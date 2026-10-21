@@ -20,6 +20,8 @@ export async function runUpgradeMaintenance(input: {
   resolveManifests: boolean
   env?: Record<string, string | undefined>
   instanceInstalled: { version: string; commit: string | null }
+  /** Full label of the installed package (`0.1.19-canary.3`), when known. */
+  buildLabel?: string | null
   colocatedServerId: string | null
 }): Promise<void> {
   const env = input.env ?? (typeof Deno === 'undefined' ? {} : Deno.env.toObject())
@@ -42,6 +44,7 @@ export async function runUpgradeMaintenance(input: {
     now: () => new Date().toISOString(),
     colocatedServerId: input.colocatedServerId,
     instanceInstalled: input.instanceInstalled,
+    buildLabel: input.buildLabel,
     verifyTimeoutMs: parseUpgradeVerifyTimeoutMs(env[UPGRADE_VERIFY_TIMEOUT_ENV]),
     trace: traceUpgradeTick,
   })

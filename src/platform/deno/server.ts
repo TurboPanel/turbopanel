@@ -10,7 +10,7 @@ import {
   type SecretsConfig,
 } from '../../lib/secrets/secrets.ts'
 import { type AppEnv, createApp } from '../../app/app.ts'
-import { resolveInstanceRevision } from '../../app/build-info.ts'
+import { resolveBuildLabel, resolveInstanceRevision } from '../../app/build-info.ts'
 import { INSTANCE_VERSION } from '../../app/version.ts'
 import { resolveColocatedServerId } from '../../client/authn/install-state.ts'
 import { createDenoDb, type Db, endDbConnection } from '../../db/connection.ts'
@@ -836,6 +836,7 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
             version: INSTANCE_VERSION,
             commit: revision.commit,
           },
+          buildLabel: resolveBuildLabel(env),
           colocatedServerId: colocated,
         })
       })

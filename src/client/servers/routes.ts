@@ -49,7 +49,7 @@ import {
 } from '../../features/servers/server-identity-db.ts'
 import { datacenter, license, organization, principal, server } from '../../db/schema.ts'
 import { INSTANCE_VERSION } from '../../app/version.ts'
-import { resolveInstanceRevision } from '../../app/build-info.ts'
+import { resolveBuildLabel, resolveInstanceRevision } from '../../app/build-info.ts'
 import { isExplicitDevelopmentMode } from '../../lib/dev-mode.ts'
 import { createUpgradeCoordinator } from '../../features/upgrades/coordinator.ts'
 import { parseUpgradeBatchDefault } from '../../features/settings/upgrade-settings.ts'
@@ -242,6 +242,7 @@ async function buildUpgradeCoordinator(
     now: () => new Date().toISOString(),
     colocatedServerId: colocated,
     instanceInstalled: { version: INSTANCE_VERSION, commit: revision.commit },
+    buildLabel: resolveBuildLabel(c.get('platformEnv')),
     verifyTimeoutMs: parseUpgradeVerifyTimeoutMs(
       c.get('platformEnv')?.[UPGRADE_VERIFY_TIMEOUT_ENV]
     ),
