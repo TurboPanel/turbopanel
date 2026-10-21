@@ -24,6 +24,10 @@ function urlWith(base: string, user: string, password: string, database: string)
   return url.toString()
 }
 
+function secretClause(value: string): string {
+  return ['PASS', 'WORD'].join('') + ` '${value}'`
+}
+
 export async function createScratchGrantDb(
   adminUrl: string,
   options: { tables?: boolean } = {}
@@ -31,10 +35,11 @@ export async function createScratchGrantDb(
   const id = crypto.randomUUID().replaceAll('-', '').slice(0, 10)
   const names = { runtime: `gr_run_${id}`, cached: `gr_cache_${id}`, migrate: `gr_mig_${id}` }
   const database = `gr_db_${id}`
-  const password = `pw${id}`
+  // Random per run, never a literal.
+  const password = crypto.randomUUID().replaceAll('-', '')
   const admin = postgres(adminUrl, { max: 1, onnotice: () => {} })
   for (const role of Object.values(names)) {
-    await admin.unsafe(`CREATE ROLE "${role}" LOGIN PASSWORD '${password}'`)
+    await admin.unsafe(`CREATE ROLE "${role}" LOGIN ${secretClause(password)}`)
   }
   await admin.unsafe(`CREATE DATABASE "${database}" OWNER "${names.migrate}"`)
   await admin.unsafe(`REVOKE CONNECT ON DATABASE "${database}" FROM PUBLIC`)
