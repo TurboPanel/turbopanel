@@ -573,7 +573,7 @@ test("registerClientRoutes mounts tags and tasks under the client API prefix", a
   assertEquals(await tasks.json(), { ok: false, error: "Unauthorized" });
 });
 
-test("registerClientRoutes mounts /billing on Workers only: self-hosted has no billing", async () => {
+test("registerClientRoutes serves /billing from the billing routes on Workers; self-hosted answers billing_not_configured", async () => {
   const secretsConfig = parseTestSecretsConfig("deno");
   const secrets = await deriveSecretsConfig(secretsConfig, "session-signing");
   const build = (
@@ -597,12 +597,14 @@ test("registerClientRoutes mounts /billing on Workers only: self-hosted has no b
   const deno = await build("deno").request(
     `${CLIENT_API_PREFIX}/billing/catalog`,
   );
-  assertEquals(deno.status, 404);
+  // No billing surface, but the path exists: the session check comes first
+  // (the signed-in 503 answer is covered in billing/unavailable.hostfree.test.ts).
+  assertEquals(deno.status, 401);
 
   const workersBare = await build("workers").request(
     `${CLIENT_API_PREFIX}/billing/catalog`,
   );
-  assertEquals(workersBare.status, 404);
+  assertEquals(workersBare.status, 401);
 
   const workers = await build("workers", registerBillingRoutes).request(
     `${CLIENT_API_PREFIX}/billing/catalog`,
