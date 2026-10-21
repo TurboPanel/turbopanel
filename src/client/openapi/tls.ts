@@ -298,12 +298,17 @@ export const tlsPaths = {
                   },
                   leafHealth: {
                     type: 'object',
-                    required: ['dueCount', 'caGeneration', 'caNotAfter'],
+                    required: ['dueCount', 'staleCount', 'caGeneration', 'caNotAfter'],
                     properties: {
                       dueCount: {
                         type: 'integer',
                         description:
-                          'Organization-CA-signed managed leaves in this org that are inside the renewal window (remaining lifetime < issued lifetime / 3) or were signed by a retired generation.',
+                          'Organization-CA-signed managed leaves in this org that are inside the renewal window (remaining lifetime < issued lifetime / 3) or were signed by a retired generation. Leaves marked stale are not counted.',
+                      },
+                      staleCount: {
+                        type: 'integer',
+                        description:
+                          'Leaves marked stale (the server was offline for weeks, nothing on it uses the certificate any more, or an owner said so). They are not renewed and do not hold back retiring the previous generation.',
                       },
                       caGeneration: {
                         type: 'integer',
@@ -392,8 +397,123 @@ export const tlsPaths = {
         },
         409: {
           description:
-            'no_pending_rotation (no awaiting_retire journal) or ca_rotation_not_converged (a tracked command is missing, non-terminal, or not succeeded, or binding rematerialize failed)',
+            'no_pending_rotation (no awaiting_retire journal), ca_rotation_not_converged (a tracked command is missing, non-terminal, or not succeeded, or binding rematerialize failed) or ca_leaves_outstanding (an active leaf, or a leaf marked stale for an offline server that is connected again, is still signed by an older generation; the body adds outstandingLeaves). Renew it, mark it stale or delete its record from /tls/ca/leaves first. The sweep also retires an awaiting_retire rotation once its retireBy deadline has passed and nothing blocks it.',
         },
+      },
+    },
+  },
+  '/api/client/v1/tls/ca/leaves': {
+    get: {
+      tags: ['TLS'],
+      summary: 'List the Organization CA leaf certificates that need attention',
+      description:
+        'Leaves that are due (signed by an older generation, or close to expiry) and leaves marked stale, due first. Each names what it belongs to: the server, and for a database cluster certificate the cluster, environment and project. `lastError` is the plain-words reason the last renewal failed. At most 100 are returned; `truncated` says there are more.',
+      security: [{ cookieAuth: [] }],
+      responses: {
+        200: {
+          description: 'Leaves needing attention',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['leaves', 'dueCount', 'staleCount', 'caGeneration', 'truncated'],
+                properties: {
+                  leaves: {
+                    type: 'array',
+                    items: {
+                      type: 'object',
+                      required: [
+                        'id',
+                        'kind',
+                        'state',
+                        'reason',
+                        'serverId',
+                        'caGeneration',
+                        'notAfter',
+                        'issuedAt',
+                        'attempts',
+                      ],
+                      properties: {
+                        id: { type: 'string', format: 'uuid' },
+                        kind: { type: 'string', enum: ['ingress', 'engine'] },
+                        state: { type: 'string', enum: ['due', 'stale'] },
+                        reason: { type: 'string' },
+                        serverId: { type: 'string', format: 'uuid' },
+                        serverName: { type: ['string', 'null'] },
+                        managedId: { type: ['string', 'null'], format: 'uuid' },
+                        managedName: { type: ['string', 'null'] },
+                        environmentId: { type: ['string', 'null'], format: 'uuid' },
+                        environmentName: { type: ['string', 'null'] },
+                        projectName: { type: ['string', 'null'] },
+                        caGeneration: { type: 'integer' },
+                        notAfter: { type: 'string', format: 'date-time' },
+                        issuedAt: { type: 'string', format: 'date-time' },
+                        attempts: { type: 'integer' },
+                        attemptedAt: { type: ['string', 'null'], format: 'date-time' },
+                        lastError: { type: ['string', 'null'] },
+                        staleAt: { type: ['string', 'null'], format: 'date-time' },
+                        staleReason: { type: ['string', 'null'] },
+                      },
+                    },
+                  },
+                  dueCount: { type: 'integer' },
+                  staleCount: { type: 'integer' },
+                  caGeneration: { type: 'integer' },
+                  truncated: { type: 'boolean' },
+                },
+              },
+            },
+          },
+        },
+        404: { description: 'No active organization CA' },
+      },
+    },
+  },
+  '/api/client/v1/tls/ca/leaves/{leafId}/renew': {
+    post: {
+      tags: ['TLS'],
+      summary: 'Renew one Organization CA leaf now',
+      description:
+        'Queues the same apply / ingress reconcile the renewal sweep uses, ignoring the retry back-off and bringing a stale leaf back. `outcome` is `queued`, `failed` (with `reason`), `stale` (nothing uses the certificate any more; it is marked stale) or `skipped`. Needs organization:manage.',
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        { name: 'leafId', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+      ],
+      responses: {
+        200: { description: 'Renewal outcome' },
+        404: { description: 'No such leaf in this organization' },
+      },
+    },
+  },
+  '/api/client/v1/tls/ca/leaves/{leafId}/stale': {
+    post: {
+      tags: ['TLS'],
+      summary: 'Mark one Organization CA leaf stale',
+      description:
+        'Says nothing is waiting on the certificate: it is no longer counted or renewed and no longer holds back retiring the previous generation. Needs organization:manage; asks for re-authentication when the organization requires it.',
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        { name: 'leafId', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+      ],
+      responses: {
+        200: { description: 'Marked stale' },
+        404: { description: 'No such leaf in this organization' },
+      },
+    },
+  },
+  '/api/client/v1/tls/ca/leaves/{leafId}': {
+    delete: {
+      tags: ['TLS'],
+      summary: 'Delete the tracking record of an Organization CA leaf',
+      description:
+        'Forgets the record only; the certificate on the server is untouched. Needs organization:manage; asks for re-authentication when the organization requires it.',
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        { name: 'leafId', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+      ],
+      responses: {
+        200: { description: 'Record deleted' },
+        404: { description: 'No such leaf in this organization' },
       },
     },
   },
@@ -402,7 +522,7 @@ export const tlsPaths = {
       tags: ['TLS'],
       summary: 'Download the organization CA trust-bundle PEM',
       description:
-        'Returns the concatenated active+retired Organization CA PEMs as `application/x-pem-file` so clients can pre-trust the overlap window. Private key is never included.',
+        'Returns the concatenated active+retired Organization CA PEMs as `application/x-pem-file` so clients can pre-trust the overlap window. Private key is never included. The attachment is named `turbopanel-org-ca-{organizationId}.pem`.',
       security: [{ cookieAuth: [] }],
       responses: {
         200: {

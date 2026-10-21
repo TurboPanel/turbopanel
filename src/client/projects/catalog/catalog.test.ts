@@ -20,13 +20,7 @@ import {
  */
 const test = Deno.test.bind(Deno)
 
-const PRINCIPAL_PROVIDERS = new Set([
-  'server',
-  'postgres',
-  'mysql',
-  'redis',
-  'clickhouse',
-])
+const PRINCIPAL_PROVIDERS = new Set(['server', 'postgres', 'mysql', 'redis', 'clickhouse'])
 
 test('listCatalog includes all managed engine codes as kind managed', () => {
   const byCode = new Map(listCatalog().map((entry) => [entry.code, entry]))
@@ -43,14 +37,9 @@ test('isManagedEngineCatalogEntry is true for engines and false for templates', 
     assertEquals(isManagedEngineCatalogEntry(entry), true)
   }
 
-  const wordpress = getCatalogEntry('wordpress-mysql')
-  if (!wordpress) throw new TypeError('missing wordpress-mysql')
-  assertEquals(wordpress.kind, 'template')
-  assertEquals(isManagedEngineCatalogEntry(wordpress), false)
-
-  const staticSite = getCatalogEntry('static-site')
-  if (!staticSite) throw new TypeError('missing static-site')
-  assertEquals(isManagedEngineCatalogEntry(staticSite), false)
+  const templateFixture = stubTemplateEntry()
+  assertEquals(templateFixture.kind, 'template')
+  assertEquals(isManagedEngineCatalogEntry(templateFixture), false)
 })
 
 test('readManagedEngineOptions returns validated engine metadata', () => {
@@ -65,14 +54,11 @@ test('readManagedEngineOptions returns validated engine metadata', () => {
     assertEquals(
       PRINCIPAL_PROVIDERS.has(options.provider),
       true,
-      `${code} provider ${options.provider} not in principal check set`,
+      `${code} provider ${options.provider} not in principal check set`
     )
   }
 
-  const wordpress = getCatalogEntry('wordpress-mysql')
-  if (!wordpress) throw new TypeError('missing wordpress-mysql')
-  assertEquals(wordpress.kind, 'template')
-  assertEquals(readManagedEngineOptions(wordpress), null)
+  assertEquals(readManagedEngineOptions(stubTemplateEntry()), null)
 })
 
 test('each managed engine declares one environment with one secret and no plaintext default', () => {
@@ -108,9 +94,22 @@ test('available catalog engines match managed engine spec defaults', () => {
   }
 })
 
-function stubManagedEntry(
-  options: Record<string, unknown> | undefined,
-): CatalogEntry {
+function stubTemplateEntry(): CatalogEntry {
+  return {
+    code: 'not-an-engine',
+    kind: 'template',
+    displayName: 'Fixture',
+    description: 'inline fixture',
+    compose: {
+      version: 1,
+      data: {},
+      presentation: { keyOrder: [], comments: {} },
+    },
+    environments: [],
+  }
+}
+
+function stubManagedEntry(options: Record<string, unknown> | undefined): CatalogEntry {
   return {
     code: 'postgres',
     kind: 'managed',
@@ -130,40 +129,48 @@ test('readManagedEngineOptions rejects incomplete or mismatched engine options',
   assertEquals(readManagedEngineOptions(stubManagedEntry(undefined)), null)
   assertEquals(readManagedEngineOptions(stubManagedEntry({})), null)
   assertEquals(
-    readManagedEngineOptions(stubManagedEntry({
-      engine: 'mysql',
-      rootUsername: 'postgres',
-      provider: 'postgres',
-      port: 5432,
-    })),
-    null,
+    readManagedEngineOptions(
+      stubManagedEntry({
+        engine: 'mysql',
+        rootUsername: 'postgres',
+        provider: 'postgres',
+        port: 5432,
+      })
+    ),
+    null
   )
   assertEquals(
-    readManagedEngineOptions(stubManagedEntry({
-      engine: 'postgres',
-      rootUsername: '',
-      provider: 'postgres',
-      port: 5432,
-    })),
-    null,
+    readManagedEngineOptions(
+      stubManagedEntry({
+        engine: 'postgres',
+        rootUsername: '',
+        provider: 'postgres',
+        port: 5432,
+      })
+    ),
+    null
   )
   assertEquals(
-    readManagedEngineOptions(stubManagedEntry({
-      engine: 'postgres',
-      rootUsername: 'postgres',
-      provider: 'not-a-provider',
-      port: 5432,
-    })),
-    null,
+    readManagedEngineOptions(
+      stubManagedEntry({
+        engine: 'postgres',
+        rootUsername: 'postgres',
+        provider: 'not-a-provider',
+        port: 5432,
+      })
+    ),
+    null
   )
   assertEquals(
-    readManagedEngineOptions(stubManagedEntry({
-      engine: 'postgres',
-      rootUsername: 'postgres',
-      provider: 'postgres',
-      port: 0,
-    })),
-    null,
+    readManagedEngineOptions(
+      stubManagedEntry({
+        engine: 'postgres',
+        rootUsername: 'postgres',
+        provider: 'postgres',
+        port: 0,
+      })
+    ),
+    null
   )
 })
 
@@ -171,7 +178,7 @@ test('resolveCatalogVariablePlaintext generates and reuses shared secrets', () =
   const shared = new Map<string, string>()
   assertEquals(
     resolveCatalogVariablePlaintext({ key: 'NAME', isSecret: false, value: 'app' }, shared),
-    'app',
+    'app'
   )
   let missing = false
   try {
@@ -181,16 +188,22 @@ test('resolveCatalogVariablePlaintext generates and reuses shared secrets', () =
   }
   assertEquals(missing, true)
 
-  const first = resolveCatalogVariablePlaintext({
-    key: 'A',
-    isSecret: true,
-    sharedCredentialId: 'db',
-  }, shared)
-  const second = resolveCatalogVariablePlaintext({
-    key: 'B',
-    isSecret: true,
-    sharedCredentialId: 'db',
-  }, shared)
+  const first = resolveCatalogVariablePlaintext(
+    {
+      key: 'A',
+      isSecret: true,
+      sharedCredentialId: 'db',
+    },
+    shared
+  )
+  const second = resolveCatalogVariablePlaintext(
+    {
+      key: 'B',
+      isSecret: true,
+      sharedCredentialId: 'db',
+    },
+    shared
+  )
   assertEquals(first.length > 0, true)
   assertEquals(second, first)
 
@@ -207,8 +220,14 @@ test('isCreateProjectType and listManagedCatalogEntries cover catalog helpers', 
   assertEquals(getCatalogEntry('no-such-code'), undefined)
 
   const managed = listManagedCatalogEntries()
-  assertEquals(managed.every((entry) => entry.kind === 'managed'), true)
+  assertEquals(
+    managed.every((entry) => entry.kind === 'managed'),
+    true
+  )
   for (const code of MANAGED_ENGINE_CODES) {
-    assertEquals(managed.some((entry) => entry.code === code), true)
+    assertEquals(
+      managed.some((entry) => entry.code === code),
+      true
+    )
   }
 })

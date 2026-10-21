@@ -1,3 +1,23 @@
+import {
+  SERVER_DELETE_BLOCKER_KIND_VALUES,
+  SERVER_SERVICES_REMOVAL_KIND_VALUES,
+} from '../servers/delete-guards.ts'
+import {
+  CLIENT_ADDRESS_PORT_KEYS,
+  CLIENT_ADDRESS_SCOPES,
+} from '../../features/net/client-addresses-pure.ts'
+
+function cappedListSchema(item: Record<string, unknown>) {
+  return {
+    type: 'object',
+    required: ['items', 'more'],
+    properties: {
+      items: { type: 'array', items: item },
+      more: { type: 'integer', minimum: 0 },
+    },
+  }
+}
+
 export const serverSchemas = {
   ServerOsMetadata: {
     type: 'object',
@@ -151,6 +171,12 @@ export const serverSchemas = {
             minimum: 1,
             description: 'MemTotal from /proc/meminfo in bytes.',
           },
+          pageSizeBytes: {
+            type: 'integer',
+            minimum: 1,
+            description:
+              'Kernel memory page size in bytes from getconf PAGESIZE. Linux only; omitted elsewhere or when unreadable.',
+          },
         },
       },
       swap: {
@@ -199,7 +225,10 @@ export const serverSchemas = {
         items: {
           type: 'object',
           properties: {
-            username: { type: 'string', description: 'Linux user that owns the site.' },
+            username: {
+              type: 'string',
+              description: 'Linux user that owns the site.',
+            },
             serviceId: { type: 'string' },
             releaseId: { type: 'string' },
             linkCount: { type: 'integer' },
@@ -254,7 +283,14 @@ export const serverSchemas = {
   },
   ServerTierPlacement: {
     type: 'object',
-    required: ['licenseTier', 'requiredTier', 'recommendedTier', 'unwatched'],
+    required: [
+      'licenseTier',
+      'requiredTier',
+      'recommendedTier',
+      'unwatched',
+      'pickedTier',
+      'tierPickNotice',
+    ],
     properties: {
       licenseTier: {
         type: ['string', 'null'],
@@ -267,6 +303,28 @@ export const serverSchemas = {
       recommendedTier: {
         type: 'string',
         description: 'Harder of required and discovered NIC / drive / GPU counts.',
+      },
+      pickedTier: {
+        type: ['string', 'null'],
+        description: 'Operator-chosen floor tier label, or null when deriving only.',
+      },
+      tierPickNotice: {
+        type: ['string', 'null'],
+        description:
+          'Plain notice when the pick could not be honored (e.g. "S2 wanted, none free"), else null.',
+      },
+      tiersFree: {
+        type: 'array',
+        description: 'Spare purchased licenses per tier (server detail only).',
+        items: {
+          type: 'object',
+          required: ['tierId', 'label', 'free'],
+          properties: {
+            tierId: { type: 'string', format: 'uuid' },
+            label: { type: 'string' },
+            free: { type: 'integer', minimum: 0 },
+          },
+        },
       },
       unwatched: {
         type: 'object',
@@ -301,11 +359,26 @@ export const serverSchemas = {
     required: ['city', 'region', 'regionCode', 'country', 'asn', 'asOrganization'],
     properties: {
       city: { type: ['string', 'null'] },
-      region: { type: ['string', 'null'], description: 'State / province name.' },
-      regionCode: { type: ['string', 'null'], description: 'State / province code, e.g. `TX`.' },
-      country: { type: ['string', 'null'], description: 'ISO 3166-1 alpha-2, upper-case.' },
-      asn: { type: ['integer', 'null'], description: 'Autonomous system number.' },
-      asOrganization: { type: ['string', 'null'], description: 'AS organization name.' },
+      region: {
+        type: ['string', 'null'],
+        description: 'State / province name.',
+      },
+      regionCode: {
+        type: ['string', 'null'],
+        description: 'State / province code, e.g. `TX`.',
+      },
+      country: {
+        type: ['string', 'null'],
+        description: 'ISO 3166-1 alpha-2, upper-case.',
+      },
+      asn: {
+        type: ['integer', 'null'],
+        description: 'Autonomous system number.',
+      },
+      asOrganization: {
+        type: ['string', 'null'],
+        description: 'AS organization name.',
+      },
     },
   },
   Location: {
@@ -360,7 +433,12 @@ export const serverSchemas = {
       organizationId: { type: ['string', 'null'] },
       licenseId: { type: ['string', 'null'] },
       tierPlacement: {
-        oneOf: [{ $ref: '#/components/schemas/ServerTierPlacement' }, { type: 'null' }],
+        oneOf: [
+          { $ref: '#/components/schemas/ServerTierPlacement' },
+          {
+            type: 'null',
+          },
+        ],
         description:
           'License vs required/recommended hardware placement. List responses use unwatched counts; detail uses device ids.',
       },
@@ -441,7 +519,12 @@ export const serverSchemas = {
         description: 'Connecting-IP geolocation from server.metadata.geo when available.',
       },
       os: {
-        oneOf: [{ $ref: '#/components/schemas/ServerOsMetadata' }, { type: 'null' }],
+        oneOf: [
+          { $ref: '#/components/schemas/ServerOsMetadata' },
+          {
+            type: 'null',
+          },
+        ],
         description:
           'Host OS from server.os_* columns (daemon hello). Null until the daemon has reported it.',
       },
@@ -456,7 +539,12 @@ export const serverSchemas = {
         description: 'Logo key for the UI OS column.',
       },
       resources: {
-        oneOf: [{ $ref: '#/components/schemas/ServerHostResources' }, { type: 'null' }],
+        oneOf: [
+          { $ref: '#/components/schemas/ServerHostResources' },
+          {
+            type: 'null',
+          },
+        ],
         description:
           'Host capacity (cpu / RAM / swap totals) plus ips from server.metadata.resources. Null until the daemon hello reports it.',
       },
@@ -472,17 +560,32 @@ export const serverSchemas = {
           'Host addresses from server.metadata.resources.ips (also nested on resources). Null until reported.',
       },
       timeSync: {
-        oneOf: [{ $ref: '#/components/schemas/ServerTimeSync' }, { type: 'null' }],
+        oneOf: [
+          { $ref: '#/components/schemas/ServerTimeSync' },
+          {
+            type: 'null',
+          },
+        ],
         description:
           'Host time-sync composed from server timezone / NTP columns. Null until reported.',
       },
       docker: {
-        oneOf: [{ $ref: '#/components/schemas/ServerDockerMetadata' }, { type: 'null' }],
+        oneOf: [
+          { $ref: '#/components/schemas/ServerDockerMetadata' },
+          {
+            type: 'null',
+          },
+        ],
         description:
           'Docker CLI / Compose plugin versions from server.metadata.docker. Null when Docker is not installed or has not been reported.',
       },
       releaseLinkScan: {
-        oneOf: [{ $ref: '#/components/schemas/ServerReleaseLinkScan' }, { type: 'null' }],
+        oneOf: [
+          { $ref: '#/components/schemas/ServerReleaseLinkScan' },
+          {
+            type: 'null',
+          },
+        ],
         description:
           "The daemon's last check of live releases for links that leave the release (server.metadata.releaseLinkScan). Null until reported; findingCount 0 means every live release passed.",
       },
@@ -580,6 +683,151 @@ export const serverSchemas = {
         additionalProperties: { type: 'string' },
         description:
           'Replace-all map of label key to value (max 64 entries). Empty object clears all labels.',
+      },
+    },
+  },
+  ServerClientAddressPorts: {
+    type: 'object',
+    additionalProperties: false,
+    description:
+      'External port per listener when a router translates it. A missing key means the same as the listen port; `null` means this address does not reach that service.',
+    properties: Object.fromEntries(
+      CLIENT_ADDRESS_PORT_KEYS.map((key) => [
+        key,
+        { type: ['integer', 'null'], minimum: 1, maximum: 65535 },
+      ])
+    ),
+  },
+  ServerClientAddressInput: {
+    type: 'object',
+    required: ['scope'],
+    properties: {
+      scope: { type: 'string', enum: [...CLIENT_ADDRESS_SCOPES] },
+      datacenterId: {
+        type: ['string', 'null'],
+        format: 'uuid',
+        description:
+          'Required for `datacenter` (one the server belongs to); absent or null for `public`.',
+      },
+      hostname: {
+        type: ['string', 'null'],
+        maxLength: 253,
+        description:
+          'DNS name clients type. Must contain a dot; trimmed and lower-cased. Blank or null = no name.',
+      },
+      addressV4: {
+        type: ['string', 'null'],
+        description:
+          "IPv4 address clients use when it is not the server's own (a router). Blank or null = the server's own.",
+      },
+      addressV6: {
+        type: ['string', 'null'],
+        description:
+          "IPv6 address clients use when it is not the server's own. Blank or null = the server's own.",
+      },
+      ports: { $ref: '#/components/schemas/ServerClientAddressPorts' },
+      primary: {
+        type: 'boolean',
+        description:
+          'Fills the main connection string. At most one entry; with none, the public side is used.',
+      },
+    },
+  },
+  ServerClientAddressesPutRequest: {
+    type: 'object',
+    required: ['addresses'],
+    properties: {
+      addresses: {
+        type: 'array',
+        maxItems: 64,
+        items: { $ref: '#/components/schemas/ServerClientAddressInput' },
+        description: 'Replaces every saved entry of the server. An empty list clears them.',
+      },
+    },
+  },
+  ServerClientAddress: {
+    type: 'object',
+    required: [
+      'scope',
+      'datacenterId',
+      'label',
+      'saved',
+      'hostname',
+      'addressV4',
+      'addressV6',
+      'ports',
+      'primary',
+      'main',
+      'mainFor',
+      'effective',
+    ],
+    properties: {
+      scope: { type: 'string', enum: [...CLIENT_ADDRESS_SCOPES] },
+      datacenterId: { type: ['string', 'null'], format: 'uuid' },
+      label: { type: 'string', description: '`Public`, or the datacenter name.' },
+      saved: { type: 'boolean', description: 'An entry was saved for this side.' },
+      hostname: { type: ['string', 'null'] },
+      addressV4: {
+        type: ['string', 'null'],
+        description: 'Saved override, not the effective value.',
+      },
+      addressV6: {
+        type: ['string', 'null'],
+        description: 'Saved override, not the effective value.',
+      },
+      ports: { $ref: '#/components/schemas/ServerClientAddressPorts' },
+      primary: { type: 'boolean', description: 'Saved primary mark.' },
+      main: {
+        type: 'boolean',
+        description:
+          'This side fills the main connection string for at least one database engine (same rules as the managed endpoints).',
+      },
+      mainFor: {
+        type: 'array',
+        items: { type: 'string', enum: ['postgres', 'mysql'] },
+        description:
+          'The engines this side is main for: the entry marked primary, else public, else the first datacenter, each only with a host and a port not set to null.',
+      },
+      effective: {
+        type: 'object',
+        required: ['v4', 'v4Source', 'v6', 'v6Source', 'host', 'hostSource'],
+        properties: {
+          v4: { type: ['string', 'null'] },
+          v4Source: { type: ['string', 'null'], enum: ['entry', 'ip', 'reported', 'pin', null] },
+          v6: { type: ['string', 'null'] },
+          v6Source: { type: ['string', 'null'], enum: ['entry', 'ip', 'reported', 'pin', null] },
+          host: {
+            type: ['string', 'null'],
+            description:
+              'What clients type: the DNS name, else an address. Never a one-word Linux hostname.',
+          },
+          hostSource: {
+            type: ['string', 'null'],
+            enum: ['hostname', 'address', 'linux-hostname', null],
+          },
+        },
+      },
+    },
+  },
+  ServerClientAddresses: {
+    type: 'object',
+    required: ['externalAccess', 'linuxHostname', 'addressNeeded', 'addresses'],
+    properties: {
+      externalAccess: {
+        type: 'boolean',
+        description:
+          'The server\'s "allow external access to the databases" switch, the only on/off control.',
+      },
+      linuxHostname: { type: ['string', 'null'] },
+      addressNeeded: {
+        type: 'boolean',
+        description:
+          'External access is on and no side can be given out for any database engine: prompt to set the address clients use.',
+      },
+      addresses: {
+        type: 'array',
+        description: 'The public side first, then each datacenter the server belongs to.',
+        items: { $ref: '#/components/schemas/ServerClientAddress' },
       },
     },
   },
@@ -778,10 +1026,20 @@ export const serverSchemas = {
           "The update channel this control plane follows (TURBOPANEL_UPDATE_CHANNEL; default release) — the one every queued update targets. rc and release resolve from the daemon's GitHub Releases.",
       },
       current: {
-        oneOf: [{ $ref: '#/components/schemas/ServerUpdateCurrent' }, { type: 'null' }],
+        oneOf: [
+          { $ref: '#/components/schemas/ServerUpdateCurrent' },
+          {
+            type: 'null',
+          },
+        ],
       },
       target: {
-        oneOf: [{ $ref: '#/components/schemas/ServerUpdateTarget' }, { type: 'null' }],
+        oneOf: [
+          { $ref: '#/components/schemas/ServerUpdateTarget' },
+          {
+            type: 'null',
+          },
+        ],
       },
       updateAvailable: { type: 'boolean' },
       colocatedWithInstance: {
@@ -849,11 +1107,25 @@ export const serverSchemas = {
   },
   HierarchyDeleteConflict: {
     type: 'object',
-    required: ['error'],
+    required: ['error', 'code'],
     properties: {
       error: {
         type: 'string',
         const: 'Cannot delete while child resources exist',
+      },
+      code: { type: 'string', const: 'hierarchy_delete_has_children' },
+      blockers: {
+        type: 'array',
+        items: {
+          type: 'object',
+          required: ['table'],
+          properties: {
+            table: { type: 'string' },
+            constraint: { type: 'string' },
+            column: { type: 'string' },
+          },
+        },
+        description: 'Postgres FK rows that still reference the deleted parent (no tenant ids).',
       },
     },
   },
@@ -868,12 +1140,413 @@ export const serverSchemas = {
       code: { type: 'string', const: 'server_has_blockers' },
       blockers: {
         type: 'array',
+        items: { $ref: '#/components/schemas/ServerDeleteBlocker' },
+      },
+      blockedDatabases: {
+        type: 'array',
+        items: { $ref: '#/components/schemas/ServerForgetBlockedDatabase' },
+        description:
+          'Present when `forgetResources=true` is refused because a database still has its only copy or its primary on this server. Capped at 50.',
+      },
+      blockedEnvironments: {
+        type: 'array',
+        items: { $ref: '#/components/schemas/ServerForgetBlockedEnvironment' },
+        description:
+          'Present when `forgetResources=true` is refused because a placed app environment still has containers, slots, deployments, addresses, or binding variables on another server. Capped at 50.',
+      },
+    },
+  },
+  ServerForgetBlockedEnvironment: {
+    type: 'object',
+    required: ['id', 'name', 'projectId', 'projectName', 'reason', 'serverNames'],
+    properties: {
+      id: { type: 'string', format: 'uuid' },
+      name: { type: 'string' },
+      projectId: { type: 'string', format: 'uuid' },
+      projectName: { type: 'string' },
+      reason: { type: 'string', enum: ['present_elsewhere'] },
+      serverNames: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Names of live servers that still carry part of this environment.',
+      },
+    },
+  },
+  ServerForgetBlockedDatabase: {
+    type: 'object',
+    required: ['id', 'name', 'reason'],
+    properties: {
+      id: { type: 'string', format: 'uuid' },
+      name: { type: 'string' },
+      reason: { type: 'string', enum: ['only_member', 'primary_here'] },
+    },
+  },
+  ServerBlockerEnvironmentItem: {
+    type: 'object',
+    required: ['id', 'name', 'projectId', 'projectName', 'hasDatabase'],
+    properties: {
+      id: { type: 'string', format: 'uuid' },
+      name: { type: 'string' },
+      projectId: { type: 'string', format: 'uuid' },
+      projectName: { type: 'string' },
+      hasDatabase: {
+        type: 'boolean',
+        description:
+          'True when this environment carries a managed database, so forget will not remove it and the Services tab app list does not show it.',
+      },
+    },
+  },
+  ServerBlockerDatabaseItem: {
+    type: 'object',
+    required: ['id', 'name'],
+    properties: {
+      id: { type: 'string', format: 'uuid' },
+      name: { type: 'string' },
+    },
+  },
+  ServerDeleteBlockerItem: {
+    oneOf: [
+      { $ref: '#/components/schemas/ServerBlockerEnvironmentItem' },
+      { $ref: '#/components/schemas/ServerBlockerDatabaseItem' },
+    ],
+  },
+  ServerDeleteBlocker: {
+    type: 'object',
+    required: ['kind', 'count', 'label'],
+    properties: {
+      kind: {
+        type: 'string',
+        enum: [...SERVER_DELETE_BLOCKER_KIND_VALUES],
+      },
+      count: { type: 'integer', minimum: 1 },
+      label: {
+        type: 'string',
+        description:
+          'Plain-words description of the leftover kind, for example "an app environment" or "a database member is still placed on this server".',
+      },
+      items: {
+        type: 'array',
+        items: { $ref: '#/components/schemas/ServerDeleteBlockerItem' },
+        description:
+          'The rows behind `count`, by name, so the owner can go find them. Present for `environment` (every placed environment, sorted by project then environment name, including the ones carrying a database) and for `managed` / `replica` (one entry per database). Capped at 50.',
+      },
+      more: {
+        type: 'integer',
+        minimum: 0,
+        description: 'How many named rows are not listed in `items`.',
+      },
+    },
+  },
+  ServerOnlineConflict: {
+    type: 'object',
+    required: ['error', 'code'],
+    properties: {
+      error: {
+        type: 'string',
+        const: 'Cannot forget leftover resources while this server is still connected',
+      },
+      code: { type: 'string', const: 'server_online' },
+    },
+  },
+  ServerDeletePreview: {
+    type: 'object',
+    required: [
+      'online',
+      'canForget',
+      'colocated',
+      'blockers',
+      'containers',
+      'systemContainers',
+      'networks',
+      'ips',
+      'environments',
+      'members',
+      'blockedDatabases',
+      'blockedEnvironments',
+    ],
+    properties: {
+      online: {
+        type: 'boolean',
+        description:
+          'True when the live cell snapshot is connected or the stored `is_connected` column is true.',
+      },
+      canForget: {
+        type: 'boolean',
+        description:
+          'True when the server is offline, is not the co-located control plane host, no database still has its only copy or its primary on this server, and no placed app environment still runs on another server.',
+      },
+      colocated: {
+        type: 'boolean',
+        description: 'True when this is the host the control plane itself runs on.',
+      },
+      blockers: {
+        type: 'array',
+        items: { $ref: '#/components/schemas/ServerDeleteBlocker' },
+      },
+      containers: {
+        type: 'object',
+        required: ['items', 'more'],
+        properties: {
+          items: {
+            type: 'array',
+            items: {
+              type: 'object',
+              required: ['id', 'name', 'status'],
+              properties: {
+                id: { type: 'string', format: 'uuid' },
+                name: { type: 'string' },
+                status: { type: 'string' },
+                serviceName: { type: 'string' },
+              },
+            },
+          },
+          more: { type: 'integer', minimum: 0 },
+        },
+      },
+      systemContainers: {
+        type: 'object',
+        required: ['items', 'more'],
+        description:
+          'Hosting-ingress system containers on this server that Host is gone forget will remove.',
+        properties: {
+          items: {
+            type: 'array',
+            items: {
+              type: 'object',
+              required: ['id', 'name', 'status'],
+              properties: {
+                id: { type: 'string', format: 'uuid' },
+                name: { type: 'string' },
+                status: { type: 'string' },
+                serviceName: { type: 'string' },
+              },
+            },
+          },
+          more: { type: 'integer', minimum: 0 },
+        },
+      },
+      networks: {
+        type: 'object',
+        required: ['items', 'more'],
+        properties: {
+          items: {
+            type: 'array',
+            items: {
+              type: 'object',
+              required: ['id', 'name'],
+              properties: {
+                id: { type: 'string', format: 'uuid' },
+                name: { type: 'string' },
+              },
+            },
+          },
+          more: { type: 'integer', minimum: 0 },
+        },
+      },
+      ips: {
+        type: 'object',
+        required: ['items', 'more'],
+        properties: {
+          items: {
+            type: 'array',
+            items: {
+              type: 'object',
+              required: ['id', 'address'],
+              properties: {
+                id: { type: 'string', format: 'uuid' },
+                address: { type: 'string' },
+              },
+            },
+          },
+          more: { type: 'integer', minimum: 0 },
+        },
+      },
+      environments: cappedListSchema({
+        type: 'object',
+        required: ['id', 'name', 'projectName'],
+        properties: {
+          id: { type: 'string', format: 'uuid' },
+          name: { type: 'string' },
+          projectName: { type: 'string' },
+        },
+      }),
+      members: cappedListSchema({
+        type: 'object',
+        required: ['id', 'databaseName'],
+        properties: {
+          id: { type: 'string', format: 'uuid' },
+          databaseName: { type: 'string' },
+        },
+      }),
+      blockedDatabases: cappedListSchema({
+        type: 'object',
+        required: ['id', 'name', 'reason'],
+        properties: {
+          id: { type: 'string', format: 'uuid' },
+          name: { type: 'string' },
+          reason: { type: 'string', enum: ['only_member', 'primary_here'] },
+        },
+      }),
+      blockedEnvironments: cappedListSchema({
+        type: 'object',
+        required: ['id', 'name', 'projectId', 'projectName', 'reason', 'serverNames'],
+        properties: {
+          id: { type: 'string', format: 'uuid' },
+          name: { type: 'string' },
+          projectId: { type: 'string', format: 'uuid' },
+          projectName: { type: 'string' },
+          reason: { type: 'string', enum: ['present_elsewhere'] },
+          serverNames: { type: 'array', items: { type: 'string' } },
+        },
+      }),
+    },
+  },
+  ServerServicesRemovalReason: {
+    type: 'object',
+    required: ['kind', 'count', 'message'],
+    properties: {
+      kind: {
+        type: 'string',
+        enum: [...SERVER_SERVICES_REMOVAL_KIND_VALUES],
+      },
+      count: { type: 'integer', minimum: 1 },
+      message: {
+        type: 'string',
+        description:
+          'One plain-language sentence for this leftover kind. Kinds match the delete blockers plus `colocated` (this host runs the control panel and cannot be removed). When `items` is present the sentence names up to three of them ("Project / Environment" for an app environment) and then says "and N more". When `removal.canForget` is true, container, network, and address sentences mention Delete server → Host is gone.',
+      },
+      items: {
+        type: 'array',
+        items: { $ref: '#/components/schemas/ServerDeleteBlockerItem' },
+        description:
+          'Same rows as `ServerDeleteBlocker.items`, so the console can link each blocking app environment or database.',
+      },
+      more: {
+        type: 'integer',
+        minimum: 0,
+        description: 'How many named rows are not listed in `items`.',
+      },
+    },
+  },
+  ServerServicesResponse: {
+    type: 'object',
+    required: [
+      'serverId',
+      'removal',
+      'apps',
+      'databases',
+      'databaseUsers',
+      'backups',
+      'networks',
+      'ipCount',
+      'runtimes',
+    ],
+    properties: {
+      serverId: { type: 'string', format: 'uuid' },
+      removal: {
+        type: 'object',
+        required: ['canRemove', 'online', 'canForget', 'reasons'],
+        properties: {
+          canRemove: { type: 'boolean' },
+          online: {
+            type: 'boolean',
+            description:
+              'True when the live cell snapshot is connected or the stored `is_connected` column is true.',
+          },
+          canForget: {
+            type: 'boolean',
+            description:
+              'True when the server is offline, is not the co-located control plane host, and no database still has its only copy or its primary on this server. The owner can then use Delete server → Host is gone.',
+          },
+          reasons: {
+            type: 'array',
+            items: { $ref: '#/components/schemas/ServerServicesRemovalReason' },
+          },
+        },
+      },
+      apps: cappedListSchema({
+        type: 'object',
+        required: ['serviceId', 'name', 'project', 'environment', 'containers', 'domains'],
+        properties: {
+          serviceId: { type: 'string', format: 'uuid' },
+          name: { type: 'string' },
+          project: { type: 'string' },
+          environment: { type: 'string' },
+          containers: cappedListSchema({
+            type: 'object',
+            required: ['name', 'status', 'role'],
+            properties: {
+              name: { type: 'string' },
+              status: { type: 'string' },
+              role: { type: 'string' },
+            },
+          }),
+          domains: cappedListSchema({ type: 'string' }),
+        },
+      }),
+      databases: {
+        type: 'array',
         items: {
           type: 'object',
-          required: ['kind', 'count'],
+          required: ['managedId', 'name', 'engine', 'role', 'status', 'readEligible', 'ordinal'],
           properties: {
-            kind: { type: 'string', enum: ['network', 'container'] },
-            count: { type: 'integer', minimum: 1 },
+            managedId: { type: 'string', format: 'uuid' },
+            name: { type: 'string' },
+            engine: { type: 'string' },
+            role: { type: 'string', enum: ['primary', 'replica'] },
+            status: { type: 'string' },
+            readEligible: { type: 'boolean' },
+            ordinal: { type: 'integer' },
+          },
+        },
+      },
+      databaseUsers: {
+        ...cappedListSchema({
+          type: 'object',
+          required: ['serviceId', 'serviceName', 'databases'],
+          properties: {
+            serviceId: { type: 'string', format: 'uuid' },
+            serviceName: { type: 'string' },
+            databases: { type: 'array', items: { type: 'string' } },
+          },
+        }),
+        description:
+          'Apps on this host bound to a managed database, grouped one entry per app with the database names it uses (they reach those databases through this host). Capped like other lists.',
+      },
+      backups: {
+        ...cappedListSchema({
+          type: 'object',
+          required: ['managedId', 'managedName', 'count', 'latestAt'],
+          properties: {
+            managedId: { type: 'string', format: 'uuid' },
+            managedName: { type: 'string' },
+            count: { type: 'integer', minimum: 0 },
+            latestAt: { type: 'string', format: 'date-time' },
+          },
+        }),
+        description:
+          'Backups of databases that have a member on this server. Counts are per database, not multiplied by how many members sit here.',
+      },
+      networks: cappedListSchema({
+        type: 'object',
+        required: ['id', 'name', 'kind'],
+        properties: {
+          id: { type: 'string', format: 'uuid' },
+          name: { type: 'string' },
+          kind: { type: 'string' },
+        },
+      }),
+      ipCount: { type: 'integer', minimum: 0 },
+      runtimes: {
+        type: 'array',
+        description:
+          'Installed runtimes from stored daemon facts (`server.metadata.runtimes`). Empty when none are stored.',
+        items: {
+          type: 'object',
+          required: ['kind', 'versions'],
+          properties: {
+            kind: { type: 'string' },
+            versions: { type: 'array', items: { type: 'string' } },
           },
         },
       },
@@ -1362,6 +2035,69 @@ export const serverPaths: Record<string, unknown> = {
       },
     },
   },
+  '/api/client/v1/servers/{id}/delete-preview': {
+    get: {
+      tags: ['Servers'],
+      summary: 'Preview leftover rows that would block deleting a server',
+      description:
+        'Same rights as delete (organization manager on this server). Lists leftover containers, networks, addresses, app environments that will be removed, database members that will be forgotten, and databases that still block forget. Each `environment` blocker names every placed app environment (including the ones carrying a database, which the Services tab app list does not show) with its project, and each `managed` / `replica` blocker names its databases, so the console can link them. System-workspace rows are omitted the same way as delete blockers. Each list is capped at 50 rows plus a `more` count. `online` is true when the live cell snapshot is connected or the stored connected flag is true. `canForget` is true only when the server is offline, is not the co-located control plane host, and no database still has its only copy or its primary on this server.',
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        {
+          name: 'id',
+          in: 'path',
+          required: true,
+          schema: { type: 'string', format: 'uuid' },
+        },
+      ],
+      responses: {
+        '200': {
+          description: 'Delete preview',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ServerDeletePreview' },
+            },
+          },
+        },
+        '401': {
+          description: 'Unauthorized',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
+            },
+          },
+        },
+        '403': {
+          description: 'Forbidden',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
+            },
+          },
+        },
+        '404': {
+          description: 'Server not found',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
   '/api/client/v1/servers/{id}': {
     get: {
       tags: ['Servers'],
@@ -1510,6 +2246,8 @@ export const serverPaths: Record<string, unknown> = {
     delete: {
       tags: ['Servers'],
       summary: 'Delete a server and purge its daemon cell',
+      description:
+        'Without `forgetResources=true`, leftover containers, networks, addresses, or other RESTRICT placements still answer 409 `server_has_blockers`. Pass the flag explicitly (query or JSON body; never implied) to drop leftover app environments, database members whose primary is elsewhere, deployments, slots, storage copies, containers, networks, and addresses on an offline server that is not the co-located control plane host. A connected server (live snapshot or stored flag, re-checked under row lock) answers 409 `server_online`. A database whose only copy or primary is on this server still answers 409 `server_has_blockers` with `blockedDatabases`. System-workspace rows still follow the ordinary hosting-ingress teardown.',
       security: [{ cookieAuth: [] }],
       parameters: [
         {
@@ -1518,7 +2256,31 @@ export const serverPaths: Record<string, unknown> = {
           required: true,
           schema: { type: 'string', format: 'uuid' },
         },
+        {
+          name: 'forgetResources',
+          in: 'query',
+          required: false,
+          schema: { type: 'boolean' },
+          description:
+            'When true, remove leftover app environments, forgettable database members, deployments, slots, copies, containers, networks, and addresses for this server inside the same delete. Must be the exact value true; omitted or any other value leaves blocker checks unchanged.',
+        },
       ],
+      requestBody: {
+        required: false,
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              properties: {
+                forgetResources: {
+                  type: 'boolean',
+                  description: 'Same meaning as the query flag; must be JSON true.',
+                },
+              },
+            },
+          },
+        },
+      },
       responses: {
         '200': {
           description: 'Server deleted and daemon cell purged',
@@ -1565,12 +2327,14 @@ export const serverPaths: Record<string, unknown> = {
           },
         },
         '409': {
-          description: 'Dependent resources block deletion',
+          description:
+            'Dependent resources block deletion, leftover rows cannot be forgotten while the server is connected, or child rows remain',
           content: {
             'application/json': {
               schema: {
                 oneOf: [
                   { $ref: '#/components/schemas/ServerDeleteBlockersConflict' },
+                  { $ref: '#/components/schemas/ServerOnlineConflict' },
                   { $ref: '#/components/schemas/HierarchyDeleteConflict' },
                 ],
               },
@@ -1741,6 +2505,171 @@ export const serverPaths: Record<string, unknown> = {
             },
           },
         },
+      },
+    },
+  },
+  '/api/client/v1/servers/{id}/services': {
+    get: {
+      tags: ['Servers'],
+      summary: 'List what is attached to a server',
+      description:
+        "Read-gated, organization-scoped snapshot of apps, databases, bindings, backups of databases that have a member here, networks, and stored runtimes for one server. Lists of apps, containers, domains, database users, networks, and backups are capped (50 plus `more`). Removal reasons reuse `planServerForget` plus the co-located-host rule so this view and DELETE cannot disagree; `online` and `canForget` match delete-preview, and a reason that blocks a named app environment or database carries `items` so the console can link each one. Another organization's server is 404.",
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        {
+          name: 'id',
+          in: 'path',
+          required: true,
+          schema: { type: 'string', format: 'uuid' },
+        },
+      ],
+      responses: {
+        '200': {
+          description: 'Attached services snapshot',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ServerServicesResponse' },
+            },
+          },
+        },
+        '401': {
+          description: 'Unauthorized',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
+            },
+          },
+        },
+        '403': {
+          description: 'Forbidden',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
+            },
+          },
+        },
+        '404': {
+          description: 'Server not found in this organization',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
+            },
+          },
+        },
+        '503': {
+          description: 'Database unavailable',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+  '/api/client/v1/servers/{id}/addresses': {
+    get: {
+      tags: ['Servers'],
+      summary: 'Get the addresses clients use',
+      description:
+        "Owners and managers only; a server of another organization is 404. One entry for the public side and one per datacenter the server belongs to, with what was saved and what the panel will use. Blank values fall back to the server's own address: a public address row, else the public interface address the server reports, and the datacenter pin.",
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        {
+          name: 'id',
+          in: 'path',
+          required: true,
+          schema: { type: 'string', format: 'uuid' },
+        },
+      ],
+      responses: {
+        '200': {
+          description: 'The addresses',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ServerClientAddresses' },
+            },
+          },
+        },
+        '403': { description: 'Not an owner or manager of the server' },
+        '404': { description: 'Server not found in the caller organization' },
+      },
+    },
+    put: {
+      tags: ['Servers'],
+      summary: 'Replace the addresses clients use',
+      description:
+        'Owners and managers only. Replaces every saved entry, then tells the server so its database certificate carries the new names and addresses. External access is still switched on and off only by `/servers/{id}/managed-external-access`.',
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        {
+          name: 'id',
+          in: 'path',
+          required: true,
+          schema: { type: 'string', format: 'uuid' },
+        },
+      ],
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: { $ref: '#/components/schemas/ServerClientAddressesPutRequest' },
+          },
+        },
+      },
+      responses: {
+        '200': {
+          description:
+            'Saved. `reconcile` is `queued`, or `not_needed` when the server fronts no database.',
+          content: {
+            'application/json': {
+              schema: {
+                allOf: [
+                  { $ref: '#/components/schemas/ServerClientAddresses' },
+                  {
+                    type: 'object',
+                    required: ['ok', 'reconcile'],
+                    properties: {
+                      ok: { type: 'boolean', const: true },
+                      reconcile: { type: 'string', enum: ['queued', 'not_needed'] },
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        },
+        '400': {
+          description:
+            '`invalid_addresses`, `address_scope_invalid`, `address_datacenter_not_member`, `address_duplicate`, `address_hostname_invalid`, `address_hostname_single_label`, `address_v4_invalid`, `address_v6_invalid`, `address_ports_invalid` or `address_primary_multiple`, with `message` and the entry `index`',
+        },
+        '403': { description: 'Not an owner or manager of the server' },
+        '404': { description: 'Server not found in the caller organization' },
+        '422': {
+          description:
+            '`daemon_key_unavailable`: the server fronts databases and cannot take changes yet; nothing saved',
+        },
+        '502': {
+          description:
+            '`ingress_reconcile_failed`: saved, but the certificate was not reissued. `reason` is `enqueue_failed` (save again, or the next listener update adds the names) or `prepare_failed` (the listener cannot be rebuilt until its databases are fixed). The body also carries the saved view and `message`.',
+        },
+        '503': { description: 'Command queue or daemon cell registry unavailable' },
       },
     },
   },

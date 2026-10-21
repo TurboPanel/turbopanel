@@ -20,9 +20,6 @@ const test = Deno.test.bind(Deno)
 
 const NOT_SEALED: Readonly<Record<string, string>> = {
   'account.password': 'Argon2id hash, not reversible',
-  'account.access_token': 'always written null (login-only OAuth link)',
-  'account.refresh_token': 'always written null (login-only OAuth link)',
-  'account.id_token': 'always written null (login-only OAuth link)',
   'forge.webhook_token_hash': 'hash',
   'invitation.token_hash': 'hash',
   [['license', 'token'].join('.')]: 'one-way hash of the license value',

@@ -1225,7 +1225,7 @@ test('POST /enroll rejects a second host once the license is latched', async () 
   )
 })
 
-test('POST /enroll with a fresh license creates a new server even on the same host', async () => {
+test('POST /enroll with a fresh license is refused when the host is already registered (machine key is unique)', async () => {
   await withEnrollFixture(
     async ({
       db,
@@ -1281,20 +1281,18 @@ test('POST /enroll with a fresh license creates a new server even on the same ho
           signature,
         }),
       })
-      assertEquals(enrollResponse.status, 200)
-      const body = (await enrollResponse.json()) as {
-        serverId: string
-        keyId: string
-      }
-      assertEquals(body.serverId !== serverId, true)
+      assertEquals(enrollResponse.status, 409)
+      const body = (await enrollResponse.json()) as { error: string; message?: string }
+      assertEquals(body.error, 'machine_key_in_use')
+      assertExists(body.message)
 
+      // Nothing changed: the original license still belongs to the original server.
       const [original] = await db
         .select({ serverId: license.serverId })
         .from(license)
         .where(eq(license.id, licenseId))
       assertEquals(original?.serverId, serverId)
 
-      await deleteOrganizationServerTree(db, organizationId, body.serverId)
       await db.delete(license).where(eq(license.id, freshLicenseId))
     }
   )
@@ -3232,6 +3230,11 @@ test('POST /metrics writes machine_class=physical back once topology proves it, 
     assertEquals(response.status, 202)
     assertEquals(writes[0]?.hardwareSignals.length, 1)
     assertEquals(await readMachineClassSettled(db, serverId, 'physical'), 'physical')
+    const [after] = await db
+      .select({ source: server.machineClassSource })
+      .from(server)
+      .where(eq(server.id, serverId))
+    assertEquals(after?.source, 'detected')
   })
 })
 
@@ -3293,6 +3296,41 @@ test('POST /metrics: a declared machine_class=virtual beats a topology that carr
     assertEquals(response.status, 202)
     assertEquals(writes[0]?.hardwareSignals, [])
     assertEquals(await readMachineClassSettled(db, serverId, 'virtual'), 'virtual')
+  })
+})
+
+test('POST /metrics never overwrites a machine class an operator pinned', async () => {
+  await withEnrollFixture(async ({ db, serverId, keyId }) => {
+    await recordTopologyGeneration(db, serverId, {
+      generation: 0,
+      bootGeneration: 0,
+      snapshot: { hardwareSignals: [{ signalId: 'board-fan' }] },
+      appliedAt: new Date().toISOString(),
+    })
+    await db
+      .update(server)
+      .set({ machineClass: 'virtual', machineClassSource: 'operator' })
+      .where(eq(server.id, serverId))
+
+    const { app } = await createMetricsTestAppWithDb(db)
+    const daemonToken = await issueDaemonToken(serverId, keyId)
+    const response = await app.request('/api/daemon/v1/metrics', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${daemonToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(
+        buildValidMetricsFrame({ hardwareSignals: [{ signalId: 'sig0', kind: 'fan' }] })
+      ),
+    })
+    assertEquals(response.status, 202)
+    await new Promise((resolve) => setTimeout(resolve, 200))
+    const [row] = await db
+      .select({ machineClass: server.machineClass, source: server.machineClassSource })
+      .from(server)
+      .where(eq(server.id, serverId))
+    assertEquals(row, { machineClass: 'virtual', source: 'operator' })
   })
 })
 

@@ -3,7 +3,7 @@ import { assertEquals, assertNotEquals } from '@std/assert'
 import { eq } from 'drizzle-orm'
 import { getDatabaseUrl } from '../../db/url.ts'
 import { createDenoDb, endDbConnection } from '../../db/connection.ts'
-import { capabilityPlanGeneration, organization, server } from '../../db/schema.ts'
+import { organization, server } from '../../db/schema.ts'
 import {
   getLatestCapabilityPlanGeneration,
   recordCapabilityPlanGenerationIfChanged,
@@ -57,7 +57,6 @@ async function withServerFixture(
   try {
     await fn({ db, serverId })
   } finally {
-    await db.delete(capabilityPlanGeneration).where(eq(capabilityPlanGeneration.serverId, serverId))
     await db.delete(server).where(eq(server.id, serverId))
     await db.delete(organization).where(eq(organization.id, organizationId))
   }
@@ -92,11 +91,8 @@ test('recordCapabilityPlanGenerationIfChanged is a no-op for an unchanged plan',
     )
     assertEquals(generation, { generation: 0, changed: false })
 
-    const rows = await db
-      .select()
-      .from(capabilityPlanGeneration)
-      .where(eq(capabilityPlanGeneration.serverId, serverId))
-    assertEquals(rows.length, 1)
+    // Overwritten in place: still the one stored value, still generation 0.
+    assertEquals((await getLatestCapabilityPlanGeneration(db, serverId))?.generation, 0)
   })
 })
 
@@ -118,12 +114,6 @@ test('recordCapabilityPlanGenerationIfChanged bumps generation when the plan cha
     assertEquals(latest?.generation, 1)
     assertEquals(latest?.plan, changedPlan)
     assertNotEquals(latest?.planHash, undefined)
-
-    const rows = await db
-      .select()
-      .from(capabilityPlanGeneration)
-      .where(eq(capabilityPlanGeneration.serverId, serverId))
-    assertEquals(rows.length, 2)
   })
 })
 
@@ -202,23 +192,13 @@ test('recordCapabilityPlanGenerationIfChanged serializes concurrent changed plan
       assertEquals(generationA.changed, true)
       assertEquals(generationB.changed, true)
 
-      const hashA = await computeMetricsCapabilityPlanHash(planA)
-      const hashB = await computeMetricsCapabilityPlanHash(planB)
-
-      const rows = await dbA
-        .select()
-        .from(capabilityPlanGeneration)
-        .where(eq(capabilityPlanGeneration.serverId, serverId))
-      const rowA = rows.find((row) => row.generation === generationA.generation)
-      const rowB = rows.find((row) => row.generation === generationB.generation)
-
-      // Each returned generation must resolve to the plan snapshot its own
-      // caller actually persisted, not to whichever write happened to win a
-      // conflicting insert.
-      assertEquals(rowA?.planHash, hashA)
-      assertEquals(rowA?.plan, planA)
-      assertEquals(rowB?.planHash, hashB)
-      assertEquals(rowB?.plan, planB)
+      // The stored value is the later write: the plan of whichever call took
+      // the higher generation, with its own hash.
+      const winner = generationA.generation > generationB.generation ? planA : planB
+      const latest = await getLatestCapabilityPlanGeneration(dbA, serverId)
+      assertEquals(latest?.generation, Math.max(generationA.generation, generationB.generation))
+      assertEquals(latest?.plan, winner)
+      assertEquals(latest?.planHash, await computeMetricsCapabilityPlanHash(winner))
     } finally {
       await endDbConnection(dbA)
       await endDbConnection(dbB)

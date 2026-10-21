@@ -45,7 +45,9 @@ import {
   hostname,
   ip,
   license,
+  login,
   managed,
+  managedDatabase,
   mount,
   network,
   notificationChannel,
@@ -327,18 +329,32 @@ async function seedOrganizationB(
       .insert(principal)
       .values({
         organizationId: orgB,
-        kind: 'database',
-        provider: 'postgres',
         username: n('p'),
         appliedUsername: n('p'),
       })
       .returning({ id: principal.id })
   )
-  await db.insert(binding).values({
-    principalId: ids.principalId,
-    serviceId: ids.serviceId,
-    databaseName: n('db').replaceAll('-', '_').replace(/^\d/, 'x'),
-  })
+  const databaseId = await insertId(
+    db
+      .insert(managedDatabase)
+      .values({
+        managedId: ids.managedId,
+        name: n('db').replaceAll('-', '_').replace(/^\d/, 'x'),
+      })
+      .returning({ id: managedDatabase.id })
+  )
+  const loginId = await insertId(
+    db
+      .insert(login)
+      .values({
+        managedId: ids.managedId,
+        role: 'user',
+        username: n('l'),
+        appliedUsername: n('l'),
+      })
+      .returning({ id: login.id })
+  )
+  await db.insert(binding).values({ loginId, serviceId: ids.serviceId, databaseId })
   ids.commandId = await insertId(
     db
       .insert(command)
@@ -415,8 +431,6 @@ async function seedBodyReferences(
       .values({
         organizationId: org,
         projectId: ids.projectId,
-        kind: 'database',
-        provider: 'postgres',
         username: n('pp'),
         appliedUsername: n('pp'),
       })

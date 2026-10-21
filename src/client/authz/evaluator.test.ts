@@ -15,7 +15,14 @@ import {
   server,
   user,
 } from '../../db/schema.ts'
-import { can, assertCan, ForbiddenError, getSubjects, listVisible } from './evaluator.ts'
+import {
+  can,
+  assertCan,
+  ForbiddenError,
+  getSubjects,
+  listVisible,
+  listVisibleVersions,
+} from './evaluator.ts'
 
 const dbUrl = getDatabaseUrl()
 
@@ -264,6 +271,39 @@ test('listVisible returns all leaves for org owner', async () => {
   })
 })
 
+test('listVisibleVersions sees exactly what listVisible sees, with the row last change', async () => {
+  await withTestFixtures(async ({ db, userId, organizationId, workspaceId }) => {
+    const none = await listVisibleVersions(db, { kind: 'workspace', userId, organizationId })
+    if (none.length !== 0) throw new Error('without a grant nothing should be visible')
+
+    await db.insert(grant).values({
+      entityType: 'organization',
+      entityId: organizationId,
+      actorType: 'user',
+      actorId: userId,
+      permission: 'organization:own',
+    })
+
+    for (const kind of ['workspace', 'project', 'environment'] as const) {
+      const ids = await listVisible(db, { kind, userId, organizationId })
+      const versions = await listVisibleVersions(db, { kind, userId, organizationId })
+      if (JSON.stringify([...ids].sort()) !== JSON.stringify(versions.map((v) => v.id))) {
+        throw new Error(`${kind}: listVisibleVersions must return the ids listVisible returns`)
+      }
+    }
+
+    const [row] = await db
+      .select({ updatedAt: workspace.updatedAt })
+      .from(workspace)
+      .where(eq(workspace.id, workspaceId))
+    const versions = await listVisibleVersions(db, { kind: 'workspace', userId, organizationId })
+    const mine = versions.find((v) => v.id === workspaceId)
+    if (!mine || new Date(mine.updatedAt).getTime() !== new Date(row!.updatedAt).getTime()) {
+      throw new Error('the version must be the row updated_at')
+    }
+  })
+})
+
 test('team:own grant allows team ownership check via can()', async () => {
   await withTestFixtures(async ({ db, userId, teamId }) => {
     await db.insert(grant).values({
@@ -342,7 +382,7 @@ test('listVisible returns variable ids for org owner', async () => {
 
     const [insertedEnvironment] = await db
       .insert(environment)
-      .values({ name: 'Evaluator Variables Env', projectId })
+      .values({ name: 'evaluator-variables-env', projectId })
       .returning({ id: environment.id })
 
     const environmentId = insertedEnvironment!.id
@@ -391,7 +431,7 @@ test('organization grant allows can() on managed and variable entities', async (
 
     const [insertedEnvironment] = await db
       .insert(environment)
-      .values({ name: 'Evaluator Test Env', projectId })
+      .values({ name: 'evaluator-test-env', projectId })
       .returning({ id: environment.id })
 
     const environmentId = insertedEnvironment!.id

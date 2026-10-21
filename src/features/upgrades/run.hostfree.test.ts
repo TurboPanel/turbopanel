@@ -226,3 +226,64 @@ test('with a batch of 1 only one server is open at a time and a failure never st
   ])
   assertEquals(activeBatchIndex(after), 2)
 })
+
+test('activeBatchIndex prefers a later connected batch over earlier offline ones', () => {
+  assertEquals(
+    activeBatchIndex([
+      { batchIndex: 0, status: 'waiting', connected: false },
+      { batchIndex: 1, status: 'waiting', connected: false },
+      { batchIndex: 2, status: 'pending', connected: true },
+      { batchIndex: 3, status: 'pending', connected: true },
+    ]),
+    2
+  )
+})
+
+test('activeBatchIndex keeps relative order: the earliest connected open batch', () => {
+  assertEquals(
+    activeBatchIndex([
+      { batchIndex: 2, status: 'pending', connected: true },
+      { batchIndex: 0, status: 'pending', connected: false },
+      { batchIndex: 5, status: 'pending', connected: true },
+    ]),
+    2
+  )
+})
+
+test('activeBatchIndex with only offline servers is still the lowest open batch', () => {
+  assertEquals(
+    activeBatchIndex([
+      { batchIndex: 0, status: 'waiting', connected: false },
+      { batchIndex: 1, status: 'pending', connected: false },
+    ]),
+    0
+  )
+})
+
+test('activeBatchIndex with only connected servers is still the lowest open batch', () => {
+  assertEquals(
+    activeBatchIndex([
+      { batchIndex: 0, status: 'pending', connected: true },
+      { batchIndex: 1, status: 'pending', connected: true },
+    ]),
+    0
+  )
+})
+
+test('an in-flight batch is not skipped for a later connected server', () => {
+  assertEquals(
+    activeBatchIndex([
+      { batchIndex: 0, status: 'installing', connected: true },
+      { batchIndex: 1, status: 'pending', connected: true },
+    ]),
+    0
+  )
+  assertEquals(
+    activeBatchIndex([
+      { batchIndex: 0, status: 'waiting', connected: false },
+      { batchIndex: 1, status: 'installing', connected: true },
+      { batchIndex: 2, status: 'pending', connected: true },
+    ]),
+    1
+  )
+})

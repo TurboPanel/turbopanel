@@ -1,5 +1,6 @@
 import { assertEquals } from '@std/assert'
 import {
+  activityStepsOf,
   ACTIVITY_DEFAULT_LIMIT,
   ACTIVITY_MAX_LIMIT,
   activityActionOf,
@@ -76,6 +77,7 @@ test('shapeActivityItem: an in-progress deploy runs against now and hides the er
     startedAt: '2026-10-04T12:08:00.000Z',
     step: null,
     totalSteps: null,
+    stepLabel: null,
     durationSecs: 120,
     errorMessage: null,
     crashCount: null,
@@ -98,6 +100,37 @@ test('shapeActivityItem: a failed command freezes its duration and shows the err
   assertEquals(item.startedAt, '2026-10-04T12:00:01.000Z')
   assertEquals(item.durationSecs, 179)
   assertEquals(item.errorMessage, 'no outcome')
+})
+
+const PROGRESS = {
+  version: 1,
+  steps: [
+    { id: 'install-docker', label: 'Install Docker', state: 'ready' },
+    { id: 'install-build-tool', label: 'Install the build tool', state: 'done' },
+    { id: 'fetch', label: 'Fetch the code', state: 'done' },
+    { id: 'build', label: 'Build', state: 'running' },
+    { id: 'start', label: 'Start the app', state: 'pending' },
+  ],
+  current: 'build',
+  updatedAt: '2026-10-04T12:09:00.000Z',
+}
+
+test('activityStepsOf counts done steps plus the running one, never the ready ones', () => {
+  assertEquals(activityStepsOf(PROGRESS), { step: 3, totalSteps: 4, stepLabel: 'Build' })
+  // Between steps nothing runs: no +1 and no label.
+  const between = {
+    ...PROGRESS,
+    steps: PROGRESS.steps.map((step) => (step.id === 'build' ? { ...step, state: 'done' } : step)),
+    current: null,
+  }
+  assertEquals(activityStepsOf(between), { step: 3, totalSteps: 4, stepLabel: null })
+  assertEquals(activityStepsOf(null), { step: null, totalSteps: null, stepLabel: null })
+  assertEquals(activityStepsOf({ version: 1 }), { step: null, totalSteps: null, stepLabel: null })
+})
+
+test('shapeActivityItem: carries the step plan of a deploying command', () => {
+  const item = shapeActivityItem({ ...BASE, progress: PROGRESS }, NAMES, NOW)
+  assertEquals([item.step, item.totalSteps, item.stepLabel], [3, 4, 'Build'])
 })
 
 test('shapeActivityItem: an environment outside the organization resolves to null names', () => {

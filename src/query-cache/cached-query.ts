@@ -8,8 +8,11 @@ import { queryCacheKey } from './keys.ts'
 import type { ApprovedReadModelId } from './approved-read-models.ts'
 
 /**
- * Internal entry point for approved read-model helpers in `read-models/`.
- * Call sites must not import this — use the named helpers instead.
+ * Internal entry point for `defineCachedRead`. Routes and read-model helpers
+ * must not call this; the boundary check (`check:query-cache-boundaries`)
+ * fails the build if they do.
+ *
+ * `keyParts` come from the statement itself (see `defineCachedRead`).
  */
 export async function runApprovedCachedReadModel<T>(
   cache: QueryCache | undefined,
@@ -17,7 +20,7 @@ export async function runApprovedCachedReadModel<T>(
   readModel: ApprovedReadModelId,
   keyParts: string[],
   load: (db: Db) => Promise<T>,
-  ttlSeconds = DEFAULT_QUERY_CACHE_TTL_SECONDS,
+  ttlSeconds = DEFAULT_QUERY_CACHE_TTL_SECONDS
 ): Promise<T> {
   if (!cache) {
     return load(db)
@@ -28,6 +31,7 @@ export async function runApprovedCachedReadModel<T>(
     key: queryCacheKey(readModel, ...keyParts),
     ttlSeconds,
     load,
+    primaryDb: db,
   }
   return cache.getReadModel(opts)
 }

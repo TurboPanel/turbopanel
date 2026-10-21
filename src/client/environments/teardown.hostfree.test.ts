@@ -93,7 +93,7 @@ test('planEnvironmentTeardown returns null when the project row is gone', async 
 test('planEnvironmentTeardown returns null when nothing places the environment', async () => {
   const db = fakeDb([
     [{ id: ENV_ID, projectId: PROJECT_ID, serverId: null }],
-    [{ id: PROJECT_ID, options: {} }],
+    [{ id: PROJECT_ID, defaultServerId: null }],
     [],
   ])
   assertEquals(await planEnvironmentTeardown(db, ENV_ID), null)
@@ -102,7 +102,7 @@ test('planEnvironmentTeardown returns null when nothing places the environment',
 test('planEnvironmentTeardown prefers deployment rows over the pin', async () => {
   const db = fakeDb([
     [{ id: ENV_ID, projectId: PROJECT_ID, serverId: 'srv-pin' }],
-    [{ id: PROJECT_ID, options: { defaultServerId: DEFAULT_SERVER_ID } }],
+    [{ id: PROJECT_ID, defaultServerId: DEFAULT_SERVER_ID }],
     [deploymentRow('srv-b'), deploymentRow('srv-a')],
     [],
     [],
@@ -115,7 +115,7 @@ test('planEnvironmentTeardown prefers deployment rows over the pin', async () =>
 test('planEnvironmentTeardown falls back to the effective pin and collects ingress + fabric', async () => {
   const db = fakeDb([
     [{ id: ENV_ID, projectId: PROJECT_ID, serverId: null }],
-    [{ id: PROJECT_ID, options: { defaultServerId: DEFAULT_SERVER_ID } }],
+    [{ id: PROJECT_ID, defaultServerId: DEFAULT_SERVER_ID }],
     [],
     [
       {
@@ -139,14 +139,14 @@ test('planEnvironmentTeardown still reclaims a release tree whose service left t
   const recorded = [{ serviceId: 'svc-gone', username: 'appuser' }]
   const db = fakeDb([
     [{ id: ENV_ID, projectId: PROJECT_ID, serverId: null }],
-    [{ id: PROJECT_ID, options: { defaultServerId: DEFAULT_SERVER_ID } }],
+    [{ id: PROJECT_ID, defaultServerId: DEFAULT_SERVER_ID }],
     [],
     [],
     [],
     // resolveEnvironmentSiteReleases: environment + project compose carry no
     // sourced service any more…
     [{ id: ENV_ID, projectId: PROJECT_ID, options: {} }],
-    [{ id: PROJECT_ID, options: {} }],
+    [{ id: PROJECT_ID, defaultServerId: null }],
     // …so only the recorded set names the tree.
     [{ options: { secretPlan: [], siteReleases: recorded } }],
   ])
@@ -157,12 +157,12 @@ test('planEnvironmentTeardown still reclaims a release tree whose service left t
 test("planEnvironmentTeardown captures the project's server principals while the rows exist", async () => {
   const db = fakeDb([
     [{ id: ENV_ID, projectId: PROJECT_ID, serverId: null }],
-    [{ id: PROJECT_ID, options: { defaultServerId: DEFAULT_SERVER_ID } }],
+    [{ id: PROJECT_ID, defaultServerId: DEFAULT_SERVER_ID }],
     [],
     [],
     [],
     [{ id: ENV_ID, projectId: PROJECT_ID, options: {} }],
-    [{ id: PROJECT_ID, options: {} }],
+    [{ id: PROJECT_ID, defaultServerId: null }],
     [],
     // The project's principals, deduplicated and sorted.
     [{ username: 'web_b' }, { username: 'app_a' }, { username: 'web_b' }],
@@ -199,7 +199,7 @@ test('planEnvironmentsTeardown drops environments with nothing to reclaim', asyn
   const db = fakeDb([
     [],
     [{ id: ENV_ID, projectId: PROJECT_ID, serverId: 'srv-a' }],
-    [{ id: PROJECT_ID, options: {} }],
+    [{ id: PROJECT_ID, defaultServerId: null }],
     [],
     [],
     [],
@@ -327,6 +327,24 @@ test('dispatchEnvironmentTeardown is a no-op without plans', async () => {
   const queue = { enqueue: () => Promise.resolve() } as unknown as CommandQueue
   assertEquals(await dispatchEnvironmentTeardown(fakeCommandDb(captured), queue, [], 'u'), [])
   assertEquals(captured.payloads.length, 0)
+})
+
+test('planEnvironmentTeardown plans no principal retirement for a project delete (keepPrincipals)', async () => {
+  const db = fakeDb([
+    [{ id: ENV_ID, projectId: PROJECT_ID, serverId: null }],
+    [{ id: PROJECT_ID, defaultServerId: DEFAULT_SERVER_ID }],
+    [],
+    [],
+    [],
+    [{ id: ENV_ID, projectId: PROJECT_ID, options: {} }],
+    [{ id: PROJECT_ID, defaultServerId: null }],
+    [],
+    // Never read: the Linux users stay when the project goes.
+    [{ username: 'web_b' }],
+  ])
+  const result = await planEnvironmentTeardown(db, ENV_ID, { keepPrincipals: true })
+  assertEquals(result?.principalUsernames, [])
+  assertEquals(result?.siteReleases !== undefined, true)
 })
 
 test('dispatchEnvironmentTeardown names retired principals on the last stop per server only', async () => {

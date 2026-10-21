@@ -509,6 +509,7 @@ test('Workers sign-up succeeds with mock db and no email verification', async ()
   assertEquals(state.users.length, 1)
   assertEquals(state.users[0]?.email, 'new-worker@example.com')
   assertEquals(state.organizations.length, 1)
+  assertEquals(state.organizations[0]?.name, "new-worker@example.com's organization")
 })
 
 /** Built at run time so secret scanners never read a fixture as a credential. */

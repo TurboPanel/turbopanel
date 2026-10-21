@@ -49,6 +49,7 @@ import {
 import { isIpAddressUniqueViolation } from '../ips/ip-create-validation.ts'
 import { parseIpPinMetadata } from '../../features/net/repin.ts'
 import { cidrCollisionResponse } from '../networks/network-scope.ts'
+import { pruneClientAddressesWithoutPin } from '../../features/net/client-addresses.ts'
 import {
   assertCanCreateOr403,
   assertCanManageOr403,
@@ -887,6 +888,11 @@ export function registerDatacenterRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
 
     try {
       await db.transaction(async (tx) => {
+        // An address entry left from an earlier membership must not come back.
+        await pruneClientAddressesWithoutPin(
+          tx,
+          resolved.pins.map((pin) => pin.member.serverId)
+        )
         const networkIdByCidr = new Map<string, string>()
         // One connection, strictly in order: a fresh subnet's network row is
         // created by its first pin and reused by the later ones.
@@ -940,6 +946,7 @@ export function registerDatacenterRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
     if (deleted.length === 0) {
       return c.json({ error: 'Not found' }, 404)
     }
+    await pruneClientAddressesWithoutPin(db, [serverId])
 
     return c.json({ ok: true as const, removed: deleted.length })
   })

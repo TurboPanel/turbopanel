@@ -18,6 +18,7 @@ import {
   LICENSE_TIER_BELOW_REQUIRED_ERROR,
   LICENSE_TIER_UNASSIGNED_ERROR,
 } from './tier-enforcement.ts'
+import { resolveTierPickNotice } from './server-preferred-tier.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -486,4 +487,10 @@ test('evaluateHostedEnrollmentTier refuses a license that does not exist or is r
     ok: false,
     error: LICENSE_TIER_UNASSIGNED_ERROR,
   })
+})
+
+test('server list tierPlacement tierPickNotice uses assignment pickUnfulfilled when provided', () => {
+  const pickUnfulfilled = new Map([['server-a', 'S2']])
+  assertEquals(resolveTierPickNotice('server-a', pickUnfulfilled), 'S2 wanted, none free')
+  assertEquals(resolveTierPickNotice('server-b', pickUnfulfilled), null)
 })

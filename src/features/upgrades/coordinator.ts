@@ -633,6 +633,7 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
       steps.map((step) => ({
         batchIndex: step.batchIndex,
         status: step.status,
+        connected: step.phase === 'fleet' ? factOf(fleet, step)?.connected === true : true,
       }))
     )
     const currentPhase = earliestOpenPhase(steps)
@@ -831,6 +832,7 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
             fleetServerIds:
               input.fleetServerIds ??
               fleet.filter((fact) => !fact.colocated).map((fact) => fact.serverId),
+            connectedServerIds: fleet.filter((fact) => fact.connected).map((fact) => fact.serverId),
             batch: settings.batch,
           })
       const now = deps.now()

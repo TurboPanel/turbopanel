@@ -5,7 +5,10 @@ export const bindingSchemas = {
     type: 'object',
     properties: {
       id: { type: 'string' },
-      principalId: { type: 'string' },
+      loginId: {
+        type: 'string',
+        description: 'The database login whose credentials are injected.',
+      },
       serviceId: { type: 'string' },
       databaseName: { type: 'string' },
       keyPrefix: { type: 'string' },
@@ -42,9 +45,17 @@ export const bindingSchemas = {
   },
   CreateBindingRequest: {
     type: 'object',
-    required: ['principalId', 'serviceId', 'databaseName'],
+    required: ['serviceId', 'databaseName'],
     properties: {
-      principalId: { type: 'string' },
+      principalId: {
+        type: 'string',
+        description:
+          'A site owner Linux user whose database login is bound. Required unless `loginId` is given; 409 `binding_login_ambiguous` when the user has several logins.',
+      },
+      loginId: {
+        type: 'string',
+        description: 'The database login to bind. Takes precedence over `principalId`.',
+      },
       serviceId: { type: 'string' },
       databaseName: { type: 'string' },
       keyPrefix: {
@@ -97,18 +108,14 @@ export const bindingPaths = {
   [bindingsBasePath]: {
     ...(basePaths[bindingsBasePath] as Record<string, unknown>),
     get: {
-      ...((basePaths[bindingsBasePath] as Record<string, unknown>).get as Record<
-        string,
-        unknown
-      >),
+      ...((basePaths[bindingsBasePath] as Record<string, unknown>).get as Record<string, unknown>),
       parameters: [
         {
           name: 'serviceId',
           in: 'query',
           required: false,
           schema: { type: 'string' },
-          description:
-            'List bindings owned by this compose service (exactly one filter)',
+          description: 'List bindings owned by this compose service (exactly one filter)',
         },
         {
           name: 'environmentId',
@@ -124,20 +131,16 @@ export const bindingPaths = {
           required: false,
           schema: { type: 'string' },
           description:
-            'List bindings whose principal belongs to the managed cluster in this environment (exactly one filter)',
+            'List bindings whose login belongs to the managed cluster in this environment (exactly one filter)',
         },
       ],
     },
     post: {
-      ...((basePaths[bindingsBasePath] as Record<string, unknown>).post as Record<
-        string,
-        unknown
-      >),
+      ...((basePaths[bindingsBasePath] as Record<string, unknown>).post as Record<string, unknown>),
       responses: {
-        ...(((basePaths[bindingsBasePath] as Record<string, unknown>).post as Record<
-          string,
-          unknown
-        >).responses as Record<string, unknown>),
+        ...((
+          (basePaths[bindingsBasePath] as Record<string, unknown>).post as Record<string, unknown>
+        ).responses as Record<string, unknown>),
         ...bindingConflictResponses,
       },
     },
@@ -145,16 +148,24 @@ export const bindingPaths = {
   [bindingIdPath]: {
     ...(basePaths[bindingIdPath] as Record<string, unknown>),
     patch: {
-      ...((basePaths[bindingIdPath] as Record<string, unknown>).patch as Record<
-        string,
-        unknown
-      >),
+      ...((basePaths[bindingIdPath] as Record<string, unknown>).patch as Record<string, unknown>),
       responses: {
-        ...(((basePaths[bindingIdPath] as Record<string, unknown>).patch as Record<
-          string,
-          unknown
-        >).responses as Record<string, unknown>),
+        ...(((basePaths[bindingIdPath] as Record<string, unknown>).patch as Record<string, unknown>)
+          .responses as Record<string, unknown>),
         ...bindingConflictResponses,
+      },
+    },
+    delete: {
+      ...((basePaths[bindingIdPath] as Record<string, unknown>).delete as Record<string, unknown>),
+      responses: {
+        ...((
+          (basePaths[bindingIdPath] as Record<string, unknown>).delete as Record<string, unknown>
+        ).responses as Record<string, unknown>),
+        '403': {
+          description:
+            'Caller cannot manage this service, or `reauth_required` (a recent step-up is needed when the organization requires one)',
+          content: { 'application/json': { schema: clientErrorJson } },
+        },
       },
     },
   },

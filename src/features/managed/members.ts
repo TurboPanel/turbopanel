@@ -21,6 +21,8 @@ import { ageReplicationHealth, type ReplicationHealthView } from './replica-fres
 import { MANAGED_PRIVATE_PORT_MAX, MANAGED_PRIVATE_PORT_MIN } from './ingress-ports.ts'
 import { firstSequential, forEachSequential } from '../../lib/sequential.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
+import { consumerServerIdsForManaged } from '../bindings/resolve-endpoint.ts'
+import { hasRemoteConsumerServers } from '../bindings/remote-consumers.ts'
 
 /**
  * High contiguous host-port range for multi-member private listeners
@@ -44,7 +46,6 @@ export type ManagedMemberRow = {
   privatePort: number | null
   status: string | null
   metadata: unknown
-  options: unknown
   createdAt: string
   updatedAt: string
 }
@@ -52,7 +53,7 @@ export type ManagedMemberRow = {
 export type SerializedManagedMember = {
   id: string
   serverId: string
-  serverDisplayName: string | null
+  serverName: string | null
   role: ManagedMemberRole
   replicaClass: ManagedReplicaClass | null
   readEligible: boolean
@@ -90,7 +91,6 @@ const MEMBER_RETURNING = {
   privatePort: replica.privatePort,
   status: replica.status,
   metadata: replica.metadata,
-  options: replica.options,
   createdAt: replica.createdAt,
   updatedAt: replica.updatedAt,
 } as const
@@ -106,7 +106,9 @@ function withFreshnessFields(
 ): ManagedReplicationHealth {
   for (const key of ['receivedGtid', 'executedGtid'] as const) {
     const v = r[key]
-    if (typeof v === 'string' && v.length > 0 && v.length <= 4096) health[key] = v
+    if (typeof v === 'string' && v.length > 0 && v.length <= 4096) {
+      health[key] = v
+    }
   }
   if (typeof r.fullyApplied === 'boolean') health.fullyApplied = r.fullyApplied
   return health
@@ -144,7 +146,9 @@ function parseReplicationHealth(metadata: unknown): ManagedReplicationHealth | u
  * (`metadata.replication`); this field is for UI aging only.
  */
 function parseDisplayReplicationHealth(metadata: unknown): ManagedReplicationHealth | undefined {
-  if (!isRecord(metadata) || !isRecord(metadata.replicationDisplay)) return undefined
+  if (!isRecord(metadata) || !isRecord(metadata.replicationDisplay)) {
+    return undefined
+  }
   const r = metadata.replicationDisplay
   if (typeof r.state !== 'string' || typeof r.observedAt !== 'string') {
     return undefined
@@ -270,7 +274,7 @@ export function nextReplicaOrdinal(members: readonly ManagedMemberRow[]): number
 
 export function serializeManagedMember(
   row: ManagedMemberRow,
-  serverDisplayName: string | null
+  serverName: string | null
 ): SerializedManagedMember {
   const role: ManagedMemberRole = row.role === 'replica' ? 'replica' : 'primary'
   const replicaClass =
@@ -287,7 +291,7 @@ export function serializeManagedMember(
   const out: SerializedManagedMember = {
     id: row.id,
     serverId: row.serverId,
-    serverDisplayName,
+    serverName,
     role,
     replicaClass,
     readEligible: row.readEligible,
@@ -310,10 +314,10 @@ export function serializeManagedMember(
  */
 export function serializeManagedMemberForDisplay(
   row: ManagedMemberRow,
-  serverDisplayName: string | null,
+  serverName: string | null,
   nowMs: number = Date.now()
 ): SerializedManagedMember {
-  const out = serializeManagedMember(row, serverDisplayName)
+  const out = serializeManagedMember(row, serverName)
   if (out.role === 'replica' && out.replication !== undefined) {
     // For display, prefer the newer of the two readings
     const measured = parseReplicationHealth(row.metadata)
@@ -336,14 +340,14 @@ export async function listSerializedManagedMembers(
   const rows = await db
     .select({
       ...MEMBER_RETURNING,
-      serverDisplayName: server.name,
+      serverName: server.name,
     })
     .from(replica)
     .leftJoin(server, eq(replica.serverId, server.id))
     .where(eq(replica.managedId, managedId))
     .orderBy(asc(replica.ordinal))
 
-  return rows.map((row) => serializeManagedMemberForDisplay(row, row.serverDisplayName ?? null))
+  return rows.map((row) => serializeManagedMemberForDisplay(row, row.serverName ?? null))
 }
 
 /** A read replica is the only member allowed on the fabric/public ladder. */
@@ -455,13 +459,20 @@ function findFreePrivatePort(used: ReadonlySet<number>): number | null {
 }
 
 /**
- * Allocate or clear private listener ports for a multi-member cluster.
- * Single-member clusters clear any leftover `private_port`.
- * Under a `fabric` transport the port is published on the relay `tp0` address.
+ * Allocate private listener ports, or return in-memory null ports when unused.
+ *
+ * Multi-member clusters always allocate. A single-member cluster allocates
+ * when a bound consumer lives on another host (that host's ProxySQL dials this
+ * engine's private listener). Clearing leftover `private_port` rows is deferred
+ * until `commitClearedPrivatePortsIfUnused` after apply is queued, so a failed
+ * enqueue cannot leave the database saying there is no listener while the host
+ * still publishes one. Under a `fabric` transport the port is published on the
+ * relay `tp0` address.
  */
 export async function ensureMemberPrivatePorts(
   db: Db,
-  members: readonly ManagedMemberRow[]
+  members: readonly ManagedMemberRow[],
+  options?: { hasRemoteConsumers?: boolean }
 ): Promise<ManagedMemberRow[] | ManagedPrivatePortExhaustedError> {
   if (members.length === 0) return []
 
@@ -471,17 +482,12 @@ export async function ensureMemberPrivatePorts(
   // payload for it against the just-cleared primary listener and failed with
   // `private_path_unavailable`.
   const inputIds = new Set(members.map((m) => m.id))
+  const keepPrivatePorts = members.length > 1 || options?.hasRemoteConsumers === true
 
-  if (members.length <= 1) {
-    await forEachSequential(members, async (member) => {
-      if (member.privatePort !== null) {
-        await db
-          .update(replica)
-          .set({ privatePort: null, updatedAt: new Date().toISOString() })
-          .where(eq(replica.id, member.id))
-      }
-    })
-    return (await listManagedMembers(db, members[0]!.managedId)).filter((m) => inputIds.has(m.id))
+  if (!keepPrivatePorts) {
+    return members
+      .filter((member) => inputIds.has(member.id))
+      .map((member) => (member.privatePort === null ? member : { ...member, privatePort: null }))
   }
 
   const managedId = members[0]!.managedId
@@ -537,6 +543,32 @@ export async function ensureMemberPrivatePorts(
         .where(eq(replica.managedId, managedId))
         .orderBy(asc(replica.ordinal))
     ).filter((m) => inputIds.has(m.id))
+  })
+}
+
+/**
+ * Persist a deferred private-port teardown after `managed.apply` is queued.
+ * No-op while the cluster still has replicas or a remote consumer, or when
+ * enqueue failed (callers skip this). The next successful apply retries it.
+ */
+export async function commitClearedPrivatePortsIfUnused(db: Db, managedId: string): Promise<void> {
+  const members = await listManagedMembers(db, managedId)
+  if (members.length !== 1) return
+  const consumers = await consumerServerIdsForManaged(db, managedId)
+  if (
+    hasRemoteConsumerServers(
+      members.map((member) => member.serverId),
+      consumers
+    )
+  ) {
+    return
+  }
+  await forEachSequential(members, async (member) => {
+    if (member.privatePort === null) return
+    await db
+      .update(replica)
+      .set({ privatePort: null, updatedAt: new Date().toISOString() })
+      .where(eq(replica.id, member.id))
   })
 }
 
@@ -603,6 +635,18 @@ function resolveCoResidentPeer(
   }
 }
 
+function resolveMemberPeer(
+  fromMember: ManagedMemberRow,
+  other: ManagedMemberRow,
+  defaultPort: number,
+  containerNames: ReadonlyMap<string, string>,
+  endpoints: ReadonlyMap<string, ResolvedPrivateEndpoint | PrivateEndpointError>
+): ManagedMemberPeer | PrivateEndpointError {
+  return other.serverId === fromMember.serverId
+    ? resolveCoResidentPeer(fromMember, other, containerNames, defaultPort)
+    : resolveRemotePeer(fromMember, other, endpoints)
+}
+
 function resolveRemotePeer(
   fromMember: ManagedMemberRow,
   other: ManagedMemberRow,
@@ -659,6 +703,27 @@ async function resolvePeerEndpointsByPurpose(
 }
 
 /**
+ * Path from one member to a single peer — co-resident container DNS or the
+ * remote private listener. Unlike {@link resolvePeersForMember}, an
+ * unreachable sibling does not fail this lookup.
+ */
+export async function resolvePeerToMember(
+  db: Db,
+  fromMember: ManagedMemberRow,
+  toMember: ManagedMemberRow,
+  defaultPort: number
+): Promise<ManagedMemberPeer | PrivateEndpointError> {
+  if (fromMember.id === toMember.id) {
+    return unavailablePeerError(fromMember, toMember)
+  }
+  const pair = [fromMember, toMember]
+  const containerNames = await loadMemberContainerNames(db, pair)
+  const remote = toMember.serverId === fromMember.serverId ? [] : [toMember]
+  const endpoints = await resolvePeerEndpointsByPurpose(db, fromMember, remote)
+  return resolveMemberPeer(fromMember, toMember, defaultPort, containerNames, endpoints)
+}
+
+/**
  * Resolve peer endpoints for one member (reachability of every other member
  * from this member's server). Used when building apply payloads.
  *
@@ -686,10 +751,7 @@ export async function resolvePeersForMember(
 
   const peers: ManagedMemberPeer[] = []
   for (const other of others) {
-    const peer =
-      other.serverId === fromMember.serverId
-        ? resolveCoResidentPeer(fromMember, other, containerNames, defaultPort)
-        : resolveRemotePeer(fromMember, other, endpoints)
+    const peer = resolveMemberPeer(fromMember, other, defaultPort, containerNames, endpoints)
     if ('kind' in peer) return peer
     peers.push(peer)
   }

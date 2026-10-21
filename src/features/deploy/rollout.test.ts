@@ -100,7 +100,7 @@ async function withRollout(
   const [env] = await db
     .insert(environment)
     .values({
-      name: 'Rollout Env',
+      name: 'rollout-env',
       projectId: proj!.id,
       options: { compose: emptyComposeDocument() },
     })

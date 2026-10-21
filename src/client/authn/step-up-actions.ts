@@ -27,8 +27,10 @@ export const STEP_UP_ACTIONS = {
   'license.revoke': 'Revoke a license key',
   'managed.delete': 'Delete a managed database',
   'managed.database.delete': 'Delete a database inside a managed database',
+  'binding.delete': 'Remove the link between an app and a managed database',
   'member.remove': 'Remove a member from the organization',
   'storage.delete': 'Delete a storage volume',
+  'folder.remove': 'Remove a leftover folder and its files from a server',
   'storage.copy.delete': 'Delete a copy of a storage volume',
   'storage.backup.delete': 'Delete a storage backup',
   'storage.restore': 'Restore a storage backup over its volume',
@@ -39,6 +41,8 @@ export const STEP_UP_ACTIONS = {
   'managed.disaster_recovery.promote': 'Promote a disaster-recovery replica of a managed database',
   'tls.ca.rotate': "Rotate the organization's certificate authority",
   'tls.ca.retire': 'Retire the previous certificate authority after a rotation',
+  'tls.leaf.stale': 'Mark a certificate as not needing renewal',
+  'tls.leaf.delete': 'Delete the record of a certificate signed by the organization CA',
   'organization.reauth_settings.update': 'Change the re-authentication setting',
 } as const
 

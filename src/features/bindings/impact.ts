@@ -1,11 +1,12 @@
 /**
- * List services affected by a principal/database binding change so the API
+ * List services affected by a login/database binding change so the API
  * can surface a `redeployRequired` hint. The API never restarts or redeploys.
  */
 
 import { and, eq, inArray } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
-import { binding, environment, principal, service } from '../../db/schema.ts'
+import { binding, environment, login, managedDatabase, service } from '../../db/schema.ts'
+import { enqueueIngressForBindingChange, type BindingListenerSync } from './enqueue-change.ts'
 
 export type BindingImpactService = {
   serviceId: string
@@ -36,27 +37,6 @@ function toImpact(row: {
   }
 }
 
-export async function listBindingImpactForPrincipal(
-  db: Db,
-  principalId: string
-): Promise<BindingRedeployRequired> {
-  const rows = await db
-    .select({
-      serviceId: binding.serviceId,
-      name: service.name,
-      environmentId: service.environmentId,
-      projectId: environment.projectId,
-      keyPrefix: binding.keyPrefix,
-    })
-    .from(binding)
-    .innerJoin(service, eq(binding.serviceId, service.id))
-    .innerJoin(environment, eq(service.environmentId, environment.id))
-    .where(eq(binding.principalId, principalId))
-
-  const services = rows.map(toImpact).sort((a, b) => a.keyPrefix.localeCompare(b.keyPrefix))
-  return { count: services.length, services }
-}
-
 /**
  * Services bound to a login of one managed cluster, optionally narrowed to one
  * of its databases. Unsorted: each caller picks its own order.
@@ -75,13 +55,14 @@ async function listManagedBindingImpact(
       keyPrefix: binding.keyPrefix,
     })
     .from(binding)
-    .innerJoin(principal, eq(binding.principalId, principal.id))
+    .innerJoin(login, eq(login.id, binding.loginId))
+    .innerJoin(managedDatabase, eq(managedDatabase.id, binding.databaseId))
     .innerJoin(service, eq(binding.serviceId, service.id))
     .innerJoin(environment, eq(service.environmentId, environment.id))
     .where(
       databaseName === undefined
-        ? eq(principal.managedId, managedId)
-        : and(eq(principal.managedId, managedId), eq(binding.databaseName, databaseName))
+        ? eq(login.managedId, managedId)
+        : and(eq(login.managedId, managedId), eq(managedDatabase.name, databaseName))
     )
   return rows.map(toImpact)
 }
@@ -113,22 +94,64 @@ export async function listBindingImpactForManaged(
  * services stop receiving the cluster's connection variables at their next
  * deploy instead of keeping dangling ones.
  */
-export async function detachBindingsForManaged(db: Db, managedId: string): Promise<void> {
+export async function detachBindingsForManaged(
+  db: Db,
+  managedId: string,
+  listenerSync?: BindingListenerSync
+): Promise<void> {
+  const impact = await listManagedBindingImpact(db, managedId)
+  const serviceIds = [...new Set(impact.map((row) => row.serviceId))]
   await db
     .delete(binding)
     .where(
       inArray(
-        binding.principalId,
-        db.select({ id: principal.id }).from(principal).where(eq(principal.managedId, managedId))
+        binding.id,
+        db
+          .select({ id: binding.id })
+          .from(binding)
+          .innerJoin(login, eq(login.id, binding.loginId))
+          .where(eq(login.managedId, managedId))
       )
     )
+  if (listenerSync && serviceIds.length > 0) {
+    await enqueueIngressForBindingChange(listenerSync.c, db, {
+      serviceIds,
+      managedId,
+      actorId: listenerSync.actorId,
+      organizationId: listenerSync.organizationId,
+    })
+  }
 }
 
-export async function hasBindingsForPrincipal(db: Db, principalId: string): Promise<boolean> {
+/** Services bound to one login. */
+export async function listBindingImpactForLogin(
+  db: Db,
+  loginId: string
+): Promise<BindingRedeployRequired> {
+  const rows = await db
+    .select({
+      serviceId: binding.serviceId,
+      name: service.name,
+      environmentId: service.environmentId,
+      projectId: environment.projectId,
+      keyPrefix: binding.keyPrefix,
+    })
+    .from(binding)
+    .innerJoin(login, eq(login.id, binding.loginId))
+    .innerJoin(service, eq(binding.serviceId, service.id))
+    .innerJoin(environment, eq(service.environmentId, environment.id))
+    .where(eq(login.id, loginId))
+
+  const services = rows.map(toImpact).sort((a, b) => a.keyPrefix.localeCompare(b.keyPrefix))
+  return { count: services.length, services }
+}
+
+export async function hasBindingsForLogin(db: Db, loginId: string): Promise<boolean> {
   const [row] = await db
     .select({ id: binding.id })
     .from(binding)
-    .where(eq(binding.principalId, principalId))
+    .innerJoin(login, eq(login.id, binding.loginId))
+    .where(eq(login.id, loginId))
     .limit(1)
   return Boolean(row)
 }

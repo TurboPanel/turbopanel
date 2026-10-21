@@ -37,7 +37,7 @@ test('unchanged plan costs one unlocked read and no transaction', async () => {
   const plan = PLATFORM_DEFAULT_METRICS_CAPABILITY_PLAN
   const planHash = await computeMetricsCapabilityPlanHash(plan)
   const { db, counters } = countingDb([
-    { generation: 7, planHash, plan, appliedAt: new Date().toISOString() },
+    { capability: { generation: 7, planHash, plan, appliedAt: new Date().toISOString() } },
   ])
   for (let i = 0; i < 20; i += 1) {
     const written = await recordCapabilityPlanGenerationIfChanged(
@@ -55,10 +55,12 @@ test('unchanged plan costs one unlocked read and no transaction', async () => {
 test('a changed plan still takes the locking transaction', async () => {
   const { db, counters } = countingDb([
     {
-      generation: 1,
-      planHash: 'different',
-      plan: {},
-      appliedAt: new Date().toISOString(),
+      capability: {
+        generation: 1,
+        planHash: 'different',
+        plan: {},
+        appliedAt: new Date().toISOString(),
+      },
     },
   ])
   let failed = false

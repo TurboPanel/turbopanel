@@ -8,6 +8,7 @@
 import { assertEquals } from '@std/assert'
 import {
   license,
+  organization,
   payer,
   allowance,
   server,
@@ -20,12 +21,14 @@ import { createMemoryDb } from '../../test-fixtures/memory-db.ts'
 import {
   clearAssignmentsForServers,
   loadAssignableServers,
+  peekOrganizationAssignment,
   recomputeAssignmentsForServer,
   recomputeOrganizationAssignments,
   requiredRankFromMetadata,
   requiredRankFromResources,
   tierQuantitiesFromState,
 } from './assignment-records.ts'
+import { resolveTierPickNotice, setServerPreferredTier } from './server-preferred-tier.ts'
 import { CUSTOM_TIER_LABEL } from './ladder.ts'
 
 /**
@@ -72,7 +75,8 @@ const serverRow = (
   createdAt: string,
   metadata: unknown,
   assignedTierId: string | null,
-  organizationId: string | null = ORG
+  organizationId: string | null = ORG,
+  preferredTierId: string | null = null
 ) => ({
   id,
   organizationId,
@@ -80,6 +84,7 @@ const serverRow = (
   updatedAt: createdAt,
   metadata,
   assignedTierId,
+  preferredTierId,
 })
 const licenseRow = (id: string, serverId: string | null, revokedAt: string | null = null) => ({
   id,
@@ -120,6 +125,19 @@ function seed(opts: {
     : []
   return createMemoryDb(
     [
+      [
+        organization,
+        [
+          {
+            id: ORG,
+            createdAt: NOW,
+            updatedAt: NOW,
+            metadata: null,
+            options: null,
+            name: 'Test org',
+          },
+        ],
+      ],
       [tier, [tierRow(S1, 'S1', 1), tierRow(S3, 'S3', 3), tierRow(S5, 'S5', 5), sxRow]],
       [allowance, grantRows],
       [
@@ -391,4 +409,82 @@ test('clearAssignmentsForServers nulls exactly the named rows and skips the writ
     [null, S3, null]
   )
   assertEquals(db.ops, ['update:server'])
+})
+
+test('recomputeOrganizationAssignments places a server on its preferred tier when a spare seat exists there', async () => {
+  const db = seed({
+    seats: [
+      { tierId: S1, quantity: 1 },
+      { tierId: S3, quantity: 1 },
+    ],
+    servers: [serverRow(SERVER_A, '2026-09-01T00:00:00.000Z', hardware(2), null, ORG, S3)],
+    licenses: [licenseRow('l-a', SERVER_A)],
+  })
+  const result = await recomputeOrganizationAssignments(db, ORG, { now: NOW })
+  assertEquals(result.changed, [SERVER_A])
+  assertEquals(db.rows(server)[0]?.assignedTierId, S3)
+  assertEquals(result.assignment.pickUnfulfilled.size, 0)
+})
+
+test('recomputeOrganizationAssignments keeps a covered server on derived tier when the preferred tier has no spare', async () => {
+  const db = seed({
+    seats: [{ tierId: S1, quantity: 2 }],
+    servers: [serverRow(SERVER_A, '2026-09-01T00:00:00.000Z', hardware(2), null, ORG, S3)],
+    licenses: [licenseRow('l-a', SERVER_A)],
+  })
+  const result = await recomputeOrganizationAssignments(db, ORG, { now: NOW })
+  assertEquals(result.changed, [SERVER_A])
+  assertEquals(db.rows(server)[0]?.assignedTierId, S1)
+  assertEquals(result.assignment.pickUnfulfilled.get(SERVER_A), 'S3')
+})
+
+test('setServerPreferredTier refuses a tier below the server requirement', async () => {
+  const db = seed({
+    seats: [{ tierId: S3, quantity: 1 }],
+    servers: [serverRow(SERVER_A, '2026-09-01T00:00:00.000Z', hardware(12), S3)],
+    licenses: [licenseRow('l-a', SERVER_A)],
+  })
+  const result = await setServerPreferredTier(db, ORG, SERVER_A, S1)
+  assertEquals(result, { ok: false, code: 'tier_below_required' })
+})
+
+test('post-swap pickUnfulfilled drives tierPickNotice for list and detail rows', async () => {
+  const db = seed({
+    seats: [{ tierId: S1, quantity: 2 }],
+    servers: [serverRow(SERVER_A, '2026-09-01T00:00:00.000Z', hardware(2), null, ORG, S3)],
+    licenses: [licenseRow('l-a', SERVER_A)],
+  })
+  const assignment = await peekOrganizationAssignment(db, ORG)
+  assertEquals(resolveTierPickNotice(SERVER_A, assignment.pickUnfulfilled), 'S3 wanted, none free')
+})
+
+test('setServerPreferredTier recomputes assignment inside a transaction', async () => {
+  const db = seed({
+    seats: [
+      { tierId: S1, quantity: 1 },
+      { tierId: S3, quantity: 1 },
+    ],
+    servers: [serverRow(SERVER_A, '2026-09-01T00:00:00.000Z', hardware(2), null, ORG, S3)],
+    licenses: [licenseRow('l-a', SERVER_A)],
+  })
+  await setServerPreferredTier(db, ORG, SERVER_A, S3)
+  assertEquals(db.ops.includes('begin'), true)
+  assertEquals(db.ops.includes('commit'), true)
+})
+
+test('setServerPreferredTier clears the pick and returns to smallest that fits', async () => {
+  const db = seed({
+    seats: [
+      { tierId: S1, quantity: 1 },
+      { tierId: S3, quantity: 1 },
+    ],
+    servers: [serverRow(SERVER_A, '2026-09-01T00:00:00.000Z', hardware(2), S3, ORG, S3)],
+    licenses: [licenseRow('l-a', SERVER_A)],
+  })
+  const result = await setServerPreferredTier(db, ORG, SERVER_A, null)
+  assertEquals(result.ok, true)
+  if (!result.ok) throw new TypeError('expected ok')
+  assertEquals(result.assignedTierLabel, 'S1')
+  assertEquals(result.preferredTierLabel, null)
+  assertEquals(db.rows(server)[0]?.preferredTierId, null)
 })

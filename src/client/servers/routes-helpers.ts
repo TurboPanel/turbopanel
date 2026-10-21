@@ -176,6 +176,9 @@ function parseServerPatchOptions(
   // `options` is merged into the stored blob, so leaving `location` out of it
   // keeps the stored override.
   delete options.location
+  // Likewise the external-access setting: it only changes through its own route,
+  // which also tells the server.
+  delete options.managedExternalAccess
   if ('sshPort' in raw) {
     const sshPort = parseSshPortInput(raw.sshPort)
     if (!sshPort.ok) {

@@ -10,11 +10,12 @@ import { hostname, hosting, tls } from '../../db/schema.ts'
 import {
   letsEncryptNames,
   readPendingLetsEncrypt,
-  withPendingLetsEncrypt,
+  pendingLetsEncryptPatch,
 } from '../hostings/hosting-certificate.ts'
 import { readHostingWwwMode } from '../hostings/hosting-options.ts'
 import { isUniqueViolationOn } from '../../db/unique-violation.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
+import { assertNotPanelHostnames } from '../hostings/panel-hostname-guard.ts'
 import { type HostingWwwMode, hostingCertificateNames } from '../../contracts/commands/hostname.ts'
 
 /**
@@ -36,11 +37,19 @@ export async function replaceHostingHostnames(
   hostnames: readonly string[]
 ): Promise<void> {
   const [row] = await db
-    .select({ tlsId: hosting.tlsId, options: hosting.options, metadata: hosting.metadata })
+    .select({
+      tlsId: hosting.tlsId,
+      options: hosting.options,
+      metadata: hosting.metadata,
+      pendingAt: hosting.pendingAt,
+    })
     .from(hosting)
     .where(eq(hosting.id, hostingId))
     .limit(1)
   const www = readHostingWwwMode(row?.options)
+  // Typed names and the www names the choice adds alike: none may be a name
+  // the panel serves. Throws, so the surrounding transaction rolls back.
+  await assertNotPanelHostnames(db, hostingRoutingNames(hostnames, www))
   await db.delete(hostname).where(eq(hostname.hostingId, hostingId))
   await forEachSequential(hostingRoutingNames(hostnames, www), (value) =>
     db.insert(hostname).values({
@@ -62,11 +71,11 @@ export async function replaceHostingHostnames(
 export async function queueLetsEncryptRecheck(
   db: Db,
   hostingId: string,
-  row: Readonly<{ tlsId: string | null; metadata: unknown }>,
+  row: Readonly<{ tlsId: string | null; metadata: unknown; pendingAt: string | null }>,
   names: readonly string[],
   now: Date = new Date()
 ): Promise<boolean> {
-  if (!row.tlsId || readPendingLetsEncrypt(row.metadata) !== null) return false
+  if (!row.tlsId || readPendingLetsEncrypt(row) !== null) return false
   const [pin] = await db
     .select({ source: tls.source, metadata: tls.metadata })
     .from(tls)
@@ -78,7 +87,7 @@ export async function queueLetsEncryptRecheck(
   await db
     .update(hosting)
     .set({
-      metadata: withPendingLetsEncrypt(row.metadata, { requestedAt: now.toISOString(), dns: null }),
+      ...pendingLetsEncryptPatch(row.metadata, { requestedAt: now.toISOString(), dns: null }),
     })
     .where(eq(hosting.id, hostingId))
   return true

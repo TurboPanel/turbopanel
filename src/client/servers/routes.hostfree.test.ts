@@ -25,6 +25,7 @@ import { deriveSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 import { colocatedServerDeleteBlockedReason } from './delete-guards.ts'
 import { registerServerLabelRoutes } from './labels-routes.ts'
+import { registerServerLicenseTierRoutes } from './license-tier-routes.ts'
 import { emptyServersUpdatesPayload } from './routes-helpers.ts'
 import { registerServerRoutes } from './routes.ts'
 
@@ -47,6 +48,7 @@ const SERVER_PATHS = [
   ['GET', `/servers/${SERVER_ID}`],
   ['PATCH', `/servers/${SERVER_ID}`],
   ['DELETE', `/servers/${SERVER_ID}`],
+  ['GET', `/servers/${SERVER_ID}/delete-preview`],
   ['GET', `/servers/${SERVER_ID}/status`],
   ['GET', `/servers/${SERVER_ID}/cell`],
   ['GET', `/servers/${SERVER_ID}/update`],
@@ -54,6 +56,7 @@ const SERVER_PATHS = [
   ['POST', `/servers/${SERVER_ID}/update/reset`],
   ['GET', `/servers/${SERVER_ID}/labels`],
   ['PUT', `/servers/${SERVER_ID}/labels`],
+  ['PUT', `/servers/${SERVER_ID}/license-tier`],
 ] as const
 
 const ORG_SCOPED_PATHS = [
@@ -64,6 +67,7 @@ const ORG_SCOPED_PATHS = [
   ['GET', `/servers/${SERVER_ID}`],
   ['PATCH', `/servers/${SERVER_ID}`],
   ['DELETE', `/servers/${SERVER_ID}`],
+  ['GET', `/servers/${SERVER_ID}/delete-preview`],
 ] as const
 
 type SessionRole = 'superadmin' | 'admin' | 'user'
@@ -307,6 +311,20 @@ test('registerServerLabelRoutes requires session secrets', () => {
       }),
     TypeError,
     'session secrets are required for server label routes'
+  )
+})
+
+test('registerServerLicenseTierRoutes requires session secrets', () => {
+  const app = new Hono<AppEnv>()
+  assertThrows(
+    () =>
+      registerServerLicenseTierRoutes(app, {
+        secrets: undefined as never,
+        runtime: 'deno',
+        signupEnvOverride: undefined,
+      }),
+    TypeError,
+    'session secrets are required for server license-tier routes'
   )
 })
 
@@ -937,6 +955,25 @@ test('DELETE /servers/:id returns 403 for a self-host-pinned server', async () =
   await expectJson(res, 403, { error: colocatedServerDeleteBlockedReason() })
 })
 
+test('GET /servers/:id/delete-preview returns 404 when the server is missing', async () => {
+  const { app, cookie } = await buildSessionApp()
+  const res = await app.request(`/servers/${SERVER_ID}/delete-preview`, {
+    headers: sessionHeaders(cookie),
+  })
+  await expectJson(res, 404, { error: 'Not found' })
+})
+
+test('GET /servers/:id/delete-preview returns 403 when manage is denied', async () => {
+  const { app, cookie } = await buildSessionApp({
+    withServerRow: true,
+    defaultAllowed: false,
+  })
+  const res = await app.request(`/servers/${SERVER_ID}/delete-preview`, {
+    headers: sessionHeaders(cookie),
+  })
+  await expectJson(res, 403, { error: 'Forbidden' })
+})
+
 test('GET /servers/:id/labels returns 403 when read is denied', async () => {
   const { app, cookie } = await buildSessionApp({ defaultAllowed: false })
   const res = await app.request(`/servers/${SERVER_ID}/labels`, {
@@ -1021,6 +1058,55 @@ test('PUT /servers/:id/labels returns 400 for invalid JSON and invalid keys', as
     throw new TypeError('expected label validation error')
   }
   assertEquals(body.error.includes('invalid'), true)
+})
+
+test('PUT /servers/:id/license-tier returns 403 when owner is denied', async () => {
+  const { app, cookie } = await buildSessionApp({ defaultAllowed: false })
+  const res = await app.request(`/servers/${SERVER_ID}/license-tier`, {
+    method: 'PUT',
+    headers: {
+      ...sessionHeaders(cookie),
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({ tierId: null }),
+  })
+  await expectJson(res, 403, { ok: false, error: 'Forbidden' })
+})
+
+test('PUT /servers/:id/license-tier returns 400 when tierId is missing or empty', async () => {
+  const { app, cookie } = await buildSessionApp({
+    withServerRow: true,
+    defaultAllowed: true,
+  })
+  const headers = {
+    ...sessionHeaders(cookie),
+    'content-type': 'application/json',
+  }
+  const missing = await app.request(`/servers/${SERVER_ID}/license-tier`, {
+    method: 'PUT',
+    headers,
+    body: JSON.stringify({}),
+  })
+  await expectJson(missing, 400, { error: 'invalid_body', code: 'invalid_body' })
+  const empty = await app.request(`/servers/${SERVER_ID}/license-tier`, {
+    method: 'PUT',
+    headers,
+    body: JSON.stringify({ tierId: '' }),
+  })
+  await expectJson(empty, 400, { error: 'invalid_body', code: 'invalid_body' })
+})
+
+test('PUT /servers/:id/license-tier returns 404 when the server is not in the org', async () => {
+  const { app, cookie } = await buildSessionApp({ defaultAllowed: true })
+  const res = await app.request(`/servers/${SERVER_ID}/license-tier`, {
+    method: 'PUT',
+    headers: {
+      ...sessionHeaders(cookie),
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({ tierId: null }),
+  })
+  await expectJson(res, 404, { error: 'Not found' })
 })
 
 test('GET /servers never returns a managedMonitor secret from a stale cache entry', async () => {

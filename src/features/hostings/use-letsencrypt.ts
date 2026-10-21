@@ -15,7 +15,7 @@ import {
   letsEncryptNames,
   letsEncryptRefusal,
   readPendingLetsEncrypt,
-  withPendingLetsEncrypt,
+  pendingLetsEncryptPatch,
   wwwRedirectConflict,
   wwwRedirectConflictMessage,
 } from './hosting-certificate.ts'
@@ -33,6 +33,8 @@ export type LetsEncryptHostingRecord = {
   tlsId: string | null
   options: unknown
   metadata: unknown
+  /** When a waiting request was made (`hosting.pending_at`); null when none. */
+  pendingAt: string | null
 }
 
 export type LetsEncryptStore = {
@@ -45,7 +47,12 @@ export type LetsEncryptStore = {
   createManagedCertificate(organizationId: string, names: readonly string[]): Promise<string>
   saveHosting(
     hostingId: string,
-    patch: { tlsId?: string; options?: Record<string, unknown>; metadata?: Record<string, unknown> }
+    patch: {
+      tlsId?: string
+      options?: Record<string, unknown>
+      metadata?: Record<string, unknown>
+      pendingAt?: string | null
+    }
   ): Promise<void>
 }
 
@@ -76,7 +83,7 @@ async function pinCertificate(
   const tlsId = existing ?? (await store.createManagedCertificate(hosting.organizationId, names))
   await store.saveHosting(hosting.id, {
     tlsId,
-    metadata: withPendingLetsEncrypt(hosting.metadata, null),
+    ...pendingLetsEncryptPatch(hosting.metadata, null),
   })
   return { ok: true, outcome: 'pinned', tlsId, dns, created: existing === null }
 }
@@ -85,13 +92,13 @@ async function rememberWaiting(
   params: RequestParams,
   dns: HostingDnsReport
 ): Promise<LetsEncryptRequestResult> {
-  const previous = readPendingLetsEncrypt(params.hosting.metadata)
+  const previous = readPendingLetsEncrypt(params.hosting)
   const pending: PendingLetsEncrypt = {
     requestedAt: previous?.requestedAt ?? params.now.toISOString(),
     dns,
   }
   await params.store.saveHosting(params.hosting.id, {
-    metadata: withPendingLetsEncrypt(params.hosting.metadata, pending),
+    ...pendingLetsEncryptPatch(params.hosting.metadata, pending),
   })
   return { ok: true, outcome: 'waiting', dns }
 }
@@ -149,11 +156,11 @@ export type PendingRetryResult = 'pinned' | 'waiting' | 'expired' | 'refused'
  * Encrypt off, hostnames changed), is dropped.
  */
 export async function retryPendingLetsEncrypt(params: RequestParams): Promise<PendingRetryResult> {
-  const pending = readPendingLetsEncrypt(params.hosting.metadata)
+  const pending = readPendingLetsEncrypt(params.hosting)
   if (pending === null) return 'refused'
   const dropPending = async (outcome: 'expired' | 'refused'): Promise<PendingRetryResult> => {
     await params.store.saveHosting(params.hosting.id, {
-      metadata: withPendingLetsEncrypt(params.hosting.metadata, null),
+      ...pendingLetsEncryptPatch(params.hosting.metadata, null),
     })
     return outcome
   }

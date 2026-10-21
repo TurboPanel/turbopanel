@@ -110,6 +110,18 @@ jobs:
         with:
           mode: canary
 
+      - name: Require the committed version to match the tags
+        # The committed deno.json / package.json / sonar version must already
+        # be the base the tags give. Right after each release the release bot
+        # opens the "chore: start X.Y.Z" PR that sets it, and it merges itself
+        # once its checks pass; until then canaries are refused here, before
+        # anything builds.
+        # Canary only: rc and release reuse the canary's bytes.
+        if: steps.canary.outcome == 'success'
+        env:
+          CANARY_BASE: ${{ steps.canary.outputs.base }}
+        run: node scripts/set-version.mjs --check "$CANARY_BASE"
+
       - name: Resolve version, channel and commit
         id: resolve
         env:
@@ -143,7 +155,7 @@ jobs:
             echo "channel=${INPUT_CHANNEL}" >> "$GITHUB_OUTPUT"
           else
             # A tag pushed by hand: its number is the version (stamped below,
-            # not checked against deno.json — versions come from tags).
+            # not checked against deno.json; only a canary is checked).
             _ref="$REF_NAME"
             echo "version=${_ref#v}" >> "$GITHUB_OUTPUT"
             echo "base=${_ref#v}" >> "$GITHUB_OUTPUT"
@@ -256,7 +268,7 @@ jobs:
         run: pnpm sbom --sbom-format cyclonedx --sbom-type application --prod --lockfile-only > sbom.cdx.json
 
       - name: Upload the SBOM
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: turbopanel-sbom-${{ matrix.arch }}
           path: sbom.cdx.json
@@ -334,7 +346,7 @@ jobs:
           ls -l release-assets
 
       - name: Upload the release asset
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: turbopanel-instance-${{ matrix.arch }}
           path: release-assets
@@ -349,7 +361,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Download both architectures
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: turbopanel-instance-linux-*
           path: release-assets
@@ -455,7 +467,7 @@ jobs:
           python3 -c 'import json; s = json.load(open("release-assets/manifest.json"))["signature"]; print("manifest signed:", s["alg"], "keyId", s["keyId"])'
 
       - name: Upload release assets
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: turbopanel-instance-release-assets
           path: release-assets

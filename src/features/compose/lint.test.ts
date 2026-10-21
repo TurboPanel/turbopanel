@@ -937,6 +937,21 @@ test('lintComposeYaml warns when nodeVersion pins an unoffered series', () => {
   assertEquals(advisory?.message.includes('not an offered series'), true)
 })
 
+test('lintComposeYaml accepts nodeVersion latest as the deliberate follow-the-server choice', () => {
+  const issues = lintComposeYaml(`services:
+  web:
+    x-turbopanel:
+      serviceKind: node
+      nodeVersion: latest
+      source:
+        sourceId: ${SOURCE_ID}
+`)
+  assertEquals(
+    issues.filter((issue) => issue.path.includes('nodeVersion')),
+    []
+  )
+})
+
 test('lintComposeYaml warns when denoVersion pins an unoffered series, and not for 2.x spellings', () => {
   const lint = (version: string) =>
     lintComposeYaml(`services:

@@ -762,6 +762,49 @@ test('memory tickWindow: the open phase is the earliest one, whatever the batch 
   )
 })
 
+test('memory tickWindow: an offline-only batch yields to a later connected one', async () => {
+  const store = createMemoryUpgradeStore({
+    facts: [
+      factFor('s-off', { connected: false, colocated: false }),
+      factFor('s-on', { connected: true, colocated: false }),
+    ],
+  })
+  await store.insertRun(runRow(), [
+    stepRow('off', {
+      phase: 'fleet',
+      batchIndex: 0,
+      status: 'waiting',
+      serverId: 's-off',
+    }),
+    stepRow('on', { phase: 'fleet', batchIndex: 1, status: 'pending', serverId: 's-on' }),
+  ])
+  const window = await store.tickWindow('upgrade-run-1', null, 50)
+  assertEquals(window.batchIndex, 1)
+  assertEquals(
+    window.steps.map((step) => step.id),
+    ['on']
+  )
+})
+
+test('memory tickWindow: only-offline open batches stay in original order', async () => {
+  const store = createMemoryUpgradeStore({
+    facts: [
+      factFor('s-off-a', { connected: false, colocated: false }),
+      factFor('s-off-b', { connected: false, colocated: false }),
+    ],
+  })
+  await store.insertRun(runRow(), [
+    stepRow('b', { phase: 'fleet', batchIndex: 1, status: 'pending', serverId: 's-off-b' }),
+    stepRow('a', { phase: 'fleet', batchIndex: 0, status: 'waiting', serverId: 's-off-a' }),
+  ])
+  const window = await store.tickWindow('upgrade-run-1', null, 50)
+  assertEquals(window.batchIndex, 0)
+  assertEquals(
+    window.steps.map((step) => step.id),
+    ['a']
+  )
+})
+
 // --- step status sets --------------------------------------------------------
 
 test('step status sets: settled and in-flight cover exactly their members', () => {

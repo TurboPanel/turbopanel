@@ -9,7 +9,7 @@ import { nowIso } from '../commands/ids.ts'
 import {
   cidrsOverlap,
   inetAddressToString,
-  isValidIpAddress,
+  joinHostPort,
   nextFreeHostAddress,
   stripInetPrefixSuffix,
 } from '../../lib/ip-address.ts'
@@ -1578,11 +1578,7 @@ export async function loadEndpointCaches(
   return { caches, serversById }
 }
 
-/** `host:port`, with brackets around an IPv6 literal (`[fd00::5]:51821`). */
-export function joinHostPort(host: string, port: number): string {
-  const bare = host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host
-  return bare.includes(':') ? `[${bare}]:${String(port)}` : `${bare}:${String(port)}`
-}
+export { joinHostPort }
 
 function appendUniqueCidrs(target: string[], values: readonly string[]): void {
   for (const value of values) {
@@ -1655,29 +1651,6 @@ export type FabricSegmentMaterial = {
   gateway?: string
 }
 
-function parseSegmentNetworkExtras(
-  options: unknown
-): Pick<FabricSegmentMaterial, 'mtu' | 'gateway'> {
-  if (!isOptionsRecord(options)) return {}
-  const extras: Pick<FabricSegmentMaterial, 'mtu' | 'gateway'> = {}
-  if (
-    typeof options.mtu === 'number' &&
-    Number.isInteger(options.mtu) &&
-    options.mtu >= 1280 &&
-    options.mtu <= 9000
-  ) {
-    extras.mtu = options.mtu
-  }
-  if (
-    typeof options.gateway === 'string' &&
-    isValidIpAddress(options.gateway) &&
-    !options.gateway.includes(':')
-  ) {
-    extras.gateway = options.gateway
-  }
-  return extras
-}
-
 export async function listServerSubnets(
   db: Db,
   serverId: string
@@ -1686,7 +1659,6 @@ export async function listServerSubnets(
     .select({
       networkId: subnet.networkId,
       cidr: subnet.cidr,
-      options: subnet.options,
     })
     .from(subnet)
     .where(eq(subnet.serverId, serverId))
@@ -1694,7 +1666,6 @@ export async function listServerSubnets(
   return rows.map((row) => ({
     name: composeNetworkHostName(row.networkId),
     subnet: typeof row.cidr === 'string' ? row.cidr : String(row.cidr),
-    ...parseSegmentNetworkExtras(row.options),
   }))
 }
 
@@ -1711,7 +1682,6 @@ export async function listSubnetsForServers(
       serverId: subnet.serverId,
       networkId: subnet.networkId,
       cidr: subnet.cidr,
-      options: subnet.options,
     })
     .from(subnet)
     .where(inArray(subnet.serverId, [...serverIds]))
@@ -1721,7 +1691,6 @@ export async function listSubnetsForServers(
     list.push({
       name: composeNetworkHostName(row.networkId),
       subnet: typeof row.cidr === 'string' ? row.cidr : String(row.cidr),
-      ...parseSegmentNetworkExtras(row.options),
     })
     byServer.set(row.serverId, list)
   }

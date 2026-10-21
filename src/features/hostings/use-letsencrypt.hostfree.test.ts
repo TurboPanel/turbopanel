@@ -43,6 +43,7 @@ function record(overrides: Partial<LetsEncryptHostingRecord> = {}): LetsEncryptH
     tlsId: null,
     options: { hostnames: ['shop.example.com'] },
     metadata: null,
+    pendingAt: null,
     ...overrides,
   }
 }
@@ -83,10 +84,7 @@ test('refuses a local bind and a non-http hosting', async () => {
 
 test('DNS ready: creates the certificate row, pins it, clears any waiting request', async () => {
   const { store, saved, created } = fakeStore()
-  const pendingMeta = {
-    letsEncryptPending: { requestedAt: NOW.toISOString(), dns: null },
-    keep: 1,
-  }
+  const pendingMeta = { keep: 1 }
   const out = await requestLetsEncrypt({
     store,
     lookup: pointing,
@@ -102,7 +100,7 @@ test('DNS ready: creates the certificate row, pins it, clears any waiting reques
   const [id, patch] = saved[0]!
   assertEquals(id, 'h1')
   // Pinning leaves the hosting options alone: the www setting is saved elsewhere.
-  assertEquals(patch, { tlsId: 'tls-new', metadata: { keep: 1 } })
+  assertEquals(patch, { tlsId: 'tls-new', metadata: { keep: 1 }, pendingAt: null })
 })
 
 test('clicking again reuses the existing certificate row', async () => {
@@ -130,7 +128,10 @@ test('DNS not ready: nothing is pinned and the request is remembered with its fi
   assertEquals(first.ok && first.outcome, 'waiting')
   const patch = saved[0]![1]
   assertEquals(patch.tlsId, undefined)
-  const pending = readPendingLetsEncrypt(patch.metadata)
+  const pending = readPendingLetsEncrypt({
+    pendingAt: patch.pendingAt ?? null,
+    metadata: patch.metadata,
+  })
   assertEquals(pending?.requestedAt, NOW.toISOString())
   assertEquals(pending?.dns?.ready, false)
 
@@ -139,16 +140,16 @@ test('DNS not ready: nothing is pinned and the request is remembered with its fi
     store,
     lookup: nowhere,
     now: later,
-    hosting: record({ metadata: patch.metadata }),
+    hosting: record({ metadata: patch.metadata, pendingAt: patch.pendingAt }),
     acmeEnabled: true,
   })
-  assertEquals(readPendingLetsEncrypt(saved[1]![1].metadata)?.requestedAt, NOW.toISOString())
+  assertEquals(saved[1]![1].pendingAt, NOW.toISOString())
 })
 
 function waiting(requestedAt: string, www?: string) {
   return record({
     options: { hostnames: ['shop.example.com'], ...(www ? { www } : {}) },
-    metadata: { letsEncryptPending: { requestedAt, dns: null } },
+    pendingAt: requestedAt,
   })
 }
 
@@ -190,7 +191,7 @@ test('the sweep drops a request older than a week, or one no longer allowed', as
     }),
     'expired'
   )
-  assertEquals(readPendingLetsEncrypt(a.saved[0]![1].metadata), null)
+  assertEquals(a.saved[0]![1].pendingAt, null)
   const b = fakeStore()
   assertEquals(
     await retryPendingLetsEncrypt({
@@ -275,7 +276,10 @@ test('a www name that does not point here yet keeps the request waiting and is n
   })
   assertEquals(out.ok && out.outcome, 'waiting')
   assertEquals(created.length, 0)
-  const dns = readPendingLetsEncrypt(saved[0]![1].metadata)?.dns
+  const dns = readPendingLetsEncrypt({
+    pendingAt: saved[0]![1].pendingAt ?? null,
+    metadata: saved[0]![1].metadata,
+  })?.dns
   assertEquals(dns?.ready, false)
   assertEquals(
     dns?.hostnames.map((h) => h.hostname),

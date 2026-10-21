@@ -245,6 +245,12 @@ function createProjectionRecordingDb(
         metadata,
         hostname,
         machineKey,
+        // The latest plan is a column on the server row now.
+        capability: capabilityPlanRows[0]
+          ? (({ serverId: _serverId, ...plan }) => plan)(
+              capabilityPlanRows[0] as Record<string, unknown>
+            )
+          : null,
         connected: columns.connected,
         statusChangedAt: columns.statusChangedAt,
         ...daemonKey,

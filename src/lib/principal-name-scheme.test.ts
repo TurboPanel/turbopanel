@@ -17,7 +17,6 @@ import {
   assertSafePrincipalUsername,
   isReservedPrincipalUsername,
   MAX_PRINCIPAL_USERNAME_LENGTH,
-  PRINCIPAL_UNIX_GROUP_SUFFIX,
 } from './naming.ts'
 
 const test = Deno.test.bind(Deno)
@@ -98,7 +97,6 @@ test('random system names are valid Linux names, unreserved and not repeating', 
     const name = randomPrincipalSystemName()
     assertEquals(name.length, 12)
     assertEquals(isReservedPrincipalUsername(name), false)
-    assert(name.length + PRINCIPAL_UNIX_GROUP_SUFFIX.length <= 32)
     assert(name.length <= MAX_PRINCIPAL_USERNAME_LENGTH)
     assertSafePrincipalUsername(name)
     seen.add(name)

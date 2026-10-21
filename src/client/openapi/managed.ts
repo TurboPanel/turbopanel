@@ -1,3 +1,24 @@
+const ALLOWED_SOURCES_SCHEMA = {
+  type: 'array',
+  items: { type: 'string' },
+  description:
+    "Where the login may be used from. Items: `any` (alone: everywhere, the default), `internal` (this server: its own programs and containers; anything arriving as the Docker gateway address counts as local), `server:<id>` (one of the organization's servers, all its addresses), `address:<ip | prefix% | cidr>` (one address, a prefix such as `203.0.113.%` or `2001:db8:1:%`, or a range that can be said exactly: IPv4 /8, /16, /24 or /32, IPv6 whole 16-bit groups /16 to /112; other ranges answer 400 `managed_login_source_range_not_exact`). The login still signs in from anywhere: the database proxy refuses every query from other addresses, so tools may show an empty page. An empty list answers 400 `managed_login_sources_empty`. Needs a server daemon that supports it (409 `managed_login_limits_need_daemon_update`). Other 400s: `managed_login_sources_invalid`, `managed_login_source_invalid`, `managed_login_sources_too_many`, `managed_login_sources_any_alone`, `managed_login_source_server_unknown`.",
+} as const
+
+const MAX_CONNECTIONS_SCHEMA = {
+  type: 'integer',
+  minimum: 1,
+  maximum: 10000,
+  description:
+    'Most connections this login may hold open at once. Omit for no per-login cap. Answers 400 `managed_login_max_connections_invalid` outside 1 to 10000.',
+} as const
+
+const STRAIGHT_THROUGH_REQUEST_SCHEMA = {
+  type: 'boolean',
+  description:
+    "Connect straight through (no connection sharing), PostgreSQL only: the login's connection goes straight through the database front door, one server connection per client session, no connection reuse and no read split. Omitted = the default (on for a login with the migrations privilege `owner` and a read/write connection role, off for the rest). Answers 400 `straight_through_conflicts_with_source_limit` together with `allowedSources` (a login with a source limit always uses the normal path), 400 `straight_through_postgres_only` for MySQL and MariaDB, and 400 `straight_through_login_not_allowed` for the cluster administrator and replication logins.",
+} as const
+
 const ENV_ID_PARAM = {
   name: 'id',
   in: 'path',
@@ -12,8 +33,8 @@ const ORG_ID_PARAM = {
   schema: { type: 'string' },
 } as const
 
-const PRINCIPAL_ID_PARAM = {
-  name: 'principalId',
+const LOGIN_ID_PARAM = {
+  name: 'loginId',
   in: 'path',
   required: true,
   schema: { type: 'string' },
@@ -158,7 +179,7 @@ export const managedSchemas = {
         type: 'object',
         additionalProperties: true,
         description:
-          'Residual metadata only (`rootPrincipalId`, `error`). Engine/status/host/port are top-level.',
+          'Residual metadata only (`rootLoginId`, `error`). Engine/status/host/port are top-level.',
       },
       options: { type: 'object', additionalProperties: true, nullable: true },
       members: {
@@ -174,7 +195,7 @@ export const managedSchemas = {
     type: 'object',
     additionalProperties: true,
     description:
-      'Engine settings (`image`, `ssl`, `resources`, `dockerOptions`, `engineConfig`, `exposure`, plus engine extras such as `initialDatabase`).',
+      'Engine settings (`image`, `ssl`, `resources`, `dockerOptions`, `engineConfig`, plus engine extras such as `initialDatabase`).',
   },
   ManagedConnectionInfo: {
     type: 'object',
@@ -195,13 +216,28 @@ export const managedSchemas = {
     required: ['managed', 'connection', 'settings', 'server', 'rootUsername', 'members'],
     properties: {
       managed: {
-        oneOf: [{ $ref: '#/components/schemas/ManagedEnvironmentRow' }, { type: 'null' }],
+        oneOf: [
+          { $ref: '#/components/schemas/ManagedEnvironmentRow' },
+          {
+            type: 'null',
+          },
+        ],
       },
       connection: {
-        oneOf: [{ $ref: '#/components/schemas/ManagedConnectionInfo' }, { type: 'null' }],
+        oneOf: [
+          { $ref: '#/components/schemas/ManagedConnectionInfo' },
+          {
+            type: 'null',
+          },
+        ],
       },
       settings: {
-        oneOf: [{ $ref: '#/components/schemas/ManagedSettings' }, { type: 'null' }],
+        oneOf: [
+          { $ref: '#/components/schemas/ManagedSettings' },
+          {
+            type: 'null',
+          },
+        ],
       },
       server: {
         type: 'object',
@@ -212,59 +248,99 @@ export const managedSchemas = {
         },
       },
       rootUsername: { type: 'string', nullable: true },
-      exposure: {
-        oneOf: [{ $ref: '#/components/schemas/ManagedEffectiveExposure' }, { type: 'null' }],
+      endpoints: {
+        type: 'array',
         description:
-          "What the shared connection listener on the cluster's server really publishes, which is not always what this cluster asked for: one exposed cluster publishes for every cluster on the same server.",
+          'Where clients connect: one `external` entry per address clients use that reaches this engine (only while external access is on), main one first, then the `local` loopback endpoint.',
+        items: { $ref: '#/components/schemas/ManagedAccessEndpoint' },
+      },
+      connections: {
+        type: 'array',
+        description:
+          'One connection string per `external` endpoint, main one first. The main one is also `connection`.',
+        items: {
+          allOf: [
+            { $ref: '#/components/schemas/ManagedConnectionInfo' },
+            {
+              type: 'object',
+              required: ['label', 'scope', 'datacenterId', 'primary'],
+              properties: {
+                label: { type: 'string', description: '`Public`, or the datacenter name.' },
+                scope: { type: 'string', enum: ['public', 'datacenter'] },
+                datacenterId: { type: ['string', 'null'], format: 'uuid' },
+                primary: { type: 'boolean' },
+              },
+            },
+          ],
+        },
+      },
+      addressNeeded: {
+        type: 'boolean',
+        description:
+          'External access is on but the server has no address clients can use (at most a one-word Linux hostname, which never goes into a connection string). Prompt to set the address clients use.',
+      },
+      externalAccess: {
+        $ref: '#/components/schemas/ManagedExternalAccess',
+        description:
+          'The "allow external access to the databases on this server" setting of every server that fronts this cluster. The setting belongs to the server and covers every cluster on it.',
       },
       members: {
         type: 'array',
         items: { $ref: '#/components/schemas/ManagedMember' },
       },
       recovery: {
-        oneOf: [{ $ref: '#/components/schemas/ManagedRecoveryRecord' }, { type: 'null' }],
+        oneOf: [
+          { $ref: '#/components/schemas/ManagedRecoveryRecord' },
+          {
+            type: 'null',
+          },
+        ],
         description: 'Latest HA recovery journal row for this cluster (`null` when none).',
       },
     },
   },
-  ManagedEffectiveExposure: {
+  ManagedAccessEndpoint: {
     type: 'object',
-    required: ['requested', 'published', 'scopes', 'viaCoResidentCluster', 'pendingServers'],
+    required: ['reach', 'host', 'port'],
     properties: {
-      requested: { type: 'boolean', description: "This cluster's own exposure toggle." },
-      published: {
-        type: 'boolean',
-        description: 'A host listener publishes in front of this cluster.',
-      },
-      scopes: {
-        type: 'array',
-        items: { type: 'string', enum: ['local', 'datacenter', 'turbofabric', 'public'] },
-        description: 'Scopes the shared listener covers, widest first.',
-      },
-      viaCoResidentCluster: {
-        type: 'boolean',
-        description: 'Published only because another cluster on the same server asked for it.',
-      },
-      pendingServers: {
-        type: 'array',
-        description:
-          'Servers told to listen the new way that have not confirmed it yet (still applying, offline, or the push failed). Retried automatically; Apply retries at once.',
-        items: {
-          type: 'object',
-          required: ['id', 'name'],
-          properties: { id: { type: 'string' }, name: { type: 'string' } },
-        },
-      },
+      reach: { type: 'string', enum: ['external', 'local'] },
+      host: { type: 'string' },
+      port: { type: 'integer' },
+      label: { type: 'string', description: 'External only: `Public`, or the datacenter name.' },
+      scope: { type: 'string', enum: ['public', 'datacenter'], description: 'External only.' },
+      datacenterId: { type: ['string', 'null'], format: 'uuid', description: 'External only.' },
+      primary: { type: 'boolean', description: 'External only: fills the main connection string.' },
     },
   },
-  ExposureReconcileOutcome: {
+  ManagedExternalAccess: {
     type: 'object',
-    required: ['queuedServerIds', 'failedServerIds'],
-    description:
-      'The new listener addresses sent to every server that fronts the cluster. `failedServerIds` could not be built or queued; the setting is saved and those servers are retried.',
+    required: ['servers'],
     properties: {
-      queuedServerIds: { type: 'array', items: { type: 'string' } },
-      failedServerIds: { type: 'array', items: { type: 'string' } },
+      servers: {
+        type: 'array',
+        items: {
+          type: 'object',
+          required: ['id', 'name', 'enabled', 'pending', 'otherClusters'],
+          properties: {
+            id: { type: 'string' },
+            name: { type: 'string' },
+            enabled: {
+              type: 'boolean',
+              description:
+                'Yes: the databases on this server can be reached from outside it. No (the default): only services on the server itself can connect.',
+            },
+            pending: {
+              type: 'boolean',
+              description:
+                'The server was told the new setting and has not confirmed it yet (still applying, offline, or the push failed). Retried automatically.',
+            },
+            otherClusters: {
+              type: 'integer',
+              description: 'Other clusters on this server that the setting also covers.',
+            },
+          },
+        },
+      },
     },
   },
   ManagedPatchResponse: {
@@ -274,36 +350,50 @@ export const managedSchemas = {
       ok: { type: 'boolean', const: true },
       managed: { $ref: '#/components/schemas/ManagedEnvironmentRow' },
       settings: { $ref: '#/components/schemas/ManagedSettings' },
-      ingressReconcile: {
-        $ref: '#/components/schemas/ExposureReconcileOutcome',
-        description: 'Present when the servers were told the listener addresses.',
-      },
-      pendingServerIds: { type: 'array', items: { type: 'string' } },
     },
   },
-  ManagedExposureRefusalError: {
+  ServerManagedExternalAccessSaved: {
     type: 'object',
-    required: ['error', 'message'],
+    required: ['ok', 'enabled', 'pending', 'clusterCount'],
     properties: {
-      error: {
-        type: 'string',
-        enum: ['datacenter_ip_required', 'fabric_address_required', 'daemon_key_unavailable'],
+      ok: { type: 'boolean', const: true },
+      enabled: { type: 'boolean' },
+      pending: {
+        type: 'boolean',
+        description: 'The server was told and has not confirmed yet. Retried automatically.',
       },
-      message: { type: 'string', description: 'Plain words; names the server.' },
-      serverId: { type: 'string' },
+      clusterCount: { type: 'integer' },
     },
   },
-  ManagedIngressReconcileFailedError: {
+  ServerManagedExternalAccessPushFailed: {
     type: 'object',
-    required: ['error', 'message', 'managed', 'settings', 'ingressReconcile'],
-    description: 'The setting is saved; the host has not been told yet.',
+    required: ['error', 'message', 'enabled', 'pending', 'clusterCount'],
+    description: 'The setting is saved; the server has not been told yet.',
     properties: {
       error: { type: 'string', const: 'ingress_reconcile_failed' },
       message: { type: 'string' },
-      managed: { $ref: '#/components/schemas/ManagedEnvironmentRow' },
-      settings: { $ref: '#/components/schemas/ManagedSettings' },
-      ingressReconcile: { $ref: '#/components/schemas/ExposureReconcileOutcome' },
-      pendingServerIds: { type: 'array', items: { type: 'string' } },
+      enabled: { type: 'boolean' },
+      pending: { type: 'boolean', const: true },
+      clusterCount: { type: 'integer' },
+    },
+  },
+  ServerManagedExternalAccess: {
+    type: 'object',
+    required: ['enabled', 'pending', 'clusterCount'],
+    properties: {
+      enabled: {
+        type: 'boolean',
+        description:
+          "Yes: the databases on this server are published beyond the server (every address; the firewall and network rules decide who can reach them). No (the default): only services on the server itself can connect, either sites run by a site owner's Linux user through 127.0.0.1 or containers bound to the cluster over the managed Docker network.",
+      },
+      pending: {
+        type: 'boolean',
+        description: 'The server was told and has not confirmed yet. Retried automatically.',
+      },
+      clusterCount: {
+        type: 'integer',
+        description: 'Managed clusters on this server that the setting covers.',
+      },
     },
   },
   ManagedRecoveryRecord: {
@@ -390,18 +480,6 @@ export const managedSchemas = {
         type: 'string',
         description:
           'Optional base-OS image variant of the series (for example `alpine` or `debian`). Alone, it selects that variant of the default series; omitted = the first variant of the series. A non-string answers 400; an unknown variant answers 422 `managed_version_unsupported`.',
-      },
-      exposure: {
-        type: 'object',
-        properties: {
-          enabled: { type: 'boolean' },
-          scope: {
-            type: 'string',
-            enum: ['public', 'datacenter', 'local', 'turbofabric'],
-            description:
-              "Where SQL clients may connect when enabled: `local` (this server only: 127.0.0.1, which is what sites run by a site owner's Linux user need), `datacenter`, `turbofabric` or `public` (every interface). Omitted = `local`. Legacy `bind` is read-only migration input.",
-          },
-        },
       },
     },
   },
@@ -544,7 +622,16 @@ export const managedSchemas = {
     type: 'object',
     required: ['id', 'username', 'appliedUsername', 'databases', 'privileges', 'createdAt'],
     properties: {
-      id: { type: 'string' },
+      id: {
+        type: 'string',
+        description: 'The login id; the routes under /managed/users address a user by it.',
+      },
+      principalId: {
+        type: ['string', 'null'],
+        description:
+          "The site owner's Linux user the login shares its name with, or null for a login made on its own.",
+      },
+      loginId: { type: 'string', description: 'The database login on this cluster.' },
       username: { type: 'string' },
       appliedUsername: {
         type: 'string',
@@ -558,7 +645,365 @@ export const managedSchemas = {
       },
       databases: { type: 'array', items: { type: 'string' } },
       privileges: { type: 'array', items: { type: 'string' } },
+      connectionRole: {
+        type: 'string',
+        enum: ['read-write', 'read-only'],
+        description:
+          'Where the login is routed: `read-write` to the primary, `read-only` to read replicas (or the primary when the cluster has none).',
+      },
+      grantMode: {
+        type: 'string',
+        enum: ['preset', 'recipe', 'self'],
+        description:
+          "Who sets the login's permissions. `preset` = logins made before modes existed (the panel resets permissions on every apply, as before). `recipe` = the panel sets them. `self` = you set them by hand and the panel never resets them; it still owns the password, LOGIN, connection limit and CONNECT on the listed databases.",
+      },
+      allowedSources: {
+        ...ALLOWED_SOURCES_SCHEMA,
+        description: "Places the login may connect from; `['any']` when unrestricted.",
+      },
+      maxConnections: {
+        type: 'integer',
+        nullable: true,
+        description: 'Per-login connection cap, or null.',
+      },
+      tool: {
+        type: 'boolean',
+        description:
+          'A database-tool login: everything goes to the primary, never split between reader and writer.',
+      },
+      straightThrough: {
+        type: 'boolean',
+        description:
+          'Connect straight through (no connection sharing), PostgreSQL only: one server connection per client session, no connection reuse, no read split. This is what the front door does now, so it is false for a login limited to certain addresses and for MySQL and MariaDB.',
+      },
+      straightThroughDefault: {
+        type: 'boolean',
+        description:
+          'True when `straightThrough` comes from the default (the owner never chose): on for a PostgreSQL login with the migrations privilege (`owner`) and a read/write connection role, off for the rest.',
+      },
       createdAt: { type: 'string', format: 'date-time' },
+    },
+  },
+  PrivilegeCatalogueResponse: {
+    type: 'object',
+    required: [
+      'engine',
+      'series',
+      'levels',
+      'privileges',
+      'roles',
+      'attributes',
+      'membershipOptions',
+      'defaultPrivilegeObjects',
+      'blocked',
+    ],
+    description:
+      "Everything the cluster's exact engine series can grant, in plain words. Only series the panel supports have a catalogue.",
+    properties: {
+      engine: { type: 'string', enum: ['postgres', 'mysql', 'mariadb'] },
+      series: { type: 'string', description: 'Engine series, for example 18, 9.7 or 11.8.' },
+      levels: {
+        type: 'array',
+        items: {
+          type: 'object',
+          required: ['id', 'label', 'explanation'],
+          properties: {
+            id: {
+              type: 'string',
+              enum: [
+                'global',
+                'database',
+                'schema',
+                'table',
+                'column',
+                'sequence',
+                'routine',
+                'type',
+                'parameter',
+                'tablespace',
+                'language',
+                'foreign',
+                'largeobject',
+              ],
+            },
+            label: { type: 'string' },
+            explanation: { type: 'string' },
+          },
+        },
+      },
+      privileges: {
+        type: 'array',
+        items: {
+          type: 'object',
+          required: ['id', 'level', 'keyword', 'label', 'explanation', 'allowed', 'grid'],
+          properties: {
+            id: { type: 'string', description: '`<level>:<keyword>`, for example `table:SELECT`.' },
+            level: { type: 'string' },
+            keyword: { type: 'string', description: 'The word used in GRANT.' },
+            aliases: { type: 'array', items: { type: 'string' } },
+            label: { type: 'string' },
+            explanation: { type: 'string' },
+            since: { type: 'string', description: 'First series that has it, when not all.' },
+            allowed: {
+              type: 'string',
+              enum: ['yes', 'needs-admin', 'no'],
+              description:
+                "Whether a site owner's login may hold it: `yes`, `needs-admin` (reserved for a Database admin login) or `no` (never).",
+            },
+            reason: { type: 'string' },
+            aclLetter: { type: 'string', description: 'Postgres access-list letter.' },
+            grid: { type: 'boolean', description: 'False when it never shows as a grid cell.' },
+          },
+        },
+      },
+      roles: {
+        type: 'array',
+        description: 'Postgres predefined roles. Empty for MySQL and MariaDB.',
+        items: {
+          type: 'object',
+          required: ['name', 'label', 'explanation', 'grantable', 'allowed'],
+          properties: {
+            name: { type: 'string' },
+            label: { type: 'string' },
+            explanation: { type: 'string' },
+            since: { type: 'string' },
+            grantable: { type: 'boolean' },
+            allowed: { type: 'string', enum: ['yes', 'needs-admin', 'no'] },
+            reason: { type: 'string' },
+          },
+        },
+      },
+      attributes: {
+        type: 'array',
+        description: 'Postgres role attributes. Empty for MySQL and MariaDB.',
+        items: {
+          type: 'object',
+          required: ['name', 'column', 'label', 'explanation', 'allowed'],
+          properties: {
+            name: { type: 'string' },
+            column: { type: 'string' },
+            label: { type: 'string' },
+            explanation: { type: 'string' },
+            allowed: { type: 'string', enum: ['yes', 'needs-admin', 'no'] },
+            reason: { type: 'string' },
+          },
+        },
+      },
+      membershipOptions: {
+        type: 'array',
+        description: 'Options on a Postgres role membership (INHERIT and SET exist from 16).',
+        items: { type: 'object' },
+      },
+      defaultPrivilegeObjects: {
+        type: 'array',
+        description: 'Object kinds Postgres default privileges can name.',
+        items: { type: 'object' },
+      },
+      blocked: {
+        type: 'object',
+        required: ['databases', 'schemas', 'reservedPrefixes'],
+        properties: {
+          databases: { type: 'array', items: { type: 'string' } },
+          schemas: { type: 'array', items: { type: 'string' } },
+          reservedPrefixes: { type: 'array', items: { type: 'string' } },
+        },
+      },
+    },
+  },
+  PrivilegeCatalogueUnsupportedError: {
+    type: 'object',
+    required: ['error', 'message'],
+    properties: {
+      error: { type: 'string', const: 'privilege_catalogue_unsupported_version' },
+      message: { type: 'string' },
+    },
+  },
+  EffectivePrivilege: {
+    type: 'object',
+    required: ['keyword', 'catalogueId', 'label', 'explanation', 'allowed', 'grantable'],
+    properties: {
+      keyword: { type: 'string', description: 'As the engine spells it.' },
+      catalogueId: {
+        type: ['string', 'null'],
+        description: 'Catalogue id, or null when this engine version has no such privilege.',
+      },
+      label: { type: 'string' },
+      explanation: { type: 'string' },
+      allowed: {
+        type: 'string',
+        enum: ['yes', 'needs-admin', 'no', 'unknown'],
+        description:
+          "Whether a site owner's login may hold it. `unknown`: not in the catalogue for this version.",
+      },
+      reason: { type: 'string' },
+      grantable: { type: 'boolean', description: 'The holder may pass this privilege on.' },
+    },
+  },
+  EffectivePermissionsResponse: {
+    type: 'object',
+    required: [
+      'username',
+      'exists',
+      'engine',
+      'series',
+      'observedAt',
+      'attributes',
+      'accounts',
+      'memberships',
+      'grants',
+      'defaults',
+      'truncated',
+      'outsidePolicyCount',
+      'ledger',
+      'databases',
+      'databasesRead',
+      'databasesFailed',
+      'databasesNotAsked',
+      'versionMatchesCatalogue',
+    ],
+    description:
+      'What the engine says a login can do right now, read from the host. Every item is `observed`: the panel keeps no record of its own grants yet, so it cannot say which grants it set and which were set outside the panel.',
+    properties: {
+      username: { type: 'string' },
+      exists: { type: 'boolean' },
+      engine: { type: 'string', enum: ['postgres', 'mysql', 'mariadb'] },
+      series: { type: 'string' },
+      observedAt: { type: 'string', format: 'date-time' },
+      serverVersion: { type: 'string' },
+      attributes: {
+        type: 'array',
+        description: 'Postgres role attributes the engine reports.',
+        items: {
+          type: 'object',
+          required: ['name', 'label', 'explanation', 'value', 'allowed'],
+          properties: {
+            name: { type: 'string' },
+            label: { type: 'string' },
+            explanation: { type: 'string' },
+            value: { type: ['boolean', 'integer'] },
+            allowed: { type: 'string', enum: ['yes', 'needs-admin', 'no'] },
+            reason: { type: 'string' },
+          },
+        },
+      },
+      accounts: {
+        type: 'array',
+        description: 'MySQL and MariaDB account rows (one per host).',
+        items: {
+          type: 'object',
+          required: ['host'],
+          properties: { host: { type: 'string' }, locked: { type: 'boolean' } },
+        },
+      },
+      memberships: {
+        type: 'array',
+        items: {
+          type: 'object',
+          required: ['role', 'kind', 'allowed', 'origin'],
+          properties: {
+            role: { type: 'string' },
+            label: { type: 'string' },
+            explanation: { type: 'string' },
+            kind: { type: 'string', enum: ['predefined', 'panel', 'other'] },
+            allowed: { type: 'string', enum: ['yes', 'needs-admin', 'no', 'unknown'] },
+            reason: { type: 'string' },
+            inherit: { type: 'boolean' },
+            set: { type: 'boolean' },
+            admin: { type: 'boolean' },
+            via: { type: 'string', description: 'The role the membership is held through.' },
+            host: { type: 'string' },
+            origin: { type: 'string', const: 'observed' },
+          },
+        },
+      },
+      grants: {
+        type: 'array',
+        items: {
+          type: 'object',
+          required: ['level', 'privileges', 'origin'],
+          properties: {
+            level: { type: 'string' },
+            database: { type: 'string' },
+            schema: { type: 'string' },
+            object: { type: 'string' },
+            columns: { type: 'array', items: { type: 'string' } },
+            host: { type: 'string' },
+            via: { type: 'string', description: 'The role the grant comes through.' },
+            viaLabel: { type: 'string', description: '`everyone` for a Postgres PUBLIC grant.' },
+            pattern: { type: 'boolean', description: 'The schema name is a wildcard pattern.' },
+            grantor: { type: 'string' },
+            privileges: {
+              type: 'array',
+              items: { $ref: '#/components/schemas/EffectivePrivilege' },
+            },
+            origin: { type: 'string', const: 'observed' },
+          },
+        },
+      },
+      defaults: {
+        type: 'array',
+        description: 'Postgres default privileges for objects made later.',
+        items: {
+          type: 'object',
+          required: ['database', 'creator', 'appliesTo', 'objectType', 'privileges', 'origin'],
+          properties: {
+            database: { type: 'string' },
+            creator: { type: 'string' },
+            schema: { type: 'string' },
+            appliesTo: { type: 'string' },
+            objectType: { type: 'string' },
+            via: { type: 'string' },
+            privileges: {
+              type: 'array',
+              items: { $ref: '#/components/schemas/EffectivePrivilege' },
+            },
+            origin: { type: 'string', const: 'observed' },
+          },
+        },
+      },
+      truncated: { type: 'boolean', description: 'The host cut a list short.' },
+      outsidePolicyCount: {
+        type: 'integer',
+        description:
+          "Privileges, role memberships and attributes a site owner's login may not hold.",
+      },
+      ledger: {
+        type: 'object',
+        required: ['available'],
+        properties: { available: { type: 'boolean', const: false } },
+      },
+      databases: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Databases asked for (Postgres, at most 100).',
+      },
+      databasesRead: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Databases the host read.',
+      },
+      databasesFailed: {
+        type: 'array',
+        items: { type: 'string' },
+        description:
+          'Databases the host could not read; their grants are missing from this answer.',
+      },
+      databasesNotAsked: {
+        type: 'array',
+        items: { type: 'string' },
+        description:
+          'Databases left out because more than 100 are placed; their grants are missing.',
+      },
+      versionMatchesCatalogue: { type: 'boolean' },
+    },
+  },
+  EffectivePermissionsFailure: {
+    type: 'object',
+    required: ['error'],
+    properties: {
+      error: { type: 'string', enum: ['daemon_update_required', 'permissions_read_failed'] },
+      reason: { type: 'string' },
+      message: { type: 'string' },
     },
   },
   ManagedUsersResponse: {
@@ -573,16 +1018,43 @@ export const managedSchemas = {
   },
   CreateManagedUserRequest: {
     type: 'object',
-    required: ['username', 'databases'],
+    required: ['databases'],
     properties: {
-      username: { type: 'string' },
+      username: {
+        type: 'string',
+        description:
+          'Name for a new login. Required unless `principalId` is given; ignored when it is.',
+      },
+      principalId: {
+        type: 'string',
+        description:
+          "Create a login for an existing site owner Linux user of the organization instead of a new name. The engine role takes the principal's own name, so it must be a valid role name for the engine (422 `principal_name_does_not_fit` or `principal_name_reserved` otherwise); 404 `principal_not_found` for an unknown principal; 409 `managed_login_exists` when it already has a login on this cluster.",
+      },
       databases: { type: 'array', items: { type: 'string' } },
       privileges: {
         type: 'array',
-        items: { type: 'string', enum: ['owner', 'read-write', 'read-only'] },
+        items: { type: 'string', enum: ['owner', 'read-write', 'read-only', 'admin'] },
         description:
-          'What the login may do in each listed database. Omitted = `read-only` for a `read-only` connectionRole, otherwise `read-write`. An empty list or an unknown name answers 400 `managed_user_privileges_invalid`, because a login with no grants can connect but is refused everywhere.',
+          'What the login may do in each listed database. `admin` makes it a Database admin login for tools: on Postgres it joins the owner role of each listed database that has one, and gets read and write access on a listed database made before owner roles (it is never refused over owner roles: the answer lists `notes` saying what it got; a daemon older than owner roles adds the login as read/write), on MySQL and MariaDB it gets ALL on each listed database with the grant option and nothing global. It is never read-only (400 `managed_admin_login_not_read_only`), is stored alone, and is a tool login (`tool` true) unless the request says `tool: false`. On MySQL and MariaDB the three jobs are: `read-only` (SELECT and SHOW VIEW; it cannot call stored functions), `read-write` (change rows, call stored routines, lock tables and use session-only temporary tables; it cannot create, alter or drop anything, and 409 `managed_readwrite_needs_daemon_update` when the daemon of the server is too old to enforce that) and `owner`, the migrations login (everything inside its database, without the grant option, so it cannot hand rights to others once the daemon of the server is up to date). Tables the migrations login makes are usable by the other two at once. On Postgres, `owner` on a database with an owner role makes the login a migrations login: it works as the owner role by session default, so tables it creates belong to the owner role and the other logins can use them at once. Omitted = `read-only` for a `read-only` connectionRole, otherwise `read-write`. An empty list or an unknown name answers 400 `managed_user_privileges_invalid`, because a login with no grants can connect but is refused everywhere.',
       },
+      connectionRole: {
+        type: 'string',
+        enum: ['read-write', 'read-only'],
+        description: 'Default `read-write`.',
+      },
+      grantMode: {
+        type: 'string',
+        enum: ['recipe', 'self'],
+        description:
+          'Default `recipe` (the panel sets permissions). `self` = you set permissions yourself and the panel never resets them. Anything else answers 400 `managed_grant_mode_invalid`.',
+      },
+      tool: {
+        type: 'boolean',
+        description: 'Mark the login as used by a database tool: routed to the primary only.',
+      },
+      allowedSources: ALLOWED_SOURCES_SCHEMA,
+      maxConnections: MAX_CONNECTIONS_SCHEMA,
+      straightThrough: STRAIGHT_THROUGH_REQUEST_SCHEMA,
       nameScheme: {
         type: 'string',
         enum: ['plain', 'partial', 'random'],
@@ -601,6 +1073,12 @@ export const managedSchemas = {
         type: 'string',
         description: 'Show-once plaintext password',
       },
+      notes: {
+        type: 'array',
+        items: { type: 'string' },
+        description:
+          'Plain-words notes on what a Database admin login got when it is not the full admin rights (a listed database made before owner roles, or a daemon older than owner roles). Absent when there is nothing to say. A login is never refused over owner roles.',
+      },
       commandId: { type: 'string' },
       serverId: { type: 'string' },
     },
@@ -610,6 +1088,18 @@ export const managedSchemas = {
     required: ['databases'],
     properties: {
       databases: { type: 'array', items: { type: 'string' } },
+      ownerRoleDatabases: {
+        type: 'array',
+        items: { type: 'string' },
+        description:
+          'Databases that have an owner role (Postgres). Others keep their current owner.',
+      },
+      owners: {
+        type: 'object',
+        description:
+          'Who owns each database that has an owner role (Postgres), keyed by database name: `{ kind: "role", role }` for the default no-login owner role, or `{ kind: "login", loginId, username }` for a login picked at create time. A database made before owner roles has no entry. Never the root login or the platform admin.',
+        additionalProperties: { type: 'object' },
+      },
     },
   },
   CreateManagedDatabaseRequest: {
@@ -617,6 +1107,16 @@ export const managedSchemas = {
     required: ['name'],
     properties: {
       name: { type: 'string' },
+      ownerRole: {
+        type: 'boolean',
+        description:
+          'Postgres only, and only ever true (or left out): every new Postgres database is made with an owner role, three roles that cannot log in (`tp_<name>_owner`, `_rw`, `_ro`), with the database owned by the owner role (or by the login picked with ownerLoginId). 400 `managed_owner_role_required` for false. 400 `managed_owner_role_name_too_long` for a name over 54 characters (choose a shorter name). 409 `managed_owner_role_needs_daemon_update` when true is asked for and the daemon of the server lacks `managed-owner-role-v1`; left out, such a daemon still makes the database without an owner role. 400 `managed_owner_role_unsupported` (MySQL, MariaDB). Databases made before this keep their owner; nothing converts them.',
+      },
+      ownerLoginId: {
+        type: 'string',
+        description:
+          "Postgres only. The id of a login to make the database's owner instead of leaving the default owner role as the only owner. It has to be a migration (`owner`) or read/write login that the panel manages (not read-only, not a Database admin login, not root or replication, not manage-myself): 400 `managed_owner_login_invalid`. The database is added to the login's list so it can connect. The three owner-role roles are still made and still own what is created; the login owns the database itself and works through the owner role, so the other logins can use what it creates. 400 `managed_owner_login_unsupported` on MySQL and MariaDB (they have no database owner; a login gets rights on a database), 409 `managed_database_owner_needs_daemon_update` when the server's daemon lacks `managed-database-owner-v1`. Leave it out for the default owner role. The owner is never the root login or the platform admin.",
+      },
     },
   },
   ManagedDatabaseMutationResponse: {
@@ -625,6 +1125,20 @@ export const managedSchemas = {
     properties: {
       ok: { type: 'boolean', const: true },
       databases: { type: 'array', items: { type: 'string' } },
+      ownerRole: {
+        type: 'boolean',
+        description: 'Whether the created database has an owner role.',
+      },
+      ownerRoleDatabases: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Every database on the cluster that has an owner role.',
+      },
+      owners: {
+        type: 'object',
+        description: 'Who owns each database that has an owner role (same shape as the list).',
+        additionalProperties: { type: 'object' },
+      },
       commandId: { type: 'string' },
       serverId: { type: 'string' },
     },
@@ -758,6 +1272,12 @@ export const managedSchemas = {
         format: 'uuid',
         description: 'The backup schedule whose run made this artifact; absent for a manual backup',
       },
+      storedOnServerId: {
+        type: 'string',
+        format: 'uuid',
+        description:
+          'Host that holds the on-disk artifact (the primary when the backup ran). Absent on older records.',
+      },
     },
   },
   ManagedBackupsResponse: {
@@ -821,7 +1341,10 @@ export const managedSchemas = {
         required: ['preset', 'day', 'time'],
         properties: {
           preset: { type: 'string', const: 'weekly' },
-          day: { type: 'string', enum: ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'] },
+          day: {
+            type: 'string',
+            enum: ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'],
+          },
           time: { type: 'string', description: 'HH:MM, 24-hour' },
         },
       },
@@ -878,7 +1401,12 @@ export const managedSchemas = {
       },
       schedule: { type: 'string', description: 'Cron text as stored' },
       preset: {
-        oneOf: [{ $ref: '#/components/schemas/BackupSchedulePreset' }, { type: 'null' }],
+        oneOf: [
+          { $ref: '#/components/schemas/BackupSchedulePreset' },
+          {
+            type: 'null',
+          },
+        ],
         description: 'The preset this schedule matches; null for custom cron',
       },
       timezone: {
@@ -916,7 +1444,12 @@ export const managedSchemas = {
   },
   BackupScheduleInput: {
     description: 'A preset object, or cron text (5 fields or an @alias; @reboot is refused)',
-    oneOf: [{ $ref: '#/components/schemas/BackupSchedulePreset' }, { type: 'string' }],
+    oneOf: [
+      { $ref: '#/components/schemas/BackupSchedulePreset' },
+      {
+        type: 'string',
+      },
+    ],
   },
   CreateBackupPolicyRequest: {
     type: 'object',
@@ -944,7 +1477,10 @@ export const managedSchemas = {
     properties: {
       name: { type: 'string', maxLength: 64 },
       schedule: { $ref: '#/components/schemas/BackupScheduleInput' },
-      timezone: { type: ['string', 'null'], description: 'null clears it (host local time)' },
+      timezone: {
+        type: ['string', 'null'],
+        description: 'null clears it (host local time)',
+      },
       retentionKeep: { type: 'integer', minimum: 1 },
       enabled: { type: 'boolean' },
     },
@@ -965,7 +1501,12 @@ export const managedSchemas = {
     properties: {
       policy: { $ref: '#/components/schemas/BackupPolicy' },
       reconcile: {
-        oneOf: [{ $ref: '#/components/schemas/BackupsReconcileOutcome' }, { type: 'null' }],
+        oneOf: [
+          { $ref: '#/components/schemas/BackupsReconcileOutcome' },
+          {
+            type: 'null',
+          },
+        ],
         description: 'null when the change did not affect what the host runs (a rename)',
       },
     },
@@ -1029,6 +1570,40 @@ export const managedSchemas = {
       },
     },
   },
+  ManagedSslMinimumRefusal: {
+    type: 'object',
+    required: ['error', 'message'],
+    description:
+      'While a server allows external access, every database it serves must use SSL mode require or stronger. Nothing is saved.',
+    properties: {
+      error: {
+        type: 'string',
+        enum: [
+          'managed_ssl_external_access_minimum',
+          'managed_ssl_default_external_access_minimum',
+          'external_access_weak_ssl',
+        ],
+      },
+      message: { type: 'string', description: 'Plain-words explanation of the refusal.' },
+      servers: {
+        type: 'array',
+        items: { type: 'string' },
+        description:
+          '`managed_ssl_external_access_minimum`: the servers serving this database that allow external access.',
+      },
+      databases: {
+        type: 'array',
+        items: { type: 'string' },
+        description:
+          "The other two codes: the databases that would accept connections without SSL. For `external_access_weak_ssl`, only the server owner's own databases.",
+      },
+      otherDatabases: {
+        type: 'integer',
+        description:
+          '`external_access_weak_ssl`: how many databases of other organizations on the server (granted placements) would accept connections without SSL. Counted, never named.',
+      },
+    },
+  },
   ManagedImageRefusalError: {
     type: 'object',
     required: ['error', 'message'],
@@ -1037,7 +1612,10 @@ export const managedSchemas = {
         type: 'string',
         enum: ['managed_series_immutable', 'managed_variant_swap_unsafe'],
       },
-      message: { type: 'string', description: 'Plain-words explanation of the refusal.' },
+      message: {
+        type: 'string',
+        description: 'Plain-words explanation of the refusal.',
+      },
     },
   },
   ManagedVersionUnsupportedError: errorSchema('managed_version_unsupported'),
@@ -1059,14 +1637,126 @@ export const managedSchemas = {
   DatacenterCidrRequiredError: errorSchema('datacenter_cidr_required'),
   PrivatePathUnavailableError: errorSchema('private_path_unavailable'),
   FailoverRequiresTrustedDatacenterError: errorSchema('failover_requires_trusted_datacenter'),
+  ManagedFailoverUnsupportedError: {
+    type: 'object',
+    required: ['error', 'code'],
+    properties: {
+      error: {
+        type: 'string',
+        description:
+          'Plain-words reason. MariaDB 12.3 can run on one server; automatic failover needs MariaDB 11.8 for now.',
+      },
+      code: { type: 'string', const: 'managed_failover_unsupported' },
+    },
+  },
   ManagedBackupUnsupportedError: errorSchema('managed_backup_unsupported'),
   BackupNotFoundError: errorSchema('backup_not_found'),
+  BackupOnOtherServerError: {
+    type: 'object',
+    required: ['error', 'message'],
+    properties: {
+      error: { type: 'string', const: 'backup_on_other_server' },
+      message: {
+        type: 'string',
+        description:
+          'The artifact is on a former primary. Restore it there, take a new backup, or switch back first.',
+      },
+    },
+  },
   ManagedReplicaNotStreamingError: errorSchema('managed_replica_not_streaming'),
   ManagedReplicaLaggingError: errorSchema('managed_replica_lagging'),
   ManagedReplicaHealthStaleError: errorSchema('managed_replica_health_stale'),
+  ManagedReplicaLiveCheckFailedError: {
+    type: 'object',
+    required: ['error', 'message'],
+    properties: {
+      error: { type: 'string', const: 'managed_replica_live_check_failed' },
+      message: {
+        type: 'string',
+        description:
+          'The replica did not answer a live check, so it cannot be proven caught up. Try again, or force the promote if you accept possible data loss.',
+      },
+    },
+  },
 }
 
 export const managedPaths = {
+  '/api/client/v1/servers/{id}/managed-external-access': {
+    get: {
+      tags: ['Managed services'],
+      summary: 'Get "allow external access to the databases on this server"',
+      description:
+        'Owners and managers only; a server of another organization is 404. One setting for the whole server, because one connection listener serves every managed cluster on it. Default no.',
+      parameters: [
+        {
+          name: 'id',
+          in: 'path',
+          required: true,
+          schema: { type: 'string', format: 'uuid' },
+        },
+      ],
+      responses: {
+        200: {
+          description: 'The setting',
+          ...jsonSchema('ServerManagedExternalAccess'),
+        },
+        403: { description: 'Not an owner or manager of the server' },
+        404: { description: 'Server not found in the caller organization' },
+      },
+    },
+    put: {
+      tags: ['Managed services'],
+      summary: 'Set "allow external access to the databases on this server"',
+      description:
+        "Owners and managers only. No (the default): only services on the server itself can connect (sites run by a site owner's Linux user through 127.0.0.1 on port 13306 for MySQL/MariaDB or 15432 for Postgres, and bound containers over the managed Docker network). Yes: those ports are published on all the server's addresses; the firewall and network rules decide who can then reach them. Saving tells the server at once; a push that cannot be queued answers 502 `ingress_reconcile_failed` (saved, retried automatically).",
+      parameters: [
+        {
+          name: 'id',
+          in: 'path',
+          required: true,
+          schema: { type: 'string', format: 'uuid' },
+        },
+      ],
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              required: ['enabled'],
+              properties: { enabled: { type: 'boolean' } },
+            },
+          },
+        },
+      },
+      responses: {
+        200: {
+          description: 'Saved',
+          ...jsonSchema('ServerManagedExternalAccessSaved'),
+        },
+        400: {
+          description: '`invalid_external_access`: `enabled` is not a boolean',
+        },
+        403: { description: 'Not an owner or manager of the server' },
+        404: { description: 'Server not found in the caller organization' },
+        409: {
+          description:
+            '`external_access_weak_ssl`: turning it on is refused while a database on the server uses an SSL mode weaker than require; `databases` names them. Turning it off is never refused.',
+          ...jsonSchema('ManagedSslMinimumRefusal'),
+        },
+        422: {
+          description: '`daemon_key_unavailable`: the server cannot take changes yet',
+        },
+        502: {
+          description: 'Saved, but the server could not be told yet; retried automatically',
+          ...jsonSchema('ServerManagedExternalAccessPushFailed'),
+        },
+        503: {
+          description: 'Command queue or daemon cell registry unavailable',
+        },
+      },
+    },
+  },
   '/api/client/v1/environments/{id}/managed': {
     get: {
       tags: ['Managed services'],
@@ -1139,7 +1829,7 @@ export const managedPaths = {
       tags: ['Managed services'],
       summary: 'Update managed settings (does not apply)',
       description:
-        "Saves settings and, optionally, the cluster `name` (a label only; `null` clears it). Settings reach the engine on the next apply, with one exception: when `exposure` changes (or the cluster still has the old no-scope exposure, or an earlier push is unconfirmed) the database's listener addresses are re-sent at once to every server that fronts the cluster, and the response carries `ingressReconcile` and `pendingServerIds`. A scope a server has no address for is refused with 422 before anything is saved; a push that cannot be built or queued answers 502 `ingress_reconcile_failed` (the setting is saved, the servers stay listed as pending, and a background sweep retries them; Apply retries at once). A public cluster on the same server also makes every other cluster on that server reachable from outside, because one listener serves them all.",
+        'Saves settings and, optionally, the cluster `name` (a label only; `null` clears it). Settings reach the engine on the next apply. Who can reach the database from outside the server is not a cluster setting: it is the server\'s "allow external access" setting (`/servers/{id}/managed-external-access`).',
       parameters: [ENV_ID_PARAM],
       requestBody: {
         content: {
@@ -1163,37 +1853,16 @@ export const managedPaths = {
           description: 'managed_settings_invalid, or a name that is not valid (Invalid request)',
           ...jsonSchema('ManagedSettingsInvalidError'),
         },
-        422: {
-          description:
-            'The new exposure cannot be applied on a server that fronts the cluster; nothing was saved',
-          ...jsonSchema('ManagedExposureRefusalError'),
-        },
-        502: {
-          description:
-            'Saved, but the listener addresses could not be built or queued for a server',
-          ...jsonSchema('ManagedIngressReconcileFailedError'),
-        },
-        503: {
-          description: 'Command queue or daemon cell registry unavailable (exposure changes only)',
-          content: {
-            'application/json': {
-              schema: {
-                type: 'object',
-                required: ['error'],
-                properties: { error: { type: 'string' } },
-              },
-            },
-          },
-        },
         409: {
           description:
-            'managed_busy, or an image change that is refused before anything is written: managed_series_immutable (the engine series cannot change on an existing cluster; create a new cluster and restore a backup into it) / managed_variant_swap_unsafe (PostgreSQL alpine <-> debian would corrupt text indexes); both carry a `message`',
+            'managed_busy, or an image change that is refused before anything is written: managed_series_immutable (the engine series cannot change on an existing cluster; create a new cluster and restore a backup into it) / managed_variant_swap_unsafe (PostgreSQL alpine <-> debian would corrupt text indexes); both carry a `message`. Also managed_ssl_external_access_minimum: a new SSL mode (or following an organization default) weaker than require while a server serving the cluster allows external access.',
           content: {
             'application/json': {
               schema: {
                 oneOf: [
                   { $ref: '#/components/schemas/ManagedBusyError' },
                   { $ref: '#/components/schemas/ManagedImageRefusalError' },
+                  { $ref: '#/components/schemas/ManagedSslMinimumRefusal' },
                 ],
               },
             },
@@ -1318,6 +1987,25 @@ export const managedPaths = {
       },
     },
   },
+  '/api/client/v1/environments/{id}/managed/privilege-catalogue': {
+    get: {
+      tags: ['Managed services'],
+      summary: "Privilege catalogue for the cluster's engine version",
+      description:
+        "Read only. Lists every privilege, predefined role and role attribute that exists in the cluster's exact engine series, with a plain-words label and whether a site owner's login may hold it. A series the panel does not support answers 422 `privilege_catalogue_unsupported_version`.",
+      parameters: [ENV_ID_PARAM],
+      responses: {
+        200: {
+          description: 'The catalogue for this cluster',
+          ...jsonSchema('PrivilegeCatalogueResponse'),
+        },
+        422: {
+          description: 'privilege_catalogue_unsupported_version',
+          ...jsonSchema('PrivilegeCatalogueUnsupportedError'),
+        },
+      },
+    },
+  },
   '/api/client/v1/environments/{id}/managed/users': {
     get: {
       tags: ['Managed services'],
@@ -1325,7 +2013,7 @@ export const managedPaths = {
       parameters: [ENV_ID_PARAM],
       responses: {
         200: {
-          description: 'Non-root principals',
+          description: 'Non-root logins',
           ...jsonSchema('ManagedUsersResponse'),
         },
       },
@@ -1364,11 +2052,120 @@ export const managedPaths = {
       },
     },
   },
-  '/api/client/v1/environments/{id}/managed/users/{principalId}': {
+  '/api/client/v1/environments/{id}/managed/users/{loginId}/effective-permissions': {
+    get: {
+      tags: ['Managed services'],
+      summary: 'Effective permissions of a login, read from the engine',
+      description:
+        'Read only. Asks the host that runs the cluster what the engine says the login can do right now and joins it to the privilege catalogue. Everything is reported as observed; the panel keeps no ledger of its own grants yet. 409 `daemon_update_required` when the server runs a TurboPanel version that cannot answer; 409 `server_offline`; 502 or 504 `permissions_read_failed` when the host answers badly or too slowly.',
+      parameters: [ENV_ID_PARAM, LOGIN_ID_PARAM],
+      responses: {
+        200: {
+          description: "The login's permissions as the engine reports them",
+          ...jsonSchema('EffectivePermissionsResponse'),
+        },
+        409: {
+          description: 'daemon_update_required / server_offline',
+          content: {
+            'application/json': {
+              schema: {
+                oneOf: [
+                  { $ref: '#/components/schemas/EffectivePermissionsFailure' },
+                  { $ref: '#/components/schemas/ServerOfflineError' },
+                ],
+              },
+            },
+          },
+        },
+        422: {
+          description: 'privilege_catalogue_unsupported_version',
+          ...jsonSchema('PrivilegeCatalogueUnsupportedError'),
+        },
+        502: {
+          description: 'permissions_read_failed',
+          ...jsonSchema('EffectivePermissionsFailure'),
+        },
+        504: {
+          description: 'permissions_read_failed (timeout)',
+          ...jsonSchema('EffectivePermissionsFailure'),
+        },
+      },
+    },
+  },
+  '/api/client/v1/environments/{id}/managed/users/{loginId}': {
+    patch: {
+      tags: ['Managed services'],
+      summary: 'Change a login (grant mode, databases, connection role, privileges, tool flag)',
+      description:
+        'Every field is optional. `dryRun: true` changes nothing and returns `statements`, a plain-words list of the kinds of SQL the next apply would run. Refusals: 422 `managed_login_not_editable` (root/replication logins), 422 `managed_grant_mode_invalid_transition` (back to `preset`), 409 `managed_grant_reset_needs_confirm` (self back to panel-set permissions, or a read-only Postgres login moving to self, needs `confirmReset: true`), 422 `managed_self_login_has_no_privileges`, 400 `managed_grant_mode_invalid`.',
+      parameters: [ENV_ID_PARAM, LOGIN_ID_PARAM],
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              properties: {
+                grantMode: { type: 'string', enum: ['recipe', 'self'] },
+                tool: { type: 'boolean' },
+                allowedSources: {
+                  ...ALLOWED_SOURCES_SCHEMA,
+                  nullable: true,
+                  description: `${ALLOWED_SOURCES_SCHEMA.description} \`null\` clears the limit.`,
+                },
+                maxConnections: {
+                  ...MAX_CONNECTIONS_SCHEMA,
+                  nullable: true,
+                  description: `${MAX_CONNECTIONS_SCHEMA.description} \`null\` removes the cap.`,
+                },
+                straightThrough: {
+                  ...STRAIGHT_THROUGH_REQUEST_SCHEMA,
+                  nullable: true,
+                  description: `${STRAIGHT_THROUGH_REQUEST_SCHEMA.description} \`null\` goes back to the default.`,
+                },
+                databases: { type: 'array', items: { type: 'string' } },
+                connectionRole: { type: 'string', enum: ['read-write', 'read-only'] },
+                privileges: {
+                  type: 'array',
+                  items: { type: 'string', enum: ['owner', 'read-write', 'read-only', 'admin'] },
+                },
+                confirmReset: { type: 'boolean' },
+                dryRun: { type: 'boolean' },
+              },
+            },
+          },
+        },
+      },
+      responses: {
+        200: {
+          description: 'Dry-run preview, or the login updated and an apply enqueued',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['ok'],
+                properties: {
+                  ok: { type: 'boolean' },
+                  dryRun: { type: 'boolean', description: 'Present and true for a preview.' },
+                  grantMode: { type: 'string', enum: ['preset', 'recipe', 'self'] },
+                  statements: {
+                    type: 'array',
+                    items: { type: 'string' },
+                    description: 'Dry run only: plain-words kinds of SQL the next apply runs.',
+                  },
+                  user: { type: 'object', nullable: true, description: 'The updated login.' },
+                  commandId: { type: 'string', description: 'The queued apply command.' },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
     delete: {
       tags: ['Managed services'],
       summary: 'Delete managed user and enqueue apply with dropUsers',
-      parameters: [ENV_ID_PARAM, PRINCIPAL_ID_PARAM],
+      parameters: [ENV_ID_PARAM, LOGIN_ID_PARAM],
       responses: {
         200: {
           description: 'User deleted; apply enqueued',
@@ -1394,11 +2191,11 @@ export const managedPaths = {
       },
     },
   },
-  '/api/client/v1/environments/{id}/managed/users/{principalId}/password': {
+  '/api/client/v1/environments/{id}/managed/users/{loginId}/password': {
     post: {
       tags: ['Managed services'],
       summary: 'Rotate a managed user password (show-once), re-materialize bindings, enqueue apply',
-      parameters: [ENV_ID_PARAM, PRINCIPAL_ID_PARAM],
+      parameters: [ENV_ID_PARAM, LOGIN_ID_PARAM],
       responses: {
         200: {
           description: 'Rotated',
@@ -1442,6 +2239,17 @@ export const managedPaths = {
     },
   },
   '/api/client/v1/environments/{id}/managed/databases/{name}': {
+    patch: {
+      tags: ['Managed services'],
+      summary: "Change a database's owner (not available yet)",
+      description:
+        'Answers 409 `managed_database_owner_change_not_available` with a plain-words message: changing the owner after the database was made has to move what the panel manages without touching anything made by hand, and is not built yet. Choose the owner when the database is created (`ownerLoginId` on create). The route exists so the answer is a clear message, with or without a dry run.',
+      parameters: [ENV_ID_PARAM, DATABASE_NAME_PARAM],
+      responses: {
+        404: { description: 'No such database' },
+        409: { description: 'managed_database_owner_change_not_available' },
+      },
+    },
     delete: {
       tags: ['Managed services'],
       summary: 'Drop managed database and enqueue apply',
@@ -1578,7 +2386,8 @@ export const managedPaths = {
     delete: {
       tags: ['Managed services'],
       summary: 'Delete a backup artifact: enqueue managed.backup (action=delete)',
-      description: 'The row is removed from the `backup` table by the consumer on success.',
+      description:
+        'The row is removed from the `backup` table by the consumer on success. The delete command is sent to the host that stores the artifact when that host is known.',
       parameters: [ENV_ID_PARAM, BACKUP_ID_PARAM],
       responses: {
         200: {
@@ -1609,7 +2418,8 @@ export const managedPaths = {
     post: {
       tags: ['Managed services'],
       summary: 'Restore a backup: enqueue managed.restore',
-      description: 'Daemon verifies the stored checksum/size before touching the running engine.',
+      description:
+        'Daemon verifies the stored checksum/size before touching the running engine. Artifacts live on the host that made them; a backup from a former primary answers 409 backup_on_other_server and does not enqueue.',
       parameters: [ENV_ID_PARAM, BACKUP_ID_PARAM],
       responses: {
         200: {
@@ -1621,13 +2431,14 @@ export const managedPaths = {
           ...jsonSchema('BackupNotFoundError'),
         },
         409: {
-          description: 'managed_busy / server_offline',
+          description: 'managed_busy / server_offline / backup_on_other_server',
           content: {
             'application/json': {
               schema: {
                 oneOf: [
                   { $ref: '#/components/schemas/ManagedBusyError' },
                   { $ref: '#/components/schemas/ServerOfflineError' },
+                  { $ref: '#/components/schemas/BackupOnOtherServerError' },
                 ],
               },
             },
@@ -1768,7 +2579,7 @@ export const managedPaths = {
       tags: ['Managed services'],
       summary: 'Add a managed replica member',
       description:
-        'Body `{ serverId, replicaClass?, readEligible? }`. `replicaClass` defaults to `failover` (same datacenter as primary, promotable). `read` replicas may use local/datacenter/fabric/public paths to any org server. Requires private reachability to primary; failover additionally requires a ready datacenter CIDR.',
+        'Body `{ serverId, replicaClass?, readEligible? }`. `replicaClass` defaults to `failover` (same datacenter as primary, promotable). `read` replicas may use local/datacenter/fabric/public paths to any org server. Requires private reachability to primary; failover additionally requires a ready datacenter CIDR. Refused with 422 `managed_failover_unsupported` when the cluster image cannot take a replica (MariaDB 12.3: single server until automatic failover supports it).',
       parameters: [ENV_ID_PARAM],
       requestBody: {
         content: {
@@ -1816,11 +2627,12 @@ export const managedPaths = {
         },
         422: {
           description:
-            'failover_replica_requires_datacenter_transport / datacenter_required / datacenter_cidr_required / private_path_unavailable / failover_requires_trusted_datacenter',
+            'managed_failover_unsupported / failover_replica_requires_datacenter_transport / datacenter_required / datacenter_cidr_required / private_path_unavailable / failover_requires_trusted_datacenter',
           content: {
             'application/json': {
               schema: {
                 oneOf: [
+                  { $ref: '#/components/schemas/ManagedFailoverUnsupportedError' },
                   {
                     $ref: '#/components/schemas/FailoverReplicaRequiresDatacenterTransportError',
                   },
@@ -1957,7 +2769,7 @@ export const managedPaths = {
         },
         409: {
           description:
-            'managed_replica_not_streaming / managed_replica_lagging / managed_replica_health_stale / managed_busy / server_offline',
+            'managed_replica_not_streaming / managed_replica_lagging / managed_replica_health_stale / managed_replica_live_check_failed / managed_busy / server_offline',
           content: {
             'application/json': {
               schema: {
@@ -1968,6 +2780,9 @@ export const managedPaths = {
                   { $ref: '#/components/schemas/ManagedReplicaLaggingError' },
                   {
                     $ref: '#/components/schemas/ManagedReplicaHealthStaleError',
+                  },
+                  {
+                    $ref: '#/components/schemas/ManagedReplicaLiveCheckFailedError',
                   },
                   { $ref: '#/components/schemas/ManagedBusyError' },
                   { $ref: '#/components/schemas/ServerOfflineError' },

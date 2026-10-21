@@ -97,16 +97,14 @@ the systemd table for ownership, ACLs, and `/run/turbopanel` **`2770 tp:tp`**
 | `tpapache`   | 9991    | Apache (optional)                                              |
 | `tpols`      | 9990    | OpenLiteSpeed (optional)                                       |
 | `tplsws`     | 9989    | LiteSpeed Enterprise (reserved)                                |
-| `tpnodeapp`  | 9988    | group only — read+traverse on the vendored tenant Node tree    |
 
 Tenant principals: **15001–60000** (host-picked from that band, or an operator override inside it; 61184–65519 above it is systemd's throwaway build users).
 
-`tpnodeapp` is a **group with no user**: tenant principals join it when their
-first native (`serviceKind: node`) app deploys, and it means only "may execute
-`/opt/turbopanel/vendor/node-app/<series>/current/bin/node`". Principals are
-deliberately never added to `tp`, and `/opt/turbopanel` + `vendor/` stay
-`tp:tp 0750` — the group reaches the tree through a traverse-only POSIX ACL on
-those two directories (`node-app-runtime` role), never through world bits.
+There are **no per-version runtime groups**. Every PHP, Node and Deno version
+installed on a server may be run by every site owner's Linux user: the vendored
+trees are root-owned, readable and executable by everyone, never writable, and
+the daemon sends no per-version list. Principals are still never added to
+`tp`.
 
 **Application logins are unchanged** — `postgres_user`/`postgres_db` =
 `turbopanel`, RabbitMQ user = `turbopanel`, Docker network/volumes =
@@ -296,7 +294,9 @@ cell) may keep `@std/*`. Guard: `pnpm check:workers-bundle`.
 the system.
 
 Unit tests use non-production secrets from `src/test-fixtures/secrets.ts`
-(`TEST_ONLY_TURBOPANEL_SECRET`). Vitest Workers config uses the same naming
+(`TEST_ONLY_TURBOPANEL_SECRET`). Host-free `managed.ha.reconcile` parser tests
+build daemon sealed-envelope strings via `src/test-fixtures/managed-ha-envelopes.ts`
+so PR secret scans do not flag static daemon-envelope literals. Vitest Workers config uses the same naming
 convention in `wrangler.vitest.jsonc`. The secret scanner allowlists only exact
 fixture lines in `.secretscan-allowlist` — do not add broad exclusions.
 `scripts/scan-secrets.sh`, `scripts/scan-secrets.patterns` and `scripts/scan-secrets.selftest.sh` are byte-identical in turbopanel, turbopaneld, ui, website and dev: change all five together (each repo keeps a copy because the pre-commit hook runs it locally). The rules in the patterns file cover private key blocks, vendor tokens, JWTs, connection URLs with credentials, secret-looking assignments and forbidden file names (dotenv files, `*.pem`, `*.key`, daemon identity files, …); the scanner reports the rule id and location, never the matching text. `--all` scans the tree; `--range BASE..HEAD` scans every line the PR's commits added, so a secret added and removed inside a PR is still caught (CI runs it on PRs into trunk). Allowlist entries in `.secretscan-allowlist` are `path:full line text` (or `@path exact/file` for a forbidden file name), each needs a `# reason:` comment above it, and wildcards are rejected. The self-test builds its fixtures at run time from fragments; dev's `src/lib/scan-secrets.test.ts` runs it and, with the siblings checked out in dev CI, fails if any copy drifts.
@@ -408,6 +408,14 @@ guard; `pnpm test:do` alone does not.
   a wiped database. `/api/client/v1/status` answers **503**
   `{ code: "database_error" }` (not a bare 500) when the settings read fails
   — the symptom of an unmigrated or unreachable database.
+  A testing or staging database that sits behind the managed database listener
+  (a pooling proxy) refuses the session advisory lock the migrate script takes
+  ("Feature not supported"); set the build variable
+  `TURBOPANEL_MIGRATE_NO_LOCK=1` there (`wrangler.jsonc` sets it in the
+  `testing` and `staging` `vars`, which the script reads, so no dashboard build
+  variable is needed). The script refuses it for any other
+  `CLOUDFLARE_ENV` (live keeps the lock), and with it set two migrations must
+  not run at once.
   Do not commit `TURBOPANEL_REVISION` in `wrangler.jsonc` — that would freeze a
   SHA. Self-hosted instance-launch writes it into `runtime.env` /
   `runtime.dev-vars` from `git rev-parse HEAD` in the instance checkout.
@@ -429,8 +437,11 @@ guard; `pnpm test:do` alone does not.
   without `deploy:testing`. `TURBOPANEL_REVISION` still wins when set.
 - **Versions on the wires** (`src/app/version.ts`, `src/lib/version-wire.ts`) —
   `INSTANCE_VERSION` is a JSON import of `deno.json`'s `version`, the one place
-  the number is typed (`package.json` and `sonar.projectVersion` mirror it;
-  `src/app/version.test.ts` pins all three). It feeds the three OpenAPI
+  the number is read (`package.json` and `sonar.projectVersion` mirror it;
+  `src/app/version.test.ts` pins all three). Change it only with
+  `node scripts/set-version.mjs X.Y.Z`, which rewrites all three; it is kept
+  equal to the version the tags give (see **Automatic promotion** below), so a
+  local build reports the version being worked on. It feeds the three OpenAPI
   `info.version`s, `/api/health`, and the `x-turbopanel-version` response header
   `createApp()` stamps on every response; a client that is not the bundled web
   export sends `x-turbopanel-client-version`, which the instance reads and does
@@ -451,7 +462,7 @@ guard; `pnpm test:do` alone does not.
   daemon keeps reconnecting; `unknown` (no header and no field — an older
   instance) passes silently. Each floor tolerates every peer semver at or
   above the constant. Today both floors are **`0.1.0`** against package
-  **`0.1.3`**, so a `0.1.x` peer is in window and a `0.0.x` peer is not. The
+  **`0.1.9`**, so a `0.1.x` peer is in window and a `0.0.x` peer is not. The
   window is allowed to trail the current release by several minor versions;
   it is not a same-version lock and it does not impose an upgrade order.
   Bump `MIN_SUPPORTED_DAEMON_VERSION` and `MIN_SUPPORTED_INSTANCE_VERSION`
@@ -720,7 +731,8 @@ layout & path model). Defaults and overrides are pinned by
 ## Database (Drizzle + Postgres.js)
 
 The instance uses **Drizzle ORM** over **postgres.js**. The Workers/Hyperdrive
-client uses `prepare: true` (see Workers Hyperdrive below); the Deno client uses
+client uses `prepare: true` and `fetch_types: false`, and the cached client also sends drizzle's
+`unsafe()` calls as named prepared statements (see Workers Hyperdrive below); the Deno client uses
 `prepare: false` (direct Postgres, no Hyperdrive). Connection factories live in
 `src/db/connection.ts`; schema in `src/db/schema.ts`; drizzle-kit config in
 `drizzle.config.mjs`. **Read `src/db/AGENTS.md` before touching schema or the
@@ -771,13 +783,20 @@ pooling/caching in this mode). **`TURBOPANEL_DATABASE_URL`** (or
 and may use different credentials than the Hyperdrive runtime user in
 production.
 
-The Workers DB client uses `prepare: true` on postgres.js. Hyperdrive has
-supported named prepared statements since June 2024 and manages their lifecycle
-across its internal connection pool — per-session state is not a concern.
-Setting `prepare: true` is **required** for Hyperdrive to cache parameterized
-`SELECT` queries on the `HYPERDRIVE_CACHED` binding; with `prepare: false`,
-Hyperdrive sends every query as a simple (unprepared) query and marks all
-parameterized reads as uncacheable.
+The Workers DB client uses `prepare: true` and `fetch_types: false` on
+postgres.js. Hyperdrive has supported named prepared statements since June 2024
+and manages their lifecycle across its internal connection pool, so per-session
+state is not a concern. Hyperdrive only caches named (extended-protocol)
+statements; unnamed ones are marked uncacheable. **`prepare: true` alone does
+not reach drizzle queries:** drizzle runs everything through `client.unsafe()`,
+whose own default is `prepare: false`. The `HYPERDRIVE_CACHED` client is
+therefore wrapped with `withCacheableUnsafe` (`createWorkersDb(..., {
+preparedStatements: true })`), which passes `{ prepare: true }` on each call and
+refuses any statement that is not a registered read-only SELECT (see
+`src/query-cache/AGENTS.md`).
+`fetch_types: false` drops the `pg_catalog.pg_type` lookup postgres.js would
+otherwise run on every new connection (one per request); drizzle parses the
+`cidr[]`/`inet[]` columns itself.
 
 #### `scripts/test-coverage.sh` is all-or-nothing without a local Postgres
 
@@ -1165,7 +1184,7 @@ routed by `src/deno.ts` and imported lazily so the server path (which loads
 the DuckDB addon at module evaluation and so needs the vendored `.so` on
 `LD_LIBRARY_PATH`) is never touched by an install-time run:
 
-**Automatic promotion (two PRs, the normal path):** `canary.yml` publishes a canary only after a green Build that tested the trunk commit itself — a `push` to trunk or a manual (`workflow_dispatch`) Build run, never a `pull_request` run (the trunk → staging PR's run has head branch `trunk` but tests trunk merged into staging) — and builds `workflow_run.head_sha`; every "green Build for this commit" lookup (`release.yml` prepare, `publish-rc.yml`) likewise ignores `pull_request` runs. `promote-prs.yml` ("Keep the RC PR Open") keeps a trunk → staging PR "Release Candidate x.y.z-rc.N" open after every green `Canary` run (opened with the Release App token so `ci-ok` runs). Merging it (merge commit) fires `publish-rc.yml` ("Publish Release Candidate") on the push to `staging`: it finds the merged PR's head commit, waits for the canary manifest whose `.commit` is that commit, and promotes those exact bytes to the next `x.y.z-rc.N` (no approval gate), then opens/refreshes the staging → live PR "Release x.y.z". Merging that fires `publish-release.yml` ("Publish Release"): newest rc.N → `vx.y.z` (`releases/latest`), behind the `release` environment approval (allowed branches: `trunk` and `live`); no PR opens afterwards. **Versions come from git tags** (no version file, no "Start x.y.z" PR): the base is the newest release tag's next patch, unless an unreleased rc or a `start/vX.Y.0` marker names a higher version; canaries are `<base>-canary.<N>` with N restarting at 1 per base; only the base is stamped into the build (the committed version numbers are what a local build reports). TurboPanel/dev's Version From Tags action (`scripts/promote/version.sh`) works them out. A minor or major is started with turbopaneld's **Start Next Version** workflow (`bump: minor|major`), which pushes the `start/` marker in all four repos and rebuilds their trunks. **Repos release independently — no release waits on a release in another repo.** PRs into staging/live (and PRs from a `staging`/`live` head) pair with sibling `trunk` — never a sibling's `staging` or `live` — in `build.yml`, and skip Sonar. Every workflow declares a top-level `permissions:` block (read-only unless a job asks for a write), so the repo's default `GITHUB_TOKEN` can be read-only.
+**Automatic promotion (two PRs, the normal path):** `canary.yml` publishes a canary only after a green Build that tested the trunk commit itself — a `push` to trunk or a manual (`workflow_dispatch`) Build run, never a `pull_request` run (the trunk → staging PR's run has head branch `trunk` but tests trunk merged into staging) — and builds `workflow_run.head_sha`; every "green Build for this commit" lookup (`release.yml` prepare, `publish-rc.yml`) likewise ignores `pull_request` runs. `promote-prs.yml` ("Keep the RC PR Open") keeps a trunk → staging PR "Release Candidate x.y.z-rc.N" open after every green `Canary` run (opened with the Release App token so `ci-ok` runs). Merging it (merge commit) fires `publish-rc.yml` ("Publish Release Candidate") on the push to `staging`: it finds the merged PR's head commit, waits for the canary manifest whose `.commit` is that commit, and promotes those exact bytes to the next `x.y.z-rc.N` (no approval gate), then opens/refreshes the staging → live PR "Release x.y.z". Merging that fires `publish-release.yml` ("Publish Release"): newest rc.N → `vx.y.z` (`releases/latest`), behind the `release` environment approval (allowed branches: `trunk` and `live`). **The tags say what the version should be; the committed files carry it.** The base is the newest release tag's next patch, unless an unreleased rc or a `start/vX.Y.0` marker names a higher version; canaries are `<base>-canary.<N>` with N restarting at 1 per base; only the base is stamped into the build. TurboPanel/dev's Version From Tags action (`scripts/promote/version.sh`) works them out. The committed number (`deno.json`, `package.json`, `sonar.projectVersion`) must already equal that base: `release.yml`'s prepare job runs `node scripts/set-version.mjs --check <base>` right after working out the canary version and refuses the canary when any file disagrees (canary only; rc and release reuse the canary's bytes). Who bumps it: right after each release, the last job of `publish-release.yml` (`start-next`) has the release bot (the TurboPanel Release App) open the "chore: start X.Y.Z" PR for the next patch (TurboPanel/dev's Start Version PR action, which runs `node scripts/set-version.mjs X.Y.Z` and makes a signed commit through the GitHub API), and it merges itself once its checks pass; canaries are refused until it has merged. That job checks that the newest release tag is the version it just released before opening anything. To move the number by hand, run the same script in a PR. A minor or major is started with turbopaneld's **Start Next Version** workflow (`bump: minor|major`), which pushes the `start/` marker in all four repos; the trunk canaries are refused until each repo's committed number is moved to the new X.Y.0 the same way. **Repos release independently — no release waits on a release in another repo.** PRs into staging/live (and PRs from a `staging`/`live` head) pair with sibling `trunk` — never a sibling's `staging` or `live` — in `build.yml`, and skip Sonar. Every workflow declares a top-level `permissions:` block (read-only unless a job asks for a write), so the repo's default `GITHUB_TOKEN` can be read-only.
 
 **Promotion, break-glass (`.github/workflows/promote.yml`):** the same three jobs as a manual form, for when the automatic path cannot run: `to=rc` turns a canary build (`source` = build id, canary version or `manifest-<version>.json` from the rolling canary release) into the next `v<base>-rc.<N>` and fast-forwards `staging`; `to=release` turns the newest `v<base>-rc.<N>` into `v<base>` (`releases/latest`; the rolling `rc` pointer is re-pointed at it) and fast-forwards `live`. Same bytes: the source manifest's signature and every asset's sha256/size are verified first, the assets are renamed, the manifest rewritten and re-signed, and the tag is created at the source commit (an existing tag elsewhere = burned version, fails). The three jobs are `TurboPanel/dev`'s `gh-promote.yml` → `gh-release.yml` → `gh-promote-finalize.yml` pinned to ONE dev sha, passed again as `dev-ref`; `signer-ref` is the turbopaneld commit carrying `scripts/sign-manifest.ts` + the key pin — bump it together with the signer pin in `release.yml`. Approval = the `release` environment (prepare, then finalize). `to=release` needs the TurboPanel Release App secrets (`RELEASE_APP_ID` / `RELEASE_APP_PRIVATE_KEY`: bare tags and the `live` push are ruleset-bypass only) and refuses to start without them; `to=rc` runs on `GITHUB_TOKEN` and only its `staging` push fails — with the exact manual `git push` — until the App exists. `release.yml` ignores tag pushes by `[bot]` actors so an App-created tag does not race the promotion with a from-source rebuild. Full contract: `../dev/AGENTS.md` → Release promotion.
 

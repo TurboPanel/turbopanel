@@ -3,17 +3,20 @@
  * restarts and stops that are running or recently failed across every project
  * and environment of one organization.
  *
- * Reads the `command` table only (never `dispatch`). A command carries no
- * organization column, so the organization comes from the command's server
- * (`server.organization_id`) and the caller's server visibility.
+ * Reads the `command` table only (never `dispatch`). A command carries an
+ * organization column (copied from its server at insert), and the caller's
+ * server visibility narrows it further.
  *
- * Not served yet, on purpose: `crashing` / `crashed` (the control plane
- * records no restart count to derive them from) and `step` / `totalSteps`
- * (no per-step progress is stored). Those response fields are always `null`.
+ * `step` / `totalSteps` / `stepLabel` come from the step plan the daemon
+ * reports on `command.progress` (`command-progress.ts`) and are `null` until
+ * it has sent one. Not served yet, on purpose: `crashing` / `crashed` (the
+ * control plane records no restart count to derive them from); `crashCount`
+ * is always `null`.
  */
 import { and, desc, eq, gte, inArray, sql, type SQL } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
-import { command, environment, project, server } from '../../db/schema.ts'
+import { command, environment, project } from '../../db/schema.ts'
+import { parseStoredCommandProgress } from './command-progress.ts'
 
 export const ACTIVITY_FILTERS = ['all', 'deploying', 'failed'] as const
 export type ActivityFilter = (typeof ACTIVITY_FILTERS)[number]
@@ -47,8 +50,12 @@ export type ActivityItem = {
   action: ActivityAction
   state: ActivityState
   startedAt: string
-  step: null
-  totalSteps: null
+  /** Steps finished so far, plus one while a step is running; `null` without a step plan. */
+  step: number | null
+  /** Steps with work to do (`ready` steps are not counted); `null` without a step plan. */
+  totalSteps: number | null
+  /** Label of the running step, or `null` when none is running. */
+  stepLabel: string | null
   durationSecs: number
   errorMessage: string | null
   crashCount: null
@@ -118,11 +125,33 @@ type ActivityRow = {
   name: string
   status: string
   context: unknown
+  progress?: unknown
   errorMessage: string | null
   createdAt: string
   queuedAt: string | null
   startedAt: string | null
   finishedAt: string | null
+}
+
+/**
+ * "Step N of M" from a stored step plan: M counts every step that has work
+ * to do (`ready` ones were already on the server), N the steps done plus the
+ * one running. Nulls when the daemon has not reported a plan.
+ */
+export function activityStepsOf(progress: unknown): {
+  step: number | null
+  totalSteps: number | null
+  stepLabel: string | null
+} {
+  const plan = parseStoredCommandProgress(progress)
+  if (plan === null) return { step: null, totalSteps: null, stepLabel: null }
+  const running = plan.steps.find((step) => step.state === 'running')
+  const done = plan.steps.filter((step) => step.state === 'done').length
+  return {
+    step: done + (running ? 1 : 0),
+    totalSteps: plan.steps.filter((step) => step.state !== 'ready').length,
+    stepLabel: running?.label ?? null,
+  }
 }
 
 export function shapeActivityItem(
@@ -145,8 +174,7 @@ export function shapeActivityItem(
     action: activityActionOf(row.name, row.context),
     state: failed ? 'failed' : 'deploying',
     startedAt,
-    step: null,
-    totalSteps: null,
+    ...activityStepsOf(row.progress),
     durationSecs: Math.max(0, Math.round((end - Date.parse(startedAt)) / 1000)),
     errorMessage: failed ? row.errorMessage : null,
     crashCount: null,
@@ -181,7 +209,8 @@ async function loadEnvironmentNames(db: Db, organizationId: string, rows: Activi
 /**
  * One page of the organization's activity, newest first. `visibleServerIds` is
  * the caller's `listVisible(server)` set; the organization is also enforced on
- * the server row, so a foreign server id can never surface a foreign command.
+ * the command row (`command.organization_id`, copied from the server), so a
+ * foreign server id can never surface a foreign command.
  */
 export async function queryOrgActivityFeed(
   db: Db,
@@ -193,7 +222,7 @@ export async function queryOrgActivityFeed(
   if (visibleServerIds.length === 0) return { items: [], total: 0, hasMore: false }
 
   const where = and(
-    eq(server.organizationId, organizationId),
+    eq(command.organizationId, organizationId),
     inArray(command.serverId, visibleServerIds),
     inArray(command.name, [...ACTIVITY_COMMAND_NAMES]),
     stateCondition(filter, now)
@@ -206,6 +235,7 @@ export async function queryOrgActivityFeed(
         name: command.name,
         status: command.status,
         context: command.context,
+        progress: command.progress,
         errorMessage: command.errorMessage,
         createdAt: command.createdAt,
         queuedAt: command.queuedAt,
@@ -213,7 +243,6 @@ export async function queryOrgActivityFeed(
         finishedAt: command.finishedAt,
       })
       .from(command)
-      .innerJoin(server, eq(server.id, command.serverId))
       .where(where)
       .orderBy(desc(command.createdAt), desc(command.id))
       .limit(limit)
@@ -221,7 +250,6 @@ export async function queryOrgActivityFeed(
     db
       .select({ total: sql<number>`count(*)::int` })
       .from(command)
-      .innerJoin(server, eq(server.id, command.serverId))
       .where(where),
   ])
   const names = await loadEnvironmentNames(db, organizationId, rows)

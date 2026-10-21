@@ -1,7 +1,8 @@
 import type { Context } from 'hono'
+import { panelHostnameRefusal } from '../../features/hostings/panel-hostname-guard.ts'
 import { and, eq, inArray, or } from 'drizzle-orm'
 import type { AppEnv } from '../../app/app.ts'
-import { type HostingWwwMode, hostingCertificateNames } from '../../contracts/commands/hostname.ts'
+import { hostingCertificateNames, type HostingWwwMode } from '../../contracts/commands/hostname.ts'
 import {
   decryptSecret,
   encryptSecretForDaemon,
@@ -86,8 +87,10 @@ import {
   collectComposeExternalDockerNetworkNames,
   pruneUnreferencedComposeNetworks,
 } from '../../features/compose/docker-external-networks.ts'
-import { principalHomeDir, principalVolumePath, resolveDockerVolumeName } from '../../lib/naming.ts'
+import { sharedVolumeIds } from '../../features/folders/shares.ts'
+import { principalHomeDir, resolveDockerVolumeName } from '../../lib/naming.ts'
 import { accessGroupsFor } from '../../features/principals/principal-access.ts'
+import { resolvePrincipalIds } from '../../features/principals/principal-ids.ts'
 import { SHA512_CRYPT_HASH_RE } from '../../lib/sha512-crypt.ts'
 import {
   CRON_JOB_NAME_RE,
@@ -103,10 +106,6 @@ import {
   resolvePrincipalIdOverride,
   resolvePrincipalShell,
 } from '../../features/principals/principal-options.ts'
-import {
-  insertDeployEntitlementsIfMissing,
-  loadEntitlementsByPrincipalIds,
-} from '../../features/principals/store.ts'
 import { renderPhpForDeploy } from '../../features/hostings/php-settings.ts'
 import { type PhpModePrepareError, withSitePhpModes } from './deploy-php-modes.ts'
 import {
@@ -117,21 +116,19 @@ import {
 } from './deploy-node-version.ts'
 import {
   DEFAULT_NATIVE_APP_DENO_SERIES,
-  denoEntitlementSeries,
+  denoRuntimeSeries,
 } from '../../contracts/runtime-registry.ts'
-import { isCheckViolationOn } from '../../db/check-violation.ts'
 import {
   type DenoAppFeatureError,
-  type DenoMigrationPendingError,
   withDenoNativeApps,
   withRecordedRuntimes,
 } from './deploy-deno-gate.ts'
 import { type SiteEngineFeatureError, withSiteEngineFeature } from './deploy-site-engine-gate.ts'
 import { type SiteDbBindingsWarning, withSiteDbBindings } from './deploy-site-db-bindings.ts'
 import {
+  type BindingDelivery,
   deliveryByServiceId,
   hostRunDeliveryByComposeName,
-  type BindingDelivery,
 } from '../../features/bindings/host-run.ts'
 import { PHP_SITE_MODES_FEATURE } from '../../lib/version-wire.ts'
 import {
@@ -192,6 +189,7 @@ import {
   type DeploySourcePrepareError,
   type ReleaseIdAllocator,
   resolveDeploySourceMaterial,
+  withBuildEnv,
 } from './deploy-sources.ts'
 import {
   binding,
@@ -270,10 +268,6 @@ import {
   tlsPinErrorCode,
 } from './deploy-routes-helpers.ts'
 import {
-  type DeployRuntimeEntitlement,
-  mergeDeployPrincipalRuntimes,
-} from './merge-deploy-principal-runtimes.ts'
-import {
   ensureSystemHierarchy,
   SYSTEM_TRAEFIK_COMPOSE_SERVICE_NAME,
 } from '../../features/system/hierarchy.ts'
@@ -321,6 +315,7 @@ export type DeployPrepareWarningCode =
   | 'compose_variable_unresolved'
   | 'php_mode_not_allowed'
   | 'node_version_unresolved'
+  | 'storage_service_removed'
 
 /**
  * Gate a deploy's PHP series against what the target host actually reports.
@@ -328,7 +323,7 @@ export type DeployPrepareWarningCode =
  * Two outcomes, and the distinction is the whole point:
  *
  * - **Not supported at all** → a hard error before anything is queued. The
- *   operator gets "PHP 8.1 is not supported; supported: 8.3, 8.4" instead of a
+ *   operator gets "PHP 7.4 is not supported; supported: 8.1, 8.2, 8.3, 8.4, 8.5" instead of a
  *   daemon throw halfway through an apply.
  * - **Supported but not yet on this host** → proceed with a warning. The
  *   Ansible run installs it. Refusing here would reject a deploy the host can
@@ -534,7 +529,7 @@ export function nativeAppDenoVersionViews(
       const pinned = app.denoVersion?.trim()
       return {
         composeServiceName: app.composeServiceName,
-        denoVersion: denoEntitlementSeries(pinned || DEFAULT_NATIVE_APP_DENO_SERIES),
+        denoVersion: denoRuntimeSeries(pinned || DEFAULT_NATIVE_APP_DENO_SERIES),
         source: pinned ? ('compose' as const) : ('default' as const),
       }
     })
@@ -591,6 +586,10 @@ export type DeployPrepareError =
       composeServiceName: string
       serviceKind: 'site' | 'node'
     }
+  | {
+      kind: 'native_app_unresolved_service'
+      composeServiceName: string
+    }
   /**
    * A `x-turbopanel.hosting` entry named a certificate or a managed address
    * this organization does not have (or names two by the same label).
@@ -617,7 +616,6 @@ export type DeployPrepareError =
   | SiteEngineFeatureError
   /** A Deno app goes to a daemon that cannot run it, or asks for a series nothing offers. */
   | DenoAppFeatureError
-  | DenoMigrationPendingError
   /**
    * The repository asks for a Node version no offered series satisfies, names
    * one that is not a version range, or (a deploy only) could not be read.
@@ -726,7 +724,6 @@ type HardDeployPrepareError =
   | SiteEngineFeatureError
   // Hard in preview too: a Deno app sent to a daemon that cannot run it would start on Node.
   | DenoAppFeatureError
-  | DenoMigrationPendingError
   // Hard in preview too: the build would get a Node the app says it cannot run on.
   | NodeVersionPrepareError
   // Hard in preview too: previewing a deploy that would silently ignore a field
@@ -768,6 +765,10 @@ type HardDeployPrepareError =
       primaryServerId: string | null
       scheduledServerId: string
       serviceId: string
+    }
+  | {
+      kind: 'native_app_unresolved_service'
+      composeServiceName: string
     }
 
 function warningFromPrepareError(
@@ -1021,6 +1022,7 @@ type LocationJoinRow = {
 type MountJoinRow = {
   storageId: string
   serviceId: string
+  serviceEnvironmentId: string
   composeServiceName: string
   destinationPath: string
   subpath: string | null
@@ -1040,15 +1042,7 @@ function isDeployStorageProvider(
 function resolvePathLocationSource(row: LocationJoinRow): string | undefined {
   if (row.provider !== 'path') return undefined
   if (typeof row.path === 'string' && row.path.length > 0) return row.path
-  if (
-    typeof row.principalId !== 'string' ||
-    row.principalId.length === 0 ||
-    typeof row.principalUsername !== 'string' ||
-    row.principalUsername.length === 0
-  ) {
-    return undefined
-  }
-  return principalVolumePath(row.principalUsername, row.storageId)
+  return undefined
 }
 
 function expandMountsForClones(
@@ -1130,6 +1124,38 @@ function appendUnseenRegisteredVolumes(
   }
 }
 
+/**
+ * Take the mounts of services the compose no longer declares out of the storage
+ * material. A removed service leaves its storage row behind (the data and its
+ * folder stay, and the storage can be attached to another service), but the
+ * host has no such service to mount it into and would refuse the whole deploy.
+ * Each dropped mount is reported by storage name and service name.
+ */
+export function detachMountsOfRemovedServices(
+  material: readonly EnvironmentDeployStorageMaterial[],
+  deployedServiceNames: ReadonlySet<string>
+): { material: EnvironmentDeployStorageMaterial[]; warnings: DeployPrepareWarning[] } {
+  const warnings: DeployPrepareWarning[] = []
+  const kept = material.map((entry) => {
+    const mounts = entry.mounts.filter((mount) => {
+      if (!mount.composeServiceName || deployedServiceNames.has(mount.composeServiceName)) {
+        return true
+      }
+      warnings.push({
+        code: 'storage_service_removed',
+        message: `Storage "${entry.name}" was mounted by service "${mount.composeServiceName}", which is no longer in the compose file. It is left unmounted for this deploy; its data stays and it can be attached to a service again.`,
+        details: {
+          storageId: entry.storageId,
+          composeServiceName: mount.composeServiceName,
+        },
+      })
+      return false
+    })
+    return mounts.length === entry.mounts.length ? entry : { ...entry, mounts }
+  })
+  return { material: kept, warnings }
+}
+
 export async function loadStorageMaterial(
   db: Db,
   params: {
@@ -1149,6 +1175,11 @@ export async function loadStorageMaterial(
   ]
   if (params.serviceIds.length > 0) {
     scopeConditions.push(inArray(storage.serviceId, params.serviceIds))
+  }
+  // Shared (common) volumes of a site owner that this environment uses.
+  const sharedIds = new Set(await sharedVolumeIds(db, params.environmentId))
+  if (sharedIds.size > 0) {
+    scopeConditions.push(inArray(storage.id, [...sharedIds]))
   }
 
   const locationRows = await db
@@ -1186,6 +1217,7 @@ export async function loadStorageMaterial(
           .select({
             storageId: mount.storageId,
             serviceId: mount.serviceId,
+            serviceEnvironmentId: service.environmentId,
             composeServiceName: service.composeServiceName,
             destinationPath: mount.destinationPath,
             subpath: mount.subpath,
@@ -1197,6 +1229,9 @@ export async function loadStorageMaterial(
 
   const mountsByStorage = new Map<string, MountJoinRow[]>()
   for (const row of mountRows) {
+    // A common volume is mounted by many environments, whether this one owns it or
+    // only uses it; this deploy carries the mounts of its own services only.
+    if (row.serviceEnvironmentId !== params.environmentId) continue
     const list = mountsByStorage.get(row.storageId) ?? []
     list.push(row)
     mountsByStorage.set(row.storageId, list)
@@ -1351,7 +1386,14 @@ async function sealStorageMaterialForDaemon(
 
 export async function loadPrincipalMaterial(
   db: Db,
-  principalIds: string[]
+  principalIds: string[],
+  /**
+   * The server the material is for. With it, an account that has no uid/gid
+   * override gets the installation-wide id the principal already has on
+   * another server, or a new one (see `features/principals/principal-ids.ts`).
+   * `allocate: false` (a preview) never takes a new number.
+   */
+  target?: { serverId: string; allocate: boolean }
 ): Promise<EnvironmentDeployPrincipalMaterial[]> {
   if (principalIds.length === 0) return []
 
@@ -1368,22 +1410,25 @@ export async function loadPrincipalMaterial(
     .from(principal)
     .where(inArray(principal.id, uniqueIds))
 
-  // Explicit grants. The daemon reconciles unix group membership from exactly
-  // this set — it never derives entitlements itself, because a derived grant
-  // could only ever be added and would therefore never be revocable.
-  const entitlements = await loadEntitlementsByPrincipalIds(db, uniqueIds)
   // Always present for every id asked about, so `[]` genuinely means "this
   // account holds no keys" rather than "we did not look".
   const sshKeys = await loadSshKeysByPrincipalIds(db, uniqueIds)
+
+  const centralIds = target
+    ? await resolvePrincipalIds(
+        db,
+        target.serverId,
+        rows
+          .filter((row) => !resolvePrincipalIdOverride(parsePrincipalOptions(row.options)))
+          .map((row) => ({ principalId: row.id, home: principalHomeDir(row.username) })),
+        { allocate: target.allocate }
+      )
+    : new Map<string, { uid: number; gid: number }>()
 
   const material: EnvironmentDeployPrincipalMaterial[] = []
   for (const row of rows) {
     const options = parsePrincipalOptions(row.options)
     const override = resolvePrincipalIdOverride(options)
-    const runtimes = (entitlements.get(row.id) ?? []).map((entry) => ({
-      runtime: entry.runtime,
-      series: entry.series,
-    }))
     const shell = resolvePrincipalShell(options)
     const keys = sshKeys.get(row.id) ?? []
     // Password sign-in is on exactly when the row holds a crypt hash. The
@@ -1408,7 +1453,9 @@ export async function loadPrincipalMaterial(
       sshKeys: keys,
       ...(passwordHash === undefined ? {} : { passwordHash }),
       ...(override ? { uid: override.uid, gid: override.gid } : {}),
-      ...(runtimes.length > 0 ? { runtimes } : {}),
+      ...(override || !centralIds.has(row.id)
+        ? {}
+        : { ...centralIds.get(row.id), idSource: 'central' as const }),
     })
   }
   return material
@@ -1886,7 +1933,7 @@ async function loadServiceIdsWithBindings(
     .select({
       serviceId: binding.serviceId,
       environmentServerId: environment.serverId,
-      projectOptions: project.options,
+      projectDefaultServerId: project.defaultServerId,
     })
     .from(binding)
     .innerJoin(service, eq(binding.serviceId, service.id))
@@ -1897,7 +1944,7 @@ async function loadServiceIdsWithBindings(
     bound.add(row.serviceId)
     const listener = resolveEffectivePlacementServerId(
       row.environmentServerId,
-      parseProjectOptions(row.projectOptions)
+      row.projectDefaultServerId
     )
     if (listener === serverId) coResident.add(row.serviceId)
   }
@@ -2007,21 +2054,68 @@ function nativeAppServicesForDeploy(
   serverOptions: unknown,
   tasksByComposeName: ReadonlyMap<string, readonly TaskRecord[]> = new Map(),
   variablesByComposeName: ReadonlyMap<string, NativeAppVariables> = new Map()
-): PreparedNativeAppService[] {
+):
+  | PreparedNativeAppService[]
+  | Extract<DeployPrepareError, { kind: 'native_app_unresolved_service' }> {
   if (apps.length === 0) return []
   const accountLimits = effectiveAccountLimits(orgOptions, serverOptions)
   const resourcesByComposeName = new Map(
     resolvedServices.map((entry) => [entry.composeServiceName, entry.resources] as const)
   )
-  return apps.map((app) =>
-    nativeAppServiceForDeploy(
-      app,
-      resourcesByComposeName.get(app.composeServiceName),
-      accountLimits,
-      renderCronForDeploy(app.cron, tasksByComposeName.get(app.composeServiceName)),
-      variablesByComposeName.get(app.composeServiceName)
-    )
+  const serviceIdByComposeName = new Map(
+    resolvedServices.map((entry) => [entry.composeServiceName, entry.serviceId] as const)
   )
+  const out: PreparedNativeAppService[] = []
+  for (const app of apps) {
+    const turboServiceId = serviceIdByComposeName.get(app.composeServiceName)
+    if (!turboServiceId) {
+      return {
+        kind: 'native_app_unresolved_service',
+        composeServiceName: app.composeServiceName,
+      }
+    }
+    out.push(
+      nativeAppServiceForDeploy(
+        app,
+        turboServiceId,
+        resourcesByComposeName.get(app.composeServiceName),
+        accountLimits,
+        renderCronForDeploy(app.cron, tasksByComposeName.get(app.composeServiceName)),
+        variablesByComposeName.get(app.composeServiceName)
+      )
+    )
+  }
+  return out
+}
+
+function resolveLocalNativeAppServicesForDeploy(
+  nativeApps: readonly NativeAppServiceSpec[],
+  withVariables: Pick<ApplyVariablesResult, 'runtimeAssignments' | 'unreferencedSecrets'>,
+  resolvedServices: readonly ResolvedService[],
+  orgOptions: unknown,
+  serverOptions: unknown,
+  tasksByComposeName: ReadonlyMap<string, readonly TaskRecord[]>,
+  localServiceNames?: ReadonlySet<string>
+):
+  | {
+      localNativeApps: PreparedNativeAppService[]
+      nativeVariables: Map<string, NativeAppVariables>
+    }
+  | Extract<DeployPrepareError, { kind: 'native_app_unresolved_service' }> {
+  const nativeVariables = resolveNativeAppVariables(nativeApps, withVariables)
+  const nativeAppsForWire = nativeAppServicesForDeploy(
+    nativeApps,
+    resolvedServices,
+    orgOptions,
+    serverOptions,
+    tasksByComposeName,
+    nativeVariables
+  )
+  if ('kind' in nativeAppsForWire) return nativeAppsForWire
+  return {
+    localNativeApps: sitesOnScheduledServer(nativeAppsForWire, localServiceNames),
+    nativeVariables,
+  }
 }
 
 /** The per-app resource ceiling the daemon turns into unit limits, when the app set one. */
@@ -2056,6 +2150,7 @@ function nativeAppRuntimeFieldsForWire(app: NativeAppServiceSpec) {
 
 function nativeAppServiceForDeploy(
   app: NativeAppServiceSpec,
+  turboServiceId: string,
   resources: ResolvedService['resources'] | undefined,
   accountLimits: ReturnType<typeof effectiveAccountLimits>,
   cron: ReturnType<typeof renderCronForDeploy>,
@@ -2063,6 +2158,7 @@ function nativeAppServiceForDeploy(
 ): PreparedNativeAppService {
   return {
     composeServiceName: app.composeServiceName,
+    serviceId: turboServiceId,
     listenPort: app.listenPort,
     framework: app.framework,
     ...nativeAppRuntimeFieldsForWire(app),
@@ -2340,7 +2436,10 @@ async function resolveBindingMaterializationOutcome(
   if (bindResult.kind === 'binding_host_site_unsupported') {
     return {
       kind: 'error',
-      error: { kind: 'binding_host_site_unsupported', message: bindResult.message },
+      error: {
+        kind: 'binding_host_site_unsupported',
+        message: bindResult.message,
+      },
     }
   }
 
@@ -2466,7 +2565,10 @@ async function prepareLocalSourcesWithNodeVersions(
 ): Promise<
   | {
       sourceMaterial: EnvironmentDeploySource[]
-      nodeVersions: { apps: PreparedNativeAppService[]; views: NativeAppNodeVersionView[] }
+      nodeVersions: {
+        apps: PreparedNativeAppService[]
+        views: NativeAppNodeVersionView[]
+      }
     }
   | DeployPrepareError
   | Response
@@ -3060,52 +3162,23 @@ async function resolveManagedNetworkHostName(
 }
 
 /**
- * Persist the runtime entitlements this deploy implies (Node for native apps,
- * PHP for per-site FastCGI / php-fpm runtimes).
- *
- * Preview must not write. Empty lists are a no-op inside the store helper.
- */
-async function persistDeployRuntimeEntitlements(
-  db: Db,
-  mode: DeployPrepareMode,
-  entitlements: readonly DeployRuntimeEntitlement[]
-): Promise<DenoMigrationPendingError | undefined> {
-  if (mode === 'preview') return undefined
-  try {
-    await insertDeployEntitlementsIfMissing(db, entitlements)
-  } catch (err) {
-    // A database that predates Deno apps refuses the `deno` runtime on this
-    // table. Say so in plain words rather than failing the deploy with a 500.
-    if (
-      entitlements.some((entry) => entry.runtime === 'deno') &&
-      isCheckViolationOn(err, 'entitlement_runtime_check')
-    ) {
-      return { kind: 'deno_migration_pending' }
-    }
-    throw err
-  }
-  return undefined
-}
-
-/**
  * Everything that depends on which runtime each local native app runs: the
- * Deno feature gate, the repository's Node version, the runtime groups each
- * site owner's Linux user is granted, and the stored entitlements. The first
- * refusal wins; a Deno app is refused before anything reads it as Node.
+ * Deno feature gate and the repository's Node version. The first refusal wins;
+ * a Deno app is refused before anything reads it as Node.
  */
 async function prepareNativeAppRuntimes(
   c: Context<AppEnv>,
   db: Db,
   args: Omit<Parameters<typeof prepareLocalSourcesWithNodeVersions>[2], 'nativeApps'> & {
     nativeApps: readonly PreparedNativeAppService[]
-    principalMaterial: Parameters<typeof mergeDeployPrincipalRuntimes>[0]['principalMaterial']
-    sites: Parameters<typeof mergeDeployPrincipalRuntimes>[0]['sites']
   }
 ): Promise<
   | {
       localSourceMaterial: EnvironmentDeploySource[]
-      nodeVersions: { apps: PreparedNativeAppService[]; views: NativeAppNodeVersionView[] }
-      principalMaterialWithRuntimes: EnvironmentDeployPrincipalMaterial[]
+      nodeVersions: {
+        apps: PreparedNativeAppService[]
+        views: NativeAppNodeVersionView[]
+      }
     }
   | DeployPrepareError
   | Response
@@ -3115,27 +3188,216 @@ async function prepareNativeAppRuntimes(
   const denoGate = await withDenoNativeApps(db, args.params.serverId, nativeApps)
   if ('kind' in denoGate) return denoGate
 
-  // Before the runtime merge: the group a native app's Linux user is granted
-  // follows the series it runs, and an app with no `nodeVersion` gets it here
-  // from its repository at the commit being deployed.
-  const localSources = await prepareLocalSourcesWithNodeVersions(c, db, { ...args, nativeApps })
+  // An app with no `nodeVersion` gets one here from its repository at the
+  // commit being deployed.
+  const localSources = await prepareLocalSourcesWithNodeVersions(c, db, {
+    ...args,
+    nativeApps,
+  })
   if (!('sourceMaterial' in localSources)) return localSources
   const { sourceMaterial: localSourceMaterial, nodeVersions } = localSources
 
-  const { principalMaterial: principalMaterialWithRuntimes, deployEntitlements } =
-    mergeDeployPrincipalRuntimes({
-      principalMaterial: args.principalMaterial,
-      nativeAppServices: nodeVersions.apps,
-      sourceMaterial: localSourceMaterial,
-      sites: args.sites,
-    })
-  const entitlementsPersisted = await persistDeployRuntimeEntitlements(
-    db,
-    args.mode,
-    deployEntitlements
+  return { localSourceMaterial, nodeVersions }
+}
+
+async function resolveLocalNativeAppsAndRuntimes(
+  c: Context<AppEnv>,
+  db: Db,
+  args: {
+    mode: DeployPrepareMode
+    warnings: DeployPrepareWarning[]
+    params: {
+      environmentId: string
+      serverId: string
+      organizationId: string
+      rollback?: DeployRollbackRequest
+    }
+    merged: Parameters<typeof prepareNativeAppRuntimes>[2]['merged']
+    serviceRows: ReadonlyArray<{ id: string; composeServiceName: string }>
+    principalMaterial: EnvironmentDeployPrincipalMaterial[]
+    principalResolution: ComposePrincipalResolution
+    split: ReturnType<typeof splitHostNativeFromDocument>
+    withVariables: ApplyVariablesResult
+    resolvedServices: readonly ResolvedService[]
+    orgOptions: unknown
+    serverOptions: unknown
+    tasksByComposeName: ReadonlyMap<string, readonly TaskRecord[]>
+    localServiceNames?: ReadonlySet<string>
+  }
+): Promise<
+  | {
+      localNativeApps: PreparedNativeAppService[]
+      nativeVariables: Map<string, NativeAppVariables>
+      localSourceMaterial: EnvironmentDeploySource[]
+      nodeVersions: {
+        apps: PreparedNativeAppService[]
+        views: NativeAppNodeVersionView[]
+      }
+    }
+  | DeployPrepareError
+  | Response
+> {
+  const localNativeAppsOrError = resolveLocalNativeAppServicesForDeploy(
+    args.split.nativeApps,
+    args.withVariables,
+    args.resolvedServices,
+    args.orgOptions,
+    args.serverOptions,
+    args.tasksByComposeName,
+    args.localServiceNames
   )
-  if (entitlementsPersisted) return entitlementsPersisted
-  return { localSourceMaterial, nodeVersions, principalMaterialWithRuntimes }
+  if ('kind' in localNativeAppsOrError) return localNativeAppsOrError
+  const { localNativeApps, nativeVariables } = localNativeAppsOrError
+
+  const runtimes = await prepareNativeAppRuntimes(c, db, {
+    mode: args.mode,
+    warnings: args.warnings,
+    params: args.params,
+    merged: args.merged,
+    serviceRows: args.serviceRows,
+    principalMaterial: args.principalMaterial,
+    principalResolution: args.principalResolution,
+    localServiceNames: args.localServiceNames,
+    nativeApps: localNativeApps,
+  })
+  if ('kind' in runtimes || runtimes instanceof Response) return runtimes
+
+  return {
+    localNativeApps,
+    nativeVariables,
+    localSourceMaterial: runtimes.localSourceMaterial,
+    nodeVersions: runtimes.nodeVersions,
+  }
+}
+
+async function resolveLocalSitesBoundForDeploy(
+  c: Context<AppEnv>,
+  db: Db,
+  args: {
+    mode: DeployPrepareMode
+    warnings: DeployPrepareWarning[]
+    params: { environmentId: string; serverId: string; organizationId: string }
+    pipeline: { localServiceNames?: ReadonlySet<string> }
+    split: ReturnType<typeof splitHostNativeFromDocument>
+    orgOptions: unknown
+    serverOptions: unknown
+    serviceRows: ServiceRow[]
+    principalMaterial: EnvironmentDeployPrincipalMaterial[]
+    principalResolution: ComposePrincipalResolution
+    tasksByComposeName: ReadonlyMap<string, readonly TaskRecord[]>
+  }
+): Promise<EnvironmentDeploySite[] | DeployPrepareError> {
+  const phpDaemonState = await getServerDaemonStateByServerId(db, args.params.serverId)
+  const siteResolved = await withSitePhpModes(
+    db,
+    {
+      daemonRunsModes:
+        phpDaemonState?.projection?.features?.includes(PHP_SITE_MODES_FEATURE) === true,
+      environmentId: args.params.environmentId,
+      serverId: args.params.serverId,
+      localServiceNames: args.pipeline.localServiceNames,
+      specs: args.split.sites,
+      orgOptions: args.orgOptions,
+      serverOptions: args.serverOptions,
+      warnings: args.warnings,
+    },
+    resolveSitesForMode(
+      args.mode,
+      args.warnings,
+      await attachPrincipalsToSites(
+        db,
+        args.params.environmentId,
+        args.serviceRows,
+        args.principalMaterial,
+        args.split.sites,
+        args.principalResolution,
+        args.tasksByComposeName
+      ),
+      args.split.sites
+    )
+  )
+  if ('kind' in siteResolved) return siteResolved
+  const localSite = sitesOnScheduledServer(siteResolved, args.pipeline.localServiceNames)
+  const engineGate = await withSiteEngineFeature(db, args.params.serverId, localSite)
+  if ('kind' in engineGate) return engineGate
+  const dbBindingWarnings: SiteDbBindingsWarning[] = []
+  const localSiteBound = await withSiteDbBindings(db, c.get('dataEncryptionSecrets'), {
+    organizationId: args.params.organizationId,
+    sites: localSite,
+    serviceRows: args.serviceRows,
+    daemonFeatures: phpDaemonState?.projection?.features ?? [],
+    warnings: dbBindingWarnings,
+  })
+  args.warnings.push(...dbBindingWarnings)
+  return localSiteBound
+}
+
+async function allocateResolvedDeployPipelineForPrepare(
+  db: Db,
+  input: {
+    params: {
+      environmentId: string
+      serverId: string
+      organizationId: string
+      schedule?: DeployScheduleSlice
+      acknowledgeHealthCheckWarnings?: boolean
+    }
+    mode: DeployPrepareMode
+    warnings: DeployPrepareWarning[]
+    projectOptions: unknown
+    merged: ComposeDocument
+    composeServiceNames: string[]
+    serviceRows: ServiceRow[]
+    orgOptions: unknown
+    serverOptions: unknown
+    application: Application
+    principalResolution: ComposePrincipalResolution
+  }
+): Promise<
+  | {
+      pipeline: Awaited<ReturnType<typeof allocateExpandDeployPipeline>>
+      resolved: ResolvedApplication
+    }
+  | DeployPrepareError
+  | Response
+> {
+  const pipeline = await allocateExpandDeployPipeline(db, {
+    environmentId: input.params.environmentId,
+    serverId: input.params.serverId,
+    organizationId: input.params.organizationId,
+    projectOptions: input.projectOptions,
+    merged: input.merged,
+    composeServiceNames: input.composeServiceNames,
+    serviceRows: input.serviceRows,
+    schedule: input.params.schedule,
+    deployHooks: resolveDeployHooksEnabled(parseOrganizationOptions(input.orgOptions)),
+  })
+
+  const resolved = buildResolvedApplication({
+    serverId: input.params.serverId,
+    application: input.application,
+    serviceRows: input.serviceRows,
+    ...(input.params.schedule ? { slots: input.params.schedule.slots } : {}),
+    containers: pipeline.containers,
+    expansion: pipeline.expansion,
+    principals: input.principalResolution,
+    resourcesByComposeServiceName: resolvedResourcesByComposeName(pipeline.optionsByComposeName),
+  })
+
+  const gateErr = await resolvedPlacementGateError(db, {
+    mode: input.mode,
+    warnings: input.warnings,
+    environmentId: input.params.environmentId,
+    serverId: input.params.serverId,
+    acknowledgeHealthCheckWarnings: input.params.acknowledgeHealthCheckWarnings,
+    resolved,
+    pipeline,
+    orgOptions: input.orgOptions,
+    serverOptions: input.serverOptions,
+  })
+  if (gateErr) return gateErr
+
+  return { pipeline, resolved }
 }
 
 export async function prepareDeployCompose(
@@ -3225,46 +3487,23 @@ export async function prepareDeployCompose(
   if (!declared.ok) return declared.failure
   const { serviceRows, principalResolution } = declared
 
-  const pipeline = await allocateExpandDeployPipeline(db, {
-    environmentId: params.environmentId,
-    serverId: params.serverId,
-    organizationId: params.organizationId,
+  const pipelineResolved = await allocateResolvedDeployPipelineForPrepare(db, {
+    params,
+    mode,
+    warnings,
     projectOptions: projectRow.options,
     merged,
     composeServiceNames,
     serviceRows,
-    schedule: params.schedule,
-    deployHooks: resolveDeployHooksEnabled(parseOrganizationOptions(orgRow?.options)),
-  })
-
-  // Stage 3: the same services after the control plane answered what the
-  // document could not — which `service.id` each compose key became, which
-  // `principal.id` each alias materialized into, where the scheduler put every
-  // replica, which containers were allocated. A projection over values already
-  // computed above, so naming the stage cannot change placement.
-  const resolved: ResolvedApplication = buildResolvedApplication({
-    serverId: params.serverId,
-    application,
-    serviceRows,
-    ...(params.schedule ? { slots: params.schedule.slots } : {}),
-    containers: pipeline.containers,
-    expansion: pipeline.expansion,
-    principals: principalResolution,
-    resourcesByComposeServiceName: resolvedResourcesByComposeName(pipeline.optionsByComposeName),
-  })
-
-  const gateErr = await resolvedPlacementGateError(db, {
-    mode,
-    warnings,
-    environmentId: params.environmentId,
-    serverId: params.serverId,
-    acknowledgeHealthCheckWarnings: params.acknowledgeHealthCheckWarnings,
-    resolved,
-    pipeline,
     orgOptions: orgRow?.options,
     serverOptions: serverRow?.options,
+    application,
+    principalResolution,
   })
-  if (gateErr) return gateErr
+  if ('kind' in pipelineResolved || pipelineResolved instanceof Response) {
+    return pipelineResolved
+  }
+  const { pipeline, resolved } = pipelineResolved
 
   const serviceRowByCloneName = buildServiceRowByCloneName(serviceRows, pipeline.expansion)
   const {
@@ -3310,7 +3549,7 @@ export async function prepareDeployCompose(
     }
   )
 
-  const storageMaterialRaw = await loadStorageMaterial(db, {
+  const storageMaterialAll = await loadStorageMaterial(db, {
     environmentId: params.environmentId,
     projectId: envRow.projectId,
     organizationId: params.organizationId,
@@ -3319,6 +3558,12 @@ export async function prepareDeployCompose(
     cloneNamesByServiceId: buildCloneNamesByServiceId(serviceRows, pipeline.expansion),
     registeredVolumes: pipeline.registeredVolumes,
   })
+  const attached = detachMountsOfRemovedServices(
+    storageMaterialAll,
+    new Set(pipeline.expandedServiceNames)
+  )
+  warnings.push(...attached.warnings)
+  const storageMaterialRaw = attached.material
   const sealed = await maybeSealDeployMaterials(
     mode,
     c,
@@ -3334,10 +3579,11 @@ export async function prepareDeployCompose(
   const storagePrincipalIds = storageMaterial
     .map((entry) => entry.principalId)
     .filter((id): id is string => typeof id === 'string')
-  const principalMaterial = await loadPrincipalMaterial(db, [
-    ...stewardPrincipalIds,
-    ...storagePrincipalIds,
-  ])
+  const principalMaterial = await loadPrincipalMaterial(
+    db,
+    [...stewardPrincipalIds, ...storagePrincipalIds],
+    { serverId: params.serverId, allocate: mode !== 'preview' }
+  )
 
   const split = splitHostNativeFromDocument(withServiceOptions.document)
   // Drop host-native hooks — neither sites nor native apps are
@@ -3354,63 +3600,23 @@ export async function prepareDeployCompose(
   // Task rows (`POST /tasks`) join compose-authored cron on the wire for
   // sites and native apps alike — loaded once here, keyed by compose name.
   const tasksByComposeName = await loadTasksByComposeServiceName(db, serviceRows)
-  const phpDaemonState = await getServerDaemonStateByServerId(db, params.serverId)
-  const siteResolved = await withSitePhpModes(
-    db,
-    {
-      daemonRunsModes:
-        phpDaemonState?.projection?.features?.includes(PHP_SITE_MODES_FEATURE) === true,
-      environmentId: params.environmentId,
-      serverId: params.serverId,
-      localServiceNames: pipeline.localServiceNames,
-      specs: split.sites,
-      orgOptions: orgRow?.options,
-      serverOptions: serverRow?.options,
-      warnings,
-    },
-    resolveSitesForMode(
-      mode,
-      warnings,
-      await attachPrincipalsToSites(
-        db,
-        params.environmentId,
-        serviceRows,
-        principalMaterial,
-        split.sites,
-        principalResolution,
-        tasksByComposeName
-      ),
-      split.sites
-    )
-  )
-  if ('kind' in siteResolved) return siteResolved
-  const localSite = sitesOnScheduledServer(siteResolved, pipeline.localServiceNames)
-  const engineGate = await withSiteEngineFeature(db, params.serverId, localSite)
-  if ('kind' in engineGate) return engineGate
-  const dbBindingWarnings: SiteDbBindingsWarning[] = []
-  const localSiteBound = await withSiteDbBindings(db, c.get('dataEncryptionSecrets'), {
-    organizationId: params.organizationId,
-    sites: localSite,
+  const localSiteBoundOrError = await resolveLocalSitesBoundForDeploy(c, db, {
+    mode,
+    warnings,
+    params,
+    pipeline,
+    split,
+    orgOptions: orgRow?.options,
+    serverOptions: serverRow?.options,
     serviceRows,
-    daemonFeatures: phpDaemonState?.projection?.features ?? [],
-    warnings: dbBindingWarnings,
+    principalMaterial,
+    principalResolution,
+    tasksByComposeName,
   })
-  warnings.push(...dbBindingWarnings)
+  if ('kind' in localSiteBoundOrError) return localSiteBoundOrError
+  const localSiteBound = localSiteBoundOrError
 
-  const nativeVariables = resolveNativeAppVariables(split.nativeApps, withVariables)
-  const localNativeApps = sitesOnScheduledServer(
-    nativeAppServicesForDeploy(
-      split.nativeApps,
-      resolved.services,
-      orgRow?.options,
-      serverRow?.options,
-      tasksByComposeName,
-      nativeVariables
-    ),
-    pipeline.localServiceNames
-  )
-
-  const runtimes = await prepareNativeAppRuntimes(c, db, {
+  const nativeLanes = await resolveLocalNativeAppsAndRuntimes(c, db, {
     mode,
     warnings,
     params,
@@ -3418,12 +3624,18 @@ export async function prepareDeployCompose(
     serviceRows,
     principalMaterial,
     principalResolution,
+    split,
+    withVariables,
+    resolvedServices: resolved.services,
+    orgOptions: orgRow?.options,
+    serverOptions: serverRow?.options,
+    tasksByComposeName,
     localServiceNames: pipeline.localServiceNames,
-    nativeApps: localNativeApps,
-    sites: localSiteBound,
   })
-  if ('kind' in runtimes || runtimes instanceof Response) return runtimes
-  const { localSourceMaterial, nodeVersions, principalMaterialWithRuntimes } = runtimes
+  if ('kind' in nativeLanes || nativeLanes instanceof Response) {
+    return nativeLanes
+  }
+  const { nativeVariables, localSourceMaterial, nodeVersions } = nativeLanes
 
   const dockerExternalNetworks = collectComposeExternalDockerNetworkNames(split.composeYaml)
   const externalNetworks = await resolveExternalNetworks(
@@ -3484,6 +3696,9 @@ export async function prepareDeployCompose(
   if (edge instanceof Response) return edge
   if ('kind' in edge) return edge
 
+  const sourceMaterial = withBuildEnv(localSourceMaterial, withVariables.buildAssignments)
+  if (!Array.isArray(sourceMaterial)) return toApplyVariablesPrepareError(sourceMaterial)
+
   return await toPreparedDeployResult(mode, {
     serverId: resolved.serverId,
     composeYaml,
@@ -3491,13 +3706,13 @@ export async function prepareDeployCompose(
     hooks,
     variableMaterial,
     storageMaterial,
-    principalMaterial: principalMaterialWithRuntimes,
+    principalMaterial,
     sites: localSiteBound,
     nativeAppServices: nodeVersions.apps,
     nativeAppVariables: nativeAppVariableViews(nodeVersions.apps, nativeVariables),
     nativeAppNodeVersions: nodeVersions.views,
     nativeAppDenoVersions: nativeAppDenoVersionViews(nodeVersions.apps),
-    sourceMaterial: localSourceMaterial,
+    sourceMaterial,
     dockerExternalNetworks,
     dockerNetworkAddressing: externalNetworks.addressing,
     fabricNetworks: fabricNetworksFromSchedule(params.schedule),
@@ -3789,6 +4004,7 @@ function toSitePrincipal(
     username: material.username,
     ...(material.uid !== undefined ? { uid: material.uid } : {}),
     ...(material.gid !== undefined ? { gid: material.gid } : {}),
+    ...(material.idSource !== undefined ? { idSource: material.idSource } : {}),
   }
 }
 
@@ -3967,10 +4183,20 @@ function tlsPinErrorResponse(
   )
   const message =
     error === 'pin_mismatch' && typedCovered && missing.length > 0
-      ? `The certificate on this hosting covers ${hosting.hostnames.join(', ')} but not ${missing.join(', ')}, which its www setting adds. Upload one that lists every name, or set www to "Only ${hosting.hostnames.join(', ')}".`
+      ? `The certificate on this hosting covers ${hosting.hostnames.join(
+          ', '
+        )} but not ${missing.join(
+          ', '
+        )}, which its www setting adds. Upload one that lists every name, or set www to "Only ${hosting.hostnames.join(
+          ', '
+        )}".`
       : undefined
   return Response.json(
-    { error: tlsPinErrorCode(error), hostingId, ...(message ? { message } : {}) },
+    {
+      error: tlsPinErrorCode(error),
+      hostingId,
+      ...(message ? { message } : {}),
+    },
     { status: 400 }
   )
 }
@@ -3992,6 +4218,11 @@ async function resolveHttpHostingEntry(
   if (hostnames.length === 0) return { skip: true }
   const www = readWwwMode(h.options)
 
+  // Last line of defence: a route stored before the write-time check existed,
+  // or written around it, still may not take a name the panel itself serves.
+  const panelRefusal = await panelHostnameRefusal(db, svc.composeServiceName, { hostnames, www })
+  if (panelRefusal) return { prepareError: panelRefusal }
+
   // A revoked Let's Encrypt pin resolves as internal (`tlsId: null`) here —
   // do not treat it as `tls_pin_not_ready`. Deleted / mismatched pins still fail.
   const resolved = resolveTlsForHosting({
@@ -4001,7 +4232,12 @@ async function resolveHttpHostingEntry(
   })
   if (!resolved.ok) {
     const pinned = candidates.find((candidate) => candidate.id === h.tlsId)
-    return { error: tlsPinErrorResponse(resolved.error, h.id, pinned, { hostnames, www }) }
+    return {
+      error: tlsPinErrorResponse(resolved.error, h.id, pinned, {
+        hostnames,
+        www,
+      }),
+    }
   }
 
   const bindScope = resolveHostingBind(parseHostingOptions(h.options))

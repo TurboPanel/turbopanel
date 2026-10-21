@@ -72,7 +72,7 @@ const NOW = '2026-09-07T12:00:00.000Z'
 const CONFIG: BillingConfig = {
   secretKey: 'sk_test_x',
   webhookSigningSecret: 'whsec_x',
-  apiVersion: '2025-08-27.basil',
+  apiVersion: '2026-09-30.endive',
 }
 
 const tierRow = (id: string, label: string, rank: number) => ({

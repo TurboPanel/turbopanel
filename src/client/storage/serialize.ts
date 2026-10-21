@@ -18,8 +18,9 @@ export type StorageSelectRow = Pick<
   | 'name'
   | 'accessMode'
   | 'retention'
-  | 'generation'
   | 'principalId'
+  | 'slug'
+  | 'isCommon'
   | 'metadata'
   | 'options'
   | 'createdAt'
@@ -40,7 +41,6 @@ export type CopySelectRow = Pick<
   | 'state'
   | 'path'
   | 'endpoint'
-  | 'generation'
   | 'metadata'
   | 'options'
   | 'createdAt'
@@ -74,7 +74,9 @@ export type SerializedCopy = CopySelectRow & {
 
 export type SerializedMount = MountSelectRow // NOSONAR typescript:S6564 — public API alias parallel to SerializedCopy
 
-export type SerializedStorage = Omit<StorageSelectRow, 'principalUsername'> & {
+export type SerializedStorage = Omit<StorageSelectRow, 'principalUsername' | 'isCommon'> & {
+  /** True when the volume folder is in the `common` scope shared by every environment. */
+  common: boolean
   copies: SerializedCopy[]
   mounts: SerializedMount[]
 }
@@ -82,7 +84,7 @@ export type SerializedStorage = Omit<StorageSelectRow, 'principalUsername'> & {
 function resolveCopyPath(
   copy: CopySelectRow,
   storageId: string,
-  principalUsername: string | null,
+  principalUsername: string | null
 ): string | null {
   if (typeof copy.path === 'string' && copy.path.length > 0) {
     return copy.path
@@ -100,7 +102,7 @@ function resolveCopyPath(
 export function serializeCopy(
   copy: CopySelectRow,
   storageId: string,
-  principalUsername: string | null,
+  principalUsername: string | null
 ): SerializedCopy {
   return {
     ...copy,
@@ -115,11 +117,9 @@ export function serializeMount(row: MountSelectRow): SerializedMount {
 export function serializeStorage(
   row: StorageSelectRow,
   copies: CopySelectRow[] = [],
-  mounts: MountSelectRow[] = [],
+  mounts: MountSelectRow[] = []
 ): SerializedStorage {
-  const serializedCopies = copies.map((copy) =>
-    serializeCopy(copy, row.id, row.principalUsername),
-  )
+  const serializedCopies = copies.map((copy) => serializeCopy(copy, row.id, row.principalUsername))
   return {
     id: row.id,
     organizationId: row.organizationId,
@@ -131,8 +131,9 @@ export function serializeStorage(
     name: row.name,
     accessMode: row.accessMode,
     retention: row.retention,
-    generation: row.generation,
     principalId: row.principalId,
+    slug: row.slug,
+    common: row.isCommon,
     metadata: row.metadata,
     options: row.options,
     createdAt: row.createdAt,

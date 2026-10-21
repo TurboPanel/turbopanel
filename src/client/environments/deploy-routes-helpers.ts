@@ -1,7 +1,8 @@
 import { attachWebMetadataToSites } from '../../features/hostings/hosting-web-env.ts'
+import { panelHostnameInUseMessage } from '../../features/hostings/panel-hostname-guard.ts'
 import { assignSiteListenPorts } from '../../features/compose/site.ts'
 import { assignNativeAppListenPorts } from '../../features/compose/native-app.ts'
-import { DEFAULT_NATIVE_APP_NODE_SERIES } from '../../contracts/runtime-registry.ts'
+import { NEWEST_NATIVE_APP_NODE_SERIES } from '../../contracts/runtime-registry.ts'
 import type {
   EnvironmentDeployComposeFile,
   EnvironmentDeployHosting,
@@ -27,6 +28,7 @@ import {
 } from '../../features/deploy/deploy-options.ts'
 import type { FabricGateOutcome } from '../../features/fabric/gate.ts'
 import type { ScheduleErrorCode } from '../../features/schedule/index.ts'
+import { resolveDeployReleaseServiceId } from './release-service-id.ts'
 
 export function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -415,6 +417,7 @@ function mapHostingPrepareError(
         | 'hosting_tls_mode_unsupported'
         | 'hosting_route_conflict'
         | 'hosting_hostname_conflict'
+        | 'hosting_hostname_is_panel'
     }
   >
 ): PrepareErrorResponse {
@@ -472,6 +475,17 @@ function mapHostingPrepareError(
       },
     }
   }
+  if (prepared.kind === 'hosting_hostname_is_panel') {
+    return {
+      status: 409,
+      body: {
+        error: 'hosting_hostname_is_panel_hostname',
+        composeServiceName: prepared.composeServiceName,
+        hostname: prepared.hostname,
+        message: panelHostnameInUseMessage(prepared.hostname),
+      },
+    }
+  }
   return {
     status: 409,
     body: {
@@ -479,6 +493,19 @@ function mapHostingPrepareError(
       composeServiceName: prepared.composeServiceName,
       hostname: prepared.hostname,
       message: `"${prepared.composeServiceName}" declares ${prepared.hostname}, which another hosting in this organization already serves. A hostname can only route to one hosting per organization.`,
+    },
+  }
+}
+
+function mapNativeAppUnresolvedPrepareError(
+  prepared: Extract<DeployPrepareError, { kind: 'native_app_unresolved_service' }>
+): PrepareErrorResponse {
+  return {
+    status: 422,
+    body: {
+      error: 'native_app_unresolved_service',
+      composeServiceName: prepared.composeServiceName,
+      message: `Native app "${prepared.composeServiceName}" has no resolved service id for this environment.`,
     },
   }
 }
@@ -557,11 +584,19 @@ function tryMapHostingPrepareError(prepared: DeployPrepareError): PrepareErrorRe
     prepared.kind !== 'hosting_ip_ref_unresolved' &&
     prepared.kind !== 'hosting_tls_mode_unsupported' &&
     prepared.kind !== 'hosting_route_conflict' &&
-    prepared.kind !== 'hosting_hostname_conflict'
+    prepared.kind !== 'hosting_hostname_conflict' &&
+    prepared.kind !== 'hosting_hostname_is_panel'
   ) {
     return null
   }
   return mapHostingPrepareError(prepared)
+}
+
+function tryMapNativeAppUnresolvedPrepareError(
+  prepared: DeployPrepareError
+): PrepareErrorResponse | null {
+  if (prepared.kind !== 'native_app_unresolved_service') return null
+  return mapNativeAppUnresolvedPrepareError(prepared)
 }
 
 function tryMapPrincipalPrepareError(prepared: DeployPrepareError): PrepareErrorResponse | null {
@@ -631,16 +666,6 @@ function tryMapDenoPrepareError(prepared: DeployPrepareError): PrepareErrorRespo
       },
     }
   }
-  if (prepared.kind === 'deno_migration_pending') {
-    return {
-      status: 422,
-      body: {
-        error: 'deno_migration_pending',
-        message:
-          "This TurboPanel instance's database has not been updated to run Deno apps yet. Ask the instance owner to apply the pending database migration, then deploy again.",
-      },
-    }
-  }
   if (prepared.kind !== 'deno_version_unsupported') return null
   return {
     status: 422,
@@ -670,7 +695,7 @@ function nodeVersionErrorBody(
     return {
       error: prepared.kind,
       composeServiceName: name,
-      message: `Could not read the repository of Node app "${name}" to find which Node version it needs: ${prepared.message}. Try again in a moment. ${pinHint(name, DEFAULT_NATIVE_APP_NODE_SERIES)} With that set, the repository is not read.`,
+      message: `Could not read the repository of Node app "${name}" to find which Node version it needs: ${prepared.message}. Try again in a moment. ${pinHint(name, NEWEST_NATIVE_APP_NODE_SERIES)} With that set, the repository is not read.`,
     }
   }
   if (prepared.kind === 'node_version_invalid') {
@@ -679,10 +704,10 @@ function nodeVersionErrorBody(
       composeServiceName: name,
       requested: prepared.requested,
       path: prepared.path,
-      message: `Node app "${name}": engines.node in ${prepared.path} is "${prepared.requested}", which is not a version range npm accepts (a range between two versions needs spaces around the dash, like "20 - 24"). Fix it in ${prepared.path}. ${pinHint(name, DEFAULT_NATIVE_APP_NODE_SERIES)}`,
+      message: `Node app "${name}": engines.node in ${prepared.path} is "${prepared.requested}", which is not a version range npm accepts (a range between two versions needs spaces around the dash, like "20 - 24"). Fix it in ${prepared.path}. ${pinHint(name, NEWEST_NATIVE_APP_NODE_SERIES)}`,
     }
   }
-  const newest = prepared.supported.at(-1) ?? DEFAULT_NATIVE_APP_NODE_SERIES
+  const newest = prepared.supported.at(-1) ?? NEWEST_NATIVE_APP_NODE_SERIES
   return {
     error: prepared.kind,
     composeServiceName: name,
@@ -712,6 +737,7 @@ export function mapPrepareErrorResponse(prepared: DeployPrepareError): PrepareEr
     tryMapBindingHostSiteError(prepared) ??
     tryMapDenoPrepareError(prepared) ??
     tryMapSitePrepareError(prepared) ??
+    tryMapNativeAppUnresolvedPrepareError(prepared) ??
     tryMapPrincipalPrepareError(prepared) ??
     tryMapHostingPrepareError(prepared) ??
     mapCorePrepareError(prepared)
@@ -963,32 +989,7 @@ export function buildSitesForDeploy(
   )
 }
 
-/**
- * Release-tree directory segment for one compose service.
- *
- * **Must** stay identical to the daemon's `resolveReleaseServiceId`
- * (`turbopaneld/src/deploy/release/apply-source-releases.ts`): hostings first,
- * then tcp/udp ingress, then the compose key. The release engine picks the
- * directory with that rule, so a native app unit whose `WorkingDirectory` were
- * derived any other way would point at a tree nothing ever published.
- */
-export function resolveDeployReleaseServiceId(
-  composeServiceName: string,
-  hostings: readonly EnvironmentDeployHosting[],
-  ingressServices: readonly EnvironmentDeployIngressService[]
-): string {
-  for (const hosting of hostings) {
-    if (hosting.composeServiceName === composeServiceName && hosting.serviceId) {
-      return hosting.serviceId
-    }
-  }
-  for (const ingress of ingressServices) {
-    if (ingress.composeServiceName === composeServiceName && ingress.serviceId) {
-      return ingress.serviceId
-    }
-  }
-  return composeServiceName
-}
+export { resolveDeployReleaseServiceId, RELEASE_TREE_SERVICE_ID_RE } from './release-service-id.ts'
 
 /**
  * Finalize native app rows for the wire: allocate loopback ports out of the
@@ -1009,8 +1010,8 @@ export function resolveDeployReleaseServiceId(
  */
 export function buildNativeAppServicesForDeploy(
   nativeAppServices: readonly PreparedNativeAppService[],
-  hostings: EnvironmentDeployHosting[],
-  ingressServices: readonly EnvironmentDeployIngressService[],
+  _hostings: EnvironmentDeployHosting[],
+  _ingressServices: readonly EnvironmentDeployIngressService[],
   used: Set<number> = new Set<number>(),
   uniqueKey?: string
 ): EnvironmentDeployNativeAppService[] {
@@ -1022,7 +1023,7 @@ export function buildNativeAppServicesForDeploy(
     uniqueKey
   ).map((app) => ({
     ...app,
-    serviceId: resolveDeployReleaseServiceId(app.composeServiceName, hostings, ingressServices),
+    serviceId: resolveDeployReleaseServiceId(app.composeServiceName, app.serviceId),
   }))
 }
 

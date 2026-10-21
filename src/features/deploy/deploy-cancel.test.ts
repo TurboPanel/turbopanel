@@ -78,7 +78,7 @@ async function withDeploy(
   const [env] = await db
     .insert(environment)
     .values({
-      name: 'Cancel Env',
+      name: 'cancel-env',
       projectId: proj!.id,
       options: { compose: emptyComposeDocument() },
     })

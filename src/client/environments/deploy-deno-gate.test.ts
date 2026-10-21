@@ -88,13 +88,6 @@ test('both refusals are 422s in plain words', () => {
   assertEquals(String((unsupported.body as { message: string }).message).includes('Deno 3'), true)
 })
 
-test('a database without the Deno migration is a 422 in plain words', () => {
-  const mapped = mapPrepareErrorResponse({ kind: 'deno_migration_pending' })
-  assertEquals(mapped.status, 422)
-  assertEquals((mapped.body as { error: string }).error, 'deno_migration_pending')
-  assertEquals(String((mapped.body as { message: string }).message).includes('migration'), true)
-})
-
 test('the preview lists each Deno app once with its series and where it came from', () => {
   assertEquals(
     nativeAppDenoVersionViews([

@@ -13,6 +13,7 @@
 const CONTEXT_KEYS = [
   'managedId',
   'memberId',
+  'targetMemberId',
   'memberRole',
   'engine',
   'environmentId',

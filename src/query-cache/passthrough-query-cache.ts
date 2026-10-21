@@ -1,9 +1,13 @@
 import type { Db } from '../db/connection.ts'
 import { isApprovedReadModelId } from './approved-read-models.ts'
 import type { QueryCache } from './contracts.ts'
+import { recordReadModel, type DbUsage } from './db-usage.ts'
 
 class PassthroughQueryCache implements QueryCache {
-  constructor(private readonly db?: Db) {}
+  constructor(
+    private readonly db?: Db,
+    private readonly usage?: DbUsage
+  ) {}
 
   async getReadModel<T>(opts: {
     readModel: string
@@ -17,10 +21,11 @@ class PassthroughQueryCache implements QueryCache {
     if (this.db === undefined) {
       throw new Error('Database unavailable')
     }
+    recordReadModel(this.usage, opts.readModel, 'primary')
     return opts.load(this.db)
   }
 }
 
-export function createPassthroughQueryCache(db?: Db): QueryCache {
-  return new PassthroughQueryCache(db)
+export function createPassthroughQueryCache(db?: Db, usage?: DbUsage): QueryCache {
+  return new PassthroughQueryCache(db, usage)
 }
