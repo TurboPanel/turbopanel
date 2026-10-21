@@ -46,9 +46,9 @@ import {
 } from './sql-api.ts'
 
 it('AE_DATASET_NAME is the current dataset', () => {
-  assertEquals(AE_DATASET_NAME, 'turbopanel_server_metrics_v8')
+  assertEquals(AE_DATASET_NAME, 'turbopanel_server_metrics_v12')
   // Readers see only the current storage layout revision: older hosted rows are skipped, never misread.
-  assertEquals(AE_SUPPORTED_SCHEMA_VERSIONS, [8])
+  assertEquals(AE_SUPPORTED_SCHEMA_VERSIONS, [12])
 })
 
 it('quoteSqlString doubles single quotes', () => {
@@ -64,19 +64,19 @@ it('quoteSqlString escapes backslashes so a literal can never be closed early', 
 
 it('kindDiscriminatorPredicates: blob1 = kind, blob3 = schema version', () => {
   const predicates = kindDiscriminatorPredicates('metrics')
-  assertEquals(predicates, [`blob1 = 'metrics'`, `blob3 = '8'`])
+  assertEquals(predicates, [`blob1 = 'metrics'`, `blob3 = '12'`])
 })
 
 it('hostMetricsDiscriminatorPredicates matches the metrics kind', () => {
-  assertEquals(hostMetricsDiscriminatorPredicates(), [`blob1 = 'metrics'`, `blob3 = '8'`])
+  assertEquals(hostMetricsDiscriminatorPredicates(), [`blob1 = 'metrics'`, `blob3 = '12'`])
 })
 
 it('eventDiscriminatorPredicates matches the event kind', () => {
-  assertEquals(eventDiscriminatorPredicates(), [`blob1 = 'event'`, `blob3 = '8'`])
+  assertEquals(eventDiscriminatorPredicates(), [`blob1 = 'event'`, `blob3 = '12'`])
 })
 
 it('statusDiscriminatorPredicates matches the status kind', () => {
-  assertEquals(statusDiscriminatorPredicates(), [`blob1 = 'status'`, `blob3 = '8'`])
+  assertEquals(statusDiscriminatorPredicates(), [`blob1 = 'status'`, `blob3 = '12'`])
 })
 
 it("familyPredicate: blob2 = '<family>'", () => {
@@ -414,7 +414,7 @@ it('a dataset nothing has written to yet reads as no data, but other errors stil
     resolutionSeconds: 60,
   }
   const missingHttp = await queryHostSeriesViaSqlApi(
-    config(422, 'Unknown table live_turbopanel_server_metrics_v8'),
+    config(422, 'Unknown table live_turbopanel_server_metrics_v12'),
     query
   )
   assertEquals(missingHttp.available, true)
@@ -424,7 +424,7 @@ it('a dataset nothing has written to yet reads as no data, but other errors stil
       200,
       JSON.stringify({
         success: false,
-        errors: [{ message: "Table default.live_turbopanel_server_metrics_v8 doesn't exist" }],
+        errors: [{ message: "Table default.live_turbopanel_server_metrics_v12 doesn't exist" }],
       })
     ),
     query

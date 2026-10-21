@@ -51,7 +51,7 @@ import {
   storageEngineFieldName,
   type StorageEngineSample,
 } from '../../../../contracts/metrics-contract.ts'
-import { STORED_FIELD_IDS } from '../../field-registry.ts'
+import { METRICS_LAYOUT_VERSION, STORED_FIELD_IDS } from '../../field-registry.ts'
 
 /** Hot raw-sample tables (recent, un-archived rows). */
 export const HOST_SAMPLES_TABLE = 'server_host_samples'
@@ -92,7 +92,7 @@ export const STATUS_EVENTS_TABLE = 'server_status_events'
  * (`server_host_text_samples` and text columns on the device tables), and the
  * sequence and generation columns, which nothing reads, are gone.
  */
-export const DUCKDB_SCHEMA_MARKER_VERSION = 12
+export const DUCKDB_SCHEMA_MARKER_VERSION = METRICS_LAYOUT_VERSION
 
 // ---------------------------------------------------------------------------
 // Field ordering — hand-declared `Record<keyof T, true>` literals so a

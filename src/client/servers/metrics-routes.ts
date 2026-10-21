@@ -30,6 +30,7 @@ import {
   metricsDeploymentKindForRuntime,
 } from '../../contracts/capability-plan.ts'
 import { getServerMetricsLiveMaxMinutes } from '../../features/settings/server-metrics-settings.ts'
+import { METRICS_LAYOUT_VERSION } from '../../daemon/metrics/field-registry.ts'
 import { loadServerStatusRecords } from './update-status.ts'
 import {
   createMetricsChartCache,
@@ -365,7 +366,7 @@ export function registerServerMetricsRoutes(router: Hono<AppEnv>, opts: AuthRout
       metrics,
       resolutionSeconds: 60,
       backend,
-      schemaVersion: 6,
+      schemaVersion: METRICS_LAYOUT_VERSION,
       kind: 'fleet-latest',
     })
 
@@ -474,7 +475,7 @@ export function registerServerMetricsRoutes(router: Hono<AppEnv>, opts: AuthRout
       metrics: seriesCacheMetricsList(selectors),
       resolutionSeconds,
       backend,
-      schemaVersion: 6,
+      schemaVersion: METRICS_LAYOUT_VERSION,
       kind: 'series',
       // The response carries the device inventory, capacities and CPU limits
       // taken from the stored hardware record, so a rewrite of that record
@@ -592,7 +593,7 @@ export function registerServerMetricsRoutes(router: Hono<AppEnv>, opts: AuthRout
       metrics: [],
       resolutionSeconds: summaryResolutionSeconds,
       backend,
-      schemaVersion: 6,
+      schemaVersion: METRICS_LAYOUT_VERSION,
       kind: 'summary',
     })
 
@@ -686,7 +687,7 @@ export function registerServerMetricsRoutes(router: Hono<AppEnv>, opts: AuthRout
       metrics: [],
       resolutionSeconds,
       backend,
-      schemaVersion: 6,
+      schemaVersion: METRICS_LAYOUT_VERSION,
       kind: 'connection',
     })
 
@@ -793,7 +794,7 @@ export function registerServerMetricsRoutes(router: Hono<AppEnv>, opts: AuthRout
       metrics: [],
       resolutionSeconds,
       backend,
-      schemaVersion: 6,
+      schemaVersion: METRICS_LAYOUT_VERSION,
       kind: 'events',
     })
 

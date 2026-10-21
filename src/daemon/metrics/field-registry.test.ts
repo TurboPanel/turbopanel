@@ -7,7 +7,11 @@
  */
 import { assert, assertEquals } from '@std/assert'
 import { describe, it } from '@std/testing/bdd'
-import { METRICS_TEXT_FIELD_NAMES, type MetricsSample } from '../../contracts/metrics-contract.ts'
+import {
+  METRICS_SCHEMA_VERSION,
+  METRICS_TEXT_FIELD_NAMES,
+  type MetricsSample,
+} from '../../contracts/metrics-contract.ts'
 import {
   V8_ENTITY_FIELD_ORDER,
   V8_HOST_ROW_SPECS,
@@ -17,10 +21,12 @@ import {
   type V8EntityFamily,
   type V8HostFamily,
 } from './backends/cloudflare/v8-layout.ts'
-import { buildSchemaStatements } from './backends/duckdb/schema.ts'
+import { AE_DATASET_NAME, AE_STORAGE_VERSION } from './backends/cloudflare/field-map.ts'
+import { buildSchemaStatements, DUCKDB_SCHEMA_MARKER_VERSION } from './backends/duckdb/schema.ts'
 import {
   ENVELOPE_FIELDS,
   KNOWN_GAPS,
+  METRICS_LAYOUT_VERSION,
   NOT_STORED_FIELDS,
   REGISTRY_TABLES,
   ROW_CADENCE,
@@ -242,6 +248,21 @@ describe('field registry: hosted layout', () => {
   })
 })
 
+describe('field registry: sensor kinds', () => {
+  it('writes the sensor kinds into the row text slot the registry names', () => {
+    const sample = { host: {}, extended: {} } as unknown as MetricsSample
+    const signals = [
+      { signalId: 'a', kind: 'temperature', value: 1 },
+      { signalId: 'b', kind: 'power', value: 2 },
+    ]
+    const page = v8EntityPages['hardware.physical'](signals as never, sample)[0]
+    const home = STORED_FIELDS.find((f) => f.id === 'hardwareSignal.kind')!.hosted
+    assert('blob' in home && home.row === 'hardware.physical')
+    assertEquals(page.blobs[home.blob - 7], 'temperature,power')
+    assertEquals(page.ids, 'a,b')
+  })
+})
+
 describe('field registry: self-hosted columns', () => {
   const tables = duckdbColumns()
   const tableName = (key: keyof typeof REGISTRY_TABLES) => REGISTRY_TABLES[key]
@@ -274,9 +295,10 @@ describe('field registry: self-hosted columns', () => {
     }
   })
 
-  it('has no self-hosted gap left', () => {
+  it('has no gap left: both editions hold the same readings', () => {
     assertEquals(KNOWN_GAPS.duckdbMissing, [])
     assertEquals(KNOWN_GAPS.duckdbExtraColumns, [])
+    assertEquals(KNOWN_GAPS.hostedMissing, [])
   })
 
   it('lists no gap that has already closed', () => {
@@ -292,5 +314,22 @@ describe('field registry: self-hosted columns', () => {
         `${id} is not a registered value`
       )
     }
+  })
+})
+
+describe('field registry: one layout number', () => {
+  it('is the hosted stamp, the dataset suffix and the self-hosted marker', () => {
+    assertEquals(AE_STORAGE_VERSION, METRICS_LAYOUT_VERSION)
+    assertEquals(DUCKDB_SCHEMA_MARKER_VERSION, METRICS_LAYOUT_VERSION)
+    assertEquals(AE_DATASET_NAME, `turbopanel_server_metrics_v${METRICS_LAYOUT_VERSION}`)
+  })
+
+  it('never goes below the self-hosted marker already shipped (11)', () => {
+    assertEquals(METRICS_LAYOUT_VERSION >= 12, true)
+  })
+
+  it('is not the wire version, which stays 8 and is shared with the daemon', () => {
+    assertEquals(METRICS_SCHEMA_VERSION, 8)
+    assertEquals(METRICS_LAYOUT_VERSION === (METRICS_SCHEMA_VERSION as number), false)
   })
 })

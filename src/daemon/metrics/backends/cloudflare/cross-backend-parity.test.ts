@@ -29,9 +29,7 @@ import {
   buildMetricsSample,
   type MetricsSampleInput,
 } from '../../../../contracts/metrics-contract.ts'
-import {
-  resolveMetricsCapabilityPlan,
-} from '../../../../contracts/capability-plan.ts'
+import { resolveMetricsCapabilityPlan } from '../../../../contracts/capability-plan.ts'
 import { limitDevicesToCase } from '../../testing/plan-device-limits.ts'
 import type { AuthenticatedMetricsSample, SlotMapping } from '../../types.ts'
 import type { ServerStatusEvent } from '../../types.ts'

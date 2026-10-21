@@ -9,7 +9,7 @@ source, database proxy) with a stable logical id per entity, every leaf value is
 `number | null` (missing is always `null`, never coerced to `0`), and no value's
 presence is inferred from bitmask/part membership. Ingest accepts
 `metadata.version` 6 or 8 (`METRICS_WIRE_VERSIONS`) during the daemon transition
-and rejects anything else; every stored hosted row carries blob3 `"8"` (`AE_STORAGE_VERSION`, the storage layout revision).
+and rejects anything else; every stored hosted row carries blob3 `"12"` (`AE_STORAGE_VERSION` = `METRICS_LAYOUT_VERSION`, the storage layout number, which is not the wire version).
 
 ## Metrics v8 (authoritative for new rows)
 
@@ -22,12 +22,12 @@ must reproduce them exactly (`v8-layout.test.ts`). The family catalog and blob
 tables below describe the **v6** layout, kept only as the read-side reference for
 v6 rows; where they disagree with `V8-LAYOUT.md`, v8 wins.
 
-- **Dataset** `turbopanel_server_metrics_v${METRICS_SCHEMA_VERSION}` (hard cut, per-env `<env>_` prefix); pinned for every wrangler environment by `wrangler-datasets.test.ts`. Readers accept only blob3 = `AE_STORAGE_VERSION` (`AE_SUPPORTED_SCHEMA_VERSIONS` = [8]): the sizes amendment reused hosted slots under wire version 8, so rows stamped earlier are skipped, never read with the new slot meanings. Bump `AE_STORAGE_VERSION` whenever a slot changes meaning.
+- **Dataset** `turbopanel_server_metrics_v${METRICS_LAYOUT_VERSION}` (hard cut, per-env `<env>_` prefix); pinned for every wrangler environment by `wrangler-datasets.test.ts`. Readers accept only blob3 = `AE_STORAGE_VERSION` (`AE_SUPPORTED_SCHEMA_VERSIONS` = [12]): rows stamped with another number are skipped, never read with the new slot meanings. Bump `METRICS_LAYOUT_VERSION` (`field-registry.ts`) whenever a slot changes meaning.
 - **Rows**: `host.system` (liveness, bare serverId index), `host.io`, `host.network`, `host.web` on every host; `managed.database` only with managed databases; `block` (>1 drive, 3/row), `network` (NIC 3+, 3/row), `filesystem` (9/row; exactly one extra filesystem is folded into `host.io`, and `host.network` blob6 names it), `gpu` (3/row, physical or real passthrough), `hardware.physical` (physical, up to 19 signals). VPS 4 rows, physical 5-6, +1 with databases.
-- **Envelope**: blob1 kind, blob2 family, blob3 `"8"` (the storage layout revision, never the wire version), blob4 reserved (written empty), blob5 sample time as UTC text `YYYY-MM-DD hh:mm:ss`, blob6 entity ids, content text from blob7, double20 interval. Sequence, plan generation and page are no longer written. Event and status rows keep their v6 blob positions except blob3 and the blob5 text format.
+- **Envelope**: blob1 kind, blob2 family, blob3 `"12"` (the storage layout number, never the wire version), blob4 reserved (written empty), blob5 sample time as UTC text `YYYY-MM-DD hh:mm:ss`, blob6 entity ids, content text from blob7, double20 interval. Sequence, plan generation and page are no longer written. Event and status rows keep their v6 blob positions except blob3 and the blob5 text format.
 - **Wire negotiation**: wire feature `metrics-v8` (`DAEMON_WIRE_FEATURES`, both repos). A daemon stamps `METRICS_LEGACY_WIRE_VERSION` (6) until the control plane it is attached to advertises it. Hard cut: the control plane accepts wire versions 6 and 8 only (`METRICS_WIRE_VERSIONS`), advertises no `metrics-v7`, and a version-7 sample is refused with the usual version error; an older daemon falls back to the plain version-6 sample until it updates. `metrics-v8-sizes` is advertised only because this release stores the sizes and divides each bucket by the size its own sample carried. v8 data rides the optional `extended` section and `metadata.durable`; a v6 sample writes the same v8 rows with sentinels and empty text for the absent data.
 - **Caddy is totals only** (no per-site fields anywhere); slow families are still re-sent every sample.
-- **Reads**: the missing-metric sentinel is tested as `col > -pow(10, 307)` (`aePresentValueSql`), never by equality; a delta-sum over an absent family is null, not 0. Hosted rows live only in the `_v8` dataset and are read as stamp 8 only; earlier rows are dropped, with no dual read. Descriptors for the data points neither edition stores (`NOT_STORED_FIELDS` in `field-registry.ts`) stay and read as empty on both. Descriptors for the new v8 metrics (OOM kills, Docker health, cert expiry, text blobs) are reader work. Analytics Engine creates a dataset on its first write, so a read before any write fails with a missing-table error; `isMissingDatasetError` turns exactly that error (for one of our own `turbopanel_server_metrics_v<N>` datasets) into "no data" and every other error still throws. The testing deploy should check the first `_v8` read.
+- **Reads**: the missing-metric sentinel is tested as `col > -pow(10, 307)` (`aePresentValueSql`), never by equality; a delta-sum over an absent family is null, not 0. Hosted rows live only in the `_v12` dataset and are read as stamp 12 only; earlier rows are dropped, with no dual read. Descriptors for the data points neither edition stores (`NOT_STORED_FIELDS` in `field-registry.ts`) stay and read as empty on both. Descriptors for the new v8 metrics (OOM kills, Docker health, cert expiry, text blobs) are reader work. Analytics Engine creates a dataset on its first write, so a read before any write fails with a missing-table error; `isMissingDatasetError` turns exactly that error (for one of our own `turbopanel_server_metrics_v<N>` datasets) into "no data" and every other error still throws. The testing deploy should check the first `_v8` read.
 
 Root context: `../../../AGENTS.md`. Daemon cell: `../cell/AGENTS.md`. Operator
 glossary (what each console chart means): `../../../../website/docs/metrics/`.
@@ -36,7 +36,7 @@ Human docs + AE cost model:
 
 The store surface is unsuffixed: `ServerMetricsStore`,
 `resolveServerMetricsStore`, binding `SERVER_METRICS`, dataset
-`turbopanel_server_metrics_v8`. `DuckDbParquetServerMetricsStore` implements
+`turbopanel_server_metrics_v12`. `DuckDbParquetServerMetricsStore` implements
 only `ServerMetricsStore` — its
 `queryHostSeries`/`queryHostSummary`/`queryFleetHostSnapshot` accept the current
 canonical metric names. `app.ts`/`db.ts`/`workers.ts` carry only the
@@ -281,13 +281,13 @@ Wiring: `SERVER_METRICS` binding → `CloudflareAnalyticsEngineServerMetricsStor
 `sql-api.ts`). Deno uses DuckDB + Parquet (`DuckDbParquetServerMetricsStore`,
 below).
 
-| Binding / config | Value                                                                                                                                                                                        |
-| ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Wrangler binding | `SERVER_METRICS` (`analytics_engine_datasets`)                                                                                                                                               |
-| Dataset name     | `turbopanel_server_metrics_v8` by default (`AE_DATASET_NAME`, `field-map.ts`; always `turbopanel_server_metrics_v${METRICS_SCHEMA_VERSION}`); every hosted environment has its own `<testing | staging | live>_turbopanel_server_metrics_v8`: wrangler.jsonc sets it on the `SERVER_METRICS`binding (writes) AND as`TURBOPANEL_SERVER_METRICS_AE_DATASET`(the SQL read side,`resolveCloudflareAnalyticsSqlConfig`); `wrangler-datasets.test.ts` keeps the two equal and unique per env |
-| Write API        | `writeDataPoint({ indexes, doubles, blobs })` — sync, non-blocking; one call per family row actually emitted (2 baseline + 0..N presence-gated), full 20/20 doubles/blobs shape on every row |
-| SQL API          | `POST .../analytics_engine/sql` with `Authorization: Bearer <token>`; response envelope rows under `result.data`                                                                             |
-| Max range        | Default `AE_DEFAULT_MAX_RANGE_SECONDS` = 90 days; override via `TURBOPANEL_SERVER_METRICS_AE_MAX_RANGE_SECONDS`                                                                              |
+| Binding / config | Value                                                                                                                                                                                         |
+| ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Wrangler binding | `SERVER_METRICS` (`analytics_engine_datasets`)                                                                                                                                                |
+| Dataset name     | `turbopanel_server_metrics_v12` by default (`AE_DATASET_NAME`, `field-map.ts`; always `turbopanel_server_metrics_v${METRICS_LAYOUT_VERSION}`); every hosted environment has its own `<testing | staging | live>_turbopanel_server_metrics_v12`: wrangler.jsonc sets it on the `SERVER_METRICS`binding (writes) AND as`TURBOPANEL_SERVER_METRICS_AE_DATASET`(the SQL read side,`resolveCloudflareAnalyticsSqlConfig`); `wrangler-datasets.test.ts` keeps the two equal and unique per env |
+| Write API        | `writeDataPoint({ indexes, doubles, blobs })` — sync, non-blocking; one call per family row actually emitted (2 baseline + 0..N presence-gated), full 20/20 doubles/blobs shape on every row  |
+| SQL API          | `POST .../analytics_engine/sql` with `Authorization: Bearer <token>`; response envelope rows under `result.data`                                                                              |
+| Max range        | Default `AE_DEFAULT_MAX_RANGE_SECONDS` = 90 days; override via `TURBOPANEL_SERVER_METRICS_AE_MAX_RANGE_SECONDS`                                                                               |
 
 **AE SQL refusals DuckDB never shows** (both hit testing on 2026-09-27; the
 fake engine in `testing/fake-analytics-engine.ts` now mirrors them as `422`):
@@ -453,10 +453,11 @@ entity), unlike v3's fixed-width part tables.
 marker-11 database is discarded like any older version (hard cut, no migration, one log line saying so); a sidecar marker holding an older version number discards `metrics.duckdb`, `parquet/`,
 `tmp/`, and `schema-version` before the current store is created. A missing marker beside existing data, or an empty, unparseable or unreadable marker, discards and rebuilds the files too (a transient read error counts as unreadable and rebuilds the file, by design); only a marker newer than this build fails the open without deleting anything — there is no
 in-place migration and no supported path for older DuckDB files. The marker is a
-discard-on-mismatch counter, not a monotonic migration version. **The three
-version counters move together, always**: `METRICS_SCHEMA_VERSION` (the wire
-contract), `DUCKDB_SCHEMA_MARKER_VERSION` (this on-disk layout), and the
-chart-cache `schemaVersion` token. Configured retention still prunes expired
+discard-on-mismatch counter, not a migration version, and it never goes down.
+**One layout number**: `METRICS_LAYOUT_VERSION` (`field-registry.ts`) is the
+hosted stamp and dataset suffix, `DUCKDB_SCHEMA_MARKER_VERSION` (this on-disk
+layout) and the chart-cache `schemaVersion` token; `METRICS_SCHEMA_VERSION` is
+the wire contract and a separate number. Configured retention still prunes expired
 points (`TURBOPANEL_SERVER_METRICS_RETENTION_DAYS`, default 90). Analytics
 Engine has no SQL `DELETE`; hosted points age out after Cloudflare's ~3-month
 retention. The sidecar marker is written before the database file is first created, so a crash between the two leaves a current marker and no data (the next open continues) instead of a database file nothing vouches for.
@@ -611,7 +612,7 @@ UI charts: **`../ui/AGENTS.md`** (Server metrics). Operator glossary:
 20. The store/binding/dataset are unsuffixed. `app.ts`/`db.ts`/`workers.ts`/
     `do.ts`/`offline-sweep.ts`/`store-selection*.ts` carry only
     `serverMetricsStore`, `resolveServerMetricsStore`, and `SERVER_METRICS`
-    (dataset `turbopanel_server_metrics_v8`). Do not reintroduce a
+    (dataset `turbopanel_server_metrics_v12`). Do not reintroduce a
     version-suffixed parallel store, binding, or dataset.
 
 ## Coverage and gaps

@@ -413,5 +413,5 @@ it('orphan row (structural, AE): a network-family row can never satisfy a host-s
   // Every host query also requires the shared metrics-row discriminator —
   // an orphan row written through any other path still has to satisfy this
   // too, and blob2's family value alone already rules it out above.
-  assertEquals(hostMetricsDiscriminatorPredicates(), [`blob1 = 'metrics'`, `blob3 = '8'`])
+  assertEquals(hostMetricsDiscriminatorPredicates(), [`blob1 = 'metrics'`, `blob3 = '12'`])
 })
