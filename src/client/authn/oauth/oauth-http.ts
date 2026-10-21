@@ -27,6 +27,8 @@ import {
   resolveSignupEnvOverrideFromContext,
 } from '../install-state.ts'
 import { assertRecentAuthOr403, isSessionRecentlyAuthenticated } from '../reauth.ts'
+import { hasRecentStepUp } from '../step-up.ts'
+import type { SessionData } from '../middleware.ts'
 import { createSession, deleteOtherSessionsForUser, getSession } from '../session-store.ts'
 import { issueTwoFactorChallenge } from '../two-factor.ts'
 import {
@@ -284,6 +286,16 @@ async function exchangeOAuthIdentity(
   }
 }
 
+/**
+ * Linking adds a permanent way into the account, so it needs a recent
+ * step-up: a session created inside the re-authentication window, or one that
+ * re-authenticated with `POST /auth/reauth` inside its own window.
+ */
+async function canLinkProvider(db: Db | undefined, session: SessionData): Promise<boolean> {
+  if (isSessionRecentlyAuthenticated(session)) return true
+  return db !== undefined && (await hasRecentStepUp(db, session))
+}
+
 async function handleOAuthAccountLink(
   c: Context<AppEnv>,
   opts: AuthRouteOpts,
@@ -295,6 +307,11 @@ async function handleOAuthAccountLink(
   const sessionData = await readActiveSession(c, opts)
   if (sessionData?.userId !== linkUserId) {
     return oauthErrorRedirect(c, 'oauth_unauthenticated', linkUserId)
+  }
+  // The start redirect checked this already, but the provider round trip can
+  // take minutes: the session must still be inside the step-up window now.
+  if (!(await canLinkProvider(db, sessionData))) {
+    return c.redirect('/account/security?linked=&error=oauth_reauth_required')
   }
   const linked = await linkProviderAccount(db, linkUserId, providerParam, identity)
   if (linked === 'conflict') {
@@ -399,7 +416,7 @@ export function registerOAuthRoutes(auth: Hono<AppEnv>, opts: AuthRouteOpts) {
       // password in, so the session half of the step-up is what applies:
       // a session older than the window must sign in again first, which
       // stops a hijacked long-lived session from planting a sign-in method.
-      if (!isSessionRecentlyAuthenticated(sessionData)) {
+      if (!(await canLinkProvider(db, sessionData))) {
         return c.redirect('/account/security?linked=&error=oauth_reauth_required')
       }
       linkUserId = sessionData.userId
