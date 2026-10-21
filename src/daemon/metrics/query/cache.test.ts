@@ -36,6 +36,23 @@ it('metricsChartCacheKey: stable metric ordering and schema version', () => {
   assertEquals(keyA.includes('v6'), true)
 })
 
+it('metricsChartCacheKey: hardwareRevision is appended only when provided', () => {
+  const base = {
+    serverId: '11111111-1111-4111-8111-111111111111',
+    fromBucketMs: 1_000,
+    toBucketMs: 2_000,
+    metrics: ['host.cpu.userPercent'],
+    resolutionSeconds: 300,
+    backend: 'duckdb' as const,
+    schemaVersion: 6,
+  }
+  const plain = metricsChartCacheKey(base)
+  const revised = metricsChartCacheKey({ ...base, hardwareRevision: 2 })
+  assertEquals(plain.includes(':hw'), false)
+  assertEquals(revised.endsWith(':hw2'), true)
+  assertEquals(metricsChartCacheKey({ ...base, hardwareRevision: 3 }) === revised, false)
+})
+
 it('resolveChartCacheTtlSeconds: live vs historical', () => {
   const nowMs = Date.parse('2026-01-01T01:00:00.000Z')
   assertEquals(

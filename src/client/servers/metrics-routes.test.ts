@@ -686,7 +686,7 @@ it('GET /servers/:id/metrics/series attaches cpuLimits and temperatureUnit', asy
   )
 })
 
-it('GET /servers/:id/metrics/series does not serve a stale cache entry across a topology-generation bump', async () => {
+it('GET /servers/:id/metrics/series does not serve a stale cache entry across a new hardware record', async () => {
   const fakeStore = createFakeMetricsStore({
     queryHostSeries: (input) =>
       Promise.resolve({
@@ -745,8 +745,10 @@ it('GET /servers/:id/metrics/series does not serve a stale cache entry across a 
         appliedAt: new Date().toISOString(),
       })
 
-      // Identical (server, range, metrics) request — must not hit the
-      // pre-bump cache entry.
+      // Identical (server, range, metrics) request — the response carries the
+      // device inventory and capacities from the latest hardware record, so it
+      // must not be answered from the entry cached before the new record. (The
+      // chart values themselves no longer depend on the generation.)
       const afterBump = await app.request(url, { headers: { Cookie: cookie } })
       assertEquals(afterBump.status, 200)
       assertEquals(fakeStore.seriesCalls.length, 2)

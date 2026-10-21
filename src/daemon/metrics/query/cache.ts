@@ -36,6 +36,13 @@ export function metricsChartCacheKey(input: {
   /** Callers must pass `6` explicitly. */
   schemaVersion: number
   kind?: 'series' | 'summary' | 'connection' | 'fleet-latest' | 'events' | 'entity-series'
+  /**
+   * Revision of the server's latest hardware record, for responses that carry
+   * what that record holds (the device inventory, capacities, CPU limits).
+   * Charts themselves never depend on it: readers use each sample's own sizes
+   * and device ids. Appended as an `hw{revision}` token only when provided.
+   */
+  hardwareRevision?: number
 }): string {
   const sortedMetrics = [...input.metrics].sort((a, b) => a.localeCompare(b)).join(',')
   const kind = input.kind ?? 'series'
@@ -49,6 +56,7 @@ export function metricsChartCacheKey(input: {
     String(input.resolutionSeconds),
     input.backend,
     `v${input.schemaVersion}`,
+    ...(input.hardwareRevision !== undefined ? [`hw${input.hardwareRevision}`] : []),
   ].join(':')
 }
 

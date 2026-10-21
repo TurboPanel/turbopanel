@@ -476,6 +476,11 @@ export function registerServerMetricsRoutes(router: Hono<AppEnv>, opts: AuthRout
       backend,
       schemaVersion: 6,
       kind: 'series',
+      // The response carries the device inventory, capacities and CPU limits
+      // taken from the latest hardware record, so a new record must not be
+      // answered from an older cached response. The chart values do not
+      // depend on it.
+      hardwareRevision: latestGeneration?.generation,
     })
 
     const cached = await cache.get<ReturnType<typeof buildSeriesRouteResponse>>(cacheKey)
