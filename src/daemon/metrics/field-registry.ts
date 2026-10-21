@@ -76,9 +76,10 @@ export type RegistryTable = keyof typeof REGISTRY_TABLES
  * meaning, a column is removed or re-typed) and never goes down: a lower number
  * would make an existing self-hosted file look newer than the program and
  * refuse to open. Additive changes (a value in a spare slot, a column added
- * in place) do not move it. 12 because the self-hosted marker was already at
- * 11; rows and files at an earlier number are skipped by the readers and
- * rebuilt (the earlier layouts were only ever on the canary).
+ * in place) do not move it. It starts at 12, the self-hosted marker the store
+ * change in this series already set; rows and files at an earlier number are
+ * skipped by the readers and rebuilt (the earlier layouts were only ever on
+ * the canary).
  */
 export const METRICS_LAYOUT_VERSION = 12 as const
 

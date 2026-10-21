@@ -874,7 +874,7 @@ export function registerServerMetricsRoutes(router: Hono<AppEnv>, opts: AuthRout
       metrics: [],
       resolutionSeconds: 60,
       backend,
-      schemaVersion: 6,
+      schemaVersion: METRICS_LAYOUT_VERSION,
       kind: 'facts',
     })
     const cached = await cache.get<ReturnType<typeof buildHostFactsPayload>>(cacheKey)
