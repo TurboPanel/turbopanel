@@ -13,6 +13,7 @@ import {
   planEnvironmentTeardown,
   planEnvironmentsTeardown,
   resolvePrincipalRetirement,
+  retireIdleIngressOn,
   stopEnvironmentHosts,
   type EnvironmentTeardownPlan,
 } from './teardown.ts'
@@ -408,4 +409,38 @@ test('stopEnvironmentHosts has nothing to stop without plans', async () => {
     stopped: true,
     serverIds: [],
   })
+})
+
+/** A request context that can dispatch to the given queue. */
+function dispatchContext(queue: CommandQueue): Context {
+  const values: Record<string, unknown> = { daemonCellRegistry: {}, commandQueue: queue }
+  return {
+    get: (key: string) => values[key],
+    json: (body: unknown, status: number) => Response.json(body, { status }),
+  } as unknown as Context
+}
+
+test('stopEnvironmentHosts is stopped only when every planned server accepted its stop', async () => {
+  const reaches = async (rejected: string[]) => {
+    const queue = {
+      enqueue: (envelope: { serverId: string }) =>
+        rejected.includes(envelope.serverId)
+          ? Promise.reject(new Error('down'))
+          : Promise.resolve(),
+    } as unknown as CommandQueue
+    return await stopEnvironmentHosts(
+      dispatchContext(queue),
+      fakeCommandDb({ payloads: [], transitions: [] }),
+      [plan({ serverIds: ['srv-a', 'srv-b'] })],
+      'user-1'
+    )
+  }
+  assertEquals(await reaches([]), { stopped: true, serverIds: ['srv-a', 'srv-b'] })
+  assertEquals(await reaches(['srv-a']), { stopped: false, serverIds: ['srv-b'] })
+})
+
+test('retireIdleIngressOn does nothing without dispatch infrastructure and never throws with it', async () => {
+  await retireIdleIngressOn(bareContext, fakeDb([]), ['srv-a'], 'user-1')
+  const queue = { enqueue: () => Promise.resolve() } as unknown as CommandQueue
+  await retireIdleIngressOn(dispatchContext(queue), fakeDb([[{ id: 'x' }]]), ['srv-a'], 'user-1')
 })
