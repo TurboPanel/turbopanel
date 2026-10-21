@@ -594,3 +594,20 @@ test('buildDatabaseOps names the chosen owner login on an owner-role create', ()
     [{ name: 'shop', action: 'create' }]
   )
 })
+
+test('buildDatabaseOps asks for a conversion only for a listed owner-role database', () => {
+  assertEquals(
+    buildDatabaseOps({
+      databases: ['first', 'shop'],
+      ownerRoleDatabases: ['first', 'shop'],
+      convertDatabases: ['first'],
+    }),
+    [
+      { name: 'first', action: 'create', ownerRole: true, convertExisting: true },
+      { name: 'shop', action: 'create', ownerRole: true },
+    ]
+  )
+  assertEquals(buildDatabaseOps({ databases: ['first'], convertDatabases: ['first'] }), [
+    { name: 'first', action: 'create' },
+  ])
+})

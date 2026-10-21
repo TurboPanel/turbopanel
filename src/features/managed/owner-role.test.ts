@@ -2,9 +2,11 @@ import { assertEquals } from '@std/assert'
 import {
   adminAccessNotes,
   DATABASE_ADMIN_PRIVILEGE,
+  DATABASE_CONVERT_NEEDS_DAEMON_ERROR,
   databasesOwnedByLogin,
   evaluateDatabaseAdminGrant,
   evaluateOwnedDatabasesKept,
+  evaluateOwnerRoleConversion,
   evaluateOwnerLogin,
   OWNER_ROLE_MAX_DATABASE_NAME,
   OWNER_ROLE_NEEDS_DAEMON_ERROR,
@@ -242,4 +244,20 @@ test('the data-only daemon rule leaves other levels, modes, engines and held log
     )?.error,
     READWRITE_NEEDS_DAEMON_ERROR
   )
+})
+
+test('moving an existing database onto its owner role needs a Postgres database, a confirmation and a daemon that can', () => {
+  const ask = (engine: string, name: string, confirm: unknown, daemon = true) =>
+    evaluateOwnerRoleConversion(engine, name, confirm, daemon)
+  assertEquals(ask('postgres', 'defaultdb', true), null)
+  assertEquals(ask('mysql', 'defaultdb', true)?.error, 'managed_owner_role_unsupported')
+  assertEquals(ask('postgres', 'postgres', true)?.status, 400)
+  assertEquals(ask('postgres', 'x'.repeat(OWNER_ROLE_MAX_DATABASE_NAME + 1), true)?.status, 400)
+  const unconfirmed = ask('postgres', 'defaultdb', undefined)
+  assertEquals(unconfirmed?.error, 'managed_owner_role_confirm_required')
+  assertEquals(unconfirmed?.message?.includes('tp_defaultdb_owner'), true)
+  assertEquals(ask('postgres', 'defaultdb', 'yes')?.status, 400)
+  const old = ask('postgres', 'defaultdb', true, false)
+  assertEquals(old?.error, DATABASE_CONVERT_NEEDS_DAEMON_ERROR)
+  assertEquals(old?.status, 409)
 })

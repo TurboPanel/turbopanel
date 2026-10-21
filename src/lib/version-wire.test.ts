@@ -9,6 +9,7 @@ import {
   DEPLOY_CANCEL_FEATURE,
   INSTANCE_REVISION_HEADER,
   INSTANCE_VERSION_HEADER,
+  MANAGED_DATABASE_CONVERT_FEATURE,
   MANAGED_DATABASE_OWNER_FEATURE,
   MANAGED_HA_BOOT_HOLD_FEATURE,
   MANAGED_HA_INSTANCE_FEATURE,
@@ -236,6 +237,14 @@ test('managed-database-owner-v1 is an advertised wire feature and raised no floo
   assertEquals(MANAGED_DATABASE_OWNER_FEATURE, 'managed-database-owner-v1')
   assertEquals(
     (DAEMON_WIRE_FEATURES as readonly string[]).includes(MANAGED_DATABASE_OWNER_FEATURE),
+    true
+  )
+})
+
+test('managed-database-convert-v1 is an advertised wire feature', () => {
+  assertEquals(MANAGED_DATABASE_CONVERT_FEATURE, 'managed-database-convert-v1')
+  assertEquals(
+    (DAEMON_WIRE_FEATURES as readonly string[]).includes(MANAGED_DATABASE_CONVERT_FEATURE),
     true
   )
 })

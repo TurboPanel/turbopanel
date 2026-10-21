@@ -57,9 +57,11 @@ import {
 import {
   adminAccessNotes,
   databasesOwnedByLogin,
+  evaluateOwnerRoleConversion,
   OWNER_CHANGE_NOT_AVAILABLE,
 } from '../../features/managed/owner-role.ts'
 import {
+  daemonCanConvertDatabase,
   daemonHonoursOwnerRole,
   refuseLoginCreateIfDaemonCannot,
   daemonOwnerSupport,
@@ -952,6 +954,7 @@ async function prepareApplyForManaged(
     dropUsers?: string[]
     dropDatabases?: string[]
     dropOwnerRoleDatabases?: string[]
+    convertDatabases?: string[]
     omitLoginIds?: string[]
     excludeMemberIds?: string[]
     forceResyncMemberIds?: string[]
@@ -975,6 +978,7 @@ async function prepareApplyForManaged(
     dropUsers: extra?.dropUsers,
     dropDatabases: extra?.dropDatabases,
     dropOwnerRoleDatabases: extra?.dropOwnerRoleDatabases,
+    convertDatabases: extra?.convertDatabases,
     omitLoginIds: extra?.omitLoginIds,
     excludeMemberIds: extra?.excludeMemberIds,
     forceResyncMemberIds: extra?.forceResyncMemberIds,
@@ -2538,6 +2542,67 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       },
       OWNER_CHANGE_NOT_AVAILABLE.status
     )
+  })
+
+  // Moves a database that already exists (the cluster's first database, or one
+  // made before owner roles) onto its owner role, only when asked. Ownership
+  // only: nothing in the database is changed or removed. Repeating it is safe.
+  router.post('/environments/:id/managed/databases/:databaseName/owner-role', async (c) => {
+    const scope = await loadManagedRowScope(c)
+    if (scope instanceof Response) return scope
+    const { db, auth, ctx, row } = scope
+    const databaseName = decodeURIComponent(c.req.param('databaseName'))
+    const options = await loadManagedOptions(db, ctx.spec, row)
+    if (!options) return c.json({ error: 'Invalid managed options' }, 400)
+    if (!options.databases.includes(databaseName)) return c.json({ error: 'Not found' }, 404)
+    const body = await parseJsonBody(c)
+    if (body instanceof Response) return body
+
+    const targetServerId = resolveManagedTargetServerId(c, row.serverId)
+    if (targetServerId instanceof Response) return targetServerId
+    const refusal = evaluateOwnerRoleConversion(
+      ctx.spec.engine,
+      databaseName,
+      body.confirm,
+      await daemonCanConvertDatabase(db, targetServerId)
+    )
+    if (refusal) {
+      return c.json({ error: refusal.error, message: refusal.message }, refusal.status)
+    }
+
+    const nextOwnerRoleDatabases = nextDatabasesAfterCreate(
+      options.ownerRoleDatabases ?? [],
+      databaseName
+    )
+    const nextOptions: ManagedRowOptions = {
+      ...options,
+      ownerRoleDatabases: nextOwnerRoleDatabases,
+    }
+    const prepared = await prepareApplyForManaged(c, db, ctx, row, nextOptions, targetServerId, {
+      convertDatabases: [databaseName],
+    })
+    if (prepared instanceof Response) return prepared
+    await saveManagedOptions(db, row.id, nextOptions)
+
+    const enqueued = await enqueuePreparedManagedApply(c, db, prepared.commandQueue, {
+      userId: auth.userId,
+      managedId: row.id,
+      members: prepared.members,
+    })
+    if (enqueued instanceof Response) {
+      await saveManagedOptions(db, row.id, options)
+      return enqueued
+    }
+    const primaryFanout = pickPrimaryCommandResult(enqueued)
+    return c.json({
+      ok: true,
+      databases: options.databases,
+      ownerRoleDatabases: nextOwnerRoleDatabases,
+      owners: describeDatabaseOwners({ ...nextOptions }),
+      commandId: primaryFanout?.commandId,
+      serverId: primaryFanout?.serverId ?? targetServerId,
+      results: enqueued,
+    })
   })
 
   router.post('/environments/:id/managed/databases', async (c) => {
