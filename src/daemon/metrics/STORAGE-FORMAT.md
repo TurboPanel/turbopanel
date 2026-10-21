@@ -289,6 +289,23 @@ the sentinel. Packing is `packEntityPages` (`v8-layout.ts:622`); the budget is a
 The folded extra filesystem and the two embedded NICs use the same contract fields as above, on `host.io` and
 `host.network`.
 
+## The field registry
+
+`field-registry.ts` is the single list of every value the two stores keep. Each entry names the value, whether it
+is a number or text, and its home in both stores: the hosted row and slot, and the self-hosted table and column.
+Contract values the stores do not keep are listed as well, each with the reason (`NOT_STORED_FIELDS`). A contract
+value is in exactly one of the two lists.
+
+`field-registry.test.ts` (also `pnpm check:metrics-parity`, no database needed) fails when:
+
+- a descriptor, a host fact or a device fact is missing from the registry, or listed twice;
+- the hosted layout uses a number or text slot the registry does not list, or the registry names a slot the layout
+  does not fill, or a reading sits in a different slot than the hosted reader looks in;
+- the self-hosted schema has a column the registry does not list, or lacks one it does.
+
+`KNOWN_GAPS` in the registry records the differences that still exist, so a new difference cannot appear
+unseen. Each list only shrinks; the aim is that all three are empty and both editions then hold the same readings.
+
 ## Data points that are not stored
 
 Nine fields stay in the wire contract and the descriptors but have no hosted slot and are masked on DuckDB, so
@@ -475,7 +492,8 @@ different, stricter rule: **a layout change is a hard cut, never a dual read.**
 2. **Descriptor.** Add it to `src/daemon/metrics/metric-descriptors.ts` with its unit, semantic
    (`gauge`/`rate`/`delta`/`psi-percent`), aggregation, reset behaviour, availability (`missing-when-unsupported` or
    `legitimate-zero`), range and sanitize rule. The canonical name is `<entityScope>.<fieldName>`.
-3. **Hosted slot.** Pick a spare slot. In `backends/cloudflare/v8-layout.ts` add the id to `DOUBLE_DEFS` (or
+3. **Registry and hosted slot.** Add the value to `field-registry.ts` with a home in both stores
+   (`STORED_FIELDS`), or with a reason in `NOT_STORED_FIELDS`. Pick a spare slot. In `backends/cloudflare/v8-layout.ts` add the id to `DOUBLE_DEFS` (or
    `TEXT_KEYS` for text) and to `V8_HOST_ROW_SPECS` at that position; for a device row, add it to the matching
    `*_SPEC`. Respect 19 doubles per page and 14 content blobs.
 4. **Layout spec.** The spec and fixture are generated: `scripts/metrics-v8-layout/generate.mjs` from the catalogue
