@@ -340,6 +340,37 @@ loopback and hairpin callers), anything arriving as the gateway is allowed. The
 list is read on each reconcile; a server added to the organization reaches the
 other servers' root allow-list at their next ingress reconcile.
 
+**Connect straight through (PostgreSQL only).** `login.is_straight_through`
+(API `straightThrough`) makes the front door pass that login's connection
+straight to the server (`fast_forward`: one server connection per client
+session, no connection reuse, no read split). It exists for drivers that send a
+Flush message after preparing a query (the Node `postgres` driver, drizzle),
+which the shared path does not support. One resolver,
+`resolveStraightThrough` in `login-straight-through.ts`, decides the effective
+value: the stored choice when not NULL, else on for a PostgreSQL `user` login
+whose privileges include `owner` (Migration level) and whose connection role is
+`read-write` (a read-only login keeps the shared path and its replica routing),
+off for the rest, and
+always off when `allowed_sources` is non-empty (the limit is enforced on the
+shared path). A Migration login with a source limit therefore just resolves
+off; it is never an error. Explicit `true` is refused with 400
+`straight_through_conflicts_with_source_limit` when the login also has a source
+limit, judged on the state after the request on both POST and PATCH (turning it
+on with a limit, or adding a limit to a login set to it); 400
+`straight_through_postgres_only` for MySQL/MariaDB; 400
+`straight_through_login_not_allowed` for root/replication. `null` on PATCH
+clears the choice back to the default. The reconcile sends
+`straightThrough: true` on the `users[]` entry only when the effective value is
+on (omitted otherwise). It is deliberately not behind a feature flag like
+`managed-login-limits-v1`: the field only adds behaviour, so a daemon that
+predates it ignores it and keeps the shared path, and the command parser there
+does not reject unknown keys. Every PATCH already re-applies the cluster
+(which re-sends the ingress), so changing the switch, the privileges or the
+source limit takes effect through the same apply; the dry run lists the change
+in plain words. `scripts/contract-field-snapshot.json` does not pin
+`managed.ingress.reconcile` (command schemas stay comment-pinned); keep the
+`ManagedIngressReconcileUser` comment in sync with the daemon.
+
 **App logins can be limited by source address and connection count.**
 `login.allowed_sources` (NULL = anywhere) lists places: `internal`
 (this server: loopback + its Docker networks), `server:<id>` (an organization
@@ -414,7 +445,9 @@ for a row made before modes; `recipe`: new logins' default; `self`: the owner
 manages permissions by hand), `is_tool` (database-tool login: everything to
 the primary), `allowed_sources`, `max_connections`, `access` and `privileges`;
 the databases a login may use are `scope` rows pointing at `database` rows.
-`ManagedLoginRow` in `logins.ts` reads them as `grantMode`, `tool`,
+`is_straight_through` (nullable: NULL = the owner never chose) is the
+per-login "Connect straight through (no connection sharing)" switch, see
+below. `ManagedLoginRow` in `logins.ts` reads them as `grantMode`, `tool`,
 `allowedSources`, `maxConnections`, `connectionRole`, `privileges` and
 `databases` (the API names). A login is not a principal: `principal_id` is only
 set when the login shares a site owner's Linux user name. The

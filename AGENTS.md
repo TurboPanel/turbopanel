@@ -408,6 +408,14 @@ guard; `pnpm test:do` alone does not.
   a wiped database. `/api/client/v1/status` answers **503**
   `{ code: "database_error" }` (not a bare 500) when the settings read fails
   — the symptom of an unmigrated or unreachable database.
+  A testing or staging database that sits behind the managed database listener
+  (a pooling proxy) refuses the session advisory lock the migrate script takes
+  ("Feature not supported"); set the build variable
+  `TURBOPANEL_MIGRATE_NO_LOCK=1` there (`wrangler.jsonc` sets it in the
+  `testing` and `staging` `vars`, which the script reads, so no dashboard build
+  variable is needed). The script refuses it for any other
+  `CLOUDFLARE_ENV` (live keeps the lock), and with it set two migrations must
+  not run at once.
   Do not commit `TURBOPANEL_REVISION` in `wrangler.jsonc` — that would freeze a
   SHA. Self-hosted instance-launch writes it into `runtime.env` /
   `runtime.dev-vars` from `git rev-parse HEAD` in the instance checkout.

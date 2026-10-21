@@ -38,6 +38,7 @@ import {
   clientEndpointsForListener,
 } from '../net/client-addresses-pure.ts'
 import { loadManagedExternalAccess } from './external-access.ts'
+import { resolveStraightThrough, type StraightThroughFacts } from './login-straight-through.ts'
 import type { ManagedContext } from './managed-context.ts'
 import { type ManagedRowOptions, parseManagedSettings } from './options.ts'
 import { evaluateManagedPromoteLagGate } from './promote-lag.ts'
@@ -479,11 +480,22 @@ export function resolveManagedServerId(
 }
 
 /**
+ * The API fields for connecting straight through: `straightThrough` is what
+ * the front door will do (false with a source limit), and
+ * `straightThroughDefault` is true when that comes from the default rather
+ * than a choice, so the UI can show 'default'.
+ */
+export function straightThroughFields(facts: StraightThroughFacts) {
+  const resolved = resolveStraightThrough(facts)
+  return { straightThrough: resolved.value, straightThroughDefault: resolved.isDefault }
+}
+
+/**
  * A login in the managed users API shape. `id` is the login id (what the
  * users routes are addressed by); `loginId` repeats it, and `principalId` is
  * the site owner's Linux user the login shares its name with, or `null`.
  */
-export function serializeManagedLogin(row: ManagedLoginRow) {
+export function serializeManagedLogin(row: ManagedLoginRow, engine: string) {
   return {
     id: row.id,
     username: row.username,
@@ -497,6 +509,7 @@ export function serializeManagedLogin(row: ManagedLoginRow) {
     // 'any' when unrestricted; otherwise the places the login may connect from.
     allowedSources: row.allowedSources ?? ['any'],
     maxConnections: row.maxConnections ?? null,
+    ...straightThroughFields({ ...row, engine }),
     createdAt: row.createdAt,
     principalId: row.principalId,
     loginId: row.id,

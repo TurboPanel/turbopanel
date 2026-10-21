@@ -5736,6 +5736,14 @@ export type ManagedIngressReconcileUser = {
    */
   tool?: boolean
   /**
+   * PostgreSQL app logins only: pass the connection straight through the
+   * front door (one server connection per client session, no connection reuse,
+   * no read split). Sent only when true, and never for a login with
+   * `allowedSources`. Absent means false; a daemon that predates the field
+   * ignores it and keeps the shared path.
+   */
+  straightThrough?: boolean
+  /**
    * Where the login may be used from, as plain IPv4/IPv6 addresses or a
    * trailing-`%` prefix (`203.0.113.%`). Root logins: the addresses of the
    * organization's servers (public, private network, mesh); present — even
@@ -7858,6 +7866,12 @@ function parseManagedIngressReconcileUser(value: unknown): ManagedIngressReconci
       throw new TypeError('Invalid managed.ingress.reconcile user tool')
     }
     user.tool = value.tool
+  }
+  if (value.straightThrough !== undefined) {
+    if (typeof value.straightThrough !== 'boolean') {
+      throw new TypeError('Invalid managed.ingress.reconcile user straightThrough')
+    }
+    user.straightThrough = value.straightThrough
   }
   parseManagedIngressUserLimits(value, user)
   return user

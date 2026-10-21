@@ -49,8 +49,11 @@ test('applySettingsPatch keeps unset settings and clears limits on null', () => 
     connectionRole: 'read-write' as const,
     allowedSources: ['internal'],
     maxConnections: 5,
+    straightThrough: true,
   }
   assertEquals(applySettingsPatch(before, {}), before)
+  assertEquals(applySettingsPatch(before, { straightThrough: null }).straightThrough, undefined)
+  assertEquals(applySettingsPatch(before, { straightThrough: false }).straightThrough, false)
   assertEquals(
     applySettingsPatch(before, { allowedSources: null, maxConnections: null, tool: true }),
     { ...before, allowedSources: undefined, maxConnections: undefined, tool: true }
