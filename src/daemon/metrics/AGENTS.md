@@ -192,7 +192,8 @@ state lives where the runtime can keep it exact:
 Best effort, not exact: the Analytics Engine write after an admitted sample is
 fire-and-forget, so an admitted sample can still be lost.
 
-A sample at or before the last stored one is a duplicate or replay; one at
+A sample stamped more than 60 s ahead of the receive time is refused with 409
+(`sample_in_future`). A sample at or before the last stored one is a duplicate or replay; one at
 least 50 s after it is on time; an earlier one spends a catch-up token (5,
 refilling one a minute). A duplicate or replayed sample gets 409 (`duplicate_sample`, no
 `Retry-After`): it can never be accepted later and the daemon does not retry a 409. An early

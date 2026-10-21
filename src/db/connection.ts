@@ -2,6 +2,7 @@ import { drizzle, type PostgresJsDatabase } from 'drizzle-orm/postgres-js'
 import type { Context } from 'hono'
 import postgres from 'postgres'
 import type { DaemonCellRegistry } from '../contracts/cell.ts'
+import type { MetricsGate } from '../daemon/metrics/ingest-gate.ts'
 import type { ServerMetricsStore } from '../daemon/metrics/types.ts'
 import type { ExecutionLogStore } from '../features/execution-logs/types.ts'
 import type { QueryCache } from '../query-cache/contracts.ts'
@@ -260,6 +261,10 @@ export function getDaemonCellRegistry(c: Context): DaemonCellRegistry | undefine
 
 export function getQueryCache(c: Context): QueryCache | undefined {
   return c.get('queryCache')
+}
+
+export function getMetricsGate(c: Context): MetricsGate | undefined {
+  return c.get('metricsGate')
 }
 
 /**

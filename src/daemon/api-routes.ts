@@ -734,6 +734,9 @@ async function applyMetricsIngestGate<E extends Env>(
     if (gate.reason === 'duplicate') {
       return c.json({ ok: false, error: 'duplicate_sample' }, 409)
     }
+    if (gate.reason === 'future') {
+      return c.json({ ok: false, error: 'sample_in_future' }, 409)
+    }
     c.header('Retry-After', String(gate.retryAfterSeconds))
     return c.json({ ok: false, error: 'rate_limited', reason: gate.reason }, 429)
   }

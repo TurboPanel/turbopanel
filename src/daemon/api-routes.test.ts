@@ -3881,3 +3881,22 @@ test("GET /host/docker-networking returns the owner org's pools (empty when unco
     })
   })
 })
+
+test('POST /metrics: a sample stamped more than 60 s ahead gets 409 and is not written', async () => {
+  await withEnrollFixture(async ({ db, serverId, keyId }) => {
+    const { app, writes } = await createMetricsTestAppWithDb(db)
+    const daemonToken = await issueDaemonToken(serverId, keyId)
+    const sampledAt = new Date(Date.now() + 120_000).toISOString()
+    const response = await app.request('/api/daemon/v1/metrics', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${daemonToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(buildValidMetricsFrame({ metadata: { sampledAt } })),
+    })
+    assertEquals(response.status, 409)
+    assertEquals(await response.json(), { ok: false, error: 'sample_in_future' })
+    assertEquals(writes.length, 0)
+  })
+})

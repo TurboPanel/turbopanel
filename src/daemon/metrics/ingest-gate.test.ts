@@ -49,6 +49,16 @@ test('the first sample is stored, the same timestamp again is a duplicate, an ea
   if (!replay.stored) assertEquals(replay.reason, 'duplicate')
 })
 
+test('a sample more than 60 s ahead of the receive time is refused and remembers nothing', async () => {
+  const { gate, advance } = gateWithClock()
+  const early = await gate.admit(SERVER, at(61), 0)
+  assertEquals(early.stored, false)
+  if (!early.stored) assertEquals(early.reason, 'future')
+  assertEquals(await gate.admit(SERVER, at(60), 0), { stored: true, eventsAllowed: 0 })
+  advance(100)
+  assertEquals(await gate.admit(SERVER, at(121), 0), { stored: true, eventsAllowed: 0 })
+})
+
 test('a duplicate leaves the remembered state exactly as it was', () => {
   const state: GateState = {
     lastSampledMs: T0,
@@ -113,7 +123,8 @@ test('a flood of parallel samples for the same minute stores at most the first p
 
 test('events are stored while the hourly budget lasts, then dropped; the sample itself is still stored', async () => {
   // All ten land at once (a daemon replaying a backlog), so nothing refills in between.
-  const { gate } = gateWithClock()
+  const { gate, advance } = gateWithClock()
+  advance(600)
   let allowed = 0
   for (let minute = 0; minute < 10; minute++) {
     const decision = await gate.admit(SERVER, at(minute * 60), 16)

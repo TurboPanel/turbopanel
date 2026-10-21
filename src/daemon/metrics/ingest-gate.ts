@@ -20,6 +20,8 @@
  *   at most one early or replayed sample can slip through right after it.
  *
  * Rules, in order:
+ * - a sample more than {@link GATE_MAX_FUTURE_SECONDS} ahead of the receive
+ *   time is refused;
  * - a sample at or before the last stored one is a duplicate or a replay:
  *   refused;
  * - a sample at least {@link GATE_MIN_GAP_SECONDS} after the last one is on
@@ -39,12 +41,14 @@
 export const GATE_MIN_GAP_SECONDS = 50
 /** Early samples a server may store in a burst (a 5-minute backlog after an outage). */
 export const GATE_SAMPLE_BURST = 5
+/** A sample stamped further ahead of the receive time than this is refused, so a wrong clock cannot park the last-stored time in the future. */
+export const GATE_MAX_FUTURE_SECONDS = 60
 /** Events a server may store per rolling hour. */
 export const GATE_EVENTS_PER_HOUR = 120
 
 export type GateDecision =
   | { stored: true; eventsAllowed: number }
-  | { stored: false; reason: 'duplicate' | 'too_soon'; retryAfterSeconds: number }
+  | { stored: false; reason: 'duplicate' | 'future' | 'too_soon'; retryAfterSeconds: number }
 
 /** What the gate remembers about one server. */
 export type GateState = {
@@ -77,6 +81,12 @@ export function decideAdmission(
   if (!Number.isFinite(sampledMs)) {
     return {
       decision: { stored: false, reason: 'duplicate', retryAfterSeconds: GATE_MIN_GAP_SECONDS },
+      next: state,
+    }
+  }
+  if (sampledMs - nowMs > GATE_MAX_FUTURE_SECONDS * 1000) {
+    return {
+      decision: { stored: false, reason: 'future', retryAfterSeconds: GATE_MIN_GAP_SECONDS },
       next: state,
     }
   }
