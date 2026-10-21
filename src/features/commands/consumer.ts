@@ -93,15 +93,18 @@ import {
 import type { CommandQueue } from './queue.ts'
 import {
   type EnvironmentDeployResultSite,
+  type KeptFolder,
   type ManagedDestroyCommandPayload,
   parseEnvironmentDeployPayload,
   parseEnvironmentDeployResult,
   parseEnvironmentLifecyclePayload,
   parseEnvironmentLifecycleResult,
+  parsePrincipalsReconcileResult,
   parseEnvironmentStopPayload,
   parseEnvironmentStopResult,
   parseFabricReconcilePayload,
   parseFabricReconcileResult,
+  parseFoldersRemoveResult,
   parseHostnameSetResult,
   parseManagedApplyPayload,
   parseManagedApplyResult,
@@ -126,8 +129,24 @@ import {
   parseSystemReconcilePayload,
   parseSystemReconcileResult,
   parseTimezoneSetResult,
+  type ReportedFolder,
 } from '../../contracts/commands/schemas.ts'
 import { updateManagedMemberObservedReplication } from '../managed/members.ts'
+import { markFoldersPresent } from '../folders/allocate.ts'
+import {
+  applyFolderRemovalReports,
+  type FolderRemovalReport,
+  markKeptFoldersOrphan,
+  markUnplannedServiceFoldersOrphan,
+  reconcileReportedFolders,
+} from '../folders/reports.ts'
+import { markPlacementsAbsent, markPlacementsPresent } from '../principals/placement-records.ts'
+import {
+  recordReportedPrincipalIds,
+  releaseRefusedPrincipalIds,
+} from '../principals/principal-ids.ts'
+import { orchestratorManagesEngine } from '../managed/ha-policy.ts'
+import { clearLeafAttentionAfterDeploy, recordPendingTlsLeafFailure } from '../tls/leaf-state.ts'
 import { findManagedHaHierarchy, findManagedIngressHierarchy } from '../system/hierarchy.ts'
 import {
   commitPendingTlsLeafTracking,
@@ -142,9 +161,15 @@ import {
   onPromoteSucceeded,
   onRecoveryCommandFailed,
   onRecoveryStepFailed,
+  onSwitchoverPromoteFailed,
   recoveryIdFromCommandMetadata,
+  resumeInterruptedPromote,
 } from '../managed/ha-recovery.ts'
 import { settleIngressCommandForRecovery } from '../managed/ha-ingress-gate.ts'
+import {
+  buildSyntheticPromoteSuccessResult,
+  isAlreadyWritablePrimaryPromoteError,
+} from '../managed/promote-resume.ts'
 import {
   enqueueFollowPrimaryOnReplicas,
   handleFollowPrimaryFailure,
@@ -194,6 +219,8 @@ const COMMAND_TIMEOUT_MS: Record<CommandType, number> = {
   'server.firewall.confirm': 60_000,
   // Writes a few unit files, one daemon-reload, enables what moved. No dump runs here.
   'server.backups.reconcile': 120_000,
+  // One `rm -rf` through the root helper per folder, up to 100 folders; a big volume takes minutes.
+  'server.folders.remove': 600_000,
   'environment.deploy': 600_000,
   'environment.lifecycle': 120_000,
   'environment.stop': 120_000,
@@ -237,6 +264,7 @@ export function commandTimeoutMs(type: string): number {
     type === 'server.firewall.reconcile' ||
     type === 'server.firewall.confirm' ||
     type === 'server.backups.reconcile' ||
+    type === 'server.folders.remove' ||
     type === 'environment.deploy' ||
     type === 'environment.lifecycle' ||
     type === 'environment.stop' ||
@@ -336,6 +364,35 @@ export function errorMessage(err: unknown): string {
  * The payload is read exactly once per processing attempt and kept in memory for
  * the side effects that need it — it is never re-read from `command`.
  */
+function managedIdFromCommandContext(context: unknown): string | null {
+  if (typeof context !== 'object' || context === null || Array.isArray(context)) {
+    return null
+  }
+  const id = (context as { managedId?: unknown }).managedId
+  return typeof id === 'string' ? id : null
+}
+
+async function failExpiredManagedApplyWhenClusterGone(
+  db: Db,
+  record: { id: string; type: string; context: unknown }
+): Promise<boolean> {
+  if (record.type !== 'managed.apply') return false
+  const managedId = managedIdFromCommandContext(record.context)
+  if (!managedId) return false
+  const [row] = await db
+    .select({ id: managed.id })
+    .from(managed)
+    .where(eq(managed.id, managedId))
+    .limit(1)
+  if (row) return false
+  await transitionCommand(db, record.id, {
+    status: 'failed',
+    error: 'Managed cluster no longer exists',
+    errorCode: 'target_gone',
+  })
+  return true
+}
+
 async function loadDispatchableRecord(
   db: Db,
   envelope: CommandEnvelope
@@ -350,6 +407,9 @@ async function loadDispatchableRecord(
   }
 
   if (record.expiresAt && Date.parse(record.expiresAt) < Date.now()) {
+    if (await failExpiredManagedApplyWhenClusterGone(db, record)) {
+      return null
+    }
     await transitionCommand(db, record.id, { status: 'timed_out' })
     await settleIngressCommandForRecovery(
       db,
@@ -1012,6 +1072,9 @@ async function applyEnvironmentDeploySideEffect(
   if (record.type !== 'environment.deploy') return
   try {
     const payload = parseEnvironmentDeployPayload(record.payload)
+    // Only the newest deploy of the environment decides which folders are still in use. A
+    // command with no generation cannot be placed among the deploys, so it decides nothing.
+    let current = false
     if (payload.generation !== undefined) {
       const finishedAt = nowIso()
       const marked = await markDeploymentApplied(db, {
@@ -1031,10 +1094,32 @@ async function applyEnvironmentDeploySideEffect(
       if (marked !== null) {
         await advanceRolloutSafely(db, deps, payload.environmentId, payload.generation)
       }
+      current = marked !== null
     }
     await markEnvironmentCopiesReady(db, payload.environmentId, envelope.serverId)
+    const plannedFolderIds = await markPlannedFoldersPresentSafely(db, record)
+    // Without a list that was read, nothing is known about which folders are in use.
+    if (current && plannedFolderIds !== null) {
+      await markUnplannedFoldersOrphanSafely(db, record, {
+        environmentId: payload.environmentId,
+        serverId: envelope.serverId,
+        plannedFolderIds,
+      })
+    }
+    // What the host says each account has is recorded first, while a row the
+    // control plane only chose ids for is still not `present`; then the
+    // accounts this deploy carried are marked present, whether or not a newer
+    // deploy has since replaced this one.
     const deployResult = parseEnvironmentDeployResult(result)
+    await recordReportedIdsSafely(db, record, envelope.serverId, deployResult.principals)
+    await markPlacementsPresentSafely(
+      db,
+      record,
+      envelope.serverId,
+      (payload.principalMaterial ?? []).map((entry) => entry.principalId)
+    )
     await recordSiteAppsSafely(db, record, payload.environmentId, deployResult.sites)
+    await markKeptFoldersOrphanSafely(db, record, envelope.serverId, deployResult.keptFolders)
     // Only reconcile when the daemon included an authoritative containers
     // report (including `[]`). Omitting the field means collection failed.
     if (deployResult.containers === undefined) return
@@ -1061,6 +1146,215 @@ async function applyEnvironmentDeploySideEffect(
   }
 }
 
+/** The folder rows a deploy planned are on the host now; a miss is logged, never fatal. */
+/**
+ * The folders the deploy planned, now marked present; `null` when they could not
+ * be read, so the caller concludes nothing from the miss. A deploy that planned
+ * no folder has none and returns an empty list.
+ */
+export async function markPlannedFoldersPresentSafely(
+  db: Db,
+  record: DispatchableCommandRecord
+): Promise<string[] | null> {
+  try {
+    const metadata = await getCommandMetadata(db, record.id)
+    const ids = metadata?.folderIds
+    if (!Array.isArray(ids)) return []
+    const folderIds = ids.filter((id): id is string => typeof id === 'string')
+    await markFoldersPresent(db, folderIds)
+    return folderIds
+  } catch (err) {
+    compatLogWarn(
+      'command-consumer',
+      `folder present mark failed for command ${record.id}: ${errorMessage(err)}`
+    )
+    return null
+  }
+}
+
+/**
+ * A deploy that no longer plans a service folder on this server leaves its files
+ * in place; the row becomes an orphan. A miss is logged, never fatal.
+ */
+async function markUnplannedFoldersOrphanSafely(
+  db: Db,
+  record: DispatchableCommandRecord,
+  input: { environmentId: string; serverId: string; plannedFolderIds: readonly string[] }
+): Promise<void> {
+  try {
+    await markUnplannedServiceFoldersOrphan(db, input)
+  } catch (err) {
+    compatLogWarn(
+      'command-consumer',
+      `unplanned folders not marked for command ${record.id}: ${errorMessage(err)}`
+    )
+  }
+}
+
+/** Placement bookkeeping never fails a command result; a miss is logged. */
+async function markPlacementsPresentSafely(
+  db: Db,
+  record: DispatchableCommandRecord,
+  serverId: string,
+  principalIds: readonly string[]
+): Promise<void> {
+  try {
+    await markPlacementsPresent(db, serverId, principalIds)
+  } catch (err) {
+    compatLogWarn(
+      'command-consumer',
+      `placement present mark failed for command ${record.id}: ${errorMessage(err)}`
+    )
+  }
+}
+
+/** The ids the host reports fill empty placement rows; a miss is logged, never fatal. */
+async function recordReportedIdsSafely(
+  db: Db,
+  record: DispatchableCommandRecord,
+  serverId: string,
+  reports: Parameters<typeof recordReportedPrincipalIds>[2] | undefined
+): Promise<void> {
+  if (reports === undefined || reports.length === 0) return
+  try {
+    await recordReportedPrincipalIds(db, serverId, reports)
+  } catch (err) {
+    compatLogWarn(
+      'command-consumer',
+      `reported principal ids not recorded for command ${record.id}: ${errorMessage(err)}`
+    )
+  }
+}
+
+/** Folders a deploy left in place become orphans; a miss is logged, never fatal. */
+async function markKeptFoldersOrphanSafely(
+  db: Db,
+  record: DispatchableCommandRecord,
+  serverId: string,
+  kept: readonly KeptFolder[] | undefined
+): Promise<void> {
+  if (kept === undefined || kept.length === 0) return
+  try {
+    await markKeptFoldersOrphan(db, serverId, kept, { updatedBefore: record.createdAt })
+  } catch (err) {
+    compatLogWarn(
+      'command-consumer',
+      `kept folders not marked for command ${record.id}: ${errorMessage(err)}`
+    )
+  }
+}
+
+/** A host's word on removed folders settles their rows; a miss is logged, never fatal. */
+async function applyFolderRemovalReportsSafely(
+  db: Db,
+  record: DispatchableCommandRecord,
+  serverId: string,
+  reports: readonly FolderRemovalReport[] | undefined,
+  options: { updatedBefore?: string } = {}
+): Promise<void> {
+  if (reports === undefined || reports.length === 0) return
+  try {
+    await applyFolderRemovalReports(db, serverId, reports, options)
+  } catch (err) {
+    compatLogWarn(
+      'command-consumer',
+      `folder removal report not applied for command ${record.id}: ${errorMessage(err)}`
+    )
+  }
+}
+
+async function applyFoldersRemoveSideEffect(
+  db: Db,
+  record: DispatchableCommandRecord,
+  envelope: CommandEnvelope,
+  result: unknown
+): Promise<void> {
+  if (record.type !== 'server.folders.remove') return
+  await applyFolderRemovalReportsSafely(
+    db,
+    record,
+    envelope.serverId,
+    parseFoldersRemoveResult(result).folders,
+    // The rows were marked before the command was built, so a row changed after it was is in use again.
+    { updatedBefore: record.createdAt }
+  )
+}
+
+/** A complete listing of the host's folders is compared with the rows; a miss is logged, never fatal. */
+async function reconcileReportedFoldersSafely(
+  db: Db,
+  record: DispatchableCommandRecord,
+  serverId: string,
+  folders: readonly ReportedFolder[] | undefined
+): Promise<void> {
+  if (folders === undefined) return
+  try {
+    await reconcileReportedFolders(db, serverId, folders, { listedAfter: record.createdAt })
+  } catch (err) {
+    compatLogWarn(
+      'command-consumer',
+      `reported folders not compared for command ${record.id}: ${errorMessage(err)}`
+    )
+  }
+}
+
+async function applyPrincipalsReconcileSideEffect(
+  db: Db,
+  record: DispatchableCommandRecord,
+  envelope: CommandEnvelope,
+  result: unknown
+): Promise<void> {
+  if (record.type !== 'server.principals.reconcile') return
+  try {
+    const parsed = parsePrincipalsReconcileResult(result)
+    await recordReportedIdsSafely(db, record, envelope.serverId, parsed.principals)
+    await reconcileReportedFoldersSafely(db, record, envelope.serverId, parsed.folders)
+  } catch (err) {
+    compatLogWarn(
+      'command-consumer',
+      `principals reconcile result not read for command ${record.id}: ${errorMessage(err)}`
+    )
+  }
+}
+
+/** A host refused an id the control plane allocated: let it go so the next attempt takes another. */
+async function applyPrincipalIdRefusedSideEffect(
+  db: Db,
+  record: DispatchableCommandRecord,
+  error: string
+): Promise<void> {
+  if (record.type !== 'environment.deploy' && record.type !== 'server.principals.reconcile') return
+  if (!error.includes('principal_id_taken')) return
+  try {
+    const released = await releaseRefusedPrincipalIds(db, error)
+    compatLogWarn(
+      'command-consumer',
+      `command ${record.id} was refused an account id (${released ? 'released for a new pick' : 'kept, the account already exists'}): ${error.slice(0, 300)}`
+    )
+  } catch (err) {
+    compatLogWarn(
+      'command-consumer',
+      `refused account id not released for command ${record.id}: ${errorMessage(err)}`
+    )
+  }
+}
+
+async function markPlacementsAbsentSafely(
+  db: Db,
+  record: DispatchableCommandRecord,
+  serverId: string,
+  usernames: readonly string[]
+): Promise<void> {
+  try {
+    await markPlacementsAbsent(db, serverId, usernames)
+  } catch (err) {
+    compatLogWarn(
+      'command-consumer',
+      `placement absent mark failed for command ${record.id}: ${errorMessage(err)}`
+    )
+  }
+}
+
 async function applyEnvironmentStopSideEffect(
   db: Db,
   record: DispatchableCommandRecord,
@@ -1069,8 +1363,17 @@ async function applyEnvironmentStopSideEffect(
 ): Promise<void> {
   if (record.type !== 'environment.stop') return
   try {
-    const { environmentId } = parseEnvironmentStopPayload(record.payload)
+    const { environmentId, retirePrincipals } = parseEnvironmentStopPayload(record.payload)
     const stopResult = parseEnvironmentStopResult(result)
+    await applyFolderRemovalReportsSafely(db, record, envelope.serverId, stopResult.folders)
+    if (retirePrincipals !== undefined && retirePrincipals.length > 0) {
+      await markPlacementsAbsentSafely(
+        db,
+        record,
+        envelope.serverId,
+        retirePrincipals.map((entry) => entry.username)
+      )
+    }
     if (stopResult.containers === undefined) return
     await reconcileContainersSafely(db, record, envelope, environmentId, stopResult.containers)
   } catch (err) {
@@ -1329,6 +1632,19 @@ async function applyManagedApplySideEffect(
     // Primary success → enqueue deferred standby applies (if any).
     if (isPrimary && deps?.commandQueue && !isNoopCommandQueue(deps.commandQueue)) {
       await enqueuePendingStandbyApplies(db, record, deps)
+    }
+    // Orchestrator's topology login is created on the primary during apply
+    // (`ensureOrchestratorTopologyRole`); HA reconcile must not run until then.
+    if (isPrimary && orchestratorManagesEngine(payload.engine) && hasManagedFollowUpDeps(deps)) {
+      const { fanOutManagedHaReconcile } = await import('../managed/ha-desired.ts')
+      await fanOutManagedHaReconcile(db, deps.commandQueue, {
+        managedId: payload.managedId,
+        actorType: record.actorEntityType === 'user' ? 'user' : 'system',
+        actorId: record.actorEntityId,
+        secretsConfig: deps.secretsConfig,
+        dataEncryptionSecrets: deps.dataEncryptionSecrets,
+        extraServerIds: [envelope.serverId],
+      })
     }
   } catch (err) {
     const message = errorMessage(err)
@@ -1621,6 +1937,11 @@ async function applyManagedLifecycleSideEffect(
         fencePhase: 'stop',
         engine: recoveryEngine(payload.engine),
         actor: recoveryActor(record),
+        ...(lifecycleResult.switchoverPrimaryExecutedGtidSet
+          ? {
+              switchoverPrimaryExecutedGtidSet: lifecycleResult.switchoverPrimaryExecutedGtidSet,
+            }
+          : {}),
       })
       return
     }
@@ -1700,6 +2021,7 @@ async function applyManagedBackupSideEffect(
         ...(backupResult.database !== undefined ? { database: backupResult.database } : {}),
         path: backupResult.path,
         ...(backupResult.completedAt !== undefined ? { createdAt: backupResult.completedAt } : {}),
+        serverId: record.serverId,
       })
     }
   } catch (err) {
@@ -1901,7 +2223,7 @@ async function applyManagedDestroySideEffect(
     // `applyManagedDestroySideEffect` only runs from `applySucceededSideEffects`
     // (the command already reported `succeeded`), so a `deleteAfterDestroy`
     // marker here always means the daemon actually tore down the runtime.
-    // Delete the `managed` row so `principal.managed_id` cascades — this is
+    // Delete the `managed` row so the cluster's logins and databases cascade — this is
     // the API-delete completion, distinct from any future "destroy runtime
     // only" action that would omit the marker and leave the row in place.
     if (payload.deleteAfterDestroy) {
@@ -1993,6 +2315,74 @@ function payloadEngine(payload: unknown): unknown {
   return (payload as { engine?: unknown }).engine
 }
 
+async function handleHaFailoverRecoveryCommandFailed(
+  db: Db,
+  commandQueue: CommandQueue | undefined,
+  params: {
+    recoveryId: string
+    engine: ReturnType<typeof recoveryEngine>
+    actor: ReturnType<typeof recoveryActor>
+    commandError?: string
+    payload: unknown
+  }
+): Promise<void> {
+  try {
+    const phase = parseManagedHaFailoverPayload(params.payload).phase
+    if (phase === 'recover') {
+      await onSwitchoverPromoteFailed(db, commandQueue, {
+        recoveryId: params.recoveryId,
+        engine: params.engine,
+        actor: params.actor,
+        commandError: params.commandError,
+      })
+      return
+    }
+  } catch {
+    // Unparseable failover payloads still fail the recovery row.
+  }
+  await onRecoveryCommandFailed(db, params.recoveryId)
+}
+
+/**
+ * Returns true when the failure was absorbed (resume re-queued or fence path).
+ */
+async function handlePromoteOrFailoverRecoveryFailure(
+  db: Db,
+  record: DispatchableCommandRecord,
+  recoveryId: string,
+  deps?: CommandConsumerDeps,
+  error?: string
+): Promise<boolean> {
+  if (isManagedHaFailoverRepoint(record)) return false
+  const engine = recoveryEngine(payloadEngine(record.payload))
+  const actor = recoveryActor(record)
+  const resumed = await resumeInterruptedPromote(db, deps?.commandQueue, {
+    recoveryId,
+    engine,
+    actor,
+    error: error ?? record.errorMessage,
+  })
+  if (resumed) return true
+  const commandError = typeof error === 'string' ? error : undefined
+  if (record.type === 'managed.promote') {
+    await onSwitchoverPromoteFailed(db, deps?.commandQueue, {
+      recoveryId,
+      engine,
+      actor,
+      commandError,
+    })
+    return true
+  }
+  await handleHaFailoverRecoveryCommandFailed(db, deps?.commandQueue, {
+    recoveryId,
+    engine,
+    actor,
+    commandError,
+    payload: record.payload,
+  })
+  return false
+}
+
 /**
  * Advance / fail the HA recovery journal when a fenced or promote/failover
  * command fails. Returns true when the fence path already handled the failure
@@ -2002,7 +2392,8 @@ async function applyManagedRecoveryFailedSideEffect(
   db: Db,
   record: DispatchableCommandRecord,
   meta: Record<string, unknown> | null | undefined,
-  deps?: CommandConsumerDeps
+  deps?: CommandConsumerDeps,
+  error?: string
 ): Promise<boolean> {
   const recoveryId = recoveryIdFromCommandMetadata(meta)
   if (!recoveryId) return false
@@ -2026,8 +2417,7 @@ async function applyManagedRecoveryFailedSideEffect(
   }
 
   if (record.type === 'managed.promote' || record.type === 'managed.ha.failover') {
-    if (isManagedHaFailoverRepoint(record)) return false
-    await onRecoveryCommandFailed(db, recoveryId)
+    return await handlePromoteOrFailoverRecoveryFailure(db, record, recoveryId, deps, error)
   }
   return false
 }
@@ -2136,6 +2526,7 @@ async function applyManagedFailedSideEffect(
   // from `needs_resync` to `failed` or mark the whole cluster failed; the
   // sweep retries it a few times.
   if (meta?.returnFence === true) return
+  await recordLeafRenewalFailure(db, record, meta, error)
   if (isManagedHaFailoverRepoint(record)) {
     await handleFollowPrimaryFailure(
       db,
@@ -2151,7 +2542,7 @@ async function applyManagedFailedSideEffect(
     )
     return
   }
-  if (await applyManagedRecoveryFailedSideEffect(db, record, meta, deps)) {
+  if (await applyManagedRecoveryFailedSideEffect(db, record, meta, deps, error)) {
     return
   }
   if (!shouldMarkManagedFailedOnCommandType(record.type)) return
@@ -2163,6 +2554,30 @@ async function applyManagedFailedSideEffect(
   )
 }
 
+/** A failed apply / ingress reconcile keeps the reason on the leaf it was renewing. */
+async function recordLeafRenewalFailure(
+  db: Db,
+  record: DispatchableCommandRecord,
+  meta: unknown,
+  error?: string
+): Promise<void> {
+  if (record.type !== 'managed.apply' && record.type !== 'managed.ingress.reconcile') {
+    return
+  }
+  try {
+    await recordPendingTlsLeafFailure(
+      db,
+      meta,
+      error ?? record.errorMessage ?? 'The command failed on the server.'
+    )
+  } catch (err) {
+    compatLogWarn(
+      'command-consumer',
+      `leaf failure note failed for command ${record.id}: ${errorMessage(err)}`
+    )
+  }
+}
+
 async function applyPendingTlsLeafSideEffect(
   db: Db,
   record: DispatchableCommandRecord
@@ -2172,7 +2587,9 @@ async function applyPendingTlsLeafSideEffect(
   }
   try {
     const meta = await getCommandMetadata(db, record.id)
-    await commitPendingTlsLeafTracking(db, meta)
+    if (await commitPendingTlsLeafTracking(db, meta)) {
+      await clearLeafAttentionAfterDeploy(db, meta)
+    }
   } catch (err) {
     const message = errorMessage(err)
     compatLogWarn(
@@ -2194,6 +2611,8 @@ async function applySucceededSideEffects(
   await applyFabricSideEffect(db, record, envelope, result, deps)
   await applyEnvironmentDeploySideEffect(db, record, envelope, result, deps)
   await applyEnvironmentStopSideEffect(db, record, envelope, result)
+  await applyFoldersRemoveSideEffect(db, record, envelope, result)
+  await applyPrincipalsReconcileSideEffect(db, record, envelope, result)
   await applyEnvironmentLifecycleSideEffect(db, record, envelope, result)
   await applySystemReconcileSideEffect(db, record, envelope, result)
   await applyManagedIngressReconcileSideEffect(db, record, envelope, result)
@@ -2605,6 +3024,44 @@ export function failureErrorCodeField(
   return {}
 }
 
+async function tryCompleteResumePromoteAsAlreadyWritable(
+  db: Db,
+  record: DispatchableCommandRecord,
+  envelope: CommandEnvelope,
+  pending: PendingRequestRecord,
+  deps?: CommandConsumerDeps,
+  error?: string
+): Promise<boolean> {
+  if (record.type !== 'managed.promote') return false
+  let payload: ReturnType<typeof parseManagedPromotePayload>
+  try {
+    payload = parseManagedPromotePayload(record.payload)
+  } catch {
+    return false
+  }
+  if (payload.resume !== true) return false
+  const message = error ?? pending.error ?? record.errorMessage
+  if (!isAlreadyWritablePrimaryPromoteError(message)) return false
+
+  const synthetic = buildSyntheticPromoteSuccessResult(payload)
+  await transitionCommand(db, record.id, {
+    status: 'succeeded',
+    result: resultSummaryForPersist(record.type, synthetic),
+    ackedAt: pending.ackAt ?? pending.finishedAt,
+    startedAt: pending.ackAt ?? pending.finishedAt,
+    finishedAt: pending.finishedAt,
+  })
+  commandConsumerTrace('dispatch-result', {
+    commandId: record.id,
+    commandType: record.type,
+    serverId: envelope.serverId,
+    pendingStatus: pending.status,
+    resultStatus: 'succeeded',
+  })
+  await applySucceededSideEffects(db, record, envelope, synthetic, deps)
+  return true
+}
+
 async function handlePendingFailed(
   db: Db,
   record: DispatchableCommandRecord,
@@ -2613,6 +3070,9 @@ async function handlePendingFailed(
   deps?: CommandConsumerDeps
 ): Promise<void> {
   const error = pending.error ?? 'Command failed'
+  if (await tryCompleteResumePromoteAsAlreadyWritable(db, record, envelope, pending, deps, error)) {
+    return
+  }
   // A sequential deploy that rolled back or needs attention says so in its error
   // text; keep that machine-readable on the row.
   const deployFailure = record.type === 'environment.deploy' ? classifyDeployFailure(error) : null
@@ -2635,6 +3095,7 @@ async function handlePendingFailed(
   await applyEnvironmentDeployFailedSideEffect(db, record, envelope, error, 'failed', deps)
   await applyFabricFailedSideEffect(db, record, envelope)
   await applyFirewallFailedSideEffect(db, record, envelope, error)
+  await applyPrincipalIdRefusedSideEffect(db, record, error)
 }
 
 async function handlePendingExpired(

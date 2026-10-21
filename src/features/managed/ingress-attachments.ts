@@ -5,48 +5,31 @@
  * with the listener.
  */
 
-import { and, eq, inArray } from "drizzle-orm";
-import type { Db } from "../../db/connection.ts";
-import type { ComposeDocument } from "../compose/types.ts";
-import {
-  composeNetworkHostName,
-  reservedManagedIngressAddress,
-} from "../fabric/cidr.ts";
-import {
-  composeServiceNetworkKeys,
-  type PlatformAttachment,
-} from "../fabric/spanning.ts";
-import type { FabricSegmentMaterial } from "../fabric/fabric-records.ts";
-import {
-  binding,
-  environment,
-  network,
-  project,
-  subnet,
-  service,
-  slot,
-} from "../../db/schema.ts";
-import {
-  parseProjectOptions,
-  resolveEffectivePlacementServerId,
-} from "../projects/project-options.ts";
+import { and, eq, inArray } from 'drizzle-orm'
+import type { Db } from '../../db/connection.ts'
+import type { ComposeDocument } from '../compose/types.ts'
+import { composeNetworkHostName, reservedManagedIngressAddress } from '../fabric/cidr.ts'
+import { composeServiceNetworkKeys, type PlatformAttachment } from '../fabric/spanning.ts'
+import type { FabricSegmentMaterial } from '../fabric/fabric-records.ts'
+import { binding, environment, network, project, subnet, service, slot } from '../../db/schema.ts'
+import { resolveEffectivePlacementServerId } from '../projects/project-options.ts'
 
-export type { PlatformAttachment };
+export type { PlatformAttachment }
 
 /** Bound compose service that must reach a ProxySQL listener over spanning nets. */
 export type ManagedIngressConsumer = {
-  composeServiceName: string;
-  networkKeys: string[];
-  listenerServerId: string;
-};
+  composeServiceName: string
+  networkKeys: string[]
+  listenerServerId: string
+}
 
 export type ManagedIngressAttachments = {
-  attachments: PlatformAttachment[];
-  consumers: ManagedIngressConsumer[];
-};
+  attachments: PlatformAttachment[]
+  consumers: ManagedIngressConsumer[]
+}
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 /**
@@ -57,20 +40,20 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 export async function loadManagedIngressPlatformAttachments(
   db: Db,
   params: Readonly<{
-    environmentId: string;
-    document: ComposeDocument;
-    slots: ReadonlyArray<{ serviceId: string; serverId: string }>;
-    serviceRows: ReadonlyArray<{ id: string; composeServiceName: string }>;
-  }>,
+    environmentId: string
+    document: ComposeDocument
+    slots: ReadonlyArray<{ serviceId: string; serverId: string }>
+    serviceRows: ReadonlyArray<{ id: string; composeServiceName: string }>
+  }>
 ): Promise<ManagedIngressAttachments> {
   const boundRows = await db
     .select({ serviceId: binding.serviceId })
     .from(binding)
     .innerJoin(service, eq(binding.serviceId, service.id))
-    .where(eq(service.environmentId, params.environmentId));
-  const boundServiceIds = [...new Set(boundRows.map((row) => row.serviceId))];
+    .where(eq(service.environmentId, params.environmentId))
+  const boundServiceIds = [...new Set(boundRows.map((row) => row.serviceId))]
   if (boundServiceIds.length === 0) {
-    return { attachments: [], consumers: [] };
+    return { attachments: [], consumers: [] }
   }
 
   const placed = await db
@@ -78,51 +61,46 @@ export async function loadManagedIngressPlatformAttachments(
       id: service.id,
       composeServiceName: service.composeServiceName,
       environmentServerId: environment.serverId,
-      projectOptions: project.options,
+      projectDefaultServerId: project.defaultServerId,
     })
     .from(service)
     .innerJoin(environment, eq(service.environmentId, environment.id))
     .innerJoin(project, eq(environment.projectId, project.id))
-    .where(inArray(service.id, boundServiceIds));
+    .where(inArray(service.id, boundServiceIds))
 
-  const services = isPlainObject(params.document.data.services)
-    ? params.document.data.services
-    : {};
-  const slotsByService = new Map<string, string[]>();
+  const services = isPlainObject(params.document.data.services) ? params.document.data.services : {}
+  const slotsByService = new Map<string, string[]>()
   for (const row of params.slots) {
-    const servers = slotsByService.get(row.serviceId) ?? [];
-    servers.push(row.serverId);
-    slotsByService.set(row.serviceId, servers);
+    const servers = slotsByService.get(row.serviceId) ?? []
+    servers.push(row.serverId)
+    slotsByService.set(row.serviceId, servers)
   }
 
-  const keysByListener = new Map<string, Set<string>>();
-  const consumers: ManagedIngressConsumer[] = [];
+  const keysByListener = new Map<string, Set<string>>()
+  const consumers: ManagedIngressConsumer[] = []
   for (const row of placed) {
     const listener = resolveEffectivePlacementServerId(
       row.environmentServerId,
-      parseProjectOptions(row.projectOptions),
-    );
-    if (!listener) continue;
-    const consumerServers = slotsByService.get(row.id) ?? [];
+      row.projectDefaultServerId
+    )
+    if (!listener) continue
+    const consumerServers = slotsByService.get(row.id) ?? []
     if (consumerServers.every((serverId) => serverId === listener)) {
-      continue;
+      continue
     }
-    const body = services[row.composeServiceName];
-    const networkKeys = composeServiceNetworkKeys(body)
-      .sort((a, b) => a.localeCompare(b));
-    const existing = keysByListener.get(listener) ?? new Set<string>();
-    for (const key of networkKeys) existing.add(key);
-    keysByListener.set(listener, existing);
+    const body = services[row.composeServiceName]
+    const networkKeys = composeServiceNetworkKeys(body).sort((a, b) => a.localeCompare(b))
+    const existing = keysByListener.get(listener) ?? new Set<string>()
+    for (const key of networkKeys) existing.add(key)
+    keysByListener.set(listener, existing)
     consumers.push({
       composeServiceName: row.composeServiceName,
       networkKeys,
       listenerServerId: listener,
-    });
+    })
   }
 
-  consumers.sort((a, b) =>
-    a.composeServiceName.localeCompare(b.composeServiceName)
-  );
+  consumers.sort((a, b) => a.composeServiceName.localeCompare(b.composeServiceName))
   return {
     attachments: [...keysByListener.entries()]
       .map(([serverId, networkKeys]) => ({
@@ -131,7 +109,7 @@ export async function loadManagedIngressPlatformAttachments(
       }))
       .sort((a, b) => a.serverId.localeCompare(b.serverId)),
     consumers,
-  };
+  }
 }
 
 /**
@@ -140,29 +118,29 @@ export async function loadManagedIngressPlatformAttachments(
  */
 export async function loadListenerAttachedSubnetNames(
   db: Db,
-  listenerServerId: string,
+  listenerServerId: string
 ): Promise<string[]> {
   const bindingRows = await db
     .select({
       serviceId: binding.serviceId,
       environmentServerId: environment.serverId,
-      projectOptions: project.options,
+      projectDefaultServerId: project.defaultServerId,
     })
     .from(binding)
     .innerJoin(service, eq(binding.serviceId, service.id))
     .innerJoin(environment, eq(service.environmentId, environment.id))
-    .innerJoin(project, eq(environment.projectId, project.id));
+    .innerJoin(project, eq(environment.projectId, project.id))
 
-  const serviceIds: string[] = [];
+  const serviceIds: string[] = []
   for (const row of bindingRows) {
     const placement = resolveEffectivePlacementServerId(
       row.environmentServerId,
-      parseProjectOptions(row.projectOptions),
-    );
-    if (placement !== listenerServerId) continue;
-    serviceIds.push(row.serviceId);
+      row.projectDefaultServerId
+    )
+    if (placement !== listenerServerId) continue
+    serviceIds.push(row.serviceId)
   }
-  if (serviceIds.length === 0) return [];
+  if (serviceIds.length === 0) return []
 
   const taskRows = await db
     .select({
@@ -171,13 +149,13 @@ export async function loadListenerAttachedSubnetNames(
       environmentId: slot.environmentId,
     })
     .from(slot)
-    .where(inArray(slot.serviceId, [...new Set(serviceIds)]));
+    .where(inArray(slot.serviceId, [...new Set(serviceIds)]))
 
-  const remoteEnvIds = new Set<string>();
+  const remoteEnvIds = new Set<string>()
   for (const row of taskRows) {
-    if (row.serverId !== listenerServerId) remoteEnvIds.add(row.environmentId);
+    if (row.serverId !== listenerServerId) remoteEnvIds.add(row.environmentId)
   }
-  if (remoteEnvIds.size === 0) return [];
+  if (remoteEnvIds.size === 0) return []
 
   const segmentRows = await db
     .select({ networkId: subnet.networkId })
@@ -187,14 +165,13 @@ export async function loadListenerAttachedSubnetNames(
       and(
         eq(subnet.serverId, listenerServerId),
         inArray(network.environmentId, [...remoteEnvIds]),
-        eq(network.kind, "compose"),
-      ),
-    );
+        eq(network.kind, 'compose')
+      )
+    )
 
-  return [
-    ...new Set(segmentRows.map((row) => composeNetworkHostName(row.networkId))),
-  ]
-    .sort((a, b) => a.localeCompare(b));
+  return [...new Set(segmentRows.map((row) => composeNetworkHostName(row.networkId)))].sort(
+    (a, b) => a.localeCompare(b)
+  )
 }
 
 /**
@@ -203,37 +180,33 @@ export async function loadListenerAttachedSubnetNames(
  * when this server is the listener for every consumer.
  */
 export function reservedIngressHostsForServer(params: {
-  thisServerId: string;
-  attachments: readonly PlatformAttachment[];
-  consumers: readonly ManagedIngressConsumer[];
-  spanning: ReadonlyMap<string, string>;
-  segmentsByServer: ReadonlyMap<string, readonly FabricSegmentMaterial[]>;
-  listenerNameByServer: ReadonlyMap<string, string>;
+  thisServerId: string
+  attachments: readonly PlatformAttachment[]
+  consumers: readonly ManagedIngressConsumer[]
+  spanning: ReadonlyMap<string, string>
+  segmentsByServer: ReadonlyMap<string, readonly FabricSegmentMaterial[]>
+  listenerNameByServer: ReadonlyMap<string, string>
 }): Map<string, Array<{ name: string; address: string }>> {
-  const attachmentByServer = new Map(
-    params.attachments.map((row) => [row.serverId, row]),
-  );
-  const byService = new Map<string, Map<string, string>>();
+  const attachmentByServer = new Map(params.attachments.map((row) => [row.serverId, row]))
+  const byService = new Map<string, Map<string, string>>()
   for (const consumer of params.consumers) {
-    if (consumer.listenerServerId === params.thisServerId) continue;
-    const listenerName = params.listenerNameByServer.get(
-      consumer.listenerServerId,
-    );
-    if (!listenerName) continue;
-    const attachment = attachmentByServer.get(consumer.listenerServerId);
-    if (!attachment) continue;
+    if (consumer.listenerServerId === params.thisServerId) continue
+    const listenerName = params.listenerNameByServer.get(consumer.listenerServerId)
+    if (!listenerName) continue
+    const attachment = attachmentByServer.get(consumer.listenerServerId)
+    if (!attachment) continue
     const cidr = segmentCidrForConsumer(
       consumer,
       attachment,
       params.spanning,
-      params.segmentsByServer,
-    );
-    if (!cidr) continue;
-    const address = reservedManagedIngressAddress(cidr);
-    if (!address) continue;
-    const hosts = byService.get(consumer.composeServiceName) ?? new Map();
-    hosts.set(listenerName, address);
-    byService.set(consumer.composeServiceName, hosts);
+      params.segmentsByServer
+    )
+    if (!cidr) continue
+    const address = reservedManagedIngressAddress(cidr)
+    if (!address) continue
+    const hosts = byService.get(consumer.composeServiceName) ?? new Map()
+    hosts.set(listenerName, address)
+    byService.set(consumer.composeServiceName, hosts)
   }
   return new Map(
     [...byService.entries()]
@@ -243,26 +216,26 @@ export function reservedIngressHostsForServer(params: {
         [...hosts.entries()]
           .map(([name, address]) => ({ name, address }))
           .sort((a, b) => a.name.localeCompare(b.name)),
-      ]),
-  );
+      ])
+  )
 }
 
 function segmentCidrForConsumer(
   consumer: ManagedIngressConsumer,
   attachment: PlatformAttachment,
   spanning: ReadonlyMap<string, string>,
-  segmentsByServer: ReadonlyMap<string, readonly FabricSegmentMaterial[]>,
+  segmentsByServer: ReadonlyMap<string, readonly FabricSegmentMaterial[]>
 ): string | null {
-  const listenerKeys = new Set(attachment.networkKeys);
+  const listenerKeys = new Set(attachment.networkKeys)
   const keys = consumer.networkKeys
     .filter((key) => listenerKeys.has(key))
-    .sort((a, b) => a.localeCompare(b));
-  const segments = segmentsByServer.get(attachment.serverId) ?? [];
+    .sort((a, b) => a.localeCompare(b))
+  const segments = segmentsByServer.get(attachment.serverId) ?? []
   for (const key of keys) {
-    const hostName = spanning.get(key);
-    if (!hostName) continue;
-    const match = segments.find((row) => row.name === hostName);
-    if (match) return match.subnet;
+    const hostName = spanning.get(key)
+    if (!hostName) continue
+    const match = segments.find((row) => row.name === hostName)
+    if (match) return match.subnet
   }
-  return null;
+  return null
 }

@@ -68,9 +68,7 @@ export function isComposeOwnedHosting(metadata: unknown): boolean {
 }
 
 /** The compose provenance recorded on a row, or null when there is none. */
-export function readHostingComposeOwner(
-  metadata: unknown,
-): HostingComposeOwner | null {
+export function readHostingComposeOwner(metadata: unknown): HostingComposeOwner | null {
   if (!isComposeOwnedHosting(metadata) || !isPlainMapping(metadata)) return null
   const composeServiceName = metadata[HOSTING_COMPOSE_SERVICE_METADATA_KEY]
   const route = metadata[HOSTING_COMPOSE_ROUTE_METADATA_KEY]
@@ -82,9 +80,7 @@ export function readHostingComposeOwner(
     composeServiceName,
     route,
     ...(typeof tlsMode === 'string' ? { tlsMode } : {}),
-    ...(metadata[HOSTING_COMPOSE_ADOPTED_METADATA_KEY] === true
-      ? { adopted: true }
-      : {}),
+    ...(metadata[HOSTING_COMPOSE_ADOPTED_METADATA_KEY] === true ? { adopted: true } : {}),
   }
 }
 
@@ -102,9 +98,7 @@ export function isAdoptedComposeHosting(metadata: unknown): boolean {
  * which is the point: once compose stops declaring the route, editing it in
  * the panel has to work again.
  */
-export function withoutHostingComposeOwner(
-  existing: unknown,
-): Record<string, unknown> {
+export function withoutHostingComposeOwner(existing: unknown): Record<string, unknown> {
   const base = isPlainMapping(existing) ? { ...existing } : {}
   delete base[HOSTING_COMPOSE_OWNED_METADATA_KEY]
   delete base[HOSTING_COMPOSE_SERVICE_METADATA_KEY]
@@ -123,7 +117,7 @@ export function withoutHostingComposeOwner(
  */
 export function withHostingComposeOwner(
   existing: unknown,
-  owner: HostingComposeOwner,
+  owner: HostingComposeOwner
 ): Record<string, unknown> {
   const base = isPlainMapping(existing) ? { ...existing } : {}
   base[HOSTING_COMPOSE_OWNED_METADATA_KEY] = true

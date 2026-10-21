@@ -17,3 +17,22 @@ export type BackupRunStatus = (typeof BACKUP_RUN_STATUSES)[number]
 
 /** Bound on a policy's `retention_keep`; matches `retention_retention_keep_check`. */
 export const MAX_BACKUP_POLICY_RETENTION_KEEP = 100
+
+/**
+ * The folders of the backup root the host keeps (`managed/<id>`, `volumes/<id>`,
+ * `panel/<id>`); a stored artifact path is relative to that root.
+ */
+export const BACKUP_ROOT_FOLDERS = { managed: 'managed', copy: 'volumes', panel: 'panel' } as const
+
+/**
+ * An artifact path relative to the backup root. A host may still report the
+ * absolute spelling (`<root>/managed/<id>/...`); it is cut down to the part
+ * below the root. Anything that is not under `<folder>/<id>/` comes back as it
+ * was, so a refusal can name it.
+ */
+export function backupRelativePath(path: string, kind: 'managed' | 'copy', id: string): string {
+  const marker = `${BACKUP_ROOT_FOLDERS[kind]}/${id}/`
+  if (path.startsWith(marker)) return path
+  const cut = path.lastIndexOf(`/${marker}`)
+  return cut < 0 ? path : path.slice(cut + 1)
+}

@@ -1,5 +1,5 @@
 /**
- * Materialize binding-owned `variable` rows from a principal + managed cluster.
+ * Materialize binding-owned `variable` rows from a login + managed cluster.
  *
  * System-owned rows are ordinary service-scoped variables with `binding_id`
  * set; deploy reuses the existing secret seal / inject rail unchanged.
@@ -15,19 +15,21 @@ import {
   environment,
   managed,
   organization,
-  principal,
+  login,
+  managedDatabase,
   project,
   service,
   variable,
   workspace,
 } from '../../db/schema.ts'
 import { getManagedEngineSpec } from '../managed/index.ts'
-import { type ManagedSslMode, resolveManagedSslMode } from '../managed/ssl.ts'
+import type { ManagedSslMode } from '../managed/ssl.ts'
+import { resolveEffectiveManagedSsl } from '../managed/external-access-tls.ts'
 import { parseOrganizationOptions } from '../organizations/organization-options.ts'
 import { bindingPrefixedKeys } from '../../lib/naming.ts'
 import type { ResolvedVariableEntry, ResolvedVariableMap } from '../variables/resolve-inherited.ts'
 import { ensureActiveOrganizationCa } from '../managed/apply-prepare.ts'
-import { parseManagedRowOptions } from '../managed/options.ts'
+import { loadManagedOptions } from '../managed/options.ts'
 import {
   type BindingDelivery,
   HOST_RUN_LOOPBACK_HOST,
@@ -273,16 +275,15 @@ export async function materializeBinding(
   const [row] = await db
     .select({
       id: binding.id,
-      principalId: binding.principalId,
       serviceId: binding.serviceId,
-      databaseName: binding.databaseName,
+      databaseName: managedDatabase.name,
       keyPrefix: binding.keyPrefix,
       emitEngineDefaults: binding.isEmitEngineDefaults,
-      principalKind: principal.kind,
+      loginId: login.id,
       // Applied login — bindings hand services the real engine credential.
-      principalUsername: principal.appliedUsername,
-      principalPassword: principal.password,
-      principalManagedId: principal.managedId,
+      principalUsername: login.appliedUsername,
+      principalPassword: login.password,
+      principalManagedId: login.managedId,
       managedId: managed.id,
       managedEngine: managed.engine,
       managedOptions: managed.options,
@@ -290,8 +291,9 @@ export async function materializeBinding(
       organizationOptions: organization.options,
     })
     .from(binding)
-    .innerJoin(principal, eq(binding.principalId, principal.id))
-    .innerJoin(managed, eq(principal.managedId, managed.id))
+    .innerJoin(login, eq(login.id, binding.loginId))
+    .innerJoin(managedDatabase, eq(managedDatabase.id, binding.databaseId))
+    .innerJoin(managed, eq(login.managedId, managed.id))
     .innerJoin(service, eq(binding.serviceId, service.id))
     .innerJoin(environment, eq(service.environmentId, environment.id))
     .innerJoin(project, eq(environment.projectId, project.id))
@@ -302,7 +304,7 @@ export async function materializeBinding(
 
   if (!row) return { kind: 'binding_not_found' }
 
-  if (row.principalKind !== 'database' || !row.principalManagedId || !row.principalUsername) {
+  if (!row.principalManagedId || !row.principalUsername) {
     return { kind: 'binding_principal_invalid' }
   }
 
@@ -311,7 +313,10 @@ export async function materializeBinding(
   const spec = getManagedEngineSpec(row.managedEngine)
   if (!spec?.binding) return { kind: 'binding_engine_unsupported' }
 
-  const options = parseManagedRowOptions(spec, row.managedOptions)
+  const options = await loadManagedOptions(db, spec, {
+    id: row.managedId,
+    options: row.managedOptions,
+  })
   if (!options) return { kind: 'binding_cluster_invalid' }
 
   if (
@@ -355,6 +360,14 @@ export async function materializeBinding(
   )
   if (typeof effectiveDelivery === 'object') return effectiveDelivery
 
+  // Raised to require while a server fronting the cluster allows external
+  // access: its listener refuses plaintext, so a weaker mode cannot connect.
+  const ssl = await resolveEffectiveManagedSsl(db, {
+    managedId: row.managedId,
+    configured: options.settings.ssl.mode,
+    organizationDefault: orgManagedDefaults?.sslMode,
+  })
+
   const desired = computeBindingVariableSet({
     keyPrefix: row.keyPrefix,
     emitEngineDefaults: row.emitEngineDefaults,
@@ -366,7 +379,7 @@ export async function materializeBinding(
     caCertPem: ca.trustBundlePem,
     readSplit: endpoint.readSplit,
     engineCode: row.managedEngine,
-    sslMode: resolveManagedSslMode(options.settings.ssl.mode, orgManagedDefaults?.sslMode),
+    sslMode: ssl.mode,
     delivery: effectiveDelivery,
   })
   if ('kind' in desired) return desired
@@ -404,15 +417,39 @@ export async function materializeBindingsForServices(
   return { ok: true }
 }
 
-export async function materializeBindingsForPrincipal(
+/** Every binding of one login. */
+export async function materializeBindingsForLogin(
   db: Db,
   dataEncryptionSecrets: DerivedSecretsConfig,
-  principalId: string
+  loginId: string
 ): Promise<{ ok: true } | MaterializeBindingError> {
   const rows = await db
     .select({ id: binding.id })
     .from(binding)
-    .where(eq(binding.principalId, principalId))
+    .innerJoin(login, eq(login.id, binding.loginId))
+    .where(eq(login.id, loginId))
+  return materializeEach(db, dataEncryptionSecrets, rows)
+}
+
+/** Every binding of every login of one cluster. */
+export async function materializeBindingsForManaged(
+  db: Db,
+  dataEncryptionSecrets: DerivedSecretsConfig,
+  managedId: string
+): Promise<{ ok: true } | MaterializeBindingError> {
+  const rows = await db
+    .select({ id: binding.id })
+    .from(binding)
+    .innerJoin(login, eq(login.id, binding.loginId))
+    .where(eq(login.managedId, managedId))
+  return materializeEach(db, dataEncryptionSecrets, rows)
+}
+
+async function materializeEach(
+  db: Db,
+  dataEncryptionSecrets: DerivedSecretsConfig,
+  rows: ReadonlyArray<{ id: string }>
+): Promise<{ ok: true } | MaterializeBindingError> {
   for (const row of rows) {
     const result = await materializeBinding(db, dataEncryptionSecrets, row.id)
     if (!('ok' in result)) return result

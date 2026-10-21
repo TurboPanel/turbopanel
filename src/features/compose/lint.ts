@@ -619,7 +619,7 @@ function lintServiceNodeVersion(
   const version = scalarString(versionNode)
   if (version === null) return
   const series = version.trim().split('.')[0]
-  if (series.length === 0 || SUPPORTED_NODE_SERIES.includes(series)) return
+  if (series.length === 0 || series === 'latest' || SUPPORTED_NODE_SERIES.includes(series)) return
   issues.push({
     level: 'warning',
     message: `Node ${version} is not an offered series (${SUPPORTED_NODE_SERIES.join(

@@ -20,16 +20,14 @@ import {
   buildStatusMemberView,
   canHardDeleteManaged,
   evaluateManagedDatabaseDelete,
-  evaluateManagedUserDropGuard,
-  evaluateManagedUserRotateGuard,
+  evaluateManagedLoginDropGuard,
+  evaluateManagedLoginRotateGuard,
+  evaluateOperatorPromoteGate,
   evaluatePromoteLagHttpGate,
   evaluatePromoteMemberRole,
   evaluatePromoteReplicaClass,
-  evaluateReadOnlyLoginTargets,
-  evaluateReadOnlyLoginTargetsLazy,
   evaluateReplicaClassConversion,
   evaluateReplicaPlacementPrechecks,
-  MANAGED_NO_READ_TARGETS_ERROR,
   managedStatusListenerParams,
   mergeManagedPatchSettings,
   nextDatabasesAfterCreate,
@@ -51,7 +49,7 @@ import {
 } from './routes-helpers.ts'
 import { postgresEngineSpec } from './postgres.ts'
 import { privateEndpointErrorResponse } from '../net/private-endpoint.ts'
-import { writeManagedRowOptions } from './options.ts'
+import { writeManagedSettings } from './options.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -334,58 +332,24 @@ test('evaluatePromoteMemberRole requires replica', () => {
 })
 
 test('user rotate/drop guards', () => {
-  assertEquals(evaluateManagedUserRotateGuard({ managedRoot: true }), {
+  assertEquals(evaluateManagedLoginRotateGuard('root'), {
     ok: false,
     error: 'use_root_password_route',
     status: 400,
   })
-  assertEquals(evaluateManagedUserRotateGuard({ managedReplication: true }), {
+  assertEquals(evaluateManagedLoginRotateGuard('replication'), {
     ok: false,
     error: 'cannot_rotate_replication_user',
     status: 400,
   })
-  assertEquals(evaluateManagedUserRotateGuard({}), null)
+  assertEquals(evaluateManagedLoginRotateGuard('user'), null)
 
-  assertEquals(evaluateManagedUserDropGuard({ managedRoot: true }), {
+  assertEquals(evaluateManagedLoginDropGuard('root'), {
     ok: false,
     error: 'cannot_drop_root_user',
     status: 400,
   })
-  assertEquals(evaluateManagedUserDropGuard({}), null)
-})
-
-test('evaluateReadOnlyLoginTargets refuses read-only without a replica', () => {
-  assertEquals(evaluateReadOnlyLoginTargets('read-write', []), null)
-  assertEquals(
-    evaluateReadOnlyLoginTargets('read-only', [{ role: 'primary', readEligible: true }]),
-    { ok: false, error: MANAGED_NO_READ_TARGETS_ERROR, status: 422 }
-  )
-  assertEquals(
-    evaluateReadOnlyLoginTargets('read-only', [{ role: 'replica', readEligible: false }]),
-    { ok: false, error: MANAGED_NO_READ_TARGETS_ERROR, status: 422 }
-  )
-  assertEquals(
-    evaluateReadOnlyLoginTargets('read-only', [{ role: 'replica', readEligible: true }]),
-    null
-  )
-})
-
-test('evaluateReadOnlyLoginTargetsLazy loads members only for read-only', async () => {
-  let loads = 0
-  const loadMembers = () => {
-    loads += 1
-    return Promise.resolve([{ role: 'replica', readEligible: true }])
-  }
-  assertEquals(await evaluateReadOnlyLoginTargetsLazy('read-write', loadMembers), null)
-  assertEquals(loads, 0)
-  assertEquals(await evaluateReadOnlyLoginTargetsLazy('read-only', loadMembers), null)
-  assertEquals(loads, 1)
-  assertEquals(
-    await evaluateReadOnlyLoginTargetsLazy('read-only', () =>
-      Promise.resolve([{ role: 'primary', readEligible: true }])
-    ),
-    { ok: false, error: MANAGED_NO_READ_TARGETS_ERROR, status: 422 }
-  )
+  assertEquals(evaluateManagedLoginDropGuard('user'), null)
 })
 
 test('evaluatePromoteLagHttpGate honors force bypass', () => {
@@ -405,6 +369,35 @@ test('evaluatePromoteLagHttpGate honors force bypass', () => {
     ),
     null
   )
+})
+
+test('evaluateOperatorPromoteGate requires fullyApplied for mysql-family engines', () => {
+  const fresh = {
+    state: 'streaming',
+    lagBytes: 0,
+    lagSeconds: 0,
+    observedAt: '2026-08-10T12:00:00.000Z',
+    fullyApplied: false,
+  }
+  const now = Date.parse('2026-08-10T12:00:01.000Z')
+  assertEquals(
+    evaluateOperatorPromoteGate(
+      { ...fresh, receivedLsn: '0/100', replayLsn: '0/100' },
+      false,
+      now,
+      'postgres'
+    ),
+    null
+  )
+  assertEquals(
+    evaluateOperatorPromoteGate(fresh, false, now, 'mariadb'),
+    'managed_replica_not_fully_applied'
+  )
+  assertEquals(
+    evaluateOperatorPromoteGate({ ...fresh, fullyApplied: true }, false, now, 'mysql'),
+    null
+  )
+  assertEquals(evaluateOperatorPromoteGate(fresh, true, now, 'mariadb'), null)
 })
 
 test('pickPrimaryCommandResult and queued response builders', () => {
@@ -442,12 +435,19 @@ test('empty detail / delete / destroy / promote response shapes', () => {
     managed: null,
     connection: null,
     endpoints: [],
+    connections: [],
+    addressNeeded: false,
     // Nothing placed yet, so there is no host whose publish could be reported.
     exposure: null,
     settings: null,
     // No org default configured, so a not-yet-created cluster still reports the
     // platform TLS policy it will inherit.
-    ssl: { configured: null, effective: 'require', organizationDefault: null },
+    ssl: {
+      configured: null,
+      effective: 'require',
+      organizationDefault: null,
+      raisedForExternalAccess: false,
+    },
     release: null,
     server: null,
     rootUsername: null,
@@ -458,12 +458,21 @@ test('empty detail / delete / destroy / promote response shapes', () => {
     configured: null,
     effective: 'verify-full',
     organizationDefault: 'verify-full',
+    raisedForExternalAccess: false,
   })
   // A service override wins over the org default in both directions.
   assertEquals(buildManagedSslView('prefer', 'verify-full'), {
     configured: 'prefer',
     effective: 'prefer',
     organizationDefault: 'verify-full',
+    raisedForExternalAccess: false,
+  })
+  // Under external access a mode without SSL is shown raised to require.
+  assertEquals(buildManagedSslView('disable', undefined, true), {
+    configured: 'disable',
+    effective: 'require',
+    organizationDefault: null,
+    raisedForExternalAccess: true,
   })
   assertEquals(buildManagedDeleteHardResponse(), { ok: true, deleted: true })
   assertEquals(
@@ -620,23 +629,23 @@ test('buildStatusMemberView and org list entry', () => {
   const entry = buildOrgManagedListEntry({
     serializedRow: { id: 'mg', engine: 'postgres' },
     engineDisplayName: 'PostgreSQL',
-    environmentDisplayName: 'Production',
+    environmentName: 'Production',
     projectId: 'p1',
-    projectDisplayName: 'App',
+    projectName: 'App',
     workspaceId: 'w1',
-    workspaceDisplayName: 'Default',
-    serverDisplayName: 'Host',
+    workspaceName: 'Default',
+    serverName: 'Host',
     members: [{ id: 'mem' }],
   })
   assertEquals(entry.id, 'mg')
   assertEquals(entry.engine, 'postgres')
   assertEquals(entry.engineDisplayName, 'PostgreSQL')
-  assertEquals(entry.environmentDisplayName, 'Production')
+  assertEquals(entry.environmentName, 'Production')
   assertEquals(entry.projectId, 'p1')
-  assertEquals(entry.projectDisplayName, 'App')
+  assertEquals(entry.projectName, 'App')
   assertEquals(entry.workspaceId, 'w1')
-  assertEquals(entry.workspaceDisplayName, 'Default')
-  assertEquals(entry.serverDisplayName, 'Host')
+  assertEquals(entry.workspaceName, 'Default')
+  assertEquals(entry.serverName, 'Host')
   assertEquals(entry.members, [{ id: 'mem' }])
 })
 
@@ -645,10 +654,7 @@ test('managedStatusListenerParams skips unplaced, uncatalogued, and unreadable r
   if (!settings) {
     throw new TypeError('failed to parse default postgres settings')
   }
-  const options = writeManagedRowOptions({
-    settings,
-    databases: ['postgres'],
-  })
+  const options = writeManagedSettings(settings)
 
   assertEquals(managedStatusListenerParams(null), null)
   assertEquals(
@@ -767,4 +773,78 @@ test('buildDisasterRecoveryQueuedResponse names source and target', () => {
       },
     }
   )
+})
+
+test('evaluateOperatorPromoteGate refuses a reading older than a few seconds', () => {
+  const now = Date.parse('2026-08-10T12:00:00.000Z')
+  const reading = (observedAt: string) => ({
+    state: 'streaming',
+    lagBytes: 0,
+    lagSeconds: 0,
+    observedAt,
+  })
+  // A replica whose threads stopped 3 s ago still reads `streaming` in a
+  // reading taken a minute ago: the stored 120 s window used to accept it.
+  assertEquals(evaluatePromoteLagHttpGate(reading('2026-08-10T11:59:00.000Z'), false, now), null)
+  assertEquals(
+    evaluateOperatorPromoteGate(reading('2026-08-10T11:59:00.000Z'), false, now),
+    'managed_replica_health_stale'
+  )
+  assertEquals(evaluateOperatorPromoteGate(reading('2026-08-10T11:59:50.000Z'), false, now), null)
+})
+
+test('evaluateOperatorPromoteGate refuses a replica that has not applied what it received', () => {
+  const now = Date.parse('2026-08-10T12:00:00.000Z')
+  const base = { state: 'streaming', observedAt: '2026-08-10T11:59:55.000Z' }
+  const mysql = 'mysql'
+  assertEquals(
+    evaluateOperatorPromoteGate({ ...base, fullyApplied: true }, false, now, mysql),
+    null
+  )
+  assertEquals(
+    evaluateOperatorPromoteGate({ ...base, fullyApplied: false }, false, now, mysql),
+    'managed_replica_not_fully_applied'
+  )
+  assertEquals(
+    evaluateOperatorPromoteGate({ ...base }, false, now, mysql),
+    'managed_replica_not_fully_applied'
+  )
+  assertEquals(
+    evaluateOperatorPromoteGate({ ...base, state: 'reconnecting' }, false, now, mysql),
+    'managed_replica_not_streaming'
+  )
+  assertEquals(
+    evaluateOperatorPromoteGate({ ...base, fullyApplied: false }, true, now, mysql),
+    null
+  )
+})
+
+test('evaluateOperatorPromoteGate postgres received vs replayed LSN', () => {
+  const now = Date.parse('2026-08-10T12:00:00.000Z')
+  const base = {
+    state: 'streaming',
+    observedAt: '2026-08-10T11:59:55.000Z',
+    lagBytes: 0,
+    lagSeconds: 0,
+  }
+  const pg = 'postgres'
+  assertEquals(
+    evaluateOperatorPromoteGate(
+      { ...base, receivedLsn: '0/3000148', replayLsn: '0/2FFC147' },
+      false,
+      now,
+      pg
+    ),
+    'managed_replica_lagging'
+  )
+  assertEquals(
+    evaluateOperatorPromoteGate(
+      { ...base, receivedLsn: '0/3000100', replayLsn: '0/3000100' },
+      false,
+      now,
+      pg
+    ),
+    null
+  )
+  assertEquals(evaluateOperatorPromoteGate({ ...base }, false, now, pg), 'managed_replica_lagging')
 })

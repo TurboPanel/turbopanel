@@ -128,19 +128,19 @@ test('PUT /organizations/:id/default-environment stores and GET echoes', async (
         Cookie: cookie,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ defaultEnvironmentName: 'Staging' }),
+      body: JSON.stringify({ defaultEnvironmentName: 'staging' }),
     })
     assertEquals(putRes.status, 200)
     assertEquals(await putRes.json(), {
       ok: true,
-      defaultEnvironmentName: 'Staging',
+      defaultEnvironmentName: 'staging',
     })
 
     const getRes = await app.request(`/organizations/${organizationId}/default-environment`, {
       headers: { Cookie: cookie },
     })
     assertEquals(getRes.status, 200)
-    assertEquals(await getRes.json(), { defaultEnvironmentName: 'Staging' })
+    assertEquals(await getRes.json(), { defaultEnvironmentName: 'staging' })
   })
 })
 
@@ -154,7 +154,7 @@ test('PUT /organizations/:id/default-environment rejects invalid names', async (
         Cookie: cookie,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ defaultEnvironmentName: 'Staging' }),
+      body: JSON.stringify({ defaultEnvironmentName: 'staging' }),
     })
 
     const illegal = await app.request(`/organizations/${organizationId}/default-environment`, {
@@ -200,7 +200,7 @@ test('PUT /organizations/:id/default-environment rejects invalid names', async (
     const getRes = await app.request(`/organizations/${organizationId}/default-environment`, {
       headers: { Cookie: cookie },
     })
-    assertEquals(await getRes.json(), { defaultEnvironmentName: 'Staging' })
+    assertEquals(await getRes.json(), { defaultEnvironmentName: 'staging' })
   })
 })
 
@@ -214,7 +214,7 @@ test('PUT /organizations/:id/default-environment null resets to null', async () 
         Cookie: cookie,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ defaultEnvironmentName: 'Staging' }),
+      body: JSON.stringify({ defaultEnvironmentName: 'staging' }),
     })
 
     const reset = await app.request(`/organizations/${organizationId}/default-environment`, {
@@ -248,7 +248,7 @@ test('PUT /organizations/:id/default-environment forbids non-managers', async ()
           Cookie: cookie,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ defaultEnvironmentName: 'Staging' }),
+        body: JSON.stringify({ defaultEnvironmentName: 'staging' }),
       })
       assertEquals(res.status, 403)
     },

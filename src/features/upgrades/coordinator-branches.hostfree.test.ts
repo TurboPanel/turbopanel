@@ -32,6 +32,10 @@ const test = Deno.test.bind(Deno)
 
 const NOW = '2026-09-24T12:00:00.000Z'
 const COLOCATED = 'colocated-0'
+const SKIP_OFFLINE_MESSAGE =
+  'It stayed offline for 15 minutes during the update. It updates on its own when it reconnects.'
+const OFFLINE_AT_START_MESSAGE =
+  'It was offline when the update started. It updates on its own when it reconnects.'
 
 const unit = (name: string, version: string, commit: string) => ({
   version,
@@ -287,6 +291,179 @@ test('preflight: a running upgrade blocks and its id is the recovery id', async 
   assertEquals(preflight.canStart, false)
 })
 
+test('preflight: a run waiting only on offline fleet hosts can start without mutating', async () => {
+  const { coordinator, store } = build({
+    runtime: 'workers',
+    colocatedServerId: null,
+    facts: [factFor('srv-a', { colocated: false, connected: false })],
+  })
+  await store.insertRun(runRow(), [
+    stepRow('step-1', { status: 'waiting', phase: 'fleet', serverId: 'srv-a' }),
+  ])
+  const before = (await store.stepsFor('upgrade-run-1'))[0]
+  const preflight = await coordinator.preflight()
+  assertEquals(preflight.canStart, true)
+  assertEquals(preflight.blockers.includes('Another update is already in progress.'), false)
+  const after = (await store.stepsFor('upgrade-run-1'))[0]
+  assertEquals(after?.status, before?.status)
+  assertEquals((await store.activeRun())?.id, 'upgrade-run-1')
+})
+
+test('start: settles a run waiting only on offline fleet hosts then opens a new run', async () => {
+  const { coordinator, store } = build({
+    runtime: 'workers',
+    colocatedServerId: null,
+    facts: [factFor('srv-a', { colocated: false, connected: false })],
+  })
+  await store.insertRun(runRow(), [
+    stepRow('step-1', { status: 'waiting', phase: 'fleet', serverId: 'srv-a' }),
+  ])
+  const started = await coordinator.start({ source: 'manual', startedBy: null })
+  assertEquals(started.ok, true)
+  if (!started.ok) throw new TypeError(started.error)
+  const previous = await store.runById('upgrade-run-1')
+  assertEquals(previous?.status, 'succeeded')
+  assertEquals(previous?.counts?.skipped, 1)
+  const skipped = (await store.stepsFor('upgrade-run-1'))[0]
+  assertEquals(skipped?.status, 'skipped')
+  assertEquals(skipped?.errorCode, 'server_offline')
+  assertEquals(skipped?.errorMessage, OFFLINE_AT_START_MESSAGE)
+  // The host is still offline, so the new run leaves it out at once too.
+  const fresh = (await store.stepsFor(started.runId))[0]
+  assertEquals(fresh?.status, 'skipped')
+  assertEquals(fresh?.errorCode, 'server_offline')
+  assertEquals(fresh?.errorMessage, OFFLINE_AT_START_MESSAGE)
+  assertEquals((await store.runById(started.runId))?.status, 'succeeded')
+})
+
+test('start: a host offline when the update starts is skipped at once; a connected one is not', async () => {
+  const { coordinator, store } = build({
+    runtime: 'workers',
+    colocatedServerId: null,
+    facts: [
+      factFor('srv-down', { colocated: false, connected: false }),
+      factFor('srv-up', { colocated: false, connected: true }),
+    ],
+  })
+  const started = await coordinator.start({ source: 'manual', startedBy: null })
+  if (!started.ok) throw new TypeError(started.error)
+  const steps = await store.stepsFor(started.runId)
+  const down = steps.find((step) => step.serverId === 'srv-down')
+  const up = steps.find((step) => step.serverId === 'srv-up')
+  assertEquals(down?.status, 'skipped')
+  assertEquals(down?.errorCode, 'server_offline')
+  assertEquals(down?.errorMessage, OFFLINE_AT_START_MESSAGE)
+  assertEquals(up?.status === 'skipped', false)
+  assertEquals(up?.errorCode, null)
+})
+
+test('start: an open run with a connected pending host, or a host that already ran, is not settled', async () => {
+  const connectedPending = build({
+    runtime: 'workers',
+    colocatedServerId: null,
+    facts: [factFor('srv-a', { colocated: false, connected: true })],
+  })
+  await connectedPending.store.insertRun(runRow(), [
+    stepRow('step-1', { status: 'pending', phase: 'fleet', serverId: 'srv-a' }),
+  ])
+  const first = await connectedPending.coordinator.start({ source: 'manual', startedBy: null })
+  assertEquals(first.ok, false)
+  assertEquals((await connectedPending.store.stepsFor('upgrade-run-1'))[0]?.status, 'pending')
+
+  const alreadyRan = build({
+    runtime: 'workers',
+    colocatedServerId: null,
+    facts: [factFor('srv-a', { colocated: false, connected: false })],
+  })
+  await alreadyRan.store.insertRun(runRow(), [
+    stepRow('step-1', { status: 'waiting', attempts: 1, phase: 'fleet', serverId: 'srv-a' }),
+  ])
+  const second = await alreadyRan.coordinator.start({ source: 'manual', startedBy: null })
+  assertEquals(second.ok, false)
+  assertEquals((await alreadyRan.store.stepsFor('upgrade-run-1'))[0]?.status, 'waiting')
+})
+
+test('start: a step moved by a concurrent report keeps the run open and answers upgrade_run_active', async () => {
+  const { coordinator, store } = build({
+    runtime: 'workers',
+    colocatedServerId: null,
+    facts: [factFor('srv-a', { colocated: false, connected: false })],
+  })
+  await store.insertRun(runRow(), [
+    stepRow('step-1', { status: 'waiting', phase: 'fleet', serverId: 'srv-a' }),
+  ])
+  const realSave = store.saveStep.bind(store)
+  let raced = false
+  store.saveStep = async (step, expectedStatus) => {
+    if (!raced) {
+      raced = true
+      // A hello moves the step before the settle write lands.
+      const moved = { ...step, status: 'dispatched' as const }
+      await realSave(moved)
+    }
+    return await realSave(step, expectedStatus)
+  }
+  const refused = await coordinator.start({ source: 'manual', startedBy: null })
+  assertEquals(refused.ok, false)
+  if (refused.ok) throw new TypeError('expected a refusal')
+  assertEquals(refused.error, 'upgrade_run_active')
+  assertEquals((await store.runById('upgrade-run-1'))?.status === 'succeeded', false)
+  assertEquals((await store.stepsFor('upgrade-run-1'))[0]?.status, 'dispatched')
+  assertEquals((await store.activeRun())?.id, 'upgrade-run-1')
+})
+
+test('activeRun: every step carries connected beside phase', async () => {
+  const { coordinator, store } = build({
+    runtime: 'workers',
+    colocatedServerId: null,
+    facts: [
+      factFor('srv-a', { colocated: false, connected: false }),
+      factFor('srv-b', { colocated: false, connected: true }),
+    ],
+  })
+  await store.insertRun(runRow(), [
+    stepRow('step-1', { status: 'waiting', phase: 'fleet', serverId: 'srv-a' }),
+    stepRow('step-2', { status: 'installing', phase: 'fleet', serverId: 'srv-b' }),
+  ])
+  const run = await coordinator.activeRun()
+  assertEquals(run?.steps[0]?.attempts, 0)
+  const byServer = Object.fromEntries(run?.steps.map((step) => [step.serverId, step]) ?? [])
+  assertEquals(byServer['srv-a']?.connected, false)
+  assertEquals(byServer['srv-b']?.connected, true)
+  assertEquals(byServer['srv-a']?.phase, 'fleet')
+})
+
+test('start: still refuses when a fleet step is in flight or its host is connected', async () => {
+  const inFlight = await build({
+    runtime: 'workers',
+    colocatedServerId: null,
+    facts: [factFor('srv-a', { colocated: false, connected: false })],
+  })
+  await inFlight.store.insertRun(runRow(), [
+    stepRow('step-1', { status: 'installing', phase: 'fleet', serverId: 'srv-a' }),
+  ])
+  const refusedInFlight = await inFlight.coordinator.start({
+    source: 'manual',
+    startedBy: null,
+  })
+  assertEquals(refusedInFlight.ok, false)
+  if (refusedInFlight.ok) throw new TypeError('expected a refusal')
+  assertEquals(refusedInFlight.error, 'upgrade_run_active')
+
+  const online = await build({
+    runtime: 'workers',
+    colocatedServerId: null,
+    facts: [factFor('srv-a', { colocated: false, connected: true })],
+  })
+  await online.store.insertRun(runRow(), [
+    stepRow('step-1', { status: 'waiting', phase: 'fleet', serverId: 'srv-a' }),
+  ])
+  const refusedOnline = await online.coordinator.start({ source: 'manual', startedBy: null })
+  assertEquals(refusedOnline.ok, false)
+  if (refusedOnline.ok) throw new TypeError('expected a refusal')
+  assertEquals(refusedOnline.error, 'upgrade_run_active')
+})
+
 // --- lastRun ---------------------------------------------------------------
 
 test('lastRun: a run stays visible up to exactly 24 hours after it finished', async () => {
@@ -377,13 +554,111 @@ test('tick: an offline host parks the step as waiting and stamps when it started
   assertEquals(again.enqueued.length, 0)
 })
 
-test('tick: a step offline for over an hour needs attention as server_offline', async () => {
+test('tick: a fleet step offline for over 15 minutes is skipped as server_offline', async () => {
+  const { step, run } = await tickOne(
+    { status: 'waiting', lastStageAt: minutesAgo(16), phase: 'fleet' },
+    { connected: false }
+  )
+  assertEquals(step.status, 'skipped')
+  assertEquals(step.errorCode, 'server_offline')
+  assertEquals(step.errorMessage, SKIP_OFFLINE_MESSAGE)
+  assertEquals(run?.status, 'succeeded')
+  assertEquals(run?.counts?.skipped, 1)
+  assertEquals(run?.counts?.needsAttention, 0)
+})
+
+test('tick: the offline deadline is strictly more than 15 minutes (14:59, 15:00, 15:01)', async () => {
+  const secondsAgo = (seconds: number) => new Date(Date.parse(NOW) - seconds * 1000).toISOString()
+  for (const [seconds, expected] of [
+    [14 * 60 + 59, 'waiting'],
+    [15 * 60, 'waiting'],
+    [15 * 60 + 1, 'skipped'],
+  ] as const) {
+    const { step } = await tickOne(
+      { status: 'waiting', lastStageAt: secondsAgo(seconds), phase: 'fleet' },
+      { connected: false }
+    )
+    assertEquals(step.status, expected, `${seconds}s offline`)
+  }
+})
+
+test('tick: a fleet step that already ran and dropped is never skipped as offline', async () => {
   const { step } = await tickOne(
-    { status: 'waiting', lastStageAt: minutesAgo(61) },
+    { status: 'waiting', attempts: 1, lastStageAt: minutesAgo(16), phase: 'fleet' },
     { connected: false }
   )
   assertEquals(step.status, 'needs_attention')
   assertEquals(step.errorCode, 'server_offline')
+})
+
+test('start: the settle never skips a pending step or a platform-phase step', async () => {
+  for (const patch of [
+    { status: 'pending' as const, phase: 'fleet' as const },
+    { status: 'waiting' as const, phase: 'colocated_daemon' as const },
+  ]) {
+    const { coordinator, store } = build({
+      runtime: 'workers',
+      colocatedServerId: null,
+      facts: [factFor('srv-a', { colocated: false, connected: false })],
+    })
+    await store.insertRun(runRow(), [stepRow('step-1', { serverId: 'srv-a', ...patch })])
+    // Bypass the first check, as if the step changed after it.
+    const realSteps = store.stepsFor.bind(store)
+    let calls = 0
+    store.stepsFor = async (id) => {
+      calls += 1
+      const rows = await realSteps(id)
+      if (calls === 1) return rows.map((row) => ({ ...row, status: 'waiting', phase: 'fleet' }))
+      return rows
+    }
+    const refused = await coordinator.start({ source: 'manual', startedBy: null })
+    assertEquals(refused.ok, false)
+    if (refused.ok) throw new TypeError('expected a refusal')
+    assertEquals(refused.error, 'upgrade_run_active')
+    assertEquals((await store.stepsFor('upgrade-run-1'))[0]?.status, patch.status)
+  }
+})
+
+test('start: a host that reconnects during the settle keeps the run open', async () => {
+  const { coordinator, store } = build({
+    runtime: 'workers',
+    colocatedServerId: null,
+    facts: [factFor('srv-a', { colocated: false, connected: false })],
+  })
+  await store.insertRun(runRow(), [
+    stepRow('step-1', { status: 'waiting', phase: 'fleet', serverId: 'srv-a' }),
+  ])
+  const realFacts = store.factsFor.bind(store)
+  store.factsFor = async (ids, colocated) =>
+    (await realFacts(ids, colocated)).map((fact) => ({ ...fact, connected: true }))
+  const refused = await coordinator.start({ source: 'manual', startedBy: null })
+  assertEquals(refused.ok, false)
+  if (refused.ok) throw new TypeError('expected a refusal')
+  assertEquals(refused.error, 'upgrade_run_active')
+  assertEquals((await store.stepsFor('upgrade-run-1'))[0]?.status, 'waiting')
+})
+
+test('tick: a colocated_daemon step offline for over 15 minutes needs attention', async () => {
+  const { coordinator, store } = build({
+    facts: [factFor(COLOCATED, { connected: false })],
+  })
+  await store.insertRun(runRow({ phase: 'colocated_daemon' }), [
+    stepRow('step-1', {
+      serverId: COLOCATED,
+      unit: 'daemon',
+      phase: 'colocated_daemon',
+      status: 'waiting',
+      lastStageAt: minutesAgo(16),
+      detail: { phase: 'colocated_daemon' },
+    }),
+  ])
+  await coordinator.tick({ resolveManifests: false })
+  const step = (await store.stepsFor('upgrade-run-1'))[0]
+  assertEquals(step?.status, 'needs_attention')
+  assertEquals(step?.errorCode, 'server_offline')
+  const run = await store.runById('upgrade-run-1')
+  assertEquals(run?.status, 'failed')
+  assertEquals(run?.error, 'colocated_daemon_failed')
 })
 
 test('tick: a stalled install retries with backoff, then needs attention after the last attempt', async () => {

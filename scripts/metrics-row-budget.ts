@@ -200,7 +200,7 @@ console.log('ANALYTICS ENGINE ROWS PER SCENARIO — measured from the real write
 console.log('All rows below mirror ingest in `api-routes.ts`. Hosted samples')
 console.log('are truncated to the PLATFORM DEFAULT plan (what an un-upgraded server')
 console.log("costs). Self-hosted samples are written untruncated — the operator's own")
-console.log('disk is uncapped. Live sessions sample every 10 s, but v7 stores only the')
+console.log('disk is uncapped. Live sessions sample every 10 s, but v8 stores only the')
 console.log('60 s baseline sample (flagged durable) and routes the 10 s samples to the')
 console.log('live overlay buffer, so a live lease does not inflate Analytics Engine row')
 console.log('counts. See `deno task metrics:inventory`.\n')

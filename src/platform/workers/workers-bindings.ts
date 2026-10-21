@@ -3,6 +3,7 @@ import {
   endDbConnection,
   type Db,
   type HyperdriveBinding,
+  type WorkersDbOptions,
 } from '../../db/connection.ts'
 import { createHyperdriveQueryCache } from '../../query-cache/hyperdrive-query-cache.ts'
 import { createPassthroughQueryCache } from '../../query-cache/passthrough-query-cache.ts'
@@ -12,6 +13,7 @@ import {
   createFailClosedRateLimiter,
   createNoopRateLimiter,
 } from '../../daemon/rate-limit/contracts.ts'
+import { createDbUsage, type DbUsage } from '../../query-cache/db-usage.ts'
 import { createWorkersRateLimiter } from '../../daemon/rate-limit/workers-rate-limiter.ts'
 import {
   type AuthRateLimiter,
@@ -33,9 +35,11 @@ export type WorkersRequestDbHandles = {
   /** Distinct `HYPERDRIVE_CACHED` client when present; ended separately. */
   cachedDb: Db | undefined
   queryCache: QueryCache | undefined
+  /** Statement counts for this invocation; read when the request ends. */
+  usage: DbUsage
 }
 
-type WorkersDbFactory = (binding: HyperdriveBinding) => Db | undefined
+type WorkersDbFactory = (binding: HyperdriveBinding, options?: WorkersDbOptions) => Db | undefined
 
 let workersDbFactory: WorkersDbFactory = createWorkersDb
 
@@ -66,14 +70,16 @@ export function isPlaceholderHyperdriveCachedId(id: string | undefined): boolean
  * Hyperdrive troubleshooting.
  */
 export function resolveWorkersDb(
-  env: CloudflareBindings
+  env: CloudflareBindings,
+  usage?: DbUsage
 ): ReturnType<typeof createWorkersDb> | undefined {
+  const options = usage ? { usage } : undefined
   if (env.HYPERDRIVE) {
-    return workersDbFactory(env.HYPERDRIVE) ?? undefined
+    return workersDbFactory(env.HYPERDRIVE, options) ?? undefined
   }
   const databaseUrl = env.TURBOPANEL_DATABASE_URL?.trim()
   if (databaseUrl) {
-    return workersDbFactory({ connectionString: databaseUrl }) ?? undefined
+    return workersDbFactory({ connectionString: databaseUrl }, options) ?? undefined
   }
   return undefined
 }
@@ -83,10 +89,16 @@ export function resolveWorkersDb(
  * Creates a new client per call — same per-request rule as {@link resolveWorkersDb}.
  */
 export function resolveWorkersCachedDb(
-  env: CloudflareBindings
+  env: CloudflareBindings,
+  usage?: DbUsage
 ): ReturnType<typeof createWorkersDb> | undefined {
   if (env.HYPERDRIVE_CACHED) {
-    return workersDbFactory(env.HYPERDRIVE_CACHED) ?? undefined
+    return (
+      workersDbFactory(env.HYPERDRIVE_CACHED, {
+        preparedStatements: true,
+        ...(usage ? { usage } : {}),
+      }) ?? undefined
+    )
   }
   return undefined
 }
@@ -103,15 +115,16 @@ export function resolveWorkersCachedDb(
 export function resolveWorkersQueryCache(
   env: CloudflareBindings,
   db: Db | undefined,
-  cachedDb?: Db | null
+  cachedDb?: Db | null,
+  usage?: DbUsage
 ): QueryCache | undefined {
   const resolvedCached =
-    cachedDb === undefined ? resolveWorkersCachedDb(env) : (cachedDb ?? undefined)
+    cachedDb === undefined ? resolveWorkersCachedDb(env, usage) : (cachedDb ?? undefined)
   if (resolvedCached) {
-    return createHyperdriveQueryCache(resolvedCached)
+    return createHyperdriveQueryCache(resolvedCached, { usage })
   }
   if (db) {
-    return createPassthroughQueryCache(db)
+    return createPassthroughQueryCache(db, usage)
   }
   return undefined
 }
@@ -122,12 +135,14 @@ export function resolveWorkersQueryCache(
  * requests.
  */
 export function openWorkersRequestDb(env: CloudflareBindings): WorkersRequestDbHandles {
-  const db = resolveWorkersDb(env)
-  const cachedDb = resolveWorkersCachedDb(env)
+  const usage = createDbUsage()
+  const db = resolveWorkersDb(env, usage)
+  const cachedDb = resolveWorkersCachedDb(env, usage)
   return {
     db,
     cachedDb,
-    queryCache: resolveWorkersQueryCache(env, db, cachedDb ?? null),
+    queryCache: resolveWorkersQueryCache(env, db, cachedDb ?? null, usage),
+    usage,
   }
 }
 

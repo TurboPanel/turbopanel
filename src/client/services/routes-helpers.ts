@@ -27,6 +27,10 @@ export type ServiceRow = {
   description: string | null
   environmentId: string
   composeServiceName: string
+  /** Folder name under the site owner's tree; null until set. */
+  slug: string | null
+  /** True when the service folder is in the shared (`common`) scope. */
+  isCommon: boolean
   metadata: unknown
   options: unknown
   createdAt: string
@@ -41,6 +45,8 @@ export function serializeService(row: ServiceRow, runState?: ServiceRunStateView
     description: row.description,
     environmentId: row.environmentId,
     composeServiceName: row.composeServiceName,
+    slug: row.slug,
+    common: row.isCommon,
     metadata: row.metadata,
     // Detected by the daemon (`metadata.app`); omitted until a deploy finds one.
     ...(app === undefined ? {} : { app }),

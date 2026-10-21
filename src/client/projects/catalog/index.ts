@@ -82,7 +82,7 @@ export function isManagedEngineCatalogEntry(
 /**
  * Engine metadata stored on managed-engine catalog `options`.
  *
- * `provider` is the `principal.provider` CHECK value (`server` \| `postgres` \|
+ * `provider` is the engine provider value (`server` \| `postgres` \|
  * `mysql` \| `redis` \| `clickhouse`).
  */
 export type ManagedEngineOptions = {

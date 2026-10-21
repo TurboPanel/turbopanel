@@ -48,7 +48,7 @@ link here rather than restating the table.
 | ----------- | -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
 | Scope       | one per control plane                                                            | one active per organization                                                                                                           |
 | Storage     | files under `<stateDir>/tls/` (`ca.crt`, `ca.key`, `ca-bundle.pem`)              | `tls` row, `source='organization_ca'`, `ca_state` / `ca_generation`, key sealed `tpsecret`                                            |
-| Minted by   | `turbopanel/scripts/generate-self-signed-cert.mjs` (`ensureCa()`)                | `mintOrganizationCa({ organizationId })` in `turbopanel/src/lib/tls/self-signed.ts` (`O=TurboPanel, OU=Organization CA, CN={org.id}`) |
+| Minted by   | `turbopanel/scripts/generate-self-signed-cert.mjs` (`ensureCa()`)                | `mintOrganizationCa({ organizationId })` in `turbopanel/src/lib/tls/self-signed.ts` (`O=TurboPanel, OU=Organization CA, CN={org.id}`; ECDSA P-384, 15 years) |
 | Signs       | the control-plane Caddy leaf only                                                | managed-database / ProxySQL / replication leaves for that org                                                                         |
 | Consumed by | daemons (`/etc/turbopanel/instance-ca.pem` via `GET /api/daemon/v1/instance/ca`) | ProxySQL, managed engines, binding `<PREFIX>_CA_CERT`, SQL clients                                                                    |
 | Rotation    | `TURBOPANEL_TLS_CA_ROTATE=1` + `server.tls.trust.reconcile`                      | `POST /api/client/v1/tls/ca/rotate` then `POST /tls/ca/retire`                                                                        |
@@ -60,7 +60,7 @@ All of this package is Web-Crypto-only and Workers-safe.
 
 | File             | Role                                                                                                                                                                                                               |
 | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `self-signed.ts` | `mintOrganizationCa` (subject `O=TurboPanel, OU=Organization CA, CN={organizationId}`; carries a subjectKeyIdentifier, which strict verifiers such as Python 3.13+ require — CAs minted before it only gain it on rotation), `issueLeafCertificate` (`ORGANIZATION_CA_LEAF_VALID_DAYS` = 90; carries its own SKI and an authorityKeyIdentifier taken from the CA's SKI, or computed from the CA key for a legacy CA), `mintSelfSignedCertificate`, `verifyCertificateSignature` |
+| `self-signed.ts` | `mintOrganizationCa` (ECDSA P-384 key, `ORGANIZATION_CA_VALID_YEARS` = 15 calendar years, for the first CA and every rotation; subject `O=TurboPanel, OU=Organization CA, CN={organizationId}`; carries a subjectKeyIdentifier, which strict verifiers such as Python 3.13+ require — CAs minted before it only gain it on rotation. Organization CAs minted before P-384 are RSA 2048 / 10 years and stay so until an owner rotates; nothing replaces them automatically), `issueLeafCertificate` (RSA 2048 leaf key, `ORGANIZATION_CA_LEAF_VALID_DAYS` = 90; signed ecdsa-with-SHA384 under a P-384 CA, sha256WithRSAEncryption under an older RSA CA — the scheme follows the CA certificate's key; carries its own SKI and an authorityKeyIdentifier taken from the CA's SKI, or computed from the CA key for a legacy CA), `mintSelfSignedCertificate`, `verifyCertificateSignature` (RSA, P-256 and P-384 issuers), `encodeValidityTime` (UTCTime 1950–2049, GeneralizedTime otherwise). `organization-ca-interop.deno.test.ts` checks the chain with `node:crypto`, `openssl verify -x509_strict` and a real TLS handshake |
 | `parse.ts`       | Certificate PEM parse                                                                                                                                                                                              |
 | `pem.ts`         | PEM encode / decode                                                                                                                                                                                                |
 | `keys.ts`        | Private-key / certificate match                                                                                                                                                                                    |
@@ -89,19 +89,30 @@ Read-only reference — no behavior claims beyond today:
 - `computeBindingVariableSet` in `../../features/bindings/materialize.ts`
 - `GET /tls/ca` / `POST /tls/ca/rotate` / `GET /tls/ca/rotation` /
   `POST /tls/ca/retire` / `GET /tls/ca/download` in `../../client/tls/routes.ts`
-  (JSON and download serve the overlap bundle; rotate fans existing
+  (JSON and download serve the overlap bundle; the download is named
+  `turbopanel-org-ca-{organizationId}.pem`, the same name the UI saves; rotate fans existing
   `managed.apply` / `managed.ingress.reconcile` commands and rematerializes
   bindings — see `../../features/commands/AGENTS.md`. Repeat POST while `in_progress`
   resumes the stored cursor without minting another generation. `GET /tls/ca`
-  also returns `leafHealth: { dueCount,
+  also returns `leafHealth: { dueCount, staleCount,
   caGeneration, caNotAfter }` (one
-  indexed COUNT on `leaf` for this org plus the active Organization CA
-  generation and expiry). `TlsPublicRow` includes `caGeneration`.
-  `POST /tls/ca/retire` advances `retired` → `revoked` only after every tracked
-  command succeeded and binding rematerialize rows are not failed).
+  indexed pass over `leaf` for this org plus the active Organization CA
+  generation and expiry; stale leaves are counted apart and never as due). `TlsPublicRow` includes `caGeneration`.
+  `POST /tls/ca/retire` advances `retired` → `revoked` only after every live
+  fan-out row converged (`rotation-converge.ts`: backfill deferred
+  `managed.apply` command ids, `POST /tls/ca/rotate` resumes from
+  `awaiting_retire`, gone targets `skipped` + `target_gone` do not block).
   `PATCH /tls/:id` with `revoke: true` on an Organization CA row is rejected
   (`409` `organization_ca_retire_required`); Organization CA retirement is
-  exclusively `POST /tls/ca/retire`.
+  exclusively `POST /tls/ca/retire`. Orchestrator hosts hold the bundle too
+  (`managed.ha.reconcile` → `tls/ca.pem`, read once at process start): when the
+  rotate fan-out completes and again after retire, every Orchestrator host of
+  the organization gets `managed.ha.reconcile`
+  (`reconcileOrganizationOrchestratorTrust` in
+  `../../client/tls/changeover-fanout.ts`; best effort, never fails the step),
+  so the bundle is both generations during the changeover and the active one
+  only afterwards. These commands are not rows in `rotation.results` and do not
+  gate retire.
 
 ## Where the Platform CA lives instead
 
@@ -187,8 +198,27 @@ progress when earlier rows keep failing.
 | Deno    | `startDenoServer` (`src/platform/deno/server.ts`, covers `deno.ts` / `deno-dev.ts`) — first Deno-side scheduled surface besides cell maintain; `LEAF_RENEWAL_SWEEP_INTERVAL_MS` (5 min), overlap-guarded | **fresh** `createDenoDb()` per tick, always `endDbConnection` in `finally` |
 
 Module: `src/client/tls/leaf-renewal-sweep.ts`. `GET /tls/ca` exposes
-`leafHealth: { dueCount, caGeneration, caNotAfter }` via one org-scoped COUNT
+`leafHealth: { dueCount, staleCount, caGeneration, caNotAfter }` via one org-scoped pass
 plus the active Organization CA generation and expiry.
+
+**A leaf never sticks forever.** `leaf.state` is `active` or `stale`. The sweep
+marks a leaf stale (and stops counting and renewing it) when its server has been
+offline for 14 days (`LEAF_STALE_OFFLINE_DAYS`) or an ingress reconcile finds nothing
+on the server that needs the certificate; an owner can also mark one stale or delete
+its record (`/tls/ca/leaves`, `leaf-routes.ts`). `leaf.stale_cause` says which: `offline` marks come back by themselves when the server reconnects (`reactivateLeavesOfReturnedServers`, run at the start of every sweep pass, so a server that returns after the previous generation was retired is renewed at once); `unused` marks come back when a later deploy needs the certificate (`clearLeafAttentionAfterDeploy` in `features/tls/leaf-state.ts`, called by the command consumer right after `commitPendingTlsLeafTracking`); `owner` marks stay until an owner or a deploy says otherwise. The sweep's stale mark is dropped if an owner asked for a renewal after the sweep read the row (it compares the try count). Every try is remembered
+(`attempts`, `attempted_at`, `last_error`, filled from the sweep and from the failed
+`managed.apply` / `managed.ingress.reconcile` command) and waits `30 min × 2^attempts`
+(at most a day) before the next one. A successful deploy clears all of it
+(`DEPLOYED_LEAF_RESET` in `features/tls/leaf-tracking.ts`).
+
+**Retiring is guarded and has a deadline.** `POST /tls/ca/retire` also refuses with
+409 `ca_leaves_outstanding` while an *active* leaf is still signed by an older
+generation, or a leaf marked stale because its server was offline has a connected server again (the sweep is about to renew it). Rotations already waiting to be retired when `retire_by` was added got a 30 day deadline from the migration. When fan-out finishes the rotation gets `retire_by` (30 days,
+`CA_RETIRE_GRACE_DAYS`); once it has passed, the sweep tick retires the previous
+generation by itself, but only if every live target converged and no active leaf is
+left on an older generation (`rotation-retire.ts`, `retireOverdueRotations`).
+Anything else stays `awaiting_retire` and the Organization CA card says what it
+waits on.
 
 ## Naming
 

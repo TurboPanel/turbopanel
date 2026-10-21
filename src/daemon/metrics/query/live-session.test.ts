@@ -227,7 +227,6 @@ test('mergeLiveSampleIntoHostSeries appends a newer bucket and replaces the same
   assertEquals(empty.points.length, 1)
   assertEquals(empty.points[0]?.values['host.cpu.busyPercent'], 70)
   assertEquals(empty.sampleCount, 1)
-  assertEquals(empty.topologyGenerations, [3])
 
   const replaced = mergeLiveSampleIntoHostSeries(empty, sample, 10)
   assertEquals(replaced.points.length, 1)
@@ -303,7 +302,7 @@ test('isDurableSample: only an explicit durable:false marks a live-only sample',
   assertEquals(isDurableSample(meta(false)), false)
 })
 
-test('hostValuesFromSample reads the v7 extended numbers and falls back for Docker reclaimable bytes', () => {
+test('hostValuesFromSample reads the v8 extended numbers and falls back for Docker reclaimable bytes', () => {
   const base = authenticatedSample({ sampledAt: '2026-01-01T00:00:10.000Z' })
   const withExtended: AuthenticatedMetricsSample = {
     ...base,

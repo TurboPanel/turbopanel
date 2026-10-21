@@ -64,6 +64,8 @@ import { runHostLossTick } from './host-loss-tick.ts'
 import { runDatacenterRepinFanoutSweep } from '../../client/datacenters/repin-fanout.ts'
 import { runSystemReconcileSweep } from '../../features/system/reconcile.ts'
 import { runBackupsReconcileSweep } from '../../features/backups/reconcile.ts'
+import { runFolderReconcileSweep } from './folder-reconcile-sweep.ts'
+import { runFolderRemovalSweep } from '../../features/folders/removal.ts'
 import type { FirewallApplyGate } from '../../features/firewall/enforcement.ts'
 import { runFirewallPreviewSweep } from '../../features/firewall/preview.ts'
 import { runLeafRenewalSweepTick } from '../../client/tls/leaf-renewal-sweep.ts'
@@ -73,6 +75,7 @@ import { cachedForEnv } from './notification-email-cache.ts'
 import { resolveAlertSender } from '../../features/alerts/resolve-alert-sender.ts'
 import { type EmitEmail, retryDueDeliveries } from '../../features/notifications/emit.ts'
 import { sendDueDigests } from '../../features/notifications/digest.ts'
+import { alertNewOrphanFolders } from '../../features/notifications/folder-alerts.ts'
 import {
   ALERT_DELIVERY_BUDGET_MS,
   notifyDemotions,
@@ -80,6 +83,7 @@ import {
 import { isMassDisconnect } from './mass-disconnect.ts'
 import type { DerivedSecretsConfig, SecretsConfig } from '../../lib/secrets/secrets.ts'
 import { createWorkersCommandQueue } from '../../features/commands/workers-queue.ts'
+import type { CommandQueue } from '../../features/commands/queue.ts'
 import {
   COMMAND_DISPATCH_SWEEP_LIMIT,
   sweepExpiredCommandDispatch,
@@ -96,8 +100,10 @@ import {
   parseUpgradeStepRetentionDays,
   pruneUpgradeHistory,
 } from '../../features/upgrades/prune.ts'
+import { pruneAuditHistory } from '../../features/audit/prune.ts'
 import { pruneCommandHistory } from '../../features/commands/prune.ts'
-import { resolveInstanceRevision } from '../../app/build-info.ts'
+import { getAuditRetentionMonths } from '../../features/settings/audit-retention-settings.ts'
+import { resolveBuildLabel, resolveInstanceRevision } from '../../app/build-info.ts'
 import { INSTANCE_VERSION } from '../../app/version.ts'
 import { resolveColocatedServerId } from '../../client/authn/install-state.ts'
 import { runUpgradeMaintenance } from '../../features/upgrades/maintenance.ts'
@@ -890,7 +896,10 @@ async function runLeafRenewalSweepTickSafely(
  * Reuses this cron's already-open db; isolated so a failure here never aborts
  * the other sweeps.
  */
-export async function sweepExpiredCommandDispatchSafely(db: Db): Promise<void> {
+export async function sweepExpiredCommandDispatchSafely(
+  db: Db,
+  opts?: { commandQueue?: CommandQueue }
+): Promise<void> {
   try {
     const deleted = await sweepExpiredCommandDispatch(db, {
       limit: COMMAND_DISPATCH_SWEEP_LIMIT,
@@ -908,7 +917,7 @@ export async function sweepExpiredCommandDispatchSafely(db: Db): Promise<void> {
   // stuck at 'applying' with no live command left. Same isolation: a
   // failure here never aborts the other sweeps.
   try {
-    const timedOut = await sweepStaleCommands(db)
+    const timedOut = await sweepStaleCommands(db, { commandQueue: opts?.commandQueue })
     // Recoveries first: a row still in flight keeps its managed row at
     // `applying`, and an expired one releases it itself.
     const expiredDetecting = await expireStaleRecoveries(db, {
@@ -968,6 +977,24 @@ export async function sweepUpgradeHistorySafely(db: Db, doneRetentionDays?: numb
 }
 
 /**
+ * Retention prune of audit rows older than the instance's window (see
+ * features/audit/prune.ts). Same 15-minute window and the same isolation.
+ */
+export async function sweepAuditHistorySafely(db: Db): Promise<void> {
+  try {
+    const months = await getAuditRetentionMonths(db)
+    const deleted = await pruneAuditHistory(db, { months })
+    if (deleted > 0) {
+      sweepTrace('audit-history-swept', { deleted })
+    }
+  } catch (err) {
+    sweepTrace('audit-history-sweep-failed', {
+      error: sweepErrorMessage(err),
+    })
+  }
+}
+
+/**
  * Retention prune of aged terminal `command` rows (see features/commands/prune.ts).
  * Rides the same 15-minute window and is isolated so a failure never aborts the
  * other sweeps.
@@ -1006,6 +1033,7 @@ export async function runUpgradeMaintenanceSafely(db: Db, env: CloudflareBinding
         version: INSTANCE_VERSION,
         commit: revision.commit,
       },
+      buildLabel: resolveBuildLabel(envRecord),
       colocatedServerId: colocated,
     })
     sweepTrace('upgrade-tick')
@@ -1084,6 +1112,19 @@ async function runQueuedCronSweeps(
       sweepTrace('backups-reconcile-sweep-failed', {
         error: sweepErrorMessage(err),
       })
+    }
+    // Folders of deleted assets the host has not confirmed gone; isolated too.
+    try {
+      await runFolderRemovalSweep(db, commandQueue)
+    } catch (err) {
+      sweepTrace('folder-removal-sweep-failed', { error: sweepErrorMessage(err) })
+    }
+    // A fresh folder listing from servers that have folders, every few hours, so
+    // a folder removed or added by hand is noticed; isolated too.
+    try {
+      await runFolderReconcileSweep(db, commandQueue)
+    } catch (err) {
+      sweepTrace('folder-reconcile-sweep-failed', { error: sweepErrorMessage(err) })
     }
     // Firewall previews after a reconnect; isolated too. The gate is the
     // deploy-time apply key: without it an opted-in host that applied would be
@@ -1281,6 +1322,7 @@ async function upgradePhaseWork(
       capDbTimeout(deadlineMs)
     )
     await runWithDbTimeout(db, sweepCommandHistorySafely, capDbTimeout(deadlineMs))
+    await runWithDbTimeout(db, sweepAuditHistorySafely, capDbTimeout(deadlineMs))
   }
   if (shouldRunUpgradeTick(scheduledTime, upgradeTickMinutes)) {
     await runUpgradeMaintenanceSafely(db, env)
@@ -1410,7 +1452,17 @@ async function runOptionalCronPhases(
       'command-dispatch',
       opts.scheduledTime,
       phasesSkipped,
-      () => runWithDbTimeout(db, sweepExpiredCommandDispatchSafely, capDbTimeout(deadlineMs))
+      () =>
+        runWithDbTimeout(
+          db,
+          () =>
+            sweepExpiredCommandDispatchSafely(db, {
+              commandQueue: env.TURBOPANEL_COMMAND_QUEUE
+                ? createWorkersCommandQueue(env.TURBOPANEL_COMMAND_QUEUE)
+                : undefined,
+            }),
+          capDbTimeout(deadlineMs)
+        )
     ))
   ) {
     return
@@ -1423,6 +1475,25 @@ async function runOptionalCronPhases(
       opts.scheduledTime,
       phasesSkipped,
       () => runWithDbTimeout(db, sweepExpiredWebhookDeliveriesSafely, capDbTimeout(deadlineMs))
+    ))
+  ) {
+    return
+  }
+
+  // Tell each organization about the folders that became orphans since the
+  // last tick, once per orphan (see features/notifications/folder-alerts.ts).
+  // The sweep itself never throws.
+  if (
+    !(await runOptionalPhase(
+      deadlineMs,
+      'orphan-folder-alerts',
+      opts.scheduledTime,
+      phasesSkipped,
+      async () => {
+        await alertNewOrphanFolders(db, tlsRenewal?.dataEncryptionSecrets, {
+          email: await workersNotificationEmail(env, db, tlsRenewal),
+        })
+      }
     ))
   ) {
     return

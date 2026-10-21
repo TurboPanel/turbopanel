@@ -36,12 +36,12 @@ test('decodePemBlock rejects missing and unterminated blocks', () => {
   assertThrows(
     () => decodePemBlock('-----BEGIN CERTIFICATE-----\nabc', 'CERTIFICATE'),
     PemError,
-    'unterminated PEM block CERTIFICATE',
+    'unterminated PEM block CERTIFICATE'
   )
   assertThrows(
     () => decodePemBlock('not pem', 'CERTIFICATE'),
     PemError,
-    'missing PEM block CERTIFICATE',
+    'missing PEM block CERTIFICATE'
   )
 })
 
@@ -49,7 +49,7 @@ test('splitCertificateChain rejects PEM without certificate blocks', () => {
   assertThrows(
     () => splitCertificateChain('-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----'),
     PemError,
-    'no CERTIFICATE PEM blocks found',
+    'no CERTIFICATE PEM blocks found'
   )
 })
 
@@ -62,14 +62,15 @@ test('decodePrivateKeyToPkcs8 accepts PKCS#8 RSA keys minted by self-signed help
 
 test('decodePrivateKeyToPkcs8 rejects unsupported PEM labels', () => {
   assertThrows(
-    () => decodePrivateKeyToPkcs8('-----BEGIN EC PRIVATE KEY-----\nabc\n-----END EC PRIVATE KEY-----'),
+    () =>
+      decodePrivateKeyToPkcs8('-----BEGIN EC PRIVATE KEY-----\nabc\n-----END EC PRIVATE KEY-----'),
     PemError,
-    'EC PRIVATE KEY (SEC1) PEM is not supported',
+    'malformed EC private key'
   )
   assertThrows(
     () => decodePrivateKeyToPkcs8('not a key'),
     PemError,
-    'unsupported private key PEM label',
+    'unsupported private key PEM label'
   )
 })
 
@@ -88,7 +89,7 @@ test('decodePrivateKeyToPkcs8 rejects unrecognized PKCS#8 algorithms', () => {
   assertThrows(
     () => decodePrivateKeyToPkcs8(emptyPkcs8),
     PemError,
-    'unrecognized PKCS#8 key algorithm',
+    'unrecognized PKCS#8 key algorithm'
   )
 })
 
@@ -100,13 +101,17 @@ test('encodePemBlock wraps long base64 across 64-character lines', () => {
     .split('\n')
     .filter((line) => !line.startsWith('-----'))
     .filter((line) => line.length > 0)
-  assertEquals(bodyLines.every((line) => line.length <= 64), true)
+  assertEquals(
+    bodyLines.every((line) => line.length <= 64),
+    true
+  )
   assertEquals(bodyLines.length > 1, true)
 })
 
 test('decodePemBlock rejects invalid base64 payload', () => {
   assertThrows(
-    () => decodePemBlock('-----BEGIN CERTIFICATE-----\n!!!\n-----END CERTIFICATE-----', 'CERTIFICATE'),
-    Error,
+    () =>
+      decodePemBlock('-----BEGIN CERTIFICATE-----\n!!!\n-----END CERTIFICATE-----', 'CERTIFICATE'),
+    Error
   )
 })

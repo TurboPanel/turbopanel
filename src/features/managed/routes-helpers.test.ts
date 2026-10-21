@@ -12,7 +12,6 @@ import {
   assertManagedSeriesUnchanged,
   assertManagedVariantSwapSafe,
   buildManagedReleaseView,
-  isManagedRootPrincipal,
   isPlainObject,
   MANAGED_SERIES_IMMUTABLE_ERROR,
   MANAGED_USER_PRIVILEGES_INVALID_ERROR,
@@ -23,12 +22,14 @@ import {
   parseManagedPatchName,
   parseManagedUserCreateFields,
   parseManagedVersionSelection,
-  principalMetadata,
   readInitialDatabase,
   resolveManagedServerId,
   resolveManagedUserPrivileges,
   serializeContainerRow,
-  serializeManagedUser,
+  serializeManagedLogin,
+  evaluateExistingPrincipalLoginName,
+  evaluateManagedLoginDropGuard,
+  evaluateManagedLoginRotateGuard,
 } from './routes-helpers.ts'
 
 /**
@@ -85,7 +86,12 @@ test('isPlainObject accepts records only', () => {
 
 test('managedSessionPaths lists every managed session route', () => {
   const paths = managedSessionPaths()
-  assertEquals(paths.length, 24)
+  assertEquals(paths.length, 26)
+  assertEquals(
+    paths.includes('/environments/:id/managed/users/:loginId/effective-permissions'),
+    true
+  )
+  assertEquals(paths.includes('/environments/:id/managed/privilege-catalogue'), true)
   assertEquals(paths.includes('/environments/:id/managed/logs'), true)
   assertEquals(paths.includes('/environments/:id/managed/backup-policies'), true)
   assertEquals(paths.includes('/environments/:id/managed/backup-policies/:policyId'), true)
@@ -402,40 +408,115 @@ test('resolveManagedServerId prefers managed.server_id over environment placemen
   assertEquals(resolveManagedServerId({ serverId: null }, null), null)
 })
 
-test('principalMetadata and isManagedRootPrincipal', () => {
-  assertEquals(principalMetadata(null), {})
-  assertEquals(principalMetadata([1]), {})
-  assertEquals(principalMetadata({ managedRoot: true, databases: ['postgres'] }), {
-    managedRoot: true,
+test('serializeManagedLogin keeps the users shape, names the principal and login, and the cluster logins are guarded by role', () => {
+  const row = {
+    id: 'login-1',
+    principalId: 'prin-1',
+    managedId: 'm1',
+    role: 'user' as const,
+    username: 'app_user',
+    appliedUsername: 'app_user',
+    nameScheme: 'plain' as const,
     databases: ['postgres'],
-  })
-  assertEquals(isManagedRootPrincipal({ managedRoot: true }), true)
-  assertEquals(isManagedRootPrincipal({ managedRoot: false }), false)
-  assertEquals(isManagedRootPrincipal(undefined), false)
+    privileges: ['read-write'],
+    connectionRole: 'read-write' as const,
+    grantMode: 'preset' as const,
+    tool: false,
+    allowedSources: undefined,
+    maxConnections: undefined,
+    createdAt: '2024-01-01T00:00:00.000Z',
+    updatedAt: '2024-01-01T00:00:00.000Z',
+  }
+  const serialized = serializeManagedLogin(row, 'postgres')
+  assertEquals(serialized.id, 'login-1')
+  assertEquals(serialized.principalId, 'prin-1')
+  assertEquals(serialized.loginId, 'login-1')
+  assertEquals(serialized.nameScheme, 'plain')
+  assertEquals(serialized.databases, ['postgres'])
+  assertEquals(
+    serializeManagedLogin({ ...row, principalId: null, role: 'root' }, 'postgres').principalId,
+    null
+  )
+
+  assertEquals(evaluateManagedLoginRotateGuard('root')?.error, 'use_root_password_route')
+  assertEquals(
+    evaluateManagedLoginRotateGuard('replication')?.error,
+    'cannot_rotate_replication_user'
+  )
+  assertEquals(evaluateManagedLoginRotateGuard('user'), null)
+  assertEquals(evaluateManagedLoginDropGuard('root')?.error, 'cannot_drop_root_user')
+  assertEquals(evaluateManagedLoginDropGuard('replication'), null)
+  assertEquals(evaluateManagedLoginDropGuard('user'), null)
 })
 
-test('serializeManagedUser filters databases and privileges to strings', () => {
-  const serialized = serializeManagedUser({
-    id: 'prin-1',
-    username: 'app_user',
-    appliedUsername: 'app_user_ab12cd34ef5',
-    metadata: {
-      databases: ['postgres', 42, 'app'],
-      privileges: ['read-only', null],
+test('evaluateExistingPrincipalLoginName accepts a name the engine takes and refuses the rest', () => {
+  assertEquals(evaluateExistingPrincipalLoginName(postgresEngineSpec, 'alice'), null)
+  assertEquals(evaluateExistingPrincipalLoginName(postgresEngineSpec, 'site_owner_01'), null)
+  // A Linux name may carry a hyphen no engine role name takes, and MySQL
+  // role names stop at 32 characters: the login is refused, never renamed.
+  assertEquals(
+    evaluateExistingPrincipalLoginName(postgresEngineSpec, 'site-owner')?.error,
+    'principal_name_does_not_fit'
+  )
+  const long = 'a'.repeat(mysqlEngineSpec.userOperations.identifier.maxLength + 1)
+  assertEquals(
+    evaluateExistingPrincipalLoginName(mysqlEngineSpec, long)?.error,
+    'principal_name_does_not_fit'
+  )
+  assertEquals(
+    evaluateExistingPrincipalLoginName(postgresEngineSpec, 'postgres')?.error,
+    'principal_name_reserved'
+  )
+  assertEquals(
+    evaluateExistingPrincipalLoginName(postgresEngineSpec, 'postgres_abc', 'postgres_abc')?.error,
+    'principal_name_reserved'
+  )
+  assertStringIncludes(
+    evaluateExistingPrincipalLoginName(mysqlEngineSpec, long)?.message ?? '',
+    'Create a login with a new name instead'
+  )
+})
+
+test('serializeManagedLogin reads settings from the login columns', () => {
+  const serialized = serializeManagedLogin(
+    {
+      id: 'login-1',
+      principalId: null,
+      managedId: 'm1',
+      role: 'user',
+      username: 'app_user',
+      appliedUsername: 'app_user_ab12cd34ef5',
+      nameScheme: 'partial',
+      databases: ['postgres', 'app'],
+      privileges: ['read-only'],
+      connectionRole: 'read-only',
+      grantMode: 'self',
+      tool: true,
+      allowedSources: ['internal'],
+      maxConnections: 3,
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
     },
-    createdAt: '2024-01-01T00:00:00.000Z',
-  })
+    'postgres'
+  )
   assertEquals(serialized, {
-    id: 'prin-1',
+    id: 'login-1',
     username: 'app_user',
     appliedUsername: 'app_user_ab12cd34ef5',
-    // Legacy row (no stored scheme): a suffixed name reads as partial.
     nameScheme: 'partial',
     databases: ['postgres', 'app'],
     privileges: ['read-only'],
-    // Absent metadata role → the writer hostgroup, never an implicit reader.
-    connectionRole: 'read-write',
+    connectionRole: 'read-only',
+    grantMode: 'self',
+    tool: true,
+    allowedSources: ['internal'],
+    maxConnections: 3,
+    // A source-limited login never connects straight through, default or not.
+    straightThrough: false,
+    straightThroughDefault: true,
     createdAt: '2024-01-01T00:00:00.000Z',
+    principalId: null,
+    loginId: 'login-1',
   })
 })
 
@@ -503,7 +584,17 @@ test('parseManagedUserCreateFields rejects root username and invalid identifiers
 
   // Reserved platform-internal names stay rejected even when the exposed
   // root login is a suffixed name that no longer equals them.
-  for (const reserved of ['postgres', 'root', 'mysql', 'superadmin', 'Root']) {
+  for (const reserved of [
+    'postgres',
+    'root',
+    'mysql',
+    'superadmin',
+    'Root',
+    // The platform's own prefix: owner roles, monitor and replication logins.
+    'tp_shop_owner',
+    'tp_monitor_ab12',
+    'TP_repl',
+  ]) {
     const res = parseManagedUserCreateFields(
       c,
       mockManagedContext(),
@@ -515,6 +606,22 @@ test('parseManagedUserCreateFields rejects root username and invalid identifiers
     assertEquals(res.status, 400)
     assertEquals(await res.json(), { error: 'Invalid username' })
   }
+})
+
+test('parseManagedUserCreateFields takes the admin privilege on any Postgres database', () => {
+  const c = mockContext()
+  const body = { username: 'dba', databases: ['postgres'], privileges: ['admin', 'read-write'] }
+  // No owner role on the database: not refused (the answer says what it got).
+  const plain = parseManagedUserCreateFields(c, mockManagedContext(), body, defaultRowOptions())
+  if (plain instanceof Response) throw new TypeError('expected parsed fields')
+  assertEquals(plain.privileges, ['admin'])
+
+  const ok = parseManagedUserCreateFields(c, mockManagedContext(), body, {
+    ...defaultRowOptions(),
+    ownerRoleDatabases: ['postgres'],
+  })
+  if (ok instanceof Response) throw new TypeError('expected parsed fields')
+  assertEquals(ok.privileges, ['admin'])
 })
 
 test('parseManagedUserCreateFields refuses a system schema listed by an older cluster', async () => {

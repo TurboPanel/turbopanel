@@ -1,3 +1,4 @@
+import { eq } from 'drizzle-orm'
 import type { Context } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import type {
@@ -6,6 +7,7 @@ import type {
 } from '../../contracts/commands/schemas.ts'
 import type { CommandQueue } from '../../features/commands/queue.ts'
 import type { Db } from '../../db/connection.ts'
+import { server } from '../../db/schema.ts'
 import type { ManagedContext } from './context.ts'
 import { enqueueTypedCommand } from '../../features/managed/apply-prepare.ts'
 import type { ManagedRowOptions } from '../../features/managed/options.ts'
@@ -16,7 +18,10 @@ import type { ManagedBackupRecord } from '../../features/backups/backup-records.
 const BACKUP_COMMAND_EXPIRES_MS = 1_800_000
 
 export type ManagedBackupApiError =
-  { kind: 'managed_backup_unsupported' } | { kind: 'backup_not_found' }
+  | { kind: 'managed_backup_unsupported' }
+  | {
+      kind: 'backup_not_found'
+    }
 
 export function mapManagedBackupApiError(
   c: Context<AppEnv>,
@@ -32,6 +37,61 @@ export function mapManagedBackupApiError(
 
 export function isManagedBackupApiError(value: unknown): value is ManagedBackupApiError {
   return typeof value === 'object' && value !== null && 'kind' in value
+}
+
+/** List/API projection: internal `serverId` is `storedOnServerId` on the wire. */
+export type ManagedBackupListItem = Omit<ManagedBackupRecord, 'serverId'> & {
+  storedOnServerId?: string
+}
+
+export function toManagedBackupListItem(record: ManagedBackupRecord): ManagedBackupListItem {
+  const { serverId, ...rest } = record
+  return serverId === undefined ? rest : { ...rest, storedOnServerId: serverId }
+}
+
+/**
+ * Artifact host when known; otherwise the current primary (legacy rows, or
+ * after that server was deleted).
+ */
+export function resolveManagedBackupArtifactServerId(
+  record: Pick<ManagedBackupRecord, 'serverId'>,
+  fallbackServerId: string
+): string {
+  return record.serverId ?? fallbackServerId
+}
+
+export function backupOnOtherServerMessage(serverName: string): string {
+  return (
+    `This backup is stored on ${serverName} (it was the primary when the backup ran). ` +
+    'It can only be restored on that server. Take a new backup on the current primary, or switch back first.'
+  )
+}
+
+/**
+ * Restores run on the current primary, which only has the file when it is
+ * still the host that made it. Refuse before any status flip or enqueue.
+ */
+export async function refuseRestoreIfBackupOnOtherServer(
+  c: Context<AppEnv>,
+  db: Db,
+  record: ManagedBackupRecord,
+  targetServerId: string
+): Promise<Response | null> {
+  if (record.serverId === undefined || record.serverId === targetServerId) {
+    return null
+  }
+  const [host] = await db
+    .select({ name: server.name })
+    .from(server)
+    .where(eq(server.id, record.serverId))
+    .limit(1)
+  return c.json(
+    {
+      error: 'backup_on_other_server',
+      message: backupOnOtherServerMessage(host?.name ?? 'another server'),
+    },
+    409
+  )
 }
 
 /** `bk_<32 hex chars>` — satisfies the daemon/instance shared `SAFE_BACKUP_ID_RE` charset. */

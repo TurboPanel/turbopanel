@@ -6,7 +6,7 @@
  * that cannot stream is flagged `needs_resync`; other failures are logged.
  */
 
-import { and, eq, inArray, sql } from 'drizzle-orm'
+import { and, eq } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { command, managed, replica } from '../../db/schema.ts'
 import { compatLogError, compatLogWarn } from '../../lib/log-compat.ts'
@@ -19,7 +19,7 @@ import {
 } from '../commands/command-records.ts'
 import { isNoopCommandQueue } from '../commands/noop-command-queue.ts'
 import type { CommandQueue } from '../commands/queue.ts'
-import { COMMAND_STATUSES, TERMINAL_COMMAND_STATUSES } from '../commands/types.ts'
+import { commandIsOpen } from '../commands/open-statuses.ts'
 import {
   parseManagedHaFailoverPayload,
   type ManagedHaFailoverCommandPayload,
@@ -36,9 +36,6 @@ import { isManagedEngineCode, type ManagedEngineCode } from './types.ts'
 const FOLLOW_PRIMARY_TTL_MS = 600_000
 /** Member rows that can follow a new primary without a full Resync. */
 const FOLLOW_PRIMARY_STATUSES = new Set(['ready', 'streaming'])
-const OUTSTANDING_COMMAND_STATUSES = COMMAND_STATUSES.filter(
-  (status) => !TERMINAL_COMMAND_STATUSES.has(status)
-)
 const SUPERSEDED_FOLLOW_PRIMARY_ERROR = 'Superseded by a follow-primary to a newer primary'
 /** Context marker so a failed slot-ensure is re-queued at most once. */
 export const FOLLOW_PRIMARY_SLOT_RETRY_KEY = 'slotRetry'
@@ -192,8 +189,8 @@ async function outstandingFollowPrimaryRepoints(
     .where(
       and(
         eq(command.name, 'managed.ha.failover'),
-        inArray(command.status, OUTSTANDING_COMMAND_STATUSES),
-        sql`${command.context}->>'managedId' = ${managedId}`
+        eq(command.managedId, managedId),
+        commandIsOpen()
       )
     )
   const outstanding: OutstandingFollowPrimary[] = []

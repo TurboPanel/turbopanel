@@ -42,7 +42,7 @@ function succeeded(overrides: Partial<BackupRunReportMessage> = {}): BackupRunRe
     backupId: BACKUP_ID,
     sizeBytes: 1024,
     checksum: CHECKSUM,
-    path: `/backup/${MANAGED_ID}/policy-${POLICY_ID}/${BACKUP_ID}.dump`,
+    path: `managed/${MANAGED_ID}/policy-${POLICY_ID}/${BACKUP_ID}.dump`,
     at: '2026-09-30T03:00:06.000Z',
     ...overrides,
   }
@@ -81,7 +81,7 @@ const COPY_ON_A: BackupPolicyTarget = {
   copyServerId: SERVER_A,
 }
 
-const COPY_PATH = `/backup/copies/${COPY_ID}/policy-${POLICY_ID}/${BACKUP_ID}.tar.gz`
+const COPY_PATH = `volumes/${COPY_ID}/policy-${POLICY_ID}/${BACKUP_ID}.tar.gz`
 
 function fakeStore(target: BackupPolicyTarget | undefined): {
   store: BackupRunReportStore
@@ -130,9 +130,18 @@ test('a succeeded run from the engine’s own server is recorded with its artifa
       backupId: BACKUP_ID,
       sizeBytes: 1024,
       checksum: CHECKSUM,
-      path: `/backup/${MANAGED_ID}/policy-${POLICY_ID}/${BACKUP_ID}.dump`,
+      path: `managed/${MANAGED_ID}/policy-${POLICY_ID}/${BACKUP_ID}.dump`,
     },
   })
+})
+
+test('an absolute path under the backup root is stored relative to it', async () => {
+  const relative = `managed/${MANAGED_ID}/policy-${POLICY_ID}/${BACKUP_ID}.dump`
+  const { outcome, recorded } = await outcomeOf(
+    succeeded({ path: `/var/lib/turbopanel/backup/${relative}` })
+  )
+  assertEquals(outcome, { ok: true })
+  assertEquals(recorded[0]?.artifact?.path, relative)
 })
 
 test('a failed run is recorded without an artifact, its error trimmed', async () => {
@@ -193,13 +202,13 @@ test('a storage-copy artifact must sit in this policy’s own copy directory as 
   const otherCopy = '0192a3b4-c5d6-7e8f-9a0b-eeeeeeeeeeee'
   const otherPolicy = '0192a3b4-c5d6-7e8f-9a0b-cccccccccccc'
   const cases: [string, string][] = [
-    [`/backup/copies/${otherCopy}/policy-${POLICY_ID}/${BACKUP_ID}.tar.gz`, 'outside'],
-    [`/backup/copies/${COPY_ID}/policy-${otherPolicy}/${BACKUP_ID}.tar.gz`, 'outside'],
-    [`/backup/copies/${COPY_ID}/${BACKUP_ID}.tar.gz`, 'outside'],
+    [`volumes/${otherCopy}/policy-${POLICY_ID}/${BACKUP_ID}.tar.gz`, 'outside'],
+    [`volumes/${COPY_ID}/policy-${otherPolicy}/${BACKUP_ID}.tar.gz`, 'outside'],
+    [`volumes/${COPY_ID}/${BACKUP_ID}.tar.gz`, 'outside'],
     // The engine layout for a copy's id is not the copy layout.
-    [`/backup/${COPY_ID}/policy-${POLICY_ID}/${BACKUP_ID}.tar.gz`, 'outside'],
-    [`/backup/copies/${COPY_ID}/policy-${POLICY_ID}/${BACKUP_ID}.dump`, 'extension'],
-    [`/backup/copies/${COPY_ID}/policy-${POLICY_ID}/${BACKUP_ID}.tar`, 'extension'],
+    [`managed/${COPY_ID}/policy-${POLICY_ID}/${BACKUP_ID}.tar.gz`, 'outside'],
+    [`volumes/${COPY_ID}/policy-${POLICY_ID}/${BACKUP_ID}.dump`, 'extension'],
+    [`volumes/${COPY_ID}/policy-${POLICY_ID}/${BACKUP_ID}.tar`, 'extension'],
   ]
   await forEachSequential(cases, async ([path, fragment]) => {
     const { outcome, recorded } = await outcomeOf(succeeded({ path }), COPY_ON_A)
@@ -210,7 +219,7 @@ test('a storage-copy artifact must sit in this policy’s own copy directory as 
 
 test('a managed report whose path is laid out like a copy’s is refused', async () => {
   const { outcome } = await outcomeOf(
-    succeeded({ path: `/backup/copies/${MANAGED_ID}/policy-${POLICY_ID}/${BACKUP_ID}.tar.gz` })
+    succeeded({ path: `volumes/${MANAGED_ID}/policy-${POLICY_ID}/${BACKUP_ID}.tar.gz` })
   )
   assertEquals(outcome.ok, false)
 })
@@ -257,12 +266,13 @@ test('the artifact must sit in this policy’s own directory for this engine', a
   const otherEngine = '0192a3b4-c5d6-7e8f-9a0b-bbbbbbbbbbbb'
   const otherPolicy = '0192a3b4-c5d6-7e8f-9a0b-cccccccccccc'
   const cases: [string, string][] = [
-    [`/backup/${otherEngine}/policy-${POLICY_ID}/${BACKUP_ID}.dump`, 'outside'],
-    [`/backup/${MANAGED_ID}/policy-${otherPolicy}/${BACKUP_ID}.dump`, 'outside'],
-    [`/backup/${MANAGED_ID}/${BACKUP_ID}.dump`, 'outside'],
-    [`/backup/${MANAGED_ID}/policy-${POLICY_ID}/${BACKUP_ID}.exe`, 'extension'],
-    [`relative/${MANAGED_ID}/policy-${POLICY_ID}/${BACKUP_ID}.dump`, 'invalid'],
-    [`/backup/${MANAGED_ID}/policy-${POLICY_ID}/${BACKUP_ID}.dump\nx`, 'invalid'],
+    [`managed/${otherEngine}/policy-${POLICY_ID}/${BACKUP_ID}.dump`, 'outside'],
+    [`managed/${MANAGED_ID}/policy-${otherPolicy}/${BACKUP_ID}.dump`, 'outside'],
+    [`managed/${MANAGED_ID}/${BACKUP_ID}.dump`, 'outside'],
+    [`managed/${MANAGED_ID}/policy-${POLICY_ID}/${BACKUP_ID}.exe`, 'extension'],
+    [`managed/../${MANAGED_ID}/policy-${POLICY_ID}/${BACKUP_ID}.dump`, 'invalid'],
+    [`managed//${MANAGED_ID}/policy-${POLICY_ID}/${BACKUP_ID}.dump`, 'invalid'],
+    [`managed/${MANAGED_ID}/policy-${POLICY_ID}/${BACKUP_ID}.dump\nx`, 'invalid'],
   ]
   await forEachSequential(cases, async ([path, fragment]) => {
     const { outcome, recorded } = await outcomeOf(succeeded({ path }))

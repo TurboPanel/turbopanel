@@ -3,6 +3,7 @@ import { assertEquals } from '@std/assert'
 import { eq } from 'drizzle-orm'
 import { getDatabaseUrl } from '../../db/url.ts'
 import { createDenoDb } from '../../db/connection.ts'
+import { listServerPlacements, recordPendingPlacements } from '../principals/placement-records.ts'
 import {
   container,
   environment,
@@ -84,7 +85,7 @@ test('deleteProjectCascade rejects when containers are still active', async () =
 
   const [env] = await db
     .insert(environment)
-    .values({ name: 'Production', projectId })
+    .values({ name: 'production', projectId })
     .returning({ id: environment.id })
   const environmentId = env!.id
 
@@ -167,7 +168,7 @@ test('deleteProjectCascade ignores a running ingress container', async () => {
 
   const [env] = await db
     .insert(environment)
-    .values({ name: 'Production', projectId })
+    .values({ name: 'production', projectId })
     .returning({ id: environment.id })
   const environmentId = env!.id
 
@@ -312,7 +313,7 @@ test('deleteProjectCascade removes children when containers are stopped', async 
 
   const [env] = await db
     .insert(environment)
-    .values({ name: 'Production', projectId })
+    .values({ name: 'production', projectId })
     .returning({ id: environment.id })
   const environmentId = env!.id
 
@@ -406,7 +407,7 @@ test('deleteProjectCascade removes tenancy edges before services', async () => {
 
   const [env] = await db
     .insert(environment)
-    .values({ name: 'Production', projectId })
+    .values({ name: 'production', projectId })
     .returning({ id: environment.id })
   const environmentId = env!.id
 
@@ -420,8 +421,6 @@ test('deleteProjectCascade removes tenancy edges before services', async () => {
     .insert(principal)
     .values({
       organizationId,
-      kind: 'system',
-      provider: 'server',
       username: 'app',
       appliedUsername: 'app',
       projectId,
@@ -430,6 +429,17 @@ test('deleteProjectCascade removes tenancy edges before services', async () => {
   const principalId = acct!.id
 
   await db.insert(tenancy).values({ principalId, serviceId })
+  const [srv] = await db
+    .insert(server)
+    .values({ organizationId, name: 'Tenancy Cascade Server' })
+    .returning({ id: server.id })
+  const serverId = srv!.id
+  // The environment is pinned here and a deploy left the placement
+  // `pending` (its result was never recorded): the cascade must promote it.
+  await db.update(environment).set({ serverId }).where(eq(environment.id, environmentId))
+  await recordPendingPlacements(db, serverId, [
+    { principalId, home: '/srv/users/app', source: 'manual' },
+  ])
 
   try {
     const result = await deleteProjectCascade(db, projectId)
@@ -447,10 +457,85 @@ test('deleteProjectCascade removes tenancy edges before services', async () => {
       .from(tenancy)
       .where(eq(tenancy.serviceId, serviceId))
     assertEquals(remainingTenancy.length, 0)
+
+    // The principal outlives the project: same row, no project, same name.
+    const [kept] = await db
+      .select({
+        id: principal.id,
+        projectId: principal.projectId,
+        appliedUsername: principal.appliedUsername,
+      })
+      .from(principal)
+      .where(eq(principal.id, principalId))
+      .limit(1)
+    assertEquals(kept, { id: principalId, projectId: null, appliedUsername: 'app' })
+
+    // Its placement survives too: it is the only record of where the account lives.
+    const placements = await listServerPlacements(db, serverId)
+    assertEquals(
+      placements.map((row) => [row.principalId, row.state]),
+      [[principalId, 'present']]
+    )
   } finally {
     await db.delete(tenancy).where(eq(tenancy.serviceId, serviceId))
     await db.delete(principal).where(eq(principal.id, principalId))
+    await db.delete(server).where(eq(server.id, serverId))
     await db.delete(service).where(eq(service.id, serviceId))
+    await db.delete(environment).where(eq(environment.id, environmentId))
+    await db.delete(project).where(eq(project.id, projectId))
+    await db.delete(workspace).where(eq(workspace.id, workspaceId))
+    await db.delete(organization).where(eq(organization.id, organizationId))
+  }
+})
+
+test('deleteProjectCascade refuses and keeps every row when the host stop did not go through', async () => {
+  if (!dbUrl) {
+    skipWithoutDatabase('project cascade tests')
+    return
+  }
+
+  const db = createDenoDb()
+  const [org] = await db
+    .insert(organization)
+    .values({ name: 'Stop Failed Org' })
+    .returning({ id: organization.id })
+  const organizationId = org!.id
+  const [ws] = await db
+    .insert(workspace)
+    .values({ name: 'Stop Failed Workspace', organizationId })
+    .returning({ id: workspace.id })
+  const workspaceId = ws!.id
+  const [proj] = await db
+    .insert(project)
+    .values({ name: 'Stop Failed Project', workspaceId, organizationId })
+    .returning({ id: project.id })
+  const projectId = proj!.id
+  const [env] = await db
+    .insert(environment)
+    .values({ name: 'production', projectId })
+    .returning({ id: environment.id })
+  const environmentId = env!.id
+
+  try {
+    let asked = 0
+    const refused = await deleteProjectCascade(db, projectId, undefined, () => {
+      asked += 1
+      return Promise.resolve(false)
+    })
+    assertEquals(refused, { ok: false, error: 'project_stop_failed' })
+    assertEquals(asked, 1)
+    const kept = await db.select({ id: project.id }).from(project).where(eq(project.id, projectId))
+    assertEquals(kept.length, 1)
+    const keptEnv = await db
+      .select({ id: environment.id })
+      .from(environment)
+      .where(eq(environment.id, environmentId))
+    assertEquals(keptEnv.length, 1)
+
+    // The same project deletes once the stop goes through.
+    const done = await deleteProjectCascade(db, projectId, undefined, () => Promise.resolve(true))
+    assertEquals(done, { ok: true })
+  } finally {
     await db.delete(environment).where(eq(environment.id, environmentId))
     await db.delete(project).where(eq(project.id, projectId))
     await db.delete(workspace).where(eq(workspace.id, workspaceId))

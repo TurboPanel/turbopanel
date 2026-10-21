@@ -1186,3 +1186,98 @@ describe('apply-variables', () => {
     })
   })
 })
+
+describe('apply-variables build assignments', () => {
+  const entry = (
+    key: string,
+    value: string,
+    fields: Partial<
+      Parameters<typeof applyVariablesToComposeDocument>[1]['globalEntries'][number]
+    > = {}
+  ) => ({
+    key,
+    value,
+    isSecret: false,
+    isLiteral: false,
+    forBuild: false,
+    forRuntime: true,
+    ...fields,
+  })
+  const doc = () => {
+    const document = emptyComposeDocument()
+    document.data.services = { web: { image: 'node:24' } }
+    return document
+  }
+  const buildOf = (result: ApplyVariablesResult, service = 'web') =>
+    Object.fromEntries((result.buildAssignments.get(service) ?? []).map((a) => [a.name, a.value]))
+
+  it('hands a non-secret forBuild variable to the service build, and not one that is runtime only', () => {
+    const result = mustApply(
+      applyVariablesToComposeDocument(doc(), {
+        globalEntries: [
+          entry('NEXT_PUBLIC_SITE_URL', ' https://example.test ', { forBuild: true }),
+          entry('RUNTIME_ONLY', 'nope'),
+          entry('BOTH', 'yes', { forBuild: true, forRuntime: true }),
+        ],
+        perServiceEntries: new Map(),
+      })
+    )
+    assertEquals(buildOf(result), {
+      NEXT_PUBLIC_SITE_URL: 'https://example.test',
+      BOTH: 'yes',
+    })
+  })
+
+  it('never hands a secret to the build environment: a build secret is a sealed file', () => {
+    const result = mustApply(
+      applyVariablesToComposeDocument(doc(), {
+        globalEntries: [
+          entry('API_TOKEN', 'envelope', { isSecret: true, forBuild: true }),
+          entry('RUN_SECRET', 'envelope', { isSecret: true, forBuild: false }),
+        ],
+        perServiceEntries: new Map(),
+      })
+    )
+    assertEquals(buildOf(result), {})
+    assertEquals(JSON.stringify([...result.buildAssignments]).includes('envelope'), false)
+  })
+
+  it('lets the later scope win: a service entry overrides the one it inherits', () => {
+    const result = mustApply(
+      applyVariablesToComposeDocument(doc(), {
+        globalEntries: [entry('SITE_URL', 'https://project.test', { forBuild: true })],
+        perServiceEntries: new Map([
+          ['web', [entry('SITE_URL', 'https://environment.test', { forBuild: true })]],
+        ]),
+      })
+    )
+    assertEquals(buildOf(result), { SITE_URL: 'https://environment.test' })
+  })
+
+  it('keeps a variable an environment sets forBuild out of a service build when the override drops forBuild', () => {
+    const result = mustApply(
+      applyVariablesToComposeDocument(doc(), {
+        globalEntries: [entry('SITE_URL', 'https://project.test', { forBuild: true })],
+        perServiceEntries: new Map([
+          ['web', [entry('SITE_URL', 'https://environment.test', { forBuild: false })]],
+        ]),
+      })
+    )
+    assertEquals(buildOf(result), {})
+  })
+
+  it('counts an explicit {$KEY} in build.args under the name the build sees', () => {
+    const document = emptyComposeDocument()
+    document.data.services = {
+      web: { image: 'node:24', build: { context: '.', args: { PUBLIC_URL: '{$SITE_URL}' } } },
+    }
+    const result = mustApply(
+      applyVariablesToComposeDocument(document, {
+        globalEntries: [entry('SITE_URL', 'https://example.test', { forBuild: true })],
+        perServiceEntries: new Map(),
+      })
+    )
+    const assigned = buildOf(result)
+    assertEquals(assigned.PUBLIC_URL, 'https://example.test')
+  })
+})

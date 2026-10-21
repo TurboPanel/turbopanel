@@ -8,7 +8,7 @@
 
 import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { assertEquals, assertThrows } from '@std/assert'
-import { eq, inArray } from 'drizzle-orm'
+import { eq, inArray, sql } from 'drizzle-orm'
 import { getDatabaseUrl } from '../../db/url.ts'
 import { createDenoDb } from '../../db/connection.ts'
 import type { CommandEnvelope } from '../commands/envelope.ts'
@@ -24,7 +24,8 @@ import {
   leaf,
   managed,
   organization,
-  principal,
+  login,
+  managedDatabase,
   project,
   replica,
   server,
@@ -39,7 +40,7 @@ import { loadHostSiteBindingNeeds } from '../bindings/host-run.ts'
 import { materializeBinding } from '../bindings/materialize.ts'
 import { serverHasHostRunBinding } from './ingress-bound-consumers.ts'
 import type { ManagedSettings } from './settings.ts'
-import { createManagedPrincipal } from '../principals/store.ts'
+import { createManagedLogin, findManagedLogin, patchLogin } from './logins.ts'
 import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
 import { ensureManagedContainerAllocation } from './allocate-managed-container.ts'
 import {
@@ -152,7 +153,7 @@ async function withSingleClusterIngressFixture(
   const [insertedEnvironment] = await db
     .insert(environment)
     .values({
-      name: 'Production',
+      name: 'production',
       projectId,
       serverId,
     })
@@ -168,7 +169,7 @@ async function withSingleClusterIngressFixture(
       name: 'Postgres',
       engine: 'postgres',
       status: 'ready',
-      options: { settings, databases: ['postgres'] },
+      options: { settings },
     })
     .returning({ id: managed.id })
   const managedId = insertedManaged!.id
@@ -188,11 +189,12 @@ async function withSingleClusterIngressFixture(
     ordinal: 1,
   })
 
-  await createManagedPrincipal(db, dataEncryptionSecrets, {
+  await db.insert(managedDatabase).values({ managedId, name: 'postgres' })
+  await createManagedLogin(db, dataEncryptionSecrets, {
     managedId,
-    provider: 'postgres',
+    role: 'root',
     username: 'postgres',
-    metadata: { managedRoot: true, databases: ['postgres'] },
+    databases: ['postgres'],
   })
 
   try {
@@ -204,7 +206,6 @@ async function withSingleClusterIngressFixture(
       dataEncryptionSecrets,
     })
   } finally {
-    await db.delete(principal).where(eq(principal.managedId, managedId))
     await db.delete(replica).where(eq(replica.managedId, managedId))
     await db.delete(container).where(eq(container.id, allocation.containerRowId))
     await db.delete(service).where(eq(service.id, allocation.serviceId))
@@ -569,6 +570,226 @@ test('external access on publishes on every address of the server', async () => 
   )
 })
 
+test('external access on adds the IPv6 wildcard only for a daemon that publishes it on a server with IPv6', async () => {
+  await withSingleClusterIngressFixture(
+    true,
+    async ({ db, serverId, organizationId, secretsConfig, dataEncryptionSecrets }) => {
+      const build = async () => {
+        const built = await buildManagedIngressReconcilePayload(db, {
+          serverId,
+          secretsConfig,
+          dataEncryptionSecrets,
+        })
+        if (built === null || 'kind' in built) {
+          throw new TypeError(`expected a payload, got ${JSON.stringify(built)}`)
+        }
+        return built.bindAddresses
+      }
+      const setServer = (values: { daemon?: unknown; metadata?: unknown }) =>
+        db.update(server).set(values).where(eq(server.id, serverId))
+      const ipv6Ip = { address: '2001:db8::4', version: 6, scope: 'public' }
+
+      // A stored IPv6 ip row alone never turns IPv6 on: only what the daemon
+      // reads from the kernel proves the kernel runs IPv6.
+      await db.insert(ip).values({
+        organizationId,
+        serverId,
+        address: '2001:db8::77',
+        allocation: 'dedicated',
+        scope: 'public',
+      })
+      await setServer({ daemon: { projection: { features: ['managed-ingress-ipv6-v1'] } } })
+      assertEquals(await build(), ['0.0.0.0'])
+
+      // A server with IPv6 whose daemon does not advertise the feature: IPv4 only.
+      await setServer({ daemon: { projection: { features: [] } }, metadata: { ips: [ipv6Ip] } })
+      assertEquals(await build(), ['0.0.0.0'])
+
+      // The daemon advertises it, but reports only a link-local IPv6 address.
+      await setServer({
+        daemon: { projection: { features: ['managed-ingress-ipv6-v1'] } },
+        metadata: { ips: [{ address: 'fe80::1', version: 6, scope: 'private' }] },
+      })
+      assertEquals(await build(), ['0.0.0.0'])
+
+      // Both: every IPv4 and every IPv6 address.
+      await setServer({ metadata: { ips: [ipv6Ip] } })
+      assertEquals(await build(), ['0.0.0.0', '::'])
+    }
+  )
+})
+
+for (const externalAccess of [false, true]) {
+  test(`a stored weak SSL mode ${externalAccess ? 'still refuses plaintext under external access' : 'stays optional without external access'}`, async () => {
+    await withSingleClusterIngressFixture(
+      externalAccess,
+      async ({ db, serverId, secretsConfig, dataEncryptionSecrets }) => {
+        // Data that drifted past the save checks: a plaintext-allowing mode.
+        const members = await db
+          .select({ managedId: replica.managedId })
+          .from(replica)
+          .where(eq(replica.serverId, serverId))
+        await db
+          .update(managed)
+          .set({ options: sql`jsonb_set(options, '{settings,ssl}', '{"mode":"disable"}')` })
+          .where(
+            inArray(
+              managed.id,
+              members.map((row) => row.managedId)
+            )
+          )
+        const built = await buildManagedIngressReconcilePayload(db, {
+          serverId,
+          secretsConfig,
+          dataEncryptionSecrets,
+        })
+        if (built === null || 'kind' in built) {
+          throw new TypeError(`expected a payload, got ${JSON.stringify(built)}`)
+        }
+        assertEquals(built.clusters[0]?.requireTls, externalAccess ? true : undefined)
+      }
+    )
+  })
+}
+
+test('each cluster carries its engine version so ProxySQL reports the real one', async () => {
+  await withSingleClusterIngressFixture(
+    false,
+    async ({ db, serverId, secretsConfig, dataEncryptionSecrets }) => {
+      const members = await db
+        .select({ managedId: replica.managedId })
+        .from(replica)
+        .where(eq(replica.serverId, serverId))
+      await db
+        .update(managed)
+        .set({
+          // A series no longer creatable: the settings parse refuses it, but the
+          // container still runs it, so that is the version to report.
+          options: sql`jsonb_set(options, '{settings,image}', '"docker.io/library/postgres:17"')`,
+        })
+        .where(
+          inArray(
+            managed.id,
+            members.map((row) => row.managedId)
+          )
+        )
+      const built = await buildManagedIngressReconcilePayload(db, {
+        serverId,
+        secretsConfig,
+        dataEncryptionSecrets,
+      })
+      if (built === null || 'kind' in built) {
+        throw new TypeError(`expected a payload, got ${JSON.stringify(built)}`)
+      }
+      assertEquals(built.clusters[0]?.engineVersion, '17')
+    }
+  )
+})
+
+/** The id of the cluster a single-cluster fixture put on the server. */
+async function fixtureManagedId(db: ReturnType<typeof createDenoDb>, serverId: string) {
+  const [member] = await db
+    .select({ managedId: replica.managedId })
+    .from(replica)
+    .where(eq(replica.serverId, serverId))
+  return member!.managedId
+}
+
+/** The payload for the server, failing the test when none is built. */
+async function buildPayloadOrThrow(
+  db: ReturnType<typeof createDenoDb>,
+  params: Parameters<typeof buildManagedIngressReconcilePayload>[1]
+) {
+  const built = await buildManagedIngressReconcilePayload(db, params)
+  if (built === null || 'kind' in built) {
+    throw new TypeError(`expected a payload, got ${JSON.stringify(built)}`)
+  }
+  return built
+}
+
+test('straightThrough goes on the wire only for a PostgreSQL user login that resolves on', async () => {
+  await withSingleClusterIngressFixture(
+    false,
+    async ({ db, serverId, secretsConfig, dataEncryptionSecrets }) => {
+      const managedId = await fixtureManagedId(db, serverId)
+      const make = (username: string, extra: Record<string, unknown>) =>
+        createManagedLogin(db, dataEncryptionSecrets, {
+          managedId,
+          username,
+          databases: ['postgres'],
+          ...extra,
+        })
+      // Migration level defaults on; the rest default off.
+      await make('migrator', { privileges: ['owner'] })
+      await make('migrator_ro', { privileges: ['owner'], connectionRole: 'read-only' })
+      await make('plain_app', { privileges: ['read-write'] })
+      await make('chosen_on', { privileges: ['read-write'], straightThrough: true })
+      const chosenOff = await make('chosen_off', { privileges: ['owner'], straightThrough: false })
+      // The column round-trips: false is kept as a choice, null goes back to unset.
+      assertEquals(
+        (await findManagedLogin(db, managedId, chosenOff.loginId))?.straightThrough,
+        false
+      )
+      await patchLogin(db, chosenOff.loginId, { straightThrough: null })
+      assertEquals(
+        (await findManagedLogin(db, managedId, chosenOff.loginId))?.straightThrough,
+        undefined
+      )
+      await patchLogin(db, chosenOff.loginId, { straightThrough: false })
+      // A source limit always wins, default or chosen: never on the wire.
+      await make('limited_migrator', { privileges: ['owner'], allowedSources: ['internal'] })
+      await make('limited_chosen', {
+        privileges: ['read-write'],
+        straightThrough: true,
+        allowedSources: ['internal'],
+      })
+      const built = await buildPayloadOrThrow(db, {
+        serverId,
+        secretsConfig,
+        dataEncryptionSecrets,
+      })
+      const users = built.clusters[0]!.users
+      const flag = (name: string) => users.find((entry) => entry.username === name)
+      assertEquals(flag('migrator')?.straightThrough, true)
+      assertEquals(flag('chosen_on')?.straightThrough, true)
+      for (const name of [
+        'migrator_ro',
+        'plain_app',
+        'chosen_off',
+        'limited_migrator',
+        'limited_chosen',
+        'postgres',
+      ]) {
+        assertEquals(flag(name) !== undefined && 'straightThrough' in flag(name)!, false, name)
+      }
+    }
+  )
+})
+
+test('straightThrough is never sent for a MySQL cluster login', async () => {
+  await withSingleClusterIngressFixture(
+    false,
+    async ({ db, serverId, secretsConfig, dataEncryptionSecrets }) => {
+      const managedId = await fixtureManagedId(db, serverId)
+      await db.update(managed).set({ engine: 'mysql' }).where(eq(managed.id, managedId))
+      await createManagedLogin(db, dataEncryptionSecrets, {
+        managedId,
+        username: 'my_migrator',
+        privileges: ['owner'],
+        databases: ['postgres'],
+      })
+      const built = await buildPayloadOrThrow(db, {
+        serverId,
+        secretsConfig,
+        dataEncryptionSecrets,
+      })
+      for (const user of built.clusters[0]!.users) {
+        assertEquals('straightThrough' in user, false, user.username)
+      }
+    }
+  )
+})
+
 async function insertBoundConsumer(
   db: ReturnType<typeof createDenoDb>,
   params: {
@@ -594,13 +815,13 @@ async function insertBoundConsumer(
       name: params.projectName,
       workspaceId: params.workspaceId,
       organizationId: params.organizationId,
-      options: { defaultServerId: params.defaultServerId },
+      defaultServerId: params.defaultServerId,
     })
     .returning({ id: project.id })
   const [environmentRow] = await db
     .insert(environment)
     .values({
-      name: 'Production',
+      name: 'production',
       projectId: projectRow!.id,
       serverId: params.environmentServerId,
     })
@@ -622,21 +843,23 @@ async function insertBoundConsumer(
       status: 'ready',
     })
     .returning({ id: managed.id })
-  const [principalRow] = await db
-    .insert(principal)
+  const [databaseRow] = await db
+    .insert(managedDatabase)
+    .values({ managedId: managedRow!.id, name: 'appdb' })
+    .returning({ id: managedDatabase.id })
+  const [loginRow] = await db
+    .insert(login)
     .values({
-      organizationId: params.organizationId,
-      kind: 'database',
-      provider: 'postgres',
+      managedId: managedRow!.id,
+      role: 'user',
       username: params.username,
       appliedUsername: params.username,
-      managedId: managedRow!.id,
     })
-    .returning({ id: principal.id })
+    .returning({ id: login.id })
   await db.insert(binding).values({
-    principalId: principalRow!.id,
+    loginId: loginRow!.id,
     serviceId: serviceRow!.id,
-    databaseName: 'appdb',
+    databaseId: databaseRow!.id,
     keyPrefix: params.keyPrefix,
     isEmitEngineDefaults: false,
   })
@@ -769,7 +992,6 @@ test('loadBoundManagedIdsForServer does not scan unpinned environments that defa
       await db.delete(service).where(inArray(service.id, serviceIds))
     }
     if (managedIds.length > 0) {
-      await db.delete(principal).where(inArray(principal.managedId, managedIds))
       await db.delete(managed).where(inArray(managed.id, managedIds))
     }
     if (environmentIds.length > 0) {
@@ -888,7 +1110,6 @@ test('serverHasHostRunBinding sees only loopback-form bindings placed on the ser
       await db.delete(service).where(inArray(service.id, serviceIds))
     }
     if (managedIds.length > 0) {
-      await db.delete(principal).where(inArray(principal.managedId, managedIds))
       await db.delete(managed).where(inArray(managed.id, managedIds))
     }
     await db.delete(environment).where(
@@ -909,6 +1130,75 @@ test('serverHasHostRunBinding sees only loopback-form bindings placed on the ser
   }
 })
 
+test('binding variables raise a stored mode without SSL to require while the server allows external access', async () => {
+  await withSingleClusterIngressFixture(
+    true,
+    async ({ db, serverId, organizationId, dataEncryptionSecrets }) => {
+      const [clusterRow] = await db
+        .select({ id: managed.id })
+        .from(managed)
+        .where(eq(managed.serverId, serverId))
+      await db
+        .update(managed)
+        .set({ options: sql`jsonb_set(options, '{settings,ssl}', '{"mode":"disable"}')` })
+        .where(eq(managed.id, clusterRow!.id))
+      const [ws] = await db
+        .select({ id: workspace.id })
+        .from(workspace)
+        .where(eq(workspace.organizationId, organizationId))
+      const [projectRow] = await db
+        .insert(project)
+        .values({ name: 'Floor Project', workspaceId: ws!.id, organizationId })
+        .returning({ id: project.id })
+      const [envRow] = await db
+        .insert(environment)
+        .values({ name: 'production', projectId: projectRow!.id, serverId })
+        .returning({ id: environment.id })
+      const [serviceRow] = await db
+        .insert(service)
+        .values({ environmentId: envRow!.id, composeServiceName: 'app' })
+        .returning({ id: service.id })
+      const loginRow = await createManagedLogin(db, dataEncryptionSecrets, {
+        managedId: clusterRow!.id,
+        username: 'floor_user',
+        databases: ['postgres'],
+      })
+      const [databaseRow] = await db
+        .select({ id: managedDatabase.id })
+        .from(managedDatabase)
+        .where(eq(managedDatabase.managedId, clusterRow!.id))
+      try {
+        const [bindingRow] = await db
+          .insert(binding)
+          .values({
+            loginId: loginRow.loginId,
+            serviceId: serviceRow!.id,
+            databaseId: databaseRow!.id,
+            keyPrefix: 'DATABASE',
+            isEmitEngineDefaults: true,
+          })
+          .returning({ id: binding.id })
+        assertEquals(
+          await materializeBinding(db, dataEncryptionSecrets, bindingRow!.id, 'container'),
+          { ok: true }
+        )
+        const rows = await db
+          .select({ key: variable.key, value: variable.value })
+          .from(variable)
+          .where(eq(variable.bindingId, bindingRow!.id))
+        assertEquals(rows.find((row) => row.key === 'PGSSLMODE')?.value, 'require')
+      } finally {
+        await db.delete(variable).where(eq(variable.serviceId, serviceRow!.id))
+        await db.delete(binding).where(eq(binding.serviceId, serviceRow!.id))
+        await db.delete(login).where(eq(login.id, loginRow.loginId))
+        await db.delete(service).where(eq(service.id, serviceRow!.id))
+        await db.delete(environment).where(eq(environment.id, envRow!.id))
+        await db.delete(project).where(eq(project.id, projectRow!.id))
+      }
+    }
+  )
+})
+
 test('materializing a binding writes the form the deploy asks for and keeps it otherwise', async () => {
   await withSingleClusterIngressFixture(
     false,
@@ -927,29 +1217,33 @@ test('materializing a binding writes the form the deploy asks for and keeps it o
           name: 'Materialize Form Project',
           workspaceId: ws!.id,
           organizationId,
-          options: { defaultServerId: serverId },
+          defaultServerId: serverId,
         })
         .returning({ id: project.id })
       const [envRow] = await db
         .insert(environment)
-        .values({ name: 'Production', projectId: projectRow!.id, serverId })
+        .values({ name: 'production', projectId: projectRow!.id, serverId })
         .returning({ id: environment.id })
       const [serviceRow] = await db
         .insert(service)
         .values({ environmentId: envRow!.id, composeServiceName: 'app' })
         .returning({ id: service.id })
-      const principalRow = await createManagedPrincipal(db, dataEncryptionSecrets, {
+      const loginRow = await createManagedLogin(db, dataEncryptionSecrets, {
         managedId: clusterRow!.id,
-        provider: 'postgres',
         username: 'app_user',
+        databases: ['postgres'],
       })
+      const [databaseRow] = await db
+        .select({ id: managedDatabase.id })
+        .from(managedDatabase)
+        .where(eq(managedDatabase.managedId, clusterRow!.id))
       try {
         const [bindingRow] = await db
           .insert(binding)
           .values({
-            principalId: principalRow.principalId,
+            loginId: loginRow.loginId,
             serviceId: serviceRow!.id,
-            databaseName: 'postgres',
+            databaseId: databaseRow!.id,
             keyPrefix: 'DATABASE',
             isEmitEngineDefaults: false,
           })
@@ -1003,7 +1297,7 @@ test('materializing a binding writes the form the deploy asks for and keeps it o
       } finally {
         await db.delete(variable).where(eq(variable.serviceId, serviceRow!.id))
         await db.delete(binding).where(eq(binding.serviceId, serviceRow!.id))
-        await db.delete(principal).where(eq(principal.id, principalRow.principalId))
+        await db.delete(login).where(eq(login.id, loginRow.loginId))
         await db.delete(service).where(eq(service.id, serviceRow!.id))
         await db.delete(environment).where(eq(environment.id, envRow!.id))
         await db.delete(project).where(eq(project.id, projectRow!.id))

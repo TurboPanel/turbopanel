@@ -51,6 +51,7 @@ import {
   createForgeHandler,
   deleteForgeHandler,
   getForgeHandler,
+  getWebhookOriginsHandler,
   listForgesHandler,
   patchForgeHandler,
   startGithubManifestHandler,
@@ -77,6 +78,7 @@ import { registerInstanceAccessAdminRoutes } from './instance-access-routes.ts'
 import { registerInstanceUpdatesAdminRoutes } from './instance-updates-routes.ts'
 import { registerInstanceHostnameAdminRoutes } from './instance-hostname-routes.ts'
 import {
+  publicUrlsSiteConflict,
   recordInstanceAcmeApplyTimeout,
   recordInstanceAcmePreflightFailure,
 } from '../features/install/instance-hostnames.ts'
@@ -87,6 +89,7 @@ import {
   parseEmailSettingsUpdates,
   parsePayloadBody,
   parseReencryptRequestBody,
+  parseAuditRetentionSettingsBody,
   parseServerMetricsLiveSettingsBody,
   parseSignupEnabledBody,
   publicUrlsApplyErrorResponse,
@@ -99,6 +102,11 @@ import {
   waitForPublicUrlsApply,
 } from './routes-helpers.ts'
 import { enqueuePlatformCaTrustReconcileBestEffort } from './tls-trust-reconcile.ts'
+import {
+  getAuditRetentionMonths,
+  isValidAuditRetentionMonths,
+  setAuditRetentionMonths,
+} from '../features/settings/audit-retention-settings.ts'
 import {
   getServerMetricsLiveMaxMinutes,
   isValidServerMetricsLiveMaxMinutes,
@@ -291,6 +299,8 @@ export function registerAdminRoutes(
       return c.json(parsed, 422)
     }
 
+    const siteConflict = await publicUrlsSiteConflict(db, parsed.urls)
+    if (siteConflict) return c.json(siteConflict, 422)
     await setPublicUrls(db, parsed.urls)
     return c.json({ ok: true, urls: parsed.urls, applied: false })
   })
@@ -340,6 +350,13 @@ export function registerAdminRoutes(
     const db = getDb(c)
     if (!db) return c.json({ ok: false, error: 'Database unavailable' }, 503)
     return await createForgeHandler(c, db, instanceScope)
+  })
+
+  // Before `/forges/:id`: same segment count, and the literal must win.
+  admin.get('/forges/webhook-origins', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ ok: false, error: 'Database unavailable' }, 503)
+    return await getWebhookOriginsHandler(c, db)
   })
 
   admin.post('/forges/github/manifest', async (c) => {
@@ -536,6 +553,32 @@ export function registerAdminRoutes(
     await setServerMetricsLiveMaxMinutes(db, parsed.maxMinutes)
     const maxMinutes = await getServerMetricsLiveMaxMinutes(db)
     return c.json({ maxMinutes })
+  })
+
+  admin.get('/settings/audit-retention', createRootOnlyMiddleware(opts.secrets), async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+
+    const months = await getAuditRetentionMonths(db)
+    return c.json({ months })
+  })
+
+  admin.put('/settings/audit-retention', createRootOnlyMiddleware(opts.secrets), async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+
+    const body = await c.req.json().catch(() => null)
+    const parsed = parseAuditRetentionSettingsBody(body)
+    if (!parsed.ok) {
+      return c.json({ error: parsed.error }, 400)
+    }
+    if (!isValidAuditRetentionMonths(parsed.months)) {
+      return c.json({ error: 'months must be 0 or a whole number between 3 and 120' }, 400)
+    }
+
+    await setAuditRetentionMonths(db, parsed.months)
+    const months = await getAuditRetentionMonths(db)
+    return c.json({ months })
   })
 
   // The operator's alert webhook. The URL is never returned in full: the path

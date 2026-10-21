@@ -149,7 +149,7 @@ async function withContainerFixtures(
   const [insertedEnvironment] = await db
     .insert(environment)
     .values({
-      name: 'Container Route Env',
+      name: 'container-route-env',
       projectId,
     })
     .returning({ id: environment.id })
@@ -312,7 +312,7 @@ test('GET /containers?environmentId= returns only matching environment container
       const [otherEnv] = await db
         .insert(environment)
         .values({
-          name: 'Other Env',
+          name: 'other-env',
           projectId,
         })
         .returning({ id: environment.id })
@@ -577,7 +577,7 @@ test('GET /containers?projectId= spans the project environments and stamps envir
       // A second environment of the SAME project — the project filter must span it.
       const [secondEnv] = await db
         .insert(environment)
-        .values({ name: 'Second Env', projectId })
+        .values({ name: 'second-env', projectId })
         .returning({ id: environment.id })
       const secondEnvironmentId = secondEnv!.id
       const [secondService] = await db
@@ -598,7 +598,7 @@ test('GET /containers?projectId= spans the project environments and stamps envir
       const otherProjectId = otherProject!.id
       const [otherEnv] = await db
         .insert(environment)
-        .values({ name: 'Other Project Env', projectId: otherProjectId })
+        .values({ name: 'other-project-env', projectId: otherProjectId })
         .returning({ id: environment.id })
       const otherEnvironmentId = otherEnv!.id
       const [otherService] = await db

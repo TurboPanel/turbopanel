@@ -170,9 +170,9 @@ it("resolveCloudflareAnalyticsSqlConfig reads this environment's dataset", () =>
   assertEquals(
     resolveCloudflareAnalyticsSqlConfig({
       ...base,
-      TURBOPANEL_SERVER_METRICS_AE_DATASET: ' staging_turbopanel_server_metrics_v7 ',
+      TURBOPANEL_SERVER_METRICS_AE_DATASET: ' staging_turbopanel_server_metrics_v8 ',
     })?.dataset,
-    'staging_turbopanel_server_metrics_v7'
+    'staging_turbopanel_server_metrics_v8'
   )
   // Not a plain SQL identifier: ignored, so the reader keeps its default dataset.
   for (const bad of ['', 'drop table x', 'a-b', '1abc', "x'; --"]) {

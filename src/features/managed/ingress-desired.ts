@@ -29,7 +29,7 @@ import type {
   ManagedIngressReconcileUser,
 } from '../../contracts/commands/schemas.ts'
 import { createCommandRecord, transitionCommand } from '../commands/command-records.ts'
-import { container, managed, principal, replica, server, service } from '../../db/schema.ts'
+import { container, login, managed, replica, server, service } from '../../db/schema.ts'
 import { getManagedEngineSpec } from './index.ts'
 import type { ManagedIngressPorts } from './ingress-ports.ts'
 import type { ManagedSettings } from './settings.ts'
@@ -43,11 +43,29 @@ import {
 } from '../net/private-endpoint.ts'
 import { ensureOrganizationManagedNetwork, listServerSubnets } from '../fabric/fabric-records.ts'
 import { loadListenerAttachedSubnetNames } from './ingress-attachments.ts'
-import { LOOPBACK_BIND, resolveManagedExternalDialHost } from './access-address.ts'
+import { LOOPBACK_BIND } from './access-address.ts'
+import { loadClientAddressFacts } from '../net/client-addresses.ts'
+import {
+  type ClientAddressFacts,
+  clientAddressCertificateNames,
+  hostHasIpv6,
+  mainClientAddressHost,
+  resolveClientAddresses,
+} from '../net/client-addresses-pure.ts'
+import {
+  MANAGED_INGRESS_IPV6_FEATURE,
+  MANAGED_LOGIN_LIMITS_FEATURE,
+} from '../../lib/version-wire.ts'
 import { consumerServerIdsForManaged } from '../bindings/resolve-endpoint.ts'
+import { hasRemoteConsumerServers } from '../bindings/remote-consumers.ts'
 import { loadBoundManagedIdsForServer } from './ingress-bound-consumers.ts'
 import { loadManagedExternalAccess } from './external-access.ts'
-import { materializeBindingsForPrincipal } from '../bindings/materialize.ts'
+import { loadOrganizationRootAllowedSources } from './root-login-sources.ts'
+import { loginSourceServerIds, loginWireLimits } from './login-sources.ts'
+import { loadServerAddressMap } from './login-sources-load.ts'
+import { materializeBindingsForManaged } from '../bindings/materialize.ts'
+import { loginDatabaseNames } from './logins.ts'
+import { resolveStraightThrough } from './login-straight-through.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
 import { loadManagedIngressPorts, loadManagedOrgDefaults } from './load-org-defaults.ts'
 import {
@@ -84,16 +102,18 @@ import {
   collectProxySqlListenerSans,
   decideIngressBindAddresses,
   hostgroupsForClusterIndex,
+  ingressEngineVersionFromOptions,
   isAtRestSealedPassword,
   mergeHierarchyContainerSan,
   principalConnectionRole,
+  principalIsTool,
   principalDefaultDatabase,
   protocolListenerForEngine,
   sanBindAddresses,
   shouldSkipIngressFrontendUser,
   sortManagedIds,
 } from './ingress-desired-pure.ts'
-import { parseManagedRowOptions } from './options.ts'
+import { parseManagedSettings } from './options.ts'
 
 export const MANAGED_INGRESS_RECONCILE_TTL_MS = 300_000
 
@@ -210,6 +230,8 @@ async function loadClusterUsersForManagedIds(
     serverId: string
     secretsConfig: SecretsConfig
     dataEncryptionSecrets: DerivedSecretsConfig
+    /** Where each root login may be used from (see `root-login-sources.ts`). */
+    rootAllowedSources: readonly string[]
   }
 ): Promise<Map<string, ManagedIngressReconcileUser[]> | ManagedIngressReconcilePrepareError> {
   const byManaged = new Map<string, ManagedIngressReconcileUser[]>()
@@ -223,19 +245,35 @@ async function loadClusterUsersForManagedIds(
 
   const rows = await db
     .select({
-      managedId: principal.managedId,
-      id: principal.id,
+      managedId: login.managedId,
+      id: login.id,
+      role: login.role,
       // Applied login — ProxySQL frontend usernames are what clients type.
-      username: principal.appliedUsername,
-      metadata: principal.metadata,
-      password: principal.password,
+      username: login.appliedUsername,
+      databases: loginDatabaseNames,
+      isTool: login.isTool,
+      access: login.access,
+      allowedSources: login.allowedSources,
+      maxConnections: login.maxConnections,
+      privileges: login.privileges,
+      isStraightThrough: login.isStraightThrough,
+      engine: managed.engine,
+      password: login.password,
     })
-    .from(principal)
-    .where(inArray(principal.managedId, [...managedIds]))
+    .from(login)
+    .innerJoin(managed, eq(managed.id, login.managedId))
+    .where(inArray(login.managedId, [...managedIds]))
+
+  const daemonSupportsLimits = (daemonState.projection?.features ?? []).includes(
+    MANAGED_LOGIN_LIMITS_FEATURE
+  )
+  const serverAddresses = await loadServerAddressMap(
+    db,
+    rows.flatMap((row) => loginSourceServerIds(row.allowedSources ?? undefined))
+  )
 
   const failure = await firstSequential(rows, async (row) => {
-    if (!row.managedId) return undefined
-    if (shouldSkipIngressFrontendUser(row.username, row.metadata)) {
+    if (row.role === 'replication' || shouldSkipIngressFrontendUser(row.username, row.role)) {
       return undefined
     }
     const sealed = row.password
@@ -250,13 +288,48 @@ async function loadClusterUsersForManagedIds(
     )
     const user: ManagedIngressReconcileUser = {
       username: row.username,
-      role: buildIngressUserRole(row.metadata),
+      role: buildIngressUserRole(row.role),
       password: resealed,
     }
-    const defaultDatabase = principalDefaultDatabase(row.metadata)
+    const defaultDatabase = principalDefaultDatabase(row.databases)
     if (defaultDatabase !== undefined) user.defaultDatabase = defaultDatabase
-    const connectionRole = principalConnectionRole(row.metadata)
+    const connectionRole = principalConnectionRole(row.access)
     if (connectionRole !== undefined) user.connectionRole = connectionRole
+    if (principalIsTool(row.isTool)) user.tool = true
+    // Sent only when on, so the payload for other logins stays as it was and a
+    // daemon that predates the field ignores it (see managed/AGENTS.md).
+    if (
+      resolveStraightThrough({
+        engine: row.engine,
+        role: user.role,
+        privileges: row.privileges ?? [],
+        connectionRole: row.access,
+        allowedSources: row.allowedSources ?? undefined,
+        straightThrough: row.isStraightThrough ?? undefined,
+      }).value
+    ) {
+      user.straightThrough = true
+    }
+    // Root: always limited to this server, its containers and the organization's
+    // servers (sent even when empty). App logins: limited only when their owner
+    // chose places (below).
+    if (user.role === 'root') user.allowedSources = [...params.rootAllowedSources]
+    else {
+      const limits = loginWireLimits(
+        {
+          allowedSources: row.allowedSources?.length ? row.allowedSources : undefined,
+          maxConnections: row.maxConnections ?? undefined,
+        },
+        {
+          daemonSupportsLimits,
+          serverAddresses,
+          serverId: params.serverId,
+        }
+      )
+      // Fail closed: a source-limited login never goes to a daemon that cannot enforce it.
+      if (limits.omit) return undefined
+      Object.assign(user, limits.fields)
+    }
     const list = byManaged.get(row.managedId) ?? []
     list.push(user)
     byManaged.set(row.managedId, list)
@@ -400,8 +473,9 @@ function buildIngressClusterFromLoaded(
   const spec = getManagedEngineSpec(engineCode)
   if (!spec) return null
 
-  const parsed = parseManagedRowOptions(spec, sample.options)
-  const settings: ManagedSettings = parsed?.settings ?? { ...spec.defaultSettings }
+  const settings: ManagedSettings = parseManagedSettings(spec, sample.options) ?? {
+    ...spec.defaultSettings,
+  }
 
   const hostgroups = hostgroupsForClusterIndex(index)
   const listener = protocolListenerForEngine(
@@ -410,9 +484,11 @@ function buildIngressClusterFromLoaded(
     orgDefaults.listenerPorts
   )
 
+  const engineVersion = ingressEngineVersionFromOptions(spec, sample.options)
   const cluster: ManagedIngressReconcileCluster = {
     managedId,
     engine: engineCode,
+    ...(engineVersion === undefined ? {} : { engineVersion }),
     protocolPort: listener.protocolPort,
     // Explicit: once ports are org-configurable the daemon can no longer infer
     // the protocol module from the port number.
@@ -423,19 +499,23 @@ function buildIngressClusterFromLoaded(
     users,
   }
   if (clusterAutoReadSplit(settings.routing)) cluster.autoReadSplit = true
-  if (clusterRequireTls(settings.ssl.mode, orgDefaults.sslMode)) {
+  if (clusterRequireTls(settings.ssl.mode, orgDefaults.sslMode, orgDefaults.externalAccess)) {
     cluster.requireTls = true
   }
   return cluster
 }
 
 /**
- * Organization-resolved managed-database policy that applies to every cluster
- * on one ProxySQL: the effective client TLS default and the listener ports.
+ * Policy that applies to every cluster on one ProxySQL: the organization's
+ * client TLS default, the listener ports, and the server's "allow external
+ * access" switch (which forces TLS for every cluster it fronts).
  */
 type IngressOrgDefaults = {
   sslMode: ManagedSslMode | undefined
   listenerPorts: ManagedIngressPorts
+  externalAccess: boolean
+  /** Addresses the root login may be used from besides this server itself. */
+  rootAllowedSources: readonly string[]
 }
 
 /** Build every cluster entry for `managedIds`, short-circuiting on the first error. */
@@ -465,6 +545,7 @@ async function buildIngressClusters(
     serverId,
     secretsConfig: reseal.secretsConfig,
     dataEncryptionSecrets: reseal.dataEncryptionSecrets,
+    rootAllowedSources: orgDefaults.rootAllowedSources,
   })
   if ('kind' in usersByManaged) return usersByManaged
 
@@ -494,17 +575,28 @@ async function buildIngressClusters(
 }
 
 /**
- * The host clients see (connection panel / binding resolver): the server's
- * dial address when external access is allowed, else loopback.
+ * What the listener certificate must name for clients: the main host clients
+ * dial (loopback while external access is off), plus every name and address
+ * of the server's addresses clients use and its Linux hostname
+ * (`clientAddressCertificateNames`). The Linux hostname stays a name on the
+ * certificate even after it left connection strings, so clients that already
+ * dial it keep verifying.
  */
-async function resolveAdvertisedHost(
-  db: Db,
-  serverId: string,
-  fallbackHost: string | null,
+function resolveListenerClientNames(
+  facts: ClientAddressFacts | null,
   externalAccess: boolean
-): Promise<string | null> {
-  if (!externalAccess) return LOOPBACK_BIND
-  return (await resolveManagedExternalDialHost(db, serverId)) ?? fallbackHost
+): { advertisedHost: string | null; dnsNames: string[]; ipAddresses: string[] } {
+  const addresses = facts ? resolveClientAddresses(facts) : { linuxHostname: null, entries: [] }
+  return {
+    advertisedHost: externalAccess ? mainClientAddressHost(addresses) : LOOPBACK_BIND,
+    ...clientAddressCertificateNames(addresses, externalAccess),
+  }
+}
+
+/** The server's daemon advertises `managed-ingress-ipv6-v1` on its hello. */
+async function daemonPublishesIngressIpv6(db: Db, serverId: string): Promise<boolean> {
+  const state = await getServerDaemonStateByServerId(db, serverId)
+  return (state?.projection?.features ?? []).includes(MANAGED_INGRESS_IPV6_FEATURE)
 }
 
 type BuiltManagedIngressReconcile = {
@@ -526,7 +618,6 @@ async function buildManagedIngressReconcileDesired(
   const [serverRow] = await db
     .select({
       organizationId: server.organizationId,
-      hostname: server.hostname,
     })
     .from(server)
     .where(eq(server.id, params.serverId))
@@ -581,6 +672,9 @@ async function buildManagedIngressReconcileDesired(
   // server, so they come from the server owner.
   const listenerPorts = await loadManagedIngressPorts(db, serverOwnerOrganizationId)
 
+  // The server's own setting, not any one cluster's: one ProxySQL fronts them all.
+  const { enabled: externalAccess } = await loadManagedExternalAccess(db, params.serverId)
+
   const clusters = await buildIngressClusters(
     db,
     params.serverId,
@@ -589,25 +683,31 @@ async function buildManagedIngressReconcileDesired(
       secretsConfig: params.secretsConfig,
       dataEncryptionSecrets: params.dataEncryptionSecrets,
     },
-    { sslMode: orgDefaults.sslMode, listenerPorts }
+    {
+      sslMode: orgDefaults.sslMode,
+      listenerPorts,
+      externalAccess,
+      // The server owner's organization, like the listener ports: the servers
+      // that may use the root login are the ones that organization owns.
+      rootAllowedSources: await loadOrganizationRootAllowedSources(db, serverOwnerOrganizationId),
+    }
   )
   if ('kind' in clusters) return clusters
   if (clusters.length === 0) return null
 
-  // The server's own setting, not any one cluster's: one ProxySQL fronts them all.
-  const { enabled: externalAccess } = await loadManagedExternalAccess(db, params.serverId)
-  const bindAddresses = decideIngressBindAddresses(externalAccess)
+  const addressFacts = await loadClientAddressFacts(db, params.serverId)
+  const bindAddresses = decideIngressBindAddresses(externalAccess, {
+    serverHasIpv6: addressFacts !== null && hostHasIpv6(addressFacts.reportedIps),
+    // Only asked when it matters: loopback-only never publishes on IPv6.
+    daemonPublishesIpv6: externalAccess && (await daemonPublishesIngressIpv6(db, params.serverId)),
+  })
 
-  const advertisedHost = await resolveAdvertisedHost(
-    db,
-    params.serverId,
-    serverRow.hostname,
-    externalAccess
-  )
+  const clientNames = resolveListenerClientNames(addressFacts, externalAccess)
 
   const backendAddresses = clusters.flatMap((c) => c.backends.map((b) => b.address))
   const listenerSans = collectProxySqlListenerSans({
-    hostname: advertisedHost,
+    hostname: clientNames.advertisedHost,
+    clientNames,
     // A site run by a site owner's Linux user verifies the certificate against
     // `127.0.0.1`; under an all-interfaces publish the bind is a wildcard and
     // carries no SAN of its own.
@@ -803,7 +903,13 @@ export async function enqueueManagedIngressReconcile(
  */
 async function recomputeManagedMemberTransports(db: Db, managedId: string): Promise<void> {
   const members = await listManagedMembers(db, managedId)
-  const withPorts = await ensureMemberPrivatePorts(db, members)
+  const consumerServerIds = await consumerServerIdsForManaged(db, managedId)
+  const withPorts = await ensureMemberPrivatePorts(db, members, {
+    hasRemoteConsumers: hasRemoteConsumerServers(
+      members.map((member) => member.serverId),
+      consumerServerIds
+    ),
+  })
   if (isManagedPrivatePortExhaustedError(withPorts)) {
     compatLogWarn(
       'managed-ingress',
@@ -850,19 +956,13 @@ async function rematerializeManagedBindings(
   managedId: string,
   dataEncryptionSecrets: DerivedSecretsConfig
 ): Promise<void> {
-  const principals = await db
-    .select({ id: principal.id })
-    .from(principal)
-    .where(eq(principal.managedId, managedId))
-  await forEachSequential(principals, async (row) => {
-    const result = await materializeBindingsForPrincipal(db, dataEncryptionSecrets, row.id)
-    if (!('ok' in result)) {
-      compatLogWarn(
-        'managed-ingress',
-        `binding rematerialize failed during promote fan-out managedId=${managedId} principalId=${row.id} kind=${result.kind}`
-      )
-    }
-  })
+  const result = await materializeBindingsForManaged(db, dataEncryptionSecrets, managedId)
+  if (!('ok' in result)) {
+    compatLogWarn(
+      'managed-ingress',
+      `binding rematerialize failed during promote fan-out managedId=${managedId} kind=${result.kind}`
+    )
+  }
 }
 
 /**

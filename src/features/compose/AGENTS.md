@@ -796,7 +796,7 @@ build and the series agree. The series each native app ran with is recorded
 on the deploy command's `context.releases[].nodeVersion`, carried on the
 rollback pin (`DeployRollbackReleasePin.nodeVersion`), and a rollback sends it
 back without reading anything; a release recorded before that falls back to a
-read, then the default with a warning. It all runs before
+read, then the newest offered series with a warning. It all runs before
 `mergeDeployPrincipalRuntimes`, so the runtime group granted matches the series
 sent. The preview lists the result once per app as `nativeAppNodeVersions`
 (`nodeVersion`, `source`, `requested`, `path`, `note`).

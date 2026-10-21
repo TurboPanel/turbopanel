@@ -394,6 +394,7 @@ export function getAdminOpenApiSpec(
                 'tls',
                 'certificates',
                 'principals',
+                'logins',
                 'storage',
                 'secrets',
                 'forge',
@@ -672,6 +673,38 @@ export function getAdminOpenApiSpec(
             },
             '404': { description: 'Not found' },
             '502': { description: 'GitHub refused the lookup' },
+          },
+        },
+      },
+      [`${ADMIN_API_PREFIX}/forges/webhook-origins`]: {
+        get: {
+          tags: ['Git apps'],
+          summary: 'List the addresses a new Git app may deliver webhooks to',
+          description:
+            'Exactly the set the manifest flow accepts as webhookOrigin, preferred first: ' +
+            "the operator's public URLs when self-hosted, the platform's own address ahead " +
+            'of them when hosted (platformManaged: true). Same answer as the client surface.',
+          security: [...cookieSecurity],
+          responses: {
+            '200': {
+              description: 'Published origins',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    required: ['origins', 'platformManaged'],
+                    properties: {
+                      origins: { type: 'array', items: { type: 'string', format: 'uri' } },
+                      platformManaged: { type: 'boolean' },
+                    },
+                  },
+                },
+              },
+            },
+            '401': { description: 'Unauthorized' },
+            '403': {
+              description: 'Forbidden — requires admin or superadmin role',
+            },
           },
         },
       },

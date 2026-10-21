@@ -55,7 +55,7 @@ delivery, presence, and request correlation only.
 | `cancelled`   | Terminal — operator-cancelled                       |
 
 `status`, `created_at`, `updated_at`, `attempts`, `name`, `result_summary`,
-`context`, `error_code`, `error_message`, and every granular lifecycle timestamp
+`context`, `progress`, `error_code`, `error_message`, and every granular lifecycle timestamp
 (`queued_at`…`finished_at`, `expires_at`) are **real columns** on the `command`
 row. `transitionCommand` `.set()`s them directly — a `CommandTransitionPatch`
 (`status`, `result`, `error`, `errorCode`, `attempts`, and any explicit

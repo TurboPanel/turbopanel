@@ -14,6 +14,7 @@ import { InstanceSecretSealingError } from '../features/install/instance-secret-
 import {
   INSTANCE_HOSTNAME_SOURCES,
   type InstanceHostnameSource,
+  publicUrlsSiteConflict,
 } from '../features/install/instance-hostnames.ts'
 import {
   getPublicUrls,
@@ -100,6 +101,8 @@ export async function resolvePublicUrlsForApply(
     if (!parsed.ok) {
       return { ok: false, status: 422, body: parsed }
     }
+    const siteConflict = await publicUrlsSiteConflict(db, parsed.urls)
+    if (siteConflict) return { ok: false, status: 422, body: siteConflict }
     await setPublicUrls(db, parsed.urls)
     return { ok: true, urls: parsed.urls }
   }
@@ -219,6 +222,24 @@ export function parseServerMetricsLiveSettingsBody(body: unknown): ServerMetrics
     return { ok: false, error: 'expected { maxMinutes: number }' }
   }
   return { ok: true, maxMinutes }
+}
+
+export type AuditRetentionSettingsParse =
+  { ok: true; months: number } | { ok: false; error: string }
+
+/**
+ * Shape-only parse of `PUT /settings/audit-retention` — the 0-or-3–120 range
+ * is enforced by the settings helper at write time.
+ */
+export function parseAuditRetentionSettingsBody(body: unknown): AuditRetentionSettingsParse {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return { ok: false, error: 'expected { months: number }' }
+  }
+  const months = (body as { months?: unknown }).months
+  if (typeof months !== 'number' || !Number.isInteger(months)) {
+    return { ok: false, error: 'expected { months: number }' }
+  }
+  return { ok: true, months }
 }
 
 const HOSTNAME_SOURCES = new Set<string>(INSTANCE_HOSTNAME_SOURCES)

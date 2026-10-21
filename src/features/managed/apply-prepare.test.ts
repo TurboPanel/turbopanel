@@ -14,7 +14,7 @@ import {
   leaf,
   managed,
   organization,
-  principal,
+  managedDatabase,
   project,
   server,
   service,
@@ -24,7 +24,7 @@ import {
 import { mariadbEngineSpec } from './mariadb.ts'
 import { postgresEngineSpec } from './postgres.ts'
 import type { ManagedSettings } from './settings.ts'
-import { createManagedPrincipal } from '../principals/store.ts'
+import { createManagedLogin } from './logins.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import { ensureManagedContainerAllocation } from './allocate-managed-container.ts'
 import { isPrepareError, prepareManagedApplyPayloads } from './apply-prepare.ts'
@@ -102,7 +102,7 @@ async function withManagedAllocationFixtures(
   const [insertedEnvironment] = await db
     .insert(environment)
     .values({
-      name: 'Managed Allocate Env',
+      name: 'managed-allocate-env',
       projectId,
     })
     .returning({ id: environment.id })
@@ -190,7 +190,7 @@ async function withManagedApplyPrepareFixtures(
   const [insertedEnvironment] = await db
     .insert(environment)
     .values({
-      name: 'Production',
+      name: 'production',
       projectId,
       serverId,
     })
@@ -205,16 +205,17 @@ async function withManagedApplyPrepareFixtures(
       name: 'Postgres',
       engine: 'postgres',
       status: 'ready',
-      options: { settings: postgresEngineSpec.defaultSettings, databases: ['postgres'] },
+      options: { settings: postgresEngineSpec.defaultSettings },
     })
     .returning({ id: managed.id })
   const managedId = insertedManaged!.id
 
-  await createManagedPrincipal(db, dataEncryptionSecrets, {
+  await db.insert(managedDatabase).values({ managedId, name: 'postgres' })
+  await createManagedLogin(db, dataEncryptionSecrets, {
     managedId,
-    provider: 'postgres',
+    role: 'root',
     username: 'postgres',
-    metadata: { managedRoot: true, databases: ['postgres'] },
+    databases: ['postgres'],
   })
 
   const app = new Hono<AppEnv>()
@@ -249,7 +250,6 @@ async function withManagedApplyPrepareFixtures(
     // this test-owned organization (not just the tracked consumer ids) so
     // that hierarchy never leaks and blocks the `server` delete below via
     // the `environment.server_id` RESTRICT foreign key.
-    await db.delete(principal).where(eq(principal.managedId, managedId))
     await db.delete(container).where(eq(container.serverId, serverId))
 
     const workspaceIds = (
@@ -459,6 +459,7 @@ test('prepareManagedApplyPayloads self-heals primary member and omits ingress', 
         spec: postgresEngineSpec,
         settings: settingsWithExposure(true),
         databases: ['postgres'],
+        ownerRoleDatabases: undefined,
         serverId,
         environmentId,
         organizationId,
@@ -525,6 +526,7 @@ test('prepareManagedApplyPayloads keeps an imageless MariaDB row on 12.3 and a s
           spec: mariadbEngineSpec,
           settings,
           databases: ['defaultdb'],
+          ownerRoleDatabases: undefined,
           serverId,
           environmentId,
           organizationId,
@@ -546,6 +548,7 @@ test('prepareManagedApplyPayloads ensures org CA and sets orgTlsMaterial with de
         spec: postgresEngineSpec,
         settings: settingsWithExposure(false),
         databases: ['postgres'],
+        ownerRoleDatabases: undefined,
         serverId,
         environmentId,
         organizationId,
@@ -591,6 +594,7 @@ test('prepareManagedApplyPayloads ensures org CA and sets orgTlsMaterial with de
         spec: postgresEngineSpec,
         settings: settingsWithExposure(false),
         databases: ['postgres'],
+        ownerRoleDatabases: undefined,
         serverId,
         environmentId,
         organizationId,

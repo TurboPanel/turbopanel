@@ -12,6 +12,7 @@ import type { RateLimiter } from '../daemon/rate-limit/contracts.ts'
 import { registerCorsMiddleware } from './cors.ts'
 import type { DaemonCellRegistry } from '../contracts/cell.ts'
 import type { ServerMetricsStore } from '../daemon/metrics/types.ts'
+import type { MetricsGate } from '../daemon/metrics/ingest-gate.ts'
 import type { ExecutionLogStore } from '../features/execution-logs/types.ts'
 import type { Db } from '../db/connection.ts'
 import type { SignupEnvOverride } from '../client/authn/install-state.ts'
@@ -35,6 +36,12 @@ export type AppEnv = {
     /** Hyperdrive or TURBOPANEL_DATABASE_URL for database status routes (Workers). */
     postgresConnectionString?: string
     daemonCellRegistry?: DaemonCellRegistry
+    /**
+     * The one-sample-a-minute and events-an-hour gate for daemon metrics
+     * ingest (`daemon/metrics/ingest-gate.ts`). A Durable Object per server
+     * on Workers, an in-process map on Deno; never Postgres.
+     */
+    metricsGate?: MetricsGate
     queryCache?: QueryCache
     /**
      * Host server-metrics store for `POST /api/daemon/v1/metrics` and every
@@ -113,6 +120,7 @@ export function createApp({
   corsOrigins,
   signupEnvOverride,
   daemonCellRegistry,
+  metricsGate,
   queryCache,
   serverMetricsStore,
   executionLogStore,
@@ -139,6 +147,8 @@ export function createApp({
   corsOrigins?: string
   signupEnvOverride: SignupEnvOverride | undefined
   daemonCellRegistry?: DaemonCellRegistry
+  /** Ingest gate — see `AppEnv.Variables.metricsGate`. */
+  metricsGate?: MetricsGate
   queryCache?: QueryCache
   /** Host server-metrics store — see `AppEnv.Variables.serverMetricsStore`. */
   serverMetricsStore?: ServerMetricsStore
@@ -209,6 +219,7 @@ export function createApp({
   app.use('*', createWriteRateLimitMiddleware({ runtime: resolvedRuntime, secrets }))
   bindContextValue(app, 'db', db)
   bindContextValue(app, 'daemonCellRegistry', daemonCellRegistry)
+  bindContextValue(app, 'metricsGate', metricsGate)
   bindContextValue(app, 'queryCache', queryCache)
   bindContextValue(app, 'serverMetricsStore', serverMetricsStore)
   bindContextValue(app, 'executionLogStore', executionLogStore)

@@ -92,6 +92,7 @@ async function withPair(fn: (cluster: Cluster) => Promise<void>): Promise<void> 
         isConnected: false,
         statusChangedAt: offlineSince,
         daemon: { projection: { offlineReason: 'sweep_stale' } },
+        offlineReason: 'sweep_stale',
       })
       .returning({ id: server.id })
     const [replicaServer] = await db
@@ -114,7 +115,7 @@ async function withPair(fn: (cluster: Cluster) => Promise<void>): Promise<void> 
       .returning({ id: project.id })
     const [env] = await db
       .insert(environment)
-      .values({ name: 'Production', projectId: proj!.id, serverId: primaryServer!.id })
+      .values({ name: 'production', projectId: proj!.id, serverId: primaryServer!.id })
       .returning({ id: environment.id })
     const [cluster] = await db
       .insert(managed)
@@ -270,7 +271,10 @@ test('a primary whose daemon socket closed is not a candidate; only a stale-swee
     const mark = async (reason: 'disconnect' | 'sweep_stale' | null) => {
       await c.db
         .update(server)
-        .set({ daemon: reason ? { projection: { offlineReason: reason } } : null })
+        .set({
+          daemon: reason ? { projection: { offlineReason: reason } } : null,
+          offlineReason: reason,
+        })
         .where(eq(server.id, c.primaryServerId))
       const rows = await DEFAULT_HOST_LOSS_LOADERS.listOfflinePrimaries(c.db, {
         cutoffIso,
@@ -719,7 +723,7 @@ test('with the switch off the loss is an alert row and nothing else', async () =
       .from(replica)
       .where(eq(replica.id, c.primaryMemberId))
     assertEquals(stillPrimary?.role, 'primary')
-    // Untouched: not flagged, not demoted.
-    assertEquals(stillPrimary?.status, null)
+    // Untouched: not flagged, not demoted (the status stays at its default).
+    assertEquals(stillPrimary?.status, 'provisioning')
   })
 })
