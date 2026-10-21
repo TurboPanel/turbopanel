@@ -51,7 +51,7 @@ import {
   registerDaemonApiRoutes,
 } from './api-routes.ts'
 import { MAX_METRICS_PAYLOAD_BYTES } from './metrics/validation.ts'
-import { createInMemoryMetricsGate } from './metrics/ingest-gate.ts'
+import { createInMemoryMetricsGate, type MetricsGate } from './metrics/ingest-gate.ts'
 import { METRICS_SCHEMA_VERSION } from '../contracts/metrics-contract.ts'
 import type { DaemonCell, DaemonCellRegistry, DaemonCellSnapshot } from '../contracts/cell.ts'
 import type { DaemonOutboundEnvelope } from '../contracts/cell-protocol.ts'
@@ -2505,6 +2505,7 @@ async function createMetricsTestAppWithDb(
   options: {
     registry?: DaemonCellRegistry
     runtime?: 'workers' | 'deno'
+    gate?: MetricsGate
   } = {}
 ): Promise<{
   app: Hono<AppEnv>
@@ -2523,7 +2524,7 @@ async function createMetricsTestAppWithDb(
     },
   }
 
-  const gate = createInMemoryMetricsGate()
+  const gate = options.gate ?? createInMemoryMetricsGate()
   const app = new Hono<AppEnv>()
   app.use('*', (c, next) => {
     c.set('db', db)
@@ -3898,5 +3899,71 @@ test('POST /metrics: a sample stamped more than 60 s ahead gets 409 and is not w
     assertEquals(response.status, 409)
     assertEquals(await response.json(), { ok: false, error: 'sample_in_future' })
     assertEquals(writes.length, 0)
+  })
+})
+
+test('POST /metrics: a gate that cannot answer gets 503 and nothing is written', async () => {
+  await withEnrollFixture(async ({ db, serverId, keyId }) => {
+    const gate: MetricsGate = { admit: () => Promise.reject(new Error('gate unreachable')) }
+    const { app, writes } = await createMetricsTestAppWithDb(db, { gate })
+    const daemonToken = await issueDaemonToken(serverId, keyId)
+    const response = await app.request('/api/daemon/v1/metrics', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${daemonToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(buildValidMetricsFrame()),
+    })
+    assertEquals(response.status, 503)
+    assertEquals(await response.json(), { ok: false, error: 'metrics_gate_unavailable' })
+    assertEquals(writes.length, 0)
+  })
+})
+
+test('POST /metrics: events over the hourly budget are cut most severe first, logged, and the sample is still stored', async () => {
+  await withEnrollFixture(async ({ db, serverId, keyId }) => {
+    const gate: MetricsGate = {
+      admit: () => Promise.resolve({ stored: true, eventsAllowed: 1 }),
+    }
+    const { app, writes } = await createMetricsTestAppWithDb(db, { gate })
+    const daemonToken = await issueDaemonToken(serverId, keyId)
+    const at = new Date().toISOString()
+    const warnings: string[] = []
+    const originalWarn = console.warn
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args.join(' '))
+    }
+    let response: Response
+    try {
+      response = await app.request('/api/daemon/v1/metrics', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${daemonToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(
+          buildValidMetricsFrame({
+            events: [
+              { eventId: 'evt-warn', at, kind: 'nic_link_down', severity: 'warning' },
+              { eventId: 'evt-crit', at, kind: 'oom_kill', severity: 'critical' },
+            ],
+          })
+        ),
+      })
+    } finally {
+      console.warn = originalWarn
+    }
+    assertEquals(response.status, 202)
+    assertEquals(writes.length, 1)
+    assertEquals(
+      writes[0]?.events.map((event) => event.eventId),
+      ['evt-crit']
+    )
+    assert(
+      warnings.some((line) =>
+        line.includes(`metrics events over the hourly budget for ${serverId}: kept 1 of 2`)
+      )
+    )
   })
 })

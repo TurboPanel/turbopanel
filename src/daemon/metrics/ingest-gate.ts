@@ -78,6 +78,9 @@ export function decideAdmission(
 ): { decision: GateDecision; next: GateState | undefined } {
   const sampledMs = Date.parse(request.sampledAt)
   const events = Math.max(0, Math.floor(request.eventCount))
+  // Validation rejects an unparseable `sampledAt` before the gate runs, so this
+  // is unreachable from the route; refusing as a duplicate (409, never retried)
+  // is the safe answer if it is ever reached.
   if (!Number.isFinite(sampledMs)) {
     return {
       decision: { stored: false, reason: 'duplicate', retryAfterSeconds: GATE_MIN_GAP_SECONDS },

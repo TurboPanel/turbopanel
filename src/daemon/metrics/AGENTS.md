@@ -192,16 +192,12 @@ state lives where the runtime can keep it exact:
 Best effort, not exact: the Analytics Engine write after an admitted sample is
 fire-and-forget, so an admitted sample can still be lost.
 
-A sample stamped more than 60 s ahead of the receive time is refused with 409
-(`sample_in_future`). A sample at or before the last stored one is a duplicate or replay; one at
-least 50 s after it is on time; an earlier one spends a catch-up token (5,
-refilling one a minute). A duplicate or replayed sample gets 409 (`duplicate_sample`, no
-`Retry-After`): it can never be accepted later and the daemon does not retry a 409. An early
-sample gets 429 with `Retry-After` (the daemon retries 429s). A gate
-error (the object unreachable) answers 503 rather than writing unmetered.
-Events are stored while a 120-an-hour budget lasts, most severe first; the
-rest are dropped and the sample is still stored. Live (non-durable) samples
-are never stored and skip the gate.
+A sample stamped more than 60 s ahead of the receive time is refused with 409 (`sample_in_future`). A sample at or before the last stored one is a duplicate or replay; one at least 50 s after it is on time; an earlier one spends a catch-up token (5, refilling one a minute). A duplicate or replayed sample gets 409 (`duplicate_sample`, no `Retry-After`): it can never be accepted later and the daemon does not retry a 409. An early sample gets 429 with `Retry-After` (the daemon retries 429s). A gate error (the object unreachable) answers 503 rather than writing unmetered. Events are stored while a 120-an-hour budget lasts, most severe first; the rest are dropped and the sample is still stored. Live (non-durable) samples are never stored and skip the gate.
+
+Two things to know:
+
+- A daemon clock more than 60 s ahead gets a permanent 409 and the daemon does not retry it, so those samples are lost until the clock is fixed.
+- The on-time path (a gap of 50 s or more) spends no catch-up token, so a tampered daemon could chain samples about 50 s apart. That is bounded to roughly 1.2 stored samples a minute sustained.
 
 #### Cadence — one interval everywhere
 
