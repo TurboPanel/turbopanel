@@ -736,16 +736,23 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
 
   /**
    * Skip fleet steps that are only waiting on offline hosts, then finish the
-   * run. Returns false (and leaves the run open) when a concurrent hello,
-   * progress report or tick moved a step first: that host is no longer idle.
+   * run. Returns false (and leaves the run open) when a step is no longer idle:
+   * a concurrent hello, progress report or tick moved it, the host reconnected
+   * after the caller read the fleet, or it was dispatched. Each step is
+   * re-checked (fresh step row and connection fact) right before its save. A
+   * partial lost race can leave earlier steps already skipped while the run
+   * stays open; that is acceptable, the next tick finishes the run.
    */
-  async function settleRunWaitingOnOfflineServers(
-    run: UpgradeRunRow,
-    steps: UpgradeStepRow[]
-  ): Promise<boolean> {
+  async function settleRunWaitingOnOfflineServers(run: UpgradeRunRow): Promise<boolean> {
+    const steps = await deps.store.stepsFor(run.id)
     let lostRace = false
     await forEachSequential(steps, async (step) => {
       if (isTerminal(step.status)) return
+      const [fact] = await deps.store.factsFor([step.serverId], deps.colocatedServerId)
+      if (step.attempts > 0 || fact?.connected !== false) {
+        lostRace = true
+        return
+      }
       const expectedStatus = step.status
       markStepSkippedOffline(step, SKIPPED_OFFLINE_AT_START_MESSAGE)
       if (!(await deps.store.saveStep(step, expectedStatus))) lostRace = true
@@ -879,7 +886,7 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
       if (active) {
         const [steps, fleet] = await Promise.all([deps.store.stepsFor(active.id), facts()])
         if (runBlocksStart(steps, fleet)) return runActiveRefusal(active.id)
-        if (!(await settleRunWaitingOnOfflineServers(active, steps))) {
+        if (!(await settleRunWaitingOnOfflineServers(active))) {
           return runActiveRefusal(active.id)
         }
       }

@@ -123,7 +123,7 @@ export const INSTANCE_UPDATES_PATHS = {
         'or null. When no run is active, `lastRun` is the most recent finished run (with its ' +
         "steps, `error`, and each step's `errorCode` / `errorMessage`) if it ended within the " +
         'last 24 hours, so a failure stays visible after the run stops being active; otherwise null. ' +
-        'Every step carries `phase` and a boolean `connected` (the host is linked now). A fleet host ' +
+        'Every step carries `phase` `attempts` (dispatches so far) and a boolean `connected` (the host is linked now); only a `waiting` step with `attempts` 0 and `connected` false is skippable-offline. A fleet host ' +
         'offline when the update starts is `skipped` with `errorCode` `server_offline` at once; a host ' +
         'that drops during the run is skipped after 15 minutes counted from when the run first noticed it offline.',
       security: [...cookieSecurity],

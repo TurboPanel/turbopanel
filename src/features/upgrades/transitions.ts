@@ -6,8 +6,8 @@
  *
  * Self-healing rules encoded here:
  *   - An offline server's step becomes `waiting`; it is dispatched on reconnect.
- *     A fleet step still waiting after {@link UPGRADE_OFFLINE_DEADLINE_MS} is
- *     skipped (`skip_offline`, `server_offline`) so one unreachable host cannot
+ *     A never-dispatched fleet step still waiting after
+ *     {@link UPGRADE_OFFLINE_DEADLINE_MS} is skipped (`skip_offline`, `server_offline`) so one unreachable host cannot
  *     hold the single instance-wide run open. Co-located daemon and control-plane
  *     steps still become `needs_attention`: the fleet gate depends on them. The
  *     skipped host is picked up by the first run after it reconnects.
@@ -215,7 +215,7 @@ function handleRolledBack(step: StepView, facts: StepFacts, cfg: StepConfig): St
 function handleDue(step: StepView, facts: StepFacts, cfg: StepConfig): StepAction {
   if (!facts.serverConnected) {
     if (offlineTooLong(step, cfg)) {
-      if (step.phase === 'fleet') return { kind: 'skip_offline' }
+      if (step.phase === 'fleet' && step.attempts === 0) return { kind: 'skip_offline' }
       return { kind: 'needs_attention', errorCode: 'server_offline' satisfies UpgradeStepErrorCode }
     }
     return { kind: 'wait_offline' }

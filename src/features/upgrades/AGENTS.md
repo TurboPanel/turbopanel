@@ -179,13 +179,17 @@ working.
   orchestrator stamps `lastStageAt` (column `stage.status_changed_at`) when the
   step enters `waiting`, so the 15 minute clock (`UPGRADE_OFFLINE_DEADLINE_MS`)
   runs from the tick that first noticed the host offline (no last-seen
-  column). A **fleet** step still waiting after that is `skipped`
-  (`skip_offline`, strictly more than 15:00 elapsed) with `errorCode`
+  column). The wait applies only to a never-dispatched
+  (`attempts === 0`) **fleet** step on a host that went offline during the run;
+  one still waiting after that is `skipped` (`skip_offline`, strictly more than
+  15:00 elapsed) with `errorCode`
   `server_offline` and "It stayed offline for 15 minutes during the update. It
   updates on its own when it reconnects." The run then ends `succeeded` when
   every other step is done/skipped. Co-located daemon and control-plane steps
   still become `needs_attention` / `server_offline` (the fleet gate depends on
-  them).
+  them). A host that dropped mid-install (`attempts > 0`) is never skipped: it
+  keeps the old path and becomes `needs_attention` / `server_offline` after the
+  long wait, because its install may still finish.
 - No progress within `UPGRADE_STEP_TIMEOUT_MS` → retry with backoff, up to
   `UPGRADE_STEP_MAX_ATTEMPTS` (3), then `needs_attention`.
 - `rolled_back` → one automatic retry (`UPGRADE_ROLLBACK_MAX_ATTEMPTS`), then
@@ -227,7 +231,7 @@ working.
   even resolved, so a second press answers 409 `upgrade_run_active` even when
   the manifest host is unreachable. A run that waits only on offline fleet
   hosts is settled first instead of 409. The run endpoints return every step
-  with a boolean `connected` (live link) beside `phase`, so the console can tell
+  with a boolean `connected` (live link) and `attempts` (dispatch count) beside `phase`, so the console can tell
   an offline-waiting step from a connected one.
 
 ## Saving what daemons report
