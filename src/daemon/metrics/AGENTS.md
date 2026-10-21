@@ -13,6 +13,8 @@ and rejects anything else; every stored hosted row carries blob3 `"8"` (`AE_STOR
 
 ## Metrics v8 (authoritative for new rows)
 
+Full storage format (column-by-column slot tables, units, nullability, DuckDB columns, versioning, how to add a metric): `STORAGE-FORMAT.md`.
+
 The v8 layout is **fixture-pinned**: `V8-LAYOUT.md` (generated) and
 `testing/v8-layout.fixture.json` are the spec, produced from the owner-sealed
 plan by `scripts/metrics-v8-layout/generate.mjs`; `backends/cloudflare/v8-layout.ts`
@@ -21,7 +23,7 @@ tables below describe the **v6** layout, kept only as the read-side reference fo
 v6 rows; where they disagree with `V8-LAYOUT.md`, v8 wins.
 
 - **Dataset** `turbopanel_server_metrics_v${METRICS_SCHEMA_VERSION}` (hard cut, per-env `<env>_` prefix); pinned for every wrangler environment by `wrangler-datasets.test.ts`. Readers accept only blob3 = `AE_STORAGE_VERSION` (`AE_SUPPORTED_SCHEMA_VERSIONS` = [8]): the sizes amendment reused hosted slots under wire version 8, so rows stamped earlier are skipped, never read with the new slot meanings. Bump `AE_STORAGE_VERSION` whenever a slot changes meaning.
-- **Rows**: `host.system` (liveness, bare serverId index), `host.io`, `host.network`, `host.web` on every host; `managed.database` only with managed databases; `block` (>1 drive, 3/row), `network` (NIC 3+, 3/row), `filesystem` (9/row; exactly one extra filesystem is folded into `host.network`), `gpu` (3/row, physical or real passthrough), `hardware.physical` (physical, up to 19 signals). VPS 4 rows, physical 5-6, +1 with databases.
+- **Rows**: `host.system` (liveness, bare serverId index), `host.io`, `host.network`, `host.web` on every host; `managed.database` only with managed databases; `block` (>1 drive, 3/row), `network` (NIC 3+, 3/row), `filesystem` (9/row; exactly one extra filesystem is folded into `host.io`, and `host.network` blob6 names it), `gpu` (3/row, physical or real passthrough), `hardware.physical` (physical, up to 19 signals). VPS 4 rows, physical 5-6, +1 with databases.
 - **Envelope**: blob1 kind, blob2 family, blob3 `"8"` (the storage layout revision, never the wire version), blob4 reserved (written empty), blob5 sample time as UTC text `YYYY-MM-DD hh:mm:ss`, blob6 entity ids, content text from blob7, double20 interval. Sequence, plan generation and page are no longer written. Event and status rows keep their v6 blob positions except blob3 and the blob5 text format.
 - **Wire negotiation**: wire feature `metrics-v8` (`DAEMON_WIRE_FEATURES`, both repos). A daemon stamps `METRICS_LEGACY_WIRE_VERSION` (6) until the control plane it is attached to advertises it. Hard cut: the control plane accepts wire versions 6 and 8 only (`METRICS_WIRE_VERSIONS`), advertises no `metrics-v7`, and a version-7 sample is refused with the usual version error; an older daemon falls back to the plain version-6 sample until it updates. `metrics-v8-sizes` is advertised only because this release stores the sizes and divides each bucket by the size its own sample carried. v8 data rides the optional `extended` section and `metadata.durable`; a v6 sample writes the same v8 rows with sentinels and empty text for the absent data.
 - **Caddy is totals only** (no per-site fields anywhere); slow families are still re-sent every sample.
