@@ -1,4 +1,5 @@
 import { resolveClientIp } from '../client/authn/http.ts'
+import { DATABASE_ROLES_LACK_GRANTS, findMissingRuntimeGrants } from '../db/role-grants.ts'
 import { mapSequential } from '../lib/sequential.ts'
 import { Hono } from 'hono'
 import type { Context, Env, Next } from 'hono'
@@ -1210,6 +1211,19 @@ export function registerDaemonApiRoutes<E extends Env>(
         'daemon-api',
         `readiness: database unavailable: ${err instanceof Error ? err.message : String(err)}`
       )
+      const missing = await findMissingRuntimeGrants(db)
+      if (missing.length > 0) {
+        logWarn('daemon-api', `readiness: ${DATABASE_ROLES_LACK_GRANTS}: ${missing.join('; ')}`)
+        return c.json(
+          {
+            ok: false,
+            ready: false,
+            error: DATABASE_ROLES_LACK_GRANTS,
+            code: 'database_roles_lack_grants',
+          },
+          503
+        )
+      }
       return c.json(
         {
           ok: false,

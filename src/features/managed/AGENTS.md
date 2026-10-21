@@ -466,9 +466,18 @@ and `_ro` (NOLOGIN) and the database belongs to the owner role. Only a new
 database gets it (`POST /managed/databases`: on Postgres every new database
 gets one; `ownerRole: false` answers 400 `managed_owner_role_required` and a
 name over 54 characters 400 `managed_owner_role_name_too_long`; `ownerRole`
-stays accepted only as `true`; 400 on MySQL/MariaDB when asked for). Existing databases keep their owner: moving one onto
-an owner role (`REASSIGN OWNED`) is a separate, explicit, backed-up action that
-does not exist yet. The flag rides on every apply as `databases[].ownerRole`
+stays accepted only as `true`; 400 on MySQL/MariaDB when asked for). Existing databases keep their owner until the customer asks:
+`POST …/databases/{name}/owner-role` with `confirm: true` (`evaluateOwnerRoleConversion`;
+needs `managed-database-convert-v1`, else 409 `managed_database_convert_needs_daemon_update`)
+sends one apply with the database flagged and `databases[].convertExisting`
+(`convertDatabases` in the apply input, never stored). The `database.is_role_owned` flag is
+set only when the primary's apply succeeds (`markConvertedDatabasesRoleOwned` in the command
+consumer), so a failed move leaves nothing flagged. The route is behind the step-up
+`managed.database.owner_role` and audited as `managed.database.owner_role.move`. The daemon
+gives up after 5 s on a lock (tell the customer to run it in a quiet window) and repeats
+safely. The
+daemon hands the database and what is in it to `tp_<db>_owner` in one transaction, so it then
+behaves like an API-made one (first database included). Asking again repeats it safely. The flag rides on every apply as `databases[].ownerRole`
 (create) and on the drop op, so every `prepareManagedApplyPayloads` caller must
 pass `ownerRoleDatabases` from the parsed options (a missing flag makes the
 daemon treat the database as an ordinary one). `writeManagedRowOptions` keeps
@@ -750,7 +759,7 @@ host that does not have the file. See `src/features/backups/AGENTS.md`.
 
 **Scheduled backups** are `retention` rows (routes under
 `/environments/:id/managed/backup-policies`, org owners and managers only;
-`src/client/managed/backup-policies.ts`). The control plane never queues a
+`src/client/managed/backup-policies.ts`). A policy may name the `database` it dumps (checked against the cluster's databases, never a system schema, otherwise 422 `backup_database_invalid`); empty or null dumps the cluster's initial database, and a chosen database that was later removed falls back to that default. The control plane never queues a
 run: it pushes each host its full policy set as `server.backups.reconcile`
 (`src/features/backups/reconcile.ts`, triggers listed in
 `src/features/commands/payload-contracts.md`), and a systemd timer on the host

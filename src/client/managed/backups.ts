@@ -11,7 +11,10 @@ import { server } from '../../db/schema.ts'
 import type { ManagedContext } from './context.ts'
 import { enqueueTypedCommand } from '../../features/managed/apply-prepare.ts'
 import type { ManagedRowOptions } from '../../features/managed/options.ts'
-import { defaultBackupDatabase } from '../../features/managed/default-backup-database.ts'
+import {
+  defaultBackupDatabase,
+  initialDatabaseOf,
+} from '../../features/managed/default-backup-database.ts'
 import type { ManagedBackupRecord } from '../../features/backups/backup-records.ts'
 
 /** Mirrors `COMMAND_TIMEOUT_MS['managed.backup' | 'managed.restore']` in `../../features/commands/consumer.ts`. */
@@ -101,8 +104,8 @@ function generateBackupId(): string {
 
 /**
  * Body `database` must already be a database configured on this managed
- * instance; when omitted, default to the first configured (initial) database
- * that is not a MySQL-family system schema.
+ * instance; when omitted, default to the cluster's initial database (else the first
+ * configured one) that is not a MySQL-family system schema.
  */
 export function resolveBackupDatabase(
   options: ManagedRowOptions,
@@ -115,7 +118,7 @@ export function resolveBackupDatabase(
     }
     return requested
   }
-  return defaultBackupDatabase(options.databases, engine)
+  return defaultBackupDatabase(options.databases, engine, initialDatabaseOf(options.settings))
 }
 
 /** Clamp `settings.backups.retentionKeep` (or the engine default) to the engine's `maxRetentionKeep`. */

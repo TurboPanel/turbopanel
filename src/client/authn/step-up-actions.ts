@@ -35,6 +35,8 @@ export const STEP_UP_ACTIONS = {
   'storage.backup.delete': 'Delete a storage backup',
   'storage.restore': 'Restore a storage backup over its volume',
   'managed.backup.delete': 'Delete a managed database backup',
+  'managed.database.owner_role':
+    'Move a database onto its owner role (changes who owns everything in it)',
   'managed.restore': 'Restore a managed database backup over its data',
   'hosting.delete': 'Delete a hosting',
   'environment.stop': 'Stop an environment and remove its containers',

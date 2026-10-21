@@ -23,6 +23,8 @@ import {
   parseLifecycleAction,
   resolveDeployReleaseServiceId,
   preferredListenPortsFromHostings,
+  previewCommitSha,
+  previewNativeAppVariables,
   queuedCommandsResponseBody,
   readHostingPorts,
   readHostingProtocol,
@@ -876,4 +878,66 @@ test('a native app never gets the port a site already took', () => {
   )
   assertEquals(sites[0]?.listenPort, 18080)
   assertEquals(apps[0]?.listenPort === sites[0]?.listenPort, false)
+})
+
+const PORT_VIEW = (value: string) => ({
+  name: 'PORT',
+  source: 'platform' as const,
+  isSecret: false,
+  value,
+  delivered: true,
+})
+
+test('previewNativeAppVariables shows the port the deploy allocates, not the spec port', () => {
+  const app = {
+    composeServiceName: 'web',
+    serviceId: 'svc-web',
+    framework: 'next',
+    listenPort: 18274,
+  } as const
+  const deployed = buildNativeAppServicesForDeploy([app], [], [], new Set(), 'env-1')
+  const views = previewNativeAppVariables(
+    {
+      sites: [],
+      hostings: [],
+      nativeAppServices: [app],
+      nativeAppVariables: [{ composeServiceName: 'web', variables: [PORT_VIEW('18274')] }],
+    },
+    undefined,
+    'env-1'
+  )
+  assertEquals(views[0]?.variables[0]?.value, String(deployed[0]?.listenPort))
+})
+
+test('previewNativeAppVariables skips ports other environments hold, like the deploy', () => {
+  const app = {
+    composeServiceName: 'web',
+    serviceId: 'svc-web',
+    framework: 'next',
+    listenPort: 0,
+  } as const
+  const free = buildNativeAppServicesForDeploy([app], [], [], new Set(), 'env-1')[0]?.listenPort
+  const held = new Set<number>([free as number])
+  const deployed = buildNativeAppServicesForDeploy([app], [], [], new Set(held), 'env-1')
+  const views = previewNativeAppVariables(
+    {
+      sites: [],
+      hostings: [],
+      nativeAppServices: [app],
+      nativeAppVariables: [{ composeServiceName: 'web', variables: [PORT_VIEW('0')] }],
+    },
+    held,
+    'env-1'
+  )
+  assertEquals(views[0]?.variables[0]?.value, String(deployed[0]?.listenPort))
+  assertNotEquals(views[0]?.variables[0]?.value, String(free))
+  assertEquals(held.size, 1)
+})
+
+test('previewCommitSha shows a commit and hides a branch name', () => {
+  assertEquals(previewCommitSha({ commitSha: 'main' }), undefined)
+  assertEquals(
+    previewCommitSha({ commitSha: '0123456789abcdef0123456789abcdef01234567' }),
+    '0123456789abcdef0123456789abcdef01234567'
+  )
 })

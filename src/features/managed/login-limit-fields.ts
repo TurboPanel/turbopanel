@@ -17,6 +17,7 @@ import {
 } from './owner-role.ts'
 import {
   MANAGED_DATA_ONLY_READWRITE_FEATURE,
+  MANAGED_DATABASE_CONVERT_FEATURE,
   MANAGED_DATABASE_OWNER_FEATURE,
   MANAGED_LOGIN_LIMITS_FEATURE,
   MANAGED_OWNER_ROLE_FEATURE,
@@ -174,6 +175,12 @@ export async function refuseIfDaemonCannotLimitLogins(
 /** Whether the server's daemon honours owner roles and the Database admin login. */
 export async function daemonHonoursOwnerRole(db: Db, serverId: string): Promise<boolean> {
   return (await daemonOwnerSupport(db, serverId)).ownerRole
+}
+
+/** Whether the server's daemon can move an existing database onto its owner role. */
+export async function daemonCanConvertDatabase(db: Db, serverId: string): Promise<boolean> {
+  const state = await getServerDaemonStateByServerId(db, serverId)
+  return (state?.projection?.features ?? []).includes(MANAGED_DATABASE_CONVERT_FEATURE)
 }
 
 /** Which of the owner-role features the server's daemon lists. */

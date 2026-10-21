@@ -724,3 +724,8 @@ id)` order. `resolveOneFromCaches` walks the up list first; a down network is
   branch. Daemon-lane failures return a fixed sentence in `message`; git's
   stderr goes to the log (`repository-inspect`), never the response. The UI
   debounces the branch field, so a half-typed name is not looked up at all.
+
+## Deploy hash and Destroy
+
+- `desiredHash` (see `environments/deploy-inputs-digest.ts`) covers the compose document, every source's commit and build inputs, variables (including linked-database logins, which are materialized into variables before the deploy is prepared), hostnames, sites, apps and storage. The organization CA is not part of a deploy payload (it travels in its own trust command), so it neither changes the hash nor needs to. The digest input includes plaintext secret variable values, but only the SHA-256 leaves the panel and is stored; no input is kept. Inputs that cannot be compared between sends (daemon-sealed values, a source known only by branch name) make the hash unique, so those deploys always run. The host additionally verifies that what the last deploy put in place is still running before it skips.
+- `POST /environments/:id/stop` is Destroy (the UI's Destroy button and the project delete wizard). The lifecycle bar's Stop uses `POST /environments/:id/lifecycle` with `stop`, which never sends `releaseCleanup`. Only the Destroy route sends `releaseCleanup`, which clears releases and keeps each service folder and its uploads.

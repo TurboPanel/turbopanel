@@ -69,7 +69,13 @@ export type BackupRunRecord = {
   finishedAt: string
   status: 'succeeded' | 'failed'
   error?: string
-  artifact?: { backupId: string; sizeBytes: number; checksum: string; path: string }
+  artifact?: {
+    backupId: string
+    sizeBytes: number
+    checksum: string
+    path: string
+    database?: string
+  }
   pruned: string[]
   nextRunAt?: string
 }
@@ -187,6 +193,7 @@ function toRunRecord(
       sizeBytes: report.sizeBytes ?? 0,
       checksum: report.checksum ?? '',
       path: backupRelativePath(report.path ?? '', target.kind, targetId(target)),
+      ...(report.database === undefined ? {} : { database: report.database }),
     }
   }
   return record
@@ -264,6 +271,7 @@ async function recordManagedArtifacts(
       managedId,
       sizeBytes: record.artifact.sizeBytes,
       checksum: record.artifact.checksum,
+      ...(record.artifact.database === undefined ? {} : { database: record.artifact.database }),
       path: record.artifact.path,
       createdAt: record.finishedAt,
       retentionId: record.policyId,
