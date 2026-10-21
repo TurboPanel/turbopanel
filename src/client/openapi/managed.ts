@@ -1413,6 +1413,11 @@ export const managedSchemas = {
         type: ['string', 'null'],
         description: 'IANA zone; null means the host local time',
       },
+      database: {
+        type: ['string', 'null'],
+        description:
+          "The database each run dumps; null means the cluster's initial database. Must exist on the cluster and not be a system schema, otherwise 422 `backup_database_invalid`.",
+      },
       retentionKeep: { type: 'integer', minimum: 1 },
       enabled: { type: 'boolean' },
       automatic: {
@@ -1458,6 +1463,11 @@ export const managedSchemas = {
       name: { type: 'string', maxLength: 64 },
       schedule: { $ref: '#/components/schemas/BackupScheduleInput' },
       timezone: { type: ['string', 'null'] },
+      database: {
+        type: ['string', 'null'],
+        description:
+          "The database each run dumps; null means the cluster's initial database. Must exist on the cluster and not be a system schema, otherwise 422 `backup_database_invalid`.",
+      },
       retentionKeep: {
         type: 'integer',
         minimum: 1,
@@ -1480,6 +1490,11 @@ export const managedSchemas = {
       timezone: {
         type: ['string', 'null'],
         description: 'null clears it (host local time)',
+      },
+      database: {
+        type: ['string', 'null'],
+        description:
+          "The database each run dumps; null means the cluster's initial database. Must exist on the cluster and not be a system schema, otherwise 422 `backup_database_invalid`.",
       },
       retentionKeep: { type: 'integer', minimum: 1 },
       enabled: { type: 'boolean' },

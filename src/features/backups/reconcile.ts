@@ -39,6 +39,7 @@ import { getManagedBackupDescriptor, getManagedEngineSpec } from '../managed/ind
 import {
   defaultBackupDatabase,
   initialDatabaseOf,
+  isSystemBackupDatabase,
 } from '../managed/default-backup-database.ts'
 import { managedDatabaseNames, parseManagedSettings } from '../managed/options.ts'
 import { managedHasBackupPolicies } from './policy-records.ts'
@@ -72,6 +73,8 @@ type ManagedPolicyRow = {
   managedId: string | null
   schedule: string
   timezone: string | null
+  /** The database the policy chose; null means the cluster's initial database. */
+  database?: string | null
   retentionKeep: number
   isEnabled: boolean
   engine: string
@@ -82,14 +85,23 @@ type ManagedPolicyRow = {
 }
 
 /**
- * The database a scheduled run dumps: the same default a manual backup picks
- * (the cluster's initial database, else the first non-system one). Absent when the stored options cannot say,
+ * The database a scheduled run dumps: the one the policy chose, else the same
+ * default a manual backup picks (the cluster's initial database, else the
+ * first non-system one). Absent when the stored options cannot say,
  * so the daemon falls back to its engine default rather than the run failing here.
  */
 function scheduledBackupDatabase(row: ManagedPolicyRow): string | undefined {
   const spec = getManagedEngineSpec(row.engine)
   const settings = spec ? parseManagedSettings(spec, row.options) : null
   if (!spec || settings === null) return undefined
+  // A chosen database that has since been removed falls back to the default.
+  if (
+    row.database &&
+    row.databases.includes(row.database) &&
+    !isSystemBackupDatabase(row.database, row.engine)
+  ) {
+    return row.database
+  }
   return defaultBackupDatabase(row.databases, row.engine, initialDatabaseOf(settings)) ?? undefined
 }
 
@@ -159,6 +171,7 @@ async function loadManagedPolicyRows(db: Db, serverId: string): Promise<ManagedP
       managedId: retention.managedId,
       schedule: retention.schedule,
       timezone: retention.timezone,
+      database: retention.database,
       retentionKeep: retention.retentionKeep,
       isEnabled: retention.isEnabled,
       engine: managed.engine,

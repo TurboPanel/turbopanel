@@ -32,3 +32,11 @@ export function defaultBackupDatabase(
   if (initialDatabase !== undefined && usable.includes(initialDatabase)) return initialDatabase
   return usable[0] ?? null
 }
+
+/** Whether `name` is a MySQL-family system schema, which a backup never dumps. */
+export function isSystemBackupDatabase(name: string, engine?: string): boolean {
+  return (
+    (engine === 'mysql' || engine === 'mariadb') &&
+    MYSQL_FAMILY_SYSTEM_SCHEMAS.has(name.toLowerCase())
+  )
+}

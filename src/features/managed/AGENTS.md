@@ -750,7 +750,7 @@ host that does not have the file. See `src/features/backups/AGENTS.md`.
 
 **Scheduled backups** are `retention` rows (routes under
 `/environments/:id/managed/backup-policies`, org owners and managers only;
-`src/client/managed/backup-policies.ts`). The control plane never queues a
+`src/client/managed/backup-policies.ts`). A policy may name the `database` it dumps (checked against the cluster's databases, never a system schema, otherwise 422 `backup_database_invalid`); empty or null dumps the cluster's initial database, and a chosen database that was later removed falls back to that default. The control plane never queues a
 run: it pushes each host its full policy set as `server.backups.reconcile`
 (`src/features/backups/reconcile.ts`, triggers listed in
 `src/features/commands/payload-contracts.md`), and a systemd timer on the host

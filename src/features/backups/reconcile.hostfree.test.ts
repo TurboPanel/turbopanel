@@ -39,6 +39,7 @@ type PolicyRow = {
   managedId: string | null
   schedule: string
   timezone: string | null
+  database?: string | null
   retentionKeep: number
   isEnabled: boolean
   engine: string
@@ -299,6 +300,32 @@ test('a managed entry carries the initial database, not the first one by name', 
   assertEquals(
     set.map((entry) => entry.database),
     ['defaultdb', 'defaultdb', 'defaultdb']
+  )
+})
+
+test('a managed entry carries the database its policy chose, unless the cluster no longer has it', async () => {
+  const names = ['ct_db_app', 'ct_db_bk', 'defaultdb']
+  const { db } = fakeDb({
+    policyRows: [
+      policyRow({ ...managedOptions('postgres', names), database: 'ct_db_bk' }),
+      policyRow({
+        id: '0192d6a0-0000-7000-8000-0000000000c2',
+        engine: 'postgres',
+        ...managedOptions('postgres', names),
+        database: 'dropped_db',
+      }),
+      policyRow({
+        id: '0192d6a0-0000-7000-8000-0000000000c3',
+        engine: 'mariadb',
+        ...managedOptions('mariadb', ['mysql', 'defaultdb']),
+        database: 'mysql',
+      }),
+    ],
+  })
+  const set = await buildBackupPolicySetForServer(db, SERVER_A)
+  assertEquals(
+    set.map((entry) => entry.database),
+    ['ct_db_bk', 'defaultdb', 'defaultdb']
   )
 })
 

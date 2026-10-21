@@ -4779,6 +4779,8 @@ export const retention = pgTable(
     schedule: text().notNull(),
     /** IANA zone the schedule is read in; null means the host's local time. */
     timezone: text(),
+    /** Managed target: the database each run dumps; null means the cluster's initial database. */
+    database: text(),
     retentionKeep: integer('retention_keep').notNull(),
     isEnabled: boolean('is_enabled').default(true).notNull(),
     nextRunAt: timestamp('next_run_at', {
