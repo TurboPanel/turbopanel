@@ -25,8 +25,7 @@ export function readOverPlanStamp(serverMetadata: unknown): OverPlanMetadata | n
 }
 
 /**
- * Flag or unflag the server from one durable sample's RAM and the daemon's
- * host report (physical cores). `serverMetadata` is the record the ingest
+ * Flag or unflag the server from the daemon's host report (RAM and physical cores). `serverMetadata` is the record the ingest
  * route already loaded, so the common case (not over plan, not flagged) costs
  * no query at all.
  */
@@ -34,7 +33,6 @@ export async function recordOverPlan(
   db: Db,
   serverId: string,
   tierRank: number | null | undefined,
-  sampleMemoryTotalBytes: number | null | undefined,
   serverMetadata: unknown
 ): Promise<void> {
   const metadata =
@@ -42,7 +40,7 @@ export async function recordOverPlan(
       ? (serverMetadata as Record<string, unknown>)
       : undefined
   const resources = parseServerHostResources(metadata?.resources)
-  const result = evaluateOverPlan(tierRank, resources, sampleMemoryTotalBytes)
+  const result = evaluateOverPlan(tierRank, resources)
   const stamped = readOverPlanStamp(serverMetadata)
   if (!isOverPlan(result)) {
     if (stamped === null) return

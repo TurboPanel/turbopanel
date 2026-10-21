@@ -10,31 +10,35 @@ function sockets(...coreCounts: number[]): ServerHostResources {
   return { cpus: coreCounts.map((total) => ({ cores: { total } })) as ServerHostResources['cpus'] }
 }
 
+/** The host report with its RAM in GiB. */
+function withRam(resources: ServerHostResources, gib: number): ServerHostResources {
+  return { ...resources, memory: { totalBytes: gib * GIB } } as ServerHostResources
+}
+
 it('a server inside its tier is not over plan', () => {
-  assertEquals(evaluateOverPlan(1, sockets(4), 8 * GIB), { memory: false, cpu: false })
+  assertEquals(evaluateOverPlan(1, withRam(sockets(4), 8)), { memory: false, cpu: false })
 })
 
 it('more RAM than the tier allows is flagged', () => {
-  const result = evaluateOverPlan(1, sockets(4), 64 * GIB)
+  const result = evaluateOverPlan(1, withRam(sockets(4), 64))
   assertEquals(result, { memory: true, cpu: false })
   assertEquals(isOverPlan(result), true)
 })
 
 it('more physical cores than the tier allows is flagged, counted across sockets', () => {
-  assertEquals(evaluateOverPlan(1, sockets(4), 8 * GIB)?.cpu, false)
-  assertEquals(evaluateOverPlan(1, sockets(3, 3), 8 * GIB)?.cpu, true)
+  assertEquals(evaluateOverPlan(1, withRam(sockets(4), 8))?.cpu, false)
+  assertEquals(evaluateOverPlan(1, withRam(sockets(3, 3), 8))?.cpu, true)
 })
 
-it('RAM falls back to the host report when the sample carries no size', () => {
-  const resources = { ...sockets(2), memory: { totalBytes: 64 * GIB } }
-  assertEquals(evaluateOverPlan(1, resources, null)?.memory, true)
+it('a host report without RAM never flags memory', () => {
+  assertEquals(evaluateOverPlan(1, sockets(2))?.memory, false)
 })
 
 it('no tier means nothing to judge, and unknown hardware is never over plan', () => {
-  assertEquals(evaluateOverPlan(null, sockets(64), 64 * GIB), null)
-  assertEquals(isOverPlan(evaluateOverPlan(1, undefined, undefined)), false)
+  assertEquals(evaluateOverPlan(null, withRam(sockets(64), 64)), null)
+  assertEquals(isOverPlan(evaluateOverPlan(1, undefined)), false)
 })
 
 it('the unbounded custom tier is never over plan', () => {
-  assertEquals(isOverPlan(evaluateOverPlan(8, sockets(512), 4096 * GIB)), false)
+  assertEquals(isOverPlan(evaluateOverPlan(8, withRam(sockets(512), 4096))), false)
 })

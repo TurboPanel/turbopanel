@@ -817,19 +817,8 @@ async function loadIngestServerPlanRow(
  * Fire-and-forget, like the other ingest-side marks: a failure logs and never
  * blocks the sample.
  */
-function flagOverPlanInBackground(
-  db: Db,
-  serverId: string,
-  sample: AuthenticatedMetricsSample,
-  planRow: IngestServerPlanRow
-): void {
-  recordOverPlan(
-    db,
-    serverId,
-    planRow.tierRank,
-    sample.extended?.sizes?.memoryTotalBytes,
-    planRow.serverMetadata
-  ).catch((err) => {
+function flagOverPlanInBackground(db: Db, serverId: string, planRow: IngestServerPlanRow): void {
+  recordOverPlan(db, serverId, planRow.tierRank, planRow.serverMetadata).catch((err) => {
     rateLimitedMetricsLog(serverId, 'over_plan_record_failed', () => {
       console.warn(`metrics over-plan flag failed for ${serverId}: ${describeError(err)}`)
     })
@@ -887,7 +876,7 @@ async function resolveIngestPlanAndReconcileTopology(
       })
     }
 
-    if (durable && planRow !== undefined) flagOverPlanInBackground(db, serverId, sample, planRow)
+    if (durable && planRow !== undefined) flagOverPlanInBackground(db, serverId, planRow)
 
     const snapshotForClass = topologyMatch?.snapshot ?? latestTopology?.snapshot
     const machineClass = resolveServerMachineClass(
