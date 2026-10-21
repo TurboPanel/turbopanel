@@ -48,7 +48,7 @@ export function publishedHostRange(entry: unknown): [number, number] | undefined
   const body = (entry.split('/')[0] ?? '').replace(/^\[[^\]]*\]:/, '')
   const parts = body.split(':')
   if (parts.length < 2) return undefined
-  return parseRange(parts.length === 2 ? (parts[0] ?? '') : (parts[parts.length - 2] ?? ''))
+  return parseRange(parts.length === 2 ? (parts[0] ?? '') : (parts.at(-2) ?? ''))
 }
 
 /** One finding per container service that publishes a reserved host port. */
