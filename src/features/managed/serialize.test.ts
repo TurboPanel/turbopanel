@@ -19,7 +19,7 @@ test('parseManagedResidual returns empty for non-objects', () => {
 test('parseManagedResidual keeps only typed residual fields', () => {
   assertEquals(
     parseManagedResidual({
-      rootPrincipalId: 'prin-1',
+      rootLoginId: 'login-1',
       host: 'db.internal',
       port: 5432,
       error: 'boom',
@@ -27,11 +27,11 @@ test('parseManagedResidual keeps only typed residual fields', () => {
       portAsString: '5432',
     }),
     {
-      rootPrincipalId: 'prin-1',
+      rootLoginId: 'login-1',
       host: 'db.internal',
       port: 5432,
       error: 'boom',
-    },
+    }
   )
 })
 
@@ -44,7 +44,7 @@ test('serializeManagedRow projects residual host/port and strips them from metad
       engine: 'postgres',
       status: 'ready',
       metadata: {
-        rootPrincipalId: 'prin-1',
+        rootLoginId: 'login-1',
         host: '127.0.0.1',
         port: 5432,
         error: 'previous failure',
@@ -53,7 +53,7 @@ test('serializeManagedRow projects residual host/port and strips them from metad
       createdAt: '2024-01-01T00:00:00.000Z',
       updatedAt: '2024-01-02T00:00:00.000Z',
     },
-    'server-1',
+    'server-1'
   )
 
   assertEquals(serialized.engine, 'postgres')
@@ -62,7 +62,7 @@ test('serializeManagedRow projects residual host/port and strips them from metad
   assertEquals(serialized.port, 5432)
   assertEquals(serialized.serverId, 'server-1')
   assertEquals(serialized.metadata, {
-    rootPrincipalId: 'prin-1',
+    rootLoginId: 'login-1',
     error: 'previous failure',
   })
 })
@@ -80,7 +80,7 @@ test('serializeManagedRow defaults unknown engine/status and null host/port', ()
       createdAt: '2024-01-01T00:00:00.000Z',
       updatedAt: '2024-01-01T00:00:00.000Z',
     },
-    null,
+    null
   )
 
   assertEquals(serialized.engine, null)
@@ -121,23 +121,23 @@ test('buildConnectionPayload renders whatever effective mode it is handed', () =
       username: 'app_user',
       sslMode: 'prefer',
     }).dsn.includes('sslmode=prefer'),
-    true,
+    true
   )
 })
 
 test('parseManagedResidual ignores wrong-typed residual fields', () => {
   assertEquals(
     parseManagedResidual({
-      rootPrincipalId: 12,
+      rootLoginId: 12,
       host: null,
       port: '5432',
       error: false,
     }),
-    {},
+    {}
   )
 })
 
-test('serializeManagedRow keeps rootPrincipalId without host when only that residual exists', () => {
+test('serializeManagedRow keeps rootLoginId without host when only that residual exists', () => {
   const serialized = serializeManagedRow(
     {
       id: 'managed-3',
@@ -145,15 +145,15 @@ test('serializeManagedRow keeps rootPrincipalId without host when only that resi
       name: 'Postgres',
       engine: 'postgres',
       status: 'stopped',
-      metadata: { rootPrincipalId: 'prin-only' },
+      metadata: { rootLoginId: 'login-only' },
       options: {},
       createdAt: '2024-01-01T00:00:00.000Z',
       updatedAt: '2024-01-01T00:00:00.000Z',
     },
-    'server-3',
+    'server-3'
   )
   assertEquals(serialized.status, 'stopped')
   assertEquals(serialized.host, null)
   assertEquals(serialized.port, null)
-  assertEquals(serialized.metadata, { rootPrincipalId: 'prin-only' })
+  assertEquals(serialized.metadata, { rootLoginId: 'login-only' })
 })

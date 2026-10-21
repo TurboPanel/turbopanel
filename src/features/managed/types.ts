@@ -120,7 +120,8 @@ export type ManagedUserOperationKind =
   | 'drop-database'
   | 'grant-database'
 
-export type ManagedDatabasePrivilege = 'owner' | 'read-write' | 'read-only'
+/** `admin` is the Database admin login (a login for database tools). */
+export type ManagedDatabasePrivilege = 'owner' | 'read-write' | 'read-only' | 'admin'
 
 /**
  * Declarative user/database ops — **no SQL text**. The daemon owns statement
@@ -264,6 +265,12 @@ export type ManagedEngineSpec = {
   engine: ManagedEngineCode
   displayName: string
   defaultImage: string
+  /**
+   * Image meant by a stored row that has no `settings.image`, when the default
+   * moved after that row was written (MariaDB: 12.3 before 11.8 became the
+   * default). Unset means `defaultImage` has never moved.
+   */
+  legacyDefaultImage?: string
   defaultPort: number
   principalProvider: string
   rootUsername: string

@@ -167,11 +167,15 @@ export type GitProviderFailure = {
   failure: string
   /** Provider HTTP status, when the failure came from its API. */
   status?: number
+  /**
+   * Set when the provider said the repository is there but the ref is not —
+   * a branch that was never pushed, or a half-typed name. That is an answer
+   * about the caller's input, not a provider outage.
+   */
+  reason?: 'ref_not_found'
 }
 
-export function isGitProviderFailure(
-  value: unknown,
-): value is GitProviderFailure {
+export function isGitProviderFailure(value: unknown): value is GitProviderFailure {
   return typeof value === 'object' && value !== null && 'failure' in value
 }
 
@@ -261,10 +265,7 @@ export interface GitProvider {
    * concept (generic SSH) answer with an empty list rather than throwing — the
    * picker simply has nothing to offer.
    */
-  listRepositories(
-    ctx: GitProviderContext,
-    connectionId: string,
-  ): Promise<RepositorySummary[]>
+  listRepositories(ctx: GitProviderContext, connectionId: string): Promise<RepositorySummary[]>
 
   /**
    * The commit to build and, when the provider mints one, the credential that
@@ -272,7 +273,7 @@ export interface GitProvider {
    */
   prepareClone(
     ctx: GitProviderContext,
-    params: PrepareCloneParams,
+    params: PrepareCloneParams
   ): Promise<PreparedClone | GitProviderFailure>
 
   /**
@@ -283,7 +284,7 @@ export interface GitProvider {
   verifyWebhook(
     secret: string | null | undefined,
     rawBody: Uint8Array,
-    headers: WebhookHeaders,
+    headers: WebhookHeaders
   ): Promise<boolean>
 
   /** `push` payload → the tuple the trigger resolver consumes, or `null`. */
@@ -293,10 +294,7 @@ export interface GitProvider {
    * A **completed, all-green** CI payload → the released SHA, or `null`.
    * Partial success is not a release signal — see each implementation.
    */
-  parseCheck(
-    event: string,
-    payload: Record<string, unknown>,
-  ): ProviderCheckEvent | null
+  parseCheck(event: string, payload: Record<string, unknown>): ProviderCheckEvent | null
 
   /**
    * Read file contents at a ref.
@@ -313,13 +311,13 @@ export interface GitProvider {
    */
   readRepositoryFiles(
     ctx: GitProviderContext,
-    params: ReadRepositoryFilesParams,
+    params: ReadRepositoryFilesParams
   ): Promise<_RepositoryFileSet | GitProviderFailure | _RepositoryReadUnsupported>
 
   /** Directory listing at a ref, same outcome model as {@link readRepositoryFiles}. */
   listRepositoryEntries(
     ctx: GitProviderContext,
-    params: ListRepositoryEntriesParams,
+    params: ListRepositoryEntriesParams
   ): Promise<
     | { commitSha: string; entries: _RepositoryEntry[] }
     | GitProviderFailure
@@ -346,8 +344,6 @@ export function resolveGitProvider(provider: string): GitProvider {
 }
 
 /** Provider for an inbound webhook surface. */
-export function resolveWebhookGitProvider(
-  provider: WebhookGitProviderName,
-): GitProvider {
+export function resolveWebhookGitProvider(provider: WebhookGitProviderName): GitProvider {
   return PROVIDERS[provider]
 }

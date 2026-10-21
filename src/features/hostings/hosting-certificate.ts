@@ -20,8 +20,8 @@ import type { HostingBindScope, HostingProtocol } from './hosting-options.ts'
 
 const MS_PER_DAY = 86_400_000
 
-/** Key on `hosting.metadata` holding a not-yet-satisfiable Let's Encrypt request. */
-export const HOSTING_LETS_ENCRYPT_PENDING_KEY = 'letsEncryptPending'
+/** `hosting.metadata` key holding the DNS report of a waiting request (the request time is `hosting.pending_at`). */
+export const HOSTING_LETS_ENCRYPT_DNS_KEY = 'letsEncryptDns'
 
 /** A waiting request older than this is dropped by the sweep (the owner can click again). */
 export const LETS_ENCRYPT_PENDING_MAX_AGE_DAYS = 7
@@ -119,26 +119,28 @@ export function uploadedExpiryWarning(notAfter: string | null, now: Date): Uploa
   return 'none'
 }
 
-export function readPendingLetsEncrypt(metadata: unknown): PendingLetsEncrypt | null {
-  if (!isRecord(metadata)) return null
-  const raw = metadata[HOSTING_LETS_ENCRYPT_PENDING_KEY]
-  if (!isRecord(raw)) return null
-  const requestedAt = readIso(raw.requestedAt)
+export function readPendingLetsEncrypt(
+  row: Readonly<{ pendingAt: string | null; metadata: unknown }>
+): PendingLetsEncrypt | null {
+  const requestedAt = readIso(row.pendingAt)
   if (requestedAt === null) return null
+  const raw = isRecord(row.metadata) ? row.metadata[HOSTING_LETS_ENCRYPT_DNS_KEY] : null
   return {
     requestedAt,
-    dns: isRecord(raw.dns) ? (raw.dns as HostingDnsReport) : null,
+    dns: isRecord(raw) ? (raw as HostingDnsReport) : null,
   }
 }
 
-export function withPendingLetsEncrypt(
+/** The column values that record (or clear) a waiting request: `pending_at` plus the DNS report in `metadata`. */
+export function pendingLetsEncryptPatch(
   metadata: unknown,
   pending: PendingLetsEncrypt | null
-): Record<string, unknown> {
+): { pendingAt: string | null; metadata: Record<string, unknown> } {
   const next: Record<string, unknown> = isRecord(metadata) ? { ...metadata } : {}
-  if (pending === null) delete next[HOSTING_LETS_ENCRYPT_PENDING_KEY]
-  else next[HOSTING_LETS_ENCRYPT_PENDING_KEY] = pending
-  return next
+  if (pending === null) delete next[HOSTING_LETS_ENCRYPT_DNS_KEY]
+  else if (pending.dns === null) delete next[HOSTING_LETS_ENCRYPT_DNS_KEY]
+  else next[HOSTING_LETS_ENCRYPT_DNS_KEY] = pending.dns
+  return { pendingAt: pending?.requestedAt ?? null, metadata: next }
 }
 
 export function isPendingExpired(pending: PendingLetsEncrypt, now: Date): boolean {

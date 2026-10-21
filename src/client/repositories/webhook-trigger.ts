@@ -36,13 +36,12 @@
  * enough — and for what it does *not* do on its own.
  */
 
-import { and, eq, inArray, sql } from 'drizzle-orm'
+import { and, eq, inArray } from 'drizzle-orm'
 import type { Context } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import type { Db } from '../../db/connection.ts'
 import { environment, gitConnection, project, repository, workspace } from '../../db/schema.ts'
 import { resolveEffectivePlacementServerId } from '../../features/projects/project-options.ts'
-import type { ProjectOptions } from '../../features/projects/project-options.ts'
 import type { CommandQueue } from '../../features/commands/queue.ts'
 import { logInfo, logWarn } from '../../lib/logger.ts'
 import {
@@ -50,7 +49,7 @@ import {
   runEnvironmentDeployForActor,
 } from '../environments/deploy-routes.ts'
 import type { WebhookGitProviderName } from '../../features/git/git-provider.ts'
-import { COMPOSE_SOURCE_JSONPATH } from './routes-helpers.ts'
+import { listWatchingEnvironmentIds } from '../../features/git/watch-records.ts'
 import { forEachSequential, mapSequential } from '../../lib/sequential.ts'
 import {
   decideEnvironmentPush,
@@ -323,24 +322,7 @@ export async function resolveRepositoryEnvironmentIds(
   db: Db,
   row: TriggerRepositoryRow
 ): Promise<string[]> {
-  const ids = new Set<string>()
-
-  const referenced = await db.execute<{ environment_id: string }>(sql`
-    SELECT e.id AS environment_id
-    FROM environment e
-    JOIN project p ON p.id = e.project_id
-    JOIN workspace w ON w.id = p.workspace_id
-    WHERE w.organization_id = ${row.organizationId}::uuid
-      AND (
-        jsonb_path_exists(e.options, ${COMPOSE_SOURCE_JSONPATH}::jsonpath,
-          jsonb_build_object('sid', ${row.id}::text))
-        OR jsonb_path_exists(p.options, ${COMPOSE_SOURCE_JSONPATH}::jsonpath,
-          jsonb_build_object('sid', ${row.id}::text))
-      )
-  `)
-  for (const found of referenced) ids.add(found.environment_id)
-
-  return [...ids]
+  return await listWatchingEnvironmentIds(db, row.organizationId, row.id)
 }
 
 /**
@@ -400,7 +382,7 @@ async function resolveEnvironmentPlacement(
   const [row] = await db
     .select({
       serverId: environment.serverId,
-      projectOptions: project.options,
+      projectDefaultServerId: project.defaultServerId,
       organizationId: workspace.organizationId,
     })
     .from(environment)
@@ -411,10 +393,7 @@ async function resolveEnvironmentPlacement(
   if (!row) return null
 
   return {
-    serverId: resolveEffectivePlacementServerId(
-      row.serverId,
-      row.projectOptions as ProjectOptions | null
-    ),
+    serverId: resolveEffectivePlacementServerId(row.serverId, row.projectDefaultServerId),
     organizationId: row.organizationId,
   }
 }

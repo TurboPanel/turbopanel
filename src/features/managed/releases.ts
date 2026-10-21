@@ -12,7 +12,9 @@
  * the daemon payload allowlist
  * (`turbopaneld/src/contracts/commands-contracts.ts`) and the UI picker
  * (`ui/src/lib/managed-releases.ts`). Each mirror has a test pinning it to the
- * same literal set.
+ * same literal set. `failoverCapable` is control-plane policy only (whether a
+ * replica / automatic failover may be added) and is not copied into those
+ * image-list mirrors — MariaDB 12.3 stays creatable there.
  */
 
 import type { ManagedEngineCode } from './types.ts'
@@ -42,6 +44,12 @@ export type ManagedEngineRelease = {
   lifecycle: ManagedEngineLifecycle
   /** Exactly one release per engine is the default for new clusters. */
   isDefault: boolean
+  /**
+   * Whether a second member (replica / automatic failover) may be added.
+   * False only for MariaDB 12.3: that series is still creatable as a single
+   * server, but failover tooling cannot read its `read_only` yet.
+   */
+  failoverCapable: boolean
   /**
    * This series has been validated end-to-end (create, replicate, promote,
    * backup/restore) against the daemon's engine handlers.
@@ -86,6 +94,7 @@ function postgresRelease(series: string, isDefault = false, tested = false): Man
     series,
     lifecycle: 'supported',
     isDefault,
+    failoverCapable: true,
     tested,
     variants: [
       {
@@ -113,6 +122,7 @@ function mysqlRelease(series: string, isDefault = false, tested = false): Manage
     series,
     lifecycle: 'lts',
     isDefault,
+    failoverCapable: true,
     tested,
     variants: [
       {
@@ -130,12 +140,18 @@ function mysqlRelease(series: string, isDefault = false, tested = false): Manage
 }
 
 /** MariaDB has never shipped Alpine; UBI is the vendor-published alternative. */
-function mariadbRelease(series: string, isDefault = false, tested = false): ManagedEngineRelease {
+function mariadbRelease(
+  series: string,
+  isDefault = false,
+  tested = false,
+  failoverCapable = true
+): ManagedEngineRelease {
   return {
     engine: 'mariadb',
     series,
     lifecycle: 'lts',
     isDefault,
+    failoverCapable,
     tested,
     variants: [
       {
@@ -167,6 +183,10 @@ function mariadbRelease(series: string, isDefault = false, tested = false): Mana
  * flipping its `tested` argument here **and** in the two mirrors
  * (`turbopaneld/src/contracts/commands-contracts.ts`,
  * `ui/src/lib/managed-releases.ts`), never in one place alone.
+ *
+ * MariaDB 11.8 is the default for new databases. MariaDB 12.3 stays tested and
+ * creatable as a single server (`failoverCapable: false`) until failover
+ * tooling can read its `read_only` values.
  */
 export const MANAGED_ENGINE_RELEASES: readonly ManagedEngineRelease[] = [
   postgresRelease('18', true, true),
@@ -175,8 +195,8 @@ export const MANAGED_ENGINE_RELEASES: readonly ManagedEngineRelease[] = [
   postgresRelease('15'),
   mysqlRelease('9.7', true, true),
   mysqlRelease('8.4', false, true),
-  mariadbRelease('12.3', true, true),
-  mariadbRelease('11.8', false, true),
+  mariadbRelease('12.3', false, true, false),
+  mariadbRelease('11.8', true, true),
   mariadbRelease('11.4'),
   mariadbRelease('10.11'),
 ]
@@ -308,6 +328,43 @@ export function describeManagedImage(image: string): ManagedImageDescriptor | un
     }
   }
   return undefined
+}
+
+/**
+ * The image a stored row actually runs: its own `settings.image`, else the
+ * spec's legacy default (the default before it moved), else the current
+ * default. New clusters always store their image at create time, so only rows
+ * written before the default moved reach the legacy branch — they must keep
+ * the series their data directory was initialised with.
+ */
+export function effectiveManagedImage(
+  spec: { defaultImage: string; legacyDefaultImage?: string },
+  image: string | undefined
+): string {
+  return image ?? spec.legacyDefaultImage ?? spec.defaultImage
+}
+
+const MARIADB_FAILOVER_UNSUPPORTED_REASON =
+  'MariaDB 12.3 can run on one server; automatic failover needs MariaDB 11.8 for now.'
+
+/**
+ * Whether `image` may take a replica / automatic failover.
+ *
+ * Catalogued releases follow {@link ManagedEngineRelease.failoverCapable}. An
+ * unknown or uncatalogued image is treated as supported so a row written
+ * before the catalog existed is not locked to a single server.
+ */
+export function managedImageFailoverSupport(
+  image: string | undefined
+): { supported: true } | { supported: false; reason: string } {
+  if (image === undefined) return { supported: true }
+  const described = describeManagedImage(image)
+  if (!described) return { supported: true }
+  const release = MANAGED_ENGINE_RELEASES.find(
+    (row) => row.engine === described.engine && row.series === described.series
+  )
+  if (!release || release.failoverCapable) return { supported: true }
+  return { supported: false, reason: MARIADB_FAILOVER_UNSUPPORTED_REASON }
 }
 
 /**

@@ -9,25 +9,17 @@
  * the replica commands (still non-terminal until then) are what this sees.
  */
 
-import { and, eq, inArray, sql } from 'drizzle-orm'
+import { and, eq } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { command } from '../../db/schema.ts'
-import { COMMAND_STATUSES, TERMINAL_COMMAND_STATUSES } from '../commands/types.ts'
-
-const OUTSTANDING_COMMAND_STATUSES = COMMAND_STATUSES.filter(
-  (status) => !TERMINAL_COMMAND_STATUSES.has(status)
-)
+import { commandIsOpen } from '../commands/open-statuses.ts'
 
 export async function hasOutstandingManagedDestroy(db: Db, managedId: string): Promise<boolean> {
   const [row] = await db
     .select({ id: command.id })
     .from(command)
     .where(
-      and(
-        eq(command.name, 'managed.destroy'),
-        inArray(command.status, OUTSTANDING_COMMAND_STATUSES),
-        sql`${command.context}->>'managedId' = ${managedId}`
-      )
+      and(eq(command.name, 'managed.destroy'), eq(command.managedId, managedId), commandIsOpen())
     )
     .limit(1)
   return row !== undefined

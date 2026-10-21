@@ -5,7 +5,7 @@
 import type { UpdateProgressStage } from '../../contracts/cell-protocol.ts'
 import { installScriptHostForChannel } from '../install/daemon-install-command.ts'
 import type { UpgradeRuntime } from './planner.ts'
-import type { UpgradePhase, UpgradeStepStatus } from './vocabulary.ts'
+import type { UpgradeStepStatus } from './vocabulary.ts'
 
 /** Wire feature a co-located daemon must advertise before a control-plane install. */
 export const MANAGED_UPGRADE_FEATURE = 'managed-upgrade-v1'
@@ -27,11 +27,11 @@ export function isUpgradeRunId(upgradeId: string): boolean {
 
 /**
  * Backup directory the rollback playbook reads for this attempt
- * (`turbopanel_backup_dir` default `/backup`).
+ * (`turbopanel_backup_dir` default `/backup`): the `panel` folder of the backup root.
  */
 export function controlPlaneBackupPath(upgradeId: string): string {
   const id = isUpgradeRunId(upgradeId) ? upgradeId : '<upgrade id>'
-  return `/backup/control-plane/${id}`
+  return `/backup/panel/${id}`
 }
 
 /** Rollback command the preflight sheet copies. `upgradeId` is one path segment. */
@@ -73,15 +73,6 @@ export function isProgressTerminal(status: UpgradeStepStatus): boolean {
   return status === 'done' || status === 'failed' || status === 'rolled_back'
 }
 
-export function phaseFromDetail(detail: unknown): UpgradePhase {
-  if (typeof detail !== 'object' || detail === null) return 'fleet'
-  const phase = (detail as { phase?: unknown }).phase
-  if (phase === 'colocated_daemon' || phase === 'control_plane' || phase === 'fleet') {
-    return phase
-  }
-  return 'fleet'
-}
-
 /** Earlier dispatch ids a step remembers; one per retry is plenty. */
 export const MAX_PRIOR_REQUEST_IDS = 5
 
@@ -100,7 +91,6 @@ export type StepDispatchHistory = {
 }
 
 export type StepDetail = {
-  phase: UpgradePhase
   progressDetail?: string
   priorRequestIds?: string[]
   inProgressRefused?: boolean
@@ -150,9 +140,10 @@ export function withInProgressRefused(detail: unknown): Record<string, unknown> 
   return { ...detailRecord(detail), inProgressRefused: true }
 }
 
-export function detailWithPhase(phase: UpgradePhase, detail: unknown): StepDetail {
+/** The detail a step stores: only the keys that survive (the phase has its own column). */
+export function stepDetail(detail: unknown): StepDetail {
   const record = detailRecord(detail)
-  const out: StepDetail = { phase }
+  const out: StepDetail = {}
   if (typeof record.progressDetail === 'string') {
     out.progressDetail = record.progressDetail
   }

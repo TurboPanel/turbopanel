@@ -88,12 +88,14 @@ function buildInstallPipeline(opts: {
     // alone never disables verification.
     envParts.push(`TURBOPANEL_DL_BASE=${opts.dlBase}`, 'TURBOPANEL_DEV_ALLOW_UNSIGNED_MANIFEST=1')
   }
-  // The daemon follows the channel this control plane follows. Always said, trunk
-  // included: the channel also picks the installer host (testing./staging.),
-  // and run.sh re-fetches itself from the host its channel names when it
-  // re-runs under sudo, so leaving it out would send a testing install back
-  // to the release installer.
-  if (opts.updateChannel) {
+  // The daemon follows the channel this control plane follows. Said for every
+  // channel but release, trunk included: the channel also picks the installer
+  // host (testing./staging.), and run.sh re-fetches itself from the host its
+  // channel names when it re-runs under sudo, so leaving it out would send a
+  // testing install back to the release installer. Release is what run.sh
+  // assumes when told nothing, so production commands stay short. A dev overlay
+  // (dlBase) makes run.sh default to trunk, so it keeps saying release.
+  if (opts.updateChannel && (opts.updateChannel !== 'release' || opts.dlBase)) {
     envParts.push(`TURBOPANEL_UPDATE_CHANNEL=${opts.updateChannel}`)
   }
   return `${curl} ${opts.curlUrl} | ${envParts.join(' ')} sh`

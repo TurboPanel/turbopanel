@@ -1,12 +1,17 @@
-import { asc, eq, inArray } from 'drizzle-orm'
+import { eq } from 'drizzle-orm'
 import type { Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
-import { assertCanOr403, listVisible } from '../authz/index.ts'
+import { assertCanOr403, listVisibleVersions } from '../authz/index.ts'
+import { cachedWorkspacesList } from '../../query-cache/read-models/hierarchy-reads.ts'
 import { getDb } from '../../db/connection.ts'
 import { workspace } from '../../db/schema.ts'
-import { applyStorageRetentionOnParentDelete } from '../../features/storage/storage-records.ts'
+import {
+  applyStorageRetentionOnParentDelete,
+  listStorageIdsDeletedWith,
+} from '../../features/storage/storage-records.ts'
+import { inUseBody, listUsesOfAssets } from '../../features/folders/shares.ts'
 import { WORKSPACE_KIND_USER } from '../../db/workspace-kind.ts'
 import {
   assertCanCreateOr403,
@@ -15,18 +20,12 @@ import {
   getOrgId,
   parseJsonBody,
 } from '../shared.ts'
-import {
-  hierarchyDeleteHasChildrenResponse,
-  runHierarchyDelete,
-} from '../hierarchy-delete.ts'
+import { respondAfterHierarchyDelete } from '../hierarchy-delete.ts'
 import {
   isWorkspaceDisplayNameTaken,
   WORKSPACE_NAME_IN_USE_ERROR,
 } from '../display-name-uniqueness.ts'
-import {
-  parseWorkspaceCreateNames,
-  parseWorkspacePatchNames,
-} from './routes-helpers.ts'
+import { parseWorkspaceCreateNames, parseWorkspacePatchNames } from './routes-helpers.ts'
 
 export function registerWorkspaceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
   if (!opts.secrets) {
@@ -48,31 +47,19 @@ export function registerWorkspaceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpt
     if (orgResult instanceof Response) return orgResult
     const organizationId = orgResult
 
-    const visibleIds = await listVisible(db, {
+    // Who may see which workspace is decided here, on the primary connection;
+    // the visible ids (with when each last changed) go into the cached read.
+    const visible = await listVisibleVersions(db, {
       kind: 'workspace',
       userId: session.userId,
       organizationId,
     })
 
-    if (visibleIds.length === 0) {
+    if (visible.length === 0) {
       return c.json({ workspaces: [] })
     }
 
-    const rows = await db
-      .select({
-        id: workspace.id,
-        name: workspace.name,
-        description: workspace.description,
-        kind: workspace.kind,
-        organizationId: workspace.organizationId,
-        createdAt: workspace.createdAt,
-        updatedAt: workspace.updatedAt,
-      })
-      .from(workspace)
-      .where(inArray(workspace.id, visibleIds))
-      // Secondary `id` break ties when same-transaction inserts share `created_at`
-      // (defaultNow() = transaction time) so System precedes Default Workspace.
-      .orderBy(asc(workspace.createdAt), asc(workspace.id))
+    const rows = await cachedWorkspacesList(c, { organizationId, visible })
 
     return c.json({ workspaces: rows })
   })
@@ -194,20 +181,12 @@ export function registerWorkspaceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpt
 
     if (
       patchFields.name !== undefined &&
-      (await isWorkspaceDisplayNameTaken(
-        db,
-        organizationId,
-        patchFields.name,
-        id,
-      ))
+      (await isWorkspaceDisplayNameTaken(db, organizationId, patchFields.name, id))
     ) {
       return c.json({ error: WORKSPACE_NAME_IN_USE_ERROR }, 409)
     }
 
-    await db
-      .update(workspace)
-      .set(patchFields)
-      .where(eq(workspace.id, id))
+    await db.update(workspace).set(patchFields).where(eq(workspace.id, id))
 
     return c.json({ ok: true as const })
   })
@@ -241,14 +220,14 @@ export function registerWorkspaceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpt
     const immutable = await assertNotSystemOwnedOr403(c, 'workspace', id)
     if (immutable) return immutable
 
-    const result = await runHierarchyDelete(db, async (tx) => {
+    // A shared volume of the workspace cannot go while an environment elsewhere uses it.
+    const storageIds = await listStorageIdsDeletedWith(db, { workspaceIds: [id] })
+    const uses = await listUsesOfAssets(db, { storageIds })
+    if (uses.length > 0) return c.json(inUseBody(uses), 409)
+
+    return respondAfterHierarchyDelete(c, db, async (tx) => {
       await applyStorageRetentionOnParentDelete(tx, { workspaceIds: [id] })
       await tx.delete(workspace).where(eq(workspace.id, id))
     })
-    if (result === 'has_children') {
-      return hierarchyDeleteHasChildrenResponse(c)
-    }
-
-    return c.json({ ok: true as const })
   })
 }

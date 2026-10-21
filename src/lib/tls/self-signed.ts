@@ -2,15 +2,28 @@
  * Mint short-lived self-signed RSA leaves and organization CA material for the
  * org TLS library. Workers + Deno safe (Web Crypto only).
  *
+ * New Organization CAs use an ECDSA P-384 key; CAs minted before that keep
+ * their RSA key until rotated, so leaf issuance and signature checks follow
+ * whichever key the issuing CA carries.
+ *
  * This module must never read or write the **Platform CA** files under
  * `<stateDir>/tls/` (see `src/lib/tls/AGENTS.md`). Org TLS library material is
  * scoped to hosting/managed-DB leaves and cannot affect daemon trust.
  */
 
-import { children, content, expectTag, readNode, type Asn1Node } from './asn1.ts'
+import {
+  children,
+  content,
+  expectTag,
+  readInteger,
+  readNode,
+  readOid,
+  type Asn1Node,
+} from './asn1.ts'
 import { decodeFirstCertificate, decodePrivateKeyToPkcs8, encodePemBlock } from './pem.ts'
 import { parseCertificatePem } from './parse.ts'
 import type { ParsedCertificate } from './types.ts'
+import { ipToBigInt, parseIpVersion } from '../ip-address.ts'
 
 function concat(...parts: Uint8Array[]): Uint8Array {
   let total = 0
@@ -59,14 +72,20 @@ function utf8(value: string): Uint8Array {
   return concat(Uint8Array.of(0x0c), encLen(encoded.length), encoded)
 }
 
-function utctime(date: Date): Uint8Array {
+/**
+ * A certificate validity time. RFC 5280 4.1.2.5: UTCTime (two-digit year) for
+ * 1950 through 2049, GeneralizedTime (four-digit year) for every other year.
+ */
+export function encodeValidityTime(date: Date): Uint8Array {
   const pad = (n: number) => String(n).padStart(2, '0')
-  const yy = pad(date.getUTCFullYear() % 100)
-  const text =
-    `${yy}${pad(date.getUTCMonth() + 1)}${pad(date.getUTCDate())}` +
+  const year = date.getUTCFullYear()
+  const rest =
+    `${pad(date.getUTCMonth() + 1)}${pad(date.getUTCDate())}` +
     `${pad(date.getUTCHours())}${pad(date.getUTCMinutes())}${pad(date.getUTCSeconds())}Z`
+  const useUtcTime = year >= 1950 && year < 2050
+  const text = useUtcTime ? `${pad(year % 100)}${rest}` : `${String(year).padStart(4, '0')}${rest}`
   const encoded = new TextEncoder().encode(text)
-  return concat(Uint8Array.of(0x17), encLen(encoded.length), encoded)
+  return concat(Uint8Array.of(useUtcTime ? 0x17 : 0x18), encLen(encoded.length), encoded)
 }
 
 function context(tag: number, contentBytes: Uint8Array): Uint8Array {
@@ -97,6 +116,10 @@ export const ORGANIZATION_CA_ORG_NAME = 'TurboPanel'
 export const ORGANIZATION_CA_ORG_UNIT = 'Organization CA'
 
 const OID_SHA256_RSA = Uint8Array.of(0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0b)
+/** 1.2.840.10045.4.3.2 ecdsa-with-SHA256 */
+const OID_ECDSA_SHA256 = Uint8Array.of(0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02)
+/** 1.2.840.10045.4.3.3 ecdsa-with-SHA384 */
+const OID_ECDSA_SHA384 = Uint8Array.of(0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x03)
 const OID_SAN = Uint8Array.of(0x55, 0x1d, 0x11)
 /** 2.5.29.19 basicConstraints */
 const OID_BASIC_CONSTRAINTS = Uint8Array.of(0x55, 0x1d, 0x13)
@@ -142,18 +165,123 @@ function algorithmIdentifier(oidBytes: Uint8Array): Uint8Array {
   return seq(concat(oid(oidBytes), Uint8Array.of(0x05, 0x00)))
 }
 
+/**
+ * How a certificate is signed with a given issuer key. RSA signs
+ * sha256WithRSAEncryption (AlgorithmIdentifier parameters NULL); ECDSA signs
+ * with the hash that matches the curve and, per RFC 5758, omits the
+ * parameters entirely.
+ */
+type SignatureScheme = {
+  /** Dotted signature algorithm OID. */
+  signatureOid: string
+  /** AlgorithmIdentifier DER for the TBS `signature` and outer `signatureAlgorithm`. */
+  algorithmIdentifier: Uint8Array
+  importParams: RsaHashedImportParams | EcKeyImportParams
+  signParams: AlgorithmIdentifier | EcdsaParams
+  /** ECDSA only: bytes per r / s half of the raw Web Crypto signature. */
+  ecCoordinateBytes?: number
+}
+
+const RSA_SHA256: SignatureScheme = {
+  signatureOid: '1.2.840.113549.1.1.11',
+  algorithmIdentifier: algorithmIdentifier(OID_SHA256_RSA),
+  importParams: { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' },
+  signParams: { name: 'RSASSA-PKCS1-v1_5' },
+}
+
+const ECDSA_P256_SHA256: SignatureScheme = {
+  signatureOid: '1.2.840.10045.4.3.2',
+  algorithmIdentifier: seq(oid(OID_ECDSA_SHA256)),
+  importParams: { name: 'ECDSA', namedCurve: 'P-256' },
+  signParams: { name: 'ECDSA', hash: 'SHA-256' },
+  ecCoordinateBytes: 32,
+}
+
+const ECDSA_P384_SHA384: SignatureScheme = {
+  signatureOid: '1.2.840.10045.4.3.3',
+  algorithmIdentifier: seq(oid(OID_ECDSA_SHA384)),
+  importParams: { name: 'ECDSA', namedCurve: 'P-384' },
+  signParams: { name: 'ECDSA', hash: 'SHA-384' },
+  ecCoordinateBytes: 48,
+}
+
+const OID_RSA_ENCRYPTION = '1.2.840.113549.1.1.1'
+const OID_EC_PUBLIC_KEY = '1.2.840.10045.2.1'
+/** namedCurve OID → scheme: prime256v1 (P-256) and secp384r1 (P-384). */
+const EC_CURVE_SCHEMES: Readonly<Record<string, SignatureScheme>> = {
+  '1.2.840.10045.3.1.7': ECDSA_P256_SHA256,
+  '1.3.132.0.34': ECDSA_P384_SHA384,
+}
+
+/** The scheme an issuer whose SubjectPublicKeyInfo is `spkiDer` signs with. */
+function signatureSchemeForSpki(spkiDer: Uint8Array): SignatureScheme {
+  const spki = readNode(spkiDer, 0)
+  expectTag(spki, 0x30, 'SubjectPublicKeyInfo')
+  const algorithm = children(spki)[0]
+  const [keyOid, params] = algorithm ? children(algorithm) : []
+  const keyAlgorithm = keyOid ? readOid(keyOid) : ''
+  if (keyAlgorithm === OID_RSA_ENCRYPTION) return RSA_SHA256
+  const scheme =
+    keyAlgorithm === OID_EC_PUBLIC_KEY && params?.tag === 0x06
+      ? EC_CURVE_SCHEMES[readOid(params)]
+      : undefined
+  if (!scheme) {
+    throw new TypeError('unsupported issuer key: expected RSA, P-256 or P-384')
+  }
+  return scheme
+}
+
+function stripLeadingZeros(bytes: Uint8Array): Uint8Array {
+  let start = 0
+  while (start < bytes.length - 1 && bytes[start] === 0) start += 1
+  return bytes.subarray(start)
+}
+
+/**
+ * Web Crypto ECDSA signature (`r || s`, fixed width) → X.509 / RFC 3279
+ * `Ecdsa-Sig-Value ::= SEQUENCE { r INTEGER, s INTEGER }`, minimally encoded
+ * (OpenSSL re-encodes and rejects a non-minimal signature).
+ */
+export function ecdsaRawToDer(raw: Uint8Array): Uint8Array {
+  const half = raw.length / 2
+  return seq(
+    concat(
+      integer(stripLeadingZeros(raw.subarray(0, half))),
+      integer(stripLeadingZeros(raw.subarray(half)))
+    )
+  )
+}
+
+/** Inverse of {@link ecdsaRawToDer}; `null` when the DER does not fit the curve. */
+export function ecdsaDerToRaw(der: Uint8Array, coordinateBytes: number): Uint8Array | null {
+  try {
+    const sigValue = readNode(der, 0)
+    expectTag(sigValue, 0x30, 'Ecdsa-Sig-Value')
+    const parts = children(sigValue)
+    if (parts.length !== 2 || sigValue.end !== der.length) return null
+    const raw = new Uint8Array(coordinateBytes * 2)
+    for (const [index, part] of parts.entries()) {
+      const value = readInteger(part)
+      if (value.length > coordinateBytes) return null
+      raw.set(value, coordinateBytes * (index + 1) - value.length)
+    }
+    return raw
+  } catch {
+    return null
+  }
+}
+
+/** iPAddress SAN octets: 4 for IPv4, 16 for IPv6 (RFC 5280 4.2.1.6). */
 function encodeIpAddress(address: string): Uint8Array | null {
-  const trimmed = address.trim()
-  // IPv4 only — managed private listeners are IPv4 literals today.
-  const v4 = trimmed.split('.')
-  if (v4.length !== 4) return null
-  const bytes = new Uint8Array(4)
-  for (let i = 0; i < 4; i += 1) {
-    const part = v4[i]!
-    if (!/^\d{1,3}$/.test(part)) return null
-    const n = Number(part)
-    if (!Number.isInteger(n) || n < 0 || n > 255) return null
-    bytes[i] = n
+  const trimmed = address.trim().replace(/^\[(.*)\]$/, '$1')
+  const version = parseIpVersion(trimmed)
+  const value = version === null ? null : ipToBigInt(trimmed)
+  if (version === null || value === null) return null
+  const bytes = new Uint8Array(version === 4 ? 4 : 16)
+  let rest = value
+  for (let i = bytes.length - 1; i >= 0; i -= 1) {
+    bytes[i] = Number(rest & 0xffn)
+    rest >>= 8n
   }
   return bytes
 }
@@ -311,6 +439,20 @@ function asBufferSource(bytes: Uint8Array): Uint8Array<ArrayBuffer> {
   return new Uint8Array(bytes)
 }
 
+async function exportKeyPair(
+  keyPair: CryptoKeyPair
+): Promise<{ spki: Uint8Array; pkcs8: Uint8Array }> {
+  return {
+    spki: new Uint8Array(await crypto.subtle.exportKey('spki', keyPair.publicKey)),
+    pkcs8: new Uint8Array(await crypto.subtle.exportKey('pkcs8', keyPair.privateKey)),
+  }
+}
+
+/** Organization CA key: ECDSA P-384 (certificates it signs carry ecdsa-with-SHA384). */
+function generateOrganizationCaKeyPair(): Promise<CryptoKeyPair> {
+  return crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-384' }, true, ['sign', 'verify'])
+}
+
 function generateRsaKeyPair(): Promise<CryptoKeyPair> {
   return crypto.subtle.generateKey(
     {
@@ -345,18 +487,28 @@ function validityWindow(validDays: number): { notBefore: Date; notAfter: Date } 
   }
 }
 
+/** Calendar-year validity: `notAfter` is the same UTC date and time, `years` later. */
+function validityWindowYears(years: number): { notBefore: Date; notAfter: Date } {
+  const now = new Date()
+  const notAfter = new Date(now)
+  notAfter.setUTCFullYear(now.getUTCFullYear() + years)
+  return { notBefore: new Date(now.getTime() - 60_000), notAfter }
+}
+
 function signBitString(signature: Uint8Array): Uint8Array {
   return concat(Uint8Array.of(0x03), encLen(signature.length + 1), Uint8Array.of(0x00), signature)
 }
 
 async function assembleCertificate(
   tbs: Uint8Array,
-  signingKey: CryptoKey
+  signingKey: CryptoKey,
+  scheme: SignatureScheme
 ): Promise<{ certificatePem: string; certDer: Uint8Array }> {
-  const signature = new Uint8Array(
-    await crypto.subtle.sign({ name: 'RSASSA-PKCS1-v1_5' }, signingKey, new Uint8Array(tbs))
+  const raw = new Uint8Array(
+    await crypto.subtle.sign(scheme.signParams, signingKey, asBufferSource(tbs))
   )
-  const certDer = seq(concat(tbs, algorithmIdentifier(OID_SHA256_RSA), signBitString(signature)))
+  const signature = scheme.ecCoordinateBytes === undefined ? raw : ecdsaRawToDer(raw)
+  const certDer = seq(concat(tbs, scheme.algorithmIdentifier, signBitString(signature)))
   return {
     certificatePem: encodePemBlock('CERTIFICATE', certDer),
     certDer,
@@ -493,7 +645,9 @@ export function readKeyUsageBits(certificatePem: string): number[] | null {
 }
 
 /**
- * Verify that leaf cert was signed by the CA public key (RSASSA-PKCS1-v1_5).
+ * Verify that leaf cert was signed by the CA public key: sha256WithRSAEncryption
+ * for an RSA CA, ecdsa-with-SHA256 / ecdsa-with-SHA384 for a P-256 / P-384 CA.
+ * Any other pairing reports `false`.
  */
 export async function verifyCertificateSignature(
   leafCertificatePem: string,
@@ -505,23 +659,32 @@ export async function verifyCertificateSignature(
   const certChildren = children(cert)
   if (certChildren.length < 3) return false
   const tbs = certChildren[0]!
+  const sigAlgNode = certChildren[1]!
   const sigNode = certChildren[2]!
   expectTag(sigNode, 0x03, 'signatureValue')
   const sigContent = content(sigNode)
   // First byte is unused-bits count.
-  const signature = sigContent.subarray(1)
+  const encodedSignature = sigContent.subarray(1)
   const tbsDer = leafDer.subarray(tbs.contentOffset - tbs.headerLength, tbs.end)
   const caSpki = extractSpkiDer(caCertificatePem)
   try {
+    const scheme = signatureSchemeForSpki(caSpki)
+    const sigAlgOid = children(sigAlgNode)[0]
+    if (!sigAlgOid || readOid(sigAlgOid) !== scheme.signatureOid) return false
+    const signature =
+      scheme.ecCoordinateBytes === undefined
+        ? encodedSignature
+        : ecdsaDerToRaw(encodedSignature, scheme.ecCoordinateBytes)
+    if (!signature) return false
     const publicKey = await crypto.subtle.importKey(
       'spki',
       asBufferSource(caSpki),
-      { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' },
+      scheme.importParams,
       false,
       ['verify']
     )
     return await crypto.subtle.verify(
-      { name: 'RSASSA-PKCS1-v1_5' },
+      scheme.signParams,
       publicKey,
       asBufferSource(signature),
       asBufferSource(tbsDer)
@@ -531,15 +694,20 @@ export async function verifyCertificateSignature(
   }
 }
 
-function importRsaPrivateKeyFromPem(privateKeyPem: string): Promise<CryptoKey> {
+/** Import an Organization CA private key for the scheme its certificate names. */
+function importIssuerPrivateKey(
+  privateKeyPem: string,
+  scheme: SignatureScheme
+): Promise<CryptoKey> {
   const decoded = decodePrivateKeyToPkcs8(privateKeyPem)
-  if (decoded.algorithm !== 'rsa') {
-    throw new TypeError('organization CA private key must be RSA')
+  const expected = scheme.ecCoordinateBytes === undefined ? 'rsa' : 'ec'
+  if (decoded.algorithm !== expected) {
+    throw new TypeError(`organization CA private key must be ${expected.toUpperCase()}`)
   }
   return crypto.subtle.importKey(
     'pkcs8',
     asBufferSource(decoded.pkcs8),
-    { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' },
+    scheme.importParams,
     false,
     ['sign']
   )
@@ -564,8 +732,7 @@ export async function mintSelfSignedCertificate(
   }
 
   const keyPair = await generateRsaKeyPair()
-  const spki = new Uint8Array(await crypto.subtle.exportKey('spki', keyPair.publicKey))
-  const pkcs8 = new Uint8Array(await crypto.subtle.exportKey('pkcs8', keyPair.privateKey))
+  const { spki, pkcs8 } = await exportKeyPair(keyPair)
 
   const validDays = opts?.validDays ?? 90
   const { notBefore, notAfter } = validityWindow(validDays)
@@ -573,27 +740,32 @@ export async function mintSelfSignedCertificate(
 
   const version = context(0, integer(Uint8Array.of(0x02)))
   const serialInt = integer(randomSerial())
-  const sigAlg = algorithmIdentifier(OID_SHA256_RSA)
+  const sigAlg = RSA_SHA256.algorithmIdentifier
   const issuer = seq(rdnCn(cn))
-  const validity = seq(concat(utctime(notBefore), utctime(notAfter)))
+  const validity = seq(concat(encodeValidityTime(notBefore), encodeValidityTime(notAfter)))
   const subject = seq(rdnCn(cn))
   const extensions = context(3, seq(buildSanExtension({ dnsNames: names })))
 
   const tbs = seq(concat(version, serialInt, sigAlg, issuer, validity, subject, spki, extensions))
 
-  const { certificatePem } = await assembleCertificate(tbs, keyPair.privateKey)
+  const { certificatePem } = await assembleCertificate(tbs, keyPair.privateKey, RSA_SHA256)
   const privateKeyPem = encodePemBlock('PRIVATE KEY', pkcs8)
   const parsed = await parseCertificatePem(certificatePem)
 
   return { certificatePem, privateKeyPem, parsed }
 }
 
+/** Organization CA lifetime in calendar years when `validDays` is not given. */
+export const ORGANIZATION_CA_VALID_YEARS = 15
+
 /**
- * Mint a self-signed organization CA (RSA-2048, CA:TRUE, 3650-day default).
+ * Mint a self-signed organization CA (ECDSA P-384, CA:TRUE pathlen:0,
+ * {@link ORGANIZATION_CA_VALID_YEARS}-year default). Used for the first
+ * Organization CA and for every rotation.
  *
  * Subject is unique per organization: `O=TurboPanel, OU=Organization CA,
  * CN={organizationId}`. Already-issued Organization CAs keep their original
- * subject until rotated.
+ * subject, key type (RSA 2048 before P-384) and lifetime until rotated.
  */
 export async function mintOrganizationCa(opts: {
   organizationId: string
@@ -604,18 +776,19 @@ export async function mintOrganizationCa(opts: {
     throw new TypeError('organizationId is required')
   }
 
-  const keyPair = await generateRsaKeyPair()
-  const spki = new Uint8Array(await crypto.subtle.exportKey('spki', keyPair.publicKey))
-  const pkcs8 = new Uint8Array(await crypto.subtle.exportKey('pkcs8', keyPair.privateKey))
+  const keyPair = await generateOrganizationCaKeyPair()
+  const { spki, pkcs8 } = await exportKeyPair(keyPair)
 
-  const validDays = opts.validDays ?? 3650
-  const { notBefore, notAfter } = validityWindow(validDays)
+  const { notBefore, notAfter } =
+    opts.validDays === undefined
+      ? validityWindowYears(ORGANIZATION_CA_VALID_YEARS)
+      : validityWindow(opts.validDays)
 
   const version = context(0, integer(Uint8Array.of(0x02)))
   const serialInt = integer(randomSerial())
-  const sigAlg = algorithmIdentifier(OID_SHA256_RSA)
+  const sigAlg = ECDSA_P384_SHA384.algorithmIdentifier
   const nameDer = organizationCaNameDer(organizationId)
-  const validity = seq(concat(utctime(notBefore), utctime(notAfter)))
+  const validity = seq(concat(encodeValidityTime(notBefore), encodeValidityTime(notAfter)))
   const extensions = context(
     3,
     seq(
@@ -631,7 +804,7 @@ export async function mintOrganizationCa(opts: {
 
   const tbs = seq(concat(version, serialInt, sigAlg, nameDer, validity, nameDer, spki, extensions))
 
-  const { certificatePem } = await assembleCertificate(tbs, keyPair.privateKey)
+  const { certificatePem } = await assembleCertificate(tbs, keyPair.privateKey, ECDSA_P384_SHA384)
   const privateKeyPem = encodePemBlock('PRIVATE KEY', pkcs8)
   const parsed = await parseCertificatePem(certificatePem)
 
@@ -668,9 +841,10 @@ export async function issueLeafCertificate(
   const ipAddresses = uniqueIpAddresses(opts?.ipAddresses ?? [])
 
   const keyPair = await generateRsaKeyPair()
-  const spki = new Uint8Array(await crypto.subtle.exportKey('spki', keyPair.publicKey))
-  const pkcs8 = new Uint8Array(await crypto.subtle.exportKey('pkcs8', keyPair.privateKey))
-  const caSigningKey = await importRsaPrivateKeyFromPem(caPrivateKeyPem)
+  const { spki, pkcs8 } = await exportKeyPair(keyPair)
+  // The leaf key stays RSA; only its signature follows the CA key.
+  const scheme = signatureSchemeForSpki(extractSpkiDer(caCertPem))
+  const caSigningKey = await importIssuerPrivateKey(caPrivateKeyPem, scheme)
   const issuerNameDer = extractSubjectNameDer(caCertPem)
 
   const validDays = opts?.validDays ?? ORGANIZATION_CA_LEAF_VALID_DAYS
@@ -684,8 +858,8 @@ export async function issueLeafCertificate(
 
   const version = context(0, integer(Uint8Array.of(0x02)))
   const serialInt = integer(randomSerial())
-  const sigAlg = algorithmIdentifier(OID_SHA256_RSA)
-  const validity = seq(concat(utctime(notBefore), utctime(notAfter)))
+  const sigAlg = scheme.algorithmIdentifier
+  const validity = seq(concat(encodeValidityTime(notBefore), encodeValidityTime(notAfter)))
   const subject = seq(rdnCn(cn))
   const extensions = context(
     3,
@@ -705,7 +879,7 @@ export async function issueLeafCertificate(
     concat(version, serialInt, sigAlg, issuerNameDer, validity, subject, spki, extensions)
   )
 
-  const { certificatePem } = await assembleCertificate(tbs, caSigningKey)
+  const { certificatePem } = await assembleCertificate(tbs, caSigningKey, scheme)
   const privateKeyPem = encodePemBlock('PRIVATE KEY', pkcs8)
   const parsed = await parseCertificatePem(certificatePem)
 

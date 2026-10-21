@@ -39,18 +39,14 @@
  *
  *   node scripts/check-migration-freeze.mjs               # verify (CI, tests)
  *   node scripts/check-migration-freeze.mjs --update      # append new entries
- *   node scripts/check-migration-freeze.mjs --rebaseline  # rewrite everything
  *
  * `--update` is the everyday path after `pnpm generate`: it appends the new
  * journal entries and refuses to change or drop an existing one — a changed
  * hash means an already-shipped file was edited, and the fix is a new forward
- * migration, not a manifest edit. `--rebaseline` is the one carve-out, for
- * the pre-tag fold that regenerates `0000_init.sql` (see `src/db/AGENTS.md`,
- * "The baseline has been regenerated…"): it rewrites the manifest from the
- * journal, bumps `generation`, and is expected to be run in the fold commit
- * itself. Once `frozen` is true (set by that fold commit), existing entries
- * never change again: the CI wiring that lands with the fold diffs the
- * manifest against trunk and accepts appends only.
+ * migration, not a manifest edit. The manifest is frozen: existing entries
+ * never change again, and the CI wiring diffs the manifest against trunk and
+ * accepts appends only. Regenerating the baseline is not an option (see
+ * `src/db/AGENTS.md`).
  */
 import crypto from 'node:crypto'
 import fs from 'node:fs'
@@ -148,7 +144,7 @@ export function readMigrationTree(migrationsDir) {
 export function compareManifest(manifest, entries) {
   const problems = []
   if (!manifest || manifest.version !== MANIFEST_VERSION || !Array.isArray(manifest.entries)) {
-    return [`manifest is not a version ${MANIFEST_VERSION} manifest — run --rebaseline`]
+    return [`manifest is not a version ${MANIFEST_VERSION} manifest`]
   }
   const recorded = manifest.entries
   const shared = Math.min(recorded.length, entries.length)
@@ -196,11 +192,7 @@ export function main(argv, { root } = {}) {
   const repoRoot = root ?? path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
   const migrationsDir = path.join(repoRoot, 'migrations')
   const manifestPath = path.join(migrationsDir, 'manifest.json')
-  const mode = argv.includes('--rebaseline')
-    ? 'rebaseline'
-    : argv.includes('--update')
-      ? 'update'
-      : 'check'
+  const mode = argv.includes('--update') ? 'update' : 'check'
 
   const { entries, problems } = readMigrationTree(migrationsDir)
   if (problems.length > 0) {
@@ -208,16 +200,6 @@ export function main(argv, { root } = {}) {
     return 1
   }
   const previous = fs.existsSync(manifestPath) ? readJson(manifestPath) : null
-
-  if (mode === 'rebaseline') {
-    const manifest = buildManifest(entries, previous)
-    manifest.generation = (previous?.generation ?? 0) + 1
-    writeManifest(manifestPath, manifest)
-    console.log(
-      `migration-freeze: REBASELINED manifest at generation ${manifest.generation} with ${entries.length} entr${entries.length === 1 ? 'y' : 'ies'} — only the pre-tag fold may do this`
-    )
-    return 0
-  }
 
   if (mode === 'update') {
     const recorded = previous?.entries ?? []

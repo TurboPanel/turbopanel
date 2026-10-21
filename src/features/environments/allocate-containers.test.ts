@@ -155,7 +155,7 @@ async function withAllocationFixtures(
   const [insertedEnvironment] = await db
     .insert(environment)
     .values({
-      name: 'Allocate Containers Env',
+      name: 'allocate-containers-env',
       projectId,
     })
     .returning({ id: environment.id })

@@ -212,7 +212,7 @@ async function withBindingReachabilityFixture(
   const [insertedManagedEnv] = await db
     .insert(environment)
     .values({
-      name: 'Production',
+      name: 'production',
       projectId,
       serverId: clusterServerId,
     })
@@ -259,7 +259,7 @@ async function withBindingReachabilityFixture(
     const [envRow] = await db
       .insert(environment)
       .values({
-        name: `Consumer ${consumerServiceOrdinal}`,
+        name: `consumer-${consumerServiceOrdinal}`,
         projectId: consumerProjectId,
         serverId,
       })

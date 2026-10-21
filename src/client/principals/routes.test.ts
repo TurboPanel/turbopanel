@@ -12,11 +12,15 @@ import {
   tenancy,
   environment,
   grant,
+  login,
+  managed,
   organization,
   principal,
   project,
   server,
   service,
+  team,
+  teammate,
   user,
   workspace,
 } from '../../db/schema.ts'
@@ -166,7 +170,7 @@ async function withPrincipalFixtures(
     .insert(environment)
     .values({
       projectId,
-      name: 'Production',
+      name: 'production',
       serverId,
       createdAt: now,
       updatedAt: now,
@@ -242,7 +246,6 @@ test('POST /projects/:projectId/principals persists default shell when options o
     const [row] = await db
       .select({
         options: principal.options,
-        provider: principal.provider,
         metadata: principal.metadata,
         username: principal.username,
         appliedUsername: principal.appliedUsername,
@@ -251,7 +254,6 @@ test('POST /projects/:projectId/principals persists default shell when options o
       .where(eq(principal.id, body.id))
       .limit(1)
     assertEquals(row?.options, { shell: DEFAULT_PRINCIPAL_SHELL, nameScheme: 'partial' })
-    assertEquals(row?.provider, 'server')
     assertEquals(row?.username, 'appuser')
     assertEquals(row?.appliedUsername, body.appliedUsername)
     // Home follows the applied login — that's the account on the host.
@@ -262,19 +264,31 @@ test('POST /projects/:projectId/principals persists default shell when options o
 test('POST /projects/:projectId/principals rejects reserved usernames', async () => {
   await withPrincipalFixtures(async ({ db, app, secrets, userId, organizationId, projectId }) => {
     const cookie = await sessionCookie(db, secrets, userId)
-    const res = await app.request(`/projects/${projectId}/principals`, {
-      method: 'POST',
-      headers: {
-        Cookie: cookie,
-        [ORG_ID_HEADER]: organizationId,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ username: 'www-data' }),
-    })
-
-    assertEquals(res.status, 400)
-    const body = (await res.json()) as { error: string }
-    assertEquals(body.error, 'username_reserved')
+    const headers = {
+      Cookie: cookie,
+      [ORG_ID_HEADER]: organizationId,
+      'Content-Type': 'application/json',
+    }
+    for (const username of [
+      'ftp',
+      'git',
+      'FTP',
+      ' git ',
+      'ubuntu',
+      'www',
+      'root',
+      'www-data',
+      'sudo',
+    ]) {
+      const res = await app.request(`/projects/${projectId}/principals`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ username }),
+      })
+      assertEquals(res.status, 400, username)
+      const body = (await res.json()) as { error: string }
+      assertEquals(body.error, 'username_reserved', username)
+    }
   })
 })
 
@@ -718,34 +732,78 @@ test('PATCH /projects/:projectId/principals/:id rejects invalid serviceIds', asy
 })
 
 test('DELETE /projects/:projectId/principals/:id removes principal', async () => {
-  await withPrincipalFixtures(async ({ db, app, secrets, userId, organizationId, projectId }) => {
-    const cookie = await sessionCookie(db, secrets, userId)
-    const headers = {
-      Cookie: cookie,
-      [ORG_ID_HEADER]: organizationId,
-      'Content-Type': 'application/json',
+  await withPrincipalFixtures(
+    async ({ db, app, secrets, userId, organizationId, projectId, serverId }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const headers = {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      }
+
+      const create = await app.request(`/projects/${projectId}/principals`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ username: 'deleteme' }),
+      })
+      const created = (await create.json()) as { id: string }
+
+      const del = await app.request(`/projects/${projectId}/principals/${created.id}`, {
+        method: 'DELETE',
+        headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
+      })
+      assertEquals(del.status, 200)
+      // The test app has no command queue, so the one server the project's
+      // environment is pinned to is reported as not reached rather than queued.
+      assertEquals(await del.json(), {
+        ok: true,
+        reconciled: { queuedServerIds: [], failedServerIds: [serverId] },
+      })
+
+      const rows = await db
+        .select({ id: principal.id })
+        .from(principal)
+        .where(eq(principal.id, created.id))
+      assertEquals(rows.length, 0)
     }
+  )
+})
 
-    const create = await app.request(`/projects/${projectId}/principals`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({ username: 'deleteme' }),
-    })
-    const created = (await create.json()) as { id: string }
+test('DELETE /projects/:projectId/principals/:id refuses while a service still runs as it', async () => {
+  await withPrincipalFixtures(
+    async ({ db, app, secrets, userId, organizationId, projectId, serviceId }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const headers = {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      }
 
-    const del = await app.request(`/projects/${projectId}/principals/${created.id}`, {
-      method: 'DELETE',
-      headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
-    })
-    assertEquals(del.status, 200)
-    assertEquals(await del.json(), { ok: true })
+      const create = await app.request(`/projects/${projectId}/principals`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ username: 'busy', serviceIds: [serviceId] }),
+      })
+      assertEquals(create.status, 200)
+      const created = (await create.json()) as { id: string }
 
-    const rows = await db
-      .select({ id: principal.id })
-      .from(principal)
-      .where(eq(principal.id, created.id))
-    assertEquals(rows.length, 0)
-  })
+      const del = await app.request(`/projects/${projectId}/principals/${created.id}`, {
+        method: 'DELETE',
+        headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
+      })
+      assertEquals(del.status, 409)
+      assertEquals(await del.json(), {
+        error: 'principal_in_use',
+        usedBy: { tenancies: 1, bindings: 0, storages: 0, secrets: 0, logins: 0, folders: 0 },
+      })
+
+      const rows = await db
+        .select({ id: principal.id })
+        .from(principal)
+        .where(eq(principal.id, created.id))
+      assertEquals(rows.length, 1)
+    }
+  )
 })
 
 test('DELETE /projects/:projectId/principals/:id returns 404 when principal belongs to another project', async () => {
@@ -1334,5 +1392,105 @@ test('principal-defaults: only an owner or manager may read or set them; other o
     await db.delete(organization).where(eq(organization.id, otherOrg!.id))
     await db.delete(user).where(eq(user.id, memberId))
     await db.delete(user).where(eq(user.id, outsiderId))
+  })
+})
+
+test('DELETE /projects/:projectId/principals/:id refuses while a database login still uses it', async () => {
+  await withPrincipalFixtures(
+    async ({ db, app, secrets, userId, organizationId, projectId, environmentId, serverId }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const create = await app.request(`/projects/${projectId}/principals`, {
+        method: 'POST',
+        headers: {
+          Cookie: cookie,
+          [ORG_ID_HEADER]: organizationId,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ username: 'dblogin' }),
+      })
+      assertEquals(create.status, 200)
+      const created = (await create.json()) as { id: string }
+      const [cluster] = await db
+        .insert(managed)
+        .values({ environmentId, serverId, name: 'DB login', engine: 'postgres', status: 'ready' })
+        .returning({ id: managed.id })
+      await db.insert(login).values({
+        managedId: cluster!.id,
+        principalId: created.id,
+        role: 'user',
+        username: 'dblogin',
+        appliedUsername: 'dblogin',
+      })
+
+      const del = await app.request(`/projects/${projectId}/principals/${created.id}`, {
+        method: 'DELETE',
+        headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
+      })
+      assertEquals(del.status, 409)
+      assertEquals(await del.json(), {
+        error: 'principal_in_use',
+        usedBy: { tenancies: 0, bindings: 0, storages: 0, secrets: 0, logins: 1, folders: 0 },
+      })
+      // The login and the principal are both still there.
+      assertEquals(
+        (await db.select({ id: login.id }).from(login).where(eq(login.principalId, created.id)))
+          .length,
+        1
+      )
+      assertEquals(
+        (await db.select({ id: principal.id }).from(principal).where(eq(principal.id, created.id)))
+          .length,
+        1
+      )
+    }
+  )
+})
+
+test('DELETE /projects/:projectId/principals/:id answers 403 to a member without manage access', async () => {
+  await withPrincipalFixtures(async ({ db, app, secrets, userId, organizationId, projectId }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const create = await app.request(`/projects/${projectId}/principals`, {
+      method: 'POST',
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ username: 'guarded' }),
+    })
+    const created = (await create.json()) as { id: string }
+
+    const [member] = await db
+      .insert(user)
+      .values({
+        email: `principal-member-${crypto.randomUUID().slice(0, 8)}@example.com`,
+        isEmailVerified: true,
+        role: 'user',
+      })
+      .returning({ id: user.id })
+    const [crew] = await db
+      .insert(team)
+      .values({ organizationId, name: 'Crew' })
+      .returning({ id: team.id })
+    await db.insert(teammate).values({ teamId: crew!.id, userId: member!.id })
+    try {
+      const del = await app.request(`/projects/${projectId}/principals/${created.id}`, {
+        method: 'DELETE',
+        headers: {
+          Cookie: await sessionCookie(db, secrets, member!.id),
+          [ORG_ID_HEADER]: organizationId,
+        },
+      })
+      assertEquals(del.status, 403)
+      assertEquals(
+        (await db.select({ id: principal.id }).from(principal).where(eq(principal.id, created.id)))
+          .length,
+        1
+      )
+    } finally {
+      await db.delete(teammate).where(eq(teammate.userId, member!.id))
+      await db.delete(team).where(eq(team.id, crew!.id))
+      await db.delete(user).where(eq(user.id, member!.id))
+    }
   })
 })

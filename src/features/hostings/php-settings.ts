@@ -154,18 +154,17 @@ function renderBool(trimmed: string): string | undefined {
  * `error_reporting` is the one enum whose accepted words are labels rather
  * than values: they expand to the literal PHP constant expression.
  */
-function renderEnum(
-  key: string,
-  trimmed: string,
-  values: readonly string[],
-): string | undefined {
+function renderEnum(key: string, trimmed: string, values: readonly string[]): string | undefined {
   if (!values.includes(trimmed)) return undefined
   if (key !== 'error_reporting') return trimmed
   return ERROR_REPORTING_LEVELS[trimmed] ?? trimmed
 }
 
 function renderNameList(trimmed: string): string | undefined {
-  const names = trimmed.split(',').map((n) => n.trim()).filter((n) => n.length > 0)
+  const names = trimmed
+    .split(',')
+    .map((n) => n.trim())
+    .filter((n) => n.length > 0)
   if (names.length === 0 || names.length > MAX_NAME_LIST_ENTRIES) return undefined
   return names.every((n) => NAME_RE.test(n)) ? names.join(',') : undefined
 }
@@ -187,10 +186,7 @@ function directiveText(raw: unknown, maxLength: number): string | undefined {
  * Validate one directive. Returns the rendered value, or `undefined` when the
  * key is unknown or the value fails its spec — the caller drops it.
  */
-export function validatePhpSetting(
-  key: string,
-  raw: unknown,
-): string | undefined {
+export function validatePhpSetting(key: string, raw: unknown): string | undefined {
   const spec = PHP_SETTINGS[key]
   if (!spec) return undefined
   const trimmed = directiveText(raw, MAX_SETTING_LENGTH)
@@ -229,10 +225,7 @@ export const PHP_POOL_SETTINGS: Readonly<Record<string, PhpSettingSpec>> = {
   request_terminate_timeout: { kind: 'int', min: 0, max: 600 },
 }
 
-export function validatePhpPoolSetting(
-  key: string,
-  raw: unknown,
-): string | undefined {
+export function validatePhpPoolSetting(key: string, raw: unknown): string | undefined {
   const spec = PHP_POOL_SETTINGS[key]
   if (!spec) return undefined
   const value = typeof raw === 'number' ? String(raw) : raw
@@ -267,19 +260,23 @@ export function validatePhpPoolSetting(
  * operator can see, so that stays a non-blocking lint issue.
  */
 export function renderPhpForDeploy(
-  php: {
-    version?: string
-    extensions?: string[]
-    settings?: Record<string, string | number>
-    pool?: Record<string, string | number>
-  } | undefined,
-  allowedExtensions: readonly string[],
-): {
-  version?: string
-  settings?: Record<string, string>
-  pool?: Record<string, string>
-  extensions?: string[]
-} | undefined {
+  php:
+    | {
+        version?: string
+        extensions?: string[]
+        settings?: Record<string, string | number>
+        pool?: Record<string, string | number>
+      }
+    | undefined,
+  allowedExtensions: readonly string[]
+):
+  | {
+      version?: string
+      settings?: Record<string, string>
+      pool?: Record<string, string>
+      extensions?: string[]
+    }
+  | undefined {
   if (!php) return undefined
   const out: {
     version?: string

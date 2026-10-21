@@ -5,7 +5,7 @@
 import { assertEquals } from '@std/assert'
 import type { Db } from '../../db/connection.ts'
 import type { CommandQueue } from '../commands/queue.ts'
-import { type HaBindingLoaders, handleManagedHaEvent } from './ha-event.ts'
+import { type HaBindingLoaders, handleManagedHaEvent, reporterPrivateHosts } from './ha-event.ts'
 import {
   AUTOMATIC_FAILOVER_COOLDOWN_MESSAGE,
   AUTOMATIC_FAILOVER_NO_QUEUE_MESSAGE,
@@ -98,6 +98,7 @@ function fakeDb(resultSets: unknown[][], inserted?: unknown[], calls?: DbCalls):
 const ORG = 'org-1'
 const OTHER_ORG = 'org-2'
 const SERVER_B = '550e8400-e29b-41d4-a716-446655440001'
+const SERVER_C = '550e8400-e29b-41d4-a716-446655440002'
 const pgRow = { id: MANAGED_ID, engine: 'postgres', organizationId: ORG }
 const mysqlRow = { id: MANAGED_ID, engine: 'mysql', organizationId: ORG }
 const inOrg = [{ organizationId: ORG }]
@@ -108,6 +109,7 @@ function binding(overrides: Partial<HaBindingLoaders> & { advertises?: boolean }
   return {
     reporterBindsInstance: async () => overrides.advertises ?? false,
     primaryDial: async () => PRIMARY_DIAL,
+    reporterPrivateHosts: async () => [],
     ...overrides,
   } satisfies HaBindingLoaders
 }
@@ -131,6 +133,38 @@ function replicaMember(overrides: Record<string, unknown> = {}) {
     ...overrides,
   })
 }
+
+test('reporterPrivateHosts resolves the reporter address from each remote member', async () => {
+  const primary = member({ serverId: SERVER_B, privatePort: 45000 })
+  const routes: Array<{ fromServerId: string; purpose: string }> = []
+  const hosts = await reporterPrivateHosts(
+    {} as Db,
+    SERVER_B,
+    primary,
+    [
+      primary,
+      replicaMember({ serverId: SERVER_A }),
+      replicaMember({ id: 'mem-read', serverId: SERVER_C, replicaClass: 'read', ordinal: 3 }),
+    ],
+    async (_db, params) => {
+      routes.push({ fromServerId: params.fromServerId, purpose: params.purpose })
+      const endpoint =
+        params.fromServerId === SERVER_A
+          ? { address: '10.0.0.6', transport: 'datacenter' as const }
+          : {
+              kind: 'private_path_unavailable' as const,
+              fromServerId: params.fromServerId,
+              toServerId: SERVER_B,
+            }
+      return new Map([[SERVER_B, endpoint]])
+    }
+  )
+  assertEquals(hosts, ['10.0.0.6'])
+  assertEquals(routes, [
+    { fromServerId: SERVER_A, purpose: 'failover-replication' },
+    { fromServerId: SERVER_C, purpose: 'read-replication' },
+  ])
+})
 
 test('handleManagedHaEvent returns null when the managed row is gone', async () => {
   const result = await handleManagedHaEvent(
@@ -369,6 +403,60 @@ test('orchestrator event naming the current primary proceeds to failover', async
     { reporterServerId: SERVER_A, commandQueue: queue, binding: binding({ advertises: true }) }
   )
   assertEquals(result?.id, 'rec-bound')
+})
+
+test("orchestrator event naming the local primary's published private listener proceeds", async () => {
+  const blocked = recoveryRow({ state: 'blocked', id: 'rec-local-private' })
+  const result = await handleManagedHaEvent(
+    fakeDb(
+      [[mysqlRow], [member({ serverId: SERVER_B, privatePort: 45000 })], inOrg, [], [], []],
+      [blocked]
+    ),
+    { managedId: MANAGED_ID, instanceHost: '10.0.0.6', instancePort: 45000 },
+    {
+      reporterServerId: SERVER_B,
+      commandQueue: queue,
+      binding: binding({
+        advertises: true,
+        primaryDial: async () => ({ host: 'primary-b', port: 3306 }),
+        reporterPrivateHosts: async () => ['10.0.0.6'],
+      }),
+    }
+  )
+  assertEquals(result?.id, 'rec-local-private')
+  assertEquals(result?.metadata.stale, undefined)
+})
+
+test('stale remote primary with the same private port as the local primary is rejected', async () => {
+  const calls = { inserts: 0, reads: 0 }
+  const stale = recoveryRow({ state: 'blocked', id: 'rec-stale-port', metadata: { stale: true } })
+  const result = await handleManagedHaEvent(
+    fakeDb(
+      [
+        [mysqlRow],
+        [
+          member({ serverId: SERVER_B, privatePort: 45000 }),
+          replicaMember({ id: 'mem-old-primary', serverId: SERVER_A, privatePort: 45000 }),
+        ],
+        inOrg,
+      ],
+      [stale],
+      calls
+    ),
+    { managedId: MANAGED_ID, instanceHost: '10.0.0.5', instancePort: 45000 },
+    {
+      reporterServerId: SERVER_B,
+      commandQueue: queue,
+      binding: binding({
+        advertises: true,
+        primaryDial: async () => ({ host: 'primary-b', port: 3306 }),
+        reporterPrivateHosts: async () => ['10.0.0.6'],
+      }),
+    }
+  )
+  assertEquals(result?.id, 'rec-stale-port')
+  assertEquals(result?.metadata.stale, true)
+  assertEquals(calls, { inserts: 1, reads: 5 })
 })
 
 test('orchestrator event matching host case-insensitively still proceeds', async () => {

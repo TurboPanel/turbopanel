@@ -9,6 +9,8 @@
  * setting, then queues the ingress reconcile that publishes (or stops
  * publishing) the listener. A push that could not be queued answers 502: the
  * setting is saved, the host is not told yet, and it is retried automatically.
+ * Turning it on is refused (409 `external_access_weak_ssl`, naming the owner's
+ * databases) while a database the server fronts lets clients skip SSL.
  */
 import { and, eq } from 'drizzle-orm'
 import type { Context, Hono } from 'hono'
@@ -30,6 +32,10 @@ import {
   readManagedExternalAccess,
   saveManagedExternalAccess,
 } from '../../features/managed/external-access.ts'
+import {
+  checkExternalAccessForWeakSslModes,
+  withManagedTlsPolicyLock,
+} from '../../features/managed/external-access-tls.ts'
 
 /** The server, scoped to the caller's organization: another org's server is 404. */
 async function loadServer(c: Context<AppEnv>) {
@@ -37,7 +43,12 @@ async function loadServer(c: Context<AppEnv>) {
   if (scope instanceof Response) return scope
   const id = c.req.param('id') ?? ''
   const [row] = await scope.db
-    .select({ options: server.options, name: server.name, hostname: server.hostname })
+    .select({
+      options: server.options,
+      pendingAt: server.externalAccessPendingAt,
+      name: server.name,
+      hostname: server.hostname,
+    })
     .from(server)
     .where(and(eq(server.id, id), eq(server.organizationId, scope.organizationId)))
     .limit(1)
@@ -51,7 +62,7 @@ export function registerManagedExternalAccessRoutes(router: Hono<AppEnv>) {
   router.get('/servers/:id/managed-external-access', async (c) => {
     const loaded = await loadServer(c)
     if (loaded instanceof Response) return loaded
-    const setting = readManagedExternalAccess(loaded.row.options)
+    const setting = readManagedExternalAccess(loaded.row.options, loaded.row.pendingAt)
     return c.json({
       enabled: setting.enabled,
       pending: setting.pendingSince !== undefined,
@@ -74,7 +85,18 @@ export function registerManagedExternalAccessRoutes(router: Hono<AppEnv>) {
     const refusal = await preflightManagedApplyInfrastructure(c, loaded.db, { serverId: loaded.id })
     if (refusal) return prepareErrorResponse(c, refusal)
 
-    const pendingSince = await saveManagedExternalAccess(loaded.db, loaded.id, body.enabled)
+    // A published listener must never take a plaintext session: "yes" is
+    // checked and saved under the SSL policy lock, and refused while any
+    // database the server fronts lets clients skip SSL. "No" is never refused.
+    const saved = body.enabled
+      ? await withManagedTlsPolicyLock(loaded.db, async (tx) => {
+          const refusal = await checkExternalAccessForWeakSslModes(tx, loaded.id)
+          if (refusal) return { refusal }
+          return { pendingSince: await saveManagedExternalAccess(tx, loaded.id, true) }
+        })
+      : { pendingSince: await saveManagedExternalAccess(loaded.db, loaded.id, false) }
+    if ('refusal' in saved) return c.json(saved.refusal, 409)
+    const { pendingSince } = saved
     const outcome = await enqueueManagedExternalAccessReconcile(c, loaded.db, commandQueue, {
       serverId: loaded.id,
       userId: loaded.session.userId,

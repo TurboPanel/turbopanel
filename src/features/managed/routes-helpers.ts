@@ -6,33 +6,55 @@ import type { ManagedSettings } from './settings.ts'
 import {
   defaultManagedRelease,
   describeManagedImage,
+  effectiveManagedImage,
   isManagedVariantSwapSafe,
   isSameManagedSeries,
   type ManagedReleaseGate,
   resolveManagedImage,
 } from './releases.ts'
 import type { ManagedConnectionRole } from '../../contracts/commands/schemas.ts'
-import { managedIngressPortForEngine, resolveManagedIngressPorts } from './ingress-ports.ts'
-import { type ManagedSslMode, resolveManagedSslMode } from './ssl.ts'
+import {
+  managedIngressFamilyForEngine,
+  managedIngressPortForEngine,
+  resolveManagedIngressPorts,
+} from './ingress-ports.ts'
+import {
+  MANAGED_SSL_MINIMUM_WITH_EXTERNAL_ACCESS,
+  type ManagedSslMode,
+  resolveManagedSslMode,
+} from './ssl.ts'
 import { organization, server } from '../../db/schema.ts'
 import { parseOrganizationOptions } from '../organizations/organization-options.ts'
 import { BadRequestError, parseName, requireStringField } from '../../lib/http/request-fields.ts'
 
 /** Keep aligned with `src/features/principals/store.ts`. */
 const USERNAME_RE = /^[A-Za-z_][A-Za-z0-9_-]*$/
+import { maxTypedNameLength, type PrincipalNameScheme } from '../../lib/principal-name-scheme.ts'
+import { LOOPBACK_BIND } from './access-address.ts'
+import { loadServerClientAddresses } from '../net/client-addresses.ts'
 import {
-  maxTypedNameLength,
-  principalNameSchemeOf,
-  type PrincipalNameScheme,
-} from '../../lib/principal-name-scheme.ts'
-import { LOOPBACK_BIND, resolveManagedExternalDialHost } from './access-address.ts'
+  clientAddressNeeded,
+  type ClientAddressScope,
+  clientEndpointsForListener,
+} from '../net/client-addresses-pure.ts'
 import { loadManagedExternalAccess } from './external-access.ts'
+import { resolveStraightThrough, type StraightThroughFacts } from './login-straight-through.ts'
 import type { ManagedContext } from './managed-context.ts'
-import { type ManagedRowOptions, parseManagedRowOptions } from './options.ts'
+import { type ManagedRowOptions, parseManagedSettings } from './options.ts'
 import { evaluateManagedPromoteLagGate } from './promote-lag.ts'
+import { isMysqlFamilyEngine, MAX_REPLAY_DELTA_BYTES, parsePgLsn } from './ha-fresh-standby.ts'
 import { loadManagedStatusError } from './last-error.ts'
 import { listManagedMembers, type ManagedMemberRow } from './members.ts'
-import type { ManagedResidualMetadata } from './serialize.ts'
+import { type ManagedResidualMetadata, serializeManagedRow } from './serialize.ts'
+import type { LoginPatchInput } from './login-patch.ts'
+import { DATABASE_ADMIN_PRIVILEGE, evaluateDatabaseAdminGrant } from './owner-role.ts'
+
+export {
+  DATABASE_ADMIN_PRIVILEGE,
+  evaluateDatabaseAdminGrant,
+  resolveDatabaseOwnerRole,
+} from './owner-role.ts'
+import type { DatabaseLoginRole, ManagedLoginRow } from './logins.ts'
 
 export { evaluateManagedPromoteLagGate }
 
@@ -42,6 +64,14 @@ export type ManagedAccessEndpoint = {
   reach: 'local' | 'external'
   host: string
   port: number
+  /** External only: `Public`, or the name of the datacenter this address is in. */
+  label?: string
+  /** External only: which side of the server this address is on. */
+  scope?: ClientAddressScope
+  /** External only: set on a datacenter address. */
+  datacenterId?: string | null
+  /** External only: this endpoint fills the main connection string. */
+  primary?: boolean
 }
 
 /**
@@ -82,28 +112,51 @@ type ManagedAccessParams = Readonly<{
 
 /**
  * Every endpoint the server's shared ProxySQL listens on for this cluster,
- * outside-the-server first.
+ * outside-the-server first, main one first among those.
  *
  * The loopback endpoint is always there: sites run by a site owner's Linux user
  * dial it, and bound containers dial ProxySQL by name over the organization's
- * managed network (see `resolveBindingEndpoint`). The external endpoint is there
+ * managed network (see `resolveBindingEndpoint`). External endpoints are there
  * only while the server's "allow external access" setting is on
- * (`./external-access.ts`) and the server has an address to give out. The
- * setting belongs to the server, so every cluster on it reports the same thing.
+ * (`./external-access.ts`): one per address clients use that has a host and
+ * reaches this engine's port (`features/net/client-addresses.ts`). The setting
+ * belongs to the server, so every cluster on it reports the same thing.
+ *
+ * `addressNeeded` is the "set the address clients use" prompt: external access
+ * is on and the panel has nothing it can give out (at most a one-word Linux
+ * hostname, which never goes into a connection string).
  */
-async function resolveManagedAccess(
+export async function resolveManagedAccess(
   db: Db,
   params: ManagedAccessParams
-): Promise<{ externalAccess: boolean; endpoints: ManagedAccessEndpoint[] }> {
+): Promise<{
+  externalAccess: boolean
+  endpoints: ManagedAccessEndpoint[]
+  addressNeeded: boolean
+}> {
   const { enabled: externalAccess } = await loadManagedExternalAccess(db, params.serverId)
   const port = await resolveListenerPortForServer(db, params)
-  const endpoints: ManagedAccessEndpoint[] = []
-  if (externalAccess) {
-    const host = await resolveManagedExternalDialHost(db, params.serverId)
-    if (host !== null) endpoints.push({ reach: 'external', host, port })
+  const family = managedIngressFamilyForEngine(params.engineCode, params.engineDefaultPort)
+  const portKey = family === 'mysql' ? 'mysql' : 'postgres'
+  const external = externalAccess
+    ? clientEndpointsForListener(
+        await loadServerClientAddresses(db, params.serverId),
+        portKey,
+        port
+      )
+    : []
+  const endpoints: ManagedAccessEndpoint[] = [
+    ...external.map((endpoint) => ({
+      reach: 'external' as const,
+      ...endpoint,
+    })),
+    { reach: 'local', host: LOOPBACK_BIND, port },
+  ]
+  return {
+    externalAccess,
+    endpoints,
+    addressNeeded: clientAddressNeeded(externalAccess, external),
   }
-  endpoints.push({ reach: 'local', host: LOOPBACK_BIND, port })
-  return { externalAccess, endpoints }
 }
 
 export async function resolveManagedAccessEndpoints(
@@ -114,8 +167,8 @@ export async function resolveManagedAccessEndpoints(
 }
 
 /**
- * The single endpoint used for the primary DSN and the listener TLS SANs: the
- * outside-the-server one when allowed, else loopback.
+ * The single endpoint used for the primary DSN: the main outside-the-server
+ * one when allowed, else loopback.
  *
  * `null` means "external access is on, but the server has no address to give
  * out" — a real misconfiguration worth surfacing rather than papering over with
@@ -125,10 +178,25 @@ export async function resolveManagedConnectionListener(
   db: Db,
   params: ManagedAccessParams
 ): Promise<{ host: string; port: number } | null> {
-  const { externalAccess, endpoints } = await resolveManagedAccess(db, params)
-  const primary = endpoints[0]!
-  if (externalAccess && primary.reach !== 'external') return null
+  return connectionListenerFromAccess(await resolveManagedAccess(db, params))
+}
+
+/** {@link resolveManagedConnectionListener} from an already resolved access view. */
+export function connectionListenerFromAccess(
+  access: Readonly<{ externalAccess: boolean; endpoints: readonly ManagedAccessEndpoint[] }>
+): { host: string; port: number } | null {
+  const primary = access.endpoints[0]!
+  if (access.externalAccess && primary.reach !== 'external') return null
   return { host: primary.host, port: primary.port }
+}
+
+/** Loopback address on the shared ProxySQL frontend (org overview column). */
+export async function resolveManagedLoopbackListener(
+  db: Db,
+  params: ManagedAccessParams
+): Promise<{ host: string; port: number }> {
+  const port = await resolveListenerPortForServer(db, params)
+  return { host: LOOPBACK_BIND, port }
 }
 
 /**
@@ -152,8 +220,7 @@ export function managedStatusListenerParams(
   if (!row.engine || !isManagedEngineCode(row.engine)) return null
   const spec = getManagedEngineSpec(row.engine)
   if (!spec) return null
-  const parsed = parseManagedRowOptions(spec, row.options)
-  if (!parsed) return null
+  if (parseManagedSettings(spec, row.options) === null) return null
   return {
     serverId: row.serverId,
     engineCode: spec.engine,
@@ -208,10 +275,12 @@ export function managedSessionPaths(): string[] {
     '/environments/:id/managed/lifecycle',
     '/environments/:id/managed/root-password',
     '/environments/:id/managed/users',
-    '/environments/:id/managed/users/:principalId',
-    '/environments/:id/managed/users/:principalId/password',
+    '/environments/:id/managed/users/:loginId',
+    '/environments/:id/managed/users/:loginId/password',
+    '/environments/:id/managed/users/:loginId/effective-permissions',
     '/environments/:id/managed/databases',
     '/environments/:id/managed/databases/:databaseName',
+    '/environments/:id/managed/privilege-catalogue',
     '/environments/:id/managed/status',
     '/environments/:id/managed/logs',
     '/environments/:id/managed/backups',
@@ -275,7 +344,13 @@ export function parseManagedVersionSelection(
   engine: string,
   body: Record<string, unknown>,
   gate?: ManagedReleaseGate
-): { ok: true; image?: string } | { ok: false; error: string; status: 400 | 422 } {
+):
+  | { ok: true; image?: string }
+  | {
+      ok: false
+      error: string
+      status: 400 | 422
+    } {
   const seriesRaw = body.engineSeries
   const variantRaw = body.imageVariant
   if (seriesRaw === undefined && variantRaw === undefined) return { ok: true }
@@ -319,12 +394,12 @@ export type ManagedImageRefusal = {
  * {@link assertManagedVariantSwapSafe}.
  */
 export function assertManagedSeriesUnchanged(
-  spec: { defaultImage: string },
+  spec: { defaultImage: string; legacyDefaultImage?: string },
   currentSettings: ManagedSettings,
   nextSettings: ManagedSettings
 ): ManagedImageRefusal | null {
-  const current = currentSettings.image ?? spec.defaultImage
-  const next = nextSettings.image ?? spec.defaultImage
+  const current = effectiveManagedImage(spec, currentSettings.image)
+  const next = effectiveManagedImage(spec, nextSettings.image)
   if (isSameManagedSeries(current, next)) return null
   return {
     ok: false,
@@ -348,12 +423,12 @@ export function assertManagedSeriesUnchanged(
  * (MySQL, MariaDB) pass. The policy lives in {@link isManagedVariantSwapSafe}.
  */
 export function assertManagedVariantSwapSafe(
-  spec: { defaultImage: string },
+  spec: { defaultImage: string; legacyDefaultImage?: string },
   currentSettings: ManagedSettings,
   nextSettings: ManagedSettings
 ): ManagedImageRefusal | null {
-  const current = currentSettings.image ?? spec.defaultImage
-  const next = nextSettings.image ?? spec.defaultImage
+  const current = effectiveManagedImage(spec, currentSettings.image)
+  const next = effectiveManagedImage(spec, nextSettings.image)
   if (isManagedVariantSwapSafe(current, next)) return null
   return {
     ok: false,
@@ -369,7 +444,7 @@ export function assertManagedVariantSwapSafe(
 
 /** Run the series guard, then the variant guard; first refusal wins. */
 export function assertManagedImageChangeAllowed(
-  spec: { defaultImage: string },
+  spec: { defaultImage: string; legacyDefaultImage?: string },
   currentSettings: ManagedSettings,
   nextSettings: ManagedSettings
 ): ManagedImageRefusal | null {
@@ -404,52 +479,40 @@ export function resolveManagedServerId(
   return managedRow.serverId ?? fallbackServerId
 }
 
-export function principalMetadata(metadata: unknown): Record<string, unknown> {
-  if (typeof metadata === 'object' && metadata !== null && !Array.isArray(metadata)) {
-    return metadata as Record<string, unknown>
-  }
-  return {}
+/**
+ * The API fields for connecting straight through: `straightThrough` is what
+ * the front door will do (false with a source limit), and
+ * `straightThroughDefault` is true when that comes from the default rather
+ * than a choice, so the UI can show 'default'.
+ */
+export function straightThroughFields(facts: StraightThroughFacts) {
+  const resolved = resolveStraightThrough(facts)
+  return { straightThrough: resolved.value, straightThroughDefault: resolved.isDefault }
 }
 
-export function isManagedRootPrincipal(metadata: unknown): boolean {
-  return principalMetadata(metadata).managedRoot === true
-}
-
-/** Replication principal is platform-managed — never listed as a client login. */
-export function isManagedReplicationPrincipal(metadata: unknown): boolean {
-  return principalMetadata(metadata).managedReplication === true
-}
-
-function principalDatabaseNames(metadata: unknown): string[] {
-  const { databases } = principalMetadata(metadata)
-  return Array.isArray(databases)
-    ? databases.filter((entry): entry is string => typeof entry === 'string')
-    : []
-}
-
-export function serializeManagedUser(row: {
-  id: string
-  username: string
-  appliedUsername: string
-  metadata: unknown
-  options?: unknown
-  createdAt: string
-}) {
-  const meta = principalMetadata(row.metadata)
-  const databases = principalDatabaseNames(row.metadata)
-  const privileges = Array.isArray(meta.privileges)
-    ? meta.privileges.filter((entry): entry is string => typeof entry === 'string')
-    : []
+/**
+ * A login in the managed users API shape. `id` is the login id (what the
+ * users routes are addressed by); `loginId` repeats it, and `principalId` is
+ * the site owner's Linux user the login shares its name with, or `null`.
+ */
+export function serializeManagedLogin(row: ManagedLoginRow, engine: string) {
   return {
     id: row.id,
     username: row.username,
     appliedUsername: row.appliedUsername,
-    nameScheme: principalNameSchemeOf(row),
-    databases,
-    privileges,
-    connectionRole:
-      meta.connectionRole === 'read-only' ? ('read-only' as const) : ('read-write' as const),
+    nameScheme: row.nameScheme,
+    databases: row.databases,
+    privileges: row.privileges,
+    connectionRole: row.connectionRole,
+    grantMode: row.grantMode,
+    tool: row.tool,
+    // 'any' when unrestricted; otherwise the places the login may connect from.
+    allowedSources: row.allowedSources ?? ['any'],
+    maxConnections: row.maxConnections ?? null,
+    ...straightThroughFields({ ...row, engine }),
     createdAt: row.createdAt,
+    principalId: row.principalId,
+    loginId: row.id,
   }
 }
 
@@ -492,6 +555,22 @@ export function serializeContainerRow(row: {
  */
 const RESERVED_MANAGED_USERNAMES = new Set(['postgres', 'root', 'mysql', 'superadmin'])
 
+/**
+ * The `tp_` prefix belongs to the platform: the roles of a database's owner
+ * role (`tp_<db>_owner`, `_rw`, `_ro`), the monitor login (`tp_monitor_…`) and
+ * the replication login (`tp_repl`). No client login may take a name with it.
+ */
+const RESERVED_MANAGED_USERNAME_PREFIX = 'tp_'
+
+export function isReservedManagedUsername(username: string, rootUsername?: string): boolean {
+  const lower = username.toLowerCase()
+  return (
+    RESERVED_MANAGED_USERNAMES.has(lower) ||
+    lower.startsWith(RESERVED_MANAGED_USERNAME_PREFIX) ||
+    (rootUsername !== undefined && username === rootUsername)
+  )
+}
+
 export function parseManagedUserCreateFields(
   c: Context,
   ctx: ManagedContext,
@@ -523,12 +602,33 @@ export function parseManagedUserCreateFields(
     !USERNAME_RE.test(username) ||
     !pattern.test(username) ||
     username.length > maxShortLength ||
-    username === effectiveRoot ||
-    RESERVED_MANAGED_USERNAMES.has(username.toLowerCase())
+    isReservedManagedUsername(username, effectiveRoot)
   ) {
     return c.json({ error: 'Invalid username' }, 400)
   }
 
+  const grants = parseManagedLoginGrantFields(c, ctx, body, options)
+  if (grants instanceof Response) return grants
+  return { username, ...grants }
+}
+
+/**
+ * What a login may do, independent of its name: the databases it is granted
+ * on, its connection role and its privileges. Shared by a login with a new
+ * name and a login created for an existing principal.
+ */
+export function parseManagedLoginGrantFields(
+  c: Context,
+  ctx: ManagedContext,
+  body: Record<string, unknown>,
+  options: ManagedRowOptions
+):
+  | {
+      databases: string[]
+      privileges: string[]
+      connectionRole: ManagedConnectionRole
+    }
+  | Response {
   if (!Array.isArray(body.databases) || body.databases.length === 0) {
     return c.json({ error: 'Invalid request' }, 400)
   }
@@ -559,13 +659,154 @@ export function parseManagedUserCreateFields(
     return c.json(
       {
         error: MANAGED_USER_PRIVILEGES_INVALID_ERROR,
-        message: `privileges must list at least one of: ${ctx.spec.userOperations.privileges.join(', ')}. Leave it out to get the default for the login's connection role.`,
+        message: `privileges must list at least one of: ${ctx.spec.userOperations.privileges.join(
+          ', '
+        )}. Leave it out to get the default for the login's connection role.`,
       },
       400
     )
   }
 
-  return { username, databases, privileges, connectionRole }
+  const admin = evaluateDatabaseAdminGrant(ctx.spec.engine, {
+    privileges,
+    connectionRole,
+  })
+  if (admin) {
+    return c.json({ error: admin.error, message: admin.message }, admin.status)
+  }
+
+  return {
+    databases,
+    privileges: privileges.includes(DATABASE_ADMIN_PRIVILEGE)
+      ? [DATABASE_ADMIN_PRIVILEGE]
+      : privileges,
+    connectionRole,
+  }
+}
+
+/**
+ * Whether an existing principal's applied name can be this engine's role
+ * name as-is (a login for a principal never renames). `null` when it fits.
+ */
+export function evaluateExistingPrincipalLoginName(
+  spec: ManagedContext['spec'],
+  appliedUsername: string,
+  rootUsername?: string
+): { error: string; message: string } | null {
+  const { pattern, maxLength } = spec.userOperations.identifier
+  if (!pattern.test(appliedUsername) || appliedUsername.length > maxLength) {
+    return {
+      error: 'principal_name_does_not_fit',
+      message: `The principal's name '${appliedUsername}' is not a valid ${spec.engine} role name (at most ${maxLength} characters, matching ${pattern}). Create a login with a new name instead.`,
+    }
+  }
+  if (isReservedManagedUsername(appliedUsername, rootUsername ?? spec.rootUsername)) {
+    return {
+      error: 'principal_name_reserved',
+      message: `The principal's name '${appliedUsername}' is reserved on ${spec.engine}. Create a login with a new name instead.`,
+    }
+  }
+  return null
+}
+
+/**
+ * Grant mode and tool flag for a new login. A new login defaults to
+ * `recipe`; `preset` is not accepted for new logins. Plain-words 400 otherwise.
+ */
+export function parseManagedLoginModeFields(
+  c: Context,
+  body: Record<string, unknown>,
+  /** A Database admin login is a tool login unless the request says otherwise. */
+  toolByDefault = false
+): { grantMode: 'recipe' | 'self'; tool: boolean } | Response {
+  const mode = body.grantMode ?? 'recipe'
+  if (mode !== 'recipe' && mode !== 'self') {
+    return c.json(
+      {
+        error: 'managed_grant_mode_invalid',
+        message:
+          "grantMode must be 'recipe' (the panel sets permissions) or 'self' (you set them).",
+      },
+      400
+    )
+  }
+  if (body.tool !== undefined && typeof body.tool !== 'boolean') {
+    return c.json(
+      {
+        error: 'Invalid request',
+        message: 'tool must be true or false.',
+      },
+      400
+    )
+  }
+  return {
+    grantMode: mode,
+    tool: body.tool === undefined ? toolByDefault : body.tool === true,
+  }
+}
+
+/** Fields of a PATCH on a login; everything is optional, validated on its own. */
+export function parseManagedLoginPatchFields(
+  c: Context,
+  ctx: ManagedContext,
+  body: Record<string, unknown>,
+  options: ManagedRowOptions
+): (LoginPatchInput & { dryRun: boolean }) | Response {
+  const input: LoginPatchInput & { dryRun: boolean } = {
+    dryRun: body.dryRun === true,
+    grantMode: body.grantMode,
+    tool: body.tool,
+    confirmReset: body.confirmReset,
+  }
+  if (body.dryRun !== undefined && typeof body.dryRun !== 'boolean') {
+    return c.json(
+      {
+        error: 'Invalid request',
+        message: 'dryRun must be true or false.',
+      },
+      400
+    )
+  }
+  if (body.databases !== undefined) {
+    const list = body.databases
+    if (
+      !Array.isArray(list) ||
+      list.length === 0 ||
+      !list.every((name) => typeof name === 'string' && options.databases.includes(name))
+    ) {
+      return c.json({ error: 'Invalid request' }, 400)
+    }
+    if (list.some((name) => isReservedDatabaseName(ctx.spec.engine, name))) {
+      return c.json({ error: 'reserved_database_name' }, 400)
+    }
+    input.databases = [...new Set(list as string[])]
+  }
+  if (body.connectionRole !== undefined) {
+    if (body.connectionRole !== 'read-write' && body.connectionRole !== 'read-only') {
+      return c.json({ error: 'Invalid request' }, 400)
+    }
+    input.connectionRole = body.connectionRole
+  }
+  if (body.privileges !== undefined) {
+    const privileges = resolveManagedUserPrivileges(
+      body.privileges,
+      ctx.spec.userOperations.privileges,
+      input.connectionRole ?? 'read-write'
+    )
+    if (privileges === null) {
+      return c.json(
+        {
+          error: MANAGED_USER_PRIVILEGES_INVALID_ERROR,
+          message: `privileges must list at least one of: ${ctx.spec.userOperations.privileges.join(
+            ', '
+          )}.`,
+        },
+        400
+      )
+    }
+    input.privileges = privileges
+  }
+  return input
 }
 
 /** `privileges` was present but empty, unknown, or not a list of names. */
@@ -592,46 +833,11 @@ export function resolveManagedUserPrivileges(
   return names.every((name) => allowed.includes(name)) ? [...new Set(names)] : null
 }
 
-/** A `read-only` login was requested for a cluster with no read-eligible replica. */
-export const MANAGED_NO_READ_TARGETS_ERROR = 'managed_no_read_targets'
-
-export type ManagedReadOnlyLoginGuardError = {
-  ok: false
-  error: typeof MANAGED_NO_READ_TARGETS_ERROR
-  status: 422
-}
-
-/**
- * Refuse a `read-only` login when the cluster has no read-eligible replica.
- * `read-write` is always allowed here.
- */
-export function evaluateReadOnlyLoginTargets(
-  connectionRole: ManagedConnectionRole,
-  members: ReadonlyArray<{ role: string; readEligible: boolean }>
-): ManagedReadOnlyLoginGuardError | null {
-  if (connectionRole !== 'read-only') return null
-  const hasReadTarget = members.some((member) => member.role === 'replica' && member.readEligible)
-  if (hasReadTarget) return null
-  return { ok: false, error: MANAGED_NO_READ_TARGETS_ERROR, status: 422 }
-}
-
-/**
- * Same guard as {@link evaluateReadOnlyLoginTargets}, but loads members only
- * when a `read-only` login was requested.
- */
-export async function evaluateReadOnlyLoginTargetsLazy(
-  connectionRole: ManagedConnectionRole,
-  loadMembers: () => Promise<ReadonlyArray<{ role: string; readEligible: boolean }>>
-): Promise<ManagedReadOnlyLoginGuardError | null> {
-  if (connectionRole !== 'read-only') return null
-  return evaluateReadOnlyLoginTargets(connectionRole, await loadMembers())
-}
-
 /**
  * Frontend hostgroup a login defaults to. Absent means `read-write` — the
  * historical behavior and the only safe default, since a `read-only` login is
- * useless (and provisioning is refused) when the cluster has no read-eligible
- * replica.
+ * useless when the cluster has no read-eligible replica, so the daemon
+ * routes it to the primary there.
  */
 export function parseManagedConnectionRole(value: unknown): ManagedConnectionRole | null {
   if (value === undefined || value === null) return 'read-write'
@@ -745,7 +951,7 @@ export function validateManagedDatabaseCreateName(
   if (isReservedDatabaseName(engine, name)) {
     return { ok: false, error: 'reserved_database_name', status: 400 }
   }
-  if (databases.includes(name)) {
+  if (databases.some((entry) => entry.toLowerCase() === name.toLowerCase())) {
     return { ok: false, error: 'database_exists', status: 409 }
   }
   return null
@@ -771,21 +977,16 @@ export function evaluateManagedDatabaseDelete(
 }
 
 /**
- * Typed usernames of the SQL users (never the root or replication principal)
+ * Typed usernames of the SQL users (never the root or replication login)
  * whose `databases` list still names `databaseName`. Dropping the database
  * while any remain would leave the next apply granting on a missing database.
  */
 export function listUsersReferencingDatabase(
-  principals: ReadonlyArray<{ username: string; metadata: unknown }>,
+  logins: ReadonlyArray<{ username: string; role: string; databases: readonly string[] }>,
   databaseName: string
 ): string[] {
-  return principals
-    .filter(
-      (entry) =>
-        !isManagedRootPrincipal(entry.metadata) &&
-        !isManagedReplicationPrincipal(entry.metadata) &&
-        principalDatabaseNames(entry.metadata).includes(databaseName)
-    )
+  return logins
+    .filter((entry) => entry.role === 'user' && entry.databases.includes(databaseName))
     .map((entry) => entry.username)
 }
 
@@ -804,9 +1005,13 @@ export function parsePromoteForce(body: Record<string, unknown>): boolean {
   return body.force === true
 }
 
-export function parseDisasterRecoveryPromoteBody(
-  body: Record<string, unknown>
-): { ok: true; memberId: string } | { ok: false; error: 'Invalid request'; status: 400 } {
+export function parseDisasterRecoveryPromoteBody(body: Record<string, unknown>):
+  | { ok: true; memberId: string }
+  | {
+      ok: false
+      error: 'Invalid request'
+      status: 400
+    } {
   if (body.confirm !== true) {
     return { ok: false, error: 'Invalid request', status: 400 }
   }
@@ -996,22 +1201,23 @@ export type ManagedUserRotateGuardError =
   | { ok: false; error: 'use_root_password_route'; status: 400 }
   | { ok: false; error: 'cannot_rotate_replication_user'; status: 400 }
 
-export function evaluateManagedUserRotateGuard(
-  metadata: unknown
+/** The cluster's own logins rotate elsewhere (root) or never (replication). */
+export function evaluateManagedLoginRotateGuard(
+  role: DatabaseLoginRole
 ): ManagedUserRotateGuardError | null {
-  if (isManagedRootPrincipal(metadata)) {
+  if (role === 'root') {
     return { ok: false, error: 'use_root_password_route', status: 400 }
   }
-  if (isManagedReplicationPrincipal(metadata)) {
+  if (role === 'replication') {
     return { ok: false, error: 'cannot_rotate_replication_user', status: 400 }
   }
   return null
 }
 
-export function evaluateManagedUserDropGuard(
-  metadata: unknown
+export function evaluateManagedLoginDropGuard(
+  role: DatabaseLoginRole
 ): { ok: false; error: 'cannot_drop_root_user'; status: 400 } | null {
-  if (isManagedRootPrincipal(metadata)) {
+  if (role === 'root') {
     return { ok: false, error: 'cannot_drop_root_user', status: 400 }
   }
   return null
@@ -1029,9 +1235,75 @@ export function evaluatePromoteLagHttpGate(
   | null
   | 'managed_replica_not_streaming'
   | 'managed_replica_lagging'
-  | 'managed_replica_health_stale' {
+  | 'managed_replica_health_stale'
+  | 'managed_replica_not_fully_applied' {
   if (force) return null
   return evaluateManagedPromoteLagGate(replication, nowMs)
+}
+
+/**
+ * Oldest replica reading an operator (non-force) promote will act on after a
+ * live `managed-health-request` answer. A stored reading from before the last
+ * few seconds proves nothing (a replication thread that stopped a moment ago
+ * still looks `streaming` in an older one).
+ */
+export const OPERATOR_PROMOTE_MAX_OBSERVATION_AGE_MS = 15_000
+
+/** Operator promote when the replica daemon did not return a live health probe. */
+export const MANAGED_REPLICA_LIVE_CHECK_FAILED = 'managed_replica_live_check_failed'
+
+export const MANAGED_REPLICA_LIVE_CHECK_FAILED_MESSAGE =
+  'The replica did not answer a live check, so it cannot be proven caught up. Try again, or force the promote if you accept possible data loss.'
+
+export function buildManagedReplicaLiveCheckFailedBody(): {
+  error: typeof MANAGED_REPLICA_LIVE_CHECK_FAILED
+  message: string
+} {
+  return {
+    error: MANAGED_REPLICA_LIVE_CHECK_FAILED,
+    message: MANAGED_REPLICA_LIVE_CHECK_FAILED_MESSAGE,
+  }
+}
+
+/**
+ * Gate for the operator promote route: {@link evaluatePromoteLagHttpGate} on
+ * a tight reading age, plus engine-specific proof the replica applied what it
+ * received (MySQL/MariaDB: `fullyApplied === true`; Postgres: received LSN
+ * replayed within {@link MAX_REPLAY_DELTA_BYTES}). `force` bypasses both, as
+ * before. Automatic failover keeps its own probe and thresholds.
+ */
+export function evaluateOperatorPromoteGate(
+  replication: unknown,
+  force: boolean,
+  nowMs?: number,
+  engine?: string
+):
+  | null
+  | 'managed_replica_not_streaming'
+  | 'managed_replica_lagging'
+  | 'managed_replica_health_stale'
+  | 'managed_replica_not_fully_applied' {
+  if (force) return null
+  const gate = evaluateManagedPromoteLagGate(replication, nowMs, {
+    staleMs: OPERATOR_PROMOTE_MAX_OBSERVATION_AGE_MS,
+  })
+  if (gate !== null) return gate
+  if (!isPlainObject(replication)) return null
+  if (engine === 'postgres') {
+    const received = parsePgLsn(replication.receivedLsn)
+    const replayed = parsePgLsn(replication.replayLsn)
+    if (received === null || replayed === null) {
+      return 'managed_replica_lagging'
+    }
+    if (received - replayed > BigInt(MAX_REPLAY_DELTA_BYTES)) {
+      return 'managed_replica_lagging'
+    }
+    return null
+  }
+  if (isMysqlFamilyEngine(engine) && replication.fullyApplied !== true) {
+    return 'managed_replica_not_fully_applied'
+  }
+  return null
 }
 
 export type QueuedCommandFanoutRow = {
@@ -1081,6 +1353,8 @@ export function buildEmptyManagedDetailResponse(organizationSslMode?: ManagedSsl
     managed: null,
     connection: null,
     endpoints: [] as const,
+    connections: [] as const,
+    addressNeeded: false,
     exposure: null,
     settings: null,
     ssl: buildManagedSslView(undefined, organizationSslMode),
@@ -1096,15 +1370,22 @@ export function buildEmptyManagedDetailResponse(organizationSslMode?: ManagedSsl
  * `configured` is the service override (`null` = inheriting); `effective` is
  * what ProxySQL enforces and DSNs render, so the UI can label the inherit
  * option with what it resolves to without recomputing the hierarchy.
+ * `raisedForExternalAccess` (from `resolveEffectiveManagedSsl`) means the
+ * resolved mode let clients skip SSL and `effective` was raised to `require`
+ * because a server serving the cluster allows external access.
  */
 export function buildManagedSslView(
   configured: ManagedSslMode | undefined,
-  organizationDefault: ManagedSslMode | undefined
+  organizationDefault: ManagedSslMode | undefined,
+  raisedForExternalAccess = false
 ) {
   return {
     configured: configured ?? null,
-    effective: resolveManagedSslMode(configured, organizationDefault),
+    effective: raisedForExternalAccess
+      ? MANAGED_SSL_MINIMUM_WITH_EXTERNAL_ACCESS
+      : resolveManagedSslMode(configured, organizationDefault),
     organizationDefault: organizationDefault ?? null,
+    raisedForExternalAccess,
   }
 }
 
@@ -1129,10 +1410,10 @@ export type ManagedReleaseView = {
  * the raw image.
  */
 export function buildManagedReleaseView(
-  spec: { defaultImage: string },
+  spec: { defaultImage: string; legacyDefaultImage?: string },
   settings: ManagedSettings
 ): ManagedReleaseView | null {
-  const image = settings.image ?? spec.defaultImage
+  const image = effectiveManagedImage(spec, settings.image)
   const descriptor = describeManagedImage(image)
   if (!descriptor) return null
   return {
@@ -1288,12 +1569,12 @@ export function buildDisasterRecoveryQueuedResponse(params: {
 
 type OrgManagedListEntryExtras = {
   engineDisplayName: string | null
-  environmentDisplayName: string | null
+  environmentName: string | null
   projectId: string
-  projectDisplayName: string | null
+  projectName: string | null
   workspaceId: string
-  workspaceDisplayName: string | null
-  serverDisplayName: string | null
+  workspaceName: string | null
+  serverName: string | null
   members: unknown[]
 }
 
@@ -1303,12 +1584,69 @@ export function buildOrgManagedListEntry<T extends Record<string, unknown>>(
   return {
     ...params.serializedRow,
     engineDisplayName: params.engineDisplayName,
-    environmentDisplayName: params.environmentDisplayName,
+    environmentName: params.environmentName,
     projectId: params.projectId,
-    projectDisplayName: params.projectDisplayName,
+    projectName: params.projectName,
     workspaceId: params.workspaceId,
-    workspaceDisplayName: params.workspaceDisplayName,
-    serverDisplayName: params.serverDisplayName,
+    workspaceName: params.workspaceName,
+    serverName: params.serverName,
     members: params.members,
   }
+}
+
+type OrgManagedListSourceRow = {
+  id: string
+  environmentId: string | null
+  name: string | null
+  engine: string | null
+  status: string | null
+  metadata: unknown
+  options: unknown
+  serverId: string | null
+  createdAt: string
+  updatedAt: string
+  environmentServerId: string | null
+  environmentDisplayName: string | null
+  projectId: string
+  projectDisplayName: string | null
+  workspaceId: string
+  workspaceDisplayName: string | null
+  serverDisplayName: string | null
+}
+
+/** One `GET /organizations/:id/managed` row — shared listener on loopback, no residual backend ports. */
+export async function serializeOrgManagedListRow(
+  db: Db,
+  row: OrgManagedListSourceRow,
+  members: unknown[],
+  serverNamesById: ReadonlyMap<string, string | null> = new Map()
+) {
+  const spec = row.engine ? getManagedEngineSpec(row.engine) : null
+  const resolvedServerId = resolveManagedServerId(
+    { serverId: row.serverId },
+    row.environmentServerId
+  )
+  const serverName =
+    resolvedServerId === null ? null : (serverNamesById.get(resolvedServerId) ?? null)
+  const listenerParams = managedStatusListenerParams({
+    serverId: resolvedServerId,
+    engine: row.engine,
+    options: row.options,
+  })
+  const listener = listenerParams ? await resolveManagedLoopbackListener(db, listenerParams) : null
+  return buildOrgManagedListEntry({
+    serializedRow: serializeManagedRow(
+      row,
+      resolvedServerId,
+      listener ? { host: listener.host, port: listener.port } : { host: null, port: null }
+    ),
+    engineDisplayName: spec?.displayName ?? null,
+    environmentName: row.environmentDisplayName,
+    projectId: row.projectId,
+    projectName: row.projectDisplayName,
+    workspaceId: row.workspaceId,
+    workspaceName: row.workspaceDisplayName,
+    serverName,
+    members,
+  })
 }

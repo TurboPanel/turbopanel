@@ -208,9 +208,10 @@ const PRINCIPAL_USERNAME_RE = /^[A-Za-z_][A-Za-z0-9_-]*$/
  * name whether or not the group exists (Ubuntu's sudoers still names
  * `%admin`; `wheel` is the pam_wheel and polkit group), so a user called
  * `admin` would be an administrator. Every common Debian / Ubuntu system and
- * privilege group name is therefore reserved too. Kept equal to
- * `TP_RESERVED_NAMES` in the daemon's tp-host, which refuses the same names
- * (and any group sudoers names) on the host.
+ * privilege group name is therefore reserved too. The daemon keeps the same
+ * list in `src/deploy/reserved-principal-names.ts`; tp-host keeps
+ * `TP_RESERVED_NAMES` (it must gain the newest names too, and also refuses any
+ * group sudoers names).
  *
  * The `tp*` entries here are documentation of the accounts that exist today —
  * the actual guard is the `tp` **prefix** rule in
@@ -318,6 +319,45 @@ export const RESERVED_PRINCIPAL_USERNAMES: ReadonlySet<string> = new Set([
   // nobody owns (also caught by the `tp` prefix rule).
   'containers',
   'tpbuild',
+  // Host logins and groups that commonly exist beside Debian's stock accounts.
+  // A site owner's Linux user must not collide with any of them.
+  'ftp',
+  'sftp',
+  'git',
+  'www',
+  'httpd',
+  'apache',
+  'nginx',
+  'ubuntu',
+  'debian',
+  'pi',
+  'vagrant',
+  'ec2-user',
+  'ssm-user',
+  'opc',
+  'postfix',
+  'dovecot',
+  'vmail',
+  'clamav',
+  'opendkim',
+  'mongodb',
+  'mariadb',
+  'memcache',
+  'elasticsearch',
+  'openldap',
+  'unbound',
+  'chrony',
+  'ntp',
+  'lightdm',
+  'gdm',
+  'pulse',
+  'rtkit',
+  'colord',
+  'geoclue',
+  'saned',
+  'dnsmasq',
+  'landscape',
+  'lxc',
 ])
 
 export function isReservedPrincipalUsername(value: string): boolean {

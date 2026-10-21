@@ -79,7 +79,7 @@ for (const fixture of representativeMachineFixtures()) {
     for (const point of points) {
       assertEquals(point.doubles.length, AE_DOUBLE_COUNT, `${fixture.name}: doubles length`)
       assertEquals(point.blobs.length, AE_BLOB_COUNT, `${fixture.name}: blobs length`)
-      assertEquals(point.blobs[AE_BLOB_SCHEMA_VERSION_INDEX], '7', `${fixture.name}: blob3`)
+      assertEquals(point.blobs[AE_BLOB_SCHEMA_VERSION_INDEX], '8', `${fixture.name}: blob3`)
       assertEquals(
         point.doubles[AE_DOUBLE_INTERVAL_INDEX],
         sample.metadata.intervalSeconds,

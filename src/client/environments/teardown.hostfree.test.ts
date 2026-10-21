@@ -5,6 +5,7 @@
  */
 
 import { assertEquals } from '@std/assert'
+import type { Context } from 'hono'
 import type { Db } from '../../db/connection.ts'
 import type { CommandQueue } from '../../features/commands/queue.ts'
 import {
@@ -12,6 +13,8 @@ import {
   planEnvironmentTeardown,
   planEnvironmentsTeardown,
   resolvePrincipalRetirement,
+  retireIdleIngressOn,
+  stopEnvironmentHosts,
   type EnvironmentTeardownPlan,
 } from './teardown.ts'
 
@@ -93,7 +96,7 @@ test('planEnvironmentTeardown returns null when the project row is gone', async 
 test('planEnvironmentTeardown returns null when nothing places the environment', async () => {
   const db = fakeDb([
     [{ id: ENV_ID, projectId: PROJECT_ID, serverId: null }],
-    [{ id: PROJECT_ID, options: {} }],
+    [{ id: PROJECT_ID, defaultServerId: null }],
     [],
   ])
   assertEquals(await planEnvironmentTeardown(db, ENV_ID), null)
@@ -102,7 +105,7 @@ test('planEnvironmentTeardown returns null when nothing places the environment',
 test('planEnvironmentTeardown prefers deployment rows over the pin', async () => {
   const db = fakeDb([
     [{ id: ENV_ID, projectId: PROJECT_ID, serverId: 'srv-pin' }],
-    [{ id: PROJECT_ID, options: { defaultServerId: DEFAULT_SERVER_ID } }],
+    [{ id: PROJECT_ID, defaultServerId: DEFAULT_SERVER_ID }],
     [deploymentRow('srv-b'), deploymentRow('srv-a')],
     [],
     [],
@@ -115,7 +118,7 @@ test('planEnvironmentTeardown prefers deployment rows over the pin', async () =>
 test('planEnvironmentTeardown falls back to the effective pin and collects ingress + fabric', async () => {
   const db = fakeDb([
     [{ id: ENV_ID, projectId: PROJECT_ID, serverId: null }],
-    [{ id: PROJECT_ID, options: { defaultServerId: DEFAULT_SERVER_ID } }],
+    [{ id: PROJECT_ID, defaultServerId: DEFAULT_SERVER_ID }],
     [],
     [
       {
@@ -139,14 +142,14 @@ test('planEnvironmentTeardown still reclaims a release tree whose service left t
   const recorded = [{ serviceId: 'svc-gone', username: 'appuser' }]
   const db = fakeDb([
     [{ id: ENV_ID, projectId: PROJECT_ID, serverId: null }],
-    [{ id: PROJECT_ID, options: { defaultServerId: DEFAULT_SERVER_ID } }],
+    [{ id: PROJECT_ID, defaultServerId: DEFAULT_SERVER_ID }],
     [],
     [],
     [],
     // resolveEnvironmentSiteReleases: environment + project compose carry no
     // sourced service any more…
     [{ id: ENV_ID, projectId: PROJECT_ID, options: {} }],
-    [{ id: PROJECT_ID, options: {} }],
+    [{ id: PROJECT_ID, defaultServerId: null }],
     // …so only the recorded set names the tree.
     [{ options: { secretPlan: [], siteReleases: recorded } }],
   ])
@@ -157,12 +160,12 @@ test('planEnvironmentTeardown still reclaims a release tree whose service left t
 test("planEnvironmentTeardown captures the project's server principals while the rows exist", async () => {
   const db = fakeDb([
     [{ id: ENV_ID, projectId: PROJECT_ID, serverId: null }],
-    [{ id: PROJECT_ID, options: { defaultServerId: DEFAULT_SERVER_ID } }],
+    [{ id: PROJECT_ID, defaultServerId: DEFAULT_SERVER_ID }],
     [],
     [],
     [],
     [{ id: ENV_ID, projectId: PROJECT_ID, options: {} }],
-    [{ id: PROJECT_ID, options: {} }],
+    [{ id: PROJECT_ID, defaultServerId: null }],
     [],
     // The project's principals, deduplicated and sorted.
     [{ username: 'web_b' }, { username: 'app_a' }, { username: 'web_b' }],
@@ -199,7 +202,7 @@ test('planEnvironmentsTeardown drops environments with nothing to reclaim', asyn
   const db = fakeDb([
     [],
     [{ id: ENV_ID, projectId: PROJECT_ID, serverId: 'srv-a' }],
-    [{ id: PROJECT_ID, options: {} }],
+    [{ id: PROJECT_ID, defaultServerId: null }],
     [],
     [],
     [],
@@ -329,6 +332,24 @@ test('dispatchEnvironmentTeardown is a no-op without plans', async () => {
   assertEquals(captured.payloads.length, 0)
 })
 
+test('planEnvironmentTeardown plans no principal retirement for a project delete (keepPrincipals)', async () => {
+  const db = fakeDb([
+    [{ id: ENV_ID, projectId: PROJECT_ID, serverId: null }],
+    [{ id: PROJECT_ID, defaultServerId: DEFAULT_SERVER_ID }],
+    [],
+    [],
+    [],
+    [{ id: ENV_ID, projectId: PROJECT_ID, options: {} }],
+    [{ id: PROJECT_ID, defaultServerId: null }],
+    [],
+    // Never read: the Linux users stay when the project goes.
+    [{ username: 'web_b' }],
+  ])
+  const result = await planEnvironmentTeardown(db, ENV_ID, { keepPrincipals: true })
+  assertEquals(result?.principalUsernames, [])
+  assertEquals(result?.siteReleases !== undefined, true)
+})
+
 test('dispatchEnvironmentTeardown names retired principals on the last stop per server only', async () => {
   const captured = { payloads: [] as unknown[], transitions: [] as string[] }
   const queue = { enqueue: () => Promise.resolve() } as unknown as CommandQueue
@@ -370,4 +391,56 @@ test('dispatchEnvironmentTeardown never retires a principal unless told to', asy
   )
   const payloads = captured.payloads as Array<Record<string, unknown>>
   assertEquals('retirePrincipals' in (payloads[0] ?? {}), false)
+})
+
+/** A request context with no dispatch infrastructure behind it. */
+const bareContext = {
+  get: () => undefined,
+  json: (body: unknown, status: number) => Response.json(body, { status }),
+} as unknown as Context
+
+test('stopEnvironmentHosts reports a failed stop when nothing can dispatch it', async () => {
+  const outcome = await stopEnvironmentHosts(bareContext, fakeDb([]), [plan()], 'user-1')
+  assertEquals(outcome, { stopped: false, serverIds: [] })
+})
+
+test('stopEnvironmentHosts has nothing to stop without plans', async () => {
+  assertEquals(await stopEnvironmentHosts(bareContext, fakeDb([]), [], 'user-1'), {
+    stopped: true,
+    serverIds: [],
+  })
+})
+
+/** A request context that can dispatch to the given queue. */
+function dispatchContext(queue: CommandQueue): Context {
+  const values: Record<string, unknown> = { daemonCellRegistry: {}, commandQueue: queue }
+  return {
+    get: (key: string) => values[key],
+    json: (body: unknown, status: number) => Response.json(body, { status }),
+  } as unknown as Context
+}
+
+test('stopEnvironmentHosts is stopped only when every planned server accepted its stop', async () => {
+  const reaches = async (rejected: string[]) => {
+    const queue = {
+      enqueue: (envelope: { serverId: string }) =>
+        rejected.includes(envelope.serverId)
+          ? Promise.reject(new Error('down'))
+          : Promise.resolve(),
+    } as unknown as CommandQueue
+    return await stopEnvironmentHosts(
+      dispatchContext(queue),
+      fakeCommandDb({ payloads: [], transitions: [] }),
+      [plan({ serverIds: ['srv-a', 'srv-b'] })],
+      'user-1'
+    )
+  }
+  assertEquals(await reaches([]), { stopped: true, serverIds: ['srv-a', 'srv-b'] })
+  assertEquals(await reaches(['srv-a']), { stopped: false, serverIds: ['srv-b'] })
+})
+
+test('retireIdleIngressOn does nothing without dispatch infrastructure and never throws with it', async () => {
+  await retireIdleIngressOn(bareContext, fakeDb([]), ['srv-a'], 'user-1')
+  const queue = { enqueue: () => Promise.resolve() } as unknown as CommandQueue
+  await retireIdleIngressOn(dispatchContext(queue), fakeDb([[{ id: 'x' }]]), ['srv-a'], 'user-1')
 })

@@ -78,7 +78,7 @@ async function withDeploy(
   const [env] = await db
     .insert(environment)
     .values({
-      name: 'Cancel Env',
+      name: 'cancel-env',
       projectId: proj!.id,
       options: { compose: emptyComposeDocument() },
     })
@@ -268,7 +268,7 @@ test('a host with no such deploy (or no answer) is still marked cancelling so a 
 })
 
 test('a daemon that cannot cancel is refused before anything changes', async () => {
-  await withDeploy({ count: 1, features: ['metrics-v7'] }, async (f) => {
+  await withDeploy({ count: 1, features: ['metrics-v8'] }, async (f) => {
     await transitionCommand(f.db, f.commandIds[0]!, { status: 'sent' })
     assertEquals(
       await cancelEnvironmentDeploy(

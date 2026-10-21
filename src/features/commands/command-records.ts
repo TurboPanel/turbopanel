@@ -5,7 +5,9 @@ import { lastErrorLine } from './error-line.ts'
 import { redactUrlSecrets } from '../upgrades/redact-url-secrets.ts'
 import { nowIso } from './ids.ts'
 import { type CommandStatus, TERMINAL_COMMAND_STATUSES } from './types.ts'
-import { command, dispatch } from '../../db/schema.ts'
+import { command, dispatch, environment, managed, server } from '../../db/schema.ts'
+import type { CommandProgress } from '../../contracts/cell-protocol.ts'
+import { finalizeStoredCommandProgress, parseStoredCommandProgress } from './command-progress.ts'
 import { sealExecutionLogOnTerminal } from '../execution-logs/seal-on-terminal.ts'
 
 /**
@@ -26,6 +28,7 @@ const COMMAND_COLUMNS = {
   attempts: command.attempts,
   context: command.context,
   resultSummary: command.resultSummary,
+  progress: command.progress,
   errorCode: command.errorCode,
   errorMessage: command.errorMessage,
   queuedAt: command.queuedAt,
@@ -41,6 +44,13 @@ type CommandDbRow = {
   [K in keyof typeof COMMAND_COLUMNS]: (typeof command.$inferSelect)[K]
 }
 
+/**
+ * What {@link serializeCommandRecord} accepts: the explicit column list, with
+ * `progress` optional because a row shaped before the column existed carries
+ * none and serializes as `progress: null`.
+ */
+type CommandRowInput = Omit<CommandDbRow, 'progress'> & Partial<Pick<CommandDbRow, 'progress'>>
+
 export type CommandRecord = {
   id: string
   serverId: string
@@ -51,6 +61,8 @@ export type CommandRecord = {
   /** Small non-secret identifier bag captured at enqueue time. */
   context: unknown
   result: unknown
+  /** Latest step plan from the daemon, settled once the command ends; `null` until reported. */
+  progress: CommandProgress | null
   errorCode: string | null
   /** Canonical human-readable error for terminal failures. */
   errorMessage: string | null
@@ -149,7 +161,7 @@ function toIsoTimestamp(value: string | Date | null | undefined): string | null 
   return parsed.toISOString()
 }
 
-export function serializeCommandRecord(row: CommandDbRow): CommandRecord {
+export function serializeCommandRecord(row: CommandRowInput): CommandRecord {
   return {
     id: row.id,
     serverId: row.serverId,
@@ -159,6 +171,7 @@ export function serializeCommandRecord(row: CommandDbRow): CommandRecord {
     status: (row.status ?? 'queued') as CommandStatus,
     context: row.context ?? null,
     result: row.resultSummary ?? null,
+    progress: parseStoredCommandProgress(row.progress),
     errorCode: row.errorCode ?? null,
     errorMessage: row.errorMessage ?? null,
     errorLine: lastErrorLine(row.errorMessage),
@@ -193,6 +206,18 @@ function managedDestroyGateIdFromMetadata(
   return typeof gateId === 'string' && gateId.length > 0 ? gateId : undefined
 }
 
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/**
+ * The id as a uuid, or `undefined` for anything else. The environment and
+ * managed columns are filled from the context bag, whose values are strings
+ * the payload carried, so a malformed one must not reach the uuid column.
+ */
+function contextUuid(context: object | undefined, key: string): string | undefined {
+  const value = (context as Record<string, unknown> | undefined)?.[key]
+  return typeof value === 'string' && UUID_PATTERN.test(value) ? value : undefined
+}
+
 /**
  * Insert the permanent `command` row and its `dispatch` payload row in
  * one transaction — a command never exists without its dispatch payload.
@@ -204,6 +229,12 @@ export async function createCommandRecord(
   const now = nowIso()
   const context = params.context ?? commandContextFromPayload(params.payload)
   const managedDestroyGateId = managedDestroyGateIdFromMetadata(params.metadata)
+  // The organization, environment and cluster the command is about get real
+  // columns (the activity feed, deploy history and the sweeps filter on them).
+  // Each is looked up, so an id the payload names but that no longer exists is
+  // left null instead of failing the insert.
+  const environmentId = contextUuid(context, 'environmentId')
+  const managedId = contextUuid(context, 'managedId')
 
   const row = await db.transaction(async (tx) => {
     const rows = await tx
@@ -216,6 +247,17 @@ export async function createCommandRecord(
         status: 'queued',
         attempts: 0,
         queuedAt: now,
+        organizationId: sql`(SELECT ${server.organizationId} FROM ${server} WHERE ${server.id} = ${params.serverId})`,
+        ...(environmentId === undefined
+          ? {}
+          : {
+              environmentId: sql`(SELECT ${environment.id} FROM ${environment} WHERE ${environment.id} = ${environmentId}::uuid)`,
+            }),
+        ...(managedId === undefined
+          ? {}
+          : {
+              managedId: sql`(SELECT ${managed.id} FROM ${managed} WHERE ${managed.id} = ${managedId}::uuid)`,
+            }),
         ...(context === undefined ? {} : { context }),
         ...(params.expiresAt === undefined ? {} : { expiresAt: params.expiresAt }),
         ...(params.metadata === undefined ? {} : { metadata: params.metadata }),
@@ -505,10 +547,17 @@ export async function transitionCommand(
   // finalizes the dispatch payload. Best effort and sink-based (no store is
   // threaded through Postgres helpers) — see
   // `src/features/execution-logs/seal-on-terminal.ts`.
-  if (TERMINAL_COMMAND_STATUSES.has(patch.status)) {
-    await sealExecutionLogOnTerminal(commandId)
-  }
-  return serializeCommandRecord(row)
+  if (!TERMINAL_COMMAND_STATUSES.has(patch.status)) return serializeCommandRecord(row)
+  await sealExecutionLogOnTerminal(commandId)
+  // Settle the daemon's step plan on the same terminal transition: the steps
+  // it never got to report become done, failed or skipped by the outcome.
+  const progress = await finalizeStoredCommandProgress(db, {
+    commandId,
+    status: patch.status,
+    progress: row.progress,
+    at: now,
+  })
+  return serializeCommandRecord({ ...row, progress })
 }
 
 async function cancelCommandWhen(
@@ -528,10 +577,17 @@ async function cancelCommandWhen(
       ...(patch.errorCode === undefined ? {} : { errorCode: patch.errorCode }),
     })
     .where(and(eq(command.id, commandId), extraWhere))
-    .returning({ id: command.id })
-  if (rows.length === 0) return false
+    .returning({ id: command.id, progress: command.progress })
+  const row = rows[0]
+  if (!row) return false
   await finalizeCommandDispatch(db, commandId, 'cancelled')
   await sealExecutionLogOnTerminal(commandId)
+  await finalizeStoredCommandProgress(db, {
+    commandId,
+    status: 'cancelled',
+    progress: row.progress,
+    at: now,
+  })
   return true
 }
 

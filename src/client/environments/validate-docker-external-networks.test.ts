@@ -20,7 +20,7 @@ type NetworkLookupRow = {
 }
 
 function createNetworkLookupDb(
-  rows: NetworkLookupRow[],
+  rows: NetworkLookupRow[]
 ): Parameters<typeof validateRegisteredExternalDockerNetworks>[0] {
   return {
     select() {
@@ -39,10 +39,7 @@ function createNetworkLookupDb(
 
 test('validateRegisteredExternalDockerNetworks returns null when empty', async () => {
   const db = createNetworkLookupDb([])
-  assertEquals(
-    await validateRegisteredExternalDockerNetworks(db, 'org', 'srv', []),
-    null,
-  )
+  assertEquals(await validateRegisteredExternalDockerNetworks(db, 'org', 'srv', []), null)
 })
 
 test('validateRegisteredExternalDockerNetworks accepts org-wide and server-scoped rows', async () => {
@@ -59,11 +56,8 @@ test('validateRegisteredExternalDockerNetworks accepts org-wide and server-scope
     },
   ])
   assertEquals(
-    await validateRegisteredExternalDockerNetworks(db, 'org', 'srv-1', [
-      'shared-b',
-      'shared-a',
-    ]),
-    null,
+    await validateRegisteredExternalDockerNetworks(db, 'org', 'srv-1', ['shared-b', 'shared-a']),
+    null
   )
 })
 
@@ -76,19 +70,15 @@ test('validateRegisteredExternalDockerNetworks matches server-pinned docker row 
     },
   ])
   assertEquals(
-    await validateRegisteredExternalDockerNetworks(db, 'org', 'srv-pinned', [
-      'host-local-net',
-    ]),
-    null,
+    await validateRegisteredExternalDockerNetworks(db, 'org', 'srv-pinned', ['host-local-net']),
+    null
   )
   // Filter is applied in SQL; the fake does not re-filter by serverId, so both
   // cases that receive the row still pass — the production OR branch makes the
   // row visible for srv-pinned and drops it for other hosts in the real query.
   assertEquals(
-    await validateRegisteredExternalDockerNetworks(db, 'org', 'srv-pinned', [
-      'missing-name',
-    ]),
-    ['missing-name'],
+    await validateRegisteredExternalDockerNetworks(db, 'org', 'srv-pinned', ['missing-name']),
+    ['missing-name']
   )
 })
 
@@ -101,12 +91,8 @@ test('validateRegisteredExternalDockerNetworks reports missing names sorted', as
     },
   ])
   assertEquals(
-    await validateRegisteredExternalDockerNetworks(db, 'org', 'srv-1', [
-      'zeta',
-      'alpha',
-      'known',
-    ]),
-    ['alpha', 'zeta'],
+    await validateRegisteredExternalDockerNetworks(db, 'org', 'srv-1', ['zeta', 'alpha', 'known']),
+    ['alpha', 'zeta']
   )
 })
 
@@ -159,10 +145,10 @@ test('resolveRegisteredExternalDockerNetworks returns addressing only for matche
           mtu: 1450,
         },
       ],
-    },
+    }
   )
-  assertEquals(
-    await resolveRegisteredExternalDockerNetworks(db, 'org', 'srv-1', []),
-    { missing: null, addressing: [] },
-  )
+  assertEquals(await resolveRegisteredExternalDockerNetworks(db, 'org', 'srv-1', []), {
+    missing: null,
+    addressing: [],
+  })
 })

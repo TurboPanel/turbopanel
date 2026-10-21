@@ -129,6 +129,11 @@ export type RecoveryMetadata = {
   ingressPendingServerIds?: string[]
   /** Servers whose ProxySQL did not confirm the new primary (set on the terminal `failed` row). */
   ingressNotRepointed?: string[]
+  /**
+   * Times a promote that the daemon lost to a restart was queued again
+   * (`resumeInterruptedPromote`).
+   */
+  promoteResumes?: number
   haPresent?: boolean
   fenced?: boolean
   drainApplied?: boolean
@@ -140,7 +145,7 @@ export type RecoveryMetadata = {
   forced?: boolean
   /**
    * Operator switchover only: a fresh reading taken before the fence showed
-   * the target fully caught up (`switchover-catchup.ts`). Absent / false =
+   * the target fully caught up (`switchover-evidence.ts`). Absent / false =
    * not proven, so the old primary is left `needs_resync` for an operator.
    */
   targetCaughtUp?: boolean
@@ -185,6 +190,11 @@ export type RecoveryMetadata = {
    */
   needsOperator?: boolean
   failedReason?: string
+  /**
+   * MySQL-family switchover: final GTID position captured when the old primary
+   * was quiesced before fence stop. The promotion target must apply it first.
+   */
+  switchoverRequiredGtidSet?: string
 }
 
 export type RecoveryRecord = {
@@ -264,6 +274,11 @@ export function parseRecoveryMetadata(value: unknown): RecoveryMetadata {
     optionalStringList(value.ingressPendingServerIds)
   )
   setIfPresent(metadata, 'ingressNotRepointed', optionalStringList(value.ingressNotRepointed))
+  setIfPresent(
+    metadata,
+    'promoteResumes',
+    optionalNullableNumber(value.promoteResumes) ?? undefined
+  )
   setIfPresent(metadata, 'haPresent', optionalBoolean(value.haPresent))
   setIfPresent(metadata, 'fenced', optionalBoolean(value.fenced))
   setIfPresent(metadata, 'drainApplied', optionalBoolean(value.drainApplied))
@@ -288,6 +303,11 @@ export function parseRecoveryMetadata(value: unknown): RecoveryMetadata {
   setIfPresent(metadata, 'stale', optionalBoolean(value.stale))
   setIfPresent(metadata, 'needsOperator', optionalBoolean(value.needsOperator))
   setIfPresent(metadata, 'failedReason', optionalString(value.failedReason))
+  setIfPresent(
+    metadata,
+    'switchoverRequiredGtidSet',
+    optionalString(value.switchoverRequiredGtidSet)
+  )
   return metadata
 }
 

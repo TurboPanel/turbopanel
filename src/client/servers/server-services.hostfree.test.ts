@@ -3,6 +3,7 @@ import {
   capServerServicesList,
   SERVER_SERVICES_LIST_CAP,
   serverServicesRemovalMessage,
+  serverServicesRemovalNames,
   serverServicesRemovalReasons,
   serverServicesRuntimesFromMetadata,
 } from './server-services.ts'
@@ -70,6 +71,129 @@ test('serverServicesRemovalMessage mentions Host is gone when the leftovers can 
   assertEquals(
     serverServicesRemovalMessage('network', 2, { canForget: true }),
     '2 networks are still recorded on this server. Because the host is offline, you can remove them with Delete server → Host is gone.'
+  )
+  assertEquals(
+    serverServicesRemovalMessage('environment', 1, { canForget: true }),
+    'One app environment lived only on this server. Because the host is offline, you can remove it with Delete server → Host is gone.'
+  )
+})
+
+test('serverServicesRemovalReasons names blocked databases and skips generic managed copy', () => {
+  assertEquals(
+    serverServicesRemovalReasons(
+      [
+        { kind: 'environment', count: 1, label: 'an app environment' },
+        { kind: 'managed', count: 1, label: 'a managed database is still placed on this server' },
+      ],
+      false,
+      false,
+      [{ id: 'db-1', name: 'orders', reason: 'only_member' }]
+    ),
+    [
+      {
+        kind: 'environment',
+        count: 1,
+        message: 'One app environment is still placed on this server.',
+      },
+      {
+        kind: 'managed',
+        count: 1,
+        message: 'Database "orders" has its only copy on this server. Delete the database first.',
+        items: [{ id: 'db-1', name: 'orders' }],
+        more: 0,
+      },
+    ]
+  )
+})
+
+const ENV_ITEMS = [
+  { id: 'env-1', name: 'production', projectId: 'proj-1', projectName: 'Acme', hasDatabase: false },
+  { id: 'env-2', name: 'staging', projectId: 'proj-1', projectName: 'Acme', hasDatabase: false },
+  { id: 'env-3', name: 'edge', projectId: 'proj-2', projectName: 'Beta', hasDatabase: true },
+  { id: 'env-4', name: 'canary', projectId: 'proj-2', projectName: 'Beta', hasDatabase: false },
+]
+
+test('serverServicesRemovalNames quotes up to three names then counts the rest', () => {
+  assertEquals(serverServicesRemovalNames([ENV_ITEMS[0]]), '"Acme / production"')
+  assertEquals(
+    serverServicesRemovalNames(ENV_ITEMS.slice(0, 2)),
+    '"Acme / production" and "Acme / staging"'
+  )
+  assertEquals(
+    serverServicesRemovalNames(ENV_ITEMS),
+    '"Acme / production", "Acme / staging", "Beta / edge" and 1 more'
+  )
+  assertEquals(serverServicesRemovalNames([ENV_ITEMS[0]], 7), '"Acme / production" and 7 more')
+})
+
+test('serverServicesRemovalMessage names the blocking environments', () => {
+  assertEquals(
+    serverServicesRemovalMessage('environment', 1, { items: [ENV_ITEMS[0]] }),
+    'App environment "Acme / production" is still placed on this server.'
+  )
+  assertEquals(
+    serverServicesRemovalMessage('environment', 4, { items: ENV_ITEMS }),
+    'App environments "Acme / production", "Acme / staging", "Beta / edge" and 1 more are still placed on this server.'
+  )
+  assertEquals(
+    serverServicesRemovalMessage('environment', 1, { items: [ENV_ITEMS[0]], canForget: true }),
+    'App environment "Acme / production" lived only on this server. Because the host is offline, you can remove it with Delete server → Host is gone.'
+  )
+})
+
+test('serverServicesRemovalMessage names the blocking databases', () => {
+  assertEquals(
+    serverServicesRemovalMessage('managed', 1, { items: [{ id: 'db-1', name: 'orders' }] }),
+    'Managed database "orders" is still placed on this server.'
+  )
+  assertEquals(
+    serverServicesRemovalMessage('replica', 2, {
+      items: [
+        { id: 'db-1', name: 'carts' },
+        { id: 'db-2', name: 'orders' },
+      ],
+    }),
+    'Databases "carts" and "orders" still have members on this server.'
+  )
+  assertEquals(
+    serverServicesRemovalMessage('replica', 1, {
+      items: [{ id: 'db-1', name: 'carts' }],
+      canForget: true,
+    }),
+    'Database "carts" still has a member recorded on this server. Because the host is offline, you can remove it with Delete server → Host is gone.'
+  )
+})
+
+test('serverServicesRemovalReasons carries the named items onto each reason', () => {
+  assertEquals(
+    serverServicesRemovalReasons(
+      [
+        {
+          kind: 'environment',
+          count: 4,
+          label: 'an app environment',
+          items: ENV_ITEMS,
+          more: 0,
+        },
+        { kind: 'ip', count: 1, label: 'an address' },
+      ],
+      false
+    ),
+    [
+      {
+        kind: 'environment',
+        count: 4,
+        message:
+          'App environments "Acme / production", "Acme / staging", "Beta / edge" and 1 more are still placed on this server.',
+        items: ENV_ITEMS,
+        more: 0,
+      },
+      {
+        kind: 'ip',
+        count: 1,
+        message: 'One address is still assigned to this server: remove it first.',
+      },
+    ]
   )
 })
 

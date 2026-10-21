@@ -21,8 +21,20 @@ export function runtimeSeries(runtime: string): readonly string[] {
   return []
 }
 
-/** Default Node series when a native app declares no `nodeVersion`. */
-export const DEFAULT_NATIVE_APP_NODE_SERIES = '24'
+/** The highest series offered for a runtime, compared as numbers. */
+export function newestRuntimeSeries(runtime: string): string | undefined {
+  return [...runtimeSeries(runtime)]
+    .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
+    .at(-1)
+}
+
+/**
+ * Node series a native app runs on when it declares no `nodeVersion` and its
+ * repository names none: the newest series offered. There is no separately
+ * chosen default, so adding a series to {@link runtimeSeries} moves unpinned
+ * apps onto it at their next deploy.
+ */
+export const NEWEST_NATIVE_APP_NODE_SERIES = newestRuntimeSeries('node') as string
 
 /**
  * Default Deno series when a Deno app declares no `denoVersion`. Deno ships one

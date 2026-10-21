@@ -64,7 +64,6 @@ import {
   type StatusHistoryResult,
 } from '../../daemon/metrics/types.ts'
 import {
-  buildCapacitiesByGeneration,
   buildConnectionHistoryPayload,
   buildCpuLimitsEnvelope,
   buildFleetLatestPayload,
@@ -97,7 +96,6 @@ import {
 import {
   getLatestTopologyGeneration,
   getLatestTopologyGenerations,
-  getTopologyGenerations,
 } from '../../features/servers/server-topology-records.ts'
 
 /** Fixed lookback for the org servers overview usage strip/bars (~1 sample/min). */
@@ -478,7 +476,12 @@ export function registerServerMetricsRoutes(router: Hono<AppEnv>, opts: AuthRout
       backend,
       schemaVersion: 6,
       kind: 'series',
-      topologyGeneration: context.topologyGeneration ?? undefined,
+      // The response carries the device inventory, capacities and CPU limits
+      // taken from the stored hardware record, so a rewrite of that record
+      // (a new one, or the same one with changed content) must not be answered
+      // from an older cached response. Its write time changes exactly then.
+      // The chart values do not depend on it.
+      hardwareWrittenAtMs: latestGeneration ? Date.parse(latestGeneration.updatedAt) : undefined,
     })
 
     const cached = await cache.get<ReturnType<typeof buildSeriesRouteResponse>>(cacheKey)
@@ -521,15 +524,6 @@ export function registerServerMetricsRoutes(router: Hono<AppEnv>, opts: AuthRout
       latestSnapshot: latestGeneration?.snapshot,
       deployment,
     })
-    // Capacity totals are the denominator of every derived percentage, so
-    // they must come from the generation each bucket was sampled under — not
-    // from today's. Only the generations this range actually spans are
-    // fetched, and a range that never crosses a topology change costs one
-    // extra indexed lookup.
-    const capacitiesByGeneration = buildCapacitiesByGeneration(
-      await getTopologyGenerations(db, serverId, hostResult?.topologyGenerations ?? []),
-      hardwareProfile
-    )
     const hostChartResponse = hostResult
       ? toHostSeriesChartResponse({
           serverId,
@@ -537,7 +531,7 @@ export function registerServerMetricsRoutes(router: Hono<AppEnv>, opts: AuthRout
           to: queryRange.toIso,
           result: hostResult,
           capacities: context.capacities,
-          capacitiesByGeneration,
+          hiddenMetrics: seriesQuery.hiddenHostMetrics,
         })
       : null
 
@@ -600,7 +594,6 @@ export function registerServerMetricsRoutes(router: Hono<AppEnv>, opts: AuthRout
       backend,
       schemaVersion: 6,
       kind: 'summary',
-      topologyGeneration: latestGeneration?.generation,
     })
 
     const cached = await cache.get<HostSummaryChartResponse & CpuLimitsEnvelope>(cacheKey)
@@ -670,7 +663,7 @@ export function registerServerMetricsRoutes(router: Hono<AppEnv>, opts: AuthRout
 
     const resolved = resolveDbAndRange(c)
     if (resolved instanceof Response) return resolved
-    const { db, range } = resolved
+    const { range } = resolved
 
     // Status transitions are v6-only: `queryStatusHistory` is optional on
     // `ServerMetricsStore` (only `DisabledServerMetricsStore` omits it),
@@ -686,10 +679,6 @@ export function registerServerMetricsRoutes(router: Hono<AppEnv>, opts: AuthRout
     })
     const queryRange = canonicalizeMetricsRange(range.fromMs, range.toMs, resolutionSeconds)
 
-    // Only the generation is needed here (no cpuLimits envelope on this
-    // route).
-    const latestGeneration = await getLatestTopologyGeneration(db, serverId)
-
     const cacheKey = metricsChartCacheKey({
       serverId,
       fromBucketMs: queryRange.fromMs,
@@ -699,7 +688,6 @@ export function registerServerMetricsRoutes(router: Hono<AppEnv>, opts: AuthRout
       backend,
       schemaVersion: 6,
       kind: 'connection',
-      topologyGeneration: latestGeneration?.generation,
     })
 
     const cached = await cache.get<ConnectionHistoryChartResponse>(cacheKey)

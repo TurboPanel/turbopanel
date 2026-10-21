@@ -10,7 +10,8 @@
  * commit against its base ref and refuses any modified or deleted
  * `NNNN_*.sql` or `meta/NNNN_snapshot.json` when the *base's* manifest says
  * `frozen: true`. `_journal.json` and `manifest.json` are expected to change
- * (they append). The fold commit itself passes because its base is unfrozen.
+ * (they append). A base that cannot be resolved, has no manifest or is not
+ * frozen fails the check: it never skips.
  *
  * Why the base's flag, not the working tree's: a commit could flip `frozen`
  * back to false alongside its edit. What was already frozen decides.
@@ -82,24 +83,32 @@ function fail(message) {
   process.exit(1)
 }
 
-function main() {
-  const base = resolveBase(process.argv.slice(2))
-
-  let baseManifest = null
+/**
+ * Refuse to run against a base that cannot prove migrations are frozen. A
+ * guard that skips on a bad ref or a missing or unfrozen manifest would let a
+ * destructive migration through, so each of those is a failure.
+ */
+function requireFrozenBase(base) {
+  try {
+    git('rev-parse', '--verify', '--quiet', `${base}^{commit}`)
+  } catch {
+    fail(`base ref "${base}" does not resolve to a commit; pass a real commit or branch`)
+  }
+  let baseManifest
   try {
     baseManifest = JSON.parse(git('show', `${base}:migrations/manifest.json`))
   } catch {
-    console.log(
-      `migration-additions: ${base} has no migrations/manifest.json — nothing frozen yet, skipping`
-    )
-    return
+    fail(`${base} has no readable migrations/manifest.json, so nothing can be checked`)
   }
   if (baseManifest.frozen !== true) {
-    console.log(
-      `migration-additions: ${base} manifest is not frozen (the fold has not landed there) — skipping`
-    )
-    return
+    fail(`${base} migrations/manifest.json is not frozen, so nothing can be checked`)
   }
+}
+
+function main() {
+  const base = resolveBase(process.argv.slice(2))
+
+  requireFrozenBase(base)
 
   const changes = parseChanges(git(...diffArgs(base)))
 

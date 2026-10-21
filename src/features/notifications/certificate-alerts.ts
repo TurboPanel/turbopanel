@@ -7,7 +7,6 @@
 import type { Db } from '../../db/connection.ts'
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { emitNotification } from './emit.ts'
-import { isNotificationEventLive } from './events.ts'
 
 const MAX_DETAIL_CHARS = 200
 
@@ -54,25 +53,17 @@ export type CertificateRenewalFailure = {
 }
 
 export type CertificateAlertDeps = {
-  /** Test seams: whether the event is accepted by the database, and the emitter. */
-  live?: boolean
+  /** Test seam: the emitter. */
   emit?: typeof emitNotification
 }
 
-/**
- * One bell/channel alert for a certificate that failed to issue or renew.
- * Stays quiet until the database accepts the event (its migration is applied
- * and the event is in the pinned vocabulary), so an unmigrated database never
- * sees a failing insert per failure.
- */
+/** One bell/channel alert for a certificate that failed to issue or renew. */
 export async function emitCertificateRenewalFailed(
   db: Db,
   secrets: DerivedSecretsConfig | undefined,
   failure: CertificateRenewalFailure,
   deps: CertificateAlertDeps = {}
 ): Promise<void> {
-  const live = deps.live ?? isNotificationEventLive('certificate.renewal_failed')
-  if (!live) return
   const emit = deps.emit ?? emitNotification
   const detail = failure.rawError?.trim().slice(0, MAX_DETAIL_CHARS)
   await emit(

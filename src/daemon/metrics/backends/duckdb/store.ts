@@ -21,6 +21,7 @@
 import {
   DIAGNOSTICS_CPU_FIELD_NAMES,
   HOST_METRICS_METRIC_DESCRIPTORS,
+  UNSTORED_V8_HOST_METRICS,
   type HostMetricsMetricDescriptor,
   type MetricEntityScope,
 } from '../../metric-descriptors.ts'
@@ -100,9 +101,11 @@ import {
   entityMetricColumnName,
   extendedColumnName,
   FILESYSTEM_METRIC_FIELDS,
+  FILESYSTEM_SIZE_FIELDS,
   FILESYSTEM_SAMPLES_TABLE,
   filesystemSamplesInsertColumns,
   GPU_METRIC_FIELDS,
+  GPU_SIZE_FIELDS,
   GPU_SAMPLES_TABLE,
   gpuSamplesInsertColumns,
   HARDWARE_SIGNAL_SAMPLES_TABLE,
@@ -136,14 +139,16 @@ import {
   STORAGE_SAMPLES_TABLE,
   storageSamplesInsertColumns,
   storageSamplesMetricColumnNames,
-  V7_DOCKER_COLUMNS,
-  V7_HOST_COLUMNS,
-  V7_INGRESS_COLUMNS,
+  V8_DOCKER_COLUMNS,
+  V8_HOST_COLUMNS,
+  V8_INGRESS_COLUMNS,
+  V8_SIZE_COLUMNS,
 } from './schema.ts'
 import {
   EXTENDED_DOCKER_FIELD_NAMES,
   EXTENDED_HOST_FIELD_NAMES,
   EXTENDED_INGRESS_FIELD_NAMES,
+  EXTENDED_SIZE_FIELD_NAMES,
   STORAGE_ENGINE_FIELD_NAMES,
   STORAGE_ENGINE_KEYS,
 } from '../../../../contracts/metrics-contract.ts'
@@ -343,6 +348,7 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
           input.diagnostics ? numericField(input.diagnostics.cpu, field) : null
         ),
         ...EXTENDED_HOST_FIELD_NAMES.map((field) => extendedNumber(input.extended?.host, field)),
+        ...EXTENDED_SIZE_FIELD_NAMES.map((field) => extendedNumber(input.extended?.sizes, field)),
       ],
     })
 
@@ -376,7 +382,18 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
         values: [
           ...common,
           filesystem.filesystemId,
-          ...FILESYSTEM_METRIC_FIELDS.map((field) => numericField(filesystem, field)),
+          ...FILESYSTEM_METRIC_FIELDS.map((field) =>
+            (FILESYSTEM_SIZE_FIELDS as readonly string[]).includes(field)
+              ? extendedNumber(
+                  sizeEntry(
+                    input.extended?.filesystemSizes,
+                    'filesystemId',
+                    filesystem.filesystemId
+                  ),
+                  field
+                )
+              : numericField(filesystem, field)
+          ),
         ],
       })
     }
@@ -398,7 +415,11 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
         values: [
           ...common,
           gpu.gpuId,
-          ...GPU_METRIC_FIELDS.map((field) => numericField(gpu, field)),
+          ...GPU_METRIC_FIELDS.map((field) =>
+            (GPU_SIZE_FIELDS as readonly string[]).includes(field)
+              ? extendedNumber(sizeEntry(input.extended?.gpuSizes, 'gpuId', gpu.gpuId), field)
+              : numericField(gpu, field)
+          ),
         ],
       })
     }
@@ -418,7 +439,7 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
           ingress.sourceId,
           ingress.sourceKind,
           ...INGRESS_METRIC_FIELDS.map((field) => numericField(ingress, field)),
-          // Hosting Caddy is the only ingress source and the v7 section is
+          // Hosting Caddy is the only ingress source and the v8 section is
           // host-wide, so its value rides every ingress row.
           ...EXTENDED_INGRESS_FIELD_NAMES.map((field) =>
             extendedNumber(input.extended?.ingress, field)
@@ -675,7 +696,7 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
 
     if (requiresIngress) {
       const ingressSource = await this.#familySamplesSource(parquetFamily('ingress'), fromMs, toMs)
-      // One row per sample whatever the number of ingress sources: the v7
+      // One row per sample whatever the number of ingress sources: the v8
       // value is host-wide and rides every source row, so any one will do.
       const summary = EXTENDED_INGRESS_FIELD_NAMES.map(
         (field) => `max(${extendedColumnName(field)}) AS ${extendedColumnName(field)}`
@@ -686,6 +707,7 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
     }
 
     const metricSelects = metrics.map((name) => {
+      if (UNSTORED_V8_HOST_METRICS.has(name)) return `CAST(NULL AS DOUBLE) AS "${name}"`
       const descriptor = HOST_METRICS_METRIC_DESCRIPTORS[name]!
       const column = hostSeriesColumnForDescriptor(descriptor)
       // "h." metadata prefix: unambiguous even without the `md`/`rt`/`st`/`dk` joins,
@@ -700,7 +722,6 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
       }) * ${bucketSeconds} AS DOUBLE) AS bucket,`,
       `  CAST(count(*) AS DOUBLE) AS sample_count,`,
       `  CAST(avg(h.interval_seconds) AS DOUBLE) AS avg_interval_seconds,`,
-      `  string_agg(DISTINCT CAST(h.topology_generation AS VARCHAR), ',') AS topology_gen_raw,`,
       `  CAST(epoch_ms(max(h.sampled_at)) AS DOUBLE) AS last_sampled_at_ms,`,
       `  ${metricSelects.join(',\n  ')}`,
       `FROM ${hostSource} AS h`,
@@ -719,11 +740,7 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
     ])
     const rows = reader.getRowObjectsJS()
 
-    const { points, sampleCount, topologyGenerations } = parseHostSeriesRows(
-      metrics,
-      rows,
-      bucketSeconds
-    )
+    const { points, sampleCount } = parseHostSeriesRows(metrics, rows, bucketSeconds)
 
     return finalizeHostSeriesResult(from.toISOString(), to.toISOString(), {
       kind: 'duckdb',
@@ -734,7 +751,6 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
       resolutionSeconds: bucketSeconds,
       gapCount: 0,
       sampleCount,
-      topologyGenerations,
     })
   }
 
@@ -800,6 +816,7 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
       to.getTime()
     )
     const metricSelects = metrics.map((name) => {
+      if (UNSTORED_V8_HOST_METRICS.has(name)) return `CAST(NULL AS DOUBLE) AS "${name}"`
       const descriptor = HOST_METRICS_METRIC_DESCRIPTORS[name]!
       const column = hostColumnForDescriptor(descriptor)
       return `${hostFieldAggregateSql(descriptor, column)} AS "${name}"`
@@ -810,7 +827,6 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
       `  CAST(server_id AS VARCHAR) AS server_id,`,
       `  CAST(count(*) AS DOUBLE) AS sample_count,`,
       `  CAST(epoch_ms(max(sampled_at)) AS DOUBLE) AS latest_at_ms,`,
-      `  string_agg(DISTINCT CAST(topology_generation AS VARCHAR), ',') AS topology_gen_raw,`,
       `  ${metricSelects.join(',\n  ')}`,
       `FROM ${source}`,
       `WHERE server_id IN (${inList})`,
@@ -830,14 +846,12 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
       if (!serverId) continue
       const sampleCount = toFiniteNumber(row.sample_count) ?? 0
       const latestAtMs = toFiniteNumber(row.latest_at_ms)
-      const generations = parseHardwareProfileGenerations(row.topology_gen_raw)
       servers.push({
         serverId,
         sampleCount,
         latestAt:
           latestAtMs === null || sampleCount <= 0 ? null : new Date(latestAtMs).toISOString(),
         values: parseMetricValues(metrics, row),
-        topologyGeneration: generations.length === 1 ? generations[0]! : null,
       })
     }
     servers.sort((a, b) => a.serverId.localeCompare(b.serverId))
@@ -1367,7 +1381,16 @@ function numericField(source: unknown, field: string): number | null {
   return (source as Record<string, number | null>)[field] ?? null
 }
 
-/** One v7 `extended` numeric field: the real value, or SQL `NULL` when the section or field is absent (a v6 sample). */
+/** The size entry of one entity (`extended.filesystemSizes` / `extended.gpuSizes`), by its id. */
+function sizeEntry(
+  entries: readonly object[] | undefined,
+  idField: string,
+  id: string
+): object | undefined {
+  return entries?.find((entry) => (entry as Record<string, unknown>)[idField] === id)
+}
+
+/** One v8 `extended` numeric field: the real value, or SQL `NULL` when the section or field is absent (a v6 sample). */
 function extendedNumber(source: object | undefined, field: string): number | null {
   return source ? numericField(source, field) : null
 }
@@ -1406,7 +1429,8 @@ const HOST_TUPLE = entityTuple(
   [],
   HOST_METRIC_FIELD_REFS.length +
     HOST_GLOBAL_CPU_DIAGNOSTICS_FIELDS_LIST.length +
-    V7_HOST_COLUMNS.length
+    V8_HOST_COLUMNS.length +
+    V8_SIZE_COLUMNS.length
 )
 
 const NETWORK_COLUMNS = networkSamplesInsertColumns()
@@ -1430,7 +1454,7 @@ const HARDWARE_SIGNAL_TUPLE = entityTuple(['?', '?'], 1)
 const INGRESS_COLUMNS = ingressSamplesInsertColumns()
 const INGRESS_TUPLE = entityTuple(
   ['?', '?'],
-  INGRESS_METRIC_FIELDS.length + V7_INGRESS_COLUMNS.length
+  INGRESS_METRIC_FIELDS.length + V8_INGRESS_COLUMNS.length
 )
 
 const DATABASE_PROXY_COLUMNS = databaseProxySamplesInsertColumns()
@@ -1448,7 +1472,7 @@ const STORAGE_TUPLE = entityTuple(
 )
 
 const DOCKER_COLUMNS = dockerSamplesInsertColumns()
-const DOCKER_TUPLE = entityTuple([], DOCKER_USAGE_METRIC_FIELDS.length + V7_DOCKER_COLUMNS.length)
+const DOCKER_TUPLE = entityTuple([], DOCKER_USAGE_METRIC_FIELDS.length + V8_DOCKER_COLUMNS.length)
 
 const EVENT_COLUMNS = metricEventsInsertColumns()
 const EVENT_TUPLE =
@@ -1637,21 +1661,6 @@ function sumValueSql(column: string): string {
   return `SUM(${column})`
 }
 
-/**
- * Parse a `string_agg(DISTINCT CAST(topology_generation AS VARCHAR), ',')`
- * aggregate into the distinct generations observed, sorted ascending.
- * `string_agg` drops NULLs, so an all-NULL group yields an empty array.
- */
-function parseHardwareProfileGenerations(raw: unknown): number[] {
-  if (typeof raw !== 'string' || raw.length === 0) return []
-  const values = new Set<number>()
-  for (const token of raw.split(',')) {
-    const value = toFiniteNumber(token.trim())
-    if (value !== null) values.add(value)
-  }
-  return [...values].sort((a, b) => a - b)
-}
-
 // ---------------------------------------------------------------------------
 // Query helpers (`queryHostSeries`/`queryFleetHostSnapshot`,
 // `queryEntitySeries`/`queryEntityIdsSeen`/`queryMetricEvents`) — real
@@ -1727,13 +1736,13 @@ function isStorageMetric(metric: string): boolean {
   return HOST_METRICS_METRIC_DESCRIPTORS[metric]?.entityScope === 'storage'
 }
 
-/** `true` when `metric` is a `managed.docker` field or a v7 container-health field, both stored in the singleton docker table. */
+/** `true` when `metric` is a `managed.docker` field or a v8 container-health field, both stored in the singleton docker table. */
 function isDockerUsageMetric(metric: string): boolean {
   const scope = HOST_METRICS_METRIC_DESCRIPTORS[metric]?.entityScope
   return scope === 'dockerUsage' || scope === 'extended.docker'
 }
 
-/** `true` when `metric` is a v7 hosting-Caddy number, stored on the ingress rows. */
+/** `true` when `metric` is a v8 hosting-Caddy number, stored on the ingress rows. */
 function isIngressExtendedMetric(metric: string): boolean {
   return HOST_METRICS_METRIC_DESCRIPTORS[metric]?.entityScope === 'extended.ingress'
 }
@@ -1776,7 +1785,7 @@ function hostSeriesColumnForDescriptor(descriptor: HostMetricsMetricDescriptor):
   if (descriptor.entityScope === 'dockerUsage') {
     return `dk.${entityMetricColumnName(descriptor.fieldName)}`
   }
-  // v7 numbers: host-wide health counters sit on the host row, container health
+  // v8 numbers: host-wide health counters sit on the host row, container health
   // on the docker row, and the certificate days on the (one-per-sample) ingress
   // summary `ig` that `queryHostSeries` joins in.
   if (descriptor.entityScope === 'extended.host') {
@@ -1789,6 +1798,9 @@ function hostSeriesColumnForDescriptor(descriptor: HostMetricsMetricDescriptor):
   }
   if (descriptor.entityScope === 'extended.ingress') {
     return `ig.${extendedColumnName(descriptor.fieldName)}`
+  }
+  if (descriptor.entityScope === 'extended.sizes') {
+    return `h.${extendedColumnName(descriptor.fieldName)}`
   }
   if (descriptor.entityScope === 'diagnostics') {
     return CPU_DIAGNOSTICS_FIELD_SET.has(descriptor.fieldName)
@@ -1807,6 +1819,7 @@ const HOST_SERIES_EXTRA_SCOPES: ReadonlySet<MetricEntityScope> = new Set([
   'extended.host',
   'extended.docker',
   'extended.ingress',
+  'extended.sizes',
 ])
 
 const NO_EXTRA_SCOPES: ReadonlySet<MetricEntityScope> = new Set()
@@ -1846,11 +1859,9 @@ function parseHostSeriesRows(
 ): {
   points: HostSeriesPoint[]
   sampleCount: number
-  topologyGenerations: number[]
 } {
   const points: HostSeriesPoint[] = []
   let sampleCount = 0
-  const allGenerations = new Set<number>()
   for (const row of rows) {
     const bucketEpochSeconds = toFiniteNumber(row.bucket)
     if (bucketEpochSeconds === null) continue
@@ -1861,8 +1872,6 @@ function parseHostSeriesRows(
       avgIntervalSeconds !== null
         ? defaultExpectedSamplesPerBucket(resolutionSeconds, avgIntervalSeconds)
         : defaultExpectedSamplesPerBucket(resolutionSeconds)
-    const bucketGenerations = parseHardwareProfileGenerations(row.topology_gen_raw)
-    for (const generation of bucketGenerations) allGenerations.add(generation)
     const lastSampledAtMs = toFiniteNumber(row.last_sampled_at_ms)
     const point: HostSeriesPoint = {
       at: new Date(bucketEpochSeconds * 1000).toISOString(),
@@ -1876,15 +1885,10 @@ function parseHostSeriesRows(
       ...(avgIntervalSeconds !== null && avgIntervalSeconds > 0
         ? { sampleSpacingSeconds: avgIntervalSeconds }
         : {}),
-      topologyGeneration: bucketGenerations.length === 1 ? bucketGenerations[0]! : null,
     }
     points.push(point)
   }
-  return {
-    points,
-    sampleCount,
-    topologyGenerations: [...allGenerations].sort((a, b) => a - b),
-  }
+  return { points, sampleCount }
 }
 
 function parseMetricValues(

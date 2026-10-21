@@ -2,7 +2,7 @@ import { assertEquals } from '@std/assert'
 import type { DaemonOutboundEnvelope } from '../../contracts/cell-protocol.ts'
 import { createUpgradeCoordinator } from './coordinator.ts'
 import { stepSatisfiedByInstalled } from './planner.ts'
-import { detailWithPhase } from './decisions.ts'
+import { stepDetail } from './decisions.ts'
 import { createMemoryUpgradeStore, type FleetServerFact } from './store.ts'
 
 /**
@@ -105,13 +105,8 @@ test('an unknown console build never opens the step', async () => {
 })
 
 test('the UI-refresh mark survives the way a step is stored', () => {
-  assertEquals(detailWithPhase('control_plane', { phase: 'control_plane', uiRefresh: true }), {
-    phase: 'control_plane',
-    uiRefresh: true,
-  })
-  assertEquals(detailWithPhase('control_plane', { phase: 'control_plane' }), {
-    phase: 'control_plane',
-  })
+  assertEquals(stepDetail({ uiRefresh: true }), { uiRefresh: true })
+  assertEquals(stepDetail({ phase: 'control_plane' }), {})
 })
 
 test('the control-plane step is satisfied only when the binary is current and the UI is not behind', () => {

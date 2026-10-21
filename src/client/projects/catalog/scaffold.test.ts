@@ -1,11 +1,18 @@
 import { skipWithoutDatabase } from '../../../test-fixtures/require-service.test.support.ts'
 import { assertEquals, assertNotEquals, assertThrows } from '@std/assert'
-import { eq } from 'drizzle-orm'
+import { eq, sql } from 'drizzle-orm'
 import { decryptSecret, parseSecretEnvelope } from '../../../lib/secrets/data-encryption.ts'
 import { deriveEncryptionSecretsConfig } from '../../../lib/secrets/secrets.ts'
 import { getDatabaseUrl } from '../../../db/url.ts'
 import { createDenoDb } from '../../../db/connection.ts'
-import { environment, organization, project, variable, workspace } from '../../../db/schema.ts'
+import {
+  environment,
+  organization,
+  project,
+  repository,
+  variable,
+  workspace,
+} from '../../../db/schema.ts'
 import { parseTestSecretsConfig } from '../../../test-fixtures/secrets.ts'
 import { scaffoldCatalogEnvironments } from '../routes.ts'
 import {
@@ -288,6 +295,81 @@ test('scaffoldCatalogEnvironments reuses sharedCredentialId when sealing', async
     if (envId) {
       await db.delete(variable).where(eq(variable.environmentId, envId))
     }
+    await db.delete(environment).where(eq(environment.projectId, proj!.id))
+    await db.delete(project).where(eq(project.id, proj!.id))
+    await db.delete(workspace).where(eq(workspace.id, ws!.id))
+    await db.delete(organization).where(eq(organization.id, org!.id))
+  }
+})
+
+test('scaffoldCatalogEnvironments watches the repository an environment compose names', async () => {
+  if (!dbUrl) {
+    skipWithoutDatabase('catalog scaffold tests')
+    return
+  }
+  const db = createDenoDb()
+  const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(
+    parseTestSecretsConfig('deno'),
+    'data-encryption'
+  )
+  const [org] = await db
+    .insert(organization)
+    .values({ name: 'Scaffold Watch Org' })
+    .returning({ id: organization.id })
+  const [ws] = await db
+    .insert(workspace)
+    .values({ organizationId: org!.id, name: 'Scaffold Watch Workspace' })
+    .returning({ id: workspace.id })
+  const [proj] = await db
+    .insert(project)
+    .values({ workspaceId: ws!.id, organizationId: org!.id, name: 'Scaffold Watch Project' })
+    .returning({ id: project.id })
+  const [repo] = await db
+    .insert(repository)
+    .values({
+      organizationId: org!.id,
+      provider: 'github',
+      repositoryUrl: `https://github.com/example/${crypto.randomUUID()}`,
+    })
+    .returning({ id: repository.id })
+  const entry: CatalogEntry = {
+    code: 'watch-fixture',
+    kind: 'template',
+    displayName: 'Watch Fixture',
+    description: 'Test-only entry whose compose names a repository',
+    compose: {
+      version: 1,
+      data: {
+        services: {
+          web: {
+            image: 'nginx:1',
+            'x-turbopanel': { source: { sourceId: repo!.id, branch: 'main' } },
+          },
+        },
+      },
+      presentation: { keyOrder: ['services'], comments: {} },
+    },
+    environments: [{ displayName: 'production' }],
+  }
+  try {
+    await db.transaction((tx) =>
+      scaffoldCatalogEnvironments(tx, proj!.id, entry, dataEncryptionSecrets)
+    )
+    const [env] = await db
+      .select({ id: environment.id, isPrimary: environment.isPrimary })
+      .from(environment)
+      .where(eq(environment.projectId, proj!.id))
+    assertEquals(env!.isPrimary, true)
+    const watched = (await db.execute(
+      sql`SELECT environment_id::text AS env FROM watch WHERE repository_id = ${repo!.id}::uuid`
+    )) as unknown as { env: string }[]
+    assertEquals(
+      watched.map((row) => row.env),
+      [env!.id]
+    )
+  } finally {
+    await db.execute(sql`DELETE FROM watch WHERE repository_id = ${repo!.id}::uuid`)
+    await db.delete(repository).where(eq(repository.id, repo!.id))
     await db.delete(environment).where(eq(environment.projectId, proj!.id))
     await db.delete(project).where(eq(project.id, proj!.id))
     await db.delete(workspace).where(eq(workspace.id, ws!.id))

@@ -39,8 +39,7 @@ export type ManagedSslMode = (typeof MANAGED_SSL_MODES)[number]
 export const DEFAULT_MANAGED_SSL_MODE: ManagedSslMode = 'require'
 
 export function isManagedSslMode(value: unknown): value is ManagedSslMode {
-  return typeof value === 'string' &&
-    (MANAGED_SSL_MODES as readonly string[]).includes(value)
+  return typeof value === 'string' && (MANAGED_SSL_MODES as readonly string[]).includes(value)
 }
 
 /**
@@ -48,9 +47,7 @@ export function isManagedSslMode(value: unknown): value is ManagedSslMode {
  * (inherit); anything unrecognized is `null` (reject) so a typo can never
  * silently downgrade to plaintext.
  */
-export function parseManagedSslMode(
-  value: unknown,
-): ManagedSslMode | null | undefined {
+export function parseManagedSslMode(value: unknown): ManagedSslMode | null | undefined {
   if (value === undefined) return undefined
   if (!isManagedSslMode(value)) return null
   return value
@@ -59,7 +56,7 @@ export function parseManagedSslMode(
 /** Effective mode for a cluster: service override → org default → platform. */
 export function resolveManagedSslMode(
   configured: ManagedSslMode | undefined,
-  organizationDefault?: ManagedSslMode | undefined,
+  organizationDefault?: ManagedSslMode | undefined
 ): ManagedSslMode {
   return configured ?? organizationDefault ?? DEFAULT_MANAGED_SSL_MODE
 }
@@ -71,6 +68,19 @@ export function resolveManagedSslMode(
  */
 export function managedSslRequiresTls(mode: ManagedSslMode): boolean {
   return mode === 'require' || mode === 'verify-ca' || mode === 'verify-full'
+}
+
+/**
+ * The weakest mode a cluster may resolve to while any server that fronts it
+ * allows external access: a published listener must never take a plaintext
+ * session. Enforced when a mode, an org default or the server switch is saved
+ * (`external-access-tls.ts`), and again in the ingress payload.
+ */
+export const MANAGED_SSL_MINIMUM_WITH_EXTERNAL_ACCESS: ManagedSslMode = 'require'
+
+/** True for the modes that let a client connect without TLS (`disable`, `allow`, `prefer`). */
+export function isWeakManagedSslMode(mode: ManagedSslMode): boolean {
+  return !managedSslRequiresTls(mode)
 }
 
 /** True when the client is told to validate the server certificate chain. */

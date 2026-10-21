@@ -17,11 +17,12 @@
 import { forEachSequential } from '../../lib/sequential.ts'
 import { and, eq, inArray, isNotNull } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
-import { environment, principal, project } from '../../db/schema.ts'
+import { environment, principal, principalPlacement, project } from '../../db/schema.ts'
 import { createCommandRecord, transitionCommand } from '../../features/commands/command-records.ts'
 import type { CommandEnvelope } from '../../features/commands/envelope.ts'
 import type { CommandQueue } from '../../features/commands/queue.ts'
 import { loadPrincipalMaterial } from '../environments/deploy-prepare.ts'
+import { principalsStillOnServer } from '../environments/teardown.ts'
 
 export type PrincipalsReconcileActor = {
   actorType: string
@@ -29,31 +30,67 @@ export type PrincipalsReconcileActor = {
 }
 
 /**
- * Servers where this principal's project has at least one environment.
+ * Placement states that put an account on the host. `pending` is left out on
+ * purpose: a deploy that never finished leaves one behind forever, and the
+ * project reach already covers a deploy in flight.
+ */
+const LIVE_PLACEMENT_STATES = ['present']
+
+/**
+ * Servers where this principal exists or will.
  *
- * That is the same reach a deploy has, so it is exactly the set of hosts where
- * the account can have been materialized. An environment with no server
- * assigned yet has nothing to reconcile.
+ * Two sources, unioned. The project reach: every server a project environment
+ * is pinned to is where a deploy materializes the account. The placements:
+ * the only record for a principal whose project was deleted (its `project_id`
+ * is NULL, the account and home stay on the host). An environment with no
+ * server assigned yet has nothing to reconcile.
  */
 export async function serversForPrincipal(db: Db, principalId: string): Promise<string[]> {
-  const rows = await db
+  const reach = await db
     .select({ serverId: environment.serverId })
     .from(principal)
     .innerJoin(project, eq(principal.projectId, project.id))
     .innerJoin(environment, eq(environment.projectId, project.id))
     .where(and(eq(principal.id, principalId), isNotNull(environment.serverId)))
-  return [...new Set(rows.map((row) => row.serverId as string))]
+  const placed = await db
+    .select({ serverId: principalPlacement.serverId })
+    .from(principalPlacement)
+    .where(
+      and(
+        eq(principalPlacement.principalId, principalId),
+        inArray(principalPlacement.state, LIVE_PLACEMENT_STATES)
+      )
+    )
+  return [
+    ...new Set([...reach.map((row) => row.serverId as string), ...placed.map((r) => r.serverId)]),
+  ]
 }
 
-/** Every principal TurboPanel manages on one server — the completeness rule. */
+/**
+ * Every principal TurboPanel manages on one server — the completeness rule.
+ * Includes principals that outlived their project: leaving one out would make
+ * the daemon treat it as no longer managed and drop its key files.
+ */
 export async function principalIdsOnServer(db: Db, serverId: string): Promise<string[]> {
-  const rows = await db
+  const reach = await db
     .select({ principalId: principal.id })
     .from(principal)
     .innerJoin(project, eq(principal.projectId, project.id))
     .innerJoin(environment, eq(environment.projectId, project.id))
     .where(eq(environment.serverId, serverId))
-  return [...new Set(rows.map((row) => row.principalId))]
+  const placed = await db
+    .select({ principalId: principalPlacement.principalId })
+    .from(principalPlacement)
+    .innerJoin(principal, eq(principalPlacement.principalId, principal.id))
+    .where(
+      and(
+        eq(principalPlacement.serverId, serverId),
+        inArray(principalPlacement.state, LIVE_PLACEMENT_STATES)
+      )
+    )
+  return [
+    ...new Set([...reach.map((row) => row.principalId), ...placed.map((row) => row.principalId)]),
+  ]
 }
 
 export type PrincipalsReconcileOutcome = {
@@ -61,6 +98,15 @@ export type PrincipalsReconcileOutcome = {
   queuedServerIds: string[]
   /** Servers whose command could not be queued; the rows are marked failed. */
   failedServerIds: string[]
+}
+
+export type PrincipalsReconcileOptions = {
+  /**
+   * Applied logins of principals the panel has just deleted; the daemon
+   * removes the accounts after it applies the surviving set
+   * (`tp-host principal-remove`). Sent to every server in `serverIds`.
+   */
+  retirePrincipals?: readonly string[]
 }
 
 /**
@@ -71,27 +117,40 @@ export type PrincipalsReconcileOutcome = {
  * into a 500 would tell the operator their revocation did not happen when the
  * row is in fact gone — the opposite of the truth, and the reason the caller
  * gets an outcome to report rather than an exception to swallow.
+ *
+ * A server whose managed set comes back **empty** is skipped unless there is
+ * an account to retire there: an empty set would tell the daemon to remove
+ * every key file on the host, and this code can never be sure enough of that
+ * to say it (the daemon refuses it too, without an explicit opt-in).
  */
 export async function enqueuePrincipalsReconcile(
   db: Db,
   queue: CommandQueue | undefined,
   actor: PrincipalsReconcileActor,
-  serverIds: readonly string[]
+  serverIds: readonly string[],
+  options: PrincipalsReconcileOptions = {}
 ): Promise<PrincipalsReconcileOutcome> {
   const queued: string[] = []
   const failed: string[] = []
   if (!queue) return { queuedServerIds: queued, failedServerIds: [...serverIds] }
+  const retirePrincipals = [...new Set(options.retirePrincipals ?? [])]
 
   await forEachSequential(serverIds, async (serverId) => {
     try {
       const principalIds = await principalIdsOnServer(db, serverId)
-      const principals = await loadPrincipalMaterial(db, principalIds)
+      const principals = await loadPrincipalMaterial(db, principalIds, { serverId, allocate: true })
+      if (principals.length === 0 && retirePrincipals.length === 0) return
       const record = await createCommandRecord(db, {
         serverId,
         actorType: actor.actorType,
         actorId: actor.actorId,
         type: 'server.principals.reconcile',
-        payload: { principals },
+        payload: {
+          principals,
+          ...(retirePrincipals.length > 0
+            ? { retirePrincipals: retirePrincipals.map((username) => ({ username })) }
+            : {}),
+        },
       })
       const envelope: CommandEnvelope = {
         commandId: record.id,
@@ -146,6 +205,55 @@ export async function reconcilePrincipalsAccess(
     .innerJoin(project, eq(principal.projectId, project.id))
     .innerJoin(environment, eq(environment.projectId, project.id))
     .where(and(inArray(principal.id, [...principalIds]), isNotNull(environment.serverId)))
-  const serverIds = [...new Set(rows.map((row) => row.serverId as string))]
+  const placed = await db
+    .select({ serverId: principalPlacement.serverId })
+    .from(principalPlacement)
+    .where(
+      and(
+        inArray(principalPlacement.principalId, [...principalIds]),
+        inArray(principalPlacement.state, LIVE_PLACEMENT_STATES)
+      )
+    )
+  const serverIds = [
+    ...new Set([...rows.map((row) => row.serverId as string), ...placed.map((r) => r.serverId)]),
+  ]
   return await enqueuePrincipalsReconcile(db, queue, actor, serverIds)
+}
+
+/**
+ * After a principal row is deleted: reconcile every server it reached and
+ * name its login in `retirePrincipals` there, so the daemon removes the
+ * account (user, group, home, slice) once the surviving set is applied. The
+ * one exception is a server where another row still places the same login
+ * (`principalsStillOnServer`, the teardown rule); that server gets a plain
+ * reconcile and keeps the account. Call with the server list resolved
+ * **before** the delete — `serversForPrincipal` joins through the row.
+ */
+export async function retireDeletedPrincipal(
+  db: Db,
+  queue: CommandQueue | undefined,
+  actor: PrincipalsReconcileActor,
+  params: Readonly<{ serverIds: readonly string[]; appliedUsername: string }>
+): Promise<PrincipalsReconcileOutcome> {
+  const retire: string[] = []
+  const keep: string[] = []
+  const failed: string[] = []
+  await forEachSequential(params.serverIds, async (serverId) => {
+    try {
+      const kept = await principalsStillOnServer(db, serverId, [params.appliedUsername])
+      ;(kept.has(params.appliedUsername) ? keep : retire).push(serverId)
+    } catch {
+      // The row is already gone; a lookup failure sends that server nothing
+      // (never retire on a guess) and is reported, not thrown.
+      failed.push(serverId)
+    }
+  })
+  const retired = await enqueuePrincipalsReconcile(db, queue, actor, retire, {
+    retirePrincipals: [params.appliedUsername],
+  })
+  const reconciled = await enqueuePrincipalsReconcile(db, queue, actor, keep)
+  return {
+    queuedServerIds: [...retired.queuedServerIds, ...reconciled.queuedServerIds],
+    failedServerIds: [...failed, ...retired.failedServerIds, ...reconciled.failedServerIds],
+  }
 }

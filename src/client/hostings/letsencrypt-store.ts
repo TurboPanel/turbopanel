@@ -160,6 +160,7 @@ export function createLetsEncryptStore(db: Db): LetsEncryptStore {
           ...(patch.tlsId === undefined ? {} : { tlsId: patch.tlsId }),
           ...(patch.options === undefined ? {} : { options: patch.options }),
           ...(patch.metadata === undefined ? {} : { metadata: patch.metadata }),
+          ...(patch.pendingAt === undefined ? {} : { pendingAt: patch.pendingAt }),
         })
         .where(eq(hosting.id, hostingId))
     },
@@ -171,6 +172,7 @@ export type HostingCertificateRow = {
   tlsId: string | null
   options: unknown
   metadata: unknown
+  pendingAt: string | null
   updatedAt: string
 }
 
@@ -255,7 +257,7 @@ export async function loadHostingCertificates(
       row.id,
       deriveHostingCertificate({
         pinned,
-        pending: readPendingLetsEncrypt(row.metadata),
+        pending: readPendingLetsEncrypt(row),
         www: readHostingWwwMode(row.options),
         letsEncryptAvailable: available,
         needsDeploy: needsDeploy.has(row.id),

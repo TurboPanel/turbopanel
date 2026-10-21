@@ -1,3 +1,4 @@
+import { X509Certificate } from 'node:crypto'
 import { assertEquals, assertRejects } from '@std/assert'
 import { CertificateParseError, parseCertificatePem } from './parse.ts'
 import { issueLeafCertificate, mintOrganizationCa } from './self-signed.ts'
@@ -11,10 +12,7 @@ import { issueLeafCertificate, mintOrganizationCa } from './self-signed.ts'
 const test = Deno.test.bind(Deno)
 
 test('parseCertificatePem rejects non-PEM input', async () => {
-  await assertRejects(
-    () => parseCertificatePem('not-a-certificate'),
-    CertificateParseError,
-  )
+  await assertRejects(() => parseCertificatePem('not-a-certificate'), CertificateParseError)
 })
 
 test('parseCertificatePem extracts DNS and IP SANs from a minted leaf', async () => {
@@ -26,7 +24,7 @@ test('parseCertificatePem extracts DNS and IP SANs from a minted leaf', async ()
     {
       commonName: 'app.example.com',
       ipAddresses: ['203.0.113.20'],
-    },
+    }
   )
   const parsed = await parseCertificatePem(leaf.certificatePem)
   assertEquals(parsed.dnsNames.includes('app.example.com'), true)
@@ -47,4 +45,25 @@ test('parseCertificatePem reads the organization CA subject as self-issued', asy
   assertEquals(parsed.subject.includes(`CN=${orgId}`), true)
   assertEquals(parsed.subject.includes('O=TurboPanel'), true)
   assertEquals(parsed.subject.includes('OU=Organization CA'), true)
+})
+
+test('a leaf carries IPv4 and IPv6 iPAddress SANs that read back exactly', async () => {
+  const ca = await mintOrganizationCa({ organizationId: 'Dual Stack CA' })
+  const leaf = await issueLeafCertificate(
+    ca.certificatePem,
+    ca.privateKeyPem,
+    ['omega', 'omega.example.com'],
+    {
+      commonName: 'omega.example.com',
+      ipAddresses: ['192.0.2.77', '2001:db8::4', '[fd00::5]'],
+    }
+  )
+  const parsed = await parseCertificatePem(leaf.certificatePem)
+  assertEquals(parsed.dnsNames, ['omega', 'omega.example.com'])
+  assertEquals(parsed.ipAddresses, ['192.0.2.77', '2001:db8::4', 'fd00::5'])
+  // An independent decoder sees the same 4- and 16-octet entries.
+  assertEquals(
+    new X509Certificate(leaf.certificatePem).subjectAltName,
+    'DNS:omega, DNS:omega.example.com, IP Address:192.0.2.77, IP Address:2001:db8::4, IP Address:fd00::5'
+  )
 })

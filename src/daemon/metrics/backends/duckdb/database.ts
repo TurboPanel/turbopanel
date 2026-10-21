@@ -69,14 +69,14 @@ export function schemaMarkerPath(paths: DuckDbPaths): string {
 type SchemaMarkerState =
   { kind: 'missing' } | { kind: 'invalid' } | { kind: 'version'; value: number }
 
-/** Marker content, with absent and unparseable told apart. Read errors other than NotFound throw. */
+/** Marker content, with absent and unparseable told apart. A read error other than NotFound counts as unreadable (`invalid`). */
 async function readSchemaMarkerState(paths: DuckDbPaths): Promise<SchemaMarkerState> {
   let text: string
   try {
     text = await Deno.readTextFile(schemaMarkerPath(paths))
   } catch (error) {
     if (error instanceof Deno.errors.NotFound) return { kind: 'missing' }
-    throw error
+    return { kind: 'invalid' }
   }
   const trimmed = text.trim()
   const value = Number(trimmed)
@@ -127,12 +127,12 @@ export function escapeSqlString(value: string): string {
 }
 
 /**
- * Open (or create) the current DuckDB metrics store (schema marker 9).
- * A sidecar marker holding an older version number discards
- * `metrics.duckdb`, `parquet/`, `tmp/`, and `schema-version` before this
- * open creates the current layout (no in-place migration). A missing marker
- * beside existing data, or an empty, unparseable, or newer marker, makes the
- * open fail without deleting anything.
+ * Open (or create) the current DuckDB metrics store (schema marker 10).
+ * Any marker other than the current one (older, empty, unparseable, missing
+ * beside existing data) discards `metrics.duckdb`, its wal, `parquet/`,
+ * `tmp/` and `schema-version` with a warning before this open creates the
+ * current layout (no in-place migration). A newer marker fails the open without
+ * deleting anything.
  */
 export async function openDuckDb(options: OpenDuckDbOptions): Promise<DuckDbHandle> {
   const { paths } = options
@@ -179,27 +179,33 @@ export async function openDuckDb(options: OpenDuckDbOptions): Promise<DuckDbHand
 }
 
 /**
- * Current-version-only gate. The store is discarded only when the marker is
- * explicitly an older version number. A missing marker next to existing data,
- * an empty or unreadable marker, or a newer version is refused instead:
- * wiping on ambiguity would let a crash or a permission error erase the
- * whole metrics history.
+ * Current-version-only gate. A store is rebuilt, never upgraded in place:
+ * an older marker, an empty, unparseable or unreadable marker, and a missing
+ * marker beside existing data all discard the metrics files (database, wal,
+ * `parquet/`, `tmp/`, marker) with one warning. The marker is removed last, so
+ * a crash mid-delete leaves it behind and the next open retries. A marker
+ * NEWER than this build is the one case that refuses to open: a rollback must
+ * not destroy the data of a newer build.
  */
 async function discardNonCurrentMetricsStore(paths: DuckDbPaths): Promise<void> {
   const state = await readSchemaMarkerState(paths)
   if (state.kind === 'version' && state.value === DUCKDB_SCHEMA_MARKER_VERSION) return
-  if (state.kind === 'version' && state.value < DUCKDB_SCHEMA_MARKER_VERSION) {
-    await removeMetricsStoreFiles(paths)
-    return
+  if (state.kind === 'version' && state.value > DUCKDB_SCHEMA_MARKER_VERSION) {
+    throw new Error(
+      `DuckDB metrics schema marker at ${schemaMarkerPath(paths)} is newer (${state.value}) than ` +
+        'this build; refusing to delete the metrics store. Update this build, or remove the ' +
+        'metrics directory yourself to start fresh.'
+    )
   }
   if (state.kind === 'missing' && !(await metricsStoreHasData(paths))) return
-  const described =
-    state.kind === 'version' ? 'newer (' + state.value + ') than this build' : state.kind
-  throw new Error(
-    `DuckDB metrics schema marker at ${schemaMarkerPath(paths)} is ${described}; ` +
-      'refusing to delete the metrics store. Fix or remove the marker, or remove the metrics ' +
-      'directory yourself to start fresh.'
+  const found =
+    state.kind === 'version' ? `schema marker ${state.value}` : `${state.kind} schema marker`
+  console.warn(
+    `DuckDB metrics store at ${paths.metricsDir} has a ${found}; this build uses ` +
+      `${DUCKDB_SCHEMA_MARKER_VERSION} and does not upgrade older files in place. ` +
+      'Discarding the old metrics store and starting a fresh one.'
   )
+  await removeMetricsStoreFiles(paths)
 }
 
 async function metricsStoreHasData(paths: DuckDbPaths): Promise<boolean> {
