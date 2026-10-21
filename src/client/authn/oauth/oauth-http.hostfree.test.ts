@@ -15,7 +15,8 @@ import { buildSignedCookie, HTTPS_SESSION_COOKIE_NAME } from '../crypto.ts'
 import { registerAuthRoutes } from '../http.ts'
 import { hashPassword } from '../../../lib/secrets/password.ts'
 import { deriveSecretsConfig } from '../../../lib/secrets/secrets.ts'
-import { createSession } from '../session-store.ts'
+import { createSession, getSession } from '../session-store.ts'
+import { stampStepUp } from '../step-up.ts'
 import { REAUTH_WINDOW_MS } from '../reauth.ts'
 import { TWO_FACTOR_CHALLENGE_PURPOSE } from '../two-factor.ts'
 import { OAUTH_STATE_TTL_MS, pkceChallenge, signOAuthState } from './oauth-state.ts'
@@ -1057,6 +1058,37 @@ test('link callback refuses a session that went stale during the provider round 
       state.accounts.some((row) => row.providerUserId === '4242'),
       false
     )
+  } finally {
+    restore()
+  }
+})
+
+test('link works on a stale session that re-authenticated recently, at start and callback', async () => {
+  const { app, db, state, secrets } = await buildApp()
+  const userId = crypto.randomUUID()
+  seedMockCredentialUser(state, {
+    id: userId,
+    email: 'owner@example.com',
+    password: await hashPassword(PASSWORD),
+    isEmailVerified: true,
+  })
+  const { token } = await createSession(db, userId, {})
+  const cookie = `${HTTPS_SESSION_COOKIE_NAME}=${await buildSignedCookie(token, secrets)}`
+  ageSession(state, token, REAUTH_WINDOW_MS + 60_000)
+  const session = await getSession(db, token)
+  await stampStepUp(db, session!.sessionId, 'password')
+  const restore = stubGithubIdentityFetch({ id: 5151 })
+  try {
+    const start = await app.request(`${ORIGIN}${AUTH}/oauth/github/start?link=1`, {
+      headers: { cookie },
+    })
+    const signedState = new URL(start.headers.get('location') ?? '').searchParams.get('state') ?? ''
+    assertEquals(signedState !== '', true)
+    const callback = await app.request(
+      `${ORIGIN}${AUTH}/oauth/github/callback?code=ok&state=${encodeURIComponent(signedState)}`,
+      withFlowCookie(cookie, start)
+    )
+    assertEquals(callback.headers.get('location'), '/account/security?linked=github')
   } finally {
     restore()
   }
