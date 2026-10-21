@@ -3,6 +3,7 @@
  * an automatic run, then advances the active run. Hello handlers do not
  * enqueue; this is the path that does.
  */
+import { resolveBuildLabel } from '../../app/build-info.ts'
 import type { DaemonCellRegistry } from '../../contracts/cell.ts'
 import { resolveInstanceUpdateChannel } from '../../contracts/update-channel.ts'
 import type { Db } from '../../db/connection.ts'
@@ -42,6 +43,7 @@ export async function runUpgradeMaintenance(input: {
     now: () => new Date().toISOString(),
     colocatedServerId: input.colocatedServerId,
     instanceInstalled: input.instanceInstalled,
+    buildLabel: resolveBuildLabel(env),
     verifyTimeoutMs: parseUpgradeVerifyTimeoutMs(env[UPGRADE_VERIFY_TIMEOUT_ENV]),
     trace: traceUpgradeTick,
   })

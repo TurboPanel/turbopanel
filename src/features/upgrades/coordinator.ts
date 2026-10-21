@@ -179,6 +179,12 @@ export type UpgradeCoordinatorDeps = {
   now: () => string
   colocatedServerId: string | null
   instanceInstalled: { version: string; commit: string | null }
+  /**
+   * The installed control-plane package's full label (`0.1.19-canary.3`), when the
+   * installer wrote one. `instanceInstalled.version` is the plain deno.json number,
+   * so a step's from-version reads this first.
+   */
+  buildLabel?: string | null
   resolveTarget?: () => Promise<UpgradeTarget>
   /**
    * How long a restarted control-plane step may wait for the daemon's verdict
@@ -941,13 +947,19 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
         finishedAt: null,
       }
       const uiBehind = uiBehindTarget(target.ui, input.consoleCommit)
+      const daemonLabels = await knownDaemonLabels(deps.store)
       const steps = plan.steps.map((planned) =>
         stepFromPlan(
           run,
           planned,
           fleet,
           now,
-          { commit: deps.instanceInstalled.commit, uiBehind },
+          {
+            commit: deps.instanceInstalled.commit,
+            uiBehind,
+            version: deps.buildLabel || deps.instanceInstalled.version,
+            daemonLabels,
+          },
           !input.serverId
         )
       )
@@ -1346,12 +1358,45 @@ function stepErrorMessage(
   return offlineAtStart ? SKIPPED_OFFLINE_AT_START_MESSAGE : null
 }
 
+/**
+ * What the unit runs right now, with any canary or rc suffix. The control plane
+ * names itself by its installed label. A daemon only reports its plain number, so
+ * its full label is the version a past run targeted at the same commit.
+ */
+function stepFromVersion(
+  unit: UpgradeStepRow['unit'],
+  fact: FleetServerFact | undefined,
+  instance: { version: string; daemonLabels: ReadonlyMap<string, string> }
+): string | null {
+  if (unit === 'instance') return instance.version
+  if (!fact) return null
+  const labelled = fact.commit ? instance.daemonLabels.get(fact.commit) : undefined
+  if (labelled && labelled.startsWith(`${fact.version}-`)) return labelled
+  return fact.version
+}
+
+/** Commit to full version label for every daemon build a recent run targeted. */
+async function knownDaemonLabels(store: UpgradeStore): Promise<Map<string, string>> {
+  const labels = new Map<string, string>()
+  const { runs } = await store.history(0, 50)
+  for (const run of [...runs].reverse()) {
+    const daemon = run.target?.daemon
+    if (daemon?.commit && daemon.version) labels.set(daemon.commit, daemon.version)
+  }
+  return labels
+}
+
 function stepFromPlan(
   run: UpgradeRunRow,
   planned: PlannedStep,
   fleet: FleetServerFact[],
   now: string,
-  instance: { commit: string | null; uiBehind: boolean },
+  instance: {
+    commit: string | null
+    uiBehind: boolean
+    version: string
+    daemonLabels: ReadonlyMap<string, string>
+  },
   skipOffline: boolean
 ): UpgradeStepRow {
   const fact = fleet.find((item) => item.serverId === planned.serverId)
@@ -1389,7 +1434,7 @@ function stepFromPlan(
     requestId: null,
     attempts: 0,
     nextAttemptAt: null,
-    fromVersion: fact?.version ?? null,
+    fromVersion: stepFromVersion(planned.unit, fact, instance),
     toVersion: pin?.version ?? null,
     fromCommit: planned.unit === 'instance' ? null : (fact?.commit ?? null),
     toCommit: pin?.commit ?? null,
