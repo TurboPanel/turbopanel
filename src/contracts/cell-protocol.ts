@@ -218,6 +218,13 @@ export type CommandProgress = {
   /** Id of the running step, or null when none is running. */
   current: string | null
   updatedAt: string
+  /**
+   * When the server began actually running this command, or `null` while it
+   * waits for the host (another build holds the single build slot). Absent
+   * from a daemon that does not report it. The control plane starts the
+   * command's run deadline from here, so waiting never counts against it.
+   */
+  runningSince?: string | null
 }
 
 /**
@@ -1182,6 +1189,10 @@ export function validateCommandProgress(value: unknown): string | null {
   if (value.version !== 1) return 'invalid progress version'
   if (!isIsoTimestamp(value.updatedAt)) return 'invalid progress updatedAt'
   if (value.current !== null && !isBoundedId(value.current)) return 'invalid progress current'
+  if (value.runningSince !== null) {
+    const issue = validateOptionalIsoTimestamp(value.runningSince, 'progress runningSince')
+    if (issue) return issue
+  }
   if (!Array.isArray(value.steps)) return 'invalid progress steps'
   if (value.steps.length > MAX_DAEMON_WS_PROGRESS_STEPS) return 'progress steps exceed max entries'
   return (

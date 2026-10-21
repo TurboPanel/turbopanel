@@ -8,7 +8,7 @@
  * and `daemon/deno-ws.ts`) and by the terminal transitions in
  * `command-records.ts`.
  */
-import { and, eq, notInArray } from 'drizzle-orm'
+import { and, eq, notInArray, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { command } from '../../db/schema.ts'
 import {
@@ -53,6 +53,7 @@ function normalizeCommandProgress(progress: CommandProgress): CommandProgress {
     })),
     current: progress.current,
     updatedAt: progress.updatedAt,
+    ...(progress.runningSince === undefined ? {} : { runningSince: progress.runningSince }),
   }
 }
 
@@ -115,7 +116,17 @@ export async function recordCommandProgress(
   try {
     const rows = await db
       .update(command)
-      .set({ progress, updatedAt: nowIso() })
+      .set({
+        progress,
+        updatedAt: nowIso(),
+        // The first time the server says it is running, that is when the
+        // command started; waiting for the host afterwards does not undo it.
+        ...(typeof progress.runningSince === 'string'
+          ? {
+              startedAt: sql`COALESCE(${command.startedAt}, ${progress.runningSince}::timestamptz)`,
+            }
+          : {}),
+      })
       .where(
         and(
           eq(command.id, input.commandId),

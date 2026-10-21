@@ -22,7 +22,8 @@
  * The deadline is measured from the row's most recent lifecycle timestamp,
  * so a legitimately long-running command (e.g. a 30-minute backup) is only
  * swept after its own budget + grace — the moment a live consumer would have
- * timed it out anyway.
+ * timed it out anyway. A deploy is the exception: it is swept by the clock it
+ * is on (waiting to start, or running since the server started it).
  */
 
 import { and, eq, inArray, lt, notExists, sql } from 'drizzle-orm'
@@ -41,6 +42,7 @@ import {
 } from '../managed/ha-recovery.ts'
 import { RECOVERY_STATES, TERMINAL_RECOVERY_STATES } from '../managed/recovery.ts'
 import { commandIsOpen } from './open-statuses.ts'
+import { DEPLOY_QUEUE_LIMIT_MS, DEPLOY_RUN_CAP_MS, deployRunState } from './deploy-wait.ts'
 
 /** Extra slack past the consumer budget before a row counts as stranded. */
 export const STALE_COMMAND_GRACE_MS = 5 * 60_000
@@ -63,6 +65,10 @@ export type StaleCommandCandidate = {
   serverId?: string
   /** `command.metadata`: carries `recoveryId` for a managed HA recovery step. */
   metadata?: unknown
+  /** `command.status`; a deploy that is still in the queue is judged by the queue limit. */
+  status?: string
+  /** `command.progress`: the deploy's step plan, carrying when the server started it. */
+  progress?: unknown
 }
 
 function toMs(value: string | null): number | null {
@@ -80,6 +86,7 @@ export function isStaleCommand(
   nowMs: number,
   graceMs = STALE_COMMAND_GRACE_MS
 ): boolean {
+  if (row.name === 'environment.deploy') return isStaleDeploy(row, nowMs, graceMs)
   const reference =
     toMs(row.startedAt) ??
     toMs(row.ackedAt) ??
@@ -89,6 +96,28 @@ export function isStaleCommand(
     toMs(row.createdAt)
   if (reference === null) return false
   return nowMs >= reference + commandTimeoutMs(row.name) + graceMs
+}
+
+/**
+ * A deploy has two clocks (`deploy-wait.ts`): one that waits to start (queue
+ * limit) and one that runs once the server has started it (run cap). It is
+ * stale only when the clock it is on has run out, plus grace.
+ */
+function isStaleDeploy(row: StaleCommandCandidate, nowMs: number, graceMs: number): boolean {
+  const queueLimit = DEPLOY_QUEUE_LIMIT_MS + graceMs
+  const waitingSince =
+    toMs(row.sentAt) ?? toMs(row.dispatchStartedAt) ?? toMs(row.queuedAt) ?? toMs(row.createdAt)
+  if (waitingSince === null) return false
+  if (row.status === 'queued' || row.status === 'dispatching') {
+    return nowMs >= waitingSince + queueLimit
+  }
+  const run = deployRunState({
+    progress: row.progress,
+    sentAt: new Date(waitingSince).toISOString(),
+    nowMs,
+  })
+  if (run.state === 'running') return nowMs >= run.sinceMs + DEPLOY_RUN_CAP_MS + graceMs
+  return nowMs >= waitingSince + queueLimit
 }
 
 /**
@@ -177,6 +206,8 @@ export async function sweepStaleCommands(
       context: command.context,
       serverId: command.serverId,
       metadata: command.metadata,
+      status: command.status,
+      progress: command.progress,
     })
     .from(command)
     .where(

@@ -140,3 +140,35 @@ test('shapeActivityItem: an environment outside the organization resolves to nul
     [null, null, null, null]
   )
 })
+
+test('shapeActivityItem: a deploy still in the queue, or waiting on the server, is queued', () => {
+  assertEquals(
+    shapeActivityItem({ ...BASE, status: 'queued', startedAt: null }, NAMES, NOW).state,
+    'queued'
+  )
+  const waiting = {
+    version: 1,
+    steps: [],
+    current: null,
+    updatedAt: NOW.toISOString(),
+    runningSince: null,
+  }
+  assertEquals(
+    shapeActivityItem({ ...BASE, status: 'sent', progress: waiting }, NAMES, NOW).state,
+    'queued'
+  )
+})
+
+test('shapeActivityItem: a deploy the server has started is deploying', () => {
+  const started = {
+    version: 1,
+    steps: [],
+    current: null,
+    updatedAt: NOW.toISOString(),
+    runningSince: NOW.toISOString(),
+  }
+  assertEquals(
+    shapeActivityItem({ ...BASE, status: 'sent', progress: started }, NAMES, NOW).state,
+    'deploying'
+  )
+})

@@ -35,7 +35,8 @@ const IN_PROGRESS_STATUSES = ['queued', 'dispatching', 'sent', 'acked', 'running
 const FAILED_STATUSES = ['failed', 'timed_out'] as const
 const LIFECYCLE_ACTIONS = new Set(['start', 'stop', 'restart'])
 
-export type ActivityState = 'deploying' | 'failed'
+/** `queued`: waiting to start (in the queue, or for another build on the server). */
+export type ActivityState = 'queued' | 'deploying' | 'failed'
 export type ActivityAction = 'deploy' | 'start' | 'restart' | 'stop'
 
 export type ActivityQuery = { filter: ActivityFilter; limit: number; offset: number }
@@ -154,6 +155,15 @@ export function activityStepsOf(progress: unknown): {
   }
 }
 
+/**
+ * Waiting rather than working: not yet handed to the server, or handed over
+ * and told by the server that it is waiting for another build to finish.
+ */
+export function isActivityQueued(status: string, progress: unknown): boolean {
+  if (status === 'queued' || status === 'dispatching') return true
+  return parseStoredCommandProgress(progress)?.runningSince === null
+}
+
 export function shapeActivityItem(
   row: ActivityRow,
   names: Map<string, { name: string | null; projectId: string; projectName: string | null }>,
@@ -172,7 +182,7 @@ export function shapeActivityItem(
     environmentName: env?.name ?? null,
     serverId: row.serverId,
     action: activityActionOf(row.name, row.context),
-    state: failed ? 'failed' : 'deploying',
+    state: failed ? 'failed' : isActivityQueued(row.status, row.progress) ? 'queued' : 'deploying',
     startedAt,
     ...activityStepsOf(row.progress),
     durationSecs: Math.max(0, Math.round((end - Date.parse(startedAt)) / 1000)),

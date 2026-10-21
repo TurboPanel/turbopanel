@@ -369,7 +369,8 @@ test('a batch claimed but never queued (worker died) is failed by the sweep and 
       .where(
         and(eq(deployment.environmentId, f.environmentId), eq(deployment.serverId, f.serverIds[1]!))
       )
-    await sweepLater(f)
+    // A deploy still in the queue waits up to the queue limit before it counts as lost.
+    await sweepStaleCommands(f.db, { now: Date.now() + 7 * 3_600_000 })
     assertEquals((await getCommandRecord(f.db, f.commandIds[1]!))?.status, 'timed_out')
     assertEquals(await targetStatus(f, f.serverIds[1]!), 'failed')
     assertEquals(await targetStatus(f, f.serverIds[2]!), 'failed')
