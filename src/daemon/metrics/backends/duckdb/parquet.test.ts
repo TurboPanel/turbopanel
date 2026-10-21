@@ -16,6 +16,7 @@ import {
   partitionFileForDay,
   pruneExpiredPartitions,
   pruneToSizeCap,
+  SIZE_CAP_KEEP_NEWEST_DAYS,
   sealDayToParquet,
   timestampLiteralFromMs,
   utcDayStartMs,
@@ -449,7 +450,8 @@ it('pruneToSizeCap removes whole days, oldest first, until the store fits its ca
     }
     // 5 days of 1,500 bytes plus 2,000 bytes of hot database: 9,500 against a cap of 6,000.
     const removed = await pruneToSizeCap({ parquetRoot: root, maxBytes: 6000, otherBytes: 2000 })
-    assertEquals(removed, 3)
+    assertEquals(removed.removedDays, 3)
+    assertEquals(removed.stillOver, false)
     for (const family of [first!, second!]) {
       const left = await listPartitionDays(root, family.subdir)
       assertEquals(
@@ -466,8 +468,55 @@ it('pruneToSizeCap leaves a store under its cap untouched', async () => {
   const root = await Deno.makeTempDir({ prefix: 'tp-duckdb-cap-' })
   try {
     await writePartition(root, PARQUET_FAMILIES[0]!.subdir, DAY_START, 100)
-    assertEquals(await pruneToSizeCap({ parquetRoot: root, maxBytes: 1000, otherBytes: 0 }), 0)
+    assertEquals(
+      (await pruneToSizeCap({ parquetRoot: root, maxBytes: 1000, otherBytes: 0 })).removedDays,
+      0
+    )
     assertEquals((await listPartitionDays(root, PARQUET_FAMILIES[0]!.subdir)).length, 1)
+  } finally {
+    await Deno.remove(root, { recursive: true })
+  }
+})
+
+it('pruneToSizeCap keeps the newest sealed days and reports still over when the hot file alone exceeds the cap', async () => {
+  const root = await Deno.makeTempDir({ prefix: 'tp-duckdb-cap-' })
+  try {
+    const family = PARQUET_FAMILIES[0]!
+    for (let day = 0; day < 5; day++) {
+      await writePartition(root, family.subdir, DAY_START + day * MS_PER_DAY, 100)
+    }
+    const result = await pruneToSizeCap({ parquetRoot: root, maxBytes: 1000, otherBytes: 5000 })
+    assertEquals(result.removedDays, 3)
+    assertEquals(result.stillOver, true)
+    assertEquals(result.removedFromMs, DAY_START)
+    assertEquals(result.removedToMs, DAY_START + 2 * MS_PER_DAY)
+    assertEquals((await listPartitionDays(root, family.subdir)).length, SIZE_CAP_KEEP_NEWEST_DAYS)
+  } finally {
+    await Deno.remove(root, { recursive: true })
+  }
+})
+
+it('pruneToSizeCap counts only days it removed and reports a failed removal', async () => {
+  // A superuser can remove a directory whatever its mode, so the failure cannot be staged.
+  if (Deno.uid() === 0) return
+  const root = await Deno.makeTempDir({ prefix: 'tp-duckdb-cap-' })
+  try {
+    const family = PARQUET_FAMILIES[0]!
+    for (let day = 0; day < 4; day++) {
+      await writePartition(root, family.subdir, DAY_START + day * MS_PER_DAY, 1000)
+    }
+    // Make the oldest day's directory impossible to remove: its parent loses write permission.
+    const oldest = (await listPartitionDays(root, family.subdir))[0]!
+    const parent = oldest.dir.slice(0, oldest.dir.lastIndexOf('/'))
+    await Deno.chmod(parent, 0o555)
+    try {
+      const result = await pruneToSizeCap({ parquetRoot: root, maxBytes: 1500, otherBytes: 0 })
+      assertEquals(result.failedDays, 2)
+      assertEquals(result.removedDays, 0)
+      assertEquals(result.stillOver, true)
+    } finally {
+      await Deno.chmod(parent, 0o755)
+    }
   } finally {
     await Deno.remove(root, { recursive: true })
   }

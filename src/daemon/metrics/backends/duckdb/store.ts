@@ -935,14 +935,25 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
 
     // Then the size cap: retention days are not enough on a big fleet, and an
     // operator's disk must never fill with metrics.
-    const removedDays = await pruneToSizeCap({
+    const pruned = await pruneToSizeCap({
       parquetRoot: this.#paths.parquetRoot,
       maxBytes: this.#maxBytes,
-      otherBytes: await fileSizeOrZero(this.#paths.databasePath),
+      otherBytes:
+        (await fileSizeOrZero(this.#paths.databasePath)) +
+        (await fileSizeOrZero(`${this.#paths.databasePath}.wal`)),
     })
-    if (removedDays > 0) {
+    if (pruned.removedDays > 0 && pruned.removedFromMs !== null && pruned.removedToMs !== null) {
+      const day = (ms: number) => new Date(ms).toISOString().slice(0, 10)
       console.warn(
-        `metrics store over its ${this.#maxBytes}-byte cap: removed the ${removedDays} oldest sealed day(s)`
+        `metrics store over its ${this.#maxBytes}-byte cap: removed the ${pruned.removedDays} oldest sealed day(s), ${day(pruned.removedFromMs)} to ${day(pruned.removedToMs)}`
+      )
+    }
+    if (pruned.failedDays > 0) {
+      console.warn(`metrics store size cap: could not remove ${pruned.failedDays} sealed day(s)`)
+    }
+    if (pruned.stillOver) {
+      console.warn(
+        `metrics store is still over its ${this.#maxBytes}-byte cap after pruning; the newest sealed days are kept, so the hot database file or a failed removal is holding it over`
       )
     }
   }
