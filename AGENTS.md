@@ -400,6 +400,22 @@ guard; `pnpm test:do` alone does not.
     values (8+ characters) of env vars named like TOKEN, SECRET, KEY or PASSWORD
     blanked. That is a best effort: a secret fetched from elsewhere or printed
     re-encoded is not caught, so the command should print no secrets.
+- **Database role grants (owner-run, not a migration).** The hosted panel
+  connects as a runtime role (and a cached read role) that the migrate role
+  does not create. Their grants live in
+  `scripts/ops/grant-database-roles.mjs`, never in `migrations/`. After any
+  schema drop-and-recreate, and again after the migration for the cached role,
+  the owner runs it as the migrate role (the table owner):
+  `TURBOPANEL_DATABASE_URL=<migrate url> TURBOPANEL_RUNTIME_DB_ROLE=<role>
+  TURBOPANEL_CACHED_DB_ROLE=<role> node scripts/ops/grant-database-roles.mjs --confirm`
+  (`--check-only` just reports; no flag refuses). It sets the schema grants and
+  default privileges so new tables inherit them, grants the cached role SELECT
+  on `CACHED_READ_TABLES` only (add a table there when a cached read model
+  gains one), is safe to repeat, and exits non-zero naming any missing grant.
+  If a runtime role lacks grants, `/api/daemon/v1/readiness` and
+  `/api/client/v1/status` answer 503 `database roles lack grants` (the role and
+  object go to the server log only), instead of a bare "database unavailable". Agents
+  never run it against live, staging or testing.
 - **STAGING and LIVE use the same Workers Builds setup**, one Worker per
   environment: `staging-instance` (branch `staging`, deploy command
   `pnpm run deploy:staging`) and `instance` (branch `live`, deploy command
