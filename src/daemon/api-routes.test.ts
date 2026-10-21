@@ -3331,9 +3331,9 @@ test('POST /metrics never writes machine_class=virtual back — absence of senso
       ),
     })
     assertEquals(response.status, 202)
-    // Inferred virtual → signals truncated, but the column stays NULL so a
-    // later topology generation that discovers sensors can still promote it.
-    assertEquals(writes[0]?.hardwareSignals, [])
+    // Inferred virtual: the signals are stored as reported, and the column stays
+    // NULL so a later topology generation that discovers sensors can still promote it.
+    assertEquals(writes[0]?.hardwareSignals.length, 1)
     assertEquals(await readMachineClassSettled(db, serverId, 'physical'), null)
   })
 })
@@ -3363,7 +3363,7 @@ test('POST /metrics: a declared machine_class=virtual beats a topology that carr
       ),
     })
     assertEquals(response.status, 202)
-    assertEquals(writes[0]?.hardwareSignals, [])
+    assertEquals(writes[0]?.hardwareSignals.length, 1)
     assertEquals(await readMachineClassSettled(db, serverId, 'virtual'), 'virtual')
   })
 })
@@ -3488,7 +3488,7 @@ test('POST /metrics keeps the sample and flags the server when its RAM or physic
   })
 })
 
-test('POST /metrics truncates hardwareSignals when the org overrides physicalHardwareSignalSlots to 0', async () => {
+test('POST /metrics does not cut hardwareSignals when the org overrides physicalHardwareSignalSlots to 0', async () => {
   await withEnrollFixture(async ({ db, organizationId, serverId, keyId }) => {
     await recordTopologyGeneration(db, serverId, {
       generation: 0,
@@ -3519,11 +3519,11 @@ test('POST /metrics truncates hardwareSignals when the org overrides physicalHar
     })
     assertEquals(response.status, 202)
     assertEquals(writes.length, 1)
-    assertEquals(writes[0]?.hardwareSignals, [])
+    assertEquals(writes[0]?.hardwareSignals.length, 1)
   })
 })
 
-test('POST /metrics truncates hardwareSignals when a server override wins over an org override', async () => {
+test('POST /metrics does not cut hardwareSignals when a server overrides physicalHardwareSignalSlots to 0', async () => {
   await withEnrollFixture(async ({ db, organizationId, serverId, keyId }) => {
     await recordTopologyGeneration(db, serverId, {
       generation: 0,
@@ -3531,7 +3531,7 @@ test('POST /metrics truncates hardwareSignals when a server override wins over a
       snapshot: { hardwareSignals: [{ signalId: 'board-fan' }] },
       appliedAt: new Date().toISOString(),
     })
-    // Org grants signals; the per-server override still wins and truncates.
+    // Slot counts are fixed at the ceilings: neither layer lowers them.
     await db
       .update(organization)
       .set({
@@ -3561,7 +3561,7 @@ test('POST /metrics truncates hardwareSignals when a server override wins over a
     })
     assertEquals(response.status, 202)
     assertEquals(writes.length, 1)
-    assertEquals(writes[0]?.hardwareSignals, [])
+    assertEquals(writes[0]?.hardwareSignals.length, 1)
   })
 })
 
@@ -3579,7 +3579,7 @@ test('POST /metrics enqueues capability-plan-update when hosted ingest bumps the
     await db
       .update(organization)
       .set({
-        options: { metricsCapabilityPlan: { extraFilesystemSlots: 3 } },
+        options: { metricsCapabilityPlan: { managedDockerEnabled: false } },
       })
       .where(eq(organization.id, organizationId))
 
@@ -3606,7 +3606,7 @@ test('POST /metrics enqueues capability-plan-update when hosted ingest bumps the
       throw new TypeError('expected capability-plan-update envelope')
     }
     assertEquals(update.generation, primed.generation + 1)
-    assertEquals(update.plan.extraFilesystemSlots, 3)
+    assertEquals(update.plan.managedDockerEnabled, false)
   })
 })
 
