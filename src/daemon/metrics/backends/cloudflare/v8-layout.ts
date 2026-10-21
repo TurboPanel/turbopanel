@@ -425,6 +425,17 @@ function defOf(id: string): DoubleDef {
   return def
 }
 
+/** The `extended.text` key behind each content blob of a host row, blob7 onward (the reader's twin of `v8HostRowValues`). */
+export function v8HostRowTextKeys(
+  family: V8HostFamily
+): (keyof NonNullable<MetricsExtended['text']>)[] {
+  return V8_HOST_ROW_SPECS[family].blobs.map((id) => {
+    const key = TEXT_KEYS[id]
+    if (!key) throw new TypeError(`v8 layout names an unknown text id: ${id}`)
+    return key
+  })
+}
+
 function textOf(c: V8Context, id: string): string {
   const key = TEXT_KEYS[id]
   if (!key) throw new TypeError(`v8 layout names an unknown text id: ${id}`)
@@ -527,6 +538,18 @@ function opsPerSecond(device: BlockDeviceSample): number | null {
   if (device.readOpsPerSecond === null || device.writeOpsPerSecond === null) return null
   return device.readOpsPerSecond + device.writeOpsPerSecond
 }
+
+/**
+ * The text each entity of a paged family carries, in the order its blobs follow
+ * the row's content blobs (entity by entity). The facts reader maps blobs back to
+ * entities with this; it mirrors the blob lists of the row specs below.
+ */
+export const V8_ENTITY_TEXT_FIELDS = {
+  block: ['model', 'smart'],
+  gpu: ['driver', 'model', 'memoryTotal'],
+  network: ['linkSpeed'],
+  filesystem: ['size'],
+} as const
 
 function blockText(key: 'model' | 'smart') {
   return {
