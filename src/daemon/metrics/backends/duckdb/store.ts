@@ -93,6 +93,7 @@ import {
   parquetFamily,
   type ParquetFamilyKey,
   pruneExpiredPartitions,
+  pruneToSizeCap,
   sealDayToParquet,
   timestampLiteralFromMs,
   utcDayStartMs,
@@ -175,6 +176,9 @@ export const DUCKDB_WRITE_BATCH_MAX_AGE_MS = 5_000
 /** Default retention for hot rows + sealed partitions (matches AE's 90 days). */
 export const DEFAULT_DUCKDB_RETENTION_DAYS = 90
 
+/** Default cap for the whole self-hosted metrics store (5 GiB); the oldest sealed days go first. */
+export const DEFAULT_DUCKDB_MAX_BYTES = 5 * 1024 ** 3
+
 /** Loopback port the dev-only embedded DuckDB UI serves on. */
 export const DUCKDB_UI_DEFAULT_PORT = 4213
 
@@ -196,6 +200,8 @@ export type DuckDbStoreConfig = {
   memoryLimitMb?: number
   /** Hot + Parquet retention days (default 90). */
   retentionDays?: number
+  /** Cap for the whole metrics store in bytes (default 5 GiB); the oldest sealed days are pruned first. */
+  maxBytes?: number
 }
 
 export type DuckDbStoreOptions = {
@@ -250,6 +256,7 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
   readonly #threads: number | undefined
   readonly #memoryLimitMb: number | undefined
   readonly #retentionDays: number
+  readonly #maxBytes: number
   readonly #openHandle: () => Promise<DuckDbHandle>
   readonly #batchMaxRows: number
   readonly #batchMaxAgeMs: number
@@ -274,6 +281,8 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
     this.#retentionDays =
       assertOptionalPositiveInt('retentionDays', config.retentionDays) ??
       DEFAULT_DUCKDB_RETENTION_DAYS
+    this.#maxBytes =
+      assertOptionalPositiveInt('maxBytes', config.maxBytes) ?? DEFAULT_DUCKDB_MAX_BYTES
     this.#paths = resolveDuckDbPaths(config.metricsDir)
     this.#batchMaxRows = options?.writeBatchMaxRows ?? DUCKDB_WRITE_BATCH_MAX_ROWS
     this.#batchMaxAgeMs = options?.writeBatchMaxAgeMs ?? DUCKDB_WRITE_BATCH_MAX_AGE_MS
@@ -947,6 +956,30 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
       parquetRoot: this.#paths.parquetRoot,
       nowMs,
     })
+
+    // Then the size cap: retention days are not enough on a big fleet, and an
+    // operator's disk must never fill with metrics.
+    const pruned = await pruneToSizeCap({
+      parquetRoot: this.#paths.parquetRoot,
+      maxBytes: this.#maxBytes,
+      otherBytes:
+        (await fileSizeOrZero(this.#paths.databasePath)) +
+        (await fileSizeOrZero(`${this.#paths.databasePath}.wal`)),
+    })
+    if (pruned.removedDays > 0 && pruned.removedFromMs !== null && pruned.removedToMs !== null) {
+      const day = (ms: number) => new Date(ms).toISOString().slice(0, 10)
+      console.warn(
+        `metrics store over its ${this.#maxBytes}-byte cap: removed the ${pruned.removedDays} oldest sealed day(s), ${day(pruned.removedFromMs)} to ${day(pruned.removedToMs)}`
+      )
+    }
+    if (pruned.failedDays > 0) {
+      console.warn(`metrics store size cap: could not remove ${pruned.failedDays} sealed day(s)`)
+    }
+    if (pruned.stillOver) {
+      console.warn(
+        `metrics store is still over its ${this.#maxBytes}-byte cap after pruning; the newest sealed days are kept, so the hot database file or a failed removal is holding it over`
+      )
+    }
   }
 
   /** Flush pending writes and release the database handle (tests/shutdown). */
@@ -1655,6 +1688,14 @@ function buildInsertForTable(
       const exhaustive: never = table
       throw new TypeError(`unknown pending row table: ${exhaustive}`)
     }
+  }
+}
+
+async function fileSizeOrZero(path: string): Promise<number> {
+  try {
+    return (await Deno.stat(path)).size
+  } catch {
+    return 0
   }
 }
 

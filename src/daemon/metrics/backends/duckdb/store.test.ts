@@ -18,7 +18,7 @@ import type {
 import { AE_MISSING_METRIC_SENTINEL } from '../cloudflare/field-map.ts'
 import { MAX_STATUS_EVENTS } from '../cloudflare/sql-api.ts'
 import { type DuckDbConnectionLike, openDuckDb, resolveDuckDbPaths } from './database.ts'
-import { MS_PER_DAY, partitionFileForDay } from './parquet.ts'
+import { listPartitionDays, MS_PER_DAY, partitionFileForDay } from './parquet.ts'
 import {
   GPU_SAMPLES_TABLE,
   HOST_SAMPLES_TABLE,
@@ -33,7 +33,7 @@ const DAY_START = Date.UTC(2026, 5, 2) // 2026-06-02T00:00:00Z
 
 function makeStore(
   metricsDir: string,
-  config: { retentionDays?: number } = {}
+  config: { retentionDays?: number; maxBytes?: number } = {}
 ): DuckDbParquetServerMetricsStore {
   // writeBatchMaxRows 1 → every accepted write flushes before resolving, so
   // tests never leave a pending flush timer behind.
@@ -47,7 +47,7 @@ function makeStore(
 
 async function withStore(
   run: (store: DuckDbParquetServerMetricsStore, metricsDir: string) => Promise<void>,
-  config: { retentionDays?: number } = {}
+  config: { retentionDays?: number; maxBytes?: number } = {}
 ): Promise<void> {
   const metricsDir = await Deno.makeTempDir({ prefix: 'tp-duckdb-store-' })
   const store = makeStore(metricsDir, config)
@@ -1400,4 +1400,21 @@ it('a row the column types reject never blocks other servers and is dropped afte
     handle.close()
     await Deno.remove(metricsDir, { recursive: true })
   }
+})
+
+it('daily archive prunes sealed days to the size cap but always keeps the newest two', async () => {
+  await withStore(
+    async (store) => {
+      for (let back = 4; back >= 1; back--) {
+        await store.writeSample(sample({ atMs: DAY_START - back * MS_PER_DAY + 60_000 }))
+      }
+      await store.runDailyArchiveOnce(DAY_START + 3600_000)
+      const days = await listPartitionDays(store.paths.parquetRoot, 'host')
+      assertEquals(
+        days.map((day) => day.dayStartMs),
+        [DAY_START - 2 * MS_PER_DAY, DAY_START - MS_PER_DAY]
+      )
+    },
+    { maxBytes: 1 }
+  )
 })
