@@ -562,11 +562,15 @@ const RESERVED_MANAGED_USERNAMES = new Set(['postgres', 'root', 'mysql', 'supera
  */
 const RESERVED_MANAGED_USERNAME_PREFIX = 'tp_'
 
+/** PostgreSQL itself owns role names starting with `pg_`. */
+const RESERVED_POSTGRES_NAME_PREFIX = 'pg_'
+
 export function isReservedManagedUsername(username: string, rootUsername?: string): boolean {
   const lower = username.toLowerCase()
   return (
     RESERVED_MANAGED_USERNAMES.has(lower) ||
     lower.startsWith(RESERVED_MANAGED_USERNAME_PREFIX) ||
+    lower.startsWith(RESERVED_POSTGRES_NAME_PREFIX) ||
     (rootUsername !== undefined && username === rootUsername)
   )
 }
@@ -598,13 +602,17 @@ export function parseManagedUserCreateFields(
   const effectiveRoot = rootUsername ?? ctx.spec.rootUsername
   const { pattern, maxLength } = ctx.spec.userOperations.identifier
   const maxShortLength = maxTypedNameLength(nameScheme, maxLength)
-  if (
-    !USERNAME_RE.test(username) ||
-    !pattern.test(username) ||
-    username.length > maxShortLength ||
-    isReservedManagedUsername(username, effectiveRoot)
-  ) {
+  if (!USERNAME_RE.test(username) || !pattern.test(username) || username.length > maxShortLength) {
     return c.json({ error: 'Invalid username' }, 400)
+  }
+  if (isReservedManagedUsername(username, effectiveRoot)) {
+    return c.json(
+      {
+        error: 'reserved_username',
+        message: `'${username}' is a name the database engine or TurboPanel keeps for itself. Pick a different login name.`,
+      },
+      422
+    )
   }
 
   const grants = parseManagedLoginGrantFields(c, ctx, body, options)
@@ -934,6 +942,24 @@ export function isReservedDatabaseName(engine: string, name: string): boolean {
   return reservedDatabaseNames(engine).includes(name.toLowerCase())
 }
 
+/**
+ * PostgreSQL's built-in databases and the `pg_` prefix it keeps. Only checked
+ * when a database is created: older clusters may already list `postgres` as an
+ * ordinary database and keep working.
+ */
+const POSTGRES_RESERVED_NEW_DATABASES: readonly string[] = ['postgres', 'template0', 'template1']
+
+/** True for a name that must not be given to a new database or initial database. */
+export function isReservedNewDatabaseName(engine: string, name: string): boolean {
+  if (isReservedDatabaseName(engine, name)) return true
+  if (engine !== 'postgres') return false
+  const lower = name.toLowerCase()
+  return (
+    POSTGRES_RESERVED_NEW_DATABASES.includes(lower) ||
+    lower.startsWith(RESERVED_POSTGRES_NAME_PREFIX)
+  )
+}
+
 export function validateManagedDatabaseCreateName(
   name: string,
   databases: readonly string[],
@@ -948,8 +974,13 @@ export function validateManagedDatabaseCreateName(
       status: 400,
     }
   }
-  if (isReservedDatabaseName(engine, name)) {
-    return { ok: false, error: 'reserved_database_name', status: 400 }
+  if (isReservedNewDatabaseName(engine, name)) {
+    return {
+      ok: false,
+      error: 'reserved_database_name',
+      message: `'${name}' is a name the database engine keeps for itself. Pick a different database name.`,
+      status: 422,
+    }
   }
   if (databases.some((entry) => entry.toLowerCase() === name.toLowerCase())) {
     return { ok: false, error: 'database_exists', status: 409 }

@@ -570,8 +570,8 @@ test('parseManagedUserCreateFields rejects root username and invalid identifiers
     options
   )
   if (!(root instanceof Response)) throw new TypeError('expected Response')
-  assertEquals(root.status, 400)
-  assertEquals(await root.json(), { error: 'Invalid username' })
+  assertEquals(root.status, 422)
+  assertEquals((await root.json()).error, 'reserved_username')
 
   const badName = parseManagedUserCreateFields(
     c,
@@ -594,6 +594,7 @@ test('parseManagedUserCreateFields rejects root username and invalid identifiers
     'tp_shop_owner',
     'tp_monitor_ab12',
     'TP_repl',
+    'pg_monitor',
   ]) {
     const res = parseManagedUserCreateFields(
       c,
@@ -603,8 +604,8 @@ test('parseManagedUserCreateFields rejects root username and invalid identifiers
       'postgres_a1b2c3d4'
     )
     if (!(res instanceof Response)) throw new TypeError('expected Response')
-    assertEquals(res.status, 400)
-    assertEquals(await res.json(), { error: 'Invalid username' })
+    assertEquals(res.status, 422)
+    assertEquals((await res.json()).error, 'reserved_username')
   }
 })
 
