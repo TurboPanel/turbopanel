@@ -174,6 +174,9 @@ export function shapeActivityItem(
   const failed = (FAILED_STATUSES as readonly string[]).includes(row.status)
   const startedAt = row.startedAt ?? row.queuedAt ?? row.createdAt
   const end = failed && row.finishedAt !== null ? Date.parse(row.finishedAt) : now.getTime()
+  let state: 'failed' | 'queued' | 'deploying' = 'deploying'
+  if (failed) state = 'failed'
+  else if (isActivityQueued(row.status, row.progress)) state = 'queued'
   return {
     id: row.id,
     projectId: env?.projectId ?? null,
@@ -182,7 +185,7 @@ export function shapeActivityItem(
     environmentName: env?.name ?? null,
     serverId: row.serverId,
     action: activityActionOf(row.name, row.context),
-    state: failed ? 'failed' : isActivityQueued(row.status, row.progress) ? 'queued' : 'deploying',
+    state,
     startedAt,
     ...activityStepsOf(row.progress),
     durationSecs: Math.max(0, Math.round((end - Date.parse(startedAt)) / 1000)),
