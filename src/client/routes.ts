@@ -9,6 +9,7 @@ import { getDb } from '../db/connection.ts'
 import { logError } from '../lib/logger.ts'
 import { isCustomerBillingOperational } from '../features/billing/config.ts'
 import { registerAccessRoutes } from './access/routes.ts'
+import { registerBillingUnavailableRoutes } from './billing/unavailable.ts'
 import {
   registerEnvironmentDeployPreviewRoutes,
   registerEnvironmentDeployRoutes,
@@ -128,7 +129,8 @@ export function registerClientRoutes(app: Hono<AppEnv>, opts: ClientRouteOpts) {
   registerDatacenterRoutes(client, opts)
   registerIpRoutes(client, opts)
   registerLicenseRoutes(client, opts)
-  opts.registerBilling?.(client, opts)
+  if (opts.registerBilling) opts.registerBilling(client, opts)
+  else if (opts.secrets) registerBillingUnavailableRoutes(client, opts)
   registerOrganizationPrincipalDefaultsRoutes(client, opts)
   registerOrganizationDirectoryDefaultsRoutes(client, opts)
   registerOrganizationFolderAdminRoutes(client, opts)
