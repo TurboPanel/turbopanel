@@ -33,7 +33,9 @@ const test = Deno.test.bind(Deno)
 const NOW = '2026-09-24T12:00:00.000Z'
 const COLOCATED = 'colocated-0'
 const SKIP_OFFLINE_MESSAGE =
-  'This server was offline for 15 minutes, so it was left out of this update. It updates on the first run after it reconnects.'
+  'It stayed offline for 15 minutes during the update. It updates on its own when it reconnects.'
+const OFFLINE_AT_START_MESSAGE =
+  'It was offline when the update started. It updates on its own when it reconnects.'
 
 const unit = (name: string, version: string, commit: string) => ({
   version,
@@ -325,8 +327,109 @@ test('start: settles a run waiting only on offline fleet hosts then opens a new 
   const skipped = (await store.stepsFor('upgrade-run-1'))[0]
   assertEquals(skipped?.status, 'skipped')
   assertEquals(skipped?.errorCode, 'server_offline')
-  assertEquals(skipped?.errorMessage, SKIP_OFFLINE_MESSAGE)
-  assertEquals((await store.activeRun())?.id, started.runId)
+  assertEquals(skipped?.errorMessage, OFFLINE_AT_START_MESSAGE)
+  // The host is still offline, so the new run leaves it out at once too.
+  const fresh = (await store.stepsFor(started.runId))[0]
+  assertEquals(fresh?.status, 'skipped')
+  assertEquals(fresh?.errorCode, 'server_offline')
+  assertEquals(fresh?.errorMessage, OFFLINE_AT_START_MESSAGE)
+  assertEquals((await store.runById(started.runId))?.status, 'succeeded')
+})
+
+test('start: a host offline when the update starts is skipped at once; a connected one is not', async () => {
+  const { coordinator, store } = build({
+    runtime: 'workers',
+    colocatedServerId: null,
+    facts: [
+      factFor('srv-down', { colocated: false, connected: false }),
+      factFor('srv-up', { colocated: false, connected: true }),
+    ],
+  })
+  const started = await coordinator.start({ source: 'manual', startedBy: null })
+  if (!started.ok) throw new TypeError(started.error)
+  const steps = await store.stepsFor(started.runId)
+  const down = steps.find((step) => step.serverId === 'srv-down')
+  const up = steps.find((step) => step.serverId === 'srv-up')
+  assertEquals(down?.status, 'skipped')
+  assertEquals(down?.errorCode, 'server_offline')
+  assertEquals(down?.errorMessage, OFFLINE_AT_START_MESSAGE)
+  assertEquals(up?.status === 'skipped', false)
+  assertEquals(up?.errorCode, null)
+})
+
+test('start: an open run with a connected pending host, or a host that already ran, is not settled', async () => {
+  const connectedPending = build({
+    runtime: 'workers',
+    colocatedServerId: null,
+    facts: [factFor('srv-a', { colocated: false, connected: true })],
+  })
+  await connectedPending.store.insertRun(runRow(), [
+    stepRow('step-1', { status: 'pending', phase: 'fleet', serverId: 'srv-a' }),
+  ])
+  const first = await connectedPending.coordinator.start({ source: 'manual', startedBy: null })
+  assertEquals(first.ok, false)
+  assertEquals((await connectedPending.store.stepsFor('upgrade-run-1'))[0]?.status, 'pending')
+
+  const alreadyRan = build({
+    runtime: 'workers',
+    colocatedServerId: null,
+    facts: [factFor('srv-a', { colocated: false, connected: false })],
+  })
+  await alreadyRan.store.insertRun(runRow(), [
+    stepRow('step-1', { status: 'waiting', attempts: 1, phase: 'fleet', serverId: 'srv-a' }),
+  ])
+  const second = await alreadyRan.coordinator.start({ source: 'manual', startedBy: null })
+  assertEquals(second.ok, false)
+  assertEquals((await alreadyRan.store.stepsFor('upgrade-run-1'))[0]?.status, 'waiting')
+})
+
+test('start: a step moved by a concurrent report keeps the run open and answers upgrade_run_active', async () => {
+  const { coordinator, store } = build({
+    runtime: 'workers',
+    colocatedServerId: null,
+    facts: [factFor('srv-a', { colocated: false, connected: false })],
+  })
+  await store.insertRun(runRow(), [
+    stepRow('step-1', { status: 'waiting', phase: 'fleet', serverId: 'srv-a' }),
+  ])
+  const realSave = store.saveStep.bind(store)
+  let raced = false
+  store.saveStep = async (step, expectedStatus) => {
+    if (!raced) {
+      raced = true
+      // A hello moves the step before the settle write lands.
+      const moved = { ...step, status: 'dispatched' as const }
+      await realSave(moved)
+    }
+    return await realSave(step, expectedStatus)
+  }
+  const refused = await coordinator.start({ source: 'manual', startedBy: null })
+  assertEquals(refused.ok, false)
+  if (refused.ok) throw new TypeError('expected a refusal')
+  assertEquals(refused.error, 'upgrade_run_active')
+  assertEquals((await store.runById('upgrade-run-1'))?.status === 'succeeded', false)
+  assertEquals((await store.stepsFor('upgrade-run-1'))[0]?.status, 'dispatched')
+  assertEquals((await store.activeRun())?.id, 'upgrade-run-1')
+})
+
+test('activeRun: every step carries connected beside phase', async () => {
+  const { coordinator, store } = build({
+    runtime: 'workers',
+    colocatedServerId: null,
+    facts: [
+      factFor('srv-a', { colocated: false, connected: false }),
+      factFor('srv-b', { colocated: false, connected: true }),
+    ],
+  })
+  await store.insertRun(runRow(), [
+    stepRow('step-1', { status: 'waiting', phase: 'fleet', serverId: 'srv-a' }),
+    stepRow('step-2', { status: 'installing', phase: 'fleet', serverId: 'srv-b' }),
+  ])
+  const run = await coordinator.activeRun()
+  const byServer = Object.fromEntries(run?.steps.map((step) => [step.serverId, step]) ?? [])
+  assertEquals(byServer['srv-a']?.connected, false)
+  assertEquals(byServer['srv-b']?.connected, true)
+  assertEquals(byServer['srv-a']?.phase, 'fleet')
 })
 
 test('start: still refuses when a fleet step is in flight or its host is connected', async () => {
@@ -461,6 +564,21 @@ test('tick: a fleet step offline for over 15 minutes is skipped as server_offlin
   assertEquals(run?.status, 'succeeded')
   assertEquals(run?.counts?.skipped, 1)
   assertEquals(run?.counts?.needsAttention, 0)
+})
+
+test('tick: the offline deadline is strictly more than 15 minutes (14:59, 15:00, 15:01)', async () => {
+  const secondsAgo = (seconds: number) => new Date(Date.parse(NOW) - seconds * 1000).toISOString()
+  for (const [seconds, expected] of [
+    [14 * 60 + 59, 'waiting'],
+    [15 * 60, 'waiting'],
+    [15 * 60 + 1, 'skipped'],
+  ] as const) {
+    const { step } = await tickOne(
+      { status: 'waiting', lastStageAt: secondsAgo(seconds), phase: 'fleet' },
+      { connected: false }
+    )
+    assertEquals(step.status, expected, `${seconds}s offline`)
+  }
 })
 
 test('tick: a colocated_daemon step offline for over 15 minutes needs attention', async () => {

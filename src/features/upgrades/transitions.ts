@@ -190,7 +190,13 @@ function isStalled(step: StepView, cfg: StepConfig): boolean {
   return Date.parse(cfg.now) - Date.parse(step.lastStageAt) > timeout
 }
 
-/** Only a step already `waiting` has a `lastStageAt` that marks when it went offline. */
+/**
+ * Only a step already `waiting` has a `lastStageAt` that marks when it went
+ * offline: the tick that first noticed the host offline stamps it (no
+ * last-seen column). The window is strictly more than the deadline, so exactly
+ * 15:00 still waits. A host already offline when a run is planned never gets
+ * here; the planner skips it at once.
+ */
 function offlineTooLong(step: StepView, cfg: StepConfig): boolean {
   if (step.status !== 'waiting' || !step.lastStageAt) return false
   const deadline = cfg.offlineDeadlineMs ?? UPGRADE_OFFLINE_DEADLINE_MS

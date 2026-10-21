@@ -52,9 +52,15 @@ the cache.
 
 - **Manual** — pre-flight first; 409 when a run is already active
   (`uniq_upgrade_active`), except a run whose only open steps are fleet
-  `waiting`/`pending` rows for servers that are not connected: `start()`
-  settles those as `skipped` (`server_offline`) and opens the new run.
-  Preflight reports `canStart` in that case and does not mutate.
+  `waiting` rows (never dispatched) for servers that are not connected:
+  `start()` settles those as `skipped` (`server_offline`) and opens the new
+  run. If a concurrent hello, progress report or tick moved any of those steps
+  first, the run stays open and the call answers 409 `upgrade_run_active`.
+  Preflight reports `canStart` in that case and does not mutate. A fleet host
+  that is not connected when a run is planned (manual or automatic, not a
+  single-server start) gets its step `skipped` at once with `server_offline`
+  and "It was offline when the update started. It updates on its own when it
+  reconnects."; a connected `pending` host is never skipped.
 - **Automatic** — only when `autoUpdate` is on, on every runtime and channel
   (Workers included; it used to ignore the flag, which kept rolling canary
   builds to the testing fleet with `autoUpdate` off, 2026-10-03). Only
@@ -62,9 +68,11 @@ the cache.
   from what's installed (`differsFromInstalled`), and only when no run is
   active. Never replace a run in progress; the next run targets the newest
   build. Daemon drift counts **connected** servers only (`anyDaemonBehind`):
-  an offline host would otherwise reopen a run on every tick, each waiting
-  out the offline deadline. It is picked up by the first run after it
-  reconnects.
+  an offline host would otherwise reopen a run on every tick. A skipped host
+  that reconnects while behind makes the next tick start an automatic run
+  (batch limits as usual) when `autoUpdate` is on and the window is open; with
+  `autoUpdate` off it waits for a person. If it drops again that run skips it
+  at once, and drift ignores it while offline, so there is no loop.
 - **Never a downgrade.** Preflight refuses a run whose control-plane or
   co-located daemon target is older than what is installed (`isDowngrade` in
   `target.ts`). A fleet daemon already newer than the target gets a `skipped`
@@ -164,18 +172,20 @@ working.
 
 ## Self-healing (`transitions.ts`)
 
-- An offline server's step becomes `waiting` (`wait_offline`) and is dispatched
-  when the server reconnects. The orchestrator stamps `lastStageAt` (column
-  `stage.status_changed_at`) when the step enters `waiting`; a **fleet** step
-  still waiting after `UPGRADE_OFFLINE_DEADLINE_MS` (15 min) is `skipped`
-  (`skip_offline`) with `errorCode` `server_offline`, so one unreachable host
-  cannot hold the single instance-wide run open. The run then ends `succeeded`
-  when every other step is done/skipped. Co-located daemon and control-plane
-  steps still become `needs_attention` / `server_offline` (the fleet gate
-  depends on them). The skipped host is picked up by the first run after it
-  reconnects (`anyDaemonBehind` counts connected servers only). `start()` and
-  preflight also settle a run that waits only on offline fleet hosts (see
-  **Manual** above) so "Update fleet now" is not blocked for 15 minutes.
+- A host already offline when a run is planned is skipped at once (see
+  **Runs**). An offline server's step otherwise becomes `waiting`
+  (`wait_offline`) and is dispatched when the server reconnects: a host that
+  was mid-update or briefly lost its connection during the run. The
+  orchestrator stamps `lastStageAt` (column `stage.status_changed_at`) when the
+  step enters `waiting`, so the 15 minute clock (`UPGRADE_OFFLINE_DEADLINE_MS`)
+  runs from the tick that first noticed the host offline (no last-seen
+  column). A **fleet** step still waiting after that is `skipped`
+  (`skip_offline`, strictly more than 15:00 elapsed) with `errorCode`
+  `server_offline` and "It stayed offline for 15 minutes during the update. It
+  updates on its own when it reconnects." The run then ends `succeeded` when
+  every other step is done/skipped. Co-located daemon and control-plane steps
+  still become `needs_attention` / `server_offline` (the fleet gate depends on
+  them).
 - No progress within `UPGRADE_STEP_TIMEOUT_MS` → retry with backoff, up to
   `UPGRADE_STEP_MAX_ATTEMPTS` (3), then `needs_attention`.
 - `rolled_back` → one automatic retry (`UPGRADE_ROLLBACK_MAX_ATTEMPTS`), then
@@ -216,7 +226,9 @@ working.
 - `start()` reads the active run before anything else, before the target is
   even resolved, so a second press answers 409 `upgrade_run_active` even when
   the manifest host is unreachable. A run that waits only on offline fleet
-  hosts is settled first instead of 409.
+  hosts is settled first instead of 409. The run endpoints return every step
+  with a boolean `connected` (live link) beside `phase`, so the console can tell
+  an offline-waiting step from a connected one.
 
 ## Saving what daemons report
 

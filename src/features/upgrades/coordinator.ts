@@ -127,14 +127,14 @@ export type UpgradeCoordinator = {
       }
   >
   tick(input?: { resolveManifests?: boolean }): Promise<void>
-  activeRun(): Promise<(UpgradeRunRow & { steps: UpgradeStepRow[] }) | null>
+  activeRun(): Promise<UpgradeRunWithSteps | null>
   /**
    * The most recent finished run, with its steps, when it ended within
    * {@link UPGRADE_LAST_RUN_VISIBLE_MS}. A run leaves `activeRun` the moment it
    * fails; without this the console loses the failure and its reason.
    */
-  lastRun(): Promise<(UpgradeRunRow & { steps: UpgradeStepRow[] }) | null>
-  run(id: string): Promise<(UpgradeRunRow & { steps: UpgradeStepRow[] }) | null>
+  lastRun(): Promise<UpgradeRunWithSteps | null>
+  run(id: string): Promise<UpgradeRunWithSteps | null>
   history(offset: number, limit: number): Promise<{ runs: UpgradeRunRow[]; total: number }>
   servers(input: { offset: number; limit: number; status: string }): Promise<{
     servers: UpgradeStepRow[]
@@ -263,16 +263,24 @@ function runActiveRefusal(activeRunId?: string) {
   }
 }
 
-/** Minutes from {@link UPGRADE_OFFLINE_DEADLINE_MS}, used in the skip sentence. */
-function skipOfflineErrorMessage(): string {
+/** Sentence on a fleet step that was already offline when the update started. */
+export const SKIPPED_OFFLINE_AT_START_MESSAGE =
+  'It was offline when the update started. It updates on its own when it reconnects.'
+
+/**
+ * Sentence on a fleet step that lost its connection during the run and stayed
+ * away past {@link UPGRADE_OFFLINE_DEADLINE_MS} (counted from the tick that
+ * first noticed it offline).
+ */
+function skipOfflineTimeoutMessage(): string {
   const minutes = Math.round(UPGRADE_OFFLINE_DEADLINE_MS / 60_000)
-  return `This server was offline for ${minutes} minutes, so it was left out of this update. It updates on the first run after it reconnects.`
+  return `It stayed offline for ${minutes} minutes during the update. It updates on its own when it reconnects.`
 }
 
-function markStepSkippedOffline(step: UpgradeStepRow): void {
+function markStepSkippedOffline(step: UpgradeStepRow, message: string): void {
   step.status = 'skipped'
   step.errorCode = 'server_offline' satisfies UpgradeStepErrorCode
-  step.errorMessage = skipOfflineErrorMessage()
+  step.errorMessage = message
 }
 
 function connectedServerIds(fleet: readonly FleetServerFact[]): string[] {
@@ -286,6 +294,10 @@ function runBlocksStart(
   return !runWaitsOnlyOnOfflineServers(steps, connectedServerIds(fleet))
 }
 
+/** A step as the run endpoints return it: `connected` is the host's live link. */
+export type UpgradeStepWithLink = UpgradeStepRow & { connected: boolean }
+export type UpgradeRunWithSteps = UpgradeRunRow & { steps: UpgradeStepWithLink[] }
+
 export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeCoordinator {
   const resolveTarget = deps.resolveTarget ?? (() => resolveUpgradeTarget(deps.channel))
 
@@ -293,12 +305,14 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
     return await deps.store.fleetFacts(deps.colocatedServerId)
   }
 
-  async function withSteps(
-    run: UpgradeRunRow | null
-  ): Promise<(UpgradeRunRow & { steps: UpgradeStepRow[] }) | null> {
+  async function withSteps(run: UpgradeRunRow | null): Promise<UpgradeRunWithSteps | null> {
     if (!run) return null
-    const steps = await deps.store.stepsFor(run.id)
-    return { ...run, steps }
+    const [steps, fleet] = await Promise.all([deps.store.stepsFor(run.id), facts()])
+    const connected = new Set(connectedServerIds(fleet))
+    return {
+      ...run,
+      steps: steps.map((step) => ({ ...step, connected: connected.has(step.serverId) })),
+    }
   }
 
   async function buildPreflight(
@@ -538,7 +552,7 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
       return await saveStepIfChanged(step, before, readStatus)
     }
     if (action.kind === 'skip_offline') {
-      markStepSkippedOffline(step)
+      markStepSkippedOffline(step, skipOfflineTimeoutMessage())
       return await saveStepIfChanged(step, before, readStatus)
     }
     if (action.kind === 'needs_attention') {
@@ -720,18 +734,25 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
     await deps.store.writeTickCursor(run.id, null)
   }
 
-  /** Skip fleet steps that are only waiting on offline hosts, then finish the run. */
+  /**
+   * Skip fleet steps that are only waiting on offline hosts, then finish the
+   * run. Returns false (and leaves the run open) when a concurrent hello,
+   * progress report or tick moved a step first: that host is no longer idle.
+   */
   async function settleRunWaitingOnOfflineServers(
     run: UpgradeRunRow,
     steps: UpgradeStepRow[]
-  ): Promise<void> {
+  ): Promise<boolean> {
+    let lostRace = false
     await forEachSequential(steps, async (step) => {
       if (isTerminal(step.status)) return
       const expectedStatus = step.status
-      markStepSkippedOffline(step)
-      await deps.store.saveStep(step, expectedStatus)
+      markStepSkippedOffline(step, SKIPPED_OFFLINE_AT_START_MESSAGE)
+      if (!(await deps.store.saveStep(step, expectedStatus))) lostRace = true
     })
+    if (lostRace) return false
     await finishRun(run, summarizeSteps(steps))
+    return true
   }
 
   /** Facts for the window's servers, plus the co-located host the gate reads. */
@@ -858,7 +879,9 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
       if (active) {
         const [steps, fleet] = await Promise.all([deps.store.stepsFor(active.id), facts()])
         if (runBlocksStart(steps, fleet)) return runActiveRefusal(active.id)
-        await settleRunWaitingOnOfflineServers(active, steps)
+        if (!(await settleRunWaitingOnOfflineServers(active, steps))) {
+          return runActiveRefusal(active.id)
+        }
       }
       const [target, fleet, settings] = await Promise.all([
         resolveTarget(),
@@ -911,10 +934,14 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
       }
       const uiBehind = uiBehindTarget(target.ui, input.consoleCommit)
       const steps = plan.steps.map((planned) =>
-        stepFromPlan(run, planned, fleet, now, {
-          commit: deps.instanceInstalled.commit,
-          uiBehind,
-        })
+        stepFromPlan(
+          run,
+          planned,
+          fleet,
+          now,
+          { commit: deps.instanceInstalled.commit, uiBehind },
+          !input.serverId
+        )
       )
       run.phase = earliestOpenPhase(steps)
       const inserted = await deps.store.insertRun(run, steps)
@@ -1294,12 +1321,30 @@ function initialStepStatus(satisfied: boolean, ahead: boolean): UpgradeStepRow['
   return 'pending'
 }
 
+function stepErrorCode(ahead: boolean, offlineAtStart: boolean): UpgradeStepErrorCode | null {
+  if (ahead) return 'downgrade_refused'
+  return offlineAtStart ? 'server_offline' : null
+}
+
+function stepErrorMessage(
+  ahead: boolean,
+  offlineAtStart: boolean,
+  installed: string | null | undefined,
+  target: string | null | undefined
+): string | null {
+  if (ahead) {
+    return `Runs ${installed}, newer than the target ${target}. Managed updates never downgrade a server.`
+  }
+  return offlineAtStart ? SKIPPED_OFFLINE_AT_START_MESSAGE : null
+}
+
 function stepFromPlan(
   run: UpgradeRunRow,
   planned: PlannedStep,
   fleet: FleetServerFact[],
   now: string,
-  instance: { commit: string | null; uiBehind: boolean }
+  instance: { commit: string | null; uiBehind: boolean },
+  skipOffline: boolean
 ): UpgradeStepRow {
   const fact = fleet.find((item) => item.serverId === planned.serverId)
   const pin = unitTarget(run.target, planned.unit)
@@ -1321,6 +1366,10 @@ function stepFromPlan(
       installedBuiltAt: fact?.builtAt,
       targetBuiltAt: pin?.builtAt,
     })
+  // A fleet host that is not connected when the run is planned is left out at
+  // once; it catches up on the first automatic or manual run after it reconnects.
+  const offlineAtStart =
+    skipOffline && !satisfied && !ahead && planned.phase === 'fleet' && fact?.connected === false
   return {
     id: newId(),
     upgradeId: run.id,
@@ -1328,7 +1377,7 @@ function stepFromPlan(
     unit: planned.unit,
     phase: planned.phase,
     batchIndex: planned.batchIndex,
-    status: initialStepStatus(satisfied, ahead),
+    status: initialStepStatus(satisfied, ahead || offlineAtStart),
     requestId: null,
     attempts: 0,
     nextAttemptAt: null,
@@ -1337,10 +1386,8 @@ function stepFromPlan(
     fromCommit: planned.unit === 'instance' ? null : (fact?.commit ?? null),
     toCommit: pin?.commit ?? null,
     lastStageAt: now,
-    errorCode: ahead ? ('downgrade_refused' satisfies UpgradeStepErrorCode) : null,
-    errorMessage: ahead
-      ? `Runs ${fact?.version}, newer than the target ${pin?.version}. Managed updates never downgrade a server.`
-      : null,
+    errorCode: stepErrorCode(ahead, offlineAtStart),
+    errorMessage: stepErrorMessage(ahead, offlineAtStart, fact?.version, pin?.version),
     detail: {
       phase: planned.phase,
       ...(planned.unit === 'instance' && instance.uiBehind ? { uiRefresh: true } : {}),

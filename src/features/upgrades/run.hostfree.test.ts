@@ -78,13 +78,14 @@ test('batchComplete requires every step in the batch terminal', () => {
   assertEquals(batchComplete(steps, 9), false)
 })
 
-test('runWaitsOnlyOnOfflineServers: only fleet waiting/pending on disconnected hosts', () => {
+test('runWaitsOnlyOnOfflineServers: only fleet waiting, never-dispatched steps on disconnected hosts', () => {
   const offline = { phase: 'fleet' as const, status: 'waiting' as const, serverId: 'down' }
   const pending = { phase: 'fleet' as const, status: 'pending' as const, serverId: 'also-down' }
   assertEquals(runWaitsOnlyOnOfflineServers([], []), false)
   assertEquals(runWaitsOnlyOnOfflineServers([offline], []), true)
-  assertEquals(runWaitsOnlyOnOfflineServers([pending], []), true)
-  assertEquals(runWaitsOnlyOnOfflineServers([offline, pending], ['up']), true)
+  assertEquals(runWaitsOnlyOnOfflineServers([pending], []), false)
+  assertEquals(runWaitsOnlyOnOfflineServers([offline, pending], ['up']), false)
+  assertEquals(runWaitsOnlyOnOfflineServers([{ ...offline, attempts: 1 }], []), false)
   assertEquals(runWaitsOnlyOnOfflineServers([offline], ['down']), false)
   assertEquals(
     runWaitsOnlyOnOfflineServers([{ phase: 'fleet', status: 'dispatched', serverId: 'down' }], []),

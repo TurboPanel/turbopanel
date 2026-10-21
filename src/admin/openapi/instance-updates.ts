@@ -109,7 +109,7 @@ export const INSTANCE_UPDATES_PATHS = {
         '202': { description: '`{ ok: true, dispatched: true, runId }`' },
         '409': {
           description:
-            'Pre-flight failed, or a run is already active (not only waiting on offline fleet hosts)',
+            'Pre-flight failed, or a run is already active (`upgrade_run_active`; not when it only waits on offline fleet hosts)',
         },
       },
     },
@@ -122,7 +122,10 @@ export const INSTANCE_UPDATES_PATHS = {
         '`{ ok: true, run, lastRun }`. `run` is the pending or running run with its steps, ' +
         'or null. When no run is active, `lastRun` is the most recent finished run (with its ' +
         "steps, `error`, and each step's `errorCode` / `errorMessage`) if it ended within the " +
-        'last 24 hours, so a failure stays visible after the run stops being active; otherwise null.',
+        'last 24 hours, so a failure stays visible after the run stops being active; otherwise null. ' +
+        'Every step carries `phase` and a boolean `connected` (the host is linked now). A fleet host ' +
+        'offline when the update starts is `skipped` with `errorCode` `server_offline` at once; a host ' +
+        'that drops during the run is skipped after 15 minutes counted from when the run first noticed it offline.',
       security: [...cookieSecurity],
       responses: {
         '200': { description: '`{ ok: true, run, lastRun }`' },
