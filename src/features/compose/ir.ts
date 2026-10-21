@@ -593,4 +593,11 @@ export type ServerDeployment = {
    * Traefik still joins it.
    */
   hostingIngressNetwork?: string
+  /**
+   * Hide web server names and versions (headers, error-page footers) for the
+   * sites and routes of this deploy. Resolved from the server's own setting,
+   * else its owner's organization default, else on. Absent only where no server
+   * was in hand (preview, an empty document).
+   */
+  hideWebServerNames?: boolean
 }

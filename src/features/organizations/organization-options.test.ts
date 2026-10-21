@@ -34,7 +34,10 @@ test('parseOrganizationOptions reads timezone, maxServers, and host defaults', (
     sshPort: 2222,
     ntp: { enabled: true, servers: ['time.cloudflare.com'] },
     defaultFabricEnabled: true,
+    hideWebServerNames: false,
   })
+  assertEquals(options.hideWebServerNames, false)
+  assertEquals(parseOrganizationOptions({ hideWebServerNames: null }).hideWebServerNames, undefined)
   assertEquals(options.defaultServerTimezone, 'America/Chicago')
   assertEquals(options.enforceServerTimezone, true)
   assertEquals(options.maxServers, 5)
