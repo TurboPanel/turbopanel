@@ -54,3 +54,18 @@ test('a fresh database without tables reports nothing missing', async () => {
     await db.cleanup()
   }
 })
+
+test('a runtime role with only SELECT is reported as lacking read/write', async () => {
+  if (!adminUrl) return skipWithoutDatabase('findMissingRuntimeGrants select-only')
+  const db = await createScratchGrantDb(adminUrl)
+  try {
+    const { runtime } = db.names
+    await db.migrate.unsafe(`GRANT USAGE ON SCHEMA public TO "${runtime}"`)
+    await db.migrate.unsafe(`GRANT SELECT ON ALL TABLES IN SCHEMA public TO "${runtime}"`)
+    assertEquals(await missingFor(db.urlFor(runtime)), [
+      `role ${runtime} lacks read/write on table public.setting`,
+    ])
+  } finally {
+    await db.cleanup()
+  }
+})

@@ -134,15 +134,16 @@ export async function checkGrants(client, { runtime, cached }, tables) {
     }
   }
   const [defaults] = await client.unsafe(
-    `select count(*)::int as n from pg_default_acl d
+    `select count(distinct a.privilege_type)::int as n from pg_default_acl d
       join pg_namespace n on n.oid = d.defaclnamespace,
       lateral aclexplode(d.defaclacl) a
       join pg_roles g on g.oid = a.grantee
      where n.nspname = 'public' and d.defaclrole = current_user::regrole
-       and d.defaclobjtype = 'r' and g.rolname = $1 and a.privilege_type = 'INSERT'`,
+       and d.defaclobjtype = 'r' and g.rolname = $1
+       and a.privilege_type in ('SELECT', 'INSERT', 'UPDATE', 'DELETE')`,
     [runtime]
   )
-  checks.push({ name: `new tables inherit grants for ${runtime}`, ok: defaults.n > 0 })
+  checks.push({ name: `new tables inherit grants for ${runtime}`, ok: defaults.n === 4 })
   if (cached) {
     await ask(
       `${cached} can use schema public`,

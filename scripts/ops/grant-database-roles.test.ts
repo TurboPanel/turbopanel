@@ -97,3 +97,23 @@ test('default privileges for a similarly named role do not count', async () => {
     await admin.end({ timeout: 5 })
   }
 })
+
+test('default privileges that cover only some of the four do not count', async () => {
+  if (!adminUrl) return skipWithoutDatabase('grant-database-roles partial defaults')
+  const db = await createScratchGrantDb(adminUrl)
+  try {
+    const { runtime } = db.names
+    await db.migrate.unsafe(
+      `ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT ON TABLES TO "${runtime}"`
+    )
+    const result = await grantDatabaseRoles(
+      db.migrate,
+      { runtime, cached: null },
+      { checkOnly: true }
+    )
+    const line = result.lines.find((l) => l.includes('new tables inherit'))
+    assertEquals(line?.startsWith('MISSING'), true, result.lines.join('\n'))
+  } finally {
+    await db.cleanup()
+  }
+})

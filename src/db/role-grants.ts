@@ -11,6 +11,7 @@ const PROBE_TABLE = 'setting'
 const PROBE_CACHE_MS = 15_000
 /** A hung database must not double the wait of the request that already failed. */
 const PROBE_TIMEOUT_MS = 2_000
+let inflight: Promise<string[]> | undefined
 let cached: { at: number; missing: string[] } | undefined
 
 type GrantProbeRow = {
@@ -34,14 +35,22 @@ type GrantProbeRow = {
 export async function findMissingRuntimeGrants(db: Db): Promise<string[]> {
   const now = Date.now()
   if (cached !== undefined && now - cached.at < PROBE_CACHE_MS) return cached.missing
-  const missing = await probeRuntimeGrants(db)
-  cached = { at: now, missing }
-  return missing
+  // A burst of failing requests shares one probe.
+  inflight ??= probeRuntimeGrants(db)
+    .then((missing) => {
+      cached = { at: Date.now(), missing }
+      return missing
+    })
+    .finally(() => {
+      inflight = undefined
+    })
+  return inflight
 }
 
 /** Test hook: forget the cached answer. */
 export function resetGrantProbeCache(): void {
   cached = undefined
+  inflight = undefined
 }
 
 async function withTimeout<T>(work: Promise<T>): Promise<T> {
@@ -66,7 +75,10 @@ async function probeRuntimeGrants(db: Db): Promise<string[]> {
         current_user::text AS role,
         has_schema_privilege(current_user, 'public', 'USAGE') AS schema_usage,
         t.oid IS NOT NULL AS table_exists,
-        has_table_privilege(current_user, t.oid, 'SELECT, INSERT, UPDATE, DELETE') AS table_privileges
+        (has_table_privilege(current_user, t.oid, 'SELECT')
+          AND has_table_privilege(current_user, t.oid, 'INSERT')
+          AND has_table_privilege(current_user, t.oid, 'UPDATE')
+          AND has_table_privilege(current_user, t.oid, 'DELETE')) AS table_privileges
       FROM (SELECT 1) AS one
       LEFT JOIN (
         SELECT c.oid FROM pg_class c
