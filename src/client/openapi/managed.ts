@@ -16,7 +16,7 @@ const MAX_CONNECTIONS_SCHEMA = {
 const STRAIGHT_THROUGH_REQUEST_SCHEMA = {
   type: 'boolean',
   description:
-    "Connect straight through (no connection sharing), PostgreSQL only: the login's connection goes straight through the database front door, one server connection per client session, no connection reuse and no read split. Omitted = the default (on for a login with the migrations privilege `owner`, off for the rest). Answers 400 `straight_through_conflicts_with_source_limit` together with `allowedSources` (a login with a source limit always uses the normal path), 400 `straight_through_postgres_only` for MySQL and MariaDB, and 400 `straight_through_login_not_allowed` for the cluster administrator and replication logins.",
+    "Connect straight through (no connection sharing), PostgreSQL only: the login's connection goes straight through the database front door, one server connection per client session, no connection reuse and no read split. Omitted = the default (on for a login with the migrations privilege `owner` and a read/write connection role, off for the rest). Answers 400 `straight_through_conflicts_with_source_limit` together with `allowedSources` (a login with a source limit always uses the normal path), 400 `straight_through_postgres_only` for MySQL and MariaDB, and 400 `straight_through_login_not_allowed` for the cluster administrator and replication logins.",
 } as const
 
 const ENV_ID_PARAM = {
@@ -679,7 +679,7 @@ export const managedSchemas = {
       straightThroughDefault: {
         type: 'boolean',
         description:
-          'True when `straightThrough` comes from the default (the owner never chose): on for a PostgreSQL login with the migrations privilege (`owner`), off for the rest.',
+          'True when `straightThrough` comes from the default (the owner never chose): on for a PostgreSQL login with the migrations privilege (`owner`) and a read/write connection role, off for the rest.',
       },
       createdAt: { type: 'string', format: 'date-time' },
     },

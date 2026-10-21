@@ -303,6 +303,7 @@ async function loadClusterUsersForManagedIds(
         engine: row.engine,
         role: user.role,
         privileges: row.privileges ?? [],
+        connectionRole: row.access,
         allowedSources: row.allowedSources ?? undefined,
         straightThrough: row.isStraightThrough ?? undefined,
       }).value

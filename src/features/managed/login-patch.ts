@@ -21,10 +21,8 @@ import {
 } from './logins.ts'
 import { describePatchedLimits } from './login-sources.ts'
 import {
-  describeStraightThroughChange,
-  refuseStraightThrough,
-  resolveStraightThrough,
-  straightThroughAfter,
+  describeStraightThroughPatch,
+  refuseStraightThroughPatch,
 } from './login-straight-through.ts'
 
 export type LoginPatchError = {
@@ -164,12 +162,7 @@ export function planLoginPatch(
 
   // Straight through: judged on the state after the change, both directions
   // (turning it on with a limit, or adding a limit to a login set to it).
-  const straightAfter = straightThroughAfter(current, input)
-  const straightRefusal = refuseStraightThrough({
-    engine,
-    role: current.role,
-    ...straightAfter,
-  })
+  const straightRefusal = refuseStraightThroughPatch(engine, current, input)
   if (straightRefusal) {
     return fail(straightRefusal.status, straightRefusal.error, straightRefusal.message)
   }
@@ -200,14 +193,7 @@ export function planLoginPatch(
   const tool = patch.tool ?? current.tool
   const summary = describeApply(engine, after, tool, becomesAdmin)
   summary.push(...describePatchedLimits(current, input))
-  const resolved = (privileges: string[], after: ReturnType<typeof straightThroughAfter>) =>
-    resolveStraightThrough({ engine, role: current.role, privileges, ...after })
-  summary.push(
-    ...describeStraightThroughChange(
-      resolved(current.privileges, current),
-      resolved(patch.privileges ?? current.privileges, straightAfter)
-    )
-  )
+  summary.push(...describeStraightThroughPatch(engine, current, patch))
   return { ok: true, patch, grantMode: after, summary }
 }
 

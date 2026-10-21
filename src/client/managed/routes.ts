@@ -2200,6 +2200,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
           engine: ctx.spec.engine,
           role: 'user',
           privileges,
+          connectionRole,
           allowedSources: limits.allowedSources ?? undefined,
           straightThrough:
             typeof limits.straightThrough === 'boolean' ? limits.straightThrough : undefined,

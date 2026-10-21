@@ -12,8 +12,6 @@
  * the front door enforces the limit on the shared path.
  */
 
-import type { LoginSettings } from './logins.ts'
-
 export const STRAIGHT_THROUGH_CONFLICT_ERROR = 'straight_through_conflicts_with_source_limit'
 export const STRAIGHT_THROUGH_CONFLICT_MESSAGE =
   'A login that connects straight through cannot be limited to certain addresses. Turn one off.'
@@ -32,10 +30,12 @@ export type StraightThroughFacts = {
   engine: string
   role: string
   privileges: readonly string[]
+  /** `read-write` (primary) or `read-only` (replicas); only read/write is ever on by default. */
+  connectionRole: string
   /** `undefined` or empty means anywhere. */
   allowedSources: readonly string[] | undefined
   /** Stored choice; `undefined` means the owner never chose. */
-  straightThrough?: boolean | undefined
+  straightThrough?: boolean
 }
 
 export type StraightThroughResolved = {
@@ -55,7 +55,7 @@ export function resolveStraightThrough(facts: StraightThroughFacts): StraightThr
   }
   const isDefault = facts.straightThrough === undefined
   const wanted = isDefault
-    ? facts.privileges.includes(MIGRATION_PRIVILEGE)
+    ? facts.privileges.includes(MIGRATION_PRIVILEGE) && facts.connectionRole === 'read-write'
     : facts.straightThrough === true
   return { value: wanted && !hasSourceLimit(facts.allowedSources), isDefault }
 }
@@ -107,7 +107,7 @@ export function refuseStraightThrough(
 
 /** The stored choice and source limit after a request (absent keys keep the stored value). */
 export function straightThroughAfter(
-  current: Pick<LoginSettings, 'allowedSources' | 'straightThrough'>,
+  current: Pick<StraightThroughFacts, 'allowedSources' | 'straightThrough'>,
   input: { allowedSources?: string[] | null; straightThrough?: boolean | null }
 ): Pick<StraightThroughFacts, 'allowedSources' | 'straightThrough'> {
   return {
@@ -120,6 +120,52 @@ export function straightThroughAfter(
         ? current.straightThrough
         : (input.straightThrough ?? undefined),
   }
+}
+
+type PatchSettings = Pick<
+  StraightThroughFacts,
+  'privileges' | 'connectionRole' | 'allowedSources'
+> & {
+  role: string
+  straightThrough?: boolean
+}
+
+type PatchChange = {
+  privileges?: string[]
+  connectionRole?: string
+  allowedSources?: string[] | null
+  straightThrough?: boolean | null
+}
+
+/** Refusal for a PATCH, judged on the state after it (both halves merged with the stored ones). */
+export function refuseStraightThroughPatch(
+  engine: string,
+  current: PatchSettings,
+  input: PatchChange
+): StraightThroughRefusal | null {
+  return refuseStraightThrough({
+    engine,
+    role: current.role,
+    ...straightThroughAfter(current, input),
+  })
+}
+
+/** Dry-run lines for a PATCH: what changes in the effective setting, if anything. */
+export function describeStraightThroughPatch(
+  engine: string,
+  current: PatchSettings,
+  change: PatchChange
+): string[] {
+  const resolve = (settings: PatchSettings) => resolveStraightThrough({ engine, ...settings })
+  return describeStraightThroughChange(
+    resolve(current),
+    resolve({
+      role: current.role,
+      privileges: change.privileges ?? current.privileges,
+      connectionRole: change.connectionRole ?? current.connectionRole,
+      ...straightThroughAfter(current, change),
+    })
+  )
 }
 
 /** Plain-words line for the dry-run preview when the effective setting changes. */

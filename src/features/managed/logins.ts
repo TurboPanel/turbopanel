@@ -51,7 +51,7 @@ export type LoginSettings = {
   /** Per-login connection cap; `undefined` means no cap. */
   maxConnections: number | undefined
   /** PostgreSQL only: the stored choice to connect straight through; `undefined` means never chosen (default applies). */
-  straightThrough?: boolean | undefined
+  straightThrough?: boolean
 }
 
 /** A change to {@link LoginSettings}; `null` clears `allowedSources` / `maxConnections`. */

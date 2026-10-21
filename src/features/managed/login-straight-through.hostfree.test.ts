@@ -20,6 +20,7 @@ const facts = (over: Partial<StraightThroughFacts> = {}): StraightThroughFacts =
   engine: 'postgres',
   role: 'user',
   privileges: ['read-write'],
+  connectionRole: 'read-write',
   allowedSources: undefined,
   straightThrough: undefined,
   ...over,
@@ -45,6 +46,18 @@ test('default: on for a PostgreSQL Migration login, off for the rest', () => {
   assertEquals(resolveStraightThrough(facts()), { value: false, isDefault: true })
   assertEquals(resolveStraightThrough(facts({ privileges: ['read-only'] })).value, false)
   assertEquals(resolveStraightThrough(facts({ privileges: ['admin'] })).value, false)
+})
+
+test('a Migration login routed to read replicas keeps the shared path by default', () => {
+  const readOnly = facts({ privileges: ['owner'], connectionRole: 'read-only' })
+  assertEquals(resolveStraightThrough(readOnly), { value: false, isDefault: true })
+  // An explicit choice still wins.
+  assertEquals(resolveStraightThrough({ ...readOnly, straightThrough: true }).value, true)
+  // A PATCH moving the login to read replicas turns the default off, and says so.
+  const plan = planLoginPatch('postgres', current({ privileges: ['owner'] }), {
+    connectionRole: 'read-only',
+  })
+  assertEquals(plan.ok && plan.summary.some((line) => line.includes('normal shared path')), true)
 })
 
 test('a stored choice beats the default in both directions', () => {

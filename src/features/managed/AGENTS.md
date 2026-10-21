@@ -348,7 +348,9 @@ Flush message after preparing a query (the Node `postgres` driver, drizzle),
 which the shared path does not support. One resolver,
 `resolveStraightThrough` in `login-straight-through.ts`, decides the effective
 value: the stored choice when not NULL, else on for a PostgreSQL `user` login
-whose privileges include `owner` (Migration level) and off for the rest, and
+whose privileges include `owner` (Migration level) and whose connection role is
+`read-write` (a read-only login keeps the shared path and its replica routing),
+off for the rest, and
 always off when `allowed_sources` is non-empty (the limit is enforced on the
 shared path). A Migration login with a source limit therefore just resolves
 off; it is never an error. Explicit `true` is refused with 400

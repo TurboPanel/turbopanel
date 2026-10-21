@@ -721,6 +721,7 @@ test('straightThrough goes on the wire only for a PostgreSQL user login that res
         })
       // Migration level defaults on; the rest default off.
       await make('migrator', { privileges: ['owner'] })
+      await make('migrator_ro', { privileges: ['owner'], connectionRole: 'read-only' })
       await make('plain_app', { privileges: ['read-write'] })
       await make('chosen_on', { privileges: ['read-write'], straightThrough: true })
       const chosenOff = await make('chosen_off', { privileges: ['owner'], straightThrough: false })
@@ -752,6 +753,7 @@ test('straightThrough goes on the wire only for a PostgreSQL user login that res
       assertEquals(flag('migrator')?.straightThrough, true)
       assertEquals(flag('chosen_on')?.straightThrough, true)
       for (const name of [
+        'migrator_ro',
         'plain_app',
         'chosen_off',
         'limited_migrator',
