@@ -968,7 +968,6 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
         : (await peekOrganizationAssignment(db, organizationId)).pickUnfulfilled
     const placementByServer = await loadTierPlacementsForServers(db, serverIds, {
       deployment,
-      orgOptions,
       unwatched: 'counts',
       pickUnfulfilled,
     })
@@ -1545,7 +1544,6 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     const layoutPathsByServer = await loadServerLayoutPaths(db, [id])
     const placementByServer = await loadTierPlacementsForServers(db, [id], {
       deployment: metricsDeploymentKindForRuntime(opts.runtime),
-      orgOptions,
       unwatched: 'ids',
     })
     const tierPlacement = await enrichServerDetailTierPlacement(

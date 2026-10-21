@@ -111,8 +111,8 @@ connection state is Postgres `server.is_connected`, never this stream.
 - `gpu`: 3 per row, physical machines or real passthrough GPUs only.
 - `hardware.physical`: physical machines only, up to 19 signals per row (one double each).
 - Entity pages are ordered by the recorded page order when a slot mapping exists, otherwise by sample order
-  (`buildEntityPoints`, `field-map.ts:532`). Plan limits cut device counts at ingest on the hosted path
-  (`truncateSampleToCapabilityPlan`).
+  (`buildEntityPoints`). Nothing cuts device counts by plan at ingest: a server stores the devices it reports, up
+  to the shared limits (64 of each kind, 16 events a sample, 250 data points a write).
 
 ### Host rows: slot by slot
 

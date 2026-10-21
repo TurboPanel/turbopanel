@@ -31,8 +31,8 @@ import {
 } from '../../../../contracts/metrics-contract.ts'
 import {
   resolveMetricsCapabilityPlan,
-  truncateSampleToCapabilityPlan,
 } from '../../../../contracts/capability-plan.ts'
+import { limitDevicesToCase } from '../../testing/plan-device-limits.ts'
 import type { AuthenticatedMetricsSample, SlotMapping } from '../../types.ts'
 import type { ServerStatusEvent } from '../../types.ts'
 import { DuckDbParquetServerMetricsStore } from '../duckdb/store.ts'
@@ -287,7 +287,7 @@ it('cross-backend parity: DuckDB and Cloudflare AE agree on host series, entity 
         },
       ],
     })
-    const tick1Built = truncateSampleToCapabilityPlan(buildMetricsSample(tick1Input), plan)
+    const tick1Built = limitDevicesToCase(buildMetricsSample(tick1Input), plan)
     const tick1Sample: AuthenticatedMetricsSample = {
       ...tick1Built,
       serverId: SERVER_ID,
@@ -315,7 +315,7 @@ it('cross-backend parity: DuckDB and Cloudflare AE agree on host series, entity 
       hostingUsedBytes: 8192,
       gpus: [gpu('gpu0', 7), gpu('gpu1', 9)],
     })
-    const tick2Built = truncateSampleToCapabilityPlan(buildMetricsSample(tick2Input), plan)
+    const tick2Built = limitDevicesToCase(buildMetricsSample(tick2Input), plan)
     const tick2Sample: AuthenticatedMetricsSample = {
       ...tick2Built,
       serverId: SERVER_ID,

@@ -131,17 +131,22 @@ capacity is what made history rewritable — see **Sizes ride every sample**);
 `host.storage.maxBlockDeviceUtilPercent` removed, as a rollup that only existed
 for plans with zero block-device slots.
 
-**Entitlement vs. emission**, restated: a capability-plan slot count (e.g.
-`gpuSlots: 1`) is what a server is _allowed_ to report; whether it actually
-emits that family's rows depends entirely on whether the daemon detected the
-hardware. Hosted ingest enforces the ceiling with
-`truncateSampleToCapabilityPlan` (`capability-plan.ts`) — truncates the sample
-to at most `N` entries per capability-gated array. Self-hosted ingest skips
-truncation. On attach, a self-hosted control plane also sends
-`capability-plan-clear` so a remote daemon that previously stored a hosted
-plan deletes `metrics/capability-plan.json` and stops truncating outbound
-samples. Truncation can only shrink what the daemon already reports, never
-fabricate rows for absent hardware.
+**Slot counts vs. emission**, restated: a capability-plan slot count (e.g.
+`gpuSlots: 1`) no longer limits what ingest stores. Both editions store every
+device the sample carries, up to the shared limits the validator enforces (64
+of each kind, 16 events a sample). Ingest only applies the noise filter and the
+organization/server on/off switches (`ingest-preparation.ts`,
+`prepareSampleForStorage`). Every plan the control plane resolves has its device
+slot counts at the ceilings (`METRICS_DEVICE_SLOT_CEILING` = 64, `MAX_NIC_SLOTS`
+for NICs; tier entitlements and slot-count overrides are ignored), so the plan
+pushed to a hosted daemon makes the daemon's own mirror of the old cut
+(`capability-plan-truncate.ts`) a no-op for counts; on attach, a self-hosted
+control plane sends `capability-plan-clear` so a remote daemon that previously
+stored a hosted plan deletes `metrics/capability-plan.json` and stops
+truncating outbound samples. Which NICs the daemon sends is still the
+operator's monitored set (`slotMapping.normalNicSlots`) plus mesh interfaces.
+Whether a family's rows exist depends on whether the daemon detected the
+hardware.
 
 **Representative row-count matrix** (`testing/representative-machines.ts` — 17
 fixed machine shapes, pinned by
@@ -165,8 +170,8 @@ hide an incident rather than bill for it, and a hello-path floor read would
 open Hyperdrive on every presence tick (see `../cell/AGENTS.md` hibernation
 rules). Session issuance (`POST /auth/session`) is the cut-off. Pipeline:
 `validateMetricsSample` (`validation.ts`) →
-`resolveIngestPlanAndReconcileTopology` (plan + `slotMapping`) → truncate
-(`truncateSampleToCapabilityPlan`, **hosted only**) → live-session check
+`resolveIngestPlanAndReconcileTopology` (plan + `slotMapping`) → prepare
+(`prepareSampleForStorage`, **both editions**) → live-session check
 (`query/live-session.ts`) → cache the sample (`cacheLiveSample`) **or**
 fire-and-forget `ServerMetricsStore.writeSample(sample, slotMapping)` via
 `getServerMetricsStore(c)`, where `slotMapping` is the caller-resolved
@@ -217,10 +222,10 @@ reaches `store.writeSample`. The parallel 60 s baseline (`durable` true or
 absent) is stored and, while a lease is active, also cached. A sample with no
 flag (every v6 daemon, which replaces its cadence during a lease) is stored as
 before, so lease windows are never gaps. Query routes overlay the buffered point
-only while the marker is active. Hosted ingest first applies the pure allowlist
+only while the marker is active. Ingest first applies the pure allowlist
 backstop (`ingest-allowlist.ts`: pseudo mounts, loop/ram/zram/md devices and
 partitions of kept disks, lo/veth/bridge NICs except fabric, virtual-display and
-all-null GPUs), then plan truncation. Queries weight by `interval_seconds` and
+all-null GPUs), then the on/off switches, on both editions. Queries weight by `interval_seconds` and
 `_sample_interval`.
 
 A missing bucket is always a genuine gap. There is no slow tier left to hold a
@@ -520,17 +525,15 @@ instance (`disabled` / `analytics-engine` / `duckdb`) purely by instance type
 s; ≤6 h → 300 s; ≤24 h → 900 s; ≤7 d → 3600 s; ≤30 d → 21600 s; else 43200 s.
 `MAX_METRICS_POINTS` = 1500; range ≤90 days.
 
-**MetricsCapabilityPlan enforcement point:** the capability plan is resolved
-**once**, at ingest (`resolveEffectiveMetricsCapabilityPlan`). Hosted ingest
-then enforces it with `truncateSampleToCapabilityPlan` before the sample reaches
-a store; self-hosted ingest skips truncation (the operator's own disk is
-uncapped) but still resolves `slotMapping` for identity-addressed packing. Query
-routes never re-check capability, they only ever see already- truncated (hosted)
-or untruncated (self-hosted) data (the hardware-profile PUT re-resolves it only
-to reject an over-limit `nicSlotDeviceIds` list up front). `networks` truncation
-keeps the slot-mapped NICs within `normalNicSlots` (slot order) plus fabric
-devices when `turboFabricEnabled`; without a resolved mapping the first
-`normalNicSlots` entries survive positionally. `normalNicSlots` defaults by
+**MetricsCapabilityPlan at ingest:** the capability plan is resolved
+**once**, at ingest (`resolveEffectiveMetricsCapabilityPlan`). Both editions
+then call `prepareSampleForStorage` with it: only the on/off switches
+(`managedIngressEnabled`, `databaseProxyMetricsEnabled`, `managedDockerEnabled`,
+`hardwareHealthEventsEnabled`, `turboFabricEnabled`) take effect; the slot counts
+are fixed at the ceilings and cut nothing. `slotMapping` is still resolved for
+identity-addressed packing. Query routes never re-check capability (the
+hardware-profile PUT re-resolves it only to reject an over-limit
+`nicSlotDeviceIds` list up front). `normalNicSlots` defaults by
 **deployment** (`MetricsDeploymentKind`, from the runtime passed to
 `registerDaemonApiRoutes` / `registerServerMetricsRoutes` — never inferred from
 `typeof Deno`): 2 on the hosted platform (Workers; more will need a licensing
@@ -558,9 +561,8 @@ UI charts: **`../ui/AGENTS.md`** (Server metrics). Operator glossary:
 
 1. Every sample writes at least the 2-row universal baseline (`host.system` +
    `host.io`) — never fewer, regardless of capability plan or hardware.
-2. A capability-plan slot count is an _entitlement_; a presence-gated family's
-   row count reflects _emission_ (actual detected hardware), truncated down to
-   (never up to) the entitlement.
+2. A presence-gated family's row count reflects _emission_ (actual detected
+   hardware); no plan cuts it down.
 3. Missing metric values are `null` (contract) / SQL `NULL` (DuckDB) / `-1e308`
    sentinel (AE) — never coerced to `0`, on any backend.
 4. AE positional tokens (`doubleN`/`blobN` literals, `-1e308`) never appear
@@ -596,9 +598,8 @@ UI charts: **`../ui/AGENTS.md`** (Server metrics). Operator glossary:
 15. Cache keys always include the authorized `serverId`, the resolved `backend`,
     and `schemaVersion` — a v5-shaped and a v6-shaped entry for the same
     server/range can never collide.
-16. `truncateSampleToCapabilityPlan` runs at ingest on the **hosted** path,
-    before the sample reaches any store. Self-hosted ingest skips truncation.
-    Query routes never re-check capability.
+16. `prepareSampleForStorage` runs at ingest on **both** editions, before the
+    sample reaches any store. Query routes never re-check capability.
 17. DuckDB missing-column reads are real SQL `NULL`s; bucket aggregation honors
     each metric's declared aggregation policy (`weighted-average` / `last` /
     `max` / `sum`) identically on AE and DuckDB.

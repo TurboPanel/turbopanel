@@ -11,12 +11,12 @@ import { it } from '@std/testing/bdd'
 import {
   type MetricsCapabilityPlan,
   PLATFORM_DEFAULT_METRICS_CAPABILITY_PLAN,
-  truncateSampleToCapabilityPlan,
 } from '../../../../contracts/capability-plan.ts'
 import {
   buildMetricsSample,
   type MetricsSampleInput,
 } from '../../../../contracts/metrics-contract.ts'
+import { limitDevicesToCase } from '../../testing/plan-device-limits.ts'
 import fixtureJson from '../../testing/v8-layout.fixture.json' with { type: 'json' }
 import type { AuthenticatedMetricsSample, SlotMapping } from '../../types.ts'
 import {
@@ -207,7 +207,7 @@ function writtenRows(c: FixtureCase): {
 } {
   const slotMapping = slotMappingFor(c)
   const built = buildMetricsSample(sampleFor(c))
-  const truncated = truncateSampleToCapabilityPlan(built, planFor(c), slotMapping)
+  const truncated = limitDevicesToCase(built, planFor(c), slotMapping)
   const sample: AuthenticatedMetricsSample = { ...truncated, serverId: SERVER_ID, receivedAt: 'x' }
   const points = buildMetricsDataPoints(sample, slotMapping).filter(
     (p) => p.blobs[AE_BLOB_KIND_INDEX] === AE_KIND_METRICS

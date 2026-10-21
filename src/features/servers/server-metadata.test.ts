@@ -1,4 +1,6 @@
 import { assertEquals } from '@std/assert'
+import { METRICS_DEVICE_SLOT_CEILING } from '../../contracts/capability-plan.ts'
+import { MAX_NIC_SLOTS } from '../../contracts/topology-types.ts'
 import {
   ipsFromDaemonPresence,
   parseServerIps,
@@ -984,75 +986,33 @@ test('resolveEffectiveCpuThermalLimits: neither override nor recognized cpuModel
   })
 })
 
-test('resolveEffectiveMetricsCapabilityPlan: a tier-derived base replaces the platform default', () => {
+test('resolveEffectiveMetricsCapabilityPlan: device slot counts are the ceilings whatever the tier says', () => {
   const plan = resolveEffectiveMetricsCapabilityPlan('physical', undefined, undefined, 'hosted', {
-    nicSlots: 5,
-    driveSlots: 4,
-    gpuSlots: 2,
-    filesystemSlots: 3,
-    isEntryTier: false,
-  })
-  assertEquals(plan.normalNicSlots, 5)
-  assertEquals(plan.gpuSlots, 2)
-  assertEquals(plan.extraFilesystemSlots, 3)
-  assertEquals(plan.managedDockerEnabled, true)
-})
-
-test('resolveEffectiveMetricsCapabilityPlan: entry-tier carve-outs apply only at the entry tier', () => {
-  const entry = resolveEffectiveMetricsCapabilityPlan('physical', undefined, undefined, 'hosted', {
     nicSlots: 2,
     driveSlots: 2,
     gpuSlots: 1,
-    filesystemSlots: 4,
+    filesystemSlots: 1,
     isEntryTier: true,
   })
-  assertEquals(entry.extraFilesystemSlots, 1)
-  assertEquals(entry.physicalHardwareSignalSlots, 19)
-  assertEquals(entry.managedDockerEnabled, true)
-
-  const standard = resolveEffectiveMetricsCapabilityPlan(
-    'physical',
-    undefined,
-    undefined,
-    'hosted',
-    {
-      nicSlots: 5,
-      driveSlots: 4,
-      gpuSlots: 2,
-      filesystemSlots: 3,
-      isEntryTier: false,
-    }
-  )
-  assertEquals(standard.extraFilesystemSlots, 3)
-  assertEquals(standard.physicalHardwareSignalSlots, 19)
-  assertEquals(standard.managedDockerEnabled, true)
+  assertEquals(plan.normalNicSlots, MAX_NIC_SLOTS)
+  assertEquals(plan.detailedBlockDeviceSlots, METRICS_DEVICE_SLOT_CEILING)
+  assertEquals(plan.gpuSlots, METRICS_DEVICE_SLOT_CEILING)
+  assertEquals(plan.extraFilesystemSlots, METRICS_DEVICE_SLOT_CEILING)
+  assertEquals(plan.physicalHardwareSignalSlots, METRICS_DEVICE_SLOT_CEILING)
+  assertEquals(plan.managedDockerEnabled, true)
 })
 
-test('resolveEffectiveMetricsCapabilityPlan: org/server overrides still win over a tier-derived base', () => {
+test('resolveEffectiveMetricsCapabilityPlan: org/server switches win, slot-count overrides do not lower the ceilings', () => {
   const plan = resolveEffectiveMetricsCapabilityPlan(
     'physical',
-    { metricsCapabilityPlan: { gpuSlots: 8 } },
-    { metricsCapabilityPlan: { normalNicSlots: 3 } },
-    'hosted',
-    {
-      nicSlots: 5,
-      driveSlots: 4,
-      gpuSlots: 2,
-      filesystemSlots: 3,
-      isEntryTier: false,
-    }
+    { metricsCapabilityPlan: { gpuSlots: 8, managedIngressEnabled: false } },
+    { metricsCapabilityPlan: { normalNicSlots: 3, databaseProxyMetricsEnabled: false } },
+    'hosted'
   )
-  assertEquals(plan.gpuSlots, 8)
-  assertEquals(plan.normalNicSlots, 3)
-  assertEquals(plan.detailedBlockDeviceSlots, 4)
-})
-
-test('resolveEffectiveMetricsCapabilityPlan: absent tier preserves platform-default behavior', () => {
-  const plan = resolveEffectiveMetricsCapabilityPlan('physical', undefined, undefined, 'hosted')
-  assertEquals(plan.normalNicSlots, 2)
-  assertEquals(plan.gpuSlots, 1)
-  assertEquals(plan.managedDockerEnabled, true)
-  assertEquals(plan.physicalHardwareSignalSlots, 19)
+  assertEquals(plan.gpuSlots, METRICS_DEVICE_SLOT_CEILING)
+  assertEquals(plan.normalNicSlots, MAX_NIC_SLOTS)
+  assertEquals(plan.managedIngressEnabled, false)
+  assertEquals(plan.databaseProxyMetricsEnabled, false)
 })
 
 test('parseServerReleaseLinkScan keeps a clean scan and a bounded finding list', () => {
