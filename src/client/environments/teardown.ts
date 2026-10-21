@@ -362,6 +362,67 @@ async function resolvePrincipalRetirementBestEffort(
   }
 }
 
+/** Retire the shared HTTP Traefik on any of these servers that no longer fronts a hostname. */
+export async function retireIdleIngressOn(
+  c: Context,
+  db: Db,
+  serverIds: readonly string[],
+  actorId: string
+): Promise<void> {
+  const commandQueue = assertDispatchInfrastructure(c)
+  if (commandQueue instanceof Response) return
+  await forEachSequential(serverIds, (serverId) =>
+    retireHostingIngressIfIdle(db, commandQueue, {
+      serverId,
+      actorType: 'user',
+      actorId,
+    })
+  )
+}
+
+export type EnvironmentStopOutcome = {
+  /** Every planned server accepted its stop. False when any was not reached. */
+  stopped: boolean
+  /** The servers whose stop was queued. */
+  serverIds: string[]
+}
+
+/**
+ * Queue `environment.stop` for every planned server and say whether all of
+ * them were reached. A project delete runs this before it removes anything and
+ * refuses when `stopped` is false, so a failed stop never leaves a site running
+ * with nothing left that names it.
+ */
+export async function stopEnvironmentHosts(
+  c: Context,
+  db: Db,
+  plans: readonly EnvironmentTeardownPlan[],
+  actorId: string
+): Promise<EnvironmentStopOutcome> {
+  if (plans.length === 0) return { stopped: true, serverIds: [] }
+
+  const commandQueue = assertDispatchInfrastructure(c)
+  if (commandQueue instanceof Response) {
+    compatLogWarn(
+      'environments',
+      `host teardown not possible for ${plans.length} environment(s): dispatch infrastructure unavailable`
+    )
+    return { stopped: false, serverIds: [] }
+  }
+
+  const retireByServer = await resolvePrincipalRetirementBestEffort(db, plans)
+  const serverIds = await dispatchEnvironmentTeardown(
+    db,
+    commandQueue,
+    plans,
+    actorId,
+    retireByServer
+  )
+  const reached = new Set(serverIds)
+  const planned = plans.flatMap((plan) => [...planServerIds(plan)])
+  return { stopped: planned.every((serverId) => reached.has(serverId)), serverIds }
+}
+
 /**
  * Post-delete host reclaim: `environment.stop` per planned server, then retire
  * the shared HTTP Traefik on any server whose last hostname hosting just went
@@ -394,11 +455,5 @@ export async function reclaimDeletedEnvironmentHosts(
     actorId,
     retireByServer
   )
-  await forEachSequential(serverIds, (serverId) =>
-    retireHostingIngressIfIdle(db, commandQueue, {
-      serverId,
-      actorType: 'user',
-      actorId,
-    })
-  )
+  await retireIdleIngressOn(c, db, serverIds, actorId)
 }

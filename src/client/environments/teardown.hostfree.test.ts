@@ -5,6 +5,7 @@
  */
 
 import { assertEquals } from '@std/assert'
+import type { Context } from 'hono'
 import type { Db } from '../../db/connection.ts'
 import type { CommandQueue } from '../../features/commands/queue.ts'
 import {
@@ -12,6 +13,7 @@ import {
   planEnvironmentTeardown,
   planEnvironmentsTeardown,
   resolvePrincipalRetirement,
+  stopEnvironmentHosts,
   type EnvironmentTeardownPlan,
 } from './teardown.ts'
 
@@ -388,4 +390,22 @@ test('dispatchEnvironmentTeardown never retires a principal unless told to', asy
   )
   const payloads = captured.payloads as Array<Record<string, unknown>>
   assertEquals('retirePrincipals' in (payloads[0] ?? {}), false)
+})
+
+/** A request context with no dispatch infrastructure behind it. */
+const bareContext = {
+  get: () => undefined,
+  json: (body: unknown, status: number) => Response.json(body, { status }),
+} as unknown as Context
+
+test('stopEnvironmentHosts reports a failed stop when nothing can dispatch it', async () => {
+  const outcome = await stopEnvironmentHosts(bareContext, fakeDb([]), [plan()], 'user-1')
+  assertEquals(outcome, { stopped: false, serverIds: [] })
+})
+
+test('stopEnvironmentHosts has nothing to stop without plans', async () => {
+  assertEquals(await stopEnvironmentHosts(bareContext, fakeDb([]), [], 'user-1'), {
+    stopped: true,
+    serverIds: [],
+  })
 })

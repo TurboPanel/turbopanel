@@ -1,4 +1,21 @@
 export const principalSchemas = {
+  PrincipalReconcileOutcome: {
+    type: 'object',
+    required: ['queuedServerIds', 'failedServerIds'],
+    properties: {
+      queuedServerIds: {
+        type: 'array',
+        items: { type: 'string', format: 'uuid' },
+        description: 'Servers the change was queued to.',
+      },
+      failedServerIds: {
+        type: 'array',
+        items: { type: 'string', format: 'uuid' },
+        description:
+          'Servers the change could not be queued to; the Hosting Account may remain there.',
+      },
+    },
+  },
   ProjectPrincipalRow: {
     type: 'object',
     required: [
@@ -389,12 +406,26 @@ export const principalPaths = {
         { name: 'principalId', in: 'path', required: true, schema: { type: 'string' } },
       ],
       responses: {
-        200: { description: 'Deleted; `reconciled` lists the servers reached and not reached' },
+        200: {
+          description: 'Deleted; `reconciled` lists the servers reached and not reached',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['ok', 'reconciled'],
+                properties: {
+                  ok: { type: 'boolean', enum: [true] },
+                  reconciled: { $ref: '#/components/schemas/PrincipalReconcileOutcome' },
+                },
+              },
+            },
+          },
+        },
         403: { description: 'Not an owner or manager of the organization' },
         404: { description: 'Organization or principal not found' },
         409: {
           description:
-            '`code`: principal_in_use (with `usedBy`: services, bindings, storage, secrets, logins) | principal_has_project',
+            '`code`: principal_in_use (with `usedBy`: tenancies, bindings, storages, secrets, logins, folders) | principal_has_project',
         },
       },
     },
@@ -404,7 +435,7 @@ export const principalPaths = {
       tags: ['Principals'],
       summary: 'List the principals placed on a server',
       description:
-        'Org owner or manager of the server organization. One row per placement with its state, ids, home and what else uses the principal.',
+        'Org owner or manager of the server organization (the same rule as the removal plan). One row per placement with its state, ids, home and what else uses the principal.',
       parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
       responses: {
         200: {
