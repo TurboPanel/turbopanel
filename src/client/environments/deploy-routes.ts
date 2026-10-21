@@ -30,6 +30,7 @@ import { findUnresolvedComposeInterpolations } from '../../features/compose/unre
 import { definedFields, presentFields } from '../../lib/optional-fields.ts'
 import { recordedNodeVersions } from './deploy-node-version.ts'
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
+import { DEPLOY_QUEUE_LIMIT_MS } from '../../features/commands/deploy-wait.ts'
 import type { CommandEnvelope } from '../../features/commands/envelope.ts'
 import type {
   EnvironmentDeployComposeFile,
@@ -95,7 +96,11 @@ import {
   normalizeReplicaCounts,
 } from '../../features/commands/context.ts'
 import { type CommandQueue, getCommandQueue } from '../../features/commands/queue.ts'
-import { createCommandRecord, transitionCommand } from '../../features/commands/command-records.ts'
+import {
+  createCommandRecord,
+  markCommandEnqueued,
+  transitionCommand,
+} from '../../features/commands/command-records.ts'
 import { bumpEnvironmentGeneration } from '../../features/deploy/environment-generation.ts'
 import {
   type DeploymentTargetInput,
@@ -700,7 +705,8 @@ async function createDeployCommand(
   db: Db,
   params: DeployCommandCreateParams
 ): Promise<CreatedDeployCommand> {
-  const expiresAt = new Date(Date.now() + 600_000).toISOString()
+  // How long the deploy may wait to start; once it runs, the run cap applies (`deploy-wait.ts`).
+  const expiresAt = new Date(Date.now() + DEPLOY_QUEUE_LIMIT_MS).toISOString()
   const replicaCounts = normalizeReplicaCounts(params.replicaCounts)
   const releases = contextReleasesFor(params.sourceMaterial, params.nativeAppServices)
   const selectionMetadata = deploySelectionMetadata(params.selection)
@@ -811,6 +817,7 @@ async function deliverDeployCommand(
 
   try {
     await commandQueue.enqueue(envelope)
+    await markCommandEnqueued(db, params.commandId)
   } catch {
     await transitionCommand(db, params.commandId, {
       status: 'failed',
