@@ -540,6 +540,8 @@ type DeployCommandCreateParams = DeployActor & {
   hostingIngress?: EnvironmentDeployIngressService
   /** Set only when `hostings` is non-empty (see prepare). */
   hostingIngressNetwork?: string
+  /** Effective web server name hiding for the server; sent to the daemon as is. */
+  hideWebServerNames?: boolean
   tlsMaterial: EnvironmentDeployTlsMaterial[]
   variableMaterial: EnvironmentDeployVariableMaterial[]
   storageMaterial: EnvironmentDeployStorageMaterial[]
@@ -737,6 +739,7 @@ async function createDeployCommand(
         ingressServices: params.ingressServices,
         hostingIngress: params.hostingIngress,
         hostingIngressNetwork: params.hostingIngressNetwork,
+        hideWebServerNames: params.hideWebServerNames,
         tlsMaterial: params.tlsMaterial,
         variableMaterial: params.variableMaterial,
         storageMaterial: params.storageMaterial,
@@ -895,6 +898,9 @@ function createParamsForPreparedServer(
     ...(row.prepared.hostingIngressNetwork
       ? { hostingIngressNetwork: row.prepared.hostingIngressNetwork }
       : {}),
+    ...(row.prepared.hideWebServerNames === undefined
+      ? {}
+      : { hideWebServerNames: row.prepared.hideWebServerNames }),
     tlsMaterial: row.prepared.tlsMaterial,
     variableMaterial: row.prepared.variableMaterial,
     storageMaterial: withVolumeFolders(row.prepared.storageMaterial, params.plannedFolders),

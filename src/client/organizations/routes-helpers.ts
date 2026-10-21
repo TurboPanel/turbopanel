@@ -14,7 +14,9 @@ import type { OrganizationSummary } from '../org-context.ts'
 import { BadRequestError, parseName } from '../shared.ts'
 import {
   type NtpDefaults,
+  DEFAULT_HIDE_WEB_SERVER_NAMES,
   parseDefaultFabricEnabledInput,
+  parseHideWebServerNamesInput,
   parseNtpDefaultsInput,
   parseSshPortInput,
 } from '../../features/servers/host-defaults.ts'
@@ -75,6 +77,7 @@ export type ComposeDefaultResourceLimitsPatch = {
 export type HostDefaultsPatch = {
   sshPort?: number | null
   ntp?: NtpDefaults | null
+  hideWebServerNames?: boolean | null
   defaultFabricEnabled?: boolean | null
 }
 
@@ -439,6 +442,18 @@ export function composeDefaultResourceLimitsPutResponse(options: {
   }
 }
 
+/** Copy `hideWebServerNames` (boolean, or `null` to clear) into the patch; an error when it is neither. */
+function readHideWebServerNames(
+  body: Record<string, unknown>,
+  patch: HostDefaultsPatch
+): OrganizationRouteValidationError | null {
+  if (!('hideWebServerNames' in body)) return null
+  const parsed = parseHideWebServerNamesInput(body.hideWebServerNames)
+  if (!parsed.ok) return { ok: false, error: 'Invalid hideWebServerNames', status: 400 }
+  patch.hideWebServerNames = parsed.value
+  return null
+}
+
 export function parseHostDefaultsPatch(
   body: Record<string, unknown>
 ): { ok: true; patch: HostDefaultsPatch } | OrganizationRouteValidationError {
@@ -459,6 +474,9 @@ export function parseHostDefaultsPatch(
     }
     patch.ntp = parsed.value
   }
+
+  const hideError = readHideWebServerNames(body, patch)
+  if (hideError) return hideError
 
   if ('defaultFabricEnabled' in body) {
     const parsed = parseDefaultFabricEnabledInput(body.defaultFabricEnabled)
@@ -640,11 +658,13 @@ export function deployHooksPutResponse(options: { deployHooksEnabled?: boolean }
 export function hostDefaultsGetResponse(options: {
   sshPort?: number
   ntp?: NtpDefaults
+  hideWebServerNames?: boolean
   defaultFabricEnabled?: boolean
 }) {
   return {
     sshPort: options.sshPort ?? null,
     ntp: options.ntp ?? null,
+    hideWebServerNames: options.hideWebServerNames ?? DEFAULT_HIDE_WEB_SERVER_NAMES,
     defaultFabricEnabled: options.defaultFabricEnabled ?? false,
   }
 }
@@ -652,6 +672,7 @@ export function hostDefaultsGetResponse(options: {
 export function hostDefaultsPutResponse(options: {
   sshPort?: number
   ntp?: NtpDefaults
+  hideWebServerNames?: boolean
   defaultFabricEnabled?: boolean
 }) {
   return {
