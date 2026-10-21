@@ -7,6 +7,12 @@ export const DATABASE_ROLES_LACK_GRANTS = 'database roles lack grants'
 /** A table every request reads; if the runtime role cannot touch it nothing works. */
 const PROBE_TABLE = 'setting'
 
+/** The public routes can fail in bursts; ask the catalog at most this often per isolate. */
+const PROBE_CACHE_MS = 15_000
+/** A hung database must not double the wait of the request that already failed. */
+const PROBE_TIMEOUT_MS = 2_000
+let cached: { at: number; missing: string[] } | undefined
+
 type GrantProbeRow = {
   role: string
   schema_usage: boolean
@@ -26,9 +32,36 @@ type GrantProbeRow = {
  * grants are missing.
  */
 export async function findMissingRuntimeGrants(db: Db): Promise<string[]> {
+  const now = Date.now()
+  if (cached !== undefined && now - cached.at < PROBE_CACHE_MS) return cached.missing
+  const missing = await probeRuntimeGrants(db)
+  cached = { at: now, missing }
+  return missing
+}
+
+/** Test hook: forget the cached answer. */
+export function resetGrantProbeCache(): void {
+  cached = undefined
+}
+
+async function withTimeout<T>(work: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const limit = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error('grant probe timed out')), PROBE_TIMEOUT_MS)
+  })
+  try {
+    return await Promise.race([work, limit])
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+async function probeRuntimeGrants(db: Db): Promise<string[]> {
   let rows: GrantProbeRow[]
   try {
-    rows = await db.execute<GrantProbeRow>(sql`
+    rows = await withTimeout(
+      Promise.resolve(
+        db.execute<GrantProbeRow>(sql`
       SELECT
         current_user::text AS role,
         has_schema_privilege(current_user, 'public', 'USAGE') AS schema_usage,
@@ -41,6 +74,8 @@ export async function findMissingRuntimeGrants(db: Db): Promise<string[]> {
         WHERE n.nspname = 'public' AND c.relname = ${PROBE_TABLE} AND c.relkind = 'r'
       ) AS t ON true
     `)
+      )
+    )
   } catch {
     return []
   }

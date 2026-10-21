@@ -1,3 +1,4 @@
+import postgres from 'postgres'
 import { assertEquals, assertRejects } from '@std/assert'
 import { skipWithoutDatabase } from '../../src/test-fixtures/require-service.test.support.ts'
 import { createScratchGrantDb } from '../../src/test-fixtures/scratch-grant-db.test.support.ts'
@@ -70,5 +71,29 @@ test('refuses a role that does not exist', async () => {
     )
   } finally {
     await db.cleanup()
+  }
+})
+
+test('default privileges for a similarly named role do not count', async () => {
+  if (!adminUrl) return skipWithoutDatabase('grant-database-roles near-miss role')
+  const db = await createScratchGrantDb(adminUrl)
+  const admin = postgres(adminUrl, { max: 1, onnotice: () => {} })
+  const lookalike = `my_${db.names.runtime}`
+  try {
+    await admin.unsafe(`CREATE ROLE "${lookalike}"`)
+    await db.migrate.unsafe(
+      `ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT ON TABLES TO "${lookalike}"`
+    )
+    const result = await grantDatabaseRoles(
+      db.migrate,
+      { runtime: db.names.runtime, cached: null },
+      { checkOnly: true }
+    )
+    const line = result.lines.find((l) => l.includes('new tables inherit'))
+    assertEquals(line?.startsWith('MISSING'), true, result.lines.join('\n'))
+  } finally {
+    await db.cleanup()
+    await admin.unsafe(`DROP ROLE IF EXISTS "${lookalike}"`)
+    await admin.end({ timeout: 5 })
   }
 })

@@ -389,8 +389,8 @@ guard; `pnpm test:do` alone does not.
   on `CACHED_READ_TABLES` only (add a table there when a cached read model
   gains one), is safe to repeat, and exits non-zero naming any missing grant.
   If a runtime role lacks grants, `/api/daemon/v1/readiness` and
-  `/api/client/v1/status` answer 503 `database roles lack grants` with the role
-  and object in `missing`, instead of a bare "database unavailable". Agents
+  `/api/client/v1/status` answer 503 `database roles lack grants` (the role and
+  object go to the server log only), instead of a bare "database unavailable". Agents
   never run it against live, staging or testing.
 
 - **STAGING and LIVE use the same Workers Builds setup**, one Worker per

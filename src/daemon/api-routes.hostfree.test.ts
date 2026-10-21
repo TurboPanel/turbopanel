@@ -3,6 +3,7 @@ import { Hono } from 'hono'
 import type { AppEnv } from '../app/app.ts'
 import { deriveEncryptionSecretsConfig, deriveSecretsConfig } from '../lib/secrets/secrets.ts'
 import type { Db } from '../db/connection.ts'
+import { resetGrantProbeCache } from '../db/role-grants.ts'
 import { parseTestSecretsConfig } from '../test-fixtures/secrets.ts'
 import { DAEMON_API_PREFIX } from '../app/surfaces.ts'
 import { deriveDaemonJwtKeyring } from './authn/daemon-jwt-keyring.ts'
@@ -527,6 +528,7 @@ test('readiness answers 503, not 500, when the database is down', async () => {
 })
 
 test('readiness names missing grants instead of a bare database-unavailable', async () => {
+  resetGrantProbeCache()
   const lacking = {
     select: () => {
       throw new Error('permission denied for schema public')
@@ -538,12 +540,12 @@ test('readiness names missing grants instead of a bare database-unavailable', as
   } as unknown as Db
   const response = await daemonApp({}, lacking).request(`${DAEMON_API_PREFIX}/readiness`)
   assertEquals(response.status, 503)
-  const body = (await response.json()) as { error: string; missing: string[] }
-  assertEquals(body.error, 'database roles lack grants')
-  assertEquals(body.missing, [
-    'role app lacks USAGE on schema public',
-    'role app lacks read/write on table public.setting',
-  ])
+  const text = await response.text()
+  assertEquals(JSON.parse(text).error, 'database roles lack grants')
+  assertEquals(JSON.parse(text).code, 'database_roles_lack_grants')
+  // Public route: the role and table names stay in the log.
+  assertEquals(text.includes('app'.concat(' lacks')), false)
+  assertEquals(text.includes('setting'), false)
 })
 
 const TLS_ISSUED_BODY = JSON.stringify({

@@ -1195,7 +1195,15 @@ export function registerDaemonApiRoutes<E extends Env>(
       const missing = await findMissingRuntimeGrants(db)
       if (missing.length > 0) {
         logWarn('daemon-api', `readiness: ${DATABASE_ROLES_LACK_GRANTS}: ${missing.join('; ')}`)
-        return c.json({ ok: false, ready: false, error: DATABASE_ROLES_LACK_GRANTS, missing }, 503)
+        return c.json(
+          {
+            ok: false,
+            ready: false,
+            error: DATABASE_ROLES_LACK_GRANTS,
+            code: 'database_roles_lack_grants',
+          },
+          503
+        )
       }
       return c.json(
         {

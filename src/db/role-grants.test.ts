@@ -3,7 +3,7 @@ import { drizzle } from 'drizzle-orm/postgres-js'
 import postgres from 'postgres'
 import { skipWithoutDatabase } from '../test-fixtures/require-service.test.support.ts'
 import { createScratchGrantDb } from '../test-fixtures/scratch-grant-db.test.support.ts'
-import { findMissingRuntimeGrants } from './role-grants.ts'
+import { findMissingRuntimeGrants, resetGrantProbeCache } from './role-grants.ts'
 import type { Db } from './connection.ts'
 
 /** Alias so Sonar recognizes the suite (see check-deploy-env.test.ts). */
@@ -12,6 +12,7 @@ const test = Deno.test.bind(Deno)
 const adminUrl = Deno.env.get('TURBOPANEL_DATABASE_URL')?.trim()
 
 async function missingFor(url: string): Promise<string[]> {
+  resetGrantProbeCache()
   const client = postgres(url, { max: 1, prepare: false })
   try {
     return await findMissingRuntimeGrants(drizzle(client) as unknown as Db)
