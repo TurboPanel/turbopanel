@@ -37,11 +37,13 @@ export function metricsChartCacheKey(input: {
   schemaVersion: number
   kind?: 'series' | 'summary' | 'connection' | 'fleet-latest' | 'events' | 'entity-series'
   /**
-   * Scopes the cache entry to one topology generation. Uses a distinct
-   * `tg{gen}` token, appended only when provided so it never collides with a
-   * full-range entry, which omits it.
+   * When the server's stored hardware record was last written (epoch ms), for
+   * responses that carry what that record holds (device inventory, capacities,
+   * CPU limits). Charts themselves never depend on it: readers use each
+   * sample's own sizes and device ids. Appended as an `hw{ms}` token only when
+   * provided.
    */
-  topologyGeneration?: number
+  hardwareWrittenAtMs?: number
 }): string {
   const sortedMetrics = [...input.metrics].sort((a, b) => a.localeCompare(b)).join(',')
   const kind = input.kind ?? 'series'
@@ -55,7 +57,7 @@ export function metricsChartCacheKey(input: {
     String(input.resolutionSeconds),
     input.backend,
     `v${input.schemaVersion}`,
-    ...(input.topologyGeneration !== undefined ? [`tg${input.topologyGeneration}`] : []),
+    ...(input.hardwareWrittenAtMs !== undefined ? [`hw${input.hardwareWrittenAtMs}`] : []),
   ].join(':')
 }
 

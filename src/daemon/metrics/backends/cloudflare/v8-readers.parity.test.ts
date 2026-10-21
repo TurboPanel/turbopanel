@@ -1,9 +1,9 @@
 /**
- * Metrics v7 readers: every v7 number can be queried back, on both backends.
+ * Metrics v8 readers: every v8 number can be queried back, on both backends.
  *
  * The same logical samples go through the self-hosted store (DuckDB) and the
  * hosted store (the real Analytics Engine writer and the real SQL builders,
- * executed against the in-memory stand-in dataset), then the v7 canonical names
+ * executed against the in-memory stand-in dataset), then the v8 canonical names
  * are read with `queryHostSeries` / `queryEntitySeries`. Values are pinned, not
  * just compared, so two backends resolving the same wrong slot still fail.
  */
@@ -22,7 +22,7 @@ const SERVER_ID = '11111111-2222-4333-8444-555555555555'
 const BASE_MS = Date.UTC(2026, 9, 5)
 const INTERVAL_SECONDS = 60
 
-const V7_HOST_METRICS = [
+const V8_HOST_METRICS = [
   'extended.host.pidLimitUsedPercent',
   'extended.host.oomKills',
   'extended.host.rootDiskQueueDepth',
@@ -38,15 +38,21 @@ const V7_HOST_METRICS = [
   'extended.docker.containersMemoryBytes',
   'extended.docker.reclaimableBytes',
   'extended.ingress.tlsCertSoonestExpiryDays',
+  'extended.sizes.memoryTotalBytes',
+  'extended.sizes.swapTotalBytes',
+  'extended.sizes.commitLimitBytes',
+  'extended.sizes.logicalCores',
+  'extended.sizes.rootFilesystemTotalBytes',
+  'extended.sizes.rootFilesystemTotalInodes',
 ] as const
 
 const slotMapping: SlotMapping = {
   normalNicSlots: [],
   fabricDeviceIds: [],
   rootFilesystemId: null,
-  gpuPageOrder: [],
+  gpuPageOrder: ['gpu0'],
   blockPageOrder: ['sda', 'sdb'],
-  filesystemPageOrder: [],
+  filesystemPageOrder: ['fs-a', 'fs-b'],
   hardwareSignalPageOrder: [],
 }
 
@@ -67,7 +73,7 @@ function drive(deviceId: string, readOps: number | null, writeOps: number | null
 function input(atMs: number, withExtended: boolean): MetricsSampleInput {
   return {
     metadata: {
-      version: withExtended ? 7 : 6,
+      version: withExtended ? 8 : 6,
       sampledAt: new Date(atMs).toISOString(),
       intervalSeconds: INTERVAL_SECONDS,
       sequence: 1,
@@ -111,10 +117,23 @@ function input(atMs: number, withExtended: boolean): MetricsSampleInput {
       network: { tcpRetransmitPercent: null, softnetDropsPerSecond: null },
     },
     networks: [],
-    filesystems: [],
+    filesystems: [
+      { filesystemId: 'fs-a', availableBytes: 10, freeInodes: 20 },
+      { filesystemId: 'fs-b', availableBytes: 30, freeInodes: 40 },
+    ],
     // sda reports both halves; sdb is missing one, so its combined figure is a gap.
     blockDevices: [drive('sda', 100, 50), drive('sdb', 7, null)],
-    gpus: [],
+    gpus: [
+      {
+        gpuId: 'gpu0',
+        utilizationPercent: 5,
+        memoryUsedBytes: 4_000,
+        memoryActivityPercent: null,
+        pcieReceiveBytesPerSecond: null,
+        pcieTransmitBytesPerSecond: null,
+        throttlePercent: null,
+      },
+    ],
     hardwareSignals: [],
     ingressSources: [
       {
@@ -178,6 +197,20 @@ function input(atMs: number, withExtended: boolean): MetricsSampleInput {
               reclaimableBytes: 4242,
             },
             ingress: { tlsCertSoonestExpiryDays: 21 },
+            sizes: {
+              memoryTotalBytes: 8_000_000_000,
+              swapTotalBytes: 2_000_000_000,
+              commitLimitBytes: 6_000_000_000,
+              logicalCores: 4,
+              rootFilesystemTotalBytes: 100_000_000_000,
+              rootFilesystemTotalInodes: 6_000_000,
+            },
+            filesystemSizes: [
+              // Out of page order: the size is matched to its filesystem by id.
+              { filesystemId: 'fs-b', totalBytes: 2_000, totalInodes: 400 },
+              { filesystemId: 'fs-a', totalBytes: 1_000, totalInodes: 200 },
+            ],
+            gpuSizes: [{ gpuId: 'gpu0', memoryTotalBytes: 16_000 }],
           },
         }
       : {}),
@@ -196,18 +229,18 @@ function valueAt(result: SeriesResult, atMs: number, metric: string): number | n
   return result.points.find((point) => point.at === at)?.values[metric] ?? null
 }
 
-it('every v7 number reads back on DuckDB and on the hosted store, and a v6 sample leaves gaps', async () => {
-  const metricsDir = await Deno.makeTempDir({ prefix: 'tp-v7-readers-' })
+it('every v8 number reads back on DuckDB and on the hosted store, and a v6 sample leaves gaps', async () => {
+  const metricsDir = await Deno.makeTempDir({ prefix: 'tp-v8-readers-' })
   const duckStore = new DuckDbParquetServerMetricsStore({ metricsDir }, { writeBatchMaxRows: 1 })
   const fakeAe = await createFakeAnalyticsEngine()
   const aeStore = new CloudflareAnalyticsEngineServerMetricsStore(fakeAe.dataset, {
     sql: fakeAe.sqlConfig,
   })
   try {
-    const v7At = BASE_MS
+    const v8At = BASE_MS
     const v6At = BASE_MS + INTERVAL_SECONDS * 1000
     for (const [atMs, withExtended] of [
-      [v7At, true],
+      [v8At, true],
       [v6At, false],
     ] as const) {
       const sample = sampleAt(atMs, withExtended)
@@ -238,18 +271,24 @@ it('every v7 number reads back on DuckDB and on the hosted store, and a v6 sampl
       'extended.docker.containersMemoryBytes': 5_000_000,
       'extended.docker.reclaimableBytes': 4242,
       'extended.ingress.tlsCertSoonestExpiryDays': 21,
+      'extended.sizes.memoryTotalBytes': 8_000_000_000,
+      'extended.sizes.swapTotalBytes': 2_000_000_000,
+      'extended.sizes.commitLimitBytes': 6_000_000_000,
+      'extended.sizes.logicalCores': 4,
+      'extended.sizes.rootFilesystemTotalBytes': 100_000_000_000,
+      'extended.sizes.rootFilesystemTotalInodes': 6_000_000,
     }
-    const duck = await duckStore.queryHostSeries({ ...range, metrics: [...V7_HOST_METRICS] })
-    const ae = await aeStore.queryHostSeries({ ...range, metrics: [...V7_HOST_METRICS] })
-    for (const metric of V7_HOST_METRICS) {
-      assertEquals(valueAt(duck, v7At, metric), expected[metric], `duckdb ${metric}`)
-      assertEquals(valueAt(ae, v7At, metric), expected[metric], `hosted ${metric}`)
+    const duck = await duckStore.queryHostSeries({ ...range, metrics: [...V8_HOST_METRICS] })
+    const ae = await aeStore.queryHostSeries({ ...range, metrics: [...V8_HOST_METRICS] })
+    for (const metric of V8_HOST_METRICS) {
+      assertEquals(valueAt(duck, v8At, metric), expected[metric], `duckdb ${metric}`)
+      assertEquals(valueAt(ae, v8At, metric), expected[metric], `hosted ${metric}`)
     }
 
-    // A v6 daemon sends no `extended` section: every v7 number is a gap on
+    // A v6 daemon sends no `extended` section: every v8 number is a gap on
     // both backends (never a 0), except Docker's reclaimable bytes, which both
     // fall back to the sum of the three reclaimable groups of the disk breakdown.
-    for (const metric of V7_HOST_METRICS) {
+    for (const metric of V8_HOST_METRICS) {
       const fallback = metric === 'extended.docker.reclaimableBytes' ? 1000 + 100 + 92 : null
       assertEquals(valueAt(duck, v6At, metric), fallback, `duckdb v6 ${metric}`)
       assertEquals(valueAt(ae, v6At, metric), fallback, `hosted v6 ${metric}`)

@@ -1,6 +1,11 @@
-import { assertEquals } from '@std/assert'
+import { assertEquals, assertRejects, assertStringIncludes } from '@std/assert'
 import { it } from '@std/testing/bdd'
-import { AE_EVENT_INDEX_SUFFIX, AE_FAMILY_HOST_IO, AE_FAMILY_HOST_SYSTEM } from './field-map.ts'
+import {
+  AE_EVENT_INDEX_SUFFIX,
+  AE_FAMILY_HOST_IO,
+  AE_FAMILY_HOST_SYSTEM,
+  AE_MISSING_METRIC_SENTINEL,
+} from './field-map.ts'
 import {
   HOST_METRICS_METRIC_DESCRIPTORS,
   type HostMetricsMetricDescriptor,
@@ -41,11 +46,9 @@ import {
 } from './sql-api.ts'
 
 it('AE_DATASET_NAME is the current dataset', () => {
-  assertEquals(AE_DATASET_NAME, 'turbopanel_server_metrics_v7')
-})
-
-it('AE_SUPPORTED_SCHEMA_VERSIONS reads both v6 and v7 rows', () => {
-  assertEquals(AE_SUPPORTED_SCHEMA_VERSIONS, [6, 7])
+  assertEquals(AE_DATASET_NAME, 'turbopanel_server_metrics_v8')
+  // Readers see only the current storage layout revision: older hosted rows are skipped, never misread.
+  assertEquals(AE_SUPPORTED_SCHEMA_VERSIONS, [8])
 })
 
 it('quoteSqlString doubles single quotes', () => {
@@ -61,19 +64,19 @@ it('quoteSqlString escapes backslashes so a literal can never be closed early', 
 
 it('kindDiscriminatorPredicates: blob1 = kind, blob3 = schema version', () => {
   const predicates = kindDiscriminatorPredicates('metrics')
-  assertEquals(predicates, [`blob1 = 'metrics'`, `blob3 IN ('6', '7')`])
+  assertEquals(predicates, [`blob1 = 'metrics'`, `blob3 = '8'`])
 })
 
 it('hostMetricsDiscriminatorPredicates matches the metrics kind', () => {
-  assertEquals(hostMetricsDiscriminatorPredicates(), [`blob1 = 'metrics'`, `blob3 IN ('6', '7')`])
+  assertEquals(hostMetricsDiscriminatorPredicates(), [`blob1 = 'metrics'`, `blob3 = '8'`])
 })
 
 it('eventDiscriminatorPredicates matches the event kind', () => {
-  assertEquals(eventDiscriminatorPredicates(), [`blob1 = 'event'`, `blob3 IN ('6', '7')`])
+  assertEquals(eventDiscriminatorPredicates(), [`blob1 = 'event'`, `blob3 = '8'`])
 })
 
 it('statusDiscriminatorPredicates matches the status kind', () => {
-  assertEquals(statusDiscriminatorPredicates(), [`blob1 = 'status'`, `blob3 IN ('6', '7')`])
+  assertEquals(statusDiscriminatorPredicates(), [`blob1 = 'status'`, `blob3 = '8'`])
 })
 
 it("familyPredicate: blob2 = '<family>'", () => {
@@ -324,26 +327,18 @@ it('aggregateExpressionForDescriptor dispatches weighted-average/delta-sum/max/l
 
 const HOST_SERVER_ID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'
 
-it('queryHostSeriesViaSqlApi: one bucket, one weighted-average metric, topology generation carried through', async () => {
+it('queryHostSeriesViaSqlApi: one bucket, one weighted-average metric', async () => {
   const result = await queryHostSeriesViaSqlApi(
     {
       accountId: 'acct123',
       apiToken: 'token-xyz',
-      fetch: async (_url, init) => {
-        const body = String(init?.body ?? '')
-        if (body.includes('GROUP BY generation')) {
-          return new Response(envelopedSqlResponse([{ generation: 3 }]), {
-            status: 200,
-          })
-        }
+      fetch: async () => {
         return new Response(
           envelopedSqlResponse([
             {
               bucket: 1735689600,
               sample_count: 6,
               avg_interval_seconds: 10,
-              topology_gen_min: '3',
-              topology_gen_max: '3',
               m0: 42.5,
             },
           ]),
@@ -363,33 +358,26 @@ it('queryHostSeriesViaSqlApi: one bucket, one weighted-average metric, topology 
   assertEquals(result.kind, 'analytics-engine')
   assertEquals(result.available, true)
   assertEquals(result.sampleCount, 6)
-  assertEquals(result.topologyGenerations, [3])
   assertEquals(result.points.length, 1)
   assertEquals(result.points[0].values['host.cpu.busyPercent'], 42.5)
-  assertEquals(result.points[0].topologyGeneration, 3)
 })
 
-it('queryHostSeriesViaSqlApi: mixed topology generations in a bucket report null', async () => {
+it('queryHostSeriesViaSqlApi: a data point v8 no longer stores reads as empty, not as an error', async () => {
+  let sql = ''
   const result = await queryHostSeriesViaSqlApi(
     {
       accountId: 'acct123',
       apiToken: 'token-xyz',
       fetch: async (_url, init) => {
-        const body = String(init?.body ?? '')
-        if (body.includes('GROUP BY generation')) {
-          return new Response(envelopedSqlResponse([{ generation: 1 }, { generation: 2 }]), {
-            status: 200,
-          })
-        }
+        sql = String(init?.body ?? '')
         return new Response(
           envelopedSqlResponse([
             {
               bucket: 1735689600,
-              sample_count: 2,
+              sample_count: 6,
               avg_interval_seconds: 10,
-              topology_gen_min: '1',
-              topology_gen_max: '2',
-              m0: 10,
+              m0: AE_MISSING_METRIC_SENTINEL,
+              m1: AE_MISSING_METRIC_SENTINEL,
             },
           ]),
           { status: 200 }
@@ -398,14 +386,57 @@ it('queryHostSeriesViaSqlApi: mixed topology generations in a bucket report null
     },
     {
       serverId: HOST_SERVER_ID,
-      metrics: ['host.cpu.busyPercent'],
+      metrics: ['storage.logsUsedBytes', 'storage.hostingFreeBytes'],
       from: '2026-01-01T00:00:00.000Z',
       to: '2026-01-01T00:05:00.000Z',
+      resolutionSeconds: 60,
     }
   )
 
-  assertEquals(result.points[0].topologyGeneration, null)
-  assertEquals(result.topologyGenerations, [1, 2])
+  assertEquals(result.available, true)
+  assertEquals(result.points.length, 1)
+  assertEquals(result.points[0].values['storage.logsUsedBytes'], null)
+  assertEquals(result.points[0].values['storage.hostingFreeBytes'], null)
+  assertStringIncludes(sql, 'AS m0')
+})
+
+it('a dataset nothing has written to yet reads as no data, but other errors still throw', async () => {
+  const config = (status: number, body: string) => ({
+    accountId: 'acct123',
+    apiToken: 'token-xyz',
+    fetch: async () => new Response(body, { status }),
+  })
+  const query = {
+    serverId: HOST_SERVER_ID,
+    metrics: ['host.cpu.busyPercent'],
+    from: '2026-01-01T00:00:00.000Z',
+    to: '2026-01-01T00:05:00.000Z',
+    resolutionSeconds: 60,
+  }
+  const missingHttp = await queryHostSeriesViaSqlApi(
+    config(422, 'Unknown table live_turbopanel_server_metrics_v8'),
+    query
+  )
+  assertEquals(missingHttp.available, true)
+  assertEquals(missingHttp.points, [])
+  const missingEnvelope = await queryHostSeriesViaSqlApi(
+    config(
+      200,
+      JSON.stringify({
+        success: false,
+        errors: [{ message: "Table default.live_turbopanel_server_metrics_v8 doesn't exist" }],
+      })
+    ),
+    query
+  )
+  assertEquals(missingEnvelope.points, [])
+
+  for (const [status, body] of [
+    [422, 'unable to find type of column: blob9'],
+    [500, 'Unknown table other_dataset'],
+  ] as const) {
+    await assertRejects(() => queryHostSeriesViaSqlApi(config(status, body), query), Error, body)
+  }
 })
 
 it('queryHostSeriesViaSqlApi rejects a non-host metric', async () => {
@@ -519,7 +550,6 @@ it("queryFleetHostSnapshotViaSqlApi: one server's values and topology generation
   assertEquals(result.servers.length, 1)
   assertEquals(result.servers[0].serverId, HOST_SERVER_ID)
   assertEquals(result.servers[0].values['host.cpu.busyPercent'], 77)
-  assertEquals(result.servers[0].topologyGeneration, 5)
 })
 
 it('queryFleetHostSnapshotViaSqlApi: reads every per-family host index and groups by the serverId prefix', async () => {
@@ -744,32 +774,28 @@ it('queryEntitySeriesViaSqlApi (paged family): a requested entity absent from ev
   assertEquals(result.entities[0].gapCount > 0, true)
 })
 
-const EMPTY_SLOT_MAPPING = {
-  normalNicSlots: [],
-  fabricDeviceIds: [],
-  rootFilesystemId: null,
-  gpuPageOrder: [],
-  blockPageOrder: [],
-  filesystemPageOrder: [],
-  hardwareSignalPageOrder: [],
-}
-
-it("queryEntitySeriesViaSqlApi (network family): reconstructs a slot-mapped NIC's rx/tx from host.network while a genuinely paged device still resolves via the paged path", async () => {
+it('queryEntitySeriesViaSqlApi (network family): reads a NIC that host.network names in blob6 while a genuinely paged device still resolves via the paged path', async () => {
+  const embeddedStatements: string[] = []
   const result = await queryEntitySeriesViaSqlApi(
     {
       accountId: 'acct123',
       apiToken: 'token-xyz',
       fetch: async (_url, init) => {
         const body = String(init?.body ?? '')
-        if (body.includes(`blob2 = 'host.network'`)) {
+        if (body.includes('AS e0_samples')) {
+          embeddedStatements.push(body)
           return new Response(
             envelopedSqlResponse([
               {
                 bucket: 1735689600,
-                sample_count: 2,
-                avg_interval_seconds: 10,
-                nic0_receiveBytesPerSecond: 400,
-                nic0_transmitBytesPerSecond: 100,
+                e0_samples: 2,
+                e0_interval: 10,
+                e0_receiveBytesPerSecond: 400,
+                e0_transmitBytesPerSecond: 100,
+                e1_samples: 0,
+                e1_interval: null,
+                e1_receiveBytesPerSecond: null,
+                e1_transmitBytesPerSecond: null,
               },
             ]),
             { status: 200 }
@@ -799,10 +825,14 @@ it("queryEntitySeriesViaSqlApi (network family): reconstructs a slot-mapped NIC'
       metrics: ['receiveBytesPerSecond', 'transmitBytesPerSecond'],
       from: '2026-01-01T00:00:00.000Z',
       to: '2026-01-01T00:05:00.000Z',
-      slotMapping: { ...EMPTY_SLOT_MAPPING, normalNicSlots: ['eth0'] },
-      topologyGeneration: 7,
     }
   )
+
+  // The NIC is matched by the id named in blob6 (either slot), never by a generation.
+  assertEquals(embeddedStatements.length, 1)
+  assertStringIncludes(embeddedStatements[0], `startsWith(blob6, 'nic1=eth0@')`)
+  assertStringIncludes(embeddedStatements[0], `';nic2=eth0@'`)
+  assertEquals(embeddedStatements[0].includes('blob4'), false)
 
   assertEquals(result.entities.length, 2)
   const eth0 = result.entities.find((e) => e.entityId === 'eth0')!
@@ -818,23 +848,83 @@ it("queryEntitySeriesViaSqlApi (network family): reconstructs a slot-mapped NIC'
   assertEquals(eth2.sampleCount, 2)
 })
 
-it('queryEntitySeriesViaSqlApi (network family): a field with no embedded-slot equivalent resolves to null for a slot-mapped NIC, never a fabricated split of the combined problem-packets rate', async () => {
+it('queryEntitySeriesViaSqlApi (network family): a NIC that moved from NIC 3 to NIC 1 inside the range gets points from both places', async () => {
   const result = await queryEntitySeriesViaSqlApi(
     {
       accountId: 'acct123',
       apiToken: 'token-xyz',
-      fetch: async () =>
-        new Response(
+      fetch: async (_url, init) => {
+        const body = String(init?.body ?? '')
+        if (body.includes('AS e0_samples')) {
+          return new Response(
+            envelopedSqlResponse([
+              {
+                bucket: 1735689660,
+                e0_samples: 3,
+                e0_interval: 10,
+                e0_receiveBytesPerSecond: 50,
+              },
+            ]),
+            { status: 200 }
+          )
+        }
+        return new Response(
           envelopedSqlResponse([
             {
               bucket: 1735689600,
+              ids: 'eth5',
               sample_count: 2,
               avg_interval_seconds: 10,
-              nic0_receiveBytesPerSecond: 400,
+              f0_s0_n: 600,
+              f0_s0_d: 20,
             },
           ]),
           { status: 200 }
-        ),
+        )
+      },
+    },
+    {
+      serverId: HOST_SERVER_ID,
+      family: 'network',
+      entityIds: ['eth5'],
+      metrics: ['receiveBytesPerSecond'],
+      from: '2026-01-01T00:00:00.000Z',
+      to: '2026-01-01T00:05:00.000Z',
+    }
+  )
+
+  const eth5 = result.entities[0]
+  assertEquals(
+    eth5.points.map((point) => [point.at, point.values.receiveBytesPerSecond]),
+    [
+      ['2025-01-01T00:00:00.000Z', 30],
+      ['2025-01-01T00:01:00.000Z', 50],
+    ]
+  )
+  assertEquals(eth5.sampleCount, 5)
+})
+
+it('queryEntitySeriesViaSqlApi (network family): a field with no embedded-slot equivalent resolves to null for an embedded NIC, never a fabricated split of the combined problem-packets rate', async () => {
+  const result = await queryEntitySeriesViaSqlApi(
+    {
+      accountId: 'acct123',
+      apiToken: 'token-xyz',
+      fetch: async (_url, init) => {
+        if (String(init?.body ?? '').includes('AS e0_samples')) {
+          return new Response(
+            envelopedSqlResponse([
+              {
+                bucket: 1735689600,
+                e0_samples: 2,
+                e0_interval: 10,
+                e0_receiveBytesPerSecond: 400,
+              },
+            ]),
+            { status: 200 }
+          )
+        }
+        return new Response(envelopedSqlResponse([]), { status: 200 })
+      },
     },
     {
       serverId: HOST_SERVER_ID,
@@ -843,43 +933,12 @@ it('queryEntitySeriesViaSqlApi (network family): a field with no embedded-slot e
       metrics: ['receiveBytesPerSecond', 'receiveErrorsPerSecond'],
       from: '2026-01-01T00:00:00.000Z',
       to: '2026-01-01T00:05:00.000Z',
-      slotMapping: { ...EMPTY_SLOT_MAPPING, normalNicSlots: ['eth0'] },
-      topologyGeneration: 7,
     }
   )
 
   const eth0 = result.entities[0]
   assertEquals(eth0.points[0].values.receiveBytesPerSecond, 400)
   assertEquals(eth0.points[0].values.receiveErrorsPerSecond, null)
-})
-
-it('queryEntitySeriesViaSqlApi (network family): an embedded NIC with no resolved topology generation reports empty points rather than guessing which host.io history is current', async () => {
-  let fetchCalls = 0
-  const result = await queryEntitySeriesViaSqlApi(
-    {
-      accountId: 'acct123',
-      apiToken: 'token-xyz',
-      fetch: async () => {
-        fetchCalls += 1
-        return new Response(envelopedSqlResponse([]), { status: 200 })
-      },
-    },
-    {
-      serverId: HOST_SERVER_ID,
-      family: 'network',
-      entityIds: ['eth0'],
-      metrics: ['receiveBytesPerSecond'],
-      from: '2026-01-01T00:00:00.000Z',
-      to: '2026-01-01T00:05:00.000Z',
-      slotMapping: { ...EMPTY_SLOT_MAPPING, normalNicSlots: ['eth0'] },
-    }
-  )
-
-  assertEquals(fetchCalls, 0)
-  assertEquals(result.entities.length, 1)
-  assertEquals(result.entities[0].entityId, 'eth0')
-  assertEquals(result.entities[0].points, [])
-  assertEquals(result.entities[0].sampleCount, 0)
 })
 
 it('queryEntitySeriesViaSqlApi (single-row family): groups managed.ingress by source_id, one row per bucket/entity', async () => {
