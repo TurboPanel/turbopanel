@@ -91,6 +91,9 @@ test('malformed fields are rejected at the frame', () => {
     [{ checksum: 'F'.repeat(64) }, 'invalid checksum'],
     [{ checksum: 'f'.repeat(63) }, 'invalid checksum'],
     [{ path: 'p'.repeat(MAX_DAEMON_WS_BACKUP_PATH_CHARS + 1) }, 'invalid path'],
+    [{ database: '' }, 'invalid database'],
+    [{ database: 7 }, 'invalid database'],
+    [{ database: 'd'.repeat(129) }, 'invalid database'],
     [{ pruned: 'bk_old' }, 'invalid pruned'],
     [{ pruned: ['bk_ok', 'bk/../x'] }, 'invalid pruned'],
     [
