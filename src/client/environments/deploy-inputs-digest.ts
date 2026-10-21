@@ -26,6 +26,11 @@ const SEND_ONLY_KEYS: ReadonlySet<string> = new Set(['credential', 'privateKeyEn
 
 type CanonicalState = { volatile: boolean }
 
+function compareCodeUnits(a: string, b: string): number {
+  if (a < b) return -1
+  return a > b ? 1 : 0
+}
+
 function canonical(value: unknown, state: CanonicalState): unknown {
   if (typeof value === 'string') {
     if (value.startsWith(ENVELOPE_PREFIX_DAEMON)) state.volatile = true
@@ -34,7 +39,7 @@ function canonical(value: unknown, state: CanonicalState): unknown {
   if (Array.isArray(value)) return value.map((entry) => canonical(entry, state))
   if (typeof value !== 'object' || value === null) return value
   const out: Record<string, unknown> = {}
-  for (const key of Object.keys(value).sort()) {
+  for (const key of Object.keys(value).sort(compareCodeUnits)) {
     const entry = (value as Record<string, unknown>)[key]
     if (entry === undefined || SEND_ONLY_KEYS.has(key)) continue
     out[key] = canonical(entry, state)
