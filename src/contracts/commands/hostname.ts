@@ -128,3 +128,19 @@ export function assertValidHostname(value: unknown): asserts value is string {
     throw new Error('Invalid hostname')
   }
 }
+
+/**
+ * One spelling of a hostname for comparing: trimmed, lowercase, and an
+ * international name as punycode. Wildcard names keep their `*.`.
+ */
+export function foldHostname(name: string): string {
+  const lowered = name.trim().toLowerCase()
+  if ([...lowered].every((ch) => (ch.codePointAt(0) ?? 0) < 128)) return lowered
+  const wildcard = lowered.startsWith('*.')
+  try {
+    const host = new URL(`http://${wildcard ? lowered.slice(2) : lowered}`).hostname
+    return wildcard ? `*.${host}` : host
+  } catch {
+    return lowered
+  }
+}

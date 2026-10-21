@@ -86,7 +86,8 @@ import {
 } from './platform/workers/workers-bindings.ts'
 import { fetchWithConnectionRetry } from './platform/workers/connection-retry.ts'
 import { type createWorkersDb, type Db, endDbConnection } from './db/connection.ts'
-import { compatLogError, compatLogWarn } from './lib/log-compat.ts'
+import { compatLogError, compatLogInfo, compatLogWarn } from './lib/log-compat.ts'
+import { dbUsageLine, shouldLogDbUsage } from './query-cache/db-usage.ts'
 import type { AuthRateLimiter } from './client/authn/auth-rate-limit.ts'
 import type { RateLimiter } from './daemon/rate-limit/contracts.ts'
 import { OTP_VERIFIER_SECRET_PURPOSE } from './client/authn/email-otp.ts'
@@ -449,7 +450,15 @@ export default {
         if (cachedExecutionLogStore) {
           c.set('executionLogStore', cachedExecutionLogStore)
         }
-        await next()
+        try {
+          await next()
+        } finally {
+          // One line per request that touched the database (see query-cache/db-usage.ts).
+          const line = dbUsageLine(c.req.routePath, dbHandles.usage)
+          if (line && shouldLogDbUsage(dbHandles.usage)) {
+            compatLogInfo('db-usage', JSON.stringify(line))
+          }
+        }
       })
       requestApp.route('/', cachedApp!)
 

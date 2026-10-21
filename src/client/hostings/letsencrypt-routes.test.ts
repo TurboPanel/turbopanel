@@ -92,7 +92,7 @@ async function setup(options: {
     .returning({ id: project.id })
   const [env] = await db
     .insert(environment)
-    .values({ projectId: proj!.id, name: 'E', createdAt: now, updatedAt: now })
+    .values({ projectId: proj!.id, name: 'e', createdAt: now, updatedAt: now })
     .returning({ id: environment.id })
   const [svc] = await db
     .insert(service)
@@ -380,10 +380,12 @@ test('PUT use-letsencrypt: pins at once when DNS is ready, and a second click ad
 
 async function readPending(f: Fixture): Promise<unknown> {
   const [row] = await f.db
-    .select({ metadata: hosting.metadata })
+    .select({ metadata: hosting.metadata, pendingAt: hosting.pendingAt })
     .from(hosting)
     .where(eq(hosting.id, f.hostingId))
-  return (row?.metadata as Record<string, unknown> | null)?.letsEncryptPending
+  if (!row?.pendingAt) return undefined
+  const dns = (row.metadata as Record<string, unknown> | null)?.letsEncryptDns ?? null
+  return { requestedAt: row.pendingAt, dns }
 }
 
 async function readCertificate(f: Fixture) {

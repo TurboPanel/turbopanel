@@ -16,18 +16,14 @@ import { listUsersReferencingDatabase } from './routes-helpers.ts'
 const test = Deno.test.bind(Deno)
 
 test('listUsersReferencingDatabase lists only SQL users that name the database', () => {
-  const principals = [
-    { username: 'root', metadata: { managedRoot: true, databases: ['app'] } },
-    {
-      username: 'repl',
-      metadata: { managedReplication: true, databases: ['app'] },
-    },
-    { username: 'alice', metadata: { databases: ['postgres', 'app'] } },
-    { username: 'bob', metadata: { databases: ['postgres'] } },
-    { username: 'carol', metadata: { databases: 'app' } },
-    { username: 'dave', metadata: null },
+  const logins = [
+    { username: 'root', role: 'root', databases: ['app'] },
+    { username: 'repl', role: 'replication', databases: ['app'] },
+    { username: 'alice', role: 'user', databases: ['postgres', 'app'] },
+    { username: 'bob', role: 'user', databases: ['postgres'] },
+    { username: 'dave', role: 'user', databases: [] },
   ]
-  assertEquals(listUsersReferencingDatabase(principals, 'app'), ['alice'])
-  assertEquals(listUsersReferencingDatabase(principals, 'postgres'), ['alice', 'bob'])
-  assertEquals(listUsersReferencingDatabase(principals, 'gone'), [])
+  assertEquals(listUsersReferencingDatabase(logins, 'app'), ['alice'])
+  assertEquals(listUsersReferencingDatabase(logins, 'postgres'), ['alice', 'bob'])
+  assertEquals(listUsersReferencingDatabase(logins, 'gone'), [])
 })

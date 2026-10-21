@@ -102,7 +102,8 @@ function resolveLastInboundAt(snapshot: DaemonCellSnapshot): string | null {
   return snapshot.lastInboundAt ?? snapshot.lastSeenAt ?? snapshot.connectedAt ?? null
 }
 
-function isSnapshotConnected(snapshot: DaemonCellSnapshot): boolean {
+/** Live cell snapshot is connected and still inside {@link DAEMON_STALE_MS}. */
+export function isSnapshotConnected(snapshot: DaemonCellSnapshot): boolean {
   if (!snapshot.connected) return false
   const lastInbound = resolveLastInboundAt(snapshot)
   if (!lastInbound) return false
@@ -281,4 +282,23 @@ export async function isServerConnected(
 ): Promise<boolean> {
   const presence = await resolveFleetPresence(db, registry, [serverId])
   return presence.get(serverId)?.connected ?? false
+}
+
+/**
+ * Forget/delete liveness: the stored `is_connected` column **or** a live cell
+ * snapshot ({@link resolveFleetPresence} with `withSnapshots`, which uses
+ * {@link isSnapshotConnected}). A host the sweep has not yet self-healed in
+ * Postgres must still refuse forget.
+ */
+export async function isServerConnectedStoredOrLive(
+  db: Db,
+  registry: DaemonCellRegistry | undefined,
+  serverId: string,
+  storedConnected: boolean
+): Promise<boolean> {
+  if (storedConnected) return true
+  const presence = await resolveFleetPresence(db, registry, [serverId], {
+    withSnapshots: true,
+  })
+  return presence.get(serverId)?.connected === true
 }

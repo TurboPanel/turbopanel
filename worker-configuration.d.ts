@@ -110,6 +110,8 @@ interface CloudflareBindings {
   TURBOPANEL_STRIPE_WEBHOOK_SIGNING_SECRET?: string
   /** Optional `Stripe-Version` pin override; defaults to `DEFAULT_STRIPE_API_VERSION`. */
   TURBOPANEL_STRIPE_API_VERSION?: string
+  /** `1` shows the promotion-code field on Stripe Checkout; unset or `0` hides it. */
+  TURBOPANEL_STRIPE_IS_COUPON_ALLOWED?: string
   /** When `1` or `true`, expose dev-only admin OpenAPI/Scalar routes (`wrangler dev` only). */
   TURBOPANEL_DEV_SURFACE?: string
   /** When `1` or `true`, enable verbose daemon-cell debug logging. */

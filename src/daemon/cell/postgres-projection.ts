@@ -312,6 +312,23 @@ function buildDaemonJsonbPatch(nextProjection: ServerDaemonProjection | undefine
   }
 }
 
+/** The `server` columns that mirror projection keys sweeps and pages filter on. */
+export function projectionColumnValues(projection: ServerDaemonProjection | undefined): {
+  offlineReason: 'disconnect' | 'sweep_stale' | null
+  daemonCommit: string | null
+  daemonBuiltAt: string | null
+  daemonUpdateStatus: string | null
+} {
+  const builtAt = projection?.daemonBuild?.builtAt
+  return {
+    offlineReason: projection?.offlineReason ?? null,
+    daemonCommit: projection?.daemonBuild?.commit ?? null,
+    daemonBuiltAt:
+      builtAt && Number.isFinite(Date.parse(builtAt)) ? new Date(builtAt).toISOString() : null,
+    daemonUpdateStatus: projection?.update?.status ?? null,
+  }
+}
+
 function statusColumnPatch(status: ServerDaemonStatus): {
   isConnected: boolean
   statusChangedAt: string | null
@@ -680,6 +697,12 @@ function buildDaemonAndStatusColumnPatch(
     )
   }
 
+  if (writeProjection) {
+    // The filtered and swept values (offline reason, build identity, update
+    // state) live in columns so sweeps and the upgrade pages never scan jsonb.
+    Object.assign(patch, projectionColumnValues(nextProjection))
+  }
+
   if (writeStatus) {
     Object.assign(patch, statusColumnPatch(nextStatus))
   }
@@ -952,6 +975,8 @@ export type ServerFleetPresenceRow = {
   ntpLastSyncedAt: string | null
   connected: boolean
   statusChangedAt: string | null
+  /** Last change to the row; the version stamp for cached reads of the same rows. */
+  updatedAt: string
 }
 
 /** Single SELECT for fleet presence + colocated enrichment on a fixed server id set. */
@@ -980,6 +1005,7 @@ export function loadServerRowsForFleetPresence(
       ntpLastSyncedAt: server.ntpLastSyncedAt,
       connected: server.isConnected,
       statusChangedAt: server.statusChangedAt,
+      updatedAt: server.updatedAt,
     })
     .from(server)
     .where(inArray(server.id, serverIds))
@@ -1048,7 +1074,7 @@ export async function listServerIdsWithUpdatingProjection(db: Db): Promise<strin
   const rows = await db
     .select({ id: server.id })
     .from(server)
-    .where(sql`${server.daemon}->'projection'->'update'->>'status' = 'updating'`)
+    .where(sql`${server.daemonUpdateStatus} = 'updating'`)
 
   return rows.map((row) => row.id)
 }

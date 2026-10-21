@@ -1,5 +1,4 @@
 import { eq } from 'drizzle-orm'
-import { SUPPORTED_RUNTIME_SERIES, SUPPORTED_RUNTIMES } from '../../contracts/runtime-registry.ts'
 import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
@@ -32,7 +31,11 @@ import {
   servicesBelongToProject,
 } from './tenancies.ts'
 import { getCommandQueue } from '../../features/commands/queue.ts'
-import { reconcilePrincipalAccess } from './reconcile.ts'
+import {
+  reconcilePrincipalAccess,
+  retireDeletedPrincipal,
+  serversForPrincipal,
+} from './reconcile.ts'
 import {
   addSshKey,
   countSshKeysByPrincipalIds,
@@ -44,12 +47,12 @@ import {
 } from './ssh-keys.ts'
 import {
   clearServerPrincipalPassword,
+  countPrincipalReferences,
+  isPrincipalReferenced,
   isServerPrincipalUsernameTaken,
-  loadEntitlementsByPrincipalIds,
   passwordEnabledByPrincipalIds,
-  replaceEntitlements,
+  PRINCIPAL_IN_USE_ERROR,
   replaceTenancies,
-  SERVER_PRINCIPAL_PROVIDER,
   setServerPrincipalPasswordHash,
   USERNAME_IN_USE_ERROR,
 } from '../../features/principals/store.ts'
@@ -61,7 +64,6 @@ import {
   optionsRecordFromJsonb,
   parseAccessField,
   parseCreatePrincipalOptions,
-  parseEntitlementsField,
   parsePrincipalPasswordField,
   parsePrincipalUsernameValue,
   patchRequiresServiceIds,
@@ -103,7 +105,6 @@ type ParsedCreateProjectPrincipal = {
   options: PrincipalOptionsPersisted
   override: { uid: number; gid: number } | null
   serviceIds: string[]
-  entitlements: { runtime: string; series: string; grantedBy: 'operator' }[]
 }
 
 function parseCreatePrincipalUsername(
@@ -128,13 +129,6 @@ async function parseCreateProjectPrincipalRequest(
   const username = parseCreatePrincipalUsername(c, body)
   if (username instanceof Response) return username
 
-  const entitlements = parseEntitlementsField(body, {
-    runtimes: SUPPORTED_RUNTIMES,
-    series: SUPPORTED_RUNTIME_SERIES,
-  })
-  if (entitlements === null) {
-    return c.json({ error: 'invalid_entitlements' }, 400)
-  }
   const serviceIds = parseServiceIdsField(body)
   if (serviceIds === null) {
     return c.json({ error: 'invalid_service_ids' }, 400)
@@ -154,7 +148,6 @@ async function parseCreateProjectPrincipalRequest(
     options: parsedOptions.options,
     override: parsedOptions.override,
     serviceIds,
-    entitlements: entitlements ?? [],
   }
 }
 
@@ -210,8 +203,6 @@ async function insertProjectPrincipal(
       .insert(principal)
       .values({
         organizationId,
-        kind: 'system',
-        provider: SERVER_PRINCIPAL_PROVIDER,
         username: input.username,
         appliedUsername,
         projectId,
@@ -222,9 +213,6 @@ async function insertProjectPrincipal(
 
     if (input.serviceIds.length > 0) {
       await replaceTenancies(tx, row.id, input.serviceIds)
-    }
-    if (input.entitlements.length > 0) {
-      await replaceEntitlements(tx, row.id, input.entitlements)
     }
     return {
       id: row.id,
@@ -266,12 +254,9 @@ export function registerProjectPrincipalRoutes(router: Hono<AppEnv>, opts: AuthR
     const rows = await db
       .select({
         id: principal.id,
-        kind: principal.kind,
-        provider: principal.provider,
         username: principal.username,
         appliedUsername: principal.appliedUsername,
         projectId: principal.projectId,
-        managedId: principal.managedId,
         metadata: principal.metadata,
         options: principal.options,
         createdAt: principal.createdAt,
@@ -282,7 +267,6 @@ export function registerProjectPrincipalRoutes(router: Hono<AppEnv>, opts: AuthR
 
     const principalIds = rows.map((row) => row.id)
     const serviceIdsByPrincipal = await loadServiceIdsByPrincipalIds(db, principalIds)
-    const entitlementsByPrincipal = await loadEntitlementsByPrincipalIds(db, principalIds)
     const keyCounts = await countSshKeysByPrincipalIds(db, principalIds)
     const passwordEnabled = await passwordEnabledByPrincipalIds(db, principalIds)
 
@@ -291,7 +275,6 @@ export function registerProjectPrincipalRoutes(router: Hono<AppEnv>, opts: AuthR
         serializeProjectPrincipal(
           row,
           serviceIdsByPrincipal.get(row.id) ?? [],
-          entitlementsByPrincipal.get(row.id) ?? [],
           keyCounts.get(row.id) ?? 0,
           passwordEnabled.has(row.id)
         )
@@ -375,16 +358,6 @@ export function registerProjectPrincipalRoutes(router: Hono<AppEnv>, opts: AuthR
       return c.json({ error: 'Invalid request' }, 400)
     }
 
-    // Absent means "leave them alone"; `[]` means "revoke everything". Both
-    // are real requests, so the two must stay distinguishable.
-    const entitlements = parseEntitlementsField(body, {
-      runtimes: SUPPORTED_RUNTIMES,
-      series: SUPPORTED_RUNTIME_SERIES,
-    })
-    if (entitlements === null) {
-      return c.json({ error: 'invalid_entitlements' }, 400)
-    }
-
     // Absent means "leave it alone"; a value sets it. Rejected rather than
     // dropped, so an operator cannot believe they suspended a live account.
     const accessShell = parseAccessField(body)
@@ -403,9 +376,6 @@ export function registerProjectPrincipalRoutes(router: Hono<AppEnv>, opts: AuthR
 
     await db.transaction(async (tx) => {
       if (patchesStewards) await replaceTenancies(tx, id, serviceIds)
-      if (entitlements !== undefined) {
-        await replaceEntitlements(tx, id, entitlements)
-      }
       const options =
         accessShell === undefined
           ? {}
@@ -424,11 +394,11 @@ export function registerProjectPrincipalRoutes(router: Hono<AppEnv>, opts: AuthR
         .where(eq(principal.id, id))
     })
 
-    // Entitlements and access are both enforced on the host as unix group
-    // membership, so a change that only lands in the database has not actually
-    // happened yet. Revoking in particular must not wait for a deploy.
+    // Access is enforced on the host as unix group membership, so a change
+    // that only lands in the database has not actually happened yet. Revoking
+    // in particular must not wait for a deploy.
     const reconciled =
-      entitlements !== undefined || accessShell !== undefined
+      accessShell !== undefined
         ? await reconcilePrincipalAccess(
             db,
             getCommandQueue(c),
@@ -467,8 +437,28 @@ export function registerProjectPrincipalRoutes(router: Hono<AppEnv>, opts: AuthR
     const immutable = await assertNotSystemOwnedOr403(c, 'project', projectId)
     if (immutable) return immutable
 
+    // Removal is an explicit action and never silent: refused while a
+    // service, binding, storage entry, secret or database login still names
+    // the principal.
+    const usedBy = await countPrincipalReferences(db, id)
+    if (isPrincipalReferenced(usedBy)) {
+      return c.json({ error: PRINCIPAL_IN_USE_ERROR, usedBy }, 409)
+    }
+
+    // Resolved before the delete: the reach is found through the row.
+    const serverIds = await serversForPrincipal(db, id)
+
     await db.delete(principal).where(eq(principal.id, id))
-    return c.json({ ok: true as const })
+
+    // The row is gone; now the account. Same best-effort outcome shape as a
+    // PATCH, so the operator sees which servers were and were not reached.
+    const reconciled = await retireDeletedPrincipal(
+      db,
+      getCommandQueue(c),
+      { actorType: 'user', actorId: session.userId },
+      { serverIds, appliedUsername: row.appliedUsername }
+    )
+    return c.json({ ok: true as const, reconciled })
   })
 
   // --- SSH keys ----------------------------------------------------------

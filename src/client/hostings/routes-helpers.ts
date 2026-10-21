@@ -10,6 +10,7 @@ import {
   HOSTING_COMPOSE_TLS_MODE_METADATA_KEY,
   readHostingComposeOwner,
 } from '../../features/hostings/hosting-compose-owner.ts'
+import { HOSTING_LETS_ENCRYPT_DNS_KEY } from '../../features/hostings/hosting-certificate.ts'
 import {
   hostingOptionsInputError,
   INVALID_HOSTING_OPTION_ERROR,
@@ -35,6 +36,7 @@ export const HOSTING_PROMOTED_METADATA_KEYS = [
   HOSTING_COMPOSE_ROUTE_METADATA_KEY,
   HOSTING_COMPOSE_TLS_MODE_METADATA_KEY,
   HOSTING_COMPOSE_ADOPTED_METADATA_KEY,
+  HOSTING_LETS_ENCRYPT_DNS_KEY,
 ] as const
 
 export const HOSTING_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i

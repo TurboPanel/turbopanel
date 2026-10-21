@@ -44,7 +44,10 @@ import {
   webhookReachability,
   type WebhookProvider,
 } from '../../features/git/webhook-reachability.ts'
-import { getPublicUrls, publicUrlEntryToInstallOrigin } from '../../features/install/public-urls.ts'
+import {
+  listPublishedOrigins,
+  platformManagedOrigin,
+} from '../../features/git/published-origins.ts'
 import {
   GITHUB_API_BASE,
   githubApiBaseFor,
@@ -56,7 +59,11 @@ import {
 import { enforceAuthRateLimit } from '../authn/http.ts'
 import { isPostgresUniqueViolation, isUniqueViolationOn } from '../../db/unique-violation.ts'
 import { resolveGitProvider, type RepositorySummary } from '../../features/git/git-provider.ts'
-import { canonicalizeRepositoryUrl } from '../../features/git/clone-url.ts'
+import {
+  canonicalizeRepositoryUrl,
+  GIT_REF_NAME_MAX_LENGTH,
+  isValidGitRefName,
+} from '../../features/git/clone-url.ts'
 import { forgeFetch } from '../../features/git/forge-url.ts'
 import { fetchPublicGithubDefaultBranch } from '../../features/git/github-provider.ts'
 import {
@@ -70,6 +77,7 @@ import { fetchGitlabAccount } from '../../features/git/gitlab-provider.ts'
 import { GitlabApiError } from '../../features/git/gitlab-api.ts'
 import { generateSshDeployKeypair } from '../../features/git/ssh-keypair.ts'
 import { encryptSecret } from '../../lib/secrets/data-encryption.ts'
+import { nodeVersionSuggestion } from '../environments/deploy-node-version.ts'
 import { canAccessOrganization } from '../org-context.ts'
 import {
   assertCanCreateOr403,
@@ -89,7 +97,6 @@ import {
   type ProviderInstallReturnError,
 } from '../forges/routes-helpers.ts'
 import {
-  COMPOSE_SOURCE_JSONPATH,
   parseSourceAttachBody,
   GIT_DEPLOY_KEY_CREDENTIAL_PROVIDER,
   parseSourceCreateBody,
@@ -134,8 +141,6 @@ const CONNECTION_SELECT = {
   accountLogin: gitConnection.accountLogin,
   accountType: gitConnection.accountType,
   suspendedAt: gitConnection.suspendedAt,
-  metadata: gitConnection.metadata,
-  options: gitConnection.options,
   createdAt: gitConnection.createdAt,
   updatedAt: gitConnection.updatedAt,
 }
@@ -207,7 +212,7 @@ async function authorizeClaimedOrganization(
 /**
  * Deleting a still-referenced repository would make every later save of that compose
  * fail the `knownSourceIds` lint, so it is a 409 instead. Reference detection
- * itself lives in {@link COMPOSE_SOURCE_JSONPATH}.
+ * is the `watch` table (see `features/git/watch-records.ts`).
  */
 export async function composeReferencesRepository(
   db: Db,
@@ -216,20 +221,10 @@ export async function composeReferencesRepository(
 ): Promise<boolean> {
   const rows = await db.execute<{ referenced: boolean }>(sql`
     SELECT EXISTS (
+      -- watch rows are the compose references of projects and environments.
       SELECT 1
-      FROM project p
-      JOIN workspace w ON w.id = p.workspace_id
-      WHERE w.organization_id = ${organizationId}::uuid
-        AND jsonb_path_exists(p.options, ${COMPOSE_SOURCE_JSONPATH}::jsonpath,
-          jsonb_build_object('sid', ${sourceId}::text))
-      UNION ALL
-      SELECT 1
-      FROM environment e
-      JOIN project p ON p.id = e.project_id
-      JOIN workspace w ON w.id = p.workspace_id
-      WHERE w.organization_id = ${organizationId}::uuid
-        AND jsonb_path_exists(e.options, ${COMPOSE_SOURCE_JSONPATH}::jsonpath,
-          jsonb_build_object('sid', ${sourceId}::text))
+      FROM watch k
+      WHERE k.repository_id = ${sourceId}::uuid
       UNION ALL
       -- project.repository_id is the binding itself, and its foreign key is
       -- ON DELETE RESTRICT. Checking it here is what turns a Postgres 23503
@@ -702,7 +697,7 @@ export async function finishGitlabOauthCallback(
     return providerCallbackFail(c, organizationId, 'not_configured', forgeId)
   }
 
-  const redirectUri = await resolveGitlabRedirectUri(db, app.redirectUri)
+  const redirectUri = await resolveGitlabRedirectUri(db, app.redirectUri, requestPlatformOrigin(c))
   if (!redirectUri) {
     return providerCallbackFail(c, organizationId, 'not_configured', app.id)
   }
@@ -900,12 +895,11 @@ export async function fetchInstallationAccount(
 export async function resolveSourceWebhookInfo(
   db: Db,
   provider: string,
-  connectionId: string | null
+  connectionId: string | null,
+  platformOrigin: string | null = null
 ): Promise<SourceWebhookInfo | undefined> {
   if (provider !== 'github' && provider !== 'gitlab') return undefined
-  const origins = (await getPublicUrls(db))
-    .map((entry) => publicUrlEntryToInstallOrigin(entry))
-    .filter((origin): origin is string => origin !== null)
+  const origins = await listPublishedOrigins(db, platformOrigin)
 
   // The app behind this repository decides both halves of the URL: whether the ref
   // belongs in the path (self-hosted only), and which origin the provider was
@@ -954,14 +948,18 @@ export async function resolveSourceWebhookInfo(
  */
 export async function resolveGitlabRedirectUri(
   db: Db,
-  configured: string | null
+  configured: string | null,
+  platformOrigin: string | null = null
 ): Promise<string | null> {
   if (configured) return configured
-  const origin = (await getPublicUrls(db))
-    .map((entry) => publicUrlEntryToInstallOrigin(entry))
-    .find((entry): entry is string => entry !== null)
+  const [origin] = await listPublishedOrigins(db, platformOrigin)
   if (!origin) return null
-  return `${origin.replace(/\/$/, '')}${CLIENT_API_PREFIX}/repositories/gitlab/oauth/callback`
+  return `${origin}${CLIENT_API_PREFIX}/repositories/gitlab/oauth/callback`
+}
+
+/** The hosted runtime's own address for this request, `null` when self-hosted. */
+function requestPlatformOrigin(c: Context<AppEnv>): string | null {
+  return platformManagedOrigin({ runtime: c.get('runtime'), platformEnv: c.get('platformEnv') })
 }
 
 export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
@@ -1196,7 +1194,11 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
     if (app instanceof Response) return app
     if (!app.clientId) return c.json({ error: 'gitlab_oauth_not_configured' }, 503)
 
-    const redirectUri = await resolveGitlabRedirectUri(db, app.redirectUri)
+    const redirectUri = await resolveGitlabRedirectUri(
+      db,
+      app.redirectUri,
+      requestPlatformOrigin(c)
+    )
     if (!redirectUri) return c.json({ error: 'gitlab_redirect_uri_unknown' }, 503)
 
     const state = await signGitlabConnectState(secretsConfig, {
@@ -1370,7 +1372,7 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
     return c.json({
       repository: serializeSourceRow(
         row,
-        await resolveSourceWebhookInfo(db, row.provider, row.connectionId)
+        await resolveSourceWebhookInfo(db, row.provider, row.connectionId, requestPlatformOrigin(c))
       ),
     })
   })
@@ -1401,6 +1403,25 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
     const denied = await assertCanReadOr403(c, 'organization', organizationId)
     if (denied) return denied
 
+    // A named ref git itself would refuse (blank, `a..b`, `x.lock`, a space)
+    // cannot exist on any remote, so it is answered here without contacting
+    // the provider or a server. Leaving `ref` out still means the default
+    // branch.
+    const queryRef = c.req.query('ref')
+    const requestedRef = (queryRef ?? '').trim()
+    if (queryRef !== undefined && !isValidGitRefName(requestedRef)) {
+      return c.json(
+        {
+          ok: false,
+          error: 'invalid_ref',
+          code: 'invalid_ref',
+          message: 'That is not a valid branch or tag name.',
+          ref: requestedRef.slice(0, GIT_REF_NAME_MAX_LENGTH),
+        },
+        400
+      )
+    }
+
     const [row] = await db
       .select(SOURCE_SELECT)
       .from(repository)
@@ -1408,7 +1429,7 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
       .limit(1)
     if (!row) return c.json({ error: 'Not found' }, 404)
 
-    const ref = await resolveInspectRef(db, row, (c.req.query('ref') ?? '').trim())
+    const ref = await resolveInspectRef(db, row, requestedRef)
     if (ref.length === 0) {
       return c.json(
         {
@@ -1455,6 +1476,18 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
     })
 
     if (!outcome.ok) {
+      if (outcome.error === 'ref_not_found') {
+        return c.json(
+          {
+            ok: false,
+            error: outcome.error,
+            code: outcome.error,
+            message: outcome.message,
+            ref: outcome.ref ?? ref,
+          },
+          404
+        )
+      }
       return c.json({ error: outcome.error, message: outcome.message }, outcome.status as 400)
     }
 
@@ -1468,6 +1501,7 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
       via: outcome.via,
       files: outcome.files,
       entries: outcome.entries,
+      nodeVersion: nodeVersionSuggestion(outcome.files),
     })
   })
 

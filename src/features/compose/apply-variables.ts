@@ -57,6 +57,22 @@ export type RuntimeEnvAssignment = {
   source?: string
 }
 
+/**
+ * One build-time variable a service's build ends up with: a non-secret value
+ * for `forBuild`, as this module decided it (the build lane of
+ * {@link RuntimeEnvAssignment}). A secret never appears here: it is a build
+ * secret file, delivered sealed.
+ */
+export type BuildEnvAssignment = {
+  /** Name the build sees (`build.args` key; differs from `key` for `FOO: "{$BAR}"`). */
+  name: string
+  /** The variable the value comes from. */
+  key: string
+  /** The plain value, trimmed and not Compose-escaped. */
+  value: string
+  source?: string
+}
+
 export type DeployVariableMaterial = {
   key: string
   composeServiceName: string | null
@@ -86,6 +102,12 @@ export type ApplyVariablesResult = {
   envFileContent: string
   /** Runtime environment per compose service, in assignment order. */
   runtimeAssignments: Map<string, RuntimeEnvAssignment[]>
+  /**
+   * Non-secret build variables per compose service, in assignment order, for
+   * the builds the host runs itself (a source release): the same answer the
+   * Compose `build.args` got.
+   */
+  buildAssignments: Map<string, BuildEnvAssignment[]>
   /**
    * Runtime secrets a native app was **not** given because nothing references
    * them, per compose service — so the list the app's owner reads can say so
@@ -295,6 +317,7 @@ type ApplyServiceState = {
   secretPlan: DeploySecretPlanEntry[]
   envEntries: EnvFileEntry[]
   runtimeAssignments: RuntimeEnvAssignment[]
+  buildAssignments: BuildEnvAssignment[]
   /** The service is a native (`serviceKind: node`) app — see {@link shouldAutoAttachSecret}. */
   nativeApp: boolean
   unreferencedSecrets: UnreferencedSecret[]
@@ -324,6 +347,14 @@ function applyNonSecretAssignment(
       name: envKey,
       key: entry.key,
       isSecret: false,
+      value: trimVariableValue(entry.value),
+      ...(entry.source === undefined ? {} : { source: entry.source }),
+    })
+  }
+  if (target === 'build') {
+    state.buildAssignments.push({
+      name: envKey,
+      key: entry.key,
       value: trimVariableValue(entry.value),
       ...(entry.source === undefined ? {} : { source: entry.source }),
     })
@@ -615,6 +646,7 @@ export function applyVariablesToComposeDocument(
   const secretPlan: DeploySecretPlanEntry[] = []
   const envEntries: EnvFileEntry[] = []
   const runtimeAssignments = new Map<string, RuntimeEnvAssignment[]>()
+  const buildAssignments = new Map<string, BuildEnvAssignment[]>()
   const unreferencedSecrets = new Map<string, UnreferencedSecret[]>()
   const runDir = params.runDir ?? DEFAULT_DEPLOY_RUN_DIR
   const projectId = params.projectId ?? 'preview'
@@ -640,6 +672,7 @@ export function applyVariablesToComposeDocument(
       secretPlan,
       envEntries,
       runtimeAssignments: [],
+      buildAssignments: [],
       nativeApp: params.nativeServiceNames?.has(composeServiceName) ?? false,
       unreferencedSecrets: [],
       projectId,
@@ -650,6 +683,7 @@ export function applyVariablesToComposeDocument(
     if (error) return error
     services[composeServiceName] = state.service
     runtimeAssignments.set(composeServiceName, state.runtimeAssignments)
+    buildAssignments.set(composeServiceName, state.buildAssignments)
     unreferencedSecrets.set(composeServiceName, state.unreferencedSecrets)
   }
 
@@ -665,6 +699,7 @@ export function applyVariablesToComposeDocument(
     secretPlan,
     envFileContent: encodeEnvFile(envEntries),
     runtimeAssignments,
+    buildAssignments,
     unreferencedSecrets,
   }
 }

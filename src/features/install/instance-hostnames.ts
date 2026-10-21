@@ -13,7 +13,13 @@
 
 import { eq, isNotNull } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
-import { instanceHostname, instanceUploadedCertificate, setting } from '../../db/schema.ts'
+import {
+  hostname as siteHostname,
+  instanceHostname,
+  instanceUploadedCertificate,
+  setting,
+} from '../../db/schema.ts'
+import { normalizeHostForCompare } from '../../lib/hostname-compare.ts'
 import { coversHostname } from '../../lib/tls/match.ts'
 import { redactUrlSecrets } from '../upgrades/redact-url-secrets.ts'
 import { isLoopbackOrPrivateHostname } from './install-tls.ts'
@@ -340,6 +346,61 @@ export async function listInstanceHostnames(db: Db): Promise<InstanceHostnameRec
   return rows.map(toRecord)
 }
 
+/**
+ * Reverse direction of the rule that a site may not use a panel hostname: a
+ * name some site already serves (exact match, any organization) may not be
+ * added to the panel. Only names not yet published are checked, so a conflict
+ * that already exists never blocks unrelated hostname edits. Wildcard site
+ * names are fine; the exact panel name wins over them.
+ */
+export async function panelHostsUsedBySites(
+  db: Db,
+  hosts: readonly string[],
+  alreadyPublished: readonly string[] = []
+): Promise<string[]> {
+  const published = new Set(alreadyPublished.map(normalizeHostForCompare))
+  const wanted = new Map<string, string>()
+  for (const host of hosts) {
+    const key = normalizeHostForCompare(host)
+    if (!published.has(key) && !wanted.has(key)) wanted.set(key, host)
+  }
+  if (wanted.size === 0) return []
+  const rows = await db
+    .select({ host: siteHostname.hostname })
+    .from(siteHostname)
+    .where(isNotNull(siteHostname.id))
+  const used = new Set<string>()
+  for (const row of rows) {
+    const key = normalizeHostForCompare(row.host)
+    if (wanted.has(key)) used.add(wanted.get(key) as string)
+  }
+  return [...used]
+}
+
+export function siteUsesPanelHostFailure(used: readonly string[]): InstanceHostnameFailure {
+  const list = used.join(', ')
+  return {
+    ok: false,
+    error: `${list} ${used.length === 1 ? 'is' : 'are'} already used by a site and cannot also be a panel hostname. Remove ${used.length === 1 ? 'it' : 'them'} from the site first.`,
+    invalid: [...used],
+  }
+}
+
+/** Failure for a flat public-URL list that adds a name a site already uses, or null. */
+export async function publicUrlsSiteConflict(
+  db: Db,
+  urls: readonly string[]
+): Promise<InstanceHostnameFailure | null> {
+  await migrateLegacyPublicUrls(db)
+  const current = await loadHostnameRows(db)
+  const used = await panelHostsUsedBySites(
+    db,
+    urls.map((url) => hostFromPublicUrlEntry(url) ?? url),
+    current.map((row) => row.host)
+  )
+  return used.length > 0 ? siteUsesPanelHostFailure(used) : null
+}
+
 const HTTP01_PREFLIGHT_PREFIX = "Let's Encrypt HTTP-01 preflight failed for "
 
 /** Detail phrase. Keep in step with the daemon and the UI. */
@@ -658,6 +719,12 @@ export async function replaceInstanceHostnames(
   const current = await loadHostnameRows(db)
   const built = await buildReplacementRows(db, entries, current)
   if (!built.ok) return built
+  const usedBySite = await panelHostsUsedBySites(
+    db,
+    built.rows.map((row) => row.host),
+    current.map((row) => row.host)
+  )
+  if (usedBySite.length > 0) return siteUsesPanelHostFailure(usedBySite)
   await persistHostnameRows(db, built.rows)
   return { ok: true, hostnames: built.rows.map(toRecord) }
 }
@@ -850,6 +917,12 @@ export async function applyUploadedCertificateHosts(
   if (!resolved.ok) return resolved
 
   const { next, attached } = rowsWithUploadedCertificate(current, resolved.desired, cert)
+  const usedBySite = await panelHostsUsedBySites(
+    db,
+    next.map((row) => row.host),
+    current.map((row) => row.host)
+  )
+  if (usedBySite.length > 0) return siteUsesPanelHostFailure(usedBySite)
   await persistHostnameRows(db, next)
   return {
     ok: true,

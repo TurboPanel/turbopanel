@@ -106,7 +106,7 @@ async function listLiveDeployCommands(
     .where(
       and(
         eq(command.name, DEPLOY_COMMAND_NAME),
-        sql`${command.context} ->> 'environmentId' = ${environmentId}`,
+        eq(command.environmentId, environmentId),
         sql`${command.context} ->> 'generation' = ${String(generation)}`
       )
     )

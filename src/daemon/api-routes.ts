@@ -25,6 +25,7 @@ import {
 } from '../lib/secrets/data-encryption.ts'
 import type { Db } from '../db/connection.ts'
 import { describeError } from '../lib/describe-error.ts'
+import { storeIssuedCertificate } from '../client/tls/issued-certificate.ts'
 import { logWarn } from '../lib/logger.ts'
 import {
   getDaemonCellRegistry,
@@ -112,10 +113,18 @@ import {
   type FabricMembershipDeps,
   findServerIdForIdentity,
   getServerLicenseBinding,
+  isMachineKeyInUse,
   resolveServerId,
   touchServerMetadata,
 } from '../features/servers/server-registry.ts'
 import { getCommandQueue } from '../features/commands/queue.ts'
+
+const MACHINE_KEY_IN_USE_RESULT = {
+  ok: false,
+  status: 409,
+  error: 'machine_key_in_use',
+  message: 'This host is already registered as another server. Remove that server first.',
+} as const
 import {
   loadExecutionLogCommandTarget,
   MAX_EXECUTION_LOG_CHUNK_BODY_BYTES,
@@ -196,6 +205,12 @@ export const MAX_SECRETS_DECRYPT_CIPHERTEXT_CHARS = 16 * 1024
  * the batch cap × per-ciphertext cap plus JSON array/quoting overhead.
  */
 export const MAX_SECRETS_DECRYPT_BODY_BYTES = 2 * 1024 * 1024
+
+/**
+ * `POST /tls/issued` — hostname plus one certificate chain and one private key
+ * (32 KiB chain + 8 KiB key at most) with JSON quoting overhead.
+ */
+export const MAX_TLS_ISSUED_BODY_BYTES = 64 * 1024
 
 /** `POST /auth/challenge` — optional serverId/keyId only. */
 export const MAX_AUTH_CHALLENGE_BODY_BYTES = 4 * 1024
@@ -341,6 +356,28 @@ function parseEnrollFields(body: Record<string, unknown>): FieldResult<EnrollFie
  * Resolves the server row, guards against a fingerprint collision, and attaches
  * the daemon key — the final leg of `POST /enroll` once the signature is verified.
  */
+function enrollFailureBody(failure: { error: string; message?: string }) {
+  return {
+    ok: false,
+    error: failure.error,
+    ...(failure.message ? { message: failure.message } : {}),
+  }
+}
+
+/** `resolveServerId`, with a host that is already registered answered as a conflict marker. */
+async function resolveServerIdOrConflict(
+  db: Db,
+  identity: Parameters<typeof resolveServerId>[1],
+  fabricDeps: Parameters<typeof resolveServerId>[2]
+): Promise<{ serverId: string | null } | { conflict: true }> {
+  try {
+    return { serverId: await resolveServerId(db, identity, fabricDeps) }
+  } catch (err) {
+    if (isMachineKeyInUse(err)) return { conflict: true }
+    throw err
+  }
+}
+
 async function finalizeDaemonEnrollment(
   db: Db,
   params: {
@@ -355,7 +392,7 @@ async function finalizeDaemonEnrollment(
   }
 ): Promise<
   | { ok: true; serverId: string; keyId: string }
-  | { ok: false; status: 400 | 403 | 409 | 500; error: string }
+  | { ok: false; status: 400 | 403 | 409 | 500; error: string; message?: string }
 > {
   const {
     serverIdBody,
@@ -397,7 +434,9 @@ async function finalizeDaemonEnrollment(
     }
   }
 
-  const serverId = await resolveServerId(db, identity, fabricDeps)
+  const resolved = await resolveServerIdOrConflict(db, identity, fabricDeps)
+  if ('conflict' in resolved) return MACHINE_KEY_IN_USE_RESULT
+  const serverId = resolved.serverId
   if (!serverId) {
     return {
       ok: false,
@@ -425,12 +464,18 @@ async function finalizeDaemonEnrollment(
     })
     return { ok: true, serverId, keyId: result.keyId }
   } catch (err) {
-    if (err instanceof DaemonKeyRevokedError) {
-      return { ok: false, status: 403, error: SERVER_KEY_REVOKED_ERROR }
-    }
-    const message = err instanceof Error ? err.message : String(err)
-    return { ok: false, status: 500, error: message }
+    return enrollAttachFailure(err)
   }
+}
+
+/** The answer for a failed key attach: revoked, host already registered, or a plain error. */
+function enrollAttachFailure(err: unknown) {
+  if (err instanceof DaemonKeyRevokedError) {
+    return { ok: false, status: 403, error: SERVER_KEY_REVOKED_ERROR } as const
+  }
+  if (isMachineKeyInUse(err)) return MACHINE_KEY_IN_USE_RESULT
+  const message = err instanceof Error ? err.message : String(err)
+  return { ok: false, status: 500, error: message } as const
 }
 
 function enrollFabricDepsFromContext(c: Context): FabricMembershipDeps | undefined {
@@ -830,7 +875,7 @@ async function resolveIngestPlanAndReconcileTopology(
       // topology generation from promoting the host. Fire-and-forget, like
       // `markTopologyResyncRequested` above.
       db.update(server)
-        .set({ machineClass: 'physical' })
+        .set({ machineClass: 'physical', machineClassSource: 'detected' })
         .where(and(eq(server.id, serverId), isNull(server.machineClass)))
         .catch((err) => {
           rateLimitedMetricsLog(serverId, 'machine_class_record_failed', () => {
@@ -936,6 +981,8 @@ type DaemonApiEnv = {
     daemonServerId: string
     daemonKeyId: string
     daemonTokenId: string
+    /** Bound by the app (`bindContextValue`); absent when no secrets are configured. */
+    dataEncryptionSecrets?: DerivedSecretsConfig
   }
 }
 
@@ -1394,7 +1441,7 @@ export function registerDaemonApiRoutes<E extends Env>(
       ...(fabricDeps ? { fabricDeps } : {}),
     })
     if (!enrolled.ok) {
-      return c.json({ ok: false, error: enrolled.error }, enrolled.status)
+      return c.json(enrollFailureBody(enrolled), enrolled.status)
     }
     // Bound now: `license.server_id` carries it from here.
     await clearLicenseEnrollAttempt(db, licenseId).catch(() => {})
@@ -1683,7 +1730,7 @@ export function registerDaemonApiRoutes<E extends Env>(
         })
       }
 
-      // Live leases. A v7 daemon keeps its 60 s baseline running during a
+      // Live leases. A v8 daemon keeps its 60 s baseline running during a
       // lease and flags the parallel 10 s live samples `durable: false`: those
       // feed the chart's live overlay ONLY and are never stored (storing them
       // is the 6x row cost the baseline-only rule removes). They are buffered
@@ -1785,6 +1832,65 @@ export function registerDaemonApiRoutes<E extends Env>(
       )
 
       return c.json({ plaintexts }, 200)
+    }
+  )
+
+  /**
+   * The certificate and private key Caddy issued on the calling server for one
+   * hostname. Stored sealed next to the other certificates (see
+   * `client/tls/issued-certificate.ts` for every check). The body is never
+   * logged and nothing from it comes back in the answer.
+   */
+  daemon.post(
+    '/tls/issued',
+    requireDaemonJwt,
+    enforceJwtRestLimit('tls-issued'),
+    requireActiveDaemonKey,
+    async (c) => {
+      const bodyRead = await readBoundedJsonBody(c, MAX_TLS_ISSUED_BODY_BYTES)
+      if (!bodyRead.ok) return bodyRead.response
+      let body: {
+        hostname?: unknown
+        certificatePem?: unknown
+        privateKeyPem?: unknown
+      }
+      try {
+        body = JSON.parse(bodyRead.text) as typeof body
+      } catch {
+        return c.json({ ok: false, error: 'invalid json' }, 400)
+      }
+      if (
+        typeof body.hostname !== 'string' ||
+        typeof body.certificatePem !== 'string' ||
+        typeof body.privateKeyPem !== 'string'
+      ) {
+        return c.json(
+          {
+            ok: false,
+            error: 'hostname, certificatePem and privateKeyPem are required',
+          },
+          400
+        )
+      }
+      const db = getDb(c)
+      const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
+      if (!db || !dataEncryptionSecrets) {
+        return c.json({ ok: false, error: 'storage unavailable' }, 503)
+      }
+      const result = await storeIssuedCertificate(
+        db,
+        {
+          serverId: c.get('daemonServerId'),
+          hostname: body.hostname,
+          certificatePem: body.certificatePem,
+          privateKeyPem: body.privateKeyPem,
+        },
+        { dataEncryptionSecrets }
+      )
+      if (!result.ok) {
+        return c.json({ ok: false, error: result.error, message: result.message }, result.status)
+      }
+      return c.json({ ok: true, stored: result.stored }, 200)
     }
   )
 

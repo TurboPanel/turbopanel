@@ -25,6 +25,10 @@
 import { assertEquals } from '@std/assert'
 import { it } from '@std/testing/bdd'
 import {
+  HOST_METRICS_METRIC_DESCRIPTORS,
+  UNSTORED_V8_HOST_METRICS,
+} from '../../metric-descriptors.ts'
+import {
   buildMetricsSample,
   type MetricsSampleInput,
 } from '../../../../contracts/metrics-contract.ts'
@@ -373,11 +377,11 @@ it('cross-backend parity: DuckDB and Cloudflare AE agree on host series, entity 
     // storage (AE double slot vs. a joined DuckDB table). ---
     const routerQuery = {
       serverId: SERVER_ID,
-      // Both aggregations: two `weighted-average` gauges and one `delta-sum`
-      // counter, since AE resolves those through different SQL expressions
-      // (`weightedAvgExpressionForColumn` vs `deltaSumExpressionForColumn`)
-      // than DuckDB's plain column aggregation.
-      metrics: ['router.backendsUp', 'router.backendLatencyMsAvg', 'router.backendRequests'],
+      // A gauge, a weighted average and a delta-sum, each resolved through a
+      // different SQL expression on AE than DuckDB's plain column aggregation.
+      // (Backends up and the request count are DuckDB-only since the owner's
+      // 2026-10-07 layout: both are derivable from what the hosted row keeps.)
+      metrics: ['router.backendsTotal', 'router.backendLatencyMsAvg', 'router.backendErrors5xx'],
       from,
       to,
       resolutionSeconds: INTERVAL_SECONDS,
@@ -390,9 +394,9 @@ it('cross-backend parity: DuckDB and Cloudflare AE agree on host series, entity 
       field: string
     ) => result.points.find((point) => point.at === at)?.values[field] ?? null
     for (const field of [
-      'router.backendsUp',
+      'router.backendsTotal',
       'router.backendLatencyMsAvg',
-      'router.backendRequests',
+      'router.backendErrors5xx',
     ]) {
       for (const sample of [tick1Sample, tick2Sample]) {
         assertEquals(
@@ -404,17 +408,35 @@ it('cross-backend parity: DuckDB and Cloudflare AE agree on host series, entity 
     }
     // Pin the actual value too, not just agreement — two backends resolving
     // the same wrong slot would otherwise pass.
-    assertEquals(routerValues(aeRouter, tick1Sample.metadata.sampledAt, 'router.backendsUp'), 3)
-    assertEquals(routerValues(aeRouter, tick2Sample.metadata.sampledAt, 'router.backendsUp'), 1)
+    assertEquals(routerValues(aeRouter, tick1Sample.metadata.sampledAt, 'router.backendsTotal'), 4)
     assertEquals(
       routerValues(aeRouter, tick1Sample.metadata.sampledAt, 'router.backendLatencyMsAvg'),
       12
     )
-    // delta-sum: one sample of 100 requests per bucket, summed rather than averaged.
     assertEquals(
-      routerValues(aeRouter, tick1Sample.metadata.sampledAt, 'router.backendRequests'),
-      100
+      routerValues(aeRouter, tick1Sample.metadata.sampledAt, 'router.backendErrors5xx'),
+      0
     )
+
+    // --- The data points v8 no longer stores read as empty on BOTH backends,
+    // even though the self-hosted columns still exist (and hold this sample's
+    // values: routerBackendsUp 3, the hosting/logs gauges 512 and 1_000_000). ---
+    const droppedMetrics = [...UNSTORED_V8_HOST_METRICS].filter(
+      (name) =>
+        HOST_METRICS_METRIC_DESCRIPTORS[name] !== undefined && name !== 'ingress.responses2xx'
+    )
+    assertEquals(droppedMetrics.length, 8)
+    const droppedQuery = { ...routerQuery, metrics: droppedMetrics }
+    for (const result of [
+      await duckStore.queryHostSeries(droppedQuery),
+      await aeStore.queryHostSeries(droppedQuery),
+    ]) {
+      for (const point of result.points) {
+        for (const name of droppedMetrics) {
+          assertEquals(point.values[name] ?? null, null, `${name} must read as empty`)
+        }
+      }
+    }
 
     // --- managed.storage / managed.docker: the other two host-wide
     // singletons. Covers a flat storage gauge, a *nested* per-engine reading

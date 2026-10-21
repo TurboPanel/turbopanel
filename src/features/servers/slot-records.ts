@@ -22,8 +22,6 @@ export type SlotRecord = {
   id: string
   createdAt: string
   updatedAt: string
-  metadata: unknown
-  options: unknown
   environmentId: string
   serviceId: string
   serverId: string
@@ -56,8 +54,6 @@ export function serializeSlot(row: SlotDbRow): SlotRecord {
     id: row.id,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
-    metadata: row.metadata ?? null,
-    options: row.options ?? null,
     environmentId: row.environmentId,
     serviceId: row.serviceId,
     serverId: row.serverId,

@@ -1,4 +1,4 @@
-import { and, eq, inArray } from 'drizzle-orm'
+import { and, eq, sql } from 'drizzle-orm'
 import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
@@ -6,8 +6,12 @@ import { requireStepUpIfConfigured } from '../authn/step-up.ts'
 import { encryptSecret } from '../../lib/secrets/data-encryption.ts'
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
-import { assertCanOr403, listVisible } from '../authz/index.ts'
-import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
+import { assertCanOr403, listVisibleVersions } from '../authz/index.ts'
+import { resolveEntityOrganizationId, resolveEntityVersion } from '../authz/create-access-grant.ts'
+import {
+  cachedProjectDetail,
+  cachedProjectsList,
+} from '../../query-cache/read-models/hierarchy-reads.ts'
 import { getDb, type Db } from '../../db/connection.ts'
 import { environment, project, variable, workspace } from '../../db/schema.ts'
 import {
@@ -40,6 +44,9 @@ import {
   isProductionEnvironmentName,
   loadDefaultEnvironmentName,
 } from './empty-setup.ts'
+import { catalogEnvironmentCompose } from './catalog-compose.ts'
+import { resolveEditTarget } from './edit-target.ts'
+import { applyEnvironmentPatch } from '../environments/routes.ts'
 import { isProjectDisplayNameTaken, PROJECT_NAME_IN_USE_ERROR } from '../display-name-uniqueness.ts'
 import { isReservedSystemProjectName } from '../../features/system/hierarchy.ts'
 import { UUID_RE } from '../repositories/routes-helpers.ts'
@@ -53,12 +60,15 @@ import {
   assertDefaultServerIdShape,
   catalogProjectOptions,
   isProjectNameUniqueViolation,
+  isProjectSlugUniqueViolation,
   mapCreateProjectError,
   normalizeProjectPatchOptions,
   parseConfigureProjectBody,
   parseCreateProjectMetadata,
   parseCreateProjectNames,
   parseCreateProjectOptions,
+  parseCreateProjectEnvironmentNameField,
+  scaffoldEnvironmentNames,
   parseCreateProjectServerIdField,
   parseJsonbField,
   resolveCatalogEntryForCreate,
@@ -70,6 +80,15 @@ import {
   stampNewEnvironmentDeployOptions,
 } from '../../features/deploy/deploy-options.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
+import { splitProjectDefaultServer } from '../../features/projects/project-options.ts'
+import { syncEnvironmentWatch, syncProjectWatch } from '../../features/git/watch-records.ts'
+import {
+  allocateProjectSlug,
+  PROJECT_SLUG_IN_USE_ERROR,
+  PROJECT_SLUG_LOCKED_ERROR,
+  projectSlugIsLocked,
+} from '../../features/folders/records.ts'
+import { isValidProjectSlug } from '../../contracts/directory-names.ts'
 
 type DbTx = Parameters<Parameters<Db['transaction']>[0]>[0]
 
@@ -79,23 +98,34 @@ export async function scaffoldCatalogEnvironments(
   entry: CatalogEntry,
   dataEncryptionSecrets: DerivedSecretsConfig,
   serverId?: string | null,
-  defaultEnvironmentName?: string
+  defaultEnvironmentName?: string,
+  /** False when the caller supplied the project's own compose: it stays the Base and is not merged in. */
+  baseMovesIntoEnvironments = true
 ) {
-  await forEachSequential(entry.environments, async (env) => {
-    const displayName = isProductionEnvironmentName(env.displayName)
-      ? (defaultEnvironmentName ?? env.displayName)
-      : env.displayName
+  const displayNames = scaffoldEnvironmentNames(entry.environments, defaultEnvironmentName)
+  // The production-like environment of the entry (else the first) is the primary one.
+  const primaryIndex = Math.max(
+    0,
+    entry.environments.findIndex((env) => isProductionEnvironmentName(env.displayName))
+  )
+  await forEachSequential(entry.environments, async (env, index) => {
+    const displayName = displayNames[index]!
+    const compose = baseMovesIntoEnvironments
+      ? catalogEnvironmentCompose(entry, env)
+      : (env.compose ?? null)
     const [insertedEnv] = await tx
       .insert(environment)
       .values({
         projectId,
         name: displayName,
         description: env.description ?? null,
+        isPrimary: index === primaryIndex,
         ...(serverId ? { serverId } : {}),
-        options: stampNewEnvironmentDeployOptions(env.compose ? { compose: env.compose } : null),
+        options: stampNewEnvironmentDeployOptions(compose ? { compose } : null),
       })
       .returning({ id: environment.id })
 
+    if (compose) await syncEnvironmentWatch(tx, insertedEnv.id)
     if (!env.variables) return
 
     // One map per environment so sharedCredentialId only aliases within that env.
@@ -329,7 +359,18 @@ async function parseCreateProjectInput(
   const serverId = await resolveServerIdForCreate(c, db, body, organizationId)
   if (serverId instanceof Response) return serverId
 
-  const defaultEnvironmentName = await loadDefaultEnvironmentName(db, organizationId)
+  const environmentName = parseCreateProjectEnvironmentNameField(body)
+  if (!environmentName.ok) {
+    return c.json(
+      environmentName.message === undefined
+        ? { error: environmentName.error }
+        : { error: environmentName.error, message: environmentName.message },
+      environmentName.status
+    )
+  }
+  // An explicit name wins; otherwise the organization default (or Production).
+  const defaultEnvironmentName =
+    environmentName.environmentName ?? (await loadDefaultEnvironmentName(db, organizationId))
 
   return {
     name,
@@ -425,11 +466,64 @@ function parseProjectPatchOptions(
 
 type ProjectPatchFields = {
   name?: string | null
+  slug?: string
   description?: string | null
   repositoryId?: string | null
   options?: Record<string, unknown> | null
+  /** The default placement server, kept in its own column (the API carries it in `options`). */
+  defaultServerId?: string | null
   workspaceId?: string
   updatedAt: string
+}
+
+/** The name and slug a PATCH asks for must be free (and the slug unlocked). */
+async function checkProjectPatchConflicts(
+  c: Context<AppEnv>,
+  db: Db,
+  organizationId: string,
+  projectId: string,
+  body: Record<string, unknown>,
+  patchFields: ProjectPatchFields
+): Promise<Response | null> {
+  if (
+    patchFields.name !== undefined &&
+    (isReservedSystemProjectName(patchFields.name) ||
+      (await isProjectDisplayNameTaken(db, organizationId, patchFields.name, projectId)))
+  ) {
+    return c.json({ error: PROJECT_NAME_IN_USE_ERROR }, 409)
+  }
+  return await checkProjectSlugPatch(c, db, projectId, body, patchFields)
+}
+
+/**
+ * A `slug` in the PATCH body changes the project slug: it has to match the
+ * rule, and it is refused once any folder exists under the project or a site
+ * owner directory exists for it. Writing the slug the project already has is a
+ * no-op. Sets `patchFields.slug` when the slug changes.
+ */
+async function checkProjectSlugPatch(
+  c: Context<AppEnv>,
+  db: Db,
+  projectId: string,
+  body: Record<string, unknown>,
+  patchFields: ProjectPatchFields
+): Promise<Response | null> {
+  if (body.slug === undefined) return null
+  if (!isValidProjectSlug(body.slug)) {
+    return c.json({ error: 'invalid_project_slug' }, 400)
+  }
+  const slug = body.slug as string
+  const [current] = await db
+    .select({ slug: project.slug })
+    .from(project)
+    .where(eq(project.id, projectId))
+    .limit(1)
+  if (current?.slug === slug) return null
+  if (await projectSlugIsLocked(db, projectId)) {
+    return c.json({ error: PROJECT_SLUG_LOCKED_ERROR }, 409)
+  }
+  patchFields.slug = slug
+  return null
 }
 
 function buildProjectPatchFields(
@@ -583,11 +677,29 @@ async function insertDockerComposeProject(
     defaultEnvironmentName: string
   }
 ): Promise<string> {
-  const compose =
-    fields.options && 'compose' in fields.options ? fields.options.compose : emptyComposeDocument()
+  const suppliedCompose =
+    fields.options && 'compose' in fields.options ? fields.options.compose : null
+  // A compose that names a repository stays in the Base with its source, so a
+  // later pull refreshes the file it came from; so does one with project
+  // overlays, which would otherwise merge before it instead of after. Any other
+  // compose is the primary environment's own content and the Base starts empty.
+  const composeStaysInBase =
+    suppliedCompose !== null &&
+    fields.options !== null &&
+    ('composeSource' in fields.options ||
+      (Array.isArray(fields.options.composeOverlays) && fields.options.composeOverlays.length > 0))
+  const stored = splitProjectDefaultServer(
+    fields.options
+      ? {
+          ...fields.options,
+          compose: composeStaysInBase ? suppliedCompose : emptyComposeDocument(),
+        }
+      : { compose: emptyComposeDocument() }
+  )
   const [inserted] = await tx
     .insert(project)
     .values({
+      slug: await allocateProjectSlug(tx, fields.organizationId, fields.name),
       name: fields.name,
       description: fields.description,
       workspaceId: fields.workspaceId,
@@ -595,16 +707,30 @@ async function insertDockerComposeProject(
       metadata: stampCreateProjectMetadata(fields.metadata, {
         type: 'docker-compose',
       }),
-      options: fields.options ?? { compose },
+      options: stored.options,
+      defaultServerId: stored.defaultServerId,
     })
     .returning({ id: project.id })
-  await tx.insert(environment).values({
-    projectId: inserted.id,
-    name: fields.defaultEnvironmentName,
-    description: DEFAULT_PRODUCTION_ENVIRONMENT_DESCRIPTION,
-    ...(fields.serverId ? { serverId: fields.serverId } : {}),
-    options: stampNewEnvironmentDeployOptions({ compose: emptyComposeDocument() }),
-  })
+  await syncProjectWatch(tx, inserted.id)
+  const [primary] = await tx
+    .insert(environment)
+    .values({
+      projectId: inserted.id,
+      name: fields.defaultEnvironmentName,
+      description: DEFAULT_PRODUCTION_ENVIRONMENT_DESCRIPTION,
+      isPrimary: true,
+      ...(fields.serverId ? { serverId: fields.serverId } : {}),
+      options: stampNewEnvironmentDeployOptions({
+        compose:
+          suppliedCompose !== null && !composeStaysInBase
+            ? suppliedCompose
+            : emptyComposeDocument(),
+      }),
+    })
+    .returning({ id: environment.id })
+  // The compose now lives in the environment, so its watch rows (deploy on push)
+  // are derived there, not from the empty Base.
+  await syncEnvironmentWatch(tx, primary!.id)
   return inserted.id
 }
 
@@ -625,10 +751,12 @@ async function insertCatalogProject(
   }
 ): Promise<string> {
   const isEngine = fields.projectType === 'managed' && isManagedEngineCatalogEntry(fields.entry)
+  const stored = splitProjectDefaultServer(catalogProjectOptions(fields, isEngine))
 
   const [inserted] = await tx
     .insert(project)
     .values({
+      slug: await allocateProjectSlug(tx, fields.organizationId, fields.name),
       name: fields.name,
       description: fields.description,
       workspaceId: fields.workspaceId,
@@ -637,7 +765,8 @@ async function insertCatalogProject(
         type: fields.projectType,
         ...(isEngine ? { code: fields.entry.code } : {}),
       }),
-      options: catalogProjectOptions(fields, isEngine),
+      options: stored.options,
+      defaultServerId: stored.defaultServerId,
     })
     .returning({ id: project.id })
 
@@ -649,9 +778,65 @@ async function insertCatalogProject(
     fields.entry,
     fields.dataEncryptionSecrets,
     fields.serverId,
-    fields.defaultEnvironmentName
+    fields.defaultEnvironmentName,
+    fields.options === null
   )
   return inserted.id
+}
+
+/**
+ * Sends a compose edit to its target. Returns the body the project patch
+ * continues with (without `options` when the edit went to an environment), or
+ * the refusal.
+ */
+async function routeComposeEdit(
+  c: Context<AppEnv>,
+  db: Db,
+  organizationId: string,
+  projectId: string,
+  requestBody: Record<string, unknown>
+): Promise<Record<string, unknown> | Response> {
+  const editTarget = await resolveEditTarget(db, projectId, requestBody)
+  if (!editTarget.ok) {
+    return c.json({ error: editTarget.error, message: editTarget.message }, 400)
+  }
+  if (editTarget.kind !== 'environment') return requestBody
+  const refused = await applyEnvironmentPatch(c, db, organizationId, editTarget.environmentId, {
+    options: requestBody.options,
+  })
+  if (refused) return refused
+  const { options: _options, ...rest } = requestBody
+  return rest
+}
+
+/**
+ * The options write and the watch rows it implies commit together, under the
+ * project row lock. Returns a response for a name or slug collision.
+ */
+async function writeProjectPatch(
+  c: Context<AppEnv>,
+  db: Db,
+  id: string,
+  patchFields: ProjectPatchFields
+): Promise<Response | null> {
+  try {
+    await db.transaction(async (tx) => {
+      if (patchFields.options !== undefined) {
+        await tx.execute(sql`SELECT 1 FROM "project" WHERE "id" = ${id}::uuid FOR UPDATE`)
+      }
+      await tx.update(project).set(patchFields).where(eq(project.id, id))
+      if (patchFields.options !== undefined) await syncProjectWatch(tx, id)
+    })
+  } catch (err) {
+    if (isProjectNameUniqueViolation(err)) {
+      return c.json({ error: PROJECT_NAME_IN_USE_ERROR }, 409)
+    }
+    if (isProjectSlugUniqueViolation(err)) {
+      return c.json({ error: PROJECT_SLUG_IN_USE_ERROR }, 409)
+    }
+    throw err
+  }
+  return null
 }
 
 export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
@@ -685,36 +870,20 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     const workspaceId = c.req.query('workspaceId')
 
-    const visibleIds = await listVisible(db, {
+    // Who may see which project is decided here, on the primary connection; the
+    // visible ids (with when each last changed) go into the cached read.
+    const visible = await listVisibleVersions(db, {
       kind: 'project',
       userId: session.userId,
       organizationId,
     })
 
-    if (visibleIds.length === 0) {
+    if (visible.length === 0) {
       return c.json({ projects: [] })
     }
 
-    const conditions = [inArray(project.id, visibleIds)]
-    if (workspaceId) {
-      conditions.push(eq(project.workspaceId, workspaceId))
-    }
-
-    const rows = await db
-      .select({
-        id: project.id,
-        name: project.name,
-        description: project.description,
-        workspaceId: project.workspaceId,
-        repositoryId: project.repositoryId,
-        metadata: project.metadata,
-        options: project.options,
-        createdAt: project.createdAt,
-        updatedAt: project.updatedAt,
-      })
-      .from(project)
-      .where(and(...conditions))
-      .orderBy(project.createdAt)
+    const all = await cachedProjectsList(c, { organizationId, visible })
+    const rows = workspaceId ? all.filter((row) => row.workspaceId === workspaceId) : all
 
     return c.json({ projects: rows })
   })
@@ -731,28 +900,16 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const organizationId = orgResult
 
     const id = c.req.param('id')
-    const entityOrgId = await resolveEntityOrganizationId(db, 'project', id)
-    if (!entityOrgId || entityOrgId !== organizationId) {
+    const entity = await resolveEntityVersion(db, 'project', id)
+    if (entity?.organizationId !== organizationId) {
       return c.json({ error: 'Not found' }, 404)
     }
 
-    const rows = await db
-      .select({
-        id: project.id,
-        name: project.name,
-        description: project.description,
-        workspaceId: project.workspaceId,
-        repositoryId: project.repositoryId,
-        metadata: project.metadata,
-        options: project.options,
-        createdAt: project.createdAt,
-        updatedAt: project.updatedAt,
-      })
-      .from(project)
-      .where(eq(project.id, id))
-      .limit(1)
-
-    const row = rows[0]
+    const row = await cachedProjectDetail(c, {
+      organizationId,
+      id,
+      updatedAt: entity.updatedAt,
+    })
     if (!row) {
       return c.json({ error: 'Not found' }, 404)
     }
@@ -855,8 +1012,13 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     if (scope instanceof Response) return scope
     const { db, organizationId } = scope
 
-    const body = await parseJsonBody(c)
-    if (body instanceof Response) return body
+    const requestBody = await parseJsonBody(c)
+    if (requestBody instanceof Response) return requestBody
+
+    // Compose edits name where they land: the Base, or one environment.
+    const routed = await routeComposeEdit(c, db, organizationId, id, requestBody)
+    if (routed instanceof Response) return routed
+    const body = routed
 
     const moveTarget = await parseProjectMoveTarget(c, db, body, organizationId)
     if (moveTarget instanceof Response) return moveTarget
@@ -877,13 +1039,8 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     if (patchFields instanceof Response) return patchFields
     if (rebind !== undefined) patchFields.repositoryId = rebind
 
-    if (
-      patchFields.name !== undefined &&
-      (isReservedSystemProjectName(patchFields.name) ||
-        (await isProjectDisplayNameTaken(db, organizationId, patchFields.name, id)))
-    ) {
-      return c.json({ error: PROJECT_NAME_IN_USE_ERROR }, 409)
-    }
+    const conflict = await checkProjectPatchConflicts(c, db, organizationId, id, body, patchFields)
+    if (conflict) return conflict
 
     const defaultServerError = await assertDefaultServerIdInOrg(
       c,
@@ -893,15 +1050,14 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     )
     if (defaultServerError) return defaultServerError
     await keepStoredProjectDeployOptions(db, id, patchFields)
-
-    try {
-      await db.update(project).set(patchFields).where(eq(project.id, id))
-    } catch (err) {
-      if (isProjectNameUniqueViolation(err)) {
-        return c.json({ error: PROJECT_NAME_IN_USE_ERROR }, 409)
-      }
-      throw err
+    if (patchFields.options !== undefined) {
+      const stored = splitProjectDefaultServer(patchFields.options)
+      patchFields.options = stored.options
+      patchFields.defaultServerId = stored.defaultServerId
     }
+
+    const writeRefused = await writeProjectPatch(c, db, id, patchFields)
+    if (writeRefused) return writeRefused
 
     if (patchFields.options !== undefined) {
       await adoptProjectRepository(db, id, patchFields.options, projectRepositoryId)
@@ -928,16 +1084,25 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       .where(eq(environment.projectId, id))
     const teardownPlans = await planEnvironmentsTeardown(
       db,
-      environmentIds.map((row) => row.id)
+      environmentIds.map((row) => row.id),
+      // The site trees go with the project; the Linux users and their homes stay.
+      { keepPrincipals: true }
     )
 
-    const result = await deleteProjectCascade(db, id)
+    const result = await deleteProjectCascade(db, id, {
+      c,
+      actorId: userId,
+      organizationId,
+    })
     if (!result.ok) {
-      return c.json({ error: result.error }, 409)
+      return c.json({ error: result.error, ...result.detail }, 409)
     }
 
     await reclaimDeletedEnvironmentHosts(c, db, teardownPlans, userId)
 
-    return c.json({ ok: true as const })
+    return c.json({
+      ok: true as const,
+      ...(result.warning ? { warning: result.warning } : {}),
+    })
   })
 }

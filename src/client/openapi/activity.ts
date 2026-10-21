@@ -20,6 +20,7 @@ export const activitySchemas = {
       'startedAt',
       'step',
       'totalSteps',
+      'stepLabel',
       'durationSecs',
       'errorMessage',
       'crashCount',
@@ -34,8 +35,22 @@ export const activitySchemas = {
       action: { type: 'string', enum: ['deploy', 'start', 'restart', 'stop'] },
       state: { type: 'string', enum: ['deploying', 'failed'] },
       startedAt: { type: 'string', format: 'date-time' },
-      step: { type: 'null', description: 'Reserved: per-step progress is not recorded yet.' },
-      totalSteps: { type: 'null', description: 'Reserved: per-step progress is not recorded yet.' },
+      step: {
+        type: ['integer', 'null'],
+        minimum: 0,
+        description:
+          'Steps finished so far, plus one while a step is running. Null until the server reports a step plan.',
+      },
+      totalSteps: {
+        type: ['integer', 'null'],
+        minimum: 0,
+        description:
+          'Steps that have work to do (planned steps that were already on the server are not counted). Null until the server reports a step plan.',
+      },
+      stepLabel: {
+        type: ['string', 'null'],
+        description: 'Plain-words label of the running step, or null when none is running.',
+      },
       durationSecs: { type: 'integer', minimum: 0 },
       errorMessage: { type: ['string', 'null'], description: 'Set when `state` is `failed`.' },
       crashCount: { type: 'null', description: 'Reserved: restart counts are not recorded yet.' },

@@ -6,7 +6,10 @@
  */
 
 export type ManagedPromoteLagGateError =
-  'managed_replica_not_streaming' | 'managed_replica_lagging' | 'managed_replica_health_stale'
+  | 'managed_replica_not_streaming'
+  | 'managed_replica_lagging'
+  | 'managed_replica_health_stale'
+  | 'managed_replica_not_fully_applied'
 
 /** Default max age of a replica observation for the promote gate. */
 export const DEFAULT_MANAGED_PROMOTE_STALE_MS = 120_000
@@ -32,7 +35,10 @@ export type ManagedPromoteLagGateOptions = {
 export function evaluateManagedPromoteLagGate(
   replication: unknown,
   nowMs: number = Date.now(),
-  options?: ManagedPromoteLagGateOptions
+  options?: ManagedPromoteLagGateOptions & {
+    /** When set, require `fullyApplied === true` (MySQL-family operator promote). */
+    requireFullyApplied?: boolean
+  }
 ): null | ManagedPromoteLagGateError {
   const staleMs = options?.staleMs ?? DEFAULT_MANAGED_PROMOTE_STALE_MS
   const maxLagBytes = options?.maxLagBytes ?? DEFAULT_MANAGED_PROMOTE_MAX_LAG_BYTES
@@ -47,6 +53,9 @@ export function evaluateManagedPromoteLagGate(
   }
   if (r.state !== 'streaming') {
     return 'managed_replica_not_streaming'
+  }
+  if (options?.requireFullyApplied && r.fullyApplied !== true) {
+    return 'managed_replica_not_fully_applied'
   }
   if (typeof r.observedAt !== 'string' || r.observedAt.length === 0) {
     return 'managed_replica_health_stale'

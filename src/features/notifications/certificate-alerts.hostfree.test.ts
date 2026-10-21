@@ -5,7 +5,6 @@ import {
   eventIsUrgent,
   eventSeverity,
   isNotificationEvent,
-  isNotificationEventLive,
   NOTIFICATION_EVENTS,
   NOTIFICATION_RULE_EVENTS,
 } from './events.ts'
@@ -65,22 +64,15 @@ function recordingEmit() {
   return { calls, emit }
 }
 
-test('until the migration widens the CHECK constraints the event is not offered anywhere', () => {
-  assertEquals(isNotificationEventLive('certificate.renewal_failed'), false)
-  assertEquals(isNotificationEvent('certificate.renewal_failed'), false)
-  assertEquals(NOTIFICATION_EVENTS.includes('certificate.renewal_failed' as never), false)
-  assertEquals(NOTIFICATION_RULE_EVENTS.includes('certificate.renewal_failed' as never), false)
+test('the renewal alert is in the catalogue, the rules vocabulary and the pinned list', () => {
+  assertEquals(isNotificationEvent('certificate.renewal_failed'), true)
+  assertEquals(NOTIFICATION_EVENTS.includes('certificate.renewal_failed'), true)
+  assertEquals(NOTIFICATION_RULE_EVENTS.includes('certificate.renewal_failed'), true)
 })
 
-test('on an unmigrated database the emitter does nothing and never touches the database', async () => {
+test('the emitter sends one organization alert with the plain reason', async () => {
   const { calls, emit } = recordingEmit()
   await emitCertificateRenewalFailed(NO_DB, undefined, FAILURE, { emit })
-  assertEquals(calls.length, 0)
-})
-
-test('once the event is live the emitter sends one organization alert with the plain reason', async () => {
-  const { calls, emit } = recordingEmit()
-  await emitCertificateRenewalFailed(NO_DB, undefined, FAILURE, { live: true, emit })
   assertEquals(calls.length, 1)
   const input = calls[0]![2]
   assertEquals(input.event, 'certificate.renewal_failed')

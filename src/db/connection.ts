@@ -3,9 +3,10 @@ import type { Context } from 'hono'
 import postgres from 'postgres'
 import type { DaemonCellRegistry } from '../contracts/cell.ts'
 import type { ServerMetricsStore } from '../daemon/metrics/types.ts'
-import type { MetricsGate } from '../daemon/metrics/ingest-gate.ts'
 import type { ExecutionLogStore } from '../features/execution-logs/types.ts'
 import type { QueryCache } from '../query-cache/contracts.ts'
+import { withCacheableUnsafe } from '../query-cache/cacheable-client.ts'
+import { withPrimaryStatementCount, type DbUsage } from '../query-cache/db-usage.ts'
 import { getDatabaseUrl, resolvePostgresConnection } from './url.ts'
 import * as schema from './schema.ts'
 
@@ -16,8 +17,19 @@ export type HyperdriveBinding = {
   connectionString: string
 }
 
-/** Hyperdrive — `max: 1` connection per client (one client is created **per request**, not per isolate — see below). `prepare: true` enables protocol-level prepared statements, which Hyperdrive requires to cache parameterized `SELECT` queries on the `HYPERDRIVE_CACHED` binding. Hyperdrive manages prepared-statement lifecycle across its connection pool, so session-scoped state is not a concern here. */
-const PG_OPTS_WORKERS = { prepare: true as const, max: 1 }
+/**
+ * Hyperdrive — `max: 1` connection per client (one client is created **per request**, not per isolate — see below).
+ *
+ * `fetch_types: false` skips postgres.js's `pg_catalog.pg_type` lookup, which otherwise runs as
+ * an extra statement on every new connection (that is one per request here). Drizzle already
+ * (de)serializes the array columns (`cidr[]`, `inet[]`) itself, so nothing relies on it.
+ *
+ * `prepare: true` only affects queries sent through the postgres.js tagged template. Drizzle
+ * runs every query through `client.unsafe()`, which defaults to `prepare: false`, so on its own
+ * this flag does **not** make drizzle statements cacheable. The cached binding opts in per
+ * query via {@link withCacheableUnsafe} (see `createWorkersDb`'s `preparedStatements`).
+ */
+const PG_OPTS_WORKERS = { prepare: true as const, fetch_types: false as const, max: 1 }
 
 /**
  * Default connect/statement bounds for the Workers/Hyperdrive path. A stalled
@@ -36,6 +48,16 @@ export type WorkersDbOptions = {
   statementTimeoutMs?: number
   /** Release idle pooled connections (postgres.js `idle_timeout`, seconds). Omit on long-lived request isolates. */
   idleTimeoutSeconds?: number
+  /**
+   * Send every drizzle statement as a named prepared statement (`unsafe(..., { prepare: true })`).
+   * Hyperdrive only caches named (extended-protocol) statements, so this is what makes the
+   * `HYPERDRIVE_CACHED` binding able to cache anything. Set only for the cached client, which
+   * runs the approved read models. The client is wrapped by `withCacheableUnsafe`, which also
+   * refuses any statement that is not a registered read-only SELECT.
+   */
+  preparedStatements?: boolean
+  /** Per-request statement counts (see `query-cache/db-usage.ts`). */
+  usage?: DbUsage
 }
 
 /** `prepare` is intentionally a separate decision for the Deno/self-hosted path (direct Postgres, no Hyperdrive). */
@@ -85,7 +107,13 @@ export function createWorkersDb(hyperdrive: HyperdriveBinding, options: WorkersD
       statement_timeout: options.statementTimeoutMs ?? DEFAULT_WORKERS_STATEMENT_TIMEOUT_MS,
     },
   })
-  return drizzle(client, { schema })
+  let wrapped = client
+  if (options.preparedStatements) {
+    wrapped = withCacheableUnsafe(client, { usage: options.usage })
+  } else if (options.usage) {
+    wrapped = withPrimaryStatementCount(client, options.usage)
+  }
+  return drizzle(wrapped, { schema })
 }
 
 const DATABASE_URL_REQUIRED = 'TURBOPANEL_DATABASE_URL is required'
@@ -228,10 +256,6 @@ export function getDb(c: Context): Db | undefined {
 
 export function getDaemonCellRegistry(c: Context): DaemonCellRegistry | undefined {
   return c.get('daemonCellRegistry')
-}
-
-export function getMetricsGate(c: Context): MetricsGate | undefined {
-  return c.get('metricsGate')
 }
 
 export function getQueryCache(c: Context): QueryCache | undefined {

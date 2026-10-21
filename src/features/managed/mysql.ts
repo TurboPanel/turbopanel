@@ -19,6 +19,7 @@
  */
 
 import { applyResourcesToComposeService } from '../compose/apply-service-options.ts'
+import { joinHostPort } from '../../lib/ip-address.ts'
 import {
   formatInnoDbBufferPoolSize,
   isValidMysqlCnfSnippet,
@@ -85,7 +86,7 @@ const USER_OPERATIONS: ManagedUserOperations = {
     'drop-database',
     'grant-database',
   ],
-  privileges: ['owner', 'read-write', 'read-only'],
+  privileges: ['owner', 'read-write', 'read-only', 'admin'],
   identifier: {
     quote: '`',
     maxLength: MYSQL_ACCOUNT_MAX_LENGTH,
@@ -301,8 +302,8 @@ function buildRuntimeSpec(input: BuildRuntimeSpecInput): ManagedRuntimeSpec {
   const volumes = service.volumes as string[]
   volumes.push(`./tls:${TLS_DIR_CONTAINER}:ro`)
 
-  // Private listener: multi-member only (shared platform rule — never remap
-  // the native 3306 inside the container).
+  // Private listener: never remap the native 3306 inside the container.
+  // Published for replicas and for a single member with remote consumer ProxySQL.
   if (input.member?.privateListener) {
     const { address, port } = input.member.privateListener
     service.ports = [`${address}:${port}:3306`]
@@ -337,10 +338,9 @@ function buildRuntimeSpec(input: BuildRuntimeSpecInput): ManagedRuntimeSpec {
     env: { ...env },
     healthcheck,
     exposure: {
-      enabled: settings.exposure.enabled,
+      enabled: true,
       protocol: 'tcp',
       containerPort: DEFAULT_PORT,
-      ...(settings.exposure.scope !== undefined ? { scope: settings.exposure.scope } : {}),
     },
   }
 
@@ -359,7 +359,7 @@ function buildRuntimeSpec(input: BuildRuntimeSpecInput): ManagedRuntimeSpec {
 function buildConnectionInfo(input: BuildConnectionInfoInput): ManagedConnectionInfo {
   const dsn =
     `mysql://${encodeURIComponent(input.username)}:***@` +
-    `${input.host}:${input.port}/${encodeURIComponent(input.database)}` +
+    `${joinHostPort(input.host, input.port)}/${encodeURIComponent(input.database)}` +
     `?ssl-mode=${mysqlFamilySslMode(input.sslMode)}`
   return {
     dsn,
@@ -374,7 +374,7 @@ function buildBindingDsn(input: BuildConnectionInfoInput & { password: string })
   return (
     `mysql://${encodeURIComponent(input.username)}:` +
     `${encodeURIComponent(input.password)}@` +
-    `${input.host}:${input.port}/${encodeURIComponent(input.database)}` +
+    `${joinHostPort(input.host, input.port)}/${encodeURIComponent(input.database)}` +
     `?ssl-mode=${mysqlFamilySslMode(input.sslMode)}`
   )
 }
@@ -387,10 +387,7 @@ export const mysqlEngineSpec: ManagedEngineSpec = {
   principalProvider: 'mysql',
   rootUsername: ROOT_USERNAME,
   exposeProtocol: 'tcp',
-  defaultSettings: {
-    ...DEFAULT_MANAGED_SETTINGS,
-    exposure: { enabled: true },
-  },
+  defaultSettings: { ...DEFAULT_MANAGED_SETTINGS },
   parseSettings: parseMysqlSettings,
   buildRuntimeSpec,
   buildConnectionInfo,

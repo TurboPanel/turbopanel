@@ -13,7 +13,7 @@ contract — keep them current when adding or changing routes.
 | `POST`   | `/api/client/v1/invitations`                                    | Create a pending invitation (`canInviteToTeam`); optional `grants` require `organization:own`; emails the accept link (`/accept-invitation?token=<secret>`; the secret is stored only as `token_hash` and never returned); **409** `invitation_pending`, **503** `email_unavailable` |
 | `GET`    | `/api/client/v1/invitations`                                    | List pending, unexpired invitations across the org's teams (`organization:manage`); `{ invitations: [{ id, email, teamId, teamName, expiresAt, createdAt, invitedBy }] }`                                                                                                            |
 | `DELETE` | `/api/client/v1/invitations/{id}`                               | Revoke a pending invitation (`canInviteToTeam`); atomic `pending` → `revoked`; **404** if missing or not pending                                                                                                                                                                     |
-| `POST`   | `/api/client/v1/invitations/{id}/accept`                        | Accept a pending invitation; creates a `teammate` row, materializes `invitation.grants` into `grant` rows, updates session `organizationId`                                                                                                                                          |
+| `POST`   | `/api/client/v1/invitations/{id}/accept`                        | Accept a pending invitation; atomically claims the row, adds team membership, materializes `invitation.grants` into `permission` rows when present (null/omitted grants confer none), updates session `organizationId`                                                               |
 | `GET`    | `/api/client/v1/permissions`                                    | Permission catalog — static, no DB query (any authenticated user)                                                                                                                                                                                                                    |
 | `GET`    | `/api/client/v1/access?resourceId=<uuid>`                       | List access grants for a resource; returns `{ access: AccessRecord[] }` with `subjectKind`, `subjectId`, `resourceId`, `effect`, and `permissionKey`                                                                                                                                 |
 | `GET`    | `/api/client/v1/access/check?resourceId=<uuid>&permissionKey=…` | Check a single permission for the signed-in user; returns `{ allowed: boolean }`                                                                                                                                                                                                     |
@@ -43,7 +43,9 @@ changes.
   (`crashing` / `crashed` are **not served**: no restart count is recorded; an
   unknown filter is **400**), `limit` 1–100 (default 50, larger clamps),
   `offset`. Returns `{ ok, items, total, hasMore }`; `step` / `totalSteps` /
-  `crashCount` are always `null` until those are recorded. Gate as the members
+  `stepLabel` come from the daemon's step plan on `command.progress` (`null`
+  until it reports one); `crashCount` is always `null` until restart counts
+  are recorded. Gate as the members
   list: unreachable org or bad uuid **404**, no owner/manager rights **403**;
   rows are limited to `listVisible(server)` and to servers of the **path** org
   (never the active-org header). Reads `command` only (never `dispatch`); the
@@ -89,6 +91,46 @@ changes.
   defaults does **not** rewrite sshd or enqueue NTP/timezone commands. Multi-DC
   membership inherits from the first pin after sort by datacenter id (same as
   timezone).
+- **Server services snapshot (client surface):** `GET /servers/:id/services`
+  — read-gated, org-scoped (`404` for another organization's server). Bounded
+  queries per server (never per-item fan-out). One response of what is
+  attached: `removal` (`canRemove`, `online`, `canForget`, plus `reasons` from
+  `planServerForget` and the co-located-host rule, so the tab and
+  DELETE cannot disagree; `canForget` is the same Host is gone path as
+  delete-preview; an app-environment or database reason names up to three of
+  them in its `message` — `"Project / Environment"` — and carries the same
+  `items` the delete blockers do), `apps` (container → service → environment → project,
+  domains from hosting/hostname; system-workspace rows omitted like the
+  blocker scan), `databases` (replica + managed, same exclusion),
+  `databaseUsers` (one entry per app on this host with the database names it
+  is bound to), `backups` of databases that have a member on this server,
+  `networks` / `ipCount`, and `runtimes` only from daemon facts already stored
+  on the server (`server.metadata.runtimes`; otherwise empty). Apps,
+  containers per app, domains per app, database users, networks, and backups
+  are capped at 50 plus `more` (`{ items, more }`).
+  `src/client/servers/server-services.ts`.
+- **Forget an offline server (client surface):** `GET /servers/:id/delete-preview`
+  (manage-gated, same as delete) lists leftover containers, networks, addresses,
+  app environments that will be removed, database members that will be
+  forgotten, and databases that still block forget (`online` is the live
+  snapshot or stored connected flag; `canForget` only when offline, not
+  co-located, and no database still has its only copy or its primary here; each
+  list capped at 50 plus `more`; system-workspace rows omitted like the blocker
+  scan). Every refusal names its blockers: an `environment` blocker carries
+  `items: { id, name, projectId, projectName, hasDatabase }[]` for **every**
+  placed environment (including the ones carrying a database, which the Services
+  tab app list omits) and a `managed` / `replica` blocker carries
+  `items: { id, name }[]` per database, in `blockers[]` on both the preview and
+  the 409. `DELETE /servers/:id?forgetResources=true` (or JSON
+  `{ forgetResources: true }` — never implied) drops leftover app environments
+  (without the running-container refusal), forgettable members, leftover
+  deployments / slots / copies, then container / network / address rows in the
+  same transaction as the server row when the host is gone; a connected server
+  answers **409** `server_online` (re-checked under row lock); a blocked
+  database answers **409** `server_has_blockers` with `blockedDatabases`;
+  co-located stays **403**. Without the flag, **409** `server_has_blockers` is
+  unchanged. Audit `forgotten` counts include environments, members,
+  deployments, slots, and copies. `src/client/servers/AGENTS.md`.
 - **Server labels (client surface):** `GET`/`PUT /servers/:id/labels` —
   read-gated GET and manage-gated PUT; PUT is replace-all
   (`{ labels: { key: value } }`, no per-key DELETE). `GET /servers/:id` includes
@@ -189,11 +231,88 @@ changes.
   effective mode is resolved per read (`resolveManagedSslMode`) rather than
   stored. Canonical detail: `src/features/managed/AGENTS.md` → **Client TLS (SSL
   mode)**.
-- **Org default environment name:**
-  `organization.options.defaultEnvironmentName` (unset = `production`).
+- **Primary environment (`environment.is_primary`, `is_pinned`):** a project has
+  exactly one primary environment, a column on the environment row with a
+  partial unique index (`uniq_environment_project_primary`). The first
+  environment created is primary; `POST /environments/:id/primary` moves it
+  (`features/projects/primary-environment.ts`, one transaction under the project
+  row lock); the primary cannot be deleted while the project has others (409
+  `primary_environment_cannot_be_deleted`). Nothing guesses the primary from a
+  name: `ensurePrimaryEnvironment` (configure) reads the marker. Catalog
+  `displayName` checks only choose which scaffolded environment is created
+  primary. `pinned` (PATCH) lists an environment right after the primary one;
+  `GET /environments` returns primary, pinned, then oldest first per project.
+- **New project content goes to the primary environment:** `POST /projects` and
+  configure leave the Base (project `options.compose`) empty and put the
+  compose (a catalog entry's shared compose merged with each environment's own,
+  `catalog-compose.ts`) into the environment's own changes, so a deploy sees the
+  same merged compose as before. A compose that names a repository
+  (`composeSource`) or has project overlays stays in the Base for now.
+- **A new environment is a copy of the primary one:** `POST /environments`
+  without `options` copies the primary's `compose` and `composeOverlays`
+  (`start: 'copy'`, the default; `features/projects/primary-environment-copy.ts`)
+  minus what must be unique: `x-turbopanel.hosting`, published host ports (moved
+  to `expose`), `container_name`, and the git `branch` (with `deployOnPush: false`
+  so a push never deploys the copy). Variables, secrets and the server pin are not
+  copied; what the Base still gives the copy (hostnames, published ports, container name,
+  auto-deploying source) is overridden in the copy's own layer with `!reset` / `!override`;
+  the response lists the omissions in `notCopied`. `start: 'empty'` stands alone. The name follows
+  the environment name rule on every path.
+- **Edit target:** `PATCH /projects/:id` with `options.compose` or
+  `options.composeOverlays` needs `target` (`base` or an environment id); with
+  one environment the default is that environment, with several 400
+  `edit_target_required` (`projects/edit-target.ts`).
+- **Org primary environment name:**
+  `organization.options.defaultEnvironmentName` (unset = `production`; the
+  stored key and route keep the old name).
   `GET`/`PUT /organizations/:id/default-environment` (manage-gated) names the
-  environment scaffolded by project create / configure. Matching for existing
-  literal "production" catalog environments is unchanged.
+  primary environment scaffolded by project create / configure. Matching for existing
+  literal "production" catalog environments is unchanged. The name is also the
+  scope folder on every server, so the PUT only takes a valid environment name
+  (`isValidEnvironmentName`) and a saved value that is not one is ignored.
+- **Folder names (`folder` table):** one row per service or volume directory per
+  server (`features/folders/records.ts`). While a row exists (any state but
+  `missing`) the environment's name (`environments/rename-lock.ts`) and server
+  pin, the asset's `slug`, the project slug and the organization's
+  `directoryNames` / `directoryNamesLocked` setting
+  (`GET`/`PUT /organizations/:id/directory-defaults`) cannot change.
+  - **Who writes rows** (`features/folders/allocate.ts`): `persistDeployFanOut`
+    takes `lockEnvironmentRow`, then `planDeployFolders` names each host-run
+    service (`slug`, the domain for web hosting) and each owned path volume that
+    has none, inserts the rows as `planned` per server and site owner, and sets
+    `directoryNamesLocked`. The ids go on the deploy command's
+    `metadata.folderIds`; the consumer marks exactly those `present` when the
+    deploy succeeds. A volume with a site owner and a `path` copy is planned when
+    the copy is added (`planVolumeFolder`). The deploy, lifecycle and stop paths
+    queue their command under the same environment row lock as a rename.
+  - **Names and scope:** `POST /storage` takes `slug`, `directoryName`, `common`
+    (a volume outside an environment is always shared). Services have no create
+    body (rows come from compose), so `PATCH /services/:id` takes the same fields
+    until the first folder exists (`service_slug_locked`, `scope_locked`).
+    Organization setting, typed names (never suffixed) and default names
+    (`-2` to `-99`) follow `features/folders/names.ts`.
+  - **Delete and stop:** deleting a service or volume (and a volume copy) flips
+    its rows to `removing` first and keeps them, with their locks, until the host
+    confirms (`confirmFolderRemoved`, from the `server.folders.remove` result or
+    a stop result's `folders[]`; see `features/folders/removal.ts` and
+    `reports.ts`). The delete sends `server.folders.remove` once it commits; a
+    server that is offline keeps the rows `removing` ("being removed, waiting
+    for server X to come back" in the blocking list) and a sweep asks again once
+    it is connected. An explicit environment stop sends no `siteReleases`, so
+    every folder stays; delete teardown and a server leaving the environment
+    still do. A service that leaves the compose file keeps its folder (the deploy
+    result's `keptFolders` marks it an `orphan`); only an explicit delete removes
+    files. Wire: `siteReleases[].folder` and
+    `storageMaterial[].folder` ride beside the old fields, which stay
+    authoritative until the daemon resolves folders itself.
+- **Common assets (`share` table):** a common service or volume belongs to the
+  site owner and lives in the owner's `common` scope; any environment of any
+  project in the organization uses it through `/environments/:id/shares`
+  (`features/folders/shares.ts`). Deleting the environment removes its rows;
+  deleting the asset, its environment or its project is refused with
+  `common_asset_in_use` while another environment uses it; common folders never
+  block a rename. A deploy carries the common volumes its environment uses
+  (with only its own mounts).
 - **Project default server:** `project.options.defaultServerId` (optional UUID).
   Environments without their own `server_id` inherit it at deploy / lifecycle /
   stop (`resolveEffectivePlacementServerId`). Overview Base shows an inline
@@ -203,9 +322,12 @@ changes.
   derived, read-only answer for the editor: the effective config (project Base
   merged with the environment compose by `mergeComposeLayers`, the same merge a
   deploy uses), the changes from the Base per service/field with their sources
-  (`base` / `project` / `environment`), and `followsBase`. `followsBase` is
-  **derived, never stored**: the environment compose (or an extra environment
-  layer) setting `services: !override` / `!reset` means it stands alone. It runs
+  (`base` / `project` / `environment`), `inheritedFromBase` on every service,
+  field, Linux user and variable row, `isPrimary` and `standsAlone`. There is no
+  "follows the Base" flag: every environment inherits from the Base.
+  `standsAlone` is **derived, never stored**: the environment compose (or an
+  extra environment layer) setting `services: !override` / `!reset` means it
+  drops the Base's services. It runs
   no deploy preparation (nothing is allocated). Secret variables carry no value
   (the stored ciphertext is not even selected) and credential-looking compose
   values are masked; the raw `x-turbopanel` block is never returned. A client
@@ -218,7 +340,7 @@ changes.
   may carry only the three tuning keys as defaults. Absent strategy = `inplace`
   (existing environments); every user-facing create path stamps `sequential` on a new
   environment (system-owned environments are not stamped) (`stampNewEnvironmentDeployOptions`). Writes are validated (`400
-  deploy_options_invalid` on environments; the reason string on projects) and a
+deploy_options_invalid` on environments; the reason string on projects) and a
   PATCH that omits these keys keeps the stored ones (`settleDeployOptions`) because
   `options` is replaced wholesale and the compose editor sends only `compose`.
   `null` clears a key. The deploy request accepts `strategy` / `migration`
@@ -482,7 +604,7 @@ sourceServerId? }`
   rival up by 10, capped at 1000) and writes only the numbers that change, in
   one transaction, then runs the same routing fan-out a priority PATCH does.
   An untrusted datacenter is **409** `datacenter_not_trusted`. `GET
-  /datacenters` adds `serverTraffic: { wins, tied }` per row and a top-level
+/datacenters` adds `serverTraffic: { wins, tied }` per row and a top-level
   `warnings` list (`equal_priority`, one per shared number among trusted
   datacenters); the raw number stays editable through PATCH under Advanced.
 
@@ -497,7 +619,7 @@ sourceServerId? }`
   by the sweep tick and cap, there is no hold-down timer). `splitTrustedByLink`
   (`private-endpoint.ts`) splits the trusted shared datacenters into the ones
   that are up on both servers and the ones that are not, both in `(priority,
-  id)` order. `resolveOneFromCaches` walks the up list first; a down network is
+id)` order. `resolveOneFromCaches` walks the up list first; a down network is
   only a last resort (after fabric and public for `read-replication` /
   `client-backend`, straight away for `failover-replication`, which never
   leaves the datacenter), and the result then carries `linkDown: true`. When
@@ -545,6 +667,12 @@ sourceServerId? }`
   Nothing is emitted under `x-turbopanel`: the importer speaks plain Compose,
   per rule 1 of the frozen contract in `../lib/compose/AGENTS.md`. Parser and
   option registry: `../lib/docker-run/AGENTS.md`.
+- **Webhook origins (client surface):** `GET /forges/webhook-origins`
+  (`organization:manage`, like the rest of `/forges`) answers
+  `{ origins, platformManaged }` — the set the manifest flow accepts as
+  `webhookOrigin`. Hosted, the platform's `TURBOPANEL_BASE_URL` leads it;
+  self-hosted, it is the operator list. Detail: `../webhook/AGENTS.md` →
+  Reachability.
 - **Forge addresses and the GitHub install callback (client surface):** a
   forge's `baseUrl` / `apiUrl` / `webhookOrigin` is validated on every write
   (`POST`/`PATCH /forges`, the manifest wizard) by `../lib/git/forge-url.ts` —
@@ -577,3 +705,15 @@ sourceServerId? }`
   authorization (OAuth) during installation_ and set the _Callback URL_ to
   `<origin>/api/client/v1/repositories/github/callback` — or every install ends
   in `install_authorization_required`.
+- **Repository inspect refs (client surface):** `GET /repositories/:id/inspect?ref=`
+  answers a ref the repository does not have with **404**
+  `{ ok: false, error: 'ref_not_found', code: 'ref_not_found', message, ref }`
+  — not the 502 an upstream failure gets. The signal is GitHub's **422** on the
+  commit lookup, GitLab's 404 "Commit Not Found" (its "Project Not Found" is a
+  different 404), or git's "couldn't find remote ref" from a connected server.
+  A named ref git would refuse (`isValidGitRefName`, the `check-ref-format`
+  rules; a blank `?ref=` included) is **400** `invalid_ref`, same body, before
+  any provider or server is contacted; leaving `ref` out still means the default
+  branch. Daemon-lane failures return a fixed sentence in `message`; git's
+  stderr goes to the log (`repository-inspect`), never the response. The UI
+  debounces the branch field, so a half-typed name is not looked up at all.

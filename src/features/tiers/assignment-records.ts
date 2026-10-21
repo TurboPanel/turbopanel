@@ -27,7 +27,7 @@ import {
   listSeatsForOrganization,
   type OrganizationBillingState,
 } from '../billing/billing-records.ts'
-import { license, server } from '../../db/schema.ts'
+import { license, server, tier } from '../../db/schema.ts'
 import { parseServerHostResources, type ServerHostResources } from '../servers/server-metadata.ts'
 import {
   type AssignableServer,
@@ -36,7 +36,7 @@ import {
   type TierQuantity,
 } from './assignment.ts'
 import { resolveRequiredTier, totalPhysicalCores } from './tier-placement.ts'
-import { getLatestTopologyGenerations } from '../servers/server-topology-records.ts'
+import { topologyRecordFromColumn } from '../servers/server-topology-records.ts'
 import { parseTopologySnapshot, recommendedRankFromMetadata } from './topology-recommendation.ts'
 import { selfHostedGrantRank } from './self-hosted-grant.ts'
 
@@ -102,24 +102,28 @@ export async function loadAssignableServers(
       serverId: server.id,
       createdAt: server.createdAt,
       metadata: server.metadata,
+      hardware: server.hardware,
       assignedTierId: server.assignedTierId,
+      preferredTierId: server.preferredTierId,
+      preferredRank: tier.rank,
+      preferredLabel: tier.label,
     })
     .from(server)
     .innerJoin(license, and(eq(license.serverId, server.id), isNull(license.revokedAt)))
+    .leftJoin(tier, eq(server.preferredTierId, tier.id))
     .where(eq(server.organizationId, organizationId))
-  const topology = await getLatestTopologyGenerations(
-    db,
-    rows.map((row) => row.serverId)
-  )
   return rows.map((row) => ({
     serverId: row.serverId,
     boundAt: row.createdAt,
     requiredRank: requiredRankFromMetadata(row.metadata),
     recommendedRank: recommendedRankFromMetadata(
       row.metadata,
-      parseTopologySnapshot(topology.get(row.serverId)?.snapshot)
+      parseTopologySnapshot(topologyRecordFromColumn(row.hardware)?.snapshot)
     ),
     assignedTierId: row.assignedTierId,
+    preferredTierId: row.preferredTierId,
+    preferredRank: row.preferredRank,
+    preferredLabel: row.preferredLabel,
   }))
 }
 
@@ -141,6 +145,17 @@ export type RecomputeAssignmentsOpts = Readonly<{
  * Recompute the organization's assignment from its committed seats and
  * its licensed servers, and write the rows that moved.
  */
+/** Read-only assignment for UI spare counts and pick notices — does not write. */
+export async function peekOrganizationAssignment(
+  db: Db,
+  organizationId: string,
+  opts: RecomputeAssignmentsOpts = {}
+): Promise<TierAssignment> {
+  const state = opts.state ?? (await listSeatsForOrganization(db, organizationId))
+  const servers = await loadAssignableServers(db, organizationId)
+  return computeAssignment(tierQuantitiesFromState(state), servers)
+}
+
 export async function recomputeOrganizationAssignments(
   db: Db,
   organizationId: string,

@@ -1,9 +1,9 @@
 /**
  * A fake `Db` surface for tests that only need to see what a `topology-report`
- * writes. `recordTopologyGeneration` runs inside a transaction, takes a lock
- * on the server row, looks for an existing row and inserts; this fake answers
- * those statements (nothing exists yet, the insert succeeds) and captures the
- * values the insert carried.
+ * writes. `recordTopologyGeneration` runs inside a transaction, locks the
+ * server row (a `select ... for update`, nothing stored yet) and writes the
+ * `server.hardware` column; this fake answers the select and captures the
+ * value the update carried.
  */
 import { PgDialect } from 'drizzle-orm/pg-core'
 import type { SQL } from 'drizzle-orm'
@@ -25,21 +25,36 @@ export function withTopologyReportRecording(base: Record<string, unknown>): {
 } {
   const inserted: RecordedTopologyInsert[] = []
   const tx = {
-    execute: (query: SQL): Promise<unknown[]> => {
-      const { sql: text, params } = dialect.sqlToQuery(query)
-      if (text.includes('INSERT INTO generation')) {
-        const [serverId, generation, bootGeneration, snapshot, appliedAt] = params
-        inserted.push({
-          serverId: String(serverId),
-          generation: Number(generation),
-          bootGeneration: Number(bootGeneration),
-          snapshot: JSON.parse(String(snapshot)),
-          appliedAt: String(appliedAt),
-        })
-        return Promise.resolve([{ id: 'row-1' }])
-      }
-      return Promise.resolve([])
-    },
+    execute: (): Promise<unknown[]> => Promise.resolve([]),
+    select: () => ({
+      from: () => ({
+        where: () => ({
+          for: () => ({ limit: () => Promise.resolve([{ hardware: null }]) }),
+        }),
+      }),
+    }),
+    update: () => ({
+      set: (values: { hardware?: SQL }) => ({
+        where: (condition: SQL) => {
+          if (values.hardware) {
+            const written = JSON.parse(String(dialect.sqlToQuery(values.hardware).params[0])) as {
+              generation: number
+              bootGeneration: number
+              snapshot: unknown
+              appliedAt: string
+            }
+            inserted.push({
+              serverId: String(dialect.sqlToQuery(condition).params[0]),
+              generation: written.generation,
+              bootGeneration: written.bootGeneration,
+              snapshot: written.snapshot,
+              appliedAt: written.appliedAt,
+            })
+          }
+          return Promise.resolve([])
+        },
+      }),
+    }),
   }
   const db = {
     ...base,

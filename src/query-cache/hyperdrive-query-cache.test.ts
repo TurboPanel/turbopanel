@@ -1,6 +1,8 @@
 import { assertEquals, assertRejects } from '@std/assert'
 import type { Db } from '../db/connection.ts'
+import { createDbUsage } from './db-usage.ts'
 import { createHyperdriveQueryCache } from './hyperdrive-query-cache.ts'
+import { UncacheableStatementError } from './statement-guard.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -42,7 +44,7 @@ test('hyperdrive cache rejects unapproved read models before load', async () => 
         },
       } as unknown as Parameters<typeof cache.getReadModel>[0]),
     Error,
-    'Unapproved read model for cached database',
+    'Unapproved read model for cached database'
   )
   assertEquals(loaded, false)
 })
@@ -60,4 +62,93 @@ test('hyperdrive cache ignores ttlSeconds and still loads server-detail', async 
     },
   })
   assertEquals(value, { id: 'srv-1' })
+})
+
+test('hyperdrive cache re-runs a refused statement once on the primary connection', async () => {
+  const cachedDb = { kind: 'cached' } as unknown as Db
+  const primaryDb = { kind: 'primary' } as unknown as Db
+  const usage = createDbUsage()
+  const cache = createHyperdriveQueryCache(cachedDb, { usage })
+  const targets: Db[] = []
+  const value = await cache.getReadModel({
+    readModel: 'servers-list',
+    key: 'k',
+    primaryDb,
+    load: async (db) => {
+      targets.push(db)
+      if (db === cachedDb) throw new UncacheableStatementError('uses now()')
+      return ['row']
+    },
+  })
+  assertEquals(value, ['row'])
+  assertEquals(targets, [cachedDb, primaryDb])
+  assertEquals(usage.fallback, 1)
+  assertEquals(usage.readModels, [{ id: 'servers-list', outcome: 'fallback' }])
+  assertEquals(usage.rerunning, 0)
+})
+
+test('hyperdrive cache falls back when the cached connection closed', async () => {
+  const cachedDb = { kind: 'cached' } as unknown as Db
+  const primaryDb = { kind: 'primary' } as unknown as Db
+  const cache = createHyperdriveQueryCache(cachedDb)
+  const value = await cache.getReadModel({
+    readModel: 'server-detail',
+    key: 'k',
+    primaryDb,
+    load: async (db) => {
+      if (db === cachedDb) throw Object.assign(new Error('closed'), { code: 'CONNECTION_CLOSED' })
+      return 'row'
+    },
+  })
+  assertEquals(value, 'row')
+})
+
+test('hyperdrive cache does not hide other errors or a closed primary connection', async () => {
+  const cachedDb = { kind: 'cached' } as unknown as Db
+  const primaryDb = { kind: 'primary' } as unknown as Db
+  const cache = createHyperdriveQueryCache(cachedDb)
+  await assertRejects(
+    () =>
+      cache.getReadModel({
+        readModel: 'servers-list',
+        key: 'k',
+        primaryDb,
+        load: async () => {
+          throw new Error('syntax error')
+        },
+      }),
+    Error,
+    'syntax error'
+  )
+  const closed = Object.assign(new Error('closed'), { code: 'CONNECTION_CLOSED' })
+  await assertRejects(
+    () =>
+      cache.getReadModel({
+        readModel: 'servers-list',
+        key: 'k',
+        primaryDb,
+        load: async () => {
+          throw closed
+        },
+      }),
+    Error,
+    'closed'
+  )
+})
+
+test('strict mode makes a refused statement fail loudly', async () => {
+  const cachedDb = { kind: 'cached' } as unknown as Db
+  const cache = createHyperdriveQueryCache(cachedDb, { strict: true })
+  await assertRejects(
+    () =>
+      cache.getReadModel({
+        readModel: 'servers-list',
+        key: 'k',
+        primaryDb: cachedDb,
+        load: async () => {
+          throw new UncacheableStatementError('not a SELECT')
+        },
+      }),
+    UncacheableStatementError
+  )
 })

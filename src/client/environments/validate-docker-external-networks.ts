@@ -30,7 +30,7 @@ export async function resolveRegisteredExternalDockerNetworks(
   db: Db,
   organizationId: string,
   serverId: string,
-  requiredNames: readonly string[],
+  requiredNames: readonly string[]
 ): Promise<ResolvedExternalDockerNetworks> {
   if (requiredNames.length === 0) return { missing: null, addressing: [] }
 
@@ -46,8 +46,8 @@ export async function resolveRegisteredExternalDockerNetworks(
       and(
         eq(network.organizationId, organizationId),
         eq(network.kind, 'docker'),
-        or(isNull(network.serverId), eq(network.serverId, serverId)),
-      ),
+        or(isNull(network.serverId), eq(network.serverId, serverId))
+      )
     )
 
   const required = new Set(requiredNames)
@@ -60,7 +60,7 @@ export async function resolveRegisteredExternalDockerNetworks(
     if (!required.has(name) || addressingByName.has(name)) continue
     const addressing = readNetworkDockerAddressing(
       typeof row.cidr === 'string' ? row.cidr : null,
-      row.options,
+      row.options
     )
     if (Object.keys(addressing).length === 0) continue
     addressingByName.set(name, { name, ...addressing })
@@ -68,12 +68,8 @@ export async function resolveRegisteredExternalDockerNetworks(
 
   const missing = requiredNames.filter((name) => !registered.has(name))
   return {
-    missing: missing.length > 0
-      ? missing.toSorted((a, b) => a.localeCompare(b))
-      : null,
-    addressing: [...addressingByName.values()].toSorted((a, b) =>
-      a.name.localeCompare(b.name)
-    ),
+    missing: missing.length > 0 ? missing.toSorted((a, b) => a.localeCompare(b)) : null,
+    addressing: [...addressingByName.values()].toSorted((a, b) => a.name.localeCompare(b.name)),
   }
 }
 
@@ -82,13 +78,13 @@ export async function validateRegisteredExternalDockerNetworks(
   db: Db,
   organizationId: string,
   serverId: string,
-  requiredNames: readonly string[],
+  requiredNames: readonly string[]
 ): Promise<string[] | null> {
   const resolved = await resolveRegisteredExternalDockerNetworks(
     db,
     organizationId,
     serverId,
-    requiredNames,
+    requiredNames
   )
   return resolved.missing
 }

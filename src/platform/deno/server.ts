@@ -26,9 +26,12 @@ import { sweepStalePresence } from '../../daemon/cell/control-plane-monitor.ts'
 import { createDenoMaintenanceScheduler } from '../../daemon/cell/deno-maintenance.ts'
 import { resolveAlertSender } from '../../features/alerts/resolve-alert-sender.ts'
 import { ALERT_WEBHOOK_POLICY } from '../../features/alerts/alert-webhook-settings.ts'
+import { pruneAuditHistory } from '../../features/audit/prune.ts'
 import { pruneCommandHistory } from '../../features/commands/prune.ts'
+import { getAuditRetentionMonths } from '../../features/settings/audit-retention-settings.ts'
 import { retryDueDeliveries } from '../../features/notifications/emit.ts'
 import { sendDueDigests } from '../../features/notifications/digest.ts'
+import { alertNewOrphanFolders } from '../../features/notifications/folder-alerts.ts'
 import { DAEMON_CELL_MAINTAIN_MS } from '../../contracts/cell-protocol.ts'
 import {
   COMMAND_DISPATCH_SWEEP_LIMIT,
@@ -48,12 +51,14 @@ import {
 } from '../../features/upgrades/prune.ts'
 import { runUpgradeMaintenance } from '../../features/upgrades/maintenance.ts'
 import { registerWebhookRoutes } from '../../webhook/routes.ts'
-import { runManagedExposurePendingSweep } from '../../features/managed/exposure-change.ts'
+import { runManagedExternalAccessPendingSweep } from '../../features/managed/external-access.ts'
 import { runManagedIngressOrphanSweep } from '../../features/managed/ingress-desired.ts'
 import { runDatacenterRepinFanoutSweep } from '../../client/datacenters/repin-fanout.ts'
 import { runSystemReconcileSweep } from '../../features/system/reconcile.ts'
 import { runHostLossTick } from '../../daemon/cell/host-loss-tick.ts'
 import { runBackupsReconcileSweep } from '../../features/backups/reconcile.ts'
+import { runFolderReconcileSweep } from '../../daemon/cell/folder-reconcile-sweep.ts'
+import { runFolderRemovalSweep } from '../../features/folders/removal.ts'
 import { runFirewallPreviewSweep } from '../../features/firewall/preview.ts'
 import { firewallApplyGateFromEnv } from '../../features/firewall/enforcement.ts'
 import {
@@ -338,8 +343,8 @@ async function runCleanupPhase(label: string, fn: () => Promise<unknown>): Promi
   }
 }
 
-async function sweepStaleCommandsPhase(db: Db): Promise<void> {
-  const swept = await sweepStaleCommands(db)
+async function sweepStaleCommandsPhase(db: Db, commandQueue?: CommandQueue): Promise<void> {
+  const swept = await sweepStaleCommands(db, { commandQueue })
   // Recoveries first: a row that is still in flight keeps its managed row at
   // `applying`, and an expired one releases it itself.
   const expired = (
@@ -668,14 +673,14 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     }).catch((err) => {
       logWarn('daemon-cell', `managed ingress orphan sweep error: ${String(err)}`)
     })
-    // A database exposure change that never reached its server (a payload that
+    // An external-access change that never reached its server (a payload that
     // could not be built, or a server offline past the command's validity) is
     // pushed again here until the server confirms it.
-    void runManagedExposurePendingSweep(db, commandQueue, {
+    void runManagedExternalAccessPendingSweep(db, commandQueue, {
       secretsConfig,
       dataEncryptionSecrets,
     }).catch((err) => {
-      logWarn('daemon-cell', `managed exposure pending sweep error: ${String(err)}`)
+      logWarn('daemon-cell', `managed external access pending sweep error: ${String(err)}`)
     })
     // Automatic membership repins stamp `ip.repin_pending_fanout_at`
     // from the presence path (which must not enqueue); this drains them with
@@ -690,6 +695,15 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     // Backup policy sets once after each reconnect (hello must not enqueue).
     void runBackupsReconcileSweep(db, commandQueue).catch((err) => {
       logWarn('daemon-cell', `backups reconcile sweep error: ${String(err)}`)
+    })
+    // Folders of deleted assets whose host has not confirmed them gone: asked
+    // again once the server is connected, and every few minutes while stuck.
+    void runFolderRemovalSweep(db, commandQueue).catch((err) => {
+      logWarn('daemon-cell', `folder removal sweep error: ${String(err)}`)
+    })
+    // A fresh folder listing from servers that have folders, every few hours.
+    void runFolderReconcileSweep(db, commandQueue).catch((err) => {
+      logWarn('daemon-cell', `folder reconcile sweep error: ${String(err)}`)
     })
     // Firewall previews once after each reconnect. Applies only for a server
     // both keys of features/firewall/enforcement.ts allow, and never re-applies
@@ -739,12 +753,25 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
       // Recover commands stranded non-terminal by a mid-run restart (the
       // consumer's timeout lives only in memory), then unwedge managed rows
       // stuck at 'applying' with no live command left.
-      await runCleanupPhase('stale command sweep', () => sweepStaleCommandsPhase(db))
+      await runCleanupPhase('stale command sweep', () =>
+        sweepStaleCommandsPhase(db, isNoopCommandQueue(commandQueue) ? undefined : commandQueue)
+      )
       // Workers parity (offline-sweep cron): drop webhook delivery ids past the
       // replay-protection retention window.
       await runCleanupPhase('webhook delivery sweep', () =>
         sweepExpiredWebhookDeliveries(db, {
           limit: WEBHOOK_DELIVERY_SWEEP_LIMIT,
+        })
+      )
+      // Workers parity (offline-sweep cron): tell each organization about the
+      // folders that became orphans since the last tick, once per orphan.
+      await runCleanupPhase('orphan folder alert sweep', () =>
+        alertNewOrphanFolders(db, dataEncryptionSecrets, {
+          email: {
+            queue: emailQueue,
+            from: emailSettings.from,
+            consoleBaseUrl: Deno.env.get('TURBOPANEL_BASE_URL') ?? null,
+          },
         })
       )
       // Workers parity (offline-sweep cron): resend notification deliveries
@@ -791,6 +818,9 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
       if (Date.now() - lastCommandPruneMs >= COMMAND_PRUNE_INTERVAL_MS) {
         lastCommandPruneMs = Date.now()
         await runCleanupPhase('command history prune', () => pruneCommandHistory(db))
+        await runCleanupPhase('audit history prune', async () =>
+          pruneAuditHistory(db, { months: await getAuditRetentionMonths(db) })
+        )
       }
       await runCleanupPhase('upgrade tick', async () => {
         const env = Deno.env.toObject()

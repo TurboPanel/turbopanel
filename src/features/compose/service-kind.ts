@@ -91,13 +91,19 @@ export const SOURCE_COMMAND_MAX_LENGTH = 1000
 const NODE_VERSION_RE = /^\d{1,3}(\.\d{1,3}){0,2}$/
 
 /**
+ * The deliberate "follow the server's newest Node series" value of
+ * `nodeVersion`. The deploy swaps it for the newest offered series before the
+ * host sees it. New apps are pinned to a concrete series instead.
+ */
+export const FLOATING_NODE_VERSION = 'latest'
+
+/**
  * Node series this control plane offers in pickers. Same contract as
  * {@link SUPPORTED_PHP_SERIES}: a static mirror of
  * `turbopaneld/orchestration/runtime-registry.json`, advisory only — the
  * schema keeps accepting any {@link NODE_VERSION_RE} value.
  */
 export const SUPPORTED_NODE_SERIES: readonly string[] = ['22', '24', '26']
-export const DEFAULT_NODE_SERIES = '24'
 
 /**
  * Deno series offered in pickers: Deno ships one major, so a series is the
@@ -278,11 +284,9 @@ type ComposeServiceExtensionFields = {
    * Scheduled jobs for a `site` or `node` service.
    *
    * Rendered by the daemon as a systemd timer per entry, with `User=` set to
-   * the service's principal. That is what makes this the cleanest proof
-   * entitlement had to be an OS grant: `ExecStart` reaches `execve` **after**
-   * systemd has dropped privileges, so `/usr/bin/php8.4` succeeds or fails
-   * purely on the account's group membership. Nothing in the generated unit
-   * grants anything.
+   * the service's principal: `ExecStart` runs **after** systemd has dropped
+   * privileges, as the site owner's Linux user, which may run every PHP,
+   * Node or Deno version installed on the server.
    */
   cron?: ComposeServiceCronJob[]
   /**
@@ -457,8 +461,13 @@ export type ComposeServicePhpExtension = {
  * repos, so this exists for save-time linting; the authoritative answer for a
  * specific host is its reported inventory. Divergence degrades to "offered a
  * series the server has not reported" — visible, never exploitable.
+ *
+ * The daemon offers the series LiteSpeed publishes for the server's OS suite
+ * (`suiteSeries` in that registry); this is the list for Debian 13, the only
+ * supported OS today. A series the host's OS does not offer is refused by the
+ * daemon before it installs anything.
  */
-export const SUPPORTED_PHP_SERIES: readonly string[] = ['8.3', '8.4']
+export const SUPPORTED_PHP_SERIES: readonly string[] = ['8.1', '8.2', '8.3', '8.4', '8.5']
 export const ALLOWED_PHP_EXTENSIONS: readonly string[] = [
   'apcu',
   'bcmath',
@@ -586,6 +595,13 @@ function readNodeVersion(value: unknown): string | undefined {
   return NODE_VERSION_RE.test(trimmed) ? trimmed : undefined
 }
 
+/** A Node pin, or `latest` ({@link FLOATING_NODE_VERSION}). */
+function readNodeAppVersion(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() === FLOATING_NODE_VERSION
+    ? FLOATING_NODE_VERSION
+    : readNodeVersion(value)
+}
+
 function readNativeRuntime(value: unknown): NativeRuntime | undefined {
   if (typeof value !== 'string') return undefined
   const trimmed = value.trim()
@@ -703,7 +719,7 @@ function applyRuntimeExtensionFields(
   if (engine) extension.engine = engine
   const framework = readNativeRuntimeFramework(value.framework)
   if (framework) extension.framework = framework
-  const nodeVersion = readNodeVersion(value.nodeVersion)
+  const nodeVersion = readNodeAppVersion(value.nodeVersion)
   if (nodeVersion) extension.nodeVersion = nodeVersion
   const runtime = readNativeRuntime(value.runtime)
   if (runtime) extension.runtime = runtime
@@ -921,8 +937,8 @@ const SERVICE_EXTENSION_FIELDS: Readonly<Record<string, ServiceExtensionFieldRul
   },
   nodeVersion: {
     kinds: NODE_KIND_ONLY,
-    isValid: (value) => Boolean(readNodeVersion(value)),
-    typeMessage: 'nodeVersion must be a pinned version like "24" or "24.17.0"',
+    isValid: (value) => Boolean(readNodeAppVersion(value)),
+    typeMessage: 'nodeVersion must be a pinned version like "24" or "24.17.0", or "latest"',
   },
   runtime: {
     kinds: NODE_KIND_ONLY,

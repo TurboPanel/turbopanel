@@ -54,7 +54,7 @@ describe('normalizeContextReleases', () => {
           commitAuthor: 'Operator',
           rollbackToReleaseId: 'rel-0',
         },
-      ],
+      ]
     )
   })
 
@@ -66,7 +66,7 @@ describe('normalizeContextReleases', () => {
           commitMessage: '',
         },
       ]),
-      [baseRelease],
+      [baseRelease]
     )
     assertEquals(
       normalizeContextReleases([
@@ -75,7 +75,7 @@ describe('normalizeContextReleases', () => {
           commitAuthor: '   ',
         },
       ]),
-      [{ ...baseRelease, commitAuthor: '   ' }],
+      [{ ...baseRelease, commitAuthor: '   ' }]
     )
   })
 
@@ -88,24 +88,15 @@ describe('normalizeContextReleases', () => {
         baseRelease,
         { composeServiceName: 'api', releaseId: '', sourceId: 'src-2', commitSha: 'def' },
       ]),
-      undefined,
+      undefined
     )
     assertEquals(normalizeContextReleases([]), undefined)
   })
 
   it('drops the whole array when an entry is not a plain object', () => {
-    assertEquals(
-      normalizeContextReleases([baseRelease, null]),
-      undefined,
-    )
-    assertEquals(
-      normalizeContextReleases([baseRelease, 'not-a-release-row']),
-      undefined,
-    )
-    assertEquals(
-      normalizeContextReleases([baseRelease, ['nested', 'array']]),
-      undefined,
-    )
+    assertEquals(normalizeContextReleases([baseRelease, null]), undefined)
+    assertEquals(normalizeContextReleases([baseRelease, 'not-a-release-row']), undefined)
+    assertEquals(normalizeContextReleases([baseRelease, ['nested', 'array']]), undefined)
   })
 })
 
@@ -116,6 +107,7 @@ describe('commandContextFromPayload', () => {
         environmentId: 'env-1',
         generation: 3,
         serverId: 'srv-1',
+        targetMemberId: '00000000-0000-4000-8000-0000000000ee',
         replicaCounts: { web: 2 },
         secretYaml: 'must-not-appear',
         credential: { token: 'nope' },
@@ -124,8 +116,9 @@ describe('commandContextFromPayload', () => {
         environmentId: 'env-1',
         generation: 3,
         serverId: 'srv-1',
+        targetMemberId: '00000000-0000-4000-8000-0000000000ee',
         replicaCounts: { web: 2 },
-      },
+      }
     )
   })
 
@@ -136,7 +129,7 @@ describe('commandContextFromPayload', () => {
         action: ['deploy'],
         replicaCounts: { web: 0 },
       }),
-      undefined,
+      undefined
     )
   })
 

@@ -1,6 +1,80 @@
 import { buildResourceCrudPaths, clientErrorJson, resourceErrorResponses } from './shared.ts'
 
 export const repositorySchemas = {
+  RepositoryInspection: {
+    type: 'object',
+    required: ['commitSha', 'via', 'files', 'entries'],
+    properties: {
+      commitSha: { type: 'string' },
+      via: { type: 'string', enum: ['provider', 'daemon'] },
+      files: {
+        type: 'array',
+        items: {
+          type: 'object',
+          required: ['path', 'found'],
+          properties: {
+            path: { type: 'string' },
+            found: { type: 'boolean' },
+            content: { type: 'string' },
+            bytes: { type: 'integer' },
+            reason: { type: 'string', enum: ['not_found', 'too_large', 'not_a_file', 'binary'] },
+          },
+        },
+      },
+      entries: {
+        type: 'array',
+        items: {
+          type: 'object',
+          required: ['path', 'kind'],
+          properties: {
+            path: { type: 'string' },
+            kind: { type: 'string', enum: ['file', 'dir'] },
+            bytes: { type: 'integer' },
+          },
+        },
+      },
+      nodeVersion: {
+        type: 'object',
+        description:
+          'The Node series a new app should start on: `newest` is the newest series the ' +
+          'control plane offers (the default pin); `hint` is what the repository asked for ' +
+          '(package.json engines.node or volta.node, .nvmrc, .node-version, .tool-versions).',
+        required: ['newest', 'offered'],
+        properties: {
+          newest: { type: 'string' },
+          offered: { type: 'array', items: { type: 'string' } },
+          hint: {
+            type: 'object',
+            required: ['source', 'requested', 'path', 'status'],
+            properties: {
+              source: {
+                type: 'string',
+                enum: ['package.json', 'volta', '.nvmrc', '.node-version', '.tool-versions'],
+              },
+              requested: { type: 'string' },
+              path: { type: 'string' },
+              status: { type: 'string', enum: ['matched', 'unsupported', 'invalid'] },
+              series: { type: 'string' },
+            },
+          },
+        },
+      },
+    },
+  },
+  RepositoryRefError: {
+    type: 'object',
+    required: ['ok', 'error', 'code', 'message', 'ref'],
+    description:
+      '`error` and `code` carry the same code (`error` is the code everywhere on this ' +
+      'surface); `message` is a sentence fit to show; `ref` is the name that was asked for.',
+    properties: {
+      ok: { type: 'boolean', const: false },
+      error: { type: 'string', enum: ['ref_not_found', 'invalid_ref'] },
+      code: { type: 'string', enum: ['ref_not_found', 'invalid_ref'] },
+      message: { type: 'string' },
+      ref: { type: 'string' },
+    },
+  },
   OrgForge: {
     type: 'object',
     description:
@@ -214,8 +288,6 @@ export const repositorySchemas = {
       accountType: { type: ['string', 'null'] },
       suspendedAt: { type: ['string', 'null'], format: 'date-time' },
       suspended: { type: 'boolean' },
-      metadata: { type: ['object', 'null'] },
-      options: { type: ['object', 'null'] },
       createdAt: { type: 'string', format: 'date-time' },
       updatedAt: { type: 'string', format: 'date-time' },
     },
@@ -558,6 +630,36 @@ export const repositoryPaths = {
       },
     },
   },
+  [`${gitAppsBasePath}/webhook-origins`]: {
+    get: {
+      tags: ['Repositories'],
+      summary: 'List the addresses a new Git application may deliver webhooks to',
+      description:
+        'Exactly the set the manifest flow accepts as `webhookOrigin`, preferred first. ' +
+        'Self-hosted: the public URLs the operator set under Networking. Hosted: the ' +
+        "platform's own address ahead of that list. `platformManaged` is true on the hosted " +
+        'runtime, where an empty list is not something an operator can fix under Networking.',
+      security,
+      responses: {
+        '200': {
+          description: 'Published origins',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['origins', 'platformManaged'],
+                properties: {
+                  origins: { type: 'array', items: { type: 'string', format: 'uri' } },
+                  platformManaged: { type: 'boolean' },
+                },
+              },
+            },
+          },
+        },
+        ...resourceErrorResponses({}),
+      },
+    },
+  },
   [`${gitAppsBasePath}/github/manifest`]: {
     post: {
       tags: ['Repositories'],
@@ -574,7 +676,9 @@ export const repositoryPaths = {
           content: { 'application/json': { schema: { type: 'object' } } },
         },
         '503': {
-          description: 'public_url_not_configured, or no root secret to sign the state',
+          description:
+            'public_url_not_configured (nothing in GET /forges/webhook-origins), or no root ' +
+            'secret to sign the state',
           content: { 'application/json': { schema: clientErrorJson } },
         },
         ...resourceErrorResponses({}),
@@ -674,6 +778,72 @@ export const repositoryPaths = {
           description: 'source_referenced_by_compose',
           content: { 'application/json': { schema: clientErrorJson } },
         },
+      },
+    },
+  },
+  [`${repositoryIdPath}/inspect`]: {
+    get: {
+      tags: ['Repositories'],
+      summary: 'Read what is in a connected repository',
+      description:
+        'Reads a fixed set of filenames and one directory listing at a ref, through the ' +
+        'provider API first and a connected server second. A ref the repository does not ' +
+        'have is a 404 `ref_not_found`; a name git would refuse is a 400 `invalid_ref`, ' +
+        'answered without contacting the provider or a server. Leaving `ref` out reads the ' +
+        "repository's default branch.",
+      security,
+      parameters: [
+        { name: 'id', in: 'path', required: true, schema: { type: 'string' } },
+        {
+          name: 'ref',
+          in: 'query',
+          required: false,
+          schema: { type: 'string', maxLength: 250 },
+          description: 'Branch, tag or commit. Omit for the default branch.',
+        },
+        {
+          name: 'listPath',
+          in: 'query',
+          required: false,
+          schema: { type: 'string' },
+          description: 'Directory the `entries` listing reads; default the repository root.',
+        },
+      ],
+      responses: {
+        '200': {
+          description: 'What the read found',
+          content: {
+            'application/json': { schema: { $ref: '#/components/schemas/RepositoryInspection' } },
+          },
+        },
+        '400': {
+          description:
+            '`invalid_ref` (body: RepositoryRefError), `ref_required`, or `invalid_list_path`',
+          content: {
+            'application/json': {
+              schema: {
+                oneOf: [{ $ref: '#/components/schemas/RepositoryRefError' }, clientErrorJson],
+              },
+            },
+          },
+        },
+        '404': {
+          description: '`ref_not_found` (body: RepositoryRefError), or no such repository',
+          content: {
+            'application/json': {
+              schema: {
+                oneOf: [{ $ref: '#/components/schemas/RepositoryRefError' }, clientErrorJson],
+              },
+            },
+          },
+        },
+        '502': {
+          description:
+            'The provider or the connected server failed (`source_read_failed`, `failed`, ' +
+            '`timeout`). `message` is a plain sentence; raw git output is logged, not returned.',
+          content: { 'application/json': { schema: clientErrorJson } },
+        },
+        ...resourceErrorResponses({}),
       },
     },
   },
