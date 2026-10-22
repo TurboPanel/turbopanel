@@ -131,7 +131,10 @@ export function readDispatchHistory(detail: unknown): StepDispatchHistory {
   }
 }
 
-/** Record a superseded dispatch id before a step is dispatched again. */
+/**
+ * Record a superseded dispatch id before a step is dispatched again. A new
+ * dispatch is a new try, so a restart hold or note left by the last one goes.
+ */
 export function withSupersededRequest(
   detail: unknown,
   requestId: string | null
@@ -141,8 +144,11 @@ export function withSupersededRequest(
     requestId && !history.priorRequestIds.includes(requestId)
       ? [...history.priorRequestIds, requestId].slice(-MAX_PRIOR_REQUEST_IDS)
       : history.priorRequestIds
+  const rest = { ...detailRecord(detail) }
+  delete rest.restartPending
+  delete rest.restartNote
   return {
-    ...detailRecord(detail),
+    ...rest,
     priorRequestIds: ids,
     inProgressRefused: false,
   }

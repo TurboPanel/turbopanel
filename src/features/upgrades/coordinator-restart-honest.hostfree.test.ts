@@ -16,6 +16,7 @@ const test = Deno.test.bind(Deno)
 
 const COLOCATED = '11111111-1111-4111-8111-111111111111'
 const HOST = '22222222-2222-4222-8222-222222222222'
+const OTHER = '33333333-3333-4333-8333-333333333333'
 const START = Date.parse('2026-10-22T10:00:00.000Z')
 const OLD = 'old-daemon'
 const NEW = 'new-daemon'
@@ -48,16 +49,19 @@ function fact(serverId: string, overrides: Partial<FleetServerFact> = {}): Fleet
   }
 }
 
-async function harness(hostOverrides: Partial<FleetServerFact> = {}) {
+async function harness(
+  hostOverrides: Partial<FleetServerFact> = {},
+  others: FleetServerFact[] = []
+) {
   const clock = { ms: START }
-  const enqueued: DaemonOutboundEnvelope[] = []
+  const enqueued: { serverId: string; envelope: DaemonOutboundEnvelope }[] = []
   const host = fact(HOST, hostOverrides)
-  const facts = [fact(COLOCATED, { name: 'panel', colocated: true, commit: NEW }), host]
+  const facts = [fact(COLOCATED, { name: 'panel', colocated: true, commit: NEW }), host, ...others]
   const store = createMemoryUpgradeStore({ facts, latest: target })
   const coordinator = createUpgradeCoordinator({
     store,
-    enqueue: (_id, envelope) => {
-      enqueued.push(envelope)
+    enqueue: (serverId, envelope) => {
+      enqueued.push({ serverId, envelope })
       return Promise.resolve()
     },
     runtime: 'deno',
@@ -70,7 +74,9 @@ async function harness(hostOverrides: Partial<FleetServerFact> = {}) {
   })
   const started = await coordinator.start({ source: 'manual', startedBy: null })
   if (!started.ok) throw new TypeError(started.error)
-  const requestId = enqueued.find((item) => item.kind === 'update')?.requestId
+  const requestId = enqueued.find(
+    (item) => item.serverId === HOST && item.envelope.kind === 'update'
+  )?.envelope.requestId
   if (!requestId) throw new TypeError('expected the dispatch')
   const at = () => new Date(clock.ms).toISOString()
   const report = (
@@ -266,12 +272,75 @@ test('a step names its server: live name, else hostname, else the planned snapsh
   renamed.host.name = 'renamed'
   assertEquals((await renamed.step())?.serverName, 'renamed')
 
-  const gone = await harness()
-  // Deleted from the fleet: the name and hostname the step was planned with remain.
-  gone.facts.splice(gone.facts.indexOf(gone.host), 1)
-  const after = (await gone.coordinator.run(gone.runId))?.steps.find(
-    (item) => item.serverId === HOST
-  )
-  assertEquals(after?.serverName, 'w')
-  assertEquals(after?.hostname, 'w.lan')
+  const cleared = await harness()
+  // The name is cleared after planning: the name the step was planned with remains.
+  cleared.host.name = null
+  assertEquals((await cleared.step())?.serverName, 'w')
+  assertEquals((await cleared.step())?.hostname, 'w.lan')
+})
+
+test('retrying a step that failed after a restart error sends a fresh install that can succeed', async () => {
+  // A second server still updating keeps the run open, so the failed step can be retried.
+  const h = await harness({}, [fact(OTHER, { name: 'x', hostname: 'x.lan' })])
+  await h.restartFailedFrame(diagnostics)
+  await h.tick(UPGRADE_RESTART_RECONNECT_MS + 1_000)
+  const failed = await h.step()
+  assertEquals(failed?.status, 'failed')
+  assertEquals((await h.coordinator.retry(failed?.id ?? '')).ok, true)
+  const retried = await h.step()
+  assertEquals(retried?.status, 'dispatched')
+  assertEquals(retried?.attempts, 2)
+  const detail = retried?.detail as { restartPending?: unknown; restartNote?: unknown }
+  assertEquals(detail.restartPending, undefined)
+  assertEquals(detail.restartNote, undefined)
+  await h.tick(1_000)
+  assertEquals((await h.step())?.status, 'dispatched')
+  await h.comesBack(NEW)
+  const other = h.facts.find((item) => item.serverId === OTHER)
+  if (other) other.commit = NEW
+  await h.coordinator.noteDaemonCommit(OTHER, NEW, h.at())
+  await h.tick(1_000)
+  const done = await h.step()
+  assertEquals(done?.status, 'done')
+  assertEquals((done?.detail as { restartNote?: unknown }).restartNote, undefined)
+  assertEquals(await h.runStatus(), 'succeeded')
+})
+
+for (const skew of [
+  { label: 'behind', ms: -15 * 60_000 },
+  { label: 'ahead', ms: 15 * 60_000 },
+]) {
+  test(`the reconnect window runs on the panel's clock when the host's clock is 15 minutes ${skew.label}`, async () => {
+    const h = await harness()
+    await h.coordinator.noteProgress({
+      serverId: HOST,
+      unit: 'daemon',
+      stage: 'failed',
+      at: new Date(Date.parse(h.at()) + skew.ms).toISOString(),
+      requestId: h.requestId,
+      errorCode: 'restart_failed',
+      detail: 'daemon restart failed after reconcile',
+    })
+    h.host.connected = false
+    await h.tick(UPGRADE_RESTART_RECONNECT_MS - 60_000)
+    assertEquals((await h.step())?.status, 'restarting')
+    await h.tick(2 * 60_000)
+    assertEquals((await h.step())?.status, 'failed')
+    assertEquals((await h.step())?.errorCode, 'restart_failed')
+  })
+}
+
+test('a failed frame replayed after the host came back on the target is ignored', async () => {
+  const h = await harness()
+  await h.restartFailedFrame(diagnostics)
+  await h.comesBack(NEW)
+  assertEquals((await h.step())?.status, 'done')
+  await h.restartFailedFrame(diagnostics)
+  await h.report('failed', { errorCode: 'update_failed', detail: 'late copy' })
+  await h.tick(UPGRADE_RESTART_RECONNECT_MS + 1_000)
+  const done = await h.step()
+  assertEquals(done?.status, 'done')
+  assertEquals(done?.errorCode, null)
+  assertEquals(done?.errorMessage, null)
+  assertEquals(await h.runStatus(), 'succeeded')
 })

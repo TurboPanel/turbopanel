@@ -1155,7 +1155,7 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
         const failure = input.stage === 'failed' || input.stage === 'rolled-back'
         if (failure && !priorFailureApplies(step, report)) return false
         if (input.stage === 'failed' && isRestartFailure(step, input.errorCode)) {
-          holdForReconnect(step, input.at, input.detail, input.restart)
+          holdForReconnect(step, deps.now(), input.detail, input.restart)
           return true
         }
         const status = stepStatusForProgressStage(input.stage)
@@ -1186,7 +1186,7 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
         }
         if (!input.ok && !priorFailureApplies(step, report)) return false
         if (!input.ok && isRestartFailure(step, input.errorCode)) {
-          holdForReconnect(step, input.at, input.error)
+          holdForReconnect(step, deps.now(), input.error)
           return true
         }
         applyOutcome(step, input)
@@ -1500,7 +1500,11 @@ function isRestartFailure(step: UpgradeStepRow, errorCode: string | undefined): 
   return step.unit === 'daemon' && errorCode === RESTART_FAILED_CODE
 }
 
-/** Keep the step in flight and start the reconnect window; the tick judges it from the host's commit. */
+/**
+ * Keep the step in flight and start the reconnect window; the tick judges it
+ * from the host's commit. `at` is the panel's clock, not the frame's: the
+ * host's clock can be off, and the window is checked against the panel's.
+ */
 function holdForReconnect(
   step: UpgradeStepRow,
   at: string,

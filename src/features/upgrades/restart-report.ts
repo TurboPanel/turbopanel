@@ -18,7 +18,7 @@ export const RESTART_FAILED_CODE = 'restart_failed'
 
 /** Saved on a step that finished `done` after a restart error. */
 export const RESTART_RECOVERED_NOTE =
-  'restart command reported an error but the daemon came back on the new build'
+  'The server restarted onto the new version after the first try was cut short.'
 
 const MAX_STDERR_CHARS = 500
 const MAX_MESSAGE_CHARS = 1000

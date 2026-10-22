@@ -414,3 +414,25 @@ test('the reconnect window is configurable and exactly the window still waits', 
   const config = { now: '2026-01-01T12:01:00.000Z', restartReconnectMs: 60_000 }
   assertEquals(planStepAction(held, facts({ serverConnected: false }), config), { kind: 'none' })
 })
+
+test('a held restart whose report time does not parse counts from the last stage, never waits forever', () => {
+  const garbled = { status: 'restarting' as const, restartReportedAt: 'not-a-time' }
+  const fromLastStage = step({ ...garbled, lastStageAt: NOW })
+  assertEquals(
+    planStepAction(fromLastStage, facts({ serverConnected: false }), {
+      now: '2026-01-01T12:09:00.000Z',
+    }),
+    { kind: 'none' }
+  )
+  assertEquals(
+    planStepAction(fromLastStage, facts({ serverConnected: false }), {
+      now: '2026-01-01T12:10:01.000Z',
+    }),
+    { kind: 'restart_failed', reason: 'never_back' }
+  )
+  const noTimes = step({ ...garbled, lastStageAt: 'also-not-a-time' })
+  assertEquals(planStepAction(noTimes, facts({ serverConnected: false }), { now: NOW }), {
+    kind: 'restart_failed',
+    reason: 'never_back',
+  })
+})

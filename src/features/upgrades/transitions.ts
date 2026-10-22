@@ -255,8 +255,11 @@ function verifyWindowPassed(step: StepView, cfg: StepConfig): boolean {
  */
 function handleRestartHeld(step: StepView, facts: StepFacts, cfg: StepConfig): StepAction {
   const window = cfg.restartReconnectMs ?? UPGRADE_RESTART_RECONNECT_MS
-  const reportedAt = Date.parse(step.restartReportedAt ?? '')
-  if (Number.isNaN(reportedAt) || Date.parse(cfg.now) - reportedAt <= window) {
+  // A time that does not parse never holds a step forever: count from the
+  // step's last stage, and judge it now when that does not parse either.
+  const reported = Date.parse(step.restartReportedAt ?? '')
+  const reportedAt = Number.isNaN(reported) ? Date.parse(step.lastStageAt ?? '') : reported
+  if (!Number.isNaN(reportedAt) && Date.parse(cfg.now) - reportedAt <= window) {
     return { kind: 'none' }
   }
   if (!facts.serverConnected) return { kind: 'restart_failed', reason: 'never_back' }
