@@ -67,6 +67,8 @@ function seed(opts: {
   ledger?: unknown
   /** The tier a manager gave each server; defaults to both on S1. */
   assigned?: { a: string | null; b: string | null }
+  /** Physical cores server B reports; defaults to 12 (needs S3). */
+  bCores?: number
 }) {
   const assigned = opts.assigned ?? { a: S1, b: S1 }
   return createMemoryDb(
@@ -133,7 +135,7 @@ function seed(opts: {
             organizationId: ORG,
             createdAt: '2026-09-02T00:00:00.000Z',
             updatedAt: NOW,
-            metadata: hardware(12),
+            metadata: hardware(opts.bCores ?? 12),
             assignedTierId: assigned.b,
           },
         ],
@@ -340,6 +342,7 @@ test('a landed downgrade that names a server moves only that server to the lower
       { tierId: S3, quantity: 1 },
     ],
     assigned: { a: S3, b: S3 },
+    bCores: 2,
     ledger: ledgerOf(intent),
   })
   const outcome = await syncNow(db)
@@ -348,6 +351,27 @@ test('a landed downgrade that names a server moves only that server to the lower
   assertEquals(outcome.result.landedIntentIds, [intent.id])
   assertEquals(await assignments(db), { [SERVER_A]: S3, [SERVER_B]: S1 })
   assertEquals(db.ops.filter((op) => op === 'update:server').length, 1)
+})
+
+test('a landed named downgrade does not move a server that grew past the new size', async () => {
+  const intent = landedDowngrade(SERVER_B)
+  const db = seed({
+    seats: [
+      { tierId: S1, quantity: 1 },
+      { tierId: S3, quantity: 1 },
+    ],
+    assigned: { a: S3, b: S3 },
+    // 12 cores need S3: S1 would be below its CPU limit.
+    bCores: 12,
+    ledger: ledgerOf(intent),
+  })
+  const outcome = await syncNow(db)
+  assertEquals(outcome.action, 'synced')
+  assertEquals(await assignments(db), { [SERVER_A]: S3, [SERVER_B]: S3 })
+  assertEquals(
+    db.rows(server).map((row) => row.updatedAt),
+    [NOW, NOW]
+  )
 })
 
 test('a landed named downgrade leaves the server alone when a manager already moved it off the old tier', async () => {

@@ -87,7 +87,7 @@ export type BillingMutationDeps = Readonly<{
   nowMs?: () => number
 }>
 
-export type BillingRefusalStatus = 400 | 404 | 409
+export type BillingRefusalStatus = 400 | 404 | 409 | 422
 
 /** What a route sends back: the status and the JSON body, verbatim. */
 export type BillingMutationOutcome<T extends Record<string, unknown>> =
@@ -596,7 +596,7 @@ function namedServerMove(
     return refuse(409, { error: SERVER_MOVE_PENDING_ERROR, serverId })
   }
   if (named.requiredRank !== null && named.requiredRank > move.to.rank) {
-    return refuse(409, {
+    return refuse(422, {
       error: TIER_BELOW_REQUIRED_ERROR,
       serverId,
       requiredTier: ladderEntryByRank(named.requiredRank)?.label ?? `rank ${named.requiredRank}`,

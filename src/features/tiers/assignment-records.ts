@@ -216,10 +216,11 @@ export async function moveNamedServerTier(
 }
 
 /**
- * Self-hosted only: every server runs on the grant's top tier, so a licensed
- * server with no tier yet gets it. Fills an empty column only — a tier
- * already on a server is never changed — and is never called on the hosted
- * runtime, where only a manager assigns.
+ * THE ONE AUTOMATIC ASSIGNMENT, SELF-HOSTED ONLY. A self-hosted control plane
+ * has nothing to buy, so a licensed server with no size yet gets the grant's
+ * top size (`SX`). It is never called on the hosted runtime, where only a
+ * manager assigns a size. It fills an empty column only: a size a manager
+ * already gave a server is never overwritten, and no server is ever moved.
  */
 export async function fillSelfHostedGrantTier(db: Db, organizationId: string): Promise<void> {
   const grant = await readSelfHostedGrant(db, organizationId)
@@ -244,7 +245,11 @@ export async function fillSelfHostedGrantTier(db: Db, organizationId: string): P
     )
 }
 
-/** {@link fillSelfHostedGrantTier} resolved from a server row; a server with no organization is a no-op. */
+/**
+ * {@link fillSelfHostedGrantTier} resolved from a server row; a server with no
+ * organization is a no-op. Self-hosted callers only — never call this on the
+ * hosted runtime.
+ */
 export async function fillSelfHostedGrantTierForServer(db: Db, serverId: string): Promise<void> {
   const [row] = await db
     .select({ organizationId: server.organizationId })

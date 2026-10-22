@@ -37,7 +37,14 @@ import {
   type OrganizationBillingState,
   revokeAllLicensesForOrganization,
 } from './billing-records.ts'
-import { moveNamedServerTier, peekOrganizationAssignment } from '../tiers/assignment-records.ts'
+import {
+  moveNamedServerTier,
+  peekOrganizationAssignment,
+  requiredRankFromMetadata,
+} from '../tiers/assignment-records.ts'
+import { getTierById } from '../tiers/tier-records.ts'
+import { eq } from 'drizzle-orm'
+import { server } from '../../db/schema.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
 import type { TierAssignment } from '../tiers/assignment.ts'
 import type { StripeClient } from './client.ts'
@@ -252,6 +259,24 @@ export async function syncEntitlementsForOrganization(
     if (!ended) {
       await forEachSequential(landed, async (intent) => {
         if (intent.kind !== 'downgrade' || !intent.serverId || !intent.toTierId) return
+        // The server may have grown since the owner asked: CPU and RAM are
+        // hard limits, so a server now past the new size stays where it is.
+        const [target, [row]] = await Promise.all([
+          getTierById(deps.db, intent.toTierId),
+          deps.db
+            .select({ metadata: server.metadata })
+            .from(server)
+            .where(eq(server.id, intent.serverId))
+            .limit(1),
+        ])
+        const required = requiredRankFromMetadata(row?.metadata)
+        if (target && required !== null && required > target.rank) {
+          logWarn(
+            logScope,
+            `organization ${input.organizationId}: server ${intent.serverId} outgrew ${target.label} before the downgrade landed; it stays on its current size`
+          )
+          return
+        }
         await moveNamedServerTier(deps.db, intent.serverId, intent.fromTierId, intent.toTierId, now)
       })
     }

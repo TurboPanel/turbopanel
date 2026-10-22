@@ -577,6 +577,9 @@ async function checkServerLicenseEntitlement(
     // Deliberately unguarded: a database error must surface as a 500 the
     // daemon retries rather than as a permanent refusal.
     await syncSelfHostedGrantForServer(db, serverId, deployment)
+    // The one automatic assignment, self-hosted only (nothing to buy there):
+    // an empty size becomes the grant's top size. Hosted never gets here, and
+    // a size a manager already set is never overwritten.
     if (deployment === 'self-hosted') {
       await fillSelfHostedGrantTierForServer(db, serverId)
     }

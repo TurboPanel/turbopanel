@@ -1185,7 +1185,7 @@ test("a named downgrade below the server's CPU or RAM is refused tier_below_requ
       serverId: SRV_A,
     })
   )
-  assertEquals(denied.status, 409)
+  assertEquals(denied.status, 422)
   assertEquals(denied.body, {
     error: TIER_BELOW_REQUIRED_ERROR,
     serverId: SRV_A,
