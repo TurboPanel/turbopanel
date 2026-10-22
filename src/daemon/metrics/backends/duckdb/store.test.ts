@@ -1,24 +1,37 @@
-import { assertEquals, assertExists, assertRejects, assertThrows } from '@std/assert'
-import { it } from '@std/testing/bdd'
-import { buildMetricsSample } from '../../../../contracts/metrics-contract.ts'
+import {
+  assertEquals,
+  assertExists,
+  assertRejects,
+  assertThrows,
+} from "@std/assert";
+import { it } from "@std/testing/bdd";
+import { buildMetricsSample } from "../../../../contracts/metrics-contract.ts";
 import type {
+  DatabaseProxySample,
   DiagnosticsSample,
   DockerUsageSample,
-  MetricsExtended,
-  DatabaseProxySample,
   IngressSourceSample,
   MetricEvent,
+  MetricsExtended,
   NetworkDeviceSample,
-} from '../../../../contracts/metrics-contract.ts'
+} from "../../../../contracts/metrics-contract.ts";
 import type {
   AuthenticatedMetricsSample,
   HostSeriesResult,
   ServerStatusEvent,
-} from '../../types.ts'
-import { AE_MISSING_METRIC_SENTINEL } from '../cloudflare/field-map.ts'
-import { MAX_STATUS_EVENTS } from '../cloudflare/sql-api.ts'
-import { type DuckDbConnectionLike, openDuckDb, resolveDuckDbPaths } from './database.ts'
-import { listPartitionDays, MS_PER_DAY, partitionFileForDay } from './parquet.ts'
+} from "../../types.ts";
+import { AE_MISSING_METRIC_SENTINEL } from "../cloudflare/field-map.ts";
+import { MAX_STATUS_EVENTS } from "../cloudflare/sql-api.ts";
+import {
+  type DuckDbConnectionLike,
+  openDuckDb,
+  resolveDuckDbPaths,
+} from "./database.ts";
+import {
+  listPartitionDays,
+  MS_PER_DAY,
+  partitionFileForDay,
+} from "./parquet.ts";
 import {
   GPU_SAMPLES_TABLE,
   HOST_SAMPLES_TABLE,
@@ -26,15 +39,18 @@ import {
   MEMORY_DIAGNOSTICS_SAMPLES_TABLE,
   METRIC_EVENTS_TABLE,
   NETWORK_SAMPLES_TABLE,
-} from './schema.ts'
-import { DUCKDB_WRITE_BATCH_MAX_AGE_MS, DuckDbParquetServerMetricsStore } from './store.ts'
+} from "./schema.ts";
+import {
+  DUCKDB_WRITE_BATCH_MAX_AGE_MS,
+  DuckDbParquetServerMetricsStore,
+} from "./store.ts";
 
-const SERVER_A = '11111111-2222-4333-8444-555555555555'
-const DAY_START = Date.UTC(2026, 5, 2) // 2026-06-02T00:00:00Z
+const SERVER_A = "11111111-2222-4333-8444-555555555555";
+const DAY_START = Date.UTC(2026, 5, 2); // 2026-06-02T00:00:00Z
 
 function makeStore(
   metricsDir: string,
-  config: { retentionDays?: number; maxBytes?: number } = {}
+  config: { retentionDays?: number; maxBytes?: number } = {},
 ): DuckDbParquetServerMetricsStore {
   // writeBatchMaxRows 1 → every accepted write flushes before resolving, so
   // tests never leave a pending flush timer behind.
@@ -42,45 +58,48 @@ function makeStore(
     { metricsDir, ...config },
     {
       writeBatchMaxRows: 1,
-    }
-  )
+    },
+  );
 }
 
 async function withStore(
-  run: (store: DuckDbParquetServerMetricsStore, metricsDir: string) => Promise<void>,
-  config: { retentionDays?: number; maxBytes?: number } = {}
+  run: (
+    store: DuckDbParquetServerMetricsStore,
+    metricsDir: string,
+  ) => Promise<void>,
+  config: { retentionDays?: number; maxBytes?: number } = {},
 ): Promise<void> {
-  const metricsDir = await Deno.makeTempDir({ prefix: 'tp-duckdb-store-' })
-  const store = makeStore(metricsDir, config)
+  const metricsDir = await Deno.makeTempDir({ prefix: "tp-duckdb-store-" });
+  const store = makeStore(metricsDir, config);
   try {
-    await run(store, metricsDir)
+    await run(store, metricsDir);
   } finally {
-    await store.close()
-    await Deno.remove(metricsDir, { recursive: true })
+    await store.close();
+    await Deno.remove(metricsDir, { recursive: true });
   }
 }
 
 function sample(overrides: {
-  serverId?: string
-  atMs: number
-  intervalSeconds?: number
-  sequence?: number
-  topologyGeneration?: number
-  bootGeneration?: number
-  cpuBusyPercent?: number | null
-  gpuCount?: number
-  networkCount?: number
-  networks?: NetworkDeviceSample[]
-  ingressSources?: IngressSourceSample[]
-  databaseProxies?: DatabaseProxySample[]
-  events?: MetricEvent[]
-  diagnostics?: DiagnosticsSample
-  extended?: MetricsExtended
-  dockerUsage?: DockerUsageSample
+  serverId?: string;
+  atMs: number;
+  intervalSeconds?: number;
+  sequence?: number;
+  topologyGeneration?: number;
+  bootGeneration?: number;
+  cpuBusyPercent?: number | null;
+  gpuCount?: number;
+  networkCount?: number;
+  networks?: NetworkDeviceSample[];
+  ingressSources?: IngressSourceSample[];
+  databaseProxies?: DatabaseProxySample[];
+  events?: MetricEvent[];
+  diagnostics?: DiagnosticsSample;
+  extended?: MetricsExtended;
+  dockerUsage?: DockerUsageSample;
 }): AuthenticatedMetricsSample {
-  const at = new Date(overrides.atMs).toISOString()
-  const gpuCount = overrides.gpuCount ?? 0
-  const networkCount = overrides.networkCount ?? 0
+  const at = new Date(overrides.atMs).toISOString();
+  const gpuCount = overrides.gpuCount ?? 0;
+  const networkCount = overrides.networkCount ?? 0;
   const sample = buildMetricsSample({
     metadata: {
       version: 6,
@@ -129,8 +148,7 @@ function sample(overrides: {
       },
       network: { tcpRetransmitPercent: null, softnetDropsPerSecond: null },
     },
-    networks:
-      overrides.networks ??
+    networks: overrides.networks ??
       Array.from({ length: networkCount }, (_, i) => ({
         deviceId: `eth${i}`,
         receiveBytesPerSecond: 100 + i,
@@ -155,161 +173,172 @@ function sample(overrides: {
     ingressSources: overrides.ingressSources ?? [],
     databaseProxies: overrides.databaseProxies ?? [],
     events: overrides.events ?? [],
-  })
+  });
   return {
     ...sample,
     serverId: overrides.serverId ?? SERVER_A,
     receivedAt: at,
-  }
+  };
 }
 
 function statusEvent(overrides: {
-  atMs: number
-  connected: boolean
-  reason?: ServerStatusEvent['reason']
+  atMs: number;
+  connected: boolean;
+  reason?: ServerStatusEvent["reason"];
 }): ServerStatusEvent {
   return {
     serverId: SERVER_A,
     connected: overrides.connected,
-    reason: overrides.reason ?? (overrides.connected ? 'connect' : 'disconnect'),
+    reason: overrides.reason ??
+      (overrides.connected ? "connect" : "disconnect"),
     at: new Date(overrides.atMs).toISOString(),
-  }
+  };
 }
 
-async function rowCount(connection: DuckDbConnectionLike, table: string): Promise<number> {
+async function rowCount(
+  connection: DuckDbConnectionLike,
+  table: string,
+): Promise<number> {
   const reader = await connection.runAndReadAll(
-    `SELECT CAST(count(*) AS DOUBLE) AS n FROM ${table}`
-  )
-  return Number(reader.getRowObjectsJS()[0]?.n ?? Number.NaN)
+    `SELECT CAST(count(*) AS DOUBLE) AS n FROM ${table}`,
+  );
+  return Number(reader.getRowObjectsJS()[0]?.n ?? Number.NaN);
 }
 
-it('writeSample persists the host row and every entity row with real NULLs, never the AE sentinel', async () => {
-  const metricsDir = await Deno.makeTempDir({ prefix: 'tp-duckdb-write-' })
+it("writeSample persists the host row and every entity row with real NULLs, never the AE sentinel", async () => {
+  const metricsDir = await Deno.makeTempDir({ prefix: "tp-duckdb-write-" });
   try {
-    const store = makeStore(metricsDir)
+    const store = makeStore(metricsDir);
     await store.writeSample(
       sample({
         atMs: DAY_START + 60_000,
         cpuBusyPercent: 42,
         networkCount: 1,
-      })
-    )
-    await store.close()
+      }),
+    );
+    await store.close();
 
-    const handle = await openDuckDb({ paths: resolveDuckDbPaths(metricsDir) })
+    const handle = await openDuckDb({ paths: resolveDuckDbPaths(metricsDir) });
     try {
       const hostReader = await handle.connection.runAndReadAll(
-        `SELECT cpu_busy_percent, cpu_user_percent FROM ${HOST_SAMPLES_TABLE}`
-      )
-      const hostRow = hostReader.getRowObjectsJS()[0]!
-      assertEquals(hostRow.cpu_busy_percent, 42)
+        `SELECT cpu_busy_percent, cpu_user_percent FROM ${HOST_SAMPLES_TABLE}`,
+      );
+      const hostRow = hostReader.getRowObjectsJS()[0]!;
+      assertEquals(hostRow.cpu_busy_percent, 42);
       // Never-set metric is a real SQL NULL — never the AE sentinel.
-      assertEquals(hostRow.cpu_user_percent, null)
-      assertEquals(hostRow.cpu_user_percent === AE_MISSING_METRIC_SENTINEL, false)
+      assertEquals(hostRow.cpu_user_percent, null);
+      assertEquals(
+        hostRow.cpu_user_percent === AE_MISSING_METRIC_SENTINEL,
+        false,
+      );
 
       const networkReader = await handle.connection.runAndReadAll(
-        `SELECT device_id, receive_bytes_per_second, transmit_bytes_per_second FROM ${NETWORK_SAMPLES_TABLE}`
-      )
-      const networkRow = networkReader.getRowObjectsJS()[0]!
-      assertEquals(networkRow.device_id, 'eth0')
-      assertEquals(networkRow.receive_bytes_per_second, 100)
-      assertEquals(networkRow.transmit_bytes_per_second, null)
+        `SELECT device_id, receive_bytes_per_second, transmit_bytes_per_second FROM ${NETWORK_SAMPLES_TABLE}`,
+      );
+      const networkRow = networkReader.getRowObjectsJS()[0]!;
+      assertEquals(networkRow.device_id, "eth0");
+      assertEquals(networkRow.receive_bytes_per_second, 100);
+      assertEquals(networkRow.transmit_bytes_per_second, null);
     } finally {
-      handle.close()
+      handle.close();
     }
   } finally {
-    await Deno.remove(metricsDir, { recursive: true })
+    await Deno.remove(metricsDir, { recursive: true });
   }
-})
+});
 
-it('arbitrary entity cardinality: 16 GPUs and 24 network devices land as that many rows, no page ceiling', async () => {
+it("arbitrary entity cardinality: 16 GPUs and 24 network devices land as that many rows, no page ceiling", async () => {
   const metricsDir = await Deno.makeTempDir({
-    prefix: 'tp-duckdb-cardinality-',
-  })
+    prefix: "tp-duckdb-cardinality-",
+  });
   try {
-    const store = makeStore(metricsDir)
+    const store = makeStore(metricsDir);
     await store.writeSample(
       sample({
         atMs: DAY_START + 60_000,
         gpuCount: 16,
         networkCount: 24,
-      })
-    )
-    await store.close()
+      }),
+    );
+    await store.close();
 
-    const handle = await openDuckDb({ paths: resolveDuckDbPaths(metricsDir) })
+    const handle = await openDuckDb({ paths: resolveDuckDbPaths(metricsDir) });
     try {
-      assertEquals(await rowCount(handle.connection, GPU_SAMPLES_TABLE), 16)
-      assertEquals(await rowCount(handle.connection, NETWORK_SAMPLES_TABLE), 24)
+      assertEquals(await rowCount(handle.connection, GPU_SAMPLES_TABLE), 16);
+      assertEquals(
+        await rowCount(handle.connection, NETWORK_SAMPLES_TABLE),
+        24,
+      );
     } finally {
-      handle.close()
+      handle.close();
     }
   } finally {
-    await Deno.remove(metricsDir, { recursive: true })
+    await Deno.remove(metricsDir, { recursive: true });
   }
-})
+});
 
-it('events land in server_metric_events with server-scoped payload/entity fields', async () => {
-  const metricsDir = await Deno.makeTempDir({ prefix: 'tp-duckdb-events-' })
+it("events land in server_metric_events with server-scoped payload/entity fields", async () => {
+  const metricsDir = await Deno.makeTempDir({ prefix: "tp-duckdb-events-" });
   try {
-    const store = makeStore(metricsDir)
+    const store = makeStore(metricsDir);
     await store.writeSample(
       sample({
         atMs: DAY_START + 60_000,
         events: [
           {
-            eventId: 'evt-1',
+            eventId: "evt-1",
             at: new Date(DAY_START + 60_000).toISOString(),
-            kind: 'oom_kill',
-            severity: 'critical',
-            entityId: 'proc-123',
+            kind: "oom_kill",
+            severity: "critical",
+            entityId: "proc-123",
             payload: { pid: 123, killed: true },
           },
         ],
-      })
-    )
-    await store.close()
+      }),
+    );
+    await store.close();
 
-    const handle = await openDuckDb({ paths: resolveDuckDbPaths(metricsDir) })
+    const handle = await openDuckDb({ paths: resolveDuckDbPaths(metricsDir) });
     try {
       const reader = await handle.connection.runAndReadAll(
-        `SELECT server_id, event_id, kind, severity, entity_id, payload FROM ${METRIC_EVENTS_TABLE}`
-      )
-      const row = reader.getRowObjectsJS()[0]!
-      assertEquals(row.event_id, 'evt-1')
-      assertEquals(row.kind, 'oom_kill')
-      assertEquals(row.severity, 'critical')
-      assertEquals(row.entity_id, 'proc-123')
-      assertEquals(JSON.parse(String(row.payload)), { pid: 123, killed: true })
+        `SELECT server_id, event_id, kind, severity, entity_id, payload FROM ${METRIC_EVENTS_TABLE}`,
+      );
+      const row = reader.getRowObjectsJS()[0]!;
+      assertEquals(row.event_id, "evt-1");
+      assertEquals(row.kind, "oom_kill");
+      assertEquals(row.severity, "critical");
+      assertEquals(row.entity_id, "proc-123");
+      assertEquals(JSON.parse(String(row.payload)), { pid: 123, killed: true });
     } finally {
-      handle.close()
+      handle.close();
     }
   } finally {
-    await Deno.remove(metricsDir, { recursive: true })
+    await Deno.remove(metricsDir, { recursive: true });
   }
-})
+});
 
 it("writeSample's row fan-out lands inside a single BEGIN/COMMIT transaction", async () => {
-  const calls: string[] = []
+  const calls: string[] = [];
   const fakeConnection: DuckDbConnectionLike = {
     // deno-lint-ignore require-await
     run: async (sql) => {
-      calls.push(sql)
+      calls.push(sql);
     },
     // deno-lint-ignore require-await
     runAndReadAll: async (sql) => {
-      calls.push(sql)
-      return { getRowObjectsJS: () => [] }
+      calls.push(sql);
+      return { getRowObjectsJS: () => [] };
     },
     closeSync: () => {},
-  }
+  };
   const store = new DuckDbParquetServerMetricsStore(
     {},
     {
-      openHandle: () => Promise.resolve({ connection: fakeConnection, close: () => {} }),
+      openHandle: () =>
+        Promise.resolve({ connection: fakeConnection, close: () => {} }),
       writeBatchMaxRows: 1,
-    }
-  )
+    },
+  );
   try {
     await store.writeSample(
       sample({
@@ -318,101 +347,107 @@ it("writeSample's row fan-out lands inside a single BEGIN/COMMIT transaction", a
         networkCount: 2,
         events: [
           {
-            eventId: 'evt-1',
+            eventId: "evt-1",
             at: new Date(DAY_START + 60_000).toISOString(),
-            kind: 'oom_kill',
-            severity: 'critical',
+            kind: "oom_kill",
+            severity: "critical",
           },
         ],
-      })
-    )
+      }),
+    );
   } finally {
-    await store.close()
+    await store.close();
   }
-  const beginIndex = calls.indexOf('BEGIN TRANSACTION')
-  const commitIndex = calls.indexOf('COMMIT')
-  assertEquals(beginIndex >= 0, true)
-  assertEquals(commitIndex > beginIndex, true)
+  const beginIndex = calls.indexOf("BEGIN TRANSACTION");
+  const commitIndex = calls.indexOf("COMMIT");
+  assertEquals(beginIndex >= 0, true);
+  assertEquals(commitIndex > beginIndex, true);
   // host + host text + network + gpu + event tables all fan out from one sample.
-  const insertCalls = calls.filter((sql) => sql.startsWith('INSERT INTO'))
-  assertEquals(insertCalls.length, 5)
+  const insertCalls = calls.filter((sql) => sql.startsWith("INSERT INTO"));
+  assertEquals(insertCalls.length, 5);
   for (const sql of insertCalls) {
-    const idx = calls.indexOf(sql)
-    assertEquals(idx > beginIndex && idx < commitIndex, true, sql)
+    const idx = calls.indexOf(sql);
+    assertEquals(idx > beginIndex && idx < commitIndex, true, sql);
   }
-})
+});
 
-it('rows persist across close + reopen at the same path', async () => {
-  const metricsDir = await Deno.makeTempDir({ prefix: 'tp-duckdb-restart-' })
+it("rows persist across close + reopen at the same path", async () => {
+  const metricsDir = await Deno.makeTempDir({ prefix: "tp-duckdb-restart-" });
   try {
-    const first = makeStore(metricsDir)
-    await first.writeSample(sample({ atMs: DAY_START + 60_000, cpuBusyPercent: 10 }))
-    await first.close()
+    const first = makeStore(metricsDir);
+    await first.writeSample(
+      sample({ atMs: DAY_START + 60_000, cpuBusyPercent: 10 }),
+    );
+    await first.close();
 
-    const handle = await openDuckDb({ paths: resolveDuckDbPaths(metricsDir) })
+    const handle = await openDuckDb({ paths: resolveDuckDbPaths(metricsDir) });
     try {
-      assertEquals(await rowCount(handle.connection, HOST_SAMPLES_TABLE), 1)
+      assertEquals(await rowCount(handle.connection, HOST_SAMPLES_TABLE), 1);
     } finally {
-      handle.close()
+      handle.close();
     }
   } finally {
-    await Deno.remove(metricsDir, { recursive: true })
+    await Deno.remove(metricsDir, { recursive: true });
   }
-})
+});
 
-it('sparse writes arm a short flush timer (a few seconds, never minutes)', async () => {
-  const metricsDir = await Deno.makeTempDir({ prefix: 'tp-duckdb-sparse-' })
-  let capturedDelay: number | undefined
-  let fireFlush: (() => void) | undefined
+it("sparse writes arm a short flush timer (a few seconds, never minutes)", async () => {
+  const metricsDir = await Deno.makeTempDir({ prefix: "tp-duckdb-sparse-" });
+  let capturedDelay: number | undefined;
+  let fireFlush: (() => void) | undefined;
   const store = new DuckDbParquetServerMetricsStore(
     { metricsDir },
     {
       setTimeoutFn: ((handler: () => void, timeout?: number) => {
-        capturedDelay = timeout
-        fireFlush = handler
-        return 0
+        capturedDelay = timeout;
+        fireFlush = handler;
+        return 0;
       }) as unknown as typeof setTimeout,
       clearTimeoutFn: (() => {}) as typeof clearTimeout,
-    }
-  )
+    },
+  );
   try {
     // Default batch size (10) — a single sparse sample stays pending and
     // must arm the age timer at the short default.
-    await store.writeSample(sample({ atMs: DAY_START + 60_000, cpuBusyPercent: 10 }))
-    assertEquals(capturedDelay, DUCKDB_WRITE_BATCH_MAX_AGE_MS)
-    assertEquals(DUCKDB_WRITE_BATCH_MAX_AGE_MS, 5_000)
+    await store.writeSample(
+      sample({ atMs: DAY_START + 60_000, cpuBusyPercent: 10 }),
+    );
+    assertEquals(capturedDelay, DUCKDB_WRITE_BATCH_MAX_AGE_MS);
+    assertEquals(DUCKDB_WRITE_BATCH_MAX_AGE_MS, 5_000);
 
-    fireFlush!()
-    await store.flushWrites()
+    fireFlush!();
+    await store.flushWrites();
   } finally {
-    await store.close()
-    await Deno.remove(metricsDir, { recursive: true })
+    await store.close();
+    await Deno.remove(metricsDir, { recursive: true });
   }
-})
+});
 
-it('close() persists pending batched writes (graceful shutdown)', async () => {
-  const metricsDir = await Deno.makeTempDir({ prefix: 'tp-duckdb-shutdown-' })
+it("close() persists pending batched writes (graceful shutdown)", async () => {
+  const metricsDir = await Deno.makeTempDir({ prefix: "tp-duckdb-shutdown-" });
   try {
     // Default batching — one accepted sample sits in the pending buffer
     // (below the row threshold, age timer not yet fired) when close() runs.
-    const first = new DuckDbParquetServerMetricsStore({ metricsDir })
-    await first.writeSample(sample({ atMs: DAY_START + 60_000, cpuBusyPercent: 10 }))
-    await first.close()
+    const first = new DuckDbParquetServerMetricsStore({ metricsDir });
+    await first.writeSample(
+      sample({ atMs: DAY_START + 60_000, cpuBusyPercent: 10 }),
+    );
+    await first.close();
 
-    const handle = await openDuckDb({ paths: resolveDuckDbPaths(metricsDir) })
+    const handle = await openDuckDb({ paths: resolveDuckDbPaths(metricsDir) });
     try {
-      assertEquals(await rowCount(handle.connection, HOST_SAMPLES_TABLE), 1)
+      assertEquals(await rowCount(handle.connection, HOST_SAMPLES_TABLE), 1);
     } finally {
-      handle.close()
+      handle.close();
     }
   } finally {
-    await Deno.remove(metricsDir, { recursive: true })
+    await Deno.remove(metricsDir, { recursive: true });
   }
-})
+});
 
-it('daily archive seals every family independently into its own Parquet subdir', async () => {
+it("daily archive seals every family independently into its own Parquet subdir", async () => {
   await withStore(async (store) => {
-    const yesterday = DAY_START - MS_PER_DAY
+    const yesterday = DAY_START - MS_PER_DAY;
     await store.writeSample(
       sample({
         atMs: yesterday + 60_000,
@@ -420,212 +455,245 @@ it('daily archive seals every family independently into its own Parquet subdir',
         gpuCount: 2,
         events: [
           {
-            eventId: 'evt-1',
+            eventId: "evt-1",
             at: new Date(yesterday + 60_000).toISOString(),
-            kind: 'oom_kill',
-            severity: 'critical',
+            kind: "oom_kill",
+            severity: "critical",
           },
         ],
-      })
-    )
+      }),
+    );
 
-    await store.runDailyArchiveOnce(DAY_START + 3600_000)
+    await store.runDailyArchiveOnce(DAY_START + 3600_000);
 
-    for (const subdir of ['host', 'gpu', 'events']) {
-      const partition = partitionFileForDay(store.paths.parquetRoot, subdir, yesterday)
-      assertExists(await Deno.stat(partition))
+    for (const subdir of ["host", "gpu", "events"]) {
+      const partition = partitionFileForDay(
+        store.paths.parquetRoot,
+        subdir,
+        yesterday,
+      );
+      assertExists(await Deno.stat(partition));
     }
 
     const handle = await openDuckDb({
       paths: resolveDuckDbPaths(store.paths.metricsDir),
-    })
+    });
     try {
-      assertEquals(await rowCount(handle.connection, HOST_SAMPLES_TABLE), 0)
-      assertEquals(await rowCount(handle.connection, GPU_SAMPLES_TABLE), 0)
-      assertEquals(await rowCount(handle.connection, METRIC_EVENTS_TABLE), 0)
+      assertEquals(await rowCount(handle.connection, HOST_SAMPLES_TABLE), 0);
+      assertEquals(await rowCount(handle.connection, GPU_SAMPLES_TABLE), 0);
+      assertEquals(await rowCount(handle.connection, METRIC_EVENTS_TABLE), 0);
     } finally {
-      handle.close()
+      handle.close();
     }
-  })
-})
+  });
+});
 
-it('retention prunes rows and partitions older than retentionDays across every family', async () => {
+it("retention prunes rows and partitions older than retentionDays across every family", async () => {
   await withStore(
     async (store) => {
-      const oldDay = DAY_START - 10 * MS_PER_DAY
-      const yesterday = DAY_START - MS_PER_DAY
-      await store.writeSample(sample({ atMs: oldDay + 60_000, cpuBusyPercent: 10, gpuCount: 1 }))
-      await store.writeSample(sample({ atMs: yesterday + 3600_000, cpuBusyPercent: 20 }))
+      const oldDay = DAY_START - 10 * MS_PER_DAY;
+      const yesterday = DAY_START - MS_PER_DAY;
+      await store.writeSample(
+        sample({ atMs: oldDay + 60_000, cpuBusyPercent: 10, gpuCount: 1 }),
+      );
+      await store.writeSample(
+        sample({ atMs: yesterday + 3600_000, cpuBusyPercent: 20 }),
+      );
 
-      await store.runDailyArchiveOnce(DAY_START + 3600_000)
+      await store.runDailyArchiveOnce(DAY_START + 3600_000);
 
       const handle = await openDuckDb({
         paths: resolveDuckDbPaths(store.paths.metricsDir),
-      })
+      });
       try {
         // Both completed days were sealed to Parquet — nothing stays hot.
-        assertEquals(await rowCount(handle.connection, HOST_SAMPLES_TABLE), 0)
-        assertEquals(await rowCount(handle.connection, GPU_SAMPLES_TABLE), 0)
+        assertEquals(await rowCount(handle.connection, HOST_SAMPLES_TABLE), 0);
+        assertEquals(await rowCount(handle.connection, GPU_SAMPLES_TABLE), 0);
       } finally {
-        handle.close()
+        handle.close();
       }
-      let oldPartitionExists = true
+      let oldPartitionExists = true;
       try {
-        await Deno.stat(partitionFileForDay(store.paths.parquetRoot, 'host', oldDay))
+        await Deno.stat(
+          partitionFileForDay(store.paths.parquetRoot, "host", oldDay),
+        );
       } catch {
-        oldPartitionExists = false
+        oldPartitionExists = false;
       }
       // 10-day-old partition is outside the 2-day retention window.
-      assertEquals(oldPartitionExists, false)
+      assertEquals(oldPartitionExists, false);
 
       // Yesterday's partition (1 day old) survives the 2-day retention.
-      const survivingPartition = partitionFileForDay(store.paths.parquetRoot, 'host', yesterday)
-      assertExists(await Deno.stat(survivingPartition))
+      const survivingPartition = partitionFileForDay(
+        store.paths.parquetRoot,
+        "host",
+        yesterday,
+      );
+      assertExists(await Deno.stat(survivingPartition));
       const survivingHandle = await openDuckDb({
         paths: resolveDuckDbPaths(store.paths.metricsDir),
-      })
+      });
       try {
         const reader = await survivingHandle.connection.runAndReadAll(
-          `SELECT cpu_busy_percent FROM read_parquet('${survivingPartition}')`
-        )
+          `SELECT cpu_busy_percent FROM read_parquet('${survivingPartition}')`,
+        );
         assertEquals(
           reader.getRowObjectsJS().map((row) => row.cpu_busy_percent),
-          [20]
-        )
+          [20],
+        );
       } finally {
-        survivingHandle.close()
+        survivingHandle.close();
       }
     },
-    { retentionDays: 2 }
-  )
-})
+    { retentionDays: 2 },
+  );
+});
 
-it('late sample for an already archived day merges on the next archive tick', async () => {
+it("late sample for an already archived day merges on the next archive tick", async () => {
   await withStore(async (store) => {
-    const yesterday = DAY_START - MS_PER_DAY
-    await store.writeSample(sample({ atMs: yesterday + 60_000, cpuBusyPercent: 10 }))
-    await store.runDailyArchiveOnce(DAY_START + 3600_000)
+    const yesterday = DAY_START - MS_PER_DAY;
+    await store.writeSample(
+      sample({ atMs: yesterday + 60_000, cpuBusyPercent: 10 }),
+    );
+    await store.runDailyArchiveOnce(DAY_START + 3600_000);
 
     // Late arrival for the already sealed day, then a second archive pass.
-    await store.writeSample(sample({ atMs: yesterday + 120_000, cpuBusyPercent: 20 }))
-    await store.runDailyArchiveOnce(DAY_START + 7200_000)
+    await store.writeSample(
+      sample({ atMs: yesterday + 120_000, cpuBusyPercent: 20 }),
+    );
+    await store.runDailyArchiveOnce(DAY_START + 7200_000);
 
-    const partition = partitionFileForDay(store.paths.parquetRoot, 'host', yesterday)
+    const partition = partitionFileForDay(
+      store.paths.parquetRoot,
+      "host",
+      yesterday,
+    );
     const handle = await openDuckDb({
       paths: resolveDuckDbPaths(store.paths.metricsDir),
-    })
+    });
     try {
-      assertEquals(await rowCount(handle.connection, HOST_SAMPLES_TABLE), 0)
+      assertEquals(await rowCount(handle.connection, HOST_SAMPLES_TABLE), 0);
       const reader = await handle.connection.runAndReadAll(
-        `SELECT cpu_busy_percent FROM read_parquet('${partition}') ORDER BY sampled_at`
-      )
+        `SELECT cpu_busy_percent FROM read_parquet('${partition}') ORDER BY sampled_at`,
+      );
       assertEquals(
         reader.getRowObjectsJS().map((row) => row.cpu_busy_percent),
-        [10, 20]
-      )
+        [10, 20],
+      );
     } finally {
-      handle.close()
+      handle.close();
     }
-  })
-})
+  });
+});
 
-it('status history: prior state + in-range transitions + uptime math (queryStatusHistory parity)', async () => {
+it("status history: prior state + in-range transitions + uptime math (queryStatusHistory parity)", async () => {
   await withStore(async (store) => {
-    const from = DAY_START
-    const to = DAY_START + 3600_000
-    await store.writeStatusEvent(statusEvent({ atMs: from - 600_000, connected: false }))
-    await store.writeStatusEvent(statusEvent({ atMs: from + 600_000, connected: true }))
+    const from = DAY_START;
+    const to = DAY_START + 3600_000;
+    await store.writeStatusEvent(
+      statusEvent({ atMs: from - 600_000, connected: false }),
+    );
+    await store.writeStatusEvent(
+      statusEvent({ atMs: from + 600_000, connected: true }),
+    );
     await store.writeStatusEvent(
       statusEvent({
         atMs: from + 1800_000,
         connected: false,
-        reason: 'sweep_stale',
-      })
-    )
+        reason: "sweep_stale",
+      }),
+    );
 
     const history = await store.queryStatusHistory!({
       serverId: SERVER_A,
       from: new Date(from).toISOString(),
       to: new Date(to).toISOString(),
-    })
-    assertEquals(history.kind, 'duckdb')
-    assertEquals(history.initialConnected, false)
-    assertEquals(history.events.length, 2)
-    assertEquals(history.events[0]!.connected, true)
-    assertEquals(history.events[1]!.reason, 'sweep_stale')
-    assertEquals(history.truncated, false)
+    });
+    assertEquals(history.kind, "duckdb");
+    assertEquals(history.initialConnected, false);
+    assertEquals(history.events.length, 2);
+    assertEquals(history.events[0]!.connected, true);
+    assertEquals(history.events[1]!.reason, "sweep_stale");
+    assertEquals(history.truncated, false);
     // down 10 min, up 20 min, down 40 min.
-    assertEquals(history.uptimeSeconds, 1200)
-    assertEquals(history.downtimeSeconds, 2400)
-    assertEquals(history.unknownSeconds, 0)
-  })
-})
+    assertEquals(history.uptimeSeconds, 1200);
+    assertEquals(history.downtimeSeconds, 2400);
+    assertEquals(history.unknownSeconds, 0);
+  });
+});
 
-it('half-open range: a status event exactly at `to` is excluded', async () => {
+it("half-open range: a status event exactly at `to` is excluded", async () => {
   await withStore(async (store) => {
-    const from = DAY_START
-    const to = DAY_START + 600_000
-    await store.writeStatusEvent(statusEvent({ atMs: from + 60_000, connected: true }))
-    await store.writeStatusEvent(statusEvent({ atMs: to, connected: false }))
+    const from = DAY_START;
+    const to = DAY_START + 600_000;
+    await store.writeStatusEvent(
+      statusEvent({ atMs: from + 60_000, connected: true }),
+    );
+    await store.writeStatusEvent(statusEvent({ atMs: to, connected: false }));
 
     const history = await store.queryStatusHistory!({
       serverId: SERVER_A,
       from: new Date(from).toISOString(),
       to: new Date(to).toISOString(),
-    })
-    assertEquals(history.events.length, 1)
-    assertEquals(history.events[0]!.connected, true)
-  })
-})
+    });
+    assertEquals(history.events.length, 1);
+    assertEquals(history.events[0]!.connected, true);
+  });
+});
 
-it('resource caps default to threads=2 / memory_limit=128MiB (duckdb_settings)', async () => {
-  const metricsDir = await Deno.makeTempDir({ prefix: 'tp-duckdb-caps-def-' })
+it("resource caps default to threads=2 / memory_limit=128MiB (duckdb_settings)", async () => {
+  const metricsDir = await Deno.makeTempDir({ prefix: "tp-duckdb-caps-def-" });
   try {
-    const handle = await openDuckDb({ paths: resolveDuckDbPaths(metricsDir) })
+    const handle = await openDuckDb({ paths: resolveDuckDbPaths(metricsDir) });
     try {
       const reader = await handle.connection.runAndReadAll(
-        'SELECT name, value FROM duckdb_settings() ' + "WHERE name IN ('threads', 'memory_limit')"
-      )
+        "SELECT name, value FROM duckdb_settings() " +
+          "WHERE name IN ('threads', 'memory_limit')",
+      );
       const settings = new Map(
-        reader.getRowObjectsJS().map((row) => [String(row.name), String(row.value)])
-      )
-      assertEquals(settings.get('threads'), '2')
-      assertEquals(settings.get('memory_limit')?.includes('128'), true)
+        reader.getRowObjectsJS().map((
+          row,
+        ) => [String(row.name), String(row.value)]),
+      );
+      assertEquals(settings.get("threads"), "2");
+      assertEquals(settings.get("memory_limit")?.includes("128"), true);
     } finally {
-      handle.close()
+      handle.close();
     }
   } finally {
-    await Deno.remove(metricsDir, { recursive: true })
+    await Deno.remove(metricsDir, { recursive: true });
   }
-})
+});
 
-it('stray tmp export from a crash is swept and never double-deletes hot rows', async () => {
+it("stray tmp export from a crash is swept and never double-deletes hot rows", async () => {
   await withStore(async (store) => {
-    const yesterday = DAY_START - MS_PER_DAY
-    await store.writeSample(sample({ atMs: yesterday + 60_000, cpuBusyPercent: 10 }))
-    const strayPath = `${store.paths.tmpDir}/host-crashed.parquet`
-    await Deno.writeTextFile(strayPath, 'interrupted export')
+    const yesterday = DAY_START - MS_PER_DAY;
+    await store.writeSample(
+      sample({ atMs: yesterday + 60_000, cpuBusyPercent: 10 }),
+    );
+    const strayPath = `${store.paths.tmpDir}/host-crashed.parquet`;
+    await Deno.writeTextFile(strayPath, "interrupted export");
 
-    await store.runDailyArchiveOnce(DAY_START + 3600_000)
+    await store.runDailyArchiveOnce(DAY_START + 3600_000);
 
-    let strayExists = true
+    let strayExists = true;
     try {
-      await Deno.stat(strayPath)
+      await Deno.stat(strayPath);
     } catch {
-      strayExists = false
+      strayExists = false;
     }
-    assertEquals(strayExists, false)
+    assertEquals(strayExists, false);
 
     const handle = await openDuckDb({
       paths: resolveDuckDbPaths(store.paths.metricsDir),
-    })
+    });
     try {
-      assertEquals(await rowCount(handle.connection, HOST_SAMPLES_TABLE), 0)
+      assertEquals(await rowCount(handle.connection, HOST_SAMPLES_TABLE), 0);
     } finally {
-      handle.close()
+      handle.close();
     }
-  })
-})
+  });
+});
 
 // ---------------------------------------------------------------------------
 // v5-native read path: queryHostSeries / queryHostSummary /
@@ -633,7 +701,7 @@ it('stray tmp export from a crash is swept and never double-deletes hot rows', a
 // queryMetricEvents.
 // ---------------------------------------------------------------------------
 
-it('v5 queryHostSeries: weighted-average math and real NULL for an unpopulated metric', async () => {
+it("v5 queryHostSeries: weighted-average math and real NULL for an unpopulated metric", async () => {
   await withStore(async (store) => {
     await store.writeSample(
       sample({
@@ -641,8 +709,8 @@ it('v5 queryHostSeries: weighted-average math and real NULL for an unpopulated m
         intervalSeconds: 60,
         cpuBusyPercent: 10,
         topologyGeneration: 1,
-      })
-    )
+      }),
+    );
     await store.writeSample(
       sample({
         atMs: DAY_START + 300_000,
@@ -650,178 +718,225 @@ it('v5 queryHostSeries: weighted-average math and real NULL for an unpopulated m
         intervalSeconds: 60,
         cpuBusyPercent: 30,
         topologyGeneration: 2,
-      })
-    )
+      }),
+    );
 
     const result = await store.queryHostSeries({
       serverId: SERVER_A,
-      metrics: ['host.cpu.busyPercent', 'host.memory.usedBytes'],
+      metrics: ["host.cpu.busyPercent", "host.memory.usedBytes"],
       from: new Date(DAY_START).toISOString(),
       to: new Date(DAY_START + 600_000).toISOString(),
       resolutionSeconds: 600,
-    })
+    });
 
-    assertEquals(result.kind, 'duckdb')
-    assertEquals(result.points.length, 1)
-    const point = result.points[0]!
+    assertEquals(result.kind, "duckdb");
+    assertEquals(result.points.length, 1);
+    const point = result.points[0]!;
     // interval-weighted average: (10*60 + 30*60) / (60 + 60) = 20.
-    assertEquals(point.values['host.cpu.busyPercent'], 20)
+    assertEquals(point.values["host.cpu.busyPercent"], 20);
     // Never populated by either sample in range — real SQL NULL.
-    assertEquals(point.values['host.memory.usedBytes'], null)
-    assertEquals(result.sampleCount, 2)
-  })
-})
+    assertEquals(point.values["host.memory.usedBytes"], null);
+    assertEquals(result.sampleCount, 2);
+  });
+});
 
-it('v6 queryHostSeries: diagnostics memory fields resolve via the left-joined memory-diagnostics table, real NULL for a bucket sample missing diagnostics', async () => {
+it("v6 queryHostSeries: diagnostics memory fields resolve via the left-joined memory-diagnostics table, real NULL for a bucket sample missing diagnostics", async () => {
   await withStore(async (store) => {
     await store.writeSample(
       sample({
         atMs: DAY_START,
         diagnostics: DIAGNOSTICS_FIXTURE,
-      })
-    )
+      }),
+    );
     await store.writeSample(
       sample({
         // No diagnostics this tick — the left join must not drop the host row.
         atMs: DAY_START + 60_000,
         sequence: 2,
-      })
-    )
+      }),
+    );
 
     const result = await store.queryHostSeries({
       serverId: SERVER_A,
-      metrics: ['diagnostics.committedAsBytes', 'diagnostics.pageScanDirectPerSecond'],
+      metrics: [
+        "diagnostics.committedAsBytes",
+        "diagnostics.pageScanDirectPerSecond",
+      ],
       from: new Date(DAY_START).toISOString(),
       to: new Date(DAY_START + 600_000).toISOString(),
       resolutionSeconds: 600,
-    })
+    });
 
-    assertEquals(result.points.length, 1)
-    const point = result.points[0]!
+    assertEquals(result.points.length, 1);
+    const point = result.points[0]!;
     // Only one of the two rows in the bucket carries a memory-diagnostics row —
     // the weighted average/last-value aggregates ignore the NULL row rather
     // than averaging it in as 0.
     assertEquals(
-      point.values['diagnostics.committedAsBytes'],
-      DIAGNOSTICS_FIXTURE.memory.committedAsBytes
-    )
+      point.values["diagnostics.committedAsBytes"],
+      DIAGNOSTICS_FIXTURE.memory.committedAsBytes,
+    );
     // A reading neither edition stores reads as empty, whatever was sent.
-    assertEquals(point.values['diagnostics.pageScanDirectPerSecond'], null)
+    assertEquals(point.values["diagnostics.pageScanDirectPerSecond"], null);
     // sample_count/topologyGeneration still reflect both host rows, not just the joined one.
-    assertEquals(result.sampleCount, 2)
-  })
-})
+    assertEquals(result.sampleCount, 2);
+  });
+});
 
-it('v6 queryHostSeries: combining host.* with both diagnostics halves in one request resolves all three', async () => {
+it("v6 queryHostSeries: combining host.* with both diagnostics halves in one request resolves all three", async () => {
   await withStore(async (store) => {
     await store.writeSample(
       sample({
         atMs: DAY_START,
         cpuBusyPercent: 42,
         diagnostics: DIAGNOSTICS_FIXTURE,
-      })
-    )
+      }),
+    );
 
     const result = await store.queryHostSeries({
       serverId: SERVER_A,
       metrics: [
-        'host.cpu.busyPercent',
-        'diagnostics.averageFrequencyMHz',
-        'diagnostics.committedAsBytes',
+        "host.cpu.busyPercent",
+        "diagnostics.averageFrequencyMHz",
+        "diagnostics.committedAsBytes",
       ],
       from: new Date(DAY_START).toISOString(),
       to: new Date(DAY_START + 600_000).toISOString(),
       resolutionSeconds: 600,
-    })
+    });
 
-    assertEquals(result.points.length, 1)
-    const point = result.points[0]!
-    assertEquals(point.values['host.cpu.busyPercent'], 42)
-    assertEquals(point.values['diagnostics.averageFrequencyMHz'], null)
+    assertEquals(result.points.length, 1);
+    const point = result.points[0]!;
+    assertEquals(point.values["host.cpu.busyPercent"], 42);
+    assertEquals(point.values["diagnostics.averageFrequencyMHz"], null);
     assertEquals(
-      point.values['diagnostics.committedAsBytes'],
-      DIAGNOSTICS_FIXTURE.memory.committedAsBytes
-    )
-  })
-})
+      point.values["diagnostics.committedAsBytes"],
+      DIAGNOSTICS_FIXTURE.memory.committedAsBytes,
+    );
+  });
+});
 
-it('v5 queryHostSummary: sample count + latestAt, zero samples means null latestAt', async () => {
+it("v5 queryHostSummary: sample count + latestAt, zero samples means null latestAt", async () => {
   await withStore(async (store) => {
-    const from = DAY_START
-    const to = DAY_START + 600_000
+    const from = DAY_START;
+    const to = DAY_START + 600_000;
 
     const empty = await store.queryHostSummary({
       serverId: SERVER_A,
       from: new Date(from).toISOString(),
       to: new Date(to).toISOString(),
-    })
-    assertEquals(empty.sampleCount, 0)
-    assertEquals(empty.latestAt, null)
+    });
+    assertEquals(empty.sampleCount, 0);
+    assertEquals(empty.latestAt, null);
 
-    await store.writeSample(sample({ atMs: from + 60_000, cpuBusyPercent: 10 }))
-    await store.writeSample(sample({ atMs: from + 120_000, cpuBusyPercent: 20 }))
+    await store.writeSample(
+      sample({ atMs: from + 60_000, cpuBusyPercent: 10 }),
+    );
+    await store.writeSample(
+      sample({ atMs: from + 120_000, cpuBusyPercent: 20 }),
+    );
 
     const summary = await store.queryHostSummary({
       serverId: SERVER_A,
       from: new Date(from).toISOString(),
       to: new Date(to).toISOString(),
-    })
-    assertEquals(summary.sampleCount, 2)
-    assertEquals(summary.latestAt, new Date(from + 120_000).toISOString())
-  })
-})
+    });
+    assertEquals(summary.sampleCount, 2);
+    assertEquals(summary.latestAt, new Date(from + 120_000).toISOString());
+  });
+});
 
-it('v5 queryFleetHostSnapshot: multiple servers, values map, a requested-but-absent server is excluded', async () => {
+it("v5 queryFleetHostSnapshot: multiple servers, values map, a requested-but-absent server is excluded", async () => {
   await withStore(async (store) => {
-    const serverB = '22222222-3333-4444-8555-666666666666'
-    const serverC = '33333333-4444-5555-8666-777777777777'
-    await store.writeSample(sample({ serverId: SERVER_A, atMs: DAY_START, cpuBusyPercent: 10 }))
-    await store.writeSample(sample({ serverId: serverB, atMs: DAY_START, cpuBusyPercent: 50 }))
+    const serverB = "22222222-3333-4444-8555-666666666666";
+    const serverC = "33333333-4444-5555-8666-777777777777";
+    await store.writeSample(
+      sample({ serverId: SERVER_A, atMs: DAY_START, cpuBusyPercent: 10 }),
+    );
+    await store.writeSample(
+      sample({ serverId: serverB, atMs: DAY_START, cpuBusyPercent: 50 }),
+    );
 
     const result = await store.queryFleetHostSnapshot({
       serverIds: [SERVER_A, serverB, serverC],
-      metrics: ['host.cpu.busyPercent'],
+      metrics: ["host.cpu.busyPercent"],
       from: new Date(DAY_START).toISOString(),
       to: new Date(DAY_START + 600_000).toISOString(),
-    })
+    });
 
-    assertEquals(result.servers.length, 2)
-    const byId = new Map(result.servers.map((s) => [s.serverId, s]))
-    assertEquals(byId.get(SERVER_A)?.values['host.cpu.busyPercent'], 10)
-    assertEquals(byId.get(serverB)?.values['host.cpu.busyPercent'], 50)
-    assertEquals(byId.has(serverC), false)
-  })
-})
+    assertEquals(result.servers.length, 2);
+    const byId = new Map(result.servers.map((s) => [s.serverId, s]));
+    assertEquals(byId.get(SERVER_A)?.values["host.cpu.busyPercent"], 10);
+    assertEquals(byId.get(serverB)?.values["host.cpu.busyPercent"], 50);
+    assertEquals(byId.has(serverC), false);
+  });
+});
 
-it('v12 queryFleetHostSnapshot: a data point v12 no longer stores reads as empty even though the column holds a value', async () => {
+it("queryFleetHostSnapshot: reads the per-sample sizes the fleet overview divides memory and swap by", async () => {
   await withStore(async (store) => {
-    const withFaults = sample({ serverId: SERVER_A, atMs: DAY_START, cpuBusyPercent: 10 })
-    withFaults.host.memory.majorPageFaultsPerSecond = 42
-    withFaults.host.cpu.saturatedCoreCount = 3
-    await store.writeSample(withFaults)
+    await store.writeSample(
+      sample({
+        serverId: SERVER_A,
+        atMs: DAY_START,
+        cpuBusyPercent: 10,
+        extended: { sizes: { memoryTotalBytes: 8e9, swapTotalBytes: 2e9 } },
+      }),
+    );
 
     const result = await store.queryFleetHostSnapshot({
       serverIds: [SERVER_A],
       metrics: [
-        'host.cpu.busyPercent',
-        'host.memory.majorPageFaultsPerSecond',
-        'host.cpu.saturatedCoreCount',
+        "host.cpu.busyPercent",
+        "extended.sizes.memoryTotalBytes",
+        "extended.sizes.swapTotalBytes",
       ],
       from: new Date(DAY_START).toISOString(),
       to: new Date(DAY_START + 600_000).toISOString(),
-    })
+    });
 
-    const values = result.servers[0]?.values
-    assertEquals(values?.['host.cpu.busyPercent'], 10)
-    assertEquals(values?.['host.memory.majorPageFaultsPerSecond'] ?? null, null)
-    assertEquals(values?.['host.cpu.saturatedCoreCount'] ?? null, null)
-  })
-})
+    const values = result.servers[0]?.values;
+    assertEquals(values?.["host.cpu.busyPercent"], 10);
+    assertEquals(values?.["extended.sizes.memoryTotalBytes"], 8e9);
+    assertEquals(values?.["extended.sizes.swapTotalBytes"], 2e9);
+  });
+});
 
-it('v5 queryEntitySeries: network family — per-entity buckets, missing entity gets empty points + full gap, unpopulated metric is real NULL', async () => {
+it("v12 queryFleetHostSnapshot: a data point v12 no longer stores reads as empty even though the column holds a value", async () => {
   await withStore(async (store) => {
-    const from = DAY_START
-    const to = DAY_START + 600_000
+    const withFaults = sample({
+      serverId: SERVER_A,
+      atMs: DAY_START,
+      cpuBusyPercent: 10,
+    });
+    withFaults.host.memory.majorPageFaultsPerSecond = 42;
+    withFaults.host.cpu.saturatedCoreCount = 3;
+    await store.writeSample(withFaults);
+
+    const result = await store.queryFleetHostSnapshot({
+      serverIds: [SERVER_A],
+      metrics: [
+        "host.cpu.busyPercent",
+        "host.memory.majorPageFaultsPerSecond",
+        "host.cpu.saturatedCoreCount",
+      ],
+      from: new Date(DAY_START).toISOString(),
+      to: new Date(DAY_START + 600_000).toISOString(),
+    });
+
+    const values = result.servers[0]?.values;
+    assertEquals(values?.["host.cpu.busyPercent"], 10);
+    assertEquals(
+      values?.["host.memory.majorPageFaultsPerSecond"] ?? null,
+      null,
+    );
+    assertEquals(values?.["host.cpu.saturatedCoreCount"] ?? null, null);
+  });
+});
+
+it("v5 queryEntitySeries: network family — per-entity buckets, missing entity gets empty points + full gap, unpopulated metric is real NULL", async () => {
+  await withStore(async (store) => {
+    const from = DAY_START;
+    const to = DAY_START + 600_000;
     const networkRow = (deviceId: string, rx: number): NetworkDeviceSample => ({
       deviceId,
       receiveBytesPerSecond: rx,
@@ -830,47 +945,50 @@ it('v5 queryEntitySeries: network family — per-entity buckets, missing entity 
       transmitErrorsPerSecond: null,
       receiveDropsPerSecond: null,
       transmitDropsPerSecond: null,
-    })
+    });
     await store.writeSample(
       sample({
         atMs: from + 60_000,
-        networks: [networkRow('eth0', 100), networkRow('eth1', 200)],
-      })
-    )
+        networks: [networkRow("eth0", 100), networkRow("eth1", 200)],
+      }),
+    );
 
     const result = await store.queryEntitySeries({
       serverId: SERVER_A,
-      family: 'network',
-      entityIds: ['eth0', 'eth1', 'eth2'],
-      metrics: ['receiveBytesPerSecond', 'transmitBytesPerSecond'],
+      family: "network",
+      entityIds: ["eth0", "eth1", "eth2"],
+      metrics: ["receiveBytesPerSecond", "transmitBytesPerSecond"],
       from: new Date(from).toISOString(),
       to: new Date(to).toISOString(),
       resolutionSeconds: 300,
-    })
+    });
 
-    assertEquals(result.entities.length, 3)
-    const byId = new Map(result.entities.map((e) => [e.entityId, e]))
-    const eth0 = byId.get('eth0')!
-    assertEquals(eth0.points.length, 1)
-    assertEquals(eth0.points[0]!.values.receiveBytesPerSecond, 100)
+    assertEquals(result.entities.length, 3);
+    const byId = new Map(result.entities.map((e) => [e.entityId, e]));
+    const eth0 = byId.get("eth0")!;
+    assertEquals(eth0.points.length, 1);
+    assertEquals(eth0.points[0]!.values.receiveBytesPerSecond, 100);
     // Never reported by any row in range — real SQL NULL.
-    assertEquals(eth0.points[0]!.values.transmitBytesPerSecond, null)
-    assertEquals(eth0.sampleCount, 1)
+    assertEquals(eth0.points[0]!.values.transmitBytesPerSecond, null);
+    assertEquals(eth0.sampleCount, 1);
 
-    const eth2 = byId.get('eth2')!
-    assertEquals(eth2.points.length, 0)
-    assertEquals(eth2.sampleCount, 0)
-    assertEquals(eth2.gapCount > 0, true)
-  })
-})
+    const eth2 = byId.get("eth2")!;
+    assertEquals(eth2.points.length, 0);
+    assertEquals(eth2.sampleCount, 0);
+    assertEquals(eth2.gapCount > 0, true);
+  });
+});
 
-it('v5 queryEntitySeries: managed.ingress groups by source_id, keeping distinct sources of the same source_kind separate', async () => {
+it("v5 queryEntitySeries: managed.ingress groups by source_id, keeping distinct sources of the same source_kind separate", async () => {
   await withStore(async (store) => {
-    const from = DAY_START
-    const to = DAY_START + 600_000
-    const ingressRow = (sourceId: string, rps: number): IngressSourceSample => ({
+    const from = DAY_START;
+    const to = DAY_START + 600_000;
+    const ingressRow = (
+      sourceId: string,
+      rps: number,
+    ): IngressSourceSample => ({
       sourceId,
-      sourceKind: 'caddy',
+      sourceKind: "caddy",
       requests: rps,
       responses2xx: null,
       responses3xx: null,
@@ -890,37 +1008,41 @@ it('v5 queryEntitySeries: managed.ingress groups by source_id, keeping distinct 
       upstreamsHealthy: null,
       upstreamsTotal: null,
       retries: null,
-    })
+    });
     await store.writeSample(
       sample({
         atMs: from + 60_000,
-        ingressSources: [ingressRow('caddy-1', 10), ingressRow('caddy-2', 30)],
-      })
-    )
+        ingressSources: [ingressRow("caddy-1", 10), ingressRow("caddy-2", 30)],
+      }),
+    );
 
     const result = await store.queryEntitySeries({
       serverId: SERVER_A,
-      family: 'managed.ingress',
-      entityIds: ['caddy-1', 'caddy-2'],
-      metrics: ['requests'],
+      family: "managed.ingress",
+      entityIds: ["caddy-1", "caddy-2"],
+      metrics: ["requests"],
       from: new Date(from).toISOString(),
       to: new Date(to).toISOString(),
       resolutionSeconds: 300,
-    })
+    });
 
-    assertEquals(result.entities.length, 2)
-    const caddy1 = result.entities.find((entity) => entity.entityId === 'caddy-1')!
-    assertEquals(caddy1.sampleCount, 1)
-    assertEquals(caddy1.points.length, 1)
-    assertEquals(caddy1.points[0]!.values.requests, 10)
-    const caddy2 = result.entities.find((entity) => entity.entityId === 'caddy-2')!
-    assertEquals(caddy2.sampleCount, 1)
-    assertEquals(caddy2.points.length, 1)
-    assertEquals(caddy2.points[0]!.values.requests, 30)
-  })
-})
+    assertEquals(result.entities.length, 2);
+    const caddy1 = result.entities.find((entity) =>
+      entity.entityId === "caddy-1"
+    )!;
+    assertEquals(caddy1.sampleCount, 1);
+    assertEquals(caddy1.points.length, 1);
+    assertEquals(caddy1.points[0]!.values.requests, 10);
+    const caddy2 = result.entities.find((entity) =>
+      entity.entityId === "caddy-2"
+    )!;
+    assertEquals(caddy2.sampleCount, 1);
+    assertEquals(caddy2.points.length, 1);
+    assertEquals(caddy2.points[0]!.values.requests, 30);
+  });
+});
 
-it('v5 queryEntityIdsSeen: returns exactly the observed entity ids for a per-device family', async () => {
+it("v5 queryEntityIdsSeen: returns exactly the observed entity ids for a per-device family", async () => {
   await withStore(async (store) => {
     const networkRow = (deviceId: string): NetworkDeviceSample => ({
       deviceId,
@@ -930,27 +1052,30 @@ it('v5 queryEntityIdsSeen: returns exactly the observed entity ids for a per-dev
       transmitErrorsPerSecond: null,
       receiveDropsPerSecond: null,
       transmitDropsPerSecond: null,
-    })
+    });
     await store.writeSample(
       sample({
         atMs: DAY_START + 60_000,
-        networks: [networkRow('eth0'), networkRow('eth1')],
-      })
-    )
+        networks: [networkRow("eth0"), networkRow("eth1")],
+      }),
+    );
 
     const result = await store.queryEntityIdsSeen({
       serverId: SERVER_A,
-      family: 'network',
+      family: "network",
       from: new Date(DAY_START).toISOString(),
       to: new Date(DAY_START + 600_000).toISOString(),
-    })
-    assertEquals(result.entityIds.slice().sort(), ['eth0', 'eth1'])
-  })
-})
+    });
+    assertEquals(result.entityIds.slice().sort(), ["eth0", "eth1"]);
+  });
+});
 
-it('v5 queryEntityIdsSeen: managed.database_proxy returns source_id values, keeping distinct sources of the same source_kind separate', async () => {
+it("v5 queryEntityIdsSeen: managed.database_proxy returns source_id values, keeping distinct sources of the same source_kind separate", async () => {
   await withStore(async (store) => {
-    const proxyRow = (sourceId: string, sourceKind: string): DatabaseProxySample => ({
+    const proxyRow = (
+      sourceId: string,
+      sourceKind: string,
+    ): DatabaseProxySample => ({
       sourceId,
       sourceKind,
       queries: 1,
@@ -970,104 +1095,107 @@ it('v5 queryEntityIdsSeen: managed.database_proxy returns source_id values, keep
       backendsTotal: null,
       bytesFromBackends: null,
       bytesToBackends: null,
-    })
+    });
     await store.writeSample(
       sample({
         atMs: DAY_START + 60_000,
-        databaseProxies: [proxyRow('proxysql-1', 'proxysql'), proxyRow('proxysql-2', 'proxysql')],
-      })
-    )
+        databaseProxies: [
+          proxyRow("proxysql-1", "proxysql"),
+          proxyRow("proxysql-2", "proxysql"),
+        ],
+      }),
+    );
 
     const result = await store.queryEntityIdsSeen({
       serverId: SERVER_A,
-      family: 'managed.database_proxy',
+      family: "managed.database_proxy",
       from: new Date(DAY_START).toISOString(),
       to: new Date(DAY_START + 600_000).toISOString(),
-    })
-    assertEquals(result.entityIds.slice().sort(), ['proxysql-1', 'proxysql-2'])
-  })
-})
+    });
+    assertEquals(result.entityIds.slice().sort(), ["proxysql-1", "proxysql-2"]);
+  });
+});
 
-it('v5 queryMetricEvents: parses entityId/source/payload when present and omits them entirely when absent', async () => {
+it("v5 queryMetricEvents: parses entityId/source/payload when present and omits them entirely when absent", async () => {
   await withStore(async (store) => {
     await store.writeSample(
       sample({
         atMs: DAY_START + 60_000,
         events: [
           {
-            eventId: 'evt-full',
+            eventId: "evt-full",
             at: new Date(DAY_START + 60_000).toISOString(),
-            kind: 'oom_kill',
-            severity: 'critical',
-            entityId: 'proc-1',
-            source: 'kernel',
+            kind: "oom_kill",
+            severity: "critical",
+            entityId: "proc-1",
+            source: "kernel",
             payload: { pid: 42, killed: true },
           },
           {
-            eventId: 'evt-bare',
+            eventId: "evt-bare",
             at: new Date(DAY_START + 120_000).toISOString(),
-            kind: 'nic_link_down',
-            severity: 'warning',
+            kind: "nic_link_down",
+            severity: "warning",
           },
         ],
-      })
-    )
+      }),
+    );
 
     const result = await store.queryMetricEvents({
       serverId: SERVER_A,
       from: new Date(DAY_START).toISOString(),
       to: new Date(DAY_START + 600_000).toISOString(),
-    })
+    });
 
-    assertEquals(result.truncated, false)
-    assertEquals(result.events.length, 2)
-    const full = result.events.find((e) => e.eventId === 'evt-full')!
-    assertEquals(full.entityId, 'proc-1')
-    assertEquals(full.source, 'kernel')
-    assertEquals(full.payload, { pid: 42, killed: true })
+    assertEquals(result.truncated, false);
+    assertEquals(result.events.length, 2);
+    const full = result.events.find((e) => e.eventId === "evt-full")!;
+    assertEquals(full.entityId, "proc-1");
+    assertEquals(full.source, "kernel");
+    assertEquals(full.payload, { pid: 42, killed: true });
 
-    const bare = result.events.find((e) => e.eventId === 'evt-bare')!
-    assertEquals('entityId' in bare, false)
-    assertEquals('source' in bare, false)
-    assertEquals('payload' in bare, false)
-  })
-})
+    const bare = result.events.find((e) => e.eventId === "evt-bare")!;
+    assertEquals("entityId" in bare, false);
+    assertEquals("source" in bare, false);
+    assertEquals("payload" in bare, false);
+  });
+});
 
-it('v5 queryMetricEvents: truncates at MAX_STATUS_EVENTS and reports truncated: true', async () => {
+it("v5 queryMetricEvents: truncates at MAX_STATUS_EVENTS and reports truncated: true", async () => {
   await withStore(async (store) => {
-    const total = MAX_STATUS_EVENTS + 1
+    const total = MAX_STATUS_EVENTS + 1;
     const allEvents: MetricEvent[] = Array.from({ length: total }, (_, i) => ({
       eventId: `evt-${i}`,
       at: new Date(DAY_START + i * 1000).toISOString(),
-      kind: 'oom_kill',
-      severity: 'info',
-    }))
+      kind: "oom_kill",
+      severity: "info",
+    }));
     // `buildMetricsSample` caps events per sample at 16 — split across
     // several `writeSample` calls (each call still fans its own events out
     // inside a single transaction; the cap is per-sample, not per-store).
-    const CHUNK = 16
+    const CHUNK = 16;
     for (let offset = 0; offset < allEvents.length; offset += CHUNK) {
-      const chunk = allEvents.slice(offset, offset + CHUNK)
+      const chunk = allEvents.slice(offset, offset + CHUNK);
       await store.writeSample(
         sample({
           atMs: DAY_START + offset * 1000,
           sequence: offset + 1,
           events: chunk,
-        })
-      )
+        }),
+      );
     }
 
     const result = await store.queryMetricEvents({
       serverId: SERVER_A,
       from: new Date(DAY_START).toISOString(),
       to: new Date(DAY_START + total * 1000 + 60_000).toISOString(),
-    })
+    });
 
-    assertEquals(result.truncated, true)
-    assertEquals(result.events.length, MAX_STATUS_EVENTS)
-    assertEquals(result.events[0]!.eventId, 'evt-0')
-  })
-})
+    assertEquals(result.truncated, true);
+    assertEquals(result.events.length, MAX_STATUS_EVENTS);
+    assertEquals(result.events[0]!.eventId, "evt-0");
+  });
+});
 
 const DIAGNOSTICS_FIXTURE: DiagnosticsSample = {
   cpu: {
@@ -1093,103 +1221,122 @@ const DIAGNOSTICS_FIXTURE: DiagnosticsSample = {
     pageScanKswapdPerSecond: 5,
     compactionStallsPerSecond: 1,
   },
-}
+};
 
-it('writeSample stores only the committed-memory reading of diagnostics, in a single server_memory_diagnostics_samples row (no row when absent)', async () => {
+it("writeSample stores only the committed-memory reading of diagnostics, in a single server_memory_diagnostics_samples row (no row when absent)", async () => {
   await withStore(async (store, metricsDir) => {
-    await store.writeSample(sample({ atMs: DAY_START, diagnostics: DIAGNOSTICS_FIXTURE }))
-    await store.close()
+    await store.writeSample(
+      sample({ atMs: DAY_START, diagnostics: DIAGNOSTICS_FIXTURE }),
+    );
+    await store.close();
 
-    const handle = await openDuckDb({ paths: resolveDuckDbPaths(metricsDir) })
+    const handle = await openDuckDb({ paths: resolveDuckDbPaths(metricsDir) });
     try {
-      assertEquals(await rowCount(handle.connection, MEMORY_DIAGNOSTICS_SAMPLES_TABLE), 1)
+      assertEquals(
+        await rowCount(handle.connection, MEMORY_DIAGNOSTICS_SAMPLES_TABLE),
+        1,
+      );
       const reader = await handle.connection.runAndReadAll(
-        `SELECT committed_as_bytes FROM ${MEMORY_DIAGNOSTICS_SAMPLES_TABLE}`
-      )
-      const row = reader.getRowObjectsJS()[0]!
-      assertEquals(row.committed_as_bytes, 9_000_000)
+        `SELECT committed_as_bytes FROM ${MEMORY_DIAGNOSTICS_SAMPLES_TABLE}`,
+      );
+      const row = reader.getRowObjectsJS()[0]!;
+      assertEquals(row.committed_as_bytes, 9_000_000);
     } finally {
-      handle.close()
+      handle.close();
     }
-  })
+  });
 
   await withStore(async (store, metricsDir) => {
-    await store.writeSample(sample({ atMs: DAY_START, cpuBusyPercent: 5 }))
-    await store.close()
-    const handle = await openDuckDb({ paths: resolveDuckDbPaths(metricsDir) })
+    await store.writeSample(sample({ atMs: DAY_START, cpuBusyPercent: 5 }));
+    await store.close();
+    const handle = await openDuckDb({ paths: resolveDuckDbPaths(metricsDir) });
     try {
-      assertEquals(await rowCount(handle.connection, MEMORY_DIAGNOSTICS_SAMPLES_TABLE), 0)
+      assertEquals(
+        await rowCount(handle.connection, MEMORY_DIAGNOSTICS_SAMPLES_TABLE),
+        0,
+      );
     } finally {
-      handle.close()
+      handle.close();
     }
-  })
-})
+  });
+});
 
-it('startUiServer rejects a non-TCP port before opening DuckDB', async () => {
+it("startUiServer rejects a non-TCP port before opening DuckDB", async () => {
   await withStore(async (store) => {
-    await assertRejects(() => store.startUiServer(0), TypeError, 'port must be a valid TCP port')
+    await assertRejects(
+      () => store.startUiServer(0),
+      TypeError,
+      "port must be a valid TCP port",
+    );
     await assertRejects(
       () => store.startUiServer(65536),
       TypeError,
-      'port must be a valid TCP port'
-    )
-    await assertRejects(() => store.startUiServer(1.5), TypeError, 'port must be a valid TCP port')
-  })
-})
+      "port must be a valid TCP port",
+    );
+    await assertRejects(
+      () => store.startUiServer(1.5),
+      TypeError,
+      "port must be a valid TCP port",
+    );
+  });
+});
 
-it('constructor rejects non-positive threads / retentionDays before opening DuckDB', async () => {
-  const metricsDir = await Deno.makeTempDir({ prefix: 'tp-duckdb-store-ctor-' })
+it("constructor rejects non-positive threads / retentionDays before opening DuckDB", async () => {
+  const metricsDir = await Deno.makeTempDir({
+    prefix: "tp-duckdb-store-ctor-",
+  });
   try {
     assertThrows(
       () => new DuckDbParquetServerMetricsStore({ metricsDir, threads: 0 }),
       TypeError,
-      'threads must be a positive integer'
-    )
+      "threads must be a positive integer",
+    );
     assertThrows(
-      () => new DuckDbParquetServerMetricsStore({ metricsDir, retentionDays: -1 }),
+      () =>
+        new DuckDbParquetServerMetricsStore({ metricsDir, retentionDays: -1 }),
       TypeError,
-      'retentionDays must be a positive integer'
-    )
+      "retentionDays must be a positive integer",
+    );
   } finally {
-    await Deno.remove(metricsDir, { recursive: true })
+    await Deno.remove(metricsDir, { recursive: true });
   }
-})
+});
 
-it('queryHostSeries rejects unsafe ids, inverted ranges, and empty metrics', async () => {
+it("queryHostSeries rejects unsafe ids, inverted ranges, and empty metrics", async () => {
   await withStore(async (store) => {
     await assertRejects(
       () =>
         store.queryHostSeries({
-          serverId: 'not-a-uuid',
-          metrics: ['host.cpu.busyPercent'],
+          serverId: "not-a-uuid",
+          metrics: ["host.cpu.busyPercent"],
           from: new Date(DAY_START).toISOString(),
           to: new Date(DAY_START + 60_000).toISOString(),
         }),
       TypeError,
-      'invalid serverId for DuckDB'
-    )
+      "invalid serverId for DuckDB",
+    );
     await assertRejects(
       () =>
         store.queryHostSeries({
           serverId: SERVER_A,
-          metrics: ['host.cpu.busyPercent'],
-          from: 'not-an-instant',
+          metrics: ["host.cpu.busyPercent"],
+          from: "not-an-instant",
           to: new Date(DAY_START + 60_000).toISOString(),
         }),
       TypeError,
-      'invalid from timestamp'
-    )
+      "invalid from timestamp",
+    );
     await assertRejects(
       () =>
         store.queryHostSeries({
           serverId: SERVER_A,
-          metrics: ['host.cpu.busyPercent'],
+          metrics: ["host.cpu.busyPercent"],
           from: new Date(DAY_START + 60_000).toISOString(),
           to: new Date(DAY_START).toISOString(),
         }),
       TypeError,
-      'from must be <= to'
-    )
+      "from must be <= to",
+    );
     await assertRejects(
       () =>
         store.queryHostSeries({
@@ -1199,61 +1346,61 @@ it('queryHostSeries rejects unsafe ids, inverted ranges, and empty metrics', asy
           to: new Date(DAY_START + 60_000).toISOString(),
         }),
       TypeError,
-      'metrics must be a non-empty list of v6 canonical names'
-    )
+      "metrics must be a non-empty list of v6 canonical names",
+    );
     await assertRejects(
       () =>
         store.queryHostSeries({
           serverId: SERVER_A,
-          metrics: ['host.cpu.busyPercent'],
+          metrics: ["host.cpu.busyPercent"],
           from: new Date(DAY_START).toISOString(),
           to: new Date(DAY_START + 60_000).toISOString(),
           resolutionSeconds: 0,
         }),
       TypeError,
-      'resolutionSeconds must be a positive integer'
-    )
-  })
-})
+      "resolutionSeconds must be a positive integer",
+    );
+  });
+});
 
-it('age-based flush writes a sample that is under the row batch cap', async () => {
-  const metricsDir = await Deno.makeTempDir({ prefix: 'tp-duckdb-store-age-' })
+it("age-based flush writes a sample that is under the row batch cap", async () => {
+  const metricsDir = await Deno.makeTempDir({ prefix: "tp-duckdb-store-age-" });
   const store = new DuckDbParquetServerMetricsStore(
     { metricsDir },
-    { writeBatchMaxRows: 50, writeBatchMaxAgeMs: 5 }
-  )
+    { writeBatchMaxRows: 50, writeBatchMaxAgeMs: 5 },
+  );
   try {
-    await store.writeSample(sample({ atMs: DAY_START, cpuBusyPercent: 7 }))
+    await store.writeSample(sample({ atMs: DAY_START, cpuBusyPercent: 7 }));
     // Age timer is 5ms, but DuckDB open+insert under a loaded `test:coverage`
     // run can take hundreds of ms. Poll the query (which force-flushes) so a
     // slow first open is not a flake.
-    const deadline = Date.now() + 2_000
-    let result: Pick<HostSeriesResult, 'sampleCount' | 'points'> = {
+    const deadline = Date.now() + 2_000;
+    let result: Pick<HostSeriesResult, "sampleCount" | "points"> = {
       sampleCount: 0,
       points: [],
-    }
+    };
     while (Date.now() < deadline) {
       result = await store.queryHostSeries({
         serverId: SERVER_A,
-        metrics: ['host.cpu.busyPercent'],
+        metrics: ["host.cpu.busyPercent"],
         from: new Date(DAY_START).toISOString(),
         to: new Date(DAY_START + 60_000).toISOString(),
         resolutionSeconds: 60,
-      })
-      if (result.sampleCount === 1) break
-      await new Promise((resolve) => setTimeout(resolve, 20))
+      });
+      if (result.sampleCount === 1) break;
+      await new Promise((resolve) => setTimeout(resolve, 20));
     }
-    assertEquals(result.sampleCount, 1)
-    assertEquals(result.points[0]?.values['host.cpu.busyPercent'], 7)
+    assertEquals(result.sampleCount, 1);
+    assertEquals(result.points[0]?.values["host.cpu.busyPercent"], 7);
   } finally {
-    await store.close()
-    await Deno.remove(metricsDir, { recursive: true })
+    await store.close();
+    await Deno.remove(metricsDir, { recursive: true });
   }
-})
+});
 
 const INGRESS_V6: IngressSourceSample = {
-  sourceId: 'caddy',
-  sourceKind: 'caddy',
+  sourceId: "caddy",
+  sourceKind: "caddy",
   requests: 10,
   responses2xx: null,
   responses3xx: null,
@@ -1273,7 +1420,7 @@ const INGRESS_V6: IngressSourceSample = {
   upstreamsHealthy: null,
   upstreamsTotal: null,
   retries: null,
-}
+};
 
 const DOCKER_V6: DockerUsageSample = {
   layersBytes: 1,
@@ -1286,116 +1433,133 @@ const DOCKER_V6: DockerUsageSample = {
   volumesReclaimableBytes: null,
   buildCacheBytes: null,
   buildCacheReclaimableBytes: null,
-}
+};
 
-it('wire version 8 extended numeric fields land in the ext_* columns; a v6 sample writes real NULLs there', async () => {
-  const metricsDir = await Deno.makeTempDir({ prefix: 'tp-duckdb-v12-' })
+it("wire version 8 extended numeric fields land in the ext_* columns; a v6 sample writes real NULLs there", async () => {
+  const metricsDir = await Deno.makeTempDir({ prefix: "tp-duckdb-v12-" });
   try {
-    const store = makeStore(metricsDir)
+    const store = makeStore(metricsDir);
     await store.writeSample(
       sample({
         atMs: DAY_START + 60_000,
         ingressSources: [INGRESS_V6],
         dockerUsage: DOCKER_V6,
         extended: {
-          host: { oomKills: 3, rootDiskQueueDepth: 1.5, pidLimitUsedPercent: 20 },
+          host: {
+            oomKills: 3,
+            rootDiskQueueDepth: 1.5,
+            pidLimitUsedPercent: 20,
+          },
           docker: { containersRunning: 7, reclaimableBytes: 99 },
           ingress: { tlsCertSoonestExpiryDays: 21 },
-          text: { kernel: '6.8.0' },
+          text: { kernel: "6.8.0" },
         },
-      })
-    )
+      }),
+    );
     await store.writeSample(
       sample({
         atMs: DAY_START + 120_000,
         ingressSources: [INGRESS_V6],
         dockerUsage: DOCKER_V6,
-      })
-    )
-    await store.close()
+      }),
+    );
+    await store.close();
 
-    const handle = await openDuckDb({ paths: resolveDuckDbPaths(metricsDir) })
+    const handle = await openDuckDb({ paths: resolveDuckDbPaths(metricsDir) });
     try {
       const read = async (sql: string) =>
-        (await handle.connection.runAndReadAll(sql)).getRowObjectsJS()
+        (await handle.connection.runAndReadAll(sql)).getRowObjectsJS();
       const host = await read(
         `SELECT ext_oom_kills, ext_root_disk_queue_depth, ext_pid_limit_used_percent, ` +
           `ext_systemd_units_failed, ext_tls_cert_soonest_expiry_days AS d ` +
-          `FROM ${HOST_SAMPLES_TABLE} ORDER BY sampled_at`
-      )
+          `FROM ${HOST_SAMPLES_TABLE} ORDER BY sampled_at`,
+      );
       assertEquals(host[0], {
         ext_oom_kills: 3,
         ext_root_disk_queue_depth: 1.5,
         ext_pid_limit_used_percent: 20,
         ext_systemd_units_failed: null,
         d: 21,
-      })
-      assertEquals(host[1].ext_oom_kills, null)
-      assertEquals(host[1].d, null)
+      });
+      assertEquals(host[1].ext_oom_kills, null);
+      assertEquals(host[1].d, null);
       const docker = await read(
-        `SELECT ext_containers_running, ext_reclaimable_bytes FROM server_docker_samples ORDER BY sampled_at`
-      )
-      assertEquals(docker[0], { ext_containers_running: 7, ext_reclaimable_bytes: 99 })
-      assertEquals(docker[1].ext_containers_running, null)
+        `SELECT ext_containers_running, ext_reclaimable_bytes FROM server_docker_samples ORDER BY sampled_at`,
+      );
+      assertEquals(docker[0], {
+        ext_containers_running: 7,
+        ext_reclaimable_bytes: 99,
+      });
+      assertEquals(docker[1].ext_containers_running, null);
       const text = await read(
-        `SELECT kernel, os FROM ${HOST_TEXT_SAMPLES_TABLE} ORDER BY sampled_at`
-      )
+        `SELECT kernel, os FROM ${HOST_TEXT_SAMPLES_TABLE} ORDER BY sampled_at`,
+      );
       assertEquals(text, [
-        { kernel: '6.8.0', os: '' },
-        { kernel: '', os: '' },
-      ])
+        { kernel: "6.8.0", os: "" },
+        { kernel: "", os: "" },
+      ]);
     } finally {
-      handle.close()
+      handle.close();
     }
   } finally {
-    await Deno.remove(metricsDir, { recursive: true })
+    await Deno.remove(metricsDir, { recursive: true });
   }
-})
+});
 
-it('a row the column types reject never blocks other servers and is dropped after bounded retries', async () => {
-  const metricsDir = await Deno.makeTempDir({ prefix: 'tp-duckdb-poison-' })
-  const errors: unknown[] = []
+it("a row the column types reject never blocks other servers and is dropped after bounded retries", async () => {
+  const metricsDir = await Deno.makeTempDir({ prefix: "tp-duckdb-poison-" });
+  const errors: unknown[] = [];
   const store = new DuckDbParquetServerMetricsStore(
     { metricsDir },
-    { writeBatchMaxRows: 1, onFlushError: (error) => errors.push(error) }
-  )
-  const SERVER_B = '66666666-7777-4888-8999-aaaaaaaaaaaa'
+    { writeBatchMaxRows: 1, onFlushError: (error) => errors.push(error) },
+  );
+  const SERVER_B = "66666666-7777-4888-8999-aaaaaaaaaaaa";
   try {
     // 100000 does not fit the SMALLINT interval_seconds column.
     await assertRejects(() =>
-      store.writeSample(sample({ atMs: DAY_START + 60_000, intervalSeconds: 100_000 }))
-    )
+      store.writeSample(
+        sample({ atMs: DAY_START + 60_000, intervalSeconds: 100_000 }),
+      )
+    );
     // A later sample from another server still lands and reads back.
     await store.writeSample(
-      sample({ serverId: SERVER_B, atMs: DAY_START + 120_000, cpuBusyPercent: 7 })
-    )
+      sample({
+        serverId: SERVER_B,
+        atMs: DAY_START + 120_000,
+        cpuBusyPercent: 7,
+      }),
+    );
     // Repeated flushes (queries) do not throw because of the poisoned row.
-    for (let i = 0; i < 8; i++) await store.flushWrites()
-    const afterDrop = errors.length
-    await store.flushWrites()
-    assertEquals(errors.length, afterDrop, 'poisoned row is dropped, not retried forever')
+    for (let i = 0; i < 8; i++) await store.flushWrites();
+    const afterDrop = errors.length;
+    await store.flushWrites();
+    assertEquals(
+      errors.length,
+      afterDrop,
+      "poisoned row is dropped, not retried forever",
+    );
   } finally {
-    await store.close()
+    await store.close();
   }
-  const handle = await openDuckDb({ paths: resolveDuckDbPaths(metricsDir) })
+  const handle = await openDuckDb({ paths: resolveDuckDbPaths(metricsDir) });
   try {
     const reader = await handle.connection.runAndReadAll(
-      `SELECT CAST(server_id AS VARCHAR) AS server_id FROM ${HOST_SAMPLES_TABLE}`
-    )
+      `SELECT CAST(server_id AS VARCHAR) AS server_id FROM ${HOST_SAMPLES_TABLE}`,
+    );
     assertEquals(
       reader.getRowObjectsJS().map((row) => row.server_id),
-      [SERVER_B]
-    )
+      [SERVER_B],
+    );
   } finally {
-    handle.close()
-    await Deno.remove(metricsDir, { recursive: true })
+    handle.close();
+    await Deno.remove(metricsDir, { recursive: true });
   }
-})
+});
 
-it('a NIC embedded in the hosted host row keeps its errors and drops only as their sum', async () => {
-  const metricsDir = await Deno.makeTempDir({ prefix: 'tp-duckdb-nic-sum-' })
+it("a NIC embedded in the hosted host row keeps its errors and drops only as their sum", async () => {
+  const metricsDir = await Deno.makeTempDir({ prefix: "tp-duckdb-nic-sum-" });
   try {
-    const store = makeStore(metricsDir)
+    const store = makeStore(metricsDir);
     const withRates = (deviceId: string) => ({
       deviceId,
       receiveBytesPerSecond: 10,
@@ -1404,56 +1568,70 @@ it('a NIC embedded in the hosted host row keeps its errors and drops only as the
       transmitErrorsPerSecond: 2,
       receiveDropsPerSecond: 3,
       transmitDropsPerSecond: 4,
-    })
+    });
     await store.writeSample(
       sample({
         atMs: DAY_START + 60_000,
-        networks: [withRates('eth0'), withRates('eth9')],
-        extended: { networkSizes: [{ deviceId: 'eth9', linkSpeedMbps: 2500 }] },
+        networks: [withRates("eth0"), withRates("eth9")],
+        extended: { networkSizes: [{ deviceId: "eth9", linkSpeedMbps: 2500 }] },
       }),
       {
-        normalNicSlots: ['eth0'],
+        normalNicSlots: ["eth0"],
         fabricDeviceIds: [],
         rootFilesystemId: null,
         gpuPageOrder: [],
         blockPageOrder: [],
         filesystemPageOrder: [],
         hardwareSignalPageOrder: [],
-      }
-    )
-    await store.close()
+      },
+    );
+    await store.close();
 
-    const handle = await openDuckDb({ paths: resolveDuckDbPaths(metricsDir) })
+    const handle = await openDuckDb({ paths: resolveDuckDbPaths(metricsDir) });
     try {
       const rows = (
         await handle.connection.runAndReadAll(
           `SELECT device_id, receive_bytes_per_second AS rx, receive_errors_per_second AS rx_err, ` +
             `transmit_drops_per_second AS tx_drop, problems_per_second AS problems, ` +
-            `link_speed_mbps AS speed FROM ${NETWORK_SAMPLES_TABLE} ORDER BY device_id`
+            `link_speed_mbps AS speed FROM ${NETWORK_SAMPLES_TABLE} ORDER BY device_id`,
         )
-      ).getRowObjectsJS()
+      ).getRowObjectsJS();
       assertEquals(rows, [
-        { device_id: 'eth0', rx: 10, rx_err: null, tx_drop: null, problems: 10, speed: null },
-        { device_id: 'eth9', rx: 10, rx_err: 1, tx_drop: 4, problems: null, speed: 2500 },
-      ])
+        {
+          device_id: "eth0",
+          rx: 10,
+          rx_err: null,
+          tx_drop: null,
+          problems: 10,
+          speed: null,
+        },
+        {
+          device_id: "eth9",
+          rx: 10,
+          rx_err: 1,
+          tx_drop: 4,
+          problems: null,
+          speed: 2500,
+        },
+      ]);
     } finally {
-      handle.close()
+      handle.close();
     }
   } finally {
-    await Deno.remove(metricsDir, { recursive: true })
+    await Deno.remove(metricsDir, { recursive: true });
   }
-})
+});
 
-it('container health is stored without the disk breakdown; reclaimable falls back to the three groups', async () => {
-  const metricsDir = await Deno.makeTempDir({ prefix: 'tp-duckdb-docker-' })
+it("container health is stored without the disk breakdown; reclaimable falls back to the three groups", async () => {
+  const metricsDir = await Deno.makeTempDir({ prefix: "tp-duckdb-docker-" });
   try {
-    const store = makeStore(metricsDir)
+    const store = makeStore(metricsDir);
     await store.writeSample(
       sample({
         atMs: DAY_START + 60_000,
         extended: { docker: { containersRunning: 4 } },
-      })
-    )
+      }),
+    );
     await store.writeSample(
       sample({
         atMs: DAY_START + 120_000,
@@ -1463,43 +1641,45 @@ it('container health is stored without the disk breakdown; reclaimable falls bac
           volumesReclaimableBytes: 20,
           buildCacheReclaimableBytes: 30,
         },
-      })
-    )
-    await store.close()
+      }),
+    );
+    await store.close();
 
-    const handle = await openDuckDb({ paths: resolveDuckDbPaths(metricsDir) })
+    const handle = await openDuckDb({ paths: resolveDuckDbPaths(metricsDir) });
     try {
       const rows = (
         await handle.connection.runAndReadAll(
           `SELECT ext_containers_running AS running, ext_reclaimable_bytes AS reclaimable, ` +
-            `layers_bytes FROM server_docker_samples ORDER BY sampled_at`
+            `layers_bytes FROM server_docker_samples ORDER BY sampled_at`,
         )
-      ).getRowObjectsJS()
+      ).getRowObjectsJS();
       assertEquals(rows, [
         { running: 4, reclaimable: null, layers_bytes: null },
         { running: null, reclaimable: 60, layers_bytes: 1 },
-      ])
+      ]);
     } finally {
-      handle.close()
+      handle.close();
     }
   } finally {
-    await Deno.remove(metricsDir, { recursive: true })
+    await Deno.remove(metricsDir, { recursive: true });
   }
-})
+});
 
-it('daily archive prunes sealed days to the size cap but always keeps the newest two', async () => {
+it("daily archive prunes sealed days to the size cap but always keeps the newest two", async () => {
   await withStore(
     async (store) => {
       for (let back = 4; back >= 1; back--) {
-        await store.writeSample(sample({ atMs: DAY_START - back * MS_PER_DAY + 60_000 }))
+        await store.writeSample(
+          sample({ atMs: DAY_START - back * MS_PER_DAY + 60_000 }),
+        );
       }
-      await store.runDailyArchiveOnce(DAY_START + 3600_000)
-      const days = await listPartitionDays(store.paths.parquetRoot, 'host')
+      await store.runDailyArchiveOnce(DAY_START + 3600_000);
+      const days = await listPartitionDays(store.paths.parquetRoot, "host");
       assertEquals(
         days.map((day) => day.dayStartMs),
-        [DAY_START - 2 * MS_PER_DAY, DAY_START - MS_PER_DAY]
-      )
+        [DAY_START - 2 * MS_PER_DAY, DAY_START - MS_PER_DAY],
+      );
     },
-    { maxBytes: 1 }
-  )
-})
+    { maxBytes: 1 },
+  );
+});

@@ -20,32 +20,32 @@
 
 import {
   HOST_METRICS_METRIC_DESCRIPTORS,
-  UNSTORED_HOST_METRICS,
   type HostMetricsMetricDescriptor,
   type MetricEntityScope,
-} from '../../metric-descriptors.ts'
+  UNSTORED_HOST_METRICS,
+} from "../../metric-descriptors.ts";
 import type {
+  MetricEvent,
   MetricEventKind,
   MetricEventSeverity,
-  MetricEvent,
-} from '../../../../contracts/metrics-contract.ts'
+} from "../../../../contracts/metrics-contract.ts";
 import {
   AE_DEFAULT_MAX_RANGE_SECONDS,
   MAX_STATUS_EVENTS,
   resolveTruncatedStatusEvents,
-} from '../cloudflare/sql-api.ts'
+} from "../cloudflare/sql-api.ts";
 import {
   computeSeriesGapCount,
   defaultExpectedSamplesPerBucket,
   finalizeHostSeriesResult,
-} from '../../query/series-response.ts'
+} from "../../query/series-response.ts";
 import {
   emptyHostFacts,
   hostFactsFromSample,
   parseStoredHostFacts,
-} from '../../query/host-facts.ts'
-import { computeStatusUptime } from '../../query/uptime.ts'
-import { forEachSequential } from '../../../../lib/sequential.ts'
+} from "../../query/host-facts.ts";
+import { computeStatusUptime } from "../../query/uptime.ts";
+import { forEachSequential } from "../../../../lib/sequential.ts";
 import type {
   AuthenticatedMetricsSample,
   EntityIdsSeenQuery,
@@ -56,9 +56,9 @@ import type {
   EntitySeriesResult,
   FleetHostSnapshotQuery,
   FleetHostSnapshotResult,
+  FleetHostSnapshotServer,
   HostFactsQuery,
   HostFactsResult,
-  FleetHostSnapshotServer,
   HostSeriesPoint,
   HostSeriesQuery,
   HostSeriesResult,
@@ -72,7 +72,7 @@ import type {
   SlotMapping,
   StatusHistoryQuery,
   StatusHistoryResult,
-} from '../../types.ts'
+} from "../../types.ts";
 import {
   type DuckDbBindValue,
   type DuckDbConnectionLike,
@@ -82,7 +82,7 @@ import {
   escapeSqlString,
   openDuckDb,
   resolveDuckDbPaths,
-} from './database.ts'
+} from "./database.ts";
 import {
   cleanupTmpParquetFiles,
   listPartitionFilesInRange,
@@ -96,18 +96,18 @@ import {
   sealDayToParquet,
   timestampLiteralFromMs,
   utcDayStartMs,
-} from './parquet.ts'
+} from "./parquet.ts";
 import {
   BLOCK_METRIC_FIELDS,
   BLOCK_SAMPLES_TABLE,
-  blockSamplesInsertColumns,
   BLOCK_TEXT_FIELDS,
+  blockSamplesInsertColumns,
   DATABASE_PROXY_METRIC_FIELDS,
   DATABASE_PROXY_SAMPLES_TABLE,
   databaseProxySamplesInsertColumns,
   DOCKER_SAMPLES_TABLE,
-  dockerSamplesInsertColumns,
   DOCKER_USAGE_METRIC_FIELDS,
+  dockerSamplesInsertColumns,
   entityMetricColumnName,
   extendedColumnName,
   FILESYSTEM_METRIC_FIELDS,
@@ -115,12 +115,12 @@ import {
   filesystemSamplesInsertColumns,
   GPU_METRIC_FIELDS,
   GPU_SAMPLES_TABLE,
-  gpuSamplesInsertColumns,
   GPU_TEXT_FIELDS,
+  gpuSamplesInsertColumns,
   HARDWARE_SIGNAL_SAMPLES_TABLE,
   hardwareSignalSamplesInsertColumns,
-  HOST_METRIC_FIELD_REFS,
   HOST_FACTS_TABLE,
+  HOST_METRIC_FIELD_REFS,
   HOST_SAMPLES_TABLE,
   HOST_TEXT_FIELDS,
   HOST_TEXT_SAMPLES_TABLE,
@@ -150,11 +150,15 @@ import {
   V12_HOST_COLUMNS,
   V12_INGRESS_COLUMNS,
   V12_SIZE_COLUMNS,
-} from './schema.ts'
-import { buildSampleRows, type PendingRowTable, toDuckDbTimestamp } from './sample-rows.ts'
+} from "./schema.ts";
+import {
+  buildSampleRows,
+  type PendingRowTable,
+  toDuckDbTimestamp,
+} from "./sample-rows.ts";
 
 /** Flush when this many pending rows accumulate (small co-located fleet). */
-export const DUCKDB_WRITE_BATCH_MAX_ROWS = 10
+export const DUCKDB_WRITE_BATCH_MAX_ROWS = 10;
 
 /**
  * Max age before an incomplete batch flushes. Short on purpose: loaded
@@ -162,131 +166,138 @@ export const DUCKDB_WRITE_BATCH_MAX_ROWS = 10
  * sample every ~60 s) must still persist promptly — an accepted row never
  * sits in memory for more than a few seconds.
  */
-export const DUCKDB_WRITE_BATCH_MAX_AGE_MS = 5_000
+export const DUCKDB_WRITE_BATCH_MAX_AGE_MS = 5_000;
 
 /** Default retention for hot rows + sealed partitions (matches AE's 90 days). */
-export const DEFAULT_DUCKDB_RETENTION_DAYS = 90
+export const DEFAULT_DUCKDB_RETENTION_DAYS = 90;
 
 /** Default cap for the whole self-hosted metrics store (5 GiB); the oldest sealed days go first. */
-export const DEFAULT_DUCKDB_MAX_BYTES = 5 * 1024 ** 3
+export const DEFAULT_DUCKDB_MAX_BYTES = 5 * 1024 ** 3;
 
 /** Loopback port the dev-only embedded DuckDB UI serves on. */
-export const DUCKDB_UI_DEFAULT_PORT = 4213
+export const DUCKDB_UI_DEFAULT_PORT = 4213;
 
 /** How often the armed daily-archive timer checks for a completed UTC day. */
-export const DUCKDB_ARCHIVE_CHECK_INTERVAL_MS = 60 * 60_000
+export const DUCKDB_ARCHIVE_CHECK_INTERVAL_MS = 60 * 60_000;
 
 /** Default bucket when `resolutionSeconds` is omitted (5 minutes). */
-export const DUCKDB_DEFAULT_BUCKET_SECONDS = 300
+export const DUCKDB_DEFAULT_BUCKET_SECONDS = 300;
 
 /** Cap on serverIds accepted into one fleet snapshot IN-list. */
-export const DUCKDB_MAX_FLEET_SNAPSHOT_SERVERS = 500
+export const DUCKDB_MAX_FLEET_SNAPSHOT_SERVERS = 500;
 
 export type DuckDbStoreConfig = {
   /** Metrics state root override (default: `resolveMetricsDir()`). */
-  metricsDir?: string
+  metricsDir?: string;
   /** DuckDB worker-thread cap (`SET threads`, default 2). */
-  threads?: number
+  threads?: number;
   /** DuckDB memory cap in MiB (`SET memory_limit`, default 128). */
-  memoryLimitMb?: number
+  memoryLimitMb?: number;
   /** Hot + Parquet retention days (default 90). */
-  retentionDays?: number
+  retentionDays?: number;
   /** Cap for the whole metrics store in bytes (default 5 GiB); the oldest sealed days are pruned first. */
-  maxBytes?: number
-}
+  maxBytes?: number;
+};
 
 export type DuckDbStoreOptions = {
   /** Injected handle factory (tests) — skips filesystem setup + native open. */
-  openHandle?: () => Promise<DuckDbHandle>
+  openHandle?: () => Promise<DuckDbHandle>;
   /** Override insert batch size (default {@link DUCKDB_WRITE_BATCH_MAX_ROWS}). */
-  writeBatchMaxRows?: number
+  writeBatchMaxRows?: number;
   /** Override insert batch age (default {@link DUCKDB_WRITE_BATCH_MAX_AGE_MS}). */
-  writeBatchMaxAgeMs?: number
-  setTimeoutFn?: typeof setTimeout
-  clearTimeoutFn?: typeof clearTimeout
-  setIntervalFn?: typeof setInterval
-  clearIntervalFn?: typeof clearInterval
-  now?: () => number
-  onFlushError?: (error: unknown) => void
-}
+  writeBatchMaxAgeMs?: number;
+  setTimeoutFn?: typeof setTimeout;
+  clearTimeoutFn?: typeof clearTimeout;
+  setIntervalFn?: typeof setInterval;
+  clearIntervalFn?: typeof clearInterval;
+  now?: () => number;
+  onFlushError?: (error: unknown) => void;
+};
 
 type PendingRow = {
-  table: PendingRowTable
-  values: DuckDbBindValue[]
+  table: PendingRowTable;
+  values: DuckDbBindValue[];
   /** Rows from one `writeSample` share a group so a failed insert is isolated per sample. */
-  group?: number
+  group?: number;
   /** Failed flush attempts so far; the group is dropped at {@link DUCKDB_WRITE_MAX_ATTEMPTS}. */
-  attempts?: number
-}
+  attempts?: number;
+};
 
 /** A sample whose insert keeps failing is dropped (and logged) after this many attempts. */
-export const DUCKDB_WRITE_MAX_ATTEMPTS = 5
+export const DUCKDB_WRITE_MAX_ATTEMPTS = 5;
 /** Hard cap on queued rows while flushes fail; the oldest rows are dropped first. */
-export const DUCKDB_WRITE_MAX_PENDING_ROWS = 50_000
-const MAX_RECORDED_GROUP_FAILURES = 64
+export const DUCKDB_WRITE_MAX_PENDING_ROWS = 50_000;
+const MAX_RECORDED_GROUP_FAILURES = 64;
 
 export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
-  readonly #paths: DuckDbPaths
-  readonly #threads: number | undefined
-  readonly #memoryLimitMb: number | undefined
-  readonly #retentionDays: number
-  readonly #maxBytes: number
-  readonly #openHandle: () => Promise<DuckDbHandle>
-  readonly #batchMaxRows: number
-  readonly #batchMaxAgeMs: number
-  readonly #setTimeout: typeof setTimeout
-  readonly #clearTimeout: typeof clearTimeout
-  readonly #setInterval: typeof setInterval
-  readonly #clearInterval: typeof clearInterval
-  readonly #now: () => number
-  readonly #onFlushError: (error: unknown) => void
-  #handle: DuckDbHandle | null = null
-  #openPromise: Promise<DuckDbHandle> | null = null
-  readonly #pendingRows: PendingRow[] = []
-  #flushTimer: ReturnType<typeof setTimeout> | null = null
-  #flushPromise: Promise<void> | null = null
-  #nextGroup = 1
-  readonly #groupFailures = new Map<number, unknown>()
-  #archiveTimer: ReturnType<typeof setInterval> | null = null
+  readonly #paths: DuckDbPaths;
+  readonly #threads: number | undefined;
+  readonly #memoryLimitMb: number | undefined;
+  readonly #retentionDays: number;
+  readonly #maxBytes: number;
+  readonly #openHandle: () => Promise<DuckDbHandle>;
+  readonly #batchMaxRows: number;
+  readonly #batchMaxAgeMs: number;
+  readonly #setTimeout: typeof setTimeout;
+  readonly #clearTimeout: typeof clearTimeout;
+  readonly #setInterval: typeof setInterval;
+  readonly #clearInterval: typeof clearInterval;
+  readonly #now: () => number;
+  readonly #onFlushError: (error: unknown) => void;
+  #handle: DuckDbHandle | null = null;
+  #openPromise: Promise<DuckDbHandle> | null = null;
+  readonly #pendingRows: PendingRow[] = [];
+  #flushTimer: ReturnType<typeof setTimeout> | null = null;
+  #flushPromise: Promise<void> | null = null;
+  #nextGroup = 1;
+  readonly #groupFailures = new Map<number, unknown>();
+  #archiveTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(config: DuckDbStoreConfig = {}, options?: DuckDbStoreOptions) {
-    this.#threads = assertOptionalPositiveInt('threads', config.threads)
-    this.#memoryLimitMb = assertOptionalPositiveInt('memoryLimitMb', config.memoryLimitMb)
+    this.#threads = assertOptionalPositiveInt("threads", config.threads);
+    this.#memoryLimitMb = assertOptionalPositiveInt(
+      "memoryLimitMb",
+      config.memoryLimitMb,
+    );
     this.#retentionDays =
-      assertOptionalPositiveInt('retentionDays', config.retentionDays) ??
-      DEFAULT_DUCKDB_RETENTION_DAYS
-    this.#maxBytes =
-      assertOptionalPositiveInt('maxBytes', config.maxBytes) ?? DEFAULT_DUCKDB_MAX_BYTES
-    this.#paths = resolveDuckDbPaths(config.metricsDir)
-    this.#batchMaxRows = options?.writeBatchMaxRows ?? DUCKDB_WRITE_BATCH_MAX_ROWS
-    this.#batchMaxAgeMs = options?.writeBatchMaxAgeMs ?? DUCKDB_WRITE_BATCH_MAX_AGE_MS
-    this.#setTimeout = options?.setTimeoutFn ?? setTimeout
-    this.#clearTimeout = options?.clearTimeoutFn ?? clearTimeout
-    this.#setInterval = options?.setIntervalFn ?? setInterval
-    this.#clearInterval = options?.clearIntervalFn ?? clearInterval
-    this.#now = options?.now ?? Date.now
-    this.#onFlushError = options?.onFlushError ?? defaultFlushErrorLog
+      assertOptionalPositiveInt("retentionDays", config.retentionDays) ??
+        DEFAULT_DUCKDB_RETENTION_DAYS;
+    this.#maxBytes = assertOptionalPositiveInt("maxBytes", config.maxBytes) ??
+      DEFAULT_DUCKDB_MAX_BYTES;
+    this.#paths = resolveDuckDbPaths(config.metricsDir);
+    this.#batchMaxRows = options?.writeBatchMaxRows ??
+      DUCKDB_WRITE_BATCH_MAX_ROWS;
+    this.#batchMaxAgeMs = options?.writeBatchMaxAgeMs ??
+      DUCKDB_WRITE_BATCH_MAX_AGE_MS;
+    this.#setTimeout = options?.setTimeoutFn ?? setTimeout;
+    this.#clearTimeout = options?.clearTimeoutFn ?? clearTimeout;
+    this.#setInterval = options?.setIntervalFn ?? setInterval;
+    this.#clearInterval = options?.clearIntervalFn ?? clearInterval;
+    this.#now = options?.now ?? Date.now;
+    this.#onFlushError = options?.onFlushError ?? defaultFlushErrorLog;
     if (options?.openHandle) {
-      this.#openHandle = options.openHandle
+      this.#openHandle = options.openHandle;
     } else {
       // Fail at construction (not first query) when the metrics directory
       // cannot be created — store selection catches this and falls back to
       // the disabled store.
-      Deno.mkdirSync(this.#paths.metricsDir, { recursive: true })
-      Deno.mkdirSync(this.#paths.parquetRoot, { recursive: true })
-      Deno.mkdirSync(this.#paths.tmpDir, { recursive: true })
+      Deno.mkdirSync(this.#paths.metricsDir, { recursive: true });
+      Deno.mkdirSync(this.#paths.parquetRoot, { recursive: true });
+      Deno.mkdirSync(this.#paths.tmpDir, { recursive: true });
       this.#openHandle = () =>
         openDuckDb({
           paths: this.#paths,
           ...(this.#threads !== undefined ? { threads: this.#threads } : {}),
-          ...(this.#memoryLimitMb !== undefined ? { memoryLimitMb: this.#memoryLimitMb } : {}),
-        })
+          ...(this.#memoryLimitMb !== undefined
+            ? { memoryLimitMb: this.#memoryLimitMb }
+            : {}),
+        });
     }
   }
 
   /** Resolved on-disk layout (db file, parquet tree, tmp spill). */
   get paths(): DuckDbPaths {
-    return this.#paths
+    return this.#paths;
   }
 
   /**
@@ -295,16 +306,18 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
    * to the single writer instead of a second process opening the database
    * file. Idempotent — `start_ui_server()` is a no-op when already running.
    */
-  async startUiServer(port: number = DUCKDB_UI_DEFAULT_PORT): Promise<{ port: number }> {
+  async startUiServer(
+    port: number = DUCKDB_UI_DEFAULT_PORT,
+  ): Promise<{ port: number }> {
     if (!Number.isInteger(port) || port <= 0 || port > 65535) {
-      throw new TypeError('port must be a valid TCP port')
+      throw new TypeError("port must be a valid TCP port");
     }
-    const handle = await this.#ensureOpen()
-    await handle.connection.run(`SET ui_local_port = ${port}`)
-    await handle.connection.run('INSTALL ui')
-    await handle.connection.run('LOAD ui')
-    await handle.connection.run('CALL start_ui_server()')
-    return { port }
+    const handle = await this.#ensureOpen();
+    await handle.connection.run(`SET ui_local_port = ${port}`);
+    await handle.connection.run("INSTALL ui");
+    await handle.connection.run("LOAD ui");
+    await handle.connection.run("CALL start_ui_server()");
+    return { port };
   }
 
   /**
@@ -319,23 +332,26 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
    * layout embeds in its host row, whose error and drop rates both stores
    * keep as one sum.
    */
-  writeSample(input: AuthenticatedMetricsSample, slotMapping?: SlotMapping): Promise<void> {
-    const rows = buildSampleRows(input, slotMapping)
+  writeSample(
+    input: AuthenticatedMetricsSample,
+    slotMapping?: SlotMapping,
+  ): Promise<void> {
+    const rows = buildSampleRows(input, slotMapping);
     // Latest host facts: every sample from a wire version 8 daemon (one that sends the
     // `extended` section) replaces the row, even with no text, so a fact that
     // disappears stops being shown, like on the hosted store. A v6 sample has
     // nothing to say about facts and leaves the row alone.
     if (input.extended) {
       rows.push({
-        table: 'facts',
+        table: "facts",
         values: [
           input.serverId,
           toDuckDbTimestamp(input.metadata.sampledAt),
           JSON.stringify(hostFactsFromSample(input)),
         ],
-      })
+      });
     }
-    return this.#enqueueRows(rows)
+    return this.#enqueueRows(rows);
   }
 
   /**
@@ -345,43 +361,50 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
   writeStatusEvent(input: ServerStatusEvent): Promise<void> {
     return this.#enqueueRows([
       {
-        table: 'status',
-        values: [input.serverId, toDuckDbTimestamp(input.at), input.connected, input.reason],
+        table: "status",
+        values: [
+          input.serverId,
+          toDuckDbTimestamp(input.at),
+          input.connected,
+          input.reason,
+        ],
       },
-    ])
+    ]);
   }
 
   /** Force-flush pending writes (queries / shutdown / archive tick). */
   flushWrites(): Promise<void> {
-    return this.#flushPending()
+    return this.#flushPending();
   }
 
-  async queryStatusHistory(input: StatusHistoryQuery): Promise<StatusHistoryResult> {
-    await this.flushWrites()
-    const serverId = assertSafeServerId(input.serverId)
-    const from = assertIsoTimestamp('from', input.from)
-    const to = assertIsoTimestamp('to', input.to)
-    assertRange(from, to)
+  async queryStatusHistory(
+    input: StatusHistoryQuery,
+  ): Promise<StatusHistoryResult> {
+    await this.flushWrites();
+    const serverId = assertSafeServerId(input.serverId);
+    const from = assertIsoTimestamp("from", input.from);
+    const to = assertIsoTimestamp("to", input.to);
+    assertRange(from, to);
 
-    const handle = await this.#ensureOpen()
+    const handle = await this.#ensureOpen();
     // Aliases match `resolveTruncatedStatusEvents` row expectations
     // (`timestamp` epoch-ms, `connected`, `reason`).
     const selectList = [
       `  CAST(epoch_ms("at") AS DOUBLE) AS "timestamp",`,
       `  connected,`,
       `  reason`,
-    ].join('\n')
+    ].join("\n");
     const priorSql = [
-      'SELECT',
+      "SELECT",
       selectList,
       `FROM ${STATUS_EVENTS_TABLE}`,
       `WHERE server_id = CAST(? AS UUID)`,
       `  AND "at" < CAST(? AS TIMESTAMP)`,
       `ORDER BY "at" DESC`,
       `LIMIT 1`,
-    ].join('\n')
+    ].join("\n");
     const eventsSql = [
-      'SELECT',
+      "SELECT",
       selectList,
       `FROM ${STATUS_EVENTS_TABLE}`,
       `WHERE server_id = CAST(? AS UUID)`,
@@ -389,36 +412,41 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
       `  AND "at" < CAST(? AS TIMESTAMP)`,
       `ORDER BY "at" ASC`,
       `LIMIT ${MAX_STATUS_EVENTS + 1}`,
-    ].join('\n')
+    ].join("\n");
 
     // Sequential on purpose — a DuckDB connection is not safe for
     // concurrent statements.
-    const fromParam = toDuckDbTimestamp(from.toISOString())
-    const toParam = toDuckDbTimestamp(to.toISOString())
-    const priorReader = await handle.connection.runAndReadAll(priorSql, [serverId, fromParam])
+    const fromParam = toDuckDbTimestamp(from.toISOString());
+    const toParam = toDuckDbTimestamp(to.toISOString());
+    const priorReader = await handle.connection.runAndReadAll(priorSql, [
+      serverId,
+      fromParam,
+    ]);
     const eventsReader = await handle.connection.runAndReadAll(eventsSql, [
       serverId,
       fromParam,
       toParam,
-    ])
+    ]);
 
-    const priorConnected = parseStatusConnected(priorReader.getRowObjectsJS()[0]?.connected)
-    const fromMs = from.getTime()
-    const toMs = to.getTime()
+    const priorConnected = parseStatusConnected(
+      priorReader.getRowObjectsJS()[0]?.connected,
+    );
+    const fromMs = from.getTime();
+    const toMs = to.getTime();
     const { events, truncated, knownUntilMs } = resolveTruncatedStatusEvents(
       eventsReader.getRowObjectsJS(),
-      fromMs
-    )
+      fromMs,
+    );
     const uptime = computeStatusUptime({
       fromMs,
       toMs,
       initialConnected: priorConnected,
       events,
       knownUntilMs,
-    })
+    });
 
     return {
-      kind: 'duckdb',
+      kind: "duckdb",
       available: true,
       serverId: input.serverId,
       initialConnected: priorConnected,
@@ -428,7 +456,7 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
       unknownSeconds: uptime.unknownSeconds,
       uptimePercent: uptime.uptimePercent,
       truncated,
-    }
+    };
   }
 
   /**
@@ -451,74 +479,92 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
    * family the CPU scalars used to accompany no longer exists.
    */
   async queryHostSeries(input: HostSeriesQuery): Promise<HostSeriesResult> {
-    await this.flushWrites()
-    const serverId = assertSafeServerId(input.serverId)
-    const metrics = assertHostMetrics(input.metrics, HOST_SERIES_EXTRA_SCOPES)
-    const from = assertIsoTimestamp('from', input.from)
-    const to = assertIsoTimestamp('to', input.to)
-    assertRange(from, to)
+    await this.flushWrites();
+    const serverId = assertSafeServerId(input.serverId);
+    const metrics = assertHostMetrics(input.metrics, HOST_SERIES_EXTRA_SCOPES);
+    const from = assertIsoTimestamp("from", input.from);
+    const to = assertIsoTimestamp("to", input.to);
+    assertRange(from, to);
     const bucketSeconds = assertPositiveInt(
-      'resolutionSeconds',
-      input.resolutionSeconds ?? DUCKDB_DEFAULT_BUCKET_SECONDS
-    )
+      "resolutionSeconds",
+      input.resolutionSeconds ?? DUCKDB_DEFAULT_BUCKET_SECONDS,
+    );
 
-    const handle = await this.#ensureOpen()
-    const fromMs = from.getTime()
-    const toMs = to.getTime()
-    const hostSource = await this.#familySamplesSource(parquetFamily('host'), fromMs, toMs)
-    const requiresMemoryDiagnostics = metrics.some(isMemoryDiagnosticsMetric)
-    const requiresRouter = metrics.some(isRouterMetric)
-    const requiresStorage = metrics.some(isStorageMetric)
-    const requiresDockerUsage = metrics.some(isDockerUsageMetric)
+    const handle = await this.#ensureOpen();
+    const fromMs = from.getTime();
+    const toMs = to.getTime();
+    const hostSource = await this.#familySamplesSource(
+      parquetFamily("host"),
+      fromMs,
+      toMs,
+    );
+    const requiresMemoryDiagnostics = metrics.some(isMemoryDiagnosticsMetric);
+    const requiresRouter = metrics.some(isRouterMetric);
+    const requiresStorage = metrics.some(isStorageMetric);
+    const requiresDockerUsage = metrics.some(isDockerUsageMetric);
 
-    const joins: string[] = []
+    const joins: string[] = [];
     if (requiresMemoryDiagnostics) {
       const memoryDiagnosticsSource = await this.#familySamplesSource(
-        parquetFamily('memory-diagnostics'),
+        parquetFamily("memory-diagnostics"),
         fromMs,
-        toMs
-      )
+        toMs,
+      );
       joins.push(
-        `LEFT JOIN ${memoryDiagnosticsSource} AS md ON md.server_id = h.server_id AND md.sampled_at = h.sampled_at`
-      )
+        `LEFT JOIN ${memoryDiagnosticsSource} AS md ON md.server_id = h.server_id AND md.sampled_at = h.sampled_at`,
+      );
     }
     if (requiresRouter) {
-      const routerSource = await this.#familySamplesSource(parquetFamily('router'), fromMs, toMs)
+      const routerSource = await this.#familySamplesSource(
+        parquetFamily("router"),
+        fromMs,
+        toMs,
+      );
       joins.push(
-        `LEFT JOIN ${routerSource} AS rt ON rt.server_id = h.server_id AND rt.sampled_at = h.sampled_at`
-      )
+        `LEFT JOIN ${routerSource} AS rt ON rt.server_id = h.server_id AND rt.sampled_at = h.sampled_at`,
+      );
     }
     if (requiresStorage) {
-      const storageSource = await this.#familySamplesSource(parquetFamily('storage'), fromMs, toMs)
+      const storageSource = await this.#familySamplesSource(
+        parquetFamily("storage"),
+        fromMs,
+        toMs,
+      );
       joins.push(
-        `LEFT JOIN ${storageSource} AS st ON st.server_id = h.server_id AND st.sampled_at = h.sampled_at`
-      )
+        `LEFT JOIN ${storageSource} AS st ON st.server_id = h.server_id AND st.sampled_at = h.sampled_at`,
+      );
     }
     if (requiresDockerUsage) {
-      const dockerSource = await this.#familySamplesSource(parquetFamily('docker'), fromMs, toMs)
+      const dockerSource = await this.#familySamplesSource(
+        parquetFamily("docker"),
+        fromMs,
+        toMs,
+      );
       joins.push(
-        `LEFT JOIN ${dockerSource} AS dk ON dk.server_id = h.server_id AND dk.sampled_at = h.sampled_at`
-      )
+        `LEFT JOIN ${dockerSource} AS dk ON dk.server_id = h.server_id AND dk.sampled_at = h.sampled_at`,
+      );
     }
 
     const metricSelects = metrics.map((name) => {
-      if (UNSTORED_HOST_METRICS.has(name)) return `CAST(NULL AS DOUBLE) AS "${name}"`
-      const descriptor = HOST_METRICS_METRIC_DESCRIPTORS[name]!
-      const column = hostSeriesColumnForDescriptor(descriptor)
+      if (UNSTORED_HOST_METRICS.has(name)) {
+        return `CAST(NULL AS DOUBLE) AS "${name}"`;
+      }
+      const descriptor = HOST_METRICS_METRIC_DESCRIPTORS[name]!;
+      const column = hostSeriesColumnForDescriptor(descriptor);
       // "h." metadata prefix: unambiguous even without the `md`/`rt`/`st`/`dk` joins,
       // and required whenever either is present (every singleton table
       // carries `sampled_at`/`interval_seconds` of its own).
-      return `${hostFieldAggregateSql(descriptor, column, 'h.')} AS "${name}"`
-    })
+      return `${hostFieldAggregateSql(descriptor, column, "h.")} AS "${name}"`;
+    });
     const sql = [
-      'SELECT',
+      "SELECT",
       `  CAST((epoch_ms(h.sampled_at) // ${
         bucketSeconds * 1000
       }) * ${bucketSeconds} AS DOUBLE) AS bucket,`,
       `  CAST(count(*) AS DOUBLE) AS sample_count,`,
       `  CAST(avg(h.interval_seconds) AS DOUBLE) AS avg_interval_seconds,`,
       `  CAST(epoch_ms(max(h.sampled_at)) AS DOUBLE) AS last_sampled_at_ms,`,
-      `  ${metricSelects.join(',\n  ')}`,
+      `  ${metricSelects.join(",\n  ")}`,
       `FROM ${hostSource} AS h`,
       ...joins,
       `WHERE h.server_id = CAST(? AS UUID)`,
@@ -526,19 +572,23 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
       `  AND h.sampled_at < CAST(? AS TIMESTAMP)`,
       `GROUP BY bucket`,
       `ORDER BY bucket ASC`,
-    ].join('\n')
+    ].join("\n");
 
     const reader = await handle.connection.runAndReadAll(sql, [
       serverId,
       toDuckDbTimestamp(from.toISOString()),
       toDuckDbTimestamp(to.toISOString()),
-    ])
-    const rows = reader.getRowObjectsJS()
+    ]);
+    const rows = reader.getRowObjectsJS();
 
-    const { points, sampleCount } = parseHostSeriesRows(metrics, rows, bucketSeconds)
+    const { points, sampleCount } = parseHostSeriesRows(
+      metrics,
+      rows,
+      bucketSeconds,
+    );
 
     return finalizeHostSeriesResult(from.toISOString(), to.toISOString(), {
-      kind: 'duckdb',
+      kind: "duckdb",
       available: true,
       serverId: input.serverId,
       metrics,
@@ -546,112 +596,127 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
       resolutionSeconds: bucketSeconds,
       gapCount: 0,
       sampleCount,
-    })
+    });
   }
 
   async queryHostSummary(input: HostSummaryQuery): Promise<HostSummaryResult> {
-    await this.flushWrites()
-    const serverId = assertSafeServerId(input.serverId)
-    const from = assertIsoTimestamp('from', input.from)
-    const to = assertIsoTimestamp('to', input.to)
-    assertRange(from, to)
+    await this.flushWrites();
+    const serverId = assertSafeServerId(input.serverId);
+    const from = assertIsoTimestamp("from", input.from);
+    const to = assertIsoTimestamp("to", input.to);
+    assertRange(from, to);
 
-    const handle = await this.#ensureOpen()
-    const source = await this.#hostSamplesSource(from.getTime(), to.getTime())
+    const handle = await this.#ensureOpen();
+    const source = await this.#hostSamplesSource(from.getTime(), to.getTime());
     const sql = [
-      'SELECT',
+      "SELECT",
       `  CAST(count(*) AS DOUBLE) AS sample_count,`,
       `  CAST(epoch_ms(max(sampled_at)) AS DOUBLE) AS latest_at_ms`,
       `FROM ${source}`,
       `WHERE server_id = CAST(? AS UUID)`,
       `  AND sampled_at >= CAST(? AS TIMESTAMP)`,
       `  AND sampled_at < CAST(? AS TIMESTAMP)`,
-    ].join('\n')
+    ].join("\n");
     const reader = await handle.connection.runAndReadAll(sql, [
       serverId,
       toDuckDbTimestamp(from.toISOString()),
       toDuckDbTimestamp(to.toISOString()),
-    ])
-    const row = reader.getRowObjectsJS()[0]
-    const sampleCount = toFiniteNumber(row?.sample_count) ?? 0
-    const latestAtMs = toFiniteNumber(row?.latest_at_ms)
+    ]);
+    const row = reader.getRowObjectsJS()[0];
+    const sampleCount = toFiniteNumber(row?.sample_count) ?? 0;
+    const latestAtMs = toFiniteNumber(row?.latest_at_ms);
 
     return {
-      kind: 'duckdb',
+      kind: "duckdb",
       available: true,
       serverId: input.serverId,
       sampleCount,
-      latestAt: sampleCount > 0 && latestAtMs !== null ? new Date(latestAtMs).toISOString() : null,
-    }
+      latestAt: sampleCount > 0 && latestAtMs !== null
+        ? new Date(latestAtMs).toISOString()
+        : null,
+    };
   }
 
   /**
    * Real per-descriptor aggregation over any `host.*` canonical metric name.
    */
-  async queryFleetHostSnapshot(input: FleetHostSnapshotQuery): Promise<FleetHostSnapshotResult> {
+  async queryFleetHostSnapshot(
+    input: FleetHostSnapshotQuery,
+  ): Promise<FleetHostSnapshotResult> {
     if (input.serverIds.length === 0) {
       return {
-        kind: 'duckdb',
+        kind: "duckdb",
         available: true,
         metrics: [...input.metrics],
         servers: [],
-      }
+      };
     }
-    await this.flushWrites()
-    const metrics = assertHostMetrics(input.metrics)
-    const from = assertIsoTimestamp('from', input.from)
-    const to = assertIsoTimestamp('to', input.to)
-    assertRange(from, to)
-    const serverIds = dedupeServerIds(input.serverIds)
+    await this.flushWrites();
+    const metrics = assertHostMetrics(
+      input.metrics,
+      FLEET_SNAPSHOT_EXTRA_SCOPES,
+    );
+    const from = assertIsoTimestamp("from", input.from);
+    const to = assertIsoTimestamp("to", input.to);
+    assertRange(from, to);
+    const serverIds = dedupeServerIds(input.serverIds);
 
-    const handle = await this.#ensureOpen()
+    const handle = await this.#ensureOpen();
     const source = await this.#familySamplesSource(
-      parquetFamily('host'),
+      parquetFamily("host"),
       from.getTime(),
-      to.getTime()
-    )
+      to.getTime(),
+    );
     const metricSelects = metrics.map((name) => {
-      if (UNSTORED_HOST_METRICS.has(name)) return `CAST(NULL AS DOUBLE) AS "${name}"`
-      const descriptor = HOST_METRICS_METRIC_DESCRIPTORS[name]!
-      const column = hostColumnForDescriptor(descriptor)
-      return `${hostFieldAggregateSql(descriptor, column)} AS "${name}"`
-    })
-    const inList = serverIds.map(() => 'CAST(? AS UUID)').join(', ')
+      if (UNSTORED_HOST_METRICS.has(name)) {
+        return `CAST(NULL AS DOUBLE) AS "${name}"`;
+      }
+      const descriptor = HOST_METRICS_METRIC_DESCRIPTORS[name]!;
+      // The sizes sit on the host row under their own column names.
+      const column = descriptor.entityScope === "extended.sizes"
+        ? extendedColumnName(descriptor.fieldName)
+        : hostColumnForDescriptor(descriptor);
+      return `${hostFieldAggregateSql(descriptor, column)} AS "${name}"`;
+    });
+    const inList = serverIds.map(() => "CAST(? AS UUID)").join(", ");
     const sql = [
-      'SELECT',
+      "SELECT",
       `  CAST(server_id AS VARCHAR) AS server_id,`,
       `  CAST(count(*) AS DOUBLE) AS sample_count,`,
       `  CAST(epoch_ms(max(sampled_at)) AS DOUBLE) AS latest_at_ms,`,
-      `  ${metricSelects.join(',\n  ')}`,
+      `  ${metricSelects.join(",\n  ")}`,
       `FROM ${source}`,
       `WHERE server_id IN (${inList})`,
       `  AND sampled_at >= CAST(? AS TIMESTAMP)`,
       `  AND sampled_at < CAST(? AS TIMESTAMP)`,
       `GROUP BY server_id`,
-    ].join('\n')
+    ].join("\n");
     const reader = await handle.connection.runAndReadAll(sql, [
       ...serverIds,
       toDuckDbTimestamp(from.toISOString()),
       toDuckDbTimestamp(to.toISOString()),
-    ])
+    ]);
 
-    const servers: FleetHostSnapshotServer[] = []
+    const servers: FleetHostSnapshotServer[] = [];
     for (const row of reader.getRowObjectsJS()) {
-      const serverId = typeof row.server_id === 'string' ? row.server_id.trim() : ''
-      if (!serverId) continue
-      const sampleCount = toFiniteNumber(row.sample_count) ?? 0
-      const latestAtMs = toFiniteNumber(row.latest_at_ms)
+      const serverId = typeof row.server_id === "string"
+        ? row.server_id.trim()
+        : "";
+      if (!serverId) continue;
+      const sampleCount = toFiniteNumber(row.sample_count) ?? 0;
+      const latestAtMs = toFiniteNumber(row.latest_at_ms);
       servers.push({
         serverId,
         sampleCount,
-        latestAt:
-          latestAtMs === null || sampleCount <= 0 ? null : new Date(latestAtMs).toISOString(),
+        latestAt: latestAtMs === null || sampleCount <= 0
+          ? null
+          : new Date(latestAtMs).toISOString(),
         values: parseMetricValues(metrics, row),
-      })
+      });
     }
-    servers.sort((a, b) => a.serverId.localeCompare(b.serverId))
+    servers.sort((a, b) => a.serverId.localeCompare(b.serverId));
 
-    return { kind: 'duckdb', available: true, metrics, servers }
+    return { kind: "duckdb", available: true, metrics, servers };
   }
 
   /**
@@ -660,21 +725,24 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
    * can drive archiving deterministically via {@link runDailyArchiveOnce}.
    */
   startDailyArchiveTimer(): void {
-    if (this.#archiveTimer !== null) return
+    if (this.#archiveTimer !== null) return;
     const tick = () => {
       void this.runDailyArchiveOnce().catch((error) => {
-        this.#onFlushError(error)
-      })
-    }
-    this.#archiveTimer = this.#setInterval(tick, DUCKDB_ARCHIVE_CHECK_INTERVAL_MS)
+        this.#onFlushError(error);
+      });
+    };
+    this.#archiveTimer = this.#setInterval(
+      tick,
+      DUCKDB_ARCHIVE_CHECK_INTERVAL_MS,
+    );
     // Immediate first pass: sweep crash leftovers + seal any backlog days.
-    tick()
+    tick();
   }
 
   stopDailyArchiveTimer(): void {
-    if (this.#archiveTimer === null) return
-    this.#clearInterval(this.#archiveTimer)
-    this.#archiveTimer = null
+    if (this.#archiveTimer === null) return;
+    this.#clearInterval(this.#archiveTimer);
+    this.#archiveTimer = null;
   }
 
   /**
@@ -683,100 +751,108 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
    * and rows across every family (plus `server_status_events`).
    */
   async runDailyArchiveOnce(nowMs: number = this.#now()): Promise<void> {
-    const handle = await this.#ensureOpen()
-    await this.flushWrites()
+    const handle = await this.#ensureOpen();
+    await this.flushWrites();
     // An interrupted export never counts as sealed — its hot rows are still
     // in the hot table, so deleting the leftover cannot double-delete.
-    await cleanupTmpParquetFiles(this.#paths.tmpDir)
+    await cleanupTmpParquetFiles(this.#paths.tmpDir);
 
-    const todayStartMs = utcDayStartMs(nowMs)
+    const todayStartMs = utcDayStartMs(nowMs);
     await forEachSequential(PARQUET_FAMILIES, async (family) => {
       const reader = await handle.connection.runAndReadAll(
         `SELECT DISTINCT CAST(epoch_ms(${family.timestampColumn}) // ${MS_PER_DAY} AS DOUBLE) AS day ` +
           `FROM ${family.table} ` +
-          `WHERE ${family.timestampColumn} < ${timestampLiteralFromMs(todayStartMs)}`
-      )
+          `WHERE ${family.timestampColumn} < ${
+            timestampLiteralFromMs(todayStartMs)
+          }`,
+      );
       const days = reader
         .getRowObjectsJS()
         .map((row) => toFiniteNumber(row.day))
         .filter((day): day is number => day !== null)
-        .sort((a, b) => a - b)
+        .sort((a, b) => a - b);
       await forEachSequential(days, (day) => {
-        const dayStartMs = day * MS_PER_DAY
+        const dayStartMs = day * MS_PER_DAY;
         return sealDayToParquet(handle.connection, {
           family,
           dayStartMs,
           dayEndMs: dayStartMs + MS_PER_DAY,
           parquetRoot: this.#paths.parquetRoot,
           tmpDir: this.#paths.tmpDir,
-        })
-      })
-    })
+        });
+      });
+    });
 
     await pruneExpiredPartitions(handle.connection, {
       retentionDays: this.#retentionDays,
       parquetRoot: this.#paths.parquetRoot,
       nowMs,
-    })
+    });
 
     // Then the size cap: retention days are not enough on a big fleet, and an
     // operator's disk must never fill with metrics.
     const pruned = await pruneToSizeCap({
       parquetRoot: this.#paths.parquetRoot,
       maxBytes: this.#maxBytes,
-      otherBytes:
-        (await fileSizeOrZero(this.#paths.databasePath)) +
+      otherBytes: (await fileSizeOrZero(this.#paths.databasePath)) +
         (await fileSizeOrZero(`${this.#paths.databasePath}.wal`)),
-    })
-    if (pruned.removedDays > 0 && pruned.removedFromMs !== null && pruned.removedToMs !== null) {
-      const day = (ms: number) => new Date(ms).toISOString().slice(0, 10)
+    });
+    if (
+      pruned.removedDays > 0 && pruned.removedFromMs !== null &&
+      pruned.removedToMs !== null
+    ) {
+      const day = (ms: number) => new Date(ms).toISOString().slice(0, 10);
       console.warn(
-        `metrics store over its ${this.#maxBytes}-byte cap: removed the ${pruned.removedDays} oldest sealed day(s), ${day(pruned.removedFromMs)} to ${day(pruned.removedToMs)}`
-      )
+        `metrics store over its ${this.#maxBytes}-byte cap: removed the ${pruned.removedDays} oldest sealed day(s), ${
+          day(pruned.removedFromMs)
+        } to ${day(pruned.removedToMs)}`,
+      );
     }
     if (pruned.failedDays > 0) {
-      console.warn(`metrics store size cap: could not remove ${pruned.failedDays} sealed day(s)`)
+      console.warn(
+        `metrics store size cap: could not remove ${pruned.failedDays} sealed day(s)`,
+      );
     }
     if (pruned.stillOver) {
       console.warn(
-        `metrics store is still over its ${this.#maxBytes}-byte cap after pruning; the newest sealed days are kept, so the hot database file or a failed removal is holding it over`
-      )
+        `metrics store is still over its ${this.#maxBytes}-byte cap after pruning; the newest sealed days are kept, so the hot database file or a failed removal is holding it over`,
+      );
     }
   }
 
   /** Flush pending writes and release the database handle (tests/shutdown). */
   async close(): Promise<void> {
-    this.stopDailyArchiveTimer()
-    this.#clearFlushTimer()
+    this.stopDailyArchiveTimer();
+    this.#clearFlushTimer();
     try {
-      await this.#flushPending()
+      await this.#flushPending();
     } finally {
       if (this.#openPromise !== null) {
         try {
-          await this.#openPromise
+          await this.#openPromise;
         } catch {
           // Never opened successfully — nothing to close.
         }
       }
-      this.#handle?.close()
-      this.#handle = null
-      this.#openPromise = null
+      this.#handle?.close();
+      this.#handle = null;
+      this.#openPromise = null;
     }
   }
 
   #ensureOpen(): Promise<DuckDbHandle> {
-    if (this.#handle !== null) return Promise.resolve(this.#handle)
-    if (this.#openPromise !== null) return this.#openPromise
+    if (this.#handle !== null) return Promise.resolve(this.#handle);
+    if (this.#openPromise !== null) return this.#openPromise;
     this.#openPromise = this.#openHandle()
       .then((handle) => {
-        this.#handle = handle
-        return handle
+        this.#handle = handle;
+        return handle;
       })
       .catch((error) => {
-        this.#openPromise = null
-        throw error
-      })
-    return this.#openPromise
+        this.#openPromise = null;
+        throw error;
+      });
+    return this.#openPromise;
   }
 
   /**
@@ -786,7 +862,7 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
    * `"host"` family.
    */
   #hostSamplesSource(fromMs: number, toMs: number): Promise<string> {
-    return this.#familySamplesSource(parquetFamily('host'), fromMs, toMs)
+    return this.#familySamplesSource(parquetFamily("host"), fromMs, toMs);
   }
 
   /**
@@ -796,20 +872,26 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
    * `runDailyArchiveOnce`'s per-family sealing, generalized to every
    * `PARQUET_FAMILIES` entry rather than just `"host"`.
    */
-  async #familySamplesSource(family: ParquetFamily, fromMs: number, toMs: number): Promise<string> {
+  async #familySamplesSource(
+    family: ParquetFamily,
+    fromMs: number,
+    toMs: number,
+  ): Promise<string> {
     const files = await listPartitionFilesInRange(
       this.#paths.parquetRoot,
       family.subdir,
       fromMs,
-      toMs
-    )
-    if (files.length === 0) return family.table
-    const fileList = files.map((file) => `'${escapeSqlString(file)}'`).join(', ')
+      toMs,
+    );
+    if (files.length === 0) return family.table;
+    const fileList = files.map((file) => `'${escapeSqlString(file)}'`).join(
+      ", ",
+    );
     return (
       `(SELECT * FROM ${family.table} ` +
       `UNION ALL BY NAME ` +
       `SELECT * FROM read_parquet([${fileList}], union_by_name = true))`
-    )
+    );
   }
 
   /**
@@ -820,54 +902,60 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
    * by `source_id` so distinct sources of the same `source_kind` stay
    * distinct entities — see `EntitySeriesQuery.entityIds`'s doc comment.
    */
-  async queryEntitySeries(input: EntitySeriesQuery): Promise<EntitySeriesResult> {
+  async queryEntitySeries(
+    input: EntitySeriesQuery,
+  ): Promise<EntitySeriesResult> {
     if (input.entityIds.length === 0) {
       return {
-        kind: 'duckdb',
+        kind: "duckdb",
         available: true,
         serverId: input.serverId,
         family: input.family,
         metrics: input.metrics,
         resolutionSeconds: null,
         entities: [],
-      }
+      };
     }
-    await this.flushWrites()
-    const serverId = assertSafeServerId(input.serverId)
-    const config = entityFamilyConfig(input.family)
-    const fields = assertNonEmptyFields(input.metrics)
-    const from = assertIsoTimestamp('from', input.from)
-    const to = assertIsoTimestamp('to', input.to)
-    assertRange(from, to)
+    await this.flushWrites();
+    const serverId = assertSafeServerId(input.serverId);
+    const config = entityFamilyConfig(input.family);
+    const fields = assertNonEmptyFields(input.metrics);
+    const from = assertIsoTimestamp("from", input.from);
+    const to = assertIsoTimestamp("to", input.to);
+    assertRange(from, to);
     const bucketSeconds = assertPositiveInt(
-      'resolutionSeconds',
-      input.resolutionSeconds ?? DUCKDB_DEFAULT_BUCKET_SECONDS
-    )
+      "resolutionSeconds",
+      input.resolutionSeconds ?? DUCKDB_DEFAULT_BUCKET_SECONDS,
+    );
 
-    const handle = await this.#ensureOpen()
+    const handle = await this.#ensureOpen();
     const source = await this.#familySamplesSource(
       parquetFamily(config.parquetKey),
       from.getTime(),
-      to.getTime()
-    )
+      to.getTime(),
+    );
     const metricSelects = fields.map((field) => {
-      const descriptor = resolveEntityFieldDescriptor(input.family, config.entityScope, field)
+      const descriptor = resolveEntityFieldDescriptor(
+        input.family,
+        config.entityScope,
+        field,
+      );
       // A value neither edition stores reads as empty, whatever the table holds.
       if (UNSTORED_HOST_METRICS.has(descriptor.canonicalName)) {
-        return `CAST(NULL AS DOUBLE) AS "${field}"`
+        return `CAST(NULL AS DOUBLE) AS "${field}"`;
       }
-      const column = entityMetricColumnForFamily(input.family, field)
-      return `${hostFieldAggregateSql(descriptor, column)} AS "${field}"`
-    })
-    const inList = input.entityIds.map(() => '?').join(', ')
+      const column = entityMetricColumnForFamily(input.family, field);
+      return `${hostFieldAggregateSql(descriptor, column)} AS "${field}"`;
+    });
+    const inList = input.entityIds.map(() => "?").join(", ");
     const sql = [
-      'SELECT',
+      "SELECT",
       `  CAST((epoch_ms(sampled_at) // ${
         bucketSeconds * 1000
       }) * ${bucketSeconds} AS DOUBLE) AS bucket,`,
       `  ${config.idColumn} AS entity_id,`,
       `  CAST(count(*) AS DOUBLE) AS sample_count,`,
-      `  ${metricSelects.join(',\n  ')}`,
+      `  ${metricSelects.join(",\n  ")}`,
       `FROM ${source}`,
       `WHERE server_id = CAST(? AS UUID)`,
       `  AND ${config.idColumn} IN (${inList})`,
@@ -875,63 +963,65 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
       `  AND sampled_at < CAST(? AS TIMESTAMP)`,
       `GROUP BY bucket, ${config.idColumn}`,
       `ORDER BY bucket ASC`,
-    ].join('\n')
+    ].join("\n");
 
     const reader = await handle.connection.runAndReadAll(sql, [
       serverId,
       ...input.entityIds,
       toDuckDbTimestamp(from.toISOString()),
       toDuckDbTimestamp(to.toISOString()),
-    ])
+    ]);
 
-    const rowsByEntity = new Map<string, DuckDbRow[]>()
+    const rowsByEntity = new Map<string, DuckDbRow[]>();
     for (const row of reader.getRowObjectsJS()) {
-      const entityId = typeof row.entity_id === 'string' ? row.entity_id : ''
-      if (!entityId) continue
-      const list = rowsByEntity.get(entityId)
+      const entityId = typeof row.entity_id === "string" ? row.entity_id : "";
+      if (!entityId) continue;
+      const list = rowsByEntity.get(entityId);
       if (list) {
-        list.push(row)
+        list.push(row);
       } else {
-        rowsByEntity.set(entityId, [row])
+        rowsByEntity.set(entityId, [row]);
       }
     }
 
-    const fromMs = from.getTime()
-    const toMs = to.getTime()
-    const entities: EntitySeriesEntityResult[] = input.entityIds.map((entityId) => {
-      const rows = rowsByEntity.get(entityId) ?? []
-      const points: EntitySeriesPoint[] = []
-      let sampleCount = 0
-      for (const row of rows) {
-        const bucketEpochSeconds = toFiniteNumber(row.bucket)
-        if (bucketEpochSeconds === null) continue
-        const rowSamples = toFiniteNumber(row.sample_count) ?? 0
-        sampleCount += rowSamples
-        points.push({
-          at: new Date(bucketEpochSeconds * 1000).toISOString(),
-          values: parseMetricValues(fields, row),
-          sampleCount: rowSamples,
-        })
-      }
-      points.sort((a, b) => Date.parse(a.at) - Date.parse(b.at))
-      const gapCount = computeSeriesGapCount({
-        fromMs,
-        toMs,
-        resolutionSeconds: bucketSeconds,
-        points,
-      })
-      return { entityId, points, sampleCount, gapCount }
-    })
+    const fromMs = from.getTime();
+    const toMs = to.getTime();
+    const entities: EntitySeriesEntityResult[] = input.entityIds.map(
+      (entityId) => {
+        const rows = rowsByEntity.get(entityId) ?? [];
+        const points: EntitySeriesPoint[] = [];
+        let sampleCount = 0;
+        for (const row of rows) {
+          const bucketEpochSeconds = toFiniteNumber(row.bucket);
+          if (bucketEpochSeconds === null) continue;
+          const rowSamples = toFiniteNumber(row.sample_count) ?? 0;
+          sampleCount += rowSamples;
+          points.push({
+            at: new Date(bucketEpochSeconds * 1000).toISOString(),
+            values: parseMetricValues(fields, row),
+            sampleCount: rowSamples,
+          });
+        }
+        points.sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
+        const gapCount = computeSeriesGapCount({
+          fromMs,
+          toMs,
+          resolutionSeconds: bucketSeconds,
+          points,
+        });
+        return { entityId, points, sampleCount, gapCount };
+      },
+    );
 
     return {
-      kind: 'duckdb',
+      kind: "duckdb",
       available: true,
       serverId: input.serverId,
       family: input.family,
       metrics: fields,
       resolutionSeconds: bucketSeconds,
       entities,
-    }
+    };
   }
 
   /**
@@ -940,39 +1030,41 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
    * does. `managed.ingress` / `managed.database_proxy` return `source_id`
    * values, not `source_kind` — same rule as `queryEntitySeries`.
    */
-  async queryEntityIdsSeen(input: EntityIdsSeenQuery): Promise<EntityIdsSeenResult> {
-    await this.flushWrites()
-    const serverId = assertSafeServerId(input.serverId)
-    const config = entityFamilyConfig(input.family)
-    const from = assertIsoTimestamp('from', input.from)
-    const to = assertIsoTimestamp('to', input.to)
-    assertRange(from, to)
+  async queryEntityIdsSeen(
+    input: EntityIdsSeenQuery,
+  ): Promise<EntityIdsSeenResult> {
+    await this.flushWrites();
+    const serverId = assertSafeServerId(input.serverId);
+    const config = entityFamilyConfig(input.family);
+    const from = assertIsoTimestamp("from", input.from);
+    const to = assertIsoTimestamp("to", input.to);
+    assertRange(from, to);
 
-    const handle = await this.#ensureOpen()
+    const handle = await this.#ensureOpen();
     const source = await this.#familySamplesSource(
       parquetFamily(config.parquetKey),
       from.getTime(),
-      to.getTime()
-    )
+      to.getTime(),
+    );
     const sql = [
       `SELECT DISTINCT ${config.idColumn} AS entity_id`,
       `FROM ${source}`,
       `WHERE server_id = CAST(? AS UUID)`,
       `  AND sampled_at >= CAST(? AS TIMESTAMP)`,
       `  AND sampled_at < CAST(? AS TIMESTAMP)`,
-    ].join('\n')
+    ].join("\n");
     const reader = await handle.connection.runAndReadAll(sql, [
       serverId,
       toDuckDbTimestamp(from.toISOString()),
       toDuckDbTimestamp(to.toISOString()),
-    ])
+    ]);
     const entityIds = reader
       .getRowObjectsJS()
-      .map((row) => (typeof row.entity_id === 'string' ? row.entity_id : null))
+      .map((row) => (typeof row.entity_id === "string" ? row.entity_id : null))
       .filter((id): id is string => id !== null && id.length > 0)
-      .sort((a, b) => a.localeCompare(b))
+      .sort((a, b) => a.localeCompare(b));
 
-    return { kind: 'duckdb', available: true, entityIds }
+    return { kind: "duckdb", available: true, entityIds };
   }
 
   /**
@@ -981,12 +1073,12 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
    * same answer the hosted store gives for a sample outside its window.
    */
   async queryHostFacts(input: HostFactsQuery): Promise<HostFactsResult> {
-    await this.flushWrites()
-    const serverId = assertSafeServerId(input.serverId)
-    const from = assertIsoTimestamp('from', input.from)
-    const to = assertIsoTimestamp('to', input.to)
-    assertRange(from, to)
-    const handle = await this.#ensureOpen()
+    await this.flushWrites();
+    const serverId = assertSafeServerId(input.serverId);
+    const from = assertIsoTimestamp("from", input.from);
+    const to = assertIsoTimestamp("to", input.to);
+    assertRange(from, to);
+    const handle = await this.#ensureOpen();
     const reader = await handle.connection.runAndReadAll(
       [
         `SELECT CAST(epoch_ms(sampled_at) AS DOUBLE) AS sampled_at_ms, facts`,
@@ -994,18 +1086,24 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
         `WHERE server_id = CAST(? AS UUID)`,
         `  AND sampled_at >= CAST(? AS TIMESTAMP)`,
         `  AND sampled_at < CAST(? AS TIMESTAMP)`,
-      ].join('\n'),
-      [serverId, toDuckDbTimestamp(from.toISOString()), toDuckDbTimestamp(to.toISOString())]
-    )
-    const row = reader.getRowObjectsJS()[0]
-    const sampledAtMs = row ? toFiniteNumber(row.sampled_at_ms) : null
+      ].join("\n"),
+      [
+        serverId,
+        toDuckDbTimestamp(from.toISOString()),
+        toDuckDbTimestamp(to.toISOString()),
+      ],
+    );
+    const row = reader.getRowObjectsJS()[0];
+    const sampledAtMs = row ? toFiniteNumber(row.sampled_at_ms) : null;
     return {
-      kind: 'duckdb',
+      kind: "duckdb",
       available: true,
       serverId: input.serverId,
-      sampledAt: sampledAtMs === null ? null : new Date(sampledAtMs).toISOString(),
+      sampledAt: sampledAtMs === null
+        ? null
+        : new Date(sampledAtMs).toISOString(),
       facts: row ? parseStoredHostFacts(row.facts) : emptyHostFacts(),
-    }
+    };
   }
 
   /**
@@ -1017,21 +1115,23 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
    * unconverted column isn't a plain JS string/number, the same reason every
    * other read path in this file casts timestamps before reading them.
    */
-  async queryMetricEvents(input: MetricEventsQuery): Promise<MetricEventsResult> {
-    await this.flushWrites()
-    const serverId = assertSafeServerId(input.serverId)
-    const from = assertIsoTimestamp('from', input.from)
-    const to = assertIsoTimestamp('to', input.to)
-    assertRange(from, to)
+  async queryMetricEvents(
+    input: MetricEventsQuery,
+  ): Promise<MetricEventsResult> {
+    await this.flushWrites();
+    const serverId = assertSafeServerId(input.serverId);
+    const from = assertIsoTimestamp("from", input.from);
+    const to = assertIsoTimestamp("to", input.to);
+    assertRange(from, to);
 
-    const handle = await this.#ensureOpen()
+    const handle = await this.#ensureOpen();
     const source = await this.#familySamplesSource(
-      parquetFamily('events'),
+      parquetFamily("events"),
       from.getTime(),
-      to.getTime()
-    )
+      to.getTime(),
+    );
     const sql = [
-      'SELECT',
+      "SELECT",
       `  event_id,`,
       `  CAST(epoch_ms("at") AS DOUBLE) AS at_ms,`,
       `  kind,`,
@@ -1045,24 +1145,24 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
       `  AND "at" < CAST(? AS TIMESTAMP)`,
       `ORDER BY "at" ASC`,
       `LIMIT ${MAX_STATUS_EVENTS + 1}`,
-    ].join('\n')
+    ].join("\n");
     const reader = await handle.connection.runAndReadAll(sql, [
       serverId,
       toDuckDbTimestamp(from.toISOString()),
       toDuckDbTimestamp(to.toISOString()),
-    ])
-    const rawRows = reader.getRowObjectsJS()
-    const truncated = rawRows.length > MAX_STATUS_EVENTS
-    const rows = truncated ? rawRows.slice(0, MAX_STATUS_EVENTS) : rawRows
-    const events = rows.map(parseMetricEventRow)
+    ]);
+    const rawRows = reader.getRowObjectsJS();
+    const truncated = rawRows.length > MAX_STATUS_EVENTS;
+    const rows = truncated ? rawRows.slice(0, MAX_STATUS_EVENTS) : rawRows;
+    const events = rows.map(parseMetricEventRow);
 
     return {
-      kind: 'duckdb',
+      kind: "duckdb",
       available: true,
       serverId: input.serverId,
       events,
       truncated,
-    }
+    };
   }
 
   /**
@@ -1075,106 +1175,116 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
     // Enqueue before any await so concurrent chart queries that
     // `flushWrites()` cannot race ahead of an in-flight open and observe an
     // empty pending buffer for a sample already accepted with 202.
-    const group = this.#nextGroup++
-    for (const row of rows) row.group = group
-    this.#pendingRows.push(...rows)
-    this.#capPendingRows()
+    const group = this.#nextGroup++;
+    for (const row of rows) row.group = group;
+    this.#pendingRows.push(...rows);
+    this.#capPendingRows();
     if (this.#pendingRows.length >= this.#batchMaxRows) {
-      await this.#flushPending()
+      await this.#flushPending();
       // A failure in another sample's group never surfaces here; only ours.
       if (this.#groupFailures.has(group)) {
-        const error = this.#groupFailures.get(group)
-        this.#groupFailures.delete(group)
-        throw error
+        const error = this.#groupFailures.get(group);
+        this.#groupFailures.delete(group);
+        throw error;
       }
-      return
+      return;
     }
-    this.#armFlushTimer()
+    this.#armFlushTimer();
   }
 
   #armFlushTimer(): void {
-    if (this.#flushTimer !== null) return
+    if (this.#flushTimer !== null) return;
     this.#flushTimer = this.#setTimeout(() => {
-      this.#flushTimer = null
+      this.#flushTimer = null;
       // An open failure (e.g. a refused marker) rejects here; nothing awaits a
       // timer flush, so log it rather than raise an unhandled rejection.
-      this.#flushPending().catch((error) => this.#onFlushError(error))
-    }, this.#batchMaxAgeMs)
+      this.#flushPending().catch((error) => this.#onFlushError(error));
+    }, this.#batchMaxAgeMs);
   }
 
   #clearFlushTimer(): void {
-    if (this.#flushTimer === null) return
-    this.#clearTimeout(this.#flushTimer)
-    this.#flushTimer = null
+    if (this.#flushTimer === null) return;
+    this.#clearTimeout(this.#flushTimer);
+    this.#flushTimer = null;
   }
 
   #capPendingRows(): void {
-    const excess = this.#pendingRows.length - DUCKDB_WRITE_MAX_PENDING_ROWS
-    if (excess <= 0) return
-    this.#pendingRows.splice(0, excess)
-    this.#onFlushError(new Error(`duckdb metrics write queue full; dropped ${excess} oldest rows`))
+    const excess = this.#pendingRows.length - DUCKDB_WRITE_MAX_PENDING_ROWS;
+    if (excess <= 0) return;
+    this.#pendingRows.splice(0, excess);
+    this.#onFlushError(
+      new Error(
+        `duckdb metrics write queue full; dropped ${excess} oldest rows`,
+      ),
+    );
   }
 
   async #flushPending(): Promise<void> {
     if (this.#flushPromise) {
-      await this.#flushPromise
-      if (this.#pendingRows.length === 0) return
+      await this.#flushPromise;
+      if (this.#pendingRows.length === 0) return;
     }
-    this.#clearFlushTimer()
-    if (this.#pendingRows.length === 0) return
+    this.#clearFlushTimer();
+    if (this.#pendingRows.length === 0) return;
 
     // Publish the in-flight promise *before* `#ensureOpen` so a concurrent
     // query `flushWrites()` waits for this insert instead of observing an
     // empty pending buffer and reading the DB mid-open.
-    const run = this.#flushPendingBody()
+    const run = this.#flushPendingBody();
     this.#flushPromise = run.finally(() => {
-      this.#flushPromise = null
-    })
-    await this.#flushPromise
+      this.#flushPromise = null;
+    });
+    await this.#flushPromise;
   }
 
   async #flushPendingBody(): Promise<void> {
-    const handle = await this.#ensureOpen()
-    if (this.#pendingRows.length === 0) return
-    const batch = this.#pendingRows.splice(0)
-    await this.#insertBatch(handle.connection, batch)
+    const handle = await this.#ensureOpen();
+    if (this.#pendingRows.length === 0) return;
+    const batch = this.#pendingRows.splice(0);
+    await this.#insertBatch(handle.connection, batch);
   }
 
   /** One transaction per flushed batch — every row a single `writeSample` produced lands (or rolls back) together. */
-  async #insertBatch(connection: DuckDbConnectionLike, batch: PendingRow[]): Promise<void> {
+  async #insertBatch(
+    connection: DuckDbConnectionLike,
+    batch: PendingRow[],
+  ): Promise<void> {
     try {
-      await this.#insertRows(connection, batch)
+      await this.#insertRows(connection, batch);
     } catch (error) {
-      this.#onFlushError(error)
-      await this.#isolateFailedBatch(connection, batch, error)
-      if (this.#pendingRows.length > 0) this.#armFlushTimer()
+      this.#onFlushError(error);
+      await this.#isolateFailedBatch(connection, batch, error);
+      if (this.#pendingRows.length > 0) this.#armFlushTimer();
     }
   }
 
-  async #insertRows(connection: DuckDbConnectionLike, batch: PendingRow[]): Promise<void> {
-    const byTable = new Map<PendingRowTable, DuckDbBindValue[][]>()
+  async #insertRows(
+    connection: DuckDbConnectionLike,
+    batch: PendingRow[],
+  ): Promise<void> {
+    const byTable = new Map<PendingRowTable, DuckDbBindValue[][]>();
     for (const row of batch) {
-      const rows = byTable.get(row.table)
+      const rows = byTable.get(row.table);
       if (rows) {
-        rows.push(row.values)
+        rows.push(row.values);
       } else {
-        byTable.set(row.table, [row.values])
+        byTable.set(row.table, [row.values]);
       }
     }
-    await connection.run('BEGIN TRANSACTION')
+    await connection.run("BEGIN TRANSACTION");
     try {
       await forEachSequential(byTable, async ([table, rows]) => {
-        if (table === 'facts') {
-          await upsertHostFacts(connection, rows)
-          return
+        if (table === "facts") {
+          await upsertHostFacts(connection, rows);
+          return;
         }
-        const { sql, values } = buildInsertForTable(table, rows)
-        await connection.run(sql, values)
-      })
-      await connection.run('COMMIT')
+        const { sql, values } = buildInsertForTable(table, rows);
+        await connection.run(sql, values);
+      });
+      await connection.run("COMMIT");
     } catch (error) {
-      await connection.run('ROLLBACK').catch(() => {})
-      throw error
+      await connection.run("ROLLBACK").catch(() => {});
+      throw error;
     }
   }
 
@@ -1187,53 +1297,58 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
   async #isolateFailedBatch(
     connection: DuckDbConnectionLike,
     batch: PendingRow[],
-    batchError: unknown
+    batchError: unknown,
   ): Promise<void> {
-    const groups = new Map<number, PendingRow[]>()
+    const groups = new Map<number, PendingRow[]>();
     for (const row of batch) {
-      const key = row.group ?? 0
-      const rows = groups.get(key)
+      const key = row.group ?? 0;
+      const rows = groups.get(key);
       if (rows) {
-        rows.push(row)
+        rows.push(row);
       } else {
-        groups.set(key, [row])
+        groups.set(key, [row]);
       }
     }
-    const requeue: PendingRow[] = []
+    const requeue: PendingRow[] = [];
     await forEachSequential(groups, async ([group, rows]) => {
-      let error: unknown = batchError
+      let error: unknown = batchError;
       if (groups.size > 1) {
         try {
-          await this.#insertRows(connection, rows)
-          return
+          await this.#insertRows(connection, rows);
+          return;
         } catch (rowError) {
-          error = rowError
+          error = rowError;
         }
       }
-      this.#groupFailures.set(group, error)
+      this.#groupFailures.set(group, error);
       if (this.#groupFailures.size > MAX_RECORDED_GROUP_FAILURES) {
-        this.#groupFailures.delete(this.#groupFailures.keys().next().value as number)
+        this.#groupFailures.delete(
+          this.#groupFailures.keys().next().value as number,
+        );
       }
-      const attempts = (rows[0]?.attempts ?? 0) + 1
+      const attempts = (rows[0]?.attempts ?? 0) + 1;
       if (attempts >= DUCKDB_WRITE_MAX_ATTEMPTS) {
         this.#onFlushError(
-          new Error(`duckdb metrics write dropped after ${attempts} failed attempts`, {
-            cause: error,
-          })
-        )
-        return
+          new Error(
+            `duckdb metrics write dropped after ${attempts} failed attempts`,
+            {
+              cause: error,
+            },
+          ),
+        );
+        return;
       }
-      for (const row of rows) row.attempts = attempts
-      requeue.push(...rows)
-    })
-    this.#pendingRows.unshift(...requeue)
-    this.#capPendingRows()
+      for (const row of rows) row.attempts = attempts;
+      requeue.push(...rows);
+    });
+    this.#pendingRows.unshift(...requeue);
+    this.#capPendingRows();
   }
 }
 
 function defaultFlushErrorLog(error: unknown): void {
-  const message = error instanceof Error ? error.message : String(error)
-  console.error(`duckdb metrics write flush failed: ${message}`)
+  const message = error instanceof Error ? error.message : String(error);
+  console.error(`duckdb metrics write flush failed: ${message}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -1244,207 +1359,275 @@ function defaultFlushErrorLog(error: unknown): void {
 // ---------------------------------------------------------------------------
 
 const COMMON_METADATA_TUPLE_PREFIX = [
-  'CAST(? AS UUID)',
-  'CAST(? AS TIMESTAMP)',
-  'CAST(? AS TIMESTAMP)',
-  'CAST(? AS SMALLINT)',
-]
+  "CAST(? AS UUID)",
+  "CAST(? AS TIMESTAMP)",
+  "CAST(? AS TIMESTAMP)",
+  "CAST(? AS SMALLINT)",
+];
 
-function entityTuple(idPlaceholders: readonly string[], metricCount: number): string {
+function entityTuple(
+  idPlaceholders: readonly string[],
+  metricCount: number,
+): string {
   return (
-    '(' +
+    "(" +
     [
       ...COMMON_METADATA_TUPLE_PREFIX,
       ...idPlaceholders,
-      ...new Array<string>(metricCount).fill('?'),
-    ].join(', ') +
-    ')'
-  )
+      ...new Array<string>(metricCount).fill("?"),
+    ].join(", ") +
+    ")"
+  );
 }
 
-const HOST_COLUMNS = hostSamplesInsertColumns()
+const HOST_COLUMNS = hostSamplesInsertColumns();
 const HOST_TUPLE = entityTuple(
   [],
   HOST_METRIC_FIELD_REFS.length +
     V12_HOST_COLUMNS.length +
     V12_INGRESS_COLUMNS.length +
-    V12_SIZE_COLUMNS.length
-)
+    V12_SIZE_COLUMNS.length,
+);
 
-const HOST_TEXT_COLUMNS = hostTextSamplesInsertColumns()
-const HOST_TEXT_TUPLE = entityTuple([], HOST_TEXT_FIELDS.length)
+const HOST_TEXT_COLUMNS = hostTextSamplesInsertColumns();
+const HOST_TEXT_TUPLE = entityTuple([], HOST_TEXT_FIELDS.length);
 
-const NETWORK_COLUMNS = networkSamplesInsertColumns()
-const NETWORK_TUPLE = entityTuple(['?'], NETWORK_METRIC_FIELDS.length)
+const NETWORK_COLUMNS = networkSamplesInsertColumns();
+const NETWORK_TUPLE = entityTuple(["?"], NETWORK_METRIC_FIELDS.length);
 
-const FILESYSTEM_COLUMNS = filesystemSamplesInsertColumns()
-const FILESYSTEM_TUPLE = entityTuple(['?'], FILESYSTEM_METRIC_FIELDS.length)
+const FILESYSTEM_COLUMNS = filesystemSamplesInsertColumns();
+const FILESYSTEM_TUPLE = entityTuple(["?"], FILESYSTEM_METRIC_FIELDS.length);
 
-const BLOCK_COLUMNS = blockSamplesInsertColumns()
-const BLOCK_TUPLE = entityTuple(['?'], BLOCK_METRIC_FIELDS.length + BLOCK_TEXT_FIELDS.length)
+const BLOCK_COLUMNS = blockSamplesInsertColumns();
+const BLOCK_TUPLE = entityTuple(
+  ["?"],
+  BLOCK_METRIC_FIELDS.length + BLOCK_TEXT_FIELDS.length,
+);
 
-const GPU_COLUMNS = gpuSamplesInsertColumns()
-const GPU_TUPLE = entityTuple(['?'], GPU_METRIC_FIELDS.length + GPU_TEXT_FIELDS.length)
+const GPU_COLUMNS = gpuSamplesInsertColumns();
+const GPU_TUPLE = entityTuple(
+  ["?"],
+  GPU_METRIC_FIELDS.length + GPU_TEXT_FIELDS.length,
+);
 
-const MEMORY_DIAGNOSTICS_COLUMNS = memoryDiagnosticsSamplesInsertColumns()
-const MEMORY_DIAGNOSTICS_TUPLE = entityTuple([], MEMORY_DIAGNOSTICS_METRIC_FIELDS.length)
+const MEMORY_DIAGNOSTICS_COLUMNS = memoryDiagnosticsSamplesInsertColumns();
+const MEMORY_DIAGNOSTICS_TUPLE = entityTuple(
+  [],
+  MEMORY_DIAGNOSTICS_METRIC_FIELDS.length,
+);
 
-const HARDWARE_SIGNAL_COLUMNS = hardwareSignalSamplesInsertColumns()
-const HARDWARE_SIGNAL_TUPLE = entityTuple(['?', '?'], 1)
+const HARDWARE_SIGNAL_COLUMNS = hardwareSignalSamplesInsertColumns();
+const HARDWARE_SIGNAL_TUPLE = entityTuple(["?", "?"], 1);
 
-const INGRESS_COLUMNS = ingressSamplesInsertColumns()
-const INGRESS_TUPLE = entityTuple(['?', '?'], INGRESS_METRIC_FIELDS.length)
+const INGRESS_COLUMNS = ingressSamplesInsertColumns();
+const INGRESS_TUPLE = entityTuple(["?", "?"], INGRESS_METRIC_FIELDS.length);
 
-const DATABASE_PROXY_COLUMNS = databaseProxySamplesInsertColumns()
-const DATABASE_PROXY_TUPLE = entityTuple(['?', '?'], DATABASE_PROXY_METRIC_FIELDS.length)
+const DATABASE_PROXY_COLUMNS = databaseProxySamplesInsertColumns();
+const DATABASE_PROXY_TUPLE = entityTuple(
+  ["?", "?"],
+  DATABASE_PROXY_METRIC_FIELDS.length,
+);
 
-const ROUTER_COLUMNS = routerSamplesInsertColumns()
-const ROUTER_TUPLE = entityTuple([], ROUTER_METRIC_FIELDS.length)
+const ROUTER_COLUMNS = routerSamplesInsertColumns();
+const ROUTER_TUPLE = entityTuple([], ROUTER_METRIC_FIELDS.length);
 
-const STORAGE_COLUMNS = storageSamplesInsertColumns()
-const STORAGE_TUPLE = entityTuple([], storageSamplesMetricFields().length)
+const STORAGE_COLUMNS = storageSamplesInsertColumns();
+const STORAGE_TUPLE = entityTuple([], storageSamplesMetricFields().length);
 
-const DOCKER_COLUMNS = dockerSamplesInsertColumns()
-const DOCKER_TUPLE = entityTuple([], DOCKER_USAGE_METRIC_FIELDS.length + V12_DOCKER_COLUMNS.length)
+const DOCKER_COLUMNS = dockerSamplesInsertColumns();
+const DOCKER_TUPLE = entityTuple(
+  [],
+  DOCKER_USAGE_METRIC_FIELDS.length + V12_DOCKER_COLUMNS.length,
+);
 
-const EVENT_COLUMNS = metricEventsInsertColumns()
+const EVENT_COLUMNS = metricEventsInsertColumns();
 const EVENT_TUPLE =
-  '(CAST(? AS UUID), ?, CAST(? AS TIMESTAMP), CAST(? AS TIMESTAMP), ?, ?, ?, ?, ?)'
+  "(CAST(? AS UUID), ?, CAST(? AS TIMESTAMP), CAST(? AS TIMESTAMP), ?, ?, ?, ?, ?)";
 
-const STATUS_COLUMNS = ['server_id', `"at"`, 'connected', 'reason']
-const STATUS_TUPLE = '(CAST(? AS UUID), CAST(? AS TIMESTAMP), ?, ?)'
+const STATUS_COLUMNS = ["server_id", `"at"`, "connected", "reason"];
+const STATUS_TUPLE = "(CAST(? AS UUID), CAST(? AS TIMESTAMP), ?, ?)";
 
 function buildInsertSql(
   table: string,
   columns: readonly string[],
   tuple: string,
-  rowCount: number
+  rowCount: number,
 ): string {
-  const tuples = new Array<string>(rowCount).fill(tuple).join(', ')
-  return `INSERT INTO ${table} (${columns.join(', ')}) VALUES ${tuples}`
+  const tuples = new Array<string>(rowCount).fill(tuple).join(", ");
+  return `INSERT INTO ${table} (${columns.join(", ")}) VALUES ${tuples}`;
 }
 
 function buildInsertForTable(
   table: PendingRowTable,
-  rows: DuckDbBindValue[][]
+  rows: DuckDbBindValue[][],
 ): { sql: string; values: DuckDbBindValue[] } {
-  const values = rows.flat()
+  const values = rows.flat();
   switch (table) {
-    case 'host':
+    case "host":
       return {
-        sql: buildInsertSql(HOST_SAMPLES_TABLE, HOST_COLUMNS, HOST_TUPLE, rows.length),
+        sql: buildInsertSql(
+          HOST_SAMPLES_TABLE,
+          HOST_COLUMNS,
+          HOST_TUPLE,
+          rows.length,
+        ),
         values,
-      }
-    case 'hostText':
+      };
+    case "hostText":
       return {
         sql: buildInsertSql(
           HOST_TEXT_SAMPLES_TABLE,
           HOST_TEXT_COLUMNS,
           HOST_TEXT_TUPLE,
-          rows.length
+          rows.length,
         ),
         values,
-      }
-    case 'network':
+      };
+    case "network":
       return {
-        sql: buildInsertSql(NETWORK_SAMPLES_TABLE, NETWORK_COLUMNS, NETWORK_TUPLE, rows.length),
+        sql: buildInsertSql(
+          NETWORK_SAMPLES_TABLE,
+          NETWORK_COLUMNS,
+          NETWORK_TUPLE,
+          rows.length,
+        ),
         values,
-      }
-    case 'filesystem':
+      };
+    case "filesystem":
       return {
         sql: buildInsertSql(
           FILESYSTEM_SAMPLES_TABLE,
           FILESYSTEM_COLUMNS,
           FILESYSTEM_TUPLE,
-          rows.length
+          rows.length,
         ),
         values,
-      }
-    case 'block':
+      };
+    case "block":
       return {
-        sql: buildInsertSql(BLOCK_SAMPLES_TABLE, BLOCK_COLUMNS, BLOCK_TUPLE, rows.length),
+        sql: buildInsertSql(
+          BLOCK_SAMPLES_TABLE,
+          BLOCK_COLUMNS,
+          BLOCK_TUPLE,
+          rows.length,
+        ),
         values,
-      }
-    case 'gpu':
+      };
+    case "gpu":
       return {
-        sql: buildInsertSql(GPU_SAMPLES_TABLE, GPU_COLUMNS, GPU_TUPLE, rows.length),
+        sql: buildInsertSql(
+          GPU_SAMPLES_TABLE,
+          GPU_COLUMNS,
+          GPU_TUPLE,
+          rows.length,
+        ),
         values,
-      }
-    case 'memoryDiagnostics':
+      };
+    case "memoryDiagnostics":
       return {
         sql: buildInsertSql(
           MEMORY_DIAGNOSTICS_SAMPLES_TABLE,
           MEMORY_DIAGNOSTICS_COLUMNS,
           MEMORY_DIAGNOSTICS_TUPLE,
-          rows.length
+          rows.length,
         ),
         values,
-      }
-    case 'hardwareSignal':
+      };
+    case "hardwareSignal":
       return {
         sql: buildInsertSql(
           HARDWARE_SIGNAL_SAMPLES_TABLE,
           HARDWARE_SIGNAL_COLUMNS,
           HARDWARE_SIGNAL_TUPLE,
-          rows.length
+          rows.length,
         ),
         values,
-      }
-    case 'ingress':
+      };
+    case "ingress":
       return {
-        sql: buildInsertSql(INGRESS_SAMPLES_TABLE, INGRESS_COLUMNS, INGRESS_TUPLE, rows.length),
+        sql: buildInsertSql(
+          INGRESS_SAMPLES_TABLE,
+          INGRESS_COLUMNS,
+          INGRESS_TUPLE,
+          rows.length,
+        ),
         values,
-      }
-    case 'databaseProxy':
+      };
+    case "databaseProxy":
       return {
         sql: buildInsertSql(
           DATABASE_PROXY_SAMPLES_TABLE,
           DATABASE_PROXY_COLUMNS,
           DATABASE_PROXY_TUPLE,
-          rows.length
+          rows.length,
         ),
         values,
-      }
-    case 'router':
+      };
+    case "router":
       return {
-        sql: buildInsertSql(ROUTER_SAMPLES_TABLE, ROUTER_COLUMNS, ROUTER_TUPLE, rows.length),
+        sql: buildInsertSql(
+          ROUTER_SAMPLES_TABLE,
+          ROUTER_COLUMNS,
+          ROUTER_TUPLE,
+          rows.length,
+        ),
         values,
-      }
-    case 'storage':
+      };
+    case "storage":
       return {
-        sql: buildInsertSql(STORAGE_SAMPLES_TABLE, STORAGE_COLUMNS, STORAGE_TUPLE, rows.length),
+        sql: buildInsertSql(
+          STORAGE_SAMPLES_TABLE,
+          STORAGE_COLUMNS,
+          STORAGE_TUPLE,
+          rows.length,
+        ),
         values,
-      }
-    case 'docker':
+      };
+    case "docker":
       return {
-        sql: buildInsertSql(DOCKER_SAMPLES_TABLE, DOCKER_COLUMNS, DOCKER_TUPLE, rows.length),
+        sql: buildInsertSql(
+          DOCKER_SAMPLES_TABLE,
+          DOCKER_COLUMNS,
+          DOCKER_TUPLE,
+          rows.length,
+        ),
         values,
-      }
-    case 'event':
+      };
+    case "event":
       return {
-        sql: buildInsertSql(METRIC_EVENTS_TABLE, EVENT_COLUMNS, EVENT_TUPLE, rows.length),
+        sql: buildInsertSql(
+          METRIC_EVENTS_TABLE,
+          EVENT_COLUMNS,
+          EVENT_TUPLE,
+          rows.length,
+        ),
         values,
-      }
-    case 'status':
+      };
+    case "status":
       return {
-        sql: buildInsertSql(STATUS_EVENTS_TABLE, STATUS_COLUMNS, STATUS_TUPLE, rows.length),
+        sql: buildInsertSql(
+          STATUS_EVENTS_TABLE,
+          STATUS_COLUMNS,
+          STATUS_TUPLE,
+          rows.length,
+        ),
         values,
-      }
-    case 'facts':
+      };
+    case "facts":
       // Latest-only rows are written one at a time by `upsertHostFacts`, never as a bulk insert.
-      throw new TypeError('host facts are upserted, not bulk-inserted')
+      throw new TypeError("host facts are upserted, not bulk-inserted");
     default: {
-      const exhaustive: never = table
-      throw new TypeError(`unknown pending row table: ${exhaustive}`)
+      const exhaustive: never = table;
+      throw new TypeError(`unknown pending row table: ${exhaustive}`);
     }
   }
 }
 
 async function fileSizeOrZero(path: string): Promise<number> {
   try {
-    return (await Deno.stat(path)).size
+    return (await Deno.stat(path)).size;
   } catch {
-    return 0
+    return 0;
   }
 }
 
@@ -1455,29 +1638,29 @@ async function fileSizeOrZero(path: string): Promise<number> {
  */
 async function upsertHostFacts(
   connection: DuckDbConnectionLike,
-  rows: DuckDbBindValue[][]
+  rows: DuckDbBindValue[][],
 ): Promise<void> {
   await forEachSequential(rows, async ([serverId, sampledAt, facts]) => {
     await connection.run(
       `DELETE FROM ${HOST_FACTS_TABLE} WHERE server_id = CAST(? AS UUID) AND sampled_at <= CAST(? AS TIMESTAMP)`,
-      [serverId, sampledAt]
-    )
+      [serverId, sampledAt],
+    );
     await connection.run(
       `INSERT INTO ${HOST_FACTS_TABLE} (server_id, sampled_at, facts) VALUES (CAST(? AS UUID), CAST(? AS TIMESTAMP), ?) ON CONFLICT DO NOTHING`,
-      [serverId, sampledAt, facts]
-    )
-  })
+      [serverId, sampledAt, facts],
+    );
+  });
 }
 
 function toFiniteNumber(raw: unknown): number | null {
-  if (raw === null || raw === undefined) return null
-  const num = typeof raw === 'number' ? raw : Number(raw)
-  return Number.isFinite(num) ? num : null
+  if (raw === null || raw === undefined) return null;
+  const num = typeof raw === "number" ? raw : Number(raw);
+  return Number.isFinite(num) ? num : null;
 }
 
 /** VARCHAR cell as a string; non-strings (including objects) become `''`. */
 function toStringOrEmpty(raw: unknown): string {
-  return typeof raw === 'string' ? raw : ''
+  return typeof raw === "string" ? raw : "";
 }
 
 // ---------------------------------------------------------------------------
@@ -1494,11 +1677,14 @@ function toStringOrEmpty(raw: unknown): string {
  * query (`queryHostSeries`'s `md` join) qualify the otherwise-ambiguous
  * `interval_seconds` name.
  */
-function intervalWeightedAvgSql(column: string, weightColumn = 'interval_seconds'): string {
+function intervalWeightedAvgSql(
+  column: string,
+  weightColumn = "interval_seconds",
+): string {
   return (
     `SUM(${column} * ${weightColumn})` +
     ` / (SUM(${weightColumn}) FILTER (WHERE ${column} IS NOT NULL))`
-  )
+  );
 }
 
 /**
@@ -1508,13 +1694,13 @@ function intervalWeightedAvgSql(column: string, weightColumn = 'interval_seconds
  * (`queryHostSeries`'s `md` join) qualify the otherwise-ambiguous
  * `sampled_at` name.
  */
-function lastValueSql(column: string, orderColumn = 'sampled_at'): string {
-  return `arg_max(${column}, ${orderColumn}) FILTER (WHERE ${column} IS NOT NULL)`
+function lastValueSql(column: string, orderColumn = "sampled_at"): string {
+  return `arg_max(${column}, ${orderColumn}) FILTER (WHERE ${column} IS NOT NULL)`;
 }
 
 /** Group maximum — NULLs are ignored by SQL `MAX` semantics. */
 function maxValueSql(column: string): string {
-  return `MAX(${column})`
+  return `MAX(${column})`;
 }
 
 /**
@@ -1524,7 +1710,7 @@ function maxValueSql(column: string): string {
  * rather than a fabricated 0.
  */
 function sumValueSql(column: string): string {
-  return `SUM(${column})`
+  return `SUM(${column})`;
 }
 
 // ---------------------------------------------------------------------------
@@ -1551,55 +1737,61 @@ function hostFieldAggregateSql(
    * names are ambiguous. Empty string (the default) for every other,
    * unjoined call site.
    */
-  metaPrefix = ''
+  metaPrefix = "",
 ): string {
   switch (descriptor.aggregation) {
-    case 'last':
-      return lastValueSql(column, `${metaPrefix}sampled_at`)
-    case 'max':
-      return maxValueSql(column)
-    case 'delta-sum':
-      return sumValueSql(column)
-    case 'weighted-average':
+    case "last":
+      return lastValueSql(column, `${metaPrefix}sampled_at`);
+    case "max":
+      return maxValueSql(column);
+    case "delta-sum":
+      return sumValueSql(column);
+    case "weighted-average":
     default:
-      return intervalWeightedAvgSql(column, `${metaPrefix}interval_seconds`)
+      return intervalWeightedAvgSql(column, `${metaPrefix}interval_seconds`);
   }
 }
 
 /** DuckDB column for a `host.*`-scoped descriptor — `entityScope` minus its `"host."` prefix is the {@link HostMetricGroup}. */
-function hostColumnForDescriptor(descriptor: HostMetricsMetricDescriptor): string {
-  const group = descriptor.entityScope.slice('host.'.length) as HostMetricGroup
-  return hostMetricColumnName(group, descriptor.fieldName)
+function hostColumnForDescriptor(
+  descriptor: HostMetricsMetricDescriptor,
+): string {
+  const group = descriptor.entityScope.slice("host.".length) as HostMetricGroup;
+  return hostMetricColumnName(group, descriptor.fieldName);
 }
 
 /** The diagnostics fields stored in the singleton memory-diagnostics table (the only stored ones). */
-const MEMORY_DIAGNOSTICS_FIELD_SET: ReadonlySet<string> = new Set(MEMORY_DIAGNOSTICS_METRIC_FIELDS)
+const MEMORY_DIAGNOSTICS_FIELD_SET: ReadonlySet<string> = new Set(
+  MEMORY_DIAGNOSTICS_METRIC_FIELDS,
+);
 
 function diagnosticsFieldName(metric: string): string | undefined {
-  const descriptor = HOST_METRICS_METRIC_DESCRIPTORS[metric]
-  return descriptor?.entityScope === 'diagnostics' ? descriptor.fieldName : undefined
+  const descriptor = HOST_METRICS_METRIC_DESCRIPTORS[metric];
+  return descriptor?.entityScope === "diagnostics"
+    ? descriptor.fieldName
+    : undefined;
 }
 
 /** `true` when `metric` is a diagnostics field stored in the singleton memory-diagnostics table. */
 function isMemoryDiagnosticsMetric(metric: string): boolean {
-  const field = diagnosticsFieldName(metric)
-  return field !== undefined && MEMORY_DIAGNOSTICS_FIELD_SET.has(field)
+  const field = diagnosticsFieldName(metric);
+  return field !== undefined && MEMORY_DIAGNOSTICS_FIELD_SET.has(field);
 }
 
 /** `true` when `metric` is a `managed.router` field, stored in the singleton router table. */
 function isRouterMetric(metric: string): boolean {
-  return HOST_METRICS_METRIC_DESCRIPTORS[metric]?.entityScope === 'router'
+  return HOST_METRICS_METRIC_DESCRIPTORS[metric]?.entityScope === "router";
 }
 
 /** `true` when `metric` is a `managed.storage` field, stored in the singleton storage table. */
 function isStorageMetric(metric: string): boolean {
-  return HOST_METRICS_METRIC_DESCRIPTORS[metric]?.entityScope === 'storage'
+  return HOST_METRICS_METRIC_DESCRIPTORS[metric]?.entityScope === "storage";
 }
 
 /** `true` when `metric` is a `managed.docker` field or a v12 container-health field, both stored in the singleton docker table. */
 function isDockerUsageMetric(metric: string): boolean {
-  const scope = HOST_METRICS_METRIC_DESCRIPTORS[metric]?.entityScope
-  return scope === 'dockerUsage' || scope === 'extended.docker'
+  const scope = HOST_METRICS_METRIC_DESCRIPTORS[metric]?.entityScope;
+  return scope === "dockerUsage" || scope === "extended.docker";
 }
 
 /**
@@ -1610,40 +1802,47 @@ function isDockerUsageMetric(metric: string): boolean {
  * (`md`), the `managed.router` family on another (`rt`), storage on `st` and
  * Docker (the disk breakdown and the container health numbers) on `dk`.
  */
-function hostSeriesColumnForDescriptor(descriptor: HostMetricsMetricDescriptor): string {
+function hostSeriesColumnForDescriptor(
+  descriptor: HostMetricsMetricDescriptor,
+): string {
   switch (descriptor.entityScope) {
-    case 'router':
-      return `rt.${entityMetricColumnName(descriptor.fieldName)}`
-    case 'storage':
-      return `st.${entityMetricColumnName(descriptor.fieldName)}`
-    case 'dockerUsage':
-      return `dk.${entityMetricColumnName(descriptor.fieldName)}`
-    case 'extended.docker':
-      return `dk.${extendedColumnName(descriptor.fieldName)}`
-    case 'extended.host':
-    case 'extended.ingress':
-    case 'extended.sizes':
-      return `h.${extendedColumnName(descriptor.fieldName)}`
-    case 'diagnostics':
-      return `md.${entityMetricColumnName(descriptor.fieldName)}`
+    case "router":
+      return `rt.${entityMetricColumnName(descriptor.fieldName)}`;
+    case "storage":
+      return `st.${entityMetricColumnName(descriptor.fieldName)}`;
+    case "dockerUsage":
+      return `dk.${entityMetricColumnName(descriptor.fieldName)}`;
+    case "extended.docker":
+      return `dk.${extendedColumnName(descriptor.fieldName)}`;
+    case "extended.host":
+    case "extended.ingress":
+    case "extended.sizes":
+      return `h.${extendedColumnName(descriptor.fieldName)}`;
+    case "diagnostics":
+      return `md.${entityMetricColumnName(descriptor.fieldName)}`;
     default:
-      return `h.${hostColumnForDescriptor(descriptor)}`
+      return `h.${hostColumnForDescriptor(descriptor)}`;
   }
 }
 
 /** Extra host-singleton scopes `queryHostSeries` accepts beyond `host.*` — see its doc comment. */
 const HOST_SERIES_EXTRA_SCOPES: ReadonlySet<MetricEntityScope> = new Set([
-  'diagnostics',
-  'router',
-  'storage',
-  'dockerUsage',
-  'extended.host',
-  'extended.docker',
-  'extended.ingress',
-  'extended.sizes',
-])
+  "diagnostics",
+  "router",
+  "storage",
+  "dockerUsage",
+  "extended.host",
+  "extended.docker",
+  "extended.ingress",
+  "extended.sizes",
+]);
 
-const NO_EXTRA_SCOPES: ReadonlySet<MetricEntityScope> = new Set()
+/** The one non-`host.*` scope the fleet snapshot reads: the sizes the memory and swap percentages divide by. */
+const FLEET_SNAPSHOT_EXTRA_SCOPES: ReadonlySet<MetricEntityScope> = new Set([
+  "extended.sizes",
+]);
+
+const NO_EXTRA_SCOPES: ReadonlySet<MetricEntityScope> = new Set();
 
 /**
  * Validate `metrics` as a non-empty list of v6 canonical names, each
@@ -1654,46 +1853,47 @@ const NO_EXTRA_SCOPES: ReadonlySet<MetricEntityScope> = new Set()
  */
 function assertHostMetrics(
   metrics: readonly string[],
-  extraScopes: ReadonlySet<MetricEntityScope> = NO_EXTRA_SCOPES
+  extraScopes: ReadonlySet<MetricEntityScope> = NO_EXTRA_SCOPES,
 ): string[] {
   if (metrics.length === 0) {
-    throw new TypeError('metrics must be a non-empty list of v6 canonical names')
+    throw new TypeError(
+      "metrics must be a non-empty list of v6 canonical names",
+    );
   }
-  const out: string[] = []
+  const out: string[] = [];
   for (const name of metrics) {
-    const descriptor = HOST_METRICS_METRIC_DESCRIPTORS[name]
-    const scopeOk =
-      descriptor !== undefined &&
-      (descriptor.entityScope.startsWith('host.') || extraScopes.has(descriptor.entityScope))
+    const descriptor = HOST_METRICS_METRIC_DESCRIPTORS[name];
+    const scopeOk = descriptor !== undefined &&
+      (descriptor.entityScope.startsWith("host.") ||
+        extraScopes.has(descriptor.entityScope));
     if (!scopeOk) {
-      throw new TypeError(`unknown host metrics v6 canonical name: ${name}`)
+      throw new TypeError(`unknown host metrics v6 canonical name: ${name}`);
     }
-    out.push(name)
+    out.push(name);
   }
-  return out
+  return out;
 }
 
 function parseHostSeriesRows(
   metrics: readonly string[],
   rows: DuckDbRow[],
-  resolutionSeconds: number
+  resolutionSeconds: number,
 ): {
-  points: HostSeriesPoint[]
-  sampleCount: number
+  points: HostSeriesPoint[];
+  sampleCount: number;
 } {
-  const points: HostSeriesPoint[] = []
-  let sampleCount = 0
+  const points: HostSeriesPoint[] = [];
+  let sampleCount = 0;
   for (const row of rows) {
-    const bucketEpochSeconds = toFiniteNumber(row.bucket)
-    if (bucketEpochSeconds === null) continue
-    const rowSamples = toFiniteNumber(row.sample_count) ?? 0
-    sampleCount += rowSamples
-    const avgIntervalSeconds = toFiniteNumber(row.avg_interval_seconds)
-    const expectedSampleCount =
-      avgIntervalSeconds !== null
-        ? defaultExpectedSamplesPerBucket(resolutionSeconds, avgIntervalSeconds)
-        : defaultExpectedSamplesPerBucket(resolutionSeconds)
-    const lastSampledAtMs = toFiniteNumber(row.last_sampled_at_ms)
+    const bucketEpochSeconds = toFiniteNumber(row.bucket);
+    if (bucketEpochSeconds === null) continue;
+    const rowSamples = toFiniteNumber(row.sample_count) ?? 0;
+    sampleCount += rowSamples;
+    const avgIntervalSeconds = toFiniteNumber(row.avg_interval_seconds);
+    const expectedSampleCount = avgIntervalSeconds !== null
+      ? defaultExpectedSamplesPerBucket(resolutionSeconds, avgIntervalSeconds)
+      : defaultExpectedSamplesPerBucket(resolutionSeconds);
+    const lastSampledAtMs = toFiniteNumber(row.last_sampled_at_ms);
     const point: HostSeriesPoint = {
       at: new Date(bucketEpochSeconds * 1000).toISOString(),
       values: parseMetricValues(metrics, row),
@@ -1706,30 +1906,30 @@ function parseHostSeriesRows(
       ...(avgIntervalSeconds !== null && avgIntervalSeconds > 0
         ? { sampleSpacingSeconds: avgIntervalSeconds }
         : {}),
-    }
-    points.push(point)
+    };
+    points.push(point);
   }
-  return { points, sampleCount }
+  return { points, sampleCount };
 }
 
 function parseMetricValues(
   metrics: readonly string[],
-  row: DuckDbRow
+  row: DuckDbRow,
 ): Partial<Record<string, number | null>> {
-  const values: Partial<Record<string, number | null>> = {}
+  const values: Partial<Record<string, number | null>> = {};
   for (const key of metrics) {
-    values[key] = toFiniteNumber(row[key])
+    values[key] = toFiniteNumber(row[key]);
   }
-  return values
+  return values;
 }
 
 /** Per-family static config for `queryEntitySeries`/`queryEntityIdsSeen`. */
 type EntityFamilyConfig = {
-  parquetKey: ParquetFamilyKey
+  parquetKey: ParquetFamilyKey;
   /** Physical id column queried/grouped on — `source_id` (not `source_kind`) for the two managed families. */
-  idColumn: string
-  entityScope: MetricEntityScope
-}
+  idColumn: string;
+  entityScope: MetricEntityScope;
+};
 
 /**
  * Static per-family table/column/entity-scope mapping for
@@ -1739,47 +1939,47 @@ type EntityFamilyConfig = {
  */
 function entityFamilyConfig(family: PerEntityHostedFamily): EntityFamilyConfig {
   switch (family) {
-    case 'gpu':
-      return { parquetKey: 'gpu', idColumn: 'gpu_id', entityScope: 'gpu' }
-    case 'network':
+    case "gpu":
+      return { parquetKey: "gpu", idColumn: "gpu_id", entityScope: "gpu" };
+    case "network":
       return {
-        parquetKey: 'network',
-        idColumn: 'device_id',
-        entityScope: 'network',
-      }
-    case 'filesystem':
+        parquetKey: "network",
+        idColumn: "device_id",
+        entityScope: "network",
+      };
+    case "filesystem":
       return {
-        parquetKey: 'filesystem',
-        idColumn: 'filesystem_id',
-        entityScope: 'filesystem',
-      }
-    case 'block':
+        parquetKey: "filesystem",
+        idColumn: "filesystem_id",
+        entityScope: "filesystem",
+      };
+    case "block":
       return {
-        parquetKey: 'block',
-        idColumn: 'device_id',
-        entityScope: 'block',
-      }
-    case 'hardware.physical':
+        parquetKey: "block",
+        idColumn: "device_id",
+        entityScope: "block",
+      };
+    case "hardware.physical":
       return {
-        parquetKey: 'hardware',
-        idColumn: 'signal_id',
-        entityScope: 'hardwareSignal',
-      }
-    case 'managed.ingress':
+        parquetKey: "hardware",
+        idColumn: "signal_id",
+        entityScope: "hardwareSignal",
+      };
+    case "managed.ingress":
       return {
-        parquetKey: 'ingress',
-        idColumn: 'source_id',
-        entityScope: 'ingress',
-      }
-    case 'managed.database_proxy':
+        parquetKey: "ingress",
+        idColumn: "source_id",
+        entityScope: "ingress",
+      };
+    case "managed.database_proxy":
       return {
-        parquetKey: 'database-proxy',
-        idColumn: 'source_id',
-        entityScope: 'databaseProxy',
-      }
+        parquetKey: "database-proxy",
+        idColumn: "source_id",
+        entityScope: "databaseProxy",
+      };
     default: {
-      const exhaustive: never = family
-      throw new TypeError(`unknown per-entity hosted family: ${exhaustive}`)
+      const exhaustive: never = family;
+      throw new TypeError(`unknown per-entity hosted family: ${exhaustive}`);
     }
   }
 }
@@ -1788,26 +1988,29 @@ function entityFamilyConfig(family: PerEntityHostedFamily): EntityFamilyConfig {
 function resolveEntityFieldDescriptor(
   family: PerEntityHostedFamily,
   entityScope: MetricEntityScope,
-  field: string
+  field: string,
 ): HostMetricsMetricDescriptor {
-  const descriptor = HOST_METRICS_METRIC_DESCRIPTORS[`${entityScope}.${field}`]
+  const descriptor = HOST_METRICS_METRIC_DESCRIPTORS[`${entityScope}.${field}`];
   if (!descriptor) {
-    throw new TypeError(`unknown ${family} metrics field: ${field}`)
+    throw new TypeError(`unknown ${family} metrics field: ${field}`);
   }
-  return descriptor
+  return descriptor;
 }
 
 /** `hardware.physical` is long-form (one `value` column, not one column per field); every other family uses `entityMetricColumnName`. */
-function entityMetricColumnForFamily(family: PerEntityHostedFamily, field: string): string {
-  if (family === 'hardware.physical') return 'value'
-  return entityMetricColumnName(field)
+function entityMetricColumnForFamily(
+  family: PerEntityHostedFamily,
+  field: string,
+): string {
+  if (family === "hardware.physical") return "value";
+  return entityMetricColumnName(field);
 }
 
 function assertNonEmptyFields(metrics: readonly string[]): string[] {
   if (metrics.length === 0) {
-    throw new TypeError('metrics must be a non-empty list of field names')
+    throw new TypeError("metrics must be a non-empty list of field names");
   }
-  return [...metrics]
+  return [...metrics];
 }
 
 /**
@@ -1817,95 +2020,105 @@ function assertNonEmptyFields(metrics: readonly string[]): string[] {
  * corrupt `payload` JSON string as "no payload" rather than throwing.
  */
 function parseMetricEventRow(row: DuckDbRow): MetricEvent {
-  const atMs = toFiniteNumber(row.at_ms) ?? 0
+  const atMs = toFiniteNumber(row.at_ms) ?? 0;
   const event: MetricEvent = {
     eventId: toStringOrEmpty(row.event_id),
     at: new Date(atMs).toISOString(),
     kind: toStringOrEmpty(row.kind) as MetricEventKind,
     severity: toStringOrEmpty(row.severity) as MetricEventSeverity,
+  };
+  if (typeof row.entity_id === "string" && row.entity_id.length > 0) {
+    event.entityId = row.entity_id;
   }
-  if (typeof row.entity_id === 'string' && row.entity_id.length > 0) {
-    event.entityId = row.entity_id
+  if (typeof row.source === "string" && row.source.length > 0) {
+    event.source = row.source;
   }
-  if (typeof row.source === 'string' && row.source.length > 0) {
-    event.source = row.source
-  }
-  if (typeof row.payload === 'string' && row.payload.length > 0) {
+  if (typeof row.payload === "string" && row.payload.length > 0) {
     try {
-      const parsed = JSON.parse(row.payload)
-      if (parsed !== null && typeof parsed === 'object') {
-        event.payload = parsed as Record<string, string | number | boolean | null>
+      const parsed = JSON.parse(row.payload);
+      if (parsed !== null && typeof parsed === "object") {
+        event.payload = parsed as Record<
+          string,
+          string | number | boolean | null
+        >;
       }
     } catch {
       // Corrupt payload — treated as absent rather than thrown.
     }
   }
-  return event
+  return event;
 }
 
 function dedupeServerIds(serverIds: readonly string[]): string[] {
   if (serverIds.length > DUCKDB_MAX_FLEET_SNAPSHOT_SERVERS) {
     throw new TypeError(
-      `serverIds length ${serverIds.length} exceeds max ${DUCKDB_MAX_FLEET_SNAPSHOT_SERVERS}`
-    )
+      `serverIds length ${serverIds.length} exceeds max ${DUCKDB_MAX_FLEET_SNAPSHOT_SERVERS}`,
+    );
   }
-  const seen = new Set<string>()
-  const out: string[] = []
+  const seen = new Set<string>();
+  const out: string[] = [];
   for (const raw of serverIds) {
-    const id = assertSafeServerId(raw)
-    if (seen.has(id)) continue
-    seen.add(id)
-    out.push(id)
+    const id = assertSafeServerId(raw);
+    if (seen.has(id)) continue;
+    seen.add(id);
+    out.push(id);
   }
   if (out.length === 0) {
-    throw new TypeError('serverIds must be non-empty for fleet snapshot')
+    throw new TypeError("serverIds must be non-empty for fleet snapshot");
   }
-  return out
+  return out;
 }
 
 function parseStatusConnected(raw: unknown): boolean | null {
-  if (raw === null || raw === undefined) return null
-  if (typeof raw === 'boolean') return raw
-  const num = toFiniteNumber(raw)
-  if (num === null) return null
-  return num >= 0.5
+  if (raw === null || raw === undefined) return null;
+  if (typeof raw === "boolean") return raw;
+  const num = toFiniteNumber(raw);
+  if (num === null) return null;
+  return num >= 0.5;
 }
 
 function assertSafeServerId(serverId: string): string {
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(serverId)) {
-    throw new TypeError(`invalid serverId for DuckDB: ${serverId}`)
+  if (
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+      serverId,
+    )
+  ) {
+    throw new TypeError(`invalid serverId for DuckDB: ${serverId}`);
   }
-  return serverId
+  return serverId;
 }
 
 function assertIsoTimestamp(label: string, value: string): Date {
-  const ms = Date.parse(value)
+  const ms = Date.parse(value);
   if (!Number.isFinite(ms)) {
-    throw new TypeError(`invalid ${label} timestamp: ${value}`)
+    throw new TypeError(`invalid ${label} timestamp: ${value}`);
   }
-  return new Date(ms)
+  return new Date(ms);
 }
 
 function assertRange(from: Date, to: Date): void {
-  const spanSeconds = (to.getTime() - from.getTime()) / 1000
+  const spanSeconds = (to.getTime() - from.getTime()) / 1000;
   if (spanSeconds < 0) {
-    throw new TypeError('from must be <= to')
+    throw new TypeError("from must be <= to");
   }
   if (spanSeconds > AE_DEFAULT_MAX_RANGE_SECONDS) {
     throw new TypeError(
-      `query range ${spanSeconds}s exceeds maxRangeSeconds ${AE_DEFAULT_MAX_RANGE_SECONDS}`
-    )
+      `query range ${spanSeconds}s exceeds maxRangeSeconds ${AE_DEFAULT_MAX_RANGE_SECONDS}`,
+    );
   }
 }
 
 function assertPositiveInt(label: string, value: number): number {
   if (!Number.isInteger(value) || value <= 0) {
-    throw new TypeError(`${label} must be a positive integer`)
+    throw new TypeError(`${label} must be a positive integer`);
   }
-  return value
+  return value;
 }
 
-function assertOptionalPositiveInt(label: string, value: number | undefined): number | undefined {
-  if (value === undefined) return undefined
-  return assertPositiveInt(label, value)
+function assertOptionalPositiveInt(
+  label: string,
+  value: number | undefined,
+): number | undefined {
+  if (value === undefined) return undefined;
+  return assertPositiveInt(label, value);
 }
