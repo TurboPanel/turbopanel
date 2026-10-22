@@ -80,9 +80,10 @@ import {
 import {
   evaluateHostedEnrollmentTier,
   evaluateTierFloor,
-  LICENSE_TIER_BELOW_REQUIRED_ERROR,
   loadServerLicenseTierJoin,
 } from '../features/tiers/tier-enforcement.ts'
+import { recordOverTier } from '../features/tiers/over-tier-flag.ts'
+import { resolveRequiredTier } from '../features/tiers/tier-placement.ts'
 import {
   getLatestTopologyGeneration,
   getTopologyGeneration,
@@ -555,65 +556,69 @@ async function loadActiveDaemonKeyState(
 }
 
 /**
- * Confirms the server's bound license (if any) is still active and that an
- * entitled tier covers it. The assignment is derived
+ * Confirms the server's bound license (if any) is still active, the only
+ * refusal left here (byte-identical to the daemon's permanent-auth list).
+ * Tier coverage no longer refuses: a server the organization's purchased
+ * sizes do not cover — it grew past its size, or nothing bought is left for
+ * it — still connects and stays managed, and the caller records when it went
+ * over (`over-tier-flag.ts`, `overTierRank`). The assignment is derived
  * (`assignment-records.ts`); a licensed server assigned nothing gets one
- * recompute here — the hardware report and the projection may have raced
- * this session — and is refused only when it still ends uncovered. The
- * error string is byte-identical to the daemon's permanent-auth list.
+ * recompute here first, since the hardware report and the projection may
+ * have raced this session.
  *
  * **The same check runs on both runtimes.** Self-hosted is not exempted;
  * it is entitled instead, by the grant (`self-hosted-grant.ts`) that is
  * brought in line here before anything is read. Reconnecting is therefore
  * also the backfill path for an organization licensed before the grant
  * existed, and for one whose control plane has just moved from Deno to
- * Workers — the grant it left behind is what keeps its daemons connected.
+ * Workers — the grant it left behind is what keeps its daemons covered.
  */
 async function checkServerLicenseEntitlement(
   db: Db,
   serverId: string,
   deployment: MetricsDeploymentKind
-): Promise<{ ok: true } | { ok: false; status: 400; error: string }> {
+): Promise<
+  | { ok: true; overTierRank: number | null; serverMetadata: unknown }
+  | { ok: false; status: 400; error: string }
+> {
   const binding = await getServerLicenseBinding(db, serverId)
   if (binding?.licenseId) {
     const activeLicense = await lookupActiveLicense(db, binding.licenseId)
     if (!activeLicense) {
       return { ok: false, status: 400, error: 'License is inactive' }
     }
-    // Deliberately unguarded, like the recompute below: this decides the
-    // daemon's fate, so a database error must surface as a 500 the daemon
-    // retries rather than as a permanent refusal.
+    // Deliberately unguarded, like the recompute below: a database error
+    // must surface as a 500 the daemon retries, never be read as "covered".
     await syncSelfHostedGrantForServer(db, serverId, deployment)
   }
 
   let row = await loadServerLicenseTierJoin(db, serverId)
   if (row?.licenseId && !row.assignedTierId) {
-    // Deliberately unguarded: this decides the daemon's fate. A refusal here
-    // is a 400, which the daemon treats as permanent and parks on, so a
-    // transient database error must surface as a 500 (transient, retried)
-    // rather than be swallowed into "still unassigned, refuse permanently".
+    // Deliberately unguarded: a transient database error must surface as a
+    // 500 (retried) rather than be swallowed into "still unassigned".
     await recomputeAssignmentsForServer(db, serverId)
     row = await loadServerLicenseTierJoin(db, serverId)
   }
+  const serverMetadata = row?.serverMetadata
+  const metadata = isPlainObject(serverMetadata) ? serverMetadata : undefined
+  const resources = parseServerHostResources(metadata?.resources)
   if (row?.licenseId && !row.assignedTierId) {
-    return { ok: false, status: 400, error: LICENSE_TIER_BELOW_REQUIRED_ERROR }
+    return {
+      ok: true,
+      overTierRank: resolveRequiredTier(resources ?? {}).rank,
+      serverMetadata,
+    }
   }
   if (row?.assignedTierId && row.tierRank != null) {
-    const metadata = isPlainObject(row.serverMetadata) ? row.serverMetadata : undefined
-    const resources = parseServerHostResources(metadata?.resources)
     const floor = evaluateTierFloor({
       resources,
       tierRank: row.tierRank,
     })
     if (!floor.satisfied) {
-      return {
-        ok: false,
-        status: 400,
-        error: LICENSE_TIER_BELOW_REQUIRED_ERROR,
-      }
+      return { ok: true, overTierRank: floor.requiredRank, serverMetadata }
     }
   }
-  return { ok: true }
+  return { ok: true, overTierRank: null, serverMetadata }
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -1563,6 +1568,9 @@ export function registerDaemonApiRoutes<E extends Env>(
 
     await touchDaemonKeyLastUsed(db, serverId)
     await touchServerMetadata(db, serverId, { machineKey, hostname })
+    // Signed in: record (or clear) the date this server went past what the
+    // organization bought. It stays connected and managed either way.
+    await recordOverTier(db, serverId, licenseState.overTierRank, licenseState.serverMetadata)
 
     const issued = await issueDaemonJwt({ sub: serverId, kid: keyId }, secrets)
     return c.json(

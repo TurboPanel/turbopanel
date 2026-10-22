@@ -51,12 +51,18 @@ Do-not-retry-soon mapping for enroll/session responses (daemon intent):
 | `401 Invalid license`                                      | permanent → daemon parks (5 min–1 h backoff)                        |
 | `400 License already consumed or invalid`                  | permanent → daemon parks                                            |
 | `400 License is inactive`                                  | permanent → daemon parks                                            |
-| `400 License tier below required`                          | permanent → daemon parks                                            |
-| `400 License tier not assigned`                            | permanent → daemon parks                                            |
+| `400 License tier below required` (`/enroll` only)         | awaiting-seat → daemon re-checks every 15 min, never gives up       |
+| `400 License tier not assigned` (`/enroll` only)           | awaiting-seat → daemon re-checks every 15 min, never gives up       |
 | `400 Server key is inactive`                               | permanent → daemon parks                                            |
 | `403 Invalid signature` / `409 Fingerprint already exists` | permanent → daemon parks                                            |
 | `404 Server key not found` / `400 Server key mismatch`     | stale-identity → recoverable re-enroll (keeps persisted `serverId`) |
 | `429` / `5xx` / `400 Invalid or expired challenge`         | transient → normal full-jitter reconnect                            |
+
+`/auth/session` never refuses on tier coverage: a server the organization's
+purchased sizes do not cover (it grew, or nothing bought is left for it) still
+gets its session, and the panel records when it went over in
+`server.metadata.overTier` (`{ since, requiredRank }`, written once, cleared
+when it is covered again; `src/features/tiers/over-tier-flag.ts`).
 
 The daemon-side parked state (not `DAEMON_REST_RATE_LIMITER`) is the primary protection against enroll/challenge storms after a control-plane identity loss (e.g. DB wipe); `DAEMON_REST_RATE_LIMITER` remains a backstop that must behave even when limits fail open. Canonical daemon backoff/unpark behavior: **`../turbopaneld/AGENTS.md`** (Instance client → parked state) — do not duplicate it here.
 

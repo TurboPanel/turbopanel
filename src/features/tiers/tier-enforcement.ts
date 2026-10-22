@@ -31,10 +31,16 @@ import {
   totalPhysicalCores,
 } from './tier-placement.ts'
 
-/** Byte-for-byte daemon `classifyConnectFailure` permanent-auth/enroll message. */
+/**
+ * Byte-for-byte daemon `classifyConnectFailure` message, sent only by the
+ * enroll gate now; the daemon retries it slowly rather than giving up.
+ */
 export const LICENSE_TIER_BELOW_REQUIRED_ERROR = 'License tier below required'
 
-/** Byte-for-byte daemon `classifyConnectFailure` permanent-auth/enroll message. */
+/**
+ * Byte-for-byte daemon `classifyConnectFailure` message, sent only by the
+ * enroll gate; the daemon retries it slowly rather than giving up.
+ */
 export const LICENSE_TIER_UNASSIGNED_ERROR = 'License tier not assigned'
 
 export type ServerLicenseTierJoinRow = {

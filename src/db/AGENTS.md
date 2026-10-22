@@ -988,8 +988,9 @@ mutation, after the self-hosted grant is synced, on every hardware report
 (`touchServerMetadata`), on enroll, on server delete and on license revoke.
 Ingest, the capability plan, placement and the notice sweep read this column;
 nothing on those paths recomputes. Null on an unlicensed server and on a
-licensed server nothing entitled covers — the daemon's next session is then
-refused with `License tier below required`. Self-hosted is entitled by the
+licensed server nothing entitled covers — the daemon's next session still
+connects, and stamps `server.metadata.overTier` (`{ since, requiredRank }`)
+until the server is covered again. Self-hosted is entitled by the
 SX grant (`self-hosted-grant.ts`), so the column is populated there too.
 
 **Cell metadata fields** (stored in `server.metadata` and/or `server.options`

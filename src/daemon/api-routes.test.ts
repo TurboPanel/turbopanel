@@ -1678,33 +1678,56 @@ test('self-hosted enroll assigns SX and issues a session with nothing bought', a
   )
 })
 
-test('POST /auth/session refuses after a resize past the license band', async () => {
+async function readOverTier(
+  db: ReturnType<typeof createDenoDb>,
+  serverId: string
+): Promise<{ since: string; requiredRank: number } | null> {
+  const [row] = await db
+    .select({ metadata: server.metadata })
+    .from(server)
+    .where(eq(server.id, serverId))
+    .limit(1)
+  const metadata = row?.metadata as Record<string, unknown> | null | undefined
+  return (metadata?.overTier as { since: string; requiredRank: number } | undefined) ?? null
+}
+
+test('POST /auth/session lets a server that grew past its tier connect and records when it went over', async () => {
   await withEnrollFixture(async (fixture) => {
     const first = await postAuthSession(fixture.app, fixture)
     assertEquals(first.status, 200)
+    assertEquals(await readOverTier(fixture.db, fixture.serverId), null)
 
+    // Memory and cores hot-added past what the S1 covers.
     await mergeServerResources(fixture.db, fixture.serverId, hostResourcesPayload(64, 256))
-    const refused = await postAuthSession(fixture.app, fixture)
-    assertEquals(refused.status, 400)
-    const refusedBody = (await refused.json()) as { error: string }
-    assertEquals(refusedBody.error, LICENSE_TIER_BELOW_REQUIRED_ERROR)
+    const over = await postAuthSession(fixture.app, fixture)
+    assertEquals(over.status, 200)
+    const stamp = await readOverTier(fixture.db, fixture.serverId)
+    assertExists(stamp)
+    assertEquals(typeof stamp.since, 'string')
+    assertEquals(stamp.requiredRank > 1, true)
 
-    // Buying an S5 moves the server onto it (the projection's recompute).
+    // Still over: the date it went over is kept, not moved forward.
+    const again = await postAuthSession(fixture.app, fixture)
+    assertEquals(again.status, 200)
+    assertEquals(await readOverTier(fixture.db, fixture.serverId), stamp)
+
+    // Buying an S5 moves the server onto it (the projection's recompute) and clears the stamp.
     await purchaseTier(fixture.db, fixture, 5, 1)
-
-    const recovered = await postAuthSession(fixture.app, fixture)
-    assertEquals(recovered.status, 200)
+    const covered = await postAuthSession(fixture.app, fixture)
+    assertEquals(covered.status, 200)
+    assertEquals(await readOverTier(fixture.db, fixture.serverId), null)
   })
 })
 
-test('POST /auth/session recomputes a licensed server assigned nothing, and refuses it only when nothing bought covers it', async () => {
+test('POST /auth/session recomputes a licensed server assigned nothing, and lets it connect over its tier when nothing bought covers it', async () => {
   await withEnrollFixture(async (fixture) => {
     // The one S1 given back: the recompute leaves the server on nothing.
     await purchaseTier(fixture.db, fixture, 1, 0)
-    const refused = await postAuthSession(fixture.app, fixture)
-    assertEquals(refused.status, 400)
-    const refusedBody = (await refused.json()) as { error: string }
-    assertEquals(refusedBody.error, LICENSE_TIER_BELOW_REQUIRED_ERROR)
+    const uncovered = await postAuthSession(fixture.app, fixture)
+    assertEquals(uncovered.status, 200)
+    const stamp = await readOverTier(fixture.db, fixture.serverId)
+    assertExists(stamp)
+    assertEquals(typeof stamp.requiredRank, 'number')
 
     // Bought back — but the projection and this session raced, so the
     // derived column is still empty: the gate's one recompute places it.
@@ -1721,6 +1744,7 @@ test('POST /auth/session recomputes a licensed server assigned nothing, and refu
       .where(eq(server.id, fixture.serverId))
       .limit(1)
     assertEquals(row?.assignedTierId, tierId)
+    assertEquals(await readOverTier(fixture.db, fixture.serverId), null)
   })
 })
 

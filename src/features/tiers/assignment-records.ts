@@ -184,8 +184,8 @@ export async function recomputeOrganizationAssignments(
  * organization is a no-op. Self-hosted has no payer; the grant still
  * supplies quantity (`tierQuantitiesFromState`), so this always runs the
  * same assignment as the hosted path rather than skipping and leaving
- * `assigned_tier_id` null (which the session gate treats as a permanent
- * `License tier below required`).
+ * `assigned_tier_id` null (which the session gate records as over its
+ * tier, `metadata.overTier`).
  */
 export async function recomputeAssignmentsForServer(
   db: Db,

@@ -194,9 +194,10 @@ A license therefore carries no tier. It is minted only inside "Add server"
 with a truthful `message` and per-tier `ending` / `endsAt` counts),
 embedded in the install command,
 and revoked when its server is deleted — without touching Stripe. An uncovered
-licensed server is refused at its next `/auth/session` with
-`License tier below required` (byte-identical to the daemon's permanent list)
-and reported by the reconcile sweep.
+licensed server is not cut off: its next `/auth/session` still succeeds, the
+panel stamps `server.metadata.overTier` (`{ since, requiredRank }`, the date it
+went over, cleared once it is covered again), and the reconcile sweep reports
+it. No purchase or seat change is ever made for it.
 
 Because the tier is derived, a person adding a server needs to know which tier
 it will land in **before** it enrols. `GET /billing/catalog` carries
