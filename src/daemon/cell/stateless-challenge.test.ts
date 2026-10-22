@@ -304,9 +304,7 @@ test('stateless challenge returns null for invalid base64url payload/signature s
 })
 
 test('stateless challenge verifies with fallback signing keys', async () => {
-  const legacySecret = ['Bb2Cc3Dd4Ee5Ff6Gg7Hh8Ii9Jj0Kk1Ll2', 'Mm3Nn4Oo5Pp6Qq7Rr8Ss9Tt0Uu1'].join(
-    '_'
-  )
+  const legacySecret = 'legacy-fallback-signing-key-for-tests-'.repeat(2)
   const signing = await deriveSecretsConfig(
     parseSecretsEnv(`1:${legacySecret}`, 'workers'),
     'daemon-challenge-signing'
