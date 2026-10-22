@@ -3,7 +3,7 @@
  * literal, array, or member must fail even when the field name and `?`
  * marker are unchanged.
  */
-import { assertEquals, assertStringIncludes } from '@std/assert'
+import { assertEquals, assertStringIncludes, assertThrows } from '@std/assert'
 import { dirname, fromFileUrl, join } from '@std/path'
 import { extractFieldSpecs, fieldPinDrift, snapshotDataDrift } from './check-contract-drift.mjs'
 
@@ -123,4 +123,15 @@ test('snapshotDataDrift ignores layout and names the first differing path', () =
   )
   assertEquals(snapshotDataDrift(wrapped, `{"Foo": {"fields": []}}`), '$.Foo.fields[0]')
   assertEquals(snapshotDataDrift(wrapped, `{"Bar": {}}`), '$.Foo')
+})
+
+test('snapshotDataDrift reports a shorter array and a malformed file', () => {
+  assertEquals(snapshotDataDrift(`{"a": [1, 2]}`, `{"a": [1]}`), '$.a[1]')
+  assertEquals(snapshotDataDrift(`{"a": 1, "b": 2}`, `{"b": 2, "a": 1}`), null)
+  assertThrows(
+    () => snapshotDataDrift(`{"a": `, `{}`),
+    Error,
+    'contract-field-snapshot.json on the instance is not valid JSON'
+  )
+  assertThrows(() => snapshotDataDrift(`{}`, `nope`), Error, 'on the daemon is not valid JSON')
 })
