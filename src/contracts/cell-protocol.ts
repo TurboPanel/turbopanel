@@ -423,6 +423,58 @@ export type ManagedPermissionsResultMessage = {
   at: string
 }
 
+/** One peer address a host is asked to try (feature `server-network-check-v1`). */
+export type ServerNetworkCheckTarget = {
+  peerServerId: string
+  /** The peer's address on the network being checked (an IPv4 or IPv6 literal). */
+  address: string
+  /** A TCP port the peer already listens on, reached from the asked host. */
+  port: number
+}
+
+/** What happened for one {@link ServerNetworkCheckTarget}. */
+export type ServerNetworkCheckEntry = {
+  peerServerId: string
+  address: string
+  reachable: boolean
+  /** Time to open the connection, whole milliseconds. Only when reachable. */
+  latencyMs?: number
+  /** The local address the connection left from. Only when reachable. */
+  sourceAddress?: string
+  /** The local interface that owns `sourceAddress`, when known. */
+  interface?: string
+  /** A short reason when not reachable: `refused`, `timeout`, `unreachable`, `invalid_target`. */
+  error?: string
+}
+
+/**
+ * Ask a host to try a TCP connection to each target and say what happened
+ * (feature `server-network-check-v1`). Nothing is sent on the connection and
+ * nothing is stored. Twin of the daemon's `ServerNetworkCheckRequestMessage`.
+ */
+export type ServerNetworkCheckRequestMessage = {
+  type: 'server-network-check-request'
+  id: string
+  /** Up to {@link MAX_DAEMON_WS_NETWORK_CHECK_TARGETS}. */
+  targets: ServerNetworkCheckTarget[]
+  at: string
+}
+
+/**
+ * The host's answer, on the request's id. Always sent: a request that cannot
+ * be run is `ok: false` with a short `error`; otherwise `results` holds one
+ * entry per target, in order.
+ * Twin of the daemon's `ServerNetworkCheckResultMessage`.
+ */
+export type ServerNetworkCheckResultMessage = {
+  type: 'server-network-check-result'
+  id: string
+  ok: boolean
+  results?: ServerNetworkCheckEntry[]
+  error?: string
+  at: string
+}
+
 /**
  * The commands a daemon is carrying, sent on `hello` and `heartbeat` (feature
  * `command-recovery-v1`) only while either list is not empty. `running` holds
@@ -564,6 +616,8 @@ export type DaemonMessage =
     }
   | ManagedPermissionsRequestMessage
   | ManagedPermissionsResultMessage
+  | ServerNetworkCheckRequestMessage
+  | ServerNetworkCheckResultMessage
   | {
       /**
        * Daemon-initiated, fire-and-forget: every managed replica the host runs,
@@ -925,6 +979,7 @@ export const DAEMON_INBOUND_ALLOWED = new Set([
   'managed-logs-result',
   'managed-health-result',
   'managed-permissions-result',
+  'server-network-check-result',
   'container-logs-result',
   'metrics-live-start-result',
   'metrics-live-stop-result',
@@ -1001,6 +1056,8 @@ export const MAX_DAEMON_WS_MANAGED_GTID_CHARS = 4096
 export const MAX_DAEMON_WS_PERMISSIONS_LOGINS = 50
 /** Max databases in one `managed-permissions-request`. */
 export const MAX_DAEMON_WS_PERMISSIONS_DATABASES = 100
+/** Max targets in one `server-network-check-request`. */
+export const MAX_DAEMON_WS_NETWORK_CHECK_TARGETS = 32
 /** Max UTF-8 bytes of `managed-permissions-result.permissions` JSON. */
 export const MAX_DAEMON_WS_PERMISSIONS_JSON_BYTES = 128 * 1024
 
@@ -1760,6 +1817,32 @@ function validateManagedPermissionsResultFields(record: Record<string, unknown>)
   )
 }
 
+function validateServerNetworkCheckResultFields(record: Record<string, unknown>): string | null {
+  const base = validateOkResultFields(record)
+  if (base) return base
+  if (record.results === undefined) return null
+  if (!Array.isArray(record.results)) return 'invalid results'
+  if (record.results.length > MAX_DAEMON_WS_NETWORK_CHECK_TARGETS) return 'too many results'
+  for (const entry of record.results) {
+    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
+      return 'invalid results'
+    }
+    const e = entry as Record<string, unknown>
+    if (typeof e.peerServerId !== 'string' || e.peerServerId.length > 128) return 'invalid results'
+    if (typeof e.address !== 'string' || e.address.length > 64) return 'invalid results'
+    if (typeof e.reachable !== 'boolean') return 'invalid results'
+    if (e.latencyMs !== undefined && (typeof e.latencyMs !== 'number' || !(e.latencyMs >= 0))) {
+      return 'invalid results'
+    }
+    for (const key of ['sourceAddress', 'interface', 'error']) {
+      if (e[key] !== undefined && (typeof e[key] !== 'string' || (e[key] as string).length > 128)) {
+        return 'invalid results'
+      }
+    }
+  }
+  return null
+}
+
 /**
  * What the host did with a `deploy-cancel`: `cancelling` (it was told to stop;
  * the deploy command's own outcome says how it ended), `too_late` (the deploy
@@ -1912,6 +1995,8 @@ function validateInboundMessageFields(record: Record<string, unknown>): string |
       return validateManagedHealthResultFields(record)
     case 'managed-permissions-result':
       return validateManagedPermissionsResultFields(record)
+    case 'server-network-check-result':
+      return validateServerNetworkCheckResultFields(record)
     case 'repo-read-result':
       return validateRepoReadResultFields(record)
     case 'repo-default-branch-result':
@@ -2032,6 +2117,7 @@ function validateInboundEnvelopeKind(inbound: DaemonInboundEnvelope): string | n
     case 'repo-default-branch-result':
     case 'managed-health-result':
     case 'managed-permissions-result':
+    case 'server-network-check-result':
       return validateOptionalError(inbound.error)
     case 'fabric-paths-result':
       return validateFabricPathsEnvelope(inbound)
@@ -2118,6 +2204,10 @@ export type DaemonOutboundEnvelope =
       engine: string
       logins: string[]
       databases: string[]
+    })
+  | (OutboundEnvelopeBase & {
+      kind: 'server-network-check-request'
+      targets: ServerNetworkCheckTarget[]
     })
   | (OutboundEnvelopeBase & {
       kind: 'container-logs-request'
@@ -2247,6 +2337,14 @@ export type DaemonInboundEnvelope =
       at: string
       ok: boolean
       permissions?: ManagedPermissionsObserved
+      error?: string
+    }
+  | {
+      kind: 'server-network-check-result'
+      requestId: string
+      at: string
+      ok: boolean
+      results?: ServerNetworkCheckEntry[]
       error?: string
     }
   | {
@@ -2449,6 +2547,15 @@ export function wireMessageToInboundEnvelope(msg: DaemonMessage): DaemonInboundE
         at: msg.at,
         ok: msg.ok,
         permissions: msg.permissions,
+        error: msg.error,
+      }
+    case 'server-network-check-result':
+      return {
+        kind: 'server-network-check-result',
+        requestId: msg.id,
+        at: msg.at,
+        ok: msg.ok,
+        results: msg.results,
         error: msg.error,
       }
     case 'container-logs-result':
@@ -2700,6 +2807,13 @@ export function outboundEnvelopeToWireMessage(env: DaemonOutboundEnvelope): Daem
         engine: env.engine,
         logins: env.logins,
         databases: env.databases,
+        at: env.at,
+      }
+    case 'server-network-check-request':
+      return {
+        type: 'server-network-check-request',
+        id: env.requestId,
+        targets: env.targets,
         at: env.at,
       }
     case 'container-logs-request':
