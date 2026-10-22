@@ -303,6 +303,7 @@ async function handleUpdateProgressInbound(params: {
     at: message.at,
     detail: message.detail,
     errorCode: message.errorCode,
+    restart: message.restart,
     requestId: message.id,
   })
 }

@@ -6,6 +6,7 @@ import { createDenoDb, endDbConnection } from '../../db/connection.ts'
 import { organization, server, setting, upgrade } from '../../db/schema.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
 import { createUpgradeCoordinator } from './coordinator.ts'
+import { RESTART_RECOVERED_NOTE } from './restart-report.ts'
 import {
   persistDaemonReachedTarget,
   persistUpgradeOutcome,
@@ -685,5 +686,100 @@ test('Postgres upgrades: saveStep with expectedStatus refuses a stale write', as
 
     const final = await stepById(fx, runId, stepId)
     assertEquals(final?.status, 'done')
+  })
+})
+
+async function seedHeldRestart(fx: Fixture) {
+  const host = await addServer(fx, { connected: true, commit: 'old-daemon' })
+  let stepId = ''
+  const runId = await seedRun(fx, 'fleet', (id) => {
+    const row = stepRow(id, { serverId: host, unit: 'daemon', phase: 'fleet' })
+    row.fromCommit = 'old-daemon'
+    stepId = row.id
+    return [row]
+  })
+  const { coordinator, clock, enqueued } = coordinatorFor(fx, {
+    runtime: 'workers',
+    colocatedServerId: null,
+  })
+  await coordinator.tick({ resolveManifests: false })
+  const requestId = enqueued[0]?.envelope.requestId
+  if (!requestId) throw new TypeError('expected the dispatch')
+  await persistUpgradeProgress(fx.db, {
+    serverId: host,
+    unit: 'daemon',
+    stage: 'failed',
+    at: minutesAfter(T0, 1),
+    detail: 'daemon restart failed after reconcile (systemctl restart exited 143, 1 try, 900 ms)',
+    errorCode: 'restart_failed',
+    restart: { command: 'restart', exitCode: 143, attempts: 1, elapsedMs: 900 },
+    requestId,
+  })
+  return { host, stepId, runId, coordinator, clock }
+}
+
+test('Postgres upgrades: a reported restart error is held and the host coming back on the target ends updated', async () => {
+  await withFixture('restart-held-then-back', async (fx) => {
+    const { host, stepId, runId, coordinator, clock } = await seedHeldRestart(fx)
+    const held = await stepById(fx, runId, stepId)
+    assertEquals(held?.status, 'restarting')
+    assertEquals(held?.errorCode, null)
+
+    await persistDaemonReachedTarget(fx.db, host, 'new-daemon', minutesAfter(T0, 2))
+    const done = await stepById(fx, runId, stepId)
+    assertEquals(done?.status, 'done')
+    const detail = done?.detail as {
+      restartNote?: string
+      restartPending?: { restart?: { exitCode?: number } }
+    }
+    assertEquals(detail.restartNote, RESTART_RECOVERED_NOTE)
+    assertEquals(detail.restartPending?.restart?.exitCode, 143)
+    clock.now = minutesAfter(T0, 3)
+    await coordinator.tick({ resolveManifests: false })
+    assertEquals((await createDrizzleUpgradeStore(fx.db, null).runById(runId))?.status, 'succeeded')
+  })
+})
+
+test('Postgres upgrades: a reported restart error with no host back on the target fails after the window with the reason', async () => {
+  await withFixture('restart-held-never-back', async (fx) => {
+    const { host, stepId, runId, coordinator, clock } = await seedHeldRestart(fx)
+    await fx.db.update(server).set({ isConnected: false }).where(eq(server.id, host))
+    clock.now = minutesAfter(T0, 5)
+    await coordinator.tick({ resolveManifests: false })
+    assertEquals((await stepById(fx, runId, stepId))?.status, 'restarting')
+
+    clock.now = minutesAfter(T0, 12)
+    await coordinator.tick({ resolveManifests: false })
+    const failed = await stepById(fx, runId, stepId)
+    assertEquals(failed?.status, 'failed')
+    assertEquals(failed?.errorCode, 'restart_failed')
+    assertEquals(failed?.errorMessage?.includes('exited 143'), true)
+    assertEquals(failed?.errorMessage?.includes('did not reconnect'), true)
+    assertEquals((await createDrizzleUpgradeStore(fx.db, null).runById(runId))?.status, 'failed')
+  })
+})
+
+test('Postgres upgrades: run steps name their server, from the servers table or the planned snapshot', async () => {
+  await withFixture('step-server-names', async (fx) => {
+    const host = await addServer(fx, { connected: true, commit: 'old-daemon' })
+    await fx.db.update(server).set({ name: null, hostname: 'w.lan' }).where(eq(server.id, host))
+    const runId = await seedRun(fx, 'fleet', (id) => {
+      const row = stepRow(id, { serverId: host, unit: 'daemon', phase: 'fleet' })
+      row.detail = { phase: 'fleet', serverName: 'w', serverHostname: 'w.lan' }
+      return [row]
+    })
+    const { coordinator } = coordinatorFor(fx, { runtime: 'workers', colocatedServerId: null })
+    const stepOf = async () => (await coordinator.run(runId))?.steps[0]
+
+    assertEquals((await stepOf())?.serverName, 'w')
+    assertEquals((await stepOf())?.hostname, 'w.lan')
+
+    await fx.db.update(server).set({ name: 'renamed' }).where(eq(server.id, host))
+    assertEquals((await stepOf())?.serverName, 'renamed')
+
+    // A step row goes with its server (cascade), so the snapshot covers a name or hostname later cleared.
+    await fx.db.update(server).set({ name: null, hostname: null }).where(eq(server.id, host))
+    assertEquals((await stepOf())?.serverName, 'w')
+    assertEquals((await stepOf())?.hostname, 'w.lan')
   })
 })

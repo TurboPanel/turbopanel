@@ -17,10 +17,15 @@
  *   - A control-plane step that restarted (`restarting` / `verifying`) is never
  *     re-dispatched: quiet past {@link UPGRADE_VERIFY_TIMEOUT_MS} it goes to
  *     `needs_attention` (`verify_timeout`).
+ *   - A daemon that reported a failed restart is held, not failed: the host gets
+ *     {@link UPGRADE_RESTART_RECONNECT_MS} to come back. On the target build the
+ *     step is `done`; past the window it fails with the reason the host is
+ *     in (never back, still the old build, some other build).
  *   - A commit that matches the target marks the step `done` (this is also
  *     what the hello/heartbeat projection sees when a host comes back on the
  *     new build).
  */
+import { UPGRADE_RESTART_RECONNECT_MS } from './restart-report.ts'
 import type {
   UpgradePhase,
   UpgradeStepErrorCode,
@@ -126,6 +131,10 @@ export type StepView = {
   toCommit: string | null
   /** The daemon refused the current dispatch because it is busy with another install. */
   inProgressRefused?: boolean
+  /** The commit the host ran before the step (tells "still the old build" from another one). */
+  fromCommit?: string | null
+  /** When the host reported a failed daemon restart; set while the step is held for the reconnect window. */
+  restartReportedAt?: string | null
 }
 
 export type StepFacts = {
@@ -144,6 +153,7 @@ export type StepConfig = {
   backoffBaseMs?: number
   backoffMaxMs?: number
   offlineDeadlineMs?: number
+  restartReconnectMs?: number
 }
 
 export type StepAction =
@@ -154,6 +164,10 @@ export type StepAction =
   | { kind: 'skip_offline' }
   | { kind: 'retry'; nextAttemptAt: string }
   | { kind: 'needs_attention'; errorCode: string }
+  | { kind: 'restart_failed'; reason: RestartFailureReason }
+
+/** Why a held restart ended as a failure. */
+export type RestartFailureReason = 'never_back' | 'old_build' | 'other_build'
 
 /** Exponential backoff for the n-th retry (attempt ≥ 1), capped. */
 export function computeBackoffMs(
@@ -235,6 +249,21 @@ function verifyWindowPassed(step: StepView, cfg: StepConfig): boolean {
   return Date.parse(cfg.now) - Date.parse(step.lastStageAt) > window
 }
 
+/**
+ * A step whose host reported a failed restart. `reachedTarget` already ran, so
+ * the host is not on the target build: wait out the window, then say why.
+ */
+function handleRestartHeld(step: StepView, facts: StepFacts, cfg: StepConfig): StepAction {
+  const window = cfg.restartReconnectMs ?? UPGRADE_RESTART_RECONNECT_MS
+  const reportedAt = Date.parse(step.restartReportedAt ?? '')
+  if (Number.isNaN(reportedAt) || Date.parse(cfg.now) - reportedAt <= window) {
+    return { kind: 'none' }
+  }
+  if (!facts.serverConnected) return { kind: 'restart_failed', reason: 'never_back' }
+  const onOldBuild = facts.currentCommit !== null && facts.currentCommit === step.fromCommit
+  return { kind: 'restart_failed', reason: onOldBuild ? 'old_build' : 'other_build' }
+}
+
 function handleInFlight(step: StepView, facts: StepFacts, cfg: StepConfig): StepAction {
   // Checked before the offline rule: the co-located daemon reconnects to the
   // freshly restarted control plane, and a tick in that gap must not turn the
@@ -263,6 +292,9 @@ function handleInFlight(step: StepView, facts: StepFacts, cfg: StepConfig): Step
 export function planStepAction(step: StepView, facts: StepFacts, cfg: StepConfig): StepAction {
   if (isSettledStepStatus(step.status)) return { kind: 'none' }
   if (reachedTarget(step, facts)) return { kind: 'done' }
+  if (step.restartReportedAt && isInFlightStepStatus(step.status)) {
+    return handleRestartHeld(step, facts, cfg)
+  }
   if (step.status === 'rolled_back') return handleRolledBack(step, facts, cfg)
   if (step.status === 'pending' || step.status === 'waiting') {
     return handleDue(step, facts, cfg)

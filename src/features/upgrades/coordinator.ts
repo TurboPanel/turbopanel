@@ -51,11 +51,22 @@ import {
 import {
   computeBackoffMs,
   planStepAction,
+  type RestartFailureReason,
   type StepAction,
   UPGRADE_OFFLINE_DEADLINE_MS,
   UPGRADE_STEP_MAX_ATTEMPTS,
   UPGRADE_VERIFY_TIMEOUT_MS,
 } from './transitions.ts'
+import {
+  describeRestartPending,
+  readRestartPending,
+  readServerSnapshot,
+  RESTART_FAILED_CODE,
+  type ServerSnapshot,
+  UPGRADE_RESTART_RECONNECT_MS,
+  withRestartPending,
+  withRestartRecovered,
+} from './restart-report.ts'
 import { shouldAutoStartRun } from './schedule.ts'
 import {
   type ClientUpdateBlock,
@@ -153,6 +164,8 @@ export type UpgradeCoordinator = {
     at: string
     detail?: string
     errorCode?: string
+    /** The daemon's restart diagnostics on a `restart_failed` stage (untrusted; sanitized on save). */
+    restart?: unknown
     /** Wire id of the `update` / `instance-update` this report belongs to. */
     requestId: string
   }): Promise<void>
@@ -301,7 +314,13 @@ function runBlocksStart(
 }
 
 /** A step as the run endpoints return it: `connected` is the host's live link. */
-export type UpgradeStepWithLink = UpgradeStepRow & { connected: boolean }
+export type UpgradeStepWithLink = UpgradeStepRow & {
+  connected: boolean
+  /** The server's name now, else the name it had when the step was planned; null when it never had one. */
+  serverName: string | null
+  /** The server's hostname now, else the one it had when the step was planned. */
+  hostname: string | null
+}
 export type UpgradeRunWithSteps = UpgradeRunRow & { steps: UpgradeStepWithLink[] }
 
 export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeCoordinator {
@@ -315,9 +334,14 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
     if (!run) return null
     const [steps, fleet] = await Promise.all([deps.store.stepsFor(run.id), facts()])
     const connected = new Set(connectedServerIds(fleet))
+    const byId = new Map(fleet.map((fact) => [fact.serverId, fact]))
     return {
       ...run,
-      steps: steps.map((step) => ({ ...step, connected: connected.has(step.serverId) })),
+      steps: steps.map((step) => ({
+        ...step,
+        connected: connected.has(step.serverId),
+        ...serverLabelFor(step, byId.get(step.serverId)),
+      })),
     }
   }
 
@@ -547,8 +571,11 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
     // what to do with the copy it read earlier) always wins over this pass.
     const readStatus = step.status
     if (action.kind === 'done') {
-      step.status = 'done'
-      step.lastStageAt = deps.now()
+      markStepDone(step, deps.now())
+      return await saveStepIfChanged(step, before, readStatus)
+    }
+    if (action.kind === 'restart_failed') {
+      markRestartFailed(step, action.reason, fact?.commit ?? null, deps.now())
       return await saveStepIfChanged(step, before, readStatus)
     }
     if (action.kind === 'wait_offline') {
@@ -641,6 +668,8 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
         lastStageAt: step.lastStageAt,
         toCommit: step.toCommit,
         inProgressRefused: readDispatchHistory(step.detail).inProgressRefused,
+        fromCommit: step.fromCommit,
+        restartReportedAt: readRestartPending(step.detail)?.at ?? null,
       },
       {
         serverConnected: fact?.connected === true,
@@ -1114,8 +1143,7 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
           !isTerminal(item.status)
       )
       if (!step) return
-      step.status = 'done'
-      step.lastStageAt = at
+      markStepDone(step, at)
       await deps.store.saveStep(step)
     },
     noteProgress: async (input) => {
@@ -1126,6 +1154,10 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
         }
         const failure = input.stage === 'failed' || input.stage === 'rolled-back'
         if (failure && !priorFailureApplies(step, report)) return false
+        if (input.stage === 'failed' && isRestartFailure(step, input.errorCode)) {
+          holdForReconnect(step, input.at, input.detail, input.restart)
+          return true
+        }
         const status = stepStatusForProgressStage(input.stage)
         // Reports replayed after a restart can arrive out of order; an earlier
         // stage never pulls a step back from a later one.
@@ -1153,6 +1185,10 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
           return report === 'current'
         }
         if (!input.ok && !priorFailureApplies(step, report)) return false
+        if (!input.ok && isRestartFailure(step, input.errorCode)) {
+          holdForReconnect(step, input.at, input.error)
+          return true
+        }
         applyOutcome(step, input)
         return true
       })
@@ -1432,6 +1468,76 @@ async function knownDaemonLabels(store: UpgradeStore): Promise<Map<string, strin
   return labels
 }
 
+/** The server's name and hostname now, kept on the step so a later rename or delete still reads sensibly. */
+function serverSnapshotOf(fact: FleetServerFact | undefined): ServerSnapshot {
+  return {
+    ...(fact?.name?.trim() ? { serverName: fact.name.trim() } : {}),
+    ...(fact?.hostname?.trim() ? { serverHostname: fact.hostname.trim() } : {}),
+  }
+}
+
+/** Live name and hostname, else the planned-time snapshot, else null (the client shows the short id). */
+function serverLabelFor(
+  step: UpgradeStepRow,
+  fact: FleetServerFact | undefined
+): { serverName: string | null; hostname: string | null } {
+  const snapshot = readServerSnapshot(step.detail)
+  return {
+    serverName: fact?.name?.trim() || snapshot.serverName || null,
+    hostname: fact?.hostname?.trim() || snapshot.serverHostname || null,
+  }
+}
+
+/** A step settles `done`; one that was held after a reported restart error keeps a plain note. */
+function markStepDone(step: UpgradeStepRow, at: string): void {
+  if (readRestartPending(step.detail)) step.detail = withRestartRecovered(step.detail)
+  step.status = 'done'
+  step.lastStageAt = at
+}
+
+/** The daemon step's own `restart_failed` report: a hint to hold on, not a verdict. */
+function isRestartFailure(step: UpgradeStepRow, errorCode: string | undefined): boolean {
+  return step.unit === 'daemon' && errorCode === RESTART_FAILED_CODE
+}
+
+/** Keep the step in flight and start the reconnect window; the tick judges it from the host's commit. */
+function holdForReconnect(
+  step: UpgradeStepRow,
+  at: string,
+  message: string | undefined,
+  restart?: unknown
+): void {
+  step.detail = withRestartPending(step.detail, {
+    at,
+    message: message ?? RESTART_FAILED_CODE,
+    restart,
+  })
+  step.status = 'restarting'
+  step.lastStageAt = at
+}
+
+/** The window ended without the target build: fail with the exact reason. */
+function markRestartFailed(
+  step: UpgradeStepRow,
+  reason: RestartFailureReason,
+  currentCommit: string | null,
+  at: string
+): void {
+  const pending = readRestartPending(step.detail)
+  const said = pending ? describeRestartPending(pending) : 'daemon restart failed after reconcile'
+  const minutes = Math.round(UPGRADE_RESTART_RECONNECT_MS / 60_000)
+  const want = shortCommit(step.toCommit)
+  const state = {
+    never_back: `The host did not reconnect within ${minutes} minutes.`,
+    old_build: `The host reconnected but still runs the old build ${shortCommit(currentCommit)}, not the target ${want}.`,
+    other_build: `The host reconnected on ${shortCommit(currentCommit)}, which is neither the old build nor the target ${want}.`,
+  }[reason]
+  step.status = 'failed'
+  step.errorCode = RESTART_FAILED_CODE
+  step.errorMessage = redactUrlSecrets(`${said}. ${state}`)
+  step.lastStageAt = at
+}
+
 function stepFromPlan(
   run: UpgradeRunRow,
   planned: PlannedStep,
@@ -1490,6 +1596,7 @@ function stepFromPlan(
     detail: {
       phase: planned.phase,
       ...(planned.unit === 'instance' && instance.uiBehind ? { uiRefresh: true } : {}),
+      ...serverSnapshotOf(fact),
     },
   }
 }

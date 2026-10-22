@@ -46,6 +46,7 @@ export async function persistUpgradeProgress(
     at: string;
     detail?: string;
     errorCode?: string;
+    restart?: unknown;
     requestId: string;
   },
 ): Promise<void> {
@@ -58,6 +59,7 @@ export async function persistUpgradeProgress(
       at: input.at,
       detail: input.detail,
       errorCode: input.errorCode,
+      restart: input.restart,
       requestId: input.requestId,
     });
   } catch {
