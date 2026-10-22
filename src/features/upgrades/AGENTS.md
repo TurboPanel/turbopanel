@@ -19,16 +19,17 @@ reads rows, calls these, then writes Postgres and enqueues cell messages. Do not
 push a decision down into the orchestrator that belongs in a pure function, and
 do not import a DB/cell module here.
 
-| Module              | Owns                                                                                                                               |
-| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `vocabulary.ts`     | `upgrade` / `stage` enums, pinned by `../../db/enum-checks.test.ts`                                                                |
-| `target.ts`         | `upgrade.target` jsonb shape + `isOnTarget` / `differsFromInstalled`                                                               |
-| `target-resolve.ts` | channel manifests → `UpgradeTarget` (pinned via `pinnedChannelManifestUrl`), `channelHasInstancePackage`, latest-build setting row |
-| `planner.ts`        | phases + batch sizing → the run's step list                                                                                        |
-| `transitions.ts`    | per-step next action (dispatch / wait / skip_offline / retry / needs_attention / done)                                             |
-| `run.ts`            | batch gating, fleet hard-gate, control-plane failure, run outcome, settle-on-start predicate, Workers dispatch cap                 |
-| `schedule.ts`       | pure maintenance-window + auto-start decision                                                                                      |
-| `prune.ts`          | bounded history prune on the maintenance tick                                                                                      |
+| Module              | Owns                                                                                                                                                                                  |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `vocabulary.ts`     | `upgrade` / `stage` enums, pinned by `../../db/enum-checks.test.ts`                                                                                                                   |
+| `restart-report.ts` | the hold a daemon step gets when its host reports `restart_failed` (a hint, not a verdict: the host's commit decides, see below), and the server name snapshot kept in `stage.detail` |
+| `target.ts`         | `upgrade.target` jsonb shape + `isOnTarget` / `differsFromInstalled`                                                                                                                  |
+| `target-resolve.ts` | channel manifests → `UpgradeTarget` (pinned via `pinnedChannelManifestUrl`), `channelHasInstancePackage`, latest-build setting row                                                    |
+| `planner.ts`        | phases + batch sizing → the run's step list                                                                                                                                           |
+| `transitions.ts`    | per-step next action (dispatch / wait / skip_offline / retry / needs_attention / done)                                                                                                |
+| `run.ts`            | batch gating, fleet hard-gate, control-plane failure, run outcome, settle-on-start predicate, Workers dispatch cap                                                                    |
+| `schedule.ts`       | pure maintenance-window + auto-start decision                                                                                                                                         |
+| `prune.ts`          | bounded history prune on the maintenance tick                                                                                                                                         |
 
 The coordinator is `coordinator.ts` (decisions) plus `store.ts` (Postgres or the
 in-memory test store). `maintenance.ts` is the tick: Deno cleanup lane every
@@ -301,3 +302,20 @@ grouped `count(*)`, not a materialised server or step list.
   other code verbatim. `UPGRADE_RUN_ERROR_CODES` are the run `error`s
   (`colocated_daemon_failed`, `control_plane_failed`). The literals in
   `transitions.ts` / `coordinator.ts` are `satisfies`-checked against them.
+
+## A reported restart error is a hint
+
+The daemon's own restart (`sudo systemctl restart --no-block`) can exit nonzero
+or be cut off by the restart it asked for even though the host comes back on the
+new build (seen on slow low-memory hosts). So a daemon step that gets a
+`restart_failed` stage or result is **not** failed: `holdForReconnect` keeps it
+`restarting` with the report in `detail.restartPending`. The host's commit then
+decides: the target build marks the step `done` with a plain `restartNote`;
+past `UPGRADE_RESTART_RECONNECT_MS` without it the tick fails the step with
+`restart_failed` and the exact state (never reconnected, still the old build,
+some other build). A real install failure (any other code) still fails at once.
+Older daemons send only the code and are held the same way.
+
+Run steps carry `serverName` / `hostname`: the live server row first, then the
+snapshot saved in `detail` when the step was planned. A step row goes with its
+server (cascade), so the snapshot only covers a name later cleared.

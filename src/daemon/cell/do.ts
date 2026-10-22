@@ -1879,6 +1879,7 @@ export class DaemonCellObject {
         | 'rolled-back'
       detail?: string
       errorCode?: string
+      restart?: unknown
     }
   ): Promise<void> {
     await this.#recordInboundRepairingPresence(attachment, parsed.at)
@@ -1891,6 +1892,7 @@ export class DaemonCellObject {
         at: parsed.at,
         detail: parsed.detail,
         errorCode: parsed.errorCode,
+        restart: parsed.restart,
         requestId: parsed.id,
       })
     )

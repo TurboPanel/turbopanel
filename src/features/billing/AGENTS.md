@@ -444,8 +444,14 @@ default (no)"_ while the API still returns `unspecified`, so refusing on the
 price alone rejects the setup Stripe recommends — it did, and that was a bug.
 `getTaxDefaults()` reads `GET /v1/tax/settings`, and `needsAccountTaxDefaults`
 keeps it to the prices that actually need it, so a catalogue of explicit prices
-costs no extra round trip. An account with Tax not set up errors on that
-endpoint; that degrades to "no default", which only makes the gate stricter.
+costs no extra round trip. The lookup never swallows the reason: it returns an
+`outcome` of `set`, `unset` (Stripe answered with no default, or
+`stripe_tax_inactive`), `not_asked` (no price needed it), `permission_missing`
+(HTTP 403: a restricted key without read access to Tax settings) or
+`provider_error`, plus Stripe's status, type, code and any `rak_…` permission it
+names (never its message), and logs the full `describeStripeError` line. Every
+refusal still degrades to "no default", which only makes the gate stricter, and
+the verification failure and the admin notice name the real reason and fix.
 
 The cached display price is written on every verify and refreshed by the
 `product.updated` / `price.updated` webhooks (`refreshTierCatalogue` in the
