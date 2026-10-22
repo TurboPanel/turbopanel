@@ -897,6 +897,41 @@ function assertRequiredSuperset(instanceFields, daemonFields, label) {
   }
 }
 
+/**
+ * Compares two snapshot files by parsed data, not bytes, because each repo's
+ * formatter wraps lines differently. Returns the path of the first difference
+ * (for example `$.Foo.fields[2].type`) or null when the data is identical.
+ */
+export function snapshotDataDrift(left, right) {
+  return firstDataDifference(JSON.parse(left), JSON.parse(right), '$')
+}
+
+function firstDataDifference(a, b, path) {
+  if (Array.isArray(a) && Array.isArray(b)) {
+    const length = Math.max(a.length, b.length)
+    for (let i = 0; i < length; i++) {
+      if (i >= a.length || i >= b.length) return `${path}[${i}]`
+      const found = firstDataDifference(a[i], b[i], `${path}[${i}]`)
+      if (found) return found
+    }
+    return null
+  }
+  if (isPlainObject(a) && isPlainObject(b)) {
+    const keys = [...new Set([...Object.keys(a), ...Object.keys(b)])]
+    for (const key of keys) {
+      if (!(key in a) || !(key in b)) return `${path}.${key}`
+      const found = firstDataDifference(a[key], b[key], `${path}.${key}`)
+      if (found) return found
+    }
+    return null
+  }
+  return Object.is(a, b) ? null : path
+}
+
+function isPlainObject(value) {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
 function checkExpandOnly(tp, td) {
   const left = requireText(
     readRel(tp, 'scripts/contract-field-snapshot.json'),
@@ -906,8 +941,9 @@ function checkExpandOnly(tp, td) {
     readRel(td, 'scripts/contract-field-snapshot.json'),
     'contract-field-snapshot.json missing on the daemon'
   )
-  if (normalizeWs(left) !== normalizeWs(right)) {
-    fail('contract-field-snapshot.json drifted between checkouts')
+  const differsAt = snapshotDataDrift(left, right)
+  if (differsAt) {
+    fail(`contract-field-snapshot.json drifted between checkouts at ${differsAt}`)
   }
   const snapshot = JSON.parse(left)
   for (const [typeName, pin] of Object.entries(snapshot)) {

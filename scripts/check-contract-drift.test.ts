@@ -5,7 +5,7 @@
  */
 import { assertEquals, assertStringIncludes } from '@std/assert'
 import { dirname, fromFileUrl, join } from '@std/path'
-import { extractFieldSpecs, fieldPinDrift } from './check-contract-drift.mjs'
+import { extractFieldSpecs, fieldPinDrift, snapshotDataDrift } from './check-contract-drift.mjs'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -102,4 +102,25 @@ test("the committed snapshot matches both checkouts' normalized field types", as
     assertEquals(extractFieldSpecs(instanceSrc, typeName), pin.fields)
     assertEquals(extractFieldSpecs(daemonSrc, typeName), pin.fields)
   }
+})
+
+test('snapshotDataDrift ignores layout and names the first differing path', () => {
+  const wrapped = `{
+  "Foo": {
+    "fields": [
+      {
+        "name": "type",
+        "required": true
+      }
+    ]
+  }
+}`
+  const collapsed = `{"Foo": {"fields": [{ "name": "type", "required": true }]}}`
+  assertEquals(snapshotDataDrift(wrapped, collapsed), null)
+  assertEquals(
+    snapshotDataDrift(wrapped, collapsed.replace('"required": true', '"required": false')),
+    '$.Foo.fields[0].required'
+  )
+  assertEquals(snapshotDataDrift(wrapped, `{"Foo": {"fields": []}}`), '$.Foo.fields[0]')
+  assertEquals(snapshotDataDrift(wrapped, `{"Bar": {}}`), '$.Foo')
 })
