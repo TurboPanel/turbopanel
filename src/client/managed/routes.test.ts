@@ -53,7 +53,11 @@ import {
   user,
   workspace,
 } from '../../db/schema.ts'
-import { createCommandRecord, transitionCommand } from '../../features/commands/command-records.ts'
+import {
+  createCommandRecord,
+  getCommandRecord,
+  transitionCommand,
+} from '../../features/commands/command-records.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 import { getCatalogEntry, readManagedEngineOptions } from '../projects/catalog/index.ts'
 import { registerManagedRoutes } from './routes.ts'
@@ -648,6 +652,14 @@ test('managed create returns rootPassword once, seals principal, is idempotent',
         commandQueue.envelopes.every((envelope) => envelope.serverId === serverId),
         true
       )
+      // Commands run one at a time, so the front-door update waits behind the
+      // apply that queued it: it must stay valid for the apply's whole budget
+      // plus its own, or it expires unsent and the new logins never reach it.
+      const applyRecord = await getCommandRecord(db, commandQueue.envelopes[0]!.commandId)
+      const reconcileRecord = await getCommandRecord(db, commandQueue.envelopes[1]!.commandId)
+      const applyExpiry = Date.parse(applyRecord!.expiresAt!)
+      const reconcileExpiry = Date.parse(reconcileRecord!.expiresAt!)
+      assertEquals(reconcileExpiry - applyExpiry >= 300_000 - 5_000, true)
 
       const [managedRow] = await db
         .select({ options: managed.options, id: managed.id })

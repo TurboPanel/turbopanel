@@ -30,6 +30,20 @@ export {
 // real endpoints to advertise as a SAN.
 export const WILDCARD_BIND_ADDRESSES = new Set(['0.0.0.0', '::', '::0']) // NOSONAR typescript:S1313 — wildcard bind sentinel, not a routable address
 
+/** How long one front-door update may run once the server starts it. */
+export const INGRESS_RECONCILE_RUN_MS = 300_000
+
+/**
+ * How long a queued front-door update stays valid. Commands run one at a time,
+ * so an update queued together with an apply starts only after that apply has
+ * finished (up to its whole budget, `waitsBehindMs`); give it that wait plus
+ * its own run budget, or it expires unsent and the new logins never reach the
+ * front door.
+ */
+export function ingressReconcileValidityMs(waitsBehindMs = 0): number {
+  return Math.max(0, waitsBehindMs) + INGRESS_RECONCILE_RUN_MS
+}
+
 /** Hostgroup pair for cluster index `i` (stable writer = 2i, reader = 2i+1). */
 export function hostgroupsForClusterIndex(index: number): {
   writerHostgroup: number

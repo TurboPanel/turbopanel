@@ -1962,6 +1962,8 @@ async function finalizePreparedManagedApplyResults(
         actorId: params.userId,
         secretsConfig,
         dataEncryptionSecrets,
+        // Queued right behind the apply: it runs after the apply finishes.
+        waitsBehindMs: APPLY_EXPIRES_MS,
       })
     })
   }
