@@ -39,8 +39,21 @@ export {
 /** The longest a deploy may wait, in the queue or for the server, before it starts. */
 export const DEPLOY_QUEUE_LIMIT_MS = 6 * 60 * 60_000
 
-/** How long the cell keeps a deploy's request while it waits: the queue limit plus a margin. */
-export const DEPLOY_REQUEST_TTL_SECONDS = Math.ceil(DEPLOY_QUEUE_LIMIT_MS / 1000) + 15 * 60
+/**
+ * The longest the control plane waits for a deploy from when it was sent, in any
+ * state: the queue limit, the deploy time limit and one whole reconcile window.
+ * Quiet time does not count on the run clock, so a deploy that keeps going
+ * quiet could otherwise be waited on for ever; past this it is given up on.
+ */
+export const DEPLOY_WAIT_LIMIT_MS =
+  DEPLOY_QUEUE_LIMIT_MS + DEPLOY_DEFAULT_TIMEOUT_MS + DEPLOY_RECONCILE_WINDOW_MS
+
+/**
+ * How long the cell keeps a deploy's request: the whole wait limit plus a margin,
+ * so the request is still there for every wait, every hand-off and a result
+ * that arrives late. The deploy is given up on before the request expires.
+ */
+export const DEPLOY_REQUEST_TTL_SECONDS = Math.ceil(DEPLOY_WAIT_LIMIT_MS / 1000) + 30 * 60
 
 /** How long a deploy sent to an offline server waits for it to come back. */
 export const DEPLOY_OFFLINE_LIMIT_MS = 15 * 60_000
@@ -51,16 +64,15 @@ export const DEPLOY_SIGNAL_GRACE_MS = 2 * 60_000
 /**
  * How long one consumer run keeps waiting for a deploy that has not started.
  * Then it puts the message back on the queue and lets go, because a queue
- * consumer cannot be held for hours. Short enough that a deploy that starts
- * just before this still finishes inside a Workers invocation (4 + 10 minutes).
+ * consumer cannot be held for hours. The next run picks the wait up again.
  */
 export const DEPLOY_QUEUE_HOLD_MS = 2 * 60_000
 
 /**
  * The longest one consumer run waits for a deploy in any state. Past it the run
- * hands the wait back, so a run never nears the ~15 minute wall-time limit of a
- * Workers queue consumer (a deploy that starts at the last moment of the hold
- * still has its 10 minute cap inside this).
+ * hands the wait back to the queue, so a run never nears the ~15 minute
+ * wall-time limit of a Workers queue consumer; a deploy that runs longer is
+ * waited on by the runs that follow.
  */
 export const DEPLOY_INVOCATION_LIMIT_MS = 12 * 60_000
 
@@ -172,6 +184,10 @@ function runningVerdict(
   }
   if (input.silentMs >= DEPLOY_RECONCILE_WINDOW_MS) return 'unreachable'
   const quiet = input.silentMs >= DEPLOY_RUN_SILENCE_MS
+  const sentMs = toMs(input.sentAt)
+  if (sentMs !== null && input.nowMs >= sentMs + DEPLOY_WAIT_LIMIT_MS) {
+    return quiet ? 'unreachable' : 'run_cap'
+  }
   if (!quiet && input.nowMs >= sinceMs + (input.runCapMs ?? DEPLOY_DEFAULT_TIMEOUT_MS)) {
     return 'run_cap'
   }
@@ -238,6 +254,21 @@ export function deployWaitMessage(waiter: DeployWaiter | undefined): string | un
   if (verdict === 'run_cap' && waiter.recovery) return deployTimeLimitMessage(waiter.runCapMs)
   if (verdict === 'unreachable') return deployUnreachableMessage(lastStepLabel(waiter.lastProgress))
   return DEPLOY_WAIT_MESSAGES[verdict]
+}
+
+/**
+ * The waiter for a sent deploy whose request the cell no longer holds: nothing
+ * can deliver its result any more, so it is given up on as unreachable, naming
+ * the last step it reported. It is never sent again.
+ */
+export function lostRequestWaiter(lastProgress: unknown): DeployWaiter {
+  return {
+    verdict: 'unreachable',
+    recovery: true,
+    runCapMs: DEPLOY_DEFAULT_TIMEOUT_MS,
+    lastProgress,
+    wait: () => Promise.resolve(null),
+  }
 }
 
 /** Verdicts after which the deploy may still be sitting on the server and should be told to stop. */

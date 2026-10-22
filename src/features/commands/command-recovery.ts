@@ -103,9 +103,10 @@ async function correctTimedOutDeploy(
     .set({ progress: succeededProgress(flippedRow.progress) })
     .where(eq(command.id, row.id))
   const settled: CommandRecord = { ...row, status: 'succeeded' }
-  if (payload === null) {
-    await markAppliedFromContext(db, settled)
-  } else {
+  // Containers, sites and placements are put right only while this deploy is
+  // still the server's latest; a newer deploy's rows are never overwritten.
+  const current = await markAppliedIfCurrent(db, settled)
+  if (current && payload !== null) {
     const dispatchable: DispatchableCommandRecord = { ...settled, payload }
     await applySucceededSideEffects(
       db,
@@ -123,17 +124,22 @@ async function correctTimedOutDeploy(
   await deleteCommandDispatch(db, row.id)
 }
 
-/** Without the dispatch payload only the deployment row can be put right. */
-async function markAppliedFromContext(db: Db, row: CommandRecord): Promise<void> {
+/**
+ * Mark the deployment applied when this command is still the one it last ran.
+ * Returns false when a newer deploy has replaced it, or the command carries no
+ * environment and generation to place it among the deploys.
+ */
+async function markAppliedIfCurrent(db: Db, row: CommandRecord): Promise<boolean> {
   const deploy = readDeployContext(row.context)
-  if (deploy === null) return
-  await markDeploymentApplied(db, {
+  if (deploy === null) return false
+  const marked = await markDeploymentApplied(db, {
     environmentId: deploy.environmentId,
     serverId: row.serverId,
     generation: deploy.generation,
     commandId: row.id,
     expectedCommandId: row.id,
   })
+  return marked !== null
 }
 
 /**

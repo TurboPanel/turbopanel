@@ -6826,3 +6826,175 @@ test('an outcome from a daemon that does not know the confirmation is stored but
     assertEquals(cells.requests.get(record.id)?.status, 'done')
   })
 })
+
+// --- The cell's copy of a deploy's request runs out --------------------------------------------
+
+/**
+ * Pending requests that expire like the real cells do: a request read after its
+ * `expiresAt` is `expired`. Every wait moves this cell's clock on by `stepMs`.
+ */
+function expiringCellRequests(serverId: string, stepMs: number) {
+  const requests = new Map<string, PendingRequestRecord>()
+  let offsetMs = 0
+  const registry = createDispatchMockRegistry(serverId, { waitForRequestResult: null })
+  const base = registry.getCell(serverId)
+  const cell: DaemonCell = {
+    ...base,
+    getRequest: (id) => {
+      const held = requests.get(id)
+      if (held === undefined) return Promise.resolve(null)
+      const expired = Date.now() + offsetMs >= Date.parse(held.expiresAt)
+      return Promise.resolve(expired ? { ...held, status: 'expired' as const } : held)
+    },
+    waitForRequest: () => {
+      offsetMs += stepMs
+      return Promise.resolve(null)
+    },
+  }
+  return { requests, registry: Object.assign(registry, { getCell: () => cell }) }
+}
+
+test('a resumed deploy whose request has expired is given up on, never sent again', async () => {
+  await withDeployFixtures(async (ctx) => {
+    const record = await quietDeploy({
+      ctx,
+      environmentId: ctx.environmentId,
+      projectId: ctx.projectId,
+      ranMs: 20 * MIN,
+      silentMs: 10 * MIN,
+      recovery: true,
+    })
+    const cells = expiringCellRequests(ctx.serverId, 0)
+    cells.requests.set(record.id, {
+      ...ACKED_REQUEST(ctx.serverId, record.id),
+      expiresAt: new Date(Date.now() - MIN).toISOString(),
+    })
+    const { sent, queue } = fakeQueue()
+
+    await processCommandEnvelope(ctx.db, cells.registry, buildEnvelope(record, ctx.serverId), {
+      commandQueue: queue,
+      firewallApplyGate: DENY_FIREWALL_APPLY,
+      deployWaitHoldMs: 0,
+      deployWaitEndMs: 0,
+    })
+
+    assertEquals(cells.registry.enqueueCalled, false)
+    assertEquals(sent.length, 0)
+    const stored = await getCommandRecord(ctx.db, record.id)
+    assertEquals(stored?.status, 'timed_out')
+    assertEquals(stored?.error?.includes('Lost contact with the server'), true)
+    assertEquals(stored?.error?.includes('Last known step: Build running'), true)
+    const [row] = await ctx.db
+      .select({ status: deployment.status })
+      .from(deployment)
+      .where(eq(deployment.serverId, ctx.serverId))
+    assertEquals(row?.status, 'failed')
+  })
+})
+
+test('a deploy whose request expires during the wait ends with the lost-contact message', async () => {
+  await withDeployFixtures(async (ctx) => {
+    const record = await quietDeploy({
+      ctx,
+      environmentId: ctx.environmentId,
+      projectId: ctx.projectId,
+      ranMs: 20 * MIN,
+      silentMs: 0,
+      recovery: true,
+    })
+    // Still held when the wait is picked up; gone by the first poll.
+    const cells = expiringCellRequests(ctx.serverId, 2 * MIN)
+    cells.requests.set(record.id, {
+      ...ACKED_REQUEST(ctx.serverId, record.id),
+      expiresAt: new Date(Date.now() + MIN).toISOString(),
+    })
+    const { sent, queue } = fakeQueue()
+
+    await processCommandEnvelope(ctx.db, cells.registry, buildEnvelope(record, ctx.serverId), {
+      commandQueue: queue,
+      firewallApplyGate: DENY_FIREWALL_APPLY,
+    })
+
+    assertEquals(cells.registry.enqueueCalled, false)
+    assertEquals(sent.length, 0)
+    const stored = await getCommandRecord(ctx.db, record.id)
+    assertEquals(stored?.status, 'timed_out')
+    assertEquals(stored?.error?.includes('Lost contact with the server'), true)
+  })
+})
+
+test('a late success for a deploy a newer one replaced changes nothing the newer deploy owns', async () => {
+  await withDeployFixtures(async (ctx) => {
+    const record = await quietDeploy({
+      ctx,
+      environmentId: ctx.environmentId,
+      projectId: ctx.projectId,
+      ranMs: 7 * 60 * MIN,
+      silentMs: 7 * 60 * MIN,
+      recovery: true,
+    })
+    const registry = registryWithRequest(ctx.serverId, (id) => ACKED_REQUEST(ctx.serverId, id))
+    await processCommandEnvelope(ctx.db, registry, buildEnvelope(record, ctx.serverId), {
+      firewallApplyGate: DENY_FIREWALL_APPLY,
+      deployWaitHoldMs: 0,
+    })
+    assertEquals((await getCommandRecord(ctx.db, record.id))?.status, 'timed_out')
+
+    // A newer deploy now owns the server's deployment row and its container.
+    const newer = await createCommandRecord(ctx.db, {
+      serverId: ctx.serverId,
+      ...TEST_COMMAND_ACTOR,
+      type: 'environment.deploy',
+      payload: { notAnEnvironmentId: true },
+    })
+    await ctx.db
+      .update(deployment)
+      .set({
+        lastCommandId: newer.id,
+        desiredGeneration: 3,
+        status: 'applied',
+        appliedGeneration: 3,
+      })
+      .where(eq(deployment.serverId, ctx.serverId))
+    await ctx.db.insert(container).values({
+      serviceId: ctx.webServiceId,
+      serverId: ctx.serverId,
+      containerId: 'newer-cid',
+      containerName: 'tp-deploy-test-web-1',
+      status: 'running',
+      composeServiceName: 'web',
+      ordinal: 1,
+    })
+
+    assertEquals(
+      await settleReportedOutcome(ctx.db, {
+        serverId: ctx.serverId,
+        envelope: {
+          kind: 'command-outcome',
+          requestId: record.id,
+          at: new Date().toISOString(),
+          ok: true,
+          result: { containers: [] },
+        },
+        record: null,
+      }),
+      true
+    )
+
+    assertEquals((await getCommandRecord(ctx.db, record.id))?.status, 'succeeded')
+    const [row] = await ctx.db
+      .select({
+        status: deployment.status,
+        applied: deployment.appliedGeneration,
+        last: deployment.lastCommandId,
+      })
+      .from(deployment)
+      .where(eq(deployment.serverId, ctx.serverId))
+    assertEquals(row, { status: 'applied', applied: 3, last: newer.id })
+    const containers = await ctx.db
+      .select({ containerId: container.containerId, status: container.status })
+      .from(container)
+      .where(eq(container.serverId, ctx.serverId))
+    assertEquals(containers, [{ containerId: 'newer-cid', status: 'running' }])
+  })
+})

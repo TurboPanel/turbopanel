@@ -9,6 +9,7 @@ import {
   DEPLOY_OFFLINE_LIMIT_MS,
   DEPLOY_PAUSED_SILENCE_MS,
   DEPLOY_REQUEST_TTL_SECONDS,
+  DEPLOY_WAIT_LIMIT_MS,
   DEPLOY_QUEUE_HOLD_MS,
   DEPLOY_QUEUE_LIMIT_MS,
   DEPLOY_RECONCILE_WINDOW_MS,
@@ -327,4 +328,33 @@ test('the messages say what is true about each way a deploy can end without a re
     true
   )
   assertEquals(deployUnreachableMessage(null).includes('Last known step'), false)
+})
+
+test('the request outlives the whole wait, and a deploy is given up on before it runs out', () => {
+  assertEquals(DEPLOY_REQUEST_TTL_SECONDS * 1000 > DEPLOY_WAIT_LIMIT_MS, true)
+  const sentAt = '2026-10-22T00:00:00.000Z'
+  const sentMs = Date.parse(sentAt)
+  const nowMs = sentMs + DEPLOY_WAIT_LIMIT_MS
+  // Reporting all along, with quiet gaps keeping the run clock short.
+  const progress = {
+    version: 1,
+    steps: [],
+    current: null,
+    updatedAt: sentAt,
+    runningSince: new Date(nowMs - 60_000).toISOString(),
+  }
+  const verdict = (silentMs: number) =>
+    deployWaitVerdict({
+      requestStatus: 'acked',
+      progress,
+      sentAt,
+      nowMs,
+      holdUntilMs: 0,
+      endAtMs: Number.POSITIVE_INFINITY,
+      silentMs,
+      recovery: true,
+    })
+  assertEquals(verdict(0), 'run_cap')
+  assertEquals(verdict(10 * 60_000), 'unreachable')
+  assertEquals(nowMs < sentMs + DEPLOY_REQUEST_TTL_SECONDS * 1000, true)
 })

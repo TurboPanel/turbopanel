@@ -43,9 +43,12 @@ import {
 import { RECOVERY_STATES, TERMINAL_RECOVERY_STATES } from '../managed/recovery.ts'
 import { commandIsOpen } from './open-statuses.ts'
 import {
+  DEPLOY_DEFAULT_TIMEOUT_MS,
   DEPLOY_QUEUE_LIMIT_MS,
   DEPLOY_RECONCILE_WINDOW_MS,
   DEPLOY_RUN_CAP_MS,
+  DEPLOY_RUN_SILENCE_MS,
+  DEPLOY_WAIT_LIMIT_MS,
   deployRunState,
 } from './deploy-wait.ts'
 import { serverHasCommandRecovery } from './deploy-wait-settings.ts'
@@ -138,14 +141,18 @@ function isStaleDeploy(row: StaleCommandCandidate, nowMs: number, graceMs: numbe
     nowMs,
   })
   if (run.state === 'running') {
-    // On a server that sends signs of life a running deploy is not judged by how long
-    // it has run (its consumer applies the time limit while the server reports); it is
-    // stranded when nobody has heard from the server for the whole reconcile window.
-    // Otherwise, or without a last-heard time, the fixed cap.
+    // On a server that sends signs of life a running deploy is stranded when it is still
+    // reported on and has run past the deploy time limit (`runningSince` leaves out quiet
+    // time), when nobody has heard from the server for the whole reconcile window, or past
+    // the whole wait limit. Otherwise, or without a last-heard time, the fixed cap.
     const lastHeard = row.recovery === true ? toMs(row.updatedAt ?? null) : null
-    return lastHeard === null
-      ? nowMs >= run.sinceMs + DEPLOY_RUN_CAP_MS + graceMs
-      : nowMs >= lastHeard + DEPLOY_RECONCILE_WINDOW_MS + graceMs
+    if (lastHeard === null) return nowMs >= run.sinceMs + DEPLOY_RUN_CAP_MS + graceMs
+    const reporting = nowMs - lastHeard < DEPLOY_RUN_SILENCE_MS
+    return (
+      (reporting && nowMs >= run.sinceMs + DEPLOY_DEFAULT_TIMEOUT_MS + graceMs) ||
+      nowMs >= lastHeard + DEPLOY_RECONCILE_WINDOW_MS + graceMs ||
+      nowMs >= waitingSince + DEPLOY_WAIT_LIMIT_MS + graceMs
+    )
   }
   return nowMs >= waitingSince + queueLimit
 }

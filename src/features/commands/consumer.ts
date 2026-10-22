@@ -93,6 +93,7 @@ import { loadDeployWaitSettings } from './deploy-wait-settings.ts'
 import {
   createDeployWaiter,
   deployWaitMessage,
+  lostRequestWaiter,
   DEPLOY_REQUEST_TTL_SECONDS,
   DEPLOY_RUN_CAP_MS,
   DEPLOY_WAIT_CANCELS_SERVER,
@@ -797,8 +798,15 @@ async function resumeDeployWait(
 ): Promise<{ pending: PendingRequestRecord | null } | null> {
   if (record.type !== 'environment.deploy' || record.sentAt === null) return null
   if (!['sent', 'acked', 'running'].includes(record.status)) return null
-  const existing = await registry.getCell(envelope.serverId).getRequest(record.id)
-  if (existing === null || existing.status === 'expired') return null
+  const cell = registry.getCell(envelope.serverId)
+  const existing = await cell.getRequest(record.id)
+  if (existing === null || existing.status === 'expired') {
+    // The deploy may already be running on the server, so it is never sent again:
+    // with its request gone no result can reach it, and it is given up on.
+    const waiter = lostRequestWaiter(record.progress)
+    await settleUnansweredCommand(db, cell, record, envelope, deps, waiter)
+    return { pending: null }
+  }
   return {
     pending: await awaitCommandOutcome(db, registry, record, envelope, deps, record.sentAt, true),
   }
@@ -3289,7 +3297,15 @@ async function handlePendingExpired(
   pending: PendingRequestRecord,
   deps?: CommandConsumerDeps
 ): Promise<void> {
-  await transitionCommand(db, record.id, { status: 'timed_out' })
+  // A deploy whose request ran out without a result says so in plain words.
+  const deployMessage =
+    record.type === 'environment.deploy'
+      ? deployWaitMessage(lostRequestWaiter((await getCommandRecord(db, record.id))?.progress))
+      : undefined
+  await transitionCommand(db, record.id, {
+    status: 'timed_out',
+    ...(deployMessage === undefined ? {} : { error: deployMessage }),
+  })
   commandConsumerTrace('dispatch-result', {
     commandId: record.id,
     commandType: record.type,
@@ -3298,7 +3314,14 @@ async function handlePendingExpired(
     resultStatus: 'timed_out',
   })
   await applyManagedFailedSideEffect(db, record, deps, pending.error ?? 'Command timed out')
-  await applyEnvironmentDeployFailedSideEffect(db, record, envelope, 'timed_out', 'timed_out', deps)
+  await applyEnvironmentDeployFailedSideEffect(
+    db,
+    record,
+    envelope,
+    deployMessage ?? 'timed_out',
+    'timed_out',
+    deps
+  )
   await applyFabricFailedSideEffect(db, record, envelope)
   await applyFirewallFailedSideEffect(db, record, envelope, pending.error ?? 'Command timed out')
 }

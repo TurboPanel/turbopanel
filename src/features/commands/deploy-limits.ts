@@ -25,8 +25,7 @@ export const DEPLOY_RUN_SILENCE_MS = 5 * 60_000
 
 /**
  * How long a deploy may stay "checking with the server" before the control plane
- * gives up and says the server never reported a result. Inside the request's
- * time to live (`DEPLOY_REQUEST_TTL_SECONDS`).
+ * gives up and says the server never reported a result.
  */
 export const DEPLOY_RECONCILE_WINDOW_MS = 6 * 60 * 60_000
 
