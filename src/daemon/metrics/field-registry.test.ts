@@ -1,6 +1,6 @@
 /**
  * The field registry against both stores. These checks need no database: the
- * hosted layout is read from `backends/cloudflare/v8-layout.ts` and the
+ * hosted layout is read from `backends/cloudflare/v12-layout.ts` and the
  * self-hosted columns from the DDL in `backends/duckdb/schema.ts`.
  *
  * Run alone with `pnpm check:metrics-parity`.
@@ -13,14 +13,14 @@ import {
   type MetricsSample,
 } from '../../contracts/metrics-contract.ts'
 import {
-  V8_ENTITY_FIELD_ORDER,
-  V8_HOST_ROW_SPECS,
-  v8EntityPages,
-  v8HostRowValues,
-  v8HostSlotFor,
-  type V8EntityFamily,
-  type V8HostFamily,
-} from './backends/cloudflare/v8-layout.ts'
+  V12_ENTITY_FIELD_ORDER,
+  V12_HOST_ROW_SPECS,
+  v12EntityPages,
+  v12HostRowValues,
+  v12HostSlotFor,
+  type V12EntityFamily,
+  type V12HostFamily,
+} from './backends/cloudflare/v12-layout.ts'
 import { AE_DATASET_NAME, AE_STORAGE_VERSION } from './backends/cloudflare/field-map.ts'
 import { buildSchemaStatements, DUCKDB_SCHEMA_MARKER_VERSION } from './backends/duckdb/schema.ts'
 import {
@@ -37,10 +37,10 @@ import {
 } from './field-registry.ts'
 import { HOST_METRICS_METRIC_DESCRIPTORS } from './metric-descriptors.ts'
 
-const HOST_ROWS = Object.keys(V8_HOST_ROW_SPECS) as V8HostFamily[]
-const ENTITY_ROWS = Object.keys(V8_ENTITY_FIELD_ORDER) as V8EntityFamily[]
+const HOST_ROWS = Object.keys(V12_HOST_ROW_SPECS) as V12HostFamily[]
+const ENTITY_ROWS = Object.keys(V12_ENTITY_FIELD_ORDER) as V12EntityFamily[]
 
-const ENTITY_SCOPE_ROW: Readonly<Record<string, V8EntityFamily>> = {
+const ENTITY_SCOPE_ROW: Readonly<Record<string, V12EntityFamily>> = {
   network: 'network',
   filesystem: 'filesystem',
   block: 'block',
@@ -128,7 +128,7 @@ describe('field registry: hosted layout', () => {
 
   it('uses exactly the number slots the host rows use', () => {
     for (const row of HOST_ROWS) {
-      const used = V8_HOST_ROW_SPECS[row].doubles.flatMap((id, i) => (id === null ? [] : [i + 1]))
+      const used = V12_HOST_ROW_SPECS[row].doubles.flatMap((id, i) => (id === null ? [] : [i + 1]))
       const registered = fields.flatMap((f) =>
         homesOf(f).flatMap((home) => (home.row === row && 'double' in home ? [home.double] : []))
       )
@@ -138,7 +138,7 @@ describe('field registry: hosted layout', () => {
 
   it('uses exactly the device fields the device rows use', () => {
     for (const row of ENTITY_ROWS) {
-      const used = V8_ENTITY_FIELD_ORDER[row].flatMap((f, i) => (f === null ? [] : [i + 1]))
+      const used = V12_ENTITY_FIELD_ORDER[row].flatMap((f, i) => (f === null ? [] : [i + 1]))
       const registered = fields.flatMap((f) =>
         homesOf(f).flatMap((home) =>
           home.row === row && 'entityDouble' in home ? [home.entityDouble] : []
@@ -154,12 +154,12 @@ describe('field registry: hosted layout', () => {
       if (!descriptor || field.kind !== 'number') continue
       const home = field.hosted
       if ('double' in home) {
-        const slot = v8HostSlotFor(descriptor.entityScope, descriptor.fieldName)
+        const slot = v12HostSlotFor(descriptor.entityScope, descriptor.fieldName)
         assertEquals(slot, { family: home.row, doubleIndex: home.double - 1 }, field.id)
       } else if ('entityDouble' in home) {
         const row = ENTITY_SCOPE_ROW[descriptor.entityScope]
         assertEquals(row, home.row, field.id)
-        assertEquals(V8_ENTITY_FIELD_ORDER[row][home.entityDouble - 1], descriptor.fieldName)
+        assertEquals(V12_ENTITY_FIELD_ORDER[row][home.entityDouble - 1], descriptor.fieldName)
       } else {
         throw new Error(`${field.id}: a reading must live in a number slot`)
       }
@@ -169,9 +169,9 @@ describe('field registry: hosted layout', () => {
   it('stores nothing for a value marked not stored', () => {
     for (const { id } of NOT_STORED_FIELDS) {
       const descriptor = HOST_METRICS_METRIC_DESCRIPTORS[id]
-      assertEquals(v8HostSlotFor(descriptor.entityScope, descriptor.fieldName), undefined, id)
+      assertEquals(v12HostSlotFor(descriptor.entityScope, descriptor.fieldName), undefined, id)
       const row = ENTITY_SCOPE_ROW[descriptor.entityScope]
-      if (row) assert(!V8_ENTITY_FIELD_ORDER[row].includes(descriptor.fieldName), id)
+      if (row) assert(!V12_ENTITY_FIELD_ORDER[row].includes(descriptor.fieldName), id)
     }
   })
 
@@ -187,7 +187,7 @@ describe('field registry: hosted layout', () => {
     }
     let checked = 0
     for (const row of HOST_ROWS) {
-      const blobs = v8HostRowValues(row, ctx).blobs
+      const blobs = v12HostRowValues(row, ctx).blobs
       for (const field of fields) {
         const home = field.hosted
         if (!field.id.startsWith('text.') || home.row !== row || !('blob' in home)) continue
@@ -215,10 +215,10 @@ describe('field registry: hosted layout', () => {
       },
     } as unknown as MetricsSample
     const pages = {
-      block: v8EntityPages.block([{ deviceId: 'b1' }] as never, sample)[0].blobs,
-      gpu: v8EntityPages.gpu([{ gpuId: 'g1' }] as never, sample)[0].blobs,
-      network: v8EntityPages.network([{ deviceId: 'n1' }] as never, sample)[0].blobs,
-      filesystem: v8EntityPages.filesystem([{ filesystemId: 'f1' }] as never, sample)[0].blobs,
+      block: v12EntityPages.block([{ deviceId: 'b1' }] as never, sample)[0].blobs,
+      gpu: v12EntityPages.gpu([{ gpuId: 'g1' }] as never, sample)[0].blobs,
+      network: v12EntityPages.network([{ deviceId: 'n1' }] as never, sample)[0].blobs,
+      filesystem: v12EntityPages.filesystem([{ filesystemId: 'f1' }] as never, sample)[0].blobs,
     }
     const expected: Record<string, string> = {
       'block.model': 'block-model',
@@ -255,7 +255,7 @@ describe('field registry: sensor kinds', () => {
       { signalId: 'a', kind: 'temperature', value: 1 },
       { signalId: 'b', kind: 'power', value: 2 },
     ]
-    const page = v8EntityPages['hardware.physical'](signals as never, sample)[0]
+    const page = v12EntityPages['hardware.physical'](signals as never, sample)[0]
     const home = STORED_FIELDS.find((f) => f.id === 'hardwareSignal.kind')!.hosted
     assert('blob' in home && home.row === 'hardware.physical')
     assertEquals(page.blobs[home.blob - 7], 'temperature,power')

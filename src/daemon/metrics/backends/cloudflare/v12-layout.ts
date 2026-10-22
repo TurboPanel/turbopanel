@@ -1,8 +1,8 @@
 /**
- * Metrics v8 slot layout: the static row table the Analytics Engine writer
+ * Metrics v12 slot layout: the static row table the Analytics Engine writer
  * packs and the read path resolves against. It is the code twin of the
- * canonical layout spec (`../../V8-LAYOUT.md`, `../../testing/v8-layout.fixture.json`);
- * `v8-layout.test.ts` pins every row below to that fixture.
+ * canonical layout spec (`../../V12-LAYOUT.md`, `../../testing/v12-layout.fixture.json`);
+ * `v12-layout.test.ts` pins every row below to that fixture.
  *
  * Every slot is named by its catalogue id (`busy`, `oomKills`, `nic1.rx`, ...).
  * This module maps each id to the `MetricsSample` field behind it. It is pure
@@ -31,7 +31,7 @@ import {
   nicProblemsPerSecond,
 } from '../../shared-derivations.ts'
 
-export const V8_HOST_FAMILIES = [
+export const V12_HOST_FAMILIES = [
   'host.system',
   'host.io',
   'host.network',
@@ -39,27 +39,27 @@ export const V8_HOST_FAMILIES = [
   'managed.database',
 ] as const
 
-export type V8HostFamily = (typeof V8_HOST_FAMILIES)[number]
+export type V12HostFamily = (typeof V12_HOST_FAMILIES)[number]
 
-export type V8EntityFamily = 'block' | 'network' | 'filesystem' | 'gpu' | 'hardware.physical'
+export type V12EntityFamily = 'block' | 'network' | 'filesystem' | 'gpu' | 'hardware.physical'
 
 /** Doubles available to a row's metric values (double1..double19). */
-export const V8_DOUBLE_SLOTS = 19
+export const V12_DOUBLE_SLOTS = 19
 
 /** Content text blobs start after the six envelope blobs (blob7). */
-export const V8_FIRST_CONTENT_BLOB_INDEX = 6
+export const V12_FIRST_CONTENT_BLOB_INDEX = 6
 
 /** Content text blobs a row can carry (blob7..blob20). */
-export const V8_CONTENT_BLOB_CAPACITY = 14
+export const V12_CONTENT_BLOB_CAPACITY = 14
 
 /** The one source id the single-source families (`managed.ingress`, `managed.database_proxy`) report as. */
-export const V8_SOURCE_IDS = {
+export const V12_SOURCE_IDS = {
   'managed.ingress': 'caddy',
   'managed.database_proxy': 'proxysql',
 } as const
 
 /** What a per-sample row builder reads besides the sample itself. */
-export type V8Context = {
+export type V12Context = {
   sample: MetricsSample
   /** Embedded NIC 1 and NIC 2 (`SlotMapping.normalNicSlots[0..1]`). */
   nics: readonly [NetworkDeviceSample | undefined, NetworkDeviceSample | undefined]
@@ -69,9 +69,9 @@ export type V8Context = {
   proxy: DatabaseProxySample | undefined
 }
 
-export type V8FieldRef = { scope: MetricEntityScope; field: string }
+export type V12FieldRef = { scope: MetricEntityScope; field: string }
 
-type DoubleDef = { ref?: V8FieldRef; read: (ctx: V8Context) => number | null }
+type DoubleDef = { ref?: V12FieldRef; read: (ctx: V12Context) => number | null }
 
 // ---------------------------------------------------------------------------
 // Readers
@@ -107,7 +107,7 @@ function diagnostics(half: 'cpu' | 'memory', field: string): DoubleDef {
 function sampleScope(
   scope: 'router' | 'storage' | 'dockerUsage',
   field: string,
-  read: (c: V8Context) => unknown = (c) => c.sample[scope]
+  read: (c: V12Context) => unknown = (c) => c.sample[scope]
 ): DoubleDef {
   return { ref: { scope, field }, read: (c) => num(read(c), field) }
 }
@@ -138,7 +138,7 @@ function embeddedNic(slot: 0 | 1, key: 'rx' | 'tx' | 'problems'): DoubleDef {
   }
 }
 
-function reclaimableTotal(c: V8Context): number | null {
+function reclaimableTotal(c: V12Context): number | null {
   return dockerReclaimableBytes(c.sample.extended?.docker, c.sample.dockerUsage)
 }
 
@@ -192,7 +192,7 @@ function linkSpeedOf(sample: MetricsSample, deviceId: string): number | null {
  * `nic1=<id>@<Mb/s>;nic2=<id>@<Mb/s>;fs=<id>` on `host.network` (empty parts
  * left out), `''` on every other host row.
  */
-export function v8HostRowEntityIds(family: V8HostFamily, ctx: V8Context): string {
+export function v12HostRowEntityIds(family: V12HostFamily, ctx: V12Context): string {
   if (family !== 'host.network') return ''
   const parts: string[] = []
   ctx.nics.forEach((nic, slot) => {
@@ -359,7 +359,7 @@ function ids(list: string): string[] {
   return list.split(' ')
 }
 
-export const V8_HOST_ROW_SPECS: Readonly<Record<V8HostFamily, HostRowSpec>> = {
+export const V12_HOST_ROW_SPECS: Readonly<Record<V12HostFamily, HostRowSpec>> = {
   // CPU and its pressure (cpu, then irq), then memory and its pressure, with the sizes they are measured against.
   'host.system': {
     doubles: ids(
@@ -376,7 +376,7 @@ export const V8_HOST_ROW_SPECS: Readonly<Record<V8HostFamily, HostRowSpec>> = {
     ),
     blobs: ids('fsReadOnly raidState'),
   },
-  // Network, then Docker. blob6 names NIC 1, NIC 2 and the lone extra disk (see `v8HostRowEntityIds`).
+  // Network, then Docker. blob6 names NIC 1, NIC 2 and the lone extra disk (see `v12HostRowEntityIds`).
   'host.network': {
     doubles: ids(
       'tcpRetrans nic1.rx nic1.tx nic1.problems nic2.rx nic2.tx nic2.problems ctrRunning ctrUnhealthy ctrRestarting ctrOom ctrDie ctrCpu ctrMem layers ctrBytes volumes buildCache reclTotal'
@@ -405,32 +405,32 @@ export const V8_HOST_ROW_SPECS: Readonly<Record<V8HostFamily, HostRowSpec>> = {
 
 function defOf(id: string): DoubleDef {
   const def = DOUBLE_DEFS[id]
-  if (!def) throw new TypeError(`v8 layout names an unknown slot id: ${id}`)
+  if (!def) throw new TypeError(`v12 layout names an unknown slot id: ${id}`)
   return def
 }
 
-/** The `extended.text` key behind each content blob of a host row, blob7 onward (the reader's twin of `v8HostRowValues`). */
-export function v8HostRowTextKeys(
-  family: V8HostFamily
+/** The `extended.text` key behind each content blob of a host row, blob7 onward (the reader's twin of `v12HostRowValues`). */
+export function v12HostRowTextKeys(
+  family: V12HostFamily
 ): (keyof NonNullable<MetricsExtended['text']>)[] {
-  return V8_HOST_ROW_SPECS[family].blobs.map((id) => {
+  return V12_HOST_ROW_SPECS[family].blobs.map((id) => {
     const key = TEXT_KEYS[id]
-    if (!key) throw new TypeError(`v8 layout names an unknown text id: ${id}`)
+    if (!key) throw new TypeError(`v12 layout names an unknown text id: ${id}`)
     return key
   })
 }
 
-function textOf(c: V8Context, id: string): string {
+function textOf(c: V12Context, id: string): string {
   const key = TEXT_KEYS[id]
-  if (!key) throw new TypeError(`v8 layout names an unknown text id: ${id}`)
+  if (!key) throw new TypeError(`v12 layout names an unknown text id: ${id}`)
   return c.sample.extended?.text?.[key] ?? ''
 }
 
-export type V8RowValues = { doubles: (number | null)[]; blobs: string[] }
+export type V12RowValues = { doubles: (number | null)[]; blobs: string[] }
 
 /** Values for one host row: 19 nullable doubles and the content text blobs. */
-export function v8HostRowValues(family: V8HostFamily, ctx: V8Context): V8RowValues {
-  const spec = V8_HOST_ROW_SPECS[family]
+export function v12HostRowValues(family: V12HostFamily, ctx: V12Context): V12RowValues {
+  const spec = V12_HOST_ROW_SPECS[family]
   return {
     doubles: spec.doubles.map((id) => (id === null ? null : defOf(id).read(ctx))),
     blobs: spec.blobs.map((id) => textOf(ctx, id)),
@@ -451,12 +451,12 @@ export function hasManagedDatabase(sample: MetricsSample): boolean {
 // Read-side resolution: contract field -> (row family, double index)
 // ---------------------------------------------------------------------------
 
-export type V8Slot = { family: V8HostFamily; doubleIndex: number }
+export type V12Slot = { family: V12HostFamily; doubleIndex: number }
 
-const SLOT_BY_REF: ReadonlyMap<string, V8Slot> = (() => {
-  const map = new Map<string, V8Slot>()
-  for (const family of V8_HOST_FAMILIES) {
-    V8_HOST_ROW_SPECS[family].doubles.forEach((id, doubleIndex) => {
+const SLOT_BY_REF: ReadonlyMap<string, V12Slot> = (() => {
+  const map = new Map<string, V12Slot>()
+  for (const family of V12_HOST_FAMILIES) {
+    V12_HOST_ROW_SPECS[family].doubles.forEach((id, doubleIndex) => {
       const ref = id === null ? undefined : defOf(id).ref
       if (ref) map.set(`${ref.scope}.${ref.field}`, { family, doubleIndex })
     })
@@ -464,8 +464,8 @@ const SLOT_BY_REF: ReadonlyMap<string, V8Slot> = (() => {
   return map
 })()
 
-/** Where a contract field lives on a v8 host row, or `undefined` when v8 does not store it. */
-export function v8HostSlotFor(scope: MetricEntityScope, field: string): V8Slot | undefined {
+/** Where a contract field lives on a v12 host row, or `undefined` when v12 does not store it. */
+export function v12HostSlotFor(scope: MetricEntityScope, field: string): V12Slot | undefined {
   return SLOT_BY_REF.get(`${scope}.${field}`)
 }
 
@@ -473,27 +473,27 @@ export function v8HostSlotFor(scope: MetricEntityScope, field: string): V8Slot |
  * A single-source family's field names laid out by physical double index on the
  * host row that carries it (`null` elsewhere), so `indexOf(field)` is the slot.
  */
-function slotArrayFor(family: V8HostFamily, scope: MetricEntityScope): readonly (string | null)[] {
-  return V8_HOST_ROW_SPECS[family].doubles.map((id) => {
+function slotArrayFor(family: V12HostFamily, scope: MetricEntityScope): readonly (string | null)[] {
+  return V12_HOST_ROW_SPECS[family].doubles.map((id) => {
     const ref = id === null ? undefined : defOf(id).ref
     return ref?.scope === scope ? ref.field : null
   })
 }
 
-export const V8_SINGLE_SOURCE_FAMILIES = {
+export const V12_SINGLE_SOURCE_FAMILIES = {
   'managed.ingress': { hostFamily: 'host.web', scope: 'ingress' },
   'managed.database_proxy': { hostFamily: 'managed.database', scope: 'databaseProxy' },
-} as const satisfies Record<string, { hostFamily: V8HostFamily; scope: MetricEntityScope }>
+} as const satisfies Record<string, { hostFamily: V12HostFamily; scope: MetricEntityScope }>
 
-export const V8_SINGLE_SOURCE_FIELD_ORDER = {
+export const V12_SINGLE_SOURCE_FIELD_ORDER = {
   'managed.ingress': slotArrayFor('host.web', 'ingress'),
   'managed.database_proxy': slotArrayFor('managed.database', 'databaseProxy'),
 } as const
 
 /** Physical double index of NIC `slot`'s receive or transmit rate on `host.network`. */
-export function v8EmbeddedNicDoubleIndex(slot: 0 | 1, key: 'rx' | 'tx'): number {
+export function v12EmbeddedNicDoubleIndex(slot: 0 | 1, key: 'rx' | 'tx'): number {
   const id = `nic${slot + 1}.${key}`
-  return V8_HOST_ROW_SPECS['host.network'].doubles.indexOf(id)
+  return V12_HOST_ROW_SPECS['host.network'].doubles.indexOf(id)
 }
 
 // ---------------------------------------------------------------------------
@@ -525,7 +525,7 @@ function entityNum<E>(field: string): {
  * the row's content blobs (entity by entity). The facts reader maps blobs back to
  * entities with this; it mirrors the blob lists of the row specs below.
  */
-export const V8_ENTITY_TEXT_FIELDS = {
+export const V12_ENTITY_TEXT_FIELDS = {
   block: ['model', 'smart'],
   gpu: ['driver', 'model', 'memoryTotal'],
   network: ['linkSpeed'],
@@ -604,27 +604,28 @@ const SIGNAL_SPEC: EntityRowSpec<HardwareSignalSample> = {
   // The signals' kinds (temperature, power), comma joined in the same order as
   // the ids in blob6: one text slot for the whole row.
   pageBlobs: [{ read: (signals) => signals.map((signal) => signal.kind).join(',') }],
-  perPage: V8_DOUBLE_SLOTS,
+  perPage: V12_DOUBLE_SLOTS,
 }
 
 /** Per-entity field order (spare = `null`) the read path resolves slots against. */
-export const V8_ENTITY_FIELD_ORDER: Readonly<Record<V8EntityFamily, readonly (string | null)[]>> = {
-  block: BLOCK_SPEC.doubles.map((d) => d.field),
-  network: NETWORK_SPEC.doubles.map((d) => d.field),
-  filesystem: FILESYSTEM_SPEC.doubles.map((d) => d.field),
-  gpu: GPU_SPEC.doubles.map((d) => d.field),
-  'hardware.physical': SIGNAL_SPEC.doubles.map((d) => d.field),
-}
+export const V12_ENTITY_FIELD_ORDER: Readonly<Record<V12EntityFamily, readonly (string | null)[]>> =
+  {
+    block: BLOCK_SPEC.doubles.map((d) => d.field),
+    network: NETWORK_SPEC.doubles.map((d) => d.field),
+    filesystem: FILESYSTEM_SPEC.doubles.map((d) => d.field),
+    gpu: GPU_SPEC.doubles.map((d) => d.field),
+    'hardware.physical': SIGNAL_SPEC.doubles.map((d) => d.field),
+  }
 
 /** Text blobs each entity of a paged family carries, taken from the row specs (the writer). */
-export const V8_ENTITY_BLOB_COUNTS = {
+export const V12_ENTITY_BLOB_COUNTS = {
   block: BLOCK_SPEC.blobs.length,
   gpu: GPU_SPEC.blobs.length,
   network: NETWORK_SPEC.blobs.length,
   filesystem: FILESYSTEM_SPEC.blobs.length,
 } as const
 
-export const V8_ENTITIES_PER_PAGE: Readonly<Record<V8EntityFamily, number>> = {
+export const V12_ENTITIES_PER_PAGE: Readonly<Record<V12EntityFamily, number>> = {
   block: BLOCK_SPEC.perPage,
   network: NETWORK_SPEC.perPage,
   filesystem: FILESYSTEM_SPEC.perPage,
@@ -632,18 +633,18 @@ export const V8_ENTITIES_PER_PAGE: Readonly<Record<V8EntityFamily, number>> = {
   'hardware.physical': SIGNAL_SPEC.perPage,
 }
 
-export type V8EntityPage = V8RowValues & { page: number; ids: string }
+export type V12EntityPage = V12RowValues & { page: number; ids: string }
 
 function packEntityPages<E>(
   entities: readonly E[],
   spec: EntityRowSpec<E>,
   idOf: (entity: E) => string,
   sample: MetricsSample
-): V8EntityPage[] {
-  const pages: V8EntityPage[] = []
+): V12EntityPage[] {
+  const pages: V12EntityPage[] = []
   for (let start = 0; start < entities.length; start += spec.perPage) {
     const chunk = entities.slice(start, start + spec.perPage)
-    const doubles = new Array<number | null>(V8_DOUBLE_SLOTS).fill(null)
+    const doubles = new Array<number | null>(V12_DOUBLE_SLOTS).fill(null)
     chunk.forEach((entity, entityIndex) => {
       spec.doubles.forEach((slot, fieldIndex) => {
         doubles[entityIndex * spec.doubles.length + fieldIndex] = slot.read(entity, sample)
@@ -659,7 +660,7 @@ function packEntityPages<E>(
 }
 
 /** Pack already-ordered, already-plan-truncated entities of one family into pages. */
-export const v8EntityPages = {
+export const v12EntityPages = {
   block: (e: readonly BlockDeviceSample[], s: MetricsSample) =>
     packEntityPages(e, BLOCK_SPEC, (d) => d.deviceId, s),
   network: (e: readonly NetworkDeviceSample[], s: MetricsSample) =>

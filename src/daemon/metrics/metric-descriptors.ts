@@ -112,9 +112,9 @@ export type HostedFamily =
   | 'managed.docker'
   | 'host.diagnostics'
   /**
-   * The v8 optional `extended` section (`extended.host` / `.docker` /
+   * The v12 optional `extended` section (`extended.host` / `.docker` /
    * `.ingress`). Informational like every other value here: the physical
-   * rows that carry these numbers are in `V8-LAYOUT.md`.
+   * rows that carry these numbers are in `V12-LAYOUT.md`.
    */
   | 'host.extended'
   /** The sizes every sample carries (`extended.sizes`): the divisors of the derived percentages. */
@@ -894,7 +894,7 @@ export const DIAGNOSTICS_MEMORY_FIELD_NAMES: readonly string[] = Object.values(
 ).map((descriptor) => descriptor.fieldName)
 
 // ---------------------------------------------------------------------------
-// Metrics v8 numbers — the optional `extended` section plus the combined
+// Metrics v12 numbers — the optional `extended` section plus the combined
 // per-drive ops/s. Each `extended` group is its own entity scope
 // (`extended.host`, `extended.docker`, `extended.ingress`) so no v6 family
 // budget changes and the canonical names read like the wire shape
@@ -924,7 +924,7 @@ function healthCount(
   })
 }
 
-/** A v8 value that is only meaningful when the host reported it (never a 0 stand-in). */
+/** A v12 value that is only meaningful when the host reported it (never a 0 stand-in). */
 function reported(descriptor: HostMetricsMetricDescriptor): HostMetricsMetricDescriptor {
   return { ...descriptor, availabilityBehavior: 'missing-when-unsupported' }
 }
@@ -1009,7 +1009,7 @@ const EXTENDED_INGRESS_DESCRIPTORS: Record<
 }
 
 /**
- * A drive's read plus write operations per second, one number. v8 stores this
+ * A drive's read plus write operations per second, one number. v12 stores this
  * sum in the drive row instead of the two halves (so it is not a field of the
  * wire sample); the self-hosted store adds the two halves when it reads.
  */

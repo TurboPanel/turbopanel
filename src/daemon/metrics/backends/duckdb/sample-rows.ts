@@ -92,7 +92,7 @@ function sizeEntry(
   return entries?.find((entry) => (entry as Record<string, unknown>)[idField] === id)
 }
 
-/** One v8 `extended` numeric field: the real value, or SQL `NULL` when the section or field is absent (a v6 sample). */
+/** One wire version 8 `extended` numeric field: the real value, or SQL `NULL` when the section or field is absent (a v6 sample). */
 function extendedNumber(source: object | undefined, field: string): number | null {
   return source ? numericField(source, field) : null
 }
