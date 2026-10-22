@@ -316,6 +316,7 @@ test('a running deploy is stranded only after its server has been quiet for the 
       sentAt: started,
       progress: { version: 1, steps: [], current: null, updatedAt: started, runningSince: started },
       updatedAt,
+      recovery: true,
     })
   const hour = 60 * 60_000
   // Running for three hours but heard from a minute ago: not stranded.
@@ -326,4 +327,18 @@ test('a running deploy is stranded only after its server has been quiet for the 
   // Last heard from at the start: stranded only past six hours plus grace.
   assertEquals(isStaleCommand(row(started), T0 + 6 * hour), false)
   assertEquals(isStaleCommand(row(started), T0 + 6 * hour + STALE_COMMAND_GRACE_MS), true)
+})
+
+test('a running deploy on a server without signs of life keeps the fixed run cap', () => {
+  const started = new Date(T0).toISOString()
+  const row = candidate({
+    name: 'environment.deploy',
+    status: 'running',
+    sentAt: started,
+    progress: { version: 1, steps: [], current: null, updatedAt: started, runningSince: started },
+    updatedAt: started,
+    recovery: false,
+  })
+  assertEquals(isStaleCommand(row, T0 + 10 * 60_000), false)
+  assertEquals(isStaleCommand(row, T0 + 10 * 60_000 + STALE_COMMAND_GRACE_MS), true)
 })
