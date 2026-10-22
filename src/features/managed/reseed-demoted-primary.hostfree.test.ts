@@ -372,21 +372,20 @@ test('a running backup or restore blocks the re-seed and is recorded', async () 
   assertEquals(outcomes, [{ state: 'skipped', note: 'a backup or restore is running' }])
 })
 
-test('a MySQL-family switchover is re-seeded when the old primary final GTID set was captured', async () => {
-  const mysqlDeps = (enqueued: EnqueueCall[]) =>
-    capturingDeps(enqueued, {
-      loadCluster: () => Promise.resolve(clusterRow({ engine: 'mysql' })),
-    })
+test('a MySQL-family switchover is left for an operator even with a captured GTID set', async () => {
   const enqueued: EnqueueCall[] = []
   const { targetCaughtUp: _omit, ...withoutReading } = CLEAN_METADATA
   await reseed(
-    mysqlDeps(enqueued),
+    capturingDeps(enqueued, {
+      loadCluster: () => Promise.resolve(clusterRow({ engine: 'mysql' })),
+    }),
     switchoverRecord({ metadata: { ...withoutReading, switchoverRequiredGtidSet: 'uuid:1-9' } })
   )
-  assertEquals(enqueued.length, 1)
-  const none: EnqueueCall[] = []
-  await reseed(mysqlDeps(none), switchoverRecord({ metadata: withoutReading }))
-  assertEquals(none.length, 0)
+  assertEquals(enqueued.length, 0)
+  assertEquals(
+    outcomes.map((o) => o.state),
+    ['skipped']
+  )
 })
 
 test('a re-seed already decided on the recovery row is not repeated', async () => {

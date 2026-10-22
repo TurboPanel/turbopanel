@@ -32,8 +32,6 @@ import { loadManagedOptions } from './options.ts'
 import { findInFlightRecovery, updateRecoveryLocked } from './recovery-records.ts'
 import type { RecoveryRecord } from './recovery.ts'
 import { parseManagedResidual } from './serialize.ts'
-import { engineNeedsSwitchoverGtidProof } from './switchover-catchup.ts'
-import type { ManagedEngineCode } from './types.ts'
 
 const OUTSTANDING_COMMAND_STATUSES = COMMAND_STATUSES.filter(
   (status) => !TERMINAL_COMMAND_STATUSES.has(status)
@@ -252,13 +250,11 @@ function switchoverRecordReady(
   // Drain AND stop proven. A stop alone lets an operator switchover go on.
   if (record.metadata.fenced !== true) return skip('old primary is not proven fenced')
   if (record.metadata.forced === true) return skip('switchover was forced')
-  // Nothing may be missing from the new primary. Postgres: a fresh zero-lag
-  // streaming reading taken before the fence. MySQL and MariaDB: the old
-  // primary's final GTID set was captured when it stopped, and the promote
-  // only succeeds once the new primary has applied all of it.
-  const proven = engineNeedsSwitchoverGtidProof(engine as ManagedEngineCode)
-    ? Boolean(record.metadata.switchoverRequiredGtidSet)
-    : record.metadata.targetCaughtUp === true
+  // Nothing may be missing from the new primary. Only a fresh zero-lag
+  // Postgres reading counts. MySQL and MariaDB wait for the final GTID set at
+  // promote, but no result field says the new primary's daemon honoured that
+  // wait (an older daemon ignores it), so they stay `needs_resync` for now.
+  const proven = engine === 'postgres' && record.metadata.targetCaughtUp === true
   if (!proven) {
     return skip(
       `new primary was not proven caught up (${record.metadata.targetCaughtUpBasis ?? 'no proof'})`
