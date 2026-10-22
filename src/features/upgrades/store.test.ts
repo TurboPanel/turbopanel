@@ -744,11 +744,16 @@ test('Postgres upgrades: a reported restart error with no host back on the targe
   await withFixture('restart-held-never-back', async (fx) => {
     const { host, stepId, runId, coordinator, clock } = await seedHeldRestart(fx)
     await fx.db.update(server).set({ isConnected: false }).where(eq(server.id, host))
-    clock.now = minutesAfter(T0, 5)
+    // The window counts from the panel's own clock when it held the step (the
+    // frame writer stamps the wall clock), not from the test clock or the frame.
+    const held = await stepById(fx, runId, stepId)
+    const heldAt = (held?.detail as { restartPending?: { at?: string } }).restartPending?.at
+    if (!heldAt) throw new TypeError('expected the restart hold')
+    clock.now = minutesAfter(heldAt, 5)
     await coordinator.tick({ resolveManifests: false })
     assertEquals((await stepById(fx, runId, stepId))?.status, 'restarting')
 
-    clock.now = minutesAfter(T0, 12)
+    clock.now = minutesAfter(heldAt, 12)
     await coordinator.tick({ resolveManifests: false })
     const failed = await stepById(fx, runId, stepId)
     assertEquals(failed?.status, 'failed')
