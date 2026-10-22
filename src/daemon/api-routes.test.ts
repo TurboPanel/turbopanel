@@ -2692,7 +2692,7 @@ test('POST /metrics rejects an unrecognized top-level field (e.g. body-supplied 
   assertEquals(writes.length, 0)
 })
 
-test('POST /metrics truncates entity arrays to the resolved capability plan', async () => {
+test('POST /metrics stores every device the server reports, whatever the plan', async () => {
   const { app, writes } = await createMetricsTestApp()
   const serverId = 'srv-metrics-plan'
   const daemonToken = await issueDaemonToken(serverId, 'key-metrics-plan')
@@ -2704,13 +2704,11 @@ test('POST /metrics truncates entity arrays to the resolved capability plan', as
     },
     body: JSON.stringify(
       buildValidMetricsFrame({
-        // Default (virtual) plan: gpuSlots=1, detailedBlockDeviceSlots=1,
-        // extraFilesystemSlots=0, physicalHardwareSignalSlots=0.
         gpus: [
           { gpuId: 'gpu0', utilizationPercent: 5 },
           { gpuId: 'gpu1', utilizationPercent: 6 },
         ],
-        blockDevices: [{ deviceId: 'sda' }],
+        blockDevices: [{ deviceId: 'sda' }, { deviceId: 'sdb' }],
         filesystems: [{ filesystemId: 'fs0' }],
         hardwareSignals: [{ signalId: 'sig0', kind: 'fan' }],
       })
@@ -2719,40 +2717,53 @@ test('POST /metrics truncates entity arrays to the resolved capability plan', as
   assertEquals(response.status, 202)
   assertEquals(writes.length, 1)
   const sample = writes[0]
-  assertEquals(sample?.gpus.length, 1)
-  assertEquals(sample?.gpus[0]?.gpuId, 'gpu0')
-  assertEquals(sample?.blockDevices.length, 1)
-  assertEquals(sample?.blockDevices[0]?.deviceId, 'sda')
-  assertEquals(sample?.filesystems, [])
-  assertEquals(sample?.hardwareSignals, [])
+  assertEquals(
+    sample?.gpus.map((gpu) => gpu.gpuId),
+    ['gpu0', 'gpu1']
+  )
+  assertEquals(
+    sample?.blockDevices.map((device) => device.deviceId),
+    ['sda', 'sdb']
+  )
+  assertEquals(
+    sample?.filesystems.map((fs) => fs.filesystemId),
+    ['fs0']
+  )
+  assertEquals(
+    sample?.hardwareSignals.map((signal) => signal.signalId),
+    ['sig0']
+  )
 })
 
-test('POST /metrics on self-hosted skips capability-plan truncation', async () => {
-  const { app, writes } = await createMetricsTestApp({ runtime: 'deno' })
-  const serverId = 'srv-metrics-self-hosted'
-  const daemonToken = await issueDaemonToken(serverId, 'key-metrics-self-hosted')
-  const response = await app.request('/api/daemon/v1/metrics', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${daemonToken}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(
-      buildValidMetricsFrame({
-        gpus: [{ gpuId: 'gpu0' }, { gpuId: 'gpu1' }],
-        filesystems: [{ filesystemId: 'fs0' }, { filesystemId: 'fs1' }],
-        hardwareSignals: [
-          { signalId: 'sig0', kind: 'fan' },
-          { signalId: 'sig1', kind: 'temp' },
-        ],
-      })
-    ),
+test('POST /metrics applies the same preparation on both editions', async () => {
+  const frame = buildValidMetricsFrame({
+    gpus: [
+      { gpuId: 'gpu0', utilizationPercent: 1 },
+      { gpuId: 'gpu1', utilizationPercent: 2 },
+    ],
+    filesystems: [{ filesystemId: 'fs0' }, { filesystemId: 'fs1' }],
+    hardwareSignals: [
+      { signalId: 'sig0', kind: 'fan' },
+      { signalId: 'sig1', kind: 'temp' },
+    ],
   })
-  assertEquals(response.status, 202)
-  assertEquals(writes.length, 1)
-  assertEquals(writes[0]?.gpus.length, 2)
-  assertEquals(writes[0]?.filesystems.length, 2)
-  assertEquals(writes[0]?.hardwareSignals.length, 2)
+  for (const runtime of ['workers', 'deno'] as const) {
+    const { app, writes } = await createMetricsTestApp({ runtime })
+    const daemonToken = await issueDaemonToken(`srv-metrics-${runtime}`, `key-metrics-${runtime}`)
+    const response = await app.request('/api/daemon/v1/metrics', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${daemonToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(frame),
+    })
+    assertEquals(response.status, 202)
+    assertEquals(writes.length, 1)
+    assertEquals(writes[0]?.gpus.length, 2, runtime)
+    assertEquals(writes[0]?.filesystems.length, 2, runtime)
+    assertEquals(writes[0]?.hardwareSignals.length, 2, runtime)
+  }
 })
 
 test('POST /metrics buffers a live-session sample for the overlay AND writes a flag-less (v6) sample durably', async () => {
@@ -2838,7 +2849,7 @@ test('POST /metrics stores a v8 durable baseline sample and buffers it while a l
   assertEquals((await readLiveSample(cache, serverId))?.serverId, serverId)
 })
 
-test('POST /metrics hosted ingest drops entities the allowlist rejects before plan truncation', async () => {
+test('POST /metrics drops entities the allowlist rejects', async () => {
   const { app, writes } = await createMetricsTestApp()
   const serverId = 'srv-metrics-allowlist'
   const daemonToken = await issueDaemonToken(serverId, 'key-metrics-allowlist')
@@ -2913,9 +2924,8 @@ test('POST /metrics through a real CloudflareAnalyticsEngineServerMetricsStore: 
     },
     body: JSON.stringify(
       buildValidMetricsFrame({
-        // Default hosted (virtual) plan: normalNicSlots=2 — with no recorded
-        // topology the first two embed into host.io positionally and eth2 is
-        // dropped by the plan before it reaches the store; gpuSlots=1,
+        // With no recorded topology the first two NICs embed into host.network
+        // positionally and eth2 pages as a network row of its own;
         // managedIngress/databaseProxy/events enabled.
         networks: [
           { deviceId: 'eth0' },
@@ -2950,7 +2960,7 @@ test('POST /metrics through a real CloudflareAnalyticsEngineServerMetricsStore: 
   assertEquals(family('host.io').length, 1)
   assertEquals(family('host.network').length, 1)
   assertEquals(family('host.web').length, 1)
-  assertEquals(family('network').length, 0) // eth0/eth1 embed; eth2 exceeds the 2-slot hosted plan
+  assertEquals(family('network').length, 1) // eth0/eth1 embed; eth2 pages
   assertEquals(family('gpu').length, 1)
 
   // v8 folds Caddy into host.web and ProxySQL into managed.database: no rows
@@ -3321,9 +3331,9 @@ test('POST /metrics never writes machine_class=virtual back — absence of senso
       ),
     })
     assertEquals(response.status, 202)
-    // Inferred virtual → signals truncated, but the column stays NULL so a
-    // later topology generation that discovers sensors can still promote it.
-    assertEquals(writes[0]?.hardwareSignals, [])
+    // Inferred virtual: the signals are stored as reported, and the column stays
+    // NULL so a later topology generation that discovers sensors can still promote it.
+    assertEquals(writes[0]?.hardwareSignals.length, 1)
     assertEquals(await readMachineClassSettled(db, serverId, 'physical'), null)
   })
 })
@@ -3353,7 +3363,7 @@ test('POST /metrics: a declared machine_class=virtual beats a topology that carr
       ),
     })
     assertEquals(response.status, 202)
-    assertEquals(writes[0]?.hardwareSignals, [])
+    assertEquals(writes[0]?.hardwareSignals.length, 1)
     assertEquals(await readMachineClassSettled(db, serverId, 'virtual'), 'virtual')
   })
 })
@@ -3478,7 +3488,7 @@ test('POST /metrics keeps the sample and flags the server when its RAM or physic
   })
 })
 
-test('POST /metrics truncates hardwareSignals when the org overrides physicalHardwareSignalSlots to 0', async () => {
+test('POST /metrics does not cut hardwareSignals when the org overrides physicalHardwareSignalSlots to 0', async () => {
   await withEnrollFixture(async ({ db, organizationId, serverId, keyId }) => {
     await recordTopologyGeneration(db, serverId, {
       generation: 0,
@@ -3509,11 +3519,11 @@ test('POST /metrics truncates hardwareSignals when the org overrides physicalHar
     })
     assertEquals(response.status, 202)
     assertEquals(writes.length, 1)
-    assertEquals(writes[0]?.hardwareSignals, [])
+    assertEquals(writes[0]?.hardwareSignals.length, 1)
   })
 })
 
-test('POST /metrics truncates hardwareSignals when a server override wins over an org override', async () => {
+test('POST /metrics does not cut hardwareSignals when a server overrides physicalHardwareSignalSlots to 0', async () => {
   await withEnrollFixture(async ({ db, organizationId, serverId, keyId }) => {
     await recordTopologyGeneration(db, serverId, {
       generation: 0,
@@ -3521,7 +3531,7 @@ test('POST /metrics truncates hardwareSignals when a server override wins over a
       snapshot: { hardwareSignals: [{ signalId: 'board-fan' }] },
       appliedAt: new Date().toISOString(),
     })
-    // Org grants signals; the per-server override still wins and truncates.
+    // Slot counts are fixed at the ceilings: neither layer lowers them.
     await db
       .update(organization)
       .set({
@@ -3551,7 +3561,7 @@ test('POST /metrics truncates hardwareSignals when a server override wins over a
     })
     assertEquals(response.status, 202)
     assertEquals(writes.length, 1)
-    assertEquals(writes[0]?.hardwareSignals, [])
+    assertEquals(writes[0]?.hardwareSignals.length, 1)
   })
 })
 
@@ -3569,7 +3579,7 @@ test('POST /metrics enqueues capability-plan-update when hosted ingest bumps the
     await db
       .update(organization)
       .set({
-        options: { metricsCapabilityPlan: { extraFilesystemSlots: 3 } },
+        options: { metricsCapabilityPlan: { managedDockerEnabled: false } },
       })
       .where(eq(organization.id, organizationId))
 
@@ -3596,7 +3606,7 @@ test('POST /metrics enqueues capability-plan-update when hosted ingest bumps the
       throw new TypeError('expected capability-plan-update envelope')
     }
     assertEquals(update.generation, primed.generation + 1)
-    assertEquals(update.plan.extraFilesystemSlots, 3)
+    assertEquals(update.plan.managedDockerEnabled, false)
   })
 })
 

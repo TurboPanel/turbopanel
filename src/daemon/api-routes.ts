@@ -50,11 +50,10 @@ import {
   resolveDefaultMetricsCapabilityPlan,
   countHostLevelSignals,
   resolveServerMachineClass,
-  truncateSampleToCapabilityPlan,
 } from '../contracts/capability-plan.ts'
 import { DisabledServerMetricsStore } from './metrics/disabled-store.ts'
 import { createMetricsChartCache } from './metrics/query/cache.ts'
-import { applyIngestAllowlist } from './metrics/ingest-allowlist.ts'
+import { prepareSampleForStorage } from './metrics/ingest-preparation.ts'
 import {
   cacheLiveSample,
   isDurableSample,
@@ -1741,17 +1740,10 @@ export function registerDaemonApiRoutes<E extends Env>(
         void enqueueCapabilityPlanUpdate(getDaemonCellRegistry(c), serverId, plan, generation)
       }
 
-      // Hosted ingest truncates to the capability plan; self-hosted writes
-      // the operator's own disk uncapped. Topology `slotMapping` is still
-      // resolved above for identity-addressed packing.
-      const prepared =
-        deployment === 'self-hosted'
-          ? result.sample
-          : truncateSampleToCapabilityPlan(
-              applyIngestAllowlist(result.sample, slotMapping),
-              plan,
-              slotMapping
-            )
+      // Both editions store what the machine reports: the same noise filter
+      // and the same organization/server on/off switches, with no cap on how
+      // many devices a server may have.
+      const prepared = prepareSampleForStorage(result.sample, plan, slotMapping)
       const sample = {
         ...prepared,
         serverId,

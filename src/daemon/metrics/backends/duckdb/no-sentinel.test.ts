@@ -16,7 +16,7 @@
 import { assertEquals } from '@std/assert'
 import { it } from '@std/testing/bdd'
 import { buildMetricsSample } from '../../../../contracts/metrics-contract.ts'
-import { truncateSampleToCapabilityPlan } from '../../../../contracts/capability-plan.ts'
+import { limitDevicesToCase } from '../../testing/plan-device-limits.ts'
 import type { AuthenticatedMetricsSample } from '../../types.ts'
 import { representativeMachineFixtures } from '../../testing/representative-machines.ts'
 import {
@@ -87,7 +87,7 @@ for (const name of FIXTURES_TO_CHECK) {
   it(`no-sentinel: "${fixture.name}" host series + entity series never surface AE_MISSING_METRIC_SENTINEL`, async () => {
     await withStore(async (store) => {
       const built = buildMetricsSample(fixture.input)
-      const truncated = truncateSampleToCapabilityPlan(built, fixture.plan)
+      const truncated = limitDevicesToCase(built, fixture.plan)
       await store.writeSample(authenticate(truncated, FROM_MS + 60_000))
 
       const hostResult = await store.queryHostSeries({
