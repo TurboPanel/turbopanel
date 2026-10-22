@@ -55,8 +55,9 @@ changes.
   heartbeats persist `timeSync` onto `server.timezone` / `is_time_sync_enabled`
   / `ntp_servers` / `ntp_last_synced_at`, and nest addresses on
   `server.metadata.resources.ips` (legacy top-level `ips` still accepted).
-  Hello-only host inventory is `server.metadata.resources.cpus[]` (per-socket
-  `vendorId` / `cores` / `threads` / `cache` / clocks) and `gpus[]`; leftover
+  Host inventory is `server.metadata.resources.cpus[]` (per-socket
+  `vendorId` / `cores` / `threads` / `cache` / clocks, also re-sent on a
+  heartbeat when the online CPU set changes) and hello-only `gpus[]`; leftover
   `resources.cpu` is lifted on read. Docker CLI / Compose plugin versions
   project onto `server.metadata.docker` the same way, but **only when Docker is
   installed** (the key is omitted otherwise). `GET /api/client/v1/servers` and
