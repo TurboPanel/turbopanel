@@ -36,6 +36,8 @@ import { fanOutManagedHaReconcile } from './ha-desired.ts'
 import { enqueueFollowPrimaryOnReplicas } from './follow-primary.ts'
 import { reseedDemotedPrimaryAfterSwitchover } from './reseed-demoted-primary.ts'
 import { evaluateSwitchoverCatchUp } from './switchover-evidence.ts'
+import { loadPrimaryEpoch } from './primary-epoch.ts'
+import { finalPositionStopFields, recordOldPrimaryFinalPosition } from './switchover-position.ts'
 import {
   failRecoveryIngressNotQueued,
   parkRecoveryAtIngressGate,
@@ -538,6 +540,11 @@ async function enqueueFenceCommands(
   params: FenceParams
 ): Promise<RecoveryEnqueueResult> {
   const drains = await prepareDrainCommands(db, params)
+  const finalPosition = await finalPositionStopFields(db, {
+    recovery: params.recovery,
+    engine: params.engine,
+    sourceServerId: params.source.serverId,
+  })
   const stop = await prepareCommand(db, {
     serverId: params.source.serverId,
     type: 'managed.lifecycle',
@@ -551,6 +558,7 @@ async function enqueueFenceCommands(
       ...(fenceStopCapturesSwitchoverGtid(params.recovery.kind, params.engine)
         ? { captureSwitchoverGtid: true }
         : {}),
+      ...finalPosition,
     },
     expiresAtMs: FENCE_TTL_MS,
     actor: params.actor,
@@ -697,7 +705,7 @@ async function beginRecovery(params: {
   })
 }
 
-export function beginOperatorSwitchover(params: {
+export async function beginOperatorSwitchover(params: {
   db: Db
   commandQueue: CommandQueue
   managedId: string
@@ -713,13 +721,15 @@ export function beginOperatorSwitchover(params: {
 }): Promise<RecoveryEnqueueResult> {
   const { forced, targetReplication, ...rest } = params
   const catchUp = evaluateSwitchoverCatchUp(params.engine, targetReplication)
-  return beginRecovery({
+  const primaryEpochAtStart = await loadPrimaryEpoch(params.db, params.managedId)
+  return await beginRecovery({
     ...rest,
     kind: 'switchover',
     extraMetadata: {
       forced: forced === true,
       targetCaughtUp: catchUp.caughtUp,
       targetCaughtUpBasis: catchUp.basis,
+      primaryEpochAtStart,
     },
   })
 }
@@ -1260,8 +1270,16 @@ export async function onFenceCommandSucceeded(
     engine: ManagedEngineCode
     actor: RecoveryCommandActor
     switchoverPrimaryExecutedGtidSet?: string
+    /** Postgres switchover: the old primary's final write position after the clean stop. */
+    oldPrimaryFinal?: { lsn: string; timeline: number }
   }
 ): Promise<void> {
+  if (params.oldPrimaryFinal) {
+    await recordOldPrimaryFinalPosition(db, params.recoveryId, {
+      engine: params.engine,
+      ...params.oldPrimaryFinal,
+    })
+  }
   const switchoverGtid = params.switchoverPrimaryExecutedGtidSet
   if (switchoverGtid) {
     await updateRecoveryLocked(db, params.recoveryId, (current) => ({

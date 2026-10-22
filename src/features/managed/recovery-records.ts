@@ -244,6 +244,8 @@ export async function updateRecovery(
  * other's `fenceCommandIds` edits. `decide` sees the locked current row and
  * returns the patch, or null to leave it untouched. Returns the updated row,
  * or null when nothing was written (missing, terminal, or declined).
+ * `includeTerminal` also locks a finished row, for notes written after the
+ * recovery completed (the re-seed of a former primary runs after its switchover).
  *
  * `decide` must be pure: never queue commands or open another transaction
  * while the lock is held; act on the returned row after the commit.
@@ -251,7 +253,8 @@ export async function updateRecovery(
 export async function updateRecoveryLocked(
   db: Db,
   recoveryId: string,
-  decide: (current: RecoveryRecord) => RecoveryPatch | null
+  decide: (current: RecoveryRecord) => RecoveryPatch | null,
+  options: { includeTerminal?: boolean } = {}
 ): Promise<RecoveryRecord | null> {
   return await db.transaction(async (tx) => {
     const [locked] = await tx
@@ -261,7 +264,11 @@ export async function updateRecoveryLocked(
       .for('update')
       .limit(1)
     const current = locked ? serializeRow(locked) : null
-    if (!current || (TERMINAL_RECOVERY_STATES as ReadonlySet<string>).has(current.state)) {
+    if (!current) return null
+    if (
+      !options.includeTerminal &&
+      (TERMINAL_RECOVERY_STATES as ReadonlySet<string>).has(current.state)
+    ) {
       return null
     }
     const patch = decide(current)
