@@ -7,7 +7,7 @@
  * isolate (worker stub or Deno process), not inside the Durable Object.
  * There is no per-server polling or cross-cell fan-out.
  */
-import { and, asc, eq, inArray, or, sql } from 'drizzle-orm'
+import { and, asc, eq, inArray, ne, or, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
 import type { DeployFailureNotice } from '../deploy/deploy-failure-notice.ts'
@@ -2276,7 +2276,8 @@ async function cleanupDestroyedMember(
   db: Db,
   record: DispatchableCommandRecord,
   payload: ManagedDestroyCommandPayload,
-  deps: CommandConsumerDeps | undefined
+  deps: CommandConsumerDeps | undefined,
+  environmentReused = false
 ): Promise<void> {
   if (!payload.deleteMemberAfterDestroy || !payload.memberId) return
   const [member] = await db
@@ -2289,7 +2290,7 @@ async function cleanupDestroyedMember(
   // allocation row too, or the status panel keeps a phantom EXITED entry
   // (`reconcileEnvironmentContainers` only resets rows on an empty report,
   // which is stop semantics, not removal).
-  if (member) {
+  if (member && !environmentReused) {
     const [managedRow] = await db
       .select({ environmentId: managed.environmentId })
       .from(managed)
@@ -2337,6 +2338,25 @@ async function reconcileManagedIngressAfterDestroy(
   })
 }
 
+/**
+ * Another managed database now lives in this environment (the same name was
+ * created again after a force delete or a failed create). A late destroy for
+ * the old id must leave the environment's container rows alone: they belong to
+ * the new database, and the destroy's own report says nothing about them.
+ */
+async function environmentHasOtherManaged(
+  db: Db,
+  environmentId: string,
+  managedId: string
+): Promise<boolean> {
+  const rows = await db
+    .select({ id: managed.id })
+    .from(managed)
+    .where(and(eq(managed.environmentId, environmentId), ne(managed.id, managedId)))
+    .limit(1)
+  return rows.length > 0
+}
+
 async function applyManagedDestroySideEffect(
   db: Db,
   record: DispatchableCommandRecord,
@@ -2369,7 +2389,10 @@ async function applyManagedDestroySideEffect(
         .limit(1)
       environmentId = row?.environmentId
     }
-    if (environmentId) {
+    const environmentReused =
+      environmentId !== undefined &&
+      (await environmentHasOtherManaged(db, environmentId, payload.managedId))
+    if (environmentId && !environmentReused) {
       await reconcileContainersSafely(db, record, envelope, environmentId, destroyResult.containers)
     }
 
@@ -2392,7 +2415,7 @@ async function applyManagedDestroySideEffect(
       )
     }
 
-    await cleanupDestroyedMember(db, record, payload, deps)
+    await cleanupDestroyedMember(db, record, payload, deps, environmentReused)
     await reconcileManagedIngressAfterDestroy(db, envelope, deps)
     // Replica teardown is done and its side effects above have committed —
     // release the primary destroy if this was the last replica of the fan-out.

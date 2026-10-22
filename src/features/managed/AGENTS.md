@@ -888,7 +888,17 @@ now) and a plain-words `note` when any host is offline. A normal delete keeps
 the 10-minute destroy expiry. Failed or incomplete create compensation deletes
 the managed row only after a best-effort `managed.destroy` (volumes on,
 `deleteAfterDestroy` off, same 7-day expiry) to every member host; enqueue
-failure is logged and never blocks the row delete. Sweeps mop up leftover
+failure is logged and never blocks the row delete. A command for a host that
+is not connected fails at once, so the 7-day expiry alone would not clean an
+offline host: these destroys carry the `redriveWhenOnline` flag, and
+`destroy-redrive.ts` (run from the host-loss tick, both runtimes) queues a
+flagged destroy that ended `failed` or `timed_out` again once its host is
+connected, rebuilding the payload from the command's context (volumes on, no row
+delete), at most 10 times and never past the original expiry, and never when the
+cluster row exists or a newer destroy of it on that host is open or done. The
+host side is keyed by the cluster id, and a late destroy's report never touches
+the container rows of another database in the same environment (a database
+created again with the same name has a new id). Sweeps mop up leftover
 containers. While any service is bound to one of the
 cluster's logins the destroy is refused with 409 `managed_has_bindings` and the
 bound `services` (same list shape as `managed_user_has_bindings`), for every

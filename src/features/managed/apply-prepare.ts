@@ -93,6 +93,7 @@ export {
   type PendingManagedDestroy,
 } from './destroy-gate.ts'
 import { logWarn } from '../../lib/logger.ts'
+import { MANAGED_DESTROY_REDRIVE_FLAG } from './destroy-redrive.ts'
 import { firstSequential, forEachSequential } from '../../lib/sequential.ts'
 
 const APPLY_EXPIRES_MS = 600_000
@@ -2075,17 +2076,23 @@ export async function enqueueManagedDestroyFanout(
   const expiresAtMs =
     params.expiresAtMs ??
     (params.force ? MANAGED_FORCE_DESTROY_EXPIRES_MS : MANAGED_DESTROY_EXPIRES_MS)
+  // A destroy that must still happen when its host was offline: the sweep in
+  // `destroy-redrive.ts` queues it again once the host is connected.
+  const redrive = params.force === true || expiresAtMs >= MANAGED_FORCE_DESTROY_EXPIRES_MS
   const enqueueOne = async (
     member: ManagedMemberRow,
     metadata?: Record<string, unknown>
   ): Promise<ManagedApplyEnqueueResult> => {
+    const commandMetadata = redrive
+      ? { ...metadata, [MANAGED_DESTROY_REDRIVE_FLAG]: true }
+      : metadata
     const enqueued = await enqueueTypedCommand(c, db, commandQueue, {
       userId: params.userId,
       serverId: member.serverId,
       type: 'managed.destroy',
       payload: buildManagedDestroyPayload(params, member),
       expiresAtMs,
-      ...(metadata ? { metadata } : {}),
+      ...(commandMetadata ? { metadata: commandMetadata } : {}),
     })
     if (enqueued instanceof Response) {
       return {

@@ -1037,6 +1037,103 @@ test('processCommandEnvelope leaves the managed row and logins in place without 
   })
 })
 
+async function runDestroyReportingNoContainers(
+  db: ReturnType<typeof createDenoDb>,
+  serverId: string,
+  payload: Record<string, unknown>
+): Promise<void> {
+  const record = await createCommandRecord(db, {
+    serverId,
+    ...TEST_COMMAND_ACTOR,
+    type: 'managed.destroy',
+    payload,
+  })
+  const registry = createDispatchMockRegistry(serverId, {
+    waitForRequestResult: {
+      serverId,
+      requestId: record.id,
+      requestKind: 'command-dispatch',
+      status: 'done',
+      createdAt: record.createdAt,
+      expiresAt: record.createdAt,
+      finishedAt: new Date().toISOString(),
+      result: { status: 'stopped', containers: [] },
+    },
+  })
+  await processCommandEnvelope(db, registry, buildEnvelope(record, serverId))
+  assertEquals((await getCommandRecord(db, record.id))?.status, 'succeeded')
+}
+
+async function seedRunningContainer(
+  db: ReturnType<typeof createDenoDb>,
+  serverId: string,
+  managedId: string
+): Promise<{ serviceId: string; environmentId: string }> {
+  const [row] = await db
+    .select({ environmentId: managed.environmentId })
+    .from(managed)
+    .where(eq(managed.id, managedId))
+  const environmentId = row!.environmentId
+  const [serviceRow] = await db
+    .insert(service)
+    .values({ environmentId, name: 'db', composeServiceName: 'db' })
+    .returning({ id: service.id })
+  await db.insert(container).values({
+    serviceId: serviceRow!.id,
+    serverId,
+    containerId: 'new-database-cid',
+    containerName: 'managed-db-1',
+    status: 'running',
+    composeServiceName: 'db',
+    ordinal: 1,
+  })
+  return { serviceId: serviceRow!.id, environmentId }
+}
+
+test('a late destroy for a deleted database leaves the container rows of the one created in its place', async () => {
+  await withManagedDestroyFixtures(async ({ db, serverId, managedId }) => {
+    const { serviceId, environmentId } = await seedRunningContainer(db, serverId, managedId)
+    try {
+      // The old database (a different id) was force deleted; this destroy is
+      // the retry that finally reached its host.
+      await runDestroyReportingNoContainers(db, serverId, {
+        managedId: '00000000-0000-4000-8000-0000000000aa',
+        removeVolumes: true,
+        environmentId,
+      })
+      const [kept] = await db
+        .select({ status: container.status })
+        .from(container)
+        .where(eq(container.serviceId, serviceId))
+      assertEquals(kept?.status, 'running')
+    } finally {
+      await db.delete(container).where(eq(container.serviceId, serviceId))
+      await db.delete(service).where(eq(service.id, serviceId))
+    }
+  })
+})
+
+test('a destroy of the only database in the environment still clears its container rows', async () => {
+  await withManagedDestroyFixtures(async ({ db, serverId, managedId }) => {
+    const { serviceId, environmentId } = await seedRunningContainer(db, serverId, managedId)
+    try {
+      await runDestroyReportingNoContainers(db, serverId, {
+        managedId,
+        removeVolumes: true,
+        environmentId,
+      })
+      const [row] = await db
+        .select({ status: container.status })
+        .from(container)
+        .where(eq(container.serviceId, serviceId))
+      assertEquals(row?.status !== 'running', true)
+    } finally {
+      await db.delete(container).where(eq(container.serviceId, serviceId))
+      await db.delete(service).where(eq(service.id, serviceId))
+    }
+  })
+})
+
 test('processCommandEnvelope no-ops for terminal or expired commands', async () => {
   await withConsumerFixtures(async ({ db, serverId }) => {
     await attachConnectedDaemonStatus(db, serverId)

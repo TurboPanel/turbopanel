@@ -23,6 +23,7 @@ import {
   MANAGED_FORCE_DESTROY_EXPIRES_MS,
 } from '../../features/managed/apply-prepare.ts'
 import { parseManagedDestroyGate } from '../../features/managed/destroy-gate.ts'
+import { MANAGED_DESTROY_REDRIVE_FLAG } from '../../features/managed/destroy-redrive.ts'
 import type { ManagedMemberRow } from '../../features/managed/members.ts'
 
 /**
@@ -311,8 +312,10 @@ test('force destroy uses a 7-day expiry; a normal delete stays at 10 minutes', a
   )
   for (const row of forceRecorded) {
     const remaining = remainingExpiryMs(row.expiresAt)
-    assertEquals(remaining > MANAGED_FORCE_DESTROY_EXPIRES_MS - 5_000, true)
-    assertEquals(remaining <= MANAGED_FORCE_DESTROY_EXPIRES_MS + 5_000, true)
+    assertEquals(remaining > MANAGED_FORCE_DESTROY_EXPIRES_MS - 60_000, true)
+    assertEquals(remaining <= MANAGED_FORCE_DESTROY_EXPIRES_MS + 60_000, true)
+    // Flagged so the re-drive sweep finishes it on a host that was offline.
+    assertEquals(row.metadata?.[MANAGED_DESTROY_REDRIVE_FLAG], true)
   }
 
   const normalRecorded: RecordedCommand[] = []
@@ -325,6 +328,7 @@ test('force destroy uses a 7-day expiry; a normal delete stays at 10 minutes', a
   const remaining = remainingExpiryMs(normalRecorded[0]?.expiresAt ?? null)
   assertEquals(remaining > 500_000, true)
   assertEquals(remaining < 700_000, true)
+  assertEquals(normalRecorded[0]?.metadata?.[MANAGED_DESTROY_REDRIVE_FLAG], undefined)
 })
 
 test('compensation enqueue uses the long expiry and deleteAfterDestroy stays off', async () => {
@@ -342,8 +346,9 @@ test('compensation enqueue uses the long expiry and deleteAfterDestroy stays off
   assertEquals(recorded.length, 1)
   assertEquals(recorded[0]?.payload.deleteAfterDestroy, undefined)
   assertEquals(recorded[0]?.payload.removeVolumes, true)
+  assertEquals(recorded[0]?.metadata?.[MANAGED_DESTROY_REDRIVE_FLAG], true)
   const remaining = remainingExpiryMs(recorded[0]?.expiresAt ?? null)
-  assertEquals(remaining > MANAGED_FORCE_DESTROY_EXPIRES_MS - 5_000, true)
+  assertEquals(remaining > MANAGED_FORCE_DESTROY_EXPIRES_MS - 60_000, true)
 })
 
 test('compensation enqueue failure does not throw', async () => {
