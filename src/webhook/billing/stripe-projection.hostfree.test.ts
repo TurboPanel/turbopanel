@@ -322,7 +322,7 @@ test('T6 · a customer naming a user projects the rows but syncs no entitlements
   assertEquals(db.rows(setting), [])
 })
 
-test('T6 · an organization projection syncs entitlements: the licensed server is assigned, the lease is released, nothing is landed or revoked', async () => {
+test('T6 · an organization projection syncs entitlements: no tier is assigned to the licensed server, it is reported uncovered, the lease is released, nothing is landed or revoked', async () => {
   const db = emptyDb({
     licenses: [licenseRow(LICENSE_BOUND, SERVER)],
     servers: [serverRow(SERVER)],
@@ -333,9 +333,11 @@ test('T6 · an organization projection syncs entitlements: the licensed server i
   assertEquals(entitlements.result.landedIntentIds, [])
   assertEquals(entitlements.result.revokedLicenseIds, [])
   assertEquals(entitlements.result.disconnectedServerIds, [])
-  assertEquals(entitlements.result.assignment.changed, [SERVER])
-  assertEquals(entitlements.result.assignment.uncovered, [])
-  assertEquals(db.rows(server)[0]?.assignedTierId, S1)
+  // Only a manager assigns a license tier: the projection leaves it empty
+  // and reports the server as not yet covered.
+  assertEquals(entitlements.result.assignment.uncovered, [SERVER])
+  assertEquals(entitlements.result.assignment.spare.get(S1), 2)
+  assertEquals(db.rows(server)[0]?.assignedTierId, null)
   // The sync took its own quantity lease and released it; the ledger stayed empty.
   assertEquals(db.rows(setting), [])
   // Only the refetch: no schedule work on a ledger with nothing deferred.
@@ -345,7 +347,7 @@ test('T6 · an organization projection syncs entitlements: the licensed server i
   )
 })
 
-test('T6 · an ended subscription revokes every license the organization holds — bound ones included — and clears the assignment', async () => {
+test("T6 · an ended subscription revokes every license the organization holds — bound ones included — and leaves the server's tier as its managers set it", async () => {
   const db = emptyDb({
     licenses: [licenseRow(LICENSE_BOUND, SERVER), licenseRow(LICENSE_SPARE, null)],
     servers: [serverRow(SERVER, S1)],
@@ -364,7 +366,7 @@ test('T6 · an ended subscription revokes every license the organization holds �
     db.rows(license).every((row) => row.revokedAt === NOW),
     true
   )
-  assertEquals(db.rows(server)[0]?.assignedTierId, null)
+  assertEquals(db.rows(server)[0]?.assignedTierId, S1)
   // The seat row still says what the provider counts; entitlement reads it as zero.
   assertEquals(db.rows(subscription)[0]?.status, 'canceled')
   assertEquals(seatRows(db), [['si_1', S1, 2, 'price_S1']])
@@ -428,7 +430,7 @@ test("T6 · customer.subscription.deleted — Stripe's dunning ending the subscr
     db.rows(license).every((row) => row.revokedAt === NOW),
     true
   )
-  assertEquals(db.rows(server)[0]?.assignedTierId, null)
+  assertEquals(db.rows(server)[0]?.assignedTierId, S1)
   assertEquals(db.rows(subscription)[0]?.status, 'canceled')
   assertEquals(db.rows(subscription)[0]?.pastDueSince, null)
 })

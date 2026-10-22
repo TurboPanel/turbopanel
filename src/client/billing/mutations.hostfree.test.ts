@@ -13,12 +13,12 @@
  *
  * Part two (ledger T1–T3): the tier moves and the seat decrease, against
  * the recording client double so the exact form Stripe receives is pinned
- * — an upgrade is an immediate −1/+1 item swap whose reprojection moves the
- * derived assignment (or leaves it alone when Stripe parked the change
- * under `pending_update`); a downgrade and a seat decrease write only the
- * ledger and a schedule phase, never a seat or server row; a Stripe
- * failure on either rolls the fresh intents back; and the coverage gate
- * refuses a reduction that would strand a licensed server or leave more
+ * — an upgrade is an immediate −1/+1 item swap whose reprojection writes
+ * the seats but never a server's license tier (only a manager assigns
+ * one); a downgrade and a seat decrease write only the ledger and a
+ * schedule phase, never a seat or server row; a Stripe failure on either
+ * rolls the fresh intents back; and the coverage gate refuses a reduction
+ * that would leave a server holding a tier nobody pays for, or more
  * licenses held than purchased.
  *
  * Part three (T4): restore before buy, per tier — an increase (or a tier
@@ -73,6 +73,9 @@ import {
   changeSeats,
   downgradeTier,
   restoreSeats,
+  SERVER_MOVE_PENDING_ERROR,
+  SERVER_NOT_ON_TIER_ERROR,
+  TIER_BELOW_REQUIRED_ERROR,
   upgradeTier,
 } from './mutations.ts'
 import {
@@ -101,6 +104,8 @@ const S1 = '33333333-3333-4333-8333-333333333311'
 const S3 = '33333333-3333-4333-8333-333333333331'
 const S5 = '33333333-3333-4333-8333-333333333335'
 const SRV_A = '55555555-5555-4555-8555-55555555555a'
+const SRV_B = '55555555-5555-4555-8555-55555555555b'
+const SRV_UNKNOWN = '55555555-5555-4555-8555-55555555555f'
 const NOW = '2026-09-07T12:00:00.000Z'
 const NOW_MS = Date.parse(NOW)
 const NOW_SEC = Math.floor(NOW_MS / 1000)
@@ -185,7 +190,14 @@ function hardware(cores: number, memoryGib: number) {
 
 type SeatSeed = { tierId: string; providerItemId: string; quantity: number }
 /** A licensed server: its hardware decides the rank it needs (12 cores → S3, 40 → S5, 2 → S1). */
-type ServerSeed = { id: string; cores: number; memoryGib: number; createdAt?: string }
+type ServerSeed = {
+  id: string
+  cores: number
+  memoryGib: number
+  createdAt?: string
+  /** The tier a manager gave it; none by default. */
+  assignedTierId?: string | null
+}
 
 type OrgSeed = {
   seats?: SeatSeed[]
@@ -300,7 +312,7 @@ function orgDb(seed: OrgSeed = {}): MemoryDb {
           createdAt: row.createdAt ?? NOW,
           updatedAt: NOW,
           metadata: hardware(row.cores, row.memoryGib),
-          assignedTierId: null,
+          assignedTierId: row.assignedTierId ?? null,
           isConnected: false,
         })),
       ],
@@ -738,20 +750,20 @@ test("a seat increase on a tier with no item yet mints the item at the product's
   assertEquals(formOf(post, 'items[1][price]'), 'price_s5')
   assertEquals(formOf(post, 'items[1][quantity]'), '1')
   assertEquals(db.rows(tier).find((row) => row.id === S5)?.priceCents, 2000)
-  // The reprojection wrote the new seat and the assignment followed: the S5 server is covered now.
+  // The reprojection wrote the new seat; the server is not put on it — only a manager assigns.
   assertEquals(seatQuantities(db), { [S3]: 2, [S5]: 1 })
   assertEquals(
     db.rows(subscriptionItem).find((row) => row.tierId === S5)?.providerPriceId,
     'price_s5'
   )
-  assertEquals(assignedTier(db, SRV_A), S5)
+  assertEquals(assignedTier(db, SRV_A), null)
   assertEquals(storedRecord(db), null)
 })
 
 // --- T1 -------------------------------------------------------------------
 
-test('T1 · an upgrade is an immediate −1/+1 item swap under the seat-increase record; the reprojection moves the assignment', async () => {
-  // Two S3 seats; one server that S3 cannot cover and is therefore on nothing.
+test('T1 · an upgrade is an immediate −1/+1 item swap under the seat-increase record; the reprojection moves no server onto the new seat', async () => {
+  // Two S3 seats; one server that measures S5 and was never given a tier.
   const db = orgDb({ ...twoSeats(), servers: [{ id: SRV_A, cores: 40, memoryGib: 64 }] })
   const atPost: { record: ReturnType<typeof storedRecord> } = { record: null }
   const client = routedClient({
@@ -775,7 +787,7 @@ test('T1 · an upgrade is an immediate −1/+1 item swap under the seat-increase
     prorationDate: QUOTED_AT,
   })
   assertEquals(outcome.ok, true)
-  assertEquals(outcome.ok && outcome.body, { ok: true, pending: false })
+  assertEquals(outcome.ok && outcome.body, { ok: true, pending: false, movedServerId: null })
 
   // The target's price came from the gateway; exactly one write; then the reprojection's refetch.
   assertEquals(callsOf(client), [
@@ -801,10 +813,11 @@ test('T1 · an upgrade is an immediate −1/+1 item swap under the seat-increase
   assertEquals(formOf(post, 'items[1][quantity]'), '1')
   assertEquals(formOf(post, 'items[0][price]'), undefined)
 
-  // The committed items show the swap, so the sync placed the server on S5
-  // and the record is gone — the webhook that follows is redundant.
+  // The committed items show the swap and the record is gone — the webhook
+  // that follows is redundant. The server still holds no tier: a manager
+  // assigns the new S5 seat.
   assertEquals(seatQuantities(db), { [S3]: 1, [S5]: 1 })
-  assertEquals(assignedTier(db, SRV_A), S5)
+  assertEquals(assignedTier(db, SRV_A), null)
   assertEquals(storedRecord(db), null)
   assertEquals((await ledgerOf(db)).intents, [])
   assertEquals(leases, ['begin', 'end'])
@@ -884,9 +897,9 @@ test('T2 · a downgrade writes one downgrade intent and a schedule phase for the
   // The target tier has no seat line yet, so the future phase must mint a new item by price.
   const db = orgDb({
     seats: [{ tierId: S5, providerItemId: 'si_5', quantity: 1 }],
+    // A licensed server with no tier yet: the downgrade strands no one.
     servers: [{ id: SRV_A, cores: 12, memoryGib: 32 }],
   })
-  db.rows(server)[0]!.assignedTierId = S5
   const client = routedClient({
     'POST /v1/subscription_schedules': () => stripeSchedule([{ price: 'price_s5', quantity: 1 }]),
     'POST /v1/subscription_schedules/sub_sched_1': () =>
@@ -911,9 +924,9 @@ test('T2 · a downgrade writes one downgrade intent and a schedule phase for the
   assertEquals(intent.createdAt, NOW)
   assertEquals(outcome.body.intentId, intent.id)
 
-  // Nothing moved now: the boundary does that.
+  // Nothing moved now: the boundary does that, and never a server's tier.
   assertEquals(seatQuantities(db), { [S5]: 1 })
-  assertEquals(assignedTier(db, SRV_A), S5)
+  assertEquals(assignedTier(db, SRV_A), null)
   assertEquals(storedRecord(db), null)
 
   // The target's price from the gateway, a schedule from the subscription, then every phase rewritten.
@@ -973,7 +986,7 @@ test('T2 · a Stripe failure rolls a fresh downgrade intent back; a later attemp
   assertEquals(creates[0]!.idempotencyKey === creates[1]!.idempotencyKey, false)
 })
 
-test('T2 · refusals: not a downgrade, and 409 servers_uncovered when a licensed server needs the higher tier', async () => {
+test('T2 · refusals: not a downgrade, and 409 servers_uncovered when a licensed server holds the higher tier', async () => {
   const client = routedClient({})
   const up = orgDb({ seats: [{ tierId: S3, providerItemId: 'si_1', quantity: 1 }] })
   const wrongWay = refusalOf(
@@ -987,10 +1000,10 @@ test('T2 · refusals: not a downgrade, and 409 servers_uncovered when a licensed
   assertEquals(wrongWay.body, { error: NOT_A_DOWNGRADE_ERROR })
   assertEquals(client.calls, [])
 
-  // One S5 seat covering one server that needs S5: S5 → S3 would strand it.
+  // One S5 seat held by one server: S5 → S3 would leave it on a tier nobody pays for.
   const db = orgDb({
     seats: [{ tierId: S5, providerItemId: 'si_5', quantity: 1 }],
-    servers: [{ id: SRV_A, cores: 40, memoryGib: 64 }],
+    servers: [{ id: SRV_A, cores: 40, memoryGib: 64, assignedTierId: S5 }],
   })
   const { deps, leases } = depsFor(db, client)
   const denied = refusalOf(
@@ -1005,6 +1018,224 @@ test('T2 · refusals: not a downgrade, and 409 servers_uncovered when a licensed
   )
   assertEquals((await ledgerOf(db)).intents, [])
   assertEquals(leases, ['begin', 'end'])
+})
+
+// --- Owner-named server on a tier move ---------------------------------------
+
+/** Two S3 seats, both held: A (older) and B, each measuring S3. */
+const bothS3Held = (): OrgSeed => ({
+  ...twoSeats(),
+  servers: [
+    {
+      id: SRV_A,
+      cores: 12,
+      memoryGib: 32,
+      assignedTierId: S3,
+      createdAt: '2026-09-01T00:00:00.000Z',
+    },
+    {
+      id: SRV_B,
+      cores: 12,
+      memoryGib: 32,
+      assignedTierId: S3,
+      createdAt: '2026-09-02T00:00:00.000Z',
+    },
+  ],
+})
+
+function swapClient(opts: { pending?: boolean } = {}) {
+  return routedClient({
+    'POST /v1/subscriptions/sub_1': () => ({
+      id: 'sub_1',
+      object: 'subscription',
+      status: 'active',
+      ...(opts.pending ? { pending_update: { expires_at: 1 } } : {}),
+    }),
+    'GET /v1/subscriptions/sub_1': () =>
+      opts.pending
+        ? stripeSubscription([{ id: 'si_1', tierId: S3, quantity: 2 }], { pendingUpdate: true })
+        : stripeSubscription([
+            { id: 'si_1', tierId: S3, quantity: 1 },
+            { id: 'si_2', tierId: S5, quantity: 1 },
+          ]),
+  })
+}
+
+test('an upgrade naming one server moves only that server to the new tier once Stripe takes the swap', async () => {
+  const db = orgDb(bothS3Held())
+  const client = swapClient()
+  const { deps } = depsFor(db, client)
+  const opsBefore = db.ops.length
+  const outcome = await upgradeTier(deps, {
+    organizationId: ORG,
+    fromTierId: S3,
+    toTierId: S5,
+    prorationDate: QUOTED_AT,
+    serverId: SRV_B,
+  })
+  assertEquals(outcome.ok && outcome.body, { ok: true, pending: false, movedServerId: SRV_B })
+  assertEquals(seatQuantities(db), { [S3]: 1, [S5]: 1 })
+  assertEquals(assignedTier(db, SRV_B), S5)
+  // The other S3 holder is untouched: exactly one server row was written.
+  assertEquals(assignedTier(db, SRV_A), S3)
+  assertEquals(db.ops.slice(opsBefore).filter((op) => op === 'update:server').length, 1)
+})
+
+test('the same upgrade without a named server is refused: every S3 seat is held, and nothing is moved for the owner', async () => {
+  const db = orgDb(bothS3Held())
+  const client = swapClient()
+  const { deps } = depsFor(db, client)
+  const denied = refusalOf(
+    await upgradeTier(deps, { organizationId: ORG, fromTierId: S3, toTierId: S5 })
+  )
+  assertEquals(denied.status, 409)
+  assertEquals(denied.body, { error: SERVERS_UNCOVERED_ERROR, serverId: SRV_B, requiredTier: 'S3' })
+  assertEquals(
+    callsOf(client).filter((c) => c.startsWith('POST')),
+    []
+  )
+  assertEquals(assignedTier(db, SRV_A), S3)
+  assertEquals(assignedTier(db, SRV_B), S3)
+})
+
+test('a named upgrade Stripe parks moves nothing: movedServerId is null and the server keeps its tier', async () => {
+  const db = orgDb(bothS3Held())
+  const { deps } = depsFor(db, swapClient({ pending: true }))
+  const outcome = await upgradeTier(deps, {
+    organizationId: ORG,
+    fromTierId: S3,
+    toTierId: S5,
+    serverId: SRV_A,
+  })
+  assertEquals(outcome.ok && outcome.body, { ok: true, pending: true, movedServerId: null })
+  assertEquals(assignedTier(db, SRV_A), S3)
+  assertEquals(assignedTier(db, SRV_B), S3)
+})
+
+test('a named tier move is refused when the server does not hold the old tier, is not licensed, or already has a move waiting', async () => {
+  const db = orgDb({
+    ...twoSeats(),
+    servers: [
+      { id: SRV_A, cores: 12, memoryGib: 32, assignedTierId: S3 },
+      // Licensed, no tier yet.
+      { id: SRV_B, cores: 12, memoryGib: 32 },
+    ],
+  })
+  const client = swapClient()
+  const { deps } = depsFor(db, client)
+  const notOnTier = refusalOf(
+    await upgradeTier(deps, { organizationId: ORG, fromTierId: S3, toTierId: S5, serverId: SRV_B })
+  )
+  assertEquals(notOnTier.status, 409)
+  assertEquals(notOnTier.body, { error: SERVER_NOT_ON_TIER_ERROR, serverId: SRV_B, tierId: S3 })
+  const unknown = refusalOf(
+    await upgradeTier(deps, {
+      organizationId: ORG,
+      fromTierId: S3,
+      toTierId: S5,
+      serverId: SRV_UNKNOWN,
+    })
+  )
+  assertEquals(unknown.status, 404)
+  assertEquals(unknown.body, { error: 'server_not_licensed', serverId: SRV_UNKNOWN })
+
+  // A downgrade already parked for A names it: a second named move is refused.
+  await writePendingChanges(
+    db,
+    ORG,
+    withIntent(
+      emptyLedger('sub_1'),
+      newDeferredIntent('downgrade', {
+        fromTierId: S3,
+        toTierId: S1,
+        landsAt: PERIOD_END_ISO,
+        fromQuantity: 2,
+        serverId: SRV_A,
+        nowMs: NOW_MS - 60_000,
+      })
+    ),
+    NOW_MS
+  )
+  const waiting = refusalOf(
+    await upgradeTier(deps, { organizationId: ORG, fromTierId: S3, toTierId: S5, serverId: SRV_A })
+  )
+  assertEquals(waiting.status, 409)
+  assertEquals(waiting.body, { error: SERVER_MOVE_PENDING_ERROR, serverId: SRV_A })
+  assertEquals(
+    callsOf(client).filter((c) => c.startsWith('POST')),
+    []
+  )
+  assertEquals(assignedTier(db, SRV_A), S3)
+  assertEquals(assignedTier(db, SRV_B), null)
+})
+
+test("a named downgrade below the server's CPU or RAM is refused tier_below_required", async () => {
+  const db = orgDb({
+    seats: [{ tierId: S5, providerItemId: 'si_5', quantity: 1 }],
+    // 40 cores: S5 is the smallest tier whose core ceiling covers it.
+    servers: [{ id: SRV_A, cores: 40, memoryGib: 64, assignedTierId: S5 }],
+  })
+  const client = routedClient({})
+  const { deps } = depsFor(db, client)
+  const denied = refusalOf(
+    await downgradeTier(deps, {
+      organizationId: ORG,
+      fromTierId: S5,
+      toTierId: S3,
+      serverId: SRV_A,
+    })
+  )
+  assertEquals(denied.status, 422)
+  assertEquals(denied.body, {
+    error: TIER_BELOW_REQUIRED_ERROR,
+    serverId: SRV_A,
+    requiredTier: 'S5',
+  })
+  assertEquals((await ledgerOf(db)).intents, [])
+  assertEquals(assignedTier(db, SRV_A), S5)
+})
+
+test('a named downgrade stores the server on its intent and passes the gate the same unnamed downgrade fails', async () => {
+  const seed = (): OrgSeed => ({
+    seats: [{ tierId: S5, providerItemId: 'si_5', quantity: 1 }],
+    // Measures S3, kept on S5.
+    servers: [{ id: SRV_A, cores: 12, memoryGib: 32, assignedTierId: S5 }],
+  })
+  const unnamedDb = orgDb(seed())
+  const unnamed = refusalOf(
+    await downgradeTier(depsFor(unnamedDb, routedClient({})).deps, {
+      organizationId: ORG,
+      fromTierId: S5,
+      toTierId: S3,
+    })
+  )
+  assertEquals(unnamed.status, 409)
+  assertEquals(unnamed.body, {
+    error: SERVERS_UNCOVERED_ERROR,
+    serverId: SRV_A,
+    requiredTier: 'S5',
+  })
+
+  const db = orgDb(seed())
+  const client = routedClient({
+    'POST /v1/subscription_schedules': () => stripeSchedule([{ price: 'price_s5', quantity: 1 }]),
+    'POST /v1/subscription_schedules/sub_sched_1': () =>
+      stripeSchedule([{ price: 'price_s5', quantity: 1 }]),
+  })
+  const outcome = await downgradeTier(depsFor(db, client).deps, {
+    organizationId: ORG,
+    fromTierId: S5,
+    toTierId: S3,
+    serverId: SRV_A,
+  })
+  assertEquals(outcome.ok, true)
+  if (!outcome.ok) return
+  assertEquals(outcome.body.serverId, SRV_A)
+  const [intent] = (await ledgerOf(db)).intents
+  assertEquals(intent?.kind, 'downgrade')
+  assertEquals(intent?.serverId, SRV_A)
+  // Nothing moves until the boundary lands.
+  assertEquals(assignedTier(db, SRV_A), S5)
 })
 
 // --- T3 -------------------------------------------------------------------
@@ -1083,14 +1314,15 @@ test('T3 · a second release stacks on the parked one: the future phase is rebui
   assertEquals(seatQuantities(db), { [S3]: 3 })
 })
 
-test('T3 · a decrease that would strand a licensed server is refused 409 servers_uncovered naming the server and the tier it needs, before any Stripe call', async () => {
-  // One S3 and one S1 seat; the only server needs S3. Releasing S3 leaves S1, which cannot hold it.
+test('T3 · a decrease that would strand a licensed server is refused 409 servers_uncovered naming the server and the tier it holds, before any Stripe call', async () => {
+  // One S3 and one S1 seat; a manager put the only server on S3. Releasing
+  // S3 would leave it on a tier nobody pays for; it is never moved to S1.
   const db = orgDb({
     seats: [
       { tierId: S1, providerItemId: 'si_a', quantity: 1 },
       { tierId: S3, providerItemId: 'si_1', quantity: 1 },
     ],
-    servers: [{ id: SRV_A, cores: 12, memoryGib: 32 }],
+    servers: [{ id: SRV_A, cores: 12, memoryGib: 32, assignedTierId: S3 }],
   })
   const client = routedClient({})
   const outcome = refusalOf(

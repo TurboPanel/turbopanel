@@ -976,21 +976,19 @@ timestamp (see "Fleet status columns" below). `organization_id` FK uses
 `license.server_id` via `ON DELETE SET NULL`; the app soft-revokes the bound
 license after delete.
 
-**Derived tier:** `server.assigned_tier_id` (nullable FK → `tier.id`,
+**Assigned tier:** `server.assigned_tier_id` (nullable FK → `tier.id`,
 `ON DELETE SET NULL`, `idx_server_assigned_tier_id`) is the tier this server
-sits on — **computed, never chosen**. `src/features/tiers/assignment.ts` takes
-the organization's committed `seat` quantities and its licensed servers in
-bind order (`created_at`), gives each the smallest purchased tier whose rank
-covers its hardware requirement (`tier-placement`; unknown hardware needs the
-entry rank), and leaves the newest uncovered when nothing fits.
-`assignment-records.ts` writes the column after every seat projection and
-mutation, after the self-hosted grant is synced, on every hardware report
-(`touchServerMetadata`), on enroll, on server delete and on license revoke.
-Ingest, the capability plan, placement and the notice sweep read this column;
-nothing on those paths recomputes. Null on an unlicensed server and on a
-licensed server nothing entitled covers — the daemon's next session is then
-refused with `License tier below required`. Self-hosted is entitled by the
-SX grant (`self-hosted-grant.ts`), so the column is populated there too.
+holds — **chosen by the organization's managers, never computed**. It is
+written only by the manager route `PUT /servers/:id/license-tier`
+(`assignServerTier` in `src/features/tiers/assignment-records.ts`, needs a free
+seat at that tier, writes only that server) and, on the self-hosted runtime
+only, by the grant fill (`fillSelfHostedGrantTier`, sets `SX` where the column
+is null). No hardware report, enroll, session, seat or subscription change, or
+server delete writes it. `preferred_tier_id` is written in step with it by the
+manager route. Ingest, the capability plan, placement and the notice sweep read
+this column. Null on an unlicensed server and on a licensed server no manager
+has assigned yet — the daemon still connects. A server that measures bigger
+than its tier keeps it and is flagged (`metadata.overPlan`).
 
 **Cell metadata fields** (stored in `server.metadata` and/or `server.options`
 JSONB):
