@@ -73,7 +73,7 @@ export const METRIC_EVENTS_TABLE = 'server_metric_events'
 export const STATUS_EVENTS_TABLE = 'server_status_events'
 
 /**
- * Latest host facts (the short text a v8 sample carries beside its numbers):
+ * Latest host facts (the short text a wire version 8 sample carries beside its numbers):
  * one row per server, replaced as newer samples arrive. Not a time series, so
  * it is never archived to Parquet and needs no retention. Added with
  * `CREATE TABLE IF NOT EXISTS`, so an existing file at the current marker (10) simply gains it. (A marker-9 file is discarded, not upgraded.)
@@ -476,13 +476,13 @@ export function entityMetricColumnName(field: string): string {
   return snakeCase(field)
 }
 
-/** DuckDB column name for one of the v8 `extended` numeric fields (`oomKills` -> `ext_oom_kills`). */
+/** DuckDB column name for one of the v12 `extended` numeric fields (`oomKills` -> `ext_oom_kills`). */
 export function extendedColumnName(field: string): string {
   return `ext_${snakeCase(field)}`
 }
 
 /**
- * v8 numeric columns, in DDL / insert order: `extended.host` and the host-wide
+ * v12 numeric columns, in DDL / insert order: `extended.host` and the host-wide
  * certificate days from `extended.ingress` on `server_host_samples`,
  * `extended.docker` on `server_docker_samples`.
  */
@@ -502,14 +502,14 @@ export const EXTENDED_SIZE_STORED_FIELDS: readonly string[] = stored(
   'extended.sizes',
   EXTENDED_SIZE_FIELD_NAMES
 )
-export const V8_HOST_COLUMNS: readonly string[] =
+export const V12_HOST_COLUMNS: readonly string[] =
   EXTENDED_HOST_STORED_FIELDS.map(extendedColumnName)
-export const V8_DOCKER_COLUMNS: readonly string[] =
+export const V12_DOCKER_COLUMNS: readonly string[] =
   EXTENDED_DOCKER_STORED_FIELDS.map(extendedColumnName)
-export const V8_INGRESS_COLUMNS: readonly string[] =
+export const V12_INGRESS_COLUMNS: readonly string[] =
   EXTENDED_INGRESS_STORED_FIELDS.map(extendedColumnName)
 /** The sizes every sample carries (`extended.sizes`), as `ext_*` columns on `server_host_samples`. */
-export const V8_SIZE_COLUMNS: readonly string[] =
+export const V12_SIZE_COLUMNS: readonly string[] =
   EXTENDED_SIZE_STORED_FIELDS.map(extendedColumnName)
 
 // ---------------------------------------------------------------------------
@@ -551,9 +551,9 @@ function hostSamplesTableDdl(): string {
     indent([
       ...COMMON_METADATA_COLUMN_DEFS,
       ...metricColumns,
-      ...doubleColumns(V8_HOST_COLUMNS),
-      ...doubleColumns(V8_INGRESS_COLUMNS),
-      ...doubleColumns(V8_SIZE_COLUMNS),
+      ...doubleColumns(V12_HOST_COLUMNS),
+      ...doubleColumns(V12_INGRESS_COLUMNS),
+      ...doubleColumns(V12_SIZE_COLUMNS),
     ]),
     `)`,
   ].join('\n')
@@ -654,7 +654,7 @@ function dockerSamplesTableDdl(): string {
     DOCKER_SAMPLES_TABLE,
     [],
     DOCKER_USAGE_METRIC_FIELDS,
-    V8_DOCKER_COLUMNS
+    V12_DOCKER_COLUMNS
   )
 }
 
@@ -804,9 +804,9 @@ export function hostSamplesInsertColumns(): string[] {
   return [
     ...COMMON_METADATA_COLUMNS,
     ...HOST_METRIC_FIELD_REFS.map((ref) => hostMetricColumnName(ref.group, ref.field)),
-    ...V8_HOST_COLUMNS,
-    ...V8_INGRESS_COLUMNS,
-    ...V8_SIZE_COLUMNS,
+    ...V12_HOST_COLUMNS,
+    ...V12_INGRESS_COLUMNS,
+    ...V12_SIZE_COLUMNS,
   ]
 }
 
@@ -899,7 +899,7 @@ export function dockerSamplesInsertColumns(): string[] {
   return [
     ...COMMON_METADATA_COLUMNS,
     ...DOCKER_USAGE_METRIC_FIELDS.map(entityMetricColumnName),
-    ...V8_DOCKER_COLUMNS,
+    ...V12_DOCKER_COLUMNS,
   ]
 }
 

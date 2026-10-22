@@ -4,7 +4,7 @@
  * Both editions store the same readings: the hosted edition (Analytics
  * Engine, positional slots) and the self-hosted edition (DuckDB, named
  * columns). Before this file the two layouts were kept by hand in four places
- * (the contract field lists, `metric-descriptors.ts`, `backends/cloudflare/v8-layout.ts`
+ * (the contract field lists, `metric-descriptors.ts`, `backends/cloudflare/v12-layout.ts`
  * and `backends/duckdb/schema.ts`) and nothing stopped a value landing in one
  * store only. Now every value is one entry here with a home in each store, and
  * `field-registry.test.ts` fails when either store disagrees with it.

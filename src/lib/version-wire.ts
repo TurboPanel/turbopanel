@@ -266,7 +266,7 @@ export const MANAGED_HA_INSTANCE_FEATURE: DaemonWireFeature = 'managed-ha-instan
 export const MANAGED_HA_BOOT_HOLD_FEATURE: DaemonWireFeature = 'managed-ha-boot-hold-v1'
 
 /**
- * Metrics schema v8 (`metadata.version` 8: the `extended` section and the
+ * Metrics schema wire version 8 (`metadata.version` 8: the `extended` section and the
  * `durable` flag). The daemon stamps the legacy wire version until the control
  * plane it is attached to lists this feature.
  */

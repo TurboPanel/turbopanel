@@ -362,7 +362,7 @@ it('queryHostSeriesViaSqlApi: one bucket, one weighted-average metric', async ()
   assertEquals(result.points[0].values['host.cpu.busyPercent'], 42.5)
 })
 
-it('queryHostSeriesViaSqlApi: a data point v8 no longer stores reads as empty, not as an error', async () => {
+it('queryHostSeriesViaSqlApi: a data point v12 no longer stores reads as empty, not as an error', async () => {
   let sql = ''
   const result = await queryHostSeriesViaSqlApi(
     {

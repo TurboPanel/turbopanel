@@ -1,5 +1,5 @@
 /**
- * Latest host facts on both stores: the text a v8 sample carries beside its
+ * Latest host facts on both stores: the text a wire version 8 sample carries beside its
  * numbers (kernel, OS, versions, a drive's model and SMART verdict, a GPU's
  * driver, model and memory size, each filesystem's size and each NIC's link speed) is written through the real DuckDB store and the real
  * hosted writer, then read back with `queryHostFacts` and compared.
