@@ -105,3 +105,10 @@ test('a fresh release id on every send does not change the digest, a rollback ta
   )
   assertNotEquals(rollback, first)
 })
+
+test('inputs without a source list, or with an odd entry, still digest and stay stable', async () => {
+  const bare = { hostings: [{ hostname: 'example.test', targetPort: 80 }] }
+  assertEquals(await deployInputsDigest(bare), await deployInputsDigest({ ...bare }))
+  const odd = { ...bare, sourceMaterial: [null] }
+  assertNotEquals(await deployInputsDigest(odd), await deployInputsDigest(bare))
+})
