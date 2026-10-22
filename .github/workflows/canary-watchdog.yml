@@ -25,6 +25,9 @@ concurrency:
 
 jobs:
   cancel-stuck:
+    # Only the real repository, and only from trunk (scheduled runs always
+    # use the default branch, so this does not stop them).
+    if: github.repository == 'TurboPanel/turbopanel' && github.ref == 'refs/heads/trunk'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
@@ -54,7 +57,14 @@ jobs:
             [ -n "$id" ] || continue
             echo "Cancelling Canary run $id: queued for more than $LIMIT_MINUTES minutes."
             echo "Cancelled Canary run $id (queued for more than $LIMIT_MINUTES minutes): https://github.com/$REPO/actions/runs/$id" >> "$GITHUB_STEP_SUMMARY"
-            gh api -X POST "repos/$REPO/actions/runs/$id/force-cancel" > /dev/null \
-              || gh api -X POST "repos/$REPO/actions/runs/$id/cancel" > /dev/null \
-              || echo "::warning::could not cancel Canary run $id"
+            # Plain cancel first; force-cancel only if the run is still going
+            # after a short wait (a stuck run may ignore a plain cancel).
+            gh api -X POST "repos/$REPO/actions/runs/$id/cancel" > /dev/null \
+              || echo "::warning::cancel request for Canary run $id failed"
+            sleep 30
+            state="$(gh api "repos/$REPO/actions/runs/$id" --jq .status)"
+            if [ "$state" = "queued" ] || [ "$state" = "in_progress" ]; then
+              gh api -X POST "repos/$REPO/actions/runs/$id/force-cancel" > /dev/null \
+                || echo "::warning::could not force-cancel Canary run $id"
+            fi
           done
