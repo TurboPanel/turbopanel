@@ -18,6 +18,16 @@ export type LoginDeleteCheck =
     }
   | { kind: 'proceed'; note?: string }
 
+const checkFailed = (): LoginDeleteCheck => ({
+  kind: 'refuse',
+  status: 503,
+  body: {
+    error: 'managed_login_check_failed',
+    message:
+      'Could not check whether this login still owns views or routines. Try again in a moment.',
+  },
+})
+
 const quoted = (names: readonly string[]) => names.map((name) => `'${name}'`).join(', ')
 
 /**
@@ -36,6 +46,9 @@ export async function checkLoginMayBeDeleted(
   if (outcome.status === 'observed') {
     const found = outcome.permissions.logins.find((entry) => entry.username === appliedUsername)
     const objects = found?.definesObjects
+    if (found?.definesObjectsUnread && (!objects || objects.length === 0)) {
+      return checkFailed()
+    }
     if (!objects || objects.length === 0) return { kind: 'proceed' }
     return {
       kind: 'refuse',
@@ -57,13 +70,5 @@ export async function checkLoginMayBeDeleted(
       note: 'Could not check whether this login still owns views or routines because the server could not be asked; the server refuses the delete itself if it does.',
     }
   }
-  return {
-    kind: 'refuse',
-    status: 503,
-    body: {
-      error: 'managed_login_check_failed',
-      message:
-        'Could not check whether this login still owns views or routines. Try again in a moment.',
-    },
-  }
+  return checkFailed()
 }

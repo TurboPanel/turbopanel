@@ -86,7 +86,6 @@ import {
   type ManagedLoginRow,
   patchLogin,
   removeManagedLogin,
-  restoreManagedLogin,
   rotateLoginPassword,
   setLoginPassword,
 } from '../../features/managed/logins.ts'
@@ -2489,18 +2488,16 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     })
     if (prepared instanceof Response) return prepared
 
-    // The login row goes now (its scope rows and bindings with it).
-    const removed = await removeManagedLogin(db, target.id)
-
+    // The login row stays until the host has dropped the account: the apply
+    // consumer removes it when the apply succeeds (see
+    // `removeLoginsDroppedByApply`), so a host that refuses leaves the panel
+    // and the host agreeing.
     const enqueued = await enqueuePreparedManagedApply(c, db, prepared.commandQueue, {
       userId: auth.userId,
       managedId: row.id,
       members: prepared.members,
     })
-    if (enqueued instanceof Response) {
-      if (removed) await restoreManagedLogin(db, removed)
-      return enqueued
-    }
+    if (enqueued instanceof Response) return enqueued
 
     // A database this login owned goes back to its default owner role on the
     // server (the apply above hands it back before dropping the login), and

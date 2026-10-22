@@ -141,6 +141,7 @@ import {
   type ReportedFolder,
 } from '../../contracts/commands/schemas.ts'
 import { updateManagedMemberObservedReplication } from '../managed/members.ts'
+import { removeLoginsDroppedByApply } from '../managed/logins.ts'
 import { convertedDatabaseNames, markConvertedDatabasesRoleOwned } from '../managed/options.ts'
 import { markFoldersPresent } from '../folders/allocate.ts'
 import {
@@ -1757,6 +1758,8 @@ async function applyManagedApplySideEffect(
         .where(eq(managed.id, payload.managedId))
     }
     if (isPrimary) {
+      // The host dropped these accounts, so the panel forgets their logins.
+      await removeLoginsDroppedByApply(db, payload.managedId, payload.dropUsers)
       await markConvertedDatabasesRoleOwned(
         db,
         payload.managedId,

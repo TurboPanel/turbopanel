@@ -115,6 +115,11 @@ export type ObservedLogin = {
    * Absent when there are none or the daemon did not report them.
    */
   definesObjects?: string[]
+  /**
+   * MySQL / MariaDB: true when the daemon could not look up the objects above
+   * (the query failed or time ran out), so an absent list does not mean none.
+   */
+  definesObjectsUnread?: boolean
 }
 
 export type ManagedPermissionsObserved = {
@@ -297,6 +302,7 @@ function parseLogin(value: unknown): ObservedLogin | null {
   if (value.truncated === true) login.truncated = true
   const definesObjects = clampedNames(value.definesObjects, OBSERVED_MAX_DEFINED_OBJECTS)
   if (definesObjects.length > 0) login.definesObjects = definesObjects
+  if (value.definesObjectsUnread === true) login.definesObjectsUnread = true
   return login
 }
 
