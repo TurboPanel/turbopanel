@@ -150,6 +150,14 @@ export type RecoveryMetadata = {
    */
   targetCaughtUp?: boolean
   targetCaughtUpBasis?: string
+  /**
+   * Operator switchover only: what became of the automatic re-seed of the old
+   * primary. `queued` = the forced re-seed was queued; `skipped` = it was not
+   * safe or possible right now; `failed` = it could not be queued. In the last
+   * two the old primary stays `needs_resync` until an operator runs Resync.
+   */
+  reseedState?: 'queued' | 'skipped' | 'failed'
+  reseedNote?: string
   blockedReason?: string
   /** Times the same refusal was seen; absent = once. */
   blockedCount?: number
@@ -286,6 +294,14 @@ export function parseRecoveryMetadata(value: unknown): RecoveryMetadata {
   setIfPresent(metadata, 'forced', optionalBoolean(value.forced))
   setIfPresent(metadata, 'targetCaughtUp', optionalBoolean(value.targetCaughtUp))
   setIfPresent(metadata, 'targetCaughtUpBasis', optionalString(value.targetCaughtUpBasis))
+  if (
+    value.reseedState === 'queued' ||
+    value.reseedState === 'skipped' ||
+    value.reseedState === 'failed'
+  ) {
+    metadata.reseedState = value.reseedState
+  }
+  setIfPresent(metadata, 'reseedNote', optionalString(value.reseedNote))
   setIfPresent(metadata, 'blockedReason', optionalString(value.blockedReason))
   setIfPresent(metadata, 'blockedCount', optionalNullableNumber(value.blockedCount) ?? undefined)
   setIfPresent(metadata, 'lastBlockedAt', optionalString(value.lastBlockedAt))

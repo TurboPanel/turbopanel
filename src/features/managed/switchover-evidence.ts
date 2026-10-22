@@ -5,10 +5,10 @@
  * only run when nothing on that node can be missing from the new primary. Only
  * a fresh, fully caught-up Postgres reading counts as that evidence: a clean
  * Postgres shutdown ships the remaining log to a connected standby, and the
- * reading shows no receive or replay lag. MySQL and MariaDB replicate
- * asynchronously and the control plane cannot compare the final GTID sets, so
- * they are never proven here and their old primary stays `needs_resync` for an
- * operator.
+ * reading shows no receive or replay lag. MySQL and MariaDB are proven
+ * elsewhere: the old primary's final GTID set is captured when it stops and the
+ * promote only succeeds once the new primary applied it (`switchover-catchup.ts`),
+ * so this reading says nothing for them.
  */
 
 /** Max age of the reading the evidence is based on. */
@@ -36,7 +36,10 @@ export function evaluateSwitchoverCatchUp(
   nowMs: number = Date.now()
 ): SwitchoverCatchUp {
   if (engine !== 'postgres') {
-    return { caughtUp: false, basis: 'asynchronous engine: final position cannot be compared' }
+    return {
+      caughtUp: false,
+      basis: 'not a Postgres reading (MySQL and MariaDB are proven by the GTID set at promote)',
+    }
   }
   if (!isRecord(replication)) return { caughtUp: false, basis: 'no replication reading' }
   if (replication.state !== 'streaming') return { caughtUp: false, basis: 'not streaming' }

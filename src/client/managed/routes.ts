@@ -421,6 +421,8 @@ async function readSwitchoverTargetReplication(
   db: NonNullable<ReturnType<typeof getDb>>,
   params: { member: ManagedMemberRow; managedId: string; engine: string }
 ): Promise<unknown> {
+  // Only Postgres is proven by a reading; MySQL and MariaDB by the GTID set.
+  if (params.engine !== 'postgres') return undefined
   try {
     const stored = await findManagedMember(db, params.member.id)
     const current = serializeManagedMember(stored ?? params.member, null).replication

@@ -15,6 +15,7 @@ import type { DaemonCellRegistry } from '../../contracts/cell.ts'
 import type { DerivedSecretsConfig, SecretsConfig } from '../../lib/secrets/secrets.ts'
 import { getResolveFleetPresence } from '../../platform/ports/fleet-presence.ts'
 import type { CommandQueue } from '../commands/queue.ts'
+import { hasLiveBackupCommand } from '../commands/command-records.ts'
 import { COMMAND_STATUSES, TERMINAL_COMMAND_STATUSES } from '../commands/types.ts'
 import {
   enqueuePreparedManagedApply,
@@ -28,9 +29,11 @@ import { headlessManagedContext } from './headless-context.ts'
 import { getManagedEngineSpec } from './index.ts'
 import { listManagedMembers, type ManagedMemberRow } from './members.ts'
 import { loadManagedOptions } from './options.ts'
-import { findInFlightRecovery } from './recovery-records.ts'
+import { findInFlightRecovery, updateRecoveryLocked } from './recovery-records.ts'
 import type { RecoveryRecord } from './recovery.ts'
 import { parseManagedResidual } from './serialize.ts'
+import { engineNeedsSwitchoverGtidProof } from './switchover-catchup.ts'
+import type { ManagedEngineCode } from './types.ts'
 
 const OUTSTANDING_COMMAND_STATUSES = COMMAND_STATUSES.filter(
   (status) => !TERMINAL_COMMAND_STATUSES.has(status)
@@ -49,6 +52,10 @@ export type ReseedDemotedPrimaryDeps = {
   serversConnected?: (db: Db, serverIds: string[]) => Promise<boolean>
   findInFlightRecovery?: typeof findInFlightRecovery
   hasOutstandingApply?: (db: Db, managedId: string, memberId: string) => Promise<boolean>
+  /** True while a backup or restore of this database is queued or running. */
+  hasLiveBackup?: (db: Db, managedId: string) => Promise<boolean>
+  /** Writes the outcome on the recovery row so the operator can see it. */
+  recordOutcome?: (db: Db, recoveryId: string, outcome: ReseedOutcome) => Promise<void>
   loadCluster?: (db: Db, managedId: string) => Promise<ManagedApplyCluster | null>
   preflight?: typeof preflightManagedApplyInfrastructure
   loadOptions?: typeof loadManagedOptions
@@ -69,6 +76,11 @@ export type ReseedDemotedPrimaryDeps = {
   ) => ReturnType<typeof enqueuePreparedManagedApply>
 }
 
+export type ReseedOutcome = {
+  state: 'queued' | 'skipped' | 'failed'
+  note: string
+}
+
 export type ManagedApplyCluster = {
   id: string
   environmentId: string
@@ -80,8 +92,29 @@ export type ManagedApplyCluster = {
   serverId: string | null
 }
 
-function skip(reason: string): void {
+type Skipped = { skipped: string }
+
+function skip(reason: string): Skipped {
   compatLogInfo('managed-ha', `managed.member.reseed.auto skipped: ${reason}`)
+  return { skipped: reason }
+}
+
+function isSkipped(value: unknown): value is Skipped {
+  return typeof value === 'object' && value !== null && 'skipped' in value
+}
+
+async function recordReseedOutcome(
+  db: Db,
+  recoveryId: string,
+  outcome: ReseedOutcome
+): Promise<void> {
+  await updateRecoveryLocked(db, recoveryId, (current) => ({
+    metadata: {
+      ...current.metadata,
+      reseedState: outcome.state,
+      reseedNote: outcome.note.slice(0, 300),
+    },
+  }))
 }
 
 function warn(detail: string): void {
@@ -200,6 +233,7 @@ function memberById(
 
 type SwitchoverReseedReady = {
   source: ManagedMemberRow
+  cluster: ManagedApplyCluster
   secrets: {
     secretsConfig: SecretsConfig
     dataEncryptionSecrets: DerivedSecretsConfig
@@ -208,17 +242,27 @@ type SwitchoverReseedReady = {
 }
 
 function switchoverRecordReady(
-  record: RecoveryRecord
-): { sourceId: string; targetId: string } | string {
-  if (record.kind !== 'switchover') return 'kind is not switchover'
+  record: RecoveryRecord,
+  engine: string
+): { sourceId: string; targetId: string } | Skipped {
+  if (record.kind !== 'switchover') return skip('kind is not switchover')
   if (!record.sourcePrimaryMemberId || !record.targetMemberId) {
-    return 'source or target member is missing'
+    return skip('source or target member is missing')
   }
   // Drain AND stop proven. A stop alone lets an operator switchover go on.
-  if (record.metadata.fenced !== true) return 'old primary is not proven fenced'
-  if (record.metadata.forced === true) return 'switchover was forced'
-  if (record.metadata.targetCaughtUp !== true) {
-    return `target was not proven caught up (${record.metadata.targetCaughtUpBasis ?? 'no reading'})`
+  if (record.metadata.fenced !== true) return skip('old primary is not proven fenced')
+  if (record.metadata.forced === true) return skip('switchover was forced')
+  // Nothing may be missing from the new primary. Postgres: a fresh zero-lag
+  // streaming reading taken before the fence. MySQL and MariaDB: the old
+  // primary's final GTID set was captured when it stopped, and the promote
+  // only succeeds once the new primary has applied all of it.
+  const proven = engineNeedsSwitchoverGtidProof(engine as ManagedEngineCode)
+    ? Boolean(record.metadata.switchoverRequiredGtidSet)
+    : record.metadata.targetCaughtUp === true
+  if (!proven) {
+    return skip(
+      `new primary was not proven caught up (${record.metadata.targetCaughtUpBasis ?? 'no proof'})`
+    )
   }
   return { sourceId: record.sourcePrimaryMemberId, targetId: record.targetMemberId }
 }
@@ -243,30 +287,31 @@ async function evaluateSwitchoverReseed(
   secrets: ReseedDemotedPrimarySecrets,
   record: RecoveryRecord,
   deps: ReseedDemotedPrimaryDeps
-): Promise<SwitchoverReseedReady | null> {
-  const recordReady = switchoverRecordReady(record)
-  if (typeof recordReady === 'string') {
-    skip(recordReady)
-    return null
-  }
+): Promise<SwitchoverReseedReady | Skipped> {
+  if (record.kind !== 'switchover') return skip('kind is not switchover')
+  // A retried promote result must not queue a second wipe.
+  if (record.metadata.reseedState !== undefined) return skip('re-seed already decided')
+
+  const cluster = await (deps.loadCluster ?? loadManagedApplyCluster)(db, record.managedId)
+  if (!cluster) return skip('managed row is missing')
+
+  const recordReady = switchoverRecordReady(record, cluster.engine)
+  if (isSkipped(recordReady)) return recordReady
   const dispatch = dispatchReady(commandQueue, secrets)
-  if (!dispatch) {
-    skip('secrets or command queue missing')
-    return null
-  }
+  if (!dispatch) return skip('secrets or command queue missing')
 
   const listMembers = deps.listMembers ?? listManagedMembers
   const members = await listMembers(db, record.managedId)
   const source = memberById(members, recordReady.sourceId)
   const target = memberById(members, recordReady.targetId)
   if (source?.role !== 'replica' || source.status !== 'needs_resync') {
-    skip('source member is not a needs_resync replica')
-    return null
+    return skip('source member is not a needs_resync replica')
   }
-  if (target?.role !== 'primary') {
-    skip('target member is not primary')
-    return null
-  }
+  // The new primary must be a healthy, promoted member: its data is the only
+  // copy the wipe leaves behind.
+  if (target?.role !== 'primary') return skip('target member is not primary')
+  if (target.status !== 'ready')
+    return skip(`new primary is ${target.status ?? 'unknown'}, not ready`)
 
   // Both ends must be reachable now: the apply goes to the new primary's
   // server and the wipe happens on the old primary's.
@@ -274,24 +319,26 @@ async function evaluateSwitchoverReseed(
     deps.serversConnected ??
     ((d: Db, ids: string[]) => liveServersConnected(d, secrets.registry, ids))
   if (!(await connected(db, [...new Set([source.serverId, target.serverId])]))) {
-    skip('the old or the new primary server is offline')
-    return null
+    return skip('the old or the new primary server is offline')
   }
 
   const inflight = await (deps.findInFlightRecovery ?? findInFlightRecovery)(db, record.managedId)
-  if (inflight && inflight.id !== record.id) {
-    skip('another recovery is in flight')
-    return null
+  if (inflight && inflight.id !== record.id) return skip('another recovery is in flight')
+
+  // The host takes one backup or restore at a time, and a re-seed under a
+  // running backup or restore would pull the data away from it.
+  if (await (deps.hasLiveBackup ?? hasLiveBackupCommand)(db, record.managedId)) {
+    return skip('a backup or restore is running')
   }
 
   const outstanding = deps.hasOutstandingApply ?? hasOutstandingManagedApplyForMember
   if (await outstanding(db, record.managedId, source.id)) {
-    skip(`member ${source.id} already has a managed.apply queued`)
-    return null
+    return skip(`member ${source.id} already has a managed.apply queued`)
   }
 
   return {
     source,
+    cluster,
     secrets: {
       secretsConfig: dispatch.secretsConfig,
       dataEncryptionSecrets: dispatch.dataEncryptionSecrets,
@@ -300,44 +347,32 @@ async function evaluateSwitchoverReseed(
   }
 }
 
+/** Queues the forced re-seed; returns why nothing was queued, or null when it was. */
 async function enqueueSwitchoverReseedApply(
   db: Db,
   ready: SwitchoverReseedReady,
   record: RecoveryRecord,
   actorId: string,
   deps: ReseedDemotedPrimaryDeps
-): Promise<void> {
-  const loadCluster = deps.loadCluster ?? loadManagedApplyCluster
-  const cluster = await loadCluster(db, record.managedId)
-  const primaryServerId = cluster?.serverId
-  if (!cluster || !primaryServerId) {
-    skip('managed row or primary server is missing')
-    return
-  }
+): Promise<Skipped | { failed: string } | null> {
+  const { cluster } = ready
+  const primaryServerId = cluster.serverId
+  if (!primaryServerId) return skip('primary server is missing')
 
   const spec = getManagedEngineSpec(cluster.engine)
-  if (!spec) {
-    skip(`engine ${cluster.engine} is unrecognized`)
-    return
-  }
+  if (!spec) return skip(`engine ${cluster.engine} is unrecognized`)
   const options = await (deps.loadOptions ?? loadManagedOptions)(db, spec, {
     id: cluster.id,
     options: cluster.options,
   })
-  if (!options) {
-    skip('managed options are invalid')
-    return
-  }
+  if (!options) return skip('managed options are invalid')
 
   const c = headlessManagedContext(ready.secrets)
   const preflight = deps.preflight ?? preflightManagedApplyInfrastructure
   const infra = await preflight(c, db, {
     serverId: primaryServerId,
   })
-  if (infra) {
-    skip(`apply preflight ${infra.kind}`)
-    return
-  }
+  if (infra) return skip(`apply preflight ${infra.kind}`)
 
   const residual = parseManagedResidual(cluster.metadata)
   const prepare = deps.preparePayloads ?? prepareManagedApplyPayloads
@@ -354,10 +389,7 @@ async function enqueueSwitchoverReseedApply(
     rootUsername: residual.rootUsername ?? spec.rootUsername,
     forceResyncMemberIds: [ready.source.id],
   })
-  if (isPrepareError(prepared)) {
-    skip(`prepare failed (${prepared.kind})`)
-    return
-  }
+  if (isPrepareError(prepared)) return skip(`prepare failed (${prepared.kind})`)
 
   const enqueue = deps.enqueueApply ?? enqueuePreparedManagedApply
   const enqueued = await enqueue(c, db, ready.commandQueue, {
@@ -367,17 +399,26 @@ async function enqueueSwitchoverReseedApply(
   })
   if (enqueued instanceof Response) {
     warn(`enqueue returned ${enqueued.status}`)
-    return
+    return { failed: `the re-seed could not be queued (${enqueued.status})` }
+  }
+
+  const failedResult = enqueued.find((row) => row.status === 'failed')
+  if (failedResult) {
+    warn(`apply for member ${failedResult.memberId} did not queue`)
+    return { failed: failedResult.error ?? 'the re-seed apply did not queue' }
   }
 
   compatLogInfo(
     'managed-ha',
     `managed.member.reseed.auto managedId=${cluster.id} memberId=${ready.source.id} recoveryId=${record.id}`
   )
+  return null
 }
 
 /**
  * Best-effort forced re-seed of the demoted switchover primary. Never throws.
+ * The outcome lands on the recovery row (`reseedState`, `reseedNote`) so an
+ * operator can see why a former primary was left `needs_resync`.
  */
 export async function reseedDemotedPrimaryAfterSwitchover(
   db: Db,
@@ -387,11 +428,30 @@ export async function reseedDemotedPrimaryAfterSwitchover(
   actorId: string,
   deps: ReseedDemotedPrimaryDeps = {}
 ): Promise<void> {
+  if (record.kind !== 'switchover') return
+  let outcome: ReseedOutcome
   try {
     const ready = await evaluateSwitchoverReseed(db, commandQueue, secrets, record, deps)
-    if (!ready) return
-    await enqueueSwitchoverReseedApply(db, ready, record, actorId, deps)
+    if (isSkipped(ready)) {
+      outcome = { state: 'skipped', note: ready.skipped }
+    } else {
+      const result = await enqueueSwitchoverReseedApply(db, ready, record, actorId, deps)
+      if (result === null) {
+        outcome = { state: 'queued', note: 'forced re-seed of the former primary queued' }
+      } else if ('failed' in result) {
+        outcome = { state: 'failed', note: result.failed }
+      } else {
+        outcome = { state: 'skipped', note: result.skipped }
+      }
+    }
   } catch (err) {
     warn(errorMessage(err))
+    outcome = { state: 'failed', note: errorMessage(err) }
+  }
+  if (outcome.state === 'skipped' && outcome.note === 're-seed already decided') return
+  try {
+    await (deps.recordOutcome ?? recordReseedOutcome)(db, record.id, outcome)
+  } catch (err) {
+    warn(`could not record the outcome: ${errorMessage(err)}`)
   }
 }

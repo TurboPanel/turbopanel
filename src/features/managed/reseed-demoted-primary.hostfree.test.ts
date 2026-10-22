@@ -13,6 +13,7 @@ import type { RecoveryRecord } from './recovery.ts'
 import {
   reseedDemotedPrimaryAfterSwitchover,
   type ManagedApplyCluster,
+  type ReseedOutcome,
   type ReseedDemotedPrimaryDeps,
 } from './reseed-demoted-primary.ts'
 
@@ -124,7 +125,10 @@ type EnqueueCall = {
   forceResyncMemberIds?: string[]
 }
 
+const outcomes: ReseedOutcome[] = []
+
 function capturingDeps(enqueued: EnqueueCall[], extra: ReseedDemotedPrimaryDeps = {}) {
+  outcomes.length = 0
   let prepareServerId: string | undefined
   let forceResyncMemberIds: string[] | undefined
   const deps: ReseedDemotedPrimaryDeps = {
@@ -132,6 +136,11 @@ function capturingDeps(enqueued: EnqueueCall[], extra: ReseedDemotedPrimaryDeps 
     serversConnected: () => Promise.resolve(true),
     findInFlightRecovery: () => Promise.resolve(switchoverRecord()),
     hasOutstandingApply: () => Promise.resolve(false),
+    hasLiveBackup: () => Promise.resolve(false),
+    recordOutcome: (_db, _id, outcome) => {
+      outcomes.push(outcome)
+      return Promise.resolve()
+    },
     loadCluster: () => Promise.resolve(clusterRow()),
     preflight: () => Promise.resolve(null),
     loadOptions: () => Promise.resolve({ settings: { ssl: {} }, databases: ['postgres'] }),
@@ -195,6 +204,10 @@ test('switchover with a demoted needs_resync member enqueues one force-resync ap
   assertEquals(
     enqueued[0]?.members.some((row) => row.serverId === SERVER_NEW),
     true
+  )
+  assertEquals(
+    outcomes.map((o) => o.state),
+    ['queued']
   )
 })
 
@@ -334,4 +347,72 @@ test('enqueue failure does not throw', async () => {
     })
   )
   assertEquals(enqueued.length, 0)
+  assertEquals(outcomes, [{ state: 'failed', note: 'queue unavailable' }])
+})
+
+test('a new primary that is not ready is a no-op with the reason recorded', async () => {
+  const enqueued: EnqueueCall[] = []
+  await reseed(
+    capturingDeps(enqueued, {
+      listMembers: () => Promise.resolve([demoted(), promoted({ status: 'failed' })]),
+    })
+  )
+  assertEquals(enqueued.length, 0)
+  assertEquals(
+    outcomes.map((o) => o.state),
+    ['skipped']
+  )
+  assertEquals(outcomes[0]?.note, 'new primary is failed, not ready')
+})
+
+test('a running backup or restore blocks the re-seed and is recorded', async () => {
+  const enqueued: EnqueueCall[] = []
+  await reseed(capturingDeps(enqueued, { hasLiveBackup: () => Promise.resolve(true) }))
+  assertEquals(enqueued.length, 0)
+  assertEquals(outcomes, [{ state: 'skipped', note: 'a backup or restore is running' }])
+})
+
+test('a MySQL-family switchover is re-seeded when the old primary final GTID set was captured', async () => {
+  const mysqlDeps = (enqueued: EnqueueCall[]) =>
+    capturingDeps(enqueued, {
+      loadCluster: () => Promise.resolve(clusterRow({ engine: 'mysql' })),
+    })
+  const enqueued: EnqueueCall[] = []
+  const { targetCaughtUp: _omit, ...withoutReading } = CLEAN_METADATA
+  await reseed(
+    mysqlDeps(enqueued),
+    switchoverRecord({ metadata: { ...withoutReading, switchoverRequiredGtidSet: 'uuid:1-9' } })
+  )
+  assertEquals(enqueued.length, 1)
+  const none: EnqueueCall[] = []
+  await reseed(mysqlDeps(none), switchoverRecord({ metadata: withoutReading }))
+  assertEquals(none.length, 0)
+})
+
+test('a re-seed already decided on the recovery row is not repeated', async () => {
+  const enqueued: EnqueueCall[] = []
+  await reseed(
+    capturingDeps(enqueued),
+    switchoverRecord({ metadata: { ...CLEAN_METADATA, reseedState: 'queued' } })
+  )
+  assertEquals(enqueued.length, 0)
+  assertEquals(outcomes.length, 0)
+})
+
+test('an apply that did not queue is recorded as failed', async () => {
+  const enqueued: EnqueueCall[] = []
+  await reseed(
+    capturingDeps(enqueued, {
+      enqueueApply: (_c, _db, _queue, params) =>
+        Promise.resolve(
+          params.members.map((row) => ({
+            memberId: row.memberId,
+            serverId: row.serverId,
+            status: 'failed' as const,
+            error: 'host rejected the command',
+          }))
+        ),
+    })
+  )
+  assertEquals(outcomes, [{ state: 'failed', note: 'host rejected the command' }])
 })

@@ -973,13 +973,17 @@ of this fails the promote. After a planned switchover the former primary is
 re-seeded automatically from the new primary (`reseed-demoted-primary.ts`),
 but only when nothing on it can be missing from the new primary: the drain AND
 the stop are proven (`fenced`), the operator did not force the switchover, the
-target was proven fully caught up by a fresh reading taken before the fence
-(`targetCaughtUp`, `switchover-evidence.ts`: Postgres, streaming, zero lag, at
-most 30 s old; MySQL and MariaDB are asynchronous with no final position to
-compare, so they are never proven), and both servers are connected now. In every
-other case, and after an automatic failover or disaster recovery, it stays
-`needs_resync` until an operator runs Resync. The `forced` and `targetCaughtUp`
-facts are stored on the recovery row at switchover start. The
+target was proven fully caught up (Postgres: a fresh streaming
+reading with zero lag taken before the fence, at most 30 s old, `targetCaughtUp`,
+`switchover-evidence.ts`; MySQL and MariaDB: the old primary's final GTID set
+was captured at the stop and the promote only succeeds once the new primary
+applied it), the new primary is `ready`, no backup or restore of the database is
+queued or running, and both servers are connected now. In every other case, and
+after an automatic failover or disaster recovery, it stays `needs_resync` until
+an operator runs Resync. The `forced` and `targetCaughtUp` facts are stored on
+the recovery row at switchover start; the outcome of the re-seed (`reseedState`
+queued, skipped or failed, with `reseedNote` saying why) is written on the same
+row, and a retried promote result never queues a second wipe. The
 payload always carries `engine` (loaded from the
 managed row when the caller omits it).
 

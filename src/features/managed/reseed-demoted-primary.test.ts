@@ -19,9 +19,11 @@ import {
   workspace,
 } from '../../db/schema.ts'
 import { createCommandRecord, transitionCommand } from '../commands/command-records.ts'
+import { findRecoveryById, insertRecovery } from './recovery-records.ts'
 import {
   hasOutstandingManagedApplyForMember,
   loadManagedApplyCluster,
+  reseedDemotedPrimaryAfterSwitchover,
 } from './reseed-demoted-primary.ts'
 
 /**
@@ -229,5 +231,24 @@ test('finished applies and applies for another cluster do not count', async () =
       context: { managedId: '00000000-0000-4000-8000-0000000000fe', memberId: replicaId },
     })
     assertEquals(await hasOutstandingManagedApplyForMember(f.db, f.managedId, replicaId!), false)
+  })
+})
+
+test('the re-seed outcome is written on the recovery row next to what was already there', async () => {
+  await withCluster(async (f) => {
+    const [primaryId, replicaId] = f.memberIds
+    const created = await insertRecovery(f.db, {
+      managedId: f.managedId,
+      kind: 'switchover',
+      sourcePrimaryMemberId: primaryId!,
+      targetMemberId: replicaId!,
+      state: 'repointing',
+      metadata: { fenced: true, forced: true },
+    })
+    await reseedDemotedPrimaryAfterSwitchover(f.db, undefined, {}, created, replicaId!)
+    const stored = await findRecoveryById(f.db, created.id)
+    assertEquals(stored?.metadata.fenced, true)
+    assertEquals(stored?.metadata.reseedState, 'skipped')
+    assertEquals(stored?.metadata.reseedNote, 'switchover was forced')
   })
 })
