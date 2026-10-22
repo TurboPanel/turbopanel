@@ -3160,7 +3160,10 @@ async function applyManagedHaFailoverSideEffect(
       })
       return
     }
-    if (payload.phase === 'repoint') return
+    // Only a confirmed engine promote ('recover') may change roles. A planned
+    // switchover that stops early sends 'undrain' to put traffic back on the
+    // unchanged primary; flipping roles there claims a promote that never ran.
+    if (payload.phase !== 'recover') return
 
     const backupHost = await captureManagedBackupHost(db, deps?.commandQueue, payload.managedId)
     await applyManagedRoleFlip(db, {
