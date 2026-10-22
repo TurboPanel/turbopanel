@@ -542,6 +542,74 @@ test('the same price is refused when the account names no default either', async
   assertEquals(db.rows(tier).length, 0)
 })
 
+type TaxDefaultsBody = {
+  taxDefaults: {
+    outcome: string
+    taxBehavior: string | null
+    error: { status: number; type: string; code: string | null; permission: string | null } | null
+  }
+  products: { verification: { ok: boolean; failures: string[] } }[]
+}
+
+test('GET /tiers/products reports a key that may not read tax settings, not a missing default', async () => {
+  const listing = catalogue([product({}, { tax_behavior: 'unspecified' })], 'exclusive')
+  const { app, cookie } = await buildApp({
+    respond: (call) => {
+      if (call.path === '/v1/tax/settings') {
+        throw new StripeApiError({
+          status: 403,
+          type: 'invalid_request_error',
+          message:
+            "The provided key 'rk_test_********wxyz' does not have the required permissions. " +
+            "Having the 'rak_tax_settings_read' permission would allow this request to continue.",
+        })
+      }
+      return listing(call)
+    },
+  })
+  const res = await get(app, cookie, '/tiers/products')
+  // Degrades instead of breaking the dropdown.
+  assertEquals(res.status, 200)
+  const body = await jsonBody<TaxDefaultsBody>(res)
+  assertEquals(body.taxDefaults, {
+    outcome: 'permission_missing',
+    taxBehavior: null,
+    status: null,
+    error: {
+      status: 403,
+      type: 'invalid_request_error',
+      code: null,
+      permission: 'rak_tax_settings_read',
+    },
+  } as TaxDefaultsBody['taxDefaults'])
+  const failure = body.products[0]?.verification.failures[0] ?? ''
+  assertEquals(failure.includes('lacks permission to read tax settings'), true)
+  // Neither the provider's message nor any part of the key reaches the client.
+  assertEquals(JSON.stringify(body).includes('wxyz'), false)
+  assertEquals(JSON.stringify(body).includes('does not have the required'), false)
+})
+
+test('GET /tiers/products says not_asked when every price names its own tax behaviour', async () => {
+  const { app, cookie, client } = await buildApp({ respond: catalogue([product()], 'exclusive') })
+  const body = await jsonBody<TaxDefaultsBody>(await get(app, cookie, '/tiers/products'))
+  assertEquals(body.taxDefaults.outcome, 'not_asked')
+  assertEquals(
+    client.calls.some((call) => call.path === '/v1/tax/settings'),
+    false
+  )
+})
+
+test('GET /tiers/products reports a set default, including Automatic', async () => {
+  for (const behaviour of ['exclusive', 'inferred_by_currency']) {
+    const { app, cookie } = await buildApp({
+      respond: catalogue([product({}, { tax_behavior: 'unspecified' })], behaviour),
+    })
+    const body = await jsonBody<TaxDefaultsBody>(await get(app, cookie, '/tiers/products'))
+    assertEquals([body.taxDefaults.outcome, body.taxDefaults.taxBehavior], ['set', behaviour])
+    assertEquals(body.products[0]?.verification.ok, true)
+  }
+})
+
 test("POST /tiers refuses a product the provider does not know with our words, never the provider's", async () => {
   const { app, cookie, db } = await buildApp({ respond: catalogue([]) })
   const res = await post(app, cookie, '/tiers', {
