@@ -2669,3 +2669,32 @@ it('managed-health-result bounds the GTID freshness fields and types fullyApplie
   assertEquals(frame({ executedGtid: 7 }), false)
   assertEquals(frame({ fullyApplied: 'true' }), false)
 })
+
+it('validateDaemonInboundFrame bounds the commands report on hello and heartbeat', () => {
+  const frame = (type: 'hello' | 'heartbeat', commands: unknown) =>
+    validateDaemonInboundFrame(
+      JSON.stringify({ type, at: VALID_AT, daemonBuild: VALID_DAEMON_BUILD, commands })
+    )
+  const report = { running: ['c1'], unacked: ['c2', 'c3'] }
+  for (const type of ['hello', 'heartbeat'] as const) {
+    const accepted = frame(type, report)
+    assertEquals(accepted.ok, true)
+    if (
+      accepted.ok &&
+      (accepted.message.type === 'hello' || accepted.message.type === 'heartbeat')
+    ) {
+      assertEquals(accepted.message.commands, report)
+    }
+    assertEquals(frame(type, undefined).ok, true)
+    for (const bad of [
+      'x',
+      [],
+      { running: 'c1', unacked: [] },
+      { running: [], unacked: [7] },
+      { running: ['a'.repeat(MAX_DAEMON_WS_ID_CHARS + 1)], unacked: [] },
+      { running: Array.from({ length: 65 }, (_, index) => `c${index}`), unacked: [] },
+    ]) {
+      assertEquals(frame(type, bad).ok, false, JSON.stringify(bad))
+    }
+  }
+})
