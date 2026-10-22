@@ -71,6 +71,8 @@ import {
   MANAGED_DESTROY_GATE_METADATA_KEY,
   parseManagedDestroyGate,
 } from '../managed/destroy-gate.ts'
+import { bumpedPrimaryEpochMetadata } from '../managed/primary-epoch.ts'
+import { recordNewPrimaryReplayPosition } from '../managed/switchover-position.ts'
 import { parseReseedGuard, reseedSupersededReason } from '../managed/reseed-guard.ts'
 import { deleteManagedBackup, insertManagedBackup } from '../backups/backup-records.ts'
 import { applyStorageBackupSideEffect } from '../backups/storage-command-effects.ts'
@@ -2103,6 +2105,16 @@ async function applyManagedLifecycleSideEffect(
               switchoverPrimaryExecutedGtidSet: lifecycleResult.switchoverPrimaryExecutedGtidSet,
             }
           : {}),
+        ...(payload.switchoverRecoveryId === recoveryId &&
+        lifecycleResult.oldPrimaryFinalLsn !== undefined &&
+        lifecycleResult.oldPrimaryFinalTimeline !== undefined
+          ? {
+              oldPrimaryFinal: {
+                lsn: lifecycleResult.oldPrimaryFinalLsn,
+                timeline: lifecycleResult.oldPrimaryFinalTimeline,
+              },
+            }
+          : {}),
       })
       return
     }
@@ -2944,13 +2956,14 @@ async function applyManagedPromoteSideEffect(
           .set({
             status: 'ready',
             serverId: promoted.serverId,
+            metadata: bumpedPrimaryEpochMetadata(),
             updatedAt,
           })
           .where(eq(managed.id, managedId))
       } else {
         await tx
           .update(managed)
-          .set({ status: 'ready', updatedAt })
+          .set({ status: 'ready', metadata: bumpedPrimaryEpochMetadata(), updatedAt })
           .where(eq(managed.id, managedId))
       }
     })
@@ -2976,9 +2989,18 @@ async function applyManagedPromoteSideEffect(
       })
     }
 
+    const meta = await getCommandMetadata(db, record.id)
+    const recoveryId = recoveryIdFromCommandMetadata(meta)
+    // Before the follow-up: the planned-switchover re-seed reads it.
+    if (recoveryId) {
+      await recordNewPrimaryReplayPosition(db, recoveryId, {
+        engine: recoveryEngine(payload.engine),
+        lsn: promoteResult.newPrimaryReplayLsn,
+        timeline: promoteResult.newPrimaryTimeline,
+      })
+    }
+
     if (!hasManagedFollowUpDeps(deps)) {
-      const meta = await getCommandMetadata(db, record.id)
-      const recoveryId = recoveryIdFromCommandMetadata(meta)
       if (recoveryId) {
         await onPromoteSucceeded(db, deps?.commandQueue, {}, recoveryId, envelope.serverId)
       }
@@ -2992,8 +3014,6 @@ async function applyManagedPromoteSideEffect(
     // demoted primary. The fence-then-promote path enqueues a real
     // `managed.promote` command (see `applyManagedLifecycleSideEffect`), so it
     // lands here too once that promote succeeds.
-    const meta = await getCommandMetadata(db, record.id)
-    const recoveryId = recoveryIdFromCommandMetadata(meta)
     if (recoveryId) {
       await onPromoteSucceeded(
         db,
@@ -3080,13 +3100,18 @@ async function applyManagedRoleFlip(
         .set({
           status: 'ready',
           serverId: promoted.serverId,
+          metadata: bumpedPrimaryEpochMetadata(),
           updatedAt: params.updatedAt,
         })
         .where(eq(managed.id, params.managedId))
     } else {
       await tx
         .update(managed)
-        .set({ status: 'ready', updatedAt: params.updatedAt })
+        .set({
+          status: 'ready',
+          metadata: bumpedPrimaryEpochMetadata(),
+          updatedAt: params.updatedAt,
+        })
         .where(eq(managed.id, params.managedId))
     }
   })

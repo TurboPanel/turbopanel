@@ -23,6 +23,12 @@ import { processCommandEnvelope } from '../commands/consumer.ts'
 import { getCommandRecord } from '../commands/command-records.ts'
 import { findRecoveryById, insertRecovery, updateRecovery } from './recovery-records.ts'
 import { RESEED_GUARD_METADATA_KEY, reseedSupersededReason } from './reseed-guard.ts'
+import { bumpedPrimaryEpochMetadata, loadPrimaryEpoch } from './primary-epoch.ts'
+import {
+  recordNewPrimaryReplayPosition,
+  recordOldPrimaryFinalPosition,
+} from './switchover-position.ts'
+import { evaluateFinalPosition } from './switchover-evidence.ts'
 import type { DaemonCellRegistry } from '../../contracts/cell.ts'
 import {
   claimReseed,
@@ -372,5 +378,124 @@ test('a queued wipe whose switchover was overtaken is cancelled before it is sen
       .from(managed)
       .where(eq(managed.id, f.managedId))
     assertEquals(row?.status, 'ready')
+  })
+})
+
+test('the epoch goes up by one with each bump, keeps the other metadata and restarts from a damaged value', async () => {
+  await withCluster(async (f) => {
+    assertEquals(await loadPrimaryEpoch(f.db, f.managedId), 0)
+    const bump = () =>
+      f.db
+        .update(managed)
+        .set({ metadata: bumpedPrimaryEpochMetadata() })
+        .where(eq(managed.id, f.managedId))
+    await bump()
+    assertEquals(await loadPrimaryEpoch(f.db, f.managedId), 1)
+    await f.db
+      .update(managed)
+      .set({ metadata: { host: 'db.internal', primaryEpoch: 41 } })
+      .where(eq(managed.id, f.managedId))
+    await bump()
+    assertEquals(await loadPrimaryEpoch(f.db, f.managedId), 42)
+    const [row] = await f.db
+      .select({ metadata: managed.metadata })
+      .from(managed)
+      .where(eq(managed.id, f.managedId))
+    assertEquals((row?.metadata as { host?: string }).host, 'db.internal')
+    await f.db
+      .update(managed)
+      .set({ metadata: { primaryEpoch: 'oops' } })
+      .where(eq(managed.id, f.managedId))
+    await bump()
+    assertEquals(await loadPrimaryEpoch(f.db, f.managedId), 1)
+  })
+})
+
+test('the wipe is refused once the primary epoch moved after it was queued', async () => {
+  await withCluster(async (f) => {
+    const { guard } = await switchoverFixture(f)
+    assertEquals(await reseedSupersededReason(f.db, { ...guard, epoch: 0 }), null)
+    await f.db
+      .update(managed)
+      .set({ metadata: bumpedPrimaryEpochMetadata() })
+      .where(eq(managed.id, f.managedId))
+    assertEquals(
+      await reseedSupersededReason(f.db, { ...guard, epoch: 0 }),
+      'the primary changed after the re-seed was queued'
+    )
+    assertEquals(await reseedSupersededReason(f.db, { ...guard, epoch: 1 }), null)
+    // A command queued by an older release carries no epoch and is not compared.
+    assertEquals(await reseedSupersededReason(f.db, guard), null)
+  })
+})
+
+test('both reported positions are stored on a Postgres switchover and prove the final position', async () => {
+  await withCluster(async (f) => {
+    const { recoveryId } = await switchoverFixture(f)
+    await recordOldPrimaryFinalPosition(f.db, recoveryId, {
+      engine: 'postgres',
+      lsn: '0/7258050',
+      timeline: 1,
+    })
+    await recordNewPrimaryReplayPosition(f.db, recoveryId, {
+      engine: 'postgres',
+      lsn: '0/7258050',
+      timeline: 2,
+    })
+    const stored = await findRecoveryById(f.db, recoveryId)
+    assertEquals(stored?.metadata.fenced, true)
+    assertEquals(stored?.metadata.oldPrimaryFinalLsn, '0/7258050')
+    assertEquals(stored?.metadata.newPrimaryTimeline, 2)
+    assertEquals(evaluateFinalPosition(stored!.metadata).caughtUp, true)
+  })
+})
+
+test('a position that is malformed, from another engine, for another kind or after the decision is not stored', async () => {
+  await withCluster(async (f) => {
+    const { recoveryId, newPrimaryId, oldPrimaryId } = await switchoverFixture(f)
+    const attempts = [
+      { engine: 'postgres', lsn: 'nonsense', timeline: 1 },
+      { engine: 'postgres', lsn: '0/7258050', timeline: 0 },
+      { engine: 'postgres', lsn: '0/7258050', timeline: 1.5 },
+      { engine: 'postgres', lsn: '0/7258050' },
+      { engine: 'mysql', lsn: '0/7258050', timeline: 1 },
+    ]
+    for (const attempt of attempts) {
+      await recordOldPrimaryFinalPosition(f.db, recoveryId, attempt as never)
+      await recordNewPrimaryReplayPosition(f.db, recoveryId, attempt)
+    }
+    const untouched = await findRecoveryById(f.db, recoveryId)
+    assertEquals(untouched?.metadata.oldPrimaryFinalLsn, undefined)
+    assertEquals(untouched?.metadata.newPrimaryReplayLsn, undefined)
+
+    await updateRecovery(f.db, recoveryId, {
+      metadata: { fenced: true, reseedState: 'skipped', reseedNote: 'decided' },
+    })
+    await recordNewPrimaryReplayPosition(f.db, recoveryId, {
+      engine: 'postgres',
+      lsn: '0/7258050',
+      timeline: 2,
+    })
+    assertEquals(
+      (await findRecoveryById(f.db, recoveryId))?.metadata.newPrimaryReplayLsn,
+      undefined
+    )
+    await updateRecovery(f.db, recoveryId, { state: 'completed' })
+    const failover = await insertRecovery(f.db, {
+      managedId: f.managedId,
+      kind: 'automatic-failover',
+      sourcePrimaryMemberId: oldPrimaryId,
+      targetMemberId: newPrimaryId,
+      state: 'promoting',
+    })
+    await recordNewPrimaryReplayPosition(f.db, failover.id, {
+      engine: 'postgres',
+      lsn: '0/7258050',
+      timeline: 2,
+    })
+    assertEquals(
+      (await findRecoveryById(f.db, failover.id))?.metadata.newPrimaryReplayLsn,
+      undefined
+    )
   })
 })

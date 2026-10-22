@@ -193,6 +193,7 @@ export const DAEMON_WIRE_FEATURES = [
   'managed-database-owner-v1',
   'managed-database-convert-v1',
   'tls-capture-v1',
+  'managed-switchover-final-position-v1',
 ] as const
 
 export type DaemonWireFeature = (typeof DAEMON_WIRE_FEATURES)[number]
@@ -210,6 +211,17 @@ export const SEALED_INSTANCE_SECRETS_FEATURE: DaemonWireFeature = 'sealed-instan
  * The daemon sends nothing until this control plane lists the feature.
  */
 export const TLS_CAPTURE_FEATURE: DaemonWireFeature = 'tls-capture-v1'
+
+/**
+ * The daemon reports the old primary's final write position on a Postgres
+ * fence stop and the new primary's replay position on the promote, and refuses
+ * a stale forced re-seed (`switchoverReseed`) before wiping anything. Without
+ * it on BOTH servers of a planned switchover the control plane never re-seeds
+ * the former primary by itself (`reseedNote` "daemon too old"): an older
+ * daemon would ignore the guard and could not report either position.
+ */
+export const MANAGED_SWITCHOVER_FINAL_POSITION_FEATURE: DaemonWireFeature =
+  'managed-switchover-final-position-v1'
 
 /**
  * The daemon answers `managed-health-request` with `managed-health-result`

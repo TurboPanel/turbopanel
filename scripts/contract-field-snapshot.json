@@ -207,11 +207,13 @@
       { "name": "demoted", "required": false, "type": "boolean" },
       { "name": "managedId", "required": true, "type": "string" },
       { "name": "memberId", "required": false, "type": "string" },
+      { "name": "primaryEpoch", "required": false, "type": "number" },
       {
         "name": "role",
         "required": false,
         "type": "'primary' | 'replica'"
-      }
+      },
+      { "name": "switchoverRecoveryId", "required": false, "type": "string" }
     ]
   },
   "BackupPolicyWireEntry": {

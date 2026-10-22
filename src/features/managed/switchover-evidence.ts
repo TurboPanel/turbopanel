@@ -69,17 +69,33 @@ function parseLsn(value: unknown): bigint | null {
 /**
  * Is the new primary at or past the old primary's FINAL write position, both
  * taken after the old primary was stopped? The reading at switchover start is
- * taken before the drain and the stop, so it can never prove this. Missing or
- * unreadable positions, or a new primary behind the old one, are not proof.
+ * taken before the drain and the stop, so it can never prove this. The old
+ * position is where the cleanly stopped primary's WAL ends, the new one is
+ * what the promoted standby had replayed, and the new primary must have
+ * promoted onto the timeline right after the old primary's. Missing or
+ * unreadable positions or timelines, a new primary behind the old one, or any
+ * other timeline are not proof.
  */
 export function evaluateFinalPosition(positions: {
   oldPrimaryFinalLsn?: string
+  oldPrimaryFinalTimeline?: number
   newPrimaryReplayLsn?: string
+  newPrimaryTimeline?: number
 }): SwitchoverCatchUp {
   const oldLsn = parseLsn(positions.oldPrimaryFinalLsn)
   const newLsn = parseLsn(positions.newPrimaryReplayLsn)
-  if (oldLsn === null || newLsn === null) {
+  const oldTimeline = positions.oldPrimaryFinalTimeline
+  const newTimeline = positions.newPrimaryTimeline
+  if (
+    oldLsn === null ||
+    newLsn === null ||
+    oldTimeline === undefined ||
+    newTimeline === undefined
+  ) {
     return { caughtUp: false, basis: 'final position not proven' }
+  }
+  if (newTimeline !== oldTimeline + 1) {
+    return { caughtUp: false, basis: 'final position not proven: timeline does not follow' }
   }
   if (newLsn < oldLsn) {
     return { caughtUp: false, basis: 'final position not proven: new primary is behind' }

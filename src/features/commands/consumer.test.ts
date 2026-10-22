@@ -33,6 +33,7 @@ import {
   principal,
   principalPlacement,
   project,
+  recovery as recoveryTable,
   replica,
   server,
   service,
@@ -43,6 +44,9 @@ import {
   workspace,
 } from '../../db/schema.ts'
 import { createManagedLogin } from '../managed/logins.ts'
+import { loadPrimaryEpoch } from '../managed/primary-epoch.ts'
+import { findRecoveryById, insertRecovery } from '../managed/recovery-records.ts'
+import { evaluateFinalPosition } from '../managed/switchover-evidence.ts'
 import { ensureManagedIngressHierarchy } from '../system/hierarchy.ts'
 import {
   COMMAND_DISPATCH_FAILURE_RETENTION_MS,
@@ -4776,48 +4780,89 @@ test('processCommandEnvelope leaves managed.status unchanged when managed.restor
   })
 })
 
+type PromoteFixture = {
+  standbyServerId: string
+  primaryMemberId: string
+  replicaMemberId: string
+}
+
+/** A primary on `serverId` and a ready replica on a second connected server. */
+async function insertPromotePair(
+  db: Db,
+  params: { serverId: string; managedId: string }
+): Promise<PromoteFixture> {
+  const { serverId, managedId } = params
+  await attachConnectedDaemonStatus(db, serverId)
+  const [standbyServer] = await db
+    .insert(server)
+    .values({
+      organizationId: (
+        await db
+          .select({ organizationId: server.organizationId })
+          .from(server)
+          .where(eq(server.id, serverId))
+          .limit(1)
+      )[0]!.organizationId,
+      name: 'standby-host',
+      hostname: 'standby-host',
+    })
+    .returning({ id: server.id })
+  const standbyServerId = standbyServer!.id
+  await attachConnectedDaemonStatus(db, standbyServerId)
+  const [primaryMember] = await db
+    .insert(replica)
+    .values({ managedId, serverId, role: 'primary', ordinal: 1, status: 'ready' })
+    .returning({ id: replica.id })
+  const [replicaMember] = await db
+    .insert(replica)
+    .values({ managedId, serverId: standbyServerId, role: 'replica', ordinal: 2, status: 'ready' })
+    .returning({ id: replica.id })
+  return {
+    standbyServerId,
+    primaryMemberId: primaryMember!.id,
+    replicaMemberId: replicaMember!.id,
+  }
+}
+
+async function cleanUpPromotePair(
+  db: Db,
+  params: { serverId: string; managedId: string; standbyServerId: string }
+): Promise<void> {
+  await db.delete(replica).where(eq(replica.managedId, params.managedId))
+  // Promote may have flipped managed.serverId to the standby host; point
+  // it back at the original server before dropping the standby row so
+  // the FK doesn't block deletion.
+  await db
+    .update(managed)
+    .set({ serverId: params.serverId })
+    .where(eq(managed.id, params.managedId))
+  await db.delete(command).where(eq(command.serverId, params.standbyServerId))
+  await db.delete(server).where(eq(server.id, params.standbyServerId))
+}
+
+function promoteRegistry(
+  record: { id: string; createdAt: string },
+  standbyServerId: string,
+  result: Record<string, unknown>
+) {
+  return createDispatchMockRegistry(standbyServerId, {
+    waitForRequestResult: {
+      serverId: standbyServerId,
+      requestId: record.id,
+      requestKind: 'command-dispatch',
+      status: 'done',
+      createdAt: record.createdAt,
+      expiresAt: record.createdAt,
+      finishedAt: new Date().toISOString(),
+      result,
+    },
+  })
+}
+
 test('processCommandEnvelope demotes old primary before promote so uniq_node_primary holds', async () => {
   await withManagedDestroyFixtures(async ({ db, serverId, managedId }) => {
-    await attachConnectedDaemonStatus(db, serverId)
-
-    // Second server for the standby that will be promoted.
-    const [standbyServer] = await db
-      .insert(server)
-      .values({
-        organizationId: (
-          await db
-            .select({ organizationId: server.organizationId })
-            .from(server)
-            .where(eq(server.id, serverId))
-            .limit(1)
-        )[0]!.organizationId,
-        name: 'standby-host',
-        hostname: 'standby-host',
-      })
-      .returning({ id: server.id })
-    const standbyServerId = standbyServer!.id
-    await attachConnectedDaemonStatus(db, standbyServerId)
-
-    const [primaryMember] = await db
-      .insert(replica)
-      .values({
-        managedId,
-        serverId,
-        role: 'primary',
-        ordinal: 1,
-        status: 'ready',
-      })
-      .returning({ id: replica.id })
-    const [replicaMember] = await db
-      .insert(replica)
-      .values({
-        managedId,
-        serverId: standbyServerId,
-        role: 'replica',
-        ordinal: 2,
-        status: 'ready',
-      })
-      .returning({ id: replica.id })
+    const pair = await insertPromotePair(db, { serverId, managedId })
+    const { standbyServerId, primaryMemberId, replicaMemberId } = pair
 
     try {
       const record = await createCommandRecord(db, {
@@ -4826,27 +4871,16 @@ test('processCommandEnvelope demotes old primary before promote so uniq_node_pri
         type: 'managed.promote',
         payload: {
           managedId,
-          memberId: replicaMember!.id,
-          demoteMemberId: primaryMember!.id,
+          memberId: replicaMemberId,
+          demoteMemberId: primaryMemberId,
         },
       })
 
-      const registry = createDispatchMockRegistry(standbyServerId, {
-        waitForRequestResult: {
-          serverId: standbyServerId,
-          requestId: record.id,
-          requestKind: 'command-dispatch',
-          status: 'done',
-          createdAt: record.createdAt,
-          expiresAt: record.createdAt,
-          finishedAt: new Date().toISOString(),
-          result: {
-            promotedMemberId: replicaMember!.id,
-            demotedMemberId: primaryMember!.id,
-            status: 'ready',
-            summary: 'promoted',
-          },
-        },
+      const registry = promoteRegistry(record, standbyServerId, {
+        promotedMemberId: replicaMemberId,
+        demotedMemberId: primaryMemberId,
+        status: 'ready',
+        summary: 'promoted',
       })
 
       await processCommandEnvelope(db, registry, buildEnvelope(record, standbyServerId))
@@ -4860,8 +4894,8 @@ test('processCommandEnvelope demotes old primary before promote so uniq_node_pri
         .from(replica)
         .where(eq(replica.managedId, managedId))
 
-      const primary = members.find((m) => m.id === primaryMember!.id)
-      const replicaRow = members.find((m) => m.id === replicaMember!.id)
+      const primary = members.find((m) => m.id === primaryMemberId)
+      const replicaRow = members.find((m) => m.id === replicaMemberId)
       assertEquals(primary?.role, 'replica')
       assertEquals(primary?.status, 'needs_resync')
       assertEquals(replicaRow?.role, 'primary')
@@ -4874,14 +4908,62 @@ test('processCommandEnvelope demotes old primary before promote so uniq_node_pri
         .limit(1)
       assertEquals(managedRow?.serverId, standbyServerId)
       assertEquals(managedRow?.status, 'ready')
+      // The primary moved, so the epoch went up by one.
+      assertEquals(await loadPrimaryEpoch(db, managedId), 1)
     } finally {
-      await db.delete(replica).where(eq(replica.managedId, managedId))
-      // Promote may have flipped managed.serverId to the standby host; point
-      // it back at the original server before dropping the standby row so
-      // the FK doesn't block deletion.
-      await db.update(managed).set({ serverId }).where(eq(managed.id, managedId))
-      await db.delete(command).where(eq(command.serverId, standbyServerId))
-      await db.delete(server).where(eq(server.id, standbyServerId))
+      await cleanUpPromotePair(db, { serverId, managedId, standbyServerId })
+    }
+  })
+})
+
+test('a switchover promote result stores the new primary replay position on the recovery row and moves the epoch', async () => {
+  await withManagedDestroyFixtures(async ({ db, serverId, managedId }) => {
+    const pair = await insertPromotePair(db, { serverId, managedId })
+    const { standbyServerId, primaryMemberId, replicaMemberId } = pair
+    try {
+      const created = await insertRecovery(db, {
+        managedId,
+        kind: 'switchover',
+        sourcePrimaryMemberId: primaryMemberId,
+        targetMemberId: replicaMemberId,
+        state: 'promoting',
+        metadata: {
+          fenced: true,
+          oldPrimaryFinalLsn: '0/7258050',
+          oldPrimaryFinalTimeline: 1,
+          primaryEpochAtStart: 0,
+        },
+      })
+      const record = await createCommandRecord(db, {
+        serverId: standbyServerId,
+        ...TEST_COMMAND_ACTOR,
+        type: 'managed.promote',
+        payload: {
+          managedId,
+          memberId: replicaMemberId,
+          demoteMemberId: primaryMemberId,
+          engine: 'postgres',
+        },
+        metadata: { recoveryId: created.id },
+      })
+      const registry = promoteRegistry(record, standbyServerId, {
+        promotedMemberId: replicaMemberId,
+        demotedMemberId: primaryMemberId,
+        status: 'ready',
+        newPrimaryReplayLsn: '0/7258050',
+        newPrimaryTimeline: 2,
+      })
+
+      await processCommandEnvelope(db, registry, buildEnvelope(record, standbyServerId))
+
+      const stored = await findRecoveryById(db, created.id)
+      assertEquals(stored?.metadata.newPrimaryReplayLsn, '0/7258050')
+      assertEquals(stored?.metadata.newPrimaryTimeline, 2)
+      assertEquals(evaluateFinalPosition(stored!.metadata).caughtUp, true)
+      assertEquals(await loadPrimaryEpoch(db, managedId), 1)
+    } finally {
+      await db.delete(recoveryTable).where(eq(recoveryTable.managedId, managedId))
+      await cleanUpPromotePair(db, { serverId, managedId, standbyServerId })
     }
   })
 })
@@ -5301,6 +5383,99 @@ test('processCommandEnvelope ignores a malformed destroy gate instead of enqueui
     const updated = await getCommandRecord(db, record.id)
     assertEquals(updated?.status, 'succeeded')
   })
+})
+
+async function runSwitchoverStop(
+  f: { db: Db; serverId: string; managedId: string },
+  stopResult: Record<string, unknown>
+) {
+  const { db, serverId, managedId } = f
+  const [primaryMember] = await db
+    .insert(replica)
+    .values({ managedId, serverId, role: 'primary', ordinal: 1, status: 'ready' })
+    .returning({ id: replica.id })
+  const created = await insertRecovery(db, {
+    managedId,
+    kind: 'switchover',
+    sourcePrimaryMemberId: primaryMember!.id,
+    targetMemberId: null,
+    state: 'fencing',
+    metadata: { fenceCommandIds: [], drainApplied: true, primaryEpochAtStart: 0 },
+  })
+  const record = await createCommandRecord(db, {
+    serverId,
+    ...TEST_COMMAND_ACTOR,
+    type: 'managed.lifecycle',
+    payload: {
+      managedId,
+      action: 'stop',
+      engine: 'postgres',
+      memberId: primaryMember!.id,
+      switchoverRecoveryId: created.id,
+      primaryEpoch: 0,
+    },
+    metadata: { recoveryId: created.id, fencePhase: 'stop' },
+  })
+  await db
+    .update(recoveryTable)
+    .set({ metadata: { fenceCommandIds: [record.id], drainApplied: true, primaryEpochAtStart: 0 } })
+    .where(eq(recoveryTable.id, created.id))
+  await processCommandEnvelope(
+    db,
+    createDispatchMockRegistry(serverId, {
+      waitForRequestResult: {
+        serverId,
+        requestId: record.id,
+        requestKind: 'command-dispatch',
+        status: 'done',
+        createdAt: record.createdAt,
+        expiresAt: record.createdAt,
+        finishedAt: new Date().toISOString(),
+        result: stopResult,
+      },
+    }),
+    buildEnvelope(record, serverId),
+    { firewallApplyGate: DENY_FIREWALL_APPLY, commandQueue: createRecordingCommandQueue() }
+  )
+  return (await findRecoveryById(db, created.id))!.metadata
+}
+
+test('a switchover fence stop result stores the old primary final position on the recovery row', async () => {
+  await withManagedDestroyFixtures(async (f) => {
+    try {
+      const metadata = await runSwitchoverStop(f, {
+        status: 'stopped',
+        oldPrimaryFinalLsn: '0/7258050',
+        oldPrimaryFinalTimeline: 1,
+      })
+      assertEquals(metadata.oldPrimaryFinalLsn, '0/7258050')
+      assertEquals(metadata.oldPrimaryFinalTimeline, 1)
+      assertEquals(metadata.stopApplied, true)
+    } finally {
+      await f.db.delete(recoveryTable).where(eq(recoveryTable.managedId, f.managedId))
+      await f.db.delete(replica).where(eq(replica.managedId, f.managedId))
+    }
+  })
+})
+
+test('a stop result from a daemon that reports no position, or a malformed one, stores nothing', async () => {
+  for (const result of [
+    { status: 'stopped' },
+    { status: 'stopped', oldPrimaryFinalLsn: '0/7258050' },
+    { status: 'stopped', oldPrimaryFinalLsn: 'nonsense', oldPrimaryFinalTimeline: 1 },
+  ]) {
+    await withManagedDestroyFixtures(async (f) => {
+      try {
+        const metadata = await runSwitchoverStop(f, result)
+        assertEquals(metadata.oldPrimaryFinalLsn, undefined)
+        assertEquals(metadata.oldPrimaryFinalTimeline, undefined)
+        assertEquals(metadata.stopApplied, true)
+      } finally {
+        await f.db.delete(recoveryTable).where(eq(recoveryTable.managedId, f.managedId))
+        await f.db.delete(replica).where(eq(replica.managedId, f.managedId))
+      }
+    })
+  }
 })
 
 test('processCommandEnvelope enqueues promote only after successful fence lifecycle', async () => {

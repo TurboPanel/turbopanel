@@ -30,8 +30,10 @@ import { getManagedEngineSpec } from './index.ts'
 import { listManagedMembers, type ManagedMemberRow } from './members.ts'
 import { loadManagedOptions } from './options.ts'
 import { findInFlightRecovery, updateRecoveryLocked } from './recovery-records.ts'
+import { readPrimaryEpoch } from './primary-epoch.ts'
 import { RESEED_GUARD_METADATA_KEY } from './reseed-guard.ts'
 import { evaluateFinalPosition } from './switchover-evidence.ts'
+import { daemonsAllReportFinalPosition } from './switchover-position.ts'
 import type { RecoveryRecord } from './recovery.ts'
 import { parseManagedResidual } from './serialize.ts'
 
@@ -56,6 +58,8 @@ export type ReseedDemotedPrimaryDeps = {
   hasLiveBackup?: (db: Db, managedId: string) => Promise<boolean>
   /** Writes the outcome on the recovery row so the operator can see it. */
   recordOutcome?: (db: Db, recoveryId: string, outcome: ReseedOutcome) => Promise<void>
+  /** True when the daemon of every listed server lists `managed-switchover-final-position-v1`. */
+  daemonsReportFinalPosition?: (db: Db, serverIds: string[]) => Promise<boolean>
   /** Marks the re-seed as decided before anything is queued; false = someone already did. */
   claim?: (db: Db, recoveryId: string) => Promise<boolean>
   loadCluster?: (db: Db, managedId: string) => Promise<ManagedApplyCluster | null>
@@ -257,6 +261,7 @@ function memberById(
 
 type SwitchoverReseedReady = {
   source: ManagedMemberRow
+  target: ManagedMemberRow
   cluster: ManagedApplyCluster
   secrets: {
     secretsConfig: SecretsConfig
@@ -303,6 +308,37 @@ function dispatchReady(
   }
 }
 
+/**
+ * The reading at switchover start predates the drain and the stop, so it
+ * cannot prove nothing was written after it. Only a position taken after the
+ * old primary stopped can. Both servers must run a daemon that reports it (and
+ * refuses a stale wipe), the positions must be strictly valid and the new
+ * primary at or past the old one, and the primary must not have changed since
+ * the switchover began. Anything else fails closed.
+ */
+async function finalPositionSkip(
+  db: Db,
+  record: RecoveryRecord,
+  cluster: ManagedApplyCluster,
+  deps: ReseedDemotedPrimaryDeps
+): Promise<Skipped | null> {
+  const members = await (deps.listMembers ?? listManagedMembers)(db, record.managedId)
+  const serverIds = members
+    .filter((row) => row.id === record.sourcePrimaryMemberId || row.id === record.targetMemberId)
+    .map((row) => row.serverId)
+  const capable = deps.daemonsReportFinalPosition ?? daemonsAllReportFinalPosition
+  if (serverIds.length > 0 && !(await capable(db, [...new Set(serverIds)]))) {
+    return skip('daemon too old')
+  }
+  const finalPosition = evaluateFinalPosition(record.metadata)
+  if (!finalPosition.caughtUp) return skip(finalPosition.basis)
+  const started = record.metadata.primaryEpochAtStart
+  if (started === undefined || readPrimaryEpoch(cluster.metadata) !== started + 1) {
+    return skip('the primary changed since the switchover began')
+  }
+  return null
+}
+
 async function evaluateSwitchoverReseed(
   db: Db,
   commandQueue: CommandQueue | undefined,
@@ -319,11 +355,8 @@ async function evaluateSwitchoverReseed(
 
   const recordReady = switchoverRecordReady(record, cluster.engine)
   if (isSkipped(recordReady)) return recordReady
-  // The reading at switchover start predates the drain and the stop, so it
-  // cannot prove nothing was written after it. Only a position taken after the
-  // old primary stopped can, and no host result reports one yet: fail closed.
-  const finalPosition = evaluateFinalPosition(record.metadata)
-  if (!finalPosition.caughtUp) return skip(finalPosition.basis)
+  const proven = await finalPositionSkip(db, record, cluster, deps)
+  if (proven) return proven
   const dispatch = dispatchReady(commandQueue, secrets)
   if (!dispatch) return skip('secrets or command queue missing')
 
@@ -365,6 +398,7 @@ async function evaluateSwitchoverReseed(
 
   return {
     source,
+    target,
     cluster,
     secrets: {
       secretsConfig: dispatch.secretsConfig,
@@ -415,6 +449,12 @@ async function enqueueSwitchoverReseedApply(
     organizationId: cluster.organizationId,
     rootUsername: residual.rootUsername ?? spec.rootUsername,
     forceResyncMemberIds: [ready.source.id],
+    switchoverReseed: {
+      recoveryId: record.id,
+      sourceMemberId: ready.source.id,
+      targetMemberId: ready.target.id,
+      epoch: readPrimaryEpoch(cluster.metadata),
+    },
   })
   if (isPrepareError(prepared)) return skip(`prepare failed (${prepared.kind})`)
 
@@ -432,6 +472,7 @@ async function enqueueSwitchoverReseedApply(
               managedId: cluster.id,
               sourceMemberId: ready.source.id,
               targetMemberId: record.targetMemberId,
+              epoch: readPrimaryEpoch(cluster.metadata),
             },
           },
         }

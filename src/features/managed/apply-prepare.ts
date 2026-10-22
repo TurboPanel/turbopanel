@@ -19,6 +19,7 @@ import { getServerDaemonStateByServerId, isDaemonKeyActive } from '../servers/se
 import type {
   ManagedApplyCommandPayload,
   ManagedApplyOrgTlsMaterial,
+  ManagedSwitchoverReseed,
 } from '../../contracts/commands/schemas.ts'
 import type { CommandEnvelope } from '../commands/envelope.ts'
 import type { CommandQueue } from '../commands/queue.ts'
@@ -277,6 +278,12 @@ export type BuildManagedApplyInput = {
    * wipes and re-seeds their data directory (operator resync action).
    */
   forceResyncMemberIds?: string[]
+  /**
+   * The planned-switchover re-seed's guard, stamped on the payload of the
+   * forced member `switchoverReseed.sourceMemberId` so the host can refuse a
+   * stale wipe.
+   */
+  switchoverReseed?: ManagedSwitchoverReseed
 }
 
 export type PreparedManagedMemberApply = {
@@ -1047,6 +1054,9 @@ function attachMemberApplyFlags(
     (input.forceResyncMemberIds?.includes(extra.memberId) ?? false)
   ) {
     payload.forceResync = true
+    if (input.switchoverReseed?.sourceMemberId === extra.memberId) {
+      payload.switchoverReseed = input.switchoverReseed
+    }
   }
   if (memberInput?.clientSourceAddresses?.length) {
     payload.ingressSourceAddresses = memberInput.clientSourceAddresses

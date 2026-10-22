@@ -45,7 +45,10 @@ const CLEAN_METADATA = {
   targetCaughtUp: true,
   targetCaughtUpBasis: 'streaming with zero lag',
   oldPrimaryFinalLsn: '0/5000060',
+  oldPrimaryFinalTimeline: 1,
   newPrimaryReplayLsn: '0/5000060',
+  newPrimaryTimeline: 2,
+  primaryEpochAtStart: 4,
 }
 
 const db = {} as Db
@@ -113,7 +116,8 @@ function clusterRow(overrides: Partial<ManagedApplyCluster> = {}): ManagedApplyC
     organizationId: ORG_ID,
     engine: 'postgres',
     status: 'ready',
-    metadata: null,
+    // One promote after the switchover began (`primaryEpochAtStart` 4).
+    metadata: { primaryEpoch: 5 },
     options: { settings: {}, databases: ['postgres'] },
     serverId: SERVER_NEW,
     ...overrides,
@@ -138,6 +142,7 @@ function capturingDeps(enqueued: EnqueueCall[], extra: ReseedDemotedPrimaryDeps 
   const deps: ReseedDemotedPrimaryDeps = {
     listMembers: () => Promise.resolve([demoted(), promoted()]),
     serversConnected: () => Promise.resolve(true),
+    daemonsReportFinalPosition: () => Promise.resolve(true),
     findInFlightRecovery: () => Promise.resolve(switchoverRecord()),
     hasOutstandingApply: () => Promise.resolve(false),
     hasLiveBackup: () => Promise.resolve(false),
@@ -170,6 +175,9 @@ function capturingDeps(enqueued: EnqueueCall[], extra: ReseedDemotedPrimaryDeps 
               managedId: MANAGED_ID,
               memberRole: 'standby',
               ...(forceResync ? { forceResync: true } : {}),
+              ...(forceResync && input.switchoverReseed
+                ? { switchoverReseed: input.switchoverReseed }
+                : {}),
             } as never,
           },
         ],
@@ -465,6 +473,97 @@ test('only the former primary apply carries the guard that lets the host command
     managedId: MANAGED_ID,
     sourceMemberId: SOURCE_ID,
     targetMemberId: TARGET_ID,
+    epoch: 5,
   })
   assertEquals(target?.metadata, undefined)
+})
+
+test('the wipe payload carries the recovery id and the primary epoch for the host to check', async () => {
+  const enqueued: EnqueueCall[] = []
+  await reseed(capturingDeps(enqueued))
+  const source = enqueued[0]?.members.find((row) => row.memberId === SOURCE_ID)
+  const target = enqueued[0]?.members.find((row) => row.memberId === TARGET_ID)
+  assertEquals(source?.payload.switchoverReseed, {
+    recoveryId: REC_ID,
+    sourceMemberId: SOURCE_ID,
+    targetMemberId: TARGET_ID,
+    epoch: 5,
+  })
+  assertEquals(target?.payload.switchoverReseed, undefined)
+})
+
+test('a daemon that does not list the final position feature fails closed as too old', async () => {
+  const enqueued: EnqueueCall[] = []
+  const seen: string[][] = []
+  await reseed(
+    capturingDeps(enqueued, {
+      daemonsReportFinalPosition: (_db, ids) => {
+        seen.push([...ids].sort())
+        return Promise.resolve(false)
+      },
+    })
+  )
+  assertEquals(enqueued.length, 0)
+  // Both the old and the new primary server are asked.
+  assertEquals(seen, [[SERVER_OLD, SERVER_NEW].sort()])
+  assertEquals(outcomes, [{ state: 'skipped', note: 'daemon too old' }])
+})
+
+test('the daemon check runs before the positions, so an old daemon is named as too old', async () => {
+  const enqueued: EnqueueCall[] = []
+  const { oldPrimaryFinalLsn: _old, newPrimaryReplayLsn: _new, ...begunOnly } = CLEAN_METADATA
+  await reseed(
+    capturingDeps(enqueued, { daemonsReportFinalPosition: () => Promise.resolve(false) }),
+    switchoverRecord({ metadata: begunOnly })
+  )
+  assertEquals(outcomes, [{ state: 'skipped', note: 'daemon too old' }])
+})
+
+test('a primary that changed again since the switchover began is not wiped over', async () => {
+  for (const metadata of [{ primaryEpoch: 6 }, { primaryEpoch: 4 }, null]) {
+    const enqueued: EnqueueCall[] = []
+    await reseed(
+      capturingDeps(enqueued, {
+        loadCluster: () => Promise.resolve(clusterRow({ metadata })),
+      })
+    )
+    assertEquals(enqueued.length, 0)
+    assertEquals(outcomes, [
+      { state: 'skipped', note: 'the primary changed since the switchover began' },
+    ])
+  }
+  const enqueued: EnqueueCall[] = []
+  const { primaryEpochAtStart: _epoch, ...noEpoch } = CLEAN_METADATA
+  await reseed(capturingDeps(enqueued), switchoverRecord({ metadata: noEpoch }))
+  assertEquals(enqueued.length, 0)
+})
+
+test('a new primary on an unexpected timeline is not wiped over', async () => {
+  for (const newPrimaryTimeline of [1, 3]) {
+    const enqueued: EnqueueCall[] = []
+    await reseed(
+      capturingDeps(enqueued),
+      switchoverRecord({ metadata: { ...CLEAN_METADATA, newPrimaryTimeline } })
+    )
+    assertEquals(enqueued.length, 0)
+    assertEquals(outcomes, [
+      { state: 'skipped', note: 'final position not proven: timeline does not follow' },
+    ])
+  }
+})
+
+test('the real reported fields, equal at the final position, queue exactly one wipe', async () => {
+  const enqueued: EnqueueCall[] = []
+  await reseed(
+    capturingDeps(enqueued),
+    switchoverRecord({
+      metadata: {
+        ...CLEAN_METADATA,
+        oldPrimaryFinalLsn: '0/7258050',
+        newPrimaryReplayLsn: '0/7258050',
+      },
+    })
+  )
+  assertEquals(enqueued.length, 1)
+  assertEquals(outcomes[0]?.state, 'queued')
 })
