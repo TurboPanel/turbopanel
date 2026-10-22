@@ -522,7 +522,8 @@ test('deleteProjectCascade refuses and keeps every row when the host stop did no
       asked += 1
       return Promise.resolve(false)
     })
-    assertEquals(refused, { ok: false, error: 'project_stop_failed' })
+    assertEquals(refused.ok, false)
+    if (!refused.ok) assertEquals(refused.error, 'project_stop_failed')
     assertEquals(asked, 1)
     const kept = await db.select({ id: project.id }).from(project).where(eq(project.id, projectId))
     assertEquals(kept.length, 1)
