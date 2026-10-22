@@ -22,7 +22,11 @@ import { createCommandRecord, transitionCommand } from '../commands/command-reco
 import { processCommandEnvelope } from '../commands/consumer.ts'
 import { getCommandRecord } from '../commands/command-records.ts'
 import { findRecoveryById, insertRecovery, updateRecovery } from './recovery-records.ts'
-import { RESEED_GUARD_METADATA_KEY, reseedSupersededReason } from './reseed-guard.ts'
+import {
+  parseReseedGuard,
+  RESEED_GUARD_METADATA_KEY,
+  reseedSupersededReason,
+} from './reseed-guard.ts'
 import {
   bumpedPrimaryEpochMetadata,
   keepLivePrimaryEpoch,
@@ -297,6 +301,7 @@ async function switchoverFixture(f: Fixture) {
       managedId: f.managedId,
       sourceMemberId: oldPrimaryId,
       targetMemberId: newPrimaryId,
+      epoch: 0,
     },
   }
 }
@@ -428,11 +433,15 @@ test('the wipe is refused once the primary epoch moved after it was queued', asy
       'the primary changed after the re-seed was queued'
     )
     assertEquals(await reseedSupersededReason(f.db, { ...guard, epoch: 1 }), null)
-    // A guard with no valid epoch cannot be proven current, so the wipe is skipped.
-    assertEquals(
-      await reseedSupersededReason(f.db, guard),
-      'the re-seed carries no valid primary epoch'
-    )
+    // A guard stored with no epoch, or a damaged one, cannot be proven current, so the wipe is skipped.
+    for (const epoch of [undefined, -1, 1.5, 'oops']) {
+      const stored = parseReseedGuard({ [RESEED_GUARD_METADATA_KEY]: { ...guard, epoch } })
+      if (stored === null) throw new TypeError('the stored guard should still parse')
+      assertEquals(
+        await reseedSupersededReason(f.db, stored),
+        'the re-seed carries no valid primary epoch'
+      )
+    }
   })
 })
 

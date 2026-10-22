@@ -628,14 +628,35 @@ test('prepareManagedApplyPayloads ensures org CA and sets orgTlsMaterial with de
 test('preparing a multi-member apply from a stale row never moves the primary epoch back', async () => {
   await withManagedApplyPrepareFixtures(
     async ({ db, c, serverId, environmentId, managedId, organizationId }) => {
-      await db.insert(replica).values({ managedId, serverId, role: 'replica', ordinal: 2 })
+      const now = new Date().toISOString()
+      const [standby] = await db
+        .insert(server)
+        .values({
+          organizationId,
+          name: 'Managed Apply Prepare Standby',
+          createdAt: now,
+          updatedAt: now,
+          isConnected: true,
+          statusChangedAt: now,
+        })
+        .returning({ id: server.id })
+      const standbyServerId = standby!.id
+      await attachDaemonStateToServer(db, standbyServerId, {
+        publicJwk: { kty: 'OKP', crv: 'Ed25519', x: 'managed-apply-prepare-standby-key' },
+        fingerprint: `managed-apply-prepare-fp-${standbyServerId}`,
+      })
+      await db
+        .insert(replica)
+        .values({ managedId, serverId: standbyServerId, role: 'replica', ordinal: 2 })
       try {
         // The row read for this request still shows epoch 0; a promote then moves it to 1.
         await db
           .update(managed)
           .set({ metadata: bumpedPrimaryEpochMetadata() })
           .where(eq(managed.id, managedId))
-        const prepared = await prepareManagedApplyPayloads(c, db, {
+        // The standby has no private path, so the prepare stops after the
+        // replication username was written; that write is what is checked here.
+        await prepareManagedApplyPayloads(c, db, {
           managedRow: { id: managedId, engine: 'postgres', metadata: {} },
           spec: postgresEngineSpec,
           settings: settingsWithExposure(false),
@@ -645,9 +666,6 @@ test('preparing a multi-member apply from a stale row never moves the primary ep
           environmentId,
           organizationId,
         })
-        if (isPrepareError(prepared)) {
-          throw new TypeError(`unexpected prepare error: ${prepared.kind}`)
-        }
         assertEquals(await loadPrimaryEpoch(db, managedId), 1)
         const [row] = await db
           .select({ metadata: managed.metadata })
@@ -658,7 +676,9 @@ test('preparing a multi-member apply from a stale row never moves the primary ep
           'string'
         )
       } finally {
+        await db.delete(container).where(eq(container.serverId, standbyServerId))
         await db.delete(replica).where(eq(replica.managedId, managedId))
+        await db.delete(server).where(eq(server.id, standbyServerId))
       }
     }
   )
