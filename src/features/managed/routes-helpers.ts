@@ -1344,9 +1344,28 @@ export function evaluateOperatorPromoteGate(
     return null
   }
   if (isMysqlFamilyEngine(engine) && replication.fullyApplied !== true) {
-    return 'managed_replica_not_fully_applied'
+    // An explicit false is behind. A missing reading is only accepted for an
+    // idle pair: the replica reports its applied set but has received nothing
+    // since it started (no received set), both threads run, and lag is zero.
+    // The planned switchover itself then proves the final position: it stops
+    // the old primary, records its last GTID set and makes the target wait for
+    // it before promoting, aborting (and reactivating the old primary) on a
+    // timeout. Failover never comes through this gate.
+    if (replication.fullyApplied === false || !isIdleMysqlReplicaReading(replication)) {
+      return 'managed_replica_not_fully_applied'
+    }
   }
   return null
+}
+
+function isIdleMysqlReplicaReading(replication: Record<string, unknown>): boolean {
+  return (
+    replication.state === 'streaming' &&
+    replication.lagSeconds === 0 &&
+    replication.receivedGtid === undefined &&
+    typeof replication.executedGtid === 'string' &&
+    replication.executedGtid.length > 0
+  )
 }
 
 export type QueuedCommandFanoutRow = {

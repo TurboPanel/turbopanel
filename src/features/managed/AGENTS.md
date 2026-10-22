@@ -967,7 +967,7 @@ to `managed.promote` when Orchestrator is absent or the recover API fails.
 drain, fence stop captures the old primary's final GTID (`captureSwitchoverGtid`
 on `managed.lifecycle`); promotion carries `requiredExecutedGtidSet` so the
 daemon waits on the target before `managed.promote`. Operator promote also
-requires `fullyApplied === true` on a fresh health probe (`evaluateOperatorPromoteGate`).
+requires `fullyApplied === true` on a fresh health probe (`evaluateOperatorPromoteGate`), or an idle pair (streaming, zero lag, applied set reported, no received set); the switchover wait above is the real proof.
 A promote failure before the target becomes writable (`gtid_wait_timeout` /
 `gtid_wait_error`, including stale-command timeout) enqueues reactivate + undrain
 on the old primary; that path needs a command queue (Deno and Workers stale-command

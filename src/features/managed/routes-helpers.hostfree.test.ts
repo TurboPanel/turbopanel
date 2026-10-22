@@ -400,6 +400,45 @@ test('evaluateOperatorPromoteGate requires fullyApplied for mysql-family engines
   assertEquals(evaluateOperatorPromoteGate(fresh, true, now, 'mariadb'), null)
 })
 
+test('evaluateOperatorPromoteGate accepts an idle mysql pair that has no received set yet', () => {
+  const idle = {
+    state: 'streaming',
+    lagSeconds: 0,
+    observedAt: '2026-08-10T12:00:00.000Z',
+    executedGtid: '3e11fa47-71ca-11e1-9e33-c80aa9429562:1-10',
+  }
+  const now = Date.parse('2026-08-10T12:00:01.000Z')
+  const refused = 'managed_replica_not_fully_applied'
+  assertEquals(evaluateOperatorPromoteGate(idle, false, now, 'mysql'), null)
+  assertEquals(evaluateOperatorPromoteGate(idle, false, now, 'mariadb'), null)
+  // Behind, unknown lag, nothing applied, or a received set the replica has not applied.
+  assertEquals(
+    evaluateOperatorPromoteGate({ ...idle, fullyApplied: false }, false, now, 'mysql'),
+    refused
+  )
+  assertEquals(
+    evaluateOperatorPromoteGate({ ...idle, lagSeconds: undefined }, false, now, 'mysql'),
+    refused
+  )
+  assertEquals(
+    evaluateOperatorPromoteGate({ ...idle, executedGtid: undefined }, false, now, 'mysql'),
+    refused
+  )
+  assertEquals(
+    evaluateOperatorPromoteGate({ ...idle, receivedGtid: 'a:1-12' }, false, now, 'mysql'),
+    refused
+  )
+  // Applier or IO thread off, or a stale reading, never passes.
+  assertEquals(
+    evaluateOperatorPromoteGate({ ...idle, state: 'reconnecting' }, false, now, 'mysql'),
+    'managed_replica_not_streaming'
+  )
+  assertEquals(
+    evaluateOperatorPromoteGate(idle, false, now + 60_000, 'mysql'),
+    'managed_replica_health_stale'
+  )
+})
+
 test('pickPrimaryCommandResult and queued response builders', () => {
   assertEquals(pickPrimaryCommandResult([]), undefined)
   assertEquals(
