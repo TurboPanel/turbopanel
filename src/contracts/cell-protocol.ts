@@ -1817,30 +1817,38 @@ function validateManagedPermissionsResultFields(record: Record<string, unknown>)
   )
 }
 
+const NETWORK_CHECK_TEXT_KEYS = ['sourceAddress', 'interface', 'error'] as const
+
+function isOptionalShortText(value: unknown): boolean {
+  return value === undefined || (typeof value === 'string' && value.length <= 128)
+}
+
+function isOptionalLatency(value: unknown): boolean {
+  return value === undefined || (typeof value === 'number' && Number.isFinite(value) && value >= 0)
+}
+
+function isNetworkCheckEntry(entry: unknown): boolean {
+  if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) return false
+  const e = entry as Record<string, unknown>
+  return (
+    typeof e.peerServerId === 'string' &&
+    e.peerServerId.length <= 128 &&
+    typeof e.address === 'string' &&
+    e.address.length <= 64 &&
+    typeof e.reachable === 'boolean' &&
+    isOptionalLatency(e.latencyMs) &&
+    NETWORK_CHECK_TEXT_KEYS.every((key) => isOptionalShortText(e[key]))
+  )
+}
+
 function validateServerNetworkCheckResultFields(record: Record<string, unknown>): string | null {
   const base = validateOkResultFields(record)
   if (base) return base
-  if (record.results === undefined) return null
-  if (!Array.isArray(record.results)) return 'invalid results'
-  if (record.results.length > MAX_DAEMON_WS_NETWORK_CHECK_TARGETS) return 'too many results'
-  for (const entry of record.results) {
-    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
-      return 'invalid results'
-    }
-    const e = entry as Record<string, unknown>
-    if (typeof e.peerServerId !== 'string' || e.peerServerId.length > 128) return 'invalid results'
-    if (typeof e.address !== 'string' || e.address.length > 64) return 'invalid results'
-    if (typeof e.reachable !== 'boolean') return 'invalid results'
-    if (e.latencyMs !== undefined && (typeof e.latencyMs !== 'number' || !(e.latencyMs >= 0))) {
-      return 'invalid results'
-    }
-    for (const key of ['sourceAddress', 'interface', 'error']) {
-      if (e[key] !== undefined && (typeof e[key] !== 'string' || (e[key] as string).length > 128)) {
-        return 'invalid results'
-      }
-    }
-  }
-  return null
+  const { results } = record
+  if (results === undefined) return null
+  if (!Array.isArray(results)) return 'invalid results'
+  if (results.length > MAX_DAEMON_WS_NETWORK_CHECK_TARGETS) return 'too many results'
+  return results.every(isNetworkCheckEntry) ? null : 'invalid results'
 }
 
 /**
