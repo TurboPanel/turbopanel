@@ -31,7 +31,6 @@ import { command, managed, replica, server } from '../../db/schema.ts'
 import { consumerServerIdsForManaged } from '../bindings/resolve-endpoint.ts'
 import { getManagedEngineSpec } from './index.ts'
 import { enqueueManagedIngressReconcile } from './ingress-desired.ts'
-import { ingressReconcileValidityMs, MANAGED_APPLY_EXPIRES_MS } from './ingress-desired-pure.ts'
 import { loadBoundManagedIdsForServer } from './ingress-bound-consumers.ts'
 import { managedIngressPortForEngine } from './ingress-ports.ts'
 import { loadManagedIngressPorts } from './load-org-defaults.ts'
@@ -304,12 +303,6 @@ export async function enqueueManagedExternalAccessReconcile(
 }
 
 /**
- * The longest a queued ingress reconcile can stay valid: one queued behind an
- * apply outlives that apply, so it still counts as in flight that long.
- */
-const INGRESS_RECONCILE_VALID_MS = ingressReconcileValidityMs(MANAGED_APPLY_EXPIRES_MS)
-
-/**
  * Re-send the setting to servers that were asked but never confirmed (a payload
  * that could not be built and has since been fixed, or a server offline past
  * the command's validity). Connected servers only, and not while an earlier
@@ -329,7 +322,7 @@ export async function runManagedExternalAccessPendingSweep(
     .where(and(eq(server.isConnected, true), isNotNull(server.externalAccessPendingAt)))
   if (connected.length === 0) return { enqueued: 0 }
 
-  const cutoff = new Date(Date.now() - INGRESS_RECONCILE_VALID_MS).toISOString()
+  const now = new Date().toISOString()
   const inFlight = await db
     .select({ serverId: command.serverId })
     .from(command)
@@ -340,7 +333,7 @@ export async function runManagedExternalAccessPendingSweep(
           connected.map((row) => row.id)
         ),
         eq(command.name, 'managed.ingress.reconcile'),
-        gte(command.createdAt, cutoff)
+        gte(command.expiresAt, now)
       )
     )
   const busy = new Set(inFlight.map((row) => row.serverId))

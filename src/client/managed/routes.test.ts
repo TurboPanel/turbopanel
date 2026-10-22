@@ -4808,7 +4808,10 @@ test('the pending sweep re-pushes a server that never confirmed, once the earlie
       // It expired without the server confirming (offline past its validity).
       await db
         .update(command)
-        .set({ createdAt: new Date(Date.now() - 10 * 60_000).toISOString() })
+        .set({
+          createdAt: new Date(Date.now() - 10 * 60_000).toISOString(),
+          expiresAt: new Date(Date.now() - 5 * 60_000).toISOString(),
+        })
         .where(and(eq(command.serverId, serverId), eq(command.name, 'managed.ingress.reconcile')))
       const before = commandQueue.envelopes.length
       assertEquals(
