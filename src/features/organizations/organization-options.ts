@@ -47,7 +47,18 @@ const TEMPERATURE_UNITS = new Set<TemperatureUnit>(['celsius', 'fahrenheit'])
 /** Platform fallback when `temperatureUnit` is unset. */
 export const DEFAULT_TEMPERATURE_UNIT: TemperatureUnit = 'celsius'
 
+/** Smallest and largest organization deploy time limit, in minutes. */
+export const DEPLOY_TIMEOUT_MIN_MINUTES = 5
+export const DEPLOY_TIMEOUT_MAX_MINUTES = 240
+/** The deploy time limit when the organization has not set one: 30 minutes. */
+export const DEPLOY_DEFAULT_TIMEOUT_MS = 30 * 60_000
+
 export type OrganizationOptions = {
+  /**
+   * The longest a deploy may run, in minutes, counted only while the server
+   * reports (`command-recovery-v1`). Omitted → 30. Bounded 5 to 240.
+   */
+  deployTimeoutMinutes?: number
   /** Org-wide default timezone applied when a server has no override. */
   defaultServerTimezone?: string
   /**
@@ -385,7 +396,24 @@ export function parseOrganizationOptions(value: unknown): OrganizationOptions {
   assignComposeDefaultResourceLimits(options, value)
   assignPhpModes(options, value)
   assignDirectoryNames(options, value)
+  const deployTimeoutMinutes = parseDeployTimeoutMinutes(value.deployTimeoutMinutes)
+  if (deployTimeoutMinutes !== undefined) options.deployTimeoutMinutes = deployTimeoutMinutes
   return options
+}
+
+/** A whole number of minutes inside the allowed range; anything else is dropped. */
+export function parseDeployTimeoutMinutes(value: unknown): number | undefined {
+  if (typeof value !== 'number' || !Number.isInteger(value)) return undefined
+  return value >= DEPLOY_TIMEOUT_MIN_MINUTES && value <= DEPLOY_TIMEOUT_MAX_MINUTES
+    ? value
+    : undefined
+}
+
+/** Effective deploy time limit in milliseconds: the organization's setting, or 30 minutes. */
+export function resolveDeployTimeoutMs(options: OrganizationOptions): number {
+  return options.deployTimeoutMinutes === undefined
+    ? DEPLOY_DEFAULT_TIMEOUT_MS
+    : options.deployTimeoutMinutes * 60_000
 }
 
 function assignDirectoryNames(
