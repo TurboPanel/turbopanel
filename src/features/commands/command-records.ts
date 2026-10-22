@@ -449,12 +449,11 @@ export async function hasLiveBackupCommand(db: Db, managedId: string): Promise<b
   const rows = await db
     .select({ id: command.id })
     .from(command)
-    .innerJoin(dispatch, eq(dispatch.commandId, command.id))
     .where(
       and(
         eq(command.managedId, managedId),
         // Removing a stored artifact takes no engine lock, so it never counts.
-        sql`coalesce(${dispatch.payload}->>'action', '') <> 'delete'`,
+        sql`coalesce(${command.context}->>'action', '') <> 'delete'`,
         inArray(command.name, ['managed.backup', 'managed.restore']),
         notInArray(command.status, [...TERMINAL_COMMAND_STATUSES])
       )
