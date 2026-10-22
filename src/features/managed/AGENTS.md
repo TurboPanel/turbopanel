@@ -874,7 +874,9 @@ stays a single-server database until failover tooling can read it), `PATCH/DELET
 (`readEligible` / `replicaClass` conversion),
 `POST …/members/:memberId/resync` (operator-forced re-seed: full apply fan-out
 with `forceResync` on the target standby payload — the daemon wipes its data
-dir and re-basebackups from the primary; the only way past `needs_resync`),
+dir and re-basebackups from the primary; the only way past `needs_resync`
+a planned switchover will re-seed the former primary on its own once the
+final position can be proven, see below),
 `DELETE …/managed` destroys **replicas first (awaited, bounded 180s), then the
 primary** — the primary's `deleteAfterDestroy` outcome removes the managed row,
 and destroy side effects are row-independent (`payload.environmentId`) so
@@ -990,7 +992,40 @@ the command context; a second failure is logged (`replicas may fail to stream
 until the slots exist`) and not retried. A follow-mode replica whose error
 contains `did not reach streaming` is flagged `needs_resync` when it is still
 `role=replica` and `status=ready`. Other repoint failures stay log-only. None
-of this fails the promote. The payload always carries `engine` (loaded from the
+of this fails the promote. After a planned switchover the former primary would be
+re-seeded automatically from the new primary (`reseed-demoted-primary.ts`), but
+only when nothing on it can be missing from the new primary, and today that
+proof is incomplete, so in practice **the re-seed does not fire yet** and the
+former primary stays `needs_resync` until an operator runs Resync. The checks,
+all required: the drain AND the stop are proven (`fenced`); the operator did not
+force the switchover; Postgres only; a fresh reading taken at switchover start
+showed the target streaming with zero lag, at most 30 s old (`targetCaughtUp`,
+`switchover-evidence.ts`) — that reading predates the drain and the stop, so it
+is necessary but never sufficient; and a **final position taken after the stop**
+shows the new primary at or past the old primary's last write
+(`oldPrimaryFinalLsn` <= `newPrimaryReplayLsn` on the recovery row,
+`evaluateFinalPosition`). No host result reports those two positions yet, so
+the re-seed is skipped with `reseedNote` "final position not proven". Needed
+from the host software: the Postgres stop result carries the old primary's
+final write position after a clean shutdown (for example the shutdown
+checkpoint location), and the promote result carries the new primary's replay
+position at promote. MySQL and MariaDB are never re-seeded yet (the promote
+waits for the final position but nothing confirms the new primary's host
+honoured it). Further requirements once proven: the new primary is `ready`, no
+backup or restore is queued or running, both servers are connected, and no
+other recovery is in flight. The decision is claimed on the recovery row
+(`reseedState`) BEFORE the wipe is queued, so a retry or a crash can never queue
+a second wipe (at worst nothing is queued); `reseedState` queued, skipped or
+failed with `reseedNote` is visible there. The queued wipe carries a guard in
+its command metadata (`switchoverReseed`: recovery id, source, target); just
+before the command is sent the consumer refuses it (`reseed_superseded`) if the
+new primary is no longer the ready primary, the former primary is no longer a
+replica, or another recovery started since. Residual risk: the host payload has
+no recovery id or epoch, so a wipe already sent to the host cannot be refused
+there; closing that needs the recovery id and an epoch in the `managed.apply`
+payload and a host-side check (paired host change).
+The
+payload always carries `engine` (loaded from the
 managed row when the caller omits it).
 
 ### Completion gate: every ingress must confirm (`ha-ingress-gate.ts`)

@@ -264,6 +264,7 @@ import {
   parseManagedResidual,
   serializeManagedRow,
 } from '../../features/managed/serialize.ts'
+import { readSwitchoverReplication } from '../../features/managed/switchover-reading.ts'
 import {
   effectiveManagedImage,
   managedImageFailoverSupport,
@@ -412,6 +413,36 @@ async function assertManagedPromoteLagAllowed(
   }
   const gate = evaluateOperatorPromoteGate(replication, force, undefined, params.engine)
   return gate !== null ? c.json({ error: gate }, 409) : null
+}
+
+/**
+ * The target's replication reading for the switchover journal: the stored one
+ * when it is fresh enough to prove the target caught up, otherwise one fresh
+ * probe (`switchover-evidence.ts`). Never throws; `undefined` = no proof.
+ */
+async function readSwitchoverTargetReplication(
+  c: Context<AppEnv>,
+  db: NonNullable<ReturnType<typeof getDb>>,
+  params: { member: ManagedMemberRow; managedId: string; engine: string }
+): Promise<unknown> {
+  return await readSwitchoverReplication({
+    engine: params.engine,
+    stored: async () => {
+      const stored = await findManagedMember(db, params.member.id)
+      return serializeManagedMember(stored ?? params.member, null).replication
+    },
+    probe: async () => {
+      const probe = await probeManagedMemberHealth(db, getDaemonCellRegistry(c), {
+        serverId: params.member.serverId,
+        managedId: params.managedId,
+        memberId: params.member.id,
+        role: 'replica',
+        engine: params.engine,
+        timeoutMs: MANAGED_HEALTH_PROBE_PROMOTE_TIMEOUT_MS,
+      })
+      return probe.status === 'observed' ? probe.replication : undefined
+    },
+  })
 }
 
 /**
@@ -3333,6 +3364,13 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       })
     }
 
+    const targetReplication = force
+      ? undefined
+      : await readSwitchoverTargetReplication(c, db, {
+          member,
+          managedId: row.id,
+          engine: ctx.spec.engine,
+        })
     const recovery = await beginOperatorSwitchover({
       db,
       commandQueue,
@@ -3342,6 +3380,8 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       target: member,
       members,
       actor: { actorType: 'user', actorId: auth.userId },
+      forced: force,
+      targetReplication,
     })
     const http = operatorPromoteHttpResult(recovery)
     return c.json(http.body, http.status)

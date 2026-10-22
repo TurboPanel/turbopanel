@@ -71,6 +71,7 @@ import {
   MANAGED_DESTROY_GATE_METADATA_KEY,
   parseManagedDestroyGate,
 } from '../managed/destroy-gate.ts'
+import { parseReseedGuard, reseedSupersededReason } from '../managed/reseed-guard.ts'
 import { deleteManagedBackup, insertManagedBackup } from '../backups/backup-records.ts'
 import { applyStorageBackupSideEffect } from '../backups/storage-command-effects.ts'
 import { applyBackupsReconcileSideEffect } from '../backups/reconcile-effects.ts'
@@ -84,6 +85,7 @@ import {
 import type { FirewallApplyGate } from '../firewall/enforcement.ts'
 import type { CommandEnvelope } from './envelope.ts'
 import { nowIso } from './ids.ts'
+import { commandIsOpen } from './open-statuses.ts'
 import { cancelDeployOnServer } from '../deploy/deploy-cancel.ts'
 import { isNoopCommandQueue } from './noop-command-queue.ts'
 import {
@@ -208,6 +210,8 @@ export type CommandConsumerDeps = {
   resealDeps?: CommandResealDeps
   secretsConfig?: SecretsConfig
   dataEncryptionSecrets?: DerivedSecretsConfig
+  /** Set by `processCommandEnvelope` for result side effects that need live daemon presence. */
+  registry?: DaemonCellRegistry
   /** The deploy-time firewall apply key; required so a dropped gate fails the type check. */
   firewallApplyGate: FirewallApplyGate
   /** Test seam: how long one run keeps waiting for a deploy that has not started. */
@@ -1813,6 +1817,7 @@ type PendingStandbyApply = {
   memberId: string
   payload: unknown
   pendingTlsLeaf?: unknown
+  metadata?: Record<string, unknown>
 }
 
 async function enqueuePendingStandbyApplies(
@@ -1843,7 +1848,10 @@ async function enqueuePendingStandbyApplies(
     }
     const expiresAt = new Date(Date.now() + 600_000).toISOString()
     const pendingTlsLeaf = parsePendingTlsLeafValue(standby.pendingTlsLeaf)
-    const metadata = pendingTlsLeaf ? pendingTlsLeafMetadata(pendingTlsLeaf) : undefined
+    const carried =
+      typeof standby.metadata === 'object' && standby.metadata !== null ? standby.metadata : {}
+    const merged = { ...carried, ...(pendingTlsLeaf ? pendingTlsLeafMetadata(pendingTlsLeaf) : {}) }
+    const metadata = Object.keys(merged).length > 0 ? merged : undefined
     try {
       const next = await createCommandRecord(db, {
         serverId: standby.serverId,
@@ -2993,6 +3001,7 @@ async function applyManagedPromoteSideEffect(
         {
           secretsConfig: deps.secretsConfig,
           dataEncryptionSecrets: deps.dataEncryptionSecrets,
+          registry: deps.registry,
         },
         recoveryId,
         envelope.serverId
@@ -3137,6 +3146,7 @@ async function applyManagedHaFailoverSideEffect(
         {
           secretsConfig: deps?.secretsConfig,
           dataEncryptionSecrets: deps?.dataEncryptionSecrets,
+          registry: deps?.registry,
         },
         recoveryId,
         envelope.serverId
@@ -3340,6 +3350,46 @@ async function applyPendingOutcome(
   }
 }
 
+/**
+ * A forced re-seed queued after a planned switchover wipes the former
+ * primary's data. If the switchover was overtaken before the command was sent
+ * (a second switchover or failover), refuse it instead of wiping.
+ */
+async function failSupersededReseed(db: Db, record: DispatchableCommandRecord): Promise<boolean> {
+  if (record.type !== 'managed.apply') return false
+  const guard = parseReseedGuard(await getCommandMetadata(db, record.id))
+  if (!guard) return false
+  const reason = await reseedSupersededReason(db, guard)
+  if (!reason) return false
+  const error = `re-seed cancelled: ${reason}`
+  await transitionCommand(db, record.id, {
+    status: 'failed',
+    error,
+    errorCode: 'reseed_superseded',
+  })
+  // Not a failure of the database: release the `applying` stamp the enqueue
+  // set (unless another apply is still open) and leave the members as they are.
+  const otherOpen = await db
+    .select({ id: command.id })
+    .from(command)
+    .where(
+      and(
+        eq(command.name, 'managed.apply'),
+        commandIsOpen(),
+        ne(command.id, record.id),
+        sql`${command.context}->>'managedId' = ${guard.managedId}`
+      )
+    )
+    .limit(1)
+  if (otherOpen.length === 0) {
+    await db
+      .update(managed)
+      .set({ status: 'ready', updatedAt: nowIso() })
+      .where(and(eq(managed.id, guard.managedId), eq(managed.status, 'applying')))
+  }
+  return true
+}
+
 export async function processCommandEnvelope(
   db: Db,
   registry: DaemonCellRegistry,
@@ -3348,6 +3398,8 @@ export async function processCommandEnvelope(
 ): Promise<void> {
   const record = await loadDispatchableRecord(db, envelope)
   if (!record) return
+
+  if (await failSupersededReseed(db, record)) return
 
   const resumed = await resumeDeployWait(db, registry, record, envelope, deps)
   if (resumed !== null) {
@@ -3374,5 +3426,5 @@ export async function processCommandEnvelope(
   const pending = await enqueueAndAwaitOutcome(db, registry, record, envelope, deps)
   if (!pending) return
 
-  await applyPendingOutcome(db, record, envelope, pending, deps)
+  await applyPendingOutcome(db, record, envelope, pending, deps ? { ...deps, registry } : deps)
 }

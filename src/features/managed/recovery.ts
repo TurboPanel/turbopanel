@@ -138,6 +138,35 @@ export type RecoveryMetadata = {
   fenced?: boolean
   drainApplied?: boolean
   stopApplied?: boolean
+  /**
+   * Operator switchover only: the operator forced it past the lag gate. A
+   * forced switchover never triggers the automatic re-seed of the old primary.
+   */
+  forced?: boolean
+  /**
+   * Operator switchover only: a fresh reading taken before the fence showed
+   * the target fully caught up (`switchover-evidence.ts`). Absent / false =
+   * not proven, so the old primary is left `needs_resync` for an operator.
+   */
+  targetCaughtUp?: boolean
+  targetCaughtUpBasis?: string
+  /**
+   * Operator switchover only: what became of the automatic re-seed of the old
+   * primary. `queued` = the forced re-seed was queued; `skipped` = it was not
+   * safe or possible right now; `failed` = it could not be queued. In the last
+   * two the old primary stays `needs_resync` until an operator runs Resync.
+   */
+  /**
+   * Postgres switchover: the old primary's final write position taken after it
+   * was stopped, and the new primary's replay position at promote
+   * (`pg_lsn` text such as `0/5000060`). The automatic re-seed needs both and
+   * needs the new primary's to be at or past the old primary's. No daemon
+   * result reports either yet, so nothing sets them today.
+   */
+  oldPrimaryFinalLsn?: string
+  newPrimaryReplayLsn?: string
+  reseedState?: 'queued' | 'skipped' | 'failed'
+  reseedNote?: string
   blockedReason?: string
   /** Times the same refusal was seen; absent = once. */
   blockedCount?: number
@@ -271,6 +300,19 @@ export function parseRecoveryMetadata(value: unknown): RecoveryMetadata {
   setIfPresent(metadata, 'fenced', optionalBoolean(value.fenced))
   setIfPresent(metadata, 'drainApplied', optionalBoolean(value.drainApplied))
   setIfPresent(metadata, 'stopApplied', optionalBoolean(value.stopApplied))
+  setIfPresent(metadata, 'forced', optionalBoolean(value.forced))
+  setIfPresent(metadata, 'targetCaughtUp', optionalBoolean(value.targetCaughtUp))
+  setIfPresent(metadata, 'targetCaughtUpBasis', optionalString(value.targetCaughtUpBasis))
+  if (
+    value.reseedState === 'queued' ||
+    value.reseedState === 'skipped' ||
+    value.reseedState === 'failed'
+  ) {
+    metadata.reseedState = value.reseedState
+  }
+  setIfPresent(metadata, 'oldPrimaryFinalLsn', optionalString(value.oldPrimaryFinalLsn))
+  setIfPresent(metadata, 'newPrimaryReplayLsn', optionalString(value.newPrimaryReplayLsn))
+  setIfPresent(metadata, 'reseedNote', optionalString(value.reseedNote))
   setIfPresent(metadata, 'blockedReason', optionalString(value.blockedReason))
   setIfPresent(metadata, 'blockedCount', optionalNullableNumber(value.blockedCount) ?? undefined)
   setIfPresent(metadata, 'lastBlockedAt', optionalString(value.lastBlockedAt))
