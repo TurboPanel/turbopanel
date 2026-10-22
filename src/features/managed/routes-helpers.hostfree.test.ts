@@ -400,7 +400,7 @@ test('evaluateOperatorPromoteGate requires fullyApplied for mysql-family engines
   assertEquals(evaluateOperatorPromoteGate(fresh, true, now, 'mariadb'), null)
 })
 
-test('evaluateOperatorPromoteGate accepts an idle mysql pair that has no received set yet', () => {
+test('evaluateOperatorPromoteGate accepts an idle mysql pair only when a fence will run', () => {
   const idle = {
     state: 'streaming',
     lagSeconds: 0,
@@ -409,34 +409,24 @@ test('evaluateOperatorPromoteGate accepts an idle mysql pair that has no receive
   }
   const now = Date.parse('2026-08-10T12:00:01.000Z')
   const refused = 'managed_replica_not_fully_applied'
-  assertEquals(evaluateOperatorPromoteGate(idle, false, now, 'mysql'), null)
-  assertEquals(evaluateOperatorPromoteGate(idle, false, now, 'mariadb'), null)
+  const gate = (r: unknown, engine = 'mysql', fence: boolean | 'unset' = true, at = now) =>
+    evaluateOperatorPromoteGate(r, false, at, engine, fence === 'unset' ? undefined : fence)
+  assertEquals(gate(idle), null)
+  // Dead source or no primary row (no fence, no required position): refused.
+  assertEquals(gate(idle, 'mysql', false), refused)
+  assertEquals(gate(idle, 'mysql', 'unset'), refused)
+  // MariaDB positions mean something else: never the idle clause.
+  assertEquals(gate(idle, 'mariadb'), refused)
   // Behind, unknown lag, nothing applied, or a received set the replica has not applied.
-  assertEquals(
-    evaluateOperatorPromoteGate({ ...idle, fullyApplied: false }, false, now, 'mysql'),
-    refused
-  )
-  assertEquals(
-    evaluateOperatorPromoteGate({ ...idle, lagSeconds: undefined }, false, now, 'mysql'),
-    refused
-  )
-  assertEquals(
-    evaluateOperatorPromoteGate({ ...idle, executedGtid: undefined }, false, now, 'mysql'),
-    refused
-  )
-  assertEquals(
-    evaluateOperatorPromoteGate({ ...idle, receivedGtid: 'a:1-12' }, false, now, 'mysql'),
-    refused
-  )
+  assertEquals(gate({ ...idle, fullyApplied: false }), refused)
+  assertEquals(gate({ ...idle, lagSeconds: undefined }), refused)
+  assertEquals(gate({ ...idle, executedGtid: undefined }), refused)
+  assertEquals(gate({ ...idle, receivedGtid: 'a:1-12' }), refused)
   // Applier or IO thread off, or a stale reading, never passes.
-  assertEquals(
-    evaluateOperatorPromoteGate({ ...idle, state: 'reconnecting' }, false, now, 'mysql'),
-    'managed_replica_not_streaming'
-  )
-  assertEquals(
-    evaluateOperatorPromoteGate(idle, false, now + 60_000, 'mysql'),
-    'managed_replica_health_stale'
-  )
+  assertEquals(gate({ ...idle, state: 'reconnecting' }), 'managed_replica_not_streaming')
+  assertEquals(gate(idle, 'mysql', true, now + 60_000), 'managed_replica_health_stale')
+  // A real fully-applied reading still passes without a fence.
+  assertEquals(gate({ ...idle, fullyApplied: true }, 'mysql', false), null)
 })
 
 test('pickPrimaryCommandResult and queued response builders', () => {

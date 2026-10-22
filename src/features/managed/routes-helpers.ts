@@ -1319,7 +1319,13 @@ export function evaluateOperatorPromoteGate(
   replication: unknown,
   force: boolean,
   nowMs?: number,
-  engine?: string
+  engine?: string,
+  /**
+   * True only when this promote will run a planned switchover with a fence:
+   * the old primary's server is connected, so its final position is recorded
+   * and the target waits for it. Without it an idle-only reading is refused.
+   */
+  fenceWillRun?: boolean
 ):
   | null
   | 'managed_replica_not_streaming'
@@ -1344,14 +1350,21 @@ export function evaluateOperatorPromoteGate(
     return null
   }
   if (isMysqlFamilyEngine(engine) && replication.fullyApplied !== true) {
-    // An explicit false is behind. A missing reading is only accepted for an
-    // idle pair: the replica reports its applied set but has received nothing
+    // An explicit false is behind. A missing reading is only accepted for MySQL
+    // (not MariaDB, whose positions mean something else) when a fence will run
+    // (old primary connected; never the dead-source or no-primary paths), and
+    // for an idle pair: the replica reports its applied set but has received nothing
     // since it started (no received set), both threads run, and lag is zero.
     // The planned switchover itself then proves the final position: it stops
     // the old primary, records its last GTID set and makes the target wait for
     // it before promoting, aborting (and reactivating the old primary) on a
     // timeout. Failover never comes through this gate.
-    if (replication.fullyApplied === false || !isIdleMysqlReplicaReading(replication)) {
+    if (
+      replication.fullyApplied === false ||
+      engine !== 'mysql' ||
+      fenceWillRun !== true ||
+      !isIdleMysqlReplicaReading(replication)
+    ) {
       return 'managed_replica_not_fully_applied'
     }
   }

@@ -275,6 +275,7 @@ import {
   beginDisasterRecovery,
   beginOperatorSwitchover,
   firstDatacenterId,
+  isServerConnected,
   loadDatacenterSets,
 } from '../../features/managed/ha-recovery.ts'
 
@@ -393,6 +394,8 @@ async function assertManagedPromoteLagAllowed(
     managedId: string
     engine: string
     force: boolean
+    /** The old primary's server is connected, so the switchover fences it. */
+    fenceWillRun: boolean
   }
 ): Promise<Response | null> {
   const { member, force } = params
@@ -411,7 +414,13 @@ async function assertManagedPromoteLagAllowed(
     }
     replication = probe.replication
   }
-  const gate = evaluateOperatorPromoteGate(replication, force, undefined, params.engine)
+  const gate = evaluateOperatorPromoteGate(
+    replication,
+    force,
+    undefined,
+    params.engine,
+    params.fenceWillRun
+  )
   return gate !== null ? c.json({ error: gate }, 409) : null
 }
 
@@ -3339,11 +3348,15 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       return c.json({ error: classError.error }, classError.status)
     }
 
+    const currentPrimary = (await listManagedMembers(db, row.id)).find((m) => m.role === 'primary')
+    const fenceWillRun =
+      currentPrimary !== undefined && (await isServerConnected(db, currentPrimary.serverId))
     const lagGate = await assertManagedPromoteLagAllowed(c, db, {
       member,
       managedId: row.id,
       engine: ctx.spec.engine,
       force,
+      fenceWillRun,
     })
     if (lagGate) return lagGate
 
