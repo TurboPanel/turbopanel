@@ -1057,3 +1057,126 @@ test('parseServerReleaseLinkScan refuses a block without a scan time or list', (
   assertEquals(parseServerReleaseLinkScan({ scannedAt: 't', findings: 'x' }), undefined)
   assertEquals(parseServerReleaseLinkScan({ scannedAt: 't' }), undefined)
 })
+
+const MIB = 1024 * 1024
+
+test('parseServerHostResources reads present memory and dynamic memory', () => {
+  assertEquals(
+    parseServerHostResources({
+      memory: {
+        totalBytes: 372 * MIB,
+        pageSizeBytes: 4096,
+        presentBytes: 2048 * MIB,
+        blockSizeBytes: 128 * MIB,
+      },
+      dynamicMemory: { driver: 'hv_balloon', totalMoved: 0 },
+    }),
+    {
+      memory: {
+        totalBytes: 372 * MIB,
+        pageSizeBytes: 4096,
+        presentBytes: 2048 * MIB,
+        blockSizeBytes: 128 * MIB,
+      },
+      dynamicMemory: { driver: 'hv_balloon', totalMoved: 0 },
+    }
+  )
+  // Bad values are dropped, not stored.
+  assertEquals(
+    parseServerHostResources({
+      memory: { totalBytes: 1024, presentBytes: -1, blockSizeBytes: 'x' },
+      dynamicMemory: { driver: '', totalMoved: 3 },
+    }),
+    { memory: { totalBytes: 1024 } }
+  )
+  assertEquals(
+    parseServerHostResources({
+      memory: { totalBytes: 1024 },
+      dynamicMemory: { driver: 'virtio_mem' },
+    }),
+    { memory: { totalBytes: 1024 } }
+  )
+})
+
+test('resourcesFromDaemonPresence parses a capacity heartbeat without ips', () => {
+  assertEquals(
+    resourcesFromDaemonPresence({
+      type: 'heartbeat',
+      at: '2026-10-22T12:00:00.000Z',
+      resources: {
+        memory: { totalBytes: 1900 * MIB, presentBytes: 2048 * MIB, blockSizeBytes: 128 * MIB },
+        swap: { totalBytes: 0 },
+        cpus: [{ cores: { total: 2 }, threads: { total: 2 } }],
+        dynamicMemory: { driver: 'hv_balloon', totalMoved: 1528 * MIB },
+      },
+    }),
+    {
+      memory: { totalBytes: 1900 * MIB, presentBytes: 2048 * MIB, blockSizeBytes: 128 * MIB },
+      swap: { totalBytes: 0 },
+      cpus: [{ cores: { total: 2 }, threads: { total: 2 } }],
+      dynamicMemory: { driver: 'hv_balloon', totalMoved: 1528 * MIB },
+    }
+  )
+})
+
+test('mergeServerHostResources: a capacity heartbeat keeps gpus, ips and page size', () => {
+  const gpus = [{ vendorId: '0x10de', name: 'Fixture GPU', memoryBytes: 8 * 1024 * MIB }]
+  const ips = [{ address: '10.0.0.8', version: 4 as const, scope: 'private' as const }]
+  const hello = {
+    cpus: [{ cores: { total: 2 }, threads: { total: 2 } }],
+    gpus,
+    memory: {
+      totalBytes: 372 * MIB,
+      pageSizeBytes: 4096,
+      presentBytes: 2048 * MIB,
+      blockSizeBytes: 128 * MIB,
+    },
+    swap: { totalBytes: 0 },
+    ips,
+    dynamicMemory: { driver: 'hv_balloon', totalMoved: 0 },
+  }
+  const merged = mergeServerHostResources(hello, {
+    memory: { totalBytes: 1900 * MIB, presentBytes: 4096 * MIB, blockSizeBytes: 128 * MIB },
+    swap: { totalBytes: 512 * MIB },
+    cpus: [{ cores: { total: 4 }, threads: { total: 4 } }],
+    dynamicMemory: { driver: 'hv_balloon', totalMoved: 1528 * MIB },
+  })
+  assertEquals(merged, {
+    cpus: [{ cores: { total: 4 }, threads: { total: 4 } }],
+    gpus,
+    memory: {
+      totalBytes: 1900 * MIB,
+      pageSizeBytes: 4096,
+      presentBytes: 4096 * MIB,
+      blockSizeBytes: 128 * MIB,
+    },
+    swap: { totalBytes: 512 * MIB },
+    ips,
+    dynamicMemory: { driver: 'hv_balloon', totalMoved: 1528 * MIB },
+  })
+  // An ips-only heartbeat leaves memory and the dynamic flag alone.
+  assertEquals(mergeServerHostResources(merged, { ips: [] }).dynamicMemory, merged.dynamicMemory)
+  // Memory without the flag (an older daemon's hello, or a settled guest) clears it.
+  const settled = mergeServerHostResources(merged, { memory: { totalBytes: 2000 * MIB } })
+  assertEquals(settled.dynamicMemory, undefined)
+  assertEquals('dynamicMemory' in settled, false)
+  assertEquals(settled.memory, { totalBytes: 2000 * MIB, pageSizeBytes: 4096 })
+  assertEquals(settled.gpus, gpus)
+})
+
+test('serverHostResourcesEquals sees present memory and dynamic memory', () => {
+  const a = {
+    memory: { totalBytes: 372 * MIB, presentBytes: 2048 * MIB, blockSizeBytes: 128 * MIB },
+    dynamicMemory: { driver: 'hv_balloon', totalMoved: 0 },
+  }
+  assertEquals(serverHostResourcesEquals(a, structuredClone(a)), true)
+  assertEquals(
+    serverHostResourcesEquals(a, { ...a, memory: { ...a.memory, presentBytes: 4096 * MIB } }),
+    false
+  )
+  assertEquals(
+    serverHostResourcesEquals(a, { ...a, dynamicMemory: { driver: 'hv_balloon', totalMoved: 1 } }),
+    false
+  )
+  assertEquals(serverHostResourcesEquals(a, { memory: a.memory }), false)
+})
