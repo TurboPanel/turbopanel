@@ -339,6 +339,11 @@ export const metricsSchemas = {
       cpuLimits: { $ref: '#/components/schemas/EffectiveCpuThermalLimits' },
       temperatureUnit: { type: 'string', enum: ['celsius', 'fahrenheit'] },
       nicSlotLimit: nicSlotLimitSchema,
+      layoutVersion: {
+        type: 'integer',
+        description:
+          'The metrics layout number this panel serves (the same on hosted and self-hosted). Optional: older panels omit it.',
+      },
     },
   },
   HostSummaryChartResponse: {

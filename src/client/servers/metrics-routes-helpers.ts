@@ -5,6 +5,7 @@
 
 import { CloudflareAnalyticsEngineServerMetricsStore } from '../../daemon/metrics/backends/cloudflare/store.ts'
 import { DisabledServerMetricsStore } from '../../daemon/metrics/disabled-store.ts'
+import { METRICS_LAYOUT_VERSION } from '../../daemon/metrics/field-registry.ts'
 import type {
   EntitySeriesResult,
   HostSeriesResult,
@@ -921,6 +922,8 @@ export type SeriesRouteResponse = {
   cpuLimits: EffectiveCpuThermalLimits
   temperatureUnit: TemperatureUnit
   nicSlotLimit: number
+  /** Metrics layout number this panel serves (`METRICS_LAYOUT_VERSION`); older panels omit it. */
+  layoutVersion: number
 }
 
 export function buildSeriesRouteResponse(
@@ -952,6 +955,7 @@ export function buildSeriesRouteResponse(
     cpuLimits: params.envelope.cpuLimits,
     temperatureUnit: params.envelope.temperatureUnit,
     nicSlotLimit: params.envelope.nicSlotLimit,
+    layoutVersion: METRICS_LAYOUT_VERSION,
   }
 }
 
