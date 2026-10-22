@@ -89,3 +89,26 @@ test('a changed linked-database login value (delivered as a secret variable) cha
     await deployInputsDigest(login('tpsecret.v1.after'))
   )
 })
+
+test('a fresh release id on every send does not change the digest, a rollback target does', async () => {
+  const source = (extra: Record<string, unknown>) =>
+    inputs({
+      sourceMaterial: [
+        { composeServiceName: 'web', commitSha: SHA, buildEnv: { A: '1' }, ...extra },
+      ],
+    })
+  const first = await deployInputsDigest(source({ releaseId: 'release-one' }))
+  const second = await deployInputsDigest(source({ releaseId: 'release-two' }))
+  assertEquals(first, second)
+  const rollback = await deployInputsDigest(
+    source({ releaseId: 'release-three', rollbackToReleaseId: 'release-one' })
+  )
+  assertNotEquals(rollback, first)
+})
+
+test('inputs without a source list, or with an odd entry, still digest and stay stable', async () => {
+  const bare = { hostings: [{ hostname: 'example.test', targetPort: 80 }] }
+  assertEquals(await deployInputsDigest(bare), await deployInputsDigest({ ...bare }))
+  const odd = { ...bare, sourceMaterial: [null] }
+  assertNotEquals(await deployInputsDigest(odd), await deployInputsDigest(bare))
+})

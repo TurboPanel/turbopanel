@@ -56,10 +56,31 @@ function hasUnresolvedCommit(sourceMaterial: unknown): boolean {
 }
 
 /**
+ * Every deploy allocates a new `releaseId` (the on-host release folder) for each
+ * source, so it differs on every send even when nothing else does. It names
+ * where the build lands, not what runs, and is left out. A rollback still
+ * hashes differently because `rollbackToReleaseId` names the release it
+ * re-promotes and stays in.
+ */
+function withoutFreshReleaseIds(inputs: Record<string, unknown>): Record<string, unknown> {
+  const sources = inputs.sourceMaterial
+  if (!Array.isArray(sources)) return inputs
+  return {
+    ...inputs,
+    sourceMaterial: sources.map((entry) => {
+      if (typeof entry !== 'object' || entry === null) return entry
+      const { releaseId: _releaseId, ...rest } = entry as Record<string, unknown>
+      return rest
+    }),
+  }
+}
+
+/**
  * Digest of `inputs` (a plain object of the prepared deployment's parts), or a
  * one-off value when the inputs cannot be compared between deploys.
  */
-export async function deployInputsDigest(inputs: Record<string, unknown>): Promise<string> {
+export async function deployInputsDigest(rawInputs: Record<string, unknown>): Promise<string> {
+  const inputs = withoutFreshReleaseIds(rawInputs)
   const state: CanonicalState = { volatile: hasUnresolvedCommit(inputs.sourceMaterial) }
   const text = JSON.stringify(canonical(inputs, state))
   return await sha256HexUtf8(state.volatile ? `${text}\n${crypto.randomUUID()}` : text)
