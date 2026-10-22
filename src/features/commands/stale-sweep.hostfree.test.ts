@@ -306,3 +306,24 @@ test('a queued deploy whose message never reached the queue is still swept after
   assertEquals(isStaleCommand(lost, T0 + 10 * 60_000), false)
   assertEquals(isStaleCommand(lost, T0 + 10 * 60_000 + STALE_COMMAND_GRACE_MS), true)
 })
+
+test('a running deploy is stranded only after its server has been quiet for the whole reconcile window', () => {
+  const started = new Date(T0).toISOString()
+  const row = (updatedAt: string) =>
+    candidate({
+      name: 'environment.deploy',
+      status: 'running',
+      sentAt: started,
+      progress: { version: 1, steps: [], current: null, updatedAt: started, runningSince: started },
+      updatedAt,
+    })
+  const hour = 60 * 60_000
+  // Running for three hours but heard from a minute ago: not stranded.
+  assertEquals(
+    isStaleCommand(row(new Date(T0 + 3 * hour - 60_000).toISOString()), T0 + 3 * hour),
+    false
+  )
+  // Last heard from at the start: stranded only past six hours plus grace.
+  assertEquals(isStaleCommand(row(started), T0 + 6 * hour), false)
+  assertEquals(isStaleCommand(row(started), T0 + 6 * hour + STALE_COMMAND_GRACE_MS), true)
+})

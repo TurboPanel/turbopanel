@@ -89,6 +89,26 @@ export const organizationSchemas = {
       temperatureUnit: { type: 'string', enum: ['celsius', 'fahrenheit'] },
     },
   },
+  OrganizationDeployTimeoutUpdate: {
+    type: 'object',
+    required: ['deployTimeoutMinutes'],
+    properties: {
+      deployTimeoutMinutes: { type: 'integer', minimum: 5, maximum: 240 },
+    },
+  },
+  OrganizationDeployTimeout: {
+    type: 'object',
+    required: ['deployTimeoutMinutes'],
+    properties: {
+      deployTimeoutMinutes: {
+        type: 'integer',
+        minimum: 5,
+        maximum: 240,
+        description:
+          'The longest a deploy may run, in minutes, counted only while the server keeps reporting. Platform default is 30.',
+      },
+    },
+  },
   OrganizationHostDefaults: {
     type: 'object',
     required: ['sshPort', 'ntp', 'hideWebServerNames', 'defaultFabricEnabled'],
@@ -915,6 +935,109 @@ export const organizationPaths: Record<string, unknown> = {
         },
         '400': {
           description: 'Invalid temperatureUnit or body',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '403': {
+          description: 'Forbidden',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+      },
+    },
+  },
+  '/api/client/v1/organizations/{id}/deploy-timeout': {
+    get: {
+      tags: ['Organizations'],
+      summary: 'Get organization deploy time limit',
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        {
+          name: 'id',
+          in: 'path',
+          required: true,
+          schema: { type: 'string', format: 'uuid' },
+        },
+      ],
+      responses: {
+        '200': {
+          description: 'Org deploy time limit',
+          content: {
+            'application/json': {
+              schema: {
+                $ref: '#/components/schemas/OrganizationDeployTimeout',
+              },
+            },
+          },
+        },
+        '403': {
+          description: 'Forbidden',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '404': {
+          description: 'Organization not found',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+      },
+    },
+    put: {
+      tags: ['Organizations'],
+      summary: 'Update organization deploy time limit',
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        {
+          name: 'id',
+          in: 'path',
+          required: true,
+          schema: { type: 'string', format: 'uuid' },
+        },
+      ],
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: {
+              $ref: '#/components/schemas/OrganizationDeployTimeoutUpdate',
+            },
+          },
+        },
+      },
+      responses: {
+        '200': {
+          description: 'Updated org deploy time limit',
+          content: {
+            'application/json': {
+              schema: {
+                allOf: [
+                  {
+                    $ref: '#/components/schemas/OrganizationDeployTimeout',
+                  },
+                  {
+                    type: 'object',
+                    required: ['ok'],
+                    properties: { ok: { type: 'boolean', const: true } },
+                  },
+                ],
+              },
+            },
+          },
+        },
+        '400': {
+          description: 'Invalid deployTimeoutMinutes or body',
           content: {
             'application/json': {
               schema: { $ref: '#/components/schemas/ErrorResponse' },

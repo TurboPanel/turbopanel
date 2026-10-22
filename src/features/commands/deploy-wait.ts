@@ -21,10 +21,20 @@
  */
 import type { DaemonCell, PendingRequestRecord } from '../../contracts/cell.ts'
 import { parseStoredCommandProgress } from './command-progress.ts'
+import {
+  DEPLOY_DEFAULT_TIMEOUT_MS,
+  DEPLOY_RECONCILE_WINDOW_MS,
+  DEPLOY_RUN_CAP_MS,
+  DEPLOY_RUN_SILENCE_MS,
+} from './deploy-limits.ts'
 import { TERMINAL_COMMAND_STATUSES } from './types.ts'
 
-/** The longest a running deploy may take, counted from when it started. */
-export const DEPLOY_RUN_CAP_MS = 600_000
+export {
+  DEPLOY_DEFAULT_TIMEOUT_MS,
+  DEPLOY_RECONCILE_WINDOW_MS,
+  DEPLOY_RUN_CAP_MS,
+  DEPLOY_RUN_SILENCE_MS,
+} from './deploy-limits.ts'
 
 /** The longest a deploy may wait, in the queue or for the server, before it starts. */
 export const DEPLOY_QUEUE_LIMIT_MS = 6 * 60 * 60_000
@@ -99,6 +109,8 @@ export type DeployWaitVerdict =
   | 'none'
   /** Ran longer than the run cap. */
   | 'run_cap'
+  /** The server went quiet during the run and never reported a result inside the reconcile window. */
+  | 'unreachable'
   /** Waited longer than the queue limit without starting. */
   | 'queue_limit'
   /** Never reached the server and it stayed offline. */
@@ -122,6 +134,13 @@ export function deployWaitVerdict(input: {
   endAtMs: number
   /** Time since the command row last changed. */
   silentMs: number
+  /**
+   * The server keeps sending signs of life (`command-recovery-v1`). Without it a
+   * quiet running deploy is normal and only the fixed run cap applies.
+   */
+  recovery?: boolean
+  /** The longest a deploy may run while the server reports; the fixed cap without `recovery`. */
+  runCapMs?: number
 }): DeployWaitVerdict | null {
   const sentMs = toMs(input.sentAt) ?? input.nowMs
   const handoff = input.nowMs >= input.holdUntilMs ? 'handoff' : null
@@ -130,14 +149,48 @@ export function deployWaitVerdict(input: {
     return input.nowMs >= sentMs + DEPLOY_OFFLINE_LIMIT_MS ? 'offline' : handoff
   }
   const run = deployRunState(input)
-  if (run.state === 'running') {
-    if (input.nowMs >= run.sinceMs + DEPLOY_RUN_CAP_MS) return 'run_cap'
-    return input.nowMs >= input.endAtMs ? 'handoff' : null
-  }
+  if (run.state === 'running') return runningVerdict(input, run.sinceMs)
   if (input.nowMs >= sentMs + DEPLOY_QUEUE_LIMIT_MS) return 'queue_limit'
   const paused = parseStoredCommandProgress(input.progress)?.runningSince === null
   if (paused && input.silentMs >= DEPLOY_PAUSED_SILENCE_MS) return 'silent'
   return handoff
+}
+
+/**
+ * A running deploy. With `command-recovery-v1` the run cap holds only while the
+ * server keeps reporting, and a server that goes quiet is checked on for the
+ * reconcile window before the deploy is given up on. Without it the fixed cap
+ * is all there is.
+ */
+function runningVerdict(
+  input: Parameters<typeof deployWaitVerdict>[0],
+  sinceMs: number
+): DeployWaitVerdict | null {
+  const handoff = input.nowMs >= input.endAtMs ? 'handoff' : null
+  if (input.recovery !== true) {
+    return input.nowMs >= sinceMs + DEPLOY_RUN_CAP_MS ? 'run_cap' : handoff
+  }
+  if (input.silentMs >= DEPLOY_RECONCILE_WINDOW_MS) return 'unreachable'
+  const quiet = input.silentMs >= DEPLOY_RUN_SILENCE_MS
+  if (!quiet && input.nowMs >= sinceMs + (input.runCapMs ?? DEPLOY_DEFAULT_TIMEOUT_MS)) {
+    return 'run_cap'
+  }
+  return handoff
+}
+
+/** Is a running deploy quiet: no sign of life from a server that should send them? */
+export function deployIsChecking(input: {
+  progress: unknown
+  sentAt: string | null
+  nowMs: number
+  silentMs: number
+  recovery: boolean
+}): boolean {
+  return (
+    input.recovery &&
+    input.silentMs >= DEPLOY_RUN_SILENCE_MS &&
+    deployRunState(input).state === 'running'
+  )
 }
 
 /** Plain words for a deploy that ended without a result from the server. */
@@ -146,7 +199,9 @@ export const DEPLOY_WAIT_MESSAGES: Record<
   string
 > = {
   run_cap:
-    'The deploy was still running after 10 minutes, so the control plane stopped waiting for it.',
+    'No result came back from the server within 10 minutes of the deploy starting, so the control plane stopped waiting. The deploy may still have finished on the server, so check the site before deploying again.',
+  unreachable:
+    'Lost contact with the server during the deploy, and the server did not report a result. Check the server before deploying again.',
   queue_limit:
     'The deploy waited more than 6 hours for the server to start it, so it was given up on. Deploy again when the server is free.',
   silent:
@@ -154,6 +209,35 @@ export const DEPLOY_WAIT_MESSAGES: Record<
   lost: 'The control plane lost track of the deploy on the server. Check the server before deploying again.',
   offline:
     'The server stayed offline, so the deploy never started. Deploy again once the server is back.',
+}
+
+/** The message for a deploy stopped at its time limit while the server was still reporting. */
+export function deployTimeLimitMessage(runCapMs: number): string {
+  const minutes = Math.round(runCapMs / 60_000)
+  return `The deploy ran for more than ${minutes} minutes, which is the deploy time limit, so it was stopped. A deploy that needs longer can be allowed more time in the organization settings.`
+}
+
+/** The message for a deploy given up on after the server went quiet, naming where it was. */
+export function deployUnreachableMessage(lastStep: string | null): string {
+  const where = lastStep === null ? '' : ` Last known step: ${lastStep}.`
+  return `Lost contact with the server during the deploy.${where} The server did not report a result, so the control plane stopped waiting. Check the server before deploying again.`
+}
+
+/** The label of the step a deploy was on when it was last heard from, if it said. */
+function lastStepLabel(progress: unknown): string | null {
+  const plan = parseStoredCommandProgress(progress)
+  const step = plan?.steps.find((candidate) => candidate.id === plan.current)
+  return step?.label ?? null
+}
+
+/** The plain-words error for a deploy that ended without a result; none when it did not end that way. */
+export function deployWaitMessage(waiter: DeployWaiter | undefined): string | undefined {
+  const verdict = waiter?.verdict
+  if (waiter === undefined || verdict === undefined) return undefined
+  if (verdict === 'none' || verdict === 'handoff' || verdict === 'settled') return undefined
+  if (verdict === 'run_cap' && waiter.recovery) return deployTimeLimitMessage(waiter.runCapMs)
+  if (verdict === 'unreachable') return deployUnreachableMessage(lastStepLabel(waiter.lastProgress))
+  return DEPLOY_WAIT_MESSAGES[verdict]
 }
 
 /** Verdicts after which the deploy may still be sitting on the server and should be told to stop. */
@@ -166,6 +250,12 @@ export const DEPLOY_WAIT_CANCELS_SERVER: ReadonlySet<DeployWaitVerdict> = new Se
 export type DeployWaiter = {
   /** Set when {@link DeployWaiter.wait} returned `null`. */
   verdict: DeployWaitVerdict
+  /** The server sends signs of life, so the time limit holds only while it reports. */
+  readonly recovery: boolean
+  /** The time limit in effect while the server reports. */
+  readonly runCapMs: number
+  /** The step plan as last read, for naming where a deploy was when contact was lost. */
+  lastProgress: unknown
   wait(cell: DaemonCell, requestId: string, timeoutMs: number): Promise<PendingRequestRecord | null>
 }
 
@@ -183,6 +273,12 @@ export type DeployWaiterDeps = {
   holdMs?: number
   endMs?: number
   pollMs?: number
+  /** The server sends signs of life (`command-recovery-v1`). */
+  recovery?: boolean
+  /** The time limit while the server reports; see {@link deployWaitVerdict}. */
+  runCapMs?: number
+  /** Called when a running deploy first goes quiet, with when the server was last heard. */
+  onContactLost?: (lastHeardAt: string) => Promise<void>
 }
 
 /**
@@ -197,8 +293,12 @@ export function createDeployWaiter(deps: DeployWaiterDeps): DeployWaiter {
   const startedMs = now()
   const holdUntilMs = startedMs + (deps.holdMs ?? DEPLOY_QUEUE_HOLD_MS)
   const endAtMs = startedMs + (deps.endMs ?? DEPLOY_INVOCATION_LIMIT_MS)
+  let contactMarked = false
   const waiter: DeployWaiter = {
     verdict: 'none',
+    recovery: deps.recovery === true,
+    runCapMs: deps.runCapMs ?? DEPLOY_DEFAULT_TIMEOUT_MS,
+    lastProgress: null,
     async wait(cell, requestId) {
       for (;;) {
         const finished = await cell.waitForRequest(requestId, pollMs)
@@ -206,13 +306,37 @@ export function createDeployWaiter(deps: DeployWaiterDeps): DeployWaiter {
         const request = await cell.getRequest(requestId)
         if (request && TERMINAL_REQUEST_STATUSES.has(request.status)) return request
         const view = request === null ? null : await deps.readCommand()
+        if (view !== null) waiter.lastProgress = view.progress
         const verdict = decide(request, view)
+        await noteQuiet(request, view)
         if (verdict !== null) {
           waiter.verdict = verdict
           return null
         }
       }
     },
+  }
+  async function noteQuiet(
+    request: PendingRequestRecord | null,
+    view: DeployCommandView | null
+  ): Promise<void> {
+    if (deps.onContactLost === undefined || view === null || request?.status === 'queued') return
+    const nowMs = now()
+    const silentMs = nowMs - (Date.parse(view.updatedAt) || nowMs)
+    const checking = deployIsChecking({
+      progress: view.progress,
+      sentAt: deps.sentAt,
+      nowMs,
+      silentMs,
+      recovery: deps.recovery === true,
+    })
+    if (!checking) {
+      contactMarked = false
+      return
+    }
+    if (contactMarked) return
+    contactMarked = true
+    await deps.onContactLost(view.updatedAt)
   }
   function decide(
     request: PendingRequestRecord | null,
@@ -229,6 +353,8 @@ export function createDeployWaiter(deps: DeployWaiterDeps): DeployWaiter {
       holdUntilMs,
       endAtMs,
       silentMs: view === null ? 0 : nowMs - (Date.parse(view.updatedAt) || nowMs),
+      recovery: deps.recovery === true,
+      ...(deps.runCapMs === undefined ? {} : { runCapMs: deps.runCapMs }),
     })
   }
   return waiter

@@ -88,9 +88,11 @@ import { nowIso } from './ids.ts'
 import { commandIsOpen } from './open-statuses.ts'
 import { cancelDeployOnServer } from '../deploy/deploy-cancel.ts'
 import { isNoopCommandQueue } from './noop-command-queue.ts'
+import { markCommandContactLost } from './command-progress.ts'
+import { loadDeployWaitSettings } from './deploy-wait-settings.ts'
 import {
   createDeployWaiter,
-  DEPLOY_WAIT_MESSAGES,
+  deployWaitMessage,
   DEPLOY_REQUEST_TTL_SECONDS,
   DEPLOY_RUN_CAP_MS,
   DEPLOY_WAIT_CANCELS_SERVER,
@@ -216,6 +218,8 @@ export type CommandConsumerDeps = {
   firewallApplyGate: FirewallApplyGate
   /** Test seam: how long one run keeps waiting for a deploy that has not started. */
   deployWaitHoldMs?: number
+  /** Test seam: how long one run keeps waiting for a deploy in any state. */
+  deployWaitEndMs?: number
 }
 
 const COMMAND_TIMEOUT_MS: Record<CommandType, number> = {
@@ -680,7 +684,9 @@ async function awaitCommandOutcome(
 ): Promise<PendingRequestRecord | null> {
   const cell = registry.getCell(envelope.serverId)
   const waiter =
-    record.type === 'environment.deploy' ? makeDeployWaiter(db, record, sentAt, deps) : undefined
+    record.type === 'environment.deploy'
+      ? await makeDeployWaiter(db, record, envelope.serverId, sentAt, deps)
+      : undefined
 
   // A wait picked up again has been through the ack check already.
   const pending =
@@ -698,15 +704,21 @@ async function awaitCommandOutcome(
   return null
 }
 
-function makeDeployWaiter(
+async function makeDeployWaiter(
   db: Db,
   record: DispatchableCommandRecord,
+  serverId: string,
   sentAt: string,
   deps: CommandConsumerDeps | undefined
-): DeployWaiter {
+): Promise<DeployWaiter> {
   const canHandOff = !!deps?.commandQueue && !isNoopCommandQueue(deps.commandQueue)
+  const settings = await loadDeployWaitSettings(db, serverId)
   return createDeployWaiter({
     sentAt,
+    ...settings,
+    onContactLost: async (lastHeardAt) => {
+      await markCommandContactLost(db, { commandId: record.id, lastHeardAt })
+    },
     readCommand: async () => {
       const current = await getCommandRecord(db, record.id)
       return current === null
@@ -714,7 +726,7 @@ function makeDeployWaiter(
         : { status: current.status, progress: current.progress, updatedAt: current.updatedAt }
     },
     ...(canHandOff
-      ? { holdMs: deps?.deployWaitHoldMs }
+      ? { holdMs: deps?.deployWaitHoldMs, endMs: deps?.deployWaitEndMs }
       : { holdMs: Number.POSITIVE_INFINITY, endMs: Number.POSITIVE_INFINITY }),
   })
 }
@@ -745,7 +757,7 @@ async function settleUnansweredCommand(
     trace('handed_off')
     return
   }
-  const timeoutMessage = deployTimeoutMessage(waiter)
+  const timeoutMessage = deployWaitMessage(waiter)
   if (waiter && DEPLOY_WAIT_CANCELS_SERVER.has(waiter.verdict)) {
     await cancelDeployOnServer(db, cell, envelope.serverId, record.id)
   }
@@ -768,20 +780,6 @@ async function settleUnansweredCommand(
     deps
   )
   await applyFabricFailedSideEffect(db, record, envelope)
-}
-
-/** The plain-words error for a deploy that ended without a result; none for other commands. */
-function deployTimeoutMessage(waiter: DeployWaiter | undefined): string | undefined {
-  const verdict = waiter?.verdict
-  if (
-    verdict === undefined ||
-    verdict === 'none' ||
-    verdict === 'handoff' ||
-    verdict === 'settled'
-  ) {
-    return undefined
-  }
-  return DEPLOY_WAIT_MESSAGES[verdict]
 }
 
 /**
@@ -2783,7 +2781,7 @@ async function applyPendingTlsLeafSideEffect(
   }
 }
 
-async function applySucceededSideEffects(
+export async function applySucceededSideEffects(
   db: Db,
   record: DispatchableCommandRecord,
   envelope: CommandEnvelope,

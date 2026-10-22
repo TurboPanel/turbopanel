@@ -42,7 +42,12 @@ import {
 } from '../managed/ha-recovery.ts'
 import { RECOVERY_STATES, TERMINAL_RECOVERY_STATES } from '../managed/recovery.ts'
 import { commandIsOpen } from './open-statuses.ts'
-import { DEPLOY_QUEUE_LIMIT_MS, DEPLOY_RUN_CAP_MS, deployRunState } from './deploy-wait.ts'
+import {
+  DEPLOY_QUEUE_LIMIT_MS,
+  DEPLOY_RECONCILE_WINDOW_MS,
+  DEPLOY_RUN_CAP_MS,
+  deployRunState,
+} from './deploy-wait.ts'
 
 /** Extra slack past the consumer budget before a row counts as stranded. */
 export const STALE_COMMAND_GRACE_MS = 5 * 60_000
@@ -69,6 +74,11 @@ export type StaleCommandCandidate = {
   status?: string
   /** `command.progress`: the deploy's step plan, carrying when the server started it. */
   progress?: unknown
+  /**
+   * `command.updated_at`: when the server last reported. A running deploy is
+   * stranded only after the server has been quiet for the reconcile window.
+   */
+  updatedAt?: string
 }
 
 function toMs(value: string | null): number | null {
@@ -119,7 +129,15 @@ function isStaleDeploy(row: StaleCommandCandidate, nowMs: number, graceMs: numbe
     sentAt: new Date(waitingSince).toISOString(),
     nowMs,
   })
-  if (run.state === 'running') return nowMs >= run.sinceMs + DEPLOY_RUN_CAP_MS + graceMs
+  if (run.state === 'running') {
+    // A running deploy is not judged by how long it has run (its consumer applies the
+    // time limit while the server reports); it is stranded when nobody has heard from
+    // the server for the whole reconcile window. Without a last-heard time, the fixed cap.
+    const lastHeard = toMs(row.updatedAt ?? null)
+    return lastHeard === null
+      ? nowMs >= run.sinceMs + DEPLOY_RUN_CAP_MS + graceMs
+      : nowMs >= lastHeard + DEPLOY_RECONCILE_WINDOW_MS + graceMs
+  }
   return nowMs >= waitingSince + queueLimit
 }
 
@@ -211,6 +229,7 @@ export async function sweepStaleCommands(
       metadata: command.metadata,
       status: command.status,
       progress: command.progress,
+      updatedAt: command.updatedAt,
     })
     .from(command)
     .where(

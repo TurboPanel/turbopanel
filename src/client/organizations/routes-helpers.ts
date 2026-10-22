@@ -1,11 +1,13 @@
 import {
   parseDefaultEnvironmentNameInput,
   parseMaxServersInput,
+  parseDeployTimeoutMinutes,
   parseTemperatureUnitInput,
   resolveAcmeEnabled,
   resolveComposeDefaultResourceLimits,
   resolveComposeGatedFieldsEnabled,
   resolveDeployHooksEnabled,
+  resolveDeployTimeoutMs,
   type TemperatureUnit,
 } from '../../features/organizations/organization-options.ts'
 import { ENVIRONMENT_NAME_RULE_MESSAGE } from '../../features/folders/records.ts'
@@ -341,6 +343,25 @@ export function parseTemperatureUnitPatch(
     return { ok: false, error: 'Invalid temperatureUnit', status: 400 }
   }
   return { ok: true, patch: { temperatureUnit: parsed.value } }
+}
+
+/** `deployTimeoutMinutes` is a whole number inside the allowed range. */
+export function parseDeployTimeoutPatch(
+  body: Record<string, unknown>
+): { ok: true; patch: { deployTimeoutMinutes: number } } | OrganizationRouteValidationError {
+  const minutes = parseDeployTimeoutMinutes(body.deployTimeoutMinutes)
+  if (minutes === undefined) {
+    return { ok: false, error: 'Invalid deployTimeoutMinutes', status: 400 }
+  }
+  return { ok: true, patch: { deployTimeoutMinutes: minutes } }
+}
+
+export function deployTimeoutGetResponse(options: { deployTimeoutMinutes?: number }) {
+  return { deployTimeoutMinutes: Math.round(resolveDeployTimeoutMs(options) / 60_000) }
+}
+
+export function deployTimeoutPutResponse(options: { deployTimeoutMinutes?: number }) {
+  return { ok: true as const, ...deployTimeoutGetResponse(options) }
 }
 
 export function parseTlsSettingsPatch(

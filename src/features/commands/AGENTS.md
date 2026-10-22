@@ -293,6 +293,30 @@ the primary gets no command row and the `managed` row survives for a retry — o
 for `?force=true`, which skips the gate deliberately because a member host may
 be unreachable.
 
+### A deploy survives a lost link or a restart (`command-recovery-v1`)
+
+A daemon that lists `command-recovery-v1` keeps each command's final result on
+its host until this control plane confirms it (`command-outcome-ack`), sends it
+again on every attach and every 30 s, lists the ids it is running or holding on
+`hello` / `heartbeat` (`commands`), and repeats a running command's step plan
+every 30 s. The control plane then works like this (`deploy-wait.ts`,
+`command-recovery.ts`, `command-progress.ts`):
+
+- A running deploy is timed only while the server reports: the deploy time
+  limit (30 minutes, per organization `deployTimeoutMinutes`, 5 to 240) counts
+  from `runningSince`, and quiet time is given back to the run clock.
+- No frame for 5 minutes means "checking with the server":
+  `progress.contactLostAt` is set (the next frame, or a `commands.running` entry,
+  clears it) and the wait carries on. The deploy is not failed. After 6 hours
+  without a word it ends `timed_out` with "Lost contact with the server ... Last
+  known step: X ... did not report a result".
+- A result that arrives in that time settles the deploy as normal. A deploy
+  already `timed_out` whose server later reports success is corrected to
+  `succeeded` with a note in `metadata.lateOutcome` (`settleReportedOutcome`),
+  never dropped. The ack is sent only once the result is stored.
+- A server without the feature keeps the fixed 10 minute cap, worded "no result
+  came back" (the deploy may still have finished).
+
 ### Cancelling a deploy
 
 `POST /environments/:id/deployments/:deploymentId/cancel` stops a deploy that is
