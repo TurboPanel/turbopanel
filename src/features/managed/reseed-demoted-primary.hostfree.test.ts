@@ -44,6 +44,8 @@ const CLEAN_METADATA = {
   forced: false,
   targetCaughtUp: true,
   targetCaughtUpBasis: 'streaming with zero lag',
+  oldPrimaryFinalLsn: '0/5000060',
+  newPrimaryReplayLsn: '0/5000060',
 }
 
 const db = {} as Db
@@ -126,9 +128,11 @@ type EnqueueCall = {
 }
 
 const outcomes: ReseedOutcome[] = []
+const events: string[] = []
 
 function capturingDeps(enqueued: EnqueueCall[], extra: ReseedDemotedPrimaryDeps = {}) {
   outcomes.length = 0
+  events.length = 0
   let prepareServerId: string | undefined
   let forceResyncMemberIds: string[] | undefined
   const deps: ReseedDemotedPrimaryDeps = {
@@ -137,6 +141,10 @@ function capturingDeps(enqueued: EnqueueCall[], extra: ReseedDemotedPrimaryDeps 
     findInFlightRecovery: () => Promise.resolve(switchoverRecord()),
     hasOutstandingApply: () => Promise.resolve(false),
     hasLiveBackup: () => Promise.resolve(false),
+    claim: () => {
+      events.push('claim')
+      return Promise.resolve(true)
+    },
     recordOutcome: (_db, _id, outcome) => {
       outcomes.push(outcome)
       return Promise.resolve()
@@ -168,6 +176,7 @@ function capturingDeps(enqueued: EnqueueCall[], extra: ReseedDemotedPrimaryDeps 
       })
     },
     enqueueApply: (_c, _db, _queue, params) => {
+      events.push('enqueue')
       enqueued.push({
         managedId: params.managedId,
         members: params.members,
@@ -414,4 +423,48 @@ test('an apply that did not queue is recorded as failed', async () => {
     })
   )
   assertEquals(outcomes, [{ state: 'failed', note: 'host rejected the command' }])
+})
+
+test('without the final write positions taken after the stop nothing is wiped', async () => {
+  const enqueued: EnqueueCall[] = []
+  const { oldPrimaryFinalLsn: _old, newPrimaryReplayLsn: _new, ...begunOnly } = CLEAN_METADATA
+  await reseed(capturingDeps(enqueued), switchoverRecord({ metadata: begunOnly }))
+  assertEquals(enqueued.length, 0)
+  assertEquals(outcomes, [{ state: 'skipped', note: 'final position not proven' }])
+})
+
+test('a new primary behind the old primary final position is not wiped over', async () => {
+  const enqueued: EnqueueCall[] = []
+  await reseed(
+    capturingDeps(enqueued),
+    switchoverRecord({ metadata: { ...CLEAN_METADATA, newPrimaryReplayLsn: '0/5000058' } })
+  )
+  assertEquals(enqueued.length, 0)
+  assertEquals(outcomes[0]?.state, 'skipped')
+})
+
+test('the re-seed is claimed before it is queued, and a lost claim queues nothing', async () => {
+  const enqueued: EnqueueCall[] = []
+  await reseed(capturingDeps(enqueued))
+  assertEquals(events, ['claim', 'enqueue'])
+
+  const none: EnqueueCall[] = []
+  await reseed(capturingDeps(none, { claim: () => Promise.resolve(false) }))
+  assertEquals(none.length, 0)
+  assertEquals(outcomes.length, 0)
+})
+
+test('only the former primary apply carries the guard that lets the host command be refused later', async () => {
+  const enqueued: EnqueueCall[] = []
+  await reseed(capturingDeps(enqueued))
+  const [call] = enqueued
+  const source = call?.members.find((row) => row.memberId === SOURCE_ID)
+  const target = call?.members.find((row) => row.memberId === TARGET_ID)
+  assertEquals(source?.metadata?.switchoverReseed, {
+    recoveryId: REC_ID,
+    managedId: MANAGED_ID,
+    sourceMemberId: SOURCE_ID,
+    targetMemberId: TARGET_ID,
+  })
+  assertEquals(target?.metadata, undefined)
 })

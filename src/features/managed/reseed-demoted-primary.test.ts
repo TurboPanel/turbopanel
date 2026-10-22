@@ -19,8 +19,13 @@ import {
   workspace,
 } from '../../db/schema.ts'
 import { createCommandRecord, transitionCommand } from '../commands/command-records.ts'
-import { findRecoveryById, insertRecovery } from './recovery-records.ts'
+import { processCommandEnvelope } from '../commands/consumer.ts'
+import { getCommandRecord } from '../commands/command-records.ts'
+import { findRecoveryById, insertRecovery, updateRecovery } from './recovery-records.ts'
+import { RESEED_GUARD_METADATA_KEY, reseedSupersededReason } from './reseed-guard.ts'
+import type { DaemonCellRegistry } from '../../contracts/cell.ts'
 import {
+  claimReseed,
   hasOutstandingManagedApplyForMember,
   loadManagedApplyCluster,
   reseedDemotedPrimaryAfterSwitchover,
@@ -250,5 +255,122 @@ test('the re-seed outcome is written on the recovery row next to what was alread
     assertEquals(stored?.metadata.fenced, true)
     assertEquals(stored?.metadata.reseedState, 'skipped')
     assertEquals(stored?.metadata.reseedNote, 'switchover was forced')
+  })
+})
+
+async function switchoverFixture(f: Fixture) {
+  const [oldPrimaryId, newPrimaryId] = f.memberIds as [string, string]
+  // After the switchover: the second member is the primary, the first is the
+  // former primary waiting for its re-seed.
+  await f.db
+    .update(replica)
+    .set({ role: 'replica', status: 'needs_resync' })
+    .where(eq(replica.id, oldPrimaryId))
+  await f.db
+    .update(replica)
+    .set({ role: 'primary', status: 'ready' })
+    .where(eq(replica.id, newPrimaryId))
+  const created = await insertRecovery(f.db, {
+    managedId: f.managedId,
+    kind: 'switchover',
+    sourcePrimaryMemberId: oldPrimaryId,
+    targetMemberId: newPrimaryId,
+    state: 'repointing',
+    metadata: { fenced: true },
+  })
+  return {
+    oldPrimaryId,
+    newPrimaryId,
+    recoveryId: created.id,
+    guard: {
+      recoveryId: created.id,
+      managedId: f.managedId,
+      sourceMemberId: oldPrimaryId,
+      targetMemberId: newPrimaryId,
+    },
+  }
+}
+
+test('two claims of the same re-seed race and exactly one wins', async () => {
+  await withCluster(async (f) => {
+    const { recoveryId } = await switchoverFixture(f)
+    const results = await Promise.all([
+      claimReseed(f.db, recoveryId),
+      claimReseed(f.db, recoveryId),
+    ])
+    assertEquals(results.filter(Boolean).length, 1)
+    const stored = await findRecoveryById(f.db, recoveryId)
+    assertEquals(stored?.metadata.reseedState, 'queued')
+    assertEquals(stored?.metadata.fenced, true)
+  })
+})
+
+test('the wipe is refused once the new primary, the former primary or the latest recovery changed', async () => {
+  await withCluster(async (f) => {
+    const { guard, newPrimaryId, oldPrimaryId, recoveryId } = await switchoverFixture(f)
+    assertEquals(await reseedSupersededReason(f.db, guard), null)
+
+    // A second recovery started after this switchover.
+    await updateRecovery(f.db, recoveryId, { state: 'completed' })
+    const later = await insertRecovery(f.db, {
+      managedId: f.managedId,
+      kind: 'switchover',
+      sourcePrimaryMemberId: newPrimaryId,
+      targetMemberId: oldPrimaryId,
+      state: 'fencing',
+    })
+    assertEquals(
+      await reseedSupersededReason(f.db, guard),
+      'another recovery started after the switchover'
+    )
+    await updateRecovery(f.db, later.id, { state: 'completed' })
+
+    // The new primary was demoted again.
+    await f.db.update(replica).set({ role: 'replica' }).where(eq(replica.id, newPrimaryId))
+    assertEquals(
+      await reseedSupersededReason(f.db, guard),
+      'the new primary is no longer the ready primary'
+    )
+    await f.db
+      .update(replica)
+      .set({ role: 'primary', status: 'failed' })
+      .where(eq(replica.id, newPrimaryId))
+    assertEquals(
+      await reseedSupersededReason(f.db, guard),
+      'the new primary is no longer the ready primary'
+    )
+  })
+})
+
+test('a queued wipe whose switchover was overtaken is cancelled before it is sent', async () => {
+  await withCluster(async (f) => {
+    const { guard, newPrimaryId } = await switchoverFixture(f)
+    await f.db.update(managed).set({ status: 'applying' }).where(eq(managed.id, f.managedId))
+    // The new primary was demoted by another switchover before the command ran.
+    await f.db.update(replica).set({ role: 'replica' }).where(eq(replica.id, newPrimaryId))
+    const record = await createCommandRecord(f.db, {
+      serverId: f.serverId,
+      actorType: 'system',
+      actorId: f.serverId,
+      type: 'managed.apply',
+      payload: { managedId: f.managedId },
+      context: { managedId: f.managedId, memberId: guard.sourceMemberId },
+      metadata: { [RESEED_GUARD_METADATA_KEY]: guard },
+    })
+    await processCommandEnvelope(f.db, {} as DaemonCellRegistry, {
+      commandId: record.id,
+      serverId: f.serverId,
+      type: 'managed.apply',
+      attempt: 1,
+      queuedAt: record.queuedAt ?? record.createdAt,
+    })
+    const after = await getCommandRecord(f.db, record.id)
+    assertEquals(after?.status, 'failed')
+    assertEquals(after?.errorCode, 'reseed_superseded')
+    const [row] = await f.db
+      .select({ status: managed.status })
+      .from(managed)
+      .where(eq(managed.id, f.managedId))
+    assertEquals(row?.status, 'ready')
   })
 })

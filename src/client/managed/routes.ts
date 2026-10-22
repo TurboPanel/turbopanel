@@ -259,8 +259,7 @@ import {
   parseManagedResidual,
   serializeManagedRow,
 } from '../../features/managed/serialize.ts'
-import { isManagedReplicaObservationStale } from '../../features/managed/promote-lag.ts'
-import { SWITCHOVER_CATCHUP_MAX_AGE_MS } from '../../features/managed/switchover-evidence.ts'
+import { readSwitchoverReplication } from '../../features/managed/switchover-reading.ts'
 import {
   effectiveManagedImage,
   managedImageFailoverSupport,
@@ -421,26 +420,24 @@ async function readSwitchoverTargetReplication(
   db: NonNullable<ReturnType<typeof getDb>>,
   params: { member: ManagedMemberRow; managedId: string; engine: string }
 ): Promise<unknown> {
-  // Only Postgres is proven by a reading; MySQL and MariaDB by the GTID set.
-  if (params.engine !== 'postgres') return undefined
-  try {
-    const stored = await findManagedMember(db, params.member.id)
-    const current = serializeManagedMember(stored ?? params.member, null).replication
-    if (!isManagedReplicaObservationStale(current, Date.now(), SWITCHOVER_CATCHUP_MAX_AGE_MS)) {
-      return current
-    }
-    const probe = await probeManagedMemberHealth(db, getDaemonCellRegistry(c), {
-      serverId: params.member.serverId,
-      managedId: params.managedId,
-      memberId: params.member.id,
-      role: 'replica',
-      engine: params.engine,
-      timeoutMs: MANAGED_HEALTH_PROBE_PROMOTE_TIMEOUT_MS,
-    })
-    return probe.status === 'observed' ? probe.replication : undefined
-  } catch {
-    return undefined
-  }
+  return await readSwitchoverReplication({
+    engine: params.engine,
+    stored: async () => {
+      const stored = await findManagedMember(db, params.member.id)
+      return serializeManagedMember(stored ?? params.member, null).replication
+    },
+    probe: async () => {
+      const probe = await probeManagedMemberHealth(db, getDaemonCellRegistry(c), {
+        serverId: params.member.serverId,
+        managedId: params.managedId,
+        memberId: params.member.id,
+        role: 'replica',
+        engine: params.engine,
+        timeoutMs: MANAGED_HEALTH_PROBE_PROMOTE_TIMEOUT_MS,
+      })
+      return probe.status === 'observed' ? probe.replication : undefined
+    },
+  })
 }
 
 /**

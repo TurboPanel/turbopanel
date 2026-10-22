@@ -30,6 +30,8 @@ import { getManagedEngineSpec } from './index.ts'
 import { listManagedMembers, type ManagedMemberRow } from './members.ts'
 import { loadManagedOptions } from './options.ts'
 import { findInFlightRecovery, updateRecoveryLocked } from './recovery-records.ts'
+import { RESEED_GUARD_METADATA_KEY } from './reseed-guard.ts'
+import { evaluateFinalPosition } from './switchover-evidence.ts'
 import type { RecoveryRecord } from './recovery.ts'
 import { parseManagedResidual } from './serialize.ts'
 
@@ -54,6 +56,8 @@ export type ReseedDemotedPrimaryDeps = {
   hasLiveBackup?: (db: Db, managedId: string) => Promise<boolean>
   /** Writes the outcome on the recovery row so the operator can see it. */
   recordOutcome?: (db: Db, recoveryId: string, outcome: ReseedOutcome) => Promise<void>
+  /** Marks the re-seed as decided before anything is queued; false = someone already did. */
+  claim?: (db: Db, recoveryId: string) => Promise<boolean>
   loadCluster?: (db: Db, managedId: string) => Promise<ManagedApplyCluster | null>
   preflight?: typeof preflightManagedApplyInfrastructure
   loadOptions?: typeof loadManagedOptions
@@ -90,6 +94,8 @@ export type ManagedApplyCluster = {
   serverId: string | null
 }
 
+const ALREADY_DECIDED = 're-seed already decided'
+
 type Skipped = { skipped: string }
 
 function skip(reason: string): Skipped {
@@ -99,6 +105,26 @@ function skip(reason: string): Skipped {
 
 function isSkipped(value: unknown): value is Skipped {
   return typeof value === 'object' && value !== null && 'skipped' in value
+}
+
+/**
+ * Decide the re-seed once, before the wipe is queued: a crash or a retry after
+ * this point can never queue a second one (at worst nothing is queued and the
+ * operator runs Resync).
+ */
+export async function claimReseed(db: Db, recoveryId: string): Promise<boolean> {
+  const claimed = await updateRecoveryLocked(db, recoveryId, (current) =>
+    current.metadata.reseedState === undefined
+      ? {
+          metadata: {
+            ...current.metadata,
+            reseedState: 'queued',
+            reseedNote: 'forced re-seed of the former primary being queued',
+          },
+        }
+      : null
+  )
+  return claimed !== null
 }
 
 async function recordReseedOutcome(
@@ -286,13 +312,18 @@ async function evaluateSwitchoverReseed(
 ): Promise<SwitchoverReseedReady | Skipped> {
   if (record.kind !== 'switchover') return skip('kind is not switchover')
   // A retried promote result must not queue a second wipe.
-  if (record.metadata.reseedState !== undefined) return skip('re-seed already decided')
+  if (record.metadata.reseedState !== undefined) return skip(ALREADY_DECIDED)
 
   const cluster = await (deps.loadCluster ?? loadManagedApplyCluster)(db, record.managedId)
   if (!cluster) return skip('managed row is missing')
 
   const recordReady = switchoverRecordReady(record, cluster.engine)
   if (isSkipped(recordReady)) return recordReady
+  // The reading at switchover start predates the drain and the stop, so it
+  // cannot prove nothing was written after it. Only a position taken after the
+  // old primary stopped can, and no host result reports one yet: fail closed.
+  const finalPosition = evaluateFinalPosition(record.metadata)
+  if (!finalPosition.caughtUp) return skip(finalPosition.basis)
   const dispatch = dispatchReady(commandQueue, secrets)
   if (!dispatch) return skip('secrets or command queue missing')
 
@@ -388,10 +419,28 @@ async function enqueueSwitchoverReseedApply(
   if (isPrepareError(prepared)) return skip(`prepare failed (${prepared.kind})`)
 
   const enqueue = deps.enqueueApply ?? enqueuePreparedManagedApply
+  // The wipe carries what justified it, so the command consumer can refuse it
+  // if a second switchover or failover overtakes this one before it is sent.
+  const members = prepared.members.map((member) =>
+    member.memberId === ready.source.id
+      ? {
+          ...member,
+          metadata: {
+            ...member.metadata,
+            [RESEED_GUARD_METADATA_KEY]: {
+              recoveryId: record.id,
+              managedId: cluster.id,
+              sourceMemberId: ready.source.id,
+              targetMemberId: record.targetMemberId,
+            },
+          },
+        }
+      : member
+  )
   const enqueued = await enqueue(c, db, ready.commandQueue, {
     userId: actorId,
     managedId: cluster.id,
-    members: prepared.members,
+    members,
   })
   if (enqueued instanceof Response) {
     warn(`enqueue returned ${enqueued.status}`)
@@ -430,6 +479,8 @@ export async function reseedDemotedPrimaryAfterSwitchover(
     const ready = await evaluateSwitchoverReseed(db, commandQueue, secrets, record, deps)
     if (isSkipped(ready)) {
       outcome = { state: 'skipped', note: ready.skipped }
+    } else if (!(await (deps.claim ?? claimReseed)(db, record.id))) {
+      outcome = { state: 'skipped', note: ALREADY_DECIDED }
     } else {
       const result = await enqueueSwitchoverReseedApply(db, ready, record, actorId, deps)
       if (result === null) {
@@ -444,7 +495,7 @@ export async function reseedDemotedPrimaryAfterSwitchover(
     warn(errorMessage(err))
     outcome = { state: 'failed', note: errorMessage(err) }
   }
-  if (outcome.state === 'skipped' && outcome.note === 're-seed already decided') return
+  if (outcome.state === 'skipped' && outcome.note === ALREADY_DECIDED) return
   try {
     await (deps.recordOutcome ?? recordReseedOutcome)(db, record.id, outcome)
   } catch (err) {

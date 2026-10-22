@@ -56,3 +56,33 @@ export function evaluateSwitchoverCatchUp(
   }
   return { caughtUp: true, basis: 'streaming with zero lag' }
 }
+
+const LSN_PATTERN = /^([0-9A-Fa-f]{1,8})\/([0-9A-Fa-f]{1,8})$/
+
+function parseLsn(value: unknown): bigint | null {
+  if (typeof value !== 'string') return null
+  const match = LSN_PATTERN.exec(value)
+  if (!match) return null
+  return (BigInt(`0x${match[1]}`) << 32n) | BigInt(`0x${match[2]}`)
+}
+
+/**
+ * Is the new primary at or past the old primary's FINAL write position, both
+ * taken after the old primary was stopped? The reading at switchover start is
+ * taken before the drain and the stop, so it can never prove this. Missing or
+ * unreadable positions, or a new primary behind the old one, are not proof.
+ */
+export function evaluateFinalPosition(positions: {
+  oldPrimaryFinalLsn?: string
+  newPrimaryReplayLsn?: string
+}): SwitchoverCatchUp {
+  const oldLsn = parseLsn(positions.oldPrimaryFinalLsn)
+  const newLsn = parseLsn(positions.newPrimaryReplayLsn)
+  if (oldLsn === null || newLsn === null) {
+    return { caughtUp: false, basis: 'final position not proven' }
+  }
+  if (newLsn < oldLsn) {
+    return { caughtUp: false, basis: 'final position not proven: new primary is behind' }
+  }
+  return { caughtUp: true, basis: 'new primary replayed the old primary final position' }
+}

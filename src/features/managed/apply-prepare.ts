@@ -151,7 +151,7 @@ function metadataForManagedApplyMember(
   extraMetadata?: Record<string, unknown>
 ): Record<string, unknown> | undefined {
   const pending = member.pendingTlsLeaf ? pendingTlsLeafMetadata(member.pendingTlsLeaf) : {}
-  const merged = { ...extraMetadata, ...pending }
+  const merged = { ...extraMetadata, ...member.metadata, ...pending }
   return Object.keys(merged).length > 0 ? merged : undefined
 }
 
@@ -275,6 +275,8 @@ export type PreparedManagedMemberApply = {
   payload: ManagedApplyCommandPayload
   /** Minted engine leaf; committed to `leaf` only after command success. */
   pendingTlsLeaf?: UpsertTlsLeafTrackingParams
+  /** Extra command metadata for this member's apply (also carried to a deferred standby). */
+  metadata?: Record<string, unknown>
 }
 
 export type ManagedApplyEnqueueResult = {
@@ -1860,6 +1862,7 @@ async function enqueueTwoPhaseManagedApply(
     serverId: member.serverId,
     memberId: member.memberId,
     payload: member.payload,
+    ...(member.metadata ? { metadata: member.metadata } : {}),
     ...(member.pendingTlsLeaf ? { pendingTlsLeaf: member.pendingTlsLeaf } : {}),
   }))
 

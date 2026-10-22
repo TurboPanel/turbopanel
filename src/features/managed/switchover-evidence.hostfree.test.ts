@@ -3,7 +3,11 @@
  */
 
 import { assertEquals } from '@std/assert'
-import { evaluateSwitchoverCatchUp, SWITCHOVER_CATCHUP_MAX_AGE_MS } from './switchover-evidence.ts'
+import {
+  evaluateFinalPosition,
+  evaluateSwitchoverCatchUp,
+  SWITCHOVER_CATCHUP_MAX_AGE_MS,
+} from './switchover-evidence.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -57,4 +61,30 @@ test('MySQL and MariaDB are never proven: asynchronous, no final position to com
   for (const engine of ['mysql', 'mariadb']) {
     assertEquals(evaluateSwitchoverCatchUp(engine, caughtUp, NOW).caughtUp, false)
   }
+})
+
+test('the final position is proven only when the new primary is at or past the old one', () => {
+  assertEquals(
+    evaluateFinalPosition({ oldPrimaryFinalLsn: '0/5000060', newPrimaryReplayLsn: '0/5000060' })
+      .caughtUp,
+    true
+  )
+  assertEquals(
+    evaluateFinalPosition({ oldPrimaryFinalLsn: '0/5000060', newPrimaryReplayLsn: '1/0' }).caughtUp,
+    true
+  )
+  assertEquals(
+    evaluateFinalPosition({ oldPrimaryFinalLsn: '0/5000060', newPrimaryReplayLsn: '0/5000058' })
+      .caughtUp,
+    false
+  )
+})
+
+test('a missing or unreadable final position is not proof', () => {
+  assertEquals(evaluateFinalPosition({}).caughtUp, false)
+  assertEquals(evaluateFinalPosition({ oldPrimaryFinalLsn: '0/5000060' }).caughtUp, false)
+  assertEquals(
+    evaluateFinalPosition({ oldPrimaryFinalLsn: 'nope', newPrimaryReplayLsn: '0/5000060' }).basis,
+    'final position not proven'
+  )
 })

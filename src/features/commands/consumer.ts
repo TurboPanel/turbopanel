@@ -7,7 +7,7 @@
  * isolate (worker stub or Deno process), not inside the Durable Object.
  * There is no per-server polling or cross-cell fan-out.
  */
-import { and, asc, eq, inArray, or, sql } from 'drizzle-orm'
+import { and, asc, eq, inArray, ne, or, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
 import type { DeployFailureNotice } from '../deploy/deploy-failure-notice.ts'
@@ -71,6 +71,7 @@ import {
   MANAGED_DESTROY_GATE_METADATA_KEY,
   parseManagedDestroyGate,
 } from '../managed/destroy-gate.ts'
+import { parseReseedGuard, reseedSupersededReason } from '../managed/reseed-guard.ts'
 import { deleteManagedBackup, insertManagedBackup } from '../backups/backup-records.ts'
 import { applyStorageBackupSideEffect } from '../backups/storage-command-effects.ts'
 import { applyBackupsReconcileSideEffect } from '../backups/reconcile-effects.ts'
@@ -84,6 +85,7 @@ import {
 import type { FirewallApplyGate } from '../firewall/enforcement.ts'
 import type { CommandEnvelope } from './envelope.ts'
 import { nowIso } from './ids.ts'
+import { commandIsOpen } from './open-statuses.ts'
 import { cancelDeployOnServer } from '../deploy/deploy-cancel.ts'
 import { isNoopCommandQueue } from './noop-command-queue.ts'
 import {
@@ -1815,6 +1817,7 @@ type PendingStandbyApply = {
   memberId: string
   payload: unknown
   pendingTlsLeaf?: unknown
+  metadata?: Record<string, unknown>
 }
 
 async function enqueuePendingStandbyApplies(
@@ -1845,7 +1848,10 @@ async function enqueuePendingStandbyApplies(
     }
     const expiresAt = new Date(Date.now() + 600_000).toISOString()
     const pendingTlsLeaf = parsePendingTlsLeafValue(standby.pendingTlsLeaf)
-    const metadata = pendingTlsLeaf ? pendingTlsLeafMetadata(pendingTlsLeaf) : undefined
+    const carried =
+      typeof standby.metadata === 'object' && standby.metadata !== null ? standby.metadata : {}
+    const merged = { ...carried, ...(pendingTlsLeaf ? pendingTlsLeafMetadata(pendingTlsLeaf) : {}) }
+    const metadata = Object.keys(merged).length > 0 ? merged : undefined
     try {
       const next = await createCommandRecord(db, {
         serverId: standby.serverId,
@@ -3321,6 +3327,46 @@ async function applyPendingOutcome(
   }
 }
 
+/**
+ * A forced re-seed queued after a planned switchover wipes the former
+ * primary's data. If the switchover was overtaken before the command was sent
+ * (a second switchover or failover), refuse it instead of wiping.
+ */
+async function failSupersededReseed(db: Db, record: DispatchableCommandRecord): Promise<boolean> {
+  if (record.type !== 'managed.apply') return false
+  const guard = parseReseedGuard(await getCommandMetadata(db, record.id))
+  if (!guard) return false
+  const reason = await reseedSupersededReason(db, guard)
+  if (!reason) return false
+  const error = `re-seed cancelled: ${reason}`
+  await transitionCommand(db, record.id, {
+    status: 'failed',
+    error,
+    errorCode: 'reseed_superseded',
+  })
+  // Not a failure of the database: release the `applying` stamp the enqueue
+  // set (unless another apply is still open) and leave the members as they are.
+  const otherOpen = await db
+    .select({ id: command.id })
+    .from(command)
+    .where(
+      and(
+        eq(command.name, 'managed.apply'),
+        commandIsOpen(),
+        ne(command.id, record.id),
+        sql`${command.context}->>'managedId' = ${guard.managedId}`
+      )
+    )
+    .limit(1)
+  if (otherOpen.length === 0) {
+    await db
+      .update(managed)
+      .set({ status: 'ready', updatedAt: nowIso() })
+      .where(and(eq(managed.id, guard.managedId), eq(managed.status, 'applying')))
+  }
+  return true
+}
+
 export async function processCommandEnvelope(
   db: Db,
   registry: DaemonCellRegistry,
@@ -3329,6 +3375,8 @@ export async function processCommandEnvelope(
 ): Promise<void> {
   const record = await loadDispatchableRecord(db, envelope)
   if (!record) return
+
+  if (await failSupersededReseed(db, record)) return
 
   const resumed = await resumeDeployWait(db, registry, record, envelope, deps)
   if (resumed !== null) {
