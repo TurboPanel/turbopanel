@@ -618,6 +618,11 @@ async function beginRecovery(params: {
    * it, and only while that server is still not connected.
    */
   hostLoss?: boolean
+  /**
+   * The operator promote gate passed only on an idle reading, so the old
+   * primary must be fenced and its final GTID set recorded before promotion.
+   */
+  requireFence?: boolean
 }): Promise<RecoveryEnqueueResult> {
   const inflight = await findInFlightRecovery(params.db, params.managedId)
   if (inflight) {
@@ -656,6 +661,18 @@ async function beginRecovery(params: {
     })
     await stampManagedReady(params.db, params.managedId)
     return { ok: false, error: AUTOMATIC_FAILOVER_BLOCKED_ERROR, status: 409 }
+  }
+  if (!sourceOnline && params.requireFence) {
+    // The old primary dropped its link after the gate: there is no final
+    // position to wait for, so do not promote. Nothing was changed and it is
+    // still the primary, so the row ends `blocked` (not `failed` with
+    // `needsOperator`, which would keep a boot-held old primary stopped).
+    await updateRecovery(params.db, recovery.id, {
+      state: 'blocked',
+      metadata: { ...recovery.metadata, blockedReason: SWITCHOVER_GTID_NOT_RECORDED_MESSAGE },
+    })
+    await stampManagedReady(params.db, params.managedId)
+    return { ok: false, error: 'managed_replica_not_fully_applied', status: 409 }
   }
   if (!sourceOnline) {
     await markNeedsResync(params.db, params.source.id)
@@ -718,6 +735,8 @@ export async function beginOperatorSwitchover(params: {
   forced?: boolean
   /** The target's fresh replication reading taken before the fence. */
   targetReplication?: unknown
+  /** See `beginRecovery`: refuse instead of promoting when the fence cannot run. */
+  requireFence?: boolean
 }): Promise<RecoveryEnqueueResult> {
   const { forced, targetReplication, ...rest } = params
   const catchUp = evaluateSwitchoverCatchUp(params.engine, targetReplication)
@@ -1172,6 +1191,9 @@ async function enqueueSwitchoverAbortReactivation(
   })
 }
 
+const SWITCHOVER_GTID_NOT_RECORDED_MESSAGE =
+  'Planned switchover stopped: the old primary GTID position was not recorded before promotion'
+
 async function abortSwitchoverWhenGtidMissing(
   db: Db,
   commandQueue: CommandQueue | undefined,
@@ -1197,11 +1219,7 @@ async function abortSwitchoverWhenGtidMissing(
       members,
     })
   }
-  await failRecoveryForOperator(
-    db,
-    record.id,
-    'Planned switchover stopped: the old primary GTID position was not recorded before promotion'
-  )
+  await failRecoveryForOperator(db, record.id, SWITCHOVER_GTID_NOT_RECORDED_MESSAGE)
   await stampManagedReady(db, record.managedId)
   return true
 }

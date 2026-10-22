@@ -958,6 +958,35 @@ test('beginOperatorSwitchover promotes when the old primary is already offline',
   assertEquals(harness.managedStatus.includes('applying'), true)
 })
 
+test('an idle-gated mysql switchover is refused when the old primary goes offline before the fence', async () => {
+  const queue = okQueue()
+  const harness = createHarness({ connected: [false] })
+  const result = await beginOperatorSwitchover({
+    db: harness.db,
+    commandQueue: queue,
+    managedId: MANAGED_ID,
+    engine: 'mysql',
+    source: member(),
+    target: failoverReplica(),
+    members: [member(), failoverReplica()],
+    actor: ACTOR,
+    requireFence: true,
+  })
+  assertEquals(result, { ok: false, error: 'managed_replica_not_fully_applied', status: 409 })
+  assertEquals(queue.envelopes.length, 0)
+  assertEquals(harness.commandInserts.length, 0)
+  assertEquals(harness.nodePatches.length, 0)
+  assertEquals(harness.managedStatus.includes('applying'), false)
+  const row = harness.recovery()
+  const metadata = row?.metadata as { needsOperator?: boolean; blockedReason?: string }
+  assertEquals(row?.state, 'blocked')
+  assertEquals(metadata.needsOperator, undefined)
+  assertEquals(
+    metadata.blockedReason,
+    'Planned switchover stopped: the old primary GTID position was not recorded before promotion'
+  )
+})
+
 test('beginOperatorSwitchover recovers via Orchestrator when HA is present', async () => {
   const queue = okQueue()
   const harness = createHarness({ connected: [false], haPresent: true })

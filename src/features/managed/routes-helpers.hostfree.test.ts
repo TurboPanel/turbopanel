@@ -33,6 +33,7 @@ import {
   nextDatabasesAfterCreate,
   nextDatabasesAfterDelete,
   operatorPromoteHttpResult,
+  operatorPromoteRequiresFence,
   parseDisasterRecoveryPromoteBody,
   parseManagedConnectionRole,
   parseManagedCreateName,
@@ -427,6 +428,11 @@ test('evaluateOperatorPromoteGate accepts an idle mysql pair only when a fence w
   assertEquals(gate(idle, 'mysql', true, now + 60_000), 'managed_replica_health_stale')
   // A real fully-applied reading still passes without a fence.
   assertEquals(gate({ ...idle, fullyApplied: true }, 'mysql', false), null)
+  // Only the idle pass carries the fence requirement on to the switchover.
+  assertEquals(operatorPromoteRequiresFence(idle, false, 'mysql'), true)
+  assertEquals(operatorPromoteRequiresFence({ ...idle, fullyApplied: true }, false, 'mysql'), false)
+  assertEquals(operatorPromoteRequiresFence(idle, true, 'mysql'), false)
+  assertEquals(operatorPromoteRequiresFence(idle, false, 'postgres'), false)
 })
 
 test('pickPrimaryCommandResult and queued response builders', () => {

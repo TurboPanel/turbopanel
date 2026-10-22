@@ -1371,6 +1371,22 @@ export function evaluateOperatorPromoteGate(
   return null
 }
 
+/**
+ * True when a reading that passed {@link evaluateOperatorPromoteGate} passed
+ * only on the idle MySQL clause (no `fullyApplied: true`). Such a promote must
+ * fence the old primary and wait for its recorded final position; if the old
+ * primary drops offline before the fence starts, the switchover is refused
+ * rather than promoting with no position to wait for.
+ */
+export function operatorPromoteRequiresFence(
+  replication: unknown,
+  force: boolean,
+  engine?: string
+): boolean {
+  if (force || !isMysqlFamilyEngine(engine)) return false
+  return !isPlainObject(replication) || replication.fullyApplied !== true
+}
+
 function isIdleMysqlReplicaReading(replication: Record<string, unknown>): boolean {
   return (
     replication.state === 'streaming' &&

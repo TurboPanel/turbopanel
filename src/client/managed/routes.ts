@@ -234,6 +234,7 @@ import {
   nextDatabasesAfterCreate,
   nextDatabasesAfterDelete,
   operatorPromoteHttpResult,
+  operatorPromoteRequiresFence,
   parseDisasterRecoveryPromoteBody,
   parseManagedCreateName,
   parseManagedLifecycleAction,
@@ -397,7 +398,7 @@ async function assertManagedPromoteLagAllowed(
     /** The old primary's server is connected, so the switchover fences it. */
     fenceWillRun: boolean
   }
-): Promise<Response | null> {
+): Promise<Response | { requireFence: boolean }> {
   const { member, force } = params
   let replication = serializeManagedMember(member, null).replication
   if (!force) {
@@ -421,7 +422,8 @@ async function assertManagedPromoteLagAllowed(
     params.engine,
     params.fenceWillRun
   )
-  return gate !== null ? c.json({ error: gate }, 409) : null
+  if (gate !== null) return c.json({ error: gate }, 409)
+  return { requireFence: operatorPromoteRequiresFence(replication, force, params.engine) }
 }
 
 /**
@@ -3358,7 +3360,8 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       force,
       fenceWillRun,
     })
-    if (lagGate) return lagGate
+    if (lagGate instanceof Response) return lagGate
+    const { requireFence } = lagGate
 
     const offline = await assertTargetServerOnline(c, db, member.serverId)
     if (offline) return offline
@@ -3369,6 +3372,8 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const members = await listManagedMembers(db, row.id)
     const primary = members.find((m) => m.role === 'primary')
     if (!primary) {
+      // The reading only passed because a fence was going to run.
+      if (requireFence) return c.json({ error: 'managed_replica_not_fully_applied' }, 409)
       return enqueueOrphanManagedPromote(c, db, commandQueue, {
         userId: auth.userId,
         managedId: row.id,
@@ -3395,6 +3400,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       actor: { actorType: 'user', actorId: auth.userId },
       forced: force,
       targetReplication,
+      requireFence,
     })
     const http = operatorPromoteHttpResult(recovery)
     return c.json(http.body, http.status)
