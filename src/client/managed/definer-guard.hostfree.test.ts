@@ -1,4 +1,6 @@
 import { assertEquals } from '@std/assert'
+import type { Db } from '../../db/connection.ts'
+import { removeLoginsDroppedByApply } from '../../features/managed/logins.ts'
 import { checkLoginMayBeDeleted } from './definer-guard.ts'
 import { parseManagedPermissionsObserved } from '../../features/managed/privileges/observed.ts'
 import type { ManagedPermissionsProbeOutcome } from './permissions-probe.ts'
@@ -107,4 +109,59 @@ test('one bad entry in definesObjects is skipped and long names are clamped', ()
   assertEquals(kept?.length, 2)
   assertEquals(kept?.[0], 'view a.b')
   assertEquals(kept?.[1]?.length, 256)
+})
+
+test('a host that could not look up the objects fails closed, not as "none"', async () => {
+  const outcome: ManagedPermissionsProbeOutcome = {
+    status: 'observed',
+    permissions: {
+      engine: 'mysql',
+      observedAt: '2026-10-21T00:00:00.000Z',
+      logins: [
+        {
+          username: 'app_user',
+          exists: true,
+          memberships: [],
+          grants: [],
+          defaults: [],
+          definesObjectsUnread: true,
+        },
+      ],
+    },
+  }
+  const check = await checkLoginMayBeDeleted('mysql', 'app_user', () => Promise.resolve(outcome))
+  if (check.kind !== 'refuse') throw new TypeError('expected a refusal')
+  assertEquals(check.status, 503)
+  assertEquals(check.body.error, 'managed_login_check_failed')
+})
+
+test('the observed report keeps the unread flag', () => {
+  const base = { username: 'u', exists: true, memberships: [], grants: [], defaults: [] }
+  const report = parseManagedPermissionsObserved({
+    engine: 'mysql',
+    observedAt: '2026-10-21T00:00:00.000Z',
+    logins: [
+      { ...base, definesObjectsUnread: true },
+      { ...base, username: 'v' },
+    ],
+  })
+  assertEquals(report?.logins[0]?.definesObjectsUnread, true)
+  assertEquals(report?.logins[1]?.definesObjectsUnread, undefined)
+})
+
+test('login rows are removed only for the accounts an apply dropped', async () => {
+  let deletes = 0
+  const db = {
+    delete: () => ({
+      where: () => {
+        deletes += 1
+        return Promise.resolve()
+      },
+    }),
+  } as unknown as Db
+  await removeLoginsDroppedByApply(db, 'managed-1', undefined)
+  await removeLoginsDroppedByApply(db, 'managed-1', [])
+  assertEquals(deletes, 0)
+  await removeLoginsDroppedByApply(db, 'managed-1', ['app_user'])
+  assertEquals(deletes, 1)
 })

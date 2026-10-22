@@ -72,6 +72,7 @@ import {
 } from '../../features/backups/run-report.ts'
 import type { BackupRunReportMessage } from '../../contracts/cell-protocol.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
+import { removeLoginsDroppedByApply } from '../../features/managed/logins.ts'
 
 const dbUrl = getDatabaseUrl()
 
@@ -2974,6 +2975,15 @@ test('POST managed user for an existing principal reuses its name, lists it with
         headers,
       })
       assertEquals(removed.status, 200)
+      // The row stays until the host has dropped the account.
+      const loginsPending = await db
+        .select({ id: login.id, username: login.appliedUsername, managedId: login.managedId })
+        .from(login)
+        .where(eq(login.id, loginId))
+      assertEquals(loginsPending.length, 1)
+      await removeLoginsDroppedByApply(db, loginsPending[0]!.managedId, [
+        loginsPending[0]!.username,
+      ])
       const loginsLeft = await db.select({ id: login.id }).from(login).where(eq(login.id, loginId))
       assertEquals(loginsLeft.length, 0)
       const [ownerStays] = await db
