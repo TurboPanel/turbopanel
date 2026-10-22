@@ -508,8 +508,11 @@ export function registerServerMetricsRoutes(router: Hono<AppEnv>, opts: AuthRout
     }
     const { hostResult: storedHostResult, entityResults: storedEntityResults } = seriesQuery
 
+    // The requested `to`, not the bucket-floored one: the floor can sit a whole
+    // bucket behind now, so a poll made just after a bucket boundary would lose
+    // its live point.
     const liveSample =
-      metricsRangeTailIsNow(queryRange.toMs) && resolutionSeconds <= METRICS_LIVE_INTERVAL_SECONDS
+      metricsRangeTailIsNow(range.toMs) && resolutionSeconds <= METRICS_LIVE_INTERVAL_SECONDS
         ? await readLiveSample(cache, serverId)
         : null
     const { hostResult, entityResults } = applyLiveSampleToSeries({
@@ -628,7 +631,8 @@ export function registerServerMetricsRoutes(router: Hono<AppEnv>, opts: AuthRout
       return c.json(metricsBackendUnavailableResponse(backend), 503)
     }
 
-    const liveSample = metricsRangeTailIsNow(queryRange.toMs)
+    // The requested `to`, not the bucket-floored one (see the series route).
+    const liveSample = metricsRangeTailIsNow(range.toMs)
       ? await readLiveSample(cache, serverId)
       : null
     const summaryResult =
