@@ -6443,14 +6443,14 @@ test('a deploy the server never reports on is failed only after the whole reconc
   })
 })
 
-test('the deploy time limit holds only while the server reports, and follows the organization setting', async () => {
+test('the deploy time limit of 30 minutes holds only while the server reports', async () => {
   await withDeployFixtures(async (ctx) => {
-    const run = async () => {
+    const run = async (ranMs: number) => {
       const record = await quietDeploy({
         ctx,
         environmentId: ctx.environmentId,
         projectId: ctx.projectId,
-        ranMs: 45 * MIN,
+        ranMs,
         silentMs: 20_000,
         recovery: true,
       })
@@ -6464,16 +6464,13 @@ test('the deploy time limit holds only while the server reports, and follows the
       return getCommandRecord(ctx.db, record.id)
     }
 
-    // Reporting all along and past the default 30 minutes: stopped, with the real reason.
-    const over = await run()
+    // Reporting all along and past 30 minutes: stopped, with the real reason.
+    const over = await run(45 * MIN)
     assertEquals(over?.status, 'timed_out')
     assertEquals(over?.error?.includes('30 minutes'), true)
 
-    await ctx.db
-      .update(organization)
-      .set({ options: { deployTimeoutMinutes: 60 } })
-      .where(eq(organization.id, ctx.organizationId))
-    const allowed = await run()
+    // Reporting and past the old ten minute cap, inside the limit: still running.
+    const allowed = await run(25 * MIN)
     assertEquals(allowed?.status, 'sent')
   })
 })

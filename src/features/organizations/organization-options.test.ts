@@ -8,7 +8,6 @@ import {
   resolveComposeDefaultResourceLimits,
   resolveDefaultEnvironmentName,
   resolveDeployHooksEnabled,
-  resolveDeployTimeoutMs,
   resolvePrincipalNamePolicy,
   resolveRandomizedPrincipalUsernames,
   resolveTemperatureUnit,
@@ -302,21 +301,4 @@ test('deploy hooks are off unless the organization opted in', () => {
     true
   )
   assertEquals(parseOrganizationOptions({ deployHooksEnabled: false }).deployHooksEnabled, false)
-})
-
-test('the deploy time limit is 30 minutes unless the organization set a whole number from 5 to 240', () => {
-  assertEquals(resolveDeployTimeoutMs({}), 30 * 60_000)
-  assertEquals(
-    resolveDeployTimeoutMs(parseOrganizationOptions({ deployTimeoutMinutes: 90 })),
-    90 * 60_000
-  )
-  for (const bad of [4, 241, 12.5, '30', null, true]) {
-    assertEquals(
-      parseOrganizationOptions({ deployTimeoutMinutes: bad }).deployTimeoutMinutes,
-      undefined,
-      JSON.stringify(bad)
-    )
-  }
-  assertEquals(parseOrganizationOptions({ deployTimeoutMinutes: 5 }).deployTimeoutMinutes, 5)
-  assertEquals(parseOrganizationOptions({ deployTimeoutMinutes: 240 }).deployTimeoutMinutes, 240)
 })

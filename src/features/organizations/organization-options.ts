@@ -31,11 +31,6 @@ import {
 } from '../deploy/docker-address-pools.ts'
 import { parsePhpModes, type PhpMode } from '../hostings/php-mode.ts'
 import {
-  DEPLOY_DEFAULT_TIMEOUT_MS,
-  DEPLOY_TIMEOUT_MAX_MINUTES,
-  DEPLOY_TIMEOUT_MIN_MINUTES,
-} from '../commands/deploy-limits.ts'
-import {
   DEFAULT_DIRECTORY_NAME_MODE,
   type DirectoryNameMode,
   isDirectoryNameMode,
@@ -53,11 +48,6 @@ const TEMPERATURE_UNITS = new Set<TemperatureUnit>(['celsius', 'fahrenheit'])
 export const DEFAULT_TEMPERATURE_UNIT: TemperatureUnit = 'celsius'
 
 export type OrganizationOptions = {
-  /**
-   * The longest a deploy may run, in minutes, counted only while the server
-   * reports (`command-recovery-v1`). Omitted → 30. Bounded 5 to 240.
-   */
-  deployTimeoutMinutes?: number
   /** Org-wide default timezone applied when a server has no override. */
   defaultServerTimezone?: string
   /**
@@ -395,24 +385,7 @@ export function parseOrganizationOptions(value: unknown): OrganizationOptions {
   assignComposeDefaultResourceLimits(options, value)
   assignPhpModes(options, value)
   assignDirectoryNames(options, value)
-  const deployTimeoutMinutes = parseDeployTimeoutMinutes(value.deployTimeoutMinutes)
-  if (deployTimeoutMinutes !== undefined) options.deployTimeoutMinutes = deployTimeoutMinutes
   return options
-}
-
-/** A whole number of minutes inside the allowed range; anything else is dropped. */
-export function parseDeployTimeoutMinutes(value: unknown): number | undefined {
-  if (typeof value !== 'number' || !Number.isInteger(value)) return undefined
-  return value >= DEPLOY_TIMEOUT_MIN_MINUTES && value <= DEPLOY_TIMEOUT_MAX_MINUTES
-    ? value
-    : undefined
-}
-
-/** Effective deploy time limit in milliseconds: the organization's setting, or 30 minutes. */
-export function resolveDeployTimeoutMs(options: OrganizationOptions): number {
-  return options.deployTimeoutMinutes === undefined
-    ? DEPLOY_DEFAULT_TIMEOUT_MS
-    : options.deployTimeoutMinutes * 60_000
 }
 
 function assignDirectoryNames(

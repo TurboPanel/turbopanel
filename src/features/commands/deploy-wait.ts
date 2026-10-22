@@ -214,7 +214,7 @@ export const DEPLOY_WAIT_MESSAGES: Record<
 /** The message for a deploy stopped at its time limit while the server was still reporting. */
 export function deployTimeLimitMessage(runCapMs: number): string {
   const minutes = Math.round(runCapMs / 60_000)
-  return `The deploy ran for more than ${minutes} minutes, which is the deploy time limit, so it was stopped. A deploy that needs longer can be allowed more time in the organization settings.`
+  return `The deploy ran for more than ${minutes} minutes, which is the deploy time limit, so it was stopped. Check the build and deploy again.`
 }
 
 /** The message for a deploy given up on after the server went quiet, naming where it was. */
