@@ -16,6 +16,7 @@ import { and, eq, inArray, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { command, managed, server } from '../../db/schema.ts'
 import { compatLogInfo, compatLogWarn } from '../../lib/log-compat.ts'
+import { forEachSequential } from '../../lib/sequential.ts'
 import { createCommandRecord, transitionCommand } from '../commands/command-records.ts'
 import { commandIsOpen } from '../commands/open-statuses.ts'
 import type { CommandEnvelope } from '../commands/envelope.ts'
@@ -185,7 +186,7 @@ export async function runManagedDestroyRedriveSweep(
 ): Promise<number> {
   let queued = 0
   const rows = await listCandidates(db, MANAGED_DESTROY_REDRIVE_SWEEP_CAP)
-  for (const row of rows) {
+  await forEachSequential(rows, async (row) => {
     try {
       if (await redriveOne(db, commandQueue, row)) queued += 1
     } catch (error) {
@@ -194,6 +195,6 @@ export async function runManagedDestroyRedriveSweep(
         `managed.destroy redrive failed for command ${row.id}: ${String(error)}`
       )
     }
-  }
+  })
   return queued
 }
