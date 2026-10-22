@@ -30,6 +30,9 @@ export {
 // real endpoints to advertise as a SAN.
 export const WILDCARD_BIND_ADDRESSES = new Set(['0.0.0.0', '::', '::0']) // NOSONAR typescript:S1313 — wildcard bind sentinel, not a routable address
 
+/** How long a queued `managed.apply` stays valid (its whole budget). */
+export const MANAGED_APPLY_EXPIRES_MS = 600_000
+
 /** How long one front-door update may run once the server starts it. */
 export const INGRESS_RECONCILE_RUN_MS = 300_000
 

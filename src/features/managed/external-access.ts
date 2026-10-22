@@ -31,6 +31,7 @@ import { command, managed, replica, server } from '../../db/schema.ts'
 import { consumerServerIdsForManaged } from '../bindings/resolve-endpoint.ts'
 import { getManagedEngineSpec } from './index.ts'
 import { enqueueManagedIngressReconcile } from './ingress-desired.ts'
+import { ingressReconcileValidityMs, MANAGED_APPLY_EXPIRES_MS } from './ingress-desired-pure.ts'
 import { loadBoundManagedIdsForServer } from './ingress-bound-consumers.ts'
 import { managedIngressPortForEngine } from './ingress-ports.ts'
 import { loadManagedIngressPorts } from './load-org-defaults.ts'
@@ -302,8 +303,11 @@ export async function enqueueManagedExternalAccessReconcile(
   return result.reason === 'not_needed' ? 'not_needed' : 'failed'
 }
 
-/** How long a queued ingress reconcile is valid; mirrors `MANAGED_INGRESS_RECONCILE_TTL_MS`. */
-const INGRESS_RECONCILE_VALID_MS = 5 * 60_000
+/**
+ * The longest a queued ingress reconcile can stay valid: one queued behind an
+ * apply outlives that apply, so it still counts as in flight that long.
+ */
+const INGRESS_RECONCILE_VALID_MS = ingressReconcileValidityMs(MANAGED_APPLY_EXPIRES_MS)
 
 /**
  * Re-send the setting to servers that were asked but never confirmed (a payload
