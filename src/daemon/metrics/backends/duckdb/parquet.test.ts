@@ -50,10 +50,10 @@ async function insertHostSample(
   await connection.run(
     `INSERT INTO ${HOST_SAMPLES_TABLE} ` +
       `(server_id, sampled_at, received_at, interval_seconds, ` +
-      `sequence, topology_generation, boot_generation, cpu_busy_percent) ` +
+      `cpu_busy_percent) ` +
       `VALUES (CAST(? AS UUID), ${timestampLiteralFromMs(atMs)}, ${timestampLiteralFromMs(
         atMs
-      )}, 60, 1, 1, 1, ?)`,
+      )}, 60, ?)`,
     [SERVER_ID, cpuBusyPercent]
   )
 }
@@ -65,10 +65,10 @@ async function insertMetricEvent(
 ): Promise<void> {
   await connection.run(
     `INSERT INTO ${METRIC_EVENTS_TABLE} ` +
-      `(server_id, event_id, "at", received_at, kind, severity, topology_generation) ` +
+      `(server_id, event_id, "at", received_at, kind, severity) ` +
       `VALUES (CAST(? AS UUID), ?, ${timestampLiteralFromMs(atMs)}, ${timestampLiteralFromMs(
         atMs
-      )}, 'oom_kill', 'critical', 1)`,
+      )}, 'oom_kill', 'critical')`,
     [SERVER_ID, eventId]
   )
 }

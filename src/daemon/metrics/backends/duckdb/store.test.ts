@@ -22,6 +22,7 @@ import { listPartitionDays, MS_PER_DAY, partitionFileForDay } from './parquet.ts
 import {
   GPU_SAMPLES_TABLE,
   HOST_SAMPLES_TABLE,
+  HOST_TEXT_SAMPLES_TABLE,
   MEMORY_DIAGNOSTICS_SAMPLES_TABLE,
   METRIC_EVENTS_TABLE,
   NETWORK_SAMPLES_TABLE,
@@ -198,18 +199,13 @@ it('writeSample persists the host row and every entity row with real NULLs, neve
     const handle = await openDuckDb({ paths: resolveDuckDbPaths(metricsDir) })
     try {
       const hostReader = await handle.connection.runAndReadAll(
-        `SELECT cpu_busy_percent, cpu_user_percent, ` +
-          `CAST(sequence AS DOUBLE) AS sequence, topology_generation, boot_generation ` +
-          `FROM ${HOST_SAMPLES_TABLE}`
+        `SELECT cpu_busy_percent, cpu_user_percent FROM ${HOST_SAMPLES_TABLE}`
       )
       const hostRow = hostReader.getRowObjectsJS()[0]!
       assertEquals(hostRow.cpu_busy_percent, 42)
       // Never-set metric is a real SQL NULL — never the AE sentinel.
       assertEquals(hostRow.cpu_user_percent, null)
       assertEquals(hostRow.cpu_user_percent === AE_MISSING_METRIC_SENTINEL, false)
-      assertEquals(hostRow.sequence, 1)
-      assertEquals(hostRow.topology_generation, 1)
-      assertEquals(hostRow.boot_generation, 1)
 
       const networkReader = await handle.connection.runAndReadAll(
         `SELECT device_id, receive_bytes_per_second, transmit_bytes_per_second FROM ${NETWORK_SAMPLES_TABLE}`
@@ -337,9 +333,9 @@ it("writeSample's row fan-out lands inside a single BEGIN/COMMIT transaction", a
   const commitIndex = calls.indexOf('COMMIT')
   assertEquals(beginIndex >= 0, true)
   assertEquals(commitIndex > beginIndex, true)
-  // host + network + gpu + event tables all fan out from one sample.
+  // host + host text + network + gpu + event tables all fan out from one sample.
   const insertCalls = calls.filter((sql) => sql.startsWith('INSERT INTO'))
-  assertEquals(insertCalls.length, 4)
+  assertEquals(insertCalls.length, 5)
   for (const sql of insertCalls) {
     const idx = calls.indexOf(sql)
     assertEquals(idx > beginIndex && idx < commitIndex, true, sql)
@@ -694,7 +690,7 @@ it('v6 queryHostSeries: diagnostics memory fields resolve via the left-joined me
 
     const result = await store.queryHostSeries({
       serverId: SERVER_A,
-      metrics: ['diagnostics.memoryFreeBytes', 'diagnostics.pageScanDirectPerSecond'],
+      metrics: ['diagnostics.committedAsBytes', 'diagnostics.pageScanDirectPerSecond'],
       from: new Date(DAY_START).toISOString(),
       to: new Date(DAY_START + 600_000).toISOString(),
       resolutionSeconds: 600,
@@ -706,13 +702,11 @@ it('v6 queryHostSeries: diagnostics memory fields resolve via the left-joined me
     // the weighted average/last-value aggregates ignore the NULL row rather
     // than averaging it in as 0.
     assertEquals(
-      point.values['diagnostics.memoryFreeBytes'],
-      DIAGNOSTICS_FIXTURE.memory.memoryFreeBytes
+      point.values['diagnostics.committedAsBytes'],
+      DIAGNOSTICS_FIXTURE.memory.committedAsBytes
     )
-    assertEquals(
-      point.values['diagnostics.pageScanDirectPerSecond'],
-      DIAGNOSTICS_FIXTURE.memory.pageScanDirectPerSecond
-    )
+    // A reading neither edition stores reads as empty, whatever was sent.
+    assertEquals(point.values['diagnostics.pageScanDirectPerSecond'], null)
     // sample_count/topologyGeneration still reflect both host rows, not just the joined one.
     assertEquals(result.sampleCount, 2)
   })
@@ -733,7 +727,7 @@ it('v6 queryHostSeries: combining host.* with both diagnostics halves in one req
       metrics: [
         'host.cpu.busyPercent',
         'diagnostics.averageFrequencyMHz',
-        'diagnostics.memoryFreeBytes',
+        'diagnostics.committedAsBytes',
       ],
       from: new Date(DAY_START).toISOString(),
       to: new Date(DAY_START + 600_000).toISOString(),
@@ -743,10 +737,10 @@ it('v6 queryHostSeries: combining host.* with both diagnostics halves in one req
     assertEquals(result.points.length, 1)
     const point = result.points[0]!
     assertEquals(point.values['host.cpu.busyPercent'], 42)
-    assertEquals(point.values['diagnostics.averageFrequencyMHz'], 3200)
+    assertEquals(point.values['diagnostics.averageFrequencyMHz'], null)
     assertEquals(
-      point.values['diagnostics.memoryFreeBytes'],
-      DIAGNOSTICS_FIXTURE.memory.memoryFreeBytes
+      point.values['diagnostics.committedAsBytes'],
+      DIAGNOSTICS_FIXTURE.memory.committedAsBytes
     )
   })
 })
@@ -765,7 +759,7 @@ it('v5 queryHostSummary: sample count + latestAt, zero samples means null latest
     assertEquals(empty.latestAt, null)
 
     await store.writeSample(sample({ atMs: from + 60_000, cpuBusyPercent: 10 }))
-    await store.writeSample(sample({ atMs: from + 120_000, sequence: 2, cpuBusyPercent: 20 }))
+    await store.writeSample(sample({ atMs: from + 120_000, cpuBusyPercent: 20 }))
 
     const summary = await store.queryHostSummary({
       serverId: SERVER_A,
@@ -1101,7 +1095,7 @@ const DIAGNOSTICS_FIXTURE: DiagnosticsSample = {
   },
 }
 
-it("writeSample splits diagnostics across the host row's cpu_diagnostics_* columns and a single server_memory_diagnostics_samples row (no row when absent)", async () => {
+it('writeSample stores only the committed-memory reading of diagnostics, in a single server_memory_diagnostics_samples row (no row when absent)', async () => {
   await withStore(async (store, metricsDir) => {
     await store.writeSample(sample({ atMs: DAY_START, diagnostics: DIAGNOSTICS_FIXTURE }))
     await store.close()
@@ -1110,19 +1104,10 @@ it("writeSample splits diagnostics across the host row's cpu_diagnostics_* colum
     try {
       assertEquals(await rowCount(handle.connection, MEMORY_DIAGNOSTICS_SAMPLES_TABLE), 1)
       const reader = await handle.connection.runAndReadAll(
-        `SELECT memory_free_bytes, compaction_stalls_per_second FROM ${MEMORY_DIAGNOSTICS_SAMPLES_TABLE}`
+        `SELECT committed_as_bytes FROM ${MEMORY_DIAGNOSTICS_SAMPLES_TABLE}`
       )
       const row = reader.getRowObjectsJS()[0]!
-      assertEquals(row.memory_free_bytes, 1_000_000)
-      assertEquals(row.compaction_stalls_per_second, 1)
-
-      // The CPU half rides the host row itself — no second table, no join.
-      const hostReader = await handle.connection.runAndReadAll(
-        `SELECT cpu_diagnostics_average_frequency_m_hz, cpu_diagnostics_cpu_irq_percent FROM ${HOST_SAMPLES_TABLE}`
-      )
-      const hostRow = hostReader.getRowObjectsJS()[0]!
-      assertEquals(hostRow.cpu_diagnostics_average_frequency_m_hz, 3200)
-      assertEquals(hostRow.cpu_diagnostics_cpu_irq_percent, 2.5)
+      assertEquals(row.committed_as_bytes, 9_000_000)
     } finally {
       handle.close()
     }
@@ -1323,7 +1308,6 @@ it('v8 extended numeric fields land in the ext_* columns; a v6 sample writes rea
     await store.writeSample(
       sample({
         atMs: DAY_START + 120_000,
-        sequence: 2,
         ingressSources: [INGRESS_V6],
         dockerUsage: DOCKER_V6,
       })
@@ -1336,24 +1320,30 @@ it('v8 extended numeric fields land in the ext_* columns; a v6 sample writes rea
         (await handle.connection.runAndReadAll(sql)).getRowObjectsJS()
       const host = await read(
         `SELECT ext_oom_kills, ext_root_disk_queue_depth, ext_pid_limit_used_percent, ` +
-          `ext_systemd_units_failed FROM ${HOST_SAMPLES_TABLE} ORDER BY sequence`
+          `ext_systemd_units_failed, ext_tls_cert_soonest_expiry_days AS d ` +
+          `FROM ${HOST_SAMPLES_TABLE} ORDER BY sampled_at`
       )
       assertEquals(host[0], {
         ext_oom_kills: 3,
         ext_root_disk_queue_depth: 1.5,
         ext_pid_limit_used_percent: 20,
         ext_systemd_units_failed: null,
+        d: 21,
       })
       assertEquals(host[1].ext_oom_kills, null)
+      assertEquals(host[1].d, null)
       const docker = await read(
-        `SELECT ext_containers_running, ext_reclaimable_bytes FROM server_docker_samples ORDER BY sequence`
+        `SELECT ext_containers_running, ext_reclaimable_bytes FROM server_docker_samples ORDER BY sampled_at`
       )
       assertEquals(docker[0], { ext_containers_running: 7, ext_reclaimable_bytes: 99 })
       assertEquals(docker[1].ext_containers_running, null)
-      const ingress = await read(
-        `SELECT ext_tls_cert_soonest_expiry_days AS d FROM server_ingress_samples ORDER BY sequence`
+      const text = await read(
+        `SELECT kernel, os FROM ${HOST_TEXT_SAMPLES_TABLE} ORDER BY sampled_at`
       )
-      assertEquals([ingress[0].d, ingress[1].d], [21, null])
+      assertEquals(text, [
+        { kernel: '6.8.0', os: '' },
+        { kernel: '', os: '' },
+      ])
     } finally {
       handle.close()
     }
@@ -1371,9 +1361,9 @@ it('a row the column types reject never blocks other servers and is dropped afte
   )
   const SERVER_B = '66666666-7777-4888-8999-aaaaaaaaaaaa'
   try {
-    // 3e9 does not fit the INTEGER topology_generation column.
+    // 100000 does not fit the SMALLINT interval_seconds column.
     await assertRejects(() =>
-      store.writeSample(sample({ atMs: DAY_START + 60_000, topologyGeneration: 3_000_000_000 }))
+      store.writeSample(sample({ atMs: DAY_START + 60_000, intervalSeconds: 100_000 }))
     )
     // A later sample from another server still lands and reads back.
     await store.writeSample(
@@ -1398,6 +1388,101 @@ it('a row the column types reject never blocks other servers and is dropped afte
     )
   } finally {
     handle.close()
+    await Deno.remove(metricsDir, { recursive: true })
+  }
+})
+
+it('a NIC embedded in the hosted host row keeps its errors and drops only as their sum', async () => {
+  const metricsDir = await Deno.makeTempDir({ prefix: 'tp-duckdb-nic-sum-' })
+  try {
+    const store = makeStore(metricsDir)
+    const withRates = (deviceId: string) => ({
+      deviceId,
+      receiveBytesPerSecond: 10,
+      transmitBytesPerSecond: 20,
+      receiveErrorsPerSecond: 1,
+      transmitErrorsPerSecond: 2,
+      receiveDropsPerSecond: 3,
+      transmitDropsPerSecond: 4,
+    })
+    await store.writeSample(
+      sample({
+        atMs: DAY_START + 60_000,
+        networks: [withRates('eth0'), withRates('eth9')],
+        extended: { networkSizes: [{ deviceId: 'eth9', linkSpeedMbps: 2500 }] },
+      }),
+      {
+        normalNicSlots: ['eth0'],
+        fabricDeviceIds: [],
+        rootFilesystemId: null,
+        gpuPageOrder: [],
+        blockPageOrder: [],
+        filesystemPageOrder: [],
+        hardwareSignalPageOrder: [],
+      }
+    )
+    await store.close()
+
+    const handle = await openDuckDb({ paths: resolveDuckDbPaths(metricsDir) })
+    try {
+      const rows = (
+        await handle.connection.runAndReadAll(
+          `SELECT device_id, receive_bytes_per_second AS rx, receive_errors_per_second AS rx_err, ` +
+            `transmit_drops_per_second AS tx_drop, problems_per_second AS problems, ` +
+            `link_speed_mbps AS speed FROM ${NETWORK_SAMPLES_TABLE} ORDER BY device_id`
+        )
+      ).getRowObjectsJS()
+      assertEquals(rows, [
+        { device_id: 'eth0', rx: 10, rx_err: null, tx_drop: null, problems: 10, speed: null },
+        { device_id: 'eth9', rx: 10, rx_err: 1, tx_drop: 4, problems: null, speed: 2500 },
+      ])
+    } finally {
+      handle.close()
+    }
+  } finally {
+    await Deno.remove(metricsDir, { recursive: true })
+  }
+})
+
+it('container health is stored without the disk breakdown; reclaimable falls back to the three groups', async () => {
+  const metricsDir = await Deno.makeTempDir({ prefix: 'tp-duckdb-docker-' })
+  try {
+    const store = makeStore(metricsDir)
+    await store.writeSample(
+      sample({
+        atMs: DAY_START + 60_000,
+        extended: { docker: { containersRunning: 4 } },
+      })
+    )
+    await store.writeSample(
+      sample({
+        atMs: DAY_START + 120_000,
+        dockerUsage: {
+          ...DOCKER_V6,
+          imagesReclaimableBytes: 10,
+          volumesReclaimableBytes: 20,
+          buildCacheReclaimableBytes: 30,
+        },
+      })
+    )
+    await store.close()
+
+    const handle = await openDuckDb({ paths: resolveDuckDbPaths(metricsDir) })
+    try {
+      const rows = (
+        await handle.connection.runAndReadAll(
+          `SELECT ext_containers_running AS running, ext_reclaimable_bytes AS reclaimable, ` +
+            `layers_bytes FROM server_docker_samples ORDER BY sampled_at`
+        )
+      ).getRowObjectsJS()
+      assertEquals(rows, [
+        { running: 4, reclaimable: null, layers_bytes: null },
+        { running: null, reclaimable: 60, layers_bytes: 1 },
+      ])
+    } finally {
+      handle.close()
+    }
+  } finally {
     await Deno.remove(metricsDir, { recursive: true })
   }
 })

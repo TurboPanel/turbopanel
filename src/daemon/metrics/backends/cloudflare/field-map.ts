@@ -49,6 +49,7 @@ import {
   type NetworkDeviceSample,
 } from '../../../../contracts/metrics-contract.ts'
 import type { HostedFamily, MetricEntityScope } from '../../metric-descriptors.ts'
+import { resolveNetworkSlots } from '../../shared-derivations.ts'
 import type { AuthenticatedMetricsSample, ServerStatusEvent, SlotMapping } from '../../types.ts'
 import {
   hasManagedDatabase,
@@ -277,58 +278,6 @@ export function assertAnalyticsEngineDataPointShape(point: {
   if (point.blobs.length !== AE_BLOB_COUNT) {
     throw new TypeError(`AE v5 blobs length ${point.blobs.length} !== ${AE_BLOB_COUNT}`)
   }
-}
-
-/** How many `normalNicSlots` entries `host.network` embeds — slots 1 and 2; every later slot pages. */
-export const HOST_IO_EMBEDDED_NIC_SLOT_COUNT = 2
-
-/**
- * Resolve which `networks[]` entries embed in `host.network` (slots 1/2) versus
- * page as standalone `network` rows, given an optional `SlotMapping`.
- *
- * With a mapping: slot 1/slot 2 are looked up by `deviceId` (never by array
- * position — a topology reorder must not silently reinterpret a slot), and
- * any device listed in `fabricDeviceIds` is excluded from paging entirely —
- * this is what keeps a 2-NIC-plus-fabric host at 2 rows instead of 3. Slots
- * 3+ page first, in slot order, then any device that is neither a slot nor a
- * known fabric device (arrival order).
- *
- * Without a mapping (generation not recorded yet): falls back to this
- * module's original positional behavior — `networks[0]`/`networks[1]` embed,
- * everything else pages — since there is no way yet to tell a fabric device
- * apart from an ordinary extra NIC.
- */
-function resolveNetworkSlots(
-  networks: readonly NetworkDeviceSample[],
-  slotMapping: SlotMapping | undefined
-): {
-  nic0: NetworkDeviceSample | undefined
-  nic1: NetworkDeviceSample | undefined
-  paged: NetworkDeviceSample[]
-} {
-  if (!slotMapping) {
-    return { nic0: networks[0], nic1: networks[1], paged: networks.slice(2) }
-  }
-  const byId = new Map(networks.map((device) => [device.deviceId, device]))
-  const [slot1, slot2] = slotMapping.normalNicSlots
-  const nic0 = slot1 ? byId.get(slot1) : undefined
-  const nic1 = slot2 ? byId.get(slot2) : undefined
-  const excluded = new Set<string>([
-    ...slotMapping.fabricDeviceIds,
-    ...slotMapping.normalNicSlots.slice(0, HOST_IO_EMBEDDED_NIC_SLOT_COUNT),
-  ])
-  const pagedSlots = slotMapping.normalNicSlots
-    .slice(HOST_IO_EMBEDDED_NIC_SLOT_COUNT)
-    .map((id) => byId.get(id))
-    .filter((device): device is NetworkDeviceSample => device !== undefined)
-  const pagedSlotIds = new Set(pagedSlots.map((device) => device.deviceId))
-  const paged = [
-    ...pagedSlots,
-    ...networks.filter(
-      (device) => !excluded.has(device.deviceId) && !pagedSlotIds.has(device.deviceId)
-    ),
-  ]
-  return { nic0, nic1, paged }
 }
 
 /**

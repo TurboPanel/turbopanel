@@ -30,6 +30,7 @@ import {
   GPU_SAMPLES_TABLE,
   HARDWARE_SIGNAL_SAMPLES_TABLE,
   HOST_SAMPLES_TABLE,
+  HOST_TEXT_SAMPLES_TABLE,
   INGRESS_SAMPLES_TABLE,
   MEMORY_DIAGNOSTICS_SAMPLES_TABLE,
   METRIC_EVENTS_TABLE,
@@ -46,6 +47,7 @@ export const PARQUET_PARTITION_FILE = 'metrics.parquet'
 
 export type ParquetFamilyKey =
   | 'host'
+  | 'host-text'
   | 'network'
   | 'filesystem'
   | 'block'
@@ -75,6 +77,12 @@ export const PARQUET_FAMILIES: readonly ParquetFamily[] = [
     key: 'host',
     table: HOST_SAMPLES_TABLE,
     subdir: 'host',
+    timestampColumn: 'sampled_at',
+  },
+  {
+    key: 'host-text',
+    table: HOST_TEXT_SAMPLES_TABLE,
+    subdir: 'host-text',
     timestampColumn: 'sampled_at',
   },
   {

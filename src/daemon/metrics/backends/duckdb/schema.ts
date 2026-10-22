@@ -12,15 +12,11 @@
  * `parts` marker column: v5 has no `MetricPart` allowlist, so a family's
  * table simply has no row for a sample that never reported that family.
  *
- * `diagnostics` is v6's single merged depth family, replacing v5's two
- * separately capability-gated `cpuDetail`/`memoryDetail` families. It is
- * still stored in two places for query-shape reasons: its 7 CPU scalars are
- * hand-declared host-global `cpu_diagnostics_*` columns on
- * `server_host_samples` (so a CPU-only diagnostics query needs no join at
- * all), while its 12 memory gauges/rates live in the singleton
+ * `diagnostics` is v6's single merged depth family. Only its committed-memory
+ * reading is stored (it has a place in the hosted layout); the others are not
+ * stored by either edition. That one reading lives in the singleton
  * `server_memory_diagnostics_samples` table, left-joined on
- * `(server_id, sampled_at)` — see `HOST_GLOBAL_CPU_DIAGNOSTICS_FIELDS` and
- * `MEMORY_DIAGNOSTICS_FIELDS` below.
+ * `(server_id, sampled_at)`.
  *
  * v5 deleted every per-core table. `server_cpu_hotspot_samples` (the 4
  * busiest cores per sample) and `server_cpu_core_samples` (live-only, one
@@ -36,7 +32,6 @@ import {
   EXTENDED_INGRESS_FIELD_NAMES,
   EXTENDED_SIZE_FIELD_NAMES,
   type DatabaseProxySample,
-  type DiagnosticsCpuSample,
   type DiagnosticsMemorySample,
   type DockerUsageSample,
   type FilesystemSample,
@@ -50,11 +45,13 @@ import {
   type IngressSourceSample,
   type NetworkDeviceSample,
   type RouterSample,
+  METRICS_TEXT_FIELD_NAMES,
   STORAGE_ENGINE_KEYS,
   STORAGE_FLAT_FIELD_NAMES,
   storageEngineFieldName,
   type StorageEngineSample,
 } from '../../../../contracts/metrics-contract.ts'
+import { STORED_FIELD_IDS } from '../../field-registry.ts'
 
 /** Hot raw-sample tables (recent, un-archived rows). */
 export const HOST_SAMPLES_TABLE = 'server_host_samples'
@@ -69,6 +66,7 @@ export const ROUTER_SAMPLES_TABLE = 'server_router_samples'
 export const STORAGE_SAMPLES_TABLE = 'server_storage_samples'
 export const DOCKER_SAMPLES_TABLE = 'server_docker_samples'
 export const MEMORY_DIAGNOSTICS_SAMPLES_TABLE = 'server_memory_diagnostics_samples'
+export const HOST_TEXT_SAMPLES_TABLE = 'server_host_text_samples'
 export const METRIC_EVENTS_TABLE = 'server_metric_events'
 
 /** Connection-status transition table — untouched by the v5 cutover. */
@@ -84,27 +82,25 @@ export const HOST_FACTS_TABLE = 'server_host_facts'
 
 /**
  * Sidecar version written after a successful open. The current DuckDB store
- * is **10** — the only supported on-disk layout. `openDuckDb` discards
+ * is **12** — the only supported on-disk layout. `openDuckDb` discards
  * `metrics.duckdb`, `parquet/`, `tmp/`, and `schema-version` when the marker
  * holds an older version number, then creates the current store (a missing,
  * corrupt, or newer marker beside existing data fails the open instead).
- * There is no in-place migration and no supported path for older files.
+ * There is no in-place migration and no supported path for older files. The
+ * number never goes down: a lower one would make an existing file look
+ * "newer" and refuse to open.
  *
- * Bumped 6 → 7 when `managed.router` gained its own `server_router_samples`
- * table and the ingress/database-proxy tables gained columns: every DDL
- * statement is `CREATE TABLE IF NOT EXISTS`, so without a marker bump an
- * existing file would silently keep its old, narrower columns and reject
- * every insert. Bumped 7 → 8 for the same reason when `managed.storage` and
- * `managed.docker` gained `server_storage_samples` / `server_docker_samples`.
- * Bumped 8 → 9 for metrics v8: the optional `extended` numeric fields became
- * `ext_*` columns on `server_host_samples`, `server_docker_samples` and
- * `server_ingress_samples`; like the earlier bumps it is a hard cut (a
- * marker-8 file is discarded). Free-text v8 fields are not stored here (Analytics Engine and the live view
- * only). Bumped 9 → 10 when every sample began carrying the sizes its percentages are measured against: the
- * `ext_*` size columns on `server_host_samples` and `total_bytes` / `total_inodes` / `memory_total_bytes` on the
- * filesystem and GPU tables; again a hard cut.
+ * Every DDL statement is `CREATE TABLE IF NOT EXISTS`, so without a marker
+ * bump an existing file would silently keep its old columns and reject or
+ * misread every insert; each layout change is therefore a hard cut (the old
+ * file is discarded, the new one starts empty). Marker 12 makes the store hold
+ * exactly the readings the hosted store holds (`../../field-registry.ts`):
+ * the columns for values neither store keeps are gone, the host and device
+ * facts that ride as text on the hosted store are columns here
+ * (`server_host_text_samples` and text columns on the device tables), and the
+ * sequence and generation columns, which nothing reads, are gone.
  */
-export const DUCKDB_SCHEMA_MARKER_VERSION = 10
+export const DUCKDB_SCHEMA_MARKER_VERSION = 12
 
 // ---------------------------------------------------------------------------
 // Field ordering — hand-declared `Record<keyof T, true>` literals so a
@@ -112,6 +108,15 @@ export const DUCKDB_SCHEMA_MARKER_VERSION = 10
 // instead of silently dropping a column. `Object.keys()` on each literal
 // gives a stable, deterministic field order (object literal insertion order).
 // ---------------------------------------------------------------------------
+
+/**
+ * The fields of one scope the registry says both stores keep, in the order
+ * given. Every column list below is cut through this, so a value the registry
+ * does not store has no column, and `field-registry.test.ts` checks the result.
+ */
+function stored(scope: string, fields: readonly string[]): string[] {
+  return fields.filter((field) => STORED_FIELD_IDS.has(`${scope}.${field}`))
+}
 
 export type HostMetricGroup = keyof HostMetrics
 
@@ -184,8 +189,9 @@ const HOST_GROUP_FIELD_RECORDS: Record<HostMetricGroup, Record<string, true>> = 
 }
 
 /**
- * Every `HostMetrics` leaf field, in declared group order — 31 entries
- * (11 + 2 + 7 + 9 + 2). Group coverage is compile-time exhaustive
+ * Every `HostMetrics` leaf field the registry stores, in declared group order.
+ * The contract has 31 (11 + 2 + 7 + 9 + 2); the others are not stored by either
+ * edition. Group coverage is compile-time exhaustive
  * (`HOST_GROUP_MARKERS` above is typed `Record<keyof HostMetrics, true>`);
  * field coverage within each group is compile-time exhaustive via that
  * group's own `Record<keyof T, true>` literal (`HOST_CPU_FIELDS` etc.) — a
@@ -193,7 +199,7 @@ const HOST_GROUP_FIELD_RECORDS: Record<HostMetricGroup, Record<string, true>> = 
  * the TypeScript build rather than silently missing a column.
  */
 export const HOST_METRIC_FIELD_REFS: readonly HostFieldRef[] = HOST_METRIC_GROUPS.flatMap((group) =>
-  Object.keys(HOST_GROUP_FIELD_RECORDS[group]).map((field) => ({
+  stored(`host.${group}`, Object.keys(HOST_GROUP_FIELD_RECORDS[group])).map((field) => ({
     group,
     field,
   }))
@@ -207,7 +213,16 @@ const NETWORK_FIELDS: Record<keyof Omit<NetworkDeviceSample, 'deviceId'>, true> 
   receiveDropsPerSecond: true,
   transmitDropsPerSecond: true,
 }
-export const NETWORK_METRIC_FIELDS: readonly string[] = Object.keys(NETWORK_FIELDS)
+/**
+ * Two stored NIC values are not wire fields: the sum of the four error and drop
+ * rates (the only form the hosted store keeps for a NIC embedded in a host row)
+ * and the negotiated link speed from `extended.networkSizes`.
+ */
+export const NETWORK_DERIVED_FIELDS = ['problemsPerSecond', 'linkSpeedMbps'] as const
+export const NETWORK_METRIC_FIELDS: readonly string[] = stored('network', [
+  ...Object.keys(NETWORK_FIELDS),
+  ...NETWORK_DERIVED_FIELDS,
+])
 
 /**
  * The root filesystem never gets a row here: its capacity is carried
@@ -230,10 +245,10 @@ const FILESYSTEM_FIELDS: Record<keyof Omit<FilesystemSample, 'filesystemId'>, tr
  * filesystem's readings so a percentage is taken against the size at that moment.
  */
 export const FILESYSTEM_SIZE_FIELDS = ['totalBytes', 'totalInodes'] as const
-export const FILESYSTEM_METRIC_FIELDS: readonly string[] = [
+export const FILESYSTEM_METRIC_FIELDS: readonly string[] = stored('filesystem', [
   ...Object.keys(FILESYSTEM_FIELDS),
   ...FILESYSTEM_SIZE_FIELDS,
-]
+])
 
 const BLOCK_FIELDS: Record<keyof Omit<BlockDeviceSample, 'deviceId'>, true> = {
   readBytesPerSecond: true,
@@ -245,7 +260,14 @@ const BLOCK_FIELDS: Record<keyof Omit<BlockDeviceSample, 'deviceId'>, true> = {
   utilizationPercent: true,
   queueDepth: true,
 }
-export const BLOCK_METRIC_FIELDS: readonly string[] = Object.keys(BLOCK_FIELDS)
+/** A drive's combined read plus write operations per second: stored as one sum, like the hosted store. */
+export const BLOCK_OPS_FIELD = 'opsPerSecond'
+export const BLOCK_METRIC_FIELDS: readonly string[] = stored('block', [
+  ...Object.keys(BLOCK_FIELDS),
+  BLOCK_OPS_FIELD,
+])
+/** A drive's text facts, from `extended.blockDeviceText`. */
+export const BLOCK_TEXT_FIELDS = ['model', 'smart'] as const
 
 const GPU_FIELDS: Record<keyof Omit<GpuSample, 'gpuId'>, true> = {
   utilizationPercent: true,
@@ -257,7 +279,12 @@ const GPU_FIELDS: Record<keyof Omit<GpuSample, 'gpuId'>, true> = {
 }
 /** The GPU's memory size from `extended.gpuSizes`, stored beside its readings. */
 export const GPU_SIZE_FIELDS = ['memoryTotalBytes'] as const
-export const GPU_METRIC_FIELDS: readonly string[] = [...Object.keys(GPU_FIELDS), ...GPU_SIZE_FIELDS]
+export const GPU_METRIC_FIELDS: readonly string[] = stored('gpu', [
+  ...Object.keys(GPU_FIELDS),
+  ...GPU_SIZE_FIELDS,
+])
+/** A GPU's text facts, from `extended.gpuText`. */
+export const GPU_TEXT_FIELDS = ['driver', 'model'] as const
 
 const INGRESS_FIELDS: Record<keyof Omit<IngressSourceSample, 'sourceId' | 'sourceKind'>, true> = {
   requests: true,
@@ -280,7 +307,10 @@ const INGRESS_FIELDS: Record<keyof Omit<IngressSourceSample, 'sourceId' | 'sourc
   upstreamsTotal: true,
   retries: true,
 }
-export const INGRESS_METRIC_FIELDS: readonly string[] = Object.keys(INGRESS_FIELDS)
+export const INGRESS_METRIC_FIELDS: readonly string[] = stored(
+  'ingress',
+  Object.keys(INGRESS_FIELDS)
+)
 
 const DATABASE_PROXY_FIELDS: Record<
   keyof Omit<DatabaseProxySample, 'sourceId' | 'sourceKind'>,
@@ -304,7 +334,10 @@ const DATABASE_PROXY_FIELDS: Record<
   bytesFromBackends: true,
   bytesToBackends: true,
 }
-export const DATABASE_PROXY_METRIC_FIELDS: readonly string[] = Object.keys(DATABASE_PROXY_FIELDS)
+export const DATABASE_PROXY_METRIC_FIELDS: readonly string[] = stored(
+  'databaseProxy',
+  Object.keys(DATABASE_PROXY_FIELDS)
+)
 
 /**
  * The shared-hosting HTTP router family — host-wide and singleton, so its
@@ -327,34 +360,11 @@ const ROUTER_FIELDS: Record<keyof RouterSample, true> = {
   configLastReloadAgeSeconds: true,
   tlsCertSoonestExpiryDays: true,
 }
-export const ROUTER_METRIC_FIELDS: readonly string[] = Object.keys(ROUTER_FIELDS)
+export const ROUTER_METRIC_FIELDS: readonly string[] = stored('router', Object.keys(ROUTER_FIELDS))
 
 /**
- * The CPU half of `diagnostics` — a small, intentional, hand-declared
- * exception to the `HOST_METRIC_FIELD_REFS` derivation pattern above, since
- * `diagnostics` lives outside `HostMetrics`'s `host` object but is still
- * host-global (one value per sample, not per entity). Keeping these 7 on the
- * host row is what lets a CPU-only diagnostics query answer without touching
- * the memory-diagnostics table.
- */
-const HOST_GLOBAL_CPU_DIAGNOSTICS_FIELDS: Record<keyof DiagnosticsCpuSample, true> = {
-  averageFrequencyMHz: true,
-  minimumFrequencyMHz: true,
-  maximumFrequencyMHz: true,
-  contextSwitchesPerSecond: true,
-  interruptsPerSecond: true,
-  forksPerSecond: true,
-  cpuIrqPercent: true,
-}
-export const HOST_GLOBAL_CPU_DIAGNOSTICS_FIELDS_LIST: readonly string[] = Object.keys(
-  HOST_GLOBAL_CPU_DIAGNOSTICS_FIELDS
-)
-
-/**
- * The memory half of `diagnostics` — 12 fields. v6 dropped seven
- * never-charted `/proc/meminfo` gauges (`pageTablesBytes`,
- * `kernelStackBytes`, `commitLimitBytes`, and the four active/inactive
- * anon/file gauges) that v5's `memoryDetail` carried.
+ * The memory half of `diagnostics` — 12 fields on the wire, of which only
+ * `committedAsBytes` is stored.
  */
 const MEMORY_DIAGNOSTICS_FIELDS: Record<keyof DiagnosticsMemorySample, true> = {
   memoryFreeBytes: true,
@@ -370,20 +380,18 @@ const MEMORY_DIAGNOSTICS_FIELDS: Record<keyof DiagnosticsMemorySample, true> = {
   pageScanKswapdPerSecond: true,
   compactionStallsPerSecond: true,
 }
-export const MEMORY_DIAGNOSTICS_METRIC_FIELDS: readonly string[] =
+export const MEMORY_DIAGNOSTICS_METRIC_FIELDS: readonly string[] = stored(
+  'diagnostics',
   Object.keys(MEMORY_DIAGNOSTICS_FIELDS)
+)
 
 /**
  * Host-wide managed-storage accounting — singleton per sample, so its table
  * carries no entity id column (same shape as `server_router_samples`).
  *
- * Unlike the Analytics Engine backend, this table is **not** split at the
- * `managed.storage` / `managed.docker` family boundary: DuckDB has no 19-slot
- * page to budget against, so the Docker breakdown rides here too (prefixed
- * `docker_*`) and a storage panel answers from one row with no join. The
- * separate `server_docker_samples` table below keeps the AE family boundary
- * reproducible for cross-backend comparisons; the duplication is deliberate
- * and costs one narrow row per sample.
+ * The Docker breakdown is not repeated here: it lives in the separate
+ * `server_docker_samples` table, which keeps the hosted `managed.docker` family
+ * boundary and is the one place a Docker figure is stored.
  *
  * The nested per-engine groups flatten to `<engine><Field>` before
  * snake_casing, which is what yields `postgres_instances_running` and keeps
@@ -397,26 +405,34 @@ const STORAGE_ENGINE_FIELD_MARKERS: Record<keyof StorageEngineSample, true> = {
 }
 
 /**
- * Every per-engine column, flattened — derived from the compile-time
+ * Every stored per-engine column, flattened — derived from the compile-time
  * exhaustive marker record above crossed with the contract's engine list, so
  * a field added to `StorageEngineSample` fails the TypeScript build rather
- * than silently missing three columns.
+ * than silently missing three columns. The connection counts are not stored.
  */
-export const STORAGE_ENGINE_METRIC_FIELDS: readonly string[] = STORAGE_ENGINE_KEYS.flatMap(
-  (engine) =>
-    (Object.keys(STORAGE_ENGINE_FIELD_MARKERS) as (keyof StorageEngineSample)[]).map((field) =>
-      storageEngineFieldName(engine, field)
-    )
+export const STORAGE_ENGINE_STORED_FIELDS: readonly {
+  engine: (typeof STORAGE_ENGINE_KEYS)[number]
+  field: keyof StorageEngineSample
+  flat: string
+}[] = STORAGE_ENGINE_KEYS.flatMap((engine) =>
+  (Object.keys(STORAGE_ENGINE_FIELD_MARKERS) as (keyof StorageEngineSample)[]).map((field) => ({
+    engine,
+    field,
+    flat: storageEngineFieldName(engine, field),
+  }))
+).filter((entry) => STORED_FIELD_IDS.has(`storage.${entry.flat}`))
+
+export const STORAGE_ENGINE_METRIC_FIELDS: readonly string[] = STORAGE_ENGINE_STORED_FIELDS.map(
+  (entry) => entry.flat
 )
 
-/** `StorageSample`'s seven flat (non-engine) field names, in contract order. */
-export const STORAGE_FLAT_METRIC_FIELDS: readonly string[] = [...STORAGE_FLAT_FIELD_NAMES]
+/** The stored ones of `StorageSample`'s seven flat (non-engine) field names, in contract order. */
+export const STORAGE_FLAT_METRIC_FIELDS: readonly string[] = stored(
+  'storage',
+  STORAGE_FLAT_FIELD_NAMES
+)
 
-/**
- * The Docker breakdown as it appears **on the storage row** — the same ten
- * `DockerUsageSample` fields, `docker_`-prefixed so they cannot collide with
- * `docker_used_bytes` (the total, which comes from `StorageSample`).
- */
+/** The Docker disk breakdown fields the registry stores (`server_docker_samples`). */
 const DOCKER_USAGE_FIELDS: Record<keyof DockerUsageSample, true> = {
   layersBytes: true,
   imagesCount: true,
@@ -429,21 +445,13 @@ const DOCKER_USAGE_FIELDS: Record<keyof DockerUsageSample, true> = {
   buildCacheBytes: true,
   buildCacheReclaimableBytes: true,
 }
-export const DOCKER_USAGE_METRIC_FIELDS: readonly string[] = Object.keys(DOCKER_USAGE_FIELDS)
+export const DOCKER_USAGE_METRIC_FIELDS: readonly string[] = stored(
+  'dockerUsage',
+  Object.keys(DOCKER_USAGE_FIELDS)
+)
 
-/**
- * The four topology filesystem ids a storage row is labeled with. Nullable
- * and currently always written `NULL`: nothing on the wire carries them yet
- * (`StorageSample` is pure numbers), so the columns exist for the phase that
- * threads topology identity onto the row rather than being back-filled with a
- * guess.
- */
-export const STORAGE_FILESYSTEM_ID_COLUMNS = [
-  'hosting_filesystem_id',
-  'backup_filesystem_id',
-  'docker_filesystem_id',
-  'logs_filesystem_id',
-] as const
+/** The host facts that ride as text, one column each in `server_host_text_samples`. */
+export const HOST_TEXT_FIELDS: readonly string[] = METRICS_TEXT_FIELD_NAMES
 
 function snakeCase(field: string): string {
   return field.replaceAll(/([A-Z])/g, '_$1').toLowerCase()
@@ -468,46 +476,48 @@ export function entityMetricColumnName(field: string): string {
   return snakeCase(field)
 }
 
-/**
- * DuckDB column name for one of the Docker breakdown's fields **on the
- * storage row** — `docker_`-prefixed so `layersBytes` becomes
- * `docker_layers_bytes` and cannot collide with the `docker_used_bytes`
- * total. The standalone `server_docker_samples` table uses the unprefixed
- * `entityMetricColumnName` instead, matching its AE family exactly.
- */
-export function dockerUsageStorageColumnName(field: string): string {
-  if (!(field in DOCKER_USAGE_FIELDS)) {
-    throw new TypeError(`unknown Docker usage field: ${field}`)
-  }
-  return `docker_${snakeCase(field)}`
-}
-
 /** DuckDB column name for one of the v8 `extended` numeric fields (`oomKills` -> `ext_oom_kills`). */
 export function extendedColumnName(field: string): string {
   return `ext_${snakeCase(field)}`
 }
 
-/** v8 numeric columns per table, in DDL / insert order (`extended.host`, `.docker`, `.ingress`). */
-export const V8_HOST_COLUMNS: readonly string[] = EXTENDED_HOST_FIELD_NAMES.map(extendedColumnName)
+/**
+ * v8 numeric columns, in DDL / insert order: `extended.host` and the host-wide
+ * certificate days from `extended.ingress` on `server_host_samples`,
+ * `extended.docker` on `server_docker_samples`.
+ */
+export const EXTENDED_HOST_STORED_FIELDS: readonly string[] = stored(
+  'extended.host',
+  EXTENDED_HOST_FIELD_NAMES
+)
+export const EXTENDED_DOCKER_STORED_FIELDS: readonly string[] = stored(
+  'extended.docker',
+  EXTENDED_DOCKER_FIELD_NAMES
+)
+export const EXTENDED_INGRESS_STORED_FIELDS: readonly string[] = stored(
+  'extended.ingress',
+  EXTENDED_INGRESS_FIELD_NAMES
+)
+export const EXTENDED_SIZE_STORED_FIELDS: readonly string[] = stored(
+  'extended.sizes',
+  EXTENDED_SIZE_FIELD_NAMES
+)
+export const V8_HOST_COLUMNS: readonly string[] =
+  EXTENDED_HOST_STORED_FIELDS.map(extendedColumnName)
 export const V8_DOCKER_COLUMNS: readonly string[] =
-  EXTENDED_DOCKER_FIELD_NAMES.map(extendedColumnName)
+  EXTENDED_DOCKER_STORED_FIELDS.map(extendedColumnName)
 export const V8_INGRESS_COLUMNS: readonly string[] =
-  EXTENDED_INGRESS_FIELD_NAMES.map(extendedColumnName)
+  EXTENDED_INGRESS_STORED_FIELDS.map(extendedColumnName)
 /** The sizes every sample carries (`extended.sizes`), as `ext_*` columns on `server_host_samples`. */
-export const V8_SIZE_COLUMNS: readonly string[] = EXTENDED_SIZE_FIELD_NAMES.map(extendedColumnName)
-
-/** DuckDB column name for one of the diagnostics CPU half's hand-declared host-global scalar fields. */
-export function cpuDiagnosticsHostColumnName(field: string): string {
-  if (!(field in HOST_GLOBAL_CPU_DIAGNOSTICS_FIELDS)) {
-    throw new TypeError(`unknown diagnostics CPU host-global field: ${field}`)
-  }
-  return `cpu_diagnostics_${snakeCase(field)}`
-}
+export const V8_SIZE_COLUMNS: readonly string[] =
+  EXTENDED_SIZE_STORED_FIELDS.map(extendedColumnName)
 
 // ---------------------------------------------------------------------------
 // Common metadata columns shared by every family table except
 // `server_metric_events` (leaner, event-shaped) and `server_status_events`
-// (untouched v3 shape).
+// (untouched v3 shape). The sequence number and the topology and boot
+// generations are not stored: nothing reads them, and the hosted store does not
+// keep them either (see `../../field-registry.ts`).
 // ---------------------------------------------------------------------------
 
 export const COMMON_METADATA_COLUMNS = [
@@ -515,9 +525,6 @@ export const COMMON_METADATA_COLUMNS = [
   'sampled_at',
   'received_at',
   'interval_seconds',
-  'sequence',
-  'topology_generation',
-  'boot_generation',
 ] as const
 
 const COMMON_METADATA_COLUMN_DEFS = [
@@ -525,45 +532,60 @@ const COMMON_METADATA_COLUMN_DEFS = [
   'sampled_at TIMESTAMP NOT NULL',
   'received_at TIMESTAMP NOT NULL',
   'interval_seconds SMALLINT NOT NULL',
-  'sequence BIGINT NOT NULL',
-  'topology_generation INTEGER NOT NULL',
-  'boot_generation INTEGER NOT NULL',
 ]
 
 function indent(lines: readonly string[]): string {
   return lines.map((line) => `    ${line}`).join(',\n')
 }
 
+function doubleColumns(names: readonly string[]): string[] {
+  return names.map((name) => `${name} DOUBLE`)
+}
+
 function hostSamplesTableDdl(): string {
   const metricColumns = HOST_METRIC_FIELD_REFS.map(
     (ref) => `${hostMetricColumnName(ref.group, ref.field)} DOUBLE`
-  )
-  const cpuDiagnosticsColumns = HOST_GLOBAL_CPU_DIAGNOSTICS_FIELDS_LIST.map(
-    (field) => `${cpuDiagnosticsHostColumnName(field)} DOUBLE`
   )
   return [
     `CREATE TABLE IF NOT EXISTS ${HOST_SAMPLES_TABLE} (`,
     indent([
       ...COMMON_METADATA_COLUMN_DEFS,
       ...metricColumns,
-      ...cpuDiagnosticsColumns,
-      ...V8_HOST_COLUMNS.map((column) => `${column} DOUBLE`),
-      ...V8_SIZE_COLUMNS.map((column) => `${column} DOUBLE`),
+      ...doubleColumns(V8_HOST_COLUMNS),
+      ...doubleColumns(V8_INGRESS_COLUMNS),
+      ...doubleColumns(V8_SIZE_COLUMNS),
     ]),
     `)`,
   ].join('\n')
 }
 
-/** DDL for a per-entity family table: common metadata + entity id column(s) + nullable DOUBLE metric columns. */
+/** DDL for the host facts: one row per sample, one text column per fact. */
+function hostTextSamplesTableDdl(): string {
+  return [
+    `CREATE TABLE IF NOT EXISTS ${HOST_TEXT_SAMPLES_TABLE} (`,
+    indent([
+      ...COMMON_METADATA_COLUMN_DEFS,
+      ...HOST_TEXT_FIELDS.map((field) => `${entityMetricColumnName(field)} VARCHAR`),
+    ]),
+    `)`,
+  ].join('\n')
+}
+
+/**
+ * DDL for a per-entity family table: common metadata + entity id column(s) +
+ * nullable DOUBLE metric columns + VARCHAR text columns.
+ */
 function entitySamplesTableDdl(
   table: string,
   idColumnDefs: readonly string[],
   metricFields: readonly string[],
-  extraDoubleColumns: readonly string[] = []
+  extraDoubleColumns: readonly string[] = [],
+  textFields: readonly string[] = []
 ): string {
   const metricColumns = [
-    ...metricFields.map((field) => `${entityMetricColumnName(field)} DOUBLE`),
-    ...extraDoubleColumns.map((column) => `${column} DOUBLE`),
+    ...doubleColumns(metricFields.map(entityMetricColumnName)),
+    ...doubleColumns(extraDoubleColumns),
+    ...textFields.map((field) => `${entityMetricColumnName(field)} VARCHAR`),
   ]
   return [
     `CREATE TABLE IF NOT EXISTS ${table} (`,
@@ -592,74 +614,57 @@ function blockSamplesTableDdl(): string {
   return entitySamplesTableDdl(
     BLOCK_SAMPLES_TABLE,
     ['device_id VARCHAR NOT NULL'],
-    BLOCK_METRIC_FIELDS
+    BLOCK_METRIC_FIELDS,
+    [],
+    BLOCK_TEXT_FIELDS
   )
 }
 
 function gpuSamplesTableDdl(): string {
-  return entitySamplesTableDdl(GPU_SAMPLES_TABLE, ['gpu_id VARCHAR NOT NULL'], GPU_METRIC_FIELDS)
+  return entitySamplesTableDdl(
+    GPU_SAMPLES_TABLE,
+    ['gpu_id VARCHAR NOT NULL'],
+    GPU_METRIC_FIELDS,
+    [],
+    GPU_TEXT_FIELDS
+  )
 }
 
 /** Singleton per sample (no entity id column) — one row per sample when `router` is present. */
 function routerSamplesTableDdl(): string {
-  const metricColumns = ROUTER_METRIC_FIELDS.map(
-    (field) => `${entityMetricColumnName(field)} DOUBLE`
-  )
-  return [
-    `CREATE TABLE IF NOT EXISTS ${ROUTER_SAMPLES_TABLE} (`,
-    indent([...COMMON_METADATA_COLUMN_DEFS, ...metricColumns]),
-    `)`,
-  ].join('\n')
+  return entitySamplesTableDdl(ROUTER_SAMPLES_TABLE, [], ROUTER_METRIC_FIELDS)
 }
 
 /**
  * Singleton per sample (no entity id column) — one row per sample when
- * `storage` is present. Column order is the storage story end to end: the
- * used-byte totals (with the Docker breakdown expanded inline after
- * `docker_used_bytes`, since that is what the total decomposes into), then
- * the free-byte headrooms, then the per-engine census, then the four
- * topology-id labels.
+ * `storage` is present: the used and free byte totals, then the per-engine
+ * census.
  */
 function storageSamplesTableDdl(): string {
-  const metricColumns = storageSamplesMetricColumnNames().map((column) => `${column} DOUBLE`)
-  const idColumns = STORAGE_FILESYSTEM_ID_COLUMNS.map((column) => `${column} VARCHAR`)
-  return [
-    `CREATE TABLE IF NOT EXISTS ${STORAGE_SAMPLES_TABLE} (`,
-    indent([...COMMON_METADATA_COLUMN_DEFS, ...metricColumns, ...idColumns]),
-    `)`,
-  ].join('\n')
+  return entitySamplesTableDdl(STORAGE_SAMPLES_TABLE, [], storageSamplesMetricFields())
 }
 
 /**
  * Singleton per sample (no entity id column) — one row per sample when
- * `dockerUsage` survives the capability plan. Kept as its own table even
- * though `server_storage_samples` already carries the same ten values, so the
- * AE `managed.docker` family boundary stays reproducible on this backend —
- * the same precedent `server_memory_diagnostics_samples` set for the
- * diagnostics memory half.
+ * `dockerUsage` survives the capability plan. Its own table so the hosted
+ * `managed.docker` family boundary stays reproducible on this backend.
  */
 function dockerSamplesTableDdl(): string {
-  const metricColumns = [
-    ...DOCKER_USAGE_METRIC_FIELDS.map((field) => `${entityMetricColumnName(field)} DOUBLE`),
-    ...V8_DOCKER_COLUMNS.map((column) => `${column} DOUBLE`),
-  ]
-  return [
-    `CREATE TABLE IF NOT EXISTS ${DOCKER_SAMPLES_TABLE} (`,
-    indent([...COMMON_METADATA_COLUMN_DEFS, ...metricColumns]),
-    `)`,
-  ].join('\n')
+  return entitySamplesTableDdl(
+    DOCKER_SAMPLES_TABLE,
+    [],
+    DOCKER_USAGE_METRIC_FIELDS,
+    V8_DOCKER_COLUMNS
+  )
 }
 
 /** Singleton per sample (no entity id column) — one row per sample when `diagnostics` is present. */
 function memoryDiagnosticsSamplesTableDdl(): string {
-  const metricColumns = MEMORY_DIAGNOSTICS_METRIC_FIELDS.map(
-    (field) => `${entityMetricColumnName(field)} DOUBLE`
+  return entitySamplesTableDdl(
+    MEMORY_DIAGNOSTICS_SAMPLES_TABLE,
+    [],
+    MEMORY_DIAGNOSTICS_METRIC_FIELDS
   )
-  return [
-    `CREATE TABLE IF NOT EXISTS ${MEMORY_DIAGNOSTICS_SAMPLES_TABLE} (`,
-    indent([...COMMON_METADATA_COLUMN_DEFS, ...metricColumns]),
-    `)`,
-  ].join('\n')
 }
 
 /** Long-form table: one row per (sample, signal), `kind` + `value` columns rather than one column per signal kind. */
@@ -680,8 +685,7 @@ function ingressSamplesTableDdl(): string {
   return entitySamplesTableDdl(
     INGRESS_SAMPLES_TABLE,
     ['source_id VARCHAR NOT NULL', 'source_kind VARCHAR NOT NULL'],
-    INGRESS_METRIC_FIELDS,
-    V8_INGRESS_COLUMNS
+    INGRESS_METRIC_FIELDS
   )
 }
 
@@ -693,7 +697,7 @@ function databaseProxySamplesTableDdl(): string {
   )
 }
 
-/** Discrete event rows (`METRIC_EVENT_KINDS`) — leaner shape than the sample tables, no interval/sequence columns. */
+/** Discrete event rows (`METRIC_EVENT_KINDS`) — leaner shape than the sample tables, no interval column. */
 function metricEventsTableDdl(): string {
   return [
     `CREATE TABLE IF NOT EXISTS ${METRIC_EVENTS_TABLE} (`,
@@ -704,7 +708,6 @@ function metricEventsTableDdl(): string {
       'received_at TIMESTAMP NOT NULL',
       'kind VARCHAR NOT NULL',
       'severity VARCHAR NOT NULL',
-      'topology_generation INTEGER NOT NULL',
       'entity_id VARCHAR',
       'source VARCHAR',
       'payload VARCHAR',
@@ -747,6 +750,10 @@ function entityIndexes(table: string, idColumn: string): string[] {
   ]
 }
 
+function serverTimeIndex(table: string): string {
+  return `CREATE INDEX IF NOT EXISTS idx_${table}_server_time ON ${table} (server_id, sampled_at)`
+}
+
 /**
  * Ordered idempotent DDL for every table plus the range-scan indexes queries
  * scan on: `(server_id, <time column>)` for every family table, plus
@@ -755,7 +762,9 @@ function entityIndexes(table: string, idColumn: string): string[] {
 export function buildSchemaStatements(): string[] {
   return [
     hostSamplesTableDdl(),
-    `CREATE INDEX IF NOT EXISTS idx_${HOST_SAMPLES_TABLE}_server_time ON ${HOST_SAMPLES_TABLE} (server_id, sampled_at)`,
+    serverTimeIndex(HOST_SAMPLES_TABLE),
+    hostTextSamplesTableDdl(),
+    serverTimeIndex(HOST_TEXT_SAMPLES_TABLE),
     networkSamplesTableDdl(),
     ...entityIndexes(NETWORK_SAMPLES_TABLE, 'device_id'),
     filesystemSamplesTableDdl(),
@@ -765,7 +774,7 @@ export function buildSchemaStatements(): string[] {
     gpuSamplesTableDdl(),
     ...entityIndexes(GPU_SAMPLES_TABLE, 'gpu_id'),
     memoryDiagnosticsSamplesTableDdl(),
-    `CREATE INDEX IF NOT EXISTS idx_${MEMORY_DIAGNOSTICS_SAMPLES_TABLE}_server_time ON ${MEMORY_DIAGNOSTICS_SAMPLES_TABLE} (server_id, sampled_at)`,
+    serverTimeIndex(MEMORY_DIAGNOSTICS_SAMPLES_TABLE),
     hardwareSignalSamplesTableDdl(),
     ...entityIndexes(HARDWARE_SIGNAL_SAMPLES_TABLE, 'signal_id'),
     ingressSamplesTableDdl(),
@@ -773,11 +782,11 @@ export function buildSchemaStatements(): string[] {
     databaseProxySamplesTableDdl(),
     ...entityIndexes(DATABASE_PROXY_SAMPLES_TABLE, 'source_id'),
     routerSamplesTableDdl(),
-    `CREATE INDEX IF NOT EXISTS idx_${ROUTER_SAMPLES_TABLE}_server_time ON ${ROUTER_SAMPLES_TABLE} (server_id, sampled_at)`,
+    serverTimeIndex(ROUTER_SAMPLES_TABLE),
     storageSamplesTableDdl(),
-    `CREATE INDEX IF NOT EXISTS idx_${STORAGE_SAMPLES_TABLE}_server_time ON ${STORAGE_SAMPLES_TABLE} (server_id, sampled_at)`,
+    serverTimeIndex(STORAGE_SAMPLES_TABLE),
     dockerSamplesTableDdl(),
-    `CREATE INDEX IF NOT EXISTS idx_${DOCKER_SAMPLES_TABLE}_server_time ON ${DOCKER_SAMPLES_TABLE} (server_id, sampled_at)`,
+    serverTimeIndex(DOCKER_SAMPLES_TABLE),
     metricEventsTableDdl(),
     `CREATE INDEX IF NOT EXISTS idx_${METRIC_EVENTS_TABLE}_server_time ON ${METRIC_EVENTS_TABLE} (server_id, "at")`,
     statusEventsTableDdl(),
@@ -791,17 +800,18 @@ export function buildSchemaStatements(): string[] {
 // single source of truth `store.ts` builds its parameterized INSERTs from.
 // ---------------------------------------------------------------------------
 
-function hostSamplesDoubleColumnNames(): string[] {
+export function hostSamplesInsertColumns(): string[] {
   return [
+    ...COMMON_METADATA_COLUMNS,
     ...HOST_METRIC_FIELD_REFS.map((ref) => hostMetricColumnName(ref.group, ref.field)),
-    ...HOST_GLOBAL_CPU_DIAGNOSTICS_FIELDS_LIST.map(cpuDiagnosticsHostColumnName),
     ...V8_HOST_COLUMNS,
+    ...V8_INGRESS_COLUMNS,
     ...V8_SIZE_COLUMNS,
   ]
 }
 
-export function hostSamplesInsertColumns(): string[] {
-  return [...COMMON_METADATA_COLUMNS, ...hostSamplesDoubleColumnNames()]
+export function hostTextSamplesInsertColumns(): string[] {
+  return [...COMMON_METADATA_COLUMNS, ...HOST_TEXT_FIELDS.map(entityMetricColumnName)]
 }
 
 export function networkSamplesInsertColumns(): string[] {
@@ -825,11 +835,17 @@ export function blockSamplesInsertColumns(): string[] {
     ...COMMON_METADATA_COLUMNS,
     'device_id',
     ...BLOCK_METRIC_FIELDS.map(entityMetricColumnName),
+    ...BLOCK_TEXT_FIELDS.map(entityMetricColumnName),
   ]
 }
 
 export function gpuSamplesInsertColumns(): string[] {
-  return [...COMMON_METADATA_COLUMNS, 'gpu_id', ...GPU_METRIC_FIELDS.map(entityMetricColumnName)]
+  return [
+    ...COMMON_METADATA_COLUMNS,
+    'gpu_id',
+    ...GPU_METRIC_FIELDS.map(entityMetricColumnName),
+    ...GPU_TEXT_FIELDS.map(entityMetricColumnName),
+  ]
 }
 
 export function memoryDiagnosticsSamplesInsertColumns(): string[] {
@@ -849,7 +865,6 @@ export function ingressSamplesInsertColumns(): string[] {
     'source_id',
     'source_kind',
     ...INGRESS_METRIC_FIELDS.map(entityMetricColumnName),
-    ...V8_INGRESS_COLUMNS,
   ]
 }
 
@@ -867,48 +882,17 @@ export function routerSamplesInsertColumns(): string[] {
 }
 
 /**
- * `server_storage_samples`' metric column names, in DDL order — the single
- * source of truth both the DDL and `store.ts`'s parameterized INSERT derive
- * from, so a column can never be declared in one order and bound in another.
+ * `server_storage_samples`' metric fields, in DDL order: the stored flat
+ * totals, then the stored per-engine census. The single source of truth the
+ * DDL and `store.ts`'s parameterized INSERT both derive from, so a column can
+ * never be declared in one order and bound in another.
  */
-export function storageSamplesMetricColumnNames(): string[] {
-  return [
-    entityMetricColumnName('hostingUsedBytes'),
-    entityMetricColumnName('backupUsedBytes'),
-    entityMetricColumnName('dockerUsedBytes'),
-    ...DOCKER_USAGE_METRIC_FIELDS.map(dockerUsageStorageColumnName),
-    entityMetricColumnName('logsUsedBytes'),
-    entityMetricColumnName('hostingFreeBytes'),
-    entityMetricColumnName('backupFreeBytes'),
-    entityMetricColumnName('logsFreeBytes'),
-    ...STORAGE_ENGINE_METRIC_FIELDS.map(entityMetricColumnName),
-  ]
+export function storageSamplesMetricFields(): string[] {
+  return [...STORAGE_FLAT_METRIC_FIELDS, ...STORAGE_ENGINE_METRIC_FIELDS]
 }
 
-/**
- * `server_storage_samples`' metric values, in the same order
- * {@link storageSamplesMetricColumnNames} declares — the storage half read
- * from `StorageSample`, the ten `docker_*` breakdown columns from the
- * separate (capability-gated) `DockerUsageSample`. A sample with storage but
- * no Docker breakdown writes real `NULL`s in the breakdown columns, which is
- * exactly "Docker usage was not reported", never zero bytes.
- */
-export const STORAGE_ROW_VALUE_PLAN = {
-  leadingFlatFields: ['hostingUsedBytes', 'backupUsedBytes', 'dockerUsedBytes'] as const,
-  trailingFlatFields: [
-    'logsUsedBytes',
-    'hostingFreeBytes',
-    'backupFreeBytes',
-    'logsFreeBytes',
-  ] as const,
-} as const
-
 export function storageSamplesInsertColumns(): string[] {
-  return [
-    ...COMMON_METADATA_COLUMNS,
-    ...storageSamplesMetricColumnNames(),
-    ...STORAGE_FILESYSTEM_ID_COLUMNS,
-  ]
+  return [...COMMON_METADATA_COLUMNS, ...storageSamplesMetricFields().map(entityMetricColumnName)]
 }
 
 export function dockerSamplesInsertColumns(): string[] {
@@ -927,7 +911,6 @@ export function metricEventsInsertColumns(): string[] {
     'received_at',
     'kind',
     'severity',
-    'topology_generation',
     'entity_id',
     'source',
     'payload',
@@ -942,9 +925,8 @@ export function metricEventsInsertColumns(): string[] {
 // (every group covered), and each group's own `Record<keyof T, true>`
 // literal (`HOST_CPU_FIELDS` etc.) covers every field within it — a field or
 // group added to `contract.ts` without a matching literal entry fails the
-// TypeScript build. The schema test "every leaf metric of a real v5 sample
-// maps to a known host column" additionally exercises this against a real
-// sanitized sample at runtime.
+// TypeScript build. Whether a field is stored is the registry's decision, and
+// `field-registry.test.ts` checks the columns against it.
 // ---------------------------------------------------------------------------
 
 function assertHostFieldRefsCoverContract(): void {

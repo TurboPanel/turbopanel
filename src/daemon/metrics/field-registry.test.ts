@@ -274,6 +274,11 @@ describe('field registry: self-hosted columns', () => {
     }
   })
 
+  it('has no self-hosted gap left', () => {
+    assertEquals(KNOWN_GAPS.duckdbMissing, [])
+    assertEquals(KNOWN_GAPS.duckdbExtraColumns, [])
+  })
+
   it('lists no gap that has already closed', () => {
     for (const id of KNOWN_GAPS.duckdbMissing) {
       assert(

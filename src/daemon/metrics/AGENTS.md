@@ -27,7 +27,7 @@ v6 rows; where they disagree with `V8-LAYOUT.md`, v8 wins.
 - **Envelope**: blob1 kind, blob2 family, blob3 `"8"` (the storage layout revision, never the wire version), blob4 reserved (written empty), blob5 sample time as UTC text `YYYY-MM-DD hh:mm:ss`, blob6 entity ids, content text from blob7, double20 interval. Sequence, plan generation and page are no longer written. Event and status rows keep their v6 blob positions except blob3 and the blob5 text format.
 - **Wire negotiation**: wire feature `metrics-v8` (`DAEMON_WIRE_FEATURES`, both repos). A daemon stamps `METRICS_LEGACY_WIRE_VERSION` (6) until the control plane it is attached to advertises it. Hard cut: the control plane accepts wire versions 6 and 8 only (`METRICS_WIRE_VERSIONS`), advertises no `metrics-v7`, and a version-7 sample is refused with the usual version error; an older daemon falls back to the plain version-6 sample until it updates. `metrics-v8-sizes` is advertised only because this release stores the sizes and divides each bucket by the size its own sample carried. v8 data rides the optional `extended` section and `metadata.durable`; a v6 sample writes the same v8 rows with sentinels and empty text for the absent data.
 - **Caddy is totals only** (no per-site fields anywhere); slow families are still re-sent every sample.
-- **Reads**: the missing-metric sentinel is tested as `col > -pow(10, 307)` (`aePresentValueSql`), never by equality; a delta-sum over an absent family is null, not 0. Hosted rows live only in the `_v8` dataset and are read as stamp 8 only; earlier rows are dropped, with no dual read. Descriptors for the nine data points v8 stops storing stay and read as empty. Descriptors for the new v8 metrics (OOM kills, Docker health, cert expiry, text blobs) are reader work. Analytics Engine creates a dataset on its first write, so a read before any write fails with a missing-table error; `isMissingDatasetError` turns exactly that error (for one of our own `turbopanel_server_metrics_v<N>` datasets) into "no data" and every other error still throws. The testing deploy should check the first `_v8` read.
+- **Reads**: the missing-metric sentinel is tested as `col > -pow(10, 307)` (`aePresentValueSql`), never by equality; a delta-sum over an absent family is null, not 0. Hosted rows live only in the `_v8` dataset and are read as stamp 8 only; earlier rows are dropped, with no dual read. Descriptors for the data points neither edition stores (`NOT_STORED_FIELDS` in `field-registry.ts`) stay and read as empty on both. Descriptors for the new v8 metrics (OOM kills, Docker health, cert expiry, text blobs) are reader work. Analytics Engine creates a dataset on its first write, so a read before any write fails with a missing-table error; `isMissingDatasetError` turns exactly that error (for one of our own `turbopanel_server_metrics_v<N>` datasets) into "no data" and every other error still throws. The testing deploy should check the first `_v8` read.
 
 Root context: `../../../AGENTS.md`. Daemon cell: `../cell/AGENTS.md`. Operator
 glossary (what each console chart means): `../../../../website/docs/metrics/`.
@@ -255,8 +255,8 @@ pegged cores, hosting free (read from the disk that holds hosting), Docker used
 (the sum of the four Docker groups), router backends up (total minus the
 unhealthy names), router requests (Caddy counts every request first), major
 page faults, 2xx responses (requests minus 4xx and 5xx), unreclaimable slab and
-logs used. DuckDB still stores all of them; the hosted reader answers them as not
-stored. Per-device sizes (each extra disk's bytes and inodes, each GPU's memory,
+logs used. Neither edition stores them (nor the other 59 listed in
+`field-registry.ts`); both readers answer them as empty. Per-device sizes (each extra disk's bytes and inodes, each GPU's memory,
 each NIC's link speed) ride as text on that device's own row, so device rows keep
 every number and their entities per row. `host.network` blob6 names the host
 rows' devices (`nic1=<id>@<Mb/s>;nic2=<id>@<Mb/s>;fs=<id>`; the speed follows the
@@ -417,25 +417,26 @@ force-flush pending batches.
 
 **One real typed table per entity family — no positional layout, no sentinel,
 arbitrary cardinality** (`schema.ts`, `DUCKDB_SCHEMA_MARKER_VERSION` currently
-`7` — bumped from 6 when `managed.router` gained its own table and the
-ingress/database-proxy tables gained columns; every DDL statement is
-`CREATE TABLE IF NOT EXISTS`, so without the bump an existing file would keep
-its old, narrower columns and reject every insert):
+`12`; every DDL statement is `CREATE TABLE IF NOT EXISTS`, so without a bump an
+existing file would keep its old columns and reject or misread every insert).
+The stored values are exactly the registry's (`field-registry.ts`); the column
+tables are in `STORAGE-FORMAT.md`:
 
-| Table                               | Family                                                                                                |
-| ----------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| `server_host_samples`               | `host.system` + `host.io` + `host.diagnostics`'s CPU half (`cpu_diagnostics_*` columns), one wide row |
-| `server_network_samples`            | `network`                                                                                             |
-| `server_filesystem_samples`         | `filesystem`                                                                                          |
-| `server_block_samples`              | `block`                                                                                               |
-| `server_gpu_samples`                | `gpu`                                                                                                 |
-| `server_hardware_signal_samples`    | `hardware.physical`                                                                                   |
-| `server_ingress_samples`            | `managed.ingress`                                                                                     |
-| `server_database_proxy_samples`     | `managed.database_proxy`                                                                              |
-| `server_router_samples`             | `managed.router` (singleton per sample, no entity id)                                                 |
-| `server_memory_diagnostics_samples` | `host.diagnostics`'s memory half                                                                      |
-| `server_metric_events`              | metrics events (`MetricEvent`)                                                                        |
-| `server_status_events`              | connection-status transitions                                                                         |
+| Table                               | Family                                                                  |
+| ----------------------------------- | ----------------------------------------------------------------------- |
+| `server_host_samples`               | `host.system` + `host.io` + the host-wide `ext_*` numbers, one wide row |
+| `server_host_text_samples`          | the host facts that ride as text on the hosted rows                     |
+| `server_network_samples`            | `network`                                                               |
+| `server_filesystem_samples`         | `filesystem`                                                            |
+| `server_block_samples`              | `block`                                                                 |
+| `server_gpu_samples`                | `gpu`                                                                   |
+| `server_hardware_signal_samples`    | `hardware.physical`                                                     |
+| `server_ingress_samples`            | `managed.ingress`                                                       |
+| `server_database_proxy_samples`     | `managed.database_proxy`                                                |
+| `server_router_samples`             | `managed.router` (singleton per sample, no entity id)                   |
+| `server_memory_diagnostics_samples` | the one stored `host.diagnostics` reading (`committed_as_bytes`)        |
+| `server_metric_events`              | metrics events (`MetricEvent`)                                          |
+| `server_status_events`              | connection-status transitions                                           |
 
 Every metric column is real, independently-nullable `DOUBLE` (or typed identity
 column) — missing is a real SQL `NULL`, never a sentinel or a part-membership
@@ -443,8 +444,8 @@ flag. Entity tables carry arbitrary cardinality per sample (one row per reported
 entity), unlike v3's fixed-width part tables.
 
 **Schema on open** (`database.ts`): `CREATE TABLE IF NOT EXISTS` /
-`CREATE INDEX IF NOT EXISTS` for the current layout (schema marker **10**). A
-marker-9 database is discarded like any older version (hard cut, no migration, one log line saying so); a sidecar marker holding an older version number discards `metrics.duckdb`, `parquet/`,
+`CREATE INDEX IF NOT EXISTS` for the current layout (schema marker **12**). A
+marker-11 database is discarded like any older version (hard cut, no migration, one log line saying so); a sidecar marker holding an older version number discards `metrics.duckdb`, `parquet/`,
 `tmp/`, and `schema-version` before the current store is created. A missing marker beside existing data, or an empty, unparseable or unreadable marker, discards and rebuilds the files too (a transient read error counts as unreadable and rebuilds the file, by design); only a marker newer than this build fails the open without deleting anything — there is no
 in-place migration and no supported path for older DuckDB files. The marker is a
 discard-on-mismatch counter, not a monotonic migration version. **The three
