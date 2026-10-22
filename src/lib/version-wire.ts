@@ -196,6 +196,7 @@ export const DAEMON_WIRE_FEATURES = [
   'command-recovery-v1',
   'managed-switchover-final-position-v1',
   'host-capacity-v1',
+  'server-network-check-v1',
 ] as const
 
 export type DaemonWireFeature = (typeof DAEMON_WIRE_FEATURES)[number]
@@ -410,6 +411,14 @@ export const MANAGED_DATABASE_OWNER_FEATURE: DaemonWireFeature = 'managed-databa
  * `managed_database_convert_needs_daemon_update`.
  */
 export const MANAGED_DATABASE_CONVERT_FEATURE: DaemonWireFeature = 'managed-database-convert-v1'
+
+/**
+ * The daemon answers `server-network-check-request` with
+ * `server-network-check-result`: whether the host can open a TCP connection to
+ * each listed peer address, and from which local address. Without it the
+ * control plane never sends the message and the UI hides the check.
+ */
+export const SERVER_NETWORK_CHECK_FEATURE: DaemonWireFeature = 'server-network-check-v1'
 
 /** Features that need an instance at or above a semver. Empty until one lands. */
 export const INSTANCE_FEATURE_MIN_VERSIONS: Readonly<Record<string, string>> = {}

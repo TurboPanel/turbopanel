@@ -22,6 +22,7 @@ import {
   MANAGED_OWNER_ROLE_FEATURE,
   MANAGED_REPLICA_FRESHNESS_FEATURE,
   MIN_SUPPORTED_DAEMON_VERSION,
+  SERVER_NETWORK_CHECK_FEATURE,
   parseSemver,
   PHP_SITE_MODES_FEATURE,
   resolveDaemonCapabilities,
@@ -248,9 +249,9 @@ test('managed-switchover-final-position-v1 is an advertised wire feature and rai
   assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.0')
 })
 
-test('host-capacity-v1 is the last advertised wire feature and raised no floor', () => {
+test('host-capacity-v1 is an advertised wire feature and raised no floor', () => {
   assertEquals(HOST_CAPACITY_FEATURE, 'host-capacity-v1')
-  assertEquals(DAEMON_WIRE_FEATURES.at(-1), HOST_CAPACITY_FEATURE)
+  assertEquals(DAEMON_WIRE_FEATURES.includes(HOST_CAPACITY_FEATURE), true)
   assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.0')
 })
 
@@ -295,4 +296,10 @@ test('advertises metrics-v8-sizes, the feature a daemon checks before it sends t
 test('does not advertise metrics-v7, so a daemon that only knows v7 stays on the basic sample until it updates', () => {
   assertEquals((DAEMON_WIRE_FEATURES as readonly string[]).includes('metrics-v7'), false)
   assertEquals((DAEMON_WIRE_FEATURES as readonly string[]).includes('metrics-v7-sizes'), false)
+})
+
+test('server-network-check-v1 is the last advertised wire feature and raised no floor', () => {
+  assertEquals(SERVER_NETWORK_CHECK_FEATURE, 'server-network-check-v1')
+  assertEquals(DAEMON_WIRE_FEATURES.at(-1), SERVER_NETWORK_CHECK_FEATURE)
+  assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.0')
 })
