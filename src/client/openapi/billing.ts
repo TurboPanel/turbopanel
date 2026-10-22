@@ -351,7 +351,7 @@ export const billingSchemas = {
         type: ['string', 'null'],
         format: 'uuid',
         description:
-          'The one server that moves with this change. It must hold `fromTierId` (else 409 `server_not_on_tier`); `toTierId` may not be below its CPU or RAM (409 `tier_below_required`). An upgrade moves it once the swap is taken (not while `pending`); a downgrade moves it when the boundary lands.',
+          'The one server that moves with this change. It must hold `fromTierId` (else 409 `server_not_on_tier`); `toTierId` may not be below its CPU or RAM (422 `tier_below_required`). An upgrade moves it once the swap is taken (not while `pending`); a downgrade moves it when the boundary lands.',
       },
       prorationDate: {
         type: 'integer',
@@ -466,7 +466,13 @@ function mutationPath(summary: string, requestSchema: string, extraConflicts: st
         ),
         '401': unauthorized,
         '403': forbidden,
+        '404': errorResponse(
+          'The named `serverId` is not a licensed server (`server_not_licensed`)'
+        ),
         '409': conflict(`\`billing_mutation_in_progress\`, ${extraConflicts}`),
+        '422': errorResponse(
+          'The named server has more CPU cores or RAM than the target tier allows (`tier_below_required`)'
+        ),
         '502': errorResponse('Stripe refused the request (`stripe_error`, permanent)'),
         '503': errorResponse(
           '`billing_not_configured`, or Stripe was unreachable (`stripe_error`, transient)'
@@ -648,6 +654,6 @@ export const billingPaths: Record<string, unknown> = {
   [`${CLIENT_PREFIX}/billing/downgrade`]: mutationPath(
     'Move one purchased license to a lower tier at the period boundary',
     'BillingTierMoveRequest',
-    '`licenses_ending` (at the lower tier), `no_subscription`, `servers_uncovered`, `licenses_in_use` (BillingLicensesInUseError), `server_not_on_tier`, `server_move_pending`, `tier_below_required`'
+    '`licenses_ending` (at the lower tier), `no_subscription`, `servers_uncovered`, `licenses_in_use` (BillingLicensesInUseError), `server_not_on_tier`, `server_move_pending`'
   ),
 }
