@@ -1793,6 +1793,27 @@ test('crud helpers: insert update delete find mark and observed replication', as
     replication: { state: 'streaming', observedAt: 't', lagBytes: 1 },
   })
 
+  // A promoted member's old replica reading is cleared, not kept.
+  metaSelect = 0
+  await updateManagedMemberObservedReplication(
+    {
+      ...observeDb,
+      select: () => ({
+        from: () => ({
+          where: () => ({
+            limit: () =>
+              Promise.resolve([
+                { metadata: { keep: true, replication: { state: 'reconnecting' } } },
+              ]),
+          }),
+        }),
+      }),
+    } as unknown as Db,
+    'r1',
+    { replication: null }
+  )
+  assertEquals(observedMeta, { keep: true })
+
   // Missing member is a no-op on the second select path.
   await updateManagedMemberObservedReplication(observeDb, 'gone', {
     status: 'failed',
