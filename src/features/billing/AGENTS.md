@@ -171,18 +171,30 @@ An organization owns a **quantity per tier** (the `seat` rows). Which server
 holds which of those licenses is **chosen by the organization's managers**
 (`PUT /servers/:id/license-tier`, owner-only): the server takes a free seat at
 the tier picked, or gives its license back with `null`. Nothing is bought there,
-and no other server moves. That route is the only hosted writer of
-`server.assigned_tier_id`; `src/features/tiers/assignment.ts` only **reads** the
+and no other server moves. CPU cores and RAM are **hard limits**: a tier whose
+`maxCores` or `maxMemoryBytes` is below what the server reports is refused
+(`tier_below_required`). The monitoring slots (`nicSlots`, `driveSlots`,
+`gpuSlots`, `filesystemSlots`) are not limits: a manager may keep a server on a
+smaller tier to skip, say, GPU metrics.
+
+`/billing/upgrade` and `/billing/downgrade` take an optional `serverId`: the
+one server that moves with the change. It must hold `fromTierId`, and
+`toTierId` is checked against its CPU and RAM like the route above. An upgrade
+moves it as soon as Stripe takes the swap (a `pending` swap moves nothing; the
+owner assigns it once it lands); a downgrade stores the server on its intent
+and `entitlements.ts` moves it when the intent lands, if it still holds the old
+tier. Without `serverId`, a change that would leave a server holding a tier
+nobody pays for is refused (`servers_uncovered`). Apart from these writes, the
+route above is the only hosted writer of `server.assigned_tier_id`; `src/features/tiers/assignment.ts` only **reads** the
 assignment against the purchases (spare seats per tier; servers holding no tier,
 or more holders at a tier than were bought — the newest by bind order are the
 ones over).
 
 **No server is ever given a license tier automatically, and no license is ever
-moved between servers automatically** — not on enroll, not on a hardware report
+moved between servers automatically** (only the owner-named moves above) — not on enroll, not on a hardware report
 (hello or heartbeat), not on a session, not on a seat or subscription change
-(webhook projection, mutation, reconcile), not on a server delete. A customer
-may deliberately keep a server on a smaller tier than it measures (for example
-to stay on S1 without GPU metrics). The hardware requirement (`tier-placement`:
+(webhook projection, mutation, reconcile), not on a server delete. A server that
+grows past its tier's CPU or RAM keeps its tier and is flagged. The hardware requirement (`tier-placement`:
 required = max(core band, RAM band)) and the recommendation (NIC / drive / GPU
 slots) are computed only for flags, notices and recommendations
 (`over-plan-flag.ts`, the notice sweep, the reconcile report); they never change
@@ -256,9 +268,10 @@ licenses_ending` (`{ tierId, ending, endsAt }`) before anything is written,
 
 Every reduction and deferred change runs the **coverage gate**
 (`coverageRefusal`): apply the ledger's outstanding deltas and the proposed ones
-to the committed quantities, run the assignment against the licensed servers,
-and refuse `409 servers_uncovered` (naming the server and the tier it needs)
-when one would go uncovered, or `409 licenses_in_use` when the organization
+to the committed quantities, read the managers' assignment against them (with
+the owner-named server, and the ledger's named downgrades, on their new tiers),
+and refuse `409 servers_uncovered` (naming the server and the tier it holds)
+when one would be left holding a tier nobody pays for, or `409 licenses_in_use` when the organization
 would hold more licenses than it pays for.
 
 Which price a tier bills at is resolved at mutation time from its product
@@ -376,9 +389,11 @@ no refund call anywhere. `grace_expires_at` is written `null` on every
 projection and is no longer read for anything.
 
 `reconcile.ts` compares, per organization, the purchased total to the active
-licenses (`licenses_exceed_purchased`), runs the assignment and reports every
-licensed server nothing covers (`servers_uncovered`), and notes bought-ahead
-quantity (`purchased_unused`, informational). **Alert, never auto-correct**: an
+licenses (`licenses_exceed_purchased`), reads the assignment and reports servers
+holding a tier beyond what was bought there (`servers_uncovered`), and notes
+licensed servers no manager has given a tier yet (`servers_unassigned`,
+informational — a new server waiting for its owner is not drift) and
+bought-ahead quantity (`purchased_unused`, informational). **Alert, never auto-correct**: an
 error-level structured log and the last report in `BILLING_RECONCILE_REPORT` for
 the admin surface. No Stripe write, no license write. Reconcile does **not**
 refetch Stripe and is not recovery for a missed webhook — that is

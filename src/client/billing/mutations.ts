@@ -54,6 +54,8 @@ import { buildItemMutation, type TierDelta } from '../../features/billing/subscr
 import { priceMapWithIntentTargets, resolveTierPrice } from '../../features/billing/tier-prices.ts'
 import { getTierById, getTiersByIds, type TierRow } from '../../features/tiers/tier-records.ts'
 import { seatQuantitiesByTier } from '../../features/billing/billing-records.ts'
+import { moveNamedServerTier } from '../../features/tiers/assignment-records.ts'
+import { ladderEntryByRank } from '../../features/tiers/ladder.ts'
 import { projectSubscriptionById } from '../../webhook/billing/stripe-projection.ts'
 import {
   BILLING_MUTATION_IN_PROGRESS_ERROR,
@@ -135,16 +137,33 @@ export type TierMoveInput = Readonly<{
   toTierId: string
   /** Upgrades only. */
   prorationDate?: number | null
+  /**
+   * The one server the owner moves with this change. It must hold
+   * `fromTierId`; only it moves to `toTierId` (an upgrade once the swap has
+   * landed, a downgrade when the boundary lands). No other server ever moves.
+   */
+  serverId?: string | null
 }>
 
-export type UpgradeTierBody = { ok: true; pending: boolean }
+export type UpgradeTierBody = {
+  ok: true
+  pending: boolean
+  /** The named server, once it moved; `null` when none was named or the swap is still pending. */
+  movedServerId: string | null
+}
 
 export type DowngradeTierBody = {
   ok: true
   deferred: true
   intentId: string
   scheduleId: string | null
+  /** The named server that moves when the downgrade lands, or `null`. */
+  serverId: string | null
 }
+
+export const SERVER_NOT_ON_TIER_ERROR = 'server_not_on_tier'
+export const SERVER_MOVE_PENDING_ERROR = 'server_move_pending'
+export const TIER_BELOW_REQUIRED_ERROR = 'tier_below_required'
 
 const INVALID_REQUEST = { error: 'Invalid request' } as const
 
@@ -551,6 +570,48 @@ async function resolveTierMove(
   return { from, to }
 }
 
+/**
+ * The owner-named server for a tier move, checked under the lease: it holds a
+ * license at `from`, no other named move is waiting for it, and `to` is not
+ * below its CPU or RAM (a hard limit; monitoring slots are not). Returns the
+ * move to apply to the coverage gate, or a refusal.
+ */
+function namedServerMove(
+  view: BillingOrgView,
+  serverId: string | null | undefined,
+  move: ResolvedTierMove
+): Map<string, string> | BillingMutationOutcome<never> {
+  const moves = new Map<string, string>()
+  if (!serverId) return moves
+  const named = view.servers.find((entry) => entry.serverId === serverId)
+  if (!named) return refuse(404, { error: 'server_not_licensed', serverId })
+  if (named.assignedTierId !== move.from.id) {
+    return refuse(409, { error: SERVER_NOT_ON_TIER_ERROR, serverId, tierId: move.from.id })
+  }
+  if (
+    view.ledger.intents.some(
+      (intent) => intent.kind === 'downgrade' && intent.serverId === serverId
+    )
+  ) {
+    return refuse(409, { error: SERVER_MOVE_PENDING_ERROR, serverId })
+  }
+  if (named.requiredRank !== null && named.requiredRank > move.to.rank) {
+    return refuse(409, {
+      error: TIER_BELOW_REQUIRED_ERROR,
+      serverId,
+      requiredTier: ladderEntryByRank(named.requiredRank)?.label ?? `rank ${named.requiredRank}`,
+    })
+  }
+  moves.set(serverId, move.to.id)
+  return moves
+}
+
+function isNamedMoveRefusal(
+  value: Map<string, string> | BillingMutationOutcome<never>
+): value is BillingMutationOutcome<never> {
+  return !(value instanceof Map)
+}
+
 function isMoveRefusal(
   value: ResolvedTierMove | BillingMutationOutcome<never>
 ): value is BillingMutationOutcome<never> {
@@ -595,12 +656,15 @@ export async function upgradeTier(
       { tierId: move.from.id, delta: -1 },
       { tierId: move.to.id, delta: 1 },
     ]
-    // The swap never lowers coverage, but the lower tier must still have a
-    // seat that is not already leaving at the boundary.
+    // Only the server the owner named moves; without one, the lower tier
+    // must have a seat no server holds and that is not already leaving.
+    const moves = namedServerMove(view, input.serverId, move)
+    if (isNamedMoveRefusal(moves)) return moves
     const coverage = coverageRefusal(
       view,
       deltas,
-      await rankResolver(deps.db, view, [move.from, move.to])
+      await rankResolver(deps.db, view, [move.from, move.to]),
+      moves
     )
     if (coverage) return refuse(409, coverage)
     const ctx: MutationContext = { lock, view, sub, lines, priceByTier }
@@ -612,7 +676,24 @@ export async function upgradeTier(
       input.prorationDate
     )
     if (isRefusal(applied)) return applied
-    return succeed<UpgradeTierBody>({ ok: true, pending: applied.pending })
+    // Stripe took the swap: the named server, and only it, takes the new
+    // seat. A parked swap moves nothing; the owner assigns the server once
+    // it lands.
+    const moved =
+      input.serverId && !applied.pending
+        ? await moveNamedServerTier(
+            deps.db,
+            input.serverId,
+            move.from.id,
+            move.to.id,
+            new Date(nowMs()).toISOString()
+          )
+        : false
+    return succeed<UpgradeTierBody>({
+      ok: true,
+      pending: applied.pending,
+      movedServerId: moved ? (input.serverId ?? null) : null,
+    })
   })
 }
 
@@ -653,10 +734,13 @@ export async function downgradeTier(
       { tierId: move.from.id, delta: -1 },
       { tierId: move.to.id, delta: 1 },
     ]
+    const moves = namedServerMove(view, input.serverId, move)
+    if (isNamedMoveRefusal(moves)) return moves
     const coverage = coverageRefusal(
       view,
       deltas,
-      await rankResolver(deps.db, view, [move.from, move.to])
+      await rankResolver(deps.db, view, [move.from, move.to]),
+      moves
     )
     if (coverage) return refuse(409, coverage)
     const intent = newDeferredIntent('downgrade', {
@@ -664,6 +748,7 @@ export async function downgradeTier(
       toTierId: move.to.id,
       landsAt: sub.currentPeriodEnd,
       fromQuantity: seatQuantitiesByTier(view.state).get(move.from.id) ?? 0,
+      serverId: input.serverId ?? null,
       nowMs: nowMs(),
     })
     const ctx: MutationContext = { lock, view, sub, lines, priceByTier }
@@ -673,6 +758,7 @@ export async function downgradeTier(
       deferred: true,
       intentId: intent.id,
       scheduleId: result.scheduleId,
+      serverId: input.serverId ?? null,
     })
   })
 }

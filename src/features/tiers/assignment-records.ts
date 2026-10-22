@@ -9,6 +9,10 @@
  *     (`PUT /servers/:id/license-tier`): a manager gives one server a
  *     license at a tier with a free seat, or releases it. No other server is
  *     touched.
+ *   - {@link moveNamedServerTier}, behind an owner's upgrade or downgrade
+ *     that names one server (`/billing/upgrade`, `/billing/downgrade` with
+ *     `serverId`): once the bought change has landed, that server — and no
+ *     other — moves from the old tier to the new one.
  *   - {@link fillSelfHostedGrantTier}, self-hosted only: every server there
  *     runs on the top tier (`SX`, the grant in `self-hosted-grant.ts`), so a
  *     licensed server with no tier yet gets the grant's tier. It only fills
@@ -189,6 +193,26 @@ export async function assignServerTier(
       assignedTierId: tierId,
     } as const
   })
+}
+
+/**
+ * The one server an owner's upgrade or downgrade named moves from `fromTierId`
+ * to `toTierId`. Only when it still holds `fromTierId` (compare-and-set), so
+ * a manager's change in between wins. Returns whether it moved.
+ */
+export async function moveNamedServerTier(
+  db: Db,
+  serverId: string,
+  fromTierId: string,
+  toTierId: string,
+  now: string = new Date().toISOString()
+): Promise<boolean> {
+  const moved = await db
+    .update(server)
+    .set({ assignedTierId: toTierId, preferredTierId: toTierId, updatedAt: now })
+    .where(and(eq(server.id, serverId), eq(server.assignedTierId, fromTierId)))
+    .returning({ id: server.id })
+  return moved.length > 0
 }
 
 /**

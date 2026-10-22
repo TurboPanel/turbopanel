@@ -58,6 +58,15 @@ export function registerServerLicenseTierRoutes(router: Hono<AppEnv>, opts: Auth
 
     const result = await setServerPreferredTier(db, organizationId, serverId, parsed.tierId)
     if (!result.ok) {
+      if (result.code === 'tier_below_required') {
+        return c.json(
+          {
+            error: "That tier's CPU or RAM limit is below what this server has",
+            code: 'tier_below_required',
+          },
+          422
+        )
+      }
       if (result.code === 'no_free_seat') {
         return c.json(
           { error: 'No free license at that tier; buy one first', code: 'no_free_seat' },

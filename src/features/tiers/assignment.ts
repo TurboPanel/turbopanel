@@ -18,6 +18,8 @@
  *   - `byServer` is each licensed server's held tier (`null` when none was
  *     assigned yet);
  *   - `spare` is, per tier, purchased quantity no server holds;
+ *   - `unassigned` lists, in bind order, licensed servers no manager has
+ *     given a tier yet (a normal state for a new server, not an error);
  *   - `uncovered` lists, in bind order, licensed servers with no tier and
  *     servers holding a tier whose purchased quantity is already used by
  *     older servers (more holders than seats — the newest are the ones
@@ -58,6 +60,8 @@ export type TierAssignment = Readonly<{
   spare: ReadonlyMap<string, number>
   /** Servers in bind order with no tier, or holding more of a tier than was bought. */
   uncovered: readonly string[]
+  /** The part of `uncovered` with no tier at all (not yet assigned). */
+  unassigned: readonly string[]
 }>
 
 export function effectiveRequiredRank(server: Pick<AssignableServer, 'requiredRank'>): number {
@@ -90,6 +94,7 @@ export function readAssignment(
   }
   const byServer = new Map<string, string | null>()
   const uncovered: string[] = []
+  const unassigned: string[] = []
   for (const server of sortByBindOrder(servers)) {
     const held = server.assignedTierId
     byServer.set(server.serverId, held)
@@ -98,13 +103,14 @@ export function readAssignment(
       left.set(held, free - 1)
     } else {
       uncovered.push(server.serverId)
+      if (held === null) unassigned.push(server.serverId)
     }
   }
   const spare = new Map<string, number>()
   for (const entry of quantities) {
     if (entry.quantity > 0) spare.set(entry.tierId, left.get(entry.tierId) ?? 0)
   }
-  return { byServer, spare, uncovered }
+  return { byServer, spare, uncovered, unassigned }
 }
 
 /** Purchased quantity at `tierId` that no server other than `exceptServerId` holds. */
@@ -130,25 +136,42 @@ export function freeAtTier(
  * a tier nobody pays for. The server is never moved to make room — a
  * manager reassigns or releases it first. `requiredRank` is the rank of the
  * tier that server holds.
+ *
+ * `futureServers` is the same servers after the moves the change itself
+ * names (an owner's upgrade or downgrade of one named server); it defaults
+ * to `servers`, i.e. nobody moves.
  */
 export function coverageLoss(
   current: readonly TierQuantity[],
   proposed: readonly TierQuantity[],
-  servers: readonly AssignableServer[]
+  servers: readonly AssignableServer[],
+  futureServers: readonly AssignableServer[] = servers
 ): { serverId: string; requiredRank: number } | null {
   const before = new Set(readAssignment(current, servers).uncovered)
-  const after = readAssignment(proposed, servers)
+  const after = readAssignment(proposed, futureServers)
   const rankOf = new Map<string, number>()
   for (const entry of [...current, ...proposed]) rankOf.set(entry.tierId, entry.rank)
   for (const serverId of after.uncovered) {
     if (before.has(serverId)) continue
-    const held = servers.find((entry) => entry.serverId === serverId)?.assignedTierId ?? null
+    const held = futureServers.find((entry) => entry.serverId === serverId)?.assignedTierId ?? null
     return {
       serverId,
       requiredRank: (held !== null ? rankOf.get(held) : undefined) ?? ENTRY_TIER_RANK,
     }
   }
   return null
+}
+
+/** `servers` with the named servers put on the named tiers; everyone else as they are. */
+export function serversAfterMoves<T extends AssignableServer>(
+  servers: readonly T[],
+  moves: ReadonlyMap<string, string>
+): T[] {
+  if (moves.size === 0) return [...servers]
+  return servers.map((entry) => {
+    const to = moves.get(entry.serverId)
+    return to === undefined ? entry : { ...entry, assignedTierId: to }
+  })
 }
 
 /** Apply per-tier deltas to a quantity list; tiers with no current row are created at rank `rankOf(tierId)`. */

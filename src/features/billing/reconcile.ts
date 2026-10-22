@@ -51,8 +51,10 @@ export function shouldRunReconcile(scheduledTimeMs: number): boolean {
 export type ReconcileDriftKind =
   /** More active licenses than purchased quantity — a mint slipped past the gate, or a reduction landed under held keys. */
   | 'licenses_exceed_purchased'
-  /** A licensed server that no purchased tier covers — hardware outgrew the purchase. */
+  /** More servers hold a tier than were bought at that tier. */
   | 'servers_uncovered'
+  /** Licensed servers no manager has given a tier yet — a normal state for a new server. Informational. */
+  | 'servers_unassigned'
   /** Purchased quantity no server or key is using. Informational. */
   | 'purchased_unused'
 
@@ -63,7 +65,10 @@ export type ReconcileDrift = Readonly<{
   /** Outstanding deferred releases across tiers, which explain a surplus. */
   releasing: number
   licensesHeld: number
+  /** Servers holding a tier beyond what was bought there. */
   serversUncovered: readonly string[]
+  /** Licensed servers with no tier yet. */
+  serversUnassigned: readonly string[]
 }>
 
 export type ReconcileReport = Readonly<{
@@ -73,9 +78,10 @@ export type ReconcileReport = Readonly<{
 }>
 
 /**
- * Pure comparison for one organization. `purchased_unused` is reported at
- * info level only — an operator buying ahead is not drift — while the
- * other two kinds are the invariant breaking.
+ * Pure comparison for one organization. `purchased_unused` and
+ * `servers_unassigned` are reported at info level only — buying ahead, or a
+ * new server waiting for a manager to give it a tier, is not drift — while
+ * the other two kinds are the invariant breaking.
  */
 export function compareSeatsToLicenses(input: {
   organizationId: string
@@ -83,6 +89,7 @@ export function compareSeatsToLicenses(input: {
   releasing: number
   licensesHeld: number
   serversUncovered: readonly string[]
+  serversUnassigned?: readonly string[]
 }): ReconcileDrift[] {
   const out: ReconcileDrift[] = []
   const base = {
@@ -91,8 +98,10 @@ export function compareSeatsToLicenses(input: {
     releasing: input.releasing,
     licensesHeld: input.licensesHeld,
     serversUncovered: [...input.serversUncovered],
+    serversUnassigned: [...(input.serversUnassigned ?? [])],
   }
   if (input.serversUncovered.length > 0) out.push({ ...base, kind: 'servers_uncovered' })
+  if (base.serversUnassigned.length > 0) out.push({ ...base, kind: 'servers_unassigned' })
   if (input.licensesHeld > input.purchased) out.push({ ...base, kind: 'licenses_exceed_purchased' })
   else if (input.purchased - input.releasing > input.licensesHeld)
     out.push({ ...base, kind: 'purchased_unused' })
@@ -130,7 +139,10 @@ export async function runReconcile(deps: ReconcileDeps): Promise<ReconcileReport
         purchased: quantities.reduce((sum, entry) => sum + entry.quantity, 0),
         releasing,
         licensesHeld: licenses.active,
-        serversUncovered: assignment.uncovered,
+        serversUncovered: assignment.uncovered.filter(
+          (serverId) => !assignment.unassigned.includes(serverId)
+        ),
+        serversUnassigned: assignment.unassigned,
       })
     )
   })
@@ -139,7 +151,9 @@ export async function runReconcile(deps: ReconcileDeps): Promise<ReconcileReport
     organizations: organizationIds.length,
     drift,
   }
-  const broken = drift.filter((entry) => entry.kind !== 'purchased_unused')
+  const broken = drift.filter(
+    (entry) => entry.kind !== 'purchased_unused' && entry.kind !== 'servers_unassigned'
+  )
   if (broken.length > 0) {
     logError(RECONCILE_LOG_SCOPE, 'purchase / license drift', JSON.stringify(broken))
   } else {

@@ -13,6 +13,7 @@ import {
   effectiveRequiredRank,
   freeAtTier,
   readAssignment,
+  serversAfterMoves,
   sortByBindOrder,
   type TierQuantity,
 } from './assignment.ts'
@@ -74,6 +75,7 @@ test('each server holds exactly the tier a manager assigned; unassigned servers 
     ].sort()
   )
   assertEquals(result.uncovered, ['fresh'])
+  assertEquals(result.unassigned, ['fresh'])
 })
 
 test('a server kept on S1 while it measures S2 stays on S1; hardware never moves it', () => {
@@ -99,6 +101,8 @@ test('more holders than seats: the newest holders are uncovered and keep their t
     server('gone', S3, '2026-09-03T00:00:00.000Z'),
   ])
   assertEquals(result.uncovered, ['young', 'gone'])
+  // Over the bought count, not unassigned.
+  assertEquals(result.unassigned, [])
   assertEquals(result.byServer.get('young'), S1)
   assertEquals(result.byServer.get('gone'), S3)
   assertEquals(result.spare.get(S1), 0)
@@ -153,6 +157,30 @@ test('coverageLoss names the first server, in bind order, that the proposed mix 
   })
   // A free seat can go.
   assertEquals(coverageLoss(purchased(2, 2, 0), purchased(1, 2, 0), servers), null)
+})
+
+test('coverageLoss with a named move: only the named server is assumed to move', () => {
+  const servers = [
+    server('a', S1, '2026-09-01T00:00:00.000Z'),
+    server('b', S1, '2026-09-02T00:00:00.000Z'),
+  ]
+  // Upgrade one S1 to S3 with every S1 held: refused without a named server.
+  assertEquals(coverageLoss(purchased(2, 0, 0), purchased(1, 1, 0), servers), {
+    serverId: 'b',
+    requiredRank: 1,
+  })
+  // Naming a moves a onto the S3 and only a.
+  const moved = serversAfterMoves(servers, new Map([['a', S3]]))
+  assertEquals(
+    moved.map((entry) => [entry.serverId, entry.assignedTierId]),
+    [
+      ['a', S3],
+      ['b', S1],
+    ]
+  )
+  assertEquals(coverageLoss(purchased(2, 0, 0), purchased(1, 1, 0), servers, moved), null)
+  // No moves: the list is the same servers.
+  assertEquals(serversAfterMoves(servers, new Map()), servers)
 })
 
 test('coverageLoss is null when nothing changes and ignores servers already uncovered', () => {

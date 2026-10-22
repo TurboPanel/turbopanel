@@ -8,6 +8,9 @@
  *
  *   1. reads the pending-change ledger and drops the intents whose change
  *      the committed items now show (`landedIntents`);
+ *   1b. for a landed downgrade the owner named a server for, moves that one
+ *      server from the old tier to the new one (if it still holds the old
+ *      tier) — the only tier write here, and only for the named server;
  *   2. reads the managers' assignment against the new seats
  *      (`peekOrganizationAssignment`) and reports servers left uncovered —
  *      it never writes `server.assigned_tier_id`;
@@ -17,8 +20,9 @@
  *      intents but the subscription has no schedule (an immediate change
  *      released it and was parked as pending).
  *
- * Nothing here assigns, moves or releases a server's license tier: only
- * the organization's managers do that. A seat change that leaves a server
+ * Nothing here assigns, moves or releases a server's license tier on its
+ * own: only the organization's managers do that (1b carries out a move an
+ * owner asked for by name). A seat change that leaves a server
  * holding a tier nobody pays for is reported as uncovered; the server keeps
  * its tier and stays connected, and the console shows why.
  *
@@ -33,7 +37,8 @@ import {
   type OrganizationBillingState,
   revokeAllLicensesForOrganization,
 } from './billing-records.ts'
-import { peekOrganizationAssignment } from '../tiers/assignment-records.ts'
+import { moveNamedServerTier, peekOrganizationAssignment } from '../tiers/assignment-records.ts'
+import { forEachSequential } from '../../lib/sequential.ts'
 import type { TierAssignment } from '../tiers/assignment.ts'
 import type { StripeClient } from './client.ts'
 import { resolveBillingGateway } from './gateway.ts'
@@ -243,6 +248,13 @@ export async function syncEntitlementsForOrganization(
       ledger,
       landed.map((intent) => intent.id)
     )
+    // 1b. A landed downgrade moves the one server its owner named.
+    if (!ended) {
+      await forEachSequential(landed, async (intent) => {
+        if (intent.kind !== 'downgrade' || !intent.serverId || !intent.toTierId) return
+        await moveNamedServerTier(deps.db, intent.serverId, intent.fromTierId, intent.toTierId, now)
+      })
+    }
     ledger = clearLedgerIfSubscriptionEnded(ledger, state)
     await writePendingChanges(deps.db, input.organizationId, ledger, nowMs)
 
@@ -275,11 +287,14 @@ export async function syncEntitlementsForOrganization(
       revokedLicenseIds: revoked.licenseIds,
       disconnectedServerIds: revoked.serverIds,
     }
-    if (assignment.uncovered.length > 0) {
+    const overBought = assignment.uncovered.filter(
+      (serverId) => !assignment.unassigned.includes(serverId)
+    )
+    if (overBought.length > 0) {
       logWarn(
         logScope,
-        `organization ${input.organizationId}: ${assignment.uncovered.length} licensed server(s) not covered by any purchased tier`,
-        JSON.stringify(assignment.uncovered)
+        `organization ${input.organizationId}: ${overBought.length} server(s) hold a tier beyond what was bought`,
+        JSON.stringify(overBought)
       )
     } else {
       logInfo(
@@ -288,6 +303,7 @@ export async function syncEntitlementsForOrganization(
         JSON.stringify({
           landed: result.landedIntentIds.length,
           revoked: revoked.licenseIds.length,
+          unassigned: assignment.unassigned.length,
         })
       )
     }

@@ -389,26 +389,76 @@ test('assignServerTier releases a license with null and refuses a server with no
   })
 })
 
-test('setServerPreferredTier lets a manager keep a server on a smaller tier than it measures', async () => {
+test('setServerPreferredTier refuses a tier whose CPU or RAM limit is below the server', async () => {
   const db = seed({
     seats: [
       { tierId: S1, quantity: 1 },
       { tierId: S3, quantity: 1 },
     ],
-    servers: [serverRow(SERVER_A, '2026-09-01T00:00:00.000Z', hardware(12), null)],
+    servers: [
+      // 12 cores needs S3 by CPU.
+      serverRow(SERVER_A, '2026-09-01T00:00:00.000Z', hardware(12), null),
+      // 2 cores but 100 GiB RAM needs S4 by memory.
+      serverRow(SERVER_B, '2026-09-02T00:00:00.000Z', hardware(2, 100), null),
+    ],
+    licenses: [licenseRow('l-a', SERVER_A), licenseRow('l-b', SERVER_B)],
+  })
+  assertEquals(await setServerPreferredTier(db, ORG, SERVER_A, S1), {
+    ok: false,
+    code: 'tier_below_required',
+  })
+  assertEquals(await setServerPreferredTier(db, ORG, SERVER_B, S3), {
+    ok: false,
+    code: 'tier_below_required',
+  })
+  assertEquals(db.ops.filter((op) => op === 'update:server').length, 0)
+  const ok = await setServerPreferredTier(db, ORG, SERVER_A, S3)
+  assertEquals(ok.ok, true)
+  assertEquals(tierOf(db, SERVER_A), S3)
+  assertEquals((await setServerPreferredTier(db, ORG, SERVER_A, 'no-such-tier')).ok, false)
+})
+
+test('setServerPreferredTier lets a manager pick a tier below what monitoring recommends', async () => {
+  // Fits S1 by CPU and RAM; GPUs or extra drives would only recommend more.
+  const db = seed({
+    seats: [
+      { tierId: S1, quantity: 1 },
+      { tierId: S3, quantity: 1 },
+    ],
+    servers: [
+      serverRow(
+        SERVER_A,
+        '2026-09-01T00:00:00.000Z',
+        {
+          resources: {
+            cpus: [{ cores: { total: 2 } }],
+            memory: { totalBytes: 8 * GIB },
+            gpus: [{ name: 'gpu0' }, { name: 'gpu1' }],
+          },
+        },
+        null
+      ),
+    ],
     licenses: [licenseRow('l-a', SERVER_A)],
   })
   const result = await setServerPreferredTier(db, ORG, SERVER_A, S1)
   assertEquals(result.ok, true)
   if (!result.ok) throw new TypeError('expected ok')
   assertEquals(result.assignedTierLabel, 'S1')
-  assertEquals(result.preferredTierLabel, 'S1')
   assertEquals(
     result.tiersFree.map((row) => [row.label, row.free]),
     [['S3', 1]]
   )
   assertEquals(tierOf(db, SERVER_A), S1)
-  assertEquals((await setServerPreferredTier(db, ORG, SERVER_A, 'no-such-tier')).ok, false)
+})
+
+test('setServerPreferredTier allows any tier while the hardware is not reported yet', async () => {
+  const db = seed({
+    seats: [{ tierId: S1, quantity: 1 }],
+    servers: [serverRow(SERVER_A, '2026-09-01T00:00:00.000Z', null, null)],
+    licenses: [licenseRow('l-a', SERVER_A)],
+  })
+  assertEquals((await setServerPreferredTier(db, ORG, SERVER_A, S1)).ok, true)
 })
 
 test('fillSelfHostedGrantTier fills only licensed servers with no tier and never changes a held tier', async () => {

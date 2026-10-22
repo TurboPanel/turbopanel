@@ -283,3 +283,21 @@ test('PUT /servers/:id/license-tier with null releases the license and the freed
     })
   })
 })
+
+test('PUT /servers/:id/license-tier is refused 422 when the tier is below the server CPU or RAM', async () => {
+  await withFixture(async (f) => {
+    // 12 physical cores needs S3 by CPU: S1 is a hard no, whatever is free.
+    await f.db
+      .update(server)
+      .set({ metadata: { resources: { cpus: [{ cores: { total: 12 } }] } } })
+      .where(eq(server.id, f.serverNoTier))
+    const refused = await putTier(f, f.serverNoTier, f.s1)
+    assertEquals(refused.status, 422)
+    assertEquals(refused.body.code, 'tier_below_required')
+    assertEquals(await tiersOf(f), {
+      [f.serverOnS1]: f.s1,
+      [f.serverOnS3]: f.s3,
+      [f.serverNoTier]: null,
+    })
+  })
+})

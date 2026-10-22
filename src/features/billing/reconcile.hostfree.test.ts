@@ -173,7 +173,7 @@ function seed(opts: {
   )
 }
 
-test('compareSeatsToLicenses classifies the three drift kinds and explains a surplus by outstanding releases', () => {
+test('compareSeatsToLicenses classifies the drift kinds and explains a surplus by outstanding releases', () => {
   const base = {
     organizationId: ORG,
     purchased: 3,
@@ -199,7 +199,13 @@ test('compareSeatsToLicenses classifies the three drift kinds and explains a sur
   )
   // An uncovered server is reported on its own and beside either quantity drift.
   const uncovered = compareSeatsToLicenses({ ...base, serversUncovered: [SERVER_BIG] })
-  assertEquals(uncovered, [{ ...base, serversUncovered: [SERVER_BIG], kind: 'servers_uncovered' }])
+  assertEquals(uncovered, [
+    { ...base, serversUncovered: [SERVER_BIG], serversUnassigned: [], kind: 'servers_uncovered' },
+  ])
+  // A server no manager has given a tier yet is its own, informational kind.
+  assertEquals(compareSeatsToLicenses({ ...base, serversUnassigned: [SERVER_BIG] }), [
+    { ...base, serversUncovered: [], serversUnassigned: [SERVER_BIG], kind: 'servers_unassigned' },
+  ])
   assertEquals(
     compareSeatsToLicenses({ ...base, licensesHeld: 4, serversUncovered: [SERVER_BIG] }).map(
       (d) => d.kind
@@ -213,8 +219,26 @@ test('compareSeatsToLicenses classifies the three drift kinds and explains a sur
   )
 })
 
+/** Run `fn` and return the ERROR lines the structured logger wrote to stderr meanwhile. */
+async function errorLinesDuring(fn: () => Promise<unknown>): Promise<string[]> {
+  const lines: string[] = []
+  const original = Deno.stderr.writeSync.bind(Deno.stderr)
+  const decoder = new TextDecoder()
+  Deno.stderr.writeSync = (data: Uint8Array) => {
+    const text = decoder.decode(data)
+    if (text.includes(' ERROR ')) lines.push(text)
+    return data.length
+  }
+  try {
+    await fn()
+  } finally {
+    Deno.stderr.writeSync = original
+  }
+  return lines
+}
+
 test('runReconcile reports drift into the setting row and writes nothing else', async () => {
-  // Purchased 3; three keys held, two bound; the big box is uncovered.
+  // Purchased 3; three keys held, two bound; the big box has no tier yet.
   const db = seed({
     s3Seats: 1,
     s5Seats: 2,
@@ -239,18 +263,25 @@ test('runReconcile reports drift into the setting row and writes nothing else', 
     subscription: JSON.stringify(db.rows(subscription)),
     servers: JSON.stringify(db.rows(server)),
   }
-  const report = await runReconcile({ db, nowMs: Date.parse(NOW) })
+  let report: Awaited<ReturnType<typeof runReconcile>> | undefined
+  const errors = await errorLinesDuring(async () => {
+    report = await runReconcile({ db, nowMs: Date.parse(NOW) })
+  })
+  if (!report) throw new Error('no report')
   assertEquals(report.organizations, 1)
+  // A new server waiting for a tier is informational: reported, never logged as an error.
   assertEquals(report.drift, [
     {
       organizationId: ORG,
-      kind: 'servers_uncovered',
+      kind: 'servers_unassigned',
       purchased: 3,
       releasing: 1,
       licensesHeld: 3,
-      serversUncovered: [SERVER_BIG],
+      serversUncovered: [],
+      serversUnassigned: [SERVER_BIG],
     },
   ])
+  assertEquals(errors, [])
   // Nothing but the report row moved — the sweep only reads the assignment.
   assertEquals(JSON.stringify(db.rows(license)), before.licenses)
   assertEquals(JSON.stringify(db.rows(subscriptionItem)), before.seats)
@@ -267,6 +298,30 @@ test('runReconcile reports drift into the setting row and writes nothing else', 
   const stored = await readReconcileReport(db)
   assertEquals(stored?.ranAt, NOW)
   assertEquals(stored?.drift, report.drift)
+})
+
+test('more holders at a tier than were bought is servers_uncovered and logged as an error', async () => {
+  // One S3 seat; both servers were given S3, the big box second.
+  const db = seed({
+    s3Seats: 1,
+    s5Seats: 1,
+    licenses: [
+      { id: 'l1', serverId: SERVER_A },
+      { id: 'l2', serverId: SERVER_BIG },
+    ],
+  })
+  db.rows(server).find((row) => row.id === SERVER_BIG)!.assignedTierId = S3
+  let report: Awaited<ReturnType<typeof runReconcile>> | undefined
+  const errors = await errorLinesDuring(async () => {
+    report = await runReconcile({ db, nowMs: Date.parse(NOW) })
+  })
+  assertEquals(
+    report?.drift.map((d) => [d.kind, d.serversUncovered, d.serversUnassigned]),
+    [['servers_uncovered', [SERVER_BIG], []]]
+  )
+  assertEquals(errors.length > 0, true)
+  // Nothing was moved onto the free S5 seat.
+  assertEquals(db.rows(server).find((row) => row.id === SERVER_BIG)?.assignedTierId, S3)
 })
 
 test('a fourth key over three purchased is licenses_exceed_purchased; an unused purchase is reported on its own', async () => {

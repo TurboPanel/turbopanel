@@ -311,6 +311,77 @@ test('a landed intent is dropped from the ledger; an outstanding one survives', 
   )
 })
 
+function landedDowngrade(serverId: string) {
+  return newDeferredIntent('downgrade', {
+    fromTierId: S3,
+    toTierId: S1,
+    landsAt: '2026-09-01T00:00:00.000Z',
+    fromQuantity: 2,
+    serverId,
+    nowMs: NOW_MS,
+  })
+}
+
+function ledgerOf(...intents: unknown[]) {
+  return { version: PENDING_CHANGES_LEDGER_VERSION, providerSubscriptionId: 'sub_1', intents }
+}
+
+const syncNow = (db: ReturnType<typeof seed>) =>
+  syncEntitlementsForOrganization(
+    { db, client: null, nowMs: NOW_MS },
+    { organizationId: ORG, providerSubscriptionId: 'sub_1', pendingUpdate: false }
+  )
+
+test('a landed downgrade that names a server moves only that server to the lower tier', async () => {
+  const intent = landedDowngrade(SERVER_B)
+  const db = seed({
+    seats: [
+      { tierId: S1, quantity: 1 },
+      { tierId: S3, quantity: 1 },
+    ],
+    assigned: { a: S3, b: S3 },
+    ledger: ledgerOf(intent),
+  })
+  const outcome = await syncNow(db)
+  assertEquals(outcome.action, 'synced')
+  if (outcome.action !== 'synced') return
+  assertEquals(outcome.result.landedIntentIds, [intent.id])
+  assertEquals(await assignments(db), { [SERVER_A]: S3, [SERVER_B]: S1 })
+  assertEquals(db.ops.filter((op) => op === 'update:server').length, 1)
+})
+
+test('a landed named downgrade leaves the server alone when a manager already moved it off the old tier', async () => {
+  const db = seed({
+    seats: [{ tierId: S1, quantity: 2 }],
+    // B was put on S1 by hand before the boundary; A still holds S3.
+    assigned: { a: S3, b: S1 },
+    ledger: ledgerOf(landedDowngrade(SERVER_B)),
+  })
+  const outcome = await syncNow(db)
+  assertEquals(outcome.action, 'synced')
+  assertEquals(await assignments(db), { [SERVER_A]: S3, [SERVER_B]: S1 })
+  // The guarded write matched no row: neither server was touched.
+  assertEquals(
+    db.rows(server).map((row) => row.updatedAt),
+    [NOW, NOW]
+  )
+})
+
+test('a named downgrade does not move its server once the subscription has ended', async () => {
+  const db = seed({
+    seats: [
+      { tierId: S1, quantity: 1 },
+      { tierId: S3, quantity: 1 },
+    ],
+    status: 'canceled',
+    assigned: { a: S3, b: S3 },
+    ledger: ledgerOf(landedDowngrade(SERVER_B)),
+  })
+  const outcome = await syncNow(db)
+  assertEquals(outcome.action, 'synced')
+  assertEquals(await assignments(db), { [SERVER_A]: S3, [SERVER_B]: S3 })
+})
+
 test('an ended subscription revokes every license, bound ones included, and leaves every server on the tier its managers set', async () => {
   const db = seed({
     seats: [

@@ -187,16 +187,19 @@ function readTierMove(c: Ctx, body: Record<string, unknown>, withProration: bool
   const fromTierId = readUuidField(body, 'fromTierId')
   const toTierId = readUuidField(body, 'toTierId')
   const prorationDate = withProration ? readIntField(body, 'prorationDate') : null
+  // Optional: the one server the owner moves with this change.
+  const serverId = readUuidField(body, 'serverId')
   if (
     fromTierId === PARSE_UUID_INVALID ||
     !fromTierId ||
     toTierId === PARSE_UUID_INVALID ||
     !toTierId ||
+    serverId === PARSE_UUID_INVALID ||
     prorationDate === 'invalid'
   ) {
     return c.json({ error: 'Invalid request' }, 400)
   }
-  return { fromTierId, toTierId, prorationDate }
+  return { fromTierId, toTierId, prorationDate, serverId: serverId ?? null }
 }
 
 /**
@@ -507,6 +510,7 @@ export function registerBillingRoutes(
         organizationId: auth.organizationId,
         fromTierId: move.fromTierId,
         toTierId: move.toTierId,
+        serverId: move.serverId,
       })
     )
   })
