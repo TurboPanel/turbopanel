@@ -1263,6 +1263,54 @@ test('POST /environments/:id/managed/backups enqueues managed.backup create with
   )
 })
 
+test('a second manual backup is refused at once while one is queued, and queues nothing', async () => {
+  await withManagedFixtures(
+    {},
+    async ({ db, app, secrets, commandQueue, userId, organizationId, environmentId }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const headers = {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      }
+      const create = await app.request(`/environments/${environmentId}/managed`, {
+        method: 'POST',
+        headers,
+        body: '{}',
+      })
+      const created = (await create.json()) as { managed: { id: string } }
+      await db.update(managed).set({ status: 'ready' }).where(eq(managed.id, created.managed.id))
+      const url = `/environments/${environmentId}/managed/backups`
+
+      const first = await app.request(url, { method: 'POST', headers, body: '{}' })
+      assertEquals(first.status, 200)
+      const queued = commandQueue.envelopes.length
+
+      const repeats = await Promise.all(
+        [1, 2, 3].map((_) => app.request(url, { method: 'POST', headers, body: '{}' }))
+      )
+      for (const again of repeats) {
+        assertEquals(again.status, 409)
+        assertEquals(await again.clone().json(), {
+          error: 'managed_busy',
+          reason: 'backup_in_flight',
+          message:
+            'Another backup or restore of this database is already running. Try again when it has finished.',
+        })
+      }
+      assertEquals(commandQueue.envelopes.length, queued)
+
+      // Once the first command has finished, a new backup is accepted again.
+      await db
+        .update(command)
+        .set({ status: 'failed' })
+        .where(eq(command.managedId, created.managed.id))
+      const after = await app.request(url, { method: 'POST', headers, body: '{}' })
+      assertEquals(after.status, 200)
+    }
+  )
+})
+
 test('managed_busy guard on backup create while status=applying', async () => {
   await withManagedFixtures(
     {},
@@ -1847,6 +1895,12 @@ test('backup create/delete/restore target managed.server_id when environment pla
         }
         assertEquals(removeBody.serverId, serverId)
         assertEquals(commandQueue.envelopes.at(-1)?.serverId, serverId)
+
+        // The create above has finished; a restore is refused while one is still running.
+        await db
+          .update(command)
+          .set({ status: 'succeeded' })
+          .where(eq(command.managedId, created.managed.id))
 
         const restore = await app.request(
           `/environments/${environmentId}/managed/backups/bk_drift/restore`,

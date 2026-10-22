@@ -441,6 +441,28 @@ export async function listCommandRecordsByIds(
   return rows.map(serializeCommandRecord)
 }
 
+/**
+ * True while a backup or restore command for this cluster is queued or running.
+ * The host refuses a second one at once, so queuing it only fills the queue.
+ */
+export async function hasLiveBackupCommand(db: Db, managedId: string): Promise<boolean> {
+  const rows = await db
+    .select({ id: command.id })
+    .from(command)
+    .innerJoin(dispatch, eq(dispatch.commandId, command.id))
+    .where(
+      and(
+        eq(command.managedId, managedId),
+        // Removing a stored artifact takes no engine lock, so it never counts.
+        sql`coalesce(${dispatch.payload}->>'action', '') <> 'delete'`,
+        inArray(command.name, ['managed.backup', 'managed.restore']),
+        notInArray(command.status, [...TERMINAL_COMMAND_STATUSES])
+      )
+    )
+    .limit(1)
+  return rows.length > 0
+}
+
 export async function listServerCommands(
   db: Db,
   params: ListServerCommandsParams

@@ -1940,7 +1940,8 @@ export const managedPaths = {
           ...jsonSchema('ManagedApplyResponse'),
         },
         409: {
-          description: 'managed_busy / server_offline',
+          description:
+            'managed_busy (also reason backup_in_flight when another backup or restore of the cluster is queued or running) / server_offline',
           content: {
             'application/json': {
               schema: {
@@ -2476,7 +2477,8 @@ export const managedPaths = {
           ...jsonSchema('BackupNotFoundError'),
         },
         409: {
-          description: 'managed_busy / server_offline / backup_on_other_server',
+          description:
+            'managed_busy (also reason backup_in_flight) / server_offline / backup_on_other_server',
           content: {
             'application/json': {
               schema: {
