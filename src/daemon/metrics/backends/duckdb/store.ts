@@ -598,7 +598,7 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
       }
     }
     await this.flushWrites()
-    const metrics = assertHostMetrics(input.metrics)
+    const metrics = assertHostMetrics(input.metrics, FLEET_SNAPSHOT_EXTRA_SCOPES)
     const from = assertIsoTimestamp('from', input.from)
     const to = assertIsoTimestamp('to', input.to)
     assertRange(from, to)
@@ -613,7 +613,11 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
     const metricSelects = metrics.map((name) => {
       if (UNSTORED_HOST_METRICS.has(name)) return `CAST(NULL AS DOUBLE) AS "${name}"`
       const descriptor = HOST_METRICS_METRIC_DESCRIPTORS[name]!
-      const column = hostColumnForDescriptor(descriptor)
+      // The sizes sit on the host row under their own column names.
+      const column =
+        descriptor.entityScope === 'extended.sizes'
+          ? extendedColumnName(descriptor.fieldName)
+          : hostColumnForDescriptor(descriptor)
       return `${hostFieldAggregateSql(descriptor, column)} AS "${name}"`
     })
     const inList = serverIds.map(() => 'CAST(? AS UUID)').join(', ')
@@ -1642,6 +1646,9 @@ const HOST_SERIES_EXTRA_SCOPES: ReadonlySet<MetricEntityScope> = new Set([
   'extended.ingress',
   'extended.sizes',
 ])
+
+/** The one non-`host.*` scope the fleet snapshot reads: the sizes the memory and swap percentages divide by. */
+const FLEET_SNAPSHOT_EXTRA_SCOPES: ReadonlySet<MetricEntityScope> = new Set(['extended.sizes'])
 
 const NO_EXTRA_SCOPES: ReadonlySet<MetricEntityScope> = new Set()
 

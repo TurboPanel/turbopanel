@@ -876,7 +876,8 @@ export async function updateManagedMemberObservedReplication(
   observed: {
     /** Omitted by the on-demand probe: it observes replication, not lifecycle. */
     status?: string
-    replication?: ManagedReplicationHealth
+    /** `null` clears the stored reading (a replica that just became the primary has none). */
+    replication?: ManagedReplicationHealth | null
   }
 ): Promise<void> {
   const [existing] = await db
@@ -887,7 +888,9 @@ export async function updateManagedMemberObservedReplication(
   if (!existing) return
 
   const prev = isRecord(existing.metadata) ? { ...existing.metadata } : {}
-  if (observed.replication !== undefined) {
+  if (observed.replication === null) {
+    delete prev.replication
+  } else if (observed.replication !== undefined) {
     prev.replication = observed.replication
   }
 
