@@ -1139,6 +1139,32 @@ test('mariadb switchover fence stop requests GTID capture on the old primary', a
   assertEquals(stop.captureSwitchoverGtid, true)
 })
 
+test('a planned switchover records the primary epoch it began at and leaves other stops unchanged', async () => {
+  const harness = createHarness({ connected: [true, true] })
+  const result = await beginOperatorSwitchover({
+    db: harness.db,
+    commandQueue: okQueue(),
+    managedId: MANAGED_ID,
+    engine: 'postgres',
+    source: member(),
+    target: failoverReplica(),
+    members: [member(), failoverReplica()],
+    actor: ACTOR,
+  })
+  expectOk(result)
+  assertEquals(
+    (harness.recovery()?.metadata as { primaryEpochAtStart?: number } | undefined)
+      ?.primaryEpochAtStart,
+    0
+  )
+  // This harness has no enrolled daemon, so the stop asks for no position.
+  const stop = harness.commandInserts
+    .map((row) => row.payload as Record<string, unknown> | undefined)
+    .find((payload) => payload?.action === 'stop')
+  assertEquals(stop?.switchoverRecoveryId, undefined)
+  assertEquals(stop?.primaryEpoch, undefined)
+})
+
 test('mariadb switchover aborts promote when fence stop did not record a GTID', async () => {
   const harness = createHarness({
     members: [member(), failoverReplica()],
