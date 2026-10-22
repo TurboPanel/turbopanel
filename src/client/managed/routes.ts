@@ -105,6 +105,7 @@ import {
 } from '../../features/net/private-endpoint.ts'
 import {
   assertManagedIdle,
+  assertNoBackupInFlight,
   assertTargetServerOnline,
   authorizeManagedBackupMutation,
   authorizeManagedRequest,
@@ -3483,6 +3484,9 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const busy = await assertManagedIdle(c, db, row)
     if (busy) return busy
 
+    const inFlight = await assertNoBackupInFlight(c, db, row.id)
+    if (inFlight) return inFlight
+
     const offline = await assertTargetServerOnline(c, db, targetServerId)
     if (offline) return offline
 
@@ -3597,6 +3601,9 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     const busy = await assertManagedIdle(c, db, row)
     if (busy) return busy
+
+    const inFlight = await assertNoBackupInFlight(c, db, row.id)
+    if (inFlight) return inFlight
 
     const offline = await assertTargetServerOnline(c, db, targetServerId)
     if (offline) return offline
