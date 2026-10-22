@@ -42,6 +42,18 @@ export const commandSchemas = {
         description: 'Id of the running step, or null when none is running.',
       },
       updatedAt: { type: 'string', format: 'date-time' },
+      runningSince: {
+        type: ['string', 'null'],
+        format: 'date-time',
+        description:
+          'When the server began the work (control plane clock); null while it waits for another build. Absent from servers that do not report it.',
+      },
+      contactLostAt: {
+        type: ['string', 'null'],
+        format: 'date-time',
+        description:
+          'Set while a running command has gone quiet: when the server was last heard from. The control plane is checking with the server and has not declared the command failed. Cleared when the server is heard from again; absent once the command ends.',
+      },
     },
   },
   CommandStatusRecord: {
