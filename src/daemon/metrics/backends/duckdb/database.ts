@@ -127,7 +127,7 @@ export function escapeSqlString(value: string): string {
 }
 
 /**
- * Open (or create) the current DuckDB metrics store (schema marker 10).
+ * Open (or create) the current DuckDB metrics store (schema marker 12).
  * Any marker other than the current one (older, empty, unparseable, missing
  * beside existing data) discards `metrics.duckdb`, its wal, `parquet/`,
  * `tmp/` and `schema-version` with a warning before this open creates the

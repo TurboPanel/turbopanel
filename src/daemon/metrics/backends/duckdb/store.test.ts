@@ -793,7 +793,7 @@ it('v5 queryFleetHostSnapshot: multiple servers, values map, a requested-but-abs
   })
 })
 
-it('v8 queryFleetHostSnapshot: a data point v8 no longer stores reads as empty even though the column holds a value', async () => {
+it('v12 queryFleetHostSnapshot: a data point v12 no longer stores reads as empty even though the column holds a value', async () => {
   await withStore(async (store) => {
     const withFaults = sample({ serverId: SERVER_A, atMs: DAY_START, cpuBusyPercent: 10 })
     withFaults.host.memory.majorPageFaultsPerSecond = 42
@@ -1288,8 +1288,8 @@ const DOCKER_V6: DockerUsageSample = {
   buildCacheReclaimableBytes: null,
 }
 
-it('v8 extended numeric fields land in the ext_* columns; a v6 sample writes real NULLs there', async () => {
-  const metricsDir = await Deno.makeTempDir({ prefix: 'tp-duckdb-v8-' })
+it('wire version 8 extended numeric fields land in the ext_* columns; a v6 sample writes real NULLs there', async () => {
+  const metricsDir = await Deno.makeTempDir({ prefix: 'tp-duckdb-v12-' })
   try {
     const store = makeStore(metricsDir)
     await store.writeSample(

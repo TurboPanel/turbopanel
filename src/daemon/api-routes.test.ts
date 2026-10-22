@@ -2800,7 +2800,7 @@ test('POST /metrics buffers a live-session sample for the overlay AND writes a f
   assertEquals(buffered?.host.cpu.busyPercent, 81)
 })
 
-test('POST /metrics routes a non-durable v8 live sample to the overlay buffer only, with or without the lease marker', async () => {
+test('POST /metrics routes a non-durable wire version 8 live sample to the overlay buffer only, with or without the lease marker', async () => {
   for (const marked of [true, false]) {
     const { app, writes } = await createMetricsTestApp({ runtime: 'deno' })
     const serverId = `srv-metrics-nondurable-${marked}`
@@ -2831,7 +2831,7 @@ test('POST /metrics routes a non-durable v8 live sample to the overlay buffer on
   }
 })
 
-test('POST /metrics stores a v8 durable baseline sample and buffers it while a lease is active', async () => {
+test('POST /metrics stores a wire version 8 durable baseline sample and buffers it while a lease is active', async () => {
   const { app, writes } = await createMetricsTestApp({ runtime: 'deno' })
   const serverId = 'srv-metrics-baseline-lease'
   const cache = createMetricsChartCache('deno')
@@ -2912,7 +2912,7 @@ test('POST /metrics still writes priming and baseline intervals without a live-s
   assertEquals(writes.length, 2)
 })
 
-test('POST /metrics through a real CloudflareAnalyticsEngineServerMetricsStore: host rows, entity families and events all land as v8 AE rows', async () => {
+test('POST /metrics through a real CloudflareAnalyticsEngineServerMetricsStore: host rows, entity families and events all land as v12 AE rows', async () => {
   const { app, points } = await createMetricsTestAppWithRealCloudflareStore()
   const serverId = 'srv-metrics-cf-real'
   const daemonToken = await issueDaemonToken(serverId, 'key-metrics-cf-real')
@@ -2963,7 +2963,7 @@ test('POST /metrics through a real CloudflareAnalyticsEngineServerMetricsStore: 
   assertEquals(family('network').length, 1) // eth0/eth1 embed; eth2 pages
   assertEquals(family('gpu').length, 1)
 
-  // v8 folds Caddy into host.web and ProxySQL into managed.database: no rows
+  // v12 folds Caddy into host.web and ProxySQL into managed.database: no rows
   // of their own, one source each.
   assertEquals(family('managed.ingress').length, 0)
   assertEquals(family('managed.database').length, 1)

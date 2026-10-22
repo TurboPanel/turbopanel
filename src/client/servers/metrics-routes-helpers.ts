@@ -5,6 +5,7 @@
 
 import { CloudflareAnalyticsEngineServerMetricsStore } from '../../daemon/metrics/backends/cloudflare/store.ts'
 import { DisabledServerMetricsStore } from '../../daemon/metrics/disabled-store.ts'
+import { METRICS_LAYOUT_VERSION } from '../../daemon/metrics/field-registry.ts'
 import type {
   EntitySeriesResult,
   HostSeriesResult,
@@ -578,9 +579,9 @@ const HOST_SINGLETON_QUERYABLE_SCOPES: ReadonlySet<MetricEntityScope> = new Set(
  * plan (the capability plan's `managedDockerEnabled`, no longer tier-gated). Both answer a storage panel that
  * asks for them by name, never the fleet overview's default selection.
  *
- * `extended.*`: the v8 health and limit numbers (OOM kills, PID limit, root
+ * `extended.*`: the v12 health and limit numbers (OOM kills, PID limit, root
  * disk queue/ops, failed units, RAID, container health, Docker reclaimable,
- * certificate days). Only a v8 daemon reports them, so a panel asks for them
+ * certificate days). Only a wire version 8 daemon reports them, so a panel asks for them
  * by name and the overview default stays the v6 host set.
  */
 const HOST_SINGLETON_EXPLICIT_ONLY_SCOPES: ReadonlySet<MetricEntityScope> = new Set([
@@ -921,6 +922,8 @@ export type SeriesRouteResponse = {
   cpuLimits: EffectiveCpuThermalLimits
   temperatureUnit: TemperatureUnit
   nicSlotLimit: number
+  /** Metrics layout number this panel serves (`METRICS_LAYOUT_VERSION`); older panels omit it. */
+  layoutVersion: number
 }
 
 export function buildSeriesRouteResponse(
@@ -952,6 +955,7 @@ export function buildSeriesRouteResponse(
     cpuLimits: params.envelope.cpuLimits,
     temperatureUnit: params.envelope.temperatureUnit,
     nicSlotLimit: params.envelope.nicSlotLimit,
+    layoutVersion: METRICS_LAYOUT_VERSION,
   }
 }
 

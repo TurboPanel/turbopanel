@@ -145,7 +145,7 @@
   // (host.system, host.io, host.network, host.web), managed.database when managed
   // databases run, presence-gated pages for block/network/filesystem/gpu/
   // hardware.physical, and one row per event — see
-  // src/daemon/metrics/backends/cloudflare/field-map.ts and src/daemon/metrics/V8-LAYOUT.md. `workers.ts` wires this binding
+  // src/daemon/metrics/backends/cloudflare/field-map.ts and src/daemon/metrics/V12-LAYOUT.md. `workers.ts` wires this binding
   // straight into a real `CloudflareAnalyticsEngineServerMetricsStore` for
   // both writes and reads — metric samples, status transitions, and metric
   // events all land here directly.
