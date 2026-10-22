@@ -896,6 +896,11 @@ flagged destroy that ended `failed` or `timed_out` again once its host is
 connected, rebuilding the payload from the command's context (volumes on, no row
 delete), at most 10 times and never past the original expiry, and never when the
 cluster row exists or a newer destroy of it on that host is open or done. The
+old row is claimed with a conditional update before anything is queued, so two
+passes (both runtimes tick) cannot both queue one. A managed row is only ever
+inserted by the create route with a database-generated id (nothing adopts or
+converts an existing cluster id into a new row), so a destroy keyed by an old
+id can never reach a database made later. The
 host side is keyed by the cluster id, and a late destroy's report never touches
 the container rows of another database in the same environment (a database
 created again with the same name has a new id). Sweeps mop up leftover

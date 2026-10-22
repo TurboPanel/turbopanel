@@ -122,6 +122,15 @@ async function redriveOne(db: Db, commandQueue: CommandQueue, row: Candidate): P
     return false
   }
 
+  // Claim the old row first, conditionally: of two passes (both runtimes tick),
+  // only the one whose update changes the row may queue anything.
+  const claimed = await db
+    .update(command)
+    .set({ metadata: { ...meta, [REDRIVE_DONE_KEY]: 'claiming' } })
+    .where(and(eq(command.id, row.id), sql`${command.metadata}->>${REDRIVE_DONE_KEY} is null`))
+    .returning({ id: command.id })
+  if (claimed.length === 0) return false
+
   const memberId = contextString(row.context, 'memberId')
   const environmentId = contextString(row.context, 'environmentId')
   // Rebuilt from the command's context: the stored payload of a failed command
@@ -133,21 +142,27 @@ async function redriveOne(db: Db, commandQueue: CommandQueue, row: Candidate): P
     ...(memberId ? { memberId } : {}),
     ...(environmentId ? { environmentId } : {}),
   }
-  const record = await createCommandRecord(db, {
-    serverId: row.serverId,
-    actorType: 'system',
-    actorId: row.serverId,
-    type: 'managed.destroy',
-    payload,
-    // Same deadline as the original: a retry never extends the 7 days.
-    expiresAt: row.expiresAt,
-    metadata: {
-      [MANAGED_DESTROY_REDRIVE_FLAG]: true,
-      [REDRIVE_ATTEMPTS_KEY]: attempts + 1,
-      redriveOf: row.id,
-    },
-  })
-  // Claim the old row before queueing, so a failed claim cannot double-queue.
+  let record: Awaited<ReturnType<typeof createCommandRecord>>
+  try {
+    record = await createCommandRecord(db, {
+      serverId: row.serverId,
+      actorType: 'system',
+      actorId: row.serverId,
+      type: 'managed.destroy',
+      payload,
+      // Same deadline as the original: a retry never extends the 7 days.
+      expiresAt: row.expiresAt,
+      metadata: {
+        [MANAGED_DESTROY_REDRIVE_FLAG]: true,
+        [REDRIVE_ATTEMPTS_KEY]: attempts + 1,
+        redriveOf: row.id,
+      },
+    })
+  } catch (error) {
+    // Nothing was created: give the claim back so a later pass can try again.
+    await db.update(command).set({ metadata: meta }).where(eq(command.id, row.id))
+    throw error
+  }
   await db
     .update(command)
     .set({ metadata: { ...meta, [REDRIVE_DONE_KEY]: record.id } })
