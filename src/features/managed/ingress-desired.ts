@@ -102,7 +102,6 @@ import {
   collectProxySqlListenerSans,
   decideIngressBindAddresses,
   hostgroupsForClusterIndex,
-  INGRESS_RECONCILE_RUN_MS,
   ingressEngineVersionFromOptions,
   ingressReconcileValidityMs,
   isAtRestSealedPassword,
@@ -117,7 +116,7 @@ import {
 } from './ingress-desired-pure.ts'
 import { parseManagedSettings } from './options.ts'
 
-export const MANAGED_INGRESS_RECONCILE_TTL_MS = INGRESS_RECONCILE_RUN_MS
+export { INGRESS_RECONCILE_RUN_MS as MANAGED_INGRESS_RECONCILE_TTL_MS } from './ingress-desired-pure.ts'
 
 export type ManagedIngressReconcilePrepareError =
   | { kind: 'daemon_key_unavailable'; serverId: string }
