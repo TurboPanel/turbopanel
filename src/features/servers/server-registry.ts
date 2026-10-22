@@ -27,7 +27,6 @@ import {
   timeSyncColumnPatch,
 } from './server-metadata.ts'
 import { license, server } from '../../db/schema.ts'
-import { recomputeAssignmentsForServer } from '../tiers/assignment-records.ts'
 import { applyReportedAddressRepin } from '../net/repin-apply.ts'
 import { serverIpsEquals } from '../../contracts/server-addresses.ts'
 import {
@@ -436,9 +435,10 @@ export async function touchServerMetadata(
 }
 
 /**
- * Best-effort follow-ups once a hello wrote its delta: re-derive tier
- * assignment and re-point datacenter pins. A failure in either must not reject
- * the hello.
+ * Best-effort follow-up once a hello wrote its delta: re-point datacenter
+ * pins. A failure must not reject the hello. A hardware report never touches
+ * the server's license tier — only a manager assigns one; a server that
+ * measures bigger than its tier is flagged, not moved.
  */
 async function reconcileAfterHardwareReport(
   db: Db,
@@ -446,18 +446,9 @@ async function reconcileAfterHardwareReport(
   base: ServerMetadata | null | undefined,
   delta: Partial<ServerMetadata>
 ): Promise<void> {
-  // A hardware report can move the server's tier requirement: re-derive the
-  // organization's assignment. Best-effort — a failure here must not reject
-  // the hello, and the next session check recomputes again.
-  if (delta.resources !== undefined) {
-    await recomputeAssignmentsForServer(db, serverId).catch((err) => {
-      console.warn(`tier assignment recompute failed for ${serverId}: ${describeError(err)}`)
-    })
-  }
-
   // Reported addresses moved: re-point / flag the server's datacenter
   // membership pins. Gated on `ips` specifically so a CPU / docker-only delta
-  // never touches `ip` rows. Best-effort like the tier recompute. Nothing is
+  // never touches `ip` rows. Best-effort. Nothing is
   // enqueued here — hello and Durable Object handlers must not enqueue
   // commands (DO cost rule, see `client/system/reconcile.ts`); the routing
   // fan-out for a repin is deferred to the maintenance sweep

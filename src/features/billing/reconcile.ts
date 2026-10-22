@@ -31,7 +31,7 @@ import {
 } from './billing-records.ts'
 import { setting } from '../../db/schema.ts'
 import { countActiveLicenses } from '../tiers/tier-records.ts'
-import { computeAssignment } from '../tiers/assignment.ts'
+import { readAssignment } from '../tiers/assignment.ts'
 import { loadAssignableServers, tierQuantitiesFromState } from '../tiers/assignment-records.ts'
 import { outstandingReleasesByTier, readPendingChanges } from './pending-changes.ts'
 
@@ -121,7 +121,7 @@ export async function runReconcile(deps: ReconcileDeps): Promise<ReconcileReport
     )
     const quantities = tierQuantitiesFromState(state)
     const servers = await loadAssignableServers(deps.db, organizationId)
-    const assignment = computeAssignment(quantities, servers)
+    const assignment = readAssignment(quantities, servers)
     let releasing = 0
     for (const count of outstandingReleasesByTier(ledger).values()) releasing += count
     drift.push(

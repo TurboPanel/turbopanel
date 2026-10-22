@@ -1,5 +1,5 @@
 /**
- * Entitlement sync: committed seats in, the derived assignment out.
+ * Entitlement sync: committed seats in, the coverage report out.
  *
  * Runs after every successful projection (the webhook task) and at the
  * end of every mutation route, so the webhook is a redundant idempotent
@@ -8,18 +8,19 @@
  *
  *   1. reads the pending-change ledger and drops the intents whose change
  *      the committed items now show (`landedIntents`);
- *   2. recomputes which server sits on which tier from the seats and the
- *      licensed servers' hardware (`recomputeOrganizationAssignments`),
- *      writing `server.assigned_tier_id` where it moved;
+ *   2. reads the managers' assignment against the new seats
+ *      (`peekOrganizationAssignment`) and reports servers left uncovered —
+ *      it never writes `server.assigned_tier_id`;
  *   3. on an **ended** subscription, revokes every license the
  *      organization holds — bound ones included — and clears the ledger;
  *   4. rebuilds the deferred schedule when the ledger still carries
  *      intents but the subscription has no schedule (an immediate change
  *      released it and was parked as pending).
  *
- * Nothing here moves a license between tiers, because a license has no
- * tier: a server that ends up on nothing is reported as uncovered, the
- * daemon's next session is refused, and the console shows why.
+ * Nothing here assigns, moves or releases a server's license tier: only
+ * the organization's managers do that. A seat change that leaves a server
+ * holding a tier nobody pays for is reported as uncovered; the server keeps
+ * its tier and stays connected, and the console shows why.
  *
  * Workers-bundleable: nothing at module load.
  */
@@ -32,11 +33,8 @@ import {
   type OrganizationBillingState,
   revokeAllLicensesForOrganization,
 } from './billing-records.ts'
-import {
-  clearAssignmentsForServers,
-  recomputeOrganizationAssignments,
-  type RecomputeAssignmentsResult,
-} from '../tiers/assignment-records.ts'
+import { peekOrganizationAssignment } from '../tiers/assignment-records.ts'
+import type { TierAssignment } from '../tiers/assignment.ts'
 import type { StripeClient } from './client.ts'
 import { resolveBillingGateway } from './gateway.ts'
 import {
@@ -105,7 +103,8 @@ export type EntitlementSyncInput = Readonly<{
 
 export type EntitlementSyncResult = Readonly<{
   landedIntentIds: string[]
-  assignment: RecomputeAssignmentsResult
+  /** The managers' assignment read against the seats; this sync never changes it. */
+  assignment: TierAssignment
   revokedLicenseIds: string[]
   /** Servers whose bound license was revoked (subscription ended only). */
   disconnectedServerIds: string[]
@@ -247,22 +246,19 @@ export async function syncEntitlementsForOrganization(
     ledger = clearLedgerIfSubscriptionEnded(ledger, state)
     await writePendingChanges(deps.db, input.organizationId, ledger, nowMs)
 
-    // 3. An ended subscription revokes everything, before the assignment
-    //    runs so it sees no licensed servers.
+    // 3. An ended subscription revokes everything. The revoked servers keep
+    //    the tier their managers gave them; they drop out of the coverage
+    //    read because they no longer hold an active license.
     let revoked: { licenseIds: string[]; serverIds: string[] } = { licenseIds: [], serverIds: [] }
     if (ended) {
       revoked = await revokeAllLicensesForOrganization(deps.db, input.organizationId, {
         now,
         onRevokeBound: deps.onRevokeBound,
       })
-      await clearAssignmentsForServers(deps.db, revoked.serverIds)
     }
 
-    // 2. The derived assignment.
-    const assignment = await recomputeOrganizationAssignments(deps.db, input.organizationId, {
-      state,
-      now,
-    })
+    // 2. The managers' assignment, read against the seats (never written).
+    const assignment = await peekOrganizationAssignment(deps.db, input.organizationId, { state })
 
     // 4. The schedule, when the ledger still needs one.
     const scheduleRebuilt = await rebuildDeferredScheduleIfNeeded(
@@ -291,7 +287,6 @@ export async function syncEntitlementsForOrganization(
         `organization ${input.organizationId}: entitlements synced`,
         JSON.stringify({
           landed: result.landedIntentIds.length,
-          moved: assignment.changed.length,
           revoked: revoked.licenseIds.length,
         })
       )

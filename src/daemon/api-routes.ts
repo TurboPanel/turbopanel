@@ -67,22 +67,16 @@ import {
 import { resolveOrganizationDockerNetworking } from '../features/deploy/docker-address-pools.ts'
 import {
   parseServerHardwareProfile,
-  parseServerHostResources,
   parseServerOptions,
   resolveEffectiveMetricsCapabilityPlan,
 } from '../features/servers/server-metadata.ts'
 import { metricsCapabilityTierEntitlementsForRank } from '../features/tiers/tier-entitlements.ts'
-import { recomputeAssignmentsForServer } from '../features/tiers/assignment-records.ts'
+import { fillSelfHostedGrantTierForServer } from '../features/tiers/assignment-records.ts'
 import {
   syncSelfHostedGrantForLicense,
   syncSelfHostedGrantForServer,
 } from '../features/tiers/self-hosted-grant-records.ts'
-import {
-  evaluateHostedEnrollmentTier,
-  evaluateTierFloor,
-  LICENSE_TIER_BELOW_REQUIRED_ERROR,
-  loadServerLicenseTierJoin,
-} from '../features/tiers/tier-enforcement.ts'
+import { loadServerLicenseTierJoin } from '../features/tiers/tier-enforcement.ts'
 import {
   getLatestTopologyGeneration,
   getTopologyGeneration,
@@ -555,19 +549,19 @@ async function loadActiveDaemonKeyState(
 }
 
 /**
- * Confirms the server's bound license (if any) is still active and that an
- * entitled tier covers it. The assignment is derived
- * (`assignment-records.ts`); a licensed server assigned nothing gets one
- * recompute here — the hardware report and the projection may have raced
- * this session — and is refused only when it still ends uncovered. The
- * error string is byte-identical to the daemon's permanent-auth list.
+ * Confirms the server's bound license (if any) is still active — the only
+ * refusal here. Tier coverage never refuses and never assigns: which tier a
+ * server holds is a manager's choice (`assignment-records.ts`), so a
+ * licensed server with no tier yet, or one that measures bigger than the
+ * tier it was given, still connects and stays managed; it is flagged
+ * (`over-plan-flag.ts`, the reconcile sweep), never moved.
  *
- * **The same check runs on both runtimes.** Self-hosted is not exempted;
- * it is entitled instead, by the grant (`self-hosted-grant.ts`) that is
- * brought in line here before anything is read. Reconnecting is therefore
- * also the backfill path for an organization licensed before the grant
- * existed, and for one whose control plane has just moved from Deno to
- * Workers — the grant it left behind is what keeps its daemons connected.
+ * **Self-hosted** is entitled by the grant (`self-hosted-grant.ts`), brought
+ * in line here before anything is read, and its servers run on the grant's
+ * top tier: a licensed server there with no tier yet gets it
+ * (`fillSelfHostedGrantTierForServer`, self-hosted only). Reconnecting is
+ * therefore also the backfill path for an organization licensed before the
+ * grant existed.
  */
 async function checkServerLicenseEntitlement(
   db: Db,
@@ -580,37 +574,11 @@ async function checkServerLicenseEntitlement(
     if (!activeLicense) {
       return { ok: false, status: 400, error: 'License is inactive' }
     }
-    // Deliberately unguarded, like the recompute below: this decides the
-    // daemon's fate, so a database error must surface as a 500 the daemon
-    // retries rather than as a permanent refusal.
+    // Deliberately unguarded: a database error must surface as a 500 the
+    // daemon retries rather than as a permanent refusal.
     await syncSelfHostedGrantForServer(db, serverId, deployment)
-  }
-
-  let row = await loadServerLicenseTierJoin(db, serverId)
-  if (row?.licenseId && !row.assignedTierId) {
-    // Deliberately unguarded: this decides the daemon's fate. A refusal here
-    // is a 400, which the daemon treats as permanent and parks on, so a
-    // transient database error must surface as a 500 (transient, retried)
-    // rather than be swallowed into "still unassigned, refuse permanently".
-    await recomputeAssignmentsForServer(db, serverId)
-    row = await loadServerLicenseTierJoin(db, serverId)
-  }
-  if (row?.licenseId && !row.assignedTierId) {
-    return { ok: false, status: 400, error: LICENSE_TIER_BELOW_REQUIRED_ERROR }
-  }
-  if (row?.assignedTierId && row.tierRank != null) {
-    const metadata = isPlainObject(row.serverMetadata) ? row.serverMetadata : undefined
-    const resources = parseServerHostResources(metadata?.resources)
-    const floor = evaluateTierFloor({
-      resources,
-      tierRank: row.tierRank,
-    })
-    if (!floor.satisfied) {
-      return {
-        ok: false,
-        status: 400,
-        error: LICENSE_TIER_BELOW_REQUIRED_ERROR,
-      }
+    if (deployment === 'self-hosted') {
+      await fillSelfHostedGrantTierForServer(db, serverId)
     }
   }
   return { ok: true }
@@ -971,8 +939,6 @@ async function primeCapabilityPlanAfterEnroll(
 ): Promise<void> {
   if (deployment === 'self-hosted') return
   try {
-    // The server just bound a license: place it before reading its plan.
-    await recomputeAssignmentsForServer(db, serverId)
     const planRow = await loadIngestServerPlanRow(db, serverId, deployment)
     const machineClass = resolveServerMachineClass(planRow?.machineClass, undefined, 0)
     const plan = resolveEffectiveMetricsCapabilityPlan(
@@ -1452,16 +1418,13 @@ export function registerDaemonApiRoutes<E extends Env>(
     // Bookkeeping only: it must never fail an enrol.
     await recordLicenseEnrollAttempt(db, licenseId, hostname).catch(() => {})
 
-    // Same gate on both runtimes. Self-hosted grants itself the coverage
-    // first (`self-hosted-grant.ts`), so the check passes there by being
-    // entitled rather than by being skipped — and the row it writes is what
-    // still covers this server after a switch to the hosted runtime.
+    // No tier gate and no assignment here: a freshly enrolled server holds
+    // no license tier until a manager assigns one, and it connects either
+    // way. Self-hosted grants itself the coverage first
+    // (`self-hosted-grant.ts`) — the row it writes is what still covers this
+    // server after a switch to the hosted runtime.
     if (deployment === 'self-hosted') {
       await syncSelfHostedGrantForLicense(db, licenseId)
-    }
-    const tierGate = await evaluateHostedEnrollmentTier(db, licenseId)
-    if (!tierGate.ok) {
-      return c.json({ ok: false, error: tierGate.error }, 400)
     }
 
     const fabricDeps = enrollFabricDepsFromContext(c)

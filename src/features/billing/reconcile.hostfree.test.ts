@@ -1,8 +1,8 @@
 /**
  * The reconciliation sweep: drift detected and reported to the log and the
  * `setting` row, nothing else written. Purchased quantity is compared to
- * licenses held (the mint gate's invariant) and to the derived assignment
- * (a licensed server nothing purchased covers).
+ * licenses held (the mint gate's invariant) and to the managers' assignment
+ * (a licensed server with no tier, or holding a tier nobody pays for).
  */
 
 import { assertEquals } from '@std/assert'
@@ -75,12 +75,17 @@ const licenseRow = (id: string, serverId: string | null) => ({
   createdAt: NOW,
   updatedAt: NOW,
 })
-const serverRow = (id: string, cores: number, createdAt: string) => ({
+const serverRow = (
+  id: string,
+  cores: number,
+  createdAt: string,
+  assignedTierId: string | null = null
+) => ({
   id,
   organizationId: ORG,
   createdAt,
   updatedAt: createdAt,
-  assignedTierId: null,
+  assignedTierId,
   metadata: { resources: { cpus: [{ cores: { total: cores } }], memory: { totalBytes: 8 * GIB } } },
 })
 
@@ -150,11 +155,12 @@ function seed(opts: {
         ],
       ],
       [license, opts.licenses.map((l) => licenseRow(l.id, l.serverId))],
-      // A 12-core box fits S3; a 256-core box needs S7, which nobody bought.
+      // A manager put the 12-core box on S3; the 256-core box was never
+      // given a license tier, so it reads as uncovered.
       [
         server,
         [
-          serverRow(SERVER_A, 12, '2026-09-01T00:00:00.000Z'),
+          serverRow(SERVER_A, 12, '2026-09-01T00:00:00.000Z', S3),
           serverRow(SERVER_BIG, 256, '2026-09-02T00:00:00.000Z'),
         ],
       ],
@@ -245,7 +251,7 @@ test('runReconcile reports drift into the setting row and writes nothing else', 
       serversUncovered: [SERVER_BIG],
     },
   ])
-  // Nothing but the report row moved — the assignment is computed, never cached, here.
+  // Nothing but the report row moved — the sweep only reads the assignment.
   assertEquals(JSON.stringify(db.rows(license)), before.licenses)
   assertEquals(JSON.stringify(db.rows(subscriptionItem)), before.seats)
   assertEquals(JSON.stringify(db.rows(subscription)), before.subscription)

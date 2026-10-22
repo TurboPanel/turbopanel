@@ -1,8 +1,9 @@
 /**
- * The derived assignment, persisted: `server.assigned_tier_id` is written
- * only for the rows whose tier moved. An organization without a payer still
- * assigns from its self-hosted grant; a server outside any organization is
- * left alone. Hardware → required rank treats an unreported box as unknown.
+ * The managers' assignment, read and written: reading never writes
+ * `server.assigned_tier_id`; a manager's assignment writes only the one
+ * server it names and needs a free seat; the self-hosted grant fill only
+ * fills empty rows. Hardware → required rank treats an unreported box as
+ * unknown.
  */
 
 import { assertEquals } from '@std/assert'
@@ -19,16 +20,15 @@ import {
 import { listSeatsForOrganization } from '../billing/billing-records.ts'
 import { createMemoryDb } from '../../test-fixtures/memory-db.ts'
 import {
-  clearAssignmentsForServers,
+  assignServerTier,
+  fillSelfHostedGrantTier,
   loadAssignableServers,
   peekOrganizationAssignment,
-  recomputeAssignmentsForServer,
-  recomputeOrganizationAssignments,
   requiredRankFromMetadata,
   requiredRankFromResources,
   tierQuantitiesFromState,
 } from './assignment-records.ts'
-import { resolveTierPickNotice, setServerPreferredTier } from './server-preferred-tier.ts'
+import { setServerPreferredTier } from './server-preferred-tier.ts'
 import { CUSTOM_TIER_LABEL } from './ladder.ts'
 
 /**
@@ -236,7 +236,7 @@ test('tierQuantitiesFromState sums per tier with its rank and reads zero once th
   )
 })
 
-test('loadAssignableServers is every licensed server of the organization with its requirement and cached assignment', async () => {
+test('loadAssignableServers is every licensed server of the organization with its requirement and the tier it holds', async () => {
   const db = seed({
     servers: [
       serverRow(SERVER_B, '2026-09-02T00:00:00.000Z', hardware(12), S3),
@@ -263,60 +263,43 @@ test('loadAssignableServers is every licensed server of the organization with it
   )
 })
 
-test('recomputeOrganizationAssignments writes assigned_tier_id only for the rows that moved', async () => {
+const tierOf = (db: ReturnType<typeof seed>, id: string) =>
+  db.rows(server).find((row) => row.id === id)?.assignedTierId ?? null
+
+test("peekOrganizationAssignment reads the managers' assignment and never writes a server", async () => {
   const db = seed({
     seats: [
       { tierId: S1, quantity: 1 },
       { tierId: S3, quantity: 1 },
     ],
     servers: [
-      // Already on the right tier: untouched.
-      serverRow(SERVER_A, '2026-09-01T00:00:00.000Z', hardware(2), S1),
-      // Stale: cached on S1, needs S3.
-      serverRow(SERVER_B, '2026-09-02T00:00:00.000Z', hardware(12), S1),
-      // Nothing left for a third licensed box: stale S3 is cleared.
-      serverRow(SERVER_C, '2026-09-03T00:00:00.000Z', hardware(2), S3),
-      // Unlicensed: never read, never written.
+      // Kept on S1 while it measures S3: stays on S1.
+      serverRow(SERVER_A, '2026-09-01T00:00:00.000Z', hardware(12), S1),
+      // Enrolled, no tier given yet: stays empty though an S3 seat is free.
+      serverRow(SERVER_B, '2026-09-02T00:00:00.000Z', hardware(2), null),
       serverRow(SERVER_UNLICENSED, '2026-09-01T00:00:00.000Z', hardware(2), S5),
     ],
-    licenses: [
-      licenseRow('l-a', SERVER_A),
-      licenseRow('l-b', SERVER_B),
-      licenseRow('l-c', SERVER_C),
-    ],
+    licenses: [licenseRow('l-a', SERVER_A), licenseRow('l-b', SERVER_B)],
   })
-  const result = await recomputeOrganizationAssignments(db, ORG, { now: NOW })
+  const assignment = await peekOrganizationAssignment(db, ORG)
   assertEquals(
-    [...result.assignment.byServer],
+    [...assignment.byServer],
     [
       [SERVER_A, S1],
-      [SERVER_B, S3],
-      [SERVER_C, null],
+      [SERVER_B, null],
     ]
   )
-  assertEquals(result.changed, [SERVER_B, SERVER_C])
-  assertEquals(result.uncovered, [SERVER_C])
-  const byId = new Map(db.rows(server).map((row) => [row.id, row]))
+  assertEquals(assignment.uncovered, [SERVER_B])
+  assertEquals(assignment.spare.get(S3), 1)
   assertEquals(
-    [byId.get(SERVER_A)?.assignedTierId, byId.get(SERVER_A)?.updatedAt],
-    [S1, '2026-09-01T00:00:00.000Z']
-  )
-  assertEquals([byId.get(SERVER_B)?.assignedTierId, byId.get(SERVER_B)?.updatedAt], [S3, NOW])
-  assertEquals([byId.get(SERVER_C)?.assignedTierId, byId.get(SERVER_C)?.updatedAt], [null, NOW])
-  assertEquals(byId.get(SERVER_UNLICENSED)?.assignedTierId, S5)
-  assertEquals(db.ops.filter((op) => op === 'update:server').length, result.changed.length)
-  assertEquals(
-    db.ops.filter((op) => op.startsWith('insert:') || op.startsWith('delete:')),
+    db.ops.filter((op) => !op.startsWith('select:')),
     []
   )
-
-  // A second pass is a pure read: everything is where it should be.
-  const again = await recomputeOrganizationAssignments(db, ORG, { now: '2026-09-08T00:00:00.000Z' })
-  assertEquals(again.changed, [])
-  assertEquals(db.ops.filter((op) => op === 'update:server').length, 2)
+  assertEquals(tierOf(db, SERVER_A), S1)
+  assertEquals(tierOf(db, SERVER_B), null)
 })
 
-test('an already-loaded state skips the billing read, and an ended subscription clears every assignment', async () => {
+test('an ended subscription reports the server uncovered and leaves its tier alone', async () => {
   const db = seed({
     status: 'canceled',
     seats: [{ tierId: S3, quantity: 2 }],
@@ -325,166 +308,139 @@ test('an already-loaded state skips the billing read, and an ended subscription 
   })
   const state = await listSeatsForOrganization(db, ORG)
   const opsBefore = db.ops.length
-  const result = await recomputeOrganizationAssignments(db, ORG, { state, now: NOW })
+  const assignment = await peekOrganizationAssignment(db, ORG, { state })
   assertEquals(
     db.ops.slice(opsBefore).filter((op) => op.startsWith('select:')),
     ['select:server']
   )
-  assertEquals(result.changed, [SERVER_A])
-  assertEquals(result.uncovered, [SERVER_A])
-  assertEquals(db.rows(server)[0]?.assignedTierId, null)
+  assertEquals(assignment.uncovered, [SERVER_A])
+  assertEquals(tierOf(db, SERVER_A), S3)
 })
 
-test('recomputeAssignmentsForServer recomputes the organization the server belongs to', async () => {
-  const db = seed({
-    seats: [{ tierId: S3, quantity: 1 }],
-    servers: [serverRow(SERVER_A, '2026-09-01T00:00:00.000Z', hardware(12), null)],
-    licenses: [licenseRow('l-a', SERVER_A)],
-  })
-  const result = await recomputeAssignmentsForServer(db, SERVER_A)
-  assertEquals(result?.changed, [SERVER_A])
-  assertEquals(db.rows(server)[0]?.assignedTierId, S3)
-})
-
-test('recomputeAssignmentsForServer assigns from the self-hosted grant when there is no payer', async () => {
-  const db = seed({
-    payer: false,
-    grantQuantity: 1,
-    servers: [serverRow(SERVER_A, '2026-09-01T00:00:00.000Z', hardware(12), null)],
-    licenses: [licenseRow('l-a', SERVER_A)],
-  })
-  const result = await recomputeAssignmentsForServer(db, SERVER_A)
-  assertEquals(result?.changed, [SERVER_A])
-  assertEquals(result?.uncovered, [])
-  assertEquals(db.rows(server)[0]?.assignedTierId, SX)
-})
-
-test('recomputeAssignmentsForServer with no payer and no grant leaves a licensed server uncovered', async () => {
-  const stale = seed({
-    payer: false,
-    servers: [serverRow(SERVER_A, '2026-09-01T00:00:00.000Z', hardware(12), S3)],
-    licenses: [licenseRow('l-a', SERVER_A)],
-  })
-  const cleared = await recomputeAssignmentsForServer(stale, SERVER_A)
-  assertEquals(cleared?.uncovered, [SERVER_A])
-  assertEquals(stale.rows(server)[0]?.assignedTierId, null)
-  assertEquals(stale.ops.filter((op) => op === 'update:server').length, 1)
-
-  const clean = seed({
-    payer: false,
-    servers: [serverRow(SERVER_A, '2026-09-01T00:00:00.000Z', hardware(12), null)],
-    licenses: [licenseRow('l-a', SERVER_A)],
-  })
-  const empty = await recomputeAssignmentsForServer(clean, SERVER_A)
-  assertEquals(empty?.changed, [])
-  assertEquals(empty?.uncovered, [SERVER_A])
-  assertEquals(
-    clean.ops.filter((op) => op.startsWith('update:')),
-    []
-  )
-
-  // A server outside any organization, or one that does not exist, is left alone.
-  const orphan = seed({
-    servers: [serverRow(SERVER_A, '2026-09-01T00:00:00.000Z', hardware(12), S3, null)],
-  })
-  assertEquals(await recomputeAssignmentsForServer(orphan, SERVER_A), null)
-  assertEquals(orphan.rows(server)[0]?.assignedTierId, S3)
-  assertEquals(orphan.ops, ['select:server'])
-  assertEquals(await recomputeAssignmentsForServer(orphan, SERVER_B), null)
-})
-
-test('clearAssignmentsForServers nulls exactly the named rows and skips the write for none', async () => {
-  const db = seed({
-    servers: [
-      serverRow(SERVER_A, '2026-09-01T00:00:00.000Z', hardware(2), S1),
-      serverRow(SERVER_B, '2026-09-02T00:00:00.000Z', hardware(2), S3),
-      serverRow(SERVER_C, '2026-09-03T00:00:00.000Z', hardware(2), S5),
-    ],
-  })
-  await clearAssignmentsForServers(db, [])
-  assertEquals(db.ops, [])
-  await clearAssignmentsForServers(db, [SERVER_A, SERVER_C])
-  assertEquals(
-    db.rows(server).map((row) => row.assignedTierId),
-    [null, S3, null]
-  )
-  assertEquals(db.ops, ['update:server'])
-})
-
-test('recomputeOrganizationAssignments places a server on its preferred tier when a spare seat exists there', async () => {
+test('assignServerTier gives one server a free seat and writes only that server', async () => {
   const db = seed({
     seats: [
       { tierId: S1, quantity: 1 },
       { tierId: S3, quantity: 1 },
     ],
-    servers: [serverRow(SERVER_A, '2026-09-01T00:00:00.000Z', hardware(2), null, ORG, S3)],
-    licenses: [licenseRow('l-a', SERVER_A)],
+    servers: [
+      serverRow(SERVER_A, '2026-09-01T00:00:00.000Z', hardware(2), S1),
+      serverRow(SERVER_B, '2026-09-02T00:00:00.000Z', hardware(12), null),
+    ],
+    licenses: [licenseRow('l-a', SERVER_A), licenseRow('l-b', SERVER_B)],
   })
-  const result = await recomputeOrganizationAssignments(db, ORG, { now: NOW })
-  assertEquals(result.changed, [SERVER_A])
-  assertEquals(db.rows(server)[0]?.assignedTierId, S3)
-  assertEquals(result.assignment.pickUnfulfilled.size, 0)
+  const result = await assignServerTier(db, ORG, SERVER_B, S3, NOW)
+  assertEquals(result.ok, true)
+  if (!result.ok) throw new TypeError('expected ok')
+  assertEquals(result.assignedTierId, S3)
+  assertEquals(result.assignment.uncovered, [])
+  assertEquals(db.ops.includes('begin'), true)
+  assertEquals(db.ops.includes('commit'), true)
+  assertEquals(db.ops.filter((op) => op === 'update:server').length, 1)
+  assertEquals(tierOf(db, SERVER_B), S3)
+  assertEquals(db.rows(server).find((row) => row.id === SERVER_B)?.preferredTierId, S3)
+  // The other server did not move.
+  assertEquals(tierOf(db, SERVER_A), S1)
 })
 
-test('recomputeOrganizationAssignments keeps a covered server on derived tier when the preferred tier has no spare', async () => {
-  const db = seed({
-    seats: [{ tierId: S1, quantity: 2 }],
-    servers: [serverRow(SERVER_A, '2026-09-01T00:00:00.000Z', hardware(2), null, ORG, S3)],
-    licenses: [licenseRow('l-a', SERVER_A)],
-  })
-  const result = await recomputeOrganizationAssignments(db, ORG, { now: NOW })
-  assertEquals(result.changed, [SERVER_A])
-  assertEquals(db.rows(server)[0]?.assignedTierId, S1)
-  assertEquals(result.assignment.pickUnfulfilled.get(SERVER_A), 'S3')
-})
-
-test('setServerPreferredTier refuses a tier below the server requirement', async () => {
+test('assignServerTier refuses a tier with no free seat and never takes one from another server', async () => {
   const db = seed({
     seats: [{ tierId: S3, quantity: 1 }],
-    servers: [serverRow(SERVER_A, '2026-09-01T00:00:00.000Z', hardware(12), S3)],
+    servers: [
+      serverRow(SERVER_A, '2026-09-01T00:00:00.000Z', hardware(2), S3),
+      serverRow(SERVER_B, '2026-09-02T00:00:00.000Z', hardware(12), null),
+    ],
+    licenses: [licenseRow('l-a', SERVER_A), licenseRow('l-b', SERVER_B)],
+  })
+  assertEquals(await assignServerTier(db, ORG, SERVER_B, S3, NOW), {
+    ok: false,
+    code: 'no_free_seat',
+  })
+  assertEquals(await assignServerTier(db, ORG, SERVER_B, S5, NOW), {
+    ok: false,
+    code: 'no_free_seat',
+  })
+  assertEquals(db.ops.filter((op) => op === 'update:server').length, 0)
+  assertEquals(tierOf(db, SERVER_A), S3)
+  assertEquals(tierOf(db, SERVER_B), null)
+  // Re-assigning the tier a server already holds is a no-op success.
+  const same = await assignServerTier(db, ORG, SERVER_A, S3, NOW)
+  assertEquals(same.ok, true)
+})
+
+test('assignServerTier releases a license with null and refuses a server with no active license', async () => {
+  const db = seed({
+    seats: [{ tierId: S3, quantity: 1 }],
+    servers: [
+      serverRow(SERVER_A, '2026-09-01T00:00:00.000Z', hardware(2), S3, ORG, S3),
+      serverRow(SERVER_C, '2026-09-02T00:00:00.000Z', hardware(2), null),
+    ],
+    licenses: [licenseRow('l-a', SERVER_A), licenseRow('l-c', SERVER_C, NOW)],
+  })
+  const released = await assignServerTier(db, ORG, SERVER_A, null, NOW)
+  assertEquals(released.ok, true)
+  if (!released.ok) throw new TypeError('expected ok')
+  assertEquals(released.assignment.spare.get(S3), 1)
+  assertEquals(tierOf(db, SERVER_A), null)
+  assertEquals(db.rows(server).find((row) => row.id === SERVER_A)?.preferredTierId, null)
+  assertEquals(await assignServerTier(db, ORG, SERVER_C, S3, NOW), {
+    ok: false,
+    code: 'server_not_licensed',
+  })
+})
+
+test('setServerPreferredTier lets a manager keep a server on a smaller tier than it measures', async () => {
+  const db = seed({
+    seats: [
+      { tierId: S1, quantity: 1 },
+      { tierId: S3, quantity: 1 },
+    ],
+    servers: [serverRow(SERVER_A, '2026-09-01T00:00:00.000Z', hardware(12), null)],
     licenses: [licenseRow('l-a', SERVER_A)],
   })
   const result = await setServerPreferredTier(db, ORG, SERVER_A, S1)
-  assertEquals(result, { ok: false, code: 'tier_below_required' })
-})
-
-test('post-swap pickUnfulfilled drives tierPickNotice for list and detail rows', async () => {
-  const db = seed({
-    seats: [{ tierId: S1, quantity: 2 }],
-    servers: [serverRow(SERVER_A, '2026-09-01T00:00:00.000Z', hardware(2), null, ORG, S3)],
-    licenses: [licenseRow('l-a', SERVER_A)],
-  })
-  const assignment = await peekOrganizationAssignment(db, ORG)
-  assertEquals(resolveTierPickNotice(SERVER_A, assignment.pickUnfulfilled), 'S3 wanted, none free')
-})
-
-test('setServerPreferredTier recomputes assignment inside a transaction', async () => {
-  const db = seed({
-    seats: [
-      { tierId: S1, quantity: 1 },
-      { tierId: S3, quantity: 1 },
-    ],
-    servers: [serverRow(SERVER_A, '2026-09-01T00:00:00.000Z', hardware(2), null, ORG, S3)],
-    licenses: [licenseRow('l-a', SERVER_A)],
-  })
-  await setServerPreferredTier(db, ORG, SERVER_A, S3)
-  assertEquals(db.ops.includes('begin'), true)
-  assertEquals(db.ops.includes('commit'), true)
-})
-
-test('setServerPreferredTier clears the pick and returns to smallest that fits', async () => {
-  const db = seed({
-    seats: [
-      { tierId: S1, quantity: 1 },
-      { tierId: S3, quantity: 1 },
-    ],
-    servers: [serverRow(SERVER_A, '2026-09-01T00:00:00.000Z', hardware(2), S3, ORG, S3)],
-    licenses: [licenseRow('l-a', SERVER_A)],
-  })
-  const result = await setServerPreferredTier(db, ORG, SERVER_A, null)
   assertEquals(result.ok, true)
   if (!result.ok) throw new TypeError('expected ok')
   assertEquals(result.assignedTierLabel, 'S1')
-  assertEquals(result.preferredTierLabel, null)
-  assertEquals(db.rows(server)[0]?.preferredTierId, null)
+  assertEquals(result.preferredTierLabel, 'S1')
+  assertEquals(
+    result.tiersFree.map((row) => [row.label, row.free]),
+    [['S3', 1]]
+  )
+  assertEquals(tierOf(db, SERVER_A), S1)
+  assertEquals((await setServerPreferredTier(db, ORG, SERVER_A, 'no-such-tier')).ok, false)
+})
+
+test('fillSelfHostedGrantTier fills only licensed servers with no tier and never changes a held tier', async () => {
+  const db = seed({
+    payer: false,
+    grantQuantity: 3,
+    servers: [
+      serverRow(SERVER_A, '2026-09-01T00:00:00.000Z', hardware(2), null),
+      serverRow(SERVER_B, '2026-09-02T00:00:00.000Z', hardware(2), S1),
+      serverRow(SERVER_C, '2026-09-03T00:00:00.000Z', hardware(2), null),
+      serverRow(SERVER_UNLICENSED, '2026-09-01T00:00:00.000Z', hardware(2), null),
+    ],
+    licenses: [
+      licenseRow('l-a', SERVER_A),
+      licenseRow('l-b', SERVER_B),
+      licenseRow('l-c', SERVER_C, NOW),
+    ],
+  })
+  await fillSelfHostedGrantTier(db, ORG)
+  assertEquals(tierOf(db, SERVER_A), SX)
+  assertEquals(tierOf(db, SERVER_B), S1)
+  assertEquals(tierOf(db, SERVER_C), null)
+  assertEquals(tierOf(db, SERVER_UNLICENSED), null)
+})
+
+test('fillSelfHostedGrantTier with no grant writes nothing', async () => {
+  const db = seed({
+    payer: false,
+    servers: [serverRow(SERVER_A, '2026-09-01T00:00:00.000Z', hardware(2), null)],
+    licenses: [licenseRow('l-a', SERVER_A)],
+  })
+  await fillSelfHostedGrantTier(db, ORG)
+  assertEquals(tierOf(db, SERVER_A), null)
+  assertEquals(db.ops.filter((op) => op === 'update:server').length, 0)
 })

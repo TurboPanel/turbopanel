@@ -183,7 +183,7 @@ export const billingSchemas = {
       assignedTierId: {
         type: ['string', 'null'],
         format: 'uuid',
-        description: 'The derived tier; null when nothing purchased covers the server.',
+        description: 'The tier a manager assigned; null when none was assigned.',
       },
       requiredTier: {
         type: ['string', 'null'],

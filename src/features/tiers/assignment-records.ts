@@ -1,25 +1,27 @@
 /**
- * The derived assignment, persisted: `server.assigned_tier_id`.
+ * The managers' assignment, read and written: `server.assigned_tier_id`.
  *
- * `assignment.ts` is the rule; this is the read-compute-write around it.
- * It runs whenever either input can have changed — after every seat
- * projection and mutation (`entitlements.ts`), when a daemon reports its
- * hardware (`touchServerMetadata`), when a server enrolls or is deleted,
- * and when a license is revoked — and writes only the rows whose tier
- * moved. Everything on the ingest and page-load path then reads the cached
- * column; nothing there recomputes.
+ * `assignment.ts` reads the assignment against what was bought; this is the
+ * I/O around it. The column is written in exactly two places, and nowhere
+ * else:
  *
- * Self-hosted never has a payer, but it does hold a grant
- * (`self-hosted-grant.ts`) — one `SX` unit per active license — so the
- * assignment runs there exactly as it does on the hosted runtime and
- * `server.assigned_tier_id` is populated on both. That is what lets a
- * control plane move between the two runtimes without its daemons being
- * refused.
+ *   - {@link assignServerTier}, behind the manager route
+ *     (`PUT /servers/:id/license-tier`): a manager gives one server a
+ *     license at a tier with a free seat, or releases it. No other server is
+ *     touched.
+ *   - {@link fillSelfHostedGrantTier}, self-hosted only: every server there
+ *     runs on the top tier (`SX`, the grant in `self-hosted-grant.ts`), so a
+ *     licensed server with no tier yet gets the grant's tier. It only fills
+ *     an empty column and is never called on the hosted runtime.
+ *
+ * A hardware report, an enroll, a session, a seat or subscription change and
+ * a server delete never assign, move or release a license. A server that
+ * measures bigger than its tier keeps its tier and is flagged
+ * (`over-plan-flag.ts`, the reconcile sweep, the notice sweep).
  *
  * Workers-bundleable: nothing at module load.
  */
 
-import { forEachSequential } from '../../lib/sequential.ts'
 import { and, eq, inArray, isNull } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import {
@@ -27,11 +29,12 @@ import {
   listSeatsForOrganization,
   type OrganizationBillingState,
 } from '../billing/billing-records.ts'
-import { license, server, tier } from '../../db/schema.ts'
+import { license, organization, server } from '../../db/schema.ts'
 import { parseServerHostResources, type ServerHostResources } from '../servers/server-metadata.ts'
 import {
   type AssignableServer,
-  computeAssignment,
+  freeAtTier,
+  readAssignment,
   type TierAssignment,
   type TierQuantity,
 } from './assignment.ts'
@@ -39,6 +42,7 @@ import { resolveRequiredTier, totalPhysicalCores } from './tier-placement.ts'
 import { topologyRecordFromColumn } from '../servers/server-topology-records.ts'
 import { parseTopologySnapshot, recommendedRankFromMetadata } from './topology-recommendation.ts'
 import { selfHostedGrantRank } from './self-hosted-grant.ts'
+import { readSelfHostedGrant } from './self-hosted-grant-records.ts'
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -60,7 +64,7 @@ export function requiredRankFromMetadata(metadata: unknown): number | null {
 
 /**
  * Entitled quantity per tier with the tier's rank — the input to
- * {@link computeAssignment} and to every coverage gate.
+ * {@link readAssignment} and to every coverage gate.
  *
  * Two sources, added together. Projected provider seats read as zero once
  * the subscription ended, because entitlement follows the money. The
@@ -90,9 +94,9 @@ export function tierQuantitiesFromState(state: OrganizationBillingState): TierQu
   return [...out.values()]
 }
 
-export type AssignedServerRow = AssignableServer & Readonly<{ assignedTierId: string | null }>
+export type AssignedServerRow = AssignableServer
 
-/** Every server in the organization holding an active license, with its requirement and current assignment. */
+/** Every server in the organization holding an active license, with its requirement and the tier it holds. */
 export async function loadAssignableServers(
   db: Db,
   organizationId: string
@@ -104,13 +108,9 @@ export async function loadAssignableServers(
       metadata: server.metadata,
       hardware: server.hardware,
       assignedTierId: server.assignedTierId,
-      preferredTierId: server.preferredTierId,
-      preferredRank: tier.rank,
-      preferredLabel: tier.label,
     })
     .from(server)
     .innerJoin(license, and(eq(license.serverId, server.id), isNull(license.revokedAt)))
-    .leftJoin(tier, eq(server.preferredTierId, tier.id))
     .where(eq(server.organizationId, organizationId))
   return rows.map((row) => ({
     serverId: row.serverId,
@@ -121,93 +121,112 @@ export async function loadAssignableServers(
       parseTopologySnapshot(topologyRecordFromColumn(row.hardware)?.snapshot)
     ),
     assignedTierId: row.assignedTierId,
-    preferredTierId: row.preferredTierId,
-    preferredRank: row.preferredRank,
-    preferredLabel: row.preferredLabel,
   }))
 }
 
-export type RecomputeAssignmentsResult = Readonly<{
-  assignment: TierAssignment
-  /** Server ids whose `assigned_tier_id` changed. */
-  changed: readonly string[]
-  /** Servers holding a license nothing purchased covers. */
-  uncovered: readonly string[]
-}>
-
-export type RecomputeAssignmentsOpts = Readonly<{
+export type ReadAssignmentOpts = Readonly<{
   /** Already-loaded billing state, to skip the read. */
   state?: OrganizationBillingState
-  now?: string
 }>
 
-/**
- * Recompute the organization's assignment from its committed seats and
- * its licensed servers, and write the rows that moved.
- */
-/** Read-only assignment for UI spare counts and pick notices — does not write. */
+/** Read-only: the organization's assignment against its purchases (spare counts, uncovered servers). Never writes. */
 export async function peekOrganizationAssignment(
   db: Db,
   organizationId: string,
-  opts: RecomputeAssignmentsOpts = {}
+  opts: ReadAssignmentOpts = {}
 ): Promise<TierAssignment> {
   const state = opts.state ?? (await listSeatsForOrganization(db, organizationId))
   const servers = await loadAssignableServers(db, organizationId)
-  return computeAssignment(tierQuantitiesFromState(state), servers)
+  return readAssignment(tierQuantitiesFromState(state), servers)
 }
 
-export async function recomputeOrganizationAssignments(
+export type AssignServerTierResult =
+  | Readonly<{ ok: true; assignment: TierAssignment; assignedTierId: string | null }>
+  | Readonly<{ ok: false; code: 'server_not_licensed' | 'no_free_seat' }>
+
+/**
+ * A manager's assignment: put one licensed server on `tierId` (a seat there
+ * must be free — nothing is bought here) or release its license (`null`).
+ * Only this server's row is written; no other server moves. Runs under the
+ * organization row lock so two managers cannot both take the last seat.
+ */
+export async function assignServerTier(
   db: Db,
   organizationId: string,
-  opts: RecomputeAssignmentsOpts = {}
-): Promise<RecomputeAssignmentsResult> {
-  const state = opts.state ?? (await listSeatsForOrganization(db, organizationId))
-  const servers = await loadAssignableServers(db, organizationId)
-  const assignment = computeAssignment(tierQuantitiesFromState(state), servers)
-  const now = opts.now ?? new Date().toISOString()
-  const changed: string[] = []
-  await forEachSequential(servers, async (row) => {
-    const next = assignment.byServer.get(row.serverId) ?? null
-    if (next === row.assignedTierId) return
-    await db
+  serverId: string,
+  tierId: string | null,
+  now: string = new Date().toISOString()
+): Promise<AssignServerTierResult> {
+  return await db.transaction(async (tx) => {
+    await tx
+      .select({ id: organization.id })
+      .from(organization)
+      .where(eq(organization.id, organizationId))
+      .for('update')
+      .limit(1)
+    const state = await listSeatsForOrganization(tx, organizationId)
+    const servers = await loadAssignableServers(tx, organizationId)
+    const mine = servers.find((entry) => entry.serverId === serverId)
+    if (!mine) return { ok: false, code: 'server_not_licensed' } as const
+    const quantities = tierQuantitiesFromState(state)
+    if (
+      tierId !== null &&
+      tierId !== mine.assignedTierId &&
+      freeAtTier(quantities, servers, tierId, serverId) < 1
+    ) {
+      return { ok: false, code: 'no_free_seat' } as const
+    }
+    await tx
       .update(server)
-      .set({ assignedTierId: next, updatedAt: now })
-      .where(eq(server.id, row.serverId))
-    changed.push(row.serverId)
+      .set({ assignedTierId: tierId, preferredTierId: tierId, updatedAt: now })
+      .where(eq(server.id, serverId))
+    const next = servers.map((entry) =>
+      entry.serverId === serverId ? { ...entry, assignedTierId: tierId } : entry
+    )
+    return {
+      ok: true,
+      assignment: readAssignment(quantities, next),
+      assignedTierId: tierId,
+    } as const
   })
-  return { assignment, changed, uncovered: assignment.uncovered }
 }
 
 /**
- * Recompute for the organization one server belongs to — the hook the
- * hardware-report, enroll, and session paths call. A server with no
- * organization is a no-op. Self-hosted has no payer; the grant still
- * supplies quantity (`tierQuantitiesFromState`), so this always runs the
- * same assignment as the hosted path rather than skipping and leaving
- * `assigned_tier_id` null (which the session gate treats as a permanent
- * `License tier below required`).
+ * Self-hosted only: every server runs on the grant's top tier, so a licensed
+ * server with no tier yet gets it. Fills an empty column only — a tier
+ * already on a server is never changed — and is never called on the hosted
+ * runtime, where only a manager assigns.
  */
-export async function recomputeAssignmentsForServer(
-  db: Db,
-  serverId: string
-): Promise<RecomputeAssignmentsResult | null> {
+export async function fillSelfHostedGrantTier(db: Db, organizationId: string): Promise<void> {
+  const grant = await readSelfHostedGrant(db, organizationId)
+  if (!grant || grant.quantity <= 0) return
+  const empty = await db
+    .select({ serverId: server.id })
+    .from(server)
+    .innerJoin(license, and(eq(license.serverId, server.id), isNull(license.revokedAt)))
+    .where(and(eq(server.organizationId, organizationId), isNull(server.assignedTierId)))
+  if (empty.length === 0) return
+  await db
+    .update(server)
+    .set({ assignedTierId: grant.tierId })
+    .where(
+      and(
+        inArray(
+          server.id,
+          empty.map((row) => row.serverId)
+        ),
+        isNull(server.assignedTierId)
+      )
+    )
+}
+
+/** {@link fillSelfHostedGrantTier} resolved from a server row; a server with no organization is a no-op. */
+export async function fillSelfHostedGrantTierForServer(db: Db, serverId: string): Promise<void> {
   const [row] = await db
     .select({ organizationId: server.organizationId })
     .from(server)
     .where(eq(server.id, serverId))
     .limit(1)
-  if (!row?.organizationId) return null
-  return recomputeOrganizationAssignments(db, row.organizationId)
-}
-
-/** Clear the assignment on servers that no longer hold a license (a revoke or delete path). */
-export async function clearAssignmentsForServers(
-  db: Db,
-  serverIds: readonly string[]
-): Promise<void> {
-  if (serverIds.length === 0) return
-  await db
-    .update(server)
-    .set({ assignedTierId: null })
-    .where(inArray(server.id, [...serverIds]))
+  if (!row?.organizationId) return
+  await fillSelfHostedGrantTier(db, row.organizationId)
 }

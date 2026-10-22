@@ -165,38 +165,45 @@ on a route; the webhook task logs and skips the sync (the seat rows are still
 written — they are Stripe's truth) and the mutation holder, which runs the same
 sync before releasing, catches up.
 
-## Who chooses a tier: nobody
+## Who chooses a tier: the organization's managers, never TurboPanel
 
-An organization owns a **quantity per tier** (the `seat` rows). Each server with
-an active license needs a tier from its hardware (`tier-placement`: required =
-max(core band, RAM band)). Which server gets which tier is **derived**, never
-chosen: `src/features/tiers/assignment.ts` takes the servers in bind order (oldest
-first), gives each the smallest purchased tier whose rank covers its need
-(unknown hardware needs the entry rank), and leaves the newest uncovered when
-nothing fits. Incumbents are placed before any newcomer, so adding hardware can
-never move a covered server onto nothing. A swap pass then runs on top: a
-server whose recommended tier (monitored NIC / drive / GPU slots) is above its
-placed tier trades seats with a server holding a higher one whose required and
-recommended tiers are both at or below the first server's placed tier, so spare
-big seats go where they are recommended and no server drops below its required
-tier. `assignment-records.ts` writes the
-result to `server.assigned_tier_id` after every projection and mutation, on
-every hardware report, on enroll, on delete and on revoke; ingest and the
-capability plan read the column.
+An organization owns a **quantity per tier** (the `seat` rows). Which server
+holds which of those licenses is **chosen by the organization's managers**
+(`PUT /servers/:id/license-tier`, owner-only): the server takes a free seat at
+the tier picked, or gives its license back with `null`. Nothing is bought there,
+and no other server moves. That route is the only hosted writer of
+`server.assigned_tier_id`; `src/features/tiers/assignment.ts` only **reads** the
+assignment against the purchases (spare seats per tier; servers holding no tier,
+or more holders at a tier than were bought — the newest by bind order are the
+ones over).
+
+**No server is ever given a license tier automatically, and no license is ever
+moved between servers automatically** — not on enroll, not on a hardware report
+(hello or heartbeat), not on a session, not on a seat or subscription change
+(webhook projection, mutation, reconcile), not on a server delete. A customer
+may deliberately keep a server on a smaller tier than it measures (for example
+to stay on S1 without GPU metrics). The hardware requirement (`tier-placement`:
+required = max(core band, RAM band)) and the recommendation (NIC / drive / GPU
+slots) are computed only for flags, notices and recommendations
+(`over-plan-flag.ts`, the notice sweep, the reconcile report); they never change
+the assignment. A freshly enrolled hosted server holds no tier until a manager
+assigns one; it connects and stays managed either way.
 
 A self-hosted organization has no purchased quantity at all; its quantity is the
 grant (see _Billing runs on Workers, not Deno_ below), one `SX` unit per active
-license, so the same greedy assignment places every self-hosted server on `SX`
-rather than on nothing.
+license, and every self-hosted server runs on `SX`: the self-hosted session
+fills `SX` into a licensed server with no tier yet (`fillSelfHostedGrantTier`,
+self-hosted only, never changes a tier already held).
 
 A license therefore carries no tier. It is minted only inside "Add server"
 (gated on `purchased − releasing − held > 0`; refused `no_license_available`
 with a truthful `message` and per-tier `ending` / `endsAt` counts),
 embedded in the install command,
 and revoked when its server is deleted — without touching Stripe. An uncovered
-licensed server is refused at its next `/auth/session` with
-`License tier below required` (byte-identical to the daemon's permanent list)
-and reported by the reconcile sweep.
+licensed server is not refused: its next `/auth/session` still succeeds, and
+the reconcile sweep reports it. Seat reductions and downgrades are refused
+(`servers_uncovered`) while they would leave a server holding a tier nobody
+pays for; a manager reassigns or releases that server first.
 
 Because the tier is derived, a person adding a server needs to know which tier
 it will land in **before** it enrols. `GET /billing/catalog` carries
@@ -337,8 +344,9 @@ empty; a version-1 (license-keyed) ledger reads as empty too.
 An intent **lands** when the projected `current_period_end` has rolled past
 `landsAt`, when the tier's quantity has dropped below `fromQuantity`, or when
 the subscription ended (`landedIntents`). `entitlements.ts` drops landed intents
-after every projection and mutation, then recomputes the assignment, revokes
-every license when the subscription ended, and rebuilds the schedule when
+after every projection and mutation, then reads (never writes) the assignment
+to report uncovered servers, revokes every license when the subscription ended
+(the revoked servers keep their tier), and rebuilds the schedule when
 intents remain but no schedule is attached.
 
 An **immediate** change (a seat raise, an upgrade's swap) has no intent. Its key
@@ -549,9 +557,9 @@ records as delivered; `src/app/surfaces.test.ts` pins the path). Two ways:
 **Not available locally:** metrics. The Analytics Engine binding accepts writes
 in local mode and discards them, and reads need the account SQL API token, so
 charts stay empty on a local Workers instance; the offline sweep tolerates that
-(`ae-unavailable` → probe). A daemon whose organization has bought nothing is
-refused by the hosted gate (`License tier not assigned`) — bind the tiers under
-Admin → Tiers and buy in the sandbox first.
+(`ae-unavailable` → probe). A daemon whose organization has bought nothing still
+enrols and connects with no license tier — bind the tiers under Admin → Tiers,
+buy in the sandbox and assign the server a tier to see tier limits.
 
 ## Billing runs on Workers, not Deno — but licensing runs on both
 
@@ -607,8 +615,8 @@ Read that file for the rules; the two that matter here are:
   Checkout for the next one.
 
 That asymmetry is what makes the two runtimes interchangeable in development
-without a licence setup step, and it is why `recomputeOrganizationAssignments`
-now runs on both.
+without a licence setup step, and it is why the self-hosted session fills `SX`
+into a licensed server with no tier (`fillSelfHostedGrantTier`).
 
 What the Deno bundle still _imports_ from `src/features/billing/` is the
 absent-config no-op path in `src/client/authn/license-lifecycle.ts` and the

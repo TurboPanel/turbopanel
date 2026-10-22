@@ -10,7 +10,6 @@ import { and, eq, inArray, isNull } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
 import type { Db } from '../../db/connection.ts'
 import { license, organization, server, tier } from '../../db/schema.ts'
-import { listSeatsForOrganization } from '../billing/billing-records.ts'
 import { parseServerHostResources, type ServerHostResources } from '../servers/server-metadata.ts'
 import type { MetricsDeploymentKind } from '../../contracts/capability-plan.ts'
 import { getLatestTopologyGenerations } from '../servers/server-topology-records.ts'
@@ -21,21 +20,12 @@ import {
   parseTopologySnapshot,
   topologyOverridesFromMetadata,
 } from './topology-recommendation.ts'
-import { computeAssignment } from './assignment.ts'
-import { loadAssignableServers, tierQuantitiesFromState } from './assignment-records.ts'
-import { resolveTierPickNotice } from './server-preferred-tier.ts'
 import {
   resolveRecommendedTier,
   resolveRequiredTier,
   type TierBandLabel,
   totalPhysicalCores,
 } from './tier-placement.ts'
-
-/** Byte-for-byte daemon `classifyConnectFailure` permanent-auth/enroll message. */
-export const LICENSE_TIER_BELOW_REQUIRED_ERROR = 'License tier below required'
-
-/** Byte-for-byte daemon `classifyConnectFailure` permanent-auth/enroll message. */
-export const LICENSE_TIER_UNASSIGNED_ERROR = 'License tier not assigned'
 
 export type ServerLicenseTierJoinRow = {
   serverId: string
@@ -47,7 +37,7 @@ export type ServerLicenseTierJoinRow = {
   serverMetadata: unknown
   machineClass: unknown
   licenseId: string | null
-  /** The derived tier; null when unlicensed or uncovered. */
+  /** The tier a manager assigned; null when none was assigned. */
   assignedTierId: string | null
   tierRank: number | null
   tierLabel: string | null
@@ -168,53 +158,6 @@ export async function loadServerLicenseTierJoins(
     byId.set(row.serverId, { ...row, organizationId: row.organizationId })
   }
   return byId
-}
-
-/**
- * Hosted enroll gate that must run before any durable latch/attach: would
- * the organization's purchased tiers still cover every licensed server
- * once this license binds one more? Hardware is unknown at enroll, so the
- * newcomer needs the entry rank; the incumbents are placed first
- * (`computeAssignment`), so the newcomer is the one refused when nothing
- * is free. Reads the license (and its already-bound server, on a
- * re-enroll) so a 400 refusal cannot consume `license.server_id` or
- * replace `server.daemon`.
- */
-export async function evaluateHostedEnrollmentTier(
-  db: Db,
-  licenseId: string
-): Promise<{ ok: true } | { ok: false; error: string }> {
-  const [row] = await db
-    .select({
-      organizationId: license.organizationId,
-      serverId: license.serverId,
-    })
-    .from(license)
-    .where(and(eq(license.id, licenseId), isNull(license.revokedAt)))
-    .limit(1)
-  if (!row) return { ok: false, error: LICENSE_TIER_UNASSIGNED_ERROR }
-
-  const state = await listSeatsForOrganization(db, row.organizationId)
-  const servers = await loadAssignableServers(db, row.organizationId)
-  const already = row.serverId
-    ? servers.find((entry) => entry.serverId === row.serverId)
-    : undefined
-  const candidate = already ?? {
-    serverId: `enrolling:${licenseId}`,
-    requiredRank: null,
-    // Newest: placed after every incumbent.
-    boundAt: '9999-12-31T23:59:59.999Z',
-  }
-  const quantities = tierQuantitiesFromState(state)
-  const assignment = computeAssignment(quantities, already ? servers : [...servers, candidate])
-  const assigned = assignment.byServer.get(candidate.serverId) ?? null
-  if (assigned === null) {
-    return {
-      ok: false,
-      error: already ? LICENSE_TIER_BELOW_REQUIRED_ERROR : LICENSE_TIER_UNASSIGNED_ERROR,
-    }
-  }
-  return { ok: true }
 }
 
 /**
@@ -358,7 +301,6 @@ export async function loadTierPlacementsForServers(
   opts: {
     deployment: MetricsDeploymentKind
     unwatched: 'ids'
-    pickUnfulfilled?: ReadonlyMap<string, string>
   }
 ): Promise<Map<string, TierPlacementDto<TierUnwatchedIds>>>
 export async function loadTierPlacementsForServers(
@@ -367,7 +309,6 @@ export async function loadTierPlacementsForServers(
   opts: {
     deployment: MetricsDeploymentKind
     unwatched: 'counts'
-    pickUnfulfilled?: ReadonlyMap<string, string>
   }
 ): Promise<Map<string, TierPlacementDto<TierUnwatchedCounts>>>
 export async function loadTierPlacementsForServers(
@@ -376,7 +317,6 @@ export async function loadTierPlacementsForServers(
   opts: {
     deployment: MetricsDeploymentKind
     unwatched: 'ids' | 'counts'
-    pickUnfulfilled?: ReadonlyMap<string, string>
   }
 ): Promise<Map<string, TierPlacementDto<TierUnwatchedIds | TierUnwatchedCounts>>> {
   const result = new Map<string, TierPlacementDto<TierUnwatchedIds | TierUnwatchedCounts>>()
@@ -399,9 +339,7 @@ export async function loadTierPlacementsForServers(
     result.set(serverId, {
       ...base,
       pickedTier: row.preferredTierLabel ?? null,
-      tierPickNotice: opts.pickUnfulfilled
-        ? resolveTierPickNotice(serverId, opts.pickUnfulfilled)
-        : null,
+      tierPickNotice: null,
     })
   }
   return result
