@@ -151,7 +151,7 @@ export async function settleReportedOutcome(
   }
 ): Promise<boolean> {
   const row = await getCommandRecord(db, input.envelope.requestId)
-  if (row === null || row.serverId !== input.serverId) return true
+  if (row?.serverId !== input.serverId) return true
   if (!TERMINAL_COMMAND_STATUSES.has(row.status)) return input.record !== null
   if (row.status === 'timed_out' && row.type === 'environment.deploy' && input.envelope.ok) {
     await correctTimedOutDeploy(db, row, input.envelope)
