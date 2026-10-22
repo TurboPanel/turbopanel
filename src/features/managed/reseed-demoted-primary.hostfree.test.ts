@@ -509,6 +509,25 @@ test('a daemon that does not list the final position feature fails closed as too
   assertEquals(outcomes, [{ state: 'skipped', note: 'daemon too old' }])
 })
 
+test('a missing member row skips the re-seed instead of skipping the daemon check', async () => {
+  const enqueued: EnqueueCall[] = []
+  let asked = false
+  await reseed(
+    capturingDeps(enqueued, {
+      listMembers: () => Promise.resolve([promoted()]),
+      daemonsReportFinalPosition: () => {
+        asked = true
+        return Promise.resolve(true)
+      },
+    })
+  )
+  assertEquals(enqueued.length, 0)
+  assertEquals(asked, false)
+  assertEquals(outcomes, [
+    { state: 'skipped', note: 'the former or the new primary member is missing' },
+  ])
+})
+
 test('the daemon check runs before the positions, so an old daemon is named as too old', async () => {
   const enqueued: EnqueueCall[] = []
   const { oldPrimaryFinalLsn: _old, newPrimaryReplayLsn: _new, ...begunOnly } = CLEAN_METADATA

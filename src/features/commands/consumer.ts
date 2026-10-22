@@ -72,7 +72,7 @@ import {
   parseManagedDestroyGate,
 } from '../managed/destroy-gate.ts'
 import { bumpedPrimaryEpochMetadata } from '../managed/primary-epoch.ts'
-import { findRecoveryById, updateRecovery } from '../managed/recovery-records.ts'
+import { updateRecoveryLocked } from '../managed/recovery-records.ts'
 import { recordNewPrimaryReplayPosition } from '../managed/switchover-position.ts'
 import { parseReseedGuard, reseedSupersededReason } from '../managed/reseed-guard.ts'
 import { deleteManagedBackup, insertManagedBackup } from '../backups/backup-records.ts'
@@ -2002,10 +2002,10 @@ async function loadManagedDestroyGateCommands(
     .where(eq(command.managedDestroyGateId, gateId))
 }
 
-/** Observed statuses the consumer may project onto `managed.status`. */
 /** What the host's `managed.apply` error says when it refuses a stale switchover re-seed. */
 const HOST_RESEED_REFUSAL = 'switchover re-seed refused'
 
+/** Observed statuses the consumer may project onto `managed.status`. */
 const MANAGED_OBSERVED_STATUSES = new Set(['ready', 'stopped', 'failed'])
 
 /**
@@ -3434,16 +3434,18 @@ async function absorbRefusedReseed(
   const guard = parseReseedGuard(meta)
   if (!guard || !error?.includes(HOST_RESEED_REFUSAL)) return false
   await releaseApplyingAfterReseedStop(db, record.id, guard.managedId)
-  const current = await findRecoveryById(db, guard.recoveryId)
-  if (current) {
-    await updateRecovery(db, current.id, {
+  await updateRecoveryLocked(
+    db,
+    guard.recoveryId,
+    (current) => ({
       metadata: {
         ...current.metadata,
         reseedState: 'failed',
         reseedNote: `the host refused the re-seed: ${error}`.slice(0, 300),
       },
-    })
-  }
+    }),
+    { includeTerminal: true }
+  )
   return true
 }
 

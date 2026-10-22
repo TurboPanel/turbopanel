@@ -21,7 +21,13 @@ import {
 import { createCommandRecord, transitionCommand } from '../commands/command-records.ts'
 import { processCommandEnvelope } from '../commands/consumer.ts'
 import { getCommandRecord } from '../commands/command-records.ts'
-import { findRecoveryById, insertRecovery, updateRecovery } from './recovery-records.ts'
+import {
+  findRecoveryById,
+  insertRecovery,
+  updateRecovery,
+  updateRecoveryLocked,
+} from './recovery-records.ts'
+import type { RecoveryRecord } from './recovery.ts'
 import {
   parseReseedGuard,
   RESEED_GUARD_METADATA_KEY,
@@ -316,6 +322,23 @@ test('two claims of the same re-seed race and exactly one wins', async () => {
     assertEquals(results.filter(Boolean).length, 1)
     const stored = await findRecoveryById(f.db, recoveryId)
     assertEquals(stored?.metadata.reseedState, 'queued')
+    assertEquals(stored?.metadata.fenced, true)
+  })
+})
+
+test('a locked note on a finished recovery is written only when asked to include finished rows', async () => {
+  await withCluster(async (f) => {
+    const { recoveryId } = await switchoverFixture(f)
+    await updateRecovery(f.db, recoveryId, { state: 'completed' })
+    const note = (current: RecoveryRecord) => ({
+      metadata: { ...current.metadata, reseedState: 'failed' as const, reseedNote: 'refused' },
+    })
+    assertEquals(await updateRecoveryLocked(f.db, recoveryId, note), null)
+    assertEquals((await findRecoveryById(f.db, recoveryId))?.metadata.reseedState, undefined)
+    await updateRecoveryLocked(f.db, recoveryId, note, { includeTerminal: true })
+    const stored = await findRecoveryById(f.db, recoveryId)
+    assertEquals(stored?.state, 'completed')
+    assertEquals(stored?.metadata.reseedState, 'failed')
     assertEquals(stored?.metadata.fenced, true)
   })
 })

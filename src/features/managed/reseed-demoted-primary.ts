@@ -323,13 +323,19 @@ async function finalPositionSkip(
   deps: ReseedDemotedPrimaryDeps
 ): Promise<Skipped | null> {
   const members = await (deps.listMembers ?? listManagedMembers)(db, record.managedId)
-  const serverIds = members
-    .filter((row) => row.id === record.sourcePrimaryMemberId || row.id === record.targetMemberId)
-    .map((row) => row.serverId)
+  const serverIds = [
+    ...new Set(
+      members
+        .filter(
+          (row) => row.id === record.sourcePrimaryMemberId || row.id === record.targetMemberId
+        )
+        .map((row) => row.serverId)
+    ),
+  ]
+  // Both hosts must be known to prove they report the final position.
+  if (serverIds.length < 2) return skip('the former or the new primary member is missing')
   const capable = deps.daemonsReportFinalPosition ?? daemonsAllReportFinalPosition
-  if (serverIds.length > 0 && !(await capable(db, [...new Set(serverIds)]))) {
-    return skip('daemon too old')
-  }
+  if (!(await capable(db, serverIds))) return skip('daemon too old')
   const finalPosition = evaluateFinalPosition(record.metadata)
   if (!finalPosition.caughtUp) return skip(finalPosition.basis)
   const started = record.metadata.primaryEpochAtStart
