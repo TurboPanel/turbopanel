@@ -100,7 +100,7 @@ export const HOST_FACTS_TABLE = 'server_host_facts'
  * (`server_host_text_samples` and text columns on the device tables), and the
  * sequence and generation columns, which nothing reads, are gone.
  */
-export const DUCKDB_SCHEMA_MARKER_VERSION = 12
+export { METRICS_LAYOUT_VERSION as DUCKDB_SCHEMA_MARKER_VERSION } from '../../field-registry.ts'
 
 // ---------------------------------------------------------------------------
 // Field ordering — hand-declared `Record<keyof T, true>` literals so a

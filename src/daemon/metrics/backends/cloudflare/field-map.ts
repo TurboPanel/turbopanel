@@ -1,7 +1,8 @@
 /**
  * Cloudflare Analytics Engine positional field map for the current metrics
  * contract: the single source of truth for the double1..double20 /
- * blob1..blob20 layout on the `turbopanel_server_metrics_v8` dataset.
+ * blob1..blob20 layout on the `turbopanel_server_metrics_v<N>` dataset (`N` is
+ * `METRICS_LAYOUT_VERSION`).
  *
  * The slot layout itself lives in `v8-layout.ts` (a static table pinned to
  * `../../testing/v8-layout.fixture.json`, spec in `../../V8-LAYOUT.md`); this
@@ -42,12 +43,12 @@
  * always derive columns and write payloads through this module.
  */
 
-import {
-  type MetricEvent,
-  METRICS_SCHEMA_VERSION,
-  type MetricsSample,
-  type NetworkDeviceSample,
+import type {
+  MetricEvent,
+  MetricsSample,
+  NetworkDeviceSample,
 } from '../../../../contracts/metrics-contract.ts'
+import { METRICS_LAYOUT_VERSION } from '../../field-registry.ts'
 import type { HostedFamily, MetricEntityScope } from '../../metric-descriptors.ts'
 import { resolveNetworkSlots } from '../../shared-derivations.ts'
 import type { AuthenticatedMetricsSample, ServerStatusEvent, SlotMapping } from '../../types.ts'
@@ -69,19 +70,17 @@ import {
   type V8RowValues,
 } from './v8-layout.ts'
 
-/** Analytics Engine dataset for the current metrics contract. */
 /**
  * The layout revision stamped in `blob3` on every hosted row (stringified).
- * It is the storage layout's own number, not the wire version: the sizes
- * amendment (2026-10-07) reused hosted slots under the same wire version 8, so
- * rows written before it must never be read with the new slot meanings. Rows
- * stamped with any other value are invisible to the readers (history before
- * the cut is dropped; only testing and canary had any). Bump it again whenever
- * a slot changes meaning.
+ * It is the storage layout's own number (`METRICS_LAYOUT_VERSION`, shared with
+ * the dataset name and the self-hosted schema marker), not the wire version.
+ * Rows stamped with any other value are invisible to the readers (history
+ * before a cut is dropped; only testing and canary had any). It moves again
+ * only when a slot changes meaning.
  */
-export const AE_STORAGE_VERSION = 8 as const
+export const AE_STORAGE_VERSION = METRICS_LAYOUT_VERSION
 
-export const AE_DATASET_NAME = `turbopanel_server_metrics_v${METRICS_SCHEMA_VERSION}`
+export const AE_DATASET_NAME = `turbopanel_server_metrics_v${METRICS_LAYOUT_VERSION}`
 
 export const AE_DOUBLE_COUNT = 20
 export const AE_BLOB_COUNT = 20

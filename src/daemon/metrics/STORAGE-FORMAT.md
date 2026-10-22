@@ -13,8 +13,8 @@ tables below add the contract field, unit, nullability and DuckDB column for eac
 
 | Item               | Value                                                                                                                                                                                                                                          | Where                                                                                                           |
 | ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| Hosted dataset     | `turbopanel_server_metrics_v8`, one per environment with a prefix: `testing_`, `staging_`, `live_` (the bare name is the local default)                                                                                                        | `backends/cloudflare/field-map.ts:83`, `wrangler.jsonc` (SERVER_METRICS binding and the read-side var)          |
-| Storage stamp      | `8`, written as text in blob3 of every row. Readers accept only this value                                                                                                                                                                     | `AE_STORAGE_VERSION` (`field-map.ts:81`), `AE_SUPPORTED_SCHEMA_VERSIONS` (`backends/cloudflare/sql-api.ts:114`) |
+| Hosted dataset     | `turbopanel_server_metrics_v12`, one per environment with a prefix: `testing_`, `staging_`, `live_` (the bare name is the local default)                                                                                                       | `backends/cloudflare/field-map.ts:83`, `wrangler.jsonc` (SERVER_METRICS binding and the read-side var)          |
+| Storage stamp      | `12`, written as text in blob3 of every row. Readers accept only this value                                                                                                                                                                    | `AE_STORAGE_VERSION` (`field-map.ts:81`), `AE_SUPPORTED_SCHEMA_VERSIONS` (`backends/cloudflare/sql-api.ts:114`) |
 | Wire versions      | `[6, 8]`. 6 is the plain fallback sample (no `extended` section, no `durable` flag). Any other value, including 7, is refused with a version error                                                                                             | `METRICS_WIRE_VERSIONS` (`src/contracts/metrics-contract.ts:41`), checked at `validation.ts:320`                |
 | Wire features      | `metrics-v8` and `metrics-v8-sizes`. `metrics-v7` is not advertised. A daemon stamps 6 until the panel it is attached to advertises `metrics-v8`                                                                                               | `DAEMON_WIRE_FEATURES` (`src/lib/version-wire.ts:171-182`)                                                      |
 | Rows per sample    | VPS 4, physical 5-6, plus 1 with managed databases, plus 1 per event (16 at most)                                                                                                                                                              | `buildMetricsDataPoints` (`field-map.ts:582`), table at the end of `V8-LAYOUT.md`                               |
@@ -58,7 +58,7 @@ are empty strings.
 | ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | blob1      | row kind: `metrics`                                                                                                                                                                                                                                                                      |
 | blob2      | family: `host.system`, `host.io`, `host.network`, `host.web`, `managed.database`, `block`, `network`, `filesystem`, `gpu`, `hardware.physical`                                                                                                                                           |
-| blob3      | storage stamp, `8`                                                                                                                                                                                                                                                                       |
+| blob3      | storage stamp, `12`                                                                                                                                                                                                                                                                      |
 | blob4      | reserved, written empty on every row (it held the topology generation before v8; readers never use one)                                                                                                                                                                                  |
 | blob5      | sample time as UTC text `YYYY-MM-DD hh:mm:ss` (`formatAeSampleTime`, `field-map.ts:374`; the one format `toDateTime` parses). Filter on Analytics Engine's own `timestamp` for ranges                                                                                                    |
 | blob6      | entity ids, comma joined, in the same order as the row's doubles (entity families). On `host.network`: `nic1=<id>@<Mb/s>;nic2=<id>@<Mb/s>;fs=<id>` (parts left out when absent; the speed follows the last `@`). Empty on the other host rows (`v8HostRowEntityIds`, `v8-layout.ts:211`) |
@@ -75,7 +75,7 @@ are empty strings.
 | index1     | `<serverId>:event`                                                   |
 | blob1      | `event`                                                              |
 | blob2      | event kind (`MetricEventKind`, `METRIC_EVENT_KINDS` in the contract) |
-| blob3      | `8`                                                                  |
+| blob3      | `12`                                                                 |
 | blob5      | the event's own time, UTC text                                       |
 | blob6      | the enclosing sample's sequence number (text)                        |
 | blob7      | reserved, written empty (it held the topology generation)            |
@@ -95,7 +95,7 @@ The contract constructor enforces 16 again on the sanitized sample (`assertArray
 
 ### Envelope of a status row (connection transitions)
 
-`buildStatusDataPoint` (`field-map.ts:451`): index1 `<serverId>`, blob1 `status`, blob3 `8`, blob17 the transition
+`buildStatusDataPoint` (`field-map.ts:451`): index1 `<serverId>`, blob1 `status`, blob3 `12`, blob17 the transition
 reason, double1 connected (1 or 0), every other double the sentinel. Status rows are history only; the current
 connection state is Postgres `server.is_connected`, never this stream.
 
@@ -278,16 +278,17 @@ Each page holds up to `perPage` devices. A device takes a fixed run of consecuti
 the sentinel. Packing is `packEntityPages` (`v8-layout.ts:622`); the budget is asserted at load
 (`assertV8LayoutWithinBudgets`, `field-map.ts:686`).
 
-| Family              | Per page | Doubles per device, in order                                                                                                                                          | Text per device, in order                                       | Unit and nullability                                                                                                                        |
-| ------------------- | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `block` (drives)    | 3        | 6: `readBytesPerSecond`, `writeBytesPerSecond`, `opsPerSecond` (read ops plus write ops; empty if either is missing), `readLatencyMs`, `writeLatencyMs`, `queueDepth` | `model`, `smart` (drive model and SMART result)                 | bytes per second, ops per second, milliseconds, count. All 0 or more, all nullable, 0 is a real reading                                     |
-| `network` (NIC 3+)  | 3        | 6: `receiveBytesPerSecond`, `transmitBytesPerSecond`, `receiveErrorsPerSecond`, `transmitErrorsPerSecond`, `receiveDropsPerSecond`, `transmitDropsPerSecond`          | link speed in Mb/s as plain text (from `extended.networkSizes`) | bytes per second, count per second. All nullable                                                                                            |
-| `filesystem`        | 9        | 2: `availableBytes`, `freeInodes`                                                                                                                                     | size as `<bytes>/<inodes>` (either side empty when unknown)     | bytes, count. Nullable. The size text comes from `extended.filesystemSizes`                                                                 |
-| `gpu`               | 3        | 6: `utilizationPercent`, `memoryUsedBytes`, `memoryActivityPercent`, `pcieReceiveBytesPerSecond`, `pcieTransmitBytesPerSecond`, `throttlePercent`                     | `driver`, `model`, memory size in bytes as plain text           | percent (0-100, clamped; no data when unsupported), bytes, bytes per second. All nullable                                                   |
-| `hardware.physical` | 19       | 1: `value` (one signal per double; the signal ids are in blob6, in order)                                                                                             | none                                                            | The unit depends on the signal (temperature, power); the descriptor lists it as `count`. The signal `kind` is not stored on the hosted rows |
+| Family              | Per page | Doubles per device, in order                                                                                                                                          | Text per device, in order                                       | Unit and nullability                                                                                                                                                                        |
+| ------------------- | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `block` (drives)    | 3        | 6: `readBytesPerSecond`, `writeBytesPerSecond`, `opsPerSecond` (read ops plus write ops; empty if either is missing), `readLatencyMs`, `writeLatencyMs`, `queueDepth` | `model`, `smart` (drive model and SMART result)                 | bytes per second, ops per second, milliseconds, count. All 0 or more, all nullable, 0 is a real reading                                                                                     |
+| `network` (NIC 3+)  | 3        | 6: `receiveBytesPerSecond`, `transmitBytesPerSecond`, `receiveErrorsPerSecond`, `transmitErrorsPerSecond`, `receiveDropsPerSecond`, `transmitDropsPerSecond`          | link speed in Mb/s as plain text (from `extended.networkSizes`) | bytes per second, count per second. All nullable                                                                                                                                            |
+| `filesystem`        | 9        | 2: `availableBytes`, `freeInodes`                                                                                                                                     | size as `<bytes>/<inodes>` (either side empty when unknown)     | bytes, count. Nullable. The size text comes from `extended.filesystemSizes`                                                                                                                 |
+| `gpu`               | 3        | 6: `utilizationPercent`, `memoryUsedBytes`, `memoryActivityPercent`, `pcieReceiveBytesPerSecond`, `pcieTransmitBytesPerSecond`, `throttlePercent`                     | `driver`, `model`, memory size in bytes as plain text           | percent (0-100, clamped; no data when unsupported), bytes, bytes per second. All nullable                                                                                                   |
+| `hardware.physical` | 19       | 1: `value` (one signal per double; the signal ids are in blob6, in order)                                                                                             | none                                                            | The unit depends on the signal (temperature, power); the descriptor lists it as `count`. The signals' kinds ride as one text slot for the whole row (blob7, comma separated in blob6 order) |
 
 The folded extra filesystem and the two embedded NICs use the same contract fields as above, on `host.io` and
-`host.network`.
+`host.network`. A sensor row's one text slot (blob7) holds the kinds, comma separated in the same order as the ids
+in blob6; it is the only row-level text on a device row.
 
 ## The field registry
 
@@ -478,13 +479,20 @@ different, stricter rule: **a layout change is a hard cut, never a dual read.**
    is needed. This is the reading of the rule at `field-map.ts:72-80`; check it with a reader test.
 2. **Any change to what a written slot means** (move, reorder, re-unit, re-purpose) bumps `AE_STORAGE_VERSION`.
    Readers then skip older rows; nothing reads them under the new meaning. If the wire contract also changes
-   incompatibly, `METRICS_SCHEMA_VERSION` moves too, which renames the dataset (`..._v<N>`) in every wrangler
+   incompatibly, the layout number moves, which renames the dataset (`..._v<N>`) in every wrangler
    environment, guarded by `backends/cloudflare/wrangler-datasets.test.ts`.
-3. **No dual read, no backfill.** Decided: hard cut to v8. Analytics Engine has no update or delete, so old rows
-   are simply not read and age out in about 3 months. Rows stamped 7 are dropped.
-4. **The three counters move together:** `METRICS_SCHEMA_VERSION` (wire contract), `DUCKDB_SCHEMA_MARKER_VERSION`
-   (on-disk layout) and the chart-cache `schemaVersion` token. A new `ext_*` column is a marker bump, because an
-   existing file keeps its old columns under `CREATE TABLE IF NOT EXISTS`.
+3. **No dual read, no backfill.** Decided: hard cut. Analytics Engine has no update or delete, so old rows
+   are simply not read and age out in about 3 months. Rows stamped with any other number are dropped.
+4. **One layout number.** `METRICS_LAYOUT_VERSION` (`field-registry.ts`, 12) is the hosted stamp, the hosted dataset
+   suffix, the self-hosted marker (`DUCKDB_SCHEMA_MARKER_VERSION`) and the chart-cache `schemaVersion` token. It is
+   the control plane's own number; the wire version the daemon speaks (`METRICS_SCHEMA_VERSION`, 8) is separate and
+   unchanged, so the daemon repository and the shared contract are untouched. The number never goes down (a lower
+   one would make an existing self-hosted file look newer than the program and refuse to open) and moves only for
+   an incompatible layout change: a slot changing meaning, a column removed or re-typed. An additive change (a value
+   in a spare slot, a column added in place) does not move it. A new `ext_*` column on an existing file is still
+   an incompatibility for the file, because `CREATE TABLE IF NOT EXISTS` keeps the old columns: it moves the number.
+   Existing canary rows and files at an earlier number are skipped (hosted) or discarded and rebuilt at first start
+   (self-hosted); the owner creates the new hosted dataset binding, as with any dataset change.
 5. **Wire changes are expand-only** (`scripts/contract-field-snapshot.json`), and a new optional field travels in
    the `extended` section so older daemons keep working.
 6. **Postgres:** no metrics migration is needed for the format. If a column in the panel database changes, follow
@@ -514,7 +522,8 @@ different, stricter rule: **a layout change is a hard cut, never a dual read.**
 5. **DuckDB.** Add the column to the right table in `backends/duckdb/schema.ts` (and its value in
    `backends/duckdb/sample-rows.ts`), and bump `DUCKDB_SCHEMA_MARKER_VERSION` (one marker bump per release, not per
    field). Update the reader mapping (`hostSeriesColumnForDescriptor`) if the scope is new.
-6. **Stamp.** Bump `AE_STORAGE_VERSION` only if you moved or re-meant a written slot (rule 2 above).
+6. **Layout number.** Bump `METRICS_LAYOUT_VERSION` only if you moved or re-meant a written slot or changed a
+   self-hosted column incompatibly (rules 2 and 4 above).
 7. **Tests.** `v8-layout.test.ts` and `v8-layout.fixture.test.ts` (fixture), `field-map.test.ts` (slots and
    envelope), `cross-backend-parity.test.ts` (the two stores agree on one logical sample),
    `metric-descriptors.test.ts` (descriptor and contract agree), `backends/duckdb/schema.test.ts`. New

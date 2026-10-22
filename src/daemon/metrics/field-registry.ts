@@ -65,6 +65,24 @@ export const REGISTRY_TABLES = {
 
 export type RegistryTable = keyof typeof REGISTRY_TABLES
 
+/**
+ * The one layout number of the stored metrics, used by both editions: the
+ * hosted row stamp (blob3), the hosted dataset name suffix
+ * (`turbopanel_server_metrics_v<N>`) and the self-hosted schema marker. It is
+ * the control plane's own number: the wire version the daemon speaks
+ * (`METRICS_SCHEMA_VERSION`) is a different thing and stays 8.
+ *
+ * It moves only when a stored layout changes incompatibly (a slot changes
+ * meaning, a column is removed or re-typed) and never goes down: a lower number
+ * would make an existing self-hosted file look newer than the program and
+ * refuse to open. Additive changes (a value in a spare slot, a column added
+ * in place) do not move it. It starts at 12, the self-hosted marker the store
+ * change in this series already set; rows and files at an earlier number are
+ * skipped by the readers and rebuilt (the earlier layouts were only ever on
+ * the canary).
+ */
+export const METRICS_LAYOUT_VERSION = 12 as const
+
 /** Where a value sits in the self-hosted store: a table (a key of {@link REGISTRY_TABLES}) and a column. */
 export type RegistryDuckDbHome = { table: RegistryTable; column: string }
 
@@ -436,6 +454,6 @@ export const KNOWN_GAPS: {
   duckdbExtraColumns: readonly string[]
 } = {
   duckdbMissing: [],
-  hostedMissing: ['hardwareSignal.kind'],
+  hostedMissing: [],
   duckdbExtraColumns: [],
 }

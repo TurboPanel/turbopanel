@@ -508,6 +508,8 @@ type EntityRowSpec<E> = {
   }[]
   /** Per-entity text blobs, appended entity by entity. */
   blobs: readonly { read: (entity: E, sample: MetricsSample) => string }[]
+  /** Text blobs for the whole row, appended after the per-entity blobs. */
+  pageBlobs?: readonly { read: (entities: readonly E[], sample: MetricsSample) => string }[]
   perPage: number
 }
 
@@ -599,6 +601,9 @@ const GPU_SPEC: EntityRowSpec<GpuSample> = {
 const SIGNAL_SPEC: EntityRowSpec<HardwareSignalSample> = {
   doubles: [{ field: 'value', read: (signal) => signal.value }],
   blobs: [],
+  // The signals' kinds (temperature, power), comma joined in the same order as
+  // the ids in blob6: one text slot for the whole row.
+  pageBlobs: [{ read: (signals) => signals.map((signal) => signal.kind).join(',') }],
   perPage: V8_DOUBLE_SLOTS,
 }
 
@@ -644,7 +649,10 @@ function packEntityPages<E>(
         doubles[entityIndex * spec.doubles.length + fieldIndex] = slot.read(entity, sample)
       })
     })
-    const blobs = chunk.flatMap((entity) => spec.blobs.map((blob) => blob.read(entity, sample)))
+    const blobs = [
+      ...chunk.flatMap((entity) => spec.blobs.map((blob) => blob.read(entity, sample))),
+      ...(spec.pageBlobs ?? []).map((blob) => blob.read(chunk, sample)),
+    ]
     pages.push({ doubles, blobs, page: pages.length, ids: chunk.map(idOf).join(',') })
   }
   return pages
