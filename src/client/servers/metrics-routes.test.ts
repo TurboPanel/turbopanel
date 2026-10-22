@@ -6,6 +6,7 @@ import type { AppEnv } from '../../app/app.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
 import { createDenoDb, endDbConnection } from '../../db/connection.ts'
 import { it } from '@std/testing/bdd'
+import { stub } from '@std/testing/mock'
 import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from '../authn/crypto.ts'
 import { createSession } from '../authn/session-store.ts'
 import { deriveSecretsConfig } from '../../lib/secrets/secrets.ts'
@@ -2010,10 +2011,13 @@ function liveBufferedSample(
   }
 }
 
-it('GET /servers/:id/metrics/series overlays a buffered live sample on a now-tailed live range', async () => {
-  const now = Date.now()
+/**
+ * A now-tailed live series read with one stored point and one buffered live sample;
+ * returns the last point's CPU value. `toMs` is the range end the client sent.
+ */
+async function overlaidLiveValue(now: number, toMs: number): Promise<number | null | undefined> {
   const from = new Date(now - 5 * 60_000).toISOString()
-  const to = new Date(now).toISOString()
+  const to = new Date(toMs).toISOString()
   const storedAt = new Date(now - 20_000).toISOString()
   const liveAt = new Date(now - 2_000).toISOString()
   const fakeStore = createFakeMetricsStore({
@@ -2036,6 +2040,7 @@ it('GET /servers/:id/metrics/series overlays a buffered live sample on a now-tai
         sampleCount: 1,
       }),
   })
+  let value: number | null | undefined
   await withMetricsFixtures(
     async ({ app, serverId, cookie }) => {
       const cache = createMetricsChartCache('deno')
@@ -2048,12 +2053,29 @@ it('GET /servers/:id/metrics/series overlays a buffered live sample on a now-tai
       assertEquals(res.status, 200)
       const body = await readSeriesJson(res)
       assertEquals(body.resolutionSeconds, 10)
-      const last = body.host?.points.at(-1)
-      assertEquals(last?.values['host.cpu.busyPercent'], 77)
+      value = body.host?.points.at(-1)?.values['host.cpu.busyPercent']
     },
     undefined,
     fakeStore
   )
+  return value
+}
+
+it('GET /servers/:id/metrics/series overlays a buffered live sample on a now-tailed live range', async () => {
+  const now = Date.now()
+  assertEquals(await overlaidLiveValue(now, now), 77)
+})
+
+it('GET /servers/:id/metrics/series overlays the live sample when the poll lands just after a bucket boundary', async () => {
+  // The clock is 3 ms past a 10 s boundary and the client sent `to` 5 ms earlier, so the
+  // bucket-floored `to` is more than 10 s old while the requested one is current.
+  const now = Math.floor(Date.now() / 10_000) * 10_000 + 3
+  const clock = stub(Date, 'now', () => now)
+  try {
+    assertEquals(await overlaidLiveValue(now, now - 5), 77)
+  } finally {
+    clock.restore()
+  }
 })
 
 it('GET /servers/:id/metrics/series keeps overlaying after one of two viewers stops', async () => {
