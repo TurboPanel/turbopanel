@@ -319,3 +319,66 @@ test('resolveServerId rejects a second host once the license is latched', async 
     }
   })
 })
+
+test('touchServerMetadata merges a capacity heartbeat without dropping hello-only fields', async () => {
+  await withTestDb(async (db) => {
+    const MIB = 1024 * 1024
+    const now = new Date().toISOString()
+    const [inserted] = await db
+      .insert(server)
+      .values({
+        createdAt: now,
+        updatedAt: now,
+        hostname: `capacity-${crypto.randomUUID()}`,
+        machineKey: randomMachineKey(),
+      })
+      .returning({ id: server.id })
+    const serverId = inserted!.id
+    const gpus = [{ vendorId: '0x10de', name: 'Fixture GPU' }]
+    const ips = [{ address: '10.0.0.9', version: 4 as const, scope: 'private' as const }]
+    try {
+      await touchServerMetadata(db, serverId, {
+        resources: {
+          cpus: [{ cores: { total: 2 }, threads: { total: 2 } }],
+          gpus,
+          memory: {
+            totalBytes: 372 * MIB,
+            pageSizeBytes: 4096,
+            presentBytes: 2048 * MIB,
+            blockSizeBytes: 128 * MIB,
+          },
+          swap: { totalBytes: 0 },
+          ips,
+          dynamicMemory: { driver: 'hv_balloon', totalMoved: 0 },
+        },
+        features: [],
+      })
+      // Heartbeat: memory, swap and cpus only.
+      await touchServerMetadata(db, serverId, {
+        resources: {
+          memory: { totalBytes: 1900 * MIB, presentBytes: 2048 * MIB, blockSizeBytes: 128 * MIB },
+          swap: { totalBytes: 0 },
+          cpus: [{ cores: { total: 2 }, threads: { total: 2 } }],
+          dynamicMemory: { driver: 'hv_balloon', totalMoved: 1528 * MIB },
+        },
+      })
+      const [row] = await db
+        .select({ metadata: server.metadata })
+        .from(server)
+        .where(eq(server.id, serverId))
+        .limit(1)
+      const resources = (row?.metadata as { resources?: Record<string, unknown> } | null)?.resources
+      assertEquals(resources?.gpus, gpus)
+      assertEquals(resources?.ips, ips)
+      assertEquals(resources?.memory, {
+        totalBytes: 1900 * MIB,
+        pageSizeBytes: 4096,
+        presentBytes: 2048 * MIB,
+        blockSizeBytes: 128 * MIB,
+      })
+      assertEquals(resources?.dynamicMemory, { driver: 'hv_balloon', totalMoved: 1528 * MIB })
+    } finally {
+      await db.delete(server).where(eq(server.id, serverId))
+    }
+  })
+})

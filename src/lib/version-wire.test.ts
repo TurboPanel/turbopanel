@@ -7,6 +7,7 @@ import {
   daemonUnsupportedReason,
   DENO_NATIVE_APPS_FEATURE,
   DEPLOY_CANCEL_FEATURE,
+  HOST_CAPACITY_FEATURE,
   INSTANCE_REVISION_HEADER,
   INSTANCE_VERSION_HEADER,
   MANAGED_DATABASE_CONVERT_FEATURE,
@@ -227,9 +228,14 @@ test('managed-login-limits-v1 is an advertised wire feature and raised no floor'
   )
 })
 
-test('tls-capture-v1 is the last advertised wire feature and raised no floor', () => {
+test('tls-capture-v1 is an advertised wire feature', () => {
   assertEquals(TLS_CAPTURE_FEATURE, 'tls-capture-v1')
-  assertEquals(DAEMON_WIRE_FEATURES.at(-1), TLS_CAPTURE_FEATURE)
+  assertEquals((DAEMON_WIRE_FEATURES as readonly string[]).includes(TLS_CAPTURE_FEATURE), true)
+})
+
+test('host-capacity-v1 is the last advertised wire feature and raised no floor', () => {
+  assertEquals(HOST_CAPACITY_FEATURE, 'host-capacity-v1')
+  assertEquals(DAEMON_WIRE_FEATURES.at(-1), HOST_CAPACITY_FEATURE)
   assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.0')
 })
 
