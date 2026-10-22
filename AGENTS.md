@@ -222,6 +222,15 @@ everyday code stay below (**TypeScript style**).
   (`typescript:S1135`).
 - Use **RFC 5737 TEST-NET** addresses (e.g. `203.0.113.x`) in tests, not
   arbitrary public IPs (`typescript:S1313`).
+- No flaky tests. Do not feed unseeded randomness (`crypto.randomUUID`,
+  `Math.random`, `getRandomValues`) into a test where an assertion depends on
+  the value's content (substring, prefix, ordering, base64 characters); use a
+  fixed value, or a seeded or injected generator. A tamper test must change
+  the input for certain (flip a character to a different one, and not only a
+  trailing base64 character, whose unused bits may decode the same). No tight
+  real-time margins (`setTimeout`/`Date.now` deltas): use a fake clock or wait
+  on the event itself. No wall-clock expectations (year, month, day, DST)
+  without a fixed clock.
 - Add **`// NOSONAR rule-key — reason`** when a semantic type alias or path
   check is intentional (`typescript:S6564`, `typescript:S5443`).
 - Deno tests: Sonar `typescript:S2187` only recognizes `test()` / `it()` /

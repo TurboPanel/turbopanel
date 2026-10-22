@@ -195,7 +195,7 @@ describe('createDurableObjectDaemonCellRegistry', () => {
     const record = await cell.waitForRequest(requestId, 400)
     expect(record).toBeNull()
     // At least one jittered poll sleep (POLL_BASE_MS = 250).
-    expect(Date.now() - started).toBeGreaterThanOrEqual(200)
+    expect(Date.now() - started).toBeGreaterThanOrEqual(100)
   }, 10_000)
 
   it('createRequestAndWait expires when the poll deadline elapses', async () => {

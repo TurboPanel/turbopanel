@@ -13,7 +13,11 @@ describe('Organization CA (Workers Web Crypto)', () => {
     const ca = await mintOrganizationCa({ organizationId: '019a0000-0000-7000-8000-000000000002' })
     expect(ca.privateKeyPem).toContain('BEGIN PRIVATE KEY')
     expect(await privateKeyMatchesCertificate(ca.privateKeyPem, ca.parsed)).toBe(true)
-    expect(ca.parsed.notAfter.getUTCFullYear()).toBe(new Date().getUTCFullYear() + 15)
+    // Compare against 15 years from now with a week of slack, so a year or leap-day rollover cannot flip it.
+    const fifteenYearsMs = 15 * 365.25 * 24 * 3_600_000
+    expect(Math.abs(ca.parsed.notAfter.getTime() - (Date.now() + fifteenYearsMs))).toBeLessThan(
+      7 * 24 * 3_600_000
+    )
 
     const leaf = await issueLeafCertificate(ca.certificatePem, ca.privateKeyPem, ['db.example.com'])
     expect(await verifyCertificateSignature(leaf.certificatePem, ca.certificatePem)).toBe(true)
