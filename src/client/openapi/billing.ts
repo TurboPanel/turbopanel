@@ -183,7 +183,7 @@ export const billingSchemas = {
       assignedTierId: {
         type: ['string', 'null'],
         format: 'uuid',
-        description: 'The derived tier; null when nothing purchased covers the server.',
+        description: 'The tier a manager assigned; null when none was assigned.',
       },
       requiredTier: {
         type: ['string', 'null'],
@@ -343,10 +343,16 @@ export const billingSchemas = {
     type: 'object',
     required: ['fromTierId', 'toTierId'],
     description:
-      'One fewer at `fromTierId`, one more at `toTierId`. Which server ends up where is derived from hardware.',
+      'One fewer at `fromTierId`, one more at `toTierId`. No server moves unless `serverId` names one; then only that server moves.',
     properties: {
       fromTierId: { type: 'string', format: 'uuid' },
       toTierId: { type: 'string', format: 'uuid' },
+      serverId: {
+        type: ['string', 'null'],
+        format: 'uuid',
+        description:
+          'The one server that moves with this change. It must hold `fromTierId` (else 409 `server_not_on_tier`); `toTierId` may not be below its CPU or RAM (422 `tier_below_required`). An upgrade moves it once the swap is taken (not while `pending`); a downgrade moves it when the boundary lands.',
+      },
       prorationDate: {
         type: 'integer',
         description:
@@ -367,6 +373,14 @@ export const billingSchemas = {
       deferred: { type: 'boolean', description: 'Parked on a schedule for the period boundary.' },
       intentId: { type: 'string' },
       scheduleId: { type: ['string', 'null'] },
+      movedServerId: {
+        type: ['string', 'null'],
+        description: 'Upgrades: the named server, once it moved to the new tier.',
+      },
+      serverId: {
+        type: ['string', 'null'],
+        description: 'Downgrades: the named server that moves when the change lands.',
+      },
     },
   },
   BillingRestoreRequest: {
@@ -452,7 +466,13 @@ function mutationPath(summary: string, requestSchema: string, extraConflicts: st
         ),
         '401': unauthorized,
         '403': forbidden,
+        '404': errorResponse(
+          'The named `serverId` is not a licensed server (`server_not_licensed`)'
+        ),
         '409': conflict(`\`billing_mutation_in_progress\`, ${extraConflicts}`),
+        '422': errorResponse(
+          'The named server has more CPU cores or RAM than the target tier allows (`tier_below_required`)'
+        ),
         '502': errorResponse('Stripe refused the request (`stripe_error`, permanent)'),
         '503': errorResponse(
           '`billing_not_configured`, or Stripe was unreachable (`stripe_error`, transient)'
@@ -629,11 +649,11 @@ export const billingPaths: Record<string, unknown> = {
   [`${CLIENT_PREFIX}/billing/upgrade`]: mutationPath(
     'Move one purchased license to a higher tier, invoiced now',
     'BillingTierMoveRequest',
-    '`licenses_ending` (at the higher tier), `subscription_past_due`, `no_subscription`, `servers_uncovered`'
+    '`licenses_ending` (at the higher tier), `subscription_past_due`, `no_subscription`, `servers_uncovered`, `server_not_on_tier`, `server_move_pending`'
   ),
   [`${CLIENT_PREFIX}/billing/downgrade`]: mutationPath(
     'Move one purchased license to a lower tier at the period boundary',
     'BillingTierMoveRequest',
-    '`licenses_ending` (at the lower tier), `no_subscription`, `servers_uncovered`, `licenses_in_use` (BillingLicensesInUseError)'
+    '`licenses_ending` (at the lower tier), `no_subscription`, `servers_uncovered`, `licenses_in_use` (BillingLicensesInUseError), `server_not_on_tier`, `server_move_pending`'
   ),
 }

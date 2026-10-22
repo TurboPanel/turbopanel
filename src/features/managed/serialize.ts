@@ -8,6 +8,8 @@ export type ManagedResidualMetadata = {
   host?: string
   port?: number
   error?: string
+  /** Counter of primary moves (`primary-epoch.ts`); kept when metadata is rewritten. */
+  primaryEpoch?: number
 }
 
 export function parseManagedResidual(value: unknown): ManagedResidualMetadata {
@@ -21,6 +23,9 @@ export function parseManagedResidual(value: unknown): ManagedResidualMetadata {
     ...(typeof record.host === 'string' ? { host: record.host } : {}),
     ...(typeof record.port === 'number' ? { port: record.port } : {}),
     ...(typeof record.error === 'string' ? { error: record.error } : {}),
+    ...(Number.isInteger(record.primaryEpoch) && (record.primaryEpoch as number) >= 0
+      ? { primaryEpoch: record.primaryEpoch as number }
+      : {}),
   }
 }
 

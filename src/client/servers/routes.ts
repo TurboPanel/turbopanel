@@ -68,10 +68,6 @@ import { resolveUpdateManifest } from '../../features/update/manifest.ts'
 import { resolveInstanceUpdateChannel, type UpdateChannel } from '../../contracts/update-channel.ts'
 import { getServerUpdatePreparer } from '../../features/update/prepare.ts'
 import { revokeLicense } from '../../features/licenses/license.ts'
-import {
-  peekOrganizationAssignment,
-  recomputeOrganizationAssignments,
-} from '../../features/tiers/assignment-records.ts'
 import { syncSelfHostedGrant } from '../../features/tiers/self-hosted-grant-records.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
 import {
@@ -962,14 +958,9 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     )
     const layoutPathsByServer = await loadServerLayoutPaths(db, serverIds)
     const deployment = metricsDeploymentKindForRuntime(opts.runtime)
-    const pickUnfulfilled =
-      deployment === 'self-hosted'
-        ? undefined
-        : (await peekOrganizationAssignment(db, organizationId)).pickUnfulfilled
     const placementByServer = await loadTierPlacementsForServers(db, serverIds, {
       deployment,
       unwatched: 'counts',
-      pickUnfulfilled,
     })
 
     return c.json({
@@ -1549,7 +1540,6 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     const tierPlacement = await enrichServerDetailTierPlacement(
       db,
       organizationId,
-      id,
       placementByServer.get(id) ?? null
     )
 
@@ -1810,20 +1800,15 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
 
     const purgeError = await purgeServerDaemonCell(registry, id)
     await revokeBoundLicenseOnServerDelete(db, id, boundLicense?.id ?? null, organizationId)
-    // The freed tier may now cover a server that was uncovered, or let a
-    // server move down: re-derive the organization's assignment. This runs
-    // on both runtimes — self-hosted derives an assignment too, from its
-    // grant. The grant is squared up first, and *shrinking* it is allowed
-    // on either runtime: the revoked license just gave its granted unit
-    // back, and leaving it standing would be a free license on the hosted
-    // runtime.
+    // The freed seat stays free: no other server is moved onto it (only a
+    // manager assigns licenses). The self-hosted grant is squared up, and
+    // *shrinking* it is allowed on either runtime: the revoked license just
+    // gave its granted unit back, and leaving it standing would be a free
+    // license on the hosted runtime.
     await syncSelfHostedGrant(db, organizationId, {
       allowGrow: metricsDeploymentKindForRuntime(opts.runtime) === 'self-hosted',
     }).catch((err) => {
       compatLogWarn('servers', `self-hosted grant sync after delete failed: ${String(err)}`)
-    })
-    await recomputeOrganizationAssignments(db, organizationId).catch((err) => {
-      compatLogWarn('servers', `tier assignment recompute after delete failed: ${String(err)}`)
     })
 
     await recordAuditAndNotify(
