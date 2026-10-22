@@ -108,6 +108,12 @@ function deriveRawInboundOutcome(inbound: DaemonInboundEnvelope): InboundOutcome
         permissions: inbound.permissions,
         error: inbound.error,
       })
+    case 'server-network-check-result':
+      return inboundOutcomeFromOk(inbound.ok, inbound.error, {
+        ok: inbound.ok,
+        results: inbound.results,
+        error: inbound.error,
+      })
     case 'repo-read-result':
       return inboundOutcomeFromOk(inbound.ok, inbound.error, repoReadResultPayload(inbound))
     case 'repo-default-branch-result':

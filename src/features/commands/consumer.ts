@@ -2987,10 +2987,10 @@ async function applyManagedPromoteSideEffect(
       }
     })
 
-    if (promotedMemberId && promoteResult.replication !== undefined) {
+    if (promotedMemberId) {
       await updateManagedMemberObservedReplication(db, promotedMemberId, {
         status: promoteResult.status || 'ready',
-        replication: promoteResult.replication,
+        replication: promoteResult.replication ?? null,
       })
     }
     await reconcileBackupsAfterManagedMove(db, deps?.commandQueue, {
@@ -3170,6 +3170,7 @@ async function applyManagedHaFailoverSideEffect(
       status: 'ready',
       updatedAt: nowIso(),
     })
+    await updateManagedMemberObservedReplication(db, payload.targetMemberId, { replication: null })
     await reconcileBackupsAfterManagedMove(db, deps?.commandQueue, {
       managedId: payload.managedId,
       previousServerId: backupHost,

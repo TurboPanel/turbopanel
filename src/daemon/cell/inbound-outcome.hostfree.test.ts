@@ -287,6 +287,34 @@ test('deriveInboundOutcome maps managed-health-result done and failed', () => {
   )
 })
 
+test('deriveInboundOutcome maps server-network-check-result done and failed', () => {
+  const results = [{ peerServerId: 's2', address: '10.0.0.2', reachable: true, latencyMs: 3 }]
+  assertEquals(
+    deriveInboundOutcome({
+      kind: 'server-network-check-result',
+      requestId: REQUEST_ID,
+      at: AT,
+      ok: true,
+      results,
+    }),
+    { status: 'done', result: { ok: true, results, error: undefined } }
+  )
+  assertEquals(
+    deriveInboundOutcome({
+      kind: 'server-network-check-result',
+      requestId: REQUEST_ID,
+      at: AT,
+      ok: false,
+      error: 'no targets',
+    }),
+    {
+      status: 'failed',
+      result: { ok: false, results: undefined, error: 'no targets' },
+      error: 'no targets',
+    }
+  )
+})
+
 test('deriveInboundOutcome maps managed-permissions-result done and failed', () => {
   const permissions = { engine: 'postgres', observedAt: AT, logins: [] }
   assertEquals(
@@ -343,6 +371,7 @@ const SAMPLES: Record<DaemonInboundEnvelope['kind'], DaemonInboundEnvelope> = {
   'managed-logs-result': { kind: 'managed-logs-result', ...common, logs: '' },
   'managed-health-result': { kind: 'managed-health-result', ...common, ok: true },
   'managed-permissions-result': { kind: 'managed-permissions-result', ...common, ok: true },
+  'server-network-check-result': { kind: 'server-network-check-result', ...common, ok: true },
   'container-logs-result': { kind: 'container-logs-result', ...common, logs: '' },
   'repo-read-result': { kind: 'repo-read-result', ...common, ok: true },
   'repo-default-branch-result': {
