@@ -1,4 +1,4 @@
-import { assertEquals, assertRejects } from '@std/assert'
+import { assertEquals, assertNotEquals, assertRejects } from '@std/assert'
 import {
   DataEncryptionError,
   decryptSecret,
@@ -151,7 +151,11 @@ test("decryptSecret rejects malformed and tampered envelopes", async () => {
 
   const envelope = await encryptSecret(secrets, "tamper-me");
   const parts = envelope.split(".");
-  parts[2] = `${parts[2]!.slice(0, -2)}xx`;
+  // Flip the first character to a different one: trailing base64url characters
+  // can carry unused bits, so editing them may not change the decoded bytes.
+  const body = parts[2]!;
+  parts[2] = `${body.startsWith("A") ? "B" : "A"}${body.slice(1)}`;
+  assertNotEquals(parts.join("."), envelope);
   await assertRejects(
     () => decryptSecret(secrets, parts.join(".")),
     DataEncryptionError,

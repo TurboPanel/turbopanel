@@ -137,7 +137,8 @@ test('stateless challenge rejects mismatch, expiry, and tampering', async () => 
     null,
   )
   // Payload tampering with an intact signature must also fail verification.
-  const tamperedPayload = `${payload.slice(0, -1)}${payload.endsWith('A') ? 'B' : 'A'}`
+  // Edit the first character: trailing base64url characters can be padding-equivalent.
+  const tamperedPayload = `${payload.startsWith('A') ? 'B' : 'A'}${payload.slice(1)}`
   assertEquals(
     await consumeChallenge(
       secrets,

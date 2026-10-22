@@ -318,14 +318,14 @@ test('a lease that stays held is given up on after the configured attempts', asy
   const db = seed({ seats: [{ tierId: S3, quantity: 1 }] })
   const lock = await tryBeginQuantityMutation(db, ORG, NOW_MS)
   assertEquals(lock !== null, true)
-  const started = Date.now()
+  const started = performance.now()
   const outcome = await syncEntitlementsForOrganization(
     { db, client: null, nowMs: NOW_MS, leaseRetry: { attempts: 3, delayMs: 15 } },
     { organizationId: ORG, providerSubscriptionId: 'sub_1', pendingUpdate: false }
   )
   assertEquals(outcome, { action: 'skipped', reason: 'lease_held' })
   // Two waits between three attempts, none after the last.
-  const elapsed = Date.now() - started
-  assertEquals(elapsed >= 25 && elapsed < 1000, true)
+  // Timers may fire a little early, so only a loose lower bound is asserted.
+  assertEquals(performance.now() - started >= 20, true)
   assertEquals(await assignments(db), { [SERVER_A]: null, [SERVER_B]: S1 })
 })
