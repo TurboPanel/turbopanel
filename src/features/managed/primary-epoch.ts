@@ -31,6 +31,15 @@ export function bumpedPrimaryEpochMetadata(): SQL {
   return sql`jsonb_set(coalesce(${managed.metadata}, '{}'::jsonb), '{primaryEpoch}', to_jsonb(case when (${managed.metadata}->>'primaryEpoch') ~ '^[0-9]{1,9}$' then (${managed.metadata}->>'primaryEpoch')::int + 1 else 1 end))`
 }
 
+/**
+ * New `metadata` value for a rewrite of the managed row's metadata: `next`
+ * (which must not carry `primaryEpoch`) plus the epoch the row holds right now,
+ * so a rewrite built from an earlier read can never move the epoch backwards.
+ */
+export function keepLivePrimaryEpoch(next: Record<string, unknown>): SQL {
+  return sql`${JSON.stringify(next)}::jsonb || case when (${managed.metadata}->'primaryEpoch') is null then '{}'::jsonb else jsonb_build_object('primaryEpoch', ${managed.metadata}->'primaryEpoch') end`
+}
+
 export async function loadPrimaryEpoch(db: Db, managedId: string): Promise<number> {
   const [row] = await db
     .select({ metadata: managed.metadata })

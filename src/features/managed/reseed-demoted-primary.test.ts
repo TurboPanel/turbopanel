@@ -23,7 +23,11 @@ import { processCommandEnvelope } from '../commands/consumer.ts'
 import { getCommandRecord } from '../commands/command-records.ts'
 import { findRecoveryById, insertRecovery, updateRecovery } from './recovery-records.ts'
 import { RESEED_GUARD_METADATA_KEY, reseedSupersededReason } from './reseed-guard.ts'
-import { bumpedPrimaryEpochMetadata, loadPrimaryEpoch } from './primary-epoch.ts'
+import {
+  bumpedPrimaryEpochMetadata,
+  keepLivePrimaryEpoch,
+  loadPrimaryEpoch,
+} from './primary-epoch.ts'
 import {
   recordNewPrimaryReplayPosition,
   recordOldPrimaryFinalPosition,
@@ -497,5 +501,38 @@ test('a position that is malformed, from another engine, for another kind or aft
       (await findRecoveryById(f.db, failover.id))?.metadata.newPrimaryReplayLsn,
       undefined
     )
+  })
+})
+
+test('a metadata rewrite built from an earlier read keeps the epoch the row holds now', async () => {
+  await withCluster(async (f) => {
+    // The rewrite was prepared while the epoch was still 0.
+    const prepared = { host: 'db.internal', replicationUsername: 'tp_repl' }
+    await f.db
+      .update(managed)
+      .set({ metadata: bumpedPrimaryEpochMetadata() })
+      .where(eq(managed.id, f.managedId))
+    await f.db
+      .update(managed)
+      .set({ metadata: keepLivePrimaryEpoch(prepared) })
+      .where(eq(managed.id, f.managedId))
+    assertEquals(await loadPrimaryEpoch(f.db, f.managedId), 1)
+    const [row] = await f.db
+      .select({ metadata: managed.metadata })
+      .from(managed)
+      .where(eq(managed.id, f.managedId))
+    assertEquals(row?.metadata, { ...prepared, primaryEpoch: 1 })
+
+    // A row that never had an epoch gets none added.
+    await f.db.update(managed).set({ metadata: null }).where(eq(managed.id, f.managedId))
+    await f.db
+      .update(managed)
+      .set({ metadata: keepLivePrimaryEpoch(prepared) })
+      .where(eq(managed.id, f.managedId))
+    const [fresh] = await f.db
+      .select({ metadata: managed.metadata })
+      .from(managed)
+      .where(eq(managed.id, f.managedId))
+    assertEquals(fresh?.metadata, prepared)
   })
 })

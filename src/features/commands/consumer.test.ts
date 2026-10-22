@@ -45,6 +45,7 @@ import {
 } from '../../db/schema.ts'
 import { createManagedLogin } from '../managed/logins.ts'
 import { loadPrimaryEpoch } from '../managed/primary-epoch.ts'
+import { RESEED_GUARD_METADATA_KEY } from '../managed/reseed-guard.ts'
 import { findRecoveryById, insertRecovery } from '../managed/recovery-records.ts'
 import { evaluateFinalPosition } from '../managed/switchover-evidence.ts'
 import { ensureManagedIngressHierarchy } from '../system/hierarchy.ts'
@@ -5439,6 +5440,83 @@ async function runSwitchoverStop(
   )
   return (await findRecoveryById(db, created.id))!.metadata
 }
+
+test('a host that refuses a stale re-seed leaves the cluster ready and the former primary needs_resync', async () => {
+  await withManagedDestroyFixtures(async ({ db, serverId, managedId }) => {
+    const pair = await insertPromotePair(db, { serverId, managedId })
+    const { standbyServerId, primaryMemberId, replicaMemberId } = pair
+    try {
+      // After the switchover: the second member is the primary, the first the
+      // former primary waiting for its re-seed.
+      await db
+        .update(replica)
+        .set({ role: 'replica', status: 'needs_resync' })
+        .where(eq(replica.id, primaryMemberId))
+      await db
+        .update(replica)
+        .set({ role: 'primary', status: 'ready' })
+        .where(eq(replica.id, replicaMemberId))
+      await db.update(managed).set({ status: 'applying' }).where(eq(managed.id, managedId))
+      const created = await insertRecovery(db, {
+        managedId,
+        kind: 'switchover',
+        sourcePrimaryMemberId: primaryMemberId,
+        targetMemberId: replicaMemberId,
+        state: 'completed',
+        metadata: { fenced: true, reseedState: 'queued', reseedNote: 'queued' },
+      })
+      const record = await createCommandRecord(db, {
+        serverId,
+        ...TEST_COMMAND_ACTOR,
+        type: 'managed.apply',
+        payload: { managedId, memberId: primaryMemberId },
+        context: { managedId, memberId: primaryMemberId },
+        metadata: {
+          [RESEED_GUARD_METADATA_KEY]: {
+            recoveryId: created.id,
+            managedId,
+            sourceMemberId: primaryMemberId,
+            targetMemberId: replicaMemberId,
+            epoch: 0,
+          },
+        },
+      })
+      const registry = createDispatchMockRegistry(serverId, {
+        waitForRequestResult: {
+          serverId,
+          requestId: record.id,
+          requestKind: 'command-dispatch',
+          status: 'failed',
+          createdAt: record.createdAt,
+          expiresAt: record.createdAt,
+          finishedAt: new Date().toISOString(),
+          error:
+            'managed.apply switchover re-seed refused: it belongs to another switchover (stale recovery); the data directory was not touched',
+        },
+      })
+
+      await processCommandEnvelope(db, registry, buildEnvelope(record, serverId))
+
+      const [row] = await db
+        .select({ status: managed.status })
+        .from(managed)
+        .where(eq(managed.id, managedId))
+      assertEquals(row?.status, 'ready')
+      const [former] = await db
+        .select({ role: replica.role, status: replica.status })
+        .from(replica)
+        .where(eq(replica.id, primaryMemberId))
+      assertEquals(former, { role: 'replica', status: 'needs_resync' })
+      const stored = await findRecoveryById(db, created.id)
+      assertEquals(stored?.metadata.reseedState, 'failed')
+      assertEquals(stored?.metadata.reseedNote?.includes('stale recovery'), true)
+      assertEquals((await getCommandRecord(db, record.id))?.status, 'failed')
+    } finally {
+      await db.delete(recoveryTable).where(eq(recoveryTable.managedId, managedId))
+      await cleanUpPromotePair(db, { serverId, managedId, standbyServerId })
+    }
+  })
+})
 
 test('a switchover fence stop result stores the old primary final position on the recovery row', async () => {
   await withManagedDestroyFixtures(async (f) => {

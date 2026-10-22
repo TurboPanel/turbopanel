@@ -55,6 +55,7 @@ import type { Db } from '../../db/connection.ts'
 import { REPLICATION_PASSWORD_LENGTH } from '../principals/store.ts'
 import { findManagedLoginByRole, listManagedLoginCredentials, setLoginPassword } from './logins.ts'
 import { ensureManagedReplicationLogin } from './cluster-logins.ts'
+import { keepLivePrimaryEpoch } from './primary-epoch.ts'
 import { loadPrincipalNamePolicy } from './load-org-defaults.ts'
 import { generatePassword } from '../../lib/secrets/generate-secret.ts'
 import {
@@ -1617,14 +1618,13 @@ async function ensureClusterReplicationUsername(
     }
   }
 
-  const residual = parseManagedResidual(input.managedRow.metadata)
+  // The residual was read earlier in this request: the primary epoch must be
+  // the live one, never the stale copy, or a promote in between would be undone.
+  const { primaryEpoch: _stale, ...residual } = parseManagedResidual(input.managedRow.metadata)
   await db
     .update(managed)
     .set({
-      metadata: {
-        ...residual,
-        replicationUsername: repl.appliedUsername,
-      },
+      metadata: keepLivePrimaryEpoch({ ...residual, replicationUsername: repl.appliedUsername }),
       updatedAt: new Date().toISOString(),
     })
     .where(eq(managed.id, input.managedRow.id))

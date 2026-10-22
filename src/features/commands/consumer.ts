@@ -72,6 +72,7 @@ import {
   parseManagedDestroyGate,
 } from '../managed/destroy-gate.ts'
 import { bumpedPrimaryEpochMetadata } from '../managed/primary-epoch.ts'
+import { findRecoveryById, updateRecovery } from '../managed/recovery-records.ts'
 import { recordNewPrimaryReplayPosition } from '../managed/switchover-position.ts'
 import { parseReseedGuard, reseedSupersededReason } from '../managed/reseed-guard.ts'
 import { deleteManagedBackup, insertManagedBackup } from '../backups/backup-records.ts'
@@ -108,6 +109,8 @@ import {
   type EnvironmentDeployResultSite,
   type KeptFolder,
   type ManagedDestroyCommandPayload,
+  type ManagedLifecycleCommandResult,
+  type ManagedLifecyclePayload,
   parseEnvironmentDeployPayload,
   parseEnvironmentDeployResult,
   parseEnvironmentLifecyclePayload,
@@ -2000,6 +2003,9 @@ async function loadManagedDestroyGateCommands(
 }
 
 /** Observed statuses the consumer may project onto `managed.status`. */
+/** What the host's `managed.apply` error says when it refuses a stale switchover re-seed. */
+const HOST_RESEED_REFUSAL = 'switchover re-seed refused'
+
 const MANAGED_OBSERVED_STATUSES = new Set(['ready', 'stopped', 'failed'])
 
 /**
@@ -2067,6 +2073,21 @@ async function projectManagedObservedStatus(
     .where(eq(managed.id, managedId))
 }
 
+/** The old primary's final position from a fence stop result, when it answers this switchover. */
+function oldPrimaryFinalFromStop(
+  payload: ManagedLifecyclePayload,
+  recoveryId: string,
+  result: ManagedLifecycleCommandResult
+): { oldPrimaryFinal?: { lsn: string; timeline: number } } {
+  if (payload.switchoverRecoveryId !== recoveryId) return {}
+  if (result.oldPrimaryFinalLsn === undefined || result.oldPrimaryFinalTimeline === undefined) {
+    return {}
+  }
+  return {
+    oldPrimaryFinal: { lsn: result.oldPrimaryFinalLsn, timeline: result.oldPrimaryFinalTimeline },
+  }
+}
+
 async function applyManagedLifecycleSideEffect(
   db: Db,
   record: DispatchableCommandRecord,
@@ -2105,16 +2126,7 @@ async function applyManagedLifecycleSideEffect(
               switchoverPrimaryExecutedGtidSet: lifecycleResult.switchoverPrimaryExecutedGtidSet,
             }
           : {}),
-        ...(payload.switchoverRecoveryId === recoveryId &&
-        lifecycleResult.oldPrimaryFinalLsn !== undefined &&
-        lifecycleResult.oldPrimaryFinalTimeline !== undefined
-          ? {
-              oldPrimaryFinal: {
-                lsn: lifecycleResult.oldPrimaryFinalLsn,
-                timeline: lifecycleResult.oldPrimaryFinalTimeline,
-              },
-            }
-          : {}),
+        ...oldPrimaryFinalFromStop(payload, recoveryId, lifecycleResult),
       })
       return
     }
@@ -2722,6 +2734,7 @@ async function applyManagedFailedSideEffect(
   // from `needs_resync` to `failed` or mark the whole cluster failed; the
   // sweep retries it a few times.
   if (meta?.returnFence === true) return
+  if (await absorbRefusedReseed(db, record, meta, error)) return
   await recordLeafRenewalFailure(db, record, meta, error)
   if (isManagedHaFailoverRepoint(record)) {
     await handleFollowPrimaryFailure(
@@ -3376,6 +3389,65 @@ async function applyPendingOutcome(
 }
 
 /**
+ * Not a failure of the database: release the `applying` stamp the enqueue set
+ * (unless another apply is still open) and leave the members as they are.
+ */
+async function releaseApplyingAfterReseedStop(
+  db: Db,
+  commandId: string,
+  managedId: string
+): Promise<void> {
+  const otherOpen = await db
+    .select({ id: command.id })
+    .from(command)
+    .where(
+      and(
+        eq(command.name, 'managed.apply'),
+        commandIsOpen(),
+        ne(command.id, commandId),
+        sql`${command.context}->>'managedId' = ${managedId}`
+      )
+    )
+    .limit(1)
+  if (otherOpen.length === 0) {
+    await db
+      .update(managed)
+      .set({ status: 'ready', updatedAt: nowIso() })
+      .where(and(eq(managed.id, managedId), eq(managed.status, 'applying')))
+  }
+}
+
+/**
+ * The host refused a stale switchover re-seed before touching the data
+ * (`switchover re-seed refused`, see the host's `switchover-final-position.ts`).
+ * Nothing was wiped, so this is not a failure of the database or of the former
+ * primary: keep it `needs_resync` for an operator, release `applying`, and say
+ * so on the recovery row. Returns true when the failure was absorbed here.
+ */
+async function absorbRefusedReseed(
+  db: Db,
+  record: DispatchableCommandRecord,
+  meta: Record<string, unknown> | null | undefined,
+  error?: string
+): Promise<boolean> {
+  if (record.type !== 'managed.apply') return false
+  const guard = parseReseedGuard(meta)
+  if (!guard || !error?.includes(HOST_RESEED_REFUSAL)) return false
+  await releaseApplyingAfterReseedStop(db, record.id, guard.managedId)
+  const current = await findRecoveryById(db, guard.recoveryId)
+  if (current) {
+    await updateRecovery(db, current.id, {
+      metadata: {
+        ...current.metadata,
+        reseedState: 'failed',
+        reseedNote: `the host refused the re-seed: ${error}`.slice(0, 300),
+      },
+    })
+  }
+  return true
+}
+
+/**
  * A forced re-seed queued after a planned switchover wipes the former
  * primary's data. If the switchover was overtaken before the command was sent
  * (a second switchover or failover), refuse it instead of wiping.
@@ -3392,26 +3464,7 @@ async function failSupersededReseed(db: Db, record: DispatchableCommandRecord): 
     error,
     errorCode: 'reseed_superseded',
   })
-  // Not a failure of the database: release the `applying` stamp the enqueue
-  // set (unless another apply is still open) and leave the members as they are.
-  const otherOpen = await db
-    .select({ id: command.id })
-    .from(command)
-    .where(
-      and(
-        eq(command.name, 'managed.apply'),
-        commandIsOpen(),
-        ne(command.id, record.id),
-        sql`${command.context}->>'managedId' = ${guard.managedId}`
-      )
-    )
-    .limit(1)
-  if (otherOpen.length === 0) {
-    await db
-      .update(managed)
-      .set({ status: 'ready', updatedAt: nowIso() })
-      .where(and(eq(managed.id, guard.managedId), eq(managed.status, 'applying')))
-  }
+  await releaseApplyingAfterReseedStop(db, record.id, guard.managedId)
   return true
 }
 

@@ -1042,6 +1042,10 @@ one past the recorded one, member still fenced); an operator Resync carries no
 `switchoverReseed` and is never checked. A daemon without the feature ignores
 the field, which is why the panel does not re-seed at all unless both daemons
 list it.
+A host refusal comes back as a failed `managed.apply`; the consumer absorbs it
+(`absorbRefusedReseed`): the cluster is not marked `failed` and the former
+primary stays `needs_resync` (only `applying` is released), and the recovery row
+gets `reseedState: failed` with the host's reason.
 The
 payload always carries `engine` (loaded from the
 managed row when the caller omits it).
