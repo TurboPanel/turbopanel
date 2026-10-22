@@ -174,6 +174,23 @@ export type UpdateProgressMessage = {
   at: string
   detail?: string
   errorCode?: string
+  /**
+   * How the daemon's own restart went, sent with a `failed` stage whose
+   * `errorCode` is `restart_failed`. Optional: an older daemon never sends it.
+   */
+  restart?: UpdateRestartReport
+}
+
+/** Diagnostics for a daemon restart that was reported as failed. Twin of the daemon's `cell-messages.ts`. */
+export type UpdateRestartReport = {
+  /** `enable` or `restart`: the `systemctl` verb that failed. */
+  command?: string
+  exitCode?: number
+  signal?: string
+  stderr?: string
+  /** Times the command ran (2 after the one retry). */
+  attempts: number
+  elapsedMs: number
 }
 
 /** Where one deploy step stands. Twin of the daemon's `cell-messages.ts`. */
