@@ -15,7 +15,7 @@
   "build": {
     "command": "[ -z \"$WORKERS_CI_COMMIT_SHA\" ] || node scripts/stamp-build-commit.mjs"
   },
-  "compatibility_date": "2026-08-18",
+  "compatibility_date": "2026-10-01",
   "compatibility_flags": ["nodejs_compat"],
   "alias": {
     "nodemailer": "./src/features/email/smtp/nodemailer-shim.ts",
