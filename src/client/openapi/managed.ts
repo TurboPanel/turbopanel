@@ -562,7 +562,7 @@ export const managedSchemas = {
       hostCleanup: {
         type: 'array',
         description:
-          'Present on `?force=true`: one entry per member host. `status` is whether `managed.destroy` was queued; `online` is the live connection right now (an offline host still receives a destroy that runs when it reconnects within 7 days)',
+          'Present on `?force=true`: one entry per member host. `status` is whether `managed.destroy` was queued; `online` is the live connection right now (an offline host is retried once it reconnects, within 7 days)',
         items: {
           type: 'object',
           required: ['serverId', 'status', 'online'],
