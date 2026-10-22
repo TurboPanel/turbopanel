@@ -1,4 +1,5 @@
 import { resolveClientIp } from '../client/authn/http.ts'
+import { DATABASE_ROLES_LACK_GRANTS, findMissingRuntimeGrants } from '../db/role-grants.ts'
 import { mapSequential } from '../lib/sequential.ts'
 import { Hono } from 'hono'
 import type { Context, Env, Next } from 'hono'
@@ -49,11 +50,10 @@ import {
   resolveDefaultMetricsCapabilityPlan,
   countHostLevelSignals,
   resolveServerMachineClass,
-  truncateSampleToCapabilityPlan,
 } from '../contracts/capability-plan.ts'
 import { DisabledServerMetricsStore } from './metrics/disabled-store.ts'
 import { createMetricsChartCache } from './metrics/query/cache.ts'
-import { applyIngestAllowlist } from './metrics/ingest-allowlist.ts'
+import { prepareSampleForStorage } from './metrics/ingest-preparation.ts'
 import {
   cacheLiveSample,
   isDurableSample,
@@ -89,6 +89,7 @@ import {
   markTopologyResyncRequested,
   topologyChurnLimitedRecently,
 } from '../features/servers/server-topology-records.ts'
+import { recordOverPlan } from './metrics/over-plan-flag.ts'
 import { recordCapabilityPlanGenerationIfChanged } from '../client/servers/capability-plan-records.ts'
 import type { GateDecision, MetricsGate } from './metrics/ingest-gate.ts'
 import type { MetricEvent } from '../contracts/metrics-contract.ts'
@@ -759,6 +760,7 @@ type IngestPlanAndTopology = {
 }
 
 type IngestServerPlanRow = {
+  tierRank?: number | null
   serverOptions: unknown
   orgOptions: unknown
   serverMetadata: unknown
@@ -804,8 +806,23 @@ async function loadIngestServerPlanRow(
     orgOptions: joined.orgOptions,
     serverMetadata: joined.serverMetadata,
     machineClass: joined.machineClass,
+    tierRank: joined.tierRank,
     tier: metricsCapabilityTierEntitlementsForRank(joined.tierRank),
   }
+}
+
+/**
+ * A server with more RAM or more physical CPU cores than its licensed box size
+ * keeps its metrics and gets flagged on the server record (`over-plan-flag.ts`).
+ * Fire-and-forget, like the other ingest-side marks: a failure logs and never
+ * blocks the sample.
+ */
+function flagOverPlanInBackground(db: Db, serverId: string, planRow: IngestServerPlanRow): void {
+  recordOverPlan(db, serverId, planRow.tierRank, planRow.serverMetadata).catch((err) => {
+    rateLimitedMetricsLog(serverId, 'over_plan_record_failed', () => {
+      console.warn(`metrics over-plan flag failed for ${serverId}: ${describeError(err)}`)
+    })
+  })
 }
 
 /**
@@ -858,6 +875,8 @@ async function resolveIngestPlanAndReconcileTopology(
         })
       })
     }
+
+    if (durable && planRow !== undefined) flagOverPlanInBackground(db, serverId, planRow)
 
     const snapshotForClass = topologyMatch?.snapshot ?? latestTopology?.snapshot
     const machineClass = resolveServerMachineClass(
@@ -1191,6 +1210,19 @@ export function registerDaemonApiRoutes<E extends Env>(
         'daemon-api',
         `readiness: database unavailable: ${err instanceof Error ? err.message : String(err)}`
       )
+      const missing = await findMissingRuntimeGrants(db)
+      if (missing.length > 0) {
+        logWarn('daemon-api', `readiness: ${DATABASE_ROLES_LACK_GRANTS}: ${missing.join('; ')}`)
+        return c.json(
+          {
+            ok: false,
+            ready: false,
+            error: DATABASE_ROLES_LACK_GRANTS,
+            code: 'database_roles_lack_grants',
+          },
+          503
+        )
+      }
       return c.json(
         {
           ok: false,
@@ -1708,17 +1740,10 @@ export function registerDaemonApiRoutes<E extends Env>(
         void enqueueCapabilityPlanUpdate(getDaemonCellRegistry(c), serverId, plan, generation)
       }
 
-      // Hosted ingest truncates to the capability plan; self-hosted writes
-      // the operator's own disk uncapped. Topology `slotMapping` is still
-      // resolved above for identity-addressed packing.
-      const prepared =
-        deployment === 'self-hosted'
-          ? result.sample
-          : truncateSampleToCapabilityPlan(
-              applyIngestAllowlist(result.sample, slotMapping),
-              plan,
-              slotMapping
-            )
+      // Both editions store what the machine reports: the same noise filter
+      // and the same organization/server on/off switches, with no cap on how
+      // many devices a server may have.
+      const prepared = prepareSampleForStorage(result.sample, plan, slotMapping)
       const sample = {
         ...prepared,
         serverId,

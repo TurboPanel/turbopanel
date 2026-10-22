@@ -1,9 +1,9 @@
 /**
- * Metrics capability plan (v5) — backend-neutral entitlement model for how
- * much of the v5 metrics contract (`contract.ts`) a given server is
- * allowed to report/store. Deliberately carries no pricing-tier names or
- * literals: this module only knows about slot counts and feature toggles,
- * never about what plan/SKU produced them. Org-wide defaults live in
+ * Metrics capability plan (v5) — backend-neutral model of the slot counts and
+ * feature toggles a server has. Deliberately carries no pricing-tier names or
+ * literals: this module never knows what plan/SKU produced them. Only the
+ * feature toggles affect what is stored (see `daemon/metrics/ingest-preparation.ts`);
+ * the slot counts do not cap anything that is stored. Org-wide defaults live in
  * `organization.options.metricsCapabilityPlan` (`../../lib/organization-options.ts`),
  * an optional per-server override lives in `server.options.metricsCapabilityPlan`
  * (read the same way `server-metadata.ts` reads `cpuTdpWattsOverride`), and
@@ -15,13 +15,12 @@
  *
  * Ingest call site: `POST /api/daemon/v1/metrics` (`api-routes.ts`) resolves
  * the effective plan for the reporting server via
- * `resolveEffectiveMetricsCapabilityPlan` (`server-metadata.ts`). Hosted
- * ingest then calls {@link truncateSampleToCapabilityPlan}; self-hosted
- * ingest skips truncation and writes the validated sample unchanged.
+ * `resolveEffectiveMetricsCapabilityPlan` (`server-metadata.ts`). Both
+ * editions then apply the same `prepareSampleForStorage` with the plan's
+ * toggles; neither cuts devices to the slot counts.
  */
 
-import { isHardwareHealthEventKind, type MetricsSample } from './metrics-contract.ts'
-import { MAX_NIC_SLOTS, type SlotMapping } from './topology-types.ts'
+import { MAX_NIC_SLOTS } from './topology-types.ts'
 import {
   type MetricsCapabilityPlanOverride,
   parseMetricsCapabilityPlanOverride,
@@ -59,7 +58,7 @@ export const METRICS_PRIME_INTERVAL_SECONDS = 2
 export type MetricsCapabilityPlan = {
   /** Fastest cadence a "live" on-demand session may request, seconds. */
   liveMinIntervalSeconds: number
-  /** Monitored normal-NIC slots a server may store (`SlotMapping.normalNicSlots` is truncated to this at ingest); never above `MAX_NIC_SLOTS`. */
+  /** Normal-NIC slots a server watches (`SlotMapping.normalNicSlots`); never above `MAX_NIC_SLOTS`. Does not cap what is stored. */
   normalNicSlots: number
   /** Whether TurboFabric mesh interfaces may report beyond the normal NIC slots. */
   turboFabricEnabled: boolean
@@ -163,7 +162,7 @@ export function countHostLevelSignals(signals: readonly unknown[]): number {
  * {@link countHostLevelSignals}); an empty one is only absence of proof and resolves
  * `'virtual'`. A snapshot that lacks the array entirely (none recorded, or a
  * minimal test snapshot) falls through to `sampleSignalCount` — the raw,
- * pre-truncation sample's own signal count at ingest, `0` on the read side
+ * sample's own signal count at ingest, `0` on the read side
  * where there is no sample.
  */
 export function inferServerMachineClass(
@@ -187,7 +186,7 @@ export function inferServerMachineClass(
 
 /**
  * The one machine-class resolution both ingest and the read-side routes use,
- * so the plan a sample is truncated to and the limits the UI reports never
+ * so the plan applied at ingest and the limits the UI reports never
  * disagree. The declared `server.machine_class` column wins outright — an
  * operator can pin a VM that exposes a bogus thermal zone to `'virtual'`, or
  * a physical box whose sensors are not exposed to `'physical'`. Only while
@@ -218,6 +217,30 @@ export function metricsDeploymentKindForRuntime(
 ): MetricsDeploymentKind {
   return runtime === 'workers' ? 'hosted' : 'self-hosted'
 }
+
+/**
+ * The most entries of one device kind a sample may carry: the sample
+ * validator's cap (64 per kind). A plan names no fewer: the number of drives,
+ * network cards, GPUs, extra filesystems and sensors a server may report is
+ * set by the machine and these shared limits, never by a plan or an override.
+ */
+export const METRICS_DEVICE_SLOT_CEILING = 64
+
+/**
+ * Every plan the control plane resolves, pushes to a daemon and shows has its
+ * device slot counts at the ceilings, so neither the control plane nor a
+ * daemon holding the plan cuts devices. Tier entitlements and org or server
+ * overrides of a slot count are ignored for the same reason; their switches
+ * (web traffic, database proxy, Docker usage, hardware health events, mesh
+ * interfaces) are not.
+ */
+const DEVICE_SLOT_CEILINGS = {
+  normalNicSlots: MAX_NIC_SLOTS,
+  extraFilesystemSlots: METRICS_DEVICE_SLOT_CEILING,
+  detailedBlockDeviceSlots: METRICS_DEVICE_SLOT_CEILING,
+  gpuSlots: METRICS_DEVICE_SLOT_CEILING,
+  physicalHardwareSignalSlots: METRICS_DEVICE_SLOT_CEILING,
+} as const satisfies Partial<MetricsCapabilityPlan>
 
 /**
  * Self-hosted NIC-slot default — the ceiling itself (`MAX_NIC_SLOTS`): a
@@ -396,6 +419,7 @@ export function resolveMetricsCapabilityPlan(
     ...base,
     ...orgOverride,
     ...serverOverride,
+    ...DEVICE_SLOT_CEILINGS,
   }
 }
 
@@ -420,57 +444,6 @@ export async function computeMetricsCapabilityPlanHash(
     .join('')
 }
 
-// ---------------------------------------------------------------------------
-// Enforcement — truncate a discovered v5 sample down to plan entitlements.
-// ---------------------------------------------------------------------------
-
-/**
- * Truncate a `MetricsSample`'s presence-gated entity arrays/optionals down
- * to what `plan` entitles, without ever fabricating an entity that wasn't
- * present (0 discovered stays 0 regardless of the slot count). Pure — no I/O,
- * no mutation of `sample`.
- *
- * Notes for later phases:
- * - `filesystems` truncation: the daemon's collector no longer emits the
- *   root-tagged filesystem into `sample.filesystems[]` at all (its capacity
- *   lives exclusively in `host.storage`'s `rootFilesystemAvailableBytes`/
- *   `rootFilesystemFreeInodes` — see `turbopaneld`'s
- *   `collector/filesystem.ts`), but this truncation still defensively drops
- *   any entry matching `slotMapping.rootFilesystemId` before applying
- *   `extraFilesystemSlots`, so an older daemon that still reports root in
- *   `filesystems[]` can never spend a slot budget on `/` itself.
- * - `events` filters out only the hardware-health kinds
- *   (`isHardwareHealthEventKind`, `contract.ts`) when
- *   `hardwareHealthEventsEnabled` is false; every other kind (OS/kernel,
- *   filesystem, fabric, clock-sync, topology/boot generation) is unrelated
- *   operational history and always survives.
- * - `router` rides `managedIngressEnabled`, the same entitlement that gates
- *   `ingressSources`: both are traffic visibility for the host's HTTP
- *   front door, and splitting Traefik out of `managed.ingress` into its own
- *   family was a storage-layout change, not a new thing to sell. Dropped by
- *   omitting the key entirely (never an `undefined`-valued property), the
- *   same idiom `buildMetricsSample` uses to build it.
- * - `dockerUsage` rides `managedDockerEnabled` — Docker's `/system/df`
- *   breakdown is a managed-container feature, not universal host accounting.
- *   Dropped by omitting the key entirely (never an `undefined`-valued
- *   property), the same idiom `router` uses.
- * - `storage` is deliberately ungated and passes through untouched, exactly
- *   like `diagnostics`: a host always knows where its own bytes went, and the
- *   row it costs is one row on every tier.
- * - `diagnostics` is deliberately absent: v6 merged the two capability-gated
- *   detail families into one always-on `host.diagnostics` row, so the depth
- *   metrics pass through untouched by the `...sample` spread. Doubles inside
- *   an AE row are free — the row is the cost — so there is nothing left for a
- *   plan to buy here.
- * - `networks` keeps, in slot order, the `slotMapping.normalNicSlots` devices
- *   within `normalNicSlots`, then every `fabricDeviceIds` device when
- *   `turboFabricEnabled` — anything else the daemon sent (an unmonitored
- *   device, a slot beyond the plan) is dropped before it reaches a store.
- *   Without a resolved mapping (generation not recorded yet) the first
- *   `normalNicSlots` entries survive positionally, matching the packer's own
- *   positional fallback, and fabric devices cannot be told apart so nothing
- *   beyond that count is kept.
- */
 /**
  * Conservative fallback plan resolution — platform defaults only, always
  * `"virtual"` machine class (no host-level hardware-signal slots granted).
@@ -483,64 +456,4 @@ export function resolveDefaultMetricsCapabilityPlan(
   deployment: MetricsDeploymentKind
 ): MetricsCapabilityPlan {
   return resolveMetricsCapabilityPlan('virtual', undefined, undefined, deployment)
-}
-
-/**
- * `networks` truncation — see {@link truncateSampleToCapabilityPlan}'s doc
- * comment. Identity-addressed when a `slotMapping` is available (a device is
- * kept because of *which* device it is, never its array position), ordered
- * slots-first so the positional packer fallback still embeds slot 1/2.
- */
-function truncateNetworksToPlan(
-  networks: MetricsSample['networks'],
-  plan: MetricsCapabilityPlan,
-  slotMapping: SlotMapping | undefined
-): MetricsSample['networks'] {
-  if (!slotMapping) return networks.slice(0, plan.normalNicSlots)
-  const byId = new Map(networks.map((device) => [device.deviceId, device]))
-  const keepIds = [
-    ...slotMapping.normalNicSlots.slice(0, plan.normalNicSlots),
-    ...(plan.turboFabricEnabled ? slotMapping.fabricDeviceIds : []),
-  ]
-  const kept: MetricsSample['networks'] = []
-  for (const id of keepIds) {
-    const device = byId.get(id)
-    if (device && !kept.includes(device)) kept.push(device)
-  }
-  return kept
-}
-
-export function truncateSampleToCapabilityPlan(
-  sample: MetricsSample,
-  plan: MetricsCapabilityPlan,
-  slotMapping?: SlotMapping
-): MetricsSample {
-  const nonRootFilesystems = slotMapping?.rootFilesystemId
-    ? sample.filesystems.filter((fs) => fs.filesystemId !== slotMapping.rootFilesystemId)
-    : sample.filesystems
-  // `router` is dropped by omitting the key, never by assigning `undefined`:
-  // the field is optional on `MetricsSample`, and a present-but-undefined
-  // property is a different object shape than an absent one (which whole-
-  // sample equality assertions and `JSON.stringify` both notice).
-  const { router: _gatedRouter, ...withoutRouter } = sample
-  const base = plan.managedIngressEnabled ? sample : withoutRouter
-  // Same omit-the-key discipline for `dockerUsage`, applied to whatever
-  // `router` already left behind so the two gates compose.
-  const { dockerUsage: _gatedDockerUsage, ...withoutDockerUsage } = base
-  const gated = plan.managedDockerEnabled ? base : withoutDockerUsage
-  const truncated: MetricsSample = {
-    ...gated,
-    networks: truncateNetworksToPlan(sample.networks, plan, slotMapping),
-    gpus: sample.gpus.slice(0, plan.gpuSlots),
-    blockDevices: sample.blockDevices.slice(0, plan.detailedBlockDeviceSlots),
-    filesystems: nonRootFilesystems.slice(0, plan.extraFilesystemSlots),
-    hardwareSignals: sample.hardwareSignals.slice(0, plan.physicalHardwareSignalSlots),
-    ingressSources: plan.managedIngressEnabled ? sample.ingressSources : [],
-    databaseProxies: plan.databaseProxyMetricsEnabled ? sample.databaseProxies : [],
-    events: plan.hardwareHealthEventsEnabled
-      ? sample.events
-      : sample.events.filter((event) => !isHardwareHealthEventKind(event.kind)),
-  }
-
-  return truncated
 }

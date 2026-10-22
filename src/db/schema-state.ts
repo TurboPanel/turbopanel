@@ -36,7 +36,7 @@ import type { Db } from './connection.ts'
  */
 export const MIGRATIONS_FOLDER = join(
   dirname(dirname(dirname(fromFileUrl(import.meta.url)))),
-  'migrations',
+  'migrations'
 )
 
 export type SchemaState =
@@ -51,7 +51,10 @@ export type SchemaState =
  * order (empty when the table does not exist); `shipped` is the manifest's
  * entries in order.
  */
-export function compareSchemaState(applied: readonly string[], shipped: readonly string[]): SchemaState {
+export function compareSchemaState(
+  applied: readonly string[],
+  shipped: readonly string[]
+): SchemaState {
   if (applied.length === 0) return { status: 'unmigrated', applied: 0, shipped: shipped.length }
   const shippedSet = new Set(shipped)
   const unknown = applied.filter((hash) => !shippedSet.has(hash))
@@ -103,7 +106,7 @@ type ManifestFile = { entries?: Array<{ sha256?: unknown }> }
 
 /** The frozen manifest's hashes, in order. */
 export async function readShippedMigrationHashes(
-  migrationsFolder: string = MIGRATIONS_FOLDER,
+  migrationsFolder: string = MIGRATIONS_FOLDER
 ): Promise<string[]> {
   const raw = await Deno.readTextFile(join(migrationsFolder, 'manifest.json'))
   const manifest = JSON.parse(raw) as ManifestFile
@@ -117,11 +120,11 @@ export async function readShippedMigrationHashes(
 /** `public.migration.hash` in `created_at` order; `[]` when the table is absent. */
 export async function readAppliedMigrationHashes(db: Db): Promise<string[]> {
   const exists = await db.execute<{ present: boolean }>(
-    sql`select to_regclass('public.migration') is not null as present`,
+    sql`select to_regclass('public.migration') is not null as present`
   )
   if (!exists[0]?.present) return []
   const rows = await db.execute<{ hash: string }>(
-    sql`select hash from public.migration order by created_at, id`,
+    sql`select hash from public.migration order by created_at, id`
   )
   return rows.map((row) => row.hash)
 }
@@ -134,7 +137,7 @@ export async function readAppliedMigrationHashes(db: Db): Promise<string[]> {
  */
 export async function assertSchemaCurrent(
   db: Db,
-  migrationsFolder: string = MIGRATIONS_FOLDER,
+  migrationsFolder: string = MIGRATIONS_FOLDER
 ): Promise<SchemaState> {
   const [applied, shipped] = await Promise.all([
     readAppliedMigrationHashes(db),

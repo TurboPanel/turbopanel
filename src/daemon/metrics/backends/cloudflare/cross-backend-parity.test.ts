@@ -24,18 +24,13 @@
  */
 import { assertEquals } from '@std/assert'
 import { it } from '@std/testing/bdd'
-import {
-  HOST_METRICS_METRIC_DESCRIPTORS,
-  UNSTORED_V8_HOST_METRICS,
-} from '../../metric-descriptors.ts'
+import { HOST_METRICS_METRIC_DESCRIPTORS, UNSTORED_HOST_METRICS } from '../../metric-descriptors.ts'
 import {
   buildMetricsSample,
   type MetricsSampleInput,
 } from '../../../../contracts/metrics-contract.ts'
-import {
-  resolveMetricsCapabilityPlan,
-  truncateSampleToCapabilityPlan,
-} from '../../../../contracts/capability-plan.ts'
+import { resolveMetricsCapabilityPlan } from '../../../../contracts/capability-plan.ts'
+import { limitDevicesToCase } from '../../testing/plan-device-limits.ts'
 import type { AuthenticatedMetricsSample, SlotMapping } from '../../types.ts'
 import type { ServerStatusEvent } from '../../types.ts'
 import { DuckDbParquetServerMetricsStore } from '../duckdb/store.ts'
@@ -290,7 +285,7 @@ it('cross-backend parity: DuckDB and Cloudflare AE agree on host series, entity 
         },
       ],
     })
-    const tick1Built = truncateSampleToCapabilityPlan(buildMetricsSample(tick1Input), plan)
+    const tick1Built = limitDevicesToCase(buildMetricsSample(tick1Input), plan)
     const tick1Sample: AuthenticatedMetricsSample = {
       ...tick1Built,
       serverId: SERVER_ID,
@@ -318,7 +313,7 @@ it('cross-backend parity: DuckDB and Cloudflare AE agree on host series, entity 
       hostingUsedBytes: 8192,
       gpus: [gpu('gpu0', 7), gpu('gpu1', 9)],
     })
-    const tick2Built = truncateSampleToCapabilityPlan(buildMetricsSample(tick2Input), plan)
+    const tick2Built = limitDevicesToCase(buildMetricsSample(tick2Input), plan)
     const tick2Sample: AuthenticatedMetricsSample = {
       ...tick2Built,
       serverId: SERVER_ID,
@@ -418,14 +413,17 @@ it('cross-backend parity: DuckDB and Cloudflare AE agree on host series, entity 
       0
     )
 
-    // --- The data points v8 no longer stores read as empty on BOTH backends,
-    // even though the self-hosted columns still exist (and hold this sample's
-    // values: routerBackendsUp 3, the hosting/logs gauges 512 and 1_000_000). ---
-    const droppedMetrics = [...UNSTORED_V8_HOST_METRICS].filter(
-      (name) =>
-        HOST_METRICS_METRIC_DESCRIPTORS[name] !== undefined && name !== 'ingress.responses2xx'
-    )
-    assertEquals(droppedMetrics.length, 8)
+    // --- The values neither edition stores read as empty on BOTH backends
+    // (the sample carries router.backendsUp 3, the hosting/logs gauges 512 and
+    // 1_000_000, and so on). Only the host-wide ones can be asked of the host
+    // series; the device ones are covered by the entity checks below. ---
+    const hostWideScopes = new Set(['router', 'storage', 'dockerUsage', 'diagnostics'])
+    const droppedMetrics = [...UNSTORED_HOST_METRICS].filter((name) => {
+      const scope = HOST_METRICS_METRIC_DESCRIPTORS[name]?.entityScope
+      return scope !== undefined && (scope.startsWith('host.') || hostWideScopes.has(scope))
+    })
+    assertEquals(droppedMetrics.includes('router.backendsUp'), true)
+    assertEquals(droppedMetrics.includes('storage.hostingFreeBytes'), true)
     const droppedQuery = { ...routerQuery, metrics: droppedMetrics }
     for (const result of [
       await duckStore.queryHostSeries(droppedQuery),

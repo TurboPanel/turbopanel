@@ -11,12 +11,12 @@ import { it } from '@std/testing/bdd'
 import {
   type MetricsCapabilityPlan,
   PLATFORM_DEFAULT_METRICS_CAPABILITY_PLAN,
-  truncateSampleToCapabilityPlan,
 } from '../../../../contracts/capability-plan.ts'
 import {
   buildMetricsSample,
   type MetricsSampleInput,
 } from '../../../../contracts/metrics-contract.ts'
+import { limitDevicesToCase } from '../../testing/plan-device-limits.ts'
 import fixtureJson from '../../testing/v8-layout.fixture.json' with { type: 'json' }
 import type { AuthenticatedMetricsSample, SlotMapping } from '../../types.ts'
 import {
@@ -33,6 +33,8 @@ import {
   V8_ENTITY_FIELD_ORDER,
   V8_HOST_FAMILIES,
   V8_HOST_ROW_SPECS,
+  V8_ENTITY_BLOB_COUNTS,
+  V8_ENTITY_TEXT_FIELDS,
 } from './v8-layout.ts'
 
 type FixtureRow = { family: string; page?: number; entities?: string[] }
@@ -207,7 +209,7 @@ function writtenRows(c: FixtureCase): {
 } {
   const slotMapping = slotMappingFor(c)
   const built = buildMetricsSample(sampleFor(c))
-  const truncated = truncateSampleToCapabilityPlan(built, planFor(c), slotMapping)
+  const truncated = limitDevicesToCase(built, planFor(c), slotMapping)
   const sample: AuthenticatedMetricsSample = { ...truncated, serverId: SERVER_ID, receivedAt: 'x' }
   const points = buildMetricsDataPoints(sample, slotMapping).filter(
     (p) => p.blobs[AE_BLOB_KIND_INDEX] === AE_KIND_METRICS
@@ -265,4 +267,10 @@ it('the entity row shapes match the fixture templates (width, entities per page)
   }
   assertEquals(V8_ENTITY_FIELD_ORDER['hardware.physical'].length, 1)
   assertEquals(V8_ENTITIES_PER_PAGE['hardware.physical'], 19)
+})
+
+it('the facts reader names exactly as many text fields per entity as the writer packs', () => {
+  for (const family of ['block', 'gpu', 'network', 'filesystem'] as const) {
+    assertEquals(V8_ENTITY_TEXT_FIELDS[family].length, V8_ENTITY_BLOB_COUNTS[family], family)
+  }
 })

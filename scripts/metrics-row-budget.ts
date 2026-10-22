@@ -14,11 +14,9 @@
  * per point; 250 points max per Worker invocation.
  */
 import { buildMetricsSample } from '../src/contracts/metrics-contract.ts'
-import {
-  platformDefaultMetricsCapabilityPlan,
-  truncateSampleToCapabilityPlan,
-} from '../src/contracts/capability-plan.ts'
+import { platformDefaultMetricsCapabilityPlan } from '../src/contracts/capability-plan.ts'
 import { buildMetricsDataPoints } from '../src/daemon/metrics/backends/cloudflare/field-map.ts'
+import { limitDevicesToCase } from '../src/daemon/metrics/testing/plan-device-limits.ts'
 import { representativeMachineFixtures } from '../src/daemon/metrics/testing/representative-machines.ts'
 import type { MetricsSample } from '../src/contracts/metrics-contract.ts'
 import type { SlotMapping } from '../src/daemon/metrics/types.ts'
@@ -113,9 +111,7 @@ function sampleForIngest(
   slotMapping: SlotMapping | undefined,
   deployment: Archetype['deployment']
 ): MetricsSample {
-  return deployment === 'self-hosted'
-    ? sample
-    : truncateSampleToCapabilityPlan(sample, plan, slotMapping)
+  return deployment === 'self-hosted' ? sample : limitDevicesToCase(sample, plan, slotMapping)
 }
 
 /** One hour of samples through the real write path; returns rows actually written. */

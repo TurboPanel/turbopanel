@@ -84,7 +84,16 @@ import {
 import type { FirewallApplyGate } from '../firewall/enforcement.ts'
 import type { CommandEnvelope } from './envelope.ts'
 import { nowIso } from './ids.ts'
+import { cancelDeployOnServer } from '../deploy/deploy-cancel.ts'
 import { isNoopCommandQueue } from './noop-command-queue.ts'
+import {
+  createDeployWaiter,
+  DEPLOY_WAIT_MESSAGES,
+  DEPLOY_REQUEST_TTL_SECONDS,
+  DEPLOY_RUN_CAP_MS,
+  DEPLOY_WAIT_CANCELS_SERVER,
+  type DeployWaiter,
+} from './deploy-wait.ts'
 import {
   captureManagedBackupHost,
   enqueueBackupsReconcile,
@@ -132,6 +141,8 @@ import {
   type ReportedFolder,
 } from '../../contracts/commands/schemas.ts'
 import { updateManagedMemberObservedReplication } from '../managed/members.ts'
+import { removeLoginsDroppedByApply } from '../managed/logins.ts'
+import { convertedDatabaseNames, markConvertedDatabasesRoleOwned } from '../managed/options.ts'
 import { markFoldersPresent } from '../folders/allocate.ts'
 import {
   applyFolderRemovalReports,
@@ -201,6 +212,8 @@ export type CommandConsumerDeps = {
   registry?: DaemonCellRegistry
   /** The deploy-time firewall apply key; required so a dropped gate fails the type check. */
   firewallApplyGate: FirewallApplyGate
+  /** Test seam: how long one run keeps waiting for a deploy that has not started. */
+  deployWaitHoldMs?: number
 }
 
 const COMMAND_TIMEOUT_MS: Record<CommandType, number> = {
@@ -223,7 +236,8 @@ const COMMAND_TIMEOUT_MS: Record<CommandType, number> = {
   'server.backups.reconcile': 120_000,
   // One `rm -rf` through the root helper per folder, up to 100 folders; a big volume takes minutes.
   'server.folders.remove': 600_000,
-  'environment.deploy': 600_000,
+  // The run cap: counted from when the server starts the deploy, not from when it was sent.
+  'environment.deploy': DEPLOY_RUN_CAP_MS,
   'environment.lifecycle': 120_000,
   'environment.stop': 120_000,
   'managed.apply': 600_000,
@@ -570,18 +584,22 @@ export async function awaitOutcomeWithAckDeadline(
   cell: DaemonCell,
   requestId: string,
   timeoutMs: number,
-  ackDeadlineMs = COMMAND_ACK_DEADLINE_MS
+  ackDeadlineMs = COMMAND_ACK_DEADLINE_MS,
+  waiter?: DeployWaiter
 ): Promise<PendingRequestRecord | null> {
   const { dropDaemonConnection, expireRequest } = cell
+  // A deploy waits by its own two clocks (queued, then running) instead of one budget.
+  const waitRest = (ms: number) =>
+    waiter ? waiter.wait(cell, requestId, ms) : cell.waitForRequest(requestId, ms)
   if (ackDeadlineMs >= timeoutMs || !dropDaemonConnection || !expireRequest) {
-    return cell.waitForRequest(requestId, timeoutMs)
+    return waitRest(timeoutMs)
   }
   const restMs = timeoutMs - ackDeadlineMs
   const first = await cell.waitForRequest(requestId, ackDeadlineMs)
   if (first) return first
   const current = await cell.getRequest(requestId)
   if (current?.status !== 'sent' || current.ackAt) {
-    return cell.waitForRequest(requestId, restMs)
+    return waitRest(restMs)
   }
   await dropDaemonConnection.call(cell, 'command_unacked').catch(() => undefined)
   // The ack may have landed while the connection was being dropped.
@@ -590,7 +608,7 @@ export async function awaitOutcomeWithAckDeadline(
     return settled
   }
   if (settled?.ackAt || (settled && settled.status !== 'sent')) {
-    return cell.waitForRequest(requestId, restMs)
+    return waitRest(restMs)
   }
   const expired = await expireRequest.call(cell, requestId).catch(() => null)
   if (expired && (expired.status === 'done' || expired.status === 'failed')) {
@@ -620,9 +638,12 @@ async function enqueueAndAwaitOutcome(
     payload: record.payload,
   }
 
-  const timeoutMs = commandTimeoutMs(record.type)
   const cell = registry.getCell(envelope.serverId)
-  await cell.enqueue(outbound)
+  // A deploy may wait hours for the server, so its request must outlive the default five minutes.
+  await cell.enqueue(
+    outbound,
+    record.type === 'environment.deploy' ? { ttlSeconds: DEPLOY_REQUEST_TTL_SECONDS } : undefined
+  )
   commandConsumerTrace('dispatch-enqueued', {
     commandId: record.id,
     commandType: record.type,
@@ -630,34 +651,157 @@ async function enqueueAndAwaitOutcome(
     requestId: record.id,
     deliveryId: outbound.deliveryId,
   })
-  await transitionCommand(db, record.id, { status: 'sent' })
+  const sent = await transitionCommand(db, record.id, { status: 'sent' })
   commandConsumerTrace('dispatch-sent', {
     commandId: record.id,
     commandType: record.type,
     serverId: envelope.serverId,
   })
+  return awaitCommandOutcome(db, registry, record, envelope, deps, sent?.sentAt ?? nowIso())
+}
 
-  const pending = await awaitOutcomeWithAckDeadline(cell, record.id, timeoutMs)
-  if (!pending) {
-    await transitionCommand(db, record.id, { status: 'timed_out' })
+/**
+ * Wait for what the server reports. A deploy has two clocks (see
+ * `deploy-wait.ts`): the run cap counts from when the server starts it, and a
+ * deploy that has not started is not timed out for being queued. When it is
+ * still waiting after one hold, the message goes back on the queue and this
+ * run lets go; the next run picks the wait up (`resumeDeployWait`).
+ */
+async function awaitCommandOutcome(
+  db: Db,
+  registry: DaemonCellRegistry,
+  record: DispatchableCommandRecord,
+  envelope: CommandEnvelope,
+  deps: CommandConsumerDeps | undefined,
+  sentAt: string,
+  resumed = false
+): Promise<PendingRequestRecord | null> {
+  const cell = registry.getCell(envelope.serverId)
+  const waiter =
+    record.type === 'environment.deploy' ? makeDeployWaiter(db, record, sentAt, deps) : undefined
+
+  // A wait picked up again has been through the ack check already.
+  const pending =
+    resumed && waiter
+      ? await waiter.wait(cell, record.id, 0)
+      : await awaitOutcomeWithAckDeadline(
+          cell,
+          record.id,
+          commandTimeoutMs(record.type),
+          COMMAND_ACK_DEADLINE_MS,
+          waiter
+        )
+  if (pending) return pending
+  await settleUnansweredCommand(db, cell, record, envelope, deps, waiter)
+  return null
+}
+
+function makeDeployWaiter(
+  db: Db,
+  record: DispatchableCommandRecord,
+  sentAt: string,
+  deps: CommandConsumerDeps | undefined
+): DeployWaiter {
+  const canHandOff = !!deps?.commandQueue && !isNoopCommandQueue(deps.commandQueue)
+  return createDeployWaiter({
+    sentAt,
+    readCommand: async () => {
+      const current = await getCommandRecord(db, record.id)
+      return current === null
+        ? null
+        : { status: current.status, progress: current.progress, updatedAt: current.updatedAt }
+    },
+    ...(canHandOff
+      ? { holdMs: deps?.deployWaitHoldMs }
+      : { holdMs: Number.POSITIVE_INFINITY, endMs: Number.POSITIVE_INFINITY }),
+  })
+}
+
+/**
+ * The wait ended without a result. A deploy that someone else already finished
+ * is left alone, one still waiting goes back on the queue, and anything else
+ * is timed out with its failure side effects.
+ */
+async function settleUnansweredCommand(
+  db: Db,
+  cell: DaemonCell,
+  record: DispatchableCommandRecord,
+  envelope: CommandEnvelope,
+  deps: CommandConsumerDeps | undefined,
+  waiter: DeployWaiter | undefined
+): Promise<void> {
+  if (waiter?.verdict === 'settled') return
+  const trace = (resultStatus: string) =>
     commandConsumerTrace('dispatch-result', {
       commandId: record.id,
       commandType: record.type,
       serverId: envelope.serverId,
-      resultStatus: 'timed_out',
+      resultStatus,
     })
-    await applyManagedFailedSideEffect(db, record, deps, 'Command timed out')
-    await applyEnvironmentDeployFailedSideEffect(
-      db,
-      record,
-      envelope,
-      'timed_out',
-      'timed_out',
-      deps
-    )
-    await applyFabricFailedSideEffect(db, record, envelope)
+  if (waiter?.verdict === 'handoff') {
+    await deps?.commandQueue?.enqueue(envelope)
+    trace('handed_off')
+    return
   }
-  return pending
+  const timeoutMessage = deployTimeoutMessage(waiter)
+  if (waiter && DEPLOY_WAIT_CANCELS_SERVER.has(waiter.verdict)) {
+    await cancelDeployOnServer(db, cell, envelope.serverId, record.id)
+  }
+  if (waiter?.verdict === 'offline') {
+    // Never reached the server: take it back so it cannot be delivered later.
+    await cell.expireRequest?.(record.id).catch(() => undefined)
+  }
+  await transitionCommand(db, record.id, {
+    status: 'timed_out',
+    ...(timeoutMessage === undefined ? {} : { error: timeoutMessage }),
+  })
+  trace('timed_out')
+  await applyManagedFailedSideEffect(db, record, deps, 'Command timed out')
+  await applyEnvironmentDeployFailedSideEffect(
+    db,
+    record,
+    envelope,
+    timeoutMessage ?? 'timed_out',
+    'timed_out',
+    deps
+  )
+  await applyFabricFailedSideEffect(db, record, envelope)
+}
+
+/** The plain-words error for a deploy that ended without a result; none for other commands. */
+function deployTimeoutMessage(waiter: DeployWaiter | undefined): string | undefined {
+  const verdict = waiter?.verdict
+  if (
+    verdict === undefined ||
+    verdict === 'none' ||
+    verdict === 'handoff' ||
+    verdict === 'settled'
+  ) {
+    return undefined
+  }
+  return DEPLOY_WAIT_MESSAGES[verdict]
+}
+
+/**
+ * A deploy this consumer already sent that came round again (it handed the wait
+ * back to the queue, or the consumer died mid-wait): keep waiting for the
+ * request that is already on the server instead of sending it twice.
+ * `null` when there is nothing to resume.
+ */
+async function resumeDeployWait(
+  db: Db,
+  registry: DaemonCellRegistry,
+  record: DispatchableCommandRecord,
+  envelope: CommandEnvelope,
+  deps?: CommandConsumerDeps
+): Promise<{ pending: PendingRequestRecord | null } | null> {
+  if (record.type !== 'environment.deploy' || record.sentAt === null) return null
+  if (!['sent', 'acked', 'running'].includes(record.status)) return null
+  const existing = await registry.getCell(envelope.serverId).getRequest(record.id)
+  if (existing === null || existing.status === 'expired') return null
+  return {
+    pending: await awaitCommandOutcome(db, registry, record, envelope, deps, record.sentAt, true),
+  }
 }
 
 /**
@@ -1614,6 +1758,15 @@ async function applyManagedApplySideEffect(
           updatedAt,
         })
         .where(eq(managed.id, payload.managedId))
+    }
+    if (isPrimary) {
+      // The host dropped these accounts, so the panel forgets their logins.
+      await removeLoginsDroppedByApply(db, payload.managedId, payload.dropUsers)
+      await markConvertedDatabasesRoleOwned(
+        db,
+        payload.managedId,
+        convertedDatabaseNames(payload.databases)
+      )
     }
     if (applyResult.containers !== undefined) {
       await reconcileContainersSafely(
@@ -3176,6 +3329,12 @@ export async function processCommandEnvelope(
 ): Promise<void> {
   const record = await loadDispatchableRecord(db, envelope)
   if (!record) return
+
+  const resumed = await resumeDeployWait(db, registry, record, envelope, deps)
+  if (resumed !== null) {
+    if (resumed.pending) await applyPendingOutcome(db, record, envelope, resumed.pending, deps)
+    return
+  }
 
   await markDispatching(db, record, envelope)
 

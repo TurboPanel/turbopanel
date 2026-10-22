@@ -12,7 +12,7 @@
  *
  * Each fixture pairs a `MetricsSampleInput`, the `MetricsCapabilityPlan`
  * that must entitle it (so a caller can round-trip through
- * `truncateSampleToCapabilityPlan` before packing — a plan that doesn't
+ * `limitDevicesToCase` before packing — a plan that doesn't
  * grant enough slots would silently truncate the fixture's own entities),
  * and the `SlotMapping` that makes NIC/fabric/paging identity-addressed
  * rather than positional. `expectedFamilies` is the exact ordered
@@ -600,7 +600,7 @@ function bareMetalGpu(): RepresentativeMachineFixture {
 // ---------------------------------------------------------------------------
 // 11. 4-NIC host, all four monitored on a 4-slot plan (2 embedded + 2 paged
 //     -> 1 network page). An unmonitored NIC never reaches the store at all
-//     (`truncateSampleToCapabilityPlan`), so only monitored slots page.
+//     (`limitDevicesToCase`), so only monitored slots page.
 // ---------------------------------------------------------------------------
 
 function fourNic(): RepresentativeMachineFixture {
@@ -785,7 +785,7 @@ function managedStorageHost(): RepresentativeMachineFixture {
 // ---------------------------------------------------------------------------
 // 18. Managed-storage host with the Docker breakdown gated off
 //
-// Same shape, `managedDockerEnabled: false`. `truncateSampleToCapabilityPlan`
+// Same shape, `managedDockerEnabled: false`. `limitDevicesToCase`
 // drops the `dockerUsage` key outright, so no `managed.docker` row is emitted
 // and `managed.storage` — ungated — still is. The pair is what pins the flag's
 // effect on row count.

@@ -1,6 +1,6 @@
 {
   "specVersion": 1,
-  "schemaVersion": 8,
+  "schemaVersion": 12,
   "generatedBy": "scripts/metrics-v8-layout/generate.mjs",
   "plan": {
     "packing": "auto",
@@ -193,7 +193,7 @@
   "envelope": {
     "order": ["kind", "family", "version", "topoGen", "sampledAt", "ids"],
     "contentBlobCapacity": 14,
-    "note": "Metrics rows: blob1 kind, blob2 family, blob3 \"8\" (storage layout revision), blob4 reserved (written empty), blob5 sample time (UTC YYYY-MM-DD hh:mm:ss), blob6 entity or source ids; content text blobs from blob7. double20 is the interval."
+    "note": "Metrics rows: blob1 kind, blob2 family, blob3 \"12\" (storage layout revision), blob4 reserved (written empty), blob5 sample time (UTC YYYY-MM-DD hh:mm:ss), blob6 entity or source ids; content text blobs from blob7. double20 is the interval."
   },
   "planLimits": {
     "S1": {
@@ -425,7 +425,12 @@
       "blobs": ["dr_model", "dr_smart"],
       "perPageEntities": 3
     },
-    "hardware.physical": { "kind": "sensor", "doubles": ["sn_value"], "blobs": [] },
+    "hardware.physical": {
+      "kind": "sensor",
+      "doubles": ["sn_value"],
+      "blobs": [],
+      "pageBlobs": ["kinds"]
+    },
     "filesystem": {
       "kind": "entity",
       "doubles": ["fs_availableBytes", "fs_freeInodes"],

@@ -19,9 +19,8 @@
  */
 
 import {
-  DIAGNOSTICS_CPU_FIELD_NAMES,
   HOST_METRICS_METRIC_DESCRIPTORS,
-  UNSTORED_V8_HOST_METRICS,
+  UNSTORED_HOST_METRICS,
   type HostMetricsMetricDescriptor,
   type MetricEntityScope,
 } from '../../metric-descriptors.ts'
@@ -40,6 +39,11 @@ import {
   defaultExpectedSamplesPerBucket,
   finalizeHostSeriesResult,
 } from '../../query/series-response.ts'
+import {
+  emptyHostFacts,
+  hostFactsFromSample,
+  parseStoredHostFacts,
+} from '../../query/host-facts.ts'
 import { computeStatusUptime } from '../../query/uptime.ts'
 import { forEachSequential } from '../../../../lib/sequential.ts'
 import type {
@@ -52,6 +56,8 @@ import type {
   EntitySeriesResult,
   FleetHostSnapshotQuery,
   FleetHostSnapshotResult,
+  HostFactsQuery,
+  HostFactsResult,
   FleetHostSnapshotServer,
   HostSeriesPoint,
   HostSeriesQuery,
@@ -86,6 +92,7 @@ import {
   parquetFamily,
   type ParquetFamilyKey,
   pruneExpiredPartitions,
+  pruneToSizeCap,
   sealDayToParquet,
   timestampLiteralFromMs,
   utcDayStartMs,
@@ -94,28 +101,33 @@ import {
   BLOCK_METRIC_FIELDS,
   BLOCK_SAMPLES_TABLE,
   blockSamplesInsertColumns,
-  cpuDiagnosticsHostColumnName,
+  BLOCK_TEXT_FIELDS,
   DATABASE_PROXY_METRIC_FIELDS,
   DATABASE_PROXY_SAMPLES_TABLE,
   databaseProxySamplesInsertColumns,
+  DOCKER_SAMPLES_TABLE,
+  dockerSamplesInsertColumns,
+  DOCKER_USAGE_METRIC_FIELDS,
   entityMetricColumnName,
   extendedColumnName,
   FILESYSTEM_METRIC_FIELDS,
-  FILESYSTEM_SIZE_FIELDS,
   FILESYSTEM_SAMPLES_TABLE,
   filesystemSamplesInsertColumns,
   GPU_METRIC_FIELDS,
-  GPU_SIZE_FIELDS,
   GPU_SAMPLES_TABLE,
   gpuSamplesInsertColumns,
+  GPU_TEXT_FIELDS,
   HARDWARE_SIGNAL_SAMPLES_TABLE,
   hardwareSignalSamplesInsertColumns,
-  HOST_GLOBAL_CPU_DIAGNOSTICS_FIELDS_LIST,
   HOST_METRIC_FIELD_REFS,
+  HOST_FACTS_TABLE,
   HOST_SAMPLES_TABLE,
+  HOST_TEXT_FIELDS,
+  HOST_TEXT_SAMPLES_TABLE,
   hostMetricColumnName,
   type HostMetricGroup,
   hostSamplesInsertColumns,
+  hostTextSamplesInsertColumns,
   INGRESS_METRIC_FIELDS,
   INGRESS_SAMPLES_TABLE,
   ingressSamplesInsertColumns,
@@ -127,31 +139,19 @@ import {
   NETWORK_METRIC_FIELDS,
   NETWORK_SAMPLES_TABLE,
   networkSamplesInsertColumns,
-  DOCKER_SAMPLES_TABLE,
-  dockerSamplesInsertColumns,
-  DOCKER_USAGE_METRIC_FIELDS,
   ROUTER_METRIC_FIELDS,
   ROUTER_SAMPLES_TABLE,
   routerSamplesInsertColumns,
   STATUS_EVENTS_TABLE,
-  STORAGE_FILESYSTEM_ID_COLUMNS,
-  STORAGE_ROW_VALUE_PLAN,
   STORAGE_SAMPLES_TABLE,
   storageSamplesInsertColumns,
-  storageSamplesMetricColumnNames,
+  storageSamplesMetricFields,
   V8_DOCKER_COLUMNS,
   V8_HOST_COLUMNS,
   V8_INGRESS_COLUMNS,
   V8_SIZE_COLUMNS,
 } from './schema.ts'
-import {
-  EXTENDED_DOCKER_FIELD_NAMES,
-  EXTENDED_HOST_FIELD_NAMES,
-  EXTENDED_INGRESS_FIELD_NAMES,
-  EXTENDED_SIZE_FIELD_NAMES,
-  STORAGE_ENGINE_FIELD_NAMES,
-  STORAGE_ENGINE_KEYS,
-} from '../../../../contracts/metrics-contract.ts'
+import { buildSampleRows, type PendingRowTable, toDuckDbTimestamp } from './sample-rows.ts'
 
 /** Flush when this many pending rows accumulate (small co-located fleet). */
 export const DUCKDB_WRITE_BATCH_MAX_ROWS = 10
@@ -166,6 +166,9 @@ export const DUCKDB_WRITE_BATCH_MAX_AGE_MS = 5_000
 
 /** Default retention for hot rows + sealed partitions (matches AE's 90 days). */
 export const DEFAULT_DUCKDB_RETENTION_DAYS = 90
+
+/** Default cap for the whole self-hosted metrics store (5 GiB); the oldest sealed days go first. */
+export const DEFAULT_DUCKDB_MAX_BYTES = 5 * 1024 ** 3
 
 /** Loopback port the dev-only embedded DuckDB UI serves on. */
 export const DUCKDB_UI_DEFAULT_PORT = 4213
@@ -188,6 +191,8 @@ export type DuckDbStoreConfig = {
   memoryLimitMb?: number
   /** Hot + Parquet retention days (default 90). */
   retentionDays?: number
+  /** Cap for the whole metrics store in bytes (default 5 GiB); the oldest sealed days are pruned first. */
+  maxBytes?: number
 }
 
 export type DuckDbStoreOptions = {
@@ -204,22 +209,6 @@ export type DuckDbStoreOptions = {
   now?: () => number
   onFlushError?: (error: unknown) => void
 }
-
-type PendingRowTable =
-  | 'host'
-  | 'network'
-  | 'filesystem'
-  | 'block'
-  | 'gpu'
-  | 'memoryDiagnostics'
-  | 'hardwareSignal'
-  | 'ingress'
-  | 'databaseProxy'
-  | 'router'
-  | 'storage'
-  | 'docker'
-  | 'event'
-  | 'status'
 
 type PendingRow = {
   table: PendingRowTable
@@ -241,6 +230,7 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
   readonly #threads: number | undefined
   readonly #memoryLimitMb: number | undefined
   readonly #retentionDays: number
+  readonly #maxBytes: number
   readonly #openHandle: () => Promise<DuckDbHandle>
   readonly #batchMaxRows: number
   readonly #batchMaxAgeMs: number
@@ -265,6 +255,8 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
     this.#retentionDays =
       assertOptionalPositiveInt('retentionDays', config.retentionDays) ??
       DEFAULT_DUCKDB_RETENTION_DAYS
+    this.#maxBytes =
+      assertOptionalPositiveInt('maxBytes', config.maxBytes) ?? DEFAULT_DUCKDB_MAX_BYTES
     this.#paths = resolveDuckDbPaths(config.metricsDir)
     this.#batchMaxRows = options?.writeBatchMaxRows ?? DUCKDB_WRITE_BATCH_MAX_ROWS
     this.#batchMaxAgeMs = options?.writeBatchMaxAgeMs ?? DUCKDB_WRITE_BATCH_MAX_AGE_MS
@@ -318,215 +310,31 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
   /**
    * Fire-and-forget insert (batched). Fans one sample into a `host` row, one
    * row per entity in `networks`/`filesystems`/`blockDevices`/`gpus`/
-   * `hardwareSignals`/`ingressSources`/`databaseProxies`, one singleton row
+   * `hardwareSignals`/`ingressSources`/`databaseProxies`, a host text row, one singleton row
    * each for the presence-gated `diagnostics` memory half, `router`,
    * `storage` and `dockerUsage`, and
    * one row per `events` entry — all enqueued together so `#flushPending` commits the
    * entire fan-out for one sample in a single transaction (never split
-   * across two batches). `slotMapping` is accepted to satisfy
-   * `ServerMetricsStore` but not consulted: DuckDB has no page/slot
-   * concept to resolve identity against.
+   * across two batches). `slotMapping` only decides which NICs the hosted
+   * layout embeds in its host row, whose error and drop rates both stores
+   * keep as one sum.
    */
-  writeSample(input: AuthenticatedMetricsSample, _slotMapping?: SlotMapping): Promise<void> {
-    const common: DuckDbBindValue[] = [
-      input.serverId,
-      toDuckDbTimestamp(input.metadata.sampledAt),
-      toDuckDbTimestamp(input.receivedAt),
-      Math.round(input.metadata.intervalSeconds),
-      input.metadata.sequence,
-      input.metadata.topologyGeneration,
-      input.metadata.bootGeneration,
-    ]
-    const rows: PendingRow[] = []
-
-    rows.push({
-      table: 'host',
-      values: [
-        ...common,
-        ...HOST_METRIC_FIELD_REFS.map((ref) => numericField(input.host[ref.group], ref.field)),
-        ...HOST_GLOBAL_CPU_DIAGNOSTICS_FIELDS_LIST.map((field) =>
-          input.diagnostics ? numericField(input.diagnostics.cpu, field) : null
-        ),
-        ...EXTENDED_HOST_FIELD_NAMES.map((field) => extendedNumber(input.extended?.host, field)),
-        ...EXTENDED_SIZE_FIELD_NAMES.map((field) => extendedNumber(input.extended?.sizes, field)),
-      ],
-    })
-
-    if (input.diagnostics) {
-      const diagnosticsMemory = input.diagnostics.memory
+  writeSample(input: AuthenticatedMetricsSample, slotMapping?: SlotMapping): Promise<void> {
+    const rows = buildSampleRows(input, slotMapping)
+    // Latest host facts: every sample from a v8 daemon (one that sends the
+    // `extended` section) replaces the row, even with no text, so a fact that
+    // disappears stops being shown, like on the hosted store. A v6 sample has
+    // nothing to say about facts and leaves the row alone.
+    if (input.extended) {
       rows.push({
-        table: 'memoryDiagnostics',
-        values: [
-          ...common,
-          ...MEMORY_DIAGNOSTICS_METRIC_FIELDS.map((field) =>
-            numericField(diagnosticsMemory, field)
-          ),
-        ],
-      })
-    }
-
-    for (const network of input.networks) {
-      rows.push({
-        table: 'network',
-        values: [
-          ...common,
-          network.deviceId,
-          ...NETWORK_METRIC_FIELDS.map((field) => numericField(network, field)),
-        ],
-      })
-    }
-
-    for (const filesystem of input.filesystems) {
-      rows.push({
-        table: 'filesystem',
-        values: [
-          ...common,
-          filesystem.filesystemId,
-          ...FILESYSTEM_METRIC_FIELDS.map((field) =>
-            (FILESYSTEM_SIZE_FIELDS as readonly string[]).includes(field)
-              ? extendedNumber(
-                  sizeEntry(
-                    input.extended?.filesystemSizes,
-                    'filesystemId',
-                    filesystem.filesystemId
-                  ),
-                  field
-                )
-              : numericField(filesystem, field)
-          ),
-        ],
-      })
-    }
-
-    for (const device of input.blockDevices) {
-      rows.push({
-        table: 'block',
-        values: [
-          ...common,
-          device.deviceId,
-          ...BLOCK_METRIC_FIELDS.map((field) => numericField(device, field)),
-        ],
-      })
-    }
-
-    for (const gpu of input.gpus) {
-      rows.push({
-        table: 'gpu',
-        values: [
-          ...common,
-          gpu.gpuId,
-          ...GPU_METRIC_FIELDS.map((field) =>
-            (GPU_SIZE_FIELDS as readonly string[]).includes(field)
-              ? extendedNumber(sizeEntry(input.extended?.gpuSizes, 'gpuId', gpu.gpuId), field)
-              : numericField(gpu, field)
-          ),
-        ],
-      })
-    }
-
-    for (const signal of input.hardwareSignals) {
-      rows.push({
-        table: 'hardwareSignal',
-        values: [...common, signal.signalId, signal.kind, signal.value ?? null],
-      })
-    }
-
-    for (const ingress of input.ingressSources) {
-      rows.push({
-        table: 'ingress',
-        values: [
-          ...common,
-          ingress.sourceId,
-          ingress.sourceKind,
-          ...INGRESS_METRIC_FIELDS.map((field) => numericField(ingress, field)),
-          // Hosting Caddy is the only ingress source and the v8 section is
-          // host-wide, so its value rides every ingress row.
-          ...EXTENDED_INGRESS_FIELD_NAMES.map((field) =>
-            extendedNumber(input.extended?.ingress, field)
-          ),
-        ],
-      })
-    }
-
-    for (const proxy of input.databaseProxies) {
-      rows.push({
-        table: 'databaseProxy',
-        values: [
-          ...common,
-          proxy.sourceId,
-          proxy.sourceKind,
-          ...DATABASE_PROXY_METRIC_FIELDS.map((field) => numericField(proxy, field)),
-        ],
-      })
-    }
-
-    if (input.router) {
-      const router = input.router
-      rows.push({
-        table: 'router',
-        values: [...common, ...ROUTER_METRIC_FIELDS.map((field) => numericField(router, field))],
-      })
-    }
-
-    if (input.storage) {
-      const storage = input.storage
-      const dockerUsage = input.dockerUsage
-      rows.push({
-        table: 'storage',
-        values: [
-          ...common,
-          ...STORAGE_ROW_VALUE_PLAN.leadingFlatFields.map((field) => numericField(storage, field)),
-          // Real SQL NULLs when the Docker breakdown was absent or gated off
-          // — "not reported", never zero bytes.
-          ...DOCKER_USAGE_METRIC_FIELDS.map((field) =>
-            dockerUsage ? numericField(dockerUsage, field) : null
-          ),
-          ...STORAGE_ROW_VALUE_PLAN.trailingFlatFields.map((field) => numericField(storage, field)),
-          ...STORAGE_ENGINE_KEYS.flatMap((engine) =>
-            STORAGE_ENGINE_FIELD_NAMES.map((field) => numericField(storage[engine], field))
-          ),
-          // Topology filesystem ids: nothing on the wire carries them yet —
-          // see `STORAGE_FILESYSTEM_ID_COLUMNS` in `schema.ts`.
-          null,
-          null,
-          null,
-          null,
-        ],
-      })
-    }
-
-    if (input.dockerUsage) {
-      const dockerUsage = input.dockerUsage
-      rows.push({
-        table: 'docker',
-        values: [
-          ...common,
-          ...DOCKER_USAGE_METRIC_FIELDS.map((field) => numericField(dockerUsage, field)),
-          ...EXTENDED_DOCKER_FIELD_NAMES.map((field) =>
-            extendedNumber(input.extended?.docker, field)
-          ),
-        ],
-      })
-    }
-
-    for (const event of input.events) {
-      rows.push({
-        table: 'event',
+        table: 'facts',
         values: [
           input.serverId,
-          event.eventId,
-          toDuckDbTimestamp(event.at),
-          toDuckDbTimestamp(input.receivedAt),
-          event.kind,
-          event.severity,
-          input.metadata.topologyGeneration,
-          event.entityId ?? null,
-          event.source ?? null,
-          event.payload ? JSON.stringify(event.payload) : null,
+          toDuckDbTimestamp(input.metadata.sampledAt),
+          JSON.stringify(hostFactsFromSample(input)),
         ],
       })
     }
-
     return this.#enqueueRows(rows)
   }
 
@@ -662,7 +470,6 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
     const requiresRouter = metrics.some(isRouterMetric)
     const requiresStorage = metrics.some(isStorageMetric)
     const requiresDockerUsage = metrics.some(isDockerUsageMetric)
-    const requiresIngress = metrics.some(isIngressExtendedMetric)
 
     const joins: string[] = []
     if (requiresMemoryDiagnostics) {
@@ -694,20 +501,8 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
       )
     }
 
-    if (requiresIngress) {
-      const ingressSource = await this.#familySamplesSource(parquetFamily('ingress'), fromMs, toMs)
-      // One row per sample whatever the number of ingress sources: the v8
-      // value is host-wide and rides every source row, so any one will do.
-      const summary = EXTENDED_INGRESS_FIELD_NAMES.map(
-        (field) => `max(${extendedColumnName(field)}) AS ${extendedColumnName(field)}`
-      ).join(', ')
-      joins.push(
-        `LEFT JOIN (SELECT server_id, sampled_at, ${summary} FROM ${ingressSource} GROUP BY server_id, sampled_at) AS ig ON ig.server_id = h.server_id AND ig.sampled_at = h.sampled_at`
-      )
-    }
-
     const metricSelects = metrics.map((name) => {
-      if (UNSTORED_V8_HOST_METRICS.has(name)) return `CAST(NULL AS DOUBLE) AS "${name}"`
+      if (UNSTORED_HOST_METRICS.has(name)) return `CAST(NULL AS DOUBLE) AS "${name}"`
       const descriptor = HOST_METRICS_METRIC_DESCRIPTORS[name]!
       const column = hostSeriesColumnForDescriptor(descriptor)
       // "h." metadata prefix: unambiguous even without the `md`/`rt`/`st`/`dk` joins,
@@ -816,7 +611,7 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
       to.getTime()
     )
     const metricSelects = metrics.map((name) => {
-      if (UNSTORED_V8_HOST_METRICS.has(name)) return `CAST(NULL AS DOUBLE) AS "${name}"`
+      if (UNSTORED_HOST_METRICS.has(name)) return `CAST(NULL AS DOUBLE) AS "${name}"`
       const descriptor = HOST_METRICS_METRIC_DESCRIPTORS[name]!
       const column = hostColumnForDescriptor(descriptor)
       return `${hostFieldAggregateSql(descriptor, column)} AS "${name}"`
@@ -923,6 +718,30 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
       parquetRoot: this.#paths.parquetRoot,
       nowMs,
     })
+
+    // Then the size cap: retention days are not enough on a big fleet, and an
+    // operator's disk must never fill with metrics.
+    const pruned = await pruneToSizeCap({
+      parquetRoot: this.#paths.parquetRoot,
+      maxBytes: this.#maxBytes,
+      otherBytes:
+        (await fileSizeOrZero(this.#paths.databasePath)) +
+        (await fileSizeOrZero(`${this.#paths.databasePath}.wal`)),
+    })
+    if (pruned.removedDays > 0 && pruned.removedFromMs !== null && pruned.removedToMs !== null) {
+      const day = (ms: number) => new Date(ms).toISOString().slice(0, 10)
+      console.warn(
+        `metrics store over its ${this.#maxBytes}-byte cap: removed the ${pruned.removedDays} oldest sealed day(s), ${day(pruned.removedFromMs)} to ${day(pruned.removedToMs)}`
+      )
+    }
+    if (pruned.failedDays > 0) {
+      console.warn(`metrics store size cap: could not remove ${pruned.failedDays} sealed day(s)`)
+    }
+    if (pruned.stillOver) {
+      console.warn(
+        `metrics store is still over its ${this.#maxBytes}-byte cap after pruning; the newest sealed days are kept, so the hot database file or a failed removal is holding it over`
+      )
+    }
   }
 
   /** Flush pending writes and release the database handle (tests/shutdown). */
@@ -1033,6 +852,10 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
     )
     const metricSelects = fields.map((field) => {
       const descriptor = resolveEntityFieldDescriptor(input.family, config.entityScope, field)
+      // A value neither edition stores reads as empty, whatever the table holds.
+      if (UNSTORED_HOST_METRICS.has(descriptor.canonicalName)) {
+        return `CAST(NULL AS DOUBLE) AS "${field}"`
+      }
       const column = entityMetricColumnForFamily(input.family, field)
       return `${hostFieldAggregateSql(descriptor, column)} AS "${field}"`
     })
@@ -1150,6 +973,39 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
       .sort((a, b) => a.localeCompare(b))
 
     return { kind: 'duckdb', available: true, entityIds }
+  }
+
+  /**
+   * The facts row of the newest sample in `[from, to)`. DuckDB keeps only the
+   * latest row per server, so a sample older than `from` reads as "none", the
+   * same answer the hosted store gives for a sample outside its window.
+   */
+  async queryHostFacts(input: HostFactsQuery): Promise<HostFactsResult> {
+    await this.flushWrites()
+    const serverId = assertSafeServerId(input.serverId)
+    const from = assertIsoTimestamp('from', input.from)
+    const to = assertIsoTimestamp('to', input.to)
+    assertRange(from, to)
+    const handle = await this.#ensureOpen()
+    const reader = await handle.connection.runAndReadAll(
+      [
+        `SELECT CAST(epoch_ms(sampled_at) AS DOUBLE) AS sampled_at_ms, facts`,
+        `FROM ${HOST_FACTS_TABLE}`,
+        `WHERE server_id = CAST(? AS UUID)`,
+        `  AND sampled_at >= CAST(? AS TIMESTAMP)`,
+        `  AND sampled_at < CAST(? AS TIMESTAMP)`,
+      ].join('\n'),
+      [serverId, toDuckDbTimestamp(from.toISOString()), toDuckDbTimestamp(to.toISOString())]
+    )
+    const row = reader.getRowObjectsJS()[0]
+    const sampledAtMs = row ? toFiniteNumber(row.sampled_at_ms) : null
+    return {
+      kind: 'duckdb',
+      available: true,
+      serverId: input.serverId,
+      sampledAt: sampledAtMs === null ? null : new Date(sampledAtMs).toISOString(),
+      facts: row ? parseStoredHostFacts(row.facts) : emptyHostFacts(),
+    }
   }
 
   /**
@@ -1307,9 +1163,13 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
     }
     await connection.run('BEGIN TRANSACTION')
     try {
-      await forEachSequential(byTable, ([table, rows]) => {
+      await forEachSequential(byTable, async ([table, rows]) => {
+        if (table === 'facts') {
+          await upsertHostFacts(connection, rows)
+          return
+        }
         const { sql, values } = buildInsertForTable(table, rows)
-        return connection.run(sql, values)
+        await connection.run(sql, values)
       })
       await connection.run('COMMIT')
     } catch (error) {
@@ -1376,25 +1236,6 @@ function defaultFlushErrorLog(error: unknown): void {
   console.error(`duckdb metrics write flush failed: ${message}`)
 }
 
-/** Raw field value off an entity/group object — real value or SQL `NULL`, never a sentinel or coerced `0`. */
-function numericField(source: unknown, field: string): number | null {
-  return (source as Record<string, number | null>)[field] ?? null
-}
-
-/** The size entry of one entity (`extended.filesystemSizes` / `extended.gpuSizes`), by its id. */
-function sizeEntry(
-  entries: readonly object[] | undefined,
-  idField: string,
-  id: string
-): object | undefined {
-  return entries?.find((entry) => (entry as Record<string, unknown>)[idField] === id)
-}
-
-/** One v8 `extended` numeric field: the real value, or SQL `NULL` when the section or field is absent (a v6 sample). */
-function extendedNumber(source: object | undefined, field: string): number | null {
-  return source ? numericField(source, field) : null
-}
-
 // ---------------------------------------------------------------------------
 // Per-table parameterized INSERT builders — column lists come from
 // `schema.ts` (the single source of truth also used for DDL); tuples here
@@ -1407,9 +1248,6 @@ const COMMON_METADATA_TUPLE_PREFIX = [
   'CAST(? AS TIMESTAMP)',
   'CAST(? AS TIMESTAMP)',
   'CAST(? AS SMALLINT)',
-  'CAST(? AS BIGINT)',
-  'CAST(? AS INTEGER)',
-  'CAST(? AS INTEGER)',
 ]
 
 function entityTuple(idPlaceholders: readonly string[], metricCount: number): string {
@@ -1428,10 +1266,13 @@ const HOST_COLUMNS = hostSamplesInsertColumns()
 const HOST_TUPLE = entityTuple(
   [],
   HOST_METRIC_FIELD_REFS.length +
-    HOST_GLOBAL_CPU_DIAGNOSTICS_FIELDS_LIST.length +
     V8_HOST_COLUMNS.length +
+    V8_INGRESS_COLUMNS.length +
     V8_SIZE_COLUMNS.length
 )
+
+const HOST_TEXT_COLUMNS = hostTextSamplesInsertColumns()
+const HOST_TEXT_TUPLE = entityTuple([], HOST_TEXT_FIELDS.length)
 
 const NETWORK_COLUMNS = networkSamplesInsertColumns()
 const NETWORK_TUPLE = entityTuple(['?'], NETWORK_METRIC_FIELDS.length)
@@ -1440,10 +1281,10 @@ const FILESYSTEM_COLUMNS = filesystemSamplesInsertColumns()
 const FILESYSTEM_TUPLE = entityTuple(['?'], FILESYSTEM_METRIC_FIELDS.length)
 
 const BLOCK_COLUMNS = blockSamplesInsertColumns()
-const BLOCK_TUPLE = entityTuple(['?'], BLOCK_METRIC_FIELDS.length)
+const BLOCK_TUPLE = entityTuple(['?'], BLOCK_METRIC_FIELDS.length + BLOCK_TEXT_FIELDS.length)
 
 const GPU_COLUMNS = gpuSamplesInsertColumns()
-const GPU_TUPLE = entityTuple(['?'], GPU_METRIC_FIELDS.length)
+const GPU_TUPLE = entityTuple(['?'], GPU_METRIC_FIELDS.length + GPU_TEXT_FIELDS.length)
 
 const MEMORY_DIAGNOSTICS_COLUMNS = memoryDiagnosticsSamplesInsertColumns()
 const MEMORY_DIAGNOSTICS_TUPLE = entityTuple([], MEMORY_DIAGNOSTICS_METRIC_FIELDS.length)
@@ -1452,10 +1293,7 @@ const HARDWARE_SIGNAL_COLUMNS = hardwareSignalSamplesInsertColumns()
 const HARDWARE_SIGNAL_TUPLE = entityTuple(['?', '?'], 1)
 
 const INGRESS_COLUMNS = ingressSamplesInsertColumns()
-const INGRESS_TUPLE = entityTuple(
-  ['?', '?'],
-  INGRESS_METRIC_FIELDS.length + V8_INGRESS_COLUMNS.length
-)
+const INGRESS_TUPLE = entityTuple(['?', '?'], INGRESS_METRIC_FIELDS.length)
 
 const DATABASE_PROXY_COLUMNS = databaseProxySamplesInsertColumns()
 const DATABASE_PROXY_TUPLE = entityTuple(['?', '?'], DATABASE_PROXY_METRIC_FIELDS.length)
@@ -1464,19 +1302,14 @@ const ROUTER_COLUMNS = routerSamplesInsertColumns()
 const ROUTER_TUPLE = entityTuple([], ROUTER_METRIC_FIELDS.length)
 
 const STORAGE_COLUMNS = storageSamplesInsertColumns()
-// Four trailing VARCHAR id columns after the metric doubles — bound as plain
-// `?` placeholders like every other non-numeric column.
-const STORAGE_TUPLE = entityTuple(
-  [],
-  storageSamplesMetricColumnNames().length + STORAGE_FILESYSTEM_ID_COLUMNS.length
-)
+const STORAGE_TUPLE = entityTuple([], storageSamplesMetricFields().length)
 
 const DOCKER_COLUMNS = dockerSamplesInsertColumns()
 const DOCKER_TUPLE = entityTuple([], DOCKER_USAGE_METRIC_FIELDS.length + V8_DOCKER_COLUMNS.length)
 
 const EVENT_COLUMNS = metricEventsInsertColumns()
 const EVENT_TUPLE =
-  '(CAST(? AS UUID), ?, CAST(? AS TIMESTAMP), CAST(? AS TIMESTAMP), ?, ?, CAST(? AS INTEGER), ?, ?, ?)'
+  '(CAST(? AS UUID), ?, CAST(? AS TIMESTAMP), CAST(? AS TIMESTAMP), ?, ?, ?, ?, ?)'
 
 const STATUS_COLUMNS = ['server_id', `"at"`, 'connected', 'reason']
 const STATUS_TUPLE = '(CAST(? AS UUID), CAST(? AS TIMESTAMP), ?, ?)'
@@ -1500,6 +1333,16 @@ function buildInsertForTable(
     case 'host':
       return {
         sql: buildInsertSql(HOST_SAMPLES_TABLE, HOST_COLUMNS, HOST_TUPLE, rows.length),
+        values,
+      }
+    case 'hostText':
+      return {
+        sql: buildInsertSql(
+          HOST_TEXT_SAMPLES_TABLE,
+          HOST_TEXT_COLUMNS,
+          HOST_TEXT_TUPLE,
+          rows.length
+        ),
         values,
       }
     case 'network':
@@ -1587,6 +1430,9 @@ function buildInsertForTable(
         sql: buildInsertSql(STATUS_EVENTS_TABLE, STATUS_COLUMNS, STATUS_TUPLE, rows.length),
         values,
       }
+    case 'facts':
+      // Latest-only rows are written one at a time by `upsertHostFacts`, never as a bulk insert.
+      throw new TypeError('host facts are upserted, not bulk-inserted')
     default: {
       const exhaustive: never = table
       throw new TypeError(`unknown pending row table: ${exhaustive}`)
@@ -1594,13 +1440,33 @@ function buildInsertForTable(
   }
 }
 
-/** DuckDB `TIMESTAMP`-castable UTC string from an ISO timestamp. */
-function toDuckDbTimestamp(iso: string): string {
-  const ms = Date.parse(iso)
-  if (!Number.isFinite(ms)) {
-    throw new TypeError(`invalid timestamp: ${iso}`)
+async function fileSizeOrZero(path: string): Promise<number> {
+  try {
+    return (await Deno.stat(path)).size
+  } catch {
+    return 0
   }
-  return new Date(ms).toISOString().replace('T', ' ').replace('Z', '')
+}
+
+/**
+ * Replace a server's facts row with a newer (or equal-age) sample's. A sample
+ * older than the stored row changes nothing: the older row is only dropped when
+ * the new one is at least as recent, and the insert yields to an existing row.
+ */
+async function upsertHostFacts(
+  connection: DuckDbConnectionLike,
+  rows: DuckDbBindValue[][]
+): Promise<void> {
+  await forEachSequential(rows, async ([serverId, sampledAt, facts]) => {
+    await connection.run(
+      `DELETE FROM ${HOST_FACTS_TABLE} WHERE server_id = CAST(? AS UUID) AND sampled_at <= CAST(? AS TIMESTAMP)`,
+      [serverId, sampledAt]
+    )
+    await connection.run(
+      `INSERT INTO ${HOST_FACTS_TABLE} (server_id, sampled_at, facts) VALUES (CAST(? AS UUID), CAST(? AS TIMESTAMP), ?) ON CONFLICT DO NOTHING`,
+      [serverId, sampledAt, facts]
+    )
+  })
 }
 
 function toFiniteNumber(raw: unknown): number | null {
@@ -1706,13 +1572,7 @@ function hostColumnForDescriptor(descriptor: HostMetricsMetricDescriptor): strin
   return hostMetricColumnName(group, descriptor.fieldName)
 }
 
-/**
- * Which half of the merged `diagnostics` family a field belongs to. v6 has a
- * single `diagnostics` entity scope but two physical homes, so the split is
- * by field name — the two halves share no field name, and both lists are
- * derived from the schema module rather than restated here.
- */
-const CPU_DIAGNOSTICS_FIELD_SET: ReadonlySet<string> = new Set(DIAGNOSTICS_CPU_FIELD_NAMES)
+/** The diagnostics fields stored in the singleton memory-diagnostics table (the only stored ones). */
 const MEMORY_DIAGNOSTICS_FIELD_SET: ReadonlySet<string> = new Set(MEMORY_DIAGNOSTICS_METRIC_FIELDS)
 
 function diagnosticsFieldName(metric: string): string | undefined {
@@ -1742,72 +1602,33 @@ function isDockerUsageMetric(metric: string): boolean {
   return scope === 'dockerUsage' || scope === 'extended.docker'
 }
 
-/** `true` when `metric` is a v8 hosting-Caddy number, stored on the ingress rows. */
-function isIngressExtendedMetric(metric: string): boolean {
-  return HOST_METRICS_METRIC_DESCRIPTORS[metric]?.entityScope === 'extended.ingress'
-}
-
 /**
- * Docker's reclaimable bytes: the daemon's own total, else the three reclaimable
- * groups of the disk breakdown added up (`NULL` only when none was reported).
- * The hosted writer applies the same fallback when it stores the sample.
- */
-const DOCKER_RECLAIMABLE_SQL = [
-  '(coalesce(dk.ext_reclaimable_bytes,',
-  '  CASE WHEN dk.images_reclaimable_bytes IS NULL',
-  '    AND dk.volumes_reclaimable_bytes IS NULL',
-  '    AND dk.build_cache_reclaimable_bytes IS NULL THEN NULL',
-  '  ELSE coalesce(dk.images_reclaimable_bytes, 0)',
-  '    + coalesce(dk.volumes_reclaimable_bytes, 0)',
-  '    + coalesce(dk.build_cache_reclaimable_bytes, 0) END))',
-].join(' ')
-
-/**
- * DuckDB column reference for a `queryHostSeries` descriptor, scoped to
- * the `h`/`md`/`rt` aliases that query's SQL declares. `host.*` fields and
- * the diagnostics CPU half both live on the host row (`h` — the latter via
- * `cpuDiagnosticsHostColumnName`'s `cpu_diagnostics_*` columns); the
- * diagnostics memory half lives on one left-joined singleton row (`md`) and
- * the `managed.router` family on another (`rt`).
+ * DuckDB column reference for a `queryHostSeries` descriptor, scoped to the
+ * `h`/`md`/`rt`/`st`/`dk` aliases that query's SQL declares. Host-wide numbers
+ * (`host.*`, `extended.host`, the certificate days, the sizes) live on the host
+ * row (`h`); the stored diagnostics reading on one left-joined singleton row
+ * (`md`), the `managed.router` family on another (`rt`), storage on `st` and
+ * Docker (the disk breakdown and the container health numbers) on `dk`.
  */
 function hostSeriesColumnForDescriptor(descriptor: HostMetricsMetricDescriptor): string {
-  if (descriptor.entityScope === 'router') {
-    return `rt.${entityMetricColumnName(descriptor.fieldName)}`
+  switch (descriptor.entityScope) {
+    case 'router':
+      return `rt.${entityMetricColumnName(descriptor.fieldName)}`
+    case 'storage':
+      return `st.${entityMetricColumnName(descriptor.fieldName)}`
+    case 'dockerUsage':
+      return `dk.${entityMetricColumnName(descriptor.fieldName)}`
+    case 'extended.docker':
+      return `dk.${extendedColumnName(descriptor.fieldName)}`
+    case 'extended.host':
+    case 'extended.ingress':
+    case 'extended.sizes':
+      return `h.${extendedColumnName(descriptor.fieldName)}`
+    case 'diagnostics':
+      return `md.${entityMetricColumnName(descriptor.fieldName)}`
+    default:
+      return `h.${hostColumnForDescriptor(descriptor)}`
   }
-  // `managed.storage`'s flattened field names (`postgresInstancesRunning`)
-  // snake_case straight to their storage-table columns; `managed.docker`
-  // resolves against its own table, whose columns are unprefixed (the
-  // `docker_*`-prefixed copies on the storage row are a convenience for
-  // single-row storage panels, not the queryable series).
-  if (descriptor.entityScope === 'storage') {
-    return `st.${entityMetricColumnName(descriptor.fieldName)}`
-  }
-  if (descriptor.entityScope === 'dockerUsage') {
-    return `dk.${entityMetricColumnName(descriptor.fieldName)}`
-  }
-  // v8 numbers: host-wide health counters sit on the host row, container health
-  // on the docker row, and the certificate days on the (one-per-sample) ingress
-  // summary `ig` that `queryHostSeries` joins in.
-  if (descriptor.entityScope === 'extended.host') {
-    return `h.${extendedColumnName(descriptor.fieldName)}`
-  }
-  if (descriptor.entityScope === 'extended.docker') {
-    return descriptor.fieldName === 'reclaimableBytes'
-      ? DOCKER_RECLAIMABLE_SQL
-      : `dk.${extendedColumnName(descriptor.fieldName)}`
-  }
-  if (descriptor.entityScope === 'extended.ingress') {
-    return `ig.${extendedColumnName(descriptor.fieldName)}`
-  }
-  if (descriptor.entityScope === 'extended.sizes') {
-    return `h.${extendedColumnName(descriptor.fieldName)}`
-  }
-  if (descriptor.entityScope === 'diagnostics') {
-    return CPU_DIAGNOSTICS_FIELD_SET.has(descriptor.fieldName)
-      ? `h.${cpuDiagnosticsHostColumnName(descriptor.fieldName)}`
-      : `md.${entityMetricColumnName(descriptor.fieldName)}`
-  }
-  return `h.${hostColumnForDescriptor(descriptor)}`
 }
 
 /** Extra host-singleton scopes `queryHostSeries` accepts beyond `host.*` — see its doc comment. */
@@ -1979,10 +1800,6 @@ function resolveEntityFieldDescriptor(
 /** `hardware.physical` is long-form (one `value` column, not one column per field); every other family uses `entityMetricColumnName`. */
 function entityMetricColumnForFamily(family: PerEntityHostedFamily, field: string): string {
   if (family === 'hardware.physical') return 'value'
-  // A drive's combined ops/s is not a stored column: read plus write, `NULL` when either half is.
-  if (family === 'block' && field === 'opsPerSecond') {
-    return `(${entityMetricColumnName('readOpsPerSecond')} + ${entityMetricColumnName('writeOpsPerSecond')})`
-  }
   return entityMetricColumnName(field)
 }
 

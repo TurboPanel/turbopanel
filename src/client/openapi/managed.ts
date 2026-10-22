@@ -1413,6 +1413,11 @@ export const managedSchemas = {
         type: ['string', 'null'],
         description: 'IANA zone; null means the host local time',
       },
+      database: {
+        type: ['string', 'null'],
+        description:
+          "The database each run dumps; null means the cluster's initial database. Must exist on the cluster and not be a system schema, otherwise 422 `backup_database_invalid`.",
+      },
       retentionKeep: { type: 'integer', minimum: 1 },
       enabled: { type: 'boolean' },
       automatic: {
@@ -1458,6 +1463,11 @@ export const managedSchemas = {
       name: { type: 'string', maxLength: 64 },
       schedule: { $ref: '#/components/schemas/BackupScheduleInput' },
       timezone: { type: ['string', 'null'] },
+      database: {
+        type: ['string', 'null'],
+        description:
+          "The database each run dumps; null means the cluster's initial database. Must exist on the cluster and not be a system schema, otherwise 422 `backup_database_invalid`.",
+      },
       retentionKeep: {
         type: 'integer',
         minimum: 1,
@@ -1480,6 +1490,11 @@ export const managedSchemas = {
       timezone: {
         type: ['string', 'null'],
         description: 'null clears it (host local time)',
+      },
+      database: {
+        type: ['string', 'null'],
+        description:
+          "The database each run dumps; null means the cluster's initial database. Must exist on the cluster and not be a system schema, otherwise 422 `backup_database_invalid`.",
       },
       retentionKeep: { type: 'integer', minimum: 1 },
       enabled: { type: 'boolean' },
@@ -1925,7 +1940,8 @@ export const managedPaths = {
           ...jsonSchema('ManagedApplyResponse'),
         },
         409: {
-          description: 'managed_busy / server_offline',
+          description:
+            'managed_busy (also reason backup_in_flight when another backup or restore of the cluster is queued or running) / server_offline',
           content: {
             'application/json': {
               schema: {
@@ -2285,6 +2301,36 @@ export const managedPaths = {
       },
     },
   },
+  '/api/client/v1/environments/{id}/managed/databases/{name}/owner-role': {
+    post: {
+      tags: ['Managed services'],
+      summary: 'Move an existing Postgres database onto its owner role',
+      description:
+        "Postgres only. For the cluster's first database, or any database made before owner roles: hands the database and everything in it (schemas, tables, views, sequences, functions, types that are not part of an extension) to its owner role `tp_<name>_owner`, whoever owns it now, then applies. It changes who owns things, never a row or a grant, and it runs only when asked: send `confirm: true` (400 `managed_owner_role_confirm_required` says what will happen). Afterwards the database behaves like one made through the API: several migration logins and a Database admin login can change each other's tables, and read/write and read-only logins reach all of it. It waits at most five seconds for a busy table and then stops without changing anything, so run it in a quiet window and repeat it if it stops. Asking again, also for a database that already has an owner role, repeats the move and picks up what other logins made since; it is safe. The database is recorded as having an owner role once the server reports the move done. Subject to the organization's re-authentication setting (`managed.database.owner_role`) and recorded in the audit trail as `managed.database.owner_role.move`. 400 `managed_owner_role_unsupported` on MySQL and MariaDB, 400 `managed_owner_role_database_not_movable` for the engine's own databases, 400 `managed_owner_role_name_too_long` for a name over 54 characters, 409 `managed_database_convert_needs_daemon_update` when the server's daemon lacks `managed-database-convert-v1`.",
+      parameters: [ENV_ID_PARAM, DATABASE_NAME_PARAM],
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              required: ['confirm'],
+              properties: { confirm: { type: 'boolean', enum: [true] } },
+            },
+          },
+        },
+      },
+      responses: {
+        200: {
+          description: 'Move queued',
+          ...jsonSchema('ManagedDatabaseMutationResponse'),
+        },
+        400: { description: 'managed_owner_role_confirm_required and the refusals above' },
+        404: { description: 'No such database' },
+        409: { description: 'managed_database_convert_needs_daemon_update' },
+      },
+    },
+  },
   '/api/client/v1/environments/{id}/managed/status': {
     get: {
       tags: ['Managed services'],
@@ -2431,7 +2477,8 @@ export const managedPaths = {
           ...jsonSchema('BackupNotFoundError'),
         },
         409: {
-          description: 'managed_busy / server_offline / backup_on_other_server',
+          description:
+            'managed_busy (also reason backup_in_flight) / server_offline / backup_on_other_server',
           content: {
             'application/json': {
               schema: {

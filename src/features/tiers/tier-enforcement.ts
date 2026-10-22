@@ -11,22 +11,10 @@ import { alias } from 'drizzle-orm/pg-core'
 import type { Db } from '../../db/connection.ts'
 import { license, organization, server, tier } from '../../db/schema.ts'
 import { listSeatsForOrganization } from '../billing/billing-records.ts'
-import {
-  parseServerHostResources,
-  parseServerOptions,
-  resolveEffectiveMetricsCapabilityPlan,
-  type ServerHostResources,
-} from '../servers/server-metadata.ts'
-import { parseOrganizationOptions } from '../organizations/organization-options.ts'
-import {
-  isServerMachineClass,
-  type MetricsCapabilityPlan,
-  type MetricsDeploymentKind,
-  resolveServerMachineClass,
-} from '../../contracts/capability-plan.ts'
+import { parseServerHostResources, type ServerHostResources } from '../servers/server-metadata.ts'
+import type { MetricsDeploymentKind } from '../../contracts/capability-plan.ts'
 import { getLatestTopologyGenerations } from '../servers/server-topology-records.ts'
 import type { TopologyOverrides, TopologySnapshot } from '../../contracts/topology-types.ts'
-import { metricsCapabilityTierEntitlementsForRank } from './tier-entitlements.ts'
 import {
   discoveredDeviceIds,
   monitoredNicIds,
@@ -144,27 +132,6 @@ function hasKnownHardware(resources: ServerHostResources | undefined): boolean {
   return totalPhysicalCores(resources) > 0 || (resources.memory?.totalBytes ?? 0) > 0
 }
 
-function unwatchedBeyondSlots(discovered: readonly string[], slotCount: number): string[] {
-  if (slotCount <= 0) return [...discovered]
-  return discovered.slice(slotCount)
-}
-
-/**
- * Unwatched NICs are discovered uplinks the stored sample will not carry:
- * everything outside the monitored set, plus monitored slots beyond the
- * plan's `normalNicSlots` (hosted ingest keeps the first N in slot order —
- * `truncateSampleToCapabilityPlan`). A pinned slot the tier cannot store is
- * therefore reported unwatched, which is what the recommendation is for.
- */
-function unwatchedNicIds(
-  discovered: readonly string[],
-  monitored: readonly string[],
-  slotCount: number
-): string[] {
-  const watched = new Set(monitored.slice(0, Math.max(slotCount, 0)))
-  return discovered.filter((id) => !watched.has(id))
-}
-
 /**
  * Identical hosted join ingest uses: `server → organization`, active
  * `license` (`revoked_at IS NULL`), and the `tier` the server is assigned.
@@ -278,7 +245,6 @@ export function evaluateTierFloor(input: {
 export function evaluateTierPlacement(input: {
   resources: ServerHostResources | undefined
   topologySnapshot: TopologySnapshot | undefined
-  plan: Pick<MetricsCapabilityPlan, 'normalNicSlots' | 'detailedBlockDeviceSlots' | 'gpuSlots'>
   tierRank: number | null
   licenseLabel?: string | null
   topologyOverrides?: TopologyOverrides
@@ -305,10 +271,14 @@ export function evaluateTierPlacement(input: {
     recommendedLabel: recommended.label,
     licenseRank: input.tierRank,
     licenseLabel: input.licenseLabel ?? null,
+    // Ingest stores every device a server reports, whatever the plan, so only
+    // the uplinks the operator is not monitoring are left out of a sample
+    // (the daemon sends the monitored set). Drives and GPUs have no operator
+    // selection: all of them are stored.
     unwatched: {
-      nics: unwatchedNicIds(discovered.nics, monitoredNics, input.plan.normalNicSlots),
-      drives: unwatchedBeyondSlots(discovered.drives, input.plan.detailedBlockDeviceSlots),
-      gpus: unwatchedBeyondSlots(discovered.gpus, input.plan.gpuSlots),
+      nics: discovered.nics.filter((id) => !monitoredNics.includes(id)),
+      drives: [],
+      gpus: [],
     },
     satisfied: floor.satisfied,
   }
@@ -363,40 +333,20 @@ export function withTierPlacementExtras<U extends TierUnwatchedIds | TierUnwatch
 function placementFromJoinRow(
   row: ServerLicenseTierJoinRow,
   snapshot: TopologySnapshot | undefined,
-  deployment: MetricsDeploymentKind,
-  orgOptionsOverride?: ReturnType<typeof parseOrganizationOptions>
+  deployment: MetricsDeploymentKind
 ): TierPlacementEvaluation {
   const metadata = isRecord(row.serverMetadata) ? row.serverMetadata : undefined
   const resources = parseServerHostResources(metadata?.resources)
-  const machineClass = isServerMachineClass(row.machineClass)
-    ? row.machineClass
-    : resolveServerMachineClass(row.machineClass, snapshot)
-  const orgOptions = orgOptionsOverride ?? parseOrganizationOptions(row.orgOptions)
-  const serverOptions = parseServerOptions(row.serverOptions) ?? undefined
   // Self-hosted has an assigned tier now — the licence grant places every
   // server on `SX` (`src/features/tiers/self-hosted-grant.ts`) — but placement is
-  // a *priced* idea and self-hosted buys nothing. Feeding the grant's rung in
-  // here would cap the plan at SX's slot budgets on a deployment that is
-  // uncapped by definition, and would put an "SX" badge on a console that has
-  // no billing area. So the tier is dropped on this path only: the grant
-  // stays what it is, an entitlement the assignment reads.
+  // a *priced* idea and self-hosted buys nothing. So the tier is dropped on
+  // this path only: the grant stays what it is, an entitlement the assignment
+  // reads.
   const selfHosted = deployment === 'self-hosted'
-  const tierRank = selfHosted ? null : row.tierRank
-  const entitlements = selfHosted
-    ? undefined
-    : metricsCapabilityTierEntitlementsForRank(row.tierRank)
-  const plan = resolveEffectiveMetricsCapabilityPlan(
-    machineClass,
-    orgOptions,
-    serverOptions,
-    deployment,
-    entitlements
-  )
   return evaluateTierPlacement({
     resources,
     topologySnapshot: snapshot,
-    plan,
-    tierRank,
+    tierRank: selfHosted ? null : row.tierRank,
     licenseLabel: selfHosted ? null : row.tierLabel,
     topologyOverrides: topologyOverridesFromMetadata(metadata),
   })
@@ -407,7 +357,6 @@ export async function loadTierPlacementsForServers(
   serverIds: readonly string[],
   opts: {
     deployment: MetricsDeploymentKind
-    orgOptions?: ReturnType<typeof parseOrganizationOptions>
     unwatched: 'ids'
     pickUnfulfilled?: ReadonlyMap<string, string>
   }
@@ -417,7 +366,6 @@ export async function loadTierPlacementsForServers(
   serverIds: readonly string[],
   opts: {
     deployment: MetricsDeploymentKind
-    orgOptions?: ReturnType<typeof parseOrganizationOptions>
     unwatched: 'counts'
     pickUnfulfilled?: ReadonlyMap<string, string>
   }
@@ -427,7 +375,6 @@ export async function loadTierPlacementsForServers(
   serverIds: readonly string[],
   opts: {
     deployment: MetricsDeploymentKind
-    orgOptions?: ReturnType<typeof parseOrganizationOptions>
     unwatched: 'ids' | 'counts'
     pickUnfulfilled?: ReadonlyMap<string, string>
   }
@@ -444,7 +391,7 @@ export async function loadTierPlacementsForServers(
     const row = joins.get(serverId)
     if (!row) continue
     const snapshot = parseTopologySnapshot(topologyByServer.get(serverId)?.snapshot)
-    const placement = placementFromJoinRow(row, snapshot, opts.deployment, opts.orgOptions)
+    const placement = placementFromJoinRow(row, snapshot, opts.deployment)
     const base =
       opts.unwatched === 'ids'
         ? toTierPlacementDto(placement, 'ids')

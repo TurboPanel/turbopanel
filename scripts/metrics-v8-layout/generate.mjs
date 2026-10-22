@@ -88,7 +88,12 @@ function rowsToCase(rows, machine, hw, tier) {
     let entities
     if (sec === 'sensor') {
       entities = row.slots.filter((s) => s.f).map((s) => s.f.name)
-      recordTemplate(family, { kind: 'sensor', doubles: ['sn_value'], blobs: [] })
+      recordTemplate(family, {
+        kind: 'sensor',
+        doubles: ['sn_value'],
+        blobs: [],
+        pageBlobs: ['kinds'],
+      })
     } else {
       entities = entityIdsOf(row)
       const per = entities.length
@@ -168,14 +173,14 @@ ids, not the 171 the brief quoted, and equals preset \`r\` exactly). Differences
 | --- | --- |
 | blob1 | kind, \`metrics\` |
 | blob2 | family (below) |
-| blob3 | storage layout revision, \`8\` (the sizes amendment reused slots under wire version 8, so rows stamped \`7\` are never read) |
-| blob4 | reserved, written empty |
+| blob3 | storage layout revision, \`12\` (the layout number shared with the dataset name and the self-hosted marker; rows stamped any other number are never read) |
+| blob4 | reserved, written empty (it held the topology generation; readers never use one) |
 | blob5 | sample time, UTC text \`YYYY-MM-DD hh:mm:ss\` |
 | blob6 | entity ids (comma joined, same order as the row's doubles) or source id; empty on host rows |
 | blob7-blob20 | text content blobs (below) |
 | double20 | interval seconds |
 
-Event and status rows keep their v6 blob positions; only blob3 (\`8\`) and the blob5 text format change. Sequence,
+Event and status rows keep their v6 blob positions; only blob3 (\`12\`) and the blob5 text format change. Sequence,
 capability-plan generation and page are no longer written.
 
 ## Row families and presence
@@ -440,7 +445,7 @@ const planLimits = Object.fromEntries(
 
 const fixture = {
   specVersion: 1,
-  schemaVersion: 8,
+  schemaVersion: 12,
   generatedBy: 'scripts/metrics-v8-layout/generate.mjs',
   plan: {
     packing: plan.packing,
@@ -457,7 +462,7 @@ const fixture = {
   envelope: {
     order: ENVELOPE_ORDER,
     contentBlobCapacity: 20 - ENVELOPE_ORDER.length,
-    note: 'Metrics rows: blob1 kind, blob2 family, blob3 "8" (storage layout revision), blob4 reserved (written empty), blob5 sample time (UTC YYYY-MM-DD hh:mm:ss), blob6 entity or source ids; content text blobs from blob7. double20 is the interval.',
+    note: 'Metrics rows: blob1 kind, blob2 family, blob3 "12" (storage layout revision), blob4 reserved (written empty), blob5 sample time (UTC YYYY-MM-DD hh:mm:ss), blob6 entity or source ids; content text blobs from blob7. double20 is the interval.',
   },
   planLimits,
   families: Object.fromEntries(Object.entries(templates).map(([k, v]) => [k, v.tpl])),
@@ -483,7 +488,11 @@ for (const [family, tpl] of Object.entries(fixture.families)) {
     md.push('| double20 | interval seconds |')
     tpl.blobs.forEach((id, i) => md.push(`| blob${i + 7} | ${label(id)} |`))
   } else if (tpl.kind === 'sensor') {
-    md.push('One double per sensor signal id, in the order listed in blob6 (up to 19 per row).')
+    md.push(
+      'One double per sensor signal id, in the order listed in blob6 (up to 19 per row).',
+      '',
+      "blob7 holds the signals' kinds (temperature, power), comma separated in the same order."
+    )
   } else {
     md.push(
       `${tpl.perPageEntities} entities per row; each entity takes ${tpl.doubles.length} consecutive doubles, in blob6 order:`,

@@ -333,6 +333,23 @@ export async function claimCommandMetadataFlag(
   return claimed.length > 0
 }
 
+/** `command.metadata` key stamped once a command's message is on the command queue. */
+export const ENQUEUED_FLAG = 'enqueuedAt'
+
+/**
+ * Record that the command's message reached the command queue. Until then a
+ * `queued` command may belong to a worker that died before it enqueued it, so
+ * the stale sweep gives it only a short wait; after it, the command may
+ * legitimately wait a long time behind other deploys. Best effort.
+ */
+export async function markCommandEnqueued(db: Db, commandId: string): Promise<void> {
+  try {
+    await claimCommandMetadataFlag(db, commandId, ENQUEUED_FLAG)
+  } catch {
+    // The sweep falls back to its short wait for this command.
+  }
+}
+
 /**
  * The only sanctioned read of the daemon execution payload. Returns `null` once
  * the dispatch row has been cleaned up (success) or swept (expired failure).
@@ -422,6 +439,27 @@ export async function listCommandRecordsByIds(
     .from(command)
     .where(inArray(command.id, [...ids]))
   return rows.map(serializeCommandRecord)
+}
+
+/**
+ * True while a backup or restore command for this cluster is queued or running.
+ * The host refuses a second one at once, so queuing it only fills the queue.
+ */
+export async function hasLiveBackupCommand(db: Db, managedId: string): Promise<boolean> {
+  const rows = await db
+    .select({ id: command.id })
+    .from(command)
+    .where(
+      and(
+        eq(command.managedId, managedId),
+        // Removing a stored artifact takes no engine lock, so it never counts.
+        sql`coalesce(${command.context}->>'action', '') <> 'delete'`,
+        inArray(command.name, ['managed.backup', 'managed.restore']),
+        notInArray(command.status, [...TERMINAL_COMMAND_STATUSES])
+      )
+    )
+    .limit(1)
+  return rows.length > 0
 }
 
 export async function listServerCommands(

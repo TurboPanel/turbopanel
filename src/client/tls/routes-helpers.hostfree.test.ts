@@ -312,7 +312,10 @@ test('materialFromOrganizationCa (first CA and every rotation) mints P-384 for 1
   const cert = new X509Certificate(ca.certificatePem!)
   assertEquals(cert.publicKey.asymmetricKeyType, 'ec')
   assertEquals(cert.publicKey.asymmetricKeyDetails?.namedCurve, 'secp384r1')
-  assertEquals(new Date(cert.validTo).getUTCFullYear(), new Date().getUTCFullYear() + 15)
+  // Within a week of 15 years from now, so a year or leap-day rollover cannot flip it.
+  const fifteenYearsMs = 15 * 365.25 * 24 * 3_600_000
+  const driftMs = Math.abs(new Date(cert.validTo).getTime() - (Date.now() + fifteenYearsMs))
+  assertEquals(driftMs < 7 * 24 * 3_600_000, true)
 
   // Reload the stored key the way leaf issuance does: unseal, then sign.
   const privateKeyPem = await decryptSecret(secrets, ca.privateKeyPemSealed!)

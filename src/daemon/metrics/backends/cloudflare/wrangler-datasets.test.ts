@@ -1,6 +1,6 @@
 import { assert, assertEquals, assertNotEquals } from '@std/assert'
 import { it } from '@std/testing/bdd'
-import { METRICS_SCHEMA_VERSION } from '../../../../contracts/metrics-contract.ts'
+import { METRICS_LAYOUT_VERSION } from '../../field-registry.ts'
 import { AE_DATASET_NAME } from './field-map.ts'
 
 type WranglerEnv = {
@@ -42,8 +42,8 @@ it('every deployed environment writes its own Analytics Engine dataset and reads
   assertNotEquals(seen.has(top.dataset), true, 'no deployed environment uses the local-dev dataset')
 })
 
-it('the dataset name tracks the metrics schema version in code and in every wrangler environment', async () => {
-  const expected = `turbopanel_server_metrics_v${METRICS_SCHEMA_VERSION}`
+it('the dataset name tracks the metrics layout number in code and in every wrangler environment', async () => {
+  const expected = `turbopanel_server_metrics_v${METRICS_LAYOUT_VERSION}`
   assertEquals(AE_DATASET_NAME, expected)
   const wrangler = await readWrangler()
   const top = wrangler.analytics_engine_datasets.find((d) => d.binding === 'SERVER_METRICS')

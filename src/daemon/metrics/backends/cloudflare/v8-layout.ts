@@ -25,6 +25,11 @@ import type {
   NetworkDeviceSample,
 } from '../../../../contracts/metrics-contract.ts'
 import type { MetricEntityScope } from '../../metric-descriptors.ts'
+import {
+  blockOpsPerSecond,
+  dockerReclaimableBytes,
+  nicProblemsPerSecond,
+} from '../../shared-derivations.ts'
 
 export const V8_HOST_FAMILIES = [
   'host.system',
@@ -123,39 +128,18 @@ function proxyField(field: string): DoubleDef {
   return { ref: { scope: 'databaseProxy', field }, read: (c) => num(c.proxy, field) }
 }
 
-/** Sum of a NIC's four error/drop rates, `null` if any input is missing. */
-function nicProblems(nic: NetworkDeviceSample | undefined): number | null {
-  if (!nic) return null
-  const parts = [
-    nic.receiveErrorsPerSecond,
-    nic.transmitErrorsPerSecond,
-    nic.receiveDropsPerSecond,
-    nic.transmitDropsPerSecond,
-  ]
-  if (parts.includes(null)) return null
-  return (parts as number[]).reduce((sum, value) => sum + value, 0)
-}
-
 function embeddedNic(slot: 0 | 1, key: 'rx' | 'tx' | 'problems'): DoubleDef {
   return {
     read: (c) => {
       const nic = c.nics[slot]
-      if (key === 'problems') return nicProblems(nic)
+      if (key === 'problems') return nicProblemsPerSecond(nic)
       return (key === 'rx' ? nic?.receiveBytesPerSecond : nic?.transmitBytesPerSecond) ?? null
     },
   }
 }
 
-/** Docker's reclaimable bytes: the daemon's own sum, else the three df groups added up. */
 function reclaimableTotal(c: V8Context): number | null {
-  const own = num(c.sample.extended?.docker, 'reclaimableBytes')
-  if (own !== null) return own
-  const parts = [
-    num(c.sample.dockerUsage, 'imagesReclaimableBytes'),
-    num(c.sample.dockerUsage, 'volumesReclaimableBytes'),
-    num(c.sample.dockerUsage, 'buildCacheReclaimableBytes'),
-  ].filter((part): part is number => part !== null)
-  return parts.length === 0 ? null : parts.reduce((sum, part) => sum + part, 0)
+  return dockerReclaimableBytes(c.sample.extended?.docker, c.sample.dockerUsage)
 }
 
 function foldedFilesystemField(field: 'availableBytes' | 'freeInodes'): DoubleDef {
@@ -425,6 +409,17 @@ function defOf(id: string): DoubleDef {
   return def
 }
 
+/** The `extended.text` key behind each content blob of a host row, blob7 onward (the reader's twin of `v8HostRowValues`). */
+export function v8HostRowTextKeys(
+  family: V8HostFamily
+): (keyof NonNullable<MetricsExtended['text']>)[] {
+  return V8_HOST_ROW_SPECS[family].blobs.map((id) => {
+    const key = TEXT_KEYS[id]
+    if (!key) throw new TypeError(`v8 layout names an unknown text id: ${id}`)
+    return key
+  })
+}
+
 function textOf(c: V8Context, id: string): string {
   const key = TEXT_KEYS[id]
   if (!key) throw new TypeError(`v8 layout names an unknown text id: ${id}`)
@@ -513,6 +508,8 @@ type EntityRowSpec<E> = {
   }[]
   /** Per-entity text blobs, appended entity by entity. */
   blobs: readonly { read: (entity: E, sample: MetricsSample) => string }[]
+  /** Text blobs for the whole row, appended after the per-entity blobs. */
+  pageBlobs?: readonly { read: (entities: readonly E[], sample: MetricsSample) => string }[]
   perPage: number
 }
 
@@ -523,10 +520,17 @@ function entityNum<E>(field: string): {
   return { field, read: (entity) => num(entity, field) }
 }
 
-function opsPerSecond(device: BlockDeviceSample): number | null {
-  if (device.readOpsPerSecond === null || device.writeOpsPerSecond === null) return null
-  return device.readOpsPerSecond + device.writeOpsPerSecond
-}
+/**
+ * The text each entity of a paged family carries, in the order its blobs follow
+ * the row's content blobs (entity by entity). The facts reader maps blobs back to
+ * entities with this; it mirrors the blob lists of the row specs below.
+ */
+export const V8_ENTITY_TEXT_FIELDS = {
+  block: ['model', 'smart'],
+  gpu: ['driver', 'model', 'memoryTotal'],
+  network: ['linkSpeed'],
+  filesystem: ['size'],
+} as const
 
 function blockText(key: 'model' | 'smart') {
   return {
@@ -546,7 +550,7 @@ const BLOCK_SPEC: EntityRowSpec<BlockDeviceSample> = {
   doubles: [
     entityNum('readBytesPerSecond'),
     entityNum('writeBytesPerSecond'),
-    { field: 'opsPerSecond', read: opsPerSecond },
+    { field: 'opsPerSecond', read: blockOpsPerSecond },
     entityNum('readLatencyMs'),
     entityNum('writeLatencyMs'),
     entityNum('queueDepth'),
@@ -597,6 +601,9 @@ const GPU_SPEC: EntityRowSpec<GpuSample> = {
 const SIGNAL_SPEC: EntityRowSpec<HardwareSignalSample> = {
   doubles: [{ field: 'value', read: (signal) => signal.value }],
   blobs: [],
+  // The signals' kinds (temperature, power), comma joined in the same order as
+  // the ids in blob6: one text slot for the whole row.
+  pageBlobs: [{ read: (signals) => signals.map((signal) => signal.kind).join(',') }],
   perPage: V8_DOUBLE_SLOTS,
 }
 
@@ -608,6 +615,14 @@ export const V8_ENTITY_FIELD_ORDER: Readonly<Record<V8EntityFamily, readonly (st
   gpu: GPU_SPEC.doubles.map((d) => d.field),
   'hardware.physical': SIGNAL_SPEC.doubles.map((d) => d.field),
 }
+
+/** Text blobs each entity of a paged family carries, taken from the row specs (the writer). */
+export const V8_ENTITY_BLOB_COUNTS = {
+  block: BLOCK_SPEC.blobs.length,
+  gpu: GPU_SPEC.blobs.length,
+  network: NETWORK_SPEC.blobs.length,
+  filesystem: FILESYSTEM_SPEC.blobs.length,
+} as const
 
 export const V8_ENTITIES_PER_PAGE: Readonly<Record<V8EntityFamily, number>> = {
   block: BLOCK_SPEC.perPage,
@@ -634,7 +649,10 @@ function packEntityPages<E>(
         doubles[entityIndex * spec.doubles.length + fieldIndex] = slot.read(entity, sample)
       })
     })
-    const blobs = chunk.flatMap((entity) => spec.blobs.map((blob) => blob.read(entity, sample)))
+    const blobs = [
+      ...chunk.flatMap((entity) => spec.blobs.map((blob) => blob.read(entity, sample))),
+      ...(spec.pageBlobs ?? []).map((blob) => blob.read(chunk, sample)),
+    ]
     pages.push({ doubles, blobs, page: pages.length, ids: chunk.map(idOf).join(',') })
   }
   return pages

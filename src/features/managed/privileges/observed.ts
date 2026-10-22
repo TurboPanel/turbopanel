@@ -109,6 +109,17 @@ export type ObservedLogin = {
   defaults: ObservedDefaultGrant[]
   /** True when a limit cut the lists short. */
   truncated?: boolean
+  /**
+   * MySQL / MariaDB: views, triggers, routines and events that name this login
+   * as their definer, like `view shop.orders_v` (the last entry may be `and N more`).
+   * Absent when there are none or the daemon did not report them.
+   */
+  definesObjects?: string[]
+  /**
+   * MySQL / MariaDB: true when the daemon could not look up the objects above
+   * (the query failed or time ran out), so an absent list does not mean none.
+   */
+  definesObjectsUnread?: boolean
 }
 
 export type ManagedPermissionsObserved = {
@@ -129,6 +140,8 @@ export const OBSERVED_MAX_GRANTS_PER_LOGIN = 2000
 export const OBSERVED_MAX_NAME_CHARS = 256
 export const OBSERVED_MAX_PRIVILEGES = 64
 export const OBSERVED_MAX_COLUMNS = 256
+/** Ten named objects plus the daemon's `and N more` line. */
+export const OBSERVED_MAX_DEFINED_OBJECTS = 11
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -147,6 +160,19 @@ function names(value: unknown, max: number): string[] | undefined {
     const n = name(entry)
     if (n === undefined) return undefined
     out.push(n)
+  }
+  return out
+}
+
+/** Strings kept as they are (cut at the name limit); empty or non-string entries are skipped. */
+function clampedNames(value: unknown, max: number): string[] {
+  if (!Array.isArray(value)) return []
+  const out: string[] = []
+  for (const entry of value) {
+    if (out.length >= max) break
+    if (typeof entry === 'string' && entry.length > 0) {
+      out.push(entry.slice(0, OBSERVED_MAX_NAME_CHARS))
+    }
   }
   return out
 }
@@ -274,6 +300,9 @@ function parseLogin(value: unknown): ObservedLogin | null {
   const accounts = parseList(value.accounts, parseAccount, 256)
   if (accounts.length > 0) login.accounts = accounts
   if (value.truncated === true) login.truncated = true
+  const definesObjects = clampedNames(value.definesObjects, OBSERVED_MAX_DEFINED_OBJECTS)
+  if (definesObjects.length > 0) login.definesObjects = definesObjects
+  if (value.definesObjectsUnread === true) login.definesObjectsUnread = true
   return login
 }
 

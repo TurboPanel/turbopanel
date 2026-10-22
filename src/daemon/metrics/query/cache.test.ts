@@ -170,8 +170,15 @@ it('Deno metrics chart cache: expired entries are evicted on get', async () => {
   resetDenoMetricsChartCacheForTests()
   const cache = createMetricsChartCache('deno')
   const key = 'tp:metrics:chart:expired'
-  await cache.set(key, { stale: true }, 1)
-  assertEquals(await cache.get(key), { stale: true })
-  await new Promise((resolve) => setTimeout(resolve, 1100))
-  assertEquals(await cache.get(key), null)
+  const realNow = Date.now
+  const base = realNow()
+  try {
+    Date.now = () => base
+    await cache.set(key, { stale: true }, 1)
+    assertEquals(await cache.get(key), { stale: true })
+    Date.now = () => base + 1_001
+    assertEquals(await cache.get(key), null)
+  } finally {
+    Date.now = realNow
+  }
 })

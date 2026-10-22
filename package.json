@@ -42,6 +42,7 @@
     "check:deploy-env": "node scripts/check-deploy-env.mjs",
     "bootstrap:superadmin": "node scripts/bootstrap-superadmin.mjs",
     "check:metrics-boundaries": "node scripts/check-metrics-boundaries.mjs",
+    "check:metrics-parity": "deno test --allow-read src/daemon/metrics/field-registry.test.ts",
     "check:query-cache-boundaries": "node scripts/check-query-cache-boundaries.mjs",
     "test:hook": "deno task check:types && pnpm run check:do-hibernation && pnpm run check:workers-bundle && pnpm run check:vocabulary && pnpm run check:test-inventory && pnpm run notices:check && pnpm run check:ca-boundary && pnpm run check:instance-acme-boundary && pnpm run check:import-boundaries && pnpm run check:metrics-boundaries && pnpm run check:query-cache-boundaries && pnpm run check:contract-drift && pnpm test:do && deno task test:authn && deno task test:permissions && deno task test:authz && deno task test:paths && deno task test:compose && deno task test:managed && deno task test:admin"
   },
@@ -67,5 +68,5 @@
     "vitest": "^4.1.11",
     "wrangler": "^4.124.0"
   },
-  "packageManager": "pnpm@12.3.4+sha512.961aa41fb077da3a04a441d9f8e15ebc0c96da8ef710b2eb67bf9ee7cb0610eabd48f1fd85f51cffe73846785fa0f87c56a3a872a1d893f8446741b5cce45457"
+  "packageManager": "pnpm@12.14.0+sha512.c18ba6d87993d3d164cb5e8948f32b2c06ee854487e06cd8d86781342fb3e5bb4634367034711e86802baa9c37bea906ce1929ad08d70884c97d801df13389a6"
 }

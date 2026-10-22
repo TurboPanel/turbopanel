@@ -359,7 +359,7 @@ export const deploySchemas = {
       nativeAppVariables: {
         type: 'array',
         description:
-          "For each Node.js app (native service) in the deploy: every environment variable its process gets, where each one comes from, and whether it reaches the process. Secret values are never shown (`value` is null). The platform sets HOST, HOSTNAME, NODE_ENV and PORT itself; a variable of one of those names is listed with `delivered: false`. A secret set directly on the app (service or hostname) is passed automatically; a secret set higher up is passed only when the app's environment references it as `{$KEY}`, and is otherwise listed with `delivered: false, reason: not_referenced`.",
+          "For each Node.js app (native service) in the deploy: every environment variable its process gets, where each one comes from, and whether it reaches the process. Secret values are never shown (`value` is null). The platform sets HOST (127.0.0.1), HOSTNAME (127.0.0.1; Next.js reads it for its listen address), NODE_ENV and PORT itself; the PORT shown is the one the deploy will assign, worked out the same way the deploy does it; a variable of one of those names is listed with `delivered: false`. A secret set directly on the app (service or hostname) is passed automatically; a secret set higher up is passed only when the app's environment references it as `{$KEY}`, and is otherwise listed with `delivered: false, reason: not_referenced`.",
         items: {
           type: 'object',
           required: ['composeServiceName', 'variables'],

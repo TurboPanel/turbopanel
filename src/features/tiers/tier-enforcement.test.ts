@@ -30,12 +30,6 @@ const test = Deno.test.bind(Deno)
 
 const GIBIBYTE = 1024 ** 3
 
-const PLAN = {
-  normalNicSlots: 2,
-  detailedBlockDeviceSlots: 2,
-  gpuSlots: 1,
-}
-
 function resources(input: {
   cores?: number
   threads?: number
@@ -125,16 +119,15 @@ test('a 4-core box with 24 drives passes — soft dimensions never block', () =>
   const placement = evaluateTierPlacement({
     resources: small,
     topologySnapshot: snapshotWithDrives(24),
-    plan: PLAN,
     tierRank: 1,
     licenseLabel: 'S1',
   })
   assertEquals(placement.satisfied, true)
-  assertEquals(placement.unwatched.drives.length, 22)
+  assertEquals(placement.unwatched.drives.length, 0)
   assertEquals(placement.recommendedRank > placement.requiredRank, true)
 })
 
-test('a RAID host counts member disks, not the md array or partitions, and reports drives beyond the plan as unwatched', () => {
+test('a RAID host counts member disks, not the md array or partitions, and leaves no drive unwatched', () => {
   const device = (deviceId: string, deviceType: 'physical' | 'virtual' | 'partition') => ({
     deviceId,
     kernelName: deviceId,
@@ -155,12 +148,11 @@ test('a RAID host counts member disks, not the md array or partitions, and repor
         device('nvme0n1', 'physical'),
       ],
     },
-    plan: PLAN,
     tierRank: 1,
     licenseLabel: 'S1',
   })
-  // Four real whole disks, two slots: the other two are unwatched.
-  assertEquals(placement.unwatched.drives, ['sdb', 'sdc'])
+  // Four real whole disks: every one is stored, so none is unwatched.
+  assertEquals(placement.unwatched.drives, [])
 })
 
 test('absent resources never block the floor', () => {
@@ -181,7 +173,6 @@ test('unwatched NICs follow the default-route uplink, not lexicographic first-N'
       { deviceId: 'nic-aaa' },
       { deviceId: 'nic-zzz', defaultRoute: true },
     ]),
-    plan: PLAN,
     tierRank: 1,
     licenseLabel: 'S1',
   })
@@ -201,7 +192,6 @@ test('unwatched NICs follow nicSlotDeviceIds overrides rather than sorted uplink
       { deviceId: 'nic-bbb' },
       { deviceId: 'nic-ccc' },
     ]),
-    plan: PLAN,
     tierRank: 1,
     licenseLabel: 'S1',
     topologyOverrides: overrides,
@@ -220,7 +210,6 @@ test('the NIC recommendation follows the monitored set: six uplinks watching one
       { deviceId: 'nic-5' },
       { deviceId: 'nic-6' },
     ]),
-    plan: PLAN,
     tierRank: 1,
     licenseLabel: 'S1',
   })
@@ -231,7 +220,7 @@ test('the NIC recommendation follows the monitored set: six uplinks watching one
   assertEquals(placement.unwatched.nics, ['nic-2', 'nic-3', 'nic-4', 'nic-5', 'nic-6'])
 })
 
-test('pinning more NIC slots than the plan stores raises the recommendation and reports the truncated slots as unwatched', () => {
+test('pinning many NIC slots raises the recommendation; only the unpinned uplink is unwatched', () => {
   const overrides: TopologyOverrides = {
     nicSlotDeviceIds: ['nic-6', 'nic-5', 'nic-4', 'nic-3', 'nic-2', 'nic-1'],
     hostingFilesystemId: null,
@@ -249,45 +238,15 @@ test('pinning more NIC slots than the plan stores raises the recommendation and 
   const onS1 = evaluateTierPlacement({
     resources: resources({ cores: 4, memoryGib: 8 }),
     topologySnapshot: snapshot,
-    plan: PLAN,
     tierRank: 1,
     licenseLabel: 'S1',
     topologyOverrides: overrides,
   })
   // Six monitored NICs land on S5 — the lowest tier whose NIC column covers six.
   assertEquals(onS1.recommendedLabel, 'S5')
-  // S1 stores the first two pinned slots (in slot order); the rest of the
-  // pinned list and the unpinned uplink are unwatched. Sorted by id.
-  assertEquals(onS1.unwatched.nics, ['nic-1', 'nic-2', 'nic-3', 'nic-4', 'nic-7'])
-
-  // Once the plan covers the pinned list, only the unpinned uplink is unwatched
-  // and the recommendation is unchanged.
-  const onS5 = evaluateTierPlacement({
-    resources: resources({ cores: 4, memoryGib: 8 }),
-    topologySnapshot: snapshot,
-    plan: { ...PLAN, normalNicSlots: 8 },
-    tierRank: 5,
-    licenseLabel: 'S5',
-    topologyOverrides: overrides,
-  })
-  assertEquals(onS5.recommendedLabel, 'S5')
-  assertEquals(onS5.unwatched.nics, ['nic-7'])
-})
-
-test('a plan with no NIC slots leaves every discovered uplink unwatched, including the monitored one', () => {
-  const placement = evaluateTierPlacement({
-    resources: resources({ cores: 4, memoryGib: 8 }),
-    topologySnapshot: snapshotWithUplinks([
-      {
-        deviceId: 'nic-1',
-        defaultRoute: true,
-      },
-    ]),
-    plan: { ...PLAN, normalNicSlots: 0 },
-    tierRank: 1,
-    licenseLabel: 'S1',
-  })
-  assertEquals(placement.unwatched.nics, ['nic-1'])
+  // The license does not cut the pinned list: every pinned slot is stored, and
+  // only the unpinned uplink is left out.
+  assertEquals(onS1.unwatched.nics, ['nic-7'])
 })
 
 // --- evaluateHostedEnrollmentTier ------------------------------------------

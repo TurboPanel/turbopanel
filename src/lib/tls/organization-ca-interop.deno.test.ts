@@ -74,7 +74,10 @@ test('node:crypto verifies the P-384 Organization CA and the leaf it signed', as
   assertEquals(caCert.publicKey.asymmetricKeyDetails?.namedCurve, 'secp384r1')
   assertEquals(caCert.checkIssued(caCert), true)
   assertEquals(caCert.verify(caCert.publicKey), true)
-  assertEquals(new Date(caCert.validTo).getUTCFullYear(), new Date().getUTCFullYear() + 15)
+  // Within a week of 15 years from now, so a year or leap-day rollover cannot flip it.
+  const fifteenYearsMs = 15 * 365.25 * 24 * 3_600_000
+  const driftMs = Math.abs(new Date(caCert.validTo).getTime() - (Date.now() + fifteenYearsMs))
+  assertEquals(driftMs < 7 * 24 * 3_600_000, true)
 
   assertEquals(leafCert.ca, false)
   assertEquals(leafCert.publicKey.asymmetricKeyType, 'rsa')
