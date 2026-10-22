@@ -1,7 +1,8 @@
 /**
  * Cloudflare Analytics Engine positional field map for the current metrics
  * contract: the single source of truth for the double1..double20 /
- * blob1..blob20 layout on the `turbopanel_server_metrics_v8` dataset.
+ * blob1..blob20 layout on the `turbopanel_server_metrics_v<N>` dataset (`N` is
+ * `METRICS_LAYOUT_VERSION`).
  *
  * The slot layout itself lives in `v8-layout.ts` (a static table pinned to
  * `../../testing/v8-layout.fixture.json`, spec in `../../V8-LAYOUT.md`); this
@@ -42,13 +43,14 @@
  * always derive columns and write payloads through this module.
  */
 
-import {
-  type MetricEvent,
-  METRICS_SCHEMA_VERSION,
-  type MetricsSample,
-  type NetworkDeviceSample,
+import type {
+  MetricEvent,
+  MetricsSample,
+  NetworkDeviceSample,
 } from '../../../../contracts/metrics-contract.ts'
+import { METRICS_LAYOUT_VERSION } from '../../field-registry.ts'
 import type { HostedFamily, MetricEntityScope } from '../../metric-descriptors.ts'
+import { resolveNetworkSlots } from '../../shared-derivations.ts'
 import type { AuthenticatedMetricsSample, ServerStatusEvent, SlotMapping } from '../../types.ts'
 import {
   hasManagedDatabase,
@@ -68,19 +70,17 @@ import {
   type V8RowValues,
 } from './v8-layout.ts'
 
-/** Analytics Engine dataset for the current metrics contract. */
 /**
  * The layout revision stamped in `blob3` on every hosted row (stringified).
- * It is the storage layout's own number, not the wire version: the sizes
- * amendment (2026-10-07) reused hosted slots under the same wire version 8, so
- * rows written before it must never be read with the new slot meanings. Rows
- * stamped with any other value are invisible to the readers (history before
- * the cut is dropped; only testing and canary had any). Bump it again whenever
- * a slot changes meaning.
+ * It is the storage layout's own number (`METRICS_LAYOUT_VERSION`, shared with
+ * the dataset name and the self-hosted schema marker), not the wire version.
+ * Rows stamped with any other value are invisible to the readers (history
+ * before a cut is dropped; only testing and canary had any). It moves again
+ * only when a slot changes meaning.
  */
-export const AE_STORAGE_VERSION = 8 as const
+export const AE_STORAGE_VERSION = METRICS_LAYOUT_VERSION
 
-export const AE_DATASET_NAME = `turbopanel_server_metrics_v${METRICS_SCHEMA_VERSION}`
+export const AE_DATASET_NAME = `turbopanel_server_metrics_v${METRICS_LAYOUT_VERSION}`
 
 export const AE_DOUBLE_COUNT = 20
 export const AE_BLOB_COUNT = 20
@@ -277,58 +277,6 @@ export function assertAnalyticsEngineDataPointShape(point: {
   if (point.blobs.length !== AE_BLOB_COUNT) {
     throw new TypeError(`AE v5 blobs length ${point.blobs.length} !== ${AE_BLOB_COUNT}`)
   }
-}
-
-/** How many `normalNicSlots` entries `host.network` embeds — slots 1 and 2; every later slot pages. */
-export const HOST_IO_EMBEDDED_NIC_SLOT_COUNT = 2
-
-/**
- * Resolve which `networks[]` entries embed in `host.network` (slots 1/2) versus
- * page as standalone `network` rows, given an optional `SlotMapping`.
- *
- * With a mapping: slot 1/slot 2 are looked up by `deviceId` (never by array
- * position — a topology reorder must not silently reinterpret a slot), and
- * any device listed in `fabricDeviceIds` is excluded from paging entirely —
- * this is what keeps a 2-NIC-plus-fabric host at 2 rows instead of 3. Slots
- * 3+ page first, in slot order, then any device that is neither a slot nor a
- * known fabric device (arrival order).
- *
- * Without a mapping (generation not recorded yet): falls back to this
- * module's original positional behavior — `networks[0]`/`networks[1]` embed,
- * everything else pages — since there is no way yet to tell a fabric device
- * apart from an ordinary extra NIC.
- */
-function resolveNetworkSlots(
-  networks: readonly NetworkDeviceSample[],
-  slotMapping: SlotMapping | undefined
-): {
-  nic0: NetworkDeviceSample | undefined
-  nic1: NetworkDeviceSample | undefined
-  paged: NetworkDeviceSample[]
-} {
-  if (!slotMapping) {
-    return { nic0: networks[0], nic1: networks[1], paged: networks.slice(2) }
-  }
-  const byId = new Map(networks.map((device) => [device.deviceId, device]))
-  const [slot1, slot2] = slotMapping.normalNicSlots
-  const nic0 = slot1 ? byId.get(slot1) : undefined
-  const nic1 = slot2 ? byId.get(slot2) : undefined
-  const excluded = new Set<string>([
-    ...slotMapping.fabricDeviceIds,
-    ...slotMapping.normalNicSlots.slice(0, HOST_IO_EMBEDDED_NIC_SLOT_COUNT),
-  ])
-  const pagedSlots = slotMapping.normalNicSlots
-    .slice(HOST_IO_EMBEDDED_NIC_SLOT_COUNT)
-    .map((id) => byId.get(id))
-    .filter((device): device is NetworkDeviceSample => device !== undefined)
-  const pagedSlotIds = new Set(pagedSlots.map((device) => device.deviceId))
-  const paged = [
-    ...pagedSlots,
-    ...networks.filter(
-      (device) => !excluded.has(device.deviceId) && !pagedSlotIds.has(device.deviceId)
-    ),
-  ]
-  return { nic0, nic1, paged }
 }
 
 /**

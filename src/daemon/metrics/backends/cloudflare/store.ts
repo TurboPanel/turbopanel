@@ -20,6 +20,8 @@ import type {
   EntitySeriesResult,
   FleetHostSnapshotQuery,
   FleetHostSnapshotResult,
+  HostFactsQuery,
+  HostFactsResult,
   HostSeriesQuery,
   HostSeriesResult,
   HostSummaryQuery,
@@ -32,7 +34,9 @@ import type {
   StatusHistoryQuery,
   StatusHistoryResult,
 } from '../../types.ts'
+import { emptyHostFacts } from '../../query/host-facts.ts'
 import { buildMetricsDataPoints, buildStatusDataPoint } from './field-map.ts'
+import { queryHostFactsViaSqlApi } from './host-facts-sql.ts'
 import type { CloudflareAnalyticsSqlConfig } from './sql-api.ts'
 import {
   queryEntityIdsSeenViaSqlApi,
@@ -166,6 +170,19 @@ export class CloudflareAnalyticsEngineServerMetricsStore implements ServerMetric
       })
     }
     return queryMetricEventsViaSqlApi(this.#sql, input)
+  }
+
+  queryHostFacts(input: HostFactsQuery): Promise<HostFactsResult> {
+    if (!this.#sql) {
+      return Promise.resolve({
+        kind: 'analytics-engine',
+        available: false,
+        serverId: input.serverId,
+        sampledAt: null,
+        facts: emptyHostFacts(),
+      })
+    }
+    return queryHostFactsViaSqlApi(this.#sql, input)
   }
 
   queryEntitySeries(input: EntitySeriesQuery): Promise<EntitySeriesResult> {

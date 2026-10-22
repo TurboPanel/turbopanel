@@ -3,6 +3,7 @@ import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
+import { recordAudit } from '../../features/audit/audit-records.ts'
 import { requireStepUpIfConfigured } from '../authn/step-up.ts'
 import type { StepUpAction } from '../authn/step-up-actions.ts'
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
@@ -23,6 +24,8 @@ import {
 } from '../../db/schema.ts'
 import { clampManagedResources, type ManagedSettings } from '../../features/managed/settings.ts'
 import { registerManagedExternalAccessRoutes } from './external-access-routes.ts'
+import { checkLoginMayBeDeleted, MANAGED_LOGIN_CHECK_TIMEOUT_MS } from './definer-guard.ts'
+import { probeManagedPermissions } from './permissions-probe.ts'
 import { registerManagedPrivilegeRoutes } from './privilege-routes.ts'
 import { loadManagedExternalAccessView } from '../../features/managed/external-access.ts'
 import {
@@ -57,9 +60,11 @@ import {
 import {
   adminAccessNotes,
   databasesOwnedByLogin,
+  evaluateOwnerRoleConversion,
   OWNER_CHANGE_NOT_AVAILABLE,
 } from '../../features/managed/owner-role.ts'
 import {
+  daemonCanConvertDatabase,
   daemonHonoursOwnerRole,
   refuseLoginCreateIfDaemonCannot,
   daemonOwnerSupport,
@@ -81,7 +86,6 @@ import {
   type ManagedLoginRow,
   patchLogin,
   removeManagedLogin,
-  restoreManagedLogin,
   rotateLoginPassword,
   setLoginPassword,
 } from '../../features/managed/logins.ts'
@@ -103,6 +107,7 @@ import {
 } from '../../features/net/private-endpoint.ts'
 import {
   assertManagedIdle,
+  assertNoBackupInFlight,
   assertTargetServerOnline,
   authorizeManagedBackupMutation,
   authorizeManagedRequest,
@@ -978,6 +983,7 @@ async function prepareApplyForManaged(
     dropUsers?: string[]
     dropDatabases?: string[]
     dropOwnerRoleDatabases?: string[]
+    convertDatabases?: string[]
     omitLoginIds?: string[]
     excludeMemberIds?: string[]
     forceResyncMemberIds?: string[]
@@ -1001,6 +1007,7 @@ async function prepareApplyForManaged(
     dropUsers: extra?.dropUsers,
     dropDatabases: extra?.dropDatabases,
     dropOwnerRoleDatabases: extra?.dropOwnerRoleDatabases,
+    convertDatabases: extra?.convertDatabases,
     omitLoginIds: extra?.omitLoginIds,
     excludeMemberIds: extra?.excludeMemberIds,
     forceResyncMemberIds: extra?.forceResyncMemberIds,
@@ -2498,24 +2505,36 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const targetServerId = resolveManagedTargetServerId(c, row.serverId)
     if (targetServerId instanceof Response) return targetServerId
 
+    // MySQL and MariaDB: ask the host first, so nothing is removed for a login
+    // that still owns views, triggers, routines or events.
+    const deleteCheck = await checkLoginMayBeDeleted(ctx.spec.engine, target.appliedUsername, () =>
+      probeManagedPermissions(db, getDaemonCellRegistry(c), {
+        serverId: targetServerId,
+        managedId: row.id,
+        engine: ctx.spec.engine,
+        logins: [target.appliedUsername],
+        databases: [],
+        timeoutMs: MANAGED_LOGIN_CHECK_TIMEOUT_MS,
+      })
+    )
+    if (deleteCheck.kind === 'refuse') return c.json(deleteCheck.body, deleteCheck.status)
+
     const prepared = await prepareApplyForManaged(c, db, ctx, row, options, targetServerId, {
       dropUsers: [target.appliedUsername],
       omitLoginIds: [target.id],
     })
     if (prepared instanceof Response) return prepared
 
-    // The login row goes now (its scope rows and bindings with it).
-    const removed = await removeManagedLogin(db, target.id)
-
+    // The login row stays until the host has dropped the account: the apply
+    // consumer removes it when the apply succeeds (see
+    // `removeLoginsDroppedByApply`), so a host that refuses leaves the panel
+    // and the host agreeing.
     const enqueued = await enqueuePreparedManagedApply(c, db, prepared.commandQueue, {
       userId: auth.userId,
       managedId: row.id,
       members: prepared.members,
     })
-    if (enqueued instanceof Response) {
-      if (removed) await restoreManagedLogin(db, removed)
-      return enqueued
-    }
+    if (enqueued instanceof Response) return enqueued
 
     // A database this login owned goes back to its default owner role on the
     // server (the apply above hands it back before dropping the login), and
@@ -2526,6 +2545,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     return c.json({
       ok: true,
       ...handedBackNotes(handedBack),
+      ...(deleteCheck.note ? { note: deleteCheck.note } : {}),
       commandId: primaryFanout?.commandId,
       serverId: primaryFanout?.serverId ?? targetServerId,
       results: enqueued,
@@ -2574,6 +2594,70 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       },
       OWNER_CHANGE_NOT_AVAILABLE.status
     )
+  })
+
+  // Moves a database that already exists (the cluster's first database, or one
+  // made before owner roles) onto its owner role, only when asked. Ownership
+  // only: nothing in the database is changed or removed. Repeating it is safe.
+  router.post('/environments/:id/managed/databases/:databaseName/owner-role', async (c) => {
+    const scope = await loadManagedRowScope(c, 'managed.database.owner_role')
+    if (scope instanceof Response) return scope
+    const { db, auth, ctx, row } = scope
+    const databaseName = decodeURIComponent(c.req.param('databaseName'))
+    const options = await loadManagedOptions(db, ctx.spec, row)
+    if (!options) return c.json({ error: 'Invalid managed options' }, 400)
+    if (!options.databases.includes(databaseName)) return c.json({ error: 'Not found' }, 404)
+    const body = await parseJsonBody(c)
+    if (body instanceof Response) return body
+
+    const targetServerId = resolveManagedTargetServerId(c, row.serverId)
+    if (targetServerId instanceof Response) return targetServerId
+    const refusal = evaluateOwnerRoleConversion(
+      ctx.spec.engine,
+      databaseName,
+      body.confirm,
+      await daemonCanConvertDatabase(db, targetServerId)
+    )
+    if (refusal) {
+      return c.json({ error: refusal.error, message: refusal.message }, refusal.status)
+    }
+
+    const nextOptions: ManagedRowOptions = {
+      ...options,
+      ownerRoleDatabases: nextDatabasesAfterCreate(options.ownerRoleDatabases ?? [], databaseName),
+    }
+    const prepared = await prepareApplyForManaged(c, db, ctx, row, nextOptions, targetServerId, {
+      convertDatabases: [databaseName],
+    })
+    if (prepared instanceof Response) return prepared
+
+    // The database is only recorded as having an owner role once the primary
+    // reports the move done (see `markConvertedDatabasesRoleOwned`), so a
+    // move that fails leaves nothing flagged that is not true.
+    const enqueued = await enqueuePreparedManagedApply(c, db, prepared.commandQueue, {
+      userId: auth.userId,
+      managedId: row.id,
+      members: prepared.members,
+    })
+    if (enqueued instanceof Response) return enqueued
+    await recordAudit(db, {
+      organizationId: auth.organizationId,
+      actorUserId: auth.userId,
+      action: 'managed.database.owner_role.move',
+      targetType: 'managed',
+      targetId: row.id,
+      context: { database: databaseName },
+    })
+    const primaryFanout = pickPrimaryCommandResult(enqueued)
+    return c.json({
+      ok: true,
+      databases: options.databases,
+      ownerRoleDatabases: options.ownerRoleDatabases ?? [],
+      owners: describeDatabaseOwners(options),
+      commandId: primaryFanout?.commandId,
+      serverId: primaryFanout?.serverId ?? targetServerId,
+      results: enqueued,
+    })
   })
 
   router.post('/environments/:id/managed/databases', async (c) => {
@@ -3436,6 +3520,9 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const busy = await assertManagedIdle(c, db, row)
     if (busy) return busy
 
+    const inFlight = await assertNoBackupInFlight(c, db, row.id)
+    if (inFlight) return inFlight
+
     const offline = await assertTargetServerOnline(c, db, targetServerId)
     if (offline) return offline
 
@@ -3550,6 +3637,9 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     const busy = await assertManagedIdle(c, db, row)
     if (busy) return busy
+
+    const inFlight = await assertNoBackupInFlight(c, db, row.id)
+    if (inFlight) return inFlight
 
     const offline = await assertTargetServerOnline(c, db, targetServerId)
     if (offline) return offline

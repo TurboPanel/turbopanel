@@ -1070,6 +1070,8 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       schedule:
         'The schedule as authored, a cron expression or alias; translated to a systemd `OnCalendar` value when pushed to the host.',
       timezone: "IANA zone the schedule is read in; null means the host's local time.",
+      database:
+        "Managed target: the database each run dumps (API field `database`); NULL means the cluster's initial database.",
       retention_keep:
         "How many of this policy's own artifacts the host keeps, 1 to 100; older ones are pruned after each run.",
       is_enabled:

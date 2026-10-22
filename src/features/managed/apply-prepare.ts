@@ -251,6 +251,8 @@ export type BuildManagedApplyInput = {
   ownerRoleDatabases: string[] | undefined
   /** Postgres: owner-role databases whose owner is a login the customer chose. */
   databaseOwners?: Record<string, { username: string }>
+  /** Postgres: owner-role databases to hand over from their current owner on this apply (asked for by the customer). */
+  convertDatabases?: string[]
   /** Postgres: dropped databases that had an owner role (their roles go too). */
   dropOwnerRoleDatabases?: string[]
   /** Primary pin — the server `ensureManagedPrimaryMember` binds the primary to. */
@@ -1253,7 +1255,11 @@ export function buildDatabaseOps(
     Partial<
       Pick<
         BuildManagedApplyInput,
-        'dropDatabases' | 'ownerRoleDatabases' | 'dropOwnerRoleDatabases' | 'databaseOwners'
+        | 'dropDatabases'
+        | 'ownerRoleDatabases'
+        | 'dropOwnerRoleDatabases'
+        | 'databaseOwners'
+        | 'convertDatabases'
       >
     >
 ): NonNullable<ManagedApplyCommandPayload['databases']> {
@@ -1264,6 +1270,9 @@ export function buildDatabaseOps(
       ...(input.ownerRoleDatabases?.includes(name) ? { ownerRole: true } : {}),
       ...(input.ownerRoleDatabases?.includes(name) && input.databaseOwners?.[name]
         ? { ownerLogin: input.databaseOwners[name].username }
+        : {}),
+      ...(input.ownerRoleDatabases?.includes(name) && input.convertDatabases?.includes(name)
+        ? { convertExisting: true }
         : {}),
     })),
     ...(input.dropDatabases ?? []).map((name) => ({

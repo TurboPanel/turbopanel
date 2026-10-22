@@ -2792,6 +2792,12 @@ export type EnvironmentDeployCommandResult = {
    * were none and from older daemons.
    */
   keptFolders?: KeptFolder[]
+  /**
+   * True when the host found nothing to change (same sources, variables and
+   * settings as the last finished deploy) and built and restarted nothing.
+   * Absent otherwise and from older daemons.
+   */
+  unchanged?: boolean
 }
 
 /** A service folder a deploy left in place, by its components. */
@@ -4672,6 +4678,7 @@ export function parseEnvironmentDeployResult(value: unknown): EnvironmentDeployC
   if (principals !== undefined) result.principals = principals
   const keptFolders = parseKeptFolders(value.keptFolders)
   if (keptFolders !== undefined) result.keptFolders = keptFolders
+  if (value.unchanged === true) result.unchanged = true
   return result
 }
 
@@ -4784,6 +4791,12 @@ export type EnvironmentStopCommandPayload = {
    */
   siteReleases?: StopSiteRelease[]
   /**
+   * Services whose published releases a Destroy clears while their folder stays
+   * (uploads in `shared/`, logs, the owner's account). Same entry shape as
+   * `siteReleases`; a delete sends `siteReleases` instead, which removes the folder.
+   */
+  releaseCleanup?: StopSiteRelease[]
+  /**
    * Principals (applied Linux logins) that no project, site or app on this
    * server uses once the delete commits. The daemon retires each after the
    * rest of the stop through `tp-host principal-remove` (slice, processes, key
@@ -4872,10 +4885,13 @@ export type StopSiteRelease = { serviceId: string; username: string; folder?: Fo
 const STOP_SITE_RELEASE_SERVICE_ID_RE = /^[0-9A-Za-z][0-9A-Za-z_-]{0,63}$/
 const STOP_SITE_RELEASE_USERNAME_RE = /^[A-Za-z_][A-Za-z0-9_-]{0,27}$/
 
-function parseStopSiteReleases(value: unknown): StopSiteRelease[] | undefined {
+function parseStopSiteReleases(
+  value: unknown,
+  field: 'siteReleases' | 'releaseCleanup' = 'siteReleases'
+): StopSiteRelease[] | undefined {
   if (value === undefined) return undefined
   if (!Array.isArray(value)) {
-    throw new TypeError('siteReleases must be an array')
+    throw new TypeError(`${field} must be an array`)
   }
   const out: StopSiteRelease[] = []
   for (const entry of value) {
@@ -4886,7 +4902,7 @@ function parseStopSiteReleases(value: unknown): StopSiteRelease[] | undefined {
       !isString(entry.username) ||
       !STOP_SITE_RELEASE_USERNAME_RE.test(entry.username)
     ) {
-      throw new Error('Invalid environment.stop siteReleases entry')
+      throw new Error(`Invalid environment.stop ${field} entry`)
     }
     const release: StopSiteRelease = { serviceId: entry.serviceId, username: entry.username }
     if (entry.folder !== undefined) {
@@ -4954,6 +4970,7 @@ export function parseEnvironmentStopPayload(value: unknown): EnvironmentStopComm
   const ingressServices = parseStopIngressServices(value.ingressServices)
   const fabricNetworks = parseStopFabricNetworks(value.fabricNetworks)
   const siteReleases = parseStopSiteReleases(value.siteReleases)
+  const releaseCleanup = parseStopSiteReleases(value.releaseCleanup, 'releaseCleanup')
   const retirePrincipals = parseRetirePrincipals(value.retirePrincipals)
   return {
     environmentId,
@@ -4962,6 +4979,7 @@ export function parseEnvironmentStopPayload(value: unknown): EnvironmentStopComm
     ...(ingressServices !== undefined ? { ingressServices } : {}),
     ...(fabricNetworks !== undefined ? { fabricNetworks } : {}),
     ...(siteReleases !== undefined ? { siteReleases } : {}),
+    ...(releaseCleanup !== undefined ? { releaseCleanup } : {}),
     ...(retirePrincipals !== undefined ? { retirePrincipals } : {}),
   }
 }
@@ -5391,6 +5409,20 @@ export type ManagedApplyDatabaseOp = {
    * database onto it once the login exists. Needs `managed-database-owner-v1`.
    */
   ownerLogin?: string
+  /**
+   * Postgres only, on a create with `ownerRole`. Asked for by the customer:
+   * a database that already exists with another owner (and may hold data) is
+   * moved onto its owner role. What is in it (schemas, tables and partitions,
+   * views, sequences, routines, types, operators, collations, statistics, text
+   * search objects, conversions, foreign servers; nothing that belongs to an
+   * extension) is handed over in one transaction that gives up after five
+   * seconds waiting for a lock, then the database itself moves. No data is
+   * touched, and a failure leaves the old owner so a repeat finishes the job.
+   * It also repeats safely on a database that already has its owner role,
+   * picking up what other roles made since. Without it an existing database
+   * is left as it is. Needs `managed-database-convert-v1`.
+   */
+  convertExisting?: boolean
 }
 
 /** Mirror of `ManagedTlsMaterialRequest` — daemon generates key material on host. */
@@ -6550,6 +6582,18 @@ function parseManagedDatabaseOwnerLogin(entry: Record<string, unknown>): string 
   return value
 }
 
+/** `convertExisting` of a database op: true, only on a create with `ownerRole`. */
+function parseManagedDatabaseConvert(entry: Record<string, unknown>): boolean {
+  const value = entry.convertExisting
+  if (value === undefined) return false
+  if (value !== true || entry.ownerRole !== true || entry.action !== 'create') {
+    throw new TypeError(
+      'Invalid managed.apply databases entry: convertExisting must be true on a created database with ownerRole'
+    )
+  }
+  return true
+}
+
 function parseManagedApplyDatabases(value: unknown): ManagedApplyDatabaseOp[] | undefined {
   if (value === undefined) return undefined
   if (!Array.isArray(value)) {
@@ -6578,6 +6622,7 @@ function parseManagedApplyDatabases(value: unknown): ManagedApplyDatabaseOp[] | 
       action: entry.action as ManagedApplyDatabaseOp['action'],
       ...(entry.ownerRole === true ? { ownerRole: true } : {}),
       ...(ownerLogin === undefined ? {} : { ownerLogin }),
+      ...(parseManagedDatabaseConvert(entry) ? { convertExisting: true } : {}),
     })
   }
   return databases

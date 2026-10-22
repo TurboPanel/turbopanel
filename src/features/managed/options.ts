@@ -172,3 +172,30 @@ export async function saveManagedDatabases(
       .where(eq(managedDatabase.id, row.id))
   })
 }
+
+/** The databases a `managed.apply` asked the daemon to move onto their owner role. */
+export function convertedDatabaseNames(
+  databases:
+    ReadonlyArray<{ name: string; ownerRole?: boolean; convertExisting?: boolean }> | undefined
+): string[] {
+  return (databases ?? [])
+    .filter((op) => op.ownerRole === true && op.convertExisting === true)
+    .map((op) => op.name)
+}
+
+/**
+ * Record the databases a successful primary apply moved onto their owner
+ * role. Called only from the success side effect, so a move that failed
+ * leaves the database as it was recorded.
+ */
+export async function markConvertedDatabasesRoleOwned(
+  db: Db,
+  managedId: string,
+  names: readonly string[]
+): Promise<void> {
+  if (names.length === 0) return
+  await db
+    .update(managedDatabase)
+    .set({ isRoleOwned: true, updatedAt: sql`now()` })
+    .where(and(eq(managedDatabase.managedId, managedId), inArray(managedDatabase.name, [...names])))
+}

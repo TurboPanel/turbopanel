@@ -491,6 +491,22 @@ export async function removeManagedLogin(db: Db, loginId: string): Promise<Remov
   }
 }
 
+/**
+ * Delete the login rows an apply was asked to drop (`dropUsers`), once the
+ * host has dropped those accounts. Called only when the apply succeeded: a
+ * host that refuses the drop leaves the panel row in place.
+ */
+export async function removeLoginsDroppedByApply(
+  db: Db,
+  managedId: string,
+  dropUsers: readonly string[] | undefined
+): Promise<void> {
+  if (!dropUsers || dropUsers.length === 0) return
+  await db
+    .delete(login)
+    .where(and(eq(login.managedId, managedId), inArray(login.appliedUsername, [...dropUsers])))
+}
+
 /** Put back what {@link removeManagedLogin} deleted, same ids, after a failed enqueue. */
 export async function restoreManagedLogin(db: Db, removed: RemovedLogin): Promise<void> {
   await db.transaction(async (tx) => {

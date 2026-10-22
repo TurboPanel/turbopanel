@@ -20,6 +20,7 @@ import {
   managedSessionPaths,
   mergeCreateSettings,
   parseManagedPatchName,
+  isReservedManagedUsername,
   parseManagedUserCreateFields,
   parseManagedVersionSelection,
   readInitialDatabase,
@@ -86,7 +87,8 @@ test('isPlainObject accepts records only', () => {
 
 test('managedSessionPaths lists every managed session route', () => {
   const paths = managedSessionPaths()
-  assertEquals(paths.length, 26)
+  assertEquals(paths.length, 27)
+  assertEquals(paths.includes('/environments/:id/managed/databases/:databaseName/owner-role'), true)
   assertEquals(
     paths.includes('/environments/:id/managed/users/:loginId/effective-permissions'),
     true
@@ -570,8 +572,8 @@ test('parseManagedUserCreateFields rejects root username and invalid identifiers
     options
   )
   if (!(root instanceof Response)) throw new TypeError('expected Response')
-  assertEquals(root.status, 400)
-  assertEquals(await root.json(), { error: 'Invalid username' })
+  assertEquals(root.status, 422)
+  assertEquals((await root.json()).error, 'reserved_username')
 
   const badName = parseManagedUserCreateFields(
     c,
@@ -603,9 +605,18 @@ test('parseManagedUserCreateFields rejects root username and invalid identifiers
       'postgres_a1b2c3d4'
     )
     if (!(res instanceof Response)) throw new TypeError('expected Response')
-    assertEquals(res.status, 400)
-    assertEquals(await res.json(), { error: 'Invalid username' })
+    assertEquals(res.status, 422)
+    const body = await res.json()
+    assertEquals(body.error, 'reserved_username')
+    assertEquals(body.message.includes(`'${reserved}'`), true)
   }
+})
+
+test('the pg_ prefix is reserved for PostgreSQL logins only', () => {
+  assertEquals(isReservedManagedUsername('pg_monitor', undefined, 'postgres'), true)
+  assertEquals(isReservedManagedUsername('pg_monitor', undefined, 'mysql'), false)
+  assertEquals(isReservedManagedUsername('pg_monitor'), false)
+  assertEquals(isReservedManagedUsername('tp_x', undefined, 'mysql'), true)
 })
 
 test('parseManagedUserCreateFields takes the admin privilege on any Postgres database', () => {
@@ -638,8 +649,10 @@ test('parseManagedUserCreateFields refuses a system schema listed by an older cl
     options
   )
   if (!(res instanceof Response)) throw new TypeError('expected Response')
-  assertEquals(res.status, 400)
-  assertEquals(await res.json(), { error: 'reserved_database_name' })
+  assertEquals(res.status, 422)
+  const body = await res.json()
+  assertEquals(body.error, 'reserved_database_name')
+  assertEquals(typeof body.message, 'string')
 
   const ok = parseManagedUserCreateFields(
     c,

@@ -72,6 +72,7 @@ import {
 } from '../../features/backups/run-report.ts'
 import type { BackupRunReportMessage } from '../../contracts/cell-protocol.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
+import { removeLoginsDroppedByApply } from '../../features/managed/logins.ts'
 
 const dbUrl = getDatabaseUrl()
 
@@ -1262,6 +1263,54 @@ test('POST /environments/:id/managed/backups enqueues managed.backup create with
   )
 })
 
+test('a second manual backup is refused at once while one is queued, and queues nothing', async () => {
+  await withManagedFixtures(
+    {},
+    async ({ db, app, secrets, commandQueue, userId, organizationId, environmentId }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const headers = {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      }
+      const create = await app.request(`/environments/${environmentId}/managed`, {
+        method: 'POST',
+        headers,
+        body: '{}',
+      })
+      const created = (await create.json()) as { managed: { id: string } }
+      await db.update(managed).set({ status: 'ready' }).where(eq(managed.id, created.managed.id))
+      const url = `/environments/${environmentId}/managed/backups`
+
+      const first = await app.request(url, { method: 'POST', headers, body: '{}' })
+      assertEquals(first.status, 200)
+      const queued = commandQueue.envelopes.length
+
+      const repeats = await Promise.all(
+        [1, 2, 3].map((_) => app.request(url, { method: 'POST', headers, body: '{}' }))
+      )
+      for (const again of repeats) {
+        assertEquals(again.status, 409)
+        assertEquals(await again.clone().json(), {
+          error: 'managed_busy',
+          reason: 'backup_in_flight',
+          message:
+            'Another backup or restore of this database is already running. Try again when it has finished.',
+        })
+      }
+      assertEquals(commandQueue.envelopes.length, queued)
+
+      // Once the first command has finished, a new backup is accepted again.
+      await db
+        .update(command)
+        .set({ status: 'failed' })
+        .where(eq(command.managedId, created.managed.id))
+      const after = await app.request(url, { method: 'POST', headers, body: '{}' })
+      assertEquals(after.status, 200)
+    }
+  )
+})
+
 test('managed_busy guard on backup create while status=applying', async () => {
   await withManagedFixtures(
     {},
@@ -1846,6 +1895,12 @@ test('backup create/delete/restore target managed.server_id when environment pla
         }
         assertEquals(removeBody.serverId, serverId)
         assertEquals(commandQueue.envelopes.at(-1)?.serverId, serverId)
+
+        // The create above has finished; a restore is refused while one is still running.
+        await db
+          .update(command)
+          .set({ status: 'succeeded' })
+          .where(eq(command.managedId, created.managed.id))
 
         const restore = await app.request(
           `/environments/${environmentId}/managed/backups/bk_drift/restore`,
@@ -2974,6 +3029,15 @@ test('POST managed user for an existing principal reuses its name, lists it with
         headers,
       })
       assertEquals(removed.status, 200)
+      // The row stays until the host has dropped the account.
+      const loginsPending = await db
+        .select({ id: login.id, username: login.appliedUsername, managedId: login.managedId })
+        .from(login)
+        .where(eq(login.id, loginId))
+      assertEquals(loginsPending.length, 1)
+      await removeLoginsDroppedByApply(db, loginsPending[0]!.managedId, [
+        loginsPending[0]!.username,
+      ])
       const loginsLeft = await db.select({ id: login.id }).from(login).where(eq(login.id, loginId))
       assertEquals(loginsLeft.length, 0)
       const [ownerStays] = await db
@@ -3016,8 +3080,8 @@ test('POST user rejects invalid username and DELETE database protects initial da
           databases: ['defaultdb'],
         }),
       })
-      assertEquals(badUser.status, 400)
-      assertEquals(await badUser.json(), { error: 'Invalid username' })
+      assertEquals(badUser.status, 422)
+      assertEquals((await badUser.json()).error, 'reserved_username')
 
       const dropInitial = await app.request(
         `/environments/${environmentId}/managed/databases/${encodeURIComponent('defaultdb')}`,
@@ -3153,6 +3217,7 @@ type PolicyBody = {
   schedule: string
   preset: unknown
   timezone: string | null
+  database: string | null
   retentionKeep: number
   enabled: boolean
   automatic: boolean
@@ -3318,6 +3383,71 @@ test('backup policy routes: create, list with last run, update, delete, runs', a
         headers,
       })
       assertEquals(gone.status, 404)
+    }
+  )
+})
+
+test('backup policy routes: a chosen database is validated, stored, pushed and can be cleared', async () => {
+  await withManagedFixtures(
+    {},
+    async ({ db, app, secrets, userId, organizationId, environmentId, serverId }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const headers = {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      }
+      const created = await app.request(`/environments/${environmentId}/managed`, {
+        method: 'POST',
+        headers,
+        body: '{}',
+      })
+      assertEquals(created.status, 200)
+      const base = `/environments/${environmentId}/managed/backup-policies`
+      const post = (extra: Record<string, unknown>) =>
+        app.request(base, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            name: 'Nightly',
+            schedule: { preset: 'hourly' },
+            retentionKeep: 3,
+            ...extra,
+          }),
+        })
+
+      const unknown = await post({ database: 'no_such_db' })
+      assertEquals(unknown.status, 422)
+      assertEquals(((await unknown.json()) as { error: string }).error, 'backup_database_invalid')
+      const wrongType = await post({ database: 7 })
+      assertEquals(wrongType.status, 422)
+
+      const plain = await post({})
+      assertEquals(plain.status, 201)
+      const plainBody = (await plain.json()) as { policy: PolicyBody }
+      assertEquals(plainBody.policy.database, null)
+
+      const patch = (id: string, database: unknown) =>
+        app.request(`${base}/${id}`, {
+          method: 'PATCH',
+          headers,
+          body: JSON.stringify({ database }),
+        })
+      const bad = await patch(plainBody.policy.id, 'no_such_db')
+      assertEquals(bad.status, 422)
+
+      const chosen = await patch(plainBody.policy.id, 'defaultdb')
+      assertEquals(chosen.status, 200)
+      assertEquals(((await chosen.json()) as { policy: PolicyBody }).policy.database, 'defaultdb')
+      const pushed = await latestBackupsReconcilePayload(db, serverId)
+      assertEquals(
+        pushed.find((entry) => entry.policyId === plainBody.policy.id)?.database,
+        'defaultdb'
+      )
+
+      const cleared = await patch(plainBody.policy.id, null)
+      assertEquals(cleared.status, 200)
+      assertEquals(((await cleared.json()) as { policy: PolicyBody }).policy.database, null)
     }
   )
 })

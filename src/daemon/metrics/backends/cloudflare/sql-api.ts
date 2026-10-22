@@ -39,6 +39,7 @@ import {
   type HostedFamily,
   type HostMetricsMetricDescriptor,
   type MetricEntityScope,
+  UNSTORED_HOST_METRICS,
 } from '../../metric-descriptors.ts'
 import type {
   EntityIdsSeenQuery,
@@ -1736,6 +1737,11 @@ function resolveEntityFieldDescriptor(
   return descriptor
 }
 
+/** `true` for a contract field of the family that neither edition stores (it reads as empty). */
+function isUnstoredEntityField(family: PerEntityHostedFamily, field: string): boolean {
+  return UNSTORED_HOST_METRICS.has(`${ENTITY_SCOPE_FOR_FAMILY[family]}.${field}`)
+}
+
 /** Validate + de-dupe requested bare field names, in request order. */
 function assertEntityFields(family: PerEntityHostedFamily, fields: readonly string[]): string[] {
   if (fields.length === 0) {
@@ -1745,7 +1751,7 @@ function assertEntityFields(family: PerEntityHostedFamily, fields: readonly stri
   const seen = new Set<string>()
   const result: string[] = []
   for (const field of fields) {
-    if (!order.includes(field)) {
+    if (!order.includes(field) && !isUnstoredEntityField(family, field)) {
       throw new TypeError(`unknown v5 metric field "${field}" for family "${family}"`)
     }
     if (seen.has(field)) continue
@@ -2459,7 +2465,12 @@ export async function queryEntitySeriesViaSqlApi(
   config: CloudflareAnalyticsSqlConfig,
   input: EntitySeriesQuery
 ): Promise<EntitySeriesResult> {
-  const fields = assertEntityFields(input.family, input.metrics)
+  const requested = assertEntityFields(input.family, input.metrics)
+  // A value neither edition stores has no slot to query; it is answered empty.
+  // When nothing stored was asked for, one stored field is read only to learn
+  // which buckets exist.
+  const stored = requested.filter((field) => !isUnstoredEntityField(input.family, field))
+  const fields = stored.length > 0 ? stored : [probeFieldFor(input.family)]
   const entityIds = assertEntityIds(input.entityIds)
   const dataset = config.dataset ?? AE_DATASET_NAME
   const maxRangeSeconds = config.maxRangeSeconds ?? AE_DEFAULT_MAX_RANGE_SECONDS
@@ -2491,10 +2502,40 @@ export async function queryEntitySeriesViaSqlApi(
     available: true,
     serverId: input.serverId,
     family: input.family,
-    metrics: fields,
+    metrics: requested,
     resolutionSeconds: bucketSeconds,
-    entities: withGapCounts(entities, input.from, input.to, bucketSeconds),
+    entities: withEmptyUnstoredFields(
+      withGapCounts(entities, input.from, input.to, bucketSeconds),
+      requested,
+      stored
+    ),
   }
+}
+
+/** A stored field of the family, for reading which buckets exist. */
+function probeFieldFor(family: PerEntityHostedFamily): string {
+  return fieldOrderForFamily(family).find((field): field is string => field !== null)!
+}
+
+/** Point values restricted to `requested`, with every not-stored field present and empty. */
+function withEmptyUnstoredFields(
+  entities: EntitySeriesEntityResult[],
+  requested: readonly string[],
+  stored: readonly string[]
+): EntitySeriesEntityResult[] {
+  if (stored.length === requested.length) return entities
+  return entities.map((entity) => ({
+    ...entity,
+    points: entity.points.map((point) => ({
+      ...point,
+      values: Object.fromEntries(
+        requested.map((field) => [
+          field,
+          stored.includes(field) ? (point.values[field] ?? null) : null,
+        ])
+      ),
+    })),
+  }))
 }
 
 /** Longest statement one entity-series chunk would send — mirrors {@link queryEntitySeriesChunk}'s builder choice. */

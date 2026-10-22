@@ -22,13 +22,14 @@ import { and, eq, inArray, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { command, deployment } from '../../db/schema.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
-import { transitionCommand } from '../commands/command-records.ts'
+import { markCommandEnqueued, transitionCommand } from '../commands/command-records.ts'
 import type { CommandEnvelope } from '../commands/envelope.ts'
 import { nowIso } from '../commands/ids.ts'
 import { markDeploymentFailed } from './deployment-records.ts'
+import { DEPLOY_QUEUE_LIMIT_MS } from '../commands/deploy-wait.ts'
 
-/** Same budget `createDeployCommand` gives a command at creation. */
-const COMMAND_BUDGET_MS = 600_000
+/** Same budget `createDeployCommand` gives a command at creation: how long it may wait to start. */
+const COMMAND_BUDGET_MS = DEPLOY_QUEUE_LIMIT_MS
 
 export type RolloutOptions = {
   /** 0-based position of the batch this server belongs to. */
@@ -185,6 +186,7 @@ async function deliverClaimed(
       attempt: 1,
       queuedAt: params.queuedAt,
     })
+    await markCommandEnqueued(db, claimed.commandId)
     return true
   } catch {
     const error = 'Command queue unavailable'

@@ -45,6 +45,7 @@ import type {
   NetworkDeviceSample,
   RouterSample,
 } from '../../contracts/metrics-contract.ts'
+import { NOT_STORED_FIELD_IDS } from './field-registry.ts'
 import {
   EXTENDED_DOCKER_FIELD_NAMES,
   EXTENDED_HOST_FIELD_NAMES,
@@ -1083,25 +1084,14 @@ export const HOST_METRICS_METRIC_DESCRIPTORS: Record<string, HostMetricsMetricDe
   buildDescriptorMap(ALL_DESCRIPTOR_RECORDS)
 
 /**
- * The nine data points the v8 layout no longer stores (pegged cores, hosting
- * free, Docker used, router backends up, router requests, major page faults,
- * 2xx responses, unreclaimable slab, logs used). They stay in the contract and
- * the descriptors, so an older screen asking for one gets an empty value rather
- * than an unknown-metric error. Both stores must read them as empty: the hosted
- * reader has no slot for them, and the self-hosted reader masks them with this
- * set even though its columns still hold older rows.
+ * The contract values neither edition stores (`NOT_STORED_FIELDS` in
+ * `field-registry.ts`, each with the reason). They stay in the wire contract and
+ * the descriptors, so an older screen asking for one gets an empty value
+ * rather than an unknown-metric error. Both readers answer them as empty: the
+ * hosted reader has no slot for them, and the self-hosted reader masks them
+ * with this set.
  */
-export const UNSTORED_V8_HOST_METRICS: ReadonlySet<string> = new Set([
-  'host.cpu.saturatedCoreCount',
-  'storage.hostingFreeBytes',
-  'storage.dockerUsedBytes',
-  'router.backendsUp',
-  'router.backendRequests',
-  'host.memory.majorPageFaultsPerSecond',
-  'ingress.responses2xx',
-  'diagnostics.slabUnreclaimableBytes',
-  'storage.logsUsedBytes',
-])
+export const UNSTORED_HOST_METRICS: ReadonlySet<string> = NOT_STORED_FIELD_IDS
 
 /** AE double-index page budget per fixed-shape family (one row/page per sample, not per entity). */
 const HOSTED_FAMILY_CAPACITY: Partial<Record<HostedFamily, number>> = {

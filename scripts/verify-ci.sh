@@ -85,6 +85,9 @@ pnpm run check:import-boundaries
 echo "==> Check metrics boundaries"
 pnpm run check:metrics-boundaries
 
+echo "==> Check metrics parity"
+pnpm run check:metrics-parity
+
 echo "==> Check contract drift (sibling twins)"
 pnpm run check:contract-drift
 

@@ -66,6 +66,7 @@ export const AUDIT_ACTIONS = [
   'tls.leaf.delete',
   'folder.remove',
   'environment.primary.set',
+  'managed.database.owner_role.move',
 ] as const
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[number]

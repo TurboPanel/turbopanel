@@ -13,13 +13,13 @@ tables below add the contract field, unit, nullability and DuckDB column for eac
 
 | Item               | Value                                                                                                                                                                                                                                          | Where                                                                                                           |
 | ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| Hosted dataset     | `turbopanel_server_metrics_v8`, one per environment with a prefix: `testing_`, `staging_`, `live_` (the bare name is the local default)                                                                                                        | `backends/cloudflare/field-map.ts:83`, `wrangler.jsonc` (SERVER_METRICS binding and the read-side var)          |
-| Storage stamp      | `8`, written as text in blob3 of every row. Readers accept only this value                                                                                                                                                                     | `AE_STORAGE_VERSION` (`field-map.ts:81`), `AE_SUPPORTED_SCHEMA_VERSIONS` (`backends/cloudflare/sql-api.ts:114`) |
+| Hosted dataset     | `turbopanel_server_metrics_v12`, one per environment with a prefix: `testing_`, `staging_`, `live_` (the bare name is the local default)                                                                                                       | `backends/cloudflare/field-map.ts:83`, `wrangler.jsonc` (SERVER_METRICS binding and the read-side var)          |
+| Storage stamp      | `12`, written as text in blob3 of every row. Readers accept only this value                                                                                                                                                                    | `AE_STORAGE_VERSION` (`field-map.ts:81`), `AE_SUPPORTED_SCHEMA_VERSIONS` (`backends/cloudflare/sql-api.ts:114`) |
 | Wire versions      | `[6, 8]`. 6 is the plain fallback sample (no `extended` section, no `durable` flag). Any other value, including 7, is refused with a version error                                                                                             | `METRICS_WIRE_VERSIONS` (`src/contracts/metrics-contract.ts:41`), checked at `validation.ts:320`                |
 | Wire features      | `metrics-v8` and `metrics-v8-sizes`. `metrics-v7` is not advertised. A daemon stamps 6 until the panel it is attached to advertises `metrics-v8`                                                                                               | `DAEMON_WIRE_FEATURES` (`src/lib/version-wire.ts:171-182`)                                                      |
 | Rows per sample    | VPS 4, physical 5-6, plus 1 with managed databases, plus 1 per event (16 at most)                                                                                                                                                              | `buildMetricsDataPoints` (`field-map.ts:582`), table at the end of `V8-LAYOUT.md`                               |
 | Cap per write call | 250 data points per sample; the lowest-priority rows are dropped and logged past that                                                                                                                                                          | `capToInvocationLimit` (`field-map.ts:659`)                                                                     |
-| Self-hosted marker | `10` (`DUCKDB_SCHEMA_MARKER_VERSION`). Any older or unreadable marker discards the file and rebuilds it                                                                                                                                        | `backends/duckdb/schema.ts:99`, `backends/duckdb/database.ts`                                                   |
+| Self-hosted marker | `12` (`DUCKDB_SCHEMA_MARKER_VERSION`). Any older or unreadable marker discards the file and rebuilds it                                                                                                                                        | `backends/duckdb/schema.ts:99`, `backends/duckdb/database.ts`                                                   |
 | Retention          | Hosted: about 3 months (Cloudflare's own retention; the reader's default window is 90 days, `AE_DEFAULT_MAX_RANGE_SECONDS`). Self-hosted: 90 days by default (`DEFAULT_DUCKDB_RETENTION_DAYS`, env `TURBOPANEL_SERVER_METRICS_RETENTION_DAYS`) | `sql-api.ts:167`, `backends/duckdb/store.ts:168`                                                                |
 
 ## Rules that never change without a new stamp
@@ -58,7 +58,7 @@ are empty strings.
 | ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | blob1      | row kind: `metrics`                                                                                                                                                                                                                                                                      |
 | blob2      | family: `host.system`, `host.io`, `host.network`, `host.web`, `managed.database`, `block`, `network`, `filesystem`, `gpu`, `hardware.physical`                                                                                                                                           |
-| blob3      | storage stamp, `8`                                                                                                                                                                                                                                                                       |
+| blob3      | storage stamp, `12`                                                                                                                                                                                                                                                                      |
 | blob4      | reserved, written empty on every row (it held the topology generation before v8; readers never use one)                                                                                                                                                                                  |
 | blob5      | sample time as UTC text `YYYY-MM-DD hh:mm:ss` (`formatAeSampleTime`, `field-map.ts:374`; the one format `toDateTime` parses). Filter on Analytics Engine's own `timestamp` for ranges                                                                                                    |
 | blob6      | entity ids, comma joined, in the same order as the row's doubles (entity families). On `host.network`: `nic1=<id>@<Mb/s>;nic2=<id>@<Mb/s>;fs=<id>` (parts left out when absent; the speed follows the last `@`). Empty on the other host rows (`v8HostRowEntityIds`, `v8-layout.ts:211`) |
@@ -75,7 +75,7 @@ are empty strings.
 | index1     | `<serverId>:event`                                                   |
 | blob1      | `event`                                                              |
 | blob2      | event kind (`MetricEventKind`, `METRIC_EVENT_KINDS` in the contract) |
-| blob3      | `8`                                                                  |
+| blob3      | `12`                                                                 |
 | blob5      | the event's own time, UTC text                                       |
 | blob6      | the enclosing sample's sequence number (text)                        |
 | blob7      | reserved, written empty (it held the topology generation)            |
@@ -95,7 +95,7 @@ The contract constructor enforces 16 again on the sanitized sample (`assertArray
 
 ### Envelope of a status row (connection transitions)
 
-`buildStatusDataPoint` (`field-map.ts:451`): index1 `<serverId>`, blob1 `status`, blob3 `8`, blob17 the transition
+`buildStatusDataPoint` (`field-map.ts:451`): index1 `<serverId>`, blob1 `status`, blob3 `12`, blob17 the transition
 reason, double1 connected (1 or 0), every other double the sentinel. Status rows are history only; the current
 connection state is Postgres `server.is_connected`, never this stream.
 
@@ -111,8 +111,8 @@ connection state is Postgres `server.is_connected`, never this stream.
 - `gpu`: 3 per row, physical machines or real passthrough GPUs only.
 - `hardware.physical`: physical machines only, up to 19 signals per row (one double each).
 - Entity pages are ordered by the recorded page order when a slot mapping exists, otherwise by sample order
-  (`buildEntityPoints`, `field-map.ts:532`). Plan limits cut device counts at ingest on the hosted path
-  (`truncateSampleToCapabilityPlan`).
+  (`buildEntityPoints`). Nothing cuts device counts by plan at ingest: a server stores the devices it reports, up
+  to the shared limits (64 of each kind, 16 events a sample, 250 data points a write).
 
 ### Host rows: slot by slot
 
@@ -259,7 +259,7 @@ DuckDB column helpers (`backends/duckdb/schema.ts`); the column order matches `V
 Text is free on Analytics Engine (it costs no number slot and no row), so descriptive text rides on the host rows.
 All text is empty when the daemon did not send it (a version 6 daemon sends none). The contract key is
 `extended.text.<key>`; the key equals the id except `unhealthyNames`, which is `unhealthyContainers`
-(`TEXT_KEYS`, `v8-layout.ts:336`). **DuckDB stores none of this text.**
+(`TEXT_KEYS`, `v8-layout.ts:336`). The self-hosted store keeps the same text in `server_host_text_samples` and in text columns on the device tables.
 
 | Row                | Blobs, from blob7 in order                                                                                                                                                                                    |
 | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -278,43 +278,59 @@ Each page holds up to `perPage` devices. A device takes a fixed run of consecuti
 the sentinel. Packing is `packEntityPages` (`v8-layout.ts:622`); the budget is asserted at load
 (`assertV8LayoutWithinBudgets`, `field-map.ts:686`).
 
-| Family              | Per page | Doubles per device, in order                                                                                                                                          | Text per device, in order                                       | Unit and nullability                                                                                                                        |
-| ------------------- | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `block` (drives)    | 3        | 6: `readBytesPerSecond`, `writeBytesPerSecond`, `opsPerSecond` (read ops plus write ops; empty if either is missing), `readLatencyMs`, `writeLatencyMs`, `queueDepth` | `model`, `smart` (drive model and SMART result)                 | bytes per second, ops per second, milliseconds, count. All 0 or more, all nullable, 0 is a real reading                                     |
-| `network` (NIC 3+)  | 3        | 6: `receiveBytesPerSecond`, `transmitBytesPerSecond`, `receiveErrorsPerSecond`, `transmitErrorsPerSecond`, `receiveDropsPerSecond`, `transmitDropsPerSecond`          | link speed in Mb/s as plain text (from `extended.networkSizes`) | bytes per second, count per second. All nullable                                                                                            |
-| `filesystem`        | 9        | 2: `availableBytes`, `freeInodes`                                                                                                                                     | size as `<bytes>/<inodes>` (either side empty when unknown)     | bytes, count. Nullable. The size text comes from `extended.filesystemSizes`                                                                 |
-| `gpu`               | 3        | 6: `utilizationPercent`, `memoryUsedBytes`, `memoryActivityPercent`, `pcieReceiveBytesPerSecond`, `pcieTransmitBytesPerSecond`, `throttlePercent`                     | `driver`, `model`, memory size in bytes as plain text           | percent (0-100, clamped; no data when unsupported), bytes, bytes per second. All nullable                                                   |
-| `hardware.physical` | 19       | 1: `value` (one signal per double; the signal ids are in blob6, in order)                                                                                             | none                                                            | The unit depends on the signal (temperature, power); the descriptor lists it as `count`. The signal `kind` is not stored on the hosted rows |
+| Family              | Per page | Doubles per device, in order                                                                                                                                          | Text per device, in order                                       | Unit and nullability                                                                                                                                                                        |
+| ------------------- | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `block` (drives)    | 3        | 6: `readBytesPerSecond`, `writeBytesPerSecond`, `opsPerSecond` (read ops plus write ops; empty if either is missing), `readLatencyMs`, `writeLatencyMs`, `queueDepth` | `model`, `smart` (drive model and SMART result)                 | bytes per second, ops per second, milliseconds, count. All 0 or more, all nullable, 0 is a real reading                                                                                     |
+| `network` (NIC 3+)  | 3        | 6: `receiveBytesPerSecond`, `transmitBytesPerSecond`, `receiveErrorsPerSecond`, `transmitErrorsPerSecond`, `receiveDropsPerSecond`, `transmitDropsPerSecond`          | link speed in Mb/s as plain text (from `extended.networkSizes`) | bytes per second, count per second. All nullable                                                                                                                                            |
+| `filesystem`        | 9        | 2: `availableBytes`, `freeInodes`                                                                                                                                     | size as `<bytes>/<inodes>` (either side empty when unknown)     | bytes, count. Nullable. The size text comes from `extended.filesystemSizes`                                                                                                                 |
+| `gpu`               | 3        | 6: `utilizationPercent`, `memoryUsedBytes`, `memoryActivityPercent`, `pcieReceiveBytesPerSecond`, `pcieTransmitBytesPerSecond`, `throttlePercent`                     | `driver`, `model`, memory size in bytes as plain text           | percent (0-100, clamped; no data when unsupported), bytes, bytes per second. All nullable                                                                                                   |
+| `hardware.physical` | 19       | 1: `value` (one signal per double; the signal ids are in blob6, in order)                                                                                             | none                                                            | The unit depends on the signal (temperature, power); the descriptor lists it as `count`. The signals' kinds ride as one text slot for the whole row (blob7, comma separated in blob6 order) |
 
 The folded extra filesystem and the two embedded NICs use the same contract fields as above, on `host.io` and
-`host.network`.
+`host.network`. A sensor row's one text slot (blob7) holds the kinds, comma separated in the same order as the ids
+in blob6; it is the only row-level text on a device row.
+
+## The field registry
+
+`field-registry.ts` is the single list of every value the two stores keep. Each entry names the value, whether it
+is a number or text, and its home in both stores: the hosted row and slot, and the self-hosted table and column.
+Contract values the stores do not keep are listed as well, each with the reason (`NOT_STORED_FIELDS`). A contract
+value is in exactly one of the two lists.
+
+`field-registry.test.ts` (also `pnpm check:metrics-parity`, no database needed) fails when:
+
+- a descriptor, a host fact or a device fact is missing from the registry, or listed twice;
+- the hosted layout uses a number or text slot the registry does not list, or the registry names a slot the layout
+  does not fill, or a reading sits in a different slot than the hosted reader looks in;
+- the self-hosted schema has a column the registry does not list, or lacks one it does.
+
+`KNOWN_GAPS` in the registry records the differences that still exist, so a new difference cannot appear
+unseen. Each list only shrinks; the aim is that all three are empty and both editions then hold the same readings.
 
 ## Data points that are not stored
 
-Nine fields stay in the wire contract and the descriptors but have no hosted slot and are masked on DuckDB, so
-every reader answers them as empty on both stores and an older screen asking for one gets "no data" instead of an
-unknown-metric error (`UNSTORED_V8_HOST_METRICS`, `metric-descriptors.ts:1094`; the DuckDB reader masks them at
-`backends/duckdb/store.ts:710` and `:819`; the hosted reader returns the sentinel for any field without a slot,
-`hostMetricSelectExpression`, `sql-api.ts:1145`):
+68 contract values stay in the wire contract and the descriptors but are stored by neither edition: the hosted
+layout has no slot for them and the self-hosted schema has no column. Every reader answers them as empty on both
+stores, so an older screen asking for one gets "no data" instead of an unknown-metric error
+(`UNSTORED_HOST_METRICS` in `metric-descriptors.ts` is the registry's `NOT_STORED_FIELDS`; the self-hosted reader
+masks them in `queryHostSeries`, `queryFleetHostSnapshot` and `queryEntitySeries`; the hosted reader returns the
+sentinel for a host-wide field without a slot and an empty value for a device field without one).
 
-| Field                                  | Another way to read it                                          |
-| -------------------------------------- | --------------------------------------------------------------- |
-| `host.cpu.saturatedCoreCount`          | the top-process text names a hog                                |
-| `storage.hostingFreeBytes`             | read from the disk that holds hosting                           |
-| `storage.dockerUsedBytes`              | the sum of the four Docker groups                               |
-| `router.backendsUp`                    | backends total minus the unhealthy names                        |
-| `router.backendRequests`               | the hosting Caddy counts every request first                    |
-| `host.memory.majorPageFaultsPerSecond` | memory pressure is the better signal                            |
-| `ingress.responses2xx`                 | requests minus 4xx and 5xx                                      |
-| `diagnostics.slabUnreclaimableBytes`   | dropped to make room for the sizes (owner decision, 2026-10-07) |
-| `storage.logsUsedBytes`                | dropped to make room for the sizes (owner decision, 2026-10-07) |
+`field-registry.ts` lists all 68 with the reason for each. They fall in three groups:
 
-Other contract fields also have no hosted slot (for example `host.cpu.procsRunning`, the swap in and out rates,
-the other `diagnostics.*` figures, `ingress.responses3xx`, the 10 ms, 50 ms and 5 s latency buckets, upstream
-counts, the extra ProxySQL counters, the extra router counters, the per-engine connection counts, the Docker
-image and container counts, and `extended.host.mdArraysResyncing`). The hosted reader answers them as empty too
-(same code path). DuckDB still has a column for each and returns what it holds, because only the nine above are
-masked. Anything that compares the two stores must not treat that difference as a bug.
+- Dropped by owner decision (7 Oct) to make room for the sizes: pegged cores, hosting free, Docker used, router
+  backends up, router requests, major page faults, 2xx responses, unreclaimable slab, logs used.
+- Named in the audit's left-out column: process counts, swap in and out rates, softnet drops, split drive
+  operations and utilisation, the 3xx count, the 10 ms, 50 ms and 5 s latency buckets, upstream counts, retries,
+  the extra ProxySQL counters, the extra router counters, the per-engine connection counts, the Docker image and
+  container counts, RAID resyncing, clock speeds and several memory gauges.
+- Not named individually: the rest of the old diagnostics row, the router's reload age and certificate days (the
+  certificate days are kept once, from the Caddy certificates), and the reclaimable counts of each Docker group
+  (only the total is kept).
+
+All of them remain visible in the 10 s live view. Anything that compares the two stores can rely on the two
+editions holding exactly the same readings: `field-registry.test.ts` and `registry-round-trip.test.ts` fail
+otherwise.
 
 ## Self-hosted rows (DuckDB)
 
@@ -323,50 +339,63 @@ State root `resolveMetricsDir()` (`TURBOPANEL_METRICS_DIR`, default `<stateDir>/
 Each completed UTC day is sealed from the hot tables to Parquet under
 `parquet/<table>/year=YYYY/month=MM/day=DD/`; reads union the hot tables with the sealed files.
 
-DuckDB uses one typed table per family, not slots. Every metric column is an independently nullable `DOUBLE`
-(a real SQL `NULL`, no sentinel) and entity tables carry any number of rows per sample. No free text is stored.
-Every table except the two event tables starts with the same seven columns: `server_id UUID`, `sampled_at`,
-`received_at`, `interval_seconds SMALLINT`, `sequence BIGINT`, `topology_generation INTEGER` and
-`boot_generation INTEGER` (`COMMON_METADATA_COLUMNS`, `schema.ts:505`); the generation columns are still written
-and no v8 reader depends on them.
+DuckDB uses one typed table per family, not slots. Every number column is an independently nullable `DOUBLE`
+(a real SQL `NULL`, no sentinel) and entity tables carry any number of rows per sample. The same facts the hosted
+rows carry as text are text columns here (`VARCHAR`, `''` when the sample carried none). Every table except the
+two event tables starts with the same four columns: `server_id UUID`, `sampled_at`, `received_at` and
+`interval_seconds SMALLINT` (`COMMON_METADATA_COLUMNS`). The sequence number and the topology and boot
+generations are not stored (nothing reads them, and the hosted rows do not keep them).
 
-| Table                               | Holds                                                                                                         | Columns | Notes                                                                                                        |
-| ----------------------------------- | ------------------------------------------------------------------------------------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------ |
-| `server_host_samples`               | `host.*` groups (`cpu_`, `kernel_`, `memory_`, `storage_`, `network_` prefixes), `ext_*`, `cpu_diagnostics_*` | 58      | The wide row. `ext_*` holds `extended.host` and `extended.sizes` (the sizes every sample carries)            |
-| `server_network_samples`            | one row per NIC                                                                                               | 14      | `device_id`, six rates. No link speed                                                                        |
-| `server_filesystem_samples`         | one row per extra filesystem                                                                                  | 12      | `available_bytes`, `free_inodes`, `total_bytes`, `total_inodes`                                              |
-| `server_block_samples`              | one row per drive                                                                                             | 16      | read and write ops are separate columns; `utilization_percent` is stored here but not on the hosted rows     |
-| `server_gpu_samples`                | one row per GPU                                                                                               | 15      | six readings plus `memory_total_bytes`. No driver or model text                                              |
-| `server_hardware_signal_samples`    | one row per sensor signal                                                                                     | 10      | `signal_id`, `kind`, `value`                                                                                 |
-| `server_ingress_samples`            | one row per ingress source (Caddy)                                                                            | 29      | adds `ext_tls_cert_soonest_expiry_days`                                                                      |
-| `server_database_proxy_samples`     | one row per database proxy source (ProxySQL)                                                                  | 26      |                                                                                                              |
-| `server_router_samples`             | the shared router, one row per sample                                                                         | 19      |                                                                                                              |
-| `server_storage_samples`            | directory usage, the engine census, filesystem ids                                                            | 40      | the four `*_filesystem_id` columns are always `NULL` today                                                   |
-| `server_docker_samples`             | Docker usage plus `ext_*` container health                                                                    | 25      | `ext_reclaimable_bytes` falls back to the sum of the three df columns when absent                            |
-| `server_memory_diagnostics_samples` | the memory half of `diagnostics`                                                                              | 19      | holds `committed_as_bytes`                                                                                   |
-| `server_metric_events`              | metric events                                                                                                 | 10      | `event_id`, `at`, `received_at`, `kind`, `severity`, `topology_generation`, `entity_id`, `source`, `payload` |
-| `server_status_events`              | connection transitions                                                                                        | 4       | `at`, `connected`, `reason`                                                                                  |
+Which values have a column is decided by the registry: every column list in `schema.ts` is cut through
+`field-registry.ts`.
+
+| Table                               | Holds                                                                                    | Columns | Notes                                                                                                          |
+| ----------------------------------- | ---------------------------------------------------------------------------------------- | ------- | -------------------------------------------------------------------------------------------------------------- |
+| `server_host_samples`               | `host.*` groups (`cpu_`, `kernel_`, `memory_`, `storage_`, `network_` prefixes), `ext_*` | 40      | The wide row. `ext_*` holds `extended.host`, the certificate days from `extended.ingress` and the sizes        |
+| `server_host_text_samples`          | the 28 host facts, one text column each                                                  | 32      | `loadavg`, `top_cpu`, `kernel`, `os`, `php_versions`, `db_versions` and the rest                               |
+| `server_network_samples`            | one row per NIC                                                                          | 13      | `device_id`, six rates, `problems_per_second`, `link_speed_mbps`                                               |
+| `server_filesystem_samples`         | one row per extra filesystem                                                             | 9       | `available_bytes`, `free_inodes`, `total_bytes`, `total_inodes`                                                |
+| `server_block_samples`              | one row per drive                                                                        | 13      | `ops_per_second` is the read plus write sum; text `model`, `smart`                                             |
+| `server_gpu_samples`                | one row per GPU                                                                          | 14      | six readings plus `memory_total_bytes`; text `driver`, `model`                                                 |
+| `server_hardware_signal_samples`    | one row per sensor signal                                                                | 7       | `signal_id`, `kind`, `value`                                                                                   |
+| `server_ingress_samples`            | one row per ingress source (Caddy)                                                       | 17      |                                                                                                                |
+| `server_database_proxy_samples`     | one row per database proxy source (ProxySQL)                                             | 18      |                                                                                                                |
+| `server_router_samples`             | the shared router, one row per sample                                                    | 7       | backends total, 5xx, latency                                                                                   |
+| `server_storage_samples`            | directory usage and the engine instance counts                                           | 13      | no Docker figures here; they live in `server_docker_samples`                                                   |
+| `server_docker_samples`             | Docker disk usage plus `ext_*` container health                                          | 16      | `ext_reclaimable_bytes` is the daemon's total, else the sum of the three reclaimable groups, set at write time |
+| `server_memory_diagnostics_samples` | the one stored diagnostics reading                                                       | 5       | `committed_as_bytes`                                                                                           |
+| `server_metric_events`              | metric events                                                                            | 9       | `event_id`, `at`, `received_at`, `kind`, `severity`, `entity_id`, `source`, `payload`                          |
+| `server_status_events`              | connection transitions                                                                   | 4       | `at`, `connected`, `reason`                                                                                    |
+
+A NIC the hosted layout embeds in a host row (`resolveNetworkSlots`, `shared-derivations.ts`) keeps its error and
+drop rates only as their sum, here in `problems_per_second`, and the four separate columns stay `NULL`; a paged NIC
+keeps the four and has no sum. The container health numbers are stored even when the Docker disk breakdown is
+switched off, like the hosted row.
 
 Column names come from the contract field names in snake case (`hostMetricColumnName`, `entityMetricColumnName`,
-`extendedColumnName`, `cpuDiagnosticsHostColumnName` in `schema.ts`); the host-row tables above show the exact
-column for every hosted slot. The DDL is `buildSchemaStatements()` (`schema.ts:734`).
+`extendedColumnName` in `schema.ts`); the host-row tables above show the exact column for every hosted slot. The
+DDL is `buildSchemaStatements()`; the rows a sample writes are built in `backends/duckdb/sample-rows.ts`.
 
-### Marker 10 and the rebuild rule
+### Marker 12 and the rebuild rule
 
-`DUCKDB_SCHEMA_MARKER_VERSION = 10`, mirrored in the `schema-version` file beside the database
+`DUCKDB_SCHEMA_MARKER_VERSION = 12`, mirrored in the `schema-version` file beside the database
 (`backends/duckdb/database.ts`):
 
-- Marker equals 10: open normally. Every DDL statement is `CREATE TABLE IF NOT EXISTS`.
-- Marker older than 10, missing beside existing data, empty, unparseable or unreadable: the files
+- Marker equals 12: open normally. Every DDL statement is `CREATE TABLE IF NOT EXISTS`.
+- Marker older than 12, missing beside existing data, empty, unparseable or unreadable: the files
   (`metrics.duckdb`, its wal, `parquet/`, `tmp/`, `schema-version`) are discarded and rebuilt, with one log line.
   A transient read error counts as unreadable and rebuilds the file, by design.
 - Marker newer than this build: the open fails and nothing is deleted. Rolling back to a build that expects an
   older marker therefore refuses the newer file; the way back is a fix-forward release.
-- There is no in-place column upgrade. The marker is a discard-on-mismatch counter, not a migration version.
+- There is no in-place column upgrade. The marker is a discard-on-mismatch counter, not a migration version, and
+  it never goes down.
 - The marker is written before the database file is first created, so a crash between the two leaves a current
   marker and no data, and the next open continues.
-- History of the counter, from the comment at `schema.ts:80-99`: 9 added the `ext_*` columns, 10 added the sizes
-  (the `ext_*` size columns and `total_*` columns on the filesystem and GPU tables).
+- History of the counter, from the comment in `schema.ts`: 9 added the `ext_*` columns, 10 added the sizes (the
+  `ext_*` size columns and `total_*` columns on the filesystem and GPU tables), 12 made the store hold exactly the
+  registry's readings: the columns for values neither edition stores were removed, the host and device facts became
+  text columns and the sequence and generation columns went away. The earlier counters were one hard cut each; so is
+  this one. A development install's old file is discarded at first start and its short history is lost.
 
 Because a self-hosted marker bump discards the metrics history of that install, treat it as a release decision
 (see "Versioning").
@@ -450,13 +479,20 @@ different, stricter rule: **a layout change is a hard cut, never a dual read.**
    is needed. This is the reading of the rule at `field-map.ts:72-80`; check it with a reader test.
 2. **Any change to what a written slot means** (move, reorder, re-unit, re-purpose) bumps `AE_STORAGE_VERSION`.
    Readers then skip older rows; nothing reads them under the new meaning. If the wire contract also changes
-   incompatibly, `METRICS_SCHEMA_VERSION` moves too, which renames the dataset (`..._v<N>`) in every wrangler
+   incompatibly, the layout number moves, which renames the dataset (`..._v<N>`) in every wrangler
    environment, guarded by `backends/cloudflare/wrangler-datasets.test.ts`.
-3. **No dual read, no backfill.** Decided: hard cut to v8. Analytics Engine has no update or delete, so old rows
-   are simply not read and age out in about 3 months. Rows stamped 7 are dropped.
-4. **The three counters move together:** `METRICS_SCHEMA_VERSION` (wire contract), `DUCKDB_SCHEMA_MARKER_VERSION`
-   (on-disk layout) and the chart-cache `schemaVersion` token. A new `ext_*` column is a marker bump, because an
-   existing file keeps its old columns under `CREATE TABLE IF NOT EXISTS`.
+3. **No dual read, no backfill.** Decided: hard cut. Analytics Engine has no update or delete, so old rows
+   are simply not read and age out in about 3 months. Rows stamped with any other number are dropped.
+4. **One layout number.** `METRICS_LAYOUT_VERSION` (`field-registry.ts`, 12) is the hosted stamp, the hosted dataset
+   suffix, the self-hosted marker (`DUCKDB_SCHEMA_MARKER_VERSION`) and the chart-cache `schemaVersion` token. It is
+   the control plane's own number; the wire version the daemon speaks (`METRICS_SCHEMA_VERSION`, 8) is separate and
+   unchanged, so the daemon repository and the shared contract are untouched. The number never goes down (a lower
+   one would make an existing self-hosted file look newer than the program and refuse to open) and moves only for
+   an incompatible layout change: a slot changing meaning, a column removed or re-typed. An additive change (a value
+   in a spare slot, a column added in place) does not move it. A new `ext_*` column on an existing file is still
+   an incompatibility for the file, because `CREATE TABLE IF NOT EXISTS` keeps the old columns: it moves the number.
+   Existing canary rows and files at an earlier number are skipped (hosted) or discarded and rebuilt at first start
+   (self-hosted); the owner creates the new hosted dataset binding, as with any dataset change.
 5. **Wire changes are expand-only** (`scripts/contract-field-snapshot.json`), and a new optional field travels in
    the `extended` section so older daemons keep working.
 6. **Postgres:** no metrics migration is needed for the format. If a column in the panel database changes, follow
@@ -475,17 +511,19 @@ different, stricter rule: **a layout change is a hard cut, never a dual read.**
 2. **Descriptor.** Add it to `src/daemon/metrics/metric-descriptors.ts` with its unit, semantic
    (`gauge`/`rate`/`delta`/`psi-percent`), aggregation, reset behaviour, availability (`missing-when-unsupported` or
    `legitimate-zero`), range and sanitize rule. The canonical name is `<entityScope>.<fieldName>`.
-3. **Hosted slot.** Pick a spare slot. In `backends/cloudflare/v8-layout.ts` add the id to `DOUBLE_DEFS` (or
+3. **Registry and hosted slot.** Add the value to `field-registry.ts` with a home in both stores
+   (`STORED_FIELDS`), or with a reason in `NOT_STORED_FIELDS`. Pick a spare slot. In `backends/cloudflare/v8-layout.ts` add the id to `DOUBLE_DEFS` (or
    `TEXT_KEYS` for text) and to `V8_HOST_ROW_SPECS` at that position; for a device row, add it to the matching
    `*_SPEC`. Respect 19 doubles per page and 14 content blobs.
 4. **Layout spec.** The spec and fixture are generated: `scripts/metrics-v8-layout/generate.mjs` from the catalogue
    in `scripts/metrics-v8-layout/artifact-model.cjs` and the selection in `scripts/metrics-v8-layout/plan.json`.
    Add the catalogue row and the plan id, then run `node scripts/metrics-v8-layout/generate.mjs` to regenerate
    `testing/v8-layout.fixture.json` and `V8-LAYOUT.md`. Do not hand-edit either.
-5. **DuckDB.** Add the column to the right table in `backends/duckdb/schema.ts` (and its insert path in
-   `backends/duckdb/store.ts`), and bump `DUCKDB_SCHEMA_MARKER_VERSION` (one marker bump per release, not per
+5. **DuckDB.** Add the column to the right table in `backends/duckdb/schema.ts` (and its value in
+   `backends/duckdb/sample-rows.ts`), and bump `DUCKDB_SCHEMA_MARKER_VERSION` (one marker bump per release, not per
    field). Update the reader mapping (`hostSeriesColumnForDescriptor`) if the scope is new.
-6. **Stamp.** Bump `AE_STORAGE_VERSION` only if you moved or re-meant a written slot (rule 2 above).
+6. **Layout number.** Bump `METRICS_LAYOUT_VERSION` only if you moved or re-meant a written slot or changed a
+   self-hosted column incompatibly (rules 2 and 4 above).
 7. **Tests.** `v8-layout.test.ts` and `v8-layout.fixture.test.ts` (fixture), `field-map.test.ts` (slots and
    envelope), `cross-backend-parity.test.ts` (the two stores agree on one logical sample),
    `metric-descriptors.test.ts` (descriptor and contract agree), `backends/duckdb/schema.test.ts`. New

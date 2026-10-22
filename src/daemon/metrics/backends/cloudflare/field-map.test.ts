@@ -245,7 +245,7 @@ function contentBlobs(point: AnalyticsEngineDataPointLike, count: number): strin
 // Envelope
 // ---------------------------------------------------------------------------
 
-it('metrics rows: blob1 kind, blob2 family, blob3 "8", blob4 empty, blob5 UTC text sample time, blob6 entity ids', () => {
+it('metrics rows: blob1 kind, blob2 family, blob3 "12", blob4 empty, blob5 UTC text sample time, blob6 entity ids', () => {
   const sample = buildSample({
     metadata: {
       version: 6,
@@ -262,7 +262,7 @@ it('metrics rows: blob1 kind, blob2 family, blob3 "8", blob4 empty, blob5 UTC te
   assertEquals(gpu.blobs.slice(0, 6), [
     'metrics',
     'gpu',
-    '8',
+    '12',
     '',
     '2026-03-04 05:06:07',
     'gpu0,gpu1',
@@ -273,7 +273,7 @@ it('metrics rows: blob1 kind, blob2 family, blob3 "8", blob4 empty, blob5 UTC te
   assertEquals(host.blobs[AE_BLOB_SAMPLED_AT_INDEX], '2026-03-04 05:06:07')
 })
 
-it('blob3 is always the storage layout revision "8", even for a v6-stamped sample, so rows written before the sizes amendment are never read with the new slot meanings', () => {
+it('blob3 is always the storage layout revision "12", even for a v6-stamped sample, so rows from an earlier layout are never read with the new slot meanings', () => {
   for (const version of [6, 8] as const) {
     const input = baseInput()
     input.metadata.version = version
@@ -281,7 +281,7 @@ it('blob3 is always the storage layout revision "8", even for a v6-stamped sampl
     const points = buildMetricsDataPoints({ ...built, serverId: 's', receivedAt: 'x' })
     for (const point of points)
       assertEquals(point.blobs[AE_BLOB_SCHEMA_VERSION_INDEX], String(AE_STORAGE_VERSION))
-    assertEquals(AE_STORAGE_VERSION, 8)
+    assertEquals(AE_STORAGE_VERSION, 12)
   }
 })
 
@@ -1012,7 +1012,7 @@ it('every produced point has exactly AE_DOUBLE_COUNT doubles and AE_BLOB_COUNT b
 // Events keep their v6 blob positions
 // ---------------------------------------------------------------------------
 
-it('events: one event-kind row per entry at the v6 blob positions, blob3 "8" and blob5 UTC text', () => {
+it('events: one event-kind row per entry at the v6 blob positions, blob3 "12" and blob5 UTC text', () => {
   const sample = buildSample({
     events: [
       {
@@ -1030,7 +1030,7 @@ it('events: one event-kind row per entry at the v6 blob positions, blob3 "8" and
     (p) => p.blobs[AE_BLOB_KIND_INDEX] === AE_KIND_EVENT
   )!
   assertEquals(event.blobs[AE_BLOB_FAMILY_INDEX], 'nic_link_down')
-  assertEquals(event.blobs[AE_BLOB_SCHEMA_VERSION_INDEX], '8')
+  assertEquals(event.blobs[AE_BLOB_SCHEMA_VERSION_INDEX], '12')
   assertEquals(event.blobs[AE_BLOB_SAMPLED_AT_INDEX], '2026-01-01 00:00:00')
   assertEquals(event.blobs[6], '', 'blob7 is reserved and written empty on events')
   assertEquals(event.blobs[AE_BLOB_SOURCE_OR_IDENTITY_INDEX], 'daemon')

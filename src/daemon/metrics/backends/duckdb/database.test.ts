@@ -54,9 +54,15 @@ it('openDuckDb writes the marker and creates the current host columns', async ()
       assertEquals(await readSchemaMarker(paths), DUCKDB_SCHEMA_MARKER_VERSION)
       const columnsReader = await handle.connection.runAndReadAll(
         `SELECT column_name FROM information_schema.columns ` +
-          `WHERE table_name = '${HOST_SAMPLES_TABLE}' AND column_name = 'cpu_process_count'`
+          `WHERE table_name = '${HOST_SAMPLES_TABLE}' AND column_name = 'cpu_busy_percent'`
       )
       assertEquals(columnsReader.getRowObjectsJS().length, 1)
+      // A value neither edition stores has no column.
+      const droppedReader = await handle.connection.runAndReadAll(
+        `SELECT column_name FROM information_schema.columns ` +
+          `WHERE table_name = '${HOST_SAMPLES_TABLE}' AND column_name = 'cpu_process_count'`
+      )
+      assertEquals(droppedReader.getRowObjectsJS().length, 0)
     } finally {
       handle.close()
     }
@@ -259,8 +265,8 @@ it('openDuckDb discards a marker-8 store and recreates the current layout', asyn
   }
 })
 
-it('openDuckDb discards a marker-9 store, logs it, and starts fresh at the current marker', async () => {
-  const metricsDir = await Deno.makeTempDir({ prefix: 'tp-duckdb-open-cut9-' })
+it('openDuckDb discards a marker-11 store, logs it, and starts fresh at the current marker', async () => {
+  const metricsDir = await Deno.makeTempDir({ prefix: 'tp-duckdb-open-cut10-' })
   const warnings: string[] = []
   const originalWarn = console.warn
   console.warn = (...args: unknown[]) => {
@@ -272,7 +278,7 @@ it('openDuckDb discards a marker-9 store, logs it, and starts fresh at the curre
     await Deno.writeTextFile(schemaMarkerPath(paths), String(DUCKDB_SCHEMA_MARKER_VERSION - 1))
     const stale = `${paths.parquetRoot}/server_host_samples/year=2026`
     await Deno.mkdir(stale, { recursive: true })
-    await Deno.writeTextFile(`${stale}/metrics.parquet`, 'marker nine day')
+    await Deno.writeTextFile(`${stale}/metrics.parquet`, 'marker ten day')
 
     const handle = await openDuckDb({ paths })
     try {
@@ -282,7 +288,7 @@ it('openDuckDb discards a marker-9 store, logs it, and starts fresh at the curre
     }
     assertEquals(await fileExistsForTest(`${stale}/metrics.parquet`), false)
     assertEquals(warnings.length, 1)
-    assertStringIncludes(warnings[0] ?? '', 'schema marker 9')
+    assertStringIncludes(warnings[0] ?? '', 'schema marker 11')
     assertStringIncludes(warnings[0] ?? '', 'Discarding the old metrics store')
 
     // A second open of the fresh store is quiet and keeps its data.

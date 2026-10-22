@@ -30,6 +30,7 @@ import {
   GPU_SAMPLES_TABLE,
   HARDWARE_SIGNAL_SAMPLES_TABLE,
   HOST_SAMPLES_TABLE,
+  HOST_TEXT_SAMPLES_TABLE,
   INGRESS_SAMPLES_TABLE,
   MEMORY_DIAGNOSTICS_SAMPLES_TABLE,
   METRIC_EVENTS_TABLE,
@@ -46,6 +47,7 @@ export const PARQUET_PARTITION_FILE = 'metrics.parquet'
 
 export type ParquetFamilyKey =
   | 'host'
+  | 'host-text'
   | 'network'
   | 'filesystem'
   | 'block'
@@ -75,6 +77,12 @@ export const PARQUET_FAMILIES: readonly ParquetFamily[] = [
     key: 'host',
     table: HOST_SAMPLES_TABLE,
     subdir: 'host',
+    timestampColumn: 'sampled_at',
+  },
+  {
+    key: 'host-text',
+    table: HOST_TEXT_SAMPLES_TABLE,
+    subdir: 'host-text',
     timestampColumn: 'sampled_at',
   },
   {
@@ -548,4 +556,99 @@ export async function pruneExpiredPartitions(
   })
 
   await connection.run(`DELETE FROM ${STATUS_EVENTS_TABLE} WHERE "at" < ${cutoffLiteral}`)
+}
+
+export type PruneToSizeCapInput = {
+  parquetRoot: string
+  /** The cap for the whole metrics store, in bytes. */
+  maxBytes: number
+  /** Bytes the store holds outside the sealed partitions (the hot database file). */
+  otherBytes: number
+}
+
+async function fileBytes(path: string): Promise<number> {
+  try {
+    return (await Deno.stat(path)).size
+  } catch {
+    return 0
+  }
+}
+
+/** Sealed days the size cap never deletes, so a hot file over the cap cannot erase all history. */
+export const SIZE_CAP_KEEP_NEWEST_DAYS = 2
+
+export type PruneToSizeCapResult = {
+  /** Days whose every partition was removed. */
+  removedDays: number
+  /** Days where at least one partition could not be removed. */
+  failedDays: number
+  /** First and last UTC day removed (ms), or `null` when none was. */
+  removedFromMs: number | null
+  removedToMs: number | null
+  /** The store is still over the cap (only the newest kept days, or failures, remain). */
+  stillOver: boolean
+}
+
+/**
+ * Keep the metrics store under `maxBytes`: while the sealed partitions plus
+ * `otherBytes` exceed it, delete the oldest sealed UTC day (every family's
+ * partition for that day together, so no day is left half-present). The newest
+ * {@link SIZE_CAP_KEEP_NEWEST_DAYS} sealed days are never deleted, so when the
+ * hot file alone is over the cap the result says `stillOver`. Retention days
+ * still apply first; this only bites when a server fleet writes more than the
+ * cap holds in that many days.
+ */
+export async function pruneToSizeCap(input: PruneToSizeCapInput): Promise<PruneToSizeCapResult> {
+  if (!Number.isFinite(input.maxBytes) || input.maxBytes <= 0) {
+    throw new TypeError('maxBytes must be a positive number')
+  }
+  const byDay = new Map<number, { dirs: string[]; bytes: number }>()
+  const perFamily = await Promise.all(
+    PARQUET_FAMILIES.map((family) => listPartitionDays(input.parquetRoot, family.subdir))
+  )
+  const partitions = perFamily.flat()
+  const sizes = await Promise.all(partitions.map((day) => fileBytes(day.file)))
+  partitions.forEach((day, index) => {
+    const entry = byDay.get(day.dayStartMs) ?? { dirs: [], bytes: 0 }
+    entry.dirs.push(day.dir)
+    entry.bytes += sizes[index] ?? 0
+    byDay.set(day.dayStartMs, entry)
+  })
+
+  let total = input.otherBytes + [...byDay.values()].reduce((sum, day) => sum + day.bytes, 0)
+  const oldestFirst = [...byDay.entries()].sort(([a], [b]) => a - b)
+  const deletable = oldestFirst.slice(
+    0,
+    Math.max(0, oldestFirst.length - SIZE_CAP_KEEP_NEWEST_DAYS)
+  )
+  // Choose the oldest days that bring the store under the cap, then remove
+  // them together: day directories are independent of one another.
+  const doomed: { dayStartMs: number; dirs: string[]; bytes: number }[] = []
+  for (const [dayStartMs, day] of deletable) {
+    if (total <= input.maxBytes) break
+    doomed.push({ dayStartMs, ...day })
+    total -= day.bytes
+  }
+  const outcomes = await Promise.all(
+    doomed.map(async (day) => {
+      const results = await Promise.all(
+        day.dirs.map((dir) =>
+          Deno.remove(dir, { recursive: true }).then(
+            () => true,
+            () => false
+          )
+        )
+      )
+      return { day, ok: results.every(Boolean) }
+    })
+  )
+  const removed = outcomes.filter((o) => o.ok).map((o) => o.day.dayStartMs)
+  const failedBytes = outcomes.filter((o) => !o.ok).reduce((sum, o) => sum + o.day.bytes, 0)
+  return {
+    removedDays: removed.length,
+    failedDays: outcomes.length - removed.length,
+    removedFromMs: removed.length > 0 ? Math.min(...removed) : null,
+    removedToMs: removed.length > 0 ? Math.max(...removed) : null,
+    stillOver: total + failedBytes > input.maxBytes,
+  }
 }

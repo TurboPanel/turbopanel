@@ -15,7 +15,7 @@
 import { assertEquals } from '@std/assert'
 import { it } from '@std/testing/bdd'
 import { buildMetricsSample } from '../../../../contracts/metrics-contract.ts'
-import { truncateSampleToCapabilityPlan } from '../../../../contracts/capability-plan.ts'
+import { limitDevicesToCase } from '../../testing/plan-device-limits.ts'
 import type { AuthenticatedMetricsSample } from '../../types.ts'
 import { representativeMachineFixtures } from '../../testing/representative-machines.ts'
 import {
@@ -31,7 +31,7 @@ import {
 for (const fixture of representativeMachineFixtures()) {
   it(`representative machine "${fixture.name}": exact row count + family order`, () => {
     const built = buildMetricsSample(fixture.input)
-    const truncated = truncateSampleToCapabilityPlan(built, fixture.plan)
+    const truncated = limitDevicesToCase(built, fixture.plan)
     const sample: AuthenticatedMetricsSample = {
       ...truncated,
       serverId: '11111111-2222-4333-8444-555555555555',
@@ -79,7 +79,7 @@ for (const fixture of representativeMachineFixtures()) {
     for (const point of points) {
       assertEquals(point.doubles.length, AE_DOUBLE_COUNT, `${fixture.name}: doubles length`)
       assertEquals(point.blobs.length, AE_BLOB_COUNT, `${fixture.name}: blobs length`)
-      assertEquals(point.blobs[AE_BLOB_SCHEMA_VERSION_INDEX], '8', `${fixture.name}: blob3`)
+      assertEquals(point.blobs[AE_BLOB_SCHEMA_VERSION_INDEX], '12', `${fixture.name}: blob3`)
       assertEquals(
         point.doubles[AE_DOUBLE_INTERVAL_INDEX],
         sample.metadata.intervalSeconds,
