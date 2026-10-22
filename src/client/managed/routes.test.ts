@@ -4825,3 +4825,65 @@ test('the pending sweep re-pushes a server that never confirmed, once the earlie
     }
   )
 })
+
+test('the pending sweep re-pushes a server that never confirmed, even when the earlier push failed with time left', async () => {
+  await withManagedFixtures(
+    {},
+    async ({ db, app, secrets, commandQueue, userId, organizationId, environmentId, serverId }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const headers = {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      }
+      const create = await app.request(`/environments/${environmentId}/managed`, {
+        method: 'POST',
+        headers,
+        body: '{}',
+      })
+      assertEquals(create.status, 200)
+      await db
+        .update(managed)
+        .set({ status: 'ready' })
+        .where(eq(managed.environmentId, environmentId))
+      await db.update(server).set({ isConnected: true }).where(eq(server.id, serverId))
+      const put = await app.request(`/servers/${serverId}/managed-external-access`, {
+        method: 'PUT',
+        headers,
+        body: JSON.stringify({ enabled: false }),
+      })
+      assertEquals(put.status, 200)
+
+      const sweepParams = {
+        secretsConfig: parseTestSecretsConfig('deno'),
+        dataEncryptionSecrets: await deriveEncryptionSecretsConfig(
+          parseTestSecretsConfig('deno'),
+          'data-encryption'
+        ),
+      }
+      // The earlier push is still valid: nothing to do yet.
+      assertEquals(
+        (await runManagedExternalAccessPendingSweep(db, commandQueue, sweepParams)).enqueued,
+        0
+      )
+
+      // It ended without the server confirming (failed, timed out or cancelled)
+      // while its validity has not run out: it must not hold the sweep back.
+      for (const status of ['failed', 'timed_out', 'cancelled'] as const) {
+        await db
+          .update(command)
+          .set({ status })
+          .where(and(eq(command.serverId, serverId), eq(command.name, 'managed.ingress.reconcile')))
+        const before = commandQueue.envelopes.length
+        assertEquals(
+          (await runManagedExternalAccessPendingSweep(db, commandQueue, sweepParams)).enqueued,
+          1
+        )
+        assertEquals(
+          commandQueue.envelopes.slice(before).map((envelope) => envelope.type),
+          ['managed.ingress.reconcile']
+        )
+      }
+    }
+  )
+})

@@ -30,6 +30,7 @@ import type { Db } from '../../db/connection.ts'
 import { command, managed, replica, server } from '../../db/schema.ts'
 import { consumerServerIdsForManaged } from '../bindings/resolve-endpoint.ts'
 import { getManagedEngineSpec } from './index.ts'
+import { commandIsOpen } from '../commands/open-statuses.ts'
 import { enqueueManagedIngressReconcile } from './ingress-desired.ts'
 import { loadBoundManagedIdsForServer } from './ingress-bound-consumers.ts'
 import { managedIngressPortForEngine } from './ingress-ports.ts'
@@ -333,7 +334,8 @@ export async function runManagedExternalAccessPendingSweep(
           connected.map((row) => row.id)
         ),
         eq(command.name, 'managed.ingress.reconcile'),
-        gte(command.expiresAt, now)
+        gte(command.expiresAt, now),
+        commandIsOpen()
       )
     )
   const busy = new Set(inFlight.map((row) => row.serverId))
