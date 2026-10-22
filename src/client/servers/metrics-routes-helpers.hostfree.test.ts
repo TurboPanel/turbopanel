@@ -5,6 +5,7 @@
 import { assert, assertAlmostEquals, assertEquals } from '@std/assert'
 import { CloudflareAnalyticsEngineServerMetricsStore } from '../../daemon/metrics/backends/cloudflare/store.ts'
 import { DisabledServerMetricsStore } from '../../daemon/metrics/disabled-store.ts'
+import { METRICS_LAYOUT_VERSION } from '../../daemon/metrics/field-registry.ts'
 import type {
   EntitySeriesPoint,
   EntitySeriesQuery,
@@ -1176,6 +1177,25 @@ test('buildTopologyContext builds inventory/slotMapping/capacities from a usable
   assertEquals(context.capacities.memoryTotalBytes, 16_000_000_000)
   assertEquals(context.capacities.swapTotalBytes, 2_000_000_000)
   assertEquals(context.capacities.rootFilesystemTotalBytes, 100_000_000_000)
+})
+
+test('buildSeriesRouteResponse carries the metrics layout number', () => {
+  const response = buildSeriesRouteResponse({
+    serverId: 'srv-1',
+    from: '2026-01-01T00:00:00.000Z',
+    to: '2026-01-01T01:00:00.000Z',
+    backend: 'duckdb',
+    resolutionSeconds: 60,
+    host: null,
+    entities: [],
+    context: buildTopologyContext(undefined, undefined),
+    envelope: {
+      cpuLimits: { tdpWatts: null, tjMaxCelsius: null, source: 'none' as const },
+      temperatureUnit: 'celsius' as const,
+      nicSlotLimit: 2,
+    },
+  })
+  assertEquals(response.layoutVersion, METRICS_LAYOUT_VERSION)
 })
 
 test('buildSeriesRouteResponse is unavailable only when host or some requested entity family is unavailable', () => {
