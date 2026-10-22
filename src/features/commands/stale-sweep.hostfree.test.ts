@@ -2,6 +2,7 @@ import { assertEquals } from '@std/assert'
 import type { Db } from '../../db/connection.ts'
 import { command, deployment, managed, recovery } from '../../db/schema.ts'
 import { createMemoryDb } from '../../test-fixtures/memory-db.ts'
+import { DEPLOY_WAIT_LIMIT_MS } from './deploy-wait.ts'
 import {
   daemonEverHadCommand,
   isStaleCommand,
@@ -305,4 +306,59 @@ test('a queued deploy whose message never reached the queue is still swept after
   })
   assertEquals(isStaleCommand(lost, T0 + 10 * 60_000), false)
   assertEquals(isStaleCommand(lost, T0 + 10 * 60_000 + STALE_COMMAND_GRACE_MS), true)
+})
+
+test('a running deploy on a server with signs of life is stranded past the time limit, the quiet window or the wait limit', () => {
+  const started = new Date(T0).toISOString()
+  const hour = 60 * 60_000
+  const row = (input: { runningSince: string; updatedAt: string }) =>
+    candidate({
+      name: 'environment.deploy',
+      status: 'running',
+      sentAt: started,
+      progress: {
+        version: 1,
+        steps: [],
+        current: null,
+        updatedAt: started,
+        runningSince: input.runningSince,
+      },
+      updatedAt: input.updatedAt,
+      recovery: true,
+    })
+  const at = (ms: number) => new Date(T0 + ms).toISOString()
+  // Still listed as running a minute ago, but run for longer than 30 minutes: stranded.
+  const limitEnds = 30 * 60_000 + STALE_COMMAND_GRACE_MS
+  const hung = (heardMs: number) => row({ runningSince: started, updatedAt: at(heardMs) })
+  assertEquals(isStaleCommand(hung(limitEnds - 60_000), T0 + limitEnds - 1), false)
+  assertEquals(isStaleCommand(hung(limitEnds - 60_000), T0 + limitEnds), true)
+  // Quiet: the run clock is not judged until the server reports again, only the quiet window.
+  const quiet = row({ runningSince: at(3 * hour), updatedAt: at(3 * hour + 20 * 60_000) })
+  const quietEnds = 3 * hour + 20 * 60_000 + 6 * hour + STALE_COMMAND_GRACE_MS
+  assertEquals(isStaleCommand(quiet, T0 + 3 * hour + 20 * 60_000 + 60_000), false)
+  assertEquals(isStaleCommand(quiet, T0 + quietEnds - 1), false)
+  assertEquals(isStaleCommand(quiet, T0 + quietEnds), true)
+  // Heard from a minute ago with time left on the run clock, but past the whole wait limit.
+  const late = (nowMs: number) =>
+    row({
+      runningSince: new Date(nowMs - 60_000).toISOString(),
+      updatedAt: new Date(nowMs - 60_000).toISOString(),
+    })
+  const limit = DEPLOY_WAIT_LIMIT_MS + STALE_COMMAND_GRACE_MS
+  assertEquals(isStaleCommand(late(T0 + limit - 1), T0 + limit - 1), false)
+  assertEquals(isStaleCommand(late(T0 + limit), T0 + limit), true)
+})
+
+test('a running deploy on a server without signs of life keeps the fixed run cap', () => {
+  const started = new Date(T0).toISOString()
+  const row = candidate({
+    name: 'environment.deploy',
+    status: 'running',
+    sentAt: started,
+    progress: { version: 1, steps: [], current: null, updatedAt: started, runningSince: started },
+    updatedAt: started,
+    recovery: false,
+  })
+  assertEquals(isStaleCommand(row, T0 + 10 * 60_000), false)
+  assertEquals(isStaleCommand(row, T0 + 10 * 60_000 + STALE_COMMAND_GRACE_MS), true)
 })

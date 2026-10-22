@@ -174,6 +174,23 @@ export type UpdateProgressMessage = {
   at: string
   detail?: string
   errorCode?: string
+  /**
+   * How the daemon's own restart went, sent with a `failed` stage whose
+   * `errorCode` is `restart_failed`. Optional: an older daemon never sends it.
+   */
+  restart?: UpdateRestartReport
+}
+
+/** Diagnostics for a daemon restart that was reported as failed. Twin of the daemon's `cell-messages.ts`. */
+export type UpdateRestartReport = {
+  /** `enable` or `restart`: the `systemctl` verb that failed. */
+  command?: string
+  exitCode?: number
+  signal?: string
+  stderr?: string
+  /** Times the command ran (2 after the one retry). */
+  attempts: number
+  elapsedMs: number
 }
 
 /** Where one deploy step stands. Twin of the daemon's `cell-messages.ts`. */
@@ -406,6 +423,26 @@ export type ManagedPermissionsResultMessage = {
   at: string
 }
 
+/**
+ * The commands a daemon is carrying, sent on `hello` and `heartbeat` (feature
+ * `command-recovery-v1`) only while either list is not empty. `running` holds
+ * the ids it has accepted and not finished (including commands waiting behind
+ * another build); `unacked` holds the ids whose final `command-outcome` it keeps
+ * until a {@link CommandOutcomeAckMessage} arrives. Twin of
+ * `turbopaneld/src/contracts/cell-messages.ts`.
+ */
+export type CommandRecoveryReport = {
+  running: string[]
+  unacked: string[]
+}
+
+/** Control plane -> daemon: the final outcome of command `id` is stored; drop the held copy. */
+export type CommandOutcomeAckMessage = {
+  type: 'command-outcome-ack'
+  id: string
+  at: string
+}
+
 /** One replica in a `managed-health-report`: `down`, or its reading. */
 export type ManagedHealthReportMember = {
   managedId: string
@@ -454,6 +491,8 @@ export type DaemonMessage =
        * the scan finishes after the first hello.
        */
       releaseLinkScan?: ServerReleaseLinkScanMetadata
+      /** Commands in flight and results awaiting an ack (feature `command-recovery-v1`). */
+      commands?: CommandRecoveryReport
     }
   | {
       type: 'heartbeat'
@@ -479,6 +518,8 @@ export type DaemonMessage =
        * Docker; `[]` means no services on the host.
        */
       services?: ServiceRunState[]
+      /** Commands in flight and results awaiting an ack (feature `command-recovery-v1`). */
+      commands?: CommandRecoveryReport
     }
   | { type: 'echo'; payload: unknown; at: string }
   | CellAttachVersionMessage
@@ -806,6 +847,7 @@ export type DaemonMessage =
     }
   | BackupRunReportMessage
   | BackupRunReportResultMessage
+  | CommandOutcomeAckMessage
   | {
       type: 'public-urls-update'
       id: string
@@ -925,6 +967,9 @@ export const MAX_DAEMON_WS_FEATURE_CHARS = 64
 
 /** Max characters for `update-progress.errorCode`. */
 export const MAX_DAEMON_WS_ERROR_CODE_CHARS = 64
+
+/** Max ids in each list of a `commands` report on `hello` / `heartbeat`. */
+export const MAX_DAEMON_WS_COMMAND_REPORT_IDS = 64
 
 /** Max steps in one `command-progress.progress.steps`. */
 export const MAX_DAEMON_WS_PROGRESS_STEPS = 24
@@ -1068,7 +1113,24 @@ function validatePresenceFields(record: Record<string, unknown>): string | null 
   if (record.daemonBuild !== undefined && !parseDaemonBuildInfo(record.daemonBuild)) {
     return 'invalid daemonBuild'
   }
-  return null
+  return validateCommandsReport(record.commands)
+}
+
+function isBoundedIdList(value: unknown): boolean {
+  return (
+    Array.isArray(value) &&
+    value.length <= MAX_DAEMON_WS_COMMAND_REPORT_IDS &&
+    value.every(isBoundedId)
+  )
+}
+
+function validateCommandsReport(value: unknown): string | null {
+  if (value === undefined) return null
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return 'invalid commands'
+  const report = value as Record<string, unknown>
+  return isBoundedIdList(report.running) && isBoundedIdList(report.unacked)
+    ? null
+    : 'invalid commands'
 }
 
 function validateResultEnvelopeFields(record: Record<string, unknown>): string | null {

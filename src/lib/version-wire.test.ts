@@ -28,6 +28,7 @@ import {
   resolveDaemonSupport,
   resolveInstanceCapabilities,
   TLS_CAPTURE_FEATURE,
+  COMMAND_RECOVERY_FEATURE,
 } from './version-wire.ts'
 import { INSTANCE_VERSION } from '../app/version.ts'
 
@@ -228,9 +229,16 @@ test('managed-login-limits-v1 is an advertised wire feature and raised no floor'
   )
 })
 
-test('tls-capture-v1 is an advertised wire feature', () => {
+test('tls-capture-v1 is an advertised wire feature and raised no floor', () => {
   assertEquals(TLS_CAPTURE_FEATURE, 'tls-capture-v1')
   assertEquals((DAEMON_WIRE_FEATURES as readonly string[]).includes(TLS_CAPTURE_FEATURE), true)
+  assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.0')
+})
+
+test('command-recovery-v1 is advertised and raised no floor', () => {
+  assertEquals(COMMAND_RECOVERY_FEATURE, 'command-recovery-v1')
+  assertEquals((DAEMON_WIRE_FEATURES as readonly string[]).includes(COMMAND_RECOVERY_FEATURE), true)
+  assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.0')
 })
 
 test('host-capacity-v1 is the last advertised wire feature and raised no floor', () => {

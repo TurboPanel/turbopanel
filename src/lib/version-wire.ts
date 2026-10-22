@@ -193,6 +193,7 @@ export const DAEMON_WIRE_FEATURES = [
   'managed-database-owner-v1',
   'managed-database-convert-v1',
   'tls-capture-v1',
+  'command-recovery-v1',
   'host-capacity-v1',
 ] as const
 
@@ -211,6 +212,17 @@ export const SEALED_INSTANCE_SECRETS_FEATURE: DaemonWireFeature = 'sealed-instan
  * The daemon sends nothing until this control plane lists the feature.
  */
 export const TLS_CAPTURE_FEATURE: DaemonWireFeature = 'tls-capture-v1'
+
+/**
+ * The daemon keeps each command's final result on the host until this control
+ * plane confirms it (`command-outcome-ack`), re-sends it on every attach, lists
+ * the commands it is running or still holding a result for on `hello` /
+ * `heartbeat` (`commands`), and repeats a running command's step plan every 30 s
+ * as a sign of life. This control plane then treats a quiet deploy as "checking
+ * with the server" instead of failed. Without it a quiet deploy keeps the old
+ * fixed run cap, worded as "no result came back".
+ */
+export const COMMAND_RECOVERY_FEATURE: DaemonWireFeature = 'command-recovery-v1'
 
 /**
  * This control plane merges heartbeat `resources.{memory,swap,cpus}` without

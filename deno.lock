@@ -63,7 +63,7 @@
     ],
     "packageJson": {
       "dependencies": [
-        "npm:@cloudflare/vitest-pool-workers@0.22",
+        "npm:@cloudflare/vitest-pool-workers@0.23",
         "npm:@cloudflare/workers-types@^5.20260818.1",
         "npm:@duckdb/node-api@1.5.5-r.4",
         "npm:@noble/hashes@1.8.0",
@@ -79,7 +79,7 @@
         "npm:prettier@^3.9.9",
         "npm:typescript@^5.9.3",
         "npm:vitest@^4.1.11",
-        "npm:wrangler@^4.124.0",
+        "npm:wrangler@^4.151.3",
         "npm:yaml@^2.9.0"
       ]
     }

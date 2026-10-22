@@ -5,8 +5,8 @@ This file is generated from the resolved dependency graph. Do not edit it by han
 Third-party components remain under their own copyright and license terms and are not relicensed by TurboPanel Control Plane's repository license (AGPL-3.0-only).
 
 <!-- lockfiles
-deno.lock sha256:e077ab24ed3f601ada799a5ed3d2d720934cfedb6b4e8e2c57fed6ad05ce1fe7
-pnpm-lock.yaml sha256:5790a8e94ab0b19e048f27fb98001bd9aec9e7c7559fd15ad7d782d03e5ae092
+deno.lock sha256:0dadc2711a0f03f165563c10bbac5a53a370796e69a95be63d5418d51341368e
+pnpm-lock.yaml sha256:6fe67c65a0e12d83745ee8fad0675e731e10f5f20bc41f653cc03d242a5f9e86
 -->
 
 ## Production dependencies
@@ -233,17 +233,17 @@ These packages are used for development, test, or build tooling and are not bund
 - Copyright: wrangler@cloudflare.com
 - Homepage: https://github.com/cloudflare/workers-sdk#readme
 
-### @cloudflare/unenv-preset@2.16.1
+### @cloudflare/unenv-preset@2.16.2
 
 - License: MIT OR Apache-2.0
 - Homepage: https://github.com/cloudflare/workers-sdk#readme
 
-### @cloudflare/vitest-pool-workers@0.22.0
+### @cloudflare/vitest-pool-workers@0.23.0
 
 - License: MIT
 - Homepage: https://github.com/cloudflare/workers-sdk/tree/main/packages/vitest-pool-workers#readme
 
-### @cloudflare/workerd-linux-64@1.20260815.1
+### @cloudflare/workerd-linux-64@1.20261019.1
 
 - License: Apache-2.0
 - Homepage: https://github.com/cloudflare/workerd#readme
@@ -677,7 +677,7 @@ These packages are used for development, test, or build tooling and are not bund
 - Copyright: Sindre Sorhus
 - Homepage: https://github.com/sindresorhus/make-dir#readme
 
-### miniflare@5.20260815.0-alpha
+### miniflare@5.20261019.1-beta
 
 - License: MIT
 - Copyright: MrBBot
@@ -884,12 +884,12 @@ These packages are used for development, test, or build tooling and are not bund
 - Copyright: Mathias Buus
 - Homepage: https://github.com/mafintosh/why-is-node-running
 
-### workerd@1.20260815.1
+### workerd@1.20261019.1
 
 - License: Apache-2.0
 - Homepage: https://github.com/cloudflare/workerd#readme
 
-### wrangler@4.124.0
+### wrangler@4.151.3
 
 - License: MIT OR Apache-2.0
 - Copyright: wrangler@cloudflare.com

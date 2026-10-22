@@ -7,7 +7,6 @@ import { recordAuditAndNotify } from '../../features/notifications/audit-bridge.
 import {
   loadOrganizationTierSpare,
   setServerPreferredTier,
-  tierPickNoticeForServer,
 } from '../../features/tiers/server-preferred-tier.ts'
 import { withTierPlacementExtras } from '../../features/tiers/tier-enforcement.ts'
 import { verifyServerInOrg } from '../environments/deploy-prepare.ts'
@@ -61,8 +60,17 @@ export function registerServerLicenseTierRoutes(router: Hono<AppEnv>, opts: Auth
     if (!result.ok) {
       if (result.code === 'tier_below_required') {
         return c.json(
-          { error: 'Tier is below what this server needs', code: 'tier_below_required' },
+          {
+            error: "That tier's CPU or RAM limit is below what this server has",
+            code: 'tier_below_required',
+          },
           422
+        )
+      }
+      if (result.code === 'no_free_seat') {
+        return c.json(
+          { error: 'No free license at that tier; buy one first', code: 'no_free_seat' },
+          409
         )
       }
       if (result.code === 'tier_not_found') {
@@ -91,7 +99,7 @@ export function registerServerLicenseTierRoutes(router: Hono<AppEnv>, opts: Auth
       assignedTierId: result.assignedTierId,
       pickedTier: result.preferredTierLabel,
       pickedTierId: result.preferredTierId,
-      tierPickNotice: result.tierPickNotice,
+      tierPickNotice: null,
       tiersFree: result.tiersFree,
     })
   })
@@ -100,17 +108,13 @@ export function registerServerLicenseTierRoutes(router: Hono<AppEnv>, opts: Auth
 export async function enrichServerDetailTierPlacement(
   db: import('../../db/connection.ts').Db,
   organizationId: string,
-  serverId: string,
   placement: import('../../features/tiers/tier-enforcement.ts').TierPlacementDto | null
 ) {
   if (!placement) return null
-  const [tierPickNotice, tiersFree] = await Promise.all([
-    tierPickNoticeForServer(db, organizationId, serverId),
-    loadOrganizationTierSpare(db, organizationId),
-  ])
+  const tiersFree = await loadOrganizationTierSpare(db, organizationId)
   return withTierPlacementExtras(placement, {
     pickedTier: placement.pickedTier,
-    tierPickNotice,
+    tierPickNotice: null,
     tiersFree,
   })
 }

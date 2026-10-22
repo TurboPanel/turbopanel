@@ -6,8 +6,11 @@ import { redactUrlSecrets } from '../upgrades/redact-url-secrets.ts'
 import { nowIso } from './ids.ts'
 import { type CommandStatus, TERMINAL_COMMAND_STATUSES } from './types.ts'
 import { command, dispatch, environment, managed, server } from '../../db/schema.ts'
-import type { CommandProgress } from '../../contracts/cell-protocol.ts'
-import { finalizeStoredCommandProgress, parseStoredCommandProgress } from './command-progress.ts'
+import {
+  finalizeStoredCommandProgress,
+  parseStoredCommandProgress,
+  type StoredCommandProgress,
+} from './command-progress.ts'
 import { sealExecutionLogOnTerminal } from '../execution-logs/seal-on-terminal.ts'
 
 /**
@@ -62,7 +65,7 @@ export type CommandRecord = {
   context: unknown
   result: unknown
   /** Latest step plan from the daemon, settled once the command ends; `null` until reported. */
-  progress: CommandProgress | null
+  progress: StoredCommandProgress | null
   errorCode: string | null
   /** Canonical human-readable error for terminal failures. */
   errorMessage: string | null

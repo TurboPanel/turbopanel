@@ -88,9 +88,12 @@ import { nowIso } from './ids.ts'
 import { commandIsOpen } from './open-statuses.ts'
 import { cancelDeployOnServer } from '../deploy/deploy-cancel.ts'
 import { isNoopCommandQueue } from './noop-command-queue.ts'
+import { markCommandContactLost } from './command-progress.ts'
+import { loadDeployWaitSettings } from './deploy-wait-settings.ts'
 import {
   createDeployWaiter,
-  DEPLOY_WAIT_MESSAGES,
+  deployWaitMessage,
+  lostRequestWaiter,
   DEPLOY_REQUEST_TTL_SECONDS,
   DEPLOY_RUN_CAP_MS,
   DEPLOY_WAIT_CANCELS_SERVER,
@@ -216,6 +219,8 @@ export type CommandConsumerDeps = {
   firewallApplyGate: FirewallApplyGate
   /** Test seam: how long one run keeps waiting for a deploy that has not started. */
   deployWaitHoldMs?: number
+  /** Test seam: how long one run keeps waiting for a deploy in any state. */
+  deployWaitEndMs?: number
 }
 
 const COMMAND_TIMEOUT_MS: Record<CommandType, number> = {
@@ -680,7 +685,9 @@ async function awaitCommandOutcome(
 ): Promise<PendingRequestRecord | null> {
   const cell = registry.getCell(envelope.serverId)
   const waiter =
-    record.type === 'environment.deploy' ? makeDeployWaiter(db, record, sentAt, deps) : undefined
+    record.type === 'environment.deploy'
+      ? await makeDeployWaiter(db, record, envelope.serverId, sentAt, deps)
+      : undefined
 
   // A wait picked up again has been through the ack check already.
   const pending =
@@ -698,15 +705,21 @@ async function awaitCommandOutcome(
   return null
 }
 
-function makeDeployWaiter(
+async function makeDeployWaiter(
   db: Db,
   record: DispatchableCommandRecord,
+  serverId: string,
   sentAt: string,
   deps: CommandConsumerDeps | undefined
-): DeployWaiter {
+): Promise<DeployWaiter> {
   const canHandOff = !!deps?.commandQueue && !isNoopCommandQueue(deps.commandQueue)
+  const settings = await loadDeployWaitSettings(db, serverId)
   return createDeployWaiter({
     sentAt,
+    ...settings,
+    onContactLost: async (lastHeardAt) => {
+      await markCommandContactLost(db, { commandId: record.id, lastHeardAt })
+    },
     readCommand: async () => {
       const current = await getCommandRecord(db, record.id)
       return current === null
@@ -714,7 +727,7 @@ function makeDeployWaiter(
         : { status: current.status, progress: current.progress, updatedAt: current.updatedAt }
     },
     ...(canHandOff
-      ? { holdMs: deps?.deployWaitHoldMs }
+      ? { holdMs: deps?.deployWaitHoldMs, endMs: deps?.deployWaitEndMs }
       : { holdMs: Number.POSITIVE_INFINITY, endMs: Number.POSITIVE_INFINITY }),
   })
 }
@@ -745,7 +758,7 @@ async function settleUnansweredCommand(
     trace('handed_off')
     return
   }
-  const timeoutMessage = deployTimeoutMessage(waiter)
+  const timeoutMessage = deployWaitMessage(waiter)
   if (waiter && DEPLOY_WAIT_CANCELS_SERVER.has(waiter.verdict)) {
     await cancelDeployOnServer(db, cell, envelope.serverId, record.id)
   }
@@ -770,20 +783,6 @@ async function settleUnansweredCommand(
   await applyFabricFailedSideEffect(db, record, envelope)
 }
 
-/** The plain-words error for a deploy that ended without a result; none for other commands. */
-function deployTimeoutMessage(waiter: DeployWaiter | undefined): string | undefined {
-  const verdict = waiter?.verdict
-  if (
-    verdict === undefined ||
-    verdict === 'none' ||
-    verdict === 'handoff' ||
-    verdict === 'settled'
-  ) {
-    return undefined
-  }
-  return DEPLOY_WAIT_MESSAGES[verdict]
-}
-
 /**
  * A deploy this consumer already sent that came round again (it handed the wait
  * back to the queue, or the consumer died mid-wait): keep waiting for the
@@ -799,8 +798,15 @@ async function resumeDeployWait(
 ): Promise<{ pending: PendingRequestRecord | null } | null> {
   if (record.type !== 'environment.deploy' || record.sentAt === null) return null
   if (!['sent', 'acked', 'running'].includes(record.status)) return null
-  const existing = await registry.getCell(envelope.serverId).getRequest(record.id)
-  if (existing === null || existing.status === 'expired') return null
+  const cell = registry.getCell(envelope.serverId)
+  const existing = await cell.getRequest(record.id)
+  if (existing === null || existing.status === 'expired') {
+    // The deploy may already be running on the server, so it is never sent again:
+    // with its request gone no result can reach it, and it is given up on.
+    const waiter = lostRequestWaiter(record.progress)
+    await settleUnansweredCommand(db, cell, record, envelope, deps, waiter)
+    return { pending: null }
+  }
   return {
     pending: await awaitCommandOutcome(db, registry, record, envelope, deps, record.sentAt, true),
   }
@@ -2783,7 +2789,7 @@ async function applyPendingTlsLeafSideEffect(
   }
 }
 
-async function applySucceededSideEffects(
+export async function applySucceededSideEffects(
   db: Db,
   record: DispatchableCommandRecord,
   envelope: CommandEnvelope,
@@ -3291,7 +3297,15 @@ async function handlePendingExpired(
   pending: PendingRequestRecord,
   deps?: CommandConsumerDeps
 ): Promise<void> {
-  await transitionCommand(db, record.id, { status: 'timed_out' })
+  // A deploy whose request ran out without a result says so in plain words.
+  const deployMessage =
+    record.type === 'environment.deploy'
+      ? deployWaitMessage(lostRequestWaiter((await getCommandRecord(db, record.id))?.progress))
+      : undefined
+  await transitionCommand(db, record.id, {
+    status: 'timed_out',
+    ...(deployMessage === undefined ? {} : { error: deployMessage }),
+  })
   commandConsumerTrace('dispatch-result', {
     commandId: record.id,
     commandType: record.type,
@@ -3300,7 +3314,14 @@ async function handlePendingExpired(
     resultStatus: 'timed_out',
   })
   await applyManagedFailedSideEffect(db, record, deps, pending.error ?? 'Command timed out')
-  await applyEnvironmentDeployFailedSideEffect(db, record, envelope, 'timed_out', 'timed_out', deps)
+  await applyEnvironmentDeployFailedSideEffect(
+    db,
+    record,
+    envelope,
+    deployMessage ?? 'timed_out',
+    'timed_out',
+    deps
+  )
   await applyFabricFailedSideEffect(db, record, envelope)
   await applyFirewallFailedSideEffect(db, record, envelope, pending.error ?? 'Command timed out')
 }

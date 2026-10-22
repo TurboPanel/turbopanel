@@ -3,12 +3,21 @@ allowBuilds:
   sharp: true
   workerd: true
 minimumReleaseAgeExclude:
-  - miniflare@5.20260815.0-alpha
-  - wrangler@4.124.0
-  - '@cloudflare/vitest-pool-workers@0.22.0'
+  - miniflare@5.20261019.1-beta
+  - wrangler@4.151.3
+  - workerd@1.20261019.1
+  - '@cloudflare/workerd-darwin-64@1.20261019.1'
+  - '@cloudflare/workerd-darwin-arm64@1.20261019.1'
+  - '@cloudflare/workerd-linux-64@1.20261019.1'
+  - '@cloudflare/workerd-linux-arm64@1.20261019.1'
+  - '@cloudflare/workerd-windows-64@1.20261019.1'
+  - '@cloudflare/vitest-pool-workers@0.23.0'
   - '@cloudflare/workers-types@5.20260818.1'
   - vite@6.4.4
 overrides:
+  # vitest-pool-workers pins an older wrangler and miniflare (workerd 2026-08-15), which cannot run a 2026-10-01 compatibility date; use the same runtime as the deploy tool.
+  wrangler: 4.151.3
+  miniflare: 5.20261019.1-beta
   nanoid: ^3.3.18
   postcss: ^8.5.23
   sharp: ^0.35.5
