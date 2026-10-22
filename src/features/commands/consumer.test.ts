@@ -65,8 +65,13 @@ import {
   type DispatchableCommandRecord,
   isTransientError,
   markPlannedFoldersPresentSafely,
+  oldPrimaryFinalFromStop,
   processCommandEnvelope,
 } from './consumer.ts'
+import {
+  type ManagedLifecycleCommandResult,
+  parseManagedLifecyclePayload,
+} from '../../contracts/commands/schemas.ts'
 import type { CommandEnvelope } from './envelope.ts'
 import { recordCommandProgress } from './command-progress.ts'
 import type { CommandQueue } from './queue.ts'
@@ -4915,6 +4920,60 @@ test('processCommandEnvelope demotes old primary before promote so uniq_node_pri
       await cleanUpPromotePair(db, { serverId, managedId, standbyServerId })
     }
   })
+})
+
+test('a failover recover result moves the primary role and the epoch goes up by one', async () => {
+  await withManagedDestroyFixtures(async ({ db, serverId, managedId }) => {
+    const pair = await insertPromotePair(db, { serverId, managedId })
+    const { standbyServerId, primaryMemberId, replicaMemberId } = pair
+    try {
+      const record = await createCommandRecord(db, {
+        serverId: standbyServerId,
+        ...TEST_COMMAND_ACTOR,
+        type: 'managed.ha.failover',
+        payload: {
+          managedId,
+          sourceMemberId: primaryMemberId,
+          targetMemberId: replicaMemberId,
+          phase: 'recover',
+          engine: 'postgres',
+        },
+      })
+      assertEquals(await loadPrimaryEpoch(db, managedId), 0)
+      await processCommandEnvelope(
+        db,
+        promoteRegistry(record, standbyServerId, { summary: 'recovered', phase: 'recover' }),
+        buildEnvelope(record, standbyServerId)
+      )
+      const [promoted] = await db
+        .select({ role: replica.role })
+        .from(replica)
+        .where(eq(replica.id, replicaMemberId))
+      assertEquals(promoted?.role, 'primary')
+      assertEquals(await loadPrimaryEpoch(db, managedId), 1)
+    } finally {
+      await cleanUpPromotePair(db, { serverId, managedId, standbyServerId })
+    }
+  })
+})
+
+test('a fence stop result that answers another switchover stores no final position', () => {
+  const payload = parseManagedLifecyclePayload({
+    managedId: 'managed-1',
+    action: 'stop',
+    engine: 'postgres',
+    switchoverRecoveryId: '11111111-1111-4111-8111-111111111111',
+    primaryEpoch: 0,
+  })
+  const result = {
+    status: 'stopped',
+    oldPrimaryFinalLsn: '0/7258050',
+    oldPrimaryFinalTimeline: 1,
+  } as ManagedLifecycleCommandResult
+  assertEquals(oldPrimaryFinalFromStop(payload, '11111111-1111-4111-8111-111111111111', result), {
+    oldPrimaryFinal: { lsn: '0/7258050', timeline: 1 },
+  })
+  assertEquals(oldPrimaryFinalFromStop(payload, '22222222-2222-4222-8222-222222222222', result), {})
 })
 
 test('a switchover promote result stores the new primary replay position on the recovery row and moves the epoch', async () => {

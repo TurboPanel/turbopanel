@@ -428,8 +428,11 @@ test('the wipe is refused once the primary epoch moved after it was queued', asy
       'the primary changed after the re-seed was queued'
     )
     assertEquals(await reseedSupersededReason(f.db, { ...guard, epoch: 1 }), null)
-    // A command queued by an older release carries no epoch and is not compared.
-    assertEquals(await reseedSupersededReason(f.db, guard), null)
+    // A guard with no valid epoch cannot be proven current, so the wipe is skipped.
+    assertEquals(
+      await reseedSupersededReason(f.db, guard),
+      'the re-seed carries no valid primary epoch'
+    )
   })
 })
 

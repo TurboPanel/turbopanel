@@ -2074,7 +2074,7 @@ async function projectManagedObservedStatus(
 }
 
 /** The old primary's final position from a fence stop result, when it answers this switchover. */
-function oldPrimaryFinalFromStop(
+export function oldPrimaryFinalFromStop(
   payload: ManagedLifecyclePayload,
   recoveryId: string,
   result: ManagedLifecycleCommandResult

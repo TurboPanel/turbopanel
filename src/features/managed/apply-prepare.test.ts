@@ -16,6 +16,7 @@ import {
   organization,
   managedDatabase,
   project,
+  replica,
   server,
   service,
   tls,
@@ -27,6 +28,7 @@ import type { ManagedSettings } from './settings.ts'
 import { createManagedLogin } from './logins.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import { ensureManagedContainerAllocation } from './allocate-managed-container.ts'
+import { bumpedPrimaryEpochMetadata, loadPrimaryEpoch } from './primary-epoch.ts'
 import { isPrepareError, prepareManagedApplyPayloads } from './apply-prepare.ts'
 
 const dbUrl = getDatabaseUrl()
@@ -619,6 +621,45 @@ test('prepareManagedApplyPayloads ensures org CA and sets orgTlsMaterial with de
         )
       assertEquals(casAfter.length, 1)
       assertEquals(casAfter[0]?.caState, 'active')
+    }
+  )
+})
+
+test('preparing a multi-member apply from a stale row never moves the primary epoch back', async () => {
+  await withManagedApplyPrepareFixtures(
+    async ({ db, c, serverId, environmentId, managedId, organizationId }) => {
+      await db.insert(replica).values({ managedId, serverId, role: 'replica', ordinal: 2 })
+      try {
+        // The row read for this request still shows epoch 0; a promote then moves it to 1.
+        await db
+          .update(managed)
+          .set({ metadata: bumpedPrimaryEpochMetadata() })
+          .where(eq(managed.id, managedId))
+        const prepared = await prepareManagedApplyPayloads(c, db, {
+          managedRow: { id: managedId, engine: 'postgres', metadata: {} },
+          spec: postgresEngineSpec,
+          settings: settingsWithExposure(false),
+          databases: ['postgres'],
+          ownerRoleDatabases: undefined,
+          serverId,
+          environmentId,
+          organizationId,
+        })
+        if (isPrepareError(prepared)) {
+          throw new TypeError(`unexpected prepare error: ${prepared.kind}`)
+        }
+        assertEquals(await loadPrimaryEpoch(db, managedId), 1)
+        const [row] = await db
+          .select({ metadata: managed.metadata })
+          .from(managed)
+          .where(eq(managed.id, managedId))
+        assertEquals(
+          typeof (row?.metadata as { replicationUsername?: unknown }).replicationUsername,
+          'string'
+        )
+      } finally {
+        await db.delete(replica).where(eq(replica.managedId, managedId))
+      }
     }
   )
 })

@@ -7027,6 +7027,7 @@ export function parseWalPosition(
   timeline: unknown
 ): { lsn: string; timeline: number } | undefined {
   if (!isString(lsn) || !WAL_LSN_RE.test(lsn)) return undefined
+  if (/^0+\/0+$/.test(lsn)) return undefined
   if (
     typeof timeline !== 'number' ||
     !Number.isInteger(timeline) ||

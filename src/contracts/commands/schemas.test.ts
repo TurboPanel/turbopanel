@@ -8,6 +8,7 @@ import {
   parseCommandPayload,
   parseCommandResult,
   parseDeployComposeFiles,
+  parseWalPosition,
   parseEnvironmentDeployPayload,
   parseEnvironmentDeployResult,
   parseEnvironmentLifecyclePayload,
@@ -7750,4 +7751,11 @@ test('lifecycle and promote results keep a well-formed position and drop a malfo
   }
   // A result from a daemon that predates the fields parses as before.
   assertEquals(parseManagedLifecycleResult({ status: 'stopped' }), { status: 'stopped' })
+})
+
+test('a wal position of 0/0 is rejected, any other well formed position is kept', () => {
+  assertEquals(parseWalPosition('0/0', 1), undefined)
+  assertEquals(parseWalPosition('00000000/00000000', 1), undefined)
+  assertEquals(parseWalPosition('0/1', 1), { lsn: '0/1', timeline: 1 })
+  assertEquals(parseWalPosition('1/0', 2), { lsn: '1/0', timeline: 2 })
 })

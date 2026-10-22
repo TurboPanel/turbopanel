@@ -23,7 +23,7 @@ export type ReseedGuard = {
   managedId: string
   sourceMemberId: string
   targetMemberId: string
-  /** Primary epoch at queue time; absent on a command queued by an older release. */
+  /** Primary epoch at queue time; absent or invalid means the wipe cannot be proven current. */
   epoch?: number
 }
 
@@ -60,7 +60,8 @@ export async function reseedSupersededReason(db: Db, guard: ReseedGuard): Promis
   if (source?.role !== 'replica') return 'the former primary is no longer a replica'
   const latest = await findLatestRecovery(db, guard.managedId)
   if (latest?.id !== guard.recoveryId) return 'another recovery started after the switchover'
-  if (guard.epoch !== undefined && (await loadPrimaryEpoch(db, guard.managedId)) !== guard.epoch) {
+  if (guard.epoch === undefined) return 'the re-seed carries no valid primary epoch'
+  if ((await loadPrimaryEpoch(db, guard.managedId)) !== guard.epoch) {
     return 'the primary changed after the re-seed was queued'
   }
   return null
