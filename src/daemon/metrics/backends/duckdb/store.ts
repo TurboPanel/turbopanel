@@ -146,10 +146,10 @@ import {
   STORAGE_SAMPLES_TABLE,
   storageSamplesInsertColumns,
   storageSamplesMetricFields,
-  V8_DOCKER_COLUMNS,
-  V8_HOST_COLUMNS,
-  V8_INGRESS_COLUMNS,
-  V8_SIZE_COLUMNS,
+  V12_DOCKER_COLUMNS,
+  V12_HOST_COLUMNS,
+  V12_INGRESS_COLUMNS,
+  V12_SIZE_COLUMNS,
 } from './schema.ts'
 import { buildSampleRows, type PendingRowTable, toDuckDbTimestamp } from './sample-rows.ts'
 
@@ -321,7 +321,7 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
    */
   writeSample(input: AuthenticatedMetricsSample, slotMapping?: SlotMapping): Promise<void> {
     const rows = buildSampleRows(input, slotMapping)
-    // Latest host facts: every sample from a v8 daemon (one that sends the
+    // Latest host facts: every sample from a wire version 8 daemon (one that sends the
     // `extended` section) replaces the row, even with no text, so a fact that
     // disappears stops being shown, like on the hosted store. A v6 sample has
     // nothing to say about facts and leaves the row alone.
@@ -1266,9 +1266,9 @@ const HOST_COLUMNS = hostSamplesInsertColumns()
 const HOST_TUPLE = entityTuple(
   [],
   HOST_METRIC_FIELD_REFS.length +
-    V8_HOST_COLUMNS.length +
-    V8_INGRESS_COLUMNS.length +
-    V8_SIZE_COLUMNS.length
+    V12_HOST_COLUMNS.length +
+    V12_INGRESS_COLUMNS.length +
+    V12_SIZE_COLUMNS.length
 )
 
 const HOST_TEXT_COLUMNS = hostTextSamplesInsertColumns()
@@ -1305,7 +1305,7 @@ const STORAGE_COLUMNS = storageSamplesInsertColumns()
 const STORAGE_TUPLE = entityTuple([], storageSamplesMetricFields().length)
 
 const DOCKER_COLUMNS = dockerSamplesInsertColumns()
-const DOCKER_TUPLE = entityTuple([], DOCKER_USAGE_METRIC_FIELDS.length + V8_DOCKER_COLUMNS.length)
+const DOCKER_TUPLE = entityTuple([], DOCKER_USAGE_METRIC_FIELDS.length + V12_DOCKER_COLUMNS.length)
 
 const EVENT_COLUMNS = metricEventsInsertColumns()
 const EVENT_TUPLE =
@@ -1596,7 +1596,7 @@ function isStorageMetric(metric: string): boolean {
   return HOST_METRICS_METRIC_DESCRIPTORS[metric]?.entityScope === 'storage'
 }
 
-/** `true` when `metric` is a `managed.docker` field or a v8 container-health field, both stored in the singleton docker table. */
+/** `true` when `metric` is a `managed.docker` field or a v12 container-health field, both stored in the singleton docker table. */
 function isDockerUsageMetric(metric: string): boolean {
   const scope = HOST_METRICS_METRIC_DESCRIPTORS[metric]?.entityScope
   return scope === 'dockerUsage' || scope === 'extended.docker'

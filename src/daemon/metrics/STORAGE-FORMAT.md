@@ -1,12 +1,12 @@
-# Metrics v8 storage format
+# Metrics v12 storage format
 
 The one place that says what a stored metrics row looks like: where every number and text value lives on the
 hosted store (Cloudflare Analytics Engine) and the self-hosted store (DuckDB), what is nullable, which units
 apply, how the format is versioned, and how to add a metric. Internal; not for the public website (the
 operator-facing glossary lives in `website/docs/metrics/`).
 
-Source order when two things disagree: the code, then `testing/v8-layout.fixture.json` (pinned by tests), then
-this file. `V8-LAYOUT.md` is the generated slot spec for the hosted host rows and is kept next to this file; the
+Source order when two things disagree: the code, then `testing/v12-layout.fixture.json` (pinned by tests), then
+this file. `V12-LAYOUT.md` is the generated slot spec for the hosted host rows and is kept next to this file; the
 tables below add the contract field, unit, nullability and DuckDB column for each slot.
 
 ## At a glance
@@ -17,7 +17,7 @@ tables below add the contract field, unit, nullability and DuckDB column for eac
 | Storage stamp      | `12`, written as text in blob3 of every row. Readers accept only this value                                                                                                                                                                    | `AE_STORAGE_VERSION` (`field-map.ts:81`), `AE_SUPPORTED_SCHEMA_VERSIONS` (`backends/cloudflare/sql-api.ts:114`) |
 | Wire versions      | `[6, 8]`. 6 is the plain fallback sample (no `extended` section, no `durable` flag). Any other value, including 7, is refused with a version error                                                                                             | `METRICS_WIRE_VERSIONS` (`src/contracts/metrics-contract.ts:41`), checked at `validation.ts:320`                |
 | Wire features      | `metrics-v8` and `metrics-v8-sizes`. `metrics-v7` is not advertised. A daemon stamps 6 until the panel it is attached to advertises `metrics-v8`                                                                                               | `DAEMON_WIRE_FEATURES` (`src/lib/version-wire.ts:171-182`)                                                      |
-| Rows per sample    | VPS 4, physical 5-6, plus 1 with managed databases, plus 1 per event (16 at most)                                                                                                                                                              | `buildMetricsDataPoints` (`field-map.ts:582`), table at the end of `V8-LAYOUT.md`                               |
+| Rows per sample    | VPS 4, physical 5-6, plus 1 with managed databases, plus 1 per event (16 at most)                                                                                                                                                              | `buildMetricsDataPoints` (`field-map.ts:582`), table at the end of `V12-LAYOUT.md`                              |
 | Cap per write call | 250 data points per sample; the lowest-priority rows are dropped and logged past that                                                                                                                                                          | `capToInvocationLimit` (`field-map.ts:659`)                                                                     |
 | Self-hosted marker | `12` (`DUCKDB_SCHEMA_MARKER_VERSION`). Any older or unreadable marker discards the file and rebuilds it                                                                                                                                        | `backends/duckdb/schema.ts:99`, `backends/duckdb/database.ts`                                                   |
 | Retention          | Hosted: about 3 months (Cloudflare's own retention; the reader's default window is 90 days, `AE_DEFAULT_MAX_RANGE_SECONDS`). Self-hosted: 90 days by default (`DEFAULT_DUCKDB_RETENTION_DAYS`, env `TURBOPANEL_SERVER_METRICS_RETENTION_DAYS`) | `sql-api.ts:167`, `backends/duckdb/store.ts:168`                                                                |
@@ -32,9 +32,9 @@ tables below add the contract field, unit, nullability and DuckDB column for eac
    (and with it the dataset, see "Versioning"). Rows with another stamp are skipped, never read with the new
    meaning.
 3. **Positional tokens stay inside `backends/cloudflare/`.** `doubleN`, `blobN` and the sentinel are confined there
-   by `scripts/check-metrics-boundaries.mjs`; everything else goes through `field-map.ts` and `v8-layout.ts`.
-4. **Hosted ingest writes v8 rows for every accepted wire version.** A version 6 sample writes the same rows with
-   sentinels and empty text where the data is absent (`v8-layout.ts:12-14`).
+   by `scripts/check-metrics-boundaries.mjs`; everything else goes through `field-map.ts` and `v12-layout.ts`.
+4. **Hosted ingest writes v12 rows for every accepted wire version.** A version 6 sample writes the same rows with
+   sentinels and empty text where the data is absent (`v12-layout.ts:12-14`).
 5. **Rows name their own devices.** There is no topology generation in any row. Readers find a device by the id in
    blob6, never by a slot number.
 
@@ -54,17 +54,17 @@ are empty strings.
 
 ### Envelope of a metrics row
 
-| Slot       | Content                                                                                                                                                                                                                                                                                  |
-| ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| blob1      | row kind: `metrics`                                                                                                                                                                                                                                                                      |
-| blob2      | family: `host.system`, `host.io`, `host.network`, `host.web`, `managed.database`, `block`, `network`, `filesystem`, `gpu`, `hardware.physical`                                                                                                                                           |
-| blob3      | storage stamp, `12`                                                                                                                                                                                                                                                                      |
-| blob4      | reserved, written empty on every row (it held the topology generation before v8; readers never use one)                                                                                                                                                                                  |
-| blob5      | sample time as UTC text `YYYY-MM-DD hh:mm:ss` (`formatAeSampleTime`, `field-map.ts:374`; the one format `toDateTime` parses). Filter on Analytics Engine's own `timestamp` for ranges                                                                                                    |
-| blob6      | entity ids, comma joined, in the same order as the row's doubles (entity families). On `host.network`: `nic1=<id>@<Mb/s>;nic2=<id>@<Mb/s>;fs=<id>` (parts left out when absent; the speed follows the last `@`). Empty on the other host rows (`v8HostRowEntityIds`, `v8-layout.ts:211`) |
-| blob7-20   | content text, at most 14 blobs (`V8_CONTENT_BLOB_CAPACITY`); device rows append their per-device text entity by entity                                                                                                                                                                   |
-| double1-19 | metric values, in slot order                                                                                                                                                                                                                                                             |
-| double20   | sample interval in seconds (`metadata.intervalSeconds`), the weight for every aggregate                                                                                                                                                                                                  |
+| Slot       | Content                                                                                                                                                                                                                                                                                    |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| blob1      | row kind: `metrics`                                                                                                                                                                                                                                                                        |
+| blob2      | family: `host.system`, `host.io`, `host.network`, `host.web`, `managed.database`, `block`, `network`, `filesystem`, `gpu`, `hardware.physical`                                                                                                                                             |
+| blob3      | storage stamp, `12`                                                                                                                                                                                                                                                                        |
+| blob4      | reserved, written empty on every row (it held the topology generation before v12; readers never use one)                                                                                                                                                                                   |
+| blob5      | sample time as UTC text `YYYY-MM-DD hh:mm:ss` (`formatAeSampleTime`, `field-map.ts:374`; the one format `toDateTime` parses). Filter on Analytics Engine's own `timestamp` for ranges                                                                                                      |
+| blob6      | entity ids, comma joined, in the same order as the row's doubles (entity families). On `host.network`: `nic1=<id>@<Mb/s>;nic2=<id>@<Mb/s>;fs=<id>` (parts left out when absent; the speed follows the last `@`). Empty on the other host rows (`v12HostRowEntityIds`, `v12-layout.ts:211`) |
+| blob7-20   | content text, at most 14 blobs (`V12_CONTENT_BLOB_CAPACITY`); device rows append their per-device text entity by entity                                                                                                                                                                    |
+| double1-19 | metric values, in slot order                                                                                                                                                                                                                                                               |
+| double20   | sample interval in seconds (`metadata.intervalSeconds`), the weight for every aggregate                                                                                                                                                                                                    |
 
 ### Envelope of an event row (one per `sample.events` entry)
 
@@ -103,7 +103,7 @@ connection state is Postgres `server.is_connected`, never this stream.
 
 - `host.system`, `host.io`, `host.network`, `host.web`: every sample, on every host. A data point that does not
   apply (no Docker, no RAID, no second NIC) is the sentinel in its slot, so every server shares one layout.
-- `managed.database`: only when the sample carries managed-database data (`hasManagedDatabase`, `v8-layout.ts:446`).
+- `managed.database`: only when the sample carries managed-database data (`hasManagedDatabase`, `v12-layout.ts:446`).
 - `block`: only when there is more than one drive (one drive is covered by `host.io`). 3 drives per row.
 - `network`: NIC 3 and up, 3 per row. NIC 1 and NIC 2 ride on `host.network`.
 - `filesystem`: only when there is more than one extra filesystem, 9 per row. Exactly one extra filesystem is
@@ -116,8 +116,8 @@ connection state is Postgres `server.is_connected`, never this stream.
 
 ### Host rows: slot by slot
 
-Generated from `V8_HOST_ROW_SPECS` (`v8-layout.ts:378`), the metric descriptors (`metric-descriptors.ts`) and the
-DuckDB column helpers (`backends/duckdb/schema.ts`); the column order matches `V8-LAYOUT.md`.
+Generated from `V12_HOST_ROW_SPECS` (`v12-layout.ts:378`), the metric descriptors (`metric-descriptors.ts`) and the
+DuckDB column helpers (`backends/duckdb/schema.ts`); the column order matches `V12-LAYOUT.md`.
 
 - Contract field is `<scope>.<field>` in `src/contracts/metrics-contract.ts`.
 - "Absent means": a metric whose descriptor says `missing-when-unsupported` is shown as "no data" when empty; a
@@ -259,7 +259,7 @@ DuckDB column helpers (`backends/duckdb/schema.ts`); the column order matches `V
 Text is free on Analytics Engine (it costs no number slot and no row), so descriptive text rides on the host rows.
 All text is empty when the daemon did not send it (a version 6 daemon sends none). The contract key is
 `extended.text.<key>`; the key equals the id except `unhealthyNames`, which is `unhealthyContainers`
-(`TEXT_KEYS`, `v8-layout.ts:336`). The self-hosted store keeps the same text in `server_host_text_samples` and in text columns on the device tables.
+(`TEXT_KEYS`, `v12-layout.ts:336`). The self-hosted store keeps the same text in `server_host_text_samples` and in text columns on the device tables.
 
 | Row                | Blobs, from blob7 in order                                                                                                                                                                                    |
 | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -275,8 +275,8 @@ Caddy is totals only: there are no per-site traffic fields anywhere in the forma
 
 Each page holds up to `perPage` devices. A device takes a fixed run of consecutive doubles in the order of blob6
 (device 1 first), then its text blobs are appended device by device from blob7. Unused doubles on a page hold
-the sentinel. Packing is `packEntityPages` (`v8-layout.ts:622`); the budget is asserted at load
-(`assertV8LayoutWithinBudgets`, `field-map.ts:686`).
+the sentinel. Packing is `packEntityPages` (`v12-layout.ts:622`); the budget is asserted at load
+(`assertV12LayoutWithinBudgets`, `field-map.ts:686`).
 
 | Family              | Per page | Doubles per device, in order                                                                                                                                          | Text per device, in order                                       | Unit and nullability                                                                                                                                                                        |
 | ------------------- | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -512,19 +512,19 @@ different, stricter rule: **a layout change is a hard cut, never a dual read.**
    (`gauge`/`rate`/`delta`/`psi-percent`), aggregation, reset behaviour, availability (`missing-when-unsupported` or
    `legitimate-zero`), range and sanitize rule. The canonical name is `<entityScope>.<fieldName>`.
 3. **Registry and hosted slot.** Add the value to `field-registry.ts` with a home in both stores
-   (`STORED_FIELDS`), or with a reason in `NOT_STORED_FIELDS`. Pick a spare slot. In `backends/cloudflare/v8-layout.ts` add the id to `DOUBLE_DEFS` (or
-   `TEXT_KEYS` for text) and to `V8_HOST_ROW_SPECS` at that position; for a device row, add it to the matching
+   (`STORED_FIELDS`), or with a reason in `NOT_STORED_FIELDS`. Pick a spare slot. In `backends/cloudflare/v12-layout.ts` add the id to `DOUBLE_DEFS` (or
+   `TEXT_KEYS` for text) and to `V12_HOST_ROW_SPECS` at that position; for a device row, add it to the matching
    `*_SPEC`. Respect 19 doubles per page and 14 content blobs.
-4. **Layout spec.** The spec and fixture are generated: `scripts/metrics-v8-layout/generate.mjs` from the catalogue
-   in `scripts/metrics-v8-layout/artifact-model.cjs` and the selection in `scripts/metrics-v8-layout/plan.json`.
-   Add the catalogue row and the plan id, then run `node scripts/metrics-v8-layout/generate.mjs` to regenerate
-   `testing/v8-layout.fixture.json` and `V8-LAYOUT.md`. Do not hand-edit either.
+4. **Layout spec.** The spec and fixture are generated: `scripts/metrics-v12-layout/generate.mjs` from the catalogue
+   in `scripts/metrics-v12-layout/artifact-model.cjs` and the selection in `scripts/metrics-v12-layout/plan.json`.
+   Add the catalogue row and the plan id, then run `node scripts/metrics-v12-layout/generate.mjs` to regenerate
+   `testing/v12-layout.fixture.json` and `V12-LAYOUT.md`. Do not hand-edit either.
 5. **DuckDB.** Add the column to the right table in `backends/duckdb/schema.ts` (and its value in
    `backends/duckdb/sample-rows.ts`), and bump `DUCKDB_SCHEMA_MARKER_VERSION` (one marker bump per release, not per
    field). Update the reader mapping (`hostSeriesColumnForDescriptor`) if the scope is new.
 6. **Layout number.** Bump `METRICS_LAYOUT_VERSION` only if you moved or re-meant a written slot or changed a
    self-hosted column incompatibly (rules 2 and 4 above).
-7. **Tests.** `v8-layout.test.ts` and `v8-layout.fixture.test.ts` (fixture), `field-map.test.ts` (slots and
+7. **Tests.** `v12-layout.test.ts` and `v12-layout.fixture.test.ts` (fixture), `field-map.test.ts` (slots and
    envelope), `cross-backend-parity.test.ts` (the two stores agree on one logical sample),
    `metric-descriptors.test.ts` (descriptor and contract agree), `backends/duckdb/schema.test.ts`. New
    `*.test.ts` files must be claimed in `scripts/test-coverage.sh` or `vitest.config.ts`, then
@@ -537,10 +537,10 @@ different, stricter rule: **a layout change is a hard cut, never a dual read.**
 
 ## Where to verify
 
-- Slot meaning: `backends/cloudflare/v8-layout.ts` and `field-map.ts`; pinned by `v8-layout.test.ts` against
-  `testing/v8-layout.fixture.json`.
+- Slot meaning: `backends/cloudflare/v12-layout.ts` and `field-map.ts`; pinned by `v12-layout.test.ts` against
+  `testing/v12-layout.fixture.json`.
 - Reads: `backends/cloudflare/sql-api.ts` (hosted) and `backends/duckdb/store.ts` (self-hosted).
-- Parity: `backends/cloudflare/cross-backend-parity.test.ts`, `v8-readers.parity.test.ts`.
+- Parity: `backends/cloudflare/cross-backend-parity.test.ts`, `v12-readers.parity.test.ts`.
 - Sizes and how percentages divide by them: the "Sizes ride every sample" section of `AGENTS.md` in this folder.
 - Older sections of that `AGENTS.md` (family catalog, v6 envelope table) describe the retired v6 layout and are kept
   only as the read-side reference; where they disagree with this file, this file wins.

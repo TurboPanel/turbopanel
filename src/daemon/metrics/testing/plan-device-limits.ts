@@ -1,7 +1,7 @@
 /**
  * Test-only: shrink a sample to the box a layout case describes.
  *
- * The layout fixture (`v8-layout.fixture.json`) and the representative
+ * The layout fixture (`v12-layout.fixture.json`) and the representative
  * machines are built for a grid of box sizes, each with a number of drives,
  * network cards, GPUs, extra disks and sensors. Production no longer cuts
  * devices to a plan (a server stores what it has); this helper only reproduces
