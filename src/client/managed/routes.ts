@@ -501,8 +501,11 @@ async function enqueueOrphanManagedPromote(
     managedId: string
     member: ManagedMemberRow
     engine: string
+    /** The reading only passed the gate because a fence was going to run. */
+    requireFence: boolean
   }
 ): Promise<Response> {
+  if (params.requireFence) return c.json({ error: 'managed_replica_not_fully_applied' }, 409)
   const enqueued = await enqueueTypedCommand(c, db, commandQueue, {
     userId: params.userId,
     serverId: params.member.serverId,
@@ -3372,13 +3375,12 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const members = await listManagedMembers(db, row.id)
     const primary = members.find((m) => m.role === 'primary')
     if (!primary) {
-      // The reading only passed because a fence was going to run.
-      if (requireFence) return c.json({ error: 'managed_replica_not_fully_applied' }, 409)
       return enqueueOrphanManagedPromote(c, db, commandQueue, {
         userId: auth.userId,
         managedId: row.id,
         member,
         engine: ctx.spec.engine,
+        requireFence,
       })
     }
 
