@@ -63,28 +63,61 @@ test('MySQL and MariaDB are never proven: asynchronous, no final position to com
   }
 })
 
+const FINAL = { oldPrimaryFinalTimeline: 1, newPrimaryTimeline: 2 }
+
 test('the final position is proven only when the new primary is at or past the old one', () => {
   assertEquals(
-    evaluateFinalPosition({ oldPrimaryFinalLsn: '0/5000060', newPrimaryReplayLsn: '0/5000060' })
+    evaluateFinalPosition({
+      ...FINAL,
+      oldPrimaryFinalLsn: '0/5000060',
+      newPrimaryReplayLsn: '0/5000060',
+    }).caughtUp,
+    true
+  )
+  assertEquals(
+    evaluateFinalPosition({ ...FINAL, oldPrimaryFinalLsn: '0/5000060', newPrimaryReplayLsn: '1/0' })
       .caughtUp,
     true
   )
   assertEquals(
-    evaluateFinalPosition({ oldPrimaryFinalLsn: '0/5000060', newPrimaryReplayLsn: '1/0' }).caughtUp,
-    true
+    evaluateFinalPosition({
+      ...FINAL,
+      oldPrimaryFinalLsn: '0/5000060',
+      newPrimaryReplayLsn: '0/5000058',
+    }).basis,
+    'final position not proven: new primary is behind'
   )
-  assertEquals(
-    evaluateFinalPosition({ oldPrimaryFinalLsn: '0/5000060', newPrimaryReplayLsn: '0/5000058' })
-      .caughtUp,
-    false
-  )
+})
+
+test('the new primary must have promoted onto the timeline right after the old one', () => {
+  for (const newPrimaryTimeline of [1, 3, 5]) {
+    assertEquals(
+      evaluateFinalPosition({
+        oldPrimaryFinalTimeline: 1,
+        newPrimaryTimeline,
+        oldPrimaryFinalLsn: '0/5000060',
+        newPrimaryReplayLsn: '0/5000060',
+      }).basis,
+      'final position not proven: timeline does not follow'
+    )
+  }
 })
 
 test('a missing or unreadable final position is not proof', () => {
   assertEquals(evaluateFinalPosition({}).caughtUp, false)
   assertEquals(evaluateFinalPosition({ oldPrimaryFinalLsn: '0/5000060' }).caughtUp, false)
   assertEquals(
-    evaluateFinalPosition({ oldPrimaryFinalLsn: 'nope', newPrimaryReplayLsn: '0/5000060' }).basis,
+    evaluateFinalPosition({
+      ...FINAL,
+      oldPrimaryFinalLsn: 'nope',
+      newPrimaryReplayLsn: '0/5000060',
+    }).basis,
     'final position not proven'
+  )
+  // Positions without their timelines are not proof either.
+  assertEquals(
+    evaluateFinalPosition({ oldPrimaryFinalLsn: '0/5000060', newPrimaryReplayLsn: '0/5000060' })
+      .caughtUp,
+    false
   )
 })

@@ -157,14 +157,20 @@ export type RecoveryMetadata = {
    * two the old primary stays `needs_resync` until an operator runs Resync.
    */
   /**
-   * Postgres switchover: the old primary's final write position taken after it
-   * was stopped, and the new primary's replay position at promote
-   * (`pg_lsn` text such as `0/5000060`). The automatic re-seed needs both and
-   * needs the new primary's to be at or past the old primary's. No daemon
-   * result reports either yet, so nothing sets them today.
+   * Postgres switchover: the old primary's final write position (where its WAL
+   * ends after the clean shutdown) reported by the stop result, and the position
+   * the new primary had replayed to, reported by the promote result (`pg_lsn`
+   * text such as `0/7258050`), each with its timeline. Stored by
+   * `switchover-position.ts` only for a Postgres switchover and only when
+   * strictly valid. The automatic re-seed needs both, the new primary on the
+   * timeline after the old one, and its position at or past the old primary's.
    */
   oldPrimaryFinalLsn?: string
+  oldPrimaryFinalTimeline?: number
   newPrimaryReplayLsn?: string
+  newPrimaryTimeline?: number
+  /** The managed cluster's primary epoch when the switchover began. */
+  primaryEpochAtStart?: number
   reseedState?: 'queued' | 'skipped' | 'failed'
   reseedNote?: string
   blockedReason?: string
@@ -262,6 +268,14 @@ function optionalNullableString(value: unknown): string | null | undefined {
   return optionalString(value)
 }
 
+function optionalPositiveInt(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 1 ? value : undefined
+}
+
+function optionalNonNegativeInt(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : undefined
+}
+
 function optionalNullableNumber(value: unknown): number | null | undefined {
   if (value === null) return null
   return typeof value === 'number' ? value : undefined
@@ -312,6 +326,13 @@ export function parseRecoveryMetadata(value: unknown): RecoveryMetadata {
   }
   setIfPresent(metadata, 'oldPrimaryFinalLsn', optionalString(value.oldPrimaryFinalLsn))
   setIfPresent(metadata, 'newPrimaryReplayLsn', optionalString(value.newPrimaryReplayLsn))
+  setIfPresent(
+    metadata,
+    'oldPrimaryFinalTimeline',
+    optionalPositiveInt(value.oldPrimaryFinalTimeline)
+  )
+  setIfPresent(metadata, 'newPrimaryTimeline', optionalPositiveInt(value.newPrimaryTimeline))
+  setIfPresent(metadata, 'primaryEpochAtStart', optionalNonNegativeInt(value.primaryEpochAtStart))
   setIfPresent(metadata, 'reseedNote', optionalString(value.reseedNote))
   setIfPresent(metadata, 'blockedReason', optionalString(value.blockedReason))
   setIfPresent(metadata, 'blockedCount', optionalNullableNumber(value.blockedCount) ?? undefined)

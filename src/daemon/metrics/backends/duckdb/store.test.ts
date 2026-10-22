@@ -793,6 +793,35 @@ it('v5 queryFleetHostSnapshot: multiple servers, values map, a requested-but-abs
   })
 })
 
+it('queryFleetHostSnapshot: reads the per-sample sizes the fleet overview divides memory and swap by', async () => {
+  await withStore(async (store) => {
+    await store.writeSample(
+      sample({
+        serverId: SERVER_A,
+        atMs: DAY_START,
+        cpuBusyPercent: 10,
+        extended: { sizes: { memoryTotalBytes: 8e9, swapTotalBytes: 2e9 } },
+      })
+    )
+
+    const result = await store.queryFleetHostSnapshot({
+      serverIds: [SERVER_A],
+      metrics: [
+        'host.cpu.busyPercent',
+        'extended.sizes.memoryTotalBytes',
+        'extended.sizes.swapTotalBytes',
+      ],
+      from: new Date(DAY_START).toISOString(),
+      to: new Date(DAY_START + 600_000).toISOString(),
+    })
+
+    const values = result.servers[0]?.values
+    assertEquals(values?.['host.cpu.busyPercent'], 10)
+    assertEquals(values?.['extended.sizes.memoryTotalBytes'], 8e9)
+    assertEquals(values?.['extended.sizes.swapTotalBytes'], 2e9)
+  })
+})
+
 it('v12 queryFleetHostSnapshot: a data point v12 no longer stores reads as empty even though the column holds a value', async () => {
   await withStore(async (store) => {
     const withFaults = sample({ serverId: SERVER_A, atMs: DAY_START, cpuBusyPercent: 10 })
