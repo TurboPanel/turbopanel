@@ -23,9 +23,9 @@
     },
     {
       "idx": 3,
-      "tag": "0003_principal_access",
-      "when": 1792772699533,
-      "sha256": "4f86b3d65624c93ce7e04239394de0d36eee4363fd2c211dc470d87988f9455d"
+      "tag": "0003_server_architecture_check",
+      "when": 1792771227864,
+      "sha256": "e2073e226449ac2c63b59d467df12c06c7d8dc9e36498fd75c44a864eb6eff5c"
     }
   ]
 }
