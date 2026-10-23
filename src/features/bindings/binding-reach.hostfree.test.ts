@@ -72,7 +72,7 @@ function fixtureDb(params: {
   const publicAddresses = params.publicAddresses ?? []
   const datacenterOptions = [...new Set(memberships.map((row) => row.datacenterId))]
     .sort((a, b) => a.localeCompare(b))
-    .map((id) => ({ id, options: {} }))
+    .map((id) => ({ id, priority: 100, isTrusted: true, addressPreference: 'ipv6' }))
 
   return {
     select(fields: Record<string, unknown>) {
@@ -113,7 +113,7 @@ function fixtureDb(params: {
           }),
         }
       }
-      if (keys.length === 2 && keySet.has('id') && keySet.has('options')) {
+      if (keySet.has('id') && keySet.has('priority') && keySet.has('addressPreference')) {
         return { from: () => ({ where: () => thenable(datacenterOptions) }) }
       }
       throw new TypeError(`unexpected select keys: ${keys.join(',')}`)
