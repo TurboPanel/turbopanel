@@ -484,17 +484,13 @@ them only while something writes it (owner decision 2026-10-17: the empty pairs
 were dropped in the baseline); add the column back, with its description, in the
 change that first writes it.
 
-## Schema cutover (executed — see ledger archive)
+## Schema cutover (executed)
 
-The phase-1 cutover ledger — the full table/column/constraint inventory, locked
-renames, and per-item keep/rename/drop adjudications with reasons — is archived
-outside the repo in the
-[TurboPanel Schema Archive](https://claude.ai/artifact/EKjs2tdF2C9zLy3GdfPdfC)
-artifact ("Cutover ledger"). Phase 2 executed
-it: `schema.ts` and the squashed `migrations/0000_init.sql` use the post-cutover
-names below, and the retired names are rejected by `table-naming.test.ts`.
-Consult the ledger only for the historical **why** behind a kept or dropped
-item.
+The phase-1 cutover ledger (the full table/column/constraint inventory, locked
+renames, and per-item keep/rename/drop adjudications with reasons) is no longer
+kept in this repo. Phase 2 executed it: `schema.ts` and the squashed migrations
+use the post-cutover names below, and the retired names are rejected by
+`table-naming.test.ts`.
 
 ## Table groupings
 
