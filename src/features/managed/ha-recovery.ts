@@ -1200,7 +1200,7 @@ async function abortSwitchoverWhenGtidMissing(
   await failRecoveryForOperator(
     db,
     record.id,
-    'Planned switchover stopped: the old primary GTID position was not recorded before promotion'
+    'Planned switchover stopped: the current primary did not answer in time, so nothing was changed and it stays the primary'
   )
   await stampManagedReady(db, record.managedId)
   return true
