@@ -168,7 +168,7 @@ export function chosenNetworkDownWarnings(
   if (!winner) return []
   const serverIds = [
     ...new Set(pins.filter((p) => p.datacenterId === winner && p.linkDown).map((p) => p.serverId)),
-  ].sort()
+  ].sort((a, b) => a.localeCompare(b))
   if (serverIds.length === 0) return []
   const fallback =
     datacenters
