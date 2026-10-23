@@ -694,7 +694,12 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
       logWarn('daemon-cell', `datacenter repin fan-out sweep error: ${String(err)}`)
     })
     // Backup policy sets once after each reconnect (hello must not enqueue).
-    void runBackupsReconcileSweep(db, commandQueue).catch((err) => {
+    void runBackupsReconcileSweep(db, commandQueue, {
+      copyDeps:
+        secretsConfig && dataEncryptionSecrets
+          ? { secretsConfig, dataEncryptionSecrets }
+          : undefined,
+    }).catch((err) => {
       logWarn('daemon-cell', `backups reconcile sweep error: ${String(err)}`)
     })
     // Folders of deleted assets whose host has not confirmed them gone: asked

@@ -1057,6 +1057,67 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'Host that holds the on-disk artifact (the primary when the backup ran); null on older rows or after that server is deleted.',
     },
   },
+  destination: {
+    group: 'managed',
+    summary:
+      'A named S3-compatible destination an organization copies finished backups to; the secret key is sealed and never returned by an API.',
+    columns: {
+      name: 'Label the organization gave the target, unique per organization, 1 to 64 characters.',
+      kind: 'Kind of destination; only `s3` (S3-compatible object storage) for now.',
+      endpoint: 'Base URL of the storage service, for example `https://s3.example.com`; no path.',
+      region:
+        'Region name used when signing requests; `us-east-1` when the provider has no regions.',
+      bucket: 'Bucket the copies are written to.',
+      prefix:
+        'Folder inside the bucket, without a leading or trailing slash; empty for the bucket root.',
+      is_path_style:
+        'True addresses the bucket in the path (`endpoint/bucket/key`); false uses the bucket as a host name prefix.',
+      is_server_side_encrypted:
+        'True asks the storage to encrypt each object at rest with its own key (`AES256`).',
+      access_key_id: 'Access key id for the bucket; an identifier, returned by the API.',
+      secret_key_sealed:
+        'Secret access key sealed with the instance data key (`tpsecret` envelope); never returned by any API.',
+      last_tested_at:
+        'When the connection test last ran against this target; null before the first test.',
+      is_last_test_ok:
+        'True when the last connection test passed, false when it failed; null before the first test.',
+      last_test_error:
+        'A plain reason the last connection test failed; null when it passed or was never run.',
+      created_by: 'User who created the target, set null if that user is deleted.',
+    },
+  },
+  selection: {
+    group: 'managed',
+    summary:
+      "Which backup target applies where: a row with no `managed_id` is the organization's default, a row with one is that cluster's own choice.",
+    columns: {
+      managed_id:
+        'The cluster this row overrides the default for; null for the organization default.',
+      target_id:
+        'Target to copy to; null on a cluster row means no copy for that cluster even when a default exists.',
+    },
+  },
+  mirror: {
+    group: 'managed',
+    summary:
+      "How copying one backup to one target stands, as the host reported it; keyed by the engine and the daemon's `bk_` id, cascades with the cluster.",
+    columns: {
+      managed_id: 'The cluster whose backup this is.',
+      backup_id:
+        'The daemon-minted `bk_` id of the backup, matching `backup.backup_id`; kept as text so a report can land first.',
+      target_id: 'Target the copy went to, set null if the target is deleted.',
+      target_name:
+        'Name the target had when the copy was recorded, so a deleted target still reads in plain words.',
+      state:
+        'One of `pending`, `copying`, `copied`, `failed` or `removed` (pruned from the bucket by retention).',
+      error: 'A plain reason the copy failed; null otherwise.',
+      object_key: 'Object key in the bucket, prefix included; set once the copy is done.',
+      size_bytes: 'Size of the copied object in bytes as the host reported it.',
+      attempts: 'How many times the host tried to copy this backup.',
+      copied_at: 'When the host reported the copy finished; null until then.',
+      server_id: 'The host that reported the latest state, set null if that server is deleted.',
+    },
+  },
   retention: {
     group: 'managed',
     summary:

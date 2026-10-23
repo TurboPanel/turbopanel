@@ -27,6 +27,7 @@ import { workspacePaths, workspaceSchemas } from './workspaces.ts'
 import { storagePaths, storageSchemas } from './storage.ts'
 import { storageBackupPaths, storageBackupSchemas } from './storage-backups.ts'
 import { firewallPaths, firewallSchemas } from './firewall.ts'
+import { backupTargetPaths, backupTargetSchemas } from './backup-targets.ts'
 import { activityPaths, activitySchemas } from './activity.ts'
 import { organizationMemberPaths, organizationMemberSchemas } from './organization-members.ts'
 import { repositoryPaths, repositorySchemas } from './repositories.ts'
@@ -174,6 +175,7 @@ export function getClientOpenApiSpec(serverUrl: string, options?: ClientOpenApiO
         ...storageSchemas,
         ...storageBackupSchemas,
         ...firewallSchemas,
+        ...backupTargetSchemas,
         ...organizationMemberSchemas,
         ...activitySchemas,
         ...repositorySchemas,
@@ -212,6 +214,7 @@ export function getClientOpenApiSpec(serverUrl: string, options?: ClientOpenApiO
       ...storagePaths,
       ...storageBackupPaths,
       ...firewallPaths,
+      ...backupTargetPaths,
       ...organizationMemberPaths,
       ...activityPaths,
       ...repositoryPaths,
