@@ -26,8 +26,22 @@
     {
       "idx": 3,
       "version": "7",
-      "when": 1792771223762,
-      "tag": "0003_backup_copy_tables",
+      "when": 1792771227864,
+      "tag": "0003_server_architecture_check",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1792773762483,
+      "tag": "0004_datacenter_option_columns",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1792774861329,
+      "tag": "0005_backup_copy_tables",
       "breakpoints": true
     }
   ]

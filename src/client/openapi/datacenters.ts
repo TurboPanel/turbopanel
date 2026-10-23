@@ -38,12 +38,17 @@ export const datacenterSchemas = {
         minimum: 0,
         maximum: 1000,
         description:
-          'Effective routing-ladder rank (`options.priority` with the default `100` applied). Lower wins.',
+          'Effective routing-ladder rank (`options.priority`, stored in a column, default `100`). Lower wins.',
       },
       trusted: {
         type: 'boolean',
         description:
-          "Effective trust flag (`options.trusted` with the default `true` applied). `false` means the datacenter's L2 is not under the operator's control.",
+          "Effective trust flag (`options.trusted`, stored in a column, default `true`). `false` means the datacenter's L2 is not under the operator's control.",
+      },
+      kind: {
+        type: ['string', 'null'],
+        enum: ['lan', 'backplane', 'provider_private', null],
+        description: 'What the network is; `null` when the operator never said.',
       },
       serverTraffic: {
         type: 'object',
@@ -210,6 +215,12 @@ export const datacenterSchemas = {
           },
         },
       },
+      kind: {
+        type: ['string', 'null'],
+        enum: ['lan', 'backplane', 'provider_private', null],
+        description:
+          'What the network is; omit or `null` when unknown. Anything else is 400 `invalid_kind`.',
+      },
       sourceServerId: {
         type: 'string',
         format: 'uuid',
@@ -228,6 +239,11 @@ export const datacenterSchemas = {
         type: ['object', 'null'],
         description:
           "Replace-all datacenter options; `null` clears the stored blob so the documented defaults apply again. `addressPreference` is `'ipv4'` or `'ipv6'`; `priority` is an integer 0–1000 (lower wins); `trusted` is a boolean. The location override is never changed through `options` (a `location` key there is ignored, and replacing or clearing `options` keeps it) — send the top-level `location` field to edit it.",
+      },
+      kind: {
+        type: ['string', 'null'],
+        enum: ['lan', 'backplane', 'provider_private', null],
+        description: 'What the network is; `null` clears it. Anything else is 400 `invalid_kind`.',
       },
       location: {
         $ref: '#/components/schemas/LocationPatch',

@@ -180,7 +180,7 @@ export const tls = pgTable(
     certificatePem: text('certificate_pem'),
     /** Sealed `tpsecret` private key PEM; null while LE `pending` before keygen. */
     privateKeyPem: text('private_key_pem'),
-    /** `ready` | `pending` | `expired` | `failed` | `revoked` */
+    /** `ready` | `pending` | `expired` | `failed` | `revoked` | `managed` (Caddy ACME intent) */
     status: text().default('ready').notNull(),
     notAfter: timestamp('not_after', {
       precision: 3,
@@ -370,10 +370,11 @@ export const passkey = pgTable(
  * Logical routing domain — not a building — of mutually routable private
  * subnets (IPv4 and/or IPv6); optional — a server may belong to zero or many
  * datacenters via `ip` pins. `options` mirrors `organization.options` for
- * `defaultServerTimezone` / `enforceServerTimezone`, and carries routing policy
- * `priority` (integer, lower wins, default 100) and `trusted` (default true;
- * false when the L2 is not under the operator's control) parsed by
- * `src/features/datacenters/datacenter-options.ts`. Must stay declared before `server` (same
+ * `defaultServerTimezone` / `enforceServerTimezone` (parsed by
+ * `src/features/datacenters/datacenter-options.ts`); the routing policy lives in
+ * real columns: `priority` (integer, lower wins, default 100), `trusted`
+ * (default true; false when the L2 is not under the operator's control) and
+ * `address_preference`, plus the optional `kind` of network. Must stay declared before `server` (same
  * rule as `license`).
  */
 export const datacenter = pgTable(
@@ -403,6 +404,14 @@ export const datacenter = pgTable(
     organizationId: uuid('organization_id').notNull(),
     name: text(),
     description: text('description'),
+    /** Routing-ladder rank among a server's datacenters, 0..1000, lower wins. */
+    priority: integer().default(100).notNull(),
+    /** Whether the operator controls the datacenter's L2; `false` keeps server-to-server traffic off it. */
+    isTrusted: boolean('is_trusted').default(true).notNull(),
+    /** Address family tried first among a server's pins here: `ipv6` or `ipv4`. */
+    addressPreference: text('address_preference').default('ipv6').notNull(),
+    /** What the network is: `lan`, `backplane` or `provider_private`; NULL means the operator never said. */
+    kind: text(),
   },
   (table) => [
     index('idx_datacenter_organization_id').using(
@@ -414,6 +423,12 @@ export const datacenter = pgTable(
       foreignColumns: [organization.id],
       name: 'datacenter_organization_id_organization_id_fk',
     }).onDelete('cascade'),
+    check('datacenter_priority_check', sql`priority >= 0 AND priority <= 1000`),
+    check('datacenter_address_preference_check', sql`address_preference IN ('ipv6', 'ipv4')`),
+    check(
+      'datacenter_kind_check',
+      sql`kind IS NULL OR kind IN ('lan', 'backplane', 'provider_private')`
+    ),
   ]
 )
 /**
@@ -630,19 +645,15 @@ export const server = pgTable(
      * serializes as `connected`.
      */
     /**
-     * The tier this server is assigned from the organization's purchased
-     * quantities — **derived**, never chosen: recomputed by
-     * `src/features/tiers/assignment-records.ts` whenever seats, the self-hosted
-     * grant, or hardware change, and read on every ingest sample for the
-     * capability plan. Null on a server with no active license, and on a
-     * licensed server nothing entitled covers. Self-hosted is entitled by
-     * the SX grant, so the column is populated there too.
+     * The tier an organization manager assigned this server (license-tier
+     * route, or an owner-named upgrade or downgrade). On self-hosted, the top
+     * tier is filled into a licensed server that has none. Never recomputed;
+     * null until assigned.
      */
     assignedTierId: uuid('assigned_tier_id'),
     /**
-     * Operator-chosen floor for assignment: use a spare license at this tier
-     * or the smallest tier above before falling back to the derived smallest
-     * that fits. Null means derive only.
+     * Written in step with `assigned_tier_id` by the manager route, for the
+     * console's picked label; never read to place a server.
      */
     preferredTierId: uuid('preferred_tier_id'),
     isConnected: boolean('is_connected').default(false).notNull(),
@@ -747,6 +758,10 @@ export const server = pgTable(
     check(
       'server_machine_class_source_check',
       sql`machine_class_source IN ('detected', 'operator')`
+    ),
+    check(
+      'server_os_architecture_check',
+      sql`os_architecture IS NULL OR os_architecture IN ('x86_64', 'aarch64')`
     ),
     check('server_offline_reason_check', sql`offline_reason IN ('disconnect', 'sweep_stale')`),
     check(

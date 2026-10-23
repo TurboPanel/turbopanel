@@ -36,8 +36,15 @@ import {
   LOGIN_CONNECTION_ROLES,
   LOGIN_GRANT_MODES,
 } from '../features/managed/logins.ts'
+import {
+  DATACENTER_ADDRESS_PREFERENCES,
+  DATACENTER_KINDS,
+} from '../features/datacenters/datacenter-options.ts'
 import { PRINCIPAL_NAME_SCHEMES } from '../lib/principal-name-scheme.ts'
-import { SERVER_MACHINE_CLASS_SOURCES } from '../contracts/capability-plan.ts'
+import {
+  SERVER_MACHINE_CLASS_SOURCES,
+  SERVER_OS_ARCHITECTURES,
+} from '../contracts/capability-plan.ts'
 import {
   SERVER_DAEMON_UPDATE_STATUSES,
   SERVER_OFFLINE_REASONS,
@@ -131,11 +138,14 @@ const CASES: Array<[constraint: string, values: readonly string[]]> = [
   ['stage_status_check', UPGRADE_STEP_STATUSES],
   ['login_role_check', DATABASE_LOGIN_ROLES],
   ['server_machine_class_source_check', SERVER_MACHINE_CLASS_SOURCES],
+  ['server_os_architecture_check', SERVER_OS_ARCHITECTURES],
   ['server_offline_reason_check', SERVER_OFFLINE_REASONS],
   ['server_daemon_update_status_check', SERVER_DAEMON_UPDATE_STATUSES],
   ['login_grant_mode_check', LOGIN_GRANT_MODES],
   ['login_access_check', LOGIN_CONNECTION_ROLES],
   ['login_name_scheme_check', PRINCIPAL_NAME_SCHEMES],
+  ['datacenter_address_preference_check', DATACENTER_ADDRESS_PREFERENCES],
+  ['datacenter_kind_check', DATACENTER_KINDS],
 ]
 
 for (const [constraint, values] of CASES) {
