@@ -145,6 +145,8 @@ export type RecoveryMetadata = {
   /** Whether the old primary's stop may have reached its server (a start is needed). */
   abortRestartReactivate?: boolean
   abortRestartAttempts?: number
+  /** When a sweep took the restart commands to queue them; a stale claim is taken over. */
+  abortRestartClaimedAt?: string
   /** The fence steps cancelled for this abort. */
   abortRestartStepIds?: string[]
   haPresent?: boolean
@@ -327,6 +329,7 @@ export function parseRecoveryMetadata(value: unknown): RecoveryMetadata {
   setIfPresent(metadata, 'abortRestartTodo', optionalStringList(value.abortRestartTodo))
   setIfPresent(metadata, 'abortRestartReactivate', optionalBoolean(value.abortRestartReactivate))
   setIfPresent(metadata, 'abortRestartAttempts', optionalNonNegativeInt(value.abortRestartAttempts))
+  setIfPresent(metadata, 'abortRestartClaimedAt', optionalString(value.abortRestartClaimedAt))
   setIfPresent(metadata, 'abortRestartStepIds', optionalStringList(value.abortRestartStepIds))
   setIfPresent(metadata, 'haPresent', optionalBoolean(value.haPresent))
   setIfPresent(metadata, 'fenced', optionalBoolean(value.fenced))

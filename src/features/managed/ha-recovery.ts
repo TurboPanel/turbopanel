@@ -1187,11 +1187,14 @@ export async function enqueueSwitchoverAbortReactivation(
     reactivate?: boolean
     /** Only these commands (`start`, `undrain:<serverId>`); everything when absent. */
     only?: ReadonlySet<string>
+    /** Asked before each command; false stops the rest (the restart is no longer wanted). */
+    before?: () => Promise<boolean>
   }
 ): Promise<string[]> {
   const missing: string[] = []
   const wanted = (key: string) => params.only === undefined || params.only.has(key)
-  if (params.reactivate !== false && wanted('start')) {
+  const allowed = async () => (params.before ? await params.before() : true)
+  if (params.reactivate !== false && wanted('start') && (await allowed())) {
     const queued = await enqueueCommand(db, commandQueue, {
       serverId: params.source.serverId,
       type: 'managed.lifecycle',
@@ -1210,7 +1213,7 @@ export async function enqueueSwitchoverAbortReactivation(
   const undrainServers = [...new Set(params.members.map((row) => row.serverId))]
   await forEachSequential(undrainServers, async (serverId) => {
     const key = `undrain:${serverId}`
-    if (!wanted(key) || !(await isServerConnected(db, serverId))) return
+    if (!wanted(key) || !(await isServerConnected(db, serverId)) || !(await allowed())) return
     const payload = await failoverPayload(db, serverId, {
       managedId: params.record.managedId,
       source: params.source,
@@ -1896,7 +1899,8 @@ async function expireStalledFence(
   commandQueue: CommandQueue | undefined,
   row: RecoveryRecord,
   nowMs: number,
-  recentRecoveries?: typeof listRecentRecoveries
+  recentRecoveries?: typeof listRecentRecoveries,
+  deps: AbortRestartDeps = {}
 ): Promise<boolean> {
   const steps = await loadFenceStepStates(db, row.metadata.fenceCommandIds ?? [])
   const stop = steps.find((step) => step.phase === 'stop')
@@ -1937,7 +1941,24 @@ async function expireStalledFence(
     })
     if (!blocked) return false
     await cancelOpenFenceSteps(db, steps)
-    await finishAbortRestart(db, commandQueue, row.id, engine, actor)
+    // A stop sent between the first read and the cancel may have stopped the
+    // old primary: read the steps again, the start is then needed.
+    const after = await loadFenceStepStates(db, row.metadata.fenceCommandIds ?? [])
+    if (
+      !plan.stopDelivered &&
+      after.some((step) => step.phase === 'stop' && step.sentAt !== null)
+    ) {
+      await updateRecoveryLocked(
+        db,
+        row.id,
+        (current) =>
+          current.state === 'blocked' && current.metadata.abortRestartTodo
+            ? { metadata: { ...current.metadata, abortRestartReactivate: true } }
+            : null,
+        { includeTerminal: true }
+      )
+    }
+    await finishAbortRestart(db, commandQueue, row.id, engine, actor, deps)
     return true
   }
 
@@ -1968,65 +1989,141 @@ async function expireStalledFence(
   return true
 }
 
+/** How long a sweep's claim on the restart commands holds before another sweep may take over. */
+const ABORT_RESTART_CLAIM_MS = 120_000
+
+/**
+ * Why the old primary must NOT be brought back any more, or null. A newer
+ * recovery exists for the cluster (it may have fenced, promoted or be about to),
+ * or the cluster's primary is no longer the member the switchover started from.
+ */
+export async function abortRestartStaleReason(db: Db, row: RecoveryRecord): Promise<string | null> {
+  const latest = await findLatestRecovery(db, row.managedId)
+  if (latest && latest.id !== row.id) return 'a newer recovery exists for the cluster'
+  const members = await listManagedMembers(db, row.managedId)
+  const primary = members.find((member) => member.role === 'primary')
+  if (primary?.id !== row.sourcePrimaryMemberId) return 'the cluster primary changed'
+  return null
+}
+
+type AbortRestartDeps = {
+  staleReason?: typeof abortRestartStaleReason
+  nowMs?: () => number
+}
+
 /**
  * Queue what brings the old primary back after a planned switchover ended at
  * the fence deadline. The row is already `blocked` by the guarded change, so a
- * late stop confirmation cannot start a promote beside it. Each run queues only
- * the commands not queued yet (`abortRestartTodo`); the sweep calls this again
- * until none is missing. After 3 runs with something still missing, or at once
- * with no command queue or no source member, the row ends `failed` for the
- * operator.
+ * late stop confirmation cannot start a promote beside it.
+ * - It never acts on a cluster that has moved on: when a newer recovery exists
+ *   or the primary changed (checked before the claim and before every command),
+ *   the todo is cleared and nothing is queued.
+ * - The todo is claimed under the row lock before anything is queued, so two
+ *   sweeps (cleanup lane and cron) do not queue the same commands; a claim
+ *   older than `ABORT_RESTART_CLAIM_MS` (a crashed sweep) is taken over.
+ * - Each run queues only the commands not queued yet (`abortRestartTodo`).
+ *   An error while queueing counts as a try like a command that could not be
+ *   queued. After 3 tries, or at once with no command queue or no source member,
+ *   the row ends `failed` for the operator.
  */
 async function finishAbortRestart(
   db: Db,
   commandQueue: CommandQueue | undefined,
   recoveryId: string,
   engine: ManagedEngineCode,
-  actor: RecoveryCommandActor
+  actor: RecoveryCommandActor,
+  deps: AbortRestartDeps = {}
 ): Promise<void> {
+  const nowMs = (deps.nowMs ?? Date.now)()
+  const staleReason = deps.staleReason ?? abortRestartStaleReason
   const owed = (current: RecoveryRecord) =>
     current.state === 'blocked' &&
     !current.metadata.stopApplied &&
     (current.metadata.abortRestartTodo?.length ?? 0) > 0
-  // The guard is read under the row lock right before anything is queued.
+  const clearTodo = (current: RecoveryRecord) =>
+    owed(current)
+      ? {
+          metadata: {
+            ...current.metadata,
+            abortRestartTodo: [],
+            abortRestartClaimedAt: undefined,
+          },
+        }
+      : null
+
+  const current = await findRecoveryById(db, recoveryId)
+  if (!current || !owed(current)) return
+
+  // Claim under the row lock, before anything is queued.
   const locked = await updateRecoveryLocked(
     db,
     recoveryId,
-    (current) => (owed(current) ? { metadata: current.metadata } : null),
+    (row) => {
+      if (!owed(row)) return null
+      const claimedAt = Date.parse(row.metadata.abortRestartClaimedAt ?? '')
+      if (Number.isFinite(claimedAt) && nowMs - claimedAt < ABORT_RESTART_CLAIM_MS) return null
+      return {
+        metadata: { ...row.metadata, abortRestartClaimedAt: new Date(nowMs).toISOString() },
+      }
+    },
     { includeTerminal: true }
   )
   if (!locked) return
-  const members = await listManagedMembers(db, locked.managedId)
-  const source = members.find((member) => member.id === locked.sourcePrimaryMemberId)
+
   const todo = locked.metadata.abortRestartTodo ?? []
-  const missing =
-    commandQueue && source
-      ? await enqueueSwitchoverAbortReactivation(db, commandQueue, {
-          record: locked,
-          engine,
-          actor,
-          source,
-          members,
-          reactivate: locked.metadata.abortRestartReactivate,
-          ...(todo.includes('*') ? {} : { only: new Set(todo) }),
-        })
-      : ['*']
-  const noWay = !commandQueue || !source
+  let stale: string | null = null
+  const before = async () => {
+    if (stale === null) stale = await staleReason(db, locked)
+    return stale === null
+  }
+  let missing: string[]
+  let noWay = false
+  try {
+    const members = await listManagedMembers(db, locked.managedId)
+    const source = members.find((member) => member.id === locked.sourcePrimaryMemberId)
+    if (!commandQueue || !source) {
+      noWay = true
+      missing = ['*']
+    } else {
+      missing = await enqueueSwitchoverAbortReactivation(db, commandQueue, {
+        record: locked,
+        engine,
+        actor,
+        source,
+        members,
+        reactivate: locked.metadata.abortRestartReactivate,
+        before,
+        ...(todo.includes('*') ? {} : { only: new Set(todo) }),
+      })
+    }
+  } catch (error) {
+    compatLogWarn('managed-ha', `abort restart for recovery ${recoveryId} failed: ${String(error)}`)
+    missing = todo
+  }
+  if (stale !== null) {
+    await updateRecoveryLocked(db, recoveryId, clearTodo, { includeTerminal: true })
+    return
+  }
   const settled = await updateRecoveryLocked(
     db,
     recoveryId,
-    (current) => {
-      if (!owed(current)) return null
-      if (missing.length === 0) return { metadata: { ...current.metadata, abortRestartTodo: [] } }
-      const attempts = (current.metadata.abortRestartAttempts ?? 0) + 1
+    (row) => {
+      if (!owed(row)) return null
+      if (missing.length === 0) {
+        return {
+          metadata: { ...row.metadata, abortRestartTodo: [], abortRestartClaimedAt: undefined },
+        }
+      }
+      const attempts = (row.metadata.abortRestartAttempts ?? 0) + 1
       if (noWay || attempts >= FENCE_ABORT_MAX_ATTEMPTS) {
-        return failedNeedsOperator(current, FENCE_ABORT_NOT_QUEUED_MESSAGE)
+        return failedNeedsOperator(row, FENCE_ABORT_NOT_QUEUED_MESSAGE)
       }
       return {
         metadata: {
-          ...current.metadata,
+          ...row.metadata,
           abortRestartTodo: missing,
           abortRestartAttempts: attempts,
+          abortRestartClaimedAt: undefined,
         },
       }
     },
@@ -2062,6 +2159,8 @@ export async function sweepStalledFencing(
     now?: number
     /** Test seam for the recent rows of a cluster. */
     recentRecoveries?: typeof listRecentRecoveries
+    /** Test seams for the restart of the old primary. */
+    abortRestart?: AbortRestartDeps
   } = {}
 ): Promise<string[]> {
   const nowMs = opts.now ?? Date.now()
@@ -2077,7 +2176,16 @@ export async function sweepStalledFencing(
   }
   await forEachSequential(rows, async (row) => {
     try {
-      if (await expireStalledFence(db, opts.commandQueue, row, nowMs, opts.recentRecoveries)) {
+      if (
+        await expireStalledFence(
+          db,
+          opts.commandQueue,
+          row,
+          nowMs,
+          opts.recentRecoveries,
+          opts.abortRestart
+        )
+      ) {
         handled.push(row.id)
       }
     } catch (error) {
@@ -2092,7 +2200,8 @@ export async function sweepStalledFencing(
         opts.commandQueue,
         row.id,
         await managedEngineOf(db, row.managedId),
-        { actorType: 'system', actorId: row.id }
+        { actorType: 'system', actorId: row.id },
+        opts.abortRestart
       )
       handled.push(row.id)
     } catch (error) {
