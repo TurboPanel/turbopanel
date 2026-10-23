@@ -453,8 +453,9 @@ guard; `pnpm test:do` alone does not.
   for the migrate role (Hyperdrive is not reachable from the build
   container), and `TURBOPANEL_DEPLOY_CHECK_API_TOKEN` — secret, a token with
   Hyperdrive Read so `check-deploy-env.mjs` can confirm the URL is testing's
-  Hyperdrive origin (it fails closed without it). Migrations run from zero on
-  a wiped database. `/api/client/v1/status` answers **503**
+  Hyperdrive origin (it fails closed without it).
+  Testing applies pending migrations on top of the existing database; any reset
+  is a named testing-only script that refuses on staging and live. `/api/client/v1/status` answers **503**
   `{ code: "database_error" }` (not a bare 500) when the settings read fails
   — the symptom of an unmigrated or unreachable database.
   A testing or staging database that sits behind the managed database listener
