@@ -1469,7 +1469,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       os_codename: 'Daemon-reported `VERSION_CODENAME` from /etc/os-release.',
       os_pretty_name: 'Daemon-reported `PRETTY_NAME` from /etc/os-release.',
       os_architecture:
-        'Daemon-reported CPU architecture from the Deno build, such as `x86_64` or `aarch64`.',
+        'Daemon-reported CPU architecture, normalised on ingest to `x86_64` or `aarch64` (`amd64` and `arm64` map across); other CPUs are not stored, so NULL.',
       machine_class:
         '`physical` or `virtual` for sensor entitlement; NULL means auto, where ingest writes `physical` once sensors are found (never `virtual`); PATCH can pin.',
       timezone:
@@ -1481,9 +1481,9 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       ntp_last_synced_at:
         'Last successful NTP sync: set from the daemon stamp or first synced observation, cleared when the host reports unsynced, never bumped to now() per heartbeat.',
       assigned_tier_id:
-        'Purchased tier covering this server, recomputed by assignment-records.ts from seats, `preferred_tier_id`, and hardware; NULL if none.',
+        'Tier a manager assigned this server (license-tier route or a named size change); self-hosted fills the top tier when none. Never recomputed; NULL until set.',
       preferred_tier_id:
-        'Optional operator pick: assignment uses a spare license at this tier or the smallest tier above before the derived smallest that fits; NULL derives only.',
+        "Written in step with `assigned_tier_id` by the manager route, for the console's picked label; never read to place a server.",
       is_connected:
         'Daemon liveness flag written by the cell projection on connect and disconnect; `online`, `offline` or `unknown` is derived from it and `status_changed_at`.',
       status_changed_at:
