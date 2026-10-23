@@ -38,7 +38,10 @@ import { beginAutomaticFailover } from './ha-recovery.ts'
 import {
   HOST_LOSS_ALERT_MESSAGES,
   HOST_LOSS_DETECTOR,
+  type EngineReach,
   HOST_LOSS_DISCONNECT_PEER_SLACK_MS,
+  HOST_LOSS_ENGINE_PROBE_GAP_MS,
+  HOST_LOSS_ENGINE_PROBE_ROUNDS,
   HOST_LOSS_GIVE_UP_MS,
   HOST_LOSS_MARK_REASONS,
   HOST_LOSS_PLANNED_GRACE_MS,
@@ -47,6 +50,7 @@ import {
   hostLossIncidentKey,
   hostLossPreflight,
   type HostLossMarkReason,
+  hostLossEngineVerdict,
   hostLossVerdict,
   type PeerReading,
   readPeer,
@@ -95,15 +99,30 @@ export type HostLossLoaders = {
   inFlightRecovery: (db: Db, managedId: string) => Promise<RecoveryRecord | null>
 }
 
+/**
+ * One peer's attempt, from its own server, to open a connection to the
+ * primary's database port (bounded on the peer). Never throws; any failure to
+ * ask or to learn the answer is `unknown`.
+ */
+export type EnginePortProbe = (target: {
+  peer: ManagedMemberRow
+  primary: ManagedMemberRow
+  engine: string
+}) => Promise<EngineReach>
+
 export type HostLossSweepDeps = {
   commandQueue: CommandQueue | null
   /** `TURBOPANEL_AUTO_FAILOVER` for this deployment. */
   autoFailover: AutoFailoverSetting
   /** Fresh health read of one member's daemon; `null` = no answer. */
   probeStandby: FreshStandbyProbe
+  /** The second signal: can the other members still reach the primary's database port? */
+  probeEngine: EnginePortProbe
   windowMs: number
   freshStandbyMarginMs?: number
   nowMs?: () => number
+  /** Test seam: the pause between engine-port rounds. */
+  sleep?: (ms: number) => Promise<void>
   /** Test seams. */
   loaders?: Partial<HostLossLoaders>
   beginFailover?: typeof beginAutomaticFailover
@@ -286,6 +305,29 @@ async function readPeers(
   )
 }
 
+/** Every other member tries the primary's database port, twice, a few seconds apart. */
+async function readEngineRounds(
+  deps: HostLossSweepDeps,
+  engine: string,
+  primary: ManagedMemberRow,
+  peers: readonly ManagedMemberRow[]
+): Promise<EngineReach[][]> {
+  const sleep =
+    deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)))
+  const rounds: EngineReach[][] = []
+  for (let round = 0; round < HOST_LOSS_ENGINE_PROBE_ROUNDS; round++) {
+    if (round > 0) await sleep(HOST_LOSS_ENGINE_PROBE_GAP_MS)
+    rounds.push(
+      await Promise.all(
+        peers.map((peer) =>
+          deps.probeEngine({ peer, primary, engine }).catch((): EngineReach => 'unknown')
+        )
+      )
+    )
+  }
+  return rounds
+}
+
 /** Hand a confirmed loss to the ordinary automatic failover, anchored on the offline mark. */
 function startFailover(
   db: Db,
@@ -401,9 +443,27 @@ async function evaluateCluster(
     return { managedId, result: 'alert', code: verdict.code }
   }
 
+  const rounds = await readEngineRounds(deps, engine, primary, peers)
+  const engineVerdict = hostLossEngineVerdict(rounds)
+  if (engineVerdict.action === 'alert') {
+    await alert(db, {
+      managedId,
+      primary,
+      code: engineVerdict.code,
+      incident,
+      evidence: evidenceJson({
+        incident,
+        silentMs: nowMs - offlineSinceMs,
+        peers: readings,
+        rounds,
+      }),
+    })
+    return { managedId, result: 'alert', code: engineVerdict.code }
+  }
+
   compatLogInfo(
     'managed-ha',
-    `host loss confirmed for ${managedId} (${incident}): every other member reports the primary is gone`
+    `host loss confirmed for ${managedId} (${incident}): every other member reports the primary is gone and cannot reach its database port`
   )
   await startFailover(db, deps, {
     candidate,

@@ -14,6 +14,8 @@ import {
   HOST_LOSS_PLANNED_GRACE_MS,
   type HostLossPreflightFacts,
   hostLossLastDecisionMs,
+  classifyEngineReach,
+  hostLossEngineVerdict,
   hostLossFailureStartMs,
   hostLossIncidentKey,
   hostLossPreflight,
@@ -272,4 +274,36 @@ test('every refusal has a plain-words message that names what to do', () => {
     assertEquals(message.length > 40, true, code)
     assertEquals(/principal|tenant/i.test(message), false, code)
   }
+})
+
+test('a connection attempt only supports a promotion when it was made and failed', () => {
+  assertEquals(classifyEngineReach({ reachable: true }), 'reachable')
+  for (const error of ['refused', 'timeout', 'unreachable']) {
+    assertEquals(classifyEngineReach({ reachable: false, error }), 'unreachable')
+  }
+  // The peer refused the target, or gave no reason: nothing was learned.
+  assertEquals(classifyEngineReach({ reachable: false, error: 'invalid_target' }), 'unknown')
+  assertEquals(classifyEngineReach({ reachable: false }), 'unknown')
+  assertEquals(classifyEngineReach(null), 'unknown')
+})
+
+test('the engine verdict: two complete rounds, all unreachable, or no promotion', () => {
+  assertEquals(hostLossEngineVerdict([['unreachable'], ['unreachable']]), { action: 'promote' })
+  assertEquals(
+    hostLossEngineVerdict([
+      ['unreachable', 'unreachable'],
+      ['unreachable', 'unreachable'],
+    ]),
+    {
+      action: 'promote',
+    }
+  )
+  const veto = { action: 'alert', code: 'engine_reachable' } as const
+  assertEquals(hostLossEngineVerdict([['unreachable'], ['reachable']]), veto)
+  assertEquals(hostLossEngineVerdict([['reachable'], ['unknown']]), veto)
+  const unsure = { action: 'alert', code: 'engine_unconfirmed' } as const
+  assertEquals(hostLossEngineVerdict([['unreachable'], ['unknown']]), unsure)
+  assertEquals(hostLossEngineVerdict([['unreachable']]), unsure)
+  assertEquals(hostLossEngineVerdict([]), unsure)
+  assertEquals(hostLossEngineVerdict([['unreachable'], []]), unsure)
 })

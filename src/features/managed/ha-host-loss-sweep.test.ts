@@ -329,6 +329,8 @@ test('the sweep end to end on real queries: a confirmed lost host starts the fai
     const outcomes = await runHostLossSweep(c.db, {
       commandQueue: null,
       autoFailover: 'on',
+      probeEngine: () => Promise.resolve('unreachable' as const),
+      sleep: () => Promise.resolve(),
       probeStandby: () =>
         Promise.resolve({
           state: 'stopped',
@@ -505,6 +507,8 @@ test('power cut, failover, power back: the old primary is fenced, never started,
     const sweepDeps = {
       commandQueue: queue,
       autoFailover: 'on' as const,
+      probeEngine: () => Promise.resolve('unreachable' as const),
+      sleep: () => Promise.resolve(),
       probeStandby: stopped,
       windowMs: 120_000,
       loaders: {
@@ -657,6 +661,8 @@ test('a blip: the host answers again before the window ends, so the next tick fi
       runHostLossSweep(c.db, {
         commandQueue: queue,
         autoFailover: 'on',
+        probeEngine: () => Promise.resolve('unreachable' as const),
+        sleep: () => Promise.resolve(),
         probeStandby: (target) => {
           probes.push(target.memberId)
           return Promise.resolve(null)
@@ -693,6 +699,8 @@ test('with the switch off the loss is an alert row and nothing else', async () =
     const outcomes = await runHostLossSweep(c.db, {
       commandQueue: queue,
       autoFailover: 'off',
+      probeEngine: () => Promise.resolve('unreachable' as const),
+      sleep: () => Promise.resolve(),
       probeStandby: () =>
         Promise.resolve({
           state: 'stopped',

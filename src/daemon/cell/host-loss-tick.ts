@@ -23,6 +23,7 @@ import { resolveHostLossWindowMs } from '../../features/managed/ha-host-loss.ts'
 import { runHostLossSweep } from '../../features/managed/ha-host-loss-sweep.ts'
 import { runManagedDestroyRedriveSweep } from '../../features/managed/destroy-redrive.ts'
 import { runReturnFenceSweep } from '../../features/managed/ha-return-fence.ts'
+import { createEnginePortProbe } from '../../client/managed/engine-port-probe.ts'
 import { createFreshStandbyProbe } from '../../client/managed/health-probe.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
 
@@ -42,6 +43,7 @@ export async function runHostLossTick(
       commandQueue: deps.commandQueue,
       autoFailover: resolveAutoFailover(deps.env),
       probeStandby: createFreshStandbyProbe(db, deps.registry),
+      probeEngine: createEnginePortProbe(db, deps.registry),
       windowMs: resolveHostLossWindowMs(deps.env),
       freshStandbyMarginMs: resolveFreshStandbyMarginMs({
         [FRESH_STANDBY_MARGIN_ENV]: deps.env[FRESH_STANDBY_MARGIN_ENV],

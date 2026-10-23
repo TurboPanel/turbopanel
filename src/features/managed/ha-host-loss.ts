@@ -35,6 +35,16 @@
  *    replica that still hears the primary means the host is alive and only
  *    its link to the control plane is down.
  *
+ * 7. The second signal: the other members' servers must each fail to open a
+ *    connection to the primary's database port ({@link hostLossEngineVerdict}:
+ *    two rounds {@link HOST_LOSS_ENGINE_PROBE_GAP_MS} apart, each attempt
+ *    bounded to 3 s on the peer, refused / timeout / no route all count as
+ *    "not reachable"). One connection that opens vetoes: a daemon that merely
+ *    crashed or was stopped on a healthy host is never failed over. A check
+ *    that did not run or answer is no confirmation either. A pure network
+ *    partition (peers cannot reach the host, the host is fine) still looks the
+ *    same; closing that needs a witness outside the cluster's network.
+ *
  * Then, and only then, the ordinary automatic-failover gates apply
  * unchanged: the per-environment switch, the 15 minute cooldown, a healthy
  * same-datacenter failover replica proven caught up (the fresh-standby gate,
@@ -108,7 +118,11 @@ export function hostLossLastDecisionMs(reason: HostLossMarkReason = 'sweep_stale
   return MAX_FAILURE_SPAN_MS - markLagMs(reason)
 }
 
-/** Stale-sweep value of {@link hostLossLastDecisionMs}. */
+/**
+ * The stale-sweep mark's value of {@link hostLossLastDecisionMs}; a closed-socket
+ * mark has no lag and may be decided {@link MAX_FAILURE_SPAN_MS} after the mark.
+ * Use the function when the mark reason is known.
+ */
 export const HOST_LOSS_LAST_DECISION_MS = hostLossLastDecisionMs('sweep_stale')
 
 /** A host offline this long is no longer an incident this path works on. */
@@ -146,6 +160,8 @@ export type HostLossAlertCode =
   | 'daemon_too_old'
   | 'not_corroborated'
   | 'peer_streaming'
+  | 'engine_reachable'
+  | 'engine_unconfirmed'
 
 /** Plain-words journal text, one per code. */
 export const HOST_LOSS_ALERT_MESSAGES: Readonly<Record<HostLossAlertCode, string>> = {
@@ -161,6 +177,10 @@ export const HOST_LOSS_ALERT_MESSAGES: Readonly<Record<HostLossAlertCode, string
     "The primary's server stopped answering, but the other servers of this database could not confirm that the primary is down (one is offline or did not answer), so nothing was changed. If the server is really gone, promote a replica from the database page.",
   peer_streaming:
     "The primary's server stopped answering the control plane, but a replica still reports it is receiving data from the primary, so the host is probably alive and only its link to the control plane is down. Nothing was changed.",
+  engine_reachable:
+    "The primary's server stopped answering the control plane, but the other servers of this database can still open a connection to the primary's database port, so the database is probably still running and only the server's daemon is down. Nothing was changed.",
+  engine_unconfirmed:
+    "The primary's server stopped answering and its replicas are not receiving from it, but the other servers could not confirm that the primary's database port is unreachable (a check did not answer, or was not possible), so nothing was changed. If the server is really gone, promote a replica from the database page.",
 }
 
 export type HostLossPreflightFacts = {
@@ -253,8 +273,59 @@ export function readPeer(
   return 'no_answer'
 }
 
+/** One peer's attempt to open a connection to the primary's database port. */
+export type EngineReach = 'reachable' | 'unreachable' | 'unknown'
+
+/** Rounds of engine-port checks, every peer in each, before a lost host is promoted over. */
+export const HOST_LOSS_ENGINE_PROBE_ROUNDS = 2
+/** Pause between two rounds; each connection attempt itself is cut off after 3 s on the peer. */
+export const HOST_LOSS_ENGINE_PROBE_GAP_MS = 10_000
+
+/**
+ * What one connection attempt from a peer means. Only an attempt that was
+ * actually made counts: a connection that opens is `reachable`; one that is
+ * refused (host up, nothing listening), times out or finds no route is
+ * `unreachable`. Anything else (no answer from the peer, an old daemon, a
+ * target the peer refused to try) is `unknown` and never supports a promotion.
+ */
+export function classifyEngineReach(
+  entry: { reachable: boolean; error?: string } | null | undefined
+): EngineReach {
+  if (!entry) return 'unknown'
+  if (entry.reachable) return 'reachable'
+  return entry.error === 'refused' || entry.error === 'timeout' || entry.error === 'unreachable'
+    ? 'unreachable'
+    : 'unknown'
+}
+
+/**
+ * The second signal. `rounds` holds, per round, what every other member saw of
+ * the primary's database port. Any open connection in any round vetoes (the
+ * database is alive, only its daemon is gone). Promotion needs at least
+ * {@link HOST_LOSS_ENGINE_PROBE_ROUNDS} complete rounds and every attempt in
+ * them unreachable; a missing or unknown attempt never counts.
+ */
+export function hostLossEngineVerdict(
+  rounds: readonly (readonly EngineReach[])[]
+): HostLossVerdict {
+  const all = rounds.flat()
+  if (all.includes('reachable')) return { action: 'alert', code: 'engine_reachable' }
+  if (
+    rounds.length < HOST_LOSS_ENGINE_PROBE_ROUNDS ||
+    rounds.some((round) => round.length === 0) ||
+    all.includes('unknown')
+  ) {
+    return { action: 'alert', code: 'engine_unconfirmed' }
+  }
+  return { action: 'promote' }
+}
+
 export type HostLossVerdict =
-  { action: 'alert'; code: 'peer_streaming' | 'not_corroborated' } | { action: 'promote' }
+  | {
+      action: 'alert'
+      code: 'peer_streaming' | 'not_corroborated' | 'engine_reachable' | 'engine_unconfirmed'
+    }
+  | { action: 'promote' }
 
 /** Step 6: every other member must corroborate; any one that hears the primary vetoes. */
 export function hostLossVerdict(peers: readonly PeerReading[]): HostLossVerdict {
