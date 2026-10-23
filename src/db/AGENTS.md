@@ -1007,6 +1007,10 @@ and are read as fallbacks only.
 `os_pretty_name`, `os_architecture`. Raspberry Pi OS 64-bit (`ID=debian` +
 `/etc/rpi-issue`) is stored as `os_id = raspberry-pi-os`. The API still composes
 a nested `os` object (with `variant: raspberry-pi-os` when that id is set).
+`os_architecture` is `NULL` or `x86_64` / `aarch64` (`server_os_architecture_check`,
+migration 0003): `normalizeServerOsArchitecture` (`src/contracts/capability-plan.ts`)
+maps `amd64` / `arm64` and similar spellings on ingest, so older daemons keep
+working, and drops CPUs that are neither (for example `armv7l`).
 
 **Host time-sync columns:** `timezone` is the **daemon-reported** IANA zone
 (operator override stays on `server.options.timezone`). `is_time_sync_enabled`
