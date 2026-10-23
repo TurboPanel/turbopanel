@@ -1,5 +1,5 @@
 {
-  "id": "57982cd5-2353-4f1b-9f55-468a8164e19d",
+  "id": "77b371bd-8f53-4e74-bee6-f725df68e05c",
   "prevId": "0b2d2b49-7f32-426a-b5ec-e4d9ba54ff8c",
   "version": "7",
   "dialect": "postgresql",
@@ -724,8 +724,8 @@
       },
       "isRLSEnabled": false
     },
-    "public.mirror": {
-      "name": "mirror",
+    "public.shipment": {
+      "name": "shipment",
       "schema": "",
       "columns": {
         "id": {
@@ -819,8 +819,8 @@
         }
       },
       "indexes": {
-        "uniq_mirror_managed_destination": {
-          "name": "uniq_mirror_managed_destination",
+        "uniq_shipment_managed_destination": {
+          "name": "uniq_shipment_managed_destination",
           "columns": [
             {
               "expression": "managed_id",
@@ -846,8 +846,8 @@
           "method": "btree",
           "with": {}
         },
-        "idx_mirror_managed_id_backup_id": {
-          "name": "idx_mirror_managed_id_backup_id",
+        "idx_shipment_managed_id_backup_id": {
+          "name": "idx_shipment_managed_id_backup_id",
           "columns": [
             {
               "expression": "managed_id",
@@ -867,8 +867,8 @@
           "method": "btree",
           "with": {}
         },
-        "idx_mirror_target_id": {
-          "name": "idx_mirror_target_id",
+        "idx_shipment_target_id": {
+          "name": "idx_shipment_target_id",
           "columns": [
             {
               "expression": "target_id",
@@ -882,8 +882,8 @@
           "method": "btree",
           "with": {}
         },
-        "idx_mirror_server_id": {
-          "name": "idx_mirror_server_id",
+        "idx_shipment_server_id": {
+          "name": "idx_shipment_server_id",
           "columns": [
             {
               "expression": "server_id",
@@ -899,9 +899,9 @@
         }
       },
       "foreignKeys": {
-        "mirror_managed_id_managed_id_fk": {
-          "name": "mirror_managed_id_managed_id_fk",
-          "tableFrom": "mirror",
+        "shipment_managed_id_managed_id_fk": {
+          "name": "shipment_managed_id_managed_id_fk",
+          "tableFrom": "shipment",
           "tableTo": "managed",
           "columnsFrom": [
             "managed_id"
@@ -912,9 +912,9 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "mirror_target_id_destination_id_fk": {
-          "name": "mirror_target_id_destination_id_fk",
-          "tableFrom": "mirror",
+        "shipment_target_id_destination_id_fk": {
+          "name": "shipment_target_id_destination_id_fk",
+          "tableFrom": "shipment",
           "tableTo": "destination",
           "columnsFrom": [
             "target_id"
@@ -925,9 +925,9 @@
           "onDelete": "set null",
           "onUpdate": "no action"
         },
-        "mirror_server_id_server_id_fk": {
-          "name": "mirror_server_id_server_id_fk",
-          "tableFrom": "mirror",
+        "shipment_server_id_server_id_fk": {
+          "name": "shipment_server_id_server_id_fk",
+          "tableFrom": "shipment",
           "tableTo": "server",
           "columnsFrom": [
             "server_id"
@@ -943,16 +943,16 @@
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {
-        "mirror_backup_id_format_check": {
-          "name": "mirror_backup_id_format_check",
+        "shipment_backup_id_format_check": {
+          "name": "shipment_backup_id_format_check",
           "value": "backup_id ~ '^[A-Za-z0-9_-]+$'"
         },
-        "mirror_state_check": {
-          "name": "mirror_state_check",
+        "shipment_state_check": {
+          "name": "shipment_state_check",
           "value": "state IN ('pending', 'copying', 'copied', 'failed', 'removed')"
         },
-        "mirror_attempts_check": {
-          "name": "mirror_attempts_check",
+        "shipment_attempts_check": {
+          "name": "shipment_attempts_check",
           "value": "attempts >= 0"
         }
       },
@@ -1155,151 +1155,6 @@
         "destination_name_check": {
           "name": "destination_name_check",
           "value": "char_length(name) BETWEEN 1 AND 64"
-        }
-      },
-      "isRLSEnabled": false
-    },
-    "public.selection": {
-      "name": "selection",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "uuidv7()"
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp(3) with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp(3) with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "organization_id": {
-          "name": "organization_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "managed_id": {
-          "name": "managed_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "target_id": {
-          "name": "target_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        }
-      },
-      "indexes": {
-        "uniq_selection_default": {
-          "name": "uniq_selection_default",
-          "columns": [
-            {
-              "expression": "organization_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "managed_id IS NULL",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "uniq_selection_managed": {
-          "name": "uniq_selection_managed",
-          "columns": [
-            {
-              "expression": "managed_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "managed_id IS NOT NULL",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "idx_selection_target_id": {
-          "name": "idx_selection_target_id",
-          "columns": [
-            {
-              "expression": "target_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "selection_organization_id_organization_id_fk": {
-          "name": "selection_organization_id_organization_id_fk",
-          "tableFrom": "selection",
-          "tableTo": "organization",
-          "columnsFrom": [
-            "organization_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "selection_managed_id_managed_id_fk": {
-          "name": "selection_managed_id_managed_id_fk",
-          "tableFrom": "selection",
-          "tableTo": "managed",
-          "columnsFrom": [
-            "managed_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "selection_target_id_destination_id_fk": {
-          "name": "selection_target_id_destination_id_fk",
-          "tableFrom": "selection",
-          "tableTo": "destination",
-          "columnsFrom": [
-            "target_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "restrict",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {
-        "selection_target_check": {
-          "name": "selection_target_check",
-          "value": "managed_id IS NOT NULL OR target_id IS NOT NULL"
         }
       },
       "isRLSEnabled": false
@@ -6344,9 +6199,37 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'provisioning'"
+        },
+        "backup_destination_id": {
+          "name": "backup_destination_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "is_backup_copy_off": {
+          "name": "is_backup_copy_off",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
         }
       },
       "indexes": {
+        "idx_managed_backup_destination_id": {
+          "name": "idx_managed_backup_destination_id",
+          "columns": [
+            {
+              "expression": "backup_destination_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
         "idx_managed_server_id": {
           "name": "idx_managed_server_id",
           "columns": [
@@ -6396,6 +6279,19 @@
         }
       },
       "foreignKeys": {
+        "managed_backup_destination_id_destination_id_fk": {
+          "name": "managed_backup_destination_id_destination_id_fk",
+          "tableFrom": "managed",
+          "tableTo": "destination",
+          "columnsFrom": [
+            "backup_destination_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
         "managed_environment_id_environment_id_fk": {
           "name": "managed_environment_id_environment_id_fk",
           "tableFrom": "managed",
@@ -6427,6 +6323,10 @@
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {
+        "managed_backup_copy_off_check": {
+          "name": "managed_backup_copy_off_check",
+          "value": "NOT (is_backup_copy_off AND backup_destination_id IS NOT NULL)"
+        },
         "managed_name_format_check": {
           "name": "managed_name_format_check",
           "value": "(\"managed\".\"name\" IS NULL) OR (((char_length((\"managed\".\"name\")::text) >= 1) AND (char_length((\"managed\".\"name\")::text) <= 255)) AND ((\"managed\".\"name\")::text ~ '^[A-Za-z0-9 ._-]+$'::text))"
@@ -8298,10 +8198,46 @@
           "primaryKey": false,
           "notNull": true,
           "default": 30001
+        },
+        "backup_destination_id": {
+          "name": "backup_destination_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
         }
       },
-      "indexes": {},
-      "foreignKeys": {},
+      "indexes": {
+        "idx_organization_backup_destination_id": {
+          "name": "idx_organization_backup_destination_id",
+          "columns": [
+            {
+              "expression": "backup_destination_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "organization_backup_destination_id_destination_id_fk": {
+          "name": "organization_backup_destination_id_destination_id_fk",
+          "tableFrom": "organization",
+          "tableTo": "destination",
+          "columnsFrom": [
+            "backup_destination_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},

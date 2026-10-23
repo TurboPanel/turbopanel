@@ -8,13 +8,13 @@
  * outside this module's sealing helpers.
  */
 
-import { and, asc, eq, isNull, sql } from 'drizzle-orm'
+import { and, asc, eq, isNotNull, or } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import {
   backupTarget,
-  backupTargetAssignment,
   environment,
   managed,
+  organization,
   project,
   workspace,
 } from '../../db/schema.ts'
@@ -271,14 +271,15 @@ export async function targetUsage(
   db: Db,
   targetId: string
 ): Promise<{ isDefault: boolean; managedIds: string[] }> {
-  const rows = await db
-    .select({ managedId: backupTargetAssignment.managedId })
-    .from(backupTargetAssignment)
-    .where(eq(backupTargetAssignment.targetId, targetId))
-  return {
-    isDefault: rows.some((r) => r.managedId === null),
-    managedIds: rows.flatMap((r) => (r.managedId ? [r.managedId] : [])),
-  }
+  const [defaults, clusters] = await Promise.all([
+    db
+      .select({ id: organization.id })
+      .from(organization)
+      .where(eq(organization.backupDestinationId, targetId))
+      .limit(1),
+    db.select({ id: managed.id }).from(managed).where(eq(managed.backupDestinationId, targetId)),
+  ])
+  return { isDefault: defaults.length > 0, managedIds: clusters.map((r) => r.id) }
 }
 
 export async function deleteTarget(db: Db, targetId: string): Promise<void> {
@@ -316,19 +317,29 @@ export type OrgAssignments = {
 }
 
 export async function readAssignments(db: Db, organizationId: string): Promise<OrgAssignments> {
-  const rows = await db
-    .select({
-      managedId: backupTargetAssignment.managedId,
-      targetId: backupTargetAssignment.targetId,
-    })
-    .from(backupTargetAssignment)
-    .where(eq(backupTargetAssignment.organizationId, organizationId))
-  return {
-    defaultTargetId: rows.find((r) => r.managedId === null)?.targetId ?? null,
-    clusters: rows.flatMap((r) =>
-      r.managedId ? [{ managedId: r.managedId, targetId: r.targetId }] : []
-    ),
-  }
+  const [[org], rows] = await Promise.all([
+    db
+      .select({ targetId: organization.backupDestinationId })
+      .from(organization)
+      .where(eq(organization.id, organizationId))
+      .limit(1),
+    db
+      .select({
+        managedId: managed.id,
+        targetId: managed.backupDestinationId,
+      })
+      .from(managed)
+      .innerJoin(environment, eq(environment.id, managed.environmentId))
+      .innerJoin(project, eq(project.id, environment.projectId))
+      .innerJoin(workspace, eq(workspace.id, project.workspaceId))
+      .where(
+        and(
+          eq(workspace.organizationId, organizationId),
+          or(isNotNull(managed.backupDestinationId), eq(managed.isBackupCopyOff, true))
+        )
+      ),
+  ])
+  return { defaultTargetId: org?.targetId ?? null, clusters: rows }
 }
 
 export async function setOrganizationDefault(
@@ -336,47 +347,25 @@ export async function setOrganizationDefault(
   organizationId: string,
   targetId: string | null
 ): Promise<void> {
-  if (targetId === null) {
-    await db
-      .delete(backupTargetAssignment)
-      .where(
-        and(
-          eq(backupTargetAssignment.organizationId, organizationId),
-          isNull(backupTargetAssignment.managedId)
-        )
-      )
-    return
-  }
   await db
-    .insert(backupTargetAssignment)
-    .values({ organizationId, managedId: null, targetId })
-    .onConflictDoUpdate({
-      target: [backupTargetAssignment.organizationId],
-      targetWhere: isNull(backupTargetAssignment.managedId),
-      set: { targetId },
-    })
+    .update(organization)
+    .set({ backupDestinationId: targetId })
+    .where(eq(organization.id, organizationId))
 }
 
-/** `inherit` removes the cluster's own row; `none` and a target id write one. */
+/** `inherit` clears the cluster's own choice; `none` turns copying off; a target id names it. */
 export async function setClusterChoice(
   db: Db,
   params: { organizationId: string; managedId: string; choice: 'inherit' | 'none' | string }
 ): Promise<void> {
-  if (params.choice === 'inherit') {
-    await db
-      .delete(backupTargetAssignment)
-      .where(eq(backupTargetAssignment.managedId, params.managedId))
-    return
-  }
-  const targetId = params.choice === 'none' ? null : params.choice
+  const { choice } = params
   await db
-    .insert(backupTargetAssignment)
-    .values({ organizationId: params.organizationId, managedId: params.managedId, targetId })
-    .onConflictDoUpdate({
-      target: [backupTargetAssignment.managedId],
-      targetWhere: sql`managed_id IS NOT NULL`,
-      set: { targetId },
+    .update(managed)
+    .set({
+      backupDestinationId: choice === 'inherit' || choice === 'none' ? null : choice,
+      isBackupCopyOff: choice === 'none',
     })
+    .where(eq(managed.id, params.managedId))
 }
 
 export type EffectiveChoice = {
@@ -401,24 +390,20 @@ export async function resolveEffectiveTarget(
   organizationId?: string
 ): Promise<EffectiveChoice> {
   const [own] = await db
-    .select({ targetId: backupTargetAssignment.targetId })
-    .from(backupTargetAssignment)
-    .where(eq(backupTargetAssignment.managedId, managedId))
+    .select({ targetId: managed.backupDestinationId, isOff: managed.isBackupCopyOff })
+    .from(managed)
+    .where(eq(managed.id, managedId))
     .limit(1)
-  if (own) {
+  if (own?.isOff) return { source: 'none', target: null }
+  if (own?.targetId) {
     const target = await loadTarget(db, own.targetId)
-    return { source: target ? 'cluster' : 'none', target }
+    if (target) return { source: 'cluster', target }
   }
   const orgId = organizationId ?? (await resolveManagedHomeOrganizationId(db, managedId))
   const [fallback] = await db
-    .select({ targetId: backupTargetAssignment.targetId })
-    .from(backupTargetAssignment)
-    .where(
-      and(
-        eq(backupTargetAssignment.organizationId, orgId),
-        isNull(backupTargetAssignment.managedId)
-      )
-    )
+    .select({ targetId: organization.backupDestinationId })
+    .from(organization)
+    .where(eq(organization.id, orgId))
     .limit(1)
   const target = await loadTarget(db, fallback?.targetId ?? null)
   return { source: target ? 'organization' : 'none', target }

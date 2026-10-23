@@ -71,8 +71,6 @@ const APPROVED_TABLE_NAMES = new Set<string>([
   'login',
   'managed',
   'marker',
-  // How one backup's copy to one destination stands.
-  'mirror',
   'monitor',
   'mount',
   'network',
@@ -95,8 +93,8 @@ const APPROVED_TABLE_NAMES = new Set<string>([
   'seat',
   'scope',
   'secret',
-  // Which destination applies to an organization or to one cluster.
-  'selection',
+  // How one backup's copy to one destination stands.
+  'shipment',
   'server',
   'service',
   'session',

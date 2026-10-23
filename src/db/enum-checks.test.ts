@@ -120,7 +120,7 @@ const CASES: Array<[constraint: string, values: readonly string[]]> = [
   ['stage_phase_check', UPGRADE_PHASES],
   ['retention_target_kind_check', BACKUP_TARGET_KINDS],
   ['destination_kind_check', BACKUP_TARGET_STORE_KINDS],
-  ['mirror_state_check', BACKUP_COPY_STATES],
+  ['shipment_state_check', BACKUP_COPY_STATES],
   ['snapshot_status_check', BACKUP_RUN_STATUSES],
   ['edict_scope_check', FIREWALL_RULE_SCOPES],
   ['edict_action_check', FIREWALL_RULE_ACTIONS],

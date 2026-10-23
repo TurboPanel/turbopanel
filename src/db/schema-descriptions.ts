@@ -305,6 +305,8 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'Next uid/gid for a Hosting Account on servers this organization owns; starts at 30001, rises by one per new account, never reused.',
       options:
         'Org-wide settings merged key-by-key by the organization routes (`defaultServerTimezone`, `maxServers`, `acmeEnabled`, `managedDatabase`, `phpModes` and more).',
+      backup_destination_id:
+        'Destination finished backups are copied to unless a cluster chooses otherwise; null means no default copy. Set null if the destination is deleted.',
       name: "Display name; sign-up uses `you@example.com's organization` from email, else `My Organization` if missing, blank, or label invalid; install Root Organization.",
     },
   },
@@ -1086,18 +1088,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       created_by: 'User who created the target, set null if that user is deleted.',
     },
   },
-  selection: {
-    group: 'managed',
-    summary:
-      "Which backup target applies where: a row with no `managed_id` is the organization's default, a row with one is that cluster's own choice.",
-    columns: {
-      managed_id:
-        'The cluster this row overrides the default for; null for the organization default.',
-      target_id:
-        'Target to copy to; null on a cluster row means no copy for that cluster even when a default exists.',
-    },
-  },
-  mirror: {
+  shipment: {
     group: 'managed',
     summary:
       "How copying one backup to one target stands, as the host reported it; keyed by the engine and the daemon's `bk_` id, cascades with the cluster.",
@@ -1224,6 +1215,10 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'Catalog engine code set once at create from ManagedEngineSpec: `postgres`, `mysql`, `mariadb`, `redis` or `clickhouse` (only the first three are creatable).',
       status:
         'Lifecycle state: `provisioning` at create, `applying` while a command is queued, then daemon-observed `ready`, `stopped` or `failed` projected by the consumer.',
+      backup_destination_id:
+        "This cluster's own copy destination, which wins over the organization default; null follows the default. Set null if the destination is deleted.",
+      is_backup_copy_off:
+        'True turns copying finished backups off for this cluster even when the organization has a default; never true together with a destination.',
     },
   },
   recovery: {

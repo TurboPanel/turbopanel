@@ -129,8 +129,14 @@ export const organization = pgTable(
     options: jsonb(),
     name: text(),
     nextLinuxId: integer('next_linux_id').default(30001).notNull(),
+    /** Destination finished backups are copied to unless a cluster chooses otherwise. */
+    backupDestinationId: uuid('backup_destination_id').references(
+      (): AnyPgColumn => backupTarget.id,
+      { onDelete: 'set null' }
+    ),
   },
   (table) => [
+    index('idx_organization_backup_destination_id').on(table.backupDestinationId),
     check(
       'organization_next_linux_id_check',
       sql`${table.nextLinuxId} >= 30001 AND ${table.nextLinuxId} <= 60001`
@@ -2384,8 +2390,22 @@ export const managed = pgTable(
     engine: text().notNull(),
     /** `provisioning` | `applying` | `ready` | `stopped` | `failed` */
     status: text().default('provisioning').notNull(),
+    /** This cluster's own copy destination; wins over the organization default. */
+    backupDestinationId: uuid('backup_destination_id'),
+    /** True turns copying off for this cluster even when the organization has a default. */
+    isBackupCopyOff: boolean('is_backup_copy_off').default(false).notNull(),
   },
   (table) => [
+    foreignKey({
+      columns: [table.backupDestinationId],
+      foreignColumns: [backupTarget.id],
+      name: 'managed_backup_destination_id_destination_id_fk',
+    }).onDelete('set null'),
+    index('idx_managed_backup_destination_id').on(table.backupDestinationId),
+    check(
+      'managed_backup_copy_off_check',
+      sql`NOT (is_backup_copy_off AND backup_destination_id IS NOT NULL)`
+    ),
     index('idx_managed_server_id').using('btree', table.serverId.asc().nullsLast().op('uuid_ops')),
     index('idx_managed_engine').using('btree', table.engine.asc().nullsLast().op('text_ops')),
     foreignKey({
@@ -2674,64 +2694,6 @@ export const backupTarget = pgTable(
   ]
 )
 /**
- * Which {@link backupTarget} applies where. A row with no `managed_id` is the
- * organization's default; a row with one is that cluster's own choice, which
- * wins over the default. A cluster row with no `target_id` means "no copy for
- * this cluster" even when the organization has a default.
- */
-export const backupTargetAssignment = pgTable(
-  'selection',
-  {
-    id: uuid()
-      .default(sql`uuidv7()`)
-      .primaryKey()
-      .notNull(),
-    createdAt: timestamp('created_at', {
-      precision: 3,
-      withTimezone: true,
-      mode: 'string',
-    })
-      .defaultNow()
-      .notNull(),
-    updatedAt: timestamp('updated_at', {
-      precision: 3,
-      withTimezone: true,
-      mode: 'string',
-    })
-      .defaultNow()
-      .$onUpdate(() => sql`now()`)
-      .notNull(),
-    organizationId: uuid('organization_id').notNull(),
-    managedId: uuid('managed_id'),
-    targetId: uuid('target_id'),
-  },
-  (table) => [
-    uniqueIndex('uniq_selection_default')
-      .on(table.organizationId)
-      .where(sql`managed_id IS NULL`),
-    uniqueIndex('uniq_selection_managed')
-      .on(table.managedId)
-      .where(sql`managed_id IS NOT NULL`),
-    index('idx_selection_target_id').on(table.targetId),
-    foreignKey({
-      columns: [table.organizationId],
-      foreignColumns: [organization.id],
-      name: 'selection_organization_id_organization_id_fk',
-    }).onDelete('cascade'),
-    foreignKey({
-      columns: [table.managedId],
-      foreignColumns: [managed.id],
-      name: 'selection_managed_id_managed_id_fk',
-    }).onDelete('cascade'),
-    foreignKey({
-      columns: [table.targetId],
-      foreignColumns: [backupTarget.id],
-      name: 'selection_target_id_destination_id_fk',
-    }).onDelete('restrict'),
-    check('selection_target_check', sql`managed_id IS NOT NULL OR target_id IS NOT NULL`),
-  ]
-)
-/**
  * How copying one backup to one target stands, as the host reported it
  * (`features/backups/copy-report.ts`). Keyed by the engine and the daemon's
  * `bk_` id as text, not by the {@link backup} row, so a report that arrives
@@ -2739,7 +2701,7 @@ export const backupTargetAssignment = pgTable(
  * deleted target still reads in plain words.
  */
 export const backupCopy = pgTable(
-  'mirror',
+  'shipment',
   {
     id: uuid()
       .default(sql`uuidv7()`)
@@ -2780,36 +2742,36 @@ export const backupCopy = pgTable(
     serverId: uuid('server_id'),
   },
   (table) => [
-    uniqueIndex('uniq_mirror_managed_destination').on(
+    uniqueIndex('uniq_shipment_managed_destination').on(
       table.managedId,
       table.backupId,
       table.targetId
     ),
-    index('idx_mirror_managed_id_backup_id').on(table.managedId, table.backupId),
-    index('idx_mirror_target_id').on(table.targetId),
-    index('idx_mirror_server_id').on(table.serverId),
+    index('idx_shipment_managed_id_backup_id').on(table.managedId, table.backupId),
+    index('idx_shipment_target_id').on(table.targetId),
+    index('idx_shipment_server_id').on(table.serverId),
     foreignKey({
       columns: [table.managedId],
       foreignColumns: [managed.id],
-      name: 'mirror_managed_id_managed_id_fk',
+      name: 'shipment_managed_id_managed_id_fk',
     }).onDelete('cascade'),
     foreignKey({
       columns: [table.targetId],
       foreignColumns: [backupTarget.id],
-      name: 'mirror_target_id_destination_id_fk',
+      name: 'shipment_target_id_destination_id_fk',
     }).onDelete('set null'),
     foreignKey({
       columns: [table.serverId],
       foreignColumns: [server.id],
-      name: 'mirror_server_id_server_id_fk',
+      name: 'shipment_server_id_server_id_fk',
     }).onDelete('set null'),
-    check('mirror_backup_id_format_check', sql`backup_id ~ '^[A-Za-z0-9_-]+$'`),
+    check('shipment_backup_id_format_check', sql`backup_id ~ '^[A-Za-z0-9_-]+$'`),
     // Mirror BACKUP_COPY_STATES (src/features/backups/vocabulary.ts) — pinned by enum-checks.test.ts.
     check(
-      'mirror_state_check',
+      'shipment_state_check',
       sql`state IN ('pending', 'copying', 'copied', 'failed', 'removed')`
     ),
-    check('mirror_attempts_check', sql`attempts >= 0`),
+    check('shipment_attempts_check', sql`attempts >= 0`),
   ]
 )
 /**
