@@ -87,9 +87,16 @@ INSERT INTO placement (id, principal_id, server_id, state, home, source) VALUES
 
 -- A login that stands on its own, one that shares the site owner's name, and
 -- the databases they may use.
-INSERT INTO login (id, managed_id, principal_id, role, username, applied_username, privileges, grant_mode) VALUES
-  ('00000000-0000-7000-8000-000000000c21', '00000000-0000-7000-8000-000000000b01', '00000000-0000-7000-8000-000000000c01', 'user', 'siteowner', 'siteowner', '{read-write}', 'recipe'),
-  ('00000000-0000-7000-8000-000000000c22', '00000000-0000-7000-8000-000000000b01', NULL, 'user', 'reporting', 'reporting', '{read-only}', 'recipe');
+-- Both are manage-myself logins (`self`) with their sources named, so the rows fit
+-- the previous release and the current schema alike: the current schema needs a
+-- `recipe` for a panel-set login and never accepts NULL sources, and the seed
+-- cannot name columns the previous release does not have. The move of older
+-- `preset` rows to `recipe` and of NULL sources to the explicit anywhere pair is
+-- checked by hand against a database built from the previous release (see the
+-- login migration).
+INSERT INTO login (id, managed_id, principal_id, role, username, applied_username, privileges, grant_mode, allowed_sources) VALUES
+  ('00000000-0000-7000-8000-000000000c21', '00000000-0000-7000-8000-000000000b01', '00000000-0000-7000-8000-000000000c01', 'user', 'siteowner', 'siteowner', '{read-write}', 'self', '{internal}'),
+  ('00000000-0000-7000-8000-000000000c22', '00000000-0000-7000-8000-000000000b01', NULL, 'user', 'reporting', 'reporting', '{read-only}', 'self', '{internal,address:203.0.113.7}');
 
 INSERT INTO database (id, managed_id, name, is_role_owned) VALUES
   ('00000000-0000-7000-8000-000000000c31', '00000000-0000-7000-8000-000000000b01', 'app', false);

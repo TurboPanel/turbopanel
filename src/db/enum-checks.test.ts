@@ -30,6 +30,7 @@ import {
   DATABASE_LOGIN_ROLES,
   LOGIN_CONNECTION_ROLES,
   LOGIN_GRANT_MODES,
+  LOGIN_RECIPES,
 } from '../features/managed/logins.ts'
 import { PRINCIPAL_NAME_SCHEMES } from '../lib/principal-name-scheme.ts'
 import { SERVER_MACHINE_CLASS_SOURCES } from '../contracts/capability-plan.ts'
@@ -127,6 +128,7 @@ const CASES: Array<[constraint: string, values: readonly string[]]> = [
   ['server_offline_reason_check', SERVER_OFFLINE_REASONS],
   ['server_daemon_update_status_check', SERVER_DAEMON_UPDATE_STATUSES],
   ['login_grant_mode_check', LOGIN_GRANT_MODES],
+  ['login_recipe_check', LOGIN_RECIPES],
   ['login_access_check', LOGIN_CONNECTION_ROLES],
   ['login_name_scheme_check', PRINCIPAL_NAME_SCHEMES],
 ]

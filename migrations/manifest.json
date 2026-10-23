@@ -20,6 +20,12 @@
       "tag": "0002_backup_policy_database",
       "when": 1792604831497,
       "sha256": "3ca7c79d1c53d7f463e9ada8098b35c9072b26c3b00639eb505be0a8a9a52547"
+    },
+    {
+      "idx": 3,
+      "tag": "0003_login_recipe_sources",
+      "when": 1792772516456,
+      "sha256": "f83c0d259000762ee7eba1063aefc0ef75425351a4d53f13773473baa6cfef8c"
     }
   ]
 }
