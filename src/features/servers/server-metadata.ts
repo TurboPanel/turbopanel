@@ -3,10 +3,6 @@ import {
   serverIpsEquals,
   type ServerReportedIp,
 } from '../../contracts/server-addresses.ts'
-import {
-  normalizeServerOsArchitecture,
-  type ServerOsArchitecture,
-} from '../../contracts/capability-plan.ts'
 import type { ServerGeo } from '../geo/server-geo.ts'
 import type { ServiceRunState } from '../../contracts/service-run-state.ts'
 import { type LocationFields, parseLocationOverride } from '../geo/location-override.ts'
@@ -29,9 +25,11 @@ import {
   type MetricsCapabilityPlanOverride,
   type MetricsCapabilityTierEntitlements,
   type MetricsDeploymentKind,
+  normalizeServerOsArchitecture,
   parseServerMetricsCapabilityPlanOverride,
   resolveMetricsCapabilityPlan,
   type ServerMachineClass,
+  type ServerOsArchitecture,
 } from '../../contracts/capability-plan.ts'
 
 /** OS families we may report from the daemon; extend the union as support is added. */
