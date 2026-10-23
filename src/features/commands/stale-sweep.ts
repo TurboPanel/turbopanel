@@ -51,7 +51,7 @@ import {
   DEPLOY_WAIT_LIMIT_MS,
   deployRunState,
 } from './deploy-wait.ts'
-import { serverHasCommandRecovery } from './deploy-wait-settings.ts'
+import { loadDeployRunCapMs, serverHasCommandRecovery } from './deploy-wait-settings.ts'
 
 /** Extra slack past the consumer budget before a row counts as stranded. */
 export const STALE_COMMAND_GRACE_MS = 5 * 60_000
@@ -90,6 +90,11 @@ export type StaleCommandCandidate = {
    * fixed run cap.
    */
   recovery?: boolean
+  /**
+   * The deploy time limit of the server's organization, in milliseconds
+   * (30 minutes when not given). Only used with {@link StaleCommandCandidate.recovery}.
+   */
+  deployRunCapMs?: number
 }
 
 function toMs(value: string | null): number | null {
@@ -149,7 +154,8 @@ function isStaleDeploy(row: StaleCommandCandidate, nowMs: number, graceMs: numbe
     if (lastHeard === null) return nowMs >= run.sinceMs + DEPLOY_RUN_CAP_MS + graceMs
     const reporting = nowMs - lastHeard < DEPLOY_RUN_SILENCE_MS
     return (
-      (reporting && nowMs >= run.sinceMs + DEPLOY_DEFAULT_TIMEOUT_MS + graceMs) ||
+      (reporting &&
+        nowMs >= run.sinceMs + (row.deployRunCapMs ?? DEPLOY_DEFAULT_TIMEOUT_MS) + graceMs) ||
       nowMs >= lastHeard + DEPLOY_RECONCILE_WINDOW_MS + graceMs ||
       nowMs >= waitingSince + DEPLOY_WAIT_LIMIT_MS + graceMs
     )
@@ -275,10 +281,23 @@ export async function sweepStaleCommands(
     }
     return known
   }
+  const runCapByServer = new Map<string, Promise<number>>()
+  const serverRunCap = (serverId: string): Promise<number> => {
+    let known = runCapByServer.get(serverId)
+    if (known === undefined) {
+      known = loadDeployRunCapMs(db, serverId)
+      runCapByServer.set(serverId, known)
+    }
+    return known
+  }
   await forEachSequential(candidates, async (candidate) => {
     const row =
       candidate.name === 'environment.deploy'
-        ? { ...candidate, recovery: await serverRecovery(candidate.serverId) }
+        ? {
+            ...candidate,
+            recovery: await serverRecovery(candidate.serverId),
+            deployRunCapMs: await serverRunCap(candidate.serverId),
+          }
         : candidate
     if (!isStaleCommand(row, nowMs, graceMs)) return
     // Two different situations, and the operator's next move differs:

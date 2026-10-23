@@ -9,6 +9,7 @@ import {
   type PrincipalNameScheme,
   resolveOrgPrincipalNameScheme,
 } from '../../lib/principal-name-scheme.ts'
+import { DEPLOY_DEFAULT_TIMEOUT_MS } from '../commands/deploy-limits.ts'
 import { isValidEnvironmentName } from '../../contracts/directory-names.ts'
 import { normalizeDisplayName } from '../../lib/display-name-format.ts'
 import {
@@ -50,8 +51,6 @@ export const DEFAULT_TEMPERATURE_UNIT: TemperatureUnit = 'celsius'
 /** Smallest and largest organization deploy time limit, in minutes. */
 export const DEPLOY_TIMEOUT_MIN_MINUTES = 5
 export const DEPLOY_TIMEOUT_MAX_MINUTES = 240
-/** The deploy time limit when the organization has not set one: 30 minutes. */
-export const DEPLOY_DEFAULT_TIMEOUT_MS = 30 * 60_000
 
 export type OrganizationOptions = {
   /**

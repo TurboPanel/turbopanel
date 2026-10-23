@@ -1,9 +1,16 @@
 /**
  * What the deploy waiter needs to know about a server before it waits: does the
  * server's daemon send signs of life (`command-recovery-v1`), and how long may a
- * deploy run while it reports (a fixed 30 minutes, `DEPLOY_DEFAULT_TIMEOUT_MS`).
+ * deploy run while it reports (the organization's deploy time limit, 30 minutes
+ * unless an organization manager set another).
  */
+import { eq } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
+import { organization, server } from '../../db/schema.ts'
+import {
+  parseOrganizationOptions,
+  resolveDeployTimeoutMs,
+} from '../organizations/organization-options.ts'
 import { COMMAND_RECOVERY_FEATURE } from '../../lib/version-wire.ts'
 import { DEPLOY_DEFAULT_TIMEOUT_MS } from './deploy-limits.ts'
 import { getServerDaemonStateByServerId } from '../servers/server-identity-db.ts'
@@ -20,6 +27,29 @@ export async function serverHasCommandRecovery(db: Db, serverId: string): Promis
   }
 }
 
+/**
+ * The deploy time limit for a server's organization, from the stored options
+ * (any value outside 5 to 240 whole minutes is dropped, so 30 minutes applies).
+ */
+export function deployRunCapFromOptions(options: unknown): number {
+  return resolveDeployTimeoutMs(parseOrganizationOptions(options))
+}
+
+/** The organization's deploy time limit for this server; 30 minutes when it cannot be read. */
+export async function loadDeployRunCapMs(db: Db, serverId: string): Promise<number> {
+  try {
+    const [row] = await db
+      .select({ options: organization.options })
+      .from(server)
+      .innerJoin(organization, eq(organization.id, server.organizationId))
+      .where(eq(server.id, serverId))
+      .limit(1)
+    return deployRunCapFromOptions(row?.options)
+  } catch {
+    return DEPLOY_DEFAULT_TIMEOUT_MS
+  }
+}
+
 /** Best effort: a read that fails leaves the old fixed rule in force. */
 export async function loadDeployWaitSettings(
   db: Db,
@@ -27,6 +57,6 @@ export async function loadDeployWaitSettings(
 ): Promise<DeployWaitSettings> {
   return {
     recovery: await serverHasCommandRecovery(db, serverId),
-    runCapMs: DEPLOY_DEFAULT_TIMEOUT_MS,
+    runCapMs: await loadDeployRunCapMs(db, serverId),
   }
 }

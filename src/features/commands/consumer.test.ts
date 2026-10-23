@@ -3,6 +3,7 @@ import { DENY_FIREWALL_APPLY } from '../firewall/enforcement.ts'
 import { assertEquals } from '@std/assert'
 import { projectServerDaemon } from '../../daemon/cell/postgres-projection.ts'
 import { eq, inArray } from 'drizzle-orm'
+import { loadDeployRunCapMs } from './deploy-wait-settings.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
 import { createDenoDb, type Db, endDbConnection } from '../../db/connection.ts'
 import type { DaemonCell, DaemonCellRegistry, PendingRequestRecord } from '../../contracts/cell.ts'
@@ -6795,6 +6796,40 @@ test('the deploy time limit of 30 minutes holds only while the server reports', 
     // Reporting and past the old ten minute cap, inside the limit: still running.
     const allowed = await run(25 * MIN)
     assertEquals(allowed?.status, 'sent')
+  })
+})
+
+test("the deploy time limit is the one the server's organization set", async () => {
+  await withDeployFixtures(async (ctx) => {
+    assertEquals(await loadDeployRunCapMs(ctx.db, ctx.serverId), 30 * MIN)
+    const setLimit = (deployTimeoutMinutes: unknown) =>
+      ctx.db
+        .update(organization)
+        .set({ options: { deployTimeoutMinutes } })
+        .where(eq(organization.id, ctx.organizationId))
+    await setLimit(90)
+    assertEquals(await loadDeployRunCapMs(ctx.db, ctx.serverId), 90 * MIN)
+    await setLimit(1000)
+    assertEquals(await loadDeployRunCapMs(ctx.db, ctx.serverId), 30 * MIN)
+
+    await setLimit(90)
+    const record = await quietDeploy({
+      ctx,
+      environmentId: ctx.environmentId,
+      projectId: ctx.projectId,
+      ranMs: 45 * MIN,
+      silentMs: 20_000,
+      recovery: true,
+    })
+    const registry = registryWithRequest(ctx.serverId, (id) => ACKED_REQUEST(ctx.serverId, id))
+    await processCommandEnvelope(ctx.db, registry, buildEnvelope(record, ctx.serverId), {
+      commandQueue: fakeQueue().queue,
+      firewallApplyGate: DENY_FIREWALL_APPLY,
+      deployWaitHoldMs: 0,
+      deployWaitEndMs: 0,
+    })
+    // Past 30 minutes but inside the organization's 90: still running, not stopped.
+    assertEquals((await getCommandRecord(ctx.db, record.id))?.status, 'sent')
   })
 })
 
