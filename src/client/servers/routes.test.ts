@@ -4672,16 +4672,14 @@ test('DELETE /servers/:id refuses an outright delete while the principal has a d
         })
         .returning({ id: managed.id })
       try {
-        await db
-          .insert(login)
-          .values({
-            recipe: 'app',
-            managedId: cluster!.id,
-            principalId: freeId,
-            role: 'user',
-            username: 'pl_free',
-            appliedUsername: 'pl_free',
-          })
+        await db.insert(login).values({
+          recipe: 'app',
+          managedId: cluster!.id,
+          principalId: freeId,
+          role: 'user',
+          username: 'pl_free',
+          appliedUsername: 'pl_free',
+        })
         const cookie = await sessionCookie(db, secrets, userId)
         const plan = await app.request(`/servers/${serverId}/principal-removal-plan`, {
           headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },

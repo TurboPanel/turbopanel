@@ -453,25 +453,21 @@ test('resolveManagedAppliedUsername suffixes when short name taken', async () =>
     ordinal: 1,
   })
   // The cluster's own root login holds the bare engine admin name.
-  await db
-    .insert(login)
-    .values({
-      recipe: 'app',
-      managedId,
-      role: 'root',
-      username: 'postgres',
-      appliedUsername: 'postgres',
-    })
+  await db.insert(login).values({
+    recipe: 'app',
+    managedId,
+    role: 'root',
+    username: 'postgres',
+    appliedUsername: 'postgres',
+  })
 
-  await db
-    .insert(login)
-    .values({
-      recipe: 'app',
-      managedId,
-      role: 'user',
-      username: 'webuser',
-      appliedUsername: 'webuser_x1',
-    })
+  await db.insert(login).values({
+    recipe: 'app',
+    managedId,
+    role: 'user',
+    username: 'webuser',
+    appliedUsername: 'webuser_x1',
+  })
 
   try {
     // A user login takes part in the organization's name pool; the cluster's

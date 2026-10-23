@@ -356,16 +356,14 @@ test('DELETE /organizations/:id/principals/:principalId refuses a principal that
           status: 'ready',
         })
         .returning({ id: managed.id })
-      await db
-        .insert(login)
-        .values({
-          recipe: 'app',
-          managedId: cluster!.id,
-          principalId: withLogin,
-          role: 'user',
-          username: `login_${tag}`,
-          appliedUsername: `login_${tag}`,
-        })
+      await db.insert(login).values({
+        recipe: 'app',
+        managedId: cluster!.id,
+        principalId: withLogin,
+        role: 'user',
+        username: `login_${tag}`,
+        appliedUsername: `login_${tag}`,
+      })
 
       const del = (id: string) =>
         app.request(`/organizations/${organizationId}/principals/${id}`, {
