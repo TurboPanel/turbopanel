@@ -153,7 +153,7 @@ export type OrganizationOptions = {
    * tenant `tls` library (`POST /tls` with `source: 'lets_encrypt'`) and the
    * deploy-time `tlsMode: 'acme'` wire the resolved TLS status can produce.
    * Off by default: some operators do not want Let's Encrypt used against
-   * their servers at all, so a `managed` TLS row is inert until the org
+   * their servers at all, so an `automatic` TLS row is inert until the org
    * turns this on. Toggling off does not revoke certificates already issued.
    */
   acmeEnabled?: boolean

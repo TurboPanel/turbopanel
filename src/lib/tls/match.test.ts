@@ -168,12 +168,12 @@ test("resolveTlsForHosting rejects missing, unready, or mismatched pins", () => 
   );
 });
 
-test("resolveTlsForHosting accepts a managed lets_encrypt pin without PEM dates", () => {
+test("resolveTlsForHosting accepts an automatic lets_encrypt pin without PEM dates", () => {
   const pinned: TlsCandidate = {
     id: "tls-le",
     source: "lets_encrypt",
     metadata: readyMeta(["app.example.com"], {
-      status: "managed",
+      status: "automatic",
       notBefore: "1970-01-01T00:00:00.000Z",
       notAfter: "1970-01-01T00:00:00.000Z",
     }),
@@ -190,17 +190,17 @@ test("resolveTlsForHosting accepts a managed lets_encrypt pin without PEM dates"
   );
 });
 
-test("resolveTlsForHosting still deploys a managed pin with a recorded acme.lastError", () => {
+test("resolveTlsForHosting still deploys an automatic pin with a recorded acme.lastError", () => {
   // Regression guard for AcmeIssuanceObserver / handleAcmeIssuanceEvent: a
   // visibility feature recording a failed-probe note must never itself
   // become a second, accidental deploy gate. Only the `status` column
-  // drives isReadyCandidate() for a `managed` row — metadata.acme.lastError
+  // drives isReadyCandidate() for an `automatic` row — metadata.acme.lastError
   // is not consulted here at all.
   const pinned: TlsCandidate = {
     id: "tls-le",
     source: "lets_encrypt",
     metadata: readyMeta(["app.example.com"], {
-      status: "managed",
+      status: "automatic",
       notBefore: "1970-01-01T00:00:00.000Z",
       notAfter: "1970-01-01T00:00:00.000Z",
       acme: {
@@ -221,13 +221,13 @@ test("resolveTlsForHosting still deploys a managed pin with a recorded acme.last
   );
 });
 
-test("resolveTlsForHosting rejects managed pins that are not lets_encrypt", () => {
+test("resolveTlsForHosting rejects automatic pins that are not lets_encrypt", () => {
   assertEquals(
     resolveTlsForHosting({
       pinId: "tls-1",
       hostnames: ["app.example.com"],
       candidates: [
-        candidate("tls-1", ["app.example.com"], { status: "managed" }),
+        candidate("tls-1", ["app.example.com"], { status: "automatic" }),
       ],
       now: NOW,
     }),

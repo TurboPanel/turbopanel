@@ -1379,7 +1379,7 @@ CREATE TABLE "tls" (
 	CONSTRAINT "tls_ca_lifecycle_source_check" CHECK ((source = 'organization_ca' AND ca_state IS NOT NULL) OR (source <> 'organization_ca' AND ca_state IS NULL AND ca_generation IS NULL)),
 	CONSTRAINT "tls_ca_generation_source_check" CHECK (ca_generation IS NULL OR source = 'organization_ca'),
 	CONSTRAINT "tls_ca_generation_required_check" CHECK (ca_state IS NULL OR ca_state = 'revoked' OR ca_generation IS NOT NULL),
-	CONSTRAINT "tls_status_check" CHECK (status IN ('ready', 'pending', 'expired', 'failed', 'revoked', 'managed'))
+	CONSTRAINT "tls_status_check" CHECK (status IN ('ready', 'pending', 'expired', 'failed', 'revoked', 'automatic'))
 );
 --> statement-breakpoint
 CREATE TABLE "totp" (
@@ -2636,7 +2636,7 @@ COMMENT ON COLUMN "tls"."name" IS 'Operator label of 1-255 letters, digits, spac
 COMMENT ON COLUMN "tls"."source" IS '`upload`, `lets_encrypt` (Caddy-managed ACME on the host), `self_signed` or `organization_ca`; decides which other columns are meaningful.';--> statement-breakpoint
 COMMENT ON COLUMN "tls"."certificate_pem" IS 'Leaf plus intermediate chain PEM; on `lets_encrypt` rows it is null until the serving host''s Caddy has issued the certificate and its daemon has sent a copy.';--> statement-breakpoint
 COMMENT ON COLUMN "tls"."private_key_pem" IS 'Private key PEM sealed as a `tpsecret` envelope, never returned by the client API; Let''s Encrypt rows get it from the daemon report and lose it on revoke.';--> statement-breakpoint
-COMMENT ON COLUMN "tls"."status" IS 'Row health `ready`, `pending`, `expired`, `failed`, `revoked` or `managed` (Caddy ACME intent); `expired` is derived at read from `not_after`, others stored.';--> statement-breakpoint
+COMMENT ON COLUMN "tls"."status" IS 'Row health `ready`, `pending`, `expired`, `failed`, `revoked` or `automatic` (web server issues it); `expired` is derived from `not_after`, others stored.';--> statement-breakpoint
 COMMENT ON COLUMN "tls"."not_after" IS 'Certificate expiry parsed from the PEM at write; epoch-0 placeholder on `managed` rows; indexed for expiry checks.';--> statement-breakpoint
 COMMENT ON COLUMN "tls"."fingerprint_sha256" IS 'SHA-256 fingerprint of the leaf DER, unique per organization when set; null on `managed` rows that have no certificate yet.';--> statement-breakpoint
 COMMENT ON COLUMN "tls"."ca_state" IS 'Organization CA lifecycle `active` (one per org), `retired` (still in the trust bundle) or `revoked`; null on non-CA rows.';--> statement-breakpoint

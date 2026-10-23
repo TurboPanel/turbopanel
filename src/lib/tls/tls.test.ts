@@ -104,7 +104,7 @@ describe("resolveTlsForHosting", () => {
     dnsNames: string[],
     opts?: {
       prefer?: number;
-      status?: "ready" | "pending" | "expired" | "managed" | "revoked";
+      status?: "ready" | "pending" | "expired" | "automatic" | "revoked";
       source?: TlsCandidate["source"];
     },
   ): TlsCandidate {
@@ -151,7 +151,7 @@ describe("resolveTlsForHosting", () => {
       hostnames: ["api.example.com"],
       candidates: [
         candidate("pin-le", ["api.example.com"], {
-          status: "managed",
+          status: "automatic",
           source: "lets_encrypt",
         }),
       ],

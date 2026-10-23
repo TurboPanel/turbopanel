@@ -335,7 +335,7 @@ test('buildCreateTlsMaterial dispatches by source', async () => {
   if (isCreateTlsFailure(le)) {
     throw new TypeError('expected lets encrypt material')
   }
-  assertEquals(le.metadata.status, 'managed')
+  assertEquals(le.metadata.status, 'automatic')
   assertEquals(le.metadata.acme?.managedBy, 'caddy')
 
   const selfSigned = await buildCreateTlsMaterial(

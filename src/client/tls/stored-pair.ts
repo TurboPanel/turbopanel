@@ -90,7 +90,7 @@ export async function runStoredPairSweepTick(
       metadata: tls.metadata,
     })
     .from(tls)
-    .where(and(eq(tls.source, 'lets_encrypt'), eq(tls.status, 'managed'), sql`not ${pinned}`))
+    .where(and(eq(tls.source, 'lets_encrypt'), eq(tls.status, 'automatic'), sql`not ${pinned}`))
     .limit(STORED_PAIR_SWEEP_BATCH)
 
   await forEachSequential(loose, async (row) => {

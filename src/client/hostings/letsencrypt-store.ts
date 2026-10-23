@@ -121,7 +121,7 @@ export function createLetsEncryptStore(db: Db): LetsEncryptStore {
           and(
             eq(tls.organizationId, organizationId),
             eq(tls.source, 'lets_encrypt'),
-            eq(tls.status, 'managed')
+            eq(tls.status, 'automatic')
           )
         )
       const match = rows.find((row) => {

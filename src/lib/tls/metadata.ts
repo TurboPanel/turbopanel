@@ -19,7 +19,7 @@ export const TLS_STATUS_VALUES = [
   'expired',
   'failed',
   'revoked',
-  'managed',
+  'automatic',
 ] as const satisfies readonly TlsStatus[]
 
 const TLS_STATUSES = new Set<TlsStatus>(TLS_STATUS_VALUES)
@@ -127,7 +127,7 @@ export function refreshTlsStatus(
   metadata: TlsMetadata,
   now: Date = new Date(),
 ): TlsMetadata {
-  // `managed` is Caddy ACME intent — no leaf dates to expire here.
+  // `automatic` is Caddy ACME intent — no leaf dates to expire here.
   if (metadata.status !== 'ready') return metadata
   const notAfter = Date.parse(metadata.notAfter)
   if (!Number.isNaN(notAfter) && now.getTime() > notAfter) {

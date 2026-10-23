@@ -1,5 +1,5 @@
 {
-  "id": "27012479-5849-49fa-89f2-663ddf7bf658",
+  "id": "0a80159a-5174-4636-85df-03f06658cbaa",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -14320,7 +14320,7 @@
         },
         "tls_status_check": {
           "name": "tls_status_check",
-          "value": "status IN ('ready', 'pending', 'expired', 'failed', 'revoked', 'managed')"
+          "value": "status IN ('ready', 'pending', 'expired', 'failed', 'revoked', 'automatic')"
         }
       },
       "isRLSEnabled": false

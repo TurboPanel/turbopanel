@@ -4223,7 +4223,7 @@ export function hostingTlsWireFromResolved(params: {
   bindScope: HostingBindScope
   acmeEnabled: boolean
 }): HostingTlsWire {
-  if (params.status !== 'managed') {
+  if (params.status !== 'automatic') {
     return { ok: true, tlsId: params.tlsId }
   }
   if (!params.acmeEnabled) {

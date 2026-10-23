@@ -344,7 +344,7 @@ test('PUT use-letsencrypt: pins at once when DNS is ready, and a second click ad
       .where(eq(tls.organizationId, f.organizationId))
     assertEquals(rows.length, 1)
     assertEquals(rows[0]?.source, 'lets_encrypt')
-    assertEquals(rows[0]?.status, 'managed')
+    assertEquals(rows[0]?.status, 'automatic')
 
     // The daemon reports a failure: the same row now reads as renewal failed.
     await f.db
