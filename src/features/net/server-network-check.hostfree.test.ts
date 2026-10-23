@@ -182,3 +182,18 @@ test('chosenNetworkDownWarnings has no fallback when no other trusted network ex
 test('chosenNetworkDownWarnings is quiet when every link is up', () => {
   assertEquals(chosenNetworkDownWarnings(rivals, [pin(A, DC), pin(B, DC, false)]), [])
 })
+
+test('chosenNetworkDownWarnings says unreachable when only the probes marked the servers', () => {
+  const probed = (serverId: string): DatacenterMembershipRow => ({
+    ...pin(serverId, DC, true),
+    probedDown: true,
+  })
+  const warnings = chosenNetworkDownWarnings(rivals, [probed(A), probed(B)])
+  assertEquals(warnings[0]!.reason, 'unreachable')
+  assertEquals(warnings[0]!.serverIds, [A, B])
+  // A network card that reports no link on one of them keeps the stronger reason.
+  assertEquals(
+    chosenNetworkDownWarnings(rivals, [probed(A), pin(B, DC, true)])[0]!.reason,
+    'link_down'
+  )
+})

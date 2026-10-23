@@ -62,6 +62,7 @@ import { resolveWorkersDb } from '../../platform/workers/workers-bindings.ts'
 import { runManagedIngressOrphanSweep } from '../../features/managed/ingress-desired.ts'
 import { runHostLossTick } from './host-loss-tick.ts'
 import { runDatacenterRepinFanoutSweep } from '../../client/datacenters/repin-fanout.ts'
+import { runNetworkProbeSweep } from '../../client/datacenters/network-probe-sweep.ts'
 import { runSystemReconcileSweep } from '../../features/system/reconcile.ts'
 import { runBackupsReconcileSweep } from '../../features/backups/reconcile.ts'
 import { runFolderReconcileSweep } from './folder-reconcile-sweep.ts'
@@ -1097,7 +1098,8 @@ async function runQueuedCronSweeps(
   db: Db,
   queue: NonNullable<CloudflareBindings['TURBOPANEL_COMMAND_QUEUE']>,
   tlsRenewal: CronTlsRenewal | null | undefined,
-  firewallApplyGate: FirewallApplyGate
+  firewallApplyGate: FirewallApplyGate,
+  registry: DaemonCellRegistry
 ): Promise<void> {
   try {
     const commandQueue = createWorkersCommandQueue(queue)
@@ -1167,6 +1169,17 @@ async function runQueuedCronSweeps(
           error: sweepErrorMessage(err),
         })
       }
+    }
+    // Automatic network fallback: ask the servers whether the network that
+    // carries server-to-server traffic still works, and mark the ones nobody
+    // can reach. Only stamps `ip.repin_pending_fanout_at`; the fan-out above
+    // drains it on a later tick. Never throws.
+    try {
+      await runNetworkProbeSweep(db, registry)
+    } catch (err) {
+      sweepTrace('network-probe-sweep-failed', {
+        error: sweepErrorMessage(err),
+      })
     }
   } catch (err) {
     sweepTrace('system-reconcile-sweep-failed', {
@@ -1587,7 +1600,13 @@ async function runOptionalCronPhases(
   const commandQueue = env.TURBOPANEL_COMMAND_QUEUE
   if (!commandQueue) return
   await runOptionalPhase(deadlineMs, 'reconcile', opts.scheduledTime, phasesSkipped, () =>
-    runQueuedCronSweeps(db, commandQueue, tlsRenewal, opts.firewallApplyGate)
+    runQueuedCronSweeps(
+      db,
+      commandQueue,
+      tlsRenewal,
+      opts.firewallApplyGate,
+      createDurableObjectDaemonCellRegistry(env, db)
+    )
   )
 }
 

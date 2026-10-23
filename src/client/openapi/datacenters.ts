@@ -79,7 +79,7 @@ export const datacenterSchemas = {
       warnings: {
         type: 'array',
         description:
-          'Plain-words warnings about the set. `equal_priority`: two or more trusted datacenters share a priority number. `chosen_network_down`: the network servers try first has a server whose link is down, so those servers already use `fallbackDatacenterId` (null when no other trusted network exists).',
+          'Plain-words warnings about the set. `equal_priority`: two or more trusted datacenters share a priority number. `chosen_network_down`: the network servers try first has a server whose link is down or that the others cannot reach, so those servers already use `fallbackDatacenterId` (null when no other trusted network exists).',
         items: {
           type: 'object',
           required: ['code'],
@@ -104,12 +104,14 @@ export const datacenterSchemas = {
             serverIds: {
               type: 'array',
               items: { type: 'string', format: 'uuid' },
-              description: '`chosen_network_down` only: servers whose link is down.',
+              description:
+                '`chosen_network_down` only: servers whose link is down or that the others cannot reach.',
             },
             reason: {
               type: 'string',
-              const: 'link_down',
-              description: '`chosen_network_down` only.',
+              enum: ['link_down', 'unreachable'],
+              description:
+                '`chosen_network_down` only: `link_down` when a network card reports no link, `unreachable` when the other servers could not reach it over this network.',
             },
           },
         },
