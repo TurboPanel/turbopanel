@@ -167,6 +167,8 @@ type SessionAppOpts = {
   visibleMemberServers?: boolean
   orgOverlapFromOtherSite?: boolean
   memberAddressInUse?: boolean
+  /** Every `update(...).where(...).returning()` matches no row (the row moved under the writer). */
+  updateMatchesNothing?: boolean
   /** Stored `datacenter.options` jsonb for the seeded row (default `{}`). */
   datacenterOptions?: Record<string, unknown> | null
   /** Stored `datacenter.metadata` jsonb (e.g. a seeded `geo`; default `{}`). */
@@ -376,7 +378,7 @@ async function buildSessionApp(opts: SessionAppOpts): Promise<{
       set: (patch: Record<string, unknown>) => ({
         where: () => {
           updates.push(patch)
-          return thenableRows([])
+          return thenableRows(opts.updateMatchesNothing ? [] : [{ id: 'updated-row' }])
         },
       }),
     }),
@@ -1742,6 +1744,24 @@ test('POST /datacenters/:id/server-traffic gives the chosen network the lowest n
   assertEquals(updates.length, 1)
   assertEquals(updates[0]?.priority, 10)
   assertEquals('options' in (updates[0] ?? {}), false)
+})
+
+test('POST /datacenters/:id/server-traffic answers 409 when the row moved before the write', async () => {
+  const { app, cookie } = await buildSessionApp({
+    manageAllowed: true,
+    updateMatchesNothing: true,
+    orgDatacenterRows: [
+      { id: otherDatacenterId, options: {} },
+      { id: BACKHAUL_ID, options: {} },
+    ],
+  })
+  const res = await app.request(`/datacenters/${BACKHAUL_ID}/server-traffic`, {
+    method: 'POST',
+    headers: sessionHeaders(cookie, true),
+    body: JSON.stringify({ preferred: true }),
+  })
+  assertEquals(res.status, 409)
+  assertEquals(await res.json(), { error: 'network_choice_changed' })
 })
 
 test('POST /datacenters/:id/server-traffic writes nothing when the network already wins', async () => {
