@@ -70,11 +70,8 @@ export const PRINCIPAL_ACCESS_GROUPS: Readonly<
  */
 export const PRINCIPAL_PASSWORD_GROUP = 'tppasswd'
 
-export function isPrincipalAccessLevel(
-  value: unknown,
-): value is PrincipalAccessLevel {
-  return typeof value === 'string' &&
-    (PRINCIPAL_ACCESS_LEVELS as readonly string[]).includes(value)
+export function isPrincipalAccessLevel(value: unknown): value is PrincipalAccessLevel {
+  return typeof value === 'string' && (PRINCIPAL_ACCESS_LEVELS as readonly string[]).includes(value)
 }
 
 /** The shell to persist for a level. */
@@ -89,9 +86,7 @@ export function shellForAccessLevel(level: PrincipalAccessLevel): string {
  * default: an account whose shell the panel cannot interpret is one the panel
  * should not be handing out SSH access for.
  */
-export function accessLevelForShell(
-  shell: string | null | undefined,
-): PrincipalAccessLevel {
+export function accessLevelForShell(shell: string | null | undefined): PrincipalAccessLevel {
   switch (shell) {
     case '/bin/bash':
     case '/bin/sh':
@@ -120,7 +115,7 @@ export function accessLevelForShell(
 export function effectivePrincipalAccess(
   shell: string | null | undefined,
   keyCount: number,
-  passwordEnabled = false,
+  passwordEnabled = false
 ): PrincipalAccessLevel {
   const intended = accessLevelForShell(shell)
   return keyCount > 0 || passwordEnabled ? intended : 'none'
@@ -143,7 +138,7 @@ export function effectivePrincipalAccess(
 export function accessGroupsFor(
   shell: string | null | undefined,
   keyCount: number,
-  passwordEnabled = false,
+  passwordEnabled = false
 ): readonly string[] {
   const level = effectivePrincipalAccess(shell, keyCount, passwordEnabled)
   if (level === 'none') return []

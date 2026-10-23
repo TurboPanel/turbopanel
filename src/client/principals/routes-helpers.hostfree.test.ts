@@ -93,7 +93,11 @@ test('parsePrincipalUsernameValue rejects reserved and unsafe names', () => {
 test('parseCreatePrincipalOptions turns the shell into an access level and keeps it out of options', () => {
   const none = parseCreatePrincipalOptions({})
   assertEquals(none.ok && none.access, 'sftp')
-  const bash = parseCreatePrincipalOptions({ options: { shell: '/bin/bash' }, uid: 15001, gid: 15001 })
+  const bash = parseCreatePrincipalOptions({
+    options: { shell: '/bin/bash' },
+    uid: 15001,
+    gid: 15001,
+  })
   assertEquals(bash.ok && bash.access, 'shell')
   assertEquals(bash.ok && bash.options, { uid: 15001, gid: 15001 })
   const off = parseCreatePrincipalOptions({ options: { shell: '/bin/false' } })

@@ -321,7 +321,8 @@ export const principalPaths = {
                 },
                 options: {
                   type: 'object',
-                  description: 'Optional principal options; `shell` (allowlisted) is accepted and stored as the access level',
+                  description:
+                    'Optional principal options; `shell` (allowlisted) is accepted and stored as the access level',
                 },
                 uid: {
                   type: 'integer',
