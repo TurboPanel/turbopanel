@@ -669,7 +669,7 @@ async function beginRecovery(params: {
     // `needsOperator`, which would keep a boot-held old primary stopped).
     await updateRecovery(params.db, recovery.id, {
       state: 'blocked',
-      metadata: { ...recovery.metadata, blockedReason: SWITCHOVER_GTID_NOT_RECORDED_MESSAGE },
+      metadata: { ...recovery.metadata, blockedReason: SWITCHOVER_PRIMARY_DID_NOT_ANSWER_MESSAGE },
     })
     await stampManagedReady(params.db, params.managedId)
     return { ok: false, error: 'managed_replica_not_fully_applied', status: 409 }
@@ -1191,8 +1191,8 @@ async function enqueueSwitchoverAbortReactivation(
   })
 }
 
-const SWITCHOVER_GTID_NOT_RECORDED_MESSAGE =
-  'Planned switchover stopped: the old primary GTID position was not recorded before promotion'
+const SWITCHOVER_PRIMARY_DID_NOT_ANSWER_MESSAGE =
+  'Planned switchover stopped: the current primary did not answer in time, so nothing was changed and it stays the primary'
 
 async function abortSwitchoverWhenGtidMissing(
   db: Db,
@@ -1219,7 +1219,7 @@ async function abortSwitchoverWhenGtidMissing(
       members,
     })
   }
-  await failRecoveryForOperator(db, record.id, SWITCHOVER_GTID_NOT_RECORDED_MESSAGE)
+  await failRecoveryForOperator(db, record.id, SWITCHOVER_PRIMARY_DID_NOT_ANSWER_MESSAGE)
   await stampManagedReady(db, record.managedId)
   return true
 }

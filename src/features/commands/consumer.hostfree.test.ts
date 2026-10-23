@@ -1856,14 +1856,36 @@ test('processCommandEnvelope managed.ha.failover drain without recoveryId is a n
   )
 })
 
+test('processCommandEnvelope managed.ha.failover undrain success does not flip roles', async () => {
+  const fake = await runOnline(
+    'managed.ha.failover',
+    { ...VALID_HA_FAILOVER_PAYLOAD, phase: 'undrain' },
+    doneWith({ summary: 'undrained', phase: 'undrain' }),
+    { replicaServerId: SERVER_ID }
+  )
+  assertEquals(
+    fake.transitions.some((t) => t.status === 'succeeded'),
+    true
+  )
+  assertEquals(
+    fake.managedUpdates.some((patch) => patch.status === 'ready' || patch.serverId !== undefined),
+    false
+  )
+})
+
 test('processCommandEnvelope managed.ha.failover recover flips roles', async () => {
   const fake = await runOnline(
     'managed.ha.failover',
     { ...VALID_HA_FAILOVER_PAYLOAD, phase: 'recover' },
-    doneWith({ summary: 'recovered', phase: 'recover' })
+    doneWith({ summary: 'recovered', phase: 'recover' }),
+    { replicaServerId: SERVER_ID }
   )
   assertEquals(
     fake.transitions.some((t) => t.status === 'succeeded'),
+    true
+  )
+  assertEquals(
+    fake.managedUpdates.some((patch) => patch.status === 'ready'),
     true
   )
 })

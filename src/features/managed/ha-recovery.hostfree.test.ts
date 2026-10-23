@@ -983,7 +983,7 @@ test('an idle-gated mysql switchover is refused when the old primary goes offlin
   assertEquals(metadata.needsOperator, undefined)
   assertEquals(
     metadata.blockedReason,
-    'Planned switchover stopped: the old primary GTID position was not recorded before promotion'
+    'Planned switchover stopped: the current primary did not answer in time, so nothing was changed and it stays the primary'
   )
 })
 
@@ -1215,7 +1215,7 @@ test('mariadb switchover aborts promote when fence stop did not record a GTID', 
   assertEquals(row?.state, 'failed')
   assertEquals(
     (row?.metadata as { failedReason?: string }).failedReason,
-    'Planned switchover stopped: the old primary GTID position was not recorded before promotion'
+    'Planned switchover stopped: the current primary did not answer in time, so nothing was changed and it stays the primary'
   )
   assertEquals(
     harness.commandInserts.some((insert) => insert.name === 'managed.promote'),

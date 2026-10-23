@@ -4825,7 +4825,15 @@ async function insertPromotePair(
   await attachConnectedDaemonStatus(db, standbyServerId)
   const [primaryMember] = await db
     .insert(replica)
-    .values({ managedId, serverId, role: 'primary', ordinal: 1, status: 'ready' })
+    // A cluster's first member has no replica class: it never was a replica.
+    .values({
+      managedId,
+      serverId,
+      role: 'primary',
+      ordinal: 1,
+      status: 'ready',
+      replicaClass: null,
+    })
     .returning({ id: replica.id })
   const [replicaMember] = await db
     .insert(replica)
@@ -4904,6 +4912,7 @@ test('processCommandEnvelope demotes old primary before promote so uniq_node_pri
           id: replica.id,
           role: replica.role,
           status: replica.status,
+          replicaClass: replica.replicaClass,
         })
         .from(replica)
         .where(eq(replica.managedId, managedId))
@@ -4912,6 +4921,8 @@ test('processCommandEnvelope demotes old primary before promote so uniq_node_pri
       const replicaRow = members.find((m) => m.id === replicaMemberId)
       assertEquals(primary?.role, 'replica')
       assertEquals(primary?.status, 'needs_resync')
+      // The demoted primary stays a failover candidate once it is resynced.
+      assertEquals(primary?.replicaClass, 'failover')
       assertEquals(replicaRow?.role, 'primary')
       assertEquals(replicaRow?.status, 'ready')
 
