@@ -62,6 +62,49 @@ CREATE TABLE "backup" (
 	CONSTRAINT "backup_size_bytes_check" CHECK (size_bytes >= 0)
 );
 --> statement-breakpoint
+CREATE TABLE "shipment" (
+	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
+	"created_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
+	"updated_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
+	"managed_id" uuid NOT NULL,
+	"backup_id" text NOT NULL,
+	"destination_id" uuid,
+	"destination_name" text NOT NULL,
+	"state" text DEFAULT 'pending' NOT NULL,
+	"error" text,
+	"object_key" text,
+	"size_bytes" bigint,
+	"attempts" integer DEFAULT 0 NOT NULL,
+	"copied_at" timestamp(3) with time zone,
+	"server_id" uuid,
+	CONSTRAINT "shipment_backup_id_format_check" CHECK (backup_id ~ '^[A-Za-z0-9_-]+$'),
+	CONSTRAINT "shipment_state_check" CHECK (state IN ('pending', 'copying', 'copied', 'failed', 'removed')),
+	CONSTRAINT "shipment_attempts_check" CHECK (attempts >= 0)
+);
+--> statement-breakpoint
+CREATE TABLE "destination" (
+	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
+	"created_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
+	"updated_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
+	"organization_id" uuid NOT NULL,
+	"name" text NOT NULL,
+	"kind" text DEFAULT 's3' NOT NULL,
+	"endpoint" text NOT NULL,
+	"region" text NOT NULL,
+	"bucket" text NOT NULL,
+	"prefix" text DEFAULT '' NOT NULL,
+	"is_path_style" boolean DEFAULT true NOT NULL,
+	"is_server_side_encrypted" boolean DEFAULT false NOT NULL,
+	"access_key_id" text NOT NULL,
+	"secret_key_sealed" text NOT NULL,
+	"last_tested_at" timestamp(3) with time zone,
+	"is_last_test_ok" boolean,
+	"last_test_error" text,
+	"created_by" uuid,
+	CONSTRAINT "destination_kind_check" CHECK (kind IN ('s3')),
+	CONSTRAINT "destination_name_check" CHECK (char_length(name) BETWEEN 1 AND 64)
+);
+--> statement-breakpoint
 CREATE TABLE "binding" (
 	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
 	"created_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
@@ -189,7 +232,14 @@ CREATE TABLE "datacenter" (
 	"options" jsonb,
 	"organization_id" uuid NOT NULL,
 	"name" text,
-	"description" text
+	"description" text,
+	"priority" integer DEFAULT 100 NOT NULL,
+	"is_trusted" boolean DEFAULT true NOT NULL,
+	"address_preference" text DEFAULT 'ipv6' NOT NULL,
+	"kind" text,
+	CONSTRAINT "datacenter_priority_check" CHECK (priority >= 0 AND priority <= 1000),
+	CONSTRAINT "datacenter_address_preference_check" CHECK (address_preference IN ('ipv6', 'ipv4')),
+	CONSTRAINT "datacenter_kind_check" CHECK (kind IS NULL OR kind IN ('lan', 'backplane', 'provider_private'))
 );
 --> statement-breakpoint
 CREATE TABLE "deployment" (
@@ -535,6 +585,7 @@ CREATE TABLE "login" (
 	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
 	"created_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
+	"metadata" jsonb,
 	"managed_id" uuid NOT NULL,
 	"principal_id" uuid,
 	"role" text NOT NULL,
@@ -542,15 +593,22 @@ CREATE TABLE "login" (
 	"applied_username" varchar(255) NOT NULL,
 	"name_scheme" text DEFAULT 'plain' NOT NULL,
 	"password" text,
-	"grant_mode" text DEFAULT 'preset' NOT NULL,
+	"grant_mode" text DEFAULT 'recipe' NOT NULL,
+	"recipe" text,
+	"is_all_databases" boolean DEFAULT false NOT NULL,
 	"is_tool" boolean DEFAULT false NOT NULL,
-	"allowed_sources" text[],
+	"allowed_sources" text[] DEFAULT '{internal}'::text[] NOT NULL,
 	"max_connections" integer,
+	"is_straight_through" boolean,
 	"access" text DEFAULT 'read-write' NOT NULL,
 	"privileges" text[] DEFAULT '{}'::text[] NOT NULL,
-	CONSTRAINT "login_role_check" CHECK (role IN ('root', 'replication', 'user')),
+	CONSTRAINT "login_role_check" CHECK (role IN ('root', 'replication', 'user', 'backup')),
 	CONSTRAINT "login_name_scheme_check" CHECK (name_scheme IN ('plain', 'partial', 'random')),
-	CONSTRAINT "login_grant_mode_check" CHECK (grant_mode IN ('preset', 'recipe', 'self')),
+	CONSTRAINT "login_grant_mode_check" CHECK (grant_mode IN ('recipe', 'self')),
+	CONSTRAINT "login_recipe_check" CHECK (recipe IS NULL OR recipe IN ('app', 'migrations', 'read-only', 'analyst', 'admin', 'backup')),
+	CONSTRAINT "login_recipe_required_check" CHECK (grant_mode <> 'recipe' OR recipe IS NOT NULL),
+	CONSTRAINT "login_allowed_sources_check" CHECK (cardinality(allowed_sources) BETWEEN 1 AND 100),
+	CONSTRAINT "login_backup_sources_check" CHECK (role <> 'backup' OR cardinality(allowed_sources) >= 1),
 	CONSTRAINT "login_access_check" CHECK (access IN ('read-write', 'read-only')),
 	CONSTRAINT "login_max_connections_check" CHECK (max_connections IS NULL OR max_connections >= 1),
 	CONSTRAINT "login_applied_username_format_check" CHECK ((char_length((applied_username)::text) >= 1) AND (char_length((applied_username)::text) <= 255) AND ((applied_username)::text ~ '^[A-Za-z_][A-Za-z0-9_-]*$'::text))
@@ -567,6 +625,8 @@ CREATE TABLE "managed" (
 	"name" text,
 	"engine" text NOT NULL,
 	"status" text DEFAULT 'provisioning' NOT NULL,
+	"backup_destination" text,
+	CONSTRAINT "managed_backup_destination_check" CHECK (backup_destination IS NULL OR backup_destination = 'none' OR backup_destination ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'),
 	CONSTRAINT "managed_name_format_check" CHECK (("managed"."name" IS NULL) OR (((char_length(("managed"."name")::text) >= 1) AND (char_length(("managed"."name")::text) <= 255)) AND (("managed"."name")::text ~ '^[A-Za-z0-9 ._-]+$'::text))),
 	CONSTRAINT "managed_engine_check" CHECK (engine IN ('postgres', 'mysql', 'mariadb', 'redis', 'clickhouse')),
 	CONSTRAINT "managed_status_check" CHECK (status IN ('provisioning','applying','ready','stopped','failed'))
@@ -731,6 +791,7 @@ CREATE TABLE "organization" (
 	"options" jsonb,
 	"name" text,
 	"next_linux_id" integer DEFAULT 30001 NOT NULL,
+	"backup_destination_id" uuid,
 	CONSTRAINT "organization_next_linux_id_check" CHECK ("organization"."next_linux_id" >= 30001 AND "organization"."next_linux_id" <= 60001)
 );
 --> statement-breakpoint
@@ -762,17 +823,32 @@ CREATE TABLE "payer" (
 	CONSTRAINT "payer_provider_check" CHECK (provider IN ('stripe'))
 );
 --> statement-breakpoint
+CREATE TABLE "peak" (
+	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
+	"created_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
+	"updated_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
+	"server_id" uuid NOT NULL,
+	"bucket" timestamp(3) with time zone NOT NULL,
+	"memory_bytes" bigint,
+	"cores" integer,
+	CONSTRAINT "peak_memory_bytes_check" CHECK (memory_bytes >= 0),
+	CONSTRAINT "peak_cores_check" CHECK (cores >= 0),
+	CONSTRAINT "peak_reading_check" CHECK (memory_bytes IS NOT NULL OR cores IS NOT NULL)
+);
+--> statement-breakpoint
 CREATE TABLE "principal" (
 	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
 	"created_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
 	"metadata" jsonb,
 	"options" jsonb,
+	"access" text DEFAULT 'sftp' NOT NULL,
 	"username" varchar(255) NOT NULL,
 	"applied_username" varchar(255) NOT NULL,
 	"password" text,
 	"organization_id" uuid NOT NULL,
 	"project_id" uuid,
+	CONSTRAINT "principal_access_check" CHECK (access IN ('none', 'sftp', 'shell')),
 	CONSTRAINT "principal_username_format_check" CHECK ((char_length((username)::text) >= 1) AND (char_length((username)::text) <= 255) AND ((username)::text ~ '^[A-Za-z_][A-Za-z0-9_-]*$'::text)),
 	CONSTRAINT "principal_applied_username_format_check" CHECK ((char_length((applied_username)::text) >= 1) AND (char_length((applied_username)::text) <= 255) AND ((applied_username)::text ~ '^[A-Za-z_][A-Za-z0-9_-]*$'::text))
 );
@@ -807,8 +883,12 @@ CREATE TABLE "project" (
 	"component" text,
 	"slug" text DEFAULT uuidv7()::text NOT NULL,
 	"default_server_id" uuid,
+	"kind" text,
+	"icon" text,
 	CONSTRAINT "uniq_project_organization_slug" UNIQUE("organization_id","slug"),
-	CONSTRAINT "project_slug_check" CHECK (slug ~ '^[a-z0-9][a-z0-9-]{0,39}$')
+	CONSTRAINT "project_slug_check" CHECK (slug ~ '^[a-z0-9][a-z0-9-]{0,39}$'),
+	CONSTRAINT "project_kind_check" CHECK (kind IS NULL OR kind IN ('compose', 'managed', 'system')),
+	CONSTRAINT "project_icon_check" CHECK (icon IS NULL OR icon IN ('cube', 'globe', 'cart', 'bolt', 'chat', 'chart', 'code', 'book', 'layers', 'mail', 'rocket', 'image'))
 );
 --> statement-breakpoint
 CREATE TABLE "recovery" (
@@ -910,6 +990,7 @@ CREATE TABLE "retention" (
 	"name" text NOT NULL,
 	"schedule" text NOT NULL,
 	"timezone" text,
+	"database" text,
 	"retention_keep" integer NOT NULL,
 	"is_enabled" boolean DEFAULT true NOT NULL,
 	"next_run_at" timestamp(3) with time zone,
@@ -980,6 +1061,7 @@ CREATE TABLE "server" (
 	CONSTRAINT "uniq_server_machine_key" UNIQUE("machine_key"),
 	CONSTRAINT "server_machine_class_check" CHECK ("server"."machine_class" IN ('physical', 'virtual')),
 	CONSTRAINT "server_machine_class_source_check" CHECK (machine_class_source IN ('detected', 'operator')),
+	CONSTRAINT "server_os_architecture_check" CHECK (os_architecture IS NULL OR os_architecture IN ('x86_64', 'aarch64')),
 	CONSTRAINT "server_offline_reason_check" CHECK (offline_reason IN ('disconnect', 'sweep_stale')),
 	CONSTRAINT "server_daemon_update_status_check" CHECK (daemon_update_status IN ('idle', 'updating', 'done', 'failed', 'expired'))
 );
@@ -1421,6 +1503,11 @@ ALTER TABLE "backup" ADD CONSTRAINT "backup_managed_id_managed_id_fk" FOREIGN KE
 ALTER TABLE "backup" ADD CONSTRAINT "backup_retention_id_retention_id_fk" FOREIGN KEY ("retention_id") REFERENCES "public"."retention"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "backup" ADD CONSTRAINT "backup_server_id_server_id_fk" FOREIGN KEY ("server_id") REFERENCES "public"."server"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "backup" ADD CONSTRAINT "backup_database_id_database_id_fk" FOREIGN KEY ("database_id") REFERENCES "public"."database"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "shipment" ADD CONSTRAINT "shipment_managed_id_managed_id_fk" FOREIGN KEY ("managed_id") REFERENCES "public"."managed"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "shipment" ADD CONSTRAINT "shipment_destination_id_destination_id_fk" FOREIGN KEY ("destination_id") REFERENCES "public"."destination"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "shipment" ADD CONSTRAINT "shipment_server_id_server_id_fk" FOREIGN KEY ("server_id") REFERENCES "public"."server"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "destination" ADD CONSTRAINT "destination_organization_id_organization_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "destination" ADD CONSTRAINT "destination_created_by_user_id_fk" FOREIGN KEY ("created_by") REFERENCES "public"."user"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "binding" ADD CONSTRAINT "binding_login_id_login_id_fk" FOREIGN KEY ("login_id") REFERENCES "public"."login"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "binding" ADD CONSTRAINT "binding_database_id_database_id_fk" FOREIGN KEY ("database_id") REFERENCES "public"."database"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "binding" ADD CONSTRAINT "binding_service_id_service_id_fk" FOREIGN KEY ("service_id") REFERENCES "public"."service"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
@@ -1505,9 +1592,11 @@ ALTER TABLE "channel" ADD CONSTRAINT "channel_created_by_user_id_user_id_fk" FOR
 ALTER TABLE "attempt" ADD CONSTRAINT "attempt_channel_id_channel_id_fk" FOREIGN KEY ("channel_id") REFERENCES "public"."channel"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "attempt" ADD CONSTRAINT "attempt_organization_id_organization_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "rule" ADD CONSTRAINT "rule_channel_id_channel_id_fk" FOREIGN KEY ("channel_id") REFERENCES "public"."channel"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "organization" ADD CONSTRAINT "organization_backup_destination_id_destination_id_fk" FOREIGN KEY ("backup_destination_id") REFERENCES "public"."destination"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "passkey" ADD CONSTRAINT "passkey_user_id_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."user"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "payer" ADD CONSTRAINT "payer_organization_id_organization_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "payer" ADD CONSTRAINT "payer_user_id_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."user"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "peak" ADD CONSTRAINT "peak_server_id_server_id_fk" FOREIGN KEY ("server_id") REFERENCES "public"."server"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "principal" ADD CONSTRAINT "principal_organization_id_organization_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "principal" ADD CONSTRAINT "principal_project_id_project_id_fk" FOREIGN KEY ("project_id") REFERENCES "public"."project"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "placement" ADD CONSTRAINT "placement_principal_id_principal_id_fk" FOREIGN KEY ("principal_id") REFERENCES "public"."principal"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
@@ -1599,6 +1688,12 @@ CREATE INDEX "idx_backup_retention_id" ON "backup" USING btree ("retention_id");
 CREATE INDEX "idx_backup_server_id" ON "backup" USING btree ("server_id");--> statement-breakpoint
 CREATE INDEX "idx_backup_database_id" ON "backup" USING btree ("database_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "uniq_backup_managed_backup_id" ON "backup" USING btree ("managed_id","backup_id");--> statement-breakpoint
+CREATE UNIQUE INDEX "uniq_shipment_managed_destination" ON "shipment" USING btree ("managed_id","backup_id","destination_id");--> statement-breakpoint
+CREATE INDEX "idx_shipment_managed_id_backup_id" ON "shipment" USING btree ("managed_id","backup_id");--> statement-breakpoint
+CREATE INDEX "idx_shipment_destination_id" ON "shipment" USING btree ("destination_id");--> statement-breakpoint
+CREATE INDEX "idx_shipment_server_id" ON "shipment" USING btree ("server_id");--> statement-breakpoint
+CREATE UNIQUE INDEX "uniq_destination_organization_name" ON "destination" USING btree ("organization_id","name");--> statement-breakpoint
+CREATE INDEX "idx_destination_created_by" ON "destination" USING btree ("created_by");--> statement-breakpoint
 CREATE INDEX "idx_binding_database_id" ON "binding" USING btree ("database_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_binding_login_id" ON "binding" USING btree ("login_id" uuid_ops);--> statement-breakpoint
 CREATE UNIQUE INDEX "uniq_binding_service_engine_defaults" ON "binding" USING btree ("service_id") WHERE "binding"."is_emit_engine_defaults";--> statement-breakpoint
@@ -1677,6 +1772,8 @@ CREATE INDEX "idx_license_server_id" ON "license" USING btree ("server_id");--> 
 CREATE INDEX "idx_login_principal_id" ON "login" USING btree ("principal_id" uuid_ops);--> statement-breakpoint
 CREATE UNIQUE INDEX "uniq_login_managed_principal" ON "login" USING btree ("managed_id","principal_id") WHERE "login"."principal_id" IS NOT NULL;--> statement-breakpoint
 CREATE UNIQUE INDEX "uniq_login_managed_applied_username" ON "login" USING btree ("managed_id",lower(btrim(("applied_username")::text)));--> statement-breakpoint
+CREATE UNIQUE INDEX "uniq_login_managed_backup" ON "login" USING btree ("managed_id") WHERE "login"."role" = 'backup';--> statement-breakpoint
+CREATE INDEX "idx_managed_backup_destination" ON "managed" USING btree ("backup_destination");--> statement-breakpoint
 CREATE INDEX "idx_managed_server_id" ON "managed" USING btree ("server_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_managed_engine" ON "managed" USING btree ("engine" text_ops);--> statement-breakpoint
 CREATE UNIQUE INDEX "managed_environment_id_unique" ON "managed" USING btree ("environment_id");--> statement-breakpoint
@@ -1717,12 +1814,15 @@ CREATE INDEX "idx_attempt_held" ON "attempt" USING btree ("channel_id","created_
 CREATE INDEX "idx_attempt_channel_created" ON "attempt" USING btree ("channel_id","created_at" DESC NULLS LAST);--> statement-breakpoint
 CREATE INDEX "idx_attempt_organization_id" ON "attempt" USING btree ("organization_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "uniq_rule_channel_event" ON "rule" USING btree ("channel_id","event");--> statement-breakpoint
+CREATE INDEX "idx_organization_backup_destination_id" ON "organization" USING btree ("backup_destination_id");--> statement-breakpoint
 CREATE INDEX "idx_passkey_user_id" ON "passkey" USING btree ("user_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_payer_organization_id" ON "payer" USING btree ("organization_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_payer_user_id" ON "payer" USING btree ("user_id" uuid_ops);--> statement-breakpoint
 CREATE UNIQUE INDEX "uniq_payer_provider_customer" ON "payer" USING btree ("provider","provider_customer_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "uniq_payer_organization_provider" ON "payer" USING btree ("organization_id","provider") WHERE "payer"."organization_id" IS NOT NULL;--> statement-breakpoint
 CREATE UNIQUE INDEX "uniq_payer_user_provider" ON "payer" USING btree ("user_id","provider") WHERE "payer"."user_id" IS NOT NULL;--> statement-breakpoint
+CREATE UNIQUE INDEX "uniq_peak_server_bucket" ON "peak" USING btree ("server_id","bucket");--> statement-breakpoint
+CREATE INDEX "idx_peak_bucket" ON "peak" USING btree ("bucket");--> statement-breakpoint
 CREATE INDEX "idx_principal_organization_id" ON "principal" USING btree ("organization_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_principal_project_id" ON "principal" USING btree ("project_id" uuid_ops);--> statement-breakpoint
 CREATE UNIQUE INDEX "uniq_principal_organization_username" ON "principal" USING btree ("organization_id",lower("username"));--> statement-breakpoint
@@ -1832,8 +1932,7 @@ CREATE INDEX "idx_watch_project_id" ON "watch" USING btree ("project_id" uuid_op
 CREATE INDEX "idx_delivery_created_at" ON "delivery" USING btree ("created_at");--> statement-breakpoint
 CREATE INDEX "idx_delivery_pending" ON "delivery" USING btree ("updated_at") WHERE "delivery"."provider" = 'stripe' AND "delivery"."projected_at" IS NULL AND "delivery"."object_id" IS NOT NULL;--> statement-breakpoint
 CREATE INDEX "idx_workspace_organization_id" ON "workspace" USING btree ("organization_id" uuid_ops);--> statement-breakpoint
-CREATE UNIQUE INDEX "uniq_workspace_organization_turbopanel" ON "workspace" USING btree ("organization_id") WHERE kind = 'turbopanel';
---> statement-breakpoint
+CREATE UNIQUE INDEX "uniq_workspace_organization_turbopanel" ON "workspace" USING btree ("organization_id") WHERE kind = 'turbopanel';--> statement-breakpoint
 COMMENT ON TABLE "account" IS 'One sign-in credential per user and provider: the local password account (`credential`) or a linked GitHub/Google identity; unique on provider plus subject.';--> statement-breakpoint
 COMMENT ON COLUMN "account"."provider_id" IS '`credential` for the local password account, or the OAuth provider id `github` or `google` for a linked identity.';--> statement-breakpoint
 COMMENT ON COLUMN "account"."provider_user_id" IS 'Provider-side subject: the user''s own uuid on `credential` rows, else the GitHub/Google account id; unique together with `provider_id`.';--> statement-breakpoint
@@ -1865,6 +1964,33 @@ COMMENT ON COLUMN "backup"."database_id" IS 'The `database` row the dump was of,
 COMMENT ON COLUMN "backup"."path" IS 'Artifact path relative to the backup root of the host that made it (`managed/` plus the cluster id, then the file).';--> statement-breakpoint
 COMMENT ON COLUMN "backup"."retention_id" IS 'The `retention` whose scheduled run made this artifact; null for a manual backup or once that retention is deleted.';--> statement-breakpoint
 COMMENT ON COLUMN "backup"."server_id" IS 'Host that holds the on-disk artifact (the primary when the backup ran); null on older rows or after that server is deleted.';--> statement-breakpoint
+COMMENT ON TABLE "shipment" IS 'How copying one backup to one target stands, as the host reported it; keyed by the engine and the daemon''s `bk_` id, cascades with the cluster.';--> statement-breakpoint
+COMMENT ON COLUMN "shipment"."managed_id" IS 'The cluster whose backup this is.';--> statement-breakpoint
+COMMENT ON COLUMN "shipment"."backup_id" IS 'The daemon-minted `bk_` id of the backup, matching `backup.backup_id`; kept as text so a report can land first.';--> statement-breakpoint
+COMMENT ON COLUMN "shipment"."destination_id" IS 'Destination the copy went to, set null if the destination is deleted.';--> statement-breakpoint
+COMMENT ON COLUMN "shipment"."destination_name" IS 'Name the target had when the copy was recorded, so a deleted target still reads in plain words.';--> statement-breakpoint
+COMMENT ON COLUMN "shipment"."state" IS 'One of `pending`, `copying`, `copied`, `failed` or `removed` (pruned from the bucket by retention).';--> statement-breakpoint
+COMMENT ON COLUMN "shipment"."error" IS 'A plain reason the copy failed; null otherwise.';--> statement-breakpoint
+COMMENT ON COLUMN "shipment"."object_key" IS 'Object key in the bucket, prefix included; set once the copy is done.';--> statement-breakpoint
+COMMENT ON COLUMN "shipment"."size_bytes" IS 'Size of the copied object in bytes as the host reported it.';--> statement-breakpoint
+COMMENT ON COLUMN "shipment"."attempts" IS 'How many times the host tried to copy this backup.';--> statement-breakpoint
+COMMENT ON COLUMN "shipment"."copied_at" IS 'When the host reported the copy finished; null until then.';--> statement-breakpoint
+COMMENT ON COLUMN "shipment"."server_id" IS 'The host that reported the latest state, set null if that server is deleted.';--> statement-breakpoint
+COMMENT ON TABLE "destination" IS 'A named S3-compatible destination an organization copies finished backups to; the secret key is sealed and never returned by an API.';--> statement-breakpoint
+COMMENT ON COLUMN "destination"."name" IS 'Label the organization gave the target, unique per organization, 1 to 64 characters.';--> statement-breakpoint
+COMMENT ON COLUMN "destination"."kind" IS 'Kind of destination; only `s3` (S3-compatible object storage) for now.';--> statement-breakpoint
+COMMENT ON COLUMN "destination"."endpoint" IS 'Base URL of the storage service, for example `https://s3.example.com`; no path.';--> statement-breakpoint
+COMMENT ON COLUMN "destination"."region" IS 'Region name used when signing requests; `us-east-1` when the provider has no regions.';--> statement-breakpoint
+COMMENT ON COLUMN "destination"."bucket" IS 'Bucket the copies are written to.';--> statement-breakpoint
+COMMENT ON COLUMN "destination"."prefix" IS 'Folder inside the bucket, without a leading or trailing slash; empty for the bucket root.';--> statement-breakpoint
+COMMENT ON COLUMN "destination"."is_path_style" IS 'True addresses the bucket in the path (`endpoint/bucket/key`); false uses the bucket as a host name prefix.';--> statement-breakpoint
+COMMENT ON COLUMN "destination"."is_server_side_encrypted" IS 'True asks the storage to encrypt each object at rest with its own key (`AES256`).';--> statement-breakpoint
+COMMENT ON COLUMN "destination"."access_key_id" IS 'Access key id for the bucket; an identifier, returned by the API.';--> statement-breakpoint
+COMMENT ON COLUMN "destination"."secret_key_sealed" IS 'Secret access key sealed with the instance data key (`tpsecret` envelope); never returned by any API.';--> statement-breakpoint
+COMMENT ON COLUMN "destination"."last_tested_at" IS 'When the connection test last ran against this target; null before the first test.';--> statement-breakpoint
+COMMENT ON COLUMN "destination"."is_last_test_ok" IS 'True when the last connection test passed, false when it failed; null before the first test.';--> statement-breakpoint
+COMMENT ON COLUMN "destination"."last_test_error" IS 'A plain reason the last connection test failed; null when it passed or was never run.';--> statement-breakpoint
+COMMENT ON COLUMN "destination"."created_by" IS 'User who created the target, set null if that user is deleted.';--> statement-breakpoint
 COMMENT ON TABLE "binding" IS 'Join edge attaching a database login to a consuming compose service; materializes system-owned `variable` rows for deploy credential injection.';--> statement-breakpoint
 COMMENT ON COLUMN "binding"."login_id" IS 'The `login` row whose credentials are injected; cascade-deleted with it (login gone, binding gone).';--> statement-breakpoint
 COMMENT ON COLUMN "binding"."service_id" IS 'Consuming compose service; ON DELETE RESTRICT so a service with bindings cannot be deleted.';--> statement-breakpoint
@@ -1937,9 +2063,13 @@ COMMENT ON COLUMN "container"."compose_service_name" IS 'Compose service key the
 COMMENT ON COLUMN "container"."ordinal" IS '1-based instance index within the service, unique with `service_id` and `role`; ingress rows are always 1 and managed replicas match `replica.ordinal`.';--> statement-breakpoint
 COMMENT ON TABLE "datacenter" IS 'Logical routing domain (not a building) of mutually routable private subnets, operator-created per org; a server may belong to zero or many via `ip` pins.';--> statement-breakpoint
 COMMENT ON COLUMN "datacenter"."metadata" IS 'Free-form jsonb returned by the datacenter API; no control-plane code path writes or interprets any key on it today.';--> statement-breakpoint
-COMMENT ON COLUMN "datacenter"."options" IS 'Operator policy jsonb: `priority` (0..1000, lower wins, default 100), `trusted` (default true), `addressPreference`, `sshPort`, `ntp`, timezone defaults.';--> statement-breakpoint
+COMMENT ON COLUMN "datacenter"."options" IS 'Operator settings jsonb: `sshPort`, `ntp`, timezone defaults and the location override; the routing policy lives in real columns.';--> statement-breakpoint
 COMMENT ON COLUMN "datacenter"."name" IS 'Operator-chosen display name; also seeded onto the site `network` row created together with the datacenter.';--> statement-breakpoint
 COMMENT ON COLUMN "datacenter"."description" IS 'Optional operator free-text note about the datacenter.';--> statement-breakpoint
+COMMENT ON COLUMN "datacenter"."priority" IS 'Routing-ladder rank among a server''s datacenters, 0 to 1000, lower wins, default 100 (API field `priority`).';--> statement-breakpoint
+COMMENT ON COLUMN "datacenter"."is_trusted" IS 'True when the operator controls the datacenter''s L2 (default); false keeps server-to-server traffic off it (API field `trusted`).';--> statement-breakpoint
+COMMENT ON COLUMN "datacenter"."address_preference" IS 'Address family tried first among a server''s pins here, `ipv6` (default) or `ipv4` (API field `options.addressPreference`).';--> statement-breakpoint
+COMMENT ON COLUMN "datacenter"."kind" IS 'What the network is: `lan`, `backplane` or `provider_private`; NULL means the operator never said.';--> statement-breakpoint
 COMMENT ON TABLE "deployment" IS 'Current desired and applied state per (environment, server) pair, upserted on each redeploy by deploy-routes.ts; history lives in `environment.deploy` commands.';--> statement-breakpoint
 COMMENT ON COLUMN "deployment"."metadata" IS 'Jsonb patched on apply outcome: `error` holds the last failure message and is reset to null on success.';--> statement-breakpoint
 COMMENT ON COLUMN "deployment"."options" IS 'Per-target apply inputs written at deploy time: `secretPlan`, `siteReleases` (release trees the compose declares) and `phpModes` (mode per PHP site).';--> statement-breakpoint
@@ -2102,16 +2232,20 @@ COMMENT ON COLUMN "license"."name" IS 'Optional operator display name; `this ser
 COMMENT ON COLUMN "license"."token" IS 'Argon2id PHC hash of the registration key (same format as `account.password`); the plaintext is returned once at mint and cannot be recovered from this row.';--> statement-breakpoint
 COMMENT ON COLUMN "license"."revoked_at" IS 'Soft-delete timestamp set by a revoke or by an ended subscription revoking every license; non-null means inactive, and the row keeps `server_id` for audit.';--> statement-breakpoint
 COMMENT ON TABLE "login" IS 'One engine role on one managed cluster; not a principal, which is only a site owner Linux user; written by the managed users API.';--> statement-breakpoint
+COMMENT ON COLUMN "login"."metadata" IS 'Internal bookkeeping jsonb; the grant ledger (grants the panel applied) will live here. Nothing writes it yet.';--> statement-breakpoint
 COMMENT ON COLUMN "login"."principal_id" IS 'Site owner Linux user the login shares its name with, cascade-deleted with it; NULL for a login made on its own and for the root and replication logins.';--> statement-breakpoint
-COMMENT ON COLUMN "login"."role" IS '`root` for the cluster admin login, `replication` for the member-to-member login, `user` for an operator-created login.';--> statement-breakpoint
+COMMENT ON COLUMN "login"."role" IS '`root` is the cluster admin, `replication` the member-to-member login, `user` an operator login, `backup` the one login that takes backups.';--> statement-breakpoint
 COMMENT ON COLUMN "login"."username" IS 'Name the customer typed; equals `applied_username` for `plain` names and for the root and replication logins.';--> statement-breakpoint
 COMMENT ON COLUMN "login"."applied_username" IS 'Engine role name created on the cluster; unique per cluster after trim and case-fold, and equal to the principal name when `principal_id` is set.';--> statement-breakpoint
 COMMENT ON COLUMN "login"."name_scheme" IS 'How `applied_username` was derived from `username`: `plain` (same), `partial` (plus a random suffix) or `random` (no trace of it).';--> statement-breakpoint
 COMMENT ON COLUMN "login"."password" IS 'Write-only credential sealed as a `tpsecret` envelope, never returned on GET and resealed to `tpdaemon` for delivery.';--> statement-breakpoint
-COMMENT ON COLUMN "login"."grant_mode" IS 'Who sets the permissions on reconcile: `preset` (logins from before modes), `recipe` (the panel) or `self` (the owner by hand, never reset).';--> statement-breakpoint
+COMMENT ON COLUMN "login"."grant_mode" IS 'Who sets the permissions on reconcile: `recipe` (the panel, from the named `recipe`) or `self` (the owner by hand, never reset).';--> statement-breakpoint
+COMMENT ON COLUMN "login"."recipe" IS 'The permission set the panel applies when `grant_mode` is `recipe`: `app`, `migrations`, `read-only`, `analyst`, `admin` or `backup`; NULL for `self`.';--> statement-breakpoint
+COMMENT ON COLUMN "login"."is_all_databases" IS 'True for a reader of every database on the cluster, current and future; false means only the databases in `scope`.';--> statement-breakpoint
 COMMENT ON COLUMN "login"."is_tool" IS 'True for a database-tool login: the daemon sends all of its traffic to the primary and adds no read/write split rules (API field `tool`).';--> statement-breakpoint
-COMMENT ON COLUMN "login"."allowed_sources" IS 'Places the login may connect from (`internal`, `server:` plus an id, `address:` plus a value); NULL means anywhere (API field `allowedSources`).';--> statement-breakpoint
+COMMENT ON COLUMN "login"."allowed_sources" IS 'Where the login may connect from (`internal`, `server:` and id, `address:` and an IP or range); never empty; anywhere is `address:0.0.0.0/0` and `address:::/0`.';--> statement-breakpoint
 COMMENT ON COLUMN "login"."max_connections" IS 'Per-login cap on open connections, at least 1; NULL means no cap (API field `maxConnections`).';--> statement-breakpoint
+COMMENT ON COLUMN "login"."is_straight_through" IS 'PostgreSQL only: true connects the login straight through the front door; NULL means never chosen, so the default applies (API field `straightThrough`).';--> statement-breakpoint
 COMMENT ON COLUMN "login"."access" IS 'Routing: `read-write` sends the login to the primary, `read-only` to read replicas or the primary when there are none (API field `connectionRole`).';--> statement-breakpoint
 COMMENT ON COLUMN "login"."privileges" IS 'What the login may do in each database it can use: `owner`, `read-write`, `read-only` or `admin`; empty for the root and replication logins.';--> statement-breakpoint
 COMMENT ON TABLE "managed" IS 'One managed database cluster per environment (1:1 via unique environment_id); created by the managed create route, status projected by the command consumer.';--> statement-breakpoint
@@ -2122,6 +2256,7 @@ COMMENT ON COLUMN "managed"."server_id" IS 'Placement pin of the primary member'
 COMMENT ON COLUMN "managed"."name" IS 'Operator label for the cluster (1-255 chars of letters, digits, space, dot, underscore, hyphen); null when unnamed.';--> statement-breakpoint
 COMMENT ON COLUMN "managed"."engine" IS 'Catalog engine code set once at create from ManagedEngineSpec: `postgres`, `mysql`, `mariadb`, `redis` or `clickhouse` (only the first three are creatable).';--> statement-breakpoint
 COMMENT ON COLUMN "managed"."status" IS 'Lifecycle state: `provisioning` at create, `applying` while a command is queued, then daemon-observed `ready`, `stopped` or `failed` projected by the consumer.';--> statement-breakpoint
+COMMENT ON COLUMN "managed"."backup_destination" IS 'This cluster''s own copy choice: null follows the organization default, `none` turns copying off, otherwise a destination id.';--> statement-breakpoint
 COMMENT ON TABLE "database" IS 'One database inside a managed cluster: its name, whether it has an owner role and the login chosen as its owner; written by the managed databases API.';--> statement-breakpoint
 COMMENT ON COLUMN "database"."name" IS 'Name on the engine as typed (1-255 chars); unique per cluster after case-fold.';--> statement-breakpoint
 COMMENT ON COLUMN "database"."is_role_owned" IS 'Postgres only: true when the database is owned by an owner role (`tp_NAME_owner`, `_rw`, `_ro`).';--> statement-breakpoint
@@ -2185,7 +2320,7 @@ COMMENT ON TABLE "attempt" IS 'Delivery-attempt ledger: one row per event per ro
 COMMENT ON COLUMN "attempt"."organization_id" IS 'Organization the event belongs to; NULL for an instance-scoped event.';--> statement-breakpoint
 COMMENT ON COLUMN "attempt"."event" IS 'Catalogue code (`NOTIFICATION_EVENTS`), same vocabulary as `notification.event`.';--> statement-breakpoint
 COMMENT ON COLUMN "attempt"."severity" IS '`info`, `warning` or `critical`, copied from the event''s catalogue definition.';--> statement-breakpoint
-COMMENT ON COLUMN "attempt"."payload" IS 'Rendered non-secret message as JSON: `event`, `severity`, `title`, `body`, `organizationId`, `organizationName`, `targetType`, `targetId`, `context`, `at`.';--> statement-breakpoint
+COMMENT ON COLUMN "attempt"."payload" IS 'Rendered non-secret message as JSON: `event`, `severity`, `title`, `body`, `organizationId`, `organizationName`, `targetType`, `destinationId`, `context`, `at`.';--> statement-breakpoint
 COMMENT ON COLUMN "attempt"."status" IS '`pending` (default), `sent`, `failed` (retry due), `abandoned` (after 5 attempts) or `held` (waits for quiet hours or a digest); retries skip `held`.';--> statement-breakpoint
 COMMENT ON COLUMN "attempt"."attempts" IS 'Number of send attempts so far, bumped in SQL by the sender; the row is abandoned once it reaches 5.';--> statement-breakpoint
 COMMENT ON COLUMN "attempt"."next_attempt_at" IS 'Earliest time the retry sweep may pick the row up: now plus 2 min grace on insert, then backoff of 1, 5, 25 and 125 min; NULL once sent.';--> statement-breakpoint
@@ -2198,6 +2333,7 @@ COMMENT ON TABLE "organization" IS 'Tenant organization; one is created by the i
 COMMENT ON COLUMN "organization"."options" IS 'Org-wide settings merged key-by-key by the organization routes (`defaultServerTimezone`, `maxServers`, `acmeEnabled`, `managedDatabase`, `phpModes` and more).';--> statement-breakpoint
 COMMENT ON COLUMN "organization"."name" IS 'Display name; sign-up uses `you@example.com''s organization` from email, else `My Organization` if missing, blank, or label invalid; install Root Organization.';--> statement-breakpoint
 COMMENT ON COLUMN "organization"."next_linux_id" IS 'Next uid/gid for a Hosting Account on servers this organization owns; starts at 30001, rises by one per new account, never reused.';--> statement-breakpoint
+COMMENT ON COLUMN "organization"."backup_destination_id" IS 'Destination finished backups are copied to unless a cluster chooses otherwise; null means no default copy. Set null if the destination is deleted.';--> statement-breakpoint
 COMMENT ON TABLE "passkey" IS 'One WebAuthn credential registered by a user (several per user allowed), unique by `credential_id`; inserted at registration, updated on each passkey sign-in.';--> statement-breakpoint
 COMMENT ON COLUMN "passkey"."aaguid" IS 'Authenticator model AAGUID decoded from the attestation as a dashed lowercase UUID string; identifies the make, not the individual key.';--> statement-breakpoint
 COMMENT ON COLUMN "passkey"."name" IS 'User-chosen label given at registration (the device or authenticator it lives on); shown in the Security screen, never used for matching.';--> statement-breakpoint
@@ -2213,9 +2349,15 @@ COMMENT ON COLUMN "payer"."user_id" IS 'User subject for a personal subscription
 COMMENT ON COLUMN "payer"."provider" IS 'Payment provider that owns this customer; only `stripe` is allowed today (CHECK `payer_provider_check`), `apple` is reserved in comments but not accepted.';--> statement-breakpoint
 COMMENT ON COLUMN "payer"."provider_customer_id" IS 'Provider-side customer id (Stripe `cus_...`); unique together with `provider` and the conflict target of the webhook upsert.';--> statement-breakpoint
 COMMENT ON COLUMN "payer"."tax_id" IS 'Value of the first tax id the provider reports on the customer (`customer.tax_ids`), copied by the webhook for display; presence only, never validated here.';--> statement-breakpoint
+COMMENT ON TABLE "peak" IS 'Highest RAM and physical core readings of one server per UTC hour; the over-tier rules judge a server on the highest reading of the last 7 days.';--> statement-breakpoint
+COMMENT ON COLUMN "peak"."server_id" IS 'Owning server; ON DELETE CASCADE so a deleted host leaves no readings, and (server_id, bucket) is UNIQUE so an upsert only raises the hour.';--> statement-breakpoint
+COMMENT ON COLUMN "peak"."bucket" IS 'Start of the UTC hour the readings cover, aligned by the writer; rows older than the 7-day grace window are pruned by the 15-minute cron.';--> statement-breakpoint
+COMMENT ON COLUMN "peak"."memory_bytes" IS 'Highest total RAM in bytes read in the hour; NULL when none was read, never negative.';--> statement-breakpoint
+COMMENT ON COLUMN "peak"."cores" IS 'Highest physical core count read in the hour; NULL when none was read, never negative.';--> statement-breakpoint
 COMMENT ON TABLE "principal" IS 'A site owner Linux user: the host account that runs sites and owns their tree; written by the principals API and the compose deploy.';--> statement-breakpoint
 COMMENT ON COLUMN "principal"."metadata" IS 'Holds `home` (under `/srv/users`), an optional `uid`/`gid` mirror and `composeAlias`.';--> statement-breakpoint
-COMMENT ON COLUMN "principal"."options" IS 'Host-account settings: `shell` (closed allowlist, default `/usr/sbin/nologin`) and optional operator `uid`/`gid` override; parsed by `parsePrincipalOptions`.';--> statement-breakpoint
+COMMENT ON COLUMN "principal"."options" IS 'Host-account settings: optional operator `uid`/`gid` override and `nameScheme`; parsed by `parsePrincipalOptions`.';--> statement-breakpoint
+COMMENT ON COLUMN "principal"."access" IS 'Site owner SSH access: `none` (no login, keys kept), `sftp` (file transfer only) or `shell` (shell plus file transfer).';--> statement-breakpoint
 COMMENT ON COLUMN "principal"."username" IS 'Short internal account name (letter or underscore first, then letters, digits, underscore, hyphen); server accounts get a shorter API-layer cap.';--> statement-breakpoint
 COMMENT ON COLUMN "principal"."applied_username" IS 'Login actually created on the host or engine: `username`, or `username` plus an underscore and 11 random chars when the org randomizes names; fixed at create.';--> statement-breakpoint
 COMMENT ON COLUMN "principal"."password" IS 'Write-only credential sealed as a `tpsecret` envelope, never returned on GET and resealed to `tpdaemon` for delivery; null when no engine password exists.';--> statement-breakpoint
@@ -2228,7 +2370,7 @@ COMMENT ON COLUMN "placement"."gid" IS 'Linux gid the host assigned, reported by
 COMMENT ON COLUMN "placement"."home" IS 'Account home on the host, `/srv/users/` plus the applied username, copied from the deploy material.';--> statement-breakpoint
 COMMENT ON COLUMN "placement"."source" IS 'Why the account is on this server: `compose` (an `x-turbopanel.principals` alias), `manual` (a project principal), or `storage` (a storage entry owner).';--> statement-breakpoint
 COMMENT ON TABLE "project" IS 'One application or stack described by one compose document, owned by a workspace; user projects come from the API, system projects from the platform hierarchy.';--> statement-breakpoint
-COMMENT ON COLUMN "project"."metadata" IS 'Client jsonb: `type` is `docker-compose`, `managed`, `template` or platform-only `system` (absent means setup not chosen yet), plus optional catalog `code`.';--> statement-breakpoint
+COMMENT ON COLUMN "project"."metadata" IS 'Client jsonb: the catalog `code` of a template or managed engine project, plus free caller keys; the project type lives in `kind`.';--> statement-breakpoint
 COMMENT ON COLUMN "project"."options" IS 'Jsonb: `compose`, `containerNaming`, `defaultServerId`, `composeSource`, and deploy defaults `drainSeconds`, `healthTimeoutSeconds`, `rollbackWindowMinutes`.';--> statement-breakpoint
 COMMENT ON COLUMN "project"."organization_id" IS 'Denormalized copy of the workspace''s organization, resolved on every insert; exists so `uniq_project_organization_name` can be a real per-organization unique.';--> statement-breakpoint
 COMMENT ON COLUMN "project"."repository_id" IS 'The single Git repository this project is; NULL when not repository-backed, adopted from the first compose `sourceId` on save, RESTRICT on delete.';--> statement-breakpoint
@@ -2237,6 +2379,8 @@ COMMENT ON COLUMN "project"."description" IS 'Optional free-text description wri
 COMMENT ON COLUMN "project"."component" IS 'System-component discriminator (`hosting-ingress`, `managed-ingress`, `managed-ha`, `turbopanel`) written by the platform hierarchy; NULL on every user project.';--> statement-breakpoint
 COMMENT ON COLUMN "project"."slug" IS 'Short name taken from the project name, unique per organization and never part of a path; editable until any folder exists under the project, then locked.';--> statement-breakpoint
 COMMENT ON COLUMN "project"."default_server_id" IS 'Default placement server: an environment with no `server_id` of its own inherits it; set null when the server is deleted (API field `options.defaultServerId`).';--> statement-breakpoint
+COMMENT ON COLUMN "project"."kind" IS 'What the project is: `compose` (a template too), `managed` or platform-only `system`; NULL while a draft that has not chosen yet.';--> statement-breakpoint
+COMMENT ON COLUMN "project"."icon" IS 'Icon key from the fixed list the project screens offer; NULL means the default, and a managed project ignores it.';--> statement-breakpoint
 COMMENT ON TABLE "recovery" IS 'Durable HA journal entry for one managed cluster recovery (failover, switchover or DR); at most one non-terminal row per managed_id, written by the HA flow.';--> statement-breakpoint
 COMMENT ON COLUMN "recovery"."metadata" IS 'Fencing and progress facts: `fencingEpoch`, `fenceCommandIds`, `promoteCommandId`, `haPresent`, `fenced`, `drainApplied`, `lagBytes`, `blockedReason`.';--> statement-breakpoint
 COMMENT ON COLUMN "recovery"."kind" IS '`automatic-failover`, `switchover` (planned promotion of a failover replica) or `disaster-recovery` (promotion of a remote read replica).';--> statement-breakpoint
@@ -2288,6 +2432,7 @@ COMMENT ON COLUMN "retention"."target_kind" IS '`managed` or `copy`: which of `m
 COMMENT ON COLUMN "retention"."name" IS 'Operator label for the policy, shown in the console''s backup list.';--> statement-breakpoint
 COMMENT ON COLUMN "retention"."schedule" IS 'The schedule as authored, a cron expression or alias; translated to a systemd `OnCalendar` value when pushed to the host.';--> statement-breakpoint
 COMMENT ON COLUMN "retention"."timezone" IS 'IANA zone the schedule is read in; null means the host''s local time.';--> statement-breakpoint
+COMMENT ON COLUMN "retention"."database" IS 'Managed target: the database each run dumps (API field `database`); NULL means the cluster''s initial database.';--> statement-breakpoint
 COMMENT ON COLUMN "retention"."retention_keep" IS 'How many of this policy''s own artifacts the host keeps, 1 to 100; older ones are pruned after each run.';--> statement-breakpoint
 COMMENT ON COLUMN "retention"."is_enabled" IS 'False pauses the policy: its timer is removed from the host while the row and its run history stay.';--> statement-breakpoint
 COMMENT ON COLUMN "retention"."next_run_at" IS 'When the host''s timer next fires, as last reported by the daemon; null until a report arrives.';--> statement-breakpoint
@@ -2311,15 +2456,15 @@ COMMENT ON COLUMN "server"."os_family" IS 'Daemon-reported OS family, one of `li
 COMMENT ON COLUMN "server"."os_version" IS 'Daemon-reported OS version, preferring `DEBIAN_VERSION_FULL` or /etc/debian_version over `VERSION_ID` (such as `13.5`).';--> statement-breakpoint
 COMMENT ON COLUMN "server"."os_codename" IS 'Daemon-reported `VERSION_CODENAME` from /etc/os-release.';--> statement-breakpoint
 COMMENT ON COLUMN "server"."os_pretty_name" IS 'Daemon-reported `PRETTY_NAME` from /etc/os-release.';--> statement-breakpoint
-COMMENT ON COLUMN "server"."os_architecture" IS 'Daemon-reported CPU architecture from the Deno build, such as `x86_64` or `aarch64`.';--> statement-breakpoint
+COMMENT ON COLUMN "server"."os_architecture" IS 'Daemon-reported CPU architecture, normalised on ingest to `x86_64` or `aarch64` (`amd64` and `arm64` map across); other CPUs are not stored, so NULL.';--> statement-breakpoint
 COMMENT ON COLUMN "server"."machine_class" IS '`physical` or `virtual` for sensor entitlement; NULL means auto, where ingest writes `physical` once sensors are found (never `virtual`); PATCH can pin.';--> statement-breakpoint
 COMMENT ON COLUMN "server"."machine_class_source" IS 'Who set `machine_class`: `detected` (ingest wrote it back from the topology) or `operator` (a PATCH pinned or cleared it); NULL while the class is NULL.';--> statement-breakpoint
 COMMENT ON COLUMN "server"."timezone" IS 'Daemon-observed IANA host timezone; the operator override lives in `options.timezone` and wins when set.';--> statement-breakpoint
 COMMENT ON COLUMN "server"."is_time_sync_enabled" IS 'Daemon-reported NTP client enabled flag (`ntpEnabled` from the systemd-timesyncd facts); NULL when never reported.';--> statement-breakpoint
 COMMENT ON COLUMN "server"."ntp_servers" IS 'Daemon-reported jsonb array of objects with `host` and optional `fallback` (FallbackNTP entries), read from timesyncd.conf or timedatectl.';--> statement-breakpoint
 COMMENT ON COLUMN "server"."ntp_last_synced_at" IS 'Last successful NTP sync: set from the daemon stamp or first synced observation, cleared when the host reports unsynced, never bumped to now() per heartbeat.';--> statement-breakpoint
-COMMENT ON COLUMN "server"."assigned_tier_id" IS 'Purchased tier covering this server, recomputed by assignment-records.ts from seats, `preferred_tier_id`, and hardware; NULL if none.';--> statement-breakpoint
-COMMENT ON COLUMN "server"."preferred_tier_id" IS 'Optional operator pick: assignment uses a spare license at this tier or the smallest tier above before the derived smallest that fits; NULL derives only.';--> statement-breakpoint
+COMMENT ON COLUMN "server"."assigned_tier_id" IS 'Tier a manager assigned this server (license-tier route or a named size change); self-hosted fills the top tier when none. Never recomputed; NULL until set.';--> statement-breakpoint
+COMMENT ON COLUMN "server"."preferred_tier_id" IS 'Written in step with `assigned_tier_id` by the manager route, for the console''s picked label; never read to place a server.';--> statement-breakpoint
 COMMENT ON COLUMN "server"."is_connected" IS 'Daemon liveness flag written by the cell projection on connect and disconnect; `online`, `offline` or `unknown` is derived from it and `status_changed_at`.';--> statement-breakpoint
 COMMENT ON COLUMN "server"."status_changed_at" IS 'Time of the last `is_connected` flip in either direction; read as `connectedAt` while connected and offline-since otherwise, NULL if never transitioned.';--> statement-breakpoint
 COMMENT ON COLUMN "server"."daemon" IS 'Sparse jsonb with an optional `projection` (hostname, machineKey, remoteAddress, keyId, daemonBuild) written by the cell; the key lives in `key`.';--> statement-breakpoint

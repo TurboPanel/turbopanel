@@ -2,7 +2,7 @@
  * Guard: physical boolean columns must use an `is_` prefix.
  *
  * Asserts the latest Drizzle snapshot (and `schema.ts` `boolean('…')`
- * declarations) so a later squash of `0000_init.sql` cannot hide a bypass.
+ * declarations) so a later squash of `0000_base.sql` cannot hide a bypass.
  */
 
 import { assertEquals } from '@std/assert'
@@ -66,7 +66,7 @@ function assertPhysicalBooleanName(name: string): void {
   if (!name.startsWith('is_')) {
     throw new TypeError(
       `physical boolean column "${name}" must start with is_; ` +
-        `add an explicit exception only for external compatibility`,
+        `add an explicit exception only for external compatibility`
     )
   }
 }
@@ -95,11 +95,9 @@ function extractSnapshotBooleanNames(snapshot: DrizzleSnapshot): string[] {
 }
 
 async function readLatestSnapshot(
-  metaDir: string,
+  metaDir: string
 ): Promise<{ tag: string; snapshot: DrizzleSnapshot; snapshotFile: string }> {
-  const journal = JSON.parse(
-    await Deno.readTextFile(join(metaDir, '_journal.json')),
-  ) as Journal
+  const journal = JSON.parse(await Deno.readTextFile(join(metaDir, '_journal.json'))) as Journal
   const last = journal.entries?.at(-1)
   const tag = last?.tag
   const idx = last?.idx
@@ -109,7 +107,7 @@ async function readLatestSnapshot(
   // drizzle-kit names snapshots `{idx padded}_snapshot.json`, not `{tag}_snapshot.json`.
   const snapshotFile = `${String(idx).padStart(4, '0')}_snapshot.json`
   const snapshot = JSON.parse(
-    await Deno.readTextFile(join(metaDir, snapshotFile)),
+    await Deno.readTextFile(join(metaDir, snapshotFile))
   ) as DrizzleSnapshot
   return { tag, snapshot, snapshotFile }
 }
@@ -118,7 +116,7 @@ function assertNoRetiredBooleanNames(names: readonly string[]): void {
   for (const retired of RETIRED_BOOLEAN_NAMES) {
     if (names.includes(retired)) {
       throw new TypeError(
-        `retired boolean column "${retired}" must not appear after the is_ rename`,
+        `retired boolean column "${retired}" must not appear after the is_ rename`
       )
     }
   }
@@ -159,17 +157,17 @@ test('latest drizzle snapshot boolean columns start with is_', async () => {
   }
 })
 
-test('migrations/0000_init.sql boolean columns use is_ names', async () => {
+test('migrations/0000_base.sql boolean columns use is_ names', async () => {
   const here = dirname(fromFileUrl(import.meta.url))
-  const sql = await Deno.readTextFile(join(here, '../../migrations/0000_init.sql'))
+  const sql = await Deno.readTextFile(join(here, '../../migrations/0000_base.sql'))
   for (const required of REQUIRED_IS_PREFIX_COLUMNS) {
     if (!sql.includes(`"${required}"`)) {
-      throw new TypeError(`expected quoted column "${required}" in 0000_init.sql`)
+      throw new TypeError(`expected quoted column "${required}" in 0000_base.sql`)
     }
   }
   for (const retired of RETIRED_BOOLEAN_NAMES) {
     if (sql.includes(`"${retired}"`)) {
-      throw new TypeError(`retired quoted column "${retired}" must not appear in 0000_init.sql`)
+      throw new TypeError(`retired quoted column "${retired}" must not appear in 0000_base.sql`)
     }
   }
 })
