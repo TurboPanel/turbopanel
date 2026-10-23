@@ -2199,7 +2199,7 @@ export const project = pgTable(
      * System-hierarchy component discriminator (`hosting-ingress`,
      * `managed-ingress`, `managed-ha`, `turbopanel`), promoted out of
      * `metadata.component` (schema-sql-keys, Road-to-0.1.x). NULL for every
-     * user project — `metadata.type = 'system'` still marks a project as
+     * user project — `kind = 'system'` marks a project as
      * platform-owned. Identity always comes from this column, never from
      * `environment.metadata.component`.
      */
@@ -2219,6 +2219,17 @@ export const project = pgTable(
      * as `options.defaultServerId`.
      */
     defaultServerId: uuid('default_server_id'),
+    /**
+     * What the project is (`compose`, `managed`, `system`), promoted out of
+     * `metadata.type`. NULL while the project is a draft that has not chosen
+     * yet. A template project is `compose` with `metadata.code` set.
+     */
+    kind: text(),
+    /**
+     * Optional icon key from the fixed list the project screens offer. NULL
+     * means the default; a managed project ignores it.
+     */
+    icon: text(),
   },
   (table) => [
     index('idx_project_default_server_id').using(
@@ -2272,6 +2283,11 @@ export const project = pgTable(
     /** Unique per organization. */
     unique('uniq_project_organization_slug').on(table.organizationId, table.slug),
     check('project_slug_check', sql.raw(`slug ~ '${PROJECT_SLUG_SQL}'`)),
+    check('project_kind_check', sql`kind IS NULL OR kind IN ('compose', 'managed', 'system')`),
+    check(
+      'project_icon_check',
+      sql`icon IS NULL OR icon IN ('cube', 'globe', 'cart', 'bolt', 'chat', 'chart', 'code', 'book', 'layers', 'mail', 'rocket', 'image')`
+    ),
   ]
 )
 
