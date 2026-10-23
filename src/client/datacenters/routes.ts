@@ -292,22 +292,41 @@ async function planServerTrafficForOrganization(
   return { plan }
 }
 
-/** Write the changed priorities in one transaction. */
+/** Thrown inside the save transaction so a changed network choice rolls back whole. */
+class NetworkChoiceChangedError extends Error {}
+
+/**
+ * Write the changed priorities in one transaction. Each row is only updated
+ * while it still holds the number the plan was made from, and every update
+ * must hit its row: if another edit got in between (the reachability check
+ * can take several seconds), nothing is written and the caller answers 409
+ * instead of reporting a save that did not happen.
+ */
 async function writeServerTrafficChanges(
   db: Db,
   changes: readonly PriorityChange[]
-): Promise<void> {
-  await db.transaction(async (tx) => {
-    await forEachSequential(changes, (change) =>
-      tx
-        .update(datacenter)
-        .set({
-          priority: change.after,
-          updatedAt: new Date().toISOString(),
-        })
-        .where(eq(datacenter.id, change.datacenterId))
-    )
-  })
+): Promise<'saved' | 'changed'> {
+  try {
+    await db.transaction(async (tx) => {
+      await forEachSequential(changes, async (change) => {
+        const written = await tx
+          .update(datacenter)
+          .set({
+            priority: change.after,
+            updatedAt: new Date().toISOString(),
+          })
+          .where(
+            and(eq(datacenter.id, change.datacenterId), eq(datacenter.priority, change.before))
+          )
+          .returning({ id: datacenter.id })
+        if (written.length !== 1) throw new NetworkChoiceChangedError()
+      })
+    })
+    return 'saved'
+  } catch (err) {
+    if (err instanceof NetworkChoiceChangedError) return 'changed'
+    throw err
+  }
 }
 
 function parseCreateDatacenterInput(
@@ -1176,7 +1195,10 @@ export function registerDatacenterRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
         return c.json({ error: 'peers_unreachable', check: report }, 409)
       }
     }
-    if (plan.changes.length > 0) await writeServerTrafficChanges(db, plan.changes)
+    if (plan.changes.length > 0) {
+      const written = await writeServerTrafficChanges(db, plan.changes)
+      if (written === 'changed') return c.json({ error: 'network_choice_changed' }, 409)
+    }
     await forEachSequential(plan.changes, (change: PriorityChange) =>
       fanOutDatacenterPolicyChange(c, db, {
         datacenterId: change.datacenterId,

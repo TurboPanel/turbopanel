@@ -674,7 +674,7 @@ keyed off the **service** UUID, not the container row), Docker volume names
 principal UUID), the reserved-only DNS shape (`serviceDnsName`), and the
 reserved `TURBOPANEL_*` deploy variable keys (`RESERVED_DEPLOY_VARIABLE_KEYS`).
 Option parsers (`project-options.ts` `containerNaming`, `service-options.ts`
-`instances`, `principal-options.ts` `shell` + optional `uid`/`gid` override)
+`instances`, `principal-options.ts` optional `uid`/`gid` override)
 feed those helpers; deploy-prepare owns allocation (`uuid` mode ignores authored
 compose `container_name`; `custom` still reads them), multi-instance expansion,
 compose-volume registration, and compose emission via `apply-service-options.ts`
@@ -984,7 +984,10 @@ server delete writes it. `preferred_tier_id` is written in step with it by the
 manager route. Ingest, the capability plan, placement and the notice sweep read
 this column. Null on an unlicensed server and on a licensed server no manager
 has assigned yet — the daemon still connects. A server that measures bigger
-than its tier keeps it and is flagged (`metadata.overPlan`).
+than its tier keeps it and is flagged (`metadata.overPlan`). The highest RAM and
+physical cores of the last 7 days (the grace window) live in the `peak` table,
+one row per server per UTC hour (`features/servers/peak.ts`); the 15-minute
+cron prunes older buckets.
 
 **Cell metadata fields** (stored in `server.metadata` and/or `server.options`
 JSONB):

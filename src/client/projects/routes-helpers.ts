@@ -19,6 +19,7 @@ import {
   type CreateProjectType,
 } from './catalog/index.ts'
 import { emptyComposeDocument } from '../../features/compose/index.ts'
+import { isProjectIcon } from '../../features/projects/vocabulary.ts'
 import { isConfiguredProjectType, isProductionEnvironmentName } from './empty-setup.ts'
 import { isValidEnvironmentName } from '../../contracts/directory-names.ts'
 import { normalizeDisplayName } from '../../lib/display-name-format.ts'
@@ -196,8 +197,12 @@ export function parseCreateProjectOptions(
   return { ok: true, options: optionsResult }
 }
 
-/** Reserved keys the public create path must not persist from caller metadata. */
-export const CREATE_PROJECT_PROMOTED_METADATA_KEYS = ['component', 'type'] as const
+/**
+ * Reserved keys the public create path must not persist from caller metadata.
+ * `code` is stamped from the catalog entry (template and managed engines only),
+ * so a caller cannot make a compose project read as a template.
+ */
+export const CREATE_PROJECT_PROMOTED_METADATA_KEYS = ['component', 'type', 'code'] as const
 
 export function parseCreateProjectMetadata(
   body: Record<string, unknown>
@@ -214,14 +219,27 @@ export function parseCreateProjectMetadata(
 }
 
 /**
- * Merge sanitized caller metadata under canonical project-type fields so
- * custom keys cannot erase `type` (or catalog `code` when supplied).
+ * Merge sanitized caller metadata under canonical fields so custom keys
+ * cannot erase the catalog `code` when supplied.
  */
 export function stampCreateProjectMetadata(
   metadata: Record<string, unknown> | null,
   canonical: Record<string, unknown>
 ): Record<string, unknown> {
   return { ...metadata, ...canonical }
+}
+
+/**
+ * Optional `icon`: one key from the fixed list, or null for the default.
+ * `undefined` means the caller did not mention it.
+ */
+export function parseProjectIconField(
+  body: Record<string, unknown>
+): { ok: true; icon: string | null | undefined } | ProjectRouteValidationError {
+  const icon = body.icon
+  if (icon === undefined || icon === null) return { ok: true, icon }
+  if (!isProjectIcon(icon)) return { ok: false, error: 'Invalid request', status: 400 }
+  return { ok: true, icon }
 }
 
 export function parseCreateProjectServerIdField(

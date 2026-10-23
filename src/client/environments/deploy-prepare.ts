@@ -105,8 +105,11 @@ import { loadSshKeysByPrincipalIds } from '../principals/ssh-keys.ts'
 import {
   parsePrincipalOptions,
   resolvePrincipalIdOverride,
-  resolvePrincipalShell,
 } from '../../features/principals/principal-options.ts'
+import {
+  type PrincipalAccessLevel,
+  shellForAccessLevel,
+} from '../../features/principals/principal-access.ts'
 import { renderPhpForDeploy } from '../../features/hostings/php-settings.ts'
 import { type PhpModePrepareError, withSitePhpModes } from './deploy-php-modes.ts'
 import {
@@ -1423,6 +1426,7 @@ export async function loadPrincipalMaterial(
       // is the applied username; the short `username` is panel-internal.
       username: principal.appliedUsername,
       options: principal.options,
+      access: principal.access,
       password: principal.password,
     })
     .from(principal)
@@ -1447,7 +1451,7 @@ export async function loadPrincipalMaterial(
   for (const row of rows) {
     const options = parsePrincipalOptions(row.options)
     const override = resolvePrincipalIdOverride(options)
-    const shell = resolvePrincipalShell(options)
+    const shell = shellForAccessLevel(row.access as PrincipalAccessLevel)
     const keys = sshKeys.get(row.id) ?? []
     // Password sign-in is on exactly when the row holds a crypt hash. The
     // format gate matters: for a server principal the column only ever holds
@@ -3412,6 +3416,7 @@ async function resolveLocalSitesBoundForDeploy(
     daemonFeatures: phpDaemonState?.projection?.features ?? [],
     warnings: dbBindingWarnings,
   })
+  if ('kind' in localSiteBound) return localSiteBound
   args.warnings.push(...dbBindingWarnings)
   return localSiteBound
 }

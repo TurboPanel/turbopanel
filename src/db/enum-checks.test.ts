@@ -32,6 +32,7 @@ import {
   LOGIN_GRANT_MODES,
   LOGIN_RECIPES,
 } from '../features/managed/logins.ts'
+import { PROJECT_ICONS, PROJECT_KINDS } from '../features/projects/vocabulary.ts'
 import {
   DATACENTER_ADDRESS_PREFERENCES,
   DATACENTER_KINDS,
@@ -53,6 +54,7 @@ import {
   FIREWALL_SOURCE_KINDS,
   FIREWALL_STATES,
 } from '../features/firewall/vocabulary.ts'
+import { PRINCIPAL_ACCESS_LEVELS } from '../features/principals/principal-access.ts'
 import { PLACEMENT_SOURCES, PLACEMENT_STATES } from '../features/principals/placement-vocabulary.ts'
 import { FOLDER_KINDS, FOLDER_STATES } from '../features/folders/vocabulary.ts'
 import { LEAF_STALE_CAUSES, LEAF_STATES } from '../features/tls/leaf-vocabulary.ts'
@@ -101,6 +103,8 @@ const CASES: Array<[constraint: string, values: readonly string[]]> = [
   ['payer_provider_check', BILLING_PROVIDER_IDS],
   ['placement_state_check', PLACEMENT_STATES],
   ['placement_source_check', PLACEMENT_SOURCES],
+  ['project_kind_check', PROJECT_KINDS],
+  ['project_icon_check', PROJECT_ICONS],
   ['folder_kind_check', FOLDER_KINDS],
   ['folder_state_check', FOLDER_STATES],
   ['leaf_state_check', LEAF_STATES],
@@ -139,6 +143,7 @@ const CASES: Array<[constraint: string, values: readonly string[]]> = [
   ['login_recipe_check', LOGIN_RECIPES],
   ['login_access_check', LOGIN_CONNECTION_ROLES],
   ['login_name_scheme_check', PRINCIPAL_NAME_SCHEMES],
+  ['principal_access_check', PRINCIPAL_ACCESS_LEVELS],
   ['datacenter_address_preference_check', DATACENTER_ADDRESS_PREFERENCES],
   ['datacenter_kind_check', DATACENTER_KINDS],
 ]

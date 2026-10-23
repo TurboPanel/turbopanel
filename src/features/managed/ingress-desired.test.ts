@@ -20,6 +20,7 @@ import {
   command,
   container,
   environment,
+  hosting,
   ip,
   leaf,
   managed,
@@ -37,6 +38,7 @@ import {
 } from '../../db/schema.ts'
 import { postgresEngineSpec } from './postgres.ts'
 import { loadHostSiteBindingNeeds } from '../bindings/host-run.ts'
+import { loadHostedServiceIds } from '../../client/environments/deploy-site-db-bindings.ts'
 import { materializeBinding } from '../bindings/materialize.ts'
 import { serverHasHostRunBinding } from './ingress-bound-consumers.ts'
 import type { ManagedSettings } from './settings.ts'
@@ -145,7 +147,8 @@ async function withSingleClusterIngressFixture(
       name: 'Ingress Desired Project',
       workspaceId,
       organizationId,
-      metadata: { type: 'managed', code: 'postgres' },
+      kind: 'managed',
+      metadata: { code: 'postgres' },
     })
     .returning({ id: project.id })
   const projectId = insertedProject!.id
@@ -1102,11 +1105,23 @@ test('serverHasHostRunBinding sees only loopback-form bindings placed on the ser
       'HOSTB_PASSWORD',
     ])
     assertEquals((await loadHostSiteBindingNeeds(db, [])).size, 0)
+
+    // Only a hosting that carries a hostname counts as the site being reachable by name.
+    assertEquals((await loadHostedServiceIds(db, [])).size, 0)
+    await db.insert(hosting).values({ serviceId: container.serviceId, options: { hostnames: [] } })
+    await db
+      .insert(hosting)
+      .values({ serviceId: hostB.serviceId, options: { hostnames: ['site.example.test'] } })
+    assertEquals(
+      [...(await loadHostedServiceIds(db, [container.serviceId, hostB.serviceId]))],
+      [hostB.serviceId]
+    )
   } finally {
     const serviceIds = created.map((row) => row.serviceId)
     const managedIds = created.map((row) => row.managedId)
     if (serviceIds.length > 0) {
       await db.delete(variable).where(inArray(variable.serviceId, serviceIds))
+      await db.delete(hosting).where(inArray(hosting.serviceId, serviceIds))
       await db.delete(binding).where(inArray(binding.serviceId, serviceIds))
       await db.delete(service).where(inArray(service.id, serviceIds))
     }

@@ -884,7 +884,9 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       metadata:
         'Holds `home` (under `/srv/users`), an optional `uid`/`gid` mirror and `composeAlias`.',
       options:
-        'Host-account settings: `shell` (closed allowlist, default `/usr/sbin/nologin`) and optional operator `uid`/`gid` override; parsed by `parsePrincipalOptions`.',
+        'Host-account settings: optional operator `uid`/`gid` override and `nameScheme`; parsed by `parsePrincipalOptions`.',
+      access:
+        'Site owner SSH access: `none` (no login, keys kept), `sftp` (file transfer only) or `shell` (shell plus file transfer).',
       username:
         'Short internal account name (letter or underscore first, then letters, digits, underscore, hyphen); server accounts get a shorter API-layer cap.',
       applied_username:
@@ -947,7 +949,9 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       default_server_id:
         'Default placement server: an environment with no `server_id` of its own inherits it; set null when the server is deleted (API field `options.defaultServerId`).',
       metadata:
-        'Client jsonb: `type` is `docker-compose`, `managed`, `template` or platform-only `system` (absent means setup not chosen yet), plus optional catalog `code`.',
+        'Client jsonb: the catalog `code` of a template or managed engine project, plus free caller keys; the project type lives in `kind`.',
+      kind: 'What the project is: `compose` (a template too), `managed` or platform-only `system`; NULL while a draft that has not chosen yet.',
+      icon: 'Icon key from the fixed list the project screens offer; NULL means the default, and a managed project ignores it.',
       options:
         'Jsonb: `compose`, `containerNaming`, `defaultServerId`, `composeSource`, and deploy defaults `drainSeconds`, `healthTimeoutSeconds`, `rollbackWindowMinutes`.',
       organization_id:
@@ -1454,6 +1458,21 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'Deterministic monitor role name: `tp_monitor_` plus the first 12 hex chars of the server UUID without dashes, kept within engine identifier limits.',
       secret_envelope:
         'Password sealed with the data-encryption key (`ENVELOPE_PREFIX_SECRET` prefix); resealed to a `tpdaemon` envelope per recipient at send time.',
+    },
+  },
+  peak: {
+    group: 'runtime',
+    summary:
+      'Highest RAM and physical core readings of one server per UTC hour; the over-tier rules judge a server on the highest reading of the last 7 days.',
+    columns: {
+      server_id:
+        'Owning server; ON DELETE CASCADE so a deleted host leaves no readings, and (server_id, bucket) is UNIQUE so an upsert only raises the hour.',
+      bucket:
+        'Start of the UTC hour the readings cover, aligned by the writer; rows older than the 7-day grace window are pruned by the 15-minute cron.',
+      memory_bytes:
+        'Highest total RAM in bytes read in the hour; NULL when none was read, never negative.',
+      cores:
+        'Highest physical core count read in the hour; NULL when none was read, never negative.',
     },
   },
   server: {

@@ -79,8 +79,8 @@ INSERT INTO replica (id, managed_id, server_id, role, ordinal, status) VALUES
   ('00000000-0000-7000-8000-000000000b11', '00000000-0000-7000-8000-000000000b01', '00000000-0000-7000-8000-000000000501', 'primary', 1, 'ready'),
   ('00000000-0000-7000-8000-000000000b12', '00000000-0000-7000-8000-000000000b01', '00000000-0000-7000-8000-000000000502', 'replica', 2, 'provisioning');
 
-INSERT INTO principal (id, organization_id, project_id, username, applied_username) VALUES
-  ('00000000-0000-7000-8000-000000000c01', '00000000-0000-7000-8000-000000000101', '00000000-0000-7000-8000-000000000301', 'siteowner', 'siteowner');
+INSERT INTO principal (id, organization_id, project_id, username, applied_username, options) VALUES
+  ('00000000-0000-7000-8000-000000000c01', '00000000-0000-7000-8000-000000000101', '00000000-0000-7000-8000-000000000301', 'siteowner', 'siteowner', '{"shell": "/bin/bash"}');
 
 INSERT INTO placement (id, principal_id, server_id, state, home, source) VALUES
   ('00000000-0000-7000-8000-000000000c11', '00000000-0000-7000-8000-000000000c01', '00000000-0000-7000-8000-000000000501', 'present', '/srv/users/siteowner', 'manual');

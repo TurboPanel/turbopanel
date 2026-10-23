@@ -2199,7 +2199,7 @@ export const project = pgTable(
      * System-hierarchy component discriminator (`hosting-ingress`,
      * `managed-ingress`, `managed-ha`, `turbopanel`), promoted out of
      * `metadata.component` (schema-sql-keys, Road-to-0.1.x). NULL for every
-     * user project — `metadata.type = 'system'` still marks a project as
+     * user project — `kind = 'system'` marks a project as
      * platform-owned. Identity always comes from this column, never from
      * `environment.metadata.component`.
      */
@@ -2219,6 +2219,17 @@ export const project = pgTable(
      * as `options.defaultServerId`.
      */
     defaultServerId: uuid('default_server_id'),
+    /**
+     * What the project is (`compose`, `managed`, `system`), promoted out of
+     * `metadata.type`. NULL while the project is a draft that has not chosen
+     * yet. A template project is `compose` with `metadata.code` set.
+     */
+    kind: text(),
+    /**
+     * Optional icon key from the fixed list the project screens offer. NULL
+     * means the default; a managed project ignores it.
+     */
+    icon: text(),
   },
   (table) => [
     index('idx_project_default_server_id').using(
@@ -2272,6 +2283,11 @@ export const project = pgTable(
     /** Unique per organization. */
     unique('uniq_project_organization_slug').on(table.organizationId, table.slug),
     check('project_slug_check', sql.raw(`slug ~ '${PROJECT_SLUG_SQL}'`)),
+    check('project_kind_check', sql`kind IS NULL OR kind IN ('compose', 'managed', 'system')`),
+    check(
+      'project_icon_check',
+      sql`icon IS NULL OR icon IN ('cube', 'globe', 'cart', 'bolt', 'chat', 'chart', 'code', 'book', 'layers', 'mail', 'rocket', 'image')`
+    ),
   ]
 )
 
@@ -2803,6 +2819,62 @@ export const monitor = pgTable(
       foreignColumns: [server.id],
       name: 'monitor_server_id_server_id_fk',
     }).onDelete('cascade'),
+  ]
+)
+
+/**
+ * Highest RAM and CPU readings of one server per hour. The over-tier rules judge
+ * a server on the highest reading of the last 7 days, so ballooning memory or a
+ * hot-added core never flips the verdict on one low sample. One row per
+ * (server, hour); an upsert only ever raises the stored figures. Rows older
+ * than the grace window are pruned by the 15-minute cron
+ * (`features/servers/peak.ts`).
+ */
+export const peak = pgTable(
+  'peak',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .$onUpdate(() => sql`now()`)
+      .notNull(),
+    serverId: uuid('server_id').notNull(),
+    /** Start of the UTC hour these readings cover (aligned by the writer). */
+    bucket: timestamp('bucket', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }).notNull(),
+    /** Highest total RAM in bytes read in the hour; NULL when none was read. */
+    memoryBytes: bigint('memory_bytes', { mode: 'number' }),
+    /** Highest physical core count read in the hour; NULL when none was read. */
+    cores: integer('cores'),
+  },
+  (table) => [
+    uniqueIndex('uniq_peak_server_bucket').on(table.serverId, table.bucket),
+    index('idx_peak_bucket').on(table.bucket),
+    foreignKey({
+      columns: [table.serverId],
+      foreignColumns: [server.id],
+      name: 'peak_server_id_server_id_fk',
+    }).onDelete('cascade'),
+    check('peak_memory_bytes_check', sql`memory_bytes >= 0`),
+    check('peak_cores_check', sql`cores >= 0`),
+    check('peak_reading_check', sql`memory_bytes IS NOT NULL OR cores IS NOT NULL`),
   ]
 )
 
@@ -3656,6 +3728,14 @@ export const principal = pgTable(
      */
     metadata: jsonb(),
     options: jsonb(),
+    /**
+     * How the account may reach its own host account over SSH: `none` (no
+     * login, keys stay on file), `sftp` (file transfer only) or `shell`
+     * (interactive shell plus transfer). The daemon still receives the shell
+     * this level encodes, so the wire is unchanged. Effective access also needs
+     * a key or password; see `features/principals/principal-access.ts`.
+     */
+    access: text().default('sftp').notNull(),
 
     /**
      * Account name. Allowlist mirrors POSIX/database account naming: starts
@@ -3718,6 +3798,7 @@ export const principal = pgTable(
       foreignColumns: [project.id],
       name: 'principal_project_id_project_id_fk',
     }).onDelete('set null'),
+    check('principal_access_check', sql`access IN ('none', 'sftp', 'shell')`),
     check(
       'principal_username_format_check',
       sql`(char_length((username)::text) >= 1) AND (char_length((username)::text) <= 255) AND ((username)::text ~ '^[A-Za-z_][A-Za-z0-9_-]*$'::text)`

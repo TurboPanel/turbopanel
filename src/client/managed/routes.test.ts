@@ -391,7 +391,8 @@ async function withManagedFixturesBody(
             name: 'Managed Postgres Project',
             workspaceId,
             organizationId,
-            metadata: { type: 'managed', code: 'postgres' },
+            kind: 'managed',
+            metadata: { code: 'postgres' },
             options: {
               compose: catalogEntry.compose,
               ...(engineOptions ?? {}),
@@ -401,7 +402,7 @@ async function withManagedFixturesBody(
             name: 'Compose Project',
             workspaceId,
             organizationId,
-            metadata: { type: 'docker-compose' },
+            kind: 'compose',
             options: { compose: emptyComposeDocument() },
           }
     )

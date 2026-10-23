@@ -287,7 +287,7 @@ test('GET /servers/:id/services lists a container app and a database replica', a
         name: 'Data',
         workspaceId: ctx.workspaceId,
         organizationId: ctx.organizationId,
-        metadata: { type: 'managed' },
+        kind: 'managed',
       })
       .returning({ id: project.id })
     const [dbEnv] = await ctx.db
@@ -514,7 +514,7 @@ test('GET /servers/:id/services groups two database bindings on one app', async 
         name: 'Data',
         workspaceId: ctx.workspaceId,
         organizationId: ctx.organizationId,
-        metadata: { type: 'managed' },
+        kind: 'managed',
       })
       .returning({ id: project.id })
     const [dbEnv] = await ctx.db

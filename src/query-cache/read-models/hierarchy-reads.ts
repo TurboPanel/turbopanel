@@ -44,6 +44,8 @@ export type ProjectRow = {
   workspaceId: string
   repositoryId: string | null
   metadata: typeof project.$inferSelect.metadata
+  kind: typeof project.$inferSelect.kind
+  icon: typeof project.$inferSelect.icon
   options: typeof project.$inferSelect.options
   createdAt: string
   updatedAt: string
@@ -84,6 +86,8 @@ const projectColumns = {
   workspaceId: project.workspaceId,
   repositoryId: project.repositoryId,
   metadata: project.metadata,
+  kind: project.kind,
+  icon: project.icon,
   options: project.options,
   defaultServerId: project.defaultServerId,
   createdAt: project.createdAt,

@@ -350,7 +350,8 @@ test('isManagedUsernameTaken scopes by server-owning org not create chain', asyn
       name: 'p',
       workspaceId: ws!.id,
       organizationId: organizationIdA,
-      metadata: { type: 'managed', code: 'postgres' },
+      kind: 'managed',
+      metadata: { code: 'postgres' },
     })
     .returning({ id: project.id })
   const [env] = await db
@@ -430,7 +431,8 @@ test('resolveManagedAppliedUsername suffixes when short name taken', async () =>
       name: 'p',
       workspaceId: ws!.id,
       organizationId,
-      metadata: { type: 'managed', code: 'postgres' },
+      kind: 'managed',
+      metadata: { code: 'postgres' },
     })
     .returning({ id: project.id })
   const [env] = await db
@@ -585,6 +587,29 @@ test('createPrincipal and replaceTenancies write expected tenancy edges', async 
         await db.delete(principal).where(eq(principal.id, createdId))
       }
       await db.delete(service).where(eq(service.id, secondServiceId))
+    }
+  })
+})
+
+test('ensureComposePrincipal seeds the access column from the requested level', async () => {
+  await withPrincipalFixtures(async ({ db, organizationId, projectId }) => {
+    const cases = [
+      { alias: 'accssh', access: 'ssh', expected: 'shell' },
+      { alias: 'accsftp', access: 'sftp', expected: 'sftp' },
+      { alias: 'accnone', access: undefined, expected: 'none' },
+    ] as const
+    for (const scenario of cases) {
+      const { principalId } = await ensureComposePrincipal(db, {
+        organizationId,
+        projectId,
+        alias: scenario.alias,
+        access: scenario.access,
+      })
+      const [row] = await db
+        .select({ access: principal.access })
+        .from(principal)
+        .where(eq(principal.id, principalId))
+      assertEquals(row?.access, scenario.expected, scenario.alias)
     }
   })
 })

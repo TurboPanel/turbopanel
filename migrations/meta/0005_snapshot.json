@@ -1,5 +1,5 @@
 {
-  "id": "c29d719b-789a-4a02-bfe3-ccc9d8a4ebde",
+  "id": "1c4aa511-fcf1-4552-93a6-ceb7f23b0967",
   "prevId": "d6349e86-822d-4ef1-acae-ac5cac0238f1",
   "version": "7",
   "dialect": "postgresql",
@@ -5527,12 +5527,6 @@
           "notNull": true,
           "default": "now()"
         },
-        "metadata": {
-          "name": "metadata",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
         "managed_id": {
           "name": "managed_id",
           "type": "uuid",
@@ -5581,20 +5575,7 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true,
-          "default": "'recipe'"
-        },
-        "recipe": {
-          "name": "recipe",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "is_all_databases": {
-          "name": "is_all_databases",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": false
+          "default": "'preset'"
         },
         "is_tool": {
           "name": "is_tool",
@@ -5607,8 +5588,7 @@
           "name": "allowed_sources",
           "type": "text[]",
           "primaryKey": false,
-          "notNull": true,
-          "default": "'{internal}'::text[]"
+          "notNull": false
         },
         "max_connections": {
           "name": "max_connections",
@@ -5696,22 +5676,6 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
-        },
-        "uniq_login_managed_backup": {
-          "name": "uniq_login_managed_backup",
-          "columns": [
-            {
-              "expression": "managed_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"login\".\"role\" = 'backup'",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
         }
       },
       "foreignKeys": {
@@ -5748,7 +5712,7 @@
       "checkConstraints": {
         "login_role_check": {
           "name": "login_role_check",
-          "value": "role IN ('root', 'replication', 'user', 'backup')"
+          "value": "role IN ('root', 'replication', 'user')"
         },
         "login_name_scheme_check": {
           "name": "login_name_scheme_check",
@@ -5756,23 +5720,7 @@
         },
         "login_grant_mode_check": {
           "name": "login_grant_mode_check",
-          "value": "grant_mode IN ('recipe', 'self')"
-        },
-        "login_recipe_check": {
-          "name": "login_recipe_check",
-          "value": "recipe IS NULL OR recipe IN ('app', 'migrations', 'read-only', 'analyst', 'admin', 'backup')"
-        },
-        "login_recipe_required_check": {
-          "name": "login_recipe_required_check",
-          "value": "grant_mode <> 'recipe' OR recipe IS NOT NULL"
-        },
-        "login_allowed_sources_check": {
-          "name": "login_allowed_sources_check",
-          "value": "cardinality(allowed_sources) BETWEEN 1 AND 100"
-        },
-        "login_backup_sources_check": {
-          "name": "login_backup_sources_check",
-          "value": "role <> 'backup' OR cardinality(allowed_sources) >= 1"
+          "value": "grant_mode IN ('preset', 'recipe', 'self')"
         },
         "login_access_check": {
           "name": "login_access_check",
@@ -8576,6 +8524,18 @@
           "type": "uuid",
           "primaryKey": false,
           "notNull": false
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "icon": {
+          "name": "icon",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -8758,6 +8718,14 @@
         "project_slug_check": {
           "name": "project_slug_check",
           "value": "slug ~ '^[a-z0-9][a-z0-9-]{0,39}$'"
+        },
+        "project_kind_check": {
+          "name": "project_kind_check",
+          "value": "kind IS NULL OR kind IN ('compose', 'managed', 'system')"
+        },
+        "project_icon_check": {
+          "name": "project_icon_check",
+          "value": "icon IS NULL OR icon IN ('cube', 'globe', 'cart', 'bolt', 'chat', 'chart', 'code', 'book', 'layers', 'mail', 'rocket', 'image')"
         }
       },
       "isRLSEnabled": false

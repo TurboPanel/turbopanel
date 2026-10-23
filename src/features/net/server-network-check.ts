@@ -138,8 +138,10 @@ export function summarizeNetworkCheck(
 /**
  * Shown when the network that currently carries server-to-server traffic has
  * a server whose link is down, so those servers already use the next shared
- * network. `reason` is always `link_down` today (the only failure the panel
- * observes between checks).
+ * network. `reason` is `link_down` when a NIC reports no link, and
+ * `unreachable` when every server that could still be asked failed to reach
+ * the server over this network (the panel's own probes, see
+ * `network-probe.ts`).
  */
 export type ChosenNetworkDownWarning = {
   code: 'chosen_network_down'
@@ -147,7 +149,7 @@ export type ChosenNetworkDownWarning = {
   /** The shared network traffic moves to; null when no other trusted network exists. */
   fallbackDatacenterId: string | null
   serverIds: string[]
-  reason: 'link_down'
+  reason: 'link_down' | 'unreachable'
 }
 
 export type TrafficRival = { id: string; priority: number; trusted: boolean }
@@ -166,10 +168,10 @@ export function chosenNetworkDownWarnings(
 ): ChosenNetworkDownWarning[] {
   const winner = winningNetworkId(datacenters)
   if (!winner) return []
-  const serverIds = [
-    ...new Set(pins.filter((p) => p.datacenterId === winner && p.linkDown).map((p) => p.serverId)),
-  ].sort((a, b) => a.localeCompare(b))
+  const downPins = pins.filter((p) => p.datacenterId === winner && p.linkDown)
+  const serverIds = [...new Set(downPins.map((p) => p.serverId))].sort((a, b) => a.localeCompare(b))
   if (serverIds.length === 0) return []
+  const reason = downPins.every((p) => p.probedDown) ? 'unreachable' : 'link_down'
   const fallback =
     datacenters
       .filter((dc) => dc.trusted && dc.id !== winner)
@@ -180,7 +182,7 @@ export function chosenNetworkDownWarnings(
       datacenterId: winner,
       fallbackDatacenterId: fallback,
       serverIds,
-      reason: 'link_down',
+      reason,
     },
   ]
 }

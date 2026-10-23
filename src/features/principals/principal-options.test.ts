@@ -1,12 +1,10 @@
 import { assertEquals } from '@std/assert'
 import {
-  ALLOWED_PRINCIPAL_SHELLS,
   DEFAULT_PRINCIPAL_SHELL,
   isValidPrincipalIdOverride,
   parsePrincipalOptions,
   parsePrincipalOptionsInput,
   resolvePrincipalIdOverride,
-  resolvePrincipalShell,
 } from './principal-options.ts'
 import {
   PRINCIPAL_RESERVED_UID_MAX,
@@ -23,35 +21,15 @@ import {
  */
 const test = Deno.test.bind(Deno)
 
-test('parsePrincipalOptions accepts allowlisted shells', () => {
-  assertEquals(parsePrincipalOptions({ shell: '/bin/bash' }), { shell: '/bin/bash' })
-  assertEquals(parsePrincipalOptions({ shell: ' /bin/sh ' }), { shell: '/bin/sh' })
-  for (const shell of ALLOWED_PRINCIPAL_SHELLS) {
-    assertEquals(parsePrincipalOptions({ shell }), { shell })
-  }
-})
-
-test('parsePrincipalOptions drops a well-formed shell outside the allowlist', () => {
-  // `shell` reaches `useradd -s` on the host, so path shape is not enough:
-  // membership is the gate. /usr/bin/zsh is a perfectly valid path and is
-  // still refused because it is not on the list.
-  assertEquals(parsePrincipalOptions({ shell: '/usr/bin/zsh' }), {})
-  assertEquals(parsePrincipalOptions({ shell: '/usr/bin/python3' }), {})
-})
-
-test('parsePrincipalOptions drops invalid shells', () => {
-  assertEquals(parsePrincipalOptions({ shell: 'bash' }), {})
-  assertEquals(parsePrincipalOptions({ shell: '/bin/bash extra' }), {})
-  assertEquals(parsePrincipalOptions({ shell: '/bin/bash\n' }), {})
-  assertEquals(parsePrincipalOptions({ shell: '' }), {})
-  assertEquals(parsePrincipalOptions({ shell: '/usr/bin/../bin/bash' }), {})
-  assertEquals(parsePrincipalOptions({ shell: '/../bin/bash' }), {})
+test('parsePrincipalOptions ignores a legacy shell key', () => {
+  // The access level lives in `principal.access`; a shell left in old rows
+  // is never read back.
+  assertEquals(parsePrincipalOptions({ shell: '/bin/bash' }), {})
   assertEquals(parsePrincipalOptions(null), {})
 })
 
 test('parsePrincipalOptions accepts a valid uid/gid override pair', () => {
   assertEquals(parsePrincipalOptions({ shell: '/bin/bash', uid: 15001, gid: 15001 }), {
-    shell: '/bin/bash',
     uid: 15001,
     gid: 15001,
   })
@@ -125,12 +103,6 @@ test('parsePrincipalOptionsInput rejects non-object options and malformed shells
   assertEquals(parsePrincipalOptionsInput({ shell: '/../etc/passwd' }), {
     ok: false,
   })
-})
-
-test('resolvePrincipalShell defaults to nologin', () => {
-  assertEquals(resolvePrincipalShell(undefined), DEFAULT_PRINCIPAL_SHELL)
-  assertEquals(resolvePrincipalShell({}), DEFAULT_PRINCIPAL_SHELL)
-  assertEquals(resolvePrincipalShell({ shell: '/bin/bash' }), '/bin/bash')
 })
 
 test('isValidPrincipalIdOverride enforces floor and reserved service band', () => {

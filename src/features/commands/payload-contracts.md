@@ -655,7 +655,7 @@ each vhost its own LSAPI processor under suEXEC, with the same limits as
 `phpIniOverride` values. One PHP series per host across all three engines —
 conflicting `version` hints fail the deploy. `web.env` reaches PHP as FastCGI
 parameters: site Caddy `php_fastcgi env`, Apache `SetEnv`, nginx `fastcgi_param`
-(OpenLiteSpeed: not yet; `$_ENV` in no mode). When a project principal is assigned to the service, deploy-prepare
+(OpenLiteSpeed: per-site rewrite rules that set the variable; `$_ENV` in no mode). When a project principal is assigned to the service, deploy-prepare
 pins `sites[].principal` (at most one — else **422**
 `site_principal_ambiguous`); the daemon owns the site tree as that user (engine
 group retains read) and runs the site's PHP workers — FPM pool or LSAPI process
