@@ -1973,7 +1973,9 @@ async function finalizePreparedManagedApplyResults(
         actorId: params.userId,
         secretsConfig,
         dataEncryptionSecrets,
-        // Queued right behind the apply: it runs after the apply finishes.
+        // Built from the database now, not from the apply's result. On a server that
+        // is also applying it waits in that server's lane, so it gets the apply's
+        // budget; other servers run it at the same time.
         waitsBehindMs: APPLY_EXPIRES_MS,
       })
     })

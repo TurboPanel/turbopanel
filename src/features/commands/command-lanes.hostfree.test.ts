@@ -4,6 +4,7 @@
  */
 
 import { assertEquals } from '@std/assert'
+import { commandIsExpired } from './consumer.ts'
 import { createLaneScheduler } from './command-lanes.ts'
 
 /**
@@ -105,9 +106,9 @@ test('expiry counts the wait behind the same server only', async () => {
   let nowMs = 0
   const slow = deferred()
   const outcome: Record<string, string> = {}
-  // Same rule as the consumer: a command past its valid time is not sent.
+  // The consumer's own check: a command past its valid time is not sent.
   const command = (name: string, expiresAtMs: number) => () => {
-    outcome[name] = nowMs > expiresAtMs ? 'expired' : 'ran'
+    outcome[name] = commandIsExpired(new Date(expiresAtMs).toISOString(), nowMs) ? 'expired' : 'ran'
     return Promise.resolve()
   }
   const apply = lanes.run('server-a', async () => {
@@ -170,4 +171,18 @@ test('a task that fails rejects its caller and does not block its lane', async (
   assertEquals(await next, 'ok')
   await settle()
   assertEquals(lanes.activeCount(), 0)
+})
+
+test('a task that throws before returning a promise is contained in its lane', async () => {
+  const lanes = createLaneScheduler({ maxConcurrent: 1 })
+  const failed = lanes.run('a', () => {
+    throw new Error('sync boom')
+  })
+  const next = lanes.run('a', () => Promise.resolve('ok'))
+  let message = ''
+  await failed.catch((error: Error) => {
+    message = error.message
+  })
+  assertEquals(message, 'sync boom')
+  assertEquals(await next, 'ok')
 })

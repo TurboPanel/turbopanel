@@ -213,7 +213,9 @@ export async function enqueueIngressForBindingChange(
         actorId: params.actorId,
         secretsConfig,
         dataEncryptionSecrets,
-        // Queued right behind the apply, so it only starts once that is done.
+        // Built from the database now, not from the apply's result. On the apply's own
+        // server it queues behind the apply, so it gets the apply's budget; other
+        // servers run in their own lane at the same time and simply start sooner.
         ...(applyStatus === 'enqueued' ? { waitsBehindMs: MANAGED_APPLY_EXPIRES_MS } : {}),
       })
     } catch (err) {

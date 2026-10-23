@@ -707,3 +707,25 @@ test('a delivery waiting in a lane when the broker drops is not run on the lost 
     connectStub.restore()
   }
 })
+
+test('an unparseable delivery is dead-lettered at once and never enters a lane', async () => {
+  const broker = createStubBroker()
+  const connectStub = stub(amqplib, 'connect', () => Promise.resolve(broker.connection as never))
+  const { lanes, held } = heldLanes()
+  try {
+    const handle = await startCommandConsumer({
+      firewallApplyGate: DENY_FIREWALL_APPLY,
+      db: missingRowDb(),
+      registry: emptyRegistry(),
+      amqpUrl: 'amqp://test',
+      lanes,
+    })
+    broker.deliver({ content: { toString: () => 'not-json' } })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    assertEquals(held, [])
+    assertEquals(broker.dispositions, [{ method: 'nack', requeue: false }])
+    await handle.close()
+  } finally {
+    connectStub.restore()
+  }
+})

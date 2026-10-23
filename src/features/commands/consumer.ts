@@ -421,6 +421,14 @@ async function failExpiredManagedApplyWhenClusterGone(
   return true
 }
 
+/** A command past its valid time is not sent; the time counts from when it was queued. */
+export function commandIsExpired(
+  expiresAt: string | null | undefined,
+  nowMs = Date.now()
+): boolean {
+  return Boolean(expiresAt) && Date.parse(expiresAt as string) < nowMs
+}
+
 async function loadDispatchableRecord(
   db: Db,
   envelope: CommandEnvelope
@@ -434,7 +442,7 @@ async function loadDispatchableRecord(
     return null
   }
 
-  if (record.expiresAt && Date.parse(record.expiresAt) < Date.now()) {
+  if (commandIsExpired(record.expiresAt)) {
     if (await failExpiredManagedApplyWhenClusterGone(db, record)) {
       return null
     }
