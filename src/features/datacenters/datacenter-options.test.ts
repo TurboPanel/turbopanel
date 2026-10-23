@@ -7,7 +7,10 @@ import {
   hasInvalidPriority,
   parseDatacenterOptions,
   parseDatacenterPriority,
+  policyColumnsFromOptions,
   resolveDatacenterPolicy,
+  storedDatacenterOptions,
+  datacenterWireOptions,
 } from './datacenter-options.ts'
 
 /**
@@ -132,18 +135,51 @@ test('parseDatacenterOptions keeps policy alongside the other fields', () => {
   )
 })
 
-test('resolveDatacenterPolicy applies defaults for absent or invalid fields', () => {
+test('resolveDatacenterPolicy reads the priority and trusted columns', () => {
   assertEquals(DEFAULT_DATACENTER_TRUSTED, true)
-  assertEquals(resolveDatacenterPolicy(null), { priority: 100, trusted: true })
-  assertEquals(resolveDatacenterPolicy({}), { priority: 100, trusted: true })
-  assertEquals(resolveDatacenterPolicy({ priority: 5000, trusted: 'no' }), {
+  assertEquals(resolveDatacenterPolicy({ priority: 100, isTrusted: true }), {
     priority: 100,
     trusted: true,
   })
-  assertEquals(resolveDatacenterPolicy({ priority: 0, trusted: false }), {
+  assertEquals(resolveDatacenterPolicy({ priority: 0, isTrusted: false }), {
     priority: 0,
     trusted: false,
   })
+})
+
+test('policyColumnsFromOptions applies the defaults to keys the request left out', () => {
+  const defaults = { priority: 100, isTrusted: true, addressPreference: 'ipv6' }
+  assertEquals(policyColumnsFromOptions(null), defaults)
+  assertEquals(policyColumnsFromOptions({}), defaults)
+  assertEquals(
+    policyColumnsFromOptions({ priority: 5, trusted: false, addressPreference: 'ipv4' }),
+    {
+      priority: 5,
+      isTrusted: false,
+      addressPreference: 'ipv4',
+    }
+  )
+})
+
+test('storedDatacenterOptions drops the three policy keys and keeps the rest', () => {
+  assertEquals(storedDatacenterOptions(null), null)
+  assertEquals(
+    storedDatacenterOptions({ priority: 5, trusted: false, addressPreference: 'ipv4' }),
+    null
+  )
+  assertEquals(storedDatacenterOptions({ priority: 5, sshPort: 2200 }), { sshPort: 2200 })
+})
+
+test('datacenterWireOptions lays the columns over the stored options', () => {
+  assertEquals(
+    datacenterWireOptions({
+      options: { sshPort: 2200, priority: 1 },
+      priority: 7,
+      isTrusted: false,
+      addressPreference: 'ipv4',
+    }),
+    { sshPort: 2200, priority: 7, trusted: false, addressPreference: 'ipv4' }
+  )
 })
 
 test('hasInvalidPriority flags only a present, out-of-range or non-whole priority', () => {

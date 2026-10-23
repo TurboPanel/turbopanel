@@ -138,8 +138,8 @@ async function buildApp(options: { allowed: boolean; visible: string[] }) {
           return {
             where: () =>
               rows(
-                fields && 'options' in fields
-                  ? [{ id: LAN, options: {} }]
+                fields && 'priority' in fields
+                  ? [{ id: LAN, priority: 100, isTrusted: true, addressPreference: 'ipv6' }]
                   : [{ id: LAN, name: 'Office LAN' }]
               ),
           }

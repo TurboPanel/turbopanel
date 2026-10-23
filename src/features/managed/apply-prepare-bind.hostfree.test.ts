@@ -82,7 +82,7 @@ function fixtureDb(fixture: Fixture): Db {
   const publicAddresses = fixture.publicAddresses ?? []
   const datacenterOptions = [...new Set(memberships.map((row) => row.datacenterId))]
     .sort((a, b) => a.localeCompare(b))
-    .map((id) => ({ id, options: {} }))
+    .map((id) => ({ id, priority: 100, isTrusted: true, addressPreference: 'ipv6' }))
 
   return {
     select(fields: Record<string, unknown>) {
@@ -124,7 +124,7 @@ function fixtureDb(fixture: Fixture): Db {
       }
 
       // loadDatacenterAddressPreferences
-      if (keys.length === 2 && keySet.has('id') && keySet.has('options')) {
+      if (keySet.has('id') && keySet.has('priority') && keySet.has('addressPreference')) {
         return { from: () => ({ where: () => thenable(datacenterOptions) }) }
       }
 
