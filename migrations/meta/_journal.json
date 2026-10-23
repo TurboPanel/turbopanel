@@ -47,8 +47,15 @@
     {
       "idx": 6,
       "version": "7",
-      "when": 1792778212609,
-      "tag": "0006_backup_copy_tables",
+      "when": 1792777978929,
+      "tag": "0006_principal_access",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1792779921657,
+      "tag": "0007_backup_copy_tables",
       "breakpoints": true
     }
   ]
