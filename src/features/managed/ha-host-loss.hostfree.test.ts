@@ -4,6 +4,7 @@
 
 import { assertEquals } from '@std/assert'
 import { MANAGED_HA_BOOT_HOLD_FEATURE } from '../../lib/version-wire.ts'
+import { MAX_FAILURE_SPAN_MS } from './ha-fresh-standby.ts'
 import {
   DEFAULT_HOST_LOSS_WINDOW_MS,
   HOST_LOSS_ALERT_MESSAGES,
@@ -12,6 +13,7 @@ import {
   HOST_LOSS_MARK_LAG_MS,
   HOST_LOSS_PLANNED_GRACE_MS,
   type HostLossPreflightFacts,
+  hostLossLastDecisionMs,
   hostLossFailureStartMs,
   hostLossIncidentKey,
   hostLossPreflight,
@@ -62,7 +64,7 @@ test('a clean case goes on to ask the other members', () => {
   assertEquals(hostLossPreflight(facts()), { action: 'probe' })
 })
 
-test('a planned reboot or update waits, but never past the last moment a promotion can be decided', () => {
+test('a planned reboot or update waits for its grace, and never past the last moment a promotion can be decided', () => {
   const offlineSinceMs = NOW - 5 * 60_000
   assertEquals(hostLossPreflight(facts({ offlineSinceMs, plannedReboot: true })), {
     action: 'wait',
@@ -71,6 +73,12 @@ test('a planned reboot or update waits, but never past the last moment a promoti
   assertEquals(
     hostLossPreflight(
       facts({ offlineSinceMs: NOW - HOST_LOSS_PLANNED_GRACE_MS - 1, plannedReboot: true })
+    ),
+    { action: 'probe' }
+  )
+  assertEquals(
+    hostLossPreflight(
+      facts({ offlineSinceMs: NOW - HOST_LOSS_LAST_DECISION_MS - 1, plannedReboot: true })
     ),
     { action: 'alert', code: 'too_late' }
   )
@@ -82,8 +90,8 @@ test('an offline mark that cannot be read is never acted on', () => {
 })
 
 test('too late to tie the replicas to the failure: alert only, never a late promotion', () => {
-  // The cap is the fresh-standby gate's 10 minute span counted from the earliest death.
-  assertEquals(HOST_LOSS_LAST_DECISION_MS, 450_000)
+  // The cap is the fresh-standby gate's 20 minute span counted from the earliest death.
+  assertEquals(HOST_LOSS_LAST_DECISION_MS, MAX_FAILURE_SPAN_MS - HOST_LOSS_MARK_LAG_MS)
   assertEquals(
     hostLossPreflight(facts({ offlineSinceMs: NOW - HOST_LOSS_LAST_DECISION_MS })).action,
     'probe'
@@ -101,6 +109,24 @@ test('too late to tie the replicas to the failure: alert only, never a late prom
   )
   // The widest window still leaves time to decide.
   assertEquals(MAX_HOST_LOSS_WINDOW_MS < HOST_LOSS_LAST_DECISION_MS, true)
+})
+
+test('a closed daemon socket is anchored on the mark itself and may be decided up to the full span', () => {
+  assertEquals(hostLossFailureStartMs(NOW, 'disconnect'), NOW)
+  assertEquals(hostLossFailureStartMs(NOW), NOW - HOST_LOSS_MARK_LAG_MS)
+  assertEquals(hostLossLastDecisionMs('disconnect'), MAX_FAILURE_SPAN_MS)
+  const facts2 = (offlineForMs: number) =>
+    hostLossPreflight(facts({ markReason: 'disconnect', offlineSinceMs: NOW - offlineForMs }))
+  assertEquals(facts2(WINDOW).action, 'probe')
+  assertEquals(facts2(MAX_FAILURE_SPAN_MS).action, 'probe')
+  assertEquals(facts2(MAX_FAILURE_SPAN_MS + 1), { action: 'alert', code: 'too_late' })
+})
+
+test('the full chain from a dead host to a decision fits inside the documented bound', () => {
+  // Silent host: mark (<= 150 s) + window (120 s) + one tick (60 s) = 330 s.
+  // Stopped daemon: mark (a few seconds) + window (120 s) + one tick (60 s) = ~190 s.
+  assertEquals(HOST_LOSS_MARK_LAG_MS + WINDOW + 60_000, 330_000)
+  assertEquals(HOST_LOSS_MARK_LAG_MS + WINDOW + 60_000 < HOST_LOSS_LAST_DECISION_MS, true)
 })
 
 test('a host that has been gone for half an hour is not an incident this path works on', () => {

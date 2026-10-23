@@ -67,6 +67,7 @@ function candidate(overrides: Partial<HostLossCandidate> = {}): HostLossCandidat
     primaryServerId: SERVER_A,
     organizationId: ORG,
     offlineSince: OFFLINE_SINCE,
+    markReason: 'sweep_stale',
     ...overrides,
   }
 }
@@ -169,6 +170,53 @@ test('host vanishes and the replica confirms: the failover starts, anchored on t
   )
 })
 
+test('a stopped daemon (closed socket) with the engine gone is promoted once the replicas confirm', async () => {
+  const { outcomes, calls } = await sweep({ candidates: [candidate({ markReason: 'disconnect' })] })
+  assertEquals(outcomes, [{ managedId: MANAGED_ID, result: 'failover' }])
+  assertEquals(calls.alerts, [])
+  // A closed socket is marked the moment it closes: no sweep lag to allow for.
+  assertEquals(calls.failovers[0]?.failureStartedAtMs, OFFLINE_SINCE_MS)
+})
+
+test('a stopped daemon whose engine still streams to a replica is never promoted', async () => {
+  const { outcomes, calls } = await sweep({
+    candidates: [candidate({ markReason: 'disconnect' })],
+    answers: { [MEM_REPLICA]: STILL_RECEIVING },
+  })
+  assertEquals(outcomes, [{ managedId: MANAGED_ID, result: 'alert', code: 'peer_streaming' }])
+  assertEquals(calls.failovers, [])
+})
+
+test('a closed socket still waits out the window, so a daemon restart changes nothing', async () => {
+  const { outcomes, calls } = await sweep({
+    candidates: [
+      candidate({ markReason: 'disconnect', offlineSince: new Date(NOW - 20_000).toISOString() }),
+    ],
+  })
+  assertEquals(outcomes, [{ managedId: MANAGED_ID, result: 'wait' }])
+  assertEquals(calls.probes.length + calls.alerts.length + calls.failovers.length, 0)
+})
+
+test('a replica quiet for a hair under the window after a closed socket still corroborates', async () => {
+  const justUnder: ManagedReplicationHealth = {
+    state: 'stopped',
+    observedAt: NOW_ISO,
+    lastStreaming: { at: NOW_ISO, ageMs: DEFAULT_HOST_LOSS_WINDOW_MS - 5_000 },
+  }
+  const closed = await sweep({
+    candidates: [candidate({ markReason: 'disconnect' })],
+    answers: { [MEM_REPLICA]: justUnder },
+  })
+  assertEquals(closed.outcomes[0]?.result, 'failover')
+  // The stale path keeps its strict check: the same reading does not corroborate there.
+  const stale = await sweep({ answers: { [MEM_REPLICA]: justUnder } })
+  assertEquals(stale.outcomes[0], {
+    managedId: MANAGED_ID,
+    result: 'alert',
+    code: 'not_corroborated',
+  })
+})
+
 test('the per-environment switch is passed through unchanged (off = the failover path refuses and alerts)', async () => {
   const { calls } = await sweep({}, { autoFailover: 'off' })
   assertEquals(calls.failovers[0]?.autoFailover, 'off')
@@ -267,7 +315,7 @@ test('most of the fleet offline is an outage, not one lost host: alert only', as
 
 test('past the last moment a promotion can be decided it is an alert, never a late failover', async () => {
   const { outcomes, calls } = await sweep({
-    candidates: [candidate({ offlineSince: new Date(NOW - 460_000).toISOString() })],
+    candidates: [candidate({ offlineSince: new Date(NOW - 1_060_000).toISOString() })],
   })
   assertEquals(outcomes[0], { managedId: MANAGED_ID, result: 'alert', code: 'too_late' })
   assertEquals(calls.probes.length + calls.failovers.length, 0)

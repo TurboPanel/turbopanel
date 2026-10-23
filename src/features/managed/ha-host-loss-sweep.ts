@@ -8,6 +8,11 @@
  * a host that comes back inside the window simply stops being a candidate.
  *
  * What it writes:
+ * - a primary's server counts as lost when its daemon went silent (stale
+ *   sweep mark) or its daemon socket closed and stayed closed (stopped daemon,
+ *   shut-down host); both wait out the window and need every other member to
+ *   confirm. Detection is bounded: mark (at most 150 s after a silent host, a
+ *   few seconds after a closed socket) + window (2 min) + one tick (1 min);
  * - an alert-only outcome is a terminal `blocked` row in the recovery journal
  *   with the reason in plain words (`recordBlockedRecovery` folds repeats of
  *   the same reason into one row, so a one-minute tick never floods it);
@@ -20,7 +25,7 @@
  * test pins that the failover modules themselves never import the probe.
  */
 
-import { and, eq, gte, isNotNull, lte } from 'drizzle-orm'
+import { and, eq, gte, inArray, isNotNull, lte } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { command, managed, replica, server } from '../../db/schema.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
@@ -33,12 +38,15 @@ import { beginAutomaticFailover } from './ha-recovery.ts'
 import {
   HOST_LOSS_ALERT_MESSAGES,
   HOST_LOSS_DETECTOR,
+  HOST_LOSS_DISCONNECT_PEER_SLACK_MS,
   HOST_LOSS_GIVE_UP_MS,
+  HOST_LOSS_MARK_REASONS,
   HOST_LOSS_PLANNED_GRACE_MS,
   type HostLossAlertCode,
   hostLossFailureStartMs,
   hostLossIncidentKey,
   hostLossPreflight,
+  type HostLossMarkReason,
   hostLossVerdict,
   type PeerReading,
   readPeer,
@@ -59,6 +67,8 @@ export type HostLossCandidate = {
   organizationId: string | null
   /** `server.status_changed_at` of the primary's server (offline mark). */
   offlineSince: string
+  /** Why the server was marked offline: a stale sweep or a closed daemon socket. */
+  markReason: HostLossMarkReason
 }
 
 /** What a tick needs to know about the primary's server beyond the member row. */
@@ -123,6 +133,7 @@ async function listOfflinePrimaries(
       primaryServerId: replica.serverId,
       organizationId: server.organizationId,
       offlineSince: server.statusChangedAt,
+      markReason: server.offlineReason,
     })
     .from(replica)
     .innerJoin(server, eq(server.id, replica.serverId))
@@ -132,18 +143,24 @@ async function listOfflinePrimaries(
         eq(replica.role, 'primary'),
         eq(server.isConnected, false),
         isNotNull(server.statusChangedAt),
-        // Only a mark written by the stale sweep (no heartbeat for the threshold,
-        // likely power loss). A closed daemon socket could be a restart or a blip.
-        eq(server.offlineReason, 'sweep_stale'),
+        // A stale-sweep mark (no heartbeat for the threshold, likely power loss)
+        // or a closed daemon socket (daemon stopped, host shut down). The latter
+        // could also be a restart or a blip, which is why every other member of
+        // the cluster must still confirm the primary is gone before anything is
+        // promoted; a column that is neither (NULL, online) never matches.
+        inArray(server.offlineReason, [...HOST_LOSS_MARK_REASONS]),
         gte(server.statusChangedAt, giveUpBoundary),
         lte(server.statusChangedAt, params.cutoffIso)
       )
     )
     .orderBy(server.statusChangedAt)
     .limit(params.limit)
-  return rows.flatMap((row) =>
-    row.offlineSince ? [{ ...row, offlineSince: row.offlineSince } satisfies HostLossCandidate] : []
-  )
+  return rows.flatMap((row) => {
+    const markReason = HOST_LOSS_MARK_REASONS.find((reason) => reason === row.markReason)
+    return row.offlineSince && markReason
+      ? [{ ...row, offlineSince: row.offlineSince, markReason } satisfies HostLossCandidate]
+      : []
+  })
 }
 
 async function connectedServers(
@@ -248,7 +265,8 @@ async function readPeers(
   deps: HostLossSweepDeps,
   engine: string,
   peers: readonly ManagedMemberRow[],
-  windowMs: number
+  windowMs: number,
+  slackMs: number
 ): Promise<PeerReading[]> {
   return Promise.all(
     peers.map(async (peer) =>
@@ -261,7 +279,8 @@ async function readPeers(
             engine,
           })
           .catch(() => null),
-        windowMs
+        windowMs,
+        slackMs
       )
     )
   )
@@ -298,7 +317,7 @@ function startFailover(
       ? {}
       : { freshStandbyMarginMs: deps.freshStandbyMarginMs }),
     ...(deps.nowMs ? { nowMs: deps.nowMs } : {}),
-    failureStartedAtMs: hostLossFailureStartMs(params.offlineSinceMs),
+    failureStartedAtMs: hostLossFailureStartMs(params.offlineSinceMs, params.candidate.markReason),
     hostLossIncident: params.incident,
   })
 }
@@ -343,6 +362,7 @@ async function evaluateCluster(
     nowMs,
     offlineSinceMs,
     windowMs: deps.windowMs,
+    markReason: candidate.markReason,
     engine,
     primaryDaemonFeatures: facts.features,
     plannedReboot: facts.updateInFlight || facts.rebootRecently,
@@ -362,7 +382,13 @@ async function evaluateCluster(
     return { managedId, result: 'alert', code: pre.code }
   }
 
-  const readings = await readPeers(deps, engine, peers, deps.windowMs)
+  const readings = await readPeers(
+    deps,
+    engine,
+    peers,
+    deps.windowMs,
+    candidate.markReason === 'disconnect' ? HOST_LOSS_DISCONNECT_PEER_SLACK_MS : 0
+  )
   const verdict = hostLossVerdict(readings)
   if (verdict.action === 'alert') {
     await alert(db, {

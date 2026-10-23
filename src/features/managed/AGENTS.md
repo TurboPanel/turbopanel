@@ -1253,12 +1253,23 @@ mark>`; repeats of the same reason fold into one row), never a promotion:
 
 1. The primary's server has been offline (`server.status_changed_at`) for the
    whole **window** (`TURBOPANEL_HOST_LOSS_WINDOW_SECONDS`, default 120, clamped
-   60-300), on top of the 90-150 s the offline sweep needs to notice. A host
-   that returns inside it stops being a candidate: nothing happens.
+   60-300). Two marks count (`server.offline_reason`): `sweep_stale` (no
+   heartbeat for 90-150 s: power loss, cut cable) and `disconnect` (the daemon's
+   socket closed and stayed closed: daemon stopped, host shut down). A
+   `disconnect` could also be a restart, so it gets no extra trust: window,
+   reboot grace and rule 6 apply unchanged (and rule 6's quiet check allows 15 s
+   of slack, because the replicas lose the stream seconds after the socket
+   closes). A host that returns inside the window stops being a candidate:
+   nothing happens. Detection is bounded: mark (<= 150 s after a silent host,
+   seconds after a closed socket) + window + one 60 s tick, i.e. about 330 s
+   for a silent host and about 190 s for a stopped daemon, then the promotion
+   itself (fence by attestation, promote: tens of seconds).
 2. Not within 10 minutes of an operator `server.reboot` of that server or while
    a daemon update is in flight. Never later than 7.5 minutes after the offline
-   mark (`HOST_LOSS_LAST_DECISION_MS` = the fresh-standby gate's 10 minute
-   failure span minus the 150 s mark lag; the gate's receipt check does not
+   mark (`hostLossLastDecisionMs` = the fresh-standby gate's 20 minute
+   failure span (`MAX_FAILURE_SPAN_MS`, longer than the 15 minute cooldown plus
+   the daemons' 1 minute re-send, so a failover refused by the cooldown can be
+   retried when it ends) minus the 150 s mark lag for a stale mark; the gate's receipt check does not
    depend on when the probe runs, so without this cap a retry long after the
    loss would still pass it): later is alert-only (`too_late`). Not for a host
    offline over half an hour.

@@ -12,12 +12,17 @@
  * promote" (a row in the recovery journal with the reason in plain words):
  *
  * 1. The primary's server must have been marked offline for the whole window
- *    (default 2 min, on top of the 90-150 s the offline sweep needs to notice).
+ *    (default 2 min). Two kinds of mark count: `sweep_stale` (no heartbeat for
+ *    90-150 s, a powered-off or cut-off host) and `disconnect` (the daemon's
+ *    socket closed cleanly: the daemon was stopped or the host shut down). A
+ *    `disconnect` alone could be a restart, so it gets no extra trust: the
+ *    window, the planned-reboot grace and rule 6 (every other member must
+ *    confirm the primary is gone) all apply to it exactly as to a stale mark.
  *    Back inside the window: nothing happens.
  * 2. Not while an operator reboot of that server or a daemon update is under
- *    way (the first 10 minutes), and not later than 7.5 minutes after the
- *    offline mark ({@link HOST_LOSS_LAST_DECISION_MS}: the fresh-standby gate
- *    cannot tie a replica's last contact to the failure any later).
+ *    way (the first 10 minutes), and not later than
+ *    {@link hostLossLastDecisionMs} after the offline mark (the fresh-standby
+ *    gate cannot tie a replica's last contact to the failure any later).
  * 3. Not during a fleet-wide outage: more than half of the organization's
  *    servers offline points at the control plane's own network, not one host.
  * 4. Only PostgreSQL, MySQL and MariaDB. A MySQL or MariaDB replica is
@@ -54,24 +59,57 @@ export const MIN_HOST_LOSS_WINDOW_MS = 60_000
 export const MAX_HOST_LOSS_WINDOW_MS = 300_000
 
 /**
- * The offline mark trails the real silence: the offline sweep declares a server
- * stale 90 s after its last answer and runs every 60 s, so the host stopped
- * answering at most this long before the mark. The fresh-standby gate is
- * anchored here (the earliest the host can have died).
+ * The stale-sweep mark trails the real silence: the offline sweep declares a
+ * server stale 90 s after its last answer and runs every 60 s, so the host
+ * stopped answering at most this long before the mark. The fresh-standby gate
+ * is anchored here (the earliest the host can have died).
  */
 export const HOST_LOSS_MARK_LAG_MS = 150_000
+
+/**
+ * Why the primary's server was marked offline (`server.offline_reason`).
+ * `sweep_stale`: no heartbeat (power loss, cut cable). `disconnect`: the
+ * daemon's socket closed (daemon stopped, host shut down).
+ */
+export type HostLossMarkReason = 'sweep_stale' | 'disconnect'
+
+/** The offline reasons the host-loss path acts on. */
+export const HOST_LOSS_MARK_REASONS: readonly HostLossMarkReason[] = ['sweep_stale', 'disconnect']
+
+/**
+ * How far before the mark the host can have died. A closed socket is marked
+ * the moment it closes (a few seconds at most), so the mark itself is the
+ * anchor; only the stale sweep's mark trails the real silence.
+ */
+function markLagMs(reason: HostLossMarkReason): number {
+  return reason === 'disconnect' ? 0 : HOST_LOSS_MARK_LAG_MS
+}
+
+/**
+ * Slack for the peer-quiet check after a clean `disconnect`: the replicas lose
+ * the stream within a few seconds of the daemon's socket closing, so when the
+ * first tick after the window looks, their last contact is a hair younger than
+ * the window. Without it that tick would alert "not confirmed" and the
+ * promotion would wait a whole extra minute.
+ */
+export const HOST_LOSS_DISCONNECT_PEER_SLACK_MS = 15_000
 
 /** Nothing is decided for a planned reboot / update for this long. */
 export const HOST_LOSS_PLANNED_GRACE_MS = 600_000
 
 /**
  * The latest, measured from the offline mark, that a promotion may still be
- * decided: the fresh-standby gate's failure span (`MAX_FAILURE_SPAN_MS`, 10
- * min, counted from {@link hostLossFailureStartMs}). The gate's own receipt
- * check does not depend on when the probe runs, so without this cap a retry
- * long after the loss would still pass it. Later than this: alert only.
+ * decided: the fresh-standby gate's failure span (`MAX_FAILURE_SPAN_MS`,
+ * counted from {@link hostLossFailureStartMs}). The gate's own receipt check
+ * does not depend on when the probe runs, so without this cap a retry long
+ * after the loss would still pass it. Later than this: alert only.
  */
-export const HOST_LOSS_LAST_DECISION_MS = MAX_FAILURE_SPAN_MS - HOST_LOSS_MARK_LAG_MS
+export function hostLossLastDecisionMs(reason: HostLossMarkReason = 'sweep_stale'): number {
+  return MAX_FAILURE_SPAN_MS - markLagMs(reason)
+}
+
+/** Stale-sweep value of {@link hostLossLastDecisionMs}. */
+export const HOST_LOSS_LAST_DECISION_MS = hostLossLastDecisionMs('sweep_stale')
 
 /** A host offline this long is no longer an incident this path works on. */
 export const HOST_LOSS_GIVE_UP_MS = 1_800_000
@@ -94,8 +132,11 @@ export function hostLossIncidentKey(serverId: string, offlineSince: string): str
 }
 
 /** Earliest the host can have died (control-plane ms). */
-export function hostLossFailureStartMs(offlineSinceMs: number): number {
-  return offlineSinceMs - HOST_LOSS_MARK_LAG_MS
+export function hostLossFailureStartMs(
+  offlineSinceMs: number,
+  reason: HostLossMarkReason = 'sweep_stale'
+): number {
+  return offlineSinceMs - markLagMs(reason)
 }
 
 export type HostLossAlertCode =
@@ -127,6 +168,8 @@ export type HostLossPreflightFacts = {
   /** `server.status_changed_at` of the primary's server, ms. */
   offlineSinceMs: number
   windowMs: number
+  /** Why the server was marked offline; absent = a stale-sweep mark. */
+  markReason?: HostLossMarkReason
   engine: string
   /** Features the primary's daemon advertised when it last connected. */
   primaryDaemonFeatures: readonly string[]
@@ -154,7 +197,9 @@ export function hostLossPreflight(facts: Readonly<HostLossPreflightFacts>): Host
   const offlineForMs = facts.nowMs - facts.offlineSinceMs
   if (offlineForMs < facts.windowMs) return { action: 'wait', reason: 'inside_window' }
   if (offlineForMs > HOST_LOSS_GIVE_UP_MS) return { action: 'ignore' }
-  if (offlineForMs > HOST_LOSS_LAST_DECISION_MS) return { action: 'alert', code: 'too_late' }
+  if (offlineForMs > hostLossLastDecisionMs(facts.markReason)) {
+    return { action: 'alert', code: 'too_late' }
+  }
   if (facts.plannedReboot && offlineForMs < HOST_LOSS_PLANNED_GRACE_MS) {
     return { action: 'wait', reason: 'planned_reboot' }
   }
@@ -183,7 +228,11 @@ export type PeerReading = 'still_receiving' | 'not_receiving' | 'no_answer'
  * OR the member has been non-streaming for long enough via `notStreamingSince`.
  * Prevents flapping replicas (streaming then starting, repeating) from vetoing.
  */
-export function readPeer(health: ManagedReplicationHealth | null, windowMs: number): PeerReading {
+export function readPeer(
+  health: ManagedReplicationHealth | null,
+  windowMs: number,
+  slackMs = 0
+): PeerReading {
   if (!health || typeof health.state !== 'string' || health.state.length === 0) return 'no_answer'
   if (health.state === 'streaming') return 'still_receiving'
 
@@ -194,7 +243,7 @@ export function readPeer(health: ManagedReplicationHealth | null, windowMs: numb
   const { lastStreaming } = health
 
   // If lastStreaming.ageMs is known and exceeds window, replica is caught up.
-  if (typeof lastStreaming?.ageMs === 'number' && lastStreaming.ageMs > windowMs) {
+  if (typeof lastStreaming?.ageMs === 'number' && lastStreaming.ageMs > windowMs - slackMs) {
     return 'not_receiving'
   }
 

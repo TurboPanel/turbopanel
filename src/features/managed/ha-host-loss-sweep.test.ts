@@ -266,7 +266,7 @@ test('an offline primary past the cutoff is listed with its incident facts; a fr
   })
 })
 
-test('a primary whose daemon socket closed is not a candidate; only a stale-sweep mark is', async () => {
+test('a primary whose daemon socket closed is a candidate with its mark reason; an unreadable mark is not', async () => {
   await withPair(async (c) => {
     const cutoffIso = new Date(Date.now() - 120_000).toISOString()
     const mark = async (reason: 'disconnect' | 'sweep_stale' | null) => {
@@ -281,11 +281,11 @@ test('a primary whose daemon socket closed is not a candidate; only a stale-swee
         cutoffIso,
         limit: 1000,
       })
-      return ours(rows, c.managedId).length
+      return ours(rows, c.managedId).map((row) => row.markReason)
     }
-    assertEquals(await mark('disconnect'), 0)
-    assertEquals(await mark(null), 0)
-    assertEquals(await mark('sweep_stale'), 1)
+    assertEquals(await mark('disconnect'), ['disconnect'])
+    assertEquals(await mark(null), [])
+    assertEquals(await mark('sweep_stale'), ['sweep_stale'])
   })
 })
 
