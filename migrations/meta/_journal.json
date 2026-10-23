@@ -29,6 +29,13 @@
       "when": 1792771227864,
       "tag": "0003_server_architecture_check",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1792774223757,
+      "tag": "0004_server_peak",
+      "breakpoints": true
     }
   ]
 }
