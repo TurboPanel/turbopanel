@@ -1,5 +1,5 @@
 {
-  "id": "50df28e2-d903-4181-8cd4-bfeae4421a94",
+  "id": "69bb1375-df98-4d22-b890-fbb81adaabb3",
   "prevId": "0b2d2b49-7f32-426a-b5ec-e4d9ba54ff8c",
   "version": "7",
   "dialect": "postgresql",
@@ -2109,33 +2109,6 @@
           "type": "text",
           "primaryKey": false,
           "notNull": false
-        },
-        "priority": {
-          "name": "priority",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 100
-        },
-        "is_trusted": {
-          "name": "is_trusted",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": true
-        },
-        "address_preference": {
-          "name": "address_preference",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'ipv6'"
-        },
-        "kind": {
-          "name": "kind",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
         }
       },
       "indexes": {
@@ -2174,20 +2147,7 @@
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
-      "checkConstraints": {
-        "datacenter_priority_check": {
-          "name": "datacenter_priority_check",
-          "value": "priority >= 0 AND priority <= 1000"
-        },
-        "datacenter_address_preference_check": {
-          "name": "datacenter_address_preference_check",
-          "value": "address_preference IN ('ipv6', 'ipv4')"
-        },
-        "datacenter_kind_check": {
-          "name": "datacenter_kind_check",
-          "value": "kind IS NULL OR kind IN ('lan', 'backplane', 'provider_private')"
-        }
-      },
+      "checkConstraints": {},
       "isRLSEnabled": false
     },
     "public.deployment": {
@@ -10339,6 +10299,10 @@
         "server_machine_class_source_check": {
           "name": "server_machine_class_source_check",
           "value": "machine_class_source IN ('detected', 'operator')"
+        },
+        "server_os_architecture_check": {
+          "name": "server_os_architecture_check",
+          "value": "os_architecture IS NULL OR os_architecture IN ('x86_64', 'aarch64')"
         },
         "server_offline_reason_check": {
           "name": "server_offline_reason_check",

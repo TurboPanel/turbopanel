@@ -554,7 +554,7 @@ sourceServerId? }`
   `options.addressPreference`):** a datacenter is a **logical routing domain**,
   not a building — a server may belong to several. The three keys keep their
   wire names inside `options`, but are stored in real columns (`priority`,
-  `is_trusted`, `address_preference`, all NOT NULL with CHECKs; migration 0003
+  `is_trusted`, `address_preference`, all NOT NULL with CHECKs; migration 0004
   moved them out of the jsonb and backfilled). `datacenter-options.ts`
   (`policyColumnsFromOptions` / `storedDatacenterOptions` /
   `datacenterWireOptions`) maps between the two shapes. They describe how the
