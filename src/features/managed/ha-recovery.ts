@@ -1922,6 +1922,28 @@ async function expireStalledFence(
     return true
   }
 
+  return abortStalledSwitchoverFence(db, commandQueue, row, {
+    steps,
+    engine,
+    actor,
+    stopDelivered: plan.stopDelivered,
+    notFenced,
+  })
+}
+
+async function abortStalledSwitchoverFence(
+  db: Db,
+  commandQueue: CommandQueue | undefined,
+  row: RecoveryRecord,
+  ctx: {
+    steps: readonly FenceStepState[]
+    engine: ManagedEngineCode
+    actor: RecoveryCommandActor
+    stopDelivered: boolean
+    notFenced: (current: RecoveryRecord) => boolean
+  }
+): Promise<boolean> {
+  const { steps, engine, actor, notFenced } = ctx
   // Planned switchover: bring the old primary back first. Only once that is
   // queued does the row end `blocked` (nothing changed); when it cannot be
   // queued the operator has to look, and the sweep tries again meanwhile.
@@ -1935,7 +1957,7 @@ async function expireStalledFence(
           actor,
           source,
           members,
-          reactivate: plan.stopDelivered,
+          reactivate: ctx.stopDelivered,
         })
       : false
   if (queued) {
