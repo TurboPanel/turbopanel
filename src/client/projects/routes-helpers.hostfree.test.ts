@@ -127,10 +127,10 @@ test('parseCreateProjectMetadata strips reserved component and type keys', () =>
 })
 
 test('stampCreateProjectMetadata lets the canonical code win over caller metadata', () => {
-  assertEquals(
-    stampCreateProjectMetadata({ code: 'caller', note: 'keep' }, { code: 'postgres' }),
-    { code: 'postgres', note: 'keep' }
-  )
+  assertEquals(stampCreateProjectMetadata({ code: 'caller', note: 'keep' }, { code: 'postgres' }), {
+    code: 'postgres',
+    note: 'keep',
+  })
   assertEquals(stampCreateProjectMetadata(null, { code: 'postgres' }), {
     code: 'postgres',
   })

@@ -139,7 +139,8 @@ export const projectSchemas = {
         type: 'string',
         nullable: true,
         enum: PROJECT_ICONS,
-        description: 'Icon key from the fixed list, or null for the default. Ignored for managed projects.',
+        description:
+          'Icon key from the fixed list, or null for the default. Ignored for managed projects.',
       },
       workspaceId: {
         type: 'string',

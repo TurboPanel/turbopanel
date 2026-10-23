@@ -126,8 +126,7 @@ function createSequencedDb(opts: {
     },
   }
 
-  db.transaction = async (fn: (tx: Db) => Promise<unknown>) =>
-    await fn(db as unknown as Db)
+  db.transaction = async (fn: (tx: Db) => Promise<unknown>) => await fn(db as unknown as Db)
 
   return db as unknown as Db
 }
@@ -141,7 +140,7 @@ function wrapDb(tx: Db): Db {
 function staleSystemProjectRow(
   id: string,
   name: string,
-  _component: string,
+  _component: string
 ): { id: string; name: string; kind: string } {
   return {
     id,
@@ -152,20 +151,21 @@ function staleSystemProjectRow(
 
 function namedUpdate(
   updateSets: unknown[] | undefined,
-  displayName: string,
+  displayName: string
 ): Record<string, unknown> | undefined {
-  return (updateSets ?? []).find((row): row is Record<string, unknown> =>
-    typeof row === 'object' &&
-    row !== null &&
-    !Array.isArray(row) &&
-    (row as Record<string, unknown>).name === displayName,
+  return (updateSets ?? []).find(
+    (row): row is Record<string, unknown> =>
+      typeof row === 'object' &&
+      row !== null &&
+      !Array.isArray(row) &&
+      (row as Record<string, unknown>).name === displayName
   )
 }
 
 function assertNormalizedProjectUpdate(
   updateSets: unknown[] | undefined,
   displayName: string,
-  _component: string,
+  _component: string
 ): void {
   const patch = namedUpdate(updateSets, displayName)
   assertEquals(patch?.name, displayName)
@@ -186,10 +186,7 @@ test('findSystemEnvironmentForServer returns first match or null', async () => {
     execute: () => [{ id: 'env-1' }],
   } as unknown as Db
   assertEquals(await findSystemEnvironmentForServer(hit, 'srv'), 'env-1')
-  assertEquals(
-    await findSystemEnvironmentForServer(hit, 'srv', 'hosting-ingress'),
-    'env-1',
-  )
+  assertEquals(await findSystemEnvironmentForServer(hit, 'srv', 'hosting-ingress'), 'env-1')
 
   const miss = {
     execute: () => [],
@@ -212,9 +209,7 @@ test('ensureSystemWorkspace returns insert id or existing row', async () => {
       from: () => ({
         where: () => ({
           limit: () =>
-            Promise.resolve([
-              { id: 'ws-existing', name: SYSTEM_WORKSPACE_DISPLAY_NAME },
-            ]),
+            Promise.resolve([{ id: 'ws-existing', name: SYSTEM_WORKSPACE_DISPLAY_NAME }]),
         }),
       }),
     }),
@@ -237,7 +232,7 @@ test('ensureSystemWorkspace returns insert id or existing row', async () => {
   await assertRejects(
     () => ensureSystemWorkspace(missing, 'org'),
     Error,
-    'system workspace missing after insert race',
+    'system workspace missing after insert race'
   )
 })
 
@@ -296,14 +291,16 @@ test('ensureSystemHierarchy inserts workspace/project/env/service/ingress', asyn
       [{ name: '  Edge Host  ' }], // server name
       [], // no existing environment
       [{ id: SVC }], // compose service after upsert
-      [{
-        id: CTR,
-        serverId: SERVER,
-        containerName: ingressName,
-        status: 'pending',
-        containerId: null,
-        composeServiceName: SYSTEM_TRAEFIK_COMPOSE_SERVICE_NAME,
-      }],
+      [
+        {
+          id: CTR,
+          serverId: SERVER,
+          containerName: ingressName,
+          status: 'pending',
+          containerId: null,
+          composeServiceName: SYSTEM_TRAEFIK_COMPOSE_SERVICE_NAME,
+        },
+      ],
     ],
     insertReturning: [[{ id: ENV }]],
   })
@@ -336,14 +333,16 @@ test('ensureSystemHierarchy reuses existing env and falls back display name', as
       [{ name: '   ' }], // blank → SYSTEM_PROJECT_DISPLAY_NAME
       [{ id: ENV }], // existing environment
       [{ id: SVC }],
-      [{
-        id: CTR,
-        serverId: SERVER,
-        containerName: 'pending',
-        status: 'pending',
-        containerId: null,
-        composeServiceName: SYSTEM_TRAEFIK_COMPOSE_SERVICE_NAME,
-      }],
+      [
+        {
+          id: CTR,
+          serverId: SERVER,
+          containerName: 'pending',
+          status: 'pending',
+          containerId: null,
+          composeServiceName: SYSTEM_TRAEFIK_COMPOSE_SERVICE_NAME,
+        },
+      ],
     ],
   })
 
@@ -359,23 +358,21 @@ test('ensureSystemHierarchy reuses existing env and falls back display name', as
 test('ensureSystemHierarchy falls back when server row is missing', async () => {
   const ingressName = ingressContainerNameFromService(SVC)
   const tx = createSequencedDb({
-    execute: [
-      [{ id: WS }],
-      [{ id: PROJ }],
-      [],
-    ],
+    execute: [[{ id: WS }], [{ id: PROJ }], []],
     select: [
       [], // no server row
       [{ id: ENV }],
       [{ id: SVC }],
-      [{
-        id: CTR,
-        serverId: SERVER,
-        containerName: ingressName,
-        status: 'pending',
-        containerId: null,
-        composeServiceName: SYSTEM_TRAEFIK_COMPOSE_SERVICE_NAME,
-      }],
+      [
+        {
+          id: CTR,
+          serverId: SERVER,
+          containerName: ingressName,
+          status: 'pending',
+          containerId: null,
+          composeServiceName: SYSTEM_TRAEFIK_COMPOSE_SERVICE_NAME,
+        },
+      ],
     ],
   })
 
@@ -407,17 +404,13 @@ test('ensureHostingIngressProject race miss throws', async () => {
         serverId: SERVER,
       }),
     Error,
-    'hosting-ingress project missing after insert race',
+    'hosting-ingress project missing after insert race'
   )
 })
 
 test('ensureServerEnvironment insert failure throws', async () => {
   const tx = createSequencedDb({
-    execute: [
-      [{ id: WS }],
-      [{ id: PROJ }],
-      [],
-    ],
+    execute: [[{ id: WS }], [{ id: PROJ }], []],
     select: [
       [{ name: 'Host' }],
       [], // no existing env
@@ -432,17 +425,13 @@ test('ensureServerEnvironment insert failure throws', async () => {
         serverId: SERVER,
       }),
     Error,
-    'system environment insert failed',
+    'system environment insert failed'
   )
 })
 
 test('ensureComposeService missing after upsert throws', async () => {
   const tx = createSequencedDb({
-    execute: [
-      [{ id: WS }],
-      [{ id: PROJ }],
-      [],
-    ],
+    execute: [[{ id: WS }], [{ id: PROJ }], []],
     select: [
       [{ name: 'Host' }],
       [{ id: ENV }],
@@ -457,7 +446,7 @@ test('ensureComposeService missing after upsert throws', async () => {
         serverId: SERVER,
       }),
     Error,
-    'compose service missing after upsert',
+    'compose service missing after upsert'
   )
 })
 
@@ -475,14 +464,16 @@ test('ensureManagedIngressHierarchy provisions proxysql ingress container', asyn
       [{ name: 'DB Host' }],
       [], // no env
       [{ id: SVC }], // proxysql service
-      [{
-        id: CTR,
-        serverId: SERVER,
-        containerName: ingressName,
-        status: 'pending',
-        containerId: null,
-        composeServiceName: SYSTEM_PROXYSQL_COMPOSE_SERVICE_NAME,
-      }],
+      [
+        {
+          id: CTR,
+          serverId: SERVER,
+          containerName: ingressName,
+          status: 'pending',
+          containerId: null,
+          composeServiceName: SYSTEM_PROXYSQL_COMPOSE_SERVICE_NAME,
+        },
+      ],
     ],
     insertReturning: [[{ id: ENV }]],
   })
@@ -501,11 +492,7 @@ test('ensureManagedIngressHierarchy provisions proxysql ingress container', asyn
 
 test('ensureManagedIngressProject race miss throws', async () => {
   const tx = createSequencedDb({
-    execute: [
-      [{ id: WS }],
-      [],
-      [],
-    ],
+    execute: [[{ id: WS }], [], []],
   })
 
   await assertRejects(
@@ -515,17 +502,13 @@ test('ensureManagedIngressProject race miss throws', async () => {
         serverId: SERVER,
       }),
     Error,
-    'managed-ingress project missing after insert race',
+    'managed-ingress project missing after insert race'
   )
 })
 
 test('ensureManagedIngressHierarchy throws when allocation empty', async () => {
   const tx = createSequencedDb({
-    execute: [
-      [{ id: WS }],
-      [{ id: PROJ }],
-      [],
-    ],
+    execute: [[{ id: WS }], [{ id: PROJ }], []],
     select: [
       [], // server missing → managed display fallback
       [{ id: ENV }],
@@ -541,7 +524,7 @@ test('ensureManagedIngressHierarchy throws when allocation empty', async () => {
         serverId: SERVER,
       }),
     Error,
-    'service ingress container allocation missing after upsert',
+    'service ingress container allocation missing after upsert'
   )
 })
 
@@ -565,18 +548,22 @@ test('ensureSelfHostSystemHierarchy provisions database/queue', async () => {
       [], // no existing env
       [{ id: serviceIds[0] }],
       [{ id: serviceIds[1] }],
-      [{
-        id: containerIds[0],
-        serverId: SERVER,
-        containerName: 'pending',
-        composeServiceName: SYSTEM_SELF_HOST_COMPOSE_SERVICE_NAMES[0],
-      }],
-      [{
-        id: containerIds[1],
-        serverId: SERVER,
-        containerName: 'pending',
-        composeServiceName: SYSTEM_SELF_HOST_COMPOSE_SERVICE_NAMES[1],
-      }],
+      [
+        {
+          id: containerIds[0],
+          serverId: SERVER,
+          containerName: 'pending',
+          composeServiceName: SYSTEM_SELF_HOST_COMPOSE_SERVICE_NAMES[0],
+        },
+      ],
+      [
+        {
+          id: containerIds[1],
+          serverId: SERVER,
+          containerName: 'pending',
+          composeServiceName: SYSTEM_SELF_HOST_COMPOSE_SERVICE_NAMES[1],
+        },
+      ],
     ],
     insertReturning: [[{ id: ENV }]],
   })
@@ -591,25 +578,21 @@ test('ensureSelfHostSystemHierarchy provisions database/queue', async () => {
   assertEquals(result.services.length, 2)
   assertEquals(
     result.services.map((s) => s.composeServiceName),
-    [...SYSTEM_SELF_HOST_COMPOSE_SERVICE_NAMES],
+    [...SYSTEM_SELF_HOST_COMPOSE_SERVICE_NAMES]
   )
   assertEquals(
     result.services.map((s) => s.containerName),
-    serviceIds,
+    serviceIds
   )
   assertEquals(
     result.services.map((s) => s.containerRowId),
-    containerIds,
+    containerIds
   )
 })
 
 test('ensureSelfHostProject race miss throws', async () => {
   const tx = createSequencedDb({
-    execute: [
-      [{ id: WS }],
-      [],
-      [],
-    ],
+    execute: [[{ id: WS }], [], []],
   })
 
   await assertRejects(
@@ -619,7 +602,7 @@ test('ensureSelfHostProject race miss throws', async () => {
         serverId: SERVER,
       }),
     Error,
-    'self-host project missing after insert race',
+    'self-host project missing after insert race'
   )
 })
 
@@ -629,22 +612,20 @@ test('ensureSelfHostSystemHierarchy throws when a container allocation is missin
     '00000000-0000-4000-8000-0000000000a2',
   ]
   const tx = createSequencedDb({
-    execute: [
-      [{ id: WS }],
-      [{ id: PROJ }],
-      [],
-    ],
+    execute: [[{ id: WS }], [{ id: PROJ }], []],
     select: [
       [{ id: ENV }],
       [{ id: serviceIds[0] }],
       [{ id: serviceIds[1] }],
       // Only one allocation succeeds — second service missing from map
-      [{
-        id: 'c1',
-        serverId: SERVER,
-        containerName: serviceIds[0],
-        composeServiceName: SYSTEM_SELF_HOST_COMPOSE_SERVICE_NAMES[0],
-      }],
+      [
+        {
+          id: 'c1',
+          serverId: SERVER,
+          containerName: serviceIds[0],
+          composeServiceName: SYSTEM_SELF_HOST_COMPOSE_SERVICE_NAMES[0],
+        },
+      ],
       // Second allocate select empty → allocateServiceContainers throws.
       [],
     ],
@@ -657,7 +638,7 @@ test('ensureSelfHostSystemHierarchy throws when a container allocation is missin
         serverId: SERVER,
       }),
     Error,
-    'container allocation missing after upsert',
+    'container allocation missing after upsert'
   )
 })
 
@@ -668,10 +649,7 @@ test('ensureSystemWorkspace renames a stale existing workspace', async () => {
     select: () => ({
       from: () => ({
         where: () => ({
-          limit: () =>
-            Promise.resolve([
-              { id: WS, name: 'TurboPanel Platform' },
-            ]),
+          limit: () => Promise.resolve([{ id: WS, name: 'TurboPanel Platform' }]),
         }),
       }),
     }),
@@ -705,14 +683,16 @@ test('ensureSystemHierarchy normalizes a stale hosting-ingress project', async (
       [{ name: 'Host' }],
       [{ id: ENV }],
       [{ id: SVC }],
-      [{
-        id: CTR,
-        serverId: SERVER,
-        containerName: ingressName,
-        status: 'pending',
-        containerId: null,
-        composeServiceName: SYSTEM_TRAEFIK_COMPOSE_SERVICE_NAME,
-      }],
+      [
+        {
+          id: CTR,
+          serverId: SERVER,
+          containerName: ingressName,
+          status: 'pending',
+          containerId: null,
+          composeServiceName: SYSTEM_TRAEFIK_COMPOSE_SERVICE_NAME,
+        },
+      ],
     ],
   })
 
@@ -724,7 +704,7 @@ test('ensureSystemHierarchy normalizes a stale hosting-ingress project', async (
   assertNormalizedProjectUpdate(
     track.updateSets,
     SYSTEM_PROJECT_DISPLAY_NAME,
-    SYSTEM_HOSTING_INGRESS_COMPONENT,
+    SYSTEM_HOSTING_INGRESS_COMPONENT
   )
 })
 
@@ -736,25 +716,23 @@ test('ensureManagedIngressHierarchy normalizes a stale managed-ingress project',
     execute: [
       [{ id: WS }],
       [],
-      [staleSystemProjectRow(
-        PROJ,
-        'Managed Ingress',
-        SYSTEM_MANAGED_INGRESS_COMPONENT,
-      )],
+      [staleSystemProjectRow(PROJ, 'Managed Ingress', SYSTEM_MANAGED_INGRESS_COMPONENT)],
       [],
     ],
     select: [
       [{ name: 'DB Host' }],
       [{ id: ENV }],
       [{ id: SVC }],
-      [{
-        id: CTR,
-        serverId: SERVER,
-        containerName: ingressName,
-        status: 'pending',
-        containerId: null,
-        composeServiceName: SYSTEM_PROXYSQL_COMPOSE_SERVICE_NAME,
-      }],
+      [
+        {
+          id: CTR,
+          serverId: SERVER,
+          containerName: ingressName,
+          status: 'pending',
+          containerId: null,
+          composeServiceName: SYSTEM_PROXYSQL_COMPOSE_SERVICE_NAME,
+        },
+      ],
     ],
   })
 
@@ -766,7 +744,7 @@ test('ensureManagedIngressHierarchy normalizes a stale managed-ingress project',
   assertNormalizedProjectUpdate(
     track.updateSets,
     SYSTEM_MANAGED_INGRESS_PROJECT_DISPLAY_NAME,
-    SYSTEM_MANAGED_INGRESS_COMPONENT,
+    SYSTEM_MANAGED_INGRESS_COMPONENT
   )
 })
 
@@ -785,12 +763,14 @@ test('ensureManagedHaHierarchy normalizes a stale managed-ha project', async () 
       [{ name: 'HA Host' }],
       [{ id: ENV }],
       [{ id: SVC }],
-      [{
-        id: CTR,
-        serverId: SERVER,
-        containerName: haName,
-        composeServiceName: SYSTEM_ORCHESTRATOR_COMPOSE_SERVICE_NAME,
-      }],
+      [
+        {
+          id: CTR,
+          serverId: SERVER,
+          containerName: haName,
+          composeServiceName: SYSTEM_ORCHESTRATOR_COMPOSE_SERVICE_NAME,
+        },
+      ],
     ],
   })
 
@@ -803,7 +783,7 @@ test('ensureManagedHaHierarchy normalizes a stale managed-ha project', async () 
   assertNormalizedProjectUpdate(
     track.updateSets,
     SYSTEM_MANAGED_HA_PROJECT_DISPLAY_NAME,
-    SYSTEM_MANAGED_HA_COMPONENT,
+    SYSTEM_MANAGED_HA_COMPONENT
   )
 })
 
@@ -822,29 +802,29 @@ test('ensureSelfHostSystemHierarchy normalizes a stale self-host project', async
     execute: [
       [{ id: WS }],
       [],
-      [staleSystemProjectRow(
-        PROJ,
-        'TurboPanel System',
-        SYSTEM_SELF_HOST_COMPONENT,
-      )],
+      [staleSystemProjectRow(PROJ, 'TurboPanel System', SYSTEM_SELF_HOST_COMPONENT)],
       [],
     ],
     select: [
       [{ id: ENV }],
       [{ id: serviceIds[0] }],
       [{ id: serviceIds[1] }],
-      [{
-        id: containerIds[0],
-        serverId: SERVER,
-        containerName: serviceIds[0],
-        composeServiceName: SYSTEM_SELF_HOST_COMPOSE_SERVICE_NAMES[0],
-      }],
-      [{
-        id: containerIds[1],
-        serverId: SERVER,
-        containerName: serviceIds[1],
-        composeServiceName: SYSTEM_SELF_HOST_COMPOSE_SERVICE_NAMES[1],
-      }],
+      [
+        {
+          id: containerIds[0],
+          serverId: SERVER,
+          containerName: serviceIds[0],
+          composeServiceName: SYSTEM_SELF_HOST_COMPOSE_SERVICE_NAMES[0],
+        },
+      ],
+      [
+        {
+          id: containerIds[1],
+          serverId: SERVER,
+          containerName: serviceIds[1],
+          composeServiceName: SYSTEM_SELF_HOST_COMPOSE_SERVICE_NAMES[1],
+        },
+      ],
     ],
   })
 
@@ -856,6 +836,6 @@ test('ensureSelfHostSystemHierarchy normalizes a stale self-host project', async
   assertNormalizedProjectUpdate(
     track.updateSets,
     SYSTEM_SELF_HOST_PROJECT_DISPLAY_NAME,
-    SYSTEM_SELF_HOST_COMPONENT,
+    SYSTEM_SELF_HOST_COMPONENT
   )
 })

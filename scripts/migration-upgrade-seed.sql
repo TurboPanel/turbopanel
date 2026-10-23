@@ -33,13 +33,6 @@ INSERT INTO workspace (id, organization_id, name, kind) VALUES
 INSERT INTO project (id, workspace_id, organization_id, name) VALUES
   ('00000000-0000-7000-8000-000000000301', '00000000-0000-7000-8000-000000000201', '00000000-0000-7000-8000-000000000101', 'Upgrade Project');
 
--- Projects from before `kind` existed: the type sat in metadata and the upgrade
--- moves it into the column (template becomes compose; the catalog code stays).
-INSERT INTO project (id, workspace_id, organization_id, name, metadata) VALUES
-  ('00000000-0000-7000-8000-000000000302', '00000000-0000-7000-8000-000000000201', '00000000-0000-7000-8000-000000000101', 'Upgrade Compose Project', '{"type": "docker-compose"}'),
-  ('00000000-0000-7000-8000-000000000303', '00000000-0000-7000-8000-000000000201', '00000000-0000-7000-8000-000000000101', 'Upgrade Template Project', '{"type": "template", "code": "wordpress"}'),
-  ('00000000-0000-7000-8000-000000000304', '00000000-0000-7000-8000-000000000201', '00000000-0000-7000-8000-000000000101', 'Upgrade Managed Project', '{"type": "managed", "code": "postgres"}');
-
 INSERT INTO datacenter (id, organization_id, name) VALUES
   ('00000000-0000-7000-8000-000000000401', '00000000-0000-7000-8000-000000000101', 'Rack One');
 
