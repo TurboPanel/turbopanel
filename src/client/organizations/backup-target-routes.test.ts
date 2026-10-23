@@ -605,7 +605,7 @@ test('the host is sent the target sealed to its own key; a cluster can override 
       `/environments/${f.environmentId}/managed/backup-target`,
       f.managerCookie
     )
-    assertEquals(effective.body.source, 'organization')
+    assertEquals(effective.body.source, 'organization', JSON.stringify(effective))
     assertEquals(effective.body.choice, 'inherit')
   })
 })
@@ -714,9 +714,19 @@ test('copy state follows a backup: waiting, then copied, then removed by retenti
     await run(1, 'bk_one')
     await run(2, 'bk_two')
 
-    const list = async () =>
-      (await call(f, 'GET', `/environments/${f.environmentId}/managed/backups`, f.managerCookie))
-        .body.backups as Array<{ id: string; copy: { state: string; targetName: string } | null }>
+    const list = async () => {
+      const res = await call(
+        f,
+        'GET',
+        `/environments/${f.environmentId}/managed/backups`,
+        f.managerCookie
+      )
+      assertEquals(res.status, 200, JSON.stringify(res.body))
+      return res.body.backups as Array<{
+        id: string
+        copy: { state: string; targetName: string } | null
+      }>
+    }
     let items = await list()
     assertEquals(items.find((i) => i.id === 'bk_one')!.copy!.state, 'pending')
     assertEquals(items.find((i) => i.id === 'bk_one')!.copy!.targetName, 'Offsite')
@@ -791,7 +801,7 @@ test('restore from the bucket: refused until a copy is finished, then sent with 
     })
     const url = `/environments/${f.environmentId}/managed/backups/bk_far/restore`
     const wrongHost = await call(f, 'POST', url, f.managerCookie, {})
-    assertEquals(wrongHost.status, 409)
+    assertEquals(wrongHost.status, 409, JSON.stringify(wrongHost.body))
     assertEquals(wrongHost.body.error, 'backup_on_other_server')
     assertEquals(wrongHost.body.canRestoreFromCopy, false)
 
