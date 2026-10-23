@@ -93,6 +93,7 @@ async function installIsolatedFixtureSchema(tx: Db, schemaName: string): Promise
       metadata jsonb,
       options jsonb,
       next_linux_id integer DEFAULT 30001 NOT NULL,
+      deploy_timeout_minutes integer,
       backup_destination_id uuid
     )
   `)
