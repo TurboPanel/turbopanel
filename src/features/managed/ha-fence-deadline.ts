@@ -52,3 +52,42 @@ export function planStalledFence(
   if (record.metadata.stopApplied) return { action: 'abandon-drains' }
   return { action: 'abort', stopDelivered }
 }
+
+/** A fence deadline that repeats this many times in a row for one primary stops being retried freely. */
+export const FENCE_DEADLINE_STREAK_LIMIT = 3
+export const FENCE_DEADLINE_STREAK_WINDOW_MS = 30 * 60_000
+
+export const FENCE_DEADLINE_REPEATED_MESSAGE =
+  'Automatic failover blocked: the current primary could not be stopped in time three times in a row. The cooldown applies again; check the primary and its server.'
+
+/**
+ * How many automatic failovers for the same primary ended at the fence
+ * deadline just before this one, with nothing between them and all within the
+ * window. A deadline row keeps no target (no cooldown); the third in a row
+ * keeps it, so the retries cannot loop.
+ */
+export function deadlineBlockStreak(
+  recent: readonly RecoveryRecord[],
+  row: RecoveryRecord,
+  nowMs: number
+): number {
+  const earlier = recent
+    .filter((other) => other.id !== row.id)
+    .sort((a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt))
+  let streak = 0
+  for (const other of earlier) {
+    const startedAt = Date.parse(other.startedAt)
+    if (
+      other.kind !== 'automatic-failover' ||
+      other.sourcePrimaryMemberId !== row.sourcePrimaryMemberId ||
+      other.state !== 'blocked' ||
+      !other.metadata.fenceDeadline ||
+      !Number.isFinite(startedAt) ||
+      nowMs - startedAt > FENCE_DEADLINE_STREAK_WINDOW_MS
+    ) {
+      break
+    }
+    streak += 1
+  }
+  return streak
+}

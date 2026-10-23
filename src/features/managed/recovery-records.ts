@@ -289,6 +289,37 @@ export async function listFencingRecoveries(db: Db, limit = 50): Promise<Recover
   return rows.map((row) => serializeRow(row)).filter((row): row is RecoveryRecord => row !== null)
 }
 
+/** The newest rows of one cluster, newest first. */
+export async function listRecentRecoveries(
+  db: Db,
+  managedId: string,
+  limit = 10
+): Promise<RecoveryRecord[]> {
+  const rows = await db
+    .select()
+    .from(recovery)
+    .where(eq(recovery.managedId, managedId))
+    .orderBy(desc(recovery.startedAt))
+    .limit(limit)
+  return rows.map((row) => serializeRow(row)).filter((row): row is RecoveryRecord => row !== null)
+}
+
+/** Blocked rows whose planned-switchover restart is not fully queued yet. */
+export async function listPendingAbortRestarts(db: Db, limit = 50): Promise<RecoveryRecord[]> {
+  const rows = await db
+    .select()
+    .from(recovery)
+    .where(eq(recovery.state, 'blocked'))
+    .orderBy(desc(recovery.updatedAt))
+    .limit(limit)
+  return rows
+    .map((row) => serializeRow(row))
+    .filter(
+      (row): row is RecoveryRecord =>
+        row !== null && (row.metadata.abortRestartTodo?.length ?? 0) > 0
+    )
+}
+
 /** A `detecting`/`fencing` row older than this with no command queued is expired. */
 export const STALE_DETECTING_RECOVERY_MS = 10 * 60_000
 
