@@ -15,6 +15,7 @@ import {
   commandMessageDisposition,
   startCommandConsumer,
 } from './deno-consumer.ts'
+import type { LaneScheduler } from './command-lanes.ts'
 import { createNoopCommandQueue } from './noop-command-queue.ts'
 
 /**
@@ -597,6 +598,110 @@ test('a broker that dies during the reconnect handshake is retried, not installe
     broker.deliver({ content: { toString: () => PING_ENVELOPE_JSON } })
     await waitForDisposition(broker.dispositions)
     assertEquals(broker.dispositions, [{ method: 'ack' }])
+    await handle.close()
+  } finally {
+    connectStub.restore()
+  }
+})
+
+/** Lanes that hold every task until the test starts it. */
+function heldLanes() {
+  const held: Array<{ key: string; start: () => Promise<void> }> = []
+  const lanes: LaneScheduler = {
+    run: <T>(key: string, task: () => Promise<T>) =>
+      new Promise<T>((resolve, reject) => {
+        held.push({
+          key,
+          start: () =>
+            task()
+              .then(resolve, reject)
+              .then(() => undefined),
+        })
+      }),
+    activeCount: () => 0,
+  }
+  return { lanes, held }
+}
+
+const OTHER_SERVER_ENVELOPE_JSON = JSON.stringify({
+  commandId: '00000000-0000-4000-8000-0000000000dd',
+  serverId: '00000000-0000-4000-8000-0000000000ee',
+  type: 'daemon.ping',
+  attempt: 1,
+  queuedAt: '2020-01-01T00:00:00.000Z',
+})
+
+test('each delivery goes to its own server lane and is acked only after the lane runs it', async () => {
+  const broker = createStubBroker()
+  const connectStub = stub(amqplib, 'connect', () => Promise.resolve(broker.connection as never))
+  const { lanes, held } = heldLanes()
+  try {
+    const handle = await startCommandConsumer({
+      firewallApplyGate: DENY_FIREWALL_APPLY,
+      db: missingRowDb(),
+      registry: emptyRegistry(),
+      amqpUrl: 'amqp://test',
+      lanes,
+    })
+    broker.deliver({ content: { toString: () => PING_ENVELOPE_JSON } })
+    broker.deliver({ content: { toString: () => OTHER_SERVER_ENVELOPE_JSON } })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    assertEquals(
+      held.map((entry) => entry.key),
+      ['00000000-0000-4000-8000-0000000000bb', '00000000-0000-4000-8000-0000000000ee']
+    )
+    // Handed to a lane, not finished: still unacknowledged.
+    assertEquals(broker.dispositions, [])
+    await held[1].start()
+    assertEquals(broker.dispositions, [{ method: 'ack' }])
+    await held[0].start()
+    assertEquals(broker.dispositions, [{ method: 'ack' }, { method: 'ack' }])
+    await handle.close()
+  } finally {
+    connectStub.restore()
+  }
+})
+
+test('a delivery still waiting in its lane at shutdown is left for the broker, not run', async () => {
+  const broker = createStubBroker()
+  const connectStub = stub(amqplib, 'connect', () => Promise.resolve(broker.connection as never))
+  const { lanes, held } = heldLanes()
+  try {
+    const handle = await startCommandConsumer({
+      firewallApplyGate: DENY_FIREWALL_APPLY,
+      db: throwingDb(new Error('must not be read')),
+      registry: emptyRegistry(),
+      amqpUrl: 'amqp://test',
+      lanes,
+    })
+    broker.deliver({ content: { toString: () => PING_ENVELOPE_JSON } })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    await handle.close()
+    // The lane reaches it after shutdown: no processing, no ack, no nack.
+    await held[0].start()
+    assertEquals(broker.dispositions, [])
+  } finally {
+    connectStub.restore()
+  }
+})
+
+test('a delivery waiting in a lane when the broker drops is not run on the lost session', async () => {
+  const broker = createStubBroker()
+  const connectStub = stub(amqplib, 'connect', () => Promise.resolve(broker.connection as never))
+  const { lanes, held } = heldLanes()
+  try {
+    const handle = await startCommandConsumer({
+      firewallApplyGate: DENY_FIREWALL_APPLY,
+      db: throwingDb(new Error('must not be read')),
+      registry: emptyRegistry(),
+      amqpUrl: 'amqp://test',
+      lanes,
+    })
+    broker.deliver({ content: { toString: () => PING_ENVELOPE_JSON } })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    broker.emitConnection('error', new Error('Unexpected close'))
+    await held[0].start()
+    assertEquals(broker.dispositions, [])
     await handle.close()
   } finally {
     connectStub.restore()

@@ -10,6 +10,7 @@ import type { CommandQueue } from '../../features/commands/queue.ts'
 import type { DerivedSecretsConfig, SecretsConfig } from '../../lib/secrets/secrets.ts'
 import {
   enumerateOrganizationRotationTargets,
+  ingressWaitsBehindMs,
   parseCaRotationResults,
   parseNeedsRedeploy,
   orchestratorTrustReconciler,
@@ -454,4 +455,22 @@ test('reconcileOrganizationOrchestratorTrust never throws when the fan-out fails
       assertEquals(calls, [ORG_B])
     }
   )
+})
+
+test('a front-door update queued behind a cluster apply waits out the apply budget', () => {
+  assertEquals(
+    ingressWaitsBehindMs([{ serverId: 's1', kind: 'apply', managedId: 'm1', status: 'queued' }]),
+    600_000
+  )
+  assertEquals(
+    ingressWaitsBehindMs([{ serverId: 's1', kind: 'apply', managedId: 'm1', status: 'failed' }]),
+    0
+  )
+  assertEquals(ingressWaitsBehindMs([]), 0)
+})
+
+test('the cluster fan-out hands the apply budget to the front-door updates it queues', async () => {
+  const source = await Deno.readTextFile(new URL('./changeover-fanout.ts', import.meta.url))
+  const body = sliceFunction(source, 'fanOutOneManagedCluster')
+  assertEquals(body.includes('waitsBehindMs: ingressWaitsBehindMs(applyRows)'), true)
 })
