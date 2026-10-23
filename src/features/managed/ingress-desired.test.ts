@@ -850,6 +850,7 @@ async function insertBoundConsumer(
   const [loginRow] = await db
     .insert(login)
     .values({
+      recipe: 'app',
       managedId: managedRow!.id,
       role: 'user',
       username: params.username,

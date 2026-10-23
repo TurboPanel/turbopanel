@@ -1414,13 +1414,16 @@ test('DELETE /projects/:projectId/principals/:id refuses while a database login 
         .insert(managed)
         .values({ environmentId, serverId, name: 'DB login', engine: 'postgres', status: 'ready' })
         .returning({ id: managed.id })
-      await db.insert(login).values({
-        managedId: cluster!.id,
-        principalId: created.id,
-        role: 'user',
-        username: 'dblogin',
-        appliedUsername: 'dblogin',
-      })
+      await db
+        .insert(login)
+        .values({
+          recipe: 'app',
+          managedId: cluster!.id,
+          principalId: created.id,
+          role: 'user',
+          username: 'dblogin',
+          appliedUsername: 'dblogin',
+        })
 
       const del = await app.request(`/projects/${projectId}/principals/${created.id}`, {
         method: 'DELETE',

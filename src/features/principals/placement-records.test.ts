@@ -263,13 +263,16 @@ test("loadPrincipalUsage counts the principal's database logins", async () => {
       })
       .returning({ id: managed.id })
     try {
-      await db.insert(login).values({
-        managedId: cluster!.id,
-        principalId: composePrincipalId,
-        role: 'user',
-        username: 'pl_login_user',
-        appliedUsername: 'pl_login_user',
-      })
+      await db
+        .insert(login)
+        .values({
+          recipe: 'app',
+          managedId: cluster!.id,
+          principalId: composePrincipalId,
+          role: 'user',
+          username: 'pl_login_user',
+          appliedUsername: 'pl_login_user',
+        })
       const usage = await loadPrincipalUsage(db, [composePrincipalId], serverIds[0])
       assertEquals(usage.get(composePrincipalId)?.logins, 1)
     } finally {

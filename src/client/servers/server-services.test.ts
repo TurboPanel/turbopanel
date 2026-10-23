@@ -546,6 +546,7 @@ test('GET /servers/:id/services groups two database bindings on one app', async 
     const [shopUser] = await ctx.db
       .insert(login)
       .values({
+        recipe: 'app',
         managedId: cluster!.id,
         role: 'user',
         username: `shop_${suffix}`,
@@ -555,6 +556,7 @@ test('GET /servers/:id/services groups two database bindings on one app', async 
     const [ordersUser] = await ctx.db
       .insert(login)
       .values({
+        recipe: 'app',
         managedId: cluster!.id,
         role: 'user',
         username: `orders_${suffix}`,
