@@ -32,6 +32,7 @@ import {
 import {
   applyTierDeltas,
   coverageLoss,
+  serversAfterMoves,
   type TierQuantity,
 } from '../../features/tiers/assignment.ts'
 import {
@@ -452,11 +453,15 @@ export type CoverageRefusal =
  * organization would hold more licenses than it pays for.
  *
  * `rankOf` resolves a tier the seats do not yet carry (a downgrade target).
+ * `moves` is the one server an owner's upgrade or downgrade names, put on
+ * its new tier; the ledger's own named downgrades are applied the same way.
+ * No other server is ever assumed to move.
  */
 export function coverageRefusal(
   view: BillingOrgView,
   proposed: readonly TierDelta[],
-  rankOf: (tierId: string) => number | undefined
+  rankOf: (tierId: string) => number | undefined,
+  moves: ReadonlyMap<string, string> = new Map()
 ): CoverageRefusal | null {
   const current = currentTierQuantities(view)
   const deltas = deferredDeltasByTier(view.ledger)
@@ -484,7 +489,14 @@ export function coverageRefusal(
       unusedKeys,
     }
   }
-  const loss = coverageLoss(current, future, view.servers)
+  const named = new Map<string, string>()
+  for (const intent of view.ledger.intents) {
+    if (intent.kind === 'downgrade' && intent.serverId && intent.toTierId) {
+      named.set(intent.serverId, intent.toTierId)
+    }
+  }
+  for (const [serverId, tierId] of moves) named.set(serverId, tierId)
+  const loss = coverageLoss(current, future, view.servers, serversAfterMoves(view.servers, named))
   if (loss) {
     return {
       error: SERVERS_UNCOVERED_ERROR,

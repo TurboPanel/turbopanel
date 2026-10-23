@@ -234,6 +234,7 @@ import {
   nextDatabasesAfterCreate,
   nextDatabasesAfterDelete,
   operatorPromoteHttpResult,
+  operatorPromoteRequiresFence,
   parseDisasterRecoveryPromoteBody,
   parseManagedCreateName,
   parseManagedLifecycleAction,
@@ -275,6 +276,7 @@ import {
   beginDisasterRecovery,
   beginOperatorSwitchover,
   firstDatacenterId,
+  isServerConnected,
   loadDatacenterSets,
 } from '../../features/managed/ha-recovery.ts'
 
@@ -393,8 +395,10 @@ async function assertManagedPromoteLagAllowed(
     managedId: string
     engine: string
     force: boolean
+    /** The old primary's server is connected, so the switchover fences it. */
+    fenceWillRun: boolean
   }
-): Promise<Response | null> {
+): Promise<Response | { requireFence: boolean }> {
   const { member, force } = params
   let replication = serializeManagedMember(member, null).replication
   if (!force) {
@@ -411,8 +415,15 @@ async function assertManagedPromoteLagAllowed(
     }
     replication = probe.replication
   }
-  const gate = evaluateOperatorPromoteGate(replication, force, undefined, params.engine)
-  return gate !== null ? c.json({ error: gate }, 409) : null
+  const gate = evaluateOperatorPromoteGate(
+    replication,
+    force,
+    undefined,
+    params.engine,
+    params.fenceWillRun
+  )
+  if (gate !== null) return c.json({ error: gate }, 409)
+  return { requireFence: operatorPromoteRequiresFence(replication, force, params.engine) }
 }
 
 /**
@@ -490,8 +501,11 @@ async function enqueueOrphanManagedPromote(
     managedId: string
     member: ManagedMemberRow
     engine: string
+    /** The reading only passed the gate because a fence was going to run. */
+    requireFence: boolean
   }
 ): Promise<Response> {
+  if (params.requireFence) return c.json({ error: 'managed_replica_not_fully_applied' }, 409)
   const enqueued = await enqueueTypedCommand(c, db, commandQueue, {
     userId: params.userId,
     serverId: params.member.serverId,
@@ -3339,13 +3353,18 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       return c.json({ error: classError.error }, classError.status)
     }
 
+    const currentPrimary = (await listManagedMembers(db, row.id)).find((m) => m.role === 'primary')
+    const fenceWillRun =
+      currentPrimary !== undefined && (await isServerConnected(db, currentPrimary.serverId))
     const lagGate = await assertManagedPromoteLagAllowed(c, db, {
       member,
       managedId: row.id,
       engine: ctx.spec.engine,
       force,
+      fenceWillRun,
     })
-    if (lagGate) return lagGate
+    if (lagGate instanceof Response) return lagGate
+    const { requireFence } = lagGate
 
     const offline = await assertTargetServerOnline(c, db, member.serverId)
     if (offline) return offline
@@ -3361,6 +3380,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         managedId: row.id,
         member,
         engine: ctx.spec.engine,
+        requireFence,
       })
     }
 
@@ -3382,6 +3402,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       actor: { actorType: 'user', actorId: auth.userId },
       forced: force,
       targetReplication,
+      requireFence,
     })
     const http = operatorPromoteHttpResult(recovery)
     return c.json(http.body, http.status)

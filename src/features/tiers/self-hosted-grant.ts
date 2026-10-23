@@ -8,8 +8,8 @@
  * still carries `server.assigned_tier_id`. Without a quantity to assign
  * from, every self-hosted server would be uncovered, which is exactly what
  * a control plane moved from Deno to Workers (or a development instance
- * switched between the two runtimes) discovers the hard way: its daemons
- * are refused with `License tier below required`.
+ * switched between the two runtimes) discovers the hard way: its servers
+ * would all read as holding no license tier.
  *
  * The grant closes that. On the self-hosted runtime every active license
  * is matched by one **granted** unit at `SX` — the custom rung, which

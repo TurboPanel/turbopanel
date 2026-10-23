@@ -958,6 +958,35 @@ test('beginOperatorSwitchover promotes when the old primary is already offline',
   assertEquals(harness.managedStatus.includes('applying'), true)
 })
 
+test('an idle-gated mysql switchover is refused when the old primary goes offline before the fence', async () => {
+  const queue = okQueue()
+  const harness = createHarness({ connected: [false] })
+  const result = await beginOperatorSwitchover({
+    db: harness.db,
+    commandQueue: queue,
+    managedId: MANAGED_ID,
+    engine: 'mysql',
+    source: member(),
+    target: failoverReplica(),
+    members: [member(), failoverReplica()],
+    actor: ACTOR,
+    requireFence: true,
+  })
+  assertEquals(result, { ok: false, error: 'managed_replica_not_fully_applied', status: 409 })
+  assertEquals(queue.envelopes.length, 0)
+  assertEquals(harness.commandInserts.length, 0)
+  assertEquals(harness.nodePatches.length, 0)
+  assertEquals(harness.managedStatus.includes('applying'), false)
+  const row = harness.recovery()
+  const metadata = row?.metadata as { needsOperator?: boolean; blockedReason?: string }
+  assertEquals(row?.state, 'blocked')
+  assertEquals(metadata.needsOperator, undefined)
+  assertEquals(
+    metadata.blockedReason,
+    'Planned switchover stopped: the current primary did not answer in time, so nothing was changed and it stays the primary'
+  )
+})
+
 test('beginOperatorSwitchover recovers via Orchestrator when HA is present', async () => {
   const queue = okQueue()
   const harness = createHarness({ connected: [false], haPresent: true })
@@ -1139,6 +1168,32 @@ test('mariadb switchover fence stop requests GTID capture on the old primary', a
   assertEquals(stop.captureSwitchoverGtid, true)
 })
 
+test('a planned switchover records the primary epoch it began at and leaves other stops unchanged', async () => {
+  const harness = createHarness({ connected: [true, true] })
+  const result = await beginOperatorSwitchover({
+    db: harness.db,
+    commandQueue: okQueue(),
+    managedId: MANAGED_ID,
+    engine: 'postgres',
+    source: member(),
+    target: failoverReplica(),
+    members: [member(), failoverReplica()],
+    actor: ACTOR,
+  })
+  expectOk(result)
+  assertEquals(
+    (harness.recovery()?.metadata as { primaryEpochAtStart?: number } | undefined)
+      ?.primaryEpochAtStart,
+    0
+  )
+  // This harness has no enrolled daemon, so the stop asks for no position.
+  const stop = harness.commandInserts
+    .map((row) => row.payload as Record<string, unknown> | undefined)
+    .find((payload) => payload?.action === 'stop')
+  assertEquals(stop?.switchoverRecoveryId, undefined)
+  assertEquals(stop?.primaryEpoch, undefined)
+})
+
 test('mariadb switchover aborts promote when fence stop did not record a GTID', async () => {
   const harness = createHarness({
     members: [member(), failoverReplica()],
@@ -1160,7 +1215,7 @@ test('mariadb switchover aborts promote when fence stop did not record a GTID', 
   assertEquals(row?.state, 'failed')
   assertEquals(
     (row?.metadata as { failedReason?: string }).failedReason,
-    'Planned switchover stopped: the old primary GTID position was not recorded before promotion'
+    'Planned switchover stopped: the current primary did not answer in time, so nothing was changed and it stays the primary'
   )
   assertEquals(
     harness.commandInserts.some((insert) => insert.name === 'managed.promote'),

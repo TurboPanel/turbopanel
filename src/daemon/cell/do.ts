@@ -45,6 +45,10 @@ import {
 import { recordInstanceAcmeIssuance } from '../../features/install/instance-hostnames.ts'
 import { recordCommandProgress } from '../../features/commands/command-progress.ts'
 import {
+  ackForReportedOutcome,
+  noteReportedCommands,
+} from '../../features/commands/command-recovery.ts'
+import {
   persistDaemonReachedTarget,
   persistUpgradeOutcome,
   persistUpgradeProgress,
@@ -81,6 +85,7 @@ import type {
   PendingRequestStatus,
 } from '../../contracts/cell.ts'
 import type {
+  CommandRecoveryReport,
   DaemonBuildInfo,
   DaemonInboundEnvelope,
   DaemonMessage,
@@ -1742,6 +1747,7 @@ export class DaemonCellObject {
       releaseLinkScan?: ServerReleaseLinkScanMetadata
       services?: unknown
       features?: string[]
+      commands?: CommandRecoveryReport
     }
   ): Promise<void> {
     this.#bumpDiag('heartbeatCount')
@@ -1823,6 +1829,12 @@ export class DaemonCellObject {
         needsOfflineRepair
       )
     }
+    const reported = parsed.commands
+    if (reported !== undefined && reported.running.length > 0) {
+      await this.#withProjectionDb('command-report', attachment.serverId, (db) =>
+        noteReportedCommands(db, attachment.serverId, reported)
+      )
+    }
   }
 
   /**
@@ -1867,6 +1879,7 @@ export class DaemonCellObject {
         | 'rolled-back'
       detail?: string
       errorCode?: string
+      restart?: unknown
     }
   ): Promise<void> {
     await this.#recordInboundRepairingPresence(attachment, parsed.at)
@@ -1879,6 +1892,7 @@ export class DaemonCellObject {
         at: parsed.at,
         detail: parsed.detail,
         errorCode: parsed.errorCode,
+        restart: parsed.restart,
         requestId: parsed.id,
       })
     )
@@ -2749,7 +2763,14 @@ export class DaemonCellObject {
       })
       return
     }
-    await this.#handleInbound(serverId, inbound)
+    const record = await this.#handleInbound(serverId, inbound)
+    if (inbound.kind === 'command-outcome' && ws) {
+      // The daemon keeps its copy of the result until this confirms it is stored.
+      const ack = await this.#withProjectionDbResult('command-outcome-ack', serverId, (db) =>
+        ackForReportedOutcome(db, { serverId, envelope: inbound, record })
+      )
+      if (ack) ws.send(JSON.stringify(ack))
+    }
   }
 
   /**

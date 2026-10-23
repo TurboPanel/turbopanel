@@ -36,6 +36,8 @@ import { fanOutManagedHaReconcile } from './ha-desired.ts'
 import { enqueueFollowPrimaryOnReplicas } from './follow-primary.ts'
 import { reseedDemotedPrimaryAfterSwitchover } from './reseed-demoted-primary.ts'
 import { evaluateSwitchoverCatchUp } from './switchover-evidence.ts'
+import { loadPrimaryEpoch } from './primary-epoch.ts'
+import { finalPositionStopFields, recordOldPrimaryFinalPosition } from './switchover-position.ts'
 import {
   failRecoveryIngressNotQueued,
   parkRecoveryAtIngressGate,
@@ -538,6 +540,11 @@ async function enqueueFenceCommands(
   params: FenceParams
 ): Promise<RecoveryEnqueueResult> {
   const drains = await prepareDrainCommands(db, params)
+  const finalPosition = await finalPositionStopFields(db, {
+    recovery: params.recovery,
+    engine: params.engine,
+    sourceServerId: params.source.serverId,
+  })
   const stop = await prepareCommand(db, {
     serverId: params.source.serverId,
     type: 'managed.lifecycle',
@@ -551,6 +558,7 @@ async function enqueueFenceCommands(
       ...(fenceStopCapturesSwitchoverGtid(params.recovery.kind, params.engine)
         ? { captureSwitchoverGtid: true }
         : {}),
+      ...finalPosition,
     },
     expiresAtMs: FENCE_TTL_MS,
     actor: params.actor,
@@ -610,6 +618,11 @@ async function beginRecovery(params: {
    * it, and only while that server is still not connected.
    */
   hostLoss?: boolean
+  /**
+   * The operator promote gate passed only on an idle reading, so the old
+   * primary must be fenced and its final GTID set recorded before promotion.
+   */
+  requireFence?: boolean
 }): Promise<RecoveryEnqueueResult> {
   const inflight = await findInFlightRecovery(params.db, params.managedId)
   if (inflight) {
@@ -648,6 +661,18 @@ async function beginRecovery(params: {
     })
     await stampManagedReady(params.db, params.managedId)
     return { ok: false, error: AUTOMATIC_FAILOVER_BLOCKED_ERROR, status: 409 }
+  }
+  if (!sourceOnline && params.requireFence) {
+    // The old primary dropped its link after the gate: there is no final
+    // position to wait for, so do not promote. Nothing was changed and it is
+    // still the primary, so the row ends `blocked` (not `failed` with
+    // `needsOperator`, which would keep a boot-held old primary stopped).
+    await updateRecovery(params.db, recovery.id, {
+      state: 'blocked',
+      metadata: { ...recovery.metadata, blockedReason: SWITCHOVER_PRIMARY_DID_NOT_ANSWER_MESSAGE },
+    })
+    await stampManagedReady(params.db, params.managedId)
+    return { ok: false, error: 'managed_replica_not_fully_applied', status: 409 }
   }
   if (!sourceOnline) {
     await markNeedsResync(params.db, params.source.id)
@@ -697,7 +722,7 @@ async function beginRecovery(params: {
   })
 }
 
-export function beginOperatorSwitchover(params: {
+export async function beginOperatorSwitchover(params: {
   db: Db
   commandQueue: CommandQueue
   managedId: string
@@ -710,16 +735,20 @@ export function beginOperatorSwitchover(params: {
   forced?: boolean
   /** The target's fresh replication reading taken before the fence. */
   targetReplication?: unknown
+  /** See `beginRecovery`: refuse instead of promoting when the fence cannot run. */
+  requireFence?: boolean
 }): Promise<RecoveryEnqueueResult> {
   const { forced, targetReplication, ...rest } = params
   const catchUp = evaluateSwitchoverCatchUp(params.engine, targetReplication)
-  return beginRecovery({
+  const primaryEpochAtStart = await loadPrimaryEpoch(params.db, params.managedId)
+  return await beginRecovery({
     ...rest,
     kind: 'switchover',
     extraMetadata: {
       forced: forced === true,
       targetCaughtUp: catchUp.caughtUp,
       targetCaughtUpBasis: catchUp.basis,
+      primaryEpochAtStart,
     },
   })
 }
@@ -1162,6 +1191,9 @@ async function enqueueSwitchoverAbortReactivation(
   })
 }
 
+const SWITCHOVER_PRIMARY_DID_NOT_ANSWER_MESSAGE =
+  'Planned switchover stopped: the current primary did not answer in time, so nothing was changed and it stays the primary'
+
 async function abortSwitchoverWhenGtidMissing(
   db: Db,
   commandQueue: CommandQueue | undefined,
@@ -1187,11 +1219,7 @@ async function abortSwitchoverWhenGtidMissing(
       members,
     })
   }
-  await failRecoveryForOperator(
-    db,
-    record.id,
-    'Planned switchover stopped: the old primary GTID position was not recorded before promotion'
-  )
+  await failRecoveryForOperator(db, record.id, SWITCHOVER_PRIMARY_DID_NOT_ANSWER_MESSAGE)
   await stampManagedReady(db, record.managedId)
   return true
 }
@@ -1260,8 +1288,16 @@ export async function onFenceCommandSucceeded(
     engine: ManagedEngineCode
     actor: RecoveryCommandActor
     switchoverPrimaryExecutedGtidSet?: string
+    /** Postgres switchover: the old primary's final write position after the clean stop. */
+    oldPrimaryFinal?: { lsn: string; timeline: number }
   }
 ): Promise<void> {
+  if (params.oldPrimaryFinal) {
+    await recordOldPrimaryFinalPosition(db, params.recoveryId, {
+      engine: params.engine,
+      ...params.oldPrimaryFinal,
+    })
+  }
   const switchoverGtid = params.switchoverPrimaryExecutedGtidSet
   if (switchoverGtid) {
     await updateRecoveryLocked(db, params.recoveryId, (current) => ({

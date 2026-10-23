@@ -49,6 +49,9 @@ jobs:
     permissions:
       contents: write
       actions: read
+    # No timeout-minutes here: a job that calls a reusable workflow cannot
+    # carry one. release.yml sets it on each of its own jobs instead, and
+    # canary-watchdog.yml cancels a run that sits queued too long.
     uses: ./.github/workflows/release.yml
     with:
       channel: canary

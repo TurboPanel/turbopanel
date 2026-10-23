@@ -19,6 +19,7 @@ import {
   prepareManagedApplyPayloads,
 } from '../managed/apply-prepare.ts'
 import { enqueueManagedIngressReconcile } from '../managed/ingress-desired.ts'
+import { MANAGED_APPLY_EXPIRES_MS } from '../managed/ingress-desired-pure.ts'
 import { getManagedEngineSpec } from '../managed/index.ts'
 import { loadManagedOptions } from '../managed/options.ts'
 import { parseManagedResidual } from '../managed/serialize.ts'
@@ -212,6 +213,8 @@ export async function enqueueIngressForBindingChange(
         actorId: params.actorId,
         secretsConfig,
         dataEncryptionSecrets,
+        // Queued right behind the apply, so it only starts once that is done.
+        ...(applyStatus === 'enqueued' ? { waitsBehindMs: MANAGED_APPLY_EXPIRES_MS } : {}),
       })
     } catch (err) {
       ingressFailed = true

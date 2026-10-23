@@ -9,11 +9,16 @@ import {
   environment,
   license,
   organization,
+  payer,
   project,
   server,
   service,
+  subscription,
+  subscriptionItem,
+  tier,
   workspace,
 } from '../../db/schema.ts'
+import { getTierByLabel, insertTier } from '../tiers/tier-records.ts'
 import { getServerLicenseBinding, resolveServerId, touchServerMetadata } from './server-registry.ts'
 
 const dbUrl = getDatabaseUrl()
@@ -192,6 +197,147 @@ test('touchServerMetadata ignores a raw machine-id shaped machineKey', async () 
   })
 })
 
+const GIB = 1024 ** 3
+
+/** The instance's tier row for `label`, created (and recorded for cleanup) only when missing. */
+async function ensureTier(
+  db: ReturnType<typeof createDenoDb>,
+  label: string,
+  created: string[]
+): Promise<string> {
+  const existing = await getTierByLabel(db, label)
+  if (existing) return existing.id
+  const row = await insertTier(db, {
+    label,
+    providerProductId: `prod_registry_${label.toLowerCase()}`,
+    priceCents: null,
+    currency: null,
+  })
+  created.push(row.id)
+  return row.id
+}
+
+test('a hello reporting bigger or smaller hardware never changes the license tier a manager assigned', async () => {
+  await withTestDb(async (db) => {
+    const now = new Date().toISOString()
+    const createdTiers: string[] = []
+    const [org] = await db
+      .insert(organization)
+      .values({ name: 'Hello Keeps Tier Org' })
+      .returning({ id: organization.id })
+    const organizationId = org!.id
+    const s1 = await ensureTier(db, 'S1', createdTiers)
+    const s5 = await ensureTier(db, 'S5', createdTiers)
+    const [payerRow] = await db
+      .insert(payer)
+      .values({
+        organizationId,
+        provider: 'stripe',
+        providerCustomerId: `cus_registry_${crypto.randomUUID()}`,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .returning({ id: payer.id })
+    const [subRow] = await db
+      .insert(subscription)
+      .values({
+        payerId: payerRow!.id,
+        providerSubscriptionId: `sub_registry_${crypto.randomUUID()}`,
+        status: 'active',
+        providerStatus: 'active',
+        createdAt: now,
+        updatedAt: now,
+      })
+      .returning({ id: subscription.id })
+    // A spare seat on each tier: a free S5 for the box that grows, a free S1
+    // for the box that shrinks. Neither may be taken on the server's behalf.
+    for (const [tierId, quantity] of [
+      [s1, 2],
+      [s5, 2],
+    ] as const) {
+      await db.insert(subscriptionItem).values({
+        subscriptionId: subRow!.id,
+        tierId,
+        providerItemId: `si_registry_${crypto.randomUUID()}`,
+        providerPriceId: `price_registry_${crypto.randomUUID()}`,
+        quantity,
+        createdAt: now,
+        updatedAt: now,
+      })
+    }
+
+    const makeServer = async (assignedTierId: string | null) => {
+      const [row] = await db
+        .insert(server)
+        .values({
+          createdAt: now,
+          updatedAt: now,
+          organizationId,
+          hostname: `keeps-tier-${crypto.randomUUID()}`,
+          assignedTierId,
+        })
+        .returning({ id: server.id })
+      const { licenseId } = await createLicense(db, { organizationId, name: 'Keeps Tier' })
+      await db
+        .update(license)
+        .set({ serverId: row!.id, updatedAt: now })
+        .where(eq(license.id, licenseId))
+      return row!.id
+    }
+    const readTier = async (serverId: string) => {
+      const [row] = await db
+        .select({ assignedTierId: server.assignedTierId })
+        .from(server)
+        .where(eq(server.id, serverId))
+        .limit(1)
+      return row?.assignedTierId ?? null
+    }
+    const hello = (serverId: string, cores: number, memoryGib: number) =>
+      touchServerMetadata(db, serverId, {
+        hostname: `keeps-tier-host-${crypto.randomUUID()}`,
+        resources: {
+          cpus: [{ cores: { total: cores } }],
+          memory: { totalBytes: memoryGib * GIB },
+        },
+      } as Parameters<typeof touchServerMetadata>[2])
+
+    const keptSmall = await makeServer(s1)
+    const keptBig = await makeServer(s5)
+    const unassigned = await makeServer(null)
+    try {
+      // Kept on S1 by its managers while it measures far past S1: stays S1.
+      await hello(keptSmall, 64, 256)
+      const [grown] = await db
+        .select({ metadata: server.metadata })
+        .from(server)
+        .where(eq(server.id, keptSmall))
+        .limit(1)
+      const stored = grown?.metadata as { resources?: { memory?: { totalBytes?: number } } }
+      // The report landed (so the old recompute would have run) ...
+      assertEquals(stored?.resources?.memory?.totalBytes, 256 * GIB)
+      // ... and the tier did not move.
+      assertEquals(await readTier(keptSmall), s1)
+      // Shrunk well below S5: keeps its S5, no move down onto the spare S1.
+      await hello(keptBig, 1, 1)
+      assertEquals(await readTier(keptBig), s5)
+      // Licensed but never assigned: a hello does not hand it a free seat.
+      await hello(unassigned, 2, 4)
+      assertEquals(await readTier(unassigned), null)
+      // And the other servers did not move either.
+      assertEquals(await readTier(keptSmall), s1)
+      assertEquals(await readTier(keptBig), s5)
+    } finally {
+      await db.delete(license).where(eq(license.organizationId, organizationId))
+      await db.delete(server).where(eq(server.organizationId, organizationId))
+      await db.delete(subscriptionItem).where(eq(subscriptionItem.subscriptionId, subRow!.id))
+      await db.delete(subscription).where(eq(subscription.id, subRow!.id))
+      await db.delete(payer).where(eq(payer.id, payerRow!.id))
+      for (const id of createdTiers) await db.delete(tier).where(eq(tier.id, id))
+      await db.delete(organization).where(eq(organization.id, organizationId))
+    }
+  })
+})
+
 test('getServerLicenseBinding prefers an active bound license', async () => {
   await withTestDb(async (db) => {
     const now = new Date().toISOString()
@@ -316,6 +462,69 @@ test('resolveServerId rejects a second host once the license is latched', async 
       }
       await db.delete(license).where(eq(license.organizationId, organizationId))
       await db.delete(organization).where(eq(organization.id, organizationId))
+    }
+  })
+})
+
+test('touchServerMetadata merges a capacity heartbeat without dropping hello-only fields', async () => {
+  await withTestDb(async (db) => {
+    const MIB = 1024 * 1024
+    const now = new Date().toISOString()
+    const [inserted] = await db
+      .insert(server)
+      .values({
+        createdAt: now,
+        updatedAt: now,
+        hostname: `capacity-${crypto.randomUUID()}`,
+        machineKey: randomMachineKey(),
+      })
+      .returning({ id: server.id })
+    const serverId = inserted!.id
+    const gpus = [{ vendorId: '0x10de', name: 'Fixture GPU' }]
+    const ips = [{ address: '10.0.0.9', version: 4 as const, scope: 'private' as const }]
+    try {
+      await touchServerMetadata(db, serverId, {
+        resources: {
+          cpus: [{ cores: { total: 2 }, threads: { total: 2 } }],
+          gpus,
+          memory: {
+            totalBytes: 372 * MIB,
+            pageSizeBytes: 4096,
+            presentBytes: 2048 * MIB,
+            blockSizeBytes: 128 * MIB,
+          },
+          swap: { totalBytes: 0 },
+          ips,
+          dynamicMemory: { driver: 'hv_balloon', totalMoved: 0 },
+        },
+        features: [],
+      })
+      // Heartbeat: memory, swap and cpus only.
+      await touchServerMetadata(db, serverId, {
+        resources: {
+          memory: { totalBytes: 1900 * MIB, presentBytes: 2048 * MIB, blockSizeBytes: 128 * MIB },
+          swap: { totalBytes: 0 },
+          cpus: [{ cores: { total: 2 }, threads: { total: 2 } }],
+          dynamicMemory: { driver: 'hv_balloon', totalMoved: 1528 * MIB },
+        },
+      })
+      const [row] = await db
+        .select({ metadata: server.metadata })
+        .from(server)
+        .where(eq(server.id, serverId))
+        .limit(1)
+      const resources = (row?.metadata as { resources?: Record<string, unknown> } | null)?.resources
+      assertEquals(resources?.gpus, gpus)
+      assertEquals(resources?.ips, ips)
+      assertEquals(resources?.memory, {
+        totalBytes: 1900 * MIB,
+        pageSizeBytes: 4096,
+        presentBytes: 2048 * MIB,
+        blockSizeBytes: 128 * MIB,
+      })
+      assertEquals(resources?.dynamicMemory, { driver: 'hv_balloon', totalMoved: 1528 * MIB })
+    } finally {
+      await db.delete(server).where(eq(server.id, serverId))
     }
   })
 })

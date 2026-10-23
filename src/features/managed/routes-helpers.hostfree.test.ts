@@ -33,6 +33,7 @@ import {
   nextDatabasesAfterCreate,
   nextDatabasesAfterDelete,
   operatorPromoteHttpResult,
+  operatorPromoteRequiresFence,
   parseDisasterRecoveryPromoteBody,
   parseManagedConnectionRole,
   parseManagedCreateName,
@@ -398,6 +399,40 @@ test('evaluateOperatorPromoteGate requires fullyApplied for mysql-family engines
     null
   )
   assertEquals(evaluateOperatorPromoteGate(fresh, true, now, 'mariadb'), null)
+})
+
+test('evaluateOperatorPromoteGate accepts an idle mysql pair only when a fence will run', () => {
+  const idle = {
+    state: 'streaming',
+    lagSeconds: 0,
+    observedAt: '2026-08-10T12:00:00.000Z',
+    executedGtid: '3e11fa47-71ca-11e1-9e33-c80aa9429562:1-10',
+  }
+  const now = Date.parse('2026-08-10T12:00:01.000Z')
+  const refused = 'managed_replica_not_fully_applied'
+  const gate = (r: unknown, engine = 'mysql', fence: boolean | 'unset' = true, at = now) =>
+    evaluateOperatorPromoteGate(r, false, at, engine, fence === 'unset' ? undefined : fence)
+  assertEquals(gate(idle), null)
+  // Dead source or no primary row (no fence, no required position): refused.
+  assertEquals(gate(idle, 'mysql', false), refused)
+  assertEquals(gate(idle, 'mysql', 'unset'), refused)
+  // MariaDB positions mean something else: never the idle clause.
+  assertEquals(gate(idle, 'mariadb'), refused)
+  // Behind, unknown lag, nothing applied, or a received set the replica has not applied.
+  assertEquals(gate({ ...idle, fullyApplied: false }), refused)
+  assertEquals(gate({ ...idle, lagSeconds: undefined }), refused)
+  assertEquals(gate({ ...idle, executedGtid: undefined }), refused)
+  assertEquals(gate({ ...idle, receivedGtid: 'a:1-12' }), refused)
+  // Applier or IO thread off, or a stale reading, never passes.
+  assertEquals(gate({ ...idle, state: 'reconnecting' }), 'managed_replica_not_streaming')
+  assertEquals(gate(idle, 'mysql', true, now + 60_000), 'managed_replica_health_stale')
+  // A real fully-applied reading still passes without a fence.
+  assertEquals(gate({ ...idle, fullyApplied: true }, 'mysql', false), null)
+  // Only the idle pass carries the fence requirement on to the switchover.
+  assertEquals(operatorPromoteRequiresFence(idle, false, 'mysql'), true)
+  assertEquals(operatorPromoteRequiresFence({ ...idle, fullyApplied: true }, false, 'mysql'), false)
+  assertEquals(operatorPromoteRequiresFence(idle, true, 'mysql'), false)
+  assertEquals(operatorPromoteRequiresFence(idle, false, 'postgres'), false)
 })
 
 test('pickPrimaryCommandResult and queued response builders', () => {

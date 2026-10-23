@@ -19,6 +19,7 @@ import { getServerDaemonStateByServerId, isDaemonKeyActive } from '../servers/se
 import type {
   ManagedApplyCommandPayload,
   ManagedApplyOrgTlsMaterial,
+  ManagedSwitchoverReseed,
 } from '../../contracts/commands/schemas.ts'
 import type { CommandEnvelope } from '../commands/envelope.ts'
 import type { CommandQueue } from '../commands/queue.ts'
@@ -54,6 +55,7 @@ import type { Db } from '../../db/connection.ts'
 import { REPLICATION_PASSWORD_LENGTH } from '../principals/store.ts'
 import { findManagedLoginByRole, listManagedLoginCredentials, setLoginPassword } from './logins.ts'
 import { ensureManagedReplicationLogin } from './cluster-logins.ts'
+import { keepLivePrimaryEpoch } from './primary-epoch.ts'
 import { loadPrincipalNamePolicy } from './load-org-defaults.ts'
 import { generatePassword } from '../../lib/secrets/generate-secret.ts'
 import {
@@ -70,6 +72,7 @@ import {
 import { ensureManagedIngressHierarchy } from '../system/hierarchy.ts'
 import { ensureManagedContainerAllocation } from './allocate-managed-container.ts'
 import { enqueueManagedIngressReconcile } from './ingress-desired.ts'
+import { MANAGED_APPLY_EXPIRES_MS } from './ingress-desired-pure.ts'
 import {
   commitClearedPrivatePortsIfUnused,
   ensureManagedPrimaryMember,
@@ -96,7 +99,7 @@ import { logWarn } from '../../lib/logger.ts'
 import { MANAGED_DESTROY_REDRIVE_FLAG } from './destroy-redrive.ts'
 import { firstSequential, forEachSequential } from '../../lib/sequential.ts'
 
-const APPLY_EXPIRES_MS = 600_000
+const APPLY_EXPIRES_MS = MANAGED_APPLY_EXPIRES_MS
 /** Normal (online, sequenced) `managed.destroy` — 10 minutes. */
 const MANAGED_DESTROY_EXPIRES_MS = 600_000
 /**
@@ -277,6 +280,12 @@ export type BuildManagedApplyInput = {
    * wipes and re-seeds their data directory (operator resync action).
    */
   forceResyncMemberIds?: string[]
+  /**
+   * The planned-switchover re-seed's guard, stamped on the payload of the
+   * forced member `switchoverReseed.sourceMemberId` so the host can refuse a
+   * stale wipe.
+   */
+  switchoverReseed?: ManagedSwitchoverReseed
 }
 
 export type PreparedManagedMemberApply = {
@@ -1047,6 +1056,9 @@ function attachMemberApplyFlags(
     (input.forceResyncMemberIds?.includes(extra.memberId) ?? false)
   ) {
     payload.forceResync = true
+    if (input.switchoverReseed?.sourceMemberId === extra.memberId) {
+      payload.switchoverReseed = input.switchoverReseed
+    }
   }
   if (memberInput?.clientSourceAddresses?.length) {
     payload.ingressSourceAddresses = memberInput.clientSourceAddresses
@@ -1607,14 +1619,13 @@ async function ensureClusterReplicationUsername(
     }
   }
 
-  const residual = parseManagedResidual(input.managedRow.metadata)
+  // The residual was read earlier in this request: the primary epoch must be
+  // the live one, never the stale copy, or a promote in between would be undone.
+  const { primaryEpoch: _stale, ...residual } = parseManagedResidual(input.managedRow.metadata)
   await db
     .update(managed)
     .set({
-      metadata: {
-        ...residual,
-        replicationUsername: repl.appliedUsername,
-      },
+      metadata: keepLivePrimaryEpoch({ ...residual, replicationUsername: repl.appliedUsername }),
       updatedAt: new Date().toISOString(),
     })
     .where(eq(managed.id, input.managedRow.id))
@@ -1962,6 +1973,8 @@ async function finalizePreparedManagedApplyResults(
         actorId: params.userId,
         secretsConfig,
         dataEncryptionSecrets,
+        // Queued right behind the apply: it runs after the apply finishes.
+        waitsBehindMs: APPLY_EXPIRES_MS,
       })
     })
   }

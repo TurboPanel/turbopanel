@@ -5,6 +5,12 @@
 import type { UpdateProgressStage } from '../../contracts/cell-protocol.ts'
 import { installScriptHostForChannel } from '../install/daemon-install-command.ts'
 import type { UpgradeRuntime } from './planner.ts'
+import {
+  readRestartNote,
+  readRestartPending,
+  readServerSnapshot,
+  type RestartPending,
+} from './restart-report.ts'
 import type { UpgradeStepStatus } from './vocabulary.ts'
 
 /** Wire feature a co-located daemon must advertise before a control-plane install. */
@@ -91,6 +97,13 @@ export type StepDispatchHistory = {
 }
 
 export type StepDetail = {
+  /** Name and hostname of the server when the step was planned, for a server that is later renamed or deleted. */
+  serverName?: string
+  serverHostname?: string
+  /** The host reported a failed daemon restart; held until it reconnects or the window ends. */
+  restartPending?: RestartPending
+  /** The host came back on the target after a reported restart error. */
+  restartNote?: string
   progressDetail?: string
   priorRequestIds?: string[]
   inProgressRefused?: boolean
@@ -118,7 +131,10 @@ export function readDispatchHistory(detail: unknown): StepDispatchHistory {
   }
 }
 
-/** Record a superseded dispatch id before a step is dispatched again. */
+/**
+ * Record a superseded dispatch id before a step is dispatched again. A new
+ * dispatch is a new try, so a restart hold or note left by the last one goes.
+ */
 export function withSupersededRequest(
   detail: unknown,
   requestId: string | null
@@ -128,8 +144,11 @@ export function withSupersededRequest(
     requestId && !history.priorRequestIds.includes(requestId)
       ? [...history.priorRequestIds, requestId].slice(-MAX_PRIOR_REQUEST_IDS)
       : history.priorRequestIds
+  const rest = { ...detailRecord(detail) }
+  delete rest.restartPending
+  delete rest.restartNote
   return {
-    ...detailRecord(detail),
+    ...rest,
     priorRequestIds: ids,
     inProgressRefused: false,
   }
@@ -153,7 +172,11 @@ export function stepDetail(detail: unknown): StepDetail {
   }
   if (history.inProgressRefused) out.inProgressRefused = true
   if (uiRefreshFromDetail(detail)) out.uiRefresh = true
-  return out
+  const pending = readRestartPending(detail)
+  if (pending) out.restartPending = pending
+  const note = readRestartNote(detail)
+  if (note) out.restartNote = note
+  return { ...out, ...readServerSnapshot(detail) }
 }
 
 /** Whether a step was opened only to refresh the UI bundle. */

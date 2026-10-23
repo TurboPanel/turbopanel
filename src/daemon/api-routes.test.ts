@@ -18,10 +18,6 @@ import {
   invalidateLicense,
   revokeLicense,
 } from '../features/licenses/license.ts'
-import {
-  LICENSE_TIER_BELOW_REQUIRED_ERROR,
-  LICENSE_TIER_UNASSIGNED_ERROR,
-} from '../features/tiers/tier-enforcement.ts'
 import { getDatabaseUrl } from '../db/url.ts'
 import { createDenoDb, endDbConnection } from '../db/connection.ts'
 import {
@@ -40,7 +36,6 @@ import {
   workspace,
 } from '../db/schema.ts'
 import { getTierByLabel, insertTier } from '../features/tiers/tier-records.ts'
-import { recomputeOrganizationAssignments } from '../features/tiers/assignment-records.ts'
 import {
   MAX_AUTH_CHALLENGE_BODY_BYTES,
   MAX_AUTH_SESSION_BODY_BYTES,
@@ -127,6 +122,8 @@ type EnrollFixture = {
   hostname: string
   /** Tier rows this fixture created (an existing row for the label is reused, never deleted). */
   extraTierIds: string[]
+  /** The tier the fixture bought one seat of (hosted default S1); `null` when nothing was bought. */
+  purchasedTierId: string | null
 }
 
 type EnrollFixtureOptions = {
@@ -134,6 +131,12 @@ type EnrollFixtureOptions = {
   /** Hosted default buys one seat at rank 1 (S1). `null` buys nothing: no payer, no seats. */
   tierRank?: number | null
   enroll?: boolean
+  /**
+   * After a hosted enroll, put the server on the bought tier the way a
+   * manager would (enroll itself never assigns). Default `true`; `false`
+   * leaves the server with no tier.
+   */
+  assign?: boolean
 }
 
 const GIBIBYTE = 1024 ** 3
@@ -170,9 +173,8 @@ async function ensureTestTier(
 
 /**
  * What a projected purchase leaves behind: payer → subscription → one seat
- * row per tier at `quantity`, then the derived assignment recomputed the
- * way the entitlement sync does after every projection. A license carries
- * no tier; the servers it binds are covered by what the organization bought.
+ * row per tier at `quantity`. No server's tier moves: only a manager
+ * assigns one (`assignServerTier`); tests do that with {@link assignTier}.
  */
 async function purchaseTier(
   db: ReturnType<typeof createDenoDb>,
@@ -232,8 +234,31 @@ async function purchaseTier(
       target: [subscriptionItem.subscriptionId, subscriptionItem.tierId],
       set: { quantity, updatedAt: now },
     })
-  await recomputeOrganizationAssignments(db, fixture.organizationId)
   return tierId
+}
+
+/** A manager's assignment, written straight to the column. */
+async function assignTier(
+  db: ReturnType<typeof createDenoDb>,
+  serverId: string,
+  tierId: string | null
+): Promise<void> {
+  await db
+    .update(server)
+    .set({ assignedTierId: tierId, updatedAt: new Date().toISOString() })
+    .where(eq(server.id, serverId))
+}
+
+async function readAssignedTierId(
+  db: ReturnType<typeof createDenoDb>,
+  serverId: string
+): Promise<string | null> {
+  const [row] = await db
+    .select({ assignedTierId: server.assignedTierId })
+    .from(server)
+    .where(eq(server.id, serverId))
+    .limit(1)
+  return row?.assignedTierId ?? null
 }
 
 /** Remove the purchase `purchaseTier` projected: seats → subscription → payer. */
@@ -674,9 +699,8 @@ async function withEnrollFixture(
   const organizationId = orgRow!.id
   const { licenseId, licenseToken } = await insertFixtureLicense(db, organizationId)
 
-  if (tierRank != null) {
-    await purchaseTier(db, { organizationId, extraTierIds }, tierRank, 1)
-  }
+  const purchasedTierId =
+    tierRank != null ? await purchaseTier(db, { organizationId, extraTierIds }, tierRank, 1) : null
 
   const key = await generateKeyMaterial()
   let serverId = ''
@@ -698,6 +722,9 @@ async function withEnrollFixture(
     }
     serverId = enrollBody.serverId
     keyId = enrollBody.keyId
+    if (purchasedTierId && options.assign !== false) {
+      await assignTier(db, serverId, purchasedTierId)
+    }
   }
 
   try {
@@ -714,6 +741,7 @@ async function withEnrollFixture(
       machineKey,
       hostname,
       extraTierIds,
+      purchasedTierId,
     })
   } finally {
     try {
@@ -1569,25 +1597,16 @@ test('invalidateLicense revokes daemon keys on bound servers', async () => {
   })
 })
 
-test('re-enroll is refused when recorded hardware requires a higher tier', async () => {
+test('re-enroll with recorded hardware past its tier succeeds and keeps the tier', async () => {
   await withEnrollFixture(async (fixture) => {
-    const original = await readDaemonState(fixture.db, fixture.serverId)
-    assertExists(original)
     await mergeServerResources(fixture.db, fixture.serverId, hostResourcesPayload(8, 16))
+    // A free bigger seat exists; re-enrolling must not take it.
+    await purchaseTier(fixture.db, fixture, 5, 1)
     const response = await postEnroll(fixture.app, fixture)
-    assertEquals(response.status, 400)
-    const body = (await response.json()) as { error: string }
-    assertEquals(body.error, LICENSE_TIER_BELOW_REQUIRED_ERROR)
-
-    const [licenseRow] = await fixture.db
-      .select({ serverId: license.serverId })
-      .from(license)
-      .where(eq(license.id, fixture.licenseId))
-      .limit(1)
-    assertEquals(licenseRow?.serverId, fixture.serverId)
-    const after = await readDaemonState(fixture.db, fixture.serverId)
-    assertEquals(after?.key.id, original.key.id)
-    assertEquals(after?.key.fingerprint, original.key.fingerprint)
+    assertEquals(response.status, 200)
+    const body = (await response.json()) as { serverId: string }
+    assertEquals(body.serverId, fixture.serverId)
+    assertEquals(await readAssignedTierId(fixture.db, fixture.serverId), fixture.purchasedTierId)
   })
 })
 
@@ -1598,62 +1617,42 @@ test('fresh enroll with no recorded hardware succeeds', async () => {
   })
 })
 
-test('hosted enroll is refused when nothing bought covers one more server', async () => {
+test('hosted enroll never assigns a license tier, even with a free seat', async () => {
   await withEnrollFixture(
     async (fixture) => {
-      const response = await postEnroll(fixture.app, fixture)
-      assertEquals(response.status, 400)
-      const body = (await response.json()) as { error: string }
-      assertEquals(body.error, LICENSE_TIER_UNASSIGNED_ERROR)
+      assertExists(fixture.purchasedTierId)
+      assertEquals(await readAssignedTierId(fixture.db, fixture.serverId), null)
+      // Its first session connects and still assigns nothing.
+      const session = await postAuthSession(fixture.app, fixture)
+      assertEquals(session.status, 200)
+      assertEquals(await readAssignedTierId(fixture.db, fixture.serverId), null)
     },
-    { tierRank: null, enroll: false }
+    { assign: false }
   )
 })
 
-test('a hosted 400 tier refusal does not consume the license so a later retry without server.id can succeed', async () => {
+test('hosted enroll with nothing bought succeeds, binds the license and leaves the server with no tier', async () => {
   await withEnrollFixture(
     async (fixture) => {
-      const refused = await postEnroll(fixture.app, {
+      const response = await postEnroll(fixture.app, {
         licenseId: fixture.licenseId,
         licenseToken: fixture.licenseToken,
         machineKey: fixture.machineKey,
         hostname: fixture.hostname,
         key: fixture.key,
       })
-      assertEquals(refused.status, 400)
-      const refusedBody = (await refused.json()) as { error: string }
-      assertEquals(refusedBody.error, LICENSE_TIER_UNASSIGNED_ERROR)
+      assertEquals(response.status, 200)
+      const body = (await response.json()) as { serverId: string; keyId: string }
+      assertEquals(typeof body.serverId, 'string')
+      assertEquals(body.serverId.length > 0, true)
 
       const [licenseRow] = await fixture.db
         .select({ serverId: license.serverId })
         .from(license)
         .where(eq(license.id, fixture.licenseId))
         .limit(1)
-      assertEquals(licenseRow?.serverId, null)
-      const orgServers = await fixture.db
-        .select({ id: server.id, daemon: server.daemon })
-        .from(server)
-        .where(eq(server.organizationId, fixture.organizationId))
-      assertEquals(orgServers.length, 0)
-
-      // The purchase lands: one S1 seat now covers the newcomer.
-      await purchaseTier(fixture.db, fixture, 1, 1)
-
-      const recovered = await postEnroll(fixture.app, {
-        licenseId: fixture.licenseId,
-        licenseToken: fixture.licenseToken,
-        machineKey: fixture.machineKey,
-        hostname: fixture.hostname,
-        key: fixture.key,
-      })
-      assertEquals(recovered.status, 200)
-      const recoveredBody = (await recovered.json()) as {
-        serverId: string
-        keyId: string
-      }
-      assertEquals(typeof recoveredBody.serverId, 'string')
-      assertEquals(recoveredBody.serverId.length > 0, true)
-      assertEquals(typeof recoveredBody.keyId, 'string')
+      assertEquals(licenseRow?.serverId, body.serverId)
+      assertEquals(await readAssignedTierId(fixture.db, body.serverId), null)
     },
     { tierRank: null, enroll: false }
   )
@@ -1678,49 +1677,46 @@ test('self-hosted enroll assigns SX and issues a session with nothing bought', a
   )
 })
 
-test('POST /auth/session refuses after a resize past the license band', async () => {
+test('a self-hosted session never changes a tier the server already holds', async () => {
+  await withEnrollFixture(
+    async (fixture) => {
+      const s1 = await ensureTestTier(fixture.db, 1, fixture.extraTierIds)
+      await assignTier(fixture.db, fixture.serverId, s1)
+      const session = await postAuthSession(fixture.app, fixture)
+      assertEquals(session.status, 200)
+      assertEquals(await readAssignedTierId(fixture.db, fixture.serverId), s1)
+    },
+    { runtime: 'deno', tierRank: null }
+  )
+})
+
+test('POST /auth/session lets a server kept on S1 connect after it grows past S1, and it stays on S1', async () => {
   await withEnrollFixture(async (fixture) => {
     const first = await postAuthSession(fixture.app, fixture)
     assertEquals(first.status, 200)
 
     await mergeServerResources(fixture.db, fixture.serverId, hostResourcesPayload(64, 256))
-    const refused = await postAuthSession(fixture.app, fixture)
-    assertEquals(refused.status, 400)
-    const refusedBody = (await refused.json()) as { error: string }
-    assertEquals(refusedBody.error, LICENSE_TIER_BELOW_REQUIRED_ERROR)
-
-    // Buying an S5 moves the server onto it (the projection's recompute).
+    // A free S5 seat exists; the session must not move the server onto it.
     await purchaseTier(fixture.db, fixture, 5, 1)
-
-    const recovered = await postAuthSession(fixture.app, fixture)
-    assertEquals(recovered.status, 200)
+    const grown = await postAuthSession(fixture.app, fixture)
+    assertEquals(grown.status, 200)
+    assertEquals(await readAssignedTierId(fixture.db, fixture.serverId), fixture.purchasedTierId)
   })
 })
 
-test('POST /auth/session recomputes a licensed server assigned nothing, and refuses it only when nothing bought covers it', async () => {
+test('POST /auth/session connects a licensed server with no tier and assigns it nothing', async () => {
   await withEnrollFixture(async (fixture) => {
-    // The one S1 given back: the recompute leaves the server on nothing.
-    await purchaseTier(fixture.db, fixture, 1, 0)
-    const refused = await postAuthSession(fixture.app, fixture)
-    assertEquals(refused.status, 400)
-    const refusedBody = (await refused.json()) as { error: string }
-    assertEquals(refusedBody.error, LICENSE_TIER_BELOW_REQUIRED_ERROR)
+    await assignTier(fixture.db, fixture.serverId, null)
+    // A seat is free; the session still must not hand it out.
+    const session = await postAuthSession(fixture.app, fixture)
+    assertEquals(session.status, 200)
+    assertEquals(await readAssignedTierId(fixture.db, fixture.serverId), null)
 
-    // Bought back — but the projection and this session raced, so the
-    // derived column is still empty: the gate's one recompute places it.
-    const tierId = await purchaseTier(fixture.db, fixture, 1, 1)
-    await fixture.db
-      .update(server)
-      .set({ assignedTierId: null })
-      .where(eq(server.id, fixture.serverId))
-    const recovered = await postAuthSession(fixture.app, fixture)
-    assertEquals(recovered.status, 200)
-    const [row] = await fixture.db
-      .select({ assignedTierId: server.assignedTierId })
-      .from(server)
-      .where(eq(server.id, fixture.serverId))
-      .limit(1)
-    assertEquals(row?.assignedTierId, tierId)
+    // Nothing bought at all: still connects.
+    await purchaseTier(fixture.db, fixture, 1, 0)
+    const none = await postAuthSession(fixture.app, fixture)
+    assertEquals(none.status, 200)
+    assertEquals(await readAssignedTierId(fixture.db, fixture.serverId), null)
   })
 })
 

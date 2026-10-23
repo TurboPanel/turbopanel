@@ -9,13 +9,21 @@ import {
   DEPLOY_OFFLINE_LIMIT_MS,
   DEPLOY_PAUSED_SILENCE_MS,
   DEPLOY_REQUEST_TTL_SECONDS,
+  DEPLOY_WAIT_LIMIT_MS,
   DEPLOY_QUEUE_HOLD_MS,
   DEPLOY_QUEUE_LIMIT_MS,
+  DEPLOY_RECONCILE_WINDOW_MS,
   DEPLOY_RUN_CAP_MS,
+  DEPLOY_RUN_SILENCE_MS,
   DEPLOY_SIGNAL_GRACE_MS,
+  DEPLOY_DEFAULT_TIMEOUT_MS,
+  deployIsChecking,
   deployRunState,
+  deployUnreachableMessage,
+  deployWaitMessage,
   deployWaitVerdict,
 } from './deploy-wait.ts'
+import { shiftedRunningSince } from './deploy-limits.ts'
 
 const test = Deno.test.bind(Deno)
 
@@ -210,4 +218,143 @@ test('the waiter stops when the command was already finished by someone else', a
   status = 'cancelled'
   assertEquals(await h.waiter.wait(h.cell, 'r1', 0), null)
   assertEquals(h.waiter.verdict, 'settled')
+})
+
+const REPORTING = { recovery: true as const }
+const STARTED = T0 + 60_000
+const RUNNING = plan(iso(STARTED))
+
+test('a server that keeps reporting may run past ten minutes, up to the deploy time limit', () => {
+  const endAtMs = STARTED + 10 * DEPLOY_DEFAULT_TIMEOUT_MS
+  const base = { ...REPORTING, progress: RUNNING, endAtMs }
+  assertEquals(verdict({ ...base, nowMs: STARTED + DEPLOY_RUN_CAP_MS + 1 }), null)
+  assertEquals(verdict({ ...base, nowMs: STARTED + DEPLOY_DEFAULT_TIMEOUT_MS - 1 }), null)
+  assertEquals(verdict({ ...base, nowMs: STARTED + DEPLOY_DEFAULT_TIMEOUT_MS }), 'run_cap')
+  const hour = 60 * 60_000
+  assertEquals(verdict({ ...base, runCapMs: hour, nowMs: STARTED + hour - 1 }), null)
+  assertEquals(verdict({ ...base, runCapMs: hour, nowMs: STARTED + hour }), 'run_cap')
+})
+
+test('a quiet server is checked on, not failed, until the whole reconcile window has passed', () => {
+  const base = {
+    ...REPORTING,
+    progress: RUNNING,
+    nowMs: STARTED + 2 * DEPLOY_DEFAULT_TIMEOUT_MS,
+    endAtMs: STARTED + 10 * DEPLOY_RECONCILE_WINDOW_MS,
+  }
+  // Past the time limit, but the server is not reporting: that is not a timeout.
+  assertEquals(verdict({ ...base, silentMs: DEPLOY_RUN_SILENCE_MS }), null)
+  assertEquals(verdict({ ...base, silentMs: DEPLOY_RECONCILE_WINDOW_MS - 1 }), null)
+  assertEquals(verdict({ ...base, silentMs: DEPLOY_RECONCILE_WINDOW_MS }), 'unreachable')
+})
+
+test('a server without signs of life keeps the fixed ten minute cap', () => {
+  const base = { progress: RUNNING, endAtMs: STARTED + DEPLOY_RECONCILE_WINDOW_MS }
+  assertEquals(
+    verdict({ ...base, nowMs: STARTED + DEPLOY_RUN_CAP_MS - 1, silentMs: 9 * 60_000 }),
+    null
+  )
+  assertEquals(verdict({ ...base, nowMs: STARTED + DEPLOY_RUN_CAP_MS }), 'run_cap')
+})
+
+test('a deploy is "checking" only when it runs, its server sends signs of life, and it went quiet', () => {
+  const base = { progress: RUNNING, sentAt: iso(T0), nowMs: STARTED + 20 * 60_000 }
+  const quiet = { ...base, silentMs: DEPLOY_RUN_SILENCE_MS, recovery: true }
+  assertEquals(deployIsChecking(quiet), true)
+  assertEquals(deployIsChecking({ ...quiet, silentMs: DEPLOY_RUN_SILENCE_MS - 1 }), false)
+  assertEquals(deployIsChecking({ ...quiet, recovery: false }), false)
+  assertEquals(deployIsChecking({ ...quiet, progress: plan(null) }), false)
+})
+
+test('quiet time is added to the run clock only after the silence threshold', () => {
+  const runningSince = iso(T0)
+  const lastHeardMs = T0 + 10 * 60_000
+  assertEquals(
+    shiftedRunningSince({ runningSince, lastHeardMs, nowMs: lastHeardMs + DEPLOY_RUN_SILENCE_MS }),
+    null
+  )
+  assertEquals(
+    shiftedRunningSince({ runningSince, lastHeardMs, nowMs: lastHeardMs + 20 * 60_000 }),
+    iso(T0 + 20 * 60_000)
+  )
+  assertEquals(shiftedRunningSince({ runningSince: null, lastHeardMs, nowMs: T0 }), null)
+})
+
+test('the waiter marks a quiet deploy as checking, once', async () => {
+  const updatedAt = T0
+  const marks: string[] = []
+  let nowMs = T0 + 20 * 60_000
+  const cell = {
+    waitForRequest: (_id: string, ms: number) => {
+      nowMs += ms
+      return Promise.resolve(null)
+    },
+    getRequest: () => Promise.resolve(request('acked')),
+  } as unknown as DaemonCell
+  const waiter = createDeployWaiter({
+    sentAt: iso(T0),
+    readCommand: () =>
+      Promise.resolve({
+        status: 'running',
+        progress: plan(iso(STARTED)),
+        updatedAt: iso(updatedAt),
+      }),
+    now: () => nowMs,
+    holdMs: 60_000,
+    endMs: 60_000,
+    pollMs: 10_000,
+    recovery: true,
+    onContactLost: (at) => {
+      marks.push(at)
+      return Promise.resolve()
+    },
+  })
+  assertEquals(await waiter.wait(cell, 'r1', 0), null)
+  assertEquals(waiter.verdict, 'handoff')
+  assertEquals(marks, [iso(T0)])
+})
+
+test('the messages say what is true about each way a deploy can end without a result', () => {
+  const waiter = (verdict: string, recovery: boolean) =>
+    ({ verdict, recovery, runCapMs: 45 * 60_000, lastProgress: plan(iso(STARTED)) }) as never
+  assertEquals(deployWaitMessage(waiter('none', true)), undefined)
+  assertEquals(deployWaitMessage(waiter('handoff', true)), undefined)
+  assertEquals(deployWaitMessage(waiter('run_cap', true))?.includes('45 minutes'), true)
+  const legacy = deployWaitMessage(waiter('run_cap', false))
+  assertEquals(legacy?.includes('No result came back'), true)
+  assertEquals(legacy?.includes('stopped waiting for it'), false)
+  assertEquals(
+    deployUnreachableMessage('Build running').includes('Last known step: Build running.'),
+    true
+  )
+  assertEquals(deployUnreachableMessage(null).includes('Last known step'), false)
+})
+
+test('the request outlives the whole wait, and a deploy is given up on before it runs out', () => {
+  assertEquals(DEPLOY_REQUEST_TTL_SECONDS * 1000 > DEPLOY_WAIT_LIMIT_MS, true)
+  const sentAt = '2026-10-22T00:00:00.000Z'
+  const sentMs = Date.parse(sentAt)
+  const nowMs = sentMs + DEPLOY_WAIT_LIMIT_MS
+  // Reporting all along, with quiet gaps keeping the run clock short.
+  const progress = {
+    version: 1,
+    steps: [],
+    current: null,
+    updatedAt: sentAt,
+    runningSince: new Date(nowMs - 60_000).toISOString(),
+  }
+  const verdict = (silentMs: number) =>
+    deployWaitVerdict({
+      requestStatus: 'acked',
+      progress,
+      sentAt,
+      nowMs,
+      holdUntilMs: 0,
+      endAtMs: Number.POSITIVE_INFINITY,
+      silentMs,
+      recovery: true,
+    })
+  assertEquals(verdict(0), 'run_cap')
+  assertEquals(verdict(10 * 60_000), 'unreachable')
+  assertEquals(nowMs < sentMs + DEPLOY_REQUEST_TTL_SECONDS * 1000, true)
 })

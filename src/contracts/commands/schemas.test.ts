@@ -8,6 +8,7 @@ import {
   parseCommandPayload,
   parseCommandResult,
   parseDeployComposeFiles,
+  parseWalPosition,
   parseEnvironmentDeployPayload,
   parseEnvironmentDeployResult,
   parseEnvironmentLifecyclePayload,
@@ -7653,4 +7654,108 @@ test('managed.ingress.reconcile app-login limits are optional and validated', ()
   ]) {
     assertThrows(() => parseManagedIngressReconcilePayload(withFields(bad)), TypeError)
   }
+})
+
+const FP_RECOVERY = '00000000-0000-4000-8000-0000000000c3'
+const FP_SOURCE = '00000000-0000-4000-8000-0000000000a1'
+const FP_TARGET = '00000000-0000-4000-8000-0000000000b2'
+
+test('managed.apply switchoverReseed parses when whole, is absent on an operator resync and is refused when malformed', () => {
+  const reseed = {
+    recoveryId: FP_RECOVERY,
+    sourceMemberId: FP_SOURCE,
+    targetMemberId: FP_TARGET,
+    epoch: 5,
+  }
+  const guarded = parseManagedApplyPayload({
+    ...VALID_MANAGED_APPLY,
+    forceResync: true,
+    switchoverReseed: reseed,
+  })
+  assertEquals(guarded.switchoverReseed, reseed)
+  const operator = parseManagedApplyPayload({ ...VALID_MANAGED_APPLY, forceResync: true })
+  assertEquals(operator.forceResync, true)
+  assertEquals(operator.switchoverReseed, undefined)
+  for (const bad of [
+    { ...reseed, epoch: -1 },
+    { ...reseed, epoch: 1.5 },
+    { ...reseed, recoveryId: 'not-a-uuid' },
+    { ...reseed, targetMemberId: undefined },
+    'yes',
+  ]) {
+    assertThrows(
+      () => parseManagedApplyPayload({ ...VALID_MANAGED_APPLY, switchoverReseed: bad }),
+      Error,
+      'switchoverReseed'
+    )
+  }
+})
+
+test('managed.lifecycle payload carries the switchover recovery id and epoch together or not at all', () => {
+  const stop = { managedId: FP_SOURCE, action: 'stop', engine: 'postgres' }
+  const parsed = parseManagedLifecyclePayload({
+    ...stop,
+    switchoverRecoveryId: FP_RECOVERY,
+    primaryEpoch: 0,
+  })
+  assertEquals(parsed.switchoverRecoveryId, FP_RECOVERY)
+  assertEquals(parsed.primaryEpoch, 0)
+  assertEquals(parseManagedLifecyclePayload(stop).switchoverRecoveryId, undefined)
+  for (const bad of [
+    { switchoverRecoveryId: FP_RECOVERY },
+    { primaryEpoch: 3 },
+    { switchoverRecoveryId: 'x', primaryEpoch: 3 },
+    { switchoverRecoveryId: FP_RECOVERY, primaryEpoch: -2 },
+  ]) {
+    assertThrows(
+      () => parseManagedLifecyclePayload({ ...stop, ...bad }),
+      Error,
+      'managed.lifecycle'
+    )
+  }
+})
+
+test('lifecycle and promote results keep a well-formed position and drop a malformed one', () => {
+  const stopped = parseManagedLifecycleResult({
+    status: 'stopped',
+    oldPrimaryFinalLsn: '0/7258050',
+    oldPrimaryFinalTimeline: 1,
+  })
+  assertEquals(stopped.oldPrimaryFinalLsn, '0/7258050')
+  assertEquals(stopped.oldPrimaryFinalTimeline, 1)
+  const promoted = parseManagedPromoteResult({
+    status: 'ready',
+    role: 'primary',
+    promotedMemberId: FP_TARGET,
+    demoted: false,
+    newPrimaryReplayLsn: 'A/FF',
+    newPrimaryTimeline: 2,
+  })
+  assertEquals(promoted.newPrimaryReplayLsn, 'A/FF')
+  assertEquals(promoted.newPrimaryTimeline, 2)
+  for (const bad of [
+    { lsn: '7258050', timeline: 1 },
+    { lsn: '0/123456789', timeline: 1 },
+    { lsn: '0/7258050', timeline: 0 },
+    { lsn: '0/7258050', timeline: 1.5 },
+    { lsn: '0/7258050' },
+    { timeline: 1 },
+  ]) {
+    const result = parseManagedLifecycleResult({
+      status: 'stopped',
+      oldPrimaryFinalLsn: bad.lsn,
+      oldPrimaryFinalTimeline: bad.timeline,
+    })
+    assertEquals(result.oldPrimaryFinalLsn, undefined)
+    assertEquals(result.oldPrimaryFinalTimeline, undefined)
+  }
+  // A result from a daemon that predates the fields parses as before.
+  assertEquals(parseManagedLifecycleResult({ status: 'stopped' }), { status: 'stopped' })
+})
+
+test('a wal position of 0/0 is rejected, any other well formed position is kept', () => {
+  assertEquals(parseWalPosition('0/0', 1), undefined)
+  assertEquals(parseWalPosition('00000000/00000000', 1), undefined)
+  assertEquals(parseWalPosition('0/1', 1), { lsn: '0/1', timeline: 1 })
+  assertEquals(parseWalPosition('1/0', 2), { lsn: '1/0', timeline: 2 })
 })

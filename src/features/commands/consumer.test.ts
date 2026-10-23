@@ -33,6 +33,7 @@ import {
   principal,
   principalPlacement,
   project,
+  recovery as recoveryTable,
   replica,
   server,
   service,
@@ -43,6 +44,10 @@ import {
   workspace,
 } from '../../db/schema.ts'
 import { createManagedLogin } from '../managed/logins.ts'
+import { loadPrimaryEpoch } from '../managed/primary-epoch.ts'
+import { RESEED_GUARD_METADATA_KEY } from '../managed/reseed-guard.ts'
+import { findRecoveryById, insertRecovery } from '../managed/recovery-records.ts'
+import { evaluateFinalPosition } from '../managed/switchover-evidence.ts'
 import { ensureManagedIngressHierarchy } from '../system/hierarchy.ts'
 import {
   COMMAND_DISPATCH_FAILURE_RETENTION_MS,
@@ -60,10 +65,23 @@ import {
   type DispatchableCommandRecord,
   isTransientError,
   markPlannedFoldersPresentSafely,
+  oldPrimaryFinalFromStop,
   processCommandEnvelope,
 } from './consumer.ts'
+import {
+  type ManagedLifecycleCommandResult,
+  parseManagedLifecyclePayload,
+} from '../../contracts/commands/schemas.ts'
 import type { CommandEnvelope } from './envelope.ts'
-import { recordCommandProgress } from './command-progress.ts'
+import { markCommandContactLost, recordCommandProgress } from './command-progress.ts'
+import {
+  ackForReportedOutcome,
+  LATE_OUTCOME_NOTE,
+  noteReportedCommands,
+  settleReportedOutcome,
+} from './command-recovery.ts'
+import { touchServerMetadata } from '../servers/server-registry.ts'
+import { dispatchDaemonInboundMessage } from '../../daemon/deno-ws.ts'
 import type { CommandQueue } from './queue.ts'
 import { parseManagedResidual } from '../managed/serialize.ts'
 import { resolveFleetPresence } from '../../daemon/cell/server-status.ts'
@@ -4776,48 +4794,97 @@ test('processCommandEnvelope leaves managed.status unchanged when managed.restor
   })
 })
 
+type PromoteFixture = {
+  standbyServerId: string
+  primaryMemberId: string
+  replicaMemberId: string
+}
+
+/** A primary on `serverId` and a ready replica on a second connected server. */
+async function insertPromotePair(
+  db: Db,
+  params: { serverId: string; managedId: string }
+): Promise<PromoteFixture> {
+  const { serverId, managedId } = params
+  await attachConnectedDaemonStatus(db, serverId)
+  const [standbyServer] = await db
+    .insert(server)
+    .values({
+      organizationId: (
+        await db
+          .select({ organizationId: server.organizationId })
+          .from(server)
+          .where(eq(server.id, serverId))
+          .limit(1)
+      )[0]!.organizationId,
+      name: 'standby-host',
+      hostname: 'standby-host',
+    })
+    .returning({ id: server.id })
+  const standbyServerId = standbyServer!.id
+  await attachConnectedDaemonStatus(db, standbyServerId)
+  const [primaryMember] = await db
+    .insert(replica)
+    // A cluster's first member has no replica class: it never was a replica.
+    .values({
+      managedId,
+      serverId,
+      role: 'primary',
+      ordinal: 1,
+      status: 'ready',
+      replicaClass: null,
+    })
+    .returning({ id: replica.id })
+  const [replicaMember] = await db
+    .insert(replica)
+    .values({ managedId, serverId: standbyServerId, role: 'replica', ordinal: 2, status: 'ready' })
+    .returning({ id: replica.id })
+  return {
+    standbyServerId,
+    primaryMemberId: primaryMember!.id,
+    replicaMemberId: replicaMember!.id,
+  }
+}
+
+async function cleanUpPromotePair(
+  db: Db,
+  params: { serverId: string; managedId: string; standbyServerId: string }
+): Promise<void> {
+  await db.delete(replica).where(eq(replica.managedId, params.managedId))
+  // Promote may have flipped managed.serverId to the standby host; point
+  // it back at the original server before dropping the standby row so
+  // the FK doesn't block deletion.
+  await db
+    .update(managed)
+    .set({ serverId: params.serverId })
+    .where(eq(managed.id, params.managedId))
+  await db.delete(command).where(eq(command.serverId, params.standbyServerId))
+  await db.delete(server).where(eq(server.id, params.standbyServerId))
+}
+
+function promoteRegistry(
+  record: { id: string; createdAt: string },
+  standbyServerId: string,
+  result: Record<string, unknown>
+) {
+  return createDispatchMockRegistry(standbyServerId, {
+    waitForRequestResult: {
+      serverId: standbyServerId,
+      requestId: record.id,
+      requestKind: 'command-dispatch',
+      status: 'done',
+      createdAt: record.createdAt,
+      expiresAt: record.createdAt,
+      finishedAt: new Date().toISOString(),
+      result,
+    },
+  })
+}
+
 test('processCommandEnvelope demotes old primary before promote so uniq_node_primary holds', async () => {
   await withManagedDestroyFixtures(async ({ db, serverId, managedId }) => {
-    await attachConnectedDaemonStatus(db, serverId)
-
-    // Second server for the standby that will be promoted.
-    const [standbyServer] = await db
-      .insert(server)
-      .values({
-        organizationId: (
-          await db
-            .select({ organizationId: server.organizationId })
-            .from(server)
-            .where(eq(server.id, serverId))
-            .limit(1)
-        )[0]!.organizationId,
-        name: 'standby-host',
-        hostname: 'standby-host',
-      })
-      .returning({ id: server.id })
-    const standbyServerId = standbyServer!.id
-    await attachConnectedDaemonStatus(db, standbyServerId)
-
-    const [primaryMember] = await db
-      .insert(replica)
-      .values({
-        managedId,
-        serverId,
-        role: 'primary',
-        ordinal: 1,
-        status: 'ready',
-      })
-      .returning({ id: replica.id })
-    const [replicaMember] = await db
-      .insert(replica)
-      .values({
-        managedId,
-        serverId: standbyServerId,
-        role: 'replica',
-        ordinal: 2,
-        status: 'ready',
-      })
-      .returning({ id: replica.id })
+    const pair = await insertPromotePair(db, { serverId, managedId })
+    const { standbyServerId, primaryMemberId, replicaMemberId } = pair
 
     try {
       const record = await createCommandRecord(db, {
@@ -4826,27 +4893,16 @@ test('processCommandEnvelope demotes old primary before promote so uniq_node_pri
         type: 'managed.promote',
         payload: {
           managedId,
-          memberId: replicaMember!.id,
-          demoteMemberId: primaryMember!.id,
+          memberId: replicaMemberId,
+          demoteMemberId: primaryMemberId,
         },
       })
 
-      const registry = createDispatchMockRegistry(standbyServerId, {
-        waitForRequestResult: {
-          serverId: standbyServerId,
-          requestId: record.id,
-          requestKind: 'command-dispatch',
-          status: 'done',
-          createdAt: record.createdAt,
-          expiresAt: record.createdAt,
-          finishedAt: new Date().toISOString(),
-          result: {
-            promotedMemberId: replicaMember!.id,
-            demotedMemberId: primaryMember!.id,
-            status: 'ready',
-            summary: 'promoted',
-          },
-        },
+      const registry = promoteRegistry(record, standbyServerId, {
+        promotedMemberId: replicaMemberId,
+        demotedMemberId: primaryMemberId,
+        status: 'ready',
+        summary: 'promoted',
       })
 
       await processCommandEnvelope(db, registry, buildEnvelope(record, standbyServerId))
@@ -4856,14 +4912,17 @@ test('processCommandEnvelope demotes old primary before promote so uniq_node_pri
           id: replica.id,
           role: replica.role,
           status: replica.status,
+          replicaClass: replica.replicaClass,
         })
         .from(replica)
         .where(eq(replica.managedId, managedId))
 
-      const primary = members.find((m) => m.id === primaryMember!.id)
-      const replicaRow = members.find((m) => m.id === replicaMember!.id)
+      const primary = members.find((m) => m.id === primaryMemberId)
+      const replicaRow = members.find((m) => m.id === replicaMemberId)
       assertEquals(primary?.role, 'replica')
       assertEquals(primary?.status, 'needs_resync')
+      // The demoted primary stays a failover candidate once it is resynced.
+      assertEquals(primary?.replicaClass, 'failover')
       assertEquals(replicaRow?.role, 'primary')
       assertEquals(replicaRow?.status, 'ready')
 
@@ -4874,14 +4933,116 @@ test('processCommandEnvelope demotes old primary before promote so uniq_node_pri
         .limit(1)
       assertEquals(managedRow?.serverId, standbyServerId)
       assertEquals(managedRow?.status, 'ready')
+      // The primary moved, so the epoch went up by one.
+      assertEquals(await loadPrimaryEpoch(db, managedId), 1)
     } finally {
-      await db.delete(replica).where(eq(replica.managedId, managedId))
-      // Promote may have flipped managed.serverId to the standby host; point
-      // it back at the original server before dropping the standby row so
-      // the FK doesn't block deletion.
-      await db.update(managed).set({ serverId }).where(eq(managed.id, managedId))
-      await db.delete(command).where(eq(command.serverId, standbyServerId))
-      await db.delete(server).where(eq(server.id, standbyServerId))
+      await cleanUpPromotePair(db, { serverId, managedId, standbyServerId })
+    }
+  })
+})
+
+test('a failover recover result moves the primary role and the epoch goes up by one', async () => {
+  await withManagedDestroyFixtures(async ({ db, serverId, managedId }) => {
+    const pair = await insertPromotePair(db, { serverId, managedId })
+    const { standbyServerId, primaryMemberId, replicaMemberId } = pair
+    try {
+      const record = await createCommandRecord(db, {
+        serverId: standbyServerId,
+        ...TEST_COMMAND_ACTOR,
+        type: 'managed.ha.failover',
+        payload: {
+          managedId,
+          sourceMemberId: primaryMemberId,
+          targetMemberId: replicaMemberId,
+          phase: 'recover',
+          engine: 'postgres',
+        },
+      })
+      assertEquals(await loadPrimaryEpoch(db, managedId), 0)
+      await processCommandEnvelope(
+        db,
+        promoteRegistry(record, standbyServerId, { summary: 'recovered', phase: 'recover' }),
+        buildEnvelope(record, standbyServerId)
+      )
+      const [promoted] = await db
+        .select({ role: replica.role })
+        .from(replica)
+        .where(eq(replica.id, replicaMemberId))
+      assertEquals(promoted?.role, 'primary')
+      assertEquals(await loadPrimaryEpoch(db, managedId), 1)
+    } finally {
+      await cleanUpPromotePair(db, { serverId, managedId, standbyServerId })
+    }
+  })
+})
+
+test('a fence stop result that answers another switchover stores no final position', () => {
+  const payload = parseManagedLifecyclePayload({
+    managedId: 'managed-1',
+    action: 'stop',
+    engine: 'postgres',
+    switchoverRecoveryId: '11111111-1111-4111-8111-111111111111',
+    primaryEpoch: 0,
+  })
+  const result = {
+    status: 'stopped',
+    oldPrimaryFinalLsn: '0/7258050',
+    oldPrimaryFinalTimeline: 1,
+  } as ManagedLifecycleCommandResult
+  assertEquals(oldPrimaryFinalFromStop(payload, '11111111-1111-4111-8111-111111111111', result), {
+    oldPrimaryFinal: { lsn: '0/7258050', timeline: 1 },
+  })
+  assertEquals(oldPrimaryFinalFromStop(payload, '22222222-2222-4222-8222-222222222222', result), {})
+})
+
+test('a switchover promote result stores the new primary replay position on the recovery row and moves the epoch', async () => {
+  await withManagedDestroyFixtures(async ({ db, serverId, managedId }) => {
+    const pair = await insertPromotePair(db, { serverId, managedId })
+    const { standbyServerId, primaryMemberId, replicaMemberId } = pair
+    try {
+      const created = await insertRecovery(db, {
+        managedId,
+        kind: 'switchover',
+        sourcePrimaryMemberId: primaryMemberId,
+        targetMemberId: replicaMemberId,
+        state: 'promoting',
+        metadata: {
+          fenced: true,
+          oldPrimaryFinalLsn: '0/7258050',
+          oldPrimaryFinalTimeline: 1,
+          primaryEpochAtStart: 0,
+        },
+      })
+      const record = await createCommandRecord(db, {
+        serverId: standbyServerId,
+        ...TEST_COMMAND_ACTOR,
+        type: 'managed.promote',
+        payload: {
+          managedId,
+          memberId: replicaMemberId,
+          demoteMemberId: primaryMemberId,
+          engine: 'postgres',
+        },
+        metadata: { recoveryId: created.id },
+      })
+      const registry = promoteRegistry(record, standbyServerId, {
+        promotedMemberId: replicaMemberId,
+        demotedMemberId: primaryMemberId,
+        status: 'ready',
+        newPrimaryReplayLsn: '0/7258050',
+        newPrimaryTimeline: 2,
+      })
+
+      await processCommandEnvelope(db, registry, buildEnvelope(record, standbyServerId))
+
+      const stored = await findRecoveryById(db, created.id)
+      assertEquals(stored?.metadata.newPrimaryReplayLsn, '0/7258050')
+      assertEquals(stored?.metadata.newPrimaryTimeline, 2)
+      assertEquals(evaluateFinalPosition(stored!.metadata).caughtUp, true)
+      assertEquals(await loadPrimaryEpoch(db, managedId), 1)
+    } finally {
+      await db.delete(recoveryTable).where(eq(recoveryTable.managedId, managedId))
+      await cleanUpPromotePair(db, { serverId, managedId, standbyServerId })
     }
   })
 })
@@ -5301,6 +5462,176 @@ test('processCommandEnvelope ignores a malformed destroy gate instead of enqueui
     const updated = await getCommandRecord(db, record.id)
     assertEquals(updated?.status, 'succeeded')
   })
+})
+
+async function runSwitchoverStop(
+  f: { db: Db; serverId: string; managedId: string },
+  stopResult: Record<string, unknown>
+) {
+  const { db, serverId, managedId } = f
+  const [primaryMember] = await db
+    .insert(replica)
+    .values({ managedId, serverId, role: 'primary', ordinal: 1, status: 'ready' })
+    .returning({ id: replica.id })
+  const created = await insertRecovery(db, {
+    managedId,
+    kind: 'switchover',
+    sourcePrimaryMemberId: primaryMember!.id,
+    targetMemberId: null,
+    state: 'fencing',
+    metadata: { fenceCommandIds: [], drainApplied: true, primaryEpochAtStart: 0 },
+  })
+  const record = await createCommandRecord(db, {
+    serverId,
+    ...TEST_COMMAND_ACTOR,
+    type: 'managed.lifecycle',
+    payload: {
+      managedId,
+      action: 'stop',
+      engine: 'postgres',
+      memberId: primaryMember!.id,
+      switchoverRecoveryId: created.id,
+      primaryEpoch: 0,
+    },
+    metadata: { recoveryId: created.id, fencePhase: 'stop' },
+  })
+  await db
+    .update(recoveryTable)
+    .set({ metadata: { fenceCommandIds: [record.id], drainApplied: true, primaryEpochAtStart: 0 } })
+    .where(eq(recoveryTable.id, created.id))
+  await processCommandEnvelope(
+    db,
+    createDispatchMockRegistry(serverId, {
+      waitForRequestResult: {
+        serverId,
+        requestId: record.id,
+        requestKind: 'command-dispatch',
+        status: 'done',
+        createdAt: record.createdAt,
+        expiresAt: record.createdAt,
+        finishedAt: new Date().toISOString(),
+        result: stopResult,
+      },
+    }),
+    buildEnvelope(record, serverId),
+    { firewallApplyGate: DENY_FIREWALL_APPLY, commandQueue: createRecordingCommandQueue() }
+  )
+  return (await findRecoveryById(db, created.id))!.metadata
+}
+
+test('a host that refuses a stale re-seed leaves the cluster ready and the former primary needs_resync', async () => {
+  await withManagedDestroyFixtures(async ({ db, serverId, managedId }) => {
+    const pair = await insertPromotePair(db, { serverId, managedId })
+    const { standbyServerId, primaryMemberId, replicaMemberId } = pair
+    try {
+      // After the switchover: the second member is the primary, the first the
+      // former primary waiting for its re-seed.
+      await db
+        .update(replica)
+        .set({ role: 'replica', status: 'needs_resync' })
+        .where(eq(replica.id, primaryMemberId))
+      await db
+        .update(replica)
+        .set({ role: 'primary', status: 'ready' })
+        .where(eq(replica.id, replicaMemberId))
+      await db.update(managed).set({ status: 'applying' }).where(eq(managed.id, managedId))
+      const created = await insertRecovery(db, {
+        managedId,
+        kind: 'switchover',
+        sourcePrimaryMemberId: primaryMemberId,
+        targetMemberId: replicaMemberId,
+        state: 'completed',
+        metadata: { fenced: true, reseedState: 'queued', reseedNote: 'queued' },
+      })
+      const record = await createCommandRecord(db, {
+        serverId,
+        ...TEST_COMMAND_ACTOR,
+        type: 'managed.apply',
+        payload: { managedId, memberId: primaryMemberId },
+        context: { managedId, memberId: primaryMemberId },
+        metadata: {
+          [RESEED_GUARD_METADATA_KEY]: {
+            recoveryId: created.id,
+            managedId,
+            sourceMemberId: primaryMemberId,
+            targetMemberId: replicaMemberId,
+            epoch: 0,
+          },
+        },
+      })
+      const registry = createDispatchMockRegistry(serverId, {
+        waitForRequestResult: {
+          serverId,
+          requestId: record.id,
+          requestKind: 'command-dispatch',
+          status: 'failed',
+          createdAt: record.createdAt,
+          expiresAt: record.createdAt,
+          finishedAt: new Date().toISOString(),
+          error:
+            'managed.apply switchover re-seed refused: it belongs to another switchover (stale recovery); the data directory was not touched',
+        },
+      })
+
+      await processCommandEnvelope(db, registry, buildEnvelope(record, serverId))
+
+      const [row] = await db
+        .select({ status: managed.status })
+        .from(managed)
+        .where(eq(managed.id, managedId))
+      assertEquals(row?.status, 'ready')
+      const [former] = await db
+        .select({ role: replica.role, status: replica.status })
+        .from(replica)
+        .where(eq(replica.id, primaryMemberId))
+      assertEquals(former, { role: 'replica', status: 'needs_resync' })
+      const stored = await findRecoveryById(db, created.id)
+      assertEquals(stored?.metadata.reseedState, 'failed')
+      assertEquals(stored?.metadata.reseedNote?.includes('stale recovery'), true)
+      assertEquals((await getCommandRecord(db, record.id))?.status, 'failed')
+    } finally {
+      await db.delete(recoveryTable).where(eq(recoveryTable.managedId, managedId))
+      await cleanUpPromotePair(db, { serverId, managedId, standbyServerId })
+    }
+  })
+})
+
+test('a switchover fence stop result stores the old primary final position on the recovery row', async () => {
+  await withManagedDestroyFixtures(async (f) => {
+    try {
+      const metadata = await runSwitchoverStop(f, {
+        status: 'stopped',
+        oldPrimaryFinalLsn: '0/7258050',
+        oldPrimaryFinalTimeline: 1,
+      })
+      assertEquals(metadata.oldPrimaryFinalLsn, '0/7258050')
+      assertEquals(metadata.oldPrimaryFinalTimeline, 1)
+      assertEquals(metadata.stopApplied, true)
+    } finally {
+      await f.db.delete(recoveryTable).where(eq(recoveryTable.managedId, f.managedId))
+      await f.db.delete(replica).where(eq(replica.managedId, f.managedId))
+    }
+  })
+})
+
+test('a stop result from a daemon that reports no position, or a malformed one, stores nothing', async () => {
+  for (const result of [
+    { status: 'stopped' },
+    { status: 'stopped', oldPrimaryFinalLsn: '0/7258050' },
+    { status: 'stopped', oldPrimaryFinalLsn: 'nonsense', oldPrimaryFinalTimeline: 1 },
+  ]) {
+    await withManagedDestroyFixtures(async (f) => {
+      try {
+        const metadata = await runSwitchoverStop(f, result)
+        assertEquals(metadata.oldPrimaryFinalLsn, undefined)
+        assertEquals(metadata.oldPrimaryFinalTimeline, undefined)
+        assertEquals(metadata.stopApplied, true)
+      } finally {
+        await f.db.delete(recoveryTable).where(eq(recoveryTable.managedId, f.managedId))
+        await f.db.delete(replica).where(eq(replica.managedId, f.managedId))
+      }
+    })
+  }
 })
 
 test('processCommandEnvelope enqueues promote only after successful fence lifecycle', async () => {
@@ -6211,5 +6542,782 @@ test('a deploy is sent with a request lifetime longer than the queue limit, othe
       firewallApplyGate: DENY_FIREWALL_APPLY,
     })
     assertEquals((registry.enqueueOpts?.ttlSeconds ?? 0) > 6 * 60 * 60, true)
+  })
+})
+
+// --- A deploy whose server goes quiet is checked on, not failed ------------------------------
+
+const MIN = 60_000
+
+type QuietDeployOptions = {
+  ctx: { db: ReturnType<typeof createDenoDb>; organizationId: string; serverId: string }
+  environmentId: string
+  projectId: string
+  /** How long ago the deploy started running. */
+  ranMs: number
+  /** How long ago the server last reported. */
+  silentMs: number
+  recovery: boolean
+}
+
+/** A deploy the server has been running, with a step plan, a deployment row and a quiet server. */
+async function quietDeploy(opts: QuietDeployOptions) {
+  const { db, organizationId, serverId } = opts.ctx
+  await attachConnectedDaemonStatus(db, serverId)
+  await touchServerMetadata(db, serverId, {
+    features: opts.recovery ? ['command-recovery-v1'] : [],
+  })
+  const record = await createCommandRecord(db, {
+    serverId,
+    ...TEST_COMMAND_ACTOR,
+    type: 'environment.deploy',
+    payload: {
+      environmentId: opts.environmentId,
+      projectId: opts.projectId,
+      organizationId,
+      projectName: 'tp-deploy-test',
+      composeFiles: [
+        {
+          filename: 'compose.yaml',
+          role: 'runtime',
+          source: 'inline',
+          content: 'services:\n  web:\n    image: nginx\n',
+        },
+      ],
+      hostings: [],
+      deployStrategy: 'sequential',
+      generation: 2,
+    },
+    context: { environmentId: opts.environmentId, generation: 2 },
+  })
+  await db.delete(deployment).where(eq(deployment.serverId, serverId))
+  await db.insert(deployment).values({
+    environmentId: opts.environmentId,
+    serverId,
+    desiredGeneration: 2,
+    appliedGeneration: 1,
+    status: 'applying',
+    lastCommandId: record.id,
+  })
+  const now = Date.now()
+  const sentAt = new Date(now - opts.ranMs - MIN).toISOString()
+  await transitionCommand(db, record.id, { status: 'sent', sentAt })
+  await db
+    .update(command)
+    .set({
+      progress: {
+        version: 1,
+        steps: [
+          { id: 'install', label: 'Install running', state: 'done' },
+          { id: 'build', label: 'Build running', state: 'running' },
+        ],
+        current: 'build',
+        updatedAt: sentAt,
+        runningSince: new Date(now - opts.ranMs).toISOString(),
+      },
+      updatedAt: new Date(now - opts.silentMs).toISOString(),
+    })
+    .where(eq(command.id, record.id))
+  return record
+}
+
+function ackedUntilDone(serverId: string, done: PendingRequestRecord | null) {
+  let looks = 0
+  return registryWithRequest(serverId, (id) => {
+    looks += 1
+    if (done !== null && looks > 1) return { ...done, requestId: id }
+    return ACKED_REQUEST(serverId, id)
+  })
+}
+
+async function readProgress(db: ReturnType<typeof createDenoDb>, id: string) {
+  const [row] = await db
+    .select({ progress: command.progress })
+    .from(command)
+    .where(eq(command.id, id))
+  return row?.progress as { contactLostAt?: string | null } | null
+}
+
+test('a quiet running deploy is kept as checking with the server, not failed', async () => {
+  await withDeployFixtures(async (ctx) => {
+    const record = await quietDeploy({
+      ctx,
+      environmentId: ctx.environmentId,
+      projectId: ctx.projectId,
+      ranMs: 12 * MIN,
+      silentMs: 8 * MIN,
+      recovery: true,
+    })
+    const registry = registryWithRequest(ctx.serverId, (id) => ACKED_REQUEST(ctx.serverId, id))
+    const { sent, queue } = fakeQueue()
+
+    await processCommandEnvelope(ctx.db, registry, buildEnvelope(record, ctx.serverId), {
+      commandQueue: queue,
+      firewallApplyGate: DENY_FIREWALL_APPLY,
+      deployWaitHoldMs: 0,
+      deployWaitEndMs: 0,
+    })
+
+    assertEquals(sent.length, 1)
+    const stored = await getCommandRecord(ctx.db, record.id)
+    assertEquals(stored?.status, 'sent')
+    assertEquals(typeof (await readProgress(ctx.db, record.id))?.contactLostAt, 'string')
+  })
+})
+
+test('a result that arrives after the server was quiet settles the deploy as succeeded', async () => {
+  await withDeployFixtures(async (ctx) => {
+    const record = await quietDeploy({
+      ctx,
+      environmentId: ctx.environmentId,
+      projectId: ctx.projectId,
+      ranMs: 40 * MIN,
+      silentMs: 30 * MIN,
+      recovery: true,
+    })
+    const done: PendingRequestRecord = {
+      ...ACKED_REQUEST(ctx.serverId, record.id),
+      status: 'done',
+      finishedAt: new Date().toISOString(),
+      result: { containers: [] },
+    }
+
+    await processCommandEnvelope(
+      ctx.db,
+      ackedUntilDone(ctx.serverId, done),
+      buildEnvelope(record, ctx.serverId),
+      {
+        firewallApplyGate: DENY_FIREWALL_APPLY,
+      }
+    )
+
+    const stored = await getCommandRecord(ctx.db, record.id)
+    assertEquals(stored?.status, 'succeeded')
+    assertEquals(stored?.progress?.contactLostAt ?? null, null)
+    const [row] = await ctx.db
+      .select({ status: deployment.status })
+      .from(deployment)
+      .where(eq(deployment.serverId, ctx.serverId))
+    assertEquals(row?.status, 'applied')
+  })
+})
+
+test('a failure the server reports after it was quiet settles the deploy as failed with its own words', async () => {
+  await withDeployFixtures(async (ctx) => {
+    const record = await quietDeploy({
+      ctx,
+      environmentId: ctx.environmentId,
+      projectId: ctx.projectId,
+      ranMs: 20 * MIN,
+      silentMs: 10 * MIN,
+      recovery: true,
+    })
+    const failed: PendingRequestRecord = {
+      ...ACKED_REQUEST(ctx.serverId, record.id),
+      status: 'failed',
+      error: 'The daemon restarted while this command was running (last step: Build running).',
+    }
+
+    await processCommandEnvelope(
+      ctx.db,
+      ackedUntilDone(ctx.serverId, failed),
+      buildEnvelope(record, ctx.serverId),
+      {
+        firewallApplyGate: DENY_FIREWALL_APPLY,
+      }
+    )
+
+    const stored = await getCommandRecord(ctx.db, record.id)
+    assertEquals(stored?.status, 'failed')
+    assertEquals(stored?.error?.includes('daemon restarted'), true)
+  })
+})
+
+test('a deploy the server never reports on is failed only after the whole reconcile window, naming the last step', async () => {
+  await withDeployFixtures(async (ctx) => {
+    const quietFor = async (silentMs: number) => {
+      const record = await quietDeploy({
+        ctx,
+        environmentId: ctx.environmentId,
+        projectId: ctx.projectId,
+        ranMs: silentMs + 5 * MIN,
+        silentMs,
+        recovery: true,
+      })
+      const registry = registryWithRequest(ctx.serverId, (id) => ACKED_REQUEST(ctx.serverId, id))
+      await processCommandEnvelope(ctx.db, registry, buildEnvelope(record, ctx.serverId), {
+        commandQueue: fakeQueue().queue,
+        firewallApplyGate: DENY_FIREWALL_APPLY,
+        deployWaitHoldMs: 0,
+        deployWaitEndMs: 0,
+      })
+      return getCommandRecord(ctx.db, record.id)
+    }
+
+    // Just under six hours quiet: still checking (no queue here, so the wait is held).
+    const waiting = await quietFor(5 * 60 * MIN + 50 * MIN)
+    assertEquals(waiting?.status, 'sent')
+
+    const given = await quietFor(6 * 60 * MIN + MIN)
+    assertEquals(given?.status, 'timed_out')
+    assertEquals(given?.error?.includes('Lost contact with the server'), true)
+    assertEquals(given?.error?.includes('Last known step: Build running'), true)
+    assertEquals(given?.error?.includes('still running after 10 minutes'), false)
+  })
+})
+
+test('the deploy time limit of 30 minutes holds only while the server reports', async () => {
+  await withDeployFixtures(async (ctx) => {
+    const run = async (ranMs: number) => {
+      const record = await quietDeploy({
+        ctx,
+        environmentId: ctx.environmentId,
+        projectId: ctx.projectId,
+        ranMs,
+        silentMs: 20_000,
+        recovery: true,
+      })
+      const registry = registryWithRequest(ctx.serverId, (id) => ACKED_REQUEST(ctx.serverId, id))
+      await processCommandEnvelope(ctx.db, registry, buildEnvelope(record, ctx.serverId), {
+        commandQueue: fakeQueue().queue,
+        firewallApplyGate: DENY_FIREWALL_APPLY,
+        deployWaitHoldMs: 0,
+        deployWaitEndMs: 0,
+      })
+      return getCommandRecord(ctx.db, record.id)
+    }
+
+    // Reporting all along and past 30 minutes: stopped, with the real reason.
+    const over = await run(45 * MIN)
+    assertEquals(over?.status, 'timed_out')
+    assertEquals(over?.error?.includes('30 minutes'), true)
+
+    // Reporting and past the old ten minute cap, inside the limit: still running.
+    const allowed = await run(25 * MIN)
+    assertEquals(allowed?.status, 'sent')
+  })
+})
+
+test('a server without sign-of-life reports keeps the fixed cap, worded as no result rather than a stop', async () => {
+  await withDeployFixtures(async (ctx) => {
+    const record = await quietDeploy({
+      ctx,
+      environmentId: ctx.environmentId,
+      projectId: ctx.projectId,
+      ranMs: 11 * MIN,
+      silentMs: 11 * MIN,
+      recovery: false,
+    })
+    const registry = registryWithRequest(ctx.serverId, (id) => ACKED_REQUEST(ctx.serverId, id))
+
+    await processCommandEnvelope(ctx.db, registry, buildEnvelope(record, ctx.serverId), {
+      firewallApplyGate: DENY_FIREWALL_APPLY,
+    })
+
+    const stored = await getCommandRecord(ctx.db, record.id)
+    assertEquals(stored?.status, 'timed_out')
+    assertEquals(stored?.error?.includes('No result came back'), true)
+    assertEquals(stored?.error?.includes('may still have finished'), true)
+  })
+})
+
+test('a result that arrives after the deploy was given up on corrects it to succeeded, once', async () => {
+  await withDeployFixtures(async (ctx) => {
+    const record = await quietDeploy({
+      ctx,
+      environmentId: ctx.environmentId,
+      projectId: ctx.projectId,
+      ranMs: 7 * 60 * MIN,
+      silentMs: 7 * 60 * MIN,
+      recovery: true,
+    })
+    const registry = registryWithRequest(ctx.serverId, (id) => ACKED_REQUEST(ctx.serverId, id))
+    await processCommandEnvelope(ctx.db, registry, buildEnvelope(record, ctx.serverId), {
+      firewallApplyGate: DENY_FIREWALL_APPLY,
+      deployWaitHoldMs: 0,
+    })
+    assertEquals((await getCommandRecord(ctx.db, record.id))?.status, 'timed_out')
+
+    const envelope = {
+      kind: 'command-outcome' as const,
+      requestId: record.id,
+      at: new Date().toISOString(),
+      ok: true,
+      result: { containers: [] },
+    }
+    const failedLate = await settleReportedOutcome(ctx.db, {
+      serverId: ctx.serverId,
+      envelope: { ...envelope, ok: false, error: 'boom' },
+      record: null,
+    })
+    assertEquals(failedLate, true)
+    assertEquals((await getCommandRecord(ctx.db, record.id))?.status, 'timed_out')
+
+    const first = await settleReportedOutcome(ctx.db, {
+      serverId: ctx.serverId,
+      envelope,
+      record: null,
+    })
+    const second = await settleReportedOutcome(ctx.db, {
+      serverId: ctx.serverId,
+      envelope,
+      record: null,
+    })
+    assertEquals([first, second], [true, true])
+
+    const stored = await getCommandRecord(ctx.db, record.id)
+    assertEquals(stored?.status, 'succeeded')
+    assertEquals(stored?.error ?? null, null)
+    assertEquals(
+      stored?.progress?.steps.every((step) => step.state === 'done'),
+      true
+    )
+    const [meta] = await ctx.db
+      .select({ metadata: command.metadata })
+      .from(command)
+      .where(eq(command.id, record.id))
+    assertEquals(
+      (meta?.metadata as { lateOutcome?: { note: string } }).lateOutcome?.note,
+      LATE_OUTCOME_NOTE
+    )
+    const [row] = await ctx.db
+      .select({ status: deployment.status, applied: deployment.appliedGeneration })
+      .from(deployment)
+      .where(eq(deployment.serverId, ctx.serverId))
+    assertEquals(row?.status, 'applied')
+    assertEquals(row?.applied, 2)
+  })
+})
+
+test('an outcome is confirmed to the daemon only when it is stored and the daemon knows the confirmation', async () => {
+  await withConsumerFixtures(async ({ db, serverId }) => {
+    await attachConnectedDaemonStatus(db, serverId)
+    const record = await createCommandRecord(db, {
+      serverId,
+      ...TEST_COMMAND_ACTOR,
+      type: 'environment.deploy',
+      payload: { notAnEnvironmentId: true },
+    })
+    await transitionCommand(db, record.id, { status: 'sent', sentAt: new Date().toISOString() })
+    const envelope = {
+      kind: 'command-outcome' as const,
+      requestId: record.id,
+      at: '2026-10-22T13:46:00.000Z',
+      ok: true,
+    }
+    const stored = ACKED_REQUEST(serverId, record.id)
+
+    // An older daemon is never sent a message it does not know.
+    assertEquals(await ackForReportedOutcome(db, { serverId, envelope, record: stored }), null)
+
+    await touchServerMetadata(db, serverId, { features: ['command-recovery-v1'] })
+    // The cell holds the result for the consumer: confirmed.
+    const ack = await ackForReportedOutcome(db, { serverId, envelope, record: stored })
+    assertEquals(ack?.type, 'command-outcome-ack')
+    assertEquals(ack?.id, record.id)
+    // Nothing holds it yet: not confirmed, so the daemon sends it again.
+    assertEquals(await ackForReportedOutcome(db, { serverId, envelope, record: null }), null)
+  })
+})
+
+test('a deploy that sends a sign of life is counted as heard from, and the quiet time is not held against it', async () => {
+  await withDeployFixtures(async (ctx) => {
+    const record = await quietDeploy({
+      ctx,
+      environmentId: ctx.environmentId,
+      projectId: ctx.projectId,
+      ranMs: 25 * MIN,
+      silentMs: 20 * MIN,
+      recovery: true,
+    })
+    await markCommandContactLost(ctx.db, {
+      commandId: record.id,
+      lastHeardAt: new Date(Date.now() - 20 * MIN).toISOString(),
+    })
+    assertEquals(typeof (await readProgress(ctx.db, record.id))?.contactLostAt, 'string')
+
+    await noteReportedCommands(ctx.db, ctx.serverId, { running: [record.id], unacked: [] })
+
+    const stored = await getCommandRecord(ctx.db, record.id)
+    assertEquals(stored?.progress?.contactLostAt ?? null, null)
+    // 25 minutes in, 20 of them silent: about 5 minutes of counted run time remain on the clock.
+    const since = Date.parse(stored?.progress?.runningSince ?? '')
+    const counted = Date.now() - since
+    assertEquals(counted < 10 * MIN, true)
+  })
+})
+
+test('the next step plan from a quiet server clears the checking mark and gives back the quiet time', async () => {
+  await withDeployFixtures(async (ctx) => {
+    const record = await quietDeploy({
+      ctx,
+      environmentId: ctx.environmentId,
+      projectId: ctx.projectId,
+      ranMs: 25 * MIN,
+      silentMs: 20 * MIN,
+      recovery: true,
+    })
+    assertEquals(
+      await markCommandContactLost(ctx.db, {
+        commandId: record.id,
+        lastHeardAt: new Date(Date.now() - 20 * MIN).toISOString(),
+      }),
+      true
+    )
+    // Marking again changes nothing, and does not reset the silence clock.
+    assertEquals(
+      await markCommandContactLost(ctx.db, { commandId: record.id, lastHeardAt: 'later' }),
+      false
+    )
+
+    const stored = await getCommandRecord(ctx.db, record.id)
+    const result = await recordCommandProgress(ctx.db, {
+      serverId: ctx.serverId,
+      commandId: record.id,
+      progress: { ...stored!.progress!, updatedAt: new Date().toISOString() },
+    })
+
+    assertEquals(result, 'stored')
+    const after = await getCommandRecord(ctx.db, record.id)
+    assertEquals(after?.progress?.contactLostAt ?? null, null)
+    assertEquals(Date.now() - Date.parse(after?.progress?.runningSince ?? '') < 10 * MIN, true)
+  })
+})
+
+// --- A result survives a lost link and a control plane restart -------------------------------
+
+/**
+ * The pending requests a cell keeps outside any one control plane process (Redis or Durable
+ * Object storage). A restart is a new registry over the same map.
+ */
+function survivingCellRequests(serverId: string) {
+  const requests = new Map<string, PendingRequestRecord>()
+  const process = () => {
+    const registry = createDispatchMockRegistry(serverId, { waitForRequestResult: null })
+    const base = registry.getCell(serverId)
+    const cell: DaemonCell = {
+      ...base,
+      getRequest: (id) => Promise.resolve(requests.get(id) ?? null),
+      handleInbound: (envelope) => {
+        if (envelope.kind !== 'command-outcome') return Promise.resolve(null)
+        const held = requests.get(envelope.requestId)
+        if (held === undefined) return Promise.resolve(null)
+        const settled: PendingRequestRecord = {
+          ...held,
+          status: envelope.ok ? 'done' : 'failed',
+          finishedAt: envelope.at,
+          ...(envelope.result === undefined ? {} : { result: envelope.result }),
+          ...(envelope.error === undefined ? {} : { error: envelope.error }),
+        }
+        requests.set(envelope.requestId, settled)
+        return Promise.resolve(settled)
+      },
+    }
+    return Object.assign(registry, { getCell: () => cell })
+  }
+  return { requests, process }
+}
+
+test('a control plane restart mid-run keeps waiting for the deploy without sending it again', async () => {
+  await withDeployFixtures(async (ctx) => {
+    const record = await quietDeploy({
+      ctx,
+      environmentId: ctx.environmentId,
+      projectId: ctx.projectId,
+      ranMs: 14 * MIN,
+      silentMs: 7 * MIN,
+      recovery: true,
+    })
+    const cells = survivingCellRequests(ctx.serverId)
+    cells.requests.set(record.id, ACKED_REQUEST(ctx.serverId, record.id))
+    const { sent, queue } = fakeQueue()
+
+    // The process that sent the deploy died; the queue hands the message to a fresh one.
+    const afterRestart = cells.process()
+    await processCommandEnvelope(ctx.db, afterRestart, buildEnvelope(record, ctx.serverId), {
+      commandQueue: queue,
+      firewallApplyGate: DENY_FIREWALL_APPLY,
+      deployWaitHoldMs: 0,
+      deployWaitEndMs: 0,
+    })
+
+    // Past the old ten minute cap and quiet: still waiting, never sent twice, never failed.
+    assertEquals(afterRestart.enqueueCalled, false)
+    assertEquals(sent.length, 1)
+    const waiting = await getCommandRecord(ctx.db, record.id)
+    assertEquals(waiting?.status, 'sent')
+    assertEquals(waiting?.error ?? null, null)
+    assertEquals(typeof waiting?.progress?.contactLostAt, 'string')
+  })
+})
+
+test('an outcome the server sends again after a reconnect is confirmed and settles the deploy', async () => {
+  await withDeployFixtures(async (ctx) => {
+    const record = await quietDeploy({
+      ctx,
+      environmentId: ctx.environmentId,
+      projectId: ctx.projectId,
+      ranMs: 20 * MIN,
+      silentMs: 12 * MIN,
+      recovery: true,
+    })
+    const cells = survivingCellRequests(ctx.serverId)
+    cells.requests.set(record.id, ACKED_REQUEST(ctx.serverId, record.id))
+    const { sent, queue } = fakeQueue()
+    const consumerDeps = {
+      commandQueue: queue,
+      firewallApplyGate: DENY_FIREWALL_APPLY,
+      deployWaitHoldMs: 0,
+      deployWaitEndMs: 0,
+    }
+
+    // The link is down: the wait is handed back, the deploy is not failed.
+    await processCommandEnvelope(
+      ctx.db,
+      cells.process(),
+      buildEnvelope(record, ctx.serverId),
+      consumerDeps
+    )
+    assertEquals((await getCommandRecord(ctx.db, record.id))?.status, 'sent')
+
+    // The daemon reconnects and sends the result it kept on disk.
+    const replies: unknown[] = []
+    const linkBack = cells.process()
+    const finishedAt = new Date().toISOString()
+    await dispatchDaemonInboundMessage({
+      cell: linkBack.getCell(),
+      db: ctx.db,
+      serverId: ctx.serverId,
+      connectionId: 'conn-after-reconnect',
+      message: {
+        type: 'command-outcome',
+        id: record.id,
+        ok: true,
+        result: { containers: [] },
+        at: finishedAt,
+        daemonRespondedAt: finishedAt,
+      },
+      reply: (message) => replies.push(message),
+    })
+    assertEquals(replies.length, 1)
+    assertEquals((replies[0] as { type: string }).type, 'command-outcome-ack')
+    assertEquals((replies[0] as { id: string }).id, record.id)
+
+    // The handed-back wait picks the stored result up, after a restart or not.
+    await processCommandEnvelope(
+      ctx.db,
+      cells.process(),
+      buildEnvelope(record, ctx.serverId),
+      consumerDeps
+    )
+    assertEquals(sent.length, 1)
+    const stored = await getCommandRecord(ctx.db, record.id)
+    assertEquals(stored?.status, 'succeeded')
+    assertEquals(stored?.progress?.contactLostAt ?? null, null)
+    const [row] = await ctx.db
+      .select({ status: deployment.status, applied: deployment.appliedGeneration })
+      .from(deployment)
+      .where(eq(deployment.serverId, ctx.serverId))
+    assertEquals(row?.status, 'applied')
+    assertEquals(row?.applied, 2)
+  })
+})
+
+test('an outcome from a daemon that does not know the confirmation is stored but not confirmed', async () => {
+  await withDeployFixtures(async (ctx) => {
+    const record = await quietDeploy({
+      ctx,
+      environmentId: ctx.environmentId,
+      projectId: ctx.projectId,
+      ranMs: 2 * MIN,
+      silentMs: 0,
+      recovery: false,
+    })
+    const cells = survivingCellRequests(ctx.serverId)
+    cells.requests.set(record.id, ACKED_REQUEST(ctx.serverId, record.id))
+    const replies: unknown[] = []
+    const at = new Date().toISOString()
+    await dispatchDaemonInboundMessage({
+      cell: cells.process().getCell(),
+      db: ctx.db,
+      serverId: ctx.serverId,
+      connectionId: 'conn-old-daemon',
+      message: { type: 'command-outcome', id: record.id, ok: true, at },
+      reply: (message) => replies.push(message),
+    })
+    assertEquals(replies, [])
+    assertEquals(cells.requests.get(record.id)?.status, 'done')
+  })
+})
+
+// --- The cell's copy of a deploy's request runs out --------------------------------------------
+
+/**
+ * Pending requests that expire like the real cells do: a request read after its
+ * `expiresAt` is `expired`. Every wait moves this cell's clock on by `stepMs`.
+ */
+function expiringCellRequests(serverId: string, stepMs: number) {
+  const requests = new Map<string, PendingRequestRecord>()
+  let offsetMs = 0
+  const registry = createDispatchMockRegistry(serverId, { waitForRequestResult: null })
+  const base = registry.getCell(serverId)
+  const cell: DaemonCell = {
+    ...base,
+    getRequest: (id) => {
+      const held = requests.get(id)
+      if (held === undefined) return Promise.resolve(null)
+      const expired = Date.now() + offsetMs >= Date.parse(held.expiresAt)
+      return Promise.resolve(expired ? { ...held, status: 'expired' as const } : held)
+    },
+    waitForRequest: () => {
+      offsetMs += stepMs
+      return Promise.resolve(null)
+    },
+  }
+  return { requests, registry: Object.assign(registry, { getCell: () => cell }) }
+}
+
+test('a resumed deploy whose request has expired is given up on, never sent again', async () => {
+  await withDeployFixtures(async (ctx) => {
+    const record = await quietDeploy({
+      ctx,
+      environmentId: ctx.environmentId,
+      projectId: ctx.projectId,
+      ranMs: 20 * MIN,
+      silentMs: 10 * MIN,
+      recovery: true,
+    })
+    const cells = expiringCellRequests(ctx.serverId, 0)
+    cells.requests.set(record.id, {
+      ...ACKED_REQUEST(ctx.serverId, record.id),
+      expiresAt: new Date(Date.now() - MIN).toISOString(),
+    })
+    const { sent, queue } = fakeQueue()
+
+    await processCommandEnvelope(ctx.db, cells.registry, buildEnvelope(record, ctx.serverId), {
+      commandQueue: queue,
+      firewallApplyGate: DENY_FIREWALL_APPLY,
+      deployWaitHoldMs: 0,
+      deployWaitEndMs: 0,
+    })
+
+    assertEquals(cells.registry.enqueueCalled, false)
+    assertEquals(sent.length, 0)
+    const stored = await getCommandRecord(ctx.db, record.id)
+    assertEquals(stored?.status, 'timed_out')
+    assertEquals(stored?.error?.includes('Lost contact with the server'), true)
+    assertEquals(stored?.error?.includes('Last known step: Build running'), true)
+    const [row] = await ctx.db
+      .select({ status: deployment.status })
+      .from(deployment)
+      .where(eq(deployment.serverId, ctx.serverId))
+    assertEquals(row?.status, 'failed')
+  })
+})
+
+test('a deploy whose request expires during the wait ends with the lost-contact message', async () => {
+  await withDeployFixtures(async (ctx) => {
+    const record = await quietDeploy({
+      ctx,
+      environmentId: ctx.environmentId,
+      projectId: ctx.projectId,
+      ranMs: 20 * MIN,
+      silentMs: 0,
+      recovery: true,
+    })
+    // Still held when the wait is picked up; gone by the first poll.
+    const cells = expiringCellRequests(ctx.serverId, 2 * MIN)
+    cells.requests.set(record.id, {
+      ...ACKED_REQUEST(ctx.serverId, record.id),
+      expiresAt: new Date(Date.now() + MIN).toISOString(),
+    })
+    const { sent, queue } = fakeQueue()
+
+    await processCommandEnvelope(ctx.db, cells.registry, buildEnvelope(record, ctx.serverId), {
+      commandQueue: queue,
+      firewallApplyGate: DENY_FIREWALL_APPLY,
+    })
+
+    assertEquals(cells.registry.enqueueCalled, false)
+    assertEquals(sent.length, 0)
+    const stored = await getCommandRecord(ctx.db, record.id)
+    assertEquals(stored?.status, 'timed_out')
+    assertEquals(stored?.error?.includes('Lost contact with the server'), true)
+  })
+})
+
+test('a late success for a deploy a newer one replaced changes nothing the newer deploy owns', async () => {
+  await withDeployFixtures(async (ctx) => {
+    const record = await quietDeploy({
+      ctx,
+      environmentId: ctx.environmentId,
+      projectId: ctx.projectId,
+      ranMs: 7 * 60 * MIN,
+      silentMs: 7 * 60 * MIN,
+      recovery: true,
+    })
+    const registry = registryWithRequest(ctx.serverId, (id) => ACKED_REQUEST(ctx.serverId, id))
+    await processCommandEnvelope(ctx.db, registry, buildEnvelope(record, ctx.serverId), {
+      firewallApplyGate: DENY_FIREWALL_APPLY,
+      deployWaitHoldMs: 0,
+    })
+    assertEquals((await getCommandRecord(ctx.db, record.id))?.status, 'timed_out')
+
+    // A newer deploy now owns the server's deployment row and its container.
+    const newer = await createCommandRecord(ctx.db, {
+      serverId: ctx.serverId,
+      ...TEST_COMMAND_ACTOR,
+      type: 'environment.deploy',
+      payload: { notAnEnvironmentId: true },
+    })
+    await ctx.db
+      .update(deployment)
+      .set({
+        lastCommandId: newer.id,
+        desiredGeneration: 3,
+        status: 'applied',
+        appliedGeneration: 3,
+      })
+      .where(eq(deployment.serverId, ctx.serverId))
+    await ctx.db.insert(container).values({
+      serviceId: ctx.webServiceId,
+      serverId: ctx.serverId,
+      containerId: 'newer-cid',
+      containerName: 'tp-deploy-test-web-1',
+      status: 'running',
+      composeServiceName: 'web',
+      ordinal: 1,
+    })
+
+    assertEquals(
+      await settleReportedOutcome(ctx.db, {
+        serverId: ctx.serverId,
+        envelope: {
+          kind: 'command-outcome',
+          requestId: record.id,
+          at: new Date().toISOString(),
+          ok: true,
+          result: { containers: [] },
+        },
+        record: null,
+      }),
+      true
+    )
+
+    assertEquals((await getCommandRecord(ctx.db, record.id))?.status, 'succeeded')
+    const [row] = await ctx.db
+      .select({
+        status: deployment.status,
+        applied: deployment.appliedGeneration,
+        last: deployment.lastCommandId,
+      })
+      .from(deployment)
+      .where(eq(deployment.serverId, ctx.serverId))
+    assertEquals(row, { status: 'applied', applied: 3, last: newer.id })
+    const containers = await ctx.db
+      .select({ containerId: container.containerId, status: container.status })
+      .from(container)
+      .where(eq(container.serverId, ctx.serverId))
+    assertEquals(containers, [{ containerId: 'newer-cid', status: 'running' }])
   })
 })

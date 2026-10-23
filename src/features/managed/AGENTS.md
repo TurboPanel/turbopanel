@@ -967,7 +967,7 @@ to `managed.promote` when Orchestrator is absent or the recover API fails.
 drain, fence stop captures the old primary's final GTID (`captureSwitchoverGtid`
 on `managed.lifecycle`); promotion carries `requiredExecutedGtidSet` so the
 daemon waits on the target before `managed.promote`. Operator promote also
-requires `fullyApplied === true` on a fresh health probe (`evaluateOperatorPromoteGate`).
+requires `fullyApplied === true` on a fresh health probe (`evaluateOperatorPromoteGate`), or an idle pair (streaming, zero lag, applied set reported, no received set); the switchover wait above is the real proof, so an idle-only pass is refused (row `blocked`, nothing queued) if the old primary is offline when the switchover starts (`requireFence`).
 A promote failure before the target becomes writable (`gtid_wait_timeout` /
 `gtid_wait_error`, including stale-command timeout) enqueues reactivate + undrain
 on the old primary; that path needs a command queue (Deno and Workers stale-command
@@ -992,38 +992,60 @@ the command context; a second failure is logged (`replicas may fail to stream
 until the slots exist`) and not retried. A follow-mode replica whose error
 contains `did not reach streaming` is flagged `needs_resync` when it is still
 `role=replica` and `status=ready`. Other repoint failures stay log-only. None
-of this fails the promote. After a planned switchover the former primary would be
+of this fails the promote. After a planned switchover the former primary is
 re-seeded automatically from the new primary (`reseed-demoted-primary.ts`), but
-only when nothing on it can be missing from the new primary, and today that
-proof is incomplete, so in practice **the re-seed does not fire yet** and the
-former primary stays `needs_resync` until an operator runs Resync. The checks,
-all required: the drain AND the stop are proven (`fenced`); the operator did not
+only when nothing on it can be missing from the new primary. The checks, all
+required: the drain AND the stop are proven (`fenced`); the operator did not
 force the switchover; Postgres only; a fresh reading taken at switchover start
 showed the target streaming with zero lag, at most 30 s old (`targetCaughtUp`,
 `switchover-evidence.ts`) — that reading predates the drain and the stop, so it
-is necessary but never sufficient; and a **final position taken after the stop**
-shows the new primary at or past the old primary's last write
-(`oldPrimaryFinalLsn` <= `newPrimaryReplayLsn` on the recovery row,
-`evaluateFinalPosition`). No host result reports those two positions yet, so
-the re-seed is skipped with `reseedNote` "final position not proven". Needed
-from the host software: the Postgres stop result carries the old primary's
-final write position after a clean shutdown (for example the shutdown
-checkpoint location), and the promote result carries the new primary's replay
-position at promote. MySQL and MariaDB are never re-seeded yet (the promote
+is necessary but never sufficient; the daemons of BOTH servers list
+`managed-switchover-final-position-v1` (else `reseedNote` "daemon too old"); a
+**final position taken after the stop** shows the new primary at or past the old
+primary's last write (`evaluateFinalPosition`); and the primary has not moved
+since the switchover began. The two positions arrive in host results and are
+stored by `switchover-position.ts` before the follow-up runs, strictly validated
+(`pg_lsn` text plus a timeline, Postgres switchover rows only, never once the
+re-seed is decided): the fence stop (`managed.lifecycle` stop with
+`switchoverRecoveryId` and `primaryEpoch`, sent only to a daemon that lists the
+feature) returns `oldPrimaryFinalLsn` / `oldPrimaryFinalTimeline`, where the
+cleanly stopped primary's WAL ENDS (the host works it out: `pg_controldata`'s
+"Latest checkpoint location" is only where the shutdown record starts, a
+caught-up standby replays to its end), and the promote result returns
+`newPrimaryReplayLsn` / `newPrimaryTimeline`, the standby's
+`pg_last_wal_replay_lsn()` read after recovery ended. They are kept on the
+recovery row as `oldPrimaryFinalLsn`, `oldPrimaryFinalTimeline`,
+`newPrimaryReplayLsn`, `newPrimaryTimeline` (and `primaryEpochAtStart`). The new
+primary must be on the timeline right after the old one's and its position not
+before the old one's; anything missing, malformed or behind fails closed with
+`reseedNote` "final position not proven". **Primary epoch**
+(`primary-epoch.ts`): an integer `primaryEpoch` in the managed row's metadata
+(absent = 0, kept by `parseManagedResidual`), bumped in the same statement that
+records a new primary (`managed.promote` side effect and the failover role
+flip). The switchover records the epoch it began at; the re-seed is valid only
+while the epoch is exactly one past it. MySQL and MariaDB are never re-seeded yet (the promote
 waits for the final position but nothing confirms the new primary's host
-honoured it). Further requirements once proven: the new primary is `ready`, no
+honoured it). Further requirements: the new primary is `ready`, no
 backup or restore is queued or running, both servers are connected, and no
 other recovery is in flight. The decision is claimed on the recovery row
 (`reseedState`) BEFORE the wipe is queued, so a retry or a crash can never queue
 a second wipe (at worst nothing is queued); `reseedState` queued, skipped or
-failed with `reseedNote` is visible there. The queued wipe carries a guard in
-its command metadata (`switchoverReseed`: recovery id, source, target); just
-before the command is sent the consumer refuses it (`reseed_superseded`) if the
-new primary is no longer the ready primary, the former primary is no longer a
-replica, or another recovery started since. Residual risk: the host payload has
-no recovery id or epoch, so a wipe already sent to the host cannot be refused
-there; closing that needs the recovery id and an epoch in the `managed.apply`
-payload and a host-side check (paired host change).
+failed with `reseedNote` is visible there. The queued wipe is guarded twice.
+In the panel, its command metadata carries `switchoverReseed` (recovery id,
+source, target, epoch) and just before the command is sent the consumer refuses
+it (`reseed_superseded`) if the new primary is no longer the ready primary, the
+former primary is no longer a replica, another recovery started, or the epoch
+moved. On the host, the `managed.apply` payload carries the same `switchoverReseed`
+and a daemon that lists the feature refuses a stale wipe BEFORE touching the data
+directory (recovery id must be the one its own fence stop recorded, epoch exactly
+one past the recorded one, member still fenced); an operator Resync carries no
+`switchoverReseed` and is never checked. A daemon without the feature ignores
+the field, which is why the panel does not re-seed at all unless both daemons
+list it.
+A host refusal comes back as a failed `managed.apply`; the consumer absorbs it
+(`absorbRefusedReseed`): the cluster is not marked `failed` and the former
+primary stays `needs_resync` (only `applying` is released), and the recovery row
+gets `reseedState: failed` with the host's reason.
 The
 payload always carries `engine` (loaded from the
 managed row when the caller omits it).
