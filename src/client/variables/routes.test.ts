@@ -716,6 +716,7 @@ test('binding-owned variables reject PATCH/DELETE and conflict on POST', async (
       const [insertedLogin] = await db
         .insert(login)
         .values({
+          recipe: 'app',
           managedId: insertedManaged!.id,
           role: 'user',
           username: bindTest,

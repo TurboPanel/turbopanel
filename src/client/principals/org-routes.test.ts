@@ -233,6 +233,7 @@ test('GET /organizations/:id/principals lists forms, servers, project and orphan
         .returning({ id: managed.id })
       await db.insert(login).values([
         {
+          recipe: 'app',
           managedId: cluster!.id,
           principalId: loginOnly,
           role: 'user',
@@ -240,6 +241,7 @@ test('GET /organizations/:id/principals lists forms, servers, project and orphan
           appliedUsername: `dbonly_${tag}`,
         },
         {
+          recipe: 'admin',
           managedId: cluster!.id,
           principalId: null,
           role: 'root',
@@ -355,6 +357,7 @@ test('DELETE /organizations/:id/principals/:principalId refuses a principal that
         })
         .returning({ id: managed.id })
       await db.insert(login).values({
+        recipe: 'app',
         managedId: cluster!.id,
         principalId: withLogin,
         role: 'user',

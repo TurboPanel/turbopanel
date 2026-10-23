@@ -677,6 +677,7 @@ async function withConsumerOnlyManagedFixtures(
   const [account] = await db
     .insert(login)
     .values({
+      recipe: 'app',
       managedId: cluster!.id,
       role: 'user',
       username: 'appuser',

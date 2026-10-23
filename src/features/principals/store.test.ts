@@ -456,6 +456,7 @@ test('resolveManagedAppliedUsername suffixes when short name taken', async () =>
   })
   // The cluster's own root login holds the bare engine admin name.
   await db.insert(login).values({
+    recipe: 'app',
     managedId,
     role: 'root',
     username: 'postgres',
@@ -463,6 +464,7 @@ test('resolveManagedAppliedUsername suffixes when short name taken', async () =>
   })
 
   await db.insert(login).values({
+    recipe: 'app',
     managedId,
     role: 'user',
     username: 'webuser',

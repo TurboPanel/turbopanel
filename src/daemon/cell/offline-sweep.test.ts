@@ -36,6 +36,7 @@ import {
   sweepExpiredExecutionLogsSafely,
   sweepExpiredWebhookDeliveriesSafely,
   sweepOnce,
+  sweepPeakHistorySafely,
   takeLastOfflineSweepScheduledTimeForTests,
   updateNullGraceBookkeeping,
 } from './offline-sweep.ts'
@@ -1902,4 +1903,27 @@ it('the skipped-phase list follows the configured upgrade tick cadence', () => {
   assertEquals(optionalPhaseNames(minuteFive, 5).includes('upgrade-history'), true)
   assertEquals(optionalPhaseNames(minuteFifteen).includes('upgrade-history'), true)
   assertEquals(newSkippedPhases(5).upgradeTickMinutes, 5)
+})
+
+it('the peak history prune deletes through the table and never throws', async () => {
+  const deleted: unknown[] = []
+  const working = {
+    delete: () => ({
+      where: () => ({
+        returning: async () => {
+          deleted.push(1)
+          return [{ id: 'a' }, { id: 'b' }]
+        },
+      }),
+    }),
+  } as unknown as Parameters<typeof sweepPeakHistorySafely>[0]
+  await sweepPeakHistorySafely(working)
+  assertEquals(deleted.length, 1)
+
+  const broken = {
+    delete: () => {
+      throw new Error('database down')
+    },
+  } as unknown as Parameters<typeof sweepPeakHistorySafely>[0]
+  await sweepPeakHistorySafely(broken)
 })

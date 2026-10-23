@@ -423,7 +423,7 @@ test('serializeManagedLogin keeps the users shape, names the principal and login
     databases: ['postgres'],
     privileges: ['read-write'],
     connectionRole: 'read-write' as const,
-    grantMode: 'preset' as const,
+    grantMode: 'recipe' as const,
     tool: false,
     allowedSources: undefined,
     maxConnections: undefined,
