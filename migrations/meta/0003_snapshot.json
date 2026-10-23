@@ -1,5 +1,5 @@
 {
-  "id": "e2a50d2b-056c-46af-982e-5135669f350e",
+  "id": "69bb1375-df98-4d22-b890-fbb81adaabb3",
   "prevId": "0b2d2b49-7f32-426a-b5ec-e4d9ba54ff8c",
   "version": "7",
   "dialect": "postgresql",
@@ -8484,18 +8484,6 @@
           "type": "uuid",
           "primaryKey": false,
           "notNull": false
-        },
-        "kind": {
-          "name": "kind",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "icon": {
-          "name": "icon",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
         }
       },
       "indexes": {
@@ -8678,14 +8666,6 @@
         "project_slug_check": {
           "name": "project_slug_check",
           "value": "slug ~ '^[a-z0-9][a-z0-9-]{0,39}$'"
-        },
-        "project_kind_check": {
-          "name": "project_kind_check",
-          "value": "kind IS NULL OR kind IN ('compose', 'managed', 'system')"
-        },
-        "project_icon_check": {
-          "name": "project_icon_check",
-          "value": "icon IS NULL OR icon IN ('cube', 'globe', 'cart', 'bolt', 'chat', 'chart', 'code', 'book', 'layers', 'mail', 'rocket', 'image')"
         }
       },
       "isRLSEnabled": false
@@ -10319,6 +10299,10 @@
         "server_machine_class_source_check": {
           "name": "server_machine_class_source_check",
           "value": "machine_class_source IN ('detected', 'operator')"
+        },
+        "server_os_architecture_check": {
+          "name": "server_os_architecture_check",
+          "value": "os_architecture IS NULL OR os_architecture IN ('x86_64', 'aarch64')"
         },
         "server_offline_reason_check": {
           "name": "server_offline_reason_check",

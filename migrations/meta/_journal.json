@@ -26,8 +26,15 @@
     {
       "idx": 3,
       "version": "7",
-      "when": 1792771326959,
-      "tag": "0003_project_kind_icon",
+      "when": 1792771227864,
+      "tag": "0003_server_architecture_check",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1792773407607,
+      "tag": "0004_project_kind_icon",
       "breakpoints": true
     }
   ]
