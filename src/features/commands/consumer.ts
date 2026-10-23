@@ -2947,6 +2947,7 @@ async function applyManagedPromoteSideEffect(
           .set({
             role: 'replica',
             status: 'needs_resync',
+            replicaClass: demotedReplicaClassSql(),
             updatedAt,
           })
           .where(and(eq(replica.id, demotedMemberId), eq(replica.managedId, managedId)))
@@ -3076,6 +3077,16 @@ async function applyManagedPromoteSideEffect(
   }
 }
 
+/**
+ * A demoted primary keeps its replica class; the cluster's first member has
+ * none (it never was a replica), and without one it would rejoin as a plain
+ * read replica, lose its watcher and leave the pair with no failover
+ * candidate. It becomes a failover replica, like any member added by hand.
+ */
+function demotedReplicaClassSql() {
+  return sql<string>`coalesce(${replica.replicaClass}, 'failover')`
+}
+
 async function applyManagedRoleFlip(
   db: Db,
   params: {
@@ -3093,6 +3104,7 @@ async function applyManagedRoleFlip(
         .set({
           role: 'replica',
           status: 'needs_resync',
+          replicaClass: demotedReplicaClassSql(),
           updatedAt: params.updatedAt,
         })
         .where(and(eq(replica.id, params.demotedMemberId), eq(replica.managedId, params.managedId)))
