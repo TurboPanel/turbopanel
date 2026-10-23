@@ -96,9 +96,9 @@ describe('acme-issuance-event real-Postgres end-to-end', () => {
             .select({ metadata: tls.metadata, status: tls.status })
             .from(tls)
             .where(eq(tls.id, row!.id))
-          expect((after?.metadata as { acme?: { lastError?: string } } | null)?.acme?.lastError).toBe(
-            'received fatal alert: InternalError'
-          )
+          expect(
+            (after?.metadata as { acme?: { lastError?: string } } | null)?.acme?.lastError
+          ).toBe('received fatal alert: InternalError')
           // The whole point of the merge-patch design: a recorded issuance
           // failure must never touch `status`, which is what deploy-readiness
           // (`isReadyCandidate`) actually reads.
