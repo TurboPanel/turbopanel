@@ -150,3 +150,64 @@ export function orgOptionsPatchRoute<P extends Record<string, unknown>>(
     return c.json(params.respond(options))
   }
 }
+
+/** The stored `deploy_timeout_minutes` (null = default), or `undefined` when the organization does not exist. */
+async function loadDeployTimeoutMinutes(db: Db, id: string): Promise<number | null | undefined> {
+  const [row] = await db
+    .select({ minutes: organization.deployTimeoutMinutes })
+    .from(organization)
+    .where(eq(organization.id, id))
+    .limit(1)
+  return row ? row.minutes : undefined
+}
+
+/** `GET` for the deploy time limit, which is a column of its own, not an option key. */
+export function deployTimeoutGetRoute(
+  gate: OrgSettingsGate,
+  respond: (minutes: number | null) => object
+) {
+  return async (c: Context<AppEnv>) => {
+    const scope = await openOrgSettingsScope(c, gate)
+    if (scope instanceof Response) return scope
+    const minutes = await loadDeployTimeoutMinutes(scope.db, scope.id)
+    if (minutes === undefined) return c.json({ error: 'Not found' }, 404)
+    return c.json(respond(minutes))
+  }
+}
+
+/** `PUT` for the deploy time limit: validate, write the column, audit, answer from what was stored. */
+export function deployTimeoutPutRoute(
+  params: Readonly<{
+    gate: OrgSettingsGate
+    parse: (body: Record<string, unknown>) => ParsedPatch<{ deployTimeoutMinutes: number }>
+    respond: (minutes: number | null) => object
+  }>
+) {
+  return async (c: Context<AppEnv>) => {
+    const scope = await openOrgSettingsScope(c, params.gate)
+    if (scope instanceof Response) return scope
+
+    const body = await parseJsonBody(c)
+    if (body instanceof Response) return body
+
+    const parsed = params.parse(body)
+    if (!parsed.ok) return c.json({ error: parsed.error }, parsed.status)
+
+    if ((await loadDeployTimeoutMinutes(scope.db, scope.id)) === undefined) {
+      return c.json({ error: 'Not found' }, 404)
+    }
+    await scope.db
+      .update(organization)
+      .set({
+        deployTimeoutMinutes: parsed.patch.deployTimeoutMinutes,
+        updatedAt: new Date().toISOString(),
+      })
+      .where(eq(organization.id, scope.id))
+    const stored = await loadDeployTimeoutMinutes(scope.db, scope.id)
+
+    await recordOrgSettingAudit(c, scope, 'organization.deploy_timeout.set', {
+      deployTimeoutMinutes: parsed.patch.deployTimeoutMinutes,
+    })
+    return c.json(params.respond(stored ?? null))
+  }
+}

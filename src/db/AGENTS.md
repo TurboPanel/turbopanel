@@ -39,8 +39,14 @@ one new baseline, `0000_base.sql`, written by `pnpm generate --name base` from
 owner wipes the panel database and every server and installs production from
 this baseline; nothing is carried over. Checked against the migrations it
 replaced, a fresh `0000_base` database dumps to the same schema, constraints,
-indexes and comments; only the column order of a few tables differs, because the
-old baseline had columns added later.
+indexes and comments, except for the changes made in the baseline before the
+wipe because they are hard to make later: `organization.deploy_timeout_minutes`
+(integer, `CHECK` 5 to 240, null means 30; it replaces the `deployTimeoutMinutes`
+option key), the project template stamp (`template_code`, `template_track`,
+`template_version`, `template_digest`: all four set or all null, each shaped by a
+`CHECK`) and `server.preferred_datacenter_id` (nullable, `ON DELETE SET NULL`).
+Otherwise only the column order of a few tables differs, because the old
+baseline had columns added later.
 
 **Re-baselining is closed for good.** `0000_base.sql` is the baseline and every
 later migration is additive and immutable, tested as an upgrade from the
@@ -128,8 +134,8 @@ skipped on every instance that already ran it. After `pnpm generate`, run
 changed or removed entry) and commit the manifest with the migration. The
 test also checks the journal is contiguous and strictly increasing, every
 `NNNN_*.sql` on disk is journaled, and the `meta/NNNN_snapshot.json` `prevId`
-chain is intact. The manifest is frozen (generation 12); the folds of
-2026-09-17 (8 → 9), 2026-10-17 (9 → 10), 2026-10-19 (10 → 11) and 2026-10-20 (11 → 12) were the last. With the manifest frozen, layer two
+chain is intact. The manifest is frozen (generation 13); the fold of
+2026-10-22 (12 → 13) was the last. With the manifest frozen, layer two
 (`scripts/check-migration-additions.mjs`, `pnpm check:migration-additions
 [base-ref]`) diffs `migrations/` against the base ref in CI and accepts
 additions only; it reads the _base's_ `frozen` flag, so a commit cannot

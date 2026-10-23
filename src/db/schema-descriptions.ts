@@ -303,6 +303,8 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
     columns: {
       next_linux_id:
         'Next uid/gid for a Hosting Account on servers this organization owns; starts at 30001, rises by one per new account, never reused.',
+      deploy_timeout_minutes:
+        'The longest a deploy may run, in whole minutes from 5 to 240, counted only while the server reports; null means the default of 30.',
       options:
         'Org-wide settings merged key-by-key by the organization routes (`defaultServerTimezone`, `maxServers`, `acmeEnabled`, `managedDatabase`, `phpModes` and more).',
       backup_destination_id:
@@ -954,6 +956,14 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'Client jsonb: the catalog `code` of a template or managed engine project, plus free caller keys; the project type lives in `kind`.',
       kind: 'What the project is: `compose` (a template too), `managed` or platform-only `system`; NULL while a draft that has not chosen yet.',
       icon: 'Icon key from the fixed list the project screens offer; NULL means the default, and a managed project ignores it.',
+      template_code:
+        'Catalog code of the template the project was created from; NULL when not from a template. The four template columns are set together or all NULL.',
+      template_track:
+        'Software release line of the template the project was created from, such as `6.8`; NULL when not from a template.',
+      template_version:
+        'Packaging version (`major.minor.patch`) of the template the project was created from; NULL when not from a template.',
+      template_digest:
+        'Content digest (`sha256:` plus 64 hex digits) of the exact template version the project was created from; NULL when not from a template.',
       options:
         'Jsonb: `compose`, `containerNaming`, `defaultServerId`, `composeSource`, and deploy defaults `drainSeconds`, `healthTimeoutSeconds`, `rollbackWindowMinutes`.',
       organization_id:
@@ -1534,6 +1544,8 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
     summary:
       'One enrolled host per row (uuidv7 id); daemon enroll and heartbeats project host facts onto it, operators set the name, options and pins via PATCH.',
     columns: {
+      preferred_datacenter_id:
+        'The datacenter whose network this server prefers when it belongs to several; NULL means no preference; set null when the datacenter is deleted.',
       metadata:
         'Daemon-projected host facts jsonb: `resources`, `geo`, `docker`, `runtimes`, `cell` plus the operator `hardwareProfile`; hostname, OS and NTP have own columns.',
       options:

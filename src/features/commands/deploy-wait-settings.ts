@@ -7,10 +7,7 @@
 import { eq } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { organization, server } from '../../db/schema.ts'
-import {
-  parseOrganizationOptions,
-  resolveDeployTimeoutMs,
-} from '../organizations/organization-options.ts'
+import { resolveDeployTimeoutMs } from '../organizations/organization-options.ts'
 import { COMMAND_RECOVERY_FEATURE } from '../../lib/version-wire.ts'
 import { DEPLOY_DEFAULT_TIMEOUT_MS } from './deploy-limits.ts'
 import { getServerDaemonStateByServerId } from '../servers/server-identity-db.ts'
@@ -28,23 +25,24 @@ export async function serverHasCommandRecovery(db: Db, serverId: string): Promis
 }
 
 /**
- * The deploy time limit for a server's organization, from the stored options
- * (any value outside 5 to 240 whole minutes is dropped, so 30 minutes applies).
+ * The deploy time limit for a server's organization, from the stored
+ * `organization.deploy_timeout_minutes` (null, or any value outside 5 to 240
+ * whole minutes, means 30 minutes).
  */
-export function deployRunCapFromOptions(options: unknown): number {
-  return resolveDeployTimeoutMs(parseOrganizationOptions(options))
+export function deployRunCapFromMinutes(minutes: unknown): number {
+  return resolveDeployTimeoutMs(minutes)
 }
 
 /** The organization's deploy time limit for this server; 30 minutes when it cannot be read. */
 export async function loadDeployRunCapMs(db: Db, serverId: string): Promise<number> {
   try {
     const [row] = await db
-      .select({ options: organization.options })
+      .select({ minutes: organization.deployTimeoutMinutes })
       .from(server)
       .innerJoin(organization, eq(organization.id, server.organizationId))
       .where(eq(server.id, serverId))
       .limit(1)
-    return deployRunCapFromOptions(row?.options)
+    return deployRunCapFromMinutes(row?.minutes)
   } catch {
     return DEPLOY_DEFAULT_TIMEOUT_MS
   }

@@ -356,12 +356,13 @@ export function parseDeployTimeoutPatch(
   return { ok: true, patch: { deployTimeoutMinutes: minutes } }
 }
 
-export function deployTimeoutGetResponse(options: { deployTimeoutMinutes?: number }) {
-  return { deployTimeoutMinutes: Math.round(resolveDeployTimeoutMs(options) / 60_000) }
+/** Answer from the stored column value (`null` = the 30-minute default). */
+export function deployTimeoutGetResponse(minutes: number | null) {
+  return { deployTimeoutMinutes: Math.round(resolveDeployTimeoutMs(minutes) / 60_000) }
 }
 
-export function deployTimeoutPutResponse(options: { deployTimeoutMinutes?: number }) {
-  return { ok: true as const, ...deployTimeoutGetResponse(options) }
+export function deployTimeoutPutResponse(minutes: number | null) {
+  return { ok: true as const, ...deployTimeoutGetResponse(minutes) }
 }
 
 export function parseTlsSettingsPatch(

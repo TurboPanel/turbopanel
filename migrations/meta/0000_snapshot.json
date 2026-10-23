@@ -1,5 +1,5 @@
 {
-  "id": "e1301e1b-3782-48e9-bf99-ced8ffac5280",
+  "id": "27012479-5849-49fa-89f2-663ddf7bf658",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -8271,6 +8271,12 @@
           "notNull": true,
           "default": 30001
         },
+        "deploy_timeout_minutes": {
+          "name": "deploy_timeout_minutes",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
         "backup_destination_id": {
           "name": "backup_destination_id",
           "type": "uuid",
@@ -8317,6 +8323,10 @@
         "organization_next_linux_id_check": {
           "name": "organization_next_linux_id_check",
           "value": "\"organization\".\"next_linux_id\" >= 30001 AND \"organization\".\"next_linux_id\" <= 60001"
+        },
+        "organization_deploy_timeout_minutes_check": {
+          "name": "organization_deploy_timeout_minutes_check",
+          "value": "\"organization\".\"deploy_timeout_minutes\" IS NULL OR (\"organization\".\"deploy_timeout_minutes\" >= 5 AND \"organization\".\"deploy_timeout_minutes\" <= 240)"
         }
       },
       "isRLSEnabled": false
@@ -9217,6 +9227,30 @@
           "type": "text",
           "primaryKey": false,
           "notNull": false
+        },
+        "template_code": {
+          "name": "template_code",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "template_track": {
+          "name": "template_track",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "template_version": {
+          "name": "template_version",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "template_digest": {
+          "name": "template_digest",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -9403,6 +9437,26 @@
         "project_kind_check": {
           "name": "project_kind_check",
           "value": "kind IS NULL OR kind IN ('compose', 'managed', 'system')"
+        },
+        "project_template_stamp_check": {
+          "name": "project_template_stamp_check",
+          "value": "(template_code IS NULL AND template_track IS NULL AND template_version IS NULL AND template_digest IS NULL) OR (template_code IS NOT NULL AND template_track IS NOT NULL AND template_version IS NOT NULL AND template_digest IS NOT NULL)"
+        },
+        "project_template_code_check": {
+          "name": "project_template_code_check",
+          "value": "template_code IS NULL OR template_code ~ '^[a-z][a-z0-9-]{0,63}$'"
+        },
+        "project_template_track_check": {
+          "name": "project_template_track_check",
+          "value": "template_track IS NULL OR template_track ~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$'"
+        },
+        "project_template_version_check": {
+          "name": "project_template_version_check",
+          "value": "template_version IS NULL OR template_version ~ '^[0-9]+[.][0-9]+[.][0-9]+$'"
+        },
+        "project_template_digest_check": {
+          "name": "project_template_digest_check",
+          "value": "template_digest IS NULL OR template_digest ~ '^sha256:[0-9a-f]{64}$'"
         },
         "project_icon_check": {
           "name": "project_icon_check",
@@ -10880,6 +10934,12 @@
           "type": "timestamp(3) with time zone",
           "primaryKey": false,
           "notNull": false
+        },
+        "preferred_datacenter_id": {
+          "name": "preferred_datacenter_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -10978,6 +11038,22 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "idx_server_preferred_datacenter_id": {
+          "name": "idx_server_preferred_datacenter_id",
+          "columns": [
+            {
+              "expression": "preferred_datacenter_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "uuid_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -11013,6 +11089,19 @@
           "tableTo": "tier",
           "columnsFrom": [
             "preferred_tier_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "server_preferred_datacenter_id_datacenter_id_fk": {
+          "name": "server_preferred_datacenter_id_datacenter_id_fk",
+          "tableFrom": "server",
+          "tableTo": "datacenter",
+          "columnsFrom": [
+            "preferred_datacenter_id"
           ],
           "columnsTo": [
             "id"
