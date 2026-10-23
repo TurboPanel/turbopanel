@@ -89,7 +89,7 @@ export async function probeServerNetworkCheck(
       .createRequestAndWait(envelope, params.timeoutMs)
     if (record.status === 'expired') return { status: 'not_tested', reason: 'timeout' }
     const result = record.result as { ok?: unknown; results?: unknown } | null
-    if (record.status === 'failed' || !result || result.ok !== true) {
+    if (record.status === 'failed' || result?.ok !== true) {
       return { status: 'not_tested', reason: 'error' }
     }
     if (!Array.isArray(result.results) || !result.results.every(isEntry)) {
