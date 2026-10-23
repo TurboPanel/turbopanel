@@ -684,7 +684,7 @@ export const datacenterPaths: Record<string, unknown> = {
         },
         '409': {
           description:
-            '`datacenter_not_trusted` — an untrusted datacenter is never used for server-to-server traffic. `peers_unreachable` — a reachability check run before saving found servers that cannot reach each other on this network; `check` has the per-server results. Send `confirmUnreachable: true` to save anyway. Servers that could not be tested (older host, offline) never block.',
+            "`datacenter_not_trusted` — an untrusted datacenter is never used for server-to-server traffic. `peers_unreachable` — a reachability check run before saving found servers that cannot reach each other on this network; `check` has the per-server results. Send `confirmUnreachable: true` to save anyway. Servers that could not be tested (older host, offline) never block. `network_choice_changed` — a network's number was edited by someone else while this save was being checked; nothing was written, read the networks again and retry.",
           content: { 'application/json': { schema: clientErrorJson } },
         },
       },
