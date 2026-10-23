@@ -126,6 +126,12 @@ test('parseCreateProjectMetadata strips reserved component and type keys', () =>
   assertEquals(parsed.metadata?.note, 'keep')
 })
 
+test('parseCreateProjectMetadata strips a caller catalog code so a compose project never reads as a template', () => {
+  const parsed = parseCreateProjectMetadata({ metadata: { code: 'wordpress', note: 'keep' } })
+  if (!parsed.ok) throw new TypeError('expected valid metadata')
+  assertEquals(parsed.metadata, { note: 'keep' })
+})
+
 test('stampCreateProjectMetadata lets the canonical code win over caller metadata', () => {
   assertEquals(stampCreateProjectMetadata({ code: 'caller', note: 'keep' }, { code: 'postgres' }), {
     code: 'postgres',

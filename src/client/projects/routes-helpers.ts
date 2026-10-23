@@ -197,8 +197,12 @@ export function parseCreateProjectOptions(
   return { ok: true, options: optionsResult }
 }
 
-/** Reserved keys the public create path must not persist from caller metadata. */
-export const CREATE_PROJECT_PROMOTED_METADATA_KEYS = ['component', 'type'] as const
+/**
+ * Reserved keys the public create path must not persist from caller metadata.
+ * `code` is stamped from the catalog entry (template and managed engines only),
+ * so a caller cannot make a compose project read as a template.
+ */
+export const CREATE_PROJECT_PROMOTED_METADATA_KEYS = ['component', 'type', 'code'] as const
 
 export function parseCreateProjectMetadata(
   body: Record<string, unknown>

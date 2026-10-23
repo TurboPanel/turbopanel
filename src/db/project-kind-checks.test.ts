@@ -1,6 +1,6 @@
 /**
  * `project.kind` and `project.icon` against a real database: the CHECKs refuse
- * unlisted words, and the upgrade statements in migration 0003 move the old
+ * unlisted words, and the upgrade statements in migration 0005 move the old
  * `metadata.type` into `kind` (the upgrade seed check cannot cover this, it
  * refuses any changed value).
  */
@@ -49,7 +49,7 @@ test('project kind and icon accept the listed words and null, and refuse the res
   }
 })
 
-test('migration 0003 moves metadata.type into kind and keeps the catalog code', async () => {
+test('migration 0005 moves metadata.type into kind and keeps the catalog code', async () => {
   if (!getDatabaseUrl()) {
     skipWithoutDatabase('project kind backfill test')
     return
