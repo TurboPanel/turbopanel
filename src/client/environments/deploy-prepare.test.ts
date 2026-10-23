@@ -2438,7 +2438,7 @@ describe('hostingTlsWireFromResolved', () => {
     assertEquals(
       hostingTlsWireFromResolved({
         tlsId: 'tls-le',
-        status: 'managed',
+        status: 'automatic',
         bindScope: 'public',
         acmeEnabled: true,
       }),
@@ -2450,7 +2450,7 @@ describe('hostingTlsWireFromResolved', () => {
     assertEquals(
       hostingTlsWireFromResolved({
         tlsId: 'tls-le',
-        status: 'managed',
+        status: 'automatic',
         bindScope: 'local',
         acmeEnabled: true,
       }),
@@ -2459,7 +2459,7 @@ describe('hostingTlsWireFromResolved', () => {
     assertEquals(
       hostingTlsWireFromResolved({
         tlsId: 'tls-le',
-        status: 'managed',
+        status: 'automatic',
         bindScope: 'datacenter',
         acmeEnabled: true,
       }),
@@ -2471,7 +2471,7 @@ describe('hostingTlsWireFromResolved', () => {
     assertEquals(
       hostingTlsWireFromResolved({
         tlsId: 'tls-le',
-        status: 'managed',
+        status: 'automatic',
         bindScope: 'public',
         acmeEnabled: false,
       }),
@@ -2483,7 +2483,7 @@ describe('hostingTlsWireFromResolved', () => {
     assertEquals(
       hostingTlsWireFromResolved({
         tlsId: 'tls-le',
-        status: 'managed',
+        status: 'automatic',
         bindScope: 'local',
         acmeEnabled: false,
       }),

@@ -346,7 +346,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       private_key_pem:
         "Private key PEM sealed as a `tpsecret` envelope, never returned by the client API; Let's Encrypt rows get it from the daemon report and lose it on revoke.",
       status:
-        'Row health `ready`, `pending`, `expired`, `failed`, `revoked` or `managed` (Caddy ACME intent); `expired` is derived at read from `not_after`, others stored.',
+        'Row health `ready`, `pending`, `expired`, `failed`, `revoked` or `automatic` (web server issues it); `expired` is derived from `not_after`, others stored.',
       not_after:
         'Certificate expiry parsed from the PEM at write; epoch-0 placeholder on `managed` rows; indexed for expiry checks.',
       fingerprint_sha256:

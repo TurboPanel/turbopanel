@@ -263,7 +263,7 @@ export const tls = pgTable(
     // Mirrors `TlsStatus` (src/lib/tls/types.ts) — pinned by enum-checks.test.ts.
     check(
       'tls_status_check',
-      sql`status IN ('ready', 'pending', 'expired', 'failed', 'revoked', 'managed')`
+      sql`status IN ('ready', 'pending', 'expired', 'failed', 'revoked', 'automatic')`
     ),
   ]
 )

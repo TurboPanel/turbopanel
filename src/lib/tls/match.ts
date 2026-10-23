@@ -43,7 +43,7 @@ function isReadyCandidate(
   now: Date,
 ): boolean {
   const { metadata } = candidate;
-  if (candidate.source === "lets_encrypt" && metadata.status === "managed") {
+  if (candidate.source === "lets_encrypt" && metadata.status === "automatic") {
     return true;
   }
   if (metadata.status !== "ready") return false;
@@ -60,7 +60,7 @@ function isRevokedLetsEncrypt(candidate: TlsCandidate): boolean {
 
 /**
  * Resolve which org TLS cert (if any) should cover a hosting.
- * - pin set → must cover all hostnames and be ready, except a `managed`
+ * - pin set → must cover all hostnames and be ready, except an `automatic`
  *   `lets_encrypt` row which is pinnable without PEM dates (Caddy issues it)
  * - a revoked `lets_encrypt` pin that still covers the hostnames falls back
  *   to Caddy `tls internal` (the operator revoke escape hatch) instead of

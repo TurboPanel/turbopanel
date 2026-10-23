@@ -860,7 +860,7 @@ export type DaemonMessage =
        * verdict for one `tlsMode: 'acme'` hostname on this server, sent only on
        * a state change — a failure after a short debounce, or a recovery.
        * Merge-patched onto `tls.metadata.acme.lastError`; never writes
-       * `tls.status`, so it cannot itself flip a `managed` row's
+       * `tls.status`, so it cannot itself flip an `automatic` row's
        * deploy-readiness (see `handleAcmeIssuanceEvent`).
        */
       type: 'acme-issuance-event'

@@ -34,7 +34,7 @@ export const tlsSchemas = {
       issuer: { type: 'string' },
       status: {
         type: 'string',
-        enum: ['ready', 'pending', 'expired', 'failed', 'revoked', 'managed'],
+        enum: ['ready', 'pending', 'expired', 'failed', 'revoked', 'automatic'],
         description: 'Column value mirrored into metadata for API stability (shape unchanged).',
       },
       acme: {

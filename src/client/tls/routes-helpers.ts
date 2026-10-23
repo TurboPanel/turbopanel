@@ -296,7 +296,7 @@ export function materialFromLetsEncrypt(body: Record<string, unknown>): CreateTl
       fingerprintSha256: '',
       subject: '',
       issuer: '',
-      status: 'managed',
+      status: 'automatic',
       acme: {
         challengeType: 'http-01',
         managedBy: 'caddy',

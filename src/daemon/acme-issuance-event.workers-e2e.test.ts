@@ -47,7 +47,7 @@ describe('acme-issuance-event real-Postgres end-to-end', () => {
         .values({
           organizationId: org!.id,
           source: 'lets_encrypt',
-          status: 'managed',
+          status: 'automatic',
           metadata: { dnsNames: [hostname] },
         })
         .returning({ id: tls.id })
@@ -102,7 +102,7 @@ describe('acme-issuance-event real-Postgres end-to-end', () => {
           // The whole point of the merge-patch design: a recorded issuance
           // failure must never touch `status`, which is what deploy-readiness
           // (`isReadyCandidate`) actually reads.
-          expect(after?.status).toBe('managed')
+          expect(after?.status).toBe('automatic')
           matched = true
         } catch (err) {
           lastError = err

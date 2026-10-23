@@ -1039,7 +1039,7 @@ test('revoking a Lets Encrypt row clears its stored pair, revoking an upload kee
   const { buildTlsRowPatch } = await import('./routes.ts')
   const existing = {
     options: null,
-    status: 'managed',
+    status: 'automatic',
     notAfter: '2030-01-01T00:00:00.000Z',
     fingerprintSha256: null,
     metadata: {
