@@ -67,45 +67,30 @@ const UNCHANGED = (marker: IpPinUnreachableMetadata | undefined): ProbeTransitio
   change: 'none',
 })
 
-/**
- * One probe round for one pin. A network that never answered (no `firstOkAt`)
- * is never marked: a port that is simply closed there must not move traffic.
- */
-export function nextProbeMarker(
+function okRound(previous: IpPinUnreachableMetadata | undefined, nowIso: string): ProbeTransition {
+  if (!previous) {
+    return { marker: { failures: 0, okStreak: 0, firstOkAt: nowIso }, write: true, change: 'none' }
+  }
+  const firstOkAt = previous.firstOkAt ?? nowIso
+  if (previous.downSince === undefined) {
+    if (previous.failures === 0 && previous.okStreak === 0 && previous.firstOkAt) {
+      return UNCHANGED(previous)
+    }
+    return { marker: { failures: 0, okStreak: 0, firstOkAt }, write: true, change: 'none' }
+  }
+  const okStreak = previous.okStreak + 1
+  if (okStreak >= PROBE_OKS_TO_CLEAR) {
+    return { marker: { failures: 0, okStreak: 0, firstOkAt }, write: true, change: 'up' }
+  }
+  return { marker: { ...previous, firstOkAt, okStreak }, write: true, change: 'none' }
+}
+
+function failRound(
   previous: IpPinUnreachableMetadata | undefined,
-  verdict: ProbeVerdict,
   nowIso: string
 ): ProbeTransition {
-  if (verdict === 'unknown') return UNCHANGED(previous)
-  const isDown = previous?.downSince !== undefined
-  if (verdict === 'ok') {
-    if (!previous) {
-      return {
-        marker: { failures: 0, okStreak: 0, firstOkAt: nowIso },
-        write: true,
-        change: 'none',
-      }
-    }
-    const firstOkAt = previous.firstOkAt ?? nowIso
-    if (!isDown) {
-      if (previous.failures === 0 && previous.okStreak === 0 && previous.firstOkAt) {
-        return UNCHANGED(previous)
-      }
-      return { marker: { failures: 0, okStreak: 0, firstOkAt }, write: true, change: 'none' }
-    }
-    const okStreak = previous.okStreak + 1
-    if (okStreak >= PROBE_OKS_TO_CLEAR) {
-      return { marker: { failures: 0, okStreak: 0, firstOkAt }, write: true, change: 'up' }
-    }
-    return {
-      marker: { ...previous, firstOkAt, okStreak },
-      write: true,
-      change: 'none',
-    }
-  }
-  // fail
   if (!previous?.firstOkAt) return UNCHANGED(previous)
-  if (isDown) {
+  if (previous.downSince !== undefined) {
     if (previous.okStreak === 0) return UNCHANGED(previous)
     return { marker: { ...previous, okStreak: 0 }, write: true, change: 'none' }
   }
@@ -122,6 +107,19 @@ export function nextProbeMarker(
     write: true,
     change: 'none',
   }
+}
+
+/**
+ * One probe round for one pin. A network that never answered (no `firstOkAt`)
+ * is never marked: a port that is simply closed there must not move traffic.
+ */
+export function nextProbeMarker(
+  previous: IpPinUnreachableMetadata | undefined,
+  verdict: ProbeVerdict,
+  nowIso: string
+): ProbeTransition {
+  if (verdict === 'unknown') return UNCHANGED(previous)
+  return verdict === 'ok' ? okRound(previous, nowIso) : failRound(previous, nowIso)
 }
 
 /** `ip.metadata` with the probe marker set (or removed for `null`), other keys kept. */
