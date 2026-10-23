@@ -113,7 +113,8 @@ async function withCluster(fn: (fixture: Fixture) => Promise<void>): Promise<voi
         name: 'Reseed Project',
         workspaceId: ws!.id,
         organizationId,
-        metadata: { type: 'managed', code: 'postgres' },
+        kind: 'managed',
+        metadata: { code: 'postgres' },
       })
       .returning({ id: project.id })
     const [env] = await db

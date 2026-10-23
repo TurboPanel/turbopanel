@@ -40,8 +40,15 @@
     {
       "idx": 5,
       "version": "7",
-      "when": 1792774861329,
-      "tag": "0005_backup_copy_tables",
+      "when": 1792775024253,
+      "tag": "0005_project_kind_icon",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1792778212609,
+      "tag": "0006_backup_copy_tables",
       "breakpoints": true
     }
   ]

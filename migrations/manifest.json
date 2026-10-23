@@ -35,8 +35,14 @@
     },
     {
       "idx": 5,
-      "tag": "0005_backup_copy_tables",
-      "when": 1792774861329,
+      "tag": "0005_project_kind_icon",
+      "when": 1792775024253,
+      "sha256": "aa90619c7363c7a5bed0e1904294770ecdfdf71f035c77839388b86f47b5c658"
+    },
+    {
+      "idx": 6,
+      "tag": "0006_backup_copy_tables",
+      "when": 1792778212609,
       "sha256": "54cbb43e60f0945a5e5908ffdf0751025812f8b9f4afe8ea8cd6bc9d3079260a"
     }
   ]
