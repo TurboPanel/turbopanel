@@ -708,6 +708,8 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
     summary:
       'One engine role on one managed cluster; not a principal, which is only a site owner Linux user; written by the managed users API.',
     columns: {
+      metadata:
+        'Internal bookkeeping jsonb; the grant ledger (grants the panel applied) will live here. Nothing writes it yet.',
       principal_id:
         'Site owner Linux user the login shares its name with, cascade-deleted with it; NULL for a login made on its own and for the root and replication logins.',
       role: '`root` is the cluster admin, `replication` the member-to-member login, `user` an operator login, `backup` the one login that takes backups.',

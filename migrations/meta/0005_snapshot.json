@@ -1,5 +1,5 @@
 {
-  "id": "0bd3847b-9241-41eb-82e5-d1946408e8b6",
+  "id": "c29d719b-789a-4a02-bfe3-ccc9d8a4ebde",
   "prevId": "d6349e86-822d-4ef1-acae-ac5cac0238f1",
   "version": "7",
   "dialect": "postgresql",
@@ -5526,6 +5526,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "metadata": {
+          "name": "metadata",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
         },
         "managed_id": {
           "name": "managed_id",

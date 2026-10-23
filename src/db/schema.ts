@@ -4212,6 +4212,8 @@ export const login = pgTable(
       .defaultNow()
       .$onUpdate(() => sql`now()`)
       .notNull(),
+    /** Internal bookkeeping; the grant ledger (what the panel granted) will live here. */
+    metadata: jsonb(),
     /** Cluster the role exists on; cascade-deletes with it. */
     managedId: uuid('managed_id').notNull(),
     /** Site owner's Linux user this login shares its name with; NULL otherwise. */
