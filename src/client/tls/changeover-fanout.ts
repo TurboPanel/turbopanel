@@ -22,6 +22,7 @@ import {
   prepareManagedApplyPayloads,
 } from '../../features/managed/apply-prepare.ts'
 import { enqueueManagedIngressReconcile } from '../../features/managed/ingress-desired.ts'
+import { MANAGED_APPLY_EXPIRES_MS } from '../../features/managed/ingress-desired-pure.ts'
 import { fanOutOrganizationHaReconcile } from '../../features/managed/ha-desired.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
 import { loadManagedOptions } from '../../features/managed/options.ts'
@@ -511,6 +512,17 @@ export async function enqueueApplyForManagedCluster(
   })
 }
 
+/**
+ * A front-door update queued after a cluster's apply starts only once that
+ * apply has finished (up to its whole budget). Give it that wait, or it
+ * expires unsent behind a long apply.
+ */
+export function ingressWaitsBehindMs(applyRows: readonly CaRotationResultRow[]): number {
+  return applyRows.some((row) => row.kind === 'apply' && row.status === 'queued')
+    ? MANAGED_APPLY_EXPIRES_MS
+    : 0
+}
+
 async function fanOutIngressForServers(
   db: Db,
   commandQueue: CommandQueue,
@@ -521,6 +533,8 @@ async function fanOutIngressForServers(
     secretsConfig: SecretsConfig
     dataEncryptionSecrets: DerivedSecretsConfig
     alreadyQueued: Set<string>
+    /** Budget of an apply queued just before these, which they must outwait. */
+    waitsBehindMs?: number
   }
 ): Promise<CaRotationResultRow[]> {
   const results: CaRotationResultRow[] = []
@@ -533,6 +547,7 @@ async function fanOutIngressForServers(
       actorId: params.actorId,
       secretsConfig: params.secretsConfig,
       dataEncryptionSecrets: params.dataEncryptionSecrets,
+      ...(params.waitsBehindMs ? { waitsBehindMs: params.waitsBehindMs } : {}),
     })
     if (enqueued.ok) {
       results.push(ingressResultRow(serverId, 'queued', enqueued.commandId))
@@ -663,6 +678,7 @@ async function fanOutOneManagedCluster(
     secretsConfig: params.secretsConfig,
     dataEncryptionSecrets: params.dataEncryptionSecrets,
     alreadyQueued: state.alreadyQueuedIngress,
+    waitsBehindMs: ingressWaitsBehindMs(applyRows),
   })
   state.results.push(...ingressRows)
 

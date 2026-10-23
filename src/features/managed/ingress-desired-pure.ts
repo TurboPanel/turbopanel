@@ -37,7 +37,7 @@ export const MANAGED_APPLY_EXPIRES_MS = 600_000
 export const INGRESS_RECONCILE_RUN_MS = 300_000
 
 /**
- * How long a queued front-door update stays valid. Commands run one at a time,
+ * How long a queued front-door update stays valid. Commands run one at a time per server,
  * so an update queued together with an apply starts only after that apply has
  * finished (up to its whole budget, `waitsBehindMs`); give it that wait plus
  * its own run budget, or it expires unsent and the new logins never reach the

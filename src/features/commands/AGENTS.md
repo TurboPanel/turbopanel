@@ -153,6 +153,22 @@ in the execution-log store — there is no Postgres column for them. See
   first session lost during start goes through the same reconnect loop as a
   later loss. The mailer consumer (`lib/email/mailer/deno-mailer-consumer.ts`)
   follows the same rule.
+  Commands run **one at a time per server** (`command-lanes.ts`): the consumer
+  parses each delivery, hands it to the lane of its envelope's `serverId`, and
+  acks or nacks only after the lane has run it. Different servers run in
+  parallel (cap `COMMAND_LANE_CONCURRENCY`, lanes take turns); same-server
+  commands keep arrival order, which keeps same-service ordering because a
+  managed service lives on one server. Cross-server ordering is never assumed:
+  it lives in command metadata (see multi-command sequencing). `prefetch` is
+  `COMMAND_CONSUMER_PREFETCH` so a backlog can wait in its lane; a delivery
+  still waiting when the session is lost or closed is skipped (left
+  unacknowledged for the broker to redeliver), never run late. An unparseable delivery bypasses the lanes (dead-lettered at once). A
+  delivery waiting in a lane stays unacknowledged, and RabbitMQ closes a channel
+  whose delivery stays unacknowledged past its `consumer_timeout` (30 minutes by
+  default; the broker is configured in the daemon repo's `rabbitmq` role, not
+  here), so a very deep backlog on one server can outlast it. A command's valid
+  time counts from when it was queued, so waiting behind the same server's
+  earlier command counts and waiting behind other servers no longer does.
   **TODO:** extract to a dedicated `turbopanel-command-consumer.service` systemd
   unit in a future pass (mirrors the mailer pattern).
 - Shared abstraction: `CommandQueue` interface in `src/features/commands/queue.ts`;
