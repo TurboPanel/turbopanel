@@ -39,8 +39,8 @@ INSERT INTO datacenter (id, organization_id, name) VALUES
 -- server-a carries addresses; server-b has none (the empty case a backfill
 -- must also survive).
 INSERT INTO server (id, organization_id, name, hostname, machine_key, os_id, os_family, os_version, os_architecture, machine_class, timezone, is_connected, is_hosting_enabled) VALUES
-  ('00000000-0000-7000-8000-000000000501', '00000000-0000-7000-8000-000000000101', 'server-a', 'server-a.example.test', 'upgrade-machine-key-a', 'ubuntu', 'debian', '24.04', 'amd64', 'virtual', 'UTC', true, true),
-  ('00000000-0000-7000-8000-000000000502', '00000000-0000-7000-8000-000000000101', 'server-b', 'server-b.example.test', 'upgrade-machine-key-b', 'debian', 'debian', '13', 'arm64', 'physical', 'UTC', false, false);
+  ('00000000-0000-7000-8000-000000000501', '00000000-0000-7000-8000-000000000101', 'server-a', 'server-a.example.test', 'upgrade-machine-key-a', 'ubuntu', 'debian', '24.04', 'x86_64', 'virtual', 'UTC', true, true),
+  ('00000000-0000-7000-8000-000000000502', '00000000-0000-7000-8000-000000000101', 'server-b', 'server-b.example.test', 'upgrade-machine-key-b', 'debian', 'debian', '13', 'aarch64', 'physical', 'UTC', false, false);
 
 INSERT INTO environment (id, project_id, server_id, name, created_at) VALUES
   ('00000000-0000-7000-8000-000000000601', '00000000-0000-7000-8000-000000000301', '00000000-0000-7000-8000-000000000501', 'production', '2026-01-01T00:00:00Z');

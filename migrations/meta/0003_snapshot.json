@@ -1,5 +1,5 @@
 {
-  "id": "256bf5d1-4b34-49ca-8fad-f045924cc57d",
+  "id": "69bb1375-df98-4d22-b890-fbb81adaabb3",
   "prevId": "0b2d2b49-7f32-426a-b5ec-e4d9ba54ff8c",
   "version": "7",
   "dialect": "postgresql",
@@ -5535,20 +5535,7 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true,
-          "default": "'recipe'"
-        },
-        "recipe": {
-          "name": "recipe",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "is_all_databases": {
-          "name": "is_all_databases",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": false
+          "default": "'preset'"
         },
         "is_tool": {
           "name": "is_tool",
@@ -5561,8 +5548,7 @@
           "name": "allowed_sources",
           "type": "text[]",
           "primaryKey": false,
-          "notNull": true,
-          "default": "'{internal}'::text[]"
+          "notNull": false
         },
         "max_connections": {
           "name": "max_connections",
@@ -5650,22 +5636,6 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
-        },
-        "uniq_login_managed_backup": {
-          "name": "uniq_login_managed_backup",
-          "columns": [
-            {
-              "expression": "managed_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"login\".\"role\" = 'backup'",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
         }
       },
       "foreignKeys": {
@@ -5702,7 +5672,7 @@
       "checkConstraints": {
         "login_role_check": {
           "name": "login_role_check",
-          "value": "role IN ('root', 'replication', 'user', 'backup')"
+          "value": "role IN ('root', 'replication', 'user')"
         },
         "login_name_scheme_check": {
           "name": "login_name_scheme_check",
@@ -5710,23 +5680,7 @@
         },
         "login_grant_mode_check": {
           "name": "login_grant_mode_check",
-          "value": "grant_mode IN ('recipe', 'self')"
-        },
-        "login_recipe_check": {
-          "name": "login_recipe_check",
-          "value": "recipe IS NULL OR recipe IN ('app', 'migrations', 'read-only', 'analyst', 'admin', 'backup')"
-        },
-        "login_recipe_required_check": {
-          "name": "login_recipe_required_check",
-          "value": "grant_mode <> 'recipe' OR recipe IS NOT NULL"
-        },
-        "login_allowed_sources_check": {
-          "name": "login_allowed_sources_check",
-          "value": "cardinality(allowed_sources) BETWEEN 1 AND 100"
-        },
-        "login_backup_sources_check": {
-          "name": "login_backup_sources_check",
-          "value": "role <> 'backup' OR cardinality(allowed_sources) >= 1"
+          "value": "grant_mode IN ('preset', 'recipe', 'self')"
         },
         "login_access_check": {
           "name": "login_access_check",
@@ -10345,6 +10299,10 @@
         "server_machine_class_source_check": {
           "name": "server_machine_class_source_check",
           "value": "machine_class_source IN ('detected', 'operator')"
+        },
+        "server_os_architecture_check": {
+          "name": "server_os_architecture_check",
+          "value": "os_architecture IS NULL OR os_architecture IN ('x86_64', 'aarch64')"
         },
         "server_offline_reason_check": {
           "name": "server_offline_reason_check",

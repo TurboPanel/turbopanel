@@ -13,10 +13,6 @@ import { and, asc, eq, inArray, isNotNull, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { clientAddress, datacenter, ip, server } from '../../db/schema.ts'
 import { reportedIpsFromServerMetadata } from '../../contracts/server-addresses.ts'
-import {
-  parseDatacenterOptions,
-  resolveDatacenterPolicy,
-} from '../datacenters/datacenter-options.ts'
 import { inetAddressToString, parseIpVersion } from '../../lib/ip-address.ts'
 import { pinLinkIsDown } from './pin-link-state.ts'
 import {
@@ -97,7 +93,8 @@ export async function loadClientAddressDatacenterPins(
       datacenterId: ip.datacenterId,
       metadata: ip.metadata,
       name: datacenter.name,
-      options: datacenter.options,
+      priority: datacenter.priority,
+      addressPreference: datacenter.addressPreference,
     })
     .from(ip)
     .innerJoin(datacenter, eq(datacenter.id, ip.datacenterId))
@@ -111,8 +108,8 @@ export async function loadClientAddressDatacenterPins(
   return [...byDatacenter].map(([datacenterId, pins]) => ({
     datacenterId,
     datacenterName: pins[0]!.name ?? 'Datacenter',
-    addressPreference: parseDatacenterOptions(pins[0]!.options).addressPreference ?? 'ipv6',
-    priority: resolveDatacenterPolicy(pins[0]!.options).priority,
+    addressPreference: pins[0]!.addressPreference === 'ipv4' ? 'ipv4' : 'ipv6',
+    priority: pins[0]!.priority,
     // A pin whose network link is down is not where clients arrive, the same
     // rule the public side applies to reported interfaces. The server still
     // belongs to the datacenter, so the side stays (a DNS name still counts).

@@ -115,6 +115,20 @@ test('resolveServerOsLogoKey picks debian vs raspberry-pi-os', () => {
   assertEquals(resolveServerOsLogoKey({ family: 'linux', id: 'ubuntu' }), null)
 })
 
+test('parseServerOsMetadata normalises architecture and drops unknown ones', () => {
+  assertEquals(parseServerOsMetadata({ family: 'linux', architecture: 'arm64' }), {
+    family: 'linux',
+    architecture: 'aarch64',
+  })
+  assertEquals(parseServerOsMetadata({ family: 'linux', architecture: 'amd64' }), {
+    family: 'linux',
+    architecture: 'x86_64',
+  })
+  assertEquals(parseServerOsMetadata({ family: 'linux', architecture: 'armv7l' }), {
+    family: 'linux',
+  })
+})
+
 test('parseServerOsMetadata accepts daemon hello os blocks', () => {
   assertEquals(
     parseServerOsMetadata({
