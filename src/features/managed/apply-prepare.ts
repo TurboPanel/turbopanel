@@ -458,7 +458,8 @@ async function buildCredentials(
       principalId: row.id,
       // Applied login — the engine role name, not the internal short name.
       username: row.appliedUsername,
-      role: row.role,
+      // The daemon knows three roles; a backup login is an ordinary login on the wire for now.
+      role: row.role === 'backup' ? 'user' : row.role,
       databases: row.databases,
       password: resealed,
     }
@@ -467,10 +468,9 @@ async function buildCredentials(
       credential.privileges =
         !daemonKnowsAdmin && privileges.includes('admin') ? ['read-write'] : privileges
     }
-    // Only a non-default mode goes on the wire, so payloads for logins made
-    // before modes existed stay exactly as they were.
-    const grantMode = row.grantMode
-    if (grantMode !== 'preset') credential.grantMode = grantMode
+    // Only `self` goes on the wire: the daemon treats `recipe` and an absent
+    // mode alike, so payloads for panel-set logins stay as they were.
+    if (row.grantMode === 'self') credential.grantMode = row.grantMode
     credentials.push(credential)
     return undefined
   })

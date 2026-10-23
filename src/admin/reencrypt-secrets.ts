@@ -6,7 +6,7 @@
  * `principal.password`, `storage.content_envelope`, `secret.secret_envelope`,
  * `forge.envelopes` (private key / client secret / webhook secret),
  * `connection.oauth_envelope` (GitLab access/refresh token pair), `totp.secret`,
- * `monitor.secret_envelope`, `relay.preshared_key`, the `ALERT_WEBHOOK_URL`
+ * `monitor.secret_envelope`, `relay.preshared_key`, `destination.secret_key_sealed`, the `ALERT_WEBHOOK_URL`
  * setting, `SYSTEM_AUTH_PROVIDERS` secret keys, and email secret keys in the
  * `SYSTEM_EMAIL` setting row onto the current data-encryption key version.
  *
@@ -51,6 +51,7 @@ import {
   instanceUploadedCertificate,
   lease,
   login,
+  backupTarget,
   monitor,
   principal,
   relay,
@@ -98,6 +99,7 @@ export const REENCRYPT_STAGES = [
   'notifications',
   'monitors',
   'relays',
+  'destinations',
   'authproviders',
   'email',
   'alertwebhook',
@@ -123,6 +125,7 @@ export const REENCRYPT_COVERED_PLACES = [
   'channel.signing_secret',
   'monitor.secret_envelope',
   'relay.preshared_key',
+  'destination.secret_key_sealed',
   `setting:${SYSTEM_AUTH_PROVIDERS_DB_KEY}`,
   `setting:${SYSTEM_EMAIL_DB_KEY}`,
   `setting:${ALERT_WEBHOOK_URL_KEY}`,
@@ -1096,6 +1099,42 @@ async function sweepMonitorSecretsBatch(
   return { pageSize: rows.length, lastId: rows.at(-1)?.id }
 }
 
+/** `destination.secret_key_sealed`: the sealed secret access key of a backup copy destination (NOT NULL). */
+async function sweepDestinationSecretsBatch(
+  db: Db,
+  secrets: DerivedSecretsConfig,
+  summary: ReencryptSweepSummary,
+  afterId: string | undefined,
+  limit: number
+): Promise<StageBatchResult> {
+  const rows = await db
+    .select({ id: backupTarget.id, value: backupTarget.secretKeySealed })
+    .from(backupTarget)
+    .where(afterId === undefined ? undefined : gt(backupTarget.id, afterId))
+    .orderBy(asc(backupTarget.id))
+    .limit(limit)
+
+  await forEachSequential(rows, async (row) => {
+    const original = row.value
+    await processBlob(
+      summary,
+      secrets,
+      original,
+      async (resealed) => {
+        const updated = await db
+          .update(backupTarget)
+          .set({ secretKeySealed: resealed })
+          .where(and(eq(backupTarget.id, row.id), eq(backupTarget.secretKeySealed, original)))
+          .returning({ id: backupTarget.id })
+        return updated.length > 0
+      },
+      { allowDaemonBound: false }
+    )
+  })
+
+  return { pageSize: rows.length, lastId: rows.at(-1)?.id }
+}
+
 /** `relay.preshared_key`: nullable sealed WireGuard preshared key. */
 async function sweepRelayPresharedKeysBatch(
   db: Db,
@@ -1223,6 +1262,8 @@ async function runTableStageBatch(
       return sweepMonitorSecretsBatch(db, dataEncryptionSecrets, summary, afterId, remaining)
     case 'relays':
       return sweepRelayPresharedKeysBatch(db, dataEncryptionSecrets, summary, afterId, remaining)
+    case 'destinations':
+      return sweepDestinationSecretsBatch(db, dataEncryptionSecrets, summary, afterId, remaining)
   }
 }
 

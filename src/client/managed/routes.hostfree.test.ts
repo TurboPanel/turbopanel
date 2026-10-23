@@ -332,7 +332,7 @@ function loginRow(overrides: Record<string, unknown> = {}) {
     username: 'appuser',
     appliedUsername: 'appuser',
     nameScheme: 'plain',
-    grantMode: 'preset',
+    grantMode: 'recipe',
     isTool: false,
     databases: ['defaultdb'],
     privileges: ['read-write'],
@@ -3530,8 +3530,9 @@ test('POST users stores read-write access for read-write and omitted roles', asy
     const row = insertedLogin(inserted)
     assertEquals(row.access, 'read-write')
     assertEquals(row.grantMode, 'recipe')
+    assertEquals(row.recipe, 'app')
     assertEquals(row.isTool, false)
-    assertEquals(row.allowedSources, undefined)
+    assertEquals(row.allowedSources, ['address:0.0.0.0/0', 'address:::/0'])
     assertEquals(row.maxConnections, undefined)
   }
 })
@@ -3714,21 +3715,18 @@ test('PATCH user restores the old settings when preparing the apply throws', asy
   assertEquals(res.status, 500)
   assertEquals(loginWrites.length, 2)
   assertEquals(loginWrites[0]?.grantMode, 'self')
-  assertEquals(loginWrites[1]?.grantMode, 'preset')
+  assertEquals(loginWrites[1]?.grantMode, 'recipe')
 })
 
-test('PATCH user refuses a bad mode and a move back to preset in plain words', async () => {
+test('PATCH user refuses a bad mode and the retired preset mode in plain words', async () => {
   const bad = await patchUser({ grantMode: 'wild' })
   assertEquals(bad.res.status, 400)
-  const back = await patchUser(
-    { grantMode: 'preset' },
-    { databases: ['postgres'], grantMode: 'recipe' }
-  )
-  assertEquals(back.res.status, 422)
-  assertEquals((await jsonOf(back.res)).error, 'managed_grant_mode_invalid_transition')
+  const back = await patchUser({ grantMode: 'preset' }, { databases: ['postgres'] })
+  assertEquals(back.res.status, 400)
+  assertEquals((await jsonOf(back.res)).error, 'managed_grant_mode_invalid')
 })
 
-test('GET users reports grant mode, defaulting old logins to preset', async () => {
+test('GET users reports grant mode, reads recipe by default', async () => {
   const { app, cookie } = await buildApp({
     db: fakeDb({
       managedRows: [managedRow()],
@@ -3737,7 +3735,7 @@ test('GET users reports grant mode, defaulting old logins to preset', async () =
   })
   const body = await jsonOf(await app.request(envPath('/users'), { headers: authHeaders(cookie) }))
   const users = body.users as Array<{ grantMode: string; tool: boolean }>
-  assertEquals(users[0]?.grantMode, 'preset')
+  assertEquals(users[0]?.grantMode, 'recipe')
   assertEquals(users[0]?.tool, false)
 })
 

@@ -566,7 +566,7 @@ test('ensureManagedReplicationLogin reuses the existing replication login', asyn
                 username: 'tp_repl',
                 appliedUsername: 'tp_repl',
                 nameScheme: 'plain',
-                grantMode: 'preset',
+                grantMode: 'recipe',
                 isTool: false,
                 databases: [],
                 privileges: [],

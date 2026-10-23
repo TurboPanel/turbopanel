@@ -5696,6 +5696,13 @@ export type ManagedLifecyclePayload = {
   switchoverRecoveryId?: string
   primaryEpoch?: number
   reactivateAfterSwitchoverAbort?: boolean
+  /**
+   * With `reactivateAfterSwitchoverAbort`: the control plane confirms that no
+   * promote was ever queued or started on the target, so bringing the old
+   * primary back cannot make two writers. Without it the daemon refuses the
+   * reactivation.
+   */
+  switchoverAbortPromoteSafe?: boolean
 }
 
 export type ManagedLifecycleCommandResult = {
@@ -6963,14 +6970,25 @@ export function parseManagedLifecyclePayload(value: unknown): ManagedLifecyclePa
     payload.role = value.role
   }
   if (value.demoted === true) payload.demoted = true
+  applyLifecycleSwitchoverFlags(payload, value)
+  applyLifecycleFinalPositionFields(payload, value)
+  return payload
+}
+
+/** The switchover flags a lifecycle payload may carry: absent or exactly `true`. */
+function applyLifecycleSwitchoverFlags(
+  payload: ManagedLifecyclePayload,
+  value: Record<string, unknown>
+): void {
   if (parseOptionalLifecycleTrueOnly(value.captureSwitchoverGtid)) {
     payload.captureSwitchoverGtid = true
   }
   if (parseOptionalLifecycleTrueOnly(value.reactivateAfterSwitchoverAbort)) {
     payload.reactivateAfterSwitchoverAbort = true
   }
-  applyLifecycleFinalPositionFields(payload, value)
-  return payload
+  if (parseOptionalLifecycleTrueOnly(value.switchoverAbortPromoteSafe)) {
+    payload.switchoverAbortPromoteSafe = true
+  }
 }
 
 /** Both or neither: the recovery id is only meaningful with its epoch. */
@@ -7229,6 +7247,8 @@ export type ManagedBackupCommandPayload = {
    * how the file is found. Omitted for a manual backup.
    */
   policyId?: string
+  /** Copy the new backup here once it is made; on `delete`, remove its copy too. */
+  copyTarget?: BackupCopyTargetWire
 }
 
 export type ManagedBackupCommandResult = {
@@ -7257,6 +7277,11 @@ export type ManagedRestoreCommandPayload = {
    * this to find the file. Omitted for a manual backup.
    */
   policyId?: string
+  /**
+   * Fetch the artifact from this bucket first (it is not on the host). The
+   * daemon checks the download against `checksum` before it touches the engine.
+   */
+  copySource?: { target: BackupCopyTargetWire; key: string }
 }
 
 export type ManagedRestoreCommandResult = {
@@ -7320,6 +7345,9 @@ export function parseManagedBackupPayload(value: unknown): ManagedBackupCommandP
       throw new Error('Invalid managed.backup payload policyId')
     }
     payload.policyId = value.policyId
+  }
+  if (value.copyTarget !== undefined) {
+    payload.copyTarget = parseBackupCopyTarget(value.copyTarget)
   }
   return payload
 }
@@ -7398,6 +7426,19 @@ export function parseManagedRestorePayload(value: unknown): ManagedRestoreComman
     }
     payload.policyId = value.policyId
   }
+  if (value.copySource !== undefined) {
+    if (
+      !isRecord(value.copySource) ||
+      !isString(value.copySource.key) ||
+      !isSafeBucketKey(value.copySource.key)
+    ) {
+      throw new Error('Invalid managed.restore payload copySource')
+    }
+    payload.copySource = {
+      target: parseBackupCopyTarget(value.copySource.target),
+      key: value.copySource.key,
+    }
+  }
   return payload
 }
 
@@ -7421,6 +7462,130 @@ export function parseManagedRestoreResult(value: unknown): ManagedRestoreCommand
  */
 function isCanonicalUuid(value: unknown): value is string {
   return isString(value) && UUID_RE.test(value) && value === value.toLowerCase()
+}
+
+/**
+ * An S3-compatible bucket a finished backup is copied to. Must stay in sync
+ * with the daemon `BackupCopyTargetWire`. The secret key travels only as an
+ * envelope sealed to the receiving host's daemon key.
+ */
+export type BackupCopyTargetWire = {
+  destinationId: string
+  name: string
+  endpoint: string
+  region: string
+  bucket: string
+  /** Folder inside the bucket; no leading or trailing slash; may be empty. */
+  prefix: string
+  pathStyle: boolean
+  serverSideEncryption: boolean
+  accessKeyId: string
+  secretKeyEnvelope: string
+}
+
+const BUCKET_NAME_RE = /^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/
+const BUCKET_REGION_RE = /^[a-z0-9][a-z0-9-]{0,31}$/
+const BUCKET_PREFIX_RE = /^[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)*$/
+const BUCKET_ACCESS_KEY_RE = /^[\x21-\x7e]{1,128}$/
+
+/** A key the control plane wrote: safe characters, no empty or dot segments. */
+export function isSafeBucketKey(key: string): boolean {
+  return (
+    key.length > 0 &&
+    key.length <= 1024 &&
+    key
+      .split('/')
+      .every(
+        (part) => part !== '' && part !== '.' && part !== '..' && /^[A-Za-z0-9._-]+$/.test(part)
+      )
+  )
+}
+
+function wireText(value: unknown, field: string, max: number): string {
+  if (typeof value !== 'string' || value.length > max) {
+    throw new Error(`Invalid backup copy target ${field}`)
+  }
+  return value
+}
+
+export function parseBackupCopyTarget(raw: unknown): BackupCopyTargetWire {
+  if (!isRecord(raw) || !isCanonicalUuid(raw.destinationId)) {
+    throw new Error('Invalid backup copy target')
+  }
+  const prefix = wireText(raw.prefix ?? '', 'prefix', 256)
+  const region = wireText(raw.region, 'region', 32)
+  const bucket = wireText(raw.bucket, 'bucket', 63)
+  const accessKeyId = wireText(raw.accessKeyId, 'accessKeyId', 128)
+  const envelope = wireText(raw.secretKeyEnvelope, 'secretKeyEnvelope', 4096)
+  if (
+    typeof raw.pathStyle !== 'boolean' ||
+    typeof raw.serverSideEncryption !== 'boolean' ||
+    !BUCKET_NAME_RE.test(bucket) ||
+    !BUCKET_REGION_RE.test(region) ||
+    (prefix !== '' && !BUCKET_PREFIX_RE.test(prefix)) ||
+    prefix.split('/').includes('..') ||
+    !BUCKET_ACCESS_KEY_RE.test(accessKeyId) ||
+    envelope.length === 0
+  ) {
+    throw new Error('Invalid backup copy target')
+  }
+  return {
+    destinationId: raw.destinationId,
+    name: wireText(raw.name ?? '', 'name', 64),
+    endpoint: wireText(raw.endpoint, 'endpoint', 512),
+    region,
+    bucket,
+    prefix,
+    pathStyle: raw.pathStyle,
+    serverSideEncryption: raw.serverSideEncryption,
+    accessKeyId,
+    secretKeyEnvelope: envelope,
+  }
+}
+
+/** `server.backups.test-target`: write, read and delete a small object. Must stay in sync with the daemon. */
+export type BackupTargetTestCommandPayload = { target: BackupCopyTargetWire }
+
+export type BackupTargetTestStep = {
+  step: 'write' | 'read' | 'delete'
+  ok: boolean
+  /** A plain reason; never a response body. */
+  error?: string
+}
+
+export type BackupTargetTestCommandResult = {
+  ok: boolean
+  steps: BackupTargetTestStep[]
+  error?: string
+}
+
+export function parseBackupTargetTestPayload(value: unknown): BackupTargetTestCommandPayload {
+  if (!isRecord(value)) throw new Error('Invalid backup target test payload')
+  return { target: parseBackupCopyTarget(value.target) }
+}
+
+const TEST_STEP_NAMES = new Set(['write', 'read', 'delete'])
+
+/** Lenient: a malformed result reads as a failed test with no steps. */
+export function parseBackupTargetTestResult(value: unknown): BackupTargetTestCommandResult {
+  if (!isRecord(value) || typeof value.ok !== 'boolean') {
+    return { ok: false, steps: [], error: 'the host sent an unreadable test result' }
+  }
+  const steps: BackupTargetTestStep[] = []
+  if (Array.isArray(value.steps)) {
+    for (const raw of value.steps.slice(0, 3)) {
+      if (!isRecord(raw) || !isString(raw.step) || !TEST_STEP_NAMES.has(raw.step)) continue
+      const step: BackupTargetTestStep = {
+        step: raw.step as BackupTargetTestStep['step'],
+        ok: raw.ok === true,
+      }
+      if (isString(raw.error)) step.error = raw.error.slice(0, 300)
+      steps.push(step)
+    }
+  }
+  const result: BackupTargetTestCommandResult = { ok: value.ok, steps }
+  if (isString(value.error)) result.error = value.error.slice(0, 300)
+  return result
 }
 
 const BACKUP_TARGET_KIND_SET = new Set(['managed', 'copy'])
@@ -7637,6 +7802,8 @@ export type BackupPolicyWireEntry = {
   onCalendar: string
   retentionKeep: number
   enabled: boolean
+  /** Where to copy each finished `managed` backup (S3-compatible storage). Absent: no copy. */
+  copyTarget?: BackupCopyTargetWire
 }
 
 /**
@@ -7718,6 +7885,8 @@ function parseBackupPolicyWireEntry(raw: unknown): BackupPolicyWireEntry {
   ) {
     throw new Error('Invalid backup policy entry')
   }
+  const copyTarget =
+    raw.copyTarget === undefined ? undefined : parseBackupCopyTarget(raw.copyTarget)
   const entry: BackupPolicyWireEntry = {
     policyId: raw.policyId,
     targetKind: raw.targetKind as BackupPolicyWireEntry['targetKind'],
@@ -7726,6 +7895,12 @@ function parseBackupPolicyWireEntry(raw: unknown): BackupPolicyWireEntry {
     enabled: raw.enabled,
   }
   parseBackupPolicyTarget(raw, entry)
+  if (copyTarget) {
+    if (entry.targetKind !== 'managed') {
+      throw new Error('Invalid backup policy: only managed backups are copied')
+    }
+    entry.copyTarget = copyTarget
+  }
   return entry
 }
 
@@ -8674,6 +8849,7 @@ export function parseCommandPayload(
   | FirewallReconcileCommandPayload
   | FirewallConfirmCommandPayload
   | BackupsReconcileCommandPayload
+  | BackupTargetTestCommandPayload
   | FoldersRemoveCommandPayload
   | EnvironmentDeployCommandPayload
   | EnvironmentLifecycleCommandPayload
@@ -8713,6 +8889,8 @@ export function parseCommandPayload(
       return parseFirewallConfirmPayload(value)
     case 'server.backups.reconcile':
       return parseBackupsReconcilePayload(value)
+    case 'server.backups.test-target':
+      return parseBackupTargetTestPayload(value)
     case 'server.folders.remove':
       return parseFoldersRemovePayload(value)
     case 'environment.deploy':
@@ -8763,6 +8941,7 @@ export function parseCommandResult(
   | FirewallReconcileCommandResult
   | FirewallConfirmCommandResult
   | BackupsReconcileCommandResult
+  | BackupTargetTestCommandResult
   | FoldersRemoveCommandResult
   | EnvironmentDeployCommandResult
   | EnvironmentLifecycleCommandResult
@@ -8802,6 +8981,8 @@ export function parseCommandResult(
       return parseFirewallConfirmResult(value)
     case 'server.backups.reconcile':
       return parseBackupsReconcileResult(value)
+    case 'server.backups.test-target':
+      return parseBackupTargetTestResult(value)
     case 'server.folders.remove':
       return parseFoldersRemoveResult(value)
     case 'environment.deploy':

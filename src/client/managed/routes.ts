@@ -149,7 +149,6 @@ import {
   enqueueManagedRestore,
   isManagedBackupApiError,
   mapManagedBackupApiError,
-  refuseRestoreIfBackupOnOtherServer,
   resolveBackupDatabase,
   resolveManagedBackupArtifactServerId,
   toManagedBackupListItem,
@@ -184,6 +183,16 @@ import {
   writeManagedSettings,
 } from '../../features/managed/options.ts'
 import { findManagedBackupById, listManagedBackups } from '../../features/backups/backup-records.ts'
+import {
+  copyTargetForDelete,
+  copyTargetForNewBackup,
+  describeClusterBackupTarget,
+  refuseWrongHostRestore,
+  copySourceForRestore,
+  wantsRestoreFromCopy,
+} from './backup-copy.ts'
+import { listCopiesFor, toApiCopy } from '../../features/backups/copy-records.ts'
+import { copyDepsOf } from '../backup-copy-deps.ts'
 import {
   createBackupPolicyResponse,
   deleteBackupPolicyResponse,
@@ -663,9 +672,13 @@ async function runManagedDeleteFanout(
     await clearPendingNullIdContainersForEnvironment(db, environmentId)
     await detachManagedBindings(c, db, managedId, detached, userId, organizationId)
     await deleteManagedRuntimeRows(db, environmentId, managedId)
-    await enqueueBackupsReconcile(db, commandQueue, { actorType: 'user', actorId: userId }, [
-      backupHost,
-    ])
+    await enqueueBackupsReconcile(
+      db,
+      commandQueue,
+      { actorType: 'user', actorId: userId },
+      [backupHost],
+      copyDepsOf(c)
+    )
     const uniqueServerIds = [...new Set(members.map((member) => member.serverId))]
     const onlineRecords = await loadServerStatusRecords(
       db,
@@ -1161,7 +1174,8 @@ async function createManagedAndEnqueueApply(
         actorType: 'user',
         actorId: userId,
       },
-      [createServerId]
+      [createServerId],
+      copyDepsOf(c)
     )
   }
 
@@ -3561,7 +3575,16 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const row = await findManagedForEnvironment(db, environmentId)
     if (!row) return c.json({ backups: [] })
 
-    const backups = (await listManagedBackups(db, row.id)).map(toManagedBackupListItem)
+    const records = await listManagedBackups(db, row.id)
+    const copies = await listCopiesFor(
+      db,
+      row.id,
+      records.map((r) => r.id)
+    )
+    const backups = records.map((r) => {
+      const copy = copies.get(r.id)
+      return { ...toManagedBackupListItem(r), copy: copy ? toApiCopy(copy) : null }
+    })
     return c.json({ backups })
   })
 
@@ -3598,7 +3621,8 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       return c.json({ error: 'Invalid database' }, 400)
     }
 
-    const built = buildManagedBackupCreatePayload(ctx, row.id, options, database)
+    const copyTarget = await copyTargetForNewBackup(c, db, row.id, targetServerId)
+    const built = buildManagedBackupCreatePayload(ctx, row.id, options, database, copyTarget)
     if (isManagedBackupApiError(built)) {
       return mapManagedBackupApiError(c, built)
     }
@@ -3651,7 +3675,15 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const commandQueue = assertDispatchInfrastructure(c)
     if (commandQueue instanceof Response) return commandQueue
 
-    const built = buildManagedBackupDeletePayload(ctx, row.id, record)
+    const copyTarget = await copyTargetForDelete(
+      c,
+      db,
+      auth.organizationId,
+      row.id,
+      record.id,
+      targetServerId
+    )
+    const built = buildManagedBackupDeletePayload(ctx, row.id, record, copyTarget)
     if (isManagedBackupApiError(built)) {
       return mapManagedBackupApiError(c, built)
     }
@@ -3693,7 +3725,14 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const targetServerId = resolveManagedTargetServerId(c, row.serverId)
     if (targetServerId instanceof Response) return targetServerId
 
-    const wrongHost = await refuseRestoreIfBackupOnOtherServer(c, db, record, targetServerId)
+    const fromCopy = await wantsRestoreFromCopy(c)
+    const wrongHost = await refuseWrongHostRestore(c, db, {
+      fromCopy,
+      organizationId: auth.organizationId,
+      managedId: row.id,
+      record,
+      targetServerId,
+    })
     if (wrongHost) return wrongHost
 
     const busy = await assertManagedIdle(c, db, row)
@@ -3708,7 +3747,15 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const commandQueue = assertDispatchInfrastructure(c)
     if (commandQueue instanceof Response) return commandQueue
 
-    const built = buildManagedRestorePayload(ctx, row.id, record)
+    const source = await copySourceForRestore(c, db, {
+      fromCopy,
+      organizationId: auth.organizationId,
+      managedId: row.id,
+      backupId: record.id,
+      serverId: targetServerId,
+    })
+    if (source instanceof Response) return source
+    const built = buildManagedRestorePayload(ctx, row.id, record, source)
     if (isManagedBackupApiError(built)) {
       return mapManagedBackupApiError(c, built)
     }
@@ -3726,6 +3773,14 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       commandId: enqueued.commandId,
       serverId: enqueued.serverId,
     })
+  })
+
+  router.get('/environments/:id/managed/backup-target', async (c) => {
+    const scope = await loadManagedContextScope(c)
+    if (scope instanceof Response) return scope
+    const row = await findManagedForEnvironment(scope.db, scope.environmentId)
+    if (!row) return c.json({ source: 'none', target: null })
+    return c.json(await describeClusterBackupTarget(scope.db, row.id, scope.auth.organizationId))
   })
 
   router.get('/environments/:id/managed/backup-policies', async (c) => {

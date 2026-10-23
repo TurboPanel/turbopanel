@@ -42,6 +42,11 @@ import {
   createBackupRunReportStore,
   handleBackupRunReport,
 } from '../../features/backups/run-report.ts'
+import {
+  backupCopyReportResultMessage,
+  createBackupCopyReportStore,
+  handleBackupCopyReport,
+} from '../../features/backups/copy-report.ts'
 import { recordInstanceAcmeIssuance } from '../../features/install/instance-hostnames.ts'
 import { recordCommandProgress } from '../../features/commands/command-progress.ts'
 import {
@@ -2752,6 +2757,10 @@ export class DaemonCellObject {
       await this.#handleBackupRunReport(serverId, msg, ws)
       return
     }
+    if (msg.type === 'backup-copy-report') {
+      await this.#handleBackupCopyReport(serverId, msg, ws)
+      return
+    }
     const inbound = wireMessageToInboundEnvelope(msg)
     if (!inbound) return
     const envelopeOk = validateDaemonInboundEnvelope(inbound)
@@ -2790,6 +2799,21 @@ export class DaemonCellObject {
     )
     if (!outcome || !ws) return
     ws.send(JSON.stringify(backupRunReportResultMessage(msg.id, outcome, nowIso())))
+  }
+
+  /** Answer a `backup-copy-report` on its socket; no answer (a null outcome) makes the daemon resend. */
+  async #handleBackupCopyReport(
+    serverId: string,
+    msg: Extract<DaemonMessage, { type: 'backup-copy-report' }>,
+    ws: WebSocket | undefined
+  ): Promise<void> {
+    const outcome = await this.#withProjectionDbResult('backup-copy-report', serverId, (db) =>
+      handleBackupCopyReport(createBackupCopyReportStore(db), msg, {
+        reporterServerId: serverId,
+      })
+    )
+    if (!outcome || !ws) return
+    ws.send(JSON.stringify(backupCopyReportResultMessage(msg.id, outcome, nowIso())))
   }
 
   #readRequestRow(serverId: string, requestId: string): PendingRequestRecord | null {

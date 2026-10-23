@@ -29,6 +29,7 @@ import {
   resolveDaemonSupport,
   resolveInstanceCapabilities,
   MANAGED_SWITCHOVER_FINAL_POSITION_FEATURE,
+  BACKUP_S3_COPY_FEATURE,
   TLS_CAPTURE_FEATURE,
   COMMAND_RECOVERY_FEATURE,
 } from './version-wire.ts'
@@ -298,8 +299,14 @@ test('does not advertise metrics-v7, so a daemon that only knows v7 stays on the
   assertEquals((DAEMON_WIRE_FEATURES as readonly string[]).includes('metrics-v7-sizes'), false)
 })
 
-test('server-network-check-v1 is the last advertised wire feature and raised no floor', () => {
+test('server-network-check-v1 is an advertised wire feature and raised no floor', () => {
   assertEquals(SERVER_NETWORK_CHECK_FEATURE, 'server-network-check-v1')
-  assertEquals(DAEMON_WIRE_FEATURES.at(-1), SERVER_NETWORK_CHECK_FEATURE)
+  assertEquals(DAEMON_WIRE_FEATURES.includes(SERVER_NETWORK_CHECK_FEATURE), true)
+  assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.0')
+})
+
+test('backup-s3-copy-v1 is the last advertised wire feature and raised no floor', () => {
+  assertEquals(BACKUP_S3_COPY_FEATURE, 'backup-s3-copy-v1')
+  assertEquals(DAEMON_WIRE_FEATURES.at(-1), BACKUP_S3_COPY_FEATURE)
   assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.0')
 })

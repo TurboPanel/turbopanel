@@ -3,8 +3,10 @@
  * may hold open.
  *
  * Stored on the `login` row:
- *  - `allowed_sources`: a list of places. NULL means "anywhere", today's
- *    behaviour, and no ProxySQL rules are made for the login.
+ *  - `allowed_sources`: a list of places, never empty (default `internal`).
+ *    Anywhere is the explicit pair {@link LOGIN_SOURCES_ANYWHERE}; this module
+ *    reads it as `undefined` ("no limit"), so no ProxySQL rules are made for
+ *    the login, and writes `undefined` / `null` back as that pair.
  *  - `max_connections`: a whole number; NULL means no per-login cap.
  *
  * A place is one of:
@@ -27,6 +29,29 @@ import {
   parseCidr,
   parseIpVersion,
 } from '../../lib/ip-address.ts'
+
+/** The stored form of "anywhere": both address families, written out. */
+export const LOGIN_SOURCES_ANYWHERE: readonly string[] = ['address:0.0.0.0/0', 'address:::/0']
+
+/** The places a stored `allowed_sources` list means; `undefined` is anywhere (no limit). */
+export function loginSourcesFromStored(
+  stored: readonly string[] | null | undefined
+): string[] | undefined {
+  if (!stored || stored.length === 0) return undefined
+  return stored.some((entry) => LOGIN_SOURCES_ANYWHERE.includes(entry)) ? undefined : [...stored]
+}
+
+/** The list to store for a limit; `undefined` / `null` (no limit) is the explicit anywhere pair. */
+export function loginSourcesToStored(sources: readonly string[] | null | undefined): string[] {
+  return sources && sources.length > 0 ? [...sources] : [...LOGIN_SOURCES_ANYWHERE]
+}
+
+/** True for a typed `address:0.0.0.0/0` or `address:::/0` (any spelling): the same as `any`. */
+function isAnywhereEntry(entry: string): boolean {
+  if (!entry.startsWith('address:')) return false
+  const value = entry.slice('address:'.length).trim()
+  return value.includes('/') && parseCidr(value)?.prefix === 0
+}
 
 /** Most places one login may list. */
 export const MAX_LOGIN_SOURCE_ENTRIES = 100
@@ -120,7 +145,10 @@ function parseAddressEntry(raw: string): string | LoginSourcesError {
   }
   const address = standardAddress(value)
   if (address === null) {
-    return fail('managed_login_source_invalid', `'${value}' is not a valid IP address.`)
+    return fail(
+      'managed_login_source_invalid',
+      `'${value}' is not a valid IP address. Host names are not allowed: use an IP address or a range.`
+    )
   }
   return address
 }
@@ -151,10 +179,14 @@ function normalizeSourceList(raw: unknown): string[] | null | LoginSourcesError 
   if (!Array.isArray(raw) || !raw.every((entry) => typeof entry === 'string')) {
     return fail(
       'managed_login_sources_invalid',
-      "allowedSources must be a list of places: 'any', 'internal', 'server:<id>' or 'address:<ip, prefix% or range>'."
+      "allowedSources must be a list of places: 'any', 'internal', 'server:<id>' or 'address:<ip or range>'. Host names are not allowed."
     )
   }
-  const list = [...new Set((raw as string[]).map((entry) => entry.trim()))]
+  const list = [
+    ...new Set(
+      (raw as string[]).map((entry) => (isAnywhereEntry(entry.trim()) ? 'any' : entry.trim()))
+    ),
+  ]
   if (list.length === 0) {
     return fail(
       'managed_login_sources_empty',
@@ -172,7 +204,7 @@ function normalizeSourceList(raw: unknown): string[] | null | LoginSourcesError 
     ? null
     : fail(
         'managed_login_sources_any_alone',
-        "'any' means everywhere, so it can't be combined with other places."
+        "'any' (or the range 0.0.0.0/0 or ::/0) means everywhere, so it can't be combined with other places."
       )
 }
 
@@ -191,7 +223,7 @@ function parseSourceEntry(entry: string): string | LoginSourcesError {
   }
   return fail(
     'managed_login_source_invalid',
-    `'${entry}' is not a place. Use 'any', 'internal', 'server:<id>' or 'address:<ip, prefix% or range>'.`
+    `'${entry}' is not a place. Use 'any', 'internal', 'server:<id>' or 'address:<ip or range>'.`
   )
 }
 

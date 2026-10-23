@@ -168,6 +168,7 @@ import {
   onPromoteSucceeded,
   onRecoveryCommandFailed,
   recoveryIdFromCommandMetadata,
+  sweepStalledFencing,
 } from '../../features/managed/ha-recovery.ts'
 
 export type DenoDeveloperSurfaceContext = {
@@ -346,6 +347,8 @@ async function runCleanupPhase(label: string, fn: () => Promise<unknown>): Promi
 
 async function sweepStaleCommandsPhase(db: Db, commandQueue?: CommandQueue): Promise<void> {
   const swept = await sweepStaleCommands(db, { commandQueue })
+  // A fence step that never answered ends its recovery at the deadline.
+  await sweepStalledFencing(db, { commandQueue })
   // Recoveries first: a row that is still in flight keeps its managed row at
   // `applying`, and an expired one releases it itself.
   const expired = (
@@ -701,7 +704,12 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
       logWarn('daemon-cell', `network probe sweep error: ${String(err)}`)
     })
     // Backup policy sets once after each reconnect (hello must not enqueue).
-    void runBackupsReconcileSweep(db, commandQueue).catch((err) => {
+    void runBackupsReconcileSweep(db, commandQueue, {
+      copyDeps:
+        secretsConfig && dataEncryptionSecrets
+          ? { secretsConfig, dataEncryptionSecrets }
+          : undefined,
+    }).catch((err) => {
       logWarn('daemon-cell', `backups reconcile sweep error: ${String(err)}`)
     })
     // Folders of deleted assets whose host has not confirmed them gone: asked

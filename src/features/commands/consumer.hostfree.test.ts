@@ -17,6 +17,8 @@ import type { DeployFailureNotice } from '../deploy/deploy-failure-notice.ts'
 import {
   announceDeployFailure,
   commandTimeoutMs,
+  commandWaitMs,
+  FENCE_DRAIN_WAIT_MS,
   enrichPingResult,
   errorMessage,
   extractObservedHostname,
@@ -92,6 +94,23 @@ const VALID_MANAGED_APPLY_PAYLOAD = {
     },
   ],
 } as const
+
+test('commandWaitMs holds a drain to its short budget and leaves a recover on the full one', () => {
+  assertEquals(
+    commandWaitMs({ type: 'managed.ha.failover', payload: { phase: 'drain' } }),
+    FENCE_DRAIN_WAIT_MS
+  )
+  assertEquals(
+    commandWaitMs({ type: 'managed.ha.failover', payload: { phase: 'undrain' } }),
+    FENCE_DRAIN_WAIT_MS
+  )
+  assertEquals(
+    commandWaitMs({ type: 'managed.ha.failover', payload: { phase: 'recover' } }),
+    600_000
+  )
+  assertEquals(commandWaitMs({ type: 'managed.ha.failover' }), 600_000)
+  assertEquals(commandWaitMs({ type: 'managed.lifecycle', payload: { phase: 'drain' } }), 120_000)
+})
 
 test('commandTimeoutMs returns per-type budgets and the default', () => {
   assertEquals(commandTimeoutMs('daemon.ping'), 30_000)
@@ -2783,7 +2802,7 @@ test('processCommandEnvelope switchover promote failure with GTID proof does not
   )
   assertEquals(fake.managedUpdates.at(-1)?.status, 'ready')
   assertEquals(
-    fake.recoveryUpdates.some((patch) => patch.state === 'failed'),
+    fake.recoveryUpdates.some((patch) => patch.state === 'blocked'),
     true
   )
 })
