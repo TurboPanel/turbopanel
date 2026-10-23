@@ -28,6 +28,8 @@ import { isNoopCommandQueue } from '../../features/commands/noop-command-queue.t
 import { compatLogWarn } from '../../lib/log-compat.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
 import { fanOutDatacenterRoutingChange } from './routing-fanout.ts'
+import { runNetworkCheck } from './network-check-run.ts'
+import { chosenNetworkDownWarnings } from '../../features/net/server-network-check.ts'
 import { suggestDatacenterNames } from '../../features/datacenters/datacenter-name-suggestions.ts'
 import {
   applyLocationPatch,
@@ -585,6 +587,7 @@ export function registerDatacenterRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
   router.use('/datacenters/:id/members', createSessionMiddleware(secrets))
   router.use('/datacenters/:id/members/:serverId', createSessionMiddleware(secrets))
   router.use('/datacenters/:id/server-traffic', createSessionMiddleware(secrets))
+  router.use('/datacenters/:id/server-traffic/check', createSessionMiddleware(secrets))
   router.use('/datacenters/:id/subnets', createSessionMiddleware(secrets))
   router.use('/datacenters/:id/subnets/:networkId', createSessionMiddleware(secrets))
 
@@ -627,9 +630,18 @@ export function registerDatacenterRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
     )
 
     const withPolicy = attachEffectivePolicy(attachPrivateCidrs(rows, cidrsByDc))
+    const pins = (
+      await Promise.all(rows.map((row) => loadDatacenterMembershipsForDatacenter(db, row.id)))
+    ).flat()
     return c.json({
       datacenters: attachEffectiveLocation(attachServerTraffic(withPolicy)),
-      warnings: equalPriorityWarnings(withPolicy),
+      warnings: [
+        ...equalPriorityWarnings(withPolicy),
+        ...chosenNetworkDownWarnings(
+          withPolicy.map((dc) => ({ id: dc.id, priority: dc.priority, trusted: dc.trusted })),
+          pins
+        ),
+      ],
     })
   })
 
@@ -1112,10 +1124,25 @@ export function registerDatacenterRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
     if (body.preferred !== true) return c.json({ error: 'Invalid request' }, 400)
+    if (body.confirmUnreachable !== undefined && typeof body.confirmUnreachable !== 'boolean') {
+      return c.json({ error: 'Invalid request' }, 400)
+    }
 
     const { plan, optionsById } = await planServerTrafficForOrganization(db, organizationId, id)
     if (!plan.ok) {
       return c.json({ error: plan.error }, plan.error === 'datacenter_not_found' ? 404 : 409)
+    }
+    // Only a real change is checked first. A peer that cannot be tested (older
+    // host, offline) never blocks; one that does not answer does, until the
+    // owner confirms.
+    if (plan.changes.length > 0 && body.confirmUnreachable !== true) {
+      const report = await runNetworkCheck(db, getDaemonCellRegistry(c), {
+        organizationId,
+        datacenterId: id,
+      })
+      if (report.unreachableCount > 0) {
+        return c.json({ error: 'peers_unreachable', check: report }, 409)
+      }
     }
     if (plan.changes.length > 0) await writeServerTrafficChanges(db, plan.changes, optionsById)
     await forEachSequential(plan.changes, (change: PriorityChange) =>
@@ -1126,6 +1153,17 @@ export function registerDatacenterRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
       })
     )
     return c.json({ ok: true as const, changes: plan.changes })
+  })
+
+  router.post('/datacenters/:id/server-traffic/check', async (c) => {
+    const scope = await resolveDatacenterRequest(c, 'manage')
+    if (scope instanceof Response) return scope
+    const { db, organizationId, id } = scope
+    const check = await runNetworkCheck(db, getDaemonCellRegistry(c), {
+      organizationId,
+      datacenterId: id,
+    })
+    return c.json({ ok: true as const, check })
   })
 
   router.delete('/datacenters/:id', async (c) => {
