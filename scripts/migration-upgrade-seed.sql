@@ -108,3 +108,6 @@ INSERT INTO command (id, server_id, actor_type, actor_id, name, status, organiza
 
 INSERT INTO audit (id, organization_id, actor_user_id, actor_email, action, target_type, target_id) VALUES
   ('00000000-0000-7000-8000-000000000c71', '00000000-0000-7000-8000-000000000101', '00000000-0000-7000-8000-000000000001', 'upgrade-owner@example.test', 'server.delete', 'server', '00000000-0000-7000-8000-000000000502');
+
+INSERT INTO peak (id, server_id, bucket, memory_bytes, cores) VALUES
+  ('00000000-0000-7000-8000-000000000c81', '00000000-0000-7000-8000-000000000501', '2026-10-20 10:00:00+00', 17179869184, 8);

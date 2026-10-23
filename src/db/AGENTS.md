@@ -984,7 +984,10 @@ server delete writes it. `preferred_tier_id` is written in step with it by the
 manager route. Ingest, the capability plan, placement and the notice sweep read
 this column. Null on an unlicensed server and on a licensed server no manager
 has assigned yet — the daemon still connects. A server that measures bigger
-than its tier keeps it and is flagged (`metadata.overPlan`).
+than its tier keeps it and is flagged (`metadata.overPlan`). The highest RAM and
+physical cores of the last 7 days (the grace window) live in the `peak` table,
+one row per server per UTC hour (`features/servers/peak.ts`); the 15-minute
+cron prunes older buckets.
 
 **Cell metadata fields** (stored in `server.metadata` and/or `server.options`
 JSONB):

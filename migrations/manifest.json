@@ -20,6 +20,12 @@
       "tag": "0002_backup_policy_database",
       "when": 1792604831497,
       "sha256": "3ca7c79d1c53d7f463e9ada8098b35c9072b26c3b00639eb505be0a8a9a52547"
+    },
+    {
+      "idx": 3,
+      "tag": "0003_server_peak",
+      "when": 1792772729154,
+      "sha256": "46438c6a1c2a3555799b75b56c144c8464e2be5307a5d58c979c290298cc6dc7"
     }
   ]
 }

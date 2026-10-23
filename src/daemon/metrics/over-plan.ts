@@ -13,6 +13,7 @@
  * they can move with ballooning, and mixing two sources would flip the flag
  * (and write the row) on every sample near a limit.
  */
+import type { ServerPeak } from '../../features/servers/peak.ts'
 import type { ServerHostResources } from '../../features/servers/server-metadata.ts'
 import { cpuBand, ramBand, totalPhysicalCores } from '../../features/tiers/tier-placement.ts'
 
@@ -26,9 +27,32 @@ export function evaluateOverPlan(
   tierRank: number | null | undefined,
   resources: ServerHostResources | undefined
 ): OverPlan | null {
+  return judgeOverPlan(
+    tierRank,
+    resources?.memory?.totalBytes ?? 0,
+    resources === undefined ? 0 : totalPhysicalCores(resources)
+  )
+}
+
+/**
+ * The same verdict from the highest readings of the grace window (`peak`
+ * table, `features/servers/peak.ts`) instead of the latest host report, so one
+ * low sample after a balloon or a hot-add never clears it. `null` peak means no
+ * reading in the window: nothing to judge against, so never over plan.
+ */
+export function evaluateOverPlanFromPeak(
+  tierRank: number | null | undefined,
+  peak: ServerPeak | null
+): OverPlan | null {
+  return judgeOverPlan(tierRank, peak?.memoryBytes ?? 0, peak?.cores ?? 0)
+}
+
+function judgeOverPlan(
+  tierRank: number | null | undefined,
+  memoryBytes: number,
+  cores: number
+): OverPlan | null {
   if (tierRank === null || tierRank === undefined) return null
-  const memoryBytes = resources?.memory?.totalBytes ?? 0
-  const cores = resources === undefined ? 0 : totalPhysicalCores(resources)
   return {
     memory: memoryBytes > 0 && ramBand(memoryBytes).rank > tierRank,
     cpu: cores > 0 && cpuBand(cores).rank > tierRank,
