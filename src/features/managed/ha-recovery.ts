@@ -1949,16 +1949,14 @@ async function expireStalledFence(
     const recent = await (recentRecoveries ?? listRecentRecoveries)(db, row.managedId)
     repeated = deadlineBlockStreak(recent, row, nowMs) >= FENCE_DEADLINE_STREAK_LIMIT - 1
   }
-  const blocked = await blockRecoveryNothingChanged(
-    db,
-    row.id,
-    repeated
-      ? FENCE_DEADLINE_REPEATED_MESSAGE
-      : row.kind === 'automatic-failover'
-        ? automaticFailoverBlockedReason('unfenced')
-        : FENCE_TIMED_OUT_MESSAGE,
-    { stillApplies: notFenced, clearTarget: !repeated, extra: { fenceDeadline: true } }
-  )
+  let reason = FENCE_TIMED_OUT_MESSAGE
+  if (repeated) reason = FENCE_DEADLINE_REPEATED_MESSAGE
+  else if (row.kind === 'automatic-failover') reason = automaticFailoverBlockedReason('unfenced')
+  const blocked = await blockRecoveryNothingChanged(db, row.id, reason, {
+    stillApplies: notFenced,
+    clearTarget: !repeated,
+    extra: { fenceDeadline: true },
+  })
   if (!blocked) return false
   if (repeated) {
     compatLogWarn(
