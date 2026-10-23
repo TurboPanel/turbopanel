@@ -11,6 +11,7 @@ import { deriveEncryptionSecretsConfig, parseSecretsEnv } from '../lib/secrets/s
 import { getDatabaseUrl } from '../db/url.ts'
 import { createDenoDb, type Db } from '../db/connection.ts'
 import {
+  backupTarget,
   forge,
   gitConnection,
   instanceUploadedCertificate,
@@ -91,7 +92,8 @@ async function installIsolatedFixtureSchema(tx: Db, schemaName: string): Promise
       slug varchar(255),
       metadata jsonb,
       options jsonb,
-      next_linux_id integer DEFAULT 30001 NOT NULL
+      next_linux_id integer DEFAULT 30001 NOT NULL,
+      backup_destination_id uuid
     )
   `)
   )
@@ -263,6 +265,7 @@ async function installIsolatedFixtureSchema(tx: Db, schemaName: string): Promise
   // Column-for-column copies without the foreign keys (the transaction rolls back).
   await tx.execute(sql.raw('CREATE TABLE monitor (LIKE public.monitor INCLUDING DEFAULTS)'))
   await tx.execute(sql.raw('CREATE TABLE relay (LIKE public.relay INCLUDING DEFAULTS)'))
+  await tx.execute(sql.raw('CREATE TABLE destination (LIKE public.destination INCLUDING DEFAULTS)'))
 }
 
 async function withIsolatedFixture(
@@ -1041,6 +1044,8 @@ test('reencryptAtRestSecrets reseals monitor.secret_envelope, relay.preshared_ke
   const monitorV1 = await encryptSecret(v1Only, monitorPlain)
   const monitorV2 = await encryptSecret(rotated, 'already-current')
   const presharedV1 = await encryptSecret(v1Only, presharedPlain)
+  const destinationPlain = `s3-${suffix}`
+  const destinationV1 = await encryptSecret(v1Only, destinationPlain)
 
   await withIsolatedFixture('reencrypt_p2', async (scoped) => {
     const serverId = crypto.randomUUID()
@@ -1069,6 +1074,18 @@ test('reencryptAtRestSecrets reseals monitor.secret_envelope, relay.preshared_ke
         .returning({ id: relay.id })
       return row!.id
     }
+    const [destinationRow] = await scoped
+      .insert(backupTarget)
+      .values({
+        organizationId: crypto.randomUUID(),
+        name: 'ct-destination',
+        endpoint: 'https://s3.example.test',
+        region: 'us-east-1',
+        bucket: 'ct-bucket',
+        accessKeyId: 'AKIAEXAMPLE',
+        secretKeySealed: destinationV1,
+      })
+      .returning({ id: backupTarget.id })
     const monitorV1Id = await insertMonitor(monitorV1)
     const monitorV2Id = await insertMonitor(monitorV2)
     const relayV1Id = await insertRelay(presharedV1)
@@ -1078,8 +1095,15 @@ test('reencryptAtRestSecrets reseals monitor.secret_envelope, relay.preshared_ke
       .values({ key: ALERT_WEBHOOK_URL_KEY, value: await encryptSecret(v1Only, webhookPlain) })
 
     const totals = await reencryptAtRestSecretsToCompletion(scoped, rotated)
-    assertEquals(totals.reencrypted, 3)
+    assertEquals(totals.reencrypted, 4)
     assertEquals(totals.failed, 0)
+
+    const [resealedDestination] = await scoped
+      .select({ v: backupTarget.secretKeySealed })
+      .from(backupTarget)
+      .where(eq(backupTarget.id, destinationRow!.id))
+    assertEquals(parseSecretEnvelope(resealedDestination!.v)?.keyVersion, 2)
+    assertEquals(await decryptSecret(rotated, resealedDestination!.v), destinationPlain)
 
     const monitorOf = async (id: string) =>
       (

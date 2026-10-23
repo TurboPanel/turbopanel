@@ -227,6 +227,13 @@ async function withFixture(fn: (fixture: Fixture) => Promise<void>): Promise<voi
     })
   } finally {
     await db.delete(audit).where(inArray(audit.organizationId, [orgA, orgB]))
+    const projectIds = db
+      .select({ id: project.id })
+      .from(project)
+      .where(inArray(project.organizationId, [orgA, orgB]))
+    await db.delete(environment).where(inArray(environment.projectId, projectIds))
+    await db.delete(project).where(inArray(project.organizationId, [orgA, orgB]))
+    await db.delete(workspace).where(inArray(workspace.organizationId, [orgA, orgB]))
     await db.delete(server).where(inArray(server.organizationId, [orgA, orgB]))
     await db.delete(organization).where(inArray(organization.id, [orgA, orgB]))
     if (userIds.length > 0) await db.delete(user).where(inArray(user.id, userIds))
