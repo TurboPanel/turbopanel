@@ -3,6 +3,10 @@ import {
   serverIpsEquals,
   type ServerReportedIp,
 } from '../../contracts/server-addresses.ts'
+import {
+  normalizeServerOsArchitecture,
+  type ServerOsArchitecture,
+} from '../../contracts/capability-plan.ts'
 import type { ServerGeo } from '../geo/server-geo.ts'
 import type { ServiceRunState } from '../../contracts/service-run-state.ts'
 import { type LocationFields, parseLocationOverride } from '../geo/location-override.ts'
@@ -54,8 +58,8 @@ export type ServerOsMetadata = {
   codename?: string
   /** Raw `PRETTY_NAME` from os-release when available. */
   prettyName?: string
-  /** e.g. arm64, x86_64, aarch64 */
-  architecture?: string
+  /** `x86_64` or `aarch64`; other spellings (`amd64`, `arm64`) are normalised on ingest. */
+  architecture?: ServerOsArchitecture
 }
 
 /** Physical vs efficiency core/thread counts on hybrid CPUs. */
@@ -474,7 +478,7 @@ export function parseServerOsMetadata(value: unknown): ServerOsMetadata | undefi
   if (codename) os.codename = codename
   const prettyName = optionalTrimmedString(value.prettyName)
   if (prettyName) os.prettyName = prettyName
-  const architecture = optionalTrimmedString(value.architecture)
+  const architecture = normalizeServerOsArchitecture(value.architecture)
   if (architecture) os.architecture = architecture
 
   return Object.keys(os).length > 0 ? os : undefined
@@ -861,7 +865,7 @@ export function osMetadataFromColumns(row: ServerOsColumns): ServerOsMetadata | 
   if (codename) os.codename = codename
   const prettyName = optionalTrimmedString(row.osPrettyName)
   if (prettyName) os.prettyName = prettyName
-  const architecture = optionalTrimmedString(row.osArchitecture)
+  const architecture = normalizeServerOsArchitecture(row.osArchitecture)
   if (architecture) os.architecture = architecture
   return Object.keys(os).length > 0 ? os : undefined
 }

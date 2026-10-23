@@ -8,6 +8,7 @@ import {
   metricsCapabilityPlanFromTierEntitlements,
   type MetricsCapabilityTierEntitlements,
   metricsDeploymentKindForRuntime,
+  normalizeServerOsArchitecture,
   parseMetricsCapabilityPlanOverride,
   PLATFORM_DEFAULT_METRICS_CAPABILITY_PLAN,
   platformDefaultMetricsCapabilityPlan,
@@ -407,4 +408,17 @@ test('resolveServerMachineClass: NULL and out-of-range declarations fall back to
   assertEquals(resolveServerMachineClass(undefined, { hardwareSignals: [] }), 'virtual')
   assertEquals(resolveServerMachineClass('bare-metal', undefined, 1), 'physical')
   assertEquals(resolveServerMachineClass('', undefined, 0), 'virtual')
+})
+
+test('normalizeServerOsArchitecture maps every spelling onto x86_64 or aarch64', () => {
+  for (const raw of ['x86_64', 'amd64', 'AMD64', ' x64 ', 'x86-64']) {
+    assertEquals(normalizeServerOsArchitecture(raw), 'x86_64')
+  }
+  // Raspberry Pi 5 and other 64-bit Arm boards report aarch64 (some tools say arm64).
+  for (const raw of ['aarch64', 'arm64', 'ARM64', 'armv8l']) {
+    assertEquals(normalizeServerOsArchitecture(raw), 'aarch64')
+  }
+  for (const raw of ['armv7l', 'i686', 'riscv64', '', '   ', null, undefined, 64]) {
+    assertEquals(normalizeServerOsArchitecture(raw), null)
+  }
 })
