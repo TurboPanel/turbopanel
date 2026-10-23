@@ -1,10 +1,7 @@
 import type { ParsedCertificate, TlsMetadata, TlsStatus } from './types.ts'
 
 /** Residual `tls.metadata` jsonb — promoted fields live in dedicated columns. */
-export type TlsResidualMetadata = Omit<
-  TlsMetadata,
-  'status' | 'notAfter' | 'fingerprintSha256'
->
+export type TlsResidualMetadata = Omit<TlsMetadata, 'status' | 'notAfter' | 'fingerprintSha256'>
 
 export type TlsStatusColumns = {
   status: string | null | undefined
@@ -30,7 +27,7 @@ function isTlsStatus(value: unknown): value is TlsStatus {
 
 export function metadataFromParsed(
   parsed: ParsedCertificate,
-  status: TlsStatus = 'ready',
+  status: TlsStatus = 'ready'
 ): TlsMetadata {
   return {
     dnsNames: parsed.dnsNames,
@@ -74,7 +71,7 @@ export function splitTlsMetadata(metadata: TlsMetadata): {
 /** Assemble the client-facing metadata DTO from columns + residual jsonb. */
 export function assembleTlsMetadata(
   columns: TlsStatusColumns,
-  residual: unknown,
+  residual: unknown
 ): TlsMetadata | null {
   if (typeof residual !== 'object' || residual === null || Array.isArray(residual)) {
     return null
@@ -90,15 +87,13 @@ export function assembleTlsMetadata(
   }
 
   // Promoted fields are required from their dedicated columns.
-  const notAfter = typeof columns.notAfter === 'string' && columns.notAfter.length > 0
-    ? columns.notAfter
-    : null
+  const notAfter =
+    typeof columns.notAfter === 'string' && columns.notAfter.length > 0 ? columns.notAfter : null
 
   // Pending / non-materialized certs store NULL in the column (partial unique
   // index) — expose '' on the client DTO.
-  const fingerprintSha256 = typeof columns.fingerprintSha256 === 'string'
-    ? columns.fingerprintSha256
-    : ''
+  const fingerprintSha256 =
+    typeof columns.fingerprintSha256 === 'string' ? columns.fingerprintSha256 : ''
 
   const status = isTlsStatus(columns.status) ? columns.status : null
 
@@ -123,10 +118,7 @@ export function assembleTlsMetadata(
 }
 
 /** Mark ready certs past notAfter as expired for API responses. */
-export function refreshTlsStatus(
-  metadata: TlsMetadata,
-  now: Date = new Date(),
-): TlsMetadata {
+export function refreshTlsStatus(metadata: TlsMetadata, now: Date = new Date()): TlsMetadata {
   // `automatic` is Caddy ACME intent — no leaf dates to expire here.
   if (metadata.status !== 'ready') return metadata
   const notAfter = Date.parse(metadata.notAfter)
