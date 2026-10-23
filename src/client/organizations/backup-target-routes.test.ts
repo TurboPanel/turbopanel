@@ -46,6 +46,7 @@ import {
   getCommandDispatchPayload,
   getCommandRecord,
 } from '../../features/commands/command-records.ts'
+import { ORG_ID_HEADER } from '../org-context.ts'
 import { registerOrganizationBackupTargetRoutes } from './backup-target-routes.ts'
 import { registerManagedRoutes } from '../managed/routes.ts'
 
@@ -257,7 +258,12 @@ async function call(
 ): Promise<Called> {
   const res = await f.app.request(path, {
     method,
-    headers: { 'content-type': 'application/json', ...(cookie ? { Cookie: cookie } : {}) },
+    headers: {
+      'content-type': 'application/json',
+      // Managed routes read the organization from this header.
+      [ORG_ID_HEADER]: cookie === f.otherManagerCookie ? f.orgB : f.orgA,
+      ...(cookie ? { Cookie: cookie } : {}),
+    },
     body: body === undefined || method === 'GET' ? undefined : JSON.stringify(body),
   })
   return { status: res.status, body: (await res.json()) as Record<string, unknown> }
