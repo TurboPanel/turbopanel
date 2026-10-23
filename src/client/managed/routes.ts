@@ -188,7 +188,7 @@ import {
   copyTargetForNewBackup,
   describeClusterBackupTarget,
   refuseWrongHostRestore,
-  restoreSourceFromCopy,
+  copySourceForRestore,
   wantsRestoreFromCopy,
 } from './backup-copy.ts'
 import { listCopiesFor, toApiCopy } from '../../features/backups/copy-records.ts'
@@ -3747,23 +3747,15 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const commandQueue = assertDispatchInfrastructure(c)
     if (commandQueue instanceof Response) return commandQueue
 
-    const source = fromCopy
-      ? await restoreSourceFromCopy(c, db, {
-          organizationId: auth.organizationId,
-          managedId: row.id,
-          backupId: record.id,
-          serverId: targetServerId,
-        })
-      : undefined
-    if (source && !source.ok) {
-      return c.json({ error: source.error, message: source.message }, 409)
-    }
-    const built = buildManagedRestorePayload(
-      ctx,
-      row.id,
-      record,
-      source?.ok ? source.source : undefined
-    )
+    const source = await copySourceForRestore(c, db, {
+      fromCopy,
+      organizationId: auth.organizationId,
+      managedId: row.id,
+      backupId: record.id,
+      serverId: targetServerId,
+    })
+    if (source instanceof Response) return source
+    const built = buildManagedRestorePayload(ctx, row.id, record, source)
     if (isManagedBackupApiError(built)) {
       return mapManagedBackupApiError(c, built)
     }

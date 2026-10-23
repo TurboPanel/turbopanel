@@ -167,3 +167,21 @@ export async function refuseWrongHostRestore(
     copyLive?.copy.state === 'copied'
   )
 }
+
+/** What a restore reads from the bucket, undefined when it is not asked for, or the 409 explaining why the copy cannot be used. */
+export async function copySourceForRestore(
+  c: Context<AppEnv>,
+  db: Db,
+  params: {
+    fromCopy: boolean
+    organizationId: string
+    managedId: string
+    backupId: string
+    serverId: string
+  }
+): Promise<Response | { target: BackupCopyTargetWire; key: string } | undefined> {
+  if (!params.fromCopy) return undefined
+  const source = await restoreSourceFromCopy(c, db, params)
+  if (!source.ok) return c.json({ error: source.error, message: source.message }, 409)
+  return source.source
+}
