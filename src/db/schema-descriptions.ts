@@ -563,9 +563,16 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       metadata:
         'Free-form jsonb returned by the datacenter API; no control-plane code path writes or interprets any key on it today.',
       options:
-        'Operator policy jsonb: `priority` (0..1000, lower wins, default 100), `trusted` (default true), `addressPreference`, `sshPort`, `ntp`, timezone defaults.',
+        'Operator settings jsonb: `sshPort`, `ntp`, timezone defaults and the location override; the routing policy lives in real columns.',
       name: 'Operator-chosen display name; also seeded onto the site `network` row created together with the datacenter.',
       description: 'Optional operator free-text note about the datacenter.',
+      priority:
+        "Routing-ladder rank among a server's datacenters, 0 to 1000, lower wins, default 100 (API field `priority`).",
+      is_trusted:
+        "True when the operator controls the datacenter's L2 (default); false keeps server-to-server traffic off it (API field `trusted`).",
+      address_preference:
+        "Address family tried first among a server's pins here, `ipv6` (default) or `ipv4` (API field `options.addressPreference`).",
+      kind: 'What the network is: `lan`, `backplane` or `provider_private`; NULL means the operator never said.',
     },
   },
   fabric: {
@@ -936,7 +943,9 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       default_server_id:
         'Default placement server: an environment with no `server_id` of its own inherits it; set null when the server is deleted (API field `options.defaultServerId`).',
       metadata:
-        'Client jsonb: `type` is `docker-compose`, `managed`, `template` or platform-only `system` (absent means setup not chosen yet), plus optional catalog `code`.',
+        'Client jsonb: the catalog `code` of a template or managed engine project, plus free caller keys; the project type lives in `kind`.',
+      kind: 'What the project is: `compose` (a template too), `managed` or platform-only `system`; NULL while a draft that has not chosen yet.',
+      icon: 'Icon key from the fixed list the project screens offer; NULL means the default, and a managed project ignores it.',
       options:
         'Jsonb: `compose`, `containerNaming`, `defaultServerId`, `composeSource`, and deploy defaults `drainSeconds`, `healthTimeoutSeconds`, `rollbackWindowMinutes`.',
       organization_id:

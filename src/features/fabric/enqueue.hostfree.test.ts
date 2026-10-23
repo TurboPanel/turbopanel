@@ -111,7 +111,7 @@ function createEndpointlessFabricDb(
         }
       }
 
-      if (keys.length === 2 && keySet.has('id') && keySet.has('options')) {
+      if (keySet.has('id') && keySet.has('priority') && keySet.has('addressPreference')) {
         return {
           from() {
             return {
