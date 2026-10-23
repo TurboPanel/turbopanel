@@ -45,9 +45,9 @@ jobs:
       || (github.event_name == 'workflow_run'
           && github.event.workflow_run.event != 'pull_request'
           && github.event.workflow_run.conclusion != 'skipped')
-    uses: TurboPanel/dev/.github/workflows/gh-promote-ok-recheck.yml@d9127ee03a6a3b42e9435ebec3542db5fab09bc0 # dev#49
+    uses: TurboPanel/dev/.github/workflows/gh-promote-ok-recheck.yml@fac435665a138dbf4449c581621ea527ec1ca4df # dev#79
     with:
-      dev-ref: d9127ee03a6a3b42e9435ebec3542db5fab09bc0 # dev#49
+      dev-ref: fac435665a138dbf4449c581621ea527ec1ca4df # dev#79
       dry-run: ${{ github.event_name == 'workflow_dispatch' && !inputs.rerun }}
     # gh-promote-ok-recheck.yml finds the open PRs (pull-requests) and re-runs
     # their failed promote-ok run (actions: write).
@@ -58,11 +58,11 @@ jobs:
 
   dry-run:
     if: github.event_name == 'workflow_dispatch' && inputs.pr != ''
-    uses: TurboPanel/dev/.github/workflows/gh-promote-ok.yml@efe45fb83fc2cef6350e7f7cbdbb65da11003e31 # dev#70
+    uses: TurboPanel/dev/.github/workflows/gh-promote-ok.yml@fac435665a138dbf4449c581621ea527ec1ca4df # dev#79
     with:
       repo-kind: instance
       ci-workflow: build.yml
-      dev-ref: efe45fb83fc2cef6350e7f7cbdbb65da11003e31 # dev#70
+      dev-ref: fac435665a138dbf4449c581621ea527ec1ca4df # dev#79
       pr-number: ${{ inputs.pr }}
     permissions:
       contents: read

@@ -44,11 +44,11 @@ concurrency:
 
 jobs:
   evaluate:
-    uses: TurboPanel/dev/.github/workflows/gh-promote-ok.yml@efe45fb83fc2cef6350e7f7cbdbb65da11003e31 # dev#70
+    uses: TurboPanel/dev/.github/workflows/gh-promote-ok.yml@fac435665a138dbf4449c581621ea527ec1ca4df # dev#79
     with:
       repo-kind: instance
       ci-workflow: build.yml
-      dev-ref: efe45fb83fc2cef6350e7f7cbdbb65da11003e31 # dev#70
+      dev-ref: fac435665a138dbf4449c581621ea527ec1ca4df # dev#79
       base: ${{ github.event.pull_request.base.ref }}
       head-sha: ${{ github.event.pull_request.head.sha }}
     # gh-promote-ok.yml reads the canary release, tags and releases (contents),
