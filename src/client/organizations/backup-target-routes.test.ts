@@ -588,6 +588,21 @@ test('the host is sent the target sealed to its own key; a cluster can override 
     })
     assertEquals(set[0]!.copyTarget!.bucket, 'second-bucket')
 
+    // An upper-case id is folded to lower case, so the stored choice passes the database check.
+    const upper = await call(
+      f,
+      'PUT',
+      `/organizations/${f.orgA}/backup-targets/clusters/${f.managedId}`,
+      f.managerCookie,
+      { choice: id.toUpperCase() }
+    )
+    assertEquals(upper.status, 200, JSON.stringify(upper.body))
+    const [stored] = await f.db
+      .select({ v: managed.backupDestination })
+      .from(managed)
+      .where(eq(managed.id, f.managedId))
+    assertEquals(stored!.v, id)
+
     const bad = await call(
       f,
       'PUT',

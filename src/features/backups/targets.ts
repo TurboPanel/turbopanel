@@ -296,11 +296,13 @@ export async function targetUsage(
 
 export async function deleteTarget(db: Db, destinationId: string): Promise<void> {
   // A cluster's choice is text with no foreign key, so clear any that names it.
-  await db
-    .update(managed)
-    .set({ backupDestination: null })
-    .where(eq(managed.backupDestination, destinationId))
-  await db.delete(backupTarget).where(eq(backupTarget.id, destinationId))
+  await db.transaction(async (tx) => {
+    await tx
+      .update(managed)
+      .set({ backupDestination: null })
+      .where(eq(managed.backupDestination, destinationId))
+    await tx.delete(backupTarget).where(eq(backupTarget.id, destinationId))
+  })
 }
 
 export async function recordTargetTest(
@@ -375,7 +377,7 @@ export async function setClusterChoice(
   db: Db,
   params: { organizationId: string; managedId: string; choice: string }
 ): Promise<void> {
-  const { choice } = params
+  const choice = params.choice.toLowerCase()
   await db
     .update(managed)
     .set({

@@ -362,7 +362,8 @@ async function putClusterResponse(c: Context<AppEnv>, scope: Scope): Promise<Res
 function clusterChoiceOf(body: Record<string, unknown>): string | null {
   const choice = body.choice
   if (choice === 'inherit' || choice === 'none') return choice
-  return typeof choice === 'string' && isUuid(choice) ? choice : null
+  // Stored as text and checked in lower case, so an upper-case id is folded first.
+  return typeof choice === 'string' && isUuid(choice) ? choice.toLowerCase() : null
 }
 
 export function registerOrganizationBackupTargetRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
