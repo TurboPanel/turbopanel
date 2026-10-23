@@ -878,7 +878,9 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       metadata:
         'Holds `home` (under `/srv/users`), an optional `uid`/`gid` mirror and `composeAlias`.',
       options:
-        'Host-account settings: `shell` (closed allowlist, default `/usr/sbin/nologin`) and optional operator `uid`/`gid` override; parsed by `parsePrincipalOptions`.',
+        'Host-account settings: optional operator `uid`/`gid` override and `nameScheme`; parsed by `parsePrincipalOptions`.',
+      access:
+        'Site owner SSH access: `none` (no login, keys kept), `sftp` (file transfer only) or `shell` (shell plus file transfer).',
       username:
         'Short internal account name (letter or underscore first, then letters, digits, underscore, hyphen); server accounts get a shorter API-layer cap.',
       applied_username:

@@ -153,7 +153,8 @@ async function installIsolatedFixtureSchema(tx: Db, schemaName: string): Promise
       password text,
       project_id uuid,
       metadata jsonb,
-      options jsonb
+      options jsonb,
+      access text DEFAULT 'sftp' NOT NULL
     )
   `)
   )

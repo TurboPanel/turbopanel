@@ -1,13 +1,6 @@
 import type { principal } from '../../db/schema.ts'
-import {
-  accessLevelForShell,
-  type PrincipalAccessLevel,
-} from '../../features/principals/principal-access.ts'
+import type { PrincipalAccessLevel } from '../../features/principals/principal-access.ts'
 import { type PrincipalNameScheme, principalNameSchemeOf } from '../../lib/principal-name-scheme.ts'
-import {
-  parsePrincipalOptions,
-  resolvePrincipalShell,
-} from '../../features/principals/principal-options.ts'
 
 /**
  * Only the columns the serializer reads — deliberately excludes `password` so
@@ -21,6 +14,7 @@ type PrincipalRow = Pick<
   | 'projectId'
   | 'metadata'
   | 'options'
+  | 'access'
   | 'createdAt'
   | 'updatedAt'
 >
@@ -46,11 +40,9 @@ export type SerializedProjectPrincipal = {
   /** Services this principal runs as / owns storage for (via `tenancy`). */
   serviceIds: string[]
   /**
-   * How this account may log in, decoded from `options.shell`.
-   *
-   * Derived rather than stored: the shell **is** the access level, so exposing
-   * both a level and a shell as independent fields would let the two disagree.
-   * See `lib/principal-access.ts`.
+   * How this account may log in: the stored `principal.access` level. The shell
+   * the host sees is derived from it, never stored beside it, so the two cannot
+   * disagree. See `features/principals/principal-access.ts`.
    *
    * This is what the operator asked for. What actually happens also depends on
    * `sshKeyCount` — an account set to `shell` with no keys cannot log in at all,
@@ -85,7 +77,7 @@ export function serializeProjectPrincipal(
     metadata: row.metadata,
     options: row.options,
     serviceIds: [...serviceIds].sort((a, b) => a.localeCompare(b)),
-    access: accessLevelForShell(resolvePrincipalShell(parsePrincipalOptions(row.options))),
+    access: row.access as PrincipalAccessLevel,
     sshKeyCount,
     passwordAuth,
     createdAt: row.createdAt,

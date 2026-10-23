@@ -3672,6 +3672,14 @@ export const principal = pgTable(
      */
     metadata: jsonb(),
     options: jsonb(),
+    /**
+     * How the account may reach its own host account over SSH: `none` (no
+     * login, keys stay on file), `sftp` (file transfer only) or `shell`
+     * (interactive shell plus transfer). The daemon still receives the shell
+     * this level encodes, so the wire is unchanged. Effective access also needs
+     * a key or password; see `features/principals/principal-access.ts`.
+     */
+    access: text().default('sftp').notNull(),
 
     /**
      * Account name. Allowlist mirrors POSIX/database account naming: starts
@@ -3734,6 +3742,7 @@ export const principal = pgTable(
       foreignColumns: [project.id],
       name: 'principal_project_id_project_id_fk',
     }).onDelete('set null'),
+    check('principal_access_check', sql`access IN ('none', 'sftp', 'shell')`),
     check(
       'principal_username_format_check',
       sql`(char_length((username)::text) >= 1) AND (char_length((username)::text) <= 255) AND ((username)::text ~ '^[A-Za-z_][A-Za-z0-9_-]*$'::text)`

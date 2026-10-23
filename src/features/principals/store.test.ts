@@ -589,6 +589,29 @@ test('createPrincipal and replaceTenancies write expected tenancy edges', async 
   })
 })
 
+test('ensureComposePrincipal seeds the access column from the requested level', async () => {
+  await withPrincipalFixtures(async ({ db, organizationId, projectId }) => {
+    const cases = [
+      { alias: 'accssh', access: 'ssh', expected: 'shell' },
+      { alias: 'accsftp', access: 'sftp', expected: 'sftp' },
+      { alias: 'accnone', access: undefined, expected: 'none' },
+    ] as const
+    for (const scenario of cases) {
+      const { principalId } = await ensureComposePrincipal(db, {
+        organizationId,
+        projectId,
+        alias: scenario.alias,
+        access: scenario.access,
+      })
+      const [row] = await db
+        .select({ access: principal.access })
+        .from(principal)
+        .where(eq(principal.id, principalId))
+      assertEquals(row?.access, scenario.expected, scenario.alias)
+    }
+  })
+})
+
 test('ensureComposePrincipal follows the org default scheme and stores it', async () => {
   await withPrincipalFixtures(async ({ db, organizationId, projectId }) => {
     const scenarios = [
