@@ -1,5 +1,5 @@
 {
-  "id": "5e3fb18c-f51c-4c99-a6be-4678ba7360a8",
+  "id": "d6349e86-822d-4ef1-acae-ac5cac0238f1",
   "prevId": "69bb1375-df98-4d22-b890-fbb81adaabb3",
   "version": "7",
   "dialect": "postgresql",
@@ -2109,6 +2109,33 @@
           "type": "text",
           "primaryKey": false,
           "notNull": false
+        },
+        "priority": {
+          "name": "priority",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 100
+        },
+        "is_trusted": {
+          "name": "is_trusted",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
+        },
+        "address_preference": {
+          "name": "address_preference",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'ipv6'"
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -2147,7 +2174,20 @@
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
-      "checkConstraints": {},
+      "checkConstraints": {
+        "datacenter_priority_check": {
+          "name": "datacenter_priority_check",
+          "value": "priority >= 0 AND priority <= 1000"
+        },
+        "datacenter_address_preference_check": {
+          "name": "datacenter_address_preference_check",
+          "value": "address_preference IN ('ipv6', 'ipv4')"
+        },
+        "datacenter_kind_check": {
+          "name": "datacenter_kind_check",
+          "value": "kind IS NULL OR kind IN ('lan', 'backplane', 'provider_private')"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.deployment": {
@@ -8484,18 +8524,6 @@
           "type": "uuid",
           "primaryKey": false,
           "notNull": false
-        },
-        "kind": {
-          "name": "kind",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "icon": {
-          "name": "icon",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
         }
       },
       "indexes": {
@@ -8678,14 +8706,6 @@
         "project_slug_check": {
           "name": "project_slug_check",
           "value": "slug ~ '^[a-z0-9][a-z0-9-]{0,39}$'"
-        },
-        "project_kind_check": {
-          "name": "project_kind_check",
-          "value": "kind IS NULL OR kind IN ('compose', 'managed', 'system')"
-        },
-        "project_icon_check": {
-          "name": "project_icon_check",
-          "value": "icon IS NULL OR icon IN ('cube', 'globe', 'cart', 'bolt', 'chat', 'chart', 'code', 'book', 'layers', 'mail', 'rocket', 'image')"
         }
       },
       "isRLSEnabled": false

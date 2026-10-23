@@ -33,8 +33,15 @@
     {
       "idx": 4,
       "version": "7",
-      "when": 1792773407607,
-      "tag": "0004_project_kind_icon",
+      "when": 1792773762483,
+      "tag": "0004_datacenter_option_columns",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1792775024253,
+      "tag": "0005_project_kind_icon",
       "breakpoints": true
     }
   ]

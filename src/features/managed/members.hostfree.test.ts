@@ -553,13 +553,24 @@ function privateEndpointSelect(memberships: MembershipPinRow[], opts?: PrivateEn
       }
     }
 
-    // loadDatacenterPolicies: { id, options }
-    if (keys.length === 2 && keySet.has('id') && keySet.has('options')) {
+    // loadDatacenterPolicies: { id, priority, isTrusted, addressPreference }
+    if (keySet.has('id') && keySet.has('priority') && keySet.has('addressPreference')) {
       return {
         from() {
           return {
             where() {
-              return thenableRows(datacenterOptions)
+              // Fixtures keep the short options shape; the columns default like the table.
+              return thenableRows(
+                datacenterOptions.map(({ id, options }) => {
+                  const o = (options ?? {}) as Record<string, unknown>
+                  return {
+                    id,
+                    priority: o.priority ?? 100,
+                    isTrusted: o.trusted ?? true,
+                    addressPreference: o.addressPreference ?? 'ipv6',
+                  }
+                })
+              )
             },
           }
         },

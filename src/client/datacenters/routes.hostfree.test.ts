@@ -114,6 +114,22 @@ async function buildApp(): Promise<Hono<AppEnv>> {
   return app
 }
 
+/**
+ * The row as the table stores it: fixtures keep the short `options` shape, and
+ * the three routing keys move into their columns (with the table defaults).
+ */
+function storedRow<T extends { options: unknown }>(row: T) {
+  const o = (row.options ?? {}) as Record<string, unknown>
+  const { priority, trusted, addressPreference, ...rest } = o
+  return {
+    ...row,
+    options: Object.keys(rest).length > 0 || row.options !== null ? rest : null,
+    priority: priority ?? 100,
+    isTrusted: trusted ?? true,
+    addressPreference: addressPreference ?? 'ipv6',
+  }
+}
+
 const DC_ROW = {
   id,
   name: 'Site',
@@ -248,7 +264,9 @@ async function buildSessionApp(opts: SessionAppOpts): Promise<{
         if (table === datacenter && opts.orgDatacenterRows) {
           return {
             where: () =>
-              thenableRows((opts.orgDatacenterRows ?? []).map((row) => ({ ...DC_ROW, ...row }))),
+              thenableRows(
+                (opts.orgDatacenterRows ?? []).map((row) => storedRow({ ...DC_ROW, ...row }))
+              ),
           }
         }
         if (table === datacenter) {
@@ -267,9 +285,10 @@ async function buildSessionApp(opts: SessionAppOpts): Promise<{
                   ? { metadata: opts.datacenterMetadata }
                   : {}),
               }
-              if (org !== organizationId) return thenableRows([row])
-              if (datacenterSelects === 1) return thenableRows([row])
-              return thenableRows(opts.withDatacenterRow ? [row] : [])
+              const stored = storedRow(row)
+              if (org !== organizationId) return thenableRows([stored])
+              if (datacenterSelects === 1) return thenableRows([stored])
+              return thenableRows(opts.withDatacenterRow ? [stored] : [])
             },
           }
         }
@@ -623,7 +642,11 @@ test('GET /datacenters/:id applies default priority and trusted when options are
   const body = (await res.json()) as {
     datacenter: { options: unknown; priority: number; trusted: boolean }
   }
-  assertEquals(body.datacenter.options, null)
+  assertEquals(body.datacenter.options, {
+    priority: 100,
+    trusted: true,
+    addressPreference: 'ipv6',
+  })
   assertEquals(body.datacenter.priority, 100)
   assertEquals(body.datacenter.trusted, true)
 })
@@ -1160,11 +1183,41 @@ test('PATCH /datacenters/:id persists valid priority and trusted options', async
   assertEquals(res.status, 200)
   assertEquals(await res.json(), { ok: true })
   assertEquals(updates.length, 1)
-  assertEquals(updates[0]?.options, {
-    addressPreference: 'ipv4',
-    priority: 20,
-    trusted: false,
+  assertEquals(updates[0]?.options, null)
+  assertEquals(updates[0]?.addressPreference, 'ipv4')
+  assertEquals(updates[0]?.priority, 20)
+  assertEquals(updates[0]?.isTrusted, false)
+})
+
+test('PATCH /datacenters/:id stores a valid kind and clears it with null', async () => {
+  for (const kind of ['lan', 'backplane', 'provider_private', null]) {
+    const { app, cookie, updates } = await buildSessionApp({
+      withDatacenterRow: true,
+      manageAllowed: true,
+    })
+    const res = await app.request(`/datacenters/${id}`, {
+      method: 'PATCH',
+      headers: sessionHeaders(cookie, true),
+      body: JSON.stringify({ kind }),
+    })
+    assertEquals(res.status, 200, String(kind))
+    assertEquals(updates[0]?.kind, kind)
+  }
+})
+
+test('PATCH /datacenters/:id refuses an unknown kind with 400', async () => {
+  const { app, cookie, updates } = await buildSessionApp({
+    withDatacenterRow: true,
+    manageAllowed: true,
   })
+  const res = await app.request(`/datacenters/${id}`, {
+    method: 'PATCH',
+    headers: sessionHeaders(cookie, true),
+    body: JSON.stringify({ kind: 'wan' }),
+  })
+  assertEquals(res.status, 400)
+  assertEquals(await res.json(), { error: 'invalid_kind' })
+  assertEquals(updates.length, 0)
 })
 
 test('PATCH /datacenters/:id drops an invalid trusted value', async () => {
@@ -1179,7 +1232,10 @@ test('PATCH /datacenters/:id drops an invalid trusted value', async () => {
   })
   assertEquals(res.status, 200)
   assertEquals(updates.length, 1)
-  assertEquals(updates[0]?.options, { addressPreference: 'ipv6', priority: 20 })
+  assertEquals(updates[0]?.options, null)
+  assertEquals(updates[0]?.addressPreference, 'ipv6')
+  assertEquals(updates[0]?.priority, 20)
+  assertEquals(updates[0]?.isTrusted, true)
 })
 
 test('PATCH /datacenters/:id refuses a priority outside 0..1000 or not whole with 400', async () => {
@@ -1571,14 +1627,14 @@ test('PATCH /datacenters/:id location merges into the stored options', async () 
   assertEquals(res.status, 200)
   assertEquals(await res.json(), { ok: true })
   assertEquals(updates.length, 1)
-  assertEquals(updates[0]?.options, {
-    priority: 10,
-    location: { city: 'Reston', country: 'US' },
-  })
+  assertEquals(updates[0]?.options, { location: { city: 'Reston', country: 'US' } })
+  // A location-only edit leaves the policy columns alone.
+  assertEquals('priority' in (updates[0] ?? {}), false)
+  assertEquals('isTrusted' in (updates[0] ?? {}), false)
   assertEquals('metadata' in (updates[0] ?? {}), false)
 })
 
-test('PATCH /datacenters/:id location: null resets the override and keeps other options', async () => {
+test('PATCH /datacenters/:id location: null resets the override and leaves the policy columns alone', async () => {
   const { app, cookie, updates } = await buildSessionApp({
     withDatacenterRow: true,
     manageAllowed: true,
@@ -1590,7 +1646,8 @@ test('PATCH /datacenters/:id location: null resets the override and keeps other 
     body: JSON.stringify({ location: null }),
   })
   assertEquals(res.status, 200)
-  assertEquals(updates[0]?.options, { trusted: false })
+  assertEquals(updates[0]?.options, null)
+  assertEquals('isTrusted' in (updates[0] ?? {}), false)
 })
 
 test('PATCH /datacenters/:id applies location on top of a replaced options blob', async () => {
@@ -1610,10 +1667,8 @@ test('PATCH /datacenters/:id applies location on top of a replaced options blob'
   assertEquals(res.status, 200)
   // The stored override survives the replacement; the request's own
   // `location` is merged on top of it.
-  assertEquals(updates[0]?.options, {
-    priority: 20,
-    location: { city: 'Reston', regionCode: 'VA' },
-  })
+  assertEquals(updates[0]?.options, { location: { city: 'Reston', regionCode: 'VA' } })
+  assertEquals(updates[0]?.priority, 20)
 })
 
 test('PATCH /datacenters/:id replacing options without location keeps the override', async () => {
@@ -1629,10 +1684,9 @@ test('PATCH /datacenters/:id replacing options without location keeps the overri
     body: JSON.stringify({ options: { trusted: false, location: { city: 'Elsewhere' } } }),
   })
   assertEquals(res.status, 200)
-  assertEquals(updates[0]?.options, {
-    trusted: false,
-    location: { city: 'Reston', asn: 64512 },
-  })
+  assertEquals(updates[0]?.options, { location: { city: 'Reston', asn: 64512 } })
+  assertEquals(updates[0]?.isTrusted, false)
+  assertEquals(updates[0]?.priority, 100)
 })
 
 test('PATCH /datacenters/:id clearing options keeps the location override', async () => {
@@ -1686,8 +1740,8 @@ test('POST /datacenters/:id/server-traffic gives the chosen network the lowest n
     changes: [{ datacenterId: BACKHAUL_ID, before: 100, after: 10 }],
   })
   assertEquals(updates.length, 1)
-  assertEquals((updates[0]?.options as Record<string, unknown>).priority, 10)
-  assertEquals((updates[0]?.options as Record<string, unknown>).addressPreference, 'ipv4')
+  assertEquals(updates[0]?.priority, 10)
+  assertEquals('options' in (updates[0] ?? {}), false)
 })
 
 test('POST /datacenters/:id/server-traffic writes nothing when the network already wins', async () => {

@@ -56,7 +56,7 @@ test('migration 0003 moves metadata.type into kind and keeps the catalog code', 
   }
   const db = createDenoDb()
   const migration = readFileSync(
-    new URL('../../migrations/0004_project_kind_icon.sql', import.meta.url),
+    new URL('../../migrations/0005_project_kind_icon.sql', import.meta.url),
     'utf8'
   )
   const updates = migration
