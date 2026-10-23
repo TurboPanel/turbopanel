@@ -16,6 +16,9 @@ export const DEPLOY_RUN_CAP_MS = 600_000
  */
 export const DEPLOY_DEFAULT_TIMEOUT_MS = 30 * 60_000
 
+/** The longest deploy time limit an organization can set: 240 minutes. */
+export const DEPLOY_MAX_TIMEOUT_MS = 240 * 60_000
+
 /**
  * A running deploy whose server has said nothing for this long is "checking with
  * the server": the control plane no longer knows its state and does not call it

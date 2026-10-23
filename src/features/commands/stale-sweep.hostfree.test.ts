@@ -362,3 +362,22 @@ test('a running deploy on a server without signs of life keeps the fixed run cap
   assertEquals(isStaleCommand(row, T0 + 10 * 60_000), false)
   assertEquals(isStaleCommand(row, T0 + 10 * 60_000 + STALE_COMMAND_GRACE_MS), true)
 })
+
+test('a running deploy is stranded at its organization time limit, not at a fixed 30 minutes', () => {
+  const started = new Date(T0).toISOString()
+  const row = (deployRunCapMs?: number) =>
+    candidate({
+      name: 'environment.deploy',
+      status: 'running',
+      sentAt: started,
+      progress: { version: 1, steps: [], current: null, updatedAt: started, runningSince: started },
+      updatedAt: new Date(T0 + 124 * 60_000).toISOString(),
+      recovery: true,
+      ...(deployRunCapMs === undefined ? {} : { deployRunCapMs }),
+    })
+  const hour = 60 * 60_000
+  const now = T0 + 120 * 60_000
+  assertEquals(isStaleCommand(row(), now + STALE_COMMAND_GRACE_MS), true)
+  assertEquals(isStaleCommand(row(3 * hour), now + STALE_COMMAND_GRACE_MS), false)
+  assertEquals(isStaleCommand(row(hour), now + STALE_COMMAND_GRACE_MS), true)
+})
