@@ -22,7 +22,7 @@ import {
   TERMINAL_RECOVERY_STATES,
 } from './recovery.ts'
 import { AUTOMATIC_FAILOVER_DISABLED_MESSAGE } from './auto-failover-switch.ts'
-import { FENCE_TIMED_OUT_MESSAGE } from './ha-fence-deadline.ts'
+import { FENCE_DEADLINE_REPEATED_MESSAGE, FENCE_TIMED_OUT_MESSAGE } from './ha-fence-deadline.ts'
 import {
   command,
   container,
@@ -276,6 +276,8 @@ type RecoveryHarness = {
   nodePatches: Array<Record<string, unknown>>
   commandInserts: Array<Record<string, unknown>>
   recovery: () => RecoveryRow | null
+  /** Command rows written ('insert') and fence steps taken back ('cancel'), in order. */
+  events: string[]
 }
 
 function createHarness(opts: HarnessOpts = {}): RecoveryHarness {
@@ -287,6 +289,7 @@ function createHarness(opts: HarnessOpts = {}): RecoveryHarness {
   const managedStatus: string[] = []
   const nodePatches: Array<Record<string, unknown>> = []
   const commandInserts: Array<Record<string, unknown>> = []
+  const events: string[] = []
   let commandSeq = 0
   let lastCommand: ReturnType<typeof commandRow> | null = null
   let txTail: Promise<unknown> = Promise.resolve()
@@ -368,6 +371,7 @@ function createHarness(opts: HarnessOpts = {}): RecoveryHarness {
         commandSeq += 1
         lastCommand = commandRow(values, `cmd-${commandSeq}`)
         commandInserts.push(values)
+        events.push('insert')
         return thenableRows([lastCommand])
       },
     }),
@@ -380,6 +384,7 @@ function createHarness(opts: HarnessOpts = {}): RecoveryHarness {
           managedStatus.push(patch.status)
         }
         if (table === replica) nodePatches.push(patch)
+        if (table === command && patch.status === 'cancelled') events.push('cancel')
         const rows =
           table === recovery && stored
             ? [stored]
@@ -411,6 +416,7 @@ function createHarness(opts: HarnessOpts = {}): RecoveryHarness {
     nodePatches,
     commandInserts,
     recovery: () => stored,
+    events,
   }
 }
 
@@ -2942,10 +2948,9 @@ function fenceStep(id: string, name: string, fencePhase: string, sentAt: string 
 
 test('a switchover whose stop never answered ends blocked at the deadline, promotes nothing and brings the old primary back', async () => {
   const queue = okQueue()
-  const harness = createHarness({
+  const opts: HarnessOpts = {
     members: [member(), failoverReplica()],
     connected: [true, true],
-    inflightOnlyRecoveryReads: true,
     commandRows: [
       fenceStep('cmd-drain', 'managed.ha.failover', 'drain', LONG_AGO),
       fenceStep('cmd-stop', 'managed.lifecycle', 'stop', LONG_AGO),
@@ -2961,7 +2966,8 @@ test('a switchover whose stop never answered ends blocked at the deadline, promo
       },
     }),
     managedEngine: 'mysql',
-  })
+  }
+  const harness = createHarness(opts)
   const handled = await sweepStalledFencing(harness.db, {
     commandQueue: queue,
     now: Date.parse(NOW),
@@ -2986,7 +2992,9 @@ test('a switchover whose stop never answered ends blocked at the deadline, promo
     true
   )
 
-  // The slot is free: a new planned switchover is accepted at once.
+  // The slot is free (terminal rows no longer count as in flight):
+  opts.inflightOnlyRecoveryReads = true
+  // a new planned switchover is accepted at once.
   const retry = await beginOperatorSwitchover({
     db: harness.db,
     commandQueue: okQueue(),
@@ -3108,20 +3116,160 @@ function stalledSwitchover(metadata: Record<string, unknown> = {}) {
 }
 
 test('a deadline switchover whose restart cannot be queued is tried again, then ends failed for the operator', async () => {
-  const first = stalledSwitchover()
-  await sweepStalledFencing(first.db, { commandQueue: failingQueue(), now: Date.parse(NOW) })
-  assertEquals(first.recovery()?.state, 'fencing')
+  const harness = stalledSwitchover()
+  const sweep = () =>
+    sweepStalledFencing(harness.db, { commandQueue: failingQueue(), now: Date.parse(NOW) })
+  await sweep()
+  const first = harness.recovery()
+  assertEquals(first?.state, 'blocked')
+  assertEquals((first?.metadata as { abortRestartAttempts?: number }).abortRestartAttempts, 1)
   assertEquals(
-    (first.recovery()?.metadata as { fenceAbortAttempts?: number }).fenceAbortAttempts,
-    1
+    ((first?.metadata as { abortRestartTodo?: string[] }).abortRestartTodo ?? []).includes('start'),
+    true
   )
-
-  const last = stalledSwitchover({ fenceAbortAttempts: 2 })
-  await sweepStalledFencing(last.db, { commandQueue: failingQueue(), now: Date.parse(NOW) })
-  const row = last.recovery()
+  await sweep()
+  assertEquals(harness.recovery()?.state, 'blocked')
+  await sweep()
+  const row = harness.recovery()
   assertEquals(row?.state, 'failed')
   assertEquals((row?.metadata as { needsOperator?: boolean }).needsOperator, true)
-  assertEquals(harnessHasPromote(last), false)
+  assertEquals(harnessHasPromote(harness), false)
+  // The fence steps are taken back at the block and again when the row fails.
+  assertEquals(harness.events.filter((event) => event === 'cancel').length >= 2, true)
+})
+
+test('a retry queues only the restart commands that are still missing', async () => {
+  const harness = stalledSwitchover()
+  // The first command (the start) cannot be queued; the undrains can.
+  await sweepStalledFencing(harness.db, {
+    commandQueue: failFirstThenOkQueue(),
+    now: Date.parse(NOW),
+  })
+  assertEquals((harness.recovery()?.metadata as { abortRestartTodo?: string[] }).abortRestartTodo, [
+    'start',
+  ])
+  const before = harness.commandInserts.length
+  await sweepStalledFencing(harness.db, { commandQueue: okQueue(), now: Date.parse(NOW) })
+  const added = harness.commandInserts.slice(before)
+  const payloads = added.map((insert) => insert.payload as Record<string, unknown> | undefined)
+  assertEquals(
+    payloads.filter((payload) => payload?.reactivateAfterSwitchoverAbort === true).length,
+    1
+  )
+  assertEquals(
+    payloads.some((payload) => payload?.phase === 'undrain'),
+    false
+  )
+  assertEquals(harness.recovery()?.state, 'blocked')
+  assertEquals(
+    (harness.recovery()?.metadata as { abortRestartTodo?: string[] }).abortRestartTodo,
+    []
+  )
+})
+
+test('the fence steps are taken back before anything is queued to bring the old primary back', async () => {
+  const harness = stalledSwitchover()
+  await sweepStalledFencing(harness.db, { commandQueue: okQueue(), now: Date.parse(NOW) })
+  assertEquals(harness.events[0], 'cancel')
+  assertEquals(harness.events.includes('insert'), true)
+})
+
+test('a stop confirmation that lands before the row is blocked queues nothing', async () => {
+  const fencing = recoveryRow({
+    kind: 'switchover',
+    state: 'fencing',
+    metadata: { fenceCommandIds: ['cmd-stop'], fencingEpoch: LONG_AGO },
+  })
+  // The sweep read the row fencing; by the time it takes the row lock the stop
+  // is confirmed and the row has moved on to the promote.
+  const advanced = { ...fencing, state: 'promoting', metadata: { stopApplied: true } }
+  const harness = createHarness({
+    members: [member(), failoverReplica()],
+    connected: [true, true],
+    commandRows: [fenceStep('cmd-stop', 'managed.lifecycle', 'stop', LONG_AGO)],
+    recovery: fencing,
+    recoveryReads: [[fencing], [], [advanced], [advanced]],
+    managedEngine: 'mysql',
+  })
+  const handled = await sweepStalledFencing(harness.db, {
+    commandQueue: okQueue(),
+    now: Date.parse(NOW),
+  })
+  assertEquals(handled, [])
+  assertEquals(harness.commandInserts.length, 0)
+  assertEquals(harness.events, [])
+  assertEquals(harness.recovery()?.state, 'fencing')
+})
+
+test('the number of tries is counted from the row as it is under the lock, not the sweep read', async () => {
+  const stale = recoveryRow({
+    kind: 'switchover',
+    state: 'blocked',
+    metadata: {
+      abortRestartTodo: ['start'],
+      abortRestartAttempts: 0,
+      abortRestartReactivate: true,
+    },
+  })
+  const current = {
+    ...stale,
+    metadata: {
+      abortRestartTodo: ['start'],
+      abortRestartAttempts: 2,
+      abortRestartReactivate: true,
+    },
+  }
+  const harness = createHarness({
+    members: [member(), failoverReplica()],
+    connected: [true, true],
+    recovery: current,
+    recoveryReads: [[], [stale], [current], [current]],
+    managedEngine: 'mysql',
+  })
+  await sweepStalledFencing(harness.db, { commandQueue: failingQueue(), now: Date.parse(NOW) })
+  assertEquals(harness.recovery()?.state, 'failed')
+})
+
+test('the third automatic failover in a row that ends at the fence deadline keeps the cooldown and raises the alert message', async () => {
+  const earlier = (n: number) =>
+    ({
+      id: `earlier-${n}`,
+      kind: 'automatic-failover',
+      sourcePrimaryMemberId: MEM_PRIMARY,
+      state: 'blocked',
+      startedAt: new Date(Date.parse(NOW) - n * 5 * 60_000).toISOString(),
+      metadata: { fenceDeadline: true },
+    }) as unknown as RecoveryRecord
+  const run = async (previous: RecoveryRecord[]) => {
+    const harness = createHarness({
+      members: [member(), failoverReplica()],
+      connected: [true, true],
+      commandRows: [fenceStep('cmd-stop', 'managed.lifecycle', 'stop', LONG_AGO)],
+      recovery: recoveryRow({
+        kind: 'automatic-failover',
+        state: 'fencing',
+        metadata: { fenceCommandIds: ['cmd-stop'], fencingEpoch: LONG_AGO },
+      }),
+    })
+    await sweepStalledFencing(harness.db, {
+      commandQueue: okQueue(),
+      now: Date.parse(NOW),
+      recentRecoveries: () => Promise.resolve(previous),
+    })
+    return harness.recovery()
+  }
+  const second = await run([earlier(1)])
+  assertEquals(second?.targetMemberId, null)
+  const third = await run([earlier(1), earlier(2)])
+  assertEquals(third?.targetMemberId, MEM_REPLICA)
+  assertEquals(
+    (third?.metadata as { blockedReason?: string }).blockedReason,
+    FENCE_DEADLINE_REPEATED_MESSAGE
+  )
+  // An attempt older than the window, or one that did not end at the deadline,
+  // breaks the run.
+  const old = { ...earlier(2), startedAt: new Date(Date.parse(NOW) - 3_600_000).toISOString() }
+  assertEquals((await run([earlier(1), old]))?.targetMemberId, null)
 })
 
 test('a deadline switchover with no command queue ends failed for the operator at once', async () => {
