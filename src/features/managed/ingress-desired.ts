@@ -103,6 +103,7 @@ import {
   decideIngressBindAddresses,
   hostgroupsForClusterIndex,
   ingressEngineVersionFromOptions,
+  ingressReconcileValidityMs,
   isAtRestSealedPassword,
   mergeHierarchyContainerSan,
   principalConnectionRole,
@@ -115,7 +116,7 @@ import {
 } from './ingress-desired-pure.ts'
 import { parseManagedSettings } from './options.ts'
 
-export const MANAGED_INGRESS_RECONCILE_TTL_MS = 300_000
+export { INGRESS_RECONCILE_RUN_MS as MANAGED_INGRESS_RECONCILE_TTL_MS } from './ingress-desired-pure.ts'
 
 export type ManagedIngressReconcilePrepareError =
   | { kind: 'daemon_key_unavailable'; serverId: string }
@@ -847,6 +848,8 @@ export async function enqueueManagedIngressReconcile(
     dataEncryptionSecrets: DerivedSecretsConfig
     /** Extra command metadata (an HA recovery id, so its result settles the journal). */
     metadata?: Record<string, unknown>
+    /** Budget of a command queued just before this one, which it must outwait. */
+    waitsBehindMs?: number
   }>
 ): Promise<EnqueueManagedIngressReconcileResult> {
   const built = await buildManagedIngressReconcileDesired(db, {
@@ -857,7 +860,9 @@ export async function enqueueManagedIngressReconcile(
   if (built === null) return { ok: false, reason: 'not_needed' }
   if ('kind' in built) return { ok: false, reason: 'prepare_failed' }
 
-  const expiresAt = new Date(Date.now() + MANAGED_INGRESS_RECONCILE_TTL_MS).toISOString()
+  const expiresAt = new Date(
+    Date.now() + ingressReconcileValidityMs(params.waitsBehindMs)
+  ).toISOString()
   const leafMetadata = built.pendingTlsLeaf
     ? pendingTlsLeafMetadata(built.pendingTlsLeaf)
     : undefined

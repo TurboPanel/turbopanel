@@ -195,6 +195,7 @@ export const DAEMON_WIRE_FEATURES = [
   'tls-capture-v1',
   'command-recovery-v1',
   'managed-switchover-final-position-v1',
+  'host-capacity-v1',
   'server-network-check-v1',
 ] as const
 
@@ -235,6 +236,15 @@ export const COMMAND_RECOVERY_FEATURE: DaemonWireFeature = 'command-recovery-v1'
  */
 export const MANAGED_SWITCHOVER_FINAL_POSITION_FEATURE: DaemonWireFeature =
   'managed-switchover-final-position-v1'
+
+/**
+ * This control plane merges heartbeat `resources.{memory,swap,cpus}` without
+ * dropping hello-only fields, and parses the optional `memory.presentBytes`,
+ * `memory.blockSizeBytes` and `dynamicMemory`. The daemon re-sends memory and
+ * CPUs on a heartbeat after they move only when this is listed; hello always
+ * carries them, and `memory.totalBytes` still means MemTotal.
+ */
+export const HOST_CAPACITY_FEATURE: DaemonWireFeature = 'host-capacity-v1'
 
 /**
  * The daemon answers `managed-health-request` with `managed-health-result`

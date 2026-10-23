@@ -7,6 +7,7 @@ import {
   daemonUnsupportedReason,
   DENO_NATIVE_APPS_FEATURE,
   DEPLOY_CANCEL_FEATURE,
+  HOST_CAPACITY_FEATURE,
   INSTANCE_REVISION_HEADER,
   INSTANCE_VERSION_HEADER,
   MANAGED_DATABASE_CONVERT_FEATURE,
@@ -245,6 +246,12 @@ test('command-recovery-v1 is an advertised wire feature and raised no floor', ()
 test('managed-switchover-final-position-v1 is an advertised wire feature and raised no floor', () => {
   assertEquals(MANAGED_SWITCHOVER_FINAL_POSITION_FEATURE, 'managed-switchover-final-position-v1')
   assertEquals(DAEMON_WIRE_FEATURES.includes(MANAGED_SWITCHOVER_FINAL_POSITION_FEATURE), true)
+  assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.0')
+})
+
+test('host-capacity-v1 is an advertised wire feature and raised no floor', () => {
+  assertEquals(HOST_CAPACITY_FEATURE, 'host-capacity-v1')
+  assertEquals(DAEMON_WIRE_FEATURES.includes(HOST_CAPACITY_FEATURE), true)
   assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.0')
 })
 
