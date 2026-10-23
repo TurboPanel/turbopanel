@@ -23,7 +23,7 @@ async function record(
 ): Promise<void> {
   try {
     const { target } = parseBackupTargetTestPayload(command.payload)
-    await recordTargetTest(db, target.targetId, outcome, new Date().toISOString())
+    await recordTargetTest(db, target.destinationId, outcome, new Date().toISOString())
   } catch (err) {
     compatLogWarn(
       'command-consumer',

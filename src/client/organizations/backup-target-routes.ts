@@ -48,8 +48,8 @@ const TARGET_PATHS = [
   '/organizations/:id/backup-targets',
   '/organizations/:id/backup-targets/default',
   '/organizations/:id/backup-targets/clusters/:managedId',
-  '/organizations/:id/backup-targets/:targetId',
-  '/organizations/:id/backup-targets/:targetId/test',
+  '/organizations/:id/backup-targets/:destinationId',
+  '/organizations/:id/backup-targets/:destinationId/test',
 ] as const
 
 const TEST_EXPIRES_MS = 120_000
@@ -102,7 +102,7 @@ async function auditTarget(
     | 'backup_target.update'
     | 'backup_target.delete'
     | 'backup_target.assign',
-  targetId: string | null,
+  destinationId: string | null,
   context: Record<string, unknown>
 ) {
   const session = c.get('session')
@@ -112,7 +112,7 @@ async function auditTarget(
     actorEmail: session?.email ?? null,
     action,
     targetType: 'organization',
-    targetId: targetId ?? scope.organizationId,
+    targetId: destinationId ?? scope.organizationId,
     context,
   })
 }
@@ -124,7 +124,7 @@ async function listResponse(c: Context<AppEnv>, scope: Scope): Promise<Response>
   ])
   return c.json({
     targets: targets.map(toApiTarget),
-    defaultTargetId: assignments.defaultTargetId,
+    defaultDestinationId: assignments.defaultDestinationId,
     clusters: assignments.clusters,
   })
 }
@@ -154,16 +154,16 @@ async function createResponse(c: Context<AppEnv>, scope: Scope): Promise<Respons
     return c.json({ target: toApiTarget(row) }, 201)
   } catch (err) {
     if (isPostgresUniqueViolation(err)) {
-      return c.json({ error: 'backup_target_name_taken' }, 409)
+      return c.json({ error: 'backup_destination_name_taken' }, 409)
     }
     throw err
   }
 }
 
 async function loadTargetParam(c: Context<AppEnv>, scope: Scope) {
-  const targetId = c.req.param('targetId') as string
-  if (!isUuid(targetId)) return c.json({ error: 'Not found' }, 404)
-  const row = await findTarget(scope.db, scope.organizationId, targetId)
+  const destinationId = c.req.param('destinationId') as string
+  if (!isUuid(destinationId)) return c.json({ error: 'Not found' }, 404)
+  const row = await findTarget(scope.db, scope.organizationId, destinationId)
   return row ?? c.json({ error: 'Not found' }, 404)
 }
 
@@ -197,7 +197,7 @@ async function updateResponse(c: Context<AppEnv>, scope: Scope): Promise<Respons
     return c.json({ target: toApiTarget(row), pushedToServers: pushed.queuedServerIds.length })
   } catch (err) {
     if (isPostgresUniqueViolation(err)) {
-      return c.json({ error: 'backup_target_name_taken' }, 409)
+      return c.json({ error: 'backup_destination_name_taken' }, 409)
     }
     throw err
   }
@@ -309,20 +309,23 @@ async function testResponse(c: Context<AppEnv>, scope: Scope): Promise<Response>
 async function putDefaultResponse(c: Context<AppEnv>, scope: Scope): Promise<Response> {
   const body = await parseJsonBody(c)
   if (body instanceof Response) return body
-  const targetId = body.targetId
-  if (targetId !== null && (typeof targetId !== 'string' || !isUuid(targetId))) {
-    return invalid(c, 'targetId', 'Send a target id, or null for no default')
+  const destinationId = body.destinationId
+  if (destinationId !== null && (typeof destinationId !== 'string' || !isUuid(destinationId))) {
+    return invalid(c, 'destinationId', 'Send a target id, or null for no default')
   }
-  if (targetId !== null && !(await findTarget(scope.db, scope.organizationId, targetId))) {
+  if (
+    destinationId !== null &&
+    !(await findTarget(scope.db, scope.organizationId, destinationId))
+  ) {
     return c.json({ error: 'Not found' }, 404)
   }
   const before = await managedHostsOfOrganization(scope.db, scope.organizationId)
-  await setOrganizationDefault(scope.db, scope.organizationId, targetId)
-  await auditTarget(c, scope, 'backup_target.assign', targetId, { scope: 'organization' })
+  await setOrganizationDefault(scope.db, scope.organizationId, destinationId)
+  await auditTarget(c, scope, 'backup_target.assign', destinationId, { scope: 'organization' })
   const pushed = await pushAfterChange(c, scope, before)
   return c.json({
     ok: true,
-    defaultTargetId: targetId,
+    defaultDestinationId: destinationId,
     pushedToServers: pushed.queuedServerIds.length,
   })
 }
@@ -381,7 +384,7 @@ export function registerOrganizationBackupTargetRoutes(router: Hono<AppEnv>, opt
   router.post('/organizations/:id/backup-targets', guarded(createResponse))
   router.put('/organizations/:id/backup-targets/default', guarded(putDefaultResponse))
   router.put('/organizations/:id/backup-targets/clusters/:managedId', guarded(putClusterResponse))
-  router.patch('/organizations/:id/backup-targets/:targetId', guarded(updateResponse))
-  router.delete('/organizations/:id/backup-targets/:targetId', guarded(deleteResponse))
-  router.post('/organizations/:id/backup-targets/:targetId/test', guarded(testResponse))
+  router.patch('/organizations/:id/backup-targets/:destinationId', guarded(updateResponse))
+  router.delete('/organizations/:id/backup-targets/:destinationId', guarded(deleteResponse))
+  router.post('/organizations/:id/backup-targets/:destinationId/test', guarded(testResponse))
 }

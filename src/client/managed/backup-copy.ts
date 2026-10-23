@@ -56,8 +56,8 @@ export async function liveCopyOf(
   target: NonNullable<Awaited<ReturnType<typeof findTarget>>>
 } | null> {
   const copy = await findCopy(db, managedId, backupId)
-  if (!copy?.targetId || copy.state === 'failed' || copy.state === 'removed') return null
-  const target = await findTarget(db, organizationId, copy.targetId)
+  if (!copy?.destinationId || copy.state === 'failed' || copy.state === 'removed') return null
+  const target = await findTarget(db, organizationId, copy.destinationId)
   return target ? { copy, target } : null
 }
 
@@ -123,7 +123,7 @@ export async function describeClusterBackupTarget(
   const own = assignments.clusters.find((cluster) => cluster.managedId === managedId)
   const target = choice.target
   let ownChoice = 'inherit'
-  if (own) ownChoice = own.targetId ? 'target' : 'none'
+  if (own) ownChoice = own.destinationId ? 'target' : 'none'
   return {
     source: choice.source,
     /** `inherit` follows the organization default; `none` turns copying off for this cluster; `target` is its own pick. */

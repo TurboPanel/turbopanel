@@ -355,7 +355,7 @@ export type BackupRunReportResultMessage = {
 export type BackupCopyReportMessage = {
   type: 'backup-copy-report'
   id: string
-  targetId: string
+  destinationId: string
   managedId: string
   backupId: string
   policyId?: string
@@ -1659,8 +1659,8 @@ const BACKUP_COPY_OBJECT_KEY_MAX = 1024
 function validateBackupCopyReportFields(record: Record<string, unknown>): string | null {
   if (!isBoundedId(record.id)) return 'invalid id'
   if (!isIsoTimestamp(record.at)) return 'invalid at timestamp'
-  if (typeof record.targetId !== 'string' || !BACKUP_COPY_UUID_RE.test(record.targetId)) {
-    return 'invalid targetId'
+  if (typeof record.destinationId !== 'string' || !BACKUP_COPY_UUID_RE.test(record.destinationId)) {
+    return 'invalid destinationId'
   }
   if (typeof record.managedId !== 'string' || !BACKUP_COPY_UUID_RE.test(record.managedId)) {
     return 'invalid managedId'

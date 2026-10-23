@@ -19,7 +19,7 @@ function report(overrides: Record<string, unknown> = {}): Record<string, unknown
   return {
     type: 'backup-copy-report',
     id: 'a'.repeat(32),
-    targetId: '0192a3b4-c5d6-7e8f-9a0b-1c2d3e4f5a6b',
+    destinationId: '0192a3b4-c5d6-7e8f-9a0b-1c2d3e4f5a6b',
     managedId: '1192a3b4-c5d6-7e8f-9a0b-1c2d3e4f5a6b',
     backupId: 'bk_0123456789abcdef',
     policyId: '2192a3b4-c5d6-7e8f-9a0b-1c2d3e4f5a6b',
@@ -63,7 +63,7 @@ test('well-formed copied and failed reports pass the frame check', () => {
 
 test('a malformed report is refused with a reason', () => {
   for (const [override, expected] of [
-    [{ targetId: 'nope' }, 'invalid targetId'],
+    [{ destinationId: 'nope' }, 'invalid destinationId'],
     [{ managedId: 'nope' }, 'invalid managedId'],
     [{ backupId: 'a/b' }, 'invalid backupId'],
     [{ policyId: 'X' }, 'invalid policyId'],

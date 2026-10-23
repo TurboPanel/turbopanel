@@ -118,7 +118,7 @@ test('the API shape never carries the secret key', () => {
 
 test('the wire shape the host receives parses, and a malformed one does not', () => {
   const wire = {
-    targetId: '00000000-0000-4000-8000-0000000000c1',
+    destinationId: '00000000-0000-4000-8000-0000000000c1',
     name: 'Offsite',
     endpoint: 'https://s3.example.com',
     region: 'us-east-1',

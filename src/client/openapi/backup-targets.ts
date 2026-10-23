@@ -16,7 +16,7 @@ const ORG_ID_PARAM = {
 } as const
 
 const TARGET_ID_PARAM = {
-  name: 'targetId',
+  name: 'destinationId',
   in: 'path',
   required: true,
   schema: { type: 'string', format: 'uuid' },
@@ -103,8 +103,8 @@ export const backupTargetSchemas = {
       "How copying one backup to its target stands. `state` is `pending` (waiting for the server), `copying`, `copied`, `failed` (see `error`) or `removed` (taken out of the bucket by retention). Null when no target applied. Present on each item of the cluster's backup list.",
     properties: {
       state: { type: 'string', enum: ['pending', 'copying', 'copied', 'failed', 'removed'] },
-      targetId: { type: ['string', 'null'], format: 'uuid' },
-      targetName: { type: 'string' },
+      destinationId: { type: ['string', 'null'], format: 'uuid' },
+      destinationName: { type: 'string' },
       error: { type: ['string', 'null'] },
       objectKey: { type: ['string', 'null'] },
       attempts: { type: 'integer', minimum: 0 },
@@ -171,7 +171,7 @@ export const backupTargetPaths: Record<string, unknown> = {
       tags: ['Organizations'],
       summary: "List the organization's backup copy targets",
       description:
-        'Owners and managers only. Also returns the organization default and each cluster that has its own choice (`targetId` null means no copy for that cluster).',
+        'Owners and managers only. Also returns the organization default and each cluster that has its own choice (`destinationId` null means no copy for that cluster).',
       security: [{ cookieAuth: [] }],
       parameters: [ORG_ID_PARAM],
       responses: {
@@ -179,14 +179,14 @@ export const backupTargetPaths: Record<string, unknown> = {
           type: 'object',
           properties: {
             targets: { type: 'array', items: { $ref: '#/components/schemas/BackupTarget' } },
-            defaultTargetId: { type: ['string', 'null'], format: 'uuid' },
+            defaultDestinationId: { type: ['string', 'null'], format: 'uuid' },
             clusters: {
               type: 'array',
               items: {
                 type: 'object',
                 properties: {
                   managedId: { type: 'string', format: 'uuid' },
-                  targetId: { type: ['string', 'null'], format: 'uuid' },
+                  destinationId: { type: ['string', 'null'], format: 'uuid' },
                 },
               },
             },
@@ -199,7 +199,7 @@ export const backupTargetPaths: Record<string, unknown> = {
       tags: ['Organizations'],
       summary: 'Add a backup copy target',
       description:
-        'Owners and managers only. At most 20 per organization. The secret access key is sealed at once and never returned. 409 `backup_target_name_taken` or `backup_target_limit`.',
+        'Owners and managers only. At most 20 per organization. The secret access key is sealed at once and never returned. 409 `backup_destination_name_taken` or `backup_target_limit`.',
       security: [{ cookieAuth: [] }],
       parameters: [ORG_ID_PARAM],
       requestBody: jsonBody('BackupTargetCreate'),
@@ -211,7 +211,7 @@ export const backupTargetPaths: Record<string, unknown> = {
       tags: ['Organizations'],
       summary: "Set the organization's default backup copy target",
       description:
-        'Owners and managers only. `{ "targetId": null }` removes the default. The servers that run managed backups are sent their policies again.',
+        'Owners and managers only. `{ "destinationId": null }` removes the default. The servers that run managed backups are sent their policies again.',
       security: [{ cookieAuth: [] }],
       parameters: [ORG_ID_PARAM],
       requestBody: {
@@ -220,8 +220,8 @@ export const backupTargetPaths: Record<string, unknown> = {
           'application/json': {
             schema: {
               type: 'object',
-              required: ['targetId'],
-              properties: { targetId: { type: ['string', 'null'], format: 'uuid' } },
+              required: ['destinationId'],
+              properties: { destinationId: { type: ['string', 'null'], format: 'uuid' } },
             },
           },
         },
@@ -231,7 +231,7 @@ export const backupTargetPaths: Record<string, unknown> = {
           type: 'object',
           properties: {
             ok: { type: 'boolean' },
-            defaultTargetId: { type: ['string', 'null'], format: 'uuid' },
+            defaultDestinationId: { type: ['string', 'null'], format: 'uuid' },
             pushedToServers: { type: 'integer', minimum: 0 },
           },
         }),
@@ -272,7 +272,7 @@ export const backupTargetPaths: Record<string, unknown> = {
       },
     },
   },
-  '/api/client/v1/organizations/{id}/backup-targets/{targetId}': {
+  '/api/client/v1/organizations/{id}/backup-targets/{destinationId}': {
     patch: {
       tags: ['Organizations'],
       summary: 'Change a backup copy target',
@@ -305,7 +305,7 @@ export const backupTargetPaths: Record<string, unknown> = {
       },
     },
   },
-  '/api/client/v1/organizations/{id}/backup-targets/{targetId}/test': {
+  '/api/client/v1/organizations/{id}/backup-targets/{destinationId}/test': {
     post: {
       tags: ['Organizations'],
       summary: 'Test a backup copy target',

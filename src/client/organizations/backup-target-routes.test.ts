@@ -365,7 +365,7 @@ test('bad bodies, duplicate names and the loopback endpoint are refused in plain
       GOOD
     )
     assertEquals(dup.status, 409)
-    assertEquals(dup.body.error, 'backup_target_name_taken')
+    assertEquals(dup.body.error, 'backup_destination_name_taken')
     const loopback = await call(
       f,
       'POST',
@@ -443,7 +443,7 @@ test('a target in use cannot be deleted; after it is released it can', async () 
       `/organizations/${f.orgA}/backup-targets/default`,
       f.ownerCookie,
       {
-        targetId: id,
+        destinationId: id,
       }
     )
     assertEquals(set.status, 200)
@@ -456,7 +456,7 @@ test('a target in use cannot be deleted; after it is released it can', async () 
     assertEquals(refused.status, 409)
     assertEquals(refused.body.error, 'backup_target_in_use')
     await call(f, 'PUT', `/organizations/${f.orgA}/backup-targets/default`, f.ownerCookie, {
-      targetId: null,
+      destinationId: null,
     })
     const deleted = await call(
       f,
@@ -488,7 +488,7 @@ test("another organization's target cannot be assigned or read", async () => {
       `/organizations/${f.orgA}/backup-targets/default`,
       f.ownerCookie,
       {
-        targetId: other!.id,
+        destinationId: other!.id,
       }
     )
     assertEquals(res.status, 404)
@@ -529,7 +529,7 @@ test('the host is sent the target sealed to its own key; a cluster can override 
       `/organizations/${f.orgA}/backup-targets/default`,
       f.ownerCookie,
       {
-        targetId: id,
+        destinationId: id,
       }
     )
     assertEquals(saved.body.pushedToServers, 1)
@@ -540,7 +540,7 @@ test('the host is sent the target sealed to its own key; a cluster can override 
       dataEncryptionSecrets: f.dataEncryptionSecrets,
     })
     const wire = set[0]!.copyTarget!
-    assertEquals(wire.targetId, id)
+    assertEquals(wire.destinationId, id)
     assertEquals(wire.bucket, 'tp-backups')
     assert(wire.secretKeyEnvelope.startsWith('tpdaemon'))
     assert(!JSON.stringify(set).includes(SECRET))
@@ -628,7 +628,7 @@ test('a host that does not list the copy feature is sent no target', async () =>
       retentionKeep: 5,
     })
     await call(f, 'PUT', `/organizations/${f.orgA}/backup-targets/default`, f.ownerCookie, {
-      targetId: id,
+      destinationId: id,
     })
     await f.db
       .update(server)
@@ -687,7 +687,7 @@ test('copy state follows a backup: waiting, then copied, then removed by retenti
   await withFixture(async (f) => {
     const id = await createTarget(f)
     await call(f, 'PUT', `/organizations/${f.orgA}/backup-targets/default`, f.ownerCookie, {
-      targetId: id,
+      destinationId: id,
     })
     const [policy] = await f.db
       .insert(retention)
@@ -730,19 +730,19 @@ test('copy state follows a backup: waiting, then copied, then removed by retenti
       assertEquals(res.status, 200, JSON.stringify(res.body))
       return res.body.backups as Array<{
         id: string
-        copy: { state: string; targetName: string } | null
+        copy: { state: string; destinationName: string } | null
       }>
     }
     let items = await list()
     assertEquals(items.find((i) => i.id === 'bk_one')!.copy!.state, 'pending')
-    assertEquals(items.find((i) => i.id === 'bk_one')!.copy!.targetName, 'Offsite')
+    assertEquals(items.find((i) => i.id === 'bk_one')!.copy!.destinationName, 'Offsite')
 
     const report = (backupId: string, over: Record<string, unknown> = {}) =>
       recordCopyReport(f.db, {
         managedId: f.managedId,
         backupId,
-        targetId: id,
-        targetName: 'Offsite',
+        destinationId: id,
+        destinationName: 'Offsite',
         serverId: f.serverId,
         state: 'copied',
         objectKey: `tp/managed/${f.managedId}/policy-${policy!.id}/${backupId}.dump`,
@@ -784,7 +784,7 @@ test('restore from the bucket: refused until a copy is finished, then sent with 
   await withFixture(async (f) => {
     const id = await createTarget(f)
     await call(f, 'PUT', `/organizations/${f.orgA}/backup-targets/default`, f.ownerCookie, {
-      targetId: id,
+      destinationId: id,
     })
     const otherServer = (
       await f.db
@@ -818,8 +818,8 @@ test('restore from the bucket: refused until a copy is finished, then sent with 
     await recordCopyReport(f.db, {
       managedId: f.managedId,
       backupId: 'bk_far',
-      targetId: id,
-      targetName: 'Offsite',
+      destinationId: id,
+      destinationName: 'Offsite',
       serverId: otherServer,
       state: 'copied',
       objectKey: `tp/managed/${f.managedId}/manual/bk_far.dump`,
@@ -852,7 +852,7 @@ test('deleting a backup removes its copy rows and a manual backup carries the ta
   await withFixture(async (f) => {
     const id = await createTarget(f)
     await call(f, 'PUT', `/organizations/${f.orgA}/backup-targets/default`, f.ownerCookie, {
-      targetId: id,
+      destinationId: id,
     })
     const created = await call(
       f,
@@ -866,7 +866,10 @@ test('deleting a backup removes its copy rows and a manual backup carries the ta
     // A fresh cluster row has no database list; the route answers a plain 400 then.
     if (created.status === 200) {
       const cmd = await loadCommand(f, created.body.commandId as string)
-      assertEquals((cmd.payload as { copyTarget: { targetId: string } }).copyTarget.targetId, id)
+      assertEquals(
+        (cmd.payload as { copyTarget: { destinationId: string } }).copyTarget.destinationId,
+        id
+      )
     } else {
       assertEquals(created.status, 400)
     }
@@ -881,8 +884,8 @@ test('deleting a backup removes its copy rows and a manual backup carries the ta
     await recordCopyReport(f.db, {
       managedId: f.managedId,
       backupId: 'bk_gone',
-      targetId: id,
-      targetName: 'Offsite',
+      destinationId: id,
+      destinationName: 'Offsite',
       serverId: f.serverId,
       state: 'copied',
       objectKey: 'tp/x/bk_gone.dump',
@@ -898,7 +901,10 @@ test('deleting a backup removes its copy rows and a manual backup carries the ta
     )
     assertEquals(del.status, 200, JSON.stringify(del.body))
     const cmd = await loadCommand(f, del.body.commandId as string)
-    assertEquals((cmd.payload as { copyTarget: { targetId: string } }).copyTarget.targetId, id)
+    assertEquals(
+      (cmd.payload as { copyTarget: { destinationId: string } }).copyTarget.destinationId,
+      id
+    )
     assert(
       (
         await f.db

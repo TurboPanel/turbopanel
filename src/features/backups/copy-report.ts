@@ -30,7 +30,7 @@ export type BackupCopyReportStore = {
     managedId: string
   ): Promise<{ serverId: string | null; organizationId: string } | undefined>
   /** The target's organization and name; undefined when it is gone. */
-  loadTarget(targetId: string): Promise<{ organizationId: string; name: string } | undefined>
+  loadTarget(destinationId: string): Promise<{ organizationId: string; name: string } | undefined>
   record(record: CopyReportRecord): Promise<void>
 }
 
@@ -60,7 +60,7 @@ export async function handleBackupCopyReport(
   if (engine.serverId !== options.reporterServerId) {
     return refused('the engine is placed on another server')
   }
-  const target = await store.loadTarget(report.targetId)
+  const target = await store.loadTarget(report.destinationId)
   if (!target) return refused('the target no longer exists')
   if (target.organizationId !== engine.organizationId) {
     return refused('the target belongs to another organization')
@@ -68,8 +68,8 @@ export async function handleBackupCopyReport(
   const record: CopyReportRecord = {
     managedId: report.managedId,
     backupId: report.backupId,
-    targetId: report.targetId,
-    targetName: target.name,
+    destinationId: report.destinationId,
+    destinationName: target.name,
     serverId: options.reporterServerId,
     state: report.state,
     attempts: report.attempts,
@@ -112,11 +112,11 @@ export function createBackupCopyReportStore(db: Db): BackupCopyReportStore {
         organizationId: await resolveManagedHomeOrganizationId(db, managedId),
       }
     },
-    async loadTarget(targetId) {
+    async loadTarget(destinationId) {
       const [row] = await db
         .select({ organizationId: backupTarget.organizationId, name: backupTarget.name })
         .from(backupTarget)
-        .where(eq(backupTarget.id, targetId))
+        .where(eq(backupTarget.id, destinationId))
         .limit(1)
       return row
     },

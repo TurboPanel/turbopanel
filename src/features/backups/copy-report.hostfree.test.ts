@@ -24,7 +24,7 @@ function message(over: Partial<BackupCopyReportMessage> = {}): BackupCopyReportM
   return {
     type: 'backup-copy-report',
     id: 'a'.repeat(32),
-    targetId: '00000000-0000-4000-8000-0000000000c1',
+    destinationId: '00000000-0000-4000-8000-0000000000c1',
     managedId: '00000000-0000-4000-8000-0000000000b1',
     backupId: 'bk_1',
     state: 'copied',
@@ -65,7 +65,7 @@ test('a report for an engine on the reporting server is recorded with the target
     ok: true,
   })
   assertEquals(recorded.length, 1)
-  assertEquals(recorded[0]!.targetName, 'Offsite')
+  assertEquals(recorded[0]!.destinationName, 'Offsite')
   assertEquals(recorded[0]!.state, 'copied')
 })
 

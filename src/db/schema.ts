@@ -2421,21 +2421,19 @@ export const managed = pgTable(
     engine: text().notNull(),
     /** `provisioning` | `applying` | `ready` | `stopped` | `failed` */
     status: text().default('provisioning').notNull(),
-    /** This cluster's own copy destination; wins over the organization default. */
-    backupDestinationId: uuid('backup_destination_id'),
-    /** True turns copying off for this cluster even when the organization has a default. */
-    isBackupCopyOff: boolean('is_backup_copy_off').default(false).notNull(),
+    /**
+     * This cluster's own copy choice, which wins over the organization default:
+     * null follows the default, `none` turns copying off, otherwise the id of a
+     * destination. Text, so it has no foreign key: deleting a destination
+     * clears it in `features/backups/targets.ts`.
+     */
+    backupDestination: text('backup_destination'),
   },
   (table) => [
-    foreignKey({
-      columns: [table.backupDestinationId],
-      foreignColumns: [backupTarget.id],
-      name: 'managed_backup_destination_id_destination_id_fk',
-    }).onDelete('set null'),
-    index('idx_managed_backup_destination_id').on(table.backupDestinationId),
+    index('idx_managed_backup_destination').on(table.backupDestination),
     check(
-      'managed_backup_copy_off_check',
-      sql`NOT (is_backup_copy_off AND backup_destination_id IS NOT NULL)`
+      'managed_backup_destination_check',
+      sql`backup_destination IS NULL OR backup_destination = 'none' OR backup_destination ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'`
     ),
     index('idx_managed_server_id').using('btree', table.serverId.asc().nullsLast().op('uuid_ops')),
     index('idx_managed_engine').using('btree', table.engine.asc().nullsLast().op('text_ops')),
@@ -2728,7 +2726,7 @@ export const backupTarget = pgTable(
  * How copying one backup to one target stands, as the host reported it
  * (`features/backups/copy-report.ts`). Keyed by the engine and the daemon's
  * `bk_` id as text, not by the {@link backup} row, so a report that arrives
- * before the backup's own run report still lands. `target_name` is kept so a
+ * before the backup's own run report still lands. `destination_name` is kept so a
  * deleted target still reads in plain words.
  */
 export const backupCopy = pgTable(
@@ -2755,8 +2753,8 @@ export const backupCopy = pgTable(
       .notNull(),
     managedId: uuid('managed_id').notNull(),
     backupId: text('backup_id').notNull(),
-    targetId: uuid('target_id'),
-    targetName: text('target_name').notNull(),
+    destinationId: uuid('destination_id'),
+    destinationName: text('destination_name').notNull(),
     state: text().default('pending').notNull(),
     /** A plain reason when `state` is `failed`. */
     error: text(),
@@ -2776,10 +2774,10 @@ export const backupCopy = pgTable(
     uniqueIndex('uniq_shipment_managed_destination').on(
       table.managedId,
       table.backupId,
-      table.targetId
+      table.destinationId
     ),
     index('idx_shipment_managed_id_backup_id').on(table.managedId, table.backupId),
-    index('idx_shipment_target_id').on(table.targetId),
+    index('idx_shipment_destination_id').on(table.destinationId),
     index('idx_shipment_server_id').on(table.serverId),
     foreignKey({
       columns: [table.managedId],
@@ -2787,9 +2785,9 @@ export const backupCopy = pgTable(
       name: 'shipment_managed_id_managed_id_fk',
     }).onDelete('cascade'),
     foreignKey({
-      columns: [table.targetId],
+      columns: [table.destinationId],
       foreignColumns: [backupTarget.id],
-      name: 'shipment_target_id_destination_id_fk',
+      name: 'shipment_destination_id_destination_id_fk',
     }).onDelete('set null'),
     foreignKey({
       columns: [table.serverId],

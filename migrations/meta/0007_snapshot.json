@@ -1,5 +1,5 @@
 {
-  "id": "1251634a-2b81-4659-8735-985b607376d6",
+  "id": "b9e7aad0-7654-4e9b-9e3c-d2e464633648",
   "prevId": "21eb15f6-e50b-4b96-88c9-b373a5d5233c",
   "version": "7",
   "dialect": "postgresql",
@@ -761,14 +761,14 @@
           "primaryKey": false,
           "notNull": true
         },
-        "target_id": {
-          "name": "target_id",
+        "destination_id": {
+          "name": "destination_id",
           "type": "uuid",
           "primaryKey": false,
           "notNull": false
         },
-        "target_name": {
-          "name": "target_name",
+        "destination_name": {
+          "name": "destination_name",
           "type": "text",
           "primaryKey": false,
           "notNull": true
@@ -835,7 +835,7 @@
               "nulls": "last"
             },
             {
-              "expression": "target_id",
+              "expression": "destination_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -867,11 +867,11 @@
           "method": "btree",
           "with": {}
         },
-        "idx_shipment_target_id": {
-          "name": "idx_shipment_target_id",
+        "idx_shipment_destination_id": {
+          "name": "idx_shipment_destination_id",
           "columns": [
             {
-              "expression": "target_id",
+              "expression": "destination_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -912,12 +912,12 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "shipment_target_id_destination_id_fk": {
-          "name": "shipment_target_id_destination_id_fk",
+        "shipment_destination_id_destination_id_fk": {
+          "name": "shipment_destination_id_destination_id_fk",
           "tableFrom": "shipment",
           "tableTo": "destination",
           "columnsFrom": [
-            "target_id"
+            "destination_id"
           ],
           "columnsTo": [
             "id"
@@ -6240,26 +6240,19 @@
           "notNull": true,
           "default": "'provisioning'"
         },
-        "backup_destination_id": {
-          "name": "backup_destination_id",
-          "type": "uuid",
+        "backup_destination": {
+          "name": "backup_destination",
+          "type": "text",
           "primaryKey": false,
           "notNull": false
-        },
-        "is_backup_copy_off": {
-          "name": "is_backup_copy_off",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": false
         }
       },
       "indexes": {
-        "idx_managed_backup_destination_id": {
-          "name": "idx_managed_backup_destination_id",
+        "idx_managed_backup_destination": {
+          "name": "idx_managed_backup_destination",
           "columns": [
             {
-              "expression": "backup_destination_id",
+              "expression": "backup_destination",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -6319,19 +6312,6 @@
         }
       },
       "foreignKeys": {
-        "managed_backup_destination_id_destination_id_fk": {
-          "name": "managed_backup_destination_id_destination_id_fk",
-          "tableFrom": "managed",
-          "tableTo": "destination",
-          "columnsFrom": [
-            "backup_destination_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        },
         "managed_environment_id_environment_id_fk": {
           "name": "managed_environment_id_environment_id_fk",
           "tableFrom": "managed",
@@ -6363,9 +6343,9 @@
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {
-        "managed_backup_copy_off_check": {
-          "name": "managed_backup_copy_off_check",
-          "value": "NOT (is_backup_copy_off AND backup_destination_id IS NOT NULL)"
+        "managed_backup_destination_check": {
+          "name": "managed_backup_destination_check",
+          "value": "backup_destination IS NULL OR backup_destination = 'none' OR backup_destination ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'"
         },
         "managed_name_format_check": {
           "name": "managed_name_format_check",

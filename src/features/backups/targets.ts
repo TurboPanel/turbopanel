@@ -8,7 +8,7 @@
  * outside this module's sealing helpers.
  */
 
-import { and, asc, eq, isNotNull, or } from 'drizzle-orm'
+import { and, asc, eq, isNotNull } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import {
   backupTarget,
@@ -30,6 +30,9 @@ import { resolveManagedHomeOrganizationId } from '../principals/store.ts'
 import { isDaemonKeyActive } from '../servers/daemon-state.ts'
 import { getServerDaemonStateByServerId } from '../servers/server-identity-db.ts'
 import { endpointRefusal } from './endpoint-guard.ts'
+
+/** A cluster's own choice that turns copying off even when the organization has a default. */
+export const NO_COPY = 'none'
 
 export const MAX_BACKUP_TARGETS_PER_ORG = 20
 export const MAX_TARGET_NAME_LENGTH = 64
@@ -208,12 +211,12 @@ export async function listTargets(db: Db, organizationId: string): Promise<Backu
 export async function findTarget(
   db: Db,
   organizationId: string,
-  targetId: string
+  destinationId: string
 ): Promise<BackupTargetRow | null> {
   const [row] = await db
     .select()
     .from(backupTarget)
-    .where(and(eq(backupTarget.id, targetId), eq(backupTarget.organizationId, organizationId)))
+    .where(and(eq(backupTarget.id, destinationId), eq(backupTarget.organizationId, organizationId)))
     .limit(1)
   return row ?? null
 }
@@ -278,26 +281,31 @@ export async function updateTarget(
 /** Where a target is used: the default and the clusters that name it. */
 export async function targetUsage(
   db: Db,
-  targetId: string
+  destinationId: string
 ): Promise<{ isDefault: boolean; managedIds: string[] }> {
   const [defaults, clusters] = await Promise.all([
     db
       .select({ id: organization.id })
       .from(organization)
-      .where(eq(organization.backupDestinationId, targetId))
+      .where(eq(organization.backupDestinationId, destinationId))
       .limit(1),
-    db.select({ id: managed.id }).from(managed).where(eq(managed.backupDestinationId, targetId)),
+    db.select({ id: managed.id }).from(managed).where(eq(managed.backupDestination, destinationId)),
   ])
   return { isDefault: defaults.length > 0, managedIds: clusters.map((r) => r.id) }
 }
 
-export async function deleteTarget(db: Db, targetId: string): Promise<void> {
-  await db.delete(backupTarget).where(eq(backupTarget.id, targetId))
+export async function deleteTarget(db: Db, destinationId: string): Promise<void> {
+  // A cluster's choice is text with no foreign key, so clear any that names it.
+  await db
+    .update(managed)
+    .set({ backupDestination: null })
+    .where(eq(managed.backupDestination, destinationId))
+  await db.delete(backupTarget).where(eq(backupTarget.id, destinationId))
 }
 
 export async function recordTargetTest(
   db: Db,
-  targetId: string,
+  destinationId: string,
   result: { ok: boolean; error?: string },
   at: string
 ): Promise<void> {
@@ -308,7 +316,7 @@ export async function recordTargetTest(
       isLastTestOk: result.ok,
       lastTestError: result.ok ? null : (result.error ?? 'The test failed').slice(0, 300),
     })
-    .where(eq(backupTarget.id, targetId))
+    .where(eq(backupTarget.id, destinationId))
 }
 
 /** Seal a secret access key for storage. */
@@ -320,45 +328,45 @@ export async function sealSecretKey(
 }
 
 export type OrgAssignments = {
-  defaultTargetId: string | null
-  /** One entry per cluster with its own choice; `targetId` null means "no copy". */
-  clusters: { managedId: string; targetId: string | null }[]
+  defaultDestinationId: string | null
+  /** One entry per cluster with its own choice; `destinationId` null means "no copy". */
+  clusters: { managedId: string; destinationId: string | null }[]
 }
 
 export async function readAssignments(db: Db, organizationId: string): Promise<OrgAssignments> {
   const [[org], rows] = await Promise.all([
     db
-      .select({ targetId: organization.backupDestinationId })
+      .select({ destinationId: organization.backupDestinationId })
       .from(organization)
       .where(eq(organization.id, organizationId))
       .limit(1),
     db
-      .select({
-        managedId: managed.id,
-        targetId: managed.backupDestinationId,
-      })
+      .select({ managedId: managed.id, choice: managed.backupDestination })
       .from(managed)
       .innerJoin(environment, eq(environment.id, managed.environmentId))
       .innerJoin(project, eq(project.id, environment.projectId))
       .innerJoin(workspace, eq(workspace.id, project.workspaceId))
       .where(
-        and(
-          eq(workspace.organizationId, organizationId),
-          or(isNotNull(managed.backupDestinationId), eq(managed.isBackupCopyOff, true))
-        )
+        and(eq(workspace.organizationId, organizationId), isNotNull(managed.backupDestination))
       ),
   ])
-  return { defaultTargetId: org?.targetId ?? null, clusters: rows }
+  return {
+    defaultDestinationId: org?.destinationId ?? null,
+    clusters: rows.map((r) => ({
+      managedId: r.managedId,
+      destinationId: r.choice === NO_COPY ? null : r.choice,
+    })),
+  }
 }
 
 export async function setOrganizationDefault(
   db: Db,
   organizationId: string,
-  targetId: string | null
+  destinationId: string | null
 ): Promise<void> {
   await db
     .update(organization)
-    .set({ backupDestinationId: targetId })
+    .set({ backupDestinationId: destinationId })
     .where(eq(organization.id, organizationId))
 }
 
@@ -371,8 +379,7 @@ export async function setClusterChoice(
   await db
     .update(managed)
     .set({
-      backupDestinationId: choice === 'inherit' || choice === 'none' ? null : choice,
-      isBackupCopyOff: choice === 'none',
+      backupDestination: choice === 'inherit' ? null : choice, // 'none' or a destination id
     })
     .where(eq(managed.id, params.managedId))
 }
@@ -383,9 +390,13 @@ export type EffectiveChoice = {
   target: BackupTargetRow | null
 }
 
-async function loadTarget(db: Db, targetId: string | null): Promise<BackupTargetRow | null> {
-  if (!targetId) return null
-  const [row] = await db.select().from(backupTarget).where(eq(backupTarget.id, targetId)).limit(1)
+async function loadTarget(db: Db, destinationId: string | null): Promise<BackupTargetRow | null> {
+  if (!destinationId) return null
+  const [row] = await db
+    .select()
+    .from(backupTarget)
+    .where(eq(backupTarget.id, destinationId))
+    .limit(1)
   return row ?? null
 }
 
@@ -399,22 +410,22 @@ export async function resolveEffectiveTarget(
   organizationId?: string
 ): Promise<EffectiveChoice> {
   const [own] = await db
-    .select({ targetId: managed.backupDestinationId, isOff: managed.isBackupCopyOff })
+    .select({ choice: managed.backupDestination })
     .from(managed)
     .where(eq(managed.id, managedId))
     .limit(1)
-  if (own?.isOff) return { source: 'none', target: null }
-  if (own?.targetId) {
-    const target = await loadTarget(db, own.targetId)
+  if (own?.choice === NO_COPY) return { source: 'none', target: null }
+  if (own?.choice) {
+    const target = await loadTarget(db, own.choice)
     if (target) return { source: 'cluster', target }
   }
   const orgId = organizationId ?? (await resolveManagedHomeOrganizationId(db, managedId))
   const [fallback] = await db
-    .select({ targetId: organization.backupDestinationId })
+    .select({ destinationId: organization.backupDestinationId })
     .from(organization)
     .where(eq(organization.id, orgId))
     .limit(1)
-  const target = await loadTarget(db, fallback?.targetId ?? null)
+  const target = await loadTarget(db, fallback?.destinationId ?? null)
   return { source: target ? 'organization' : 'none', target }
 }
 
@@ -442,7 +453,7 @@ export async function toWireTarget(
   deps: CopyResealDeps
 ): Promise<BackupCopyTargetWire> {
   return {
-    targetId: row.id,
+    destinationId: row.id,
     name: row.name,
     endpoint: row.endpoint,
     region: row.region,

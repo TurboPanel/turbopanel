@@ -17,8 +17,8 @@ export type BackupCopyRecord = typeof backupCopy.$inferSelect
 export function toApiCopy(row: BackupCopyRecord) {
   return {
     state: row.state as BackupCopyState,
-    targetId: row.targetId,
-    targetName: row.targetName,
+    destinationId: row.destinationId,
+    destinationName: row.destinationName,
     error: row.error,
     objectKey: row.objectKey,
     attempts: row.attempts,
@@ -43,8 +43,8 @@ export async function recordPendingCopy(
       .values({
         managedId: params.managedId,
         backupId: params.backupId,
-        targetId: choice.target.id,
-        targetName: choice.target.name,
+        destinationId: choice.target.id,
+        destinationName: choice.target.name,
         state: 'pending',
       })
       .onConflictDoNothing()
@@ -84,8 +84,8 @@ export async function findCopy(
 export type CopyReportRecord = {
   managedId: string
   backupId: string
-  targetId: string
-  targetName: string
+  destinationId: string
+  destinationName: string
   serverId: string
   state: 'copied' | 'failed'
   error?: string
@@ -104,8 +104,8 @@ export async function recordCopyReport(db: Db, report: CopyReportRecord): Promis
       .values({
         managedId: report.managedId,
         backupId: report.backupId,
-        targetId: report.targetId,
-        targetName: report.targetName,
+        destinationId: report.destinationId,
+        destinationName: report.destinationName,
         state: report.state,
         error: report.state === 'failed' ? (report.error ?? 'The copy failed') : null,
         objectKey: report.objectKey ?? null,
@@ -115,9 +115,9 @@ export async function recordCopyReport(db: Db, report: CopyReportRecord): Promis
         serverId: report.serverId,
       })
       .onConflictDoUpdate({
-        target: [backupCopy.managedId, backupCopy.backupId, backupCopy.targetId],
+        target: [backupCopy.managedId, backupCopy.backupId, backupCopy.destinationId],
         set: {
-          targetName: report.targetName,
+          destinationName: report.destinationName,
           state: report.state,
           error: report.state === 'failed' ? (report.error ?? 'The copy failed') : null,
           objectKey: report.objectKey ?? null,
@@ -134,7 +134,7 @@ export async function recordCopyReport(db: Db, report: CopyReportRecord): Promis
         .where(
           and(
             eq(backupCopy.managedId, report.managedId),
-            eq(backupCopy.targetId, report.targetId),
+            eq(backupCopy.destinationId, report.destinationId),
             inArray(backupCopy.backupId, report.pruned),
             eq(backupCopy.state, 'copied')
           )

@@ -7452,7 +7452,7 @@ function isCanonicalUuid(value: unknown): value is string {
  * envelope sealed to the receiving host's daemon key.
  */
 export type BackupCopyTargetWire = {
-  targetId: string
+  destinationId: string
   name: string
   endpoint: string
   region: string
@@ -7491,7 +7491,7 @@ function wireText(value: unknown, field: string, max: number): string {
 }
 
 export function parseBackupCopyTarget(raw: unknown): BackupCopyTargetWire {
-  if (!isRecord(raw) || !isCanonicalUuid(raw.targetId)) {
+  if (!isRecord(raw) || !isCanonicalUuid(raw.destinationId)) {
     throw new Error('Invalid backup copy target')
   }
   const prefix = wireText(raw.prefix ?? '', 'prefix', 256)
@@ -7512,7 +7512,7 @@ export function parseBackupCopyTarget(raw: unknown): BackupCopyTargetWire {
     throw new Error('Invalid backup copy target')
   }
   return {
-    targetId: raw.targetId,
+    destinationId: raw.destinationId,
     name: wireText(raw.name ?? '', 'name', 64),
     endpoint: wireText(raw.endpoint, 'endpoint', 512),
     region,
