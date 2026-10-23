@@ -2,7 +2,7 @@
 /**
  * Pre-migration compatibility gate for `pnpm migrate`.
  *
- * The schema baseline (migrations/0000_init.sql) defaults every surrogate
+ * The schema baseline (migrations/0000_base.sql) defaults every surrogate
  * primary key to the built-in `uuidv7()`, which ships with PostgreSQL 18.
  * This script connects to the target server before `drizzle-kit migrate`
  * runs and fails fast with a clear message when `uuidv7()` is unavailable,
@@ -57,7 +57,7 @@ try {
   } catch (error) {
     fail(
       `cannot reach the target PostgreSQL server (${error?.message ?? error}) — ` +
-        'check TURBOPANEL_DATABASE_URL before running migrations',
+        'check TURBOPANEL_DATABASE_URL before running migrations'
     )
   }
 
@@ -74,7 +74,7 @@ try {
         `turbopanel migrations require PostgreSQL ${MINIMUM_POSTGRES_MAJOR} or newer ` +
         '(the schema defaults primary keys to the built-in uuidv7()). ' +
         'Upgrade the server; the orchestration pin is postgres:18 ' +
-        '(turbopaneld/orchestration/roles/postgres/defaults/main.yml).',
+        '(turbopaneld/orchestration/roles/postgres/defaults/main.yml).'
     )
   }
 
@@ -83,13 +83,11 @@ try {
     // it, but flag the drift from the documented PostgreSQL 18 minimum.
     console.warn(
       `check-postgres-compat: warning — PostgreSQL ${serverVersion.version} is below the ` +
-        `documented minimum ${MINIMUM_POSTGRES_MAJOR}, but uuidv7() is available; proceeding`,
+        `documented minimum ${MINIMUM_POSTGRES_MAJOR}, but uuidv7() is available; proceeding`
     )
   }
 
-  console.log(
-    `check-postgres-compat: PostgreSQL ${serverVersion.version} with uuidv7() — ok`,
-  )
+  console.log(`check-postgres-compat: PostgreSQL ${serverVersion.version} with uuidv7() — ok`)
 } finally {
   await sql.end({ timeout: 5 })
 }

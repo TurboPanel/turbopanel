@@ -1,6 +1,6 @@
 import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { DENY_FIREWALL_APPLY } from '../firewall/enforcement.ts'
-import { assertEquals } from '@std/assert'
+import { assertEquals, assertRejects } from '@std/assert'
 import { projectServerDaemon } from '../../daemon/cell/postgres-projection.ts'
 import { eq, inArray } from 'drizzle-orm'
 import { loadDeployRunCapMs } from './deploy-wait-settings.ts'
@@ -6812,14 +6812,17 @@ test('the deploy time limit of 30 minutes holds only while the server reports', 
 test("the deploy time limit is the one the server's organization set", async () => {
   await withDeployFixtures(async (ctx) => {
     assertEquals(await loadDeployRunCapMs(ctx.db, ctx.serverId), 30 * MIN)
-    const setLimit = (deployTimeoutMinutes: unknown) =>
+    const setLimit = (deployTimeoutMinutes: number | null) =>
       ctx.db
         .update(organization)
-        .set({ options: { deployTimeoutMinutes } })
+        .set({ deployTimeoutMinutes })
         .where(eq(organization.id, ctx.organizationId))
     await setLimit(90)
     assertEquals(await loadDeployRunCapMs(ctx.db, ctx.serverId), 90 * MIN)
-    await setLimit(1000)
+    await assertRejects(() => setLimit(1000))
+    await assertRejects(() => setLimit(4))
+    assertEquals(await loadDeployRunCapMs(ctx.db, ctx.serverId), 90 * MIN)
+    await setLimit(null)
     assertEquals(await loadDeployRunCapMs(ctx.db, ctx.serverId), 30 * MIN)
 
     await setLimit(90)

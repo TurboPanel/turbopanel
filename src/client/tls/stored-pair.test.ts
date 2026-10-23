@@ -46,7 +46,7 @@ async function setup(pin: boolean) {
       organizationId,
       name: 'Lets Encrypt pair',
       source: 'lets_encrypt',
-      status: 'managed',
+      status: 'automatic',
       certificatePem: 'CHAIN',
       privateKeyPem: 'tpsecret.v1.sealed',
       notAfter: '2030-01-01T00:00:00.000Z',
@@ -124,7 +124,7 @@ test('eraseStoredPairs clears the key and chain but keeps the row', async () => 
     const row = await f.read()
     assertEquals(row?.privateKeyPem, null)
     assertEquals(row?.certificatePem, null)
-    assertEquals(row?.status, 'managed')
+    assertEquals(row?.status, 'automatic')
     assertEquals(row?.fingerprintSha256, null)
     assertEquals(new Date(row!.notAfter!).getTime(), 0)
     const acme = (row?.metadata as { acme: Record<string, unknown>; extra: string }).acme

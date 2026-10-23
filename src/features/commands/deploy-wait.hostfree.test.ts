@@ -25,7 +25,7 @@ import {
   deployWaitVerdict,
 } from './deploy-wait.ts'
 import { shiftedRunningSince } from './deploy-limits.ts'
-import { deployRunCapFromOptions } from './deploy-wait-settings.ts'
+import { deployRunCapFromMinutes } from './deploy-wait-settings.ts'
 
 const test = Deno.test.bind(Deno)
 
@@ -362,18 +362,18 @@ test('the request outlives the whole wait, and a deploy is given up on before it
 })
 
 test('the deploy time limit is the organization setting: 30 minutes unset, the value when valid, 30 when out of range', () => {
-  assertEquals(deployRunCapFromOptions(undefined), 30 * 60_000)
-  assertEquals(deployRunCapFromOptions({}), 30 * 60_000)
-  assertEquals(deployRunCapFromOptions({ deployTimeoutMinutes: 90 }), 90 * 60_000)
-  assertEquals(deployRunCapFromOptions({ deployTimeoutMinutes: 240 }), 240 * 60_000)
-  assertEquals(deployRunCapFromOptions({ deployTimeoutMinutes: 4 }), 30 * 60_000)
-  assertEquals(deployRunCapFromOptions({ deployTimeoutMinutes: 241 }), 30 * 60_000)
-  assertEquals(deployRunCapFromOptions({ deployTimeoutMinutes: 12.5 }), 30 * 60_000)
-  assertEquals(deployRunCapFromOptions({ deployTimeoutMinutes: '60' }), 30 * 60_000)
+  assertEquals(deployRunCapFromMinutes(undefined), 30 * 60_000)
+  assertEquals(deployRunCapFromMinutes(null), 30 * 60_000)
+  assertEquals(deployRunCapFromMinutes(90), 90 * 60_000)
+  assertEquals(deployRunCapFromMinutes(240), 240 * 60_000)
+  assertEquals(deployRunCapFromMinutes(4), 30 * 60_000)
+  assertEquals(deployRunCapFromMinutes(241), 30 * 60_000)
+  assertEquals(deployRunCapFromMinutes(12.5), 30 * 60_000)
+  assertEquals(deployRunCapFromMinutes('60'), 30 * 60_000)
 })
 
 test('a custom time limit decides when a reporting server is stopped, and the message names it and where to change it', () => {
-  const ninety = deployRunCapFromOptions({ deployTimeoutMinutes: 90 })
+  const ninety = deployRunCapFromMinutes(90)
   const base = { ...REPORTING, progress: RUNNING, endAtMs: STARTED + 10 * ninety, runCapMs: ninety }
   assertEquals(verdict({ ...base, nowMs: STARTED + DEPLOY_DEFAULT_TIMEOUT_MS }), null)
   assertEquals(verdict({ ...base, nowMs: STARTED + ninety - 1 }), null)

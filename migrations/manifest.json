@@ -1,67 +1,13 @@
 {
   "version": 1,
   "frozen": true,
-  "generation": 12,
+  "generation": 13,
   "entries": [
     {
       "idx": 0,
-      "tag": "0000_init",
-      "when": 1792498533036,
-      "sha256": "42fc7e4cabe14ee2a290e9265a2070691c59d73bcf8d0bf7fcd34ccc29dd1d2e"
-    },
-    {
-      "idx": 1,
-      "tag": "0001_login_straight_through",
-      "when": 1792542413788,
-      "sha256": "d5e03c7668e5788d619a606938ed81feec29a275f17fe2ccb7568548fd1d1542"
-    },
-    {
-      "idx": 2,
-      "tag": "0002_backup_policy_database",
-      "when": 1792604831497,
-      "sha256": "3ca7c79d1c53d7f463e9ada8098b35c9072b26c3b00639eb505be0a8a9a52547"
-    },
-    {
-      "idx": 3,
-      "tag": "0003_server_architecture_check",
-      "when": 1792771227864,
-      "sha256": "e2073e226449ac2c63b59d467df12c06c7d8dc9e36498fd75c44a864eb6eff5c"
-    },
-    {
-      "idx": 4,
-      "tag": "0004_datacenter_option_columns",
-      "when": 1792773762483,
-      "sha256": "223c1c997276dc609cbced7731bb4682f122998508ae82dcf78b162dee78f27c"
-    },
-    {
-      "idx": 5,
-      "tag": "0005_project_kind_icon",
-      "when": 1792775024253,
-      "sha256": "aa90619c7363c7a5bed0e1904294770ecdfdf71f035c77839388b86f47b5c658"
-    },
-    {
-      "idx": 6,
-      "tag": "0006_principal_access",
-      "when": 1792777978929,
-      "sha256": "4f86b3d65624c93ce7e04239394de0d36eee4363fd2c211dc470d87988f9455d"
-    },
-    {
-      "idx": 7,
-      "tag": "0007_server_peak",
-      "when": 1792779015336,
-      "sha256": "46438c6a1c2a3555799b75b56c144c8464e2be5307a5d58c979c290298cc6dc7"
-    },
-    {
-      "idx": 8,
-      "tag": "0008_login_recipe_sources",
-      "when": 1792782918180,
-      "sha256": "84b18c180fb97ba413bd7210d3e330b2e2f8e20543d00ed15edebb9184099542"
-    },
-    {
-      "idx": 9,
-      "tag": "0009_backup_copy_tables",
-      "when": 1792785838307,
-      "sha256": "59bead1f8a165d307dba33a8f30ed00f516a0b84eb9072931c581c6b6ef02407"
+      "tag": "0000_base",
+      "when": 1792792899297,
+      "sha256": "db851802085444569696db99b904edf177a53ca89006c3f456d7906852d2bbe0"
     }
   ]
 }

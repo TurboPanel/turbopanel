@@ -305,18 +305,12 @@ test('deploy hooks are off unless the organization opted in', () => {
 })
 
 test('the deploy time limit is 30 minutes unless the organization set a whole number from 5 to 240', () => {
-  assertEquals(resolveDeployTimeoutMs({}), 30 * 60_000)
-  assertEquals(
-    resolveDeployTimeoutMs(parseOrganizationOptions({ deployTimeoutMinutes: 90 })),
-    90 * 60_000
-  )
-  for (const bad of [4, 241, 12.5, '30', null, true]) {
-    assertEquals(
-      parseOrganizationOptions({ deployTimeoutMinutes: bad }).deployTimeoutMinutes,
-      undefined,
-      JSON.stringify(bad)
-    )
+  assertEquals(resolveDeployTimeoutMs(null), 30 * 60_000)
+  assertEquals(resolveDeployTimeoutMs(undefined), 30 * 60_000)
+  assertEquals(resolveDeployTimeoutMs(90), 90 * 60_000)
+  for (const bad of [4, 241, 12.5, '30', true]) {
+    assertEquals(resolveDeployTimeoutMs(bad), 30 * 60_000, JSON.stringify(bad))
   }
-  assertEquals(parseOrganizationOptions({ deployTimeoutMinutes: 5 }).deployTimeoutMinutes, 5)
-  assertEquals(parseOrganizationOptions({ deployTimeoutMinutes: 240 }).deployTimeoutMinutes, 240)
+  assertEquals(resolveDeployTimeoutMs(5), 5 * 60_000)
+  assertEquals(resolveDeployTimeoutMs(240), 240 * 60_000)
 })

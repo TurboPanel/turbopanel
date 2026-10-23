@@ -33,7 +33,7 @@ function input(overrides: Partial<DeriveHostingCertificateInput>): DeriveHosting
 function managed(acme: Record<string, unknown>) {
   return {
     source: 'lets_encrypt',
-    status: 'managed',
+    status: 'automatic',
     notAfter: new Date(0).toISOString(),
     metadata: { dnsNames: ['a.example.com'], acme: { managedBy: 'caddy', ...acme } },
   }

@@ -17,6 +17,8 @@ import {
   withManagedTlsPolicyLock,
 } from '../../features/managed/external-access-tls.ts'
 import {
+  deployTimeoutGetRoute,
+  deployTimeoutPutRoute,
   loadOrgOptionsRow,
   mergeOrgOptionsSql,
   openOrgSettingsScope,
@@ -228,18 +230,14 @@ export function registerOrganizationRoutes(router: Hono<AppEnv>, opts: AuthRoute
 
   router.get(
     '/organizations/:id/deploy-timeout',
-    orgOptionsGetRoute('manage', deployTimeoutGetResponse)
+    deployTimeoutGetRoute('manage', deployTimeoutGetResponse)
   )
   router.put(
     '/organizations/:id/deploy-timeout',
-    orgOptionsPatchRoute({
+    deployTimeoutPutRoute({
       gate: 'manage',
       parse: parseDeployTimeoutPatch,
       respond: deployTimeoutPutResponse,
-      audit: (patch) => ({
-        action: 'organization.deploy_timeout.set',
-        context: { deployTimeoutMinutes: patch.deployTimeoutMinutes },
-      }),
     })
   )
 

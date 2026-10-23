@@ -319,7 +319,7 @@ every 30 s. The control plane then works like this (`deploy-wait.ts`,
 `command-recovery.ts`, `command-progress.ts`):
 
 - A running deploy is timed only while the server reports: the deploy time
-  limit (the organization's `deployTimeoutMinutes`, 5 to 240, 30 when unset;
+  limit (the organization's `deploy_timeout_minutes` column, 5 to 240, 30 when null;
   `loadDeployRunCapMs`) counts
   from `runningSince`, and quiet time is given back to the run clock.
 - No frame for 5 minutes means "checking with the server":

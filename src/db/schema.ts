@@ -129,6 +129,8 @@ export const organization = pgTable(
     options: jsonb(),
     name: text(),
     nextLinuxId: integer('next_linux_id').default(30001).notNull(),
+    /** Longest a deploy may run, in minutes (5 to 240); null means the default of 30. */
+    deployTimeoutMinutes: integer('deploy_timeout_minutes'),
     /** Destination finished backups are copied to unless a cluster chooses otherwise. */
     backupDestinationId: uuid('backup_destination_id').references(
       (): AnyPgColumn => backupTarget.id,
@@ -140,6 +142,10 @@ export const organization = pgTable(
     check(
       'organization_next_linux_id_check',
       sql`${table.nextLinuxId} >= 30001 AND ${table.nextLinuxId} <= 60001`
+    ),
+    check(
+      'organization_deploy_timeout_minutes_check',
+      sql`${table.deployTimeoutMinutes} IS NULL OR (${table.deployTimeoutMinutes} >= 5 AND ${table.deployTimeoutMinutes} <= 240)`
     ),
   ]
 )
@@ -257,7 +263,7 @@ export const tls = pgTable(
     // Mirrors `TlsStatus` (src/lib/tls/types.ts) — pinned by enum-checks.test.ts.
     check(
       'tls_status_check',
-      sql`status IN ('ready', 'pending', 'expired', 'failed', 'revoked', 'managed')`
+      sql`status IN ('ready', 'pending', 'expired', 'failed', 'revoked', 'automatic')`
     ),
   ]
 )
@@ -715,6 +721,12 @@ export const server = pgTable(
       withTimezone: true,
       mode: 'string',
     }),
+    /**
+     * The datacenter whose network this server prefers for its traffic when it
+     * belongs to several. NULL means no preference (priority order decides).
+     * Set null if the datacenter is deleted.
+     */
+    preferredDatacenterId: uuid('preferred_datacenter_id'),
   },
   (table) => [
     index('idx_server_organization_id').using(
@@ -753,6 +765,15 @@ export const server = pgTable(
       columns: [table.preferredTierId],
       foreignColumns: [tier.id],
       name: 'server_preferred_tier_id_tier_id_fk',
+    }).onDelete('set null'),
+    index('idx_server_preferred_datacenter_id').using(
+      'btree',
+      table.preferredDatacenterId.asc().nullsLast().op('uuid_ops')
+    ),
+    foreignKey({
+      columns: [table.preferredDatacenterId],
+      foreignColumns: [datacenter.id],
+      name: 'server_preferred_datacenter_id_datacenter_id_fk',
     }).onDelete('set null'),
     check('server_machine_class_check', sql`${table.machineClass} IN ('physical', 'virtual')`),
     check(
@@ -2236,6 +2257,14 @@ export const project = pgTable(
      * means the default; a managed project ignores it.
      */
     icon: text(),
+    /** Catalog `code` of the template this project was created from; NULL when not from a template. */
+    templateCode: text('template_code'),
+    /** Software release line (track) of that template, such as `6.8`. */
+    templateTrack: text('template_track'),
+    /** Template packaging version (semver) the project was created from. */
+    templateVersion: text('template_version'),
+    /** Content digest of that template version (`sha256:` and 64 hex digits). */
+    templateDigest: text('template_digest'),
   },
   (table) => [
     index('idx_project_default_server_id').using(
@@ -2290,6 +2319,26 @@ export const project = pgTable(
     unique('uniq_project_organization_slug').on(table.organizationId, table.slug),
     check('project_slug_check', sql.raw(`slug ~ '${PROJECT_SLUG_SQL}'`)),
     check('project_kind_check', sql`kind IS NULL OR kind IN ('compose', 'managed', 'system')`),
+    check(
+      'project_template_stamp_check',
+      sql`(template_code IS NULL AND template_track IS NULL AND template_version IS NULL AND template_digest IS NULL) OR (template_code IS NOT NULL AND template_track IS NOT NULL AND template_version IS NOT NULL AND template_digest IS NOT NULL)`
+    ),
+    check(
+      'project_template_code_check',
+      sql`template_code IS NULL OR template_code ~ '^[a-z][a-z0-9-]{0,63}$'`
+    ),
+    check(
+      'project_template_track_check',
+      sql`template_track IS NULL OR template_track ~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$'`
+    ),
+    check(
+      'project_template_version_check',
+      sql`template_version IS NULL OR template_version ~ '^[0-9]+[.][0-9]+[.][0-9]+$'`
+    ),
+    check(
+      'project_template_digest_check',
+      sql`template_digest IS NULL OR template_digest ~ '^sha256:[0-9a-f]{64}$'`
+    ),
     check(
       'project_icon_check',
       sql`icon IS NULL OR icon IN ('cube', 'globe', 'cart', 'bolt', 'chat', 'chart', 'code', 'book', 'layers', 'mail', 'rocket', 'image')`
