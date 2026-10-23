@@ -72,6 +72,7 @@ import {
 import { ensureManagedIngressHierarchy } from '../system/hierarchy.ts'
 import { ensureManagedContainerAllocation } from './allocate-managed-container.ts'
 import { enqueueManagedIngressReconcile } from './ingress-desired.ts'
+import { MANAGED_APPLY_EXPIRES_MS } from './ingress-desired-pure.ts'
 import {
   commitClearedPrivatePortsIfUnused,
   ensureManagedPrimaryMember,
@@ -98,7 +99,7 @@ import { logWarn } from '../../lib/logger.ts'
 import { MANAGED_DESTROY_REDRIVE_FLAG } from './destroy-redrive.ts'
 import { firstSequential, forEachSequential } from '../../lib/sequential.ts'
 
-const APPLY_EXPIRES_MS = 600_000
+const APPLY_EXPIRES_MS = MANAGED_APPLY_EXPIRES_MS
 /** Normal (online, sequenced) `managed.destroy` — 10 minutes. */
 const MANAGED_DESTROY_EXPIRES_MS = 600_000
 /**
@@ -1972,6 +1973,8 @@ async function finalizePreparedManagedApplyResults(
         actorId: params.userId,
         secretsConfig,
         dataEncryptionSecrets,
+        // Queued right behind the apply: it runs after the apply finishes.
+        waitsBehindMs: APPLY_EXPIRES_MS,
       })
     })
   }

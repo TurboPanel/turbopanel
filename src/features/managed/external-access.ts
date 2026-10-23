@@ -30,6 +30,7 @@ import type { Db } from '../../db/connection.ts'
 import { command, managed, replica, server } from '../../db/schema.ts'
 import { consumerServerIdsForManaged } from '../bindings/resolve-endpoint.ts'
 import { getManagedEngineSpec } from './index.ts'
+import { commandIsOpen } from '../commands/open-statuses.ts'
 import { enqueueManagedIngressReconcile } from './ingress-desired.ts'
 import { loadBoundManagedIdsForServer } from './ingress-bound-consumers.ts'
 import { managedIngressPortForEngine } from './ingress-ports.ts'
@@ -302,9 +303,6 @@ export async function enqueueManagedExternalAccessReconcile(
   return result.reason === 'not_needed' ? 'not_needed' : 'failed'
 }
 
-/** How long a queued ingress reconcile is valid; mirrors `MANAGED_INGRESS_RECONCILE_TTL_MS`. */
-const INGRESS_RECONCILE_VALID_MS = 5 * 60_000
-
 /**
  * Re-send the setting to servers that were asked but never confirmed (a payload
  * that could not be built and has since been fixed, or a server offline past
@@ -325,7 +323,7 @@ export async function runManagedExternalAccessPendingSweep(
     .where(and(eq(server.isConnected, true), isNotNull(server.externalAccessPendingAt)))
   if (connected.length === 0) return { enqueued: 0 }
 
-  const cutoff = new Date(Date.now() - INGRESS_RECONCILE_VALID_MS).toISOString()
+  const now = new Date().toISOString()
   const inFlight = await db
     .select({ serverId: command.serverId })
     .from(command)
@@ -336,7 +334,8 @@ export async function runManagedExternalAccessPendingSweep(
           connected.map((row) => row.id)
         ),
         eq(command.name, 'managed.ingress.reconcile'),
-        gte(command.createdAt, cutoff)
+        gte(command.expiresAt, now),
+        commandIsOpen()
       )
     )
   const busy = new Set(inFlight.map((row) => row.serverId))
