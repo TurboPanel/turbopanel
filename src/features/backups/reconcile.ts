@@ -245,12 +245,14 @@ export async function buildBackupPolicySetForServer(
   const copyRows = await loadCopyPolicyRows(db, serverId)
   const entries: BackupPolicyWireEntry[] = []
   const recipient = managedRows.length > 0 ? await copyRecipientFor(db, serverId) : null
-  for (const row of managedRows) {
+  const managedEntries = managedRows.flatMap((row) => {
     const entry = toWireEntry(row)
-    if (!entry) continue
-    await attachCopyTarget(db, entry, { recipient, copyDeps })
-    entries.push(entry)
-  }
+    return entry ? [entry] : []
+  })
+  await Promise.all(
+    managedEntries.map((entry) => attachCopyTarget(db, entry, { recipient, copyDeps }))
+  )
+  entries.push(...managedEntries)
   for (const row of copyRows) {
     const entry = toCopyWireEntry(row)
     if (entry) entries.push(entry)

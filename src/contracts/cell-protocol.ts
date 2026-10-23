@@ -1676,6 +1676,11 @@ function validateBackupCopyReportFields(record: Record<string, unknown>): string
     return 'invalid state'
   }
   if (!isIsoTimestamp(record.finishedAt)) return 'invalid finishedAt'
+  return validateBackupCopyReportOutcome(record)
+}
+
+/** The counts, object key and pruned list of a copy report. */
+function validateBackupCopyReportOutcome(record: Record<string, unknown>): string | null {
   if (!(isNonNegativeInt(record.attempts) && Number.isSafeInteger(record.attempts))) {
     return 'invalid attempts'
   }

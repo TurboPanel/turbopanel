@@ -86,6 +86,15 @@ function text(body: Record<string, unknown>, field: string): string | undefined 
   return typeof v === 'string' ? v.trim() : undefined
 }
 
+/** Drop leading and/or trailing slashes without a backtracking pattern. */
+function trimSlashes(value: string, ends: 'end' | 'both'): string {
+  let start = 0
+  let end = value.length
+  while (end > start && value[end - 1] === '/') end--
+  if (ends === 'both') while (start < end && value[start] === '/') start++
+  return value.slice(start, end)
+}
+
 function checkName(name: string | undefined): string | null {
   if (!name || name.length > MAX_TARGET_NAME_LENGTH) {
     return `The name must be 1 to ${MAX_TARGET_NAME_LENGTH} characters`
@@ -152,10 +161,10 @@ export function parseTargetBody(
   current?: BackupTargetRow
 ): Parsed<TargetFields> {
   const name = text(body, 'name') ?? current?.name
-  const endpoint = (text(body, 'endpoint') ?? current?.endpoint ?? '').replace(/\/+$/, '')
+  const endpoint = trimSlashes(text(body, 'endpoint') ?? current?.endpoint ?? '', 'end')
   const region = text(body, 'region') ?? current?.region
   const bucket = text(body, 'bucket') ?? current?.bucket
-  const prefix = (text(body, 'prefix') ?? current?.prefix ?? '').replace(/^\/+|\/+$/g, '')
+  const prefix = trimSlashes(text(body, 'prefix') ?? current?.prefix ?? '', 'both')
   const accessKeyId = text(body, 'accessKeyId') ?? current?.accessKeyId
   const secret = typeof body.secretAccessKey === 'string' ? body.secretAccessKey : undefined
   const pathStyle = flag(body, 'pathStyle', current?.isPathStyle ?? true)
@@ -356,7 +365,7 @@ export async function setOrganizationDefault(
 /** `inherit` clears the cluster's own choice; `none` turns copying off; a target id names it. */
 export async function setClusterChoice(
   db: Db,
-  params: { organizationId: string; managedId: string; choice: 'inherit' | 'none' | string }
+  params: { organizationId: string; managedId: string; choice: string }
 ): Promise<void> {
   const { choice } = params
   await db

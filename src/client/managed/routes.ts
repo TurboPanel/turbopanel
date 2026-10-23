@@ -149,7 +149,6 @@ import {
   enqueueManagedRestore,
   isManagedBackupApiError,
   mapManagedBackupApiError,
-  refuseRestoreIfBackupOnOtherServer,
   resolveBackupDatabase,
   resolveManagedBackupArtifactServerId,
   toManagedBackupListItem,
@@ -184,11 +183,11 @@ import {
   writeManagedSettings,
 } from '../../features/managed/options.ts'
 import { findManagedBackupById, listManagedBackups } from '../../features/backups/backup-records.ts'
-import { describeClusterBackupTarget } from './backup-copy.ts'
 import {
   copyTargetForDelete,
   copyTargetForNewBackup,
-  liveCopyOf,
+  describeClusterBackupTarget,
+  refuseWrongHostRestore,
   restoreSourceFromCopy,
   wantsRestoreFromCopy,
 } from './backup-copy.ts'
@@ -3727,16 +3726,13 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     if (targetServerId instanceof Response) return targetServerId
 
     const fromCopy = await wantsRestoreFromCopy(c)
-    const copyLive = await liveCopyOf(db, auth.organizationId, row.id, record.id)
-    const wrongHost = fromCopy
-      ? null
-      : await refuseRestoreIfBackupOnOtherServer(
-          c,
-          db,
-          record,
-          targetServerId,
-          copyLive?.copy.state === 'copied'
-        )
+    const wrongHost = await refuseWrongHostRestore(c, db, {
+      fromCopy,
+      organizationId: auth.organizationId,
+      managedId: row.id,
+      record,
+      targetServerId,
+    })
     if (wrongHost) return wrongHost
 
     const busy = await assertManagedIdle(c, db, row)

@@ -16,7 +16,9 @@ import {
   resolveEffectiveTarget,
   toWireTarget,
 } from '../../features/backups/targets.ts'
+import type { ManagedBackupRecord } from '../../features/backups/backup-records.ts'
 import { copyDepsOf } from '../backup-copy-deps.ts'
+import { refuseRestoreIfBackupOnOtherServer } from './backups.ts'
 import { parseJsonBody } from '../shared.ts'
 
 /** The wire target for a host, or undefined when no target applies or the host cannot take one yet. */
@@ -83,7 +85,7 @@ export async function restoreSourceFromCopy(
   params: { organizationId: string; managedId: string; backupId: string; serverId: string }
 ): Promise<RestoreFromCopy> {
   const live = await liveCopyOf(db, params.organizationId, params.managedId, params.backupId)
-  if (!live || live.copy.state !== 'copied' || !live.copy.objectKey) {
+  if (live?.copy.state !== 'copied' || !live.copy.objectKey) {
     return {
       ok: false,
       error: 'backup_copy_not_ready',
@@ -120,10 +122,12 @@ export async function describeClusterBackupTarget(
   ])
   const own = assignments.clusters.find((cluster) => cluster.managedId === managedId)
   const target = choice.target
+  let ownChoice = 'inherit'
+  if (own) ownChoice = own.targetId ? 'target' : 'none'
   return {
     source: choice.source,
     /** `inherit` follows the organization default; `none` turns copying off for this cluster; `target` is its own pick. */
-    choice: own ? (own.targetId ? 'target' : 'none') : 'inherit',
+    choice: ownChoice,
     target: target
       ? {
           id: target.id,
@@ -135,4 +139,31 @@ export async function describeClusterBackupTarget(
         }
       : null,
   }
+}
+
+/**
+ * The 409 for a restore of a backup made on another host, or null. Skipped when
+ * the request asks for the bucket copy; otherwise the refusal says whether a
+ * finished copy could be restored here instead.
+ */
+export async function refuseWrongHostRestore(
+  c: Context<AppEnv>,
+  db: Db,
+  params: {
+    fromCopy: boolean
+    organizationId: string
+    managedId: string
+    record: ManagedBackupRecord
+    targetServerId: string
+  }
+): Promise<Response | null> {
+  if (params.fromCopy) return null
+  const copyLive = await liveCopyOf(db, params.organizationId, params.managedId, params.record.id)
+  return await refuseRestoreIfBackupOnOtherServer(
+    c,
+    db,
+    params.record,
+    params.targetServerId,
+    copyLive?.copy.state === 'copied'
+  )
 }
