@@ -134,6 +134,8 @@ export type RecoveryMetadata = {
    * (`resumeInterruptedPromote`).
    */
   promoteResumes?: number
+  /** Fence deadline: times the restart of the old primary could not be queued. */
+  fenceAbortAttempts?: number
   haPresent?: boolean
   fenced?: boolean
   drainApplied?: boolean
@@ -309,6 +311,11 @@ export function parseRecoveryMetadata(value: unknown): RecoveryMetadata {
     metadata,
     'promoteResumes',
     optionalNullableNumber(value.promoteResumes) ?? undefined
+  )
+  setIfPresent(
+    metadata,
+    'fenceAbortAttempts',
+    optionalNullableNumber(value.fenceAbortAttempts) ?? undefined
   )
   setIfPresent(metadata, 'haPresent', optionalBoolean(value.haPresent))
   setIfPresent(metadata, 'fenced', optionalBoolean(value.fenced))

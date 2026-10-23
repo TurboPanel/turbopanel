@@ -3070,6 +3070,8 @@ test('an automatic failover whose stop never answered ends blocked as unfenced',
     (row?.metadata as { blockedReason?: string }).blockedReason,
     AUTOMATIC_FAILOVER_BLOCKED_MESSAGE
   )
+  // Nothing was promoted: no target, so no cooldown for the next attempt.
+  assertEquals(row?.targetMemberId, null)
 })
 
 test('a fence that is still within its deadline is left alone', async () => {
@@ -3090,3 +3092,46 @@ test('a fence that is still within its deadline is left alone', async () => {
   assertEquals(handled, [])
   assertEquals(harness.recovery()?.state, 'fencing')
 })
+
+function stalledSwitchover(metadata: Record<string, unknown> = {}) {
+  return createHarness({
+    members: [member(), failoverReplica()],
+    connected: [true, true],
+    commandRows: [fenceStep('cmd-stop', 'managed.lifecycle', 'stop', LONG_AGO)],
+    recovery: recoveryRow({
+      kind: 'switchover',
+      state: 'fencing',
+      metadata: { fenceCommandIds: ['cmd-stop'], fencingEpoch: LONG_AGO, ...metadata },
+    }),
+    managedEngine: 'mysql',
+  })
+}
+
+test('a deadline switchover whose restart cannot be queued is tried again, then ends failed for the operator', async () => {
+  const first = stalledSwitchover()
+  await sweepStalledFencing(first.db, { commandQueue: failingQueue(), now: Date.parse(NOW) })
+  assertEquals(first.recovery()?.state, 'fencing')
+  assertEquals(
+    (first.recovery()?.metadata as { fenceAbortAttempts?: number }).fenceAbortAttempts,
+    1
+  )
+
+  const last = stalledSwitchover({ fenceAbortAttempts: 2 })
+  await sweepStalledFencing(last.db, { commandQueue: failingQueue(), now: Date.parse(NOW) })
+  const row = last.recovery()
+  assertEquals(row?.state, 'failed')
+  assertEquals((row?.metadata as { needsOperator?: boolean }).needsOperator, true)
+  assertEquals(harnessHasPromote(last), false)
+})
+
+test('a deadline switchover with no command queue ends failed for the operator at once', async () => {
+  const harness = stalledSwitchover()
+  await sweepStalledFencing(harness.db, { now: Date.parse(NOW) })
+  const row = harness.recovery()
+  assertEquals(row?.state, 'failed')
+  assertEquals((row?.metadata as { needsOperator?: boolean }).needsOperator, true)
+})
+
+function harnessHasPromote(harness: RecoveryHarness): boolean {
+  return harness.commandInserts.some((insert) => insert.name === 'managed.promote')
+}

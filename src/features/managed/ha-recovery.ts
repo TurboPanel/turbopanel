@@ -132,6 +132,10 @@ const FENCE_TTL_MS = 600_000
  * must not run: it would fence a primary the control plane already restored).
  */
 export const FENCE_STEP_TTL_MS = 180_000
+/** Tries to queue the restart of the old primary before the row ends for an operator. */
+const FENCE_ABORT_MAX_ATTEMPTS = 3
+const FENCE_ABORT_NOT_QUEUED_MESSAGE =
+  'Planned switchover stopped, but the old primary could not be told to start again: check that the current primary is running and writable, then run the switchover again.'
 const PROMOTE_TTL_MS = 600_000
 
 async function isServerConnected(db: Db, serverId: string): Promise<boolean> {
@@ -1174,9 +1178,10 @@ export async function enqueueSwitchoverAbortReactivation(
     members: readonly ManagedMemberRow[]
     reactivate?: boolean
   }
-): Promise<void> {
+): Promise<boolean> {
+  let allQueued = true
   if (params.reactivate !== false) {
-    await enqueueCommand(db, commandQueue, {
+    const queued = await enqueueCommand(db, commandQueue, {
       serverId: params.source.serverId,
       type: 'managed.lifecycle',
       payload: switchoverAbortReactivateLifecyclePayload({
@@ -1187,6 +1192,7 @@ export async function enqueueSwitchoverAbortReactivation(
       expiresAtMs: FENCE_TTL_MS,
       actor: params.actor,
     })
+    if (!queued) allQueued = false
   }
   const target =
     params.members.find((row) => row.id === params.record.targetMemberId) ?? params.source
@@ -1200,14 +1206,16 @@ export async function enqueueSwitchoverAbortReactivation(
       engine: params.engine,
       phase: 'undrain',
     })
-    await enqueueCommand(db, commandQueue, {
+    const queued = await enqueueCommand(db, commandQueue, {
       serverId,
       type: 'managed.ha.failover',
       payload,
       expiresAtMs: FENCE_TTL_MS,
       actor: params.actor,
     })
+    if (!queued) allQueued = false
   })
+  return allQueued
 }
 
 const SWITCHOVER_PRIMARY_DID_NOT_ANSWER_MESSAGE =
@@ -1383,13 +1391,15 @@ export async function blockRecoveryNothingChanged(
   db: Db,
   recoveryId: string,
   reason: string,
-  stillApplies: (current: RecoveryRecord) => boolean = () => true
+  stillApplies: (current: RecoveryRecord) => boolean = () => true,
+  clearTarget = false
 ): Promise<RecoveryRecord | null> {
   const blocked = await updateRecoveryLocked(db, recoveryId, (current) =>
     isTerminalRecoveryState(current.state) || !stillApplies(current)
       ? null
       : {
           state: 'blocked',
+          ...(clearTarget ? { targetMemberId: null } : {}),
           metadata: { ...current.metadata, fenceCommandIds: [], blockedReason: reason },
         }
   )
@@ -1893,30 +1903,67 @@ async function expireStalledFence(
     return true
   }
 
-  const blocked = await blockRecoveryNothingChanged(
-    db,
-    row.id,
-    row.kind === 'automatic-failover'
-      ? automaticFailoverBlockedReason('unfenced')
-      : FENCE_TIMED_OUT_MESSAGE,
-    (current) => current.state === 'fencing' && !current.metadata.stopApplied
-  )
-  if (!blocked) return false
-  await cancelOpenFenceSteps(db, steps)
-  if (row.kind === 'switchover' && commandQueue) {
-    const members = await listManagedMembers(db, row.managedId)
-    const source = members.find((member) => member.id === row.sourcePrimaryMemberId)
-    if (source) {
-      await enqueueSwitchoverAbortReactivation(db, commandQueue, {
-        record: blocked,
-        engine,
-        actor,
-        source,
-        members,
-        reactivate: plan.stopDelivered,
-      })
-    }
+  const notFenced = (current: RecoveryRecord) =>
+    current.state === 'fencing' && !current.metadata.stopApplied
+  if (row.kind !== 'switchover') {
+    // Nothing was promoted, so the attempt must not start the cooldown that
+    // follows an accepted automatic failover: the row keeps no target.
+    const blocked = await blockRecoveryNothingChanged(
+      db,
+      row.id,
+      row.kind === 'automatic-failover'
+        ? automaticFailoverBlockedReason('unfenced')
+        : FENCE_TIMED_OUT_MESSAGE,
+      notFenced,
+      true
+    )
+    if (!blocked) return false
+    await cancelOpenFenceSteps(db, steps)
+    return true
   }
+
+  // Planned switchover: bring the old primary back first. Only once that is
+  // queued does the row end `blocked` (nothing changed); when it cannot be
+  // queued the operator has to look, and the sweep tries again meanwhile.
+  const members = await listManagedMembers(db, row.managedId)
+  const source = members.find((member) => member.id === row.sourcePrimaryMemberId)
+  const queued =
+    commandQueue && source
+      ? await enqueueSwitchoverAbortReactivation(db, commandQueue, {
+          record: row,
+          engine,
+          actor,
+          source,
+          members,
+          reactivate: plan.stopDelivered,
+        })
+      : false
+  if (queued) {
+    const blocked = await blockRecoveryNothingChanged(
+      db,
+      row.id,
+      FENCE_TIMED_OUT_MESSAGE,
+      notFenced
+    )
+    if (!blocked) return false
+    await cancelOpenFenceSteps(db, steps)
+    return true
+  }
+  const attempts = (row.metadata.fenceAbortAttempts ?? 0) + 1
+  if (commandQueue && source && attempts < FENCE_ABORT_MAX_ATTEMPTS) {
+    await updateRecoveryLocked(db, row.id, (current) =>
+      notFenced(current)
+        ? { metadata: { ...current.metadata, fenceAbortAttempts: attempts } }
+        : null
+    )
+    return true
+  }
+  const failed = await updateRecoveryLocked(db, row.id, (current) =>
+    notFenced(current) ? failedNeedsOperator(current, FENCE_ABORT_NOT_QUEUED_MESSAGE) : null
+  )
+  if (!failed) return false
+  await stampManagedReady(db, failed.managedId)
+  await cancelOpenFenceSteps(db, steps)
   return true
 }
 
