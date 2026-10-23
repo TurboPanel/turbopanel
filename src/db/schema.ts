@@ -174,7 +174,7 @@ export const tls = pgTable(
     certificatePem: text('certificate_pem'),
     /** Sealed `tpsecret` private key PEM; null while LE `pending` before keygen. */
     privateKeyPem: text('private_key_pem'),
-    /** `ready` | `pending` | `expired` | `failed` | `revoked` */
+    /** `ready` | `pending` | `expired` | `failed` | `revoked` | `managed` (Caddy ACME intent) */
     status: text().default('ready').notNull(),
     notAfter: timestamp('not_after', {
       precision: 3,
@@ -624,19 +624,15 @@ export const server = pgTable(
      * serializes as `connected`.
      */
     /**
-     * The tier this server is assigned from the organization's purchased
-     * quantities — **derived**, never chosen: recomputed by
-     * `src/features/tiers/assignment-records.ts` whenever seats, the self-hosted
-     * grant, or hardware change, and read on every ingest sample for the
-     * capability plan. Null on a server with no active license, and on a
-     * licensed server nothing entitled covers. Self-hosted is entitled by
-     * the SX grant, so the column is populated there too.
+     * The tier an organization manager assigned this server (license-tier
+     * route, or an owner-named upgrade or downgrade). On self-hosted, the top
+     * tier is filled into a licensed server that has none. Never recomputed;
+     * null until assigned.
      */
     assignedTierId: uuid('assigned_tier_id'),
     /**
-     * Operator-chosen floor for assignment: use a spare license at this tier
-     * or the smallest tier above before falling back to the derived smallest
-     * that fits. Null means derive only.
+     * Written in step with `assigned_tier_id` by the manager route, for the
+     * console's picked label; never read to place a server.
      */
     preferredTierId: uuid('preferred_tier_id'),
     isConnected: boolean('is_connected').default(false).notNull(),
@@ -741,6 +737,10 @@ export const server = pgTable(
     check(
       'server_machine_class_source_check',
       sql`machine_class_source IN ('detected', 'operator')`
+    ),
+    check(
+      'server_os_architecture_check',
+      sql`os_architecture IS NULL OR os_architecture IN ('x86_64', 'aarch64')`
     ),
     check('server_offline_reason_check', sql`offline_reason IN ('disconnect', 'sweep_stale')`),
     check(
