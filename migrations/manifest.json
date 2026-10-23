@@ -20,6 +20,12 @@
       "tag": "0002_backup_policy_database",
       "when": 1792604831497,
       "sha256": "3ca7c79d1c53d7f463e9ada8098b35c9072b26c3b00639eb505be0a8a9a52547"
+    },
+    {
+      "idx": 3,
+      "tag": "0003_datacenter_option_columns",
+      "when": 1792771432154,
+      "sha256": "223c1c997276dc609cbced7731bb4682f122998508ae82dcf78b162dee78f27c"
     }
   ]
 }

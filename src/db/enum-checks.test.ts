@@ -31,6 +31,10 @@ import {
   LOGIN_CONNECTION_ROLES,
   LOGIN_GRANT_MODES,
 } from '../features/managed/logins.ts'
+import {
+  DATACENTER_ADDRESS_PREFERENCES,
+  DATACENTER_KINDS,
+} from '../features/datacenters/datacenter-options.ts'
 import { PRINCIPAL_NAME_SCHEMES } from '../lib/principal-name-scheme.ts'
 import { SERVER_MACHINE_CLASS_SOURCES } from '../contracts/capability-plan.ts'
 import {
@@ -129,6 +133,8 @@ const CASES: Array<[constraint: string, values: readonly string[]]> = [
   ['login_grant_mode_check', LOGIN_GRANT_MODES],
   ['login_access_check', LOGIN_CONNECTION_ROLES],
   ['login_name_scheme_check', PRINCIPAL_NAME_SCHEMES],
+  ['datacenter_address_preference_check', DATACENTER_ADDRESS_PREFERENCES],
+  ['datacenter_kind_check', DATACENTER_KINDS],
 ]
 
 for (const [constraint, values] of CASES) {
