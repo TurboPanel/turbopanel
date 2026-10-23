@@ -2444,6 +2444,43 @@ it('validateDaemonInboundFrame checks managed-permissions-result', () => {
   assertEquals(accept({ ...base, permissions: { blob: 'x'.repeat(130 * 1024) } }), false)
 })
 
+it('server-network-check-result is allowed inbound; the request stays outbound-only', () => {
+  const allowed = DAEMON_INBOUND_ALLOWED as ReadonlySet<string>
+  assertEquals(allowed.has('server-network-check-result'), true)
+  assertEquals(allowed.has('server-network-check-request'), false)
+})
+
+it('validateDaemonInboundFrame checks server-network-check-result', () => {
+  const base = { type: 'server-network-check-result', id: 'req-1', ok: true, at: VALID_AT }
+  const entry = { peerServerId: 's2', address: '10.0.0.2', reachable: true }
+  const accept = (frame: Record<string, unknown>) =>
+    validateDaemonInboundFrame(JSON.stringify(frame)).ok
+  assertEquals(accept({ ...base, results: [entry] }), true)
+  assertEquals(
+    accept({ ...base, results: [{ ...entry, reachable: false, error: 'timeout' }] }),
+    true
+  )
+  assertEquals(accept({ ...base, ok: false, error: 'no targets' }), true)
+  assertEquals(accept({ ...base, results: 'nope' }), false)
+  assertEquals(accept({ ...base, results: [{ ...entry, reachable: 'yes' }] }), false)
+  assertEquals(accept({ ...base, results: [{ ...entry, latencyMs: -1 }] }), false)
+  assertEquals(accept({ ...base, results: Array.from({ length: 33 }, () => entry) }), false)
+})
+
+it('server-network-check-request is sent as a wire message with its targets', () => {
+  const targets = [{ peerServerId: 's2', address: '10.0.0.2', port: 22 }]
+  assertEquals(
+    outboundEnvelopeToWireMessage({
+      kind: 'server-network-check-request',
+      deliveryId: 'd1',
+      requestId: 'r1',
+      targets,
+      at: VALID_AT,
+    }),
+    { type: 'server-network-check-request', id: 'r1', targets, at: VALID_AT }
+  )
+})
+
 it('validateDaemonInboundFrame rejects malformed managed-health-result frames', () => {
   const base = {
     type: 'managed-health-result',

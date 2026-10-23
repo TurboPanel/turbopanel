@@ -179,3 +179,34 @@ test('mergeServerMetadataIdentity ignores a services value that is not a list', 
     null
   )
 })
+
+test('mergeServerMetadataIdentity: a capacity heartbeat keeps hello-only gpus and geo', () => {
+  const MIB = 1024 * 1024
+  const geo = { country: 'US' }
+  const gpus = [{ vendorId: '0x1002', name: 'Fixture Radeon' }]
+  const ips: ServerReportedIp[] = [{ address: '10.0.0.1', version: 4, scope: 'private' }]
+  const merged = mergeServerMetadataIdentity(
+    {
+      geo,
+      resources: {
+        gpus,
+        ips,
+        cpus: [{ cores: { total: 2 }, threads: { total: 2 } }],
+        memory: { totalBytes: 372 * MIB, presentBytes: 2048 * MIB, blockSizeBytes: 128 * MIB },
+      },
+    },
+    {
+      resources: {
+        memory: { totalBytes: 1900 * MIB, presentBytes: 2048 * MIB, blockSizeBytes: 128 * MIB },
+        swap: { totalBytes: 0 },
+        cpus: [{ cores: { total: 2 }, threads: { total: 2 } }],
+        dynamicMemory: { driver: 'hv_balloon', totalMoved: 1528 * MIB },
+      },
+    }
+  )
+  assertEquals(merged?.geo, geo)
+  assertEquals(merged?.resources?.gpus, gpus)
+  assertEquals(merged?.resources?.ips, ips)
+  assertEquals(merged?.resources?.memory?.totalBytes, 1900 * MIB)
+  assertEquals(merged?.resources?.dynamicMemory?.driver, 'hv_balloon')
+})
