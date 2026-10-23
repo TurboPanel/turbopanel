@@ -3,13 +3,7 @@
  * migrations and snapshots fail; journal and manifest may change.
  */
 import { assertEquals, assertStringIncludes } from '@std/assert'
-import {
-  BASELINE_EXCEPTION,
-  baselineExceptionApplies,
-  findViolations,
-  parseChanges,
-  resolveBase,
-} from './check-migration-additions.mjs'
+import { findViolations, parseChanges, resolveBase } from './check-migration-additions.mjs'
 
 /** Alias so Sonar recognizes the suite (see check-deploy-env.test.ts). */
 const test = Deno.test.bind(Deno)
@@ -176,50 +170,4 @@ test('script: a base whose manifest is not frozen fails instead of skipping', ()
   const result = guardAfter(addOne, { manifest: '{"frozen":false}' })
   assertEquals(result.code, 1)
   assertStringIncludes(result.out, 'not frozen')
-})
-
-const BASELINE_HEAD = { generation: 13, frozen: true }
-const BASELINE_JOURNAL = { entries: [{ idx: 0, tag: '0000_base' }] }
-
-test('the baseline exception passes exactly generation 12 to 13 with a one-entry journal', () => {
-  assertEquals(BASELINE_EXCEPTION.name, 'baseline-2026-10-22-owner-approved')
-  assertEquals(baselineExceptionApplies({ generation: 12 }, BASELINE_HEAD, BASELINE_JOURNAL), true)
-})
-
-test('the baseline exception refuses every other shape', () => {
-  // Wrong base generation (the fold already landed, or an older one).
-  assertEquals(baselineExceptionApplies({ generation: 13 }, BASELINE_HEAD, BASELINE_JOURNAL), false)
-  assertEquals(baselineExceptionApplies({ generation: 11 }, BASELINE_HEAD, BASELINE_JOURNAL), false)
-  // Head generation not bumped by exactly one, or not frozen.
-  assertEquals(
-    baselineExceptionApplies(
-      { generation: 12 },
-      { generation: 12, frozen: true },
-      BASELINE_JOURNAL
-    ),
-    false
-  )
-  assertEquals(
-    baselineExceptionApplies(
-      { generation: 12 },
-      { generation: 13, frozen: false },
-      BASELINE_JOURNAL
-    ),
-    false
-  )
-  // More than one journal entry: a migration slipped in beside the baseline.
-  assertEquals(
-    baselineExceptionApplies({ generation: 12 }, BASELINE_HEAD, {
-      entries: [...BASELINE_JOURNAL.entries, { idx: 1, tag: '0001_extra' }],
-    }),
-    false
-  )
-  // A different tag.
-  assertEquals(
-    baselineExceptionApplies({ generation: 12 }, BASELINE_HEAD, {
-      entries: [{ idx: 0, tag: '0000_other' }],
-    }),
-    false
-  )
-  assertEquals(baselineExceptionApplies(undefined, BASELINE_HEAD, BASELINE_JOURNAL), false)
 })
