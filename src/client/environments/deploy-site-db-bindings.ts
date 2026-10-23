@@ -63,18 +63,24 @@ export type SiteDbBindingsDeps = {
   ) => Promise<string | undefined>
 }
 
+/** Ids of the given services that have at least one hosting with a hostname. */
+export async function loadHostedServiceIds(
+  db: Db,
+  serviceIds: readonly string[]
+): Promise<Set<string>> {
+  if (serviceIds.length === 0) return new Set()
+  const rows = await db
+    .select({ serviceId: hosting.serviceId, options: hosting.options })
+    .from(hosting)
+    .where(inArray(hosting.serviceId, [...serviceIds]))
+  return new Set(
+    rows.filter((row) => readHostnames(row.options).length > 0).map((row) => row.serviceId)
+  )
+}
+
 const defaultDeps: SiteDbBindingsDeps = {
   loadNeeds: loadHostSiteBindingNeeds,
-  loadHostedServiceIds: async (db, serviceIds) => {
-    if (serviceIds.length === 0) return new Set()
-    const rows = await db
-      .select({ serviceId: hosting.serviceId, options: hosting.options })
-      .from(hosting)
-      .where(inArray(hosting.serviceId, [...serviceIds]))
-    return new Set(
-      rows.filter((row) => readHostnames(row.options).length > 0).map((r) => r.serviceId)
-    )
-  },
+  loadHostedServiceIds,
   loadCaPem: async (db, secrets, organizationId) => {
     const ca = await ensureActiveOrganizationCa(db, secrets, organizationId)
     return 'kind' in ca ? undefined : ca.trustBundlePem
