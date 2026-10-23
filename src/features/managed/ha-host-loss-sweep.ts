@@ -315,16 +315,19 @@ async function readEngineRounds(
   const sleep =
     deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)))
   const rounds: EngineReach[][] = []
-  for (let round = 0; round < HOST_LOSS_ENGINE_PROBE_ROUNDS; round++) {
-    if (round > 0) await sleep(HOST_LOSS_ENGINE_PROBE_GAP_MS)
-    rounds.push(
-      await Promise.all(
-        peers.map((peer) =>
-          deps.probeEngine({ peer, primary, engine }).catch((): EngineReach => 'unknown')
+  await forEachSequential(
+    Array.from({ length: HOST_LOSS_ENGINE_PROBE_ROUNDS }, (_, round) => round),
+    async (round) => {
+      if (round > 0) await sleep(HOST_LOSS_ENGINE_PROBE_GAP_MS)
+      rounds.push(
+        await Promise.all(
+          peers.map((peer) =>
+            deps.probeEngine({ peer, primary, engine }).catch((): EngineReach => 'unknown')
+          )
         )
       )
-    )
-  }
+    }
+  )
   return rounds
 }
 

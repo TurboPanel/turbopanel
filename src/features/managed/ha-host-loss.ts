@@ -308,12 +308,12 @@ export function classifyEngineReach(
 export function hostLossEngineVerdict(
   rounds: readonly (readonly EngineReach[])[]
 ): HostLossVerdict {
-  const all = rounds.flat()
-  if (all.includes('reachable')) return { action: 'alert', code: 'engine_reachable' }
+  const seen = new Set(rounds.flat())
+  if (seen.has('reachable')) return { action: 'alert', code: 'engine_reachable' }
   if (
     rounds.length < HOST_LOSS_ENGINE_PROBE_ROUNDS ||
     rounds.some((round) => round.length === 0) ||
-    all.includes('unknown')
+    seen.has('unknown')
   ) {
     return { action: 'alert', code: 'engine_unconfirmed' }
   }
