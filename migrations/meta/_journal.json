@@ -36,6 +36,13 @@
       "when": 1792773762483,
       "tag": "0004_datacenter_option_columns",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1792775914839,
+      "tag": "0005_server_peak",
+      "breakpoints": true
     }
   ]
 }

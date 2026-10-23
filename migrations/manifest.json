@@ -32,6 +32,12 @@
       "tag": "0004_datacenter_option_columns",
       "when": 1792773762483,
       "sha256": "223c1c997276dc609cbced7731bb4682f122998508ae82dcf78b162dee78f27c"
+    },
+    {
+      "idx": 5,
+      "tag": "0005_server_peak",
+      "when": 1792775914839,
+      "sha256": "46438c6a1c2a3555799b75b56c144c8464e2be5307a5d58c979c290298cc6dc7"
     }
   ]
 }
