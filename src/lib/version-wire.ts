@@ -195,6 +195,8 @@ export const DAEMON_WIRE_FEATURES = [
   'tls-capture-v1',
   'command-recovery-v1',
   'managed-switchover-final-position-v1',
+  'host-capacity-v1',
+  'server-network-check-v1',
 ] as const
 
 export type DaemonWireFeature = (typeof DAEMON_WIRE_FEATURES)[number]
@@ -234,6 +236,15 @@ export const COMMAND_RECOVERY_FEATURE: DaemonWireFeature = 'command-recovery-v1'
  */
 export const MANAGED_SWITCHOVER_FINAL_POSITION_FEATURE: DaemonWireFeature =
   'managed-switchover-final-position-v1'
+
+/**
+ * This control plane merges heartbeat `resources.{memory,swap,cpus}` without
+ * dropping hello-only fields, and parses the optional `memory.presentBytes`,
+ * `memory.blockSizeBytes` and `dynamicMemory`. The daemon re-sends memory and
+ * CPUs on a heartbeat after they move only when this is listed; hello always
+ * carries them, and `memory.totalBytes` still means MemTotal.
+ */
+export const HOST_CAPACITY_FEATURE: DaemonWireFeature = 'host-capacity-v1'
 
 /**
  * The daemon answers `managed-health-request` with `managed-health-result`
@@ -400,6 +411,14 @@ export const MANAGED_DATABASE_OWNER_FEATURE: DaemonWireFeature = 'managed-databa
  * `managed_database_convert_needs_daemon_update`.
  */
 export const MANAGED_DATABASE_CONVERT_FEATURE: DaemonWireFeature = 'managed-database-convert-v1'
+
+/**
+ * The daemon answers `server-network-check-request` with
+ * `server-network-check-result`: whether the host can open a TCP connection to
+ * each listed peer address, and from which local address. Without it the
+ * control plane never sends the message and the UI hides the check.
+ */
+export const SERVER_NETWORK_CHECK_FEATURE: DaemonWireFeature = 'server-network-check-v1'
 
 /** Features that need an instance at or above a semver. Empty until one lands. */
 export const INSTANCE_FEATURE_MIN_VERSIONS: Readonly<Record<string, string>> = {}

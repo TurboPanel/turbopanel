@@ -1,3 +1,4 @@
+import { MANAGED_APPLY_EXPIRES_MS } from '../managed/ingress-desired-pure.ts'
 import { assertEquals } from '@std/assert'
 import type { Context } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
@@ -194,6 +195,7 @@ test('enqueueIngressForBindingChange warns and skips ingress when managed.apply 
 
 test('enqueueIngressForBindingChange enqueues ingress after managed.apply succeeds', async () => {
   const ingressCalls: string[] = []
+  const waits: Array<number | undefined> = []
   const queue: CommandQueue = { enqueue: () => Promise.resolve() }
   const memberId = '00000000-0000-4000-8000-000000000020'
   const deps: BindingListenerEnqueueDeps = {
@@ -216,6 +218,7 @@ test('enqueueIngressForBindingChange enqueues ingress after managed.apply succee
       ]),
     enqueueManagedIngressReconcile: async (_db, _queue, params) => {
       ingressCalls.push(params.serverId)
+      waits.push(params.waitsBehindMs)
       return { ok: true, commandId: 'cmd-ingress', serverId: params.serverId }
     },
   }
@@ -236,6 +239,8 @@ test('enqueueIngressForBindingChange enqueues ingress after managed.apply succee
     ingressCalls.toSorted((a, b) => a.localeCompare(b)),
     [APP_SERVER_ID, DB_SERVER_ID].toSorted((a, b) => a.localeCompare(b))
   )
+  // The update waits behind the apply queued just before it (one command at a time).
+  assertEquals(waits, [MANAGED_APPLY_EXPIRES_MS, MANAGED_APPLY_EXPIRES_MS])
 })
 
 test('enqueueIngressForBindingChange warns when ingress reconcile fails after apply', async () => {
