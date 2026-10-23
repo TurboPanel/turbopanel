@@ -61,7 +61,7 @@ ALTER TABLE "managed" ADD CONSTRAINT "managed_backup_destination_check" CHECK (b
 COMMENT ON TABLE "shipment" IS 'How copying one backup to one target stands, as the host reported it; keyed by the engine and the daemon''s `bk_` id, cascades with the cluster.';--> statement-breakpoint
 COMMENT ON COLUMN "shipment"."managed_id" IS 'The cluster whose backup this is.';--> statement-breakpoint
 COMMENT ON COLUMN "shipment"."backup_id" IS 'The daemon-minted `bk_` id of the backup, matching `backup.backup_id`; kept as text so a report can land first.';--> statement-breakpoint
-COMMENT ON COLUMN "shipment"."destination_id" IS 'Target the copy went to, set null if the target is deleted.';--> statement-breakpoint
+COMMENT ON COLUMN "shipment"."destination_id" IS 'Destination the copy went to, set null if the destination is deleted.';--> statement-breakpoint
 COMMENT ON COLUMN "shipment"."destination_name" IS 'Name the target had when the copy was recorded, so a deleted target still reads in plain words.';--> statement-breakpoint
 COMMENT ON COLUMN "shipment"."state" IS 'One of `pending`, `copying`, `copied`, `failed` or `removed` (pruned from the bucket by retention).';--> statement-breakpoint
 COMMENT ON COLUMN "shipment"."error" IS 'A plain reason the copy failed; null otherwise.';--> statement-breakpoint
@@ -85,6 +85,6 @@ COMMENT ON COLUMN "destination"."last_tested_at" IS 'When the connection test la
 COMMENT ON COLUMN "destination"."is_last_test_ok" IS 'True when the last connection test passed, false when it failed; null before the first test.';--> statement-breakpoint
 COMMENT ON COLUMN "destination"."last_test_error" IS 'A plain reason the last connection test failed; null when it passed or was never run.';--> statement-breakpoint
 COMMENT ON COLUMN "destination"."created_by" IS 'User who created the target, set null if that user is deleted.';--> statement-breakpoint
-COMMENT ON COLUMN "managed"."backup_destination" IS 'This cluster''s own copy choice, which wins over the organization default: null follows the default, `none` turns copying off, otherwise a destination id (no foreign key; deleting a destination clears it).';--> statement-breakpoint
+COMMENT ON COLUMN "managed"."backup_destination" IS 'This cluster''s own copy choice: null follows the organization default, `none` turns copying off, otherwise a destination id.';--> statement-breakpoint
 COMMENT ON COLUMN "attempt"."payload" IS 'Rendered non-secret message as JSON: `event`, `severity`, `title`, `body`, `organizationId`, `organizationName`, `targetType`, `destinationId`, `context`, `at`.';--> statement-breakpoint
 COMMENT ON COLUMN "organization"."backup_destination_id" IS 'Destination finished backups are copied to unless a cluster chooses otherwise; null means no default copy. Set null if the destination is deleted.';

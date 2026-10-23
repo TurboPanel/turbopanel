@@ -476,7 +476,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'Dot-joined subject and verb from `AUDIT_ACTIONS` (such as `server.delete`, `grant.create`, `organization.acme.set`); a label only, not CHECKed so it can grow.',
       target_type:
         'What the action was done to: `organization`, `server`, `forge`, or the `entity_type` of the grant being created or deleted.',
-      destination_id:
+      target_id:
         'Id of the target row when there is one (server, forge, organization or grant entity); nullable and without an FK so the trail outlives the target.',
       context:
         'Small non-secret JSON facts kept beside the action, such as `purged`, `acmeEnabled`, `deployHooksEnabled` or the grant details; never a credential.',
@@ -1107,7 +1107,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       managed_id: 'The cluster whose backup this is.',
       backup_id:
         'The daemon-minted `bk_` id of the backup, matching `backup.backup_id`; kept as text so a report can land first.',
-      destination_id: 'Target the copy went to, set null if the target is deleted.',
+      destination_id: 'Destination the copy went to, set null if the destination is deleted.',
       destination_name:
         'Name the target had when the copy was recorded, so a deleted target still reads in plain words.',
       state:
@@ -1227,7 +1227,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       status:
         'Lifecycle state: `provisioning` at create, `applying` while a command is queued, then daemon-observed `ready`, `stopped` or `failed` projected by the consumer.',
       backup_destination:
-        "This cluster's own copy choice, which wins over the organization default: null follows the default, `none` turns copying off, otherwise a destination id (no foreign key; deleting a destination clears it).",
+        "This cluster's own copy choice: null follows the organization default, `none` turns copying off, otherwise a destination id.",
     },
   },
   recovery: {
@@ -1821,7 +1821,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       body: "Fuller sentence rendered from the catalogue's body template; NULL when the event defines none.",
       target_type:
         "Catalog entity kind the event is about (`server`, or a grant's entity type) so the bell can link to it; NULL when there is no target.",
-      destination_id:
+      target_id:
         'UUID of the `target_type` entity; not a foreign key, so it may outlive the entity.',
       context:
         'Small non-secret facts the sentence was rendered from, such as `serverName`, `lastSeenAt`, `count`, `actorEmail`, `permissionKey`, `subjectKind`, `subjectId`.',
