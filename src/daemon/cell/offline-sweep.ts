@@ -150,6 +150,7 @@ import {
 import { endOfflineSweep, tryBeginOfflineSweep } from './offline-sweep-lease.ts'
 import { resolveWorkersEmailQueue } from '../../features/email/mailgun/workers-queue.ts'
 import { resolveEmailSettings } from '../../features/settings/email-settings.ts'
+import { prunePeaks } from '../../features/servers/peak.ts'
 import { sweepTierNotices } from '../../features/tiers/tier-notice-sweep.ts'
 import { resolveBillingConfig } from '../../features/billing/config.ts'
 import { createStripeClient } from '../../features/billing/client.ts'
@@ -996,6 +997,23 @@ export async function sweepAuditHistorySafely(db: Db): Promise<void> {
 }
 
 /**
+ * Retention prune of `peak` buckets older than the 7-day grace window (see
+ * features/servers/peak.ts). Same 15-minute window and the same isolation.
+ */
+export async function sweepPeakHistorySafely(db: Db): Promise<void> {
+  try {
+    const deleted = await prunePeaks(db)
+    if (deleted > 0) {
+      sweepTrace('peak-history-swept', { deleted })
+    }
+  } catch (err) {
+    sweepTrace('peak-history-sweep-failed', {
+      error: sweepErrorMessage(err),
+    })
+  }
+}
+
+/**
  * Retention prune of aged terminal `command` rows (see features/commands/prune.ts).
  * Rides the same 15-minute window and is isolated so a failure never aborts the
  * other sweeps.
@@ -1336,6 +1354,7 @@ async function upgradePhaseWork(
     )
     await runWithDbTimeout(db, sweepCommandHistorySafely, capDbTimeout(deadlineMs))
     await runWithDbTimeout(db, sweepAuditHistorySafely, capDbTimeout(deadlineMs))
+    await runWithDbTimeout(db, sweepPeakHistorySafely, capDbTimeout(deadlineMs))
   }
   if (shouldRunUpgradeTick(scheduledTime, upgradeTickMinutes)) {
     await runUpgradeMaintenanceSafely(db, env)

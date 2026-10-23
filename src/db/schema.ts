@@ -2823,6 +2823,62 @@ export const monitor = pgTable(
 )
 
 /**
+ * Highest RAM and CPU readings of one server per hour. The over-tier rules judge
+ * a server on the highest reading of the last 7 days, so ballooning memory or a
+ * hot-added core never flips the verdict on one low sample. One row per
+ * (server, hour); an upsert only ever raises the stored figures. Rows older
+ * than the grace window are pruned by the 15-minute cron
+ * (`features/servers/peak.ts`).
+ */
+export const peak = pgTable(
+  'peak',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .$onUpdate(() => sql`now()`)
+      .notNull(),
+    serverId: uuid('server_id').notNull(),
+    /** Start of the UTC hour these readings cover (aligned by the writer). */
+    bucket: timestamp('bucket', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }).notNull(),
+    /** Highest total RAM in bytes read in the hour; NULL when none was read. */
+    memoryBytes: bigint('memory_bytes', { mode: 'number' }),
+    /** Highest physical core count read in the hour; NULL when none was read. */
+    cores: integer('cores'),
+  },
+  (table) => [
+    uniqueIndex('uniq_peak_server_bucket').on(table.serverId, table.bucket),
+    index('idx_peak_bucket').on(table.bucket),
+    foreignKey({
+      columns: [table.serverId],
+      foreignColumns: [server.id],
+      name: 'peak_server_id_server_id_fk',
+    }).onDelete('cascade'),
+    check('peak_memory_bytes_check', sql`memory_bytes >= 0`),
+    check('peak_cores_check', sql`cores >= 0`),
+    check('peak_reading_check', sql`memory_bytes IS NOT NULL OR cores IS NOT NULL`),
+  ]
+)
+
+/**
  * Durable HA journal for one managed cluster. At most one in-flight recovery
  * per `managed_id` (partial unique on non-terminal states). Member ids are
  * stored without a node FK so deleting a member cannot block the journal.

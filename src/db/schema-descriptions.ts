@@ -1454,6 +1454,21 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'Password sealed with the data-encryption key (`ENVELOPE_PREFIX_SECRET` prefix); resealed to a `tpdaemon` envelope per recipient at send time.',
     },
   },
+  peak: {
+    group: 'runtime',
+    summary:
+      'Highest RAM and physical core readings of one server per UTC hour; the over-tier rules judge a server on the highest reading of the last 7 days.',
+    columns: {
+      server_id:
+        'Owning server; ON DELETE CASCADE so a deleted host leaves no readings, and (server_id, bucket) is UNIQUE so an upsert only raises the hour.',
+      bucket:
+        'Start of the UTC hour the readings cover, aligned by the writer; rows older than the 7-day grace window are pruned by the 15-minute cron.',
+      memory_bytes:
+        'Highest total RAM in bytes read in the hour; NULL when none was read, never negative.',
+      cores:
+        'Highest physical core count read in the hour; NULL when none was read, never negative.',
+    },
+  },
   server: {
     group: 'runtime',
     summary:

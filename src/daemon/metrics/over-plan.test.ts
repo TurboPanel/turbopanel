@@ -1,7 +1,7 @@
 import { assertEquals } from '@std/assert'
 import { it } from '@std/testing/bdd'
 import type { ServerHostResources } from '../../features/servers/server-metadata.ts'
-import { evaluateOverPlan, isOverPlan } from './over-plan.ts'
+import { evaluateOverPlan, evaluateOverPlanFromPeak, isOverPlan } from './over-plan.ts'
 
 const GIB = 1024 ** 3
 
@@ -41,4 +41,15 @@ it('no tier means nothing to judge, and unknown hardware is never over plan', ()
 
 it('the unbounded custom tier is never over plan', () => {
   assertEquals(isOverPlan(evaluateOverPlan(8, withRam(sockets(512), 4096))), false)
+})
+
+it('the grace-window peak decides: a high reading flags, no reading never does', () => {
+  assertEquals(evaluateOverPlanFromPeak(1, { memoryBytes: 64 * GIB, cores: 4 }), {
+    memory: true,
+    cpu: false,
+  })
+  assertEquals(evaluateOverPlanFromPeak(1, { memoryBytes: 8 * GIB, cores: 6 })?.cpu, true)
+  assertEquals(isOverPlan(evaluateOverPlanFromPeak(1, { memoryBytes: 8 * GIB, cores: 4 })), false)
+  assertEquals(isOverPlan(evaluateOverPlanFromPeak(1, null)), false)
+  assertEquals(evaluateOverPlanFromPeak(null, { memoryBytes: 64 * GIB, cores: 64 }), null)
 })

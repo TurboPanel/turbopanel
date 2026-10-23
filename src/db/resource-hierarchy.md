@@ -44,6 +44,7 @@ organization → tag                             (org-owned tag definition)
 organization → tag → marker → server | workspace | project | environment | service | datacenter | storage
 environment → service → task                   (scheduled command; cron text stored verbatim)
 organization → server → container
+organization → server → peak (1:N, one row per UTC hour: highest RAM and physical cores; 7-day window, cascade delete)
 organization → server → variable (1:N, server-scoped; excluded from inheritance chain)
 ```
 
