@@ -53,11 +53,6 @@ export const DEPLOY_TIMEOUT_MIN_MINUTES = 5
 export const DEPLOY_TIMEOUT_MAX_MINUTES = 240
 
 export type OrganizationOptions = {
-  /**
-   * The longest a deploy may run, in minutes, counted only while the server
-   * reports (`command-recovery-v1`). Omitted → 30. Bounded 5 to 240.
-   */
-  deployTimeoutMinutes?: number
   /** Org-wide default timezone applied when a server has no override. */
   defaultServerTimezone?: string
   /**
@@ -395,8 +390,6 @@ export function parseOrganizationOptions(value: unknown): OrganizationOptions {
   assignComposeDefaultResourceLimits(options, value)
   assignPhpModes(options, value)
   assignDirectoryNames(options, value)
-  const deployTimeoutMinutes = parseDeployTimeoutMinutes(value.deployTimeoutMinutes)
-  if (deployTimeoutMinutes !== undefined) options.deployTimeoutMinutes = deployTimeoutMinutes
   return options
 }
 
@@ -408,11 +401,14 @@ export function parseDeployTimeoutMinutes(value: unknown): number | undefined {
     : undefined
 }
 
-/** Effective deploy time limit in milliseconds: the organization's setting, or 30 minutes. */
-export function resolveDeployTimeoutMs(options: OrganizationOptions): number {
-  return options.deployTimeoutMinutes === undefined
-    ? DEPLOY_DEFAULT_TIMEOUT_MS
-    : options.deployTimeoutMinutes * 60_000
+/**
+ * Effective deploy time limit in milliseconds from the stored
+ * `organization.deploy_timeout_minutes`: the setting, or 30 minutes when it is
+ * null or (defensively) outside 5 to 240 whole minutes.
+ */
+export function resolveDeployTimeoutMs(minutes: unknown): number {
+  const valid = parseDeployTimeoutMinutes(minutes)
+  return valid === undefined ? DEPLOY_DEFAULT_TIMEOUT_MS : valid * 60_000
 }
 
 function assignDirectoryNames(

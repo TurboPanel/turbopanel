@@ -791,8 +791,10 @@ CREATE TABLE "organization" (
 	"options" jsonb,
 	"name" text,
 	"next_linux_id" integer DEFAULT 30001 NOT NULL,
+	"deploy_timeout_minutes" integer,
 	"backup_destination_id" uuid,
-	CONSTRAINT "organization_next_linux_id_check" CHECK ("organization"."next_linux_id" >= 30001 AND "organization"."next_linux_id" <= 60001)
+	CONSTRAINT "organization_next_linux_id_check" CHECK ("organization"."next_linux_id" >= 30001 AND "organization"."next_linux_id" <= 60001),
+	CONSTRAINT "organization_deploy_timeout_minutes_check" CHECK ("organization"."deploy_timeout_minutes" IS NULL OR ("organization"."deploy_timeout_minutes" >= 5 AND "organization"."deploy_timeout_minutes" <= 240))
 );
 --> statement-breakpoint
 CREATE TABLE "passkey" (
@@ -885,9 +887,18 @@ CREATE TABLE "project" (
 	"default_server_id" uuid,
 	"kind" text,
 	"icon" text,
+	"template_code" text,
+	"template_track" text,
+	"template_version" text,
+	"template_digest" text,
 	CONSTRAINT "uniq_project_organization_slug" UNIQUE("organization_id","slug"),
 	CONSTRAINT "project_slug_check" CHECK (slug ~ '^[a-z0-9][a-z0-9-]{0,39}$'),
 	CONSTRAINT "project_kind_check" CHECK (kind IS NULL OR kind IN ('compose', 'managed', 'system')),
+	CONSTRAINT "project_template_stamp_check" CHECK ((template_code IS NULL AND template_track IS NULL AND template_version IS NULL AND template_digest IS NULL) OR (template_code IS NOT NULL AND template_track IS NOT NULL AND template_version IS NOT NULL AND template_digest IS NOT NULL)),
+	CONSTRAINT "project_template_code_check" CHECK (template_code IS NULL OR template_code ~ '^[a-z][a-z0-9-]{0,63}$'),
+	CONSTRAINT "project_template_track_check" CHECK (template_track IS NULL OR template_track ~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$'),
+	CONSTRAINT "project_template_version_check" CHECK (template_version IS NULL OR template_version ~ '^[0-9]+[.][0-9]+[.][0-9]+$'),
+	CONSTRAINT "project_template_digest_check" CHECK (template_digest IS NULL OR template_digest ~ '^sha256:[0-9a-f]{64}$'),
 	CONSTRAINT "project_icon_check" CHECK (icon IS NULL OR icon IN ('cube', 'globe', 'cart', 'bolt', 'chat', 'chart', 'code', 'book', 'layers', 'mail', 'rocket', 'image'))
 );
 --> statement-breakpoint
@@ -1058,6 +1069,7 @@ CREATE TABLE "server" (
 	"daemon_built_at" timestamp(3) with time zone,
 	"daemon_update_status" text,
 	"external_access_pending_at" timestamp(3) with time zone,
+	"preferred_datacenter_id" uuid,
 	CONSTRAINT "uniq_server_machine_key" UNIQUE("machine_key"),
 	CONSTRAINT "server_machine_class_check" CHECK ("server"."machine_class" IN ('physical', 'virtual')),
 	CONSTRAINT "server_machine_class_source_check" CHECK (machine_class_source IN ('detected', 'operator')),
@@ -1625,6 +1637,7 @@ ALTER TABLE "secret" ADD CONSTRAINT "secret_principal_id_principal_id_fk" FOREIG
 ALTER TABLE "server" ADD CONSTRAINT "server_organization_id_organization_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organization"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "server" ADD CONSTRAINT "server_assigned_tier_id_tier_id_fk" FOREIGN KEY ("assigned_tier_id") REFERENCES "public"."tier"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "server" ADD CONSTRAINT "server_preferred_tier_id_tier_id_fk" FOREIGN KEY ("preferred_tier_id") REFERENCES "public"."tier"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "server" ADD CONSTRAINT "server_preferred_datacenter_id_datacenter_id_fk" FOREIGN KEY ("preferred_datacenter_id") REFERENCES "public"."datacenter"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "service" ADD CONSTRAINT "service_environment_id_environment_id_fk" FOREIGN KEY ("environment_id") REFERENCES "public"."environment"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "session" ADD CONSTRAINT "session_user_id_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."user"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "share" ADD CONSTRAINT "share_environment_id_environment_id_fk" FOREIGN KEY ("environment_id") REFERENCES "public"."environment"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
@@ -1856,6 +1869,7 @@ CREATE INDEX "idx_server_offline" ON "server" USING btree ("status_changed_at" D
 CREATE INDEX "idx_server_updating" ON "server" USING btree ("id") WHERE "server"."daemon_update_status" = 'updating';--> statement-breakpoint
 CREATE INDEX "idx_server_assigned_tier_id" ON "server" USING btree ("assigned_tier_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_server_preferred_tier_id" ON "server" USING btree ("preferred_tier_id" uuid_ops);--> statement-breakpoint
+CREATE INDEX "idx_server_preferred_datacenter_id" ON "server" USING btree ("preferred_datacenter_id" uuid_ops);--> statement-breakpoint
 CREATE UNIQUE INDEX "uniq_service_environment_compose_name" ON "service" USING btree ("environment_id","compose_service_name");--> statement-breakpoint
 CREATE UNIQUE INDEX "uniq_service_environment_slug" ON "service" USING btree ("environment_id","slug") WHERE slug IS NOT NULL;--> statement-breakpoint
 CREATE INDEX "idx_session_user_id" ON "session" USING btree ("user_id" uuid_ops);--> statement-breakpoint
@@ -2333,6 +2347,7 @@ COMMENT ON TABLE "organization" IS 'Tenant organization; one is created by the i
 COMMENT ON COLUMN "organization"."options" IS 'Org-wide settings merged key-by-key by the organization routes (`defaultServerTimezone`, `maxServers`, `acmeEnabled`, `managedDatabase`, `phpModes` and more).';--> statement-breakpoint
 COMMENT ON COLUMN "organization"."name" IS 'Display name; sign-up uses `you@example.com''s organization` from email, else `My Organization` if missing, blank, or label invalid; install Root Organization.';--> statement-breakpoint
 COMMENT ON COLUMN "organization"."next_linux_id" IS 'Next uid/gid for a Hosting Account on servers this organization owns; starts at 30001, rises by one per new account, never reused.';--> statement-breakpoint
+COMMENT ON COLUMN "organization"."deploy_timeout_minutes" IS 'The longest a deploy may run, in whole minutes from 5 to 240, counted only while the server reports; null means the default of 30.';--> statement-breakpoint
 COMMENT ON COLUMN "organization"."backup_destination_id" IS 'Destination finished backups are copied to unless a cluster chooses otherwise; null means no default copy. Set null if the destination is deleted.';--> statement-breakpoint
 COMMENT ON TABLE "passkey" IS 'One WebAuthn credential registered by a user (several per user allowed), unique by `credential_id`; inserted at registration, updated on each passkey sign-in.';--> statement-breakpoint
 COMMENT ON COLUMN "passkey"."aaguid" IS 'Authenticator model AAGUID decoded from the attestation as a dashed lowercase UUID string; identifies the make, not the individual key.';--> statement-breakpoint
@@ -2381,6 +2396,10 @@ COMMENT ON COLUMN "project"."slug" IS 'Short name taken from the project name, u
 COMMENT ON COLUMN "project"."default_server_id" IS 'Default placement server: an environment with no `server_id` of its own inherits it; set null when the server is deleted (API field `options.defaultServerId`).';--> statement-breakpoint
 COMMENT ON COLUMN "project"."kind" IS 'What the project is: `compose` (a template too), `managed` or platform-only `system`; NULL while a draft that has not chosen yet.';--> statement-breakpoint
 COMMENT ON COLUMN "project"."icon" IS 'Icon key from the fixed list the project screens offer; NULL means the default, and a managed project ignores it.';--> statement-breakpoint
+COMMENT ON COLUMN "project"."template_code" IS 'Catalog code of the template the project was created from; NULL when not from a template. The four template columns are set together or all NULL.';--> statement-breakpoint
+COMMENT ON COLUMN "project"."template_track" IS 'Software release line of the template the project was created from, such as `6.8`; NULL when not from a template.';--> statement-breakpoint
+COMMENT ON COLUMN "project"."template_version" IS 'Packaging version (`major.minor.patch`) of the template the project was created from; NULL when not from a template.';--> statement-breakpoint
+COMMENT ON COLUMN "project"."template_digest" IS 'Content digest (`sha256:` plus 64 hex digits) of the exact template version the project was created from; NULL when not from a template.';--> statement-breakpoint
 COMMENT ON TABLE "recovery" IS 'Durable HA journal entry for one managed cluster recovery (failover, switchover or DR); at most one non-terminal row per managed_id, written by the HA flow.';--> statement-breakpoint
 COMMENT ON COLUMN "recovery"."metadata" IS 'Fencing and progress facts: `fencingEpoch`, `fenceCommandIds`, `promoteCommandId`, `haPresent`, `fenced`, `drainApplied`, `lagBytes`, `blockedReason`.';--> statement-breakpoint
 COMMENT ON COLUMN "recovery"."kind" IS '`automatic-failover`, `switchover` (planned promotion of a failover replica) or `disaster-recovery` (promotion of a remote read replica).';--> statement-breakpoint
@@ -2476,6 +2495,7 @@ COMMENT ON COLUMN "server"."daemon_commit" IS 'Commit of the daemon build runnin
 COMMENT ON COLUMN "server"."daemon_built_at" IS 'Build time of the daemon build running on the host.';--> statement-breakpoint
 COMMENT ON COLUMN "server"."daemon_update_status" IS 'Daemon self-update state: `idle`, `updating`, `done`, `failed` or `expired`; NULL until the host reports one.';--> statement-breakpoint
 COMMENT ON COLUMN "server"."external_access_pending_at" IS 'When the host was last asked to change database external access and has not confirmed; a sweep re-sends it while set.';--> statement-breakpoint
+COMMENT ON COLUMN "server"."preferred_datacenter_id" IS 'The datacenter whose network this server prefers when it belongs to several; NULL means no preference; set null when the datacenter is deleted.';--> statement-breakpoint
 COMMENT ON TABLE "service" IS 'One deployable unit (a compose service) within an environment; rows are derived from the compose document by reconcile, managed allocation or daemon reports.';--> statement-breakpoint
 COMMENT ON COLUMN "service"."metadata" IS 'Client jsonb for non-indexed facts plus the daemon-detected `app` fact; promoted identity keys are stripped on write and the compose name never lives here.';--> statement-breakpoint
 COMMENT ON COLUMN "service"."options" IS 'Validated per-service settings jsonb: `instances`, `build`, `operations`, `healthCheck`, `resources`, plus deploy hooks when the organization enables them.';--> statement-breakpoint
@@ -2682,3 +2702,4 @@ COMMENT ON TABLE "workspace" IS 'Grouping of projects inside one organization; o
 COMMENT ON COLUMN "workspace"."name" IS 'Display label under `workspace_name_format_check` (letters, digits, space, `._-`), unique per organization at the API; ''TurboPanel'' is reserved from first boot.';--> statement-breakpoint
 COMMENT ON COLUMN "workspace"."description" IS 'Optional free-text description written by the client API; no format CHECK, app-side length cap only.';--> statement-breakpoint
 COMMENT ON COLUMN "workspace"."kind" IS 'Workspace discriminator: `user` (default, operator-created) or `turbopanel` (the single machine workspace per organization, provisioned at install).';
+
