@@ -1,15 +1,15 @@
 /**
  * How a principal reaches its own account over SSH.
  *
- * **One field, not two.** The access level is not stored; it is *encoded* by
- * `options.shell`, which already exists, is already an allowlist, and is
- * already re-validated daemon-side before it reaches `useradd -s`. A separate
- * `options.access` would be a second source of truth that can disagree with the
- * first, and the disagreement would be invisible until someone could not log
- * in — the worst possible time to discover it.
+ * **One field, not two.** The level is stored in `principal.access` (a CHECKed
+ * column) and nothing else. The shell the host sees is *derived* from it by
+ * {@link shellForAccessLevel} when a deploy is prepared, so the two cannot
+ * disagree: a stored shell beside a stored level would be a second source of
+ * truth, and the disagreement would be invisible until someone could not log
+ * in. A create request may still name an allowlisted `shell`; it is read once
+ * through {@link accessLevelForShell} and never stored.
  *
- * The mapping is total in both directions, which is what makes the encoding
- * safe rather than cute:
+ * The mapping is total in both directions:
  *
  * | level   | shell                          | result                       |
  * | ------- | ------------------------------ | ---------------------------- |

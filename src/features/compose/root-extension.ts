@@ -130,7 +130,7 @@ export const ROOT_KEY_REDIRECTS: Readonly<Record<string, string>> = {
   home:
     "home is not authored in compose; the daemon derives a principal's home directory (turbopaneld ensure-principal.ts)",
   shell:
-    "shell is not authored in compose; the access level is encoded by principal.options.shell",
+    "shell is not authored in compose; the access level lives in principal.access",
   password:
     "password is not authored in compose; principal credentials live on the ssh table",
   authorized_keys:

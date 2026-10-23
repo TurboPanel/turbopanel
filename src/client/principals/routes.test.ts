@@ -26,7 +26,6 @@ import {
 } from '../../db/schema.ts'
 import { WORKSPACE_KIND_TURBOPANEL } from '../../db/workspace-kind.ts'
 import { principalHomeDir } from '../../lib/naming.ts'
-import { DEFAULT_PRINCIPAL_SHELL } from '../../features/principals/principal-options.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 import { registerOrganizationPrincipalDefaultsRoutes } from '../organizations/principal-defaults-routes.ts'
 import { registerOrganizationRoutes } from '../organizations/routes.ts'
@@ -246,6 +245,7 @@ test('POST /projects/:projectId/principals persists default shell when options o
     const [row] = await db
       .select({
         options: principal.options,
+        access: principal.access,
         metadata: principal.metadata,
         username: principal.username,
         appliedUsername: principal.appliedUsername,
@@ -253,7 +253,8 @@ test('POST /projects/:projectId/principals persists default shell when options o
       .from(principal)
       .where(eq(principal.id, body.id))
       .limit(1)
-    assertEquals(row?.options, { shell: DEFAULT_PRINCIPAL_SHELL, nameScheme: 'partial' })
+    assertEquals(row?.options, { nameScheme: 'partial' })
+    assertEquals(row?.access, 'sftp')
     assertEquals(row?.username, 'appuser')
     assertEquals(row?.appliedUsername, body.appliedUsername)
     // Home follows the applied login — that's the account on the host.
@@ -1123,7 +1124,7 @@ test('POST principals: each scheme derives the system name on the server and kee
     const row = await storedPrincipal(db, random.id)
     assertEquals(row?.username, 'randone')
     assertEquals(row?.appliedUsername, random.appliedUsername)
-    assertEquals(row?.options, { shell: DEFAULT_PRINCIPAL_SHELL, nameScheme: 'random' })
+    assertEquals(row?.options, { nameScheme: 'random' })
     assertEquals(row?.metadata, { home: principalHomeDir(random.appliedUsername) })
 
     // The list route reports both names and the scheme.

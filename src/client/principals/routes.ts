@@ -16,6 +16,7 @@ import {
 } from '../../lib/principal-name-scheme.ts'
 import { loadPrincipalNamePolicy } from '../../features/managed/load-org-defaults.ts'
 import { deriveFreeSystemName } from '../../features/principals/system-name.ts'
+import type { PrincipalAccessLevel } from '../../features/principals/principal-access.ts'
 import type { PrincipalOptionsPersisted } from '../../features/principals/principal-options.ts'
 import {
   assertCanManageOr403,
@@ -103,6 +104,7 @@ type ParsedCreateProjectPrincipal = {
   /** Raw client `nameScheme`; resolved against the org policy at insert. */
   requestedScheme: unknown
   options: PrincipalOptionsPersisted
+  access: PrincipalAccessLevel
   override: { uid: number; gid: number } | null
   serviceIds: string[]
 }
@@ -146,6 +148,7 @@ async function parseCreateProjectPrincipalRequest(
     username,
     requestedScheme: body.nameScheme,
     options: parsedOptions.options,
+    access: parsedOptions.access,
     override: parsedOptions.override,
     serviceIds,
   }
@@ -208,6 +211,7 @@ async function insertProjectPrincipal(
         projectId,
         metadata,
         options: { ...input.options, nameScheme },
+        access: input.access,
       })
       .returning({ id: principal.id })
 
@@ -259,6 +263,7 @@ export function registerProjectPrincipalRoutes(router: Hono<AppEnv>, opts: AuthR
         projectId: principal.projectId,
         metadata: principal.metadata,
         options: principal.options,
+        access: principal.access,
         createdAt: principal.createdAt,
         updatedAt: principal.updatedAt,
       })
@@ -360,8 +365,8 @@ export function registerProjectPrincipalRoutes(router: Hono<AppEnv>, opts: AuthR
 
     // Absent means "leave it alone"; a value sets it. Rejected rather than
     // dropped, so an operator cannot believe they suspended a live account.
-    const accessShell = parseAccessField(body)
-    if (accessShell === null) {
+    const accessLevel = parseAccessField(body)
+    if (accessLevel === null) {
       return c.json({ error: 'invalid_access' }, 400)
     }
 
@@ -376,19 +381,10 @@ export function registerProjectPrincipalRoutes(router: Hono<AppEnv>, opts: AuthR
 
     await db.transaction(async (tx) => {
       if (patchesStewards) await replaceTenancies(tx, id, serviceIds)
-      const options =
-        accessShell === undefined
-          ? {}
-          : {
-              options: {
-                ...optionsRecordFromJsonb(row.options),
-                shell: accessShell,
-              },
-            }
       await tx
         .update(principal)
         .set({
-          ...options,
+          ...(accessLevel === undefined ? {} : { access: accessLevel }),
           updatedAt: new Date().toISOString(),
         })
         .where(eq(principal.id, id))
@@ -398,7 +394,7 @@ export function registerProjectPrincipalRoutes(router: Hono<AppEnv>, opts: AuthR
     // that only lands in the database has not actually happened yet. Revoking
     // in particular must not wait for a deploy.
     const reconciled =
-      accessShell !== undefined
+      accessLevel !== undefined
         ? await reconcilePrincipalAccess(
             db,
             getCommandQueue(c),

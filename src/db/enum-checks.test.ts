@@ -45,6 +45,7 @@ import {
   FIREWALL_SOURCE_KINDS,
   FIREWALL_STATES,
 } from '../features/firewall/vocabulary.ts'
+import { PRINCIPAL_ACCESS_LEVELS } from '../features/principals/principal-access.ts'
 import { PLACEMENT_SOURCES, PLACEMENT_STATES } from '../features/principals/placement-vocabulary.ts'
 import { FOLDER_KINDS, FOLDER_STATES } from '../features/folders/vocabulary.ts'
 import { LEAF_STALE_CAUSES, LEAF_STATES } from '../features/tls/leaf-vocabulary.ts'
@@ -129,6 +130,7 @@ const CASES: Array<[constraint: string, values: readonly string[]]> = [
   ['login_grant_mode_check', LOGIN_GRANT_MODES],
   ['login_access_check', LOGIN_CONNECTION_ROLES],
   ['login_name_scheme_check', PRINCIPAL_NAME_SCHEMES],
+  ['principal_access_check', PRINCIPAL_ACCESS_LEVELS],
 ]
 
 for (const [constraint, values] of CASES) {

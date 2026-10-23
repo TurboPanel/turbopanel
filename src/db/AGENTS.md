@@ -674,7 +674,7 @@ keyed off the **service** UUID, not the container row), Docker volume names
 principal UUID), the reserved-only DNS shape (`serviceDnsName`), and the
 reserved `TURBOPANEL_*` deploy variable keys (`RESERVED_DEPLOY_VARIABLE_KEYS`).
 Option parsers (`project-options.ts` `containerNaming`, `service-options.ts`
-`instances`, `principal-options.ts` `shell` + optional `uid`/`gid` override)
+`instances`, `principal-options.ts` optional `uid`/`gid` override)
 feed those helpers; deploy-prepare owns allocation (`uuid` mode ignores authored
 compose `container_name`; `custom` still reads them), multi-instance expansion,
 compose-volume registration, and compose emission via `apply-service-options.ts`
