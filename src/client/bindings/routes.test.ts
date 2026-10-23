@@ -237,7 +237,8 @@ async function withBindingFixtures(
       name: 'Binding Route Managed Project',
       workspaceId,
       organizationId,
-      metadata: { type: 'managed', code: 'postgres' },
+      kind: 'managed',
+      metadata: { code: 'postgres' },
     })
     .returning({ id: project.id })
 
@@ -297,7 +298,7 @@ async function withBindingFixtures(
       name: 'Binding Route Consumer Project',
       workspaceId,
       organizationId,
-      metadata: { type: 'docker-compose' },
+      kind: 'compose',
     })
     .returning({ id: project.id })
 
@@ -760,7 +761,8 @@ test('GET /bindings managedEnvironmentId returns empty when cluster has no princ
         name: 'Lonely Managed',
         workspaceId: ws!.id,
         organizationId,
-        metadata: { type: 'managed', code: 'postgres' },
+        kind: 'managed',
+        metadata: { code: 'postgres' },
       })
       .returning({ id: project.id })
     const [lonelyEnv] = await db

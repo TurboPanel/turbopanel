@@ -44,6 +44,12 @@
       "tag": "0006_principal_access",
       "when": 1792777978929,
       "sha256": "4f86b3d65624c93ce7e04239394de0d36eee4363fd2c211dc470d87988f9455d"
+    },
+    {
+      "idx": 7,
+      "tag": "0007_server_peak",
+      "when": 1792779015336,
+      "sha256": "46438c6a1c2a3555799b75b56c144c8464e2be5307a5d58c979c290298cc6dc7"
     }
   ]
 }

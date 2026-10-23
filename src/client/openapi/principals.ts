@@ -44,6 +44,12 @@ export const principalSchemas = {
       projectId: { type: ['string', 'null'] },
       metadata: { type: 'object', nullable: true },
       options: { type: 'object', nullable: true },
+      access: {
+        type: 'string',
+        enum: ['none', 'sftp', 'shell'],
+        description:
+          'Stored SSH access level: none (no login, keys stay on file), sftp (file transfer only) or shell (interactive shell plus transfer).',
+      },
       serviceIds: {
         type: 'array',
         items: { type: 'string', format: 'uuid' },
@@ -315,7 +321,8 @@ export const principalPaths = {
                 },
                 options: {
                   type: 'object',
-                  description: 'Optional shell and other principal options',
+                  description:
+                    'Optional principal options; `shell` (allowlisted) is accepted and stored as the access level',
                 },
                 uid: {
                   type: 'integer',

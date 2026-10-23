@@ -5,10 +5,7 @@ import {
   MAX_SUFFIXED_PRINCIPAL_USERNAME_LENGTH,
   principalHomeDir,
 } from '../../lib/naming.ts'
-import {
-  type PrincipalAccessLevel,
-  shellForAccessLevel,
-} from '../../features/principals/principal-access.ts'
+import type { PrincipalAccessLevel } from '../../features/principals/principal-access.ts'
 import { loadPrincipalNamePolicy } from '../../features/managed/load-org-defaults.ts'
 import { isManagedLoginNameTaken } from '../../features/managed/logins.ts'
 import type { PrincipalNameScheme } from '../../lib/principal-name-scheme.ts'
@@ -262,7 +259,7 @@ export async function createPrincipal(
  */
 export const COMPOSE_ALIAS_METADATA_KEY = 'composeAlias'
 
-/** How a compose `access:` level maps onto the stored shell encoding. */
+/** How a compose `access:` level maps onto the stored access level. */
 const ACCESS_LEVEL_FOR_COMPOSE: Readonly<Record<'none' | 'sftp' | 'ssh', PrincipalAccessLevel>> = {
   none: 'none',
   sftp: 'sftp',
@@ -308,7 +305,7 @@ export type EnsureComposePrincipalInput = {
   projectId: string
   /** Alias as declared in the document's root `x-turbopanel.principals`. */
   alias: string
-  /** Requested access level from the alias entry. Seeds the shell on create. */
+  /** Requested access level from the alias entry. Seeds the access level on create. */
   access?: 'none' | 'sftp' | 'ssh'
 }
 
@@ -320,8 +317,8 @@ export type EnsureComposePrincipalInput = {
  * run this on every deploy: the second call finds the row the first minted
  * instead of piling up an account per deploy.
  *
- * **Create-only for `options`.** The requested `access` seeds the shell when
- * the row is minted and is never re-applied: `principal.options` is the single
+ * **Create-only for `access`.** The requested `access` seeds the level when
+ * the row is minted and is never re-applied: `principal.access` is the single
  * source of truth for what the host does, an operator may legitimately raise or
  * suspend access from the UI afterwards, and a reconcile that re-asserted the
  * document would silently undo that. Compose declares that an account *exists*;
@@ -374,10 +371,8 @@ export async function ensureComposePrincipal(
           home: principalHomeDir(appliedUsername),
           [COMPOSE_ALIAS_METADATA_KEY]: input.alias,
         },
-        options: {
-          shell: shellForAccessLevel(ACCESS_LEVEL_FOR_COMPOSE[input.access ?? 'none']),
-          nameScheme,
-        },
+        access: ACCESS_LEVEL_FOR_COMPOSE[input.access ?? 'none'],
+        options: { nameScheme },
       })
       .returning({ id: principal.id })
 

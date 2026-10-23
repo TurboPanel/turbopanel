@@ -145,7 +145,8 @@ async function withSingleClusterIngressFixture(
       name: 'Ingress Desired Project',
       workspaceId,
       organizationId,
-      metadata: { type: 'managed', code: 'postgres' },
+      kind: 'managed',
+      metadata: { code: 'postgres' },
     })
     .returning({ id: project.id })
   const projectId = insertedProject!.id

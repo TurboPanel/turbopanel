@@ -204,7 +204,8 @@ async function withBindingReachabilityFixture(
       name: 'Binding Endpoint Project',
       workspaceId,
       organizationId,
-      metadata: { type: 'managed', code: 'postgres' },
+      kind: 'managed',
+      metadata: { code: 'postgres' },
     })
     .returning({ id: project.id })
   const projectId = insertedProject!.id
@@ -248,7 +249,7 @@ async function withBindingReachabilityFixture(
       name: 'Binding Endpoint Consumer Project',
       workspaceId,
       organizationId,
-      metadata: { type: 'docker-compose' },
+      kind: 'compose',
     })
     .returning({ id: project.id })
   const consumerProjectId = consumerProject!.id
