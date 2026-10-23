@@ -165,9 +165,9 @@ test('pickMostAdvancedStandby takes the highest received LSN, then the lowest or
   assertEquals(pickMostAdvancedStandby([]), null)
 })
 
-test('failureStartedAtMs refuses a span older than 10 minutes (an old incident)', () => {
-  assertEquals(failureStartedAtMs({ spanMs: 10 * 60_000 }, 1_000_000), 400_000)
-  assertEquals(failureStartedAtMs({ spanMs: 11 * 60_000 }, 1_000_000), null)
+test('failureStartedAtMs refuses a span older than the cap (an old incident)', () => {
+  assertEquals(failureStartedAtMs({ spanMs: 20 * 60_000 }, 1_300_000), 100_000)
+  assertEquals(failureStartedAtMs({ spanMs: 21 * 60_000 }, 1_300_000), null)
 })
 
 function mysqlReplica(overrides: Partial<ManagedReplicationHealth> = {}): ManagedReplicationHealth {

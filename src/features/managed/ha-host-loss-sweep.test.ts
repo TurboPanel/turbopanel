@@ -266,7 +266,7 @@ test('an offline primary past the cutoff is listed with its incident facts; a fr
   })
 })
 
-test('a primary whose daemon socket closed is not a candidate; only a stale-sweep mark is', async () => {
+test('a primary whose daemon socket closed is a candidate with its mark reason; an unreadable mark is not', async () => {
   await withPair(async (c) => {
     const cutoffIso = new Date(Date.now() - 120_000).toISOString()
     const mark = async (reason: 'disconnect' | 'sweep_stale' | null) => {
@@ -281,11 +281,11 @@ test('a primary whose daemon socket closed is not a candidate; only a stale-swee
         cutoffIso,
         limit: 1000,
       })
-      return ours(rows, c.managedId).length
+      return ours(rows, c.managedId).map((row) => row.markReason)
     }
-    assertEquals(await mark('disconnect'), 0)
-    assertEquals(await mark(null), 0)
-    assertEquals(await mark('sweep_stale'), 1)
+    assertEquals(await mark('disconnect'), ['disconnect'])
+    assertEquals(await mark(null), [])
+    assertEquals(await mark('sweep_stale'), ['sweep_stale'])
   })
 })
 
@@ -329,6 +329,8 @@ test('the sweep end to end on real queries: a confirmed lost host starts the fai
     const outcomes = await runHostLossSweep(c.db, {
       commandQueue: null,
       autoFailover: 'on',
+      probeEngine: () => Promise.resolve('unreachable' as const),
+      sleep: () => Promise.resolve(),
       probeStandby: () =>
         Promise.resolve({
           state: 'stopped',
@@ -505,6 +507,8 @@ test('power cut, failover, power back: the old primary is fenced, never started,
     const sweepDeps = {
       commandQueue: queue,
       autoFailover: 'on' as const,
+      probeEngine: () => Promise.resolve('unreachable' as const),
+      sleep: () => Promise.resolve(),
       probeStandby: stopped,
       windowMs: 120_000,
       loaders: {
@@ -657,6 +661,8 @@ test('a blip: the host answers again before the window ends, so the next tick fi
       runHostLossSweep(c.db, {
         commandQueue: queue,
         autoFailover: 'on',
+        probeEngine: () => Promise.resolve('unreachable' as const),
+        sleep: () => Promise.resolve(),
         probeStandby: (target) => {
           probes.push(target.memberId)
           return Promise.resolve(null)
@@ -693,6 +699,8 @@ test('with the switch off the loss is an alert row and nothing else', async () =
     const outcomes = await runHostLossSweep(c.db, {
       commandQueue: queue,
       autoFailover: 'off',
+      probeEngine: () => Promise.resolve('unreachable' as const),
+      sleep: () => Promise.resolve(),
       probeStandby: () =>
         Promise.resolve({
           state: 'stopped',

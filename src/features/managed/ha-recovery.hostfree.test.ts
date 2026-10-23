@@ -1117,6 +1117,38 @@ test('beginAutomaticFailover inside the cooldown records a visible terminal row 
   assertEquals(harness.commandInserts.length, 0)
 })
 
+test('beginAutomaticFailover is retried once the cooldown has ended: the previous failover no longer blocks', async () => {
+  const previous = recoveryRow({
+    state: 'completed',
+    targetMemberId: MEM_REPLICA,
+    startedAt: new Date(Date.now() - 15 * 60_000 - 5_000).toISOString(),
+  })
+  const harness = createHarness({ recoveryReads: [[], [previous]] })
+  const row = await beginAutomaticFailover({
+    db: harness.db,
+    commandQueue: okQueue(),
+    managedId: MANAGED_ID,
+    engine: 'postgres',
+    members: [member(), failoverReplica()],
+    actor: ACTOR,
+  })
+  assertEquals(row?.metadata.blockedReason === AUTOMATIC_FAILOVER_COOLDOWN_MESSAGE, false)
+})
+
+test('beginAutomaticFailover with no previous failover has no cooldown at all', async () => {
+  // In-flight read: nothing. Cooldown read: no accepted failover in the journal.
+  const harness = createHarness({ recoveryReads: [[], []] })
+  const row = await beginAutomaticFailover({
+    db: harness.db,
+    commandQueue: okQueue(),
+    managedId: MANAGED_ID,
+    engine: 'postgres',
+    members: [member(), failoverReplica()],
+    actor: ACTOR,
+  })
+  assertEquals(row?.metadata.blockedReason === AUTOMATIC_FAILOVER_COOLDOWN_MESSAGE, false)
+})
+
 test('beginOperatorSwitchover fences a reachable primary', async () => {
   const queue = okQueue()
   const harness = createHarness({ connected: [true, true] })
