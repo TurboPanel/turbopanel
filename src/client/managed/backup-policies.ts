@@ -42,6 +42,7 @@ import {
 import { isSystemBackupDatabase } from '../../features/managed/default-backup-database.ts'
 import { loadManagedDatabases } from '../../features/managed/options.ts'
 import { MAX_BACKUP_POLICY_RETENTION_KEEP } from '../../features/backups/vocabulary.ts'
+import { copyDepsOf } from '../backup-copy-deps.ts'
 
 const MAX_POLICY_NAME_LENGTH = 64
 const DEFAULT_RUNS_PAGE = 20
@@ -254,7 +255,8 @@ async function pushPolicySet(
     scope.db,
     c.get('commandQueue'),
     { actorType: 'user', actorId: scope.auth.userId },
-    [scope.serverId]
+    [scope.serverId],
+    copyDepsOf(c)
   )
 }
 

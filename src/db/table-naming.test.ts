@@ -50,6 +50,8 @@ const APPROVED_TABLE_NAMES = new Set<string>([
   'datacenter',
   'delivery',
   'deployment',
+  // An organization's S3-compatible place to copy finished backups to.
+  'destination',
   'dispatch',
   'edict',
   'environment',
@@ -93,6 +95,8 @@ const APPROVED_TABLE_NAMES = new Set<string>([
   'seat',
   'scope',
   'secret',
+  // How one backup's copy to one destination stands.
+  'shipment',
   'server',
   'service',
   'session',

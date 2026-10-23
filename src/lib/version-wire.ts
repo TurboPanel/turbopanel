@@ -197,6 +197,7 @@ export const DAEMON_WIRE_FEATURES = [
   'managed-switchover-final-position-v1',
   'host-capacity-v1',
   'server-network-check-v1',
+  'backup-s3-copy-v1',
 ] as const
 
 export type DaemonWireFeature = (typeof DAEMON_WIRE_FEATURES)[number]
@@ -213,6 +214,14 @@ export const SEALED_INSTANCE_SECRETS_FEATURE: DaemonWireFeature = 'sealed-instan
  * `POST /api/daemon/v1/tls/issued`, and this control plane stores them sealed.
  * The daemon sends nothing until this control plane lists the feature.
  */
+/**
+ * The daemon copies finished managed backups to an S3-compatible bucket, tests
+ * a target (`server.backups.test-target`) and restores from a bucket. This
+ * control plane sends a target only to a daemon that lists the feature, and the
+ * daemon sends `backup-copy-report` only to a control plane that lists it.
+ */
+export const BACKUP_S3_COPY_FEATURE: DaemonWireFeature = 'backup-s3-copy-v1'
+
 export const TLS_CAPTURE_FEATURE: DaemonWireFeature = 'tls-capture-v1'
 
 /**

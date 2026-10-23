@@ -411,6 +411,7 @@ test('refuseRestoreIfBackupOnOtherServer returns 409 backup_on_other_server', as
   assertEquals(await refused.json(), {
     error: 'backup_on_other_server',
     message: backupOnOtherServerMessage('Former Primary'),
+    canRestoreFromCopy: false,
   })
 })
 

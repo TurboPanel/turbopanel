@@ -56,6 +56,12 @@
       "tag": "0008_login_recipe_sources",
       "when": 1792782918180,
       "sha256": "84b18c180fb97ba413bd7210d3e330b2e2f8e20543d00ed15edebb9184099542"
+    },
+    {
+      "idx": 9,
+      "tag": "0009_backup_copy_tables",
+      "when": 1792785838307,
+      "sha256": "59bead1f8a165d307dba33a8f30ed00f516a0b84eb9072931c581c6b6ef02407"
     }
   ]
 }

@@ -1127,7 +1127,14 @@ async function runQueuedCronSweeps(
     // Backup policy sets after a reconnect; isolated so a failure never
     // aborts the other sweeps.
     try {
-      await runBackupsReconcileSweep(db, commandQueue)
+      await runBackupsReconcileSweep(db, commandQueue, {
+        copyDeps: tlsRenewal
+          ? {
+              secretsConfig: tlsRenewal.secretsConfig,
+              dataEncryptionSecrets: tlsRenewal.dataEncryptionSecrets,
+            }
+          : undefined,
+      })
     } catch (err) {
       sweepTrace('backups-reconcile-sweep-failed', {
         error: sweepErrorMessage(err),

@@ -64,6 +64,13 @@
       "when": 1792782918180,
       "tag": "0008_login_recipe_sources",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1792785838307,
+      "tag": "0009_backup_copy_tables",
+      "breakpoints": true
     }
   ]
 }

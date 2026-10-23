@@ -290,6 +290,7 @@ export function managedSessionPaths(): string[] {
     '/environments/:id/managed/backup-policies',
     '/environments/:id/managed/backup-policies/:policyId',
     '/environments/:id/managed/backup-policies/:policyId/runs',
+    '/environments/:id/managed/backup-target',
     '/environments/:id/managed/members',
     '/environments/:id/managed/members/:memberId',
     '/environments/:id/managed/members/:memberId/promote',
