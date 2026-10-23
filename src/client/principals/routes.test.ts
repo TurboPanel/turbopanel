@@ -680,6 +680,52 @@ test('PATCH /projects/:projectId/principals/:id updates serviceIds', async () =>
   )
 })
 
+test('PATCH /projects/:projectId/principals/:id writes the access column and rejects bad levels', async () => {
+  await withPrincipalFixtures(async ({ app, db, secrets, userId, organizationId, projectId }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const headers = {
+      Cookie: cookie,
+      [ORG_ID_HEADER]: organizationId,
+      'Content-Type': 'application/json',
+    }
+    const create = await app.request(`/projects/${projectId}/principals`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ username: 'accessme' }),
+    })
+    assertEquals(create.status, 200)
+    const created = (await create.json()) as { id: string }
+    const stored = async () => {
+      const [row] = await db
+        .select({ access: principal.access, options: principal.options })
+        .from(principal)
+        .where(eq(principal.id, created.id))
+      return row
+    }
+    assertEquals((await stored())?.access, 'sftp')
+
+    for (const access of ['shell', 'none']) {
+      const patch = await app.request(`/projects/${projectId}/principals/${created.id}`, {
+        method: 'PATCH',
+        headers,
+        body: JSON.stringify({ access }),
+      })
+      assertEquals(patch.status, 200)
+      assertEquals((await stored())?.access, access)
+    }
+    assertEquals('shell' in ((await stored())?.options as Record<string, unknown>), false)
+
+    const bad = await app.request(`/projects/${projectId}/principals/${created.id}`, {
+      method: 'PATCH',
+      headers,
+      body: JSON.stringify({ access: '/bin/bash' }),
+    })
+    assertEquals(bad.status, 400)
+    assertEquals(((await bad.json()) as { error: string }).error, 'invalid_access')
+    assertEquals((await stored())?.access, 'none')
+  })
+})
+
 test('PATCH /projects/:projectId/principals/:id requires serviceIds field', async () => {
   await withPrincipalFixtures(async ({ app, db, secrets, userId, organizationId, projectId }) => {
     const cookie = await sessionCookie(db, secrets, userId)
