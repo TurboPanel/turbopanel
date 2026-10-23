@@ -227,8 +227,8 @@ async function withFixture(fn: (fixture: Fixture) => Promise<void>): Promise<voi
     })
   } finally {
     await db.delete(audit).where(inArray(audit.organizationId, [orgA, orgB]))
+    await db.delete(server).where(inArray(server.organizationId, [orgA, orgB]))
     await db.delete(organization).where(inArray(organization.id, [orgA, orgB]))
-    await db.delete(server).where(eq(server.organizationId, orgA))
     if (userIds.length > 0) await db.delete(user).where(inArray(user.id, userIds))
     await endDbConnection(db)
   }

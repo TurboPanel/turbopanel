@@ -1441,6 +1441,7 @@ test('POST restore 409s when the artifact is on a former primary, and does not f
         )
         assertEquals(restore.status, 409)
         assertEquals(await restore.json(), {
+          canRestoreFromCopy: false,
           error: 'backup_on_other_server',
           message:
             'This backup is stored on Former Primary (it was the primary when the backup ran). It can only be restored on that server. Take a new backup on the current primary, or switch back first.',
