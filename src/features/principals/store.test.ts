@@ -350,7 +350,8 @@ test('isManagedUsernameTaken scopes by server-owning org not create chain', asyn
       name: 'p',
       workspaceId: ws!.id,
       organizationId: organizationIdA,
-      metadata: { type: 'managed', code: 'postgres' },
+      kind: 'managed',
+      metadata: { code: 'postgres' },
     })
     .returning({ id: project.id })
   const [env] = await db
@@ -430,7 +431,8 @@ test('resolveManagedAppliedUsername suffixes when short name taken', async () =>
       name: 'p',
       workspaceId: ws!.id,
       organizationId,
-      metadata: { type: 'managed', code: 'postgres' },
+      kind: 'managed',
+      metadata: { code: 'postgres' },
     })
     .returning({ id: project.id })
   const [env] = await db

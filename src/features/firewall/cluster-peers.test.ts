@@ -88,7 +88,8 @@ async function withCluster(
         name: 'Cluster Peer Project',
         workspaceId,
         organizationId,
-        metadata: { type: 'managed', code: 'postgres' },
+        kind: 'managed',
+        metadata: { code: 'postgres' },
       })
       .returning({ id: project.id })
     const [env] = await db

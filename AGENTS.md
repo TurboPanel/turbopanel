@@ -1388,7 +1388,7 @@ src/
   org check (`403` `system_resource_immutable`); that guard keys on **workspace
   kind**, never on project type. Client workspace responses include
   `workspace.kind` (`user` \| `turbopanel`; `WORKSPACE_KIND_SYSTEM` is only a
-  deprecated alias). `project.metadata.type = 'system'` is a
+  deprecated alias). `project.kind = 'system'` is a
   presentation/classification stamp only — never an authorization source.
 - `src/daemon/` — control-plane side of `/api/daemon/v1` + `/ws/daemon/v1`
   (see `src/daemon/AGENTS.md`). Cell protocol types live in `src/contracts/`;
