@@ -358,16 +358,9 @@ async function parseCreateProjectInput(
   )
   if (defaultServerError) return defaultServerError
 
-  const metadataResult = parseCreateProjectMetadata(body)
-  if (!metadataResult.ok) {
-    return c.json({ error: metadataResult.error }, metadataResult.status)
-  }
-  const { metadata } = metadataResult
-
-  const iconResult = parseProjectIconField(body)
-  if (!iconResult.ok) {
-    return c.json({ error: iconResult.error }, iconResult.status)
-  }
+  const extras = parseCreateProjectExtras(c, body, projectType)
+  if (extras instanceof Response) return extras
+  const { metadata, icon } = extras
 
   const serverId = await resolveServerIdForCreate(c, db, body, organizationId)
   if (serverId instanceof Response) return serverId
@@ -394,10 +387,30 @@ async function parseCreateProjectInput(
     catalogEntry,
     options: optionsResult.options,
     metadata,
-    // A managed project always shows the managed icon, so none is stored.
-    icon: projectType === 'managed' ? null : (iconResult.icon ?? null),
+    icon,
     serverId,
     defaultEnvironmentName,
+  }
+}
+
+/** Caller metadata and the optional icon of a create request. */
+function parseCreateProjectExtras(
+  c: Context<AppEnv>,
+  body: Record<string, unknown>,
+  projectType: ResolvedCreateProjectType
+): { metadata: Record<string, unknown> | null; icon: string | null } | Response {
+  const metadataResult = parseCreateProjectMetadata(body)
+  if (!metadataResult.ok) {
+    return c.json({ error: metadataResult.error }, metadataResult.status)
+  }
+  const iconResult = parseProjectIconField(body)
+  if (!iconResult.ok) {
+    return c.json({ error: iconResult.error }, iconResult.status)
+  }
+  return {
+    metadata: metadataResult.metadata,
+    // A managed project always shows the managed icon, so none is stored.
+    icon: projectType === 'managed' ? null : (iconResult.icon ?? null),
   }
 }
 
