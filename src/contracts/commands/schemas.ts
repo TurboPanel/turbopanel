@@ -5696,6 +5696,13 @@ export type ManagedLifecyclePayload = {
   switchoverRecoveryId?: string
   primaryEpoch?: number
   reactivateAfterSwitchoverAbort?: boolean
+  /**
+   * With `reactivateAfterSwitchoverAbort`: the control plane confirms that no
+   * promote was ever queued or started on the target, so bringing the old
+   * primary back cannot make two writers. Without it the daemon refuses the
+   * reactivation.
+   */
+  switchoverAbortPromoteSafe?: boolean
 }
 
 export type ManagedLifecycleCommandResult = {
@@ -6968,6 +6975,9 @@ export function parseManagedLifecyclePayload(value: unknown): ManagedLifecyclePa
   }
   if (parseOptionalLifecycleTrueOnly(value.reactivateAfterSwitchoverAbort)) {
     payload.reactivateAfterSwitchoverAbort = true
+  }
+  if (parseOptionalLifecycleTrueOnly(value.switchoverAbortPromoteSafe)) {
+    payload.switchoverAbortPromoteSafe = true
   }
   applyLifecycleFinalPositionFields(payload, value)
   return payload

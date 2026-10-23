@@ -1211,7 +1211,8 @@ running…`) is **queued again** by `resumeInterruptedPromote`
    failing the row would leave no writer until an operator repaired it.
    Anything else (other errors, a limit reached, no queue) ends the row `failed`
    as before.
-9. Safety net: the stale sweep (Deno cleanup lane and the Workers
+9. Fence deadline (`ha-fence-deadline.ts`, `sweepStalledFencing` in `ha-recovery.ts`, run by the same stale sweep before `expireStaleRecoveries`): a row that has been `fencing` for `FENCE_DEADLINE_MS` (150 s from `fencingEpoch`) is settled instead of waiting for a command budget. Stop confirmed: the drains still pending are cancelled and settled as failed, so the row goes on exactly as if they had failed (the stop is the fence, a drain only moves traffic). Stop not confirmed: terminal `blocked` (never promote), the open fence commands are cancelled, and a planned switchover also sends the undrain and, when its stop may have reached the server, the abort reactivation (`switchoverAbortPromoteSafe: true`, which the daemon requires; it is sent only where no promote was queued or the target itself reported that promotion never started). Drains and fence stops carry a 3 minute lifetime (`FENCE_STEP_TTL_MS`) so a late one is refused, and a drain/undrain is waited for at most 60 s (`FENCE_DRAIN_WAIT_MS`, not the 10 minute recover budget). An unanswered promote (`promote_unconfirmed`) never reactivates the old primary. An aborted switchover ends `blocked`, not `failed` + `needsOperator`, because nothing changed and a held-back reboot of the primary's host (`ha-return-fence.ts`) must not follow it. A new switchover can start at once after any of these.
+10. Safety net: the stale sweep (Deno cleanup lane and the Workers
    offline-sweep cron) runs `expireStaleRecoveries`: a `detecting`/`fencing`
    row older than `STALE_DETECTING_RECOVERY_MS` (10 min) with no command
    recorded expires to `blocked`; any other in-flight row with no update for

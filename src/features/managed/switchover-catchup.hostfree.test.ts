@@ -97,10 +97,18 @@ test('switchoverPromoteFailureShouldReactivateOldPrimary covers pre-writable fai
   assertEquals(switchoverPromoteFailureShouldReactivateOldPrimary(null), false)
 })
 
+test('an unanswered promote is not a reason to bring the old primary back', () => {
+  assertEquals(
+    parseSwitchoverPromoteFailureCode(switchoverPromoteTimedOutCommandError('command timed out')),
+    'promote_unconfirmed'
+  )
+  assertEquals(switchoverPromoteFailureShouldReactivateOldPrimary('promote_unconfirmed'), false)
+})
+
 test('switchoverPromoteTimedOutCommandError prefixes stale-sweep timeouts for the promote path', () => {
   assertEquals(
     switchoverPromoteTimedOutCommandError('command timed out'),
-    'switchover_promote:gtid_wait_timeout: command timed out'
+    'switchover_promote:promote_unconfirmed: command timed out'
   )
 })
 
@@ -119,7 +127,7 @@ test('failover recover payload and abort lifecycle carry switchover GTID fields'
       managedId: 'm',
       memberId: 's',
       engine: 'mariadb',
-    }).reactivateAfterSwitchoverAbort,
+    }).switchoverAbortPromoteSafe,
     true
   )
 })
