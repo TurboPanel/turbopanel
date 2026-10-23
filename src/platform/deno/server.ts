@@ -54,6 +54,7 @@ import { registerWebhookRoutes } from '../../webhook/routes.ts'
 import { runManagedExternalAccessPendingSweep } from '../../features/managed/external-access.ts'
 import { runManagedIngressOrphanSweep } from '../../features/managed/ingress-desired.ts'
 import { runDatacenterRepinFanoutSweep } from '../../client/datacenters/repin-fanout.ts'
+import { runNetworkProbeSweep } from '../../client/datacenters/network-probe-sweep.ts'
 import { runSystemReconcileSweep } from '../../features/system/reconcile.ts'
 import { runHostLossTick } from '../../daemon/cell/host-loss-tick.ts'
 import { runBackupsReconcileSweep } from '../../features/backups/reconcile.ts'
@@ -692,6 +693,12 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
       dataEncryptionSecrets,
     }).catch((err) => {
       logWarn('daemon-cell', `datacenter repin fan-out sweep error: ${String(err)}`)
+    })
+    // Automatic network fallback: probe the network that carries
+    // server-to-server traffic and mark servers nobody can reach. Throttled
+    // inside, so extra ticks (every reconnect) cost nothing.
+    void runNetworkProbeSweep(db, daemonCellRegistry).catch((err) => {
+      logWarn('daemon-cell', `network probe sweep error: ${String(err)}`)
     })
     // Backup policy sets once after each reconnect (hello must not enqueue).
     void runBackupsReconcileSweep(db, commandQueue).catch((err) => {
