@@ -727,11 +727,12 @@ test('POST /projects/:id/configure reuses scaffolded env when org default change
     assertEquals(envs[0]!.name, 'staging')
 
     const [projectRow] = await db
-      .select({ metadata: project.metadata })
+      .select({ kind: project.kind, metadata: project.metadata })
       .from(project)
       .where(eq(project.id, id))
       .limit(1)
-    assertEquals(projectRow?.metadata, { type: 'managed', code: 'postgres' })
+    assertEquals(projectRow?.kind, 'managed')
+    assertEquals(projectRow?.metadata, { code: 'postgres' })
 
     const vars = await db
       .select({ key: variable.key })
