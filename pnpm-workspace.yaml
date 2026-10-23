@@ -28,5 +28,7 @@ overrides:
   source-map-js: 1.2.2
   # GHSA-587h-7wmj-h5pm and two related advisories: vite <= 6.4.3 bundles a vulnerable dev-server editor opener (Windows only); force the fixed release.
   vite: 6.4.4
+  # GHSA-mrhx-c7xc-m3w5: vitest-pool-workers pins zod 4.4.3 exactly (memory exhaustion on oversized collections); force the patched release.
+  zod: 4.6.6
 patchedDependencies:
   postgres@3.4.9: patches/postgres@3.4.9.patch
