@@ -708,9 +708,11 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
     summary:
       'One engine role on one managed cluster; not a principal, which is only a site owner Linux user; written by the managed users API.',
     columns: {
+      metadata:
+        'Internal bookkeeping jsonb; the grant ledger (grants the panel applied) will live here. Nothing writes it yet.',
       principal_id:
         'Site owner Linux user the login shares its name with, cascade-deleted with it; NULL for a login made on its own and for the root and replication logins.',
-      role: '`root` for the cluster admin login, `replication` for the member-to-member login, `user` for an operator-created login.',
+      role: '`root` is the cluster admin, `replication` the member-to-member login, `user` an operator login, `backup` the one login that takes backups.',
       username:
         'Name the customer typed; equals `applied_username` for `plain` names and for the root and replication logins.',
       applied_username:
@@ -720,11 +722,15 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       password:
         'Write-only credential sealed as a `tpsecret` envelope, never returned on GET and resealed to `tpdaemon` for delivery.',
       grant_mode:
-        'Who sets the permissions on reconcile: `preset` (logins from before modes), `recipe` (the panel) or `self` (the owner by hand, never reset).',
+        'Who sets the permissions on reconcile: `recipe` (the panel, from the named `recipe`) or `self` (the owner by hand, never reset).',
+      recipe:
+        'The permission set the panel applies when `grant_mode` is `recipe`: `app`, `migrations`, `read-only`, `analyst`, `admin` or `backup`; NULL for `self`.',
+      is_all_databases:
+        'True for a reader of every database on the cluster, current and future; false means only the databases in `scope`.',
       is_tool:
         'True for a database-tool login: the daemon sends all of its traffic to the primary and adds no read/write split rules (API field `tool`).',
       allowed_sources:
-        'Places the login may connect from (`internal`, `server:` plus an id, `address:` plus a value); NULL means anywhere (API field `allowedSources`).',
+        'Where the login may connect from (`internal`, `server:` and id, `address:` and an IP or range); never empty; anywhere is `address:0.0.0.0/0` and `address:::/0`.',
       max_connections:
         'Per-login cap on open connections, at least 1; NULL means no cap (API field `maxConnections`).',
       is_straight_through:

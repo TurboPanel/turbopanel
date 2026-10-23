@@ -910,6 +910,7 @@ async function withManagedDestroyFixtures(
     const [rootLoginRow] = await db
       .insert(login)
       .values({
+        recipe: 'app',
         managedId,
         role: 'root',
         username: 'postgres',

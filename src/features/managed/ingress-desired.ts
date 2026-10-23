@@ -61,7 +61,7 @@ import { hasRemoteConsumerServers } from '../bindings/remote-consumers.ts'
 import { loadBoundManagedIdsForServer } from './ingress-bound-consumers.ts'
 import { loadManagedExternalAccess } from './external-access.ts'
 import { loadOrganizationRootAllowedSources } from './root-login-sources.ts'
-import { loginSourceServerIds, loginWireLimits } from './login-sources.ts'
+import { loginSourceServerIds, loginSourcesFromStored, loginWireLimits } from './login-sources.ts'
 import { loadServerAddressMap } from './login-sources-load.ts'
 import { materializeBindingsForManaged } from '../bindings/materialize.ts'
 import { loginDatabaseNames } from './logins.ts'
@@ -270,7 +270,7 @@ async function loadClusterUsersForManagedIds(
   )
   const serverAddresses = await loadServerAddressMap(
     db,
-    rows.flatMap((row) => loginSourceServerIds(row.allowedSources ?? undefined))
+    rows.flatMap((row) => loginSourceServerIds(loginSourcesFromStored(row.allowedSources)))
   )
 
   const failure = await firstSequential(rows, async (row) => {
@@ -305,7 +305,7 @@ async function loadClusterUsersForManagedIds(
         role: user.role,
         privileges: row.privileges ?? [],
         connectionRole: row.access,
-        allowedSources: row.allowedSources ?? undefined,
+        allowedSources: loginSourcesFromStored(row.allowedSources),
         straightThrough: row.isStraightThrough ?? undefined,
       }).value
     ) {
@@ -318,7 +318,7 @@ async function loadClusterUsersForManagedIds(
     else {
       const limits = loginWireLimits(
         {
-          allowedSources: row.allowedSources?.length ? row.allowedSources : undefined,
+          allowedSources: loginSourcesFromStored(row.allowedSources),
           maxConnections: row.maxConnections ?? undefined,
         },
         {

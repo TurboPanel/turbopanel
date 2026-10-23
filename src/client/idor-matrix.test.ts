@@ -347,6 +347,7 @@ async function seedOrganizationB(
     db
       .insert(login)
       .values({
+        recipe: 'app',
         managedId: ids.managedId,
         role: 'user',
         username: n('l'),

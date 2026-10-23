@@ -2,7 +2,7 @@ const ALLOWED_SOURCES_SCHEMA = {
   type: 'array',
   items: { type: 'string' },
   description:
-    "Where the login may be used from. Items: `any` (alone: everywhere, the default), `internal` (this server: its own programs and containers; anything arriving as the Docker gateway address counts as local), `server:<id>` (one of the organization's servers, all its addresses), `address:<ip | prefix% | cidr>` (one address, a prefix such as `203.0.113.%` or `2001:db8:1:%`, or a range that can be said exactly: IPv4 /8, /16, /24 or /32, IPv6 whole 16-bit groups /16 to /112; other ranges answer 400 `managed_login_source_range_not_exact`). The login still signs in from anywhere: the database proxy refuses every query from other addresses, so tools may show an empty page. An empty list answers 400 `managed_login_sources_empty`. Needs a server daemon that supports it (409 `managed_login_limits_need_daemon_update`). Other 400s: `managed_login_sources_invalid`, `managed_login_source_invalid`, `managed_login_sources_too_many`, `managed_login_sources_any_alone`, `managed_login_source_server_unknown`.",
+    "Where the login may be used from. Items: `any` (alone: everywhere, stored as the pair `address:0.0.0.0/0` and `address:::/0`; typing the range `0.0.0.0/0` or `::/0` means the same), `internal` (this server: its own programs and containers; anything arriving as the Docker gateway address counts as local), `server:<id>` (one of the organization's servers, all its addresses), `address:<ip | prefix% | cidr>` (one address (host names are refused), a prefix such as `203.0.113.%` or `2001:db8:1:%`, or a range that can be said exactly: IPv4 /8, /16, /24 or /32, IPv6 whole 16-bit groups /16 to /112; other ranges answer 400 `managed_login_source_range_not_exact`). The login still signs in from anywhere: the database proxy refuses every query from other addresses, so tools may show an empty page. An empty list answers 400 `managed_login_sources_empty`. Needs a server daemon that supports it (409 `managed_login_limits_need_daemon_update`). Other 400s: `managed_login_sources_invalid`, `managed_login_source_invalid`, `managed_login_sources_too_many`, `managed_login_sources_any_alone`, `managed_login_source_server_unknown`.",
 } as const
 
 const MAX_CONNECTIONS_SCHEMA = {
@@ -672,9 +672,9 @@ export const managedSchemas = {
       },
       grantMode: {
         type: 'string',
-        enum: ['preset', 'recipe', 'self'],
+        enum: ['recipe', 'self'],
         description:
-          "Who sets the login's permissions. `preset` = logins made before modes existed (the panel resets permissions on every apply, as before). `recipe` = the panel sets them. `self` = you set them by hand and the panel never resets them; it still owns the password, LOGIN, connection limit and CONNECT on the listed databases.",
+          "Who sets the login's permissions. `recipe` = the panel sets them. `self` = you set them by hand and the panel never resets them; it still owns the password, LOGIN, connection limit and CONNECT on the listed databases.",
       },
       allowedSources: {
         ...ALLOWED_SOURCES_SCHEMA,
@@ -2140,7 +2140,7 @@ export const managedPaths = {
       tags: ['Managed services'],
       summary: 'Change a login (grant mode, databases, connection role, privileges, tool flag)',
       description:
-        'Every field is optional. `dryRun: true` changes nothing and returns `statements`, a plain-words list of the kinds of SQL the next apply would run. Refusals: 422 `managed_login_not_editable` (root/replication logins), 422 `managed_grant_mode_invalid_transition` (back to `preset`), 409 `managed_grant_reset_needs_confirm` (self back to panel-set permissions, or a read-only Postgres login moving to self, needs `confirmReset: true`), 422 `managed_self_login_has_no_privileges`, 400 `managed_grant_mode_invalid`.',
+        'Every field is optional. `dryRun: true` changes nothing and returns `statements`, a plain-words list of the kinds of SQL the next apply would run. Refusals: 422 `managed_login_not_editable` (root/replication logins), 409 `managed_grant_reset_needs_confirm` (self back to panel-set permissions, or a read-only Postgres login moving to self, needs `confirmReset: true`), 422 `managed_self_login_has_no_privileges`, 400 `managed_grant_mode_invalid`.',
       parameters: [ENV_ID_PARAM, LOGIN_ID_PARAM],
       requestBody: {
         required: true,
@@ -2190,7 +2190,7 @@ export const managedPaths = {
                 properties: {
                   ok: { type: 'boolean' },
                   dryRun: { type: 'boolean', description: 'Present and true for a preview.' },
-                  grantMode: { type: 'string', enum: ['preset', 'recipe', 'self'] },
+                  grantMode: { type: 'string', enum: ['recipe', 'self'] },
                   statements: {
                     type: 'array',
                     items: { type: 'string' },

@@ -1462,6 +1462,7 @@ test('DELETE /projects/:projectId/principals/:id refuses while a database login 
         .values({ environmentId, serverId, name: 'DB login', engine: 'postgres', status: 'ready' })
         .returning({ id: managed.id })
       await db.insert(login).values({
+        recipe: 'app',
         managedId: cluster!.id,
         principalId: created.id,
         role: 'user',

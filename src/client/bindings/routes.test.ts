@@ -283,6 +283,7 @@ async function withBindingFixtures(
   const [insertedLogin] = await db
     .insert(login)
     .values({
+      recipe: 'app',
       managedId,
       role: 'user',
       username: bindUser,
@@ -674,6 +675,7 @@ test('POST /bindings rejects non-bindable principals and encryption gaps', async
       const [rootLogin] = await db
         .insert(login)
         .values({
+          recipe: 'app',
           managedId,
           role: 'root',
           username: `root_${crypto.randomUUID().slice(0, 8)}`,
@@ -697,6 +699,7 @@ test('POST /bindings rejects non-bindable principals and encryption gaps', async
       const [noPassword] = await db
         .insert(login)
         .values({
+          recipe: 'app',
           managedId,
           role: 'user',
           username: `nopw_${crypto.randomUUID().slice(0, 8)}`,

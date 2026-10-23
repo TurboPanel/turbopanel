@@ -3,6 +3,7 @@ import type { Db } from '../../db/connection.ts'
 import {
   applySettingsPatch,
   DATABASE_LOGIN_ROLES,
+  deriveLoginRecipe,
   isLoginGrantMode,
   isManagedLoginNameTakenInFamily,
   managedProtocolFamilyEngines,
@@ -11,8 +12,8 @@ import {
 
 const test = Deno.test.bind(Deno)
 
-test('the login roles are the three the table allows', () => {
-  assertEquals([...DATABASE_LOGIN_ROLES], ['root', 'replication', 'user'])
+test('the login roles are the four the table allows', () => {
+  assertEquals([...DATABASE_LOGIN_ROLES], ['root', 'replication', 'user', 'backup'])
 })
 
 test('withoutPassword drops the credential and keeps every other field', () => {
@@ -24,7 +25,7 @@ test('withoutPassword drops the credential and keeps every other field', () => {
     username: 'app',
     appliedUsername: 'app',
     nameScheme: 'plain' as const,
-    grantMode: 'preset' as const,
+    grantMode: 'recipe' as const,
     tool: false,
     databases: ['app'],
     privileges: ['read-write'],
@@ -72,4 +73,23 @@ test('managedProtocolFamilyEngines: mysql and mariadb share a family, postgres i
 test('isManagedLoginNameTakenInFamily skips the query for blank names and non-frontend engines', async () => {
   assertEquals(await isManagedLoginNameTakenInFamily({} as Db, 'm1', 'postgres', '  '), false)
   assertEquals(await isManagedLoginNameTakenInFamily({} as Db, 'm1', 'redis', 'app'), false)
+})
+
+test('deriveLoginRecipe names the permission set a login amounts to', () => {
+  const user = (privileges: string[], connectionRole: 'read-write' | 'read-only' = 'read-write') =>
+    deriveLoginRecipe({ role: 'user', privileges, connectionRole })
+  assertEquals(user(['read-write']), 'app')
+  assertEquals(user([]), 'app')
+  assertEquals(user(['read-only']), 'read-only')
+  assertEquals(user(['read-write'], 'read-only'), 'read-only')
+  assertEquals(user(['owner']), 'migrations')
+  assertEquals(user(['admin']), 'admin')
+  assertEquals(
+    deriveLoginRecipe({ role: 'root', privileges: [], connectionRole: 'read-write' }),
+    'admin'
+  )
+  assertEquals(
+    deriveLoginRecipe({ role: 'backup', privileges: [], connectionRole: 'read-only' }),
+    'backup'
+  )
 })

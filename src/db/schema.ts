@@ -4268,8 +4268,8 @@ export const tenancy = pgTable(
  * with (the one allowed overlap in the organization's name pool); it is NULL
  * for every login made on its own and for the cluster's own `root` and
  * `replication` logins. The permission settings are real columns:
- * `grant_mode`, `is_tool`, `allowed_sources`, `max_connections`, `access` and
- * `privileges`; the databases a login may use are `scope` rows.
+ * `grant_mode`, `recipe`, `is_all_databases`, `is_tool`, `allowed_sources`,
+ * `max_connections`, `access` and `privileges`; the databases a login may use are `scope` rows.
  */
 export const login = pgTable(
   'login',
@@ -4293,11 +4293,13 @@ export const login = pgTable(
       .defaultNow()
       .$onUpdate(() => sql`now()`)
       .notNull(),
+    /** Internal bookkeeping; the grant ledger (what the panel granted) will live here. */
+    metadata: jsonb(),
     /** Cluster the role exists on; cascade-deletes with it. */
     managedId: uuid('managed_id').notNull(),
     /** Site owner's Linux user this login shares its name with; NULL otherwise. */
     principalId: uuid('principal_id'),
-    /** `root` | `replication` | `user` */
+    /** `root` | `replication` | `user` | `backup` */
     role: text().notNull(),
     /** Name the customer typed (equals `applied_username` for `plain` names and cluster logins). */
     username: varchar({ length: 255 }).notNull(),
@@ -4308,15 +4310,30 @@ export const login = pgTable(
     /** Write-only credential, a `tpsecret` envelope; never returned on GET. */
     password: text(),
     /**
-     * Who sets the permissions on reconcile: `preset` (logins from before
-     * modes; the panel resets them), `recipe` (the panel sets them) or `self`
-     * (the owner sets them by hand and the panel never resets them).
+     * Who sets the permissions on reconcile: `recipe` (the panel sets them
+     * from the named recipe) or `self` (the owner sets them by hand and the
+     * panel never resets them).
      */
-    grantMode: text('grant_mode').default('preset').notNull(),
+    grantMode: text('grant_mode').default('recipe').notNull(),
+    /**
+     * The named permission set the panel applies when `grant_mode` is
+     * `recipe`: `app`, `migrations`, `read-only`, `analyst`, `admin` or
+     * `backup`. NULL only for a `self` login.
+     */
+    recipe: text(),
+    /** A read-only reader of every database on the cluster, current and future. */
+    isAllDatabases: boolean('is_all_databases').default(false).notNull(),
     /** A database-tool login routes everything to the primary (no read/write split). */
     isTool: boolean('is_tool').default(false).notNull(),
-    /** Places the login may connect from; NULL means anywhere. */
-    allowedSources: text('allowed_sources').array(),
+    /**
+     * Places the login may connect from: `internal`, `server:<id>` or
+     * `address:<ip or range>`. Never empty. Anywhere is the explicit pair
+     * `address:0.0.0.0/0` and `address:::/0`.
+     */
+    allowedSources: text('allowed_sources')
+      .array()
+      .default(sql`'{internal}'::text[]`)
+      .notNull(),
     /** Per-login connection cap; NULL means no cap. */
     maxConnections: integer('max_connections'),
     /** PostgreSQL only: connect straight through the front door; NULL means the owner never chose (default applies). */
@@ -4353,9 +4370,22 @@ export const login = pgTable(
       table.managedId,
       sql`lower(btrim((${table.appliedUsername})::text))`
     ),
-    check('login_role_check', sql`role IN ('root', 'replication', 'user')`),
+    // One backup login per cluster.
+    uniqueIndex('uniq_login_managed_backup')
+      .on(table.managedId)
+      .where(sql`${table.role} = 'backup'`),
+    check('login_role_check', sql`role IN ('root', 'replication', 'user', 'backup')`),
     check('login_name_scheme_check', sql`name_scheme IN ('plain', 'partial', 'random')`),
-    check('login_grant_mode_check', sql`grant_mode IN ('preset', 'recipe', 'self')`),
+    check('login_grant_mode_check', sql`grant_mode IN ('recipe', 'self')`),
+    check(
+      'login_recipe_check',
+      sql`recipe IS NULL OR recipe IN ('app', 'migrations', 'read-only', 'analyst', 'admin', 'backup')`
+    ),
+    // A panel-set login always names its recipe.
+    check('login_recipe_required_check', sql`grant_mode <> 'recipe' OR recipe IS NOT NULL`),
+    check('login_allowed_sources_check', sql`cardinality(allowed_sources) BETWEEN 1 AND 100`),
+    // A backup login is never left without a place to connect from.
+    check('login_backup_sources_check', sql`role <> 'backup' OR cardinality(allowed_sources) >= 1`),
     check('login_access_check', sql`access IN ('read-write', 'read-only')`),
     check('login_max_connections_check', sql`max_connections IS NULL OR max_connections >= 1`),
     check(

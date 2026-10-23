@@ -4673,6 +4673,7 @@ test('DELETE /servers/:id refuses an outright delete while the principal has a d
         .returning({ id: managed.id })
       try {
         await db.insert(login).values({
+          recipe: 'app',
           managedId: cluster!.id,
           principalId: freeId,
           role: 'user',

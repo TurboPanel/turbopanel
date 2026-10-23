@@ -372,7 +372,7 @@ in plain words. `scripts/contract-field-snapshot.json` does not pin
 `ManagedIngressReconcileUser` comment in sync with the daemon.
 
 **App logins can be limited by source address and connection count.**
-`login.allowed_sources` (NULL = anywhere) lists places: `internal`
+`login.allowed_sources` (never NULL, default `internal`; anywhere is the explicit pair `address:0.0.0.0/0` and `address:::/0`, which `login-sources.ts` reads as no limit) lists places: `internal`
 (this server: loopback + its Docker networks), `server:<id>` (an organization
 server, resolved to its public/private/mesh addresses on every reconcile,
 `login-sources-load.ts`) and `address:<ip | prefix% | cidr>` (a CIDR is turned
@@ -440,9 +440,11 @@ locking reads. `readEligible` alone must never turn it on.
 
 ## Login settings (`login` columns)
 
-The `login` row carries `grant_mode` (`preset`: today's behaviour, the default
-for a row made before modes; `recipe`: new logins' default; `self`: the owner
-manages permissions by hand), `is_tool` (database-tool login: everything to
+The `login` row carries `grant_mode` (`recipe`: the panel sets permissions from the
+named `recipe` column, the default; `self`: the owner manages permissions by
+hand and `recipe` is NULL), `recipe` (`app`, `migrations`, `read-only`,
+`analyst`, `admin` or `backup`; derived from role, privileges and routing by
+`deriveLoginRecipe` on every write), `is_all_databases`, `is_tool` (database-tool login: everything to
 the primary), `allowed_sources`, `max_connections`, `access` and `privileges`;
 the databases a login may use are `scope` rows pointing at `database` rows.
 `is_straight_through` (nullable: NULL = the owner never chose) is the
@@ -451,8 +453,10 @@ below. `ManagedLoginRow` in `logins.ts` reads them as `grantMode`, `tool`,
 `allowedSources`, `maxConnections`, `connectionRole`, `privileges` and
 `databases` (the API names). A login is not a principal: `principal_id` is only
 set when the login shares a site owner's Linux user name. The
-apply credential carries `grantMode` only when it is not `preset`, so payloads
-for old logins are unchanged. For `self` the daemon skips every grant reset
+apply credential carries `grantMode` only for `self` (the daemon treats
+`recipe` and an absent mode alike), so payloads for panel-set logins are
+unchanged. A `backup` role login is allowed once per cluster and always needs
+at least one allowed source. For `self` the daemon skips every grant reset
 and keeps password, LOGIN, NOSUPERUSER, connection limit and CONNECT on the
 listed databases. `PATCH /managed/users/:loginId` (`login-patch.ts`) plans
 the change; `dryRun` returns plain-words statement kinds because the SQL is

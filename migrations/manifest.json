@@ -50,6 +50,12 @@
       "tag": "0007_server_peak",
       "when": 1792779015336,
       "sha256": "46438c6a1c2a3555799b75b56c144c8464e2be5307a5d58c979c290298cc6dc7"
+    },
+    {
+      "idx": 8,
+      "tag": "0008_login_recipe_sources",
+      "when": 1792782918180,
+      "sha256": "84b18c180fb97ba413bd7210d3e330b2e2f8e20543d00ed15edebb9184099542"
     }
   ]
 }
