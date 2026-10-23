@@ -40,8 +40,15 @@
     {
       "idx": 5,
       "version": "7",
-      "when": 1792775914839,
-      "tag": "0005_server_peak",
+      "when": 1792775024253,
+      "tag": "0005_project_kind_icon",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1792777978929,
+      "tag": "0006_principal_access",
       "breakpoints": true
     }
   ]
