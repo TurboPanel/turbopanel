@@ -168,6 +168,7 @@ import {
   onPromoteSucceeded,
   onRecoveryCommandFailed,
   recoveryIdFromCommandMetadata,
+  sweepStalledFencing,
 } from '../../features/managed/ha-recovery.ts'
 
 export type DenoDeveloperSurfaceContext = {
@@ -346,6 +347,8 @@ async function runCleanupPhase(label: string, fn: () => Promise<unknown>): Promi
 
 async function sweepStaleCommandsPhase(db: Db, commandQueue?: CommandQueue): Promise<void> {
   const swept = await sweepStaleCommands(db, { commandQueue })
+  // A fence step that never answered ends its recovery at the deadline.
+  await sweepStalledFencing(db, { commandQueue })
   // Recoveries first: a row that is still in flight keeps its managed row at
   // `applying`, and an expired one releases it itself.
   const expired = (

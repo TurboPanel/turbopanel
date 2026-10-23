@@ -50,6 +50,7 @@
  * enforced live runtime so a still-running holder cannot be stolen.
  */
 import { expireStaleRecoveries } from '../../features/managed/recovery-records.ts'
+import { sweepStalledFencing } from '../../features/managed/ha-recovery.ts'
 import { AUTOMATIC_FAILOVER_STALE_DETECTING_MESSAGE } from '../../features/managed/recovery.ts'
 import {
   type Db,
@@ -920,6 +921,8 @@ export async function sweepExpiredCommandDispatchSafely(
   // failure here never aborts the other sweeps.
   try {
     const timedOut = await sweepStaleCommands(db, { commandQueue: opts?.commandQueue })
+    // A fence step that never answered ends its recovery at the deadline.
+    await sweepStalledFencing(db, { commandQueue: opts?.commandQueue })
     // Recoveries first: a row still in flight keeps its managed row at
     // `applying`, and an expired one releases it itself.
     const expiredDetecting = await expireStaleRecoveries(db, {

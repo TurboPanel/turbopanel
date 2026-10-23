@@ -323,6 +323,23 @@ export function commandTimeoutMs(type: string): number {
   return DEFAULT_COMMAND_TIMEOUT_MS
 }
 
+/**
+ * How long a drain or undrain of one server's ProxySQL may take. It is a few
+ * local admin statements, yet it shares the `managed.ha.failover` type whose
+ * budget is the 10 minutes a recover needs. A fence waits for every drain, so a
+ * silent bystander server must not hold a switchover for that long.
+ */
+export const FENCE_DRAIN_WAIT_MS = 60_000
+
+/** The wait budget of one command; a drain is held to {@link FENCE_DRAIN_WAIT_MS}. */
+export function commandWaitMs(record: { type: string; payload?: unknown }): number {
+  if (record.type === 'managed.ha.failover') {
+    const phase = (record.payload as { phase?: unknown } | null | undefined)?.phase
+    if (phase === 'drain' || phase === 'undrain') return FENCE_DRAIN_WAIT_MS
+  }
+  return commandTimeoutMs(record.type)
+}
+
 function recoveryEngine(engine: unknown): ManagedEngineCode {
   return typeof engine === 'string' && isManagedEngineCode(engine) ? engine : 'postgres'
 }
@@ -718,7 +735,7 @@ async function awaitCommandOutcome(
       : await awaitOutcomeWithAckDeadline(
           cell,
           record.id,
-          commandTimeoutMs(record.type),
+          commandWaitMs(record),
           COMMAND_ACK_DEADLINE_MS,
           waiter
         )

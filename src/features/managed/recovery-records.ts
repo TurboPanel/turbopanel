@@ -283,6 +283,12 @@ export async function updateRecoveryLocked(
   })
 }
 
+/** Rows still in `fencing` (the fence deadline sweep judges them). */
+export async function listFencingRecoveries(db: Db, limit = 50): Promise<RecoveryRecord[]> {
+  const rows = await db.select().from(recovery).where(eq(recovery.state, 'fencing')).limit(limit)
+  return rows.map((row) => serializeRow(row)).filter((row): row is RecoveryRecord => row !== null)
+}
+
 /** A `detecting`/`fencing` row older than this with no command queued is expired. */
 export const STALE_DETECTING_RECOVERY_MS = 10 * 60_000
 
