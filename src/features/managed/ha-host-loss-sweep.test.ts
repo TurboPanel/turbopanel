@@ -110,7 +110,8 @@ async function withPair(fn: (cluster: Cluster) => Promise<void>): Promise<void> 
         name: 'Host Loss Project',
         workspaceId: ws!.id,
         organizationId,
-        metadata: { type: 'managed', code: 'postgres' },
+        kind: 'managed',
+        metadata: { code: 'postgres' },
       })
       .returning({ id: project.id })
     const [env] = await db

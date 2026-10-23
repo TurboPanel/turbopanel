@@ -96,7 +96,8 @@ async function withHost(fn: (fixture: Fixture) => Promise<void>): Promise<void> 
         name: 'Redrive Project',
         workspaceId: ws!.id,
         organizationId,
-        metadata: { type: 'managed', code: 'postgres' },
+        kind: 'managed',
+        metadata: { code: 'postgres' },
       })
       .returning({ id: project.id })
     const [env] = await db

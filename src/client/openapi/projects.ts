@@ -1,3 +1,4 @@
+import { PROJECT_ICONS } from '../../features/projects/vocabulary.ts'
 import { buildResourceCrudPaths } from './shared.ts'
 
 export const projectSchemas = {
@@ -13,20 +14,28 @@ export const projectSchemas = {
         description:
           'The one Git repository this project is, or null when it is not repository-backed. Every x-turbopanel.source.sourceId in the project compose must name this row.',
       },
+      kind: {
+        type: 'string',
+        nullable: true,
+        enum: ['compose', 'managed', 'system'],
+        description:
+          'What the project is. `compose` also covers a template project (which carries metadata.code); `managed` is a managed database or service; `system` is platform-owned and read-only. null while the project is a draft that has not chosen yet; set by create or POST …/configure, never by PATCH.',
+      },
+      icon: {
+        type: 'string',
+        nullable: true,
+        enum: PROJECT_ICONS,
+        description:
+          'Icon key from the fixed list the project screens offer; null means the default. A managed project ignores it and always shows the managed icon.',
+      },
       metadata: {
         type: 'object',
         nullable: true,
         additionalProperties: true,
         properties: {
-          type: {
-            type: 'string',
-            enum: ['docker-compose', 'template', 'managed', 'system'],
-            description:
-              'Project kind. `system` is platform-owned (TurboPanel workspace projects) and read-only — never accepted on create or configure.',
-          },
           code: {
             type: 'string',
-            description: 'Catalog code when type is template or managed',
+            description: 'Catalog code of a template or managed engine project',
           },
           component: {
             type: 'string',
@@ -78,6 +87,12 @@ export const projectSchemas = {
           "Optional name for the project's first environment. Omitted means the organization default (else Production).",
       },
       metadata: { type: 'object', nullable: true },
+      icon: {
+        type: 'string',
+        nullable: true,
+        enum: PROJECT_ICONS,
+        description: 'Optional icon key; ignored for managed projects.',
+      },
       options: {
         type: 'object',
         nullable: true,
@@ -120,6 +135,12 @@ export const projectSchemas = {
     properties: {
       name: { type: 'string' },
       description: { type: 'string' },
+      icon: {
+        type: 'string',
+        nullable: true,
+        enum: PROJECT_ICONS,
+        description: 'Icon key from the fixed list, or null for the default. Ignored for managed projects.',
+      },
       workspaceId: {
         type: 'string',
         description: 'Move the project to another workspace in the same organization',

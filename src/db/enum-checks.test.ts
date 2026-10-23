@@ -31,6 +31,7 @@ import {
   LOGIN_CONNECTION_ROLES,
   LOGIN_GRANT_MODES,
 } from '../features/managed/logins.ts'
+import { PROJECT_ICONS, PROJECT_KINDS } from '../features/projects/vocabulary.ts'
 import { PRINCIPAL_NAME_SCHEMES } from '../lib/principal-name-scheme.ts'
 import { SERVER_MACHINE_CLASS_SOURCES } from '../contracts/capability-plan.ts'
 import {
@@ -93,6 +94,8 @@ const CASES: Array<[constraint: string, values: readonly string[]]> = [
   ['payer_provider_check', BILLING_PROVIDER_IDS],
   ['placement_state_check', PLACEMENT_STATES],
   ['placement_source_check', PLACEMENT_SOURCES],
+  ['project_kind_check', PROJECT_KINDS],
+  ['project_icon_check', PROJECT_ICONS],
   ['folder_kind_check', FOLDER_KINDS],
   ['folder_state_check', FOLDER_STATES],
   ['leaf_state_check', LEAF_STATES],

@@ -72,10 +72,12 @@ import {
   scaffoldEnvironmentNames,
   parseCreateProjectServerIdField,
   parseJsonbField,
+  parseProjectIconField,
   resolveCatalogEntryForCreate,
   resolveCreateProjectType,
   stampCreateProjectMetadata,
 } from './routes-helpers.ts'
+import { projectKindForType } from '../../features/projects/vocabulary.ts'
 import {
   settleDeployOptions,
   stampNewEnvironmentDeployOptions,
@@ -158,6 +160,7 @@ function runCreateProjectTransaction(
     workspaceId: string
     organizationId: string
     metadata: Record<string, unknown> | null
+    icon: string | null
     options: Record<string, unknown> | null
     catalogEntry: CatalogEntry | undefined
     dataEncryptionSecrets: DerivedSecretsConfig | undefined
@@ -174,6 +177,7 @@ function runCreateProjectTransaction(
         organizationId: input.organizationId,
         serverId: input.serverId,
         defaultEnvironmentName: input.defaultEnvironmentName,
+        icon: input.icon,
       })
     }
 
@@ -184,6 +188,7 @@ function runCreateProjectTransaction(
         workspaceId: input.workspaceId,
         organizationId: input.organizationId,
         metadata: input.metadata,
+        icon: input.icon,
         options: input.options,
         serverId: input.serverId,
         defaultEnvironmentName: input.defaultEnvironmentName,
@@ -204,6 +209,7 @@ function runCreateProjectTransaction(
       workspaceId: input.workspaceId,
       organizationId: input.organizationId,
       metadata: input.metadata,
+      icon: input.icon,
       options: input.options,
       entry: input.catalogEntry,
       dataEncryptionSecrets: input.dataEncryptionSecrets,
@@ -222,6 +228,7 @@ type CreateProjectInput = {
   catalogEntry: CatalogEntry | undefined
   options: Record<string, unknown> | null
   metadata: Record<string, unknown> | null
+  icon: string | null
   serverId: string | null
   defaultEnvironmentName: string
 }
@@ -357,6 +364,11 @@ async function parseCreateProjectInput(
   }
   const { metadata } = metadataResult
 
+  const iconResult = parseProjectIconField(body)
+  if (!iconResult.ok) {
+    return c.json({ error: iconResult.error }, iconResult.status)
+  }
+
   const serverId = await resolveServerIdForCreate(c, db, body, organizationId)
   if (serverId instanceof Response) return serverId
 
@@ -382,6 +394,8 @@ async function parseCreateProjectInput(
     catalogEntry,
     options: optionsResult.options,
     metadata,
+    // A managed project always shows the managed icon, so none is stored.
+    icon: projectType === 'managed' ? null : (iconResult.icon ?? null),
     serverId,
     defaultEnvironmentName,
   }
@@ -474,6 +488,7 @@ type ProjectPatchFields = {
   /** The default placement server, kept in its own column (the API carries it in `options`). */
   defaultServerId?: string | null
   workspaceId?: string
+  icon?: string | null
   updatedAt: string
 }
 
@@ -553,6 +568,11 @@ function buildProjectPatchFields(
   if (optionsResult !== null) {
     patchFields.options = optionsResult
   }
+
+  const iconResult = parseProjectIconField(body)
+  if (!iconResult.ok) return c.json({ error: iconResult.error }, iconResult.status)
+  // `undefined` leaves the stored icon alone; an explicit null clears it.
+  if (body.icon !== undefined) patchFields.icon = iconResult.icon ?? null
 
   if (moveTarget !== undefined) {
     patchFields.workspaceId = moveTarget
@@ -673,6 +693,7 @@ async function insertDockerComposeProject(
     workspaceId: string
     organizationId: string
     metadata: Record<string, unknown> | null
+    icon: string | null
     options: Record<string, unknown> | null
     serverId: string | null
     defaultEnvironmentName: string
@@ -705,9 +726,9 @@ async function insertDockerComposeProject(
       description: fields.description,
       workspaceId: fields.workspaceId,
       organizationId: fields.organizationId,
-      metadata: stampCreateProjectMetadata(fields.metadata, {
-        type: 'docker-compose',
-      }),
+      metadata: fields.metadata,
+      kind: projectKindForType('docker-compose'),
+      icon: fields.icon,
       options: stored.options,
       defaultServerId: stored.defaultServerId,
     })
@@ -744,6 +765,7 @@ async function insertCatalogProject(
     workspaceId: string
     organizationId: string
     metadata: Record<string, unknown> | null
+    icon: string | null
     options: Record<string, unknown> | null
     entry: CatalogEntry
     dataEncryptionSecrets: DerivedSecretsConfig
@@ -763,9 +785,10 @@ async function insertCatalogProject(
       workspaceId: fields.workspaceId,
       organizationId: fields.organizationId,
       metadata: stampCreateProjectMetadata(fields.metadata, {
-        type: fields.projectType,
-        ...(isEngine ? { code: fields.entry.code } : {}),
+        ...(isEngine || fields.projectType === 'template' ? { code: fields.entry.code } : {}),
       }),
+      kind: projectKindForType(fields.projectType),
+      icon: fields.icon,
       options: stored.options,
       defaultServerId: stored.defaultServerId,
     })

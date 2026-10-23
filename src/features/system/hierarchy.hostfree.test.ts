@@ -25,7 +25,7 @@ import {
   SYSTEM_MANAGED_INGRESS_PROJECT_DISPLAY_NAME,
   SYSTEM_ORCHESTRATOR_COMPOSE_SERVICE_NAME,
   SYSTEM_PROJECT_DISPLAY_NAME,
-  SYSTEM_PROJECT_METADATA_TYPE,
+  SYSTEM_PROJECT_KIND,
   SYSTEM_PROXYSQL_COMPOSE_SERVICE_NAME,
   SYSTEM_SELF_HOST_COMPONENT,
   SYSTEM_SELF_HOST_COMPOSE_SERVICE_NAMES,
@@ -141,12 +141,12 @@ function wrapDb(tx: Db): Db {
 function staleSystemProjectRow(
   id: string,
   name: string,
-  component: string,
-): { id: string; name: string; metadata: Record<string, unknown> } {
+  _component: string,
+): { id: string; name: string; kind: string } {
   return {
     id,
     name,
-    metadata: { type: 'docker-compose', component, extra: 'keep' },
+    kind: 'compose',
   }
 }
 
@@ -165,14 +165,11 @@ function namedUpdate(
 function assertNormalizedProjectUpdate(
   updateSets: unknown[] | undefined,
   displayName: string,
-  component: string,
+  _component: string,
 ): void {
   const patch = namedUpdate(updateSets, displayName)
   assertEquals(patch?.name, displayName)
-  const metadata = patch?.metadata as Record<string, unknown> | undefined
-  assertEquals(metadata?.type, SYSTEM_PROJECT_METADATA_TYPE)
-  assertEquals(metadata?.component, component)
-  assertEquals(metadata?.extra, 'keep')
+  assertEquals(patch?.kind, SYSTEM_PROJECT_KIND)
 }
 
 test('isSystemSelfHostComposeServiceName allowlists only stack services', () => {

@@ -883,7 +883,7 @@ async function withManagedDestroyFixtures(
         workspaceId: workspaceRow!.id,
         organizationId,
         name: 'Managed Destroy Test Project',
-        metadata: { type: 'managed' },
+        kind: 'managed',
       })
       .returning({ id: project.id })
     const [environmentRow] = await db
@@ -1205,7 +1205,7 @@ test('processCommandEnvelope reconciles containers on environment.lifecycle succ
         workspaceId: workspaceRow!.id,
         organizationId,
         name: 'Lifecycle Reconcile Project',
-        metadata: { type: 'docker-compose' },
+        kind: 'compose',
       })
       .returning({ id: project.id })
     const [environmentRow] = await db
@@ -1312,7 +1312,7 @@ test('processCommandEnvelope skips reconcile when environment.lifecycle omits co
         workspaceId: workspaceRow!.id,
         organizationId,
         name: 'Lifecycle Skip Project',
-        metadata: { type: 'docker-compose' },
+        kind: 'compose',
       })
       .returning({ id: project.id })
     const [environmentRow] = await db
@@ -1410,7 +1410,8 @@ test('processCommandEnvelope reconciles containers on system.reconcile success',
         workspaceId: workspaceRow!.id,
         organizationId,
         name: 'System Reconcile Project',
-        metadata: { type: 'docker-compose', component: 'hosting-ingress' },
+        kind: 'compose',
+        metadata: { component: 'hosting-ingress' },
         component: 'hosting-ingress',
       })
       .returning({ id: project.id })
@@ -1536,7 +1537,8 @@ test('processCommandEnvelope skips reconcile when system.reconcile omits contain
         workspaceId: workspaceRow!.id,
         organizationId,
         name: 'System Skip Project',
-        metadata: { type: 'docker-compose', component: 'hosting-ingress' },
+        kind: 'compose',
+        metadata: { component: 'hosting-ingress' },
         component: 'hosting-ingress',
       })
       .returning({ id: project.id })
@@ -1641,7 +1643,8 @@ test('processCommandEnvelope clears pins when system.reconcile reports empty con
         workspaceId: workspaceRow!.id,
         organizationId,
         name: 'System Empty Project',
-        metadata: { type: 'docker-compose', component: 'hosting-ingress' },
+        kind: 'compose',
+        metadata: { component: 'hosting-ingress' },
         component: 'hosting-ingress',
       })
       .returning({ id: project.id })
@@ -1756,7 +1759,8 @@ test('processCommandEnvelope reconciles containers on managed.ingress.reconcile 
         workspaceId: workspaceRow!.id,
         organizationId,
         name: 'Managed Ingress Project',
-        metadata: { type: 'docker-compose', component: 'managed-ingress' },
+        kind: 'compose',
+        metadata: { component: 'managed-ingress' },
         component: 'managed-ingress',
       })
       .returning({ id: project.id })
@@ -1879,7 +1883,8 @@ test('processCommandEnvelope clears pins when managed.ingress.reconcile reports 
         workspaceId: workspaceRow!.id,
         organizationId,
         name: 'Managed Ingress Empty Project',
-        metadata: { type: 'docker-compose', component: 'managed-ingress' },
+        kind: 'compose',
+        metadata: { component: 'managed-ingress' },
         component: 'managed-ingress',
       })
       .returning({ id: project.id })
@@ -1989,7 +1994,8 @@ test('processCommandEnvelope maps a labelled self-host system.reconcile report o
         workspaceId: workspaceRow!.id,
         organizationId,
         name: 'TurboPanel',
-        metadata: { type: 'docker-compose', component: 'turbopanel' },
+        kind: 'compose',
+        metadata: { component: 'turbopanel' },
         component: 'turbopanel',
       })
       .returning({ id: project.id })
@@ -2121,7 +2127,8 @@ test('processCommandEnvelope leaves a missing self-host system container exited 
         workspaceId: workspaceRow!.id,
         organizationId,
         name: 'TurboPanel',
-        metadata: { type: 'docker-compose', component: 'turbopanel' },
+        kind: 'compose',
+        metadata: { component: 'turbopanel' },
         component: 'turbopanel',
       })
       .returning({ id: project.id })
@@ -2237,7 +2244,8 @@ test('processCommandEnvelope keeps unmatched self-host expected rows on partial 
         workspaceId: workspaceRow!.id,
         organizationId,
         name: 'TurboPanel',
-        metadata: { type: 'docker-compose', component: 'turbopanel' },
+        kind: 'compose',
+        metadata: { component: 'turbopanel' },
         component: 'turbopanel',
       })
       .returning({ id: project.id })
@@ -2472,7 +2480,7 @@ async function withDeployFixtures(
         workspaceId: workspaceRow!.id,
         organizationId,
         name: 'Deploy Consumer Project',
-        metadata: { type: 'docker-compose' },
+        kind: 'compose',
       })
       .returning({ id: project.id })
     const [environmentRow] = await db
@@ -6004,7 +6012,8 @@ async function withPromoteConsumerFixtures(
           workspaceId: workspaceRow!.id,
           organizationId,
           name: 'Promote Fan-out Database',
-          metadata: { type: 'managed', code: 'postgres' },
+          kind: 'managed',
+          metadata: { code: 'postgres' },
         })
         .returning({ id: project.id })
       const [managedEnvironmentRow] = await db
@@ -6096,7 +6105,7 @@ async function withPromoteConsumerFixtures(
           workspaceId: workspaceRow!.id,
           organizationId,
           name: 'Promote Fan-out App',
-          metadata: { type: 'docker-compose' },
+          kind: 'compose',
         })
         .returning({ id: project.id })
       const [consumerEnvironmentRow] = await db
