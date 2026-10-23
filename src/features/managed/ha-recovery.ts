@@ -2073,7 +2073,8 @@ async function finishAbortRestart(
   const todo = locked.metadata.abortRestartTodo ?? []
   let stale: string | null = null
   const before = async () => {
-    if (stale === null) stale = await staleReason(db, locked)
+    if (stale !== null) return false
+    stale = await staleReason(db, locked)
     return stale === null
   }
   let missing: string[]
