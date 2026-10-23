@@ -3412,6 +3412,7 @@ async function resolveLocalSitesBoundForDeploy(
     daemonFeatures: phpDaemonState?.projection?.features ?? [],
     warnings: dbBindingWarnings,
   })
+  if ('kind' in localSiteBound) return localSiteBound
   args.warnings.push(...dbBindingWarnings)
   return localSiteBound
 }

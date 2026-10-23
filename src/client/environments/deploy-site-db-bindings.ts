@@ -11,7 +11,10 @@
  * neither: the site still gets its connection settings and a warning that the
  * certificate cannot be delivered.
  */
+import { inArray } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
+import { hosting } from '../../db/schema.ts'
+import { readHostnames } from './deploy-routes-helpers.ts'
 import type { EnvironmentDeploySite } from '../../contracts/commands/schemas.ts'
 import {
   type HostSiteBindingNeeds,
@@ -27,6 +30,19 @@ export type SiteDbBindingsWarning = {
   details: { composeServiceName: string }
 }
 
+/** Refusal for a bound site that has no hostname: its variables ride the hostname's hosting. */
+export type SiteDbBindingsError = {
+  kind: 'binding_host_site_unsupported'
+  message: string
+}
+
+export function siteNeedsHostnameError(composeServiceName: string): SiteDbBindingsError {
+  return {
+    kind: 'binding_host_site_unsupported',
+    message: `Site "${composeServiceName}" is bound to a managed database but has no hostname. A site gets its database settings through its hostname, so add a hostname to the site, then deploy again.`,
+  }
+}
+
 export function siteDbCaUnavailableWarning(composeServiceName: string): SiteDbBindingsWarning {
   return {
     code: 'site_db_ca_unavailable',
@@ -38,6 +54,8 @@ export function siteDbCaUnavailableWarning(composeServiceName: string): SiteDbBi
 /** The database reads, injectable so the rules above are testable without one. */
 export type SiteDbBindingsDeps = {
   loadNeeds: (db: Db, serviceIds: readonly string[]) => Promise<Map<string, HostSiteBindingNeeds>>
+  /** Ids of the services that have at least one hosting with a hostname. */
+  loadHostedServiceIds: (db: Db, serviceIds: readonly string[]) => Promise<Set<string>>
   loadCaPem: (
     db: Db,
     secrets: DerivedSecretsConfig,
@@ -47,6 +65,16 @@ export type SiteDbBindingsDeps = {
 
 const defaultDeps: SiteDbBindingsDeps = {
   loadNeeds: loadHostSiteBindingNeeds,
+  loadHostedServiceIds: async (db, serviceIds) => {
+    if (serviceIds.length === 0) return new Set()
+    const rows = await db
+      .select({ serviceId: hosting.serviceId, options: hosting.options })
+      .from(hosting)
+      .where(inArray(hosting.serviceId, [...serviceIds]))
+    return new Set(
+      rows.filter((row) => readHostnames(row.options).length > 0).map((r) => r.serviceId)
+    )
+  },
   loadCaPem: async (db, secrets, organizationId) => {
     const ca = await ensureActiveOrganizationCa(db, secrets, organizationId)
     return 'kind' in ca ? undefined : ca.trustBundlePem
@@ -71,7 +99,7 @@ export async function withSiteDbBindings(
     warnings: SiteDbBindingsWarning[]
   }>,
   deps: SiteDbBindingsDeps = defaultDeps
-): Promise<EnvironmentDeploySite[]> {
+): Promise<EnvironmentDeploySite[] | SiteDbBindingsError> {
   if (params.sites.length === 0 || !dataEncryptionSecrets) return [...params.sites]
   const idByName = new Map(params.serviceRows.map((row) => [row.composeServiceName, row.id]))
   const needs = await deps.loadNeeds(
@@ -79,6 +107,14 @@ export async function withSiteDbBindings(
     params.sites.flatMap((site) => idByName.get(site.composeServiceName) ?? [])
   )
   if (needs.size === 0) return [...params.sites]
+
+  const hosted = await deps.loadHostedServiceIds(db, [...needs.keys()])
+  for (const site of params.sites) {
+    const id = idByName.get(site.composeServiceName)
+    if (id !== undefined && needs.has(id) && !hosted.has(id)) {
+      return siteNeedsHostnameError(site.composeServiceName)
+    }
+  }
 
   const supported = params.daemonFeatures.includes(SITE_DB_BINDINGS_FEATURE)
   const pem = supported
