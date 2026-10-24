@@ -1407,6 +1407,85 @@ test('onSwitchoverPromoteFailed does not reactivate after promote_started on the
   )
 })
 
+const TARGET_NOT_RUNNING =
+  'switchover_promote:target_not_running: managed.promote: no running containers for m1'
+
+function reactivations(harness: ReturnType<typeof createHarness>): number {
+  return harness.commandInserts.filter(
+    (row) =>
+      (row.payload as Record<string, unknown> | undefined)?.reactivateAfterSwitchoverAbort === true
+  ).length
+}
+
+test('a postgres switchover whose target is not running brings the old primary back', async () => {
+  const harness = createHarness({
+    members: [member(), failoverReplica()],
+    connected: [true, true],
+    recovery: recoveryRow({ kind: 'switchover', state: 'promoting', metadata: {} }),
+  })
+  await onSwitchoverPromoteFailed(harness.db, okQueue(), {
+    recoveryId: REC_ID,
+    engine: 'postgres',
+    actor: ACTOR,
+    commandError: TARGET_NOT_RUNNING,
+  })
+  assertEquals(harness.recovery()?.state, 'blocked')
+  assertEquals(reactivations(harness), 1)
+})
+
+test('a postgres promote that was re-queued once keeps the old primary fenced', async () => {
+  const harness = createHarness({
+    members: [member(), failoverReplica()],
+    connected: [true, true],
+    recovery: recoveryRow({
+      kind: 'switchover',
+      state: 'promoting',
+      metadata: { promoteResumes: 1 },
+    }),
+  })
+  await onSwitchoverPromoteFailed(harness.db, okQueue(), {
+    recoveryId: REC_ID,
+    engine: 'postgres',
+    actor: ACTOR,
+    commandError: TARGET_NOT_RUNNING,
+  })
+  assertEquals(reactivations(harness), 0)
+})
+
+test('a mysql promote that was re-queued once keeps the old primary fenced on target_not_running', async () => {
+  const harness = createHarness({
+    members: [member(), failoverReplica()],
+    connected: [true, true],
+    recovery: recoveryRow({
+      kind: 'switchover',
+      state: 'promoting',
+      metadata: { switchoverRequiredGtidSet: '0-1-5', promoteResumes: 1 },
+    }),
+  })
+  await onSwitchoverPromoteFailed(harness.db, okQueue(), {
+    recoveryId: REC_ID,
+    engine: 'mysql',
+    actor: ACTOR,
+    commandError: TARGET_NOT_RUNNING,
+  })
+  assertEquals(reactivations(harness), 0)
+})
+
+test('a postgres promote that failed any other way keeps the old primary fenced', async () => {
+  const harness = createHarness({
+    members: [member(), failoverReplica()],
+    connected: [true, true],
+    recovery: recoveryRow({ kind: 'switchover', state: 'promoting', metadata: {} }),
+  })
+  await onSwitchoverPromoteFailed(harness.db, okQueue(), {
+    recoveryId: REC_ID,
+    engine: 'postgres',
+    actor: ACTOR,
+    commandError: 'switchover_promote:promote_unconfirmed: command timed out',
+  })
+  assertEquals(reactivations(harness), 0)
+})
+
 test('beginOperatorSwitchover skips drain on disconnected peers and still stops the writer', async () => {
   const queue = okQueue()
   const harness = createHarness({

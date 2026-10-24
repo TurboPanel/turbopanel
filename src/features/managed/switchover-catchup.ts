@@ -13,7 +13,11 @@ import type {
 export const SWITCHOVER_GTID_WAIT_SECONDS = 90
 
 export type SwitchoverPromoteFailureCode =
-  'gtid_wait_timeout' | 'gtid_wait_error' | 'promote_started' | 'promote_unconfirmed'
+  | 'gtid_wait_timeout'
+  | 'gtid_wait_error'
+  | 'promote_started'
+  | 'promote_unconfirmed'
+  | 'target_not_running'
 
 const SWITCHOVER_PROMOTE_ERROR_PREFIX = 'switchover_promote:'
 
@@ -22,7 +26,7 @@ export function parseSwitchoverPromoteFailureCode(
 ): SwitchoverPromoteFailureCode | null {
   if (!error) return null
   const match = new RegExp(
-    `^${SWITCHOVER_PROMOTE_ERROR_PREFIX}(gtid_wait_timeout|gtid_wait_error|promote_started|promote_unconfirmed):`
+    `^${SWITCHOVER_PROMOTE_ERROR_PREFIX}(gtid_wait_timeout|gtid_wait_error|promote_started|promote_unconfirmed|target_not_running):`
   ).exec(error)
   if (!match) return null
   return match[1] as SwitchoverPromoteFailureCode
@@ -30,13 +34,15 @@ export function parseSwitchoverPromoteFailureCode(
 
 /**
  * The target itself reported that promotion never started — safe to bring the
- * old primary back. `promote_unconfirmed` (the command went unanswered) is not:
- * the target may be promoting, so the old primary stays fenced.
+ * old primary back. `target_not_running`: the target had no running engine
+ * container, so nothing was promoted (any engine). `promote_unconfirmed` (the
+ * command went unanswered) is not: the target may be promoting, so the old
+ * primary stays fenced.
  */
 export function switchoverPromoteFailureShouldReactivateOldPrimary(
   code: SwitchoverPromoteFailureCode | null
 ): boolean {
-  return code === 'gtid_wait_timeout' || code === 'gtid_wait_error'
+  return code === 'gtid_wait_timeout' || code === 'gtid_wait_error' || code === 'target_not_running'
 }
 
 export function switchoverPromoteTimedOutCommandError(message: string): string {

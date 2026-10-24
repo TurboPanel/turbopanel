@@ -97,6 +97,13 @@ test('switchoverPromoteFailureShouldReactivateOldPrimary covers pre-writable fai
   assertEquals(switchoverPromoteFailureShouldReactivateOldPrimary(null), false)
 })
 
+test('a target with no running engine is parsed and never promoted, so the old primary comes back', () => {
+  const error =
+    'switchover_promote:target_not_running: managed.promote: no running containers for m1'
+  assertEquals(parseSwitchoverPromoteFailureCode(error), 'target_not_running')
+  assertEquals(switchoverPromoteFailureShouldReactivateOldPrimary('target_not_running'), true)
+})
+
 test('an unanswered promote is not a reason to bring the old primary back', () => {
   assertEquals(
     parseSwitchoverPromoteFailureCode(switchoverPromoteTimedOutCommandError('command timed out')),

@@ -97,6 +97,8 @@ import {
 } from '../../lib/principal-name-scheme.ts'
 import { assertDispatchInfrastructure } from '../servers/command-dispatch.ts'
 import { getCommandQueue } from '../../features/commands/queue.ts'
+import { cancelOpenReturnFenceStops } from '../../features/commands/command-records.ts'
+import { cancelStopsOnceQueued } from '../../features/managed/ha-return-fence.ts'
 import { loadServerStatusRecords } from '../servers/update-status.ts'
 import { assertCanManageOr403, getOrgId, parseJsonBody, requireStringField } from '../shared.ts'
 import { assertServerDatacenterReady } from '../../features/net/datacenter-networks.ts'
@@ -3314,11 +3316,16 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     })
     if (prepared instanceof Response) return prepared
 
+    // A stop queued for the member's old data must not outlive the re-seed,
+    // but only once the re-seed itself is queued.
     const enqueued = await enqueuePreparedManagedApply(c, db, prepared.commandQueue, {
       userId: auth.userId,
       managedId: row.id,
       members: prepared.members,
     })
+    await cancelStopsOnceQueued(enqueued, () =>
+      cancelOpenReturnFenceStops(db, row.id, member.serverId)
+    )
     if (enqueued instanceof Response) return enqueued
 
     const primary = pickPrimaryCommandResult(enqueued)
