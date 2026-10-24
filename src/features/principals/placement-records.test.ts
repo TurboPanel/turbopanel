@@ -264,6 +264,7 @@ test("loadPrincipalUsage counts the principal's database logins", async () => {
       .returning({ id: managed.id })
     try {
       await db.insert(login).values({
+        recipe: 'app',
         managedId: cluster!.id,
         principalId: composePrincipalId,
         role: 'user',

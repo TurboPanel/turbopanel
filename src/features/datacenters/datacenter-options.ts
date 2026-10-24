@@ -1,6 +1,9 @@
 /**
  * Defensive parsers for `datacenter.options` jsonb fields used by the
- * client timezone, host-defaults, and routing-policy APIs.
+ * client timezone, host-defaults, and routing-policy APIs. The routing policy
+ * (`priority`, `trusted`, `addressPreference`) is stored in real columns; the
+ * request-side parser still accepts those keys inside `options` (the wire
+ * shape) and the helpers below move them to and from the columns.
  */
 
 import { parseNtpDefaults, parseSshPort, type NtpDefaults } from '../servers/host-defaults.ts'
@@ -50,11 +53,26 @@ export type DatacenterOptions = {
   location?: LocationFields
 }
 
-/** Effective `priority` when `datacenter.options.priority` is absent. */
+/** What a datacenter network is, as stored in `datacenter.kind` (NULL = never said). */
+export const DATACENTER_KINDS = ['lan', 'backplane', 'provider_private'] as const
+export type DatacenterKind = (typeof DATACENTER_KINDS)[number]
+/** Address families `datacenter.address_preference` may hold. */
+export const DATACENTER_ADDRESS_PREFERENCES = ['ipv6', 'ipv4'] as const
+
+/** A request's `kind`: absent stays `undefined`, `null` clears, anything but a listed value is invalid. */
+export function parseDatacenterKind(
+  value: unknown
+): { ok: true; value: DatacenterKind | null | undefined } | { ok: false } {
+  if (value === undefined || value === null) return { ok: true, value }
+  const kind = DATACENTER_KINDS.find((candidate) => candidate === value)
+  return kind ? { ok: true, value: kind } : { ok: false }
+}
+
+/** Default `datacenter.priority` column value. */
 export const DEFAULT_DATACENTER_PRIORITY = 100
 export const DATACENTER_PRIORITY_MIN = 0
 export const DATACENTER_PRIORITY_MAX = 1000
-/** Effective `trusted` when `datacenter.options.trusted` is absent. */
+/** Default `datacenter.trusted` column value. */
 export const DEFAULT_DATACENTER_TRUSTED = true
 
 /** Integer in range → the value; anything else → undefined (never clamps). */
@@ -85,16 +103,60 @@ export type DatacenterPolicy = {
   trusted: boolean
 }
 
+/** The routing policy as stored: the real `datacenter` columns (all NOT NULL, defaults applied). */
+export type DatacenterPolicyColumns = {
+  priority: number
+  isTrusted: boolean
+  addressPreference: 'ipv6' | 'ipv4'
+}
+
+/** Effective `addressPreference` when the request carries none (RFC 6724). */
+export const DEFAULT_DATACENTER_ADDRESS_PREFERENCE = 'ipv6'
+
+/** The three policy columns a datacenter row carries, taken from a row. */
+export function resolveDatacenterPolicy(
+  row: Pick<DatacenterPolicyColumns, 'priority' | 'isTrusted'>
+): DatacenterPolicy {
+  return { priority: row.priority, trusted: row.isTrusted }
+}
+
 /**
- * Effective routing policy: parsed `options` with documented defaults applied
- * (`priority` → `DEFAULT_DATACENTER_PRIORITY`, `trusted` → `DEFAULT_DATACENTER_TRUSTED`).
- * Accepts raw jsonb so callers can hand it a `datacenter.options` row value.
+ * The column values a request's parsed `options` stands for: a key the request
+ * left out resets its column to the documented default (`options` is
+ * replace-all), and `null` (cleared options) resets all three.
  */
-export function resolveDatacenterPolicy(value: unknown): DatacenterPolicy {
-  const options = parseDatacenterOptions(value)
+export function policyColumnsFromOptions(
+  options: DatacenterOptions | null | undefined
+): DatacenterPolicyColumns {
   return {
-    priority: options.priority ?? DEFAULT_DATACENTER_PRIORITY,
-    trusted: options.trusted ?? DEFAULT_DATACENTER_TRUSTED,
+    priority: options?.priority ?? DEFAULT_DATACENTER_PRIORITY,
+    isTrusted: options?.trusted ?? DEFAULT_DATACENTER_TRUSTED,
+    addressPreference: options?.addressPreference ?? DEFAULT_DATACENTER_ADDRESS_PREFERENCE,
+  }
+}
+
+/** `options` as stored in the jsonb column: the three policy keys live in columns, never here. */
+export function storedDatacenterOptions(
+  options: DatacenterOptions | null | undefined
+): Omit<DatacenterOptions, 'priority' | 'trusted' | 'addressPreference'> | null {
+  if (!options) return null
+  const { priority: _p, trusted: _t, addressPreference: _a, ...rest } = options
+  return Object.keys(rest).length > 0 ? rest : null
+}
+
+/**
+ * The `options` object the API returns: the stored jsonb with the three policy
+ * columns laid over it, so the wire shape (`options.priority`, `.trusted`,
+ * `.addressPreference`) is what it was before they became columns.
+ */
+export function datacenterWireOptions(
+  row: DatacenterPolicyColumns & { options: unknown }
+): DatacenterOptions {
+  return {
+    ...parseDatacenterOptions(row.options),
+    priority: row.priority,
+    trusted: row.isTrusted,
+    addressPreference: row.addressPreference,
   }
 }
 

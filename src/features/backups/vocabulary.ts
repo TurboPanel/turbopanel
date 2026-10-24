@@ -36,3 +36,17 @@ export function backupRelativePath(path: string, kind: 'managed' | 'copy', id: s
   const cut = path.lastIndexOf(`/${marker}`)
   return cut < 0 ? path : path.slice(cut + 1)
 }
+
+/** Where a backup can be copied to. Only S3-compatible object storage for now. */
+export const BACKUP_TARGET_STORE_KINDS = ['s3'] as const
+
+export type BackupTargetStoreKind = (typeof BACKUP_TARGET_STORE_KINDS)[number]
+
+/**
+ * How copying one backup to its target stands. `pending` waits for the host,
+ * `copying` is uploading, `copied` is safe in the bucket, `failed` carries a
+ * plain reason, `removed` was pruned from the bucket by retention.
+ */
+export const BACKUP_COPY_STATES = ['pending', 'copying', 'copied', 'failed', 'removed'] as const
+
+export type BackupCopyState = (typeof BACKUP_COPY_STATES)[number]

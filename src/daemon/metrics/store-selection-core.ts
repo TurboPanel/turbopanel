@@ -11,6 +11,8 @@ import type {
   EntitySeriesResult,
   FleetHostSnapshotQuery,
   FleetHostSnapshotResult,
+  HostFactsQuery,
+  HostFactsResult,
   HostSeriesQuery,
   HostSeriesResult,
   HostSummaryQuery,
@@ -153,6 +155,10 @@ export class UnavailableServerMetricsStore implements ServerMetricsStore {
   queryMetricEvents(_input: MetricEventsQuery): Promise<MetricEventsResult> {
     return Promise.reject(new Error(this.reason))
   }
+
+  queryHostFacts(_input: HostFactsQuery): Promise<HostFactsResult> {
+    return Promise.reject(new Error(this.reason))
+  }
 }
 
 export type ResolveServerMetricsStoreInput = {
@@ -166,5 +172,7 @@ export type ResolveServerMetricsStoreInput = {
     threads?: number
     memoryLimitMb?: number
     retentionDays?: number
+    /** Cap for the whole metrics store in bytes (default 5 GiB, `TURBOPANEL_SERVER_METRICS_MAX_BYTES`). */
+    maxBytes?: number
   }
 }

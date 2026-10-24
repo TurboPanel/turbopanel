@@ -287,7 +287,7 @@ test('GET /servers/:id/services lists a container app and a database replica', a
         name: 'Data',
         workspaceId: ctx.workspaceId,
         organizationId: ctx.organizationId,
-        metadata: { type: 'managed' },
+        kind: 'managed',
       })
       .returning({ id: project.id })
     const [dbEnv] = await ctx.db
@@ -514,7 +514,7 @@ test('GET /servers/:id/services groups two database bindings on one app', async 
         name: 'Data',
         workspaceId: ctx.workspaceId,
         organizationId: ctx.organizationId,
-        metadata: { type: 'managed' },
+        kind: 'managed',
       })
       .returning({ id: project.id })
     const [dbEnv] = await ctx.db
@@ -546,6 +546,7 @@ test('GET /servers/:id/services groups two database bindings on one app', async 
     const [shopUser] = await ctx.db
       .insert(login)
       .values({
+        recipe: 'app',
         managedId: cluster!.id,
         role: 'user',
         username: `shop_${suffix}`,
@@ -555,6 +556,7 @@ test('GET /servers/:id/services groups two database bindings on one app', async 
     const [ordersUser] = await ctx.db
       .insert(login)
       .values({
+        recipe: 'app',
         managedId: cluster!.id,
         role: 'user',
         username: `orders_${suffix}`,

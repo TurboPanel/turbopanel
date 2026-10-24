@@ -1,32 +1,26 @@
-import { assertEquals } from "@std/assert";
-import { Hono } from "hono";
-import type { AppEnv } from "../../../app/app.ts";
-import { CLIENT_API_PREFIX } from "../../../app/surfaces.ts";
-import { parseTestSecretsConfig } from "../../../test-fixtures/secrets.ts";
-import {
-  createAuthRateLimiter,
-  setSharedAuthRateLimiterForTests,
-} from "../auth-rate-limit.ts";
+import { assertEquals } from '@std/assert'
+import { Hono } from 'hono'
+import type { AppEnv } from '../../../app/app.ts'
+import { CLIENT_API_PREFIX } from '../../../app/surfaces.ts'
+import { parseTestSecretsConfig } from '../../../test-fixtures/secrets.ts'
+import { createAuthRateLimiter, setSharedAuthRateLimiterForTests } from '../auth-rate-limit.ts'
 import {
   createEmptyMockAuthState,
   createMockAuthDb,
   seedMockCredentialUser,
   seedMockSignupEnabled,
   seedMockUser,
-} from "../authn-hostfree-doubles.ts";
-import { buildSignedCookie, HTTPS_SESSION_COOKIE_NAME } from "../crypto.ts";
-import { registerAuthRoutes } from "../http.ts";
-import { hashPassword } from "../../../lib/secrets/password.ts";
-import { deriveSecretsConfig } from "../../../lib/secrets/secrets.ts";
-import { createSession } from "../session-store.ts";
-import { REAUTH_WINDOW_MS } from "../reauth.ts";
-import { TWO_FACTOR_CHALLENGE_PURPOSE } from "../two-factor.ts";
-import {
-  OAUTH_STATE_TTL_MS,
-  pkceChallenge,
-  signOAuthState,
-} from "./oauth-state.ts";
-import { oauthFlowCookieName } from "./oauth-http.ts";
+} from '../authn-hostfree-doubles.ts'
+import { buildSignedCookie, HTTPS_SESSION_COOKIE_NAME } from '../crypto.ts'
+import { registerAuthRoutes } from '../http.ts'
+import { hashPassword } from '../../../lib/secrets/password.ts'
+import { deriveSecretsConfig } from '../../../lib/secrets/secrets.ts'
+import { createSession, getSession } from '../session-store.ts'
+import { stampStepUp } from '../step-up.ts'
+import { REAUTH_WINDOW_MS } from '../reauth.ts'
+import { TWO_FACTOR_CHALLENGE_PURPOSE } from '../two-factor.ts'
+import { OAUTH_STATE_TTL_MS, pkceChallenge, signOAuthState } from './oauth-state.ts'
+import { oauthFlowCookieName } from './oauth-http.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -34,24 +28,24 @@ import { oauthFlowCookieName } from "./oauth-http.ts";
  * Sonar typescript:S2187 only recognizes `test()` / `it()` / `describe()` and
  * reports Deno suites as empty; keep this alias so analysis sees real tests.
  */
-const test = Deno.test.bind(Deno);
+const test = Deno.test.bind(Deno)
 
 /**
  * The cookie `/start` leaves on the browser that began a flow. A test that
  * signs its own state must sign {@link FLOW_NONCE} (the verifier's S256
  * challenge) and present this cookie on the callback, as a real browser does.
  */
-const FLOW_VERIFIER = "test-only-pkce-verifier-0123456789-abcdefghijklmn";
-const FLOW_NONCE = await pkceChallenge(FLOW_VERIFIER);
-const FLOW_COOKIE = `${oauthFlowCookieName(true)}=${FLOW_VERIFIER}`;
+const FLOW_VERIFIER = 'test-only-pkce-verifier-0123456789-abcdefghijklmn'
+const FLOW_NONCE = await pkceChallenge(FLOW_VERIFIER)
+const FLOW_COOKIE = `${oauthFlowCookieName(true)}=${FLOW_VERIFIER}`
 
 /** The flow cookie a real `GET /start` response set. */
 function flowCookieFrom(start: Response): string {
   const line = start.headers
     .getSetCookie()
-    .find((entry) => entry.startsWith(`${oauthFlowCookieName(true)}=`));
-  if (!line) throw new TypeError("/start set no OAuth flow cookie");
-  return line.split(";")[0]!;
+    .find((entry) => entry.startsWith(`${oauthFlowCookieName(true)}=`))
+  if (!line) throw new TypeError('/start set no OAuth flow cookie')
+  return line.split(';')[0]!
 }
 
 /**
@@ -60,1083 +54,1042 @@ function flowCookieFrom(start: Response): string {
  * cookies (e.g. the session).
  */
 function withFlowCookie(otherCookies?: string, start?: Response): RequestInit {
-  const flow = start ? flowCookieFrom(start) : FLOW_COOKIE;
+  const flow = start ? flowCookieFrom(start) : FLOW_COOKIE
   return {
     headers: { cookie: otherCookies ? `${otherCookies}; ${flow}` : flow },
-  };
+  }
 }
 
-const AUTH = `${CLIENT_API_PREFIX}/auth`;
-const ORIGIN = "https://panel.example.com";
-const PASSWORD = "Sup3r-secret!";
+const AUTH = `${CLIENT_API_PREFIX}/auth`
+const ORIGIN = 'https://panel.example.com'
+const PASSWORD = 'Sup3r-secret!'
 const GITHUB_ENV = {
-  TURBOPANEL_AUTH_PROVIDERS__GITHUB_CLIENT_ID: "gh-client",
-  TURBOPANEL_AUTH_PROVIDERS__GITHUB_CLIENT_SECRET: "gh-secret",
-};
+  TURBOPANEL_AUTH_PROVIDERS__GITHUB_CLIENT_ID: 'gh-client',
+  TURBOPANEL_AUTH_PROVIDERS__GITHUB_CLIENT_SECRET: 'gh-secret',
+}
 const GOOGLE_ENV = {
-  TURBOPANEL_AUTH_PROVIDERS__GOOGLE_CLIENT_ID: "google-client",
-  TURBOPANEL_AUTH_PROVIDERS__GOOGLE_CLIENT_SECRET: "google-secret",
-};
-const BOTH_PROVIDERS_ENV = { ...GITHUB_ENV, ...GOOGLE_ENV };
+  TURBOPANEL_AUTH_PROVIDERS__GOOGLE_CLIENT_ID: 'google-client',
+  TURBOPANEL_AUTH_PROVIDERS__GOOGLE_CLIENT_SECRET: 'google-secret',
+}
+const BOTH_PROVIDERS_ENV = { ...GITHUB_ENV, ...GOOGLE_ENV }
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { "content-type": "application/json" },
-  });
+    headers: { 'content-type': 'application/json' },
+  })
 }
 
 function stubGithubIdentityFetch(identity?: { id?: number }): () => void {
-  const githubId = identity?.id ?? 99;
-  const original = globalThis.fetch;
+  const githubId = identity?.id ?? 99
+  const original = globalThis.fetch
   globalThis.fetch = (input) => {
-    const url = String(input);
-    if (url.includes("/login/oauth/access_token")) {
-      return Promise.resolve(jsonResponse({ access_token: "gho_test" }));
+    const url = String(input)
+    if (url.includes('/login/oauth/access_token')) {
+      return Promise.resolve(jsonResponse({ access_token: 'gho_test' }))
     }
-    if (url.endsWith("/user") && !url.includes("emails")) {
-      return Promise.resolve(jsonResponse({
-        id: githubId,
-        login: "octocat",
-        name: "Octo Cat",
-      }));
+    if (url.endsWith('/user') && !url.includes('emails')) {
+      return Promise.resolve(
+        jsonResponse({
+          id: githubId,
+          login: 'octocat',
+          name: 'Octo Cat',
+        })
+      )
     }
-    if (url.includes("/user/emails")) {
-      return Promise.resolve(jsonResponse([
-        { email: "octocat@example.com", primary: true, verified: true },
-      ]));
+    if (url.includes('/user/emails')) {
+      return Promise.resolve(
+        jsonResponse([{ email: 'octocat@example.com', primary: true, verified: true }])
+      )
     }
-    return Promise.reject(new Error(`unexpected fetch ${url}`));
-  };
+    return Promise.reject(new Error(`unexpected fetch ${url}`))
+  }
   return () => {
-    globalThis.fetch = original;
-  };
+    globalThis.fetch = original
+  }
 }
 
-function stubGoogleIdentityFetch(
-  identity?: { sub?: string; email?: string },
-): () => void {
-  const sub = identity?.sub ?? "google-sub-99";
-  const email = identity?.email ?? "googler@example.com";
-  const original = globalThis.fetch;
+function stubGoogleIdentityFetch(identity?: { sub?: string; email?: string }): () => void {
+  const sub = identity?.sub ?? 'google-sub-99'
+  const email = identity?.email ?? 'googler@example.com'
+  const original = globalThis.fetch
   globalThis.fetch = (input) => {
-    const url = String(input);
-    if (url.includes("oauth2.googleapis.com/token")) {
-      return Promise.resolve(jsonResponse({ access_token: "ya29_test" }));
+    const url = String(input)
+    if (url.includes('oauth2.googleapis.com/token')) {
+      return Promise.resolve(jsonResponse({ access_token: 'ya29_test' }))
     }
-    if (url.includes("openidconnect.googleapis.com/v1/userinfo")) {
-      return Promise.resolve(jsonResponse({
-        sub,
-        email,
-        email_verified: true,
-        name: "Googler",
-      }));
+    if (url.includes('openidconnect.googleapis.com/v1/userinfo')) {
+      return Promise.resolve(
+        jsonResponse({
+          sub,
+          email,
+          email_verified: true,
+          name: 'Googler',
+        })
+      )
     }
-    return Promise.reject(new Error(`unexpected fetch ${url}`));
-  };
+    return Promise.reject(new Error(`unexpected fetch ${url}`))
+  }
   return () => {
-    globalThis.fetch = original;
-  };
+    globalThis.fetch = original
+  }
 }
 
 async function buildApp(opts?: {
-  signupEnabled?: boolean;
-  withSecrets?: boolean;
-  withTwoFactorChallengeSecrets?: boolean;
-  platformEnv?: Record<string, string | undefined>;
-  runtime?: "deno" | "workers";
-  omitBaseUrl?: boolean;
+  signupEnabled?: boolean
+  withSecrets?: boolean
+  withTwoFactorChallengeSecrets?: boolean
+  platformEnv?: Record<string, string | undefined>
+  runtime?: 'deno' | 'workers'
+  omitBaseUrl?: boolean
 }) {
-  const config = parseTestSecretsConfig("deno");
-  const secrets = await deriveSecretsConfig(config, "session-signing");
-  const twoFactorChallengeSecrets = await deriveSecretsConfig(
-    config,
-    TWO_FACTOR_CHALLENGE_PURPOSE,
-  );
-  const state = createEmptyMockAuthState();
-  seedMockSignupEnabled(state, opts?.signupEnabled ?? false);
-  const db = createMockAuthDb(state);
+  const config = parseTestSecretsConfig('deno')
+  const secrets = await deriveSecretsConfig(config, 'session-signing')
+  const twoFactorChallengeSecrets = await deriveSecretsConfig(config, TWO_FACTOR_CHALLENGE_PURPOSE)
+  const state = createEmptyMockAuthState()
+  seedMockSignupEnabled(state, opts?.signupEnabled ?? false)
+  const db = createMockAuthDb(state)
   const limiter = createAuthRateLimiter({
     defaultPolicy: { limit: 100, windowMs: 60_000 },
-  });
-  setSharedAuthRateLimiterForTests(limiter);
+  })
+  setSharedAuthRateLimiterForTests(limiter)
 
-  const app = new Hono<AppEnv>();
-  app.use("*", (c, next) => {
-    c.set("db", db);
-    c.set("secretsConfig", config);
-    c.set("platformEnv", opts?.platformEnv ?? GITHUB_ENV);
-    c.set("authRateLimiter", limiter);
-    return next();
-  });
-  const client = new Hono<AppEnv>();
+  const app = new Hono<AppEnv>()
+  app.use('*', (c, next) => {
+    c.set('db', db)
+    c.set('secretsConfig', config)
+    c.set('platformEnv', opts?.platformEnv ?? GITHUB_ENV)
+    c.set('authRateLimiter', limiter)
+    return next()
+  })
+  const client = new Hono<AppEnv>()
   registerAuthRoutes(client, {
     ...(opts?.withSecrets === false ? {} : { secrets }),
-    ...(opts?.withTwoFactorChallengeSecrets === false
-      ? {}
-      : { twoFactorChallengeSecrets }),
-    runtime: opts?.runtime ?? "deno",
-    signupEnvOverride: opts?.signupEnabled === true ? "1" : "0",
+    ...(opts?.withTwoFactorChallengeSecrets === false ? {} : { twoFactorChallengeSecrets }),
+    runtime: opts?.runtime ?? 'deno',
+    signupEnvOverride: opts?.signupEnabled === true ? '1' : '0',
     ...(opts?.omitBaseUrl ? {} : { baseUrl: ORIGIN }),
-  });
-  app.route(CLIENT_API_PREFIX, client);
+  })
+  app.route(CLIENT_API_PREFIX, client)
 
-  return { app, db, state, secrets, config };
+  return { app, db, state, secrets, config }
 }
 
 function assertRedirectNotJson(res: Response, location: string) {
-  assertEquals(res.status, 302);
-  assertEquals(res.headers.get("location"), location);
-  const contentType = res.headers.get("content-type") ?? "";
-  assertEquals(contentType.includes("json"), false);
+  assertEquals(res.status, 302)
+  assertEquals(res.headers.get('location'), location)
+  const contentType = res.headers.get('content-type') ?? ''
+  assertEquals(contentType.includes('json'), false)
 }
 
-test("unconfigured provider start returns 404", async () => {
-  const config = parseTestSecretsConfig("deno");
-  const secrets = await deriveSecretsConfig(config, "session-signing");
-  const state = createEmptyMockAuthState();
-  const db = createMockAuthDb(state);
+test('unconfigured provider start returns 404', async () => {
+  const config = parseTestSecretsConfig('deno')
+  const secrets = await deriveSecretsConfig(config, 'session-signing')
+  const state = createEmptyMockAuthState()
+  const db = createMockAuthDb(state)
   const limiter = createAuthRateLimiter({
     defaultPolicy: { limit: 100, windowMs: 60_000 },
-  });
-  setSharedAuthRateLimiterForTests(limiter);
-  const app = new Hono<AppEnv>();
-  app.use("*", (c, next) => {
-    c.set("db", db);
-    c.set("secretsConfig", config);
-    c.set("platformEnv", {});
-    c.set("authRateLimiter", limiter);
-    return next();
-  });
-  const client = new Hono<AppEnv>();
+  })
+  setSharedAuthRateLimiterForTests(limiter)
+  const app = new Hono<AppEnv>()
+  app.use('*', (c, next) => {
+    c.set('db', db)
+    c.set('secretsConfig', config)
+    c.set('platformEnv', {})
+    c.set('authRateLimiter', limiter)
+    return next()
+  })
+  const client = new Hono<AppEnv>()
   registerAuthRoutes(client, {
     secrets,
-    runtime: "deno",
+    runtime: 'deno',
     signupEnvOverride: undefined,
-  });
-  app.route(CLIENT_API_PREFIX, client);
+  })
+  app.route(CLIENT_API_PREFIX, client)
 
-  const res = await app.request(`${ORIGIN}${AUTH}/oauth/github/start`);
-  assertEquals(res.status, 404);
-});
+  const res = await app.request(`${ORIGIN}${AUTH}/oauth/github/start`)
+  assertEquals(res.status, 404)
+})
 
-test("start redirects to GitHub authorize URL with signed state", async () => {
-  const { app } = await buildApp();
-  const res = await app.request(`${ORIGIN}${AUTH}/oauth/github/start`);
-  assertEquals(res.status, 302);
-  const location = res.headers.get("location") ?? "";
-  assertEquals(
-    location.includes("https://github.com/login/oauth/authorize"),
-    true,
-  );
-  assertEquals(location.includes("client_id=gh-client"), true);
-  assertEquals(location.includes("state="), true);
-});
+test('start redirects to GitHub authorize URL with signed state', async () => {
+  const { app } = await buildApp()
+  const res = await app.request(`${ORIGIN}${AUTH}/oauth/github/start`)
+  assertEquals(res.status, 302)
+  const location = res.headers.get('location') ?? ''
+  assertEquals(location.includes('https://github.com/login/oauth/authorize'), true)
+  assertEquals(location.includes('client_id=gh-client'), true)
+  assertEquals(location.includes('state='), true)
+})
 
-test("Workers OAuth callback stays on the hosted https origin", async () => {
-  const previousBase = Deno.env.get("TURBOPANEL_BASE_URL");
-  const previousPublic = Deno.env.get("TURBOPANEL_PUBLIC_URLS");
-  Deno.env.delete("TURBOPANEL_BASE_URL");
-  Deno.env.delete("TURBOPANEL_PUBLIC_URLS");
+test('Workers OAuth callback stays on the hosted https origin', async () => {
+  const previousBase = Deno.env.get('TURBOPANEL_BASE_URL')
+  const previousPublic = Deno.env.get('TURBOPANEL_PUBLIC_URLS')
+  Deno.env.delete('TURBOPANEL_BASE_URL')
+  Deno.env.delete('TURBOPANEL_PUBLIC_URLS')
   try {
     const { app } = await buildApp({
-      runtime: "workers",
+      runtime: 'workers',
       omitBaseUrl: true,
       platformEnv: {
         ...BOTH_PROVIDERS_ENV,
-        TURBOPANEL_BASE_URL: "https://turbopanel.app",
+        TURBOPANEL_BASE_URL: 'https://turbopanel.app',
       },
-    });
-    const github = await app.request(`${ORIGIN}${AUTH}/oauth/github/start`);
-    const google = await app.request(`${ORIGIN}${AUTH}/oauth/google/start`);
-    assertEquals(github.status, 302);
-    assertEquals(google.status, 302);
-    const githubCallback =
-      "https://turbopanel.app/api/client/v1/auth/oauth/github/callback";
-    const googleCallback =
-      "https://turbopanel.app/api/client/v1/auth/oauth/google/callback";
-    const githubLocation = github.headers.get("location") ?? "";
-    const googleLocation = google.headers.get("location") ?? "";
+    })
+    const github = await app.request(`${ORIGIN}${AUTH}/oauth/github/start`)
+    const google = await app.request(`${ORIGIN}${AUTH}/oauth/google/start`)
+    assertEquals(github.status, 302)
+    assertEquals(google.status, 302)
+    const githubCallback = 'https://turbopanel.app/api/client/v1/auth/oauth/github/callback'
+    const googleCallback = 'https://turbopanel.app/api/client/v1/auth/oauth/google/callback'
+    const githubLocation = github.headers.get('location') ?? ''
+    const googleLocation = google.headers.get('location') ?? ''
     assertEquals(
-      githubLocation.includes(
-        `redirect_uri=${encodeURIComponent(githubCallback)}`,
-      ),
-      true,
-    );
+      githubLocation.includes(`redirect_uri=${encodeURIComponent(githubCallback)}`),
+      true
+    )
     assertEquals(
-      googleLocation.includes(
-        `redirect_uri=${encodeURIComponent(googleCallback)}`,
-      ),
-      true,
-    );
-    assertEquals(githubLocation.includes("8443"), false);
-    assertEquals(googleLocation.includes("8443"), false);
+      googleLocation.includes(`redirect_uri=${encodeURIComponent(googleCallback)}`),
+      true
+    )
+    assertEquals(githubLocation.includes('8443'), false)
+    assertEquals(googleLocation.includes('8443'), false)
   } finally {
-    if (previousBase === undefined) Deno.env.delete("TURBOPANEL_BASE_URL");
-    else Deno.env.set("TURBOPANEL_BASE_URL", previousBase);
-    if (previousPublic === undefined) Deno.env.delete("TURBOPANEL_PUBLIC_URLS");
-    else Deno.env.set("TURBOPANEL_PUBLIC_URLS", previousPublic);
+    if (previousBase === undefined) Deno.env.delete('TURBOPANEL_BASE_URL')
+    else Deno.env.set('TURBOPANEL_BASE_URL', previousBase)
+    if (previousPublic === undefined) Deno.env.delete('TURBOPANEL_PUBLIC_URLS')
+    else Deno.env.set('TURBOPANEL_PUBLIC_URLS', previousPublic)
   }
-});
+})
 
-test("callback with tampered or expired state redirects oauth_state_invalid", async () => {
-  const { app, config } = await buildApp();
+test('callback with tampered or expired state redirects oauth_state_invalid', async () => {
+  const { app, config } = await buildApp()
   const tampered = await app.request(
     `${ORIGIN}${AUTH}/oauth/github/callback?code=x&state=not-an-envelope`,
-  withFlowCookie(),
-);
-  assertEquals(tampered.status, 302);
-  assertEquals(
-    tampered.headers.get("location"),
-    "/sign-in?error=oauth_state_invalid",
-  );
+    withFlowCookie()
+  )
+  assertEquals(tampered.status, 302)
+  assertEquals(tampered.headers.get('location'), '/sign-in?error=oauth_state_invalid')
 
-  const expiredState = await signOAuthState(config, {
-    provider: "github",
-    nonce: FLOW_NONCE,
-    redirectTo: "/",
-  }, Date.now() - OAUTH_STATE_TTL_MS - 1_000);
+  const expiredState = await signOAuthState(
+    config,
+    {
+      provider: 'github',
+      nonce: FLOW_NONCE,
+      redirectTo: '/',
+    },
+    Date.now() - OAUTH_STATE_TTL_MS - 1_000
+  )
   const expired = await app.request(
-    `${ORIGIN}${AUTH}/oauth/github/callback?code=x&state=${
-      encodeURIComponent(expiredState)
-    }`,
-  withFlowCookie(),
-);
-  assertEquals(expired.status, 302);
-  assertEquals(
-    expired.headers.get("location"),
-    "/sign-in?error=oauth_state_invalid",
-  );
-});
+    `${ORIGIN}${AUTH}/oauth/github/callback?code=x&state=${encodeURIComponent(expiredState)}`,
+    withFlowCookie()
+  )
+  assertEquals(expired.status, 302)
+  assertEquals(expired.headers.get('location'), '/sign-in?error=oauth_state_invalid')
+})
 
-test("signup-disabled with no matching account redirects oauth_signup_disabled", async () => {
-  const { app, config } = await buildApp({ signupEnabled: false });
+test('signup-disabled with no matching account redirects oauth_signup_disabled', async () => {
+  const { app, config } = await buildApp({ signupEnabled: false })
   const state = await signOAuthState(config, {
-    provider: "github",
+    provider: 'github',
     nonce: FLOW_NONCE,
-    redirectTo: "/",
-  });
-  const restore = stubGithubIdentityFetch();
+    redirectTo: '/',
+  })
+  const restore = stubGithubIdentityFetch()
   try {
     const res = await app.request(
-      `${ORIGIN}${AUTH}/oauth/github/callback?code=ok&state=${
-        encodeURIComponent(state)
-      }`,
-    withFlowCookie(),
-  );
-    assertEquals(res.status, 302);
-    assertEquals(
-      res.headers.get("location"),
-      "/sign-in?error=oauth_signup_disabled",
-    );
+      `${ORIGIN}${AUTH}/oauth/github/callback?code=ok&state=${encodeURIComponent(state)}`,
+      withFlowCookie()
+    )
+    assertEquals(res.status, 302)
+    assertEquals(res.headers.get('location'), '/sign-in?error=oauth_signup_disabled')
   } finally {
-    restore();
+    restore()
   }
-});
+})
 
-test("existing match issues a session cookie and redirects to redirectTo", async () => {
-  const { app, state, config } = await buildApp();
-  const userId = crypto.randomUUID();
+test('existing match issues a session cookie and redirects to redirectTo', async () => {
+  const { app, state, config } = await buildApp()
+  const userId = crypto.randomUUID()
   seedMockUser(state, {
     id: userId,
-    email: "octocat@example.com",
+    email: 'octocat@example.com',
     isDisabled: false,
     isEmailVerified: true,
     is2FaEnabled: false,
-    role: "user",
-  });
+    role: 'user',
+  })
   state.accounts.push({
     userId,
     password: null,
-    providerId: "github",
-    providerUserId: "99",
-  });
+    providerId: 'github',
+    providerUserId: '99',
+  })
   const oauthState = await signOAuthState(config, {
-    provider: "github",
+    provider: 'github',
     nonce: FLOW_NONCE,
-    redirectTo: "/welcome",
-  });
-  const restore = stubGithubIdentityFetch();
+    redirectTo: '/welcome',
+  })
+  const restore = stubGithubIdentityFetch()
   try {
     const res = await app.request(
-      `${ORIGIN}${AUTH}/oauth/github/callback?code=ok&state=${
-        encodeURIComponent(oauthState)
-      }`,
-    withFlowCookie(),
-  );
-    assertEquals(res.status, 302);
-    assertEquals(res.headers.get("location"), "/welcome");
-    const setCookie = res.headers.get("set-cookie") ?? "";
-    assertEquals(setCookie.includes(HTTPS_SESSION_COOKIE_NAME), true);
+      `${ORIGIN}${AUTH}/oauth/github/callback?code=ok&state=${encodeURIComponent(oauthState)}`,
+      withFlowCookie()
+    )
+    assertEquals(res.status, 302)
+    assertEquals(res.headers.get('location'), '/welcome')
+    const setCookie = res.headers.get('set-cookie') ?? ''
+    assertEquals(setCookie.includes(HTTPS_SESSION_COOKIE_NAME), true)
   } finally {
-    restore();
+    restore()
   }
-});
+})
 
-test("2FA user is redirected to a tp2fa challenge instead of a session", async () => {
-  const { app, state, config } = await buildApp();
-  const userId = crypto.randomUUID();
+test('2FA user is redirected to a tp2fa challenge instead of a session', async () => {
+  const { app, state, config } = await buildApp()
+  const userId = crypto.randomUUID()
   seedMockUser(state, {
     id: userId,
-    email: "octocat@example.com",
+    email: 'octocat@example.com',
     isDisabled: false,
     isEmailVerified: true,
     is2FaEnabled: true,
-    role: "user",
-  });
+    role: 'user',
+  })
   state.accounts.push({
     userId,
     password: null,
-    providerId: "github",
-    providerUserId: "99",
-  });
+    providerId: 'github',
+    providerUserId: '99',
+  })
   const oauthState = await signOAuthState(config, {
-    provider: "github",
+    provider: 'github',
     nonce: FLOW_NONCE,
-    redirectTo: "/",
-  });
-  const restore = stubGithubIdentityFetch();
+    redirectTo: '/',
+  })
+  const restore = stubGithubIdentityFetch()
   try {
     const res = await app.request(
-      `${ORIGIN}${AUTH}/oauth/github/callback?code=ok&state=${
-        encodeURIComponent(oauthState)
-      }`,
-    withFlowCookie(),
-  );
-    assertEquals(res.status, 302);
-    const location = res.headers.get("location") ?? "";
-    assertEquals(location.startsWith("/sign-in?challenge="), true);
+      `${ORIGIN}${AUTH}/oauth/github/callback?code=ok&state=${encodeURIComponent(oauthState)}`,
+      withFlowCookie()
+    )
+    assertEquals(res.status, 302)
+    const location = res.headers.get('location') ?? ''
+    assertEquals(location.startsWith('/sign-in?challenge='), true)
     // No session: the only cookie written clears the spent OAuth flow cookie.
-    assertEquals(
-      (res.headers.get("set-cookie") ?? "").includes(HTTPS_SESSION_COOKIE_NAME),
-      false,
-    );
+    assertEquals((res.headers.get('set-cookie') ?? '').includes(HTTPS_SESSION_COOKIE_NAME), false)
   } finally {
-    restore();
+    restore()
   }
-});
+})
 
-test("start redirects to Google authorize URL with signed state", async () => {
-  const { app } = await buildApp({ platformEnv: GOOGLE_ENV });
-  const res = await app.request(`${ORIGIN}${AUTH}/oauth/google/start`);
-  assertEquals(res.status, 302);
-  const location = res.headers.get("location") ?? "";
-  assertEquals(
-    location.includes("https://accounts.google.com/o/oauth2/v2/auth"),
-    true,
-  );
-  assertEquals(location.includes("client_id=google-client"), true);
-  assertEquals(location.includes("state="), true);
-});
+test('start redirects to Google authorize URL with signed state', async () => {
+  const { app } = await buildApp({ platformEnv: GOOGLE_ENV })
+  const res = await app.request(`${ORIGIN}${AUTH}/oauth/google/start`)
+  assertEquals(res.status, 302)
+  const location = res.headers.get('location') ?? ''
+  assertEquals(location.includes('https://accounts.google.com/o/oauth2/v2/auth'), true)
+  assertEquals(location.includes('client_id=google-client'), true)
+  assertEquals(location.includes('state='), true)
+})
 
-test("Google existing match issues a session cookie and redirects to redirectTo", async () => {
+test('Google existing match issues a session cookie and redirects to redirectTo', async () => {
   const { app, state, config } = await buildApp({
     platformEnv: BOTH_PROVIDERS_ENV,
-  });
-  const userId = crypto.randomUUID();
+  })
+  const userId = crypto.randomUUID()
   seedMockUser(state, {
     id: userId,
-    email: "googler@example.com",
+    email: 'googler@example.com',
     isDisabled: false,
     isEmailVerified: true,
     is2FaEnabled: false,
-    role: "user",
-  });
+    role: 'user',
+  })
   state.accounts.push({
     userId,
     password: null,
-    providerId: "google",
-    providerUserId: "google-sub-99",
-  });
+    providerId: 'google',
+    providerUserId: 'google-sub-99',
+  })
   const oauthState = await signOAuthState(config, {
-    provider: "google",
+    provider: 'google',
     nonce: FLOW_NONCE,
-    redirectTo: "/welcome",
-  });
-  const restore = stubGoogleIdentityFetch();
+    redirectTo: '/welcome',
+  })
+  const restore = stubGoogleIdentityFetch()
   try {
     const res = await app.request(
-      `${ORIGIN}${AUTH}/oauth/google/callback?code=ok&state=${
-        encodeURIComponent(oauthState)
-      }`,
-    withFlowCookie(),
-  );
-    assertEquals(res.status, 302);
-    assertEquals(res.headers.get("location"), "/welcome");
-    const setCookie = res.headers.get("set-cookie") ?? "";
-    assertEquals(setCookie.includes(HTTPS_SESSION_COOKIE_NAME), true);
+      `${ORIGIN}${AUTH}/oauth/google/callback?code=ok&state=${encodeURIComponent(oauthState)}`,
+      withFlowCookie()
+    )
+    assertEquals(res.status, 302)
+    assertEquals(res.headers.get('location'), '/welcome')
+    const setCookie = res.headers.get('set-cookie') ?? ''
+    assertEquals(setCookie.includes(HTTPS_SESSION_COOKIE_NAME), true)
   } finally {
-    restore();
+    restore()
   }
-});
+})
 
-test("Google 2FA user is redirected to a tp2fa challenge instead of a session", async () => {
+test('Google 2FA user is redirected to a tp2fa challenge instead of a session', async () => {
   const { app, state, config } = await buildApp({
     platformEnv: BOTH_PROVIDERS_ENV,
-  });
-  const userId = crypto.randomUUID();
+  })
+  const userId = crypto.randomUUID()
   seedMockUser(state, {
     id: userId,
-    email: "googler-2fa@example.com",
+    email: 'googler-2fa@example.com',
     isDisabled: false,
     isEmailVerified: true,
     is2FaEnabled: true,
-    role: "user",
-  });
+    role: 'user',
+  })
   state.accounts.push({
     userId,
     password: null,
-    providerId: "google",
-    providerUserId: "google-sub-2fa",
-  });
+    providerId: 'google',
+    providerUserId: 'google-sub-2fa',
+  })
   const oauthState = await signOAuthState(config, {
-    provider: "google",
+    provider: 'google',
     nonce: FLOW_NONCE,
-    redirectTo: "/",
-  });
-  const restore = stubGoogleIdentityFetch({ sub: "google-sub-2fa" });
+    redirectTo: '/',
+  })
+  const restore = stubGoogleIdentityFetch({ sub: 'google-sub-2fa' })
   try {
     const res = await app.request(
-      `${ORIGIN}${AUTH}/oauth/google/callback?code=ok&state=${
-        encodeURIComponent(oauthState)
-      }`,
-    withFlowCookie(),
-  );
-    assertEquals(res.status, 302);
-    const location = res.headers.get("location") ?? "";
-    assertEquals(location.startsWith("/sign-in?challenge="), true);
+      `${ORIGIN}${AUTH}/oauth/google/callback?code=ok&state=${encodeURIComponent(oauthState)}`,
+      withFlowCookie()
+    )
+    assertEquals(res.status, 302)
+    const location = res.headers.get('location') ?? ''
+    assertEquals(location.startsWith('/sign-in?challenge='), true)
     // No session: the only cookie written clears the spent OAuth flow cookie.
-    assertEquals(
-      (res.headers.get("set-cookie") ?? "").includes(HTTPS_SESSION_COOKIE_NAME),
-      false,
-    );
+    assertEquals((res.headers.get('set-cookie') ?? '').includes(HTTPS_SESSION_COOKIE_NAME), false)
   } finally {
-    restore();
+    restore()
   }
-});
+})
 
-test("Google sign-up with an unverified email is refused and creates no user", async () => {
+test('Google sign-up with an unverified email is refused and creates no user', async () => {
   const { app, state, config } = await buildApp({
     signupEnabled: true,
     platformEnv: GOOGLE_ENV,
-  });
+  })
   const oauthState = await signOAuthState(config, {
-    provider: "google",
+    provider: 'google',
     nonce: FLOW_NONCE,
-    redirectTo: "/dashboard",
-  });
+    redirectTo: '/dashboard',
+  })
   const restore = stubGoogleIdentityFetch({
-    sub: "google-new-user",
-    email: "new-google-user@example.com",
-  });
+    sub: 'google-new-user',
+    email: 'new-google-user@example.com',
+  })
   // stubGoogleIdentityFetch always returns email_verified: true; override it
   // here: a new account must not take an address the provider has not
   // verified as its own.
-  const original = globalThis.fetch;
+  const original = globalThis.fetch
   globalThis.fetch = (input) => {
-    const url = String(input);
-    if (url.includes("oauth2.googleapis.com/token")) {
-      return Promise.resolve(jsonResponse({ access_token: "ya29_test" }));
+    const url = String(input)
+    if (url.includes('oauth2.googleapis.com/token')) {
+      return Promise.resolve(jsonResponse({ access_token: 'ya29_test' }))
     }
-    if (url.includes("openidconnect.googleapis.com/v1/userinfo")) {
-      return Promise.resolve(jsonResponse({
-        sub: "google-new-user",
-        email: "new-google-user@example.com",
-        email_verified: false,
-        name: "New Googler",
-      }));
+    if (url.includes('openidconnect.googleapis.com/v1/userinfo')) {
+      return Promise.resolve(
+        jsonResponse({
+          sub: 'google-new-user',
+          email: 'new-google-user@example.com',
+          email_verified: false,
+          name: 'New Googler',
+        })
+      )
     }
-    return Promise.reject(new Error(`unexpected fetch ${url}`));
-  };
+    return Promise.reject(new Error(`unexpected fetch ${url}`))
+  }
   try {
     const res = await app.request(
-      `${ORIGIN}${AUTH}/oauth/google/callback?code=ok&state=${
-        encodeURIComponent(oauthState)
-      }`,
-    withFlowCookie(),
-  );
-    assertEquals(res.status, 302);
+      `${ORIGIN}${AUTH}/oauth/google/callback?code=ok&state=${encodeURIComponent(oauthState)}`,
+      withFlowCookie()
+    )
+    assertEquals(res.status, 302)
+    assertEquals(res.headers.get('location'), '/sign-in?error=oauth_email_unverified')
+    assertEquals((res.headers.get('set-cookie') ?? '').includes(HTTPS_SESSION_COOKIE_NAME), false)
     assertEquals(
-      res.headers.get("location"),
-      "/sign-in?error=oauth_email_unverified",
-    );
+      state.users.some((u) => u.email === 'new-google-user@example.com'),
+      false
+    )
     assertEquals(
-      (res.headers.get("set-cookie") ?? "").includes(HTTPS_SESSION_COOKIE_NAME),
-      false,
-    );
-    assertEquals(
-      state.users.some((u) => u.email === "new-google-user@example.com"),
-      false,
-    );
-    assertEquals(
-      state.accounts.some((row) => row.providerUserId === "google-new-user"),
-      false,
-    );
+      state.accounts.some((row) => row.providerUserId === 'google-new-user'),
+      false
+    )
   } finally {
-    globalThis.fetch = original;
-    restore();
+    globalThis.fetch = original
+    restore()
   }
-});
+})
 
-test("link mode success and unique-constraint conflict", async () => {
-  const { app, db, state, secrets, config } = await buildApp();
-  const userId = crypto.randomUUID();
+test('link mode success and unique-constraint conflict', async () => {
+  const { app, db, state, secrets, config } = await buildApp()
+  const userId = crypto.randomUUID()
   seedMockCredentialUser(state, {
     id: userId,
-    email: "owner@example.com",
+    email: 'owner@example.com',
     password: await hashPassword(PASSWORD),
     isEmailVerified: true,
-  });
-  const { token } = await createSession(db, userId, {});
-  const cookie = `${HTTPS_SESSION_COOKIE_NAME}=${await buildSignedCookie(
-    token,
-    secrets,
-  )}`;
+  })
+  const { token } = await createSession(db, userId, {})
+  const cookie = `${HTTPS_SESSION_COOKIE_NAME}=${await buildSignedCookie(token, secrets)}`
 
-  const restore = stubGithubIdentityFetch();
+  const restore = stubGithubIdentityFetch()
   try {
-    const start = await app.request(
-      `${ORIGIN}${AUTH}/oauth/github/start?link=1`,
-      { headers: { cookie } },
-    );
-    assertEquals(start.status, 302);
-    const authorize = new URL(start.headers.get("location") ?? "");
-    const signedState = authorize.searchParams.get("state") ?? "";
+    const start = await app.request(`${ORIGIN}${AUTH}/oauth/github/start?link=1`, {
+      headers: { cookie },
+    })
+    assertEquals(start.status, 302)
+    const authorize = new URL(start.headers.get('location') ?? '')
+    const signedState = authorize.searchParams.get('state') ?? ''
 
     const linked = await app.request(
-      `${ORIGIN}${AUTH}/oauth/github/callback?code=ok&state=${
-        encodeURIComponent(signedState)
-      }`,
-      withFlowCookie(cookie, start),
-    );
-    assertEquals(linked.status, 302);
-    assertEquals(
-      linked.headers.get("location"),
-      "/account/security?linked=github",
-    );
+      `${ORIGIN}${AUTH}/oauth/github/callback?code=ok&state=${encodeURIComponent(signedState)}`,
+      withFlowCookie(cookie, start)
+    )
+    assertEquals(linked.status, 302)
+    assertEquals(linked.headers.get('location'), '/account/security?linked=github')
 
-    const otherUser = crypto.randomUUID();
+    const otherUser = crypto.randomUUID()
     seedMockUser(state, {
       id: otherUser,
-      email: "other@example.com",
+      email: 'other@example.com',
       isDisabled: false,
       isEmailVerified: true,
-      role: "user",
-    });
-    const { token: otherToken } = await createSession(db, otherUser, {});
+      role: 'user',
+    })
+    const { token: otherToken } = await createSession(db, otherUser, {})
     const otherCookie = `${HTTPS_SESSION_COOKIE_NAME}=${await buildSignedCookie(
       otherToken,
-      secrets,
-    )}`;
+      secrets
+    )}`
     const conflictState = await signOAuthState(config, {
-      provider: "github",
+      provider: 'github',
       nonce: FLOW_NONCE,
-      redirectTo: "/",
+      redirectTo: '/',
       linkUserId: otherUser,
-    });
+    })
     const conflict = await app.request(
-      `${ORIGIN}${AUTH}/oauth/github/callback?code=ok&state=${
-        encodeURIComponent(conflictState)
-      }`,
-      withFlowCookie(otherCookie),
-    );
-    assertEquals(conflict.status, 302);
+      `${ORIGIN}${AUTH}/oauth/github/callback?code=ok&state=${encodeURIComponent(conflictState)}`,
+      withFlowCookie(otherCookie)
+    )
+    assertEquals(conflict.status, 302)
     assertEquals(
-      conflict.headers.get("location"),
-      "/account/security?linked=&error=account_conflict",
-    );
+      conflict.headers.get('location'),
+      '/account/security?linked=&error=account_conflict'
+    )
 
     const secondState = await signOAuthState(config, {
-      provider: "github",
+      provider: 'github',
       nonce: FLOW_NONCE,
-      redirectTo: "/",
+      redirectTo: '/',
       linkUserId: userId,
-    });
-    restore();
-    const restoreSecond = stubGithubIdentityFetch({ id: 100 });
+    })
+    restore()
+    const restoreSecond = stubGithubIdentityFetch({ id: 100 })
     try {
       // Host-free getSession returns the newest session; remint the owner so
       // the original cookie is not shadowed by the otherUser row above.
-      const { token: ownerAgain } = await createSession(db, userId, {});
-      const ownerCookie =
-        `${HTTPS_SESSION_COOKIE_NAME}=${await buildSignedCookie(
-          ownerAgain,
-          secrets,
-        )}`;
+      const { token: ownerAgain } = await createSession(db, userId, {})
+      const ownerCookie = `${HTTPS_SESSION_COOKIE_NAME}=${await buildSignedCookie(
+        ownerAgain,
+        secrets
+      )}`
       const second = await app.request(
-        `${ORIGIN}${AUTH}/oauth/github/callback?code=ok&state=${
-          encodeURIComponent(secondState)
-        }`,
-        withFlowCookie(ownerCookie),
-      );
-      assertEquals(second.status, 302);
+        `${ORIGIN}${AUTH}/oauth/github/callback?code=ok&state=${encodeURIComponent(secondState)}`,
+        withFlowCookie(ownerCookie)
+      )
+      assertEquals(second.status, 302)
       assertEquals(
-        second.headers.get("location"),
-        "/account/security?linked=&error=account_conflict",
-      );
+        second.headers.get('location'),
+        '/account/security?linked=&error=account_conflict'
+      )
     } finally {
-      restoreSecond();
+      restoreSecond()
     }
   } finally {
-    restore();
+    restore()
   }
-});
+})
 
-test("link callback after sign-out does not mutate accounts", async () => {
-  const { app, db, state, secrets } = await buildApp();
-  const userId = crypto.randomUUID();
+test('link callback after sign-out does not mutate accounts', async () => {
+  const { app, db, state, secrets } = await buildApp()
+  const userId = crypto.randomUUID()
   seedMockCredentialUser(state, {
     id: userId,
-    email: "signed-out@example.com",
+    email: 'signed-out@example.com',
     password: await hashPassword(PASSWORD),
     isEmailVerified: true,
-  });
-  const { token } = await createSession(db, userId, {});
-  const cookie = `${HTTPS_SESSION_COOKIE_NAME}=${await buildSignedCookie(
-    token,
-    secrets,
-  )}`;
-  const restore = stubGithubIdentityFetch({ id: 77 });
+  })
+  const { token } = await createSession(db, userId, {})
+  const cookie = `${HTTPS_SESSION_COOKIE_NAME}=${await buildSignedCookie(token, secrets)}`
+  const restore = stubGithubIdentityFetch({ id: 77 })
   try {
-    const start = await app.request(
-      `${ORIGIN}${AUTH}/oauth/github/start?link=1`,
-      { headers: { cookie } },
-    );
-    assertEquals(start.status, 302);
-    const authorize = new URL(start.headers.get("location") ?? "");
-    const signedState = authorize.searchParams.get("state") ?? "";
+    const start = await app.request(`${ORIGIN}${AUTH}/oauth/github/start?link=1`, {
+      headers: { cookie },
+    })
+    assertEquals(start.status, 302)
+    const authorize = new URL(start.headers.get('location') ?? '')
+    const signedState = authorize.searchParams.get('state') ?? ''
 
     const callback = await app.request(
-      `${ORIGIN}${AUTH}/oauth/github/callback?code=ok&state=${
-        encodeURIComponent(signedState)
-      }`,
-    withFlowCookie(undefined, start),
-  );
-    assertEquals(callback.status, 302);
+      `${ORIGIN}${AUTH}/oauth/github/callback?code=ok&state=${encodeURIComponent(signedState)}`,
+      withFlowCookie(undefined, start)
+    )
+    assertEquals(callback.status, 302)
     assertEquals(
-      callback.headers.get("location"),
-      "/account/security?linked=&error=oauth_unauthenticated",
-    );
+      callback.headers.get('location'),
+      '/account/security?linked=&error=oauth_unauthenticated'
+    )
     assertEquals(
-      state.accounts.some((row) => row.providerId === "github"),
-      false,
-    );
+      state.accounts.some((row) => row.providerId === 'github'),
+      false
+    )
   } finally {
-    restore();
+    restore()
   }
-});
+})
 
-test("link callback rejects a different signed-in user", async () => {
-  const { app, db, state, secrets } = await buildApp();
-  const ownerId = crypto.randomUUID();
-  const otherId = crypto.randomUUID();
+test('link callback rejects a different signed-in user', async () => {
+  const { app, db, state, secrets } = await buildApp()
+  const ownerId = crypto.randomUUID()
+  const otherId = crypto.randomUUID()
   seedMockCredentialUser(state, {
     id: ownerId,
-    email: "owner-switch@example.com",
+    email: 'owner-switch@example.com',
     password: await hashPassword(PASSWORD),
     isEmailVerified: true,
-  });
+  })
   seedMockCredentialUser(state, {
     id: otherId,
-    email: "other-switch@example.com",
+    email: 'other-switch@example.com',
     password: await hashPassword(PASSWORD),
     isEmailVerified: true,
-  });
-  const { token: ownerToken } = await createSession(db, ownerId, {});
-  const ownerCookie = `${HTTPS_SESSION_COOKIE_NAME}=${await buildSignedCookie(
-    ownerToken,
-    secrets,
-  )}`;
-  const restore = stubGithubIdentityFetch({ id: 88 });
+  })
+  const { token: ownerToken } = await createSession(db, ownerId, {})
+  const ownerCookie = `${HTTPS_SESSION_COOKIE_NAME}=${await buildSignedCookie(ownerToken, secrets)}`
+  const restore = stubGithubIdentityFetch({ id: 88 })
   try {
     // Host-free getSession returns the newest session. Start while the owner
     // session is newest so signed state captures ownerId, then mint the other
     // session so the callback cookie is the live session the mock will read.
-    const start = await app.request(
-      `${ORIGIN}${AUTH}/oauth/github/start?link=1`,
-      { headers: { cookie: ownerCookie } },
-    );
-    assertEquals(start.status, 302);
-    const authorize = new URL(start.headers.get("location") ?? "");
-    const signedState = authorize.searchParams.get("state") ?? "";
+    const start = await app.request(`${ORIGIN}${AUTH}/oauth/github/start?link=1`, {
+      headers: { cookie: ownerCookie },
+    })
+    assertEquals(start.status, 302)
+    const authorize = new URL(start.headers.get('location') ?? '')
+    const signedState = authorize.searchParams.get('state') ?? ''
 
-    const { token: otherToken } = await createSession(db, otherId, {});
+    const { token: otherToken } = await createSession(db, otherId, {})
     const otherCookie = `${HTTPS_SESSION_COOKIE_NAME}=${await buildSignedCookie(
       otherToken,
-      secrets,
-    )}`;
+      secrets
+    )}`
     const callback = await app.request(
-      `${ORIGIN}${AUTH}/oauth/github/callback?code=ok&state=${
-        encodeURIComponent(signedState)
-      }`,
-      withFlowCookie(otherCookie, start),
-    );
-    assertEquals(callback.status, 302);
+      `${ORIGIN}${AUTH}/oauth/github/callback?code=ok&state=${encodeURIComponent(signedState)}`,
+      withFlowCookie(otherCookie, start)
+    )
+    assertEquals(callback.status, 302)
     assertEquals(
-      callback.headers.get("location"),
-      "/account/security?linked=&error=oauth_unauthenticated",
-    );
+      callback.headers.get('location'),
+      '/account/security?linked=&error=oauth_unauthenticated'
+    )
     assertEquals(
-      state.accounts.some((row) => row.providerId === "github"),
-      false,
-    );
+      state.accounts.some((row) => row.providerId === 'github'),
+      false
+    )
   } finally {
-    restore();
+    restore()
   }
-});
+})
 
-test("unlink succeeds when another sign-in method remains; 409 when it is last", async () => {
-  const { app, db, state, secrets } = await buildApp();
-  const lastUser = crypto.randomUUID();
+test('unlink succeeds when another sign-in method remains; 409 when it is last', async () => {
+  const { app, db, state, secrets } = await buildApp()
+  const lastUser = crypto.randomUUID()
   seedMockUser(state, {
     id: lastUser,
-    email: "only-oauth@example.com",
+    email: 'only-oauth@example.com',
     isDisabled: false,
     isEmailVerified: true,
-    role: "user",
-  });
+    role: 'user',
+  })
   state.accounts.push({
     userId: lastUser,
     password: null,
-    providerId: "github",
-    providerUserId: "1",
-  });
-  const { token: lastToken } = await createSession(db, lastUser, {});
-  const lastCookie = `${HTTPS_SESSION_COOKIE_NAME}=${await buildSignedCookie(
-    lastToken,
-    secrets,
-  )}`;
+    providerId: 'github',
+    providerUserId: '1',
+  })
+  const { token: lastToken } = await createSession(db, lastUser, {})
+  const lastCookie = `${HTTPS_SESSION_COOKIE_NAME}=${await buildSignedCookie(lastToken, secrets)}`
   const last = await app.request(`${ORIGIN}${AUTH}/oauth/github`, {
-    method: "DELETE",
-    headers: { cookie: lastCookie, "content-type": "application/json" },
-    body: "{}",
-  });
-  assertEquals(last.status, 409);
+    method: 'DELETE',
+    headers: { cookie: lastCookie, 'content-type': 'application/json' },
+    body: '{}',
+  })
+  assertEquals(last.status, 409)
 
-  const dualUser = crypto.randomUUID();
+  const dualUser = crypto.randomUUID()
   seedMockCredentialUser(state, {
     id: dualUser,
-    email: "dual@example.com",
+    email: 'dual@example.com',
     password: await hashPassword(PASSWORD),
     isEmailVerified: true,
-  });
+  })
   state.accounts.push({
     userId: dualUser,
     password: null,
-    providerId: "github",
-    providerUserId: "2",
-  });
-  const { token } = await createSession(db, dualUser, {});
-  const cookie = `${HTTPS_SESSION_COOKIE_NAME}=${await buildSignedCookie(
-    token,
-    secrets,
-  )}`;
+    providerId: 'github',
+    providerUserId: '2',
+  })
+  const { token } = await createSession(db, dualUser, {})
+  const cookie = `${HTTPS_SESSION_COOKIE_NAME}=${await buildSignedCookie(token, secrets)}`
   const unlinked = await app.request(`${ORIGIN}${AUTH}/oauth/github`, {
-    method: "DELETE",
-    headers: { cookie, "content-type": "application/json" },
-    body: "{}",
-  });
-  assertEquals(unlinked.status, 200);
-});
+    method: 'DELETE',
+    headers: { cookie, 'content-type': 'application/json' },
+    body: '{}',
+  })
+  assertEquals(unlinked.status, 200)
+})
 
-test("unlink succeeds when the remaining sign-in method is a passkey", async () => {
-  const { app, db, state, secrets } = await buildApp();
-  const userId = crypto.randomUUID();
+test('unlink succeeds when the remaining sign-in method is a passkey', async () => {
+  const { app, db, state, secrets } = await buildApp()
+  const userId = crypto.randomUUID()
   seedMockUser(state, {
     id: userId,
-    email: "oauth-plus-passkey@example.com",
+    email: 'oauth-plus-passkey@example.com',
     isDisabled: false,
     isEmailVerified: true,
-    role: "user",
-  });
+    role: 'user',
+  })
   state.accounts.push({
     userId,
     password: null,
-    providerId: "github",
-    providerUserId: "3",
-  });
+    providerId: 'github',
+    providerUserId: '3',
+  })
   state.passkeys.push({
     id: crypto.randomUUID(),
     userId,
-    name: "Laptop",
+    name: 'Laptop',
     createdAt: new Date().toISOString(),
-    credentialId: "passkey-oauth-unlink",
-    publicKey: "pk",
+    credentialId: 'passkey-oauth-unlink',
+    publicKey: 'pk',
     counter: 0,
-    deviceType: "singleDevice",
+    deviceType: 'singleDevice',
     isBackedUp: false,
     aaguid: null,
     transports: null,
-  });
-  const { token } = await createSession(db, userId, {});
-  const cookie = `${HTTPS_SESSION_COOKIE_NAME}=${await buildSignedCookie(
-    token,
-    secrets,
-  )}`;
+  })
+  const { token } = await createSession(db, userId, {})
+  const cookie = `${HTTPS_SESSION_COOKIE_NAME}=${await buildSignedCookie(token, secrets)}`
   const unlinked = await app.request(`${ORIGIN}${AUTH}/oauth/github`, {
-    method: "DELETE",
-    headers: { cookie, "content-type": "application/json" },
-    body: "{}",
-  });
-  assertEquals(unlinked.status, 200);
-});
+    method: 'DELETE',
+    headers: { cookie, 'content-type': 'application/json' },
+    body: '{}',
+  })
+  assertEquals(unlinked.status, 200)
+})
 
-test("callback missing secretsConfig redirects not_configured, never JSON", async () => {
-  const config = parseTestSecretsConfig("deno");
-  const secrets = await deriveSecretsConfig(config, "session-signing");
-  const state = createEmptyMockAuthState();
-  const db = createMockAuthDb(state);
+test('callback missing secretsConfig redirects not_configured, never JSON', async () => {
+  const config = parseTestSecretsConfig('deno')
+  const secrets = await deriveSecretsConfig(config, 'session-signing')
+  const state = createEmptyMockAuthState()
+  const db = createMockAuthDb(state)
   const limiter = createAuthRateLimiter({
     defaultPolicy: { limit: 100, windowMs: 60_000 },
-  });
-  setSharedAuthRateLimiterForTests(limiter);
-  const app = new Hono<AppEnv>();
-  app.use("*", (c, next) => {
-    c.set("db", db);
-    c.set("platformEnv", GITHUB_ENV);
-    c.set("authRateLimiter", limiter);
-    return next();
-  });
-  const client = new Hono<AppEnv>();
+  })
+  setSharedAuthRateLimiterForTests(limiter)
+  const app = new Hono<AppEnv>()
+  app.use('*', (c, next) => {
+    c.set('db', db)
+    c.set('platformEnv', GITHUB_ENV)
+    c.set('authRateLimiter', limiter)
+    return next()
+  })
+  const client = new Hono<AppEnv>()
   registerAuthRoutes(client, {
     secrets,
-    runtime: "deno",
+    runtime: 'deno',
     signupEnvOverride: undefined,
     baseUrl: ORIGIN,
-  });
-  app.route(CLIENT_API_PREFIX, client);
+  })
+  app.route(CLIENT_API_PREFIX, client)
 
   const res = await app.request(
     `${ORIGIN}${AUTH}/oauth/github/callback?code=ok&state=x`,
-  withFlowCookie(),
-);
-  assertRedirectNotJson(res, "/sign-in?error=not_configured");
-  const body = await res.text();
-  assertEquals(body.includes('"error"'), false);
-});
+    withFlowCookie()
+  )
+  assertRedirectNotJson(res, '/sign-in?error=not_configured')
+  const body = await res.text()
+  assertEquals(body.includes('"error"'), false)
+})
 
-test("callback missing database redirects database_unavailable, never JSON", async () => {
-  const config = parseTestSecretsConfig("deno");
-  const secrets = await deriveSecretsConfig(config, "session-signing");
+test('callback missing database redirects database_unavailable, never JSON', async () => {
+  const config = parseTestSecretsConfig('deno')
+  const secrets = await deriveSecretsConfig(config, 'session-signing')
   const limiter = createAuthRateLimiter({
     defaultPolicy: { limit: 100, windowMs: 60_000 },
-  });
-  setSharedAuthRateLimiterForTests(limiter);
-  const app = new Hono<AppEnv>();
-  app.use("*", (c, next) => {
-    c.set("secretsConfig", config);
-    c.set("platformEnv", GITHUB_ENV);
-    c.set("authRateLimiter", limiter);
-    return next();
-  });
-  const client = new Hono<AppEnv>();
+  })
+  setSharedAuthRateLimiterForTests(limiter)
+  const app = new Hono<AppEnv>()
+  app.use('*', (c, next) => {
+    c.set('secretsConfig', config)
+    c.set('platformEnv', GITHUB_ENV)
+    c.set('authRateLimiter', limiter)
+    return next()
+  })
+  const client = new Hono<AppEnv>()
   registerAuthRoutes(client, {
     secrets,
-    runtime: "deno",
+    runtime: 'deno',
     signupEnvOverride: undefined,
     baseUrl: ORIGIN,
-  });
-  app.route(CLIENT_API_PREFIX, client);
+  })
+  app.route(CLIENT_API_PREFIX, client)
 
   const oauthState = await signOAuthState(config, {
-    provider: "github",
+    provider: 'github',
     nonce: FLOW_NONCE,
-    redirectTo: "/",
-  });
+    redirectTo: '/',
+  })
   const res = await app.request(
-    `${ORIGIN}${AUTH}/oauth/github/callback?code=ok&state=${
-      encodeURIComponent(oauthState)
-    }`,
-  withFlowCookie(),
-);
-  assertRedirectNotJson(res, "/sign-in?error=database_unavailable");
-  const body = await res.text();
-  assertEquals(body.includes('"error"'), false);
-});
+    `${ORIGIN}${AUTH}/oauth/github/callback?code=ok&state=${encodeURIComponent(oauthState)}`,
+    withFlowCookie()
+  )
+  assertRedirectNotJson(res, '/sign-in?error=database_unavailable')
+  const body = await res.text()
+  assertEquals(body.includes('"error"'), false)
+})
 
-test("callback missing session secrets redirects not_configured", async () => {
-  const { app, state, config } = await buildApp({ withSecrets: false });
-  const userId = crypto.randomUUID();
+test('callback missing session secrets redirects not_configured', async () => {
+  const { app, state, config } = await buildApp({ withSecrets: false })
+  const userId = crypto.randomUUID()
   seedMockUser(state, {
     id: userId,
-    email: "octocat@example.com",
+    email: 'octocat@example.com',
     isDisabled: false,
     isEmailVerified: true,
     is2FaEnabled: false,
-    role: "user",
-  });
+    role: 'user',
+  })
   state.accounts.push({
     userId,
     password: null,
-    providerId: "github",
-    providerUserId: "99",
-  });
+    providerId: 'github',
+    providerUserId: '99',
+  })
   const oauthState = await signOAuthState(config, {
-    provider: "github",
+    provider: 'github',
     nonce: FLOW_NONCE,
-    redirectTo: "/",
-  });
-  const restore = stubGithubIdentityFetch();
+    redirectTo: '/',
+  })
+  const restore = stubGithubIdentityFetch()
   try {
     const res = await app.request(
-      `${ORIGIN}${AUTH}/oauth/github/callback?code=ok&state=${
-        encodeURIComponent(oauthState)
-      }`,
-    withFlowCookie(),
-  );
-    assertRedirectNotJson(res, "/sign-in?error=not_configured");
+      `${ORIGIN}${AUTH}/oauth/github/callback?code=ok&state=${encodeURIComponent(oauthState)}`,
+      withFlowCookie()
+    )
+    assertRedirectNotJson(res, '/sign-in?error=not_configured')
   } finally {
-    restore();
+    restore()
   }
-});
+})
 
-test("callback missing two-factor challenge secrets redirects not_configured", async () => {
+test('callback missing two-factor challenge secrets redirects not_configured', async () => {
   const { app, state, config } = await buildApp({
     withTwoFactorChallengeSecrets: false,
-  });
-  const userId = crypto.randomUUID();
+  })
+  const userId = crypto.randomUUID()
   seedMockUser(state, {
     id: userId,
-    email: "octocat@example.com",
+    email: 'octocat@example.com',
     isDisabled: false,
     isEmailVerified: true,
     is2FaEnabled: true,
-    role: "user",
-  });
+    role: 'user',
+  })
   state.accounts.push({
     userId,
     password: null,
-    providerId: "github",
-    providerUserId: "99",
-  });
+    providerId: 'github',
+    providerUserId: '99',
+  })
   const oauthState = await signOAuthState(config, {
-    provider: "github",
+    provider: 'github',
     nonce: FLOW_NONCE,
-    redirectTo: "/",
-  });
-  const restore = stubGithubIdentityFetch();
+    redirectTo: '/',
+  })
+  const restore = stubGithubIdentityFetch()
   try {
     const res = await app.request(
-      `${ORIGIN}${AUTH}/oauth/github/callback?code=ok&state=${
-        encodeURIComponent(oauthState)
-      }`,
-    withFlowCookie(),
-  );
-    assertRedirectNotJson(res, "/sign-in?error=not_configured");
+      `${ORIGIN}${AUTH}/oauth/github/callback?code=ok&state=${encodeURIComponent(oauthState)}`,
+      withFlowCookie()
+    )
+    assertRedirectNotJson(res, '/sign-in?error=not_configured')
   } finally {
-    restore();
+    restore()
   }
-});
+})
 
 /** Age the session behind `token` so it falls outside the step-up window. */
 function ageSession(
   state: ReturnType<typeof createEmptyMockAuthState>,
   token: string,
-  ageMs: number,
+  ageMs: number
 ): void {
-  const data = state.sessions.get(token);
-  if (!data) throw new Error("no session for that token");
+  const data = state.sessions.get(token)
+  if (!data) throw new Error('no session for that token')
   state.sessions.set(token, {
     ...data,
     createdAt: new Date(Date.now() - ageMs).toISOString(),
-  });
+  })
 }
 
-test("link start refuses a stale session — a hijacked session cannot plant a sign-in method", async () => {
-  const { app, db, state, secrets } = await buildApp();
-  const userId = crypto.randomUUID();
+test('link start refuses a stale session — a hijacked session cannot plant a sign-in method', async () => {
+  const { app, db, state, secrets } = await buildApp()
+  const userId = crypto.randomUUID()
   seedMockCredentialUser(state, {
     id: userId,
-    email: "owner@example.com",
+    email: 'owner@example.com',
     password: await hashPassword(PASSWORD),
     isEmailVerified: true,
-  });
-  const { token } = await createSession(db, userId, {});
-  const cookie = `${HTTPS_SESSION_COOKIE_NAME}=${await buildSignedCookie(
-    token,
-    secrets,
-  )}`;
+  })
+  const { token } = await createSession(db, userId, {})
+  const cookie = `${HTTPS_SESSION_COOKIE_NAME}=${await buildSignedCookie(token, secrets)}`
 
   // Fresh: the redirect to the provider is issued as before.
-  const fresh = await app.request(
-    `${ORIGIN}${AUTH}/oauth/github/start?link=1`,
-    {
-      headers: { cookie },
-    },
-  );
-  assertEquals(fresh.status, 302);
+  const fresh = await app.request(`${ORIGIN}${AUTH}/oauth/github/start?link=1`, {
+    headers: { cookie },
+  })
+  assertEquals(fresh.status, 302)
   assertEquals(
-    (fresh.headers.get("location") ?? "").includes(
-      "https://github.com/login/oauth/authorize",
-    ),
-    true,
-  );
+    (fresh.headers.get('location') ?? '').includes('https://github.com/login/oauth/authorize'),
+    true
+  )
 
   // Older than the step-up window: refused, and no provider redirect at all.
-  ageSession(state, token, REAUTH_WINDOW_MS + 60_000);
-  const stale = await app.request(
-    `${ORIGIN}${AUTH}/oauth/github/start?link=1`,
-    {
-      headers: { cookie },
-    },
-  );
-  assertEquals(stale.status, 302);
+  ageSession(state, token, REAUTH_WINDOW_MS + 60_000)
+  const stale = await app.request(`${ORIGIN}${AUTH}/oauth/github/start?link=1`, {
+    headers: { cookie },
+  })
+  assertEquals(stale.status, 302)
   assertEquals(
-    stale.headers.get("location"),
-    "/account/security?linked=&error=oauth_reauth_required",
-  );
+    stale.headers.get('location'),
+    '/account/security?linked=&error=oauth_reauth_required'
+  )
 
   // Signing in (not linking) is unaffected by session age.
-  const signIn = await app.request(`${ORIGIN}${AUTH}/oauth/github/start`);
-  assertEquals(signIn.status, 302);
+  const signIn = await app.request(`${ORIGIN}${AUTH}/oauth/github/start`)
+  assertEquals(signIn.status, 302)
   assertEquals(
-    (signIn.headers.get("location") ?? "").includes(
-      "https://github.com/login/oauth/authorize",
-    ),
-    true,
-  );
-});
+    (signIn.headers.get('location') ?? '').includes('https://github.com/login/oauth/authorize'),
+    true
+  )
+})
 
 test("linking a provider revokes the user's other sessions and keeps the current one", async () => {
-  const { app, db, state, secrets } = await buildApp();
-  const userId = crypto.randomUUID();
+  const { app, db, state, secrets } = await buildApp()
+  const userId = crypto.randomUUID()
   seedMockCredentialUser(state, {
     id: userId,
-    email: "owner@example.com",
+    email: 'owner@example.com',
     password: await hashPassword(PASSWORD),
     isEmailVerified: true,
-  });
+  })
   // An older session elsewhere — a laptop left signed in, or an attacker's.
-  const { token: otherToken } = await createSession(db, userId, {});
-  const { token } = await createSession(db, userId, {});
-  const cookie = `${HTTPS_SESSION_COOKIE_NAME}=${await buildSignedCookie(
-    token,
-    secrets,
-  )}`;
-  assertEquals(state.sessions.size, 2);
+  const { token: otherToken } = await createSession(db, userId, {})
+  const { token } = await createSession(db, userId, {})
+  const cookie = `${HTTPS_SESSION_COOKIE_NAME}=${await buildSignedCookie(token, secrets)}`
+  assertEquals(state.sessions.size, 2)
 
-  const restore = stubGithubIdentityFetch();
+  const restore = stubGithubIdentityFetch()
   try {
-    const start = await app.request(
-      `${ORIGIN}${AUTH}/oauth/github/start?link=1`,
-      { headers: { cookie } },
-    );
-    const authorize = new URL(start.headers.get("location") ?? "");
-    const signedState = authorize.searchParams.get("state") ?? "";
+    const start = await app.request(`${ORIGIN}${AUTH}/oauth/github/start?link=1`, {
+      headers: { cookie },
+    })
+    const authorize = new URL(start.headers.get('location') ?? '')
+    const signedState = authorize.searchParams.get('state') ?? ''
     const linked = await app.request(
-      `${ORIGIN}${AUTH}/oauth/github/callback?code=ok&state=${
-        encodeURIComponent(signedState)
-      }`,
-      withFlowCookie(cookie, start),
-    );
-    assertEquals(
-      linked.headers.get("location"),
-      "/account/security?linked=github",
-    );
+      `${ORIGIN}${AUTH}/oauth/github/callback?code=ok&state=${encodeURIComponent(signedState)}`,
+      withFlowCookie(cookie, start)
+    )
+    assertEquals(linked.headers.get('location'), '/account/security?linked=github')
   } finally {
-    restore();
+    restore()
   }
 
-  assertEquals(state.sessions.has(token), true);
-  assertEquals(state.sessions.has(otherToken), false);
-});
+  assertEquals(state.sessions.has(token), true)
+  assertEquals(state.sessions.has(otherToken), false)
+})
+
+test('link callback refuses a session that went stale during the provider round trip', async () => {
+  const { app, db, state, secrets } = await buildApp()
+  const userId = crypto.randomUUID()
+  seedMockCredentialUser(state, {
+    id: userId,
+    email: 'owner@example.com',
+    password: await hashPassword(PASSWORD),
+    isEmailVerified: true,
+  })
+  const { token } = await createSession(db, userId, {})
+  const cookie = `${HTTPS_SESSION_COOKIE_NAME}=${await buildSignedCookie(token, secrets)}`
+  const restore = stubGithubIdentityFetch({ id: 4242 })
+  try {
+    const start = await app.request(`${ORIGIN}${AUTH}/oauth/github/start?link=1`, {
+      headers: { cookie },
+    })
+    const signedState = new URL(start.headers.get('location') ?? '').searchParams.get('state') ?? ''
+    ageSession(state, token, REAUTH_WINDOW_MS + 60_000)
+    const callback = await app.request(
+      `${ORIGIN}${AUTH}/oauth/github/callback?code=ok&state=${encodeURIComponent(signedState)}`,
+      withFlowCookie(cookie, start)
+    )
+    assertEquals(
+      callback.headers.get('location'),
+      '/account/security?linked=&error=oauth_reauth_required'
+    )
+    assertEquals(
+      state.accounts.some((row) => row.providerUserId === '4242'),
+      false
+    )
+  } finally {
+    restore()
+  }
+})
+
+test('link works on a stale session that re-authenticated recently, at start and callback', async () => {
+  const { app, db, state, secrets } = await buildApp()
+  const userId = crypto.randomUUID()
+  seedMockCredentialUser(state, {
+    id: userId,
+    email: 'owner@example.com',
+    password: await hashPassword(PASSWORD),
+    isEmailVerified: true,
+  })
+  const { token } = await createSession(db, userId, {})
+  const cookie = `${HTTPS_SESSION_COOKIE_NAME}=${await buildSignedCookie(token, secrets)}`
+  ageSession(state, token, REAUTH_WINDOW_MS + 60_000)
+  const session = await getSession(db, token)
+  await stampStepUp(db, session!.sessionId, 'password')
+  const restore = stubGithubIdentityFetch({ id: 5151 })
+  try {
+    const start = await app.request(`${ORIGIN}${AUTH}/oauth/github/start?link=1`, {
+      headers: { cookie },
+    })
+    const signedState = new URL(start.headers.get('location') ?? '').searchParams.get('state') ?? ''
+    assertEquals(signedState !== '', true)
+    const callback = await app.request(
+      `${ORIGIN}${AUTH}/oauth/github/callback?code=ok&state=${encodeURIComponent(signedState)}`,
+      withFlowCookie(cookie, start)
+    )
+    assertEquals(callback.headers.get('location'), '/account/security?linked=github')
+  } finally {
+    restore()
+  }
+})

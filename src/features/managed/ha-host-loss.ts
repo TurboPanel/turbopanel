@@ -12,12 +12,17 @@
  * promote" (a row in the recovery journal with the reason in plain words):
  *
  * 1. The primary's server must have been marked offline for the whole window
- *    (default 2 min, on top of the 90-150 s the offline sweep needs to notice).
+ *    (default 2 min). Two kinds of mark count: `sweep_stale` (no heartbeat for
+ *    90-150 s, a powered-off or cut-off host) and `disconnect` (the daemon's
+ *    socket closed cleanly: the daemon was stopped or the host shut down). A
+ *    `disconnect` alone could be a restart, so it gets no extra trust: the
+ *    window, the planned-reboot grace and rule 6 (every other member must
+ *    confirm the primary is gone) all apply to it exactly as to a stale mark.
  *    Back inside the window: nothing happens.
  * 2. Not while an operator reboot of that server or a daemon update is under
- *    way (the first 10 minutes), and not later than 7.5 minutes after the
- *    offline mark ({@link HOST_LOSS_LAST_DECISION_MS}: the fresh-standby gate
- *    cannot tie a replica's last contact to the failure any later).
+ *    way (the first 10 minutes), and not later than
+ *    {@link hostLossLastDecisionMs} after the offline mark (the fresh-standby
+ *    gate cannot tie a replica's last contact to the failure any later).
  * 3. Not during a fleet-wide outage: more than half of the organization's
  *    servers offline points at the control plane's own network, not one host.
  * 4. Only PostgreSQL, MySQL and MariaDB. A MySQL or MariaDB replica is
@@ -29,6 +34,16 @@
  *    health read, and NONE may still be receiving from the primary. One
  *    replica that still hears the primary means the host is alive and only
  *    its link to the control plane is down.
+ *
+ * 7. The second signal: the other members' servers must each fail to open a
+ *    connection to the primary's database port ({@link hostLossEngineVerdict}:
+ *    two rounds {@link HOST_LOSS_ENGINE_PROBE_GAP_MS} apart, each attempt
+ *    bounded to 3 s on the peer, refused / timeout / no route all count as
+ *    "not reachable"). One connection that opens vetoes: a daemon that merely
+ *    crashed or was stopped on a healthy host is never failed over. A check
+ *    that did not run or answer is no confirmation either. A pure network
+ *    partition (peers cannot reach the host, the host is fine) still looks the
+ *    same; closing that needs a witness outside the cluster's network.
  *
  * Then, and only then, the ordinary automatic-failover gates apply
  * unchanged: the per-environment switch, the 15 minute cooldown, a healthy
@@ -54,24 +69,61 @@ export const MIN_HOST_LOSS_WINDOW_MS = 60_000
 export const MAX_HOST_LOSS_WINDOW_MS = 300_000
 
 /**
- * The offline mark trails the real silence: the offline sweep declares a server
- * stale 90 s after its last answer and runs every 60 s, so the host stopped
- * answering at most this long before the mark. The fresh-standby gate is
- * anchored here (the earliest the host can have died).
+ * The stale-sweep mark trails the real silence: the offline sweep declares a
+ * server stale 90 s after its last answer and runs every 60 s, so the host
+ * stopped answering at most this long before the mark. The fresh-standby gate
+ * is anchored here (the earliest the host can have died).
  */
 export const HOST_LOSS_MARK_LAG_MS = 150_000
+
+/**
+ * Why the primary's server was marked offline (`server.offline_reason`).
+ * `sweep_stale`: no heartbeat (power loss, cut cable). `disconnect`: the
+ * daemon's socket closed (daemon stopped, host shut down).
+ */
+export type HostLossMarkReason = 'sweep_stale' | 'disconnect'
+
+/** The offline reasons the host-loss path acts on. */
+export const HOST_LOSS_MARK_REASONS: readonly HostLossMarkReason[] = ['sweep_stale', 'disconnect']
+
+/**
+ * How far before the mark the host can have died. A closed socket is marked
+ * the moment it closes (a few seconds at most), so the mark itself is the
+ * anchor; only the stale sweep's mark trails the real silence.
+ */
+function markLagMs(reason: HostLossMarkReason): number {
+  return reason === 'disconnect' ? 0 : HOST_LOSS_MARK_LAG_MS
+}
+
+/**
+ * Slack for the peer-quiet check after a clean `disconnect`: the replicas lose
+ * the stream within a few seconds of the daemon's socket closing, so when the
+ * first tick after the window looks, their last contact is a hair younger than
+ * the window. Without it that tick would alert "not confirmed" and the
+ * promotion would wait a whole extra minute.
+ */
+export const HOST_LOSS_DISCONNECT_PEER_SLACK_MS = 15_000
 
 /** Nothing is decided for a planned reboot / update for this long. */
 export const HOST_LOSS_PLANNED_GRACE_MS = 600_000
 
 /**
  * The latest, measured from the offline mark, that a promotion may still be
- * decided: the fresh-standby gate's failure span (`MAX_FAILURE_SPAN_MS`, 10
- * min, counted from {@link hostLossFailureStartMs}). The gate's own receipt
- * check does not depend on when the probe runs, so without this cap a retry
- * long after the loss would still pass it. Later than this: alert only.
+ * decided: the fresh-standby gate's failure span (`MAX_FAILURE_SPAN_MS`,
+ * counted from {@link hostLossFailureStartMs}). The gate's own receipt check
+ * does not depend on when the probe runs, so without this cap a retry long
+ * after the loss would still pass it. Later than this: alert only.
  */
-export const HOST_LOSS_LAST_DECISION_MS = MAX_FAILURE_SPAN_MS - HOST_LOSS_MARK_LAG_MS
+export function hostLossLastDecisionMs(reason: HostLossMarkReason = 'sweep_stale'): number {
+  return MAX_FAILURE_SPAN_MS - markLagMs(reason)
+}
+
+/**
+ * The stale-sweep mark's value of {@link hostLossLastDecisionMs}; a closed-socket
+ * mark has no lag and may be decided {@link MAX_FAILURE_SPAN_MS} after the mark.
+ * Use the function when the mark reason is known.
+ */
+export const HOST_LOSS_LAST_DECISION_MS = hostLossLastDecisionMs('sweep_stale')
 
 /** A host offline this long is no longer an incident this path works on. */
 export const HOST_LOSS_GIVE_UP_MS = 1_800_000
@@ -94,8 +146,11 @@ export function hostLossIncidentKey(serverId: string, offlineSince: string): str
 }
 
 /** Earliest the host can have died (control-plane ms). */
-export function hostLossFailureStartMs(offlineSinceMs: number): number {
-  return offlineSinceMs - HOST_LOSS_MARK_LAG_MS
+export function hostLossFailureStartMs(
+  offlineSinceMs: number,
+  reason: HostLossMarkReason = 'sweep_stale'
+): number {
+  return offlineSinceMs - markLagMs(reason)
 }
 
 export type HostLossAlertCode =
@@ -105,6 +160,8 @@ export type HostLossAlertCode =
   | 'daemon_too_old'
   | 'not_corroborated'
   | 'peer_streaming'
+  | 'engine_reachable'
+  | 'engine_unconfirmed'
 
 /** Plain-words journal text, one per code. */
 export const HOST_LOSS_ALERT_MESSAGES: Readonly<Record<HostLossAlertCode, string>> = {
@@ -120,6 +177,10 @@ export const HOST_LOSS_ALERT_MESSAGES: Readonly<Record<HostLossAlertCode, string
     "The primary's server stopped answering, but the other servers of this database could not confirm that the primary is down (one is offline or did not answer), so nothing was changed. If the server is really gone, promote a replica from the database page.",
   peer_streaming:
     "The primary's server stopped answering the control plane, but a replica still reports it is receiving data from the primary, so the host is probably alive and only its link to the control plane is down. Nothing was changed.",
+  engine_reachable:
+    "The primary's server stopped answering the control plane, but the other servers of this database can still open a connection to the primary's database port, so the database is probably still running and only the server's daemon is down. Nothing was changed.",
+  engine_unconfirmed:
+    "The primary's server stopped answering and its replicas are not receiving from it, but the other servers could not confirm that the primary's database port is unreachable (a check did not answer, or was not possible), so nothing was changed. If the server is really gone, promote a replica from the database page.",
 }
 
 export type HostLossPreflightFacts = {
@@ -127,6 +188,8 @@ export type HostLossPreflightFacts = {
   /** `server.status_changed_at` of the primary's server, ms. */
   offlineSinceMs: number
   windowMs: number
+  /** Why the server was marked offline; absent = a stale-sweep mark. */
+  markReason?: HostLossMarkReason
   engine: string
   /** Features the primary's daemon advertised when it last connected. */
   primaryDaemonFeatures: readonly string[]
@@ -154,7 +217,9 @@ export function hostLossPreflight(facts: Readonly<HostLossPreflightFacts>): Host
   const offlineForMs = facts.nowMs - facts.offlineSinceMs
   if (offlineForMs < facts.windowMs) return { action: 'wait', reason: 'inside_window' }
   if (offlineForMs > HOST_LOSS_GIVE_UP_MS) return { action: 'ignore' }
-  if (offlineForMs > HOST_LOSS_LAST_DECISION_MS) return { action: 'alert', code: 'too_late' }
+  if (offlineForMs > hostLossLastDecisionMs(facts.markReason)) {
+    return { action: 'alert', code: 'too_late' }
+  }
   if (facts.plannedReboot && offlineForMs < HOST_LOSS_PLANNED_GRACE_MS) {
     return { action: 'wait', reason: 'planned_reboot' }
   }
@@ -183,7 +248,11 @@ export type PeerReading = 'still_receiving' | 'not_receiving' | 'no_answer'
  * OR the member has been non-streaming for long enough via `notStreamingSince`.
  * Prevents flapping replicas (streaming then starting, repeating) from vetoing.
  */
-export function readPeer(health: ManagedReplicationHealth | null, windowMs: number): PeerReading {
+export function readPeer(
+  health: ManagedReplicationHealth | null,
+  windowMs: number,
+  slackMs = 0
+): PeerReading {
   if (!health || typeof health.state !== 'string' || health.state.length === 0) return 'no_answer'
   if (health.state === 'streaming') return 'still_receiving'
 
@@ -194,7 +263,7 @@ export function readPeer(health: ManagedReplicationHealth | null, windowMs: numb
   const { lastStreaming } = health
 
   // If lastStreaming.ageMs is known and exceeds window, replica is caught up.
-  if (typeof lastStreaming?.ageMs === 'number' && lastStreaming.ageMs > windowMs) {
+  if (typeof lastStreaming?.ageMs === 'number' && lastStreaming.ageMs > windowMs - slackMs) {
     return 'not_receiving'
   }
 
@@ -204,8 +273,59 @@ export function readPeer(health: ManagedReplicationHealth | null, windowMs: numb
   return 'no_answer'
 }
 
+/** One peer's attempt to open a connection to the primary's database port. */
+export type EngineReach = 'reachable' | 'unreachable' | 'unknown'
+
+/** Rounds of engine-port checks, every peer in each, before a lost host is promoted over. */
+export const HOST_LOSS_ENGINE_PROBE_ROUNDS = 2
+/** Pause between two rounds; each connection attempt itself is cut off after 3 s on the peer. */
+export const HOST_LOSS_ENGINE_PROBE_GAP_MS = 10_000
+
+/**
+ * What one connection attempt from a peer means. Only an attempt that was
+ * actually made counts: a connection that opens is `reachable`; one that is
+ * refused (host up, nothing listening), times out or finds no route is
+ * `unreachable`. Anything else (no answer from the peer, an old daemon, a
+ * target the peer refused to try) is `unknown` and never supports a promotion.
+ */
+export function classifyEngineReach(
+  entry: { reachable: boolean; error?: string } | null | undefined
+): EngineReach {
+  if (!entry) return 'unknown'
+  if (entry.reachable) return 'reachable'
+  return entry.error === 'refused' || entry.error === 'timeout' || entry.error === 'unreachable'
+    ? 'unreachable'
+    : 'unknown'
+}
+
+/**
+ * The second signal. `rounds` holds, per round, what every other member saw of
+ * the primary's database port. Any open connection in any round vetoes (the
+ * database is alive, only its daemon is gone). Promotion needs at least
+ * {@link HOST_LOSS_ENGINE_PROBE_ROUNDS} complete rounds and every attempt in
+ * them unreachable; a missing or unknown attempt never counts.
+ */
+export function hostLossEngineVerdict(
+  rounds: readonly (readonly EngineReach[])[]
+): HostLossVerdict {
+  const seen = new Set(rounds.flat())
+  if (seen.has('reachable')) return { action: 'alert', code: 'engine_reachable' }
+  if (
+    rounds.length < HOST_LOSS_ENGINE_PROBE_ROUNDS ||
+    rounds.some((round) => round.length === 0) ||
+    seen.has('unknown')
+  ) {
+    return { action: 'alert', code: 'engine_unconfirmed' }
+  }
+  return { action: 'promote' }
+}
+
 export type HostLossVerdict =
-  { action: 'alert'; code: 'peer_streaming' | 'not_corroborated' } | { action: 'promote' }
+  | {
+      action: 'alert'
+      code: 'peer_streaming' | 'not_corroborated' | 'engine_reachable' | 'engine_unconfirmed'
+    }
+  | { action: 'promote' }
 
 /** Step 6: every other member must corroborate; any one that hears the primary vetoes. */
 export function hostLossVerdict(peers: readonly PeerReading[]): HostLossVerdict {

@@ -403,6 +403,7 @@ export function getAdminOpenApiSpec(
                 'notifications',
                 'monitors',
                 'relays',
+                'destinations',
                 'authproviders',
                 'email',
                 'alertwebhook',

@@ -228,7 +228,7 @@ test('an owner sees only their own organization’s running and failed commands'
       [
         ['deploy', 'deploying'],
         ['deploy', 'failed'],
-        ['restart', 'deploying'],
+        ['restart', 'queued'],
       ]
     )
     assert(feed.items.every((i) => i.serverId !== s.serverB))

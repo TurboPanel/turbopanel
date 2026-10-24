@@ -19,9 +19,9 @@ import { buildMetricsSample } from '../src/contracts/metrics-contract.ts'
 import {
   type MetricsDeploymentKind,
   platformDefaultMetricsCapabilityPlan,
-  truncateSampleToCapabilityPlan,
 } from '../src/contracts/capability-plan.ts'
 import { buildMetricsDataPoints } from '../src/daemon/metrics/backends/cloudflare/field-map.ts'
+import { limitDevicesToCase } from '../src/daemon/metrics/testing/plan-device-limits.ts'
 import { representativeMachineFixtures } from '../src/daemon/metrics/testing/representative-machines.ts'
 import type { MetricsSample } from '../src/contracts/metrics-contract.ts'
 import type { SlotMapping } from '../src/daemon/metrics/types.ts'
@@ -238,9 +238,7 @@ function aeRows(fixtureName: string, applyPlan: boolean, slotMapping?: SlotMappi
       intervalSeconds: 60,
     },
   }
-  const planned = applyPlan
-    ? truncateSampleToCapabilityPlan(sample, fixture.plan, slotMapping)
-    : sample
+  const planned = applyPlan ? limitDevicesToCase(sample, fixture.plan, slotMapping) : sample
   const points = buildMetricsDataPoints(
     { ...planned, serverId: SERVER_ID, receivedAt: planned.metadata.sampledAt },
     slotMapping
@@ -265,7 +263,7 @@ function sampleForIngest(
   ingest: MetricsDeploymentKind
 ): MetricsSample {
   if (ingest === 'self-hosted') return sample
-  return truncateSampleToCapabilityPlan(sample, plan, slotMapping)
+  return limitDevicesToCase(sample, plan, slotMapping)
 }
 
 console.log('\n=== 3. High-cardinality handling ===\n')

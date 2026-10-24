@@ -28,7 +28,7 @@ import {
   SYSTEM_MANAGED_INGRESS_COMPONENT,
   SYSTEM_MANAGED_INGRESS_PROJECT_DISPLAY_NAME,
   SYSTEM_PROJECT_DISPLAY_NAME,
-  SYSTEM_PROJECT_METADATA_TYPE,
+  SYSTEM_PROJECT_KIND,
   SYSTEM_SELF_HOST_COMPONENT,
   SYSTEM_SELF_HOST_COMPOSE_SERVICE_NAMES,
   SYSTEM_SELF_HOST_PROJECT_DISPLAY_NAME,
@@ -146,15 +146,12 @@ test('ensureSystemHierarchy is idempotent for the same org/server', async () => 
     assertEquals(second.containerName, first.containerName)
 
     const [ingressProjectRow] = await db
-      .select({ component: project.component, metadata: project.metadata })
+      .select({ component: project.component, kind: project.kind })
       .from(project)
       .where(eq(project.id, first.projectId))
       .limit(1)
     assertEquals(ingressProjectRow?.component, SYSTEM_HOSTING_INGRESS_COMPONENT)
-    assertEquals(
-      (ingressProjectRow?.metadata as Record<string, unknown> | null)?.type,
-      SYSTEM_PROJECT_METADATA_TYPE
-    )
+    assertEquals(ingressProjectRow?.kind, SYSTEM_PROJECT_KIND)
   })
 })
 
@@ -300,15 +297,12 @@ test('ensureSelfHostSystemHierarchy provisions database/queue with pending uuid-
     assertEquals(result.services.map((svc) => svc.composeServiceName).sort(), ['database', 'queue'])
 
     const [projectRow] = await db
-      .select({ metadata: project.metadata, component: project.component })
+      .select({ metadata: project.metadata, kind: project.kind, component: project.component })
       .from(project)
       .where(eq(project.id, result.projectId))
       .limit(1)
     assertEquals(projectRow?.component, SYSTEM_SELF_HOST_COMPONENT)
-    assertEquals(
-      (projectRow?.metadata as Record<string, unknown> | null)?.type,
-      SYSTEM_PROJECT_METADATA_TYPE
-    )
+    assertEquals(projectRow?.kind, SYSTEM_PROJECT_KIND)
     // No organizationId/serverId leak into project metadata — those columns
     // (workspace.organization_id / environment.server_id) are the source of
     // truth.
@@ -510,8 +504,8 @@ test('ensure paths normalize stale workspace and project display names', async (
         workspaceId,
         organizationId,
         name: 'Server Ingress',
+        kind: 'compose',
         metadata: {
-          type: 'docker-compose',
           component: SYSTEM_HOSTING_INGRESS_COMPONENT,
           extra: 'keep',
         },
@@ -521,8 +515,8 @@ test('ensure paths normalize stale workspace and project display names', async (
         workspaceId,
         organizationId,
         name: 'Managed Ingress',
+        kind: 'compose',
         metadata: {
-          type: 'docker-compose',
           component: SYSTEM_MANAGED_INGRESS_COMPONENT,
           extra: 'keep',
         },
@@ -532,8 +526,8 @@ test('ensure paths normalize stale workspace and project display names', async (
         workspaceId,
         organizationId,
         name: 'Database HA',
+        kind: 'compose',
         metadata: {
-          type: 'docker-compose',
           component: SYSTEM_MANAGED_HA_COMPONENT,
           extra: 'keep',
         },
@@ -543,8 +537,8 @@ test('ensure paths normalize stale workspace and project display names', async (
         workspaceId,
         organizationId,
         name: 'TurboPanel System',
+        kind: 'compose',
         metadata: {
-          type: 'docker-compose',
           component: SYSTEM_SELF_HOST_COMPONENT,
           extra: 'keep',
         },
@@ -602,13 +596,13 @@ test('ensure paths normalize stale workspace and project display names', async (
 
     for (const row of expected) {
       const [projectRow] = await db
-        .select({ name: project.name, metadata: project.metadata })
+        .select({ name: project.name, kind: project.kind, metadata: project.metadata })
         .from(project)
         .where(eq(project.id, row.id))
         .limit(1)
       const metadata = projectRow?.metadata as Record<string, unknown> | null
       assertEquals(projectRow?.name, row.name)
-      assertEquals(metadata?.type, SYSTEM_PROJECT_METADATA_TYPE)
+      assertEquals(projectRow?.kind, SYSTEM_PROJECT_KIND)
       assertEquals(metadata?.component, row.component)
       assertEquals(metadata?.extra, 'keep')
     }

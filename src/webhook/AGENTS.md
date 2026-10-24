@@ -197,7 +197,7 @@ The three things around the gate that used to be git-shaped were widened
 when Stripe landed, so a fourth kind inherits them:
 
 - `delivery.provider` is `CHECK (provider IN ('github','gitlab','stripe'))`
-  (`src/db/schema.ts`, `migrations/0003_billing_projection.sql`). The
+  (`src/db/schema.ts`, `migrations/0000_base.sql`). The
   claim in step 5 writes it, so a new kind still needs one forward migration
   to add its value.
 - `WebhookDeliveryProvider` is its own literal union

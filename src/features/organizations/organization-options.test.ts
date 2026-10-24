@@ -8,6 +8,7 @@ import {
   resolveComposeDefaultResourceLimits,
   resolveDefaultEnvironmentName,
   resolveDeployHooksEnabled,
+  resolveDeployTimeoutMs,
   resolvePrincipalNamePolicy,
   resolveRandomizedPrincipalUsernames,
   resolveTemperatureUnit,
@@ -34,7 +35,10 @@ test('parseOrganizationOptions reads timezone, maxServers, and host defaults', (
     sshPort: 2222,
     ntp: { enabled: true, servers: ['time.cloudflare.com'] },
     defaultFabricEnabled: true,
+    hideWebServerNames: false,
   })
+  assertEquals(options.hideWebServerNames, false)
+  assertEquals(parseOrganizationOptions({ hideWebServerNames: null }).hideWebServerNames, undefined)
   assertEquals(options.defaultServerTimezone, 'America/Chicago')
   assertEquals(options.enforceServerTimezone, true)
   assertEquals(options.maxServers, 5)
@@ -298,4 +302,15 @@ test('deploy hooks are off unless the organization opted in', () => {
     true
   )
   assertEquals(parseOrganizationOptions({ deployHooksEnabled: false }).deployHooksEnabled, false)
+})
+
+test('the deploy time limit is 30 minutes unless the organization set a whole number from 5 to 240', () => {
+  assertEquals(resolveDeployTimeoutMs(null), 30 * 60_000)
+  assertEquals(resolveDeployTimeoutMs(undefined), 30 * 60_000)
+  assertEquals(resolveDeployTimeoutMs(90), 90 * 60_000)
+  for (const bad of [4, 241, 12.5, '30', true]) {
+    assertEquals(resolveDeployTimeoutMs(bad), 30 * 60_000, JSON.stringify(bad))
+  }
+  assertEquals(resolveDeployTimeoutMs(5), 5 * 60_000)
+  assertEquals(resolveDeployTimeoutMs(240), 240 * 60_000)
 })

@@ -7,6 +7,9 @@ import { assertEquals } from '@std/assert'
 import { planLoginPatch } from './login-patch.ts'
 import {
   cidrToSourcePrefix,
+  LOGIN_SOURCES_ANYWHERE,
+  loginSourcesFromStored,
+  loginSourcesToStored,
   loginWireLimits,
   parseLoginAllowedSources,
   parseLoginMaxConnections,
@@ -197,5 +200,38 @@ test('PATCH plans store, clear and describe limits in plain words', () => {
   assertEquals(
     cleared.summary.some((line) => line.includes('from anywhere')),
     true
+  )
+})
+
+test('anywhere is stored as the explicit pair and read back as no limit', () => {
+  assertEquals([...LOGIN_SOURCES_ANYWHERE], ['address:0.0.0.0/0', 'address:::/0'])
+  assertEquals(loginSourcesToStored(undefined), ['address:0.0.0.0/0', 'address:::/0'])
+  assertEquals(loginSourcesToStored(null), ['address:0.0.0.0/0', 'address:::/0'])
+  assertEquals(loginSourcesToStored(['internal']), ['internal'])
+  assertEquals(loginSourcesFromStored(['address:0.0.0.0/0', 'address:::/0']), undefined)
+  assertEquals(loginSourcesFromStored(null), undefined)
+  assertEquals(loginSourcesFromStored(['internal', 'address:203.0.113.7']), [
+    'internal',
+    'address:203.0.113.7',
+  ])
+})
+
+test('typing the full-open ranges means anywhere; mixing them with other places is refused', () => {
+  assertEquals(parseLoginAllowedSources(['address:0.0.0.0/0']), null)
+  assertEquals(parseLoginAllowedSources(['address:::/0']), null)
+  assertEquals(parseLoginAllowedSources(['address:0::/0']), null)
+  assertEquals(
+    errorOf(parseLoginAllowedSources(['address:0.0.0.0/0', 'internal'])),
+    'managed_login_sources_any_alone'
+  )
+})
+
+test('host names are refused in plain words', () => {
+  const refused = parseLoginAllowedSources(['address:db.example.com'])
+  assertEquals(errorOf(refused), 'managed_login_source_invalid')
+  assertEquals(String((refused as { message: string }).message).includes('Host names'), true)
+  assertEquals(
+    errorOf(parseLoginAllowedSources(['address:2001:db8::/56'])),
+    'managed_login_source_range_not_exact'
   )
 })

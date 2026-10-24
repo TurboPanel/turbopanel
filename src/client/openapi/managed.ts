@@ -2,7 +2,7 @@ const ALLOWED_SOURCES_SCHEMA = {
   type: 'array',
   items: { type: 'string' },
   description:
-    "Where the login may be used from. Items: `any` (alone: everywhere, the default), `internal` (this server: its own programs and containers; anything arriving as the Docker gateway address counts as local), `server:<id>` (one of the organization's servers, all its addresses), `address:<ip | prefix% | cidr>` (one address, a prefix such as `203.0.113.%` or `2001:db8:1:%`, or a range that can be said exactly: IPv4 /8, /16, /24 or /32, IPv6 whole 16-bit groups /16 to /112; other ranges answer 400 `managed_login_source_range_not_exact`). The login still signs in from anywhere: the database proxy refuses every query from other addresses, so tools may show an empty page. An empty list answers 400 `managed_login_sources_empty`. Needs a server daemon that supports it (409 `managed_login_limits_need_daemon_update`). Other 400s: `managed_login_sources_invalid`, `managed_login_source_invalid`, `managed_login_sources_too_many`, `managed_login_sources_any_alone`, `managed_login_source_server_unknown`.",
+    "Where the login may be used from. Items: `any` (alone: everywhere, stored as the pair `address:0.0.0.0/0` and `address:::/0`; typing the range `0.0.0.0/0` or `::/0` means the same), `internal` (this server: its own programs and containers; anything arriving as the Docker gateway address counts as local), `server:<id>` (one of the organization's servers, all its addresses), `address:<ip | prefix% | cidr>` (one address (host names are refused), a prefix such as `203.0.113.%` or `2001:db8:1:%`, or a range that can be said exactly: IPv4 /8, /16, /24 or /32, IPv6 whole 16-bit groups /16 to /112; other ranges answer 400 `managed_login_source_range_not_exact`). The login still signs in from anywhere: the database proxy refuses every query from other addresses, so tools may show an empty page. An empty list answers 400 `managed_login_sources_empty`. Needs a server daemon that supports it (409 `managed_login_limits_need_daemon_update`). Other 400s: `managed_login_sources_invalid`, `managed_login_source_invalid`, `managed_login_sources_too_many`, `managed_login_sources_any_alone`, `managed_login_source_server_unknown`.",
 } as const
 
 const MAX_CONNECTIONS_SCHEMA = {
@@ -549,7 +549,7 @@ export const managedSchemas = {
       deleted: {
         type: 'boolean',
         description:
-          'True when the row was hard-deleted (unplaced cluster); false when `managed.destroy` was enqueued for a placed cluster',
+          'True when the row was hard-deleted (unplaced cluster or `?force=true`); false when `managed.destroy` was enqueued for a placed cluster',
       },
       commandId: { type: 'string' },
       serverId: { type: 'string' },
@@ -558,6 +558,25 @@ export const managedSchemas = {
         items: { type: 'object' },
         description:
           'Present when `detach=true` and services were bound: the services (`serviceId`, `name`, `environmentId`, `projectId`, `keyPrefix`) whose bindings and database variables go with the cluster. Removed at once on a forced or unplaced delete; otherwise removed only when the queued destroy succeeds (a destroy that fails leaves the cluster and its bindings in place)',
+      },
+      hostCleanup: {
+        type: 'array',
+        description:
+          'Present on `?force=true`: one entry per member host. `status` is whether `managed.destroy` was queued; `online` is the live connection right now (an offline host is retried once it reconnects, within 7 days)',
+        items: {
+          type: 'object',
+          required: ['serverId', 'status', 'online'],
+          properties: {
+            serverId: { type: 'string', format: 'uuid' },
+            status: { type: 'string', enum: ['queued', 'failed'] },
+            online: { type: 'boolean' },
+          },
+        },
+      },
+      note: {
+        type: 'string',
+        description:
+          'Present on `?force=true` when any member host is offline: the cleanup will run when those servers reconnect within 7 days',
       },
     },
   },
@@ -653,9 +672,9 @@ export const managedSchemas = {
       },
       grantMode: {
         type: 'string',
-        enum: ['preset', 'recipe', 'self'],
+        enum: ['recipe', 'self'],
         description:
-          "Who sets the login's permissions. `preset` = logins made before modes existed (the panel resets permissions on every apply, as before). `recipe` = the panel sets them. `self` = you set them by hand and the panel never resets them; it still owns the password, LOGIN, connection limit and CONNECT on the listed databases.",
+          "Who sets the login's permissions. `recipe` = the panel sets them. `self` = you set them by hand and the panel never resets them; it still owns the password, LOGIN, connection limit and CONNECT on the listed databases.",
       },
       allowedSources: {
         ...ALLOWED_SOURCES_SCHEMA,
@@ -1278,6 +1297,11 @@ export const managedSchemas = {
         description:
           'Host that holds the on-disk artifact (the primary when the backup ran). Absent on older records.',
       },
+      copy: {
+        $ref: '#/components/schemas/BackupTargetCopy',
+        description:
+          'How copying this backup to its off-server target stands; null when no target applied.',
+      },
     },
   },
   ManagedBackupsResponse: {
@@ -1413,6 +1437,11 @@ export const managedSchemas = {
         type: ['string', 'null'],
         description: 'IANA zone; null means the host local time',
       },
+      database: {
+        type: ['string', 'null'],
+        description:
+          "The database each run dumps; null means the cluster's initial database. Must exist on the cluster and not be a system schema, otherwise 422 `backup_database_invalid`.",
+      },
       retentionKeep: { type: 'integer', minimum: 1 },
       enabled: { type: 'boolean' },
       automatic: {
@@ -1458,6 +1487,11 @@ export const managedSchemas = {
       name: { type: 'string', maxLength: 64 },
       schedule: { $ref: '#/components/schemas/BackupScheduleInput' },
       timezone: { type: ['string', 'null'] },
+      database: {
+        type: ['string', 'null'],
+        description:
+          "The database each run dumps; null means the cluster's initial database. Must exist on the cluster and not be a system schema, otherwise 422 `backup_database_invalid`.",
+      },
       retentionKeep: {
         type: 'integer',
         minimum: 1,
@@ -1480,6 +1514,11 @@ export const managedSchemas = {
       timezone: {
         type: ['string', 'null'],
         description: 'null clears it (host local time)',
+      },
+      database: {
+        type: ['string', 'null'],
+        description:
+          "The database each run dumps; null means the cluster's initial database. Must exist on the cluster and not be a system schema, otherwise 422 `backup_database_invalid`.",
       },
       retentionKeep: { type: 'integer', minimum: 1 },
       enabled: { type: 'boolean' },
@@ -1660,6 +1699,11 @@ export const managedSchemas = {
         type: 'string',
         description:
           'The artifact is on a former primary. Restore it there, take a new backup, or switch back first.',
+      },
+      canRestoreFromCopy: {
+        type: 'boolean',
+        description:
+          'True when a finished copy in the bucket exists: resend with `{ "fromCopy": true }` to restore from it on this server.',
       },
     },
   },
@@ -1874,7 +1918,7 @@ export const managedPaths = {
       tags: ['Managed services'],
       summary: 'Destroy managed service (two-step when running)',
       description:
-        "Refused with 409 `managed_has_bindings` (and the bound `services`) while any service is bound to one of the cluster's logins. Pass `detach=true` to remove those bindings and their variables with the cluster (when the destroy succeeds; at once on a forced or unplaced delete); the response then lists them in `detached`. New bindings are refused with 409 `managed_busy` (`destroy_in_flight`) while a destroy is queued. Needs the same rights as the destroy itself. The services keep running with the values they already have until their next deploy.",
+        "Refused with 409 `managed_has_bindings` (and the bound `services`) while any service is bound to one of the cluster's logins. Pass `detach=true` to remove those bindings and their variables with the cluster (when the destroy succeeds; at once on a forced or unplaced delete); the response then lists them in `detached`. `?force=true` skips online checks, enqueues a 7-day `managed.destroy` per member host, hard-deletes the row, and returns `hostCleanup` (plus `note` when any host is offline). New bindings are refused with 409 `managed_busy` (`destroy_in_flight`) while a destroy is queued. Needs the same rights as the destroy itself. The services keep running with the values they already have until their next deploy.",
       parameters: [
         ENV_ID_PARAM,
         {
@@ -1884,6 +1928,14 @@ export const managedPaths = {
           schema: { type: 'boolean' },
           description:
             "Remove the cluster's service bindings (and their variables) with the cluster, once the destroy succeeds",
+        },
+        {
+          name: 'force',
+          in: 'query',
+          required: false,
+          schema: { type: 'boolean' },
+          description:
+            'Best-effort teardown: skip online checks, enqueue destroy on every member host with a 7-day expiry, and hard-delete the row immediately',
         },
       ],
       responses: {
@@ -1925,7 +1977,8 @@ export const managedPaths = {
           ...jsonSchema('ManagedApplyResponse'),
         },
         409: {
-          description: 'managed_busy / server_offline',
+          description:
+            'managed_busy (also reason backup_in_flight when another backup or restore of the cluster is queued or running) / server_offline',
           content: {
             'application/json': {
               schema: {
@@ -2097,7 +2150,7 @@ export const managedPaths = {
       tags: ['Managed services'],
       summary: 'Change a login (grant mode, databases, connection role, privileges, tool flag)',
       description:
-        'Every field is optional. `dryRun: true` changes nothing and returns `statements`, a plain-words list of the kinds of SQL the next apply would run. Refusals: 422 `managed_login_not_editable` (root/replication logins), 422 `managed_grant_mode_invalid_transition` (back to `preset`), 409 `managed_grant_reset_needs_confirm` (self back to panel-set permissions, or a read-only Postgres login moving to self, needs `confirmReset: true`), 422 `managed_self_login_has_no_privileges`, 400 `managed_grant_mode_invalid`.',
+        'Every field is optional. `dryRun: true` changes nothing and returns `statements`, a plain-words list of the kinds of SQL the next apply would run. Refusals: 422 `managed_login_not_editable` (root/replication logins), 409 `managed_grant_reset_needs_confirm` (self back to panel-set permissions, or a read-only Postgres login moving to self, needs `confirmReset: true`), 422 `managed_self_login_has_no_privileges`, 400 `managed_grant_mode_invalid`.',
       parameters: [ENV_ID_PARAM, LOGIN_ID_PARAM],
       requestBody: {
         required: true,
@@ -2147,7 +2200,7 @@ export const managedPaths = {
                 properties: {
                   ok: { type: 'boolean' },
                   dryRun: { type: 'boolean', description: 'Present and true for a preview.' },
-                  grantMode: { type: 'string', enum: ['preset', 'recipe', 'self'] },
+                  grantMode: { type: 'string', enum: ['recipe', 'self'] },
                   statements: {
                     type: 'array',
                     items: { type: 'string' },
@@ -2285,6 +2338,36 @@ export const managedPaths = {
       },
     },
   },
+  '/api/client/v1/environments/{id}/managed/databases/{name}/owner-role': {
+    post: {
+      tags: ['Managed services'],
+      summary: 'Move an existing Postgres database onto its owner role',
+      description:
+        "Postgres only. For the cluster's first database, or any database made before owner roles: hands the database and everything in it (schemas, tables, views, sequences, functions, types that are not part of an extension) to its owner role `tp_<name>_owner`, whoever owns it now, then applies. It changes who owns things, never a row or a grant, and it runs only when asked: send `confirm: true` (400 `managed_owner_role_confirm_required` says what will happen). Afterwards the database behaves like one made through the API: several migration logins and a Database admin login can change each other's tables, and read/write and read-only logins reach all of it. It waits at most five seconds for a busy table and then stops without changing anything, so run it in a quiet window and repeat it if it stops. Asking again, also for a database that already has an owner role, repeats the move and picks up what other logins made since; it is safe. The database is recorded as having an owner role once the server reports the move done. Subject to the organization's re-authentication setting (`managed.database.owner_role`) and recorded in the audit trail as `managed.database.owner_role.move`. 400 `managed_owner_role_unsupported` on MySQL and MariaDB, 400 `managed_owner_role_database_not_movable` for the engine's own databases, 400 `managed_owner_role_name_too_long` for a name over 54 characters, 409 `managed_database_convert_needs_daemon_update` when the server's daemon lacks `managed-database-convert-v1`.",
+      parameters: [ENV_ID_PARAM, DATABASE_NAME_PARAM],
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              required: ['confirm'],
+              properties: { confirm: { type: 'boolean', enum: [true] } },
+            },
+          },
+        },
+      },
+      responses: {
+        200: {
+          description: 'Move queued',
+          ...jsonSchema('ManagedDatabaseMutationResponse'),
+        },
+        400: { description: 'managed_owner_role_confirm_required and the refusals above' },
+        404: { description: 'No such database' },
+        409: { description: 'managed_database_convert_needs_daemon_update' },
+      },
+    },
+  },
   '/api/client/v1/environments/{id}/managed/status': {
     get: {
       tags: ['Managed services'],
@@ -2419,8 +2502,16 @@ export const managedPaths = {
       tags: ['Managed services'],
       summary: 'Restore a backup: enqueue managed.restore',
       description:
-        'Daemon verifies the stored checksum/size before touching the running engine. Artifacts live on the host that made them; a backup from a former primary answers 409 backup_on_other_server and does not enqueue.',
+        'Daemon verifies the stored checksum/size before touching the running engine. Artifacts live on the host that made them; a backup from a former primary answers 409 backup_on_other_server and does not enqueue. With `{ "fromCopy": true }` the server fetches the finished copy from the bucket instead (409 `backup_copy_not_ready` or `backup_copy_unavailable` when it cannot).',
       parameters: [ENV_ID_PARAM, BACKUP_ID_PARAM],
+      requestBody: {
+        required: false,
+        content: {
+          'application/json': {
+            schema: { type: 'object', properties: { fromCopy: { type: 'boolean' } } },
+          },
+        },
+      },
       responses: {
         200: {
           description: 'Restore command enqueued',
@@ -2431,7 +2522,8 @@ export const managedPaths = {
           ...jsonSchema('BackupNotFoundError'),
         },
         409: {
-          description: 'managed_busy / server_offline / backup_on_other_server',
+          description:
+            'managed_busy (also reason backup_in_flight) / server_offline / backup_on_other_server',
           content: {
             'application/json': {
               schema: {

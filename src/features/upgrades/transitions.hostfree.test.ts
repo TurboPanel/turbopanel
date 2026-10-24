@@ -147,7 +147,46 @@ function hoursBefore(iso: string, hours: number): string {
   return new Date(Date.parse(iso) - hours * HOUR_MS).toISOString()
 }
 
-test('a step still offline past the offline deadline needs attention', () => {
+function minutesBefore(iso: string, minutes: number): string {
+  return new Date(Date.parse(iso) - minutes * 60 * 1000).toISOString()
+}
+
+test('a fleet step still offline past the deadline is skipped', () => {
+  const action = planStepAction(
+    step({ status: 'waiting', phase: 'fleet', lastStageAt: minutesBefore(NOW, 16) }),
+    facts({ serverConnected: false }),
+    cfg
+  )
+  assertEquals(action, { kind: 'skip_offline' })
+})
+
+test('a colocated daemon step still offline past the deadline needs attention', () => {
+  const action = planStepAction(
+    step({
+      status: 'waiting',
+      phase: 'colocated_daemon',
+      lastStageAt: minutesBefore(NOW, 16),
+    }),
+    facts({ serverConnected: false }),
+    cfg
+  )
+  assertEquals(action, { kind: 'needs_attention', errorCode: 'server_offline' })
+})
+
+test('a control-plane step still offline past the deadline needs attention', () => {
+  const action = planStepAction(
+    step({
+      status: 'waiting',
+      phase: 'control_plane',
+      lastStageAt: minutesBefore(NOW, 16),
+    }),
+    facts({ serverConnected: false }),
+    cfg
+  )
+  assertEquals(action, { kind: 'needs_attention', errorCode: 'server_offline' })
+})
+
+test('a step with no phase still offline past the deadline needs attention', () => {
   const action = planStepAction(
     step({ status: 'waiting', lastStageAt: hoursBefore(NOW, 2) }),
     facts({ serverConnected: false }),
@@ -187,6 +226,18 @@ test('the offline deadline is configurable', () => {
     { now: NOW, offlineDeadlineMs: 60 * 1000 }
   )
   assertEquals(action, { kind: 'needs_attention', errorCode: 'server_offline' })
+  assertEquals(
+    planStepAction(
+      step({
+        phase: 'fleet',
+        status: 'waiting',
+        lastStageAt: new Date(Date.parse(NOW) - 5 * 60 * 1000).toISOString(),
+      }),
+      facts({ serverConnected: false }),
+      { now: NOW, offlineDeadlineMs: 60 * 1000 }
+    ),
+    { kind: 'skip_offline' }
+  )
 })
 
 test('a server back online before the deadline is dispatched', () => {
@@ -316,4 +367,72 @@ test('a restarted control-plane step is not re-dispatched while its daemon recon
   // Before the restart an offline host still waits and is re-dispatched.
   const installing = step({ unit: 'instance', status: 'installing', lastStageAt: minutesAgo(2) })
   assertEquals(planStepAction(installing, offline, cfg).kind, 'wait_offline')
+})
+
+test('a host that reported a failed restart is held inside the reconnect window, offline or not', () => {
+  const held = step({
+    status: 'restarting',
+    fromCommit: 'old-sha',
+    lastStageAt: NOW,
+    restartReportedAt: NOW,
+  })
+  const inside = { now: '2026-01-01T12:09:00.000Z' }
+  assertEquals(planStepAction(held, facts({ serverConnected: false }), inside), { kind: 'none' })
+  assertEquals(planStepAction(held, facts({ currentCommit: 'old-sha' }), inside), { kind: 'none' })
+})
+
+test('a held restart is done the moment the host reports the target build', () => {
+  const held = step({ status: 'restarting', restartReportedAt: NOW })
+  assertEquals(planStepAction(held, facts({ currentCommit: 'target-sha' }), { now: NOW }), {
+    kind: 'done',
+  })
+})
+
+test('past the window a held restart fails with the state the host is in', () => {
+  const held = step({
+    status: 'restarting',
+    fromCommit: 'old-sha',
+    restartReportedAt: NOW,
+  })
+  const past = { now: '2026-01-01T12:10:01.000Z' }
+  assertEquals(planStepAction(held, facts({ serverConnected: false }), past), {
+    kind: 'restart_failed',
+    reason: 'never_back',
+  })
+  assertEquals(planStepAction(held, facts({ currentCommit: 'old-sha' }), past), {
+    kind: 'restart_failed',
+    reason: 'old_build',
+  })
+  assertEquals(planStepAction(held, facts({ currentCommit: 'other-sha' }), past), {
+    kind: 'restart_failed',
+    reason: 'other_build',
+  })
+})
+
+test('the reconnect window is configurable and exactly the window still waits', () => {
+  const held = step({ status: 'restarting', restartReportedAt: NOW })
+  const config = { now: '2026-01-01T12:01:00.000Z', restartReconnectMs: 60_000 }
+  assertEquals(planStepAction(held, facts({ serverConnected: false }), config), { kind: 'none' })
+})
+
+test('a held restart whose report time does not parse counts from the last stage, never waits forever', () => {
+  const garbled = { status: 'restarting' as const, restartReportedAt: 'not-a-time' }
+  const fromLastStage = step({ ...garbled, lastStageAt: NOW })
+  assertEquals(
+    planStepAction(fromLastStage, facts({ serverConnected: false }), {
+      now: '2026-01-01T12:09:00.000Z',
+    }),
+    { kind: 'none' }
+  )
+  assertEquals(
+    planStepAction(fromLastStage, facts({ serverConnected: false }), {
+      now: '2026-01-01T12:10:01.000Z',
+    }),
+    { kind: 'restart_failed', reason: 'never_back' }
+  )
+  const noTimes = step({ ...garbled, lastStageAt: 'also-not-a-time' })
+  assertEquals(planStepAction(noTimes, facts({ serverConnected: false }), { now: NOW }), {
+    kind: 'restart_failed',
+    reason: 'never_back',
+  })
 })

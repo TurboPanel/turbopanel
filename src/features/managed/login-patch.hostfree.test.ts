@@ -4,7 +4,7 @@ import { type LoginPatchCurrent, planLoginPatch } from './login-patch.ts'
 const test = Deno.test.bind(Deno)
 const settings = (overrides: Partial<LoginPatchCurrent> = {}): LoginPatchCurrent => ({
   role: 'user',
-  grantMode: 'preset',
+  grantMode: 'recipe',
   tool: false,
   databases: [],
   privileges: [],
@@ -15,7 +15,7 @@ const settings = (overrides: Partial<LoginPatchCurrent> = {}): LoginPatchCurrent
 })
 const user = (overrides: Partial<LoginPatchCurrent> = {}) => settings(overrides)
 
-test('a preset login can move to self and the preview keeps grants alone', () => {
+test('a recipe login can move to self and the preview keeps grants alone', () => {
   const plan = planLoginPatch('postgres', user(), { grantMode: 'self' })
   if (!plan.ok) throw new Error('expected ok')
   assertEquals(plan.patch, { grantMode: 'self' })
@@ -52,7 +52,7 @@ test('invalid transitions are refused in plain words', () => {
   const preset = planLoginPatch('postgres', user({ grantMode: 'recipe' }), {
     grantMode: 'preset',
   })
-  assertEquals(!preset.ok && preset.error, 'managed_grant_mode_invalid_transition')
+  assertEquals(!preset.ok && preset.error, 'managed_grant_mode_invalid')
   const bogus = planLoginPatch('postgres', user(), { grantMode: 'x' })
   assertEquals(!bogus.ok && bogus.error, 'managed_grant_mode_invalid')
   const noConfirm = planLoginPatch('postgres', user({ grantMode: 'self' }), {

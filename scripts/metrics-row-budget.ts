@@ -14,11 +14,9 @@
  * per point; 250 points max per Worker invocation.
  */
 import { buildMetricsSample } from '../src/contracts/metrics-contract.ts'
-import {
-  platformDefaultMetricsCapabilityPlan,
-  truncateSampleToCapabilityPlan,
-} from '../src/contracts/capability-plan.ts'
+import { platformDefaultMetricsCapabilityPlan } from '../src/contracts/capability-plan.ts'
 import { buildMetricsDataPoints } from '../src/daemon/metrics/backends/cloudflare/field-map.ts'
+import { limitDevicesToCase } from '../src/daemon/metrics/testing/plan-device-limits.ts'
 import { representativeMachineFixtures } from '../src/daemon/metrics/testing/representative-machines.ts'
 import type { MetricsSample } from '../src/contracts/metrics-contract.ts'
 import type { SlotMapping } from '../src/daemon/metrics/types.ts'
@@ -113,9 +111,7 @@ function sampleForIngest(
   slotMapping: SlotMapping | undefined,
   deployment: Archetype['deployment']
 ): MetricsSample {
-  return deployment === 'self-hosted'
-    ? sample
-    : truncateSampleToCapabilityPlan(sample, plan, slotMapping)
+  return deployment === 'self-hosted' ? sample : limitDevicesToCase(sample, plan, slotMapping)
 }
 
 /** One hour of samples through the real write path; returns rows actually written. */
@@ -200,7 +196,7 @@ console.log('ANALYTICS ENGINE ROWS PER SCENARIO — measured from the real write
 console.log('All rows below mirror ingest in `api-routes.ts`. Hosted samples')
 console.log('are truncated to the PLATFORM DEFAULT plan (what an un-upgraded server')
 console.log("costs). Self-hosted samples are written untruncated — the operator's own")
-console.log('disk is uncapped. Live sessions sample every 10 s, but v7 stores only the')
+console.log('disk is uncapped. Live sessions sample every 10 s, but v12 stores only the')
 console.log('60 s baseline sample (flagged durable) and routes the 10 s samples to the')
 console.log('live overlay buffer, so a live lease does not inflate Analytics Engine row')
 console.log('counts. See `deno task metrics:inventory`.\n')

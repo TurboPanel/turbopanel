@@ -35,9 +35,10 @@
  * Workers-bundleable: nothing at module load.
  */
 
+import { logWarn } from '../../lib/logger.ts'
 import { CATALOGUE_CURRENCY, isTierLabel } from '../tiers/ladder.ts'
 import type { StripeClient } from './client.ts'
-import { StripeApiError } from './errors.ts'
+import { describeStripeError, StripeApiError } from './errors.ts'
 import {
   type BillingGateway,
   isResolvedAccountTaxDefault,
@@ -156,12 +157,34 @@ export function productVerificationFailures(
     !isResolvedTaxBehavior(price.taxBehavior) &&
     !isResolvedAccountTaxDefault(taxDefaults.taxBehavior)
   ) {
-    out.push(
-      'no tax behaviour resolves for this price: it is unspecified and Stripe Tax carries no ' +
-        'default. Set a default under Settings → Tax, or set tax_behavior on the price.'
-    )
+    out.push(unresolvedTaxFailure(taxDefaults))
   }
   return out
+}
+
+/** Why an `unspecified` price has no behaviour, worded for the lookup's outcome. */
+function unresolvedTaxFailure(taxDefaults: ProviderTaxDefaults): string {
+  const lead = 'no tax behaviour resolves for this price: it is unspecified and '
+  if (taxDefaults.outcome === 'permission_missing') {
+    return (
+      lead +
+      "the account's tax default could not be read, because the Stripe key lacks permission " +
+      'to read tax settings. Give the key Read access to Tax settings, or set tax_behavior on the price.'
+    )
+  }
+  if (taxDefaults.outcome === 'provider_error') {
+    const error = taxDefaults.error
+    const detail = error ? ` (status ${error.status}, ${error.code ?? error.type})` : ''
+    return (
+      lead +
+      `Stripe did not answer when asked for the account's tax default${detail}. ` +
+      'Try again, or set tax_behavior on the price.'
+    )
+  }
+  return (
+    lead +
+    'Stripe Tax carries no default. Set a default under Settings → Tax, or set tax_behavior on the price.'
+  )
 }
 
 function ladderMatchFailures(
@@ -195,29 +218,63 @@ export function verifyStripeProduct(
   return { ok: failures.length === 0, product, failures }
 }
 
-/** Normalise `GET /v1/tax/settings`. */
+/** Normalise a successful `GET /v1/tax/settings`. */
 export function summarizeStripeTaxDefaults(raw: StripeObject): ProviderTaxDefaults {
   const defaults = isObject(raw.defaults) ? raw.defaults : null
+  const taxBehavior = defaults ? str(defaults.tax_behavior) : null
   return {
-    taxBehavior: defaults ? str(defaults.tax_behavior) : null,
+    outcome: taxBehavior === null ? 'unset' : 'set',
+    taxBehavior,
     status: str(raw.status),
+    error: null,
   }
+}
+
+const TAX_SETTINGS_LOG_SCOPE = 'billing-tax-settings'
+
+/** A restricted key's 403 names the permission it lacks as `rak_…`; that name is not secret. */
+const RAK_PERMISSION = /\brak_[a-z0-9_]+\b/
+
+/**
+ * Classify a refused `GET /v1/tax/settings`. Keyed on HTTP status and
+ * `code`, like {@link StripeApiError}'s own classification, never on the
+ * message text: a 403 is a key without the permission (Stripe answers a
+ * restricted key that lacks one with 403), `stripe_tax_inactive` means
+ * there is no default to read, and everything else is a provider failure.
+ */
+export function taxDefaultsFromStripeError(err: StripeApiError): ProviderTaxDefaults {
+  const error = {
+    status: err.status,
+    type: err.type,
+    code: err.code,
+    permission: RAK_PERMISSION.exec(err.message)?.[0] ?? null,
+  }
+  let outcome: ProviderTaxDefaults['outcome'] = 'provider_error'
+  if (err.status === 403) outcome = 'permission_missing'
+  else if (err.code === 'stripe_tax_inactive') outcome = 'unset'
+  return { outcome, taxBehavior: null, status: null, error }
 }
 
 /**
  * `GET /v1/tax/settings`.
  *
- * An account with Stripe Tax not yet set up answers with an error rather
- * than an object. That is not fatal here: it means "no default", which
- * makes verification stricter rather than laxer, so it degrades instead of
- * breaking the admin dropdown. Non-Stripe failures still propagate.
+ * A Stripe refusal is not fatal here: it comes back as an outcome that
+ * names the reason, with no default, which makes verification stricter
+ * rather than laxer and degrades instead of breaking the admin dropdown.
+ * The reason is logged with every typed field so the operator can find the
+ * call in Stripe's request logs. Non-Stripe failures still propagate.
  */
 export async function getStripeTaxDefaults(client: StripeClient): Promise<ProviderTaxDefaults> {
   try {
     return summarizeStripeTaxDefaults(await client.get<StripeObject>('/v1/tax/settings'))
   } catch (err) {
-    if (err instanceof StripeApiError) return NO_TAX_DEFAULTS
-    throw err
+    if (!(err instanceof StripeApiError)) throw err
+    const result = taxDefaultsFromStripeError(err)
+    logWarn(
+      TAX_SETTINGS_LOG_SCOPE,
+      `tax settings read failed (${result.outcome}): ${describeStripeError(err)}`
+    )
+    return result
   }
 }
 

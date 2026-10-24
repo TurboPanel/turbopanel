@@ -14,6 +14,7 @@ import {
   parseCreateProjectNames,
   parseCreateProjectOptions,
   parseCreateProjectServerIdField,
+  parseProjectIconField,
   parseProjectPatchOptionsBody,
   resolveCatalogEntryForCreate,
   scaffoldEnvironmentNames,
@@ -21,7 +22,8 @@ import {
   stampCreateProjectMetadata,
 } from './routes-helpers.ts'
 import type { CatalogEntry } from './catalog/index.ts'
-import { SYSTEM_PROJECT_METADATA_TYPE } from '../../features/system/hierarchy.ts'
+import { SYSTEM_PROJECT_KIND } from '../../features/system/hierarchy.ts'
+import { projectKindForType } from '../../features/projects/vocabulary.ts'
 import { emptyComposeDocument, type ComposeDocument } from '../../features/compose/index.ts'
 
 /**
@@ -38,7 +40,7 @@ test('resolveCreateProjectType rejects missing and invalid types', () => {
   assertEquals(resolveCreateProjectType({}), 'invalid')
   assertEquals(resolveCreateProjectType({ type: '' }), 'invalid')
   assertEquals(resolveCreateProjectType({ type: 'not-a-type' }), 'invalid')
-  assertEquals(resolveCreateProjectType({ type: SYSTEM_PROJECT_METADATA_TYPE }), 'invalid')
+  assertEquals(resolveCreateProjectType({ type: SYSTEM_PROJECT_KIND }), 'invalid')
   assertEquals(resolveCreateProjectType({ type: 'empty' }), 'empty')
   assertEquals(resolveCreateProjectType({ type: 'docker-compose' }), 'docker-compose')
 })
@@ -114,7 +116,7 @@ test('parseCreateProjectMetadata strips reserved component and type keys', () =>
   const parsed = parseCreateProjectMetadata({
     metadata: {
       component: 'hosting-ingress',
-      type: SYSTEM_PROJECT_METADATA_TYPE,
+      type: SYSTEM_PROJECT_KIND,
       note: 'keep',
     },
   })
@@ -124,16 +126,18 @@ test('parseCreateProjectMetadata strips reserved component and type keys', () =>
   assertEquals(parsed.metadata?.note, 'keep')
 })
 
-test('stampCreateProjectMetadata lets canonical type win over caller metadata', () => {
-  assertEquals(
-    stampCreateProjectMetadata(
-      { type: SYSTEM_PROJECT_METADATA_TYPE, note: 'keep' },
-      { type: 'docker-compose' }
-    ),
-    { type: 'docker-compose', note: 'keep' }
-  )
-  assertEquals(stampCreateProjectMetadata(null, { type: 'managed', code: 'postgres' }), {
-    type: 'managed',
+test('parseCreateProjectMetadata strips a caller catalog code so a compose project never reads as a template', () => {
+  const parsed = parseCreateProjectMetadata({ metadata: { code: 'wordpress', note: 'keep' } })
+  if (!parsed.ok) throw new TypeError('expected valid metadata')
+  assertEquals(parsed.metadata, { note: 'keep' })
+})
+
+test('stampCreateProjectMetadata lets the canonical code win over caller metadata', () => {
+  assertEquals(stampCreateProjectMetadata({ code: 'caller', note: 'keep' }, { code: 'postgres' }), {
+    code: 'postgres',
+    note: 'keep',
+  })
+  assertEquals(stampCreateProjectMetadata(null, { code: 'postgres' }), {
     code: 'postgres',
   })
 })
@@ -216,7 +220,7 @@ test('assertDefaultServerIdShape rejects malformed server ids', () => {
 
 test('parseConfigureProjectBody requires catalog codes for template and managed', () => {
   assertEquals(parseConfigureProjectBody({ type: 'docker-compose' }).ok, true)
-  assertEquals(parseConfigureProjectBody({ type: SYSTEM_PROJECT_METADATA_TYPE }).ok, false)
+  assertEquals(parseConfigureProjectBody({ type: SYSTEM_PROJECT_KIND }).ok, false)
   assertEquals(parseConfigureProjectBody({ type: 'template' }).ok, false)
   const managed = parseConfigureProjectBody({ type: 'managed', code: 'postgres' })
   if (!managed.ok) throw new TypeError('expected managed configure body')
@@ -236,4 +240,19 @@ Deno.test('scaffoldEnvironmentNames never gives two environments the same name',
   const envs = [{ displayName: 'production' }, { displayName: 'Staging' }]
   assertEquals(scaffoldEnvironmentNames(envs, 'staging'), ['production', 'Staging'])
   assertEquals(scaffoldEnvironmentNames(envs, 'Edge'), ['Edge', 'Staging'])
+})
+
+test('parseProjectIconField accepts a listed key, null or nothing, and refuses the rest', () => {
+  assertEquals(parseProjectIconField({}), { ok: true, icon: undefined })
+  assertEquals(parseProjectIconField({ icon: null }), { ok: true, icon: null })
+  assertEquals(parseProjectIconField({ icon: 'rocket' }), { ok: true, icon: 'rocket' })
+  assertEquals(parseProjectIconField({ icon: 'unicorn' }).ok, false)
+  assertEquals(parseProjectIconField({ icon: '' }).ok, false)
+  assertEquals(parseProjectIconField({ icon: 7 }).ok, false)
+})
+
+test('projectKindForType folds a template into compose', () => {
+  assertEquals(projectKindForType('docker-compose'), 'compose')
+  assertEquals(projectKindForType('template'), 'compose')
+  assertEquals(projectKindForType('managed'), 'managed')
 })

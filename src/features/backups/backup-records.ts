@@ -6,7 +6,7 @@
 
 import { and, desc, eq } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
-import { backup, managedDatabase } from '../../db/schema.ts'
+import { backup, backupCopy, managedDatabase } from '../../db/schema.ts'
 import { backupRelativePath } from './vocabulary.ts'
 
 const CHECKSUM_SHA256_RE = /^[a-f0-9]{64}$/
@@ -147,4 +147,8 @@ export async function deleteManagedBackup(
   backupId: string
 ): Promise<void> {
   await db.delete(backup).where(and(eq(backup.managedId, managedId), eq(backup.backupId, backupId)))
+  // The copy rows describe a backup that is gone from the list; the bucket's own retention or delete handles the object.
+  await db
+    .delete(backupCopy)
+    .where(and(eq(backupCopy.managedId, managedId), eq(backupCopy.backupId, backupId)))
 }

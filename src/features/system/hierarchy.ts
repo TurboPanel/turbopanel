@@ -7,7 +7,7 @@
  * metadata — these keys are the source of truth):
  *
  * - `workspace.kind = 'turbopanel'` — one machine workspace per organization
- * - `project.metadata.type = 'system'` (`SYSTEM_PROJECT_METADATA_TYPE`) — shared
+ * - `project.kind = 'system'` (`SYSTEM_PROJECT_KIND`) — shared
  *   platform stamp on all four projects; presentation-only, never an
  *   authorization source
  * - `project.component = 'hosting-ingress'` — shared Traefik project
@@ -59,10 +59,10 @@ import {
 import { managedHaContainerNameFromService } from '../../lib/naming.ts'
 
 /**
- * Platform-owned project metadata type — never accepted by `POST /projects` or
+ * Platform-owned project kind — never accepted by `POST /projects` or
  * `…/configure`; not an authorization source.
  */
-export const SYSTEM_PROJECT_METADATA_TYPE = 'system'
+export const SYSTEM_PROJECT_KIND = 'system'
 
 export const SYSTEM_HOSTING_INGRESS_COMPONENT = 'hosting-ingress'
 export const SYSTEM_TRAEFIK_COMPOSE_SERVICE_NAME = 'traefik'
@@ -243,17 +243,10 @@ export async function ensureSystemWorkspace(tx: Db, organizationId: string): Pro
   return existing.id
 }
 
-function isMetadataRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
-function projectMetadataRecord(value: unknown): Record<string, unknown> {
-  return isMetadataRecord(value) ? { ...value } : {}
-}
-
 type ExistingSystemProjectRow = {
   id: string
   name: string | null
+  kind: string | null
   metadata: unknown
 }
 
@@ -266,27 +259,24 @@ type SystemComponentProjectParams = {
 
 /**
  * Normalize a reused system project: current display name + reserved
- * `metadata.type`, preserving `component` and any other existing keys.
+ * `kind`, preserving `component` and any other existing metadata keys.
  */
 async function normalizeExistingSystemProject(
   tx: Db,
   existing: ExistingSystemProjectRow,
   displayName: string
 ): Promise<void> {
-  const metadata = projectMetadataRecord(existing.metadata)
   const nameStale = existing.name !== displayName
-  const typeStale = metadata.type !== SYSTEM_PROJECT_METADATA_TYPE
-  if (!nameStale && !typeStale) return
+  const kindStale = existing.kind !== SYSTEM_PROJECT_KIND
+  if (!nameStale && !kindStale) return
 
   const patch: {
     name?: string
-    metadata?: Record<string, unknown>
+    kind?: string
     updatedAt: string
   } = { updatedAt: new Date().toISOString() }
   if (nameStale) patch.name = displayName
-  if (typeStale) {
-    patch.metadata = { ...metadata, type: SYSTEM_PROJECT_METADATA_TYPE }
-  }
+  if (kindStale) patch.kind = SYSTEM_PROJECT_KIND
 
   await tx.update(project).set(patch).where(eq(project.id, existing.id))
 }
@@ -296,7 +286,7 @@ async function reuseExistingSystemProject(
   params: SystemComponentProjectParams
 ): Promise<string> {
   const rows = await tx.execute<ExistingSystemProjectRow>(sql`
-    SELECT id, name, metadata
+    SELECT id, name, kind
     FROM project
     WHERE workspace_id = ${params.workspaceId}::uuid
       AND component = ${params.component}
@@ -316,19 +306,15 @@ async function ensureSystemComponentProject(
   tx: Db,
   params: SystemComponentProjectParams
 ): Promise<string> {
-  const metadataJson = JSON.stringify({
-    type: SYSTEM_PROJECT_METADATA_TYPE,
-  })
-
   // `organization_id` is resolved from the workspace row in the same
   // statement — the denormalization every project insert performs.
   const inserted = await tx.execute<{ id: string }>(sql`
-    INSERT INTO project (workspace_id, organization_id, name, metadata, component)
+    INSERT INTO project (workspace_id, organization_id, name, kind, component)
     SELECT
       w.id,
       w.organization_id,
       ${params.displayName},
-      ${metadataJson}::jsonb,
+      ${SYSTEM_PROJECT_KIND},
       ${params.component}
     FROM workspace w
     WHERE w.id = ${params.workspaceId}::uuid

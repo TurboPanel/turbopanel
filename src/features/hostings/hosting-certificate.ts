@@ -4,7 +4,7 @@
  *
  * Everything here is pure. The server decides each state and the panel only
  * renders it. The `tls.status` column is deliberately NOT extended: a
- * Let's Encrypt row stays `managed` and `isReadyCandidate` keeps gating deploys
+ * Let's Encrypt row stays `automatic` and `isReadyCandidate` keeps gating deploys
  * on that column alone. "Renewal failed" and "Waiting for DNS" are derived here
  * from the row's issuance details plus the hosting's own pending request.
  */
@@ -67,7 +67,7 @@ export type HostingCertificate = {
 export type PinnedCertificateRow = {
   source: string
   status: string
-  /** `tls.not_after` column (real for uploads; epoch placeholder for managed rows). */
+  /** `tls.not_after` column (real for uploads; epoch placeholder for automatic rows). */
   notAfter: string | null
   /** The residual jsonb (`dnsNames`, `acme`, ...). */
   metadata: unknown
@@ -88,7 +88,7 @@ function readIso(value: unknown): string | null {
   return Number.isNaN(ms) || ms <= 0 ? null : new Date(ms).toISOString()
 }
 
-/** The ACME block of a managed row; every field is read defensively. */
+/** The ACME block of an automatic row; every field is read defensively. */
 function readAcme(metadata: unknown): {
   lastError: string | null
   lastIssuedAt: string | null
@@ -301,7 +301,7 @@ function deriveLetsEncrypt(
   return { ...base, state: 'secure' }
 }
 
-/** Test certificates: no pin, a revoked pin, a self-signed pin, or the organization CA. */
+/** Self-signed fallback (the test_certificate state): no pin, a revoked pin, a self-signed pin, or the organization CA. */
 function deriveTest(input: DeriveHostingCertificateInput): HostingCertificate {
   if (input.pending !== null) {
     return {

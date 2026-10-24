@@ -325,7 +325,7 @@ async function writePair(
       .for('update')
   ).filter(
     (row) =>
-      row.status === 'managed' &&
+      row.status === 'automatic' &&
       isManagedRowMetadata(row.metadata) &&
       coversHostname(row.metadata.dnsNames, hostname)
   )

@@ -12,6 +12,7 @@ import {
   enqueueManagedLifecycleFanout,
   enqueuePreparedManagedApply,
   enqueueTypedCommand,
+  MANAGED_FORCE_DESTROY_EXPIRES_MS,
 } from './apply-prepare.ts'
 
 /**
@@ -42,6 +43,7 @@ type CommandRow = {
   payload: unknown
   metadata: Record<string, unknown>
   result: unknown
+  expiresAt: string | null
   createdAt: string
   updatedAt: string
 }
@@ -115,6 +117,7 @@ function createEnqueueDb(): {
               payload: row.payload,
               metadata: row.metadata as Record<string, unknown>,
               result: null,
+              expiresAt: (row.expiresAt as string | undefined) ?? null,
               createdAt: '2024-01-01T00:00:00.000Z',
               updatedAt: '2024-01-01T00:00:00.000Z',
             }
@@ -349,7 +352,7 @@ test('enqueueManagedApply delegates to managed.apply with setApplying', async ()
 
 test('enqueueManagedLifecycle and enqueueManagedDestroy enqueue without setApplying', async () => {
   const c = mockContext()
-  const { db, managedUpdates } = createEnqueueDb()
+  const { db, managedUpdates, commandRows } = createEnqueueDb()
   const queue = recordingQueue()
 
   const lifecycle = await enqueueManagedLifecycle(c, db, queue, {
@@ -375,6 +378,32 @@ test('enqueueManagedLifecycle and enqueueManagedDestroy enqueue without setApply
   }
   assertEquals(destroy.status, 'queued')
   assertEquals(managedUpdates.length, 0)
+  const destroyRow = commandRows.find((row) => row.name === 'managed.destroy')
+  const remaining = Date.parse(destroyRow?.expiresAt ?? '') - Date.now()
+  assertEquals(remaining > 500_000, true)
+  assertEquals(remaining < 700_000, true)
+})
+
+test('enqueueManagedDestroy honors a long force-delete expiry', async () => {
+  const c = mockContext()
+  const { db, commandRows } = createEnqueueDb()
+  const queue = recordingQueue()
+
+  const destroy = await enqueueManagedDestroy(c, db, queue, {
+    userId: 'user-1',
+    serverId: 'server-1',
+    managedId: 'managed-1',
+    removeVolumes: true,
+    expiresAtMs: MANAGED_FORCE_DESTROY_EXPIRES_MS,
+  })
+  if (destroy instanceof Response) {
+    throw new TypeError('expected destroy enqueue response')
+  }
+  const remaining =
+    Date.parse(commandRows.find((row) => row.name === 'managed.destroy')?.expiresAt ?? '') -
+    Date.now()
+  assertEquals(remaining > MANAGED_FORCE_DESTROY_EXPIRES_MS - 5_000, true)
+  assertEquals(remaining <= MANAGED_FORCE_DESTROY_EXPIRES_MS + 5_000, true)
 })
 
 test('enqueueManagedLifecycleFanout sends each member its own id and HA role', async () => {

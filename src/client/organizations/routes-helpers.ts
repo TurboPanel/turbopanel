@@ -1,11 +1,13 @@
 import {
   parseDefaultEnvironmentNameInput,
   parseMaxServersInput,
+  parseDeployTimeoutMinutes,
   parseTemperatureUnitInput,
   resolveAcmeEnabled,
   resolveComposeDefaultResourceLimits,
   resolveComposeGatedFieldsEnabled,
   resolveDeployHooksEnabled,
+  resolveDeployTimeoutMs,
   type TemperatureUnit,
 } from '../../features/organizations/organization-options.ts'
 import { ENVIRONMENT_NAME_RULE_MESSAGE } from '../../features/folders/records.ts'
@@ -14,7 +16,9 @@ import type { OrganizationSummary } from '../org-context.ts'
 import { BadRequestError, parseName } from '../shared.ts'
 import {
   type NtpDefaults,
+  DEFAULT_HIDE_WEB_SERVER_NAMES,
   parseDefaultFabricEnabledInput,
+  parseHideWebServerNamesInput,
   parseNtpDefaultsInput,
   parseSshPortInput,
 } from '../../features/servers/host-defaults.ts'
@@ -75,6 +79,7 @@ export type ComposeDefaultResourceLimitsPatch = {
 export type HostDefaultsPatch = {
   sshPort?: number | null
   ntp?: NtpDefaults | null
+  hideWebServerNames?: boolean | null
   defaultFabricEnabled?: boolean | null
 }
 
@@ -340,6 +345,26 @@ export function parseTemperatureUnitPatch(
   return { ok: true, patch: { temperatureUnit: parsed.value } }
 }
 
+/** `deployTimeoutMinutes` is a whole number inside the allowed range. */
+export function parseDeployTimeoutPatch(
+  body: Record<string, unknown>
+): { ok: true; patch: { deployTimeoutMinutes: number } } | OrganizationRouteValidationError {
+  const minutes = parseDeployTimeoutMinutes(body.deployTimeoutMinutes)
+  if (minutes === undefined) {
+    return { ok: false, error: 'Invalid deployTimeoutMinutes', status: 400 }
+  }
+  return { ok: true, patch: { deployTimeoutMinutes: minutes } }
+}
+
+/** Answer from the stored column value (`null` = the 30-minute default). */
+export function deployTimeoutGetResponse(minutes: number | null) {
+  return { deployTimeoutMinutes: Math.round(resolveDeployTimeoutMs(minutes) / 60_000) }
+}
+
+export function deployTimeoutPutResponse(minutes: number | null) {
+  return { ok: true as const, ...deployTimeoutGetResponse(minutes) }
+}
+
 export function parseTlsSettingsPatch(
   body: Record<string, unknown>
 ): { ok: true; patch: TlsSettingsPatch } | OrganizationRouteValidationError {
@@ -439,6 +464,18 @@ export function composeDefaultResourceLimitsPutResponse(options: {
   }
 }
 
+/** Copy `hideWebServerNames` (boolean, or `null` to clear) into the patch; an error when it is neither. */
+function readHideWebServerNames(
+  body: Record<string, unknown>,
+  patch: HostDefaultsPatch
+): OrganizationRouteValidationError | null {
+  if (!('hideWebServerNames' in body)) return null
+  const parsed = parseHideWebServerNamesInput(body.hideWebServerNames)
+  if (!parsed.ok) return { ok: false, error: 'Invalid hideWebServerNames', status: 400 }
+  patch.hideWebServerNames = parsed.value
+  return null
+}
+
 export function parseHostDefaultsPatch(
   body: Record<string, unknown>
 ): { ok: true; patch: HostDefaultsPatch } | OrganizationRouteValidationError {
@@ -459,6 +496,9 @@ export function parseHostDefaultsPatch(
     }
     patch.ntp = parsed.value
   }
+
+  const hideError = readHideWebServerNames(body, patch)
+  if (hideError) return hideError
 
   if ('defaultFabricEnabled' in body) {
     const parsed = parseDefaultFabricEnabledInput(body.defaultFabricEnabled)
@@ -640,11 +680,13 @@ export function deployHooksPutResponse(options: { deployHooksEnabled?: boolean }
 export function hostDefaultsGetResponse(options: {
   sshPort?: number
   ntp?: NtpDefaults
+  hideWebServerNames?: boolean
   defaultFabricEnabled?: boolean
 }) {
   return {
     sshPort: options.sshPort ?? null,
     ntp: options.ntp ?? null,
+    hideWebServerNames: options.hideWebServerNames ?? DEFAULT_HIDE_WEB_SERVER_NAMES,
     defaultFabricEnabled: options.defaultFabricEnabled ?? false,
   }
 }
@@ -652,6 +694,7 @@ export function hostDefaultsGetResponse(options: {
 export function hostDefaultsPutResponse(options: {
   sshPort?: number
   ntp?: NtpDefaults
+  hideWebServerNames?: boolean
   defaultFabricEnabled?: boolean
 }) {
   return {

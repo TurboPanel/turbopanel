@@ -25,14 +25,28 @@ import {
   UPGRADE_STEP_STATUSES,
   UPGRADE_STEP_UNITS,
 } from '../features/upgrades/vocabulary.ts'
-import { BACKUP_RUN_STATUSES, BACKUP_TARGET_KINDS } from '../features/backups/vocabulary.ts'
+import {
+  BACKUP_COPY_STATES,
+  BACKUP_RUN_STATUSES,
+  BACKUP_TARGET_KINDS,
+  BACKUP_TARGET_STORE_KINDS,
+} from '../features/backups/vocabulary.ts'
 import {
   DATABASE_LOGIN_ROLES,
   LOGIN_CONNECTION_ROLES,
   LOGIN_GRANT_MODES,
+  LOGIN_RECIPES,
 } from '../features/managed/logins.ts'
+import { PROJECT_ICONS, PROJECT_KINDS } from '../features/projects/vocabulary.ts'
+import {
+  DATACENTER_ADDRESS_PREFERENCES,
+  DATACENTER_KINDS,
+} from '../features/datacenters/datacenter-options.ts'
 import { PRINCIPAL_NAME_SCHEMES } from '../lib/principal-name-scheme.ts'
-import { SERVER_MACHINE_CLASS_SOURCES } from '../contracts/capability-plan.ts'
+import {
+  SERVER_MACHINE_CLASS_SOURCES,
+  SERVER_OS_ARCHITECTURES,
+} from '../contracts/capability-plan.ts'
 import {
   SERVER_DAEMON_UPDATE_STATUSES,
   SERVER_OFFLINE_REASONS,
@@ -45,6 +59,7 @@ import {
   FIREWALL_SOURCE_KINDS,
   FIREWALL_STATES,
 } from '../features/firewall/vocabulary.ts'
+import { PRINCIPAL_ACCESS_LEVELS } from '../features/principals/principal-access.ts'
 import { PLACEMENT_SOURCES, PLACEMENT_STATES } from '../features/principals/placement-vocabulary.ts'
 import { FOLDER_KINDS, FOLDER_STATES } from '../features/folders/vocabulary.ts'
 import { LEAF_STALE_CAUSES, LEAF_STATES } from '../features/tls/leaf-vocabulary.ts'
@@ -93,6 +108,8 @@ const CASES: Array<[constraint: string, values: readonly string[]]> = [
   ['payer_provider_check', BILLING_PROVIDER_IDS],
   ['placement_state_check', PLACEMENT_STATES],
   ['placement_source_check', PLACEMENT_SOURCES],
+  ['project_kind_check', PROJECT_KINDS],
+  ['project_icon_check', PROJECT_ICONS],
   ['folder_kind_check', FOLDER_KINDS],
   ['folder_state_check', FOLDER_STATES],
   ['leaf_state_check', LEAF_STATES],
@@ -114,6 +131,8 @@ const CASES: Array<[constraint: string, values: readonly string[]]> = [
   ['stage_unit_check', UPGRADE_STEP_UNITS],
   ['stage_phase_check', UPGRADE_PHASES],
   ['retention_target_kind_check', BACKUP_TARGET_KINDS],
+  ['destination_kind_check', BACKUP_TARGET_STORE_KINDS],
+  ['shipment_state_check', BACKUP_COPY_STATES],
   ['snapshot_status_check', BACKUP_RUN_STATUSES],
   ['edict_scope_check', FIREWALL_RULE_SCOPES],
   ['edict_action_check', FIREWALL_RULE_ACTIONS],
@@ -124,11 +143,16 @@ const CASES: Array<[constraint: string, values: readonly string[]]> = [
   ['stage_status_check', UPGRADE_STEP_STATUSES],
   ['login_role_check', DATABASE_LOGIN_ROLES],
   ['server_machine_class_source_check', SERVER_MACHINE_CLASS_SOURCES],
+  ['server_os_architecture_check', SERVER_OS_ARCHITECTURES],
   ['server_offline_reason_check', SERVER_OFFLINE_REASONS],
   ['server_daemon_update_status_check', SERVER_DAEMON_UPDATE_STATUSES],
   ['login_grant_mode_check', LOGIN_GRANT_MODES],
+  ['login_recipe_check', LOGIN_RECIPES],
   ['login_access_check', LOGIN_CONNECTION_ROLES],
   ['login_name_scheme_check', PRINCIPAL_NAME_SCHEMES],
+  ['principal_access_check', PRINCIPAL_ACCESS_LEVELS],
+  ['datacenter_address_preference_check', DATACENTER_ADDRESS_PREFERENCES],
+  ['datacenter_kind_check', DATACENTER_KINDS],
 ]
 
 for (const [constraint, values] of CASES) {

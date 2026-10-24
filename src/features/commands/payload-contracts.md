@@ -379,9 +379,12 @@ privileged runner, best-effort per entry, and a failure never fails the stop.
 Idempotent when the compose file is already gone. Used as the teardown
 gate before project cascade delete. `folder` (`{ owner, scope, slug }`, the
 service folder as components) names the folder to remove; the daemon takes the
-path from the components and never from a path on the wire. The explicit stop route sends **no** `siteReleases`: stopping keeps
+path from the components and never from a path on the wire. The explicit stop route (Destroy) sends **no** `siteReleases`: it keeps
 every service and volume folder, uploads included, and only delete teardown or a
-server leaving the environment names trees to reclaim. A deploy's
+server leaving the environment names trees to reclaim. It sends `releaseCleanup[]`
+instead (same entry shape): the daemon removes each service's published releases,
+the `current` link and its own release records, and leaves the folder, `shared/`,
+logs and the site owner's account in place. An older daemon ignores the field. A deploy's
 `storageMaterial[].folder` (`{ owner, scope, slug }`) carries the same for an
 owned volume, and `serviceFolders[]` (`{ serviceId, composeServiceName?, folder }`) names the
 folder of every host-run service (site, native app or Git-backed source) by
@@ -599,7 +602,7 @@ generation N+1 as `ca_state='active'`, and records a `changeover` journal).
 Hosting may pin `hosting.tls_id` to a library cert, leave null for **basic
 self-signed** (Caddy `tls internal`), or pin a `managed` Let's Encrypt row.
 Library certs — including Let's Encrypt — are never auto-selected; the operator
-must pin them. A `managed` `lets_encrypt` pin deploys as
+must pin them. An `automatic` `lets_encrypt` pin deploys as
 `hostings[].tlsMode: 'acme'` with no `tlsId` and **no** `tlsMaterial` entry —
 Caddy issues the leaf on the host. Private keys are sealed `tpsecret` envelopes
 at rest — never returned on client GET. Deploy and managed
@@ -613,7 +616,7 @@ materializes ProxySQL PEMs without a separate TLS wizard (`caCertPem` is the
 active+retired trust bundle; ProxySQL `ssl_ca` and Postgres `ssl_ca_file` accept
 multi-PEM). **Ingress reconcile scopes Organization CA/leaf to the server-owner
 org** so multi-org clusters on one host share a single frontend identity for
-that server. LE rows insert as `metadata.status: managed` (pinnable without
+that server. LE rows insert as `metadata.status: automatic` (pinnable without
 PEMs; Caddy issues on a public bind). CRUD: `/api/client/v1/tls`; Organization
 CA ensure-or-create **`GET /tls/ca`** (`{ tls, trustBundlePem }`), rotate
 **`POST /tls/ca/rotate`** (lease-guarded journal + fan-out of existing
@@ -652,7 +655,7 @@ each vhost its own LSAPI processor under suEXEC, with the same limits as
 `phpIniOverride` values. One PHP series per host across all three engines —
 conflicting `version` hints fail the deploy. `web.env` reaches PHP as FastCGI
 parameters: site Caddy `php_fastcgi env`, Apache `SetEnv`, nginx `fastcgi_param`
-(OpenLiteSpeed: not yet; `$_ENV` in no mode). When a project principal is assigned to the service, deploy-prepare
+(OpenLiteSpeed: per-site rewrite rules that set the variable; `$_ENV` in no mode). When a project principal is assigned to the service, deploy-prepare
 pins `sites[].principal` (at most one — else **422**
 `site_principal_ambiguous`); the daemon owns the site tree as that user (engine
 group retains read) and runs the site's PHP workers — FPM pool or LSAPI process

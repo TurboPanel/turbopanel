@@ -7,8 +7,10 @@ import {
   daemonUnsupportedReason,
   DENO_NATIVE_APPS_FEATURE,
   DEPLOY_CANCEL_FEATURE,
+  HOST_CAPACITY_FEATURE,
   INSTANCE_REVISION_HEADER,
   INSTANCE_VERSION_HEADER,
+  MANAGED_DATABASE_CONVERT_FEATURE,
   MANAGED_DATABASE_OWNER_FEATURE,
   MANAGED_HA_BOOT_HOLD_FEATURE,
   MANAGED_HA_INSTANCE_FEATURE,
@@ -20,12 +22,16 @@ import {
   MANAGED_OWNER_ROLE_FEATURE,
   MANAGED_REPLICA_FRESHNESS_FEATURE,
   MIN_SUPPORTED_DAEMON_VERSION,
+  SERVER_NETWORK_CHECK_FEATURE,
   parseSemver,
   PHP_SITE_MODES_FEATURE,
   resolveDaemonCapabilities,
   resolveDaemonSupport,
   resolveInstanceCapabilities,
+  MANAGED_SWITCHOVER_FINAL_POSITION_FEATURE,
+  BACKUP_S3_COPY_FEATURE,
   TLS_CAPTURE_FEATURE,
+  COMMAND_RECOVERY_FEATURE,
 } from './version-wire.ts'
 import { INSTANCE_VERSION } from '../app/version.ts'
 
@@ -226,9 +232,27 @@ test('managed-login-limits-v1 is an advertised wire feature and raised no floor'
   )
 })
 
-test('tls-capture-v1 is the last advertised wire feature and raised no floor', () => {
+test('tls-capture-v1 is an advertised wire feature and raised no floor', () => {
   assertEquals(TLS_CAPTURE_FEATURE, 'tls-capture-v1')
-  assertEquals(DAEMON_WIRE_FEATURES.at(-1), TLS_CAPTURE_FEATURE)
+  assertEquals((DAEMON_WIRE_FEATURES as readonly string[]).includes(TLS_CAPTURE_FEATURE), true)
+  assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.0')
+})
+
+test('command-recovery-v1 is an advertised wire feature and raised no floor', () => {
+  assertEquals(COMMAND_RECOVERY_FEATURE, 'command-recovery-v1')
+  assertEquals(DAEMON_WIRE_FEATURES.includes(COMMAND_RECOVERY_FEATURE), true)
+  assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.0')
+})
+
+test('managed-switchover-final-position-v1 is an advertised wire feature and raised no floor', () => {
+  assertEquals(MANAGED_SWITCHOVER_FINAL_POSITION_FEATURE, 'managed-switchover-final-position-v1')
+  assertEquals(DAEMON_WIRE_FEATURES.includes(MANAGED_SWITCHOVER_FINAL_POSITION_FEATURE), true)
+  assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.0')
+})
+
+test('host-capacity-v1 is an advertised wire feature and raised no floor', () => {
+  assertEquals(HOST_CAPACITY_FEATURE, 'host-capacity-v1')
+  assertEquals(DAEMON_WIRE_FEATURES.includes(HOST_CAPACITY_FEATURE), true)
   assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.0')
 })
 
@@ -236,6 +260,14 @@ test('managed-database-owner-v1 is an advertised wire feature and raised no floo
   assertEquals(MANAGED_DATABASE_OWNER_FEATURE, 'managed-database-owner-v1')
   assertEquals(
     (DAEMON_WIRE_FEATURES as readonly string[]).includes(MANAGED_DATABASE_OWNER_FEATURE),
+    true
+  )
+})
+
+test('managed-database-convert-v1 is an advertised wire feature', () => {
+  assertEquals(MANAGED_DATABASE_CONVERT_FEATURE, 'managed-database-convert-v1')
+  assertEquals(
+    (DAEMON_WIRE_FEATURES as readonly string[]).includes(MANAGED_DATABASE_CONVERT_FEATURE),
     true
   )
 })
@@ -254,4 +286,27 @@ test('managed-data-only-readwrite-v1 is an advertised wire feature and raised no
     (DAEMON_WIRE_FEATURES as readonly string[]).includes(MANAGED_DATA_ONLY_READWRITE_FEATURE),
     true
   )
+})
+
+test('advertises metrics-v8-sizes, the feature a daemon checks before it sends the per-sample sizes', () => {
+  assertEquals((DAEMON_WIRE_FEATURES as readonly string[]).includes('metrics-v8-sizes'), true)
+  // A control plane that advertises the sizes also advertises metrics-v8 (the sizes ride its `extended` block).
+  assertEquals((DAEMON_WIRE_FEATURES as readonly string[]).includes('metrics-v8'), true)
+})
+
+test('does not advertise metrics-v7, so a daemon that only knows v7 stays on the basic sample until it updates', () => {
+  assertEquals((DAEMON_WIRE_FEATURES as readonly string[]).includes('metrics-v7'), false)
+  assertEquals((DAEMON_WIRE_FEATURES as readonly string[]).includes('metrics-v7-sizes'), false)
+})
+
+test('server-network-check-v1 is an advertised wire feature and raised no floor', () => {
+  assertEquals(SERVER_NETWORK_CHECK_FEATURE, 'server-network-check-v1')
+  assertEquals(DAEMON_WIRE_FEATURES.includes(SERVER_NETWORK_CHECK_FEATURE), true)
+  assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.0')
+})
+
+test('backup-s3-copy-v1 is the last advertised wire feature and raised no floor', () => {
+  assertEquals(BACKUP_S3_COPY_FEATURE, 'backup-s3-copy-v1')
+  assertEquals(DAEMON_WIRE_FEATURES.at(-1), BACKUP_S3_COPY_FEATURE)
+  assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.0')
 })

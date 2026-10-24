@@ -42,8 +42,17 @@ import {
   createBackupRunReportStore,
   handleBackupRunReport,
 } from '../../features/backups/run-report.ts'
+import {
+  backupCopyReportResultMessage,
+  createBackupCopyReportStore,
+  handleBackupCopyReport,
+} from '../../features/backups/copy-report.ts'
 import { recordInstanceAcmeIssuance } from '../../features/install/instance-hostnames.ts'
 import { recordCommandProgress } from '../../features/commands/command-progress.ts'
+import {
+  ackForReportedOutcome,
+  noteReportedCommands,
+} from '../../features/commands/command-recovery.ts'
 import {
   persistDaemonReachedTarget,
   persistUpgradeOutcome,
@@ -81,6 +90,7 @@ import type {
   PendingRequestStatus,
 } from '../../contracts/cell.ts'
 import type {
+  CommandRecoveryReport,
   DaemonBuildInfo,
   DaemonInboundEnvelope,
   DaemonMessage,
@@ -1742,6 +1752,7 @@ export class DaemonCellObject {
       releaseLinkScan?: ServerReleaseLinkScanMetadata
       services?: unknown
       features?: string[]
+      commands?: CommandRecoveryReport
     }
   ): Promise<void> {
     this.#bumpDiag('heartbeatCount')
@@ -1823,6 +1834,12 @@ export class DaemonCellObject {
         needsOfflineRepair
       )
     }
+    const reported = parsed.commands
+    if (reported !== undefined && reported.running.length > 0) {
+      await this.#withProjectionDb('command-report', attachment.serverId, (db) =>
+        noteReportedCommands(db, attachment.serverId, reported)
+      )
+    }
   }
 
   /**
@@ -1867,6 +1884,7 @@ export class DaemonCellObject {
         | 'rolled-back'
       detail?: string
       errorCode?: string
+      restart?: unknown
     }
   ): Promise<void> {
     await this.#recordInboundRepairingPresence(attachment, parsed.at)
@@ -1879,6 +1897,7 @@ export class DaemonCellObject {
         at: parsed.at,
         detail: parsed.detail,
         errorCode: parsed.errorCode,
+        restart: parsed.restart,
         requestId: parsed.id,
       })
     )
@@ -2738,6 +2757,10 @@ export class DaemonCellObject {
       await this.#handleBackupRunReport(serverId, msg, ws)
       return
     }
+    if (msg.type === 'backup-copy-report') {
+      await this.#handleBackupCopyReport(serverId, msg, ws)
+      return
+    }
     const inbound = wireMessageToInboundEnvelope(msg)
     if (!inbound) return
     const envelopeOk = validateDaemonInboundEnvelope(inbound)
@@ -2749,7 +2772,14 @@ export class DaemonCellObject {
       })
       return
     }
-    await this.#handleInbound(serverId, inbound)
+    const record = await this.#handleInbound(serverId, inbound)
+    if (inbound.kind === 'command-outcome' && ws) {
+      // The daemon keeps its copy of the result until this confirms it is stored.
+      const ack = await this.#withProjectionDbResult('command-outcome-ack', serverId, (db) =>
+        ackForReportedOutcome(db, { serverId, envelope: inbound, record })
+      )
+      if (ack) ws.send(JSON.stringify(ack))
+    }
   }
 
   /**
@@ -2769,6 +2799,21 @@ export class DaemonCellObject {
     )
     if (!outcome || !ws) return
     ws.send(JSON.stringify(backupRunReportResultMessage(msg.id, outcome, nowIso())))
+  }
+
+  /** Answer a `backup-copy-report` on its socket; no answer (a null outcome) makes the daemon resend. */
+  async #handleBackupCopyReport(
+    serverId: string,
+    msg: Extract<DaemonMessage, { type: 'backup-copy-report' }>,
+    ws: WebSocket | undefined
+  ): Promise<void> {
+    const outcome = await this.#withProjectionDbResult('backup-copy-report', serverId, (db) =>
+      handleBackupCopyReport(createBackupCopyReportStore(db), msg, {
+        reporterServerId: serverId,
+      })
+    )
+    if (!outcome || !ws) return
+    ws.send(JSON.stringify(backupCopyReportResultMessage(msg.id, outcome, nowIso())))
   }
 
   #readRequestRow(serverId: string, requestId: string): PendingRequestRecord | null {

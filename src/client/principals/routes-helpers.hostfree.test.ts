@@ -90,6 +90,21 @@ test('parsePrincipalUsernameValue rejects reserved and unsafe names', () => {
   assertEquals(ok.username, 'appuser')
 })
 
+test('parseCreatePrincipalOptions turns the shell into an access level and keeps it out of options', () => {
+  const none = parseCreatePrincipalOptions({})
+  assertEquals(none.ok && none.access, 'sftp')
+  const bash = parseCreatePrincipalOptions({
+    options: { shell: '/bin/bash' },
+    uid: 15001,
+    gid: 15001,
+  })
+  assertEquals(bash.ok && bash.access, 'shell')
+  assertEquals(bash.ok && bash.options, { uid: 15001, gid: 15001 })
+  const off = parseCreatePrincipalOptions({ options: { shell: '/bin/false' } })
+  assertEquals(off.ok && off.access, 'none')
+  assertEquals(off.ok && off.options, {})
+})
+
 test('parseCreatePrincipalOptions accepts and rejects option shapes', () => {
   const ok = parseCreatePrincipalOptions({ uid: 15001, gid: 15001 })
   if (!ok.ok) throw new TypeError('expected valid options')
@@ -157,9 +172,9 @@ test('parseAccessField distinguishes absent from set, and rejects nonsense', () 
   // Absent means "leave it alone". A value sets it. Invalid is rejected rather
   // than dropped, so an operator cannot believe they suspended a live account.
   assertEquals(parseAccessField({}), undefined)
-  assertEquals(parseAccessField({ access: 'none' }), '/bin/false')
-  assertEquals(parseAccessField({ access: 'sftp' }), '/usr/sbin/nologin')
-  assertEquals(parseAccessField({ access: 'shell' }), '/bin/bash')
+  assertEquals(parseAccessField({ access: 'none' }), 'none')
+  assertEquals(parseAccessField({ access: 'sftp' }), 'sftp')
+  assertEquals(parseAccessField({ access: 'shell' }), 'shell')
   assertEquals(parseAccessField({ access: 'root' }), null)
   assertEquals(parseAccessField({ access: undefined }), null)
 })

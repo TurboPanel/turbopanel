@@ -19,16 +19,17 @@ reads rows, calls these, then writes Postgres and enqueues cell messages. Do not
 push a decision down into the orchestrator that belongs in a pure function, and
 do not import a DB/cell module here.
 
-| Module              | Owns                                                                                                                               |
-| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `vocabulary.ts`     | `upgrade` / `stage` enums, pinned by `../../db/enum-checks.test.ts`                                                                |
-| `target.ts`         | `upgrade.target` jsonb shape + `isOnTarget` / `differsFromInstalled`                                                               |
-| `target-resolve.ts` | channel manifests → `UpgradeTarget` (pinned via `pinnedChannelManifestUrl`), `channelHasInstancePackage`, latest-build setting row |
-| `planner.ts`        | phases + batch sizing → the run's step list                                                                                        |
-| `transitions.ts`    | per-step next action (dispatch / wait / retry / needs_attention / done)                                                            |
-| `run.ts`            | batch gating, fleet hard-gate, control-plane failure, run outcome, Workers dispatch cap                                            |
-| `schedule.ts`       | pure maintenance-window + auto-start decision                                                                                      |
-| `prune.ts`          | bounded history prune on the maintenance tick                                                                                      |
+| Module              | Owns                                                                                                                                                                                  |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `vocabulary.ts`     | `upgrade` / `stage` enums, pinned by `../../db/enum-checks.test.ts`                                                                                                                   |
+| `restart-report.ts` | the hold a daemon step gets when its host reports `restart_failed` (a hint, not a verdict: the host's commit decides, see below), and the server name snapshot kept in `stage.detail` |
+| `target.ts`         | `upgrade.target` jsonb shape + `isOnTarget` / `differsFromInstalled`                                                                                                                  |
+| `target-resolve.ts` | channel manifests → `UpgradeTarget` (pinned via `pinnedChannelManifestUrl`), `channelHasInstancePackage`, latest-build setting row                                                    |
+| `planner.ts`        | phases + batch sizing → the run's step list                                                                                                                                           |
+| `transitions.ts`    | per-step next action (dispatch / wait / skip_offline / retry / needs_attention / done)                                                                                                |
+| `run.ts`            | batch gating, fleet hard-gate, control-plane failure, run outcome, settle-on-start predicate, Workers dispatch cap                                                                    |
+| `schedule.ts`       | pure maintenance-window + auto-start decision                                                                                                                                         |
+| `prune.ts`          | bounded history prune on the maintenance tick                                                                                                                                         |
 
 The coordinator is `coordinator.ts` (decisions) plus `store.ts` (Postgres or the
 in-memory test store). `maintenance.ts` is the tick: Deno cleanup lane every
@@ -51,7 +52,16 @@ the cache.
 ## Runs
 
 - **Manual** — pre-flight first; 409 when a run is already active
-  (`uniq_upgrade_active`).
+  (`uniq_upgrade_active`), except a run whose only open steps are fleet
+  `waiting` rows (never dispatched) for servers that are not connected:
+  `start()` settles those as `skipped` (`server_offline`) and opens the new
+  run. If a concurrent hello, progress report or tick moved any of those steps
+  first, the run stays open and the call answers 409 `upgrade_run_active`.
+  Preflight reports `canStart` in that case and does not mutate. A fleet host
+  that is not connected when a run is planned (manual or automatic, not a
+  single-server start) gets its step `skipped` at once with `server_offline`
+  and "It was offline when the update started. It updates on its own when it
+  reconnects."; a connected `pending` host is never skipped.
 - **Automatic** — only when `autoUpdate` is on, on every runtime and channel
   (Workers included; it used to ignore the flag, which kept rolling canary
   builds to the testing fleet with `autoUpdate` off, 2026-10-03). Only
@@ -59,9 +69,11 @@ the cache.
   from what's installed (`differsFromInstalled`), and only when no run is
   active. Never replace a run in progress; the next run targets the newest
   build. Daemon drift counts **connected** servers only (`anyDaemonBehind`):
-  an offline host would otherwise reopen a run on every tick, each waiting
-  out the offline deadline. It is picked up by the first run after it
-  reconnects.
+  an offline host would otherwise reopen a run on every tick. A skipped host
+  that reconnects while behind makes the next tick start an automatic run
+  (batch limits as usual) when `autoUpdate` is on and the window is open; with
+  `autoUpdate` off it waits for a person. If it drops again that run skips it
+  at once, and drift ignores it while offline, so there is no loop.
 - **Never a downgrade.** Preflight refuses a run whose control-plane or
   co-located daemon target is older than what is installed (`isDowngrade` in
   `target.ts`). A fleet daemon already newer than the target gets a `skipped`
@@ -161,12 +173,24 @@ working.
 
 ## Self-healing (`transitions.ts`)
 
-- An offline server's step becomes `waiting` (`wait_offline`) and is dispatched
-  when the server reconnects. The orchestrator stamps `lastStageAt` (column
-  `stage.status_changed_at`) when the step enters `waiting`; still waiting after `UPGRADE_OFFLINE_DEADLINE_MS`
-  (60 min) it becomes `needs_attention` with `errorCode` `server_offline`, so
-  one unreachable host cannot hold the single instance-wide run open. The
-  step-retry endpoint reopens it.
+- A host already offline when a run is planned is skipped at once (see
+  **Runs**). An offline server's step otherwise becomes `waiting`
+  (`wait_offline`) and is dispatched when the server reconnects: a host that
+  was mid-update or briefly lost its connection during the run. The
+  orchestrator stamps `lastStageAt` (column `stage.status_changed_at`) when the
+  step enters `waiting`, so the 15 minute clock (`UPGRADE_OFFLINE_DEADLINE_MS`)
+  runs from the tick that first noticed the host offline (no last-seen
+  column). The wait applies only to a never-dispatched
+  (`attempts === 0`) **fleet** step on a host that went offline during the run;
+  one still waiting after that is `skipped` (`skip_offline`, strictly more than
+  15:00 elapsed) with `errorCode`
+  `server_offline` and "It stayed offline for 15 minutes during the update. It
+  updates on its own when it reconnects." The run then ends `succeeded` when
+  every other step is done/skipped. Co-located daemon and control-plane steps
+  still become `needs_attention` / `server_offline` (the fleet gate depends on
+  them). A host that dropped mid-install (`attempts > 0`) is never skipped: it
+  keeps the old path and becomes `needs_attention` / `server_offline` after the
+  long wait, because its install may still finish.
 - No progress within `UPGRADE_STEP_TIMEOUT_MS` → retry with backoff, up to
   `UPGRADE_STEP_MAX_ATTEMPTS` (3), then `needs_attention`.
 - `rolled_back` → one automatic retry (`UPGRADE_ROLLBACK_MAX_ATTEMPTS`), then
@@ -206,7 +230,10 @@ working.
   matched a canary label (`0.1.7` vs `0.1.7-canary.56`; fixed in turbopaneld).
 - `start()` reads the active run before anything else, before the target is
   even resolved, so a second press answers 409 `upgrade_run_active` even when
-  the manifest host is unreachable.
+  the manifest host is unreachable. A run that waits only on offline fleet
+  hosts is settled first instead of 409. The run endpoints return every step
+  with a boolean `connected` (live link) and `attempts` (dispatch count) beside `phase`, so the console can tell
+  an offline-waiting step from a connected one.
 
 ## Saving what daemons report
 
@@ -275,3 +302,20 @@ grouped `count(*)`, not a materialised server or step list.
   other code verbatim. `UPGRADE_RUN_ERROR_CODES` are the run `error`s
   (`colocated_daemon_failed`, `control_plane_failed`). The literals in
   `transitions.ts` / `coordinator.ts` are `satisfies`-checked against them.
+
+## A reported restart error is a hint
+
+The daemon's own restart (`sudo systemctl restart --no-block`) can exit nonzero
+or be cut off by the restart it asked for even though the host comes back on the
+new build (seen on slow low-memory hosts). So a daemon step that gets a
+`restart_failed` stage or result is **not** failed: `holdForReconnect` keeps it
+`restarting` with the report in `detail.restartPending`. The host's commit then
+decides: the target build marks the step `done` with a plain `restartNote`;
+past `UPGRADE_RESTART_RECONNECT_MS` without it the tick fails the step with
+`restart_failed` and the exact state (never reconnected, still the old build,
+some other build). A real install failure (any other code) still fails at once.
+Older daemons send only the code and are held the same way.
+
+Run steps carry `serverName` / `hostname`: the live server row first, then the
+snapshot saved in `detail` when the step was planned. A step row goes with its
+server (cascade), so the snapshot only covers a name later cleared.

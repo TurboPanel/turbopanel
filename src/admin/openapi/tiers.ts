@@ -67,8 +67,13 @@ export const TIER_PATHS = {
         '`metadata.turbopanel_tier` (when valid) as `suggestedLabel`, and the ' +
         'tier row already bound to it, if any, plus `taxDefaults` — the ' +
         "account's Stripe Tax default, which is what lets a price left at " +
-        '"Use default" verify. One provider list call, and a second for ' +
-        'those defaults only when some price needs them; nothing is written.',
+        '"Use default" verify. `taxDefaults.outcome` says how that lookup ' +
+        'ended: `set`, `unset`, `not_asked` (no price needed it), ' +
+        '`permission_missing` (the key may not read tax settings) or ' +
+        "`provider_error`, with Stripe's status, type, code and any named " +
+        'permission in `taxDefaults.error`. One provider list call, and a ' +
+        'second for those defaults only when some price needs them; nothing ' +
+        'is written.',
       security: [...cookieSecurity],
       responses: {
         '200': { description: '`{ provider, taxDefaults, products }`' },

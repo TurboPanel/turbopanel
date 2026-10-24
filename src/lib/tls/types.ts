@@ -2,7 +2,7 @@
 export type TlsSource = 'upload' | 'lets_encrypt' | 'self_signed' | 'organization_ca'
 
 /** Lifecycle status — dedicated `tls.status` column (also in API metadata DTO). */
-export type TlsStatus = 'ready' | 'pending' | 'expired' | 'failed' | 'revoked' | 'managed'
+export type TlsStatus = 'ready' | 'pending' | 'expired' | 'failed' | 'revoked' | 'automatic'
 
 export type TlsAcmeMetadata = {
   orderUrl?: string
@@ -66,7 +66,7 @@ export type TlsCandidate = {
   id: string
   metadata: TlsMetadata
   options: TlsOptions | null
-  /** Discriminator from `tls.source`; required to pin a `managed` LE row. */
+  /** Discriminator from `tls.source`; required to pin an `automatic` LE row. */
   source?: TlsSource
 }
 

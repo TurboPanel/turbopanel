@@ -1,9 +1,9 @@
 /**
  * Daemon-observed ACME issuance state for one `tlsMode: 'acme'` hostname.
  * Merge-patches `tls.metadata.acme` (`lastError`, `lastIssuedAt`, `notAfter`)
- * on the matching `managed` `lets_encrypt` row only — deliberately never
+ * on the matching `automatic` `lets_encrypt` row only — deliberately never
  * writes `tls.status`.
- * `isReadyCandidate` (`../../lib/tls/match.ts`) treats any `managed` row as
+ * `isReadyCandidate` (`../../lib/tls/match.ts`) treats any `automatic` row as
  * deploy-ready purely from its `status` column; a visibility feature must
  * not become a second, accidental deploy gate by touching that column.
  */
@@ -82,7 +82,7 @@ export type AcmeIssuanceEventDeps = {
 
 /**
  * Records the latest issuance outcome on the reporting organization's
- * `managed` `lets_encrypt` rows whose `dnsNames` cover the hostname.
+ * `automatic` `lets_encrypt` rows whose `dnsNames` cover the hostname.
  *
  * **Scoped to the reporting server's organization.** Hostname uniqueness is
  * per organization, so two organizations can legitimately hold rows for the
@@ -124,7 +124,7 @@ export async function handleAcmeIssuanceEvent(
   let updated = false
   let newlyFailing = false
   await forEachSequential(rows, async (row) => {
-    if (row.status !== 'managed') return
+    if (row.status !== 'automatic') return
     if (!isResidualMetadata(row.metadata)) return
     if (!coversHostname(row.metadata.dnsNames, hostname)) return
 

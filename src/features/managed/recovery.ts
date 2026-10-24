@@ -134,10 +134,60 @@ export type RecoveryMetadata = {
    * (`resumeInterruptedPromote`).
    */
   promoteResumes?: number
+  /** The row ended at the fence deadline (nothing was promoted). */
+  fenceDeadline?: boolean
+  /**
+   * Planned switchover that hit the fence deadline: the commands that bring the
+   * old primary back (`start`, `undrain:<serverId>`) that are not queued yet.
+   * Present (even empty) while the restart is being queued; the sweep finishes it.
+   */
+  abortRestartTodo?: string[]
+  /** Whether the old primary's stop may have reached its server (a start is needed). */
+  abortRestartReactivate?: boolean
+  abortRestartAttempts?: number
+  /** When a sweep took the restart commands to queue them; a stale claim is taken over. */
+  abortRestartClaimedAt?: string
+  /** The fence steps cancelled for this abort. */
+  abortRestartStepIds?: string[]
   haPresent?: boolean
   fenced?: boolean
   drainApplied?: boolean
   stopApplied?: boolean
+  /**
+   * Operator switchover only: the operator forced it past the lag gate. A
+   * forced switchover never triggers the automatic re-seed of the old primary.
+   */
+  forced?: boolean
+  /**
+   * Operator switchover only: a fresh reading taken before the fence showed
+   * the target fully caught up (`switchover-evidence.ts`). Absent / false =
+   * not proven, so the old primary is left `needs_resync` for an operator.
+   */
+  targetCaughtUp?: boolean
+  targetCaughtUpBasis?: string
+  /**
+   * Operator switchover only: what became of the automatic re-seed of the old
+   * primary. `queued` = the forced re-seed was queued; `skipped` = it was not
+   * safe or possible right now; `failed` = it could not be queued. In the last
+   * two the old primary stays `needs_resync` until an operator runs Resync.
+   */
+  /**
+   * Postgres switchover: the old primary's final write position (where its WAL
+   * ends after the clean shutdown) reported by the stop result, and the position
+   * the new primary had replayed to, reported by the promote result (`pg_lsn`
+   * text such as `0/7258050`), each with its timeline. Stored by
+   * `switchover-position.ts` only for a Postgres switchover and only when
+   * strictly valid. The automatic re-seed needs both, the new primary on the
+   * timeline after the old one, and its position at or past the old primary's.
+   */
+  oldPrimaryFinalLsn?: string
+  oldPrimaryFinalTimeline?: number
+  newPrimaryReplayLsn?: string
+  newPrimaryTimeline?: number
+  /** The managed cluster's primary epoch when the switchover began. */
+  primaryEpochAtStart?: number
+  reseedState?: 'queued' | 'skipped' | 'failed'
+  reseedNote?: string
   blockedReason?: string
   /** Times the same refusal was seen; absent = once. */
   blockedCount?: number
@@ -233,6 +283,14 @@ function optionalNullableString(value: unknown): string | null | undefined {
   return optionalString(value)
 }
 
+function optionalPositiveInt(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 1 ? value : undefined
+}
+
+function optionalNonNegativeInt(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : undefined
+}
+
 function optionalNullableNumber(value: unknown): number | null | undefined {
   if (value === null) return null
   return typeof value === 'number' ? value : undefined
@@ -267,10 +325,36 @@ export function parseRecoveryMetadata(value: unknown): RecoveryMetadata {
     'promoteResumes',
     optionalNullableNumber(value.promoteResumes) ?? undefined
   )
+  setIfPresent(metadata, 'fenceDeadline', optionalBoolean(value.fenceDeadline))
+  setIfPresent(metadata, 'abortRestartTodo', optionalStringList(value.abortRestartTodo))
+  setIfPresent(metadata, 'abortRestartReactivate', optionalBoolean(value.abortRestartReactivate))
+  setIfPresent(metadata, 'abortRestartAttempts', optionalNonNegativeInt(value.abortRestartAttempts))
+  setIfPresent(metadata, 'abortRestartClaimedAt', optionalString(value.abortRestartClaimedAt))
+  setIfPresent(metadata, 'abortRestartStepIds', optionalStringList(value.abortRestartStepIds))
   setIfPresent(metadata, 'haPresent', optionalBoolean(value.haPresent))
   setIfPresent(metadata, 'fenced', optionalBoolean(value.fenced))
   setIfPresent(metadata, 'drainApplied', optionalBoolean(value.drainApplied))
   setIfPresent(metadata, 'stopApplied', optionalBoolean(value.stopApplied))
+  setIfPresent(metadata, 'forced', optionalBoolean(value.forced))
+  setIfPresent(metadata, 'targetCaughtUp', optionalBoolean(value.targetCaughtUp))
+  setIfPresent(metadata, 'targetCaughtUpBasis', optionalString(value.targetCaughtUpBasis))
+  if (
+    value.reseedState === 'queued' ||
+    value.reseedState === 'skipped' ||
+    value.reseedState === 'failed'
+  ) {
+    metadata.reseedState = value.reseedState
+  }
+  setIfPresent(metadata, 'oldPrimaryFinalLsn', optionalString(value.oldPrimaryFinalLsn))
+  setIfPresent(metadata, 'newPrimaryReplayLsn', optionalString(value.newPrimaryReplayLsn))
+  setIfPresent(
+    metadata,
+    'oldPrimaryFinalTimeline',
+    optionalPositiveInt(value.oldPrimaryFinalTimeline)
+  )
+  setIfPresent(metadata, 'newPrimaryTimeline', optionalPositiveInt(value.newPrimaryTimeline))
+  setIfPresent(metadata, 'primaryEpochAtStart', optionalNonNegativeInt(value.primaryEpochAtStart))
+  setIfPresent(metadata, 'reseedNote', optionalString(value.reseedNote))
   setIfPresent(metadata, 'blockedReason', optionalString(value.blockedReason))
   setIfPresent(metadata, 'blockedCount', optionalNullableNumber(value.blockedCount) ?? undefined)
   setIfPresent(metadata, 'lastBlockedAt', optionalString(value.lastBlockedAt))

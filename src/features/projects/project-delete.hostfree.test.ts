@@ -31,9 +31,15 @@ function createCascadeMockDb(scenario: {
   containers?: ContainerRow[]
   hostingIds?: string[]
   composeNetworkIds?: string[]
-}): { db: Db; deletes: DeleteCall[]; stats: { transactions: number } } {
+  /** Serve the same rows again when a second pass reads them (check, then delete). */
+  repeat?: boolean
+}): {
+  db: Db
+  deletes: DeleteCall[]
+  stats: { transactions: number; open: boolean }
+} {
   const deletes: DeleteCall[] = []
-  const stats = { transactions: 0 }
+  const stats = { transactions: 0, open: false }
   const projectId = 'proj-1'
 
   const envIds = scenario.environmentIds ?? []
@@ -62,6 +68,7 @@ function createCascadeMockDb(scenario: {
             ? composeNetworkIds.map((id) => ({ id }))
             : (selectQueue[selectIndex] ?? [])
         if (table !== network) selectIndex += 1
+        if (scenario.repeat && selectIndex >= selectQueue.length) selectIndex = 0
         // `where(...)` can be awaited, or continue into `orderBy(...).limit(...)`.
         const result = Promise.resolve(rows) as Promise<unknown[]> & {
           orderBy: () => { limit: () => Promise<unknown[]> }
@@ -119,7 +126,12 @@ function createCascadeMockDb(scenario: {
     }),
     transaction: async <T>(fn: (inner: Db) => Promise<T>): Promise<T> => {
       stats.transactions += 1
-      return await fn(tx)
+      stats.open = true
+      try {
+        return await fn(tx)
+      } finally {
+        stats.open = false
+      }
     },
   } as unknown as Db
 
@@ -216,4 +228,27 @@ test('deleteProjectCascade cascades stopped containers inside a transaction', as
   assertEquals(stats.transactions, 1)
   // The principals' placements are written first, inside the same transaction.
   assertEquals(deletes[0], { table: 'tx-placements', ids: ['proj-1'] })
+})
+
+test('deleteProjectCascade sends the stop before the transaction opens, never inside it', async () => {
+  const { db, stats } = createCascadeMockDb({ environmentIds: ['env-1'], repeat: true })
+  let openWhenStopped: boolean | undefined
+  const result = await deleteProjectCascade(db, 'proj-1', undefined, () => {
+    openWhenStopped = stats.open
+    return Promise.resolve(true)
+  })
+  assertEquals(result, { ok: true })
+  assertEquals(openWhenStopped, false)
+})
+
+test('deleteProjectCascade gives up with a clear message when the stop never answers', async () => {
+  const { db, stats } = createCascadeMockDb({ environmentIds: ['env-1'], repeat: true })
+  const hang = new Promise<boolean>(() => {})
+  const result = await deleteProjectCascade(db, 'proj-1', undefined, () => hang, 20)
+  assertEquals(result.ok, false)
+  if (!result.ok) {
+    assertEquals(result.error, 'project_stop_failed')
+    assertEquals(typeof result.detail?.message, 'string')
+  }
+  assertEquals(stats.transactions, 0)
 })

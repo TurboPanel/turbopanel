@@ -55,8 +55,9 @@ changes.
   heartbeats persist `timeSync` onto `server.timezone` / `is_time_sync_enabled`
   / `ntp_servers` / `ntp_last_synced_at`, and nest addresses on
   `server.metadata.resources.ips` (legacy top-level `ips` still accepted).
-  Hello-only host inventory is `server.metadata.resources.cpus[]` (per-socket
-  `vendorId` / `cores` / `threads` / `cache` / clocks) and `gpus[]`; leftover
+  Host inventory is `server.metadata.resources.cpus[]` (per-socket
+  `vendorId` / `cores` / `threads` / `cache` / clocks, also re-sent on a
+  heartbeat when the online CPU set changes) and hello-only `gpus[]`; leftover
   `resources.cpu` is lifted on read. Docker CLI / Compose plugin versions
   project onto `server.metadata.docker` the same way, but **only when Docker is
   installed** (the key is omitted otherwise). `GET /api/client/v1/servers` and
@@ -88,7 +89,14 @@ changes.
   `ntp` (`null` inherits). List/detail expose effective `sshPort` /
   `sshPortSource` / `ntpDefaults` / `ntpDefaultsSource`; detail also adds
   `datacenterDefaultTimezone` / `datacenterEnforceServerTimezone`. Saving
-  defaults does **not** rewrite sshd or enqueue NTP/timezone commands. Multi-DC
+  defaults does **not** rewrite sshd or enqueue NTP/timezone commands.
+  `hideWebServerNames` (organization and server layers only; no migration, same
+  `options` jsonb) is on unless a layer says off: org `PUT …/host-defaults`
+  (`null` clears), server `PATCH options.hideWebServerNames` (`null` inherits);
+  list/detail expose the effective value and `hideWebServerNamesSource`. It is
+  read at deploy-prepare (`loadHideWebServerNames`, the server owner's
+  organization) and sent as `environment.deploy.hideWebServerNames`, so it takes
+  effect on each environment's next deploy; saving it enqueues nothing. Multi-DC
   membership inherits from the first pin after sort by datacenter id (same as
   timezone).
 - **Server services snapshot (client surface):** `GET /servers/:id/services`
@@ -531,7 +539,7 @@ sourceServerId? }`
   `datacenter` → `fabric` → `public`) in an **address-family aware** way: it
   intersects the source and target pin families in each trusted shared
   datacenter (priority order — see the routing-policy bullet below) and orders
-  candidates by `datacenter.options.addressPreference` (default **IPv6**, RFC
+  candidates by the `datacenter.address_preference` column (default **IPv6**, RFC
   6724), never returning a family the source does not hold; a trusted shared
   datacenter with no common family is **422** `private_family_mismatch`. Fabric
   dials over `tp0`.
@@ -542,23 +550,30 @@ sourceServerId? }`
   `subnet_has_members`, **422** `private_family_mismatch` (alongside existing
   `datacenter_has_members` / `datacenter_has_networks`).
 
-- **Datacenter routing policy (`options.priority` / `options.trusted`):** a
-  datacenter is a **logical routing domain**, not a building — a server may
-  belong to several. Two `datacenter.options` jsonb fields (parsed by
-  `src/features/datacenters/datacenter-options.ts`, no migration) describe how the ladder should
-  treat each membership:
+- **Datacenter routing policy (`options.priority` / `options.trusted` /
+  `options.addressPreference`):** a datacenter is a **logical routing domain**,
+  not a building — a server may belong to several. The three keys keep their
+  wire names inside `options`, but are stored in real columns (`priority`,
+  `is_trusted`, `address_preference`, all NOT NULL with CHECKs; migration 0004
+  moved them out of the jsonb and backfilled). `datacenter-options.ts`
+  (`policyColumnsFromOptions` / `storedDatacenterOptions` /
+  `datacenterWireOptions`) maps between the two shapes. They describe how the
+  ladder should treat each membership; the optional `kind` column (`lan`,
+  `backplane`, `provider_private`, NULL = unsaid; top-level `kind` on
+  `POST` / `PATCH`, **400** `invalid_kind`) says what the network is:
   - `priority` — integer `0`–`1000`, **lower wins**; absent = **`100`**
-    (`DEFAULT_DATACENTER_PRIORITY`). A stored out-of-range or non-integer value is
-    dropped by the parser, never clamped; a **request** (`POST` / `PATCH`)
-    carrying one is **400** `invalid_priority` (`hasInvalidPriority`).
+    (`DEFAULT_DATACENTER_PRIORITY`). A request (`POST` / `PATCH`) carrying an
+    out-of-range or non-integer value is **400** `invalid_priority`
+    (`hasInvalidPriority`); the column CHECK backs it.
   - `trusted` — boolean; absent = **`true`** (`DEFAULT_DATACENTER_TRUSTED`).
     `false` marks a datacenter whose L2 is **not** under the operator's control
     (shared or provider-owned segments).
 
   `PATCH /datacenters/:id` accepts both under the same **replace-all `options`**
-  semantics as `addressPreference` (send the merged object). `GET /datacenters`
-  and `GET /datacenters/:id` return the raw `options` **and** the effective
-  top-level `priority` / `trusted` with defaults applied
+  semantics as `addressPreference` (send the merged object; a key left out resets
+  its column to the default). `GET /datacenters` and `GET /datacenters/:id`
+  return `options` (the stored jsonb with the three columns laid over it)
+  **and** the effective top-level `priority` / `trusted`
   (`resolveDatacenterPolicy` / `attachEffectivePolicy`), so clients never
   re-derive them. The ladder **reads both**: `loadDatacenterPolicies`
   (`src/features/net/datacenter-networks.ts`) loads the effective
@@ -717,3 +732,8 @@ id)` order. `resolveOneFromCaches` walks the up list first; a down network is
   branch. Daemon-lane failures return a fixed sentence in `message`; git's
   stderr goes to the log (`repository-inspect`), never the response. The UI
   debounces the branch field, so a half-typed name is not looked up at all.
+
+## Deploy hash and Destroy
+
+- `desiredHash` (see `environments/deploy-inputs-digest.ts`) covers the compose document, every source's commit and build inputs, variables (including linked-database logins, which are materialized into variables before the deploy is prepared), hostnames, sites, apps and storage. The organization CA is not part of a deploy payload (it travels in its own trust command), so it neither changes the hash nor needs to. The digest input includes plaintext secret variable values, but only the SHA-256 leaves the panel and is stored; no input is kept. Inputs that cannot be compared between sends (daemon-sealed values, a source known only by branch name) make the hash unique, so those deploys always run. The host additionally verifies that what the last deploy put in place is still running before it skips.
+- `POST /environments/:id/stop` is Destroy (the UI's Destroy button and the project delete wizard). The lifecycle bar's Stop uses `POST /environments/:id/lifecycle` with `stop`, which never sends `releaseCleanup`. Only the Destroy route sends `releaseCleanup`, which clears releases and keeps each service folder and its uploads.

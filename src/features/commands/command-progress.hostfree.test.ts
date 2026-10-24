@@ -304,3 +304,18 @@ test('finalizeStoredCommandProgress survives a failed write-back', async () => {
   })
   assertEquals(states(written!), ['ready', 'done', 'failed', 'skipped', 'skipped'])
 })
+
+test('validateCommandProgress accepts runningSince as a time, null, or absent, and rejects anything else', () => {
+  const base = { version: 1, steps: [], current: null, updatedAt: '2026-10-21T10:00:00.000Z' }
+  assertEquals(validateCommandProgress(base), null)
+  assertEquals(validateCommandProgress({ ...base, runningSince: null }), null)
+  assertEquals(validateCommandProgress({ ...base, runningSince: '2026-10-21T10:00:01.000Z' }), null)
+  assertEquals(
+    validateCommandProgress({ ...base, runningSince: 'soon' }),
+    'invalid progress runningSince'
+  )
+  assertEquals(
+    validateCommandProgress({ ...base, runningSince: 5 }),
+    'invalid progress runningSince'
+  )
+})

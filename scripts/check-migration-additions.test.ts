@@ -80,7 +80,10 @@ test('parseChanges keeps both paths of a rename', () => {
 })
 
 /** Run the guard in a throwaway repo whose base commit has a frozen manifest. */
-function guardAfter(change: (dir: string) => void): { code: number; out: string } {
+function guardAfter(
+  change: (dir: string) => void,
+  options: { base?: string; manifest?: string | null } = {}
+): { code: number; out: string } {
   const dir = Deno.makeTempDirSync()
   try {
     const git = (...args: string[]) => {
@@ -96,7 +99,8 @@ function guardAfter(change: (dir: string) => void): { code: number; out: string 
     git('config', 'user.name', 'test')
     git('config', 'user.email', 'test@example.invalid')
     Deno.mkdirSync(`${dir}/migrations`)
-    Deno.writeTextFileSync(`${dir}/migrations/manifest.json`, '{"frozen":true}')
+    const manifest = options.manifest === undefined ? '{"frozen":true}' : options.manifest
+    if (manifest !== null) Deno.writeTextFileSync(`${dir}/migrations/manifest.json`, manifest)
     Deno.writeTextFileSync(`${dir}/migrations/0001_a.sql`, 'select 1;\n')
     git('add', '-A')
     git('commit', '-q', '-m', 'base')
@@ -104,7 +108,10 @@ function guardAfter(change: (dir: string) => void): { code: number; out: string 
     git('add', '-A')
     git('commit', '-q', '-m', 'change')
     const run = new Deno.Command('node', {
-      args: [new URL('./check-migration-additions.mjs', import.meta.url).pathname, 'HEAD~1'],
+      args: [
+        new URL('./check-migration-additions.mjs', import.meta.url).pathname,
+        options.base ?? 'HEAD~1',
+      ],
       cwd: dir,
       stdout: 'piped',
       stderr: 'piped',
@@ -142,4 +149,25 @@ test('script: deleting or editing a shipped migration fails, adding one passes',
     guardAfter((dir) => Deno.writeTextFileSync(`${dir}/migrations/0002_b.sql`, 'select 3;\n')).code,
     0
   )
+})
+
+const addOne = (dir: string) =>
+  Deno.writeTextFileSync(`${dir}/migrations/0002_b.sql`, 'select 3;\n')
+
+test('script: a base ref that does not resolve fails instead of skipping', () => {
+  const result = guardAfter(addOne, { base: 'no-such-ref' })
+  assertEquals(result.code, 1)
+  assertStringIncludes(result.out, 'does not resolve')
+})
+
+test('script: a base with no manifest fails instead of skipping', () => {
+  const result = guardAfter(addOne, { manifest: null })
+  assertEquals(result.code, 1)
+  assertStringIncludes(result.out, 'no readable migrations/manifest.json')
+})
+
+test('script: a base whose manifest is not frozen fails instead of skipping', () => {
+  const result = guardAfter(addOne, { manifest: '{"frozen":false}' })
+  assertEquals(result.code, 1)
+  assertStringIncludes(result.out, 'not frozen')
 })

@@ -6,6 +6,7 @@ import type { AppEnv } from '../../app/app.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
 import { createDenoDb, endDbConnection } from '../../db/connection.ts'
 import { it } from '@std/testing/bdd'
+import { stub } from '@std/testing/mock'
 import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from '../authn/crypto.ts'
 import { createSession } from '../authn/session-store.ts'
 import { deriveSecretsConfig } from '../../lib/secrets/secrets.ts'
@@ -573,6 +574,8 @@ it('GET /servers/:id/metrics/series issues one fan-in queryHostSeries call', asy
             values: {
               'host.cpu.busyPercent': 25,
               'host.memory.usedBytes': 2_000,
+              // The size the route asked for beside the use reading.
+              'extended.sizes.memoryTotalBytes': 8_000,
             },
             sampleCount: 1,
             expectedSampleCount: 5,
@@ -596,18 +599,21 @@ it('GET /servers/:id/metrics/series issues one fan-in queryHostSeries call', asy
       const values = body.host!.points[0]!.values
       assertEquals(values['host.cpu.busyPercent'], 25)
       assertEquals(values['host.memory.usedBytes'], 2_000)
+      // The size is read beside the use metric, then hidden from the response.
+      assertEquals('extended.sizes.memoryTotalBytes' in values, false)
       // Derived presentation values are server-computed. v5's
       // host.cpu.busyPercent is already the "used" semantic (no v3
-      // idle-inversion); memoryUsedPercent needs the topology-reported
-      // memoryTotalBytes, which no generation was recorded here, so it's null.
+      // idle-inversion); memoryUsedPercent is taken against the memory size
+      // that very sample carried (2,000 of 8,000).
       const derived = body.host!.points[0]!.derived!
       assertEquals(derived.cpuUsagePercent, 25)
-      assertEquals(derived.memoryUsedPercent, null)
+      assertEquals(derived.memoryUsedPercent, 25)
       assertEquals(body.host!.points[0]!.sampleCount, 1)
       assertEquals(fakeStore.seriesCalls.length, 1)
       assertEquals(fakeStore.seriesCalls[0]!.metrics, [
         'host.cpu.busyPercent',
         'host.memory.usedBytes',
+        'extended.sizes.memoryTotalBytes',
       ])
       assertEquals(fakeStore.seriesCalls[0]!.resolutionSeconds, 60)
 
@@ -620,7 +626,7 @@ it('GET /servers/:id/metrics/series issues one fan-in queryHostSeries call', asy
   )
 })
 
-it('GET /servers/:id/metrics/series attaches cpuLimits, temperatureUnit, and topology-generation breaks', async () => {
+it('GET /servers/:id/metrics/series attaches cpuLimits and temperatureUnit', async () => {
   const fakeStore = createFakeMetricsStore({
     queryHostSeries: (input) =>
       Promise.resolve({
@@ -633,19 +639,16 @@ it('GET /servers/:id/metrics/series attaches cpuLimits, temperatureUnit, and top
             at: FROM,
             values: { 'host.cpu.busyPercent': 10 },
             sampleCount: 1,
-            topologyGeneration: 1,
           },
           {
             at: TO,
             values: { 'host.cpu.busyPercent': 20 },
             sampleCount: 1,
-            topologyGeneration: 2,
           },
         ],
         resolutionSeconds: input.resolutionSeconds ?? 60,
         gapCount: 0,
         sampleCount: 2,
-        topologyGenerations: [1, 2],
       }),
   })
 
@@ -678,15 +681,13 @@ it('GET /servers/:id/metrics/series attaches cpuLimits, temperatureUnit, and top
         source: 'catalog-exact',
       })
       assertEquals(body.temperatureUnit, 'fahrenheit')
-      assertEquals(body.host!.topologyGenerationBreaks, [1])
-      assertEquals(body.host!.topologyGenerations, [1, 2])
     },
     undefined,
     fakeStore
   )
 })
 
-it('GET /servers/:id/metrics/series does not serve a stale cache entry across a topology-generation bump', async () => {
+it('GET /servers/:id/metrics/series does not serve a stale cache entry across a new hardware record', async () => {
   const fakeStore = createFakeMetricsStore({
     queryHostSeries: (input) =>
       Promise.resolve({
@@ -745,10 +746,78 @@ it('GET /servers/:id/metrics/series does not serve a stale cache entry across a 
         appliedAt: new Date().toISOString(),
       })
 
-      // Identical (server, range, metrics) request — must not hit the
-      // pre-bump cache entry.
+      // Identical (server, range, metrics) request — the response carries the
+      // device inventory and capacities from the latest hardware record, so it
+      // must not be answered from the entry cached before the new record. (The
+      // chart values themselves no longer depend on the generation.)
       const afterBump = await app.request(url, { headers: { Cookie: cookie } })
       assertEquals(afterBump.status, 200)
+      assertEquals(fakeStore.seriesCalls.length, 2)
+    },
+    undefined,
+    fakeStore
+  )
+})
+
+function emptyTopologySnapshot(memoryTotalBytes: number) {
+  return {
+    networks: [],
+    filesystems: [],
+    blockDevices: [],
+    gpus: [],
+    hardwareSignals: [],
+    cpu: { sockets: 1, coresPerSocket: 1, threadsPerSocket: 1, model: null },
+    numaNodes: [],
+    memoryTotalBytes,
+    swapTotalBytes: null,
+  }
+}
+
+it('GET /servers/:id/metrics/series does not serve a stale cache entry after the hardware record is rewritten at the same generation', async () => {
+  const fakeStore = createFakeMetricsStore({
+    queryHostSeries: (input) =>
+      Promise.resolve({
+        kind: 'duckdb',
+        available: true,
+        serverId: input.serverId,
+        metrics: input.metrics,
+        points: [{ at: FROM, values: { 'host.cpu.busyPercent': 90 }, sampleCount: 1 }],
+        resolutionSeconds: input.resolutionSeconds ?? 60,
+        gapCount: 0,
+        sampleCount: 1,
+      }),
+  })
+
+  await withMetricsFixtures(
+    async ({ db, app, serverId, cookie }) => {
+      const url = `/servers/${serverId}/metrics/series?from=${FROM}&to=${TO}&metrics=host.cpu.busyPercent`
+      const record = (memoryTotalBytes: number) =>
+        recordTopologyGeneration(db, serverId, {
+          generation: 1,
+          bootGeneration: 1,
+          snapshot: emptyTopologySnapshot(memoryTotalBytes),
+          appliedAt: new Date().toISOString(),
+        })
+
+      await record(1_000)
+      assertEquals((await app.request(url, { headers: { Cookie: cookie } })).status, 200)
+      assertEquals(fakeStore.seriesCalls.length, 1)
+      assertEquals((await app.request(url, { headers: { Cookie: cookie } })).status, 200)
+      assertEquals(fakeStore.seriesCalls.length, 1)
+
+      // Age the stored write past the rewrite cooldown, then resend the SAME
+      // generation with different content: the record is rewritten in place,
+      // its generation does not change, and the cached response must not be
+      // served (it carries the inventory and capacities of the old content).
+      await db
+        .update(server)
+        .set({
+          hardware: sql`jsonb_set(${server.hardware}, '{updatedAt}', to_jsonb(${new Date(Date.now() - 600_000).toISOString()}::text))`,
+        })
+        .where(eq(server.id, serverId))
+      assertEquals(await record(2_000), 'refreshed')
+
+      assertEquals((await app.request(url, { headers: { Cookie: cookie } })).status, 200)
       assertEquals(fakeStore.seriesCalls.length, 2)
     },
     undefined,
@@ -1215,8 +1284,6 @@ it('GET /servers/:id/metrics/series allows a slot-mapped NIC as a standalone net
       assertEquals(body.ok, true)
       assertEquals(body.entities?.[0]?.entities?.[0]?.entityId, 'eth0')
       assertEquals(fakeStore.entityCalls.length, 1)
-      assertEquals(fakeStore.entityCalls[0]!.slotMapping?.normalNicSlots, ['eth0'])
-      assertEquals(fakeStore.entityCalls[0]!.topologyGeneration, 1)
     },
     undefined,
     fakeStore
@@ -1387,17 +1454,32 @@ it('GET /servers/:id/metrics/connection returns 401 without session', async () =
   })
 })
 
-it('GET /servers/:id/metrics/connection returns 403 without read access', async () => {
+it('GET /servers/:id/metrics/facts returns 401 without session', async () => {
+  await withMetricsFixtures(async ({ app, serverId }) => {
+    const res = await app.request(`/servers/${serverId}/metrics/facts`)
+    assertEquals(res.status, 401)
+  })
+})
+
+/** A signed-in user with no access to a server that exists: what every read route must answer 403 for. */
+async function withDeniedReader(
+  label: string,
+  fn: (ctx: {
+    app: Awaited<ReturnType<typeof createMetricsRoutesTestApp>>['app']
+    serverId: string
+    cookie: string
+  }) => Promise<void>
+): Promise<void> {
   if (!dbUrl) return
 
   resetDenoMetricsChartCacheForTests()
   const db = createDenoDb()
   const { app, secrets } = await createMetricsRoutesTestApp(db)
 
-  const email = `metrics-conn-deny-${crypto.randomUUID()}@example.com`
+  const email = `metrics-${label}-deny-${crypto.randomUUID()}@example.com`
   const [insertedOrg] = await db
     .insert(organization)
-    .values({ name: 'Metrics Connection Deny Org' })
+    .values({ name: `Metrics ${label} Deny Org` })
     .returning({ id: organization.id })
   const organizationId = insertedOrg!.id
 
@@ -1409,22 +1491,53 @@ it('GET /servers/:id/metrics/connection returns 403 without read access', async 
 
   const [insertedServer] = await db
     .insert(server)
-    .values({ organizationId, name: 'Denied Connection Server' })
+    .values({ organizationId, name: `Denied ${label} Server` })
     .returning({ id: server.id })
   const serverId = insertedServer!.id
 
   const cookie = await sessionCookie(db, secrets, userId)
 
   try {
-    const res = await app.request(`/servers/${serverId}/metrics/connection?from=${FROM}&to=${TO}`, {
-      headers: { Cookie: cookie },
-    })
-    assertEquals(res.status, 403)
+    await fn({ app, serverId, cookie })
   } finally {
     await db.delete(server).where(eq(server.id, serverId))
     await db.delete(user).where(eq(user.id, userId))
     await db.delete(organization).where(eq(organization.id, organizationId))
   }
+}
+
+it('GET /servers/:id/metrics/connection returns 403 without read access', async () => {
+  await withDeniedReader('connection', async ({ app, serverId, cookie }) => {
+    const res = await app.request(`/servers/${serverId}/metrics/connection?from=${FROM}&to=${TO}`, {
+      headers: { Cookie: cookie },
+    })
+    assertEquals(res.status, 403)
+  })
+})
+
+it('GET /servers/:id/metrics/facts returns 403 without read access', async () => {
+  await withDeniedReader('facts', async ({ app, serverId, cookie }) => {
+    const res = await app.request(`/servers/${serverId}/metrics/facts`, {
+      headers: { Cookie: cookie },
+    })
+    assertEquals(res.status, 403)
+  })
+})
+
+it('GET /servers/:id/metrics/facts answers like its siblings for a server that does not exist', async () => {
+  await withMetricsFixtures(async ({ app, cookie }) => {
+    const missing = crypto.randomUUID()
+    const facts = await app.request(`/servers/${missing}/metrics/facts`, {
+      headers: { Cookie: cookie },
+    })
+    const sibling = await app.request(
+      `/servers/${missing}/metrics/connection?from=${FROM}&to=${TO}`,
+      { headers: { Cookie: cookie } }
+    )
+    // Whatever the siblings do for an unknown id (never a 200 with data), facts does too.
+    assertEquals(facts.status, sibling.status)
+    assertEquals(facts.status === 200, false)
+  })
 })
 
 it('GET /servers/:id/metrics/connection rejects invalid range', async () => {
@@ -1898,10 +2011,13 @@ function liveBufferedSample(
   }
 }
 
-it('GET /servers/:id/metrics/series overlays a buffered live sample on a now-tailed live range', async () => {
-  const now = Date.now()
+/**
+ * A now-tailed live series read with one stored point and one buffered live sample;
+ * returns the last point's CPU value. `toMs` is the range end the client sent.
+ */
+async function overlaidLiveValue(now: number, toMs: number): Promise<number | null | undefined> {
   const from = new Date(now - 5 * 60_000).toISOString()
-  const to = new Date(now).toISOString()
+  const to = new Date(toMs).toISOString()
   const storedAt = new Date(now - 20_000).toISOString()
   const liveAt = new Date(now - 2_000).toISOString()
   const fakeStore = createFakeMetricsStore({
@@ -1924,6 +2040,7 @@ it('GET /servers/:id/metrics/series overlays a buffered live sample on a now-tai
         sampleCount: 1,
       }),
   })
+  let value: number | null | undefined
   await withMetricsFixtures(
     async ({ app, serverId, cookie }) => {
       const cache = createMetricsChartCache('deno')
@@ -1936,12 +2053,29 @@ it('GET /servers/:id/metrics/series overlays a buffered live sample on a now-tai
       assertEquals(res.status, 200)
       const body = await readSeriesJson(res)
       assertEquals(body.resolutionSeconds, 10)
-      const last = body.host?.points.at(-1)
-      assertEquals(last?.values['host.cpu.busyPercent'], 77)
+      value = body.host?.points.at(-1)?.values['host.cpu.busyPercent']
     },
     undefined,
     fakeStore
   )
+  return value
+}
+
+it('GET /servers/:id/metrics/series overlays a buffered live sample on a now-tailed live range', async () => {
+  const now = Date.now()
+  assertEquals(await overlaidLiveValue(now, now), 77)
+})
+
+it('GET /servers/:id/metrics/series overlays the live sample when the poll lands just after a bucket boundary', async () => {
+  // The clock is 3 ms past a 10 s boundary and the client sent `to` 5 ms earlier, so the
+  // bucket-floored `to` is more than 10 s old while the requested one is current.
+  const now = Math.floor(Date.now() / 10_000) * 10_000 + 3
+  const clock = stub(Date, 'now', () => now)
+  try {
+    assertEquals(await overlaidLiveValue(now, now - 5), 77)
+  } finally {
+    clock.restore()
+  }
 })
 
 it('GET /servers/:id/metrics/series keeps overlaying after one of two viewers stops', async () => {

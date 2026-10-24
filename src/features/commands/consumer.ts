@@ -7,7 +7,7 @@
  * isolate (worker stub or Deno process), not inside the Durable Object.
  * There is no per-server polling or cross-cell fan-out.
  */
-import { and, asc, eq, inArray, or, sql } from 'drizzle-orm'
+import { and, asc, eq, inArray, ne, or, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
 import type { DeployFailureNotice } from '../deploy/deploy-failure-notice.ts'
@@ -71,9 +71,19 @@ import {
   MANAGED_DESTROY_GATE_METADATA_KEY,
   parseManagedDestroyGate,
 } from '../managed/destroy-gate.ts'
+import { bumpedPrimaryEpochMetadata } from '../managed/primary-epoch.ts'
+import { updateRecoveryLocked } from '../managed/recovery-records.ts'
+import { recordNewPrimaryReplayPosition } from '../managed/switchover-position.ts'
+import { parseReseedGuard, reseedSupersededReason } from '../managed/reseed-guard.ts'
 import { deleteManagedBackup, insertManagedBackup } from '../backups/backup-records.ts'
 import { applyStorageBackupSideEffect } from '../backups/storage-command-effects.ts'
 import { applyBackupsReconcileSideEffect } from '../backups/reconcile-effects.ts'
+import {
+  applyBackupTargetTestFailure,
+  applyBackupTargetTestSideEffect,
+} from '../backups/target-test-effects.ts'
+import type { CopyResealDeps } from '../backups/targets.ts'
+import { recordPendingCopy } from '../backups/copy-records.ts'
 import {
   commandMayChangeFirewallPreview,
   enqueueFirewallPreview,
@@ -84,7 +94,20 @@ import {
 import type { FirewallApplyGate } from '../firewall/enforcement.ts'
 import type { CommandEnvelope } from './envelope.ts'
 import { nowIso } from './ids.ts'
+import { commandIsOpen } from './open-statuses.ts'
+import { cancelDeployOnServer } from '../deploy/deploy-cancel.ts'
 import { isNoopCommandQueue } from './noop-command-queue.ts'
+import { markCommandContactLost } from './command-progress.ts'
+import { loadDeployWaitSettings } from './deploy-wait-settings.ts'
+import {
+  createDeployWaiter,
+  deployWaitMessage,
+  lostRequestWaiter,
+  DEPLOY_REQUEST_TTL_SECONDS,
+  DEPLOY_RUN_CAP_MS,
+  DEPLOY_WAIT_CANCELS_SERVER,
+  type DeployWaiter,
+} from './deploy-wait.ts'
 import {
   captureManagedBackupHost,
   enqueueBackupsReconcile,
@@ -95,6 +118,8 @@ import {
   type EnvironmentDeployResultSite,
   type KeptFolder,
   type ManagedDestroyCommandPayload,
+  type ManagedLifecycleCommandResult,
+  type ManagedLifecyclePayload,
   parseEnvironmentDeployPayload,
   parseEnvironmentDeployResult,
   parseEnvironmentLifecyclePayload,
@@ -132,6 +157,8 @@ import {
   type ReportedFolder,
 } from '../../contracts/commands/schemas.ts'
 import { updateManagedMemberObservedReplication } from '../managed/members.ts'
+import { removeLoginsDroppedByApply } from '../managed/logins.ts'
+import { convertedDatabaseNames, markConvertedDatabasesRoleOwned } from '../managed/options.ts'
 import { markFoldersPresent } from '../folders/allocate.ts'
 import {
   applyFolderRemovalReports,
@@ -197,8 +224,14 @@ export type CommandConsumerDeps = {
   resealDeps?: CommandResealDeps
   secretsConfig?: SecretsConfig
   dataEncryptionSecrets?: DerivedSecretsConfig
+  /** Set by `processCommandEnvelope` for result side effects that need live daemon presence. */
+  registry?: DaemonCellRegistry
   /** The deploy-time firewall apply key; required so a dropped gate fails the type check. */
   firewallApplyGate: FirewallApplyGate
+  /** Test seam: how long one run keeps waiting for a deploy that has not started. */
+  deployWaitHoldMs?: number
+  /** Test seam: how long one run keeps waiting for a deploy in any state. */
+  deployWaitEndMs?: number
 }
 
 const COMMAND_TIMEOUT_MS: Record<CommandType, number> = {
@@ -219,9 +252,12 @@ const COMMAND_TIMEOUT_MS: Record<CommandType, number> = {
   'server.firewall.confirm': 60_000,
   // Writes a few unit files, one daemon-reload, enables what moved. No dump runs here.
   'server.backups.reconcile': 120_000,
+  // Writes, reads and deletes one small object; the request timeout alone is a minute.
+  'server.backups.test-target': 120_000,
   // One `rm -rf` through the root helper per folder, up to 100 folders; a big volume takes minutes.
   'server.folders.remove': 600_000,
-  'environment.deploy': 600_000,
+  // The run cap: counted from when the server starts the deploy, not from when it was sent.
+  'environment.deploy': DEPLOY_RUN_CAP_MS,
   'environment.lifecycle': 120_000,
   'environment.stop': 120_000,
   'managed.apply': 600_000,
@@ -264,6 +300,7 @@ export function commandTimeoutMs(type: string): number {
     type === 'server.firewall.reconcile' ||
     type === 'server.firewall.confirm' ||
     type === 'server.backups.reconcile' ||
+    type === 'server.backups.test-target' ||
     type === 'server.folders.remove' ||
     type === 'environment.deploy' ||
     type === 'environment.lifecycle' ||
@@ -284,6 +321,23 @@ export function commandTimeoutMs(type: string): number {
     return COMMAND_TIMEOUT_MS[type]
   }
   return DEFAULT_COMMAND_TIMEOUT_MS
+}
+
+/**
+ * How long a drain or undrain of one server's ProxySQL may take. It is a few
+ * local admin statements, yet it shares the `managed.ha.failover` type whose
+ * budget is the 10 minutes a recover needs. A fence waits for every drain, so a
+ * silent bystander server must not hold a switchover for that long.
+ */
+export const FENCE_DRAIN_WAIT_MS = 60_000
+
+/** The wait budget of one command; a drain is held to {@link FENCE_DRAIN_WAIT_MS}. */
+export function commandWaitMs(record: { type: string; payload?: unknown }): number {
+  if (record.type === 'managed.ha.failover') {
+    const phase = (record.payload as { phase?: unknown } | null | undefined)?.phase
+    if (phase === 'drain' || phase === 'undrain') return FENCE_DRAIN_WAIT_MS
+  }
+  return commandTimeoutMs(record.type)
 }
 
 function recoveryEngine(engine: unknown): ManagedEngineCode {
@@ -393,6 +447,14 @@ async function failExpiredManagedApplyWhenClusterGone(
   return true
 }
 
+/** A command past its valid time is not sent; the time counts from when it was queued. */
+export function commandIsExpired(
+  expiresAt: string | null | undefined,
+  nowMs = Date.now()
+): boolean {
+  return Boolean(expiresAt) && Date.parse(expiresAt as string) < nowMs
+}
+
 async function loadDispatchableRecord(
   db: Db,
   envelope: CommandEnvelope
@@ -406,7 +468,7 @@ async function loadDispatchableRecord(
     return null
   }
 
-  if (record.expiresAt && Date.parse(record.expiresAt) < Date.now()) {
+  if (commandIsExpired(record.expiresAt)) {
     if (await failExpiredManagedApplyWhenClusterGone(db, record)) {
       return null
     }
@@ -568,18 +630,22 @@ export async function awaitOutcomeWithAckDeadline(
   cell: DaemonCell,
   requestId: string,
   timeoutMs: number,
-  ackDeadlineMs = COMMAND_ACK_DEADLINE_MS
+  ackDeadlineMs = COMMAND_ACK_DEADLINE_MS,
+  waiter?: DeployWaiter
 ): Promise<PendingRequestRecord | null> {
   const { dropDaemonConnection, expireRequest } = cell
+  // A deploy waits by its own two clocks (queued, then running) instead of one budget.
+  const waitRest = (ms: number) =>
+    waiter ? waiter.wait(cell, requestId, ms) : cell.waitForRequest(requestId, ms)
   if (ackDeadlineMs >= timeoutMs || !dropDaemonConnection || !expireRequest) {
-    return cell.waitForRequest(requestId, timeoutMs)
+    return waitRest(timeoutMs)
   }
   const restMs = timeoutMs - ackDeadlineMs
   const first = await cell.waitForRequest(requestId, ackDeadlineMs)
   if (first) return first
   const current = await cell.getRequest(requestId)
   if (current?.status !== 'sent' || current.ackAt) {
-    return cell.waitForRequest(requestId, restMs)
+    return waitRest(restMs)
   }
   await dropDaemonConnection.call(cell, 'command_unacked').catch(() => undefined)
   // The ack may have landed while the connection was being dropped.
@@ -588,7 +654,7 @@ export async function awaitOutcomeWithAckDeadline(
     return settled
   }
   if (settled?.ackAt || (settled && settled.status !== 'sent')) {
-    return cell.waitForRequest(requestId, restMs)
+    return waitRest(restMs)
   }
   const expired = await expireRequest.call(cell, requestId).catch(() => null)
   if (expired && (expired.status === 'done' || expired.status === 'failed')) {
@@ -618,9 +684,12 @@ async function enqueueAndAwaitOutcome(
     payload: record.payload,
   }
 
-  const timeoutMs = commandTimeoutMs(record.type)
   const cell = registry.getCell(envelope.serverId)
-  await cell.enqueue(outbound)
+  // A deploy may wait hours for the server, so its request must outlive the default five minutes.
+  await cell.enqueue(
+    outbound,
+    record.type === 'environment.deploy' ? { ttlSeconds: DEPLOY_REQUEST_TTL_SECONDS } : undefined
+  )
   commandConsumerTrace('dispatch-enqueued', {
     commandId: record.id,
     commandType: record.type,
@@ -628,34 +697,158 @@ async function enqueueAndAwaitOutcome(
     requestId: record.id,
     deliveryId: outbound.deliveryId,
   })
-  await transitionCommand(db, record.id, { status: 'sent' })
+  const sent = await transitionCommand(db, record.id, { status: 'sent' })
   commandConsumerTrace('dispatch-sent', {
     commandId: record.id,
     commandType: record.type,
     serverId: envelope.serverId,
   })
+  return awaitCommandOutcome(db, registry, record, envelope, deps, sent?.sentAt ?? nowIso())
+}
 
-  const pending = await awaitOutcomeWithAckDeadline(cell, record.id, timeoutMs)
-  if (!pending) {
-    await transitionCommand(db, record.id, { status: 'timed_out' })
+/**
+ * Wait for what the server reports. A deploy has two clocks (see
+ * `deploy-wait.ts`): the run cap counts from when the server starts it, and a
+ * deploy that has not started is not timed out for being queued. When it is
+ * still waiting after one hold, the message goes back on the queue and this
+ * run lets go; the next run picks the wait up (`resumeDeployWait`).
+ */
+async function awaitCommandOutcome(
+  db: Db,
+  registry: DaemonCellRegistry,
+  record: DispatchableCommandRecord,
+  envelope: CommandEnvelope,
+  deps: CommandConsumerDeps | undefined,
+  sentAt: string,
+  resumed = false
+): Promise<PendingRequestRecord | null> {
+  const cell = registry.getCell(envelope.serverId)
+  const waiter =
+    record.type === 'environment.deploy'
+      ? await makeDeployWaiter(db, record, envelope.serverId, sentAt, deps)
+      : undefined
+
+  // A wait picked up again has been through the ack check already.
+  const pending =
+    resumed && waiter
+      ? await waiter.wait(cell, record.id, 0)
+      : await awaitOutcomeWithAckDeadline(
+          cell,
+          record.id,
+          commandWaitMs(record),
+          COMMAND_ACK_DEADLINE_MS,
+          waiter
+        )
+  if (pending) return pending
+  await settleUnansweredCommand(db, cell, record, envelope, deps, waiter)
+  return null
+}
+
+async function makeDeployWaiter(
+  db: Db,
+  record: DispatchableCommandRecord,
+  serverId: string,
+  sentAt: string,
+  deps: CommandConsumerDeps | undefined
+): Promise<DeployWaiter> {
+  const canHandOff = !!deps?.commandQueue && !isNoopCommandQueue(deps.commandQueue)
+  const settings = await loadDeployWaitSettings(db, serverId)
+  return createDeployWaiter({
+    sentAt,
+    ...settings,
+    onContactLost: async (lastHeardAt) => {
+      await markCommandContactLost(db, { commandId: record.id, lastHeardAt })
+    },
+    readCommand: async () => {
+      const current = await getCommandRecord(db, record.id)
+      return current === null
+        ? null
+        : { status: current.status, progress: current.progress, updatedAt: current.updatedAt }
+    },
+    ...(canHandOff
+      ? { holdMs: deps?.deployWaitHoldMs, endMs: deps?.deployWaitEndMs }
+      : { holdMs: Number.POSITIVE_INFINITY, endMs: Number.POSITIVE_INFINITY }),
+  })
+}
+
+/**
+ * The wait ended without a result. A deploy that someone else already finished
+ * is left alone, one still waiting goes back on the queue, and anything else
+ * is timed out with its failure side effects.
+ */
+async function settleUnansweredCommand(
+  db: Db,
+  cell: DaemonCell,
+  record: DispatchableCommandRecord,
+  envelope: CommandEnvelope,
+  deps: CommandConsumerDeps | undefined,
+  waiter: DeployWaiter | undefined
+): Promise<void> {
+  if (waiter?.verdict === 'settled') return
+  const trace = (resultStatus: string) =>
     commandConsumerTrace('dispatch-result', {
       commandId: record.id,
       commandType: record.type,
       serverId: envelope.serverId,
-      resultStatus: 'timed_out',
+      resultStatus,
     })
-    await applyManagedFailedSideEffect(db, record, deps, 'Command timed out')
-    await applyEnvironmentDeployFailedSideEffect(
-      db,
-      record,
-      envelope,
-      'timed_out',
-      'timed_out',
-      deps
-    )
-    await applyFabricFailedSideEffect(db, record, envelope)
+  if (waiter?.verdict === 'handoff') {
+    await deps?.commandQueue?.enqueue(envelope)
+    trace('handed_off')
+    return
   }
-  return pending
+  const timeoutMessage = deployWaitMessage(waiter)
+  if (waiter && DEPLOY_WAIT_CANCELS_SERVER.has(waiter.verdict)) {
+    await cancelDeployOnServer(db, cell, envelope.serverId, record.id)
+  }
+  if (waiter?.verdict === 'offline') {
+    // Never reached the server: take it back so it cannot be delivered later.
+    await cell.expireRequest?.(record.id).catch(() => undefined)
+  }
+  await transitionCommand(db, record.id, {
+    status: 'timed_out',
+    ...(timeoutMessage === undefined ? {} : { error: timeoutMessage }),
+  })
+  trace('timed_out')
+  await applyManagedFailedSideEffect(db, record, deps, 'Command timed out')
+  await applyEnvironmentDeployFailedSideEffect(
+    db,
+    record,
+    envelope,
+    timeoutMessage ?? 'timed_out',
+    'timed_out',
+    deps
+  )
+  await applyFabricFailedSideEffect(db, record, envelope)
+}
+
+/**
+ * A deploy this consumer already sent that came round again (it handed the wait
+ * back to the queue, or the consumer died mid-wait): keep waiting for the
+ * request that is already on the server instead of sending it twice.
+ * `null` when there is nothing to resume.
+ */
+async function resumeDeployWait(
+  db: Db,
+  registry: DaemonCellRegistry,
+  record: DispatchableCommandRecord,
+  envelope: CommandEnvelope,
+  deps?: CommandConsumerDeps
+): Promise<{ pending: PendingRequestRecord | null } | null> {
+  if (record.type !== 'environment.deploy' || record.sentAt === null) return null
+  if (!['sent', 'acked', 'running'].includes(record.status)) return null
+  const cell = registry.getCell(envelope.serverId)
+  const existing = await cell.getRequest(record.id)
+  if (existing === null || existing.status === 'expired') {
+    // The deploy may already be running on the server, so it is never sent again:
+    // with its request gone no result can reach it, and it is given up on.
+    const waiter = lostRequestWaiter(record.progress)
+    await settleUnansweredCommand(db, cell, record, envelope, deps, waiter)
+    return { pending: null }
+  }
+  return {
+    pending: await awaitCommandOutcome(db, registry, record, envelope, deps, record.sentAt, true),
+  }
 }
 
 /**
@@ -816,6 +1009,14 @@ async function applyTimeSyncSideEffect(
   } catch {
     // Malformed success payload — leave columns for the next heartbeat.
   }
+}
+
+/** The secrets a backup reconcile needs to seal copy targets for a host; absent when the consumer has none. */
+function consumerCopyDeps(deps?: CommandConsumerDeps): CopyResealDeps | undefined {
+  const fields = consumerFabricSecretFields(deps)
+  return fields.secretsConfig && fields.dataEncryptionSecrets
+    ? { secretsConfig: fields.secretsConfig, dataEncryptionSecrets: fields.dataEncryptionSecrets }
+    : undefined
 }
 
 function consumerFabricSecretFields(deps?: CommandConsumerDeps): {
@@ -1613,6 +1814,15 @@ async function applyManagedApplySideEffect(
         })
         .where(eq(managed.id, payload.managedId))
     }
+    if (isPrimary) {
+      // The host dropped these accounts, so the panel forgets their logins.
+      await removeLoginsDroppedByApply(db, payload.managedId, payload.dropUsers)
+      await markConvertedDatabasesRoleOwned(
+        db,
+        payload.managedId,
+        convertedDatabaseNames(payload.databases)
+      )
+    }
     if (applyResult.containers !== undefined) {
       await reconcileContainersSafely(
         db,
@@ -1627,6 +1837,7 @@ async function applyManagedApplySideEffect(
       managedId: payload.managedId,
       previousServerId: backupHost,
       actorId: envelope.serverId,
+      copyDeps: consumerCopyDeps(deps),
     })
 
     // Primary success → enqueue deferred standby applies (if any).
@@ -1660,6 +1871,7 @@ type PendingStandbyApply = {
   memberId: string
   payload: unknown
   pendingTlsLeaf?: unknown
+  metadata?: Record<string, unknown>
 }
 
 async function enqueuePendingStandbyApplies(
@@ -1690,7 +1902,10 @@ async function enqueuePendingStandbyApplies(
     }
     const expiresAt = new Date(Date.now() + 600_000).toISOString()
     const pendingTlsLeaf = parsePendingTlsLeafValue(standby.pendingTlsLeaf)
-    const metadata = pendingTlsLeaf ? pendingTlsLeafMetadata(pendingTlsLeaf) : undefined
+    const carried =
+      typeof standby.metadata === 'object' && standby.metadata !== null ? standby.metadata : {}
+    const merged = { ...carried, ...(pendingTlsLeaf ? pendingTlsLeafMetadata(pendingTlsLeaf) : {}) }
+    const metadata = Object.keys(merged).length > 0 ? merged : undefined
     try {
       const next = await createCommandRecord(db, {
         serverId: standby.serverId,
@@ -1836,6 +2051,9 @@ async function loadManagedDestroyGateCommands(
     .where(eq(command.managedDestroyGateId, gateId))
 }
 
+/** What the host's `managed.apply` error says when it refuses a stale switchover re-seed. */
+const HOST_RESEED_REFUSAL = 'switchover re-seed refused'
+
 /** Observed statuses the consumer may project onto `managed.status`. */
 const MANAGED_OBSERVED_STATUSES = new Set(['ready', 'stopped', 'failed'])
 
@@ -1904,6 +2122,21 @@ async function projectManagedObservedStatus(
     .where(eq(managed.id, managedId))
 }
 
+/** The old primary's final position from a fence stop result, when it answers this switchover. */
+export function oldPrimaryFinalFromStop(
+  payload: ManagedLifecyclePayload,
+  recoveryId: string,
+  result: ManagedLifecycleCommandResult
+): { oldPrimaryFinal?: { lsn: string; timeline: number } } {
+  if (payload.switchoverRecoveryId !== recoveryId) return {}
+  if (result.oldPrimaryFinalLsn === undefined || result.oldPrimaryFinalTimeline === undefined) {
+    return {}
+  }
+  return {
+    oldPrimaryFinal: { lsn: result.oldPrimaryFinalLsn, timeline: result.oldPrimaryFinalTimeline },
+  }
+}
+
 async function applyManagedLifecycleSideEffect(
   db: Db,
   record: DispatchableCommandRecord,
@@ -1942,6 +2175,7 @@ async function applyManagedLifecycleSideEffect(
               switchoverPrimaryExecutedGtidSet: lifecycleResult.switchoverPrimaryExecutedGtidSet,
             }
           : {}),
+        ...oldPrimaryFinalFromStop(payload, recoveryId, lifecycleResult),
       })
       return
     }
@@ -2023,6 +2257,13 @@ async function applyManagedBackupSideEffect(
         ...(backupResult.completedAt !== undefined ? { createdAt: backupResult.completedAt } : {}),
         serverId: record.serverId,
       })
+      // Only a backup that was asked to be copied waits for a copy.
+      if (payload.copyTarget) {
+        await recordPendingCopy(db, {
+          managedId: payload.managedId,
+          backupId: backupResult.backupId,
+        })
+      }
     }
   } catch (err) {
     const message = errorMessage(err)
@@ -2123,7 +2364,8 @@ async function cleanupDestroyedMember(
   db: Db,
   record: DispatchableCommandRecord,
   payload: ManagedDestroyCommandPayload,
-  deps: CommandConsumerDeps | undefined
+  deps: CommandConsumerDeps | undefined,
+  environmentReused = false
 ): Promise<void> {
   if (!payload.deleteMemberAfterDestroy || !payload.memberId) return
   const [member] = await db
@@ -2136,7 +2378,7 @@ async function cleanupDestroyedMember(
   // allocation row too, or the status panel keeps a phantom EXITED entry
   // (`reconcileEnvironmentContainers` only resets rows on an empty report,
   // which is stop semantics, not removal).
-  if (member) {
+  if (member && !environmentReused) {
     const [managedRow] = await db
       .select({ environmentId: managed.environmentId })
       .from(managed)
@@ -2184,6 +2426,25 @@ async function reconcileManagedIngressAfterDestroy(
   })
 }
 
+/**
+ * Another managed database now lives in this environment (the same name was
+ * created again after a force delete or a failed create). A late destroy for
+ * the old id must leave the environment's container rows alone: they belong to
+ * the new database, and the destroy's own report says nothing about them.
+ */
+async function environmentHasOtherManaged(
+  db: Db,
+  environmentId: string,
+  managedId: string
+): Promise<boolean> {
+  const rows = await db
+    .select({ id: managed.id })
+    .from(managed)
+    .where(and(eq(managed.environmentId, environmentId), ne(managed.id, managedId)))
+    .limit(1)
+  return rows.length > 0
+}
+
 async function applyManagedDestroySideEffect(
   db: Db,
   record: DispatchableCommandRecord,
@@ -2216,7 +2477,10 @@ async function applyManagedDestroySideEffect(
         .limit(1)
       environmentId = row?.environmentId
     }
-    if (environmentId) {
+    const environmentReused =
+      environmentId !== undefined &&
+      (await environmentHasOtherManaged(db, environmentId, payload.managedId))
+    if (environmentId && !environmentReused) {
       await reconcileContainersSafely(db, record, envelope, environmentId, destroyResult.containers)
     }
 
@@ -2235,11 +2499,12 @@ async function applyManagedDestroySideEffect(
         db,
         deps?.commandQueue,
         { actorType: 'system', actorId: envelope.serverId },
-        [backupHost]
+        [backupHost],
+        consumerCopyDeps(deps)
       )
     }
 
-    await cleanupDestroyedMember(db, record, payload, deps)
+    await cleanupDestroyedMember(db, record, payload, deps, environmentReused)
     await reconcileManagedIngressAfterDestroy(db, envelope, deps)
     // Replica teardown is done and its side effects above have committed —
     // release the primary destroy if this was the last replica of the fan-out.
@@ -2521,11 +2786,13 @@ async function applyManagedFailedSideEffect(
   deps?: CommandConsumerDeps,
   error?: string
 ): Promise<void> {
+  await applyBackupTargetTestFailure(db, record, error)
   const meta = await getCommandMetadata(db, record.id)
   // A failed return-fence stop (`ha-return-fence.ts`) must not flip the member
   // from `needs_resync` to `failed` or mark the whole cluster failed; the
   // sweep retries it a few times.
   if (meta?.returnFence === true) return
+  if (await absorbRefusedReseed(db, record, meta, error)) return
   await recordLeafRenewalFailure(db, record, meta, error)
   if (isManagedHaFailoverRepoint(record)) {
     await handleFollowPrimaryFailure(
@@ -2599,7 +2866,7 @@ async function applyPendingTlsLeafSideEffect(
   }
 }
 
-async function applySucceededSideEffects(
+export async function applySucceededSideEffects(
   db: Db,
   record: DispatchableCommandRecord,
   envelope: CommandEnvelope,
@@ -2625,6 +2892,7 @@ async function applySucceededSideEffects(
   await applyManagedPromoteSideEffect(db, record, envelope, result, deps)
   await applyManagedHaFailoverSideEffect(db, record, envelope, result, deps)
   await applyBackupsReconcileSideEffect(db, record, result)
+  await applyBackupTargetTestSideEffect(db, record, result)
   await applyManagedBackupSideEffect(db, record, envelope, result)
   await applyManagedRestoreSideEffect(db, record, envelope, result)
   await applyStorageBackupSideEffect(db, record, result)
@@ -2732,6 +3000,7 @@ async function applyManagedPromoteSideEffect(
           .set({
             role: 'replica',
             status: 'needs_resync',
+            replicaClass: demotedReplicaClassSql(),
             updatedAt,
           })
           .where(and(eq(replica.id, demotedMemberId), eq(replica.managedId, managedId)))
@@ -2760,27 +3029,29 @@ async function applyManagedPromoteSideEffect(
           .set({
             status: 'ready',
             serverId: promoted.serverId,
+            metadata: bumpedPrimaryEpochMetadata(),
             updatedAt,
           })
           .where(eq(managed.id, managedId))
       } else {
         await tx
           .update(managed)
-          .set({ status: 'ready', updatedAt })
+          .set({ status: 'ready', metadata: bumpedPrimaryEpochMetadata(), updatedAt })
           .where(eq(managed.id, managedId))
       }
     })
 
-    if (promotedMemberId && promoteResult.replication !== undefined) {
+    if (promotedMemberId) {
       await updateManagedMemberObservedReplication(db, promotedMemberId, {
         status: promoteResult.status || 'ready',
-        replication: promoteResult.replication,
+        replication: promoteResult.replication ?? null,
       })
     }
     await reconcileBackupsAfterManagedMove(db, deps?.commandQueue, {
       managedId,
       previousServerId: backupHost,
       actorId: envelope.serverId,
+      copyDeps: consumerCopyDeps(deps),
     })
 
     if (promotedMemberId) {
@@ -2792,9 +3063,18 @@ async function applyManagedPromoteSideEffect(
       })
     }
 
+    const meta = await getCommandMetadata(db, record.id)
+    const recoveryId = recoveryIdFromCommandMetadata(meta)
+    // Before the follow-up: the planned-switchover re-seed reads it.
+    if (recoveryId) {
+      await recordNewPrimaryReplayPosition(db, recoveryId, {
+        engine: recoveryEngine(payload.engine),
+        lsn: promoteResult.newPrimaryReplayLsn,
+        timeline: promoteResult.newPrimaryTimeline,
+      })
+    }
+
     if (!hasManagedFollowUpDeps(deps)) {
-      const meta = await getCommandMetadata(db, record.id)
-      const recoveryId = recoveryIdFromCommandMetadata(meta)
       if (recoveryId) {
         await onPromoteSucceeded(db, deps?.commandQueue, {}, recoveryId, envelope.serverId)
       }
@@ -2808,8 +3088,6 @@ async function applyManagedPromoteSideEffect(
     // demoted primary. The fence-then-promote path enqueues a real
     // `managed.promote` command (see `applyManagedLifecycleSideEffect`), so it
     // lands here too once that promote succeeds.
-    const meta = await getCommandMetadata(db, record.id)
-    const recoveryId = recoveryIdFromCommandMetadata(meta)
     if (recoveryId) {
       await onPromoteSucceeded(
         db,
@@ -2817,6 +3095,7 @@ async function applyManagedPromoteSideEffect(
         {
           secretsConfig: deps.secretsConfig,
           dataEncryptionSecrets: deps.dataEncryptionSecrets,
+          registry: deps.registry,
         },
         recoveryId,
         envelope.serverId
@@ -2852,6 +3131,16 @@ async function applyManagedPromoteSideEffect(
   }
 }
 
+/**
+ * A demoted primary keeps its replica class; the cluster's first member has
+ * none (it never was a replica), and without one it would rejoin as a plain
+ * read replica, lose its watcher and leave the pair with no failover
+ * candidate. It becomes a failover replica, like any member added by hand.
+ */
+function demotedReplicaClassSql() {
+  return sql<string>`coalesce(${replica.replicaClass}, 'failover')`
+}
+
 async function applyManagedRoleFlip(
   db: Db,
   params: {
@@ -2869,6 +3158,7 @@ async function applyManagedRoleFlip(
         .set({
           role: 'replica',
           status: 'needs_resync',
+          replicaClass: demotedReplicaClassSql(),
           updatedAt: params.updatedAt,
         })
         .where(and(eq(replica.id, params.demotedMemberId), eq(replica.managedId, params.managedId)))
@@ -2895,13 +3185,18 @@ async function applyManagedRoleFlip(
         .set({
           status: 'ready',
           serverId: promoted.serverId,
+          metadata: bumpedPrimaryEpochMetadata(),
           updatedAt: params.updatedAt,
         })
         .where(eq(managed.id, params.managedId))
     } else {
       await tx
         .update(managed)
-        .set({ status: 'ready', updatedAt: params.updatedAt })
+        .set({
+          status: 'ready',
+          metadata: bumpedPrimaryEpochMetadata(),
+          updatedAt: params.updatedAt,
+        })
         .where(eq(managed.id, params.managedId))
     }
   })
@@ -2931,7 +3226,10 @@ async function applyManagedHaFailoverSideEffect(
       })
       return
     }
-    if (payload.phase === 'repoint') return
+    // Only a confirmed engine promote ('recover') may change roles. A planned
+    // switchover that stops early sends 'undrain' to put traffic back on the
+    // unchanged primary; flipping roles there claims a promote that never ran.
+    if (payload.phase !== 'recover') return
 
     const backupHost = await captureManagedBackupHost(db, deps?.commandQueue, payload.managedId)
     await applyManagedRoleFlip(db, {
@@ -2941,10 +3239,12 @@ async function applyManagedHaFailoverSideEffect(
       status: 'ready',
       updatedAt: nowIso(),
     })
+    await updateManagedMemberObservedReplication(db, payload.targetMemberId, { replication: null })
     await reconcileBackupsAfterManagedMove(db, deps?.commandQueue, {
       managedId: payload.managedId,
       previousServerId: backupHost,
       actorId: envelope.serverId,
+      copyDeps: consumerCopyDeps(deps),
     })
 
     await enqueueFollowPrimaryOnReplicas(db, deps?.commandQueue, {
@@ -2961,6 +3261,7 @@ async function applyManagedHaFailoverSideEffect(
         {
           secretsConfig: deps?.secretsConfig,
           dataEncryptionSecrets: deps?.dataEncryptionSecrets,
+          registry: deps?.registry,
         },
         recoveryId,
         envelope.serverId
@@ -3105,7 +3406,15 @@ async function handlePendingExpired(
   pending: PendingRequestRecord,
   deps?: CommandConsumerDeps
 ): Promise<void> {
-  await transitionCommand(db, record.id, { status: 'timed_out' })
+  // A deploy whose request ran out without a result says so in plain words.
+  const deployMessage =
+    record.type === 'environment.deploy'
+      ? deployWaitMessage(lostRequestWaiter((await getCommandRecord(db, record.id))?.progress))
+      : undefined
+  await transitionCommand(db, record.id, {
+    status: 'timed_out',
+    ...(deployMessage === undefined ? {} : { error: deployMessage }),
+  })
   commandConsumerTrace('dispatch-result', {
     commandId: record.id,
     commandType: record.type,
@@ -3114,7 +3423,14 @@ async function handlePendingExpired(
     resultStatus: 'timed_out',
   })
   await applyManagedFailedSideEffect(db, record, deps, pending.error ?? 'Command timed out')
-  await applyEnvironmentDeployFailedSideEffect(db, record, envelope, 'timed_out', 'timed_out', deps)
+  await applyEnvironmentDeployFailedSideEffect(
+    db,
+    record,
+    envelope,
+    deployMessage ?? 'timed_out',
+    'timed_out',
+    deps
+  )
   await applyFabricFailedSideEffect(db, record, envelope)
   await applyFirewallFailedSideEffect(db, record, envelope, pending.error ?? 'Command timed out')
 }
@@ -3164,6 +3480,88 @@ async function applyPendingOutcome(
   }
 }
 
+/**
+ * Not a failure of the database: release the `applying` stamp the enqueue set
+ * (unless another apply is still open) and leave the members as they are.
+ */
+async function releaseApplyingAfterReseedStop(
+  db: Db,
+  commandId: string,
+  managedId: string
+): Promise<void> {
+  const otherOpen = await db
+    .select({ id: command.id })
+    .from(command)
+    .where(
+      and(
+        eq(command.name, 'managed.apply'),
+        commandIsOpen(),
+        ne(command.id, commandId),
+        sql`${command.context}->>'managedId' = ${managedId}`
+      )
+    )
+    .limit(1)
+  if (otherOpen.length === 0) {
+    await db
+      .update(managed)
+      .set({ status: 'ready', updatedAt: nowIso() })
+      .where(and(eq(managed.id, managedId), eq(managed.status, 'applying')))
+  }
+}
+
+/**
+ * The host refused a stale switchover re-seed before touching the data
+ * (`switchover re-seed refused`, see the host's `switchover-final-position.ts`).
+ * Nothing was wiped, so this is not a failure of the database or of the former
+ * primary: keep it `needs_resync` for an operator, release `applying`, and say
+ * so on the recovery row. Returns true when the failure was absorbed here.
+ */
+async function absorbRefusedReseed(
+  db: Db,
+  record: DispatchableCommandRecord,
+  meta: Record<string, unknown> | null | undefined,
+  error?: string
+): Promise<boolean> {
+  if (record.type !== 'managed.apply') return false
+  const guard = parseReseedGuard(meta)
+  if (!guard || !error?.includes(HOST_RESEED_REFUSAL)) return false
+  await releaseApplyingAfterReseedStop(db, record.id, guard.managedId)
+  await updateRecoveryLocked(
+    db,
+    guard.recoveryId,
+    (current) => ({
+      metadata: {
+        ...current.metadata,
+        reseedState: 'failed',
+        reseedNote: `the host refused the re-seed: ${error}`.slice(0, 300),
+      },
+    }),
+    { includeTerminal: true }
+  )
+  return true
+}
+
+/**
+ * A forced re-seed queued after a planned switchover wipes the former
+ * primary's data. If the switchover was overtaken before the command was sent
+ * (a second switchover or failover), refuse it instead of wiping.
+ */
+async function failSupersededReseed(db: Db, record: DispatchableCommandRecord): Promise<boolean> {
+  if (record.type !== 'managed.apply') return false
+  const guard = parseReseedGuard(await getCommandMetadata(db, record.id))
+  if (!guard) return false
+  const reason = await reseedSupersededReason(db, guard)
+  if (!reason) return false
+  const error = `re-seed cancelled: ${reason}`
+  await transitionCommand(db, record.id, {
+    status: 'failed',
+    error,
+    errorCode: 'reseed_superseded',
+  })
+  await releaseApplyingAfterReseedStop(db, record.id, guard.managedId)
+  return true
+}
+
 export async function processCommandEnvelope(
   db: Db,
   registry: DaemonCellRegistry,
@@ -3172,6 +3570,14 @@ export async function processCommandEnvelope(
 ): Promise<void> {
   const record = await loadDispatchableRecord(db, envelope)
   if (!record) return
+
+  if (await failSupersededReseed(db, record)) return
+
+  const resumed = await resumeDeployWait(db, registry, record, envelope, deps)
+  if (resumed !== null) {
+    if (resumed.pending) await applyPendingOutcome(db, record, envelope, resumed.pending, deps)
+    return
+  }
 
   await markDispatching(db, record, envelope)
 
@@ -3192,5 +3598,5 @@ export async function processCommandEnvelope(
   const pending = await enqueueAndAwaitOutcome(db, registry, record, envelope, deps)
   if (!pending) return
 
-  await applyPendingOutcome(db, record, envelope, pending, deps)
+  await applyPendingOutcome(db, record, envelope, pending, deps ? { ...deps, registry } : deps)
 }

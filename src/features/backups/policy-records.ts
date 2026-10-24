@@ -36,6 +36,8 @@ export type NewManagedBackupPolicy = {
   name: string
   schedule: string
   timezone: string | null
+  /** The database each run dumps; null or absent means the cluster's initial database. */
+  database?: string | null
   retentionKeep: number
   isEnabled: boolean
   createdBy: string | null
@@ -49,7 +51,10 @@ export type BackupPolicyTargetRef =
 export type NewBackupPolicy = Omit<NewManagedBackupPolicy, 'managedId'>
 
 export type BackupPolicyPatch = Partial<
-  Pick<BackupPolicyRow, 'name' | 'schedule' | 'timezone' | 'retentionKeep' | 'isEnabled'>
+  Pick<
+    BackupPolicyRow,
+    'name' | 'schedule' | 'timezone' | 'database' | 'retentionKeep' | 'isEnabled'
+  >
 >
 
 function toRunRecord(row: typeof snapshot.$inferSelect): BackupRunRecord {

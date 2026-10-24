@@ -18,10 +18,6 @@ import {
   invalidateLicense,
   revokeLicense,
 } from '../features/licenses/license.ts'
-import {
-  LICENSE_TIER_BELOW_REQUIRED_ERROR,
-  LICENSE_TIER_UNASSIGNED_ERROR,
-} from '../features/tiers/tier-enforcement.ts'
 import { getDatabaseUrl } from '../db/url.ts'
 import { createDenoDb, endDbConnection } from '../db/connection.ts'
 import {
@@ -40,7 +36,6 @@ import {
   workspace,
 } from '../db/schema.ts'
 import { getTierByLabel, insertTier } from '../features/tiers/tier-records.ts'
-import { recomputeOrganizationAssignments } from '../features/tiers/assignment-records.ts'
 import {
   MAX_AUTH_CHALLENGE_BODY_BYTES,
   MAX_AUTH_SESSION_BODY_BYTES,
@@ -51,6 +46,7 @@ import {
   registerDaemonApiRoutes,
 } from './api-routes.ts'
 import { MAX_METRICS_PAYLOAD_BYTES } from './metrics/validation.ts'
+import { createInMemoryMetricsGate, type MetricsGate } from './metrics/ingest-gate.ts'
 import { METRICS_SCHEMA_VERSION } from '../contracts/metrics-contract.ts'
 import type { DaemonCell, DaemonCellRegistry, DaemonCellSnapshot } from '../contracts/cell.ts'
 import type { DaemonOutboundEnvelope } from '../contracts/cell-protocol.ts'
@@ -126,6 +122,8 @@ type EnrollFixture = {
   hostname: string
   /** Tier rows this fixture created (an existing row for the label is reused, never deleted). */
   extraTierIds: string[]
+  /** The tier the fixture bought one seat of (hosted default S1); `null` when nothing was bought. */
+  purchasedTierId: string | null
 }
 
 type EnrollFixtureOptions = {
@@ -133,6 +131,12 @@ type EnrollFixtureOptions = {
   /** Hosted default buys one seat at rank 1 (S1). `null` buys nothing: no payer, no seats. */
   tierRank?: number | null
   enroll?: boolean
+  /**
+   * After a hosted enroll, put the server on the bought tier the way a
+   * manager would (enroll itself never assigns). Default `true`; `false`
+   * leaves the server with no tier.
+   */
+  assign?: boolean
 }
 
 const GIBIBYTE = 1024 ** 3
@@ -169,9 +173,8 @@ async function ensureTestTier(
 
 /**
  * What a projected purchase leaves behind: payer → subscription → one seat
- * row per tier at `quantity`, then the derived assignment recomputed the
- * way the entitlement sync does after every projection. A license carries
- * no tier; the servers it binds are covered by what the organization bought.
+ * row per tier at `quantity`. No server's tier moves: only a manager
+ * assigns one (`assignServerTier`); tests do that with {@link assignTier}.
  */
 async function purchaseTier(
   db: ReturnType<typeof createDenoDb>,
@@ -231,8 +234,31 @@ async function purchaseTier(
       target: [subscriptionItem.subscriptionId, subscriptionItem.tierId],
       set: { quantity, updatedAt: now },
     })
-  await recomputeOrganizationAssignments(db, fixture.organizationId)
   return tierId
+}
+
+/** A manager's assignment, written straight to the column. */
+async function assignTier(
+  db: ReturnType<typeof createDenoDb>,
+  serverId: string,
+  tierId: string | null
+): Promise<void> {
+  await db
+    .update(server)
+    .set({ assignedTierId: tierId, updatedAt: new Date().toISOString() })
+    .where(eq(server.id, serverId))
+}
+
+async function readAssignedTierId(
+  db: ReturnType<typeof createDenoDb>,
+  serverId: string
+): Promise<string | null> {
+  const [row] = await db
+    .select({ assignedTierId: server.assignedTierId })
+    .from(server)
+    .where(eq(server.id, serverId))
+    .limit(1)
+  return row?.assignedTierId ?? null
 }
 
 /** Remove the purchase `purchaseTier` projected: seats → subscription → payer. */
@@ -673,9 +699,8 @@ async function withEnrollFixture(
   const organizationId = orgRow!.id
   const { licenseId, licenseToken } = await insertFixtureLicense(db, organizationId)
 
-  if (tierRank != null) {
-    await purchaseTier(db, { organizationId, extraTierIds }, tierRank, 1)
-  }
+  const purchasedTierId =
+    tierRank != null ? await purchaseTier(db, { organizationId, extraTierIds }, tierRank, 1) : null
 
   const key = await generateKeyMaterial()
   let serverId = ''
@@ -697,6 +722,9 @@ async function withEnrollFixture(
     }
     serverId = enrollBody.serverId
     keyId = enrollBody.keyId
+    if (purchasedTierId && options.assign !== false) {
+      await assignTier(db, serverId, purchasedTierId)
+    }
   }
 
   try {
@@ -713,6 +741,7 @@ async function withEnrollFixture(
       machineKey,
       hostname,
       extraTierIds,
+      purchasedTierId,
     })
   } finally {
     try {
@@ -1568,25 +1597,16 @@ test('invalidateLicense revokes daemon keys on bound servers', async () => {
   })
 })
 
-test('re-enroll is refused when recorded hardware requires a higher tier', async () => {
+test('re-enroll with recorded hardware past its tier succeeds and keeps the tier', async () => {
   await withEnrollFixture(async (fixture) => {
-    const original = await readDaemonState(fixture.db, fixture.serverId)
-    assertExists(original)
     await mergeServerResources(fixture.db, fixture.serverId, hostResourcesPayload(8, 16))
+    // A free bigger seat exists; re-enrolling must not take it.
+    await purchaseTier(fixture.db, fixture, 5, 1)
     const response = await postEnroll(fixture.app, fixture)
-    assertEquals(response.status, 400)
-    const body = (await response.json()) as { error: string }
-    assertEquals(body.error, LICENSE_TIER_BELOW_REQUIRED_ERROR)
-
-    const [licenseRow] = await fixture.db
-      .select({ serverId: license.serverId })
-      .from(license)
-      .where(eq(license.id, fixture.licenseId))
-      .limit(1)
-    assertEquals(licenseRow?.serverId, fixture.serverId)
-    const after = await readDaemonState(fixture.db, fixture.serverId)
-    assertEquals(after?.key.id, original.key.id)
-    assertEquals(after?.key.fingerprint, original.key.fingerprint)
+    assertEquals(response.status, 200)
+    const body = (await response.json()) as { serverId: string }
+    assertEquals(body.serverId, fixture.serverId)
+    assertEquals(await readAssignedTierId(fixture.db, fixture.serverId), fixture.purchasedTierId)
   })
 })
 
@@ -1597,62 +1617,42 @@ test('fresh enroll with no recorded hardware succeeds', async () => {
   })
 })
 
-test('hosted enroll is refused when nothing bought covers one more server', async () => {
+test('hosted enroll never assigns a license tier, even with a free seat', async () => {
   await withEnrollFixture(
     async (fixture) => {
-      const response = await postEnroll(fixture.app, fixture)
-      assertEquals(response.status, 400)
-      const body = (await response.json()) as { error: string }
-      assertEquals(body.error, LICENSE_TIER_UNASSIGNED_ERROR)
+      assertExists(fixture.purchasedTierId)
+      assertEquals(await readAssignedTierId(fixture.db, fixture.serverId), null)
+      // Its first session connects and still assigns nothing.
+      const session = await postAuthSession(fixture.app, fixture)
+      assertEquals(session.status, 200)
+      assertEquals(await readAssignedTierId(fixture.db, fixture.serverId), null)
     },
-    { tierRank: null, enroll: false }
+    { assign: false }
   )
 })
 
-test('a hosted 400 tier refusal does not consume the license so a later retry without server.id can succeed', async () => {
+test('hosted enroll with nothing bought succeeds, binds the license and leaves the server with no tier', async () => {
   await withEnrollFixture(
     async (fixture) => {
-      const refused = await postEnroll(fixture.app, {
+      const response = await postEnroll(fixture.app, {
         licenseId: fixture.licenseId,
         licenseToken: fixture.licenseToken,
         machineKey: fixture.machineKey,
         hostname: fixture.hostname,
         key: fixture.key,
       })
-      assertEquals(refused.status, 400)
-      const refusedBody = (await refused.json()) as { error: string }
-      assertEquals(refusedBody.error, LICENSE_TIER_UNASSIGNED_ERROR)
+      assertEquals(response.status, 200)
+      const body = (await response.json()) as { serverId: string; keyId: string }
+      assertEquals(typeof body.serverId, 'string')
+      assertEquals(body.serverId.length > 0, true)
 
       const [licenseRow] = await fixture.db
         .select({ serverId: license.serverId })
         .from(license)
         .where(eq(license.id, fixture.licenseId))
         .limit(1)
-      assertEquals(licenseRow?.serverId, null)
-      const orgServers = await fixture.db
-        .select({ id: server.id, daemon: server.daemon })
-        .from(server)
-        .where(eq(server.organizationId, fixture.organizationId))
-      assertEquals(orgServers.length, 0)
-
-      // The purchase lands: one S1 seat now covers the newcomer.
-      await purchaseTier(fixture.db, fixture, 1, 1)
-
-      const recovered = await postEnroll(fixture.app, {
-        licenseId: fixture.licenseId,
-        licenseToken: fixture.licenseToken,
-        machineKey: fixture.machineKey,
-        hostname: fixture.hostname,
-        key: fixture.key,
-      })
-      assertEquals(recovered.status, 200)
-      const recoveredBody = (await recovered.json()) as {
-        serverId: string
-        keyId: string
-      }
-      assertEquals(typeof recoveredBody.serverId, 'string')
-      assertEquals(recoveredBody.serverId.length > 0, true)
-      assertEquals(typeof recoveredBody.keyId, 'string')
+      assertEquals(licenseRow?.serverId, body.serverId)
+      assertEquals(await readAssignedTierId(fixture.db, body.serverId), null)
     },
     { tierRank: null, enroll: false }
   )
@@ -1677,49 +1677,46 @@ test('self-hosted enroll assigns SX and issues a session with nothing bought', a
   )
 })
 
-test('POST /auth/session refuses after a resize past the license band', async () => {
+test('a self-hosted session never changes a tier the server already holds', async () => {
+  await withEnrollFixture(
+    async (fixture) => {
+      const s1 = await ensureTestTier(fixture.db, 1, fixture.extraTierIds)
+      await assignTier(fixture.db, fixture.serverId, s1)
+      const session = await postAuthSession(fixture.app, fixture)
+      assertEquals(session.status, 200)
+      assertEquals(await readAssignedTierId(fixture.db, fixture.serverId), s1)
+    },
+    { runtime: 'deno', tierRank: null }
+  )
+})
+
+test('POST /auth/session lets a server kept on S1 connect after it grows past S1, and it stays on S1', async () => {
   await withEnrollFixture(async (fixture) => {
     const first = await postAuthSession(fixture.app, fixture)
     assertEquals(first.status, 200)
 
     await mergeServerResources(fixture.db, fixture.serverId, hostResourcesPayload(64, 256))
-    const refused = await postAuthSession(fixture.app, fixture)
-    assertEquals(refused.status, 400)
-    const refusedBody = (await refused.json()) as { error: string }
-    assertEquals(refusedBody.error, LICENSE_TIER_BELOW_REQUIRED_ERROR)
-
-    // Buying an S5 moves the server onto it (the projection's recompute).
+    // A free S5 seat exists; the session must not move the server onto it.
     await purchaseTier(fixture.db, fixture, 5, 1)
-
-    const recovered = await postAuthSession(fixture.app, fixture)
-    assertEquals(recovered.status, 200)
+    const grown = await postAuthSession(fixture.app, fixture)
+    assertEquals(grown.status, 200)
+    assertEquals(await readAssignedTierId(fixture.db, fixture.serverId), fixture.purchasedTierId)
   })
 })
 
-test('POST /auth/session recomputes a licensed server assigned nothing, and refuses it only when nothing bought covers it', async () => {
+test('POST /auth/session connects a licensed server with no tier and assigns it nothing', async () => {
   await withEnrollFixture(async (fixture) => {
-    // The one S1 given back: the recompute leaves the server on nothing.
-    await purchaseTier(fixture.db, fixture, 1, 0)
-    const refused = await postAuthSession(fixture.app, fixture)
-    assertEquals(refused.status, 400)
-    const refusedBody = (await refused.json()) as { error: string }
-    assertEquals(refusedBody.error, LICENSE_TIER_BELOW_REQUIRED_ERROR)
+    await assignTier(fixture.db, fixture.serverId, null)
+    // A seat is free; the session still must not hand it out.
+    const session = await postAuthSession(fixture.app, fixture)
+    assertEquals(session.status, 200)
+    assertEquals(await readAssignedTierId(fixture.db, fixture.serverId), null)
 
-    // Bought back — but the projection and this session raced, so the
-    // derived column is still empty: the gate's one recompute places it.
-    const tierId = await purchaseTier(fixture.db, fixture, 1, 1)
-    await fixture.db
-      .update(server)
-      .set({ assignedTierId: null })
-      .where(eq(server.id, fixture.serverId))
-    const recovered = await postAuthSession(fixture.app, fixture)
-    assertEquals(recovered.status, 200)
-    const [row] = await fixture.db
-      .select({ assignedTierId: server.assignedTierId })
-      .from(server)
-      .where(eq(server.id, fixture.serverId))
-      .limit(1)
-    assertEquals(row?.assignedTierId, tierId)
+    // Nothing bought at all: still connects.
+    await purchaseTier(fixture.db, fixture, 1, 0)
+    const none = await postAuthSession(fixture.app, fixture)
+    assertEquals(none.status, 200)
+    assertEquals(await readAssignedTierId(fixture.db, fixture.serverId), null)
   })
 })
 
@@ -2504,6 +2501,7 @@ async function createMetricsTestAppWithDb(
   options: {
     registry?: DaemonCellRegistry
     runtime?: 'workers' | 'deno'
+    gate?: MetricsGate
   } = {}
 ): Promise<{
   app: Hono<AppEnv>
@@ -2522,9 +2520,11 @@ async function createMetricsTestAppWithDb(
     },
   }
 
+  const gate = options.gate ?? createInMemoryMetricsGate()
   const app = new Hono<AppEnv>()
   app.use('*', (c, next) => {
     c.set('db', db)
+    c.set('metricsGate', gate)
     c.set('serverMetricsStore', fakeStore)
     if (options.registry) c.set('daemonCellRegistry', options.registry)
     return next()
@@ -2688,7 +2688,7 @@ test('POST /metrics rejects an unrecognized top-level field (e.g. body-supplied 
   assertEquals(writes.length, 0)
 })
 
-test('POST /metrics truncates entity arrays to the resolved capability plan', async () => {
+test('POST /metrics stores every device the server reports, whatever the plan', async () => {
   const { app, writes } = await createMetricsTestApp()
   const serverId = 'srv-metrics-plan'
   const daemonToken = await issueDaemonToken(serverId, 'key-metrics-plan')
@@ -2700,13 +2700,11 @@ test('POST /metrics truncates entity arrays to the resolved capability plan', as
     },
     body: JSON.stringify(
       buildValidMetricsFrame({
-        // Default (virtual) plan: gpuSlots=1, detailedBlockDeviceSlots=1,
-        // extraFilesystemSlots=0, physicalHardwareSignalSlots=0.
         gpus: [
           { gpuId: 'gpu0', utilizationPercent: 5 },
           { gpuId: 'gpu1', utilizationPercent: 6 },
         ],
-        blockDevices: [{ deviceId: 'sda' }],
+        blockDevices: [{ deviceId: 'sda' }, { deviceId: 'sdb' }],
         filesystems: [{ filesystemId: 'fs0' }],
         hardwareSignals: [{ signalId: 'sig0', kind: 'fan' }],
       })
@@ -2715,40 +2713,53 @@ test('POST /metrics truncates entity arrays to the resolved capability plan', as
   assertEquals(response.status, 202)
   assertEquals(writes.length, 1)
   const sample = writes[0]
-  assertEquals(sample?.gpus.length, 1)
-  assertEquals(sample?.gpus[0]?.gpuId, 'gpu0')
-  assertEquals(sample?.blockDevices.length, 1)
-  assertEquals(sample?.blockDevices[0]?.deviceId, 'sda')
-  assertEquals(sample?.filesystems, [])
-  assertEquals(sample?.hardwareSignals, [])
+  assertEquals(
+    sample?.gpus.map((gpu) => gpu.gpuId),
+    ['gpu0', 'gpu1']
+  )
+  assertEquals(
+    sample?.blockDevices.map((device) => device.deviceId),
+    ['sda', 'sdb']
+  )
+  assertEquals(
+    sample?.filesystems.map((fs) => fs.filesystemId),
+    ['fs0']
+  )
+  assertEquals(
+    sample?.hardwareSignals.map((signal) => signal.signalId),
+    ['sig0']
+  )
 })
 
-test('POST /metrics on self-hosted skips capability-plan truncation', async () => {
-  const { app, writes } = await createMetricsTestApp({ runtime: 'deno' })
-  const serverId = 'srv-metrics-self-hosted'
-  const daemonToken = await issueDaemonToken(serverId, 'key-metrics-self-hosted')
-  const response = await app.request('/api/daemon/v1/metrics', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${daemonToken}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(
-      buildValidMetricsFrame({
-        gpus: [{ gpuId: 'gpu0' }, { gpuId: 'gpu1' }],
-        filesystems: [{ filesystemId: 'fs0' }, { filesystemId: 'fs1' }],
-        hardwareSignals: [
-          { signalId: 'sig0', kind: 'fan' },
-          { signalId: 'sig1', kind: 'temp' },
-        ],
-      })
-    ),
+test('POST /metrics applies the same preparation on both editions', async () => {
+  const frame = buildValidMetricsFrame({
+    gpus: [
+      { gpuId: 'gpu0', utilizationPercent: 1 },
+      { gpuId: 'gpu1', utilizationPercent: 2 },
+    ],
+    filesystems: [{ filesystemId: 'fs0' }, { filesystemId: 'fs1' }],
+    hardwareSignals: [
+      { signalId: 'sig0', kind: 'fan' },
+      { signalId: 'sig1', kind: 'temp' },
+    ],
   })
-  assertEquals(response.status, 202)
-  assertEquals(writes.length, 1)
-  assertEquals(writes[0]?.gpus.length, 2)
-  assertEquals(writes[0]?.filesystems.length, 2)
-  assertEquals(writes[0]?.hardwareSignals.length, 2)
+  for (const runtime of ['workers', 'deno'] as const) {
+    const { app, writes } = await createMetricsTestApp({ runtime })
+    const daemonToken = await issueDaemonToken(`srv-metrics-${runtime}`, `key-metrics-${runtime}`)
+    const response = await app.request('/api/daemon/v1/metrics', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${daemonToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(frame),
+    })
+    assertEquals(response.status, 202)
+    assertEquals(writes.length, 1)
+    assertEquals(writes[0]?.gpus.length, 2, runtime)
+    assertEquals(writes[0]?.filesystems.length, 2, runtime)
+    assertEquals(writes[0]?.hardwareSignals.length, 2, runtime)
+  }
 })
 
 test('POST /metrics buffers a live-session sample for the overlay AND writes a flag-less (v6) sample durably', async () => {
@@ -2785,7 +2796,7 @@ test('POST /metrics buffers a live-session sample for the overlay AND writes a f
   assertEquals(buffered?.host.cpu.busyPercent, 81)
 })
 
-test('POST /metrics routes a non-durable v7 live sample to the overlay buffer only, with or without the lease marker', async () => {
+test('POST /metrics routes a non-durable wire version 8 live sample to the overlay buffer only, with or without the lease marker', async () => {
   for (const marked of [true, false]) {
     const { app, writes } = await createMetricsTestApp({ runtime: 'deno' })
     const serverId = `srv-metrics-nondurable-${marked}`
@@ -2797,7 +2808,7 @@ test('POST /metrics routes a non-durable v7 live sample to the overlay buffer on
       headers: { Authorization: `Bearer ${daemonToken}`, 'Content-Type': 'application/json' },
       body: JSON.stringify(
         buildValidMetricsFrame({
-          metadata: { version: 7, durable: false, intervalSeconds: 10 },
+          metadata: { version: 8, durable: false, intervalSeconds: 10 },
           host: {
             cpu: { busyPercent: 64 },
             kernel: emptyHostGroup(),
@@ -2816,7 +2827,7 @@ test('POST /metrics routes a non-durable v7 live sample to the overlay buffer on
   }
 })
 
-test('POST /metrics stores a v7 durable baseline sample and buffers it while a lease is active', async () => {
+test('POST /metrics stores a wire version 8 durable baseline sample and buffers it while a lease is active', async () => {
   const { app, writes } = await createMetricsTestApp({ runtime: 'deno' })
   const serverId = 'srv-metrics-baseline-lease'
   const cache = createMetricsChartCache('deno')
@@ -2826,7 +2837,7 @@ test('POST /metrics stores a v7 durable baseline sample and buffers it while a l
     method: 'POST',
     headers: { Authorization: `Bearer ${daemonToken}`, 'Content-Type': 'application/json' },
     body: JSON.stringify(
-      buildValidMetricsFrame({ metadata: { version: 7, durable: true, intervalSeconds: 60 } })
+      buildValidMetricsFrame({ metadata: { version: 8, durable: true, intervalSeconds: 60 } })
     ),
   })
   assertEquals(response.status, 202)
@@ -2834,7 +2845,7 @@ test('POST /metrics stores a v7 durable baseline sample and buffers it while a l
   assertEquals((await readLiveSample(cache, serverId))?.serverId, serverId)
 })
 
-test('POST /metrics hosted ingest drops entities the allowlist rejects before plan truncation', async () => {
+test('POST /metrics drops entities the allowlist rejects', async () => {
   const { app, writes } = await createMetricsTestApp()
   const serverId = 'srv-metrics-allowlist'
   const daemonToken = await issueDaemonToken(serverId, 'key-metrics-allowlist')
@@ -2897,7 +2908,7 @@ test('POST /metrics still writes priming and baseline intervals without a live-s
   assertEquals(writes.length, 2)
 })
 
-test('POST /metrics through a real CloudflareAnalyticsEngineServerMetricsStore: host rows, entity families and events all land as v7 AE rows', async () => {
+test('POST /metrics through a real CloudflareAnalyticsEngineServerMetricsStore: host rows, entity families and events all land as v12 AE rows', async () => {
   const { app, points } = await createMetricsTestAppWithRealCloudflareStore()
   const serverId = 'srv-metrics-cf-real'
   const daemonToken = await issueDaemonToken(serverId, 'key-metrics-cf-real')
@@ -2909,9 +2920,8 @@ test('POST /metrics through a real CloudflareAnalyticsEngineServerMetricsStore: 
     },
     body: JSON.stringify(
       buildValidMetricsFrame({
-        // Default hosted (virtual) plan: normalNicSlots=2 — with no recorded
-        // topology the first two embed into host.io positionally and eth2 is
-        // dropped by the plan before it reaches the store; gpuSlots=1,
+        // With no recorded topology the first two NICs embed into host.network
+        // positionally and eth2 pages as a network row of its own;
         // managedIngress/databaseProxy/events enabled.
         networks: [
           { deviceId: 'eth0' },
@@ -2946,10 +2956,10 @@ test('POST /metrics through a real CloudflareAnalyticsEngineServerMetricsStore: 
   assertEquals(family('host.io').length, 1)
   assertEquals(family('host.network').length, 1)
   assertEquals(family('host.web').length, 1)
-  assertEquals(family('network').length, 0) // eth0/eth1 embed; eth2 exceeds the 2-slot hosted plan
+  assertEquals(family('network').length, 1) // eth0/eth1 embed; eth2 pages
   assertEquals(family('gpu').length, 1)
 
-  // v7 folds Caddy into host.web and ProxySQL into managed.database: no rows
+  // v12 folds Caddy into host.web and ProxySQL into managed.database: no rows
   // of their own, one source each.
   assertEquals(family('managed.ingress').length, 0)
   assertEquals(family('managed.database').length, 1)
@@ -3033,6 +3043,61 @@ test('POST /metrics does not await the store write before responding', async () 
   releaseWrite()
   await waitForCondition(() => Promise.resolve(writes.length === 1))
   assertEquals(writes.length, 1)
+})
+
+test('POST /metrics stores one sample a minute: a duplicate timestamp gets 409 (the daemon does not retry it) and is not written', async () => {
+  await withEnrollFixture(async ({ db, serverId, keyId }) => {
+    const { app, writes } = await createMetricsTestAppWithDb(db)
+    const daemonToken = await issueDaemonToken(serverId, keyId)
+    const body = JSON.stringify(buildValidMetricsFrame())
+    const post = () =>
+      app.request('/api/daemon/v1/metrics', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${daemonToken}`,
+          'Content-Type': 'application/json',
+        },
+        body,
+      })
+    assertEquals((await post()).status, 202)
+    const replay = await post()
+    assertEquals(replay.status, 409)
+    assertEquals(await replay.json(), { ok: false, error: 'duplicate_sample' })
+    assertEquals(replay.headers.get('Retry-After'), null)
+    assertEquals(writes.length, 1)
+  })
+})
+
+test('POST /metrics: a sample sent too soon after the last gets 429 with Retry-After and is not written', async () => {
+  await withEnrollFixture(async ({ db, serverId, keyId }) => {
+    const { app, writes } = await createMetricsTestAppWithDb(db)
+    const daemonToken = await issueDaemonToken(serverId, keyId)
+    const post = (sampledAt: string) =>
+      app.request('/api/daemon/v1/metrics', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${daemonToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(buildValidMetricsFrame({ metadata: { sampledAt } })),
+      })
+    const base = Date.now()
+    assertEquals((await post(new Date(base).toISOString())).status, 202)
+    // Spend the catch-up allowance with samples a second apart, then one more is refused.
+    let refused: Response | undefined
+    for (let i = 1; i <= 8 && !refused; i++) {
+      const response = await post(new Date(base + i * 1000).toISOString())
+      if (response.status === 429) refused = response
+    }
+    assertEquals(refused?.status, 429)
+    assertEquals((await refused!.json()) as unknown, {
+      ok: false,
+      error: 'rate_limited',
+      reason: 'too_soon',
+    })
+    assert(Number(refused!.headers.get('Retry-After')) >= 1)
+    assertEquals(writes.length, 6)
+  })
 })
 
 test('POST /metrics accepts a known topology generation without requesting a resync', async () => {
@@ -3262,9 +3327,9 @@ test('POST /metrics never writes machine_class=virtual back — absence of senso
       ),
     })
     assertEquals(response.status, 202)
-    // Inferred virtual → signals truncated, but the column stays NULL so a
-    // later topology generation that discovers sensors can still promote it.
-    assertEquals(writes[0]?.hardwareSignals, [])
+    // Inferred virtual: the signals are stored as reported, and the column stays
+    // NULL so a later topology generation that discovers sensors can still promote it.
+    assertEquals(writes[0]?.hardwareSignals.length, 1)
     assertEquals(await readMachineClassSettled(db, serverId, 'physical'), null)
   })
 })
@@ -3294,7 +3359,7 @@ test('POST /metrics: a declared machine_class=virtual beats a topology that carr
       ),
     })
     assertEquals(response.status, 202)
-    assertEquals(writes[0]?.hardwareSignals, [])
+    assertEquals(writes[0]?.hardwareSignals.length, 1)
     assertEquals(await readMachineClassSettled(db, serverId, 'virtual'), 'virtual')
   })
 })
@@ -3355,7 +3420,71 @@ test('POST /metrics: a declared machine_class=physical retains sensors with no t
   })
 })
 
-test('POST /metrics truncates hardwareSignals when the org overrides physicalHardwareSignalSlots to 0', async () => {
+test('POST /metrics keeps the sample and flags the server when its RAM or physical cores are past the licensed box size', async () => {
+  await withEnrollFixture(async ({ db, serverId, keyId }) => {
+    const { app, writes } = await createMetricsTestAppWithDb(db)
+    const daemonToken = await issueDaemonToken(serverId, keyId)
+    const post = (at: string) =>
+      app.request('/api/daemon/v1/metrics', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${daemonToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(
+          buildValidMetricsFrame({
+            // The sample's own sizes are never the plan's unit: only the host report counts.
+            extended: { sizes: { memoryTotalBytes: 1024, logicalCores: 128 } },
+            metadata: { sampledAt: at },
+          })
+        ),
+      })
+    const metadataOf = async () =>
+      ((await db.select({ m: server.metadata }).from(server).where(eq(server.id, serverId)))[0]!
+        .m ?? {}) as Record<string, unknown>
+    const GIB = 1024 ** 3
+    const setHostReport = (gib: number, ...perSocket: number[]) =>
+      db
+        .update(server)
+        .set({
+          metadata: sql`COALESCE(${server.metadata}, '{}'::jsonb) || ${JSON.stringify({
+            resources: {
+              cpus: perSocket.map((total) => ({ cores: { total } })),
+              memory: { totalBytes: gib * GIB },
+            },
+          })}::jsonb`,
+        })
+        .where(eq(server.id, serverId))
+    const settle = () => new Promise((resolve) => setTimeout(resolve, 200))
+
+    // The fixture's tier is S1 (16 GiB, 4 physical cores). 128 logical CPUs on
+    // the sample change nothing: only the host report's RAM and physical cores count.
+    await setHostReport(8, 2, 2)
+    const fits = await post(new Date().toISOString())
+    assertEquals(fits.status, 202)
+    await settle()
+    assertEquals('overPlan' in (await metadataOf()), false)
+
+    // 64 GiB of RAM and 6 physical cores (3 + 3) are both past S1.
+    await setHostReport(64, 3, 3)
+    const over = await post(new Date(Date.now() + 1000).toISOString())
+    assertEquals(over.status, 202)
+    assertEquals(writes.length, 2, 'the sample is stored')
+    await settle()
+    const stamp = (await metadataOf()).overPlan as Record<string, unknown>
+    assertEquals([stamp.memory, stamp.cpu], [true, true])
+
+    // Back inside the box: the flag clears and the sample is still stored.
+    await setHostReport(8, 2, 2)
+    const back = await post(new Date(Date.now() + 2000).toISOString())
+    assertEquals(back.status, 202)
+    assertEquals(writes.length, 3)
+    await settle()
+    assertEquals('overPlan' in (await metadataOf()), false)
+  })
+})
+
+test('POST /metrics does not cut hardwareSignals when the org overrides physicalHardwareSignalSlots to 0', async () => {
   await withEnrollFixture(async ({ db, organizationId, serverId, keyId }) => {
     await recordTopologyGeneration(db, serverId, {
       generation: 0,
@@ -3386,11 +3515,11 @@ test('POST /metrics truncates hardwareSignals when the org overrides physicalHar
     })
     assertEquals(response.status, 202)
     assertEquals(writes.length, 1)
-    assertEquals(writes[0]?.hardwareSignals, [])
+    assertEquals(writes[0]?.hardwareSignals.length, 1)
   })
 })
 
-test('POST /metrics truncates hardwareSignals when a server override wins over an org override', async () => {
+test('POST /metrics does not cut hardwareSignals when a server overrides physicalHardwareSignalSlots to 0', async () => {
   await withEnrollFixture(async ({ db, organizationId, serverId, keyId }) => {
     await recordTopologyGeneration(db, serverId, {
       generation: 0,
@@ -3398,7 +3527,7 @@ test('POST /metrics truncates hardwareSignals when a server override wins over a
       snapshot: { hardwareSignals: [{ signalId: 'board-fan' }] },
       appliedAt: new Date().toISOString(),
     })
-    // Org grants signals; the per-server override still wins and truncates.
+    // Slot counts are fixed at the ceilings: neither layer lowers them.
     await db
       .update(organization)
       .set({
@@ -3428,7 +3557,7 @@ test('POST /metrics truncates hardwareSignals when a server override wins over a
     })
     assertEquals(response.status, 202)
     assertEquals(writes.length, 1)
-    assertEquals(writes[0]?.hardwareSignals, [])
+    assertEquals(writes[0]?.hardwareSignals.length, 1)
   })
 })
 
@@ -3446,7 +3575,7 @@ test('POST /metrics enqueues capability-plan-update when hosted ingest bumps the
     await db
       .update(organization)
       .set({
-        options: { metricsCapabilityPlan: { extraFilesystemSlots: 3 } },
+        options: { metricsCapabilityPlan: { managedDockerEnabled: false } },
       })
       .where(eq(organization.id, organizationId))
 
@@ -3473,7 +3602,7 @@ test('POST /metrics enqueues capability-plan-update when hosted ingest bumps the
       throw new TypeError('expected capability-plan-update envelope')
     }
     assertEquals(update.generation, primed.generation + 1)
-    assertEquals(update.plan.extraFilesystemSlots, 3)
+    assertEquals(update.plan.managedDockerEnabled, false)
   })
 })
 
@@ -3821,5 +3950,90 @@ test("GET /host/docker-networking returns the owner org's pools (empty when unco
       addressPools: [{ base: '10.200.0.0/16', size: 24 }],
       defaultBridgeCidr: '172.17.0.1/16',
     })
+  })
+})
+
+test('POST /metrics: a sample stamped more than 60 s ahead gets 409 and is not written', async () => {
+  await withEnrollFixture(async ({ db, serverId, keyId }) => {
+    const { app, writes } = await createMetricsTestAppWithDb(db)
+    const daemonToken = await issueDaemonToken(serverId, keyId)
+    const sampledAt = new Date(Date.now() + 120_000).toISOString()
+    const response = await app.request('/api/daemon/v1/metrics', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${daemonToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(buildValidMetricsFrame({ metadata: { sampledAt } })),
+    })
+    assertEquals(response.status, 409)
+    assertEquals(await response.json(), { ok: false, error: 'sample_in_future' })
+    assertEquals(writes.length, 0)
+  })
+})
+
+test('POST /metrics: a gate that cannot answer gets 503 and nothing is written', async () => {
+  await withEnrollFixture(async ({ db, serverId, keyId }) => {
+    const gate: MetricsGate = { admit: () => Promise.reject(new Error('gate unreachable')) }
+    const { app, writes } = await createMetricsTestAppWithDb(db, { gate })
+    const daemonToken = await issueDaemonToken(serverId, keyId)
+    const response = await app.request('/api/daemon/v1/metrics', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${daemonToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(buildValidMetricsFrame()),
+    })
+    assertEquals(response.status, 503)
+    assertEquals(await response.json(), { ok: false, error: 'metrics_gate_unavailable' })
+    assertEquals(writes.length, 0)
+  })
+})
+
+test('POST /metrics: events over the hourly budget are cut most severe first, logged, and the sample is still stored', async () => {
+  await withEnrollFixture(async ({ db, serverId, keyId }) => {
+    const gate: MetricsGate = {
+      admit: () => Promise.resolve({ stored: true, eventsAllowed: 1 }),
+    }
+    const { app, writes } = await createMetricsTestAppWithDb(db, { gate })
+    const daemonToken = await issueDaemonToken(serverId, keyId)
+    const at = new Date().toISOString()
+    const warnings: string[] = []
+    const originalWarn = console.warn
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args.join(' '))
+    }
+    let response: Response
+    try {
+      response = await app.request('/api/daemon/v1/metrics', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${daemonToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(
+          buildValidMetricsFrame({
+            events: [
+              { eventId: 'evt-warn', at, kind: 'nic_link_down', severity: 'warning' },
+              { eventId: 'evt-crit', at, kind: 'oom_kill', severity: 'critical' },
+            ],
+          })
+        ),
+      })
+    } finally {
+      console.warn = originalWarn
+    }
+    assertEquals(response.status, 202)
+    assertEquals(writes.length, 1)
+    assertEquals(
+      writes[0]?.events.map((event) => event.eventId),
+      ['evt-crit']
+    )
+    assert(
+      warnings.some((line) =>
+        line.includes(`metrics events over the hourly budget for ${serverId}: kept 1 of 2`)
+      )
+    )
   })
 })

@@ -5,8 +5,8 @@ This file is generated from the resolved dependency graph. Do not edit it by han
 Third-party components remain under their own copyright and license terms and are not relicensed by TurboPanel Control Plane's repository license (AGPL-3.0-only).
 
 <!-- lockfiles
-deno.lock sha256:e077ab24ed3f601ada799a5ed3d2d720934cfedb6b4e8e2c57fed6ad05ce1fe7
-pnpm-lock.yaml sha256:c0273b087fd658f04c85548bb25ed5bbb569597334cb63d9560a37bb286960b6
+deno.lock sha256:0dadc2711a0f03f165563c10bbac5a53a370796e69a95be63d5418d51341368e
+pnpm-lock.yaml sha256:60e3f8980037a0d633efe62eab23219e85ec3b12e0233eec457595f81b3cbb30
 -->
 
 ## Production dependencies
@@ -233,17 +233,17 @@ These packages are used for development, test, or build tooling and are not bund
 - Copyright: wrangler@cloudflare.com
 - Homepage: https://github.com/cloudflare/workers-sdk#readme
 
-### @cloudflare/unenv-preset@2.16.1
+### @cloudflare/unenv-preset@2.16.2
 
 - License: MIT OR Apache-2.0
 - Homepage: https://github.com/cloudflare/workers-sdk#readme
 
-### @cloudflare/vitest-pool-workers@0.22.0
+### @cloudflare/vitest-pool-workers@0.23.0
 
 - License: MIT
 - Homepage: https://github.com/cloudflare/workers-sdk/tree/main/packages/vitest-pool-workers#readme
 
-### @cloudflare/workerd-linux-64@1.20260815.1
+### @cloudflare/workerd-linux-64@1.20261019.1
 
 - License: Apache-2.0
 - Homepage: https://github.com/cloudflare/workerd#readme
@@ -677,7 +677,7 @@ These packages are used for development, test, or build tooling and are not bund
 - Copyright: Sindre Sorhus
 - Homepage: https://github.com/sindresorhus/make-dir#readme
 
-### miniflare@5.20260815.0-alpha
+### miniflare@5.20261019.1-beta
 
 - License: MIT
 - Copyright: MrBBot
@@ -845,7 +845,7 @@ These packages are used for development, test, or build tooling and are not bund
 - Copyright: Microsoft Corp.
 - Homepage: https://www.typescriptlang.org/
 
-### undici@7.29.1
+### undici@7.30.1
 
 - License: MIT
 - Homepage: https://undici.nodejs.org
@@ -884,12 +884,12 @@ These packages are used for development, test, or build tooling and are not bund
 - Copyright: Mathias Buus
 - Homepage: https://github.com/mafintosh/why-is-node-running
 
-### workerd@1.20260815.1
+### workerd@1.20261019.1
 
 - License: Apache-2.0
 - Homepage: https://github.com/cloudflare/workerd#readme
 
-### wrangler@4.124.0
+### wrangler@4.151.3
 
 - License: MIT OR Apache-2.0
 - Copyright: wrangler@cloudflare.com
@@ -919,7 +919,7 @@ These packages are used for development, test, or build tooling and are not bund
 - Copyright: Harminder Virk
 - Homepage: https://github.com/poppinss/youch-core#readme
 
-### zod@4.4.3
+### zod@4.6.6
 
 - License: MIT
 - Copyright: Colin McDonnell

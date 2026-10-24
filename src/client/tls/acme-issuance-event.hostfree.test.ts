@@ -34,7 +34,7 @@ function fakeDb(
 ): { db: Db; updates: Array<{ id: string; patch: Record<string, unknown> }> } {
   const updates: Array<{ id: string; patch: Record<string, unknown> }> = []
   const organizationId = opts.organizationId === undefined ? ORG_ID : opts.organizationId
-  const managedIds = rows.filter((r) => r.status === 'managed').map((r) => r.id)
+  const managedIds = rows.filter((r) => r.status === 'automatic').map((r) => r.id)
   let updateIndex = 0
   let selectCall = 0
   const db = {
@@ -110,7 +110,7 @@ test('handleAcmeIssuanceEvent skips a managed row whose dnsNames do not cover th
   const { db, updates } = fakeDb([
     {
       id: 'tls-1',
-      status: 'managed',
+      status: 'automatic',
       metadata: {
         dnsNames: ['other.example.com'],
         hasWildcard: false,
@@ -134,7 +134,7 @@ test('handleAcmeIssuanceEvent writes lastError onto the matching managed row, le
   const { db, updates } = fakeDb([
     {
       id: 'tls-1',
-      status: 'managed',
+      status: 'automatic',
       metadata: {
         dnsNames: ['app.example.com'],
         hasWildcard: false,
@@ -171,7 +171,7 @@ test('handleAcmeIssuanceEvent falls back to a default message when the daemon se
   const { db, updates } = fakeDb([
     {
       id: 'tls-1',
-      status: 'managed',
+      status: 'automatic',
       metadata: {
         dnsNames: ['app.example.com'],
         hasWildcard: false,
@@ -196,7 +196,7 @@ test('handleAcmeIssuanceEvent clears lastError on recovery, keeping other acme f
   const { db, updates } = fakeDb([
     {
       id: 'tls-1',
-      status: 'managed',
+      status: 'automatic',
       metadata: {
         dnsNames: ['app.example.com'],
         hasWildcard: false,
@@ -224,7 +224,7 @@ test('handleAcmeIssuanceEvent matches a wildcard dnsNames entry', async () => {
   const { db, updates } = fakeDb([
     {
       id: 'tls-1',
-      status: 'managed',
+      status: 'automatic',
       metadata: {
         dnsNames: ['*.example.com'],
         hasWildcard: true,
@@ -248,7 +248,7 @@ test('handleAcmeIssuanceEvent normalizes hostname casing and trailing dot before
   const { db, updates } = fakeDb([
     {
       id: 'tls-1',
-      status: 'managed',
+      status: 'automatic',
       metadata: {
         dnsNames: ['app.example.com'],
         hasWildcard: false,
@@ -272,7 +272,7 @@ test('handleAcmeIssuanceEvent is a no-op for an empty hostname', async () => {
   const { db, updates } = fakeDb([
     {
       id: 'tls-1',
-      status: 'managed',
+      status: 'automatic',
       metadata: {
         dnsNames: ['app.example.com'],
         hasWildcard: false,
@@ -300,12 +300,12 @@ test('an event only touches the reporting organization, and every row it covers'
   const { db, updates } = fakeDb([
     {
       id: 'row-current',
-      status: 'managed',
+      status: 'automatic',
       metadata: { dnsNames: ['app.example.com'] },
     },
     {
       id: 'row-wildcard',
-      status: 'managed',
+      status: 'automatic',
       metadata: { dnsNames: ['*.example.com'], acme: { lastError: 'stale' } },
     },
   ])
@@ -331,7 +331,7 @@ test('a server with no organization writes nothing', async () => {
     [
       {
         id: 'row-other-org',
-        status: 'managed',
+        status: 'automatic',
         metadata: { dnsNames: ['app.example.com'] },
       },
     ],
@@ -425,7 +425,7 @@ test('handleAcmeIssuanceEvent writes notAfter and lastIssuedAt on a good event, 
   const { db, updates } = fakeDb([
     {
       id: 'tls-1',
-      status: 'managed',
+      status: 'automatic',
       metadata: {
         dnsNames: ['app.example.com'],
         hasWildcard: false,
@@ -456,7 +456,7 @@ test('handleAcmeIssuanceEvent writes notAfter and lastIssuedAt on a good event, 
 
 const FAILING_ROW = (acme?: Record<string, unknown>): Row => ({
   id: 'tls-1',
-  status: 'managed',
+  status: 'automatic',
   metadata: {
     dnsNames: ['app.example.com'],
     hasWildcard: false,

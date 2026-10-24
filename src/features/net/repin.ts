@@ -233,6 +233,8 @@ export function withRepinMetadata(
   // The new address may sit on another NIC: its link state is re-read from
   // the same heartbeat (see `applyReportedAddressRepin`).
   delete next.linkDown
+  // Probe results belong to the old address.
+  delete next.unreachable
   next.repin = repin
   return next
 }

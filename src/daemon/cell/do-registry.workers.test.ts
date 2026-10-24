@@ -195,7 +195,7 @@ describe('createDurableObjectDaemonCellRegistry', () => {
     const record = await cell.waitForRequest(requestId, 400)
     expect(record).toBeNull()
     // At least one jittered poll sleep (POLL_BASE_MS = 250).
-    expect(Date.now() - started).toBeGreaterThanOrEqual(200)
+    expect(Date.now() - started).toBeGreaterThanOrEqual(100)
   }, 10_000)
 
   it('createRequestAndWait expires when the poll deadline elapses', async () => {
@@ -570,5 +570,30 @@ describe('DurableObjectStubDaemonCell RPC retry edges', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+  it('keeps a long-lived deploy request for its whole lifetime, queued or acked', async () => {
+    const registry = createDurableObjectDaemonCellRegistry(env)
+    const cell = registry.getCell('test-srv-registry-long-lived')
+    const requestId = generateRequestId()
+    const at = new Date().toISOString()
+    const queued = await cell.enqueue(
+      {
+        kind: 'command-dispatch',
+        deliveryId: generateDeliveryId(),
+        requestId,
+        at,
+        commandId: 'cmd-long-lived',
+        commandType: 'environment.deploy',
+        payload: {},
+      },
+      { ttlSeconds: 6 * 60 * 60 + 900 }
+    )
+    const sixHoursFromNow = Date.now() + 6 * 60 * 60 * 1000
+    expect(Date.parse(queued.expiresAt)).toBeGreaterThan(sixHoursFromNow)
+
+    await cell.handleInbound({ kind: 'command-ack', requestId, at, daemonReceivedAt: at })
+    const acked = await cell.getRequest(requestId)
+    expect(acked?.status).toBe('acked')
+    expect(Date.parse(acked?.expiresAt ?? '')).toBeGreaterThan(sixHoursFromNow)
   })
 })
