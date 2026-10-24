@@ -1280,8 +1280,7 @@ a pruned tree has no `@types/node` for a checking compile to resolve.
 
 ## Subsystem docs (nested `AGENTS.md`)
 
-Large subsystems live in focused `AGENTS.md` files next to their code — Cursor
-loads the nearest one automatically when you work in that directory. **Read the
+Large subsystems live in focused `AGENTS.md` files next to their code. **Read the
 matching file before editing that area.** This root keeps only cross-cutting
 orientation; the detail moved to:
 
