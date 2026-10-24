@@ -39,13 +39,13 @@ function managed(acme: Record<string, unknown>) {
   }
 }
 
-test('no pin and a self-signed pin read as a test certificate', () => {
+test('no pin and a self-signed pin read as the self-signed fallback', () => {
   assertEquals(deriveHostingCertificate(input({})).state, 'test_certificate')
   const selfSigned = { source: 'self_signed', status: 'ready', notAfter: iso(30), metadata: {} }
   assertEquals(deriveHostingCertificate(input({ pinned: selfSigned })).state, 'test_certificate')
 })
 
-test('a revoked pin falls back to a test certificate', () => {
+test('a revoked pin falls back to the self-signed certificate', () => {
   const revoked = { ...managed({}), status: 'revoked' }
   assertEquals(deriveHostingCertificate(input({ pinned: revoked })).state, 'test_certificate')
 })

@@ -25,7 +25,7 @@ const REASONS: ReadonlyArray<{ test: RegExp; text: string }> = [
   },
   {
     test: /UnknownIssuer|self[- ]signed|invalid peer certificate|certificate verify failed|alert/i,
-    text: "The server is still showing a test certificate; Let's Encrypt has not issued a real one yet.",
+    text: "The server is still showing a self-signed certificate; Let's Encrypt has not issued a real one yet.",
   },
   {
     test: /rate ?limit|too many/i,

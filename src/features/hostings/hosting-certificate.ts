@@ -301,7 +301,7 @@ function deriveLetsEncrypt(
   return { ...base, state: 'secure' }
 }
 
-/** Test certificates: no pin, a revoked pin, a self-signed pin, or the organization CA. */
+/** Self-signed fallback (the test_certificate state): no pin, a revoked pin, a self-signed pin, or the organization CA. */
 function deriveTest(input: DeriveHostingCertificateInput): HostingCertificate {
   if (input.pending !== null) {
     return {
