@@ -59,7 +59,15 @@ export type LetsEncryptStore = {
 export type LetsEncryptRequestResult =
   | { ok: false; error: LetsEncryptRefusal; message?: string }
   | { ok: true; outcome: 'waiting'; dns: HostingDnsReport }
-  | { ok: true; outcome: 'pinned'; tlsId: string; dns: HostingDnsReport; created: boolean }
+  | {
+      ok: true
+      outcome: 'pinned'
+      tlsId: string
+      dns: HostingDnsReport
+      created: boolean
+      /** The hosting points at a different certificate row than before (a new pin). */
+      changed: boolean
+    }
 
 type RequestParams = {
   store: LetsEncryptStore
@@ -81,11 +89,16 @@ async function pinCertificate(
   const { store, hosting } = params
   const existing = await store.findManagedCertificate(hosting.organizationId, names)
   const tlsId = existing ?? (await store.createManagedCertificate(hosting.organizationId, names))
-  await store.saveHosting(hosting.id, {
-    tlsId,
-    ...pendingLetsEncryptPatch(hosting.metadata, null),
-  })
-  return { ok: true, outcome: 'pinned', tlsId, dns, created: existing === null }
+  const changed = hosting.tlsId !== tlsId
+  // A repeat click on a hosting already pinned to this row writes nothing, so
+  // it neither looks like a new change nor sends the certificate out again.
+  if (changed || readPendingLetsEncrypt(hosting) !== null) {
+    await store.saveHosting(hosting.id, {
+      ...(changed ? { tlsId } : {}),
+      ...pendingLetsEncryptPatch(hosting.metadata, null),
+    })
+  }
+  return { ok: true, outcome: 'pinned', tlsId, dns, created: existing === null, changed }
 }
 
 async function rememberWaiting(
@@ -148,7 +161,8 @@ export async function requestLetsEncrypt(params: RequestParams): Promise<LetsEnc
   return dns.ready ? pinCertificate(params, names, dns) : rememberWaiting(params, dns)
 }
 
-export type PendingRetryResult = 'pinned' | 'waiting' | 'expired' | 'refused'
+/** `unchanged`: DNS is ready and the hosting was already pinned to the matching row. */
+export type PendingRetryResult = 'pinned' | 'unchanged' | 'waiting' | 'expired' | 'refused'
 
 /**
  * One sweep step for a hosting with a waiting request. A request older than the
@@ -167,5 +181,6 @@ export async function retryPendingLetsEncrypt(params: RequestParams): Promise<Pe
   if (isPendingExpired(pending, params.now)) return dropPending('expired')
   const result = await requestLetsEncrypt(params)
   if (!result.ok) return dropPending('refused')
+  if (result.outcome === 'pinned' && !result.changed) return 'unchanged'
   return result.outcome
 }

@@ -46,6 +46,7 @@ import {
 import {
   type HostingApplyDeps,
   type HostingApplyOutcome,
+  type HostingApplyParams,
   queueHostingCertificateApply,
 } from './letsencrypt-apply.ts'
 
@@ -125,16 +126,32 @@ function enrichHostingReads(now: () => Date): MiddlewareHandler<AppEnv> {
   }
 }
 
-/** Sends a just-pinned certificate to the servers; `null` when nothing was pinned. */
-function applyIfPinned(
+/**
+ * Sends a newly pinned certificate to the servers; `null` when nothing new was
+ * pinned (still waiting for DNS, or a repeat click on the same pin).
+ */
+function applyIfNewPin(
   c: Context<AppEnv>,
   db: Db,
-  outcome: 'pinned' | 'waiting',
-  params: Parameters<typeof queueHostingCertificateApply>[2],
+  result: { outcome: 'pinned'; changed: boolean } | { outcome: 'waiting' },
+  params: HostingApplyParams,
   deps: HostingApplyDeps
 ): Promise<HostingApplyOutcome | null> {
-  if (outcome !== 'pinned') return Promise.resolve(null)
+  if (result.outcome !== 'pinned' || !result.changed) return Promise.resolve(null)
   return queueHostingCertificateApply(c, db, params, deps)
+}
+
+/**
+ * A pin the servers still have to learn about: a new pin whose apply was not
+ * queued, or a repeat click on a pin no deploy has picked up yet.
+ */
+function pinNeedsDeploy(
+  outcome: 'pinned' | 'waiting',
+  apply: HostingApplyOutcome | null,
+  derived: boolean | undefined
+): boolean {
+  if (outcome !== 'pinned') return false
+  return apply === null ? derived !== false : apply !== 'queued'
 }
 
 function requestAuditContext(
@@ -205,6 +222,7 @@ export function registerHostingLetsEncryptRoutes(
         options: hosting.options,
         metadata: hosting.metadata,
         pendingAt: hosting.pendingAt,
+        updatedAt: hosting.updatedAt,
       })
       .from(hosting)
       .where(eq(hosting.id, id))
@@ -229,11 +247,16 @@ export function registerHostingLetsEncryptRoutes(
       )
     }
 
-    const applyOutcome = await applyIfPinned(
+    const applyOutcome = await applyIfNewPin(
       c,
       db,
-      result.outcome,
-      { hostingId: id, organizationId, actor: { actorType: 'user', actorId: session.userId } },
+      result,
+      {
+        hostingId: id,
+        organizationId,
+        actor: { actorType: 'user', actorId: session.userId },
+        editedAt: row.updatedAt,
+      },
       applyDeps(c)
     )
 
@@ -266,7 +289,7 @@ export function registerHostingLetsEncryptRoutes(
     return c.json({
       hosting: fresh,
       certificate: certificate ? { ...certificate, dns: result.dns } : null,
-      needsDeploy: result.outcome === 'pinned' && applyOutcome !== 'queued',
+      needsDeploy: pinNeedsDeploy(result.outcome, applyOutcome, certificate?.needsDeploy),
     })
   })
 

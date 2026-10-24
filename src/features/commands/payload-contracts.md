@@ -203,7 +203,9 @@ injection + Docker/Caddy bootstrap run on the daemon
 `hostingsOnly: true` (queued after a hosting gets a Let's Encrypt certificate,
 `src/client/hostings/letsencrypt-apply.ts`) asks the daemon to rewrite only the
 environment's hosting Caddy config and certificates: no build, no restart. It is
-sent only when every server already runs a finished deploy of the environment;
+sent only when every server already runs a finished deploy of the environment,
+every daemon lists `deploy-hostings-only-v1`, and nothing else in the
+environment changed since that deploy finished;
 its command context carries `action: 'hostings'` and no `releases[]`, and on
 success the consumer marks the deployment applied and records nothing else. A
 daemon that predates the field runs a full deploy. On success the daemon may

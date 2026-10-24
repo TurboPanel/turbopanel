@@ -25,6 +25,7 @@ import {
 import type { CommandQueue } from '../../features/commands/queue.ts'
 import type { DeployRequestAuth } from '../environments/deploy-routes.ts'
 import type { HostingApplyDeps } from './letsencrypt-apply.ts'
+import { DEPLOY_HOSTINGS_ONLY_FEATURE } from '../../lib/version-wire.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 import { registerHostingRoutes } from './routes.ts'
 import { registerHostingLetsEncryptRoutes } from './letsencrypt-routes.ts'
@@ -498,6 +499,8 @@ test('PATCH /hostings: no DNS check is queued without a pin or for an uploaded c
   }
 })
 
+const CURRENT_DAEMON = () => Promise.resolve([DEPLOY_HOSTINGS_ONLY_FEATURE])
+
 /** A queue the apply accepts; the deploy itself is the fake below, so nothing is sent. */
 const LIVE_QUEUE = { send: () => Promise.resolve() } as unknown as CommandQueue
 
@@ -518,7 +521,7 @@ function fakeDeploy(db: Db, calls: DeployCall[]): NonNullable<HostingApplyDeps['
   }
 }
 
-/** A server that ran a finished deploy of the fixture's environment an hour ago. */
+/** A server that finished a deploy of the fixture's environment just now (after every edit). */
 async function deployedOn(f: Fixture, connected: boolean): Promise<() => Promise<void>> {
   const now = new Date().toISOString()
   const [srv] = await f.db
@@ -531,16 +534,16 @@ async function deployedOn(f: Fixture, connected: boolean): Promise<() => Promise
       updatedAt: now,
     })
     .returning({ id: server.id })
-  const hourAgo = new Date(Date.now() - 3_600_000).toISOString()
+  const finished = new Date(Date.now() + 1).toISOString()
   await f.db.insert(deployment).values({
     environmentId: f.environmentId,
     serverId: srv!.id,
     desiredGeneration: 1,
     appliedGeneration: 1,
     status: 'applied',
-    finishedAt: hourAgo,
-    createdAt: hourAgo,
-    updatedAt: hourAgo,
+    finishedAt: finished,
+    createdAt: finished,
+    updatedAt: finished,
   })
   return async () => {
     await f.db.delete(deployment).where(eq(deployment.environmentId, f.environmentId))
@@ -551,16 +554,7 @@ async function deployedOn(f: Fixture, connected: boolean): Promise<() => Promise
 test('PUT use-letsencrypt: a pinned certificate queues the hostings-only apply at once', async () => {
   if (!dbUrl) return skipWithoutDatabase("hosting Let's Encrypt route tests")
   const calls: DeployCall[] = []
-  let db: Db | null = null
-  const f = await setup({
-    acmeEnabled: true,
-    hostingOptions: PUBLIC_SITE,
-    applyDeps: {
-      commandQueue: LIVE_QUEUE,
-      runDeploy: (...args) => fakeDeploy(db!, calls)(...args),
-    },
-  })
-  db = f.db
+  const f = await setupWithApply(calls)
   const undeploy = await deployedOn(f, true)
   try {
     const res = await f.call('PUT', `/hostings/${f.hostingId}/use-letsencrypt`, {})
@@ -581,6 +575,10 @@ test('PUT use-letsencrypt: a pinned certificate queues the hostings-only apply a
     assertEquals(requested?.context, { outcome: 'pinned', www: 'off', apply: 'queued' })
     // While the apply runs the page shows it working, not a redeploy request.
     assertEquals((await readCertificate(f))?.needsDeploy, false)
+    // A second click on the same pin sends nothing again.
+    const again = await f.call('PUT', `/hostings/${f.hostingId}/use-letsencrypt`, {})
+    assertEquals(((await again.json()) as CertificateBody).needsDeploy, false)
+    assertEquals(calls.length, 1)
   } finally {
     await undeploy()
     await f.cleanup()
@@ -590,16 +588,7 @@ test('PUT use-letsencrypt: a pinned certificate queues the hostings-only apply a
 test('PUT use-letsencrypt: with the server offline nothing is queued and a redeploy is asked for', async () => {
   if (!dbUrl) return skipWithoutDatabase("hosting Let's Encrypt route tests")
   const calls: DeployCall[] = []
-  let db: Db | null = null
-  const f = await setup({
-    acmeEnabled: true,
-    hostingOptions: PUBLIC_SITE,
-    applyDeps: {
-      commandQueue: LIVE_QUEUE,
-      runDeploy: (...args) => fakeDeploy(db!, calls)(...args),
-    },
-  })
-  db = f.db
+  const f = await setupWithApply(calls)
   const undeploy = await deployedOn(f, false)
   try {
     const res = await f.call('PUT', `/hostings/${f.hostingId}/use-letsencrypt`, {})
@@ -623,16 +612,7 @@ test('PUT use-letsencrypt: with the server offline nothing is queued and a redep
 test('PUT use-letsencrypt: a deploy already running is not doubled', async () => {
   if (!dbUrl) return skipWithoutDatabase("hosting Let's Encrypt route tests")
   const calls: DeployCall[] = []
-  let db: Db | null = null
-  const f = await setup({
-    acmeEnabled: true,
-    hostingOptions: PUBLIC_SITE,
-    applyDeps: {
-      commandQueue: LIVE_QUEUE,
-      runDeploy: (...args) => fakeDeploy(db!, calls)(...args),
-    },
-  })
-  db = f.db
+  const f = await setupWithApply(calls)
   const undeploy = await deployedOn(f, true)
   try {
     // Queued before the certificate was chosen, so it does not carry it.
@@ -669,6 +649,7 @@ test('sweep: a certificate pinned once DNS resolves queues the hostings-only app
         secretsConfig: null,
         dataEncryptionSecrets: null,
         runDeploy: fakeDeploy(f.db, calls),
+        daemonFeatures: CURRENT_DAEMON,
       },
     })
     assertEquals(sweep.pinned, 1)
@@ -680,6 +661,83 @@ test('sweep: a certificate pinned once DNS resolves queues the hostings-only app
     assertEquals(certificate?.state, 'issuing')
     assertEquals(certificate?.needsDeploy, false)
   } finally {
+    await undeploy()
+    await f.cleanup()
+  }
+})
+
+async function setupWithApply(
+  calls: DeployCall[],
+  daemonFeatures: () => Promise<string[]> = CURRENT_DAEMON
+): Promise<Fixture> {
+  let db: Db | null = null
+  const f = await setup({
+    acmeEnabled: true,
+    hostingOptions: PUBLIC_SITE,
+    applyDeps: {
+      commandQueue: LIVE_QUEUE,
+      runDeploy: (...args) => fakeDeploy(db!, calls)(...args),
+      daemonFeatures,
+    },
+  })
+  db = f.db
+  return f
+}
+
+test('PUT use-letsencrypt: a daemon without hostings-only support gets no run and a redeploy is asked for', async () => {
+  if (!dbUrl) return skipWithoutDatabase("hosting Let's Encrypt route tests")
+  const calls: DeployCall[] = []
+  const f = await setupWithApply(calls, () => Promise.resolve(['backup-s3-copy-v1']))
+  const undeploy = await deployedOn(f, true)
+  try {
+    const res = await f.call('PUT', `/hostings/${f.hostingId}/use-letsencrypt`, {})
+    assertEquals(((await res.json()) as CertificateBody).needsDeploy, true)
+    assertEquals(calls.length, 0)
+    const [requested] = await f.db
+      .select({ context: audit.context })
+      .from(audit)
+      .where(eq(audit.organizationId, f.organizationId))
+    assertEquals(requested?.context, { outcome: 'pinned', www: 'off', apply: 'daemon_too_old' })
+  } finally {
+    await undeploy()
+    await f.cleanup()
+  }
+})
+
+test('PUT use-letsencrypt: an undeployed edit elsewhere in the environment is not published early', async () => {
+  if (!dbUrl) return skipWithoutDatabase("hosting Let's Encrypt route tests")
+  const calls: DeployCall[] = []
+  const f = await setupWithApply(calls)
+  const undeploy = await deployedOn(f, true)
+  const [own] = await f.db
+    .select({ serviceId: hosting.serviceId })
+    .from(hosting)
+    .where(eq(hosting.id, f.hostingId))
+  // Another hosting of the environment edited after the last deploy finished.
+  const later = new Date(Date.now() + 60_000).toISOString()
+  const [other] = await f.db
+    .insert(hosting)
+    .values({
+      serviceId: own!.serviceId,
+      name: 'Pending',
+      options: { hostnames: ['pending.example.com'] },
+      createdAt: later,
+      updatedAt: later,
+    })
+    .returning({ id: hosting.id })
+  try {
+    const res = await f.call('PUT', `/hostings/${f.hostingId}/use-letsencrypt`, {})
+    const body = (await res.json()) as CertificateBody
+    assertEquals(body.certificate?.state, 'issuing')
+    assertEquals(body.needsDeploy, true)
+    assertEquals(calls.length, 0)
+    const [requested] = await f.db
+      .select({ context: audit.context })
+      .from(audit)
+      .where(eq(audit.organizationId, f.organizationId))
+    assertEquals(requested?.context, { outcome: 'pinned', www: 'off', apply: 'pending_changes' })
+  } finally {
+    await f.db.delete(hosting).where(eq(hosting.id, other!.id))
     await undeploy()
     await f.cleanup()
   }

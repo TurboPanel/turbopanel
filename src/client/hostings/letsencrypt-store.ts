@@ -161,6 +161,13 @@ export function createLetsEncryptStore(db: Db): LetsEncryptStore {
           ...(patch.options === undefined ? {} : { options: patch.options }),
           ...(patch.metadata === undefined ? {} : { metadata: patch.metadata }),
           ...(patch.pendingAt === undefined ? {} : { pendingAt: patch.pendingAt }),
+          // Remembering or clearing a waiting request is bookkeeping, not an
+          // edit: `updatedAt` moves only when the pin or the options change,
+          // which is what tells a deploy (or the hostings-only apply) whether
+          // this hosting changed since it last ran.
+          ...(patch.tlsId === undefined && patch.options === undefined
+            ? { updatedAt: sql`${hosting.updatedAt}` }
+            : {}),
         })
         .where(eq(hosting.id, hostingId))
     },

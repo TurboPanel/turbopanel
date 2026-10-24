@@ -42,6 +42,7 @@ export type HostingLetsEncryptSweepApply = {
   secretsConfig: SecretsConfig | null
   dataEncryptionSecrets: DerivedSecretsConfig | null
   runDeploy?: NonNullable<HostingApplyDeps['runDeploy']>
+  daemonFeatures?: NonNullable<HostingApplyDeps['daemonFeatures']>
 }
 
 export async function runHostingLetsEncryptSweepTick(
@@ -58,6 +59,7 @@ export async function runHostingLetsEncryptSweepTick(
       options: hosting.options,
       metadata: hosting.metadata,
       pendingAt: hosting.pendingAt,
+      updatedAt: hosting.updatedAt,
     })
     .from(hosting)
     .where(isNotNull(hosting.pendingAt))
@@ -97,10 +99,16 @@ export async function runHostingLetsEncryptSweepTick(
         const applied = await queueHostingCertificateApply(
           applyContext,
           db,
-          { hostingId: row.id, organizationId, actor: { actorType: 'system', actorId: row.id } },
+          {
+            hostingId: row.id,
+            organizationId,
+            actor: { actorType: 'system', actorId: row.id },
+            editedAt: row.updatedAt,
+          },
           {
             commandQueue: apply.commandQueue,
             ...(apply.runDeploy ? { runDeploy: apply.runDeploy } : {}),
+            ...(apply.daemonFeatures ? { daemonFeatures: apply.daemonFeatures } : {}),
           }
         )
         if (applied === 'queued') result.applied += 1
