@@ -14,15 +14,13 @@
  * - `TURBOPANEL_MIGRATE_BACKUP_TIMEOUT_SECONDS` (default 900) bounds the
  *   command; a hung dump is killed and the migration refused, so the deploy
  *   never sits on the migration lock forever.
- * - Without a command, only an explicit allowlist of environments (testing,
- *   staging, local, ci, or no `CLOUDFLARE_ENV` at all) prints a warning and goes
- *   on. Any other value (live, Live, production, a typo) refuses unless
- *   `TURBOPANEL_MIGRATE_BACKUP_ACK=1` says, on purpose, that a backup was taken
- *   another way.
+ * - Without a command, every environment (live, Live, production, a typo,
+ *   anything) prints one clear warning and goes on. Production relies on the
+ *   database provider's managed backups (point-in-time rollback within a
+ *   window), so the warning asks the operator to check that the window covers
+ *   the moment before this migration. `TURBOPANEL_MIGRATE_BACKUP_ACK=1` is a
+ *   harmless alias that only changes the wording of the warning.
  *
- * The guard depends on `CLOUDFLARE_ENV`, the same value `migrate-locked.mjs`
- * and `check-deploy-env.mjs` use. Unset means a local or CI run against a
- * throwaway database (the CI build migrates its own test database that way).
  */
 import { spawnSync } from 'node:child_process'
 
@@ -31,30 +29,21 @@ export const BACKUP_ACK_VAR = 'TURBOPANEL_MIGRATE_BACKUP_ACK'
 export const BACKUP_TIMEOUT_VAR = 'TURBOPANEL_MIGRATE_BACKUP_TIMEOUT_SECONDS'
 const DEFAULT_TIMEOUT_SECONDS = 900
 const MAX_OUTPUT_BYTES = 64 * 1024 * 1024
-const WARN_ENVS = new Set(['', 'testing', 'staging', 'local', 'ci'])
 const SECRET_NAME = /TOKEN|SECRET|KEY|PASSWORD/i
 const MIN_SECRET_LENGTH = 8
 
-/** Decide what to do before migrating: run the command, warn, or refuse. */
+/** Decide what to do before migrating: run the command, or warn and go on. */
 export function planMigrateBackup(env) {
   const command = env[BACKUP_COMMAND_VAR]?.trim() ?? ''
   if (command) return { action: 'run', command }
-  const envName = env.CLOUDFLARE_ENV?.trim() ?? ''
-  if (WARN_ENVS.has(envName)) {
-    return {
-      action: 'warn',
-      message: `no database backup before migrating (${BACKUP_COMMAND_VAR} is not set); continuing because this is not a deployed environment`,
-    }
-  }
-  if (env[BACKUP_ACK_VAR]?.trim() === '1') {
-    return {
-      action: 'warn',
-      message: `no backup command; continuing on ${envName} because ${BACKUP_ACK_VAR}=1 says a backup was taken another way`,
-    }
-  }
+  const acknowledged = env[BACKUP_ACK_VAR]?.trim() === '1'
   return {
-    action: 'refuse',
-    message: `refusing to migrate ${envName} without a backup: set ${BACKUP_COMMAND_VAR}, or ${BACKUP_ACK_VAR}=1 if a backup was taken another way (only testing, staging, local and ci may skip it)`,
+    action: 'warn',
+    message:
+      `NO database backup command ran before this migration (${BACKUP_COMMAND_VAR} is not set)` +
+      `${acknowledged ? `, as ${BACKUP_ACK_VAR}=1 says is intended` : ''}. ` +
+      `This deploy relies on the database provider's managed backups (point-in-time rollback). ` +
+      `Check that the restore window covers the moment before this migration.`,
   }
 }
 
@@ -113,7 +102,7 @@ function describeFailure(result, timeoutSeconds) {
 
 /**
  * Apply the plan. Returns normally to let the migration go ahead; throws an
- * Error (message free of secrets) to stop it. `run` is injectable for tests;
+ * Error (message free of secrets) when a backup command fails. `run` is injectable for tests;
  * the default runs the command in a shell with the current environment.
  * @param {Record<string, string | undefined>} env
  * @param {(line: string) => void} [log]
@@ -121,7 +110,6 @@ function describeFailure(result, timeoutSeconds) {
  */
 export function runMigrateBackup(env, log = console.log, run = defaultRun) {
   const plan = planMigrateBackup(env)
-  if (plan.action === 'refuse') throw new Error(plan.message)
   if (plan.action === 'warn') {
     log(`migrate-locked: WARNING: ${plan.message}`)
     return plan

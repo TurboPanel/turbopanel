@@ -400,11 +400,13 @@ guard; `pnpm test:do` alone does not.
     build image may not ship `pg_dump`, so the command must fetch or run it
     (for example over SSH on the database host). The method is the owner's
     choice (see the local report "Panel database backup and restore plan").
-  - Without a command, only `CLOUDFLARE_ENV` of testing, staging, local, ci or
-    unset (a local run, or the CI build migrating its own test database) warns
-    and continues. Every other value (`live`, `Live`, `production`, a typo)
-    refuses unless `TURBOPANEL_MIGRATE_BACKUP_ACK=1`. The guard depends on
-    `CLOUDFLARE_ENV` being set correctly by the deploy scripts.
+  - Without a command, every environment (live, production, testing, a typo,
+    anything) prints one clear warning and the migration goes on. The warning
+    says that no backup command ran, that the database provider's managed
+    backups (point-in-time rollback within a window) are relied on, and to check
+    that the restore window covers the moment before this migration. Production
+    sets no command. `TURBOPANEL_MIGRATE_BACKUP_ACK=1` is still accepted but
+    only changes the wording of the warning.
   - The command's output is printed with the database URL, its password and the
     values (8+ characters) of env vars named like TOKEN, SECRET, KEY or PASSWORD
     blanked. That is a best effort: a secret fetched from elsewhere or printed

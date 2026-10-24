@@ -1,4 +1,4 @@
-/** Pre-migrate backup gate: run, warn or refuse, and never print the database URL. */
+/** Pre-migrate backup gate: run or warn, and never print the database URL. */
 import { assertEquals, assertThrows } from '@std/assert'
 import {
   backupTimeoutSeconds,
@@ -27,34 +27,34 @@ test('a set command is run, in any environment', () => {
   }
 })
 
-test('without a command, testing, staging and local warn and go on', () => {
-  for (const CLOUDFLARE_ENV of ['testing', 'staging', undefined]) {
-    assertEquals(planMigrateBackup({ CLOUDFLARE_ENV }).action, 'warn')
+test('without a command, every environment warns and goes on', () => {
+  for (const CLOUDFLARE_ENV of [
+    'testing',
+    'staging',
+    'live',
+    'Live',
+    'production',
+    'typo',
+    undefined,
+  ]) {
+    const plan = planMigrateBackup({ CLOUDFLARE_ENV })
+    assertEquals(plan.action, 'warn')
+    assertEquals(plan.message.includes('NO database backup command ran'), true)
+    assertEquals(plan.message.includes('managed backups'), true)
+    assertEquals(plan.message.includes('restore window'), true)
   }
 })
 
-test('without a command, live is refused unless acknowledged', () => {
-  assertEquals(planMigrateBackup({ CLOUDFLARE_ENV: 'live' }).action, 'refuse')
-  assertEquals(
-    planMigrateBackup({
-      CLOUDFLARE_ENV: 'live',
-      TURBOPANEL_MIGRATE_BACKUP_ACK: 'yes',
-    }).action,
-    'refuse'
-  )
-  assertEquals(
-    planMigrateBackup({
-      CLOUDFLARE_ENV: 'live',
-      TURBOPANEL_MIGRATE_BACKUP_ACK: '1',
-    }).action,
-    'warn'
-  )
+test('the old acknowledgement variable only changes the wording', () => {
+  const plain = planMigrateBackup({ CLOUDFLARE_ENV: 'live' })
+  const acked = planMigrateBackup({ CLOUDFLARE_ENV: 'live', TURBOPANEL_MIGRATE_BACKUP_ACK: '1' })
+  assertEquals(acked.action, 'warn')
+  assertEquals(acked.message === plain.message, false)
 })
 
-test('a refused plan throws and a warning is logged', () => {
-  assertThrows(() => runMigrateBackup({ CLOUDFLARE_ENV: 'live' }, () => {}), Error, 'refusing')
+test('a missing command on live logs one warning and does not throw', () => {
   const lines: string[] = []
-  runMigrateBackup({ CLOUDFLARE_ENV: 'staging' }, (l: string) => lines.push(l))
+  runMigrateBackup({ CLOUDFLARE_ENV: 'live' }, (l: string) => lines.push(l))
   assertEquals(lines.length, 1)
   assertEquals(lines[0].includes('WARNING'), true)
 })
