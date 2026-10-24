@@ -494,7 +494,8 @@ export async function hasLiveManagedApplyOn(
 export async function cancelOpenReturnFenceStops(
   db: Db,
   managedId: string,
-  serverId: string
+  serverId: string,
+  transition: typeof transitionCommand = transitionCommand
 ): Promise<number> {
   const rows = await db
     .select({ id: command.id })
@@ -508,12 +509,14 @@ export async function cancelOpenReturnFenceStops(
         notInArray(command.status, [...TERMINAL_COMMAND_STATUSES])
       )
     )
-  for (const row of rows) {
-    await transitionCommand(db, row.id, {
-      status: 'cancelled',
-      error: 'the member was resynced after this stop was queued',
-    })
-  }
+  await Promise.all(
+    rows.map((row) =>
+      transition(db, row.id, {
+        status: 'cancelled',
+        error: 'the member was resynced after this stop was queued',
+      })
+    )
+  )
   return rows.length
 }
 
