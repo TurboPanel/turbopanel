@@ -10,9 +10,10 @@
  * when the tick has a command queue and the secrets the deploy needs; without
  * them, or when the apply cannot be queued, the panel asks for a redeploy.
  */
-import { asc, isNotNull } from 'drizzle-orm'
+import { asc, isNotNull, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { hosting } from '../../db/schema.ts'
+import { HOSTING_LETS_ENCRYPT_DNS_KEY } from '../../features/hostings/hosting-certificate.ts'
 import { type DnsLookup, runtimeDnsLookup } from '../../features/hostings/hosting-dns-check.ts'
 import { retryPendingLetsEncrypt } from '../../features/hostings/use-letsencrypt.ts'
 import { logWarn } from '../../lib/logger.ts'
@@ -90,7 +91,13 @@ export async function runHostingLetsEncryptSweepTick(
     })
     .from(hosting)
     .where(isNotNull(hosting.pendingAt))
-    .orderBy(asc(hosting.updatedAt))
+    // Never-checked requests first, then the oldest DNS check. A retry that is
+    // still waiting stamps a new `checkedAt` (and leaves `updatedAt` alone), so
+    // the batch rotates through every waiting hosting.
+    .orderBy(
+      sql`(${hosting.metadata} -> ${HOSTING_LETS_ENCRYPT_DNS_KEY}::text ->> 'checkedAt') asc nulls first`,
+      asc(hosting.id)
+    )
     .limit(HOSTING_LETS_ENCRYPT_SWEEP_BATCH)
 
   const result: HostingLetsEncryptSweepResult = {

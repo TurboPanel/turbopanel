@@ -29,7 +29,10 @@ import { DEPLOY_HOSTINGS_ONLY_FEATURE } from '../../lib/version-wire.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 import { registerHostingRoutes } from './routes.ts'
 import { registerHostingLetsEncryptRoutes } from './letsencrypt-routes.ts'
-import { runHostingLetsEncryptSweepTick } from './letsencrypt-sweep.ts'
+import {
+  HOSTING_LETS_ENCRYPT_SWEEP_BATCH,
+  runHostingLetsEncryptSweepTick,
+} from './letsencrypt-sweep.ts'
 import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
 
 const dbUrl = getDatabaseUrl()
@@ -739,6 +742,56 @@ test('PUT use-letsencrypt: an undeployed edit elsewhere in the environment is no
   } finally {
     await f.db.delete(hosting).where(eq(hosting.id, other!.id))
     await undeploy()
+    await f.cleanup()
+  }
+})
+
+test('sweep: with more waiting hostings than one batch, every one is checked over two ticks', async () => {
+  if (!dbUrl) return skipWithoutDatabase("hosting Let's Encrypt route tests")
+  const f = await setup({ acmeEnabled: true, hostingOptions: PUBLIC_SITE })
+  const [own] = await f.db
+    .select({ serviceId: hosting.serviceId })
+    .from(hosting)
+    .where(eq(hosting.id, f.hostingId))
+  const now = new Date().toISOString()
+  const extra = await f.db
+    .insert(hosting)
+    .values(
+      Array.from({ length: 11 }, (_, i) => ({
+        serviceId: own!.serviceId,
+        name: `Waiting ${i}`,
+        options: { hostnames: [`waiting-${i}.example.com`] },
+        pendingAt: now,
+        createdAt: now,
+        updatedAt: now,
+      }))
+    )
+    .returning({ id: hosting.id })
+  await f.db.update(hosting).set({ pendingAt: now }).where(eq(hosting.id, f.hostingId))
+  const ids = [f.hostingId, ...extra.map((row) => row.id)]
+  const checked = async () => {
+    const rows = await f.db
+      .select({ metadata: hosting.metadata })
+      .from(hosting)
+      .where(inArray(hosting.id, ids))
+    return rows.filter(
+      (row) => (row.metadata as Record<string, unknown> | null)?.letsEncryptDns !== undefined
+    ).length
+  }
+  try {
+    const first = await runHostingLetsEncryptSweepTick(f.db, { lookup: nowhere })
+    assertEquals(first.scanned, HOSTING_LETS_ENCRYPT_SWEEP_BATCH)
+    assertEquals(await checked(), HOSTING_LETS_ENCRYPT_SWEEP_BATCH)
+    // The two never checked come first on the next tick, so none is left out.
+    await runHostingLetsEncryptSweepTick(f.db, { lookup: nowhere })
+    assertEquals(await checked(), 12)
+  } finally {
+    await f.db.delete(hosting).where(
+      inArray(
+        hosting.id,
+        extra.map((row) => row.id)
+      )
+    )
     await f.cleanup()
   }
 })
