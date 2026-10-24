@@ -2014,6 +2014,36 @@ test('parseCommandPayload accepts noCache on environment.deploy', () => {
   )
 })
 
+test('parseCommandPayload carries hostingsOnly on environment.deploy and rejects a non-boolean', () => {
+  const base = {
+    environmentId: 'env-1',
+    projectId: 'proj-1',
+    organizationId: 'org-1',
+    projectName: 'tp-demo',
+    composeFiles: [
+      {
+        filename: 'compose.yaml',
+        role: 'runtime' as const,
+        content: 'services: {}\\n',
+      },
+    ],
+    hostings: [],
+  }
+  const parsed = parseCommandPayload('environment.deploy' as CommandType, {
+    ...base,
+    hostingsOnly: true,
+  }) as Record<string, unknown>
+  assertEquals(parsed.hostingsOnly, true)
+  const plain = parseCommandPayload('environment.deploy' as CommandType, base) as Record<
+    string,
+    unknown
+  >
+  assertEquals('hostingsOnly' in plain, false)
+  assertThrows(() =>
+    parseCommandPayload('environment.deploy' as CommandType, { ...base, hostingsOnly: 'yes' })
+  )
+})
+
 test('parseCommandPayload carries the sequential strategy fields and rejects bad ones', () => {
   const base = {
     environmentId: 'env-1',

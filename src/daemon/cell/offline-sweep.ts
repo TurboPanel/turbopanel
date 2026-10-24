@@ -1166,9 +1166,21 @@ async function runQueuedCronSweeps(
         error: sweepErrorMessage(err),
       })
     }
-    // Let's Encrypt requests waiting for DNS; needs no secrets bundle.
+    // Let's Encrypt requests waiting for DNS. With the secrets bundle a newly
+    // pinned certificate goes out at once; without it the panel asks for a redeploy.
     try {
-      await runHostingLetsEncryptSweepTick(db)
+      await runHostingLetsEncryptSweepTick(
+        db,
+        tlsRenewal
+          ? {
+              apply: {
+                commandQueue,
+                secretsConfig: tlsRenewal.secretsConfig,
+                dataEncryptionSecrets: tlsRenewal.dataEncryptionSecrets,
+              },
+            }
+          : {}
+      )
     } catch (err) {
       sweepTrace('hosting-letsencrypt-sweep-failed', {
         error: sweepErrorMessage(err),

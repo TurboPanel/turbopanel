@@ -880,9 +880,11 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
           secretsConfig,
           dataEncryptionSecrets,
         })
-        // Waiting Let's Encrypt requests (DNS not ready yet): same cadence,
-        // no secrets needed.
-        await runHostingLetsEncryptSweepTick(tickDb)
+        // Waiting Let's Encrypt requests (DNS not ready yet): same cadence.
+        // The secrets let a newly pinned certificate go out at once.
+        await runHostingLetsEncryptSweepTick(tickDb, {
+          apply: { commandQueue, secretsConfig, dataEncryptionSecrets },
+        })
       } catch (err) {
         logWarn('tls-leaf-renewal', `sweep error: ${String(err)}`)
       } finally {

@@ -3,8 +3,10 @@
  *
  * - `PUT /hostings/:id/use-letsencrypt` - check DNS, then pin a managed
  *   Let's Encrypt certificate (or remember the request until DNS is ready).
- *   The next deploy of the environment is what makes the web server ask for
- *   the certificate, so a pinned answer carries `needsDeploy: true`.
+ *   A pinned certificate is sent to the servers at once by a hostings-only
+ *   apply (no build, no restart; `letsencrypt-apply.ts`). When that cannot be
+ *   queued (a server offline, a deploy running, nothing deployed yet) the
+ *   answer carries `needsDeploy: true` and the next deploy starts it.
  * - `GET /hostings/:id/dns-check` - the same DNS check, read-only.
  */
 import { eq, inArray } from 'drizzle-orm'
@@ -14,7 +16,7 @@ import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { assertCanOr403 } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
-import { getDb, type Db } from '../../db/connection.ts'
+import { getDaemonCellRegistry, getDb, type Db } from '../../db/connection.ts'
 import { hosting } from '../../db/schema.ts'
 import { recordAudit } from '../../features/audit/audit-records.ts'
 import {
@@ -33,6 +35,7 @@ import {
   resolveHostingProtocol,
 } from '../../features/hostings/hosting-options.ts'
 import { requestLetsEncrypt } from '../../features/hostings/use-letsencrypt.ts'
+import { getCommandQueue } from '../../features/commands/queue.ts'
 import { assertNotSystemOwnedOr403, getOrgId, parseJsonBody } from '../shared.ts'
 import { assertHostingNotComposeOwnedOr409 } from './routes-helpers.ts'
 import {
@@ -40,10 +43,17 @@ import {
   loadAcmeEnabled,
   loadHostingCertificates,
 } from './letsencrypt-store.ts'
+import { type HostingApplyDeps, queueHostingCertificateApply } from './letsencrypt-apply.ts'
 
 export type HostingLetsEncryptDeps = {
   lookup?: DnsLookup
   now?: () => Date
+  /** Where the hostings-only apply is queued; defaults to the request's queue and registry. */
+  applyDeps?: (c: Context<AppEnv>) => HostingApplyDeps
+}
+
+function requestApplyDeps(c: Context<AppEnv>): HostingApplyDeps {
+  return { commandQueue: getCommandQueue(c), registry: getDaemonCellRegistry(c) }
 }
 
 type HostingReadRow = {
@@ -139,6 +149,7 @@ export function registerHostingLetsEncryptRoutes(
   const secrets = opts.secrets
   const lookup = deps.lookup ?? runtimeDnsLookup()
   const now = deps.now ?? (() => new Date())
+  const applyDeps = deps.applyDeps ?? requestApplyDeps
 
   router.use('/hostings', enrichHostingReads(now))
   router.use('/hostings/:id', enrichHostingReads(now))
@@ -194,6 +205,20 @@ export function registerHostingLetsEncryptRoutes(
       )
     }
 
+    const applyOutcome =
+      result.outcome === 'pinned'
+        ? await queueHostingCertificateApply(
+            c,
+            db,
+            {
+              hostingId: id,
+              organizationId,
+              actor: { actorType: 'user', actorId: session.userId },
+            },
+            applyDeps(c)
+          )
+        : null
+
     await recordAudit(db, {
       organizationId,
       actorUserId: session.userId,
@@ -201,7 +226,11 @@ export function registerHostingLetsEncryptRoutes(
       action: 'hosting.letsencrypt.requested',
       targetType: 'hosting',
       targetId: id,
-      context: { outcome: result.outcome, www },
+      context: {
+        outcome: result.outcome,
+        www,
+        ...(applyOutcome === null ? {} : { apply: applyOutcome }),
+      },
     })
 
     const [fresh] = await db
@@ -223,7 +252,7 @@ export function registerHostingLetsEncryptRoutes(
     return c.json({
       hosting: fresh,
       certificate: certificate ? { ...certificate, dns: result.dns } : null,
-      needsDeploy: result.outcome === 'pinned',
+      needsDeploy: result.outcome === 'pinned' && applyOutcome !== 'queued',
     })
   })
 

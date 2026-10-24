@@ -199,7 +199,14 @@ phase).
 injection + Docker/Caddy bootstrap run on the daemon
 (`turbopaneld/src/commands/deploy-environment.ts`). Optional payload
 `noCache: true` (from UI cacheless redeploy) asks the daemon to run
-`docker compose build --no-cache --pull` before `up`. On success the daemon may
+`docker compose build --no-cache --pull` before `up`. Optional payload
+`hostingsOnly: true` (queued after a hosting gets a Let's Encrypt certificate,
+`src/client/hostings/letsencrypt-apply.ts`) asks the daemon to rewrite only the
+environment's hosting Caddy config and certificates: no build, no restart. It is
+sent only when every server already runs a finished deploy of the environment;
+its command context carries `action: 'hostings'` and no `releases[]`, and on
+success the consumer marks the deployment applied and records nothing else. A
+daemon that predates the field runs a full deploy. On success the daemon may
 also return best-effort per-container identity/status from `docker compose ps`;
 the consumer reconciles those into `container` rows (ids/status only). **Cost:**
 one cell outbox enqueue; UI polls Postgres command rows only — never Durable
