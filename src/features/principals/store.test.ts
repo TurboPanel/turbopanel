@@ -678,3 +678,47 @@ test('ensureComposePrincipal follows the org default scheme and stores it', asyn
     }
   })
 })
+
+test('ensureComposePrincipal adopts a hand-made account that has the alias name', async () => {
+  await withPrincipalFixtures(async ({ db, organizationId, projectId }) => {
+    const [manual] = await db
+      .insert(principal)
+      .values({
+        organizationId,
+        username: 'adoptme',
+        appliedUsername: 'adoptme_abcdefghijk',
+        projectId,
+        metadata: { home: '/srv/users/adoptme_abcdefghijk' },
+        access: 'sftp',
+      })
+      .returning({ id: principal.id })
+    const first = await ensureComposePrincipal(db, { organizationId, projectId, alias: 'adoptme' })
+    assertEquals(first, { principalId: manual.id, created: false })
+    const [row] = await db
+      .select({ metadata: principal.metadata, access: principal.access })
+      .from(principal)
+      .where(eq(principal.id, manual.id))
+    assertEquals((row?.metadata as Record<string, unknown>).composeAlias, 'adoptme')
+    assertEquals(row?.access, 'sftp')
+    const again = await ensureComposePrincipal(db, { organizationId, projectId, alias: 'adoptme' })
+    assertEquals(again.principalId, manual.id)
+  })
+})
+
+test('ensureComposePrincipal adopts a hand-made account whatever its case', async () => {
+  await withPrincipalFixtures(async ({ db, organizationId, projectId }) => {
+    const [manual] = await db
+      .insert(principal)
+      .values({
+        organizationId,
+        username: 'AdoptMe',
+        appliedUsername: 'adoptme_abcdefghijk',
+        projectId,
+        metadata: { home: '/srv/users/adoptme_abcdefghijk' },
+        access: 'sftp',
+      })
+      .returning({ id: principal.id })
+    const first = await ensureComposePrincipal(db, { organizationId, projectId, alias: 'AdoptMe' })
+    assertEquals(first, { principalId: manual.id, created: false })
+  })
+})
