@@ -45,6 +45,33 @@ export type HostingLetsEncryptSweepApply = {
   daemonFeatures?: NonNullable<HostingApplyDeps['daemonFeatures']>
 }
 
+/**
+ * Queues the hostings-only apply for a certificate the tick pinned; answers
+ * whether it was queued. Without apply deps it never queues.
+ */
+function pinSender(
+  db: Db,
+  apply: HostingLetsEncryptSweepApply | undefined
+): (hostingId: string, organizationId: string, editedAt: string) => Promise<boolean> {
+  if (!apply) return () => Promise.resolve(false)
+  const context = systemRotationContext({
+    secretsConfig: apply.secretsConfig,
+    dataEncryptionSecrets: apply.dataEncryptionSecrets,
+  })
+  const applyDeps: HostingApplyDeps = {
+    commandQueue: apply.commandQueue,
+    ...(apply.runDeploy ? { runDeploy: apply.runDeploy } : {}),
+    ...(apply.daemonFeatures ? { daemonFeatures: apply.daemonFeatures } : {}),
+  }
+  return async (hostingId, organizationId, editedAt) =>
+    (await queueHostingCertificateApply(
+      context,
+      db,
+      { hostingId, organizationId, actor: { actorType: 'system', actorId: hostingId }, editedAt },
+      applyDeps
+    )) === 'queued'
+}
+
 export async function runHostingLetsEncryptSweepTick(
   db: Db,
   deps: { lookup?: DnsLookup; now?: () => Date; apply?: HostingLetsEncryptSweepApply } = {}
@@ -72,13 +99,7 @@ export async function runHostingLetsEncryptSweepTick(
     dropped: 0,
     applied: 0,
   }
-  const apply = deps.apply
-  const applyContext = apply
-    ? systemRotationContext({
-        secretsConfig: apply.secretsConfig,
-        dataEncryptionSecrets: apply.dataEncryptionSecrets,
-      })
-    : null
+  const sendPin = pinSender(db, deps.apply)
   const acmeByOrganization = new Map<string, boolean>()
   await forEachSequential(rows, async (row) => {
     const organizationId = await resolveEntityOrganizationId(db, 'hosting', row.id)
@@ -95,24 +116,7 @@ export async function runHostingLetsEncryptSweepTick(
     })
     if (outcome === 'pinned') {
       result.pinned += 1
-      if (apply && applyContext) {
-        const applied = await queueHostingCertificateApply(
-          applyContext,
-          db,
-          {
-            hostingId: row.id,
-            organizationId,
-            actor: { actorType: 'system', actorId: row.id },
-            editedAt: row.updatedAt,
-          },
-          {
-            commandQueue: apply.commandQueue,
-            ...(apply.runDeploy ? { runDeploy: apply.runDeploy } : {}),
-            ...(apply.daemonFeatures ? { daemonFeatures: apply.daemonFeatures } : {}),
-          }
-        )
-        if (applied === 'queued') result.applied += 1
-      }
+      if (await sendPin(row.id, organizationId, row.updatedAt)) result.applied += 1
     }
     if (outcome === 'expired' || outcome === 'refused') result.dropped += 1
   })
