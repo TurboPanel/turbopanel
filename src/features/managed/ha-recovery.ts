@@ -1700,6 +1700,9 @@ function switchoverPromoteFailedMessage(code: SwitchoverPromoteFailureCode | nul
   if (code === 'gtid_wait_timeout') {
     return 'Planned switchover aborted: the promotion target did not apply the old primary GTID position before the wait timed out'
   }
+  if (code === 'target_not_running') {
+    return 'Planned switchover aborted: the promotion target was not running, so nothing was promoted and the old primary was started again'
+  }
   if (code === 'gtid_wait_error') {
     return 'Planned switchover aborted: the promotion target could not run the GTID catch-up check'
   }
@@ -1727,11 +1730,19 @@ export async function onSwitchoverPromoteFailed(
   }
 ): Promise<void> {
   const record = await findRecoveryById(db, params.recoveryId)
-  if (!record?.metadata.switchoverRequiredGtidSet) {
+  const failureCode = parseSwitchoverPromoteFailureCode(params.commandError)
+  // The GTID proof exists on MySQL and MariaDB only. Any engine can report
+  // that the target had no running container (nothing promoted); that counts
+  // for a planned switchover whose promote was never re-queued after a lost
+  // result (a re-queued promote may have started before the engine stopped).
+  const targetNeverRan =
+    failureCode === 'target_not_running' &&
+    record?.kind === 'switchover' &&
+    (record.metadata.promoteResumes ?? 0) === 0
+  if (!record || (!record.metadata.switchoverRequiredGtidSet && !targetNeverRan)) {
     await onRecoveryCommandFailed(db, params.recoveryId)
     return
   }
-  const failureCode = parseSwitchoverPromoteFailureCode(params.commandError)
   const members = await listManagedMembers(db, record.managedId)
   const source = members.find((row) => row.id === record.sourcePrimaryMemberId)
   if (!switchoverPromoteFailureShouldReactivateOldPrimary(failureCode)) {

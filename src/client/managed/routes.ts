@@ -97,6 +97,7 @@ import {
 } from '../../lib/principal-name-scheme.ts'
 import { assertDispatchInfrastructure } from '../servers/command-dispatch.ts'
 import { getCommandQueue } from '../../features/commands/queue.ts'
+import { cancelOpenReturnFenceStops } from '../../features/commands/command-records.ts'
 import { loadServerStatusRecords } from '../servers/update-status.ts'
 import { assertCanManageOr403, getOrgId, parseJsonBody, requireStringField } from '../shared.ts'
 import { assertServerDatacenterReady } from '../../features/net/datacenter-networks.ts'
@@ -3308,6 +3309,9 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     const primaryServerId = resolveManagedTargetServerId(c, row.serverId)
     if (primaryServerId instanceof Response) return primaryServerId
+
+    // A stop queued for the member's old data must not outlive the re-seed.
+    await cancelOpenReturnFenceStops(db, row.id, member.serverId)
 
     const prepared = await prepareApplyForManaged(c, db, ctx, row, options, primaryServerId, {
       forceResyncMemberIds: [member.id],

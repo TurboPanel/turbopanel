@@ -465,6 +465,58 @@ export async function hasLiveBackupCommand(db: Db, managedId: string): Promise<b
   return rows.length > 0
 }
 
+/** True while a `managed.apply` for this cluster on this server is queued or running. */
+export async function hasLiveManagedApplyOn(
+  db: Db,
+  managedId: string,
+  serverId: string
+): Promise<boolean> {
+  const rows = await db
+    .select({ id: command.id })
+    .from(command)
+    .where(
+      and(
+        eq(command.managedId, managedId),
+        eq(command.serverId, serverId),
+        eq(command.name, 'managed.apply'),
+        notInArray(command.status, [...TERMINAL_COMMAND_STATUSES])
+      )
+    )
+    .limit(1)
+  return rows.length > 0
+}
+
+/**
+ * Take back the return-fence stops of this cluster on this server that have
+ * not finished. A Resync calls it so a stop queued for the old data cannot run
+ * on the freshly seeded member.
+ */
+export async function cancelOpenReturnFenceStops(
+  db: Db,
+  managedId: string,
+  serverId: string
+): Promise<number> {
+  const rows = await db
+    .select({ id: command.id })
+    .from(command)
+    .where(
+      and(
+        eq(command.managedId, managedId),
+        eq(command.serverId, serverId),
+        eq(command.name, 'managed.lifecycle'),
+        sql`${command.metadata}->>'returnFence' = 'true'`,
+        notInArray(command.status, [...TERMINAL_COMMAND_STATUSES])
+      )
+    )
+  for (const row of rows) {
+    await transitionCommand(db, row.id, {
+      status: 'cancelled',
+      error: 'the member was resynced after this stop was queued',
+    })
+  }
+  return rows.length
+}
+
 export async function listServerCommands(
   db: Db,
   params: ListServerCommandsParams

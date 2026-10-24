@@ -38,6 +38,7 @@ import { forEachSequential } from '../../lib/sequential.ts'
 import {
   createCommandRecord,
   getCommandRecord,
+  hasLiveManagedApplyOn,
   transitionCommand,
 } from '../commands/command-records.ts'
 import type { CommandQueue } from '../commands/queue.ts'
@@ -320,6 +321,7 @@ export type ReturnFenceSweepDeps = {
   action?: typeof returnFenceAction
   enqueueLifecycle?: typeof enqueueLifecycle
   noteReturnFence?: typeof noteReturnFence
+  applyInFlight?: typeof hasLiveManagedApplyOn
 }
 
 /**
@@ -342,6 +344,13 @@ export async function runReturnFenceSweep(
   await forEachSequential(demoted, async ({ member, engine, serverStatusChangedAt }) => {
     try {
       if (!engine) return
+      // A Resync (or any apply) is seeding this member: its data is about to
+      // be replaced and a stop now would undo the seed.
+      if (
+        await (deps.applyInFlight ?? hasLiveManagedApplyOn)(db, member.managedId, member.serverId)
+      ) {
+        return
+      }
       const decision = await (deps.action ?? returnFenceAction)(
         db,
         member.metadata,

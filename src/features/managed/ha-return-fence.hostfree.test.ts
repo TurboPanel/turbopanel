@@ -234,6 +234,7 @@ test('a demoted member whose server is back gets one stop, marked so nothing is 
   const notes: Array<{ commandId: string; attempts: number }> = []
   const fenced = await runReturnFenceSweep(DB, QUEUE, {
     nowMs: () => Date.parse(NOW_ISO),
+    applyInFlight: () => Promise.resolve(false),
     listDemoted: () => Promise.resolve([demoted(null)]),
     enqueueLifecycle: (_db, _queue, params) => {
       stops.push({
@@ -306,6 +307,7 @@ test('a stop that failed is retried a few times per reconnect, never for ever', 
 test('a failing member never stops the others in the sweep', async () => {
   let calls = 0
   const fenced = await runReturnFenceSweep(DB, QUEUE, {
+    applyInFlight: () => Promise.resolve(false),
     listDemoted: () => Promise.resolve([demoted(null), demoted(null)]),
     enqueueLifecycle: () => {
       calls += 1
@@ -320,8 +322,25 @@ test('a failing member never stops the others in the sweep', async () => {
 test('a failing listing is survived', async () => {
   assertEquals(
     await runReturnFenceSweep(DB, QUEUE, {
+      applyInFlight: () => Promise.resolve(false),
       listDemoted: () => Promise.reject(new TypeError('down')),
     }),
     []
   )
+})
+
+test('a member being seeded by an apply gets no return-fence stop', async () => {
+  const stops: string[] = []
+  const fenced = await runReturnFenceSweep(DB, QUEUE, {
+    nowMs: () => Date.parse(NOW_ISO),
+    listDemoted: () => Promise.resolve([demoted(null)]),
+    applyInFlight: () => Promise.resolve(true),
+    enqueueLifecycle: (_db, _queue, params) => {
+      stops.push(params.action)
+      return Promise.resolve('cmd-10')
+    },
+    noteReturnFence: () => Promise.resolve(),
+  })
+  assertEquals(fenced, [])
+  assertEquals(stops, [])
 })
