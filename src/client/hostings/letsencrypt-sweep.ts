@@ -41,7 +41,7 @@ export type HostingLetsEncryptSweepApply = {
   commandQueue: CommandQueue
   secretsConfig: SecretsConfig | null
   dataEncryptionSecrets: DerivedSecretsConfig | null
-  runDeploy?: HostingApplyDeps['runDeploy']
+  runDeploy?: NonNullable<HostingApplyDeps['runDeploy']>
 }
 
 export async function runHostingLetsEncryptSweepTick(

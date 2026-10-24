@@ -43,7 +43,11 @@ import {
   loadAcmeEnabled,
   loadHostingCertificates,
 } from './letsencrypt-store.ts'
-import { type HostingApplyDeps, queueHostingCertificateApply } from './letsencrypt-apply.ts'
+import {
+  type HostingApplyDeps,
+  type HostingApplyOutcome,
+  queueHostingCertificateApply,
+} from './letsencrypt-apply.ts'
 
 export type HostingLetsEncryptDeps = {
   lookup?: DnsLookup
@@ -119,6 +123,26 @@ function enrichHostingReads(now: () => Date): MiddlewareHandler<AppEnv> {
       : { ...body, hosting: isHostingReadRow(single) ? withCertificate(single) : single }
     c.res = c.json(enriched)
   }
+}
+
+/** Sends a just-pinned certificate to the servers; `null` when nothing was pinned. */
+function applyIfPinned(
+  c: Context<AppEnv>,
+  db: Db,
+  outcome: 'pinned' | 'waiting',
+  params: Parameters<typeof queueHostingCertificateApply>[2],
+  deps: HostingApplyDeps
+): Promise<HostingApplyOutcome | null> {
+  if (outcome !== 'pinned') return Promise.resolve(null)
+  return queueHostingCertificateApply(c, db, params, deps)
+}
+
+function requestAuditContext(
+  outcome: 'pinned' | 'waiting',
+  www: string,
+  apply: HostingApplyOutcome | null
+): Record<string, string> {
+  return apply === null ? { outcome, www } : { outcome, www, apply }
 }
 
 /** Same gate as PATCH /hostings/:id: this organization's row, manager, not system or compose owned. */
@@ -205,19 +229,13 @@ export function registerHostingLetsEncryptRoutes(
       )
     }
 
-    const applyOutcome =
-      result.outcome === 'pinned'
-        ? await queueHostingCertificateApply(
-            c,
-            db,
-            {
-              hostingId: id,
-              organizationId,
-              actor: { actorType: 'user', actorId: session.userId },
-            },
-            applyDeps(c)
-          )
-        : null
+    const applyOutcome = await applyIfPinned(
+      c,
+      db,
+      result.outcome,
+      { hostingId: id, organizationId, actor: { actorType: 'user', actorId: session.userId } },
+      applyDeps(c)
+    )
 
     await recordAudit(db, {
       organizationId,
@@ -226,11 +244,7 @@ export function registerHostingLetsEncryptRoutes(
       action: 'hosting.letsencrypt.requested',
       targetType: 'hosting',
       targetId: id,
-      context: {
-        outcome: result.outcome,
-        www,
-        ...(applyOutcome === null ? {} : { apply: applyOutcome }),
-      },
+      context: requestAuditContext(result.outcome, www, applyOutcome),
     })
 
     const [fresh] = await db
