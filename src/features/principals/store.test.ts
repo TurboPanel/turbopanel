@@ -704,3 +704,21 @@ test('ensureComposePrincipal adopts a hand-made account that has the alias name'
     assertEquals(again.principalId, manual.id)
   })
 })
+
+test('ensureComposePrincipal adopts a hand-made account whatever its case', async () => {
+  await withPrincipalFixtures(async ({ db, organizationId, projectId }) => {
+    const [manual] = await db
+      .insert(principal)
+      .values({
+        organizationId,
+        username: 'AdoptMe',
+        appliedUsername: 'adoptme_abcdefghijk',
+        projectId,
+        metadata: { home: '/srv/users/adoptme_abcdefghijk' },
+        access: 'sftp',
+      })
+      .returning({ id: principal.id })
+    const first = await ensureComposePrincipal(db, { organizationId, projectId, alias: 'AdoptMe' })
+    assertEquals(first, { principalId: manual.id, created: false })
+  })
+})

@@ -408,7 +408,8 @@ async function adoptManualPrincipal(
     .where(
       and(
         eq(principal.projectId, projectId),
-        eq(principal.username, shortUsername),
+        // Hand-made names keep their case; compose aliases fold to lower case.
+        sql`lower(${principal.username}) = ${shortUsername}`,
         sql`${principal.metadata} ->> ${COMPOSE_ALIAS_METADATA_KEY} is null`
       )
     )
