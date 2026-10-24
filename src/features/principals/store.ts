@@ -254,8 +254,11 @@ export async function createPrincipal(
  * it lives in metadata rather than a column because the alias is a *document*
  * fact, not an account fact: renaming a compose alias should mint a new
  * account, not rename an existing tenant's Unix login out from under their
- * SFTP client. A row whose alias key is absent was created by hand in the UI
- * and is never adopted by a reconcile.
+ * SFTP client. A row whose alias key is absent was created by hand in the UI.
+ * A reconcile adopts such a row only when a document names it: an alias whose
+ * short username equals the typed username of one hand-made row in the same
+ * project is stamped onto that row instead of minting a second account for the
+ * same name (`adoptManualPrincipal`).
  */
 export const COMPOSE_ALIAS_METADATA_KEY = 'composeAlias'
 
@@ -345,6 +348,8 @@ export async function ensureComposePrincipal(
     if (raced) return { principalId: raced, created: false }
 
     const shortUsername = composeAliasShortUsername(input.alias)
+    const adopted = await adoptManualPrincipal(tx, input.projectId, shortUsername, input.alias)
+    if (adopted) return { principalId: adopted, created: false }
     const { appliedUsername, nameScheme } = await resolveComposeAppliedUsername(
       tx,
       input.organizationId,
@@ -378,6 +383,37 @@ export async function ensureComposePrincipal(
 
     return { principalId: row.id, created: true }
   })
+}
+
+/**
+ * Bind `alias` to the hand-made account of this project whose typed username
+ * is `shortUsername`, so a document that names an account the operator already
+ * added on Bindings reuses that row (and its host login) instead of creating a
+ * second one. Only rows with no alias yet are taken; the row keeps its access,
+ * keys and assignments.
+ */
+async function adoptManualPrincipal(
+  db: Db,
+  projectId: string,
+  shortUsername: string,
+  alias: string
+): Promise<string | undefined> {
+  const [row] = await db
+    .update(principal)
+    .set({
+      metadata: sql`coalesce(${principal.metadata}, '{}'::jsonb) || ${JSON.stringify({
+        [COMPOSE_ALIAS_METADATA_KEY]: alias,
+      })}::jsonb`,
+    })
+    .where(
+      and(
+        eq(principal.projectId, projectId),
+        eq(principal.username, shortUsername),
+        sql`${principal.metadata} ->> ${COMPOSE_ALIAS_METADATA_KEY} is null`
+      )
+    )
+    .returning({ id: principal.id })
+  return row?.id
 }
 
 /** The row this project already materialized for `alias`, if any. */
