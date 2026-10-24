@@ -12,6 +12,7 @@ import {
   handleBootHoldReport,
   RETURN_FENCE_MAX_ATTEMPTS,
   returnFenceAction,
+  cancelStopsOnceQueued,
   runReturnFenceSweep,
 } from './ha-return-fence.ts'
 import type { ManagedMemberRow } from './members.ts'
@@ -343,4 +344,17 @@ test('a member being seeded by an apply gets no return-fence stop', async () => 
   })
   assertEquals(fenced, [])
   assertEquals(stops, [])
+})
+
+test('a refused Resync leaves the return-fence stop alone; a queued one cancels it', async () => {
+  let cancelled = 0
+  const cancel = () => {
+    cancelled++
+    return Promise.resolve()
+  }
+  const refusal = new Response('busy', { status: 409 })
+  assertEquals(await cancelStopsOnceQueued(refusal, cancel), refusal)
+  assertEquals(cancelled, 0)
+  assertEquals(await cancelStopsOnceQueued([{ commandId: 'c1' }], cancel), [{ commandId: 'c1' }])
+  assertEquals(cancelled, 1)
 })

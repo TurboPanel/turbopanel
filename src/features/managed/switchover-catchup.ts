@@ -35,8 +35,9 @@ export function parseSwitchoverPromoteFailureCode(
 /**
  * The target itself reported that promotion never started — safe to bring the
  * old primary back. `target_not_running`: the target had no running engine
- * container, so nothing was promoted (any engine). `promote_unconfirmed` (the command went unanswered) is not:
- * the target may be promoting, so the old primary stays fenced.
+ * container, so nothing was promoted (any engine). `promote_unconfirmed` (the
+ * command went unanswered) is not: the target may be promoting, so the old
+ * primary stays fenced.
  */
 export function switchoverPromoteFailureShouldReactivateOldPrimary(
   code: SwitchoverPromoteFailureCode | null

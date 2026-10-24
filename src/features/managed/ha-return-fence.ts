@@ -382,3 +382,17 @@ export async function runReturnFenceSweep(
   })
   return fenced
 }
+
+/**
+ * Run `cancel` only when the re-seed was really queued (`queued` is not a
+ * refusal response). A refused Resync must leave the member's return-fence
+ * stop in place.
+ */
+export async function cancelStopsOnceQueued<T>(
+  queued: T | Response,
+  cancel: () => Promise<unknown>
+): Promise<T | Response> {
+  if (queued instanceof Response) return queued
+  await cancel()
+  return queued
+}

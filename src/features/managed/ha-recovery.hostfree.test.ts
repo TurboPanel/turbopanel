@@ -1452,6 +1452,25 @@ test('a postgres promote that was re-queued once keeps the old primary fenced', 
   assertEquals(reactivations(harness), 0)
 })
 
+test('a mysql promote that was re-queued once keeps the old primary fenced on target_not_running', async () => {
+  const harness = createHarness({
+    members: [member(), failoverReplica()],
+    connected: [true, true],
+    recovery: recoveryRow({
+      kind: 'switchover',
+      state: 'promoting',
+      metadata: { switchoverRequiredGtidSet: '0-1-5', promoteResumes: 1 },
+    }),
+  })
+  await onSwitchoverPromoteFailed(harness.db, okQueue(), {
+    recoveryId: REC_ID,
+    engine: 'mysql',
+    actor: ACTOR,
+    commandError: TARGET_NOT_RUNNING,
+  })
+  assertEquals(reactivations(harness), 0)
+})
+
 test('a postgres promote that failed any other way keeps the old primary fenced', async () => {
   const harness = createHarness({
     members: [member(), failoverReplica()],
