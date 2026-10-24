@@ -20,7 +20,6 @@
  *   window), so the warning asks the operator to check that the window covers
  *   the moment before this migration. `TURBOPANEL_MIGRATE_BACKUP_ACK=1` is a
  *   harmless alias that only changes the wording of the warning.
- *
  */
 import { spawnSync } from 'node:child_process'
 
@@ -102,8 +101,8 @@ function describeFailure(result, timeoutSeconds) {
 
 /**
  * Apply the plan. Returns normally to let the migration go ahead; throws an
- * Error (message free of secrets) when a backup command fails. `run` is injectable for tests;
- * the default runs the command in a shell with the current environment.
+ * Error (message free of secrets) when a backup command fails. `run` is
+ * injectable for tests; the default runs the command in a shell with the current environment.
  * @param {Record<string, string | undefined>} env
  * @param {(line: string) => void} [log]
  * @param {(command: string, env: Record<string, string | undefined>, options: { timeoutSeconds: number }) => { status: number | null, signal?: string | null, error?: { code?: string, message: string } | null, stdout?: string | null, stderr?: string | null }} [run]

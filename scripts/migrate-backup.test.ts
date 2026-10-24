@@ -45,6 +45,14 @@ test('without a command, every environment warns and goes on', () => {
   }
 })
 
+test('a whitespace-only command counts as no command', () => {
+  const plan = planMigrateBackup({
+    CLOUDFLARE_ENV: 'live',
+    TURBOPANEL_MIGRATE_BACKUP_COMMAND: '   ',
+  })
+  assertEquals(plan.action, 'warn')
+})
+
 test('the old acknowledgement variable only changes the wording', () => {
   const plain = planMigrateBackup({ CLOUDFLARE_ENV: 'live' })
   const acked = planMigrateBackup({ CLOUDFLARE_ENV: 'live', TURBOPANEL_MIGRATE_BACKUP_ACK: '1' })
