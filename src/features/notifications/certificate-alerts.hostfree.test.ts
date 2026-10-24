@@ -19,7 +19,7 @@ test('known probe errors read in plain words', () => {
   assertMatch(plainAcmeReason('dns error: failed to lookup address information'), /does not point/)
   assertMatch(plainAcmeReason('tcp connect error: Connection refused (os error 111)'), /port 443/)
   assertMatch(plainAcmeReason('operation timed out'), /in time/)
-  assertMatch(plainAcmeReason('invalid peer certificate: UnknownIssuer'), /test certificate/)
+  assertMatch(plainAcmeReason('invalid peer certificate: UnknownIssuer'), /self-signed certificate/)
   assertMatch(plainAcmeReason('too many certificates already issued'), /limiting/)
   assertMatch(plainAcmeReason('CAA record prevents issuance'), /CAA/)
 })
