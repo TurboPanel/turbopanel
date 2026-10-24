@@ -351,7 +351,10 @@ changes.
 deploy_options_invalid` on environments; the reason string on projects) and a
   PATCH that omits these keys keeps the stored ones (`settleDeployOptions`) because
   `options` is replaced wholesale and the compose editor sends only `compose`.
-  `null` clears a key. The deploy request accepts `strategy` / `migration`
+  `null` clears a key. `environment.options.primaryHostname` (a lowercase
+  hostname, `null` clears) names the hostname the environment header's Visit
+  button uses; it is settled the same way so a partial save keeps it, and
+  nothing on the server reads it. The deploy request accepts `strategy` / `migration`
   overrides; `strategy: inplace` and `sequential` are honored (the daemon runs the
   sequential engine: stop, migrate, start, health gate, roll back from `previous/`),
   `bluegreen` and any `migration` answer `501 deploy_strategy_unsupported`. A stored

@@ -137,6 +137,46 @@ test('settleDeployOptions keeps stored keys the body omits, replaces named ones,
   assertEquals(Object.keys(stored).length, 4)
 })
 
+test('primaryHostname survives a partial save, is replaced when named and cleared by null', () => {
+  const stored = { compose: 1, deployStrategy: 'sequential', primaryHostname: 'shop.example.com' }
+  assertEquals(settleDeployOptions(stored, { compose: 2 }, 'environment'), {
+    compose: 2,
+    deployStrategy: 'sequential',
+    primaryHostname: 'shop.example.com',
+  })
+  assertEquals(
+    settleDeployOptions(stored, { compose: 2, primaryHostname: 'www.example.com' }, 'environment')
+      .primaryHostname,
+    'www.example.com'
+  )
+  assertEquals(
+    'primaryHostname' in settleDeployOptions(stored, { primaryHostname: null }, 'environment'),
+    false
+  )
+  // A project has no hostnames of its own, so the key is not carried there.
+  assertEquals(
+    'primaryHostname' in settleDeployOptions({ primaryHostname: 'a.example' }, {}, 'project'),
+    false
+  )
+})
+
+test('validateDeployOptions checks primaryHostname is a hostname and refuses it on a project', () => {
+  assertEquals(validateDeployOptions({ primaryHostname: 'shop.example.com' }, 'environment'), {
+    ok: true,
+  })
+  assertEquals(validateDeployOptions({ primaryHostname: null }, 'environment'), { ok: true })
+  for (const value of ['', 'Shop.example.com', 'bad host', 'a;b', 42]) {
+    assertEquals(validateDeployOptions({ primaryHostname: value }, 'environment'), {
+      ok: false,
+      reason: 'primaryHostname must be a lowercase hostname',
+    })
+  }
+  assertEquals(validateDeployOptions({ primaryHostname: 'shop.example.com' }, 'project'), {
+    ok: false,
+    reason: 'primaryHostname can only be set on an environment',
+  })
+})
+
 test('settleDeployOptions on a project only carries tuning keys', () => {
   const stored = {
     rollbackWindowMinutes: 5,
