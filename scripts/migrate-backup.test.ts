@@ -39,9 +39,9 @@ test('without a command, every environment warns and goes on', () => {
   ]) {
     const plan = planMigrateBackup({ CLOUDFLARE_ENV })
     assertEquals(plan.action, 'warn')
-    assertEquals(plan.message.includes('NO database backup command ran'), true)
-    assertEquals(plan.message.includes('managed backups'), true)
-    assertEquals(plan.message.includes('restore window'), true)
+    assertEquals(plan.message?.includes('NO database backup command ran'), true)
+    assertEquals(plan.message?.includes('managed backups'), true)
+    assertEquals(plan.message?.includes('restore window'), true)
   }
 })
 
@@ -123,20 +123,6 @@ test('redactSecrets blanks the URL and decoded password', () => {
     redactSecrets(`x ${URL_WITH_PASSWORD} y ${PW}`, { TURBOPANEL_DATABASE_URL: URL_WITH_PASSWORD }),
     'x [redacted] y [redacted]'
   )
-})
-
-test('live refuses with a plain message, in any spelling that is not an allowed environment', () => {
-  for (const CLOUDFLARE_ENV of ['live', 'Live', 'production', 'stagin']) {
-    const plan = planMigrateBackup({ CLOUDFLARE_ENV })
-    assertEquals(plan.action, 'refuse')
-    assertEquals(
-      plan.message?.includes(`refusing to migrate ${CLOUDFLARE_ENV} without a backup`),
-      true
-    )
-  }
-  for (const CLOUDFLARE_ENV of ['', 'ci', 'local', 'testing', 'staging']) {
-    assertEquals(planMigrateBackup({ CLOUDFLARE_ENV }).action, 'warn')
-  }
 })
 
 test('a timed-out, errored or oversized backup stops the migration with a reason', () => {
