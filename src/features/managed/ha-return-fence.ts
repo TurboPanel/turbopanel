@@ -386,13 +386,13 @@ export async function runReturnFenceSweep(
 /**
  * Run `cancel` only when the re-seed was really queued (`queued` is not a
  * refusal response). A refused Resync must leave the member's return-fence
- * stop in place.
+ * stop in place. Returns whether the stops were cancelled.
  */
-export async function cancelStopsOnceQueued<T>(
-  queued: T | Response,
+export async function cancelStopsOnceQueued(
+  queued: unknown,
   cancel: () => Promise<unknown>
-): Promise<T | Response> {
-  if (queued instanceof Response) return queued
+): Promise<boolean> {
+  if (queued instanceof Response) return false
   await cancel()
-  return queued
+  return true
 }

@@ -353,8 +353,8 @@ test('a refused Resync leaves the return-fence stop alone; a queued one cancels 
     return Promise.resolve()
   }
   const refusal = new Response('busy', { status: 409 })
-  assertEquals(await cancelStopsOnceQueued(refusal, cancel), refusal)
+  assertEquals(await cancelStopsOnceQueued(refusal, cancel), false)
   assertEquals(cancelled, 0)
-  assertEquals(await cancelStopsOnceQueued([{ commandId: 'c1' }], cancel), [{ commandId: 'c1' }])
+  assertEquals(await cancelStopsOnceQueued([{ commandId: 'c1' }], cancel), true)
   assertEquals(cancelled, 1)
 })

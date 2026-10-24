@@ -3318,13 +3318,13 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     // A stop queued for the member's old data must not outlive the re-seed,
     // but only once the re-seed itself is queued.
-    const enqueued = await cancelStopsOnceQueued(
-      await enqueuePreparedManagedApply(c, db, prepared.commandQueue, {
-        userId: auth.userId,
-        managedId: row.id,
-        members: prepared.members,
-      }),
-      () => cancelOpenReturnFenceStops(db, row.id, member.serverId)
+    const enqueued = await enqueuePreparedManagedApply(c, db, prepared.commandQueue, {
+      userId: auth.userId,
+      managedId: row.id,
+      members: prepared.members,
+    })
+    await cancelStopsOnceQueued(enqueued, () =>
+      cancelOpenReturnFenceStops(db, row.id, member.serverId)
     )
     if (enqueued instanceof Response) return enqueued
 
