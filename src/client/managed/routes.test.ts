@@ -2923,6 +2923,141 @@ test('POST managed user honours name schemes, the org lock, and the root login s
   )
 })
 
+test('POST app-logins adds the owner, read/write and read-only logins in one apply, all or nothing', async () => {
+  await withManagedFixtures(
+    {},
+    async ({ db, app, secrets, commandQueue, userId, organizationId, environmentId }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const headers = {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      }
+      const create = await app.request(`/environments/${environmentId}/managed`, {
+        method: 'POST',
+        headers,
+        body: '{}',
+      })
+      assertEquals(create.status, 200)
+      const created = (await create.json()) as { managed: { id: string } }
+      const ready = () =>
+        db.update(managed).set({ status: 'ready' }).where(eq(managed.id, created.managed.id))
+      await ready()
+      const appLogins = (database: string, body: Record<string, unknown>) =>
+        app.request(`/environments/${environmentId}/managed/databases/${database}/app-logins`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(body),
+        })
+
+      const before = commandQueue.envelopes.length
+      const made = await appLogins('defaultdb', { straightThrough: true })
+      assertEquals(made.status, 200)
+      const madeBody = (await made.json()) as {
+        logins: Array<{
+          user: {
+            username: string
+            appliedUsername: string
+            nameScheme: string
+            databases: string[]
+            privileges: string[]
+            connectionRole: string
+            grantMode: string
+            tool: boolean
+            straightThrough: boolean
+          }
+          password: string
+        }>
+      }
+      assertEquals(
+        madeBody.logins.map(({ user }) => [
+          user.appliedUsername,
+          user.nameScheme,
+          user.databases,
+          user.privileges,
+          user.connectionRole,
+          user.grantMode,
+          user.tool,
+          user.straightThrough,
+        ]),
+        [
+          [
+            'defaultdb_migrate',
+            'plain',
+            ['defaultdb'],
+            ['admin'],
+            'read-write',
+            'recipe',
+            true,
+            true,
+          ],
+          [
+            'defaultdb_rw',
+            'plain',
+            ['defaultdb'],
+            ['read-write'],
+            'read-write',
+            'recipe',
+            false,
+            true,
+          ],
+          [
+            'defaultdb_ro',
+            'plain',
+            ['defaultdb'],
+            ['read-only'],
+            'read-only',
+            'recipe',
+            false,
+            true,
+          ],
+        ]
+      )
+      assertEquals(new Set(madeBody.logins.map((entry) => entry.password)).size, 3)
+      // One apply for the three, not one each.
+      const applies = commandQueue.envelopes
+        .slice(before)
+        .filter((envelope) => envelope.type === 'managed.apply')
+      assertEquals(applies.length, 1)
+
+      // A name already in use keeps none of the three.
+      await ready()
+      const taken = await app.request(`/environments/${environmentId}/managed/users`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          username: 'shop_rw',
+          databases: ['defaultdb'],
+          nameScheme: 'plain',
+        }),
+      })
+      assertEquals(taken.status, 200)
+      await ready()
+      const conflict = await appLogins('defaultdb', { prefix: 'shop' })
+      assertEquals(conflict.status, 409)
+      const conflictBody = (await conflict.json()) as { username: string }
+      assertEquals(conflictBody.username, 'shop_rw')
+      const shopLogins = await db
+        .select({ username: login.username })
+        .from(login)
+        .where(and(eq(login.managedId, created.managed.id), sql`${login.username} like 'shop_%'`))
+      assertEquals(
+        shopLogins.map((entry) => entry.username),
+        ['shop_rw']
+      )
+
+      // A database the cluster does not have, and a prefix that does not fit.
+      assertEquals((await appLogins('nope', {})).status, 404)
+      const badPrefix = await appLogins('defaultdb', { prefix: 'not-a-name' })
+      assertEquals(badPrefix.status, 400)
+      assertEquals(
+        ((await badPrefix.json()) as { error: string }).error,
+        'managed_app_login_prefix_invalid'
+      )
+    }
+  )
+})
+
 test('POST managed user for an existing principal reuses its name, lists it with the login, and removal keeps the identity', async () => {
   await withManagedFixtures(
     {},
