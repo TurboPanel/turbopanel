@@ -60,11 +60,9 @@ constant lets a shipped migration be edited, removed or regenerated.
 
 The final fold got past the freeze guards through one named, owner-approved
 exception in `check-migration-additions.mjs` (generation 12 to 13, one
-`0000_base` journal entry). It stays until the release branches (staging,
-live) carry the fold, since their pull requests compare against a
-generation-12 base, and is deleted right after that release merges. The
-upgrade check (`check-migration-upgrade.mjs`) keeps a lasting rule, not a
-bypass: when the previous release tag's manifest has a lower generation than
+`0000_base` journal entry). It has been deleted, and no mode or flag brings it
+back. The upgrade check (`check-migration-upgrade.mjs`) keeps a lasting rule,
+not a bypass: when the previous release tag's manifest has a lower generation than
 the checkout's, there is nothing to upgrade from, so it only builds a fresh
 database and proves the seed fits; once a release is tagged from the baseline
 the generations match and the full comparison resumes by itself.
