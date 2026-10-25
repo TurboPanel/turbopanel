@@ -688,6 +688,13 @@ exact failure the field was added to prevent.
 **`409 hosting_owned_by_compose`** naming the owning `serviceId` and compose
 service — not 403, because it is not a permission problem: the next deploy would
 overwrite the write. Rows created in the panel keep working unchanged.
+`POST /hostings/{id}/release-from-compose` (`src/client/hostings/compose-release-route.ts`)
+hands a compose-made row back to the panel by stripping the markers, the same
+release the reconcile applies to an adopted row; the Hosting screen calls it
+before it removes the entry from the environment's compose file, so a failed
+file save leaves a row the next deploy adopts again instead of deleting it.
+It takes the environment row lock (as the reconcile does before it reads the
+rows) and refuses with `409 environment_deploy_running` while a deploy runs.
 
 ### Per-service Git source (`x-turbopanel.source`) — resolved into `sourceMaterial[]`
 
