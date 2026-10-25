@@ -102,6 +102,38 @@ export function isTerminalStepStatus(status: UpgradeStepStatus): boolean {
   )
 }
 
+export type OfflineWaitStepView = {
+  phase: UpgradePhase
+  status: UpgradeStepStatus
+  serverId: string
+  /** Dispatches so far; a step that already ran is never counted as idle. */
+  attempts?: number
+}
+
+/**
+ * True when every still-open step is a fleet `waiting` row, never dispatched,
+ * for a host that is not in `connectedIds`. An in-flight step, a `pending`
+ * step (the tick has not looked at it yet), a platform-phase step still open,
+ * or a connected host keeps the run active.
+ * Preflight uses this without mutating; `start()` settles those steps first.
+ */
+export function runWaitsOnlyOnOfflineServers(
+  steps: readonly OfflineWaitStepView[],
+  connectedIds: readonly string[]
+): boolean {
+  const connected = new Set(connectedIds)
+  let waiting = 0
+  for (const step of steps) {
+    if (isTerminalStepStatus(step.status)) continue
+    if (isInFlightStepStatus(step.status)) return false
+    if (step.phase !== 'fleet') return false
+    if (step.status !== 'waiting' || (step.attempts ?? 0) > 0) return false
+    if (connected.has(step.serverId)) return false
+    waiting += 1
+  }
+  return waiting > 0
+}
+
 export type BatchStepView = {
   batchIndex: number
   status: UpgradeStepStatus

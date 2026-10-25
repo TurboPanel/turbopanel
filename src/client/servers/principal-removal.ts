@@ -25,7 +25,7 @@ import {
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { resolveOrgRequest } from '../org-request.ts'
-import { assertCanReadOr403 } from '../shared.ts'
+import { assertCanManageOr403 } from '../shared.ts'
 
 export const PRINCIPAL_REMOVAL_ACTIONS = ['keep', 'delete'] as const
 export type PrincipalRemovalAction = (typeof PRINCIPAL_REMOVAL_ACTIONS)[number]
@@ -168,7 +168,7 @@ export function registerServerPrincipalRemovalRoutes(router: Hono<AppEnv>, opts:
       return c.json({ error: 'Not found' }, 404)
     }
 
-    const denied = await assertCanReadOr403(c, 'server', serverId)
+    const denied = await assertCanManageOr403(c, 'server', serverId)
     if (denied) return denied
 
     return c.json({ serverId, principals: await loadPrincipalRemovalPlan(db, serverId) })

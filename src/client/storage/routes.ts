@@ -75,6 +75,7 @@ import {
   storageHasFolder,
 } from '../../features/folders/records.ts'
 import { inUseBody, listUsesOfAssets } from '../../features/folders/shares.ts'
+import { copyDepsOf } from '../backup-copy-deps.ts'
 
 async function sealStorageContent(c: Context<AppEnv>, content: string): Promise<string | Response> {
   if (isStorageContentTooLarge(content)) {
@@ -209,6 +210,7 @@ async function repushCopyBackups(
     copyIds,
     previousServerIds,
     actor: { actorType: 'user', actorId: session?.userId ?? 'unknown' },
+    copyDeps: copyDepsOf(c),
   })
 }
 

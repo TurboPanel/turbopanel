@@ -36,10 +36,20 @@ import type { CommandEnvelope } from '../commands/envelope.ts'
 import type { CommandQueue } from '../commands/queue.ts'
 import { isNoopCommandQueue } from '../commands/noop-command-queue.ts'
 import { getManagedBackupDescriptor, getManagedEngineSpec } from '../managed/index.ts'
-import { defaultBackupDatabase } from '../managed/default-backup-database.ts'
+import {
+  defaultBackupDatabase,
+  initialDatabaseOf,
+  isSystemBackupDatabase,
+} from '../managed/default-backup-database.ts'
 import { managedDatabaseNames, parseManagedSettings } from '../managed/options.ts'
 import { managedHasBackupPolicies } from './policy-records.ts'
 import { translateBackupSchedule } from './schedules.ts'
+import {
+  type CopyResealDeps,
+  copyRecipientFor,
+  resolveEffectiveTarget,
+  toWireTarget,
+} from './targets.ts'
 import {
   COPY_TARGET_SELECT,
   type CopyTargetRow,
@@ -69,6 +79,8 @@ type ManagedPolicyRow = {
   managedId: string | null
   schedule: string
   timezone: string | null
+  /** The database the policy chose; null means the cluster's initial database. */
+  database?: string | null
   retentionKeep: number
   isEnabled: boolean
   engine: string
@@ -79,14 +91,24 @@ type ManagedPolicyRow = {
 }
 
 /**
- * The database a scheduled run dumps: the same default a manual backup picks
- * (the first non-system database). Absent when the stored options cannot say,
+ * The database a scheduled run dumps: the one the policy chose, else the same
+ * default a manual backup picks (the cluster's initial database, else the
+ * first non-system one). Absent when the stored options cannot say,
  * so the daemon falls back to its engine default rather than the run failing here.
  */
 function scheduledBackupDatabase(row: ManagedPolicyRow): string | undefined {
   const spec = getManagedEngineSpec(row.engine)
-  if (!spec || parseManagedSettings(spec, row.options) === null) return undefined
-  return defaultBackupDatabase(row.databases, row.engine) ?? undefined
+  const settings = spec ? parseManagedSettings(spec, row.options) : null
+  if (!spec || settings === null) return undefined
+  // A chosen database that has since been removed falls back to the default.
+  if (
+    row.database &&
+    row.databases.includes(row.database) &&
+    !isSystemBackupDatabase(row.database, row.engine)
+  ) {
+    return row.database
+  }
+  return defaultBackupDatabase(row.databases, row.engine, initialDatabaseOf(settings)) ?? undefined
 }
 
 function toWireEntry(row: ManagedPolicyRow): BackupPolicyWireEntry | null {
@@ -155,6 +177,7 @@ async function loadManagedPolicyRows(db: Db, serverId: string): Promise<ManagedP
       managedId: retention.managedId,
       schedule: retention.schedule,
       timezone: retention.timezone,
+      database: retention.database,
       retentionKeep: retention.retentionKeep,
       isEnabled: retention.isEnabled,
       engine: managed.engine,
@@ -187,20 +210,49 @@ async function loadCopyPolicyRows(db: Db, serverId: string): Promise<CopyPolicyR
 }
 
 /**
+ * Name the cluster's copy target on a managed entry when one applies and the
+ * host can take it (a daemon that lists `backup-s3-copy-v1` with an active
+ * key). Otherwise the entry carries none, so the host makes no copy.
+ */
+async function attachCopyTarget(
+  db: Db,
+  entry: BackupPolicyWireEntry,
+  ctx: { recipient: Awaited<ReturnType<typeof copyRecipientFor>>; copyDeps?: CopyResealDeps }
+): Promise<void> {
+  if (!entry.managedId) return
+  const choice = await resolveEffectiveTarget(db, entry.managedId)
+  if (!choice.target) return
+  if (!ctx.recipient || !ctx.copyDeps) {
+    compatLogWarn(
+      'backups',
+      `backup policy ${entry.policyId} has a copy target but this host cannot take it yet (older daemon or no secret sealing)`
+    )
+    return
+  }
+  entry.copyTarget = await toWireTarget(choice.target, ctx.recipient, ctx.copyDeps)
+}
+
+/**
  * Every policy one server runs — the completeness rule. Disabled policies are
  * included with `enabled: false` so the host drops their timers.
  */
 export async function buildBackupPolicySetForServer(
   db: Db,
-  serverId: string
+  serverId: string,
+  copyDeps?: CopyResealDeps
 ): Promise<BackupPolicyWireEntry[]> {
   const managedRows = await loadManagedPolicyRows(db, serverId)
   const copyRows = await loadCopyPolicyRows(db, serverId)
   const entries: BackupPolicyWireEntry[] = []
-  for (const row of managedRows) {
+  const recipient = managedRows.length > 0 ? await copyRecipientFor(db, serverId) : null
+  const managedEntries = managedRows.flatMap((row) => {
     const entry = toWireEntry(row)
-    if (entry) entries.push(entry)
-  }
+    return entry ? [entry] : []
+  })
+  await Promise.all(
+    managedEntries.map((entry) => attachCopyTarget(db, entry, { recipient, copyDeps }))
+  )
+  entries.push(...managedEntries)
   for (const row of copyRows) {
     const entry = toCopyWireEntry(row)
     if (entry) entries.push(entry)
@@ -214,9 +266,10 @@ async function enqueueOne(
   db: Db,
   queue: CommandQueue,
   actor: BackupsReconcileActor,
-  serverId: string
+  serverId: string,
+  copyDeps?: CopyResealDeps
 ): Promise<boolean> {
-  const policies = await buildBackupPolicySetForServer(db, serverId)
+  const policies = await buildBackupPolicySetForServer(db, serverId, copyDeps)
   const record = await createCommandRecord(db, {
     serverId,
     actorType: actor.actorType,
@@ -250,7 +303,8 @@ export async function enqueueBackupsReconcile(
   db: Db,
   queue: CommandQueue | undefined,
   actor: BackupsReconcileActor,
-  serverIds: readonly (string | null | undefined)[]
+  serverIds: readonly (string | null | undefined)[],
+  copyDeps?: CopyResealDeps
 ): Promise<BackupsReconcileOutcome> {
   const unique = [...new Set(serverIds.filter((id): id is string => typeof id === 'string'))]
   const queued: string[] = []
@@ -260,7 +314,7 @@ export async function enqueueBackupsReconcile(
   }
   await forEachSequential(unique, async (serverId) => {
     try {
-      if (await enqueueOne(db, queue, actor, serverId)) queued.push(serverId)
+      if (await enqueueOne(db, queue, actor, serverId, copyDeps)) queued.push(serverId)
       else failed.push(serverId)
     } catch (err) {
       compatLogWarn('backups', `backups reconcile for server ${serverId} failed: ${String(err)}`)
@@ -312,16 +366,24 @@ export async function captureManagedBackupHost(
 export async function reconcileBackupsAfterManagedMove(
   db: Db,
   queue: CommandQueue | undefined,
-  params: { managedId: string; previousServerId: string | null; actorId: string }
+  params: {
+    managedId: string
+    previousServerId: string | null
+    actorId: string
+    copyDeps?: CopyResealDeps
+  }
 ): Promise<void> {
   if (!params.previousServerId || !canEnqueue(queue)) return
   try {
     const nextServerId = await readManagedServerId(db, params.managedId)
     if (nextServerId === params.previousServerId) return
-    await enqueueBackupsReconcile(db, queue, { actorType: 'system', actorId: params.actorId }, [
-      params.previousServerId,
-      nextServerId,
-    ])
+    await enqueueBackupsReconcile(
+      db,
+      queue,
+      { actorType: 'system', actorId: params.actorId },
+      [params.previousServerId, nextServerId],
+      params.copyDeps
+    )
   } catch (err) {
     compatLogWarn('backups', `backups reconcile after moving ${params.managedId}: ${String(err)}`)
   }
@@ -374,6 +436,7 @@ export async function reconcileBackupsAfterCopyChange(
     copyIds: readonly string[]
     previousServerIds: readonly string[]
     actor: BackupsReconcileActor
+    copyDeps?: CopyResealDeps
   }
 ): Promise<void> {
   if (!canEnqueue(queue)) return
@@ -384,7 +447,7 @@ export async function reconcileBackupsAfterCopyChange(
         : await readCopyBackupHosts(db, inArray(storageCopy.id, [...params.copyIds]))
     const servers = [...params.previousServerIds, ...current]
     if (servers.length === 0) return
-    await enqueueBackupsReconcile(db, queue, params.actor, servers)
+    await enqueueBackupsReconcile(db, queue, params.actor, servers, params.copyDeps)
   } catch (err) {
     compatLogWarn('backups', `backups reconcile after a storage copy change: ${String(err)}`)
   }
@@ -404,7 +467,7 @@ export async function reconcileBackupsAfterCopyChange(
 export async function runBackupsReconcileSweep(
   db: Db,
   queue: CommandQueue,
-  params: Readonly<{ budget?: number }> = {}
+  params: Readonly<{ budget?: number; copyDeps?: CopyResealDeps }> = {}
 ): Promise<{ enqueued: number }> {
   if (!canEnqueue(queue)) return { enqueued: 0 }
   const budget = Math.min(
@@ -452,7 +515,8 @@ export async function runBackupsReconcileSweep(
       db,
       queue,
       { actorType: 'system', actorId: row.server_id },
-      [row.server_id]
+      [row.server_id],
+      params.copyDeps
     )
     enqueued += result.queuedServerIds.length
   })

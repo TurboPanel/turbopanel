@@ -75,13 +75,6 @@ function resolveGrantMode(
   if (!isLoginGrantMode(input.grantMode)) {
     return fail(400, 'managed_grant_mode_invalid', "grantMode must be 'recipe' or 'self'.")
   }
-  if (input.grantMode === 'preset' && before !== 'preset') {
-    return fail(
-      422,
-      'managed_grant_mode_invalid_transition',
-      "'preset' only describes logins made before permission modes existed. Choose 'recipe' (the panel sets permissions) or 'self' (you set them)."
-    )
-  }
   if (before === 'self' && input.grantMode !== 'self' && input.confirmReset !== true) {
     return fail(
       409,

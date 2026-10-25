@@ -1,4 +1,5 @@
 import { resolveClientIp } from '../client/authn/http.ts'
+import { DATABASE_ROLES_LACK_GRANTS, findMissingRuntimeGrants } from '../db/role-grants.ts'
 import { mapSequential } from '../lib/sequential.ts'
 import { Hono } from 'hono'
 import type { Context, Env, Next } from 'hono'
@@ -31,6 +32,7 @@ import {
   getDaemonCellRegistry,
   getDb,
   getExecutionLogStore,
+  getMetricsGate,
   getServerMetricsStore,
 } from '../db/connection.ts'
 import { contentLengthExceeds, readBodyWithByteLimit } from '../lib/http/bounded-body.ts'
@@ -48,11 +50,10 @@ import {
   resolveDefaultMetricsCapabilityPlan,
   countHostLevelSignals,
   resolveServerMachineClass,
-  truncateSampleToCapabilityPlan,
 } from '../contracts/capability-plan.ts'
 import { DisabledServerMetricsStore } from './metrics/disabled-store.ts'
 import { createMetricsChartCache } from './metrics/query/cache.ts'
-import { applyIngestAllowlist } from './metrics/ingest-allowlist.ts'
+import { prepareSampleForStorage } from './metrics/ingest-preparation.ts'
 import {
   cacheLiveSample,
   isDurableSample,
@@ -66,29 +67,26 @@ import {
 import { resolveOrganizationDockerNetworking } from '../features/deploy/docker-address-pools.ts'
 import {
   parseServerHardwareProfile,
-  parseServerHostResources,
   parseServerOptions,
   resolveEffectiveMetricsCapabilityPlan,
 } from '../features/servers/server-metadata.ts'
 import { metricsCapabilityTierEntitlementsForRank } from '../features/tiers/tier-entitlements.ts'
-import { recomputeAssignmentsForServer } from '../features/tiers/assignment-records.ts'
+import { fillSelfHostedGrantTierForServer } from '../features/tiers/assignment-records.ts'
 import {
   syncSelfHostedGrantForLicense,
   syncSelfHostedGrantForServer,
 } from '../features/tiers/self-hosted-grant-records.ts'
-import {
-  evaluateHostedEnrollmentTier,
-  evaluateTierFloor,
-  LICENSE_TIER_BELOW_REQUIRED_ERROR,
-  loadServerLicenseTierJoin,
-} from '../features/tiers/tier-enforcement.ts'
+import { loadServerLicenseTierJoin } from '../features/tiers/tier-enforcement.ts'
 import {
   getLatestTopologyGeneration,
   getTopologyGeneration,
   markTopologyResyncRequested,
   topologyChurnLimitedRecently,
 } from '../features/servers/server-topology-records.ts'
+import { recordOverPlan } from './metrics/over-plan-flag.ts'
 import { recordCapabilityPlanGenerationIfChanged } from '../client/servers/capability-plan-records.ts'
+import type { GateDecision, MetricsGate } from './metrics/ingest-gate.ts'
+import type { MetricEvent } from '../contracts/metrics-contract.ts'
 import { enqueueCapabilityPlanUpdate } from '../client/servers/capability-plan-push.ts'
 import { computeSlotMapping } from '../contracts/topology-slot-mapping.ts'
 import {
@@ -551,19 +549,19 @@ async function loadActiveDaemonKeyState(
 }
 
 /**
- * Confirms the server's bound license (if any) is still active and that an
- * entitled tier covers it. The assignment is derived
- * (`assignment-records.ts`); a licensed server assigned nothing gets one
- * recompute here — the hardware report and the projection may have raced
- * this session — and is refused only when it still ends uncovered. The
- * error string is byte-identical to the daemon's permanent-auth list.
+ * Confirms the server's bound license (if any) is still active — the only
+ * refusal here. Tier coverage never refuses and never assigns: which tier a
+ * server holds is a manager's choice (`assignment-records.ts`), so a
+ * licensed server with no tier yet, or one that measures bigger than the
+ * tier it was given, still connects and stays managed; it is flagged
+ * (`over-plan-flag.ts`, the reconcile sweep), never moved.
  *
- * **The same check runs on both runtimes.** Self-hosted is not exempted;
- * it is entitled instead, by the grant (`self-hosted-grant.ts`) that is
- * brought in line here before anything is read. Reconnecting is therefore
- * also the backfill path for an organization licensed before the grant
- * existed, and for one whose control plane has just moved from Deno to
- * Workers — the grant it left behind is what keeps its daemons connected.
+ * **Self-hosted** is entitled by the grant (`self-hosted-grant.ts`), brought
+ * in line here before anything is read, and its servers run on the grant's
+ * top tier: a licensed server there with no tier yet gets it
+ * (`fillSelfHostedGrantTierForServer`, self-hosted only). Reconnecting is
+ * therefore also the backfill path for an organization licensed before the
+ * grant existed.
  */
 async function checkServerLicenseEntitlement(
   db: Db,
@@ -576,37 +574,14 @@ async function checkServerLicenseEntitlement(
     if (!activeLicense) {
       return { ok: false, status: 400, error: 'License is inactive' }
     }
-    // Deliberately unguarded, like the recompute below: this decides the
-    // daemon's fate, so a database error must surface as a 500 the daemon
-    // retries rather than as a permanent refusal.
+    // Deliberately unguarded: a database error must surface as a 500 the
+    // daemon retries rather than as a permanent refusal.
     await syncSelfHostedGrantForServer(db, serverId, deployment)
-  }
-
-  let row = await loadServerLicenseTierJoin(db, serverId)
-  if (row?.licenseId && !row.assignedTierId) {
-    // Deliberately unguarded: this decides the daemon's fate. A refusal here
-    // is a 400, which the daemon treats as permanent and parks on, so a
-    // transient database error must surface as a 500 (transient, retried)
-    // rather than be swallowed into "still unassigned, refuse permanently".
-    await recomputeAssignmentsForServer(db, serverId)
-    row = await loadServerLicenseTierJoin(db, serverId)
-  }
-  if (row?.licenseId && !row.assignedTierId) {
-    return { ok: false, status: 400, error: LICENSE_TIER_BELOW_REQUIRED_ERROR }
-  }
-  if (row?.assignedTierId && row.tierRank != null) {
-    const metadata = isPlainObject(row.serverMetadata) ? row.serverMetadata : undefined
-    const resources = parseServerHostResources(metadata?.resources)
-    const floor = evaluateTierFloor({
-      resources,
-      tierRank: row.tierRank,
-    })
-    if (!floor.satisfied) {
-      return {
-        ok: false,
-        status: 400,
-        error: LICENSE_TIER_BELOW_REQUIRED_ERROR,
-      }
+    // The one automatic assignment, self-hosted only (nothing to buy there):
+    // an empty size becomes the grant's top size. Hosted never gets here, and
+    // a size a manager already set is never overwritten.
+    if (deployment === 'self-hosted') {
+      await fillSelfHostedGrantTierForServer(db, serverId)
     }
   }
   return { ok: true }
@@ -683,6 +658,71 @@ export function topologyResyncRecentlyRequested(
   return Number.isFinite(requestedMs) && nowMs - requestedMs < TOPOLOGY_RESYNC_MARK_COOLDOWN_MS
 }
 
+const EVENT_SEVERITY_RANK: Readonly<Record<MetricEvent['severity'], number>> = {
+  critical: 0,
+  warning: 1,
+  info: 2,
+}
+
+/** Events ordered most severe first, then oldest: what survives a budget cut. */
+function mostSevereFirst(events: readonly MetricEvent[]): MetricEvent[] {
+  return [...events].sort(
+    (a, b) =>
+      EVENT_SEVERITY_RANK[a.severity] - EVENT_SEVERITY_RANK[b.severity] ||
+      Date.parse(a.at) - Date.parse(b.at)
+  )
+}
+
+/**
+ * Ask the ingest gate whether this durable sample may be stored, and trim its
+ * events to the hourly budget. Returns the refusal response (429 over the
+ * limits, 503 when the gate itself cannot answer), or `null` when the sample
+ * goes on to be stored — possibly with fewer events than it arrived with.
+ */
+async function applyMetricsIngestGate<E extends Env>(
+  c: Context<E>,
+  metricsGate: MetricsGate,
+  serverId: string,
+  sample: AuthenticatedMetricsSample
+): Promise<Response | null> {
+  let gate: GateDecision
+  try {
+    gate = await metricsGate.admit(serverId, sample.metadata.sampledAt, sample.events.length)
+  } catch (err) {
+    // No exact count, no write: an unmetered path is what the gate stops.
+    rateLimitedMetricsLog(serverId, 'metrics_gate_failed', () => {
+      console.warn(`metrics gate failed for ${serverId}: ${describeError(err)}`)
+    })
+    c.header('Retry-After', '60')
+    return c.json({ ok: false, error: 'metrics_gate_unavailable' }, 503)
+  }
+  if (!gate.stored) {
+    rateLimitedMetricsLog(serverId, `metrics_gate_${gate.reason}`, () => {
+      console.warn(`metrics sample refused for ${serverId}: ${gate.reason}`)
+    })
+    // A duplicate (or replayed) sample can never be accepted later, so it gets
+    // 409, which the daemon does not retry; only an early sample is worth
+    // retrying, so only that one gets 429 with a Retry-After.
+    if (gate.reason === 'duplicate') {
+      return c.json({ ok: false, error: 'duplicate_sample' }, 409)
+    }
+    if (gate.reason === 'future') {
+      return c.json({ ok: false, error: 'sample_in_future' }, 409)
+    }
+    c.header('Retry-After', String(gate.retryAfterSeconds))
+    return c.json({ ok: false, error: 'rate_limited', reason: gate.reason }, 429)
+  }
+  if (gate.eventsAllowed < sample.events.length) {
+    rateLimitedMetricsLog(serverId, 'metrics_gate_events_dropped', () => {
+      console.warn(
+        `metrics events over the hourly budget for ${serverId}: kept ${gate.eventsAllowed} of ${sample.events.length}`
+      )
+    })
+    sample.events = mostSevereFirst(sample.events).slice(0, gate.eventsAllowed)
+  }
+  return null
+}
+
 type IngestPlanAndTopology = {
   plan: MetricsCapabilityPlan
   slotMapping: SlotMapping | undefined
@@ -691,6 +731,7 @@ type IngestPlanAndTopology = {
 }
 
 type IngestServerPlanRow = {
+  tierRank?: number | null
   serverOptions: unknown
   orgOptions: unknown
   serverMetadata: unknown
@@ -736,8 +777,23 @@ async function loadIngestServerPlanRow(
     orgOptions: joined.orgOptions,
     serverMetadata: joined.serverMetadata,
     machineClass: joined.machineClass,
+    tierRank: joined.tierRank,
     tier: metricsCapabilityTierEntitlementsForRank(joined.tierRank),
   }
+}
+
+/**
+ * A server with more RAM or more physical CPU cores than its licensed box size
+ * keeps its metrics and gets flagged on the server record (`over-plan-flag.ts`).
+ * Fire-and-forget, like the other ingest-side marks: a failure logs and never
+ * blocks the sample.
+ */
+function flagOverPlanInBackground(db: Db, serverId: string, planRow: IngestServerPlanRow): void {
+  recordOverPlan(db, serverId, planRow.tierRank, planRow.serverMetadata).catch((err) => {
+    rateLimitedMetricsLog(serverId, 'over_plan_record_failed', () => {
+      console.warn(`metrics over-plan flag failed for ${serverId}: ${describeError(err)}`)
+    })
+  })
 }
 
 /**
@@ -790,6 +846,8 @@ async function resolveIngestPlanAndReconcileTopology(
         })
       })
     }
+
+    if (durable && planRow !== undefined) flagOverPlanInBackground(db, serverId, planRow)
 
     const snapshotForClass = topologyMatch?.snapshot ?? latestTopology?.snapshot
     const machineClass = resolveServerMachineClass(
@@ -884,8 +942,6 @@ async function primeCapabilityPlanAfterEnroll(
 ): Promise<void> {
   if (deployment === 'self-hosted') return
   try {
-    // The server just bound a license: place it before reading its plan.
-    await recomputeAssignmentsForServer(db, serverId)
     const planRow = await loadIngestServerPlanRow(db, serverId, deployment)
     const machineClass = resolveServerMachineClass(planRow?.machineClass, undefined, 0)
     const plan = resolveEffectiveMetricsCapabilityPlan(
@@ -1001,6 +1057,9 @@ export function registerDaemonApiRoutes<E extends Env>(
       key: daemonMetricsRateLimitKey(serverId),
     })
     if (!success) {
+      // The binding's window is 60 s: telling the daemon when to try again
+      // stops a well-behaved one from hammering the limit.
+      c.header('Retry-After', '60')
       return c.json({ ok: false, error: 'rate_limited' }, 429)
     }
     return null
@@ -1120,6 +1179,19 @@ export function registerDaemonApiRoutes<E extends Env>(
         'daemon-api',
         `readiness: database unavailable: ${err instanceof Error ? err.message : String(err)}`
       )
+      const missing = await findMissingRuntimeGrants(db)
+      if (missing.length > 0) {
+        logWarn('daemon-api', `readiness: ${DATABASE_ROLES_LACK_GRANTS}: ${missing.join('; ')}`)
+        return c.json(
+          {
+            ok: false,
+            ready: false,
+            error: DATABASE_ROLES_LACK_GRANTS,
+            code: 'database_roles_lack_grants',
+          },
+          503
+        )
+      }
       return c.json(
         {
           ok: false,
@@ -1349,16 +1421,13 @@ export function registerDaemonApiRoutes<E extends Env>(
     // Bookkeeping only: it must never fail an enrol.
     await recordLicenseEnrollAttempt(db, licenseId, hostname).catch(() => {})
 
-    // Same gate on both runtimes. Self-hosted grants itself the coverage
-    // first (`self-hosted-grant.ts`), so the check passes there by being
-    // entitled rather than by being skipped — and the row it writes is what
-    // still covers this server after a switch to the hosted runtime.
+    // No tier gate and no assignment here: a freshly enrolled server holds
+    // no license tier until a manager assigns one, and it connects either
+    // way. Self-hosted grants itself the coverage first
+    // (`self-hosted-grant.ts`) — the row it writes is what still covers this
+    // server after a switch to the hosted runtime.
     if (deployment === 'self-hosted') {
       await syncSelfHostedGrantForLicense(db, licenseId)
-    }
-    const tierGate = await evaluateHostedEnrollmentTier(db, licenseId)
-    if (!tierGate.ok) {
-      return c.json({ ok: false, error: tierGate.error }, 400)
     }
 
     const fabricDeps = enrollFabricDepsFromContext(c)
@@ -1637,17 +1706,10 @@ export function registerDaemonApiRoutes<E extends Env>(
         void enqueueCapabilityPlanUpdate(getDaemonCellRegistry(c), serverId, plan, generation)
       }
 
-      // Hosted ingest truncates to the capability plan; self-hosted writes
-      // the operator's own disk uncapped. Topology `slotMapping` is still
-      // resolved above for identity-addressed packing.
-      const prepared =
-        deployment === 'self-hosted'
-          ? result.sample
-          : truncateSampleToCapabilityPlan(
-              applyIngestAllowlist(result.sample, slotMapping),
-              plan,
-              slotMapping
-            )
+      // Both editions store what the machine reports: the same noise filter
+      // and the same organization/server on/off switches, with no cap on how
+      // many devices a server may have.
+      const prepared = prepareSampleForStorage(result.sample, plan, slotMapping)
       const sample = {
         ...prepared,
         serverId,
@@ -1662,7 +1724,7 @@ export function registerDaemonApiRoutes<E extends Env>(
         })
       }
 
-      // Live leases. A v7 daemon keeps its 60 s baseline running during a
+      // Live leases. A wire version 8 daemon keeps its 60 s baseline running during a
       // lease and flags the parallel 10 s live samples `durable: false`: those
       // feed the chart's live overlay ONLY and are never stored (storing them
       // is the 6x row cost the baseline-only rule removes). They are buffered
@@ -1676,6 +1738,16 @@ export function registerDaemonApiRoutes<E extends Env>(
         await cacheLiveSample(metricsChartCache, sample)
         return c.json({ ok: true }, 202)
       }
+      // Exactly one stored sample a minute per server, and a bounded number of
+      // events an hour (`metrics/ingest-gate.ts`): a Durable Object per server
+      // on Workers, an in-process map on Deno. Every deployment binds one, so
+      // its absence only happens in tests that exercise other parts of the route.
+      const metricsGate = getMetricsGate(c)
+      if (metricsGate) {
+        const refused = await applyMetricsIngestGate(c, metricsGate, serverId, sample)
+        if (refused) return refused
+      }
+
       if (await isServerLiveSessionActive(metricsChartCache, serverId)) {
         await cacheLiveSample(metricsChartCache, sample)
       }

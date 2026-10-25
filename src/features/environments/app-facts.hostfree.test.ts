@@ -27,8 +27,10 @@ function createDb(rows: Row[]): Db & { writes: Array<{ metadata: unknown }> } {
     writes,
     select: () => ({ from: () => ({ where: () => Promise.resolve(rows) }) }),
     update: () => ({
-      set: (patch: { metadata: unknown }) => {
-        writes.push(patch)
+      set: (patch: { metadata: unknown; updatedAt?: unknown }) => {
+        // `updatedAt` is kept as it was (a column reference), so only the facts are compared.
+        writes.push({ metadata: patch.metadata })
+        if (patch.updatedAt === undefined) throw new Error('updatedAt must be kept')
         return { where: () => Promise.resolve([]) }
       },
     }),

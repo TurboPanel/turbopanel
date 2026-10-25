@@ -15,6 +15,10 @@ import {
   principalPlacement,
   project,
   server,
+  service,
+  team,
+  teammate,
+  tenancy,
   user,
   workspace,
 } from '../../db/schema.ts'
@@ -37,6 +41,7 @@ async function withFixtures(
     app: Hono<AppEnv>
     cookie: string
     outsiderCookie: string
+    memberCookie: string
     organizationId: string
     projectId: string
     environmentId: string
@@ -80,6 +85,16 @@ async function withFixtures(
     .insert(user)
     .values({ email: `org-principals-out-${tag}@example.com`, isEmailVerified: true, role: 'user' })
     .returning({ id: user.id })
+  const [member] = await db
+    .insert(user)
+    .values({ email: `org-principals-mem-${tag}@example.com`, isEmailVerified: true, role: 'user' })
+    .returning({ id: user.id })
+  // A member sees the organization but holds no manage grant.
+  const [crew] = await db
+    .insert(team)
+    .values({ organizationId, name: `Crew ${tag}` })
+    .returning({ id: team.id })
+  await db.insert(teammate).values({ teamId: crew!.id, userId: member!.id })
   await db.insert(grant).values({
     entityType: 'organization',
     entityId: organizationId,
@@ -131,6 +146,7 @@ async function withFixtures(
       app,
       cookie: await cookieFor(manager!.id),
       outsiderCookie: await cookieFor(outsider!.id),
+      memberCookie: await cookieFor(member!.id),
       organizationId,
       projectId: proj!.id,
       environmentId: env!.id,
@@ -140,6 +156,7 @@ async function withFixtures(
     })
   } finally {
     await db.delete(principal).where(eq(principal.organizationId, organizationId))
+    await db.delete(service).where(eq(service.environmentId, env!.id))
     await db.delete(environment).where(eq(environment.id, env!.id))
     await db.delete(server).where(
       inArray(
@@ -150,7 +167,9 @@ async function withFixtures(
     await db.delete(project).where(eq(project.id, proj!.id))
     await db.delete(workspace).where(eq(workspace.id, ws!.id))
     await db.delete(grant).where(inArray(grant.actorId, [manager!.id, outsider!.id]))
-    await db.delete(user).where(inArray(user.id, [manager!.id, outsider!.id]))
+    await db.delete(teammate).where(eq(teammate.teamId, crew!.id))
+    await db.delete(team).where(eq(team.id, crew!.id))
+    await db.delete(user).where(inArray(user.id, [manager!.id, outsider!.id, member!.id]))
     await db.delete(organization).where(inArray(organization.id, [organizationId, otherOrg!.id]))
   }
 }
@@ -214,6 +233,7 @@ test('GET /organizations/:id/principals lists forms, servers, project and orphan
         .returning({ id: managed.id })
       await db.insert(login).values([
         {
+          recipe: 'app',
           managedId: cluster!.id,
           principalId: loginOnly,
           role: 'user',
@@ -221,6 +241,7 @@ test('GET /organizations/:id/principals lists forms, servers, project and orphan
           appliedUsername: `dbonly_${tag}`,
         },
         {
+          recipe: 'admin',
           managedId: cluster!.id,
           principalId: null,
           role: 'root',
@@ -336,6 +357,7 @@ test('DELETE /organizations/:id/principals/:principalId refuses a principal that
         })
         .returning({ id: managed.id })
       await db.insert(login).values({
+        recipe: 'app',
         managedId: cluster!.id,
         principalId: withLogin,
         role: 'user',
@@ -358,7 +380,7 @@ test('DELETE /organizations/:id/principals/:principalId refuses a principal that
       assertEquals(await b.json(), {
         error: 'principal_in_use',
         code: 'principal_in_use',
-        usedBy: { services: 0, bindings: 0, storage: 0, secrets: 0, logins: 1, folders: 0 },
+        usedBy: { tenancies: 0, bindings: 0, storages: 0, secrets: 0, logins: 1, folders: 0 },
       })
 
       const rows = await db
@@ -492,4 +514,42 @@ test('GET /servers/:id/principals lists placements with state and refuses other 
       )
     }
   )
+})
+
+test('the principal routes answer 403 to a member who cannot manage the organization', async () => {
+  await withFixtures(async ({ db, app, memberCookie, organizationId, serverId, tag }) => {
+    const orphan = await addPrincipal(db, organizationId, `member_${tag}`, null)
+    const headers = { Cookie: memberCookie }
+    const list = await app.request(`/organizations/${organizationId}/principals`, { headers })
+    const remove = await app.request(`/organizations/${organizationId}/principals/${orphan}`, {
+      method: 'DELETE',
+      headers,
+    })
+    const onServer = await app.request(`/servers/${serverId}/principals`, { headers })
+    assertEquals([list.status, remove.status, onServer.status], [403, 403, 403])
+    assertEquals((await db.select().from(principal).where(eq(principal.id, orphan))).length, 1)
+  })
+})
+
+test('DELETE /organizations/:id/principals/:principalId refuses a principal a service runs as', async () => {
+  await withFixtures(async ({ db, app, cookie, organizationId, environmentId, tag }) => {
+    const busy = await addPrincipal(db, organizationId, `busy_${tag}`, null)
+    const [svc] = await db
+      .insert(service)
+      .values({ name: 'web', environmentId, composeServiceName: 'web' })
+      .returning({ id: service.id })
+    await db.insert(tenancy).values({ principalId: busy, serviceId: svc!.id })
+
+    const res = await app.request(`/organizations/${organizationId}/principals/${busy}`, {
+      method: 'DELETE',
+      headers: { Cookie: cookie },
+    })
+    assertEquals(res.status, 409)
+    assertEquals(await res.json(), {
+      error: 'principal_in_use',
+      code: 'principal_in_use',
+      usedBy: { tenancies: 1, bindings: 0, storages: 0, secrets: 0, logins: 0, folders: 0 },
+    })
+    assertEquals((await db.select().from(principal).where(eq(principal.id, busy))).length, 1)
+  })
 })

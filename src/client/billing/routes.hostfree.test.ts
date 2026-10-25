@@ -1553,6 +1553,9 @@ test('POST /billing/upgrade validates { fromTierId, toTierId } and forwards to u
     JSON.stringify({ fromTierId: 'not-a-uuid', toTierId: S5 }),
     JSON.stringify({ fromTierId: S3, toTierId: 12 }),
     JSON.stringify({ fromTierId: S3, toTierId: S5, prorationDate: 'x' }),
+    // The optional named server must be a uuid when given.
+    JSON.stringify({ fromTierId: S3, toTierId: S5, serverId: 'not-a-uuid' }),
+    JSON.stringify({ fromTierId: S3, toTierId: S5, serverId: 7 }),
   ]) {
     const res = await app.request('/billing/upgrade', {
       method: 'POST',

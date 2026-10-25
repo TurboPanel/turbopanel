@@ -27,6 +27,7 @@ import {
   type CompileRuntimeOptions,
 } from '../../features/compose/compile-runtime.ts'
 import { sha256HexUtf8 } from '../../features/compose/desired-hash.ts'
+import { deployInputsDigest } from './deploy-inputs-digest.ts'
 import {
   parseOrganizationOptions,
   resolveAcmeEnabled,
@@ -104,8 +105,11 @@ import { loadSshKeysByPrincipalIds } from '../principals/ssh-keys.ts'
 import {
   parsePrincipalOptions,
   resolvePrincipalIdOverride,
-  resolvePrincipalShell,
 } from '../../features/principals/principal-options.ts'
+import {
+  type PrincipalAccessLevel,
+  shellForAccessLevel,
+} from '../../features/principals/principal-access.ts'
 import { renderPhpForDeploy } from '../../features/hostings/php-settings.ts'
 import { type PhpModePrepareError, withSitePhpModes } from './deploy-php-modes.ts'
 import {
@@ -206,6 +210,7 @@ import {
   storageCopy,
   tls,
 } from '../../db/schema.ts'
+import { loadHideWebServerNames } from '../../features/servers/web-server-settings.ts'
 import {
   checkResourceLimits,
   parseResourceLimits,
@@ -273,6 +278,10 @@ import {
 } from '../../features/system/hierarchy.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
 import { loadManagedIngressPorts } from '../../features/managed/load-org-defaults.ts'
+import {
+  describeReservedHostPorts,
+  reservedHostPortFindings,
+} from '../../features/compose/reserved-host-ports.ts'
 import { DEFAULT_MANAGED_INGRESS_PORTS } from '../../features/managed/ingress-ports.ts'
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -316,6 +325,7 @@ export type DeployPrepareWarningCode =
   | 'php_mode_not_allowed'
   | 'node_version_unresolved'
   | 'storage_service_removed'
+  | 'reserved_host_port'
 
 /**
  * Gate a deploy's PHP series against what the target host actually reports.
@@ -1124,6 +1134,17 @@ function appendUnseenRegisteredVolumes(
   }
 }
 
+/** Warn about each published host port the platform reserves; the host refuses these at deploy. */
+export function reservedHostPortWarnings(
+  services: Record<string, unknown>
+): DeployPrepareWarning[] {
+  return reservedHostPortFindings(services).map(({ service, port }) => ({
+    code: 'reserved_host_port',
+    message: `Service "${service}" publishes host port ${port}, which the platform reserves for its own services (reserved host ports: ${describeReservedHostPorts()}). The deploy will be refused; publish a different host port.`,
+    details: { composeServiceName: service, port },
+  }))
+}
+
 /**
  * Take the mounts of services the compose no longer declares out of the storage
  * material. A removed service leaves its storage row behind (the data and its
@@ -1405,6 +1426,7 @@ export async function loadPrincipalMaterial(
       // is the applied username; the short `username` is panel-internal.
       username: principal.appliedUsername,
       options: principal.options,
+      access: principal.access,
       password: principal.password,
     })
     .from(principal)
@@ -1429,7 +1451,7 @@ export async function loadPrincipalMaterial(
   for (const row of rows) {
     const options = parsePrincipalOptions(row.options)
     const override = resolvePrincipalIdOverride(options)
-    const shell = resolvePrincipalShell(options)
+    const shell = shellForAccessLevel(row.access as PrincipalAccessLevel)
     const keys = sshKeys.get(row.id) ?? []
     // Password sign-in is on exactly when the row holds a crypt hash. The
     // format gate matters: for a server principal the column only ever holds
@@ -2711,7 +2733,8 @@ function ownsIngressForService(
 async function deployDesiredHash(
   composeYaml: string,
   sourceMaterial: readonly EnvironmentDeploySource[],
-  nativeAppServices: readonly PreparedNativeAppService[] = []
+  nativeAppServices: readonly PreparedNativeAppService[] = [],
+  inputs?: Record<string, unknown>
 ): Promise<string> {
   const parts: string[] = []
   if (sourceMaterial.length > 0) {
@@ -2742,8 +2765,62 @@ async function deployDesiredHash(
         .join('\n')
     )
   }
+  // Variables, hostnames, sites, apps and storage decide what runs just as the
+  // compose document does; without them a changed variable would hash the same
+  // and the host would skip the redeploy as unchanged.
+  if (inputs !== undefined) parts.push(await deployInputsDigest(inputs))
   if (parts.length === 0) return await sha256HexUtf8(composeYaml)
   return await sha256HexUtf8([composeYaml, ...parts].join('\n'))
+}
+
+/**
+ * What a real deploy hashes beyond the compose document (see
+ * `deploy-inputs-digest.ts`). Preview carries none of the sealed material, so
+ * it keeps the compose-and-commits hash it always had.
+ */
+function deployHashInputs(parts: {
+  hooks: ServiceDeployHook[]
+  principalMaterial: EnvironmentDeployPrincipalMaterial[]
+  sites: EnvironmentDeploySite[]
+  nativeAppServices: PreparedNativeAppService[]
+  nativeAppVariables?: NativeAppVariablesView[]
+  nativeAppNodeVersions?: NativeAppNodeVersionView[]
+  nativeAppDenoVersions?: NativeAppDenoVersionView[]
+  sourceMaterial: EnvironmentDeploySource[]
+  dockerExternalNetworks: string[]
+  dockerNetworkAddressing?: readonly EnvironmentDeployDockerNetwork[]
+  fabricNetworks?: readonly EnvironmentDeployFabricNetwork[]
+  managedNetworkServices: string[]
+  managedNetwork?: string
+  ingressServices: EnvironmentDeployIngressService[]
+  edge?: ServerEdgeDeployment
+  replicaCounts: Record<string, number>
+  hashInputs?: Record<string, unknown>
+}): Record<string, unknown> | undefined {
+  if (parts.hashInputs === undefined) return undefined
+  return {
+    ...parts.hashInputs,
+    hooks: parts.hooks,
+    principalMaterial: parts.principalMaterial,
+    sites: parts.sites,
+    nativeAppServices: parts.nativeAppServices,
+    nativeAppVariables: parts.nativeAppVariables,
+    nativeAppNodeVersions: parts.nativeAppNodeVersions,
+    nativeAppDenoVersions: parts.nativeAppDenoVersions,
+    sourceMaterial: parts.sourceMaterial,
+    dockerExternalNetworks: parts.dockerExternalNetworks,
+    dockerNetworkAddressing: parts.dockerNetworkAddressing,
+    fabricNetworks: parts.fabricNetworks,
+    managedNetworkServices: parts.managedNetworkServices,
+    managedNetwork: parts.managedNetwork,
+    ingressServices: parts.ingressServices,
+    hostings: parts.edge?.hostings,
+    tlsMaterial: parts.edge?.tlsMaterial,
+    listenerPorts: parts.edge?.listenerPorts,
+    hostingIngress: parts.edge?.hostingIngress,
+    hostingIngressNetwork: parts.edge?.hostingIngressNetwork,
+    replicaCounts: parts.replicaCounts,
+  }
 }
 
 async function toPreparedDeployResult(
@@ -2789,6 +2866,13 @@ async function toPreparedDeployResult(
     envFile?: string
     secretPlan?: DeploySecretPlanEntry[]
     sourceSelection?: DeploySourceSelection
+    /**
+     * The variables and storage as they are before they are sealed for the
+     * daemon (sealing adds a fresh nonce on every send), so the hash compares
+     * what a deploy carries, not how it was wrapped. Set only for a real
+     * deploy; absent for a preview.
+     */
+    hashInputs?: Record<string, unknown>
   }
 ): Promise<PreparedDeployCompose> {
   const omitSecrets = mode === 'preview'
@@ -2799,7 +2883,8 @@ async function toPreparedDeployResult(
     desiredHash: await deployDesiredHash(
       parts.composeYaml,
       parts.sourceMaterial,
-      parts.nativeAppServices
+      parts.nativeAppServices,
+      deployHashInputs(parts)
     ),
     replicaCounts: parts.replicaCounts,
     hooks: parts.hooks,
@@ -2830,6 +2915,9 @@ async function toPreparedDeployResult(
     ...(parts.edge?.hostingIngressNetwork === undefined
       ? {}
       : { hostingIngressNetwork: parts.edge.hostingIngressNetwork }),
+    ...(parts.edge?.hideWebServerNames === undefined
+      ? {}
+      : { hideWebServerNames: parts.edge.hideWebServerNames }),
     composeServiceExpansion: expansionToRecord(parts.expansion),
     volumes: parts.registeredVolumes,
     warnings: parts.warnings,
@@ -3328,6 +3416,7 @@ async function resolveLocalSitesBoundForDeploy(
     daemonFeatures: phpDaemonState?.projection?.features ?? [],
     warnings: dbBindingWarnings,
   })
+  if ('kind' in localSiteBound) return localSiteBound
   args.warnings.push(...dbBindingWarnings)
   return localSiteBound
 }
@@ -3667,6 +3756,7 @@ export async function prepareDeployCompose(
   // composeYaml today. Compile one runtime snapshot; daemons never see
   // project/environment/platform layers.
   const effective = split.containerDocument
+  warnings.push(...reservedHostPortWarnings(composeServicesRecord(effective)))
   const compiled = compileRuntimeCompose(effective, {
     ...compileRuntimeOptionsForServer(params.environmentId, pipeline, params.schedule),
     placementServerId: params.serverId,
@@ -3701,6 +3791,14 @@ export async function prepareDeployCompose(
 
   return await toPreparedDeployResult(mode, {
     serverId: resolved.serverId,
+    ...(mode === 'preview'
+      ? {}
+      : {
+          hashInputs: {
+            secretVariables: withVariables.secretMaterial,
+            storage: storageMaterialRaw,
+          },
+        }),
     composeYaml,
     composeFiles,
     hooks,
@@ -4125,7 +4223,7 @@ export function hostingTlsWireFromResolved(params: {
   bindScope: HostingBindScope
   acmeEnabled: boolean
 }): HostingTlsWire {
-  if (params.status !== 'managed') {
+  if (params.status !== 'automatic') {
     return { ok: true, tlsId: params.tlsId }
   }
   if (!params.acmeEnabled) {
@@ -4595,7 +4693,12 @@ async function resolveSharedHttpHostingIngress(
  */
 type ServerEdgeDeployment = Pick<
   ServerDeployment,
-  'hostings' | 'tlsMaterial' | 'listenerPorts' | 'hostingIngress' | 'hostingIngressNetwork'
+  | 'hostings'
+  | 'tlsMaterial'
+  | 'listenerPorts'
+  | 'hostingIngress'
+  | 'hostingIngressNetwork'
+  | 'hideWebServerNames'
 >
 
 /**
@@ -4680,6 +4783,11 @@ async function compileServerEdgeDeployment(
     listenerPorts,
     ...(hostingIngress ? { hostingIngress } : {}),
     ...(hostingIngressNetwork ? { hostingIngressNetwork } : {}),
+    hideWebServerNames: await loadHideWebServerNames(
+      db,
+      params.serverId,
+      params.serverOrganizationId ?? params.organizationId
+    ),
   }
 }
 

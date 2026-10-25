@@ -50,6 +50,7 @@
  * enforced live runtime so a still-running holder cannot be stolen.
  */
 import { expireStaleRecoveries } from '../../features/managed/recovery-records.ts'
+import { sweepStalledFencing } from '../../features/managed/ha-recovery.ts'
 import { AUTOMATIC_FAILOVER_STALE_DETECTING_MESSAGE } from '../../features/managed/recovery.ts'
 import {
   type Db,
@@ -62,6 +63,7 @@ import { resolveWorkersDb } from '../../platform/workers/workers-bindings.ts'
 import { runManagedIngressOrphanSweep } from '../../features/managed/ingress-desired.ts'
 import { runHostLossTick } from './host-loss-tick.ts'
 import { runDatacenterRepinFanoutSweep } from '../../client/datacenters/repin-fanout.ts'
+import { runNetworkProbeSweep } from '../../client/datacenters/network-probe-sweep.ts'
 import { runSystemReconcileSweep } from '../../features/system/reconcile.ts'
 import { runBackupsReconcileSweep } from '../../features/backups/reconcile.ts'
 import { runFolderReconcileSweep } from './folder-reconcile-sweep.ts'
@@ -103,7 +105,7 @@ import {
 import { pruneAuditHistory } from '../../features/audit/prune.ts'
 import { pruneCommandHistory } from '../../features/commands/prune.ts'
 import { getAuditRetentionMonths } from '../../features/settings/audit-retention-settings.ts'
-import { resolveInstanceRevision } from '../../app/build-info.ts'
+import { resolveBuildLabel, resolveInstanceRevision } from '../../app/build-info.ts'
 import { INSTANCE_VERSION } from '../../app/version.ts'
 import { resolveColocatedServerId } from '../../client/authn/install-state.ts'
 import { runUpgradeMaintenance } from '../../features/upgrades/maintenance.ts'
@@ -149,6 +151,7 @@ import {
 import { endOfflineSweep, tryBeginOfflineSweep } from './offline-sweep-lease.ts'
 import { resolveWorkersEmailQueue } from '../../features/email/mailgun/workers-queue.ts'
 import { resolveEmailSettings } from '../../features/settings/email-settings.ts'
+import { prunePeaks } from '../../features/servers/peak.ts'
 import { sweepTierNotices } from '../../features/tiers/tier-notice-sweep.ts'
 import { resolveBillingConfig } from '../../features/billing/config.ts'
 import { createStripeClient } from '../../features/billing/client.ts'
@@ -918,6 +921,8 @@ export async function sweepExpiredCommandDispatchSafely(
   // failure here never aborts the other sweeps.
   try {
     const timedOut = await sweepStaleCommands(db, { commandQueue: opts?.commandQueue })
+    // A fence step that never answered ends its recovery at the deadline.
+    await sweepStalledFencing(db, { commandQueue: opts?.commandQueue })
     // Recoveries first: a row still in flight keeps its managed row at
     // `applying`, and an expired one releases it itself.
     const expiredDetecting = await expireStaleRecoveries(db, {
@@ -995,6 +1000,23 @@ export async function sweepAuditHistorySafely(db: Db): Promise<void> {
 }
 
 /**
+ * Retention prune of `peak` buckets older than the 7-day grace window (see
+ * features/servers/peak.ts). Same 15-minute window and the same isolation.
+ */
+export async function sweepPeakHistorySafely(db: Db): Promise<void> {
+  try {
+    const deleted = await prunePeaks(db)
+    if (deleted > 0) {
+      sweepTrace('peak-history-swept', { deleted })
+    }
+  } catch (err) {
+    sweepTrace('peak-history-sweep-failed', {
+      error: sweepErrorMessage(err),
+    })
+  }
+}
+
+/**
  * Retention prune of aged terminal `command` rows (see features/commands/prune.ts).
  * Rides the same 15-minute window and is isolated so a failure never aborts the
  * other sweeps.
@@ -1033,6 +1055,7 @@ export async function runUpgradeMaintenanceSafely(db: Db, env: CloudflareBinding
         version: INSTANCE_VERSION,
         commit: revision.commit,
       },
+      buildLabel: resolveBuildLabel(envRecord),
       colocatedServerId: colocated,
     })
     sweepTrace('upgrade-tick')
@@ -1096,7 +1119,8 @@ async function runQueuedCronSweeps(
   db: Db,
   queue: NonNullable<CloudflareBindings['TURBOPANEL_COMMAND_QUEUE']>,
   tlsRenewal: CronTlsRenewal | null | undefined,
-  firewallApplyGate: FirewallApplyGate
+  firewallApplyGate: FirewallApplyGate,
+  registry: DaemonCellRegistry
 ): Promise<void> {
   try {
     const commandQueue = createWorkersCommandQueue(queue)
@@ -1106,7 +1130,14 @@ async function runQueuedCronSweeps(
     // Backup policy sets after a reconnect; isolated so a failure never
     // aborts the other sweeps.
     try {
-      await runBackupsReconcileSweep(db, commandQueue)
+      await runBackupsReconcileSweep(db, commandQueue, {
+        copyDeps: tlsRenewal
+          ? {
+              secretsConfig: tlsRenewal.secretsConfig,
+              dataEncryptionSecrets: tlsRenewal.dataEncryptionSecrets,
+            }
+          : undefined,
+      })
     } catch (err) {
       sweepTrace('backups-reconcile-sweep-failed', {
         error: sweepErrorMessage(err),
@@ -1135,9 +1166,21 @@ async function runQueuedCronSweeps(
         error: sweepErrorMessage(err),
       })
     }
-    // Let's Encrypt requests waiting for DNS; needs no secrets bundle.
+    // Let's Encrypt requests waiting for DNS. With the secrets bundle a newly
+    // pinned certificate goes out at once; without it the panel asks for a redeploy.
     try {
-      await runHostingLetsEncryptSweepTick(db)
+      await runHostingLetsEncryptSweepTick(
+        db,
+        tlsRenewal
+          ? {
+              apply: {
+                commandQueue,
+                secretsConfig: tlsRenewal.secretsConfig,
+                dataEncryptionSecrets: tlsRenewal.dataEncryptionSecrets,
+              },
+            }
+          : {}
+      )
     } catch (err) {
       sweepTrace('hosting-letsencrypt-sweep-failed', {
         error: sweepErrorMessage(err),
@@ -1166,6 +1209,17 @@ async function runQueuedCronSweeps(
           error: sweepErrorMessage(err),
         })
       }
+    }
+    // Automatic network fallback: ask the servers whether the network that
+    // carries server-to-server traffic still works, and mark the ones nobody
+    // can reach. Only stamps `ip.repin_pending_fanout_at`; the fan-out above
+    // drains it on a later tick. Never throws.
+    try {
+      await runNetworkProbeSweep(db, registry)
+    } catch (err) {
+      sweepTrace('network-probe-sweep-failed', {
+        error: sweepErrorMessage(err),
+      })
     }
   } catch (err) {
     sweepTrace('system-reconcile-sweep-failed', {
@@ -1322,6 +1376,7 @@ async function upgradePhaseWork(
     )
     await runWithDbTimeout(db, sweepCommandHistorySafely, capDbTimeout(deadlineMs))
     await runWithDbTimeout(db, sweepAuditHistorySafely, capDbTimeout(deadlineMs))
+    await runWithDbTimeout(db, sweepPeakHistorySafely, capDbTimeout(deadlineMs))
   }
   if (shouldRunUpgradeTick(scheduledTime, upgradeTickMinutes)) {
     await runUpgradeMaintenanceSafely(db, env)
@@ -1586,7 +1641,13 @@ async function runOptionalCronPhases(
   const commandQueue = env.TURBOPANEL_COMMAND_QUEUE
   if (!commandQueue) return
   await runOptionalPhase(deadlineMs, 'reconcile', opts.scheduledTime, phasesSkipped, () =>
-    runQueuedCronSweeps(db, commandQueue, tlsRenewal, opts.firewallApplyGate)
+    runQueuedCronSweeps(
+      db,
+      commandQueue,
+      tlsRenewal,
+      opts.firewallApplyGate,
+      createDurableObjectDaemonCellRegistry(env, db)
+    )
   )
 }
 

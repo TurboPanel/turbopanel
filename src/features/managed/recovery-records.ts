@@ -244,6 +244,8 @@ export async function updateRecovery(
  * other's `fenceCommandIds` edits. `decide` sees the locked current row and
  * returns the patch, or null to leave it untouched. Returns the updated row,
  * or null when nothing was written (missing, terminal, or declined).
+ * `includeTerminal` also locks a finished row, for notes written after the
+ * recovery completed (the re-seed of a former primary runs after its switchover).
  *
  * `decide` must be pure: never queue commands or open another transaction
  * while the lock is held; act on the returned row after the commit.
@@ -251,7 +253,8 @@ export async function updateRecovery(
 export async function updateRecoveryLocked(
   db: Db,
   recoveryId: string,
-  decide: (current: RecoveryRecord) => RecoveryPatch | null
+  decide: (current: RecoveryRecord) => RecoveryPatch | null,
+  options: { includeTerminal?: boolean } = {}
 ): Promise<RecoveryRecord | null> {
   return await db.transaction(async (tx) => {
     const [locked] = await tx
@@ -261,7 +264,11 @@ export async function updateRecoveryLocked(
       .for('update')
       .limit(1)
     const current = locked ? serializeRow(locked) : null
-    if (!current || (TERMINAL_RECOVERY_STATES as ReadonlySet<string>).has(current.state)) {
+    if (!current) return null
+    if (
+      !options.includeTerminal &&
+      (TERMINAL_RECOVERY_STATES as ReadonlySet<string>).has(current.state)
+    ) {
       return null
     }
     const patch = decide(current)
@@ -274,6 +281,43 @@ export async function updateRecoveryLocked(
     const row = rows[0]
     return row ? serializeRow(row) : null
   })
+}
+
+/** Rows still in `fencing` (the fence deadline sweep judges them). */
+export async function listFencingRecoveries(db: Db, limit = 50): Promise<RecoveryRecord[]> {
+  const rows = await db.select().from(recovery).where(eq(recovery.state, 'fencing')).limit(limit)
+  return rows.map((row) => serializeRow(row)).filter((row): row is RecoveryRecord => row !== null)
+}
+
+/** The newest rows of one cluster, newest first. */
+export async function listRecentRecoveries(
+  db: Db,
+  managedId: string,
+  limit = 10
+): Promise<RecoveryRecord[]> {
+  const rows = await db
+    .select()
+    .from(recovery)
+    .where(eq(recovery.managedId, managedId))
+    .orderBy(desc(recovery.startedAt))
+    .limit(limit)
+  return rows.map((row) => serializeRow(row)).filter((row): row is RecoveryRecord => row !== null)
+}
+
+/** Blocked rows whose planned-switchover restart is not fully queued yet. */
+export async function listPendingAbortRestarts(db: Db, limit = 50): Promise<RecoveryRecord[]> {
+  const rows = await db
+    .select()
+    .from(recovery)
+    .where(eq(recovery.state, 'blocked'))
+    .orderBy(desc(recovery.updatedAt))
+    .limit(limit)
+  return rows
+    .map((row) => serializeRow(row))
+    .filter(
+      (row): row is RecoveryRecord =>
+        row !== null && (row.metadata.abortRestartTodo?.length ?? 0) > 0
+    )
 }
 
 /** A `detecting`/`fencing` row older than this with no command queued is expired. */

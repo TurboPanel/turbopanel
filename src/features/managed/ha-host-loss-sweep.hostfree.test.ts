@@ -8,7 +8,12 @@ import type { Db } from '../../db/connection.ts'
 import type { ManagedReplicationHealth } from '../../contracts/commands/schemas.ts'
 import { MANAGED_HA_BOOT_HOLD_FEATURE } from '../../lib/version-wire.ts'
 import type { CommandQueue } from '../commands/queue.ts'
-import { DEFAULT_HOST_LOSS_WINDOW_MS, HOST_LOSS_MARK_LAG_MS } from './ha-host-loss.ts'
+import {
+  DEFAULT_HOST_LOSS_WINDOW_MS,
+  type EngineReach,
+  HOST_LOSS_ENGINE_PROBE_GAP_MS,
+  HOST_LOSS_MARK_LAG_MS,
+} from './ha-host-loss.ts'
 import {
   type HostLossCandidate,
   type HostLossLoaders,
@@ -67,6 +72,7 @@ function candidate(overrides: Partial<HostLossCandidate> = {}): HostLossCandidat
     primaryServerId: SERVER_A,
     organizationId: ORG,
     offlineSince: OFFLINE_SINCE,
+    markReason: 'sweep_stale',
     ...overrides,
   }
 }
@@ -86,19 +92,24 @@ type World = {
   org?: { total: number; offline: number }
   inFlight?: RecoveryRecord | null
   answers?: Record<string, ManagedReplicationHealth | null>
+  /** What each peer's engine-port check returns, per round (the last repeats); default unreachable. */
+  engine?: Record<string, Array<EngineReach | 'throw'>>
 }
 
 type Calls = {
   probes: Array<Parameters<FreshStandbyProbe>[0]>
   alerts: Array<{ code: string; incident: string; evidence: string }>
   failovers: Array<Record<string, unknown>>
+  engineChecks: Array<{ peer: string; primary: string }>
+  sleeps: number[]
 }
 
 async function sweep(
   world: World,
   options: { autoFailover?: 'on' | 'off'; throwOn?: string } = {}
 ): Promise<{ outcomes: HostLossOutcome[]; calls: Calls }> {
-  const calls: Calls = { probes: [], alerts: [], failovers: [] }
+  const calls: Calls = { probes: [], alerts: [], failovers: [], engineChecks: [], sleeps: [] }
+  const engineSeen = new Map<string, number>()
   const members = world.members ?? [member(), replicaMember()]
   const loaders: HostLossLoaders = {
     listOfflinePrimaries: () => Promise.resolve(world.candidates ?? [candidate()]),
@@ -131,6 +142,18 @@ async function sweep(
     commandQueue: queue,
     autoFailover: options.autoFailover ?? 'on',
     probeStandby,
+    probeEngine: ({ peer, primary }) => {
+      calls.engineChecks.push({ peer: peer.id, primary: primary.id })
+      const n = engineSeen.get(peer.id) ?? 0
+      engineSeen.set(peer.id, n + 1)
+      const script = world.engine?.[peer.id] ?? ['unreachable']
+      const answer = script[Math.min(n, script.length - 1)]!
+      return answer === 'throw' ? Promise.reject(new Error('boom')) : Promise.resolve(answer)
+    },
+    sleep: (ms) => {
+      calls.sleeps.push(ms)
+      return Promise.resolve()
+    },
     windowMs: DEFAULT_HOST_LOSS_WINDOW_MS,
     nowMs: () => NOW,
     loaders,
@@ -167,6 +190,128 @@ test('host vanishes and the replica confirms: the failover starts, anchored on t
     calls.probes.map((probe) => probe.memberId),
     [MEM_REPLICA]
   )
+})
+
+test('a stopped daemon (closed socket) with the engine gone is promoted once the replicas confirm', async () => {
+  const { outcomes, calls } = await sweep({ candidates: [candidate({ markReason: 'disconnect' })] })
+  assertEquals(outcomes, [{ managedId: MANAGED_ID, result: 'failover' }])
+  assertEquals(calls.alerts, [])
+  // A closed socket is marked the moment it closes: no sweep lag to allow for.
+  assertEquals(calls.failovers[0]?.failureStartedAtMs, OFFLINE_SINCE_MS)
+})
+
+test('a stopped daemon whose engine still streams to a replica is never promoted', async () => {
+  const { outcomes, calls } = await sweep({
+    candidates: [candidate({ markReason: 'disconnect' })],
+    answers: { [MEM_REPLICA]: STILL_RECEIVING },
+  })
+  assertEquals(outcomes, [{ managedId: MANAGED_ID, result: 'alert', code: 'peer_streaming' }])
+  assertEquals(calls.failovers, [])
+})
+
+test('a closed socket still waits out the window, so a daemon restart changes nothing', async () => {
+  const { outcomes, calls } = await sweep({
+    candidates: [
+      candidate({ markReason: 'disconnect', offlineSince: new Date(NOW - 20_000).toISOString() }),
+    ],
+  })
+  assertEquals(outcomes, [{ managedId: MANAGED_ID, result: 'wait' }])
+  assertEquals(calls.probes.length + calls.alerts.length + calls.failovers.length, 0)
+})
+
+test('a replica quiet for a hair under the window after a closed socket still corroborates', async () => {
+  const justUnder: ManagedReplicationHealth = {
+    state: 'stopped',
+    observedAt: NOW_ISO,
+    lastStreaming: { at: NOW_ISO, ageMs: DEFAULT_HOST_LOSS_WINDOW_MS - 5_000 },
+  }
+  const closed = await sweep({
+    candidates: [candidate({ markReason: 'disconnect' })],
+    answers: { [MEM_REPLICA]: justUnder },
+  })
+  assertEquals(closed.outcomes[0]?.result, 'failover')
+  // The stale path keeps its strict check: the same reading does not corroborate there.
+  const stale = await sweep({ answers: { [MEM_REPLICA]: justUnder } })
+  assertEquals(stale.outcomes[0], {
+    managedId: MANAGED_ID,
+    result: 'alert',
+    code: 'not_corroborated',
+  })
+})
+
+test('the daemon is gone but the other members still reach the database port: no promotion', async () => {
+  for (const markReason of ['disconnect', 'sweep_stale'] as const) {
+    const { outcomes, calls } = await sweep({
+      candidates: [candidate({ markReason })],
+      engine: { [MEM_REPLICA]: ['reachable'] },
+    })
+    assertEquals(outcomes, [{ managedId: MANAGED_ID, result: 'alert', code: 'engine_reachable' }])
+    assertEquals(calls.failovers, [])
+    assertEquals(calls.alerts[0]?.code, 'engine_reachable')
+  }
+})
+
+test('the database port is unreachable from every other member in two rounds: the failover starts', async () => {
+  const { outcomes, calls } = await sweep({})
+  assertEquals(outcomes, [{ managedId: MANAGED_ID, result: 'failover' }])
+  // Two rounds, every peer each time, with a pause between them.
+  assertEquals(calls.engineChecks, [
+    { peer: MEM_REPLICA, primary: MEM_PRIMARY },
+    { peer: MEM_REPLICA, primary: MEM_PRIMARY },
+  ])
+  assertEquals(calls.sleeps, [HOST_LOSS_ENGINE_PROBE_GAP_MS])
+})
+
+test('a port that answers in the second round only still vetoes', async () => {
+  const { outcomes, calls } = await sweep({
+    engine: { [MEM_REPLICA]: ['unreachable', 'reachable'] },
+  })
+  assertEquals(outcomes[0], { managedId: MANAGED_ID, result: 'alert', code: 'engine_reachable' })
+  assertEquals(calls.failovers, [])
+})
+
+test('a check that did not answer, was not possible or threw never supports a promotion', async () => {
+  for (const script of [['unknown'], ['unreachable', 'unknown'], ['throw']] as const) {
+    const { outcomes, calls } = await sweep({ engine: { [MEM_REPLICA]: [...script] } })
+    assertEquals(outcomes[0], {
+      managedId: MANAGED_ID,
+      result: 'alert',
+      code: 'engine_unconfirmed',
+    })
+    assertEquals(calls.failovers, [])
+  }
+})
+
+test('with three members every other member must fail to reach the port', async () => {
+  const members = [
+    member(),
+    replicaMember(),
+    replicaMember({ id: MEM_THIRD, serverId: SERVER_C, ordinal: 3 }),
+  ]
+  const oneReaches = await sweep({
+    members,
+    org: { total: 3, offline: 1 },
+    engine: { [MEM_THIRD]: ['reachable'] },
+  })
+  assertEquals(oneReaches.outcomes[0], {
+    managedId: MANAGED_ID,
+    result: 'alert',
+    code: 'engine_reachable',
+  })
+  const oneUnsure = await sweep({
+    members,
+    org: { total: 3, offline: 1 },
+    engine: { [MEM_THIRD]: ['unknown'] },
+  })
+  assertEquals(
+    oneUnsure.outcomes[0]?.result === 'alert' && oneUnsure.outcomes[0].code,
+    'engine_unconfirmed'
+  )
+})
+
+test('the engine check only runs after the replicas confirmed they stopped receiving', async () => {
+  const { calls } = await sweep({ answers: { [MEM_REPLICA]: STILL_RECEIVING } })
+  assertEquals(calls.engineChecks, [])
 })
 
 test('the per-environment switch is passed through unchanged (off = the failover path refuses and alerts)', async () => {
@@ -267,7 +412,7 @@ test('most of the fleet offline is an outage, not one lost host: alert only', as
 
 test('past the last moment a promotion can be decided it is an alert, never a late failover', async () => {
   const { outcomes, calls } = await sweep({
-    candidates: [candidate({ offlineSince: new Date(NOW - 460_000).toISOString() })],
+    candidates: [candidate({ offlineSince: new Date(NOW - 1_060_000).toISOString() })],
   })
   assertEquals(outcomes[0], { managedId: MANAGED_ID, result: 'alert', code: 'too_late' })
   assertEquals(calls.probes.length + calls.failovers.length, 0)
@@ -314,6 +459,7 @@ test('a failing candidate listing is survived and reports nothing', async () => 
     commandQueue: null,
     autoFailover: 'on',
     probeStandby: () => Promise.resolve(null),
+    probeEngine: () => Promise.resolve('unknown'),
     windowMs: DEFAULT_HOST_LOSS_WINDOW_MS,
     loaders: { listOfflinePrimaries: () => Promise.reject(new TypeError('down')) },
   })

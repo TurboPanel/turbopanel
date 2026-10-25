@@ -2444,6 +2444,43 @@ it('validateDaemonInboundFrame checks managed-permissions-result', () => {
   assertEquals(accept({ ...base, permissions: { blob: 'x'.repeat(130 * 1024) } }), false)
 })
 
+it('server-network-check-result is allowed inbound; the request stays outbound-only', () => {
+  const allowed = DAEMON_INBOUND_ALLOWED as ReadonlySet<string>
+  assertEquals(allowed.has('server-network-check-result'), true)
+  assertEquals(allowed.has('server-network-check-request'), false)
+})
+
+it('validateDaemonInboundFrame checks server-network-check-result', () => {
+  const base = { type: 'server-network-check-result', id: 'req-1', ok: true, at: VALID_AT }
+  const entry = { peerServerId: 's2', address: '10.0.0.2', reachable: true }
+  const accept = (frame: Record<string, unknown>) =>
+    validateDaemonInboundFrame(JSON.stringify(frame)).ok
+  assertEquals(accept({ ...base, results: [entry] }), true)
+  assertEquals(
+    accept({ ...base, results: [{ ...entry, reachable: false, error: 'timeout' }] }),
+    true
+  )
+  assertEquals(accept({ ...base, ok: false, error: 'no targets' }), true)
+  assertEquals(accept({ ...base, results: 'nope' }), false)
+  assertEquals(accept({ ...base, results: [{ ...entry, reachable: 'yes' }] }), false)
+  assertEquals(accept({ ...base, results: [{ ...entry, latencyMs: -1 }] }), false)
+  assertEquals(accept({ ...base, results: Array.from({ length: 33 }, () => entry) }), false)
+})
+
+it('server-network-check-request is sent as a wire message with its targets', () => {
+  const targets = [{ peerServerId: 's2', address: '10.0.0.2', port: 22 }]
+  assertEquals(
+    outboundEnvelopeToWireMessage({
+      kind: 'server-network-check-request',
+      deliveryId: 'd1',
+      requestId: 'r1',
+      targets,
+      at: VALID_AT,
+    }),
+    { type: 'server-network-check-request', id: 'r1', targets, at: VALID_AT }
+  )
+})
+
 it('validateDaemonInboundFrame rejects malformed managed-health-result frames', () => {
   const base = {
     type: 'managed-health-result',
@@ -2668,4 +2705,33 @@ it('managed-health-result bounds the GTID freshness fields and types fullyApplie
   assertEquals(frame({ receivedGtid: 'x'.repeat(4097) }), false)
   assertEquals(frame({ executedGtid: 7 }), false)
   assertEquals(frame({ fullyApplied: 'true' }), false)
+})
+
+it('validateDaemonInboundFrame bounds the commands report on hello and heartbeat', () => {
+  const frame = (type: 'hello' | 'heartbeat', commands: unknown) =>
+    validateDaemonInboundFrame(
+      JSON.stringify({ type, at: VALID_AT, daemonBuild: VALID_DAEMON_BUILD, commands })
+    )
+  const report = { running: ['c1'], unacked: ['c2', 'c3'] }
+  for (const type of ['hello', 'heartbeat'] as const) {
+    const accepted = frame(type, report)
+    assertEquals(accepted.ok, true)
+    if (
+      accepted.ok &&
+      (accepted.message.type === 'hello' || accepted.message.type === 'heartbeat')
+    ) {
+      assertEquals(accepted.message.commands, report)
+    }
+    assertEquals(frame(type, undefined).ok, true)
+    for (const bad of [
+      'x',
+      [],
+      { running: 'c1', unacked: [] },
+      { running: [], unacked: [7] },
+      { running: ['a'.repeat(MAX_DAEMON_WS_ID_CHARS + 1)], unacked: [] },
+      { running: Array.from({ length: 65 }, (_, index) => `c${index}`), unacked: [] },
+    ]) {
+      assertEquals(frame(type, bad).ok, false, JSON.stringify(bad))
+    }
+  }
 })

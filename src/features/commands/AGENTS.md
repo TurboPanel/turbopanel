@@ -153,6 +153,22 @@ in the execution-log store — there is no Postgres column for them. See
   first session lost during start goes through the same reconnect loop as a
   later loss. The mailer consumer (`lib/email/mailer/deno-mailer-consumer.ts`)
   follows the same rule.
+  Commands run **one at a time per server** (`command-lanes.ts`): the consumer
+  parses each delivery, hands it to the lane of its envelope's `serverId`, and
+  acks or nacks only after the lane has run it. Different servers run in
+  parallel (cap `COMMAND_LANE_CONCURRENCY`, lanes take turns); same-server
+  commands keep arrival order, which keeps same-service ordering because a
+  managed service lives on one server. Cross-server ordering is never assumed:
+  it lives in command metadata (see multi-command sequencing). `prefetch` is
+  `COMMAND_CONSUMER_PREFETCH` so a backlog can wait in its lane; a delivery
+  still waiting when the session is lost or closed is skipped (left
+  unacknowledged for the broker to redeliver), never run late. An unparseable delivery bypasses the lanes (dead-lettered at once). A
+  delivery waiting in a lane stays unacknowledged, and RabbitMQ closes a channel
+  whose delivery stays unacknowledged past its `consumer_timeout` (30 minutes by
+  default; the broker is configured in the daemon repo's `rabbitmq` role, not
+  here), so a very deep backlog on one server can outlast it. A command's valid
+  time counts from when it was queued, so waiting behind the same server's
+  earlier command counts and waiting behind other servers no longer does.
   **TODO:** extract to a dedicated `turbopanel-command-consumer.service` systemd
   unit in a future pass (mirrors the mailer pattern).
 - Shared abstraction: `CommandQueue` interface in `src/features/commands/queue.ts`;
@@ -292,6 +308,31 @@ A replica that fails, expires, or never enqueues simply never opens the gate:
 the primary gets no command row and the `managed` row survives for a retry — or
 for `?force=true`, which skips the gate deliberately because a member host may
 be unreachable.
+
+### A deploy survives a lost link or a restart (`command-recovery-v1`)
+
+A daemon that lists `command-recovery-v1` keeps each command's final result on
+its host until this control plane confirms it (`command-outcome-ack`), sends it
+again on every attach and every 30 s, lists the ids it is running or holding on
+`hello` / `heartbeat` (`commands`), and repeats a running command's step plan
+every 30 s. The control plane then works like this (`deploy-wait.ts`,
+`command-recovery.ts`, `command-progress.ts`):
+
+- A running deploy is timed only while the server reports: the deploy time
+  limit (the organization's `deploy_timeout_minutes` column, 5 to 240, 30 when null;
+  `loadDeployRunCapMs`) counts
+  from `runningSince`, and quiet time is given back to the run clock.
+- No frame for 5 minutes means "checking with the server":
+  `progress.contactLostAt` is set (the next frame, or a `commands.running` entry,
+  clears it) and the wait carries on. The deploy is not failed. After 6 hours
+  without a word it ends `timed_out` with "Lost contact with the server ... Last
+  known step: X ... did not report a result".
+- A result that arrives in that time settles the deploy as normal. A deploy
+  already `timed_out` whose server later reports success is corrected to
+  `succeeded` with a note in `metadata.lateOutcome` (`settleReportedOutcome`),
+  never dropped. The ack is sent only once the result is stored.
+- A server without the feature keeps the fixed 10 minute cap, worded "no result
+  came back" (the deploy may still have finished).
 
 ### Cancelling a deploy
 

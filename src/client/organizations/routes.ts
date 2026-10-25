@@ -17,6 +17,8 @@ import {
   withManagedTlsPolicyLock,
 } from '../../features/managed/external-access-tls.ts'
 import {
+  deployTimeoutGetRoute,
+  deployTimeoutPutRoute,
   loadOrgOptionsRow,
   mergeOrgOptionsSql,
   openOrgSettingsScope,
@@ -68,6 +70,9 @@ import {
   parseServerCapacityPutBody,
   parseTemperatureUnitPatch,
   parseTlsSettingsPatch,
+  deployTimeoutGetResponse,
+  deployTimeoutPutResponse,
+  parseDeployTimeoutPatch,
   temperatureUnitGetResponse,
   temperatureUnitPutResponse,
   tlsSettingsGetResponse,
@@ -100,6 +105,7 @@ export function registerOrganizationRoutes(router: Hono<AppEnv>, opts: AuthRoute
   router.use('/organizations/:id', createSessionMiddleware(secrets))
   router.use('/organizations/:id/default-timezone', createSessionMiddleware(secrets))
   router.use('/organizations/:id/temperature-unit', createSessionMiddleware(secrets))
+  router.use('/organizations/:id/deploy-timeout', createSessionMiddleware(secrets))
   router.use('/organizations/:id/host-defaults', createSessionMiddleware(secrets))
   router.use('/organizations/:id/default-environment', createSessionMiddleware(secrets))
   router.use('/organizations/:id/server-capacity', createSessionMiddleware(secrets))
@@ -219,6 +225,19 @@ export function registerOrganizationRoutes(router: Hono<AppEnv>, opts: AuthRoute
       gate: 'manage',
       parse: parseTemperatureUnitPatch,
       respond: temperatureUnitPutResponse,
+    })
+  )
+
+  router.get(
+    '/organizations/:id/deploy-timeout',
+    deployTimeoutGetRoute('manage', deployTimeoutGetResponse)
+  )
+  router.put(
+    '/organizations/:id/deploy-timeout',
+    deployTimeoutPutRoute({
+      gate: 'manage',
+      parse: parseDeployTimeoutPatch,
+      respond: deployTimeoutPutResponse,
     })
   )
 

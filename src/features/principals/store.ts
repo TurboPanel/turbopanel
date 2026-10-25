@@ -5,14 +5,12 @@ import {
   MAX_SUFFIXED_PRINCIPAL_USERNAME_LENGTH,
   principalHomeDir,
 } from '../../lib/naming.ts'
-import {
-  type PrincipalAccessLevel,
-  shellForAccessLevel,
-} from '../../features/principals/principal-access.ts'
+import type { PrincipalAccessLevel } from '../../features/principals/principal-access.ts'
 import { loadPrincipalNamePolicy } from '../../features/managed/load-org-defaults.ts'
 import { isManagedLoginNameTaken } from '../../features/managed/logins.ts'
 import type { PrincipalNameScheme } from '../../lib/principal-name-scheme.ts'
 import { deriveFreeSystemName } from './system-name.ts'
+import type { PrincipalUsage } from './placement-records.ts'
 import { encryptSecret, generateSealedSecret } from '../../lib/secrets/data-encryption.ts'
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import type { Db } from '../../db/connection.ts'
@@ -127,31 +125,16 @@ export async function isServerPrincipalUsernameTaken(
   )
 }
 
-export type PrincipalReferences = {
-  /** Services that run as the principal (`tenancy`). */
-  services: number
-  /** Consumer services bound to the principal's engine login (`binding`). */
-  bindings: number
-  /** Storage entries owned by the principal. */
-  storage: number
-  /** Secrets owned by the principal. */
-  secrets: number
-  /** Database logins that belong to the principal (`login`). */
-  logins: number
-  /** Service and volume folders on any server (`folder`, any state). */
-  folders: number
-}
+/**
+ * What still uses a principal, with the same key names as the principal list
+ * and the 409 body (`PrincipalUsage` minus the placements, which a delete
+ * clears itself).
+ */
+export type PrincipalReferences = Omit<PrincipalUsage, 'otherPlacements'>
 
 /** True when any count in `refs` is above zero. */
 export function isPrincipalReferenced(refs: PrincipalReferences): boolean {
-  return (
-    refs.services > 0 ||
-    refs.bindings > 0 ||
-    refs.storage > 0 ||
-    refs.secrets > 0 ||
-    refs.logins > 0 ||
-    refs.folders > 0
-  )
+  return Object.values(refs).some((total) => total > 0)
 }
 
 /**
@@ -179,9 +162,9 @@ export async function countPrincipalReferences(
     .innerJoin(login, eq(login.id, binding.loginId))
     .where(eq(login.principalId, principalId))
   return {
-    services: await count(tenancy),
+    tenancies: await count(tenancy),
     bindings: bound?.total ?? 0,
-    storage: await count(storage),
+    storages: await count(storage),
     secrets: await count(secret),
     logins: await count(login),
     folders: await count(folder),
@@ -271,12 +254,15 @@ export async function createPrincipal(
  * it lives in metadata rather than a column because the alias is a *document*
  * fact, not an account fact: renaming a compose alias should mint a new
  * account, not rename an existing tenant's Unix login out from under their
- * SFTP client. A row whose alias key is absent was created by hand in the UI
- * and is never adopted by a reconcile.
+ * SFTP client. A row whose alias key is absent was created by hand in the UI.
+ * A reconcile adopts such a row only when a document names it: an alias whose
+ * short username equals the typed username of one hand-made row in the same
+ * project is stamped onto that row instead of minting a second account for the
+ * same name (`adoptManualPrincipal`).
  */
 export const COMPOSE_ALIAS_METADATA_KEY = 'composeAlias'
 
-/** How a compose `access:` level maps onto the stored shell encoding. */
+/** How a compose `access:` level maps onto the stored access level. */
 const ACCESS_LEVEL_FOR_COMPOSE: Readonly<Record<'none' | 'sftp' | 'ssh', PrincipalAccessLevel>> = {
   none: 'none',
   sftp: 'sftp',
@@ -322,7 +308,7 @@ export type EnsureComposePrincipalInput = {
   projectId: string
   /** Alias as declared in the document's root `x-turbopanel.principals`. */
   alias: string
-  /** Requested access level from the alias entry. Seeds the shell on create. */
+  /** Requested access level from the alias entry. Seeds the access level on create. */
   access?: 'none' | 'sftp' | 'ssh'
 }
 
@@ -334,8 +320,8 @@ export type EnsureComposePrincipalInput = {
  * run this on every deploy: the second call finds the row the first minted
  * instead of piling up an account per deploy.
  *
- * **Create-only for `options`.** The requested `access` seeds the shell when
- * the row is minted and is never re-applied: `principal.options` is the single
+ * **Create-only for `access`.** The requested `access` seeds the level when
+ * the row is minted and is never re-applied: `principal.access` is the single
  * source of truth for what the host does, an operator may legitimately raise or
  * suspend access from the UI afterwards, and a reconcile that re-asserted the
  * document would silently undo that. Compose declares that an account *exists*;
@@ -362,6 +348,8 @@ export async function ensureComposePrincipal(
     if (raced) return { principalId: raced, created: false }
 
     const shortUsername = composeAliasShortUsername(input.alias)
+    const adopted = await adoptManualPrincipal(tx, input.projectId, shortUsername, input.alias)
+    if (adopted) return { principalId: adopted, created: false }
     const { appliedUsername, nameScheme } = await resolveComposeAppliedUsername(
       tx,
       input.organizationId,
@@ -388,15 +376,45 @@ export async function ensureComposePrincipal(
           home: principalHomeDir(appliedUsername),
           [COMPOSE_ALIAS_METADATA_KEY]: input.alias,
         },
-        options: {
-          shell: shellForAccessLevel(ACCESS_LEVEL_FOR_COMPOSE[input.access ?? 'none']),
-          nameScheme,
-        },
+        access: ACCESS_LEVEL_FOR_COMPOSE[input.access ?? 'none'],
+        options: { nameScheme },
       })
       .returning({ id: principal.id })
 
     return { principalId: row.id, created: true }
   })
+}
+
+/**
+ * Bind `alias` to the hand-made account of this project whose typed username
+ * is `shortUsername`, so a document that names an account the operator already
+ * added on Bindings reuses that row (and its host login) instead of creating a
+ * second one. Only rows with no alias yet are taken; the row keeps its access,
+ * keys and assignments.
+ */
+async function adoptManualPrincipal(
+  db: Db,
+  projectId: string,
+  shortUsername: string,
+  alias: string
+): Promise<string | undefined> {
+  const [row] = await db
+    .update(principal)
+    .set({
+      metadata: sql`coalesce(${principal.metadata}, '{}'::jsonb) || ${JSON.stringify({
+        [COMPOSE_ALIAS_METADATA_KEY]: alias,
+      })}::jsonb`,
+    })
+    .where(
+      and(
+        eq(principal.projectId, projectId),
+        // Hand-made names keep their case; compose aliases fold to lower case.
+        sql`lower(${principal.username}) = ${shortUsername}`,
+        sql`${principal.metadata} ->> ${COMPOSE_ALIAS_METADATA_KEY} is null`
+      )
+    )
+    .returning({ id: principal.id })
+  return row?.id
 }
 
 /** The row this project already materialized for `alias`, if any. */

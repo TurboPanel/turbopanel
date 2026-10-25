@@ -5,7 +5,7 @@
  * fail-open). The marker tracks **per-lease ids** so concurrent viewers share
  * one ingest buffer: a single stop must not clear the buffer while another
  * lease is still active. Live samples are cached here during an
- * active lease for the chart overlay. A v7 live sample (`durable: false`) is
+ * active lease for the chart overlay. A wire version 8 live sample (`durable: false`) is
  * buffered only; a baseline sample is also stored by the ingest route (see
  * `src/daemon/metrics/AGENTS.md`). Query routes overlay the buffered point on
  * a now-tailed live-range read, and only while the marker still has an
@@ -42,7 +42,7 @@ export const LIVE_SAMPLE_CACHE_TTL_SECONDS =
   METRICS_LIVE_INTERVAL_SECONDS + METRICS_LIVE_10S_CACHE_TTL_SECONDS
 
 /**
- * Whether ingest stores this sample. `metadata.durable === false` marks a v7
+ * Whether ingest stores this sample. `metadata.durable === false` marks a wire version 8
  * daemon's 10 s live-lease sample (overlay buffer only); absent or `true` is
  * stored, which keeps every v6 daemon's samples, lease cadence included.
  */
@@ -233,6 +233,8 @@ function hostGroupForScope(
       return extendedDockerRecord(sample)
     case 'extended.ingress':
       return sample.extended?.ingress ? asFieldRecord(sample.extended.ingress) : undefined
+    case 'extended.sizes':
+      return sample.extended?.sizes ? asFieldRecord(sample.extended.sizes) : undefined
     default:
       return undefined
   }
@@ -318,15 +320,6 @@ function entityValuesFromRecord(
   return values
 }
 
-function mergeTopologyGenerations(
-  existing: readonly number[] | undefined,
-  generation: number
-): number[] | undefined {
-  const merged = new Set(existing ?? [])
-  merged.add(generation)
-  return [...merged].sort((a, b) => a - b)
-}
-
 function overlayPoint<P extends { at: string }>(
   points: P[],
   next: P,
@@ -358,7 +351,6 @@ export function mergeLiveSampleIntoHostSeries(
     values: hostValuesFromSample(sample, result.metrics),
     sampleCount: 1,
     expectedSampleCount: 1,
-    topologyGeneration: sample.metadata.topologyGeneration,
   }
   const overlay = overlayPoint(result.points, point, bucketMs)
   if (overlay.points === result.points) return result
@@ -366,10 +358,6 @@ export function mergeLiveSampleIntoHostSeries(
     ...result,
     points: overlay.points,
     sampleCount: result.sampleCount + (overlay.appended ? 1 : 0),
-    topologyGenerations: mergeTopologyGenerations(
-      result.topologyGenerations,
-      sample.metadata.topologyGeneration
-    ),
   }
 }
 

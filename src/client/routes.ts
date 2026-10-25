@@ -6,9 +6,11 @@ import {
   resolveSignupEnvOverrideFromContext,
 } from './authn/install-state.ts'
 import { getDb } from '../db/connection.ts'
+import { DATABASE_ROLES_LACK_GRANTS, findMissingRuntimeGrants } from '../db/role-grants.ts'
 import { logError } from '../lib/logger.ts'
 import { isCustomerBillingOperational } from '../features/billing/config.ts'
 import { registerAccessRoutes } from './access/routes.ts'
+import { registerBillingUnavailableRoutes } from './billing/unavailable.ts'
 import {
   registerEnvironmentDeployPreviewRoutes,
   registerEnvironmentDeployRoutes,
@@ -66,6 +68,7 @@ import { registerOrganizationSessionGuards } from './organizations/session-guard
 import { registerComposeRemoteBuildSourcesRoutes } from './organizations/compose-remote-build-sources-routes.ts'
 import { registerReauthSettingsRoutes } from './organizations/reauth-settings-routes.ts'
 import { registerOrganizationFirewallRoutes } from './organizations/firewall-routes.ts'
+import { registerOrganizationBackupTargetRoutes } from './organizations/backup-target-routes.ts'
 import { registerWorkspaceRoutes } from './workspaces/routes.ts'
 import { type ClientOpenApiOptions, getClientOpenApiSpec } from './openapi/index.ts'
 import { buildClientScalarHtml } from '../app/scalar-html.ts'
@@ -112,6 +115,19 @@ export function registerClientRoutes(app: Hono<AppEnv>, opts: ClientRouteOpts) {
       // The console's first request: an unmigrated or unreachable database
       // must read as "database unavailable", not an opaque 500.
       logError('client-status', 'status read failed', error)
+      const missing = db === undefined ? [] : await findMissingRuntimeGrants(db)
+      if (missing.length > 0) {
+        logError('client-status', `${DATABASE_ROLES_LACK_GRANTS}: ${missing.join('; ')}`)
+        return c.json(
+          {
+            ok: false,
+            error: DATABASE_ROLES_LACK_GRANTS,
+            code: 'database_roles_lack_grants',
+            missing,
+          },
+          503
+        )
+      }
       return c.json({ ok: false, error: 'Database unavailable', code: 'database_error' }, 503)
     }
     if (payload === null) {
@@ -128,7 +144,8 @@ export function registerClientRoutes(app: Hono<AppEnv>, opts: ClientRouteOpts) {
   registerDatacenterRoutes(client, opts)
   registerIpRoutes(client, opts)
   registerLicenseRoutes(client, opts)
-  opts.registerBilling?.(client, opts)
+  if (opts.registerBilling) opts.registerBilling(client, opts)
+  else if (opts.secrets) registerBillingUnavailableRoutes(client, opts)
   registerOrganizationPrincipalDefaultsRoutes(client, opts)
   registerOrganizationDirectoryDefaultsRoutes(client, opts)
   registerOrganizationFolderAdminRoutes(client, opts)
@@ -140,6 +157,7 @@ export function registerClientRoutes(app: Hono<AppEnv>, opts: ClientRouteOpts) {
   registerOrganizationPrincipalRoutes(client, opts)
   registerReauthSettingsRoutes(client, opts)
   registerOrganizationFirewallRoutes(client, opts)
+  registerOrganizationBackupTargetRoutes(client, opts)
   registerAccessRoutes(client, opts)
   // Before the catch-all session middleware the next call installs: the verify link has no session.
   registerNotificationVerifyRoutes(client, opts)

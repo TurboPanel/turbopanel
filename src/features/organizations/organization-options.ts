@@ -9,9 +9,15 @@ import {
   type PrincipalNameScheme,
   resolveOrgPrincipalNameScheme,
 } from '../../lib/principal-name-scheme.ts'
+import { DEPLOY_DEFAULT_TIMEOUT_MS } from '../commands/deploy-limits.ts'
 import { isValidEnvironmentName } from '../../contracts/directory-names.ts'
 import { normalizeDisplayName } from '../../lib/display-name-format.ts'
-import { type NtpDefaults, parseNtpDefaults, parseSshPort } from '../servers/host-defaults.ts'
+import {
+  type NtpDefaults,
+  parseHideWebServerNames,
+  parseNtpDefaults,
+  parseSshPort,
+} from '../servers/host-defaults.ts'
 import {
   type ManagedOrganizationDefaults,
   parseManagedOrganizationDefaults,
@@ -42,6 +48,10 @@ const TEMPERATURE_UNITS = new Set<TemperatureUnit>(['celsius', 'fahrenheit'])
 /** Platform fallback when `temperatureUnit` is unset. */
 export const DEFAULT_TEMPERATURE_UNIT: TemperatureUnit = 'celsius'
 
+/** Smallest and largest organization deploy time limit, in minutes. */
+export const DEPLOY_TIMEOUT_MIN_MINUTES = 5
+export const DEPLOY_TIMEOUT_MAX_MINUTES = 240
+
 export type OrganizationOptions = {
   /** Org-wide default timezone applied when a server has no override. */
   defaultServerTimezone?: string
@@ -69,6 +79,11 @@ export type OrganizationOptions = {
   sshPort?: number
   /** Desired NTP client settings inherited by datacenters and servers. */
   ntp?: NtpDefaults
+  /**
+   * Hide web server names and versions on servers that do not set their own.
+   * Omitted → on.
+   */
+  hideWebServerNames?: boolean
   /**
    * Preferred TurboFabric state for this organization. Does not create or tear
    * down the mesh — `PUT /organizations/:id/fabric` remains the enable path.
@@ -138,7 +153,7 @@ export type OrganizationOptions = {
    * tenant `tls` library (`POST /tls` with `source: 'lets_encrypt'`) and the
    * deploy-time `tlsMode: 'acme'` wire the resolved TLS status can produce.
    * Off by default: some operators do not want Let's Encrypt used against
-   * their servers at all, so a `managed` TLS row is inert until the org
+   * their servers at all, so an `automatic` TLS row is inert until the org
    * turns this on. Toggling off does not revoke certificates already issued.
    */
   acmeEnabled?: boolean
@@ -278,6 +293,14 @@ function assignMaxServers(options: OrganizationOptions, value: Record<string, un
   if (parsed.ok) options.maxServers = parsed.value
 }
 
+function assignHideWebServerNames(
+  options: OrganizationOptions,
+  value: Record<string, unknown>
+): void {
+  const hide = parseHideWebServerNames(value.hideWebServerNames)
+  if (hide !== undefined) options.hideWebServerNames = hide
+}
+
 function assignManagedDatabase(options: OrganizationOptions, value: Record<string, unknown>): void {
   if (!('managedDatabase' in value)) return
   const managedDatabase = parseManagedOrganizationDefaults(value.managedDatabase)
@@ -334,6 +357,7 @@ export function parseOrganizationOptions(value: unknown): OrganizationOptions {
   if (sshPort !== undefined) options.sshPort = sshPort
   const ntp = parseNtpDefaults(value.ntp)
   if (ntp) options.ntp = ntp
+  assignHideWebServerNames(options, value)
   if (typeof value.defaultFabricEnabled === 'boolean') {
     options.defaultFabricEnabled = value.defaultFabricEnabled
   }
@@ -367,6 +391,24 @@ export function parseOrganizationOptions(value: unknown): OrganizationOptions {
   assignPhpModes(options, value)
   assignDirectoryNames(options, value)
   return options
+}
+
+/** A whole number of minutes inside the allowed range; anything else is dropped. */
+export function parseDeployTimeoutMinutes(value: unknown): number | undefined {
+  if (typeof value !== 'number' || !Number.isInteger(value)) return undefined
+  return value >= DEPLOY_TIMEOUT_MIN_MINUTES && value <= DEPLOY_TIMEOUT_MAX_MINUTES
+    ? value
+    : undefined
+}
+
+/**
+ * Effective deploy time limit in milliseconds from the stored
+ * `organization.deploy_timeout_minutes`: the setting, or 30 minutes when it is
+ * null or (defensively) outside 5 to 240 whole minutes.
+ */
+export function resolveDeployTimeoutMs(minutes: unknown): number {
+  const valid = parseDeployTimeoutMinutes(minutes)
+  return valid === undefined ? DEPLOY_DEFAULT_TIMEOUT_MS : valid * 60_000
 }
 
 function assignDirectoryNames(

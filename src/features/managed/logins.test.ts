@@ -35,6 +35,7 @@ import {
   listManagedLogins,
   patchLogin,
   removeManagedLogin,
+  removeLoginsDroppedByApply,
   restoreManagedLogin,
   rotateLoginPassword,
 } from './logins.ts'
@@ -88,7 +89,8 @@ async function withManagedFixture(
       name: 'Login Store Project',
       workspaceId: ws!.id,
       organizationId,
-      metadata: { type: 'managed', code: 'postgres' },
+      kind: 'managed',
+      metadata: { code: 'postgres' },
     })
     .returning({ id: project.id })
   const [env] = await db
@@ -284,6 +286,23 @@ test('removing a login drops its scope rows and clears the databases it owned; r
       .from(managedDatabase)
       .where(eq(managedDatabase.name, 'shop'))
     assertEquals(owned?.ownerLoginId, created.loginId)
+  })
+})
+
+test('a dropped account removes its login row only when the apply drops it', async () => {
+  await withManagedFixture(async ({ db, dataEncryptionSecrets, managedId }) => {
+    const created = await createManagedLogin(db, dataEncryptionSecrets, {
+      managedId,
+      username: 'keep_me',
+      databases: ['postgres'],
+    })
+    const stays = await findManagedLogin(db, managedId, created.loginId)
+    // A host that refused the drop never reaches the removal: the row stays.
+    await removeLoginsDroppedByApply(db, managedId, [])
+    await removeLoginsDroppedByApply(db, managedId, ['someone_else'])
+    assertEquals((await findManagedLogin(db, managedId, created.loginId))?.id, stays?.id)
+    await removeLoginsDroppedByApply(db, managedId, [stays!.appliedUsername])
+    assertEquals(await findManagedLogin(db, managedId, created.loginId), undefined)
   })
 })
 

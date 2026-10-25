@@ -2713,7 +2713,7 @@ test('live WS records an acme-issuance-event on the reporting organization lets_
   let acmeWheres = 0
   const managedRow = {
     id: 'tls-1',
-    status: 'managed',
+    status: 'automatic',
     metadata: {
       dnsNames: ['app.example.test'],
       hasWildcard: false,

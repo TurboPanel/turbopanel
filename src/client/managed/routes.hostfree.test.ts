@@ -209,7 +209,7 @@ function presenceServer(connected = false, overrides: Record<string, unknown> = 
   }
 }
 
-function applyReadyServer(connected = true) {
+function applyReadyServer(connected = true, overrides: Record<string, unknown> = {}) {
   // `getServerDaemonStateByServerId` is `server ⋈ key` with the key row's
   // columns flattened onto the result (the jsonb `daemon` is projection-only
   // now). This fake answers every `server` query with the same rows, so the
@@ -221,6 +221,7 @@ function applyReadyServer(connected = true) {
     ...keyColumns,
     revokedAt: null,
     lastUsedAt: null,
+    ...overrides,
   })
 }
 
@@ -286,6 +287,24 @@ function countingQueue(sink: CommandEnvelope[]): CommandQueue {
   }
 }
 
+function failingQueue(): CommandQueue {
+  return {
+    enqueue: () => Promise.reject(new TypeError('queue down')),
+  }
+}
+
+function partiallyFailingMemberQueue(sink: CommandEnvelope[], failServerId: string): CommandQueue {
+  return {
+    enqueue: (envelope: CommandEnvelope) => {
+      if (envelope.serverId === failServerId) {
+        return Promise.reject(new TypeError('queue down'))
+      }
+      sink.push(envelope)
+      return Promise.resolve()
+    },
+  }
+}
+
 function principalRow(overrides: Record<string, unknown> = {}) {
   return {
     id: PRINCIPAL_ID,
@@ -313,7 +332,7 @@ function loginRow(overrides: Record<string, unknown> = {}) {
     username: 'appuser',
     appliedUsername: 'appuser',
     nameScheme: 'plain',
-    grantMode: 'preset',
+    grantMode: 'recipe',
     isTool: false,
     databases: ['defaultdb'],
     privileges: ['read-write'],
@@ -1209,6 +1228,75 @@ test('POST create clears a provisioning row then requires placement', async () =
     409,
     { error: 'server_placement_required' }
   )
+})
+
+test('POST create compensation enqueues destroy before deleting the provisioning row', async () => {
+  const events: string[] = []
+  const config: FakeDbConfig = {
+    managedRows: [managedRow({ status: 'provisioning' })],
+    envRows: [envRow({ serverId: null })],
+    memberRows: [memberRow({ role: 'primary', replicaClass: null, ordinal: 1 })],
+    onInsert: (_table, values) => {
+      if (values.name === 'managed.destroy') events.push('enqueue-destroy')
+    },
+  }
+  const base = fakeDb(config)
+  const db = {
+    ...base,
+    delete: (table: unknown) => {
+      if (table === managed) events.push('delete-managed')
+      return base.delete(table as never)
+    },
+    transaction: (fn: (tx: Db) => Promise<unknown>) => fn(db),
+  } as unknown as Db
+  const { app, cookie } = await buildApp({
+    db,
+    commandQueue: countingQueue([]),
+  })
+  await expectJson(
+    await app.request(envPath(), {
+      method: 'POST',
+      headers: { ...authHeaders(cookie), 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    }),
+    409,
+    { error: 'server_placement_required' }
+  )
+  assertEquals(events.includes('enqueue-destroy'), true)
+  assertEquals(events.includes('delete-managed'), true)
+  assertEquals(events.indexOf('enqueue-destroy') < events.indexOf('delete-managed'), true)
+})
+
+test('POST create compensation still deletes the row when destroy enqueue fails', async () => {
+  const deleted: unknown[] = []
+  const config: FakeDbConfig = {
+    managedRows: [managedRow({ status: 'provisioning' })],
+    envRows: [envRow({ serverId: null })],
+    memberRows: [memberRow({ role: 'primary', replicaClass: null, ordinal: 1 })],
+  }
+  const base = fakeDb(config)
+  const db = {
+    ...base,
+    delete: (table: unknown) => {
+      deleted.push(table)
+      return base.delete(table as never)
+    },
+    transaction: (fn: (tx: Db) => Promise<unknown>) => fn(db),
+  } as unknown as Db
+  const { app, cookie } = await buildApp({
+    db,
+    commandQueue: failingQueue(),
+  })
+  await expectJson(
+    await app.request(envPath(), {
+      method: 'POST',
+      headers: { ...authHeaders(cookie), 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    }),
+    409,
+    { error: 'server_placement_required' }
+  )
+  assertEquals(deleted.includes(managed), true)
 })
 
 test('POST create requires encryption secrets after placement', async () => {
@@ -2817,12 +2905,6 @@ function applyReadyDb(extra: FakeDbConfig = {}) {
   })
 }
 
-function failingQueue(): CommandQueue {
-  return {
-    enqueue: () => Promise.reject(new TypeError('queue down')),
-  }
-}
-
 async function expectQueued(
   response: Response,
   extras: Record<string, unknown> = {}
@@ -3093,6 +3175,42 @@ test('DELETE cluster with ?force=true&detach=true removes the bindings before th
     ['web']
   )
   assertEquals(deletedTables.indexOf(binding) < deletedTables.indexOf(managed), true)
+})
+
+test('DELETE ?force=true reports hostCleanup with an offline member', async () => {
+  const replicaMemberId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'
+  const failed: CommandEnvelope[] = []
+  const { app, cookie } = await buildApp({
+    db: applyReadyDb({
+      serverRows: [
+        applyReadyServer(true),
+        applyReadyServer(false, { id: REPLICA_SERVER_ID, name: 'host-2', hostname: 'host-2' }),
+      ],
+      memberRows: [
+        memberRow({ role: 'primary', replicaClass: null, ordinal: 1 }),
+        memberRow({
+          id: replicaMemberId,
+          role: 'replica',
+          serverId: REPLICA_SERVER_ID,
+          ordinal: 2,
+        }),
+      ],
+    }),
+    registry: stubRegistry(),
+    commandQueue: partiallyFailingMemberQueue(failed, REPLICA_SERVER_ID),
+  })
+  const res = await app.request(envPath('?force=true'), {
+    method: 'DELETE',
+    headers: authHeaders(cookie),
+  })
+  assertEquals(res.status, 200)
+  const body = await jsonOf(res)
+  assertEquals(body.deleted, true)
+  assertEquals(body.hostCleanup, [
+    { serverId: SERVER_ID, status: 'queued', online: true },
+    { serverId: REPLICA_SERVER_ID, status: 'failed', online: false },
+  ])
+  assertEquals(body.note, 'The cleanup will run when 1 offline server(s) reconnect within 7 days.')
 })
 
 test('DELETE cluster with no bindings is unchanged and reports no detached list', async () => {
@@ -3412,8 +3530,9 @@ test('POST users stores read-write access for read-write and omitted roles', asy
     const row = insertedLogin(inserted)
     assertEquals(row.access, 'read-write')
     assertEquals(row.grantMode, 'recipe')
+    assertEquals(row.recipe, 'app')
     assertEquals(row.isTool, false)
-    assertEquals(row.allowedSources, undefined)
+    assertEquals(row.allowedSources, ['address:0.0.0.0/0', 'address:::/0'])
     assertEquals(row.maxConnections, undefined)
   }
 })
@@ -3596,21 +3715,18 @@ test('PATCH user restores the old settings when preparing the apply throws', asy
   assertEquals(res.status, 500)
   assertEquals(loginWrites.length, 2)
   assertEquals(loginWrites[0]?.grantMode, 'self')
-  assertEquals(loginWrites[1]?.grantMode, 'preset')
+  assertEquals(loginWrites[1]?.grantMode, 'recipe')
 })
 
-test('PATCH user refuses a bad mode and a move back to preset in plain words', async () => {
+test('PATCH user refuses a bad mode and the retired preset mode in plain words', async () => {
   const bad = await patchUser({ grantMode: 'wild' })
   assertEquals(bad.res.status, 400)
-  const back = await patchUser(
-    { grantMode: 'preset' },
-    { databases: ['postgres'], grantMode: 'recipe' }
-  )
-  assertEquals(back.res.status, 422)
-  assertEquals((await jsonOf(back.res)).error, 'managed_grant_mode_invalid_transition')
+  const back = await patchUser({ grantMode: 'preset' }, { databases: ['postgres'] })
+  assertEquals(back.res.status, 400)
+  assertEquals((await jsonOf(back.res)).error, 'managed_grant_mode_invalid')
 })
 
-test('GET users reports grant mode, defaulting old logins to preset', async () => {
+test('GET users reports grant mode, reads recipe by default', async () => {
   const { app, cookie } = await buildApp({
     db: fakeDb({
       managedRows: [managedRow()],
@@ -3619,7 +3735,7 @@ test('GET users reports grant mode, defaulting old logins to preset', async () =
   })
   const body = await jsonOf(await app.request(envPath('/users'), { headers: authHeaders(cookie) }))
   const users = body.users as Array<{ grantMode: string; tool: boolean }>
-  assertEquals(users[0]?.grantMode, 'preset')
+  assertEquals(users[0]?.grantMode, 'recipe')
   assertEquals(users[0]?.tool, false)
 })
 

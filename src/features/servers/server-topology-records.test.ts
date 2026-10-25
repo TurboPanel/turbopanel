@@ -8,7 +8,6 @@ import {
   getLatestTopologyGeneration,
   getLatestTopologyGenerations,
   getTopologyGeneration,
-  getTopologyGenerations,
   layoutPathsFromSnapshot,
   MAX_NEW_TOPOLOGY_GENERATIONS_PER_DAY,
   MAX_NEW_TOPOLOGY_GENERATIONS_PER_HOUR,
@@ -223,7 +222,6 @@ test('getTopologyGeneration answers only for the stored generation: older ones a
     // The first generation was overwritten; a sample naming it reads as unknown.
     assertEquals(await getTopologyGeneration(db, serverId, 1), undefined)
     assertEquals(await getTopologyGeneration(db, serverId, 99), undefined)
-    assertEquals([...(await getTopologyGenerations(db, serverId, [1, 2])).keys()], [2])
   })
 })
 

@@ -62,6 +62,7 @@ export type ProjectDeleteResult =
         | 'project_has_running_services'
         | 'managed_runtime_present'
         | 'project_has_folders'
+        | 'project_stop_failed'
         | typeof COMMON_ASSET_IN_USE_ERROR
       /** Extra fields for the 409 body (who still uses a shared asset). */
       detail?: Record<string, unknown>
@@ -334,8 +335,23 @@ async function sharedAssetsStillUsed(
 export async function deleteProjectCascade(
   db: Db,
   projectId: string,
-  listenerSync?: BindingListenerSync
+  listenerSync?: BindingListenerSync,
+  stopHosts?: () => Promise<boolean>,
+  stopTimeoutMs: number = STOP_HOSTS_TIMEOUT_MS
 ): Promise<ProjectDeleteResult> {
+  // The stop is sent before the transaction opens, never inside it: a stop
+  // takes its own connection, and where a request has one connection (the
+  // hosted panel) a stop inside the transaction waits on itself forever. The
+  // checks run first so a refused delete sends nothing; the transaction runs
+  // them again under the project lock.
+  if (stopHosts) {
+    const refused = await checkBeforeStop(db, projectId)
+    if (refused) return refused
+    const stopped = await stopWithin(stopHosts, stopTimeoutMs)
+    if (!stopped) {
+      return { ok: false, error: 'project_stop_failed', detail: { message: STOP_FAILED_MESSAGE } }
+    }
+  }
   // Everything is read and written under the project lock, so an environment
   // created meanwhile cannot slip past the child cleanup the others get.
   const outcome = await db.transaction(async (tx) => {
@@ -350,6 +366,44 @@ export async function deleteProjectCascade(
     listenerSync
   )
   return listenerWarning ? { ok: true, warning: listenerWarning } : { ok: true }
+}
+
+/** How long a project delete waits for its servers to accept the stop. */
+export const STOP_HOSTS_TIMEOUT_MS = 30_000
+const STOP_FAILED_MESSAGE =
+  'The servers did not accept the stop in time, so nothing was deleted. Check that they are online and try again.'
+
+async function stopWithin(stopHosts: () => Promise<boolean>, timeoutMs: number): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const work = stopHosts()
+  work.catch(() => {})
+  try {
+    return await Promise.race([
+      work,
+      new Promise<boolean>((resolve) => {
+        timer = setTimeout(() => resolve(false), timeoutMs)
+      }),
+    ])
+  } catch {
+    return false
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
+  }
+}
+
+/** The refusals a delete would hit, read without the lock, before any stop goes out. */
+async function checkBeforeStop(db: Db, projectId: string): Promise<ProjectDeleteResult | null> {
+  const envRows = await db
+    .select({ id: environment.id })
+    .from(environment)
+    .where(eq(environment.projectId, projectId))
+  if (envRows.length === 0) return null
+  const refusal = await refuseProjectDelete(
+    db,
+    projectId,
+    envRows.map((row) => row.id)
+  )
+  return 'refused' in refusal ? refusal.refused : null
 }
 
 type LockedProjectDelete =

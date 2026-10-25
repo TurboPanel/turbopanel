@@ -73,6 +73,17 @@ test('resolveBackupDatabase defaults to the first configured database', () => {
   assertEquals(resolveBackupDatabase(options, undefined), 'postgres')
 })
 
+test('resolveBackupDatabase defaults to the initial database, not the first by name', () => {
+  const base = buildOptions({ databases: ['ct_db_app', 'ct_db_bk', 'defaultdb'] })
+  const options = { ...base, settings: { ...base.settings, initialDatabase: 'defaultdb' } }
+  assertEquals(resolveBackupDatabase(options, undefined, 'postgres'), 'defaultdb')
+  assertEquals(resolveBackupDatabase(options, undefined, 'mariadb'), 'defaultdb')
+  assertEquals(resolveBackupDatabase(options, undefined, 'mysql'), 'defaultdb')
+  // The initial database was removed: fall back to the first one that is left.
+  const gone = { ...options, databases: ['ct_db_app', 'ct_db_bk'] }
+  assertEquals(resolveBackupDatabase(gone, undefined, 'postgres'), 'ct_db_app')
+})
+
 test('resolveBackupDatabase skips MySQL system schemas for the default', () => {
   const options = buildOptions({ databases: ['mysql', 'appdb', 'sys'] })
   assertEquals(resolveBackupDatabase(options, undefined, 'mysql'), 'appdb')
@@ -400,6 +411,7 @@ test('refuseRestoreIfBackupOnOtherServer returns 409 backup_on_other_server', as
   assertEquals(await refused.json(), {
     error: 'backup_on_other_server',
     message: backupOnOtherServerMessage('Former Primary'),
+    canRestoreFromCopy: false,
   })
 })
 

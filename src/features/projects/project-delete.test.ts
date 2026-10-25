@@ -487,3 +487,59 @@ test('deleteProjectCascade removes tenancy edges before services', async () => {
     await db.delete(organization).where(eq(organization.id, organizationId))
   }
 })
+
+test('deleteProjectCascade refuses and keeps every row when the host stop did not go through', async () => {
+  if (!dbUrl) {
+    skipWithoutDatabase('project cascade tests')
+    return
+  }
+
+  const db = createDenoDb()
+  const [org] = await db
+    .insert(organization)
+    .values({ name: 'Stop Failed Org' })
+    .returning({ id: organization.id })
+  const organizationId = org!.id
+  const [ws] = await db
+    .insert(workspace)
+    .values({ name: 'Stop Failed Workspace', organizationId })
+    .returning({ id: workspace.id })
+  const workspaceId = ws!.id
+  const [proj] = await db
+    .insert(project)
+    .values({ name: 'Stop Failed Project', workspaceId, organizationId })
+    .returning({ id: project.id })
+  const projectId = proj!.id
+  const [env] = await db
+    .insert(environment)
+    .values({ name: 'production', projectId })
+    .returning({ id: environment.id })
+  const environmentId = env!.id
+
+  try {
+    let asked = 0
+    const refused = await deleteProjectCascade(db, projectId, undefined, () => {
+      asked += 1
+      return Promise.resolve(false)
+    })
+    assertEquals(refused.ok, false)
+    if (!refused.ok) assertEquals(refused.error, 'project_stop_failed')
+    assertEquals(asked, 1)
+    const kept = await db.select({ id: project.id }).from(project).where(eq(project.id, projectId))
+    assertEquals(kept.length, 1)
+    const keptEnv = await db
+      .select({ id: environment.id })
+      .from(environment)
+      .where(eq(environment.id, environmentId))
+    assertEquals(keptEnv.length, 1)
+
+    // The same project deletes once the stop goes through.
+    const done = await deleteProjectCascade(db, projectId, undefined, () => Promise.resolve(true))
+    assertEquals(done, { ok: true })
+  } finally {
+    await db.delete(environment).where(eq(environment.id, environmentId))
+    await db.delete(project).where(eq(project.id, projectId))
+    await db.delete(workspace).where(eq(workspace.id, workspaceId))
+    await db.delete(organization).where(eq(organization.id, organizationId))
+  }
+})

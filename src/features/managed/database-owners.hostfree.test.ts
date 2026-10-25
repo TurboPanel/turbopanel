@@ -49,14 +49,14 @@ test('ownedDatabasesRefusal reads the login after the change', () => {
     privileges: ['owner'],
     connectionRole: 'read-write' as const,
   }
-  assertEquals(ownedDatabasesRefusal(options, 'l1', ok, 'preset'), null)
-  assertEquals(ownedDatabasesRefusal(options, 'other', { ...ok, databases: [] }, 'preset'), null)
+  assertEquals(ownedDatabasesRefusal(options, 'l1', ok, 'recipe'), null)
+  assertEquals(ownedDatabasesRefusal(options, 'other', { ...ok, databases: [] }, 'recipe'), null)
   assertEquals(
-    ownedDatabasesRefusal(options, 'l1', { ...ok, connectionRole: 'read-only' }, 'preset')?.error,
+    ownedDatabasesRefusal(options, 'l1', { ...ok, connectionRole: 'read-only' }, 'recipe')?.error,
     'managed_login_owns_databases'
   )
   assertEquals(
-    ownedDatabasesRefusal(options, 'l1', { ...ok, databases: [] }, 'preset')?.status,
+    ownedDatabasesRefusal(options, 'l1', { ...ok, databases: [] }, 'recipe')?.status,
     409
   )
 })
@@ -99,7 +99,7 @@ test('small owner helpers answer the way the routes need', () => {
     { databaseOwners: { shop: { loginId: 'l1', username: 'u1' } }, ownerRoleDatabases: [] },
     {
       id: 'l1',
-      grantMode: 'preset',
+      grantMode: 'recipe',
       tool: false,
       databases: ['shop'],
       privileges: ['owner'],
@@ -107,7 +107,7 @@ test('small owner helpers answer the way the routes need', () => {
       allowedSources: undefined,
       maxConnections: undefined,
     },
-    { patch: { privileges: ['admin'] }, grantMode: 'preset' },
+    { patch: { privileges: ['admin'] }, grantMode: 'recipe' },
     { ownerRole: true, databaseOwner: true }
   )
   assertEquals(checks.refusal?.error, 'managed_login_owns_databases')

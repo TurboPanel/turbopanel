@@ -16,6 +16,8 @@
  *   confirmed, so `rollbackWindowMinutes` defaults to `0`.
  */
 
+import { isValidHostname } from '../../contracts/commands/hostname.ts'
+
 export const DEPLOY_STRATEGIES = ['inplace', 'sequential', 'bluegreen'] as const
 export type DeployStrategy = (typeof DEPLOY_STRATEGIES)[number]
 
@@ -56,11 +58,20 @@ export const NEW_ENVIRONMENT_DEPLOY_STRATEGY: DeployStrategy = 'sequential'
 
 const INTEGER_KEYS = Object.keys(DEPLOY_INTEGER_LIMITS) as IntegerKey[]
 
+/**
+ * The hostname the environment's Visit button and status use when it has
+ * several. Not a deploy setting: it rides here so a partial save keeps it.
+ * Nothing on the server reads it; a stored name that is no longer one of the
+ * environment's hostnames is ignored by the reader.
+ */
+export const PRIMARY_HOSTNAME_OPTION_KEY = 'primaryHostname'
+
 /** Every key this module owns on an environment's `options`. */
 export const ENVIRONMENT_DEPLOY_OPTION_KEYS: readonly string[] = [
   'deployStrategy',
   'migrations',
   ...INTEGER_KEYS,
+  PRIMARY_HOSTNAME_OPTION_KEY,
 ]
 
 /** Tuning knobs only: strategy and migration status are per-environment facts. */
@@ -118,6 +129,9 @@ function deployKeyReason(key: string, value: unknown): string | null {
     return isMigrationStatus(value)
       ? null
       : `migrations must be one of ${MIGRATION_STATUSES.join(', ')}`
+  }
+  if (key === PRIMARY_HOSTNAME_OPTION_KEY) {
+    return isValidHostname(value) ? null : `${key} must be a lowercase hostname`
   }
   const parsed = readIntegerKey(key as IntegerKey, value)
   return parsed.ok ? null : parsed.reason

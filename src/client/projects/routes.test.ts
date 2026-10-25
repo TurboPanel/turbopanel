@@ -45,7 +45,7 @@ import {
   ensureSelfHostSystemHierarchy,
   ensureSystemHierarchy,
   SYSTEM_PROJECT_DISPLAY_NAME,
-  SYSTEM_PROJECT_METADATA_TYPE,
+  SYSTEM_PROJECT_KIND,
 } from '../../features/system/hierarchy.ts'
 import { isProjectNameUniqueViolation, mapCreateProjectError } from './routes-helpers.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
@@ -244,15 +244,12 @@ test('POST /projects managed postgres scaffolds env without managed row', async 
     const projectId = body.id
 
     const [projectRow] = await db
-      .select({ metadata: project.metadata })
+      .select({ metadata: project.metadata, kind: project.kind })
       .from(project)
       .where(eq(project.id, projectId))
       .limit(1)
-    const metadata = projectRow?.metadata as {
-      type?: string
-      code?: string
-    } | null
-    assertEquals(metadata?.type, 'managed')
+    const metadata = projectRow?.metadata as { code?: string } | null
+    assertEquals(projectRow?.kind, 'managed')
     assertEquals(metadata?.code, 'postgres')
 
     const envs = await db
@@ -579,13 +576,13 @@ test('POST /projects cannot persist nested metadata.type system', async () => {
         type: 'docker-compose',
         workspaceId,
         name: 'Nested System Compose',
-        metadata: { type: SYSTEM_PROJECT_METADATA_TYPE, note: 'keep' },
+        metadata: { type: SYSTEM_PROJECT_KIND, note: 'keep' },
       }),
     })
     assertEquals(composeRes.status, 200)
     const composeBody = (await composeRes.json()) as { ok: boolean; id: string }
     const [composeRow] = await db
-      .select({ metadata: project.metadata })
+      .select({ metadata: project.metadata, kind: project.kind })
       .from(project)
       .where(eq(project.id, composeBody.id))
       .limit(1)
@@ -593,7 +590,8 @@ test('POST /projects cannot persist nested metadata.type system', async () => {
       type?: string
       note?: string
     } | null
-    assertEquals(composeMetadata?.type, 'docker-compose')
+    assertEquals(composeRow?.kind, 'compose')
+    assertEquals(composeMetadata?.type, undefined)
     assertEquals(composeMetadata?.note, 'keep')
 
     const managedRes = await app.request('/projects', {
@@ -604,13 +602,13 @@ test('POST /projects cannot persist nested metadata.type system', async () => {
         code: 'postgres',
         workspaceId,
         name: 'Nested System Managed',
-        metadata: { type: SYSTEM_PROJECT_METADATA_TYPE },
+        metadata: { type: SYSTEM_PROJECT_KIND },
       }),
     })
     assertEquals(managedRes.status, 200)
     const managedBody = (await managedRes.json()) as { ok: boolean; id: string }
     const [managedRow] = await db
-      .select({ metadata: project.metadata })
+      .select({ metadata: project.metadata, kind: project.kind })
       .from(project)
       .where(eq(project.id, managedBody.id))
       .limit(1)
@@ -618,7 +616,8 @@ test('POST /projects cannot persist nested metadata.type system', async () => {
       type?: string
       code?: string
     } | null
-    assertEquals(managedMetadata?.type, 'managed')
+    assertEquals(managedRow?.kind, 'managed')
+    assertEquals(managedMetadata?.type, undefined)
     assertEquals(managedMetadata?.code, 'postgres')
   })
 })
@@ -728,11 +727,12 @@ test('POST /projects/:id/configure reuses scaffolded env when org default change
     assertEquals(envs[0]!.name, 'staging')
 
     const [projectRow] = await db
-      .select({ metadata: project.metadata })
+      .select({ kind: project.kind, metadata: project.metadata })
       .from(project)
       .where(eq(project.id, id))
       .limit(1)
-    assertEquals(projectRow?.metadata, { type: 'managed', code: 'postgres' })
+    assertEquals(projectRow?.kind, 'managed')
+    assertEquals(projectRow?.metadata, { code: 'postgres' })
 
     const vars = await db
       .select({ key: variable.key })
@@ -924,12 +924,11 @@ test('POST /projects/:id/configure sets docker-compose idempotently', async () =
     })
 
     const [after] = await db
-      .select({ metadata: project.metadata })
+      .select({ kind: project.kind })
       .from(project)
       .where(eq(project.id, id))
       .limit(1)
-    const metadata = after?.metadata as { type?: string } | null
-    assertEquals(metadata?.type, 'docker-compose')
+    assertEquals(after?.kind, 'compose')
 
     const again = await app.request(`/projects/${id}/configure`, {
       method: 'POST',
@@ -993,15 +992,12 @@ test('POST /projects/:id/configure managed postgres reuses production', async ()
     assertEquals(configureRes.status, 200)
 
     const [projectRow] = await db
-      .select({ metadata: project.metadata })
+      .select({ metadata: project.metadata, kind: project.kind })
       .from(project)
       .where(eq(project.id, id))
       .limit(1)
-    const metadata = projectRow?.metadata as {
-      type?: string
-      code?: string
-    } | null
-    assertEquals(metadata?.type, 'managed')
+    const metadata = projectRow?.metadata as { code?: string } | null
+    assertEquals(projectRow?.kind, 'managed')
     assertEquals(metadata?.code, 'postgres')
 
     const envs = await db
@@ -1808,12 +1804,15 @@ async function assertCatalogScaffold(
   entry: CatalogEntry
 ): Promise<void> {
   const [projectRow] = await ctx.db
-    .select({ metadata: project.metadata, options: project.options })
+    .select({ kind: project.kind, options: project.options })
     .from(project)
     .where(eq(project.id, projectId))
     .limit(1)
-  const metadata = projectRow?.metadata as { type?: string } | null
-  assertEquals(metadata?.type, entry.kind, `${entry.code}: project type`)
+  assertEquals(
+    projectRow?.kind,
+    entry.kind === 'managed' ? 'managed' : 'compose',
+    `${entry.code}: project kind`
+  )
   const options = projectRow?.options as { compose?: { data?: unknown } } | null
   // The Base starts empty: the template's compose sits in the environments.
   assertEquals(options?.compose?.data, {}, `${entry.code}: the Base starts empty`)

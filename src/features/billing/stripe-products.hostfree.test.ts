@@ -5,7 +5,7 @@
  * product suggests through its metadata.
  */
 
-import { assertEquals, assertThrows } from '@std/assert'
+import { assertEquals, assertRejects, assertThrows } from '@std/assert'
 import { createStripeClientDouble, formOf } from '../../test-fixtures/stripe-client.ts'
 import { StripeApiError } from './errors.ts'
 import {
@@ -328,21 +328,17 @@ test('verifyStripeProduct with an expected ladder entry refuses a mismatched lab
 // that state as "Use default (no)", which reads as configured but comes back
 // from the API as `unspecified` — so verification has to consult both.
 
-const ACCOUNT_EXCLUSIVE: ProviderTaxDefaults = {
-  taxBehavior: 'exclusive',
-  status: 'active',
+/** What a successful lookup returns for `taxBehavior`. */
+function accountDefault(taxBehavior: string): ProviderTaxDefaults {
+  return { outcome: 'set', taxBehavior, status: 'active', error: null }
 }
+
+const ACCOUNT_EXCLUSIVE = accountDefault('exclusive')
 
 test('an unspecified price passes when the account sets a default tax behaviour', () => {
   const unspecified = withPrice({ tax_behavior: 'unspecified' })
   assertEquals(productVerificationFailures(unspecified, ACCOUNT_EXCLUSIVE), [])
-  assertEquals(
-    productVerificationFailures(unspecified, {
-      taxBehavior: 'inclusive',
-      status: 'active',
-    }),
-    []
-  )
+  assertEquals(productVerificationFailures(unspecified, accountDefault('inclusive')), [])
   assertEquals(verifyStripeProduct(unspecified, ACCOUNT_EXCLUSIVE).ok, true)
   // A price that speaks for itself never needs the account default.
   assertEquals(productVerificationFailures(GOOD, NO_TAX_DEFAULTS), [])
@@ -350,7 +346,7 @@ test('an unspecified price passes when the account sets a default tax behaviour'
 
 test("an unspecified price passes under the account's Automatic (inferred_by_currency) default", () => {
   const unspecified = withPrice({ tax_behavior: 'unspecified' })
-  const automatic = { taxBehavior: 'inferred_by_currency', status: 'active' }
+  const automatic = accountDefault('inferred_by_currency')
   assertEquals(productVerificationFailures(unspecified, automatic), [])
   assertEquals(verifyStripeProduct(unspecified, automatic).ok, true)
   assertEquals(productVerificationFailures(unspecified, NO_TAX_DEFAULTS).length, 1)
@@ -361,10 +357,8 @@ test('an unspecified price still fails when the account names no default either'
   const unspecified = withPrice({ tax_behavior: 'unspecified' })
   for (const defaults of [
     NO_TAX_DEFAULTS,
-    {
-      taxBehavior: 'unspecified',
-      status: 'active',
-    },
+    accountDefault('unspecified'),
+    { outcome: 'unset', taxBehavior: null, status: 'active', error: null } as const,
   ]) {
     const failures = productVerificationFailures(unspecified, defaults)
     assertEquals(failures.length, 1, failures.join(' | '))
@@ -374,13 +368,41 @@ test('an unspecified price still fails when the account names no default either'
   assertEquals(productVerificationFailures(unspecified).length, 1)
 })
 
+test('an unspecified price names the real reason when the default could not be read', () => {
+  const unspecified = withPrice({ tax_behavior: 'unspecified' })
+  const refused = (outcome: 'permission_missing' | 'provider_error', status: number) =>
+    productVerificationFailures(unspecified, {
+      outcome,
+      taxBehavior: null,
+      status: null,
+      error: { status, type: 'invalid_request_error', code: null, permission: null },
+    })
+  const permission = refused('permission_missing', 403)
+  assertEquals(permission.length, 1)
+  assertEquals(permission[0]?.includes('lacks permission to read tax settings'), true)
+  assertEquals(permission[0]?.includes('carries no default'), false)
+  const failed = refused('provider_error', 500)
+  assertEquals(failed.length, 1)
+  assertEquals(failed[0]?.includes('Stripe did not answer'), true)
+  assertEquals(failed[0]?.includes('status 500'), true)
+  assertEquals(failed[0]?.includes('carries no default'), false)
+})
+
 test('summarizeStripeTaxDefaults reads the defaults block and tolerates a bare object', () => {
   assertEquals(
     summarizeStripeTaxDefaults({
       status: 'active',
       defaults: { tax_behavior: 'exclusive' },
     }),
-    { taxBehavior: 'exclusive', status: 'active' }
+    { outcome: 'set', taxBehavior: 'exclusive', status: 'active', error: null }
+  )
+  // Automatic is a real default, not an absent one.
+  assertEquals(
+    summarizeStripeTaxDefaults({
+      status: 'active',
+      defaults: { tax_behavior: 'inferred_by_currency' },
+    }),
+    { outcome: 'set', taxBehavior: 'inferred_by_currency', status: 'active', error: null }
   )
   // Stripe's own example returns a null behaviour under an active account.
   assertEquals(
@@ -388,38 +410,99 @@ test('summarizeStripeTaxDefaults reads the defaults block and tolerates a bare o
       status: 'active',
       defaults: { tax_behavior: null },
     }),
-    { taxBehavior: null, status: 'active' }
+    { outcome: 'unset', taxBehavior: null, status: 'active', error: null }
   )
   assertEquals(summarizeStripeTaxDefaults({}), {
+    outcome: 'unset',
     taxBehavior: null,
     status: null,
+    error: null,
   })
 })
 
-test('getStripeTaxDefaults reads /v1/tax/settings and degrades to no default on a Stripe error', async () => {
+test('getStripeTaxDefaults reads /v1/tax/settings', async () => {
   const client = createStripeClientDouble(() => ({
     status: 'active',
     defaults: { tax_behavior: 'exclusive' },
   }))
   assertEquals(await getStripeTaxDefaults(client), {
+    outcome: 'set',
     taxBehavior: 'exclusive',
     status: 'active',
+    error: null,
   })
   assertEquals(
     client.calls.map((call) => call.path),
     ['/v1/tax/settings']
   )
+})
 
-  // An account without Stripe Tax set up answers with an error. That means
-  // "no default", which only makes verification stricter.
-  const refusing = createStripeClientDouble(() => {
-    throw new StripeApiError({
+/** What `getStripeTaxDefaults` returns when Stripe refuses with `init`. */
+function refusedWith(init: ConstructorParameters<typeof StripeApiError>[0]) {
+  return getStripeTaxDefaults(
+    createStripeClientDouble(() => {
+      throw new StripeApiError(init)
+    })
+  )
+}
+
+test('a restricted key without the tax settings permission reads as permission_missing, never "no default"', async () => {
+  assertEquals(
+    await refusedWith({
       status: 403,
       type: 'invalid_request_error',
-      message: 'tax settings unavailable',
-    })
+      message:
+        "The provided key 'rk_test_********wxyz' does not have the required permissions for this " +
+        "endpoint. Having the 'rak_tax_settings_read' permission would allow this request to continue.",
+    }),
+    {
+      outcome: 'permission_missing',
+      taxBehavior: null,
+      status: null,
+      error: {
+        status: 403,
+        type: 'invalid_request_error',
+        code: null,
+        permission: 'rak_tax_settings_read',
+      },
+    }
+  )
+  // A 403 that names no permission is still a permission problem.
+  const bare = await refusedWith({ status: 403, type: 'invalid_request_error', message: 'no' })
+  assertEquals([bare.outcome, bare.error?.permission], ['permission_missing', null])
+})
+
+test('Stripe Tax not activated reads as unset, carrying the code', async () => {
+  const result = await refusedWith({
+    status: 400,
+    type: 'invalid_request_error',
+    code: 'stripe_tax_inactive',
+    message: 'Stripe Tax has not been activated on your account.',
   })
-  assertEquals(await getStripeTaxDefaults(refusing), NO_TAX_DEFAULTS)
+  assertEquals(result.outcome, 'unset')
+  assertEquals(result.taxBehavior, null)
+  assertEquals(result.error?.code, 'stripe_tax_inactive')
+})
+
+test('any other Stripe failure reads as provider_error with its typed fields', async () => {
+  for (const init of [
+    { status: 500, type: 'api_error' as const, message: 'boom' },
+    { status: 401, type: 'authentication_error' as const, message: 'bad key' },
+    { status: 429, type: 'invalid_request_error' as const, code: 'rate_limit', message: 'slow' },
+  ]) {
+    const result = await refusedWith(init)
+    assertEquals(result.outcome, 'provider_error', init.message)
+    assertEquals(result.taxBehavior, null)
+    assertEquals(result.error?.status, init.status)
+    assertEquals(result.error?.type, init.type)
+  }
+})
+
+test('a non-Stripe failure still propagates', async () => {
+  const client = createStripeClientDouble(() => {
+    throw new TypeError('bug')
+  })
+  await assertRejects(() => getStripeTaxDefaults(client), TypeError)
 })
 
 test('the gateway exposes the account tax defaults', async () => {
@@ -428,7 +511,9 @@ test('the gateway exposes the account tax defaults', async () => {
     defaults: { tax_behavior: 'exclusive' },
   }))
   assertEquals(await createStripeGateway(client).getTaxDefaults(), {
+    outcome: 'set',
     taxBehavior: 'exclusive',
     status: 'active',
+    error: null,
   })
 })

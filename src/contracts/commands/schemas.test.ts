@@ -8,6 +8,7 @@ import {
   parseCommandPayload,
   parseCommandResult,
   parseDeployComposeFiles,
+  parseWalPosition,
   parseEnvironmentDeployPayload,
   parseEnvironmentDeployResult,
   parseEnvironmentLifecyclePayload,
@@ -155,6 +156,7 @@ const DAEMON_COMMAND_TYPES = [
   'server.firewall.reconcile',
   'server.firewall.confirm',
   'server.backups.reconcile',
+  'server.backups.test-target',
   'server.folders.remove',
   'environment.deploy',
   'environment.lifecycle',
@@ -2012,6 +2014,36 @@ test('parseCommandPayload accepts noCache on environment.deploy', () => {
   )
 })
 
+test('parseCommandPayload carries hostingsOnly on environment.deploy and rejects a non-boolean', () => {
+  const base = {
+    environmentId: 'env-1',
+    projectId: 'proj-1',
+    organizationId: 'org-1',
+    projectName: 'tp-demo',
+    composeFiles: [
+      {
+        filename: 'compose.yaml',
+        role: 'runtime' as const,
+        content: 'services: {}\\n',
+      },
+    ],
+    hostings: [],
+  }
+  const parsed = parseCommandPayload('environment.deploy' as CommandType, {
+    ...base,
+    hostingsOnly: true,
+  }) as Record<string, unknown>
+  assertEquals(parsed.hostingsOnly, true)
+  const plain = parseCommandPayload('environment.deploy' as CommandType, base) as Record<
+    string,
+    unknown
+  >
+  assertEquals('hostingsOnly' in plain, false)
+  assertThrows(() =>
+    parseCommandPayload('environment.deploy' as CommandType, { ...base, hostingsOnly: 'yes' })
+  )
+})
+
 test('parseCommandPayload carries the sequential strategy fields and rejects bad ones', () => {
   const base = {
     environmentId: 'env-1',
@@ -2075,6 +2107,39 @@ test('parseCommandPayload rejects non-boolean noCache on environment.deploy', ()
         ],
         hostings: [],
         noCache: 'yes',
+      }),
+    Error,
+    'Invalid environment.deploy payload'
+  )
+})
+
+test('parseCommandPayload carries hideWebServerNames on environment.deploy and rejects non-booleans', () => {
+  const base = {
+    environmentId: 'env-1',
+    projectId: 'proj-1',
+    organizationId: 'org-1',
+    projectName: 'tp-demo',
+    composeFiles: [
+      { filename: 'compose.yaml', role: 'runtime' as const, content: 'services: {}\\n' },
+    ],
+    hostings: [],
+  }
+  for (const value of [true, false]) {
+    const parsed = parseCommandPayload('environment.deploy' as CommandType, {
+      ...base,
+      hideWebServerNames: value,
+    }) as { hideWebServerNames?: boolean }
+    assertEquals(parsed.hideWebServerNames, value)
+  }
+  const absent = parseCommandPayload('environment.deploy' as CommandType, base) as {
+    hideWebServerNames?: boolean
+  }
+  assertEquals('hideWebServerNames' in absent, false)
+  assertThrows(
+    () =>
+      parseCommandPayload('environment.deploy' as CommandType, {
+        ...base,
+        hideWebServerNames: 'yes',
       }),
     Error,
     'Invalid environment.deploy payload'
@@ -3877,6 +3942,33 @@ test('parseEnvironmentStopPayload accepts and validates ingressServices', () => 
     TypeError,
     'ingressServices must be an array'
   )
+})
+
+test('parseEnvironmentStopPayload round-trips releaseCleanup and rejects unsafe segments', () => {
+  const base = { environmentId: 'env-1', projectId: 'proj-1', projectName: 'tp-demo' }
+  const releaseCleanup = [{ serviceId: 'svc-1', username: 'appuser' }]
+  assertEquals(parseEnvironmentStopPayload({ ...base, releaseCleanup }), {
+    ...base,
+    releaseCleanup,
+  })
+  assertThrows(
+    () =>
+      parseEnvironmentStopPayload({
+        ...base,
+        releaseCleanup: [{ serviceId: '../etc', username: 'appuser' }],
+      }),
+    Error,
+    'Invalid environment.stop releaseCleanup entry'
+  )
+})
+
+test('parseEnvironmentDeployResult carries unchanged only when the host said so', () => {
+  assertEquals(parseEnvironmentDeployResult({ projectName: 'p', unchanged: true }).unchanged, true)
+  assertEquals(
+    parseEnvironmentDeployResult({ projectName: 'p', unchanged: 'yes' }).unchanged,
+    undefined
+  )
+  assertEquals(parseEnvironmentDeployResult({ projectName: 'p' }).unchanged, undefined)
 })
 
 test('parseEnvironmentStopPayload round-trips siteReleases and rejects unsafe segments', () => {
@@ -7540,6 +7632,23 @@ test('parseManagedApplyPayload reads an optional databases[].ownerLogin that nee
   )
 })
 
+test('parseManagedApplyPayload reads an optional databases[].convertExisting that needs ownerRole on a create', () => {
+  const withOp = (extra: Record<string, unknown>, action = 'create') =>
+    parseManagedApplyPayload({
+      ...VALID_MANAGED_APPLY,
+      databases: [{ name: 'shop', action, ...extra }],
+    }).databases![0]!
+  assertEquals('convertExisting' in withOp({ ownerRole: true }), false)
+  assertEquals(withOp({ ownerRole: true, convertExisting: true }).convertExisting, true)
+  for (const bad of [
+    () => withOp({ convertExisting: true }),
+    () => withOp({ ownerRole: true, convertExisting: false }),
+    () => withOp({ ownerRole: true, convertExisting: true }, 'drop'),
+  ]) {
+    assertThrows(bad, TypeError, 'convertExisting must be true')
+  }
+})
+
 test('managed.ingress.reconcile app-login limits are optional and validated', () => {
   const withFields = (fields: Record<string, unknown>) => ({
     ...VALID_MANAGED_INGRESS_RECONCILE,
@@ -7576,4 +7685,108 @@ test('managed.ingress.reconcile app-login limits are optional and validated', ()
   ]) {
     assertThrows(() => parseManagedIngressReconcilePayload(withFields(bad)), TypeError)
   }
+})
+
+const FP_RECOVERY = '00000000-0000-4000-8000-0000000000c3'
+const FP_SOURCE = '00000000-0000-4000-8000-0000000000a1'
+const FP_TARGET = '00000000-0000-4000-8000-0000000000b2'
+
+test('managed.apply switchoverReseed parses when whole, is absent on an operator resync and is refused when malformed', () => {
+  const reseed = {
+    recoveryId: FP_RECOVERY,
+    sourceMemberId: FP_SOURCE,
+    targetMemberId: FP_TARGET,
+    epoch: 5,
+  }
+  const guarded = parseManagedApplyPayload({
+    ...VALID_MANAGED_APPLY,
+    forceResync: true,
+    switchoverReseed: reseed,
+  })
+  assertEquals(guarded.switchoverReseed, reseed)
+  const operator = parseManagedApplyPayload({ ...VALID_MANAGED_APPLY, forceResync: true })
+  assertEquals(operator.forceResync, true)
+  assertEquals(operator.switchoverReseed, undefined)
+  for (const bad of [
+    { ...reseed, epoch: -1 },
+    { ...reseed, epoch: 1.5 },
+    { ...reseed, recoveryId: 'not-a-uuid' },
+    { ...reseed, targetMemberId: undefined },
+    'yes',
+  ]) {
+    assertThrows(
+      () => parseManagedApplyPayload({ ...VALID_MANAGED_APPLY, switchoverReseed: bad }),
+      Error,
+      'switchoverReseed'
+    )
+  }
+})
+
+test('managed.lifecycle payload carries the switchover recovery id and epoch together or not at all', () => {
+  const stop = { managedId: FP_SOURCE, action: 'stop', engine: 'postgres' }
+  const parsed = parseManagedLifecyclePayload({
+    ...stop,
+    switchoverRecoveryId: FP_RECOVERY,
+    primaryEpoch: 0,
+  })
+  assertEquals(parsed.switchoverRecoveryId, FP_RECOVERY)
+  assertEquals(parsed.primaryEpoch, 0)
+  assertEquals(parseManagedLifecyclePayload(stop).switchoverRecoveryId, undefined)
+  for (const bad of [
+    { switchoverRecoveryId: FP_RECOVERY },
+    { primaryEpoch: 3 },
+    { switchoverRecoveryId: 'x', primaryEpoch: 3 },
+    { switchoverRecoveryId: FP_RECOVERY, primaryEpoch: -2 },
+  ]) {
+    assertThrows(
+      () => parseManagedLifecyclePayload({ ...stop, ...bad }),
+      Error,
+      'managed.lifecycle'
+    )
+  }
+})
+
+test('lifecycle and promote results keep a well-formed position and drop a malformed one', () => {
+  const stopped = parseManagedLifecycleResult({
+    status: 'stopped',
+    oldPrimaryFinalLsn: '0/7258050',
+    oldPrimaryFinalTimeline: 1,
+  })
+  assertEquals(stopped.oldPrimaryFinalLsn, '0/7258050')
+  assertEquals(stopped.oldPrimaryFinalTimeline, 1)
+  const promoted = parseManagedPromoteResult({
+    status: 'ready',
+    role: 'primary',
+    promotedMemberId: FP_TARGET,
+    demoted: false,
+    newPrimaryReplayLsn: 'A/FF',
+    newPrimaryTimeline: 2,
+  })
+  assertEquals(promoted.newPrimaryReplayLsn, 'A/FF')
+  assertEquals(promoted.newPrimaryTimeline, 2)
+  for (const bad of [
+    { lsn: '7258050', timeline: 1 },
+    { lsn: '0/123456789', timeline: 1 },
+    { lsn: '0/7258050', timeline: 0 },
+    { lsn: '0/7258050', timeline: 1.5 },
+    { lsn: '0/7258050' },
+    { timeline: 1 },
+  ]) {
+    const result = parseManagedLifecycleResult({
+      status: 'stopped',
+      oldPrimaryFinalLsn: bad.lsn,
+      oldPrimaryFinalTimeline: bad.timeline,
+    })
+    assertEquals(result.oldPrimaryFinalLsn, undefined)
+    assertEquals(result.oldPrimaryFinalTimeline, undefined)
+  }
+  // A result from a daemon that predates the fields parses as before.
+  assertEquals(parseManagedLifecycleResult({ status: 'stopped' }), { status: 'stopped' })
+})
+
+test('a wal position of 0/0 is rejected, any other well formed position is kept', () => {
+  assertEquals(parseWalPosition('0/0', 1), undefined)
+  assertEquals(parseWalPosition('00000000/00000000', 1), undefined)
+  assertEquals(parseWalPosition('0/1', 1), { lsn: '0/1', timeline: 1 })
+  assertEquals(parseWalPosition('1/0', 2), { lsn: '1/0', timeline: 2 })
 })

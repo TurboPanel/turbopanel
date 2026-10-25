@@ -62,10 +62,10 @@ function createDb(): Db {
           ]
         : [],
     datacenter: (fields) =>
-      'options' in fields
+      'priority' in fields
         ? [
-            { id: LAN, options: { priority: 100 } },
-            { id: BACKHAUL, options: { priority: 10 } },
+            { id: LAN, priority: 100, isTrusted: true, addressPreference: 'ipv6' },
+            { id: BACKHAUL, priority: 10, isTrusted: true, addressPreference: 'ipv6' },
           ]
         : [
             { id: LAN, name: 'Office LAN' },

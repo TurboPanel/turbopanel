@@ -38,6 +38,7 @@ import { forEachSequential } from '../../lib/sequential.ts'
 import {
   createCommandRecord,
   getCommandRecord,
+  hasLiveManagedApplyOn,
   transitionCommand,
 } from '../commands/command-records.ts'
 import type { CommandQueue } from '../commands/queue.ts'
@@ -320,6 +321,7 @@ export type ReturnFenceSweepDeps = {
   action?: typeof returnFenceAction
   enqueueLifecycle?: typeof enqueueLifecycle
   noteReturnFence?: typeof noteReturnFence
+  applyInFlight?: typeof hasLiveManagedApplyOn
 }
 
 /**
@@ -342,6 +344,13 @@ export async function runReturnFenceSweep(
   await forEachSequential(demoted, async ({ member, engine, serverStatusChangedAt }) => {
     try {
       if (!engine) return
+      // A Resync (or any apply) is seeding this member: its data is about to
+      // be replaced and a stop now would undo the seed.
+      if (
+        await (deps.applyInFlight ?? hasLiveManagedApplyOn)(db, member.managedId, member.serverId)
+      ) {
+        return
+      }
       const decision = await (deps.action ?? returnFenceAction)(
         db,
         member.metadata,
@@ -372,4 +381,18 @@ export async function runReturnFenceSweep(
     }
   })
   return fenced
+}
+
+/**
+ * Run `cancel` only when the re-seed was really queued (`queued` is not a
+ * refusal response). A refused Resync must leave the member's return-fence
+ * stop in place. Returns whether the stops were cancelled.
+ */
+export async function cancelStopsOnceQueued(
+  queued: unknown,
+  cancel: () => Promise<unknown>
+): Promise<boolean> {
+  if (queued instanceof Response) return false
+  await cancel()
+  return true
 }

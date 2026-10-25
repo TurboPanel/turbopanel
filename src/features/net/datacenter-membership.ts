@@ -17,7 +17,7 @@ import {
   parseIpVersion,
   stripInetPrefixSuffix,
 } from '../../lib/ip-address.ts'
-import { pinLinkIsDown } from './pin-link-state.ts'
+import { pinLinkIsDown, pinProbedDown } from './pin-link-state.ts'
 import {
   reportedIpsFromServerMetadata,
   privateAddressesFromIps,
@@ -42,6 +42,8 @@ export type DatacenterMembershipRow = {
    * falls back to this one when nothing else works. Absent means up.
    */
   linkDown?: boolean
+  /** The panel's reachability probes (not the NIC link) marked the network down; implies `linkDown`. */
+  probedDown?: boolean
 }
 
 /**
@@ -92,7 +94,8 @@ function toMembershipRow(row: {
     networkId: row.networkId,
     address,
     family,
-    ...(pinLinkIsDown(row.metadata) ? { linkDown: true } : {}),
+    ...(pinLinkIsDown(row.metadata) || pinProbedDown(row.metadata) ? { linkDown: true } : {}),
+    ...(pinProbedDown(row.metadata) && !pinLinkIsDown(row.metadata) ? { probedDown: true } : {}),
   }
 }
 

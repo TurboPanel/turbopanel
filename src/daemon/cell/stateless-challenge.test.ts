@@ -1,8 +1,5 @@
 import { assertEquals, assertExists } from '@std/assert'
-import {
-  deriveSecretsConfig,
-  parseSecretsEnv,
-} from '../../lib/secrets/secrets.ts'
+import { deriveSecretsConfig, parseSecretsEnv } from '../../lib/secrets/secrets.ts'
 import { TEST_ONLY_TURBOPANEL_SECRET, parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import {
   DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS,
@@ -25,10 +22,7 @@ import {
 const test = Deno.test.bind(Deno)
 
 async function challengeSecrets() {
-  return await deriveSecretsConfig(
-    parseTestSecretsConfig('workers'),
-    'daemon-challenge-signing',
-  )
+  return await deriveSecretsConfig(parseTestSecretsConfig('workers'), 'daemon-challenge-signing')
 }
 
 test('issueDaemonChallenge produces a fresh nonce within TTL', () => {
@@ -38,10 +32,7 @@ test('issueDaemonChallenge produces a fresh nonce within TTL', () => {
   assertExists(challenge.nonce)
   assertEquals(challenge.at, new Date(now).toISOString())
   assertEquals(isDaemonChallengeFresh(challenge, now), true)
-  assertEquals(
-    isDaemonChallengeFresh(challenge, now + DAEMON_CHALLENGE_TTL_MS + 1),
-    false,
-  )
+  assertEquals(isDaemonChallengeFresh(challenge, now + DAEMON_CHALLENGE_TTL_MS + 1), false)
 })
 
 test('stateless challenge round-trips for matching server/key', async () => {
@@ -51,7 +42,7 @@ test('stateless challenge round-trips for matching server/key', async () => {
     secrets,
     { serverId: 'srv-1', keyId: 'key-1' },
     DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS,
-    now,
+    now
   )
   const consumed = await consumeChallenge(
     secrets,
@@ -61,7 +52,7 @@ test('stateless challenge round-trips for matching server/key', async () => {
       keyId: 'key-1',
     },
     DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS,
-    now + 1_000,
+    now + 1_000
   )
   assertEquals(consumed, {
     id: issued.id,
@@ -77,7 +68,7 @@ test('stateless challenge rejects mismatch, expiry, and tampering', async () => 
     secrets,
     { serverId: 'srv-1', keyId: 'key-1' },
     DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS,
-    now,
+    now
   )
 
   assertEquals(
@@ -85,36 +76,36 @@ test('stateless challenge rejects mismatch, expiry, and tampering', async () => 
       secrets,
       { challengeId: issued.id, serverId: 'other', keyId: 'key-1' },
       DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS,
-      now,
+      now
     ),
-    null,
+    null
   )
   assertEquals(
     await consumeChallenge(
       secrets,
       { challengeId: issued.id, serverId: 'srv-1', keyId: 'other' },
       DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS,
-      now,
+      now
     ),
-    null,
+    null
   )
   assertEquals(
     await consumeChallenge(
       secrets,
       { challengeId: issued.id, serverId: 'srv-1', keyId: 'key-1' },
       DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS,
-      now + DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS + 1,
+      now + DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS + 1
     ),
-    null,
+    null
   )
   assertEquals(
     await consumeChallenge(
       secrets,
       { challengeId: 'tpsession.v1.not.a.challenge', serverId: 'srv-1', keyId: 'key-1' },
       DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS,
-      now,
+      now
     ),
-    null,
+    null
   )
 
   // tpchallenge.vN.<payload>.<sig> — indices [2]=payload, [3]=sig
@@ -132,12 +123,13 @@ test('stateless challenge rejects mismatch, expiry, and tampering', async () => 
         keyId: 'key-1',
       },
       DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS,
-      now,
+      now
     ),
-    null,
+    null
   )
   // Payload tampering with an intact signature must also fail verification.
-  const tamperedPayload = `${payload.slice(0, -1)}${payload.endsWith('A') ? 'B' : 'A'}`
+  // Edit the first character: trailing base64url characters can be padding-equivalent.
+  const tamperedPayload = `${payload.startsWith('A') ? 'B' : 'A'}${payload.slice(1)}`
   assertEquals(
     await consumeChallenge(
       secrets,
@@ -147,18 +139,15 @@ test('stateless challenge rejects mismatch, expiry, and tampering', async () => 
         keyId: 'key-1',
       },
       DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS,
-      now,
+      now
     ),
-    null,
+    null
   )
 })
 
 test('createStatelessChallengeStore exposes issue/consume', async () => {
   const secrets = await challengeSecrets()
-  const store = createStatelessChallengeStore(
-    secrets,
-    DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS,
-  )
+  const store = createStatelessChallengeStore(secrets, DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS)
   assertEquals(store.ttlMs, DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS)
   const issued = await store.issue({ serverId: 'srv-2' })
   const consumed = await store.consume({
@@ -176,13 +165,13 @@ test('stateless challenge honors embedded payload ttl over caller default', asyn
     secrets,
     { serverId: 'srv-ttl', keyId: 'key-ttl' },
     shortTtlMs,
-    now,
+    now
   )
   const stillValid = await consumeChallenge(
     secrets,
     { challengeId: issued.id, serverId: 'srv-ttl', keyId: 'key-ttl' },
     DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS,
-    now + 1_000,
+    now + 1_000
   )
   assertEquals(stillValid?.nonce, issued.nonce)
 
@@ -191,9 +180,9 @@ test('stateless challenge honors embedded payload ttl over caller default', asyn
       secrets,
       { challengeId: issued.id, serverId: 'srv-ttl', keyId: 'key-ttl' },
       DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS,
-      now + shortTtlMs + 1,
+      now + shortTtlMs + 1
     ),
-    null,
+    null
   )
 })
 
@@ -208,9 +197,9 @@ test('stateless challenge rejects malformed ids and empty binding fields', async
       secrets,
       { challengeId: 'tpsession.v1.payload.sig', serverId: '', keyId: '' },
       DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS,
-      now,
+      now
     ),
-    null,
+    null
   )
   // Missing version token
   assertEquals(
@@ -218,9 +207,9 @@ test('stateless challenge rejects malformed ids and empty binding fields', async
       secrets,
       { challengeId: 'tpchallenge.payload.sig', serverId: '', keyId: '' },
       DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS,
-      now,
+      now
     ),
-    null,
+    null
   )
   // Empty field
   assertEquals(
@@ -228,9 +217,9 @@ test('stateless challenge rejects malformed ids and empty binding fields', async
       secrets,
       { challengeId: 'tpchallenge.v1..sig', serverId: '', keyId: '' },
       DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS,
-      now,
+      now
     ),
-    null,
+    null
   )
   // Wrong field count
   assertEquals(
@@ -238,9 +227,9 @@ test('stateless challenge rejects malformed ids and empty binding fields', async
       secrets,
       { challengeId: 'tpchallenge.v1.only-one', serverId: '', keyId: '' },
       DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS,
-      now,
+      now
     ),
-    null,
+    null
   )
   // Version absent from the keyring
   const issuedParts = issued.id.split('.')
@@ -255,18 +244,18 @@ test('stateless challenge rejects malformed ids and empty binding fields', async
         keyId: '',
       },
       DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS,
-      now,
+      now
     ),
-    null,
+    null
   )
   assertEquals(
     await consumeChallenge(
       secrets,
       { challengeId: issued.id, serverId: 'unexpected', keyId: '' },
       DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS,
-      now,
+      now
     ),
-    null,
+    null
   )
 })
 
@@ -286,26 +275,19 @@ test('stateless challenge returns null for invalid base64url payload/signature s
         keyId: '',
       },
       DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS,
-      now,
+      now
     ),
-    null,
+    null
   )
 
   // Valid HMAC over an invalid base64url payload segment — verify passes, parsePayload fails
   const badPayload = '%%%'
-  const sigBytes = await crypto.subtle.sign(
-    'HMAC',
-    secrets.current.key,
-    encoder.encode(badPayload),
-  )
+  const sigBytes = await crypto.subtle.sign('HMAC', secrets.current.key, encoder.encode(badPayload))
   let binary = ''
   for (const byte of new Uint8Array(sigBytes)) {
     binary += String.fromCodePoint(byte)
   }
-  const encodedSig = btoa(binary)
-    .replaceAll('+', '-')
-    .replaceAll('/', '_')
-    .replaceAll('=', '')
+  const encodedSig = btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '')
   assertEquals(
     await consumeChallenge(
       secrets,
@@ -315,30 +297,28 @@ test('stateless challenge returns null for invalid base64url payload/signature s
         keyId: '',
       },
       DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS,
-      now,
+      now
     ),
-    null,
+    null
   )
 })
 
 test('stateless challenge verifies with fallback signing keys', async () => {
-  const legacySecret =
-    'Bb2Cc3Dd4Ee5Ff6Gg7Hh8Ii9Jj0Kk1Ll2_Mm3Nn4Oo5Pp6Qq7Rr8Ss9Tt0Uu1'
+  const legacySecret = 'legacy-fallback-signing-key-for-tests-'.repeat(2)
   const signing = await deriveSecretsConfig(
     parseSecretsEnv(`1:${legacySecret}`, 'workers'),
-    'daemon-challenge-signing',
+    'daemon-challenge-signing'
   )
   const verifying = await deriveSecretsConfig(
-    parseSecretsEnv(`2:${TEST_ONLY_TURBOPANEL_SECRET},1:${legacySecret}`,
-    'workers'),
-    'daemon-challenge-signing',
+    parseSecretsEnv(`2:${TEST_ONLY_TURBOPANEL_SECRET},1:${legacySecret}`, 'workers'),
+    'daemon-challenge-signing'
   )
   const now = Date.parse('2026-08-05T12:00:00.000Z')
   const issued = await issueChallenge(
     signing,
     { serverId: 'srv-fallback', keyId: 'key-fallback' },
     DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS,
-    now,
+    now
   )
   const consumed = await consumeChallenge(
     verifying,
@@ -348,7 +328,7 @@ test('stateless challenge verifies with fallback signing keys', async () => {
       keyId: 'key-fallback',
     },
     DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS,
-    now,
+    now
   )
   assertEquals(consumed?.nonce, issued.nonce)
 })

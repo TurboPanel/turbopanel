@@ -13,7 +13,11 @@ import type {
 export const SWITCHOVER_GTID_WAIT_SECONDS = 90
 
 export type SwitchoverPromoteFailureCode =
-  'gtid_wait_timeout' | 'gtid_wait_error' | 'promote_started'
+  | 'gtid_wait_timeout'
+  | 'gtid_wait_error'
+  | 'promote_started'
+  | 'promote_unconfirmed'
+  | 'target_not_running'
 
 const SWITCHOVER_PROMOTE_ERROR_PREFIX = 'switchover_promote:'
 
@@ -22,21 +26,27 @@ export function parseSwitchoverPromoteFailureCode(
 ): SwitchoverPromoteFailureCode | null {
   if (!error) return null
   const match = new RegExp(
-    `^${SWITCHOVER_PROMOTE_ERROR_PREFIX}(gtid_wait_timeout|gtid_wait_error|promote_started):`
+    `^${SWITCHOVER_PROMOTE_ERROR_PREFIX}(gtid_wait_timeout|gtid_wait_error|promote_started|promote_unconfirmed|target_not_running):`
   ).exec(error)
   if (!match) return null
   return match[1] as SwitchoverPromoteFailureCode
 }
 
-/** Promotion never started on the target — safe to bring the old primary back. */
+/**
+ * The target itself reported that promotion never started — safe to bring the
+ * old primary back. `target_not_running`: the target had no running engine
+ * container, so nothing was promoted (any engine). `promote_unconfirmed` (the
+ * command went unanswered) is not: the target may be promoting, so the old
+ * primary stays fenced.
+ */
 export function switchoverPromoteFailureShouldReactivateOldPrimary(
   code: SwitchoverPromoteFailureCode | null
 ): boolean {
-  return code === 'gtid_wait_timeout' || code === 'gtid_wait_error'
+  return code === 'gtid_wait_timeout' || code === 'gtid_wait_error' || code === 'target_not_running'
 }
 
 export function switchoverPromoteTimedOutCommandError(message: string): string {
-  return `${SWITCHOVER_PROMOTE_ERROR_PREFIX}gtid_wait_timeout: ${message}`
+  return `${SWITCHOVER_PROMOTE_ERROR_PREFIX}promote_unconfirmed: ${message}`
 }
 
 const MYSQL_FAMILY: ReadonlySet<ManagedEngineCode> = new Set(['mysql', 'mariadb'])
@@ -111,6 +121,7 @@ export function switchoverAbortReactivateLifecyclePayload(params: {
   engine: ManagedEngineCode
   role: 'primary'
   reactivateAfterSwitchoverAbort: true
+  switchoverAbortPromoteSafe: true
 } {
   return {
     managedId: params.managedId,
@@ -119,5 +130,8 @@ export function switchoverAbortReactivateLifecyclePayload(params: {
     engine: params.engine,
     role: 'primary',
     reactivateAfterSwitchoverAbort: true,
+    // Callers use this only where no promote was queued or the target itself
+    // reported that promotion never started.
+    switchoverAbortPromoteSafe: true,
   }
 }

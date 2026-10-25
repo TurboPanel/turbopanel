@@ -19,6 +19,7 @@ import { getServerDaemonStateByServerId, isDaemonKeyActive } from '../servers/se
 import type {
   ManagedApplyCommandPayload,
   ManagedApplyOrgTlsMaterial,
+  ManagedSwitchoverReseed,
 } from '../../contracts/commands/schemas.ts'
 import type { CommandEnvelope } from '../commands/envelope.ts'
 import type { CommandQueue } from '../commands/queue.ts'
@@ -54,6 +55,7 @@ import type { Db } from '../../db/connection.ts'
 import { REPLICATION_PASSWORD_LENGTH } from '../principals/store.ts'
 import { findManagedLoginByRole, listManagedLoginCredentials, setLoginPassword } from './logins.ts'
 import { ensureManagedReplicationLogin } from './cluster-logins.ts'
+import { keepLivePrimaryEpoch } from './primary-epoch.ts'
 import { loadPrincipalNamePolicy } from './load-org-defaults.ts'
 import { generatePassword } from '../../lib/secrets/generate-secret.ts'
 import {
@@ -70,6 +72,7 @@ import {
 import { ensureManagedIngressHierarchy } from '../system/hierarchy.ts'
 import { ensureManagedContainerAllocation } from './allocate-managed-container.ts'
 import { enqueueManagedIngressReconcile } from './ingress-desired.ts'
+import { MANAGED_APPLY_EXPIRES_MS } from './ingress-desired-pure.ts'
 import {
   commitClearedPrivatePortsIfUnused,
   ensureManagedPrimaryMember,
@@ -92,9 +95,19 @@ export {
   parseManagedDestroyGate,
   type PendingManagedDestroy,
 } from './destroy-gate.ts'
+import { logWarn } from '../../lib/logger.ts'
+import { MANAGED_DESTROY_REDRIVE_FLAG } from './destroy-redrive.ts'
 import { firstSequential, forEachSequential } from '../../lib/sequential.ts'
 
-const APPLY_EXPIRES_MS = 600_000
+const APPLY_EXPIRES_MS = MANAGED_APPLY_EXPIRES_MS
+/** Normal (online, sequenced) `managed.destroy` — 10 minutes. */
+const MANAGED_DESTROY_EXPIRES_MS = 600_000
+/**
+ * Force-delete and failed-create compensation: keep the teardown queued long
+ * enough for a host that is offline or restarting for an update to run it
+ * when it returns.
+ */
+export const MANAGED_FORCE_DESTROY_EXPIRES_MS = 7 * 24 * 60 * 60 * 1000
 /** Polling cadence while awaiting primary apply before standby enqueue. */
 const COMMAND_AWAIT_POLL_MS = 1_000
 
@@ -151,7 +164,7 @@ function metadataForManagedApplyMember(
   extraMetadata?: Record<string, unknown>
 ): Record<string, unknown> | undefined {
   const pending = member.pendingTlsLeaf ? pendingTlsLeafMetadata(member.pendingTlsLeaf) : {}
-  const merged = { ...extraMetadata, ...pending }
+  const merged = { ...extraMetadata, ...member.metadata, ...pending }
   return Object.keys(merged).length > 0 ? merged : undefined
 }
 
@@ -242,6 +255,8 @@ export type BuildManagedApplyInput = {
   ownerRoleDatabases: string[] | undefined
   /** Postgres: owner-role databases whose owner is a login the customer chose. */
   databaseOwners?: Record<string, { username: string }>
+  /** Postgres: owner-role databases to hand over from their current owner on this apply (asked for by the customer). */
+  convertDatabases?: string[]
   /** Postgres: dropped databases that had an owner role (their roles go too). */
   dropOwnerRoleDatabases?: string[]
   /** Primary pin — the server `ensureManagedPrimaryMember` binds the primary to. */
@@ -265,6 +280,12 @@ export type BuildManagedApplyInput = {
    * wipes and re-seeds their data directory (operator resync action).
    */
   forceResyncMemberIds?: string[]
+  /**
+   * The planned-switchover re-seed's guard, stamped on the payload of the
+   * forced member `switchoverReseed.sourceMemberId` so the host can refuse a
+   * stale wipe.
+   */
+  switchoverReseed?: ManagedSwitchoverReseed
 }
 
 export type PreparedManagedMemberApply = {
@@ -273,6 +294,8 @@ export type PreparedManagedMemberApply = {
   payload: ManagedApplyCommandPayload
   /** Minted engine leaf; committed to `leaf` only after command success. */
   pendingTlsLeaf?: UpsertTlsLeafTrackingParams
+  /** Extra command metadata for this member's apply (also carried to a deferred standby). */
+  metadata?: Record<string, unknown>
 }
 
 export type ManagedApplyEnqueueResult = {
@@ -435,7 +458,8 @@ async function buildCredentials(
       principalId: row.id,
       // Applied login — the engine role name, not the internal short name.
       username: row.appliedUsername,
-      role: row.role,
+      // The daemon knows three roles; a backup login is an ordinary login on the wire for now.
+      role: row.role === 'backup' ? 'user' : row.role,
       databases: row.databases,
       password: resealed,
     }
@@ -444,10 +468,9 @@ async function buildCredentials(
       credential.privileges =
         !daemonKnowsAdmin && privileges.includes('admin') ? ['read-write'] : privileges
     }
-    // Only a non-default mode goes on the wire, so payloads for logins made
-    // before modes existed stay exactly as they were.
-    const grantMode = row.grantMode
-    if (grantMode !== 'preset') credential.grantMode = grantMode
+    // Only `self` goes on the wire: the daemon treats `recipe` and an absent
+    // mode alike, so payloads for panel-set logins stay as they were.
+    if (row.grantMode === 'self') credential.grantMode = row.grantMode
     credentials.push(credential)
     return undefined
   })
@@ -1033,6 +1056,9 @@ function attachMemberApplyFlags(
     (input.forceResyncMemberIds?.includes(extra.memberId) ?? false)
   ) {
     payload.forceResync = true
+    if (input.switchoverReseed?.sourceMemberId === extra.memberId) {
+      payload.switchoverReseed = input.switchoverReseed
+    }
   }
   if (memberInput?.clientSourceAddresses?.length) {
     payload.ingressSourceAddresses = memberInput.clientSourceAddresses
@@ -1244,7 +1270,11 @@ export function buildDatabaseOps(
     Partial<
       Pick<
         BuildManagedApplyInput,
-        'dropDatabases' | 'ownerRoleDatabases' | 'dropOwnerRoleDatabases' | 'databaseOwners'
+        | 'dropDatabases'
+        | 'ownerRoleDatabases'
+        | 'dropOwnerRoleDatabases'
+        | 'databaseOwners'
+        | 'convertDatabases'
       >
     >
 ): NonNullable<ManagedApplyCommandPayload['databases']> {
@@ -1255,6 +1285,9 @@ export function buildDatabaseOps(
       ...(input.ownerRoleDatabases?.includes(name) ? { ownerRole: true } : {}),
       ...(input.ownerRoleDatabases?.includes(name) && input.databaseOwners?.[name]
         ? { ownerLogin: input.databaseOwners[name].username }
+        : {}),
+      ...(input.ownerRoleDatabases?.includes(name) && input.convertDatabases?.includes(name)
+        ? { convertExisting: true }
         : {}),
     })),
     ...(input.dropDatabases ?? []).map((name) => ({
@@ -1586,14 +1619,13 @@ async function ensureClusterReplicationUsername(
     }
   }
 
-  const residual = parseManagedResidual(input.managedRow.metadata)
+  // The residual was read earlier in this request: the primary epoch must be
+  // the live one, never the stale copy, or a promote in between would be undone.
+  const { primaryEpoch: _stale, ...residual } = parseManagedResidual(input.managedRow.metadata)
   await db
     .update(managed)
     .set({
-      metadata: {
-        ...residual,
-        replicationUsername: repl.appliedUsername,
-      },
+      metadata: keepLivePrimaryEpoch({ ...residual, replicationUsername: repl.appliedUsername }),
       updatedAt: new Date().toISOString(),
     })
     .where(eq(managed.id, input.managedRow.id))
@@ -1851,6 +1883,7 @@ async function enqueueTwoPhaseManagedApply(
     serverId: member.serverId,
     memberId: member.memberId,
     payload: member.payload,
+    ...(member.metadata ? { metadata: member.metadata } : {}),
     ...(member.pendingTlsLeaf ? { pendingTlsLeaf: member.pendingTlsLeaf } : {}),
   }))
 
@@ -1940,6 +1973,10 @@ async function finalizePreparedManagedApplyResults(
         actorId: params.userId,
         secretsConfig,
         dataEncryptionSecrets,
+        // Built from the database now, not from the apply's result. On a server that
+        // is also applying it waits in that server's lane, so it gets the apply's
+        // budget; other servers run it at the same time.
+        waitsBehindMs: APPLY_EXPIRES_MS,
       })
     })
   }
@@ -2050,19 +2087,30 @@ export async function enqueueManagedDestroyFanout(
      * enqueue everything at once and let sweeps mop up leftovers.
      */
     force?: boolean
+    /** Command expiry. Force-delete and compensation default to 7 days. */
+    expiresAtMs?: number
   }
 ): Promise<ManagedApplyEnqueueResult[] | Response> {
+  const expiresAtMs =
+    params.expiresAtMs ??
+    (params.force ? MANAGED_FORCE_DESTROY_EXPIRES_MS : MANAGED_DESTROY_EXPIRES_MS)
+  // A destroy that must still happen when its host was offline: the sweep in
+  // `destroy-redrive.ts` queues it again once the host is connected.
+  const redrive = params.force === true || expiresAtMs >= MANAGED_FORCE_DESTROY_EXPIRES_MS
   const enqueueOne = async (
     member: ManagedMemberRow,
     metadata?: Record<string, unknown>
   ): Promise<ManagedApplyEnqueueResult> => {
+    const commandMetadata = redrive
+      ? { ...metadata, [MANAGED_DESTROY_REDRIVE_FLAG]: true }
+      : metadata
     const enqueued = await enqueueTypedCommand(c, db, commandQueue, {
       userId: params.userId,
       serverId: member.serverId,
       type: 'managed.destroy',
       payload: buildManagedDestroyPayload(params, member),
-      expiresAtMs: 600_000,
-      ...(metadata ? { metadata } : {}),
+      expiresAtMs,
+      ...(commandMetadata ? { metadata: commandMetadata } : {}),
     })
     if (enqueued instanceof Response) {
       return {
@@ -2206,6 +2254,7 @@ export function enqueueManagedDestroy(
     removeVolumes: boolean
     deleteAfterDestroy?: boolean
     memberId?: string
+    expiresAtMs?: number
   }
 ): Promise<{ ok: true; commandId: string; status: 'queued'; serverId: string } | Response> {
   const payload: Record<string, unknown> = {
@@ -2221,6 +2270,52 @@ export function enqueueManagedDestroy(
     serverId: params.serverId,
     type: 'managed.destroy',
     payload,
-    expiresAtMs: 600_000,
+    expiresAtMs: params.expiresAtMs ?? MANAGED_DESTROY_EXPIRES_MS,
   })
+}
+
+/**
+ * Best-effort host teardown for a managed row that is about to be deleted
+ * (failed/incomplete create). Never throws: a queue miss still lets the
+ * caller drop the row. Empty member set means nothing was pinned on a host.
+ */
+export async function enqueueBestEffortManagedDestroy(
+  c: Context,
+  db: Db,
+  commandQueue: CommandQueue | undefined,
+  params: {
+    userId: string
+    managedId: string
+    environmentId: string
+  }
+): Promise<void> {
+  try {
+    const members = await listManagedMembers(db, params.managedId)
+    if (members.length === 0) return
+    if (!commandQueue) {
+      logWarn(
+        'managed',
+        `Could not queue host cleanup for managed ${params.managedId}: command queue unavailable`
+      )
+      return
+    }
+    const enqueued = await enqueueManagedDestroyFanout(c, db, commandQueue, {
+      userId: params.userId,
+      managedId: params.managedId,
+      removeVolumes: true,
+      members,
+      deleteAfterDestroy: false,
+      environmentId: params.environmentId,
+      force: true,
+      expiresAtMs: MANAGED_FORCE_DESTROY_EXPIRES_MS,
+    })
+    if (enqueued instanceof Response || enqueued.some((row) => row.status === 'failed')) {
+      logWarn(
+        'managed',
+        `Could not queue host cleanup for managed ${params.managedId} on every member host`
+      )
+    }
+  } catch (error) {
+    logWarn('managed', `Could not queue host cleanup for managed ${params.managedId}`, error)
+  }
 }

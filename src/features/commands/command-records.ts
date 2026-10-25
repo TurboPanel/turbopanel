@@ -6,8 +6,11 @@ import { redactUrlSecrets } from '../upgrades/redact-url-secrets.ts'
 import { nowIso } from './ids.ts'
 import { type CommandStatus, TERMINAL_COMMAND_STATUSES } from './types.ts'
 import { command, dispatch, environment, managed, server } from '../../db/schema.ts'
-import type { CommandProgress } from '../../contracts/cell-protocol.ts'
-import { finalizeStoredCommandProgress, parseStoredCommandProgress } from './command-progress.ts'
+import {
+  finalizeStoredCommandProgress,
+  parseStoredCommandProgress,
+  type StoredCommandProgress,
+} from './command-progress.ts'
 import { sealExecutionLogOnTerminal } from '../execution-logs/seal-on-terminal.ts'
 
 /**
@@ -62,7 +65,7 @@ export type CommandRecord = {
   context: unknown
   result: unknown
   /** Latest step plan from the daemon, settled once the command ends; `null` until reported. */
-  progress: CommandProgress | null
+  progress: StoredCommandProgress | null
   errorCode: string | null
   /** Canonical human-readable error for terminal failures. */
   errorMessage: string | null
@@ -333,6 +336,23 @@ export async function claimCommandMetadataFlag(
   return claimed.length > 0
 }
 
+/** `command.metadata` key stamped once a command's message is on the command queue. */
+export const ENQUEUED_FLAG = 'enqueuedAt'
+
+/**
+ * Record that the command's message reached the command queue. Until then a
+ * `queued` command may belong to a worker that died before it enqueued it, so
+ * the stale sweep gives it only a short wait; after it, the command may
+ * legitimately wait a long time behind other deploys. Best effort.
+ */
+export async function markCommandEnqueued(db: Db, commandId: string): Promise<void> {
+  try {
+    await claimCommandMetadataFlag(db, commandId, ENQUEUED_FLAG)
+  } catch {
+    // The sweep falls back to its short wait for this command.
+  }
+}
+
 /**
  * The only sanctioned read of the daemon execution payload. Returns `null` once
  * the dispatch row has been cleaned up (success) or swept (expired failure).
@@ -422,6 +442,82 @@ export async function listCommandRecordsByIds(
     .from(command)
     .where(inArray(command.id, [...ids]))
   return rows.map(serializeCommandRecord)
+}
+
+/**
+ * True while a backup or restore command for this cluster is queued or running.
+ * The host refuses a second one at once, so queuing it only fills the queue.
+ */
+export async function hasLiveBackupCommand(db: Db, managedId: string): Promise<boolean> {
+  const rows = await db
+    .select({ id: command.id })
+    .from(command)
+    .where(
+      and(
+        eq(command.managedId, managedId),
+        // Removing a stored artifact takes no engine lock, so it never counts.
+        sql`coalesce(${command.context}->>'action', '') <> 'delete'`,
+        inArray(command.name, ['managed.backup', 'managed.restore']),
+        notInArray(command.status, [...TERMINAL_COMMAND_STATUSES])
+      )
+    )
+    .limit(1)
+  return rows.length > 0
+}
+
+/** True while a `managed.apply` for this cluster on this server is queued or running. */
+export async function hasLiveManagedApplyOn(
+  db: Db,
+  managedId: string,
+  serverId: string
+): Promise<boolean> {
+  const rows = await db
+    .select({ id: command.id })
+    .from(command)
+    .where(
+      and(
+        eq(command.managedId, managedId),
+        eq(command.serverId, serverId),
+        eq(command.name, 'managed.apply'),
+        notInArray(command.status, [...TERMINAL_COMMAND_STATUSES])
+      )
+    )
+    .limit(1)
+  return rows.length > 0
+}
+
+/**
+ * Take back the return-fence stops of this cluster on this server that have
+ * not finished. A Resync calls it so a stop queued for the old data cannot run
+ * on the freshly seeded member.
+ */
+export async function cancelOpenReturnFenceStops(
+  db: Db,
+  managedId: string,
+  serverId: string,
+  transition: typeof transitionCommand = transitionCommand
+): Promise<number> {
+  const rows = await db
+    .select({ id: command.id })
+    .from(command)
+    .where(
+      and(
+        eq(command.managedId, managedId),
+        eq(command.serverId, serverId),
+        eq(command.name, 'managed.lifecycle'),
+        sql`${command.metadata}->>'returnFence' = 'true'`,
+        notInArray(command.status, [...TERMINAL_COMMAND_STATUSES])
+      )
+    )
+  await Promise.all(
+    rows.map((row) =>
+      transition(db, row.id, {
+        status: 'cancelled',
+        error: 'the member was resynced after this stop was queued',
+      })
+    )
+  )
+  return rows.length
 }
 
 export async function listServerCommands(

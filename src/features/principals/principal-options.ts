@@ -1,7 +1,9 @@
 /**
- * Defensive parser for `principal.options` jsonb. Validates `shell` and
- * optional operator `uid`/`gid` overrides, and resolves the default shell
- * (`/usr/sbin/nologin`) for deploy materialization.
+ * Defensive parser for `principal.options` jsonb. Validates the optional
+ * operator `uid`/`gid` override. The access level is not an option: it lives
+ * in the `principal.access` column. Create requests may still name a `shell`
+ * (checked here against the allowlist); the route turns it into an access
+ * level and never stores it in `options`.
  * Create/request paths use {@link parsePrincipalOptionsInput} (strict).
  */
 
@@ -13,17 +15,18 @@ import {
 } from '../../lib/naming.ts'
 
 export type PrincipalOptions = {
-  shell?: string
   uid?: number
   gid?: number
 }
 
-/** Persisted create shape — `shell` is always present; ids optional. */
+/** Persisted create shape — ids optional. */
 export type PrincipalOptionsPersisted = {
-  shell: string
   uid?: number
   gid?: number
 }
+
+/** Create request shape — `shell` is always present and becomes the access level. */
+export type PrincipalOptionsInput = PrincipalOptionsPersisted & { shell: string }
 
 export const DEFAULT_PRINCIPAL_SHELL = '/usr/sbin/nologin'
 
@@ -129,13 +132,6 @@ function parsePrincipalIdOverrideInput(
 export function parsePrincipalOptions(value: unknown): PrincipalOptions {
   if (!isRecord(value)) return {}
   const options: PrincipalOptions = {}
-  if (typeof value.shell === 'string') {
-    // Reject newline/NUL before trim so they cannot be silently stripped.
-    if (!value.shell.includes('\0') && !value.shell.includes('\n')) {
-      const trimmed = value.shell.trim()
-      if (isValidPrincipalShell(trimmed)) options.shell = trimmed
-    }
-  }
   // Lenient: accept uid/gid only when both are present and valid; else omit both.
   const override = readIdOverridePair(value)
   if (override) {
@@ -148,7 +144,7 @@ export function parsePrincipalOptions(value: unknown): PrincipalOptions {
 /**
  * Strict request parser for principal create `options`.
  *
- * - `undefined` / `null` / `{}` / omitted `shell` → default shell persisted
+ * - `undefined` / `null` / `{}` / omitted `shell` → default shell (`sftp` access)
  * - non-object (when provided) or malformed `shell` → `{ ok: false }`
  * - omitted uid/gid → host allocates (ids omitted)
  * - one-of-two or invalid ids → `{ ok: false }`
@@ -156,7 +152,7 @@ export function parsePrincipalOptions(value: unknown): PrincipalOptions {
  */
 export function parsePrincipalOptionsInput(
   value: unknown
-): { ok: true; value: PrincipalOptionsPersisted } | { ok: false } {
+): { ok: true; value: PrincipalOptionsInput } | { ok: false } {
   if (value === undefined || value === null) {
     return { ok: true, value: { shell: DEFAULT_PRINCIPAL_SHELL } }
   }
@@ -179,11 +175,6 @@ export function parsePrincipalOptionsInput(
     }
   }
   return { ok: true, value: { shell: shellResult.shell } }
-}
-
-/** Default shell when absent/invalid. */
-export function resolvePrincipalShell(options: PrincipalOptions | null | undefined): string {
-  return options?.shell ?? DEFAULT_PRINCIPAL_SHELL
 }
 
 /** Operator uid/gid override for deploy wire material, or null when host allocates. */

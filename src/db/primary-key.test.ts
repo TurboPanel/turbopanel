@@ -79,7 +79,7 @@ async function readMigrationTableBlocks(): Promise<TableBlock[]> {
   }
   if (blocks.length === 0) {
     throw new TypeError(
-      'expected at least one CREATE TABLE in scanned migration SQL files under migrations/',
+      'expected at least one CREATE TABLE in scanned migration SQL files under migrations/'
     )
   }
   return blocks
@@ -94,7 +94,7 @@ test('migrations/ every CREATE TABLE has a PRIMARY KEY', async () => {
   for (const { name, body, file } of blocks) {
     if (primaryKeyLines(body).length === 0) {
       throw new TypeError(
-        `table "${name}" in ${file} has no PRIMARY KEY — every application table must declare one`,
+        `table "${name}" in ${file} has no PRIMARY KEY — every application table must declare one`
       )
     }
   }
@@ -113,7 +113,7 @@ test('migrations/ primary keys are uuidv7 UUIDs or an allowlisted natural key', 
         // extend this guard, not slip past it.
         throw new TypeError(
           `table "${name}" in ${file} declares a PRIMARY KEY this guard cannot parse ` +
-            `(expected an inline column PK): ${line.trim()}`,
+            `(expected an inline column PK): ${line.trim()}`
         )
       }
       const [, column, type] = inline
@@ -122,13 +122,13 @@ test('migrations/ primary keys are uuidv7 UUIDs or an allowlisted natural key', 
         if (column !== allowedNaturalKey.column) {
           throw new TypeError(
             `table "${name}" primary key is "${column}" but the allowlist expects ` +
-              `natural key "${allowedNaturalKey.column}"`,
+              `natural key "${allowedNaturalKey.column}"`
           )
         }
         if (type?.toLowerCase() !== allowedNaturalKey.type) {
           throw new TypeError(
             `table "${name}" natural key "${column}" in ${file} has type "${type}" but the ` +
-              `allowlist permits only "${allowedNaturalKey.type}"`,
+              `allowlist permits only "${allowedNaturalKey.type}"`
           )
         }
         seenNaturalKeyTables.add(name)
@@ -137,13 +137,13 @@ test('migrations/ primary keys are uuidv7 UUIDs or an allowlisted natural key', 
       if (type?.toLowerCase() !== 'uuid') {
         throw new TypeError(
           `table "${name}" primary key "${column}" in ${file} has type "${type}" — ` +
-            `application primary keys must be uuid`,
+            `application primary keys must be uuid`
         )
       }
       if (!/DEFAULT uuidv7\(\)/.test(line)) {
         throw new TypeError(
           `table "${name}" primary key "${column}" in ${file} lacks DEFAULT uuidv7() — ` +
-            `use a uuidv7 surrogate key or add a documented natural-key allowlist entry`,
+            `use a uuidv7 surrogate key or add a documented natural-key allowlist entry`
         )
       }
     }
@@ -156,7 +156,7 @@ test('migrations/ primary keys are uuidv7 UUIDs or an allowlisted natural key', 
     if (!seenNaturalKeyTables.has(table)) {
       throw new TypeError(
         `natural-key allowlist entry "${table}"."${column}" is not present in scanned ` +
-          `migration SQL files under migrations/ — remove it from the test allowlist`,
+          `migration SQL files under migrations/ — remove it from the test allowlist`
       )
     }
   }
@@ -169,7 +169,7 @@ test('migrations/ application tables have no sequence-backed columns', async () 
     if (match) {
       throw new TypeError(
         `table "${name}" in ${file} uses a sequence-backed column (${match[0].trim()}) — ` +
-          `serial / identity / nextval() are forbidden in application tables`,
+          `serial / identity / nextval() are forbidden in application tables`
       )
     }
   }
@@ -201,15 +201,13 @@ test('drizzle-orm migrator bookkeeping DDL matches the documented public.migrati
   try {
     source = await Deno.readTextFile(dialectPath)
   } catch {
-    throw new TypeError(
-      `cannot read ${dialectPath} — run pnpm install before the db guard tests`,
-    )
+    throw new TypeError(`cannot read ${dialectPath} — run pnpm install before the db guard tests`)
   }
   const createIdx = source.indexOf('CREATE TABLE IF NOT EXISTS')
   if (createIdx === -1) {
     throw new TypeError(
       'drizzle-orm PgDialect.migrate no longer contains its bookkeeping CREATE TABLE — ' +
-        're-audit public.migration and update src/db/AGENTS.md',
+        're-audit public.migration and update src/db/AGENTS.md'
     )
   }
   const ddl = source.slice(createIdx, createIdx + 400)
@@ -217,13 +215,13 @@ test('drizzle-orm migrator bookkeeping DDL matches the documented public.migrati
     if (!ddl.includes(expected)) {
       throw new TypeError(
         `drizzle-orm migrator bookkeeping DDL changed (missing "${expected}") — ` +
-          're-audit public.migration and update src/db/AGENTS.md',
+          're-audit public.migration and update src/db/AGENTS.md'
       )
     }
   }
   // Pinned so a new natural-key exception forces this audit to be re-read:
   // `dispatch.command_id` only. (`backup.id` was a text natural key from
   // migration 0011 until 0020 re-keyed it; the 2026-09-17 fold regenerated
-  // 0000_init.sql without either file, so the historical entry is gone.)
+  // 0000_base.sql without either file, so the historical entry is gone.)
   assertEquals(NATURAL_KEY_PRIMARY_KEYS.size, 1)
 })

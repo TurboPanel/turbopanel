@@ -5,6 +5,7 @@
 import { assert, assertAlmostEquals, assertEquals } from '@std/assert'
 import { CloudflareAnalyticsEngineServerMetricsStore } from '../../daemon/metrics/backends/cloudflare/store.ts'
 import { DisabledServerMetricsStore } from '../../daemon/metrics/disabled-store.ts'
+import { METRICS_LAYOUT_VERSION } from '../../daemon/metrics/field-registry.ts'
 import type {
   EntitySeriesPoint,
   EntitySeriesQuery,
@@ -18,6 +19,7 @@ import {
   buildConnectionHistoryPayload,
   buildCpuLimitsEnvelope,
   buildFleetLatestPayload,
+  buildHostFactsPayload,
   buildHostSummaryPayload,
   buildSeriesRouteResponse,
   buildTopologyContext,
@@ -414,7 +416,7 @@ test('parseSeriesMetricSelectors defaults to every queryable host.* canonical na
   assertEquals(blank.value.hostCanonicalNames, defaultHostCanonicalNames())
 })
 
-test('parseSeriesMetricSelectors accepts the v7 extended numbers by name but never defaults to them', () => {
+test('parseSeriesMetricSelectors accepts the v12 extended numbers by name but never defaults to them', () => {
   const named = parseSeriesMetricSelectors(
     'extended.host.oomKills,extended.docker.containersUnhealthy,extended.ingress.tlsCertSoonestExpiryDays'
   )
@@ -821,8 +823,6 @@ test('querySeriesResults forwards slotMapping/topologyGeneration for the network
   })
   requireSeriesQueryOk(outcome)
   assertEquals(seen?.family, 'network')
-  assertEquals(seen?.slotMapping?.normalNicSlots, ['eth0'])
-  assertEquals(seen?.topologyGeneration, 5)
 })
 
 test('querySeriesResults invokes class-instance series methods with this bound', async () => {
@@ -1091,8 +1091,6 @@ test('querySeriesResults does not attach slotMapping for a non-network family', 
   })
   requireSeriesQueryOk(outcome)
   assertEquals(seen?.family, 'hardware.physical')
-  assertEquals(seen?.slotMapping, undefined)
-  assertEquals(seen?.topologyGeneration, undefined)
 })
 
 test('topologyOverridesFromHardwareProfile: unset profile fields default null/false, set fields pass through', () => {
@@ -1154,7 +1152,6 @@ function minimalTopologySnapshot(): {
 
 test('buildTopologyContext returns an empty-but-present context when there is no recorded generation', () => {
   const context = buildTopologyContext(undefined, undefined)
-  assertEquals(context.topologyGeneration, null)
   assertEquals(context.slotMapping, null)
   assertEquals(context.inventory, null)
   assertEquals(context.capacities, EMPTY_HOST_CAPACITIES)
@@ -1165,7 +1162,6 @@ test('buildTopologyContext returns an empty-but-present context for a not-yet-sl
     { generation: 3, snapshot: { hardwareSignals: [] } },
     undefined
   )
-  assertEquals(context.topologyGeneration, 3)
   assertEquals(context.slotMapping, null)
   assertEquals(context.inventory, null)
 })
@@ -1175,13 +1171,31 @@ test('buildTopologyContext builds inventory/slotMapping/capacities from a usable
     { generation: 5, snapshot: minimalTopologySnapshot() },
     undefined
   )
-  assertEquals(context.topologyGeneration, 5)
   assertEquals(context.slotMapping?.normalNicSlots, ['eth0'])
   assertEquals(context.inventory?.networks[0]?.role, 'nic')
   assertEquals(context.inventory?.networks[0]?.slot, 1)
   assertEquals(context.capacities.memoryTotalBytes, 16_000_000_000)
   assertEquals(context.capacities.swapTotalBytes, 2_000_000_000)
   assertEquals(context.capacities.rootFilesystemTotalBytes, 100_000_000_000)
+})
+
+test('buildSeriesRouteResponse carries the metrics layout number', () => {
+  const response = buildSeriesRouteResponse({
+    serverId: 'srv-1',
+    from: '2026-01-01T00:00:00.000Z',
+    to: '2026-01-01T01:00:00.000Z',
+    backend: 'duckdb',
+    resolutionSeconds: 60,
+    host: null,
+    entities: [],
+    context: buildTopologyContext(undefined, undefined),
+    envelope: {
+      cpuLimits: { tdpWatts: null, tjMaxCelsius: null, source: 'none' as const },
+      temperatureUnit: 'celsius' as const,
+      nicSlotLimit: 2,
+    },
+  })
+  assertEquals(response.layoutVersion, METRICS_LAYOUT_VERSION)
 })
 
 test('buildSeriesRouteResponse is unavailable only when host or some requested entity family is unavailable', () => {
@@ -1205,7 +1219,6 @@ test('buildSeriesRouteResponse is unavailable only when host or some requested e
   })
   assertEquals(noHostRequested.available, true)
   assertEquals(noHostRequested.inventory, null)
-  assertEquals(noHostRequested.topologyGeneration, null)
 
   const unavailableEntity: EntitySeriesResult = {
     kind: 'duckdb',
@@ -1289,4 +1302,24 @@ test('buildFleetLatestPayload attaches per-server derived values from the batche
 
   const srv2 = payload.servers.find((row) => row.serverId === 'srv-2')!
   assertEquals(srv2.derived.memoryUsedPercent, null)
+})
+
+test('buildHostFactsPayload names the backend and carries the facts through', () => {
+  const payload = buildHostFactsPayload({
+    kind: 'duckdb',
+    available: true,
+    serverId: 'srv-1',
+    sampledAt: '2026-10-07T10:00:00.000Z',
+    facts: {
+      text: { kernel: '6.12.0' },
+      blockDevices: [{ deviceId: 'sda', smart: 'passed' }],
+      gpus: [],
+      filesystems: [{ filesystemId: 'fs:a', totalBytes: 1000 }],
+      networks: [{ deviceId: 'eth0', linkSpeedMbps: 10000 }],
+    },
+  })
+  assertEquals(payload.ok, true)
+  assertEquals(payload.backend, 'duckdb')
+  assertEquals(payload.facts.text.kernel, '6.12.0')
+  assertEquals(payload.sampledAt, '2026-10-07T10:00:00.000Z')
 })

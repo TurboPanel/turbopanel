@@ -27,7 +27,7 @@ import type { SelfHostedGrant } from './self-hosted-grant.ts'
 
 export async function readSelfHostedGrant(
   db: Db,
-  organizationId: string,
+  organizationId: string
 ): Promise<SelfHostedGrant | null> {
   const [row] = await db
     .select({ tierId: allowance.tierId, quantity: allowance.quantity })
@@ -42,12 +42,10 @@ export async function writeSelfHostedGrant(
   db: Db,
   organizationId: string,
   grant: SelfHostedGrant,
-  nowMs = Date.now(),
+  nowMs = Date.now()
 ): Promise<void> {
   if (grant.quantity <= 0) {
-    await db.delete(allowance).where(
-      eq(allowance.organizationId, organizationId),
-    )
+    await db.delete(allowance).where(eq(allowance.organizationId, organizationId))
     return
   }
   const now = new Date(nowMs).toISOString()
@@ -119,7 +117,8 @@ export type SyncSelfHostedGrantOpts = Readonly<{
  * The target is every active license the provider does not already cover:
  * `activeLicenses − providerPurchased`, floored at zero. On self-hosted
  * that is simply the license count, so each minted key is covered the
- * moment it exists and the assignment places its server on `SX`. On
+ * moment it exists and the self-hosted session fills `SX` into its server
+ * (`fillSelfHostedGrantTier`). On
  * Workers the target is the same number, but only a *reduction* is
  * applied — see the module comment.
  *
@@ -128,7 +127,7 @@ export type SyncSelfHostedGrantOpts = Readonly<{
 export async function syncSelfHostedGrant(
   db: Db,
   organizationId: string,
-  opts: SyncSelfHostedGrantOpts,
+  opts: SyncSelfHostedGrantOpts
 ): Promise<SelfHostedGrant | null> {
   // The hosted fast path, and the reason this is cheap enough to sit on the
   // daemon session route: an organization that holds no grant and may not
@@ -151,7 +150,7 @@ export async function syncSelfHostedGrant(
   }
   if (current?.quantity === quantity) return current
 
-  const tierId = current?.tierId ?? await ensureCustomTierRow(db)
+  const tierId = current?.tierId ?? (await ensureCustomTierRow(db))
   const next: SelfHostedGrant = { tierId, quantity }
   await writeSelfHostedGrant(db, organizationId, next, opts.nowMs)
   return next
@@ -167,7 +166,7 @@ export async function syncSelfHostedGrant(
 export async function syncSelfHostedGrantForServer(
   db: Db,
   serverId: string,
-  deployment: 'hosted' | 'self-hosted',
+  deployment: 'hosted' | 'self-hosted'
 ): Promise<void> {
   const [row] = await db
     .select({ organizationId: server.organizationId })
@@ -182,14 +181,11 @@ export async function syncSelfHostedGrantForServer(
 
 /**
  * Grant coverage for a license about to bind, resolved from the license
- * row. Called on the self-hosted enroll path *before* the tier gate, so a
- * key minted while the instance was self-hosted is covered by the time the
- * gate reads the assignment.
+ * row. Called on the self-hosted enroll path, so a key minted while the
+ * instance was self-hosted is covered by the time its first session fills
+ * the server's tier.
  */
-export async function syncSelfHostedGrantForLicense(
-  db: Db,
-  licenseId: string,
-): Promise<void> {
+export async function syncSelfHostedGrantForLicense(db: Db, licenseId: string): Promise<void> {
   const [row] = await db
     .select({ organizationId: license.organizationId })
     .from(license)

@@ -3,6 +3,7 @@ import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
+import { recordAudit } from '../../features/audit/audit-records.ts'
 import { requireStepUpIfConfigured } from '../authn/step-up.ts'
 import type { StepUpAction } from '../authn/step-up-actions.ts'
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
@@ -23,6 +24,8 @@ import {
 } from '../../db/schema.ts'
 import { clampManagedResources, type ManagedSettings } from '../../features/managed/settings.ts'
 import { registerManagedExternalAccessRoutes } from './external-access-routes.ts'
+import { checkLoginMayBeDeleted, MANAGED_LOGIN_CHECK_TIMEOUT_MS } from './definer-guard.ts'
+import { probeManagedPermissions } from './permissions-probe.ts'
 import { registerManagedPrivilegeRoutes } from './privilege-routes.ts'
 import { loadManagedExternalAccessView } from '../../features/managed/external-access.ts'
 import {
@@ -57,9 +60,11 @@ import {
 import {
   adminAccessNotes,
   databasesOwnedByLogin,
+  evaluateOwnerRoleConversion,
   OWNER_CHANGE_NOT_AVAILABLE,
 } from '../../features/managed/owner-role.ts'
 import {
+  daemonCanConvertDatabase,
   daemonHonoursOwnerRole,
   refuseLoginCreateIfDaemonCannot,
   daemonOwnerSupport,
@@ -81,7 +86,6 @@ import {
   type ManagedLoginRow,
   patchLogin,
   removeManagedLogin,
-  restoreManagedLogin,
   rotateLoginPassword,
   setLoginPassword,
 } from '../../features/managed/logins.ts'
@@ -92,6 +96,10 @@ import {
   resolveRequestedNameScheme,
 } from '../../lib/principal-name-scheme.ts'
 import { assertDispatchInfrastructure } from '../servers/command-dispatch.ts'
+import { getCommandQueue } from '../../features/commands/queue.ts'
+import { cancelOpenReturnFenceStops } from '../../features/commands/command-records.ts'
+import { cancelStopsOnceQueued } from '../../features/managed/ha-return-fence.ts'
+import { loadServerStatusRecords } from '../servers/update-status.ts'
 import { assertCanManageOr403, getOrgId, parseJsonBody, requireStringField } from '../shared.ts'
 import { assertServerDatacenterReady } from '../../features/net/datacenter-networks.ts'
 import {
@@ -101,6 +109,7 @@ import {
 } from '../../features/net/private-endpoint.ts'
 import {
   assertManagedIdle,
+  assertNoBackupInFlight,
   assertTargetServerOnline,
   authorizeManagedBackupMutation,
   authorizeManagedRequest,
@@ -121,9 +130,11 @@ import {
 import { materializeBindingsForLogin } from '../../features/bindings/materialize.ts'
 import { rollBackLoginRotation } from '../../features/managed/principal-rotation.ts'
 import {
+  enqueueBestEffortManagedDestroy,
   enqueueManagedDestroyFanout,
   enqueueManagedLifecycleFanout,
   enqueuePreparedManagedApply,
+  MANAGED_FORCE_DESTROY_EXPIRES_MS,
   enqueueTypedCommand,
   isPrepareError,
   type ManagedApplyPrepareError,
@@ -140,7 +151,6 @@ import {
   enqueueManagedRestore,
   isManagedBackupApiError,
   mapManagedBackupApiError,
-  refuseRestoreIfBackupOnOtherServer,
   resolveBackupDatabase,
   resolveManagedBackupArtifactServerId,
   toManagedBackupListItem,
@@ -176,6 +186,16 @@ import {
 } from '../../features/managed/options.ts'
 import { findManagedBackupById, listManagedBackups } from '../../features/backups/backup-records.ts'
 import {
+  copyTargetForDelete,
+  copyTargetForNewBackup,
+  describeClusterBackupTarget,
+  refuseWrongHostRestore,
+  copySourceForRestore,
+  wantsRestoreFromCopy,
+} from './backup-copy.ts'
+import { listCopiesFor, toApiCopy } from '../../features/backups/copy-records.ts'
+import { copyDepsOf } from '../backup-copy-deps.ts'
+import {
   createBackupPolicyResponse,
   deleteBackupPolicyResponse,
   listBackupPoliciesResponse,
@@ -195,6 +215,7 @@ import {
   buildEmptyManagedDetailResponse,
   buildManagedDeleteHardResponse,
   buildManagedDeleteQueuedResponse,
+  buildManagedForceHostCleanup,
   buildManagedDestroyQueuedResponse,
   buildManagedReleaseView,
   buildManagedReplicaLiveCheckFailedBody,
@@ -224,6 +245,7 @@ import {
   nextDatabasesAfterCreate,
   nextDatabasesAfterDelete,
   operatorPromoteHttpResult,
+  operatorPromoteRequiresFence,
   parseDisasterRecoveryPromoteBody,
   parseManagedCreateName,
   parseManagedLifecycleAction,
@@ -254,6 +276,7 @@ import {
   parseManagedResidual,
   serializeManagedRow,
 } from '../../features/managed/serialize.ts'
+import { readSwitchoverReplication } from '../../features/managed/switchover-reading.ts'
 import {
   effectiveManagedImage,
   managedImageFailoverSupport,
@@ -264,6 +287,7 @@ import {
   beginDisasterRecovery,
   beginOperatorSwitchover,
   firstDatacenterId,
+  isServerConnected,
   loadDatacenterSets,
 } from '../../features/managed/ha-recovery.ts'
 
@@ -382,8 +406,10 @@ async function assertManagedPromoteLagAllowed(
     managedId: string
     engine: string
     force: boolean
+    /** The old primary's server is connected, so the switchover fences it. */
+    fenceWillRun: boolean
   }
-): Promise<Response | null> {
+): Promise<Response | { requireFence: boolean }> {
   const { member, force } = params
   let replication = serializeManagedMember(member, null).replication
   if (!force) {
@@ -400,8 +426,45 @@ async function assertManagedPromoteLagAllowed(
     }
     replication = probe.replication
   }
-  const gate = evaluateOperatorPromoteGate(replication, force, undefined, params.engine)
-  return gate !== null ? c.json({ error: gate }, 409) : null
+  const gate = evaluateOperatorPromoteGate(
+    replication,
+    force,
+    undefined,
+    params.engine,
+    params.fenceWillRun
+  )
+  if (gate !== null) return c.json({ error: gate }, 409)
+  return { requireFence: operatorPromoteRequiresFence(replication, force, params.engine) }
+}
+
+/**
+ * The target's replication reading for the switchover journal: the stored one
+ * when it is fresh enough to prove the target caught up, otherwise one fresh
+ * probe (`switchover-evidence.ts`). Never throws; `undefined` = no proof.
+ */
+async function readSwitchoverTargetReplication(
+  c: Context<AppEnv>,
+  db: NonNullable<ReturnType<typeof getDb>>,
+  params: { member: ManagedMemberRow; managedId: string; engine: string }
+): Promise<unknown> {
+  return await readSwitchoverReplication({
+    engine: params.engine,
+    stored: async () => {
+      const stored = await findManagedMember(db, params.member.id)
+      return serializeManagedMember(stored ?? params.member, null).replication
+    },
+    probe: async () => {
+      const probe = await probeManagedMemberHealth(db, getDaemonCellRegistry(c), {
+        serverId: params.member.serverId,
+        managedId: params.managedId,
+        memberId: params.member.id,
+        role: 'replica',
+        engine: params.engine,
+        timeoutMs: MANAGED_HEALTH_PROBE_PROMOTE_TIMEOUT_MS,
+      })
+      return probe.status === 'observed' ? probe.replication : undefined
+    },
+  })
 }
 
 /**
@@ -449,8 +512,11 @@ async function enqueueOrphanManagedPromote(
     managedId: string
     member: ManagedMemberRow
     engine: string
+    /** The reading only passed the gate because a fence was going to run. */
+    requireFence: boolean
   }
 ): Promise<Response> {
+  if (params.requireFence) return c.json({ error: 'managed_replica_not_fully_applied' }, 409)
   const enqueued = await enqueueTypedCommand(c, db, commandQueue, {
     userId: params.userId,
     serverId: params.member.serverId,
@@ -583,6 +649,7 @@ async function runManagedDeleteFanout(
     deleteAfterDestroy: true,
     environmentId,
     force,
+    ...(force ? { expiresAtMs: MANAGED_FORCE_DESTROY_EXPIRES_MS } : {}),
   })
   if (enqueued instanceof Response) return enqueued
 
@@ -601,6 +668,8 @@ async function runManagedDeleteFanout(
     // stops gating on them, regardless of destroy outcomes. Report as
     // deleted — the UI has nothing left to track. The engine's backup
     // policies cascade with the row, so its host gets the smaller set.
+    // Destroy commands keep a 7-day expiry so an offline host still
+    // tears down when it reconnects.
     const backupHost = await captureManagedBackupHost(db, commandQueue, managedId)
     await clearPendingNullIdContainersForEnvironment(db, environmentId)
     await detachManagedBindings(c, db, managedId, detached, userId, organizationId)
@@ -608,14 +677,22 @@ async function runManagedDeleteFanout(
     await enqueueBackupsReconcile(
       db,
       commandQueue,
-      {
-        actorType: 'user',
-        actorId: userId,
-      },
-      [backupHost]
+      { actorType: 'user', actorId: userId },
+      [backupHost],
+      copyDepsOf(c)
     )
+    const uniqueServerIds = [...new Set(members.map((member) => member.serverId))]
+    const onlineRecords = await loadServerStatusRecords(
+      db,
+      getDaemonCellRegistry(c),
+      uniqueServerIds
+    )
+    const onlineByServerId = new Map(
+      onlineRecords.map((row) => [row.serverId, row.connected] as const)
+    )
+    const hostCleanup = buildManagedForceHostCleanup(members, enqueued, onlineByServerId)
     return c.json({
-      ...buildManagedDeleteHardResponse(),
+      ...buildManagedDeleteHardResponse({ hostCleanup }),
       ...detachedField(detached),
     })
   }
@@ -657,12 +734,21 @@ async function detachManagedBindings(
 }
 
 async function deleteManagedCompensation(
+  c: Context<AppEnv>,
   db: NonNullable<ReturnType<typeof getDb>>,
-  managedId: string,
-  environmentId: string
+  params: {
+    userId: string
+    managedId: string
+    environmentId: string
+  }
 ): Promise<void> {
-  await clearPendingNullIdContainersForEnvironment(db, environmentId)
-  await db.delete(managed).where(eq(managed.id, managedId))
+  await enqueueBestEffortManagedDestroy(c, db, getCommandQueue(c), {
+    userId: params.userId,
+    managedId: params.managedId,
+    environmentId: params.environmentId,
+  })
+  await clearPendingNullIdContainersForEnvironment(db, params.environmentId)
+  await db.delete(managed).where(eq(managed.id, params.managedId))
 }
 
 const MANAGED_RETURNING = {
@@ -684,10 +770,15 @@ async function clearIncompleteManagedCreate(
   c: Context<AppEnv>,
   db: NonNullable<ReturnType<typeof getDb>>,
   existing: ManagedRow,
-  fallbackServerId: string | null
+  fallbackServerId: string | null,
+  userId: string
 ): Promise<Response | null> {
   if (existing.status === 'provisioning') {
-    await deleteManagedCompensation(db, existing.id, existing.environmentId)
+    await deleteManagedCompensation(c, db, {
+      userId,
+      managedId: existing.id,
+      environmentId: existing.environmentId,
+    })
     return null
   }
   const serverId = resolveManagedServerId(existing, fallbackServerId)
@@ -952,6 +1043,7 @@ async function prepareApplyForManaged(
     dropUsers?: string[]
     dropDatabases?: string[]
     dropOwnerRoleDatabases?: string[]
+    convertDatabases?: string[]
     omitLoginIds?: string[]
     excludeMemberIds?: string[]
     forceResyncMemberIds?: string[]
@@ -975,6 +1067,7 @@ async function prepareApplyForManaged(
     dropUsers: extra?.dropUsers,
     dropDatabases: extra?.dropDatabases,
     dropOwnerRoleDatabases: extra?.dropOwnerRoleDatabases,
+    convertDatabases: extra?.convertDatabases,
     omitLoginIds: extra?.omitLoginIds,
     excludeMemberIds: extra?.excludeMemberIds,
     forceResyncMemberIds: extra?.forceResyncMemberIds,
@@ -1065,7 +1158,11 @@ async function createManagedAndEnqueueApply(
     members: created.prepared,
   })
   if (enqueued instanceof Response) {
-    await deleteManagedCompensation(db, created.row.id, environmentId)
+    await deleteManagedCompensation(c, db, {
+      userId,
+      managedId: created.row.id,
+      environmentId,
+    })
     return enqueued
   }
 
@@ -1079,7 +1176,8 @@ async function createManagedAndEnqueueApply(
         actorType: 'user',
         actorId: userId,
       },
-      [createServerId]
+      [createServerId],
+      copyDepsOf(c)
     )
   }
 
@@ -1580,7 +1678,13 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       // provisioning. This is not itself a create, so it displays whichever
       // server id is known (`managed.server_id`, falling back to the
       // environment's current placement) rather than hard-requiring one.
-      const idempotent = await clearIncompleteManagedCreate(c, db, existing, ctx.serverId)
+      const idempotent = await clearIncompleteManagedCreate(
+        c,
+        db,
+        existing,
+        ctx.serverId,
+        auth.userId
+      )
       if (idempotent) return idempotent
     }
 
@@ -2462,24 +2566,36 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const targetServerId = resolveManagedTargetServerId(c, row.serverId)
     if (targetServerId instanceof Response) return targetServerId
 
+    // MySQL and MariaDB: ask the host first, so nothing is removed for a login
+    // that still owns views, triggers, routines or events.
+    const deleteCheck = await checkLoginMayBeDeleted(ctx.spec.engine, target.appliedUsername, () =>
+      probeManagedPermissions(db, getDaemonCellRegistry(c), {
+        serverId: targetServerId,
+        managedId: row.id,
+        engine: ctx.spec.engine,
+        logins: [target.appliedUsername],
+        databases: [],
+        timeoutMs: MANAGED_LOGIN_CHECK_TIMEOUT_MS,
+      })
+    )
+    if (deleteCheck.kind === 'refuse') return c.json(deleteCheck.body, deleteCheck.status)
+
     const prepared = await prepareApplyForManaged(c, db, ctx, row, options, targetServerId, {
       dropUsers: [target.appliedUsername],
       omitLoginIds: [target.id],
     })
     if (prepared instanceof Response) return prepared
 
-    // The login row goes now (its scope rows and bindings with it).
-    const removed = await removeManagedLogin(db, target.id)
-
+    // The login row stays until the host has dropped the account: the apply
+    // consumer removes it when the apply succeeds (see
+    // `removeLoginsDroppedByApply`), so a host that refuses leaves the panel
+    // and the host agreeing.
     const enqueued = await enqueuePreparedManagedApply(c, db, prepared.commandQueue, {
       userId: auth.userId,
       managedId: row.id,
       members: prepared.members,
     })
-    if (enqueued instanceof Response) {
-      if (removed) await restoreManagedLogin(db, removed)
-      return enqueued
-    }
+    if (enqueued instanceof Response) return enqueued
 
     // A database this login owned goes back to its default owner role on the
     // server (the apply above hands it back before dropping the login), and
@@ -2490,6 +2606,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     return c.json({
       ok: true,
       ...handedBackNotes(handedBack),
+      ...(deleteCheck.note ? { note: deleteCheck.note } : {}),
       commandId: primaryFanout?.commandId,
       serverId: primaryFanout?.serverId ?? targetServerId,
       results: enqueued,
@@ -2538,6 +2655,70 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       },
       OWNER_CHANGE_NOT_AVAILABLE.status
     )
+  })
+
+  // Moves a database that already exists (the cluster's first database, or one
+  // made before owner roles) onto its owner role, only when asked. Ownership
+  // only: nothing in the database is changed or removed. Repeating it is safe.
+  router.post('/environments/:id/managed/databases/:databaseName/owner-role', async (c) => {
+    const scope = await loadManagedRowScope(c, 'managed.database.owner_role')
+    if (scope instanceof Response) return scope
+    const { db, auth, ctx, row } = scope
+    const databaseName = decodeURIComponent(c.req.param('databaseName'))
+    const options = await loadManagedOptions(db, ctx.spec, row)
+    if (!options) return c.json({ error: 'Invalid managed options' }, 400)
+    if (!options.databases.includes(databaseName)) return c.json({ error: 'Not found' }, 404)
+    const body = await parseJsonBody(c)
+    if (body instanceof Response) return body
+
+    const targetServerId = resolveManagedTargetServerId(c, row.serverId)
+    if (targetServerId instanceof Response) return targetServerId
+    const refusal = evaluateOwnerRoleConversion(
+      ctx.spec.engine,
+      databaseName,
+      body.confirm,
+      await daemonCanConvertDatabase(db, targetServerId)
+    )
+    if (refusal) {
+      return c.json({ error: refusal.error, message: refusal.message }, refusal.status)
+    }
+
+    const nextOptions: ManagedRowOptions = {
+      ...options,
+      ownerRoleDatabases: nextDatabasesAfterCreate(options.ownerRoleDatabases ?? [], databaseName),
+    }
+    const prepared = await prepareApplyForManaged(c, db, ctx, row, nextOptions, targetServerId, {
+      convertDatabases: [databaseName],
+    })
+    if (prepared instanceof Response) return prepared
+
+    // The database is only recorded as having an owner role once the primary
+    // reports the move done (see `markConvertedDatabasesRoleOwned`), so a
+    // move that fails leaves nothing flagged that is not true.
+    const enqueued = await enqueuePreparedManagedApply(c, db, prepared.commandQueue, {
+      userId: auth.userId,
+      managedId: row.id,
+      members: prepared.members,
+    })
+    if (enqueued instanceof Response) return enqueued
+    await recordAudit(db, {
+      organizationId: auth.organizationId,
+      actorUserId: auth.userId,
+      action: 'managed.database.owner_role.move',
+      targetType: 'managed',
+      targetId: row.id,
+      context: { database: databaseName },
+    })
+    const primaryFanout = pickPrimaryCommandResult(enqueued)
+    return c.json({
+      ok: true,
+      databases: options.databases,
+      ownerRoleDatabases: options.ownerRoleDatabases ?? [],
+      owners: describeDatabaseOwners(options),
+      commandId: primaryFanout?.commandId,
+      serverId: primaryFanout?.serverId ?? targetServerId,
+      results: enqueued,
+    })
   })
 
   router.post('/environments/:id/managed/databases', async (c) => {
@@ -3135,11 +3316,16 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     })
     if (prepared instanceof Response) return prepared
 
+    // A stop queued for the member's old data must not outlive the re-seed,
+    // but only once the re-seed itself is queued.
     const enqueued = await enqueuePreparedManagedApply(c, db, prepared.commandQueue, {
       userId: auth.userId,
       managedId: row.id,
       members: prepared.members,
     })
+    await cancelStopsOnceQueued(enqueued, () =>
+      cancelOpenReturnFenceStops(db, row.id, member.serverId)
+    )
     if (enqueued instanceof Response) return enqueued
 
     const primary = pickPrimaryCommandResult(enqueued)
@@ -3188,13 +3374,18 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       return c.json({ error: classError.error }, classError.status)
     }
 
+    const currentPrimary = (await listManagedMembers(db, row.id)).find((m) => m.role === 'primary')
+    const fenceWillRun =
+      currentPrimary !== undefined && (await isServerConnected(db, currentPrimary.serverId))
     const lagGate = await assertManagedPromoteLagAllowed(c, db, {
       member,
       managedId: row.id,
       engine: ctx.spec.engine,
       force,
+      fenceWillRun,
     })
-    if (lagGate) return lagGate
+    if (lagGate instanceof Response) return lagGate
+    const { requireFence } = lagGate
 
     const offline = await assertTargetServerOnline(c, db, member.serverId)
     if (offline) return offline
@@ -3210,9 +3401,17 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         managedId: row.id,
         member,
         engine: ctx.spec.engine,
+        requireFence,
       })
     }
 
+    const targetReplication = force
+      ? undefined
+      : await readSwitchoverTargetReplication(c, db, {
+          member,
+          managedId: row.id,
+          engine: ctx.spec.engine,
+        })
     const recovery = await beginOperatorSwitchover({
       db,
       commandQueue,
@@ -3222,6 +3421,9 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       target: member,
       members,
       actor: { actorType: 'user', actorId: auth.userId },
+      forced: force,
+      targetReplication,
+      requireFence,
     })
     const http = operatorPromoteHttpResult(recovery)
     return c.json(http.body, http.status)
@@ -3380,7 +3582,16 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const row = await findManagedForEnvironment(db, environmentId)
     if (!row) return c.json({ backups: [] })
 
-    const backups = (await listManagedBackups(db, row.id)).map(toManagedBackupListItem)
+    const records = await listManagedBackups(db, row.id)
+    const copies = await listCopiesFor(
+      db,
+      row.id,
+      records.map((r) => r.id)
+    )
+    const backups = records.map((r) => {
+      const copy = copies.get(r.id)
+      return { ...toManagedBackupListItem(r), copy: copy ? toApiCopy(copy) : null }
+    })
     return c.json({ backups })
   })
 
@@ -3400,6 +3611,9 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const busy = await assertManagedIdle(c, db, row)
     if (busy) return busy
 
+    const inFlight = await assertNoBackupInFlight(c, db, row.id)
+    if (inFlight) return inFlight
+
     const offline = await assertTargetServerOnline(c, db, targetServerId)
     if (offline) return offline
 
@@ -3414,7 +3628,8 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       return c.json({ error: 'Invalid database' }, 400)
     }
 
-    const built = buildManagedBackupCreatePayload(ctx, row.id, options, database)
+    const copyTarget = await copyTargetForNewBackup(c, db, row.id, targetServerId)
+    const built = buildManagedBackupCreatePayload(ctx, row.id, options, database, copyTarget)
     if (isManagedBackupApiError(built)) {
       return mapManagedBackupApiError(c, built)
     }
@@ -3467,7 +3682,15 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const commandQueue = assertDispatchInfrastructure(c)
     if (commandQueue instanceof Response) return commandQueue
 
-    const built = buildManagedBackupDeletePayload(ctx, row.id, record)
+    const copyTarget = await copyTargetForDelete(
+      c,
+      db,
+      auth.organizationId,
+      row.id,
+      record.id,
+      targetServerId
+    )
+    const built = buildManagedBackupDeletePayload(ctx, row.id, record, copyTarget)
     if (isManagedBackupApiError(built)) {
       return mapManagedBackupApiError(c, built)
     }
@@ -3509,11 +3732,21 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const targetServerId = resolveManagedTargetServerId(c, row.serverId)
     if (targetServerId instanceof Response) return targetServerId
 
-    const wrongHost = await refuseRestoreIfBackupOnOtherServer(c, db, record, targetServerId)
+    const fromCopy = await wantsRestoreFromCopy(c)
+    const wrongHost = await refuseWrongHostRestore(c, db, {
+      fromCopy,
+      organizationId: auth.organizationId,
+      managedId: row.id,
+      record,
+      targetServerId,
+    })
     if (wrongHost) return wrongHost
 
     const busy = await assertManagedIdle(c, db, row)
     if (busy) return busy
+
+    const inFlight = await assertNoBackupInFlight(c, db, row.id)
+    if (inFlight) return inFlight
 
     const offline = await assertTargetServerOnline(c, db, targetServerId)
     if (offline) return offline
@@ -3521,7 +3754,15 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const commandQueue = assertDispatchInfrastructure(c)
     if (commandQueue instanceof Response) return commandQueue
 
-    const built = buildManagedRestorePayload(ctx, row.id, record)
+    const source = await copySourceForRestore(c, db, {
+      fromCopy,
+      organizationId: auth.organizationId,
+      managedId: row.id,
+      backupId: record.id,
+      serverId: targetServerId,
+    })
+    if (source instanceof Response) return source
+    const built = buildManagedRestorePayload(ctx, row.id, record, source)
     if (isManagedBackupApiError(built)) {
       return mapManagedBackupApiError(c, built)
     }
@@ -3539,6 +3780,14 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       commandId: enqueued.commandId,
       serverId: enqueued.serverId,
     })
+  })
+
+  router.get('/environments/:id/managed/backup-target', async (c) => {
+    const scope = await loadManagedContextScope(c)
+    if (scope instanceof Response) return scope
+    const row = await findManagedForEnvironment(scope.db, scope.environmentId)
+    if (!row) return c.json({ source: 'none', target: null })
+    return c.json(await describeClusterBackupTarget(scope.db, row.id, scope.auth.organizationId))
   })
 
   router.get('/environments/:id/managed/backup-policies', async (c) => {

@@ -10,6 +10,7 @@ import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { SITE_DB_BINDINGS_FEATURE } from '../../lib/version-wire.ts'
 import {
   siteDbCaUnavailableWarning,
+  siteNeedsHostnameError,
   type SiteDbBindingsDeps,
   type SiteDbBindingsWarning,
   withSiteDbBindings,
@@ -44,6 +45,8 @@ const deps: SiteDbBindingsDeps = {
           ])
       )
     ),
+  loadHostedServiceIds: (_db, ids) =>
+    Promise.resolve(new Set(ids.filter((id) => id !== 's-nohost'))),
   loadCaPem: () => Promise.resolve(PEM),
 }
 
@@ -59,7 +62,7 @@ function run(features: string[], sites: EnvironmentDeploySite[]) {
     secrets,
     { organizationId: 'org', sites, serviceRows, daemonFeatures: features, warnings },
     deps
-  ).then((out) => ({ out, warnings }))
+  ).then((out) => ({ out: out as EnvironmentDeploySite[], warnings }))
 }
 
 test('a bound site on a new daemon gets the CA and the required names, once each', async () => {
@@ -105,4 +108,28 @@ test('the warning names the site and the fix, never a value', () => {
   assertEquals(warning.message.includes('"wp"'), true)
   assertEquals(warning.message.includes('Update the daemon'), true)
   assertEquals(SITE_DB_BINDINGS_FEATURE, 'site-db-bindings-v1')
+})
+
+test('a bound site with no hostname is refused in plain words instead of losing its settings', async () => {
+  const noHostDeps: SiteDbBindingsDeps = {
+    ...deps,
+    loadNeeds: (_db, ids) =>
+      Promise.resolve(
+        new Map(ids.map((id) => [id, { caFileKeys: [], requiredKeys: ['DATABASE_HOST'] }]))
+      ),
+  }
+  const out = await withSiteDbBindings(
+    db,
+    secrets,
+    {
+      organizationId: 'org',
+      sites: [site('bare')],
+      serviceRows: [{ id: 's-nohost', composeServiceName: 'bare' }],
+      daemonFeatures: [SITE_DB_BINDINGS_FEATURE],
+      warnings: [],
+    },
+    noHostDeps
+  )
+  assertEquals(out, siteNeedsHostnameError('bare'))
+  assertEquals((out as { message: string }).message.includes('add a hostname'), true)
 })

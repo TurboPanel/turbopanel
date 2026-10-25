@@ -137,6 +137,9 @@ jobs:
       - name: Check metrics boundaries (AE tokens and page identity stay backend-private)
         run: pnpm run check:metrics-boundaries
 
+      - name: Check metrics parity (both stores match the field registry)
+        run: pnpm run check:metrics-parity
+
       - name: Check query-cache boundaries (only registered reads reach the cached connection)
         run: pnpm run check:query-cache-boundaries
 

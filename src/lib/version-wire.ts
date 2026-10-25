@@ -178,7 +178,8 @@ export const DAEMON_WIRE_FEATURES = [
   'managed-ha-probe-v1',
   'managed-ha-instance-v1',
   'managed-ha-boot-hold-v1',
-  'metrics-v7',
+  'metrics-v8',
+  'metrics-v8-sizes',
   'php-site-modes-v1',
   'site-engine-nginx-apache-v1',
   'deploy-cancel-v1',
@@ -190,10 +191,26 @@ export const DAEMON_WIRE_FEATURES = [
   'managed-owner-role-v1',
   'managed-data-only-readwrite-v1',
   'managed-database-owner-v1',
+  'managed-database-convert-v1',
   'tls-capture-v1',
+  'command-recovery-v1',
+  'managed-switchover-final-position-v1',
+  'host-capacity-v1',
+  'server-network-check-v1',
+  'backup-s3-copy-v1',
+  'deploy-hostings-only-v1',
 ] as const
 
 export type DaemonWireFeature = (typeof DAEMON_WIRE_FEATURES)[number]
+
+/**
+ * This daemon honours `hostingsOnly` on `environment.deploy`: it rewrites only
+ * the environment's hosting web server config and certificates, with no build
+ * and no restart. The control plane sends a hostings-only run (after a hosting
+ * gets a Let's Encrypt certificate) only when the daemon of every server lists
+ * this feature; an older daemon would run it as a full deploy.
+ */
+export const DEPLOY_HOSTINGS_ONLY_FEATURE: DaemonWireFeature = 'deploy-hostings-only-v1'
 
 /**
  * The daemon opens `tpdaemon` envelopes on `public-urls-update`
@@ -207,7 +224,46 @@ export const SEALED_INSTANCE_SECRETS_FEATURE: DaemonWireFeature = 'sealed-instan
  * `POST /api/daemon/v1/tls/issued`, and this control plane stores them sealed.
  * The daemon sends nothing until this control plane lists the feature.
  */
+/**
+ * The daemon copies finished managed backups to an S3-compatible bucket, tests
+ * a target (`server.backups.test-target`) and restores from a bucket. This
+ * control plane sends a target only to a daemon that lists the feature, and the
+ * daemon sends `backup-copy-report` only to a control plane that lists it.
+ */
+export const BACKUP_S3_COPY_FEATURE: DaemonWireFeature = 'backup-s3-copy-v1'
+
 export const TLS_CAPTURE_FEATURE: DaemonWireFeature = 'tls-capture-v1'
+
+/**
+ * The daemon keeps each command's final result on the host until this control
+ * plane confirms it (`command-outcome-ack`), re-sends it on every attach, lists
+ * the commands it is running or still holding a result for on `hello` /
+ * `heartbeat` (`commands`), and repeats a running command's step plan every 30 s
+ * as a sign of life. This control plane then treats a quiet deploy as "checking
+ * with the server" instead of failed. Without it a quiet deploy keeps the old
+ * fixed run cap, worded as "no result came back".
+ */
+export const COMMAND_RECOVERY_FEATURE: DaemonWireFeature = 'command-recovery-v1'
+
+/**
+ * The daemon reports the old primary's final write position on a Postgres
+ * fence stop and the new primary's replay position on the promote, and refuses
+ * a stale forced re-seed (`switchoverReseed`) before wiping anything. Without
+ * it on BOTH servers of a planned switchover the control plane never re-seeds
+ * the former primary by itself (`reseedNote` "daemon too old"): an older
+ * daemon would ignore the guard and could not report either position.
+ */
+export const MANAGED_SWITCHOVER_FINAL_POSITION_FEATURE: DaemonWireFeature =
+  'managed-switchover-final-position-v1'
+
+/**
+ * This control plane merges heartbeat `resources.{memory,swap,cpus}` without
+ * dropping hello-only fields, and parses the optional `memory.presentBytes`,
+ * `memory.blockSizeBytes` and `dynamicMemory`. The daemon re-sends memory and
+ * CPUs on a heartbeat after they move only when this is listed; hello always
+ * carries them, and `memory.totalBytes` still means MemTotal.
+ */
+export const HOST_CAPACITY_FEATURE: DaemonWireFeature = 'host-capacity-v1'
 
 /**
  * The daemon answers `managed-health-request` with `managed-health-result`
@@ -229,8 +285,10 @@ export const MANAGED_HEALTH_REPORT_FEATURE: DaemonWireFeature = 'managed-health-
  * `executedGtid`, `fullyApplied` and `lastStreaming`. When a whole database
  * host is lost, the failover promote rule reads `fullyApplied`,
  * `executedGtid` (to pick the standby with the most applied transactions)
- * and `lastStreaming`. `receivedGtid` is only validated and stored
- * (cell-protocol, schemas, members, health-probe); no decision code reads it.
+ * and `lastStreaming`. The operator promote gate reads `fullyApplied` and,
+ * for an idle MySQL pair with no `fullyApplied: true`, whether `receivedGtid`
+ * is absent (`evaluateOperatorPromoteGate`); otherwise `receivedGtid` is only
+ * validated and stored (cell-protocol, schemas, members, health-probe).
  */
 export const MANAGED_REPLICA_FRESHNESS_FEATURE: DaemonWireFeature = 'managed-replica-freshness-v1'
 
@@ -264,11 +322,20 @@ export const MANAGED_HA_INSTANCE_FEATURE: DaemonWireFeature = 'managed-ha-instan
 export const MANAGED_HA_BOOT_HOLD_FEATURE: DaemonWireFeature = 'managed-ha-boot-hold-v1'
 
 /**
- * Metrics schema v7 (`metadata.version` 7: the `extended` section and the
+ * Metrics schema wire version 8 (`metadata.version` 8: the `extended` section and the
  * `durable` flag). The daemon stamps the legacy wire version until the control
  * plane it is attached to lists this feature.
  */
-export const METRICS_V7_FEATURE: DaemonWireFeature = 'metrics-v7'
+export const METRICS_V8_FEATURE: DaemonWireFeature = 'metrics-v8'
+
+/**
+ * This control plane stores and reads the per-sample sizes (`extended.sizes`,
+ * `filesystemSizes`, `gpuSizes`, `networkSizes`) and divides each bucket by the
+ * size its own sample carried. Advertised only by a release that does so: a
+ * daemon that sees this feature stops counting sizes in its change fingerprint,
+ * which is safe only when a resized server is never divided by stale totals.
+ */
+export const METRICS_V8_SIZES_FEATURE: DaemonWireFeature = 'metrics-v8-sizes'
 
 /**
  * The daemon runs each PHP site in the mode its deploy asks for (`php.mode`).
@@ -357,6 +424,22 @@ export const MANAGED_DATA_ONLY_READWRITE_FEATURE: DaemonWireFeature =
  * cluster's first database is made without an owner role as before.
  */
 export const MANAGED_DATABASE_OWNER_FEATURE: DaemonWireFeature = 'managed-database-owner-v1'
+
+/**
+ * The daemon honours `databases[].convertExisting` on a Postgres database: an
+ * existing database that holds data is handed to its owner role on request.
+ * Without it the control plane refuses the request with 409
+ * `managed_database_convert_needs_daemon_update`.
+ */
+export const MANAGED_DATABASE_CONVERT_FEATURE: DaemonWireFeature = 'managed-database-convert-v1'
+
+/**
+ * The daemon answers `server-network-check-request` with
+ * `server-network-check-result`: whether the host can open a TCP connection to
+ * each listed peer address, and from which local address. Without it the
+ * control plane never sends the message and the UI hides the check.
+ */
+export const SERVER_NETWORK_CHECK_FEATURE: DaemonWireFeature = 'server-network-check-v1'
 
 /** Features that need an instance at or above a semver. Empty until one lands. */
 export const INSTANCE_FEATURE_MIN_VERSIONS: Readonly<Record<string, string>> = {}

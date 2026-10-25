@@ -8,7 +8,7 @@
  */
 
 import { assertEquals } from '@std/assert'
-import v7Layout from '../../daemon/metrics/testing/v7-layout.fixture.json' with { type: 'json' }
+import v12Layout from '../../daemon/metrics/testing/v12-layout.fixture.json' with { type: 'json' }
 import { MAX_NIC_SLOTS } from '../../contracts/topology-types.ts'
 import {
   CATALOGUE_CURRENCY,
@@ -191,8 +191,8 @@ test('the lookups answer by label and by rank, and refuse anything else', () => 
   assertEquals(isTierLabel(1), false)
 })
 
-test('the ladder grants exactly the slots the sealed v7 layout fixture states', () => {
-  const limits = v7Layout.planLimits as Record<
+test('the ladder grants exactly the slots the sealed v12 layout fixture states', () => {
+  const limits = v12Layout.planLimits as Record<
     string,
     { nicSlots: number; driveSlots: number; gpuSlots: number; filesystemSlots: number }
   >

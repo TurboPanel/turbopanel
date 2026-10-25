@@ -39,8 +39,8 @@ INSERT INTO datacenter (id, organization_id, name) VALUES
 -- server-a carries addresses; server-b has none (the empty case a backfill
 -- must also survive).
 INSERT INTO server (id, organization_id, name, hostname, machine_key, os_id, os_family, os_version, os_architecture, machine_class, timezone, is_connected, is_hosting_enabled) VALUES
-  ('00000000-0000-7000-8000-000000000501', '00000000-0000-7000-8000-000000000101', 'server-a', 'server-a.example.test', 'upgrade-machine-key-a', 'ubuntu', 'debian', '24.04', 'amd64', 'virtual', 'UTC', true, true),
-  ('00000000-0000-7000-8000-000000000502', '00000000-0000-7000-8000-000000000101', 'server-b', 'server-b.example.test', 'upgrade-machine-key-b', 'debian', 'debian', '13', 'arm64', 'physical', 'UTC', false, false);
+  ('00000000-0000-7000-8000-000000000501', '00000000-0000-7000-8000-000000000101', 'server-a', 'server-a.example.test', 'upgrade-machine-key-a', 'ubuntu', 'debian', '24.04', 'x86_64', 'virtual', 'UTC', true, true),
+  ('00000000-0000-7000-8000-000000000502', '00000000-0000-7000-8000-000000000101', 'server-b', 'server-b.example.test', 'upgrade-machine-key-b', 'debian', 'debian', '13', 'aarch64', 'physical', 'UTC', false, false);
 
 INSERT INTO environment (id, project_id, server_id, name, created_at) VALUES
   ('00000000-0000-7000-8000-000000000601', '00000000-0000-7000-8000-000000000301', '00000000-0000-7000-8000-000000000501', 'production', '2026-01-01T00:00:00Z');
@@ -79,17 +79,24 @@ INSERT INTO replica (id, managed_id, server_id, role, ordinal, status) VALUES
   ('00000000-0000-7000-8000-000000000b11', '00000000-0000-7000-8000-000000000b01', '00000000-0000-7000-8000-000000000501', 'primary', 1, 'ready'),
   ('00000000-0000-7000-8000-000000000b12', '00000000-0000-7000-8000-000000000b01', '00000000-0000-7000-8000-000000000502', 'replica', 2, 'provisioning');
 
-INSERT INTO principal (id, organization_id, project_id, username, applied_username) VALUES
-  ('00000000-0000-7000-8000-000000000c01', '00000000-0000-7000-8000-000000000101', '00000000-0000-7000-8000-000000000301', 'siteowner', 'siteowner');
+INSERT INTO principal (id, organization_id, project_id, username, applied_username, options) VALUES
+  ('00000000-0000-7000-8000-000000000c01', '00000000-0000-7000-8000-000000000101', '00000000-0000-7000-8000-000000000301', 'siteowner', 'siteowner', '{"shell": "/bin/bash"}');
 
 INSERT INTO placement (id, principal_id, server_id, state, home, source) VALUES
   ('00000000-0000-7000-8000-000000000c11', '00000000-0000-7000-8000-000000000c01', '00000000-0000-7000-8000-000000000501', 'present', '/srv/users/siteowner', 'manual');
 
 -- A login that stands on its own, one that shares the site owner's name, and
 -- the databases they may use.
-INSERT INTO login (id, managed_id, principal_id, role, username, applied_username, privileges, grant_mode) VALUES
-  ('00000000-0000-7000-8000-000000000c21', '00000000-0000-7000-8000-000000000b01', '00000000-0000-7000-8000-000000000c01', 'user', 'siteowner', 'siteowner', '{read-write}', 'recipe'),
-  ('00000000-0000-7000-8000-000000000c22', '00000000-0000-7000-8000-000000000b01', NULL, 'user', 'reporting', 'reporting', '{read-only}', 'recipe');
+-- Both are manage-myself logins (`self`) with their sources named, so the rows fit
+-- the previous release and the current schema alike: the current schema needs a
+-- `recipe` for a panel-set login and never accepts NULL sources, and the seed
+-- cannot name columns the previous release does not have. The move of older
+-- `preset` rows to `recipe` and of NULL sources to the explicit anywhere pair is
+-- checked by hand against a database built from the previous release (see the
+-- login migration).
+INSERT INTO login (id, managed_id, principal_id, role, username, applied_username, privileges, grant_mode, allowed_sources) VALUES
+  ('00000000-0000-7000-8000-000000000c21', '00000000-0000-7000-8000-000000000b01', '00000000-0000-7000-8000-000000000c01', 'user', 'siteowner', 'siteowner', '{read-write}', 'self', '{internal}'),
+  ('00000000-0000-7000-8000-000000000c22', '00000000-0000-7000-8000-000000000b01', NULL, 'user', 'reporting', 'reporting', '{read-only}', 'self', '{internal,address:203.0.113.7}');
 
 INSERT INTO database (id, managed_id, name, is_role_owned) VALUES
   ('00000000-0000-7000-8000-000000000c31', '00000000-0000-7000-8000-000000000b01', 'app', false);

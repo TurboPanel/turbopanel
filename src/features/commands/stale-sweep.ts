@@ -22,7 +22,8 @@
  * The deadline is measured from the row's most recent lifecycle timestamp,
  * so a legitimately long-running command (e.g. a 30-minute backup) is only
  * swept after its own budget + grace — the moment a live consumer would have
- * timed it out anyway.
+ * timed it out anyway. A deploy is the exception: it is swept by the clock it
+ * is on (waiting to start, or running since the server started it).
  */
 
 import { and, eq, inArray, lt, notExists, sql } from 'drizzle-orm'
@@ -30,7 +31,7 @@ import type { Db } from '../../db/connection.ts'
 import type { CommandQueue } from './queue.ts'
 import { command, deployment, managed, recovery } from '../../db/schema.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
-import { transitionCommand } from './command-records.ts'
+import { ENQUEUED_FLAG, transitionCommand } from './command-records.ts'
 import { failTimedOutDeploy } from '../deploy/rollout.ts'
 import { nowIso } from './ids.ts'
 import { commandTimeoutMs } from './consumer.ts'
@@ -41,6 +42,16 @@ import {
 } from '../managed/ha-recovery.ts'
 import { RECOVERY_STATES, TERMINAL_RECOVERY_STATES } from '../managed/recovery.ts'
 import { commandIsOpen } from './open-statuses.ts'
+import {
+  DEPLOY_DEFAULT_TIMEOUT_MS,
+  DEPLOY_QUEUE_LIMIT_MS,
+  DEPLOY_RECONCILE_WINDOW_MS,
+  DEPLOY_RUN_CAP_MS,
+  DEPLOY_RUN_SILENCE_MS,
+  DEPLOY_WAIT_LIMIT_MS,
+  deployRunState,
+} from './deploy-wait.ts'
+import { loadDeployRunCapMs, serverHasCommandRecovery } from './deploy-wait-settings.ts'
 
 /** Extra slack past the consumer budget before a row counts as stranded. */
 export const STALE_COMMAND_GRACE_MS = 5 * 60_000
@@ -63,6 +74,27 @@ export type StaleCommandCandidate = {
   serverId?: string
   /** `command.metadata`: carries `recoveryId` for a managed HA recovery step. */
   metadata?: unknown
+  /** `command.status`; a deploy that is still in the queue is judged by the queue limit. */
+  status?: string
+  /** `command.progress`: the deploy's step plan, carrying when the server started it. */
+  progress?: unknown
+  /**
+   * `command.updated_at`: when the server last reported. A running deploy on a
+   * server with {@link StaleCommandCandidate.recovery} is stranded only after
+   * the server has been quiet for the reconcile window.
+   */
+  updatedAt?: string
+  /**
+   * The server's daemon sends signs of life and keeps results until they are
+   * confirmed (`command-recovery-v1`). Without it a running deploy keeps the
+   * fixed run cap.
+   */
+  recovery?: boolean
+  /**
+   * The deploy time limit of the server's organization, in milliseconds
+   * (30 minutes when not given). Only used with {@link StaleCommandCandidate.recovery}.
+   */
+  deployRunCapMs?: number
 }
 
 function toMs(value: string | null): number | null {
@@ -80,6 +112,7 @@ export function isStaleCommand(
   nowMs: number,
   graceMs = STALE_COMMAND_GRACE_MS
 ): boolean {
+  if (row.name === 'environment.deploy') return isStaleDeploy(row, nowMs, graceMs)
   const reference =
     toMs(row.startedAt) ??
     toMs(row.ackedAt) ??
@@ -89,6 +122,45 @@ export function isStaleCommand(
     toMs(row.createdAt)
   if (reference === null) return false
   return nowMs >= reference + commandTimeoutMs(row.name) + graceMs
+}
+
+/**
+ * A deploy has two clocks (`deploy-wait.ts`): one that waits to start (queue
+ * limit) and one that runs once the server has started it (run cap). It is
+ * stale only when the clock it is on has run out, plus grace.
+ */
+function isStaleDeploy(row: StaleCommandCandidate, nowMs: number, graceMs: number): boolean {
+  const queueLimit = DEPLOY_QUEUE_LIMIT_MS + graceMs
+  const waitingSince =
+    toMs(row.sentAt) ?? toMs(row.dispatchStartedAt) ?? toMs(row.queuedAt) ?? toMs(row.createdAt)
+  if (waitingSince === null) return false
+  if (row.status === 'queued' || row.status === 'dispatching') {
+    // Only a command whose message is known to be on the queue may wait long;
+    // one that never got there (its worker died) is given the old short wait.
+    const onQueue = asRecord(row.metadata)?.[ENQUEUED_FLAG] !== undefined
+    return nowMs >= waitingSince + (onQueue ? queueLimit : commandTimeoutMs(row.name) + graceMs)
+  }
+  const run = deployRunState({
+    progress: row.progress,
+    sentAt: new Date(waitingSince).toISOString(),
+    nowMs,
+  })
+  if (run.state === 'running') {
+    // On a server that sends signs of life a running deploy is stranded when it is still
+    // reported on and has run past the deploy time limit (`runningSince` leaves out quiet
+    // time), when nobody has heard from the server for the whole reconcile window, or past
+    // the whole wait limit. Otherwise, or without a last-heard time, the fixed cap.
+    const lastHeard = row.recovery === true ? toMs(row.updatedAt ?? null) : null
+    if (lastHeard === null) return nowMs >= run.sinceMs + DEPLOY_RUN_CAP_MS + graceMs
+    const reporting = nowMs - lastHeard < DEPLOY_RUN_SILENCE_MS
+    return (
+      (reporting &&
+        nowMs >= run.sinceMs + (row.deployRunCapMs ?? DEPLOY_DEFAULT_TIMEOUT_MS) + graceMs) ||
+      nowMs >= lastHeard + DEPLOY_RECONCILE_WINDOW_MS + graceMs ||
+      nowMs >= waitingSince + DEPLOY_WAIT_LIMIT_MS + graceMs
+    )
+  }
+  return nowMs >= waitingSince + queueLimit
 }
 
 /**
@@ -177,6 +249,9 @@ export async function sweepStaleCommands(
       context: command.context,
       serverId: command.serverId,
       metadata: command.metadata,
+      status: command.status,
+      progress: command.progress,
+      updatedAt: command.updatedAt,
     })
     .from(command)
     .where(
@@ -197,7 +272,33 @@ export async function sweepStaleCommands(
     .limit(limit)
 
   let swept = 0
-  await forEachSequential(candidates, async (row) => {
+  const recoveryByServer = new Map<string, Promise<boolean>>()
+  const serverRecovery = (serverId: string): Promise<boolean> => {
+    let known = recoveryByServer.get(serverId)
+    if (known === undefined) {
+      known = serverHasCommandRecovery(db, serverId)
+      recoveryByServer.set(serverId, known)
+    }
+    return known
+  }
+  const runCapByServer = new Map<string, Promise<number>>()
+  const serverRunCap = (serverId: string): Promise<number> => {
+    let known = runCapByServer.get(serverId)
+    if (known === undefined) {
+      known = loadDeployRunCapMs(db, serverId)
+      runCapByServer.set(serverId, known)
+    }
+    return known
+  }
+  await forEachSequential(candidates, async (candidate) => {
+    const row =
+      candidate.name === 'environment.deploy'
+        ? {
+            ...candidate,
+            recovery: await serverRecovery(candidate.serverId),
+            deployRunCapMs: await serverRunCap(candidate.serverId),
+          }
+        : candidate
     if (!isStaleCommand(row, nowMs, graceMs)) return
     // Two different situations, and the operator's next move differs:
     // re-issuing an undelivered command is free, while re-issuing one the
