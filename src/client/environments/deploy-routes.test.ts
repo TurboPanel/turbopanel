@@ -1514,7 +1514,7 @@ for (const acmeEnabled of [true, false]) {
             .where(eq(tls.organizationId, organizationId))
 
           if (!acmeEnabled) {
-            assertEquals(res.status, 422)
+            assertEquals(res.status, 400)
             const refused = (await res.json()) as { error: string; message: string }
             assertEquals(refused.error, 'acme_requires_org_opt_in')
             assertEquals(refused.message.includes("Allow Let's Encrypt certificates"), true)

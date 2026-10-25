@@ -640,9 +640,9 @@ Encrypt row for the name and the www name its `www` setting adds (an existing
 row with exactly those names, else one that covers them, else a new one; the
 same store as the one-click button), and deploy-prepare sends it as the `acme`
 wire mode. There is no DNS check on this path: the server keeps retrying until
-DNS points at it. The deploy is refused with **`422 acme_requires_org_opt_in`**
+DNS points at it. The deploy is refused with **`400 acme_requires_org_opt_in`**
 when the organization has not turned on "Allow Let's Encrypt certificates",
-**`422 acme_requires_public_bind`** for a non-public route, and **`422
+**`400 acme_requires_public_bind`** for a non-public route, and **`400
 letsencrypt_hostname_unsupported`** for a wildcard, IP or private name. The
 default stays `internal` so a document saved before `automatic` worked does not
 start asking for certificates; the panel writes `automatic` explicitly.

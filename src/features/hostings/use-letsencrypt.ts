@@ -20,6 +20,7 @@ import {
   wwwRedirectConflictMessage,
 } from './hosting-certificate.ts'
 import { type DnsLookup, checkHostingDns } from './hosting-dns-check.ts'
+import { isComposeAutomaticTlsHosting, isComposeOwnedHosting } from './hosting-compose-owner.ts'
 import {
   parseHostingOptions,
   readHostingWwwMode,
@@ -43,11 +44,15 @@ export type LetsEncryptStore = {
   /** Hostnames of the other web hostings in this hosting's environment (what a www twin must not collide with). */
   otherWebHostnames(hosting: LetsEncryptHostingRecord): Promise<string[]>
   /**
-   * A live managed Let's Encrypt row of the organization for `names`: the one
-   * whose names equal them, else one that already covers every one of them.
+   * The organization's managed Let's Encrypt row for `names`, created when
+   * there is none: the live row whose names equal them, else one that already
+   * covers every one of them. Serialized per organization, so two requests at
+   * once settle on one row.
    */
-  findManagedCertificate(organizationId: string, names: readonly string[]): Promise<string | null>
-  createManagedCertificate(organizationId: string, names: readonly string[]): Promise<string>
+  managedCertificateFor(
+    organizationId: string,
+    names: readonly string[]
+  ): Promise<{ id: string; created: boolean }>
   saveHosting(
     hostingId: string,
     patch: {
@@ -80,6 +85,11 @@ type RequestParams = {
   acmeEnabled: boolean
 }
 
+/** Compose owns this row and chose a certificate other than Let's Encrypt, so the panel must not pin one. */
+function composeOwnsAnotherCertificate(metadata: unknown): boolean {
+  return isComposeOwnedHosting(metadata) && !isComposeAutomaticTlsHosting(metadata)
+}
+
 function readHostnames(options: unknown): string[] {
   return parseHostingOptions(options)?.hostnames ?? []
 }
@@ -90,8 +100,7 @@ async function pinCertificate(
   dns: HostingDnsReport
 ): Promise<LetsEncryptRequestResult> {
   const { store, hosting } = params
-  const existing = await store.findManagedCertificate(hosting.organizationId, names)
-  const tlsId = existing ?? (await store.createManagedCertificate(hosting.organizationId, names))
+  const { id: tlsId, created } = await store.managedCertificateFor(hosting.organizationId, names)
   const changed = hosting.tlsId !== tlsId
   // A repeat click on a hosting already pinned to this row writes nothing, so
   // it neither looks like a new change nor sends the certificate out again.
@@ -101,7 +110,7 @@ async function pinCertificate(
       ...pendingLetsEncryptPatch(hosting.metadata, null),
     })
   }
-  return { ok: true, outcome: 'pinned', tlsId, dns, created: existing === null, changed }
+  return { ok: true, outcome: 'pinned', tlsId, dns, created, changed }
 }
 
 async function rememberWaiting(
@@ -170,7 +179,8 @@ export type PendingRetryResult = 'pinned' | 'unchanged' | 'waiting' | 'expired' 
 /**
  * One sweep step for a hosting with a waiting request. A request older than the
  * limit, or one the rules no longer allow (the organization switched Let's
- * Encrypt off, hostnames changed), is dropped.
+ * Encrypt off, hostnames changed, or compose now owns the row and no longer
+ * asks for `tls.mode: automatic`), is dropped.
  */
 export async function retryPendingLetsEncrypt(params: RequestParams): Promise<PendingRetryResult> {
   const pending = readPendingLetsEncrypt(params.hosting)
@@ -182,6 +192,7 @@ export async function retryPendingLetsEncrypt(params: RequestParams): Promise<Pe
     return outcome
   }
   if (isPendingExpired(pending, params.now)) return dropPending('expired')
+  if (composeOwnsAnotherCertificate(params.hosting.metadata)) return dropPending('refused')
   const result = await requestLetsEncrypt(params)
   if (!result.ok) return dropPending('refused')
   if (result.outcome === 'pinned' && !result.changed) return 'unchanged'

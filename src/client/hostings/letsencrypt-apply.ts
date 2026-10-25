@@ -18,12 +18,11 @@
  * undo the certificate choice that was just saved.
  */
 import { and, eq, gt, inArray, ne, or } from 'drizzle-orm'
-import type { Context, MiddlewareHandler } from 'hono'
+import type { Context } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import type { DaemonCellRegistry } from '../../contracts/cell.ts'
-import { getDb, type Db } from '../../db/connection.ts'
+import type { Db } from '../../db/connection.ts'
 import { environment, hosting, project, server, service, tls } from '../../db/schema.ts'
-import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import { isServerConnectedStoredOrLive } from '../../daemon/cell/server-status.ts'
 import { isNoopCommandQueue } from '../../features/commands/noop-command-queue.ts'
 import type { CommandQueue } from '../../features/commands/queue.ts'
@@ -256,7 +255,10 @@ async function isManagedLetsEncryptRow(db: Db, tlsId: string): Promise<boolean> 
   return row?.source === 'lets_encrypt' && row.status === 'automatic'
 }
 
-async function loadHostingPinState(db: Db, hostingId: string): Promise<HostingPinState | null> {
+export async function loadHostingPinState(
+  db: Db,
+  hostingId: string
+): Promise<HostingPinState | null> {
   const [row] = await db
     .select({
       tlsId: hosting.tlsId,
@@ -274,40 +276,31 @@ async function loadHostingPinState(db: Db, hostingId: string): Promise<HostingPi
  * Picking a Let's Encrypt certificate from the library on a panel-authored
  * hosting (`PATCH /hostings/:id` with a new `tlsId`) starts it the way the
  * one-click button does: a hostings-only apply when that is safe, else the
- * next deploy (the Certificate panel says "Deploy" through `needsDeploy`).
- * Registered before the hosting routes; it reads the pin, lets the route
- * answer, and only acts on a successful edit that changed the pin alone.
- * Compose-owned rows never get here: the route refuses them with 409, and
+ * next deploy. Called after the edit was saved, with the pin read before it;
+ * `null` when the edit was not a pin-only change to a managed Let's Encrypt
+ * row. Compose-owned rows never get here: the route refuses them with 409, and
  * their pin is carried by the deploy whose reconcile sets it.
  */
-export function applyLibraryLetsEncryptPick(
-  applyDeps: (c: Context<AppEnv>) => HostingApplyDeps
-): MiddlewareHandler<AppEnv> {
-  return async (c, next) => {
-    const db = getDb(c)
-    const hostingId = c.req.param('id')
-    if (c.req.method !== 'PATCH' || !db || !hostingId) return next()
-    const before = await loadHostingPinState(db, hostingId)
-    await next()
-    const session = c.get('session')
-    if (!before || !session || c.res.status !== 200) return
-    const after = await loadHostingPinState(db, hostingId)
-    if (!after?.tlsId || !isPinOnlyChange(before, after)) return
-    if (!(await isManagedLetsEncryptRow(db, after.tlsId))) return
-    const organizationId = await resolveEntityOrganizationId(db, 'hosting', hostingId)
-    if (!organizationId) return
-    await queueHostingCertificateApply(
-      c,
-      db,
-      {
-        hostingId,
-        organizationId,
-        actor: { actorType: 'user', actorId: session.userId },
-        editedAt: before.updatedAt,
-      },
-      applyDeps(c)
-    )
-  }
+export async function applyAfterLibraryPick(
+  c: Context<AppEnv>,
+  db: Db,
+  params: { hostingId: string; organizationId: string; userId: string; before: HostingPinState },
+  deps: HostingApplyDeps
+): Promise<HostingApplyOutcome | null> {
+  const after = await loadHostingPinState(db, params.hostingId)
+  if (!after?.tlsId || !isPinOnlyChange(params.before, after)) return null
+  if (!(await isManagedLetsEncryptRow(db, after.tlsId))) return null
+  return await queueHostingCertificateApply(
+    c,
+    db,
+    {
+      hostingId: params.hostingId,
+      organizationId: params.organizationId,
+      actor: { actorType: 'user', actorId: params.userId },
+      editedAt: params.before.updatedAt,
+    },
+    deps
+  )
 }
 
 export async function queueHostingCertificateApply(

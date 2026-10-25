@@ -4,7 +4,7 @@
  * block returned with every hosting.
  */
 
-import { and, eq, inArray, ne, sql } from 'drizzle-orm'
+import { and, asc, eq, inArray, ne, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import {
   deployment,
@@ -108,55 +108,90 @@ function sameNames(left: readonly string[], right: readonly string[]): boolean {
   return right.every((name) => set.has(name.toLowerCase()))
 }
 
+/**
+ * The live managed row for `names`, oldest first so every caller picks the
+ * same one: one certificate per hostname per organization, so the row with
+ * exactly these names wins, else any row that already covers all of them.
+ */
+async function findManagedCertificate(
+  db: Db,
+  organizationId: string,
+  names: readonly string[]
+): Promise<string | null> {
+  const rows = await db
+    .select({ id: tls.id, metadata: tls.metadata })
+    .from(tls)
+    .where(
+      and(
+        eq(tls.organizationId, organizationId),
+        eq(tls.source, 'lets_encrypt'),
+        eq(tls.status, 'automatic')
+      )
+    )
+    .orderBy(asc(tls.createdAt), asc(tls.id))
+  const named = rows.flatMap((row) => {
+    const dnsNames = (row.metadata as { dnsNames?: unknown } | null)?.dnsNames
+    return Array.isArray(dnsNames) ? [{ id: row.id, dnsNames: dnsNames as string[] }] : []
+  })
+  const exact = named.find((row) => sameNames(row.dnsNames, names))
+  const covering = named.find((row) => coversAllHostnames(row.dnsNames, [...names]))
+  return (exact ?? covering)?.id ?? null
+}
+
+async function createManagedCertificate(
+  db: Db,
+  organizationId: string,
+  names: readonly string[]
+): Promise<string> {
+  const material = materialFromLetsEncrypt({ hostnames: [...names] })
+  if (isCreateTlsFailure(material)) throw new Error(material.error)
+  const { columns, residual } = splitTlsMetadata(material.metadata)
+  const [inserted] = await db
+    .insert(tls)
+    .values({
+      organizationId,
+      name: null,
+      source: 'lets_encrypt',
+      certificatePem: null,
+      privateKeyPem: null,
+      status: columns.status,
+      notAfter: columns.notAfter,
+      fingerprintSha256: columns.fingerprintSha256,
+      metadata: residual,
+      options: material.options,
+    })
+    .returning({ id: tls.id })
+  return inserted.id
+}
+
+/**
+ * Find or create under a per-organization transaction lock, so a deploy, a
+ * preview, the button and the sweep asking at once settle on one row. Inside
+ * an outer transaction (the deploy's reconcile) the lock is held until that
+ * transaction ends.
+ */
+export async function managedCertificateFor(
+  db: Db,
+  organizationId: string,
+  names: readonly string[]
+): Promise<{ id: string; created: boolean }> {
+  return await db.transaction(async (tx) => {
+    const lockKey = 'tls-lets-encrypt:' + organizationId
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`)
+    const existing = await findManagedCertificate(tx, organizationId, names)
+    if (existing !== null) return { id: existing, created: false }
+    return { id: await createManagedCertificate(tx, organizationId, names), created: true }
+  })
+}
+
 export function createLetsEncryptStore(db: Db): LetsEncryptStore {
   return {
     expectedAddresses: (record) => loadExpectedAddresses(db, record.id),
 
     otherWebHostnames: (record) => loadOtherWebHostnames(db, record.id),
 
-    async findManagedCertificate(organizationId, names) {
-      const rows = await db
-        .select({ id: tls.id, metadata: tls.metadata })
-        .from(tls)
-        .where(
-          and(
-            eq(tls.organizationId, organizationId),
-            eq(tls.source, 'lets_encrypt'),
-            eq(tls.status, 'automatic')
-          )
-        )
-      // One certificate per hostname per organization: the row with exactly
-      // these names wins, else any live row that already covers all of them.
-      const named = rows.flatMap((row) => {
-        const dnsNames = (row.metadata as { dnsNames?: unknown } | null)?.dnsNames
-        return Array.isArray(dnsNames) ? [{ id: row.id, dnsNames: dnsNames as string[] }] : []
-      })
-      const exact = named.find((row) => sameNames(row.dnsNames, names))
-      const covering = named.find((row) => coversAllHostnames(row.dnsNames, [...names]))
-      return (exact ?? covering)?.id ?? null
-    },
-
-    async createManagedCertificate(organizationId, names) {
-      const material = materialFromLetsEncrypt({ hostnames: [...names] })
-      if (isCreateTlsFailure(material)) throw new Error(material.error)
-      const { columns, residual } = splitTlsMetadata(material.metadata)
-      const [inserted] = await db
-        .insert(tls)
-        .values({
-          organizationId,
-          name: null,
-          source: 'lets_encrypt',
-          certificatePem: null,
-          privateKeyPem: null,
-          status: columns.status,
-          notAfter: columns.notAfter,
-          fingerprintSha256: columns.fingerprintSha256,
-          metadata: residual,
-          options: material.options,
-        })
-        .returning({ id: tls.id })
-      return inserted.id
-    },
+    managedCertificateFor: (organizationId, names) =>
+      managedCertificateFor(db, organizationId, names),
 
     async saveHosting(hostingId, patch) {
       await db

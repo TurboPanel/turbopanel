@@ -970,7 +970,7 @@ function letsEncryptRefused(
 
 test('mapPrepareErrorResponse names the Lets Encrypt setting when compose asks for automatic while it is off', () => {
   const response = mapPrepareErrorResponse(letsEncryptRefused('lets_encrypt_not_enabled'))
-  assertEquals(response.status, 422)
+  assertEquals(response.status, 400)
   assertEquals(response.body.error, 'acme_requires_org_opt_in')
   assertEquals(response.body.composeServiceName, 'web')
   assertEquals(response.body.hostname, 'app.example.com')
@@ -988,7 +988,7 @@ test('mapPrepareErrorResponse explains a non-public or unsupported automatic rou
   const wildcard = mapPrepareErrorResponse(
     letsEncryptRefused('letsencrypt_hostname_unsupported', ['*.example.com'])
   )
-  assertEquals(wildcard.status, 422)
+  assertEquals(wildcard.status, 400)
   assertEquals(wildcard.body.error, 'letsencrypt_hostname_unsupported')
   assertEquals(String(wildcard.body.message).includes('*.example.com cannot get one'), true)
 })

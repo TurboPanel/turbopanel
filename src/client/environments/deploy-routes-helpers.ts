@@ -483,8 +483,10 @@ function mapHostingPrepareError(
     }
   }
   if (prepared.kind === 'hosting_letsencrypt_refused') {
+    // 400, the status the deploy already answers these codes with for a
+    // panel hosting pinned to a Let's Encrypt row.
     return {
-      status: 422,
+      status: 400,
       body: {
         error: hostingLetsEncryptRefusedCode(prepared),
         composeServiceName: prepared.composeServiceName,

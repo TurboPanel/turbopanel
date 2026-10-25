@@ -46,12 +46,15 @@ import {
   loadHostingCertificates,
 } from './letsencrypt-store.ts'
 import {
-  applyLibraryLetsEncryptPick,
+  applyAfterLibraryPick,
   type HostingApplyDeps,
   type HostingApplyOutcome,
   type HostingApplyParams,
+  loadHostingPinState,
   queueHostingCertificateApply,
 } from './letsencrypt-apply.ts'
+import { compatLogWarn } from '../../lib/log-compat.ts'
+import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 
 export type HostingLetsEncryptDeps = {
   lookup?: DnsLookup
@@ -187,6 +190,68 @@ async function refuseHostingWrite(
   return assertHostingNotComposeOwnedOr409(c, db, id, { allowAutomaticTls: true })
 }
 
+/** This organization's id when the signed-in person may edit the hosting (the PATCH gate), else null. */
+async function editableHostingOrganization(
+  c: Context<AppEnv>,
+  db: Db,
+  userId: string,
+  hostingId: string
+): Promise<string | null> {
+  const orgResult = await getOrgId(c, userId)
+  if (orgResult instanceof Response) return null
+  if ((await resolveEntityOrganizationId(db, 'hosting', hostingId)) !== orgResult) return null
+  const denied = await assertCanOr403(c, 'organization:manage', 'hosting', hostingId)
+  return denied ? null : orgResult
+}
+
+/**
+ * Around `PATCH /hostings/:id` (answered by `routes.ts`): once the signed-in
+ * person passes the same gate as the route, read the pin, let the route save,
+ * then start a library-picked Let's Encrypt certificate (`applyAfterLibraryPick`)
+ * and add `needsDeploy` to the answer. A failure after the save is logged and
+ * answered as saved with `needsDeploy: true`, never as an error.
+ */
+function libraryPickApply(
+  secrets: DerivedSecretsConfig,
+  applyDeps: (c: Context<AppEnv>) => HostingApplyDeps
+): MiddlewareHandler<AppEnv> {
+  const session = createSessionMiddleware(secrets)
+  return (c, next) => {
+    if (c.req.method !== 'PATCH') return next()
+    return session(c, () => withLibraryPickApply(c, next, applyDeps))
+  }
+}
+
+async function withLibraryPickApply(
+  c: Context<AppEnv>,
+  next: () => Promise<void>,
+  applyDeps: (c: Context<AppEnv>) => HostingApplyDeps
+): Promise<void> {
+  const db = getDb(c)
+  const userId = c.get('session')?.userId
+  const hostingId = c.req.param('id')
+  const organizationId =
+    db && userId && hostingId ? await editableHostingOrganization(c, db, userId, hostingId) : null
+  const before = db && organizationId ? await loadHostingPinState(db, hostingId!) : null
+  await next()
+  if (!db || !userId || !organizationId || !before || c.res.status !== 200) return
+  try {
+    const outcome = await applyAfterLibraryPick(
+      c,
+      db,
+      { hostingId: hostingId!, organizationId, userId, before },
+      applyDeps(c)
+    )
+    if (outcome !== null) c.res = c.json({ ok: true, needsDeploy: outcome !== 'queued' })
+  } catch (err) {
+    compatLogWarn(
+      'hostings',
+      `certificate apply after a library pick on hosting ${hostingId} failed: ${err instanceof Error ? err.message : String(err)}`
+    )
+    c.res = c.json({ ok: true, needsDeploy: true })
+  }
+}
+
 export function registerHostingLetsEncryptRoutes(
   router: Hono<AppEnv>,
   opts: AuthRouteOpts,
@@ -202,7 +267,7 @@ export function registerHostingLetsEncryptRoutes(
 
   router.use('/hostings', enrichHostingReads(now))
   router.use('/hostings/:id', enrichHostingReads(now))
-  router.use('/hostings/:id', applyLibraryLetsEncryptPick(applyDeps))
+  router.use('/hostings/:id', libraryPickApply(secrets, applyDeps))
   router.use('/hostings/:id/use-letsencrypt', createSessionMiddleware(secrets))
   router.use('/hostings/:id/dns-check', createSessionMiddleware(secrets))
 

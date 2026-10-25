@@ -41,6 +41,7 @@ import type { Db } from '../../db/connection.ts'
 import {
   type ComposeDocument,
   type ComposeHostingExtensionEntry,
+  type ComposeHostingTlsMode,
   type ComposeServiceKind,
   DEFAULT_HOSTING_PATH_PREFIX,
   hostingBindScopeOf,
@@ -67,6 +68,7 @@ import {
   type LetsEncryptRefusal,
   letsEncryptNames,
   letsEncryptRefusal,
+  pendingLetsEncryptPatch,
 } from '../../features/hostings/hosting-certificate.ts'
 import type { LetsEncryptStore } from '../../features/hostings/use-letsencrypt.ts'
 import { createLetsEncryptStore, loadAcmeEnabled } from '../hostings/letsencrypt-store.ts'
@@ -492,7 +494,7 @@ type RouteReconcileContext = {
   /** The organization's "Allow Let's Encrypt certificates" switch; read only when a route asks for `automatic`. */
   acmeEnabled: boolean
   /** Finds or creates the managed Let's Encrypt row an `automatic` route pins (the button's store). */
-  letsEncrypt: Pick<LetsEncryptStore, 'findManagedCertificate' | 'createManagedCertificate'>
+  letsEncrypt: Pick<LetsEncryptStore, 'managedCertificateFor'>
   panelAuthored: readonly ExistingRow[]
   existingByKey: Map<string, ExistingRow>
   keptIds: Set<string>
@@ -562,12 +564,14 @@ async function reconcileDeclaredRoute(
   const { existing, isAdoption } = matched
 
   const options = mergeComposeHostingOptions(existing?.options, route.entry, route.serviceKind)
-  const metadata = withHostingComposeOwner(existing?.metadata, {
+  const tlsMode = hostingTlsModeOf(route.entry)
+  const owned = withHostingComposeOwner(existing?.metadata, {
     composeServiceName: route.composeServiceName,
     route: route.route,
-    tlsMode: hostingTlsModeOf(route.entry),
+    tlsMode,
     ...(isAdoption ? { adopted: true } : {}),
   })
+  const { metadata, pendingAt } = waitingRequestFor(owned, tlsMode)
 
   if (existing) {
     return persistExistingDeclaredRoute({
@@ -578,11 +582,26 @@ async function reconcileDeclaredRoute(
       serviceId,
       pins,
       metadata,
+      pendingAt,
       options,
       isAdoption,
     })
   }
   return insertDeclaredRoute(db, route, ctx, serviceId, pins, metadata, options)
+}
+
+/**
+ * A waiting Let's Encrypt request (from Try again while DNS was not ready)
+ * only means something while compose asks for `automatic`. Any other mode
+ * clears it, so the sweep can never pin Let's Encrypt onto a route compose
+ * gave another certificate.
+ */
+function waitingRequestFor(
+  metadata: Record<string, unknown>,
+  tlsMode: ComposeHostingTlsMode
+): { metadata: Record<string, unknown>; pendingAt: null | undefined } {
+  if (tlsMode === 'automatic') return { metadata, pendingAt: undefined }
+  return { metadata: pendingLetsEncryptPatch(metadata, null).metadata, pendingAt: null }
 }
 
 async function persistExistingDeclaredRoute(input: {
@@ -593,10 +612,13 @@ async function persistExistingDeclaredRoute(input: {
   serviceId: string
   pins: PinnedRoute
   metadata: ExistingRow['metadata']
+  /** `null` clears a waiting Let's Encrypt request; `undefined` leaves the column alone. */
+  pendingAt: null | undefined
   options: ExistingRow['options']
   isAdoption: boolean
 }): Promise<ComposeHostingError | null> {
-  const { db, route, ctx, existingId, serviceId, pins, metadata, options, isAdoption } = input
+  const { db, route, ctx, existingId, serviceId, pins, metadata, pendingAt, options, isAdoption } =
+    input
   try {
     await db.transaction(async (tx) => {
       await tx
@@ -607,6 +629,7 @@ async function persistExistingDeclaredRoute(input: {
           ipId: pins.ipId,
           metadata,
           options,
+          ...(pendingAt === undefined ? {} : { pendingAt }),
           updatedAt: new Date().toISOString(),
         })
         .where(eq(hosting.id, existingId))
@@ -903,10 +926,8 @@ async function automaticCertificatePin(
       },
     }
   }
-  const existing = await ctx.letsEncrypt.findManagedCertificate(ctx.organizationId, names)
-  const tlsId =
-    existing ?? (await ctx.letsEncrypt.createManagedCertificate(ctx.organizationId, names))
-  return { ok: true, tlsId }
+  const { id } = await ctx.letsEncrypt.managedCertificateFor(ctx.organizationId, names)
+  return { ok: true, tlsId: id }
 }
 
 /** {@link resolvePins}, plus the managed row an `automatic` route pins. */
