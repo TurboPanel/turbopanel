@@ -6,6 +6,7 @@ import { assertEquals } from '@std/assert'
 import type { ComposeDocument } from '../../features/compose/index.ts'
 import { hostingEntryKey } from '../../features/compose/index.ts'
 import {
+  environment,
   hostname,
   hosting,
   instanceHostname,
@@ -108,6 +109,8 @@ function createReconcileDb(opts: {
           },
         ],
       ],
+      // The reconcile takes the environment row's lock first.
+      [environment, [{ id: ENV_ID }]],
       [hosting, opts.hostingRows ?? []],
       [
         service,

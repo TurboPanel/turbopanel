@@ -693,6 +693,8 @@ hands a compose-made row back to the panel by stripping the markers, the same
 release the reconcile applies to an adopted row; the Hosting screen calls it
 before it removes the entry from the environment's compose file, so a failed
 file save leaves a row the next deploy adopts again instead of deleting it.
+It takes the environment row lock (as the reconcile does before it reads the
+rows) and refuses with `409 environment_deploy_running` while a deploy runs.
 
 ### Per-service Git source (`x-turbopanel.source`) — resolved into `sourceMaterial[]`
 

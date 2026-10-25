@@ -14,7 +14,7 @@
  * next deploy adopts again (reversible); the other order would leave a
  * compose-owned row with no declaration, which the next deploy deletes.
  */
-import { eq } from 'drizzle-orm'
+import { and, eq, sql } from 'drizzle-orm'
 import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
@@ -22,7 +22,12 @@ import { createSessionMiddleware } from '../authn/middleware.ts'
 import { assertCanOr403 } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import { type Db, getDb } from '../../db/connection.ts'
-import { hosting } from '../../db/schema.ts'
+import { hosting, service } from '../../db/schema.ts'
+import {
+  ENVIRONMENT_DEPLOY_RUNNING_ERROR,
+  environmentHasRunningCommand,
+  lockEnvironmentRow,
+} from '../../features/folders/records.ts'
 import {
   isComposeOwnedHosting,
   withoutHostingComposeOwner,
@@ -47,6 +52,46 @@ async function releaseAccess(c: Context<AppEnv>, id: string): Promise<Db | Respo
   return denied ?? db
 }
 
+type ReleaseOutcome = 'released' | 'not_compose_owned' | 'missing' | 'deploy_running'
+
+/**
+ * Strip the markers while holding the environment row's lock. The deploy's
+ * hosting reconcile takes the same lock before it reads the rows, so it either
+ * finishes first (and this sees what it wrote) or starts after (and adopts the
+ * released row while the file still names it) — never writes stale compose
+ * markers over the release. A deploy already past that point refuses the
+ * release outright, and the update only touches a row compose still owns.
+ */
+async function releaseUnderEnvironmentLock(tx: Db, id: string): Promise<ReleaseOutcome> {
+  const [row] = await tx
+    .select({ metadata: hosting.metadata, environmentId: service.environmentId })
+    .from(hosting)
+    .innerJoin(service, eq(service.id, hosting.serviceId))
+    .where(eq(hosting.id, id))
+    .limit(1)
+  if (!row) return 'missing'
+  await lockEnvironmentRow(tx, row.environmentId)
+  if (await environmentHasRunningCommand(tx, row.environmentId)) return 'deploy_running'
+
+  const [current] = await tx
+    .select({ metadata: hosting.metadata })
+    .from(hosting)
+    .where(eq(hosting.id, id))
+    .limit(1)
+  if (!current) return 'missing'
+  if (!isComposeOwnedHosting(current.metadata)) return 'not_compose_owned'
+
+  const updated = await tx
+    .update(hosting)
+    .set({
+      metadata: withoutHostingComposeOwner(current.metadata),
+      updatedAt: new Date().toISOString(),
+    })
+    .where(and(eq(hosting.id, id), sql`${hosting.metadata}->>'composeOwned' = 'true'`))
+    .returning({ id: hosting.id })
+  return updated.length > 0 ? 'released' : 'not_compose_owned'
+}
+
 export function registerHostingComposeReleaseRoute(router: Hono<AppEnv>, opts: AuthRouteOpts) {
   if (!opts.secrets) {
     throw new TypeError('session secrets are required for hosting routes')
@@ -58,23 +103,18 @@ export function registerHostingComposeReleaseRoute(router: Hono<AppEnv>, opts: A
     const db = await releaseAccess(c, id)
     if (db instanceof Response) return db
 
-    const [row] = await db
-      .select({ metadata: hosting.metadata })
-      .from(hosting)
-      .where(eq(hosting.id, id))
-      .limit(1)
-    if (!row) return c.json({ error: 'Not found' }, 404)
-    if (!isComposeOwnedHosting(row.metadata)) {
-      return c.json({ ok: true as const, released: false })
+    const outcome = await db.transaction((tx) => releaseUnderEnvironmentLock(tx, id))
+    if (outcome === 'missing') return c.json({ error: 'Not found' }, 404)
+    if (outcome === 'deploy_running') {
+      return c.json(
+        {
+          error: ENVIRONMENT_DEPLOY_RUNNING_ERROR,
+          message:
+            'A deploy of this environment is running. Try again when it has finished, so the deploy does not take the hostname back.',
+        },
+        409
+      )
     }
-
-    await db
-      .update(hosting)
-      .set({
-        metadata: withoutHostingComposeOwner(row.metadata),
-        updatedAt: new Date().toISOString(),
-      })
-      .where(eq(hosting.id, id))
-    return c.json({ ok: true as const, released: true })
+    return c.json({ ok: true as const, released: outcome === 'released' })
   })
 }

@@ -444,12 +444,25 @@ const composeReleasePaths = {
             },
           },
         },
+        '401': {
+          description: 'Not signed in',
+          content: { 'application/json': { schema: clientErrorJson } },
+        },
         '403': {
           description: 'No manage grant, or a system-owned hosting',
           content: { 'application/json': { schema: clientErrorJson } },
         },
         '404': {
           description: 'Hosting not found',
+          content: { 'application/json': { schema: clientErrorJson } },
+        },
+        '409': {
+          description:
+            'environment_deploy_running: a deploy of this environment is running; try again when it has finished',
+          content: { 'application/json': { schema: clientErrorJson } },
+        },
+        '503': {
+          description: 'Database unavailable',
           content: { 'application/json': { schema: clientErrorJson } },
         },
       },

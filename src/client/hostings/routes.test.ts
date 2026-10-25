@@ -9,6 +9,7 @@ import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from '../authn/crypto.ts'
 import { createSession } from '../authn/session-store.ts'
 import { deriveSecretsConfig, parseSecretsEnv } from '../../lib/secrets/secrets.ts'
 import {
+  command,
   datacenter,
   environment,
   grant,
@@ -31,6 +32,7 @@ import {
   upsertInstanceHostname,
 } from '../../features/install/instance-hostnames.ts'
 import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
+import { WORKSPACE_KIND_TURBOPANEL } from '../../db/workspace-kind.ts'
 
 const dbUrl = getDatabaseUrl()
 
@@ -806,6 +808,121 @@ test('POST /hostings/:id/release-from-compose answers 404 for another organizati
     } finally {
       await db.delete(grant).where(eq(grant.entityId, other!.id))
       await db.delete(organization).where(eq(organization.id, other!.id))
+    }
+  })
+})
+
+/** A hosting row the last deploy made from compose, for the release tests. */
+async function composeOwnedHostingId(
+  db: ReturnType<typeof createDenoDb>,
+  call: HostingCall,
+  serviceId: string
+) {
+  const id = await createHostingId(call, serviceId, { hostnames: ['held.example.com'] })
+  await db
+    .update(hosting)
+    .set({
+      metadata: {
+        composeOwned: true,
+        composeServiceName: 'web',
+        composeRoute: 'held.example.com /',
+      },
+    })
+    .where(eq(hosting.id, id))
+  return id
+}
+
+async function fixtureEnvironment(db: ReturnType<typeof createDenoDb>, serviceId: string) {
+  const [row] = await db
+    .select({ environmentId: service.environmentId, workspaceId: project.workspaceId })
+    .from(service)
+    .innerJoin(environment, eq(environment.id, service.environmentId))
+    .innerJoin(project, eq(project.id, environment.projectId))
+    .where(eq(service.id, serviceId))
+    .limit(1)
+  return row!
+}
+
+test('POST /hostings/:id/release-from-compose waits for a running deploy', async () => {
+  await withHostingFixtures(
+    async ({ app, secrets, db, userId, organizationId, serviceId, serverId }) => {
+      const call = hostingCaller(app, await sessionCookie(db, secrets, userId), organizationId)
+      const id = await composeOwnedHostingId(db, call, serviceId)
+      const { environmentId } = await fixtureEnvironment(db, serviceId)
+      const [deploy] = await db
+        .insert(command)
+        .values({
+          serverId,
+          actorType: 'system',
+          actorId: crypto.randomUUID(),
+          name: 'environment.deploy',
+          status: 'running',
+          environmentId,
+          context: { environmentId },
+        })
+        .returning({ id: command.id })
+      try {
+        const refused = await call('POST', `/hostings/${id}/release-from-compose`, {})
+        assertEquals(refused.status, 409)
+        assertEquals(
+          ((await refused.json()) as { error: string }).error,
+          'environment_deploy_running'
+        )
+        const [row] = await db
+          .select({ metadata: hosting.metadata })
+          .from(hosting)
+          .where(eq(hosting.id, id))
+        assertEquals((row?.metadata as { composeOwned?: boolean }).composeOwned, true)
+
+        await db.update(command).set({ status: 'succeeded' }).where(eq(command.id, deploy!.id))
+        const released = await call('POST', `/hostings/${id}/release-from-compose`, {})
+        assertEquals(await released.json(), { ok: true, released: true })
+      } finally {
+        await db.delete(command).where(eq(command.id, deploy!.id))
+      }
+    }
+  )
+})
+
+test('POST /hostings/:id/release-from-compose refuses a member without manage grants', async () => {
+  await withHostingFixtures(async ({ app, secrets, db, userId, organizationId, serviceId }) => {
+    const owner = hostingCaller(app, await sessionCookie(db, secrets, userId), organizationId)
+    const id = await composeOwnedHostingId(db, owner, serviceId)
+    const [viewer] = await db
+      .insert(user)
+      .values({ email: `release-viewer-${crypto.randomUUID()}@example.com`, isEmailVerified: true })
+      .returning({ id: user.id })
+    try {
+      const res = await hostingCaller(
+        app,
+        await sessionCookie(db, secrets, viewer!.id),
+        organizationId
+      )('POST', `/hostings/${id}/release-from-compose`, {})
+      assertEquals(res.status, 403)
+    } finally {
+      await db.delete(user).where(eq(user.id, viewer!.id))
+    }
+  })
+})
+
+test('POST /hostings/:id/release-from-compose refuses a system-owned hosting', async () => {
+  await withHostingFixtures(async ({ app, secrets, db, userId, organizationId, serviceId }) => {
+    const call = hostingCaller(app, await sessionCookie(db, secrets, userId), organizationId)
+    const id = await composeOwnedHostingId(db, call, serviceId)
+    const { workspaceId } = await fixtureEnvironment(db, serviceId)
+    const [before] = await db
+      .select({ kind: workspace.kind })
+      .from(workspace)
+      .where(eq(workspace.id, workspaceId))
+    await db
+      .update(workspace)
+      .set({ kind: WORKSPACE_KIND_TURBOPANEL })
+      .where(eq(workspace.id, workspaceId))
+    try {
+      const res = await call('POST', `/hostings/${id}/release-from-compose`, {})
+      assertEquals(res.status, 403)
+    } finally {
+      await db.update(workspace).set({ kind: before!.kind }).where(eq(workspace.id, workspaceId))
     }
   })
 })
