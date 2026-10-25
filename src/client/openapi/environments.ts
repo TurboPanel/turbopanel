@@ -1,4 +1,5 @@
 import { buildResourceCrudPaths } from './shared.ts'
+import { deleteOperation, deletePreviewPath, withDeleteOperation } from './delete-plan.ts'
 
 export const environmentSchemas = {
   EnvironmentRow: {
@@ -335,12 +336,26 @@ const environmentCrudPaths = buildResourceCrudPaths({
 
 export const environmentPaths = {
   ...environmentCrudPaths,
+  '/api/client/v1/environments/{id}': withDeleteOperation(
+    environmentCrudPaths,
+    '/api/client/v1/environments/{id}',
+    deleteOperation(
+      'Environments',
+      'environment',
+      'Stops the environment if it is running, then removes its rows; its folders on the servers become `removing` and are removed by the servers (a volume set to keep its data keeps its folder). The project and its Hosting Accounts stay. Refused, with nothing changed, for the primary environment, while a deploy is running, while a managed database remains, while another environment uses a shared service or volume that would go, or while a server the delete has to reach is offline.'
+    )
+  ),
+  '/api/client/v1/environments/{id}/delete-preview': deletePreviewPath(
+    'Environments',
+    'environment',
+    'What `DELETE /environments/{id}` would remove and keep, and why it would be refused. Reads only.'
+  ),
   '/api/client/v1/environments/{id}/folders': {
     get: {
       tags: ['Environments'],
       summary: 'Service and volume folders under this environment',
       description:
-        "The folders that exist under the environment's name on any server (planned, present, removing, orphan; not missing). While any exists the environment cannot be renamed or deleted: PATCH and DELETE answer 409 environment_name_locked or environment_has_folders with this same list. A removing folder is one the host has not confirmed deleted yet, for example because the server is offline. `total` counts all of them; `folders` lists the first 20, oldest first. Assets in the shared (common) scope belong to no environment and are not listed.",
+        "The folders that exist under the environment's name on any server (planned, present, removing, orphan; not missing). While any exists the environment cannot be renamed: PATCH answers 409 environment_name_locked with this same list. Deleting the environment removes them (see `GET /environments/{id}/delete-preview`). A removing folder is one the host has not confirmed deleted yet, for example because the server is offline. `total` counts all of them; `folders` lists the first 20, oldest first. Assets in the shared (common) scope belong to no environment and are not listed.",
       parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
       responses: {
         200: {

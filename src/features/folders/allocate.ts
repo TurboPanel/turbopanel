@@ -13,7 +13,7 @@
  * gets `-2` to `-99` on a clash. A row at the same server, site owner, scope,
  * kind and name is the final guard (`uniq_folder_location`).
  */
-import { and, eq, inArray, isNull, like, lt, ne, or, sql } from 'drizzle-orm'
+import { and, eq, inArray, isNotNull, isNull, like, lt, ne, notInArray, or, sql } from 'drizzle-orm'
 import {
   COMMON_SCOPE,
   type FolderRefParts,
@@ -764,6 +764,52 @@ export async function markAssetFoldersRemoving(
     .set({ state: 'removing', removalNote: null })
     // An orphan (kept when its service left the compose file) goes with an explicit delete.
     .where(and(match, inArray(folder.state, ['planned', 'present', 'orphan'])))
+    .returning({ serverId: folder.serverId })
+  return [...new Set(rows.map((row) => row.serverId))]
+}
+
+/**
+ * Environments are being deleted: every folder row under them lets go of the
+ * environment so the environment row can go now, while the folder itself
+ * waits for its server. Rows the host already reported gone (`missing`) are
+ * deleted. A volume that is kept (its `retention` is `retain`, so its row
+ * outlives the delete) keeps its folder too: the row becomes an `orphan`, still
+ * naming the volume, and nothing is removed from the server. Every other row
+ * (service folders in any state, volumes deleted with the environments, rows
+ * whose asset is already gone) becomes `removing` and keeps its lock on the
+ * name until the host confirms. Call before the asset and environment rows
+ * go. Returns the servers to ask (those with a row now `removing`).
+ */
+export async function releaseEnvironmentFolders(
+  tx: Pick<Db, 'update' | 'delete'>,
+  input: { environmentIds: readonly string[]; deletedStorageIds: readonly string[] }
+): Promise<string[]> {
+  if (input.environmentIds.length === 0) return []
+  const underEnvironments = inArray(folder.environmentId, [...input.environmentIds])
+  await tx.delete(folder).where(and(underEnvironments, eq(folder.state, 'missing')))
+  await tx
+    .update(folder)
+    .set({ state: 'orphan', environmentId: null, removalNote: null })
+    .where(
+      and(
+        underEnvironments,
+        eq(folder.kind, 'volume'),
+        isNotNull(folder.storageId),
+        input.deletedStorageIds.length > 0
+          ? notInArray(folder.storageId, [...input.deletedStorageIds])
+          : undefined,
+        inArray(folder.state, ['planned', 'present', 'orphan'])
+      )
+    )
+  const rows = await tx
+    .update(folder)
+    .set({
+      state: 'removing',
+      environmentId: null,
+      // A row already waiting keeps what its server last said about it.
+      removalNote: sql`CASE WHEN ${folder.state} = 'removing' THEN ${folder.removalNote} END`,
+    })
+    .where(underEnvironments)
     .returning({ serverId: folder.serverId })
   return [...new Set(rows.map((row) => row.serverId))]
 }

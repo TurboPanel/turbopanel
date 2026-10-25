@@ -4,7 +4,19 @@
  */
 import { assertEquals, assertMatch } from '@std/assert'
 import { and, eq } from 'drizzle-orm'
-import { command, environment, folder, project, service } from '../db/schema.ts'
+import {
+  command,
+  environment,
+  folder,
+  hosting,
+  principal,
+  project,
+  server,
+  service,
+  storage,
+} from '../db/schema.ts'
+import type { CommandEnvelope } from '../features/commands/envelope.ts'
+import type { CommandQueue } from '../features/commands/queue.ts'
 import { countPrincipalReferences } from '../features/principals/store.ts'
 import { loadPrincipalUsage } from '../features/principals/placement-records.ts'
 import {
@@ -16,11 +28,33 @@ import {
 
 const test = Deno.test.bind(Deno)
 
+function recordingQueue(): { queue: CommandQueue; sent: CommandEnvelope[] } {
+  const sent: CommandEnvelope[] = []
+  return {
+    sent,
+    queue: {
+      enqueue: (envelope) => {
+        sent.push(envelope)
+        return Promise.resolve()
+      },
+    },
+  }
+}
+
+async function ownerLogin(ctx: Ctx): Promise<string> {
+  const [row] = await ctx.db
+    .select({ login: principal.appliedUsername })
+    .from(principal)
+    .where(eq(principal.id, ctx.principalId))
+  return row!.login
+}
+
 async function addServiceFolder(
   ctx: Ctx,
   envId: string,
   slug: string,
-  state: 'planned' | 'present' | 'removing' | 'missing' = 'planned'
+  state: 'planned' | 'present' | 'removing' | 'missing' = 'planned',
+  scope = 'production'
 ): Promise<void> {
   const [svc] = await ctx.db
     .insert(service)
@@ -30,7 +64,7 @@ async function addServiceFolder(
     serverId: ctx.serverId,
     principalId: ctx.principalId,
     environmentId: envId,
-    scope: 'production',
+    scope,
     kind: 'service',
     slug,
     serviceId: svc!.id,
@@ -130,9 +164,21 @@ test('an environment with a folder cannot be renamed or deleted and the blocking
     assertEquals(list.status, 200)
     assertEquals(list.json.total, 2)
 
+    // Folders no longer refuse a delete: the plan lists them, and this one is
+    // refused only because their server is offline.
+    const preview = await send(ctx, 'GET', `/environments/${envId}/delete-preview`)
+    assertEquals(preview.status, 200)
+    assertEquals(
+      (preview.json.folders as Array<{ action: string }>).map((row) => row.action),
+      ['remove', 'remove']
+    )
+    assertEquals(
+      (preview.json.blockers as Array<{ error: string }>).map((row) => row.error),
+      ['server_offline']
+    )
     const deleted = await send(ctx, 'DELETE', `/environments/${envId}`)
     assertEquals(deleted.status, 409)
-    assertEquals(deleted.json.error, 'environment_has_folders')
+    assertEquals(deleted.json.error, 'server_offline')
   })
 })
 
@@ -239,13 +285,171 @@ test('the folder naming setting defaults to slug, changes freely, then locks wit
   })
 })
 
-test('a project with a folder under it cannot be deleted', async () => {
+test('a project with folders is refused while their server is offline, and deleted in one step once it is back', async () => {
+  const { queue, sent } = recordingQueue()
+  await withFixtures(
+    async (ctx) => {
+      const { projectId, envId } = await createProject(ctx, 'Delete Unlocked')
+      await addServiceFolder(ctx, envId, 'example.com', 'present')
+      // A first deploy that failed leaves its folder `planned`.
+      await addServiceFolder(ctx, envId, 'failed.example.com', 'planned')
+      const [svc] = await ctx.db
+        .select({ id: service.id })
+        .from(service)
+        .where(and(eq(service.environmentId, envId), eq(service.slug, 'example.com')))
+      // A hosting the compose file declared goes with its service.
+      await ctx.db.insert(hosting).values({
+        serviceId: svc!.id,
+        name: 'web',
+        options: { hostnames: ['example.com'] },
+        metadata: { composeOwned: true, composeServiceName: 'example.com' },
+      })
+
+      const refused = await send(ctx, 'DELETE', `/projects/${projectId}`)
+      assertEquals(refused.status, 409)
+      assertEquals(refused.json.error, 'server_offline')
+      assertMatch(String(refused.json.message), /Alpha is offline/)
+      assertEquals(sent.length, 0)
+      const stillThere = await ctx.db.select().from(project).where(eq(project.id, projectId))
+      assertEquals(stillThere.length, 1)
+
+      await ctx.db.update(server).set({ isConnected: true }).where(eq(server.id, ctx.serverId))
+      const preview = await send(ctx, 'GET', `/projects/${projectId}/delete-preview`)
+      assertEquals(preview.json.blockers, [])
+      assertEquals(
+        (preview.json.folders as Array<{ path: string }>).map((row) => row.path).sort(),
+        [
+          `/srv/users/${await ownerLogin(ctx)}/production/services/example.com`,
+          `/srv/users/${await ownerLogin(ctx)}/production/services/failed.example.com`,
+        ]
+      )
+
+      const deleted = await send(ctx, 'DELETE', `/projects/${projectId}`)
+      assertEquals(deleted.status, 200)
+      assertEquals((deleted.json.cleanup as { folderServerIds: string[] }).folderServerIds, [
+        ctx.serverId,
+      ])
+      const gone = await ctx.db.select().from(project).where(eq(project.id, projectId))
+      assertEquals(gone.length, 0)
+      const hostings = await ctx.db.select().from(hosting).where(eq(hosting.serviceId, svc!.id))
+      assertEquals(hostings.length, 0)
+      // Both folders wait for the server, no longer tied to the deleted environment.
+      const rows = await ctx.db
+        .select({ state: folder.state, environmentId: folder.environmentId })
+        .from(folder)
+        .where(eq(folder.serverId, ctx.serverId))
+      assertEquals(rows, [
+        { state: 'removing', environmentId: null },
+        { state: 'removing', environmentId: null },
+      ])
+      // The server was asked to remove them right away.
+      const asked = await ctx.db
+        .select({ name: command.name })
+        .from(command)
+        .where(eq(command.serverId, ctx.serverId))
+      assertEquals(
+        asked.map((row) => row.name),
+        ['server.folders.remove']
+      )
+    },
+    { commandQueue: queue }
+  )
+})
+
+test('a project delete keeps a volume set to keep its data, with its folder and its Hosting Account', async () => {
   await withFixtures(async (ctx) => {
-    const { projectId, envId } = await createProject(ctx, 'Delete Locked')
-    await addServiceFolder(ctx, envId, 'example.com', 'present')
-    const refused = await send(ctx, 'DELETE', `/projects/${projectId}`)
-    assertEquals(refused.status, 409)
-    assertEquals(refused.json.error, 'project_has_folders')
+    const { projectId, envId } = await createProject(ctx, 'Keep Volume')
+    await ctx.db.update(server).set({ isConnected: true }).where(eq(server.id, ctx.serverId))
+    const [account] = await ctx.db
+      .insert(principal)
+      .values({
+        organizationId: ctx.organizationId,
+        username: 'keepvol',
+        appliedUsername: 'keepvol',
+        projectId,
+      })
+      .returning({ id: principal.id })
+    const [vol] = await ctx.db
+      .insert(storage)
+      .values({
+        organizationId: ctx.organizationId,
+        kind: 'volume',
+        name: 'data',
+        slug: 'data',
+        retention: 'retain',
+        environmentId: envId,
+        principalId: account!.id,
+      })
+      .returning({ id: storage.id })
+    await ctx.db.insert(folder).values({
+      serverId: ctx.serverId,
+      principalId: account!.id,
+      environmentId: envId,
+      scope: 'production',
+      kind: 'volume',
+      slug: 'data',
+      storageId: vol!.id,
+      state: 'present',
+    })
+
+    const preview = await send(ctx, 'GET', `/projects/${projectId}/delete-preview`)
+    assertEquals(
+      (preview.json.folders as Array<{ action: string }>).map((row) => row.action),
+      ['keep']
+    )
+    assertEquals(
+      (preview.json.hostingAccounts as Array<{ username: string; action: string }>).map((row) => [
+        row.username,
+        row.action,
+      ]),
+      [['keepvol', 'keep']]
+    )
+
+    const deleted = await send(ctx, 'DELETE', `/projects/${projectId}`)
+    assertEquals(deleted.status, 200)
+    const cleanup = deleted.json.cleanup as {
+      hostingAccounts: { removing: unknown[]; kept: Array<{ username: string }> }
+    }
+    assertEquals(cleanup.hostingAccounts.removing, [])
+    assertEquals(
+      cleanup.hostingAccounts.kept.map((row) => row.username),
+      ['keepvol']
+    )
+    const [kept] = await ctx.db
+      .select({ state: folder.state, environmentId: folder.environmentId })
+      .from(folder)
+      .where(eq(folder.storageId, vol!.id))
+    assertEquals(kept, { state: 'orphan', environmentId: null })
+    const [owner] = await ctx.db
+      .select({ removalRequestedAt: principal.removalRequestedAt })
+      .from(principal)
+      .where(eq(principal.id, account!.id))
+    assertEquals(owner?.removalRequestedAt, null)
+    // Left for the person to delete on their own.
+    await ctx.db.delete(folder).where(eq(folder.storageId, vol!.id))
+    await ctx.db.delete(storage).where(eq(storage.id, vol!.id))
+    await ctx.db.delete(principal).where(eq(principal.id, account!.id))
+  })
+})
+
+test('an environment with folders is deleted in one step; its folders wait for the server', async () => {
+  await withFixtures(async (ctx) => {
+    const { projectId } = await createProject(ctx, 'Env Delete')
+    await ctx.db.update(server).set({ isConnected: true }).where(eq(server.id, ctx.serverId))
+    const [staging] = await ctx.db
+      .insert(environment)
+      .values({ name: 'staging', projectId })
+      .returning({ id: environment.id })
+    await addServiceFolder(ctx, staging!.id, 'stage.example.com', 'present', 'staging')
+    const deleted = await send(ctx, 'DELETE', `/environments/${staging!.id}`)
+    assertEquals(deleted.status, 200)
+    const rows = await ctx.db
+      .select({ state: folder.state, environmentId: folder.environmentId })
+      .from(folder)
+      .where(eq(folder.serverId, ctx.serverId))
+    assertEquals(rows, [{ state: 'removing', environmentId: null }])
+    const gone = await ctx.db.select().from(environment).where(eq(environment.id, staging!.id))
+    assertEquals(gone.length, 0)
   })
 })
 

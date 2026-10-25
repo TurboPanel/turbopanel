@@ -17,7 +17,14 @@ test('isOrphanDeletable needs no project and no use but placements', () => {
   const unused = { ...emptyPrincipalUsage(), otherPlacements: 3 }
   assertEquals(isOrphanDeletable({ projectId: null }, unused), true)
   assertEquals(isOrphanDeletable({ projectId: 'p' }, unused), false)
-  for (const kind of ['tenancies', 'bindings', 'storages', 'secrets', 'logins'] as const) {
+  for (const kind of [
+    'tenancies',
+    'bindings',
+    'storages',
+    'secrets',
+    'logins',
+    'folders',
+  ] as const) {
     assertEquals(isOrphanDeletable({ projectId: null }, { ...unused, [kind]: 1 }), false)
   }
 })

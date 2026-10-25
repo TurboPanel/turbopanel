@@ -1,5 +1,6 @@
 import { PROJECT_ICONS } from '../../features/projects/vocabulary.ts'
 import { buildResourceCrudPaths } from './shared.ts'
+import { deleteOperation, deletePreviewPath, withDeleteOperation } from './delete-plan.ts'
 
 export const projectSchemas = {
   ProjectRow: {
@@ -186,20 +187,36 @@ export const projectSchemas = {
   },
 }
 
+const projectCrudPaths = buildResourceCrudPaths({
+  plural: 'projects',
+  singular: 'project',
+  tag: 'Projects',
+  listSchema: 'ProjectsResponse',
+  rowSchema: 'ProjectRow',
+  createSchema: 'CreateProjectRequest',
+  patchSchema: 'UpdateProjectRequest',
+  parentQuery: {
+    name: 'workspaceId',
+    description: 'Filter projects under a workspace',
+  },
+})
+
 export const projectPaths = {
-  ...buildResourceCrudPaths({
-    plural: 'projects',
-    singular: 'project',
-    tag: 'Projects',
-    listSchema: 'ProjectsResponse',
-    rowSchema: 'ProjectRow',
-    createSchema: 'CreateProjectRequest',
-    patchSchema: 'UpdateProjectRequest',
-    parentQuery: {
-      name: 'workspaceId',
-      description: 'Filter projects under a workspace',
-    },
-  }),
+  ...projectCrudPaths,
+  '/api/client/v1/projects/{id}': withDeleteOperation(
+    projectCrudPaths,
+    '/api/client/v1/projects/{id}',
+    deleteOperation(
+      'Projects',
+      'project',
+      "Stops every environment's services on their servers, then removes the project's rows in one step: environments, services, hostings (compose-declared ones too), volumes set to be deleted with it. Each folder on a server becomes `removing` and the server is asked to remove it (asked again until it confirms); a volume set to keep its data keeps its folder. The project's Hosting Accounts that nothing else uses are removed (Linux user and home) once their folders are gone; the others are kept and listed. Refused, with nothing changed, while a managed database remains, a shared service or volume is used by another project, or a server the delete has to reach is offline."
+    )
+  ),
+  '/api/client/v1/projects/{id}/delete-preview': deletePreviewPath(
+    'Projects',
+    'project',
+    'What `DELETE /projects/{id}` would remove and keep, and why it would be refused. Reads only.'
+  ),
   '/api/client/v1/projects/{id}/configure': {
     post: {
       tags: ['Projects'],

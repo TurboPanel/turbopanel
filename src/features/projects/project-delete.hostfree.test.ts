@@ -11,6 +11,7 @@ import {
   isActiveContainerStatus,
   MANAGED_RUNTIME_PRESENT_ERROR,
   PROJECT_HAS_RUNNING_SERVICES_ERROR,
+  type ProjectDeleteResult,
 } from './project-delete.ts'
 
 /**
@@ -20,6 +21,12 @@ import {
  * reports Deno suites as empty; keep this alias so analysis sees real tests.
  */
 const test = Deno.test.bind(Deno)
+
+/** A finished delete with nothing left for the servers to do. */
+const DELETED: ProjectDeleteResult = {
+  ok: true,
+  cleanup: { folderServerIds: [], principals: { removed: [], kept: [] } },
+}
 
 type ContainerRow = { id: string; status: string | null; role?: string }
 type DeleteCall = { table: string; ids: string[] }
@@ -153,7 +160,7 @@ test('isActiveContainerStatus treats dead and removing as inactive', () => {
 test('deleteProjectCascade deletes bare project when no environments exist', async () => {
   const { db, deletes, stats } = createCascadeMockDb({})
   const result = await deleteProjectCascade(db, 'proj-1')
-  assertEquals(result, { ok: true })
+  assertEquals(result, DELETED)
   assertEquals(stats.transactions, 1)
   // No volume goes with the project, so only the project row is deleted.
   assertEquals(deletes.filter((call) => call.table !== 'tx-placements').length, 1)
@@ -165,7 +172,7 @@ test('deleteProjectCascade removes environments when no services exist', async (
     serviceIds: [],
   })
   const result = await deleteProjectCascade(db, 'proj-1')
-  assertEquals(result, { ok: true })
+  assertEquals(result, DELETED)
   assertEquals(stats.transactions, 1)
 })
 
@@ -175,14 +182,15 @@ test('deleteProjectCascade rejects remaining managed runtime before transaction'
     managedIds: ['managed-1'],
   })
   const result = await deleteProjectCascade(db, 'proj-1')
-  assertEquals(result, {
-    ok: false,
-    error: MANAGED_RUNTIME_PRESENT_ERROR,
-  })
+  assertEquals(result.ok, false)
+  if (!result.ok) {
+    assertEquals(result.error, MANAGED_RUNTIME_PRESENT_ERROR)
+    assertEquals(typeof result.detail?.message, 'string')
+  }
   assertEquals(stats.transactions, 1)
 })
 
-test('deleteProjectCascade rejects active containers before transaction', async () => {
+test('deleteProjectCascade without a stop refuses while services run', async () => {
   const { db, stats } = createCascadeMockDb({
     environmentIds: ['env-1'],
     serviceIds: ['svc-1'],
@@ -212,7 +220,7 @@ test('deleteProjectCascade ignores running platform components (ingress/ha)', as
     ],
   })
   const result = await deleteProjectCascade(db, 'proj-1')
-  assertEquals(result, { ok: true })
+  assertEquals(result, DELETED)
   assertEquals(stats.transactions, 1)
 })
 
@@ -224,7 +232,7 @@ test('deleteProjectCascade cascades stopped containers inside a transaction', as
     hostingIds: ['host-1'],
   })
   const result = await deleteProjectCascade(db, 'proj-1')
-  assertEquals(result, { ok: true })
+  assertEquals(result, DELETED)
   assertEquals(stats.transactions, 1)
   // The principals' placements are written first, inside the same transaction.
   assertEquals(deletes[0], { table: 'tx-placements', ids: ['proj-1'] })
@@ -237,7 +245,7 @@ test('deleteProjectCascade sends the stop before the transaction opens, never in
     openWhenStopped = stats.open
     return Promise.resolve(true)
   })
-  assertEquals(result, { ok: true })
+  assertEquals(result, DELETED)
   assertEquals(openWhenStopped, false)
 })
 

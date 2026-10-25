@@ -68,6 +68,7 @@ import { runSystemReconcileSweep } from '../../features/system/reconcile.ts'
 import { runBackupsReconcileSweep } from '../../features/backups/reconcile.ts'
 import { runFolderReconcileSweep } from './folder-reconcile-sweep.ts'
 import { runFolderRemovalSweep } from '../../features/folders/removal.ts'
+import { runPrincipalRemovalSweep } from '../../client/principals/removal-sweep.ts'
 import type { FirewallApplyGate } from '../../features/firewall/enforcement.ts'
 import { runFirewallPreviewSweep } from '../../features/firewall/preview.ts'
 import { runLeafRenewalSweepTick } from '../../client/tls/leaf-renewal-sweep.ts'
@@ -1148,6 +1149,12 @@ async function runQueuedCronSweeps(
       await runFolderRemovalSweep(db, commandQueue)
     } catch (err) {
       sweepTrace('folder-removal-sweep-failed', { error: sweepErrorMessage(err) })
+    }
+    // Hosting Accounts of deleted projects whose folders are gone; isolated too.
+    try {
+      await runPrincipalRemovalSweep(db, commandQueue)
+    } catch (err) {
+      sweepTrace('principal-removal-sweep-failed', { error: sweepErrorMessage(err) })
     }
     // A fresh folder listing from servers that have folders, every few hours, so
     // a folder removed or added by hand is noticed; isolated too.
