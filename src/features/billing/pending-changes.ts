@@ -64,6 +64,12 @@ export type PendingIntent = Readonly<{
   landsAt: string | null
   /** `fromTierId`'s committed quantity when the intent was written. */
   fromQuantity: number
+  /**
+   * Downgrades only: the one server the owner named. When the intent lands,
+   * that server (and no other) moves to `toTierId`, if it still holds
+   * `fromTierId`. Absent when the owner named none.
+   */
+  serverId?: string
 }>
 
 export type PendingChangeLedger = Readonly<{
@@ -109,6 +115,7 @@ function parseIntent(value: unknown): PendingIntent | null {
     landsAt: typeof r.landsAt === 'string' ? r.landsAt : null,
     fromQuantity:
       typeof r.fromQuantity === 'number' && Number.isFinite(r.fromQuantity) ? r.fromQuantity : 0,
+    ...(r.kind === 'downgrade' && typeof r.serverId === 'string' ? { serverId: r.serverId } : {}),
   }
 }
 
@@ -140,6 +147,8 @@ export type NewIntentInput = Readonly<{
   toTierId: string | null
   landsAt: string | null
   fromQuantity: number
+  /** Downgrades only: the one server that moves when the intent lands. */
+  serverId?: string | null
   nowMs?: number
 }>
 
@@ -158,6 +167,7 @@ export function newDeferredIntent(kind: PendingIntentKind, input: NewIntentInput
     createdAt: new Date(nowMs).toISOString(),
     landsAt: input.landsAt,
     fromQuantity: input.fromQuantity,
+    ...(kind === 'downgrade' && input.serverId ? { serverId: input.serverId } : {}),
   }
 }
 

@@ -97,7 +97,7 @@ test('materialFromLetsEncrypt builds managed metadata', () => {
   }
   assertEquals(material.certificatePem, null)
   assertEquals(material.privateKeyPemSealed, null)
-  assertEquals(material.metadata.status, 'managed')
+  assertEquals(material.metadata.status, 'automatic')
   assertEquals(material.metadata.dnsNames, ['le.example.com'])
   assertEquals(material.metadata.hasWildcard, false)
   assertEquals(material.metadata.acme?.challengeType, 'http-01')

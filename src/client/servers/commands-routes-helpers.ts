@@ -8,7 +8,7 @@ import { parseNtpSetPayload, parseTimezoneSetPayload } from '../../contracts/com
 import { isAllowedTimezone } from '../../lib/timezones.ts'
 import { computePingLatency } from './commands-ping-latency.ts'
 import { lastErrorLine } from '../../features/commands/error-line.ts'
-import type { CommandProgress } from '../../contracts/cell-protocol.ts'
+import type { StoredCommandProgress } from '../../features/commands/command-progress.ts'
 import { DEFAULT_EXECUTION_LOG_READ_BYTES } from '../../features/execution-logs/types.ts'
 
 export type CommandRouteValidationError = {
@@ -96,7 +96,7 @@ export type CommandStatusResponse = {
   /** Whether an execution log is retained for this command. */
   hasLog: boolean
   /** The daemon's step plan and where it stands; `null` until the daemon reports one. */
-  progress: CommandProgress | null
+  progress: StoredCommandProgress | null
 }
 
 type CommandStatusSource = {
@@ -109,7 +109,7 @@ type CommandStatusSource = {
   finishedAt: string | null
   errorCode: string | null
   errorMessage: string | null
-  progress: CommandProgress | null
+  progress: StoredCommandProgress | null
 }
 
 /**

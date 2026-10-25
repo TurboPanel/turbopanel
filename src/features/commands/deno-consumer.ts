@@ -9,7 +9,8 @@ import {
   type CommandConsumerDeps,
   type CommandResealDeps,
 } from './consumer.ts'
-import { parseCommandEnvelope } from './envelope.ts'
+import { createLaneScheduler, type LaneScheduler } from './command-lanes.ts'
+import { parseCommandEnvelope, type CommandEnvelope } from './envelope.ts'
 import type { CommandQueue } from './queue.ts'
 
 type AmqpConnection = Awaited<ReturnType<typeof amqplib.connect>>
@@ -27,6 +28,8 @@ export type StartCommandConsumerOpts = {
   secretsConfig?: import('../../lib/secrets/secrets.ts').SecretsConfig
   dataEncryptionSecrets?: import('../../lib/secrets/secrets.ts').DerivedSecretsConfig
   firewallApplyGate: import('../firewall/enforcement.ts').FirewallApplyGate
+  /** Test hook: the lanes commands run in. Defaults to one lane per server. */
+  lanes?: LaneScheduler
 }
 
 /**
@@ -59,6 +62,16 @@ export function commandMessageDisposition(
   if (outcome.ok) return 'ack'
   return isTransientError(outcome.error) ? 'nack_requeue' : 'nack_dead'
 }
+
+/**
+ * Unacknowledged deliveries the broker hands this consumer at once. Commands
+ * for a busy server wait in their lane holding a slot, so this is the room
+ * for that backlog; it is also the most that is redelivered after a crash.
+ */
+export const COMMAND_CONSUMER_PREFETCH = 32
+
+/** Servers whose commands may run at the same moment. */
+export const COMMAND_LANE_CONCURRENCY = 8
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -152,6 +165,7 @@ export async function startCommandConsumer(
   opts: StartCommandConsumerOpts
 ): Promise<{ close(): Promise<void> }> {
   const consumerDeps = buildCommandConsumerDeps(opts)
+  const lanes = opts.lanes ?? createLaneScheduler({ maxConcurrent: COMMAND_LANE_CONCURRENCY })
 
   let closed = false
   let reconnecting = false
@@ -207,10 +221,10 @@ export async function startCommandConsumer(
       opened.channel = channel
       watchForLoss(channel, 'channel', opened)
       await assertCommandAmqpTopology(channel)
-      await channel.prefetch(1)
+      await channel.prefetch(COMMAND_CONSUMER_PREFETCH)
 
       const { consumerTag } = await channel.consume(COMMAND_AMQP_QUEUE, (msg) => {
-        void handleMessage(channel, msg)
+        void handleMessage(channel, msg, opened)
       })
       opened.consumerTag = consumerTag
       return opened
@@ -277,12 +291,44 @@ export async function startCommandConsumer(
     await s.connection.close().catch(() => undefined)
   }
 
-  async function handleMessage(channel: AmqpChannel, msg: AmqpMessage): Promise<void> {
+  /**
+   * Parse the delivery and hand it to its server's lane. The ack or nack
+   * happens only after the lane has finished the command, so a delivery that
+   * has not finished stays unacknowledged and the broker redelivers it if
+   * this process or the channel goes away.
+   */
+  async function handleMessage(
+    channel: AmqpChannel,
+    msg: AmqpMessage,
+    owner: ConsumerSession
+  ): Promise<void> {
     if (!msg) return
 
+    let envelope: CommandEnvelope
+    try {
+      envelope = parseCommandEnvelope(msg.content.toString())
+    } catch (error) {
+      compatLogError('command-consumer', `permanent error, dead-lettering: ${errorMessage(error)}`)
+      disposeSafely(channel, msg, commandMessageDisposition({ ok: false, error }))
+      return
+    }
+
+    await lanes.run(envelope.serverId, async () => {
+      // Waiting in a lane can outlast the session. Shutdown, or a broker
+      // loss, leaves this delivery unacknowledged and the broker redelivers
+      // it, so running it now would run it twice.
+      if (closed || owner.lost) return
+      await runEnvelope(channel, msg, envelope)
+    })
+  }
+
+  async function runEnvelope(
+    channel: AmqpChannel,
+    msg: NonNullable<AmqpMessage>,
+    envelope: CommandEnvelope
+  ): Promise<void> {
     let disposition: CommandMessageDisposition
     try {
-      const envelope = parseCommandEnvelope(msg.content.toString())
       await processCommandEnvelope(opts.db, opts.registry, envelope, consumerDeps)
       disposition = commandMessageDisposition({ ok: true })
     } catch (error) {

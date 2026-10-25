@@ -10,8 +10,9 @@ import {
   isReservedPrincipalUsername,
 } from '../../lib/naming.ts'
 import {
+  accessLevelForShell,
   isPrincipalAccessLevel,
-  shellForAccessLevel,
+  type PrincipalAccessLevel,
 } from '../../features/principals/principal-access.ts'
 import {
   parsePrincipalOptionsInput,
@@ -69,6 +70,7 @@ export type ParsedCreatePrincipalOptions =
   | {
       ok: true
       options: PrincipalOptionsPersisted
+      access: PrincipalAccessLevel
       override: { uid: number; gid: number } | null
     }
   | PrincipalRouteValidationError
@@ -80,10 +82,12 @@ export function parseCreatePrincipalOptions(
   if (!parsedOptions.ok) {
     return { ok: false, error: 'Invalid request', status: 400 }
   }
+  const { shell, ...options } = parsedOptions.value
   return {
     ok: true,
-    options: parsedOptions.value,
-    override: resolvePrincipalIdOverride(parsedOptions.value),
+    options,
+    access: accessLevelForShell(shell),
+    override: resolvePrincipalIdOverride(options),
   }
 }
 
@@ -143,22 +147,25 @@ export function patchTouchesPrincipal(body: Record<string, unknown>): boolean {
 }
 
 /**
- * Parse an `access` field into the shell that encodes it.
+ * Parse an `access` field into an access level.
  *
  * Absent means "leave it alone", a value means "set it", and `null`
  * means invalid — rejected rather than dropped, because silently discarding a
  * malformed access level would leave the operator believing they had suspended
  * an account that is still reachable.
  *
- * The operator sets a *level*; the shell is how it is stored. Accepting a raw
- * shell path here instead would put a filesystem path in a security-decision
- * field, which is what the Phase 0 allowlist already had to defend against.
+ * The operator sets a *level*, stored as is in `principal.access`. Accepting a
+ * raw shell path here instead would put a filesystem path in a
+ * security-decision field, which is what the Phase 0 allowlist already had to
+ * defend against.
  */
-export function parseAccessField(body: Record<string, unknown>): string | null | undefined {
+export function parseAccessField(
+  body: Record<string, unknown>
+): PrincipalAccessLevel | null | undefined {
   if (!('access' in body)) return undefined
   const raw = body.access
   if (!isPrincipalAccessLevel(raw)) return null
-  return shellForAccessLevel(raw)
+  return raw
 }
 
 export const MIN_PRINCIPAL_PASSWORD_LENGTH = 8

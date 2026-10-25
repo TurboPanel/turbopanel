@@ -135,6 +135,14 @@ test('a succeeded run from the engine’s own server is recorded with its artifa
   })
 })
 
+test('the database a run dumped is recorded with its artifact', async () => {
+  const { outcome, recorded } = await outcomeOf(succeeded({ database: 'defaultdb' }))
+  assertEquals(outcome, { ok: true })
+  assertEquals(recorded[0]?.artifact?.database, 'defaultdb')
+  const older = await outcomeOf(succeeded())
+  assertEquals(older.recorded[0]?.artifact?.database, undefined)
+})
+
 test('an absolute path under the backup root is stored relative to it', async () => {
   const relative = `managed/${MANAGED_ID}/policy-${POLICY_ID}/${BACKUP_ID}.dump`
   const { outcome, recorded } = await outcomeOf(

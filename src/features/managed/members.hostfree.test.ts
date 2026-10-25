@@ -553,13 +553,24 @@ function privateEndpointSelect(memberships: MembershipPinRow[], opts?: PrivateEn
       }
     }
 
-    // loadDatacenterPolicies: { id, options }
-    if (keys.length === 2 && keySet.has('id') && keySet.has('options')) {
+    // loadDatacenterPolicies: { id, priority, isTrusted, addressPreference }
+    if (keySet.has('id') && keySet.has('priority') && keySet.has('addressPreference')) {
       return {
         from() {
           return {
             where() {
-              return thenableRows(datacenterOptions)
+              // Fixtures keep the short options shape; the columns default like the table.
+              return thenableRows(
+                datacenterOptions.map(({ id, options }) => {
+                  const o = (options ?? {}) as Record<string, unknown>
+                  return {
+                    id,
+                    priority: o.priority ?? 100,
+                    isTrusted: o.trusted ?? true,
+                    addressPreference: o.addressPreference ?? 'ipv6',
+                  }
+                })
+              )
             },
           }
         },
@@ -1792,6 +1803,27 @@ test('crud helpers: insert update delete find mark and observed replication', as
     keep: true,
     replication: { state: 'streaming', observedAt: 't', lagBytes: 1 },
   })
+
+  // A promoted member's old replica reading is cleared, not kept.
+  metaSelect = 0
+  await updateManagedMemberObservedReplication(
+    {
+      ...observeDb,
+      select: () => ({
+        from: () => ({
+          where: () => ({
+            limit: () =>
+              Promise.resolve([
+                { metadata: { keep: true, replication: { state: 'reconnecting' } } },
+              ]),
+          }),
+        }),
+      }),
+    } as unknown as Db,
+    'r1',
+    { replication: null }
+  )
+  assertEquals(observedMeta, { keep: true })
 
   // Missing member is a no-op on the second select path.
   await updateManagedMemberObservedReplication(observeDb, 'gone', {

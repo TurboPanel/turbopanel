@@ -1,10 +1,11 @@
 /**
  * Cloudflare Analytics Engine positional field map for the current metrics
  * contract: the single source of truth for the double1..double20 /
- * blob1..blob20 layout on the `turbopanel_server_metrics_v7` dataset.
+ * blob1..blob20 layout on the `turbopanel_server_metrics_v<N>` dataset (`N` is
+ * `METRICS_LAYOUT_VERSION`).
  *
- * The slot layout itself lives in `v7-layout.ts` (a static table pinned to
- * `../../testing/v7-layout.fixture.json`, spec in `../../V7-LAYOUT.md`); this
+ * The slot layout itself lives in `v12-layout.ts` (a static table pinned to
+ * `../../testing/v12-layout.fixture.json`, spec in `../../V12-LAYOUT.md`); this
  * module owns the envelope (blob positions, sentinel, sample-time text), the
  * per-sample row selection and the read-side lookups `sql-api.ts` resolves
  * slots through.
@@ -22,7 +23,10 @@
  *
  *  - `host.network` embeds the first two `slotMapping.normalNicSlots` entries
  *    (looked up by `deviceId`), so the common 1-NIC/2-NIC host never writes a
- *    `network` row. Devices in `slotMapping.fabricDeviceIds` never page.
+ *    `network` row, and names them (plus the folded extra filesystem) in its
+ *    blob6 so every stored row says which device it holds — readers never
+ *    need the layout that was active when it was written. Devices in
+ *    `slotMapping.fabricDeviceIds` never page.
  *  - `block` / `network` / `filesystem` / `gpu` / `hardware.physical` pages
  *    order their entities by the matching `*PageOrder` list and stamp blob6
  *    with that page's entity ids, comma-joined in the same order as the
@@ -31,41 +35,52 @@
  * `slotMapping` is optional: without one every family falls back to positional
  * packing in arrival order, so an unresolved generation degrades gracefully.
  *
- * A sample stamped v6 (a daemon that has not moved to v7 yet) is written as a
- * v7 row like any other: blob3 is always the storage constant, and every slot
+ * A sample stamped v6 (a daemon that has not moved to wire version 8 yet) is written as a
+ * v12 row like any other: blob3 is always the storage constant, and every slot
  * the older sample cannot fill is the sentinel (doubles) or empty (text).
  *
  * External storage contract: never inline positional literals elsewhere;
  * always derive columns and write payloads through this module.
  */
 
-import {
-  type MetricEvent,
-  METRICS_SCHEMA_VERSION,
-  type MetricsSample,
-  type NetworkDeviceSample,
+import type {
+  MetricEvent,
+  MetricsSample,
+  NetworkDeviceSample,
 } from '../../../../contracts/metrics-contract.ts'
+import { METRICS_LAYOUT_VERSION } from '../../field-registry.ts'
 import type { HostedFamily, MetricEntityScope } from '../../metric-descriptors.ts'
+import { resolveNetworkSlots } from '../../shared-derivations.ts'
 import type { AuthenticatedMetricsSample, ServerStatusEvent, SlotMapping } from '../../types.ts'
 import {
   hasManagedDatabase,
-  V7_CONTENT_BLOB_CAPACITY,
-  V7_ENTITY_FIELD_ORDER,
-  V7_ENTITIES_PER_PAGE,
-  V7_FIRST_CONTENT_BLOB_INDEX,
-  V7_HOST_FAMILIES,
-  type V7Context,
-  type V7EntityPage,
-  type V7HostFamily,
-  v7EmbeddedNicDoubleIndex,
-  v7EntityPages,
-  v7HostRowValues,
-  v7HostSlotFor,
-  type V7RowValues,
-} from './v7-layout.ts'
+  V12_CONTENT_BLOB_CAPACITY,
+  V12_ENTITY_FIELD_ORDER,
+  V12_ENTITIES_PER_PAGE,
+  V12_FIRST_CONTENT_BLOB_INDEX,
+  V12_HOST_FAMILIES,
+  type V12Context,
+  type V12EntityPage,
+  type V12HostFamily,
+  v12EmbeddedNicDoubleIndex,
+  v12EntityPages,
+  v12HostRowEntityIds,
+  v12HostRowValues,
+  v12HostSlotFor,
+  type V12RowValues,
+} from './v12-layout.ts'
 
-/** Analytics Engine dataset for the current metrics contract. */
-export const AE_DATASET_NAME = `turbopanel_server_metrics_v${METRICS_SCHEMA_VERSION}`
+/**
+ * The layout revision stamped in `blob3` on every hosted row (stringified).
+ * It is the storage layout's own number (`METRICS_LAYOUT_VERSION`, shared with
+ * the dataset name and the self-hosted schema marker), not the wire version.
+ * Rows stamped with any other value are invisible to the readers (history
+ * before a cut is dropped; only testing and canary had any). It moves again
+ * only when a slot changes meaning.
+ */
+export const AE_STORAGE_VERSION = METRICS_LAYOUT_VERSION
+
+export const AE_DATASET_NAME = `turbopanel_server_metrics_v${METRICS_LAYOUT_VERSION}`
 
 export const AE_DOUBLE_COUNT = 20
 export const AE_BLOB_COUNT = 20
@@ -100,15 +115,14 @@ export const AE_MISSING_METRIC_SENTINEL = -1e308
 /** blob1 — row-kind discriminator: `"metrics"` / `"event"` / `"status"`. */
 export const AE_BLOB_KIND_INDEX = 0
 /**
- * blob2 — on `"metrics"` rows, the row family (`V7_HOST_FAMILIES` or an
+ * blob2 — on `"metrics"` rows, the row family (`V12_HOST_FAMILIES` or an
  * entity family); on `"event"` rows, the event's `kind` (`MetricEventKind`);
  * empty on `"status"` rows.
  */
 export const AE_BLOB_FAMILY_INDEX = 1
-/** blob3 — schema version (stringified integer, every row kind): always {@link METRICS_SCHEMA_VERSION}. */
+/** blob3 — schema version (stringified integer, every row kind): always {@link AE_STORAGE_VERSION}. */
 export const AE_BLOB_SCHEMA_VERSION_INDEX = 2
-/** blob4 — `"metrics"` rows: `metadata.topologyGeneration` (stringified integer). Reserved-empty on events/status. */
-export const AE_BLOB_TOPOLOGY_GENERATION_INDEX = 3
+/* blob4 — reserved, written empty on every row (it held the topology generation before rows named their own devices). */
 /**
  * blob5 — sample time as UTC text `YYYY-MM-DD hh:mm:ss` (the one format AE's
  * `toDateTime` parses). On `"metrics"` rows `metadata.sampledAt`; on
@@ -117,14 +131,15 @@ export const AE_BLOB_TOPOLOGY_GENERATION_INDEX = 3
 export const AE_BLOB_SAMPLED_AT_INDEX = 4
 /**
  * blob6 — `"metrics"` rows: comma-joined entity ids in the same order as the
- * page's double values (entity families) or empty (host rows). `"event"`
- * rows: the enclosing sample's sequence, as in v6.
+ * page's double values (entity families); on `host.network` the embedded
+ * devices as `nic1=<id>@<Mb/s>;nic2=<id>@<Mb/s>;fs=<id>` (see
+ * `v12HostRowEntityIds`); empty on the other host rows. `"event"` rows: the
+ * enclosing sample's sequence, as in v6.
  */
 export const AE_BLOB_ENTITY_IDS_INDEX = 5
 /** blob6 on `"event"` rows — enclosing sample's sequence (stringified integer). */
 export const AE_BLOB_SEQUENCE_INDEX = 5
-/** blob7 on `"event"` rows — `metadata.topologyGeneration`. */
-export const AE_EVENT_BLOB_TOPOLOGY_GENERATION_INDEX = 6
+/* blob7 on `"event"` rows — reserved, written empty (it held the topology generation). */
 /** blob8 on `"event"` rows — capability-plan generation (empty when unresolved). */
 export const AE_BLOB_CAPABILITY_PLAN_GENERATION_INDEX = 7
 /** blob9 on `"event"` rows — `"0"`. */
@@ -264,58 +279,6 @@ export function assertAnalyticsEngineDataPointShape(point: {
   }
 }
 
-/** How many `normalNicSlots` entries `host.network` embeds — slots 1 and 2; every later slot pages. */
-export const HOST_IO_EMBEDDED_NIC_SLOT_COUNT = 2
-
-/**
- * Resolve which `networks[]` entries embed in `host.network` (slots 1/2) versus
- * page as standalone `network` rows, given an optional `SlotMapping`.
- *
- * With a mapping: slot 1/slot 2 are looked up by `deviceId` (never by array
- * position — a topology reorder must not silently reinterpret a slot), and
- * any device listed in `fabricDeviceIds` is excluded from paging entirely —
- * this is what keeps a 2-NIC-plus-fabric host at 2 rows instead of 3. Slots
- * 3+ page first, in slot order, then any device that is neither a slot nor a
- * known fabric device (arrival order).
- *
- * Without a mapping (generation not recorded yet): falls back to this
- * module's original positional behavior — `networks[0]`/`networks[1]` embed,
- * everything else pages — since there is no way yet to tell a fabric device
- * apart from an ordinary extra NIC.
- */
-function resolveNetworkSlots(
-  networks: readonly NetworkDeviceSample[],
-  slotMapping: SlotMapping | undefined
-): {
-  nic0: NetworkDeviceSample | undefined
-  nic1: NetworkDeviceSample | undefined
-  paged: NetworkDeviceSample[]
-} {
-  if (!slotMapping) {
-    return { nic0: networks[0], nic1: networks[1], paged: networks.slice(2) }
-  }
-  const byId = new Map(networks.map((device) => [device.deviceId, device]))
-  const [slot1, slot2] = slotMapping.normalNicSlots
-  const nic0 = slot1 ? byId.get(slot1) : undefined
-  const nic1 = slot2 ? byId.get(slot2) : undefined
-  const excluded = new Set<string>([
-    ...slotMapping.fabricDeviceIds,
-    ...slotMapping.normalNicSlots.slice(0, HOST_IO_EMBEDDED_NIC_SLOT_COUNT),
-  ])
-  const pagedSlots = slotMapping.normalNicSlots
-    .slice(HOST_IO_EMBEDDED_NIC_SLOT_COUNT)
-    .map((id) => byId.get(id))
-    .filter((device): device is NetworkDeviceSample => device !== undefined)
-  const pagedSlotIds = new Set(pagedSlots.map((device) => device.deviceId))
-  const paged = [
-    ...pagedSlots,
-    ...networks.filter(
-      (device) => !excluded.has(device.deviceId) && !pagedSlotIds.has(device.deviceId)
-    ),
-  ]
-  return { nic0, nic1, paged }
-}
-
 /**
  * Reorder `entities` by `pageOrder` (a `SlotMapping.*PageOrder` list of
  * stable ids, sorted by id — see `topology-slot-mapping.ts`), looked up via
@@ -377,7 +340,7 @@ function capabilityPlanGenerationBlob(
 /**
  * Envelope plus content text for a `"metrics"`-kind row. `entityIds` is blob6
  * (empty on host rows); `content` fills blob7.. in order and must fit
- * {@link V7_CONTENT_BLOB_CAPACITY}.
+ * {@link V12_CONTENT_BLOB_CAPACITY}.
  */
 export function buildMetricsBlobs(
   sample: MetricsSample,
@@ -385,25 +348,24 @@ export function buildMetricsBlobs(
   entityIds: string,
   content: readonly string[]
 ): string[] {
-  if (content.length > V7_CONTENT_BLOB_CAPACITY) {
+  if (content.length > V12_CONTENT_BLOB_CAPACITY) {
     throw new TypeError(
-      `${family} has ${content.length} content blobs, exceeding the ${V7_CONTENT_BLOB_CAPACITY}-blob budget`
+      `${family} has ${content.length} content blobs, exceeding the ${V12_CONTENT_BLOB_CAPACITY}-blob budget`
     )
   }
   const blobs: string[] = new Array(AE_BLOB_COUNT).fill('')
   blobs[AE_BLOB_KIND_INDEX] = AE_KIND_METRICS
   blobs[AE_BLOB_FAMILY_INDEX] = family
-  blobs[AE_BLOB_SCHEMA_VERSION_INDEX] = String(METRICS_SCHEMA_VERSION)
-  blobs[AE_BLOB_TOPOLOGY_GENERATION_INDEX] = String(sample.metadata.topologyGeneration)
+  blobs[AE_BLOB_SCHEMA_VERSION_INDEX] = String(AE_STORAGE_VERSION)
   blobs[AE_BLOB_SAMPLED_AT_INDEX] = formatAeSampleTime(sample.metadata.sampledAt)
   blobs[AE_BLOB_ENTITY_IDS_INDEX] = entityIds
   content.forEach((text, i) => {
-    blobs[V7_FIRST_CONTENT_BLOB_INDEX + i] = text
+    blobs[V12_FIRST_CONTENT_BLOB_INDEX + i] = text
   })
   return blobs
 }
 
-/** Envelope for a `"event"`-kind row (v6 blob positions, blob3 and blob5 text as on every v7 row) — one per `sample.events` entry. */
+/** Envelope for a `"event"`-kind row (v6 blob positions, blob3 and blob5 text as on every v12 row) — one per `sample.events` entry. */
 export function buildEventBlobs(
   sample: MetricsSample & { capabilityPlanGeneration?: number },
   event: MetricEvent
@@ -411,10 +373,9 @@ export function buildEventBlobs(
   const blobs: string[] = new Array(AE_BLOB_COUNT).fill('')
   blobs[AE_BLOB_KIND_INDEX] = AE_KIND_EVENT
   blobs[AE_BLOB_FAMILY_INDEX] = event.kind
-  blobs[AE_BLOB_SCHEMA_VERSION_INDEX] = String(METRICS_SCHEMA_VERSION)
+  blobs[AE_BLOB_SCHEMA_VERSION_INDEX] = String(AE_STORAGE_VERSION)
   blobs[AE_BLOB_SAMPLED_AT_INDEX] = formatAeSampleTime(event.at)
   blobs[AE_BLOB_SEQUENCE_INDEX] = String(sample.metadata.sequence)
-  blobs[AE_EVENT_BLOB_TOPOLOGY_GENERATION_INDEX] = String(sample.metadata.topologyGeneration)
   blobs[AE_BLOB_CAPABILITY_PLAN_GENERATION_INDEX] = capabilityPlanGenerationBlob(sample)
   blobs[AE_BLOB_PAGE_INDEX] = '0'
   blobs[AE_BLOB_SOURCE_OR_IDENTITY_INDEX] = event.source ?? ''
@@ -429,7 +390,7 @@ export function buildEventBlobs(
 export function buildStatusBlobs(event: ServerStatusEvent): string[] {
   const blobs: string[] = new Array(AE_BLOB_COUNT).fill('')
   blobs[AE_BLOB_KIND_INDEX] = AE_KIND_STATUS
-  blobs[AE_BLOB_SCHEMA_VERSION_INDEX] = String(METRICS_SCHEMA_VERSION)
+  blobs[AE_BLOB_SCHEMA_VERSION_INDEX] = String(AE_STORAGE_VERSION)
   blobs[AE_BLOB_STATUS_OR_EVENT_REASON_INDEX] = event.reason
   return blobs
 }
@@ -473,11 +434,11 @@ function buildEventDataPoint(
 
 const NULL_TO_SENTINEL = (value: number | null): number => value ?? AE_MISSING_METRIC_SENTINEL
 
-function v7Point(
+function v12Point(
   sample: AuthenticatedMetricsSample,
   family: string,
   entityIds: string,
-  values: V7RowValues
+  values: V12RowValues
 ): AnalyticsEngineDataPointLike {
   const doubles = new Array<number>(AE_DOUBLE_COUNT).fill(AE_MISSING_METRIC_SENTINEL)
   values.doubles.forEach((value, i) => {
@@ -493,10 +454,10 @@ function v7Point(
   return point
 }
 
-function buildV7Context(
+function buildV12Context(
   sample: AuthenticatedMetricsSample,
   nics: readonly [NetworkDeviceSample | undefined, NetworkDeviceSample | undefined]
-): V7Context {
+): V12Context {
   return {
     sample,
     nics,
@@ -510,9 +471,9 @@ function buildV7Context(
 function entityPoints(
   sample: AuthenticatedMetricsSample,
   family: string,
-  pages: readonly V7EntityPage[]
+  pages: readonly V12EntityPage[]
 ): AnalyticsEngineDataPointLike[] {
-  return pages.map((page) => v7Point(sample, family, page.ids, page))
+  return pages.map((page) => v12Point(sample, family, page.ids, page))
 }
 
 /** Paged entity rows, in fixture order: block, network, filesystem, gpu, hardware.physical. */
@@ -542,20 +503,20 @@ function buildEntityPoints(
     slotMapping?.hardwareSignalPageOrder
   )
   return [
-    ...entityPoints(sample, AE_FAMILY_BLOCK, v7EntityPages.block(blocks, sample)),
-    ...entityPoints(sample, AE_FAMILY_NETWORK, v7EntityPages.network(pagedNetworks, sample)),
-    ...entityPoints(sample, AE_FAMILY_FILESYSTEM, v7EntityPages.filesystem(filesystems, sample)),
-    ...entityPoints(sample, AE_FAMILY_GPU, v7EntityPages.gpu(gpus, sample)),
+    ...entityPoints(sample, AE_FAMILY_BLOCK, v12EntityPages.block(blocks, sample)),
+    ...entityPoints(sample, AE_FAMILY_NETWORK, v12EntityPages.network(pagedNetworks, sample)),
+    ...entityPoints(sample, AE_FAMILY_FILESYSTEM, v12EntityPages.filesystem(filesystems, sample)),
+    ...entityPoints(sample, AE_FAMILY_GPU, v12EntityPages.gpu(gpus, sample)),
     ...entityPoints(
       sample,
       AE_FAMILY_HARDWARE_PHYSICAL,
-      v7EntityPages['hardware.physical'](signals, sample)
+      v12EntityPages['hardware.physical'](signals, sample)
     ),
   ]
 }
 
 /**
- * Build every AE data point for one authenticated sample (v6- or v7-shaped).
+ * Build every AE data point for one authenticated sample (wire version 6 or 8 shaped).
  *
  * `host.system`, `host.io`, `host.network` and `host.web` are always emitted
  * (one row each, even if every value is missing); `managed.database` only
@@ -571,12 +532,14 @@ export function buildMetricsDataPoints(
   slotMapping?: SlotMapping
 ): AnalyticsEngineDataPointLike[] {
   const { nic0, nic1, paged } = resolveNetworkSlots(sample.networks, slotMapping)
-  const ctx = buildV7Context(sample, [nic0, nic1])
+  const ctx = buildV12Context(sample, [nic0, nic1])
   const points: AnalyticsEngineDataPointLike[] = []
 
-  for (const family of V7_HOST_FAMILIES) {
+  for (const family of V12_HOST_FAMILIES) {
     if (family === AE_FAMILY_MANAGED_DATABASE && !hasManagedDatabase(sample)) continue
-    points.push(v7Point(sample, family, '', v7HostRowValues(family, ctx)))
+    points.push(
+      v12Point(sample, family, v12HostRowEntityIds(family, ctx), v12HostRowValues(family, ctx))
+    )
   }
   points.push(...buildEntityPoints(sample, paged, slotMapping))
   for (const event of sample.events) {
@@ -610,7 +573,7 @@ function invocationPriority(point: AnalyticsEngineDataPointLike): number {
   if (kind === AE_KIND_METRICS) {
     const family = point.blobs?.[AE_BLOB_FAMILY_INDEX]
     if (
-      V7_HOST_FAMILIES.includes(family as V7HostFamily) &&
+      V12_HOST_FAMILIES.includes(family as V12HostFamily) &&
       family !== AE_FAMILY_MANAGED_DATABASE
     ) {
       return 0
@@ -668,15 +631,15 @@ function capToInvocationLimit(
 // Module-load invariants
 // ---------------------------------------------------------------------------
 
-function assertV7LayoutWithinBudgets(): void {
+function assertV12LayoutWithinBudgets(): void {
   if (AE_DOUBLE_INTERVAL_INDEX !== 19) {
     throw new TypeError('AE_DOUBLE_INTERVAL_INDEX must be 19 (double20)')
   }
-  if (V7_FIRST_CONTENT_BLOB_INDEX + V7_CONTENT_BLOB_CAPACITY !== AE_BLOB_COUNT) {
-    throw new TypeError('v7 content blobs must fill blob7..blob20 exactly')
+  if (V12_FIRST_CONTENT_BLOB_INDEX + V12_CONTENT_BLOB_CAPACITY !== AE_BLOB_COUNT) {
+    throw new TypeError('v12 content blobs must fill blob7..blob20 exactly')
   }
-  for (const [family, width] of Object.entries(V7_ENTITY_FIELD_ORDER)) {
-    const perPage = V7_ENTITIES_PER_PAGE[family as keyof typeof V7_ENTITY_FIELD_ORDER]
+  for (const [family, width] of Object.entries(V12_ENTITY_FIELD_ORDER)) {
+    const perPage = V12_ENTITIES_PER_PAGE[family as keyof typeof V12_ENTITY_FIELD_ORDER]
     if (perPage * width.length > AE_METRIC_DOUBLE_SLOT_COUNT) {
       throw new TypeError(
         `${family} pages overflow the ${AE_METRIC_DOUBLE_SLOT_COUNT}-slot AE page`
@@ -684,18 +647,18 @@ function assertV7LayoutWithinBudgets(): void {
     }
   }
 }
-assertV7LayoutWithinBudgets()
+assertV12LayoutWithinBudgets()
 
 /** Exposed for tests that need to exercise the throw behavior without waiting on module-load side effects. */
 export const _internalFieldMap = {
-  assertV7LayoutWithinBudgets,
+  assertV12LayoutWithinBudgets,
   capToInvocationLimit,
 }
 
 // ---------------------------------------------------------------------------
 // Query-side lookups: the read path (`sql-api.ts`) resolves a requested
 // canonical/field name to its physical AE double slot through these, so the
-// layout stays this module's (and v7-layout.ts's) only copy.
+// layout stays this module's (and v12-layout.ts's) only copy.
 // ---------------------------------------------------------------------------
 
 /** Entities per page for an entity family (`floor(19 / width)`, or the family's own page size). */
@@ -704,11 +667,11 @@ export function entitiesPerPage(width: number): number {
 }
 
 /** Per-entity-family field order (a `null` entry is a slot with no descriptor), keyed by family. */
-export { V7_ENTITY_FIELD_ORDER as PER_ENTITY_FIELD_ORDER } from './v7-layout.ts'
+export { V12_ENTITY_FIELD_ORDER as PER_ENTITY_FIELD_ORDER } from './v12-layout.ts'
 
 /** The queryable (non-null) field names of an entity family, in slot order. */
-export function queryableEntityFields(family: keyof typeof V7_ENTITY_FIELD_ORDER): string[] {
-  return V7_ENTITY_FIELD_ORDER[family].filter((field): field is string => field !== null)
+export function queryableEntityFields(family: keyof typeof V12_ENTITY_FIELD_ORDER): string[] {
+  return V12_ENTITY_FIELD_ORDER[family].filter((field): field is string => field !== null)
 }
 
 /**
@@ -727,7 +690,7 @@ export function hostIoEmbeddedNicDoubleIndex(
   slot: 0 | 1,
   field: (typeof HOST_IO_EMBEDDED_NIC_FIELDS)[number]
 ): number {
-  return v7EmbeddedNicDoubleIndex(slot, field === 'receiveBytesPerSecond' ? 'rx' : 'tx')
+  return v12EmbeddedNicDoubleIndex(slot, field === 'receiveBytesPerSecond' ? 'rx' : 'tx')
 }
 
 /**
@@ -735,27 +698,27 @@ export function hostIoEmbeddedNicDoubleIndex(
  * field names laid out by physical double index on the host row that carries
  * them, so `indexOf(field)` is the slot. They are no longer rows of their own.
  */
-export { V7_SINGLE_SOURCE_FIELD_ORDER as SINGLE_ROW_FIELD_ORDER } from './v7-layout.ts'
+export { V12_SINGLE_SOURCE_FIELD_ORDER as SINGLE_ROW_FIELD_ORDER } from './v12-layout.ts'
 
 /**
- * Resolve a host-scoped field to its physical AE slot: which v7 host row
- * carries it and its 0-based double index. `undefined` when v7 does not store
+ * Resolve a host-scoped field to its physical AE slot: which v12 host row
+ * carries it and its 0-based double index. `undefined` when v12 does not store
  * the field (dropped from the layout, or no slot yet).
  */
 export function findHostFieldSlot(
   scope: MetricEntityScope,
   field: string
-): { family: V7HostFamily; doubleIndex: number } | undefined {
-  return v7HostSlotFor(scope, field)
+): { family: V12HostFamily; doubleIndex: number } | undefined {
+  return v12HostSlotFor(scope, field)
 }
 
-/** As {@link findHostFieldSlot}, throwing for a field v7 does not store. */
+/** As {@link findHostFieldSlot}, throwing for a field v12 does not store. */
 export function doubleIndexForHostField(
   scope: MetricEntityScope,
   field: string
-): { family: V7HostFamily; doubleIndex: number } {
-  const slot = v7HostSlotFor(scope, field)
-  if (!slot) throw new TypeError(`no AE v7 host double slot for field "${scope}.${field}"`)
+): { family: V12HostFamily; doubleIndex: number } {
+  const slot = v12HostSlotFor(scope, field)
+  if (!slot) throw new TypeError(`no AE v12 host double slot for field "${scope}.${field}"`)
   return slot
 }
 

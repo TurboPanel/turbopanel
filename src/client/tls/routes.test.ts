@@ -282,7 +282,7 @@ test('POST /tls lets_encrypt managed cert appears in list and detail with empty 
     }
     const listed = listBody.tls.find((entry) => entry.id === created.id)
     assertEquals(listed !== undefined, true)
-    assertEquals(listed?.metadata.status, 'managed')
+    assertEquals(listed?.metadata.status, 'automatic')
     assertEquals(listed?.metadata.fingerprintSha256, '')
     assertEquals(listed?.metadata.dnsNames, ['pending.example.com'])
     assertEquals(listed?.metadata.acme?.challengeType, 'http-01')
@@ -292,7 +292,7 @@ test('POST /tls lets_encrypt managed cert appears in list and detail with empty 
     const detailBody = (await detailRes.json()) as {
       tls: { metadata: TlsMetadata }
     }
-    assertEquals(detailBody.tls.metadata.status, 'managed')
+    assertEquals(detailBody.tls.metadata.status, 'automatic')
     assertEquals(detailBody.tls.metadata.fingerprintSha256, '')
     assertEquals(detailBody.tls.metadata.dnsNames, ['pending.example.com'])
   })

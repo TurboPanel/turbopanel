@@ -18,6 +18,7 @@ import {
 import { verifyServerInOrg } from '../environments/deploy-prepare.ts'
 import { getCatalogEntry } from '../projects/catalog/index.ts'
 import { loadServerStatusRecords } from '../servers/update-status.ts'
+import { hasLiveBackupCommand } from '../../features/commands/command-records.ts'
 import { findInFlightRecovery } from '../../features/managed/recovery-records.ts'
 import type { ManagedStatus } from '../../features/managed/types.ts'
 
@@ -197,6 +198,28 @@ export async function assertManagedIdle(
     return c.json({ error: 'managed_busy', reason: 'recovery_in_flight' }, 409)
   }
   return null
+}
+
+/**
+ * 409 when a backup or restore for this cluster is already queued or running.
+ * The host would refuse the second one at once, so it is refused here instead
+ * of being queued behind it.
+ */
+export async function assertNoBackupInFlight(
+  c: Context<AppEnv>,
+  db: Db,
+  managedId: string
+): Promise<Response | null> {
+  if (!(await hasLiveBackupCommand(db, managedId))) return null
+  return c.json(
+    {
+      error: 'managed_busy',
+      reason: 'backup_in_flight',
+      message:
+        'Another backup or restore of this database is already running. Try again when it has finished.',
+    },
+    409
+  )
 }
 
 /** 409 body when the target server has no live connection. */

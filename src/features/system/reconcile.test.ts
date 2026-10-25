@@ -175,7 +175,7 @@ async function withReconcileFixtures(
         workspaceId: ws!.id,
         organizationId,
         name: 'Tenant Project',
-        metadata: { type: 'docker-compose' },
+        kind: 'compose',
       })
       .returning({ id: project.id })
     const [env] = await db
@@ -642,7 +642,7 @@ async function withConsumerOnlyManagedFixtures(
       workspaceId: ws!.id,
       organizationId,
       name: 'Tenant Project',
-      metadata: { type: 'docker-compose' },
+      kind: 'compose',
     })
     .returning({ id: project.id })
   // Consumer environment pinned to this server; the cluster lives elsewhere.
@@ -677,6 +677,7 @@ async function withConsumerOnlyManagedFixtures(
   const [account] = await db
     .insert(login)
     .values({
+      recipe: 'app',
       managedId: cluster!.id,
       role: 'user',
       username: 'appuser',

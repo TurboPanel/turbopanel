@@ -16,6 +16,7 @@ import {
   organization,
   managedDatabase,
   project,
+  replica,
   server,
   service,
   tls,
@@ -27,6 +28,7 @@ import type { ManagedSettings } from './settings.ts'
 import { createManagedLogin } from './logins.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import { ensureManagedContainerAllocation } from './allocate-managed-container.ts'
+import { bumpedPrimaryEpochMetadata, loadPrimaryEpoch } from './primary-epoch.ts'
 import { isPrepareError, prepareManagedApplyPayloads } from './apply-prepare.ts'
 
 const dbUrl = getDatabaseUrl()
@@ -182,7 +184,8 @@ async function withManagedApplyPrepareFixtures(
       name: 'Managed Apply Prepare Project',
       workspaceId,
       organizationId,
-      metadata: { type: 'managed', code: 'postgres' },
+      kind: 'managed',
+      metadata: { code: 'postgres' },
     })
     .returning({ id: project.id })
   const projectId = insertedProject!.id
@@ -619,6 +622,65 @@ test('prepareManagedApplyPayloads ensures org CA and sets orgTlsMaterial with de
         )
       assertEquals(casAfter.length, 1)
       assertEquals(casAfter[0]?.caState, 'active')
+    }
+  )
+})
+
+test('preparing a multi-member apply from a stale row never moves the primary epoch back', async () => {
+  await withManagedApplyPrepareFixtures(
+    async ({ db, c, serverId, environmentId, managedId, organizationId }) => {
+      const now = new Date().toISOString()
+      const [standby] = await db
+        .insert(server)
+        .values({
+          organizationId,
+          name: 'Managed Apply Prepare Standby',
+          createdAt: now,
+          updatedAt: now,
+          isConnected: true,
+          statusChangedAt: now,
+        })
+        .returning({ id: server.id })
+      const standbyServerId = standby!.id
+      await attachDaemonStateToServer(db, standbyServerId, {
+        publicJwk: { kty: 'OKP', crv: 'Ed25519', x: 'managed-apply-prepare-standby-key' },
+        fingerprint: `managed-apply-prepare-fp-${standbyServerId}`,
+      })
+      await db
+        .insert(replica)
+        .values({ managedId, serverId: standbyServerId, role: 'replica', ordinal: 2 })
+      try {
+        // The row read for this request still shows epoch 0; a promote then moves it to 1.
+        await db
+          .update(managed)
+          .set({ metadata: bumpedPrimaryEpochMetadata() })
+          .where(eq(managed.id, managedId))
+        // The standby has no private path, so the prepare stops after the
+        // replication username was written; that write is what is checked here.
+        await prepareManagedApplyPayloads(c, db, {
+          managedRow: { id: managedId, engine: 'postgres', metadata: {} },
+          spec: postgresEngineSpec,
+          settings: settingsWithExposure(false),
+          databases: ['postgres'],
+          ownerRoleDatabases: undefined,
+          serverId,
+          environmentId,
+          organizationId,
+        })
+        assertEquals(await loadPrimaryEpoch(db, managedId), 1)
+        const [row] = await db
+          .select({ metadata: managed.metadata })
+          .from(managed)
+          .where(eq(managed.id, managedId))
+        assertEquals(
+          typeof (row?.metadata as { replicationUsername?: unknown }).replicationUsername,
+          'string'
+        )
+      } finally {
+        await db.delete(container).where(eq(container.serverId, standbyServerId))
+        await db.delete(replica).where(eq(replica.managedId, managedId))
+        await db.delete(server).where(eq(server.id, standbyServerId))
+      }
     }
   )
 })

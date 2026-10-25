@@ -16,6 +16,7 @@ import {
   decideIngressBindAddresses,
   hostgroupsForClusterIndex,
   ingressEngineVersion,
+  ingressReconcileValidityMs,
   ingressEngineVersionFromOptions,
   isAtRestSealedPassword,
   isIngressRecord,
@@ -582,4 +583,13 @@ test('the certificate always names loopback, including under an all-interfaces p
     backendAddresses: [],
   })
   assertEquals(sans.ipAddresses, ['127.0.0.1'])
+})
+
+test('ingressReconcileValidityMs keeps a front-door update valid behind the apply that queued it', () => {
+  // Alone: its own run budget.
+  assertEquals(ingressReconcileValidityMs(), 300_000)
+  assertEquals(ingressReconcileValidityMs(0), 300_000)
+  // Queued with a 10 minute apply: commands run one at a time, so it must
+  // outlive the apply and still have its own run budget left.
+  assertEquals(ingressReconcileValidityMs(600_000), 900_000)
 })

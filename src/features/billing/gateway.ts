@@ -87,21 +87,54 @@ export type ProviderProduct = Readonly<{
  * correct, not broken, and verification must not refuse it.
  */
 export type ProviderTaxDefaults = Readonly<{
+  /** What the lookup found; see {@link ProviderTaxDefaultsOutcome}. */
+  outcome: ProviderTaxDefaultsOutcome
   /**
    * `inclusive`, `exclusive` or `inferred_by_currency` (the Dashboard's
    * "Automatic": exclusive for USD and CAD, inclusive for other
-   * currencies) when the account sets a default; `null` when it sets none,
-   * or when the provider could not be asked.
+   * currencies) when the account sets a default; `null` for every other
+   * outcome.
    */
   taxBehavior: string | null
   /** `active` once the provider can calculate tax; `pending` while incomplete. */
   status: string | null
+  /** Why the provider refused, when it did. Typed fields only, never its message. */
+  error: ProviderTaxDefaultsError | null
 }>
 
-/** No account default — every price must then speak for itself. */
+/**
+ * How the account tax default lookup ended. Each one needs a different fix,
+ * so they are never folded together:
+ *
+ *   set                 the provider named a default (`taxBehavior`)
+ *   unset               the provider answered and names no default
+ *   not_asked           no price needed the default, so nobody asked
+ *   permission_missing  the key may not read tax settings (HTTP 403)
+ *   provider_error      any other refusal or failure; `error` says which
+ */
+export type ProviderTaxDefaultsOutcome =
+  'set' | 'unset' | 'not_asked' | 'permission_missing' | 'provider_error'
+
+export type ProviderTaxDefaultsError = Readonly<{
+  status: number
+  type: string
+  code: string | null
+  /**
+   * The permission the provider says the key lacks (Stripe names it as
+   * `rak_…` in a restricted key's 403), when it names one.
+   */
+  permission: string | null
+}>
+
+/**
+ * The account was not asked, because no price needed its default. Every
+ * price must then speak for itself.
+ */
 export const NO_TAX_DEFAULTS: ProviderTaxDefaults = {
+  outcome: 'not_asked',
   taxBehavior: null,
   status: null,
+  error: null,
 }
 
 /** Whether a tax-behaviour string actually names a behaviour. */
@@ -151,9 +184,10 @@ export interface BillingGateway {
   /** One product with its default price; throws the provider's error when absent. */
   getProduct(productId: string): Promise<ProviderProduct>
   /**
-   * The account's tax defaults. Degrades to {@link NO_TAX_DEFAULTS} when
-   * the provider refuses the question, which only makes verification
-   * stricter, never laxer.
+   * The account's tax defaults. A provider refusal never throws: it comes
+   * back as an outcome naming the reason (`permission_missing`,
+   * `provider_error`, …) with no default, which only makes verification
+   * stricter, never laxer, and keeps the admin dropdown working.
    */
   getTaxDefaults(): Promise<ProviderTaxDefaults>
   /**

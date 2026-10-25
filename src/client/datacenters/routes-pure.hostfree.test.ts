@@ -21,14 +21,13 @@ import {
 const test = Deno.test.bind(Deno)
 
 test('mergeDatacenterMetadata prefers request metadata over seeded defaults', () => {
-  assertEquals(
-    mergeDatacenterMetadata({ geo: { city: 'Amsterdam' } }, { note: 'ops' }),
-    { geo: { city: 'Amsterdam' }, note: 'ops' },
-  )
-  assertEquals(
-    mergeDatacenterMetadata({ geo: { city: 'Amsterdam' } }, null),
-    { geo: { city: 'Amsterdam' } },
-  )
+  assertEquals(mergeDatacenterMetadata({ geo: { city: 'Amsterdam' } }, { note: 'ops' }), {
+    geo: { city: 'Amsterdam' },
+    note: 'ops',
+  })
+  assertEquals(mergeDatacenterMetadata({ geo: { city: 'Amsterdam' } }, null), {
+    geo: { city: 'Amsterdam' },
+  })
   assertEquals(mergeDatacenterMetadata(null, { note: 'ops' }), { note: 'ops' })
 })
 
@@ -47,7 +46,7 @@ test('parseMemberPins validates UUID + address pairs and rejects duplicates', ()
         { serverId: validId, address: '10.0.0.10' },
         { serverId: otherId, address: '10.0.0.11' },
       ],
-    },
+    }
   )
   assertEquals(parseMemberPins(undefined), { ok: false })
   assertEquals(parseMemberPins([]), { ok: false })
@@ -66,28 +65,30 @@ test('parseMemberPins validates UUID + address pairs and rejects duplicates', ()
         { serverId: validId, address: '10.0.0.10' },
         { serverId: validId, address: '10.0.0.11' },
       ],
-    },
+    }
   )
   assertEquals(
     parseMemberPins([
       { serverId: validId, address: '10.0.0.10' },
       { serverId: otherId, address: '10.0.0.10' },
     ]),
-    { ok: false },
+    { ok: false }
   )
   assertEquals(
     parseMemberPins([
       { serverId: validId, address: '10.0.0.10' },
       { serverId: validId, address: '10.0.0.10' },
     ]),
-    { ok: false },
+    { ok: false }
   )
   assertEquals(
-    parseMemberPins(Array.from({ length: 65 }, (_, i) => ({
-      serverId: `550e8400-e29b-41d4-a716-${String(i).padStart(12, '0')}`,
-      address: `10.${String(Math.floor(i / 256))}.${String(Math.floor((i % 256) / 256))}.${String(i % 256)}`,
-    }))),
-    { ok: false },
+    parseMemberPins(
+      Array.from({ length: 65 }, (_, i) => ({
+        serverId: `550e8400-e29b-41d4-a716-${String(i).padStart(12, '0')}`,
+        address: `10.${String(Math.floor(i / 256))}.${String(Math.floor((i % 256) / 256))}.${String(i % 256)}`,
+      }))
+    ),
+    { ok: false }
   )
 })
 
@@ -105,28 +106,28 @@ test('resolveSeededFields fills name and metadata from source server geo', () =>
       description: null,
       metadata: { operatorNote: 'edge' },
       options: null,
+      kind: null,
       sourceServerId: 'server-a',
       members: [{ serverId: 'server-a', address: '10.0.0.10' }],
     },
-    [{
-      id: 'server-a',
-      metadata: {
-        geo: {
-          city: 'Amsterdam',
-          country: 'NL',
-          asn: 13335,
-          asOrganization: 'Cloudflare',
+    [
+      {
+        id: 'server-a',
+        metadata: {
+          geo: {
+            city: 'Amsterdam',
+            country: 'NL',
+            asn: 13335,
+            asOrganization: 'Cloudflare',
+          },
         },
       },
-    }],
+    ]
   )
 
   assertEquals(seeded.name, 'Amsterdam NL - Cloudflare AS13335')
   assertEquals(seeded.metadata?.operatorNote, 'edge')
-  assertEquals(
-    (seeded.metadata as Record<string, unknown>).seededFromServerId,
-    'server-a',
-  )
+  assertEquals((seeded.metadata as Record<string, unknown>).seededFromServerId, 'server-a')
 
   const passthrough = resolveSeededFields(
     {
@@ -134,10 +135,11 @@ test('resolveSeededFields fills name and metadata from source server geo', () =>
       description: null,
       metadata: null,
       options: null,
+      kind: null,
       sourceServerId: null,
       members: [],
     },
-    [],
+    []
   )
   assertEquals(passthrough.name, 'Custom DC')
   assertEquals(passthrough.metadata, null)
@@ -148,10 +150,11 @@ test('resolveSeededFields fills name and metadata from source server geo', () =>
       description: null,
       metadata: { note: 'ops' },
       options: null,
+      kind: null,
       sourceServerId: 'server-b',
       members: [{ serverId: 'server-b', address: '203.0.113.10' }],
     },
-    [{ id: 'server-b', metadata: {} }],
+    [{ id: 'server-b', metadata: {} }]
   )
   assertEquals(noGeo, { name: 'Kept', metadata: { note: 'ops' } })
 })
@@ -166,36 +169,42 @@ test('parseOptionalUuid accepts null and valid UUIDs only', () => {
 test('attachPrivateCidrs joins datacenter network CIDR lists', () => {
   const rows = [{ id: 'dc-a', name: 'Site A' }]
   const cidrs = new Map([['dc-a', ['10.0.0.0/24', '10.0.1.0/24']]])
-  assertEquals(attachPrivateCidrs(rows, cidrs), [{
-    id: 'dc-a',
-    name: 'Site A',
-    privateCidrs: ['10.0.0.0/24', '10.0.1.0/24'],
-  }])
+  assertEquals(attachPrivateCidrs(rows, cidrs), [
+    {
+      id: 'dc-a',
+      name: 'Site A',
+      privateCidrs: ['10.0.0.0/24', '10.0.1.0/24'],
+    },
+  ])
   assertEquals(attachPrivateCidrs([{ id: 'dc-b' }], cidrs)[0].privateCidrs, [])
 })
 
-test('attachEffectivePolicy surfaces priority/trusted with defaults applied', () => {
-  assertEquals(
+test('attachEffectivePolicy surfaces the policy columns and keeps them in options', () => {
+  assertEquals<unknown>(
     attachEffectivePolicy([
-      { id: 'dc-a', options: null },
-      { id: 'dc-b', options: { priority: 10, trusted: false } },
-      { id: 'dc-c', options: { priority: 9999, trusted: 'nope' } },
-    ]),
-    [
-      { id: 'dc-a', options: null, priority: 100, trusted: true },
+      { id: 'dc-a', options: null, priority: 100, isTrusted: true, addressPreference: 'ipv6' },
       {
         id: 'dc-b',
-        options: { priority: 10, trusted: false },
+        options: { sshPort: 2200 },
         priority: 10,
-        trusted: false,
+        isTrusted: false,
+        addressPreference: 'ipv4',
       },
+    ]),
+    [
       {
-        id: 'dc-c',
-        options: { priority: 9999, trusted: 'nope' },
+        id: 'dc-a',
+        options: { priority: 100, trusted: true, addressPreference: 'ipv6' },
         priority: 100,
         trusted: true,
       },
-    ],
+      {
+        id: 'dc-b',
+        options: { sshPort: 2200, priority: 10, trusted: false, addressPreference: 'ipv4' },
+        priority: 10,
+        trusted: false,
+      },
+    ]
   )
 })
 
@@ -236,7 +245,7 @@ test('groupMembersByDerivedCidr collapses identical prefixes and fails closed', 
         id: SERVER_B,
         metadata: privateIpMetadata('203.0.113.11', '203.0.113.11/24'),
       },
-    ],
+    ]
   )
   assertEquals(grouped.ok, true)
   if (!grouped.ok) {
@@ -260,7 +269,7 @@ test('groupMembersByDerivedCidr collapses identical prefixes and fails closed', 
         id: SERVER_B,
         metadata: privateIpMetadata('198.51.100.20', '198.51.100.20/24'),
       },
-    ],
+    ]
   )
   assertEquals(split.ok, true)
   if (!split.ok) {
@@ -268,24 +277,21 @@ test('groupMembersByDerivedCidr collapses identical prefixes and fails closed', 
   }
   assertEquals(split.groups.length, 2)
 
+  assertEquals(groupMembersByDerivedCidr([{ serverId: SERVER_A, address: '203.0.113.10' }], []), {
+    ok: false,
+    status: 404,
+  })
   assertEquals(
     groupMembersByDerivedCidr(
       [{ serverId: SERVER_A, address: '203.0.113.10' }],
-      [],
-    ),
-    { ok: false, status: 404 },
-  )
-  assertEquals(
-    groupMembersByDerivedCidr(
-      [{ serverId: SERVER_A, address: '203.0.113.10' }],
-      [{ id: SERVER_A, metadata: { ips: [] } }],
+      [{ id: SERVER_A, metadata: { ips: [] } }]
     ),
     {
       ok: false,
       status: 400,
       error: 'address_cidr_unreported',
       serverId: SERVER_A,
-    },
+    }
   )
 })
 
@@ -294,28 +300,28 @@ test('resolveOrCreateSubnetForAddress reuses known or pending site CIDRs', () =>
     resolveOrCreateSubnetForAddress(
       '203.0.113.10',
       privateIpMetadata('203.0.113.10', '203.0.113.10/24'),
-      [{ networkId: 'net-a', cidr: '203.0.113.0/24' }],
+      [{ networkId: 'net-a', cidr: '203.0.113.0/24' }]
     ),
-    { ok: true, networkId: 'net-a', created: false },
+    { ok: true, networkId: 'net-a', created: false }
   )
   assertEquals(
     resolveOrCreateSubnetForAddress(
       '203.0.113.10',
       privateIpMetadata('203.0.113.10', '203.0.113.10/24'),
-      [{ networkId: '', cidr: '203.0.113.0/24' }],
+      [{ networkId: '', cidr: '203.0.113.0/24' }]
     ),
-    { ok: true, created: true, cidr: '203.0.113.0/24' },
+    { ok: true, created: true, cidr: '203.0.113.0/24' }
   )
   assertEquals(
     resolveOrCreateSubnetForAddress(
       '203.0.113.10',
       privateIpMetadata('203.0.113.10', '203.0.113.10/24'),
-      [{ networkId: 'net-b', cidr: '198.51.100.0/24' }],
+      [{ networkId: 'net-b', cidr: '198.51.100.0/24' }]
     ),
-    { ok: true, created: true, cidr: '203.0.113.0/24' },
+    { ok: true, created: true, cidr: '203.0.113.0/24' }
   )
-  assertEquals(
-    resolveOrCreateSubnetForAddress('203.0.113.10', { ips: [] }, []),
-    { ok: false, error: 'address_not_reported' },
-  )
+  assertEquals(resolveOrCreateSubnetForAddress('203.0.113.10', { ips: [] }, []), {
+    ok: false,
+    error: 'address_not_reported',
+  })
 })

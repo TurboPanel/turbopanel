@@ -1,9 +1,15 @@
 import type { Context, Env, Hono } from 'hono'
 import { upgradeWebSocket } from 'hono/deno'
 import type { WSContext } from 'hono/ws'
-import type { DaemonCellRegistry, DaemonCellSnapshot } from '../contracts/cell.ts'
 import type {
+  DaemonCellRegistry,
+  DaemonCellSnapshot,
+  PendingRequestRecord,
+} from '../contracts/cell.ts'
+import type {
+  BackupCopyReportResultMessage,
   BackupRunReportResultMessage,
+  CommandOutcomeAckMessage,
   DaemonInboundEnvelope,
   DaemonInboundFrameResult,
   DaemonMessage,
@@ -29,6 +35,10 @@ import {
   persistUpgradeProgress,
 } from '../features/upgrades/persist.ts'
 import { recordCommandProgress } from '../features/commands/command-progress.ts'
+import {
+  ackForReportedOutcome,
+  noteReportedCommands,
+} from '../features/commands/command-recovery.ts'
 import { getDb } from '../db/connection.ts'
 import type { Db } from '../db/connection.ts'
 import { compatLogError, compatLogWarn } from '../lib/log-compat.ts'
@@ -62,6 +72,11 @@ import {
   createBackupRunReportStore,
   handleBackupRunReport,
 } from '../features/backups/run-report.ts'
+import {
+  backupCopyReportResultMessage,
+  createBackupCopyReportStore,
+  handleBackupCopyReport,
+} from '../features/backups/copy-report.ts'
 import { handleManagedHaEvent } from '../features/managed/ha-event.ts'
 import { handleManagedHealthReport } from '../features/managed/health-report.ts'
 import {
@@ -303,6 +318,7 @@ async function handleUpdateProgressInbound(params: {
     at: message.at,
     detail: message.detail,
     errorCode: message.errorCode,
+    restart: message.restart,
     requestId: message.id,
   })
 }
@@ -379,6 +395,7 @@ async function handleDaemonPresenceInbound(params: {
     })
   }
 
+  await noteReportedCommands(db, serverId, message.commands)
   await cell.recordInbound({
     connectionId,
     at: message.at,
@@ -508,7 +525,7 @@ async function applyDaemonInboundEnvelope(params: {
   db: Db
   serverId: string
   envelope: DaemonInboundEnvelope
-}): Promise<void> {
+}): Promise<PendingRequestRecord | null> {
   const { cell, db, serverId, envelope } = params
   const record = await cell.handleInbound(envelope)
   if (envelope.kind === 'update-result' && record) {
@@ -546,6 +563,7 @@ async function applyDaemonInboundEnvelope(params: {
       requestId: envelope.requestId,
     })
   }
+  return record
 }
 
 /** Everything the per-type inbound handlers need for one validated frame. */
@@ -561,7 +579,9 @@ type DaemonInboundDispatch = {
   /** Seals alert channel addresses when an event notifies; omit and only the bell is written. */
   dataEncryptionSecrets?: DerivedSecretsConfig
   /** Answer on the socket the frame arrived on (daemon-initiated requests). */
-  reply: (message: BackupRunReportResultMessage) => void
+  reply: (
+    message: BackupRunReportResultMessage | CommandOutcomeAckMessage | BackupCopyReportResultMessage
+  ) => void
 }
 
 /**
@@ -582,6 +602,23 @@ async function handleBackupRunReportInbound(params: {
     reporterServerId: params.reporterServerId,
   })
   params.reply(backupRunReportResultMessage(message.id, outcome, new Date().toISOString()))
+}
+
+/** Same answer rule as the run report: reply once the outcome is known; an error escapes and the daemon resends. */
+async function handleBackupCopyReportInbound(params: {
+  cell: ReturnType<DaemonCellRegistry['getCell']>
+  db: Db
+  connectionId: string | undefined
+  message: Extract<DaemonMessage, { type: 'backup-copy-report' }>
+  reporterServerId: string
+  reply: DaemonInboundDispatch['reply']
+}): Promise<void> {
+  const { cell, db, connectionId, message } = params
+  await cell.recordInbound({ connectionId, at: message.at })
+  const outcome = await handleBackupCopyReport(createBackupCopyReportStore(db), message, {
+    reporterServerId: params.reporterServerId,
+  })
+  params.reply(backupCopyReportResultMessage(message.id, outcome, new Date().toISOString()))
 }
 
 /**
@@ -698,6 +735,16 @@ async function dispatchDaemonInboundByType(params: DaemonInboundDispatch): Promi
         reply: params.reply,
       })
       return
+    case 'backup-copy-report':
+      await handleBackupCopyReportInbound({
+        cell,
+        db,
+        connectionId,
+        message,
+        reporterServerId: serverId,
+        reply: params.reply,
+      })
+      return
     case 'update-progress':
       await handleUpdateProgressInbound({
         cell,
@@ -718,7 +765,7 @@ async function dispatchDaemonInboundByType(params: DaemonInboundDispatch): Promi
       return
     default:
       await cell.recordInbound({ connectionId, at: message.at })
-      await applyWireMessageEnvelope(cell, db, serverId, message)
+      await applyWireMessageEnvelope(cell, db, serverId, message, params.reply)
   }
 }
 
@@ -726,11 +773,16 @@ async function applyWireMessageEnvelope(
   cell: ReturnType<DaemonCellRegistry['getCell']>,
   db: Db,
   serverId: string,
-  message: DaemonMessage
+  message: DaemonMessage,
+  reply: DaemonInboundDispatch['reply']
 ): Promise<void> {
   const envelope = wireMessageToInboundEnvelope(message)
   if (!envelope) return
-  await applyDaemonInboundEnvelope({ cell, db, serverId, envelope })
+  const record = await applyDaemonInboundEnvelope({ cell, db, serverId, envelope })
+  if (envelope.kind !== 'command-outcome') return
+  // The daemon keeps its copy of the result until this confirms it is stored.
+  const ack = await ackForReportedOutcome(db, { serverId, envelope, record })
+  if (ack !== null) reply(ack)
 }
 
 export type DaemonWebSocketOptions = {

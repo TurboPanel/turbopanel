@@ -39,7 +39,10 @@ import {
   normalizeBackupScheduleInput,
   translateBackupSchedule,
 } from '../../features/backups/schedules.ts'
+import { isSystemBackupDatabase } from '../../features/managed/default-backup-database.ts'
+import { loadManagedDatabases } from '../../features/managed/options.ts'
 import { MAX_BACKUP_POLICY_RETENTION_KEEP } from '../../features/backups/vocabulary.ts'
+import { copyDepsOf } from '../backup-copy-deps.ts'
 
 const MAX_POLICY_NAME_LENGTH = 64
 const DEFAULT_RUNS_PAGE = 20
@@ -158,6 +161,7 @@ function patchTouchesHost(patch: BackupPolicyPatch): boolean {
   return (
     patch.schedule !== undefined ||
     patch.timezone !== undefined ||
+    patch.database !== undefined ||
     patch.retentionKeep !== undefined ||
     patch.isEnabled !== undefined
   )
@@ -232,6 +236,7 @@ export function serializeBackupPolicy(row: BackupPolicyRow, lastRun: BackupRunRe
     schedule: row.schedule,
     preset: describeBackupSchedule(row.schedule),
     timezone: row.timezone,
+    database: row.database,
     retentionKeep: row.retentionKeep,
     enabled: row.isEnabled,
     automatic: row.createdBy === null,
@@ -250,7 +255,8 @@ async function pushPolicySet(
     scope.db,
     c.get('commandQueue'),
     { actorType: 'user', actorId: scope.auth.userId },
-    [scope.serverId]
+    [scope.serverId],
+    copyDepsOf(c)
   )
 }
 
@@ -272,7 +278,8 @@ export async function listPoliciesForTarget(
 export async function createPolicyForTarget(
   c: Context<AppEnv>,
   scope: BackupPolicyTargetScope,
-  body: Record<string, unknown>
+  body: Record<string, unknown>,
+  database?: string | null
 ): Promise<Response> {
   if (body.targetKind !== undefined && body.targetKind !== scope.target.kind) {
     return c.json({ error: 'backup_target_unsupported' }, 400)
@@ -287,6 +294,7 @@ export async function createPolicyForTarget(
 
   const row = await insertBackupPolicy(scope.db, scope.target, {
     ...parsed.value,
+    ...(database === undefined ? {} : { database }),
     organizationId: scope.auth.organizationId,
     createdBy: scope.auth.userId,
   })
@@ -298,13 +306,15 @@ export async function updatePolicyForTarget(
   c: Context<AppEnv>,
   scope: BackupPolicyTargetScope,
   policyId: string,
-  body: Record<string, unknown>
+  body: Record<string, unknown>,
+  database?: string | null
 ): Promise<Response> {
   const current = await findBackupPolicyForTarget(scope.db, scope.target, policyId)
   if (!current) return c.json({ error: 'backup_policy_not_found' }, 404)
 
   const parsed = parsePatchBody(body, current, scope.maxRetentionKeep)
   if (!parsed.ok) return invalidResponse(c, parsed)
+  if (database !== undefined) parsed.value.database = database
   if (Object.keys(parsed.value).length === 0) {
     return c.json({ policy: serializeBackupPolicy(current, null), reconcile: null })
   }
@@ -345,6 +355,32 @@ export async function listRunsForTarget(
   return c.json({ runs: runs.map(serializeRun) })
 }
 
+function databaseInvalidResponse(c: Context<AppEnv>, detail: string): Response {
+  return c.json({ error: 'backup_database_invalid', detail }, 422)
+}
+
+/**
+ * The policy's chosen database: `undefined` when the body leaves it out,
+ * `null` when it is empty or null (the cluster's initial database applies),
+ * otherwise a database that exists on the cluster and is not a system schema.
+ */
+async function parsePolicyDatabase(
+  scope: BackupPolicyScope,
+  value: unknown
+): Promise<{ ok: true; value: string | null | undefined } | { ok: false; detail: string }> {
+  if (value === undefined) return { ok: true, value: undefined }
+  if (value === null || value === '') return { ok: true, value: null }
+  if (typeof value !== 'string') return { ok: false, detail: 'database must be a name or null' }
+  const { databases } = await loadManagedDatabases(scope.db, scope.row.id)
+  if (!databases.includes(value)) {
+    return { ok: false, detail: "database is not one of this cluster's databases" }
+  }
+  if (isSystemBackupDatabase(value, scope.ctx.spec.engine)) {
+    return { ok: false, detail: 'a system database cannot be backed up' }
+  }
+  return { ok: true, value }
+}
+
 /** The managed engine's scope, or null when its engine has no backup support. */
 function managedTargetScope(scope: BackupPolicyScope): BackupPolicyTargetScope | null {
   const maxKeep = maxRetentionKeep(scope.ctx)
@@ -376,7 +412,9 @@ export async function createBackupPolicyResponse(
   }
   const target = managedTargetScope(scope)
   if (!target) return c.json({ error: 'managed_backup_unsupported' }, 400)
-  return await createPolicyForTarget(c, target, body)
+  const database = await parsePolicyDatabase(scope, body.database)
+  if (!database.ok) return databaseInvalidResponse(c, database.detail)
+  return await createPolicyForTarget(c, target, body, database.value)
 }
 
 export async function updateBackupPolicyResponse(
@@ -393,7 +431,9 @@ export async function updateBackupPolicyResponse(
   if (!current) return c.json({ error: 'backup_policy_not_found' }, 404)
   const target = managedTargetScope(scope)
   if (!target) return c.json({ error: 'managed_backup_unsupported' }, 400)
-  return await updatePolicyForTarget(c, target, policyId, body)
+  const database = await parsePolicyDatabase(scope, body.database)
+  if (!database.ok) return databaseInvalidResponse(c, database.detail)
+  return await updatePolicyForTarget(c, target, policyId, body, database.value)
 }
 
 export async function deleteBackupPolicyResponse(

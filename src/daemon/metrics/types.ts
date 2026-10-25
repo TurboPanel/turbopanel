@@ -1,4 +1,8 @@
-import type { MetricEvent, MetricsSample } from '../../contracts/metrics-contract.ts'
+import type {
+  MetricEvent,
+  MetricsSample,
+  MetricsTextFieldName,
+} from '../../contracts/metrics-contract.ts'
 import type { HostedFamily } from './metric-descriptors.ts'
 import type { IngressDerivedValues } from './query/derived-metrics.ts'
 import type { SlotMapping } from '../../contracts/topology-types.ts'
@@ -81,7 +85,7 @@ export type AuthenticatedMetricsSample = MetricsSample & {
  * one of each, never many).
  *
  * `managed.ingress` / `managed.database_proxy` are included for entity-scoped
- * querying even though the Analytics Engine v7 layout no longer writes rows of
+ * querying even though the Analytics Engine v12 layout no longer writes rows of
  * their own: Caddy totals ride `host.web` and ProxySQL rides
  * `managed.database`, one source each (ids `caddy` and `proxysql`). DuckDB
  * still stores one row per source, keyed by `sourceId`; see the
@@ -117,13 +121,7 @@ export type HostSeriesQuery = {
   resolutionSeconds?: number
 }
 
-/**
- * One bucket timestamp with a values map keyed by requested canonical name.
- * `topologyGeneration` replaces v3's `hardwareProfileGeneration` — `null`
- * means unknown or the bucket spans a topology reassignment (mixed
- * generations), a boundary marker for series-continuity breaks. Omitted
- * when the backend doesn't track generations.
- */
+/** One bucket timestamp with a values map keyed by requested canonical name. */
 export type HostSeriesPoint = {
   at: string
   values: Partial<Record<string, number | null>>
@@ -140,7 +138,6 @@ export type HostSeriesPoint = {
    * due two intervals later). Drives gap detection — see `computeSeriesCoverage`.
    */
   sampleSpacingSeconds?: number
-  topologyGeneration?: number | null
 }
 
 export type HostSeriesResult = {
@@ -157,12 +154,6 @@ export type HostSeriesResult = {
   gapBuckets?: string[]
   /** Number of underlying samples contributing to the series. */
   sampleCount: number
-  /**
-   * Distinct topology generations observed anywhere in the queried range,
-   * sorted ascending — `length > 1` means the server's topology changed
-   * during the window. Omitted when the backend doesn't track generations.
-   */
-  topologyGenerations?: number[]
 }
 
 export type HostSummaryQuery = {
@@ -193,8 +184,8 @@ export type HostSummaryResult = {
  *    `block` -> `deviceId`, `hardware.physical` -> `signalId`: the contract
  *    entity id, matching `entity-metric-id.ts`'s per-entity identity.
  *  - `managed.ingress` / `managed.database_proxy` -> `sourceId`, **not**
- *    `sourceKind`. Cloudflare Analytics Engine v7 has a single fixed source
- *    per family (`v7-layout.ts`'s `V7_SOURCE_IDS`) and writes no source id —
+ *    `sourceKind`. Cloudflare Analytics Engine v12 has a single fixed source
+ *    per family (`v12-layout.ts`'s `V12_SOURCE_IDS`) and writes no source id —
  *    `sourceKind` never reaches AE at all. DuckDB stores both
  *    columns but groups by `source_id` here too so the two backends agree on
  *    what an "entity id" means for these families — two different sources of
@@ -234,26 +225,6 @@ export type EntitySeriesQuery = {
   from: string
   to: string
   resolutionSeconds?: number
-  /**
-   * Current topology's `SlotMapping`, consulted only for `family: "network"`
-   * — identifies which of `entityIds` (if any) are the first two
-   * `normalNicSlots` so the Cloudflare backend can reconstruct their series
-   * from `host.io` instead of the (nonexistent) paged `network` rows. `undefined`
-   * on a backend/caller that doesn't resolve one (e.g. no recorded topology
-   * generation yet) — every requested entity is then treated as independently
-   * paged, matching pre-slot-mapping behavior.
-   */
-  slotMapping?: SlotMapping
-  /**
-   * The topology generation `slotMapping` was computed for. `host.io` rows
-   * carry no per-row NIC identity (unlike a paged `network` row's blob10), so
-   * the embedded-NIC reconstruction scopes its `host.io` scan to this exact
-   * generation — otherwise a slot reassignment (an operator changing
-   * `nicSlotDeviceIds`) would relabel older `host.io`
-   * history as the new device. `null`/`undefined` (no recorded generation)
-   * means the reconstruction finds no in-range rows rather than guessing.
-   */
-  topologyGeneration?: number | null
 }
 
 export type EntitySeriesPoint = {
@@ -329,12 +300,6 @@ export type FleetHostSnapshotServer = {
   latestAt: string | null
   values: Partial<Record<string, number | null>>
   sampleCount: number
-  /**
-   * Topology generation shared by every contributing sample in the queried
-   * window, or `null` when unknown or mixed (a reassignment happened inside
-   * the window). Omitted when the backend doesn't track generations.
-   */
-  topologyGeneration?: number | null
 }
 
 export type FleetHostSnapshotResult = {
@@ -363,6 +328,39 @@ export type MetricEventsResult = {
   truncated: boolean
 }
 
+export type HostFactsQuery = {
+  serverId: string
+  /** Only a sample taken at or after `from` counts (the lookback window). */
+  from: string
+  to: string
+}
+
+/**
+ * What a host told us about itself: kernel, OS, versions, a drive's model, a GPU's driver, and each
+ * device's own size (a filesystem's bytes and inodes, a GPU's memory, a NIC's link speed). The sizes are
+ * facts about the device, shown as text; the series route carries the numbers that are measured.
+ */
+export type HostFacts = {
+  /** Host-wide short text by name; only fields the host actually reported. */
+  text: Partial<Record<MetricsTextFieldName, string>>
+  blockDevices: { deviceId: string; model?: string; smart?: string }[]
+  gpus: { gpuId: string; driver?: string; model?: string; memoryTotalBytes?: number }[]
+  /** Each extra filesystem's size as the host reported it (bytes and inodes, whichever it knew). */
+  filesystems: { filesystemId: string; totalBytes?: number; totalInodes?: number }[]
+  /** Each NIC's negotiated link speed in Mb/s, when the host reported one. */
+  networks: { deviceId: string; linkSpeedMbps?: number }[]
+}
+
+/** The latest host facts a store holds for one server. */
+export type HostFactsResult = {
+  kind: MetricsBackendKind
+  available: boolean
+  serverId: string
+  /** When the sample these facts came from was taken; `null` when no sample is in the window. */
+  sampledAt: string | null
+  facts: HostFacts
+}
+
 /**
  * Backend-neutral write sink for v5 host metrics samples and connection
  * status events, plus (where a real query-capable backend implements it)
@@ -379,14 +377,14 @@ export type MetricEventsResult = {
  * `writeSample` / `writeStatusEvent` are fire-and-forget — callers must not
  * await them into WS / request handlers (same discipline as v3 writes).
  *
- * `writeSample`'s optional `slotMapping` is the caller-resolved
- * `(topology generation) -> SlotMapping` result (see
- * `client/servers/topology-slot-mapping.ts`) for the sample's own
+ * `writeSample`'s optional `slotMapping` is the caller-resolved `SlotMapping`
+ * (see `client/servers/topology-slot-mapping.ts`) for the sample's own
  * `metadata.topologyGeneration` — resolving it requires a DB read, so it is
  * computed by the ingest route (which already does that work for capability
- * planning), never by the store itself. `undefined` means the generation
- * hasn't been recorded yet; implementations must fall back to a
- * topology-agnostic packing in that case (see `field-map.ts`).
+ * planning), never by the store itself. `undefined` means that generation is
+ * not the one on record; implementations must fall back to a topology-agnostic
+ * packing in that case (see `field-map.ts`). Readers never use the generation:
+ * every stored row names its own devices.
  */
 export interface ServerMetricsStore {
   writeSample(input: AuthenticatedMetricsSample, slotMapping?: SlotMapping): void | Promise<void>
@@ -398,4 +396,6 @@ export interface ServerMetricsStore {
   queryEntityIdsSeen?(input: EntityIdsSeenQuery): Promise<EntityIdsSeenResult>
   queryFleetHostSnapshot?(input: FleetHostSnapshotQuery): Promise<FleetHostSnapshotResult>
   queryMetricEvents?(input: MetricEventsQuery): Promise<MetricEventsResult>
+  /** Latest host facts (text the v12 layout stores outside the numbers). */
+  queryHostFacts?(input: HostFactsQuery): Promise<HostFactsResult>
 }

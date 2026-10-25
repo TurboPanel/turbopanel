@@ -50,6 +50,8 @@ const APPROVED_TABLE_NAMES = new Set<string>([
   'datacenter',
   'delivery',
   'deployment',
+  // An organization's S3-compatible place to copy finished backups to.
+  'destination',
   'dispatch',
   'edict',
   'environment',
@@ -77,6 +79,8 @@ const APPROVED_TABLE_NAMES = new Set<string>([
   'origin',
   'passkey',
   'payer',
+  // Highest RAM and cores of one server per hour (the over-tier rules).
+  'peak',
   'permission',
   // `principal` × `server`: where a system principal is a Linux account (2026-10-13).
   'placement',
@@ -91,6 +95,8 @@ const APPROVED_TABLE_NAMES = new Set<string>([
   'seat',
   'scope',
   'secret',
+  // How one backup's copy to one destination stands.
+  'shipment',
   'server',
   'service',
   'session',

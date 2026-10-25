@@ -10,10 +10,11 @@ import {
   type SecretsConfig,
 } from '../../lib/secrets/secrets.ts'
 import { type AppEnv, createApp } from '../../app/app.ts'
-import { resolveInstanceRevision } from '../../app/build-info.ts'
+import { resolveBuildLabel, resolveInstanceRevision } from '../../app/build-info.ts'
 import { INSTANCE_VERSION } from '../../app/version.ts'
 import { resolveColocatedServerId } from '../../client/authn/install-state.ts'
 import { createDenoDb, type Db, endDbConnection } from '../../db/connection.ts'
+import { createInMemoryMetricsGate } from '../../daemon/metrics/ingest-gate.ts'
 import { assertSchemaCurrent, SchemaStateError } from '../../db/schema-state.ts'
 import { logError, logInfo, logWarn } from '../../lib/logger.ts'
 import {
@@ -53,6 +54,7 @@ import { registerWebhookRoutes } from '../../webhook/routes.ts'
 import { runManagedExternalAccessPendingSweep } from '../../features/managed/external-access.ts'
 import { runManagedIngressOrphanSweep } from '../../features/managed/ingress-desired.ts'
 import { runDatacenterRepinFanoutSweep } from '../../client/datacenters/repin-fanout.ts'
+import { runNetworkProbeSweep } from '../../client/datacenters/network-probe-sweep.ts'
 import { runSystemReconcileSweep } from '../../features/system/reconcile.ts'
 import { runHostLossTick } from '../../daemon/cell/host-loss-tick.ts'
 import { runBackupsReconcileSweep } from '../../features/backups/reconcile.ts'
@@ -166,6 +168,7 @@ import {
   onPromoteSucceeded,
   onRecoveryCommandFailed,
   recoveryIdFromCommandMetadata,
+  sweepStalledFencing,
 } from '../../features/managed/ha-recovery.ts'
 
 export type DenoDeveloperSurfaceContext = {
@@ -344,6 +347,8 @@ async function runCleanupPhase(label: string, fn: () => Promise<unknown>): Promi
 
 async function sweepStaleCommandsPhase(db: Db, commandQueue?: CommandQueue): Promise<void> {
   const swept = await sweepStaleCommands(db, { commandQueue })
+  // A fence step that never answered ends its recovery at the deadline.
+  await sweepStalledFencing(db, { commandQueue })
   // Recoveries first: a row that is still in flight keeps its managed row at
   // `applying`, and an expired one releases it itself.
   const expired = (
@@ -453,6 +458,7 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
       retentionDays: parseMetricsRetentionDays(
         Deno.env.get('TURBOPANEL_SERVER_METRICS_RETENTION_DAYS')
       ),
+      maxBytes: parsePositiveIntEnv(Deno.env.get('TURBOPANEL_SERVER_METRICS_MAX_BYTES')),
       threads: parsePositiveIntEnv(Deno.env.get('TURBOPANEL_SERVER_METRICS_DUCKDB_THREADS')),
       memoryLimitMb: parsePositiveIntEnv(
         Deno.env.get('TURBOPANEL_SERVER_METRICS_DUCKDB_MEMORY_LIMIT')
@@ -581,6 +587,8 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     emailFrom: emailSettings.from,
     baseUrl: Deno.env.get('TURBOPANEL_BASE_URL') ?? undefined,
     daemonCellRegistry,
+    // Self-hosted has no Cloudflare: the same gate rules over an in-process map.
+    metricsGate: createInMemoryMetricsGate(),
     queryCache,
     serverMetricsStore,
     executionLogStore,
@@ -689,8 +697,19 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     }).catch((err) => {
       logWarn('daemon-cell', `datacenter repin fan-out sweep error: ${String(err)}`)
     })
+    // Automatic network fallback: probe the network that carries
+    // server-to-server traffic and mark servers nobody can reach. Throttled
+    // inside, so extra ticks (every reconnect) cost nothing.
+    void runNetworkProbeSweep(db, daemonCellRegistry).catch((err) => {
+      logWarn('daemon-cell', `network probe sweep error: ${String(err)}`)
+    })
     // Backup policy sets once after each reconnect (hello must not enqueue).
-    void runBackupsReconcileSweep(db, commandQueue).catch((err) => {
+    void runBackupsReconcileSweep(db, commandQueue, {
+      copyDeps:
+        secretsConfig && dataEncryptionSecrets
+          ? { secretsConfig, dataEncryptionSecrets }
+          : undefined,
+    }).catch((err) => {
       logWarn('daemon-cell', `backups reconcile sweep error: ${String(err)}`)
     })
     // Folders of deleted assets whose host has not confirmed them gone: asked
@@ -833,6 +852,7 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
             version: INSTANCE_VERSION,
             commit: revision.commit,
           },
+          buildLabel: resolveBuildLabel(env),
           colocatedServerId: colocated,
         })
       })
@@ -860,9 +880,11 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
           secretsConfig,
           dataEncryptionSecrets,
         })
-        // Waiting Let's Encrypt requests (DNS not ready yet): same cadence,
-        // no secrets needed.
-        await runHostingLetsEncryptSweepTick(tickDb)
+        // Waiting Let's Encrypt requests (DNS not ready yet): same cadence.
+        // The secrets let a newly pinned certificate go out at once.
+        await runHostingLetsEncryptSweepTick(tickDb, {
+          apply: { commandQueue, secretsConfig, dataEncryptionSecrets },
+        })
       } catch (err) {
         logWarn('tls-leaf-renewal', `sweep error: ${String(err)}`)
       } finally {

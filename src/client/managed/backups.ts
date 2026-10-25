@@ -2,6 +2,7 @@ import { eq } from 'drizzle-orm'
 import type { Context } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import type {
+  BackupCopyTargetWire,
   ManagedBackupCommandPayload,
   ManagedRestoreCommandPayload,
 } from '../../contracts/commands/schemas.ts'
@@ -11,7 +12,10 @@ import { server } from '../../db/schema.ts'
 import type { ManagedContext } from './context.ts'
 import { enqueueTypedCommand } from '../../features/managed/apply-prepare.ts'
 import type { ManagedRowOptions } from '../../features/managed/options.ts'
-import { defaultBackupDatabase } from '../../features/managed/default-backup-database.ts'
+import {
+  defaultBackupDatabase,
+  initialDatabaseOf,
+} from '../../features/managed/default-backup-database.ts'
 import type { ManagedBackupRecord } from '../../features/backups/backup-records.ts'
 
 /** Mirrors `COMMAND_TIMEOUT_MS['managed.backup' | 'managed.restore']` in `../../features/commands/consumer.ts`. */
@@ -75,7 +79,8 @@ export async function refuseRestoreIfBackupOnOtherServer(
   c: Context<AppEnv>,
   db: Db,
   record: ManagedBackupRecord,
-  targetServerId: string
+  targetServerId: string,
+  copyReady = false
 ): Promise<Response | null> {
   if (record.serverId === undefined || record.serverId === targetServerId) {
     return null
@@ -89,6 +94,8 @@ export async function refuseRestoreIfBackupOnOtherServer(
     {
       error: 'backup_on_other_server',
       message: backupOnOtherServerMessage(host?.name ?? 'another server'),
+      // A finished copy in the bucket can be restored here with `fromCopy: true`.
+      canRestoreFromCopy: copyReady,
     },
     409
   )
@@ -101,8 +108,8 @@ function generateBackupId(): string {
 
 /**
  * Body `database` must already be a database configured on this managed
- * instance; when omitted, default to the first configured (initial) database
- * that is not a MySQL-family system schema.
+ * instance; when omitted, default to the cluster's initial database (else the first
+ * configured one) that is not a MySQL-family system schema.
  */
 export function resolveBackupDatabase(
   options: ManagedRowOptions,
@@ -115,7 +122,7 @@ export function resolveBackupDatabase(
     }
     return requested
   }
-  return defaultBackupDatabase(options.databases, engine)
+  return defaultBackupDatabase(options.databases, engine, initialDatabaseOf(options.settings))
 }
 
 /** Clamp `settings.backups.retentionKeep` (or the engine default) to the engine's `maxRetentionKeep`. */
@@ -130,7 +137,8 @@ export function buildManagedBackupCreatePayload(
   ctx: ManagedContext,
   managedId: string,
   options: ManagedRowOptions,
-  database: string
+  database: string,
+  copyTarget?: BackupCopyTargetWire
 ): { payload: ManagedBackupCommandPayload; backupId: string } | ManagedBackupApiError {
   const backup = ctx.spec.backup
   if (!backup) return { kind: 'managed_backup_unsupported' }
@@ -147,6 +155,7 @@ export function buildManagedBackupCreatePayload(
   }
   const retentionKeep = resolveRetentionKeep(ctx, options)
   if (retentionKeep !== undefined) payload.retentionKeep = retentionKeep
+  if (copyTarget) payload.copyTarget = copyTarget
 
   return { payload, backupId }
 }
@@ -154,7 +163,8 @@ export function buildManagedBackupCreatePayload(
 export function buildManagedBackupDeletePayload(
   ctx: ManagedContext,
   managedId: string,
-  record: ManagedBackupRecord
+  record: ManagedBackupRecord,
+  copyTarget?: BackupCopyTargetWire
 ): { payload: ManagedBackupCommandPayload } | ManagedBackupApiError {
   const backup = ctx.spec.backup
   if (!backup) return { kind: 'managed_backup_unsupported' }
@@ -172,13 +182,16 @@ export function buildManagedBackupDeletePayload(
   // the policy id the daemon looks in the manual-backup directory, removes
   // nothing and still reports success.
   if (record.retentionId !== undefined) payload.policyId = record.retentionId
+  // The bucket copy goes with the backup.
+  if (copyTarget) payload.copyTarget = copyTarget
   return { payload }
 }
 
 export function buildManagedRestorePayload(
   ctx: ManagedContext,
   managedId: string,
-  record: ManagedBackupRecord
+  record: ManagedBackupRecord,
+  copySource?: ManagedRestoreCommandPayload['copySource']
 ): { payload: ManagedRestoreCommandPayload } | ManagedBackupApiError {
   const backup = ctx.spec.backup
   if (!backup) return { kind: 'managed_backup_unsupported' }
@@ -196,6 +209,8 @@ export function buildManagedRestorePayload(
   // daemon needs the policy id to find it. It comes from the stored row, never
   // from the request.
   if (record.retentionId !== undefined) payload.policyId = record.retentionId
+  // From the bucket the artifact is fetched first, into a place of its own on the host.
+  if (copySource) payload.copySource = copySource
   return { payload }
 }
 

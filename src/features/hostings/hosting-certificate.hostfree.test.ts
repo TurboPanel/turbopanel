@@ -33,19 +33,19 @@ function input(overrides: Partial<DeriveHostingCertificateInput>): DeriveHosting
 function managed(acme: Record<string, unknown>) {
   return {
     source: 'lets_encrypt',
-    status: 'managed',
+    status: 'automatic',
     notAfter: new Date(0).toISOString(),
     metadata: { dnsNames: ['a.example.com'], acme: { managedBy: 'caddy', ...acme } },
   }
 }
 
-test('no pin and a self-signed pin read as a test certificate', () => {
+test('no pin and a self-signed pin read as the self-signed fallback', () => {
   assertEquals(deriveHostingCertificate(input({})).state, 'test_certificate')
   const selfSigned = { source: 'self_signed', status: 'ready', notAfter: iso(30), metadata: {} }
   assertEquals(deriveHostingCertificate(input({ pinned: selfSigned })).state, 'test_certificate')
 })
 
-test('a revoked pin falls back to a test certificate', () => {
+test('a revoked pin falls back to the self-signed certificate', () => {
   const revoked = { ...managed({}), status: 'revoked' }
   assertEquals(deriveHostingCertificate(input({ pinned: revoked })).state, 'test_certificate')
 })

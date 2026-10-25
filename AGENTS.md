@@ -222,6 +222,15 @@ everyday code stay below (**TypeScript style**).
   (`typescript:S1135`).
 - Use **RFC 5737 TEST-NET** addresses (e.g. `203.0.113.x`) in tests, not
   arbitrary public IPs (`typescript:S1313`).
+- No flaky tests. Do not feed unseeded randomness (`crypto.randomUUID`,
+  `Math.random`, `getRandomValues`) into a test where an assertion depends on
+  the value's content (substring, prefix, ordering, base64 characters); use a
+  fixed value, or a seeded or injected generator. A tamper test must change
+  the input for certain (flip a character to a different one, and not only a
+  trailing base64 character, whose unused bits may decode the same). No tight
+  real-time margins (`setTimeout`/`Date.now` deltas): use a fake clock or wait
+  on the event itself. No wall-clock expectations (year, month, day, DST)
+  without a fixed clock.
 - Add **`// NOSONAR rule-key — reason`** when a semantic type alias or path
   check is intentional (`typescript:S6564`, `typescript:S5443`).
 - Deno tests: Sonar `typescript:S2187` only recognizes `test()` / `it()` /
@@ -376,6 +385,48 @@ guard; `pnpm test:do` alone does not.
   else `git rev-parse HEAD`, and a deploy that cannot name a 40-hex commit is
   refused (so `/api/health` never reports `revision: unknown`). A failed
   migrate stops before wrangler runs.
+  `scripts/migrate-locked.mjs` takes a database backup first when anything is
+  pending (`scripts/migrate-backup.mjs`):
+  - `TURBOPANEL_MIGRATE_BACKUP_COMMAND` is a shell command that reads
+    `TURBOPANEL_DATABASE_URL` from its environment. It runs under the migration
+    lock; a non-zero exit, a spawn error or a timeout refuses the migration.
+    `TURBOPANEL_MIGRATE_BACKUP_TIMEOUT_SECONDS` (default 900) bounds it; the
+    command is killed on timeout and the lock is released.
+  - The command should write to a temporary file and rename it when done, so a
+    half dump never looks finished. Example:
+    `sh -c 'pg_dump -Fc "$TURBOPANEL_DATABASE_URL" -f /backups/panel.part && mv /backups/panel.part /backups/panel-$(date -u +%Y%m%dT%H%M%SZ).dump'`.
+  - Set it as a build variable in the Workers Builds dashboard (or the shell
+    that runs `pnpm migrate`); `wrangler.jsonc` vars are not read for it. The
+    build image may not ship `pg_dump`, so the command must fetch or run it
+    (for example over SSH on the database host). The method is the owner's
+    choice (see the local report "Panel database backup and restore plan").
+  - Without a command, every environment (live, production, testing, a typo,
+    anything) prints one clear warning and the migration goes on. The warning
+    says that no backup command ran, that the database provider's managed
+    backups (point-in-time rollback within a window) are relied on, and to check
+    that the restore window covers the moment before this migration. Production
+    sets no command. `TURBOPANEL_MIGRATE_BACKUP_ACK=1` is still accepted but
+    only changes the wording of the warning.
+  - The command's output is printed with the database URL, its password and the
+    values (8+ characters) of env vars named like TOKEN, SECRET, KEY or PASSWORD
+    blanked. That is a best effort: a secret fetched from elsewhere or printed
+    re-encoded is not caught, so the command should print no secrets.
+- **Database role grants (owner-run, not a migration).** The hosted panel
+  connects as a runtime role (and a cached read role) that the migrate role
+  does not create. Their grants live in
+  `scripts/ops/grant-database-roles.mjs`, never in `migrations/`. After any
+  schema drop-and-recreate, and again after the migration for the cached role,
+  the owner runs it as the migrate role (the table owner):
+  `TURBOPANEL_DATABASE_URL=<migrate url> TURBOPANEL_RUNTIME_DB_ROLE=<role>
+  TURBOPANEL_CACHED_DB_ROLE=<role> node scripts/ops/grant-database-roles.mjs --confirm`
+  (`--check-only` just reports; no flag refuses). It sets the schema grants and
+  default privileges so new tables inherit them, grants the cached role SELECT
+  on `CACHED_READ_TABLES` only (add a table there when a cached read model
+  gains one), is safe to repeat, and exits non-zero naming any missing grant.
+  If a runtime role lacks grants, `/api/daemon/v1/readiness` and
+  `/api/client/v1/status` answer 503 `database roles lack grants` (the role and
+  object go to the server log only), instead of a bare "database unavailable". Agents
+  never run it against live, staging or testing.
 - **STAGING and LIVE use the same Workers Builds setup**, one Worker per
   environment: `staging-instance` (branch `staging`, deploy command
   `pnpm run deploy:staging`) and `instance` (branch `live`, deploy command
@@ -404,8 +455,10 @@ guard; `pnpm test:do` alone does not.
   for the migrate role (Hyperdrive is not reachable from the build
   container), and `TURBOPANEL_DEPLOY_CHECK_API_TOKEN` — secret, a token with
   Hyperdrive Read so `check-deploy-env.mjs` can confirm the URL is testing's
-  Hyperdrive origin (it fails closed without it). Migrations run from zero on
-  a wiped database. `/api/client/v1/status` answers **503**
+  Hyperdrive origin (it fails closed without it).
+  Testing applies pending migrations on top of the existing database; any reset
+  is a named testing-only script that refuses on staging and live.
+  `/api/client/v1/status` answers **503**
   `{ code: "database_error" }` (not a bare 500) when the settings read fails
   — the symptom of an unmigrated or unreachable database.
   A testing or staging database that sits behind the managed database listener
@@ -1227,8 +1280,7 @@ a pruned tree has no `@types/node` for a checking compile to resolve.
 
 ## Subsystem docs (nested `AGENTS.md`)
 
-Large subsystems live in focused `AGENTS.md` files next to their code — Cursor
-loads the nearest one automatically when you work in that directory. **Read the
+Large subsystems live in focused `AGENTS.md` files next to their code. **Read the
 matching file before editing that area.** This root keeps only cross-cutting
 orientation; the detail moved to:
 
@@ -1337,7 +1389,7 @@ src/
   org check (`403` `system_resource_immutable`); that guard keys on **workspace
   kind**, never on project type. Client workspace responses include
   `workspace.kind` (`user` \| `turbopanel`; `WORKSPACE_KIND_SYSTEM` is only a
-  deprecated alias). `project.metadata.type = 'system'` is a
+  deprecated alias). `project.kind = 'system'` is a
   presentation/classification stamp only — never an authorization source.
 - `src/daemon/` — control-plane side of `/api/daemon/v1` + `/ws/daemon/v1`
   (see `src/daemon/AGENTS.md`). Cell protocol types live in `src/contracts/`;

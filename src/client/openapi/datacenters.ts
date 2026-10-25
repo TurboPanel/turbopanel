@@ -38,12 +38,17 @@ export const datacenterSchemas = {
         minimum: 0,
         maximum: 1000,
         description:
-          'Effective routing-ladder rank (`options.priority` with the default `100` applied). Lower wins.',
+          'Effective routing-ladder rank (`options.priority`, stored in a column, default `100`). Lower wins.',
       },
       trusted: {
         type: 'boolean',
         description:
-          "Effective trust flag (`options.trusted` with the default `true` applied). `false` means the datacenter's L2 is not under the operator's control.",
+          "Effective trust flag (`options.trusted`, stored in a column, default `true`). `false` means the datacenter's L2 is not under the operator's control.",
+      },
+      kind: {
+        type: ['string', 'null'],
+        enum: ['lan', 'backplane', 'provider_private', null],
+        description: 'What the network is; `null` when the operator never said.',
       },
       serverTraffic: {
         type: 'object',
@@ -74,14 +79,82 @@ export const datacenterSchemas = {
       warnings: {
         type: 'array',
         description:
-          'Plain-words warnings about the set. `equal_priority`: two or more trusted datacenters share a priority number.',
+          'Plain-words warnings about the set. `equal_priority`: two or more trusted datacenters share a priority number. `chosen_network_down`: the network servers try first has a server whose link is down or that the others cannot reach, so those servers already use `fallbackDatacenterId` (null when no other trusted network exists).',
         items: {
           type: 'object',
-          required: ['code', 'priority', 'datacenterIds'],
+          required: ['code'],
           properties: {
-            code: { type: 'string', const: 'equal_priority' },
-            priority: { type: 'integer' },
-            datacenterIds: { type: 'array', items: { type: 'string', format: 'uuid' } },
+            code: { type: 'string', enum: ['equal_priority', 'chosen_network_down'] },
+            priority: { type: 'integer', description: '`equal_priority` only.' },
+            datacenterIds: {
+              type: 'array',
+              items: { type: 'string', format: 'uuid' },
+              description: '`equal_priority` only.',
+            },
+            datacenterId: {
+              type: 'string',
+              format: 'uuid',
+              description: '`chosen_network_down` only: the network that is down.',
+            },
+            fallbackDatacenterId: {
+              type: ['string', 'null'],
+              format: 'uuid',
+              description: '`chosen_network_down` only.',
+            },
+            serverIds: {
+              type: 'array',
+              items: { type: 'string', format: 'uuid' },
+              description:
+                '`chosen_network_down` only: servers whose link is down or that the others cannot reach.',
+            },
+            reason: {
+              type: 'string',
+              enum: ['link_down', 'unreachable'],
+              description:
+                '`chosen_network_down` only: `link_down` when a network card reports no link, `unreachable` when the other servers could not reach it over this network.',
+            },
+          },
+        },
+      },
+    },
+  },
+  NetworkCheckReport: {
+    type: 'object',
+    required: ['datacenterId', 'servers', 'unreachableCount', 'notTestedCount'],
+    properties: {
+      datacenterId: { type: 'string', format: 'uuid' },
+      unreachableCount: { type: 'integer', description: 'Peers that did not answer.' },
+      notTestedCount: { type: 'integer', description: 'Peers that could not be tested.' },
+      servers: {
+        type: 'array',
+        items: {
+          type: 'object',
+          required: ['serverId', 'status', 'peers'],
+          properties: {
+            serverId: { type: 'string', format: 'uuid' },
+            status: { type: 'string', enum: ['checked', 'not_tested'] },
+            reason: {
+              type: 'string',
+              description:
+                'Why it was not tested: `daemon_update_required`, `offline`, `timeout` or `error`.',
+            },
+            peers: {
+              type: 'array',
+              items: {
+                type: 'object',
+                required: ['peerServerId', 'address', 'port', 'result'],
+                properties: {
+                  peerServerId: { type: 'string', format: 'uuid' },
+                  address: { type: 'string' },
+                  port: { type: 'integer' },
+                  result: { type: 'string', enum: ['reachable', 'not_reachable', 'not_tested'] },
+                  latencyMs: { type: 'integer' },
+                  sourceAddress: { type: 'string' },
+                  interface: { type: 'string' },
+                  reason: { type: 'string' },
+                },
+              },
+            },
           },
         },
       },
@@ -144,6 +217,12 @@ export const datacenterSchemas = {
           },
         },
       },
+      kind: {
+        type: ['string', 'null'],
+        enum: ['lan', 'backplane', 'provider_private', null],
+        description:
+          'What the network is; omit or `null` when unknown. Anything else is 400 `invalid_kind`.',
+      },
       sourceServerId: {
         type: 'string',
         format: 'uuid',
@@ -162,6 +241,11 @@ export const datacenterSchemas = {
         type: ['object', 'null'],
         description:
           "Replace-all datacenter options; `null` clears the stored blob so the documented defaults apply again. `addressPreference` is `'ipv4'` or `'ipv6'`; `priority` is an integer 0–1000 (lower wins); `trusted` is a boolean. The location override is never changed through `options` (a `location` key there is ignored, and replacing or clearing `options` keeps it) — send the top-level `location` field to edit it.",
+      },
+      kind: {
+        type: ['string', 'null'],
+        enum: ['lan', 'backplane', 'provider_private', null],
+        description: 'What the network is; `null` clears it. Anything else is 400 `invalid_kind`.',
       },
       location: {
         $ref: '#/components/schemas/LocationPatch',
@@ -482,6 +566,47 @@ export const datacenterPaths: Record<string, unknown> = {
       },
     },
   },
+  '/api/client/v1/datacenters/{id}/server-traffic/check': {
+    post: {
+      tags: ['Datacenters'],
+      summary: 'Check that servers can reach each other on this network',
+      description:
+        "Asks each member server to open a TCP connection to every other member's address on this network, on that server's ssh port, and reports per peer whether it answered, how long it took, and the local address and interface used. The port only proves the network path. A server whose host is too old or offline reads as `not_tested`. Nothing is stored.",
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+      ],
+      responses: {
+        '200': {
+          description: 'The check report',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['ok', 'check'],
+                properties: {
+                  ok: { type: 'boolean', const: true },
+                  check: { $ref: '#/components/schemas/NetworkCheckReport' },
+                },
+              },
+            },
+          },
+        },
+        '401': {
+          description: 'Unauthorized',
+          content: { 'application/json': { schema: clientErrorJson } },
+        },
+        '403': {
+          description: 'Forbidden',
+          content: { 'application/json': { schema: clientErrorJson } },
+        },
+        '404': {
+          description: 'Not found',
+          content: { 'application/json': { schema: clientErrorJson } },
+        },
+      },
+    },
+  },
   '/api/client/v1/datacenters/{id}/server-traffic': {
     post: {
       tags: ['Datacenters'],
@@ -504,7 +629,14 @@ export const datacenterPaths: Record<string, unknown> = {
             schema: {
               type: 'object',
               required: ['preferred'],
-              properties: { preferred: { type: 'boolean', const: true } },
+              properties: {
+                preferred: { type: 'boolean', const: true },
+                confirmUnreachable: {
+                  type: 'boolean',
+                  description:
+                    'Save even though some servers cannot reach each other on this network (the answer to `peers_unreachable`).',
+                },
+              },
             },
           },
         },
@@ -554,7 +686,7 @@ export const datacenterPaths: Record<string, unknown> = {
         },
         '409': {
           description:
-            '`datacenter_not_trusted` — an untrusted datacenter is never used for server-to-server traffic.',
+            "`datacenter_not_trusted` — an untrusted datacenter is never used for server-to-server traffic. `peers_unreachable` — a reachability check run before saving found servers that cannot reach each other on this network; `check` has the per-server results. Send `confirmUnreachable: true` to save anyway. Servers that could not be tested (older host, offline) never block. `network_choice_changed` — a network's number was edited by someone else while this save was being checked; nothing was written, read the networks again and retry.",
           content: { 'application/json': { schema: clientErrorJson } },
         },
       },

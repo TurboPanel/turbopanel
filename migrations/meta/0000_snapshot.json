@@ -1,5 +1,5 @@
 {
-  "id": "3d484b4b-e04a-4cbd-9797-54c5bff0cbbc",
+  "id": "0a80159a-5174-4636-85df-03f06658cbaa",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -720,6 +720,441 @@
         "backup_size_bytes_check": {
           "name": "backup_size_bytes_check",
           "value": "size_bytes >= 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.shipment": {
+      "name": "shipment",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "uuidv7()"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "managed_id": {
+          "name": "managed_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "backup_id": {
+          "name": "backup_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "destination_id": {
+          "name": "destination_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "destination_name": {
+          "name": "destination_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "state": {
+          "name": "state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'pending'"
+        },
+        "error": {
+          "name": "error",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "object_key": {
+          "name": "object_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "size_bytes": {
+          "name": "size_bytes",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "attempts": {
+          "name": "attempts",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "copied_at": {
+          "name": "copied_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "server_id": {
+          "name": "server_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "uniq_shipment_managed_destination": {
+          "name": "uniq_shipment_managed_destination",
+          "columns": [
+            {
+              "expression": "managed_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "backup_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "destination_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_shipment_managed_id_backup_id": {
+          "name": "idx_shipment_managed_id_backup_id",
+          "columns": [
+            {
+              "expression": "managed_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "backup_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_shipment_destination_id": {
+          "name": "idx_shipment_destination_id",
+          "columns": [
+            {
+              "expression": "destination_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_shipment_server_id": {
+          "name": "idx_shipment_server_id",
+          "columns": [
+            {
+              "expression": "server_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "shipment_managed_id_managed_id_fk": {
+          "name": "shipment_managed_id_managed_id_fk",
+          "tableFrom": "shipment",
+          "tableTo": "managed",
+          "columnsFrom": [
+            "managed_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "shipment_destination_id_destination_id_fk": {
+          "name": "shipment_destination_id_destination_id_fk",
+          "tableFrom": "shipment",
+          "tableTo": "destination",
+          "columnsFrom": [
+            "destination_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "shipment_server_id_server_id_fk": {
+          "name": "shipment_server_id_server_id_fk",
+          "tableFrom": "shipment",
+          "tableTo": "server",
+          "columnsFrom": [
+            "server_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "shipment_backup_id_format_check": {
+          "name": "shipment_backup_id_format_check",
+          "value": "backup_id ~ '^[A-Za-z0-9_-]+$'"
+        },
+        "shipment_state_check": {
+          "name": "shipment_state_check",
+          "value": "state IN ('pending', 'copying', 'copied', 'failed', 'removed')"
+        },
+        "shipment_attempts_check": {
+          "name": "shipment_attempts_check",
+          "value": "attempts >= 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.destination": {
+      "name": "destination",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "uuidv7()"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "organization_id": {
+          "name": "organization_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'s3'"
+        },
+        "endpoint": {
+          "name": "endpoint",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "region": {
+          "name": "region",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "bucket": {
+          "name": "bucket",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "prefix": {
+          "name": "prefix",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "''"
+        },
+        "is_path_style": {
+          "name": "is_path_style",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
+        },
+        "is_server_side_encrypted": {
+          "name": "is_server_side_encrypted",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "access_key_id": {
+          "name": "access_key_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "secret_key_sealed": {
+          "name": "secret_key_sealed",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "last_tested_at": {
+          "name": "last_tested_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "is_last_test_ok": {
+          "name": "is_last_test_ok",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "last_test_error": {
+          "name": "last_test_error",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_by": {
+          "name": "created_by",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "uniq_destination_organization_name": {
+          "name": "uniq_destination_organization_name",
+          "columns": [
+            {
+              "expression": "organization_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "name",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_destination_created_by": {
+          "name": "idx_destination_created_by",
+          "columns": [
+            {
+              "expression": "created_by",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "destination_organization_id_organization_id_fk": {
+          "name": "destination_organization_id_organization_id_fk",
+          "tableFrom": "destination",
+          "tableTo": "organization",
+          "columnsFrom": [
+            "organization_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "destination_created_by_user_id_fk": {
+          "name": "destination_created_by_user_id_fk",
+          "tableFrom": "destination",
+          "tableTo": "user",
+          "columnsFrom": [
+            "created_by"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "destination_kind_check": {
+          "name": "destination_kind_check",
+          "value": "kind IN ('s3')"
+        },
+        "destination_name_check": {
+          "name": "destination_name_check",
+          "value": "char_length(name) BETWEEN 1 AND 64"
         }
       },
       "isRLSEnabled": false
@@ -2109,6 +2544,33 @@
           "type": "text",
           "primaryKey": false,
           "notNull": false
+        },
+        "priority": {
+          "name": "priority",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 100
+        },
+        "is_trusted": {
+          "name": "is_trusted",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
+        },
+        "address_preference": {
+          "name": "address_preference",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'ipv6'"
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -2147,7 +2609,20 @@
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
-      "checkConstraints": {},
+      "checkConstraints": {
+        "datacenter_priority_check": {
+          "name": "datacenter_priority_check",
+          "value": "priority >= 0 AND priority <= 1000"
+        },
+        "datacenter_address_preference_check": {
+          "name": "datacenter_address_preference_check",
+          "value": "address_preference IN ('ipv6', 'ipv4')"
+        },
+        "datacenter_kind_check": {
+          "name": "datacenter_kind_check",
+          "value": "kind IS NULL OR kind IN ('lan', 'backplane', 'provider_private')"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.deployment": {
@@ -5487,6 +5962,12 @@
           "notNull": true,
           "default": "now()"
         },
+        "metadata": {
+          "name": "metadata",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
         "managed_id": {
           "name": "managed_id",
           "type": "uuid",
@@ -5535,7 +6016,20 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true,
-          "default": "'preset'"
+          "default": "'recipe'"
+        },
+        "recipe": {
+          "name": "recipe",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "is_all_databases": {
+          "name": "is_all_databases",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
         },
         "is_tool": {
           "name": "is_tool",
@@ -5548,11 +6042,18 @@
           "name": "allowed_sources",
           "type": "text[]",
           "primaryKey": false,
-          "notNull": false
+          "notNull": true,
+          "default": "'{internal}'::text[]"
         },
         "max_connections": {
           "name": "max_connections",
           "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "is_straight_through": {
+          "name": "is_straight_through",
+          "type": "boolean",
           "primaryKey": false,
           "notNull": false
         },
@@ -5630,6 +6131,22 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "uniq_login_managed_backup": {
+          "name": "uniq_login_managed_backup",
+          "columns": [
+            {
+              "expression": "managed_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"login\".\"role\" = 'backup'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -5666,7 +6183,7 @@
       "checkConstraints": {
         "login_role_check": {
           "name": "login_role_check",
-          "value": "role IN ('root', 'replication', 'user')"
+          "value": "role IN ('root', 'replication', 'user', 'backup')"
         },
         "login_name_scheme_check": {
           "name": "login_name_scheme_check",
@@ -5674,7 +6191,23 @@
         },
         "login_grant_mode_check": {
           "name": "login_grant_mode_check",
-          "value": "grant_mode IN ('preset', 'recipe', 'self')"
+          "value": "grant_mode IN ('recipe', 'self')"
+        },
+        "login_recipe_check": {
+          "name": "login_recipe_check",
+          "value": "recipe IS NULL OR recipe IN ('app', 'migrations', 'read-only', 'analyst', 'admin', 'backup')"
+        },
+        "login_recipe_required_check": {
+          "name": "login_recipe_required_check",
+          "value": "grant_mode <> 'recipe' OR recipe IS NOT NULL"
+        },
+        "login_allowed_sources_check": {
+          "name": "login_allowed_sources_check",
+          "value": "cardinality(allowed_sources) BETWEEN 1 AND 100"
+        },
+        "login_backup_sources_check": {
+          "name": "login_backup_sources_check",
+          "value": "role <> 'backup' OR cardinality(allowed_sources) >= 1"
         },
         "login_access_check": {
           "name": "login_access_check",
@@ -5758,9 +6291,30 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'provisioning'"
+        },
+        "backup_destination": {
+          "name": "backup_destination",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
+        "idx_managed_backup_destination": {
+          "name": "idx_managed_backup_destination",
+          "columns": [
+            {
+              "expression": "backup_destination",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
         "idx_managed_server_id": {
           "name": "idx_managed_server_id",
           "columns": [
@@ -5841,6 +6395,10 @@
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {
+        "managed_backup_destination_check": {
+          "name": "managed_backup_destination_check",
+          "value": "backup_destination IS NULL OR backup_destination = 'none' OR backup_destination ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'"
+        },
         "managed_name_format_check": {
           "name": "managed_name_format_check",
           "value": "(\"managed\".\"name\" IS NULL) OR (((char_length((\"managed\".\"name\")::text) >= 1) AND (char_length((\"managed\".\"name\")::text) <= 255)) AND ((\"managed\".\"name\")::text ~ '^[A-Za-z0-9 ._-]+$'::text))"
@@ -7712,10 +8270,52 @@
           "primaryKey": false,
           "notNull": true,
           "default": 30001
+        },
+        "deploy_timeout_minutes": {
+          "name": "deploy_timeout_minutes",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "backup_destination_id": {
+          "name": "backup_destination_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
         }
       },
-      "indexes": {},
-      "foreignKeys": {},
+      "indexes": {
+        "idx_organization_backup_destination_id": {
+          "name": "idx_organization_backup_destination_id",
+          "columns": [
+            {
+              "expression": "backup_destination_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "organization_backup_destination_id_destination_id_fk": {
+          "name": "organization_backup_destination_id_destination_id_fk",
+          "tableFrom": "organization",
+          "tableTo": "destination",
+          "columnsFrom": [
+            "backup_destination_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
@@ -7723,6 +8323,10 @@
         "organization_next_linux_id_check": {
           "name": "organization_next_linux_id_check",
           "value": "\"organization\".\"next_linux_id\" >= 30001 AND \"organization\".\"next_linux_id\" <= 60001"
+        },
+        "organization_deploy_timeout_minutes_check": {
+          "name": "organization_deploy_timeout_minutes_check",
+          "value": "\"organization\".\"deploy_timeout_minutes\" IS NULL OR (\"organization\".\"deploy_timeout_minutes\" >= 5 AND \"organization\".\"deploy_timeout_minutes\" <= 240)"
         }
       },
       "isRLSEnabled": false
@@ -8046,6 +8650,128 @@
       },
       "isRLSEnabled": false
     },
+    "public.peak": {
+      "name": "peak",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "uuidv7()"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "server_id": {
+          "name": "server_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "bucket": {
+          "name": "bucket",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "memory_bytes": {
+          "name": "memory_bytes",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "cores": {
+          "name": "cores",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "uniq_peak_server_bucket": {
+          "name": "uniq_peak_server_bucket",
+          "columns": [
+            {
+              "expression": "server_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "bucket",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_peak_bucket": {
+          "name": "idx_peak_bucket",
+          "columns": [
+            {
+              "expression": "bucket",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "peak_server_id_server_id_fk": {
+          "name": "peak_server_id_server_id_fk",
+          "tableFrom": "peak",
+          "tableTo": "server",
+          "columnsFrom": [
+            "server_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "peak_memory_bytes_check": {
+          "name": "peak_memory_bytes_check",
+          "value": "memory_bytes >= 0"
+        },
+        "peak_cores_check": {
+          "name": "peak_cores_check",
+          "value": "cores >= 0"
+        },
+        "peak_reading_check": {
+          "name": "peak_reading_check",
+          "value": "memory_bytes IS NOT NULL OR cores IS NOT NULL"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.principal": {
       "name": "principal",
       "schema": "",
@@ -8082,6 +8808,13 @@
           "type": "jsonb",
           "primaryKey": false,
           "notNull": false
+        },
+        "access": {
+          "name": "access",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'sftp'"
         },
         "username": {
           "name": "username",
@@ -8222,6 +8955,10 @@
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {
+        "principal_access_check": {
+          "name": "principal_access_check",
+          "value": "access IN ('none', 'sftp', 'shell')"
+        },
         "principal_username_format_check": {
           "name": "principal_username_format_check",
           "value": "(char_length((username)::text) >= 1) AND (char_length((username)::text) <= 255) AND ((username)::text ~ '^[A-Za-z_][A-Za-z0-9_-]*$'::text)"
@@ -8478,6 +9215,42 @@
           "type": "uuid",
           "primaryKey": false,
           "notNull": false
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "icon": {
+          "name": "icon",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "template_code": {
+          "name": "template_code",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "template_track": {
+          "name": "template_track",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "template_version": {
+          "name": "template_version",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "template_digest": {
+          "name": "template_digest",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -8660,6 +9433,34 @@
         "project_slug_check": {
           "name": "project_slug_check",
           "value": "slug ~ '^[a-z0-9][a-z0-9-]{0,39}$'"
+        },
+        "project_kind_check": {
+          "name": "project_kind_check",
+          "value": "kind IS NULL OR kind IN ('compose', 'managed', 'system')"
+        },
+        "project_template_stamp_check": {
+          "name": "project_template_stamp_check",
+          "value": "(template_code IS NULL AND template_track IS NULL AND template_version IS NULL AND template_digest IS NULL) OR (template_code IS NOT NULL AND template_track IS NOT NULL AND template_version IS NOT NULL AND template_digest IS NOT NULL)"
+        },
+        "project_template_code_check": {
+          "name": "project_template_code_check",
+          "value": "template_code IS NULL OR template_code ~ '^[a-z][a-z0-9-]{0,63}$'"
+        },
+        "project_template_track_check": {
+          "name": "project_template_track_check",
+          "value": "template_track IS NULL OR template_track ~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$'"
+        },
+        "project_template_version_check": {
+          "name": "project_template_version_check",
+          "value": "template_version IS NULL OR template_version ~ '^[0-9]+[.][0-9]+[.][0-9]+$'"
+        },
+        "project_template_digest_check": {
+          "name": "project_template_digest_check",
+          "value": "template_digest IS NULL OR template_digest ~ '^sha256:[0-9a-f]{64}$'"
+        },
+        "project_icon_check": {
+          "name": "project_icon_check",
+          "value": "icon IS NULL OR icon IN ('cube', 'globe', 'cart', 'bolt', 'chat', 'chart', 'code', 'book', 'layers', 'mail', 'rocket', 'image')"
         }
       },
       "isRLSEnabled": false
@@ -9521,6 +10322,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "database": {
+          "name": "database",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "retention_keep": {
           "name": "retention_keep",
           "type": "integer",
@@ -10127,6 +10934,12 @@
           "type": "timestamp(3) with time zone",
           "primaryKey": false,
           "notNull": false
+        },
+        "preferred_datacenter_id": {
+          "name": "preferred_datacenter_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -10225,6 +11038,22 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "idx_server_preferred_datacenter_id": {
+          "name": "idx_server_preferred_datacenter_id",
+          "columns": [
+            {
+              "expression": "preferred_datacenter_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "uuid_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -10266,6 +11095,19 @@
           ],
           "onDelete": "set null",
           "onUpdate": "no action"
+        },
+        "server_preferred_datacenter_id_datacenter_id_fk": {
+          "name": "server_preferred_datacenter_id_datacenter_id_fk",
+          "tableFrom": "server",
+          "tableTo": "datacenter",
+          "columnsFrom": [
+            "preferred_datacenter_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -10287,6 +11129,10 @@
         "server_machine_class_source_check": {
           "name": "server_machine_class_source_check",
           "value": "machine_class_source IN ('detected', 'operator')"
+        },
+        "server_os_architecture_check": {
+          "name": "server_os_architecture_check",
+          "value": "os_architecture IS NULL OR os_architecture IN ('x86_64', 'aarch64')"
         },
         "server_offline_reason_check": {
           "name": "server_offline_reason_check",
@@ -13474,7 +14320,7 @@
         },
         "tls_status_check": {
           "name": "tls_status_check",
-          "value": "status IN ('ready', 'pending', 'expired', 'failed', 'revoked', 'managed')"
+          "value": "status IN ('ready', 'pending', 'expired', 'failed', 'revoked', 'automatic')"
         }
       },
       "isRLSEnabled": false

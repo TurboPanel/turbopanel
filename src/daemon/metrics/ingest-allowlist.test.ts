@@ -137,6 +137,40 @@ describe('applyIngestAllowlist', () => {
     assertEquals(out.extended?.blockDeviceText, [])
   })
 
+  it('drops the sizes of entities the allowlist dropped, keeping those of real ones', () => {
+    const out = applyIngestAllowlist(
+      sampleWith({
+        filesystems: [
+          { filesystemId: 'fs:ext4:/mnt/data', availableBytes: 1, freeInodes: 2 },
+          { filesystemId: 'fs:tmpfs:/run/user/1000', availableBytes: 1, freeInodes: 2 },
+        ],
+        gpus: [
+          { gpuId: 'gpu0', utilizationPercent: 40 },
+          { gpuId: 'gpu1', utilizationPercent: 3 },
+        ],
+        extended: {
+          gpuText: [
+            { gpuId: 'gpu0', driver: 'nvidia 570' },
+            { gpuId: 'gpu1', driver: 'bochs-drm' },
+          ],
+          filesystemSizes: [
+            { filesystemId: 'fs:ext4:/mnt/data', totalBytes: 10 },
+            { filesystemId: 'fs:tmpfs:/run/user/1000', totalBytes: 99 },
+          ],
+          gpuSizes: [
+            { gpuId: 'gpu0', memoryTotalBytes: 16 },
+            { gpuId: 'gpu1', memoryTotalBytes: 1 },
+          ],
+        },
+      }),
+      undefined
+    )
+    assertEquals(out.extended?.filesystemSizes, [
+      { filesystemId: 'fs:ext4:/mnt/data', totalBytes: 10 },
+    ])
+    assertEquals(out.extended?.gpuSizes, [{ gpuId: 'gpu0', memoryTotalBytes: 16 }])
+  })
+
   it('filters NICs and filesystems, honouring fabric ids, without mutating the input', () => {
     const input = sampleWith({
       networks: ['eth0', 'veth9', 'wg-fabric', 'tun7'].map(nic),

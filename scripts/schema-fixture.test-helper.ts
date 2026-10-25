@@ -141,7 +141,7 @@ export function fixtureSnapshot() {
 }
 
 /**
- * Two migrations: `0000_init` comments a column with an apostrophe and one
+ * Two migrations: `0000_base` comments a column with an apostrophe and one
  * that `0001_amend` later rewrites, clears, and adds to, so "last statement
  * wins" and `IS NULL` both get exercised.
  */
@@ -177,7 +177,7 @@ export async function writeFixtureMigrations(): Promise<string> {
           idx: 0,
           version: '7',
           when: 1000,
-          tag: '0000_init',
+          tag: '0000_base',
           breakpoints: true,
         },
         {
@@ -195,7 +195,7 @@ export async function writeFixtureMigrations(): Promise<string> {
     JSON.stringify({ ...fixtureSnapshot(), id: 'stale', tables: {} })
   )
   await Deno.writeTextFile(join(dir, 'meta/0001_snapshot.json'), JSON.stringify(fixtureSnapshot()))
-  await Deno.writeTextFile(join(dir, '0000_init.sql'), FIXTURE_SQL_0000)
+  await Deno.writeTextFile(join(dir, '0000_base.sql'), FIXTURE_SQL_0000)
   await Deno.writeTextFile(join(dir, '0001_amend.sql'), FIXTURE_SQL_0001)
   return dir
 }

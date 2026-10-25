@@ -378,7 +378,8 @@ async function projectSubscriptionPass(
   }
   const { subscriptionId, replaced } = written
 
-  // Committed items are in; now the assignment follows them. A
+  // Committed items are in; the coverage report reads them (no server's
+  // tier moves — only a manager assigns). A
   // `pending_update` is read for its presence only — never its contents.
   let entitlements: EntitlementSyncOutcome | null = null
   if (subject.organizationId) {

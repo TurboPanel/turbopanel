@@ -2,7 +2,9 @@
  * One sweep tick of the whole-host-loss path, shared by both runtimes (the
  * Workers cron's `reconcile` phase and the self-hosted Deno timer): decide on
  * silent primaries (`features/managed/ha-host-loss-sweep.ts`), then fence
- * demoted members that came back (`features/managed/ha-return-fence.ts`).
+ * demoted members that came back (`features/managed/ha-return-fence.ts`), then
+ * finish the host cleanup of deleted databases whose host was offline
+ * (`features/managed/destroy-redrive.ts`).
  *
  * Lives here, not in `features/`, because it builds the event-time health
  * probe from the runtime's cell registry; the failover modules stay free of
@@ -19,7 +21,9 @@ import {
 } from '../../features/managed/auto-failover-switch.ts'
 import { resolveHostLossWindowMs } from '../../features/managed/ha-host-loss.ts'
 import { runHostLossSweep } from '../../features/managed/ha-host-loss-sweep.ts'
+import { runManagedDestroyRedriveSweep } from '../../features/managed/destroy-redrive.ts'
 import { runReturnFenceSweep } from '../../features/managed/ha-return-fence.ts'
+import { createEnginePortProbe } from '../../client/managed/engine-port-probe.ts'
 import { createFreshStandbyProbe } from '../../client/managed/health-probe.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
 
@@ -39,6 +43,7 @@ export async function runHostLossTick(
       commandQueue: deps.commandQueue,
       autoFailover: resolveAutoFailover(deps.env),
       probeStandby: createFreshStandbyProbe(db, deps.registry),
+      probeEngine: createEnginePortProbe(db, deps.registry),
       windowMs: resolveHostLossWindowMs(deps.env),
       freshStandbyMarginMs: resolveFreshStandbyMarginMs({
         [FRESH_STANDBY_MARGIN_ENV]: deps.env[FRESH_STANDBY_MARGIN_ENV],
@@ -51,5 +56,10 @@ export async function runHostLossTick(
     await runReturnFenceSweep(db, deps.commandQueue)
   } catch (error) {
     compatLogWarn('managed-ha', `return fence sweep failed: ${String(error)}`)
+  }
+  try {
+    await runManagedDestroyRedriveSweep(db, deps.commandQueue)
+  } catch (error) {
+    compatLogWarn('managed', `destroy redrive sweep failed: ${String(error)}`)
   }
 }

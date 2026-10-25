@@ -30,6 +30,7 @@ import { findUnresolvedComposeInterpolations } from '../../features/compose/unre
 import { definedFields, presentFields } from '../../lib/optional-fields.ts'
 import { recordedNodeVersions } from './deploy-node-version.ts'
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
+import { DEPLOY_QUEUE_LIMIT_MS } from '../../features/commands/deploy-wait.ts'
 import type { CommandEnvelope } from '../../features/commands/envelope.ts'
 import type {
   EnvironmentDeployComposeFile,
@@ -53,10 +54,13 @@ import {
   buildDeployPreviewContainers,
   buildDeployPreviewServers,
   buildNativeAppServicesForDeploy,
+  previewCommitSha,
+  previewNativeAppVariables,
   buildSitesForDeploy,
   composeProjectName,
   type DeployStrategyOverride,
   fabricGateErrorResponse,
+  hostingsOnlyFits,
   mapPrepareErrorResponse,
   parseDeployRequestFlags,
   parseDeployStrategyOverride,
@@ -95,7 +99,11 @@ import {
   normalizeReplicaCounts,
 } from '../../features/commands/context.ts'
 import { type CommandQueue, getCommandQueue } from '../../features/commands/queue.ts'
-import { createCommandRecord, transitionCommand } from '../../features/commands/command-records.ts'
+import {
+  createCommandRecord,
+  markCommandEnqueued,
+  transitionCommand,
+} from '../../features/commands/command-records.ts'
 import { bumpEnvironmentGeneration } from '../../features/deploy/environment-generation.ts'
 import {
   type DeploymentTargetInput,
@@ -538,6 +546,8 @@ type DeployCommandCreateParams = DeployActor & {
   hostingIngress?: EnvironmentDeployIngressService
   /** Set only when `hostings` is non-empty (see prepare). */
   hostingIngressNetwork?: string
+  /** Effective web server name hiding for the server; sent to the daemon as is. */
+  hideWebServerNames?: boolean
   tlsMaterial: EnvironmentDeployTlsMaterial[]
   variableMaterial: EnvironmentDeployVariableMaterial[]
   storageMaterial: EnvironmentDeployStorageMaterial[]
@@ -560,6 +570,8 @@ type DeployCommandCreateParams = DeployActor & {
   /** Set only when `managedNetworkServices` is non-empty (see prepare). */
   managedNetwork?: string
   noCache: boolean
+  /** Only the web server config and certificates change on the host (`hostingsOnly`). */
+  hostingsOnly?: boolean
   /** The strategy decision; its `payload` fields ride the daemon command. */
   engine: DeployEnginePlan
   /** The planner's host-level verdict (`PlannedDeploy.hostLevelApproved`). */
@@ -698,7 +710,8 @@ async function createDeployCommand(
   db: Db,
   params: DeployCommandCreateParams
 ): Promise<CreatedDeployCommand> {
-  const expiresAt = new Date(Date.now() + 600_000).toISOString()
+  // How long the deploy may wait to start; once it runs, the run cap applies (`deploy-wait.ts`).
+  const expiresAt = new Date(Date.now() + DEPLOY_QUEUE_LIMIT_MS).toISOString()
   const replicaCounts = normalizeReplicaCounts(params.replicaCounts)
   const releases = contextReleasesFor(params.sourceMaterial, params.nativeAppServices)
   const selectionMetadata = deploySelectionMetadata(params.selection)
@@ -735,6 +748,7 @@ async function createDeployCommand(
         ingressServices: params.ingressServices,
         hostingIngress: params.hostingIngress,
         hostingIngressNetwork: params.hostingIngressNetwork,
+        hideWebServerNames: params.hideWebServerNames,
         tlsMaterial: params.tlsMaterial,
         variableMaterial: params.variableMaterial,
         storageMaterial: params.storageMaterial,
@@ -750,6 +764,7 @@ async function createDeployCommand(
         managedNetworkServices: params.managedNetworkServices,
         managedNetwork: params.managedNetwork,
         noCache: params.noCache ? true : undefined,
+        hostingsOnly: params.hostingsOnly ? true : undefined,
         hostLevelApproved: params.hostLevelApproved ? true : undefined,
         remoteBuildSourcesApproved: params.remoteBuildSourcesApproved ? true : undefined,
         ...params.engine.payload,
@@ -773,7 +788,10 @@ async function createDeployCommand(
       generation: params.generation,
       desiredHash: params.desiredHash,
       replicaCounts: replicaCounts ?? undefined,
-      releases: releases ?? undefined,
+      // A hostings-only run builds nothing, so it publishes no release a
+      // rollback could be offered.
+      releases: params.hostingsOnly ? undefined : (releases ?? undefined),
+      action: params.hostingsOnly ? HOSTINGS_ONLY_DEPLOY_ACTION : undefined,
       // What ran, so history still says so after the payload is deleted.
       deployStrategy: params.engine.effectiveStrategy,
     }),
@@ -808,6 +826,7 @@ async function deliverDeployCommand(
 
   try {
     await commandQueue.enqueue(envelope)
+    await markCommandEnqueued(db, params.commandId)
   } catch {
     await transitionCommand(db, params.commandId, {
       status: 'failed',
@@ -855,6 +874,7 @@ function createParamsForPreparedServer(
     removedSites?: readonly string[]
     /** Hostnames the host may take over from a leftover host config. */
     takeoverHostnames?: readonly DeployTakeover[]
+    hostingsOnly?: boolean
   }
 ): DeployCommandCreateParams {
   // One loopback-port ledger for both host-native lanes: site vhosts
@@ -893,6 +913,9 @@ function createParamsForPreparedServer(
     ...(row.prepared.hostingIngressNetwork
       ? { hostingIngressNetwork: row.prepared.hostingIngressNetwork }
       : {}),
+    ...(row.prepared.hideWebServerNames === undefined
+      ? {}
+      : { hideWebServerNames: row.prepared.hideWebServerNames }),
     tlsMaterial: row.prepared.tlsMaterial,
     variableMaterial: row.prepared.variableMaterial,
     storageMaterial: withVolumeFolders(row.prepared.storageMaterial, params.plannedFolders),
@@ -915,6 +938,7 @@ function createParamsForPreparedServer(
       ? {}
       : { managedNetwork: row.prepared.managedNetwork }),
     noCache: params.noCache,
+    ...(params.hostingsOnly ? { hostingsOnly: true } : {}),
     engine: params.engine,
     hostLevelApproved: params.hostLevelApproved,
     remoteBuildSourcesApproved: params.remoteBuildSourcesApproved,
@@ -922,7 +946,8 @@ function createParamsForPreparedServer(
     desiredHash: row.prepared.desiredHash,
     replicaCounts: row.prepared.replicaCounts,
     listenerPorts: row.prepared.listenerPorts,
-    ...(params.plannedFolders.folderIds.length > 0
+    // A hostings-only run creates no folders, so it marks none present.
+    ...(params.plannedFolders.folderIds.length > 0 && !params.hostingsOnly
       ? { folderIds: params.plannedFolders.folderIds }
       : {}),
   }
@@ -1078,6 +1103,7 @@ async function persistDeployFanOut(
     projectName: string
     slots: readonly DesiredSlotInput[]
     noCache: boolean
+    hostingsOnly?: boolean
     engine: DeployEnginePlan
     hostLevelApproved: boolean
     remoteBuildSourcesApproved: boolean
@@ -1141,6 +1167,7 @@ async function persistDeployFanOut(
           projectName: params.projectName,
           generation,
           noCache: params.noCache,
+          ...(params.hostingsOnly ? { hostingsOnly: true } : {}),
           engine: params.engine,
           hostLevelApproved: params.hostLevelApproved,
           remoteBuildSourcesApproved: params.remoteBuildSourcesApproved,
@@ -1270,7 +1297,8 @@ type DeployPreviewSource = {
   provider: string
   cloneUrl: string
   ref: string
-  commitSha: string
+  /** Left out until the commit is known: the host resolves a plain-git branch when it clones. */
+  commitSha?: string
   releaseId: string
   subdirectory?: string
 }
@@ -1370,7 +1398,7 @@ function deployPreviewSources(
           provider: entry.provider,
           cloneUrl: entry.cloneUrl,
           ref: entry.ref,
-          commitSha: entry.commitSha,
+          commitSha: previewCommitSha(entry),
           releaseId: entry.releaseId,
           subdirectory: entry.subdirectory,
         })
@@ -1501,6 +1529,10 @@ export function registerEnvironmentDeployPreviewRoutes(router: Hono<AppEnv>, opt
     if (preparedByServer instanceof Response) return preparedByServer
 
     const strategy = await resolveEnginePlan(db, environmentId, planned, override)
+    const reservedPorts = await listReservedListenPorts(db, {
+      environmentId,
+      serverIds: preparedByServer.map((row) => row.serverId),
+    })
 
     const first = preparedByServer[0]
     const serverRows =
@@ -1547,7 +1579,9 @@ export function registerEnvironmentDeployPreviewRoutes(router: Hono<AppEnv>, opt
       ],
       envFile: first?.prepared.envFile ?? '',
       secretPlan: first?.prepared.secretPlan ?? [],
-      nativeAppVariables: preparedByServer.flatMap((row) => row.prepared.nativeAppVariables ?? []),
+      nativeAppVariables: preparedByServer.flatMap((row) =>
+        previewNativeAppVariables(row.prepared, reservedPorts.get(row.serverId), environmentId)
+      ),
       nativeAppNodeVersions: oncePerApp(
         preparedByServer.flatMap((row) => row.prepared.nativeAppNodeVersions ?? [])
       ),
@@ -1586,7 +1620,18 @@ export type DeployRequestAuth = DeployActor & {
    * into `sourceMaterial[]` (see `deploy-sources.ts`).
    */
   rollback?: DeployRollbackRequest
+  /**
+   * Only rewrite the web server config and certificates on hosts already
+   * running this environment: no build, no restart. Sent after a hosting gets a
+   * Let's Encrypt certificate. Refused (`409 hosting_apply_needs_deploy`) when
+   * a server would be added or drained, or has no finished deploy, since only a
+   * real deploy can change those.
+   */
+  hostingsOnly?: boolean
 }
+
+/** `command.context.action` of a hostings-only `environment.deploy`. */
+export const HOSTINGS_ONLY_DEPLOY_ACTION = 'hostings'
 
 type EnrichedTaskAddresses = Awaited<ReturnType<typeof enrichPlannedTaskAddresses>>
 
@@ -2051,7 +2096,8 @@ async function runEnvironmentDeploy(
     db,
     environmentId,
     auth.organizationId,
-    await resolveHostAccessActor(db, auth, auth.organizationId, true)
+    // Applying hosting settings is not someone approving host-level Compose.
+    await resolveHostAccessActor(db, auth, auth.organizationId, auth.hostingsOnly !== true)
   )
   if (planned instanceof Response) return planned
 
@@ -2093,6 +2139,9 @@ async function runEnvironmentDeploy(
       attachments: spanningCtx.attachments,
       previous,
     })
+    if (auth.hostingsOnly && !hostingsOnlyFits(planned.plan.serverIds, drainedIds, previous)) {
+      return c.json({ error: 'hosting_apply_needs_deploy' }, 409)
+    }
     const projectName = composeProjectName(environmentId)
     const engine = await resolveEnginePlan(
       db,
@@ -2115,6 +2164,7 @@ async function runEnvironmentDeploy(
       projectName,
       slots: spanningCtx.enriched.slots,
       noCache: auth.noCache,
+      ...(auth.hostingsOnly ? { hostingsOnly: true } : {}),
       engine,
       hostLevelApproved: planned.hostLevelApproved,
       remoteBuildSourcesApproved: planned.remoteBuildSourcesApproved,
@@ -2319,6 +2369,8 @@ async function enqueueStopCommand(
     fabricNetworks: string[]
     /** Per-service release trees to reclaim (generic, not site only). */
     siteReleases: EnvironmentSiteRelease[]
+    /** Services whose releases are cleared while their folder stays. */
+    releaseCleanup?: EnvironmentSiteRelease[]
   }
 ): Promise<QueuedCommandRef | Response> {
   const expiresAt = new Date(Date.now() + 120_000).toISOString()
@@ -2334,6 +2386,9 @@ async function enqueueStopCommand(
       ...(params.ingressServices.length > 0 ? { ingressServices: params.ingressServices } : {}),
       ...(params.fabricNetworks.length > 0 ? { fabricNetworks: params.fabricNetworks } : {}),
       ...(params.siteReleases.length > 0 ? { siteReleases: params.siteReleases } : {}),
+      ...(params.releaseCleanup && params.releaseCleanup.length > 0
+        ? { releaseCleanup: params.releaseCleanup }
+        : {}),
     },
     expiresAt,
   })
@@ -2399,10 +2454,11 @@ export function registerEnvironmentStopRoutes(router: Hono<AppEnv>, opts: AuthRo
     const tcpUdpServices = await resolveTcpUdpIngressServices(db, environmentId)
     const composeNetworks = await listEnvironmentComposeNetworks(db, environmentId)
     const namesByServer = composeNetworkNamesByServer(composeNetworks)
-    // An explicit stop keeps every service and volume folder, uploads included;
-    // only deleting the environment, a server leaving it, or the asset removes
-    // files. So no release tree is named here (delete teardown still names them).
-    const siteReleases: EnvironmentSiteRelease[] = []
+    // Destroy clears each service's published releases (they pile up on every
+    // deploy) but keeps every service and volume folder, uploads included; only
+    // deleting the environment, a server leaving it, or the asset removes files.
+    // So the trees go out as `releaseCleanup`, never as `siteReleases`.
+    const releaseCleanup = await resolveEnvironmentSiteReleases(db, environmentId)
     const queued: QueuedCommandRef[] = []
     for (const serverId of loaded.serverIds) {
       const enqueued = await enqueueStopCommand(db, commandQueue, {
@@ -2416,7 +2472,8 @@ export function registerEnvironmentStopRoutes(router: Hono<AppEnv>, opts: AuthRo
           serviceId: svc.serviceId,
         })),
         fabricNetworks: namesByServer.get(serverId) ?? [],
-        siteReleases,
+        siteReleases: [],
+        releaseCleanup,
       })
       if (enqueued instanceof Response) return enqueued
       queued.push(enqueued)

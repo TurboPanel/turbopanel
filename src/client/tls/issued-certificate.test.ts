@@ -132,7 +132,7 @@ async function setup(
       organizationId,
       name: 'Lets Encrypt for shop',
       source: 'lets_encrypt',
-      status: 'managed',
+      status: 'automatic',
       metadata: {
         dnsNames: options.rowNames ?? [HOST],
         hasWildcard: false,
@@ -198,7 +198,7 @@ test('stores the chain sealed, with real expiry, issuer and fingerprint, and nev
     )
     assertEquals(result, { ok: true, stored: true, tlsIds: [f.tlsId] })
     const row = await readRow(f)
-    assertEquals(row.status, 'managed')
+    assertEquals(row.status, 'automatic')
     assertEquals(row.certificatePem, pair.certificatePem)
     assertEquals(row.privateKeyPem?.startsWith('tpsecret.'), true)
     assertEquals(row.privateKeyPem?.includes('BEGIN'), false)

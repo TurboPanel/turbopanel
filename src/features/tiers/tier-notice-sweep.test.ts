@@ -28,12 +28,6 @@ const test = Deno.test.bind(Deno)
 
 const GIBIBYTE = 1024 ** 3
 
-const PLAN = {
-  normalNicSlots: 2,
-  detailedBlockDeviceSlots: 2,
-  gpuSlots: 1,
-}
-
 function smallBox(): ServerHostResources {
   return {
     cpus: [{ cores: { total: 4 } }],
@@ -66,21 +60,20 @@ test('classifyTierNotice is exceeds when license rank is below recommended', () 
   const placement = evaluateTierPlacement({
     resources: smallBox(),
     topologySnapshot: snapshotWithDrives(24),
-    plan: PLAN,
     tierRank: 1,
     licenseLabel: 'S1',
   })
   assertEquals(classifyTierNotice(placement), 'exceeds')
   const digest = tierNoticeDigest('exceeds', placement)
   assertEquals(digest.includes('exceeds'), true)
-  assertEquals(digest.includes('drive-03'), true)
+  // A drive is stored whatever the license, so no drive is named as unwatched.
+  assertEquals(digest.includes('drive-03'), false)
 })
 
 test('classifyTierNotice is overprovisioned when recommended sits below the license', () => {
   const placement = evaluateTierPlacement({
     resources: smallBox(),
     topologySnapshot: snapshotWithDrives(1),
-    plan: PLAN,
     tierRank: 5,
     licenseLabel: 'S5',
   })
@@ -91,7 +84,6 @@ test('classifyTierNotice is null when ranks match, and the marker clears', () =>
   const placement = evaluateTierPlacement({
     resources: smallBox(),
     topologySnapshot: snapshotWithDrives(1),
-    plan: PLAN,
     tierRank: 1,
     licenseLabel: 'S1',
   })

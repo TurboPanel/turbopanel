@@ -83,7 +83,8 @@ export const hostingSchemas = {
       },
       needsDeploy: {
         type: 'boolean',
-        description: 'The certificate is pinned but the environment has not been deployed since.',
+        description:
+          'The certificate is pinned but no deploy has picked it up: none has finished since and none queued since is running.',
       },
     },
   },
@@ -104,7 +105,7 @@ export const hostingSchemas = {
       needsDeploy: {
         type: 'boolean',
         description:
-          'True when a certificate was pinned: deploy the environment to start issuance.',
+          'True when a certificate was pinned but could not be sent to the servers at once (a server offline, a deploy already running, nothing deployed yet): deploy the environment to start issuance. False when it was sent, or nothing was pinned.',
       },
     },
   },
@@ -362,7 +363,7 @@ const letsEncryptPaths = {
       tags: ['Hostings'],
       summary: "Use Let's Encrypt for this hosting",
       description:
-        "Checks that every name points at the server, then pins an automatically renewed Let's Encrypt certificate (`certificate.state` `issuing`, `needsDeploy` true: deploy the environment to start issuance). While DNS is not ready nothing is pinned and the request waits (`waiting_for_dns`); a periodic job retries it for a week. Calling it again repeats the check and changes nothing twice. " +
+        "Checks that every name points at the server, then pins an automatically renewed Let's Encrypt certificate (`certificate.state` `issuing`) and sends it to the servers at once: only the web server config changes, nothing is built or restarted. When that cannot be queued (a server offline, a deploy already running, nothing deployed yet) `needsDeploy` is true: deploy the environment to start issuance. While DNS is not ready nothing is pinned and the request waits (`waiting_for_dns`); a periodic job retries it for a week. Calling it again repeats the check and changes nothing twice. " +
         letsEncryptRefusals,
       security: [{ cookieAuth: [] }],
       parameters: [

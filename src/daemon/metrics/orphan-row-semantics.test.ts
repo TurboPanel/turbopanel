@@ -147,24 +147,21 @@ async function insertOrphanNetworkRow(metricsDir: string, atMs: number): Promise
   try {
     const columns = networkSamplesInsertColumns()
     // COMMON_METADATA_COLUMNS: server_id, sampled_at, received_at,
-    // interval_seconds, sequence, topology_generation, boot_generation —
-    // then device_id, then every NETWORK_METRIC_FIELDS column (left NULL).
+    // interval_seconds — then device_id, then every NETWORK_METRIC_FIELDS
+    // column (left NULL).
     const metricPlaceholders = columns
-      .slice(8)
+      .slice(5)
       .map(() => 'NULL')
       .join(', ')
     const sql =
       `INSERT INTO ${NETWORK_SAMPLES_TABLE} (${columns.join(', ')}) VALUES (` +
       `CAST(? AS UUID), CAST(? AS TIMESTAMP), CAST(? AS TIMESTAMP), CAST(? AS SMALLINT), ` +
-      `CAST(? AS BIGINT), CAST(? AS INTEGER), CAST(? AS INTEGER), ?, ${metricPlaceholders})`
+      `?, ${metricPlaceholders})`
     await handle.connection.run(sql, [
       SERVER_ID,
       toDuckDbTimestamp(atMs),
       toDuckDbTimestamp(atMs),
       60,
-      1,
-      1,
-      1,
       'orphan-eth0',
     ])
   } finally {
@@ -416,5 +413,5 @@ it('orphan row (structural, AE): a network-family row can never satisfy a host-s
   // Every host query also requires the shared metrics-row discriminator —
   // an orphan row written through any other path still has to satisfy this
   // too, and blob2's family value alone already rules it out above.
-  assertEquals(hostMetricsDiscriminatorPredicates(), [`blob1 = 'metrics'`, `blob3 IN ('6', '7')`])
+  assertEquals(hostMetricsDiscriminatorPredicates(), [`blob1 = 'metrics'`, `blob3 = '12'`])
 })

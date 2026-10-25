@@ -2,7 +2,7 @@
  * Empty-project setup helpers.
  *
  * Creation flow: empty project + Production once → configure type later.
- * Setup state is inferred from `metadata.type` (absent = needs setup).
+ * Setup state is inferred from `project.kind` (NULL = needs setup).
  * No separate draft/runtime status column.
  */
 import { and, eq } from 'drizzle-orm'
@@ -36,6 +36,7 @@ import {
   stampNewEnvironmentDeployOptions,
 } from '../../features/deploy/deploy-options.ts'
 import { allocateProjectSlug } from '../../features/folders/records.ts'
+import { projectKindForType } from '../../features/projects/vocabulary.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
 
 export const DEFAULT_PRODUCTION_ENVIRONMENT_NAME = DEFAULT_ENVIRONMENT_NAME
@@ -44,14 +45,12 @@ export const DEFAULT_PRODUCTION_ENVIRONMENT_DESCRIPTION = 'Default environment'
 type DbTx = Parameters<Parameters<Db['transaction']>[0]>[0]
 
 export type ProjectTypeMetadata = {
-  type?: string | null
   code?: string
 }
 
 /** True when the project has not yet chosen compose / template / managed. */
-export function projectNeedsSetup(metadata: ProjectTypeMetadata | null | undefined): boolean {
-  const type = metadata?.type
-  return type == null || type === '' || type === 'empty'
+export function projectNeedsSetup(kind: string | null | undefined): boolean {
+  return kind == null
 }
 
 export function isConfiguredProjectType(value: string): value is CreateProjectType {
@@ -82,7 +81,7 @@ export async function loadDefaultEnvironmentName(db: Db, organizationId: string)
 
 /**
  * Insert an empty project with a single Production environment.
- * Leaves `metadata.type` unset so setup can resume later.
+ * Leaves `kind` unset so setup can resume later.
  */
 export async function insertEmptyProject(
   tx: DbTx,
@@ -93,6 +92,7 @@ export async function insertEmptyProject(
     organizationId: string
     serverId: string | null
     defaultEnvironmentName?: string
+    icon?: string | null
   }
 ): Promise<string> {
   const envName = fields.defaultEnvironmentName ?? DEFAULT_PRODUCTION_ENVIRONMENT_NAME
@@ -105,6 +105,7 @@ export async function insertEmptyProject(
       workspaceId: fields.workspaceId,
       organizationId: fields.organizationId,
       metadata: null,
+      icon: fields.icon ?? null,
       options: null,
     })
     .returning({ id: project.id })
@@ -210,18 +211,25 @@ export type ConfigureProjectResult =
   { ok: true; alreadyConfigured: boolean } | { ok: false; error: string; status: 400 | 409 | 503 }
 
 function alreadyConfiguredResult(
-  metadata: ProjectTypeMetadata,
+  row: { kind: string | null; metadata: ProjectTypeMetadata },
   projectType: CreateProjectType,
   catalogCode?: string
 ): ConfigureProjectResult {
-  if (metadata.type !== projectType) {
+  // A template is compose plus a catalog code; a plain compose project has none.
+  const sameType =
+    row.kind === projectKindForType(projectType) &&
+    (projectType !== 'docker-compose' || row.metadata.code === undefined)
+  if (!sameType) {
     return {
       ok: false,
       error: 'Project type already configured',
       status: 409,
     }
   }
-  if ((projectType === 'template' || projectType === 'managed') && metadata.code !== catalogCode) {
+  if (
+    (projectType === 'template' || projectType === 'managed') &&
+    row.metadata.code !== catalogCode
+  ) {
     return {
       ok: false,
       error: 'Project type already configured',
@@ -321,9 +329,9 @@ function buildCatalogProjectMetadata(
   isEngine: boolean
 ): ProjectTypeMetadata {
   if (isEngine || projectType === 'template') {
-    return { type: projectType, code: entry.code }
+    return { code: entry.code }
   }
-  return { type: projectType }
+  return {}
 }
 
 async function configureCatalogProject(
@@ -366,6 +374,7 @@ async function configureCatalogProject(
         .update(project)
         .set({
           metadata: nextMetadata,
+          kind: projectKindForType(input.projectType),
           options: settleDeployOptions(
             input.existingOptions,
             catalogConfigureOptions(entry),
@@ -407,7 +416,8 @@ async function configureDockerComposeProject(
       await tx
         .update(project)
         .set({
-          metadata: { type: 'docker-compose' },
+          metadata: {},
+          kind: projectKindForType('docker-compose'),
           options: settleDeployOptions(
             existingOptions,
             { compose: emptyComposeDocument() },
@@ -445,6 +455,7 @@ export async function configureProjectType(
   const [row] = await db
     .select({
       id: project.id,
+      kind: project.kind,
       metadata: project.metadata,
       options: project.options,
     })
@@ -456,9 +467,12 @@ export async function configureProjectType(
     return { ok: false, error: 'Not found', status: 400 }
   }
 
-  const metadata = (row.metadata ?? {}) as ProjectTypeMetadata
-  if (!projectNeedsSetup(metadata)) {
-    return alreadyConfiguredResult(metadata, input.projectType, input.catalogCode)
+  if (!projectNeedsSetup(row.kind)) {
+    return alreadyConfiguredResult(
+      { kind: row.kind, metadata: (row.metadata ?? {}) as ProjectTypeMetadata },
+      input.projectType,
+      input.catalogCode
+    )
   }
 
   if (input.projectType === 'docker-compose') {

@@ -1,0 +1,70 @@
+# Canary watchdog: cancels a Canary run that has waited too long for a runner.
+#
+# canary.yml queues runs one at a time (`queue: max`), so a single job that
+# never gets a runner holds the whole queue: no later canary publishes and the
+# Release Candidate check keeps waiting. This looks every 10 minutes for a
+# Canary run that has sat queued, or has a job that has sat queued, for over
+# 30 minutes and cancels it, which frees the queue for the next canary. Runs
+# that are only waiting their turn behind another canary are left alone. A
+# cancelled canary can be re-run from its run page; promote-ok names the run it
+# is waiting for.
+
+name: Canary Watchdog
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+permissions:
+  actions: write # cancel a stuck Canary run
+
+concurrency:
+  group: canary-watchdog
+  cancel-in-progress: false
+
+jobs:
+  cancel-stuck:
+    # Only the real repository, and only from trunk (scheduled runs always
+    # use the default branch, so this does not stop them).
+    if: github.repository == 'TurboPanel/turbopanel' && github.ref == 'refs/heads/trunk'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      LIMIT_MINUTES: '30'
+    steps:
+      - name: Cancel Canary runs queued for too long
+        run: |
+          set -eu
+          cutoff="$(date -u -d "$LIMIT_MINUTES minutes ago" +%Y-%m-%dT%H:%M:%SZ)"
+
+          # Runs still waiting for a runner themselves.
+          gh api "repos/$REPO/actions/workflows/canary.yml/runs?status=queued&per_page=50" \
+            | jq -r --arg c "$cutoff" '.workflow_runs[] | select(.created_at < $c) | .id' > stuck.txt
+
+          # Running runs that have a job waiting for a runner. Jobs of the
+          # called release.yml count too; a job that is merely waiting for an
+          # earlier job (`needs`) is not queued, it is "waiting".
+          for id in $(gh api "repos/$REPO/actions/workflows/canary.yml/runs?status=in_progress&per_page=50" --jq '.workflow_runs[].id'); do
+            gh api "repos/$REPO/actions/runs/$id/jobs?per_page=100" \
+              | jq -r --arg c "$cutoff" --arg id "$id" \
+                  'select(any(.jobs[]; .status == "queued" and .created_at < $c)) | $id' >> stuck.txt
+          done
+
+          sort -u stuck.txt | while read -r id; do
+            [ -n "$id" ] || continue
+            echo "Cancelling Canary run $id: queued for more than $LIMIT_MINUTES minutes."
+            echo "Cancelled Canary run $id (queued for more than $LIMIT_MINUTES minutes): https://github.com/$REPO/actions/runs/$id" >> "$GITHUB_STEP_SUMMARY"
+            # Plain cancel first; force-cancel only if the run is still going
+            # after a short wait (a stuck run may ignore a plain cancel).
+            gh api -X POST "repos/$REPO/actions/runs/$id/cancel" > /dev/null \
+              || echo "::warning::cancel request for Canary run $id failed"
+            sleep 30
+            state="$(gh api "repos/$REPO/actions/runs/$id" --jq .status)"
+            if [ "$state" = "queued" ] || [ "$state" = "in_progress" ]; then
+              gh api -X POST "repos/$REPO/actions/runs/$id/force-cancel" > /dev/null \
+                || echo "::warning::could not force-cancel Canary run $id"
+            fi
+          done

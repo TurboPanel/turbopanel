@@ -1,4 +1,6 @@
 import { assertEquals } from '@std/assert'
+import { METRICS_DEVICE_SLOT_CEILING } from '../../contracts/capability-plan.ts'
+import { MAX_NIC_SLOTS } from '../../contracts/topology-types.ts'
 import {
   ipsFromDaemonPresence,
   parseServerIps,
@@ -111,6 +113,20 @@ test('resolveServerOsLogoKey picks debian vs raspberry-pi-os', () => {
   )
   assertEquals(resolveServerOsLogoKey({ family: 'linux', id: 'raspbian' }), 'raspberry-pi-os')
   assertEquals(resolveServerOsLogoKey({ family: 'linux', id: 'ubuntu' }), null)
+})
+
+test('parseServerOsMetadata normalises architecture and drops unknown ones', () => {
+  assertEquals(parseServerOsMetadata({ family: 'linux', architecture: 'arm64' }), {
+    family: 'linux',
+    architecture: 'aarch64',
+  })
+  assertEquals(parseServerOsMetadata({ family: 'linux', architecture: 'amd64' }), {
+    family: 'linux',
+    architecture: 'x86_64',
+  })
+  assertEquals(parseServerOsMetadata({ family: 'linux', architecture: 'armv7l' }), {
+    family: 'linux',
+  })
 })
 
 test('parseServerOsMetadata accepts daemon hello os blocks', () => {
@@ -341,6 +357,8 @@ test('parseServerOptions and resolveEffectiveServerTimezone', () => {
       ntp: { enabled: true, servers: ['pool.ntp.org'] },
     }
   )
+  assertEquals(parseServerOptions({ hideWebServerNames: false }), { hideWebServerNames: false })
+  assertEquals(parseServerOptions({ hideWebServerNames: null }), {})
   assertEquals(parseServerOptions(null), null)
   assertEquals(parseServerOptions({}), {})
 
@@ -982,75 +1000,33 @@ test('resolveEffectiveCpuThermalLimits: neither override nor recognized cpuModel
   })
 })
 
-test('resolveEffectiveMetricsCapabilityPlan: a tier-derived base replaces the platform default', () => {
+test('resolveEffectiveMetricsCapabilityPlan: device slot counts are the ceilings whatever the tier says', () => {
   const plan = resolveEffectiveMetricsCapabilityPlan('physical', undefined, undefined, 'hosted', {
-    nicSlots: 5,
-    driveSlots: 4,
-    gpuSlots: 2,
-    filesystemSlots: 3,
-    isEntryTier: false,
-  })
-  assertEquals(plan.normalNicSlots, 5)
-  assertEquals(plan.gpuSlots, 2)
-  assertEquals(plan.extraFilesystemSlots, 3)
-  assertEquals(plan.managedDockerEnabled, true)
-})
-
-test('resolveEffectiveMetricsCapabilityPlan: entry-tier carve-outs apply only at the entry tier', () => {
-  const entry = resolveEffectiveMetricsCapabilityPlan('physical', undefined, undefined, 'hosted', {
     nicSlots: 2,
     driveSlots: 2,
     gpuSlots: 1,
-    filesystemSlots: 4,
+    filesystemSlots: 1,
     isEntryTier: true,
   })
-  assertEquals(entry.extraFilesystemSlots, 1)
-  assertEquals(entry.physicalHardwareSignalSlots, 19)
-  assertEquals(entry.managedDockerEnabled, true)
-
-  const standard = resolveEffectiveMetricsCapabilityPlan(
-    'physical',
-    undefined,
-    undefined,
-    'hosted',
-    {
-      nicSlots: 5,
-      driveSlots: 4,
-      gpuSlots: 2,
-      filesystemSlots: 3,
-      isEntryTier: false,
-    }
-  )
-  assertEquals(standard.extraFilesystemSlots, 3)
-  assertEquals(standard.physicalHardwareSignalSlots, 19)
-  assertEquals(standard.managedDockerEnabled, true)
+  assertEquals(plan.normalNicSlots, MAX_NIC_SLOTS)
+  assertEquals(plan.detailedBlockDeviceSlots, METRICS_DEVICE_SLOT_CEILING)
+  assertEquals(plan.gpuSlots, METRICS_DEVICE_SLOT_CEILING)
+  assertEquals(plan.extraFilesystemSlots, METRICS_DEVICE_SLOT_CEILING)
+  assertEquals(plan.physicalHardwareSignalSlots, METRICS_DEVICE_SLOT_CEILING)
+  assertEquals(plan.managedDockerEnabled, true)
 })
 
-test('resolveEffectiveMetricsCapabilityPlan: org/server overrides still win over a tier-derived base', () => {
+test('resolveEffectiveMetricsCapabilityPlan: org/server switches win, slot-count overrides do not lower the ceilings', () => {
   const plan = resolveEffectiveMetricsCapabilityPlan(
     'physical',
-    { metricsCapabilityPlan: { gpuSlots: 8 } },
-    { metricsCapabilityPlan: { normalNicSlots: 3 } },
-    'hosted',
-    {
-      nicSlots: 5,
-      driveSlots: 4,
-      gpuSlots: 2,
-      filesystemSlots: 3,
-      isEntryTier: false,
-    }
+    { metricsCapabilityPlan: { gpuSlots: 8, managedIngressEnabled: false } },
+    { metricsCapabilityPlan: { normalNicSlots: 3, databaseProxyMetricsEnabled: false } },
+    'hosted'
   )
-  assertEquals(plan.gpuSlots, 8)
-  assertEquals(plan.normalNicSlots, 3)
-  assertEquals(plan.detailedBlockDeviceSlots, 4)
-})
-
-test('resolveEffectiveMetricsCapabilityPlan: absent tier preserves platform-default behavior', () => {
-  const plan = resolveEffectiveMetricsCapabilityPlan('physical', undefined, undefined, 'hosted')
-  assertEquals(plan.normalNicSlots, 2)
-  assertEquals(plan.gpuSlots, 1)
-  assertEquals(plan.managedDockerEnabled, true)
-  assertEquals(plan.physicalHardwareSignalSlots, 19)
+  assertEquals(plan.gpuSlots, METRICS_DEVICE_SLOT_CEILING)
+  assertEquals(plan.normalNicSlots, MAX_NIC_SLOTS)
+  assertEquals(plan.managedIngressEnabled, false)
+  assertEquals(plan.databaseProxyMetricsEnabled, false)
 })
 
 test('parseServerReleaseLinkScan keeps a clean scan and a bounded finding list', () => {
@@ -1094,4 +1070,127 @@ test('parseServerReleaseLinkScan refuses a block without a scan time or list', (
   assertEquals(parseServerReleaseLinkScan({ findings: [] }), undefined)
   assertEquals(parseServerReleaseLinkScan({ scannedAt: 't', findings: 'x' }), undefined)
   assertEquals(parseServerReleaseLinkScan({ scannedAt: 't' }), undefined)
+})
+
+const MIB = 1024 * 1024
+
+test('parseServerHostResources reads present memory and dynamic memory', () => {
+  assertEquals(
+    parseServerHostResources({
+      memory: {
+        totalBytes: 372 * MIB,
+        pageSizeBytes: 4096,
+        presentBytes: 2048 * MIB,
+        blockSizeBytes: 128 * MIB,
+      },
+      dynamicMemory: { driver: 'hv_balloon', totalMoved: 0 },
+    }),
+    {
+      memory: {
+        totalBytes: 372 * MIB,
+        pageSizeBytes: 4096,
+        presentBytes: 2048 * MIB,
+        blockSizeBytes: 128 * MIB,
+      },
+      dynamicMemory: { driver: 'hv_balloon', totalMoved: 0 },
+    }
+  )
+  // Bad values are dropped, not stored.
+  assertEquals(
+    parseServerHostResources({
+      memory: { totalBytes: 1024, presentBytes: -1, blockSizeBytes: 'x' },
+      dynamicMemory: { driver: '', totalMoved: 3 },
+    }),
+    { memory: { totalBytes: 1024 } }
+  )
+  assertEquals(
+    parseServerHostResources({
+      memory: { totalBytes: 1024 },
+      dynamicMemory: { driver: 'virtio_mem' },
+    }),
+    { memory: { totalBytes: 1024 } }
+  )
+})
+
+test('resourcesFromDaemonPresence parses a capacity heartbeat without ips', () => {
+  assertEquals(
+    resourcesFromDaemonPresence({
+      type: 'heartbeat',
+      at: '2026-10-22T12:00:00.000Z',
+      resources: {
+        memory: { totalBytes: 1900 * MIB, presentBytes: 2048 * MIB, blockSizeBytes: 128 * MIB },
+        swap: { totalBytes: 0 },
+        cpus: [{ cores: { total: 2 }, threads: { total: 2 } }],
+        dynamicMemory: { driver: 'hv_balloon', totalMoved: 1528 * MIB },
+      },
+    }),
+    {
+      memory: { totalBytes: 1900 * MIB, presentBytes: 2048 * MIB, blockSizeBytes: 128 * MIB },
+      swap: { totalBytes: 0 },
+      cpus: [{ cores: { total: 2 }, threads: { total: 2 } }],
+      dynamicMemory: { driver: 'hv_balloon', totalMoved: 1528 * MIB },
+    }
+  )
+})
+
+test('mergeServerHostResources: a capacity heartbeat keeps gpus, ips and page size', () => {
+  const gpus = [{ vendorId: '0x10de', name: 'Fixture GPU', memoryBytes: 8 * 1024 * MIB }]
+  const ips = [{ address: '10.0.0.8', version: 4 as const, scope: 'private' as const }]
+  const hello = {
+    cpus: [{ cores: { total: 2 }, threads: { total: 2 } }],
+    gpus,
+    memory: {
+      totalBytes: 372 * MIB,
+      pageSizeBytes: 4096,
+      presentBytes: 2048 * MIB,
+      blockSizeBytes: 128 * MIB,
+    },
+    swap: { totalBytes: 0 },
+    ips,
+    dynamicMemory: { driver: 'hv_balloon', totalMoved: 0 },
+  }
+  const merged = mergeServerHostResources(hello, {
+    memory: { totalBytes: 1900 * MIB, presentBytes: 4096 * MIB, blockSizeBytes: 128 * MIB },
+    swap: { totalBytes: 512 * MIB },
+    cpus: [{ cores: { total: 4 }, threads: { total: 4 } }],
+    dynamicMemory: { driver: 'hv_balloon', totalMoved: 1528 * MIB },
+  })
+  assertEquals(merged, {
+    cpus: [{ cores: { total: 4 }, threads: { total: 4 } }],
+    gpus,
+    memory: {
+      totalBytes: 1900 * MIB,
+      pageSizeBytes: 4096,
+      presentBytes: 4096 * MIB,
+      blockSizeBytes: 128 * MIB,
+    },
+    swap: { totalBytes: 512 * MIB },
+    ips,
+    dynamicMemory: { driver: 'hv_balloon', totalMoved: 1528 * MIB },
+  })
+  // An ips-only heartbeat leaves memory and the dynamic flag alone.
+  assertEquals(mergeServerHostResources(merged, { ips: [] }).dynamicMemory, merged.dynamicMemory)
+  // Memory without the flag (an older daemon's hello, or a settled guest) clears it.
+  const settled = mergeServerHostResources(merged, { memory: { totalBytes: 2000 * MIB } })
+  assertEquals(settled.dynamicMemory, undefined)
+  assertEquals('dynamicMemory' in settled, false)
+  assertEquals(settled.memory, { totalBytes: 2000 * MIB, pageSizeBytes: 4096 })
+  assertEquals(settled.gpus, gpus)
+})
+
+test('serverHostResourcesEquals sees present memory and dynamic memory', () => {
+  const a = {
+    memory: { totalBytes: 372 * MIB, presentBytes: 2048 * MIB, blockSizeBytes: 128 * MIB },
+    dynamicMemory: { driver: 'hv_balloon', totalMoved: 0 },
+  }
+  assertEquals(serverHostResourcesEquals(a, structuredClone(a)), true)
+  assertEquals(
+    serverHostResourcesEquals(a, { ...a, memory: { ...a.memory, presentBytes: 4096 * MIB } }),
+    false
+  )
+  assertEquals(
+    serverHostResourcesEquals(a, { ...a, dynamicMemory: { driver: 'hv_balloon', totalMoved: 1 } }),
+    false
+  )
+  assertEquals(serverHostResourcesEquals(a, { memory: a.memory }), false)
 })

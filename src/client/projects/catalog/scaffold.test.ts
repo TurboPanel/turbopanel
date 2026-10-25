@@ -257,7 +257,7 @@ test('scaffoldCatalogEnvironments reuses sharedCredentialId when sealing', async
       workspaceId: ws!.id,
       organizationId: org!.id,
       name: 'Shared Credential Project',
-      metadata: { type: 'managed' },
+      kind: 'managed',
     })
     .returning({ id: project.id })
 

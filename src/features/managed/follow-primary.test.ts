@@ -125,7 +125,8 @@ async function withCluster(
         name: 'Follow Primary Project',
         workspaceId: ws!.id,
         organizationId,
-        metadata: { type: 'managed', code: opts.engine ?? 'postgres' },
+        kind: 'managed',
+        metadata: { code: opts.engine ?? 'postgres' },
       })
       .returning({ id: project.id })
     const [env] = await db

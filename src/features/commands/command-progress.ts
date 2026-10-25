@@ -8,7 +8,7 @@
  * and `daemon/deno-ws.ts`) and by the terminal transitions in
  * `command-records.ts`.
  */
-import { and, eq, notInArray } from 'drizzle-orm'
+import { and, eq, notInArray, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { command } from '../../db/schema.ts'
 import {
@@ -17,15 +17,25 @@ import {
   type CommandProgressStepState,
   isCommandProgress,
 } from '../../contracts/cell-protocol.ts'
+import { shiftedRunningSince } from './deploy-limits.ts'
 import { nowIso } from './ids.ts'
 import { type CommandStatus, TERMINAL_COMMAND_STATUSES } from './types.ts'
+
+/**
+ * The stored step plan: what the daemon sent plus one panel-only field.
+ * `contactLostAt` is the time the server was last heard from, set while a
+ * running command has gone quiet and the control plane is checking with the
+ * server. It is never sent by a daemon, and the next frame (or a report that
+ * lists the command as running) replaces the plan and so clears it.
+ */
+export type StoredCommandProgress = CommandProgress & { contactLostAt?: string | null }
 
 /**
  * The stored jsonb as a typed payload; `null` for anything that is not one.
  * A cheap shape check only: rows were validated in full on the way in
  * ({@link recordCommandProgress}), and this runs on every command read.
  */
-export function parseStoredCommandProgress(value: unknown): CommandProgress | null {
+export function parseStoredCommandProgress(value: unknown): StoredCommandProgress | null {
   if (typeof value !== 'object' || value === null) return null
   const record = value as Record<string, unknown>
   const shaped =
@@ -33,7 +43,7 @@ export function parseStoredCommandProgress(value: unknown): CommandProgress | nu
     Array.isArray(record.steps) &&
     (record.current === null || typeof record.current === 'string') &&
     typeof record.updatedAt === 'string'
-  return shaped ? (value as CommandProgress) : null
+  return shaped ? (value as StoredCommandProgress) : null
 }
 
 /**
@@ -53,6 +63,7 @@ function normalizeCommandProgress(progress: CommandProgress): CommandProgress {
     })),
     current: progress.current,
     updatedAt: progress.updatedAt,
+    ...(progress.runningSince === undefined ? {} : { runningSince: progress.runningSince }),
   }
 }
 
@@ -91,10 +102,37 @@ export function finalizeCommandProgress(
 ): CommandProgress {
   if (!TERMINAL_COMMAND_STATUSES.has(status)) return progress
   const steps = progress.steps.map((step) => settleStep(step, status, at))
+  const stillChecking = (progress as StoredCommandProgress).contactLostAt != null
   const unchanged =
-    progress.current === null && steps.every((step, index) => step === progress.steps[index])
+    progress.current === null &&
+    !stillChecking &&
+    steps.every((step, index) => step === progress.steps[index])
   if (unchanged) return progress
-  return { ...progress, steps, current: null, updatedAt: at }
+  const { contactLostAt: _checking, ...rest } = progress as StoredCommandProgress
+  return { ...rest, steps, current: null, updatedAt: at }
+}
+
+/**
+ * The run clock after a gap in the server's reports: time the server was not
+ * heard from does not count against the deploy's time limit.
+ */
+function movedRunningSince(
+  before: string,
+  lastHeardAt: string | undefined,
+  receivedAt: string
+): string {
+  return (
+    shiftedRunningSince({
+      runningSince: before,
+      lastHeardMs: lastHeardAt === undefined ? null : toEpochMs(lastHeardAt),
+      nowMs: Date.parse(receivedAt),
+    }) ?? before
+  )
+}
+
+function toEpochMs(value: string): number | null {
+  const ms = Date.parse(value)
+  return Number.isFinite(ms) ? ms : null
 }
 
 export type RecordCommandProgressResult = 'stored' | 'invalid' | 'not-applied'
@@ -113,9 +151,35 @@ export async function recordCommandProgress(
   if (!isCommandProgress(input.progress)) return 'invalid'
   const progress = normalizeCommandProgress(input.progress)
   try {
+    const receivedAt = nowIso()
+    // The deploy's run clock is the control plane's own: the server only says
+    // "running" or "waiting", and the time it started is when that was first
+    // heard, so a wrong clock on the server cannot stretch or shorten the cap.
+    if (typeof progress.runningSince === 'string') {
+      const [previous] = await db
+        .select({ progress: command.progress, updatedAt: command.updatedAt })
+        .from(command)
+        .where(and(eq(command.id, input.commandId), eq(command.serverId, input.serverId)))
+        .limit(1)
+      const before = parseStoredCommandProgress(previous?.progress)?.runningSince
+      progress.runningSince =
+        typeof before === 'string'
+          ? movedRunningSince(before, previous?.updatedAt, receivedAt)
+          : receivedAt
+    }
     const rows = await db
       .update(command)
-      .set({ progress, updatedAt: nowIso() })
+      .set({
+        progress,
+        updatedAt: receivedAt,
+        // The first time the server says it is running, that is when the
+        // command started; waiting for the host afterwards does not undo it.
+        ...(typeof progress.runningSince === 'string'
+          ? {
+              startedAt: sql`COALESCE(${command.startedAt}, ${progress.runningSince}::timestamptz)`,
+            }
+          : {}),
+      })
       .where(
         and(
           eq(command.id, input.commandId),
@@ -159,4 +223,96 @@ export async function finalizeStoredCommandProgress(
     )
   }
   return finalized
+}
+
+/**
+ * The server says it is still carrying this command (a `commands.running`
+ * report on `hello` / `heartbeat`): count it as heard from now. Clears the
+ * "checking with the server" mark and gives back the quiet time on the run
+ * clock. Best effort, like {@link recordCommandProgress}.
+ */
+export async function noteCommandAlive(
+  db: Db,
+  input: { serverId: string; commandId: string }
+): Promise<'noted' | 'not-applied'> {
+  try {
+    const receivedAt = nowIso()
+    const [row] = await db
+      .select({ progress: command.progress, updatedAt: command.updatedAt })
+      .from(command)
+      .where(
+        and(
+          eq(command.id, input.commandId),
+          eq(command.serverId, input.serverId),
+          notInArray(command.status, [...TERMINAL_COMMAND_STATUSES])
+        )
+      )
+      .limit(1)
+    if (!row) return 'not-applied'
+    const stored = parseStoredCommandProgress(row.progress)
+    const progress =
+      stored === null
+        ? row.progress
+        : aliveProgress(stored, toEpochMs(row.updatedAt), Date.parse(receivedAt))
+    const rows = await db
+      .update(command)
+      .set({ progress, updatedAt: receivedAt })
+      .where(
+        and(
+          eq(command.id, input.commandId),
+          eq(command.serverId, input.serverId),
+          notInArray(command.status, [...TERMINAL_COMMAND_STATUSES])
+        )
+      )
+      .returning({ id: command.id })
+    return rows.length > 0 ? 'noted' : 'not-applied'
+  } catch {
+    return 'not-applied'
+  }
+}
+
+function aliveProgress(
+  stored: StoredCommandProgress,
+  lastHeardMs: number | null,
+  nowMs: number
+): StoredCommandProgress {
+  const { contactLostAt: _checking, ...rest } = stored
+  const runningSince = shiftedRunningSince({
+    runningSince: stored.runningSince,
+    lastHeardMs,
+    nowMs,
+  })
+  return runningSince === null ? rest : { ...rest, runningSince }
+}
+
+/**
+ * Mark a running command as "checking with the server": the control plane has
+ * not heard from it for a while and does not know how it ended. One conditional
+ * update that leaves `updated_at` alone, because that column is the clock of
+ * the silence. Returns whether the mark was newly set.
+ */
+export async function markCommandContactLost(
+  db: Db,
+  input: { commandId: string; lastHeardAt: string }
+): Promise<boolean> {
+  try {
+    const rows = await db
+      .update(command)
+      .set({
+        progress: sql`${command.progress} || ${JSON.stringify({ contactLostAt: input.lastHeardAt })}::jsonb`,
+        updatedAt: sql`${command.updatedAt}`,
+      })
+      .where(
+        and(
+          eq(command.id, input.commandId),
+          notInArray(command.status, [...TERMINAL_COMMAND_STATUSES]),
+          sql`${command.progress} is not null`,
+          sql`${command.progress}->>'contactLostAt' is null`
+        )
+      )
+      .returning({ id: command.id })
+    return rows.length > 0
+  } catch {
+    return false
+  }
 }

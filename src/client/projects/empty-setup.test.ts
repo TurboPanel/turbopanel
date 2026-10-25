@@ -141,7 +141,7 @@ function createTxStub(opts: {
 }
 
 function createProjectSelectDb(
-  rows: Array<{ id: string; metadata: unknown; options: unknown }>,
+  rows: Array<{ id: string; kind?: string | null; metadata?: unknown; options: unknown }>,
   tx?: DbTx,
   transactionError?: Error
 ): Db {
@@ -184,20 +184,15 @@ function createOrgSelectDb(rows: Array<{ options: unknown }>): Db {
   } as unknown as Db
 }
 
-test('projectNeedsSetup is true when type is absent or empty', () => {
+test('projectNeedsSetup is true while the kind is not chosen', () => {
   assertEquals(projectNeedsSetup(null), true)
   assertEquals(projectNeedsSetup(undefined), true)
-  assertEquals(projectNeedsSetup({}), true)
-  assertEquals(projectNeedsSetup({ type: null }), true)
-  assertEquals(projectNeedsSetup({ type: '' }), true)
-  assertEquals(projectNeedsSetup({ type: 'empty' }), true)
 })
 
-test('projectNeedsSetup is false once a real type is set', () => {
-  assertEquals(projectNeedsSetup({ type: 'docker-compose' }), false)
-  assertEquals(projectNeedsSetup({ type: 'template', code: 'custom-template' }), false)
-  assertEquals(projectNeedsSetup({ type: 'managed', code: 'postgres' }), false)
-  assertEquals(projectNeedsSetup({ type: 'system' }), false)
+test('projectNeedsSetup is false once a kind is set', () => {
+  assertEquals(projectNeedsSetup('compose'), false)
+  assertEquals(projectNeedsSetup('managed'), false)
+  assertEquals(projectNeedsSetup('system'), false)
 })
 
 test('isConfiguredProjectType accepts only configure targets', () => {
@@ -328,7 +323,7 @@ test('configureProjectType is idempotent for matching docker-compose', async () 
     createProjectSelectDb([
       {
         id: 'p1',
-        metadata: { type: 'docker-compose' },
+        kind: 'compose',
         options: {},
       },
     ]),
@@ -346,7 +341,7 @@ test('configureProjectType rejects changing configured type', async () => {
     createProjectSelectDb([
       {
         id: 'p1',
-        metadata: { type: 'docker-compose' },
+        kind: 'compose',
         options: {},
       },
     ]),
@@ -369,7 +364,8 @@ test('configureProjectType rejects catalog code mismatch when already set', asyn
     createProjectSelectDb([
       {
         id: 'p1',
-        metadata: { type: 'managed', code: 'postgres' },
+        kind: 'managed',
+        metadata: { code: 'postgres' },
         options: {},
       },
     ]),
@@ -392,7 +388,8 @@ test('configureProjectType is idempotent for matching template code', async () =
     createProjectSelectDb([
       {
         id: 'p1',
-        metadata: { type: 'template', code: 'custom-template' },
+        kind: 'compose',
+        metadata: { code: 'custom-template' },
         options: {},
       },
     ]),
@@ -411,7 +408,8 @@ test('configureProjectType is idempotent for matching managed code', async () =>
     createProjectSelectDb([
       {
         id: 'p1',
-        metadata: { type: 'managed', code: 'postgres' },
+        kind: 'managed',
+        metadata: { code: 'postgres' },
         options: {},
       },
     ]),

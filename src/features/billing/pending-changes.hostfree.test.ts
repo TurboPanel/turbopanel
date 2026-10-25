@@ -119,6 +119,45 @@ test('parseLedger round-trips a v2 ledger and reads a v1 ledger (license-keyed) 
   assertEquals(parseLedger({ version: 2, intents: [] }), null)
 })
 
+test('a downgrade keeps the one server its owner named, through a stored round-trip; a release never carries one', () => {
+  const SERVER = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
+  const named = newDeferredIntent('downgrade', {
+    fromTierId: S5,
+    toTierId: S3,
+    landsAt: PERIOD_END,
+    fromQuantity: 1,
+    serverId: SERVER,
+    nowMs: NOW_MS,
+  })
+  assertEquals(named.serverId, SERVER)
+  // An unnamed downgrade has no serverId key at all.
+  assertEquals('serverId' in downgrade(S5, S3, 1), false)
+  // A release-seat never names a server, even when asked to.
+  const releaseNamed = newDeferredIntent('release-seat', {
+    fromTierId: S3,
+    toTierId: null,
+    landsAt: PERIOD_END,
+    fromQuantity: 1,
+    serverId: SERVER,
+    nowMs: NOW_MS,
+  })
+  assertEquals('serverId' in releaseNamed, false)
+
+  const ledger = withIntent(withIntent(emptyLedger('sub_1'), named), releaseNamed)
+  const stored = JSON.parse(JSON.stringify(ledger))
+  // Hand-written row: a release-seat with a stray serverId reads without it.
+  stored.intents[1].serverId = SERVER
+  const parsed = parseLedger(stored)
+  assertEquals(parsed?.intents[0]?.serverId, SERVER)
+  assertEquals(parsed?.intents[0], named)
+  assertEquals(parsed !== null && 'serverId' in parsed.intents[1]!, false)
+  // A non-string serverId is dropped, the intent kept.
+  stored.intents[0].serverId = 42
+  const bad = parseLedger(stored)
+  assertEquals(bad?.intents.length, 2)
+  assertEquals(bad !== null && 'serverId' in bad.intents[0]!, false)
+})
+
 test('parseLedger drops an intent it cannot read and keeps the rest — the ledger survives one bad entry', () => {
   const good = release(S3, 2)
   const parsed = parseLedger({

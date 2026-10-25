@@ -152,7 +152,7 @@ export const serverSchemas = {
   ServerHostResources: {
     type: 'object',
     description:
-      'Static host capacity from daemon hello (/proc/cpuinfo, /proc/stat, /proc/meminfo, DRM).',
+      'Host capacity from daemon hello and change-detected heartbeats (/proc/cpuinfo, /proc/stat, /proc/meminfo, DRM, memory blocks).',
     properties: {
       cpus: {
         type: 'array',
@@ -177,6 +177,17 @@ export const serverSchemas = {
             description:
               'Kernel memory page size in bytes from getconf PAGESIZE. Linux only; omitted elsewhere or when unreadable.',
           },
+          presentBytes: {
+            type: 'integer',
+            minimum: 1,
+            description:
+              'Online memory blocks times the block size, in bytes. Sent only when a balloon or memory hot-plug driver is loaded; totalBytes still means MemTotal.',
+          },
+          blockSizeBytes: {
+            type: 'integer',
+            minimum: 1,
+            description: 'Memory block size in bytes, sent beside presentBytes.',
+          },
         },
       },
       swap: {
@@ -194,6 +205,22 @@ export const serverSchemas = {
         items: { $ref: '#/components/schemas/ServerReportedIp' },
         description:
           'Host interface addresses nested on resources (hello / change-detected heartbeat).',
+      },
+      dynamicMemory: {
+        type: 'object',
+        description:
+          'Present only when the host moves this server memory while it runs (a balloon or hot-plug driver is loaded and memory moved or is held back).',
+        properties: {
+          driver: {
+            type: 'string',
+            description: 'hv_balloon, virtio_balloon, vmw_balloon, virtio_mem or xen_balloon.',
+          },
+          totalMoved: {
+            type: 'integer',
+            minimum: 0,
+            description: 'Highest minus lowest MemTotal the daemon saw while it ran, in bytes.',
+          },
+        },
       },
     },
   },
@@ -628,6 +655,17 @@ export const serverSchemas = {
         enum: ['server', 'organization', 'datacenter', null],
         description: 'Which configured layer supplied ntpDefaults (null when none are set).',
       },
+      hideWebServerNames: {
+        type: 'boolean',
+        description:
+          'Effective web server name hiding: server.options.hideWebServerNames, else the organization setting, else on.',
+      },
+      hideWebServerNamesSource: {
+        type: ['string', 'null'],
+        enum: ['server', 'organization', 'datacenter', null],
+        description:
+          'Which configured layer supplied hideWebServerNames (null when the default, on, is used).',
+      },
       colocatedWithInstance: {
         type: 'boolean',
         description:
@@ -844,10 +882,11 @@ export const serverSchemas = {
       options: {
         type: 'object',
         description:
-          'Merged into server.options. sshPort (1–65535 or null to inherit) and ntp (object or null to inherit) participate in the host-defaults cascade.',
+          'Merged into server.options. sshPort (1–65535 or null to inherit) and ntp (object or null to inherit) participate in the host-defaults cascade; hideWebServerNames (boolean or null to inherit the organization setting) is a server option too.',
         properties: {
           sshPort: { type: ['integer', 'null'], minimum: 1, maximum: 65535 },
           ntp: { type: ['object', 'null'] },
+          hideWebServerNames: { type: ['boolean', 'null'] },
           hosting: {
             type: 'object',
             properties: { enabled: { type: 'boolean' } },

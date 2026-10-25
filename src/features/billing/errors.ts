@@ -108,8 +108,12 @@ export class StripeApiError extends Error {
   }
 }
 
-/** Anything shaped like a Stripe secret, in case a message ever echoes one. */
-const SECRET_LIKE = /\b(?:sk|rk)_(?:test|live)_[A-Za-z0-9]+|\bwhsec_[A-Za-z0-9]+/g
+/**
+ * Anything shaped like a Stripe secret, in case a message ever echoes one —
+ * including the masked form (`rk_test_****abcd`) a restricted key's 403
+ * quotes, whose visible tail is still a key fragment.
+ */
+const SECRET_LIKE = /\b(?:sk|rk)_(?:test|live)_[A-Za-z0-9*]+|\bwhsec_[A-Za-z0-9]+/g
 
 /**
  * One log line for an operator: every typed field plus Stripe's own message

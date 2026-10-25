@@ -18,8 +18,10 @@ import {
   shouldBlockUnreachablePrimaryFence,
   haEventRejection,
   automaticFailoverCoolingDown,
+  AUTOMATIC_FAILOVER_COOLDOWN_MS,
   type HaMemberCandidateInput,
 } from './ha-policy.ts'
+import { MAX_FAILURE_SPAN_MS } from './ha-fresh-standby.ts'
 import {
   DEFAULT_DATACENTER_PRIORITY,
   DEFAULT_DATACENTER_TRUSTED,
@@ -613,6 +615,18 @@ test('automaticFailoverCoolingDown: 15 minutes from the last accepted failover',
   assertEquals(automaticFailoverCoolingDown('2026-10-01T11:50:00Z', now), true)
   assertEquals(automaticFailoverCoolingDown('2026-10-01T11:45:00Z', now), false)
   assertEquals(automaticFailoverCoolingDown('not-a-date', now), false)
+})
+
+test('a failure that starts at the beginning of a cooldown can still be failed over when it ends', () => {
+  // Worst case: the primary hangs the moment after another failover started. The cooldown ends
+  // 15 minutes later, the daemons re-send at most 1 minute after that, and detection itself takes
+  // up to 2 minutes: the retry must still fall inside the span the fresh-standby gate accepts.
+  const resendGapMs = 60_000
+  const detectionMs = 2 * 60_000
+  assertEquals(
+    AUTOMATIC_FAILOVER_COOLDOWN_MS + resendGapMs + detectionMs < MAX_FAILURE_SPAN_MS,
+    true
+  )
 })
 
 const BOUND_PRIMARY = { host: '10.0.0.5', port: 3306 }

@@ -1,4 +1,4 @@
-import { and, eq, inArray } from 'drizzle-orm'
+import { and, eq, inArray, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import {
   type EnvironmentDeployResultApp,
@@ -88,7 +88,12 @@ export async function recordDeployedSiteApps(
   })
   await Promise.all(
     changes.map((change) =>
-      db.update(service).set({ metadata: change.metadata }).where(eq(service.id, change.id))
+      db
+        .update(service)
+        // What a deploy found on the host is not an edit of the service, so
+        // `updatedAt` keeps saying when someone last changed it.
+        .set({ metadata: change.metadata, updatedAt: sql`${service.updatedAt}` })
+        .where(eq(service.id, change.id))
     )
   )
   return changes.length

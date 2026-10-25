@@ -35,3 +35,13 @@ test('describeStripeError marks absent fields and redacts anything secret-shaped
       'message="Invalid API Key provided: [redacted]; webhook [redacted] and [redacted] too"'
   )
 })
+
+test('describeStripeError redacts a masked key, whose visible tail is still a fragment', () => {
+  const err = new StripeApiError({
+    status: 403,
+    type: 'invalid_request_error',
+    message: "The provided key 'rk_test_********wxyz' does not have the required permissions",
+  })
+  assertEquals(describeStripeError(err).includes('wxyz'), false)
+  assertEquals(describeStripeError(err).includes("'[redacted]'"), true)
+})

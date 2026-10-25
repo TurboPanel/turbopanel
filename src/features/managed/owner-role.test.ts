@@ -2,9 +2,11 @@ import { assertEquals } from '@std/assert'
 import {
   adminAccessNotes,
   DATABASE_ADMIN_PRIVILEGE,
+  DATABASE_CONVERT_NEEDS_DAEMON_ERROR,
   databasesOwnedByLogin,
   evaluateDatabaseAdminGrant,
   evaluateOwnedDatabasesKept,
+  evaluateOwnerRoleConversion,
   evaluateOwnerLogin,
   OWNER_ROLE_MAX_DATABASE_NAME,
   OWNER_ROLE_NEEDS_DAEMON_ERROR,
@@ -143,7 +145,7 @@ test('only a login that can change things, that the panel manages, may be chosen
     role: 'user',
     privileges: ['owner'],
     connectionRole: 'read-write' as const,
-    grantMode: 'preset',
+    grantMode: 'recipe',
     ...over,
   })
   assertEquals(evaluateOwnerLogin(login()), null)
@@ -169,7 +171,7 @@ test('a login that owns databases has to stay able to own them', () => {
     databases: ['crm', 'shop'],
     privileges: ['owner'],
     connectionRole: 'read-write' as const,
-    grantMode: 'preset',
+    grantMode: 'recipe',
   }
   assertEquals(evaluateOwnedDatabasesKept(['crm', 'shop'], after), null)
   assertEquals(evaluateOwnedDatabasesKept([], { ...after, privileges: ['read-only'] }), null)
@@ -208,7 +210,7 @@ test('the data-only daemon rule leaves other levels, modes, engines and held log
   assertEquals(refuseReadWriteOnOldDaemon('mysql', { ...rw, grantMode: 'self' }, null, false), null)
   // Already panel-managed read/write: nothing new is asked of the daemon.
   assertEquals(refuseReadWriteOnOldDaemon('mysql', rw, rw, false), null)
-  assertEquals(refuseReadWriteOnOldDaemon('mysql', rw, { ...rw, grantMode: 'preset' }, false), null)
+  assertEquals(refuseReadWriteOnOldDaemon('mysql', rw, { ...rw, grantMode: 'recipe' }, false), null)
   // A database it did not reach before is new to an older daemon.
   assertEquals(
     refuseReadWriteOnOldDaemon(
@@ -242,4 +244,24 @@ test('the data-only daemon rule leaves other levels, modes, engines and held log
     )?.error,
     READWRITE_NEEDS_DAEMON_ERROR
   )
+})
+
+test('moving an existing database onto its owner role needs a Postgres database, a confirmation and a daemon that can', () => {
+  const ask = (engine: string, name: string, confirm: unknown, daemon = true) =>
+    evaluateOwnerRoleConversion(engine, name, confirm, daemon)
+  assertEquals(ask('postgres', 'defaultdb', true), null)
+  assertEquals(ask('mysql', 'defaultdb', true)?.error, 'managed_owner_role_unsupported')
+  assertEquals(ask('postgres', 'postgres', true)?.error, 'managed_owner_role_database_not_movable')
+  assertEquals(
+    ask('postgres', 'x'.repeat(OWNER_ROLE_MAX_DATABASE_NAME + 1), true)?.error,
+    'managed_owner_role_name_too_long'
+  )
+  const unconfirmed = ask('postgres', 'defaultdb', undefined)
+  assertEquals(unconfirmed?.error, 'managed_owner_role_confirm_required')
+  assertEquals(unconfirmed?.message?.includes('tp_defaultdb_owner'), true)
+  assertEquals(unconfirmed?.message?.includes('quiet window'), true)
+  assertEquals(ask('postgres', 'defaultdb', 'yes')?.status, 400)
+  const old = ask('postgres', 'defaultdb', true, false)
+  assertEquals(old?.error, DATABASE_CONVERT_NEEDS_DAEMON_ERROR)
+  assertEquals(old?.status, 409)
 })

@@ -129,11 +129,23 @@ export const organization = pgTable(
     options: jsonb(),
     name: text(),
     nextLinuxId: integer('next_linux_id').default(30001).notNull(),
+    /** Longest a deploy may run, in minutes (5 to 240); null means the default of 30. */
+    deployTimeoutMinutes: integer('deploy_timeout_minutes'),
+    /** Destination finished backups are copied to unless a cluster chooses otherwise. */
+    backupDestinationId: uuid('backup_destination_id').references(
+      (): AnyPgColumn => backupTarget.id,
+      { onDelete: 'set null' }
+    ),
   },
   (table) => [
+    index('idx_organization_backup_destination_id').on(table.backupDestinationId),
     check(
       'organization_next_linux_id_check',
       sql`${table.nextLinuxId} >= 30001 AND ${table.nextLinuxId} <= 60001`
+    ),
+    check(
+      'organization_deploy_timeout_minutes_check',
+      sql`${table.deployTimeoutMinutes} IS NULL OR (${table.deployTimeoutMinutes} >= 5 AND ${table.deployTimeoutMinutes} <= 240)`
     ),
   ]
 )
@@ -174,7 +186,7 @@ export const tls = pgTable(
     certificatePem: text('certificate_pem'),
     /** Sealed `tpsecret` private key PEM; null while LE `pending` before keygen. */
     privateKeyPem: text('private_key_pem'),
-    /** `ready` | `pending` | `expired` | `failed` | `revoked` */
+    /** `ready` | `pending` | `expired` | `failed` | `revoked` | `managed` (Caddy ACME intent) */
     status: text().default('ready').notNull(),
     notAfter: timestamp('not_after', {
       precision: 3,
@@ -251,7 +263,7 @@ export const tls = pgTable(
     // Mirrors `TlsStatus` (src/lib/tls/types.ts) — pinned by enum-checks.test.ts.
     check(
       'tls_status_check',
-      sql`status IN ('ready', 'pending', 'expired', 'failed', 'revoked', 'managed')`
+      sql`status IN ('ready', 'pending', 'expired', 'failed', 'revoked', 'automatic')`
     ),
   ]
 )
@@ -364,10 +376,11 @@ export const passkey = pgTable(
  * Logical routing domain — not a building — of mutually routable private
  * subnets (IPv4 and/or IPv6); optional — a server may belong to zero or many
  * datacenters via `ip` pins. `options` mirrors `organization.options` for
- * `defaultServerTimezone` / `enforceServerTimezone`, and carries routing policy
- * `priority` (integer, lower wins, default 100) and `trusted` (default true;
- * false when the L2 is not under the operator's control) parsed by
- * `src/features/datacenters/datacenter-options.ts`. Must stay declared before `server` (same
+ * `defaultServerTimezone` / `enforceServerTimezone` (parsed by
+ * `src/features/datacenters/datacenter-options.ts`); the routing policy lives in
+ * real columns: `priority` (integer, lower wins, default 100), `trusted`
+ * (default true; false when the L2 is not under the operator's control) and
+ * `address_preference`, plus the optional `kind` of network. Must stay declared before `server` (same
  * rule as `license`).
  */
 export const datacenter = pgTable(
@@ -397,6 +410,14 @@ export const datacenter = pgTable(
     organizationId: uuid('organization_id').notNull(),
     name: text(),
     description: text('description'),
+    /** Routing-ladder rank among a server's datacenters, 0..1000, lower wins. */
+    priority: integer().default(100).notNull(),
+    /** Whether the operator controls the datacenter's L2; `false` keeps server-to-server traffic off it. */
+    isTrusted: boolean('is_trusted').default(true).notNull(),
+    /** Address family tried first among a server's pins here: `ipv6` or `ipv4`. */
+    addressPreference: text('address_preference').default('ipv6').notNull(),
+    /** What the network is: `lan`, `backplane` or `provider_private`; NULL means the operator never said. */
+    kind: text(),
   },
   (table) => [
     index('idx_datacenter_organization_id').using(
@@ -408,6 +429,12 @@ export const datacenter = pgTable(
       foreignColumns: [organization.id],
       name: 'datacenter_organization_id_organization_id_fk',
     }).onDelete('cascade'),
+    check('datacenter_priority_check', sql`priority >= 0 AND priority <= 1000`),
+    check('datacenter_address_preference_check', sql`address_preference IN ('ipv6', 'ipv4')`),
+    check(
+      'datacenter_kind_check',
+      sql`kind IS NULL OR kind IN ('lan', 'backplane', 'provider_private')`
+    ),
   ]
 )
 /**
@@ -624,19 +651,15 @@ export const server = pgTable(
      * serializes as `connected`.
      */
     /**
-     * The tier this server is assigned from the organization's purchased
-     * quantities — **derived**, never chosen: recomputed by
-     * `src/features/tiers/assignment-records.ts` whenever seats, the self-hosted
-     * grant, or hardware change, and read on every ingest sample for the
-     * capability plan. Null on a server with no active license, and on a
-     * licensed server nothing entitled covers. Self-hosted is entitled by
-     * the SX grant, so the column is populated there too.
+     * The tier an organization manager assigned this server (license-tier
+     * route, or an owner-named upgrade or downgrade). On self-hosted, the top
+     * tier is filled into a licensed server that has none. Never recomputed;
+     * null until assigned.
      */
     assignedTierId: uuid('assigned_tier_id'),
     /**
-     * Operator-chosen floor for assignment: use a spare license at this tier
-     * or the smallest tier above before falling back to the derived smallest
-     * that fits. Null means derive only.
+     * Written in step with `assigned_tier_id` by the manager route, for the
+     * console's picked label; never read to place a server.
      */
     preferredTierId: uuid('preferred_tier_id'),
     isConnected: boolean('is_connected').default(false).notNull(),
@@ -698,6 +721,12 @@ export const server = pgTable(
       withTimezone: true,
       mode: 'string',
     }),
+    /**
+     * The datacenter whose network this server prefers for its traffic when it
+     * belongs to several. NULL means no preference (priority order decides).
+     * Set null if the datacenter is deleted.
+     */
+    preferredDatacenterId: uuid('preferred_datacenter_id'),
   },
   (table) => [
     index('idx_server_organization_id').using(
@@ -737,10 +766,23 @@ export const server = pgTable(
       foreignColumns: [tier.id],
       name: 'server_preferred_tier_id_tier_id_fk',
     }).onDelete('set null'),
+    index('idx_server_preferred_datacenter_id').using(
+      'btree',
+      table.preferredDatacenterId.asc().nullsLast().op('uuid_ops')
+    ),
+    foreignKey({
+      columns: [table.preferredDatacenterId],
+      foreignColumns: [datacenter.id],
+      name: 'server_preferred_datacenter_id_datacenter_id_fk',
+    }).onDelete('set null'),
     check('server_machine_class_check', sql`${table.machineClass} IN ('physical', 'virtual')`),
     check(
       'server_machine_class_source_check',
       sql`machine_class_source IN ('detected', 'operator')`
+    ),
+    check(
+      'server_os_architecture_check',
+      sql`os_architecture IS NULL OR os_architecture IN ('x86_64', 'aarch64')`
     ),
     check('server_offline_reason_check', sql`offline_reason IN ('disconnect', 'sweep_stale')`),
     check(
@@ -2184,7 +2226,7 @@ export const project = pgTable(
      * System-hierarchy component discriminator (`hosting-ingress`,
      * `managed-ingress`, `managed-ha`, `turbopanel`), promoted out of
      * `metadata.component` (schema-sql-keys, Road-to-0.1.x). NULL for every
-     * user project — `metadata.type = 'system'` still marks a project as
+     * user project — `kind = 'system'` marks a project as
      * platform-owned. Identity always comes from this column, never from
      * `environment.metadata.component`.
      */
@@ -2204,6 +2246,25 @@ export const project = pgTable(
      * as `options.defaultServerId`.
      */
     defaultServerId: uuid('default_server_id'),
+    /**
+     * What the project is (`compose`, `managed`, `system`), promoted out of
+     * `metadata.type`. NULL while the project is a draft that has not chosen
+     * yet. A template project is `compose` with `metadata.code` set.
+     */
+    kind: text(),
+    /**
+     * Optional icon key from the fixed list the project screens offer. NULL
+     * means the default; a managed project ignores it.
+     */
+    icon: text(),
+    /** Catalog `code` of the template this project was created from; NULL when not from a template. */
+    templateCode: text('template_code'),
+    /** Software release line (track) of that template, such as `6.8`. */
+    templateTrack: text('template_track'),
+    /** Template packaging version (semver) the project was created from. */
+    templateVersion: text('template_version'),
+    /** Content digest of that template version (`sha256:` and 64 hex digits). */
+    templateDigest: text('template_digest'),
   },
   (table) => [
     index('idx_project_default_server_id').using(
@@ -2257,6 +2318,31 @@ export const project = pgTable(
     /** Unique per organization. */
     unique('uniq_project_organization_slug').on(table.organizationId, table.slug),
     check('project_slug_check', sql.raw(`slug ~ '${PROJECT_SLUG_SQL}'`)),
+    check('project_kind_check', sql`kind IS NULL OR kind IN ('compose', 'managed', 'system')`),
+    check(
+      'project_template_stamp_check',
+      sql`(template_code IS NULL AND template_track IS NULL AND template_version IS NULL AND template_digest IS NULL) OR (template_code IS NOT NULL AND template_track IS NOT NULL AND template_version IS NOT NULL AND template_digest IS NOT NULL)`
+    ),
+    check(
+      'project_template_code_check',
+      sql`template_code IS NULL OR template_code ~ '^[a-z][a-z0-9-]{0,63}$'`
+    ),
+    check(
+      'project_template_track_check',
+      sql`template_track IS NULL OR template_track ~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$'`
+    ),
+    check(
+      'project_template_version_check',
+      sql`template_version IS NULL OR template_version ~ '^[0-9]+[.][0-9]+[.][0-9]+$'`
+    ),
+    check(
+      'project_template_digest_check',
+      sql`template_digest IS NULL OR template_digest ~ '^sha256:[0-9a-f]{64}$'`
+    ),
+    check(
+      'project_icon_check',
+      sql`icon IS NULL OR icon IN ('cube', 'globe', 'cart', 'bolt', 'chat', 'chart', 'code', 'book', 'layers', 'mail', 'rocket', 'image')`
+    ),
   ]
 )
 
@@ -2384,8 +2470,20 @@ export const managed = pgTable(
     engine: text().notNull(),
     /** `provisioning` | `applying` | `ready` | `stopped` | `failed` */
     status: text().default('provisioning').notNull(),
+    /**
+     * This cluster's own copy choice, which wins over the organization default:
+     * null follows the default, `none` turns copying off, otherwise the id of a
+     * destination. Text, so it has no foreign key: deleting a destination
+     * clears it in `features/backups/targets.ts`.
+     */
+    backupDestination: text('backup_destination'),
   },
   (table) => [
+    index('idx_managed_backup_destination').on(table.backupDestination),
+    check(
+      'managed_backup_destination_check',
+      sql`backup_destination IS NULL OR backup_destination = 'none' OR backup_destination ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'`
+    ),
     index('idx_managed_server_id').using('btree', table.serverId.asc().nullsLast().op('uuid_ops')),
     index('idx_managed_engine').using('btree', table.engine.asc().nullsLast().op('text_ops')),
     foreignKey({
@@ -2603,6 +2701,158 @@ export const backup = pgTable(
   ]
 )
 /**
+ * A named S3-compatible destination an organization copies finished backups
+ * to (`features/backups/targets.ts`). The secret access key is stored sealed
+ * (`tpsecret` envelope) and never returned by any API; `access_key_id` is an
+ * identifier, not a secret. Deleting an organization removes its targets;
+ * a target still named by an assignment cannot be deleted (RESTRICT).
+ */
+export const backupTarget = pgTable(
+  'destination',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .$onUpdate(() => sql`now()`)
+      .notNull(),
+    organizationId: uuid('organization_id').notNull(),
+    name: text().notNull(),
+    kind: text().default('s3').notNull(),
+    endpoint: text().notNull(),
+    region: text().notNull(),
+    bucket: text().notNull(),
+    /** Folder inside the bucket; no leading or trailing slash; empty for none. */
+    prefix: text().default('').notNull(),
+    isPathStyle: boolean('is_path_style').default(true).notNull(),
+    isServerSideEncrypted: boolean('is_server_side_encrypted').default(false).notNull(),
+    accessKeyId: text('access_key_id').notNull(),
+    /** `tpsecret` envelope of the secret access key. Never returned by an API. */
+    secretKeySealed: text('secret_key_sealed').notNull(),
+    lastTestedAt: timestamp('last_tested_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }),
+    /** Null until the first test; then whether it passed. */
+    isLastTestOk: boolean('is_last_test_ok'),
+    /** A plain reason when the last test failed. */
+    lastTestError: text('last_test_error'),
+    createdBy: uuid('created_by'),
+  },
+  (table) => [
+    uniqueIndex('uniq_destination_organization_name').on(table.organizationId, table.name),
+    index('idx_destination_created_by').on(table.createdBy),
+    foreignKey({
+      columns: [table.organizationId],
+      foreignColumns: [organization.id],
+      name: 'destination_organization_id_organization_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.createdBy],
+      foreignColumns: [user.id],
+      name: 'destination_created_by_user_id_fk',
+    }).onDelete('set null'),
+    // Mirror BACKUP_TARGET_STORE_KINDS (src/features/backups/vocabulary.ts) — pinned by enum-checks.test.ts.
+    check('destination_kind_check', sql`kind IN ('s3')`),
+    check('destination_name_check', sql`char_length(name) BETWEEN 1 AND 64`),
+  ]
+)
+/**
+ * How copying one backup to one target stands, as the host reported it
+ * (`features/backups/copy-report.ts`). Keyed by the engine and the daemon's
+ * `bk_` id as text, not by the {@link backup} row, so a report that arrives
+ * before the backup's own run report still lands. `destination_name` is kept so a
+ * deleted target still reads in plain words.
+ */
+export const backupCopy = pgTable(
+  'shipment',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .$onUpdate(() => sql`now()`)
+      .notNull(),
+    managedId: uuid('managed_id').notNull(),
+    backupId: text('backup_id').notNull(),
+    destinationId: uuid('destination_id'),
+    destinationName: text('destination_name').notNull(),
+    state: text().default('pending').notNull(),
+    /** A plain reason when `state` is `failed`. */
+    error: text(),
+    /** Object key in the bucket (prefix included), once copied. */
+    objectKey: text('object_key'),
+    sizeBytes: bigint('size_bytes', { mode: 'number' }),
+    attempts: integer().default(0).notNull(),
+    copiedAt: timestamp('copied_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }),
+    /** The host that reported the last state. */
+    serverId: uuid('server_id'),
+  },
+  (table) => [
+    uniqueIndex('uniq_shipment_managed_destination').on(
+      table.managedId,
+      table.backupId,
+      table.destinationId
+    ),
+    index('idx_shipment_managed_id_backup_id').on(table.managedId, table.backupId),
+    index('idx_shipment_destination_id').on(table.destinationId),
+    index('idx_shipment_server_id').on(table.serverId),
+    foreignKey({
+      columns: [table.managedId],
+      foreignColumns: [managed.id],
+      name: 'shipment_managed_id_managed_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.destinationId],
+      foreignColumns: [backupTarget.id],
+      name: 'shipment_destination_id_destination_id_fk',
+    }).onDelete('set null'),
+    foreignKey({
+      columns: [table.serverId],
+      foreignColumns: [server.id],
+      name: 'shipment_server_id_server_id_fk',
+    }).onDelete('set null'),
+    check('shipment_backup_id_format_check', sql`backup_id ~ '^[A-Za-z0-9_-]+$'`),
+    // Mirror BACKUP_COPY_STATES (src/features/backups/vocabulary.ts) — pinned by enum-checks.test.ts.
+    check(
+      'shipment_state_check',
+      sql`state IN ('pending', 'copying', 'copied', 'failed', 'removed')`
+    ),
+    check('shipment_attempts_check', sql`attempts >= 0`),
+  ]
+)
+/**
  * Tracking row for Organization-CA-signed managed leaves (ProxySQL frontend
  * and per-replica engine). Re-issuance upserts rather than appending history
  * (partial uniques below). Declared after `replica` / `managed` / `server` so
@@ -2788,6 +3038,62 @@ export const monitor = pgTable(
       foreignColumns: [server.id],
       name: 'monitor_server_id_server_id_fk',
     }).onDelete('cascade'),
+  ]
+)
+
+/**
+ * Highest RAM and CPU readings of one server per hour. The over-tier rules judge
+ * a server on the highest reading of the last 7 days, so ballooning memory or a
+ * hot-added core never flips the verdict on one low sample. One row per
+ * (server, hour); an upsert only ever raises the stored figures. Rows older
+ * than the grace window are pruned by the 15-minute cron
+ * (`features/servers/peak.ts`).
+ */
+export const peak = pgTable(
+  'peak',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .$onUpdate(() => sql`now()`)
+      .notNull(),
+    serverId: uuid('server_id').notNull(),
+    /** Start of the UTC hour these readings cover (aligned by the writer). */
+    bucket: timestamp('bucket', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }).notNull(),
+    /** Highest total RAM in bytes read in the hour; NULL when none was read. */
+    memoryBytes: bigint('memory_bytes', { mode: 'number' }),
+    /** Highest physical core count read in the hour; NULL when none was read. */
+    cores: integer('cores'),
+  },
+  (table) => [
+    uniqueIndex('uniq_peak_server_bucket').on(table.serverId, table.bucket),
+    index('idx_peak_bucket').on(table.bucket),
+    foreignKey({
+      columns: [table.serverId],
+      foreignColumns: [server.id],
+      name: 'peak_server_id_server_id_fk',
+    }).onDelete('cascade'),
+    check('peak_memory_bytes_check', sql`memory_bytes >= 0`),
+    check('peak_cores_check', sql`cores >= 0`),
+    check('peak_reading_check', sql`memory_bytes IS NOT NULL OR cores IS NOT NULL`),
   ]
 )
 
@@ -3641,6 +3947,14 @@ export const principal = pgTable(
      */
     metadata: jsonb(),
     options: jsonb(),
+    /**
+     * How the account may reach its own host account over SSH: `none` (no
+     * login, keys stay on file), `sftp` (file transfer only) or `shell`
+     * (interactive shell plus transfer). The daemon still receives the shell
+     * this level encodes, so the wire is unchanged. Effective access also needs
+     * a key or password; see `features/principals/principal-access.ts`.
+     */
+    access: text().default('sftp').notNull(),
 
     /**
      * Account name. Allowlist mirrors POSIX/database account naming: starts
@@ -3703,6 +4017,7 @@ export const principal = pgTable(
       foreignColumns: [project.id],
       name: 'principal_project_id_project_id_fk',
     }).onDelete('set null'),
+    check('principal_access_check', sql`access IN ('none', 'sftp', 'shell')`),
     check(
       'principal_username_format_check',
       sql`(char_length((username)::text) >= 1) AND (char_length((username)::text) <= 255) AND ((username)::text ~ '^[A-Za-z_][A-Za-z0-9_-]*$'::text)`
@@ -4172,8 +4487,8 @@ export const tenancy = pgTable(
  * with (the one allowed overlap in the organization's name pool); it is NULL
  * for every login made on its own and for the cluster's own `root` and
  * `replication` logins. The permission settings are real columns:
- * `grant_mode`, `is_tool`, `allowed_sources`, `max_connections`, `access` and
- * `privileges`; the databases a login may use are `scope` rows.
+ * `grant_mode`, `recipe`, `is_all_databases`, `is_tool`, `allowed_sources`,
+ * `max_connections`, `access` and `privileges`; the databases a login may use are `scope` rows.
  */
 export const login = pgTable(
   'login',
@@ -4197,11 +4512,13 @@ export const login = pgTable(
       .defaultNow()
       .$onUpdate(() => sql`now()`)
       .notNull(),
+    /** Internal bookkeeping; the grant ledger (what the panel granted) will live here. */
+    metadata: jsonb(),
     /** Cluster the role exists on; cascade-deletes with it. */
     managedId: uuid('managed_id').notNull(),
     /** Site owner's Linux user this login shares its name with; NULL otherwise. */
     principalId: uuid('principal_id'),
-    /** `root` | `replication` | `user` */
+    /** `root` | `replication` | `user` | `backup` */
     role: text().notNull(),
     /** Name the customer typed (equals `applied_username` for `plain` names and cluster logins). */
     username: varchar({ length: 255 }).notNull(),
@@ -4212,15 +4529,30 @@ export const login = pgTable(
     /** Write-only credential, a `tpsecret` envelope; never returned on GET. */
     password: text(),
     /**
-     * Who sets the permissions on reconcile: `preset` (logins from before
-     * modes; the panel resets them), `recipe` (the panel sets them) or `self`
-     * (the owner sets them by hand and the panel never resets them).
+     * Who sets the permissions on reconcile: `recipe` (the panel sets them
+     * from the named recipe) or `self` (the owner sets them by hand and the
+     * panel never resets them).
      */
-    grantMode: text('grant_mode').default('preset').notNull(),
+    grantMode: text('grant_mode').default('recipe').notNull(),
+    /**
+     * The named permission set the panel applies when `grant_mode` is
+     * `recipe`: `app`, `migrations`, `read-only`, `analyst`, `admin` or
+     * `backup`. NULL only for a `self` login.
+     */
+    recipe: text(),
+    /** A read-only reader of every database on the cluster, current and future. */
+    isAllDatabases: boolean('is_all_databases').default(false).notNull(),
     /** A database-tool login routes everything to the primary (no read/write split). */
     isTool: boolean('is_tool').default(false).notNull(),
-    /** Places the login may connect from; NULL means anywhere. */
-    allowedSources: text('allowed_sources').array(),
+    /**
+     * Places the login may connect from: `internal`, `server:<id>` or
+     * `address:<ip or range>`. Never empty. Anywhere is the explicit pair
+     * `address:0.0.0.0/0` and `address:::/0`.
+     */
+    allowedSources: text('allowed_sources')
+      .array()
+      .default(sql`'{internal}'::text[]`)
+      .notNull(),
     /** Per-login connection cap; NULL means no cap. */
     maxConnections: integer('max_connections'),
     /** PostgreSQL only: connect straight through the front door; NULL means the owner never chose (default applies). */
@@ -4257,9 +4589,22 @@ export const login = pgTable(
       table.managedId,
       sql`lower(btrim((${table.appliedUsername})::text))`
     ),
-    check('login_role_check', sql`role IN ('root', 'replication', 'user')`),
+    // One backup login per cluster.
+    uniqueIndex('uniq_login_managed_backup')
+      .on(table.managedId)
+      .where(sql`${table.role} = 'backup'`),
+    check('login_role_check', sql`role IN ('root', 'replication', 'user', 'backup')`),
     check('login_name_scheme_check', sql`name_scheme IN ('plain', 'partial', 'random')`),
-    check('login_grant_mode_check', sql`grant_mode IN ('preset', 'recipe', 'self')`),
+    check('login_grant_mode_check', sql`grant_mode IN ('recipe', 'self')`),
+    check(
+      'login_recipe_check',
+      sql`recipe IS NULL OR recipe IN ('app', 'migrations', 'read-only', 'analyst', 'admin', 'backup')`
+    ),
+    // A panel-set login always names its recipe.
+    check('login_recipe_required_check', sql`grant_mode <> 'recipe' OR recipe IS NOT NULL`),
+    check('login_allowed_sources_check', sql`cardinality(allowed_sources) BETWEEN 1 AND 100`),
+    // A backup login is never left without a place to connect from.
+    check('login_backup_sources_check', sql`role <> 'backup' OR cardinality(allowed_sources) >= 1`),
     check('login_access_check', sql`access IN ('read-write', 'read-only')`),
     check('login_max_connections_check', sql`max_connections IS NULL OR max_connections >= 1`),
     check(
@@ -4779,6 +5124,8 @@ export const retention = pgTable(
     schedule: text().notNull(),
     /** IANA zone the schedule is read in; null means the host's local time. */
     timezone: text(),
+    /** Managed target: the database each run dumps; null means the cluster's initial database. */
+    database: text(),
     retentionKeep: integer('retention_keep').notNull(),
     isEnabled: boolean('is_enabled').default(true).notNull(),
     nextRunAt: timestamp('next_run_at', {

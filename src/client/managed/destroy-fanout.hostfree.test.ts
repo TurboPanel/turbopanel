@@ -17,10 +17,13 @@ import type { CommandEnvelope } from '../../features/commands/envelope.ts'
 import type { CommandQueue } from '../../features/commands/queue.ts'
 import { command } from '../../db/schema.ts'
 import {
+  enqueueBestEffortManagedDestroy,
   enqueueManagedDestroyFanout,
   MANAGED_DESTROY_GATE_METADATA_KEY,
+  MANAGED_FORCE_DESTROY_EXPIRES_MS,
 } from '../../features/managed/apply-prepare.ts'
 import { parseManagedDestroyGate } from '../../features/managed/destroy-gate.ts'
+import { MANAGED_DESTROY_REDRIVE_FLAG } from '../../features/managed/destroy-redrive.ts'
 import type { ManagedMemberRow } from '../../features/managed/members.ts'
 
 /**
@@ -59,6 +62,7 @@ type RecordedCommand = {
   type: string
   metadata: Record<string, unknown> | undefined
   payload: Record<string, unknown>
+  expiresAt: string | null
 }
 
 function mockContext(): Context<AppEnv> {
@@ -90,6 +94,7 @@ function stubDb(recorded: RecordedCommand[]): Db {
               serverId: values.serverId as string,
               type: values.name as string,
               metadata: values.metadata as Record<string, unknown> | undefined,
+              expiresAt: (values.expiresAt as string | undefined) ?? null,
             }
             return {
               returning: () =>
@@ -177,6 +182,24 @@ function destroyParams(members: ManagedMemberRow[], force = false) {
     environmentId: ENVIRONMENT_ID,
     force,
   }
+}
+
+function remainingExpiryMs(expiresAt: string | null): number {
+  if (!expiresAt) throw new TypeError('expected expiresAt')
+  return Date.parse(expiresAt) - Date.now()
+}
+
+function memberListDb(recorded: RecordedCommand[], members: ManagedMemberRow[]): Db {
+  return {
+    ...stubDb(recorded),
+    select: () => ({
+      from: () => ({
+        where: () => ({
+          orderBy: () => Promise.resolve(members),
+        }),
+      }),
+    }),
+  } as unknown as Db
 }
 
 test('destroy fan-out enqueues replicas only and defers the primary to metadata', async () => {
@@ -277,6 +300,68 @@ test('force destroy skips the gate and enqueues every member at once', async () 
   )
   const primaryRow = recorded.find((row) => row.payload.memberId === 'p1')
   assertEquals(primaryRow?.payload.deleteAfterDestroy, true)
+})
+
+test('force destroy uses a 7-day expiry; a normal delete stays at 10 minutes', async () => {
+  const forceRecorded: RecordedCommand[] = []
+  await enqueueManagedDestroyFanout(
+    mockContext(),
+    stubDb(forceRecorded),
+    okQueue([]),
+    destroyParams([PRIMARY, REPLICA_A], true)
+  )
+  for (const row of forceRecorded) {
+    const remaining = remainingExpiryMs(row.expiresAt)
+    assertEquals(remaining > MANAGED_FORCE_DESTROY_EXPIRES_MS - 60_000, true)
+    assertEquals(remaining <= MANAGED_FORCE_DESTROY_EXPIRES_MS + 60_000, true)
+    // Flagged so the re-drive sweep finishes it on a host that was offline.
+    assertEquals(row.metadata?.[MANAGED_DESTROY_REDRIVE_FLAG], true)
+  }
+
+  const normalRecorded: RecordedCommand[] = []
+  await enqueueManagedDestroyFanout(
+    mockContext(),
+    stubDb(normalRecorded),
+    okQueue([]),
+    destroyParams([PRIMARY])
+  )
+  const remaining = remainingExpiryMs(normalRecorded[0]?.expiresAt ?? null)
+  assertEquals(remaining > 500_000, true)
+  assertEquals(remaining < 700_000, true)
+  assertEquals(normalRecorded[0]?.metadata?.[MANAGED_DESTROY_REDRIVE_FLAG], undefined)
+})
+
+test('compensation enqueue uses the long expiry and deleteAfterDestroy stays off', async () => {
+  const recorded: RecordedCommand[] = []
+  await enqueueBestEffortManagedDestroy(
+    mockContext(),
+    memberListDb(recorded, [PRIMARY]),
+    okQueue([]),
+    {
+      userId: 'user-1',
+      managedId: MANAGED_ID,
+      environmentId: ENVIRONMENT_ID,
+    }
+  )
+  assertEquals(recorded.length, 1)
+  assertEquals(recorded[0]?.payload.deleteAfterDestroy, undefined)
+  assertEquals(recorded[0]?.payload.removeVolumes, true)
+  assertEquals(recorded[0]?.metadata?.[MANAGED_DESTROY_REDRIVE_FLAG], true)
+  const remaining = remainingExpiryMs(recorded[0]?.expiresAt ?? null)
+  assertEquals(remaining > MANAGED_FORCE_DESTROY_EXPIRES_MS - 60_000, true)
+})
+
+test('compensation enqueue failure does not throw', async () => {
+  await enqueueBestEffortManagedDestroy(
+    mockContext(),
+    memberListDb([], [PRIMARY]),
+    partiallyFailingQueue([], PRIMARY.serverId),
+    {
+      userId: 'user-1',
+      managedId: MANAGED_ID,
+      environmentId: ENVIRONMENT_ID,
+    }
+  )
 })
 
 test('a single-member destroy needs no gate', async () => {

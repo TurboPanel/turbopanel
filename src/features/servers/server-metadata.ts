@@ -7,7 +7,12 @@ import type { ServerGeo } from '../geo/server-geo.ts'
 import type { ServiceRunState } from '../../contracts/service-run-state.ts'
 import { type LocationFields, parseLocationOverride } from '../geo/location-override.ts'
 import type { DatacenterOptions } from '../datacenters/datacenter-options.ts'
-import { type NtpDefaults, parseNtpDefaults, parseSshPort } from './host-defaults.ts'
+import {
+  type NtpDefaults,
+  parseHideWebServerNames,
+  parseNtpDefaults,
+  parseSshPort,
+} from './host-defaults.ts'
 import { parsePhpModes, type PhpMode } from '../hostings/php-mode.ts'
 import {
   type ManagedExternalAccess,
@@ -20,9 +25,11 @@ import {
   type MetricsCapabilityPlanOverride,
   type MetricsCapabilityTierEntitlements,
   type MetricsDeploymentKind,
+  normalizeServerOsArchitecture,
   parseServerMetricsCapabilityPlanOverride,
   resolveMetricsCapabilityPlan,
   type ServerMachineClass,
+  type ServerOsArchitecture,
 } from '../../contracts/capability-plan.ts'
 
 /** OS families we may report from the daemon; extend the union as support is added. */
@@ -49,8 +56,8 @@ export type ServerOsMetadata = {
   codename?: string
   /** Raw `PRETTY_NAME` from os-release when available. */
   prettyName?: string
-  /** e.g. arm64, x86_64, aarch64 */
-  architecture?: string
+  /** `x86_64` or `aarch64`; other spellings (`amd64`, `arm64`) are normalised on ingest. */
+  architecture?: ServerOsArchitecture
 }
 
 /** Physical vs efficiency core/thread counts on hybrid CPUs. */
@@ -99,8 +106,21 @@ export type ServerGpu = {
 }
 
 /**
- * Static host capacity from daemon hello (`/proc/cpuinfo` + `/proc/stat` +
- * `/proc/meminfo` + DRM). Used for fleet inventory totals and load-average
+ * Set by the daemon only when the host really moves this guest's memory (a
+ * balloon or hot-plug driver is loaded and memory moved or is held back).
+ */
+export type ServerDynamicMemory = {
+  /** `hv_balloon`, `virtio_balloon`, `vmw_balloon`, `virtio_mem` or `xen_balloon`. */
+  driver: string
+  /** Highest minus lowest MemTotal the daemon saw while it ran, in bytes. */
+  totalMoved: number
+}
+
+/**
+ * Host capacity from daemon hello (`/proc/cpuinfo` + `/proc/stat` +
+ * `/proc/meminfo` + DRM + memory blocks). A daemon talking to a control plane
+ * that lists `host-capacity-v1` re-sends memory / swap / cpus on a heartbeat
+ * after they move. Used for fleet inventory totals and load-average
  * normalization — not live usage (that lives in the metrics backend).
  */
 export type ServerHostResources = {
@@ -111,10 +131,19 @@ export type ServerHostResources = {
     totalBytes?: number
     /** Kernel page size in bytes from `getconf PAGESIZE`. Linux only. */
     pageSizeBytes?: number
+    /**
+     * Online memory blocks x block size; sent only when a balloon or hot-plug
+     * driver is loaded. `totalBytes` keeps meaning MemTotal.
+     */
+    presentBytes?: number
+    /** Memory block size in bytes, beside `presentBytes`. */
+    blockSizeBytes?: number
   }
   swap?: { totalBytes?: number }
   /** Host interface addresses (hello / change-detected heartbeat). */
   ips?: ServerReportedIp[]
+  /** Rides with `memory`: a report that carries memory sets or clears it. */
+  dynamicMemory?: ServerDynamicMemory
 }
 
 /**
@@ -374,6 +403,11 @@ export type ServerOptions = {
   /** Desired NTP client settings for this host. Omitted → inherit parent layers. */
   ntp?: NtpDefaults
   /**
+   * Hide web server names and versions on this host. Omitted → the
+   * organization's setting, which is on unless it says otherwise.
+   */
+  hideWebServerNames?: boolean
+  /**
    * Desired state for Docker-hosting provisioning; consumed by later phases to
    * choose self-heal vs report-only.
    */
@@ -442,7 +476,7 @@ export function parseServerOsMetadata(value: unknown): ServerOsMetadata | undefi
   if (codename) os.codename = codename
   const prettyName = optionalTrimmedString(value.prettyName)
   if (prettyName) os.prettyName = prettyName
-  const architecture = optionalTrimmedString(value.architecture)
+  const architecture = normalizeServerOsArchitecture(value.architecture)
   if (architecture) os.architecture = architecture
 
   return Object.keys(os).length > 0 ? os : undefined
@@ -577,16 +611,33 @@ function parseGpus(value: unknown): ServerGpu[] | undefined {
   return gpus.length > 0 ? gpus : undefined
 }
 
-function parseMemoryTotal(
-  value: unknown
-): { totalBytes: number; pageSizeBytes?: number } | undefined {
+type ParsedServerMemory = {
+  totalBytes: number
+  pageSizeBytes?: number
+  presentBytes?: number
+  blockSizeBytes?: number
+}
+
+function parseMemoryTotal(value: unknown): ParsedServerMemory | undefined {
   if (!isRecord(value)) return undefined
   const totalBytes = optionalPositiveInt(value.totalBytes)
   if (totalBytes === undefined) return undefined
-  const memory: { totalBytes: number; pageSizeBytes?: number } = { totalBytes }
+  const memory: ParsedServerMemory = { totalBytes }
   const pageSizeBytes = optionalPositiveInt(value.pageSizeBytes)
   if (pageSizeBytes !== undefined) memory.pageSizeBytes = pageSizeBytes
+  const presentBytes = optionalPositiveInt(value.presentBytes)
+  if (presentBytes !== undefined) memory.presentBytes = presentBytes
+  const blockSizeBytes = optionalPositiveInt(value.blockSizeBytes)
+  if (blockSizeBytes !== undefined) memory.blockSizeBytes = blockSizeBytes
   return memory
+}
+
+function parseDynamicMemory(value: unknown): ServerDynamicMemory | undefined {
+  if (!isRecord(value)) return undefined
+  const driver = optionalTrimmedString(value.driver)
+  const totalMoved = optionalNonNegativeInt(value.totalMoved)
+  if (!driver || totalMoved === undefined) return undefined
+  return { driver, totalMoved }
 }
 
 function parseSwapTotal(value: unknown): { totalBytes: number } | undefined {
@@ -611,12 +662,17 @@ export function parseServerHostResources(value: unknown): ServerHostResources | 
   if (swap) resources.swap = swap
   const ips = parseServerIps(value.ips)
   if (ips !== undefined) resources.ips = ips
+  const dynamicMemory = parseDynamicMemory(value.dynamicMemory)
+  if (dynamicMemory) resources.dynamicMemory = dynamicMemory
   return Object.keys(resources).length > 0 ? resources : undefined
 }
 
 /**
- * Overlay incoming host-resource keys onto the stored block. Heartbeat
- * `{ ips }` must not drop hello-only cpus / gpus / memory / swap.
+ * Overlay incoming host-resource keys onto the stored block. A heartbeat
+ * `{ ips }` or `{ memory, swap, cpus }` must not drop what it leaves out
+ * (gpus are hello-only). Incoming memory replaces the stored block except
+ * `pageSizeBytes`, which a heartbeat may omit and cannot change, and it sets
+ * or clears `dynamicMemory` with it.
  */
 export function mergeServerHostResources(
   current: ServerHostResources | undefined,
@@ -625,7 +681,13 @@ export function mergeServerHostResources(
   const next: ServerHostResources = { ...current }
   if (incoming.cpus) next.cpus = incoming.cpus
   if (incoming.gpus) next.gpus = incoming.gpus
-  if (incoming.memory) next.memory = incoming.memory
+  if (incoming.memory) {
+    const pageSizeBytes = incoming.memory.pageSizeBytes ?? current?.memory?.pageSizeBytes
+    next.memory =
+      pageSizeBytes === undefined ? incoming.memory : { ...incoming.memory, pageSizeBytes }
+    if (incoming.dynamicMemory) next.dynamicMemory = incoming.dynamicMemory
+    else delete next.dynamicMemory
+  }
   if (incoming.swap) next.swap = incoming.swap
   if (incoming.ips !== undefined) next.ips = incoming.ips
   return next
@@ -716,6 +778,10 @@ export function serverHostResourcesEquals(
     gpusEquals(a.gpus, b.gpus) &&
     a.memory?.totalBytes === b.memory?.totalBytes &&
     a.memory?.pageSizeBytes === b.memory?.pageSizeBytes &&
+    a.memory?.presentBytes === b.memory?.presentBytes &&
+    a.memory?.blockSizeBytes === b.memory?.blockSizeBytes &&
+    a.dynamicMemory?.driver === b.dynamicMemory?.driver &&
+    a.dynamicMemory?.totalMoved === b.dynamicMemory?.totalMoved &&
     a.swap?.totalBytes === b.swap?.totalBytes &&
     serverIpsEquals(a.ips, b.ips)
   )
@@ -797,7 +863,7 @@ export function osMetadataFromColumns(row: ServerOsColumns): ServerOsMetadata | 
   if (codename) os.codename = codename
   const prettyName = optionalTrimmedString(row.osPrettyName)
   if (prettyName) os.prettyName = prettyName
-  const architecture = optionalTrimmedString(row.osArchitecture)
+  const architecture = normalizeServerOsArchitecture(row.osArchitecture)
   if (architecture) os.architecture = architecture
   return Object.keys(os).length > 0 ? os : undefined
 }
@@ -1845,6 +1911,11 @@ export function redactServerOptions<T>(value: T): T {
   return copy as T
 }
 
+function assignHideWebServerNames(options: ServerOptions, value: Record<string, unknown>): void {
+  const hide = parseHideWebServerNames(value.hideWebServerNames)
+  if (hide !== undefined) options.hideWebServerNames = hide
+}
+
 /** Parse operator-controlled `server.options` jsonb. */
 export function parseServerOptions(value: unknown): ServerOptions | null {
   if (!isRecord(value)) return null
@@ -1863,6 +1934,7 @@ export function parseServerOptions(value: unknown): ServerOptions | null {
   if (sshPort !== undefined) options.sshPort = sshPort
   const ntp = parseNtpDefaults(value.ntp)
   if (ntp) options.ntp = ntp
+  assignHideWebServerNames(options, value)
   if ('metricsCapabilityPlan' in value) {
     const metricsCapabilityPlan = parseServerMetricsCapabilityPlanOverride(
       value.metricsCapabilityPlan

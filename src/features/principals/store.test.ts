@@ -350,7 +350,8 @@ test('isManagedUsernameTaken scopes by server-owning org not create chain', asyn
       name: 'p',
       workspaceId: ws!.id,
       organizationId: organizationIdA,
-      metadata: { type: 'managed', code: 'postgres' },
+      kind: 'managed',
+      metadata: { code: 'postgres' },
     })
     .returning({ id: project.id })
   const [env] = await db
@@ -430,7 +431,8 @@ test('resolveManagedAppliedUsername suffixes when short name taken', async () =>
       name: 'p',
       workspaceId: ws!.id,
       organizationId,
-      metadata: { type: 'managed', code: 'postgres' },
+      kind: 'managed',
+      metadata: { code: 'postgres' },
     })
     .returning({ id: project.id })
   const [env] = await db
@@ -454,6 +456,7 @@ test('resolveManagedAppliedUsername suffixes when short name taken', async () =>
   })
   // The cluster's own root login holds the bare engine admin name.
   await db.insert(login).values({
+    recipe: 'app',
     managedId,
     role: 'root',
     username: 'postgres',
@@ -461,6 +464,7 @@ test('resolveManagedAppliedUsername suffixes when short name taken', async () =>
   })
 
   await db.insert(login).values({
+    recipe: 'app',
     managedId,
     role: 'user',
     username: 'webuser',
@@ -587,6 +591,29 @@ test('createPrincipal and replaceTenancies write expected tenancy edges', async 
   })
 })
 
+test('ensureComposePrincipal seeds the access column from the requested level', async () => {
+  await withPrincipalFixtures(async ({ db, organizationId, projectId }) => {
+    const cases = [
+      { alias: 'accssh', access: 'ssh', expected: 'shell' },
+      { alias: 'accsftp', access: 'sftp', expected: 'sftp' },
+      { alias: 'accnone', access: undefined, expected: 'none' },
+    ] as const
+    for (const scenario of cases) {
+      const { principalId } = await ensureComposePrincipal(db, {
+        organizationId,
+        projectId,
+        alias: scenario.alias,
+        access: scenario.access,
+      })
+      const [row] = await db
+        .select({ access: principal.access })
+        .from(principal)
+        .where(eq(principal.id, principalId))
+      assertEquals(row?.access, scenario.expected, scenario.alias)
+    }
+  })
+})
+
 test('ensureComposePrincipal follows the org default scheme and stores it', async () => {
   await withPrincipalFixtures(async ({ db, organizationId, projectId }) => {
     const scenarios = [
@@ -649,5 +676,49 @@ test('ensureComposePrincipal follows the org default scheme and stores it', asyn
     } finally {
       await db.delete(principal).where(inArray(principal.id, ids))
     }
+  })
+})
+
+test('ensureComposePrincipal adopts a hand-made account that has the alias name', async () => {
+  await withPrincipalFixtures(async ({ db, organizationId, projectId }) => {
+    const [manual] = await db
+      .insert(principal)
+      .values({
+        organizationId,
+        username: 'adoptme',
+        appliedUsername: 'adoptme_abcdefghijk',
+        projectId,
+        metadata: { home: '/srv/users/adoptme_abcdefghijk' },
+        access: 'sftp',
+      })
+      .returning({ id: principal.id })
+    const first = await ensureComposePrincipal(db, { organizationId, projectId, alias: 'adoptme' })
+    assertEquals(first, { principalId: manual.id, created: false })
+    const [row] = await db
+      .select({ metadata: principal.metadata, access: principal.access })
+      .from(principal)
+      .where(eq(principal.id, manual.id))
+    assertEquals((row?.metadata as Record<string, unknown>).composeAlias, 'adoptme')
+    assertEquals(row?.access, 'sftp')
+    const again = await ensureComposePrincipal(db, { organizationId, projectId, alias: 'adoptme' })
+    assertEquals(again.principalId, manual.id)
+  })
+})
+
+test('ensureComposePrincipal adopts a hand-made account whatever its case', async () => {
+  await withPrincipalFixtures(async ({ db, organizationId, projectId }) => {
+    const [manual] = await db
+      .insert(principal)
+      .values({
+        organizationId,
+        username: 'AdoptMe',
+        appliedUsername: 'adoptme_abcdefghijk',
+        projectId,
+        metadata: { home: '/srv/users/adoptme_abcdefghijk' },
+        access: 'sftp',
+      })
+      .returning({ id: principal.id })
+    const first = await ensureComposePrincipal(db, { organizationId, projectId, alias: 'AdoptMe' })
+    assertEquals(first, { principalId: manual.id, created: false })
   })
 })

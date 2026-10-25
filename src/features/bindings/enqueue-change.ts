@@ -19,6 +19,7 @@ import {
   prepareManagedApplyPayloads,
 } from '../managed/apply-prepare.ts'
 import { enqueueManagedIngressReconcile } from '../managed/ingress-desired.ts'
+import { MANAGED_APPLY_EXPIRES_MS } from '../managed/ingress-desired-pure.ts'
 import { getManagedEngineSpec } from '../managed/index.ts'
 import { loadManagedOptions } from '../managed/options.ts'
 import { parseManagedResidual } from '../managed/serialize.ts'
@@ -212,6 +213,10 @@ export async function enqueueIngressForBindingChange(
         actorId: params.actorId,
         secretsConfig,
         dataEncryptionSecrets,
+        // Built from the database now, not from the apply's result. On the apply's own
+        // server it queues behind the apply, so it gets the apply's budget; other
+        // servers run in their own lane at the same time and simply start sooner.
+        ...(applyStatus === 'enqueued' ? { waitsBehindMs: MANAGED_APPLY_EXPIRES_MS } : {}),
       })
     } catch (err) {
       ingressFailed = true

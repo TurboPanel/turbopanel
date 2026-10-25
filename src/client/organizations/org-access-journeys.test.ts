@@ -330,6 +330,47 @@ test('revoking a grant refuses the former manager at once and records the access
   })
 })
 
+test('the deploy time limit is stored in its own column: default 30, set, read back, audited, out of range refused', async () => {
+  await withFixture(async (fx) => {
+    const url = `/organizations/${fx.organizationId}/deploy-timeout`
+    const read = async () =>
+      (await (await fx.call(fx.owner, 'GET', url)).json()) as { deployTimeoutMinutes: number }
+    assertEquals((await read()).deployTimeoutMinutes, 30)
+
+    const put = await fx.call(fx.owner, 'PUT', url, { deployTimeoutMinutes: 90 })
+    assertEquals(put.status, 200)
+    assertEquals(await put.json(), { ok: true, deployTimeoutMinutes: 90 })
+    assertEquals((await read()).deployTimeoutMinutes, 90)
+    const [row] = await fx.db
+      .select({ minutes: organization.deployTimeoutMinutes, options: organization.options })
+      .from(organization)
+      .where(eq(organization.id, fx.organizationId))
+    assertEquals(row?.minutes, 90)
+    assertEquals(
+      (row?.options as Record<string, unknown> | null)?.deployTimeoutMinutes,
+      undefined,
+      'the setting is a column, not an option key'
+    )
+    const audited = await fx.db
+      .select({ id: audit.id })
+      .from(audit)
+      .where(
+        and(
+          eq(audit.organizationId, fx.organizationId),
+          eq(audit.action, 'organization.deploy_timeout.set')
+        )
+      )
+    assertEquals(audited.length, 1)
+
+    for (const bad of [4, 241, 12.5, '60']) {
+      const refused = await fx.call(fx.owner, 'PUT', url, { deployTimeoutMinutes: bad })
+      assertEquals(refused.status, 400, JSON.stringify(bad))
+      await refused.body?.cancel()
+    }
+    assertEquals((await read()).deployTimeoutMinutes, 90)
+  })
+})
+
 test('an expired invitation is refused with a plain 410 and adds nobody to the team', async () => {
   await withFixture(async (fx) => {
     const invitee = await fx.addPerson('outsider')

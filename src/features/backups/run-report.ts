@@ -34,6 +34,7 @@ import { COPY_BACKUP_ARTIFACT_EXTENSION } from '../../contracts/commands/schemas
 import { isManagedBackupArtifactExtension } from '../managed/types.ts'
 import { insertManagedBackup } from './backup-records.ts'
 import { deletePrunedArchives, insertArchive } from './archive-records.ts'
+import { recordPendingCopy } from './copy-records.ts'
 import { BACKUP_ROOT_FOLDERS, backupRelativePath } from './vocabulary.ts'
 
 /** Stored failure text is bounded; the daemon caps it at the same length. */
@@ -69,7 +70,13 @@ export type BackupRunRecord = {
   finishedAt: string
   status: 'succeeded' | 'failed'
   error?: string
-  artifact?: { backupId: string; sizeBytes: number; checksum: string; path: string }
+  artifact?: {
+    backupId: string
+    sizeBytes: number
+    checksum: string
+    path: string
+    database?: string
+  }
   pruned: string[]
   nextRunAt?: string
 }
@@ -187,6 +194,7 @@ function toRunRecord(
       sizeBytes: report.sizeBytes ?? 0,
       checksum: report.checksum ?? '',
       path: backupRelativePath(report.path ?? '', target.kind, targetId(target)),
+      ...(report.database === undefined ? {} : { database: report.database }),
     }
   }
   return record
@@ -264,6 +272,7 @@ async function recordManagedArtifacts(
       managedId,
       sizeBytes: record.artifact.sizeBytes,
       checksum: record.artifact.checksum,
+      ...(record.artifact.database === undefined ? {} : { database: record.artifact.database }),
       path: record.artifact.path,
       createdAt: record.finishedAt,
       retentionId: record.policyId,
@@ -338,6 +347,13 @@ export async function recordBackupRun(db: Db, record: BackupRunRecord): Promise<
         .where(eq(retention.id, record.policyId))
     }
   })
+  // After the commit: a note that a copy is waiting must never undo the record of the run.
+  if (record.artifact && record.target.kind === 'managed') {
+    await recordPendingCopy(db, {
+      managedId: record.target.managedId,
+      backupId: record.artifact.backupId,
+    })
+  }
 }
 
 export function createBackupRunReportStore(db: Db): BackupRunReportStore {

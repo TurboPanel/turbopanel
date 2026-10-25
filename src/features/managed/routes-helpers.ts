@@ -280,6 +280,7 @@ export function managedSessionPaths(): string[] {
     '/environments/:id/managed/users/:loginId/effective-permissions',
     '/environments/:id/managed/databases',
     '/environments/:id/managed/databases/:databaseName',
+    '/environments/:id/managed/databases/:databaseName/owner-role',
     '/environments/:id/managed/privilege-catalogue',
     '/environments/:id/managed/status',
     '/environments/:id/managed/logs',
@@ -289,6 +290,7 @@ export function managedSessionPaths(): string[] {
     '/environments/:id/managed/backup-policies',
     '/environments/:id/managed/backup-policies/:policyId',
     '/environments/:id/managed/backup-policies/:policyId/runs',
+    '/environments/:id/managed/backup-target',
     '/environments/:id/managed/members',
     '/environments/:id/managed/members/:memberId',
     '/environments/:id/managed/members/:memberId/promote',
@@ -562,11 +564,19 @@ const RESERVED_MANAGED_USERNAMES = new Set(['postgres', 'root', 'mysql', 'supera
  */
 const RESERVED_MANAGED_USERNAME_PREFIX = 'tp_'
 
-export function isReservedManagedUsername(username: string, rootUsername?: string): boolean {
+/** PostgreSQL itself owns role names starting with `pg_`. */
+const RESERVED_POSTGRES_NAME_PREFIX = 'pg_'
+
+export function isReservedManagedUsername(
+  username: string,
+  rootUsername?: string,
+  engine?: string
+): boolean {
   const lower = username.toLowerCase()
   return (
     RESERVED_MANAGED_USERNAMES.has(lower) ||
     lower.startsWith(RESERVED_MANAGED_USERNAME_PREFIX) ||
+    (engine === 'postgres' && lower.startsWith(RESERVED_POSTGRES_NAME_PREFIX)) ||
     (rootUsername !== undefined && username === rootUsername)
   )
 }
@@ -598,13 +608,17 @@ export function parseManagedUserCreateFields(
   const effectiveRoot = rootUsername ?? ctx.spec.rootUsername
   const { pattern, maxLength } = ctx.spec.userOperations.identifier
   const maxShortLength = maxTypedNameLength(nameScheme, maxLength)
-  if (
-    !USERNAME_RE.test(username) ||
-    !pattern.test(username) ||
-    username.length > maxShortLength ||
-    isReservedManagedUsername(username, effectiveRoot)
-  ) {
+  if (!USERNAME_RE.test(username) || !pattern.test(username) || username.length > maxShortLength) {
     return c.json({ error: 'Invalid username' }, 400)
+  }
+  if (isReservedManagedUsername(username, effectiveRoot, ctx.spec.engine)) {
+    return c.json(
+      {
+        error: 'reserved_username',
+        message: `'${username}' is a name the database engine or TurboPanel keeps for itself. Pick a different login name.`,
+      },
+      422
+    )
   }
 
   const grants = parseManagedLoginGrantFields(c, ctx, body, options)
@@ -642,7 +656,7 @@ export function parseManagedLoginGrantFields(
   }
   // A cluster that predates the reserved-name check may still list a system schema.
   if (databases.some((name) => isReservedDatabaseName(ctx.spec.engine, name))) {
-    return c.json({ error: 'reserved_database_name' }, 400)
+    return c.json(reservedDatabaseNameBody(), 422)
   }
 
   const connectionRole = parseManagedConnectionRole(body.connectionRole)
@@ -700,7 +714,7 @@ export function evaluateExistingPrincipalLoginName(
       message: `The principal's name '${appliedUsername}' is not a valid ${spec.engine} role name (at most ${maxLength} characters, matching ${pattern}). Create a login with a new name instead.`,
     }
   }
-  if (isReservedManagedUsername(appliedUsername, rootUsername ?? spec.rootUsername)) {
+  if (isReservedManagedUsername(appliedUsername, rootUsername ?? spec.rootUsername, spec.engine)) {
     return {
       error: 'principal_name_reserved',
       message: `The principal's name '${appliedUsername}' is reserved on ${spec.engine}. Create a login with a new name instead.`,
@@ -777,7 +791,7 @@ export function parseManagedLoginPatchFields(
       return c.json({ error: 'Invalid request' }, 400)
     }
     if (list.some((name) => isReservedDatabaseName(ctx.spec.engine, name))) {
-      return c.json({ error: 'reserved_database_name' }, 400)
+      return c.json(reservedDatabaseNameBody(), 422)
     }
     input.databases = [...new Set(list as string[])]
   }
@@ -934,6 +948,36 @@ export function isReservedDatabaseName(engine: string, name: string): boolean {
   return reservedDatabaseNames(engine).includes(name.toLowerCase())
 }
 
+/**
+ * PostgreSQL's built-in databases and the `pg_` prefix it keeps. Only checked
+ * when a database is created: older clusters may already list `postgres` as an
+ * ordinary database and keep working.
+ */
+const POSTGRES_RESERVED_NEW_DATABASES: ReadonlySet<string> = new Set([
+  'postgres',
+  'template0',
+  'template1',
+])
+
+/** The plain answer for a reserved database name (HTTP 422). */
+function reservedDatabaseNameBody(name?: string): { error: string; message: string } {
+  const subject = name === undefined ? 'That database name' : `'${name}'`
+  return {
+    error: 'reserved_database_name',
+    message: `${subject} is a name the database engine keeps for itself. Pick a different database name.`,
+  }
+}
+
+/** True for a name that must not be given to a new database or initial database. */
+export function isReservedNewDatabaseName(engine: string, name: string): boolean {
+  if (isReservedDatabaseName(engine, name)) return true
+  if (engine !== 'postgres') return false
+  const lower = name.toLowerCase()
+  return (
+    POSTGRES_RESERVED_NEW_DATABASES.has(lower) || lower.startsWith(RESERVED_POSTGRES_NAME_PREFIX)
+  )
+}
+
 export function validateManagedDatabaseCreateName(
   name: string,
   databases: readonly string[],
@@ -948,8 +992,8 @@ export function validateManagedDatabaseCreateName(
       status: 400,
     }
   }
-  if (isReservedDatabaseName(engine, name)) {
-    return { ok: false, error: 'reserved_database_name', status: 400 }
+  if (isReservedNewDatabaseName(engine, name)) {
+    return { ok: false, ...reservedDatabaseNameBody(name), status: 422 }
   }
   if (databases.some((entry) => entry.toLowerCase() === name.toLowerCase())) {
     return { ok: false, error: 'database_exists', status: 409 }
@@ -1276,7 +1320,13 @@ export function evaluateOperatorPromoteGate(
   replication: unknown,
   force: boolean,
   nowMs?: number,
-  engine?: string
+  engine?: string,
+  /**
+   * True only when this promote will run a planned switchover with a fence:
+   * the old primary's server is connected, so its final position is recorded
+   * and the target waits for it. Without it an idle-only reading is refused.
+   */
+  fenceWillRun?: boolean
 ):
   | null
   | 'managed_replica_not_streaming'
@@ -1301,9 +1351,51 @@ export function evaluateOperatorPromoteGate(
     return null
   }
   if (isMysqlFamilyEngine(engine) && replication.fullyApplied !== true) {
-    return 'managed_replica_not_fully_applied'
+    // An explicit false is behind. A missing reading is only accepted for MySQL
+    // (not MariaDB, whose positions mean something else) when a fence will run
+    // (old primary connected; never the dead-source or no-primary paths), and
+    // for an idle pair: the replica reports its applied set but has received nothing
+    // since it started (no received set), both threads run, and lag is zero.
+    // The planned switchover itself then proves the final position: it stops
+    // the old primary, records its last GTID set and makes the target wait for
+    // it before promoting, aborting (and reactivating the old primary) on a
+    // timeout. Failover never comes through this gate.
+    if (
+      replication.fullyApplied === false ||
+      engine !== 'mysql' ||
+      fenceWillRun !== true ||
+      !isIdleMysqlReplicaReading(replication)
+    ) {
+      return 'managed_replica_not_fully_applied'
+    }
   }
   return null
+}
+
+/**
+ * True when a reading that passed {@link evaluateOperatorPromoteGate} passed
+ * only on the idle MySQL clause (no `fullyApplied: true`). Such a promote must
+ * fence the old primary and wait for its recorded final position; if the old
+ * primary drops offline before the fence starts, the switchover is refused
+ * rather than promoting with no position to wait for.
+ */
+export function operatorPromoteRequiresFence(
+  replication: unknown,
+  force: boolean,
+  engine?: string
+): boolean {
+  if (force || !isMysqlFamilyEngine(engine)) return false
+  return !isPlainObject(replication) || replication.fullyApplied !== true
+}
+
+function isIdleMysqlReplicaReading(replication: Record<string, unknown>): boolean {
+  return (
+    replication.state === 'streaming' &&
+    replication.lagSeconds === 0 &&
+    replication.receivedGtid === undefined &&
+    typeof replication.executedGtid === 'string' &&
+    replication.executedGtid.length > 0
+  )
 }
 
 export type QueuedCommandFanoutRow = {
@@ -1462,8 +1554,64 @@ export function buildManagedDestroyQueuedResponse(params: { commandId: string; s
   }
 }
 
-export function buildManagedDeleteHardResponse() {
-  return { ok: true as const, deleted: true as const }
+export type ManagedHostCleanupRow = {
+  serverId: string
+  status: 'queued' | 'failed'
+  online: boolean
+}
+
+/**
+ * One row per member host for a force-delete: enqueue outcome plus whether
+ * that host is connected right now (offline hosts still get a long-lived
+ * destroy; they run it when they reconnect).
+ */
+export function buildManagedForceHostCleanup(
+  members: readonly { serverId: string }[],
+  enqueued: readonly { serverId: string; status: 'queued' | 'failed' }[],
+  onlineByServerId: ReadonlyMap<string, boolean>
+): ManagedHostCleanupRow[] {
+  const statusByServer = new Map<string, 'queued' | 'failed'>()
+  for (const row of enqueued) {
+    if (row.status === 'failed') {
+      statusByServer.set(row.serverId, 'failed')
+      continue
+    }
+    if (statusByServer.get(row.serverId) !== 'failed') {
+      statusByServer.set(row.serverId, 'queued')
+    }
+  }
+  const seen = new Set<string>()
+  const hostCleanup: ManagedHostCleanupRow[] = []
+  for (const member of members) {
+    if (seen.has(member.serverId)) continue
+    seen.add(member.serverId)
+    hostCleanup.push({
+      serverId: member.serverId,
+      status: statusByServer.get(member.serverId) ?? 'failed',
+      online: onlineByServerId.get(member.serverId) === true,
+    })
+  }
+  return hostCleanup
+}
+
+export function buildManagedDeleteHardResponse(params?: {
+  hostCleanup?: readonly ManagedHostCleanupRow[]
+}) {
+  const hostCleanup = params?.hostCleanup
+  if (!hostCleanup || hostCleanup.length === 0) {
+    return { ok: true as const, deleted: true as const }
+  }
+  const offlineCount = hostCleanup.filter((row) => !row.online).length
+  return {
+    ok: true as const,
+    deleted: true as const,
+    hostCleanup: [...hostCleanup],
+    ...(offlineCount > 0
+      ? {
+          note: `The cleanup will run when ${offlineCount} offline server(s) reconnect within 7 days.`,
+        }
+      : {}),
+  }
 }
 
 export function buildManagedDeleteQueuedResponse<T extends QueuedCommandFanoutRow>(

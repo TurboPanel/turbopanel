@@ -43,6 +43,7 @@ import {
   isFleetGateSatisfied,
   type PlatformPhase,
   platformFailureError,
+  runWaitsOnlyOnOfflineServers,
   type StepSummary,
   summarizeSteps,
   UPGRADE_TICK_STEP_BUDGET,
@@ -50,10 +51,22 @@ import {
 import {
   computeBackoffMs,
   planStepAction,
+  type RestartFailureReason,
   type StepAction,
+  UPGRADE_OFFLINE_DEADLINE_MS,
   UPGRADE_STEP_MAX_ATTEMPTS,
   UPGRADE_VERIFY_TIMEOUT_MS,
 } from './transitions.ts'
+import {
+  describeRestartPending,
+  readRestartPending,
+  readServerSnapshot,
+  RESTART_FAILED_CODE,
+  type ServerSnapshot,
+  UPGRADE_RESTART_RECONNECT_MS,
+  withRestartPending,
+  withRestartRecovered,
+} from './restart-report.ts'
 import { shouldAutoStartRun } from './schedule.ts'
 import {
   type ClientUpdateBlock,
@@ -125,14 +138,14 @@ export type UpgradeCoordinator = {
       }
   >
   tick(input?: { resolveManifests?: boolean }): Promise<void>
-  activeRun(): Promise<(UpgradeRunRow & { steps: UpgradeStepRow[] }) | null>
+  activeRun(): Promise<UpgradeRunWithSteps | null>
   /**
    * The most recent finished run, with its steps, when it ended within
    * {@link UPGRADE_LAST_RUN_VISIBLE_MS}. A run leaves `activeRun` the moment it
    * fails; without this the console loses the failure and its reason.
    */
-  lastRun(): Promise<(UpgradeRunRow & { steps: UpgradeStepRow[] }) | null>
-  run(id: string): Promise<(UpgradeRunRow & { steps: UpgradeStepRow[] }) | null>
+  lastRun(): Promise<UpgradeRunWithSteps | null>
+  run(id: string): Promise<UpgradeRunWithSteps | null>
   history(offset: number, limit: number): Promise<{ runs: UpgradeRunRow[]; total: number }>
   servers(input: { offset: number; limit: number; status: string }): Promise<{
     servers: UpgradeStepRow[]
@@ -151,6 +164,8 @@ export type UpgradeCoordinator = {
     at: string
     detail?: string
     errorCode?: string
+    /** The daemon's restart diagnostics on a `restart_failed` stage (untrusted; sanitized on save). */
+    restart?: unknown
     /** Wire id of the `update` / `instance-update` this report belongs to. */
     requestId: string
   }): Promise<void>
@@ -177,6 +192,12 @@ export type UpgradeCoordinatorDeps = {
   now: () => string
   colocatedServerId: string | null
   instanceInstalled: { version: string; commit: string | null }
+  /**
+   * The installed control-plane package's full label (`0.1.19-canary.3`), when the
+   * installer wrote one. `instanceInstalled.version` is the plain deno.json number,
+   * so a step's from-version reads this first.
+   */
+  buildLabel?: string | null
   resolveTarget?: () => Promise<UpgradeTarget>
   /**
    * How long a restarted control-plane step may wait for the daemon's verdict
@@ -261,6 +282,47 @@ function runActiveRefusal(activeRunId?: string) {
   }
 }
 
+/** Sentence on a fleet step that was already offline when the update started. */
+export const SKIPPED_OFFLINE_AT_START_MESSAGE =
+  'It was offline when the update started. It updates on its own when it reconnects.'
+
+/**
+ * Sentence on a fleet step that lost its connection during the run and stayed
+ * away past {@link UPGRADE_OFFLINE_DEADLINE_MS} (counted from the tick that
+ * first noticed it offline).
+ */
+function skipOfflineTimeoutMessage(): string {
+  const minutes = Math.round(UPGRADE_OFFLINE_DEADLINE_MS / 60_000)
+  return `It stayed offline for ${minutes} minutes during the update. It updates on its own when it reconnects.`
+}
+
+function markStepSkippedOffline(step: UpgradeStepRow, message: string): void {
+  step.status = 'skipped'
+  step.errorCode = 'server_offline' satisfies UpgradeStepErrorCode
+  step.errorMessage = message
+}
+
+function connectedServerIds(fleet: readonly FleetServerFact[]): string[] {
+  return fleet.filter((fact) => fact.connected).map((fact) => fact.serverId)
+}
+
+function runBlocksStart(
+  steps: readonly UpgradeStepRow[],
+  fleet: readonly FleetServerFact[]
+): boolean {
+  return !runWaitsOnlyOnOfflineServers(steps, connectedServerIds(fleet))
+}
+
+/** A step as the run endpoints return it: `connected` is the host's live link. */
+export type UpgradeStepWithLink = UpgradeStepRow & {
+  connected: boolean
+  /** The server's name now, else the name it had when the step was planned; null when it never had one. */
+  serverName: string | null
+  /** The server's hostname now, else the one it had when the step was planned. */
+  hostname: string | null
+}
+export type UpgradeRunWithSteps = UpgradeRunRow & { steps: UpgradeStepWithLink[] }
+
 export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeCoordinator {
   const resolveTarget = deps.resolveTarget ?? (() => resolveUpgradeTarget(deps.channel))
 
@@ -268,18 +330,26 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
     return await deps.store.fleetFacts(deps.colocatedServerId)
   }
 
-  async function withSteps(
-    run: UpgradeRunRow | null
-  ): Promise<(UpgradeRunRow & { steps: UpgradeStepRow[] }) | null> {
+  async function withSteps(run: UpgradeRunRow | null): Promise<UpgradeRunWithSteps | null> {
     if (!run) return null
-    const steps = await deps.store.stepsFor(run.id)
-    return { ...run, steps }
+    const [steps, fleet] = await Promise.all([deps.store.stepsFor(run.id), facts()])
+    const connected = new Set(connectedServerIds(fleet))
+    const byId = new Map(fleet.map((fact) => [fact.serverId, fact]))
+    return {
+      ...run,
+      steps: steps.map((step) => ({
+        ...step,
+        connected: connected.has(step.serverId),
+        ...serverLabelFor(step, byId.get(step.serverId)),
+      })),
+    }
   }
 
   async function buildPreflight(
     target: UpgradeTarget,
     fleet: FleetServerFact[],
-    active: UpgradeRunRow | null
+    active: UpgradeRunRow | null,
+    activeSteps: readonly UpgradeStepRow[] = []
   ): Promise<UpgradePreflight> {
     const checks: UpgradePreflight['checks'] = []
     const blockers: string[] = []
@@ -302,12 +372,13 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
     if (!targetKnown) {
       blockers.push('The channel target could not be resolved.')
     }
+    const activeBlocks = active !== null && runBlocksStart(activeSteps, fleet)
     checks.push({
       id: 'active',
       label: 'No upgrade is already running',
-      passed: active === null,
+      passed: !activeBlocks,
     })
-    if (active) blockers.push(UPGRADE_RUN_ACTIVE_MESSAGE)
+    if (activeBlocks) blockers.push(UPGRADE_RUN_ACTIVE_MESSAGE)
     const manifestGaps = pinnedManifestBlockers(deps.channel, target, {
       runtime: deps.runtime,
       hasColocated: Boolean(deps.colocatedServerId),
@@ -317,7 +388,7 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
     if (deps.runtime === 'deno' && !deps.development) {
       checkSelfHostedControlPlane(target, colocated, hasInstance, checks, blockers)
     }
-    const runId = active?.id ?? (await ensureReservedRunId(deps.store))
+    const runId = activeBlocks && active ? active.id : await ensureReservedRunId(deps.store)
     return {
       ok: true,
       canStart: blockers.length === 0,
@@ -500,14 +571,21 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
     // what to do with the copy it read earlier) always wins over this pass.
     const readStatus = step.status
     if (action.kind === 'done') {
-      step.status = 'done'
-      step.lastStageAt = deps.now()
+      markStepDone(step, deps.now())
+      return await saveStepIfChanged(step, before, readStatus)
+    }
+    if (action.kind === 'restart_failed') {
+      markRestartFailed(step, action.reason, fact?.commit ?? null, deps.now())
       return await saveStepIfChanged(step, before, readStatus)
     }
     if (action.kind === 'wait_offline') {
       // The offline deadline counts from here, not from the row's age.
       if (step.status !== 'waiting') step.lastStageAt = deps.now()
       step.status = 'waiting'
+      return await saveStepIfChanged(step, before, readStatus)
+    }
+    if (action.kind === 'skip_offline') {
+      markStepSkippedOffline(step, skipOfflineTimeoutMessage())
       return await saveStepIfChanged(step, before, readStatus)
     }
     if (action.kind === 'needs_attention') {
@@ -583,12 +661,15 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
     return planStepAction(
       {
         status: step.status,
+        phase: step.phase,
         unit: step.unit,
         attempts: step.attempts,
         nextAttemptAt: step.nextAttemptAt,
         lastStageAt: step.lastStageAt,
         toCommit: step.toCommit,
         inProgressRefused: readDispatchHistory(step.detail).inProgressRefused,
+        fromCommit: step.fromCommit,
+        restartReportedAt: readRestartPending(step.detail)?.at ?? null,
       },
       {
         serverConnected: fact?.connected === true,
@@ -688,6 +769,35 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
     await deps.store.writeTickCursor(run.id, null)
   }
 
+  /**
+   * Skip fleet steps that are only waiting on offline hosts, then finish the
+   * run. Returns false (and leaves the run open) when a step is no longer idle:
+   * a concurrent hello, progress report or tick moved it, the host reconnected
+   * after the caller read the fleet, or it was dispatched. Each step is
+   * re-checked (fresh step row and connection fact) right before its save. A
+   * partial lost race can leave earlier steps already skipped while the run
+   * stays open; that is acceptable, the next tick finishes the run.
+   */
+  async function settleRunWaitingOnOfflineServers(run: UpgradeRunRow): Promise<boolean> {
+    const steps = await deps.store.stepsFor(run.id)
+    let lostRace = false
+    await forEachSequential(steps, async (step) => {
+      if (isTerminal(step.status)) return
+      const [fact] = await deps.store.factsFor([step.serverId], deps.colocatedServerId)
+      const idle = step.status === 'waiting' && step.phase === 'fleet' && step.attempts === 0
+      if (!idle || fact?.connected !== false) {
+        lostRace = true
+        return
+      }
+      const expectedStatus = step.status
+      markStepSkippedOffline(step, SKIPPED_OFFLINE_AT_START_MESSAGE)
+      if (!(await deps.store.saveStep(step, expectedStatus))) lostRace = true
+    })
+    if (lostRace) return false
+    await finishRun(run, summarizeSteps(steps))
+    return true
+  }
+
   /** Facts for the window's servers, plus the co-located host the gate reads. */
   async function factsForWindow(window: UpgradeTickWindow): Promise<FleetServerFact[]> {
     const ids = window.steps.map((step) => step.serverId)
@@ -768,14 +878,6 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
     return true
   }
 
-  async function markInProgressRefused(step: UpgradeStepRow, at: string): Promise<void> {
-    // An earlier dispatch of this step is still installing. It is the live
-    // install now: keep the step in flight and let its own reports finish it.
-    step.detail = withInProgressRefused(step.detail)
-    step.lastStageAt = at
-    await deps.store.saveStep(step)
-  }
-
   function currentCommit(step: UpgradeStepRow, fact: FleetServerFact | undefined): string | null {
     if (step.unit === 'instance') {
       // A UI-only refresh reinstalls the same binary, so "the instance runs the
@@ -800,20 +902,28 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
         facts(),
         deps.store.activeRun(),
       ])
-      return await buildPreflight(target, fleet, active)
+      const activeSteps = active ? await deps.store.stepsFor(active.id) : []
+      return await buildPreflight(target, fleet, active, activeSteps)
     },
     start: async (input) => {
-      // One update at a time. Checked before anything else (the target is not
-      // even resolved) so a second press always gets the machine code, never
-      // a preflight sentence or a manifest-fetch error.
+      // One update at a time. Checked before the target is resolved so a
+      // second press always gets the machine code, never a preflight sentence
+      // or a manifest-fetch error — except a run that is only waiting on
+      // offline fleet hosts, which is settled first so a newer build can start.
       const active = await deps.store.activeRun()
-      if (active) return runActiveRefusal(active.id)
+      if (active) {
+        const [steps, fleet] = await Promise.all([deps.store.stepsFor(active.id), facts()])
+        if (runBlocksStart(steps, fleet)) return runActiveRefusal(active.id)
+        if (!(await settleRunWaitingOnOfflineServers(active))) {
+          return runActiveRefusal(active.id)
+        }
+      }
       const [target, fleet, settings] = await Promise.all([
         resolveTarget(),
         facts(),
         deps.store.settings(),
       ])
-      const preflight = await buildPreflight(target, fleet, active)
+      const preflight = await buildPreflight(target, fleet, null)
       if (!preflight.canStart) {
         return {
           ok: false,
@@ -858,11 +968,21 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
         finishedAt: null,
       }
       const uiBehind = uiBehindTarget(target.ui, input.consoleCommit)
+      const daemonLabels = await knownDaemonLabels(deps.store)
       const steps = plan.steps.map((planned) =>
-        stepFromPlan(run, planned, fleet, now, {
-          commit: deps.instanceInstalled.commit,
-          uiBehind,
-        })
+        stepFromPlan(
+          run,
+          planned,
+          fleet,
+          now,
+          {
+            commit: deps.instanceInstalled.commit,
+            uiBehind,
+            version: deps.buildLabel || deps.instanceInstalled.version,
+            daemonLabels,
+          },
+          !input.serverId
+        )
       )
       run.phase = earliestOpenPhase(steps)
       const inserted = await deps.store.insertRun(run, steps)
@@ -1023,27 +1143,31 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
           !isTerminal(item.status)
       )
       if (!step) return
-      step.status = 'done'
-      step.lastStageAt = at
+      markStepDone(step, at)
       await deps.store.saveStep(step)
     },
     noteProgress: async (input) => {
-      const step = await findOpenStep(deps.store, input.serverId, input.unit, input.upgradeId)
-      if (!step) return
-      const report = classifyReport(step, input.requestId)
-      if (!report) return
-      if (input.stage === 'failed' && input.errorCode === DISPATCH_IN_PROGRESS) {
-        if (report === 'current') await markInProgressRefused(step, input.at)
-        return
-      }
-      const failure = input.stage === 'failed' || input.stage === 'rolled-back'
-      if (failure && !priorFailureApplies(step, report)) return
-      const status = stepStatusForProgressStage(input.stage)
-      step.status = status
-      step.lastStageAt = input.at
-      if (input.errorCode) step.errorCode = input.errorCode
-      if (input.detail) recordProgressDetail(step, status, input.detail)
-      await deps.store.saveStep(step)
+      await applyReport(deps.store, input, (step, report) => {
+        if (input.stage === 'failed' && input.errorCode === DISPATCH_IN_PROGRESS) {
+          if (report === 'current') markInProgressRefused(step, input.at)
+          return report === 'current'
+        }
+        const failure = input.stage === 'failed' || input.stage === 'rolled-back'
+        if (failure && !priorFailureApplies(step, report)) return false
+        if (input.stage === 'failed' && isRestartFailure(step, input.errorCode)) {
+          holdForReconnect(step, deps.now(), input.detail, input.restart)
+          return true
+        }
+        const status = stepStatusForProgressStage(input.stage)
+        // Reports replayed after a restart can arrive out of order; an earlier
+        // stage never pulls a step back from a later one.
+        if (stageRank(status) < stageRank(step.status)) return false
+        step.status = status
+        step.lastStageAt = input.at
+        if (input.errorCode) step.errorCode = input.errorCode
+        if (input.detail) recordProgressDetail(step, status, input.detail)
+        return true
+      })
     },
     updateGate: async () => {
       const [target, fleet] = await Promise.all([resolveTarget(), facts()])
@@ -1055,38 +1179,95 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
       })
     },
     noteOutcome: async (input) => {
-      const step = await findOpenStep(deps.store, input.serverId, input.unit, input.upgradeId)
-      if (!step) return
-      const report = classifyReport(step, input.requestId)
-      if (!report) return
-      if (!input.ok && input.errorCode === DISPATCH_IN_PROGRESS) {
-        if (report === 'current') await markInProgressRefused(step, input.at)
-        return
-      }
-      if (!input.ok && !priorFailureApplies(step, report)) return
-      if (input.ok) {
-        step.lastStageAt = input.at
-        if (step.unit === 'instance') {
-          step.status = 'done'
+      await applyReport(deps.store, input, (step, report) => {
+        if (!input.ok && input.errorCode === DISPATCH_IN_PROGRESS) {
+          if (report === 'current') markInProgressRefused(step, input.at)
+          return report === 'current'
         }
-      } else if (isRollbackOutcome(step, input.errorCode)) {
-        // The daemon reports a rollback as a `rolled-back` progress stage and
-        // then a failed result carrying the rollback's reason code; the
-        // result must not turn that into an ordinary failure.
-        step.status = 'rolled_back'
-        step.errorCode = input.errorCode ?? step.errorCode ?? 'rolled_back'
-        step.errorMessage = input.error
-          ? redactUrlSecrets(input.error)
-          : (step.errorMessage ?? null)
-        step.lastStageAt = input.at
-      } else {
-        step.status = 'failed'
-        step.errorCode = input.errorCode ?? 'update_failed'
-        step.errorMessage = redactedOr(input.error, null)
-        step.lastStageAt = input.at
-      }
-      await deps.store.saveStep(step)
+        if (!input.ok && !priorFailureApplies(step, report)) return false
+        if (!input.ok && isRestartFailure(step, input.errorCode)) {
+          holdForReconnect(step, deps.now(), input.error)
+          return true
+        }
+        applyOutcome(step, input)
+        return true
+      })
     },
+  }
+}
+
+/**
+ * An earlier dispatch of this step is still installing. It is the live install
+ * now: keep the step in flight and let its own reports finish it.
+ */
+function markInProgressRefused(step: UpgradeStepRow, at: string): void {
+  step.detail = withInProgressRefused(step.detail)
+  step.lastStageAt = at
+}
+
+const STAGE_ORDER: readonly string[] = [
+  'dispatched',
+  'preparing',
+  'downloading',
+  'installing',
+  'restarting',
+  'verifying',
+]
+
+/** Position of an in-flight stage; every other status (including the closing ones) ranks by role. */
+function stageRank(status: string): number {
+  const index = STAGE_ORDER.indexOf(status)
+  if (index >= 0) return index
+  return status === 'done' || status === 'failed' || status === 'rolled_back'
+    ? STAGE_ORDER.length
+    : 0
+}
+
+function applyOutcome(
+  step: UpgradeStepRow,
+  input: { ok: boolean; at: string; error?: string; errorCode?: string }
+): void {
+  if (input.ok) {
+    step.lastStageAt = input.at
+    if (step.unit === 'instance') step.status = 'done'
+  } else if (isRollbackOutcome(step, input.errorCode)) {
+    // The daemon reports a rollback as a `rolled-back` progress stage and
+    // then a failed result carrying the rollback's reason code; the
+    // result must not turn that into an ordinary failure.
+    step.status = 'rolled_back'
+    step.errorCode = input.errorCode ?? step.errorCode ?? 'rolled_back'
+    step.errorMessage = input.error ? redactUrlSecrets(input.error) : (step.errorMessage ?? null)
+    step.lastStageAt = input.at
+  } else {
+    step.status = 'failed'
+    step.errorCode = input.errorCode ?? 'update_failed'
+    step.errorMessage = redactedOr(input.error, null)
+    step.lastStageAt = input.at
+  }
+}
+
+const REPORT_WRITE_ATTEMPTS = 5
+
+/**
+ * Apply one daemon report to its open step. Reports replayed after a restart
+ * arrive together and are handled concurrently, so each write is guarded by the
+ * status it read: if another report settled the step first, read it again and
+ * decide against the new state instead of overwriting it (a late `verifying`
+ * must not undo `done`).
+ */
+async function applyReport(
+  store: UpgradeStore,
+  input: { serverId: string; unit: UpgradeStepUnit; upgradeId?: string; requestId: string },
+  mutate: (step: UpgradeStepRow, report: 'current' | 'prior') => boolean
+): Promise<void> {
+  for (let attempt = 0; attempt < REPORT_WRITE_ATTEMPTS; attempt += 1) {
+    const step = await findOpenStep(store, input.serverId, input.unit, input.upgradeId)
+    if (!step) return
+    const report = classifyReport(step, input.requestId)
+    if (!report) return
+    const readStatus = step.status
+    if (!mutate(step, report)) return
+    if (await store.saveStep(step, readStatus)) return
   }
 }
 
@@ -1242,12 +1423,137 @@ function initialStepStatus(satisfied: boolean, ahead: boolean): UpgradeStepRow['
   return 'pending'
 }
 
+function stepErrorCode(ahead: boolean, offlineAtStart: boolean): UpgradeStepErrorCode | null {
+  if (ahead) return 'downgrade_refused'
+  return offlineAtStart ? 'server_offline' : null
+}
+
+function stepErrorMessage(
+  ahead: boolean,
+  offlineAtStart: boolean,
+  installed: string | null | undefined,
+  target: string | null | undefined
+): string | null {
+  if (ahead) {
+    return `Runs ${installed}, newer than the target ${target}. Managed updates never downgrade a server.`
+  }
+  return offlineAtStart ? SKIPPED_OFFLINE_AT_START_MESSAGE : null
+}
+
+/**
+ * What the unit runs right now, with any canary or rc suffix. The control plane
+ * names itself by its installed label. A daemon only reports its plain number, so
+ * its full label is the version a past run targeted at the same commit.
+ */
+function stepFromVersion(
+  unit: UpgradeStepRow['unit'],
+  fact: FleetServerFact | undefined,
+  instance: { version: string; daemonLabels: ReadonlyMap<string, string> }
+): string | null {
+  if (unit === 'instance') return instance.version
+  if (!fact) return null
+  const labelled = fact.commit ? instance.daemonLabels.get(fact.commit) : undefined
+  if (labelled?.startsWith(`${fact.version}-`)) return labelled
+  return fact.version
+}
+
+/** Commit to full version label for every daemon build a recent run targeted. */
+async function knownDaemonLabels(store: UpgradeStore): Promise<Map<string, string>> {
+  const labels = new Map<string, string>()
+  const { runs } = await store.history(0, 50)
+  for (const run of [...runs].reverse()) {
+    const daemon = run.target?.daemon
+    if (daemon?.commit && daemon.version) labels.set(daemon.commit, daemon.version)
+  }
+  return labels
+}
+
+/** The server's name and hostname now, kept on the step so a later rename or delete still reads sensibly. */
+function serverSnapshotOf(fact: FleetServerFact | undefined): ServerSnapshot {
+  return {
+    ...(fact?.name?.trim() ? { serverName: fact.name.trim() } : {}),
+    ...(fact?.hostname?.trim() ? { serverHostname: fact.hostname.trim() } : {}),
+  }
+}
+
+/** Live name and hostname, else the planned-time snapshot, else null (the client shows the short id). */
+function serverLabelFor(
+  step: UpgradeStepRow,
+  fact: FleetServerFact | undefined
+): { serverName: string | null; hostname: string | null } {
+  const snapshot = readServerSnapshot(step.detail)
+  return {
+    serverName: fact?.name?.trim() || snapshot.serverName || null,
+    hostname: fact?.hostname?.trim() || snapshot.serverHostname || null,
+  }
+}
+
+/** A step settles `done`; one that was held after a reported restart error keeps a plain note. */
+function markStepDone(step: UpgradeStepRow, at: string): void {
+  if (readRestartPending(step.detail)) step.detail = withRestartRecovered(step.detail)
+  step.status = 'done'
+  step.lastStageAt = at
+}
+
+/** The daemon step's own `restart_failed` report: a hint to hold on, not a verdict. */
+function isRestartFailure(step: UpgradeStepRow, errorCode: string | undefined): boolean {
+  return step.unit === 'daemon' && errorCode === RESTART_FAILED_CODE
+}
+
+/**
+ * Keep the step in flight and start the reconnect window; the tick judges it
+ * from the host's commit. `at` is the panel's clock, not the frame's: the
+ * host's clock can be off, and the window is checked against the panel's.
+ */
+function holdForReconnect(
+  step: UpgradeStepRow,
+  at: string,
+  message: string | undefined,
+  restart?: unknown
+): void {
+  step.detail = withRestartPending(step.detail, {
+    at,
+    message: message ?? RESTART_FAILED_CODE,
+    restart,
+  })
+  step.status = 'restarting'
+  step.lastStageAt = at
+}
+
+/** The window ended without the target build: fail with the exact reason. */
+function markRestartFailed(
+  step: UpgradeStepRow,
+  reason: RestartFailureReason,
+  currentCommit: string | null,
+  at: string
+): void {
+  const pending = readRestartPending(step.detail)
+  const said = pending ? describeRestartPending(pending) : 'daemon restart failed after reconcile'
+  const minutes = Math.round(UPGRADE_RESTART_RECONNECT_MS / 60_000)
+  const want = shortCommit(step.toCommit)
+  const state = {
+    never_back: `The host did not reconnect within ${minutes} minutes.`,
+    old_build: `The host reconnected but still runs the old build ${shortCommit(currentCommit)}, not the target ${want}.`,
+    other_build: `The host reconnected on ${shortCommit(currentCommit)}, which is neither the old build nor the target ${want}.`,
+  }[reason]
+  step.status = 'failed'
+  step.errorCode = RESTART_FAILED_CODE
+  step.errorMessage = redactUrlSecrets(`${said}. ${state}`)
+  step.lastStageAt = at
+}
+
 function stepFromPlan(
   run: UpgradeRunRow,
   planned: PlannedStep,
   fleet: FleetServerFact[],
   now: string,
-  instance: { commit: string | null; uiBehind: boolean }
+  instance: {
+    commit: string | null
+    uiBehind: boolean
+    version: string
+    daemonLabels: ReadonlyMap<string, string>
+  },
+  skipOffline: boolean
 ): UpgradeStepRow {
   const fact = fleet.find((item) => item.serverId === planned.serverId)
   const pin = unitTarget(run.target, planned.unit)
@@ -1269,6 +1575,10 @@ function stepFromPlan(
       installedBuiltAt: fact?.builtAt,
       targetBuiltAt: pin?.builtAt,
     })
+  // A fleet host that is not connected when the run is planned is left out at
+  // once; it catches up on the first automatic or manual run after it reconnects.
+  const offlineAtStart =
+    skipOffline && !satisfied && !ahead && planned.phase === 'fleet' && fact?.connected === false
   return {
     id: newId(),
     upgradeId: run.id,
@@ -1276,22 +1586,21 @@ function stepFromPlan(
     unit: planned.unit,
     phase: planned.phase,
     batchIndex: planned.batchIndex,
-    status: initialStepStatus(satisfied, ahead),
+    status: initialStepStatus(satisfied, ahead || offlineAtStart),
     requestId: null,
     attempts: 0,
     nextAttemptAt: null,
-    fromVersion: fact?.version ?? null,
+    fromVersion: stepFromVersion(planned.unit, fact, instance),
     toVersion: pin?.version ?? null,
     fromCommit: planned.unit === 'instance' ? null : (fact?.commit ?? null),
     toCommit: pin?.commit ?? null,
     lastStageAt: now,
-    errorCode: ahead ? ('downgrade_refused' satisfies UpgradeStepErrorCode) : null,
-    errorMessage: ahead
-      ? `Runs ${fact?.version}, newer than the target ${pin?.version}. Managed updates never downgrade a server.`
-      : null,
+    errorCode: stepErrorCode(ahead, offlineAtStart),
+    errorMessage: stepErrorMessage(ahead, offlineAtStart, fact?.version, pin?.version),
     detail: {
       phase: planned.phase,
       ...(planned.unit === 'instance' && instance.uiBehind ? { uiRefresh: true } : {}),
+      ...serverSnapshotOf(fact),
     },
   }
 }
