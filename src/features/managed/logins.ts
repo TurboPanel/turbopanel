@@ -561,6 +561,21 @@ export async function removeManagedLogin(db: Db, loginId: string): Promise<Remov
 }
 
 /**
+ * Delete logins that were just created and never applied (their apply could
+ * not be prepared or queued), in one statement so they go together.
+ */
+export async function removeNewManagedLogins(
+  db: Db,
+  managedId: string,
+  loginIds: readonly string[]
+): Promise<void> {
+  if (loginIds.length === 0) return
+  await db
+    .delete(login)
+    .where(and(eq(login.managedId, managedId), inArray(login.id, [...loginIds])))
+}
+
+/**
  * Delete the login rows an apply was asked to drop (`dropUsers`), once the
  * host has dropped those accounts. Called only when the apply succeeded: a
  * host that refuses the drop leaves the panel row in place.

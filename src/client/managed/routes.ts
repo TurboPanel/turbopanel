@@ -86,7 +86,7 @@ import {
   type LoginSettingsPatch,
   type ManagedLoginRow,
   patchLogin,
-  removeManagedLogin,
+  removeNewManagedLogins,
   rotateLoginPassword,
   setLoginPassword,
 } from '../../features/managed/logins.ts'
@@ -1761,9 +1761,8 @@ async function applyCreatedLogins(
   }
 ): Promise<Response | Exclude<Awaited<ReturnType<typeof enqueuePreparedManagedApply>>, Response>> {
   const { ctx, row, options } = params
-  // Each login is removed on its own; the order does not matter.
-  const removeAll = () =>
-    Promise.all(params.loginIds.map((loginId) => removeManagedLogin(db, loginId)))
+  // One statement, so the new logins go together or not at all.
+  const removeAll = () => removeNewManagedLogins(db, row.id, params.loginIds)
   const preparedApply = await prepareManagedApplyPayloads(c, db, {
     managedRow: row,
     spec: ctx.spec,
@@ -1813,6 +1812,52 @@ function parseAppLoginGrants(
     parsed.push({ username, grants })
   }
   return parsed
+}
+
+type ManagedLoginView = ReturnType<typeof serializeManagedLogin>
+
+/**
+ * Inserts the app logins one after another on the transaction's connection,
+ * in order, and reads each back as the answer shows it. A conflict or a row
+ * that cannot be read back throws, so none of them is kept.
+ */
+async function insertAppLogins(
+  tx: Db,
+  dataEncryptionSecrets: DerivedSecretsConfig,
+  shared: Omit<LoginCreateShared, 'settings'>,
+  params: {
+    logins: ReadonlyArray<{ username: string; grants: ManagedLoginGrants }>
+    nameScheme: PrincipalNameScheme
+    grantMode: 'recipe'
+    limits: LoginLimitFields
+  }
+): Promise<Array<{ loginId: string; user: ManagedLoginView; password: string }>> {
+  const made = await params.logins.reduce<Promise<Array<{ loginId: string; password: string }>>>(
+    async (previous, { username, grants }) => {
+      const done = await previous
+      const outcome = await createLoginWithNewName(tx, dataEncryptionSecrets, {
+        ...shared,
+        username,
+        nameScheme: params.nameScheme,
+        settings: {
+          ...grants,
+          grantMode: params.grantMode,
+          // The owner login is a tool login, as a single Database admin login is by default.
+          tool: grants.privileges.includes(DATABASE_ADMIN_PRIVILEGE),
+          ...loginLimitSettings(params.limits),
+        },
+      })
+      if (!outcome.ok) throw new AppLoginConflict(outcome.error, username)
+      return [...done, { loginId: outcome.loginId, password: outcome.password }]
+    },
+    Promise.resolve([])
+  )
+  const saved = await listManagedLogins(tx, shared.managedId)
+  return made.map(({ loginId, password }) => {
+    const loginRow = saved.find((entry) => entry.id === loginId)
+    if (!loginRow) throw new Error(`app login ${loginId} could not be read back`)
+    return { loginId, user: serializeManagedLogin(loginRow, shared.ctx.spec.engine), password }
+  })
 }
 
 /**
@@ -1875,34 +1920,18 @@ async function createAppLogins(c: Context<AppEnv>): Promise<Response> {
   if (gate instanceof Response) return gate
   const { commandQueue, limits, notes } = gate
 
-  let created: Array<{ loginId: string; password: string }>
+  let created: Array<{ loginId: string; user: ManagedLoginView; password: string }>
   try {
     created = await inLoginCreateTransaction(
       db,
       { ctx, managedId: row.id, targetServerId },
       (tx, shared) =>
-        // One after another on the transaction's connection, in order; a
-        // conflict throws, so none of the three is kept.
-        logins.reduce<Promise<Array<{ loginId: string; password: string }>>>(
-          async (previous, { username, grants }) => {
-            const made = await previous
-            const outcome = await createLoginWithNewName(tx, dataEncryptionSecrets, {
-              ...shared,
-              username,
-              nameScheme,
-              settings: {
-                ...grants,
-                grantMode,
-                // The owner login is a tool login, as a single Database admin login is by default.
-                tool: grants.privileges.includes(DATABASE_ADMIN_PRIVILEGE),
-                ...loginLimitSettings(limits),
-              },
-            })
-            if (!outcome.ok) throw new AppLoginConflict(outcome.error, username)
-            return [...made, { loginId: outcome.loginId, password: outcome.password }]
-          },
-          Promise.resolve([])
-        )
+        insertAppLogins(tx, dataEncryptionSecrets, shared, {
+          logins,
+          nameScheme,
+          grantMode,
+          limits,
+        })
     )
   } catch (error) {
     if (!(error instanceof AppLoginConflict)) throw error
@@ -1927,14 +1956,10 @@ async function createAppLogins(c: Context<AppEnv>): Promise<Response> {
   })
   if (enqueued instanceof Response) return enqueued
 
-  const saved = await listManagedLogins(db, row.id)
   const primaryResult = pickPrimaryCommandResult(enqueued)
   return c.json({
     ok: true,
-    logins: created.map(({ loginId, password }) => {
-      const loginRow = saved.find((entry) => entry.id === loginId)
-      return { user: loginRow ? serializeManagedLogin(loginRow, ctx.spec.engine) : null, password }
-    }),
+    logins: created.map(({ user, password }) => ({ user, password })),
     ...notesField(notes),
     commandId: primaryResult?.commandId,
     serverId: primaryResult?.serverId ?? targetServerId,
