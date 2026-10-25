@@ -612,11 +612,12 @@ export type DeployPrepareError =
    * caller can hand it the resolvable sets; reaching here means it could not.
    *
    * The same union carries two siblings with the same posture:
-   * `hosting_tls_mode_unsupported` (a `tls.mode` the deploy payload cannot
-   * express — projecting it would answer a request for a managed certificate
-   * with a self-signed one) and `hosting_route_conflict` (a declaration and a
-   * panel-authored row claiming one route, where taking the row over would
-   * drop the other hostnames it serves).
+   * `hosting_letsencrypt_refused` (`tls.mode: automatic` on a route that
+   * cannot get a Let's Encrypt certificate — the organization switch is off,
+   * the route is not public, or the name can never get one — rather than a
+   * self-signed certificate nobody asked for) and `hosting_route_conflict` (a
+   * declaration and a panel-authored row claiming one route, where taking the
+   * row over would drop the other hostnames it serves).
    */
   | ComposeHostingError
   | { kind: 'site_managed_directory_unowned'; composeServiceName: string }
@@ -4212,10 +4213,10 @@ export type HostingTlsWire =
  * ACME-managed Let's Encrypt pins omit `tlsId` on the wire so older daemons
  * fall back to `tls internal`, and they are excluded from `tlsMaterial`.
  *
- * `acmeEnabled` is the org's opt-in gate (`organization.options.acmeEnabled`,
- * off by default) — checked here as defense in depth even though `POST /tls`
- * already refuses to create a `lets_encrypt` row while the org is opted out,
- * because a `managed` row can predate the org later disabling the gate.
+ * `acmeEnabled` is the org's gate (`organization.options.acmeEnabled`, on for
+ * new organizations) — checked here as defense in depth even though `POST
+ * /tls` and the compose reconcile already refuse while the org is opted out,
+ * because an `automatic` row can predate the org later disabling the gate.
  */
 export function hostingTlsWireFromResolved(params: {
   tlsId: string | null

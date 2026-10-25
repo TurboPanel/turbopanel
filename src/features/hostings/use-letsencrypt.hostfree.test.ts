@@ -20,10 +20,10 @@ function fakeStore(existing: string | null = null, otherWeb: string[] = []) {
   const store: LetsEncryptStore = {
     expectedAddresses: () => Promise.resolve([SERVER_IP]),
     otherWebHostnames: () => Promise.resolve(otherWeb),
-    findManagedCertificate: () => Promise.resolve(existing),
-    createManagedCertificate: (_org, names) => {
+    managedCertificateFor: (_org, names) => {
+      if (existing !== null) return Promise.resolve({ id: existing, created: false })
       created.push([...names])
-      return Promise.resolve('tls-new')
+      return Promise.resolve({ id: 'tls-new', created: true })
     },
     saveHosting: (id, patch) => {
       saved.push([id, patch])
@@ -204,6 +204,47 @@ test('the sweep drops a request older than a week, or one no longer allowed', as
     'refused'
   )
   assertEquals(b.created.length, 0)
+})
+
+const COMPOSE_OWNED = {
+  composeOwned: true,
+  composeServiceName: 'web',
+  composeRoute: 'shop.example.com /',
+}
+
+test('the sweep drops a waiting request on a compose route that no longer asks for automatic', async () => {
+  for (const composeTlsMode of ['internal', 'certificate', undefined]) {
+    const { store, saved, created } = fakeStore()
+    const out = await retryPendingLetsEncrypt({
+      store,
+      lookup: pointing,
+      now: NOW,
+      hosting: {
+        ...waiting(NOW.toISOString()),
+        metadata: { ...COMPOSE_OWNED, ...(composeTlsMode ? { composeTlsMode } : {}) },
+      },
+      acmeEnabled: true,
+    })
+    assertEquals(out, 'refused', String(composeTlsMode))
+    assertEquals(saved[0]![1].pendingAt, null)
+    assertEquals(created.length, 0)
+  }
+})
+
+test('the sweep still pins a waiting request on a compose route asking for automatic', async () => {
+  const { store, created } = fakeStore()
+  const out = await retryPendingLetsEncrypt({
+    store,
+    lookup: pointing,
+    now: NOW,
+    hosting: {
+      ...waiting(NOW.toISOString()),
+      metadata: { ...COMPOSE_OWNED, composeTlsMode: 'automatic' },
+    },
+    acmeEnabled: true,
+  })
+  assertEquals(out, 'pinned')
+  assertEquals(created, [['shop.example.com']])
 })
 
 test('refuses a www setting when the other spelling is already listed, before any DNS or pin', async () => {

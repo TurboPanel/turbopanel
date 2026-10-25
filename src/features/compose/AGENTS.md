@@ -632,16 +632,21 @@ ledger and never reads a hosting `targetPort`), `tls.certificateRef` required by
 `(hostname, pathPrefix)` within one service reported rather than last-wins
 merged.
 
-**`tls.mode`.** `internal` (the default when `tls` is omitted) is Caddy's own
-self-signed certificate; `certificate` resolves `certificateRef` to a `tls` row
-and pins it. **`automatic` is refused** — at save time
-(`HOSTING_TLS_MODE_AUTOMATIC_UNSUPPORTED_MESSAGE`) and again at deploy-prepare
-(**`422 hosting_tls_mode_unsupported`**). The deploy payload carries one TLS
-field, `EnvironmentDeployHosting.tlsId` — a resolved pin, or null meaning
-`tls internal` — so there is no wire spelling for "obtain one for me", and
-projecting `automatic` as a null pin would answer a request for a managed
-certificate with a self-signed one. The mode stays in the type so the refusal
-can say that, instead of "unknown mode". Whether a ref **resolves** is sourced
+**`tls.mode`.** `internal` (the default when `tls` is omitted) is the web
+server's own self-signed certificate; `certificate` resolves `certificateRef`
+to a `tls` row and pins it; `automatic` asks for a free Let's Encrypt
+certificate. At deploy the reconcile pins the organization's managed Let's
+Encrypt row for the name and the www name its `www` setting adds (an existing
+row with exactly those names, else one that covers them, else a new one; the
+same store as the one-click button), and deploy-prepare sends it as the `acme`
+wire mode. There is no DNS check on this path: the server keeps retrying until
+DNS points at it. The deploy is refused with **`400 acme_requires_org_opt_in`**
+when the organization has not turned on "Allow Let's Encrypt certificates",
+**`400 acme_requires_public_bind`** for a non-public route, and **`400
+letsencrypt_hostname_unsupported`** for a wildcard, IP or private name. The
+default stays `internal` so a document saved before `automatic` worked does not
+start asking for certificates; the panel writes `automatic` explicitly.
+Whether a ref **resolves** is sourced
 the way `knownSourceIds` is: `lintComposeYaml` takes **`knownTlsIds`** /
 **`knownIpIds`** (ids _and_ labels — a `tls` name, an `ip` address — since that
 is what an operator has in front of them) and emits a blocking error at

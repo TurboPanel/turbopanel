@@ -795,3 +795,136 @@ test('sweep: with more waiting hostings than one batch, every one is checked ove
     await f.cleanup()
   }
 })
+
+async function insertCertificate(
+  f: Fixture,
+  values: { source: 'lets_encrypt' | 'upload'; status: 'automatic' | 'ready' }
+): Promise<string> {
+  const [row] = await f.db
+    .insert(tls)
+    .values({
+      organizationId: f.organizationId,
+      name: values.source === 'upload' ? 'Uploaded' : null,
+      ...values,
+      metadata: { dnsNames: ['shop.example.com'] },
+    })
+    .returning({ id: tls.id })
+  return row!.id
+}
+
+test("PATCH /hostings: picking a Let's Encrypt certificate from the library queues the hostings-only apply", async () => {
+  if (!dbUrl) return skipWithoutDatabase("hosting Let's Encrypt route tests")
+  const calls: DeployCall[] = []
+  const f = await setupWithApply(calls)
+  const undeploy = await deployedOn(f, true)
+  try {
+    const managed = await insertCertificate(f, { source: 'lets_encrypt', status: 'automatic' })
+    const res = await f.call('PATCH', `/hostings/${f.hostingId}`, {
+      tlsId: managed,
+      options: PUBLIC_SITE,
+    })
+    assertEquals(res.status, 200)
+    assertEquals(await res.json(), { ok: true, needsDeploy: false })
+    assertEquals(calls.length, 1)
+    assertEquals(calls[0]?.auth.hostingsOnly, true)
+    assertEquals(calls[0]?.auth.actorId, f.userId)
+    assertEquals((await readCertificate(f))?.needsDeploy, false)
+    // Saving the same pin again sends nothing.
+    const again = await f.call('PATCH', `/hostings/${f.hostingId}`, { tlsId: managed })
+    assertEquals(again.status, 200)
+    assertEquals(calls.length, 1)
+  } finally {
+    await f.db.update(hosting).set({ tlsId: null }).where(eq(hosting.id, f.hostingId))
+    await undeploy()
+    await f.cleanup()
+  }
+})
+
+test('PATCH /hostings: an uploaded pick, or a pick saved with other edits, waits for a deploy', async () => {
+  if (!dbUrl) return skipWithoutDatabase("hosting Let's Encrypt route tests")
+  const calls: DeployCall[] = []
+  const f = await setupWithApply(calls)
+  const undeploy = await deployedOn(f, true)
+  try {
+    const upload = await insertCertificate(f, { source: 'upload', status: 'ready' })
+    const uploaded = await f.call('PATCH', `/hostings/${f.hostingId}`, { tlsId: upload })
+    assertEquals(uploaded.status, 200)
+    assertEquals(await uploaded.json(), { ok: true })
+    assertEquals(calls.length, 0)
+
+    const managed = await insertCertificate(f, { source: 'lets_encrypt', status: 'automatic' })
+    const edited = await f.call('PATCH', `/hostings/${f.hostingId}`, {
+      tlsId: managed,
+      options: { ...PUBLIC_SITE, pathPrefix: '/shop' },
+    })
+    assertEquals(edited.status, 200)
+    assertEquals(calls.length, 0)
+    assertEquals((await readCertificate(f))?.needsDeploy, true)
+  } finally {
+    await f.db.update(hosting).set({ tlsId: null }).where(eq(hosting.id, f.hostingId))
+    await undeploy()
+    await f.cleanup()
+  }
+})
+
+test('PUT use-letsencrypt: a compose route asking for automatic may try again', async () => {
+  if (!dbUrl) return skipWithoutDatabase("hosting Let's Encrypt route tests")
+  const f = await setup({
+    acmeEnabled: true,
+    hostingOptions: PUBLIC_SITE,
+    hostingMetadata: {
+      composeOwned: true,
+      composeServiceName: 'web',
+      composeRoute: 'shop.example.com /',
+      composeTlsMode: 'automatic',
+    },
+  })
+  try {
+    const res = await f.call('PUT', `/hostings/${f.hostingId}/use-letsencrypt`, {})
+    assertEquals(res.status, 200)
+    const body = (await res.json()) as CertificateBody
+    assertEquals(body.certificate?.state, 'issuing')
+    assertEquals(body.needsDeploy, true)
+    // Compose still owns everything else on the row.
+    const patched = await f.call('PATCH', `/hostings/${f.hostingId}`, { options: PUBLIC_SITE })
+    assertEquals(patched.status, 409)
+  } finally {
+    await f.db.update(hosting).set({ tlsId: null }).where(eq(hosting.id, f.hostingId))
+    await f.cleanup()
+  }
+})
+
+test('PATCH /hostings: a library pick that cannot be sent now says a deploy is needed', async () => {
+  if (!dbUrl) return skipWithoutDatabase("hosting Let's Encrypt route tests")
+  const calls: DeployCall[] = []
+  const f = await setupWithApply(calls)
+  const undeploy = await deployedOn(f, false)
+  try {
+    const managed = await insertCertificate(f, { source: 'lets_encrypt', status: 'automatic' })
+    const res = await f.call('PATCH', `/hostings/${f.hostingId}`, { tlsId: managed })
+    assertEquals(res.status, 200)
+    assertEquals(await res.json(), { ok: true, needsDeploy: true })
+    assertEquals(calls.length, 0)
+  } finally {
+    await f.db.update(hosting).set({ tlsId: null }).where(eq(hosting.id, f.hostingId))
+    await undeploy()
+    await f.cleanup()
+  }
+})
+
+test('PATCH /hostings: someone who may not edit the hosting gets the route refusal, not an apply', async () => {
+  if (!dbUrl) return skipWithoutDatabase("hosting Let's Encrypt route tests")
+  const calls: DeployCall[] = []
+  const f = await setupWithApply(calls)
+  try {
+    const res = await f.app.request(`/hostings/${f.hostingId}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ tlsId: null }),
+    })
+    assertEquals(res.status, 401)
+    assertEquals(calls.length, 0)
+  } finally {
+    await f.cleanup()
+  }
+})
