@@ -213,6 +213,11 @@ export type HostingPinState = {
   updatedAt: string
 }
 
+/** One `"key":value` member of {@link sortedJson}'s object output. */
+function sortedJsonPair([key, item]: [string, unknown]): string {
+  return `${JSON.stringify(key)}:${sortedJson(item)}`
+}
+
 /** JSON with object keys sorted, so two reads of one jsonb value compare equal whatever the key order. */
 function sortedJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(sortedJson).join(',')}]`
@@ -220,7 +225,8 @@ function sortedJson(value: unknown): string {
     const entries = Object.entries(value as Record<string, unknown>)
       .filter(([, item]) => item !== undefined)
       .sort(([a], [b]) => (a < b ? -1 : Number(a > b)))
-    return `{${entries.map(([key, item]) => `${JSON.stringify(key)}:${sortedJson(item)}`).join(',')}}`
+    const pairs = entries.map(sortedJsonPair)
+    return `{${pairs.join(',')}}`
   }
   return JSON.stringify(value) ?? 'null'
 }
