@@ -901,7 +901,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       project_id:
         'Optional project scope for compose-declared hosting principals; set to NULL when the project is deleted.',
       removal_requested_at:
-        'When the delete of its project asked for this unused principal to go; the removal sweep deletes the row and the host account once no folder names it. NULL otherwise.',
+        'When the delete of its project asked for this unused principal to go; the removal sweep deletes it and its host account once no folder names it.',
     },
   },
   folder: {
