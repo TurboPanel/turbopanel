@@ -64,6 +64,7 @@ import {
   withoutHostingComposeOwner,
 } from '../../features/hostings/hosting-compose-owner.ts'
 import { PanelHostnameClaimError } from '../../features/hostings/panel-hostname-guard.ts'
+import { lockEnvironmentRow } from '../../features/folders/records.ts'
 import {
   type LetsEncryptRefusal,
   letsEncryptNames,
@@ -794,6 +795,10 @@ async function reconcileHostingsInTransaction(
   db: Db,
   params: ReconcileHostingsParams
 ): Promise<ComposeHostingReconcileResult> {
+  // The environment row's lock before reading the rows: a release to the panel
+  // (`../hostings/compose-release-route.ts`) takes it too, so the stale compose
+  // markers read here can never be written back over a release.
+  await lockEnvironmentRow(db, params.environmentId)
   const routes = collectDeclaredRoutes(params.merged)
   const { composeOwned: existingRows, panelAuthored } = await loadEnvironmentHostingRows(
     db,
