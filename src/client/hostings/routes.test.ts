@@ -25,6 +25,7 @@ import {
 } from '../../db/schema.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 import { registerHostingRoutes } from './routes.ts'
+import { registerHostingComposeReleaseRoute } from './compose-release-route.ts'
 import {
   removeInstanceHostname,
   upsertInstanceHostname,
@@ -338,11 +339,9 @@ async function createHostingTestApp(db: ReturnType<typeof createDenoDb>) {
     c.set('db', db)
     return next()
   })
-  registerHostingRoutes(app, {
-    secrets,
-    runtime: 'deno',
-    signupEnvOverride: undefined,
-  })
+  const routeOpts = { secrets, runtime: 'deno' as const, signupEnvOverride: undefined }
+  registerHostingRoutes(app, routeOpts)
+  registerHostingComposeReleaseRoute(app, routeOpts)
   return { app, secrets }
 }
 
@@ -738,6 +737,76 @@ test('POST /hostings strips client-supplied compose-ownership markers', async ()
     assertEquals(metadata?.note, 'kept')
 
     await db.delete(hosting).where(eq(hosting.id, id))
+  })
+})
+
+test('POST /hostings/:id/release-from-compose hands a compose-made hosting back to the panel', async () => {
+  await withHostingFixtures(async ({ app, secrets, db, userId, organizationId, serviceId }) => {
+    const call = hostingCaller(app, await sessionCookie(db, secrets, userId), organizationId)
+    const id = await createHostingId(call, serviceId, { hostnames: ['moved.example.com'] })
+    await db
+      .update(hosting)
+      .set({
+        metadata: {
+          composeOwned: true,
+          composeServiceName: 'web',
+          composeRoute: 'moved.example.com /',
+          composeTlsMode: 'automatic',
+          note: 'kept',
+        },
+      })
+      .where(eq(hosting.id, id))
+
+    // Compose owns it: the panel may not edit it yet.
+    const refused = await call('PATCH', `/hostings/${id}`, { name: 'Renamed' })
+    assertEquals(refused.status, 409)
+
+    const released = await call('POST', `/hostings/${id}/release-from-compose`, {})
+    assertEquals(released.status, 200)
+    assertEquals(await released.json(), { ok: true, released: true })
+
+    const [row] = await db
+      .select({ metadata: hosting.metadata, options: hosting.options })
+      .from(hosting)
+      .where(eq(hosting.id, id))
+      .limit(1)
+    assertEquals(row?.metadata, { note: 'kept' })
+    assertEquals((row?.options as { hostnames?: string[] }).hostnames, ['moved.example.com'])
+
+    // Now an ordinary panel hosting: editing works, and a second release is a no-op.
+    const patched = await call('PATCH', `/hostings/${id}`, { name: 'Renamed' })
+    assertEquals(patched.status, 200)
+    const again = await call('POST', `/hostings/${id}/release-from-compose`, {})
+    assertEquals(await again.json(), { ok: true, released: false })
+  })
+})
+
+test('POST /hostings/:id/release-from-compose answers 404 for another organization', async () => {
+  await withHostingFixtures(async ({ app, secrets, db, userId, serviceId, organizationId }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const id = await createHostingId(hostingCaller(app, cookie, organizationId), serviceId, {})
+    const [other] = await db
+      .insert(organization)
+      .values({ name: 'Other Org' })
+      .returning({ id: organization.id })
+    try {
+      await db.insert(grant).values({
+        entityType: 'organization',
+        entityId: other!.id,
+        actorType: 'user',
+        actorId: userId,
+        permission: 'organization:manage',
+      })
+      const res = await hostingCaller(app, cookie, other!.id)(
+        'POST',
+        `/hostings/${id}/release-from-compose`,
+        {}
+      )
+      assertEquals(res.status, 404)
+    } finally {
+      await db.delete(grant).where(eq(grant.entityId, other!.id))
+      await db.delete(organization).where(eq(organization.id, other!.id))
+    }
   })
 })
 

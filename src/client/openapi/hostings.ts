@@ -417,9 +417,50 @@ const letsEncryptPaths = {
   },
 }
 
+const composeReleasePaths = {
+  [`${hostingIdPath}/release-from-compose`]: {
+    post: {
+      tags: ['Hostings'],
+      summary: 'Manage a compose-made hosting in the panel instead',
+      description:
+        "Removes the compose markers from the hosting, so it is edited in the panel again and keeps its id, names, certificate and variables. The caller then removes the route from the environment's compose file; if that write fails, the next deploy adopts the row again instead of deleting it. A hosting compose does not own is left alone (`released: false`).",
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+      ],
+      responses: {
+        '200': {
+          description: 'Released, or already managed in the panel',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['ok', 'released'],
+                properties: {
+                  ok: { type: 'boolean', enum: [true] },
+                  released: { type: 'boolean' },
+                },
+              },
+            },
+          },
+        },
+        '403': {
+          description: 'No manage grant, or a system-owned hosting',
+          content: { 'application/json': { schema: clientErrorJson } },
+        },
+        '404': {
+          description: 'Hosting not found',
+          content: { 'application/json': { schema: clientErrorJson } },
+        },
+      },
+    },
+  },
+}
+
 export const hostingPaths = {
   ...basePaths,
   ...letsEncryptPaths,
+  ...composeReleasePaths,
   [hostingIdPath]: {
     ...(basePaths[hostingIdPath] as Record<string, unknown>),
     patch: {
