@@ -1684,15 +1684,19 @@ async function gateLoginCreate(
   }
 ): Promise<Response | { commandQueue: CommandQueue; limits: LoginLimitFields; notes: string[] }> {
   const { ctx, row, options, targetServerId } = params
-  for (const grant of params.grants) {
-    const daemonRefused = await refuseLoginCreateIfDaemonCannot(
-      c,
-      db,
-      { engine: ctx.spec.engine, privileges: grant.privileges, grantMode: params.grantMode },
-      targetServerId
+  // Read-only checks, so they run together; the first refusal in grant order answers.
+  const refusals = await Promise.all(
+    params.grants.map((grant) =>
+      refuseLoginCreateIfDaemonCannot(
+        c,
+        db,
+        { engine: ctx.spec.engine, privileges: grant.privileges, grantMode: params.grantMode },
+        targetServerId
+      )
     )
-    if (daemonRefused) return daemonRefused
-  }
+  )
+  const daemonRefused = refusals.find((refusal) => refusal !== null)
+  if (daemonRefused) return daemonRefused
   const ownerSupport = await daemonOwnerSupport(db, targetServerId)
   const notes = params.grants.flatMap((grant) =>
     adminAccessNotes(
@@ -1757,9 +1761,9 @@ async function applyCreatedLogins(
   }
 ): Promise<Response | Exclude<Awaited<ReturnType<typeof enqueuePreparedManagedApply>>, Response>> {
   const { ctx, row, options } = params
-  const removeAll = async () => {
-    for (const loginId of params.loginIds) await removeManagedLogin(db, loginId)
-  }
+  // Each login is removed on its own; the order does not matter.
+  const removeAll = () =>
+    Promise.all(params.loginIds.map((loginId) => removeManagedLogin(db, loginId)))
   const preparedApply = await prepareManagedApplyPayloads(c, db, {
     managedRow: row,
     spec: ctx.spec,
@@ -1876,27 +1880,29 @@ async function createAppLogins(c: Context<AppEnv>): Promise<Response> {
     created = await inLoginCreateTransaction(
       db,
       { ctx, managedId: row.id, targetServerId },
-      async (tx, shared) => {
-        const made: Array<{ loginId: string; password: string }> = []
-        for (const { username, grants } of logins) {
-          const isAdmin = grants.privileges.includes(DATABASE_ADMIN_PRIVILEGE)
-          const outcome = await createLoginWithNewName(tx, dataEncryptionSecrets, {
-            ...shared,
-            username,
-            nameScheme,
-            settings: {
-              ...grants,
-              grantMode,
-              // The owner login is a tool login, as a single Database admin login is by default.
-              tool: isAdmin,
-              ...loginLimitSettings(limits),
-            },
-          })
-          if (!outcome.ok) throw new AppLoginConflict(outcome.error, username)
-          made.push({ loginId: outcome.loginId, password: outcome.password })
-        }
-        return made
-      }
+      (tx, shared) =>
+        // One after another on the transaction's connection, in order; a
+        // conflict throws, so none of the three is kept.
+        logins.reduce<Promise<Array<{ loginId: string; password: string }>>>(
+          async (previous, { username, grants }) => {
+            const made = await previous
+            const outcome = await createLoginWithNewName(tx, dataEncryptionSecrets, {
+              ...shared,
+              username,
+              nameScheme,
+              settings: {
+                ...grants,
+                grantMode,
+                // The owner login is a tool login, as a single Database admin login is by default.
+                tool: grants.privileges.includes(DATABASE_ADMIN_PRIVILEGE),
+                ...loginLimitSettings(limits),
+              },
+            })
+            if (!outcome.ok) throw new AppLoginConflict(outcome.error, username)
+            return [...made, { loginId: outcome.loginId, password: outcome.password }]
+          },
+          Promise.resolve([])
+        )
     )
   } catch (error) {
     if (!(error instanceof AppLoginConflict)) throw error
