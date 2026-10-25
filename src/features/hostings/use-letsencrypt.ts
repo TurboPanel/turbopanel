@@ -42,7 +42,10 @@ export type LetsEncryptStore = {
   expectedAddresses(hosting: LetsEncryptHostingRecord): Promise<string[]>
   /** Hostnames of the other web hostings in this hosting's environment (what a www twin must not collide with). */
   otherWebHostnames(hosting: LetsEncryptHostingRecord): Promise<string[]>
-  /** A live managed Let's Encrypt row of the organization whose names equal `names`, if any. */
+  /**
+   * A live managed Let's Encrypt row of the organization for `names`: the one
+   * whose names equal them, else one that already covers every one of them.
+   */
   findManagedCertificate(organizationId: string, names: readonly string[]): Promise<string | null>
   createManagedCertificate(organizationId: string, names: readonly string[]): Promise<string>
   saveHosting(

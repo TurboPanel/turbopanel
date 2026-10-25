@@ -35,6 +35,7 @@ import {
   resolveAcmeEnabled,
 } from '../../features/organizations/organization-options.ts'
 import { inetAddressToString } from '../../lib/ip-address.ts'
+import { coversAllHostnames } from '../../lib/tls/match.ts'
 import { splitTlsMetadata } from '../../lib/tls/metadata.ts'
 import { materialFromLetsEncrypt, isCreateTlsFailure } from '../tls/routes-helpers.ts'
 
@@ -124,11 +125,15 @@ export function createLetsEncryptStore(db: Db): LetsEncryptStore {
             eq(tls.status, 'automatic')
           )
         )
-      const match = rows.find((row) => {
+      // One certificate per hostname per organization: the row with exactly
+      // these names wins, else any live row that already covers all of them.
+      const named = rows.flatMap((row) => {
         const dnsNames = (row.metadata as { dnsNames?: unknown } | null)?.dnsNames
-        return Array.isArray(dnsNames) && sameNames(dnsNames as string[], names)
+        return Array.isArray(dnsNames) ? [{ id: row.id, dnsNames: dnsNames as string[] }] : []
       })
-      return match?.id ?? null
+      const exact = named.find((row) => sameNames(row.dnsNames, names))
+      const covering = named.find((row) => coversAllHostnames(row.dnsNames, [...names]))
+      return (exact ?? covering)?.id ?? null
     },
 
     async createManagedCertificate(organizationId, names) {

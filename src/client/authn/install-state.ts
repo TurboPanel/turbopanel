@@ -45,6 +45,7 @@ import {
   normalizeDisplayName,
 } from '../../lib/display-name-format.ts'
 import { resolveDefaultSignupOrganizationName } from './default-signup-organization-name.ts'
+import { NEW_ORGANIZATION_OPTIONS } from '../../features/organizations/organization-options.ts'
 
 export { MY_ORGANIZATION_NAME } from './default-signup-organization-name.ts'
 
@@ -1228,6 +1229,7 @@ export async function createOrganizationForUserInTx(
     .insert(organization)
     .values({
       name: displayName,
+      options: { ...NEW_ORGANIZATION_OPTIONS },
     })
     .returning({ id: organization.id })
 
@@ -1346,6 +1348,7 @@ export async function completeInstanceInstall(
       .insert(organization)
       .values({
         name: trimmedOrgName,
+        options: { ...NEW_ORGANIZATION_OPTIONS },
       })
       .returning({ id: organization.id })
 

@@ -18,11 +18,12 @@
  * undo the certificate choice that was just saved.
  */
 import { and, eq, gt, inArray, ne, or } from 'drizzle-orm'
-import type { Context } from 'hono'
+import type { Context, MiddlewareHandler } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import type { DaemonCellRegistry } from '../../contracts/cell.ts'
-import type { Db } from '../../db/connection.ts'
-import { environment, hosting, project, server, service } from '../../db/schema.ts'
+import { getDb, type Db } from '../../db/connection.ts'
+import { environment, hosting, project, server, service, tls } from '../../db/schema.ts'
+import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import { isServerConnectedStoredOrLive } from '../../daemon/cell/server-status.ts'
 import { isNoopCommandQueue } from '../../features/commands/noop-command-queue.ts'
 import type { CommandQueue } from '../../features/commands/queue.ts'
@@ -202,6 +203,105 @@ async function queueApply(
     `certificate apply for hosting ${params.hostingId} not queued: ${response.status} ${await response.text()}`
   )
   return 'refused'
+}
+
+/** What a hosting pins and carries to the servers, read before and after a `PATCH /hostings/:id`. */
+export type HostingPinState = {
+  tlsId: string | null
+  ipId: string | null
+  options: unknown
+  updatedAt: string
+}
+
+/** JSON with object keys sorted, so two reads of one jsonb value compare equal whatever the key order. */
+function sortedJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(sortedJson).join(',')}]`
+  if (value !== null && typeof value === 'object') {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .filter(([, item]) => item !== undefined)
+      .sort(([a], [b]) => (a < b ? -1 : Number(a > b)))
+    return `{${entries.map(([key, item]) => `${JSON.stringify(key)}:${sortedJson(item)}`).join(',')}}`
+  }
+  return JSON.stringify(value) ?? 'null'
+}
+
+/**
+ * True when an edit only pointed the hosting at a different certificate row:
+ * the pin changed to a row, and nothing else the servers receive (the options
+ * and the pinned address) changed with it. Only such an edit may be sent out
+ * by the hostings-only apply; anything more waits for a deploy.
+ */
+export function isPinOnlyChange(before: HostingPinState, after: HostingPinState): boolean {
+  return (
+    after.tlsId !== null &&
+    after.tlsId !== before.tlsId &&
+    after.ipId === before.ipId &&
+    sortedJson(after.options) === sortedJson(before.options)
+  )
+}
+
+/** Is this certificate row a managed Let's Encrypt one (the web server obtains it)? */
+async function isManagedLetsEncryptRow(db: Db, tlsId: string): Promise<boolean> {
+  const [row] = await db
+    .select({ source: tls.source, status: tls.status })
+    .from(tls)
+    .where(eq(tls.id, tlsId))
+    .limit(1)
+  return row?.source === 'lets_encrypt' && row.status === 'automatic'
+}
+
+async function loadHostingPinState(db: Db, hostingId: string): Promise<HostingPinState | null> {
+  const [row] = await db
+    .select({
+      tlsId: hosting.tlsId,
+      ipId: hosting.ipId,
+      options: hosting.options,
+      updatedAt: hosting.updatedAt,
+    })
+    .from(hosting)
+    .where(eq(hosting.id, hostingId))
+    .limit(1)
+  return row ?? null
+}
+
+/**
+ * Picking a Let's Encrypt certificate from the library on a panel-authored
+ * hosting (`PATCH /hostings/:id` with a new `tlsId`) starts it the way the
+ * one-click button does: a hostings-only apply when that is safe, else the
+ * next deploy (the Certificate panel says "Deploy" through `needsDeploy`).
+ * Registered before the hosting routes; it reads the pin, lets the route
+ * answer, and only acts on a successful edit that changed the pin alone.
+ * Compose-owned rows never get here: the route refuses them with 409, and
+ * their pin is carried by the deploy whose reconcile sets it.
+ */
+export function applyLibraryLetsEncryptPick(
+  applyDeps: (c: Context<AppEnv>) => HostingApplyDeps
+): MiddlewareHandler<AppEnv> {
+  return async (c, next) => {
+    const db = getDb(c)
+    const hostingId = c.req.param('id')
+    if (c.req.method !== 'PATCH' || !db || !hostingId) return next()
+    const before = await loadHostingPinState(db, hostingId)
+    await next()
+    const session = c.get('session')
+    if (!before || !session || c.res.status !== 200) return
+    const after = await loadHostingPinState(db, hostingId)
+    if (!after?.tlsId || !isPinOnlyChange(before, after)) return
+    if (!(await isManagedLetsEncryptRow(db, after.tlsId))) return
+    const organizationId = await resolveEntityOrganizationId(db, 'hosting', hostingId)
+    if (!organizationId) return
+    await queueHostingCertificateApply(
+      c,
+      db,
+      {
+        hostingId,
+        organizationId,
+        actor: { actorType: 'user', actorId: session.userId },
+        editedAt: before.updatedAt,
+      },
+      applyDeps(c)
+    )
+  }
 }
 
 export async function queueHostingCertificateApply(

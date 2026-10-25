@@ -265,9 +265,9 @@ export const hostingSchemas = {
           },
           composeTlsMode: {
             type: 'string',
-            enum: ['internal', 'certificate'],
+            enum: ['automatic', 'internal', 'certificate'],
             description:
-              'Authored x-turbopanel.hosting[i].tls.mode. Only internal and certificate can reach a row: "automatic" has no deploy-payload spelling and is refused at save time and again at deploy-prepare (422 hosting_tls_mode_unsupported).',
+              'Authored x-turbopanel.hosting[i].tls.mode. "automatic" pins the organization\'s managed Let\'s Encrypt row for the name (created when missing) and needs the organization setting "Allow Let\'s Encrypt certificates"; otherwise the deploy is refused (422 acme_requires_org_opt_in).',
           },
           composeAdopted: {
             type: 'boolean',

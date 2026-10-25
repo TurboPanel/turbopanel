@@ -1,5 +1,6 @@
 import { attachWebMetadataToSites } from '../../features/hostings/hosting-web-env.ts'
 import { panelHostnameInUseMessage } from '../../features/hostings/panel-hostname-guard.ts'
+import { hostnameUnsupportedReason } from '../../features/hostings/hosting-certificate.ts'
 import { assignSiteListenPorts } from '../../features/compose/site.ts'
 import { assignNativeAppListenPorts } from '../../features/compose/native-app.ts'
 import { NEWEST_NATIVE_APP_NODE_SERIES } from '../../contracts/runtime-registry.ts'
@@ -411,6 +412,36 @@ function hostingIpRefUnresolvedMessage(
   return `Managed address "${prepared.ref}" pinned by "${prepared.composeServiceName}" for ${prepared.hostname} was not found in this organization. Register it under Datacenters → IPs, or point bind.ipRef at one that is already there.`
 }
 
+const LETS_ENCRYPT_SETTING_PLACE =
+  '"Allow Let\'s Encrypt certificates" under Organization settings › Domains & certificates'
+
+/** Why a compose route's `tls.mode: automatic` cannot get its certificate, in plain words. */
+function hostingLetsEncryptRefusedMessage(
+  prepared: Extract<DeployPrepareError, { kind: 'hosting_letsencrypt_refused' }>
+): string {
+  const asks = `"${prepared.composeServiceName}" asks for a Let's Encrypt certificate for ${prepared.hostname} (tls.mode "automatic")`
+  if (prepared.reason === 'lets_encrypt_not_enabled') {
+    return `${asks}, but this organization does not allow Let's Encrypt certificates. An organization owner or manager can turn on ${LETS_ENCRYPT_SETTING_PLACE}. Or set tls.mode to "internal" for a self-signed certificate.`
+  }
+  if (prepared.reason === 'acme_requires_public_bind') {
+    return `${asks}, but the route is not reachable from the internet. Let's Encrypt needs bind.scope "public"; use tls.mode "internal" for a local or datacenter route.`
+  }
+  const unsupported = prepared.names.find((name) => hostnameUnsupportedReason(name) !== null)
+  if (prepared.reason === 'letsencrypt_hostname_unsupported' && unsupported !== undefined) {
+    return `${asks}, but ${unsupported} cannot get one: ${hostnameUnsupportedReason(unsupported)}. Use tls.mode "internal", or "certificate" with an uploaded certificate.`
+  }
+  return `${asks}, which cannot be given for this route. Use tls.mode "internal", or "certificate" with tls.certificateRef.`
+}
+
+/** The deploy error code for a refused `automatic` route: the switch reuses the deploy's own opt-in code. */
+function hostingLetsEncryptRefusedCode(
+  prepared: Extract<DeployPrepareError, { kind: 'hosting_letsencrypt_refused' }>
+): string {
+  return prepared.reason === 'lets_encrypt_not_enabled'
+    ? 'acme_requires_org_opt_in'
+    : prepared.reason
+}
+
 function mapHostingPrepareError(
   prepared: Extract<
     DeployPrepareError,
@@ -418,7 +449,7 @@ function mapHostingPrepareError(
       kind:
         | 'hosting_tls_ref_unresolved'
         | 'hosting_ip_ref_unresolved'
-        | 'hosting_tls_mode_unsupported'
+        | 'hosting_letsencrypt_refused'
         | 'hosting_route_conflict'
         | 'hosting_hostname_conflict'
         | 'hosting_hostname_is_panel'
@@ -451,15 +482,14 @@ function mapHostingPrepareError(
       },
     }
   }
-  if (prepared.kind === 'hosting_tls_mode_unsupported') {
+  if (prepared.kind === 'hosting_letsencrypt_refused') {
     return {
       status: 422,
       body: {
-        error: 'hosting_tls_mode_unsupported',
+        error: hostingLetsEncryptRefusedCode(prepared),
         composeServiceName: prepared.composeServiceName,
         hostname: prepared.hostname,
-        mode: prepared.mode,
-        message: `"${prepared.composeServiceName}" asks for tls.mode "${prepared.mode}" on ${prepared.hostname}, which this platform cannot issue yet. Use "internal" for a self-signed certificate, or "certificate" with tls.certificateRef to pin one from the TLS library.`,
+        message: hostingLetsEncryptRefusedMessage(prepared),
       },
     }
   }
@@ -586,7 +616,7 @@ function tryMapHostingPrepareError(prepared: DeployPrepareError): PrepareErrorRe
   if (
     prepared.kind !== 'hosting_tls_ref_unresolved' &&
     prepared.kind !== 'hosting_ip_ref_unresolved' &&
-    prepared.kind !== 'hosting_tls_mode_unsupported' &&
+    prepared.kind !== 'hosting_letsencrypt_refused' &&
     prepared.kind !== 'hosting_route_conflict' &&
     prepared.kind !== 'hosting_hostname_conflict' &&
     prepared.kind !== 'hosting_hostname_is_panel'

@@ -8,6 +8,8 @@
  *   queued (a server offline, a deploy running, nothing deployed yet) the
  *   answer carries `needsDeploy: true` and the next deploy starts it.
  * - `GET /hostings/:id/dns-check` - the same DNS check, read-only.
+ * - `PATCH /hostings/:id` (answered by `routes.ts`) - a library pick of a
+ *   Let's Encrypt certificate queues the same hostings-only apply.
  */
 import { eq, inArray } from 'drizzle-orm'
 import type { Context, Hono, MiddlewareHandler } from 'hono'
@@ -44,6 +46,7 @@ import {
   loadHostingCertificates,
 } from './letsencrypt-store.ts'
 import {
+  applyLibraryLetsEncryptPick,
   type HostingApplyDeps,
   type HostingApplyOutcome,
   type HostingApplyParams,
@@ -162,7 +165,12 @@ function requestAuditContext(
   return apply === null ? { outcome, www } : { outcome, www, apply }
 }
 
-/** Same gate as PATCH /hostings/:id: this organization's row, manager, not system or compose owned. */
+/**
+ * Same gate as PATCH /hostings/:id: this organization's row, manager, not
+ * system owned, and not compose owned unless compose itself asks for a Let's
+ * Encrypt certificate (`tls.mode: automatic`), where Try again re-pins the row
+ * compose already chose.
+ */
 async function refuseHostingWrite(
   c: Context<AppEnv>,
   db: Db,
@@ -176,7 +184,7 @@ async function refuseHostingWrite(
   if (denied) return denied
   const immutable = await assertNotSystemOwnedOr403(c, 'hosting', id)
   if (immutable) return immutable
-  return assertHostingNotComposeOwnedOr409(c, db, id)
+  return assertHostingNotComposeOwnedOr409(c, db, id, { allowAutomaticTls: true })
 }
 
 export function registerHostingLetsEncryptRoutes(
@@ -194,6 +202,7 @@ export function registerHostingLetsEncryptRoutes(
 
   router.use('/hostings', enrichHostingReads(now))
   router.use('/hostings/:id', enrichHostingReads(now))
+  router.use('/hostings/:id', applyLibraryLetsEncryptPick(applyDeps))
   router.use('/hostings/:id/use-letsencrypt', createSessionMiddleware(secrets))
   router.use('/hostings/:id/dns-check', createSessionMiddleware(secrets))
 

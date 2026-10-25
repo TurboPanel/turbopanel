@@ -1465,6 +1465,129 @@ test("POST /environments/:id/deploy uses internal TLS after revoking a Let's Enc
   )
 })
 
+function composeWithAutomaticTls(): ComposeDocument {
+  return {
+    version: 1,
+    data: {
+      services: {
+        web: {
+          image: 'nginx:alpine',
+          'x-turbopanel': {
+            hosting: [{ hostname: 'auto.example.com', tls: { mode: 'automatic' } }],
+          },
+        },
+      },
+    },
+    presentation: { keyOrder: ['services'], comments: {} },
+  }
+}
+
+for (const acmeEnabled of [true, false]) {
+  test(`POST /environments/:id/deploy with compose tls.mode automatic (Let's Encrypt ${acmeEnabled ? 'on' : 'off'})`, async () => {
+    const traefikServiceId = '00000000-0000-4000-8000-0000000000ab'
+    await withDeployFixtures(
+      async ({
+        db,
+        app,
+        secrets,
+        userId,
+        organizationId,
+        projectId,
+        environmentId,
+        serverId,
+        commandQueue,
+      }) => {
+        const originalEnsure = systemHierarchyProvision.ensure
+        systemHierarchyProvision.ensure = () =>
+          Promise.resolve({
+            workspaceId: '00000000-0000-4000-8000-0000000000bb',
+            projectId: '00000000-0000-4000-8000-0000000000cc',
+            environmentId: '00000000-0000-4000-8000-0000000000dd',
+            serviceId: traefikServiceId,
+            containerRowId: '00000000-0000-4000-8000-0000000000ee',
+            containerName: `${traefikServiceId}-in`,
+          })
+        try {
+          await db
+            .update(environment)
+            .set({
+              serverId,
+              name: 'production',
+              options: { compose: emptyComposeDocument() },
+              updatedAt: new Date().toISOString(),
+            })
+            .where(eq(environment.id, environmentId))
+          await db
+            .update(project)
+            .set({
+              options: { compose: composeWithAutomaticTls() },
+              updatedAt: new Date().toISOString(),
+            })
+            .where(eq(project.id, projectId))
+          await db
+            .update(organization)
+            .set({ options: { acmeEnabled } })
+            .where(eq(organization.id, organizationId))
+
+          const res = await app.request(`/environments/${environmentId}/deploy`, {
+            method: 'POST',
+            headers: {
+              Cookie: await sessionCookie(db, secrets, userId),
+              [ORG_ID_HEADER]: organizationId,
+              'Content-Type': 'application/json',
+            },
+            body: '{}',
+          })
+          const managed = await db
+            .select({ id: tls.id, source: tls.source, status: tls.status })
+            .from(tls)
+            .where(eq(tls.organizationId, organizationId))
+
+          if (!acmeEnabled) {
+            assertEquals(res.status, 422)
+            const refused = (await res.json()) as { error: string; message: string }
+            assertEquals(refused.error, 'acme_requires_org_opt_in')
+            assertEquals(refused.message.includes("Allow Let's Encrypt certificates"), true)
+            assertEquals(managed, [])
+            assertEquals(commandQueue.envelopes.length, 0)
+            return
+          }
+
+          assertEquals(res.status, 200)
+          const body = (await res.json()) as { ok: boolean; commandId: string }
+          assertEquals(managed.length, 1)
+          assertEquals(managed[0]?.source, 'lets_encrypt')
+          assertEquals(managed[0]?.status, 'automatic')
+          const [row] = await db
+            .select({ payload: dispatch.payload })
+            .from(dispatch)
+            .where(eq(dispatch.commandId, body.commandId))
+            .limit(1)
+          const payload = row?.payload as {
+            hostings: Array<{ hostnames: string[]; tlsId?: string | null; tlsMode?: string }>
+            tlsMaterial?: unknown[]
+          }
+          assertEquals(payload.hostings.length, 1)
+          assertEquals(payload.hostings[0]?.hostnames, ['auto.example.com'])
+          assertEquals(payload.hostings[0]?.tlsId ?? null, null)
+          assertEquals(payload.hostings[0]?.tlsMode, 'acme')
+          assertEquals(payload.tlsMaterial ?? [], [])
+        } finally {
+          const services = await db
+            .select({ id: service.id })
+            .from(service)
+            .where(eq(service.environmentId, environmentId))
+          for (const svc of services) {
+            await db.delete(hosting).where(eq(hosting.serviceId, svc.id))
+          }
+          await db.delete(tls).where(eq(tls.organizationId, organizationId))
+          systemHierarchyProvision.ensure = originalEnsure
+        }
+      }
+    )
+  })
+}
+
 test('POST /environments/:id/deploy uses project defaultServerId when env pin is unset', async () => {
   await withDeployFixtures(
     async ({
