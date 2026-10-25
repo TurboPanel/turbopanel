@@ -27,6 +27,37 @@ import { pathToFileURL } from 'node:url'
 
 const NIL_SHA = '0000000000000000000000000000000000000000'
 
+/**
+ * THE ONE NAMED, OWNER-APPROVED EXCEPTION (decided 2026-10-22): the final
+ * fold replaces every shipped migration (`0000` to `0009`) with one new
+ * baseline, `0000_base`. It lets exactly one change through: the head manifest
+ * must be generation 13, frozen, with a one-entry journal tagged `0000_base`,
+ * on top of a base manifest at generation 12. Once the fold is the base, the
+ * generation is 13 and the exception can never match again. It stays until the
+ * release branches (staging, live) carry the fold, because their pull requests
+ * compare against a generation-12 base; delete the constant and its tests right
+ * after that release merges. Do not extend it.
+ */
+export const BASELINE_EXCEPTION = Object.freeze({
+  name: 'baseline-2026-10-22-owner-approved',
+  fromGeneration: 12,
+  toGeneration: 13,
+  tag: '0000_base',
+})
+
+/** Whether the one-time baseline exception covers this base manifest and head manifest and journal. */
+export function baselineExceptionApplies(baseManifest, headManifest, headJournal) {
+  const entries = headJournal?.entries
+  return (
+    baseManifest?.generation === BASELINE_EXCEPTION.fromGeneration &&
+    headManifest?.generation === BASELINE_EXCEPTION.toGeneration &&
+    headManifest?.frozen === true &&
+    Array.isArray(entries) &&
+    entries.length === 1 &&
+    entries[0]?.tag === BASELINE_EXCEPTION.tag
+  )
+}
+
 const IMMUTABLE = /^migrations\/(\d{4}_.+\.sql|meta\/\d{4}_snapshot\.json)$/
 
 /** The base ref from argv: skips the literal `--` pnpm forwards, falls back to origin/trunk. */
@@ -78,6 +109,18 @@ function git(...args) {
   return execFileSync('git', args, { encoding: 'utf8' }).trim()
 }
 
+function headBaselineExceptionApplies(baseManifest) {
+  try {
+    return baselineExceptionApplies(
+      baseManifest,
+      JSON.parse(git('show', 'HEAD:migrations/manifest.json')),
+      JSON.parse(git('show', 'HEAD:migrations/meta/_journal.json'))
+    )
+  } catch {
+    return false
+  }
+}
+
 function fail(message) {
   console.error(`migration-additions: ${message}`)
   process.exit(1)
@@ -103,16 +146,23 @@ function requireFrozenBase(base) {
   if (baseManifest.frozen !== true) {
     fail(`${base} migrations/manifest.json is not frozen, so nothing can be checked`)
   }
+  return baseManifest
 }
 
 function main() {
   const base = resolveBase(process.argv.slice(2))
 
-  requireFrozenBase(base)
+  const baseManifest = requireFrozenBase(base)
 
   const changes = parseChanges(git(...diffArgs(base)))
 
   const violations = findViolations(changes)
+  if (violations.length > 0 && headBaselineExceptionApplies(baseManifest)) {
+    console.log(
+      `migration-additions: BASELINE EXCEPTION ${BASELINE_EXCEPTION.name} used: generation ${BASELINE_EXCEPTION.fromGeneration} to ${BASELINE_EXCEPTION.toGeneration}, ${violations.length} shipped file change(s) allowed once`
+    )
+    return
+  }
   if (violations.length > 0) {
     for (const violation of violations) {
       console.error(
