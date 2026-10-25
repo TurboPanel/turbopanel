@@ -106,6 +106,7 @@ export function assertForgeUrlAllowed(field: ForgeUrlField, raw: string): string
  * here (the admin may be mid-DNS-setup).
  */
 export async function resolveForgeHostScope(raw: string): Promise<ForgeUrlRejection | null> {
+  if (resolveOverride) return (await resolveOverride(raw)).rejection
   return await resolveOutboundHostScope(raw)
 }
 
@@ -126,15 +127,22 @@ export type ForgeFetchDeps = {
 }
 
 let connectOverride: PinnedConnect | null | undefined
+let resolveOverride: typeof resolveOutboundHost | undefined
+
+/** Public (not private or reserved) answer the test resolver gives every name. */
+const TEST_RESOLVED_ADDRESS = '203.0.113.10'
 
 /**
  * Test seam: suites that fake `globalThis.fetch` for a forge (and cannot
  * resolve its made-up host name) call this once to take the plain-`fetch`
- * path, which is the Workers path in production. Per-call `deps.connect`
- * still wins.
+ * path, which is the Workers path in production, and to answer every name
+ * lookup with one public address instead of asking real DNS, so the suite
+ * never depends on the network's resolver. The literal URL checks still run.
+ * Per-call `deps.connect` still wins.
  */
 export function useUnpinnedForgeFetchForTests(): void {
   connectOverride = null
+  resolveOverride = () => Promise.resolve({ rejection: null, addresses: [TEST_RESOLVED_ADDRESS] })
 }
 
 function connectionFor(deps: ForgeFetchDeps): PinnedConnect | null {
@@ -167,7 +175,10 @@ type HopRequest = {
 async function sendHop({ url, init, deps, signal }: HopRequest): Promise<Response> {
   const literal = validateForgeUrl(url)
   if (literal) throw new ForgeUrlError('request', literal)
-  const resolution = await resolveOutboundHost(url, { failClosed: true, signal })
+  const resolution = await (resolveOverride ?? resolveOutboundHost)(url, {
+    failClosed: true,
+    signal,
+  })
   if (resolution.rejection) {
     throw new ForgeUrlError('request', resolution.rejection)
   }
