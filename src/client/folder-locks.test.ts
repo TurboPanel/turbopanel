@@ -6,6 +6,7 @@ import { assertEquals, assertMatch } from '@std/assert'
 import { and, eq } from 'drizzle-orm'
 import {
   command,
+  deployment,
   environment,
   folder,
   hosting,
@@ -16,6 +17,8 @@ import {
   storage,
 } from '../db/schema.ts'
 import type { CommandEnvelope } from '../features/commands/envelope.ts'
+import { markFoldersPresent, planVolumeFolder } from '../features/folders/allocate.ts'
+import { deleteProjectCascade } from '../features/projects/project-delete.ts'
 import type { CommandQueue } from '../features/commands/queue.ts'
 import { countPrincipalReferences } from '../features/principals/store.ts'
 import { loadPrincipalUsage } from '../features/principals/placement-records.ts'
@@ -356,6 +359,27 @@ test('a project with folders is refused while their server is offline, and delet
   )
 })
 
+test('a project with a deploy in flight is refused in the plan and again under the lock', async () => {
+  await withFixtures(async (ctx) => {
+    const { projectId, envId } = await createProject(ctx, 'Deploy Running')
+    await ctx.db
+      .insert(deployment)
+      .values({ environmentId: envId, serverId: ctx.serverId, status: 'applying' })
+    await ctx.db.update(server).set({ isConnected: true }).where(eq(server.id, ctx.serverId))
+
+    const refused = await send(ctx, 'DELETE', `/projects/${projectId}`)
+    assertEquals(refused.status, 409)
+    assertEquals(refused.json.error, 'project_deploy_running')
+    assertMatch(String(refused.json.message), /deploy is running/)
+    // The cascade itself checks again (a deploy queued after the plan was read).
+    const locked = await deleteProjectCascade(ctx.db, projectId)
+    assertEquals(locked.ok ? null : locked.error, 'project_deploy_running')
+
+    await ctx.db.delete(deployment).where(eq(deployment.environmentId, envId))
+    assertEquals((await send(ctx, 'DELETE', `/projects/${projectId}`)).status, 200)
+  })
+})
+
 test('a project delete keeps a volume set to keep its data, with its folder and its Hosting Account', async () => {
   await withFixtures(async (ctx) => {
     const { projectId, envId } = await createProject(ctx, 'Keep Volume')
@@ -425,6 +449,24 @@ test('a project delete keeps a volume set to keep its data, with its folder and 
       .from(principal)
       .where(eq(principal.id, account!.id))
     assertEquals(owner?.removalRequestedAt, null)
+
+    // Marking it present does nothing while it has no environment, and using the
+    // volume again in an environment of the same name gives the row that environment.
+    const [orphanRow] = await ctx.db
+      .select({ id: folder.id })
+      .from(folder)
+      .where(eq(folder.storageId, vol!.id))
+    await markFoldersPresent(ctx.db, [orphanRow!.id])
+    const again = await createProject(ctx, 'Keep Volume Again')
+    await ctx.db.update(storage).set({ environmentId: again.envId }).where(eq(storage.id, vol!.id))
+    await ctx.db.transaction((tx) =>
+      planVolumeFolder(tx, { storageId: vol!.id, serverId: ctx.serverId })
+    )
+    const [reused] = await ctx.db
+      .select({ state: folder.state, environmentId: folder.environmentId })
+      .from(folder)
+      .where(eq(folder.storageId, vol!.id))
+    assertEquals(reused, { state: 'planned', environmentId: again.envId })
     // Left for the person to delete on their own.
     await ctx.db.delete(folder).where(eq(folder.storageId, vol!.id))
     await ctx.db.delete(storage).where(eq(storage.id, vol!.id))

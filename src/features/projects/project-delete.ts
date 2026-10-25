@@ -73,6 +73,7 @@ export type ProjectDeleteResult =
         | 'project_has_running_services'
         | 'managed_runtime_present'
         | 'project_stop_failed'
+        | typeof PROJECT_DEPLOY_RUNNING_ERROR
         | typeof COMMON_ASSET_IN_USE_ERROR
       /** Extra fields for the 409 body (who still uses a shared asset). */
       detail?: Record<string, unknown>
@@ -521,8 +522,22 @@ async function refuseProjectDelete(
   if (sharedInUse) {
     return { refused: { ok: false, error: sharedInUse.error, detail: sharedInUse.detail } }
   }
+  // A deploy in flight would recreate what the delete removes.
+  if (await hasInProgressDeployment(tx, environmentIds)) {
+    return {
+      refused: {
+        ok: false,
+        error: PROJECT_DEPLOY_RUNNING_ERROR,
+        detail: { message: PROJECT_DEPLOY_RUNNING_MESSAGE },
+      },
+    }
+  }
   return { children }
 }
+
+export const PROJECT_DEPLOY_RUNNING_ERROR = 'project_deploy_running'
+export const PROJECT_DEPLOY_RUNNING_MESSAGE =
+  'A deploy is running in this project. Delete it when the deploy finishes.'
 
 /** Why a managed database refuses a delete, in plain words. */
 export const MANAGED_PRESENT_MESSAGE =
@@ -543,13 +558,18 @@ export type EnvironmentDeleteResult =
   | { ok: true; warning?: string; cleanup: DeleteCleanup }
   | { ok: false; error: EnvironmentDeleteRefusal; detail?: Record<string, unknown> }
 
-export async function hasInProgressDeployment(db: Db, environmentId: string): Promise<boolean> {
+/** True when one of these environments has a deploy queued, applying or draining. */
+export async function hasInProgressDeployment(
+  db: Pick<Db, 'select'>,
+  environmentIds: readonly string[]
+): Promise<boolean> {
+  if (environmentIds.length === 0) return false
   const rows = await db
     .select({ id: deployment.id })
     .from(deployment)
     .where(
       and(
-        eq(deployment.environmentId, environmentId),
+        inArray(deployment.environmentId, [...environmentIds]),
         inArray(deployment.status, IN_PROGRESS_DEPLOYMENT_STATUSES)
       )
     )
@@ -619,7 +639,7 @@ export async function deleteEnvironmentCascade(
     }
   }
 
-  if (await hasInProgressDeployment(db, environmentId)) {
+  if (await hasInProgressDeployment(db, [environmentId])) {
     return { ok: false, error: ENVIRONMENT_RUNNING_ERROR, detail: DEPLOY_RUNNING_DETAIL }
   }
   const children = await loadEnvironmentChildren(db, [environmentId])
@@ -666,9 +686,9 @@ export async function deleteEnvironmentCascade(
   return listenerWarning ? { ok: true, warning: listenerWarning, cleanup } : { ok: true, cleanup }
 }
 
-const DEPLOY_RUNNING_DETAIL = {
-  message: 'A deploy is running for this environment. Delete it when the deploy finishes.',
-}
+export const ENVIRONMENT_DEPLOY_RUNNING_MESSAGE =
+  'A deploy is running for this environment. Delete it when the deploy finishes.'
+const DEPLOY_RUNNING_DETAIL = { message: ENVIRONMENT_DEPLOY_RUNNING_MESSAGE }
 const STILL_RUNNING_DETAIL = {
   message: 'This environment is still running. Stop it first, then delete it.',
 }

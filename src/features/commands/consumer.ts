@@ -1513,6 +1513,11 @@ async function applyPrincipalsReconcileSideEffect(
     const parsed = parsePrincipalsReconcileResult(result)
     await recordReportedIdsSafely(db, record, envelope.serverId, parsed.principals)
     await reconcileReportedFoldersSafely(db, record, envelope.serverId, parsed.folders)
+    // The accounts the host confirms removed: their `retiring` placements are
+    // done. One it kept stays `retiring`, and the principal removal sweep asks again.
+    if (parsed.principalsRetired && parsed.principalsRetired.length > 0) {
+      await markPlacementsAbsentSafely(db, record, envelope.serverId, parsed.principalsRetired)
+    }
   } catch (err) {
     compatLogWarn(
       'command-consumer',

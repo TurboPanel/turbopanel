@@ -4,7 +4,7 @@
  * Needs a database.
  */
 import { assertEquals } from '@std/assert'
-import { eq, inArray } from 'drizzle-orm'
+import { eq, inArray, sql } from 'drizzle-orm'
 import { createDenoDb } from '../../db/connection.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
 import {
@@ -23,6 +23,7 @@ import {
 import type { CommandEnvelope } from '../../features/commands/envelope.ts'
 import type { CommandQueue } from '../../features/commands/queue.ts'
 import { deleteProjectCascade } from '../../features/projects/project-delete.ts'
+import { markPlacementsAbsent } from '../../features/principals/placement-records.ts'
 import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { removeRequestedPrincipal, runPrincipalRemovalSweep } from './removal-sweep.ts'
 
@@ -139,6 +140,22 @@ async function withWorld(fn: (world: World) => Promise<void>): Promise<void> {
   }
 }
 
+async function placementState(db: Db, principalId: string): Promise<string | undefined> {
+  const [row] = await db
+    .select({ state: principalPlacement.state })
+    .from(principalPlacement)
+    .where(eq(principalPlacement.principalId, principalId))
+  return row?.state
+}
+
+async function appliedName(db: Db, principalId: string): Promise<string> {
+  const [row] = await db
+    .select({ name: principal.appliedUsername })
+    .from(principal)
+    .where(eq(principal.id, principalId))
+  return row!.name
+}
+
 async function readPrincipal(db: Db, id: string) {
   const [row] = await db
     .select({ projectId: principal.projectId, removalRequestedAt: principal.removalRequestedAt })
@@ -175,7 +192,7 @@ test('a Hosting Account another project still uses is kept and listed, not remov
   })
 })
 
-test('the removal waits for the folders, then for the server, then retires the account', async () => {
+test('the removal waits for the folders, the server and the stop, retries an unconfirmed retire, and goes once confirmed', async () => {
   await withWorld(async ({ db, serverId, newProject, newPrincipal }) => {
     const doomed = await newProject('Waits')
     const owner = await newPrincipal('site', doomed.projectId)
@@ -211,14 +228,69 @@ test('the removal waits for the folders, then for the server, then retires the a
     assertEquals(sent.length, 0)
 
     await db.update(server).set({ isConnected: true }).where(eq(server.id, serverId))
+    // The delete's own stop is still running there: the account waits for it.
+    const [stop] = await db
+      .insert(command)
+      .values({
+        serverId,
+        name: 'environment.stop',
+        status: 'queued',
+        actorType: 'system',
+        actorId: serverId,
+      })
+      .returning({ id: command.id })
+    assertEquals(await removeRequestedPrincipal(db, queue, owner), 'waiting')
+    await db.update(command).set({ status: 'succeeded' }).where(eq(command.id, stop!.id))
+
+    // Now the server is asked; the row stays until the host confirms.
+    assertEquals(await runPrincipalRemovalSweep(db, queue), { removed: 0 })
+    assertEquals(sent.length, 1)
+    assertEquals(await placementState(db, owner), 'retiring')
+    assertEquals(typeof (await readPrincipal(db, owner))?.removalRequestedAt, 'string')
+    // Not asked again right away.
+    assertEquals(await runPrincipalRemovalSweep(db, queue), { removed: 0 })
+    assertEquals(sent.length, 1)
+
+    // No confirmation came: after the retry window the server is asked again.
+    await db
+      .update(principalPlacement)
+      .set({ updatedAt: sql`now() - interval '1 hour'` })
+      .where(eq(principalPlacement.principalId, owner))
+    assertEquals(await runPrincipalRemovalSweep(db, queue), { removed: 0 })
+    assertEquals(sent.length, 2)
+
+    // The host reports it retired (the command consumer marks it absent): the row goes.
+    await markPlacementsAbsent(db, serverId, [await appliedName(db, owner)])
     assertEquals(await runPrincipalRemovalSweep(db, queue), { removed: 1 })
     assertEquals(await readPrincipal(db, owner), undefined)
     const commands = await db
-      .select({ name: command.name, serverId: command.serverId })
+      .select({ name: command.name })
       .from(command)
       .where(eq(command.serverId, serverId))
-    assertEquals(commands, [{ name: 'server.principals.reconcile', serverId }])
-    assertEquals(sent.length, 1)
+    assertEquals(commands.map((row) => row.name).sort(), [
+      'environment.stop',
+      'server.principals.reconcile',
+      'server.principals.reconcile',
+    ])
+  })
+})
+
+test('the removal sweep leaves out an account still placed on an offline server', async () => {
+  await withWorld(async ({ db, serverId, newProject, newPrincipal }) => {
+    const doomed = await newProject('Offline')
+    const owner = await newPrincipal('away', doomed.projectId)
+    await db.insert(principalPlacement).values({
+      principalId: owner,
+      serverId,
+      state: 'present',
+      home: '/srv/users/away',
+      source: 'manual',
+    })
+    assertEquals((await deleteProjectCascade(db, doomed.projectId)).ok, true)
+    const { queue, sent } = recordingQueue()
+    assertEquals(await runPrincipalRemovalSweep(db, queue), { removed: 0 })
+    assertEquals(sent.length, 0)
+    assertEquals(await placementState(db, owner), 'present')
   })
 })
 

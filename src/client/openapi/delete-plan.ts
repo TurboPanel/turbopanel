@@ -25,7 +25,7 @@ export const deletePlanSchemas = {
     type: 'object',
     required: ['error', 'message'],
     description:
-      'A reason the delete cannot run yet, in plain words. Codes: `managed_runtime_present` (delete the managed database first, with its own confirmation), `common_asset_in_use` (another environment uses a shared service or volume that would go; `uses` lists them), `server_offline` (a server the delete has to reach is not connected; `serverIds`), and for an environment `primary_environment_cannot_be_deleted` or `environment_running` (a deploy is in progress).',
+      'A reason the delete cannot run yet, in plain words. Codes: `managed_runtime_present` (delete the managed database first, with its own confirmation), `common_asset_in_use` (another environment uses a shared service or volume that would go; `uses` lists them), `server_offline` (a server the delete has to reach is not connected; `serverIds`), `project_deploy_running` (a deploy is queued, applying or draining in the project), and for an environment `primary_environment_cannot_be_deleted` or `environment_running` (a deploy is in progress).',
     properties: {
       error: { type: 'string' },
       message: { type: 'string' },

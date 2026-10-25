@@ -34,10 +34,13 @@ import type { PrincipalReferences } from '../principals/store.ts'
 import { COMMON_ASSET_IN_USE_ERROR } from '../folders/shares.ts'
 import { PRIMARY_ENVIRONMENT_DELETE_ERROR } from './primary-environment.ts'
 import {
+  ENVIRONMENT_DEPLOY_RUNNING_MESSAGE,
   ENVIRONMENT_RUNNING_ERROR,
   hasInProgressDeployment,
   MANAGED_PRESENT_MESSAGE,
   MANAGED_RUNTIME_PRESENT_ERROR,
+  PROJECT_DEPLOY_RUNNING_ERROR,
+  PROJECT_DEPLOY_RUNNING_MESSAGE,
   sharedAssetsStillUsed,
 } from './project-delete.ts'
 
@@ -205,15 +208,11 @@ async function primaryBlocker(
 }
 
 async function runningBlocker(db: Db, input: DeletePlanInput): Promise<DeletePlanBlocker | null> {
-  if (input.projectId !== undefined) return null
-  const [environmentId] = input.environmentIds
-  if (environmentId === undefined || !(await hasInProgressDeployment(db, environmentId))) {
-    return null
+  if (!(await hasInProgressDeployment(db, input.environmentIds))) return null
+  if (input.projectId !== undefined) {
+    return { error: PROJECT_DEPLOY_RUNNING_ERROR, message: PROJECT_DEPLOY_RUNNING_MESSAGE }
   }
-  return {
-    error: ENVIRONMENT_RUNNING_ERROR,
-    message: 'A deploy is running for this environment. Delete it when the deploy finishes.',
-  }
+  return { error: ENVIRONMENT_RUNNING_ERROR, message: ENVIRONMENT_DEPLOY_RUNNING_MESSAGE }
 }
 
 /** Build the plan. Reads only. */

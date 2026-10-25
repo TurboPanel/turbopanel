@@ -4,7 +4,7 @@
 
 import { assertEquals } from '@std/assert'
 import type { Db } from '../../db/connection.ts'
-import { network } from '../../db/schema.ts'
+import { deployment, network } from '../../db/schema.ts'
 import {
   deleteProjectCascade,
   dropEnvironmentSubtreeInTx,
@@ -70,17 +70,20 @@ function createCascadeMockDb(scenario: {
   const select = () => ({
     from: (table: unknown) => {
       const next = () => {
-        const rows =
-          table === network
-            ? composeNetworkIds.map((id) => ({ id }))
-            : (selectQueue[selectIndex] ?? [])
-        if (table !== network) selectIndex += 1
+        // Compose networks and in-flight deploys are read outside the queue.
+        const outsideQueue = table === network || table === deployment
+        let rows: unknown[] = selectQueue[selectIndex] ?? []
+        if (table === network) rows = composeNetworkIds.map((id) => ({ id }))
+        else if (table === deployment) rows = []
+        if (!outsideQueue) selectIndex += 1
         if (scenario.repeat && selectIndex >= selectQueue.length) selectIndex = 0
         // `where(...)` can be awaited, or continue into `orderBy(...).limit(...)`.
         const result = Promise.resolve(rows) as Promise<unknown[]> & {
           orderBy: () => { limit: () => Promise<unknown[]> }
+          limit: () => Promise<unknown[]>
         }
         result.orderBy = () => ({ limit: () => Promise.resolve(rows) })
+        result.limit = () => Promise.resolve(rows)
         return result
       }
       const join = {

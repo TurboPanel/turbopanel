@@ -209,7 +209,7 @@ export const projectPaths = {
     deleteOperation(
       'Projects',
       'project',
-      "Stops every environment's services on their servers, then removes the project's rows in one step: environments, services, hostings (compose-declared ones too), volumes set to be deleted with it. Each folder on a server becomes `removing` and the server is asked to remove it (asked again until it confirms); a volume set to keep its data keeps its folder. The project's Hosting Accounts that nothing else uses are removed (Linux user and home) once their folders are gone; the others are kept and listed. Refused, with nothing changed, while a managed database remains, a shared service or volume is used by another project, or a server the delete has to reach is offline."
+      "Stops every environment's services on their servers, then removes the project's rows in one step: environments, services, hostings (compose-declared ones too), volumes set to be deleted with it. Each folder on a server becomes `removing` and the server is asked to remove it (asked again until it confirms); a volume set to keep its data keeps its folder. The project's Hosting Accounts that nothing else uses are removed (Linux user and home) once their folders are gone and each server has confirmed the account removed; the others are kept and listed. Refused, with nothing changed, while a managed database remains, a deploy is running, a shared service or volume is used by another project, or a server the delete has to reach is offline."
     )
   ),
   '/api/client/v1/projects/{id}/delete-preview': deletePreviewPath(

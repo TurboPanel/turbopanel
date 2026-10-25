@@ -570,7 +570,13 @@ async function useFolderAgain(
 ): Promise<void> {
   const updated = await tx
     .update(folder)
-    .set({ state: 'planned', removalNote: null, ...(adoptable ? ownerColumns(target) : {}) })
+    .set({
+      state: 'planned',
+      removalNote: null,
+      // A row kept after its environment was deleted has none; it takes the one it serves now.
+      environmentId: target.environmentId,
+      ...(adoptable ? ownerColumns(target) : {}),
+    })
     .where(
       and(
         eq(folder.id, row.id),
@@ -740,7 +746,15 @@ export async function markFoldersPresent(
   await db
     .update(folder)
     .set({ state: 'present' })
-    .where(and(inArray(folder.id, [...folderIds]), inArray(folder.state, ['planned', 'orphan'])))
+    .where(
+      and(
+        inArray(folder.id, [...folderIds]),
+        inArray(folder.state, ['planned', 'orphan']),
+        // An orphan whose environment was deleted (a kept volume) is planned
+        // again first, which gives it an environment; it never jumps to present.
+        or(isNotNull(folder.environmentId), eq(folder.scope, 'common'))
+      )
+    )
 }
 
 /**

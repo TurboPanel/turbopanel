@@ -68,7 +68,7 @@ export type DeleteCleanupBody = {
   /** Servers asked to remove folders; each confirms on its own, the sweep asks again. */
   folderServerIds: string[]
   hostingAccounts?: {
-    /** Removed with the project; `removed` once done, else waiting for their folders or servers. */
+    /** Going with the project; `removed` when already gone, else the removal sweep finishes it once its folders are gone and its servers confirm. */
     removing: Array<{ id: string; username: string; removed: boolean }>
     kept: ProjectPrincipalFate['kept']
   }

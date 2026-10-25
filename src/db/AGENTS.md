@@ -728,9 +728,12 @@ project's principals nothing else uses (`removal_requested_at`), then deletes
 the `project` (variables and `managed` cascade via FK; `principal.project_id`
 is SET NULL). After commit the servers are asked to remove the folders (the
 folder removal sweep asks again until they confirm), and the principal removal
-sweep (`client/principals/removal-sweep.ts`) deletes each marked principal and
-retires its Linux user and home once no folder row names it and its servers
-are connected. A principal still used elsewhere is kept and listed.
+sweep (`client/principals/removal-sweep.ts`) retires each marked principal's
+Linux user and home once no folder row names it, its servers are connected
+and no stop is still running there; its placements turn `retiring`, the
+command consumer turns them `absent` when the host reports the account
+retired, an unconfirmed retire is asked again, and the row is deleted once
+none is left. A principal still used elsewhere is kept and listed.
 `tenancy.service_id` and `binding.service_id` are RESTRICT (a direct service
 delete must not leave a dangling run-as or inject edge), so the cascade drops
 those rows first. Running `ingress` / `turbopanel` rows (ProxySQL, per-service

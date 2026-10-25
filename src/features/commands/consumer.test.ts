@@ -3854,6 +3854,45 @@ test('processCommandEnvelope concludes nothing about folders from a reconcile th
   })
 })
 
+test('processCommandEnvelope marks a retiring account absent once the host reports it retired', async () => {
+  await withDeployFixtures(async (ctx) => {
+    await attachConnectedDaemonStatus(ctx.db, ctx.serverId)
+    await withOwnerFolders(
+      ctx,
+      [{ owner: 'one', kind: 'volume', slug: 'a', state: 'present' }],
+      async ({ one }) => {
+        await ctx.db.insert(principalPlacement).values({
+          principalId: one.id,
+          serverId: ctx.serverId,
+          state: 'retiring',
+          home: `/srv/users/${one.login}`,
+          source: 'manual',
+        })
+        await runSucceededCommand(
+          ctx.db,
+          ctx.serverId,
+          'server.principals.reconcile',
+          { principals: [], retirePrincipals: [{ username: one.login }] },
+          {
+            principalsApplied: 0,
+            keysChanged: [],
+            keysRemoved: [],
+            sshdReloaded: false,
+            sftpChroot: false,
+            principalsRetired: [one.login],
+            warnings: [],
+          }
+        )
+        const [placement] = await ctx.db
+          .select({ state: principalPlacement.state })
+          .from(principalPlacement)
+          .where(eq(principalPlacement.principalId, one.id))
+        assertEquals(placement?.state, 'absent')
+      }
+    )
+  })
+})
+
 test('processCommandEnvelope clears pins on environment.stop success', async () => {
   await withDeployFixtures(async ({ db, serverId, environmentId, projectId, webServiceId }) => {
     await attachConnectedDaemonStatus(db, serverId)
