@@ -4,7 +4,7 @@ import { and, eq, inArray, sql } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
-import { createDenoDb, endDbConnection } from '../../db/connection.ts'
+import { createDenoDb, endDbConnection, type Db } from '../../db/connection.ts'
 import type { DaemonCell, DaemonCellRegistry } from '../../contracts/cell.ts'
 import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from '../authn/crypto.ts'
 import { createSession } from '../authn/session-store.ts'
@@ -422,6 +422,44 @@ function composeWithWebService(): ComposeDocument {
     },
     presentation: { keyOrder: ['services'], comments: {} },
   }
+}
+
+/** Stand in for the system hierarchy so a deploy finds the shared ingress; returns the restore. */
+function stubIngressHierarchy(traefikServiceId: string): () => void {
+  const originalEnsure = systemHierarchyProvision.ensure
+  systemHierarchyProvision.ensure = () =>
+    Promise.resolve({
+      workspaceId: '00000000-0000-4000-8000-0000000000bb',
+      projectId: '00000000-0000-4000-8000-0000000000cc',
+      environmentId: '00000000-0000-4000-8000-0000000000dd',
+      serviceId: traefikServiceId,
+      containerRowId: '00000000-0000-4000-8000-0000000000ee',
+      containerName: `${traefikServiceId}-in`,
+    })
+  return () => {
+    systemHierarchyProvision.ensure = originalEnsure
+  }
+}
+
+/** Pin the environment to the server with an empty overlay, and put `compose` in the project's Base. */
+async function useBaseCompose(
+  db: Db,
+  ids: { environmentId: string; projectId: string; serverId: string },
+  compose: ComposeDocument
+): Promise<void> {
+  await db
+    .update(environment)
+    .set({
+      serverId: ids.serverId,
+      name: 'production',
+      options: { compose: emptyComposeDocument() },
+      updatedAt: new Date().toISOString(),
+    })
+    .where(eq(environment.id, ids.environmentId))
+  await db
+    .update(project)
+    .set({ options: { compose }, updatedAt: new Date().toISOString() })
+    .where(eq(project.id, ids.projectId))
 }
 
 function composeWithNamedWebService(): ComposeDocument {
@@ -1225,34 +1263,10 @@ test('POST /environments/:id/deploy stamps hostingIngress for HTTP hostnames', a
       serverId,
       commandQueue,
     }) => {
-      const originalEnsure = systemHierarchyProvision.ensure
-      systemHierarchyProvision.ensure = () =>
-        Promise.resolve({
-          workspaceId: '00000000-0000-4000-8000-0000000000bb',
-          projectId: '00000000-0000-4000-8000-0000000000cc',
-          environmentId: '00000000-0000-4000-8000-0000000000dd',
-          serviceId: traefikServiceId,
-          containerRowId: '00000000-0000-4000-8000-0000000000ee',
-          containerName: `${traefikServiceId}-in`,
-        })
+      const restoreHierarchy = stubIngressHierarchy(traefikServiceId)
       let hostingServiceId: string | undefined
       try {
-        await db
-          .update(environment)
-          .set({
-            serverId,
-            name: 'production',
-            options: { compose: emptyComposeDocument() },
-            updatedAt: new Date().toISOString(),
-          })
-          .where(eq(environment.id, environmentId))
-        await db
-          .update(project)
-          .set({
-            options: { compose: composeWithWebService() },
-            updatedAt: new Date().toISOString(),
-          })
-          .where(eq(project.id, projectId))
+        await useBaseCompose(db, { environmentId, projectId, serverId }, composeWithWebService())
 
         const [svc] = await db
           .insert(service)
@@ -1330,7 +1344,7 @@ test('POST /environments/:id/deploy stamps hostingIngress for HTTP hostnames', a
         if (hostingServiceId) {
           await db.delete(hosting).where(eq(hosting.serviceId, hostingServiceId))
         }
-        systemHierarchyProvision.ensure = originalEnsure
+        restoreHierarchy()
       }
     }
   )
@@ -1350,35 +1364,11 @@ test("POST /environments/:id/deploy uses internal TLS after revoking a Let's Enc
       serverId,
       commandQueue,
     }) => {
-      const originalEnsure = systemHierarchyProvision.ensure
-      systemHierarchyProvision.ensure = () =>
-        Promise.resolve({
-          workspaceId: '00000000-0000-4000-8000-0000000000bb',
-          projectId: '00000000-0000-4000-8000-0000000000cc',
-          environmentId: '00000000-0000-4000-8000-0000000000dd',
-          serviceId: traefikServiceId,
-          containerRowId: '00000000-0000-4000-8000-0000000000ee',
-          containerName: `${traefikServiceId}-in`,
-        })
+      const restoreHierarchy = stubIngressHierarchy(traefikServiceId)
       let hostingServiceId: string | undefined
       let tlsId: string | undefined
       try {
-        await db
-          .update(environment)
-          .set({
-            serverId,
-            name: 'production',
-            options: { compose: emptyComposeDocument() },
-            updatedAt: new Date().toISOString(),
-          })
-          .where(eq(environment.id, environmentId))
-        await db
-          .update(project)
-          .set({
-            options: { compose: composeWithWebService() },
-            updatedAt: new Date().toISOString(),
-          })
-          .where(eq(project.id, projectId))
+        await useBaseCompose(db, { environmentId, projectId, serverId }, composeWithWebService())
         // POST /tls source:lets_encrypt requires the org to have opted in to
         // ACME (organization.options.acmeEnabled, off by default).
         await db
@@ -1459,7 +1449,7 @@ test("POST /environments/:id/deploy uses internal TLS after revoking a Let's Enc
         if (tlsId) {
           await db.delete(tls).where(eq(tls.id, tlsId))
         }
-        systemHierarchyProvision.ensure = originalEnsure
+        restoreHierarchy()
       }
     }
   )
@@ -1497,33 +1487,13 @@ for (const acmeEnabled of [true, false]) {
         serverId,
         commandQueue,
       }) => {
-        const originalEnsure = systemHierarchyProvision.ensure
-        systemHierarchyProvision.ensure = () =>
-          Promise.resolve({
-            workspaceId: '00000000-0000-4000-8000-0000000000bb',
-            projectId: '00000000-0000-4000-8000-0000000000cc',
-            environmentId: '00000000-0000-4000-8000-0000000000dd',
-            serviceId: traefikServiceId,
-            containerRowId: '00000000-0000-4000-8000-0000000000ee',
-            containerName: `${traefikServiceId}-in`,
-          })
+        const restoreHierarchy = stubIngressHierarchy(traefikServiceId)
         try {
-          await db
-            .update(environment)
-            .set({
-              serverId,
-              name: 'production',
-              options: { compose: emptyComposeDocument() },
-              updatedAt: new Date().toISOString(),
-            })
-            .where(eq(environment.id, environmentId))
-          await db
-            .update(project)
-            .set({
-              options: { compose: composeWithAutomaticTls() },
-              updatedAt: new Date().toISOString(),
-            })
-            .where(eq(project.id, projectId))
+          await useBaseCompose(
+            db,
+            { environmentId, projectId, serverId },
+            composeWithAutomaticTls()
+          )
           await db
             .update(organization)
             .set({ options: { acmeEnabled } })
@@ -1581,7 +1551,7 @@ for (const acmeEnabled of [true, false]) {
             await db.delete(hosting).where(eq(hosting.serviceId, svc.id))
           }
           await db.delete(tls).where(eq(tls.organizationId, organizationId))
-          systemHierarchyProvision.ensure = originalEnsure
+          restoreHierarchy()
         }
       }
     )
