@@ -2595,6 +2595,13 @@ export type EnvironmentDeployCommandPayload = EnvironmentDeployHostAccess & {
    */
   noCache?: boolean
   /**
+   * When true, the daemon only rewrites this environment's web server
+   * (hosting) config and certificates: no build, no restart, no other change
+   * on the host. Sent after a Let's Encrypt certificate is chosen for a
+   * hosting. A daemon that predates the field runs a full deploy.
+   */
+  hostingsOnly?: boolean
+  /**
    * Hide web server names and versions in responses and default error pages.
    * Absent reads as off, so an older daemon changes nothing.
    */
@@ -4626,6 +4633,7 @@ export function parseEnvironmentDeployPayload(value: unknown): EnvironmentDeploy
       managedNetworkServices,
       managedNetwork: parseDeployManagedNetwork(value.managedNetwork, managedNetworkServices),
       noCache: parseOptionalDeployBoolean(value.noCache),
+      hostingsOnly: parseOptionalDeployBoolean(value.hostingsOnly),
       hideWebServerNames: parseOptionalDeployBoolean(value.hideWebServerNames),
       deployStrategy: parseDeployStrategyField(value.deployStrategy),
       migrations: parseDeployMigrationsField(value.migrations),

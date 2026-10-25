@@ -1297,6 +1297,9 @@ async function applyEnvironmentDeploySideEffect(
       }
       current = marked !== null
     }
+    // A hostings-only run changed the web server config and nothing else: no
+    // folders, accounts, sites or containers to record.
+    if (payload.hostingsOnly === true) return
     await markEnvironmentCopiesReady(db, payload.environmentId, envelope.serverId)
     const plannedFolderIds = await markPlannedFoldersPresentSafely(db, record)
     // Without a list that was read, nothing is known about which folders are in use.

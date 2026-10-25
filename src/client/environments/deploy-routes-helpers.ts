@@ -1206,3 +1206,19 @@ export function buildDeployPreviewServers(
     }
   })
 }
+
+/**
+ * A hostings-only run fits when every server the plan names already runs a
+ * finished deploy of this environment and none is drained.
+ */
+export function hostingsOnlyFits(
+  planServerIds: readonly string[],
+  drainedIds: readonly string[],
+  previous: readonly { serverId: string; status: string }[]
+): boolean {
+  if (drainedIds.length > 0 || planServerIds.length === 0) return false
+  const applied = new Set(
+    previous.filter((target) => target.status === 'applied').map((target) => target.serverId)
+  )
+  return planServerIds.every((serverId) => applied.has(serverId))
+}

@@ -16,6 +16,7 @@ import {
   expandHostingsForComposeInstances,
   fabricGateErrorResponse,
   hostingsNeedSharedHttpIngress,
+  hostingsOnlyFits,
   isPlainObject,
   mapPrepareErrorResponse,
   parseDeployRef,
@@ -940,4 +941,16 @@ test('previewCommitSha shows a commit and hides a branch name', () => {
     previewCommitSha({ commitSha: '0123456789abcdef0123456789abcdef01234567' }),
     '0123456789abcdef0123456789abcdef01234567'
   )
+})
+
+test('hostingsOnlyFits: only servers that already run a finished deploy, none drained', () => {
+  const applied = [
+    { serverId: 'a', status: 'applied' },
+    { serverId: 'b', status: 'applied' },
+  ]
+  assertEquals(hostingsOnlyFits(['a', 'b'], [], applied), true)
+  assertEquals(hostingsOnlyFits(['a'], ['b'], applied), false)
+  assertEquals(hostingsOnlyFits(['a', 'c'], [], applied), false)
+  assertEquals(hostingsOnlyFits(['a'], [], [{ serverId: 'a', status: 'failed' }]), false)
+  assertEquals(hostingsOnlyFits([], [], applied), false)
 })

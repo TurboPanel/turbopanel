@@ -60,6 +60,7 @@ import {
   composeProjectName,
   type DeployStrategyOverride,
   fabricGateErrorResponse,
+  hostingsOnlyFits,
   mapPrepareErrorResponse,
   parseDeployRequestFlags,
   parseDeployStrategyOverride,
@@ -569,6 +570,8 @@ type DeployCommandCreateParams = DeployActor & {
   /** Set only when `managedNetworkServices` is non-empty (see prepare). */
   managedNetwork?: string
   noCache: boolean
+  /** Only the web server config and certificates change on the host (`hostingsOnly`). */
+  hostingsOnly?: boolean
   /** The strategy decision; its `payload` fields ride the daemon command. */
   engine: DeployEnginePlan
   /** The planner's host-level verdict (`PlannedDeploy.hostLevelApproved`). */
@@ -761,6 +764,7 @@ async function createDeployCommand(
         managedNetworkServices: params.managedNetworkServices,
         managedNetwork: params.managedNetwork,
         noCache: params.noCache ? true : undefined,
+        hostingsOnly: params.hostingsOnly ? true : undefined,
         hostLevelApproved: params.hostLevelApproved ? true : undefined,
         remoteBuildSourcesApproved: params.remoteBuildSourcesApproved ? true : undefined,
         ...params.engine.payload,
@@ -784,7 +788,10 @@ async function createDeployCommand(
       generation: params.generation,
       desiredHash: params.desiredHash,
       replicaCounts: replicaCounts ?? undefined,
-      releases: releases ?? undefined,
+      // A hostings-only run builds nothing, so it publishes no release a
+      // rollback could be offered.
+      releases: params.hostingsOnly ? undefined : (releases ?? undefined),
+      action: params.hostingsOnly ? HOSTINGS_ONLY_DEPLOY_ACTION : undefined,
       // What ran, so history still says so after the payload is deleted.
       deployStrategy: params.engine.effectiveStrategy,
     }),
@@ -867,6 +874,7 @@ function createParamsForPreparedServer(
     removedSites?: readonly string[]
     /** Hostnames the host may take over from a leftover host config. */
     takeoverHostnames?: readonly DeployTakeover[]
+    hostingsOnly?: boolean
   }
 ): DeployCommandCreateParams {
   // One loopback-port ledger for both host-native lanes: site vhosts
@@ -930,6 +938,7 @@ function createParamsForPreparedServer(
       ? {}
       : { managedNetwork: row.prepared.managedNetwork }),
     noCache: params.noCache,
+    ...(params.hostingsOnly ? { hostingsOnly: true } : {}),
     engine: params.engine,
     hostLevelApproved: params.hostLevelApproved,
     remoteBuildSourcesApproved: params.remoteBuildSourcesApproved,
@@ -937,7 +946,8 @@ function createParamsForPreparedServer(
     desiredHash: row.prepared.desiredHash,
     replicaCounts: row.prepared.replicaCounts,
     listenerPorts: row.prepared.listenerPorts,
-    ...(params.plannedFolders.folderIds.length > 0
+    // A hostings-only run creates no folders, so it marks none present.
+    ...(params.plannedFolders.folderIds.length > 0 && !params.hostingsOnly
       ? { folderIds: params.plannedFolders.folderIds }
       : {}),
   }
@@ -1093,6 +1103,7 @@ async function persistDeployFanOut(
     projectName: string
     slots: readonly DesiredSlotInput[]
     noCache: boolean
+    hostingsOnly?: boolean
     engine: DeployEnginePlan
     hostLevelApproved: boolean
     remoteBuildSourcesApproved: boolean
@@ -1156,6 +1167,7 @@ async function persistDeployFanOut(
           projectName: params.projectName,
           generation,
           noCache: params.noCache,
+          ...(params.hostingsOnly ? { hostingsOnly: true } : {}),
           engine: params.engine,
           hostLevelApproved: params.hostLevelApproved,
           remoteBuildSourcesApproved: params.remoteBuildSourcesApproved,
@@ -1608,7 +1620,18 @@ export type DeployRequestAuth = DeployActor & {
    * into `sourceMaterial[]` (see `deploy-sources.ts`).
    */
   rollback?: DeployRollbackRequest
+  /**
+   * Only rewrite the web server config and certificates on hosts already
+   * running this environment: no build, no restart. Sent after a hosting gets a
+   * Let's Encrypt certificate. Refused (`409 hosting_apply_needs_deploy`) when
+   * a server would be added or drained, or has no finished deploy, since only a
+   * real deploy can change those.
+   */
+  hostingsOnly?: boolean
 }
+
+/** `command.context.action` of a hostings-only `environment.deploy`. */
+export const HOSTINGS_ONLY_DEPLOY_ACTION = 'hostings'
 
 type EnrichedTaskAddresses = Awaited<ReturnType<typeof enrichPlannedTaskAddresses>>
 
@@ -2073,7 +2096,8 @@ async function runEnvironmentDeploy(
     db,
     environmentId,
     auth.organizationId,
-    await resolveHostAccessActor(db, auth, auth.organizationId, true)
+    // Applying hosting settings is not someone approving host-level Compose.
+    await resolveHostAccessActor(db, auth, auth.organizationId, auth.hostingsOnly !== true)
   )
   if (planned instanceof Response) return planned
 
@@ -2115,6 +2139,9 @@ async function runEnvironmentDeploy(
       attachments: spanningCtx.attachments,
       previous,
     })
+    if (auth.hostingsOnly && !hostingsOnlyFits(planned.plan.serverIds, drainedIds, previous)) {
+      return c.json({ error: 'hosting_apply_needs_deploy' }, 409)
+    }
     const projectName = composeProjectName(environmentId)
     const engine = await resolveEnginePlan(
       db,
@@ -2137,6 +2164,7 @@ async function runEnvironmentDeploy(
       projectName,
       slots: spanningCtx.enriched.slots,
       noCache: auth.noCache,
+      ...(auth.hostingsOnly ? { hostingsOnly: true } : {}),
       engine,
       hostLevelApproved: planned.hostLevelApproved,
       remoteBuildSourcesApproved: planned.remoteBuildSourcesApproved,

@@ -161,6 +161,13 @@ export function createLetsEncryptStore(db: Db): LetsEncryptStore {
           ...(patch.options === undefined ? {} : { options: patch.options }),
           ...(patch.metadata === undefined ? {} : { metadata: patch.metadata }),
           ...(patch.pendingAt === undefined ? {} : { pendingAt: patch.pendingAt }),
+          // Remembering or clearing a waiting request is bookkeeping, not an
+          // edit: `updatedAt` moves only when the pin or the options change,
+          // which is what tells a deploy (or the hostings-only apply) whether
+          // this hosting changed since it last ran.
+          ...(patch.tlsId === undefined && patch.options === undefined
+            ? { updatedAt: sql`${hosting.updatedAt}` }
+            : {}),
         })
         .where(eq(hosting.id, hostingId))
     },
@@ -176,7 +183,12 @@ export type HostingCertificateRow = {
   updatedAt: string
 }
 
-/** Environments (by hosting) whose last applied deployment predates `since`. */
+/**
+ * Hostings whose change no deploy has picked up: the last applied deployment
+ * of the environment predates the hosting's last change, and no deploy queued
+ * since then is still running (a running one, such as the hostings-only apply
+ * queued after a certificate is pinned, carries the change).
+ */
 async function loadNeedsDeploy(
   db: Db,
   rows: readonly HostingCertificateRow[]
@@ -189,17 +201,22 @@ async function loadNeedsDeploy(
       finishedAt: sql<
         string | null
       >`max(${deployment.finishedAt}) filter (where ${deployment.status} = 'applied')`,
+      runningSince: sql<
+        string | null
+      >`max(${deployment.updatedAt}) filter (where ${deployment.status} in ('pending', 'applying'))`,
     })
     .from(hosting)
     .innerJoin(service, eq(service.id, hosting.serviceId))
     .leftJoin(deployment, eq(deployment.environmentId, service.environmentId))
     .where(inArray(hosting.id, ids))
     .groupBy(hosting.id)
-  const lastApplied = new Map(finished.map((row) => [row.hostingId, row.finishedAt]))
+  const byHosting = new Map(finished.map((row) => [row.hostingId, row]))
+  const since = (at: string | null | undefined, changedAt: string) =>
+    at !== null && at !== undefined && Date.parse(at) >= Date.parse(changedAt)
   const stale = new Set<string>()
   for (const row of rows) {
-    const at = lastApplied.get(row.id)
-    if (at === null || at === undefined || Date.parse(at) < Date.parse(row.updatedAt)) {
+    const found = byHosting.get(row.id)
+    if (!since(found?.finishedAt, row.updatedAt) && !since(found?.runningSince, row.updatedAt)) {
       stale.add(row.id)
     }
   }
