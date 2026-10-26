@@ -273,6 +273,11 @@ function isTerminalStatus(status: PendingRequestStatus): boolean {
   return TERMINAL_STATUSES.has(status)
 }
 
+/** The daemon reported a result (`done` / `failed`); `expired` is the control plane giving up. */
+function isAnsweredStatus(status: PendingRequestStatus): boolean {
+  return status === 'done' || status === 'failed'
+}
+
 function daemonBuildIdentityEqual(
   a: DaemonBuildInfo | undefined,
   b: DaemonBuildInfo | undefined
@@ -2650,8 +2655,12 @@ export class DaemonCellObject {
     )
     if (existingRow) {
       const existingDeliveryId = sqlString(existingRow.delivery_id)
-      if (existingDeliveryId === outbound.deliveryId) {
-        return parseRequestRow(serverId, existingRow)
+      const existing = parseRequestRow(serverId, existingRow)
+      // The same delivery again, or a command whose result is already here:
+      // nothing to send. A finished command sent twice would only make the
+      // daemon answer a repeat.
+      if (existingDeliveryId === outbound.deliveryId || isAnsweredStatus(existing.status)) {
+        return existing
       }
 
       // Re-delivery: refresh delivery fields; leave correlation status alone.
