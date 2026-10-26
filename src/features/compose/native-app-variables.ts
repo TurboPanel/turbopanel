@@ -74,10 +74,7 @@ export type NativeAppVariables = {
   view: NativeAppVariableView[]
 }
 
-function platformView(app: {
-  listenPort: number
-  appMode?: 'production' | 'development'
-}): NativeAppVariableView[] {
+function platformView(app: { listenPort: number; appMode?: string }): NativeAppVariableView[] {
   const plain = (name: string, value: string): NativeAppVariableView => ({
     name,
     source: 'platform',
@@ -143,7 +140,7 @@ function compareByName(a: RuntimeEnvAssignment, b: RuntimeEnvAssignment) {
  */
 export function buildNativeAppVariables(
   assignments: readonly RuntimeEnvAssignment[],
-  app: { listenPort: number; appMode?: 'production' | 'development' },
+  app: { listenPort: number; appMode?: string },
   unreferenced: readonly UnreferencedSecret[] = []
 ): NativeAppVariables {
   const byName = new Map<string, RuntimeEnvAssignment>()
