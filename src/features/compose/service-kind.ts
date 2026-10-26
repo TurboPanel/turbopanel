@@ -42,14 +42,6 @@ export type NativeRuntime = 'node' | 'deno'
 export type NodePackageManager = 'npm' | 'yarn' | 'pnpm'
 
 /**
- * `NODE_ENV` for a `serviceKind: node` service — set in both the build
- * environment and the generated unit. Omitted means `production`. Usually
- * `production` or `development`; any other value matching
- * {@link NODE_APP_MODE_RE} (`staging`, `test`, ...) is allowed.
- */
-export type NodeAppMode = string
-
-/**
  * Application mode shape: 1-64 letters, digits, `.`, `_` or `-`, starting
  * with a letter or digit. The daemon's deploy parser and the UI use the same
  * rule. Kept tight because the daemon writes the value unquoted into the
@@ -224,7 +216,12 @@ type ComposeServiceExtensionFields = {
    * `NODE_ENV` for a `serviceKind: node` service (build + unit). Omitted
    * means `production`.
    */
-  appMode?: NodeAppMode
+  /**
+   * `NODE_ENV` for the build and the generated unit. Omitted means `production`;
+   * usually `production` or `development`, any value matching
+   * {@link NODE_APP_MODE_RE} (`staging`, `test`, ...) is allowed.
+   */
+  appMode?: string
   /**
    * Whether a `serviceKind: node` service's process should run. Omitted means
    * `true`. When `false` the release still builds and promotes and the unit
@@ -631,7 +628,7 @@ function readNodePackageManager(value: unknown): NodePackageManager | undefined 
   return trimmed as NodePackageManager
 }
 
-function readNodeAppMode(value: unknown): NodeAppMode | undefined {
+function readNodeAppMode(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined
   const trimmed = value.trim()
   return NODE_APP_MODE_RE.test(trimmed) ? trimmed : undefined
