@@ -43,9 +43,19 @@ export type NodePackageManager = 'npm' | 'yarn' | 'pnpm'
 
 /**
  * `NODE_ENV` for a `serviceKind: node` service — set in both the build
- * environment and the generated unit. Omitted means `production`.
+ * environment and the generated unit. Omitted means `production`. Usually
+ * `production` or `development`; any other value matching
+ * {@link NODE_APP_MODE_RE} (`staging`, `test`, ...) is allowed.
  */
-export type NodeAppMode = 'production' | 'development'
+export type NodeAppMode = string
+
+/**
+ * Application mode shape: 1-64 letters, digits, `.`, `_` or `-`, starting
+ * with a letter or digit. The daemon's deploy parser and the UI use the same
+ * rule. Kept tight because the daemon writes the value unquoted into the
+ * unit's `Environment=NODE_ENV=` line.
+ */
+export const NODE_APP_MODE_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
 
 /**
  * Build backend for a `x-turbopanel.source` binding.
@@ -513,7 +523,6 @@ const SITE_ENGINES = new Set<SiteEngine>([
 ])
 const SOURCE_BUILD_KINDS = new Set<ComposeSourceBuildKind>(['native', 'railpack'])
 const NODE_PACKAGE_MANAGERS = new Set<NodePackageManager>(['npm', 'yarn', 'pnpm'])
-const NODE_APP_MODES = new Set<NodeAppMode>(['production', 'development'])
 
 /** Where a site's content comes from. Omitted means `release`. */
 export type SiteSourceKind = 'release' | 'managed-directory'
@@ -625,8 +634,7 @@ function readNodePackageManager(value: unknown): NodePackageManager | undefined 
 function readNodeAppMode(value: unknown): NodeAppMode | undefined {
   if (typeof value !== 'string') return undefined
   const trimmed = value.trim()
-  if (!NODE_APP_MODES.has(trimmed as NodeAppMode)) return undefined
-  return trimmed as NodeAppMode
+  return NODE_APP_MODE_RE.test(trimmed) ? trimmed : undefined
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -958,7 +966,8 @@ const SERVICE_EXTENSION_FIELDS: Readonly<Record<string, ServiceExtensionFieldRul
   appMode: {
     kinds: NODE_KIND_ONLY,
     isValid: (value) => Boolean(readNodeAppMode(value)),
-    typeMessage: 'appMode must be "production" or "development"',
+    typeMessage:
+      'appMode must be "production", "development", or a custom value of 1 to 64 letters, digits, ".", "_", or "-" that starts with a letter or digit',
   },
   enabled: {
     kinds: NODE_KIND_ONLY,
