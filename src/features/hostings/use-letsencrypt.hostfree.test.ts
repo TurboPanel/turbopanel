@@ -17,7 +17,12 @@ type Saved = Parameters<LetsEncryptStore['saveHosting']>
 function fakeStore(existing: string | null = null, otherWeb: string[] = []) {
   const saved: Saved[] = []
   const created: string[][] = []
+  const locked: string[] = []
   const store: LetsEncryptStore = {
+    withCertificateLock: (hosting, use) => {
+      locked.push(hosting.id)
+      return use(store)
+    },
     expectedAddresses: () => Promise.resolve([SERVER_IP]),
     otherWebHostnames: () => Promise.resolve(otherWeb),
     managedCertificateFor: (_org, names) => {
@@ -30,7 +35,7 @@ function fakeStore(existing: string | null = null, otherWeb: string[] = []) {
       return Promise.resolve()
     },
   }
-  return { store, saved, created }
+  return { store, saved, created, locked }
 }
 
 const pointing: DnsLookup = () => Promise.resolve([SERVER_IP])
@@ -83,7 +88,7 @@ test('refuses a local bind and a non-http hosting', async () => {
 })
 
 test('DNS ready: creates the certificate row, pins it, clears any waiting request', async () => {
-  const { store, saved, created } = fakeStore()
+  const { store, saved, created, locked } = fakeStore()
   const pendingMeta = { keep: 1 }
   const out = await requestLetsEncrypt({
     store,
@@ -101,6 +106,8 @@ test('DNS ready: creates the certificate row, pins it, clears any waiting reques
   assertEquals(id, 'h1')
   // Pinning leaves the hosting options alone: the www setting is saved elsewhere.
   assertEquals(patch, { tlsId: 'tls-new', metadata: { keep: 1 }, pendingAt: null })
+  // Found and pinned under one lock, so no cleanup can remove the row in between.
+  assertEquals(locked, ['h1'])
 })
 
 test('clicking again reuses the existing certificate row', async () => {

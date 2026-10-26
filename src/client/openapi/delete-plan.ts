@@ -42,6 +42,7 @@ export const deletePlanSchemas = {
       'servers',
       'folders',
       'hostingAccounts',
+      'certificates',
       'blockers',
     ],
     properties: {
@@ -111,6 +112,21 @@ export const deletePlanSchemas = {
             username: { type: 'string' },
             action: { type: 'string', enum: ['remove', 'keep'] },
             usedBy,
+          },
+        },
+      },
+      certificates: {
+        type: 'array',
+        description:
+          "The Let's Encrypt certificates TurboPanel made for the deleted sites. `remove`: deleted with them, with the stored copy of the issued key. `keep`: another site still uses it (`otherSites`). Uploaded, self-signed and hand-added certificates are never listed or removed.",
+        items: {
+          type: 'object',
+          required: ['id', 'names', 'action'],
+          properties: {
+            id: { type: 'string' },
+            names: { type: 'array', items: { type: 'string' } },
+            action: { type: 'string', enum: ['remove', 'keep'] },
+            otherSites: { type: 'integer' },
           },
         },
       },

@@ -6,6 +6,7 @@ import { assertEquals } from '@std/assert'
 import type { ComposeDocument } from '../../features/compose/index.ts'
 import { hostingEntryKey } from '../../features/compose/index.ts'
 import {
+  audit,
   environment,
   hostname,
   hosting,
@@ -111,6 +112,7 @@ function createReconcileDb(opts: {
       ],
       // The reconcile takes the environment row's lock first.
       [environment, [{ id: ENV_ID }]],
+      [audit, []],
       [hosting, opts.hostingRows ?? []],
       [
         service,
@@ -507,6 +509,104 @@ test('reconcileHostingsFromCompose does not reuse a revoked or uploaded row for 
   const pinned = hostingRow(db, result.created[0])?.tlsId
   assertEquals(db.rows(tls).length, 3)
   assertEquals(pinned === 'tls-revoked' || pinned === 'tls-upload', false)
+})
+
+/** The compose document once the route is gone ("Remove hostname"). */
+function reconcileWithoutRoute(db: ReturnType<typeof createReconcileDb>) {
+  return reconcileHostingsFromCompose(db, {
+    organizationId: ORG_ID,
+    environmentId: ENV_ID,
+    merged: composeDoc({ web: hostingService([]) }),
+    serviceRows: [{ id: SVC_WEB, composeServiceName: 'web' }],
+  })
+}
+
+test('reconcileHostingsFromCompose removes the Lets Encrypt entry with the last route that used it', async () => {
+  const db = createReconcileDb({ acmeEnabled: true })
+  const first = await reconcileAutomatic(db)
+  if (!first.ok) throw new TypeError('expected automatic pin')
+  assertEquals(db.rows(tls).length, 1)
+  const entryId = db.rows(tls)[0].id
+  const removed = await reconcileWithoutRoute(db)
+  if (!removed.ok) throw new TypeError('expected the route to be removed')
+  assertEquals(removed.removed, first.created)
+  assertEquals(db.rows(tls), [])
+  assertEquals(
+    db.rows(audit).map((row) => [row.action, row.targetId]),
+    [['tls.certificate.delete', entryId]]
+  )
+})
+
+test('reconcileHostingsFromCompose removes the entry once the route stops asking for Lets Encrypt', async () => {
+  const db = createReconcileDb({ acmeEnabled: true })
+  const first = await reconcileAutomatic(db)
+  if (!first.ok) throw new TypeError('expected automatic pin')
+  const internal = await reconcileAutomatic(db, { tls: { mode: 'internal' } })
+  if (!internal.ok) throw new TypeError('expected the route to be kept')
+  assertEquals(hostingRow(db, first.created[0])?.tlsId, null)
+  assertEquals(db.rows(tls), [])
+})
+
+test('reconcileHostingsFromCompose keeps the entry while a site elsewhere in the organization uses it', async () => {
+  const db = createReconcileDb({ acmeEnabled: true })
+  const first = await reconcileAutomatic(db)
+  if (!first.ok) throw new TypeError('expected automatic pin')
+  const entryId = db.rows(tls)[0].id as string
+  await db.insert(hosting).values({
+    id: 'host-elsewhere',
+    serviceId: SVC_OTHER,
+    tlsId: entryId,
+    metadata: {},
+    options: { hostnames: [HOSTNAME] },
+  })
+  const removed = await reconcileWithoutRoute(db)
+  if (!removed.ok) throw new TypeError('expected the route to be removed')
+  assertEquals(
+    db.rows(tls).map((row) => row.id),
+    [entryId]
+  )
+})
+
+test('reconcileHostingsFromCompose never removes an uploaded or hand-added certificate', async () => {
+  const db = createReconcileDb({
+    acmeEnabled: true,
+    tlsRows: [
+      { id: 'tls-1', label: 'prod-cert' },
+      {
+        ...managedRow('tls-library', ['other.example.com']),
+        metadata: { dnsNames: ['other.example.com'], acme: { createdFor: 'library' } },
+      },
+    ],
+  })
+  const pinned = await reconcileHostingsFromCompose(db, {
+    organizationId: ORG_ID,
+    environmentId: ENV_ID,
+    merged: composeDoc({
+      web: hostingService([
+        { hostname: HOSTNAME, tls: { mode: 'certificate', certificateRef: 'tls-1' } },
+        { hostname: 'other.example.com', tls: { mode: 'automatic' } },
+      ]),
+    }),
+    serviceRows: [{ id: SVC_WEB, composeServiceName: 'web' }],
+  })
+  if (!pinned.ok) throw new TypeError(`expected both routes to pin, got ${pinned.error.kind}`)
+  assertEquals(
+    db
+      .rows(hosting)
+      .map((row) => row.tlsId)
+      .sort(),
+    ['tls-1', 'tls-library']
+  )
+  const removed = await reconcileWithoutRoute(db)
+  if (!removed.ok) throw new TypeError('expected the routes to be removed')
+  assertEquals(db.rows(hosting), [])
+  assertEquals(
+    db
+      .rows(tls)
+      .map((row) => row.id)
+      .sort(),
+    ['tls-1', 'tls-library']
+  )
 })
 
 for (const acmeEnabled of [false, undefined]) {

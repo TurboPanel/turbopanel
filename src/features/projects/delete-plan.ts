@@ -2,8 +2,9 @@
  * What deleting a project (or one environment) will remove and keep, read
  * before anything changes: the environments and services, every folder on
  * every server with its path and whether it goes or stays, the site owners'
- * Linux users (Hosting Accounts) that go with the project, and the reasons the
- * delete cannot run yet. The delete confirmation shows it, and the delete
+ * Linux users (Hosting Accounts) that go with the project, the Let's Encrypt
+ * certificates made for its sites (removed, or kept while another site uses
+ * one), and the reasons the delete cannot run yet. The delete confirmation shows it, and the delete
  * routes refuse on its blockers before they stop anything.
  *
  * Offline servers refuse, they are not queued: the stop that a delete sends
@@ -20,6 +21,7 @@ import type { Db } from '../../db/connection.ts'
 import {
   environment,
   folder,
+  hosting,
   managed,
   principal,
   server,
@@ -33,6 +35,7 @@ import { classifyProjectPrincipals } from '../principals/removal.ts'
 import type { PrincipalReferences } from '../principals/store.ts'
 import { COMMON_ASSET_IN_USE_ERROR } from '../folders/shares.ts'
 import { PRIMARY_ENVIRONMENT_DELETE_ERROR } from './primary-environment.ts'
+import { planSiteCertificates, type SiteCertificateFate } from '../tls/unused-letsencrypt.ts'
 import {
   ENVIRONMENT_DEPLOY_RUNNING_MESSAGE,
   ENVIRONMENT_RUNNING_ERROR,
@@ -84,6 +87,8 @@ export type DeletePlan = {
   folders: DeletePlanFolder[]
   /** Only for a project delete; an environment delete keeps the project's Hosting Accounts. */
   hostingAccounts: DeletePlanHostingAccount[]
+  /** The Let's Encrypt certificates made for these sites: removed, or kept while another site uses one. */
+  certificates: SiteCertificateFate[]
   blockers: DeletePlanBlocker[]
 }
 
@@ -155,6 +160,21 @@ async function loadPlanFolders(
       action: kept ? 'keep' : 'remove',
     }
   })
+}
+
+async function loadPlanCertificates(
+  db: Pick<Db, 'select'>,
+  serviceIds: string[]
+): Promise<SiteCertificateFate[]> {
+  if (serviceIds.length === 0) return []
+  const rows = await db
+    .select({ id: hosting.id })
+    .from(hosting)
+    .where(inArray(hosting.serviceId, serviceIds))
+  return await planSiteCertificates(
+    db,
+    rows.map((row) => row.id)
+  )
 }
 
 async function loadServers(
@@ -251,6 +271,7 @@ export async function buildDeletePlan(db: Db, input: DeletePlanInput): Promise<D
     ...(serviceIds.length > 0 ? { serviceIds } : {}),
   })
   const folders = await loadPlanFolders(db, { environmentIds, serviceIds, storageIds })
+  const certificates = await loadPlanCertificates(db, serviceIds)
 
   let hostingAccounts: DeletePlanHostingAccount[] = []
   if (input.projectId) {
@@ -308,6 +329,7 @@ export async function buildDeletePlan(db: Db, input: DeletePlanInput): Promise<D
     servers,
     folders,
     hostingAccounts,
+    certificates,
     blockers,
   }
 }
