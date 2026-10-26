@@ -27,6 +27,7 @@ import {
   MASS_DISCONNECT_ABSOLUTE,
   OFFLINE_SWEEP_STALE_MS,
   resetOfflineSweepNullGraceForTests,
+  runIsolatedSweep,
   runOfflineSweep,
   SELF_HEAL_SWEEP_BUDGET,
   shouldSweepExecutionLogs,
@@ -34,8 +35,10 @@ import {
   shouldSweepUpgradeHistory,
   sweepExpiredCommandDispatchSafely,
   sweepExpiredExecutionLogsSafely,
+  sweepErrorMessage,
   sweepExpiredWebhookDeliveriesSafely,
   sweepOnce,
+  sweepPeakHistorySafely,
   takeLastOfflineSweepScheduledTimeForTests,
   updateNullGraceBookkeeping,
 } from './offline-sweep.ts'
@@ -1902,4 +1905,79 @@ it('the skipped-phase list follows the configured upgrade tick cadence', () => {
   assertEquals(optionalPhaseNames(minuteFive, 5).includes('upgrade-history'), true)
   assertEquals(optionalPhaseNames(minuteFifteen).includes('upgrade-history'), true)
   assertEquals(newSkippedPhases(5).upgradeTickMinutes, 5)
+})
+
+it('the peak history prune deletes through the table and never throws', async () => {
+  const deleted: unknown[] = []
+  const working = {
+    delete: () => ({
+      where: () => ({
+        returning: async () => {
+          deleted.push(1)
+          return [{ id: 'a' }, { id: 'b' }]
+        },
+      }),
+    }),
+  } as unknown as Parameters<typeof sweepPeakHistorySafely>[0]
+  await sweepPeakHistorySafely(working)
+  assertEquals(deleted.length, 1)
+
+  const broken = {
+    delete: () => {
+      throw new Error('database down')
+    },
+  } as unknown as Parameters<typeof sweepPeakHistorySafely>[0]
+  await sweepPeakHistorySafely(broken)
+})
+
+async function captureSweepTraces(run: () => Promise<void>): Promise<string[]> {
+  const lines: string[] = []
+  const originalInfo = console.info
+  console.info = (...args: unknown[]) => {
+    lines.push(args.map(String).join(' '))
+  }
+  try {
+    await run()
+  } finally {
+    console.info = originalInfo
+  }
+  return lines
+}
+
+it('sweep errors name the database cause behind a failed query', () => {
+  const wrapped = new Error('Failed query: select 1', {
+    cause: new Error('write CONNECTION_ENDED db.local:5432'),
+  })
+  assertEquals(
+    sweepErrorMessage(wrapped),
+    'Failed query: select 1 (cause: write CONNECTION_ENDED db.local:5432)'
+  )
+  assertEquals(sweepErrorMessage(new Error('plain')), 'plain')
+  assertEquals(sweepErrorMessage('text'), 'text')
+})
+
+it('an isolated sweep traces its failure with the cause and does not throw', async () => {
+  const traces = await captureSweepTraces(() =>
+    runIsolatedSweep(undefined, 'folder-removal-sweep-failed', () =>
+      Promise.reject(new Error('Failed query: x', { cause: new Error('timeout') }))
+    )
+  )
+  assertEquals(
+    traces.some(
+      (line) =>
+        line.includes('event=folder-removal-sweep-failed') && line.includes('(cause: timeout)')
+    ),
+    true
+  )
+})
+
+it('no isolated sweep starts once the reconcile phase is out of budget', async () => {
+  const budget = new AbortController()
+  budget.abort()
+  let ran = false
+  await runIsolatedSweep(budget.signal, 'firewall-preview-sweep-failed', () => {
+    ran = true
+    return Promise.resolve()
+  })
+  assertEquals(ran, false)
 })

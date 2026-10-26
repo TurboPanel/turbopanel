@@ -5,22 +5,15 @@
     {
       "idx": 0,
       "version": "7",
-      "when": 1792498533036,
-      "tag": "0000_init",
+      "when": 1792792899297,
+      "tag": "0000_base",
       "breakpoints": true
     },
     {
       "idx": 1,
       "version": "7",
-      "when": 1792542413788,
-      "tag": "0001_login_straight_through",
-      "breakpoints": true
-    },
-    {
-      "idx": 2,
-      "version": "7",
-      "when": 1792604831497,
-      "tag": "0002_backup_policy_database",
+      "when": 1792968916599,
+      "tag": "0001_delete_project_cleanup",
       "breakpoints": true
     }
   ]

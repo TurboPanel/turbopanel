@@ -2,7 +2,7 @@ const ALLOWED_SOURCES_SCHEMA = {
   type: 'array',
   items: { type: 'string' },
   description:
-    "Where the login may be used from. Items: `any` (alone: everywhere, the default), `internal` (this server: its own programs and containers; anything arriving as the Docker gateway address counts as local), `server:<id>` (one of the organization's servers, all its addresses), `address:<ip | prefix% | cidr>` (one address, a prefix such as `203.0.113.%` or `2001:db8:1:%`, or a range that can be said exactly: IPv4 /8, /16, /24 or /32, IPv6 whole 16-bit groups /16 to /112; other ranges answer 400 `managed_login_source_range_not_exact`). The login still signs in from anywhere: the database proxy refuses every query from other addresses, so tools may show an empty page. An empty list answers 400 `managed_login_sources_empty`. Needs a server daemon that supports it (409 `managed_login_limits_need_daemon_update`). Other 400s: `managed_login_sources_invalid`, `managed_login_source_invalid`, `managed_login_sources_too_many`, `managed_login_sources_any_alone`, `managed_login_source_server_unknown`.",
+    "Where the login may be used from. Items: `any` (alone: everywhere, stored as the pair `address:0.0.0.0/0` and `address:::/0`; typing the range `0.0.0.0/0` or `::/0` means the same), `internal` (this server: its own programs and containers; anything arriving as the Docker gateway address counts as local), `server:<id>` (one of the organization's servers, all its addresses), `address:<ip | prefix% | cidr>` (one address (host names are refused), a prefix such as `203.0.113.%` or `2001:db8:1:%`, or a range that can be said exactly: IPv4 /8, /16, /24 or /32, IPv6 whole 16-bit groups /16 to /112; other ranges answer 400 `managed_login_source_range_not_exact`). The login still signs in from anywhere: the database proxy refuses every query from other addresses, so tools may show an empty page. An empty list answers 400 `managed_login_sources_empty`. Needs a server daemon that supports it (409 `managed_login_limits_need_daemon_update`). Other 400s: `managed_login_sources_invalid`, `managed_login_source_invalid`, `managed_login_sources_too_many`, `managed_login_sources_any_alone`, `managed_login_source_server_unknown`.",
 } as const
 
 const MAX_CONNECTIONS_SCHEMA = {
@@ -672,9 +672,9 @@ export const managedSchemas = {
       },
       grantMode: {
         type: 'string',
-        enum: ['preset', 'recipe', 'self'],
+        enum: ['recipe', 'self'],
         description:
-          "Who sets the login's permissions. `preset` = logins made before modes existed (the panel resets permissions on every apply, as before). `recipe` = the panel sets them. `self` = you set them by hand and the panel never resets them; it still owns the password, LOGIN, connection limit and CONNECT on the listed databases.",
+          "Who sets the login's permissions. `recipe` = the panel sets them. `self` = you set them by hand and the panel never resets them; it still owns the password, LOGIN, connection limit and CONNECT on the listed databases.",
       },
       allowedSources: {
         ...ALLOWED_SOURCES_SCHEMA,
@@ -1082,6 +1082,47 @@ export const managedSchemas = {
       },
     },
   },
+  CreateManagedAppLoginsRequest: {
+    type: 'object',
+    properties: {
+      prefix: {
+        type: 'string',
+        description:
+          'Start of the three login names (`<prefix>_migrate`, `<prefix>_rw`, `<prefix>_ro`). Left out or empty: the database name. Letters, numbers and underscores, starting with a letter or underscore, short enough that `<prefix>_migrate` fits the engine limit for login names (400 `managed_app_login_prefix_invalid` / `managed_app_login_prefix_too_long`).',
+      },
+      allowedSources: ALLOWED_SOURCES_SCHEMA,
+      maxConnections: MAX_CONNECTIONS_SCHEMA,
+      straightThrough: STRAIGHT_THROUGH_REQUEST_SCHEMA,
+    },
+  },
+  CreateManagedAppLoginsResponse: {
+    type: 'object',
+    required: ['ok', 'logins', 'commandId', 'serverId'],
+    properties: {
+      ok: { type: 'boolean', const: true },
+      logins: {
+        type: 'array',
+        description:
+          'The three new logins in order (owner, read/write, read-only), each with its show-once password.',
+        items: {
+          type: 'object',
+          required: ['user', 'password'],
+          properties: {
+            user: { $ref: '#/components/schemas/ManagedUserRecord' },
+            password: { type: 'string', description: 'Show-once plaintext password' },
+          },
+        },
+      },
+      notes: {
+        type: 'array',
+        items: { type: 'string' },
+        description:
+          'Plain-words notes on what the owner login got when it is not the full owner rights (a database without an owner role, or an older daemon). Absent when there is nothing to say.',
+      },
+      commandId: { type: 'string' },
+      serverId: { type: 'string' },
+    },
+  },
   CreateManagedUserResponse: {
     type: 'object',
     required: ['ok', 'user', 'password', 'commandId', 'serverId'],
@@ -1296,6 +1337,11 @@ export const managedSchemas = {
         format: 'uuid',
         description:
           'Host that holds the on-disk artifact (the primary when the backup ran). Absent on older records.',
+      },
+      copy: {
+        $ref: '#/components/schemas/BackupTargetCopy',
+        description:
+          'How copying this backup to its off-server target stands; null when no target applied.',
       },
     },
   },
@@ -1694,6 +1740,11 @@ export const managedSchemas = {
         type: 'string',
         description:
           'The artifact is on a former primary. Restore it there, take a new backup, or switch back first.',
+      },
+      canRestoreFromCopy: {
+        type: 'boolean',
+        description:
+          'True when a finished copy in the bucket exists: resend with `{ "fromCopy": true }` to restore from it on this server.',
       },
     },
   },
@@ -2140,7 +2191,7 @@ export const managedPaths = {
       tags: ['Managed services'],
       summary: 'Change a login (grant mode, databases, connection role, privileges, tool flag)',
       description:
-        'Every field is optional. `dryRun: true` changes nothing and returns `statements`, a plain-words list of the kinds of SQL the next apply would run. Refusals: 422 `managed_login_not_editable` (root/replication logins), 422 `managed_grant_mode_invalid_transition` (back to `preset`), 409 `managed_grant_reset_needs_confirm` (self back to panel-set permissions, or a read-only Postgres login moving to self, needs `confirmReset: true`), 422 `managed_self_login_has_no_privileges`, 400 `managed_grant_mode_invalid`.',
+        'Every field is optional. `dryRun: true` changes nothing and returns `statements`, a plain-words list of the kinds of SQL the next apply would run. Refusals: 422 `managed_login_not_editable` (root/replication logins), 409 `managed_grant_reset_needs_confirm` (self back to panel-set permissions, or a read-only Postgres login moving to self, needs `confirmReset: true`), 422 `managed_self_login_has_no_privileges`, 400 `managed_grant_mode_invalid`.',
       parameters: [ENV_ID_PARAM, LOGIN_ID_PARAM],
       requestBody: {
         required: true,
@@ -2190,7 +2241,7 @@ export const managedPaths = {
                 properties: {
                   ok: { type: 'boolean' },
                   dryRun: { type: 'boolean', description: 'Present and true for a preview.' },
-                  grantMode: { type: 'string', enum: ['preset', 'recipe', 'self'] },
+                  grantMode: { type: 'string', enum: ['recipe', 'self'] },
                   statements: {
                     type: 'array',
                     items: { type: 'string' },
@@ -2358,6 +2409,38 @@ export const managedPaths = {
       },
     },
   },
+  '/api/client/v1/environments/{id}/managed/databases/{name}/app-logins': {
+    post: {
+      tags: ['Managed services'],
+      summary: 'Add the three app logins for one database in one step',
+      description:
+        "Adds `<prefix>_migrate`, `<prefix>_rw` and `<prefix>_ro` on this database only, with names exactly as written (the plain name scheme; 409 `principal_scheme_locked` when the organization locks another scheme), permissions set by the panel, and the same connect-from limit, connection cap and straight-through choice for all three. `_migrate` is the owner of the database (privilege `admin`, a tool login): on PostgreSQL a member of the database's owner role, so what it creates belongs to the owner role and it can hand out access; MySQL and MariaDB have no database owner, so it gets every right on the database with the right to grant them. `_rw` reads and changes rows only; `_ro` only reads. All or nothing: the three are saved in one transaction and made by one apply; a name already in use (409 `username_in_use` / `managed_user_exists`, with `username`) or any other refusal adds none of them.",
+      parameters: [ENV_ID_PARAM, DATABASE_NAME_PARAM],
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: { $ref: '#/components/schemas/CreateManagedAppLoginsRequest' },
+          },
+        },
+      },
+      responses: {
+        200: {
+          description: 'Logins created, apply queued',
+          ...jsonSchema('CreateManagedAppLoginsResponse'),
+        },
+        400: {
+          description:
+            'managed_app_login_prefix_invalid / managed_app_login_prefix_too_long and the single-login refusals',
+        },
+        404: { description: 'No such database' },
+        409: {
+          description:
+            'username_in_use / managed_user_exists / managed_busy / principal_scheme_locked',
+        },
+      },
+    },
+  },
   '/api/client/v1/environments/{id}/managed/status': {
     get: {
       tags: ['Managed services'],
@@ -2492,8 +2575,16 @@ export const managedPaths = {
       tags: ['Managed services'],
       summary: 'Restore a backup: enqueue managed.restore',
       description:
-        'Daemon verifies the stored checksum/size before touching the running engine. Artifacts live on the host that made them; a backup from a former primary answers 409 backup_on_other_server and does not enqueue.',
+        'Daemon verifies the stored checksum/size before touching the running engine. Artifacts live on the host that made them; a backup from a former primary answers 409 backup_on_other_server and does not enqueue. With `{ "fromCopy": true }` the server fetches the finished copy from the bucket instead (409 `backup_copy_not_ready` or `backup_copy_unavailable` when it cannot).',
       parameters: [ENV_ID_PARAM, BACKUP_ID_PARAM],
+      requestBody: {
+        required: false,
+        content: {
+          'application/json': {
+            schema: { type: 'object', properties: { fromCopy: { type: 'boolean' } } },
+          },
+        },
+      },
       responses: {
         200: {
           description: 'Restore command enqueued',

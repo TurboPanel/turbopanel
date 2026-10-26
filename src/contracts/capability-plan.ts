@@ -457,3 +457,31 @@ export function resolveDefaultMetricsCapabilityPlan(
 ): MetricsCapabilityPlan {
   return resolveMetricsCapabilityPlan('virtual', undefined, undefined, deployment)
 }
+
+/** CPU architectures a server can report, as the daemon spells them (mirrored by `server_os_architecture_check`). */
+export const SERVER_OS_ARCHITECTURES = ['x86_64', 'aarch64'] as const
+export type ServerOsArchitecture = (typeof SERVER_OS_ARCHITECTURES)[number]
+
+/**
+ * Map a daemon-reported architecture onto the stored spelling. Older daemons
+ * and other tools say `amd64`, `arm64` or `x64`; anything that is not a 64-bit
+ * x86 or Arm CPU (for example `armv7l`) returns null and is not stored.
+ */
+export function normalizeServerOsArchitecture(raw: unknown): ServerOsArchitecture | null {
+  if (typeof raw !== 'string') return null
+  switch (raw.trim().toLowerCase()) {
+    case 'x86_64':
+    case 'x86-64':
+    case 'amd64':
+    case 'x64':
+      return 'x86_64'
+    case 'aarch64':
+    case 'arm64':
+    case 'armv8':
+    case 'armv8l':
+    case 'armv8a':
+      return 'aarch64'
+    default:
+      return null
+  }
+}

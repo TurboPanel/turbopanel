@@ -62,7 +62,7 @@ async function insertCa(
       organizationId,
       name: 'Organization CA',
       source: 'organization_ca',
-      status: 'managed',
+      status: 'automatic',
       caState: state,
       caGeneration: generation,
       fingerprintSha256: `${generation}-${fingerprintCounter}-${crypto.randomUUID()}`,

@@ -33,6 +33,7 @@ import { registerDockerRunRoutes } from './docker-run/routes.ts'
 import { registerHostingDeleteStepUp } from './hostings/delete-step-up.ts'
 import { registerHostingRoutes } from './hostings/routes.ts'
 import { registerHostingLetsEncryptRoutes } from './hostings/letsencrypt-routes.ts'
+import { registerHostingComposeReleaseRoute } from './hostings/compose-release-route.ts'
 import { registerTlsCaStepUp } from './tls/ca-step-up.ts'
 import { registerTlsLeafRoutes } from './tls/leaf-routes.ts'
 import { registerTlsRoutes } from './tls/routes.ts'
@@ -68,6 +69,7 @@ import { registerOrganizationSessionGuards } from './organizations/session-guard
 import { registerComposeRemoteBuildSourcesRoutes } from './organizations/compose-remote-build-sources-routes.ts'
 import { registerReauthSettingsRoutes } from './organizations/reauth-settings-routes.ts'
 import { registerOrganizationFirewallRoutes } from './organizations/firewall-routes.ts'
+import { registerOrganizationBackupTargetRoutes } from './organizations/backup-target-routes.ts'
 import { registerWorkspaceRoutes } from './workspaces/routes.ts'
 import { type ClientOpenApiOptions, getClientOpenApiSpec } from './openapi/index.ts'
 import { buildClientScalarHtml } from '../app/scalar-html.ts'
@@ -156,6 +158,7 @@ export function registerClientRoutes(app: Hono<AppEnv>, opts: ClientRouteOpts) {
   registerOrganizationPrincipalRoutes(client, opts)
   registerReauthSettingsRoutes(client, opts)
   registerOrganizationFirewallRoutes(client, opts)
+  registerOrganizationBackupTargetRoutes(client, opts)
   registerAccessRoutes(client, opts)
   // Before the catch-all session middleware the next call installs: the verify link has no session.
   registerNotificationVerifyRoutes(client, opts)
@@ -181,6 +184,7 @@ export function registerClientRoutes(app: Hono<AppEnv>, opts: ClientRouteOpts) {
   registerHostingDeleteStepUp(client, opts)
   registerHostingLetsEncryptRoutes(client, opts)
   registerHostingRoutes(client, opts)
+  registerHostingComposeReleaseRoute(client, opts)
   registerContainerRoutes(client, opts)
   registerDockerRunRoutes(client, opts)
   registerStorageRoutes(client, opts)

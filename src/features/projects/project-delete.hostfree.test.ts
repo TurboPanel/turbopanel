@@ -4,13 +4,14 @@
 
 import { assertEquals } from '@std/assert'
 import type { Db } from '../../db/connection.ts'
-import { network } from '../../db/schema.ts'
+import { deployment, network } from '../../db/schema.ts'
 import {
   deleteProjectCascade,
   dropEnvironmentSubtreeInTx,
   isActiveContainerStatus,
   MANAGED_RUNTIME_PRESENT_ERROR,
   PROJECT_HAS_RUNNING_SERVICES_ERROR,
+  type ProjectDeleteResult,
 } from './project-delete.ts'
 
 /**
@@ -20,6 +21,12 @@ import {
  * reports Deno suites as empty; keep this alias so analysis sees real tests.
  */
 const test = Deno.test.bind(Deno)
+
+/** A finished delete with nothing left for the servers to do. */
+const DELETED: ProjectDeleteResult = {
+  ok: true,
+  cleanup: { folderServerIds: [], principals: { removed: [], kept: [] } },
+}
 
 type ContainerRow = { id: string; status: string | null; role?: string }
 type DeleteCall = { table: string; ids: string[] }
@@ -31,9 +38,15 @@ function createCascadeMockDb(scenario: {
   containers?: ContainerRow[]
   hostingIds?: string[]
   composeNetworkIds?: string[]
-}): { db: Db; deletes: DeleteCall[]; stats: { transactions: number } } {
+  /** Serve the same rows again when a second pass reads them (check, then delete). */
+  repeat?: boolean
+}): {
+  db: Db
+  deletes: DeleteCall[]
+  stats: { transactions: number; open: boolean }
+} {
   const deletes: DeleteCall[] = []
-  const stats = { transactions: 0 }
+  const stats = { transactions: 0, open: false }
   const projectId = 'proj-1'
 
   const envIds = scenario.environmentIds ?? []
@@ -57,16 +70,20 @@ function createCascadeMockDb(scenario: {
   const select = () => ({
     from: (table: unknown) => {
       const next = () => {
-        const rows =
-          table === network
-            ? composeNetworkIds.map((id) => ({ id }))
-            : (selectQueue[selectIndex] ?? [])
-        if (table !== network) selectIndex += 1
+        // Compose networks and in-flight deploys are read outside the queue.
+        const outsideQueue = table === network || table === deployment
+        let rows: unknown[] = selectQueue[selectIndex] ?? []
+        if (table === network) rows = composeNetworkIds.map((id) => ({ id }))
+        else if (table === deployment) rows = []
+        if (!outsideQueue) selectIndex += 1
+        if (scenario.repeat && selectIndex >= selectQueue.length) selectIndex = 0
         // `where(...)` can be awaited, or continue into `orderBy(...).limit(...)`.
         const result = Promise.resolve(rows) as Promise<unknown[]> & {
           orderBy: () => { limit: () => Promise<unknown[]> }
+          limit: () => Promise<unknown[]>
         }
         result.orderBy = () => ({ limit: () => Promise.resolve(rows) })
+        result.limit = () => Promise.resolve(rows)
         return result
       }
       const join = {
@@ -119,7 +136,12 @@ function createCascadeMockDb(scenario: {
     }),
     transaction: async <T>(fn: (inner: Db) => Promise<T>): Promise<T> => {
       stats.transactions += 1
-      return await fn(tx)
+      stats.open = true
+      try {
+        return await fn(tx)
+      } finally {
+        stats.open = false
+      }
     },
   } as unknown as Db
 
@@ -141,7 +163,7 @@ test('isActiveContainerStatus treats dead and removing as inactive', () => {
 test('deleteProjectCascade deletes bare project when no environments exist', async () => {
   const { db, deletes, stats } = createCascadeMockDb({})
   const result = await deleteProjectCascade(db, 'proj-1')
-  assertEquals(result, { ok: true })
+  assertEquals(result, DELETED)
   assertEquals(stats.transactions, 1)
   // No volume goes with the project, so only the project row is deleted.
   assertEquals(deletes.filter((call) => call.table !== 'tx-placements').length, 1)
@@ -153,7 +175,7 @@ test('deleteProjectCascade removes environments when no services exist', async (
     serviceIds: [],
   })
   const result = await deleteProjectCascade(db, 'proj-1')
-  assertEquals(result, { ok: true })
+  assertEquals(result, DELETED)
   assertEquals(stats.transactions, 1)
 })
 
@@ -163,14 +185,15 @@ test('deleteProjectCascade rejects remaining managed runtime before transaction'
     managedIds: ['managed-1'],
   })
   const result = await deleteProjectCascade(db, 'proj-1')
-  assertEquals(result, {
-    ok: false,
-    error: MANAGED_RUNTIME_PRESENT_ERROR,
-  })
+  assertEquals(result.ok, false)
+  if (!result.ok) {
+    assertEquals(result.error, MANAGED_RUNTIME_PRESENT_ERROR)
+    assertEquals(typeof result.detail?.message, 'string')
+  }
   assertEquals(stats.transactions, 1)
 })
 
-test('deleteProjectCascade rejects active containers before transaction', async () => {
+test('deleteProjectCascade without a stop refuses while services run', async () => {
   const { db, stats } = createCascadeMockDb({
     environmentIds: ['env-1'],
     serviceIds: ['svc-1'],
@@ -200,7 +223,7 @@ test('deleteProjectCascade ignores running platform components (ingress/ha)', as
     ],
   })
   const result = await deleteProjectCascade(db, 'proj-1')
-  assertEquals(result, { ok: true })
+  assertEquals(result, DELETED)
   assertEquals(stats.transactions, 1)
 })
 
@@ -212,8 +235,31 @@ test('deleteProjectCascade cascades stopped containers inside a transaction', as
     hostingIds: ['host-1'],
   })
   const result = await deleteProjectCascade(db, 'proj-1')
-  assertEquals(result, { ok: true })
+  assertEquals(result, DELETED)
   assertEquals(stats.transactions, 1)
   // The principals' placements are written first, inside the same transaction.
   assertEquals(deletes[0], { table: 'tx-placements', ids: ['proj-1'] })
+})
+
+test('deleteProjectCascade sends the stop before the transaction opens, never inside it', async () => {
+  const { db, stats } = createCascadeMockDb({ environmentIds: ['env-1'], repeat: true })
+  let openWhenStopped: boolean | undefined
+  const result = await deleteProjectCascade(db, 'proj-1', undefined, () => {
+    openWhenStopped = stats.open
+    return Promise.resolve(true)
+  })
+  assertEquals(result, DELETED)
+  assertEquals(openWhenStopped, false)
+})
+
+test('deleteProjectCascade gives up with a clear message when the stop never answers', async () => {
+  const { db, stats } = createCascadeMockDb({ environmentIds: ['env-1'], repeat: true })
+  const hang = new Promise<boolean>(() => {})
+  const result = await deleteProjectCascade(db, 'proj-1', undefined, () => hang, 20)
+  assertEquals(result.ok, false)
+  if (!result.ok) {
+    assertEquals(result.error, 'project_stop_failed')
+    assertEquals(typeof result.detail?.message, 'string')
+  }
+  assertEquals(stats.transactions, 0)
 })

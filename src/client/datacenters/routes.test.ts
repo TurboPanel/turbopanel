@@ -611,7 +611,8 @@ test('GET /datacenters includes effective priority and trusted', async () => {
       .values({
         organizationId,
         name: 'Pinned DC',
-        options: { priority: 10, trusted: false },
+        priority: 10,
+        isTrusted: false,
         createdAt: new Date(Date.now() + 1000).toISOString(),
         updatedAt: now,
       })
@@ -712,7 +713,8 @@ test('GET /datacenters/:id includes effective priority and trusted', async () =>
       .values({
         organizationId,
         name: 'Policy DC',
-        options: { addressPreference: 'ipv4', priority: 25 },
+        addressPreference: 'ipv4',
+        priority: 25,
         createdAt: now,
         updatedAt: now,
       })
@@ -734,6 +736,7 @@ test('GET /datacenters/:id includes effective priority and trusted', async () =>
     assertEquals(body.datacenter.options, {
       addressPreference: 'ipv4',
       priority: 25,
+      trusted: true,
     })
     assertEquals(body.datacenter.priority, 25)
     assertEquals(body.datacenter.trusted, true)
@@ -1559,7 +1562,8 @@ test('PATCH /datacenters/:id persists valid priority and trusted, refuses a bad 
       .values({
         organizationId,
         name: 'Policy Patch DC',
-        options: { addressPreference: 'ipv4', priority: 500 },
+        addressPreference: 'ipv4',
+        priority: 500,
         createdAt: now,
         updatedAt: now,
       })
@@ -1581,12 +1585,23 @@ test('PATCH /datacenters/:id persists valid priority and trusted, refuses a bad 
     assertEquals(await valid.json(), { ok: true })
 
     const [afterValid] = await db
-      .select({ options: datacenter.options })
+      .select({
+        options: datacenter.options,
+        priority: datacenter.priority,
+        isTrusted: datacenter.isTrusted,
+        addressPreference: datacenter.addressPreference,
+      })
       .from(datacenter)
       .where(eq(datacenter.id, dc!.id))
       .limit(1)
-    // Replace-all: the previous addressPreference is gone.
-    assertEquals(afterValid?.options, { priority: 7, trusted: false })
+    // Replace-all: the previous addressPreference goes back to its default, and
+    // the policy keys live in columns, not in the jsonb.
+    assertEquals(afterValid, {
+      options: null,
+      priority: 7,
+      isTrusted: false,
+      addressPreference: 'ipv6',
+    })
 
     const detail = await app.request(`/datacenters/${dc!.id}`, {
       headers: { cookie, [ORG_ID_HEADER]: organizationId },
@@ -1606,11 +1621,11 @@ test('PATCH /datacenters/:id persists valid priority and trusted, refuses a bad 
     assertEquals(outOfRange.status, 400)
     assertEquals(await outOfRange.json(), { error: 'invalid_priority' })
     const [afterRefused] = await db
-      .select({ options: datacenter.options })
+      .select({ priority: datacenter.priority, isTrusted: datacenter.isTrusted })
       .from(datacenter)
       .where(eq(datacenter.id, dc!.id))
       .limit(1)
-    assertEquals(afterRefused?.options, { priority: 7, trusted: false })
+    assertEquals(afterRefused, { priority: 7, isTrusted: false })
 
     const invalid = await app.request(`/datacenters/${dc!.id}`, {
       method: 'PATCH',
@@ -1620,11 +1635,15 @@ test('PATCH /datacenters/:id persists valid priority and trusted, refuses a bad 
     assertEquals(invalid.status, 200)
 
     const [afterInvalid] = await db
-      .select({ options: datacenter.options })
+      .select({
+        priority: datacenter.priority,
+        isTrusted: datacenter.isTrusted,
+        addressPreference: datacenter.addressPreference,
+      })
       .from(datacenter)
       .where(eq(datacenter.id, dc!.id))
       .limit(1)
-    assertEquals(afterInvalid?.options, { addressPreference: 'ipv6' })
+    assertEquals(afterInvalid, { priority: 100, isTrusted: true, addressPreference: 'ipv6' })
 
     const list = await app.request('/datacenters', {
       headers: { cookie, [ORG_ID_HEADER]: organizationId },
@@ -1646,7 +1665,8 @@ test('PATCH /datacenters/:id with options null clears the stored blob', async ()
       .values({
         organizationId,
         name: 'Reset DC',
-        options: { priority: 1, trusted: false },
+        priority: 1,
+        isTrusted: false,
         createdAt: now,
         updatedAt: now,
       })
@@ -1666,11 +1686,15 @@ test('PATCH /datacenters/:id with options null clears the stored blob', async ()
     assertEquals(await res.json(), { ok: true })
 
     const [row] = await db
-      .select({ options: datacenter.options })
+      .select({
+        options: datacenter.options,
+        priority: datacenter.priority,
+        isTrusted: datacenter.isTrusted,
+      })
       .from(datacenter)
       .where(eq(datacenter.id, dc!.id))
       .limit(1)
-    assertEquals(row?.options, null)
+    assertEquals(row, { options: null, priority: 100, isTrusted: true })
 
     const detail = await app.request(`/datacenters/${dc!.id}`, {
       headers: { cookie, [ORG_ID_HEADER]: organizationId },
@@ -1679,7 +1703,11 @@ test('PATCH /datacenters/:id with options null clears the stored blob', async ()
     const body = (await detail.json()) as {
       datacenter: { options: unknown; priority: number; trusted: boolean }
     }
-    assertEquals(body.datacenter.options, null)
+    assertEquals(body.datacenter.options, {
+      priority: 100,
+      trusted: true,
+      addressPreference: 'ipv6',
+    })
     assertEquals(body.datacenter.priority, 100)
     assertEquals(body.datacenter.trusted, true)
   })
@@ -2084,7 +2112,8 @@ async function withManagedPolicyFixtures(
       name: 'DC Policy Project',
       workspaceId,
       organizationId,
-      metadata: { type: 'managed', code: 'postgres' },
+      kind: 'managed',
+      metadata: { code: 'postgres' },
     })
     .returning({ id: project.id })
   const projectId = proj!.id
@@ -2337,10 +2366,10 @@ test('PATCH /datacenters/:id policy change without a command queue still saves',
     assertEquals(response.status, 200)
     assertEquals(await response.json(), { ok: true })
     const [after] = await db
-      .select({ options: datacenter.options })
+      .select({ options: datacenter.options, isTrusted: datacenter.isTrusted })
       .from(datacenter)
       .where(eq(datacenter.id, dc!.id))
       .limit(1)
-    assertEquals(after?.options, { trusted: false })
+    assertEquals(after, { options: null, isTrusted: false })
   })
 })

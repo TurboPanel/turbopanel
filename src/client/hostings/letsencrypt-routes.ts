@@ -3,9 +3,13 @@
  *
  * - `PUT /hostings/:id/use-letsencrypt` - check DNS, then pin a managed
  *   Let's Encrypt certificate (or remember the request until DNS is ready).
- *   The next deploy of the environment is what makes the web server ask for
- *   the certificate, so a pinned answer carries `needsDeploy: true`.
+ *   A pinned certificate is sent to the servers at once by a hostings-only
+ *   apply (no build, no restart; `letsencrypt-apply.ts`). When that cannot be
+ *   queued (a server offline, a deploy running, nothing deployed yet) the
+ *   answer carries `needsDeploy: true` and the next deploy starts it.
  * - `GET /hostings/:id/dns-check` - the same DNS check, read-only.
+ * - `PATCH /hostings/:id` (answered by `routes.ts`) - a library pick of a
+ *   Let's Encrypt certificate queues the same hostings-only apply.
  */
 import { eq, inArray } from 'drizzle-orm'
 import type { Context, Hono, MiddlewareHandler } from 'hono'
@@ -14,7 +18,7 @@ import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { assertCanOr403 } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
-import { getDb, type Db } from '../../db/connection.ts'
+import { getDaemonCellRegistry, getDb, type Db } from '../../db/connection.ts'
 import { hosting } from '../../db/schema.ts'
 import { recordAudit } from '../../features/audit/audit-records.ts'
 import {
@@ -33,6 +37,7 @@ import {
   resolveHostingProtocol,
 } from '../../features/hostings/hosting-options.ts'
 import { requestLetsEncrypt } from '../../features/hostings/use-letsencrypt.ts'
+import { getCommandQueue } from '../../features/commands/queue.ts'
 import { assertNotSystemOwnedOr403, getOrgId, parseJsonBody } from '../shared.ts'
 import { assertHostingNotComposeOwnedOr409 } from './routes-helpers.ts'
 import {
@@ -40,10 +45,26 @@ import {
   loadAcmeEnabled,
   loadHostingCertificates,
 } from './letsencrypt-store.ts'
+import {
+  applyAfterLibraryPick,
+  type HostingApplyDeps,
+  type HostingApplyOutcome,
+  type HostingApplyParams,
+  loadHostingPinState,
+  queueHostingCertificateApply,
+} from './letsencrypt-apply.ts'
+import { compatLogWarn } from '../../lib/log-compat.ts'
+import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 
 export type HostingLetsEncryptDeps = {
   lookup?: DnsLookup
   now?: () => Date
+  /** Where the hostings-only apply is queued; defaults to the request's queue and registry. */
+  applyDeps?: (c: Context<AppEnv>) => HostingApplyDeps
+}
+
+function requestApplyDeps(c: Context<AppEnv>): HostingApplyDeps {
+  return { commandQueue: getCommandQueue(c), registry: getDaemonCellRegistry(c) }
 }
 
 type HostingReadRow = {
@@ -111,7 +132,48 @@ function enrichHostingReads(now: () => Date): MiddlewareHandler<AppEnv> {
   }
 }
 
-/** Same gate as PATCH /hostings/:id: this organization's row, manager, not system or compose owned. */
+/**
+ * Sends a newly pinned certificate to the servers; `null` when nothing new was
+ * pinned (still waiting for DNS, or a repeat click on the same pin).
+ */
+function applyIfNewPin(
+  c: Context<AppEnv>,
+  db: Db,
+  result: { outcome: 'pinned'; changed: boolean } | { outcome: 'waiting' },
+  params: HostingApplyParams,
+  deps: HostingApplyDeps
+): Promise<HostingApplyOutcome | null> {
+  if (result.outcome !== 'pinned' || !result.changed) return Promise.resolve(null)
+  return queueHostingCertificateApply(c, db, params, deps)
+}
+
+/**
+ * A pin the servers still have to learn about: a new pin whose apply was not
+ * queued, or a repeat click on a pin no deploy has picked up yet.
+ */
+function pinNeedsDeploy(
+  outcome: 'pinned' | 'waiting',
+  apply: HostingApplyOutcome | null,
+  derived: boolean | undefined
+): boolean {
+  if (outcome !== 'pinned') return false
+  return apply === null ? derived !== false : apply !== 'queued'
+}
+
+function requestAuditContext(
+  outcome: 'pinned' | 'waiting',
+  www: string,
+  apply: HostingApplyOutcome | null
+): Record<string, string> {
+  return apply === null ? { outcome, www } : { outcome, www, apply }
+}
+
+/**
+ * Same gate as PATCH /hostings/:id: this organization's row, manager, not
+ * system owned, and not compose owned unless compose itself asks for a Let's
+ * Encrypt certificate (`tls.mode: automatic`), where Try again re-pins the row
+ * compose already chose.
+ */
 async function refuseHostingWrite(
   c: Context<AppEnv>,
   db: Db,
@@ -125,7 +187,69 @@ async function refuseHostingWrite(
   if (denied) return denied
   const immutable = await assertNotSystemOwnedOr403(c, 'hosting', id)
   if (immutable) return immutable
-  return assertHostingNotComposeOwnedOr409(c, db, id)
+  return assertHostingNotComposeOwnedOr409(c, db, id, { allowAutomaticTls: true })
+}
+
+/** This organization's id when the signed-in person may edit the hosting (the PATCH gate), else null. */
+async function editableHostingOrganization(
+  c: Context<AppEnv>,
+  db: Db,
+  userId: string,
+  hostingId: string
+): Promise<string | null> {
+  const orgResult = await getOrgId(c, userId)
+  if (orgResult instanceof Response) return null
+  if ((await resolveEntityOrganizationId(db, 'hosting', hostingId)) !== orgResult) return null
+  const denied = await assertCanOr403(c, 'organization:manage', 'hosting', hostingId)
+  return denied ? null : orgResult
+}
+
+/**
+ * Around `PATCH /hostings/:id` (answered by `routes.ts`): once the signed-in
+ * person passes the same gate as the route, read the pin, let the route save,
+ * then start a library-picked Let's Encrypt certificate (`applyAfterLibraryPick`)
+ * and add `needsDeploy` to the answer. A failure after the save is logged and
+ * answered as saved with `needsDeploy: true`, never as an error.
+ */
+function libraryPickApply(
+  secrets: DerivedSecretsConfig,
+  applyDeps: (c: Context<AppEnv>) => HostingApplyDeps
+): MiddlewareHandler<AppEnv> {
+  const session = createSessionMiddleware(secrets)
+  return (c, next) => {
+    if (c.req.method !== 'PATCH') return next()
+    return session(c, () => withLibraryPickApply(c, next, applyDeps))
+  }
+}
+
+async function withLibraryPickApply(
+  c: Context<AppEnv>,
+  next: () => Promise<void>,
+  applyDeps: (c: Context<AppEnv>) => HostingApplyDeps
+): Promise<void> {
+  const db = getDb(c)
+  const userId = c.get('session')?.userId
+  const hostingId = c.req.param('id')
+  const organizationId =
+    db && userId && hostingId ? await editableHostingOrganization(c, db, userId, hostingId) : null
+  const before = db && organizationId ? await loadHostingPinState(db, hostingId!) : null
+  await next()
+  if (!db || !userId || !organizationId || !before || c.res.status !== 200) return
+  try {
+    const outcome = await applyAfterLibraryPick(
+      c,
+      db,
+      { hostingId: hostingId!, organizationId, userId, before },
+      applyDeps(c)
+    )
+    if (outcome !== null) c.res = c.json({ ok: true, needsDeploy: outcome !== 'queued' })
+  } catch (err) {
+    compatLogWarn(
+      'hostings',
+      `certificate apply after a library pick on hosting ${hostingId} failed: ${err instanceof Error ? err.message : String(err)}`
+    )
+    c.res = c.json({ ok: true, needsDeploy: true })
+  }
 }
 
 export function registerHostingLetsEncryptRoutes(
@@ -139,9 +263,11 @@ export function registerHostingLetsEncryptRoutes(
   const secrets = opts.secrets
   const lookup = deps.lookup ?? runtimeDnsLookup()
   const now = deps.now ?? (() => new Date())
+  const applyDeps = deps.applyDeps ?? requestApplyDeps
 
   router.use('/hostings', enrichHostingReads(now))
   router.use('/hostings/:id', enrichHostingReads(now))
+  router.use('/hostings/:id', libraryPickApply(secrets, applyDeps))
   router.use('/hostings/:id/use-letsencrypt', createSessionMiddleware(secrets))
   router.use('/hostings/:id/dns-check', createSessionMiddleware(secrets))
 
@@ -170,6 +296,7 @@ export function registerHostingLetsEncryptRoutes(
         options: hosting.options,
         metadata: hosting.metadata,
         pendingAt: hosting.pendingAt,
+        updatedAt: hosting.updatedAt,
       })
       .from(hosting)
       .where(eq(hosting.id, id))
@@ -194,6 +321,19 @@ export function registerHostingLetsEncryptRoutes(
       )
     }
 
+    const applyOutcome = await applyIfNewPin(
+      c,
+      db,
+      result,
+      {
+        hostingId: id,
+        organizationId,
+        actor: { actorType: 'user', actorId: session.userId },
+        editedAt: row.updatedAt,
+      },
+      applyDeps(c)
+    )
+
     await recordAudit(db, {
       organizationId,
       actorUserId: session.userId,
@@ -201,7 +341,7 @@ export function registerHostingLetsEncryptRoutes(
       action: 'hosting.letsencrypt.requested',
       targetType: 'hosting',
       targetId: id,
-      context: { outcome: result.outcome, www },
+      context: requestAuditContext(result.outcome, www, applyOutcome),
     })
 
     const [fresh] = await db
@@ -223,7 +363,7 @@ export function registerHostingLetsEncryptRoutes(
     return c.json({
       hosting: fresh,
       certificate: certificate ? { ...certificate, dns: result.dns } : null,
-      needsDeploy: result.outcome === 'pinned',
+      needsDeploy: pinNeedsDeploy(result.outcome, applyOutcome, certificate?.needsDeploy),
     })
   })
 

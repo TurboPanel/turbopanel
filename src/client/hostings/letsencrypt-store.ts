@@ -4,7 +4,7 @@
  * block returned with every hosting.
  */
 
-import { and, eq, inArray, ne, sql } from 'drizzle-orm'
+import { and, asc, eq, inArray, ne, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import {
   deployment,
@@ -35,8 +35,13 @@ import {
   resolveAcmeEnabled,
 } from '../../features/organizations/organization-options.ts'
 import { inetAddressToString } from '../../lib/ip-address.ts'
+import { coversAllHostnames } from '../../lib/tls/match.ts'
 import { splitTlsMetadata } from '../../lib/tls/metadata.ts'
 import { materialFromLetsEncrypt, isCreateTlsFailure } from '../tls/routes-helpers.ts'
+import {
+  LETS_ENCRYPT_CREATED_FOR_SITES,
+  lockOrganizationLetsEncrypt,
+} from '../../features/tls/unused-letsencrypt.ts'
 
 export async function loadAcmeEnabled(db: Db, organizationId: string): Promise<boolean> {
   const [row] = await db
@@ -107,51 +112,119 @@ function sameNames(left: readonly string[], right: readonly string[]): boolean {
   return right.every((name) => set.has(name.toLowerCase()))
 }
 
+/**
+ * The live managed row for `names`, oldest first so every caller picks the
+ * same one: one certificate per hostname per organization, so the row with
+ * exactly these names wins, else any row that already covers all of them.
+ */
+async function findManagedCertificate(
+  db: Db,
+  organizationId: string,
+  names: readonly string[]
+): Promise<string | null> {
+  const rows = await db
+    .select({ id: tls.id, metadata: tls.metadata })
+    .from(tls)
+    .where(
+      and(
+        eq(tls.organizationId, organizationId),
+        eq(tls.source, 'lets_encrypt'),
+        eq(tls.status, 'automatic')
+      )
+    )
+    .orderBy(asc(tls.createdAt), asc(tls.id))
+  const named = rows.flatMap((row) => {
+    const dnsNames = (row.metadata as { dnsNames?: unknown } | null)?.dnsNames
+    return Array.isArray(dnsNames) ? [{ id: row.id, dnsNames: dnsNames as string[] }] : []
+  })
+  const exact = named.find((row) => sameNames(row.dnsNames, names))
+  const covering = named.find((row) => coversAllHostnames(row.dnsNames, [...names]))
+  return (exact ?? covering)?.id ?? null
+}
+
+async function createManagedCertificate(
+  db: Db,
+  organizationId: string,
+  names: readonly string[]
+): Promise<string> {
+  const material = materialFromLetsEncrypt(
+    { hostnames: [...names] },
+    LETS_ENCRYPT_CREATED_FOR_SITES
+  )
+  if (isCreateTlsFailure(material)) throw new Error(material.error)
+  const { columns, residual } = splitTlsMetadata(material.metadata)
+  const [inserted] = await db
+    .insert(tls)
+    .values({
+      organizationId,
+      name: null,
+      source: 'lets_encrypt',
+      certificatePem: null,
+      privateKeyPem: null,
+      status: columns.status,
+      notAfter: columns.notAfter,
+      fingerprintSha256: columns.fingerprintSha256,
+      metadata: residual,
+      options: material.options,
+    })
+    .returning({ id: tls.id })
+  return inserted.id
+}
+
+/**
+ * Find or create under a per-organization transaction lock, so a deploy, a
+ * preview, the button and the sweep asking at once settle on one row. Inside
+ * an outer transaction (the deploy's reconcile) the lock is held until that
+ * transaction ends.
+ */
+export async function managedCertificateFor(
+  db: Db,
+  organizationId: string,
+  names: readonly string[]
+): Promise<{ id: string; created: boolean }> {
+  return await db.transaction(async (tx) => {
+    await lockOrganizationLetsEncrypt(tx, organizationId)
+    const existing = await findManagedCertificate(tx, organizationId, names)
+    if (existing !== null) return { id: existing, created: false }
+    return { id: await createManagedCertificate(tx, organizationId, names), created: true }
+  })
+}
+
+/**
+ * Run `use` in one transaction holding the hosting's environment row, then the
+ * organization's Let's Encrypt lock (the order a deploy takes them in), so a
+ * certificate found or created there is pinned before anything can remove it.
+ */
+async function withHostingCertificateLock<T>(
+  db: Db,
+  hostingId: string,
+  organizationId: string,
+  use: (store: LetsEncryptStore) => Promise<T>
+): Promise<T> {
+  return await db.transaction(async (tx) => {
+    await tx
+      .select({ id: environment.id })
+      .from(environment)
+      .innerJoin(service, eq(service.environmentId, environment.id))
+      .innerJoin(hosting, eq(hosting.serviceId, service.id))
+      .where(eq(hosting.id, hostingId))
+      .for('update', { of: environment })
+    await lockOrganizationLetsEncrypt(tx, organizationId)
+    return await use(createLetsEncryptStore(tx))
+  })
+}
+
 export function createLetsEncryptStore(db: Db): LetsEncryptStore {
   return {
+    withCertificateLock: (record, use) =>
+      withHostingCertificateLock(db, record.id, record.organizationId, use),
+
     expectedAddresses: (record) => loadExpectedAddresses(db, record.id),
 
     otherWebHostnames: (record) => loadOtherWebHostnames(db, record.id),
 
-    async findManagedCertificate(organizationId, names) {
-      const rows = await db
-        .select({ id: tls.id, metadata: tls.metadata })
-        .from(tls)
-        .where(
-          and(
-            eq(tls.organizationId, organizationId),
-            eq(tls.source, 'lets_encrypt'),
-            eq(tls.status, 'managed')
-          )
-        )
-      const match = rows.find((row) => {
-        const dnsNames = (row.metadata as { dnsNames?: unknown } | null)?.dnsNames
-        return Array.isArray(dnsNames) && sameNames(dnsNames as string[], names)
-      })
-      return match?.id ?? null
-    },
-
-    async createManagedCertificate(organizationId, names) {
-      const material = materialFromLetsEncrypt({ hostnames: [...names] })
-      if (isCreateTlsFailure(material)) throw new Error(material.error)
-      const { columns, residual } = splitTlsMetadata(material.metadata)
-      const [inserted] = await db
-        .insert(tls)
-        .values({
-          organizationId,
-          name: null,
-          source: 'lets_encrypt',
-          certificatePem: null,
-          privateKeyPem: null,
-          status: columns.status,
-          notAfter: columns.notAfter,
-          fingerprintSha256: columns.fingerprintSha256,
-          metadata: residual,
-          options: material.options,
-        })
-        .returning({ id: tls.id })
-      return inserted.id
-    },
+    managedCertificateFor: (organizationId, names) =>
+      managedCertificateFor(db, organizationId, names),
 
     async saveHosting(hostingId, patch) {
       await db
@@ -161,6 +234,13 @@ export function createLetsEncryptStore(db: Db): LetsEncryptStore {
           ...(patch.options === undefined ? {} : { options: patch.options }),
           ...(patch.metadata === undefined ? {} : { metadata: patch.metadata }),
           ...(patch.pendingAt === undefined ? {} : { pendingAt: patch.pendingAt }),
+          // Remembering or clearing a waiting request is bookkeeping, not an
+          // edit: `updatedAt` moves only when the pin or the options change,
+          // which is what tells a deploy (or the hostings-only apply) whether
+          // this hosting changed since it last ran.
+          ...(patch.tlsId === undefined && patch.options === undefined
+            ? { updatedAt: sql`${hosting.updatedAt}` }
+            : {}),
         })
         .where(eq(hosting.id, hostingId))
     },
@@ -176,7 +256,12 @@ export type HostingCertificateRow = {
   updatedAt: string
 }
 
-/** Environments (by hosting) whose last applied deployment predates `since`. */
+/**
+ * Hostings whose change no deploy has picked up: the last applied deployment
+ * of the environment predates the hosting's last change, and no deploy queued
+ * since then is still running (a running one, such as the hostings-only apply
+ * queued after a certificate is pinned, carries the change).
+ */
 async function loadNeedsDeploy(
   db: Db,
   rows: readonly HostingCertificateRow[]
@@ -189,17 +274,22 @@ async function loadNeedsDeploy(
       finishedAt: sql<
         string | null
       >`max(${deployment.finishedAt}) filter (where ${deployment.status} = 'applied')`,
+      runningSince: sql<
+        string | null
+      >`max(${deployment.updatedAt}) filter (where ${deployment.status} in ('pending', 'applying'))`,
     })
     .from(hosting)
     .innerJoin(service, eq(service.id, hosting.serviceId))
     .leftJoin(deployment, eq(deployment.environmentId, service.environmentId))
     .where(inArray(hosting.id, ids))
     .groupBy(hosting.id)
-  const lastApplied = new Map(finished.map((row) => [row.hostingId, row.finishedAt]))
+  const byHosting = new Map(finished.map((row) => [row.hostingId, row]))
+  const since = (at: string | null | undefined, changedAt: string) =>
+    at !== null && at !== undefined && Date.parse(at) >= Date.parse(changedAt)
   const stale = new Set<string>()
   for (const row of rows) {
-    const at = lastApplied.get(row.id)
-    if (at === null || at === undefined || Date.parse(at) < Date.parse(row.updatedAt)) {
+    const found = byHosting.get(row.id)
+    if (!since(found?.finishedAt, row.updatedAt) && !since(found?.runningSince, row.updatedAt)) {
       stale.add(row.id)
     }
   }

@@ -42,8 +42,17 @@ export const MAX_FRESH_STANDBY_MARGIN_MS = 60_000
  * Upper bound on the detector's failure span the gate will anchor on. A
  * re-sent event for an older incident falls outside it and is refused: the
  * standby's last streaming read can no longer be tied to the failure.
+ *
+ * It must outlast the automatic-failover cooldown (15 min,
+ * `AUTOMATIC_FAILOVER_COOLDOWN_MS` in `ha-policy.ts`) plus the daemons'
+ * re-send gap (at most 1 min) and a safety margin. A failure that starts right
+ * after another failover is refused by the cooldown and can only be retried
+ * once the cooldown ends, so with a smaller cap that retry would be refused
+ * here for ever and the database would stay down. The receipt check below does
+ * not depend on the span (it compares the standby's last streaming read with
+ * the failure start), so a longer span loosens nothing about data loss.
  */
-export const MAX_FAILURE_SPAN_MS = 10 * 60_000
+export const MAX_FAILURE_SPAN_MS = 20 * 60_000
 
 /** Receiver states of a standby still in recovery whose primary went away. */
 const DISCONNECTED_STANDBY_STATES: ReadonlySet<string> = new Set([

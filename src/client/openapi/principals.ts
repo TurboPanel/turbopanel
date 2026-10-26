@@ -44,6 +44,12 @@ export const principalSchemas = {
       projectId: { type: ['string', 'null'] },
       metadata: { type: 'object', nullable: true },
       options: { type: 'object', nullable: true },
+      access: {
+        type: 'string',
+        enum: ['none', 'sftp', 'shell'],
+        description:
+          'Stored SSH access level: none (no login, keys stay on file), sftp (file transfer only) or shell (interactive shell plus transfer).',
+      },
       serviceIds: {
         type: 'array',
         items: { type: 'string', format: 'uuid' },
@@ -78,6 +84,7 @@ export const principalSchemas = {
       'usedBy',
       'state',
       'orphaned',
+      'removalRequested',
       'canDelete',
       'createdAt',
     ],
@@ -149,6 +156,11 @@ export const principalSchemas = {
       orphaned: {
         type: 'boolean',
         description: 'No project and nothing uses it: left behind by a deleted project.',
+      },
+      removalRequested: {
+        type: 'boolean',
+        description:
+          "Its project's delete asked for it to go: it is removed (with its Linux user and home) once its folders are gone from the servers and every server it is on is connected.",
       },
       canDelete: {
         type: 'boolean',
@@ -315,7 +327,8 @@ export const principalPaths = {
                 },
                 options: {
                   type: 'object',
-                  description: 'Optional shell and other principal options',
+                  description:
+                    'Optional principal options; `shell` (allowlisted) is accepted and stored as the access level',
                 },
                 uid: {
                   type: 'integer',

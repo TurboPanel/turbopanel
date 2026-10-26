@@ -26,7 +26,6 @@ import { isUniqueViolationOn } from '../../db/unique-violation.ts'
 import { syncEnvironmentWatch } from '../../features/git/watch-records.ts'
 import {
   ENVIRONMENT_DEPLOY_RUNNING_ERROR,
-  ENVIRONMENT_HAS_FOLDERS_ERROR,
   ENVIRONMENT_NAME_INVALID_ERROR,
   ENVIRONMENT_NAME_RULE_MESSAGE,
   ENVIRONMENT_SERVER_LOCKED_ERROR,
@@ -188,23 +187,4 @@ async function refuseRename(
     )
   }
   return null
-}
-
-/** Refuse to delete an environment while any folder exists under it. */
-export async function refuseDeleteWhileFolders(
-  c: Context<AppEnv>,
-  db: Db,
-  environmentId: string
-): Promise<Response | null> {
-  const { total } = await listEnvironmentFolders(db, environmentId, 0)
-  if (total === 0) return null
-  return c.json(
-    await blockedBody(
-      db,
-      environmentId,
-      ENVIRONMENT_HAS_FOLDERS_ERROR,
-      'This environment still has folders on your servers. Remove the listed services and volumes first.'
-    ),
-    409
-  )
 }

@@ -145,7 +145,7 @@ test('only a login that can change things, that the panel manages, may be chosen
     role: 'user',
     privileges: ['owner'],
     connectionRole: 'read-write' as const,
-    grantMode: 'preset',
+    grantMode: 'recipe',
     ...over,
   })
   assertEquals(evaluateOwnerLogin(login()), null)
@@ -171,7 +171,7 @@ test('a login that owns databases has to stay able to own them', () => {
     databases: ['crm', 'shop'],
     privileges: ['owner'],
     connectionRole: 'read-write' as const,
-    grantMode: 'preset',
+    grantMode: 'recipe',
   }
   assertEquals(evaluateOwnedDatabasesKept(['crm', 'shop'], after), null)
   assertEquals(evaluateOwnedDatabasesKept([], { ...after, privileges: ['read-only'] }), null)
@@ -210,7 +210,7 @@ test('the data-only daemon rule leaves other levels, modes, engines and held log
   assertEquals(refuseReadWriteOnOldDaemon('mysql', { ...rw, grantMode: 'self' }, null, false), null)
   // Already panel-managed read/write: nothing new is asked of the daemon.
   assertEquals(refuseReadWriteOnOldDaemon('mysql', rw, rw, false), null)
-  assertEquals(refuseReadWriteOnOldDaemon('mysql', rw, { ...rw, grantMode: 'preset' }, false), null)
+  assertEquals(refuseReadWriteOnOldDaemon('mysql', rw, { ...rw, grantMode: 'recipe' }, false), null)
   // A database it did not reach before is new to an older daemon.
   assertEquals(
     refuseReadWriteOnOldDaemon(

@@ -400,11 +400,13 @@ guard; `pnpm test:do` alone does not.
     build image may not ship `pg_dump`, so the command must fetch or run it
     (for example over SSH on the database host). The method is the owner's
     choice (see the local report "Panel database backup and restore plan").
-  - Without a command, only `CLOUDFLARE_ENV` of testing, staging, local, ci or
-    unset (a local run, or the CI build migrating its own test database) warns
-    and continues. Every other value (`live`, `Live`, `production`, a typo)
-    refuses unless `TURBOPANEL_MIGRATE_BACKUP_ACK=1`. The guard depends on
-    `CLOUDFLARE_ENV` being set correctly by the deploy scripts.
+  - Without a command, every environment (live, production, testing, a typo,
+    anything) prints one clear warning and the migration goes on. The warning
+    says that no backup command ran, that the database provider's managed
+    backups (point-in-time rollback within a window) are relied on, and to check
+    that the restore window covers the moment before this migration. Production
+    sets no command. `TURBOPANEL_MIGRATE_BACKUP_ACK=1` is still accepted but
+    only changes the wording of the warning.
   - The command's output is printed with the database URL, its password and the
     values (8+ characters) of env vars named like TOKEN, SECRET, KEY or PASSWORD
     blanked. That is a best effort: a secret fetched from elsewhere or printed
@@ -453,8 +455,10 @@ guard; `pnpm test:do` alone does not.
   for the migrate role (Hyperdrive is not reachable from the build
   container), and `TURBOPANEL_DEPLOY_CHECK_API_TOKEN` — secret, a token with
   Hyperdrive Read so `check-deploy-env.mjs` can confirm the URL is testing's
-  Hyperdrive origin (it fails closed without it). Migrations run from zero on
-  a wiped database. `/api/client/v1/status` answers **503**
+  Hyperdrive origin (it fails closed without it).
+  Testing applies pending migrations on top of the existing database; any reset
+  is a named testing-only script that refuses on staging and live.
+  `/api/client/v1/status` answers **503**
   `{ code: "database_error" }` (not a bare 500) when the settings read fails
   — the symptom of an unmigrated or unreachable database.
   A testing or staging database that sits behind the managed database listener
@@ -1276,8 +1280,7 @@ a pruned tree has no `@types/node` for a checking compile to resolve.
 
 ## Subsystem docs (nested `AGENTS.md`)
 
-Large subsystems live in focused `AGENTS.md` files next to their code — Cursor
-loads the nearest one automatically when you work in that directory. **Read the
+Large subsystems live in focused `AGENTS.md` files next to their code. **Read the
 matching file before editing that area.** This root keeps only cross-cutting
 orientation; the detail moved to:
 
@@ -1386,7 +1389,7 @@ src/
   org check (`403` `system_resource_immutable`); that guard keys on **workspace
   kind**, never on project type. Client workspace responses include
   `workspace.kind` (`user` \| `turbopanel`; `WORKSPACE_KIND_SYSTEM` is only a
-  deprecated alias). `project.metadata.type = 'system'` is a
+  deprecated alias). `project.kind = 'system'` is a
   presentation/classification stamp only — never an authorization source.
 - `src/daemon/` — control-plane side of `/api/daemon/v1` + `/ws/daemon/v1`
   (see `src/daemon/AGENTS.md`). Cell protocol types live in `src/contracts/`;

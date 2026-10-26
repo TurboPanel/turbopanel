@@ -5,8 +5,8 @@ This file is generated from the resolved dependency graph. Do not edit it by han
 Third-party components remain under their own copyright and license terms and are not relicensed by TurboPanel Control Plane's repository license (AGPL-3.0-only).
 
 <!-- lockfiles
-deno.lock sha256:0dadc2711a0f03f165563c10bbac5a53a370796e69a95be63d5418d51341368e
-pnpm-lock.yaml sha256:6fe67c65a0e12d83745ee8fad0675e731e10f5f20bc41f653cc03d242a5f9e86
+deno.lock sha256:40e36da4541a1362f13a6b8f6b767435aaa3b7605159989c7485e64ba39f2187
+pnpm-lock.yaml sha256:1326dd552e2b3444e8303b6b974d92e02651b9349471368a41b935b5df888edd
 -->
 
 ## Production dependencies
@@ -91,7 +91,7 @@ pnpm-lock.yaml sha256:6fe67c65a0e12d83745ee8fad0675e731e10f5f20bc41f653cc03d242a
 - License: MIT
 - Homepage: https://github.com/vercel/ms#readme
 
-### nodemailer@10.0.11
+### nodemailer@10.2.1
 
 - License: MIT-0
 - Copyright: Andris Reinman
@@ -438,43 +438,43 @@ These packages are used for development, test, or build tooling and are not bund
 - License: MIT
 - Homepage: https://github.com/DefinitelyTyped/DefinitelyTyped/tree/master/types/node
 
-### @vitest/coverage-istanbul@4.1.11
+### @vitest/coverage-istanbul@4.1.12
 
 - License: MIT
 - Copyright: Anthony Fu
 - Homepage: https://vitest.dev/guide/coverage
 
-### @vitest/expect@4.1.11
+### @vitest/expect@4.1.12
 
 - License: MIT
 - Homepage: https://vitest.dev/api/expect
 
-### @vitest/mocker@4.1.11
+### @vitest/mocker@4.1.12
 
 - License: MIT
 - Homepage: https://github.com/vitest-dev/vitest/tree/main/packages/mocker
 
-### @vitest/pretty-format@4.1.11
+### @vitest/pretty-format@4.1.12
 
 - License: MIT
 - Homepage: https://github.com/vitest-dev/vitest/tree/main/packages/pretty-format
 
-### @vitest/runner@4.1.11
+### @vitest/runner@4.1.12
 
 - License: MIT
 - Homepage: https://vitest.dev/api/advanced/runner
 
-### @vitest/snapshot@4.1.11
+### @vitest/snapshot@4.1.12
 
 - License: MIT
 - Homepage: https://vitest.dev/guide/snapshot
 
-### @vitest/spy@4.1.11
+### @vitest/spy@4.1.12
 
 - License: MIT
 - Homepage: https://vitest.dev/api/mock
 
-### @vitest/utils@4.1.11
+### @vitest/utils@4.1.12
 
 - License: MIT
 - Homepage: https://github.com/vitest-dev/vitest/tree/main/packages/utils
@@ -845,7 +845,7 @@ These packages are used for development, test, or build tooling and are not bund
 - Copyright: Microsoft Corp.
 - Homepage: https://www.typescriptlang.org/
 
-### undici@7.29.1
+### undici@7.30.1
 
 - License: MIT
 - Homepage: https://undici.nodejs.org
@@ -872,7 +872,7 @@ These packages are used for development, test, or build tooling and are not bund
 - Copyright: Evan You
 - Homepage: https://vite.dev
 
-### vitest@4.1.11
+### vitest@4.1.12
 
 - License: MIT
 - Copyright: Anthony Fu
@@ -919,7 +919,7 @@ These packages are used for development, test, or build tooling and are not bund
 - Copyright: Harminder Virk
 - Homepage: https://github.com/poppinss/youch-core#readme
 
-### zod@4.4.3
+### zod@4.6.6
 
 - License: MIT
 - Copyright: Colin McDonnell

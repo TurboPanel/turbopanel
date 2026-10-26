@@ -31,11 +31,8 @@ import {
   requireStringField,
 } from '../shared.ts'
 import { deleteProjectCascade } from '../../features/projects/project-delete.ts'
-import {
-  planEnvironmentsTeardown,
-  retireIdleIngressOn,
-  stopEnvironmentHosts,
-} from '../environments/teardown.ts'
+import { retireIdleIngressOn, stopEnvironmentHosts } from '../environments/teardown.ts'
+import { planProjectDelete, refuseOnPlanBlockers, startDeleteCleanup } from './delete-flow.ts'
 import { verifyServerInOrg } from '../environments/deploy-prepare.ts'
 import { reconcileServicesForProject } from '../environments/reconcile-after-compose-save.ts'
 import {
@@ -72,10 +69,12 @@ import {
   scaffoldEnvironmentNames,
   parseCreateProjectServerIdField,
   parseJsonbField,
+  parseProjectIconField,
   resolveCatalogEntryForCreate,
   resolveCreateProjectType,
   stampCreateProjectMetadata,
 } from './routes-helpers.ts'
+import { projectKindForType } from '../../features/projects/vocabulary.ts'
 import {
   settleDeployOptions,
   stampNewEnvironmentDeployOptions,
@@ -158,6 +157,7 @@ function runCreateProjectTransaction(
     workspaceId: string
     organizationId: string
     metadata: Record<string, unknown> | null
+    icon: string | null
     options: Record<string, unknown> | null
     catalogEntry: CatalogEntry | undefined
     dataEncryptionSecrets: DerivedSecretsConfig | undefined
@@ -174,6 +174,7 @@ function runCreateProjectTransaction(
         organizationId: input.organizationId,
         serverId: input.serverId,
         defaultEnvironmentName: input.defaultEnvironmentName,
+        icon: input.icon,
       })
     }
 
@@ -184,6 +185,7 @@ function runCreateProjectTransaction(
         workspaceId: input.workspaceId,
         organizationId: input.organizationId,
         metadata: input.metadata,
+        icon: input.icon,
         options: input.options,
         serverId: input.serverId,
         defaultEnvironmentName: input.defaultEnvironmentName,
@@ -204,6 +206,7 @@ function runCreateProjectTransaction(
       workspaceId: input.workspaceId,
       organizationId: input.organizationId,
       metadata: input.metadata,
+      icon: input.icon,
       options: input.options,
       entry: input.catalogEntry,
       dataEncryptionSecrets: input.dataEncryptionSecrets,
@@ -222,6 +225,7 @@ type CreateProjectInput = {
   catalogEntry: CatalogEntry | undefined
   options: Record<string, unknown> | null
   metadata: Record<string, unknown> | null
+  icon: string | null
   serverId: string | null
   defaultEnvironmentName: string
 }
@@ -351,11 +355,9 @@ async function parseCreateProjectInput(
   )
   if (defaultServerError) return defaultServerError
 
-  const metadataResult = parseCreateProjectMetadata(body)
-  if (!metadataResult.ok) {
-    return c.json({ error: metadataResult.error }, metadataResult.status)
-  }
-  const { metadata } = metadataResult
+  const extras = parseCreateProjectExtras(c, body, projectType)
+  if (extras instanceof Response) return extras
+  const { metadata, icon } = extras
 
   const serverId = await resolveServerIdForCreate(c, db, body, organizationId)
   if (serverId instanceof Response) return serverId
@@ -382,8 +384,30 @@ async function parseCreateProjectInput(
     catalogEntry,
     options: optionsResult.options,
     metadata,
+    icon,
     serverId,
     defaultEnvironmentName,
+  }
+}
+
+/** Caller metadata and the optional icon of a create request. */
+function parseCreateProjectExtras(
+  c: Context<AppEnv>,
+  body: Record<string, unknown>,
+  projectType: ResolvedCreateProjectType
+): { metadata: Record<string, unknown> | null; icon: string | null } | Response {
+  const metadataResult = parseCreateProjectMetadata(body)
+  if (!metadataResult.ok) {
+    return c.json({ error: metadataResult.error }, metadataResult.status)
+  }
+  const iconResult = parseProjectIconField(body)
+  if (!iconResult.ok) {
+    return c.json({ error: iconResult.error }, iconResult.status)
+  }
+  return {
+    metadata: metadataResult.metadata,
+    // A managed project always shows the managed icon, so none is stored.
+    icon: projectType === 'managed' ? null : (iconResult.icon ?? null),
   }
 }
 
@@ -474,6 +498,7 @@ type ProjectPatchFields = {
   /** The default placement server, kept in its own column (the API carries it in `options`). */
   defaultServerId?: string | null
   workspaceId?: string
+  icon?: string | null
   updatedAt: string
 }
 
@@ -553,6 +578,11 @@ function buildProjectPatchFields(
   if (optionsResult !== null) {
     patchFields.options = optionsResult
   }
+
+  const iconResult = parseProjectIconField(body)
+  if (!iconResult.ok) return c.json({ error: iconResult.error }, iconResult.status)
+  // `undefined` leaves the stored icon alone; an explicit null clears it.
+  if (body.icon !== undefined) patchFields.icon = iconResult.icon ?? null
 
   if (moveTarget !== undefined) {
     patchFields.workspaceId = moveTarget
@@ -673,6 +703,7 @@ async function insertDockerComposeProject(
     workspaceId: string
     organizationId: string
     metadata: Record<string, unknown> | null
+    icon: string | null
     options: Record<string, unknown> | null
     serverId: string | null
     defaultEnvironmentName: string
@@ -705,9 +736,9 @@ async function insertDockerComposeProject(
       description: fields.description,
       workspaceId: fields.workspaceId,
       organizationId: fields.organizationId,
-      metadata: stampCreateProjectMetadata(fields.metadata, {
-        type: 'docker-compose',
-      }),
+      metadata: fields.metadata,
+      kind: projectKindForType('docker-compose'),
+      icon: fields.icon,
       options: stored.options,
       defaultServerId: stored.defaultServerId,
     })
@@ -744,6 +775,7 @@ async function insertCatalogProject(
     workspaceId: string
     organizationId: string
     metadata: Record<string, unknown> | null
+    icon: string | null
     options: Record<string, unknown> | null
     entry: CatalogEntry
     dataEncryptionSecrets: DerivedSecretsConfig
@@ -763,9 +795,10 @@ async function insertCatalogProject(
       workspaceId: fields.workspaceId,
       organizationId: fields.organizationId,
       metadata: stampCreateProjectMetadata(fields.metadata, {
-        type: fields.projectType,
-        ...(isEngine ? { code: fields.entry.code } : {}),
+        ...(isEngine || fields.projectType === 'template' ? { code: fields.entry.code } : {}),
       }),
+      kind: projectKindForType(fields.projectType),
+      icon: fields.icon,
       options: stored.options,
       defaultServerId: stored.defaultServerId,
     })
@@ -849,6 +882,7 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
   router.use('/projects', createSessionMiddleware(secrets))
   router.use('/projects/:id', createSessionMiddleware(secrets))
   router.use('/projects/:id/configure', createSessionMiddleware(secrets))
+  router.use('/projects/:id/delete-preview', createSessionMiddleware(secrets))
   router.use('/project-catalog', createSessionMiddleware(secrets))
 
   router.get('/project-catalog', (c) => {
@@ -1068,6 +1102,14 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     return c.json({ ok: true as const })
   })
 
+  router.get('/projects/:id/delete-preview', async (c) => {
+    const id = c.req.param('id')
+    const scope = await resolveManageableProject(c, id)
+    if (scope instanceof Response) return scope
+    const { plan } = await planProjectDelete(scope.db, id)
+    return c.json({ ok: true as const, ...plan })
+  })
+
   router.delete('/projects/:id', async (c) => {
     const id = c.req.param('id')
     const scope = await resolveManageableProject(c, id)
@@ -1077,18 +1119,13 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const stepUp = await requireStepUpIfConfigured(c, organizationId, 'project.delete')
     if (stepUp) return stepUp
 
-    // Capture host teardown material while the service / hosting / segment
-    // rows still exist; the commands go out after the cascade commits.
-    const environmentIds = await db
-      .select({ id: environment.id })
-      .from(environment)
-      .where(eq(environment.projectId, id))
-    const teardownPlans = await planEnvironmentsTeardown(
-      db,
-      environmentIds.map((row) => row.id),
-      // The site trees go with the project; the Linux users and their homes stay.
-      { keepPrincipals: true }
-    )
+    // The plan is read while the service / hosting / segment rows still exist:
+    // the stops are built from them. A reason the delete cannot run (a managed
+    // database, a shared asset another project uses, an offline server)
+    // refuses here, before anything is stopped.
+    const { plan, teardownPlans } = await planProjectDelete(db, id)
+    const refused = refuseOnPlanBlockers(c, plan)
+    if (refused) return refused
 
     // The stop goes out after the delete is checked and before any row is
     // removed; when it cannot be sent the delete is refused and nothing changes.
@@ -1107,11 +1144,13 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       return c.json({ error: result.error, ...result.detail }, 409)
     }
 
+    const cleanup = await startDeleteCleanup(c, db, userId, result.cleanup)
     await retireIdleIngressOn(c, db, stoppedServerIds, userId)
 
     return c.json({
       ok: true as const,
       ...(result.warning ? { warning: result.warning } : {}),
+      cleanup,
     })
   })
 }

@@ -18,12 +18,14 @@ import {
   DEPLOY_SIGNAL_GRACE_MS,
   DEPLOY_DEFAULT_TIMEOUT_MS,
   deployIsChecking,
+  deployTimeLimitMessage,
   deployRunState,
   deployUnreachableMessage,
   deployWaitMessage,
   deployWaitVerdict,
 } from './deploy-wait.ts'
 import { shiftedRunningSince } from './deploy-limits.ts'
+import { deployRunCapFromMinutes } from './deploy-wait-settings.ts'
 
 const test = Deno.test.bind(Deno)
 
@@ -357,4 +359,41 @@ test('the request outlives the whole wait, and a deploy is given up on before it
   assertEquals(verdict(0), 'run_cap')
   assertEquals(verdict(10 * 60_000), 'unreachable')
   assertEquals(nowMs < sentMs + DEPLOY_REQUEST_TTL_SECONDS * 1000, true)
+})
+
+test('the deploy time limit is the organization setting: 30 minutes unset, the value when valid, 30 when out of range', () => {
+  assertEquals(deployRunCapFromMinutes(undefined), 30 * 60_000)
+  assertEquals(deployRunCapFromMinutes(null), 30 * 60_000)
+  assertEquals(deployRunCapFromMinutes(90), 90 * 60_000)
+  assertEquals(deployRunCapFromMinutes(240), 240 * 60_000)
+  assertEquals(deployRunCapFromMinutes(4), 30 * 60_000)
+  assertEquals(deployRunCapFromMinutes(241), 30 * 60_000)
+  assertEquals(deployRunCapFromMinutes(12.5), 30 * 60_000)
+  assertEquals(deployRunCapFromMinutes('60'), 30 * 60_000)
+})
+
+test('a custom time limit decides when a reporting server is stopped, and the message names it and where to change it', () => {
+  const ninety = deployRunCapFromMinutes(90)
+  const base = { ...REPORTING, progress: RUNNING, endAtMs: STARTED + 10 * ninety, runCapMs: ninety }
+  assertEquals(verdict({ ...base, nowMs: STARTED + DEPLOY_DEFAULT_TIMEOUT_MS }), null)
+  assertEquals(verdict({ ...base, nowMs: STARTED + ninety - 1 }), null)
+  assertEquals(verdict({ ...base, nowMs: STARTED + ninety }), 'run_cap')
+  const message = deployTimeLimitMessage(ninety)
+  assertEquals(message.includes('time limit (90 minutes)'), true)
+  assertEquals(
+    message.includes('organization manager can change this in the organization settings'),
+    true
+  )
+})
+
+test('a server that cannot send signs of life keeps the ten minute cap whatever the organization set', () => {
+  const base = {
+    ...REPORTING,
+    recovery: false,
+    progress: RUNNING,
+    endAtMs: STARTED + 10 * DEPLOY_DEFAULT_TIMEOUT_MS,
+    runCapMs: 240 * 60_000,
+  }
+  assertEquals(verdict({ ...base, nowMs: STARTED + DEPLOY_RUN_CAP_MS - 1 }), null)
+  assertEquals(verdict({ ...base, nowMs: STARTED + DEPLOY_RUN_CAP_MS }), 'run_cap')
 })

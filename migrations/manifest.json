@@ -1,25 +1,19 @@
 {
   "version": 1,
   "frozen": true,
-  "generation": 12,
+  "generation": 13,
   "entries": [
     {
       "idx": 0,
-      "tag": "0000_init",
-      "when": 1792498533036,
-      "sha256": "42fc7e4cabe14ee2a290e9265a2070691c59d73bcf8d0bf7fcd34ccc29dd1d2e"
+      "tag": "0000_base",
+      "when": 1792792899297,
+      "sha256": "db851802085444569696db99b904edf177a53ca89006c3f456d7906852d2bbe0"
     },
     {
       "idx": 1,
-      "tag": "0001_login_straight_through",
-      "when": 1792542413788,
-      "sha256": "d5e03c7668e5788d619a606938ed81feec29a275f17fe2ccb7568548fd1d1542"
-    },
-    {
-      "idx": 2,
-      "tag": "0002_backup_policy_database",
-      "when": 1792604831497,
-      "sha256": "3ca7c79d1c53d7f463e9ada8098b35c9072b26c3b00639eb505be0a8a9a52547"
+      "tag": "0001_delete_project_cleanup",
+      "when": 1792968916599,
+      "sha256": "0eda369252e51e368ecb08c5c93253590ca42156169f4d7c4c1f779f976373e1"
     }
   ]
 }

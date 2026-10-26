@@ -79,6 +79,12 @@ import { deleteManagedBackup, insertManagedBackup } from '../backups/backup-reco
 import { applyStorageBackupSideEffect } from '../backups/storage-command-effects.ts'
 import { applyBackupsReconcileSideEffect } from '../backups/reconcile-effects.ts'
 import {
+  applyBackupTargetTestFailure,
+  applyBackupTargetTestSideEffect,
+} from '../backups/target-test-effects.ts'
+import type { CopyResealDeps } from '../backups/targets.ts'
+import { recordPendingCopy } from '../backups/copy-records.ts'
+import {
   commandMayChangeFirewallPreview,
   enqueueFirewallPreview,
   FIREWALL_RECONCILE_COMMAND,
@@ -246,6 +252,8 @@ const COMMAND_TIMEOUT_MS: Record<CommandType, number> = {
   'server.firewall.confirm': 60_000,
   // Writes a few unit files, one daemon-reload, enables what moved. No dump runs here.
   'server.backups.reconcile': 120_000,
+  // Writes, reads and deletes one small object; the request timeout alone is a minute.
+  'server.backups.test-target': 120_000,
   // One `rm -rf` through the root helper per folder, up to 100 folders; a big volume takes minutes.
   'server.folders.remove': 600_000,
   // The run cap: counted from when the server starts the deploy, not from when it was sent.
@@ -292,6 +300,7 @@ export function commandTimeoutMs(type: string): number {
     type === 'server.firewall.reconcile' ||
     type === 'server.firewall.confirm' ||
     type === 'server.backups.reconcile' ||
+    type === 'server.backups.test-target' ||
     type === 'server.folders.remove' ||
     type === 'environment.deploy' ||
     type === 'environment.lifecycle' ||
@@ -312,6 +321,23 @@ export function commandTimeoutMs(type: string): number {
     return COMMAND_TIMEOUT_MS[type]
   }
   return DEFAULT_COMMAND_TIMEOUT_MS
+}
+
+/**
+ * How long a drain or undrain of one server's ProxySQL may take. It is a few
+ * local admin statements, yet it shares the `managed.ha.failover` type whose
+ * budget is the 10 minutes a recover needs. A fence waits for every drain, so a
+ * silent bystander server must not hold a switchover for that long.
+ */
+export const FENCE_DRAIN_WAIT_MS = 60_000
+
+/** The wait budget of one command; a drain is held to {@link FENCE_DRAIN_WAIT_MS}. */
+export function commandWaitMs(record: { type: string; payload?: unknown }): number {
+  if (record.type === 'managed.ha.failover') {
+    const phase = (record.payload as { phase?: unknown } | null | undefined)?.phase
+    if (phase === 'drain' || phase === 'undrain') return FENCE_DRAIN_WAIT_MS
+  }
+  return commandTimeoutMs(record.type)
 }
 
 function recoveryEngine(engine: unknown): ManagedEngineCode {
@@ -421,6 +447,14 @@ async function failExpiredManagedApplyWhenClusterGone(
   return true
 }
 
+/** A command past its valid time is not sent; the time counts from when it was queued. */
+export function commandIsExpired(
+  expiresAt: string | null | undefined,
+  nowMs = Date.now()
+): boolean {
+  return Boolean(expiresAt) && Date.parse(expiresAt as string) < nowMs
+}
+
 async function loadDispatchableRecord(
   db: Db,
   envelope: CommandEnvelope
@@ -434,7 +468,7 @@ async function loadDispatchableRecord(
     return null
   }
 
-  if (record.expiresAt && Date.parse(record.expiresAt) < Date.now()) {
+  if (commandIsExpired(record.expiresAt)) {
     if (await failExpiredManagedApplyWhenClusterGone(db, record)) {
       return null
     }
@@ -701,7 +735,7 @@ async function awaitCommandOutcome(
       : await awaitOutcomeWithAckDeadline(
           cell,
           record.id,
-          commandTimeoutMs(record.type),
+          commandWaitMs(record),
           COMMAND_ACK_DEADLINE_MS,
           waiter
         )
@@ -975,6 +1009,14 @@ async function applyTimeSyncSideEffect(
   } catch {
     // Malformed success payload — leave columns for the next heartbeat.
   }
+}
+
+/** The secrets a backup reconcile needs to seal copy targets for a host; absent when the consumer has none. */
+function consumerCopyDeps(deps?: CommandConsumerDeps): CopyResealDeps | undefined {
+  const fields = consumerFabricSecretFields(deps)
+  return fields.secretsConfig && fields.dataEncryptionSecrets
+    ? { secretsConfig: fields.secretsConfig, dataEncryptionSecrets: fields.dataEncryptionSecrets }
+    : undefined
 }
 
 function consumerFabricSecretFields(deps?: CommandConsumerDeps): {
@@ -1255,6 +1297,9 @@ async function applyEnvironmentDeploySideEffect(
       }
       current = marked !== null
     }
+    // A hostings-only run changed the web server config and nothing else: no
+    // folders, accounts, sites or containers to record.
+    if (payload.hostingsOnly === true) return
     await markEnvironmentCopiesReady(db, payload.environmentId, envelope.serverId)
     const plannedFolderIds = await markPlannedFoldersPresentSafely(db, record)
     // Without a list that was read, nothing is known about which folders are in use.
@@ -1468,6 +1513,11 @@ async function applyPrincipalsReconcileSideEffect(
     const parsed = parsePrincipalsReconcileResult(result)
     await recordReportedIdsSafely(db, record, envelope.serverId, parsed.principals)
     await reconcileReportedFoldersSafely(db, record, envelope.serverId, parsed.folders)
+    // The accounts the host confirms removed: their `retiring` placements are
+    // done. One it kept stays `retiring`, and the principal removal sweep asks again.
+    if (parsed.principalsRetired && parsed.principalsRetired.length > 0) {
+      await markPlacementsAbsentSafely(db, record, envelope.serverId, parsed.principalsRetired)
+    }
   } catch (err) {
     compatLogWarn(
       'command-consumer',
@@ -1795,6 +1845,7 @@ async function applyManagedApplySideEffect(
       managedId: payload.managedId,
       previousServerId: backupHost,
       actorId: envelope.serverId,
+      copyDeps: consumerCopyDeps(deps),
     })
 
     // Primary success → enqueue deferred standby applies (if any).
@@ -2214,6 +2265,13 @@ async function applyManagedBackupSideEffect(
         ...(backupResult.completedAt !== undefined ? { createdAt: backupResult.completedAt } : {}),
         serverId: record.serverId,
       })
+      // Only a backup that was asked to be copied waits for a copy.
+      if (payload.copyTarget) {
+        await recordPendingCopy(db, {
+          managedId: payload.managedId,
+          backupId: backupResult.backupId,
+        })
+      }
     }
   } catch (err) {
     const message = errorMessage(err)
@@ -2449,7 +2507,8 @@ async function applyManagedDestroySideEffect(
         db,
         deps?.commandQueue,
         { actorType: 'system', actorId: envelope.serverId },
-        [backupHost]
+        [backupHost],
+        consumerCopyDeps(deps)
       )
     }
 
@@ -2735,6 +2794,7 @@ async function applyManagedFailedSideEffect(
   deps?: CommandConsumerDeps,
   error?: string
 ): Promise<void> {
+  await applyBackupTargetTestFailure(db, record, error)
   const meta = await getCommandMetadata(db, record.id)
   // A failed return-fence stop (`ha-return-fence.ts`) must not flip the member
   // from `needs_resync` to `failed` or mark the whole cluster failed; the
@@ -2840,6 +2900,7 @@ export async function applySucceededSideEffects(
   await applyManagedPromoteSideEffect(db, record, envelope, result, deps)
   await applyManagedHaFailoverSideEffect(db, record, envelope, result, deps)
   await applyBackupsReconcileSideEffect(db, record, result)
+  await applyBackupTargetTestSideEffect(db, record, result)
   await applyManagedBackupSideEffect(db, record, envelope, result)
   await applyManagedRestoreSideEffect(db, record, envelope, result)
   await applyStorageBackupSideEffect(db, record, result)
@@ -2947,6 +3008,7 @@ async function applyManagedPromoteSideEffect(
           .set({
             role: 'replica',
             status: 'needs_resync',
+            replicaClass: demotedReplicaClassSql(),
             updatedAt,
           })
           .where(and(eq(replica.id, demotedMemberId), eq(replica.managedId, managedId)))
@@ -2997,6 +3059,7 @@ async function applyManagedPromoteSideEffect(
       managedId,
       previousServerId: backupHost,
       actorId: envelope.serverId,
+      copyDeps: consumerCopyDeps(deps),
     })
 
     if (promotedMemberId) {
@@ -3076,6 +3139,16 @@ async function applyManagedPromoteSideEffect(
   }
 }
 
+/**
+ * A demoted primary keeps its replica class; the cluster's first member has
+ * none (it never was a replica), and without one it would rejoin as a plain
+ * read replica, lose its watcher and leave the pair with no failover
+ * candidate. It becomes a failover replica, like any member added by hand.
+ */
+function demotedReplicaClassSql() {
+  return sql<string>`coalesce(${replica.replicaClass}, 'failover')`
+}
+
 async function applyManagedRoleFlip(
   db: Db,
   params: {
@@ -3093,6 +3166,7 @@ async function applyManagedRoleFlip(
         .set({
           role: 'replica',
           status: 'needs_resync',
+          replicaClass: demotedReplicaClassSql(),
           updatedAt: params.updatedAt,
         })
         .where(and(eq(replica.id, params.demotedMemberId), eq(replica.managedId, params.managedId)))
@@ -3160,7 +3234,10 @@ async function applyManagedHaFailoverSideEffect(
       })
       return
     }
-    if (payload.phase === 'repoint') return
+    // Only a confirmed engine promote ('recover') may change roles. A planned
+    // switchover that stops early sends 'undrain' to put traffic back on the
+    // unchanged primary; flipping roles there claims a promote that never ran.
+    if (payload.phase !== 'recover') return
 
     const backupHost = await captureManagedBackupHost(db, deps?.commandQueue, payload.managedId)
     await applyManagedRoleFlip(db, {
@@ -3175,6 +3252,7 @@ async function applyManagedHaFailoverSideEffect(
       managedId: payload.managedId,
       previousServerId: backupHost,
       actorId: envelope.serverId,
+      copyDeps: consumerCopyDeps(deps),
     })
 
     await enqueueFollowPrimaryOnReplicas(db, deps?.commandQueue, {

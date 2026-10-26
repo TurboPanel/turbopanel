@@ -1,4 +1,6 @@
+import { PROJECT_ICONS } from '../../features/projects/vocabulary.ts'
 import { buildResourceCrudPaths } from './shared.ts'
+import { deleteOperation, deletePreviewPath, withDeleteOperation } from './delete-plan.ts'
 
 export const projectSchemas = {
   ProjectRow: {
@@ -13,20 +15,28 @@ export const projectSchemas = {
         description:
           'The one Git repository this project is, or null when it is not repository-backed. Every x-turbopanel.source.sourceId in the project compose must name this row.',
       },
+      kind: {
+        type: 'string',
+        nullable: true,
+        enum: ['compose', 'managed', 'system'],
+        description:
+          'What the project is. `compose` also covers a template project (which carries metadata.code); `managed` is a managed database or service; `system` is platform-owned and read-only. null while the project is a draft that has not chosen yet; set by create or POST …/configure, never by PATCH.',
+      },
+      icon: {
+        type: 'string',
+        nullable: true,
+        enum: PROJECT_ICONS,
+        description:
+          'Icon key from the fixed list the project screens offer; null means the default. A managed project ignores it and always shows the managed icon.',
+      },
       metadata: {
         type: 'object',
         nullable: true,
         additionalProperties: true,
         properties: {
-          type: {
-            type: 'string',
-            enum: ['docker-compose', 'template', 'managed', 'system'],
-            description:
-              'Project kind. `system` is platform-owned (TurboPanel workspace projects) and read-only — never accepted on create or configure.',
-          },
           code: {
             type: 'string',
-            description: 'Catalog code when type is template or managed',
+            description: 'Catalog code of a template or managed engine project',
           },
           component: {
             type: 'string',
@@ -78,6 +88,12 @@ export const projectSchemas = {
           "Optional name for the project's first environment. Omitted means the organization default (else Production).",
       },
       metadata: { type: 'object', nullable: true },
+      icon: {
+        type: 'string',
+        nullable: true,
+        enum: PROJECT_ICONS,
+        description: 'Optional icon key; ignored for managed projects.',
+      },
       options: {
         type: 'object',
         nullable: true,
@@ -120,6 +136,13 @@ export const projectSchemas = {
     properties: {
       name: { type: 'string' },
       description: { type: 'string' },
+      icon: {
+        type: 'string',
+        nullable: true,
+        enum: PROJECT_ICONS,
+        description:
+          'Icon key from the fixed list, or null for the default. Ignored for managed projects.',
+      },
       workspaceId: {
         type: 'string',
         description: 'Move the project to another workspace in the same organization',
@@ -164,20 +187,36 @@ export const projectSchemas = {
   },
 }
 
+const projectCrudPaths = buildResourceCrudPaths({
+  plural: 'projects',
+  singular: 'project',
+  tag: 'Projects',
+  listSchema: 'ProjectsResponse',
+  rowSchema: 'ProjectRow',
+  createSchema: 'CreateProjectRequest',
+  patchSchema: 'UpdateProjectRequest',
+  parentQuery: {
+    name: 'workspaceId',
+    description: 'Filter projects under a workspace',
+  },
+})
+
 export const projectPaths = {
-  ...buildResourceCrudPaths({
-    plural: 'projects',
-    singular: 'project',
-    tag: 'Projects',
-    listSchema: 'ProjectsResponse',
-    rowSchema: 'ProjectRow',
-    createSchema: 'CreateProjectRequest',
-    patchSchema: 'UpdateProjectRequest',
-    parentQuery: {
-      name: 'workspaceId',
-      description: 'Filter projects under a workspace',
-    },
-  }),
+  ...projectCrudPaths,
+  '/api/client/v1/projects/{id}': withDeleteOperation(
+    projectCrudPaths,
+    '/api/client/v1/projects/{id}',
+    deleteOperation(
+      'Projects',
+      'project',
+      "Stops every environment's services on their servers, then removes the project's rows in one step: environments, services, hostings (compose-declared ones too), volumes set to be deleted with it. Each folder on a server becomes `removing` and the server is asked to remove it (asked again until it confirms); a volume set to keep its data keeps its folder. The project's Hosting Accounts that nothing else uses are removed (Linux user and home) once their folders are gone and each server has confirmed the account removed; the others are kept and listed. Refused, with nothing changed, while a managed database remains, a deploy is running, a shared service or volume is used by another project, or a server the delete has to reach is offline."
+    )
+  ),
+  '/api/client/v1/projects/{id}/delete-preview': deletePreviewPath(
+    'Projects',
+    'project',
+    'What `DELETE /projects/{id}` would remove and keep, and why it would be refused. Reads only.'
+  ),
   '/api/client/v1/projects/{id}/configure': {
     post: {
       tags: ['Projects'],

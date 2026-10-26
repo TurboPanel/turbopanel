@@ -1,8 +1,9 @@
 import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { DENY_FIREWALL_APPLY } from '../firewall/enforcement.ts'
-import { assertEquals } from '@std/assert'
+import { assertEquals, assertRejects } from '@std/assert'
 import { projectServerDaemon } from '../../daemon/cell/postgres-projection.ts'
 import { eq, inArray } from 'drizzle-orm'
+import { loadDeployRunCapMs } from './deploy-wait-settings.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
 import { createDenoDb, type Db, endDbConnection } from '../../db/connection.ts'
 import type { DaemonCell, DaemonCellRegistry, PendingRequestRecord } from '../../contracts/cell.ts'
@@ -882,7 +883,7 @@ async function withManagedDestroyFixtures(
         workspaceId: workspaceRow!.id,
         organizationId,
         name: 'Managed Destroy Test Project',
-        metadata: { type: 'managed' },
+        kind: 'managed',
       })
       .returning({ id: project.id })
     const [environmentRow] = await db
@@ -909,6 +910,7 @@ async function withManagedDestroyFixtures(
     const [rootLoginRow] = await db
       .insert(login)
       .values({
+        recipe: 'app',
         managedId,
         role: 'root',
         username: 'postgres',
@@ -1204,7 +1206,7 @@ test('processCommandEnvelope reconciles containers on environment.lifecycle succ
         workspaceId: workspaceRow!.id,
         organizationId,
         name: 'Lifecycle Reconcile Project',
-        metadata: { type: 'docker-compose' },
+        kind: 'compose',
       })
       .returning({ id: project.id })
     const [environmentRow] = await db
@@ -1311,7 +1313,7 @@ test('processCommandEnvelope skips reconcile when environment.lifecycle omits co
         workspaceId: workspaceRow!.id,
         organizationId,
         name: 'Lifecycle Skip Project',
-        metadata: { type: 'docker-compose' },
+        kind: 'compose',
       })
       .returning({ id: project.id })
     const [environmentRow] = await db
@@ -1409,7 +1411,8 @@ test('processCommandEnvelope reconciles containers on system.reconcile success',
         workspaceId: workspaceRow!.id,
         organizationId,
         name: 'System Reconcile Project',
-        metadata: { type: 'docker-compose', component: 'hosting-ingress' },
+        kind: 'compose',
+        metadata: { component: 'hosting-ingress' },
         component: 'hosting-ingress',
       })
       .returning({ id: project.id })
@@ -1535,7 +1538,8 @@ test('processCommandEnvelope skips reconcile when system.reconcile omits contain
         workspaceId: workspaceRow!.id,
         organizationId,
         name: 'System Skip Project',
-        metadata: { type: 'docker-compose', component: 'hosting-ingress' },
+        kind: 'compose',
+        metadata: { component: 'hosting-ingress' },
         component: 'hosting-ingress',
       })
       .returning({ id: project.id })
@@ -1640,7 +1644,8 @@ test('processCommandEnvelope clears pins when system.reconcile reports empty con
         workspaceId: workspaceRow!.id,
         organizationId,
         name: 'System Empty Project',
-        metadata: { type: 'docker-compose', component: 'hosting-ingress' },
+        kind: 'compose',
+        metadata: { component: 'hosting-ingress' },
         component: 'hosting-ingress',
       })
       .returning({ id: project.id })
@@ -1755,7 +1760,8 @@ test('processCommandEnvelope reconciles containers on managed.ingress.reconcile 
         workspaceId: workspaceRow!.id,
         organizationId,
         name: 'Managed Ingress Project',
-        metadata: { type: 'docker-compose', component: 'managed-ingress' },
+        kind: 'compose',
+        metadata: { component: 'managed-ingress' },
         component: 'managed-ingress',
       })
       .returning({ id: project.id })
@@ -1878,7 +1884,8 @@ test('processCommandEnvelope clears pins when managed.ingress.reconcile reports 
         workspaceId: workspaceRow!.id,
         organizationId,
         name: 'Managed Ingress Empty Project',
-        metadata: { type: 'docker-compose', component: 'managed-ingress' },
+        kind: 'compose',
+        metadata: { component: 'managed-ingress' },
         component: 'managed-ingress',
       })
       .returning({ id: project.id })
@@ -1988,7 +1995,8 @@ test('processCommandEnvelope maps a labelled self-host system.reconcile report o
         workspaceId: workspaceRow!.id,
         organizationId,
         name: 'TurboPanel',
-        metadata: { type: 'docker-compose', component: 'turbopanel' },
+        kind: 'compose',
+        metadata: { component: 'turbopanel' },
         component: 'turbopanel',
       })
       .returning({ id: project.id })
@@ -2120,7 +2128,8 @@ test('processCommandEnvelope leaves a missing self-host system container exited 
         workspaceId: workspaceRow!.id,
         organizationId,
         name: 'TurboPanel',
-        metadata: { type: 'docker-compose', component: 'turbopanel' },
+        kind: 'compose',
+        metadata: { component: 'turbopanel' },
         component: 'turbopanel',
       })
       .returning({ id: project.id })
@@ -2236,7 +2245,8 @@ test('processCommandEnvelope keeps unmatched self-host expected rows on partial 
         workspaceId: workspaceRow!.id,
         organizationId,
         name: 'TurboPanel',
-        metadata: { type: 'docker-compose', component: 'turbopanel' },
+        kind: 'compose',
+        metadata: { component: 'turbopanel' },
         component: 'turbopanel',
       })
       .returning({ id: project.id })
@@ -2471,7 +2481,7 @@ async function withDeployFixtures(
         workspaceId: workspaceRow!.id,
         organizationId,
         name: 'Deploy Consumer Project',
-        metadata: { type: 'docker-compose' },
+        kind: 'compose',
       })
       .returning({ id: project.id })
     const [environmentRow] = await db
@@ -3844,6 +3854,45 @@ test('processCommandEnvelope concludes nothing about folders from a reconcile th
   })
 })
 
+test('processCommandEnvelope marks a retiring account absent once the host reports it retired', async () => {
+  await withDeployFixtures(async (ctx) => {
+    await attachConnectedDaemonStatus(ctx.db, ctx.serverId)
+    await withOwnerFolders(
+      ctx,
+      [{ owner: 'one', kind: 'volume', slug: 'a', state: 'present' }],
+      async ({ one }) => {
+        await ctx.db.insert(principalPlacement).values({
+          principalId: one.id,
+          serverId: ctx.serverId,
+          state: 'retiring',
+          home: `/srv/users/${one.login}`,
+          source: 'manual',
+        })
+        await runSucceededCommand(
+          ctx.db,
+          ctx.serverId,
+          'server.principals.reconcile',
+          { principals: [], retirePrincipals: [{ username: one.login }] },
+          {
+            principalsApplied: 0,
+            keysChanged: [],
+            keysRemoved: [],
+            sshdReloaded: false,
+            sftpChroot: false,
+            principalsRetired: [one.login],
+            warnings: [],
+          }
+        )
+        const [placement] = await ctx.db
+          .select({ state: principalPlacement.state })
+          .from(principalPlacement)
+          .where(eq(principalPlacement.principalId, one.id))
+        assertEquals(placement?.state, 'absent')
+      }
+    )
+  })
+})
+
 test('processCommandEnvelope clears pins on environment.stop success', async () => {
   await withDeployFixtures(async ({ db, serverId, environmentId, projectId, webServiceId }) => {
     await attachConnectedDaemonStatus(db, serverId)
@@ -4825,7 +4874,15 @@ async function insertPromotePair(
   await attachConnectedDaemonStatus(db, standbyServerId)
   const [primaryMember] = await db
     .insert(replica)
-    .values({ managedId, serverId, role: 'primary', ordinal: 1, status: 'ready' })
+    // A cluster's first member has no replica class: it never was a replica.
+    .values({
+      managedId,
+      serverId,
+      role: 'primary',
+      ordinal: 1,
+      status: 'ready',
+      replicaClass: null,
+    })
     .returning({ id: replica.id })
   const [replicaMember] = await db
     .insert(replica)
@@ -4904,6 +4961,7 @@ test('processCommandEnvelope demotes old primary before promote so uniq_node_pri
           id: replica.id,
           role: replica.role,
           status: replica.status,
+          replicaClass: replica.replicaClass,
         })
         .from(replica)
         .where(eq(replica.managedId, managedId))
@@ -4912,6 +4970,8 @@ test('processCommandEnvelope demotes old primary before promote so uniq_node_pri
       const replicaRow = members.find((m) => m.id === replicaMemberId)
       assertEquals(primary?.role, 'replica')
       assertEquals(primary?.status, 'needs_resync')
+      // The demoted primary stays a failover candidate once it is resynced.
+      assertEquals(primary?.replicaClass, 'failover')
       assertEquals(replicaRow?.role, 'primary')
       assertEquals(replicaRow?.status, 'ready')
 
@@ -5992,7 +6052,8 @@ async function withPromoteConsumerFixtures(
           workspaceId: workspaceRow!.id,
           organizationId,
           name: 'Promote Fan-out Database',
-          metadata: { type: 'managed', code: 'postgres' },
+          kind: 'managed',
+          metadata: { code: 'postgres' },
         })
         .returning({ id: project.id })
       const [managedEnvironmentRow] = await db
@@ -6084,7 +6145,7 @@ async function withPromoteConsumerFixtures(
           workspaceId: workspaceRow!.id,
           organizationId,
           name: 'Promote Fan-out App',
-          metadata: { type: 'docker-compose' },
+          kind: 'compose',
         })
         .returning({ id: project.id })
       const [consumerEnvironmentRow] = await db
@@ -6784,6 +6845,43 @@ test('the deploy time limit of 30 minutes holds only while the server reports', 
     // Reporting and past the old ten minute cap, inside the limit: still running.
     const allowed = await run(25 * MIN)
     assertEquals(allowed?.status, 'sent')
+  })
+})
+
+test("the deploy time limit is the one the server's organization set", async () => {
+  await withDeployFixtures(async (ctx) => {
+    assertEquals(await loadDeployRunCapMs(ctx.db, ctx.serverId), 30 * MIN)
+    const setLimit = (deployTimeoutMinutes: number | null) =>
+      ctx.db
+        .update(organization)
+        .set({ deployTimeoutMinutes })
+        .where(eq(organization.id, ctx.organizationId))
+    await setLimit(90)
+    assertEquals(await loadDeployRunCapMs(ctx.db, ctx.serverId), 90 * MIN)
+    await assertRejects(() => setLimit(1000))
+    await assertRejects(() => setLimit(4))
+    assertEquals(await loadDeployRunCapMs(ctx.db, ctx.serverId), 90 * MIN)
+    await setLimit(null)
+    assertEquals(await loadDeployRunCapMs(ctx.db, ctx.serverId), 30 * MIN)
+
+    await setLimit(90)
+    const record = await quietDeploy({
+      ctx,
+      environmentId: ctx.environmentId,
+      projectId: ctx.projectId,
+      ranMs: 45 * MIN,
+      silentMs: 20_000,
+      recovery: true,
+    })
+    const registry = registryWithRequest(ctx.serverId, (id) => ACKED_REQUEST(ctx.serverId, id))
+    await processCommandEnvelope(ctx.db, registry, buildEnvelope(record, ctx.serverId), {
+      commandQueue: fakeQueue().queue,
+      firewallApplyGate: DENY_FIREWALL_APPLY,
+      deployWaitHoldMs: 0,
+      deployWaitEndMs: 0,
+    })
+    // Past 30 minutes but inside the organization's 90: still running, not stopped.
+    assertEquals((await getCommandRecord(ctx.db, record.id))?.status, 'sent')
   })
 })
 

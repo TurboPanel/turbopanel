@@ -72,6 +72,7 @@ import {
 import { ensureManagedIngressHierarchy } from '../system/hierarchy.ts'
 import { ensureManagedContainerAllocation } from './allocate-managed-container.ts'
 import { enqueueManagedIngressReconcile } from './ingress-desired.ts'
+import { MANAGED_APPLY_EXPIRES_MS } from './ingress-desired-pure.ts'
 import {
   commitClearedPrivatePortsIfUnused,
   ensureManagedPrimaryMember,
@@ -98,7 +99,7 @@ import { logWarn } from '../../lib/logger.ts'
 import { MANAGED_DESTROY_REDRIVE_FLAG } from './destroy-redrive.ts'
 import { firstSequential, forEachSequential } from '../../lib/sequential.ts'
 
-const APPLY_EXPIRES_MS = 600_000
+const APPLY_EXPIRES_MS = MANAGED_APPLY_EXPIRES_MS
 /** Normal (online, sequenced) `managed.destroy` — 10 minutes. */
 const MANAGED_DESTROY_EXPIRES_MS = 600_000
 /**
@@ -457,7 +458,8 @@ async function buildCredentials(
       principalId: row.id,
       // Applied login — the engine role name, not the internal short name.
       username: row.appliedUsername,
-      role: row.role,
+      // The daemon knows three roles; a backup login is an ordinary login on the wire for now.
+      role: row.role === 'backup' ? 'user' : row.role,
       databases: row.databases,
       password: resealed,
     }
@@ -466,10 +468,9 @@ async function buildCredentials(
       credential.privileges =
         !daemonKnowsAdmin && privileges.includes('admin') ? ['read-write'] : privileges
     }
-    // Only a non-default mode goes on the wire, so payloads for logins made
-    // before modes existed stay exactly as they were.
-    const grantMode = row.grantMode
-    if (grantMode !== 'preset') credential.grantMode = grantMode
+    // Only `self` goes on the wire: the daemon treats `recipe` and an absent
+    // mode alike, so payloads for panel-set logins stay as they were.
+    if (row.grantMode === 'self') credential.grantMode = row.grantMode
     credentials.push(credential)
     return undefined
   })
@@ -1972,6 +1973,10 @@ async function finalizePreparedManagedApplyResults(
         actorId: params.userId,
         secretsConfig,
         dataEncryptionSecrets,
+        // Built from the database now, not from the apply's result. On a server that
+        // is also applying it waits in that server's lane, so it gets the apply's
+        // budget; other servers run it at the same time.
+        waitsBehindMs: APPLY_EXPIRES_MS,
       })
     })
   }

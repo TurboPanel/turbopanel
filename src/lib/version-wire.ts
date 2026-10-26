@@ -195,9 +195,31 @@ export const DAEMON_WIRE_FEATURES = [
   'tls-capture-v1',
   'command-recovery-v1',
   'managed-switchover-final-position-v1',
+  'host-capacity-v1',
+  'server-network-check-v1',
+  'backup-s3-copy-v1',
+  'deploy-hostings-only-v1',
+  'custom-node-app-mode-v1',
 ] as const
 
 export type DaemonWireFeature = (typeof DAEMON_WIRE_FEATURES)[number]
+
+/**
+ * This daemon honours `hostingsOnly` on `environment.deploy`: it rewrites only
+ * the environment's hosting web server config and certificates, with no build
+ * and no restart. The control plane sends a hostings-only run (after a hosting
+ * gets a Let's Encrypt certificate) only when the daemon of every server lists
+ * this feature; an older daemon would run it as a full deploy.
+ */
+export const DEPLOY_HOSTINGS_ONLY_FEATURE: DaemonWireFeature = 'deploy-hostings-only-v1'
+
+/**
+ * The daemon takes any application mode in `nativeAppServices[].appMode` that
+ * matches the deploy parser's rule (`staging`, `test`, ...), not only
+ * `production` and `development`. Without it the daemon would refuse the whole
+ * environment deploy at parse time, so the control plane refuses first.
+ */
+export const CUSTOM_NODE_APP_MODE_FEATURE: DaemonWireFeature = 'custom-node-app-mode-v1'
 
 /**
  * The daemon opens `tpdaemon` envelopes on `public-urls-update`
@@ -211,6 +233,14 @@ export const SEALED_INSTANCE_SECRETS_FEATURE: DaemonWireFeature = 'sealed-instan
  * `POST /api/daemon/v1/tls/issued`, and this control plane stores them sealed.
  * The daemon sends nothing until this control plane lists the feature.
  */
+/**
+ * The daemon copies finished managed backups to an S3-compatible bucket, tests
+ * a target (`server.backups.test-target`) and restores from a bucket. This
+ * control plane sends a target only to a daemon that lists the feature, and the
+ * daemon sends `backup-copy-report` only to a control plane that lists it.
+ */
+export const BACKUP_S3_COPY_FEATURE: DaemonWireFeature = 'backup-s3-copy-v1'
+
 export const TLS_CAPTURE_FEATURE: DaemonWireFeature = 'tls-capture-v1'
 
 /**
@@ -236,6 +266,15 @@ export const MANAGED_SWITCHOVER_FINAL_POSITION_FEATURE: DaemonWireFeature =
   'managed-switchover-final-position-v1'
 
 /**
+ * This control plane merges heartbeat `resources.{memory,swap,cpus}` without
+ * dropping hello-only fields, and parses the optional `memory.presentBytes`,
+ * `memory.blockSizeBytes` and `dynamicMemory`. The daemon re-sends memory and
+ * CPUs on a heartbeat after they move only when this is listed; hello always
+ * carries them, and `memory.totalBytes` still means MemTotal.
+ */
+export const HOST_CAPACITY_FEATURE: DaemonWireFeature = 'host-capacity-v1'
+
+/**
  * The daemon answers `managed-health-request` with `managed-health-result`
  * (a fresh replication observation for one member). Without it the control
  * plane never sends the request and keeps using the stored observation.
@@ -255,8 +294,10 @@ export const MANAGED_HEALTH_REPORT_FEATURE: DaemonWireFeature = 'managed-health-
  * `executedGtid`, `fullyApplied` and `lastStreaming`. When a whole database
  * host is lost, the failover promote rule reads `fullyApplied`,
  * `executedGtid` (to pick the standby with the most applied transactions)
- * and `lastStreaming`. `receivedGtid` is only validated and stored
- * (cell-protocol, schemas, members, health-probe); no decision code reads it.
+ * and `lastStreaming`. The operator promote gate reads `fullyApplied` and,
+ * for an idle MySQL pair with no `fullyApplied: true`, whether `receivedGtid`
+ * is absent (`evaluateOperatorPromoteGate`); otherwise `receivedGtid` is only
+ * validated and stored (cell-protocol, schemas, members, health-probe).
  */
 export const MANAGED_REPLICA_FRESHNESS_FEATURE: DaemonWireFeature = 'managed-replica-freshness-v1'
 
@@ -400,6 +441,14 @@ export const MANAGED_DATABASE_OWNER_FEATURE: DaemonWireFeature = 'managed-databa
  * `managed_database_convert_needs_daemon_update`.
  */
 export const MANAGED_DATABASE_CONVERT_FEATURE: DaemonWireFeature = 'managed-database-convert-v1'
+
+/**
+ * The daemon answers `server-network-check-request` with
+ * `server-network-check-result`: whether the host can open a TCP connection to
+ * each listed peer address, and from which local address. Without it the
+ * control plane never sends the message and the UI hides the check.
+ */
+export const SERVER_NETWORK_CHECK_FEATURE: DaemonWireFeature = 'server-network-check-v1'
 
 /** Features that need an instance at or above a semver. Empty until one lands. */
 export const INSTANCE_FEATURE_MIN_VERSIONS: Readonly<Record<string, string>> = {}

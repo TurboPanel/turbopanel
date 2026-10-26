@@ -271,7 +271,10 @@ export function createFailure(error: string, detail?: string): CreateTlsFailure 
   return { error, detail, status: 400 }
 }
 
-export function materialFromLetsEncrypt(body: Record<string, unknown>): CreateTlsResult {
+export function materialFromLetsEncrypt(
+  body: Record<string, unknown>,
+  createdFor: 'hosting' | 'library' = 'library'
+): CreateTlsResult {
   const hostnames = parseHostnames(body.hostnames)
   if (!hostnames) {
     return createFailure('Invalid request')
@@ -296,10 +299,11 @@ export function materialFromLetsEncrypt(body: Record<string, unknown>): CreateTl
       fingerprintSha256: '',
       subject: '',
       issuer: '',
-      status: 'managed',
+      status: 'automatic',
       acme: {
         challengeType: 'http-01',
         managedBy: 'caddy',
+        createdFor,
       },
     },
     options: {

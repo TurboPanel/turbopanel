@@ -372,7 +372,7 @@ in plain words. `scripts/contract-field-snapshot.json` does not pin
 `ManagedIngressReconcileUser` comment in sync with the daemon.
 
 **App logins can be limited by source address and connection count.**
-`login.allowed_sources` (NULL = anywhere) lists places: `internal`
+`login.allowed_sources` (never NULL, default `internal`; anywhere is the explicit pair `address:0.0.0.0/0` and `address:::/0`, which `login-sources.ts` reads as no limit) lists places: `internal`
 (this server: loopback + its Docker networks), `server:<id>` (an organization
 server, resolved to its public/private/mesh addresses on every reconcile,
 `login-sources-load.ts`) and `address:<ip | prefix% | cidr>` (a CIDR is turned
@@ -440,9 +440,11 @@ locking reads. `readEligible` alone must never turn it on.
 
 ## Login settings (`login` columns)
 
-The `login` row carries `grant_mode` (`preset`: today's behaviour, the default
-for a row made before modes; `recipe`: new logins' default; `self`: the owner
-manages permissions by hand), `is_tool` (database-tool login: everything to
+The `login` row carries `grant_mode` (`recipe`: the panel sets permissions from the
+named `recipe` column, the default; `self`: the owner manages permissions by
+hand and `recipe` is NULL), `recipe` (`app`, `migrations`, `read-only`,
+`analyst`, `admin` or `backup`; derived from role, privileges and routing by
+`deriveLoginRecipe` on every write), `is_all_databases`, `is_tool` (database-tool login: everything to
 the primary), `allowed_sources`, `max_connections`, `access` and `privileges`;
 the databases a login may use are `scope` rows pointing at `database` rows.
 `is_straight_through` (nullable: NULL = the owner never chose) is the
@@ -451,8 +453,10 @@ below. `ManagedLoginRow` in `logins.ts` reads them as `grantMode`, `tool`,
 `allowedSources`, `maxConnections`, `connectionRole`, `privileges` and
 `databases` (the API names). A login is not a principal: `principal_id` is only
 set when the login shares a site owner's Linux user name. The
-apply credential carries `grantMode` only when it is not `preset`, so payloads
-for old logins are unchanged. For `self` the daemon skips every grant reset
+apply credential carries `grantMode` only for `self` (the daemon treats
+`recipe` and an absent mode alike), so payloads for panel-set logins are
+unchanged. A `backup` role login is allowed once per cluster and always needs
+at least one allowed source. For `self` the daemon skips every grant reset
 and keeps password, LOGIN, NOSUPERUSER, connection limit and CONNECT on the
 listed databases. `PATCH /managed/users/:loginId` (`login-patch.ts`) plans
 the change; `dryRun` returns plain-words statement kinds because the SQL is
@@ -967,7 +971,7 @@ to `managed.promote` when Orchestrator is absent or the recover API fails.
 drain, fence stop captures the old primary's final GTID (`captureSwitchoverGtid`
 on `managed.lifecycle`); promotion carries `requiredExecutedGtidSet` so the
 daemon waits on the target before `managed.promote`. Operator promote also
-requires `fullyApplied === true` on a fresh health probe (`evaluateOperatorPromoteGate`).
+requires `fullyApplied === true` on a fresh health probe (`evaluateOperatorPromoteGate`), or an idle pair (streaming, zero lag, applied set reported, no received set); the switchover wait above is the real proof, so an idle-only pass is refused (row `blocked`, nothing queued) if the old primary is offline when the switchover starts (`requireFence`).
 A promote failure before the target becomes writable (`gtid_wait_timeout` /
 `gtid_wait_error`, including stale-command timeout) enqueues reactivate + undrain
 on the old primary; that path needs a command queue (Deno and Workers stale-command
@@ -1211,16 +1215,25 @@ running…`) is **queued again** by `resumeInterruptedPromote`
    failing the row would leave no writer until an operator repaired it.
    Anything else (other errors, a limit reached, no queue) ends the row `failed`
    as before.
-9. Safety net: the stale sweep (Deno cleanup lane and the Workers
-   offline-sweep cron) runs `expireStaleRecoveries`: a `detecting`/`fencing`
-   row older than `STALE_DETECTING_RECOVERY_MS` (10 min) with no command
-   recorded expires to `blocked`; any other in-flight row with no update for
-   `STALE_RECOVERY_STEP_MS` (15 min) ends terminal `failed` with
-   `metadata.needsOperator` (an operator checks which member is the writer).
-   The same sweep, when it times out a command that carries a `recoveryId`,
-   calls the recovery hooks (`onRecoveryCommandTimedOut`) so the row settles at
-   once. Every mutating managed route answers `managed_busy` while the journal
-   has an in-flight row (`assertManagedIdle`).
+9. Fence deadline (`ha-fence-deadline.ts`, `sweepStalledFencing` in `ha-recovery.ts`, run by the same stale sweep before `expireStaleRecoveries`). A row that has been `fencing` for `FENCE_DEADLINE_MS` (150 s from `fencingEpoch`) is settled instead of waiting for a command budget:
+   - Stop confirmed: the pending drains are cancelled and settled as failed, so the row goes on as if they had failed (the stop is the fence, a drain only moves traffic).
+   - Stop not confirmed: terminal `blocked`, never promote, the open fence commands are cancelled.
+   - Drains and fence stops live 3 minutes (`FENCE_STEP_TTL_MS`) so a late one is refused; a drain/undrain is waited for at most 60 s (`FENCE_DRAIN_WAIT_MS`, not the 10 minute recover budget).
+   - An unanswered promote (`promote_unconfirmed`) never restarts the old primary. An aborted switchover ends `blocked`, not `failed` + `needsOperator`, because nothing changed and a reboot of the primary's host (`ha-return-fence.ts`) must not be held back after it. A new switchover can start at once after any of these.
+   - Automatic failover: the deadline row keeps no target, so it does not start the 15 minute cooldown (the cooldown reads only rows with a target). The third deadline row in a row for the same primary within 30 minutes keeps its target (cooldown applies) and carries `FENCE_DEADLINE_REPEATED_MESSAGE` as the operator alert. This is a soft bound: a row refused by the cooldown, or any other row, breaks the run, so a primary that keeps failing to stop gets about three attempts per cooldown cycle, never a tight loop.
+   - Planned switchover, in this order: (1) the guarded change to `blocked` under the row lock, only while the row is `fencing` and its stop is unconfirmed, so a late stop confirmation cannot start a promote; (2) the open fence steps are cancelled; (3) the stop steps are read again, and a stop sent in the meantime sets `abortRestartReactivate`; (4) `finishAbortRestart` queues the restart (`switchoverAbortPromoteSafe: true`) and undrains.
+   - `finishAbortRestart` never acts on a cluster that moved on: before each command it checks `abortRestartStaleReason` (a newer recovery exists, or the primary is no longer the switchover's source); then it clears the todo and queues nothing. The todo is claimed under the row lock (`abortRestartClaimedAt`, 2 minutes) so two sweeps do not queue the same commands.
+   - What is not queued yet is kept in `abortRestartTodo` (`start`, `undrain:<serverId>`); the sweep's next run queues only those, and also finishes blocked rows with a non-empty todo. A try is counted from the locked row; an error while queueing counts too. After 3 tries, or at once with no command queue or no source member, the row ends `failed` + `needsOperator` and its stored fence steps are cancelled again.
+10. Safety net: the stale sweep (Deno cleanup lane and the Workers
+    offline-sweep cron) runs `expireStaleRecoveries`: a `detecting`/`fencing`
+    row older than `STALE_DETECTING_RECOVERY_MS` (10 min) with no command
+    recorded expires to `blocked`; any other in-flight row with no update for
+    `STALE_RECOVERY_STEP_MS` (15 min) ends terminal `failed` with
+    `metadata.needsOperator` (an operator checks which member is the writer).
+    The same sweep, when it times out a command that carries a `recoveryId`,
+    calls the recovery hooks (`onRecoveryCommandTimedOut`) so the row settles at
+    once. Every mutating managed route answers `managed_busy` while the journal
+    has an in-flight row (`assertManagedIdle`).
 
 **Automatic failover switch** (`auto-failover-switch.ts`):
 `TURBOPANEL_AUTO_FAILOVER=on|off` (also `true`/`false`, `1`/`0`), read at
@@ -1253,28 +1266,52 @@ mark>`; repeats of the same reason fold into one row), never a promotion:
 
 1. The primary's server has been offline (`server.status_changed_at`) for the
    whole **window** (`TURBOPANEL_HOST_LOSS_WINDOW_SECONDS`, default 120, clamped
-   60-300), on top of the 90-150 s the offline sweep needs to notice. A host
-   that returns inside it stops being a candidate: nothing happens.
+   60-300). Two marks count (`server.offline_reason`): `sweep_stale` (no
+   heartbeat for 90-150 s: power loss, cut cable) and `disconnect` (the daemon's
+   socket closed and stayed closed: daemon stopped, host shut down). A
+   `disconnect` could also be a restart, so it gets no extra trust: window,
+   reboot grace and rule 6 apply unchanged (and rule 6's quiet check allows 15 s
+   of slack, because the replicas lose the stream seconds after the socket
+   closes). A host that returns inside the window stops being a candidate:
+   nothing happens. Detection is bounded: mark (<= 150 s after a silent host,
+   seconds after a closed socket) + window + one 60 s tick, i.e. about 330 s
+   for a silent host and about 190 s for a stopped daemon, then the promotion
+   itself (fence by attestation, promote: tens of seconds).
 2. Not within 10 minutes of an operator `server.reboot` of that server or while
    a daemon update is in flight. Never later than 7.5 minutes after the offline
-   mark (`HOST_LOSS_LAST_DECISION_MS` = the fresh-standby gate's 10 minute
-   failure span minus the 150 s mark lag; the gate's receipt check does not
+   mark (`hostLossLastDecisionMs` = the fresh-standby gate's 20 minute
+   failure span (`MAX_FAILURE_SPAN_MS`, longer than the 15 minute cooldown plus
+   the daemons' 1 minute re-send, so a failover refused by the cooldown can be
+   retried when it ends) minus the 150 s mark lag for a stale mark; the gate's receipt check does not
    depend on when the probe runs, so without this cap a retry long after the
    loss would still pass it): later is alert-only (`too_late`). Not for a host
    offline over half an hour.
 3. Not when more than half of the organization's servers are offline.
-4. PostgreSQL only (MySQL/MariaDB replicas read `reconnecting` without a source
-   and cannot be proven caught up: alert, then manual promote).
+4. PostgreSQL, MySQL and MariaDB (a MySQL/MariaDB replica is proven caught up by
+   its daemon's `fullyApplied` reading, `managed-replica-freshness-v1`); any
+   other engine alerts only.
 5. The dead primary's daemon advertised `managed-ha-boot-hold-v1`.
 6. Every other member's server is connected and answers a fresh
    `managed-health-request`, and **none** is still receiving (`streaming`) from
    the primary. One that hears the primary vetoes (the host is alive, only its
    link to the control plane is down).
+7. The second signal (`hostLossEngineVerdict`): every other member's server must
+   fail to open a TCP connection to the primary's database port, at the address
+   that member replicates from (existing `server-network-check-v1` request, no
+   wire change; `client/managed/engine-port-probe.ts`). Two rounds 10 s apart,
+   each attempt cut off after 3 s on the peer; refused, timeout and no route
+   count as not reachable. One connection that opens vetoes (`engine_reachable`:
+   a daemon that crashed or was stopped on a healthy host is never failed
+   over); a check that did not run or answer is `engine_unconfirmed`. A pure
+   network partition (peers cannot reach a healthy host) still looks the same:
+   the known residual risk, to be closed by a witness outside the cluster's
+   network.
 
 Then `beginAutomaticFailover` runs with `hostLossIncident`: the per-environment
 switch (off: `auto_failover_disabled` row), the persisted 15 minute cooldown, a
 healthy same-DC `failover` replica proven by the fresh-standby gate anchored on
-`offline mark - 150 s` (the earliest the host can have died), and a command queue all
+the earliest the host can have died (`offline mark - 150 s` for a stale mark, the
+mark itself for a closed socket), and a command queue all
 apply unchanged. `beginRecovery` then skips the drain/stop (nothing can reach
 the host), flags the old primary `needs_resync`, records `fenceBasis =
 'host-loss-attested'` with `fenced = false` (`hostLossFenceAdvance`;

@@ -17,20 +17,25 @@ type Saved = Parameters<LetsEncryptStore['saveHosting']>
 function fakeStore(existing: string | null = null, otherWeb: string[] = []) {
   const saved: Saved[] = []
   const created: string[][] = []
+  const locked: string[] = []
   const store: LetsEncryptStore = {
+    withCertificateLock: (hosting, use) => {
+      locked.push(hosting.id)
+      return use(store)
+    },
     expectedAddresses: () => Promise.resolve([SERVER_IP]),
     otherWebHostnames: () => Promise.resolve(otherWeb),
-    findManagedCertificate: () => Promise.resolve(existing),
-    createManagedCertificate: (_org, names) => {
+    managedCertificateFor: (_org, names) => {
+      if (existing !== null) return Promise.resolve({ id: existing, created: false })
       created.push([...names])
-      return Promise.resolve('tls-new')
+      return Promise.resolve({ id: 'tls-new', created: true })
     },
     saveHosting: (id, patch) => {
       saved.push([id, patch])
       return Promise.resolve()
     },
   }
-  return { store, saved, created }
+  return { store, saved, created, locked }
 }
 
 const pointing: DnsLookup = () => Promise.resolve([SERVER_IP])
@@ -83,7 +88,7 @@ test('refuses a local bind and a non-http hosting', async () => {
 })
 
 test('DNS ready: creates the certificate row, pins it, clears any waiting request', async () => {
-  const { store, saved, created } = fakeStore()
+  const { store, saved, created, locked } = fakeStore()
   const pendingMeta = { keep: 1 }
   const out = await requestLetsEncrypt({
     store,
@@ -101,6 +106,8 @@ test('DNS ready: creates the certificate row, pins it, clears any waiting reques
   assertEquals(id, 'h1')
   // Pinning leaves the hosting options alone: the www setting is saved elsewhere.
   assertEquals(patch, { tlsId: 'tls-new', metadata: { keep: 1 }, pendingAt: null })
+  // Found and pinned under one lock, so no cleanup can remove the row in between.
+  assertEquals(locked, ['h1'])
 })
 
 test('clicking again reuses the existing certificate row', async () => {
@@ -204,6 +211,47 @@ test('the sweep drops a request older than a week, or one no longer allowed', as
     'refused'
   )
   assertEquals(b.created.length, 0)
+})
+
+const COMPOSE_OWNED = {
+  composeOwned: true,
+  composeServiceName: 'web',
+  composeRoute: 'shop.example.com /',
+}
+
+test('the sweep drops a waiting request on a compose route that no longer asks for automatic', async () => {
+  for (const composeTlsMode of ['internal', 'certificate', undefined]) {
+    const { store, saved, created } = fakeStore()
+    const out = await retryPendingLetsEncrypt({
+      store,
+      lookup: pointing,
+      now: NOW,
+      hosting: {
+        ...waiting(NOW.toISOString()),
+        metadata: { ...COMPOSE_OWNED, ...(composeTlsMode ? { composeTlsMode } : {}) },
+      },
+      acmeEnabled: true,
+    })
+    assertEquals(out, 'refused', String(composeTlsMode))
+    assertEquals(saved[0]![1].pendingAt, null)
+    assertEquals(created.length, 0)
+  }
+})
+
+test('the sweep still pins a waiting request on a compose route asking for automatic', async () => {
+  const { store, created } = fakeStore()
+  const out = await retryPendingLetsEncrypt({
+    store,
+    lookup: pointing,
+    now: NOW,
+    hosting: {
+      ...waiting(NOW.toISOString()),
+      metadata: { ...COMPOSE_OWNED, composeTlsMode: 'automatic' },
+    },
+    acmeEnabled: true,
+  })
+  assertEquals(out, 'pinned')
+  assertEquals(created, [['shop.example.com']])
 })
 
 test('refuses a www setting when the other spelling is already listed, before any DNS or pin', async () => {

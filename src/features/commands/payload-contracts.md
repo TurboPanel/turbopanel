@@ -199,7 +199,16 @@ phase).
 injection + Docker/Caddy bootstrap run on the daemon
 (`turbopaneld/src/commands/deploy-environment.ts`). Optional payload
 `noCache: true` (from UI cacheless redeploy) asks the daemon to run
-`docker compose build --no-cache --pull` before `up`. On success the daemon may
+`docker compose build --no-cache --pull` before `up`. Optional payload
+`hostingsOnly: true` (queued after a hosting gets a Let's Encrypt certificate,
+`src/client/hostings/letsencrypt-apply.ts`) asks the daemon to rewrite only the
+environment's hosting Caddy config and certificates: no build, no restart. It is
+sent only when every server already runs a finished deploy of the environment,
+every daemon lists `deploy-hostings-only-v1`, and nothing else in the
+environment changed since that deploy finished;
+its command context carries `action: 'hostings'` and no `releases[]`, and on
+success the consumer marks the deployment applied and records nothing else. A
+daemon that predates the field runs a full deploy. On success the daemon may
 also return best-effort per-container identity/status from `docker compose ps`;
 the consumer reconciles those into `container` rows (ids/status only). **Cost:**
 one cell outbox enqueue; UI polls Postgres command rows only — never Durable
@@ -602,7 +611,7 @@ generation N+1 as `ca_state='active'`, and records a `changeover` journal).
 Hosting may pin `hosting.tls_id` to a library cert, leave null for **basic
 self-signed** (Caddy `tls internal`), or pin a `managed` Let's Encrypt row.
 Library certs — including Let's Encrypt — are never auto-selected; the operator
-must pin them. A `managed` `lets_encrypt` pin deploys as
+must pin them. An `automatic` `lets_encrypt` pin deploys as
 `hostings[].tlsMode: 'acme'` with no `tlsId` and **no** `tlsMaterial` entry —
 Caddy issues the leaf on the host. Private keys are sealed `tpsecret` envelopes
 at rest — never returned on client GET. Deploy and managed
@@ -616,7 +625,7 @@ materializes ProxySQL PEMs without a separate TLS wizard (`caCertPem` is the
 active+retired trust bundle; ProxySQL `ssl_ca` and Postgres `ssl_ca_file` accept
 multi-PEM). **Ingress reconcile scopes Organization CA/leaf to the server-owner
 org** so multi-org clusters on one host share a single frontend identity for
-that server. LE rows insert as `metadata.status: managed` (pinnable without
+that server. LE rows insert as `metadata.status: automatic` (pinnable without
 PEMs; Caddy issues on a public bind). CRUD: `/api/client/v1/tls`; Organization
 CA ensure-or-create **`GET /tls/ca`** (`{ tls, trustBundlePem }`), rotate
 **`POST /tls/ca/rotate`** (lease-guarded journal + fan-out of existing
@@ -655,7 +664,7 @@ each vhost its own LSAPI processor under suEXEC, with the same limits as
 `phpIniOverride` values. One PHP series per host across all three engines —
 conflicting `version` hints fail the deploy. `web.env` reaches PHP as FastCGI
 parameters: site Caddy `php_fastcgi env`, Apache `SetEnv`, nginx `fastcgi_param`
-(OpenLiteSpeed: not yet; `$_ENV` in no mode). When a project principal is assigned to the service, deploy-prepare
+(OpenLiteSpeed: per-site rewrite rules that set the variable; `$_ENV` in no mode). When a project principal is assigned to the service, deploy-prepare
 pins `sites[].principal` (at most one — else **422**
 `site_principal_ambiguous`); the daemon owns the site tree as that user (engine
 group retains read) and runs the site's PHP workers — FPM pool or LSAPI process

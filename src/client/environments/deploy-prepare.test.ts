@@ -576,7 +576,8 @@ describe('loadPrincipalMaterial home and shell', () => {
       {
         id: principalId,
         username,
-        options: { shell: '/bin/bash' },
+        options: null,
+        access: 'shell',
       },
     ])
     const material = await loadPrincipalMaterial(db, [principalId])
@@ -589,12 +590,13 @@ describe('loadPrincipalMaterial home and shell', () => {
     assertEquals('gid' in (material[0] ?? {}), false)
   })
 
-  it('defaults shell when options omit it', async () => {
+  it('sends the nologin shell for the sftp level', async () => {
     const db = createSelectWhereDb([
       {
         id: principalId,
         username,
         options: null,
+        access: 'sftp',
       },
     ])
     const material = await loadPrincipalMaterial(db, [principalId])
@@ -607,7 +609,8 @@ describe('loadPrincipalMaterial home and shell', () => {
       {
         id: principalId,
         username,
-        options: { shell: '/bin/bash', uid: 15001, gid: 15001 },
+        options: { uid: 15001, gid: 15001 },
+        access: 'shell',
       },
     ])
     const material = await loadPrincipalMaterial(db, [principalId])
@@ -633,7 +636,8 @@ describe('loadPrincipalMaterial home and shell', () => {
       {
         id: principalId,
         username,
-        options: { shell: '/bin/sh' },
+        options: null,
+        access: 'shell',
       },
     ])
     const material = await loadPrincipalMaterial(db, [principalId, principalId])
@@ -647,7 +651,8 @@ describe('loadPrincipalMaterial home and shell', () => {
       {
         id: principalId,
         username,
-        options: { shell: '/bin/bash' },
+        options: null,
+        access: 'shell',
         password: passwordHash,
       },
     ])
@@ -665,7 +670,8 @@ describe('loadPrincipalMaterial home and shell', () => {
       {
         id: principalId,
         username,
-        options: { shell: '/bin/bash' },
+        options: null,
+        access: 'shell',
         password: 'sealed:v1:AAAA',
       },
     ])
@@ -2432,7 +2438,7 @@ describe('hostingTlsWireFromResolved', () => {
     assertEquals(
       hostingTlsWireFromResolved({
         tlsId: 'tls-le',
-        status: 'managed',
+        status: 'automatic',
         bindScope: 'public',
         acmeEnabled: true,
       }),
@@ -2444,7 +2450,7 @@ describe('hostingTlsWireFromResolved', () => {
     assertEquals(
       hostingTlsWireFromResolved({
         tlsId: 'tls-le',
-        status: 'managed',
+        status: 'automatic',
         bindScope: 'local',
         acmeEnabled: true,
       }),
@@ -2453,7 +2459,7 @@ describe('hostingTlsWireFromResolved', () => {
     assertEquals(
       hostingTlsWireFromResolved({
         tlsId: 'tls-le',
-        status: 'managed',
+        status: 'automatic',
         bindScope: 'datacenter',
         acmeEnabled: true,
       }),
@@ -2465,7 +2471,7 @@ describe('hostingTlsWireFromResolved', () => {
     assertEquals(
       hostingTlsWireFromResolved({
         tlsId: 'tls-le',
-        status: 'managed',
+        status: 'automatic',
         bindScope: 'public',
         acmeEnabled: false,
       }),
@@ -2477,7 +2483,7 @@ describe('hostingTlsWireFromResolved', () => {
     assertEquals(
       hostingTlsWireFromResolved({
         tlsId: 'tls-le',
-        status: 'managed',
+        status: 'automatic',
         bindScope: 'local',
         acmeEnabled: false,
       }),

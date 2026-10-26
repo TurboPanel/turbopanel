@@ -134,6 +134,21 @@ export type RecoveryMetadata = {
    * (`resumeInterruptedPromote`).
    */
   promoteResumes?: number
+  /** The row ended at the fence deadline (nothing was promoted). */
+  fenceDeadline?: boolean
+  /**
+   * Planned switchover that hit the fence deadline: the commands that bring the
+   * old primary back (`start`, `undrain:<serverId>`) that are not queued yet.
+   * Present (even empty) while the restart is being queued; the sweep finishes it.
+   */
+  abortRestartTodo?: string[]
+  /** Whether the old primary's stop may have reached its server (a start is needed). */
+  abortRestartReactivate?: boolean
+  abortRestartAttempts?: number
+  /** When a sweep took the restart commands to queue them; a stale claim is taken over. */
+  abortRestartClaimedAt?: string
+  /** The fence steps cancelled for this abort. */
+  abortRestartStepIds?: string[]
   haPresent?: boolean
   fenced?: boolean
   drainApplied?: boolean
@@ -310,6 +325,12 @@ export function parseRecoveryMetadata(value: unknown): RecoveryMetadata {
     'promoteResumes',
     optionalNullableNumber(value.promoteResumes) ?? undefined
   )
+  setIfPresent(metadata, 'fenceDeadline', optionalBoolean(value.fenceDeadline))
+  setIfPresent(metadata, 'abortRestartTodo', optionalStringList(value.abortRestartTodo))
+  setIfPresent(metadata, 'abortRestartReactivate', optionalBoolean(value.abortRestartReactivate))
+  setIfPresent(metadata, 'abortRestartAttempts', optionalNonNegativeInt(value.abortRestartAttempts))
+  setIfPresent(metadata, 'abortRestartClaimedAt', optionalString(value.abortRestartClaimedAt))
+  setIfPresent(metadata, 'abortRestartStepIds', optionalStringList(value.abortRestartStepIds))
   setIfPresent(metadata, 'haPresent', optionalBoolean(value.haPresent))
   setIfPresent(metadata, 'fenced', optionalBoolean(value.fenced))
   setIfPresent(metadata, 'drainApplied', optionalBoolean(value.drainApplied))

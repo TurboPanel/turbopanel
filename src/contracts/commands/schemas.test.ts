@@ -156,6 +156,7 @@ const DAEMON_COMMAND_TYPES = [
   'server.firewall.reconcile',
   'server.firewall.confirm',
   'server.backups.reconcile',
+  'server.backups.test-target',
   'server.folders.remove',
   'environment.deploy',
   'environment.lifecycle',
@@ -2010,6 +2011,36 @@ test('parseCommandPayload accepts noCache on environment.deploy', () => {
       hostings: [],
       noCache: true,
     }
+  )
+})
+
+test('parseCommandPayload carries hostingsOnly on environment.deploy and rejects a non-boolean', () => {
+  const base = {
+    environmentId: 'env-1',
+    projectId: 'proj-1',
+    organizationId: 'org-1',
+    projectName: 'tp-demo',
+    composeFiles: [
+      {
+        filename: 'compose.yaml',
+        role: 'runtime' as const,
+        content: 'services: {}\\n',
+      },
+    ],
+    hostings: [],
+  }
+  const parsed = parseCommandPayload('environment.deploy' as CommandType, {
+    ...base,
+    hostingsOnly: true,
+  }) as Record<string, unknown>
+  assertEquals(parsed.hostingsOnly, true)
+  const plain = parseCommandPayload('environment.deploy' as CommandType, base) as Record<
+    string,
+    unknown
+  >
+  assertEquals('hostingsOnly' in plain, false)
+  assertThrows(() =>
+    parseCommandPayload('environment.deploy' as CommandType, { ...base, hostingsOnly: 'yes' })
   )
 })
 
@@ -4371,6 +4402,24 @@ test('parseEnvironmentDeployPayload round-trips the node app settings', () => {
   ])
 })
 
+test('parseEnvironmentDeployPayload accepts a custom node app mode', () => {
+  for (const appMode of ['staging', 'test', 'qa_2', 'pre-prod.eu', 'a'.repeat(64)]) {
+    const parsed = parseEnvironmentDeployPayload({
+      ...NATIVE_APP_BASE,
+      nativeAppServices: [
+        {
+          composeServiceName: 'web',
+          serviceId: 'svc-web',
+          listenPort: 18100,
+          framework: 'auto',
+          appMode,
+        },
+      ],
+    })
+    assertEquals(parsed.nativeAppServices?.[0]?.appMode, appMode)
+  }
+})
+
 test('parseEnvironmentDeployPayload rejects bad node app settings', () => {
   const entry = {
     composeServiceName: 'web',
@@ -4378,15 +4427,17 @@ test('parseEnvironmentDeployPayload rejects bad node app settings', () => {
     listenPort: 18100,
     framework: 'auto',
   }
-  assertThrows(
-    () =>
-      parseEnvironmentDeployPayload({
-        ...NATIVE_APP_BASE,
-        nativeAppServices: [{ ...entry, appMode: 'staging' }],
-      }),
-    Error,
-    'Invalid nativeAppServices appMode'
-  )
+  for (const appMode of ['', 'my mode', '-staging', 'stage$1', 'a'.repeat(65)]) {
+    assertThrows(
+      () =>
+        parseEnvironmentDeployPayload({
+          ...NATIVE_APP_BASE,
+          nativeAppServices: [{ ...entry, appMode }],
+        }),
+      Error,
+      'Invalid nativeAppServices appMode'
+    )
+  }
   assertThrows(
     () =>
       parseEnvironmentDeployPayload({

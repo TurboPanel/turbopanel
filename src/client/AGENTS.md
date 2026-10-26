@@ -55,8 +55,9 @@ changes.
   heartbeats persist `timeSync` onto `server.timezone` / `is_time_sync_enabled`
   / `ntp_servers` / `ntp_last_synced_at`, and nest addresses on
   `server.metadata.resources.ips` (legacy top-level `ips` still accepted).
-  Hello-only host inventory is `server.metadata.resources.cpus[]` (per-socket
-  `vendorId` / `cores` / `threads` / `cache` / clocks) and `gpus[]`; leftover
+  Host inventory is `server.metadata.resources.cpus[]` (per-socket
+  `vendorId` / `cores` / `threads` / `cache` / clocks, also re-sent on a
+  heartbeat when the online CPU set changes) and hello-only `gpus[]`; leftover
   `resources.cpu` is lifted on read. Docker CLI / Compose plugin versions
   project onto `server.metadata.docker` the same way, but **only when Docker is
   installed** (the key is omitted otherwise). `GET /api/client/v1/servers` and
@@ -350,7 +351,10 @@ changes.
 deploy_options_invalid` on environments; the reason string on projects) and a
   PATCH that omits these keys keeps the stored ones (`settleDeployOptions`) because
   `options` is replaced wholesale and the compose editor sends only `compose`.
-  `null` clears a key. The deploy request accepts `strategy` / `migration`
+  `null` clears a key. `environment.options.primaryHostname` (a lowercase
+  hostname, `null` clears) names the hostname the environment header's Visit
+  button uses; it is settled the same way so a partial save keeps it, and
+  nothing on the server reads it. The deploy request accepts `strategy` / `migration`
   overrides; `strategy: inplace` and `sequential` are honored (the daemon runs the
   sequential engine: stop, migrate, start, health gate, roll back from `previous/`),
   `bluegreen` and any `migration` answer `501 deploy_strategy_unsupported`. A stored
@@ -538,7 +542,7 @@ sourceServerId? }`
   `datacenter` → `fabric` → `public`) in an **address-family aware** way: it
   intersects the source and target pin families in each trusted shared
   datacenter (priority order — see the routing-policy bullet below) and orders
-  candidates by `datacenter.options.addressPreference` (default **IPv6**, RFC
+  candidates by the `datacenter.address_preference` column (default **IPv6**, RFC
   6724), never returning a family the source does not hold; a trusted shared
   datacenter with no common family is **422** `private_family_mismatch`. Fabric
   dials over `tp0`.
@@ -549,23 +553,30 @@ sourceServerId? }`
   `subnet_has_members`, **422** `private_family_mismatch` (alongside existing
   `datacenter_has_members` / `datacenter_has_networks`).
 
-- **Datacenter routing policy (`options.priority` / `options.trusted`):** a
-  datacenter is a **logical routing domain**, not a building — a server may
-  belong to several. Two `datacenter.options` jsonb fields (parsed by
-  `src/features/datacenters/datacenter-options.ts`, no migration) describe how the ladder should
-  treat each membership:
+- **Datacenter routing policy (`options.priority` / `options.trusted` /
+  `options.addressPreference`):** a datacenter is a **logical routing domain**,
+  not a building — a server may belong to several. The three keys keep their
+  wire names inside `options`, but are stored in real columns (`priority`,
+  `is_trusted`, `address_preference`, all NOT NULL with CHECKs; migration 0004
+  moved them out of the jsonb and backfilled). `datacenter-options.ts`
+  (`policyColumnsFromOptions` / `storedDatacenterOptions` /
+  `datacenterWireOptions`) maps between the two shapes. They describe how the
+  ladder should treat each membership; the optional `kind` column (`lan`,
+  `backplane`, `provider_private`, NULL = unsaid; top-level `kind` on
+  `POST` / `PATCH`, **400** `invalid_kind`) says what the network is:
   - `priority` — integer `0`–`1000`, **lower wins**; absent = **`100`**
-    (`DEFAULT_DATACENTER_PRIORITY`). A stored out-of-range or non-integer value is
-    dropped by the parser, never clamped; a **request** (`POST` / `PATCH`)
-    carrying one is **400** `invalid_priority` (`hasInvalidPriority`).
+    (`DEFAULT_DATACENTER_PRIORITY`). A request (`POST` / `PATCH`) carrying an
+    out-of-range or non-integer value is **400** `invalid_priority`
+    (`hasInvalidPriority`); the column CHECK backs it.
   - `trusted` — boolean; absent = **`true`** (`DEFAULT_DATACENTER_TRUSTED`).
     `false` marks a datacenter whose L2 is **not** under the operator's control
     (shared or provider-owned segments).
 
   `PATCH /datacenters/:id` accepts both under the same **replace-all `options`**
-  semantics as `addressPreference` (send the merged object). `GET /datacenters`
-  and `GET /datacenters/:id` return the raw `options` **and** the effective
-  top-level `priority` / `trusted` with defaults applied
+  semantics as `addressPreference` (send the merged object; a key left out resets
+  its column to the default). `GET /datacenters` and `GET /datacenters/:id`
+  return `options` (the stored jsonb with the three columns laid over it)
+  **and** the effective top-level `priority` / `trusted`
   (`resolveDatacenterPolicy` / `attachEffectivePolicy`), so clients never
   re-derive them. The ladder **reads both**: `loadDatacenterPolicies`
   (`src/features/net/datacenter-networks.ts`) loads the effective

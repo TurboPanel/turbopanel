@@ -7,6 +7,8 @@ import type { Db } from '../../db/connection.ts'
 import type { CommandProgress } from '../../contracts/cell-protocol.ts'
 import {
   cancelNonTerminalCommand,
+  cancelOpenReturnFenceStops,
+  hasLiveManagedApplyOn,
   createCommandRecord,
   deleteCommandDispatch,
   getCommandDispatchPayload,
@@ -667,4 +669,34 @@ test('transitionCommand keeps an explicit lifecycle timestamp over the auto-stam
   })
   assertEquals(record?.sentAt, '2020-01-01T00:00:05.000Z')
   assertEquals(patch?.sentAt, '2020-01-01T00:00:05.000Z')
+})
+
+/** Fake `db.select().from().where()` that resolves to `rows` (and `.limit()` too). */
+function fakeSelectDb(rows: unknown[]): Db {
+  const where = () => Object.assign(Promise.resolve(rows), { limit: () => Promise.resolve(rows) })
+  return { select: () => ({ from: () => ({ where }) }) } as unknown as Db
+}
+
+test('hasLiveManagedApplyOn is true only when an open apply row exists', async () => {
+  assertEquals(await hasLiveManagedApplyOn(fakeSelectDb([{ id: 'c1' }]), 'm1', 's1'), true)
+  assertEquals(await hasLiveManagedApplyOn(fakeSelectDb([]), 'm1', 's1'), false)
+})
+
+test('cancelOpenReturnFenceStops cancels each open stop and counts them', async () => {
+  const cancelled: Array<{ id: string; status?: string }> = []
+  const count = await cancelOpenReturnFenceStops(
+    fakeSelectDb([{ id: 'c1' }, { id: 'c2' }]),
+    'm1',
+    's1',
+    (_db, id, patch) => {
+      cancelled.push({ id, status: patch.status })
+      return Promise.resolve(null)
+    }
+  )
+  assertEquals(count, 2)
+  assertEquals(cancelled, [
+    { id: 'c1', status: 'cancelled' },
+    { id: 'c2', status: 'cancelled' },
+  ])
+  assertEquals(await cancelOpenReturnFenceStops(fakeSelectDb([]), 'm1', 's1'), 0)
 })

@@ -3,6 +3,8 @@ import {
   type DatacenterPolicy,
   type parseDatacenterOptions,
   resolveDatacenterPolicy,
+  datacenterWireOptions,
+  type DatacenterKind,
 } from '../../features/datacenters/datacenter-options.ts'
 import {
   serverTrafficStatus,
@@ -177,6 +179,7 @@ export type CreateDatacenterInput = {
   description: string | null
   metadata: Record<string, unknown> | null
   options: ReturnType<typeof parseDatacenterOptions> | null
+  kind: DatacenterKind | null
   members: ParsedMemberPin[]
   sourceServerId: string | null
 }
@@ -227,16 +230,23 @@ export function attachPrivateCidrs<T extends { id: string }>(
 }
 
 /**
- * Surface the effective routing policy (`priority`, `trusted`) beside the raw
- * `options` so clients never re-derive the defaults. Storage-only for now — the
+ * Surface the effective routing policy (`priority`, `trusted`) beside
+ * `options` (which carries the policy columns too, so the wire shape stays
+ * what it was) so clients never re-derive the defaults. Storage-only for now — the
  * ladder does not read these yet.
  */
-export function attachEffectivePolicy<T extends { options: unknown }>(
-  rows: readonly T[]
-): Array<T & DatacenterPolicy> {
-  return rows.map((row) => ({
+export function attachEffectivePolicy<
+  T extends { options: unknown; priority: number; isTrusted: boolean; addressPreference: string },
+>(rows: readonly T[]): Array<Omit<T, 'isTrusted' | 'addressPreference'> & DatacenterPolicy> {
+  return rows.map(({ isTrusted, addressPreference, ...row }) => ({
     ...row,
-    ...resolveDatacenterPolicy(row.options),
+    options: datacenterWireOptions({
+      options: row.options,
+      priority: row.priority,
+      isTrusted,
+      addressPreference: addressPreference === 'ipv4' ? 'ipv4' : 'ipv6',
+    }),
+    ...resolveDatacenterPolicy({ priority: row.priority, isTrusted }),
   }))
 }
 

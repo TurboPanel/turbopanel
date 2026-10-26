@@ -303,8 +303,12 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
     columns: {
       next_linux_id:
         'Next uid/gid for a Hosting Account on servers this organization owns; starts at 30001, rises by one per new account, never reused.',
+      deploy_timeout_minutes:
+        'The longest a deploy may run, in whole minutes from 5 to 240, counted only while the server reports; null means the default of 30.',
       options:
         'Org-wide settings merged key-by-key by the organization routes (`defaultServerTimezone`, `maxServers`, `acmeEnabled`, `managedDatabase`, `phpModes` and more).',
+      backup_destination_id:
+        'Destination finished backups are copied to unless a cluster chooses otherwise; null means no default copy. Set null if the destination is deleted.',
       name: "Display name; sign-up uses `you@example.com's organization` from email, else `My Organization` if missing, blank, or label invalid; install Root Organization.",
     },
   },
@@ -342,7 +346,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       private_key_pem:
         "Private key PEM sealed as a `tpsecret` envelope, never returned by the client API; Let's Encrypt rows get it from the daemon report and lose it on revoke.",
       status:
-        'Row health `ready`, `pending`, `expired`, `failed`, `revoked` or `managed` (Caddy ACME intent); `expired` is derived at read from `not_after`, others stored.',
+        'Row health `ready`, `pending`, `expired`, `failed`, `revoked` or `automatic` (web server issues it); `expired` is derived from `not_after`, others stored.',
       not_after:
         'Certificate expiry parsed from the PEM at write; epoch-0 placeholder on `managed` rows; indexed for expiry checks.',
       fingerprint_sha256:
@@ -563,9 +567,16 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       metadata:
         'Free-form jsonb returned by the datacenter API; no control-plane code path writes or interprets any key on it today.',
       options:
-        'Operator policy jsonb: `priority` (0..1000, lower wins, default 100), `trusted` (default true), `addressPreference`, `sshPort`, `ntp`, timezone defaults.',
+        'Operator settings jsonb: `sshPort`, `ntp`, timezone defaults and the location override; the routing policy lives in real columns.',
       name: 'Operator-chosen display name; also seeded onto the site `network` row created together with the datacenter.',
       description: 'Optional operator free-text note about the datacenter.',
+      priority:
+        "Routing-ladder rank among a server's datacenters, 0 to 1000, lower wins, default 100 (API field `priority`).",
+      is_trusted:
+        "True when the operator controls the datacenter's L2 (default); false keeps server-to-server traffic off it (API field `trusted`).",
+      address_preference:
+        "Address family tried first among a server's pins here, `ipv6` (default) or `ipv4` (API field `options.addressPreference`).",
+      kind: 'What the network is: `lan`, `backplane` or `provider_private`; NULL means the operator never said.',
     },
   },
   fabric: {
@@ -701,9 +712,11 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
     summary:
       'One engine role on one managed cluster; not a principal, which is only a site owner Linux user; written by the managed users API.',
     columns: {
+      metadata:
+        'Internal bookkeeping jsonb; the grant ledger (grants the panel applied) will live here. Nothing writes it yet.',
       principal_id:
         'Site owner Linux user the login shares its name with, cascade-deleted with it; NULL for a login made on its own and for the root and replication logins.',
-      role: '`root` for the cluster admin login, `replication` for the member-to-member login, `user` for an operator-created login.',
+      role: '`root` is the cluster admin, `replication` the member-to-member login, `user` an operator login, `backup` the one login that takes backups.',
       username:
         'Name the customer typed; equals `applied_username` for `plain` names and for the root and replication logins.',
       applied_username:
@@ -713,11 +726,15 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       password:
         'Write-only credential sealed as a `tpsecret` envelope, never returned on GET and resealed to `tpdaemon` for delivery.',
       grant_mode:
-        'Who sets the permissions on reconcile: `preset` (logins from before modes), `recipe` (the panel) or `self` (the owner by hand, never reset).',
+        'Who sets the permissions on reconcile: `recipe` (the panel, from the named `recipe`) or `self` (the owner by hand, never reset).',
+      recipe:
+        'The permission set the panel applies when `grant_mode` is `recipe`: `app`, `migrations`, `read-only`, `analyst`, `admin` or `backup`; NULL for `self`.',
+      is_all_databases:
+        'True for a reader of every database on the cluster, current and future; false means only the databases in `scope`.',
       is_tool:
         'True for a database-tool login: the daemon sends all of its traffic to the primary and adds no read/write split rules (API field `tool`).',
       allowed_sources:
-        'Places the login may connect from (`internal`, `server:` plus an id, `address:` plus a value); NULL means anywhere (API field `allowedSources`).',
+        'Where the login may connect from (`internal`, `server:` and id, `address:` and an IP or range); never empty; anywhere is `address:0.0.0.0/0` and `address:::/0`.',
       max_connections:
         'Per-login cap on open connections, at least 1; NULL means no cap (API field `maxConnections`).',
       is_straight_through:
@@ -871,7 +888,9 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       metadata:
         'Holds `home` (under `/srv/users`), an optional `uid`/`gid` mirror and `composeAlias`.',
       options:
-        'Host-account settings: `shell` (closed allowlist, default `/usr/sbin/nologin`) and optional operator `uid`/`gid` override; parsed by `parsePrincipalOptions`.',
+        'Host-account settings: optional operator `uid`/`gid` override and `nameScheme`; parsed by `parsePrincipalOptions`.',
+      access:
+        'Site owner SSH access: `none` (no login, keys kept), `sftp` (file transfer only) or `shell` (shell plus file transfer).',
       username:
         'Short internal account name (letter or underscore first, then letters, digits, underscore, hyphen); server accounts get a shorter API-layer cap.',
       applied_username:
@@ -880,7 +899,9 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'Write-only credential sealed as a `tpsecret` envelope, never returned on GET and resealed to `tpdaemon` for delivery; null when no engine password exists.',
       organization_id: 'Home organization set on every insert, not derived.',
       project_id:
-        'Optional project scope for compose-declared hosting principals; set to NULL when the project is deleted, the principal stays.',
+        'Optional project scope for compose-declared hosting principals; set to NULL when the project is deleted.',
+      removal_requested_at:
+        'When the delete of its project asked for this unused principal to go; the removal sweep deletes it and its host account once no folder names it.',
     },
   },
   folder: {
@@ -934,7 +955,17 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       default_server_id:
         'Default placement server: an environment with no `server_id` of its own inherits it; set null when the server is deleted (API field `options.defaultServerId`).',
       metadata:
-        'Client jsonb: `type` is `docker-compose`, `managed`, `template` or platform-only `system` (absent means setup not chosen yet), plus optional catalog `code`.',
+        'Client jsonb: the catalog `code` of a template or managed engine project, plus free caller keys; the project type lives in `kind`.',
+      kind: 'What the project is: `compose` (a template too), `managed` or platform-only `system`; NULL while a draft that has not chosen yet.',
+      icon: 'Icon key from the fixed list the project screens offer; NULL means the default, and a managed project ignores it.',
+      template_code:
+        'Catalog code of the template the project was created from; NULL when not from a template. The four template columns are set together or all NULL.',
+      template_track:
+        'Software release line of the template the project was created from, such as `6.8`; NULL when not from a template.',
+      template_version:
+        'Packaging version (`major.minor.patch`) of the template the project was created from; NULL when not from a template.',
+      template_digest:
+        'Content digest (`sha256:` plus 64 hex digits) of the exact template version the project was created from; NULL when not from a template.',
       options:
         'Jsonb: `compose`, `containerNaming`, `defaultServerId`, `composeSource`, and deploy defaults `drainSeconds`, `healthTimeoutSeconds`, `rollbackWindowMinutes`.',
       organization_id:
@@ -1057,6 +1088,56 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'Host that holds the on-disk artifact (the primary when the backup ran); null on older rows or after that server is deleted.',
     },
   },
+  destination: {
+    group: 'managed',
+    summary:
+      'A named S3-compatible destination an organization copies finished backups to; the secret key is sealed and never returned by an API.',
+    columns: {
+      name: 'Label the organization gave the target, unique per organization, 1 to 64 characters.',
+      kind: 'Kind of destination; only `s3` (S3-compatible object storage) for now.',
+      endpoint: 'Base URL of the storage service, for example `https://s3.example.com`; no path.',
+      region:
+        'Region name used when signing requests; `us-east-1` when the provider has no regions.',
+      bucket: 'Bucket the copies are written to.',
+      prefix:
+        'Folder inside the bucket, without a leading or trailing slash; empty for the bucket root.',
+      is_path_style:
+        'True addresses the bucket in the path (`endpoint/bucket/key`); false uses the bucket as a host name prefix.',
+      is_server_side_encrypted:
+        'True asks the storage to encrypt each object at rest with its own key (`AES256`).',
+      access_key_id: 'Access key id for the bucket; an identifier, returned by the API.',
+      secret_key_sealed:
+        'Secret access key sealed with the instance data key (`tpsecret` envelope); never returned by any API.',
+      last_tested_at:
+        'When the connection test last ran against this target; null before the first test.',
+      is_last_test_ok:
+        'True when the last connection test passed, false when it failed; null before the first test.',
+      last_test_error:
+        'A plain reason the last connection test failed; null when it passed or was never run.',
+      created_by: 'User who created the target, set null if that user is deleted.',
+    },
+  },
+  shipment: {
+    group: 'managed',
+    summary:
+      "How copying one backup to one target stands, as the host reported it; keyed by the engine and the daemon's `bk_` id, cascades with the cluster.",
+    columns: {
+      managed_id: 'The cluster whose backup this is.',
+      backup_id:
+        'The daemon-minted `bk_` id of the backup, matching `backup.backup_id`; kept as text so a report can land first.',
+      destination_id: 'Destination the copy went to, set null if the destination is deleted.',
+      destination_name:
+        'Name the target had when the copy was recorded, so a deleted target still reads in plain words.',
+      state:
+        'One of `pending`, `copying`, `copied`, `failed` or `removed` (pruned from the bucket by retention).',
+      error: 'A plain reason the copy failed; null otherwise.',
+      object_key: 'Object key in the bucket, prefix included; set once the copy is done.',
+      size_bytes: 'Size of the copied object in bytes as the host reported it.',
+      attempts: 'How many times the host tried to copy this backup.',
+      copied_at: 'When the host reported the copy finished; null until then.',
+      server_id: 'The host that reported the latest state, set null if that server is deleted.',
+    },
+  },
   retention: {
     group: 'managed',
     summary:
@@ -1163,6 +1244,8 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'Catalog engine code set once at create from ManagedEngineSpec: `postgres`, `mysql`, `mariadb`, `redis` or `clickhouse` (only the first three are creatable).',
       status:
         'Lifecycle state: `provisioning` at create, `applying` while a command is queued, then daemon-observed `ready`, `stopped` or `failed` projected by the consumer.',
+      backup_destination:
+        "This cluster's own copy choice: null follows the organization default, `none` turns copying off, otherwise a destination id.",
     },
   },
   recovery: {
@@ -1443,11 +1526,28 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'Password sealed with the data-encryption key (`ENVELOPE_PREFIX_SECRET` prefix); resealed to a `tpdaemon` envelope per recipient at send time.',
     },
   },
+  peak: {
+    group: 'runtime',
+    summary:
+      'Highest RAM and physical core readings of one server per UTC hour; the over-tier rules judge a server on the highest reading of the last 7 days.',
+    columns: {
+      server_id:
+        'Owning server; ON DELETE CASCADE so a deleted host leaves no readings, and (server_id, bucket) is UNIQUE so an upsert only raises the hour.',
+      bucket:
+        'Start of the UTC hour the readings cover, aligned by the writer; rows older than the 7-day grace window are pruned by the 15-minute cron.',
+      memory_bytes:
+        'Highest total RAM in bytes read in the hour; NULL when none was read, never negative.',
+      cores:
+        'Highest physical core count read in the hour; NULL when none was read, never negative.',
+    },
+  },
   server: {
     group: 'runtime',
     summary:
       'One enrolled host per row (uuidv7 id); daemon enroll and heartbeats project host facts onto it, operators set the name, options and pins via PATCH.',
     columns: {
+      preferred_datacenter_id:
+        'The datacenter whose network this server prefers when it belongs to several; NULL means no preference; set null when the datacenter is deleted.',
       metadata:
         'Daemon-projected host facts jsonb: `resources`, `geo`, `docker`, `runtimes`, `cell` plus the operator `hardwareProfile`; hostname, OS and NTP have own columns.',
       options:
@@ -1467,7 +1567,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       os_codename: 'Daemon-reported `VERSION_CODENAME` from /etc/os-release.',
       os_pretty_name: 'Daemon-reported `PRETTY_NAME` from /etc/os-release.',
       os_architecture:
-        'Daemon-reported CPU architecture from the Deno build, such as `x86_64` or `aarch64`.',
+        'Daemon-reported CPU architecture, normalised on ingest to `x86_64` or `aarch64` (`amd64` and `arm64` map across); other CPUs are not stored, so NULL.',
       machine_class:
         '`physical` or `virtual` for sensor entitlement; NULL means auto, where ingest writes `physical` once sensors are found (never `virtual`); PATCH can pin.',
       timezone:
@@ -1479,9 +1579,9 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       ntp_last_synced_at:
         'Last successful NTP sync: set from the daemon stamp or first synced observation, cleared when the host reports unsynced, never bumped to now() per heartbeat.',
       assigned_tier_id:
-        'Purchased tier covering this server, recomputed by assignment-records.ts from seats, `preferred_tier_id`, and hardware; NULL if none.',
+        'Tier a manager assigned this server (license-tier route or a named size change); self-hosted fills the top tier when none. Never recomputed; NULL until set.',
       preferred_tier_id:
-        'Optional operator pick: assignment uses a spare license at this tier or the smallest tier above before the derived smallest that fits; NULL derives only.',
+        "Written in step with `assigned_tier_id` by the manager route, for the console's picked label; never read to place a server.",
       is_connected:
         'Daemon liveness flag written by the cell projection on connect and disconnect; `online`, `offline` or `unknown` is derived from it and `status_changed_at`.',
       status_changed_at:
@@ -1696,7 +1796,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       event: 'Catalogue code (`NOTIFICATION_EVENTS`), same vocabulary as `notification.event`.',
       severity: "`info`, `warning` or `critical`, copied from the event's catalogue definition.",
       payload:
-        'Rendered non-secret message as JSON: `event`, `severity`, `title`, `body`, `organizationId`, `organizationName`, `targetType`, `targetId`, `context`, `at`.',
+        'Rendered non-secret message as JSON: `event`, `severity`, `title`, `body`, `organizationId`, `organizationName`, `targetType`, `destinationId`, `context`, `at`.',
       status:
         '`pending` (default), `sent`, `failed` (retry due), `abandoned` (after 5 attempts) or `held` (waits for quiet hours or a digest); retries skip `held`.',
       attempts:

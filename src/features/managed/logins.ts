@@ -9,6 +9,7 @@
 
 import { and, asc, eq, inArray, ne, sql } from 'drizzle-orm'
 import { nameListSql } from './sql-name-list.ts'
+import { loginSourcesFromStored, loginSourcesToStored } from './login-sources.ts'
 import type { Db } from '../../db/connection.ts'
 import { login, managed, managedDatabase, replica, scope, server } from '../../db/schema.ts'
 import { generateSealedSecret } from '../../lib/secrets/data-encryption.ts'
@@ -16,18 +17,43 @@ import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import type { PrincipalNameScheme } from '../../lib/principal-name-scheme.ts'
 
 /** Pinned to `login_role_check` by `src/db/enum-checks.test.ts`. */
-export const DATABASE_LOGIN_ROLES = ['root', 'replication', 'user'] as const
+export const DATABASE_LOGIN_ROLES = ['root', 'replication', 'user', 'backup'] as const
 export type DatabaseLoginRole = (typeof DATABASE_LOGIN_ROLES)[number]
 
 /**
- * How reconcile treats a login's permissions. `preset` is today's behaviour
- * and is what a login made before modes reads as. `recipe` is the panel-built
+ * How reconcile treats a login's permissions. `recipe` is the panel-built
  * permission set (new logins start here). `self` means the owner manages
  * permissions by hand and reconcile never resets them. Pinned to
  * `login_grant_mode_check` by `src/db/enum-checks.test.ts`.
  */
-export const LOGIN_GRANT_MODES = ['preset', 'recipe', 'self'] as const
+export const LOGIN_GRANT_MODES = ['recipe', 'self'] as const
 export type LoginGrantMode = (typeof LOGIN_GRANT_MODES)[number]
+
+/** The named permission sets. Pinned to `login_recipe_check` by `src/db/enum-checks.test.ts`. */
+export const LOGIN_RECIPES = [
+  'app',
+  'migrations',
+  'read-only',
+  'analyst',
+  'admin',
+  'backup',
+] as const
+export type LoginRecipe = (typeof LOGIN_RECIPES)[number]
+
+/** The recipe a login's role, privileges and routing amount to (what a login made before recipes is given). */
+export function deriveLoginRecipe(login: {
+  role: DatabaseLoginRole
+  privileges: readonly string[]
+  connectionRole: LoginConnectionRole
+}): LoginRecipe {
+  if (login.role === 'backup') return 'backup'
+  if (login.role !== 'user' || login.privileges.includes('admin')) return 'admin'
+  if (login.privileges.includes('owner')) return 'migrations'
+  const readOnly =
+    login.connectionRole === 'read-only' ||
+    (login.privileges.length === 1 && login.privileges[0] === 'read-only')
+  return readOnly ? 'read-only' : 'app'
+}
 
 /** Pinned to `login_access_check` by `src/db/enum-checks.test.ts`. */
 export const LOGIN_CONNECTION_ROLES = ['read-write', 'read-only'] as const
@@ -46,7 +72,7 @@ export type LoginSettings = {
   databases: string[]
   privileges: string[]
   connectionRole: LoginConnectionRole
-  /** Places the login may connect from; `undefined` means anywhere. */
+  /** Places the login may connect from; `undefined` means anywhere (stored as the explicit pair). */
   allowedSources: string[] | undefined
   /** Per-login connection cap; `undefined` means no cap. */
   maxConnections: number | undefined
@@ -122,7 +148,7 @@ function toNameScheme(value: string): PrincipalNameScheme {
   return value === 'partial' || value === 'random' ? value : 'plain'
 }
 
-/** The permission settings of a stored row (`allowed_sources` empty reads as anywhere). */
+/** The permission settings of a stored row (the explicit anywhere pair reads as no limit). */
 function toLoginRow(row: {
   id: string
   principalId: string | null
@@ -151,13 +177,12 @@ function toLoginRow(row: {
     username: row.username,
     appliedUsername: row.appliedUsername,
     nameScheme: toNameScheme(row.nameScheme),
-    grantMode: isLoginGrantMode(row.grantMode) ? row.grantMode : 'preset',
+    grantMode: isLoginGrantMode(row.grantMode) ? row.grantMode : 'recipe',
     tool: row.isTool,
     databases: row.databases ?? [],
     privileges: row.privileges ?? [],
     connectionRole: row.access === 'read-only' ? 'read-only' : 'read-write',
-    allowedSources:
-      row.allowedSources && row.allowedSources.length > 0 ? row.allowedSources : undefined,
+    allowedSources: loginSourcesFromStored(row.allowedSources),
     maxConnections: row.maxConnections ?? undefined,
     straightThrough: row.isStraightThrough ?? undefined,
     createdAt: row.createdAt,
@@ -299,10 +324,22 @@ function settingsColumns(patch: LoginSettingsPatch) {
     ...(patch.tool !== undefined ? { isTool: patch.tool } : {}),
     ...(patch.privileges !== undefined ? { privileges: patch.privileges } : {}),
     ...(patch.connectionRole !== undefined ? { access: patch.connectionRole } : {}),
-    ...(patch.allowedSources !== undefined ? { allowedSources: patch.allowedSources } : {}),
+    ...(patch.allowedSources !== undefined
+      ? { allowedSources: loginSourcesToStored(patch.allowedSources) }
+      : {}),
     ...(patch.maxConnections !== undefined ? { maxConnections: patch.maxConnections } : {}),
     ...(patch.straightThrough !== undefined ? { isStraightThrough: patch.straightThrough } : {}),
   }
+}
+
+/** The `recipe` column for a login in this state: derived for `recipe` logins, empty for `self`. */
+function recipeColumn(state: {
+  grantMode: LoginGrantMode
+  role: DatabaseLoginRole
+  privileges: readonly string[]
+  connectionRole: LoginConnectionRole
+}): { recipe: LoginRecipe | null } {
+  return { recipe: state.grantMode === 'recipe' ? deriveLoginRecipe(state) : null }
 }
 
 /** Change a login's permission settings (keys not in `patch` are kept). */
@@ -312,14 +349,38 @@ export async function patchLogin(
   patch: LoginSettingsPatch
 ): Promise<void> {
   const [row] = await db
-    .select({ id: login.id, managedId: login.managedId })
+    .select({
+      id: login.id,
+      managedId: login.managedId,
+      role: login.role,
+      grantMode: login.grantMode,
+      privileges: login.privileges,
+      access: login.access,
+    })
     .from(login)
     .where(eq(login.id, loginId))
     .limit(1)
   if (!row) throw new TypeError('Login not found')
+  const touchesRecipe =
+    patch.grantMode !== undefined ||
+    patch.privileges !== undefined ||
+    patch.connectionRole !== undefined
   await db
     .update(login)
-    .set({ ...settingsColumns(patch), updatedAt: new Date().toISOString() })
+    .set({
+      ...settingsColumns(patch),
+      ...(touchesRecipe
+        ? recipeColumn({
+            grantMode:
+              patch.grantMode ?? (isLoginGrantMode(row.grantMode) ? row.grantMode : 'recipe'),
+            role: toRole(row.role),
+            privileges: patch.privileges ?? row.privileges,
+            connectionRole:
+              patch.connectionRole ?? (row.access === 'read-only' ? 'read-only' : 'read-write'),
+          })
+        : {}),
+      updatedAt: new Date().toISOString(),
+    })
     .where(eq(login.id, loginId))
   if (patch.databases !== undefined) await setLoginDatabases(db, row, patch.databases)
 }
@@ -349,6 +410,14 @@ export async function insertLogin(db: Db, input: InsertLoginInput): Promise<stri
       password: input.password,
       ...(input.nameScheme ? { nameScheme: input.nameScheme } : {}),
       ...settingsColumns(input),
+      // No limit chosen stores the explicit anywhere pair (the column default is `internal`).
+      allowedSources: loginSourcesToStored(input.allowedSources),
+      ...recipeColumn({
+        grantMode: input.grantMode ?? 'recipe',
+        role: input.role,
+        privileges: input.privileges ?? [],
+        connectionRole: input.connectionRole ?? 'read-write',
+      }),
     })
     .returning({ id: login.id })
   if (input.databases !== undefined && input.databases.length > 0) {
@@ -489,6 +558,21 @@ export async function removeManagedLogin(db: Db, loginId: string): Promise<Remov
     databaseIds: scopes.map((entry) => entry.databaseId),
     ownedDatabaseIds: owned.map((entry) => entry.id),
   }
+}
+
+/**
+ * Delete logins that were just created and never applied (their apply could
+ * not be prepared or queued), in one statement so they go together.
+ */
+export async function removeNewManagedLogins(
+  db: Db,
+  managedId: string,
+  loginIds: readonly string[]
+): Promise<void> {
+  if (loginIds.length === 0) return
+  await db
+    .delete(login)
+    .where(and(eq(login.managedId, managedId), inArray(login.id, [...loginIds])))
 }
 
 /**

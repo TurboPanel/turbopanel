@@ -23,6 +23,7 @@ import type { DaemonCell, PendingRequestRecord } from '../../contracts/cell.ts'
 import { parseStoredCommandProgress } from './command-progress.ts'
 import {
   DEPLOY_DEFAULT_TIMEOUT_MS,
+  DEPLOY_MAX_TIMEOUT_MS,
   DEPLOY_RECONCILE_WINDOW_MS,
   DEPLOY_RUN_CAP_MS,
   DEPLOY_RUN_SILENCE_MS,
@@ -41,12 +42,12 @@ export const DEPLOY_QUEUE_LIMIT_MS = 6 * 60 * 60_000
 
 /**
  * The longest the control plane waits for a deploy from when it was sent, in any
- * state: the queue limit, the deploy time limit and one whole reconcile window.
+ * state: the queue limit, the longest deploy time limit an organization can set (240 minutes) and one whole reconcile window.
  * Quiet time does not count on the run clock, so a deploy that keeps going
  * quiet could otherwise be waited on for ever; past this it is given up on.
  */
 export const DEPLOY_WAIT_LIMIT_MS =
-  DEPLOY_QUEUE_LIMIT_MS + DEPLOY_DEFAULT_TIMEOUT_MS + DEPLOY_RECONCILE_WINDOW_MS
+  DEPLOY_QUEUE_LIMIT_MS + DEPLOY_MAX_TIMEOUT_MS + DEPLOY_RECONCILE_WINDOW_MS
 
 /**
  * How long the cell keeps a deploy's request: the whole wait limit plus a margin,
@@ -230,7 +231,7 @@ export const DEPLOY_WAIT_MESSAGES: Record<
 /** The message for a deploy stopped at its time limit while the server was still reporting. */
 export function deployTimeLimitMessage(runCapMs: number): string {
   const minutes = Math.round(runCapMs / 60_000)
-  return `The deploy ran for more than ${minutes} minutes, which is the deploy time limit, so it was stopped. Check the build and deploy again.`
+  return `The deploy did not finish within the time limit (${minutes} minutes), so it was stopped. An organization manager can change this in the organization settings. Check the build and deploy again.`
 }
 
 /** The message for a deploy given up on after the server went quiet, naming where it was. */

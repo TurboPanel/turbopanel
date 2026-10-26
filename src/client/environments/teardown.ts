@@ -22,14 +22,17 @@
  * server is named in `retirePrincipals` on the last stop sent there, and the
  * daemon removes the account, its group, home and slice (`tp-host
  * principal-remove`, which re-checks on the host that nothing still references
- * it). A project delete does not (`keepPrincipals`): principals outlive their
- * project and are removed only by their own explicit delete.
+ * it). A principal that still has a folder on that server is kept there: the
+ * host would refuse anyway while its home holds the folder. A project delete
+ * plans no retirement here (`keepPrincipals`): the principals it takes with it
+ * are removed by the principal removal sweep once their folders are gone
+ * (`client/principals/removal-sweep.ts`).
  */
 import { mapSequential, forEachSequential } from '../../lib/sequential.ts'
 import { and, eq, inArray, or } from 'drizzle-orm'
 import type { Context } from 'hono'
 import type { Db } from '../../db/connection.ts'
-import { deployment, environment, principal, project } from '../../db/schema.ts'
+import { deployment, environment, folder, principal, project } from '../../db/schema.ts'
 import type { CommandEnvelope } from '../../features/commands/envelope.ts'
 import type { CommandQueue } from '../../features/commands/queue.ts'
 import { createCommandRecord, transitionCommand } from '../../features/commands/command-records.ts'
@@ -72,9 +75,9 @@ export type EnvironmentTeardownPlan = {
 
 export type TeardownPlanOptions = {
   /**
-   * Leave the project's Linux users alone: plan no `retirePrincipals`. Project
-   * delete sets this — the site trees go, the user and its home stay, and the
-   * principal outlives the project (`principal.project_id` becomes NULL).
+   * Plan no `retirePrincipals`. Project delete sets this: the stop goes out
+   * before the folders are removed, so the accounts are retired later by the
+   * principal removal sweep, not by the stop.
    */
   keepPrincipals?: boolean
 }
@@ -177,10 +180,20 @@ function planServerIds(plan: EnvironmentTeardownPlan): Set<string> {
   return new Set<string>([...plan.serverIds, ...plan.fabricNetworksByServer.keys()])
 }
 
+/** Every server these plans send a stop to, sorted. */
+export function teardownServerIds(plans: readonly EnvironmentTeardownPlan[]): string[] {
+  const ids = new Set<string>()
+  for (const plan of plans) for (const serverId of planServerIds(plan)) ids.add(serverId)
+  return [...ids].sort((a, b) => a.localeCompare(b))
+}
+
 /**
- * Of `usernames`, the ones a surviving environment still places on `serverId`:
- * a principal of a project with an environment pinned there or deployed there.
- * Run after the delete commits, so the deleted rows are no longer counted.
+ * Of `usernames`, the ones still needed on `serverId`: a principal of a
+ * project with a surviving environment pinned there or deployed there, or one
+ * with a folder row there (a folder of a deleted environment is removed after
+ * the stop, and the host refuses to remove an account whose home still holds
+ * folders). Run after the delete commits, so the deleted rows are no longer
+ * counted.
  */
 export async function principalsStillOnServer(
   db: Db,
@@ -198,7 +211,12 @@ export async function principalsStillOnServer(
         or(eq(environment.serverId, serverId), eq(deployment.serverId, serverId))
       )
     )
-  return new Set(rows.map((row) => row.username))
+  const withFolders = await db
+    .selectDistinct({ username: principal.appliedUsername })
+    .from(principal)
+    .innerJoin(folder, eq(folder.principalId, principal.id))
+    .where(and(inArray(principal.appliedUsername, [...usernames]), eq(folder.serverId, serverId)))
+  return new Set([...rows, ...withFolders].map((row) => row.username))
 }
 
 /**

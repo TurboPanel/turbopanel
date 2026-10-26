@@ -61,7 +61,7 @@ import { hasRemoteConsumerServers } from '../bindings/remote-consumers.ts'
 import { loadBoundManagedIdsForServer } from './ingress-bound-consumers.ts'
 import { loadManagedExternalAccess } from './external-access.ts'
 import { loadOrganizationRootAllowedSources } from './root-login-sources.ts'
-import { loginSourceServerIds, loginWireLimits } from './login-sources.ts'
+import { loginSourceServerIds, loginSourcesFromStored, loginWireLimits } from './login-sources.ts'
 import { loadServerAddressMap } from './login-sources-load.ts'
 import { materializeBindingsForManaged } from '../bindings/materialize.ts'
 import { loginDatabaseNames } from './logins.ts'
@@ -103,6 +103,7 @@ import {
   decideIngressBindAddresses,
   hostgroupsForClusterIndex,
   ingressEngineVersionFromOptions,
+  ingressReconcileValidityMs,
   isAtRestSealedPassword,
   mergeHierarchyContainerSan,
   principalConnectionRole,
@@ -115,7 +116,7 @@ import {
 } from './ingress-desired-pure.ts'
 import { parseManagedSettings } from './options.ts'
 
-export const MANAGED_INGRESS_RECONCILE_TTL_MS = 300_000
+export { INGRESS_RECONCILE_RUN_MS as MANAGED_INGRESS_RECONCILE_TTL_MS } from './ingress-desired-pure.ts'
 
 export type ManagedIngressReconcilePrepareError =
   | { kind: 'daemon_key_unavailable'; serverId: string }
@@ -269,7 +270,7 @@ async function loadClusterUsersForManagedIds(
   )
   const serverAddresses = await loadServerAddressMap(
     db,
-    rows.flatMap((row) => loginSourceServerIds(row.allowedSources ?? undefined))
+    rows.flatMap((row) => loginSourceServerIds(loginSourcesFromStored(row.allowedSources)))
   )
 
   const failure = await firstSequential(rows, async (row) => {
@@ -304,7 +305,7 @@ async function loadClusterUsersForManagedIds(
         role: user.role,
         privileges: row.privileges ?? [],
         connectionRole: row.access,
-        allowedSources: row.allowedSources ?? undefined,
+        allowedSources: loginSourcesFromStored(row.allowedSources),
         straightThrough: row.isStraightThrough ?? undefined,
       }).value
     ) {
@@ -317,7 +318,7 @@ async function loadClusterUsersForManagedIds(
     else {
       const limits = loginWireLimits(
         {
-          allowedSources: row.allowedSources?.length ? row.allowedSources : undefined,
+          allowedSources: loginSourcesFromStored(row.allowedSources),
           maxConnections: row.maxConnections ?? undefined,
         },
         {
@@ -847,6 +848,8 @@ export async function enqueueManagedIngressReconcile(
     dataEncryptionSecrets: DerivedSecretsConfig
     /** Extra command metadata (an HA recovery id, so its result settles the journal). */
     metadata?: Record<string, unknown>
+    /** Budget of a command queued just before this one, which it must outwait. */
+    waitsBehindMs?: number
   }>
 ): Promise<EnqueueManagedIngressReconcileResult> {
   const built = await buildManagedIngressReconcileDesired(db, {
@@ -857,7 +860,9 @@ export async function enqueueManagedIngressReconcile(
   if (built === null) return { ok: false, reason: 'not_needed' }
   if ('kind' in built) return { ok: false, reason: 'prepare_failed' }
 
-  const expiresAt = new Date(Date.now() + MANAGED_INGRESS_RECONCILE_TTL_MS).toISOString()
+  const expiresAt = new Date(
+    Date.now() + ingressReconcileValidityMs(params.waitsBehindMs)
+  ).toISOString()
   const leafMetadata = built.pendingTlsLeaf
     ? pendingTlsLeafMetadata(built.pendingTlsLeaf)
     : undefined

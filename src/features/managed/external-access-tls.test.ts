@@ -152,7 +152,7 @@ function fixture(db: Db) {
     const username = `app_${crypto.randomUUID().slice(0, 8)}`
     const [loginRow] = await db
       .insert(login)
-      .values({ managedId, role: 'user', username, appliedUsername: username })
+      .values({ recipe: 'app', managedId, role: 'user', username, appliedUsername: username })
       .returning({ id: login.id })
     const [databaseRow] = await db
       .select({ id: managedDatabase.id })

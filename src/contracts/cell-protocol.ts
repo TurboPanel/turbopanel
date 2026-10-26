@@ -343,6 +343,44 @@ export type BackupRunReportResultMessage = {
   at: string
 }
 
+/**
+ * Daemon → control plane: how copying one finished backup to its S3-compatible
+ * target ended (wire feature `backup-s3-copy-v1`; the daemon sends it only to
+ * a control plane that lists the feature). Correlated by `id` like
+ * {@link BackupRunReportMessage}: the daemon deletes its spooled report only
+ * when a {@link BackupCopyReportResultMessage} with the same `id` arrives, and
+ * a second copy of the same report changes nothing. Twin of
+ * `turbopaneld/src/contracts/cell-messages.ts`.
+ */
+export type BackupCopyReportMessage = {
+  type: 'backup-copy-report'
+  id: string
+  destinationId: string
+  managedId: string
+  backupId: string
+  policyId?: string
+  state: 'copied' | 'failed'
+  /** A plain reason when `state` is `failed`. */
+  error?: string
+  /** Object key inside the bucket (the target's prefix included). */
+  objectKey?: string
+  sizeBytes?: number
+  attempts: number
+  finishedAt: string
+  /** `bk_` ids the bucket retention removed after this copy. */
+  pruned?: string[]
+  at: string
+}
+
+/** Control plane → daemon: the copy report with this `id` is stored (`ok: true`) or refused for good. */
+export type BackupCopyReportResultMessage = {
+  type: 'backup-copy-report-result'
+  id: string
+  ok: boolean
+  error?: string
+  at: string
+}
+
 /** Instance-wide ACME knobs for hostnames whose source is `lets-encrypt`. */
 export type InstanceAcmeWireSettings = {
   contactEmail: string
@@ -419,6 +457,58 @@ export type ManagedPermissionsResultMessage = {
   id: string
   ok: boolean
   permissions?: ManagedPermissionsObserved
+  error?: string
+  at: string
+}
+
+/** One peer address a host is asked to try (feature `server-network-check-v1`). */
+export type ServerNetworkCheckTarget = {
+  peerServerId: string
+  /** The peer's address on the network being checked (an IPv4 or IPv6 literal). */
+  address: string
+  /** A TCP port the peer already listens on, reached from the asked host. */
+  port: number
+}
+
+/** What happened for one {@link ServerNetworkCheckTarget}. */
+export type ServerNetworkCheckEntry = {
+  peerServerId: string
+  address: string
+  reachable: boolean
+  /** Time to open the connection, whole milliseconds. Only when reachable. */
+  latencyMs?: number
+  /** The local address the connection left from. Only when reachable. */
+  sourceAddress?: string
+  /** The local interface that owns `sourceAddress`, when known. */
+  interface?: string
+  /** A short reason when not reachable: `refused`, `timeout`, `unreachable`, `invalid_target`. */
+  error?: string
+}
+
+/**
+ * Ask a host to try a TCP connection to each target and say what happened
+ * (feature `server-network-check-v1`). Nothing is sent on the connection and
+ * nothing is stored. Twin of the daemon's `ServerNetworkCheckRequestMessage`.
+ */
+export type ServerNetworkCheckRequestMessage = {
+  type: 'server-network-check-request'
+  id: string
+  /** Up to {@link MAX_DAEMON_WS_NETWORK_CHECK_TARGETS}. */
+  targets: ServerNetworkCheckTarget[]
+  at: string
+}
+
+/**
+ * The host's answer, on the request's id. Always sent: a request that cannot
+ * be run is `ok: false` with a short `error`; otherwise `results` holds one
+ * entry per target, in order.
+ * Twin of the daemon's `ServerNetworkCheckResultMessage`.
+ */
+export type ServerNetworkCheckResultMessage = {
+  type: 'server-network-check-result'
+  id: string
+  ok: boolean
+  results?: ServerNetworkCheckEntry[]
   error?: string
   at: string
 }
@@ -564,6 +654,8 @@ export type DaemonMessage =
     }
   | ManagedPermissionsRequestMessage
   | ManagedPermissionsResultMessage
+  | ServerNetworkCheckRequestMessage
+  | ServerNetworkCheckResultMessage
   | {
       /**
        * Daemon-initiated, fire-and-forget: every managed replica the host runs,
@@ -768,7 +860,7 @@ export type DaemonMessage =
        * verdict for one `tlsMode: 'acme'` hostname on this server, sent only on
        * a state change — a failure after a short debounce, or a recovery.
        * Merge-patched onto `tls.metadata.acme.lastError`; never writes
-       * `tls.status`, so it cannot itself flip a `managed` row's
+       * `tls.status`, so it cannot itself flip an `automatic` row's
        * deploy-readiness (see `handleAcmeIssuanceEvent`).
        */
       type: 'acme-issuance-event'
@@ -848,6 +940,8 @@ export type DaemonMessage =
   | BackupRunReportMessage
   | BackupRunReportResultMessage
   | CommandOutcomeAckMessage
+  | BackupCopyReportMessage
+  | BackupCopyReportResultMessage
   | {
       type: 'public-urls-update'
       id: string
@@ -925,6 +1019,7 @@ export const DAEMON_INBOUND_ALLOWED = new Set([
   'managed-logs-result',
   'managed-health-result',
   'managed-permissions-result',
+  'server-network-check-result',
   'container-logs-result',
   'metrics-live-start-result',
   'metrics-live-stop-result',
@@ -941,6 +1036,7 @@ export const DAEMON_INBOUND_ALLOWED = new Set([
   'acme-issuance-event',
   'instance-acme-issuance-event',
   'backup-run-report',
+  'backup-copy-report',
   'fabric-paths-result',
   'dev-sync-result',
   'tunnel-token-result',
@@ -1001,6 +1097,8 @@ export const MAX_DAEMON_WS_MANAGED_GTID_CHARS = 4096
 export const MAX_DAEMON_WS_PERMISSIONS_LOGINS = 50
 /** Max databases in one `managed-permissions-request`. */
 export const MAX_DAEMON_WS_PERMISSIONS_DATABASES = 100
+/** Max targets in one `server-network-check-request`. */
+export const MAX_DAEMON_WS_NETWORK_CHECK_TARGETS = 32
 /** Max UTF-8 bytes of `managed-permissions-result.permissions` JSON. */
 export const MAX_DAEMON_WS_PERMISSIONS_JSON_BYTES = 128 * 1024
 
@@ -1553,6 +1651,55 @@ function validateBackupRunReportFields(record: Record<string, unknown>): string 
   return validateBackupRunReportRun(record) ?? validateBackupRunReportArtifact(record)
 }
 
+const BACKUP_COPY_STATES = new Set(['copied', 'failed'])
+const BACKUP_COPY_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+const BACKUP_COPY_OBJECT_KEY_MAX = 1024
+
+/** Shape only; `handleBackupCopyReport` decides whether the report is believed. */
+function validateBackupCopyReportFields(record: Record<string, unknown>): string | null {
+  if (!isBoundedId(record.id)) return 'invalid id'
+  if (!isIsoTimestamp(record.at)) return 'invalid at timestamp'
+  if (typeof record.destinationId !== 'string' || !BACKUP_COPY_UUID_RE.test(record.destinationId)) {
+    return 'invalid destinationId'
+  }
+  if (typeof record.managedId !== 'string' || !BACKUP_COPY_UUID_RE.test(record.managedId)) {
+    return 'invalid managedId'
+  }
+  if (!isBackupRunToken(record.backupId)) return 'invalid backupId'
+  if (
+    record.policyId !== undefined &&
+    (typeof record.policyId !== 'string' || !BACKUP_POLICY_ID_RE.test(record.policyId))
+  ) {
+    return 'invalid policyId'
+  }
+  if (typeof record.state !== 'string' || !BACKUP_COPY_STATES.has(record.state)) {
+    return 'invalid state'
+  }
+  if (!isIsoTimestamp(record.finishedAt)) return 'invalid finishedAt'
+  return validateBackupCopyReportOutcome(record)
+}
+
+/** The counts, object key and pruned list of a copy report. */
+function validateBackupCopyReportOutcome(record: Record<string, unknown>): string | null {
+  if (!(isNonNegativeInt(record.attempts) && Number.isSafeInteger(record.attempts))) {
+    return 'invalid attempts'
+  }
+  if (
+    record.sizeBytes !== undefined &&
+    !(isNonNegativeInt(record.sizeBytes) && Number.isSafeInteger(record.sizeBytes))
+  ) {
+    return 'invalid sizeBytes'
+  }
+  if (
+    record.objectKey !== undefined &&
+    (typeof record.objectKey !== 'string' || record.objectKey.length > BACKUP_COPY_OBJECT_KEY_MAX)
+  ) {
+    return 'invalid objectKey'
+  }
+  if (record.pruned !== undefined && !isBackupPrunedList(record.pruned)) return 'invalid pruned'
+  return validateOptionalError(record.error)
+}
+
 function isFabricPeerHealth(value: unknown): value is FabricPathPeerHealth {
   return typeof value === 'string' && FABRIC_PEER_HEALTH.has(value)
 }
@@ -1760,6 +1907,40 @@ function validateManagedPermissionsResultFields(record: Record<string, unknown>)
   )
 }
 
+const NETWORK_CHECK_TEXT_KEYS = ['sourceAddress', 'interface', 'error'] as const
+
+function isOptionalShortText(value: unknown): boolean {
+  return value === undefined || (typeof value === 'string' && value.length <= 128)
+}
+
+function isOptionalLatency(value: unknown): boolean {
+  return value === undefined || (typeof value === 'number' && Number.isFinite(value) && value >= 0)
+}
+
+function isNetworkCheckEntry(entry: unknown): boolean {
+  if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) return false
+  const e = entry as Record<string, unknown>
+  return (
+    typeof e.peerServerId === 'string' &&
+    e.peerServerId.length <= 128 &&
+    typeof e.address === 'string' &&
+    e.address.length <= 64 &&
+    typeof e.reachable === 'boolean' &&
+    isOptionalLatency(e.latencyMs) &&
+    NETWORK_CHECK_TEXT_KEYS.every((key) => isOptionalShortText(e[key]))
+  )
+}
+
+function validateServerNetworkCheckResultFields(record: Record<string, unknown>): string | null {
+  const base = validateOkResultFields(record)
+  if (base) return base
+  const { results } = record
+  if (results === undefined) return null
+  if (!Array.isArray(results)) return 'invalid results'
+  if (results.length > MAX_DAEMON_WS_NETWORK_CHECK_TARGETS) return 'too many results'
+  return results.every(isNetworkCheckEntry) ? null : 'invalid results'
+}
+
 /**
  * What the host did with a `deploy-cancel`: `cancelling` (it was told to stop;
  * the deploy command's own outcome says how it ended), `too_late` (the deploy
@@ -1912,6 +2093,8 @@ function validateInboundMessageFields(record: Record<string, unknown>): string |
       return validateManagedHealthResultFields(record)
     case 'managed-permissions-result':
       return validateManagedPermissionsResultFields(record)
+    case 'server-network-check-result':
+      return validateServerNetworkCheckResultFields(record)
     case 'repo-read-result':
       return validateRepoReadResultFields(record)
     case 'repo-default-branch-result':
@@ -1927,6 +2110,8 @@ function validateInboundMessageFields(record: Record<string, unknown>): string |
       return validateAcmeIssuanceEventFields(record)
     case 'backup-run-report':
       return validateBackupRunReportFields(record)
+    case 'backup-copy-report':
+      return validateBackupCopyReportFields(record)
     case 'fabric-paths-result':
       return validateFabricPathsResultFields(record)
     case 'dev-sync-result':
@@ -2032,6 +2217,7 @@ function validateInboundEnvelopeKind(inbound: DaemonInboundEnvelope): string | n
     case 'repo-default-branch-result':
     case 'managed-health-result':
     case 'managed-permissions-result':
+    case 'server-network-check-result':
       return validateOptionalError(inbound.error)
     case 'fabric-paths-result':
       return validateFabricPathsEnvelope(inbound)
@@ -2118,6 +2304,10 @@ export type DaemonOutboundEnvelope =
       engine: string
       logins: string[]
       databases: string[]
+    })
+  | (OutboundEnvelopeBase & {
+      kind: 'server-network-check-request'
+      targets: ServerNetworkCheckTarget[]
     })
   | (OutboundEnvelopeBase & {
       kind: 'container-logs-request'
@@ -2247,6 +2437,14 @@ export type DaemonInboundEnvelope =
       at: string
       ok: boolean
       permissions?: ManagedPermissionsObserved
+      error?: string
+    }
+  | {
+      kind: 'server-network-check-result'
+      requestId: string
+      at: string
+      ok: boolean
+      results?: ServerNetworkCheckEntry[]
       error?: string
     }
   | {
@@ -2449,6 +2647,15 @@ export function wireMessageToInboundEnvelope(msg: DaemonMessage): DaemonInboundE
         at: msg.at,
         ok: msg.ok,
         permissions: msg.permissions,
+        error: msg.error,
+      }
+    case 'server-network-check-result':
+      return {
+        kind: 'server-network-check-result',
+        requestId: msg.id,
+        at: msg.at,
+        ok: msg.ok,
+        results: msg.results,
         error: msg.error,
       }
     case 'container-logs-result':
@@ -2700,6 +2907,13 @@ export function outboundEnvelopeToWireMessage(env: DaemonOutboundEnvelope): Daem
         engine: env.engine,
         logins: env.logins,
         databases: env.databases,
+        at: env.at,
+      }
+    case 'server-network-check-request':
+      return {
+        type: 'server-network-check-request',
+        id: env.requestId,
+        targets: env.targets,
         at: env.at,
       }
     case 'container-logs-request':

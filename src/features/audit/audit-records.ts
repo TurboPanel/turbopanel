@@ -47,6 +47,7 @@ export const AUDIT_ACTIONS = [
   'organization.deploy_hooks.set',
   'organization.compose_resource_defaults.set',
   'organization.acme.set',
+  'organization.deploy_timeout.set',
   'organization.reauth_for_destructive.set',
   'server.firewall_mode.set',
   'server.managed_external_access.update',
@@ -67,6 +68,10 @@ export const AUDIT_ACTIONS = [
   'folder.remove',
   'environment.primary.set',
   'managed.database.owner_role.move',
+  'backup_target.create',
+  'backup_target.update',
+  'backup_target.delete',
+  'backup_target.assign',
 ] as const
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[number]

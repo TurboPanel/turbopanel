@@ -54,11 +54,13 @@ import { registerWebhookRoutes } from '../../webhook/routes.ts'
 import { runManagedExternalAccessPendingSweep } from '../../features/managed/external-access.ts'
 import { runManagedIngressOrphanSweep } from '../../features/managed/ingress-desired.ts'
 import { runDatacenterRepinFanoutSweep } from '../../client/datacenters/repin-fanout.ts'
+import { runNetworkProbeSweep } from '../../client/datacenters/network-probe-sweep.ts'
 import { runSystemReconcileSweep } from '../../features/system/reconcile.ts'
 import { runHostLossTick } from '../../daemon/cell/host-loss-tick.ts'
 import { runBackupsReconcileSweep } from '../../features/backups/reconcile.ts'
 import { runFolderReconcileSweep } from '../../daemon/cell/folder-reconcile-sweep.ts'
 import { runFolderRemovalSweep } from '../../features/folders/removal.ts'
+import { runPrincipalRemovalSweep } from '../../client/principals/removal-sweep.ts'
 import { runFirewallPreviewSweep } from '../../features/firewall/preview.ts'
 import { firewallApplyGateFromEnv } from '../../features/firewall/enforcement.ts'
 import {
@@ -167,6 +169,7 @@ import {
   onPromoteSucceeded,
   onRecoveryCommandFailed,
   recoveryIdFromCommandMetadata,
+  sweepStalledFencing,
 } from '../../features/managed/ha-recovery.ts'
 
 export type DenoDeveloperSurfaceContext = {
@@ -345,6 +348,8 @@ async function runCleanupPhase(label: string, fn: () => Promise<unknown>): Promi
 
 async function sweepStaleCommandsPhase(db: Db, commandQueue?: CommandQueue): Promise<void> {
   const swept = await sweepStaleCommands(db, { commandQueue })
+  // A fence step that never answered ends its recovery at the deadline.
+  await sweepStalledFencing(db, { commandQueue })
   // Recoveries first: a row that is still in flight keeps its managed row at
   // `applying`, and an expired one releases it itself.
   const expired = (
@@ -693,14 +698,30 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     }).catch((err) => {
       logWarn('daemon-cell', `datacenter repin fan-out sweep error: ${String(err)}`)
     })
+    // Automatic network fallback: probe the network that carries
+    // server-to-server traffic and mark servers nobody can reach. Throttled
+    // inside, so extra ticks (every reconnect) cost nothing.
+    void runNetworkProbeSweep(db, daemonCellRegistry).catch((err) => {
+      logWarn('daemon-cell', `network probe sweep error: ${String(err)}`)
+    })
     // Backup policy sets once after each reconnect (hello must not enqueue).
-    void runBackupsReconcileSweep(db, commandQueue).catch((err) => {
+    void runBackupsReconcileSweep(db, commandQueue, {
+      copyDeps:
+        secretsConfig && dataEncryptionSecrets
+          ? { secretsConfig, dataEncryptionSecrets }
+          : undefined,
+    }).catch((err) => {
       logWarn('daemon-cell', `backups reconcile sweep error: ${String(err)}`)
     })
     // Folders of deleted assets whose host has not confirmed them gone: asked
     // again once the server is connected, and every few minutes while stuck.
     void runFolderRemovalSweep(db, commandQueue).catch((err) => {
       logWarn('daemon-cell', `folder removal sweep error: ${String(err)}`)
+    })
+    // Hosting Accounts of deleted projects, removed once their folders are gone
+    // and every server they are on is connected.
+    void runPrincipalRemovalSweep(db, commandQueue).catch((err) => {
+      logWarn('daemon-cell', `principal removal sweep error: ${String(err)}`)
     })
     // A fresh folder listing from servers that have folders, every few hours.
     void runFolderReconcileSweep(db, commandQueue).catch((err) => {
@@ -865,9 +886,11 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
           secretsConfig,
           dataEncryptionSecrets,
         })
-        // Waiting Let's Encrypt requests (DNS not ready yet): same cadence,
-        // no secrets needed.
-        await runHostingLetsEncryptSweepTick(tickDb)
+        // Waiting Let's Encrypt requests (DNS not ready yet): same cadence.
+        // The secrets let a newly pinned certificate go out at once.
+        await runHostingLetsEncryptSweepTick(tickDb, {
+          apply: { commandQueue, secretsConfig, dataEncryptionSecrets },
+        })
       } catch (err) {
         logWarn('tls-leaf-renewal', `sweep error: ${String(err)}`)
       } finally {

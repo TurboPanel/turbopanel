@@ -10,11 +10,13 @@ import type { Db } from '../../db/connection.ts'
 import {
   container,
   environment,
+  folder,
   managed,
   project,
   repository,
   server,
   service,
+  share,
   workspace,
 } from '../../db/schema.ts'
 import {
@@ -128,6 +130,15 @@ function thenableRows<T>(rows: T[]) {
     limit: (n: number) => Promise.resolve(rows.slice(0, n)),
     orderBy: () => Promise.resolve(rows),
   })
+}
+
+/** A query chain (joins, filters, order, limit) that always answers no rows. */
+function emptyChain(): unknown {
+  const chain = Promise.resolve([]) as Promise<never[]> & Record<string, unknown>
+  for (const step of ['innerJoin', 'leftJoin', 'where', 'orderBy', 'limit']) {
+    chain[step] = () => chain
+  }
+  return chain
 }
 
 async function buildSessionApp(opts: SessionAppOpts): Promise<{
@@ -256,6 +267,8 @@ async function buildSessionApp(opts: SessionAppOpts): Promise<{
               ),
           }
         }
+        // The delete plan's folder list: this project has none.
+        if (table === folder || table === share) return emptyChain()
         if (table === server) {
           return {
             where: () => ({
@@ -709,7 +722,10 @@ test('DELETE /projects/:id returns 200 when the cascade is empty', async () => {
     headers: sessionHeaders(cookie),
   })
   assertEquals(res.status, 200)
-  assertEquals(await res.json(), { ok: true })
+  assertEquals(await res.json(), {
+    ok: true,
+    cleanup: { folderServerIds: [], hostingAccounts: { removing: [], kept: [] } },
+  })
 })
 
 test('POST /projects returns 200 for a docker-compose project', async () => {
@@ -787,7 +803,7 @@ test('PATCH /projects/:id returns 200 when setting defaultServerId', async () =>
   assertEquals(await res.json(), { ok: true })
 })
 
-test('DELETE /projects/:id returns 409 when a service container is running', async () => {
+test('DELETE /projects/:id stops a running service itself instead of refusing', async () => {
   const { app, cookie } = await buildSessionApp({
     manageAllowed: true,
     withRunningService: true,
@@ -796,6 +812,6 @@ test('DELETE /projects/:id returns 409 when a service container is running', asy
     method: 'DELETE',
     headers: sessionHeaders(cookie),
   })
-  assertEquals(res.status, 409)
-  assertEquals(await res.json(), { error: 'project_has_running_services' })
+  // Never placed on a server, so there is nothing to stop and the project goes.
+  assertEquals(res.status, 200)
 })

@@ -16,6 +16,7 @@ import {
   expandHostingsForComposeInstances,
   fabricGateErrorResponse,
   hostingsNeedSharedHttpIngress,
+  hostingsOnlyFits,
   isPlainObject,
   mapPrepareErrorResponse,
   parseDeployRef,
@@ -940,4 +941,54 @@ test('previewCommitSha shows a commit and hides a branch name', () => {
     previewCommitSha({ commitSha: '0123456789abcdef0123456789abcdef01234567' }),
     '0123456789abcdef0123456789abcdef01234567'
   )
+})
+
+test('hostingsOnlyFits: only servers that already run a finished deploy, none drained', () => {
+  const applied = [
+    { serverId: 'a', status: 'applied' },
+    { serverId: 'b', status: 'applied' },
+  ]
+  assertEquals(hostingsOnlyFits(['a', 'b'], [], applied), true)
+  assertEquals(hostingsOnlyFits(['a'], ['b'], applied), false)
+  assertEquals(hostingsOnlyFits(['a', 'c'], [], applied), false)
+  assertEquals(hostingsOnlyFits(['a'], [], [{ serverId: 'a', status: 'failed' }]), false)
+  assertEquals(hostingsOnlyFits([], [], applied), false)
+})
+
+function letsEncryptRefused(
+  reason: Extract<DeployPrepareError, { kind: 'hosting_letsencrypt_refused' }>['reason'],
+  names = ['app.example.com']
+): DeployPrepareError {
+  return {
+    kind: 'hosting_letsencrypt_refused',
+    composeServiceName: 'web',
+    hostname: names[0],
+    reason,
+    names,
+  }
+}
+
+test('mapPrepareErrorResponse names the Lets Encrypt setting when compose asks for automatic while it is off', () => {
+  const response = mapPrepareErrorResponse(letsEncryptRefused('lets_encrypt_not_enabled'))
+  assertEquals(response.status, 400)
+  assertEquals(response.body.error, 'acme_requires_org_opt_in')
+  assertEquals(response.body.composeServiceName, 'web')
+  assertEquals(response.body.hostname, 'app.example.com')
+  const message = String(response.body.message)
+  assertEquals(message.includes("Allow Let's Encrypt certificates"), true)
+  assertEquals(message.includes('Organization settings › Domains & certificates'), true)
+  assertEquals(message.includes('organization owner or manager'), true)
+})
+
+test('mapPrepareErrorResponse explains a non-public or unsupported automatic route', () => {
+  const bind = mapPrepareErrorResponse(letsEncryptRefused('acme_requires_public_bind'))
+  assertEquals(bind.body.error, 'acme_requires_public_bind')
+  assertEquals(String(bind.body.message).includes('bind.scope "public"'), true)
+
+  const wildcard = mapPrepareErrorResponse(
+    letsEncryptRefused('letsencrypt_hostname_unsupported', ['*.example.com'])
+  )
+  assertEquals(wildcard.status, 400)
+  assertEquals(wildcard.body.error, 'letsencrypt_hostname_unsupported')
+  assertEquals(String(wildcard.body.message).includes('*.example.com cannot get one'), true)
 })

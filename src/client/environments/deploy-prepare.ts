@@ -105,8 +105,11 @@ import { loadSshKeysByPrincipalIds } from '../principals/ssh-keys.ts'
 import {
   parsePrincipalOptions,
   resolvePrincipalIdOverride,
-  resolvePrincipalShell,
 } from '../../features/principals/principal-options.ts'
+import {
+  type PrincipalAccessLevel,
+  shellForAccessLevel,
+} from '../../features/principals/principal-access.ts'
 import { renderPhpForDeploy } from '../../features/hostings/php-settings.ts'
 import { type PhpModePrepareError, withSitePhpModes } from './deploy-php-modes.ts'
 import {
@@ -125,6 +128,10 @@ import {
   withRecordedRuntimes,
 } from './deploy-deno-gate.ts'
 import { type SiteEngineFeatureError, withSiteEngineFeature } from './deploy-site-engine-gate.ts'
+import {
+  type NodeAppModeFeatureError,
+  withCustomNodeAppModes,
+} from './deploy-node-app-mode-gate.ts'
 import { type SiteDbBindingsWarning, withSiteDbBindings } from './deploy-site-db-bindings.ts'
 import {
   type BindingDelivery,
@@ -609,11 +616,12 @@ export type DeployPrepareError =
    * caller can hand it the resolvable sets; reaching here means it could not.
    *
    * The same union carries two siblings with the same posture:
-   * `hosting_tls_mode_unsupported` (a `tls.mode` the deploy payload cannot
-   * express — projecting it would answer a request for a managed certificate
-   * with a self-signed one) and `hosting_route_conflict` (a declaration and a
-   * panel-authored row claiming one route, where taking the row over would
-   * drop the other hostnames it serves).
+   * `hosting_letsencrypt_refused` (`tls.mode: automatic` on a route that
+   * cannot get a Let's Encrypt certificate — the organization switch is off,
+   * the route is not public, or the name can never get one — rather than a
+   * self-signed certificate nobody asked for) and `hosting_route_conflict` (a
+   * declaration and a panel-authored row claiming one route, where taking the
+   * row over would drop the other hostnames it serves).
    */
   | ComposeHostingError
   | { kind: 'site_managed_directory_unowned'; composeServiceName: string }
@@ -623,6 +631,8 @@ export type DeployPrepareError =
   | SiteEngineFeatureError
   /** A Deno app goes to a daemon that cannot run it, or asks for a series nothing offers. */
   | DenoAppFeatureError
+  /** An app with a custom application mode goes to a daemon that would refuse it. */
+  | NodeAppModeFeatureError
   /**
    * The repository asks for a Node version no offered series satisfies, names
    * one that is not a version range, or (a deploy only) could not be read.
@@ -731,6 +741,8 @@ type HardDeployPrepareError =
   | SiteEngineFeatureError
   // Hard in preview too: a Deno app sent to a daemon that cannot run it would start on Node.
   | DenoAppFeatureError
+  // Hard in preview too: an older daemon would refuse the whole deploy.
+  | NodeAppModeFeatureError
   // Hard in preview too: the build would get a Node the app says it cannot run on.
   | NodeVersionPrepareError
   // Hard in preview too: previewing a deploy that would silently ignore a field
@@ -1423,6 +1435,7 @@ export async function loadPrincipalMaterial(
       // is the applied username; the short `username` is panel-internal.
       username: principal.appliedUsername,
       options: principal.options,
+      access: principal.access,
       password: principal.password,
     })
     .from(principal)
@@ -1447,7 +1460,7 @@ export async function loadPrincipalMaterial(
   for (const row of rows) {
     const options = parsePrincipalOptions(row.options)
     const override = resolvePrincipalIdOverride(options)
-    const shell = resolvePrincipalShell(options)
+    const shell = shellForAccessLevel(row.access as PrincipalAccessLevel)
     const keys = sshKeys.get(row.id) ?? []
     // Password sign-in is on exactly when the row holds a crypt hash. The
     // format gate matters: for a server principal the column only ever holds
@@ -3247,8 +3260,9 @@ async function resolveManagedNetworkHostName(
 
 /**
  * Everything that depends on which runtime each local native app runs: the
- * Deno feature gate and the repository's Node version. The first refusal wins;
- * a Deno app is refused before anything reads it as Node.
+ * Deno feature gate, the custom application mode gate and the repository's
+ * Node version. The first refusal wins; a Deno app is refused before anything
+ * reads it as Node.
  */
 async function prepareNativeAppRuntimes(
   c: Context<AppEnv>,
@@ -3271,6 +3285,8 @@ async function prepareNativeAppRuntimes(
   const nativeApps = withRecordedRuntimes(args.nativeApps, args.params.rollback?.releaseByService)
   const denoGate = await withDenoNativeApps(db, args.params.serverId, nativeApps)
   if ('kind' in denoGate) return denoGate
+  const appModeGate = await withCustomNodeAppModes(db, args.params.serverId, nativeApps)
+  if ('kind' in appModeGate) return appModeGate
 
   // An app with no `nodeVersion` gets one here from its repository at the
   // commit being deployed.
@@ -3412,6 +3428,7 @@ async function resolveLocalSitesBoundForDeploy(
     daemonFeatures: phpDaemonState?.projection?.features ?? [],
     warnings: dbBindingWarnings,
   })
+  if ('kind' in localSiteBound) return localSiteBound
   args.warnings.push(...dbBindingWarnings)
   return localSiteBound
 }
@@ -4207,10 +4224,10 @@ export type HostingTlsWire =
  * ACME-managed Let's Encrypt pins omit `tlsId` on the wire so older daemons
  * fall back to `tls internal`, and they are excluded from `tlsMaterial`.
  *
- * `acmeEnabled` is the org's opt-in gate (`organization.options.acmeEnabled`,
- * off by default) — checked here as defense in depth even though `POST /tls`
- * already refuses to create a `lets_encrypt` row while the org is opted out,
- * because a `managed` row can predate the org later disabling the gate.
+ * `acmeEnabled` is the org's gate (`organization.options.acmeEnabled`, on for
+ * new organizations) — checked here as defense in depth even though `POST
+ * /tls` and the compose reconcile already refuse while the org is opted out,
+ * because an `automatic` row can predate the org later disabling the gate.
  */
 export function hostingTlsWireFromResolved(params: {
   tlsId: string | null
@@ -4218,7 +4235,7 @@ export function hostingTlsWireFromResolved(params: {
   bindScope: HostingBindScope
   acmeEnabled: boolean
 }): HostingTlsWire {
-  if (params.status !== 'managed') {
+  if (params.status !== 'automatic') {
     return { ok: true, tlsId: params.tlsId }
   }
   if (!params.acmeEnabled) {

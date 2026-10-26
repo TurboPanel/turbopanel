@@ -2,7 +2,7 @@
 export type TlsSource = 'upload' | 'lets_encrypt' | 'self_signed' | 'organization_ca'
 
 /** Lifecycle status — dedicated `tls.status` column (also in API metadata DTO). */
-export type TlsStatus = 'ready' | 'pending' | 'expired' | 'failed' | 'revoked' | 'managed'
+export type TlsStatus = 'ready' | 'pending' | 'expired' | 'failed' | 'revoked' | 'automatic'
 
 export type TlsAcmeMetadata = {
   orderUrl?: string
@@ -19,6 +19,11 @@ export type TlsAcmeMetadata = {
   storedNames?: string[]
   /** The server whose Caddy issued the stored certificate (its daemon sent the pair). */
   issuedByServerId?: string
+  /**
+   * Who asked for the entry: `hosting` when a site's "Use Let's Encrypt" made
+   * it (removed once no site uses it), `library` when a person added it.
+   */
+  createdFor?: 'hosting' | 'library'
 }
 
 /**
@@ -66,7 +71,7 @@ export type TlsCandidate = {
   id: string
   metadata: TlsMetadata
   options: TlsOptions | null
-  /** Discriminator from `tls.source`; required to pin a `managed` LE row. */
+  /** Discriminator from `tls.source`; required to pin an `automatic` LE row. */
   source?: TlsSource
 }
 

@@ -9,6 +9,7 @@ import {
   type PrincipalNameScheme,
   resolveOrgPrincipalNameScheme,
 } from '../../lib/principal-name-scheme.ts'
+import { DEPLOY_DEFAULT_TIMEOUT_MS } from '../commands/deploy-limits.ts'
 import { isValidEnvironmentName } from '../../contracts/directory-names.ts'
 import { normalizeDisplayName } from '../../lib/display-name-format.ts'
 import {
@@ -46,6 +47,10 @@ const TEMPERATURE_UNITS = new Set<TemperatureUnit>(['celsius', 'fahrenheit'])
 
 /** Platform fallback when `temperatureUnit` is unset. */
 export const DEFAULT_TEMPERATURE_UNIT: TemperatureUnit = 'celsius'
+
+/** Smallest and largest organization deploy time limit, in minutes. */
+export const DEPLOY_TIMEOUT_MIN_MINUTES = 5
+export const DEPLOY_TIMEOUT_MAX_MINUTES = 240
 
 export type OrganizationOptions = {
   /** Org-wide default timezone applied when a server has no override. */
@@ -144,12 +149,15 @@ export type OrganizationOptions = {
    */
   docker?: OrganizationDockerNetworking
   /**
-   * Opt-in gate for Let's Encrypt / ACME certificate issuance — both the
-   * tenant `tls` library (`POST /tls` with `source: 'lets_encrypt'`) and the
-   * deploy-time `tlsMode: 'acme'` wire the resolved TLS status can produce.
-   * Off by default: some operators do not want Let's Encrypt used against
-   * their servers at all, so a `managed` TLS row is inert until the org
-   * turns this on. Toggling off does not revoke certificates already issued.
+   * Gate for Let's Encrypt / ACME certificate issuance — the tenant `tls`
+   * library (`POST /tls` with `source: 'lets_encrypt'`), the one-click button,
+   * compose `tls.mode: automatic`, and the deploy-time `tlsMode: 'acme'` wire
+   * the resolved TLS status can produce. New organizations start with it on
+   * ({@link NEW_ORGANIZATION_OPTIONS}); a row without the key (an organization
+   * made before that) reads as off, so existing organizations keep what they
+   * had. Some operators do not want Let's Encrypt used against their servers
+   * at all and turn it off. Toggling off does not revoke certificates already
+   * issued.
    */
   acmeEnabled?: boolean
   /**
@@ -388,6 +396,24 @@ export function parseOrganizationOptions(value: unknown): OrganizationOptions {
   return options
 }
 
+/** A whole number of minutes inside the allowed range; anything else is dropped. */
+export function parseDeployTimeoutMinutes(value: unknown): number | undefined {
+  if (typeof value !== 'number' || !Number.isInteger(value)) return undefined
+  return value >= DEPLOY_TIMEOUT_MIN_MINUTES && value <= DEPLOY_TIMEOUT_MAX_MINUTES
+    ? value
+    : undefined
+}
+
+/**
+ * Effective deploy time limit in milliseconds from the stored
+ * `organization.deploy_timeout_minutes`: the setting, or 30 minutes when it is
+ * null or (defensively) outside 5 to 240 whole minutes.
+ */
+export function resolveDeployTimeoutMs(minutes: unknown): number {
+  const valid = parseDeployTimeoutMinutes(minutes)
+  return valid === undefined ? DEPLOY_DEFAULT_TIMEOUT_MS : valid * 60_000
+}
+
 function assignDirectoryNames(
   options: Pick<OrganizationOptions, 'directoryNames' | 'directoryNamesLocked'>,
   value: Record<string, unknown>
@@ -432,7 +458,15 @@ export function resolveTemperatureUnit(options: OrganizationOptions): Temperatur
   return options.temperatureUnit ?? DEFAULT_TEMPERATURE_UNIT
 }
 
-/** Effective Let's Encrypt gate: off unless the org has opted in. */
+/**
+ * `organization.options` for an organization being created: Let's Encrypt
+ * allowed. Only new rows get this; nothing rewrites existing organizations.
+ */
+export const NEW_ORGANIZATION_OPTIONS: Readonly<OrganizationOptions> = Object.freeze({
+  acmeEnabled: true,
+})
+
+/** Effective Let's Encrypt gate: off unless the key is set (new organizations set it on). */
 export function resolveAcmeEnabled(options: OrganizationOptions): boolean {
   return options.acmeEnabled ?? false
 }

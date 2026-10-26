@@ -3,12 +3,12 @@
  * state off the `recovery` row; HTTP routes and cell events call into here.
  */
 
-import { and, eq } from 'drizzle-orm'
+import { and, eq, inArray } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import type { DaemonCellRegistry } from '../../contracts/cell.ts'
 import type { DerivedSecretsConfig, SecretsConfig } from '../../lib/secrets/secrets.ts'
 import type { CommandQueue } from '../commands/queue.ts'
-import type { CommandType } from '../commands/types.ts'
+import { TERMINAL_COMMAND_STATUSES, type CommandType } from '../commands/types.ts'
 import type { ManagedHaFailoverCommandPayload } from '../../contracts/commands/schemas.ts'
 import type { ManagedEngineCode } from './types.ts'
 import { createCommandRecord, transitionCommand } from '../commands/command-records.ts'
@@ -18,12 +18,15 @@ import {
   findLatestRecovery,
   findRecoveryById,
   insertRecoveryIfFree,
+  listFencingRecoveries,
+  listPendingAbortRestarts,
+  listRecentRecoveries,
   recordBlockedRecovery,
   type RecoveryPatch,
   updateRecovery,
   updateRecoveryLocked,
 } from './recovery-records.ts'
-import { container, managed, replica, server, service } from '../../db/schema.ts'
+import { command, container, managed, replica, server, service } from '../../db/schema.ts'
 import { OrchestratorManagedHaAuthority } from './ha-authority.ts'
 import {
   attestedLostServerIds,
@@ -34,6 +37,13 @@ import {
 } from './ha-recovery-pure.ts'
 import { fanOutManagedHaReconcile } from './ha-desired.ts'
 import { enqueueFollowPrimaryOnReplicas } from './follow-primary.ts'
+import {
+  deadlineBlockStreak,
+  FENCE_DEADLINE_REPEATED_MESSAGE,
+  FENCE_DEADLINE_STREAK_LIMIT,
+  FENCE_TIMED_OUT_MESSAGE,
+  planStalledFence,
+} from './ha-fence-deadline.ts'
 import { reseedDemotedPrimaryAfterSwitchover } from './reseed-demoted-primary.ts'
 import { evaluateSwitchoverCatchUp } from './switchover-evidence.ts'
 import { loadPrimaryEpoch } from './primary-epoch.ts'
@@ -123,6 +133,17 @@ export type RecoveryCommandActor = {
 }
 
 const FENCE_TTL_MS = 600_000
+/**
+ * A drain or fence stop that has not been taken up within this time is
+ * refused by the queue (the sweep gives up on the step after
+ * `FENCE_DEADLINE_MS` in `ha-fence-deadline.ts`, so a step that arrives later
+ * must not run: it would fence a primary the control plane already restored).
+ */
+export const FENCE_STEP_TTL_MS = 180_000
+/** Tries to queue the restart of the old primary before the row ends for an operator. */
+const FENCE_ABORT_MAX_ATTEMPTS = 3
+const FENCE_ABORT_NOT_QUEUED_MESSAGE =
+  'Planned switchover stopped, but the old primary could not be told to start again: check that the current primary is running and writable, then run the switchover again.'
 const PROMOTE_TTL_MS = 600_000
 
 async function isServerConnected(db: Db, serverId: string): Promise<boolean> {
@@ -478,7 +499,7 @@ async function prepareDrainCommands(db: Db, params: FenceParams): Promise<Prepar
         serverId,
         type: 'managed.ha.failover',
         payload,
-        expiresAtMs: FENCE_TTL_MS,
+        expiresAtMs: FENCE_STEP_TTL_MS,
         actor: params.actor,
         metadata: { recoveryId: params.recovery.id, fencePhase: 'drain' },
       })
@@ -560,7 +581,7 @@ async function enqueueFenceCommands(
         : {}),
       ...finalPosition,
     },
-    expiresAtMs: FENCE_TTL_MS,
+    expiresAtMs: FENCE_STEP_TTL_MS,
     actor: params.actor,
     metadata: { recoveryId: params.recovery.id, fencePhase: 'stop' },
   })
@@ -618,6 +639,11 @@ async function beginRecovery(params: {
    * it, and only while that server is still not connected.
    */
   hostLoss?: boolean
+  /**
+   * The operator promote gate passed only on an idle reading, so the old
+   * primary must be fenced and its final GTID set recorded before promotion.
+   */
+  requireFence?: boolean
 }): Promise<RecoveryEnqueueResult> {
   const inflight = await findInFlightRecovery(params.db, params.managedId)
   if (inflight) {
@@ -656,6 +682,18 @@ async function beginRecovery(params: {
     })
     await stampManagedReady(params.db, params.managedId)
     return { ok: false, error: AUTOMATIC_FAILOVER_BLOCKED_ERROR, status: 409 }
+  }
+  if (!sourceOnline && params.requireFence) {
+    // The old primary dropped its link after the gate: there is no final
+    // position to wait for, so do not promote. Nothing was changed and it is
+    // still the primary, so the row ends `blocked` (not `failed` with
+    // `needsOperator`, which would keep a boot-held old primary stopped).
+    await updateRecovery(params.db, recovery.id, {
+      state: 'blocked',
+      metadata: { ...recovery.metadata, blockedReason: SWITCHOVER_PRIMARY_DID_NOT_ANSWER_MESSAGE },
+    })
+    await stampManagedReady(params.db, params.managedId)
+    return { ok: false, error: 'managed_replica_not_fully_applied', status: 409 }
   }
   if (!sourceOnline) {
     await markNeedsResync(params.db, params.source.id)
@@ -718,6 +756,8 @@ export async function beginOperatorSwitchover(params: {
   forced?: boolean
   /** The target's fresh replication reading taken before the fence. */
   targetReplication?: unknown
+  /** See `beginRecovery`: refuse instead of promoting when the fence cannot run. */
+  requireFence?: boolean
 }): Promise<RecoveryEnqueueResult> {
   const { forced, targetReplication, ...rest } = params
   const catchUp = evaluateSwitchoverCatchUp(params.engine, targetReplication)
@@ -1128,7 +1168,14 @@ function applyFenceSettlement(
   return { state: advance.state, metadata: advance.metadata }
 }
 
-async function enqueueSwitchoverAbortReactivation(
+/**
+ * Undo a planned switchover that stopped before any promote was queued (or the
+ * target reported that promotion never started): route writes to the old
+ * primary again and, unless `reactivate` is false (its stop never reached the
+ * server), start it again. Callers must never use this once a promote may have
+ * started on the target.
+ */
+export async function enqueueSwitchoverAbortReactivation(
   db: Db,
   commandQueue: CommandQueue,
   params: {
@@ -1137,24 +1184,36 @@ async function enqueueSwitchoverAbortReactivation(
     actor: RecoveryCommandActor
     source: ManagedMemberRow
     members: readonly ManagedMemberRow[]
+    reactivate?: boolean
+    /** Only these commands (`start`, `undrain:<serverId>`); everything when absent. */
+    only?: ReadonlySet<string>
+    /** Asked before each command; false stops the rest (the restart is no longer wanted). */
+    before?: () => Promise<boolean>
   }
-): Promise<void> {
-  await enqueueCommand(db, commandQueue, {
-    serverId: params.source.serverId,
-    type: 'managed.lifecycle',
-    payload: switchoverAbortReactivateLifecyclePayload({
-      managedId: params.record.managedId,
-      memberId: params.source.id,
-      engine: params.engine,
-    }),
-    expiresAtMs: FENCE_TTL_MS,
-    actor: params.actor,
-  })
+): Promise<string[]> {
+  const missing: string[] = []
+  const wanted = (key: string) => params.only === undefined || params.only.has(key)
+  const allowed = async () => (params.before ? await params.before() : true)
+  if (params.reactivate !== false && wanted('start') && (await allowed())) {
+    const queued = await enqueueCommand(db, commandQueue, {
+      serverId: params.source.serverId,
+      type: 'managed.lifecycle',
+      payload: switchoverAbortReactivateLifecyclePayload({
+        managedId: params.record.managedId,
+        memberId: params.source.id,
+        engine: params.engine,
+      }),
+      expiresAtMs: FENCE_TTL_MS,
+      actor: params.actor,
+    })
+    if (!queued) missing.push('start')
+  }
   const target =
     params.members.find((row) => row.id === params.record.targetMemberId) ?? params.source
   const undrainServers = [...new Set(params.members.map((row) => row.serverId))]
   await forEachSequential(undrainServers, async (serverId) => {
-    if (!(await isServerConnected(db, serverId))) return
+    const key = `undrain:${serverId}`
+    if (!wanted(key) || !(await isServerConnected(db, serverId)) || !(await allowed())) return
     const payload = await failoverPayload(db, serverId, {
       managedId: params.record.managedId,
       source: params.source,
@@ -1162,15 +1221,20 @@ async function enqueueSwitchoverAbortReactivation(
       engine: params.engine,
       phase: 'undrain',
     })
-    await enqueueCommand(db, commandQueue, {
+    const queued = await enqueueCommand(db, commandQueue, {
       serverId,
       type: 'managed.ha.failover',
       payload,
       expiresAtMs: FENCE_TTL_MS,
       actor: params.actor,
     })
+    if (!queued) missing.push(key)
   })
+  return missing
 }
+
+const SWITCHOVER_PRIMARY_DID_NOT_ANSWER_MESSAGE =
+  'Planned switchover stopped: the current primary did not answer in time, so nothing was changed and it stays the primary'
 
 async function abortSwitchoverWhenGtidMissing(
   db: Db,
@@ -1197,12 +1261,7 @@ async function abortSwitchoverWhenGtidMissing(
       members,
     })
   }
-  await failRecoveryForOperator(
-    db,
-    record.id,
-    'Planned switchover stopped: the old primary GTID position was not recorded before promotion'
-  )
-  await stampManagedReady(db, record.managedId)
+  await blockRecoveryNothingChanged(db, record.id, SWITCHOVER_PRIMARY_DID_NOT_ANSWER_MESSAGE)
   return true
 }
 
@@ -1334,6 +1393,41 @@ async function reclassifyAfterDisasterRecovery(db: Db, record: RecoveryRecord): 
       .set({ replicaClass: nextClass, updatedAt: new Date().toISOString() })
       .where(eq(replica.id, member.id))
   })
+}
+
+/**
+ * Terminal `blocked` for a recovery that stopped before any role change: the
+ * old primary stays the primary, so nothing needs an operator and a reboot of
+ * its host must not keep it stopped (`ha-return-fence.ts` holds only a member
+ * whose own latest row is `failed` and needs an operator). Frees the cluster's
+ * slot and puts the cluster back to ready.
+ */
+export async function blockRecoveryNothingChanged(
+  db: Db,
+  recoveryId: string,
+  reason: string,
+  options: {
+    stillApplies?: (current: RecoveryRecord) => boolean
+    clearTarget?: boolean
+    extra?: RecoveryMetadata
+  } = {}
+): Promise<RecoveryRecord | null> {
+  const blocked = await updateRecoveryLocked(db, recoveryId, (current) =>
+    isTerminalRecoveryState(current.state) || options.stillApplies?.(current) === false
+      ? null
+      : {
+          state: 'blocked',
+          ...(options.clearTarget ? { targetMemberId: null } : {}),
+          metadata: {
+            ...current.metadata,
+            fenceCommandIds: [],
+            blockedReason: reason,
+            ...options.extra,
+          },
+        }
+  )
+  if (blocked) await stampManagedReady(db, blocked.managedId)
+  return blocked
 }
 
 /** Terminal `failed` the operator has to look at; frees the cluster's slot. */
@@ -1606,11 +1700,17 @@ function switchoverPromoteFailedMessage(code: SwitchoverPromoteFailureCode | nul
   if (code === 'gtid_wait_timeout') {
     return 'Planned switchover aborted: the promotion target did not apply the old primary GTID position before the wait timed out'
   }
+  if (code === 'target_not_running') {
+    return 'Planned switchover aborted: the promotion target was not running, so nothing was promoted and the old primary was started again'
+  }
   if (code === 'gtid_wait_error') {
     return 'Planned switchover aborted: the promotion target could not run the GTID catch-up check'
   }
   if (code === 'promote_started') {
     return 'Planned switchover aborted after promotion began on the target; the old primary was left read-only to avoid two writers — operator action required'
+  }
+  if (code === 'promote_unconfirmed') {
+    return 'Planned switchover stopped: the new primary did not confirm in time whether it was promoted; the old primary was left stopped to avoid two writers — check which member is the writer'
   }
   return 'Planned switchover aborted before the role change finished'
 }
@@ -1630,14 +1730,36 @@ export async function onSwitchoverPromoteFailed(
   }
 ): Promise<void> {
   const record = await findRecoveryById(db, params.recoveryId)
-  if (!record?.metadata.switchoverRequiredGtidSet) {
+  const reported = parseSwitchoverPromoteFailureCode(params.commandError)
+  // A promote that was queued again after a lost result may have started
+  // before the engine stopped: on any engine the old primary stays fenced.
+  const failureCode =
+    reported === 'target_not_running' && (record?.metadata.promoteResumes ?? 0) > 0
+      ? 'promote_unconfirmed'
+      : reported
+  // The GTID proof exists on MySQL and MariaDB only. Any engine can report
+  // that the target had no running container (nothing promoted); that counts
+  // for a planned switchover whose promote was never re-queued after a lost
+  // result (a re-queued promote may have started before the engine stopped).
+  const targetNeverRan = failureCode === 'target_not_running' && record?.kind === 'switchover'
+  if (!record || (!record.metadata.switchoverRequiredGtidSet && !targetNeverRan)) {
     await onRecoveryCommandFailed(db, params.recoveryId)
     return
   }
-  const failureCode = parseSwitchoverPromoteFailureCode(params.commandError)
   const members = await listManagedMembers(db, record.managedId)
   const source = members.find((row) => row.id === record.sourcePrimaryMemberId)
-  if (switchoverPromoteFailureShouldReactivateOldPrimary(failureCode) && commandQueue && source) {
+  if (!switchoverPromoteFailureShouldReactivateOldPrimary(failureCode)) {
+    // Promotion started or may have started on the target: the old primary
+    // stays fenced and an operator checks which member is the writer.
+    const failed = await failRecoveryForOperator(
+      db,
+      params.recoveryId,
+      switchoverPromoteFailedMessage(failureCode)
+    )
+    if (failed) await stampManagedReady(db, failed.managedId)
+    return
+  }
+  if (commandQueue && source) {
     await enqueueSwitchoverAbortReactivation(db, commandQueue, {
       record,
       engine: params.engine,
@@ -1646,12 +1768,11 @@ export async function onSwitchoverPromoteFailed(
       members,
     })
   }
-  const failed = await failRecoveryForOperator(
+  await blockRecoveryNothingChanged(
     db,
     params.recoveryId,
     switchoverPromoteFailedMessage(failureCode)
   )
-  if (failed) await stampManagedReady(db, failed.managedId)
 }
 
 /**
@@ -1738,4 +1859,369 @@ export { isServerConnected }
 
 export function logRecoveryAdvanceFailure(commandId: string, message: string): void {
   compatLogWarn('managed-ha', `recovery advance failed for command ${commandId}: ${message}`)
+}
+
+type FenceStepState = { id: string; status: string; sentAt: string | null; phase: string | null }
+
+async function loadFenceStepStates(db: Db, ids: string[]): Promise<FenceStepState[]> {
+  if (ids.length === 0) return []
+  const rows = await db
+    .select({
+      id: command.id,
+      name: command.name,
+      status: command.status,
+      sentAt: command.sentAt,
+      metadata: command.metadata,
+    })
+    .from(command)
+    .where(inArray(command.id, ids))
+  return rows.map((row) => ({
+    id: row.id,
+    status: row.status,
+    sentAt: row.sentAt,
+    phase:
+      row.name === 'managed.lifecycle'
+        ? 'stop'
+        : fencePhaseFromCommandMetadata(row.metadata as Record<string, unknown> | null),
+  }))
+}
+
+/** Take back fence steps that have not finished, so a late one cannot run. */
+async function cancelOpenFenceSteps(db: Db, steps: readonly FenceStepState[]): Promise<void> {
+  await forEachSequential(steps, async (step) => {
+    if (TERMINAL_COMMAND_STATUSES.has(step.status as never)) return
+    await transitionCommand(db, step.id, {
+      status: 'cancelled',
+      error: 'the fence did not finish within its time limit',
+    })
+  })
+}
+
+/**
+ * One `fencing` row that is past its deadline (`ha-fence-deadline.ts`).
+ * Returns true when the row was acted on.
+ * - stop confirmed: the drains still pending are given up on and the row
+ *   advances exactly as if they had failed (the fence is the stop);
+ * - stop not confirmed: terminal `blocked`, nothing is promoted. A planned
+ *   switchover also brings the old primary back (writes routed to it again
+ *   and, when its stop may have reached the server, a start), which is safe
+ *   because no promote was ever queued.
+ * A new switchover can start at once: the row no longer holds the slot.
+ */
+async function expireStalledFence(
+  db: Db,
+  commandQueue: CommandQueue | undefined,
+  row: RecoveryRecord,
+  nowMs: number,
+  recentRecoveries?: typeof listRecentRecoveries,
+  deps: AbortRestartDeps = {}
+): Promise<boolean> {
+  const steps = await loadFenceStepStates(db, row.metadata.fenceCommandIds ?? [])
+  const stop = steps.find((step) => step.phase === 'stop')
+  const plan = planStalledFence(row, nowMs, Boolean(stop && stop.sentAt !== null))
+  if (plan.action === 'wait') return false
+
+  const engine = await managedEngineOf(db, row.managedId)
+  const actor: RecoveryCommandActor = { actorType: 'system', actorId: row.id }
+
+  if (plan.action === 'abandon-drains') {
+    await cancelOpenFenceSteps(db, steps)
+    await forEachSequential(steps, (step) =>
+      onFenceCommandFailed(db, commandQueue, {
+        recoveryId: row.id,
+        commandId: step.id,
+        engine,
+        actor,
+      })
+    )
+    return true
+  }
+
+  const notFenced = (current: RecoveryRecord) =>
+    current.state === 'fencing' && !current.metadata.stopApplied
+  if (row.kind === 'switchover') {
+    // Guarded state change first, so a stop confirmation that lands now can no
+    // longer advance the row to a promote; only then is anything cancelled or
+    // queued.
+    const blocked = await blockRecoveryNothingChanged(db, row.id, FENCE_TIMED_OUT_MESSAGE, {
+      stillApplies: notFenced,
+      extra: {
+        fenceDeadline: true,
+        abortRestartTodo: ['*'],
+        abortRestartReactivate: plan.stopDelivered,
+        abortRestartAttempts: 0,
+        abortRestartStepIds: steps.map((step) => step.id),
+      },
+    })
+    if (!blocked) return false
+    await cancelOpenFenceSteps(db, steps)
+    // A stop sent between the first read and the cancel may have stopped the
+    // old primary: read the steps again, the start is then needed.
+    const after = await loadFenceStepStates(db, row.metadata.fenceCommandIds ?? [])
+    if (
+      !plan.stopDelivered &&
+      after.some((step) => step.phase === 'stop' && step.sentAt !== null)
+    ) {
+      await updateRecoveryLocked(
+        db,
+        row.id,
+        (current) =>
+          current.state === 'blocked' && current.metadata.abortRestartTodo
+            ? { metadata: { ...current.metadata, abortRestartReactivate: true } }
+            : null,
+        { includeTerminal: true }
+      )
+    }
+    await finishAbortRestart(db, commandQueue, row.id, engine, actor, deps)
+    return true
+  }
+
+  // Nothing was promoted, so the attempt does not start the cooldown that
+  // follows an accepted automatic failover (the row keeps no target), unless it
+  // is the third in a row for this primary: then the cooldown applies again.
+  let repeated = false
+  if (row.kind === 'automatic-failover') {
+    const recent = await (recentRecoveries ?? listRecentRecoveries)(db, row.managedId)
+    repeated = deadlineBlockStreak(recent, row, nowMs) >= FENCE_DEADLINE_STREAK_LIMIT - 1
+  }
+  let reason = FENCE_TIMED_OUT_MESSAGE
+  if (repeated) reason = FENCE_DEADLINE_REPEATED_MESSAGE
+  else if (row.kind === 'automatic-failover') reason = automaticFailoverBlockedReason('unfenced')
+  const blocked = await blockRecoveryNothingChanged(db, row.id, reason, {
+    stillApplies: notFenced,
+    clearTarget: !repeated,
+    extra: { fenceDeadline: true },
+  })
+  if (!blocked) return false
+  if (repeated) {
+    compatLogWarn(
+      'managed-ha',
+      `automatic failover for ${row.managedId} ended at the fence deadline ${FENCE_DEADLINE_STREAK_LIMIT} times in a row: cooldown applies, operator attention needed`
+    )
+  }
+  await cancelOpenFenceSteps(db, steps)
+  return true
+}
+
+/** How long a sweep's claim on the restart commands holds before another sweep may take over. */
+const ABORT_RESTART_CLAIM_MS = 120_000
+
+/**
+ * Why the old primary must NOT be brought back any more, or null. A newer
+ * recovery exists for the cluster (it may have fenced, promoted or be about to),
+ * or the cluster's primary is no longer the member the switchover started from.
+ */
+export async function abortRestartStaleReason(db: Db, row: RecoveryRecord): Promise<string | null> {
+  const latest = await findLatestRecovery(db, row.managedId)
+  if (latest && latest.id !== row.id) return 'a newer recovery exists for the cluster'
+  const members = await listManagedMembers(db, row.managedId)
+  const primary = members.find((member) => member.role === 'primary')
+  if (primary?.id !== row.sourcePrimaryMemberId) return 'the cluster primary changed'
+  return null
+}
+
+type AbortRestartDeps = {
+  staleReason?: typeof abortRestartStaleReason
+  nowMs?: () => number
+}
+
+/**
+ * Queue what brings the old primary back after a planned switchover ended at
+ * the fence deadline. The row is already `blocked` by the guarded change, so a
+ * late stop confirmation cannot start a promote beside it.
+ * - It never acts on a cluster that has moved on: when a newer recovery exists
+ *   or the primary changed (checked before the claim and before every command),
+ *   the todo is cleared and nothing is queued.
+ * - The todo is claimed under the row lock before anything is queued, so two
+ *   sweeps (cleanup lane and cron) do not queue the same commands; a claim
+ *   older than `ABORT_RESTART_CLAIM_MS` (a crashed sweep) is taken over.
+ * - Each run queues only the commands not queued yet (`abortRestartTodo`).
+ *   An error while queueing counts as a try like a command that could not be
+ *   queued. After 3 tries, or at once with no command queue or no source member,
+ *   the row ends `failed` for the operator.
+ */
+async function finishAbortRestart(
+  db: Db,
+  commandQueue: CommandQueue | undefined,
+  recoveryId: string,
+  engine: ManagedEngineCode,
+  actor: RecoveryCommandActor,
+  deps: AbortRestartDeps = {}
+): Promise<void> {
+  const nowMs = (deps.nowMs ?? Date.now)()
+  const staleReason = deps.staleReason ?? abortRestartStaleReason
+  const owed = (current: RecoveryRecord) =>
+    current.state === 'blocked' &&
+    !current.metadata.stopApplied &&
+    (current.metadata.abortRestartTodo?.length ?? 0) > 0
+  const clearTodo = (current: RecoveryRecord) =>
+    owed(current)
+      ? {
+          metadata: {
+            ...current.metadata,
+            abortRestartTodo: [],
+            abortRestartClaimedAt: undefined,
+          },
+        }
+      : null
+
+  const current = await findRecoveryById(db, recoveryId)
+  if (!current || !owed(current)) return
+
+  // Claim under the row lock, before anything is queued.
+  const locked = await updateRecoveryLocked(
+    db,
+    recoveryId,
+    (row) => {
+      if (!owed(row)) return null
+      const claimedAt = Date.parse(row.metadata.abortRestartClaimedAt ?? '')
+      if (Number.isFinite(claimedAt) && nowMs - claimedAt < ABORT_RESTART_CLAIM_MS) return null
+      return {
+        metadata: { ...row.metadata, abortRestartClaimedAt: new Date(nowMs).toISOString() },
+      }
+    },
+    { includeTerminal: true }
+  )
+  if (!locked) return
+
+  const todo = locked.metadata.abortRestartTodo ?? []
+  let stale: string | null = null
+  const before = async () => {
+    if (stale !== null) return false
+    stale = await staleReason(db, locked)
+    return stale === null
+  }
+  let missing: string[]
+  let noWay = false
+  try {
+    const members = await listManagedMembers(db, locked.managedId)
+    const source = members.find((member) => member.id === locked.sourcePrimaryMemberId)
+    if (!commandQueue || !source) {
+      noWay = true
+      missing = ['*']
+    } else {
+      missing = await enqueueSwitchoverAbortReactivation(db, commandQueue, {
+        record: locked,
+        engine,
+        actor,
+        source,
+        members,
+        reactivate: locked.metadata.abortRestartReactivate,
+        before,
+        ...(todo.includes('*') ? {} : { only: new Set(todo) }),
+      })
+    }
+  } catch (error) {
+    compatLogWarn('managed-ha', `abort restart for recovery ${recoveryId} failed: ${String(error)}`)
+    missing = todo
+  }
+  if (stale !== null) {
+    await updateRecoveryLocked(db, recoveryId, clearTodo, { includeTerminal: true })
+    return
+  }
+  const settled = await updateRecoveryLocked(
+    db,
+    recoveryId,
+    (row) => {
+      if (!owed(row)) return null
+      if (missing.length === 0) {
+        return {
+          metadata: { ...row.metadata, abortRestartTodo: [], abortRestartClaimedAt: undefined },
+        }
+      }
+      const attempts = (row.metadata.abortRestartAttempts ?? 0) + 1
+      if (noWay || attempts >= FENCE_ABORT_MAX_ATTEMPTS) {
+        return failedNeedsOperator(row, FENCE_ABORT_NOT_QUEUED_MESSAGE)
+      }
+      return {
+        metadata: {
+          ...row.metadata,
+          abortRestartTodo: missing,
+          abortRestartAttempts: attempts,
+          abortRestartClaimedAt: undefined,
+        },
+      }
+    },
+    { includeTerminal: true }
+  )
+  if (settled?.state === 'failed') {
+    await stampManagedReady(db, settled.managedId)
+    await cancelOpenFenceSteps(
+      db,
+      await loadFenceStepStates(db, settled.metadata.abortRestartStepIds ?? [])
+    )
+  }
+}
+
+async function managedEngineOf(db: Db, managedId: string): Promise<ManagedEngineCode> {
+  const [managedRow] = await db
+    .select({ engine: managed.engine })
+    .from(managed)
+    .where(eq(managed.id, managedId))
+    .limit(1)
+  return isManagedEngineCode(managedRow?.engine) ? managedRow.engine : 'postgres'
+}
+
+/**
+ * The fence deadline backstop (stale sweep, both runtimes): every row that has
+ * been fencing for longer than `FENCE_DEADLINE_MS` is settled by
+ * {@link expireStalledFence}. Never throws. Returns the ids acted on.
+ */
+export async function sweepStalledFencing(
+  db: Db,
+  opts: {
+    commandQueue?: CommandQueue
+    now?: number
+    /** Test seam for the recent rows of a cluster. */
+    recentRecoveries?: typeof listRecentRecoveries
+    /** Test seams for the restart of the old primary. */
+    abortRestart?: AbortRestartDeps
+  } = {}
+): Promise<string[]> {
+  const nowMs = opts.now ?? Date.now()
+  const handled: string[] = []
+  let rows: RecoveryRecord[]
+  let pending: RecoveryRecord[]
+  try {
+    rows = await listFencingRecoveries(db)
+    pending = await listPendingAbortRestarts(db)
+  } catch (error) {
+    compatLogWarn('managed-ha', `fence deadline sweep could not list rows: ${String(error)}`)
+    return handled
+  }
+  await forEachSequential(rows, async (row) => {
+    try {
+      if (
+        await expireStalledFence(
+          db,
+          opts.commandQueue,
+          row,
+          nowMs,
+          opts.recentRecoveries,
+          opts.abortRestart
+        )
+      ) {
+        handled.push(row.id)
+      }
+    } catch (error) {
+      compatLogWarn('managed-ha', `fence deadline for recovery ${row.id} failed: ${String(error)}`)
+    }
+  })
+  // A restart that could not be fully queued earlier is finished here.
+  await forEachSequential(pending, async (row) => {
+    try {
+      await finishAbortRestart(
+        db,
+        opts.commandQueue,
+        row.id,
+        await managedEngineOf(db, row.managedId),
+        { actorType: 'system', actorId: row.id },
+        opts.abortRestart
+      )
+      handled.push(row.id)
+    } catch (error) {
+      compatLogWarn('managed-ha', `abort restart for recovery ${row.id} failed: ${String(error)}`)
+    }
+  })
+  return handled
 }

@@ -3,9 +3,9 @@
  * literal, array, or member must fail even when the field name and `?`
  * marker are unchanged.
  */
-import { assertEquals, assertStringIncludes } from '@std/assert'
+import { assertEquals, assertStringIncludes, assertThrows } from '@std/assert'
 import { dirname, fromFileUrl, join } from '@std/path'
-import { extractFieldSpecs, fieldPinDrift } from './check-contract-drift.mjs'
+import { extractFieldSpecs, fieldPinDrift, snapshotDataDrift } from './check-contract-drift.mjs'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -102,4 +102,36 @@ test("the committed snapshot matches both checkouts' normalized field types", as
     assertEquals(extractFieldSpecs(instanceSrc, typeName), pin.fields)
     assertEquals(extractFieldSpecs(daemonSrc, typeName), pin.fields)
   }
+})
+
+test('snapshotDataDrift ignores layout and names the first differing path', () => {
+  const wrapped = `{
+  "Foo": {
+    "fields": [
+      {
+        "name": "type",
+        "required": true
+      }
+    ]
+  }
+}`
+  const collapsed = `{"Foo": {"fields": [{ "name": "type", "required": true }]}}`
+  assertEquals(snapshotDataDrift(wrapped, collapsed), null)
+  assertEquals(
+    snapshotDataDrift(wrapped, collapsed.replace('"required": true', '"required": false')),
+    '$.Foo.fields[0].required'
+  )
+  assertEquals(snapshotDataDrift(wrapped, `{"Foo": {"fields": []}}`), '$.Foo.fields[0]')
+  assertEquals(snapshotDataDrift(wrapped, `{"Bar": {}}`), '$.Foo')
+})
+
+test('snapshotDataDrift reports a shorter array and a malformed file', () => {
+  assertEquals(snapshotDataDrift(`{"a": [1, 2]}`, `{"a": [1]}`), '$.a[1]')
+  assertEquals(snapshotDataDrift(`{"a": 1, "b": 2}`, `{"b": 2, "a": 1}`), null)
+  assertThrows(
+    () => snapshotDataDrift(`{"a": `, `{}`),
+    Error,
+    'contract-field-snapshot.json on the instance is not valid JSON'
+  )
+  assertThrows(() => snapshotDataDrift(`{}`, `nope`), Error, 'on the daemon is not valid JSON')
 })

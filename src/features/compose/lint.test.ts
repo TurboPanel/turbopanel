@@ -1056,7 +1056,7 @@ test('lintComposeYaml refuses targetPort on a node service hosting entry', () =>
   assertEquals(issue?.line, 8)
 })
 
-test('lintComposeYaml refuses tls.mode automatic with the line that names it', () => {
+test('lintComposeYaml accepts tls.mode automatic (a Lets Encrypt certificate)', () => {
   const source = `services:
   web:
     image: nginx:alpine
@@ -1066,11 +1066,10 @@ test('lintComposeYaml refuses tls.mode automatic with the line that names it', (
           tls:
             mode: automatic
 `
-  const issue = lintComposeYaml(source).find(
-    (row) => row.path === 'services.web.x-turbopanel.hosting[0].tls.mode'
+  assertEquals(
+    lintComposeYaml(source).filter((row) => row.path.includes('.hosting')),
+    []
   )
-  assertEquals(issue?.level, 'error')
-  assertEquals(issue?.line, 8)
 })
 
 test('lintComposeYaml accepts tls.mode internal on a container hosting entry', () => {

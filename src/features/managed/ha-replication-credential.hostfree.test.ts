@@ -131,7 +131,7 @@ function replicationLoginRow(password: string) {
     appliedUsername: 'tp_repl',
     password,
     nameScheme: 'plain',
-    grantMode: 'preset',
+    grantMode: 'recipe',
     isTool: false,
     databases: [],
     privileges: [],
