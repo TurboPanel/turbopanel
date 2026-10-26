@@ -128,6 +128,10 @@ import {
   withRecordedRuntimes,
 } from './deploy-deno-gate.ts'
 import { type SiteEngineFeatureError, withSiteEngineFeature } from './deploy-site-engine-gate.ts'
+import {
+  type NodeAppModeFeatureError,
+  withCustomNodeAppModes,
+} from './deploy-node-app-mode-gate.ts'
 import { type SiteDbBindingsWarning, withSiteDbBindings } from './deploy-site-db-bindings.ts'
 import {
   type BindingDelivery,
@@ -627,6 +631,8 @@ export type DeployPrepareError =
   | SiteEngineFeatureError
   /** A Deno app goes to a daemon that cannot run it, or asks for a series nothing offers. */
   | DenoAppFeatureError
+  /** An app with a custom application mode goes to a daemon that would refuse it. */
+  | NodeAppModeFeatureError
   /**
    * The repository asks for a Node version no offered series satisfies, names
    * one that is not a version range, or (a deploy only) could not be read.
@@ -735,6 +741,8 @@ type HardDeployPrepareError =
   | SiteEngineFeatureError
   // Hard in preview too: a Deno app sent to a daemon that cannot run it would start on Node.
   | DenoAppFeatureError
+  // Hard in preview too: an older daemon would refuse the whole deploy.
+  | NodeAppModeFeatureError
   // Hard in preview too: the build would get a Node the app says it cannot run on.
   | NodeVersionPrepareError
   // Hard in preview too: previewing a deploy that would silently ignore a field
@@ -3252,8 +3260,9 @@ async function resolveManagedNetworkHostName(
 
 /**
  * Everything that depends on which runtime each local native app runs: the
- * Deno feature gate and the repository's Node version. The first refusal wins;
- * a Deno app is refused before anything reads it as Node.
+ * Deno feature gate, the custom application mode gate and the repository's
+ * Node version. The first refusal wins; a Deno app is refused before anything
+ * reads it as Node.
  */
 async function prepareNativeAppRuntimes(
   c: Context<AppEnv>,
@@ -3276,6 +3285,8 @@ async function prepareNativeAppRuntimes(
   const nativeApps = withRecordedRuntimes(args.nativeApps, args.params.rollback?.releaseByService)
   const denoGate = await withDenoNativeApps(db, args.params.serverId, nativeApps)
   if ('kind' in denoGate) return denoGate
+  const appModeGate = await withCustomNodeAppModes(db, args.params.serverId, nativeApps)
+  if ('kind' in appModeGate) return appModeGate
 
   // An app with no `nodeVersion` gets one here from its repository at the
   // commit being deployed.

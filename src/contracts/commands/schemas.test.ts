@@ -4402,6 +4402,24 @@ test('parseEnvironmentDeployPayload round-trips the node app settings', () => {
   ])
 })
 
+test('parseEnvironmentDeployPayload accepts a custom node app mode', () => {
+  for (const appMode of ['staging', 'test', 'qa_2', 'pre-prod.eu', 'a'.repeat(64)]) {
+    const parsed = parseEnvironmentDeployPayload({
+      ...NATIVE_APP_BASE,
+      nativeAppServices: [
+        {
+          composeServiceName: 'web',
+          serviceId: 'svc-web',
+          listenPort: 18100,
+          framework: 'auto',
+          appMode,
+        },
+      ],
+    })
+    assertEquals(parsed.nativeAppServices?.[0]?.appMode, appMode)
+  }
+})
+
 test('parseEnvironmentDeployPayload rejects bad node app settings', () => {
   const entry = {
     composeServiceName: 'web',
@@ -4409,15 +4427,17 @@ test('parseEnvironmentDeployPayload rejects bad node app settings', () => {
     listenPort: 18100,
     framework: 'auto',
   }
-  assertThrows(
-    () =>
-      parseEnvironmentDeployPayload({
-        ...NATIVE_APP_BASE,
-        nativeAppServices: [{ ...entry, appMode: 'staging' }],
-      }),
-    Error,
-    'Invalid nativeAppServices appMode'
-  )
+  for (const appMode of ['', 'my mode', '-staging', 'stage$1', 'a'.repeat(65)]) {
+    assertThrows(
+      () =>
+        parseEnvironmentDeployPayload({
+          ...NATIVE_APP_BASE,
+          nativeAppServices: [{ ...entry, appMode }],
+        }),
+      Error,
+      'Invalid nativeAppServices appMode'
+    )
+  }
   assertThrows(
     () =>
       parseEnvironmentDeployPayload({
