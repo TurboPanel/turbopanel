@@ -39,6 +39,15 @@ export type LetsEncryptHostingRecord = {
 }
 
 export type LetsEncryptStore = {
+  /**
+   * Run `use` in one transaction under the locks that keep a found or created
+   * certificate from being removed before the hosting pins it, with a store
+   * bound to that transaction.
+   */
+  withCertificateLock<T>(
+    hosting: LetsEncryptHostingRecord,
+    use: (store: LetsEncryptStore) => Promise<T>
+  ): Promise<T>
   /** The public addresses of the server this hosting is deployed to (the pinned IP wins). */
   expectedAddresses(hosting: LetsEncryptHostingRecord): Promise<string[]>
   /** Hostnames of the other web hostings in this hosting's environment (what a www twin must not collide with). */
@@ -99,18 +108,22 @@ async function pinCertificate(
   names: string[],
   dns: HostingDnsReport
 ): Promise<LetsEncryptRequestResult> {
-  const { store, hosting } = params
-  const { id: tlsId, created } = await store.managedCertificateFor(hosting.organizationId, names)
-  const changed = hosting.tlsId !== tlsId
-  // A repeat click on a hosting already pinned to this row writes nothing, so
-  // it neither looks like a new change nor sends the certificate out again.
-  if (changed || readPendingLetsEncrypt(hosting) !== null) {
-    await store.saveHosting(hosting.id, {
-      ...(changed ? { tlsId } : {}),
-      ...pendingLetsEncryptPatch(hosting.metadata, null),
-    })
-  }
-  return { ok: true, outcome: 'pinned', tlsId, dns, created, changed }
+  const { hosting } = params
+  // Found or created and pinned in one transaction, so no cleanup can remove
+  // the row between the two.
+  return await params.store.withCertificateLock(hosting, async (store) => {
+    const { id: tlsId, created } = await store.managedCertificateFor(hosting.organizationId, names)
+    const changed = hosting.tlsId !== tlsId
+    // A repeat click on a hosting already pinned to this row writes nothing, so
+    // it neither looks like a new change nor sends the certificate out again.
+    if (changed || readPendingLetsEncrypt(hosting) !== null) {
+      await store.saveHosting(hosting.id, {
+        ...(changed ? { tlsId } : {}),
+        ...pendingLetsEncryptPatch(hosting.metadata, null),
+      })
+    }
+    return { ok: true as const, outcome: 'pinned' as const, tlsId, dns, created, changed }
+  })
 }
 
 async function rememberWaiting(

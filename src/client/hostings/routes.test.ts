@@ -587,11 +587,26 @@ test("DELETE /hostings removes the Let's Encrypt entry made for it once no other
       assertEquals(await exists(shared), false)
       assertEquals((await remove(third)).status, 200)
       assertEquals(await exists(uploaded), true, 'an uploaded certificate is never removed')
+      const unmarked = await certificate('lets_encrypt')
+      assertEquals((await remove(await site(unmarked))).status, 200)
+      assertEquals(await exists(unmarked), true, 'it may be one a person added')
       const trail = await db
-        .select({ action: audit.action, targetId: audit.targetId })
+        .select({
+          action: audit.action,
+          targetId: audit.targetId,
+          actorUserId: audit.actorUserId,
+          context: audit.context,
+        })
         .from(audit)
         .where(eq(audit.organizationId, organizationId))
-      assertEquals(trail, [{ action: 'tls.certificate.delete', targetId: shared }])
+      assertEquals(trail, [
+        {
+          action: 'tls.certificate.delete',
+          targetId: shared,
+          actorUserId: userId,
+          context: { reason: 'its site was deleted', names: ['app.example.test'] },
+        },
+      ])
     } finally {
       await db.delete(hosting).where(eq(hosting.serviceId, serviceId))
       await db.delete(audit).where(eq(audit.organizationId, organizationId))

@@ -22,6 +22,7 @@ import {
 } from '../../db/schema.ts'
 import { buildDeletePlan } from '../projects/delete-plan.ts'
 import { deleteEnvironmentCascade, deleteProjectCascade } from '../projects/project-delete.ts'
+import { lockOrganizationLetsEncrypt } from './unused-letsencrypt.ts'
 
 const dbUrl = getDatabaseUrl()
 
@@ -51,11 +52,21 @@ async function addSite(db: TestDb, serviceId: string, tlsId: string, name: strin
   await db.insert(hosting).values({ serviceId, name, tlsId, options: { hostnames: [name] } })
 }
 
+type CertificateKind = 'site' | 'library' | 'legacy' | 'upload'
+
+/** The marker each kind carries: `legacy` is an entry made before the marker existed. */
+const MARKER_BY_KIND: Record<CertificateKind, Record<string, unknown>> = {
+  site: { acme: { createdFor: 'hosting' } },
+  library: { acme: { createdFor: 'library' } },
+  legacy: {},
+  upload: {},
+}
+
 async function addCertificate(
   db: TestDb,
   organizationId: string,
   name: string,
-  kind: 'site' | 'library' | 'upload'
+  kind: CertificateKind
 ) {
   const [row] = await db
     .insert(tls)
@@ -65,9 +76,7 @@ async function addCertificate(
       status: kind === 'upload' ? 'ready' : 'automatic',
       metadata: {
         dnsNames: [name],
-        ...(kind === 'upload'
-          ? {}
-          : { acme: { createdFor: kind === 'site' ? 'hosting' : 'library' } }),
+        ...MARKER_BY_KIND[kind],
       },
     })
     .returning({ id: tls.id })
@@ -101,12 +110,14 @@ async function world(db: TestDb) {
     shared: await addCertificate(db, organizationId, 'shared.example.com', 'site'),
     staging: await addCertificate(db, organizationId, 'staging.example.com', 'site'),
     library: await addCertificate(db, organizationId, 'library.example.com', 'library'),
+    legacy: await addCertificate(db, organizationId, 'legacy.example.com', 'legacy'),
     uploaded: await addCertificate(db, organizationId, 'uploaded.example.com', 'upload'),
   }
   await addSite(db, a1.serviceId, certs.own, 'own.example.com')
   await addSite(db, a1.serviceId, certs.shared, 'shared.example.com')
   await addSite(db, b1.serviceId, certs.shared, 'shared.example.com')
   await addSite(db, a1.serviceId, certs.library, 'library.example.com')
+  await addSite(db, a1.serviceId, certs.legacy, 'legacy.example.com')
   await addSite(db, a1.serviceId, certs.uploaded, 'uploaded.example.com')
   await addSite(db, a2.serviceId, certs.staging, 'staging.example.com')
   const remaining = async () =>
@@ -186,15 +197,15 @@ test('an environment delete and a project delete remove only the entries nothing
     assertEquals(envResult.ok, true)
     assertEquals(
       await w.remaining(),
-      sorted([w.certs.own, w.certs.shared, w.certs.library, w.certs.uploaded])
+      sorted([w.certs.own, w.certs.shared, w.certs.library, w.certs.legacy, w.certs.uploaded])
     )
 
     const projectResult = await deleteProjectCascade(db, w.projectA)
     assertEquals(projectResult.ok, true)
     assertEquals(
       await w.remaining(),
-      sorted([w.certs.shared, w.certs.library, w.certs.uploaded]),
-      'the shared entry, the hand-added one and the uploaded one stay'
+      sorted([w.certs.shared, w.certs.library, w.certs.legacy, w.certs.uploaded]),
+      'the shared entry, the hand-added one, one made before the marker and the uploaded one stay'
     )
     const trail = await db
       .select({ targetId: audit.targetId })
@@ -204,6 +215,41 @@ test('an environment delete and a project delete remove only the entries nothing
       row.targetId === w.certs.own || row.targetId === w.certs.staging ? [row.targetId] : []
     )
     assertEquals(sorted(removed), sorted([w.certs.own, w.certs.staging]))
+  } finally {
+    await w.cleanup()
+  }
+})
+
+test('a project delete waits for a site being pinned elsewhere, and keeps the entry', async () => {
+  if (!dbUrl) return skipWithoutDatabase('unused Lets Encrypt entry tests')
+  const db = createDenoDb()
+  const w = await world(db)
+  try {
+    let deleting: ReturnType<typeof deleteProjectCascade> | undefined
+    // A deploy's order in another project: its environment row, the
+    // organization's Let's Encrypt lock, then the pin, committed a moment later.
+    await db.transaction(async (tx) => {
+      await tx
+        .select({ id: environment.id })
+        .from(environment)
+        .where(eq(environment.id, w.b1.environmentId))
+        .for('update')
+      await lockOrganizationLetsEncrypt(tx, w.organizationId)
+      await tx.insert(hosting).values({
+        serviceId: w.b1.serviceId,
+        name: 'own.example.com',
+        tlsId: w.certs.own,
+        options: { hostnames: ['own.example.com'] },
+      })
+      deleting = deleteProjectCascade(db, w.projectA)
+      await new Promise((resolve) => setTimeout(resolve, 300))
+    })
+    assertEquals((await deleting!).ok, true)
+    assertEquals(
+      (await w.remaining()).includes(w.certs.own),
+      true,
+      'the site pinned meanwhile keeps it'
+    )
   } finally {
     await w.cleanup()
   }

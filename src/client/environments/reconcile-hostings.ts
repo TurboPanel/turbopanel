@@ -889,7 +889,9 @@ async function reconcileHostingsInTransaction(
 
   // A removed route, or one that no longer asks for Let's Encrypt, lets go of
   // its entry; the entry goes when no other site in the organization uses it.
-  await removeUnusedSiteCertificates(db, certificateIds, 'no site uses it after a deploy')
+  await removeUnusedSiteCertificates(db, certificateIds, {
+    reason: 'no site uses it after a deploy',
+  })
 
   return {
     ok: true,

@@ -38,7 +38,10 @@ import {
 } from '../bindings/enqueue-change.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
 import { type ProjectPrincipalFate, requestProjectPrincipalRemoval } from '../principals/removal.ts'
-import { certificateIdsPinnedBy, removeUnusedSiteCertificates } from '../tls/unused-letsencrypt.ts'
+import {
+  lockCertificatesPinnedBy,
+  removeUnusedSiteCertificates,
+} from '../tls/unused-letsencrypt.ts'
 
 /** Docker Compose states that are considered fully stopped (safe to cascade-delete). */
 const STOPPED_CONTAINER_STATUSES = new Set(['exited', 'dead', 'removing'])
@@ -108,6 +111,8 @@ type EnvironmentRowSet = {
   hostingIds: string[]
   /** Set when the whole project goes too (storage retention is scoped by it). */
   projectId?: string
+  /** The person deleting, for the audit trail; absent for a forget. */
+  actorUserId?: string
 }
 
 /**
@@ -208,6 +213,10 @@ async function dropEnvironmentRows(tx: Db, rows: EnvironmentRowSet): Promise<str
   // One lock order everywhere: the project row first, then the environment rows.
   const projectIds = rows.projectId ? [rows.projectId] : await projectIdsOf(tx, environmentIds)
   await lockProjectsForEnvironmentChange(tx, projectIds)
+  await lockEnvironmentRows(tx, environmentIds)
+  // The Let's Encrypt lock before any site row is touched: a deploy takes it
+  // after its environment row, so this order never waits on one in a cycle.
+  const certificateIds = await lockCertificatesPinnedBy(tx, hostingIds)
   const retentionScope = {
     ...(rows.projectId ? { projectIds: [rows.projectId] } : {}),
     environmentIds,
@@ -241,10 +250,12 @@ async function dropEnvironmentRows(tx: Db, rows: EnvironmentRowSet): Promise<str
     await tx.delete(container).where(inArray(container.id, containerIds))
   }
   if (hostingIds.length > 0) {
-    const certificateIds = await certificateIdsPinnedBy(tx, hostingIds)
     await tx.delete(hosting).where(inArray(hosting.id, hostingIds))
     // The Let's Encrypt entries made for these sites go too, unless another site uses one.
-    await removeUnusedSiteCertificates(tx, certificateIds, 'its sites were deleted')
+    await removeUnusedSiteCertificates(tx, certificateIds, {
+      reason: 'its sites were deleted',
+      ...(rows.actorUserId ? { actor: { userId: rows.actorUserId } } : {}),
+    })
   }
   if (serviceIds.length > 0) {
     // A shared service's folder row stays, locked, until the host confirms it gone.
@@ -259,6 +270,16 @@ async function dropEnvironmentRows(tx: Db, rows: EnvironmentRowSet): Promise<str
   // Deleting a whole project removes every environment with it; nothing is left to promote.
   if (!rows.projectId && projectIds.length > 0) await promoteOldestAsPrimary(tx, projectIds)
   return [...folderServerIds].sort((a, b) => a.localeCompare(b))
+}
+
+/** The environment rows, locked in id order (after their project rows). */
+async function lockEnvironmentRows(tx: Db, environmentIds: readonly string[]): Promise<void> {
+  if (environmentIds.length === 0) return
+  const ids = sql.join(
+    environmentIds.map((id) => sql`${id}::uuid`),
+    sql`, `
+  )
+  await tx.execute(sql`SELECT 1 FROM "environment" WHERE "id" IN (${ids}) ORDER BY "id" FOR UPDATE`)
 }
 
 async function projectIdsOf(tx: Db, environmentIds: readonly string[]): Promise<string[]> {
@@ -384,7 +405,7 @@ export async function deleteProjectCascade(
   // created meanwhile cannot slip past the child cleanup the others get.
   const outcome = await db.transaction(async (tx) => {
     await lockProjectForEnvironmentChange(tx, projectId)
-    return await deleteProjectLocked(tx, projectId, allowRunning)
+    return await deleteProjectLocked(tx, projectId, allowRunning, listenerSync?.actorId)
   })
   if ('refused' in outcome) return outcome.refused
   const cleanup = { folderServerIds: outcome.folderServerIds, principals: outcome.principals }
@@ -447,7 +468,8 @@ type LockedProjectDelete =
 async function deleteProjectLocked(
   tx: Db,
   projectId: string,
-  allowRunning: boolean
+  allowRunning: boolean,
+  actorUserId?: string
 ): Promise<LockedProjectDelete> {
   const envRows = await tx
     .select({ id: environment.id })
@@ -477,6 +499,7 @@ async function deleteProjectLocked(
     environmentIds.length > 0
       ? await dropEnvironmentRows(tx, {
           projectId,
+          ...(actorUserId ? { actorUserId } : {}),
           environmentIds,
           serviceIds: children.serviceIds,
           containerIds: children.containerRows.map((row) => row.id),
@@ -677,6 +700,7 @@ export async function deleteEnvironmentCascade(
     // Under the project lock: a "make primary" racing this delete is seen.
     if (await deleteWouldOrphanPrimary(tx, environmentId)) return null
     return await dropEnvironmentRows(tx, {
+      ...(listenerSync ? { actorUserId: listenerSync.actorId } : {}),
       environmentIds: [environmentId],
       serviceIds: children.serviceIds,
       containerIds: children.containerRows.map((row) => row.id),

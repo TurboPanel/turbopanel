@@ -38,6 +38,10 @@ import { inetAddressToString } from '../../lib/ip-address.ts'
 import { coversAllHostnames } from '../../lib/tls/match.ts'
 import { splitTlsMetadata } from '../../lib/tls/metadata.ts'
 import { materialFromLetsEncrypt, isCreateTlsFailure } from '../tls/routes-helpers.ts'
+import {
+  LETS_ENCRYPT_CREATED_FOR_SITES,
+  lockOrganizationLetsEncrypt,
+} from '../../features/tls/unused-letsencrypt.ts'
 
 export async function loadAcmeEnabled(db: Db, organizationId: string): Promise<boolean> {
   const [row] = await db
@@ -143,7 +147,10 @@ async function createManagedCertificate(
   organizationId: string,
   names: readonly string[]
 ): Promise<string> {
-  const material = materialFromLetsEncrypt({ hostnames: [...names] }, 'hosting')
+  const material = materialFromLetsEncrypt(
+    { hostnames: [...names] },
+    LETS_ENCRYPT_CREATED_FOR_SITES
+  )
   if (isCreateTlsFailure(material)) throw new Error(material.error)
   const { columns, residual } = splitTlsMetadata(material.metadata)
   const [inserted] = await db
@@ -176,16 +183,42 @@ export async function managedCertificateFor(
   names: readonly string[]
 ): Promise<{ id: string; created: boolean }> {
   return await db.transaction(async (tx) => {
-    const lockKey = 'tls-lets-encrypt:' + organizationId
-    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`)
+    await lockOrganizationLetsEncrypt(tx, organizationId)
     const existing = await findManagedCertificate(tx, organizationId, names)
     if (existing !== null) return { id: existing, created: false }
     return { id: await createManagedCertificate(tx, organizationId, names), created: true }
   })
 }
 
+/**
+ * Run `use` in one transaction holding the hosting's environment row, then the
+ * organization's Let's Encrypt lock (the order a deploy takes them in), so a
+ * certificate found or created there is pinned before anything can remove it.
+ */
+async function withHostingCertificateLock<T>(
+  db: Db,
+  hostingId: string,
+  organizationId: string,
+  use: (store: LetsEncryptStore) => Promise<T>
+): Promise<T> {
+  return await db.transaction(async (tx) => {
+    await tx
+      .select({ id: environment.id })
+      .from(environment)
+      .innerJoin(service, eq(service.environmentId, environment.id))
+      .innerJoin(hosting, eq(hosting.serviceId, service.id))
+      .where(eq(hosting.id, hostingId))
+      .for('update', { of: environment })
+    await lockOrganizationLetsEncrypt(tx, organizationId)
+    return await use(createLetsEncryptStore(tx))
+  })
+}
+
 export function createLetsEncryptStore(db: Db): LetsEncryptStore {
   return {
+    withCertificateLock: (record, use) =>
+      withHostingCertificateLock(db, record.id, record.organizationId, use),
+
     expectedAddresses: (record) => loadExpectedAddresses(db, record.id),
 
     otherWebHostnames: (record) => loadOtherWebHostnames(db, record.id),

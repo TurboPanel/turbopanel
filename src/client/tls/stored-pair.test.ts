@@ -8,6 +8,7 @@ import { assertEquals } from '@std/assert'
 import { eq } from 'drizzle-orm'
 import { createDenoDb } from '../../db/connection.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
+import { lockOrganizationLetsEncrypt } from '../../features/tls/unused-letsencrypt.ts'
 import {
   audit,
   environment,
@@ -43,6 +44,8 @@ type RowShape = {
   name?: string | null
   /** False: the row holds no issued pair yet. */
   pair?: boolean
+  /** The server once reported a certificate in place (its pair may since have been erased). */
+  issuedBefore?: boolean
 }
 
 async function setup(pin: boolean, shape: RowShape = {}) {
@@ -73,6 +76,7 @@ async function setup(pin: boolean, shape: RowShape = {}) {
           storedNames: ['a.example.com'],
           notAfter: '2030-01-01T00:00:00.000Z',
           ...(createdFor === null ? {} : { createdFor }),
+          ...(shape.issuedBefore ? { lastIssuedAt: '2026-01-01T00:00:00.000Z' } : {}),
         },
       },
     })
@@ -253,14 +257,38 @@ test('an unused entry that never got a certificate goes once it has been left al
   }
 })
 
-test('an entry made before the marker, with no name, is swept like one made for a site', async () => {
+/** Runs the sweep twice, `days` days apart from now, so a stamped row's keep can run out. */
+async function sweepAcross(db: ReturnType<typeof createDenoDb>, days: number) {
+  const start = Date.now()
+  await runStoredPairSweepTick(db, { now: () => new Date(start) })
+  return await runStoredPairSweepTick(db, { now: () => new Date(start + days * DAY_MS) })
+}
+
+test('an entry made before the marker keeps the 30 days, even with no name and no certificate', async () => {
   if (!dbUrl) return skipWithoutDatabase('stored pair lifecycle tests')
   const f = await setup(false, { pair: false, createdFor: null, name: null })
   try {
     await runStoredPairSweepTick(f.db, {
       now: () => new Date(Date.now() + EMPTY_ENTRY_GRACE_MS + 60_000),
     })
+    assertEquals((await f.read())?.id, f.tlsId, 'it may be one a person added')
+    const late = await sweepAcross(f.db, STORED_PAIR_KEEP_DAYS + 1)
+    assertEquals(late.deleted, 1)
     assertEquals(await f.read(), undefined)
+  } finally {
+    await f.cleanup()
+  }
+})
+
+test('an entry whose certificate was erased keeps the 30 days', async () => {
+  if (!dbUrl) return skipWithoutDatabase('stored pair lifecycle tests')
+  const f = await setup(false, { pair: false, issuedBefore: true })
+  try {
+    const first = await runStoredPairSweepTick(f.db, {
+      now: () => new Date(Date.now() + EMPTY_ENTRY_GRACE_MS + 60_000),
+    })
+    assertEquals(first.stamped, 1)
+    assertEquals((await f.read())?.id, f.tlsId)
   } finally {
     await f.cleanup()
   }
@@ -268,16 +296,38 @@ test('an entry made before the marker, with no name, is swept like one made for 
 
 test("a Let's Encrypt entry a person added to the library is never swept", async () => {
   if (!dbUrl) return skipWithoutDatabase('stored pair lifecycle tests')
-  const library = await setup(false, { pair: false, createdFor: 'library', name: null })
-  const named = await setup(false, { pair: false, createdFor: null, name: 'Mine' })
+  const f = await setup(false, { pair: false, createdFor: 'library', name: null })
   try {
-    const far = () => new Date(Date.now() + 90 * DAY_MS)
-    await runStoredPairSweepTick(library.db, { now: far })
-    await runStoredPairSweepTick(library.db, { now: far })
-    assertEquals((await library.read())?.id, library.tlsId)
-    assertEquals((await named.read())?.id, named.tlsId)
+    const late = await sweepAcross(f.db, 90)
+    assertEquals(late.stamped + late.deleted, 0)
+    assertEquals((await f.read())?.id, f.tlsId)
   } finally {
-    await library.cleanup()
-    await named.cleanup()
+    await f.cleanup()
+  }
+})
+
+test('the sweep keeps an entry a site pins while it waits for the lock', async () => {
+  if (!dbUrl) return skipWithoutDatabase('stored pair lifecycle tests')
+  const f = await setup(false, { pair: false })
+  try {
+    const due = () => new Date(Date.now() + EMPTY_ENTRY_GRACE_MS + 60_000)
+    let sweep: Promise<{ deleted: number }> | undefined
+    // The button's path: the lock, then the pin, then commit a moment later.
+    await f.db.transaction(async (tx) => {
+      await lockOrganizationLetsEncrypt(tx, f.organizationId)
+      await tx.update(hosting).set({ tlsId: f.tlsId }).where(eq(hosting.id, f.hostingId))
+      sweep = runStoredPairSweepTick(f.db, { now: due })
+      await new Promise((resolve) => setTimeout(resolve, 300))
+    })
+    const result = await sweep!
+    assertEquals(result.deleted, 0)
+    assertEquals((await f.read())?.id, f.tlsId)
+    const [site] = await f.db
+      .select({ tlsId: hosting.tlsId })
+      .from(hosting)
+      .where(eq(hosting.id, f.hostingId))
+    assertEquals(site?.tlsId, f.tlsId)
+  } finally {
+    await f.cleanup()
   }
 })

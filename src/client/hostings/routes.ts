@@ -6,9 +6,9 @@ import { createSessionMiddleware } from '../authn/middleware.ts'
 import { assertCanOr403, listVisible } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import { getDb, type Db } from '../../db/connection.ts'
-import { hosting } from '../../db/schema.ts'
+import { environment, hosting, service } from '../../db/schema.ts'
 import {
-  certificateIdsPinnedBy,
+  lockCertificatesPinnedBy,
   removeUnusedSiteCertificates,
 } from '../../features/tls/unused-letsencrypt.ts'
 import {
@@ -375,9 +375,15 @@ export function registerHostingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     if (composeOwned) return composeOwned
 
     const result = await runHierarchyDelete(db, async (tx) => {
-      const certificateIds = await certificateIdsPinnedBy(tx, [id])
+      // The environment row, then the Let's Encrypt lock, then the site: the
+      // order a deploy takes them in.
+      await lockHostingEnvironment(tx, id)
+      const certificateIds = await lockCertificatesPinnedBy(tx, [id])
       await tx.delete(hosting).where(eq(hosting.id, id))
-      await removeUnusedSiteCertificates(tx, certificateIds, 'its site was deleted')
+      await removeUnusedSiteCertificates(tx, certificateIds, {
+        reason: 'its site was deleted',
+        actor: { userId: session.userId, email: session.email ?? null },
+      })
     })
     if (result === 'has_children') {
       return hierarchyDeleteHasChildrenResponse(c)
@@ -385,4 +391,15 @@ export function registerHostingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     return c.json({ ok: true as const })
   })
+}
+
+/** Lock the environment row a hosting belongs to (a deploy holds it while it changes sites). */
+async function lockHostingEnvironment(tx: Db, hostingId: string): Promise<void> {
+  await tx
+    .select({ id: environment.id })
+    .from(environment)
+    .innerJoin(service, eq(service.environmentId, environment.id))
+    .innerJoin(hosting, eq(hosting.serviceId, service.id))
+    .where(eq(hosting.id, hostingId))
+    .for('update', { of: environment })
 }
