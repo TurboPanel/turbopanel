@@ -155,7 +155,7 @@ in the execution-log store — there is no Postgres column for them. See
   follows the same rule.
   Commands run **one at a time per server** (`command-lanes.ts`): the consumer
   parses each delivery, hands it to the lane of its envelope's `serverId`, and
-  acks or nacks only after the lane has run it. Different servers run in
+  acks or nacks only after the command has finished. Different servers run in
   parallel (cap `COMMAND_LANE_CONCURRENCY`, lanes take turns); same-server
   commands keep arrival order, which keeps same-service ordering because a
   managed service lives on one server. A deploy (`environment.deploy`) is the
