@@ -1968,6 +1968,53 @@ describe.sequential('DaemonCellObject', () => {
     ws.close(1000, 'test done')
   })
 
+  it('stores and confirms an outcome sent on a new socket after the dispatch socket closed', async () => {
+    const serverId = 'test-srv-outcome-after-reconnect'
+    const stub = env.DAEMON_CELL.getByName(serverId)
+    const first = await openDaemonWebSocket(stub, serverId)
+    const firstFrames: Array<{ type?: string }> = []
+    first.ws.addEventListener('message', (event) => {
+      firstFrames.push(JSON.parse(String(event.data)) as { type?: string })
+    })
+    const requestId = generateRequestId()
+    await enqueuePing(stub, serverId, requestId, generateDeliveryId())
+    await waitFor(() => {
+      expect(firstFrames.some((frame) => frame.type === 'command-dispatch')).toBe(true)
+    })
+    const at = new Date().toISOString()
+    first.ws.send(JSON.stringify({ type: 'command-ack', id: requestId, at, daemonReceivedAt: at }))
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    first.ws.close(1001, 'link lost')
+
+    const second = await openDaemonWebSocket(stub, serverId)
+    const frames: Array<{ type?: string; id?: string }> = []
+    second.ws.addEventListener('message', (event) => {
+      frames.push(JSON.parse(String(event.data)) as { type?: string; id?: string })
+    })
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    second.ws.send(
+      JSON.stringify({
+        type: 'command-outcome',
+        id: requestId,
+        at: new Date().toISOString(),
+        ok: true,
+        result: { pong: true },
+        daemonReceivedAt: at,
+        daemonRespondedAt: at,
+      })
+    )
+    await waitFor(() => {
+      expect(frames).toContainEqual(
+        expect.objectContaining({ type: 'command-outcome-ack', id: requestId })
+      )
+    })
+    const stored = await cellRpc(stub, serverId, `/rpc/request?requestId=${requestId}`, {
+      method: 'GET',
+    })
+    expect(((await stored.json()) as { record: { status: string } }).record.status).toBe('done')
+    second.ws.close(1000, 'test done')
+  })
+
   it('does not send a finished command to the server again on a second delivery', async () => {
     const serverId = 'test-srv-no-redispatch-after-result'
     const stub = env.DAEMON_CELL.getByName(serverId)
