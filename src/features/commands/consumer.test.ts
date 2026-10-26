@@ -6468,6 +6468,33 @@ test('a deploy that waited hours for the server is handed back to the queue, not
   })
 })
 
+test('a deploy the server already has gives up its server lane while it is waited on', async () => {
+  await withConsumerFixtures(async ({ db, serverId }) => {
+    await attachConnectedDaemonStatus(db, serverId)
+    const record = await sentDeploy(db, serverId, {
+      sentAgoMs: 3 * 60 * 60_000,
+      runningSinceAgoMs: null,
+    })
+    const registry = registryWithRequest(serverId, (id) => ACKED_REQUEST(serverId, id))
+    const { sent, queue } = fakeQueue()
+    let lanesLeft = 0
+
+    await processCommandEnvelope(db, registry, buildEnvelope(record, serverId), {
+      commandQueue: queue,
+      firewallApplyGate: DENY_FIREWALL_APPLY,
+      deployWaitHoldMs: 0,
+      leaveLane: () => {
+        lanesLeft += 1
+      },
+    })
+
+    // The lane was freed for the server's other commands before the wait was handed back.
+    assertEquals(lanesLeft, 1)
+    assertEquals(sent.length, 1)
+    assertEquals((await getCommandRecord(db, record.id))?.status, 'sent')
+  })
+})
+
 test('a deploy that has been running longer than the run cap times out, counted from its start', async () => {
   await withConsumerFixtures(async ({ db, serverId }) => {
     await attachConnectedDaemonStatus(db, serverId)

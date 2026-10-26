@@ -608,12 +608,12 @@ test('a broker that dies during the reconnect handshake is retried, not installe
 function heldLanes() {
   const held: Array<{ key: string; start: () => Promise<void> }> = []
   const lanes: LaneScheduler = {
-    run: <T>(key: string, task: () => Promise<T>) =>
+    run: <T>(key: string, task: (release: () => void) => Promise<T>) =>
       new Promise<T>((resolve, reject) => {
         held.push({
           key,
           start: () =>
-            task()
+            task(() => undefined)
               .then(resolve, reject)
               .then(() => undefined),
         })

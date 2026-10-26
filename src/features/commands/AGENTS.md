@@ -155,10 +155,21 @@ in the execution-log store — there is no Postgres column for them. See
   follows the same rule.
   Commands run **one at a time per server** (`command-lanes.ts`): the consumer
   parses each delivery, hands it to the lane of its envelope's `serverId`, and
-  acks or nacks only after the lane has run it. Different servers run in
+  acks or nacks only after the command has finished. Different servers run in
   parallel (cap `COMMAND_LANE_CONCURRENCY`, lanes take turns); same-server
   commands keep arrival order, which keeps same-service ordering because a
-  managed service lives on one server. Cross-server ordering is never assumed:
+  managed service lives on one server. A deploy (`environment.deploy`) is the
+  one command that gives its lane up before it ends: once the server reports
+  it (`progress.runningSince` set or `null`), or `DEPLOY_SIGNAL_GRACE_MS`
+  after it was sent with no word (`deployMayLeaveLane` in `deploy-wait.ts`),
+  the rest of its wait runs outside the lane and the delivery is acked or
+  nacked when that wait ends. Before this a deploy the server had lost, or one
+  waiting on a result, held its server's lane in 12 minute turns for up to the
+  6 hour reconcile window, and every other command for that server waited
+  behind it. Order still holds: the deploy is put on the server's connection
+  inside the lane, the server deploys one environment at a time under the
+  environment's lock (a stop or destroy of that environment waits for it) and
+  runs one build at a time. Cross-server ordering is never assumed:
   it lives in command metadata (see multi-command sequencing). `prefetch` is
   `COMMAND_CONSUMER_PREFETCH` so a backlog can wait in its lane; a delivery
   still waiting when the session is lost or closed is skipped (left

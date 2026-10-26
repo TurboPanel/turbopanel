@@ -186,3 +186,76 @@ test('a task that throws before returning a promise is contained in its lane', a
   assertEquals(message, 'sync boom')
   assertEquals(await next, 'ok')
 })
+
+test('a task waiting on a result that releases its lane no longer blocks its server', async () => {
+  const lanes = createLaneScheduler({ maxConcurrent: 8 })
+  // A deploy the server has taken over: it waits for hours on a result.
+  const outcome = deferred()
+  const events: string[] = []
+  const deploy = lanes.run('server-a', async (release) => {
+    events.push('deploy sent')
+    release()
+    await outcome.promise
+    events.push('deploy settled')
+  })
+  const next = lanes.run('server-a', () => {
+    events.push('next deploy')
+    return Promise.resolve()
+  })
+  await next
+  await settle()
+  assertEquals(events, ['deploy sent', 'next deploy'])
+  // The released task stays pending but no longer counts as holding a lane.
+  assertEquals(lanes.activeCount(), 0)
+  outcome.release()
+  await deploy
+  await settle()
+  assertEquals(events, ['deploy sent', 'next deploy', 'deploy settled'])
+  assertEquals(lanes.activeCount(), 0)
+})
+
+test('releasing a lane twice, or releasing and then ending, frees it only once', async () => {
+  const lanes = createLaneScheduler({ maxConcurrent: 1 })
+  const hold = deferred()
+  const started: string[] = []
+  const first = lanes.run('a', async (release) => {
+    release()
+    release()
+    await hold.promise
+  })
+  const second = lanes.run('b', async () => {
+    started.push('b')
+    await hold.promise
+  })
+  const third = lanes.run('c', () => {
+    started.push('c')
+    return Promise.resolve()
+  })
+  await settle()
+  // Cap 1: `a` gave its slot to `b`; a second release must not let `c` in too.
+  assertEquals(started, ['b'])
+  assertEquals(lanes.activeCount(), 1)
+  hold.release()
+  await Promise.all([first, second, third])
+  await settle()
+  assertEquals(started, ['b', 'c'])
+  assertEquals(lanes.activeCount(), 0)
+})
+
+test('a released task that fails still rejects its caller', async () => {
+  const lanes = createLaneScheduler({ maxConcurrent: 1 })
+  const failed = lanes.run('a', async (release) => {
+    release()
+    await Promise.resolve()
+    throw new Error('lost outcome')
+  })
+  const next = lanes.run('a', () => Promise.resolve('ok'))
+  let message = ''
+  await failed.catch((error: Error) => {
+    message = error.message
+  })
+  assertEquals(message, 'lost outcome')
+  assertEquals(await next, 'ok')
+  await settle()
+  assertEquals(lanes.activeCount(), 0)
+})
