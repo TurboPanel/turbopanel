@@ -165,6 +165,27 @@ export async function settleReportedOutcome(
   return true
 }
 
+const WAITING_REQUEST_STATUSES: ReadonlySet<string> = new Set(['queued', 'sent', 'acked'])
+const ANSWERED_REQUEST_STATUSES: ReadonlySet<string> = new Set(['done', 'failed'])
+
+/**
+ * Did this `command-outcome` frame just land in a request that was waiting for
+ * it? Then the result is stored (the consumer settles it from the cell) and
+ * the daemon may drop its copy without a Postgres check, so a slow or failing
+ * database never keeps a result unconfirmed.
+ */
+export function outcomeStoredInCell(
+  before: PendingRequestRecord | null,
+  after: PendingRequestRecord | null
+): boolean {
+  return (
+    before !== null &&
+    after !== null &&
+    WAITING_REQUEST_STATUSES.has(before.status) &&
+    ANSWERED_REQUEST_STATUSES.has(after.status)
+  )
+}
+
 /**
  * After a `command-outcome` frame has been applied: the ack to send back, or
  * `null` when the daemon should keep its copy (an older daemon that does not

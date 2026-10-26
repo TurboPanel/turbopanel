@@ -51,7 +51,9 @@ import { recordInstanceAcmeIssuance } from '../../features/install/instance-host
 import { recordCommandProgress } from '../../features/commands/command-progress.ts'
 import {
   ackForReportedOutcome,
+  commandOutcomeAckMessage,
   noteReportedCommands,
+  outcomeStoredInCell,
 } from '../../features/commands/command-recovery.ts'
 import {
   persistDaemonReachedTarget,
@@ -271,6 +273,11 @@ function outboxRetryDelayMs(retryCount: number): number {
 
 function isTerminalStatus(status: PendingRequestStatus): boolean {
   return TERMINAL_STATUSES.has(status)
+}
+
+/** The daemon reported a result (`done` / `failed`); `expired` is the control plane giving up. */
+function isAnsweredStatus(status: PendingRequestStatus): boolean {
+  return status === 'done' || status === 'failed'
 }
 
 function daemonBuildIdentityEqual(
@@ -2650,8 +2657,12 @@ export class DaemonCellObject {
     )
     if (existingRow) {
       const existingDeliveryId = sqlString(existingRow.delivery_id)
-      if (existingDeliveryId === outbound.deliveryId) {
-        return parseRequestRow(serverId, existingRow)
+      const existing = parseRequestRow(serverId, existingRow)
+      // The same delivery again, or a command whose result is already here:
+      // nothing to send. A finished command sent twice would only make the
+      // daemon answer a repeat.
+      if (existingDeliveryId === outbound.deliveryId || isAnsweredStatus(existing.status)) {
+        return existing
       }
 
       // Re-delivery: refresh delivery fields; leave correlation status alone.
@@ -2772,14 +2783,36 @@ export class DaemonCellObject {
       })
       return
     }
+    const before =
+      inbound.kind === 'command-outcome' ? this.#readRequestRow(serverId, inbound.requestId) : null
     const record = await this.#handleInbound(serverId, inbound)
     if (inbound.kind === 'command-outcome' && ws) {
-      // The daemon keeps its copy of the result until this confirms it is stored.
-      const ack = await this.#withProjectionDbResult('command-outcome-ack', serverId, (db) =>
-        ackForReportedOutcome(db, { serverId, envelope: inbound, record })
-      )
-      if (ack) ws.send(JSON.stringify(ack))
+      await this.#ackReportedOutcome(serverId, inbound, before, record, ws)
     }
+  }
+
+  /**
+   * The daemon keeps its copy of a result until this confirms it is stored. A
+   * result this frame just wrote into a waiting request is stored: the
+   * consumer settles it from the cell, so the ack goes back at once and never
+   * waits on Postgres. Only a result the cell could not take (no request, or
+   * one already given up on) is checked against the command row first.
+   */
+  async #ackReportedOutcome(
+    serverId: string,
+    inbound: Extract<DaemonInboundEnvelope, { kind: 'command-outcome' }>,
+    before: PendingRequestRecord | null,
+    record: PendingRequestRecord | null,
+    ws: WebSocket
+  ): Promise<void> {
+    if (outcomeStoredInCell(before, record)) {
+      ws.send(JSON.stringify(commandOutcomeAckMessage(inbound.requestId, nowIso())))
+      return
+    }
+    const ack = await this.#withProjectionDbResult('command-outcome-ack', serverId, (db) =>
+      ackForReportedOutcome(db, { serverId, envelope: inbound, record })
+    )
+    if (ack) ws.send(JSON.stringify(ack))
   }
 
   /**
