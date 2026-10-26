@@ -5,8 +5,8 @@ This file is generated from the resolved dependency graph. Do not edit it by han
 Third-party components remain under their own copyright and license terms and are not relicensed by TurboPanel Control Plane's repository license (AGPL-3.0-only).
 
 <!-- lockfiles
-deno.lock sha256:40e36da4541a1362f13a6b8f6b767435aaa3b7605159989c7485e64ba39f2187
-pnpm-lock.yaml sha256:1326dd552e2b3444e8303b6b974d92e02651b9349471368a41b935b5df888edd
+deno.lock sha256:db7700ec855cd8560d61b13fa462c70c192a1c83abd316c4fc57e08a18e53d47
+pnpm-lock.yaml sha256:72b5543a438ed2b16df69fe14facc16eeab5c33a37a44a27c62afabbd3d5cd43
 -->
 
 ## Production dependencies
