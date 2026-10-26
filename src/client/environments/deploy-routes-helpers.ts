@@ -715,6 +715,19 @@ function tryMapDenoPrepareError(prepared: DeployPrepareError): PrepareErrorRespo
   }
 }
 
+function tryMapNodeAppModeFeatureError(prepared: DeployPrepareError): PrepareErrorResponse | null {
+  if (prepared.kind !== 'node_app_mode_feature_missing') return null
+  return {
+    status: 422,
+    body: {
+      error: 'node_app_mode_feature_missing',
+      composeServiceName: prepared.composeServiceName,
+      appMode: prepared.appMode,
+      message: `App "${prepared.composeServiceName}" uses the custom application mode "${prepared.appMode}", but the TurboPanel daemon on this server is too old to run apps in a custom mode. Update the daemon on this server, then deploy again, or set the mode to production or development.`,
+    },
+  }
+}
+
 /** How to pin a Node version on the service, for the error messages below. */
 function pinHint(composeServiceName: string, example: string): string {
   return `To choose one yourself, add to service "${composeServiceName}": x-turbopanel: { nodeVersion: "${example}" }.`
@@ -772,6 +785,7 @@ export function mapPrepareErrorResponse(prepared: DeployPrepareError): PrepareEr
     tryMapSiteEngineFeatureError(prepared) ??
     tryMapBindingHostSiteError(prepared) ??
     tryMapDenoPrepareError(prepared) ??
+    tryMapNodeAppModeFeatureError(prepared) ??
     tryMapSitePrepareError(prepared) ??
     tryMapNativeAppUnresolvedPrepareError(prepared) ??
     tryMapPrincipalPrepareError(prepared) ??
