@@ -19,6 +19,11 @@ export type TlsAcmeMetadata = {
   storedNames?: string[]
   /** The server whose Caddy issued the stored certificate (its daemon sent the pair). */
   issuedByServerId?: string
+  /**
+   * Who asked for the entry: `hosting` when a site's "Use Let's Encrypt" made
+   * it (removed once no site uses it), `library` when a person added it.
+   */
+  createdFor?: 'hosting' | 'library'
 }
 
 /**

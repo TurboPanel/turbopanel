@@ -18,7 +18,12 @@ import {
   tls,
   workspace,
 } from '../../db/schema.ts'
-import { eraseStoredPairs, runStoredPairSweepTick, STORED_PAIR_KEEP_DAYS } from './stored-pair.ts'
+import {
+  EMPTY_ENTRY_GRACE_MS,
+  eraseStoredPairs,
+  runStoredPairSweepTick,
+  STORED_PAIR_KEEP_DAYS,
+} from './stored-pair.ts'
 
 const dbUrl = getDatabaseUrl()
 
@@ -32,7 +37,17 @@ const test = Deno.test.bind(Deno)
 
 const DAY_MS = 86_400_000
 
-async function setup(pin: boolean) {
+type RowShape = {
+  /** `tls.metadata.acme.createdFor`; `null` leaves the marker out (a row made before it). */
+  createdFor?: 'hosting' | 'library' | null
+  name?: string | null
+  /** False: the row holds no issued pair yet. */
+  pair?: boolean
+}
+
+async function setup(pin: boolean, shape: RowShape = {}) {
+  const createdFor = shape.createdFor === undefined ? 'hosting' : shape.createdFor
+  const pair = shape.pair !== false
   const db = createDenoDb()
   const now = new Date().toISOString()
   const [org] = await db
@@ -44,17 +59,21 @@ async function setup(pin: boolean) {
     .insert(tls)
     .values({
       organizationId,
-      name: 'Lets Encrypt pair',
+      name: shape.name === undefined ? 'Lets Encrypt pair' : shape.name,
       source: 'lets_encrypt',
       status: 'automatic',
-      certificatePem: 'CHAIN',
-      privateKeyPem: 'tpsecret.v1.sealed',
+      certificatePem: pair ? 'CHAIN' : null,
+      privateKeyPem: pair ? 'tpsecret.v1.sealed' : null,
       notAfter: '2030-01-01T00:00:00.000Z',
       fingerprintSha256: `fp-${crypto.randomUUID()}`,
       metadata: {
         dnsNames: ['a.example.com'],
         extra: 'kept',
-        acme: { storedNames: ['a.example.com'], notAfter: '2030-01-01T00:00:00.000Z' },
+        acme: {
+          storedNames: ['a.example.com'],
+          notAfter: '2030-01-01T00:00:00.000Z',
+          ...(createdFor === null ? {} : { createdFor }),
+        },
       },
     })
     .returning({ id: tls.id })
@@ -210,5 +229,55 @@ test('stamping an unpinned row keeps every other metadata key', async () => {
     assertEquals(Array.isArray(metadata.dnsNames), true)
   } finally {
     await f.cleanup()
+  }
+})
+
+test('an unused entry that never got a certificate goes once it has been left alone', async () => {
+  if (!dbUrl) return skipWithoutDatabase('stored pair lifecycle tests')
+  const f = await setup(false, { pair: false })
+  try {
+    const fresh = await runStoredPairSweepTick(f.db, { now: () => new Date() })
+    assertEquals(fresh.stamped, 0)
+    assertEquals((await f.read())?.id, f.tlsId, 'a row just made may still be pinned')
+    await runStoredPairSweepTick(f.db, {
+      now: () => new Date(Date.now() + EMPTY_ENTRY_GRACE_MS + 60_000),
+    })
+    assertEquals(await f.read(), undefined)
+    const trail = await f.db.select().from(audit).where(eq(audit.organizationId, f.organizationId))
+    assertEquals(
+      trail.map((t) => t.action),
+      ['tls.certificate.delete']
+    )
+  } finally {
+    await f.cleanup()
+  }
+})
+
+test('an entry made before the marker, with no name, is swept like one made for a site', async () => {
+  if (!dbUrl) return skipWithoutDatabase('stored pair lifecycle tests')
+  const f = await setup(false, { pair: false, createdFor: null, name: null })
+  try {
+    await runStoredPairSweepTick(f.db, {
+      now: () => new Date(Date.now() + EMPTY_ENTRY_GRACE_MS + 60_000),
+    })
+    assertEquals(await f.read(), undefined)
+  } finally {
+    await f.cleanup()
+  }
+})
+
+test("a Let's Encrypt entry a person added to the library is never swept", async () => {
+  if (!dbUrl) return skipWithoutDatabase('stored pair lifecycle tests')
+  const library = await setup(false, { pair: false, createdFor: 'library', name: null })
+  const named = await setup(false, { pair: false, createdFor: null, name: 'Mine' })
+  try {
+    const far = () => new Date(Date.now() + 90 * DAY_MS)
+    await runStoredPairSweepTick(library.db, { now: far })
+    await runStoredPairSweepTick(library.db, { now: far })
+    assertEquals((await library.read())?.id, library.tlsId)
+    assertEquals((await named.read())?.id, named.tlsId)
+  } finally {
+    await library.cleanup()
+    await named.cleanup()
   }
 })

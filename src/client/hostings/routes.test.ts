@@ -9,6 +9,7 @@ import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from '../authn/crypto.ts'
 import { createSession } from '../authn/session-store.ts'
 import { deriveSecretsConfig, parseSecretsEnv } from '../../lib/secrets/secrets.ts'
 import {
+  audit,
   command,
   datacenter,
   environment,
@@ -21,6 +22,7 @@ import {
   project,
   server,
   service,
+  tls,
   user,
   workspace,
 } from '../../db/schema.ts'
@@ -538,6 +540,64 @@ test('hosting CRUD covers list, filter, create, patch, and delete', async () => 
       assertEquals(del.status, 200)
     }
   )
+})
+
+test("DELETE /hostings removes the Let's Encrypt entry made for it once no other site uses it", async () => {
+  await withHostingFixtures(async ({ app, secrets, db, userId, organizationId, serviceId }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const certificate = async (source: string, createdFor?: string) => {
+      const [row] = await db
+        .insert(tls)
+        .values({
+          organizationId,
+          source,
+          status: source === 'lets_encrypt' ? 'automatic' : 'ready',
+          metadata: {
+            dnsNames: ['app.example.test'],
+            ...(createdFor ? { acme: { createdFor } } : {}),
+          },
+        })
+        .returning({ id: tls.id })
+      return row!.id
+    }
+    const site = async (tlsId: string) => {
+      const [row] = await db
+        .insert(hosting)
+        .values({ serviceId, name: 'Site', tlsId, options: { hostnames: ['app.example.test'] } })
+        .returning({ id: hosting.id })
+      return row!.id
+    }
+    const remove = (id: string) =>
+      app.request(`/hostings/${id}`, {
+        method: 'DELETE',
+        headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
+      })
+    const exists = async (id: string) =>
+      (await db.select({ id: tls.id }).from(tls).where(eq(tls.id, id))).length === 1
+    try {
+      const shared = await certificate('lets_encrypt', 'hosting')
+      const uploaded = await certificate('upload')
+      const first = await site(shared)
+      const second = await site(shared)
+      const third = await site(uploaded)
+
+      assertEquals((await remove(first)).status, 200)
+      assertEquals(await exists(shared), true, 'another site still uses it')
+      assertEquals((await remove(second)).status, 200)
+      assertEquals(await exists(shared), false)
+      assertEquals((await remove(third)).status, 200)
+      assertEquals(await exists(uploaded), true, 'an uploaded certificate is never removed')
+      const trail = await db
+        .select({ action: audit.action, targetId: audit.targetId })
+        .from(audit)
+        .where(eq(audit.organizationId, organizationId))
+      assertEquals(trail, [{ action: 'tls.certificate.delete', targetId: shared }])
+    } finally {
+      await db.delete(hosting).where(eq(hosting.serviceId, serviceId))
+      await db.delete(audit).where(eq(audit.organizationId, organizationId))
+      await db.delete(tls).where(eq(tls.organizationId, organizationId))
+    }
+  })
 })
 
 type HostingCall = (method: string, path: string, body: unknown) => Promise<Response>

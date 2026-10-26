@@ -8,6 +8,10 @@ import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import { getDb, type Db } from '../../db/connection.ts'
 import { hosting } from '../../db/schema.ts'
 import {
+  certificateIdsPinnedBy,
+  removeUnusedSiteCertificates,
+} from '../../features/tls/unused-letsencrypt.ts'
+import {
   isHostnameUniqueViolation,
   replaceHostingHostnames,
 } from '../../features/servers/hostname-records.ts'
@@ -371,7 +375,9 @@ export function registerHostingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     if (composeOwned) return composeOwned
 
     const result = await runHierarchyDelete(db, async (tx) => {
+      const certificateIds = await certificateIdsPinnedBy(tx, [id])
       await tx.delete(hosting).where(eq(hosting.id, id))
+      await removeUnusedSiteCertificates(tx, certificateIds, 'its site was deleted')
     })
     if (result === 'has_children') {
       return hierarchyDeleteHasChildrenResponse(c)

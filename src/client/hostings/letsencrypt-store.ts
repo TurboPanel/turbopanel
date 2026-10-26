@@ -143,7 +143,7 @@ async function createManagedCertificate(
   organizationId: string,
   names: readonly string[]
 ): Promise<string> {
-  const material = materialFromLetsEncrypt({ hostnames: [...names] })
+  const material = materialFromLetsEncrypt({ hostnames: [...names] }, 'hosting')
   if (isCreateTlsFailure(material)) throw new Error(material.error)
   const { columns, residual } = splitTlsMetadata(material.metadata)
   const [inserted] = await db

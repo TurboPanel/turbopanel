@@ -38,6 +38,7 @@ import {
 } from '../bindings/enqueue-change.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
 import { type ProjectPrincipalFate, requestProjectPrincipalRemoval } from '../principals/removal.ts'
+import { certificateIdsPinnedBy, removeUnusedSiteCertificates } from '../tls/unused-letsencrypt.ts'
 
 /** Docker Compose states that are considered fully stopped (safe to cascade-delete). */
 const STOPPED_CONTAINER_STATUSES = new Set(['exited', 'dead', 'removing'])
@@ -240,7 +241,10 @@ async function dropEnvironmentRows(tx: Db, rows: EnvironmentRowSet): Promise<str
     await tx.delete(container).where(inArray(container.id, containerIds))
   }
   if (hostingIds.length > 0) {
+    const certificateIds = await certificateIdsPinnedBy(tx, hostingIds)
     await tx.delete(hosting).where(inArray(hosting.id, hostingIds))
+    // The Let's Encrypt entries made for these sites go too, unless another site uses one.
+    await removeUnusedSiteCertificates(tx, certificateIds, 'its sites were deleted')
   }
   if (serviceIds.length > 0) {
     // A shared service's folder row stays, locked, until the host confirms it gone.

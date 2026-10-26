@@ -72,6 +72,10 @@ import {
   pendingLetsEncryptPatch,
 } from '../../features/hostings/hosting-certificate.ts'
 import type { LetsEncryptStore } from '../../features/hostings/use-letsencrypt.ts'
+import {
+  certificateIdsPinnedBy,
+  removeUnusedSiteCertificates,
+} from '../../features/tls/unused-letsencrypt.ts'
 import { createLetsEncryptStore, loadAcmeEnabled } from '../hostings/letsencrypt-store.ts'
 import {
   type HostingOptions,
@@ -859,6 +863,12 @@ async function reconcileHostingsInTransaction(
     const route = readRouteFromMetadata(row.metadata)
     return route !== null && !declaredKeys.has(existingRowKey(row.serviceId, route))
   })
+  // Read before any row is removed or re-pinned: the Let's Encrypt entries
+  // these rows use, checked again once the reconcile is done.
+  const certificateIds = await certificateIdsPinnedBy(
+    db,
+    existingRows.map((row) => row.id)
+  )
   const early = await pruneOrphanedComposeRows(db, staleRows, new Set<string>())
   for (const row of staleRows) {
     const route = readRouteFromMetadata(row.metadata)
@@ -876,6 +886,10 @@ async function reconcileHostingsInTransaction(
     existingRows.filter((row) => !staleIds.has(row.id)),
     ctx.keptIds
   )
+
+  // A removed route, or one that no longer asks for Let's Encrypt, lets go of
+  // its entry; the entry goes when no other site in the organization uses it.
+  await removeUnusedSiteCertificates(db, certificateIds, 'no site uses it after a deploy')
 
   return {
     ok: true,
