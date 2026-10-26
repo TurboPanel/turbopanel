@@ -199,6 +199,7 @@ export const DAEMON_WIRE_FEATURES = [
   'server-network-check-v1',
   'backup-s3-copy-v1',
   'deploy-hostings-only-v1',
+  'custom-node-app-mode-v1',
 ] as const
 
 export type DaemonWireFeature = (typeof DAEMON_WIRE_FEATURES)[number]
@@ -211,6 +212,14 @@ export type DaemonWireFeature = (typeof DAEMON_WIRE_FEATURES)[number]
  * this feature; an older daemon would run it as a full deploy.
  */
 export const DEPLOY_HOSTINGS_ONLY_FEATURE: DaemonWireFeature = 'deploy-hostings-only-v1'
+
+/**
+ * The daemon takes any application mode in `nativeAppServices[].appMode` that
+ * matches the deploy parser's rule (`staging`, `test`, ...), not only
+ * `production` and `development`. Without it the daemon would refuse the whole
+ * environment deploy at parse time, so the control plane refuses first.
+ */
+export const CUSTOM_NODE_APP_MODE_FEATURE: DaemonWireFeature = 'custom-node-app-mode-v1'
 
 /**
  * The daemon opens `tpdaemon` envelopes on `public-urls-update`

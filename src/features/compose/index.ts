@@ -198,7 +198,6 @@ export {
   isSafeRoot,
   isSiteComposeService,
   type NativeRuntimeFramework,
-  type NodeAppMode,
   type NodePackageManager,
   parseServiceSourceExtension,
   parseServiceTurbopanelExtension,

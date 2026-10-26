@@ -2199,8 +2199,12 @@ export type EnvironmentDeployNativeAppService = {
    * the daemon default.
    */
   nodeVersion?: string
-  /** `NODE_ENV` for the generated unit. Omitted means `production`. */
-  appMode?: 'production' | 'development'
+  /**
+   * `NODE_ENV` for the build and the generated unit. Omitted means
+   * `production`. Usually `production` or `development`; any other value
+   * matching {@link NATIVE_APP_MODE_RE} (`staging`, `test`, ...) is allowed.
+   */
+  appMode?: string
   /**
    * Omitted means `true`. When `false` the daemon installs the unit but stops
    * and disables it instead of starting it — the release stays promoted.
@@ -3922,10 +3926,13 @@ const NODE_PACKAGE_MANAGERS = new Set<NonNullable<EnvironmentDeploySourceBuild['
   'pnpm',
 ])
 
-const NATIVE_APP_MODES = new Set<NonNullable<EnvironmentDeployNativeAppService['appMode']>>([
-  'production',
-  'development',
-])
+/**
+ * Application mode (`NODE_ENV`) shape: 1-64 letters, digits, `.`, `_` or `-`,
+ * starting with a letter or digit. Same rule both sides of the wire. Kept
+ * tight because the daemon writes the value unquoted into the unit's
+ * `Environment=NODE_ENV=` line.
+ */
+const NATIVE_APP_MODE_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
 
 function parseNativeAppPositiveNumber(value: unknown, field: string): number | undefined {
   if (value === undefined) return undefined
@@ -3995,13 +4002,10 @@ function parseNativeAppNodeVersion(value: unknown): string | undefined {
 
 function parseNativeAppMode(value: unknown): EnvironmentDeployNativeAppService['appMode'] {
   if (value === undefined) return undefined
-  if (
-    !isString(value) ||
-    !NATIVE_APP_MODES.has(value as NonNullable<EnvironmentDeployNativeAppService['appMode']>)
-  ) {
+  if (!isString(value) || !NATIVE_APP_MODE_RE.test(value)) {
     throw new Error('Invalid nativeAppServices appMode')
   }
-  return value as NonNullable<EnvironmentDeployNativeAppService['appMode']>
+  return value
 }
 
 function parseNativeAppEnabled(value: unknown): boolean | undefined {
