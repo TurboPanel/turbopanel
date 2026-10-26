@@ -24,7 +24,6 @@ import { reconcileServicesForEnvironment } from './reconcile-after-compose-save.
 import {
   environmentNameInUse,
   isEnvironmentNameUniqueViolation,
-  refuseDeleteWhileFolders,
   updateEnvironmentChecked,
 } from './rename-lock.ts'
 import { syncEnvironmentWatch } from '../../features/git/watch-records.ts'
@@ -38,7 +37,12 @@ import {
   requireStringField,
 } from '../shared.ts'
 import { hierarchyDeleteHasChildrenResponse, isForeignKeyViolation } from '../hierarchy-delete.ts'
-import { planEnvironmentTeardown, reclaimDeletedEnvironmentHosts } from './teardown.ts'
+import { reclaimDeletedEnvironmentHosts, stopEnvironmentHosts } from './teardown.ts'
+import {
+  planEnvironmentDelete,
+  refuseOnPlanBlockers,
+  startDeleteCleanup,
+} from '../projects/delete-flow.ts'
 import {
   composePrincipalAliases,
   loadProjectOptions,
@@ -376,10 +380,11 @@ async function insertEnvironmentLocked(db: Db, input: CreateEnvironmentInput): P
 async function deleteEnvironmentCascadeGuarded(
   db: Db,
   id: string,
-  listenerSync?: Parameters<typeof deleteEnvironmentCascade>[2]
+  listenerSync?: Parameters<typeof deleteEnvironmentCascade>[2],
+  stopHosts?: () => Promise<boolean>
 ): Promise<EnvironmentDeleteResult | 'has_children'> {
   try {
-    return await deleteEnvironmentCascade(db, id, listenerSync)
+    return await deleteEnvironmentCascade(db, id, listenerSync, stopHosts)
   } catch (error) {
     if (isForeignKeyViolation(error)) return 'has_children'
     throw error
@@ -678,29 +683,32 @@ export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteO
     const stepUp = await requireStepUpIfConfigured(c, organizationId, 'environment.delete')
     if (stepUp) return stepUp
 
-    // The name is a folder on the servers: an environment with folders cannot go.
-    const foldersBlock = await refuseDeleteWhileFolders(c, db, id)
-    if (foldersBlock) return foldersBlock
+    // The plan is read while the rows the stop is built from still exist. A
+    // reason the delete cannot run refuses here, before anything is stopped.
+    const { plan, teardownPlans } = await planEnvironmentDelete(db, id)
+    const refused = refuseOnPlanBlockers(c, plan)
+    if (refused) return refused
 
-    // Planned before the delete: the payload is built from rows the delete
-    // removes. Dispatched after it commits.
-    const teardownPlan = await planEnvironmentTeardown(db, id)
-
-    // Refuses (409) while a container is running or a deploy is in progress;
-    // otherwise drops the environment and everything under it.
-    const result = await deleteEnvironmentCascadeGuarded(db, id, {
-      c,
-      actorId: session.userId,
-      organizationId,
-    })
+    // A running stack is stopped before the rows go (the stop retires no
+    // account: the environment still names them until it is deleted). The
+    // reclaim after the delete sends the stop again with the accounts nothing
+    // else needs, and the folders are removed after that.
+    const result = await deleteEnvironmentCascadeGuarded(
+      db,
+      id,
+      { c, actorId: session.userId, organizationId },
+      async () => (await stopEnvironmentHosts(c, db, teardownPlans, session.userId)).stopped
+    )
     if (result === 'has_children') return hierarchyDeleteHasChildrenResponse(c)
     if (!result.ok) return environmentDeleteRefusal(c, result.error, result.detail)
 
-    await reclaimDeletedEnvironmentHosts(c, db, teardownPlan ? [teardownPlan] : [], session.userId)
+    await reclaimDeletedEnvironmentHosts(c, db, teardownPlans, session.userId)
+    const cleanup = await startDeleteCleanup(c, db, session.userId, result.cleanup)
 
     return c.json({
       ok: true as const,
       ...(result.warning ? { warning: result.warning } : {}),
+      cleanup,
     })
   })
 }

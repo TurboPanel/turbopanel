@@ -96,7 +96,9 @@ was offline when the asset was deleted), and `folder_asset_present_check` lets
 only `removing`, `orphan` and `missing` rows have neither. `server_id`,
 `principal_id` and `environment_id` are `RESTRICT`: a server, site owner or
 environment with folders cannot be deleted until the rows are gone, so the
-server-delete and environment-delete flows remove or settle them first.
+server-delete flow removes or settles them first, and the environment and
+project deletes turn them into `removing` rows with `environment_id` NULL
+(`folder_common_scope_check` allows that, as for an `orphan`).
 `project.slug` is `NOT NULL`; `service.slug` and `storage.slug` stay nullable
 because the folder allocator picks them when it plans a folder. Boolean
 columns follow the `is_` rule, so the spec's `common` is `is_common`. The CHECK
@@ -709,27 +711,35 @@ SQL / Docker / Traefik / shell). Do not relax these:
 The daemon never receives display labels on a path that interpolates them.
 
 **Project cascade delete** (`deleteProjectCascade` in `project-delete.ts`):
-after all tenant `role='service'` containers under the project are non-active
-(`exited`/`dead`/`removing`), `DELETE /projects/:id` runs
+one step from the user's point of view. The route first reads the delete plan
+(`features/projects/delete-plan.ts`) and refuses, before anything is stopped,
+while a `managed` row remains (the database is deleted on its own, with its own
+confirmation), while another project uses a shared asset that would go, or while
+a server the delete has to reach is offline (the stop cannot wait for it). It
+then sends `environment.stop` to every server (refused as `project_stop_failed`
+when that does not go out) and, in one transaction, runs
 `applyStorageRetentionOnParentDelete` (clear `mount`s first — `service_id` is
 RESTRICT — then drop `retention='delete'` storage; `retain` rows stay org-owned
-via SET NULL), then deletes in order `container` → `hosting` → `tenancy` →
-`binding` → `service` → `environment` → `project` (variables and `managed`
-cascade via FK; `principal.project_id` is SET NULL — project delete never
-deletes principals, and its teardown sends no `retirePrincipals`). `tenancy.service_id` and `binding.service_id` are
-RESTRICT (a direct service delete must not leave a dangling run-as or inject
-edge), so the project cascade drops those rows first. Active **service**
-containers return **409** `project_has_running_services` — stop stacks first via
-`environment.stop`. Running `ingress` / `turbopanel` rows (ProxySQL, per-service
-Traefik, Orchestrator) do not gate delete; their lifecycle is server-scoped
-(destroy fan-out + orphan sweep). The cascade itself is Postgres-only; the route
-wraps it with `planEnvironmentsTeardown` / `reclaimDeletedEnvironmentHosts`
-(`client/environments/teardown.ts`) so the host's deployment dir, hosting Caddy
-site, per-service tcp/udp Traefik and `tpn_*` bridges are reclaimed even when
-the environment was stopped with `environment.lifecycle` (which leaves them in
-place) rather than `environment.stop`. Restrictive FKs stay in place as a safety
-net. Workspace / environment / service delete paths use the same retention
-helper.
+via SET NULL), lets go of every folder row under the environments
+(`releaseEnvironmentFolders`: `removing` with `environment_id` NULL, a kept
+volume's row `orphan`), deletes in order `container` → `hosting` (compose-owned
+ones too) → `tenancy` → `binding` → `service` → `environment`, marks the
+project's principals nothing else uses (`removal_requested_at`), then deletes
+the `project` (variables and `managed` cascade via FK; `principal.project_id`
+is SET NULL). After commit the servers are asked to remove the folders (the
+folder removal sweep asks again until they confirm), and the principal removal
+sweep (`client/principals/removal-sweep.ts`) retires each marked principal's
+Linux user and home once no folder row names it, its servers are connected
+and no stop is still running there; its placements turn `retiring`, the
+command consumer turns them `absent` when the host reports the account
+retired, an unconfirmed retire is asked again, and the row is deleted once
+none is left. A principal still used elsewhere is kept and listed.
+`tenancy.service_id` and `binding.service_id` are RESTRICT (a direct service
+delete must not leave a dangling run-as or inject edge), so the cascade drops
+those rows first. Running `ingress` / `turbopanel` rows (ProxySQL, per-service
+Traefik, Orchestrator) are server-scoped (destroy fan-out + orphan sweep).
+Restrictive FKs stay in place as a safety net. Workspace / environment /
+service delete paths use the same retention helper.
 
 Authorization ancestry and `listVisible()` resolve organization through this
 chain in SQL (`evaluator.ts`, `create-access-grant.ts`). **`variable`** and
