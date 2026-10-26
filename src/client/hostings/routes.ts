@@ -5,7 +5,7 @@ import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { assertCanOr403, listVisible } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
-import { getDb, type Db } from '../../db/connection.ts'
+import type { Db } from '../../db/connection.ts'
 import { environment, hosting, service } from '../../db/schema.ts'
 import {
   lockCertificatesPinnedBy,
@@ -19,11 +19,11 @@ import {
   assertCanCreateOr403,
   assertCanReadOr403,
   assertNotSystemOwnedOr403,
-  getOrgId,
   parseDescription,
   parseJsonbObject,
   parseJsonBody,
   parseName,
+  requireDbSessionAndOrg,
   stripPromotedMetadataKeys,
 } from '../shared.ts'
 import { hierarchyDeleteHasChildrenResponse, runHierarchyDelete } from '../hierarchy-delete.ts'
@@ -39,6 +39,42 @@ import {
   type HostingFkResult,
   type HostingPatchFields,
 } from './routes-helpers.ts'
+
+/** The columns a hosting is read with, in the list and in the detail. */
+const HOSTING_COLUMNS = {
+  id: hosting.id,
+  name: hosting.name,
+  description: hosting.description,
+  serviceId: hosting.serviceId,
+  tlsId: hosting.tlsId,
+  ipId: hosting.ipId,
+  metadata: hosting.metadata,
+  options: hosting.options,
+  createdAt: hosting.createdAt,
+  updatedAt: hosting.updatedAt,
+}
+
+/**
+ * Why this hosting cannot be changed or deleted by this request, or null: it
+ * belongs to another organization (404), the caller cannot manage it (403),
+ * it is system-owned (403), or compose owns it (409).
+ */
+async function refuseHostingChange(
+  c: Context<AppEnv>,
+  db: Db,
+  id: string,
+  organizationId: string
+): Promise<Response | null> {
+  const entityOrgId = await resolveEntityOrganizationId(db, 'hosting', id)
+  if (entityOrgId !== organizationId) {
+    return c.json({ error: 'Not found' }, 404)
+  }
+  const denied = await assertCanOr403(c, 'organization:manage', 'hosting', id)
+  if (denied) return denied
+  const immutable = await assertNotSystemOwnedOr403(c, 'hosting', id)
+  if (immutable) return immutable
+  return await assertHostingNotComposeOwnedOr409(c, db, id)
+}
 
 function hostnamesPatchFromFields(patchFields: HostingPatchFields): string[] | null {
   // `patchFields.options` is only set when the request body included
@@ -150,15 +186,9 @@ export function registerHostingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
   router.use('/hostings/:id', createSessionMiddleware(secrets))
 
   router.get('/hostings', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const session = c.get('session')
-    if (!session) return c.json({ error: 'Unauthorized' }, 401)
-
-    const orgResult = await getOrgId(c, session.userId)
-    if (orgResult instanceof Response) return orgResult
-    const organizationId = orgResult
+    const sessionOrg = await requireDbSessionAndOrg(c)
+    if (sessionOrg instanceof Response) return sessionOrg
+    const { db, session, organizationId } = sessionOrg
 
     const serviceId = c.req.query('serviceId')
 
@@ -178,18 +208,7 @@ export function registerHostingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     }
 
     const rows = await db
-      .select({
-        id: hosting.id,
-        name: hosting.name,
-        description: hosting.description,
-        serviceId: hosting.serviceId,
-        tlsId: hosting.tlsId,
-        ipId: hosting.ipId,
-        metadata: hosting.metadata,
-        options: hosting.options,
-        createdAt: hosting.createdAt,
-        updatedAt: hosting.updatedAt,
-      })
+      .select(HOSTING_COLUMNS)
       .from(hosting)
       .where(and(...conditions))
       .orderBy(hosting.createdAt)
@@ -198,15 +217,9 @@ export function registerHostingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
   })
 
   router.get('/hostings/:id', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const session = c.get('session')
-    if (!session) return c.json({ error: 'Unauthorized' }, 401)
-
-    const orgResult = await getOrgId(c, session.userId)
-    if (orgResult instanceof Response) return orgResult
-    const organizationId = orgResult
+    const sessionOrg = await requireDbSessionAndOrg(c)
+    if (sessionOrg instanceof Response) return sessionOrg
+    const { db, organizationId } = sessionOrg
 
     const id = c.req.param('id')
     const entityOrgId = await resolveEntityOrganizationId(db, 'hosting', id)
@@ -214,22 +227,7 @@ export function registerHostingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       return c.json({ error: 'Not found' }, 404)
     }
 
-    const rows = await db
-      .select({
-        id: hosting.id,
-        name: hosting.name,
-        description: hosting.description,
-        serviceId: hosting.serviceId,
-        tlsId: hosting.tlsId,
-        ipId: hosting.ipId,
-        metadata: hosting.metadata,
-        options: hosting.options,
-        createdAt: hosting.createdAt,
-        updatedAt: hosting.updatedAt,
-      })
-      .from(hosting)
-      .where(eq(hosting.id, id))
-      .limit(1)
+    const rows = await db.select(HOSTING_COLUMNS).from(hosting).where(eq(hosting.id, id)).limit(1)
 
     const row = rows[0]
     if (!row) {
@@ -243,15 +241,9 @@ export function registerHostingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
   })
 
   router.post('/hostings', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const session = c.get('session')
-    if (!session) return c.json({ error: 'Unauthorized' }, 401)
-
-    const orgResult = await getOrgId(c, session.userId)
-    if (orgResult instanceof Response) return orgResult
-    const organizationId = orgResult
+    const sessionOrg = await requireDbSessionAndOrg(c)
+    if (sessionOrg instanceof Response) return sessionOrg
+    const { db, organizationId } = sessionOrg
 
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
@@ -294,30 +286,13 @@ export function registerHostingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
   })
 
   router.patch('/hostings/:id', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const session = c.get('session')
-    if (!session) return c.json({ error: 'Unauthorized' }, 401)
-
-    const orgResult = await getOrgId(c, session.userId)
-    if (orgResult instanceof Response) return orgResult
-    const organizationId = orgResult
+    const sessionOrg = await requireDbSessionAndOrg(c)
+    if (sessionOrg instanceof Response) return sessionOrg
+    const { db, organizationId } = sessionOrg
 
     const id = c.req.param('id')
-    const entityOrgId = await resolveEntityOrganizationId(db, 'hosting', id)
-    if (entityOrgId !== organizationId) {
-      return c.json({ error: 'Not found' }, 404)
-    }
-
-    const denied = await assertCanOr403(c, 'organization:manage', 'hosting', id)
-    if (denied) return denied
-
-    const immutable = await assertNotSystemOwnedOr403(c, 'hosting', id)
-    if (immutable) return immutable
-
-    const composeOwned = await assertHostingNotComposeOwnedOr409(c, db, id)
-    if (composeOwned) return composeOwned
+    const refused = await refuseHostingChange(c, db, id, organizationId)
+    if (refused) return refused
 
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
@@ -349,30 +324,13 @@ export function registerHostingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
   })
 
   router.delete('/hostings/:id', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const session = c.get('session')
-    if (!session) return c.json({ error: 'Unauthorized' }, 401)
-
-    const orgResult = await getOrgId(c, session.userId)
-    if (orgResult instanceof Response) return orgResult
-    const organizationId = orgResult
+    const sessionOrg = await requireDbSessionAndOrg(c)
+    if (sessionOrg instanceof Response) return sessionOrg
+    const { db, session, organizationId } = sessionOrg
 
     const id = c.req.param('id')
-    const entityOrgId = await resolveEntityOrganizationId(db, 'hosting', id)
-    if (entityOrgId !== organizationId) {
-      return c.json({ error: 'Not found' }, 404)
-    }
-
-    const denied = await assertCanOr403(c, 'organization:manage', 'hosting', id)
-    if (denied) return denied
-
-    const immutable = await assertNotSystemOwnedOr403(c, 'hosting', id)
-    if (immutable) return immutable
-
-    const composeOwned = await assertHostingNotComposeOwnedOr409(c, db, id)
-    if (composeOwned) return composeOwned
+    const refused = await refuseHostingChange(c, db, id, organizationId)
+    if (refused) return refused
 
     const result = await runHierarchyDelete(db, async (tx) => {
       // The environment row, then the Let's Encrypt lock, then the site: the

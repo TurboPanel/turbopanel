@@ -137,16 +137,21 @@ export async function lockCertificatesPinnedBy(
   hostingIds: readonly string[]
 ): Promise<string[]> {
   const ids = await certificateIdsPinnedBy(tx, hostingIds)
-  if (ids.length === 0) return ids
+  await lockOwningOrganizations(tx, ids)
+  return ids
+}
+
+/** The Let's Encrypt locks of the organizations that own these certificate rows. */
+async function lockOwningOrganizations(tx: Db, tlsIds: readonly string[]): Promise<void> {
+  if (tlsIds.length === 0) return
   const owners = await tx
     .select({ organizationId: tls.organizationId })
     .from(tls)
-    .where(inArray(tls.id, ids))
+    .where(inArray(tls.id, [...tlsIds]))
   await lockOrganizations(
     tx,
     owners.map((row) => row.organizationId)
   )
-  return ids
 }
 
 /** How many sites pin each of these rows, leaving out `exceptHostingIds`. */
