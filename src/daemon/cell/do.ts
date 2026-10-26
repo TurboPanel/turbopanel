@@ -51,9 +51,7 @@ import { recordInstanceAcmeIssuance } from '../../features/install/instance-host
 import { recordCommandProgress } from '../../features/commands/command-progress.ts'
 import {
   ackForReportedOutcome,
-  commandOutcomeAckMessage,
   noteReportedCommands,
-  outcomeStoredInCell,
 } from '../../features/commands/command-recovery.ts'
 import {
   persistDaemonReachedTarget,
@@ -2783,36 +2781,13 @@ export class DaemonCellObject {
       })
       return
     }
-    const before =
-      inbound.kind === 'command-outcome' ? this.#readRequestRow(serverId, inbound.requestId) : null
     const record = await this.#handleInbound(serverId, inbound)
     if (inbound.kind === 'command-outcome' && ws) {
-      await this.#ackReportedOutcome(serverId, inbound, before, record, ws)
-    }
-  }
-
-  /**
-   * The daemon keeps its copy of a result until this confirms it is stored.
-   * The command row is checked first (a deploy already given up on is
-   * corrected there). When that check cannot answer (Postgres slow or down)
-   * but this frame just wrote the result into a waiting request, the result
-   * is stored all the same: the consumer settles it from the cell, so it is
-   * confirmed anyway instead of being sent again for ever.
-   */
-  async #ackReportedOutcome(
-    serverId: string,
-    inbound: Extract<DaemonInboundEnvelope, { kind: 'command-outcome' }>,
-    before: PendingRequestRecord | null,
-    record: PendingRequestRecord | null,
-    ws: WebSocket
-  ): Promise<void> {
-    const ack = await this.#withProjectionDbResult('command-outcome-ack', serverId, (db) =>
-      ackForReportedOutcome(db, { serverId, envelope: inbound, record })
-    )
-    if (ack) {
-      ws.send(JSON.stringify(ack))
-    } else if (outcomeStoredInCell(before, record)) {
-      ws.send(JSON.stringify(commandOutcomeAckMessage(inbound.requestId, nowIso())))
+      // The daemon keeps its copy of the result until this confirms it is stored.
+      const ack = await this.#withProjectionDbResult('command-outcome-ack', serverId, (db) =>
+        ackForReportedOutcome(db, { serverId, envelope: inbound, record })
+      )
+      if (ack) ws.send(JSON.stringify(ack))
     }
   }
 

@@ -1943,32 +1943,7 @@ describe.sequential('DaemonCellObject', () => {
     ws.close(1000, 'test done')
   })
 
-  it('confirms an outcome that landed in a waiting request without a Postgres check', async () => {
-    const serverId = 'test-srv-outcome-ack-from-cell'
-    const stub = env.DAEMON_CELL.getByName(serverId)
-    const { ws } = await openDaemonWebSocket(stub, serverId)
-    const frames: Array<{ type?: string; id?: string }> = []
-    ws.addEventListener('message', (event) => {
-      frames.push(JSON.parse(String(event.data)) as { type?: string; id?: string })
-    })
-    const requestId = generateRequestId()
-    await enqueuePing(stub, serverId, requestId, generateDeliveryId())
-    await waitFor(() => {
-      expect(frames.some((frame) => frame.type === 'command-dispatch')).toBe(true)
-    })
-
-    // The server row is not in Postgres here, so only the cell can vouch for the result.
-    wsSendCommandOutcome(ws, requestId)
-
-    await waitFor(() => {
-      expect(frames).toContainEqual(
-        expect.objectContaining({ type: 'command-outcome-ack', id: requestId })
-      )
-    })
-    ws.close(1000, 'test done')
-  })
-
-  it('stores and confirms an outcome sent on a new socket after the dispatch socket closed', async () => {
+  it('stores an outcome sent on a new socket after the dispatch socket closed', async () => {
     const serverId = 'test-srv-outcome-after-reconnect'
     const stub = env.DAEMON_CELL.getByName(serverId)
     const first = await openDaemonWebSocket(stub, serverId)
@@ -2003,15 +1978,9 @@ describe.sequential('DaemonCellObject', () => {
         daemonRespondedAt: at,
       })
     )
-    await waitFor(() => {
-      expect(frames).toContainEqual(
-        expect.objectContaining({ type: 'command-outcome-ack', id: requestId })
-      )
+    await waitFor(async () => {
+      expect(await requestStatus(stub, serverId, requestId)).toBe('done')
     })
-    const stored = await cellRpc(stub, serverId, `/rpc/request?requestId=${requestId}`, {
-      method: 'GET',
-    })
-    expect(((await stored.json()) as { record: { status: string } }).record.status).toBe('done')
     second.ws.close(1000, 'test done')
   })
 
@@ -2029,8 +1998,8 @@ describe.sequential('DaemonCellObject', () => {
       expect(frames.some((frame) => frame.type === 'command-dispatch')).toBe(true)
     })
     wsSendCommandOutcome(ws, requestId)
-    await waitFor(() => {
-      expect(frames.some((frame) => frame.type === 'command-outcome-ack')).toBe(true)
+    await waitFor(async () => {
+      expect(await requestStatus(stub, serverId, requestId)).toBe('done')
     })
 
     const again = await enqueuePing(stub, serverId, requestId, generateDeliveryId())
@@ -4107,6 +4076,17 @@ describe('DaemonCellObject alarm / outbox / RPC branch coverage', () => {
     expect(failBody.record.status).toBe('failed')
   })
 })
+
+async function requestStatus(
+  stub: DurableObjectStub,
+  serverId: string,
+  requestId: string
+): Promise<string | undefined> {
+  const response = await cellRpc(stub, serverId, `/rpc/request?requestId=${requestId}`, {
+    method: 'GET',
+  })
+  return ((await response.json()) as { record: { status: string } | null }).record?.status
+}
 
 async function enqueuePing(
   stub: DurableObjectStub,
