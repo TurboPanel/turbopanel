@@ -2792,11 +2792,12 @@ export class DaemonCellObject {
   }
 
   /**
-   * The daemon keeps its copy of a result until this confirms it is stored. A
-   * result this frame just wrote into a waiting request is stored: the
-   * consumer settles it from the cell, so the ack goes back at once and never
-   * waits on Postgres. Only a result the cell could not take (no request, or
-   * one already given up on) is checked against the command row first.
+   * The daemon keeps its copy of a result until this confirms it is stored.
+   * The command row is checked first (a deploy already given up on is
+   * corrected there). When that check cannot answer (Postgres slow or down)
+   * but this frame just wrote the result into a waiting request, the result
+   * is stored all the same: the consumer settles it from the cell, so it is
+   * confirmed anyway instead of being sent again for ever.
    */
   async #ackReportedOutcome(
     serverId: string,
@@ -2805,14 +2806,14 @@ export class DaemonCellObject {
     record: PendingRequestRecord | null,
     ws: WebSocket
   ): Promise<void> {
-    if (outcomeStoredInCell(before, record)) {
-      ws.send(JSON.stringify(commandOutcomeAckMessage(inbound.requestId, nowIso())))
-      return
-    }
     const ack = await this.#withProjectionDbResult('command-outcome-ack', serverId, (db) =>
       ackForReportedOutcome(db, { serverId, envelope: inbound, record })
     )
-    if (ack) ws.send(JSON.stringify(ack))
+    if (ack) {
+      ws.send(JSON.stringify(ack))
+    } else if (outcomeStoredInCell(before, record)) {
+      ws.send(JSON.stringify(commandOutcomeAckMessage(inbound.requestId, nowIso())))
+    }
   }
 
   /**
