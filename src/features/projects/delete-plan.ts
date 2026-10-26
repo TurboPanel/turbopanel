@@ -95,6 +95,11 @@ export type DeletePlanInput = {
   stopServerIds: readonly string[]
 }
 
+/** A refusal's `message` when it is text, else empty. */
+function textOf(value: unknown): string {
+  return typeof value === 'string' ? value : ''
+}
+
 /** Sort in place by a name, then by id, and return the array. */
 function sortByName<T extends { id: string }>(rows: T[], name: (row: T) => string): T[] {
   return rows.sort((a, b) => name(a).localeCompare(name(b)) || a.id.localeCompare(b.id))
@@ -288,7 +293,7 @@ export async function buildDeletePlan(db: Db, input: DeletePlanInput): Promise<D
     if (shared) {
       add({
         error: COMMON_ASSET_IN_USE_ERROR,
-        message: String(shared.detail.message ?? ''),
+        message: textOf(shared.detail.message),
         uses: shared.detail.uses,
       })
     }
