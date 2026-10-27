@@ -4713,7 +4713,11 @@ async function withLifecycleRig(
 }
 
 /** Run one stop on the rig's member; the server answers with `result`. */
-async function runMemberStop(rig: LifecycleRig, result: Record<string, unknown>): Promise<void> {
+async function runMemberStop(
+  rig: LifecycleRig,
+  result: Record<string, unknown>,
+  db: LifecycleRig['db'] = rig.db
+): Promise<void> {
   const record = await createCommandRecord(rig.db, {
     serverId: rig.serverId,
     ...TEST_COMMAND_ACTOR,
@@ -4732,7 +4736,7 @@ async function runMemberStop(rig: LifecycleRig, result: Record<string, unknown>)
       result,
     },
   })
-  await processCommandEnvelope(rig.db, registry, buildEnvelope(record, rig.serverId))
+  await processCommandEnvelope(db, registry, buildEnvelope(record, rig.serverId))
 }
 
 async function rigState(rig: LifecycleRig): Promise<{ member?: string; containers: string[] }> {
@@ -4784,6 +4788,32 @@ test('a stop result with a status the member row cannot take writes nothing to i
     assertEquals(await rigState(rig), {
       member: 'ready',
       containers: ['ingress:running', 'service:running'],
+    })
+  })
+})
+
+/** The rig's db, except that every write to a member row fails. */
+function failingMemberWrites(db: LifecycleRig['db']): LifecycleRig['db'] {
+  return new Proxy(db, {
+    get(target, prop, receiver) {
+      if (prop === 'update') {
+        return (table: unknown) => {
+          if (table === replica) throw new Error('member write refused')
+          return target.update(table as typeof replica)
+        }
+      }
+      const value: unknown = Reflect.get(target, prop, receiver)
+      return typeof value === 'function' ? value.bind(target) : value
+    },
+  })
+}
+
+test('a failed member write from a status-only stop still marks the containers exited', async () => {
+  await withLifecycleRig('ready', async (rig) => {
+    await runMemberStop(rig, { status: 'stopped' }, failingMemberWrites(rig.db))
+    assertEquals(await rigState(rig), {
+      member: 'ready',
+      containers: ['ingress:running', 'service:exited'],
     })
   })
 })

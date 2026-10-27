@@ -2100,12 +2100,16 @@ async function projectManagedMemberObservedStatus(
       ...(member.replication !== undefined ? { replication: member.replication } : {}),
     })
   } catch (err) {
-    const message = errorMessage(err)
-    compatLogWarn(
-      'command-consumer',
-      `managed member projection failed for ${commandType} command ${commandId}: ${message}`
-    )
+    warnMemberProjectionFailed(err, commandId, commandType)
   }
+}
+
+/** A member-row projection is best effort: log it and let the steps after it run. */
+function warnMemberProjectionFailed(err: unknown, commandId: string, commandType: string): void {
+  compatLogWarn(
+    'command-consumer',
+    `managed member projection failed for ${commandType} command ${commandId}: ${errorMessage(err)}`
+  )
 }
 
 export function isManagedObservedStatus(value: string): value is 'ready' | 'stopped' | 'failed' {
@@ -2175,12 +2179,17 @@ export function lifecycleFallbackMemberStatus(
  */
 async function projectFallbackMemberStatus(
   db: Db,
-  observed: { memberId: string; status: string }
+  observed: { memberId: string; status: string },
+  record: Pick<DispatchableCommandRecord, 'id' | 'type'>
 ): Promise<void> {
-  await db
-    .update(replica)
-    .set({ status: observed.status, updatedAt: nowIso() })
-    .where(and(eq(replica.id, observed.memberId), ne(replica.status, 'needs_resync')))
+  try {
+    await db
+      .update(replica)
+      .set({ status: observed.status, updatedAt: nowIso() })
+      .where(and(eq(replica.id, observed.memberId), ne(replica.status, 'needs_resync')))
+  } catch (err) {
+    warnMemberProjectionFailed(err, record.id, record.type)
+  }
 }
 
 /** Container states a database the server just saw stop can no longer be in. */
@@ -2227,7 +2236,7 @@ async function projectLifecycleOnMember(
 ): Promise<void> {
   await projectManagedMemberObservedStatus(db, result.member, record.id, record.type)
   const fallback = lifecycleFallbackMemberStatus(payload, result)
-  if (fallback) await projectFallbackMemberStatus(db, fallback)
+  if (fallback) await projectFallbackMemberStatus(db, fallback, record)
   await projectManagedContainersStopped(
     db,
     payload.managedId,

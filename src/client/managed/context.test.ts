@@ -9,7 +9,9 @@ import {
   requireManagedCreateServerId,
   resolveManagedTargetServerId,
   SERVER_OFFLINE_BODY,
+  withManagedLifecycleTurn,
 } from './context.ts'
+import type { Db } from '../../db/connection.ts'
 import { recovery } from '../../db/schema.ts'
 import { createMemoryDb } from '../../test-fixtures/memory-db.ts'
 import { createServerPresenceDb } from './server-status-test-db.ts'
@@ -206,4 +208,53 @@ test('every mutating managed route that can disturb a running cluster checks the
     if (handler === undefined) throw new TypeError(`route not found: ${key}`)
     assertEquals(handler.includes('assertManagedIdle('), true, `${key} must check the journal`)
   }
+})
+
+/**
+ * A db that grants the lifecycle lease, finds no live lifecycle command, and
+ * fails the release with a connection error.
+ */
+function leaseDbWithFailingRelease(): { db: Db; releases: () => number } {
+  let releases = 0
+  const fake = {
+    insert: () => ({
+      values: (row: { owner: string }) => ({
+        onConflictDoUpdate: () => ({ returning: () => Promise.resolve([{ owner: row.owner }]) }),
+      }),
+    }),
+    select: () => ({
+      from: () => ({ where: () => ({ limit: () => Promise.resolve([]) }) }),
+    }),
+    delete: () => ({
+      where: () => {
+        releases++
+        return Promise.reject(new Error('connection reset'))
+      },
+    }),
+  }
+  return { db: fake as unknown as Db, releases: () => releases }
+}
+
+const LEASE_PARAMS = { organizationId: 'org-1', managedId: 'managed-1' }
+
+test('a failed lease release keeps the queued answer instead of turning it into a 500', async () => {
+  const { db, releases } = leaseDbWithFailingRelease()
+  const res = await withManagedLifecycleTurn(mockContext(), db, LEASE_PARAMS, () =>
+    Promise.resolve(Response.json({ queued: true }, { status: 200 }))
+  )
+  assertEquals(res.status, 200)
+  assertEquals(await res.json(), { queued: true })
+  assertEquals(releases(), 1)
+})
+
+test('a failed lease release never hides the error the queue step threw', async () => {
+  const { db, releases } = leaseDbWithFailingRelease()
+  const failed = await withManagedLifecycleTurn(mockContext(), db, LEASE_PARAMS, () =>
+    Promise.reject(new Error('enqueue failed'))
+  ).then(
+    () => undefined,
+    (err: unknown) => err
+  )
+  assertEquals((failed as Error).message, 'enqueue failed')
+  assertEquals(releases(), 1)
 })

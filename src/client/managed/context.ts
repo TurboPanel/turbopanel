@@ -19,9 +19,11 @@ import { verifyServerInOrg } from '../environments/deploy-prepare.ts'
 import { getCatalogEntry } from '../projects/catalog/index.ts'
 import { loadServerStatusRecords } from '../servers/update-status.ts'
 import {
+  type ManagedLifecycleLease,
   releaseManagedLifecycleLease,
   tryTakeManagedLifecycleLease,
 } from '../../features/managed/lifecycle-lease.ts'
+import { compatLogWarn } from '../../lib/log-compat.ts'
 import {
   hasLiveBackupCommand,
   hasLiveLifecycleCommand,
@@ -259,7 +261,27 @@ export async function withManagedLifecycleTurn(
     if (await hasLiveLifecycleCommand(db, params.managedId)) return lifecycleInFlight(c)
     return await queue()
   } finally {
+    await releaseLifecycleLeaseQuietly(db, held, params.managedId)
+  }
+}
+
+/**
+ * A failed release must not turn a queued command into a 500: the command is
+ * already on its way, and the lease runs out on its own.
+ */
+async function releaseLifecycleLeaseQuietly(
+  db: Db,
+  held: ManagedLifecycleLease,
+  managedId: string
+): Promise<void> {
+  try {
     await releaseManagedLifecycleLease(db, held)
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    compatLogWarn(
+      'managed-lifecycle',
+      `lifecycle lease release failed for managed ${managedId}; it expires on its own: ${message}`
+    )
   }
 }
 
