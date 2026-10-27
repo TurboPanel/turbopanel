@@ -5,9 +5,12 @@
  *
  * The cross-organization matrix (`../idor-matrix.test.ts`) also calls this
  * route with B's id from A's session; here the rows themselves are checked:
- * A sees only A's commands, `total` counts only A's, a plain member is refused.
+ * A sees only A's commands (every outcome, succeeded included), `total` counts
+ * only A's, a project or environment filter never reaches into B, a plain
+ * member is refused.
  */
 import { assert, assertEquals } from '@std/assert'
+import { sql } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import { createDenoDb, type Db } from '../../db/connection.ts'
@@ -24,6 +27,11 @@ import {
   workspace,
 } from '../../db/schema.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
+import {
+  ACTIVITY_COUNT_LOOKAHEAD,
+  activityPageSelect,
+  type ActivityFilter,
+} from '../../features/commands/activity-query.ts'
 import { deriveEncryptionSecretsConfig, deriveSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from '../authn/crypto.ts'
@@ -41,6 +49,8 @@ async function insertId(promise: Promise<{ id: string }[]>): Promise<string> {
 }
 
 type Seeded = {
+  makeUser: (label: string, extra?: { name?: string; role?: string }) => Promise<string>
+  db: Db
   app: Hono<AppEnv>
   orgA: string
   orgB: string
@@ -49,7 +59,11 @@ type Seeded = {
   cookieOwnerB: string
   nonce: string
   serverB: string
+  placeA: Place
+  placeB: Place
 }
+
+type Place = { serverId: string; projectId: string; environmentId: string; actor: string }
 
 async function seed(db: Db): Promise<Seeded> {
   const secretsConfig = parseTestSecretsConfig('deno')
@@ -74,7 +88,7 @@ async function seed(db: Db): Promise<Seeded> {
     .returning({ id: organization.id })
   const [orgA, orgB] = [orgs[0]!.id, orgs[1]!.id]
 
-  const makeUser = (label: string) =>
+  const makeUser = (label: string, extra: { name?: string; role?: string } = {}) =>
     insertId(
       db
         .insert(user)
@@ -82,6 +96,7 @@ async function seed(db: Db): Promise<Seeded> {
           email: `activity-${label}-${crypto.randomUUID()}@example.com`,
           isEmailVerified: true,
           role: 'user',
+          ...extra,
         })
         .returning({ id: user.id })
     )
@@ -153,9 +168,9 @@ async function seed(db: Db): Promise<Seeded> {
         createdAt: new Date(Date.now() - index * 1000).toISOString(),
       })
     }
-    return serverId
+    return { serverId, projectId, environmentId, actor }
   }
-  await seedOrg(orgA, ownerA, 'a', [
+  const placeA = await seedOrg(orgA, ownerA, 'a', [
     'environment.deploy:running',
     'environment.deploy:failed',
     'environment.lifecycle:queued',
@@ -163,12 +178,14 @@ async function seed(db: Db): Promise<Seeded> {
     'environment.stop:cancelled',
     'server.ping:running',
   ])
-  const serverB = await seedOrg(orgB, ownerB, 'b', [
+  const placeB = await seedOrg(orgB, ownerB, 'b', [
     'environment.deploy:running',
     'environment.deploy:running',
     'environment.deploy:failed',
   ])
   return {
+    makeUser,
+    db,
     app,
     orgA,
     orgB,
@@ -176,7 +193,9 @@ async function seed(db: Db): Promise<Seeded> {
     cookieMemberA: await cookieFor(memberA),
     cookieOwnerB: await cookieFor(ownerB),
     nonce,
-    serverB,
+    serverB: placeB.serverId,
+    placeA,
+    placeB,
   }
 }
 
@@ -202,9 +221,17 @@ type Feed = {
     action: string
     serverId: string
     projectName: string | null
+    actorName: string | null
   }[]
   total: number
+  totalCapped: boolean
   hasMore: boolean
+}
+
+async function feedOf(s: Seeded, query = '', cookie = s.cookieOwnerA, orgId = s.orgA) {
+  const res = await get(s, cookie, orgId, query)
+  assertEquals(res.status, 200, res.text)
+  return JSON.parse(res.text) as Feed
 }
 
 async function get(s: Seeded, cookie: string, orgId: string, query = '', header?: string) {
@@ -216,23 +243,27 @@ async function get(s: Seeded, cookie: string, orgId: string, query = '', header?
   return { status: res.status, text: await res.text() }
 }
 
-test('an owner sees only their own organization’s running and failed commands', async () => {
+test('an owner sees every outcome of their own organization’s commands, and nothing else', async () => {
   await withSeed(async (s) => {
     const res = await get(s, s.cookieOwnerA, s.orgA)
     assertEquals(res.status, 200, res.text)
     const feed = JSON.parse(res.text) as Feed
-    // running deploy, failed deploy, queued lifecycle: not succeeded, cancelled or ping
-    assertEquals(feed.total, 3)
+    // every deploy, lifecycle and stop whatever the outcome; never the ping
+    assertEquals([feed.total, feed.totalCapped], [5, false])
     assertEquals(
       feed.items.map((i) => [i.action, i.state]),
       [
         ['deploy', 'deploying'],
         ['deploy', 'failed'],
         ['restart', 'queued'],
+        ['deploy', 'succeeded'],
+        ['stop', 'cancelled'],
       ]
     )
     assert(feed.items.every((i) => i.serverId !== s.serverB))
     assert(feed.items.every((i) => i.projectName === `Project a ${s.nonce}`))
+    // the seeded person has no name, so the feed names them by email
+    assert(feed.items.every((i) => i.actorName?.startsWith('activity-owner-a-')))
     assert(!res.text.includes('boom b'))
     assert(!res.text.includes(`Project b ${s.nonce}`))
   })
@@ -240,23 +271,135 @@ test('an owner sees only their own organization’s running and failed commands'
 
 test('filters and pagination count only the caller’s organization', async () => {
   await withSeed(async (s) => {
-    const deploying = JSON.parse(
-      (await get(s, s.cookieOwnerA, s.orgA, '?filter=deploying')).text
-    ) as Feed
-    assertEquals(deploying.total, 2)
-    const failed = JSON.parse((await get(s, s.cookieOwnerA, s.orgA, '?filter=failed')).text) as Feed
+    assertEquals((await feedOf(s, '?filter=deploying')).total, 2)
+    const succeeded = await feedOf(s, '?filter=succeeded')
+    assertEquals(
+      succeeded.items.map((i) => i.state),
+      ['succeeded']
+    )
+    const failed = await feedOf(s, '?filter=failed')
     assertEquals(failed.total, 1)
     assertEquals(failed.items[0]?.state, 'failed')
-    const page = JSON.parse(
-      (await get(s, s.cookieOwnerA, s.orgA, '?limit=2&offset=0')).text
-    ) as Feed
-    assertEquals([page.items.length, page.total, page.hasMore], [2, 3, true])
-    const last = JSON.parse(
-      (await get(s, s.cookieOwnerA, s.orgA, '?limit=2&offset=2')).text
-    ) as Feed
-    assertEquals([last.items.length, last.total, last.hasMore], [1, 3, false])
-    const b = JSON.parse((await get(s, s.cookieOwnerB, s.orgB)).text) as Feed
+    const page = await feedOf(s, '?limit=2&offset=0')
+    assertEquals([page.items.length, page.total, page.hasMore], [2, 5, true])
+    const last = await feedOf(s, '?limit=2&offset=4')
+    assertEquals([last.items.length, last.total, last.hasMore], [1, 5, false])
+    const b = await feedOf(s, '', s.cookieOwnerB, s.orgB)
     assertEquals(b.total, 3)
+  })
+})
+
+test('a failed deploy stays in the feed after a week, like a succeeded one', async () => {
+  await withSeed(async (s) => {
+    const longAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
+    await s.db.insert(command).values({
+      serverId: s.placeA.serverId,
+      actorType: 'user',
+      actorId: s.placeA.actor,
+      name: 'environment.deploy',
+      status: 'failed',
+      organizationId: s.orgA,
+      environmentId: s.placeA.environmentId,
+      context: { environmentId: s.placeA.environmentId },
+      createdAt: longAgo,
+    })
+    const failed = await feedOf(s, '?filter=failed')
+    assertEquals(failed.total, 2)
+    assertEquals((await feedOf(s)).total, 6)
+  })
+})
+
+test('the count stops a fixed distance past the page and says so', async () => {
+  await withSeed(async (s) => {
+    const { serverId, environmentId, actor } = s.placeA
+    await s.db.execute(sql`
+      insert into command (server_id, actor_type, actor_id, name, status, organization_id, environment_id, created_at)
+      select ${serverId}, 'user', ${actor}, 'environment.deploy', 'succeeded', ${s.orgA}, ${environmentId},
+        now() - make_interval(days => 1, secs => n)
+      from generate_series(1, ${ACTIVITY_COUNT_LOOKAHEAD + 5}) as n`)
+    const page = await feedOf(s, '?limit=1')
+    assertEquals(
+      [page.items.length, page.total, page.totalCapped, page.hasMore],
+      [1, ACTIVITY_COUNT_LOOKAHEAD + 1, true, true]
+    )
+    const whole = await feedOf(s, '?limit=100&filter=failed')
+    assertEquals([whole.total, whole.totalCapped], [1, false])
+  })
+})
+
+test('a person is named only while they are a member of the organization', async () => {
+  await withSeed(async (s) => {
+    const member = await s.makeUser('teammate', { name: 'Team Mate' })
+    const teamId = await insertId(
+      s.db
+        .insert(team)
+        .values({ organizationId: s.orgA, name: `names-${s.nonce}` })
+        .returning({ id: team.id })
+    )
+    await s.db.insert(teammate).values({ teamId, userId: member })
+    const admin = await s.makeUser('admin', { name: 'Instance Admin', role: 'superadmin' })
+    const outsider = await s.makeUser('outsider', { name: 'Gone Person' })
+    const { serverId, environmentId } = s.placeA
+    const at = (minutes: number) => new Date(Date.now() + minutes * 60_000).toISOString()
+    for (const [index, actorId] of [member, admin, outsider].entries()) {
+      await s.db.insert(command).values({
+        serverId,
+        actorType: 'user',
+        actorId,
+        name: 'environment.deploy',
+        status: 'succeeded',
+        organizationId: s.orgA,
+        environmentId,
+        createdAt: at(3 - index),
+      })
+    }
+    const res = await get(s, s.cookieOwnerA, s.orgA, '?limit=3')
+    const feed = JSON.parse(res.text) as Feed
+    assertEquals(
+      feed.items.map((i) => i.actorName),
+      ['Team Mate', 'Platform Admin', 'Former Member']
+    )
+    assert(!res.text.includes('Gone Person'))
+    assert(!res.text.includes('Instance Admin'))
+    assert(!res.text.includes('activity-outsider-'))
+  })
+})
+
+test('every filtered page is read in index order, with no sort', async () => {
+  await withSeed(async (s) => {
+    // Make the planner show its hand on a tiny table: no sequential or bitmap
+    // scan, and a sort only if no index can give the order.
+    await s.db.execute(sql`set local enable_seqscan = off`)
+    await s.db.execute(sql`set local enable_bitmapscan = off`)
+    await s.db.execute(sql`set local enable_sort = off`)
+    const filters: ActivityFilter[] = ['all', 'succeeded', 'failed', 'deploying']
+    for (const filter of filters) {
+      const page = activityPageSelect(s.db, s.orgA, [s.placeA.serverId], {
+        filter,
+        limit: 25,
+        offset: 0,
+      })
+      const plan = (await s.db.execute(sql`explain (costs off) ${page}`)) as unknown as {
+        'QUERY PLAN': string
+      }[]
+      const text = [...plan].map((row) => row['QUERY PLAN']).join('\n')
+      assert(/Index Scan using idx_command_(activity|feed)/.test(text), `${filter}:\n${text}`)
+      assert(!/\bSort\b/.test(text), `${filter} sorts:\n${text}`)
+    }
+  })
+})
+
+test('project and environment filters stay inside the caller’s organization', async () => {
+  await withSeed(async (s) => {
+    assertEquals((await feedOf(s, `?projectId=${s.placeA.projectId}`)).total, 5)
+    assertEquals((await feedOf(s, `?environmentId=${s.placeA.environmentId}`)).total, 5)
+    // B's ids from A's session match nothing: the organization is enforced on the row
+    assertEquals((await feedOf(s, `?projectId=${s.placeB.projectId}`)).total, 0)
+    assertEquals((await feedOf(s, `?environmentId=${s.placeB.environmentId}`)).total, 0)
+    assertEquals(
+      (await feedOf(s, `?environmentId=${s.placeA.environmentId}&filter=succeeded`)).total,
+      1
+    )
   })
 })
 
@@ -271,6 +414,8 @@ test('another organization, a plain member, bad queries and no session are all r
     assertEquals((await get(s, s.cookieMemberA, s.orgA)).status, 403)
     assertEquals((await get(s, s.cookieOwnerA, s.orgA, '?filter=crashing')).status, 400)
     assertEquals((await get(s, s.cookieOwnerA, s.orgA, '?limit=0')).status, 400)
+    assertEquals((await get(s, s.cookieOwnerA, s.orgA, '?projectId=nope')).status, 400)
+    assertEquals((await get(s, s.cookieOwnerA, s.orgA, '?environmentId=1')).status, 400)
     assertEquals((await get(s, '', s.orgA)).status, 401)
   })
 })

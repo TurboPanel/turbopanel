@@ -1276,6 +1276,32 @@ export const serverSchemas = {
       },
     },
   },
+  ServerSystemContainersConflict: {
+    type: 'object',
+    required: ['error', 'code', 'blockers'],
+    properties: {
+      error: { type: 'string' },
+      code: {
+        type: 'string',
+        enum: ['server_system_containers_running', 'server_system_containers_active'],
+        description:
+          '`server_system_containers_running`: the server is connected and TurboPanel still runs its own containers there. `server_system_containers_active`: the server is offline and its containers are still recorded as running (use `forgetResources`). A pending container the host never created never blocks.',
+      },
+      blockers: {
+        type: 'array',
+        items: {
+          type: 'object',
+          required: ['id', 'name', 'status'],
+          properties: {
+            id: { type: 'string', format: 'uuid' },
+            name: { type: 'string' },
+            status: { type: 'string' },
+            serviceName: { type: 'string' },
+          },
+        },
+      },
+    },
+  },
   ServerOnlineConflict: {
     type: 'object',
     required: ['error', 'code'],
@@ -2367,13 +2393,14 @@ export const serverPaths: Record<string, unknown> = {
         },
         '409': {
           description:
-            'Dependent resources block deletion, leftover rows cannot be forgotten while the server is connected, or child rows remain',
+            'Dependent resources block deletion, TurboPanel still runs its own containers on the server, leftover rows cannot be forgotten while the server is connected, or child rows remain',
           content: {
             'application/json': {
               schema: {
                 oneOf: [
                   { $ref: '#/components/schemas/ServerDeleteBlockersConflict' },
                   { $ref: '#/components/schemas/ServerOnlineConflict' },
+                  { $ref: '#/components/schemas/ServerSystemContainersConflict' },
                   { $ref: '#/components/schemas/HierarchyDeleteConflict' },
                 ],
               },

@@ -26,6 +26,12 @@
       "tag": "0003_license_key_tier_and_expiry",
       "when": 1793119488037,
       "sha256": "fbbb9577d85ee5299e644c07d9109c2d2b105d2fe48188d9c4b467b54890a8ea"
+    },
+    {
+      "idx": 4,
+      "tag": "0004_command_activity_index",
+      "when": 1793122151433,
+      "sha256": "2d7c61e0818839f09eece916246fdcf953c145c5380853bc77e68a1c0713d7c9"
     }
   ]
 }
