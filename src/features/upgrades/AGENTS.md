@@ -67,7 +67,12 @@ the cache.
   builds to the testing fleet with `autoUpdate` off, 2026-10-03). Only
   inside the maintenance window (if one is set), only when the target differs
   from what's installed (`differsFromInstalled`), and only when no run is
-  active. Never replace a run in progress; the next run targets the newest
+  active. Control-plane drift counts only where the run would plan the
+  control-plane step (`unitsForPlannedRun`): the hosted (Workers) panel's
+  deploy commit never matches the channel build and never opens a run on its
+  own. An automatic start whose every step is already `done` saves no run
+  (`upgrade_nothing_to_update`, tick log `nothing-to-do`); history shows real
+  updates only. Manual starts and preflight are unchanged. Never replace a run in progress; the next run targets the newest
   build. Daemon drift counts **connected** servers only (`anyDaemonBehind`):
   an offline host would otherwise reopen a run on every tick. A skipped host
   that reconnects while behind makes the next tick start an automatic run

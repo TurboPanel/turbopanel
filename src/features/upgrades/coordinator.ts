@@ -30,6 +30,7 @@ import {
   planSingleServer,
   planUpgrade,
   stepSatisfiedByInstalled,
+  unitsForPlannedRun,
   type UpgradeRuntime,
 } from './planner.ts'
 import {
@@ -223,7 +224,14 @@ export type UpgradeTickDecision = {
     | { decision: 'not-attempted' }
     | { decision: 'started'; runId: string; steps: StepSummary }
     | { decision: 'refused'; error: string; blockers: string[] }
+    | { decision: 'nothing-to-do' }
 }
+
+/**
+ * `start()` error for an automatic run whose every step is already on the
+ * target. No run is saved: history shows real updates only.
+ */
+export const UPGRADE_NOTHING_TO_UPDATE = 'upgrade_nothing_to_update'
 
 const ACTIVE = new Set<string>(UPGRADE_STEP_ACTIVE_STATUSES)
 
@@ -272,6 +280,15 @@ function dispatchErrorText(error: unknown): string {
 export const UPGRADE_RUN_ACTIVE = 'upgrade_run_active'
 
 export const UPGRADE_RUN_ACTIVE_MESSAGE = 'Another update is already in progress.'
+
+/** A refused automatic start, or the tick's "nothing to update" when every server is current. */
+function refusedAutoStart(started: {
+  error: string
+  blockers?: string[]
+}): UpgradeTickDecision['autoStart'] {
+  if (started.error === UPGRADE_NOTHING_TO_UPDATE) return { decision: 'nothing-to-do' }
+  return { decision: 'refused', error: started.error, blockers: started.blockers ?? [] }
+}
 
 function runActiveRefusal(activeRunId?: string) {
   return {
@@ -895,6 +912,26 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
     return fact?.commit ?? null
   }
 
+  /**
+   * The control plane is behind only where a run would plan its step. The
+   * hosted panel never installs itself (its deploy commit never matches the
+   * channel build), so its commit alone must not open a run. `fleetCount` only
+   * decides the daemon unit, so it does not matter here.
+   */
+  function instanceBehind(target: UpgradeTarget): boolean {
+    const units = unitsForPlannedRun({
+      runtime: deps.runtime,
+      channelHasInstancePackage: channelHasInstancePackage(deps.channel),
+      hasColocated: Boolean(deps.colocatedServerId),
+      fleetCount: 0,
+    })
+    if (!units.includes('instance')) return false
+    return differsFromInstalled(
+      { version: deps.instanceInstalled.version, commit: deps.instanceInstalled.commit },
+      target.instance
+    )
+  }
+
   return {
     preflight: async () => {
       const [target, fleet, active] = await Promise.all([
@@ -984,6 +1021,13 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
           !input.serverId
         )
       )
+      if (input.source === 'auto' && steps.every((step) => step.status === 'done')) {
+        return {
+          ok: false,
+          error: UPGRADE_NOTHING_TO_UPDATE,
+          blockers: ['Every server already runs the target build.'],
+        }
+      }
       run.phase = earliestOpenPhase(steps)
       const inserted = await deps.store.insertRun(run, steps)
       if (inserted === 'active') return runActiveRefusal()
@@ -1005,15 +1049,7 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
         const daemonDrift = daemonCommit
           ? await deps.store.anyDaemonBehind(daemonCommit, target.daemon?.builtAt)
           : false
-        const differs =
-          daemonDrift ||
-          differsFromInstalled(
-            {
-              version: deps.instanceInstalled.version,
-              commit: deps.instanceInstalled.commit,
-            },
-            target.instance
-          )
+        const differs = daemonDrift || instanceBehind(target)
         let autoStart: UpgradeTickDecision['autoStart'] = { decision: 'not-attempted' }
         if (
           shouldAutoStartRun({
@@ -1034,11 +1070,7 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
                 runId: started.runId,
                 steps: await deps.store.countSteps(started.runId),
               }
-            : {
-                decision: 'refused',
-                error: started.error,
-                blockers: started.blockers ?? [],
-              }
+            : refusedAutoStart(started)
         }
         deps.trace?.({
           channel: deps.channel,
