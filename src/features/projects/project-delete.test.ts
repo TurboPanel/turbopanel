@@ -205,7 +205,7 @@ test('deleteProjectCascade ignores a running ingress container', async () => {
     // ProxySQL / per-service Traefik rows are server-scoped infrastructure —
     // their teardown is the destroy fan-out and orphan sweep, not this gate.
     const result = await deleteProjectCascade(db, projectId)
-    assertEquals(result, { ok: true })
+    assertEquals(result.ok, true)
 
     const remainingContainers = await db
       .select({ id: container.id })
@@ -258,7 +258,7 @@ test('deleteProjectCascade removes project with no environments', async () => {
 
   try {
     const result = await deleteProjectCascade(db, projectId)
-    assertEquals(result, { ok: true })
+    assertEquals(result.ok, true)
 
     const [goneProject] = await db
       .select({ id: project.id })
@@ -344,7 +344,7 @@ test('deleteProjectCascade removes children when containers are stopped', async 
 
   try {
     const result = await deleteProjectCascade(db, projectId)
-    assertEquals(result, { ok: true })
+    assertEquals(result.ok, true)
 
     const [goneProject] = await db
       .select({ id: project.id })
@@ -443,7 +443,7 @@ test('deleteProjectCascade removes tenancy edges before services', async () => {
 
   try {
     const result = await deleteProjectCascade(db, projectId)
-    assertEquals(result, { ok: true })
+    assertEquals(result.ok, true)
 
     const [goneProject] = await db
       .select({ id: project.id })
@@ -535,7 +535,7 @@ test('deleteProjectCascade refuses and keeps every row when the host stop did no
 
     // The same project deletes once the stop goes through.
     const done = await deleteProjectCascade(db, projectId, undefined, () => Promise.resolve(true))
-    assertEquals(done, { ok: true })
+    assertEquals(done.ok, true)
   } finally {
     await db.delete(environment).where(eq(environment.id, environmentId))
     await db.delete(project).where(eq(project.id, projectId))

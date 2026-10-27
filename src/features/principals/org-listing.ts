@@ -66,6 +66,11 @@ export type OrgPrincipalRow = {
   state: PlacementState | 'none'
   /** No project and nothing uses it: a leftover of a deleted project. */
   orphaned: boolean
+  /**
+   * Its project's delete asked for it to go: the removal sweep deletes it
+   * (and its Linux user and home) once its folders are gone.
+   */
+  removalRequested: boolean
   /** Delete is allowed right now (an orphaned server-form principal). */
   canDelete: boolean
   createdAt: string
@@ -82,7 +87,8 @@ export function isOrphanDeletable(
     usage.bindings === 0 &&
     usage.storages === 0 &&
     usage.secrets === 0 &&
-    usage.logins === 0
+    usage.logins === 0 &&
+    usage.folders === 0
   )
 }
 
@@ -110,6 +116,7 @@ export async function listOrganizationPrincipals(
       username: principal.username,
       appliedUsername: principal.appliedUsername,
       projectId: principal.projectId,
+      removalRequestedAt: principal.removalRequestedAt,
       createdAt: principal.createdAt,
     })
     .from(principal)
@@ -187,6 +194,7 @@ export async function listOrganizationPrincipals(
       usedBy,
       state: summarizePlacementState(servers.map((p) => p.state)),
       orphaned: row.projectId === null && unused,
+      removalRequested: row.removalRequestedAt !== null,
       canDelete: isOrphanDeletable(row, used),
       createdAt: row.createdAt,
     }

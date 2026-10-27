@@ -5,7 +5,19 @@
 import { assertEquals } from '@std/assert'
 import type { ComposeDocument } from '../../features/compose/index.ts'
 import { hostingEntryKey } from '../../features/compose/index.ts'
-import { hostname, hosting, instanceHostname, ip, service, setting, tls } from '../../db/schema.ts'
+import {
+  audit,
+  environment,
+  hostname,
+  hosting,
+  instanceHostname,
+  ip,
+  organization,
+  service,
+  setting,
+  tls,
+} from '../../db/schema.ts'
+import type { Db } from '../../db/connection.ts'
 import { createMemoryDb } from '../../test-fixtures/memory-db.ts'
 import {
   HOSTING_COMPOSE_ROUTE_METADATA_KEY,
@@ -71,54 +83,94 @@ function composeOwnedMetadata(
   )
 }
 
+type TlsSeed = {
+  id: string
+  label: string | null
+  source?: string
+  status?: string
+  metadata?: Record<string, unknown>
+}
+
 function createReconcileDb(opts: {
   hostingRows?: ExistingRow[]
-  tlsRows?: Array<{ id: string; label: string | null }>
+  tlsRows?: TlsSeed[]
   ipRows?: Array<{ id: string; label: string | null }>
   panelHosts?: string[]
+  /** The organization's "Allow Let's Encrypt certificates" switch; unset leaves the key out. */
+  acmeEnabled?: boolean
 }) {
-  return createMemoryDb([
-    [hosting, opts.hostingRows ?? []],
+  return createMemoryDb(
     [
-      service,
       [
-        { id: SVC_WEB, environmentId: ENV_ID },
-        { id: SVC_OTHER, environmentId: ENV_ID },
+        organization,
+        [
+          {
+            id: ORG_ID,
+            options: opts.acmeEnabled === undefined ? {} : { acmeEnabled: opts.acmeEnabled },
+          },
+        ],
+      ],
+      // The reconcile takes the environment row's lock first.
+      [environment, [{ id: ENV_ID }]],
+      [audit, []],
+      [hosting, opts.hostingRows ?? []],
+      [
+        service,
+        [
+          { id: SVC_WEB, environmentId: ENV_ID },
+          { id: SVC_OTHER, environmentId: ENV_ID },
+        ],
+      ],
+      [
+        tls,
+        (opts.tlsRows ?? []).map((row) => ({
+          id: row.id,
+          name: row.label,
+          organizationId: ORG_ID,
+          createdAt: new Date(0).toISOString(),
+          source: row.source ?? 'upload',
+          status: row.status ?? 'ready',
+          metadata: row.metadata ?? {},
+        })),
+      ],
+      [
+        ip,
+        (opts.ipRows ?? []).map((row) => ({
+          id: row.id,
+          address: row.label,
+          organizationId: ORG_ID,
+        })),
+      ],
+      [hostname, []],
+      [setting, []],
+      [
+        instanceHostname,
+        (opts.panelHosts ?? []).map((host, index) => ({
+          id: `panel-${index}`,
+          host,
+          source: 'platform-ca',
+          uploadedCertId: null,
+          acmeLastAttemptAt: null,
+          acmeLastError: null,
+          notAfter: null,
+          createdAt: new Date(index).toISOString(),
+          updatedAt: new Date(index).toISOString(),
+        })),
       ],
     ],
-    [
-      tls,
-      (opts.tlsRows ?? []).map((row) => ({
-        id: row.id,
-        name: row.label,
-        organizationId: ORG_ID,
-      })),
-    ],
-    [
-      ip,
-      (opts.ipRows ?? []).map((row) => ({
-        id: row.id,
-        address: row.label,
-        organizationId: ORG_ID,
-      })),
-    ],
-    [hostname, []],
-    [setting, []],
-    [
-      instanceHostname,
-      (opts.panelHosts ?? []).map((host, index) => ({
-        id: `panel-${index}`,
-        host,
-        source: 'platform-ca',
-        uploadedCertId: null,
-        acmeLastAttemptAt: null,
-        acmeLastError: null,
-        notAfter: null,
-        createdAt: new Date(index).toISOString(),
-        updatedAt: new Date(index).toISOString(),
-      })),
-    ],
-  ])
+    { fallback: lockRecorder() }
+  )
+}
+
+/** Stands in for `execute` (the managed Let's Encrypt row's transaction lock) and records each call. */
+const executed: unknown[] = []
+function lockRecorder(): Db {
+  return {
+    execute: (query: unknown) => {
+      executed.push(query)
+      return Promise.resolve([])
+    },
+  } as unknown as Db
 }
 
 /** The one `hosting` row a call created or kept, by id. */
@@ -370,29 +422,298 @@ test('reconcileHostingsFromCompose ignores tcp panel rows and other services', a
   assertEquals(db.rows(hosting).length, 4)
 })
 
-test('reconcileHostingsFromCompose refuses automatic TLS mode', async () => {
-  const db = createReconcileDb({})
-  const result = await reconcileHostingsFromCompose(db, {
+function automaticDoc(entry: Record<string, unknown> = {}): ComposeDocument {
+  return composeDoc({
+    web: hostingService([{ hostname: HOSTNAME, tls: { mode: 'automatic' }, ...entry }]),
+  })
+}
+
+function reconcileAutomatic(
+  db: ReturnType<typeof createReconcileDb>,
+  entry: Record<string, unknown> = {}
+) {
+  return reconcileHostingsFromCompose(db, {
+    organizationId: ORG_ID,
+    environmentId: ENV_ID,
+    merged: automaticDoc(entry),
+    serviceRows: [{ id: SVC_WEB, composeServiceName: 'web' }],
+  })
+}
+
+function managedRow(id: string, dnsNames: string[]): TlsSeed {
+  return { id, label: null, source: 'lets_encrypt', status: 'automatic', metadata: { dnsNames } }
+}
+
+test('reconcileHostingsFromCompose pins a new managed Lets Encrypt row for tls.mode automatic', async () => {
+  const db = createReconcileDb({ acmeEnabled: true })
+  const result = await reconcileAutomatic(db, { www: 'www-to-root' })
+  if (!result.ok) throw new TypeError(`expected automatic pin, got ${result.error.kind}`)
+  const [created] = db.rows(tls)
+  assertEquals(created.source, 'lets_encrypt')
+  assertEquals(created.status, 'automatic')
+  assertEquals(created.name, null)
+  assertEquals(created.privateKeyPem, null)
+  assertEquals((created.metadata as { dnsNames: string[] }).dnsNames, [HOSTNAME, `www.${HOSTNAME}`])
+  const row = hostingRow(db, result.created[0])
+  assertEquals(row?.tlsId, created.id)
+  assertEquals((row?.metadata as Record<string, unknown>).composeTlsMode, 'automatic')
+})
+
+test('reconcileHostingsFromCompose keeps one managed row across repeated deploys', async () => {
+  const db = createReconcileDb({ acmeEnabled: true })
+  const first = await reconcileAutomatic(db)
+  const second = await reconcileAutomatic(db)
+  if (!first.ok || !second.ok) throw new TypeError('expected both reconciles to pin')
+  assertEquals(db.rows(tls).length, 1)
+  assertEquals(second.updated, first.created)
+  assertEquals(hostingRow(db, first.created[0])?.tlsId, db.rows(tls)[0].id)
+})
+
+test('reconcileHostingsFromCompose reuses an existing Lets Encrypt row covering the hostname', async () => {
+  const db = createReconcileDb({
+    acmeEnabled: true,
+    tlsRows: [
+      managedRow('tls-other', ['other.example.com']),
+      managedRow('tls-covering', [`www.${HOSTNAME}`, HOSTNAME]),
+    ],
+  })
+  const result = await reconcileAutomatic(db)
+  if (!result.ok) throw new TypeError('expected automatic pin')
+  assertEquals(db.rows(tls).length, 2)
+  assertEquals(hostingRow(db, result.created[0])?.tlsId, 'tls-covering')
+})
+
+test('reconcileHostingsFromCompose prefers the row with exactly the needed names', async () => {
+  const db = createReconcileDb({
+    acmeEnabled: true,
+    tlsRows: [
+      managedRow('tls-covering', [HOSTNAME, `www.${HOSTNAME}`]),
+      managedRow('tls-exact', [HOSTNAME]),
+    ],
+  })
+  const result = await reconcileAutomatic(db)
+  if (!result.ok) throw new TypeError('expected automatic pin')
+  assertEquals(hostingRow(db, result.created[0])?.tlsId, 'tls-exact')
+})
+
+test('reconcileHostingsFromCompose does not reuse a revoked or uploaded row for automatic', async () => {
+  const db = createReconcileDb({
+    acmeEnabled: true,
+    tlsRows: [
+      { ...managedRow('tls-revoked', [HOSTNAME]), status: 'revoked' },
+      { id: 'tls-upload', label: 'mine', metadata: { dnsNames: [HOSTNAME] } },
+    ],
+  })
+  const result = await reconcileAutomatic(db)
+  if (!result.ok) throw new TypeError('expected automatic pin')
+  const pinned = hostingRow(db, result.created[0])?.tlsId
+  assertEquals(db.rows(tls).length, 3)
+  assertEquals(pinned === 'tls-revoked' || pinned === 'tls-upload', false)
+})
+
+/** The compose document once the route is gone ("Remove hostname"). */
+function reconcileWithoutRoute(db: ReturnType<typeof createReconcileDb>) {
+  return reconcileHostingsFromCompose(db, {
+    organizationId: ORG_ID,
+    environmentId: ENV_ID,
+    merged: composeDoc({ web: hostingService([]) }),
+    serviceRows: [{ id: SVC_WEB, composeServiceName: 'web' }],
+  })
+}
+
+test('reconcileHostingsFromCompose removes the Lets Encrypt entry with the last route that used it', async () => {
+  const db = createReconcileDb({ acmeEnabled: true })
+  const first = await reconcileAutomatic(db)
+  if (!first.ok) throw new TypeError('expected automatic pin')
+  assertEquals(db.rows(tls).length, 1)
+  const entryId = db.rows(tls)[0].id
+  const removed = await reconcileWithoutRoute(db)
+  if (!removed.ok) throw new TypeError('expected the route to be removed')
+  assertEquals(removed.removed, first.created)
+  assertEquals(db.rows(tls), [])
+  assertEquals(
+    db.rows(audit).map((row) => [row.action, row.targetId]),
+    [['tls.certificate.delete', entryId]]
+  )
+})
+
+test('reconcileHostingsFromCompose removes the entry once the route stops asking for Lets Encrypt', async () => {
+  const db = createReconcileDb({ acmeEnabled: true })
+  const first = await reconcileAutomatic(db)
+  if (!first.ok) throw new TypeError('expected automatic pin')
+  const internal = await reconcileAutomatic(db, { tls: { mode: 'internal' } })
+  if (!internal.ok) throw new TypeError('expected the route to be kept')
+  assertEquals(hostingRow(db, first.created[0])?.tlsId, null)
+  assertEquals(db.rows(tls), [])
+})
+
+test('reconcileHostingsFromCompose keeps the entry while a site elsewhere in the organization uses it', async () => {
+  const db = createReconcileDb({ acmeEnabled: true })
+  const first = await reconcileAutomatic(db)
+  if (!first.ok) throw new TypeError('expected automatic pin')
+  const entryId = db.rows(tls)[0].id as string
+  await db.insert(hosting).values({
+    id: 'host-elsewhere',
+    serviceId: SVC_OTHER,
+    tlsId: entryId,
+    metadata: {},
+    options: { hostnames: [HOSTNAME] },
+  })
+  const removed = await reconcileWithoutRoute(db)
+  if (!removed.ok) throw new TypeError('expected the route to be removed')
+  assertEquals(
+    db.rows(tls).map((row) => row.id),
+    [entryId]
+  )
+})
+
+test('reconcileHostingsFromCompose never removes an uploaded or hand-added certificate', async () => {
+  const db = createReconcileDb({
+    acmeEnabled: true,
+    tlsRows: [
+      { id: 'tls-1', label: 'prod-cert' },
+      {
+        ...managedRow('tls-library', ['other.example.com']),
+        metadata: { dnsNames: ['other.example.com'], acme: { createdFor: 'library' } },
+      },
+    ],
+  })
+  const pinned = await reconcileHostingsFromCompose(db, {
     organizationId: ORG_ID,
     environmentId: ENV_ID,
     merged: composeDoc({
       web: hostingService([
-        {
-          hostname: HOSTNAME,
-          tls: { mode: 'automatic' },
-        },
+        { hostname: HOSTNAME, tls: { mode: 'certificate', certificateRef: 'tls-1' } },
+        { hostname: 'other.example.com', tls: { mode: 'automatic' } },
       ]),
     }),
     serviceRows: [{ id: SVC_WEB, composeServiceName: 'web' }],
   })
-  assertEquals(result.ok, false)
-  if (result.ok) throw new TypeError('expected automatic TLS refusal')
-  assertEquals(result.error.kind, 'hosting_tls_mode_unsupported')
-  if (result.error.kind !== 'hosting_tls_mode_unsupported') {
-    throw new TypeError('expected tls mode error')
+  if (!pinned.ok) throw new TypeError(`expected both routes to pin, got ${pinned.error.kind}`)
+  assertEquals(
+    db
+      .rows(hosting)
+      .map((row) => row.tlsId)
+      .sort(),
+    ['tls-1', 'tls-library']
+  )
+  const removed = await reconcileWithoutRoute(db)
+  if (!removed.ok) throw new TypeError('expected the routes to be removed')
+  assertEquals(db.rows(hosting), [])
+  assertEquals(
+    db
+      .rows(tls)
+      .map((row) => row.id)
+      .sort(),
+    ['tls-1', 'tls-library']
+  )
+})
+
+for (const acmeEnabled of [false, undefined]) {
+  test(`reconcileHostingsFromCompose refuses automatic while Lets Encrypt is off (${acmeEnabled})`, async () => {
+    const db = createReconcileDb({ acmeEnabled })
+    const result = await reconcileAutomatic(db)
+    if (result.ok) throw new TypeError('expected a refusal')
+    assertEquals(result.error, {
+      kind: 'hosting_letsencrypt_refused',
+      composeServiceName: 'web',
+      hostname: HOSTNAME,
+      reason: 'lets_encrypt_not_enabled',
+      names: [HOSTNAME],
+    })
+    assertEquals(db.rows(tls).length, 0)
+    assertEquals(db.rows(hosting).length, 0)
+  })
+}
+
+test('reconcileHostingsFromCompose refuses automatic on a route that is not public', async () => {
+  const db = createReconcileDb({ acmeEnabled: true })
+  const result = await reconcileAutomatic(db, { bind: { scope: 'datacenter' } })
+  if (result.ok) throw new TypeError('expected a refusal')
+  assertEquals(result.error.kind, 'hosting_letsencrypt_refused')
+  if (result.error.kind !== 'hosting_letsencrypt_refused') return
+  assertEquals(result.error.reason, 'acme_requires_public_bind')
+  assertEquals(db.rows(tls).length, 0)
+})
+
+test('reconcileHostingsFromCompose refuses automatic for a wildcard name', async () => {
+  const db = createReconcileDb({ acmeEnabled: true })
+  const result = await reconcileHostingsFromCompose(db, {
+    organizationId: ORG_ID,
+    environmentId: ENV_ID,
+    merged: composeDoc({
+      web: hostingService([{ hostname: '*.example.com', tls: { mode: 'automatic' } }]),
+    }),
+    serviceRows: [{ id: SVC_WEB, composeServiceName: 'web' }],
+  })
+  if (result.ok) throw new TypeError('expected a refusal')
+  assertEquals(result.error.kind, 'hosting_letsencrypt_refused')
+  if (result.error.kind !== 'hosting_letsencrypt_refused') return
+  assertEquals(result.error.reason, 'letsencrypt_hostname_unsupported')
+})
+
+test('reconcileHostingsFromCompose takes the organization lock before creating a managed row', async () => {
+  executed.length = 0
+  const result = await reconcileAutomatic(createReconcileDb({ acmeEnabled: true }))
+  if (!result.ok) throw new TypeError('expected automatic pin')
+  assertEquals(executed.length, 1)
+})
+
+test('reconcileHostingsFromCompose does not reuse a row lacking the www name the route adds', async () => {
+  const db = createReconcileDb({
+    acmeEnabled: true,
+    tlsRows: [managedRow('tls-bare', [HOSTNAME])],
+  })
+  const result = await reconcileAutomatic(db, { www: 'www-to-root' })
+  if (!result.ok) throw new TypeError('expected automatic pin')
+  const pinned = hostingRow(db, result.created[0])?.tlsId
+  const row = db.rows(tls).find((candidate) => candidate.id === pinned)
+  assertEquals(pinned === 'tls-bare', false)
+  assertEquals((row?.metadata as { dnsNames: string[] }).dnsNames, [HOSTNAME, `www.${HOSTNAME}`])
+})
+
+function waitingComposeRow(tlsMode: string): ExistingRow & Record<string, unknown> {
+  return {
+    id: 'hosting-waiting',
+    serviceId: SVC_WEB,
+    pendingAt: '2026-10-25T00:00:00.000Z',
+    metadata: {
+      ...composeOwnedMetadata('web', ROUTE),
+      composeTlsMode: tlsMode,
+      letsEncryptDns: { ready: false, checkedAt: '2026-10-25T00:00:00.000Z', hostnames: [] },
+    },
+    options: { hostnames: [HOSTNAME] },
   }
-  assertEquals(result.error.mode, 'automatic')
-  assertEquals(result.error.hostname, HOSTNAME)
+}
+
+test('reconcileHostingsFromCompose clears a waiting Lets Encrypt request once the route stops asking for it', async () => {
+  const db = createReconcileDb({ hostingRows: [waitingComposeRow('automatic')] })
+  const result = await reconcileHostingsFromCompose(db, {
+    organizationId: ORG_ID,
+    environmentId: ENV_ID,
+    merged: composeDoc({ web: hostingService([{ hostname: HOSTNAME }]) }),
+    serviceRows: [{ id: SVC_WEB, composeServiceName: 'web' }],
+  })
+  if (!result.ok) throw new TypeError('expected an update')
+  const row = hostingRow(db, 'hosting-waiting')
+  assertEquals(row?.pendingAt, null)
+  assertEquals((row?.metadata as Record<string, unknown>).letsEncryptDns, undefined)
+  assertEquals((row?.metadata as Record<string, unknown>).composeTlsMode, 'internal')
+})
+
+test('reconcileHostingsFromCompose keeps a waiting request while the route asks for automatic', async () => {
+  const db = createReconcileDb({
+    acmeEnabled: true,
+    hostingRows: [waitingComposeRow('automatic')],
+  })
+  const result = await reconcileAutomatic(db)
+  if (!result.ok) throw new TypeError('expected an update')
+  const row = hostingRow(db, 'hosting-waiting')
+  assertEquals(row?.pendingAt, '2026-10-25T00:00:00.000Z')
+  assertEquals(
+    ((row?.metadata as Record<string, unknown>).letsEncryptDns as { ready: boolean }).ready,
+    false
+  )
 })
 
 test('reconcileHostingsFromCompose reports unresolved and ambiguous TLS refs', async () => {

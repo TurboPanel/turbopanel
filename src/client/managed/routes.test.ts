@@ -53,6 +53,7 @@ import {
   user,
   workspace,
 } from '../../db/schema.ts'
+import { MANAGED_DATA_ONLY_READWRITE_FEATURE } from '../../lib/version-wire.ts'
 import {
   createCommandRecord,
   getCommandRecord,
@@ -245,6 +246,8 @@ async function withManagedFixtures(
     projectKind?: 'managed-postgres' | 'docker-compose'
     foreignServer?: boolean
     online?: boolean
+    /** Engine of the managed project; PostgreSQL when left out. */
+    engine?: 'postgres' | 'mysql' | 'mariadb'
   },
   fn: (ctx: {
     db: ReturnType<typeof createDenoDb>
@@ -282,6 +285,8 @@ async function withManagedFixturesBody(
     projectKind?: 'managed-postgres' | 'docker-compose'
     foreignServer?: boolean
     online?: boolean
+    /** Engine of the managed project; PostgreSQL when left out. */
+    engine?: 'postgres' | 'mysql' | 'mariadb'
   },
   fn: (ctx: {
     db: ReturnType<typeof createDenoDb>
@@ -379,8 +384,9 @@ async function withManagedFixturesBody(
     }
   }
 
-  const catalogEntry = getCatalogEntry('postgres')
-  if (!catalogEntry) throw new TypeError('missing postgres catalog entry')
+  const engineCode = options.engine ?? 'postgres'
+  const catalogEntry = getCatalogEntry(engineCode)
+  if (!catalogEntry) throw new TypeError(`missing ${engineCode} catalog entry`)
   const engineOptions = readManagedEngineOptions(catalogEntry)
 
   const [insertedProject] = await db
@@ -392,7 +398,7 @@ async function withManagedFixturesBody(
             workspaceId,
             organizationId,
             kind: 'managed',
-            metadata: { code: 'postgres' },
+            metadata: { code: engineCode },
             options: {
               compose: catalogEntry.compose,
               ...(engineOptions ?? {}),
@@ -2922,6 +2928,293 @@ test('POST managed user honours name schemes, the org lock, and the root login s
     }
   )
 })
+
+test('POST app-logins adds the owner, read/write and read-only logins in one apply, all or nothing', async () => {
+  await withManagedFixtures(
+    {},
+    async ({ db, app, secrets, commandQueue, userId, organizationId, environmentId }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const headers = {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      }
+      const create = await app.request(`/environments/${environmentId}/managed`, {
+        method: 'POST',
+        headers,
+        body: '{}',
+      })
+      assertEquals(create.status, 200)
+      const created = (await create.json()) as { managed: { id: string } }
+      const ready = () =>
+        db.update(managed).set({ status: 'ready' }).where(eq(managed.id, created.managed.id))
+      await ready()
+      const appLogins = (database: string, body: Record<string, unknown>) =>
+        app.request(`/environments/${environmentId}/managed/databases/${database}/app-logins`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(body),
+        })
+
+      const before = commandQueue.envelopes.length
+      const made = await appLogins('defaultdb', { straightThrough: true })
+      assertEquals(made.status, 200)
+      const madeBody = (await made.json()) as {
+        logins: Array<{
+          user: {
+            username: string
+            appliedUsername: string
+            nameScheme: string
+            databases: string[]
+            privileges: string[]
+            connectionRole: string
+            grantMode: string
+            tool: boolean
+            straightThrough: boolean
+          }
+          password: string
+        }>
+      }
+      assertEquals(
+        madeBody.logins.map(({ user }) => [
+          user.appliedUsername,
+          user.nameScheme,
+          user.databases,
+          user.privileges,
+          user.connectionRole,
+          user.grantMode,
+          user.tool,
+          user.straightThrough,
+        ]),
+        [
+          [
+            'defaultdb_migrate',
+            'plain',
+            ['defaultdb'],
+            ['admin'],
+            'read-write',
+            'recipe',
+            true,
+            true,
+          ],
+          [
+            'defaultdb_rw',
+            'plain',
+            ['defaultdb'],
+            ['read-write'],
+            'read-write',
+            'recipe',
+            false,
+            true,
+          ],
+          [
+            'defaultdb_ro',
+            'plain',
+            ['defaultdb'],
+            ['read-only'],
+            'read-only',
+            'recipe',
+            false,
+            true,
+          ],
+        ]
+      )
+      assertEquals(new Set(madeBody.logins.map((entry) => entry.password)).size, 3)
+      // One apply for the three, not one each.
+      const applies = commandQueue.envelopes
+        .slice(before)
+        .filter((envelope) => envelope.type === 'managed.apply')
+      assertEquals(applies.length, 1)
+
+      // A name already in use keeps none of the three.
+      await ready()
+      const taken = await app.request(`/environments/${environmentId}/managed/users`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          username: 'shop_rw',
+          databases: ['defaultdb'],
+          nameScheme: 'plain',
+        }),
+      })
+      assertEquals(taken.status, 200)
+      await ready()
+      const conflict = await appLogins('defaultdb', { prefix: 'shop' })
+      assertEquals(conflict.status, 409)
+      const conflictBody = (await conflict.json()) as { username: string }
+      assertEquals(conflictBody.username, 'shop_rw')
+      const shopLogins = await db
+        .select({ username: login.username })
+        .from(login)
+        .where(and(eq(login.managedId, created.managed.id), sql`${login.username} like 'shop_%'`))
+      assertEquals(
+        shopLogins.map((entry) => entry.username),
+        ['shop_rw']
+      )
+
+      // A database the cluster does not have, and a prefix that does not fit.
+      assertEquals((await appLogins('nope', {})).status, 404)
+      const badPrefix = await appLogins('defaultdb', { prefix: 'not-a-name' })
+      assertEquals(badPrefix.status, 400)
+      assertEquals(
+        ((await badPrefix.json()) as { error: string }).error,
+        'managed_app_login_prefix_invalid'
+      )
+    }
+  )
+})
+
+/** A ready cluster for the app-logins tests, and how to call the route and list its logins. */
+async function appLoginsCluster(ctx: {
+  db: ReturnType<typeof createDenoDb>
+  app: Hono<AppEnv>
+  secrets: Awaited<ReturnType<typeof deriveSecretsConfig>>
+  userId: string
+  organizationId: string
+  environmentId: string
+}) {
+  const { db, app, environmentId } = ctx
+  const headers = {
+    Cookie: await sessionCookie(db, ctx.secrets, ctx.userId),
+    [ORG_ID_HEADER]: ctx.organizationId,
+    'Content-Type': 'application/json',
+  }
+  const create = await app.request(`/environments/${environmentId}/managed`, {
+    method: 'POST',
+    headers,
+    body: '{}',
+  })
+  assertEquals(create.status, 200)
+  const managedId = ((await create.json()) as { managed: { id: string } }).managed.id
+  const setStatus = (status: 'ready' | 'applying') =>
+    db.update(managed).set({ status }).where(eq(managed.id, managedId))
+  await setStatus('ready')
+  const databasesRes = await app.request(`/environments/${environmentId}/managed/databases`, {
+    headers,
+  })
+  const database = ((await databasesRes.json()) as { databases: string[] }).databases[0]!
+  return {
+    managedId,
+    database,
+    setStatus,
+    appLogins: (body: Record<string, unknown>) =>
+      app.request(`/environments/${environmentId}/managed/databases/${database}/app-logins`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body),
+      }),
+    userLogins: async () =>
+      (
+        await db
+          .select({ username: login.username })
+          .from(login)
+          .where(and(eq(login.managedId, managedId), eq(login.role, 'user')))
+      ).map((entry) => entry.username),
+  }
+}
+
+test('POST app-logins keeps none of the three when the apply cannot be queued', async () => {
+  await withManagedFixtures({}, async (ctx) => {
+    const cluster = await appLoginsCluster(ctx)
+    ctx.commandQueue.enqueue = () => {
+      throw new Error('queue unavailable')
+    }
+    const res = await cluster.appLogins({})
+    assertEquals(res.status >= 500, true)
+    assertEquals(await cluster.userLogins(), [])
+  })
+})
+
+test('POST app-logins refusals add nothing: busy cluster, locked scheme, reserved prefix', async () => {
+  await withManagedFixtures({}, async (ctx) => {
+    const cluster = await appLoginsCluster(ctx)
+
+    await cluster.setStatus('applying')
+    const busy = await cluster.appLogins({})
+    assertEquals(busy.status, 409)
+    assertEquals(((await busy.json()) as { error: string }).error, 'managed_busy')
+    await cluster.setStatus('ready')
+
+    const reserved = await cluster.appLogins({ prefix: 'tp' })
+    assertEquals(reserved.status, 422)
+    assertEquals(((await reserved.json()) as { error: string }).error, 'reserved_username')
+
+    await ctx.db
+      .update(organization)
+      .set({ options: { principalNameScheme: 'partial', principalNameSchemeLocked: true } })
+      .where(eq(organization.id, ctx.organizationId))
+    const locked = await cluster.appLogins({})
+    assertEquals(locked.status, 409)
+    assertEquals(((await locked.json()) as { error: string }).error, 'principal_scheme_locked')
+
+    assertEquals(await cluster.userLogins(), [])
+  })
+})
+
+for (const engine of ['mysql', 'mariadb'] as const) {
+  test(`POST app-logins on ${engine}: owner, read/write and read-only, no straight through`, async () => {
+    await withManagedFixtures({ engine }, async (ctx) => {
+      const cluster = await appLoginsCluster(ctx)
+      // A daemon too old for the data-only read/write level refuses, and nothing is added.
+      const tooOld = await cluster.appLogins({ prefix: 'shop' })
+      assertEquals(tooOld.status, 409)
+      assertEquals(await cluster.userLogins(), [])
+
+      const [current] = await ctx.db
+        .select({ daemon: server.daemon })
+        .from(server)
+        .where(eq(server.id, ctx.serverId))
+      const daemon = (current?.daemon ?? {}) as { projection?: { features?: string[] } }
+      await ctx.db
+        .update(server)
+        .set({
+          daemon: {
+            ...daemon,
+            projection: {
+              ...daemon.projection,
+              features: [
+                ...(daemon.projection?.features ?? []),
+                MANAGED_DATA_ONLY_READWRITE_FEATURE,
+              ],
+            },
+          },
+        })
+        .where(eq(server.id, ctx.serverId))
+      const before = ctx.commandQueue.envelopes.length
+      const made = await cluster.appLogins({ prefix: 'shop' })
+      assertEquals(made.status, 200)
+      const body = (await made.json()) as {
+        logins: Array<{
+          user: {
+            appliedUsername: string
+            databases: string[]
+            privileges: string[]
+            connectionRole: string
+            straightThrough: boolean
+          }
+        }>
+      }
+      assertEquals(
+        body.logins.map(({ user }) => [
+          user.appliedUsername,
+          user.databases,
+          user.privileges,
+          user.connectionRole,
+          user.straightThrough,
+        ]),
+        [
+          ['shop_migrate', [cluster.database], ['admin'], 'read-write', false],
+          ['shop_rw', [cluster.database], ['read-write'], 'read-write', false],
+          ['shop_ro', [cluster.database], ['read-only'], 'read-only', false],
+        ]
+      )
+      const applies = ctx.commandQueue.envelopes
+        .slice(before)
+        .filter((envelope) => envelope.type === 'managed.apply')
+      assertEquals(applies.length, 1)
+    })
+  })
+}
 
 test('POST managed user for an existing principal reuses its name, lists it with the login, and removal keeps the identity', async () => {
   await withManagedFixtures(

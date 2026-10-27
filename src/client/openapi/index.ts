@@ -4,6 +4,7 @@ import { sharedSchemas } from './shared.ts'
 import { accessPaths, accessSchemas } from './access.ts'
 import { authPaths, buildAuthSchemas } from './auth.ts'
 import { environmentPaths, environmentSchemas } from './environments.ts'
+import { deletePlanSchemas } from './delete-plan.ts'
 import { containerPaths, containerSchemas } from './containers.ts'
 import { dockerRunPaths, dockerRunSchemas } from './docker-run.ts'
 import { hostingPaths, hostingSchemas } from './hostings.ts'
@@ -167,6 +168,7 @@ export function getClientOpenApiSpec(serverUrl: string, options?: ClientOpenApiO
         ...phpModeSchemas,
         ...workspaceSchemas,
         ...environmentSchemas,
+        ...deletePlanSchemas,
         ...projectSchemas,
         ...variableSchemas,
         ...tagSchemas,

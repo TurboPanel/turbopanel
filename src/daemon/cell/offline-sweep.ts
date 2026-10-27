@@ -68,6 +68,7 @@ import { runSystemReconcileSweep } from '../../features/system/reconcile.ts'
 import { runBackupsReconcileSweep } from '../../features/backups/reconcile.ts'
 import { runFolderReconcileSweep } from './folder-reconcile-sweep.ts'
 import { runFolderRemovalSweep } from '../../features/folders/removal.ts'
+import { runPrincipalRemovalSweep } from '../../client/principals/removal-sweep.ts'
 import type { FirewallApplyGate } from '../../features/firewall/enforcement.ts'
 import { runFirewallPreviewSweep } from '../../features/firewall/preview.ts'
 import { runLeafRenewalSweepTick } from '../../client/tls/leaf-renewal-sweep.ts'
@@ -860,8 +861,33 @@ type CronTlsRenewal = {
   dataEncryptionSecrets: DerivedSecretsConfig
 }
 
-function sweepErrorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err)
+/**
+ * The error text for a sweep trace. A failed query wraps the database's own
+ * error in `cause` and only says "Failed query: <sql>", so the cause is added.
+ */
+export function sweepErrorMessage(err: unknown): string {
+  if (!(err instanceof Error)) return String(err)
+  const cause = err.cause instanceof Error ? err.cause.message : undefined
+  return cause && cause !== err.message ? `${err.message} (cause: ${cause})` : err.message
+}
+
+/**
+ * Run one isolated sweep inside the queued reconcile phase. A failure is traced
+ * and never stops the others. Once the phase is out of budget (`signal`
+ * aborted) no further sweep starts: the tick is about to close its database
+ * connection, so a sweep started now could only fail.
+ */
+export async function runIsolatedSweep(
+  signal: AbortSignal | undefined,
+  failureEvent: string,
+  sweep: () => Promise<unknown>
+): Promise<void> {
+  if (signal?.aborted) return
+  try {
+    await sweep()
+  } catch (err) {
+    sweepTrace(failureEvent, { error: sweepErrorMessage(err) })
+  }
 }
 
 async function sweepOnceSafely(
@@ -874,23 +900,6 @@ async function sweepOnceSafely(
   } catch (err) {
     sweepTrace('sweep-failed', { error: sweepErrorMessage(err) })
     return { ...EMPTY_SWEEP_STATS }
-  }
-}
-
-async function runLeafRenewalSweepTickSafely(
-  db: Db,
-  commandQueue: ReturnType<typeof createWorkersCommandQueue>,
-  tlsRenewal: CronTlsRenewal
-): Promise<void> {
-  try {
-    // Resumes from the durable LEAF_RENEWAL_SWEEP_LOCK cursor (advanced
-    // per bounded batch; reset when the sweep completes or the cursor
-    // is invalid).
-    await runLeafRenewalSweepTick(db, commandQueue, tlsRenewal)
-  } catch (err) {
-    sweepTrace('leaf-renewal-sweep-failed', {
-      error: sweepErrorMessage(err),
-    })
   }
 }
 
@@ -1120,17 +1129,18 @@ async function runQueuedCronSweeps(
   queue: NonNullable<CloudflareBindings['TURBOPANEL_COMMAND_QUEUE']>,
   tlsRenewal: CronTlsRenewal | null | undefined,
   firewallApplyGate: FirewallApplyGate,
-  registry: DaemonCellRegistry
+  registry: DaemonCellRegistry,
+  signal?: AbortSignal
 ): Promise<void> {
   try {
     const commandQueue = createWorkersCommandQueue(queue)
     // Note: host-loss tick now runs first in runOfflineSweep (P1-5) before optional phases,
     // so it is not called here anymore.
     await runSystemReconcileSweep(db, commandQueue)
-    // Backup policy sets after a reconnect; isolated so a failure never
-    // aborts the other sweeps.
-    try {
-      await runBackupsReconcileSweep(db, commandQueue, {
+    // Each sweep below is isolated: a failure never aborts the others.
+    // Backup policy sets after a reconnect.
+    await runIsolatedSweep(signal, 'backups-reconcile-sweep-failed', () =>
+      runBackupsReconcileSweep(db, commandQueue, {
         copyDeps: tlsRenewal
           ? {
               secretsConfig: tlsRenewal.secretsConfig,
@@ -1138,38 +1148,30 @@ async function runQueuedCronSweeps(
             }
           : undefined,
       })
-    } catch (err) {
-      sweepTrace('backups-reconcile-sweep-failed', {
-        error: sweepErrorMessage(err),
-      })
-    }
-    // Folders of deleted assets the host has not confirmed gone; isolated too.
-    try {
-      await runFolderRemovalSweep(db, commandQueue)
-    } catch (err) {
-      sweepTrace('folder-removal-sweep-failed', { error: sweepErrorMessage(err) })
-    }
+    )
+    // Folders of deleted assets the host has not confirmed gone.
+    await runIsolatedSweep(signal, 'folder-removal-sweep-failed', () =>
+      runFolderRemovalSweep(db, commandQueue)
+    )
+    // Hosting Accounts of deleted projects whose folders are gone.
+    await runIsolatedSweep(signal, 'principal-removal-sweep-failed', () =>
+      runPrincipalRemovalSweep(db, commandQueue)
+    )
     // A fresh folder listing from servers that have folders, every few hours, so
-    // a folder removed or added by hand is noticed; isolated too.
-    try {
-      await runFolderReconcileSweep(db, commandQueue)
-    } catch (err) {
-      sweepTrace('folder-reconcile-sweep-failed', { error: sweepErrorMessage(err) })
-    }
-    // Firewall previews after a reconnect; isolated too. The gate is the
-    // deploy-time apply key: without it an opted-in host that applied would be
-    // sent a teardown on every reconnect.
-    try {
-      await runFirewallPreviewSweep(db, commandQueue, { applyGate: firewallApplyGate })
-    } catch (err) {
-      sweepTrace('firewall-preview-sweep-failed', {
-        error: sweepErrorMessage(err),
-      })
-    }
+    // a folder removed or added by hand is noticed.
+    await runIsolatedSweep(signal, 'folder-reconcile-sweep-failed', () =>
+      runFolderReconcileSweep(db, commandQueue)
+    )
+    // Firewall previews after a reconnect. The gate is the deploy-time apply
+    // key: without it an opted-in host that applied would be sent a teardown on
+    // every reconnect.
+    await runIsolatedSweep(signal, 'firewall-preview-sweep-failed', () =>
+      runFirewallPreviewSweep(db, commandQueue, { applyGate: firewallApplyGate })
+    )
     // Let's Encrypt requests waiting for DNS. With the secrets bundle a newly
     // pinned certificate goes out at once; without it the panel asks for a redeploy.
-    try {
-      await runHostingLetsEncryptSweepTick(
+    await runIsolatedSweep(signal, 'hosting-letsencrypt-sweep-failed', () =>
+      runHostingLetsEncryptSweepTick(
         db,
         tlsRenewal
           ? {
@@ -1181,46 +1183,33 @@ async function runQueuedCronSweeps(
             }
           : {}
       )
-    } catch (err) {
-      sweepTrace('hosting-letsencrypt-sweep-failed', {
-        error: sweepErrorMessage(err),
-      })
-    }
+    )
     if (tlsRenewal) {
-      await runLeafRenewalSweepTickSafely(db, commandQueue, tlsRenewal)
+      // Resumes from the durable LEAF_RENEWAL_SWEEP_LOCK cursor (advanced per
+      // bounded batch; reset when the sweep completes or the cursor is invalid).
+      await runIsolatedSweep(signal, 'leaf-renewal-sweep-failed', () =>
+        runLeafRenewalSweepTick(db, commandQueue, tlsRenewal)
+      )
       // Orphaned ProxySQL frontends: teardown needs a full
       // `managed.ingress.reconcile`, so it can only run when the cron has the
-      // secrets bundle (same gate as leaf renewal). Isolated so a failure
-      // never aborts the other sweeps.
-      try {
-        await runManagedIngressOrphanSweep(db, commandQueue, tlsRenewal)
-      } catch (err) {
-        sweepTrace('managed-ingress-orphan-sweep-failed', {
-          error: sweepErrorMessage(err),
-        })
-      }
+      // secrets bundle (same gate as leaf renewal).
+      await runIsolatedSweep(signal, 'managed-ingress-orphan-sweep-failed', () =>
+        runManagedIngressOrphanSweep(db, commandQueue, tlsRenewal)
+      )
       // Automatic membership repins: the presence path only stamps
       // `ip.repin_pending_fanout_at` (hello / DO must not enqueue);
       // the routing fan-out needs the same secrets bundle as leaf renewal.
-      try {
-        await runDatacenterRepinFanoutSweep(db, commandQueue, tlsRenewal)
-      } catch (err) {
-        sweepTrace('datacenter-repin-fanout-sweep-failed', {
-          error: sweepErrorMessage(err),
-        })
-      }
+      await runIsolatedSweep(signal, 'datacenter-repin-fanout-sweep-failed', () =>
+        runDatacenterRepinFanoutSweep(db, commandQueue, tlsRenewal)
+      )
     }
     // Automatic network fallback: ask the servers whether the network that
     // carries server-to-server traffic still works, and mark the ones nobody
     // can reach. Only stamps `ip.repin_pending_fanout_at`; the fan-out above
-    // drains it on a later tick. Never throws.
-    try {
-      await runNetworkProbeSweep(db, registry)
-    } catch (err) {
-      sweepTrace('network-probe-sweep-failed', {
-        error: sweepErrorMessage(err),
-      })
-    }
+    // drains it on a later tick.
+    await runIsolatedSweep(signal, 'network-probe-sweep-failed', () =>
+      runNetworkProbeSweep(db, registry)
+    )
   } catch (err) {
     sweepTrace('system-reconcile-sweep-failed', {
       error: sweepErrorMessage(err),
@@ -1308,21 +1297,29 @@ async function runOptionalPhase(
   phase: string,
   scheduledTime: number | undefined,
   phasesSkipped: SkippedPhases,
-  work: () => Promise<void>
+  work: (signal: AbortSignal) => Promise<void>
 ): Promise<boolean> {
   const left = remainingMs(deadlineMs)
   if (left <= 0) {
     skipFromPhase(phasesSkipped, phase, scheduledTime)
     return false
   }
+  // A timed-out phase keeps running in the background; the signal tells it to
+  // start nothing new before the tick closes the database connection.
+  const budget = new AbortController()
   try {
     if (!Number.isFinite(left)) {
-      await work()
+      await work(budget.signal)
       return true
     }
-    await raceWithTimeout(work(), left, `offline-sweep ${phase} exceeded remaining budget`)
+    await raceWithTimeout(
+      work(budget.signal),
+      left,
+      `offline-sweep ${phase} exceeded remaining budget`
+    )
     return true
   } catch (err) {
+    budget.abort()
     sweepTrace('budget-exhausted', {
       phase,
       error: sweepErrorMessage(err),
@@ -1640,13 +1637,14 @@ async function runOptionalCronPhases(
 
   const commandQueue = env.TURBOPANEL_COMMAND_QUEUE
   if (!commandQueue) return
-  await runOptionalPhase(deadlineMs, 'reconcile', opts.scheduledTime, phasesSkipped, () =>
+  await runOptionalPhase(deadlineMs, 'reconcile', opts.scheduledTime, phasesSkipped, (signal) =>
     runQueuedCronSweeps(
       db,
       commandQueue,
       tlsRenewal,
       opts.firewallApplyGate,
-      createDurableObjectDaemonCellRegistry(env, db)
+      createDurableObjectDaemonCellRegistry(env, db),
+      signal
     )
   )
 }

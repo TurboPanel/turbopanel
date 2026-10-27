@@ -4,21 +4,24 @@ Web-Crypto-only primitives for the **Organization CA** (managed-database /
 ProxySQL / replication leaves) and the org TLS library. Importable from both the
 Workers and Deno graphs — no Deno/Node globals, `.ts` relative imports only.
 
-**Future:** tenant **hosting** leaves (Caddy-fronted web services) are
-operator-pinned library certificates, Caddy `tls internal`, or a `managed`
-`lets_encrypt` row (`tlsMode: 'acme'`) that Caddy issues and renews on the
-serving host. They are never issued by the Organization CA. **Let's Encrypt is
-opt-in at the organization level, off by default**
-(`organization.options.acmeEnabled`, `../../features/organizations/organization-options.ts`) — some
-operators do not want ACME used against their servers at all. `POST /tls` with
-`source: 'lets_encrypt'` refuses to create the row (`lets_encrypt_not_enabled`,
-403) while the org is opted out, and `hostingTlsWireFromResolved`
+**Future:** tenant **hosting** leaves (web services behind the server's web
+server) are operator-pinned library certificates, the web server's own
+self-signed certificate, or an `automatic` `lets_encrypt` row (`tlsMode:
+'acme'`) that the web server issues and renews on the serving host. They are
+never issued by the Organization CA. **Let's Encrypt is gated at the
+organization level and on for new organizations** (`organization.options.acmeEnabled`,
+`../../features/organizations/organization-options.ts`; a row without the key,
+an organization made before that default, reads as off) — some operators do not
+want ACME used against their servers at all. `POST /tls` with `source:
+'lets_encrypt'` refuses to create the row (`lets_encrypt_not_enabled`, 403)
+while the org is opted out, compose `tls.mode: automatic` is refused at deploy
+(`acme_requires_org_opt_in`), and `hostingTlsWireFromResolved`
 (`../../client/environments/deploy-prepare.ts`) refuses to wire `tlsMode:
-'acme'` at deploy time even for a `managed` row that predates the org later
+'acme'` at deploy time even for an `automatic` row that predates the org later
 turning the gate off — defense in depth, not just a creation-time check.
 Turning the gate off never revokes certificates already issued. `PATCH
 /tls/:id` `{ revoke: true }` on a `lets_encrypt` row is the operator escape
-hatch: deploy-prepare treats that pin as Caddy `tls internal` instead of
+hatch: deploy-prepare treats that pin as the self-signed certificate instead of
 `tls_pin_not_ready`. Deleted or hostname-mismatched pins still fail.
 
 **Issuance-failure visibility (built).** The daemon's `AcmeIssuanceObserver`

@@ -8,6 +8,13 @@
       "when": 1792792899297,
       "tag": "0000_base",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1792968916599,
+      "tag": "0001_delete_project_cleanup",
+      "breakpoints": true
     }
   ]
 }

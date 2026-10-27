@@ -68,6 +68,7 @@ import {
   daemonHonoursOwnerRole,
   refuseLoginCreateIfDaemonCannot,
   daemonOwnerSupport,
+  type LoginLimitFields,
   loginLimitSettings,
   parseGatedLoginLimits,
   parseLoginPatchRequest,
@@ -85,11 +86,17 @@ import {
   type LoginSettingsPatch,
   type ManagedLoginRow,
   patchLogin,
-  removeManagedLogin,
+  removeNewManagedLogins,
   rotateLoginPassword,
   setLoginPassword,
 } from '../../features/managed/logins.ts'
 import { loadPrincipalNamePolicy } from '../../features/managed/load-org-defaults.ts'
+import {
+  APP_LOGIN_NAME_SCHEME,
+  AppLoginConflict,
+  appLoginRequests,
+  parseAppLoginPrefix,
+} from '../../features/managed/app-logins.ts'
 import {
   type PrincipalNameScheme,
   principalNameSchemeOf,
@@ -1655,6 +1662,311 @@ async function createLoginForExistingPrincipal(
   }
 }
 
+type ManagedRowRecord = NonNullable<Awaited<ReturnType<typeof findManagedForEnvironment>>>
+
+/**
+ * The checks every login create makes before anything is saved: the server's
+ * daemon can do each level, the cluster is ready for an apply, and the limit
+ * fields are valid. `notes` says what a Database admin login got (never a
+ * refusal).
+ */
+async function gateLoginCreate(
+  c: Context<AppEnv>,
+  db: Db,
+  params: {
+    ctx: ManagedContext
+    row: ManagedRowRecord
+    options: ManagedRowOptions
+    body: Record<string, unknown>
+    targetServerId: string
+    grantMode: string
+    grants: ReadonlyArray<{ privileges: readonly string[]; databases: readonly string[] }>
+  }
+): Promise<Response | { commandQueue: CommandQueue; limits: LoginLimitFields; notes: string[] }> {
+  const { ctx, row, options, targetServerId } = params
+  // Read-only checks, so they run together; the first refusal in grant order answers.
+  const refusals = await Promise.all(
+    params.grants.map((grant) =>
+      refuseLoginCreateIfDaemonCannot(
+        c,
+        db,
+        { engine: ctx.spec.engine, privileges: grant.privileges, grantMode: params.grantMode },
+        targetServerId
+      )
+    )
+  )
+  const daemonRefused = refusals.find((refusal) => refusal !== null)
+  if (daemonRefused) return daemonRefused
+  const ownerSupport = await daemonOwnerSupport(db, targetServerId)
+  const notes = params.grants.flatMap((grant) =>
+    adminAccessNotes(
+      ctx.spec.engine,
+      { ...grant, ownerRoleDatabases: options.ownerRoleDatabases },
+      ownerSupport
+    )
+  )
+  const commandQueue = await assertManagedApplyReady(c, db, row, targetServerId)
+  if (commandQueue instanceof Response) return commandQueue
+  const limits = await parseGatedLoginLimits(
+    c,
+    db,
+    ctx.organizationId,
+    params.body,
+    targetServerId,
+    ctx.spec.engine
+  )
+  if (limits instanceof Response) return limits
+  return { commandQueue, limits, notes }
+}
+
+/**
+ * Same-cluster collision, owning-org namespace probe, and the inserts share
+ * one transaction so the organization FOR UPDATE lock covers the insert;
+ * otherwise concurrent creates can pass the check before either inserts.
+ * `targetServerId` goes in so the primary member exists before the insert.
+ * A throw inside `fn` keeps none of its inserts.
+ */
+async function inLoginCreateTransaction<T>(
+  db: Db,
+  params: { ctx: ManagedContext; managedId: string; targetServerId: string },
+  fn: (tx: Db, shared: Omit<LoginCreateShared, 'settings'>) => Promise<T>
+): Promise<T> {
+  const { ctx, managedId, targetServerId } = params
+  return await db.transaction(async (tx) => {
+    const existingLogins = await listManagedLogins(tx, managedId)
+    await ensureManagedPrimaryMember(tx, { managedId, serverId: targetServerId })
+    const owningOrgIds = await resolveManagedOwningOrganizationIds(
+      tx,
+      managedId,
+      [targetServerId],
+      ctx.organizationId
+    )
+    await lockOrganizationsForUpdate(tx, owningOrgIds)
+    return await fn(tx, { ctx, managedId, existingLogins, owningOrgIds })
+  })
+}
+
+/** Queue the apply that makes new logins real; when it cannot be queued, none of them is kept. */
+async function applyCreatedLogins(
+  c: Context<AppEnv>,
+  db: Db,
+  params: {
+    ctx: ManagedContext
+    row: ManagedRowRecord
+    options: ManagedRowOptions
+    targetServerId: string
+    commandQueue: CommandQueue
+    userId: string
+    loginIds: readonly string[]
+  }
+): Promise<Response | Exclude<Awaited<ReturnType<typeof enqueuePreparedManagedApply>>, Response>> {
+  const { ctx, row, options } = params
+  // One statement, so the new logins go together or not at all.
+  const removeAll = () => removeNewManagedLogins(db, row.id, params.loginIds)
+  const preparedApply = await prepareManagedApplyPayloads(c, db, {
+    managedRow: row,
+    spec: ctx.spec,
+    settings: options.settings,
+    databases: options.databases,
+    ownerRoleDatabases: options.ownerRoleDatabases,
+    databaseOwners: options.databaseOwners,
+    serverId: params.targetServerId,
+    environmentId: ctx.environmentId,
+    organizationId: ctx.organizationId,
+    rootUsername: parseManagedResidual(row.metadata).rootUsername ?? ctx.spec.rootUsername,
+  })
+  if (isPrepareError(preparedApply)) {
+    await removeAll()
+    return mapManagedApplyPrepareError(c, preparedApply)
+  }
+  const enqueued = await enqueuePreparedManagedApply(c, db, params.commandQueue, {
+    userId: params.userId,
+    managedId: row.id,
+    members: preparedApply.members,
+  })
+  if (enqueued instanceof Response) await removeAll()
+  return enqueued
+}
+
+/** The three create bodies of an app-logins request, each checked like a single login. */
+function parseAppLoginGrants(
+  c: Context<AppEnv>,
+  ctx: ManagedContext,
+  options: ManagedRowOptions,
+  prefix: string,
+  databaseName: string,
+  rootUsername: string | undefined
+): Response | Array<{ username: string; grants: ManagedLoginGrants }> {
+  const parsed: Array<{ username: string; grants: ManagedLoginGrants }> = []
+  for (const { body } of appLoginRequests(prefix, databaseName)) {
+    const fields = parseManagedUserCreateFields(
+      c,
+      ctx,
+      body,
+      options,
+      rootUsername,
+      APP_LOGIN_NAME_SCHEME
+    )
+    if (fields instanceof Response) return fields
+    const { username, ...grants } = fields
+    parsed.push({ username, grants })
+  }
+  return parsed
+}
+
+type ManagedLoginView = ReturnType<typeof serializeManagedLogin>
+
+/**
+ * Inserts the app logins one after another on the transaction's connection,
+ * in order, and reads each back as the answer shows it. A conflict or a row
+ * that cannot be read back throws, so none of them is kept.
+ */
+async function insertAppLogins(
+  tx: Db,
+  dataEncryptionSecrets: DerivedSecretsConfig,
+  shared: Omit<LoginCreateShared, 'settings'>,
+  params: {
+    logins: ReadonlyArray<{ username: string; grants: ManagedLoginGrants }>
+    nameScheme: PrincipalNameScheme
+    grantMode: 'recipe'
+    limits: LoginLimitFields
+  }
+): Promise<Array<{ loginId: string; user: ManagedLoginView; password: string }>> {
+  const made = await params.logins.reduce<Promise<Array<{ loginId: string; password: string }>>>(
+    async (previous, { username, grants }) => {
+      const done = await previous
+      const outcome = await createLoginWithNewName(tx, dataEncryptionSecrets, {
+        ...shared,
+        username,
+        nameScheme: params.nameScheme,
+        settings: {
+          ...grants,
+          grantMode: params.grantMode,
+          // The owner login is a tool login, as a single Database admin login is by default.
+          tool: grants.privileges.includes(DATABASE_ADMIN_PRIVILEGE),
+          ...loginLimitSettings(params.limits),
+        },
+      })
+      if (!outcome.ok) throw new AppLoginConflict(outcome.error, username)
+      return [...done, { loginId: outcome.loginId, password: outcome.password }]
+    },
+    Promise.resolve([])
+  )
+  const saved = await listManagedLogins(tx, shared.managedId)
+  return made.map(({ loginId, password }) => {
+    const loginRow = saved.find((entry) => entry.id === loginId)
+    if (!loginRow) throw new Error(`app login ${loginId} could not be read back`)
+    return { loginId, user: serializeManagedLogin(loginRow, shared.ctx.spec.engine), password }
+  })
+}
+
+/**
+ * `POST /environments/:id/managed/databases/:databaseName/app-logins`: the
+ * three logins an app usually needs on one database (`<prefix>_migrate` owns
+ * it, `<prefix>_rw` reads and writes rows, `<prefix>_ro` reads), with names
+ * exactly as written and the same limits for all three. All or nothing: one
+ * transaction for the three inserts and one apply; a refusal keeps none.
+ */
+async function createAppLogins(c: Context<AppEnv>): Promise<Response> {
+  const scope = await loadManagedRowScope(c)
+  if (scope instanceof Response) return scope
+  const { db, auth, ctx, row } = scope
+
+  const options = await loadManagedOptions(db, ctx.spec, row)
+  if (!options) return c.json({ error: 'Invalid managed options' }, 400)
+  const databaseName = decodeURIComponent(c.req.param('databaseName') ?? '')
+  if (!options.databases.includes(databaseName)) return c.json({ error: 'Not found' }, 404)
+  const body = await parseJsonBody(c)
+  if (body instanceof Response) return body
+
+  const prefix = parseAppLoginPrefix(
+    body.prefix,
+    databaseName,
+    ctx.spec.userOperations.identifier.maxLength
+  )
+  if (!prefix.ok) return c.json({ error: prefix.error, message: prefix.message }, prefix.status)
+  const schemeChoice = resolveRequestedNameScheme(
+    await loadPrincipalNamePolicy(db, ctx.organizationId),
+    APP_LOGIN_NAME_SCHEME
+  )
+  if (!schemeChoice.ok) return c.json({ error: schemeChoice.error }, schemeChoice.status)
+  const nameScheme = schemeChoice.scheme
+  const residual = parseManagedResidual(row.metadata)
+  const logins = parseAppLoginGrants(
+    c,
+    ctx,
+    options,
+    prefix.prefix,
+    databaseName,
+    residual.rootUsername
+  )
+  if (logins instanceof Response) return logins
+
+  const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
+  if (!dataEncryptionSecrets) return c.json({ error: 'Encryption unavailable' }, 503)
+  const targetServerId = resolveManagedTargetServerId(c, row.serverId)
+  if (targetServerId instanceof Response) return targetServerId
+
+  const grantMode = 'recipe'
+  const gate = await gateLoginCreate(c, db, {
+    ctx,
+    row,
+    options,
+    body,
+    targetServerId,
+    grantMode,
+    grants: logins.map((entry) => entry.grants),
+  })
+  if (gate instanceof Response) return gate
+  const { commandQueue, limits, notes } = gate
+
+  let created: Array<{ loginId: string; user: ManagedLoginView; password: string }>
+  try {
+    created = await inLoginCreateTransaction(
+      db,
+      { ctx, managedId: row.id, targetServerId },
+      (tx, shared) =>
+        insertAppLogins(tx, dataEncryptionSecrets, shared, {
+          logins,
+          nameScheme,
+          grantMode,
+          limits,
+        })
+    )
+  } catch (error) {
+    if (!(error instanceof AppLoginConflict)) throw error
+    return c.json(
+      {
+        error: error.error,
+        username: error.username,
+        message: `The login name ${error.username} is already taken, so none of the three logins was added. Pick another prefix.`,
+      },
+      409
+    )
+  }
+
+  const enqueued = await applyCreatedLogins(c, db, {
+    ctx,
+    row,
+    options,
+    targetServerId,
+    commandQueue,
+    userId: auth.userId,
+    loginIds: created.map((entry) => entry.loginId),
+  })
+  if (enqueued instanceof Response) return enqueued
+
+  const primaryResult = pickPrimaryCommandResult(enqueued)
+  return c.json({
+    ok: true,
+    logins: created.map(({ user, password }) => ({ user, password })),
+    ...notesField(notes),
+    commandId: primaryResult?.commandId,
+    serverId: primaryResult?.serverId ?? targetServerId,
+    results: enqueued,
+  })
+}
+
 export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
   if (!opts.secrets) {
     throw new TypeError('session secrets are required for managed routes')
@@ -2175,40 +2487,21 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const targetServerId = resolveManagedTargetServerId(c, row.serverId)
     if (targetServerId instanceof Response) return targetServerId
 
-    const daemonRefused = await refuseLoginCreateIfDaemonCannot(
-      c,
-      db,
-      { engine: ctx.spec.engine, privileges, grantMode },
-      targetServerId
-    )
-    if (daemonRefused) return daemonRefused
-
-    // Never a refusal: the login is added, and the answer says what it got.
-    const notes = adminAccessNotes(
-      ctx.spec.engine,
-      { privileges, databases, ownerRoleDatabases: options.ownerRoleDatabases },
-      await daemonOwnerSupport(db, targetServerId)
-    )
-
-    const commandQueue = await assertManagedApplyReady(c, db, row, targetServerId)
-    if (commandQueue instanceof Response) return commandQueue
-    const limits = await parseGatedLoginLimits(
-      c,
-      db,
-      ctx.organizationId,
+    const gate = await gateLoginCreate(c, db, {
+      ctx,
+      row,
+      options,
       body,
       targetServerId,
-      ctx.spec.engine
-    )
-    if (limits instanceof Response) return limits
+      grantMode,
+      grants: [{ privileges, databases }],
+    })
+    if (gate instanceof Response) return gate
+    const { commandQueue, limits, notes } = gate
 
     // A read-only login on a cluster with no read-eligible replica is fine:
     // the daemon routes it to the primary, so SELECT-only works on one server.
 
-    // Same-cluster collision, owning-org namespace probe, and the inserts
-    // share one txn so the organization FOR UPDATE lock covers the insert —
-    // otherwise concurrent creates can pass the check before either inserts.
-    // `targetServerId` goes in so the primary member exists before the insert.
     const settings: LoginSettingsPatch = {
       databases,
       privileges,
@@ -2218,68 +2511,38 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       // Absent = anywhere / no cap, which is today's behaviour.
       ...loginLimitSettings(limits),
     }
-    const userCreate = await db.transaction(async (tx) => {
-      const existingLogins = await listManagedLogins(tx, row.id)
-      await ensureManagedPrimaryMember(tx, {
-        managedId: row.id,
-        serverId: targetServerId,
-      })
-      const owningOrgIds = await resolveManagedOwningOrganizationIds(
-        tx,
-        row.id,
-        [targetServerId],
-        ctx.organizationId
-      )
-      await lockOrganizationsForUpdate(tx, owningOrgIds)
-      const shared = {
-        ctx,
-        managedId: row.id,
-        existingLogins,
-        owningOrgIds,
-        settings,
-      }
-      return request.kind === 'existing-principal'
-        ? createLoginForExistingPrincipal(tx, dataEncryptionSecrets, {
-            ...shared,
-            principal: request.principal,
-          })
-        : createLoginWithNewName(tx, dataEncryptionSecrets, {
-            ...shared,
-            username: request.username,
-            nameScheme: request.nameScheme,
-          })
-    })
+    const userCreate = await inLoginCreateTransaction(
+      db,
+      { ctx, managedId: row.id, targetServerId },
+      (tx, shared) =>
+        request.kind === 'existing-principal'
+          ? createLoginForExistingPrincipal(tx, dataEncryptionSecrets, {
+              ...shared,
+              settings,
+              principal: request.principal,
+            })
+          : createLoginWithNewName(tx, dataEncryptionSecrets, {
+              ...shared,
+              settings,
+              username: request.username,
+              nameScheme: request.nameScheme,
+            })
+    )
     if (!userCreate.ok) {
       return c.json({ error: userCreate.error }, userCreate.status)
     }
     const { principalId, loginId, password } = userCreate
 
-    const preparedApply = await prepareManagedApplyPayloads(c, db, {
-      managedRow: row,
-      spec: ctx.spec,
-      settings: options.settings,
-      databases: options.databases,
-      ownerRoleDatabases: options.ownerRoleDatabases,
-      databaseOwners: options.databaseOwners,
-      serverId: targetServerId,
-      environmentId: ctx.environmentId,
-      organizationId: ctx.organizationId,
-      rootUsername: residual.rootUsername ?? ctx.spec.rootUsername,
-    })
-    if (isPrepareError(preparedApply)) {
-      await removeManagedLogin(db, loginId)
-      return mapManagedApplyPrepareError(c, preparedApply)
-    }
-
-    const enqueued = await enqueuePreparedManagedApply(c, db, commandQueue, {
+    const enqueued = await applyCreatedLogins(c, db, {
+      ctx,
+      row,
+      options,
+      targetServerId,
+      commandQueue,
       userId: auth.userId,
-      managedId: row.id,
-      members: preparedApply.members,
+      loginIds: [loginId],
     })
-    if (enqueued instanceof Response) {
-      await removeManagedLogin(db, loginId)
-      return enqueued
-    }
+    if (enqueued instanceof Response) return enqueued
 
     const createdLogin = await findManagedLogin(db, row.id, loginId)
 
@@ -2720,6 +2983,10 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       results: enqueued,
     })
   })
+
+  router.post('/environments/:id/managed/databases/:databaseName/app-logins', (c) =>
+    createAppLogins(c)
+  )
 
   router.post('/environments/:id/managed/databases', async (c) => {
     const scope = await loadManagedRowScope(c)

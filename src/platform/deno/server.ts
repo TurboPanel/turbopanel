@@ -60,6 +60,7 @@ import { runHostLossTick } from '../../daemon/cell/host-loss-tick.ts'
 import { runBackupsReconcileSweep } from '../../features/backups/reconcile.ts'
 import { runFolderReconcileSweep } from '../../daemon/cell/folder-reconcile-sweep.ts'
 import { runFolderRemovalSweep } from '../../features/folders/removal.ts'
+import { runPrincipalRemovalSweep } from '../../client/principals/removal-sweep.ts'
 import { runFirewallPreviewSweep } from '../../features/firewall/preview.ts'
 import { firewallApplyGateFromEnv } from '../../features/firewall/enforcement.ts'
 import {
@@ -716,6 +717,11 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     // again once the server is connected, and every few minutes while stuck.
     void runFolderRemovalSweep(db, commandQueue).catch((err) => {
       logWarn('daemon-cell', `folder removal sweep error: ${String(err)}`)
+    })
+    // Hosting Accounts of deleted projects, removed once their folders are gone
+    // and every server they are on is connected.
+    void runPrincipalRemovalSweep(db, commandQueue).catch((err) => {
+      logWarn('daemon-cell', `principal removal sweep error: ${String(err)}`)
     })
     // A fresh folder listing from servers that have folders, every few hours.
     void runFolderReconcileSweep(db, commandQueue).catch((err) => {

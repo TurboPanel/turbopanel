@@ -5,7 +5,8 @@
  *   its name, which forms it has (system user, database login), the servers it
  *   is placed on, the projects and logins that use it and its state.
  * - `DELETE /organizations/:id/principals/:principalId` — remove a principal
- *   its project left behind (project delete keeps principals). Refused while a
+ *   with no project (a project delete keeps the ones something else still
+ *   uses, and the removal sweep removes the others). Refused while a
  *   service, binding, storage entry, secret or database login still uses it;
  *   otherwise the Linux account is retired on every server it reached, the same
  *   way `DELETE /projects/:projectId/principals/:id` does.
@@ -15,20 +16,16 @@
  * the session cannot reach is a 404, one without owner/manager rights a 403.
  * The path id alone drives the check, never the active-organization header.
  */
-import { and, eq } from 'drizzle-orm'
+import { eq } from 'drizzle-orm'
 import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import { type Db, getDb } from '../../db/connection.ts'
-import { principal, server } from '../../db/schema.ts'
+import { server } from '../../db/schema.ts'
 import {
   listOrganizationPrincipals,
   listServerPrincipals,
 } from '../../features/principals/org-listing.ts'
-import {
-  countPrincipalReferences,
-  isPrincipalReferenced,
-  PRINCIPAL_IN_USE_ERROR,
-} from '../../features/principals/store.ts'
+import { PRINCIPAL_IN_USE_ERROR } from '../../features/principals/store.ts'
 import { getCommandQueue } from '../../features/commands/queue.ts'
 import { isUuid } from '../access/routes-helpers.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
@@ -36,7 +33,8 @@ import { createSessionMiddleware } from '../authn/middleware.ts'
 import type { SessionData } from '../authn/session-store.ts'
 import { canManageOrganization } from '../authz/index.ts'
 import { canAccessOrganization } from '../org-context.ts'
-import { retireDeletedPrincipal, serversForPrincipal } from './reconcile.ts'
+import { retireDeletedPrincipal } from './reconcile.ts'
+import { deleteUnusedPrincipal } from './removal-sweep.ts'
 
 export const PRINCIPAL_HAS_PROJECT_CODE = 'principal_has_project'
 export const PRINCIPAL_HAS_PROJECT_ERROR =
@@ -86,29 +84,11 @@ export function registerOrganizationPrincipalRoutes(router: Hono<AppEnv>, opts: 
     const principalId = c.req.param('principalId')
     if (!isUuid(principalId)) return c.json({ error: 'Not found' }, 404)
 
-    // One transaction with the row locked: a service or login attached while
-    // we check would otherwise be cascaded away with the principal, and two
-    // parallel deletes would both queue the retire.
-    const outcome = await db.transaction(async (tx) => {
-      const [row] = await tx
-        .select()
-        .from(principal)
-        .where(and(eq(principal.id, principalId), eq(principal.organizationId, organizationId)))
-        .limit(1)
-        .for('update')
-      if (!row) return { status: 404 as const }
-      if (row.projectId !== null) return { status: 'has_project' as const }
+    const outcome = await db.transaction((tx) =>
+      deleteUnusedPrincipal(tx, { principalId, organizationId })
+    )
 
-      const usedBy = await countPrincipalReferences(tx, principalId)
-      if (isPrincipalReferenced(usedBy)) return { status: 'in_use' as const, usedBy }
-
-      // Resolved before the delete: the reach is found through the placements.
-      const serverIds = await serversForPrincipal(tx, principalId)
-      await tx.delete(principal).where(eq(principal.id, principalId))
-      return { status: 'deleted' as const, serverIds, appliedUsername: row.appliedUsername }
-    })
-
-    if (outcome.status === 404) return c.json({ error: 'Not found' }, 404)
+    if (outcome.status === 'missing') return c.json({ error: 'Not found' }, 404)
     if (outcome.status === 'has_project') {
       return c.json({ error: PRINCIPAL_HAS_PROJECT_ERROR, code: PRINCIPAL_HAS_PROJECT_CODE }, 409)
     }
@@ -118,6 +98,7 @@ export function registerOrganizationPrincipalRoutes(router: Hono<AppEnv>, opts: 
         409
       )
     }
+    if (outcome.status !== 'deleted') return c.json({ error: 'Not found' }, 404)
 
     const reconciled = await retireDeletedPrincipal(
       db,

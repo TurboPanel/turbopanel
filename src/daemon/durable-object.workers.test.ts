@@ -1943,6 +1943,72 @@ describe.sequential('DaemonCellObject', () => {
     ws.close(1000, 'test done')
   })
 
+  it('stores an outcome sent on a new socket after the dispatch socket closed', async () => {
+    const serverId = 'test-srv-outcome-after-reconnect'
+    const stub = env.DAEMON_CELL.getByName(serverId)
+    const first = await openDaemonWebSocket(stub, serverId)
+    const firstFrames: Array<{ type?: string }> = []
+    first.ws.addEventListener('message', (event) => {
+      firstFrames.push(JSON.parse(String(event.data)) as { type?: string })
+    })
+    const requestId = generateRequestId()
+    await enqueuePing(stub, serverId, requestId, generateDeliveryId())
+    await waitFor(() => {
+      expect(firstFrames.some((frame) => frame.type === 'command-dispatch')).toBe(true)
+    })
+    const at = new Date().toISOString()
+    first.ws.send(JSON.stringify({ type: 'command-ack', id: requestId, at, daemonReceivedAt: at }))
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    first.ws.close(1001, 'link lost')
+
+    const second = await openDaemonWebSocket(stub, serverId)
+    const frames: Array<{ type?: string; id?: string }> = []
+    second.ws.addEventListener('message', (event) => {
+      frames.push(JSON.parse(String(event.data)) as { type?: string; id?: string })
+    })
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    second.ws.send(
+      JSON.stringify({
+        type: 'command-outcome',
+        id: requestId,
+        at: new Date().toISOString(),
+        ok: true,
+        result: { pong: true },
+        daemonReceivedAt: at,
+        daemonRespondedAt: at,
+      })
+    )
+    await waitFor(async () => {
+      expect(await requestStatus(stub, serverId, requestId)).toBe('done')
+    })
+    second.ws.close(1000, 'test done')
+  })
+
+  it('does not send a finished command to the server again on a second delivery', async () => {
+    const serverId = 'test-srv-no-redispatch-after-result'
+    const stub = env.DAEMON_CELL.getByName(serverId)
+    const { ws } = await openDaemonWebSocket(stub, serverId)
+    const frames: Array<{ type?: string; id?: string }> = []
+    ws.addEventListener('message', (event) => {
+      frames.push(JSON.parse(String(event.data)) as { type?: string; id?: string })
+    })
+    const requestId = generateRequestId()
+    await enqueuePing(stub, serverId, requestId, generateDeliveryId())
+    await waitFor(() => {
+      expect(frames.some((frame) => frame.type === 'command-dispatch')).toBe(true)
+    })
+    wsSendCommandOutcome(ws, requestId)
+    await waitFor(async () => {
+      expect(await requestStatus(stub, serverId, requestId)).toBe('done')
+    })
+
+    const again = await enqueuePing(stub, serverId, requestId, generateDeliveryId())
+    expect(again.status).toBe('done')
+    await new Promise((resolve) => setTimeout(resolve, 200))
+    expect(frames.filter((frame) => frame.type === 'command-dispatch')).toHaveLength(1)
+    ws.close(1000, 'test done')
+  })
+
   it('stale websocket close does not mark a newer attach offline', async () => {
     const serverId = 'test-srv-stale-close'
     const stub = env.DAEMON_CELL.getByName(serverId)
@@ -4010,6 +4076,40 @@ describe('DaemonCellObject alarm / outbox / RPC branch coverage', () => {
     expect(failBody.record.status).toBe('failed')
   })
 })
+
+async function requestStatus(
+  stub: DurableObjectStub,
+  serverId: string,
+  requestId: string
+): Promise<string | undefined> {
+  const response = await cellRpc(stub, serverId, `/rpc/request?requestId=${requestId}`, {
+    method: 'GET',
+  })
+  return ((await response.json()) as { record: { status: string } | null }).record?.status
+}
+
+async function enqueuePing(
+  stub: DurableObjectStub,
+  serverId: string,
+  requestId: string,
+  deliveryId: string
+): Promise<{ status: string }> {
+  const response = await cellRpc(stub, serverId, '/rpc/enqueue', {
+    method: 'POST',
+    body: JSON.stringify({
+      outbound: {
+        kind: 'command-dispatch',
+        deliveryId,
+        requestId,
+        at: new Date().toISOString(),
+        commandId: requestId,
+        commandType: 'daemon.ping',
+        payload: {},
+      },
+    }),
+  })
+  return (await response.json()) as { status: string }
+}
 
 function wsSendCommandOutcome(ws: WebSocket, requestId: string): void {
   const at = new Date().toISOString()

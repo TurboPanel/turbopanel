@@ -232,6 +232,12 @@ export type CommandConsumerDeps = {
   deployWaitHoldMs?: number
   /** Test seam: how long one run keeps waiting for a deploy in any state. */
   deployWaitEndMs?: number
+  /**
+   * Frees this command's server lane while it keeps running (the Deno
+   * consumer's lanes). A deploy calls it once the server has taken it over;
+   * see `deployMayLeaveLane`.
+   */
+  leaveLane?: () => void
 }
 
 const COMMAND_TIMEOUT_MS: Record<CommandType, number> = {
@@ -756,6 +762,7 @@ async function makeDeployWaiter(
   return createDeployWaiter({
     sentAt,
     ...settings,
+    leaveLane: deps?.leaveLane,
     onContactLost: async (lastHeardAt) => {
       await markCommandContactLost(db, { commandId: record.id, lastHeardAt })
     },
@@ -1513,6 +1520,11 @@ async function applyPrincipalsReconcileSideEffect(
     const parsed = parsePrincipalsReconcileResult(result)
     await recordReportedIdsSafely(db, record, envelope.serverId, parsed.principals)
     await reconcileReportedFoldersSafely(db, record, envelope.serverId, parsed.folders)
+    // The accounts the host confirms removed: their `retiring` placements are
+    // done. One it kept stays `retiring`, and the principal removal sweep asks again.
+    if (parsed.principalsRetired && parsed.principalsRetired.length > 0) {
+      await markPlacementsAbsentSafely(db, record, envelope.serverId, parsed.principalsRetired)
+    }
   } catch (err) {
     compatLogWarn(
       'command-consumer',

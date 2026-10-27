@@ -293,9 +293,11 @@ export async function startCommandConsumer(
 
   /**
    * Parse the delivery and hand it to its server's lane. The ack or nack
-   * happens only after the lane has finished the command, so a delivery that
-   * has not finished stays unacknowledged and the broker redelivers it if
-   * this process or the channel goes away.
+   * happens only after the command has finished, so a delivery that has not
+   * finished stays unacknowledged and the broker redelivers it if this
+   * process or the channel goes away. A deploy gives its lane up once the
+   * server has taken it over (`leaveLane`), so the rest of its wait never holds
+   * up the server's other commands.
    */
   async function handleMessage(
     channel: AmqpChannel,
@@ -313,23 +315,29 @@ export async function startCommandConsumer(
       return
     }
 
-    await lanes.run(envelope.serverId, async () => {
+    await lanes.run(envelope.serverId, async (release) => {
       // Waiting in a lane can outlast the session. Shutdown, or a broker
       // loss, leaves this delivery unacknowledged and the broker redelivers
       // it, so running it now would run it twice.
       if (closed || owner.lost) return
-      await runEnvelope(channel, msg, envelope)
+      await runEnvelope(channel, msg, envelope, release)
     })
   }
 
   async function runEnvelope(
     channel: AmqpChannel,
     msg: NonNullable<AmqpMessage>,
-    envelope: CommandEnvelope
+    envelope: CommandEnvelope,
+    leaveLane: () => void
   ): Promise<void> {
     let disposition: CommandMessageDisposition
     try {
-      await processCommandEnvelope(opts.db, opts.registry, envelope, consumerDeps)
+      await processCommandEnvelope(
+        opts.db,
+        opts.registry,
+        envelope,
+        consumerDeps && { ...consumerDeps, leaveLane }
+      )
       disposition = commandMessageDisposition({ ok: true })
     } catch (error) {
       const errMsg = errorMessage(error)

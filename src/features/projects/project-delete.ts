@@ -1,4 +1,4 @@
-import { and, eq, inArray, ne, or, sql } from 'drizzle-orm'
+import { and, eq, inArray, or, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import {
   deleteWouldOrphanPrimary,
@@ -25,7 +25,7 @@ import {
   storageCopy,
   tenancy,
 } from '../../db/schema.ts'
-import { markAssetFoldersRemoving } from '../folders/allocate.ts'
+import { markAssetFoldersRemoving, releaseEnvironmentFolders } from '../folders/allocate.ts'
 import { type COMMON_ASSET_IN_USE_ERROR, inUseBody, listUsesOfAssets } from '../folders/shares.ts'
 import {
   applyStorageRetentionOnParentDelete,
@@ -37,6 +37,11 @@ import {
   type BindingListenerSync,
 } from '../bindings/enqueue-change.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
+import { type ProjectPrincipalFate, requestProjectPrincipalRemoval } from '../principals/removal.ts'
+import {
+  lockCertificatesPinnedBy,
+  removeUnusedSiteCertificates,
+} from '../tls/unused-letsencrypt.ts'
 
 /** Docker Compose states that are considered fully stopped (safe to cascade-delete). */
 const STOPPED_CONTAINER_STATUSES = new Set(['exited', 'dead', 'removing'])
@@ -54,15 +59,25 @@ export function isActiveContainerStatus(status: string | undefined): boolean {
   return !STOPPED_CONTAINER_STATUSES.has(status)
 }
 
+/** What a finished delete left for the servers to finish. */
+export type DeleteCleanup = {
+  /** Servers asked to remove folders (each holds rows `removing` until it confirms). */
+  folderServerIds: string[]
+}
+
 export type ProjectDeleteResult =
-  | { ok: true; warning?: string }
+  | {
+      ok: true
+      warning?: string
+      cleanup: DeleteCleanup & { principals: ProjectPrincipalFate }
+    }
   | {
       ok: false
       error:
         | 'project_has_running_services'
         | 'managed_runtime_present'
-        | 'project_has_folders'
         | 'project_stop_failed'
+        | typeof PROJECT_DEPLOY_RUNNING_ERROR
         | typeof COMMON_ASSET_IN_USE_ERROR
       /** Extra fields for the 409 body (who still uses a shared asset). */
       detail?: Record<string, unknown>
@@ -96,6 +111,8 @@ type EnvironmentRowSet = {
   hostingIds: string[]
   /** Set when the whole project goes too (storage retention is scoped by it). */
   projectId?: string
+  /** The person deleting, for the audit trail; absent for a forget. */
+  actorUserId?: string
 }
 
 /**
@@ -191,11 +208,15 @@ async function purgeEnvironmentServerPlacementArtifacts(
   }
 }
 
-async function dropEnvironmentRows(tx: Db, rows: EnvironmentRowSet): Promise<void> {
+async function dropEnvironmentRows(tx: Db, rows: EnvironmentRowSet): Promise<string[]> {
   const { environmentIds, serviceIds, containerIds, hostingIds } = rows
   // One lock order everywhere: the project row first, then the environment rows.
   const projectIds = rows.projectId ? [rows.projectId] : await projectIdsOf(tx, environmentIds)
   await lockProjectsForEnvironmentChange(tx, projectIds)
+  await lockEnvironmentRows(tx, environmentIds)
+  // The Let's Encrypt lock before any site row is touched: a deploy takes it
+  // after its environment row, so this order never waits on one in a cycle.
+  const certificateIds = await lockCertificatesPinnedBy(tx, hostingIds)
   const retentionScope = {
     ...(rows.projectId ? { projectIds: [rows.projectId] } : {}),
     environmentIds,
@@ -214,7 +235,15 @@ async function dropEnvironmentRows(tx: Db, rows: EnvironmentRowSet): Promise<voi
         goneStorageIds.length > 0 ? inArray(share.storageId, goneStorageIds) : undefined
       )
     )
-  await applyStorageRetentionOnParentDelete(tx, retentionScope)
+  // Every folder under these environments lets go of them: kept volumes keep
+  // theirs, the rest wait `removing` for their server (after this commits the
+  // caller asks the servers, and the folder sweep asks again until they confirm).
+  const folderServerIds = new Set(
+    await releaseEnvironmentFolders(tx, { environmentIds, deletedStorageIds: goneStorageIds })
+  )
+  for (const serverId of await applyStorageRetentionOnParentDelete(tx, retentionScope)) {
+    folderServerIds.add(serverId)
+  }
   // `network.environment_id` has no FK, so compose rows are not covered by cascade.
   await purgeEnvironmentsComposeNetworks(tx, environmentIds)
   if (containerIds.length > 0) {
@@ -222,22 +251,35 @@ async function dropEnvironmentRows(tx: Db, rows: EnvironmentRowSet): Promise<voi
   }
   if (hostingIds.length > 0) {
     await tx.delete(hosting).where(inArray(hosting.id, hostingIds))
+    // The Let's Encrypt entries made for these sites go too, unless another site uses one.
+    await removeUnusedSiteCertificates(tx, certificateIds, {
+      reason: 'its sites were deleted',
+      ...(rows.actorUserId ? { actor: { userId: rows.actorUserId } } : {}),
+    })
   }
   if (serviceIds.length > 0) {
     // A shared service's folder row stays, locked, until the host confirms it gone.
-    await markAssetFoldersRemoving(tx, { serviceIds })
+    for (const serverId of await markAssetFoldersRemoving(tx, { serviceIds })) {
+      folderServerIds.add(serverId)
+    }
     await tx.delete(tenancy).where(inArray(tenancy.serviceId, serviceIds))
     await tx.delete(binding).where(inArray(binding.serviceId, serviceIds))
     await tx.delete(service).where(inArray(service.id, serviceIds))
   }
-  // Rows for folders already confirmed gone no longer lock anything; the others
-  // were refused before this point (or belong to a host that is gone).
-  await tx
-    .delete(folder)
-    .where(and(inArray(folder.environmentId, environmentIds), eq(folder.state, 'missing')))
   await tx.delete(environment).where(inArray(environment.id, environmentIds))
   // Deleting a whole project removes every environment with it; nothing is left to promote.
   if (!rows.projectId && projectIds.length > 0) await promoteOldestAsPrimary(tx, projectIds)
+  return [...folderServerIds].sort((a, b) => a.localeCompare(b))
+}
+
+/** The environment rows, locked in id order (after their project rows). */
+async function lockEnvironmentRows(tx: Db, environmentIds: readonly string[]): Promise<void> {
+  if (environmentIds.length === 0) return
+  const ids = sql.join(
+    environmentIds.map((id) => sql`${id}::uuid`),
+    sql`, `
+  )
+  await tx.execute(sql`SELECT 1 FROM "environment" WHERE "id" IN (${ids}) ORDER BY "id" FOR UPDATE`)
 }
 
 async function projectIdsOf(tx: Db, environmentIds: readonly string[]): Promise<string[]> {
@@ -269,13 +311,13 @@ async function promoteOldestAsPrimary(tx: Db, projectIds: readonly string[]): Pr
   `)
 }
 
-type EnvironmentChildren = {
+export type EnvironmentChildren = {
   serviceIds: string[]
   containerRows: Array<{ id: string; status: string | null; role: string | null }>
   hostingIds: string[]
 }
 
-async function loadEnvironmentChildren(
+export async function loadEnvironmentChildren(
   db: Db,
   environmentIds: readonly string[]
 ): Promise<EnvironmentChildren> {
@@ -306,7 +348,7 @@ async function loadEnvironmentChildren(
  * when another environment, of this project or any other, still uses one.
  * Those environments have to stop using it first.
  */
-async function sharedAssetsStillUsed(
+export async function sharedAssetsStillUsed(
   db: Db,
   scope: {
     projectIds?: readonly string[]
@@ -326,11 +368,17 @@ async function sharedAssetsStillUsed(
 }
 
 /**
- * Cascade-delete a project and all child resources after verifying no active
- * containers remain and no managed-engine rows still exist. Managed host
- * runtime must be torn down with `managed.destroy` first —
- * `managed.environment_id` is ON DELETE CASCADE, so a live row here would
- * otherwise drop the cluster without stopping Docker.
+ * Delete a project and everything it owns. Refused only for what cannot be
+ * removed safely in this step: a managed database (it is deleted on its own,
+ * with its own confirmation), or a shared service or volume another project
+ * still uses. With `stopHosts` the stacks are stopped first (a running
+ * service is no reason to refuse; the stop not going out is); without it a
+ * running service still refuses.
+ *
+ * The rows go in one transaction. Folders on the servers outlive it as
+ * `removing` rows (kept volumes as `orphan` rows) until each host confirms,
+ * and the project's site owners nothing else uses are marked for the removal
+ * sweep, which retires their host accounts once their folders are gone.
  */
 export async function deleteProjectCascade(
   db: Db,
@@ -344,6 +392,7 @@ export async function deleteProjectCascade(
   // hosted panel) a stop inside the transaction waits on itself forever. The
   // checks run first so a refused delete sends nothing; the transaction runs
   // them again under the project lock.
+  const allowRunning = stopHosts !== undefined
   if (stopHosts) {
     const refused = await checkBeforeStop(db, projectId)
     if (refused) return refused
@@ -356,16 +405,16 @@ export async function deleteProjectCascade(
   // created meanwhile cannot slip past the child cleanup the others get.
   const outcome = await db.transaction(async (tx) => {
     await lockProjectForEnvironmentChange(tx, projectId)
-    return await deleteProjectLocked(tx, projectId)
+    return await deleteProjectLocked(tx, projectId, allowRunning, listenerSync?.actorId)
   })
   if ('refused' in outcome) return outcome.refused
-  if (!outcome.bindingTargets) return { ok: true }
+  const cleanup = { folderServerIds: outcome.folderServerIds, principals: outcome.principals }
   const listenerWarning = await syncRemovedBindingListeners(
     db,
     outcome.bindingTargets,
     listenerSync
   )
-  return listenerWarning ? { ok: true, warning: listenerWarning } : { ok: true }
+  return listenerWarning ? { ok: true, warning: listenerWarning, cleanup } : { ok: true, cleanup }
 }
 
 /** How long a project delete waits for its servers to accept the stop. */
@@ -401,64 +450,94 @@ async function checkBeforeStop(db: Db, projectId: string): Promise<ProjectDelete
   const refusal = await refuseProjectDelete(
     db,
     projectId,
-    envRows.map((row) => row.id)
+    envRows.map((row) => row.id),
+    true
   )
   return 'refused' in refusal ? refusal.refused : null
 }
 
 type LockedProjectDelete =
   | { refused: ProjectDeleteResult }
-  | { bindingTargets: Awaited<ReturnType<typeof loadBindingListenerTargets>> | null }
+  | {
+      bindingTargets: Awaited<ReturnType<typeof loadBindingListenerTargets>>
+      folderServerIds: string[]
+      principals: ProjectPrincipalFate
+    }
 
 /** The checks and the delete, with the project row already locked. */
-async function deleteProjectLocked(tx: Db, projectId: string): Promise<LockedProjectDelete> {
+async function deleteProjectLocked(
+  tx: Db,
+  projectId: string,
+  allowRunning: boolean,
+  actorUserId?: string
+): Promise<LockedProjectDelete> {
   const envRows = await tx
     .select({ id: environment.id })
     .from(environment)
     .where(eq(environment.projectId, projectId))
   const environmentIds = envRows.map((row) => row.id)
 
-  if (environmentIds.length === 0) {
-    await applyStorageRetentionOnParentDelete(tx, { projectIds: [projectId] })
-    await tx.delete(project).where(eq(project.id, projectId))
-    return { bindingTargets: null }
+  let children: EnvironmentChildren = { serviceIds: [], containerRows: [], hostingIds: [] }
+  if (environmentIds.length > 0) {
+    const refusal = await refuseProjectDelete(tx, projectId, environmentIds, allowRunning)
+    if ('refused' in refusal) return refusal
+    children = refusal.children
   }
-
-  const refusal = await refuseProjectDelete(tx, projectId, environmentIds)
-  if ('refused' in refusal) return refusal
-  const { children } = refusal
+  // Read before the volume rows go: uses by them do not keep a site owner.
+  const deletedStorageIds = await listStorageIdsDeletedWith(tx, {
+    projectIds: [projectId],
+    environmentIds,
+    ...(children.serviceIds.length > 0 ? { serviceIds: children.serviceIds } : {}),
+  })
 
   const bindingTargets = await loadBindingListenerTargets(tx, children.serviceIds)
-  // The principals outlive the project (`project_id` SET NULL); their
-  // placements become the only record of which servers they are on, so
-  // write any that are missing while the environments still say where.
+  // The placements are the record of which servers the site owners are on
+  // once `project_id` is cleared (the removal sweep and any later delete read
+  // them), so write any that are missing while the environments still say where.
   await ensureProjectPlacements(tx, projectId)
-  await dropEnvironmentRows(tx, {
-    projectId,
+  const folderServerIds =
+    environmentIds.length > 0
+      ? await dropEnvironmentRows(tx, {
+          projectId,
+          ...(actorUserId ? { actorUserId } : {}),
+          environmentIds,
+          serviceIds: children.serviceIds,
+          containerIds: children.containerRows.map((row) => row.id),
+          hostingIds: children.hostingIds,
+        })
+      : await applyStorageRetentionOnParentDelete(tx, { projectIds: [projectId] })
+  const principals = await requestProjectPrincipalRemoval(tx, projectId, {
     environmentIds,
     serviceIds: children.serviceIds,
-    containerIds: children.containerRows.map((row) => row.id),
-    hostingIds: children.hostingIds,
+    storageIds: deletedStorageIds,
   })
   await tx.delete(project).where(eq(project.id, projectId))
-  return { bindingTargets }
+  return { bindingTargets, folderServerIds, principals }
 }
 
 /** Why a project cannot be deleted yet, or the children the delete will remove. */
 async function refuseProjectDelete(
   tx: Db,
   projectId: string,
-  environmentIds: string[]
+  environmentIds: string[],
+  allowRunning: boolean
 ): Promise<{ refused: ProjectDeleteResult } | { children: EnvironmentChildren }> {
   const managedRows = await tx
     .select({ id: managed.id })
     .from(managed)
     .where(inArray(managed.environmentId, environmentIds))
-  if (managedRows.length > 0)
-    return { refused: { ok: false, error: MANAGED_RUNTIME_PRESENT_ERROR } }
+  if (managedRows.length > 0) {
+    return {
+      refused: {
+        ok: false,
+        error: MANAGED_RUNTIME_PRESENT_ERROR,
+        detail: { message: MANAGED_PRESENT_MESSAGE },
+      },
+    }
+  }
 
   const children = await loadEnvironmentChildren(tx, environmentIds)
-  if (hasActiveServiceContainer(children.containerRows)) {
+  if (!allowRunning && hasActiveServiceContainer(children.containerRows)) {
     return { refused: { ok: false, error: 'project_has_running_services' } }
   }
 
@@ -470,16 +549,26 @@ async function refuseProjectDelete(
   if (sharedInUse) {
     return { refused: { ok: false, error: sharedInUse.error, detail: sharedInUse.detail } }
   }
-
-  // A folder on a server holds its environment's name (and the project's slug)
-  // until the host confirms it is gone; the delete waits for that.
-  const folderRows = await tx
-    .select({ id: folder.id })
-    .from(folder)
-    .where(and(inArray(folder.environmentId, environmentIds), ne(folder.state, 'missing')))
-  if (folderRows.length > 0) return { refused: { ok: false, error: 'project_has_folders' } }
+  // A deploy in flight would recreate what the delete removes.
+  if (await hasInProgressDeployment(tx, environmentIds)) {
+    return {
+      refused: {
+        ok: false,
+        error: PROJECT_DEPLOY_RUNNING_ERROR,
+        detail: { message: PROJECT_DEPLOY_RUNNING_MESSAGE },
+      },
+    }
+  }
   return { children }
 }
+
+export const PROJECT_DEPLOY_RUNNING_ERROR = 'project_deploy_running'
+export const PROJECT_DEPLOY_RUNNING_MESSAGE =
+  'A deploy is running in this project. Delete it when the deploy finishes.'
+
+/** Why a managed database refuses a delete, in plain words. */
+export const MANAGED_PRESENT_MESSAGE =
+  'This includes a managed database. Delete the database first (it asks for its own confirmation, because its data goes with it), then try again.'
 
 const PRIMARY_DELETE_DETAIL = {
   message:
@@ -493,16 +582,21 @@ export type EnvironmentDeleteRefusal =
   | typeof COMMON_ASSET_IN_USE_ERROR
 
 export type EnvironmentDeleteResult =
-  | { ok: true; warning?: string }
+  | { ok: true; warning?: string; cleanup: DeleteCleanup }
   | { ok: false; error: EnvironmentDeleteRefusal; detail?: Record<string, unknown> }
 
-async function hasInProgressDeployment(db: Db, environmentId: string): Promise<boolean> {
+/** True when one of these environments has a deploy queued, applying or draining. */
+export async function hasInProgressDeployment(
+  db: Pick<Db, 'select'>,
+  environmentIds: readonly string[]
+): Promise<boolean> {
+  if (environmentIds.length === 0) return false
   const rows = await db
     .select({ id: deployment.id })
     .from(deployment)
     .where(
       and(
-        eq(deployment.environmentId, environmentId),
+        inArray(deployment.environmentId, [...environmentIds]),
         inArray(deployment.status, IN_PROGRESS_DEPLOYMENT_STATUSES)
       )
     )
@@ -544,14 +638,20 @@ export async function dropEnvironmentSubtreeInTx(
 /**
  * Cascade-delete one environment and its services, hostings, containers,
  * tenancy, bindings and variables (the same rows, in the same order, as a
- * project delete). Refused with `environment_running` while a tenant container
- * is still active or a deploy is queued/applying/draining: the user must Stop
- * the environment first. `deployment` rows go with it (FK cascade).
+ * project delete). Refused while a deploy is queued/applying/draining
+ * (`environment_running`), for the primary environment, and for a managed
+ * database or a shared asset another environment uses. A running service is
+ * stopped first through `stopHosts`; without it, or when the stop does not
+ * go out, a running service refuses. Folders on the servers outlive the rows
+ * as `removing` rows until each host confirms. `deployment` rows go with it
+ * (FK cascade).
  */
 export async function deleteEnvironmentCascade(
   db: Db,
   environmentId: string,
-  listenerSync?: BindingListenerSync
+  listenerSync?: BindingListenerSync,
+  stopHosts?: () => Promise<boolean>,
+  stopTimeoutMs: number = STOP_HOSTS_TIMEOUT_MS
 ): Promise<EnvironmentDeleteResult> {
   const managedRows = await db
     .select({ id: managed.id })
@@ -559,15 +659,20 @@ export async function deleteEnvironmentCascade(
     .where(eq(managed.environmentId, environmentId))
     .limit(1)
   if (managedRows.length > 0) {
-    return { ok: false, error: MANAGED_RUNTIME_PRESENT_ERROR }
+    return {
+      ok: false,
+      error: MANAGED_RUNTIME_PRESENT_ERROR,
+      detail: { message: MANAGED_PRESENT_MESSAGE },
+    }
   }
 
+  if (await hasInProgressDeployment(db, [environmentId])) {
+    return { ok: false, error: ENVIRONMENT_RUNNING_ERROR, detail: DEPLOY_RUNNING_DETAIL }
+  }
   const children = await loadEnvironmentChildren(db, [environmentId])
-  if (
-    hasActiveServiceContainer(children.containerRows) ||
-    (await hasInProgressDeployment(db, environmentId))
-  ) {
-    return { ok: false, error: ENVIRONMENT_RUNNING_ERROR }
+  const running = hasActiveServiceContainer(children.containerRows)
+  if (running && !stopHosts) {
+    return { ok: false, error: ENVIRONMENT_RUNNING_ERROR, detail: STILL_RUNNING_DETAIL }
   }
 
   const sharedInUse = await sharedAssetsStillUsed(db, {
@@ -576,20 +681,42 @@ export async function deleteEnvironmentCascade(
   })
   if (sharedInUse) return { ok: false, error: sharedInUse.error, detail: sharedInUse.detail }
 
+  if (running && stopHosts) {
+    // Asked before anything is stopped: a delete that is refused stops nothing.
+    if (await db.transaction((tx) => deleteWouldOrphanPrimary(tx, environmentId))) {
+      return { ok: false, error: PRIMARY_ENVIRONMENT_DELETE_ERROR, detail: PRIMARY_DELETE_DETAIL }
+    }
+    if (!(await stopWithin(stopHosts, stopTimeoutMs))) {
+      return {
+        ok: false,
+        error: ENVIRONMENT_RUNNING_ERROR,
+        detail: { message: STOP_FAILED_MESSAGE },
+      }
+    }
+  }
+
   const bindingTargets = await loadBindingListenerTargets(db, children.serviceIds)
-  const refused = await db.transaction(async (tx) => {
+  const outcome = await db.transaction(async (tx) => {
     // Under the project lock: a "make primary" racing this delete is seen.
-    if (await deleteWouldOrphanPrimary(tx, environmentId)) return true
-    await dropEnvironmentRows(tx, {
+    if (await deleteWouldOrphanPrimary(tx, environmentId)) return null
+    return await dropEnvironmentRows(tx, {
+      ...(listenerSync ? { actorUserId: listenerSync.actorId } : {}),
       environmentIds: [environmentId],
       serviceIds: children.serviceIds,
       containerIds: children.containerRows.map((row) => row.id),
       hostingIds: children.hostingIds,
     })
-    return false
   })
-  if (refused)
+  if (outcome === null)
     return { ok: false, error: PRIMARY_ENVIRONMENT_DELETE_ERROR, detail: PRIMARY_DELETE_DETAIL }
+  const cleanup = { folderServerIds: outcome }
   const listenerWarning = await syncRemovedBindingListeners(db, bindingTargets, listenerSync)
-  return listenerWarning ? { ok: true, warning: listenerWarning } : { ok: true }
+  return listenerWarning ? { ok: true, warning: listenerWarning, cleanup } : { ok: true, cleanup }
+}
+
+export const ENVIRONMENT_DEPLOY_RUNNING_MESSAGE =
+  'A deploy is running for this environment. Delete it when the deploy finishes.'
+const DEPLOY_RUNNING_DETAIL = { message: ENVIRONMENT_DEPLOY_RUNNING_MESSAGE }
+const STILL_RUNNING_DETAIL = {
+  message: 'This environment is still running. Stop it first, then delete it.',
 }

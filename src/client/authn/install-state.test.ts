@@ -7,6 +7,7 @@ import { createDenoDb, type Db } from '../../db/connection.ts'
 import {
   COLOCATED_SERVER_DISPLAY_NAME,
   completeInstanceInstall,
+  createOrganizationForUser,
   DEFAULT_WORKSPACE_NAME,
   getInstallStatus,
   INSTANCE_ALREADY_CONFIGURED_ERROR,
@@ -276,11 +277,13 @@ it('install produces System workspace then Default Workspace', async () => {
     userId = result.userId
 
     const [orgRow] = await db
-      .select({ name: organization.name })
+      .select({ name: organization.name, options: organization.options })
       .from(organization)
       .where(eq(organization.id, organizationId))
       .limit(1)
     assertEquals(orgRow?.name, ROOT_ORGANIZATION_NAME)
+    // A new organization allows Let's Encrypt from the start.
+    assertEquals(orgRow?.options, { acmeEnabled: true })
 
     const serverRows = await db
       .select({
@@ -319,6 +322,38 @@ it('install produces System workspace then Default Workspace', async () => {
     if (organizationId && userId) {
       await cleanupInstall(db, organizationId, userId)
     }
+  }
+})
+
+it("createOrganizationForUser starts the organization with Let's Encrypt allowed", async () => {
+  if (!dbUrl) {
+    skipWithoutDatabase('new organization options test')
+    return
+  }
+  const db = createDenoDb()
+  const [owner] = await db
+    .insert(user)
+    .values({ email: `new-org-${crypto.randomUUID()}@example.com`, isEmailVerified: true })
+    .returning({ id: user.id })
+  let organizationId: string | null = null
+  try {
+    const created = await createOrganizationForUser(db, owner!.id, 'New Org')
+    organizationId = created.organizationId
+    const [row] = await db
+      .select({ options: organization.options })
+      .from(organization)
+      .where(eq(organization.id, organizationId))
+      .limit(1)
+    assertEquals(row?.options, { acmeEnabled: true })
+  } finally {
+    await db.delete(grant).where(eq(grant.actorId, owner!.id))
+    await db.delete(teammate).where(eq(teammate.userId, owner!.id))
+    if (organizationId) {
+      await db.delete(workspace).where(eq(workspace.organizationId, organizationId))
+      await db.delete(team).where(eq(team.organizationId, organizationId))
+    }
+    await db.delete(user).where(eq(user.id, owner!.id))
+    if (organizationId) await db.delete(organization).where(eq(organization.id, organizationId))
   }
 })
 

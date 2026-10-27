@@ -37,7 +37,6 @@ export const ENVIRONMENT_NAME_RULE_MESSAGE =
   'An environment name uses lowercase letters, digits, hyphens and underscores, starts with a letter or digit, is at most 32 characters, and is not a reserved word such as common, home or tmp.'
 export const ENVIRONMENT_DEPLOY_RUNNING_ERROR = 'environment_deploy_running'
 export const ENVIRONMENT_SERVER_LOCKED_ERROR = 'environment_server_locked'
-export const ENVIRONMENT_HAS_FOLDERS_ERROR = 'environment_has_folders'
 export const PROJECT_SLUG_LOCKED_ERROR = 'project_slug_locked'
 export const PROJECT_SLUG_IN_USE_ERROR = 'project_slug_in_use'
 export const DIRECTORY_NAMES_LOCKED_ERROR = 'directory_names_locked'

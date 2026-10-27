@@ -149,12 +149,15 @@ export type OrganizationOptions = {
    */
   docker?: OrganizationDockerNetworking
   /**
-   * Opt-in gate for Let's Encrypt / ACME certificate issuance — both the
-   * tenant `tls` library (`POST /tls` with `source: 'lets_encrypt'`) and the
-   * deploy-time `tlsMode: 'acme'` wire the resolved TLS status can produce.
-   * Off by default: some operators do not want Let's Encrypt used against
-   * their servers at all, so an `automatic` TLS row is inert until the org
-   * turns this on. Toggling off does not revoke certificates already issued.
+   * Gate for Let's Encrypt / ACME certificate issuance — the tenant `tls`
+   * library (`POST /tls` with `source: 'lets_encrypt'`), the one-click button,
+   * compose `tls.mode: automatic`, and the deploy-time `tlsMode: 'acme'` wire
+   * the resolved TLS status can produce. New organizations start with it on
+   * ({@link NEW_ORGANIZATION_OPTIONS}); a row without the key (an organization
+   * made before that) reads as off, so existing organizations keep what they
+   * had. Some operators do not want Let's Encrypt used against their servers
+   * at all and turn it off. Toggling off does not revoke certificates already
+   * issued.
    */
   acmeEnabled?: boolean
   /**
@@ -455,7 +458,15 @@ export function resolveTemperatureUnit(options: OrganizationOptions): Temperatur
   return options.temperatureUnit ?? DEFAULT_TEMPERATURE_UNIT
 }
 
-/** Effective Let's Encrypt gate: off unless the org has opted in. */
+/**
+ * `organization.options` for an organization being created: Let's Encrypt
+ * allowed. Only new rows get this; nothing rewrites existing organizations.
+ */
+export const NEW_ORGANIZATION_OPTIONS: Readonly<OrganizationOptions> = Object.freeze({
+  acmeEnabled: true,
+})
+
+/** Effective Let's Encrypt gate: off unless the key is set (new organizations set it on). */
 export function resolveAcmeEnabled(options: OrganizationOptions): boolean {
   return options.acmeEnabled ?? false
 }

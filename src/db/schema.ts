@@ -3993,10 +3993,23 @@ export const principal = pgTable(
     organizationId: uuid('organization_id').notNull(),
     /**
      * Optional project scope for hosting principals. SET NULL on project
-     * delete: the principal (and the Linux user and home it names) outlives
-     * the project and is removed only by its own explicit delete.
+     * delete. A principal the deleted project owned and nothing else uses is
+     * marked with `removal_requested_at` and removed (row, Linux user and
+     * home) once its folders are gone; one still in use outlives the project.
      */
     projectId: uuid('project_id'),
+    /**
+     * When the delete of the project that owned this principal asked for it
+     * to go. Set only on a principal nothing else used at that moment; the
+     * removal sweep deletes the row and retires the host account once no
+     * folder row names it and every server it is on is connected. NULL for
+     * every other principal.
+     */
+    removalRequestedAt: timestamp('removal_requested_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }),
   },
   (table) => [
     index('idx_principal_organization_id').using(
@@ -4348,10 +4361,11 @@ export const folder = pgTable(
       )
     ),
     // `common` has no environment; every other scope has one, except an orphan
-    // found on a host whose environment is not (or no longer) known.
+    // found on a host whose environment is not (or no longer) known, and a
+    // folder still being removed after its environment was deleted.
     check(
       'folder_common_scope_check',
-      sql`(scope = 'common' AND environment_id IS NULL) OR (scope <> 'common' AND (environment_id IS NOT NULL OR state = 'orphan'))`
+      sql`(scope = 'common' AND environment_id IS NULL) OR (scope <> 'common' AND (environment_id IS NOT NULL OR state IN ('orphan', 'removing')))`
     ),
     check(
       'folder_asset_kind_check',

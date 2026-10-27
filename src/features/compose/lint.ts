@@ -20,7 +20,6 @@ import {
   HOSTING_HOSTNAME_REQUIRED_MESSAGE,
   HOSTING_TARGET_PORT_NOT_FOR_NODE_MESSAGE,
   HOSTING_TARGET_PORT_NOT_FOR_SITE_MESSAGE,
-  HOSTING_TLS_MODE_AUTOMATIC_UNSUPPORTED_MESSAGE,
   hostingIpRefUnresolvedMessage,
   hostingTargetPortAuthorable,
   hostingTlsRefUnresolvedMessage,
@@ -540,18 +539,6 @@ function lintHostingEntry(params: {
           : HOSTING_TARGET_PORT_NOT_FOR_NODE_MESSAGE,
       path: `${basePath}.targetPort`,
       line: nodeLine(targetPortNode ?? (entry as Node), lineCounter),
-    })
-  }
-
-  // `automatic` parses, so without this the editor would bless a document
-  // deploy-prepare refuses — the one thing a linter must never do.
-  const tlsModeNode = nestedEntryValue(entry, 'tls', 'mode')
-  if (scalarString(tlsModeNode)?.trim() === 'automatic') {
-    issues.push({
-      level: 'error',
-      message: HOSTING_TLS_MODE_AUTOMATIC_UNSUPPORTED_MESSAGE,
-      path: `${basePath}.tls.mode`,
-      line: nodeLine(tlsModeNode ?? (entry as Node), lineCounter),
     })
   }
 
