@@ -19,6 +19,8 @@ import type {
 } from '../../contracts/cell-protocol.ts'
 import type { Db } from '../../db/connection.ts'
 import { command } from '../../db/schema.ts'
+import { describeErrorCauses } from '../../lib/describe-error.ts'
+import { compatLogWarn } from '../../lib/log-compat.ts'
 import { markDeploymentApplied } from '../deploy/deployment-records.ts'
 import { readDeployContext } from '../deploy/rollout.ts'
 import { noteCommandAlive, parseStoredCommandProgress } from './command-progress.ts'
@@ -70,43 +72,130 @@ function succeededProgress(progress: unknown): unknown {
   return { ...stored, steps }
 }
 
-/** A deploy gave up as `timed_out` that the server now says succeeded. */
+/** A time the daemon reported, or `fallback` when it is missing or not a time. */
+function reportedTime(value: string | undefined, fallback: string): string {
+  return value !== undefined && Number.isFinite(Date.parse(value)) ? value : fallback
+}
+
+/** The command row put right with everything the server reported. */
+function fullCorrection(row: CommandRecord, envelope: CommandOutcomeEnvelope) {
+  const finishedAt = reportedTime(envelope.daemonRespondedAt ?? envelope.at, nowIso())
+  const receivedAt = reportedTime(envelope.daemonReceivedAt, finishedAt)
+  return {
+    status: 'succeeded',
+    errorMessage: null,
+    errorCode: null,
+    resultSummary: resultSummaryForPersist(row.type, envelope.result),
+    finishedAt,
+    updatedAt: nowIso(),
+    ackedAt: sql`COALESCE(${command.ackedAt}, ${receivedAt}::timestamptz)`,
+    startedAt: sql`COALESCE(${command.startedAt}, ${receivedAt}::timestamptz)`,
+    metadata: lateOutcomeMetadata(),
+  }
+}
+
+/** The status and note alone, for when the server's report itself cannot be stored. */
+function bareCorrection() {
+  return {
+    status: 'succeeded',
+    errorMessage: null,
+    errorCode: null,
+    updatedAt: nowIso(),
+    metadata: lateOutcomeMetadata(),
+  }
+}
+
+/** `command.metadata` with the late-outcome note added. */
+function lateOutcomeMetadata() {
+  return sql`COALESCE(${command.metadata}, '{}'::jsonb) || ${JSON.stringify({
+    lateOutcome: { correctedAt: nowIso(), note: LATE_OUTCOME_NOTE },
+  })}::jsonb`
+}
+
+/**
+ * Flip a `timed_out` command to `succeeded`. Returns its stored progress, or
+ * null when it was not `timed_out`.
+ */
+async function flipTimedOut(
+  db: Db,
+  commandId: string,
+  set: ReturnType<typeof fullCorrection> | ReturnType<typeof bareCorrection>
+): Promise<{ progress: unknown } | null> {
+  const flipped = await db
+    .update(command)
+    .set(set)
+    .where(and(eq(command.id, commandId), eq(command.status, 'timed_out')))
+    .returning({ progress: command.progress })
+  return flipped[0] ?? null
+}
+
+/** Log a late result that was confirmed although part of its correction failed. */
+function warnLateCorrection(commandId: string, what: string, err: unknown): void {
+  const causes = describeErrorCauses(err).replaceAll('\n', ' | ')
+  const reason = causes === '' ? String(err) : causes
+  compatLogWarn('command-recovery', `late result for command ${commandId}: ${what}: ${reason}`)
+}
+
+/**
+ * Store the late success on the command row. Only this decides whether the
+ * daemon may drop its copy: when the full report cannot be written (a value the
+ * database refuses), the status alone is corrected so the result is still
+ * confirmed. A failure of both (the database is down) throws, and the daemon
+ * sends the result again.
+ */
+async function storeLateSuccess(
+  db: Db,
+  row: CommandRecord,
+  envelope: CommandOutcomeEnvelope
+): Promise<{ progress: unknown } | null> {
+  try {
+    return await flipTimedOut(db, row.id, fullCorrection(row, envelope))
+  } catch (err) {
+    warnLateCorrection(row.id, 'the report could not be stored, only the status was corrected', err)
+    return await flipTimedOut(db, row.id, bareCorrection())
+  }
+}
+
+/**
+ * A deploy gave up as `timed_out` that the server now says succeeded. Once the
+ * command row is corrected, the rest (step plan, deployment, containers, the
+ * kept payload) is best effort: a failure there is logged with the command id
+ * and never keeps the result unconfirmed. It is not retried either; a resend
+ * finds the command already `succeeded` and would skip it anyway, and the next
+ * deploy writes those rows afresh.
+ */
 async function correctTimedOutDeploy(
   db: Db,
   row: CommandRecord,
   envelope: CommandOutcomeEnvelope
 ): Promise<void> {
-  const payload = await getCommandDispatchPayload(db, row.id)
-  const finishedAt = envelope.daemonRespondedAt ?? envelope.at
-  const receivedAt = envelope.daemonReceivedAt ?? finishedAt
-  const flipped = await db
-    .update(command)
-    .set({
-      status: 'succeeded',
-      errorMessage: null,
-      errorCode: null,
-      resultSummary: resultSummaryForPersist(row.type, envelope.result),
-      finishedAt,
-      updatedAt: nowIso(),
-      ackedAt: sql`COALESCE(${command.ackedAt}, ${receivedAt}::timestamptz)`,
-      startedAt: sql`COALESCE(${command.startedAt}, ${receivedAt}::timestamptz)`,
-      metadata: sql`COALESCE(${command.metadata}, '{}'::jsonb) || ${JSON.stringify({
-        lateOutcome: { correctedAt: nowIso(), note: LATE_OUTCOME_NOTE },
-      })}::jsonb`,
-    })
-    .where(and(eq(command.id, row.id), eq(command.status, 'timed_out')))
-    .returning({ progress: command.progress })
-  const flippedRow = flipped[0]
-  if (flippedRow === undefined) return
+  const flipped = await storeLateSuccess(db, row, envelope)
+  if (flipped === null) return
+  try {
+    await finishLateSuccess(db, row, envelope, flipped.progress)
+  } catch (err) {
+    warnLateCorrection(row.id, 'the deploy records were not updated', err)
+  }
+}
+
+/** Everything a corrected deploy puts right besides its command row. */
+async function finishLateSuccess(
+  db: Db,
+  row: CommandRecord,
+  envelope: CommandOutcomeEnvelope,
+  progress: unknown
+): Promise<void> {
   await db
     .update(command)
-    .set({ progress: succeededProgress(flippedRow.progress) })
+    .set({ progress: succeededProgress(progress) })
     .where(eq(command.id, row.id))
   const settled: CommandRecord = { ...row, status: 'succeeded' }
   // Containers, sites and placements are put right only while this deploy is
-  // still the server's latest; a newer deploy's rows are never overwritten.
+  // still the server's latest; a newer deploy's rows are never overwritten. An
+  // environment deleted since has no deployment row, so nothing is written for it.
   const current = await markAppliedIfCurrent(db, settled)
-  if (current && payload !== null) {
+  const payload = current ? await getCommandDispatchPayload(db, row.id) : null
+  if (payload !== null) {
     const dispatchable: DispatchableCommandRecord = { ...settled, payload }
     await applySucceededSideEffects(
       db,
