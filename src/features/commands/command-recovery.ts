@@ -192,7 +192,9 @@ const UNCONFIRMED_ERROR_MAX = 600
  * query's bound values, which can carry deploy data.
  */
 export function unconfirmedErrorText(err: unknown): string {
-  const head = (err instanceof Error ? err.message : String(err)).replace(/\s*params:[\s\S]*$/, '')
+  const message = err instanceof Error ? err.message : String(err)
+  const paramsAt = message.indexOf('\nparams:')
+  const head = paramsAt === -1 ? message : message.slice(0, paramsAt).trimEnd()
   const causes = describeErrorCauses(err).replaceAll('\n', ' | ')
   const text = causes === '' ? head : `${causes} | ${head}`
   return text.slice(0, UNCONFIRMED_ERROR_MAX)

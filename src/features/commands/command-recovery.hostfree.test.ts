@@ -12,7 +12,10 @@ test('a wrapped query error leads with the database reason and drops the bound v
     { cause }
   )
   const text = unconfirmedErrorText(err)
-  assertEquals(text.startsWith('caused by: Error: insert or update violates foreign key constraint'), true)
+  assertEquals(
+    text.startsWith('caused by: Error: insert or update violates foreign key constraint'),
+    true
+  )
   assertStringIncludes(text, '23503')
   assertStringIncludes(text, 'Failed query: update "command"')
   assertEquals(text.includes('params:'), false)
@@ -22,6 +25,10 @@ test('a wrapped query error leads with the database reason and drops the bound v
 test('a plain error reads as its message', () => {
   assertEquals(unconfirmedErrorText(new Error('no deploy context')), 'no deploy context')
   assertEquals(unconfirmedErrorText('boom'), 'boom')
+})
+
+test('a message with params: but no line break before it is kept whole', () => {
+  assertEquals(unconfirmedErrorText(new Error('invalid params: x')), 'invalid params: x')
 })
 
 test('the text is capped', () => {
