@@ -280,14 +280,24 @@ grouped `count(*)`, not a materialised server or step list.
 
 - Client gate (`../../client/servers/routes.ts`): `POST /servers/:id/update` and
   `POST /servers/updates` answer 409 `control_plane_upgrade_required` while the
-  gate is closed (self-hosted) and 409 `updates_managed` on Workers; the GET
+  gate is closed (self-hosted). On Workers the fleet gate is always open, so
+  both routes start a coordinator run there too (source `server`): organization
+  managers update their own servers on TurboPanel High Availability.
+  `updates_managed` is no longer sent; it stays in the code list for clients of
+  older control planes. The GET
   update-status routes carry `updateBlocked`, the machine `updateBlockedCode`
   (`ServerUpdateBlockedCode` in `decisions.ts`: the three gate errors plus
   `colocated_with_instance`) and the human `updateBlockedReason`. Clients
-  branch on the code, never the sentence. `POST /servers/updates`
-  creates a batched fleet run and requires `organization:manage` on the
-  organization (403 otherwise) — the same bar as `POST /servers/:id/update` —
-  because it opens the one instance-wide run.
+  branch on the code, never the sentence. Who may start (and reset) a server
+  update is `canUpdateOrgServers` (`../../client/servers/update-permission.ts`),
+  the one helper for that rule: owners and managers of the server's own
+  organization, and instance admins; anyone else gets 403. `POST
+/servers/updates` creates a batched fleet run over that organization's
+  servers only and needs the same permission on the organization, because it
+  opens the one instance-wide run.
+- `GET /instance/updates` also answers `daemonsBehind`: a connected daemon runs
+  an older build than the channel's daemon target (`anyDaemonBehind`), for the
+  app's update icon.
 - Admin API (`../../admin/instance-updates-routes.ts` + `openapi/`): status,
   preflight (with the recovery command), runs, check, history, servers list,
   step-retry, run-cancel, settings. `GET /instance/updates/run` answers

@@ -21,6 +21,7 @@ import {
 import {
   instanceHostname,
   notificationChannel,
+  organization,
   server,
   setting,
   upgrade,
@@ -36,6 +37,7 @@ import {
   tryBeginReencryptSweep,
 } from './reencrypt-secrets.ts'
 import { registerAdminRoutes } from './routes.ts'
+import { seedUpdateManifestCacheForTests } from '../features/update/manifest.ts'
 import { SERVER_METRICS_LIVE_MAX_MINUTES_KEY } from '../features/settings/server-metrics-settings.ts'
 import { ALERT_WEBHOOK_URL_KEY } from '../features/alerts/alert-webhook-settings.ts'
 import { replaceInstanceHostnames } from '../features/install/instance-hostnames.ts'
@@ -593,6 +595,56 @@ test('POST /api/admin/v1/instance/updates/runs answers 409 upgrade_run_active wh
       await db.delete(upgrade).where(eq(upgrade.id, active!.id))
     }
   })
+})
+
+test('GET /api/admin/v1/instance/updates reports daemonsBehind for a connected daemon off the target', async () => {
+  await withRoleUser(
+    'admin',
+    async ({ app, cookie }) => {
+      const db = createDenoDb()
+      const target = {
+        commit: `behind-target-${crypto.randomUUID()}`,
+        buildId: 'd1',
+        builtAt: '2026-10-27T00:00:00.000Z',
+        channel: 'canary',
+        manifestUrl: 'https://example.test/daemon/manifest.json',
+        version: '0.1.17-canary.1',
+      }
+      seedUpdateManifestCacheForTests(target, 'canary', 'daemon')
+      seedUpdateManifestCacheForTests(null, 'canary', 'instance')
+      seedUpdateManifestCacheForTests(null, 'canary', 'ui')
+      const [org] = await db
+        .insert(organization)
+        .values({ name: 'Daemons Behind Org' })
+        .returning({ id: organization.id })
+      const now = new Date().toISOString()
+      const [row] = await db
+        .insert(server)
+        .values({
+          createdAt: now,
+          updatedAt: now,
+          organizationId: org!.id,
+          name: 'Behind Host',
+          isConnected: true,
+          daemonCommit: 'an-older-daemon-commit',
+        })
+        .returning({ id: server.id })
+      try {
+        const res = await app.request(`${ADMIN_API_PREFIX}/instance/updates`, {
+          headers: { Cookie: cookie },
+        })
+        assertEquals(res.status, 200)
+        const body = await jsonBody<{ daemonsBehind: boolean }>(res)
+        assertEquals(body.daemonsBehind, true)
+      } finally {
+        seedUpdateManifestCacheForTests(null, 'canary', 'daemon')
+        await db.delete(server).where(eq(server.id, row!.id))
+        await db.delete(organization).where(eq(organization.id, org!.id))
+        await endDbConnection(db)
+      }
+    },
+    { runtime: 'workers', getEnv: () => ({ TURBOPANEL_UPDATE_CHANNEL: 'canary' }) }
+  )
 })
 
 test('GET /api/admin/v1/instance/updates/history pages runs with server totals and refuses unknown filters', async () => {

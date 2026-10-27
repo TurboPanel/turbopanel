@@ -938,7 +938,6 @@ test('the tick starts a run for a newer published build once the previous run ha
 test('a non-development gate fails closed when the target cannot be read', () => {
   assertEquals(
     clientUpdateBlock({
-      runtime: 'deno',
       development: false,
       targetCommitKnown: false,
       gateOpen: false,
@@ -947,7 +946,6 @@ test('a non-development gate fails closed when the target cannot be read', () =>
   )
   assertEquals(
     clientUpdateBlock({
-      runtime: 'deno',
       development: true,
       targetCommitKnown: false,
       gateOpen: false,
@@ -956,13 +954,27 @@ test('a non-development gate fails closed when the target cannot be read', () =>
   )
   assertEquals(
     clientUpdateBlock({
-      runtime: 'deno',
       development: false,
       targetCommitKnown: true,
       gateOpen: false,
     }),
     { blocked: true, error: 'control_plane_upgrade_required' }
   )
+})
+
+test('the hosted gate lets server updates through the coordinator', async () => {
+  const coordinator = createUpgradeCoordinator({
+    store: createMemoryUpgradeStore({ facts: [fact(['managed-upgrade-v1'])], latest: target }),
+    enqueue: () => Promise.resolve(),
+    runtime: 'workers',
+    channel: 'canary',
+    development: false,
+    now: () => '2026-09-24T12:00:00.000Z',
+    colocatedServerId: null,
+    instanceInstalled: { version: '0.1.0', commit: 'deployed-commit' },
+    resolveTarget: () => Promise.resolve(target),
+  })
+  assertEquals(await coordinator.updateGate(), { blocked: false, useCoordinator: true })
 })
 
 test('a hello reporting the target commit while a tick is mid-redispatch is not clobbered', async () => {

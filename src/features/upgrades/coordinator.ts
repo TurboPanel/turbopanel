@@ -1210,7 +1210,6 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
     updateGate: async () => {
       const [target, fleet] = await Promise.all([resolveTarget(), facts()])
       return clientUpdateBlock({
-        runtime: deps.runtime,
         development: deps.development,
         targetCommitKnown: Boolean(target.daemon?.commit),
         gateOpen: fleetGateOpen(fleet, target),

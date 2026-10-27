@@ -192,7 +192,7 @@ The orchestrator applies these to the Road artifact database (collection
 | `auth-signin`, `auth-redirect`, `auth-signin-throttle`             | Throttling from the runner's IP could lock the operator out. The redirect and cookie rows are covered by `turbopanel#160` tests                      |
 | `fleet-reboot`, `backups-reboot-catchup`, `storage-volumes`        | They reboot a host. Kept manual                                                                                                                      |
 | `resilience-clock-skew`, disk-full proofs                          | They change host clock or disk state. Kept manual                                                                                                    |
-| `fleet-daemon-update` (performing an update)                       | Updates are `409 updates_managed` on Workers (testing). The check only reads update state                                                            |
+| `fleet-daemon-update` (performing an update)                       | Performing an update changes the fleet under test. The check only reads update state                                                                 |
 | UI-only rows (status dots, picker defaults)                        | Not provable through the API                                                                                                                         |
 | billing, email channel, org-invite rows                            | Need Stripe test clocks, outside mailboxes or second accounts. Not in scope                                                                          |
 

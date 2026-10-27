@@ -26,7 +26,9 @@ export const INSTANCE_UPDATES_PATHS = {
         'carries `uiUpdateAvailable` (self-hosted only): pass `?consoleCommit=` ' +
         'with the commit the console bundle was built from, and it is true when ' +
         "the channel's UI build differs. The UI ships inside the control-plane " +
-        'install, so a run started with `consoleCommit` in the body reinstalls it.',
+        'install, so a run started with `consoleCommit` in the body reinstalls it. ' +
+        '`daemonsBehind` is true when any connected daemon (the co-located one ' +
+        "included) runs an older build than the channel's daemon target.",
       security: [...cookieSecurity],
       responses: {
         '200': { description: 'Installed versions and channel targets' },

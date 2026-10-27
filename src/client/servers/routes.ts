@@ -5,8 +5,9 @@ import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { requireStepUpIfConfigured } from '../authn/step-up.ts'
 import { isAdminRole } from '../authn/session-store.ts'
-import { can, listVisible } from '../authz/index.ts'
+import { listVisible } from '../authz/index.ts'
 import { assertCanManageOr403, assertCanReadOr403, getOrgId, parseJsonBody } from '../shared.ts'
+import { assertCanUpdateOrgServersOr403, canUpdateOrgServers } from './update-permission.ts'
 import { type Db, getDaemonCellRegistry, getDb } from '../../db/connection.ts'
 import { recordAuditAndNotify } from '../../features/notifications/audit-bridge.ts'
 import { parseOrganizationOptions } from '../../features/organizations/organization-options.ts'
@@ -250,9 +251,6 @@ async function clientUpdateGate(
   c: Context<AppEnv>,
   runtime: 'deno' | 'workers'
 ): Promise<ClientUpdateBlock> {
-  if (runtime === 'workers') {
-    return { blocked: true, error: 'updates_managed' }
-  }
   const db = getDb(c)
   const registry = getDaemonCellRegistry(c)
   if (!db || !registry) return { blocked: false, useCoordinator: false }
@@ -1077,8 +1075,11 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     const { db, session, organizationId } = scope
 
     // Starting a fleet update opens the one instance-wide upgrade run: the
-    // same organization:manage bar as updating a single server.
-    const denied = await assertCanManageOr403(c, 'organization', organizationId)
+    // same bar as updating a single server, scoped to this organization.
+    const denied = await assertCanUpdateOrgServersOr403(c, {
+      kind: 'organization',
+      id: organizationId,
+    })
     if (denied) return denied
 
     const registry = getDaemonCellRegistry(c)
@@ -1092,9 +1093,6 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
       organizationId,
     })
 
-    if (opts.runtime === 'workers') {
-      return c.json({ ok: false, error: 'updates_managed' }, 409)
-    }
     const gate = await clientUpdateGate(c, opts.runtime)
     const blocked = blockedUpdateResponse(c, gate)
     if (blocked) return blocked
@@ -1127,7 +1125,10 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
 
     const results = await Promise.all(
       visibleIds.map(async (serverId) => {
-        const manageable = await can(db, session.userId, 'organization:manage', 'server', serverId)
+        const manageable = await canUpdateOrgServers(db, session.userId, {
+          kind: 'server',
+          id: serverId,
+        })
         if (!manageable) {
           return {
             serverId,
@@ -1311,7 +1312,7 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     if (!db) return c.json({ error: 'Database unavailable' }, 503)
 
     const id = c.req.param('id')
-    const denied = await assertCanManageOr403(c, 'server', id)
+    const denied = await assertCanUpdateOrgServersOr403(c, { kind: 'server', id })
     if (denied) return denied
 
     const registry = getDaemonCellRegistry(c)
@@ -1433,7 +1434,7 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     if (!db) return c.json({ error: 'Database unavailable' }, 503)
 
     const id = c.req.param('id')
-    const denied = await assertCanManageOr403(c, 'server', id)
+    const denied = await assertCanUpdateOrgServersOr403(c, { kind: 'server', id })
     if (denied) return denied
 
     const registry = getDaemonCellRegistry(c)
@@ -1441,9 +1442,6 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
       return c.json({ error: 'Daemon cell registry unavailable' }, 503)
     }
 
-    if (opts.runtime === 'workers') {
-      return c.json({ ok: false, error: 'updates_managed' }, 409)
-    }
     const gate = await clientUpdateGate(c, opts.runtime)
     const blocked = blockedUpdateResponse(c, gate)
     if (blocked) return blocked

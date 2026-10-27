@@ -70,6 +70,24 @@ async function readColocatedDaemon(c: Context<AppEnv>): Promise<ColocatedDaemon>
 }
 
 /**
+ * Whether any connected daemon (the co-located one included) runs an older
+ * build than the channel's daemon target: the same rule automatic updates use
+ * (`anyDaemonBehind`). False when the target or the database is unavailable.
+ */
+async function readDaemonsBehind(
+  c: Context<AppEnv>,
+  target: { commit: string; builtAt?: string | null } | null
+): Promise<boolean> {
+  const db = getDb(c)
+  if (!db || !target?.commit) return false
+  try {
+    return await createDrizzleUpgradeStore(db, null).anyDaemonBehind(target.commit, target.builtAt)
+  } catch {
+    return false
+  }
+}
+
+/**
  * Installed versions, channel targets, and the managed upgrade run API.
  *
  * `POST …/instance` and `POST …/daemon` start the same guarded run as
@@ -110,6 +128,7 @@ export function registerInstanceUpdatesAdminRoutes(
       runtime: opts.runtime,
       managedUpgrade: true,
       updatesManaged: opts.runtime === 'workers',
+      daemonsBehind: await readDaemonsBehind(c, daemonTarget),
       units: {
         instance: {
           installed: buildLabel ? { ...instanceInstalled, label: buildLabel } : instanceInstalled,

@@ -21,7 +21,8 @@ import type { EmailQueue } from '../features/email/types.ts'
 import type { QueryCache } from '../query-cache/contracts.ts'
 import type { BillingConfig } from '../features/billing/config.ts'
 import { HEALTH_PATH } from './surfaces.ts'
-import { healthPayload, resolveInstanceRevision } from './build-info.ts'
+import { resolveInstanceRevision } from './build-info.ts'
+import { resolveHealthPayload } from './running-build.ts'
 import { INSTANCE_VERSION } from './version.ts'
 import { INSTANCE_REVISION_HEADER, INSTANCE_VERSION_HEADER } from '../lib/version-wire.ts'
 
@@ -256,7 +257,7 @@ export function createApp({
     }
   })
   app.get('/', (c) => c.text('TurboPanel'))
-  app.get(HEALTH_PATH, (c) => c.json(healthPayload(c.get('platformEnv'))))
+  app.get(HEALTH_PATH, async (c) => c.json(await resolveHealthPayload(c.get('platformEnv'))))
   if (secrets) {
     registerClientRoutes(app, {
       secrets,

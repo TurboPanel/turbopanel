@@ -4,7 +4,6 @@
  */
 import type { UpdateProgressStage } from '../../contracts/cell-protocol.ts'
 import { installScriptHostForChannel } from '../install/daemon-install-command.ts'
-import type { UpgradeRuntime } from './planner.ts'
 import {
   readRestartNote,
   readRestartPending,
@@ -202,20 +201,19 @@ export type ClientUpdateBlock =
 
 /**
  * Hard gate for `POST /servers/:id/update` and `POST /servers/updates`.
- * Workers always refuses. The legacy per-server updater runs only in explicit
- * development mode. Everywhere else a missing target or a failed gate read
- * fails closed, and a shut fleet gate refuses until the control plane is
- * on target.
+ * The legacy per-server updater runs only in explicit development mode.
+ * Everywhere else a missing target or a failed gate read fails closed, and a
+ * shut fleet gate refuses until the control plane is on target. On TurboPanel
+ * High Availability the fleet gate is always open (the platform deploys the
+ * control plane), so organization managers can start daemon updates there too.
+ * `updates_managed` stays in the code list for clients talking to an older
+ * control plane, which still sends it on Workers.
  */
 export function clientUpdateBlock(input: {
-  runtime: UpgradeRuntime
   development: boolean
   targetCommitKnown: boolean
   gateOpen: boolean
 }): ClientUpdateBlock {
-  if (input.runtime === 'workers') {
-    return { blocked: true, error: 'updates_managed' }
-  }
   if (input.development) {
     return { blocked: false, useCoordinator: false }
   }
