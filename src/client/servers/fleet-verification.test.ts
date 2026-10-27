@@ -5,7 +5,9 @@ import { Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import { createDenoDb, endDbConnection } from '../../db/connection.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
+import { WORKSPACE_KIND_USER } from '../../db/workspace-kind.ts'
 import {
+  environment,
   grant,
   license,
   notification,
@@ -17,15 +19,18 @@ import {
 } from '../../db/schema.ts'
 import type { DaemonCellRegistry } from '../../contracts/cell.ts'
 import { createLicense } from '../../features/licenses/license.ts'
+import { countReservedLicenseTiers } from '../../features/tiers/tier-records.ts'
 import { deleteProjectCascade } from '../../features/projects/project-delete.ts'
 import { resolveServerId } from '../../features/servers/server-registry.ts'
 import { mapSequential } from '../../lib/sequential.ts'
 import { deriveSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
+import { seedTierSeats } from '../../test-fixtures/tier-seats.test.support.ts'
 import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from '../authn/crypto.ts'
 import { createSession } from '../authn/session-store.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 import { registerOrganizationRoutes } from '../organizations/routes.ts'
+import { SERVER_HAS_BLOCKERS_CODE } from './delete-guards.ts'
 import { registerServerRoutes } from './routes.ts'
 
 const dbUrl = getDatabaseUrl()
@@ -237,6 +242,107 @@ test('deleting a server retires its key in the same step: a daemon still running
     const res = await request(ctx, 'DELETE', `/servers/${ctx.serverId}`)
     assertEquals(res.status, 200)
     assertEquals(seen, [{ revoked: true, reEnrolled: null }])
+  })
+})
+
+/**
+ * Enroll a host the way a daemon does (the key latches, the system hierarchy
+ * with its not-yet-started ingress row is built) and mark it connected.
+ */
+async function enrollConnectedServer(
+  ctx: FleetCtx,
+  tierId?: string
+): Promise<{ serverId: string; licenseId: string }> {
+  const key = await createLicense(ctx.db, { organizationId: ctx.organizationId, tierId })
+  const serverId = await resolveServerId(ctx.db, {
+    hostname: `enrolled-${crypto.randomUUID()}`,
+    machineKey: randomMachineKey(),
+    ...key,
+  })
+  assertExists(serverId)
+  await ctx.db.update(server).set({ isConnected: true }).where(eq(server.id, serverId))
+  return { serverId, licenseId: key.licenseId }
+}
+
+async function licenseRevoked(ctx: FleetCtx, licenseId: string): Promise<boolean> {
+  const [row] = await ctx.db
+    .select({ revokedAt: license.revokedAt })
+    .from(license)
+    .where(eq(license.id, licenseId))
+  return Boolean(row?.revokedAt)
+}
+
+async function serverExists(ctx: FleetCtx, serverId: string): Promise<boolean> {
+  const rows = await ctx.db.select({ id: server.id }).from(server).where(eq(server.id, serverId))
+  return rows.length > 0
+}
+
+test('a connected server enrolled with a key that names no tier deletes and its key is revoked', async () => {
+  await withFleetFixtures(async (ctx) => {
+    const { serverId, licenseId } = await enrollConnectedServer(ctx)
+
+    const res = await request(ctx, 'DELETE', `/servers/${serverId}`)
+    assertEquals(res.status, 200)
+    assertEquals(await serverExists(ctx, serverId), false)
+    assertEquals(await licenseRevoked(ctx, licenseId), true)
+    assertEquals(ctx.registry.purgedIds.includes(serverId), true)
+  })
+})
+
+test('a connected server holding its Add Server tier seat deletes and the seat is free for the next server', async () => {
+  await withFleetFixtures(async (ctx) => {
+    const seats = await seedTierSeats(ctx.db, ctx.organizationId, 1)
+    try {
+      const first = await enrollConnectedServer(ctx, seats.tierId)
+      const [held] = await ctx.db
+        .select({ assigned: server.assignedTierId })
+        .from(server)
+        .where(eq(server.id, first.serverId))
+      assertEquals(held?.assigned, seats.tierId)
+
+      const res = await request(ctx, 'DELETE', `/servers/${first.serverId}`)
+      assertEquals(res.status, 200)
+      assertEquals(await licenseRevoked(ctx, first.licenseId), true)
+      assertEquals((await countReservedLicenseTiers(ctx.db, ctx.organizationId)).size, 0)
+
+      // The only seat came back: the next server added on that tier takes it.
+      const next = await enrollConnectedServer(ctx, seats.tierId)
+      const [taken] = await ctx.db
+        .select({ assigned: server.assignedTierId })
+        .from(server)
+        .where(eq(server.id, next.serverId))
+      assertEquals(taken?.assigned, seats.tierId)
+    } finally {
+      await cleanUpOrganization(ctx.db, ctx.organizationId)
+      await seats.cleanup()
+    }
+  })
+})
+
+test('a connected server that still hosts an app answers which app to remove and keeps its key', async () => {
+  await withFleetFixtures(async (ctx) => {
+    const { serverId, licenseId } = await enrollConnectedServer(ctx)
+    const [space] = await ctx.db
+      .insert(workspace)
+      .values({ organizationId: ctx.organizationId, name: 'Apps', kind: WORKSPACE_KIND_USER })
+      .returning({ id: workspace.id })
+    const [app] = await ctx.db
+      .insert(project)
+      .values({ organizationId: ctx.organizationId, workspaceId: space!.id, name: 'Shop' })
+      .returning({ id: project.id })
+    await ctx.db.insert(environment).values({ name: 'production', projectId: app!.id, serverId })
+
+    const res = await request(ctx, 'DELETE', `/servers/${serverId}`)
+    assertEquals(res.status, 409)
+    const body = (await res.json()) as {
+      code: string
+      blockers?: { kind: string; items?: { projectName?: string }[] }[]
+    }
+    assertEquals(body.code, SERVER_HAS_BLOCKERS_CODE)
+    const apps = body.blockers?.find((row) => row.kind === 'environment')
+    assertEquals(apps?.items?.[0]?.projectName, 'Shop')
+    assertEquals(await serverExists(ctx, serverId), true)
+    assertEquals(await licenseRevoked(ctx, licenseId), false)
   })
 })
 

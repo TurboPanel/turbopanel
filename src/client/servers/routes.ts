@@ -666,7 +666,8 @@ async function enqueueHostingReconcileBestEffort(
 }
 
 /**
- * Blocks delete while system hosting-ingress containers are still active.
+ * Blocks delete while system hosting-ingress containers are still active on
+ * the host (a `pending` row the host never created does not count).
  * On an offline host, `forgetResources` skips this — stale rows are removed
  * with the system subtree. Otherwise every refusal lists the containers.
  */
@@ -683,11 +684,7 @@ async function assertSystemEnvironmentIdleOrBlocked(
     return { systemEnvironmentIds }
   }
 
-  const blockingContainers = await listSystemContainersBlockingServerDelete(
-    db,
-    serverId,
-    opts.serverConnected
-  )
+  const blockingContainers = await listSystemContainersBlockingServerDelete(db, serverId)
   if (blockingContainers.length > 0) {
     return serverSystemContainersDeleteBlockedResponse(c, {
       serverConnected: opts.serverConnected,
