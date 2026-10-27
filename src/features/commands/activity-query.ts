@@ -98,8 +98,8 @@ export type ActivityItem = {
   actorType: 'user' | 'system'
   /**
    * For `user`: the person's name (else email) while they are a member of the
-   * organization, `Platform admin` for an instance administrator who is not,
-   * and `Former member` for anyone else. `null` for `system`.
+   * organization, `Platform Admin` for an instance administrator who is not,
+   * and `Former Member` for anyone else. `null` for `system`.
    */
   actorName: string | null
   /** The push that set it off, `null` for a person's deploy. */
@@ -296,8 +296,8 @@ function environmentIdOf(row: ActivityRow): string | null {
 }
 
 /** Shown for a person who is not (or no longer) a member, so their name and email stay private. */
-export const FORMER_MEMBER_LABEL = 'Former member'
-export const PLATFORM_ADMIN_LABEL = 'Platform admin'
+export const FORMER_MEMBER_LABEL = 'Former Member'
+export const PLATFORM_ADMIN_LABEL = 'Platform Admin'
 
 /** Live rows count up to now; a finished row stops at its end, and has none when no end was recorded. */
 function durationSecsOf(
@@ -387,8 +387,8 @@ function isOrganizationMember(organizationId: string): SQL {
 
 /**
  * Who asked, as this organization may see them: a current member by name
- * (else email), an instance administrator as `Platform admin`, anyone else
- * left out (the caller shows `Former member`). Only this page's ids are read.
+ * (else email), an instance administrator as `Platform Admin`, anyone else
+ * left out (the caller shows `Former Member`). Only this page's ids are read.
  */
 async function loadActorNames(
   db: Db,

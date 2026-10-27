@@ -188,7 +188,7 @@ test('shapeActivityItem: a finished row with no recorded end has no duration', (
 
 test('shapeActivityItem: a person the organization cannot name reads as a former member', () => {
   const item = shapeActivityItem({ ...BASE, actorType: 'user', actorId: 'gone' }, NAMES, NOW)
-  assertEquals([item.actorType, item.actorName], ['user', 'Former member'])
+  assertEquals([item.actorType, item.actorName], ['user', 'Former Member'])
 })
 
 test('shapeActivityItem: prefers the environment column over the context copy', () => {

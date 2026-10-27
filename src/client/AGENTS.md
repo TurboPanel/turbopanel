@@ -49,7 +49,7 @@ changes.
   clamps), `offset`. Returns `{ ok, items, total, totalCapped, hasMore }`:
   `total` is counted at most 1000 rows past the page (`totalCapped` says there
   are more). Each item carries `state` + `failure`, `finishedAt`, `actorType` /
-  `actorName` (a current member's name or email; otherwise `Platform admin` for an instance administrator or `Former member`), the push `trigger` and the `commit` (first recorded release,
+  `actorName` (a current member's name or email; otherwise `Platform Admin` for an instance administrator or `Former Member`), the push `trigger` and the `commit` (first recorded release,
   else the pushed SHA); `step` / `totalSteps` / `stepLabel` come from the
   daemon's step plan on `command.progress` (`null` until it reports one);
   `crashCount` is always `null` until restart counts are recorded. Gate as the

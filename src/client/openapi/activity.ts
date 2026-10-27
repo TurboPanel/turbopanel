@@ -88,7 +88,7 @@ export const activitySchemas = {
       actorName: {
         type: ['string', 'null'],
         description:
-          'For `user`: the person’s name (else email) while they are a member of the organization, `Platform admin` for an instance administrator who is not, `Former member` for anyone else. Null for `system`.',
+          'For `user`: the person’s name (else email) while they are a member of the organization, `Platform Admin` for an instance administrator who is not, `Former Member` for anyone else. Null for `system`.',
       },
       trigger: {
         oneOf: [{ $ref: '#/components/schemas/ActivityTrigger' }, { type: 'null' }],

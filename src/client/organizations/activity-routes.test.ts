@@ -357,7 +357,7 @@ test('a person is named only while they are a member of the organization', async
     const feed = JSON.parse(res.text) as Feed
     assertEquals(
       feed.items.map((i) => i.actorName),
-      ['Team Mate', 'Platform admin', 'Former member']
+      ['Team Mate', 'Platform Admin', 'Former Member']
     )
     assert(!res.text.includes('Gone Person'))
     assert(!res.text.includes('Instance Admin'))
