@@ -241,7 +241,7 @@ export async function applyAddServerTierAtEnroll(
     .from(server)
     .where(and(eq(server.id, serverId), eq(server.organizationId, organizationId)))
     .limit(1)
-  if (!row || row.assignedTierId !== null || row.preferredTierId !== null) {
+  if (row?.assignedTierId !== null || row.preferredTierId !== null) {
     return 'already_set'
   }
   const state = await listSeatsForOrganization(tx, organizationId)
