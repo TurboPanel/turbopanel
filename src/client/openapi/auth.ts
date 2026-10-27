@@ -126,7 +126,7 @@ export function buildAuthSchemas(runtime?: 'deno' | 'workers') {
         build: {
           type: ['string', 'null'],
           description:
-            "The running build's full version label, e.g. 0.1.21-canary.3 or 0.1.21-rc.1: on self-hosted the installed package's (TURBOPANEL_BUILD_LABEL); on TurboPanel High Availability the channel build whose commit is the deployed one. Null when not known; version is the plain number then.",
+            "The installed package's full version label when the installer supplied one (TURBOPANEL_BUILD_LABEL), e.g. 0.1.1-canary.20260926-192741-3754712 or 0.1.1-rc.1; null otherwise.",
         },
         environment: {
           type: ['string', 'null'],

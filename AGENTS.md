@@ -479,12 +479,7 @@ guard; `pnpm test:do` alone does not.
   package's full label from `TURBOPANEL_BUILD_LABEL` (e.g.
   `0.1.1-canary.<buildId>`, `0.1.1-rc.1`) or null — never baked into the
   binary, because promotion reuses the canary bytes for rc and release, so the
-  installer that knows which manifest it installed has to supply it. On
-  TurboPanel High Availability (no installer) `build` is the channel's
-  control-plane manifest label when that manifest's commit is the deployed one
-  (`src/app/running-build.ts`, cached manifest read bounded at 1.5 s), else
-  null: testing often runs a commit newer than its newest canary, and staging
-  and live deploy merge commits;
+  installer that knows which manifest it installed has to supply it;
   `environment` is `TURBOPANEL_ENVIRONMENT` (`testing` / `staging` / `live`,
   set per env in wrangler.jsonc; null for local dev and self-hosted).
   **Commit on a plain `wrangler deploy`:** wrangler.jsonc's `build.command`

@@ -59,14 +59,9 @@ const BUILD_LABEL_MAX_LENGTH = 128
 export function resolveBuildLabel(
   env: Readonly<Record<string, string | undefined>> | undefined
 ): string | null {
-  return normalizeBuildLabel(env?.TURBOPANEL_BUILD_LABEL)
-}
-
-/** `raw` trimmed when it is a semver build label (`0.1.1`, `0.1.1-rc.1`, `0.1.1-canary.3`), else null. */
-export function normalizeBuildLabel(raw: string | null | undefined): string | null {
-  const label = raw?.trim()
-  if (!label || label.length > BUILD_LABEL_MAX_LENGTH) return null
-  return BUILD_LABEL_PATTERN.test(label) ? label : null
+  const raw = env?.TURBOPANEL_BUILD_LABEL?.trim()
+  if (!raw || raw.length > BUILD_LABEL_MAX_LENGTH) return null
+  return BUILD_LABEL_PATTERN.test(raw) ? raw : null
 }
 
 /** The TurboPanel High Availability deployments `TURBOPANEL_ENVIRONMENT` may name (wrangler.jsonc per env). */
@@ -96,12 +91,7 @@ export type HealthPayload = {
   revision: InstanceRevision
   /** The update channel this control plane follows (`TURBOPANEL_UPDATE_CHANNEL`, default `release`). */
   channel: UpdateChannel
-  /**
-   * The running build's full label (`0.1.1-canary.3`, `0.1.1-rc.1`), when
-   * known: the installed package's on self-hosted ({@link resolveBuildLabel});
-   * on TurboPanel High Availability the channel build whose commit is the one
-   * deployed (`resolveHealthPayload` in running-build.ts).
-   */
+  /** The installed package's pre-release label, when known; see {@link resolveBuildLabel}. */
   build: string | null
   /** The TurboPanel High Availability deployment (`testing` / `staging` / `live`), else null; see {@link resolveDeploymentEnvironment}. */
   environment: DeploymentEnvironment | null
