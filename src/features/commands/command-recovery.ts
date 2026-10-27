@@ -137,12 +137,30 @@ function warnLateCorrection(commandId: string, what: string, err: unknown): void
   )
 }
 
+/** Most wrapped errors {@link isRefusedValue} looks through. */
+const MAX_REFUSAL_DEPTH = 4
+
+/**
+ * Did the database refuse a value (SQLSTATE class 22, data, or 23, integrity)?
+ * Anything else, such as a lost connection, is worth the daemon's resend.
+ */
+function isRefusedValue(err: unknown): boolean {
+  let current = err
+  for (let depth = 0; depth < MAX_REFUSAL_DEPTH; depth++) {
+    if (typeof current !== 'object' || current === null) return false
+    const code = (current as { code?: unknown }).code
+    if (typeof code === 'string' && (code.startsWith('22') || code.startsWith('23'))) return true
+    current = (current as { cause?: unknown }).cause
+  }
+  return false
+}
+
 /**
  * Store the late success on the command row. Only this decides whether the
- * daemon may drop its copy: when the full report cannot be written (a value the
- * database refuses), the status alone is corrected so the result is still
- * confirmed. A failure of both (the database is down) throws, and the daemon
- * sends the result again.
+ * daemon may drop its copy: when the database refuses a value in the full
+ * report, the status alone is corrected so the result is still confirmed. Any
+ * other failure (the database is down) throws, and the daemon sends the result
+ * again.
  */
 async function storeLateSuccess(
   db: Db,
@@ -152,6 +170,7 @@ async function storeLateSuccess(
   try {
     return await flipTimedOut(db, row.id, fullCorrection(row, envelope))
   } catch (err) {
+    if (!isRefusedValue(err)) throw err
     warnLateCorrection(row.id, 'the report could not be stored, only the status was corrected', err)
     return await flipTimedOut(db, row.id, bareCorrection())
   }
