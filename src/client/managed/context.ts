@@ -19,6 +19,10 @@ import { verifyServerInOrg } from '../environments/deploy-prepare.ts'
 import { getCatalogEntry } from '../projects/catalog/index.ts'
 import { loadServerStatusRecords } from '../servers/update-status.ts'
 import {
+  releaseManagedLifecycleLease,
+  tryTakeManagedLifecycleLease,
+} from '../../features/managed/lifecycle-lease.ts'
+import {
   hasLiveBackupCommand,
   hasLiveLifecycleCommand,
 } from '../../features/commands/command-records.ts'
@@ -225,17 +229,7 @@ export async function assertNoBackupInFlight(
   )
 }
 
-/**
- * 409 when a start, stop, restart or destroy of this cluster is still queued or
- * running. Lifecycle commands never mark the cluster `applying`, so without
- * this a second press (or another tab) queues a racing Start behind a Stop.
- */
-export async function assertNoLifecycleInFlight(
-  c: Context<AppEnv>,
-  db: Db,
-  managedId: string
-): Promise<Response | null> {
-  if (!(await hasLiveLifecycleCommand(db, managedId))) return null
+function lifecycleInFlight(c: Context<AppEnv>): Response {
   return c.json(
     {
       error: 'managed_busy',
@@ -245,6 +239,28 @@ export async function assertNoLifecycleInFlight(
     },
     409
   )
+}
+
+/**
+ * Runs `queue` only when no start, stop, restart or destroy of this database is
+ * queued or running (lifecycle commands never mark it `applying`), and holds
+ * the database's lifecycle lease from that check until `queue` has finished,
+ * so two requests that arrive together cannot both pass. 409 otherwise.
+ */
+export async function withManagedLifecycleTurn(
+  c: Context<AppEnv>,
+  db: Db,
+  params: Readonly<{ organizationId: string; managedId: string }>,
+  queue: () => Promise<Response>
+): Promise<Response> {
+  const held = await tryTakeManagedLifecycleLease(db, params)
+  if (!held) return lifecycleInFlight(c)
+  try {
+    if (await hasLiveLifecycleCommand(db, params.managedId)) return lifecycleInFlight(c)
+    return await queue()
+  } finally {
+    await releaseManagedLifecycleLease(db, held)
+  }
 }
 
 /** 409 body when the target server has no live connection. */

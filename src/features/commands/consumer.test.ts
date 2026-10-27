@@ -66,7 +66,7 @@ import {
   type DispatchableCommandRecord,
   isTransientError,
   markPlannedFoldersPresentSafely,
-  lifecycleMemberObservation,
+  lifecycleFallbackMemberStatus,
   oldPrimaryFinalFromStop,
   processCommandEnvelope,
 } from './consumer.ts'
@@ -4622,12 +4622,32 @@ test('processCommandEnvelope marks managed failed when lifecycle command fails',
   })
 })
 
-test('a lifecycle stop result marks the member it ran on and its database containers there', async () => {
+type LifecycleRig = {
+  db: ReturnType<typeof createDenoDb>
+  serverId: string
+  managedId: string
+  memberId: string
+  engineServiceId: string
+  ingressServiceId: string
+}
+
+/**
+ * A one-member cluster with its engine container, and the server's shared
+ * managed-ingress container on a system service of its own, all running.
+ */
+async function withLifecycleRig(
+  memberStatus: string,
+  fn: (rig: LifecycleRig) => Promise<void>
+): Promise<void> {
   await withManagedDestroyFixtures(async ({ db, serverId, managedId }) => {
     const [managedRow] = await db
       .select({ environmentId: managed.environmentId })
       .from(managed)
       .where(eq(managed.id, managedId))
+    const [environmentRow] = await db
+      .select({ projectId: environment.projectId })
+      .from(environment)
+      .where(eq(environment.id, managedRow!.environmentId))
     const memberId = crypto.randomUUID()
     await db.insert(replica).values({
       id: memberId,
@@ -4636,76 +4656,135 @@ test('a lifecycle stop result marks the member it ran on and its database contai
       role: 'primary',
       isReadEligible: true,
       ordinal: 1,
-      status: 'ready',
+      status: memberStatus,
     })
-    const [serviceRow] = await db
+    const [systemEnvironment] = await db
+      .insert(environment)
+      .values({ projectId: environmentRow!.projectId, serverId, name: 'managed-ingress' })
+      .returning({ id: environment.id })
+    const [engineService] = await db
       .insert(service)
       .values({ environmentId: managedRow!.environmentId, name: 'db', composeServiceName: 'db' })
       .returning({ id: service.id })
+    const [ingressService] = await db
+      .insert(service)
+      .values({
+        environmentId: systemEnvironment!.id,
+        name: 'managed-ingress',
+        composeServiceName: 'managed-ingress',
+      })
+      .returning({ id: service.id })
+    const running = { serverId, status: 'running', ordinal: 1 }
     await db.insert(container).values([
       {
-        serviceId: serviceRow!.id,
-        serverId,
+        ...running,
+        serviceId: engineService!.id,
         containerId: 'db-cid',
         containerName: 'db-1',
-        status: 'running',
         role: 'service',
         composeServiceName: 'db',
-        ordinal: 1,
       },
       {
-        serviceId: serviceRow!.id,
-        serverId,
+        ...running,
+        serviceId: ingressService!.id,
         containerId: 'ingress-cid',
-        containerName: 'ingress-1',
-        status: 'running',
+        containerName: 'managed-ingress-1',
         role: 'ingress',
-        composeServiceName: 'db',
-        ordinal: 1,
+        composeServiceName: 'managed-ingress',
       },
     ])
-
+    const serviceIds = [engineService!.id, ingressService!.id]
     try {
-      const record = await createCommandRecord(db, {
+      await fn({
+        db,
         serverId,
-        ...TEST_COMMAND_ACTOR,
-        type: 'managed.lifecycle',
-        payload: { managedId, action: 'stop', memberId },
+        managedId,
+        memberId,
+        engineServiceId: engineService!.id,
+        ingressServiceId: ingressService!.id,
       })
-      const registry = createDispatchMockRegistry(serverId, {
-        waitForRequestResult: {
-          serverId,
-          requestId: record.id,
-          requestKind: 'command-dispatch',
-          status: 'done',
-          createdAt: record.createdAt,
-          expiresAt: record.createdAt,
-          finishedAt: new Date().toISOString(),
-          // An older server answers with a status only, no member object.
-          result: { status: 'stopped' },
-        },
-      })
-
-      await processCommandEnvelope(db, registry, buildEnvelope(record, serverId))
-
-      const [memberRow] = await db
-        .select({ status: replica.status })
-        .from(replica)
-        .where(eq(replica.id, memberId))
-      assertEquals(memberRow?.status, 'stopped')
-      const rows = await db
-        .select({ role: container.role, status: container.status })
-        .from(container)
-        .where(eq(container.serviceId, serviceRow!.id))
-      assertEquals(rows.map((row) => `${row.role}:${row.status}`).sort(), [
-        'ingress:running',
-        'service:exited',
-      ])
     } finally {
-      await db.delete(container).where(eq(container.serviceId, serviceRow!.id))
-      await db.delete(service).where(eq(service.id, serviceRow!.id))
+      await db.delete(container).where(inArray(container.serviceId, serviceIds))
+      await db.delete(service).where(inArray(service.id, serviceIds))
+      await db.delete(environment).where(eq(environment.id, systemEnvironment!.id))
       await db.delete(replica).where(eq(replica.id, memberId))
     }
+  })
+}
+
+/** Run one stop on the rig's member; the server answers with `result`. */
+async function runMemberStop(rig: LifecycleRig, result: Record<string, unknown>): Promise<void> {
+  const record = await createCommandRecord(rig.db, {
+    serverId: rig.serverId,
+    ...TEST_COMMAND_ACTOR,
+    type: 'managed.lifecycle',
+    payload: { managedId: rig.managedId, action: 'stop', memberId: rig.memberId },
+  })
+  const registry = createDispatchMockRegistry(rig.serverId, {
+    waitForRequestResult: {
+      serverId: rig.serverId,
+      requestId: record.id,
+      requestKind: 'command-dispatch',
+      status: 'done',
+      createdAt: record.createdAt,
+      expiresAt: record.createdAt,
+      finishedAt: new Date().toISOString(),
+      result,
+    },
+  })
+  await processCommandEnvelope(rig.db, registry, buildEnvelope(record, rig.serverId))
+}
+
+async function rigState(rig: LifecycleRig): Promise<{ member?: string; containers: string[] }> {
+  const [memberRow] = await rig.db
+    .select({ status: replica.status })
+    .from(replica)
+    .where(eq(replica.id, rig.memberId))
+  const rows = await rig.db
+    .select({ role: container.role, status: container.status })
+    .from(container)
+    .where(inArray(container.serviceId, [rig.engineServiceId, rig.ingressServiceId]))
+  return {
+    member: memberRow?.status,
+    containers: rows.map((row) => `${row.role}:${row.status}`).sort(),
+  }
+}
+
+test('a status-only stop result marks the member stopped and its engine container exited', async () => {
+  await withLifecycleRig('ready', async (rig) => {
+    // The daemon answers every stop with a status only: it cannot read health from a stopped container.
+    await runMemberStop(rig, { status: 'stopped' })
+    assertEquals(await rigState(rig), {
+      member: 'stopped',
+      containers: ['ingress:running', 'service:exited'],
+    })
+  })
+})
+
+test('a status-only stop never clears needs_resync on a demoted member', async () => {
+  await withLifecycleRig('needs_resync', async (rig) => {
+    await runMemberStop(rig, { status: 'stopped' })
+    assertEquals((await rigState(rig)).member, 'needs_resync')
+  })
+})
+
+test('a failed stop marks the member failed and leaves the containers alone', async () => {
+  await withLifecycleRig('ready', async (rig) => {
+    await runMemberStop(rig, { status: 'failed' })
+    assertEquals(await rigState(rig), {
+      member: 'failed',
+      containers: ['ingress:running', 'service:running'],
+    })
+  })
+})
+
+test('a stop result with a status the member row cannot take writes nothing to it', async () => {
+  await withLifecycleRig('ready', async (rig) => {
+    await runMemberStop(rig, { status: 'half-stopped' })
+    assertEquals(await rigState(rig), {
+      member: 'ready',
+      containers: ['ingress:running', 'service:running'],
+    })
   })
 })
 
@@ -5113,19 +5192,22 @@ test('a failover recover result moves the primary role and the epoch goes up by 
   })
 })
 
-test('a lifecycle result without a member object still lands on the member it was sent to', () => {
-  const failedReplicaStop = { status: 'failed' } as ManagedLifecycleCommandResult
-  assertEquals(lifecycleMemberObservation({ memberId: 'replica-1' }, failedReplicaStop), {
+test('a lifecycle result without a member object speaks for the member it was sent to', () => {
+  const stopped = { status: 'stopped' } as ManagedLifecycleCommandResult
+  assertEquals(lifecycleFallbackMemberStatus({ memberId: 'replica-1' }, stopped), {
     memberId: 'replica-1',
-    status: 'failed',
+    status: 'stopped',
   })
-  // A result that names its member wins, and a cluster-wide command names none.
+  // A result that names its member is projected as such, and a cluster-wide command names none.
   const named = {
     status: 'stopped',
     member: { memberId: 'primary-1', role: 'primary', status: 'stopped' },
   } as ManagedLifecycleCommandResult
-  assertEquals(lifecycleMemberObservation({ memberId: 'replica-1' }, named), named.member)
-  assertEquals(lifecycleMemberObservation({}, failedReplicaStop), undefined)
+  assertEquals(lifecycleFallbackMemberStatus({ memberId: 'replica-1' }, named), undefined)
+  assertEquals(lifecycleFallbackMemberStatus({}, stopped), undefined)
+  // A status the member row cannot take never reaches it.
+  const odd = { status: 'half-stopped' } as ManagedLifecycleCommandResult
+  assertEquals(lifecycleFallbackMemberStatus({ memberId: 'replica-1' }, odd), undefined)
 })
 
 test('a fence stop result that answers another switchover stores no final position', () => {

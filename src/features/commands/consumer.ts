@@ -2153,18 +2153,34 @@ export function oldPrimaryFinalFromStop(
 }
 
 /**
- * The member a lifecycle result speaks for: its own `member` object, else the
- * single member the command was sent to (`payload.memberId`) with the status
- * the server observed. Older servers answer a fan-out stop with only a status;
- * without this a replica whose stop failed kept reading Running.
+ * The status a lifecycle result without a `member` object carries for the one
+ * member it was sent to (`payload.memberId`). The daemon answers every stop
+ * that way (it cannot read health from a stopped container), so without this a
+ * replica whose stop failed kept reading Running. Only a status the cluster row
+ * also takes (ready, stopped, failed) is used; anything else is dropped.
  */
-export function lifecycleMemberObservation(
+export function lifecycleFallbackMemberStatus(
   payload: Pick<ManagedLifecyclePayload, 'memberId'>,
   result: Pick<ManagedLifecycleCommandResult, 'member' | 'status'>
-): Parameters<typeof projectManagedMemberObservedStatus>[1] {
-  if (result.member) return result.member
-  if (!payload.memberId) return undefined
+): { memberId: string; status: 'ready' | 'stopped' | 'failed' } | undefined {
+  if (result.member || !payload.memberId) return undefined
+  if (!isManagedObservedStatus(result.status)) return undefined
   return { memberId: payload.memberId, status: result.status }
+}
+
+/**
+ * Write a fallback member status, never over `needs_resync`: that mark is the
+ * only thing that keeps a demoted member's old data from being started, and the
+ * daemon answers a stop of such a member with a plain `stopped` too.
+ */
+async function projectFallbackMemberStatus(
+  db: Db,
+  observed: { memberId: string; status: string }
+): Promise<void> {
+  await db
+    .update(replica)
+    .set({ status: observed.status, updatedAt: nowIso() })
+    .where(and(eq(replica.id, observed.memberId), ne(replica.status, 'needs_resync')))
 }
 
 /** Container states a database the server just saw stop can no longer be in. */
@@ -2209,13 +2225,14 @@ async function projectLifecycleOnMember(
   payload: ManagedLifecyclePayload,
   result: ManagedLifecycleCommandResult
 ): Promise<void> {
-  const observation = lifecycleMemberObservation(payload, result)
-  await projectManagedMemberObservedStatus(db, observation, record.id, record.type)
+  await projectManagedMemberObservedStatus(db, result.member, record.id, record.type)
+  const fallback = lifecycleFallbackMemberStatus(payload, result)
+  if (fallback) await projectFallbackMemberStatus(db, fallback)
   await projectManagedContainersStopped(
     db,
     payload.managedId,
     record.serverId,
-    observation?.status ?? result.status
+    result.member?.status ?? result.status
   )
 }
 

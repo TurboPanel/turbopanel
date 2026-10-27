@@ -1364,6 +1364,9 @@ test('a start, stop or destroy is refused while another lifecycle command for th
       const start = await lifecycle('start')
       assertEquals(start.status, 409)
       assertEquals(await start.json(), busyBody)
+      // Bad input is answered as such, busy or not.
+      const bad = await lifecycle('explode')
+      assertEquals(bad.status, 400)
       const destroy = await app.request(`/environments/${environmentId}/managed`, {
         method: 'DELETE',
         headers,
@@ -1387,6 +1390,47 @@ test('a start, stop or destroy is refused while another lifecycle command for th
         .where(eq(command.managedId, created.managed.id))
       const afterEnd = await lifecycle('restart')
       assertEquals(afterEnd.status, 200)
+    }
+  )
+})
+
+test('two lifecycle requests that arrive together queue one command, and a forced delete never waits', async () => {
+  await withManagedFixtures(
+    {},
+    async ({ db, app, secrets, commandQueue, userId, organizationId, environmentId }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const headers = {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      }
+      const create = await app.request(`/environments/${environmentId}/managed`, {
+        method: 'POST',
+        headers,
+        body: '{}',
+      })
+      const created = (await create.json()) as { managed: { id: string } }
+      await db.update(managed).set({ status: 'ready' }).where(eq(managed.id, created.managed.id))
+      const before = commandQueue.envelopes.length
+
+      const answers = await Promise.all(
+        ['stop', 'start', 'restart'].map((action) =>
+          app.request(`/environments/${environmentId}/managed/lifecycle`, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({ action }),
+          })
+        )
+      )
+      assertEquals(answers.map((answer) => answer.status).sort(), [200, 409, 409])
+      assertEquals(commandQueue.envelopes.length, before + 1)
+
+      // The escape hatch for a database stuck behind a command: not refused.
+      const forced = await app.request(`/environments/${environmentId}/managed?force=true`, {
+        method: 'DELETE',
+        headers,
+      })
+      assertEquals(forced.status === 409, false)
     }
   )
 })

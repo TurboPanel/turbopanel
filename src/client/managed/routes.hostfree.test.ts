@@ -529,6 +529,8 @@ function fakeDb(config: FakeDbConfig = {}): Db {
         return {
           ...queryChain(rows),
           onConflictDoNothing: () => queryChain(rows),
+          // The lifecycle lease: the fake always grants it.
+          onConflictDoUpdate: () => queryChain(rows),
         }
       },
     }),

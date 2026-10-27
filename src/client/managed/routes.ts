@@ -117,7 +117,7 @@ import {
 import {
   assertManagedIdle,
   assertNoBackupInFlight,
-  assertNoLifecycleInFlight,
+  withManagedLifecycleTurn,
   assertTargetServerOnline,
   authorizeManagedBackupMutation,
   authorizeManagedRequest,
@@ -607,6 +607,104 @@ async function deleteManagedRuntimeRows(
   }
   await db.delete(replica).where(eq(replica.managedId, managedId))
   await db.delete(managed).where(eq(managed.id, managedId))
+}
+
+/** Ensure the primary member, check every member's server is online, and queue one lifecycle command per member. */
+async function queueManagedLifecycle(
+  c: Context<AppEnv>,
+  db: Db,
+  commandQueue: CommandQueue,
+  params: {
+    userId: string
+    managedId: string
+    action: 'start' | 'stop' | 'restart'
+    engine: string
+    targetServerId: string
+  }
+): Promise<Response> {
+  await ensureManagedPrimaryMember(db, {
+    managedId: params.managedId,
+    serverId: params.targetServerId,
+  })
+  const members = await listManagedMembers(db, params.managedId)
+  for (const member of members) {
+    const offline = await assertTargetServerOnline(c, db, member.serverId)
+    if (offline) return offline
+  }
+
+  const enqueued = await enqueueManagedLifecycleFanout(c, db, commandQueue, {
+    userId: params.userId,
+    managedId: params.managedId,
+    action: params.action,
+    members,
+    engine: params.engine,
+  })
+  if (enqueued instanceof Response) return enqueued
+  return c.json(buildQueuedFanoutResponse(enqueued, params.targetServerId))
+}
+
+/**
+ * DELETE …/managed once the gates passed: refuse while apps are bound (unless
+ * `?detach=true`), delete outright when nothing was ever placed, else fan the
+ * destroy out to every member.
+ */
+async function deleteManagedForEnvironment(
+  c: Context<AppEnv>,
+  db: Db,
+  params: {
+    environmentId: string
+    auth: { userId: string; organizationId: string }
+    row: NonNullable<Awaited<ReturnType<typeof findManagedForEnvironment>>>
+  }
+): Promise<Response> {
+  const { environmentId, auth, row } = params
+  // Apps bound to this cluster would lose their connection variables with
+  // no warning: refuse and list them, unless the caller asks to detach
+  // (`?detach=true`: the bindings and their variables are removed).
+  const attached = await listBindingImpactForManaged(db, row.id)
+  if (attached.count > 0 && c.req.query('detach') !== 'true') {
+    return c.json(
+      {
+        error: 'managed_has_bindings',
+        services: attached.services,
+      },
+      409
+    )
+  }
+
+  if (canHardDeleteManaged(row.serverId)) {
+    // Clear never-applied pending container rows so deleteProjectCascade does
+    // not treat them as active (`isActiveContainerStatus('pending')` is true).
+    await clearPendingNullIdContainersForEnvironment(db, environmentId)
+    await detachManagedBindings(c, db, row.id, attached.services, auth.userId, auth.organizationId)
+    await db.delete(managed).where(eq(managed.id, row.id))
+    return c.json({
+      ...buildManagedDeleteHardResponse(),
+      ...detachedField(attached.services),
+    })
+  }
+
+  // `canHardDeleteManaged` already covers `!row.serverId`, so `managed.server_id`
+  // is guaranteed here — resolve through the shared helper anyway for
+  // consistency with every other existing-row route.
+  const targetServerId = resolveManagedTargetServerId(c, row.serverId)
+  if (targetServerId instanceof Response) return targetServerId
+
+  const commandQueue = assertDispatchInfrastructure(c)
+  if (commandQueue instanceof Response) return commandQueue
+
+  await ensureManagedPrimaryMember(db, {
+    managedId: row.id,
+    serverId: targetServerId,
+  })
+  return await runManagedDeleteFanout(c, db, commandQueue, {
+    userId: auth.userId,
+    organizationId: auth.organizationId,
+    environmentId,
+    managedId: row.id,
+    targetServerId,
+    detached: attached.services,
+  })
 }
 
 /**
@@ -2260,44 +2358,35 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     if (scope instanceof Response) return scope
     const { db, auth, ctx, row } = scope
 
-    const busy =
-      (await assertManagedIdle(c, db, row)) ?? (await assertNoLifecycleInFlight(c, db, row.id))
+    const body = await parseJsonBody(c)
+    if (body instanceof Response) return body
+    const actionParsed = parseManagedLifecycleAction(body)
+    if (!actionParsed.ok) {
+      return c.json({ error: actionParsed.error }, actionParsed.status)
+    }
+
+    const busy = await assertManagedIdle(c, db, row)
     if (busy) return busy
 
     const targetServerId = resolveManagedTargetServerId(c, row.serverId)
     if (targetServerId instanceof Response) return targetServerId
 
-    const body = await parseJsonBody(c)
-    if (body instanceof Response) return body
-
-    const actionParsed = parseManagedLifecycleAction(body)
-    if (!actionParsed.ok) {
-      return c.json({ error: actionParsed.error }, actionParsed.status)
-    }
-    const { action } = actionParsed
-
     const commandQueue = assertDispatchInfrastructure(c)
     if (commandQueue instanceof Response) return commandQueue
 
-    await ensureManagedPrimaryMember(db, {
-      managedId: row.id,
-      serverId: targetServerId,
-    })
-    const members = await listManagedMembers(db, row.id)
-    for (const member of members) {
-      const offline = await assertTargetServerOnline(c, db, member.serverId)
-      if (offline) return offline
-    }
-
-    const enqueued = await enqueueManagedLifecycleFanout(c, db, commandQueue, {
-      userId: auth.userId,
-      managedId: row.id,
-      action,
-      members,
-      engine: ctx.spec.engine,
-    })
-    if (enqueued instanceof Response) return enqueued
-    return c.json(buildQueuedFanoutResponse(enqueued, targetServerId))
+    return await withManagedLifecycleTurn(
+      c,
+      db,
+      { organizationId: auth.organizationId, managedId: row.id },
+      () =>
+        queueManagedLifecycle(c, db, commandQueue, {
+          userId: auth.userId,
+          managedId: row.id,
+          action: actionParsed.action,
+          engine: ctx.spec.engine,
+          targetServerId,
+        })
+    )
   })
 
   router.delete('/environments/:id/managed', async (c) => {
@@ -2308,66 +2397,19 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const stepUp = await requireStepUpIfConfigured(c, auth.organizationId, 'managed.delete')
     if (stepUp) return stepUp
 
-    const busy =
-      (await assertManagedIdle(c, db, row)) ?? (await assertNoLifecycleInFlight(c, db, row.id))
+    const busy = await assertManagedIdle(c, db, row)
     if (busy) return busy
 
-    // Apps bound to this cluster would lose their connection variables with
-    // no warning: refuse and list them, unless the caller asks to detach
-    // (`?detach=true`: the bindings and their variables are removed).
-    const attached = await listBindingImpactForManaged(db, row.id)
-    if (attached.count > 0 && c.req.query('detach') !== 'true') {
-      return c.json(
-        {
-          error: 'managed_has_bindings',
-          services: attached.services,
-        },
-        409
-      )
-    }
-
-    const canHardDelete = canHardDeleteManaged(row.serverId)
-
-    if (canHardDelete) {
-      // Clear never-applied pending container rows so deleteProjectCascade does
-      // not treat them as active (`isActiveContainerStatus('pending')` is true).
-      await clearPendingNullIdContainersForEnvironment(db, environmentId)
-      await detachManagedBindings(
-        c,
-        db,
-        row.id,
-        attached.services,
-        auth.userId,
-        auth.organizationId
-      )
-      await db.delete(managed).where(eq(managed.id, row.id))
-      return c.json({
-        ...buildManagedDeleteHardResponse(),
-        ...detachedField(attached.services),
-      })
-    }
-
-    // `canHardDelete` already covers `!row.serverId`, so `managed.server_id`
-    // is guaranteed here — resolve through the shared helper anyway for
-    // consistency with every other existing-row route.
-    const targetServerId = resolveManagedTargetServerId(c, row.serverId)
-    if (targetServerId instanceof Response) return targetServerId
-
-    const commandQueue = assertDispatchInfrastructure(c)
-    if (commandQueue instanceof Response) return commandQueue
-
-    await ensureManagedPrimaryMember(db, {
-      managedId: row.id,
-      serverId: targetServerId,
-    })
-    return await runManagedDeleteFanout(c, db, commandQueue, {
-      userId: auth.userId,
-      organizationId: auth.organizationId,
-      environmentId,
-      managedId: row.id,
-      targetServerId,
-      detached: attached.services,
-    })
+    const run = () => deleteManagedForEnvironment(c, db, { environmentId, auth, row })
+    // `?force=true` is the escape hatch for a database stuck behind a command
+    // that never ends, so it never waits for one.
+    if (c.req.query('force') === 'true') return await run()
+    return await withManagedLifecycleTurn(
+      c,
+      db,
+      { organizationId: auth.organizationId, managedId: row.id },
+      run
+    )
   })
 
   router.post('/environments/:id/managed/root-password', async (c) => {
