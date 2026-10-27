@@ -5,10 +5,6 @@ import {
   dropEnvironmentSubtreeInTx,
   isActiveContainerStatus,
 } from '../../features/projects/project-delete.ts'
-import {
-  HIERARCHY_DELETE_HAS_CHILDREN_CODE,
-  HIERARCHY_DELETE_HAS_CHILDREN_ERROR,
-} from '../hierarchy-delete.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
 import {
   container,
@@ -133,6 +129,11 @@ export const SERVER_SYSTEM_CONTAINERS_ACTIVE_CODE = 'server_system_containers_ac
 
 export const SERVER_SYSTEM_CONTAINERS_ACTIVE_ERROR =
   'This server still has hosting containers marked as running. The host is offline, so use Host is gone → Forget these and delete server.'
+
+export const SERVER_SYSTEM_CONTAINERS_RUNNING_CODE = 'server_system_containers_running'
+
+export const SERVER_SYSTEM_CONTAINERS_RUNNING_ERROR =
+  'TurboPanel still runs its own containers on this server, so it cannot be deleted while it is connected. Stop TurboPanel on the server or shut the server down, then delete it again and choose Host is gone → Forget these and delete server.'
 
 export const SERVER_DELETE_PREVIEW_LIST_CAP = 50
 
@@ -320,14 +321,18 @@ type SystemContainerRow = {
   containerId: string | null
 }
 
-/** Whether a system ingress container still blocks server delete. */
+/**
+ * Whether a system ingress container still blocks server delete. A `pending`
+ * row the host never created (no `container_id`) has nothing on the host to
+ * stop — enrolling leaves one for the hosting ingress, and it stays that way
+ * until the first site needs it — so it goes with the system subtree whether
+ * or not the server is connected.
+ */
 export function systemContainerRowBlocksServerDelete(
-  row: Pick<SystemContainerRow, 'status' | 'containerId'>,
-  serverConnected: boolean
+  row: Pick<SystemContainerRow, 'status' | 'containerId'>
 ): boolean {
   return (
-    isActiveContainerStatus(row.status) &&
-    (serverConnected || !(row.status === 'pending' && row.containerId === null))
+    isActiveContainerStatus(row.status) && !(row.status === 'pending' && row.containerId === null)
   )
 }
 
@@ -362,12 +367,11 @@ async function countSystemContainersOnServer(db: Db, serverId: string): Promise<
 /** System ingress containers that still block delete (unless forget on an offline host). */
 export async function listSystemContainersBlockingServerDelete(
   db: Db,
-  serverId: string,
-  serverConnected: boolean
+  serverId: string
 ): Promise<ServerDeletePreviewContainer[]> {
   const rows = await listSystemContainersOnServer(db, serverId)
   return rows
-    .filter((row) => systemContainerRowBlocksServerDelete(row, serverConnected))
+    .filter((row) => systemContainerRowBlocksServerDelete(row))
     .map((row) => {
       const item: ServerDeletePreviewContainer = {
         id: row.id,
@@ -1231,8 +1235,8 @@ export function serverSystemContainersDeleteBlockedResponse(
   if (opts.serverConnected) {
     return c.json(
       {
-        error: HIERARCHY_DELETE_HAS_CHILDREN_ERROR,
-        code: HIERARCHY_DELETE_HAS_CHILDREN_CODE,
+        error: SERVER_SYSTEM_CONTAINERS_RUNNING_ERROR,
+        code: SERVER_SYSTEM_CONTAINERS_RUNNING_CODE,
         blockers,
       },
       409

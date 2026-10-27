@@ -317,18 +317,22 @@ test('colocatedServerDeleteBlockedReason returns the stable operator copy', () =
   assertEquals(colocatedServerDeleteBlockedReason(), COLOCATED_SERVER_DELETE_BLOCKED_REASON)
 })
 
-test('systemContainerRowBlocksServerDelete treats pending-without-id as blocking only when connected', () => {
+test('systemContainerRowBlocksServerDelete lets a pending container the host never created go', () => {
   assertEquals(
-    systemContainerRowBlocksServerDelete({ status: 'pending', containerId: null }, false),
+    systemContainerRowBlocksServerDelete({ status: 'pending', containerId: null }),
     false
   )
   assertEquals(
-    systemContainerRowBlocksServerDelete({ status: 'pending', containerId: null }, true),
+    systemContainerRowBlocksServerDelete({ status: 'pending', containerId: 'abc' }),
     true
   )
   assertEquals(
-    systemContainerRowBlocksServerDelete({ status: 'running', containerId: 'abc' }, false),
+    systemContainerRowBlocksServerDelete({ status: 'running', containerId: 'abc' }),
     true
+  )
+  assertEquals(
+    systemContainerRowBlocksServerDelete({ status: 'exited', containerId: 'abc' }),
+    false
   )
 })
 

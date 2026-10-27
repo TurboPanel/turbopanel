@@ -1304,6 +1304,17 @@ export const command = pgTable(
         sql`${table.name} IN ('environment.deploy', 'environment.lifecycle', 'environment.stop') AND ${table.status} IN ('queued', 'dispatching', 'sent', 'acked', 'running', 'failed', 'timed_out')`
       ),
     /**
+     * The organization activity feed with every outcome (succeeded and
+     * cancelled too): deploys, lifecycle and stops of one organization, newest
+     * first. Partial on the name only, written literally as the feed query
+     * writes it.
+     */
+    index('idx_command_activity')
+      .using('btree', table.organizationId.asc(), table.createdAt.desc(), table.id.desc())
+      .where(
+        sql`${table.name} IN ('environment.deploy', 'environment.lifecycle', 'environment.stop')`
+      ),
+    /**
      * Backs the per-minute reconcile sweeps' "has this server ever (or since
      * its last connect) been sent a `<x>.reconcile`" EXISTS probes, which
      * otherwise walk the server's whole command history. Not partial on

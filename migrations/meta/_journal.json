@@ -29,6 +29,13 @@
       "when": 1793119488037,
       "tag": "0003_license_key_tier_and_expiry",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1793122151433,
+      "tag": "0004_command_activity_index",
+      "breakpoints": true
     }
   ]
 }
