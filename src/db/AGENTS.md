@@ -1186,7 +1186,10 @@ sibling commands finishing at once elect exactly one follow-up enqueuer.
   `name = 'environment.deploy'` — deploy history
 - `idx_command_managed` — `(managed_id)` partial on open rows with a managed id
 - `idx_command_feed` — `(organization_id, created_at DESC, id DESC)` partial on
-  the three deploy-family names and the open or failed statuses — the activity feed
+  the three deploy-family names and the open or failed statuses — the activity
+  feed's in-progress and failed filters
+- `idx_command_activity` — the same key, partial on the three deploy-family
+  names only — the activity feed with every outcome (all, succeeded)
 - `idx_command_server_id_name_created_at` — reconcile "was one sent since X" probes
 - `idx_command_managed_destroy_gate_id` — partial on rows with a gate id
 

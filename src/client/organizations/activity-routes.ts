@@ -1,6 +1,7 @@
 /**
- * `GET /organizations/:id/activity` — the organization's running and recently
- * failed deploys, restarts and stops. The caller polls it; nothing is pushed.
+ * `GET /organizations/:id/activity` — every deploy, restart and stop of the
+ * organization, newest first, whatever its outcome. The caller polls it;
+ * nothing is pushed.
  *
  * Same gate as the members list: an organization the session cannot reach is a
  * 404, a reachable one without owner/manager rights is a 403, and the rows are
@@ -44,6 +45,8 @@ export function registerOrganizationActivityRoutes(router: Hono<AppEnv>, opts: A
       filter: c.req.query('filter'),
       limit: c.req.query('limit'),
       offset: c.req.query('offset'),
+      projectId: c.req.query('projectId'),
+      environmentId: c.req.query('environmentId'),
     })
     if (!parsed.ok) return c.json({ error: parsed.error }, 400)
 

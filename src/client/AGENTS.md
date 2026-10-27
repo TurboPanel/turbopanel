@@ -38,18 +38,26 @@ Per-feature behavior contracts for the client surface (moved from the root
 changes.
 
 - **Org activity feed (client surface):** `GET /organizations/:id/activity` —
-  running and recently failed (7 days) deploy / restart / stop commands across
-  the org, polled by the console (nothing is pushed). `?filter=all|deploying|failed`
-  (`crashing` / `crashed` are **not served**: no restart count is recorded; an
-  unknown filter is **400**), `limit` 1–100 (default 50, larger clamps),
-  `offset`. Returns `{ ok, items, total, hasMore }`; `step` / `totalSteps` /
-  `stepLabel` come from the daemon's step plan on `command.progress` (`null`
-  until it reports one); `crashCount` is always `null` until restart counts
-  are recorded. Gate as the members
-  list: unreachable org or bad uuid **404**, no owner/manager rights **403**;
-  rows are limited to `listVisible(server)` and to servers of the **path** org
-  (never the active-org header). Reads `command` only (never `dispatch`); the
-  organization comes from `command.server_id → server.organization_id`.
+  every deploy / restart / stop command across the org, newest first, whatever
+  the outcome (queued, running, succeeded, failed, timed out, cancelled, rolled
+  back), polled by the console (nothing is pushed). Deploy rows are never
+  pruned, so this is the whole deploy history. `?filter=all|deploying|succeeded|failed`
+  (`deploying` = still in progress; `failed` includes timed out and rolled
+  back; `crashing` / `crashed` are **not served**: no restart count is
+  recorded; an unknown filter is **400**), optional `projectId` /
+  `environmentId` (uuid, else **400**), `limit` 1–100 (default 50, larger
+  clamps), `offset`. Returns `{ ok, items, total, totalCapped, hasMore }`:
+  `total` is counted at most 1000 rows past the page (`totalCapped` says there
+  are more). Each item carries `state` + `failure`, `finishedAt`, `actorType` /
+  `actorName` (a current member's name or email; otherwise `Platform Admin` for an instance administrator or `Former Member`), the push `trigger` and the `commit` (first recorded release,
+  else the pushed SHA); `step` / `totalSteps` / `stepLabel` come from the
+  daemon's step plan on `command.progress` (`null` until it reports one);
+  `crashCount` is always `null` until restart counts are recorded. Gate as the
+  members list: unreachable org or bad uuid **404**, no owner/manager rights
+  **403**; rows are limited to `listVisible(server)` and to servers of the
+  **path** org (never the active-org header). Reads `command` only (never
+  `dispatch`); the organization comes from `command.organization_id` (copied
+  from the server). Backed by `idx_command_activity`; the page orders `DESC NULLS LAST` to match the indexes (a plain `DESC` forces a sort of the whole organization).
   `features/commands/activity-query.ts`.
 - **Server timezone / NTP (client surface):** daemon hello + change-detected
   heartbeats persist `timeSync` onto `server.timezone` / `is_time_sync_enabled`

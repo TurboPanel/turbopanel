@@ -1,11 +1,14 @@
 /**
- * Org-wide activity feed (`GET /organizations/:id/activity`): the deploys,
- * restarts and stops that are running or recently failed across every project
- * and environment of one organization.
+ * Org-wide activity feed (`GET /organizations/:id/activity`): every deploy,
+ * restart and stop across every project and environment of one organization,
+ * newest first — queued, running, succeeded, failed, timed out, cancelled or
+ * rolled back.
  *
- * Reads the `command` table only (never `dispatch`). A command carries an
- * organization column (copied from its server at insert), and the caller's
- * server visibility narrows it further.
+ * Reads the `command` table only (never `dispatch`). Deploy rows are kept for
+ * good (`prune.ts` never removes `environment.deploy`); restart and stop rows
+ * go after the retention window like other finished commands. A command
+ * carries an organization column (copied from its server at insert), and the
+ * caller's server visibility narrows it further.
  *
  * `step` / `totalSteps` / `stepLabel` come from the step plan the daemon
  * reports on `command.progress` (`command-progress.ts`) and are `null` until
@@ -13,33 +16,60 @@
  * control plane records no restart count to derive them from); `crashCount`
  * is always `null`.
  */
-import { and, desc, eq, gte, inArray, sql, type SQL } from 'drizzle-orm'
+import { and, eq, inArray, sql, type SQL } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
-import { command, environment, project } from '../../db/schema.ts'
+import { command, environment, grant, project, team, teammate, user } from '../../db/schema.ts'
+import { outcomeFromErrorCode } from '../deploy/deploy-outcome.ts'
+import { readDeploymentTrigger, type DeploymentTrigger } from '../deploy/deployment-history.ts'
 import { parseStoredCommandProgress } from './command-progress.ts'
+import { normalizeContextReleases } from './context.ts'
+import { commandIsOpen } from './open-statuses.ts'
 
-export const ACTIVITY_FILTERS = ['all', 'deploying', 'failed'] as const
+/** `deploying` is every item still in progress (queued or being worked on). */
+export const ACTIVITY_FILTERS = ['all', 'deploying', 'succeeded', 'failed'] as const
 export type ActivityFilter = (typeof ACTIVITY_FILTERS)[number]
 
 export const ACTIVITY_DEFAULT_LIMIT = 50
 export const ACTIVITY_MAX_LIMIT = 100
-/** A failed command stays in the feed this long; running ones stay until they end. */
-export const ACTIVITY_FAILED_WINDOW_MS = 7 * 24 * 60 * 60 * 1000
+/**
+ * `total` counts at most this many rows past the end of the page, so the
+ * count stays cheap however long the history grows; `totalCapped` says when
+ * there are more.
+ */
+export const ACTIVITY_COUNT_LOOKAHEAD = 1000
 
+/*
+ * The name and status lists are written into the SQL as literals, not bound
+ * parameters, so the planner can match them against the partial indexes
+ * `idx_command_activity` and `idx_command_feed` (a generic plan cannot prove a
+ * partial predicate from parameters it cannot see). Constants only.
+ */
 const ACTIVITY_COMMAND_NAMES = [
   'environment.deploy',
   'environment.lifecycle',
   'environment.stop',
 ] as const
-const IN_PROGRESS_STATUSES = ['queued', 'dispatching', 'sent', 'acked', 'running'] as const
 const FAILED_STATUSES = ['failed', 'timed_out'] as const
 const LIFECYCLE_ACTIONS = new Set(['start', 'stop', 'restart'])
 
 /** `queued`: waiting to start (in the queue, or for another build on the server). */
-export type ActivityState = 'queued' | 'deploying' | 'failed'
+export type ActivityState = 'queued' | 'deploying' | 'succeeded' | 'failed' | 'cancelled'
+/** How a `failed` item ended, when it was more than a plain failure. */
+export type ActivityFailure = 'timed_out' | 'rolled_back' | 'needs_attention'
 export type ActivityAction = 'deploy' | 'start' | 'restart' | 'stop'
 
-export type ActivityQuery = { filter: ActivityFilter; limit: number; offset: number }
+export type ActivityQuery = {
+  filter: ActivityFilter
+  limit: number
+  offset: number
+  /** Only this project's environments. */
+  projectId?: string
+  /** Only this environment. */
+  environmentId?: string
+}
+
+/** The commit a deploy put live, from the release it recorded (or the push behind it). */
+export type ActivityCommit = { sha: string; message: string | null }
 
 export type ActivityItem = {
   id: string
@@ -50,19 +80,42 @@ export type ActivityItem = {
   serverId: string
   action: ActivityAction
   state: ActivityState
+  /** Set only when `state` is `failed`: timed out, rolled back, or stopped on purpose. */
+  failure: ActivityFailure | null
   startedAt: string
+  /** When it ended; `null` while it is still in progress. */
+  finishedAt: string | null
   /** Steps finished so far, plus one while a step is running; `null` without a step plan. */
   step: number | null
   /** Steps with work to do (`ready` steps are not counted); `null` without a step plan. */
   totalSteps: number | null
   /** Label of the running step, or `null` when none is running. */
   stepLabel: string | null
-  durationSecs: number
+  /** Running time so far, or how long it took; `null` for a finished row with no recorded end. */
+  durationSecs: number | null
   errorMessage: string | null
+  /** `user` when a person asked for it, `system` when the panel did (a push, a schedule). */
+  actorType: 'user' | 'system'
+  /**
+   * For `user`: the person's name (else email) while they are a member of the
+   * organization, `Platform Admin` for an instance administrator who is not,
+   * and `Former Member` for anyone else. `null` for `system`.
+   */
+  actorName: string | null
+  /** The push that set it off, `null` for a person's deploy. */
+  trigger: DeploymentTrigger | null
+  commit: ActivityCommit | null
   crashCount: null
 }
 
-export type ActivityFeed = { items: ActivityItem[]; total: number; hasMore: boolean }
+export type ActivityFeed = {
+  items: ActivityItem[]
+  /** Matching rows, counted up to the end of this page plus `ACTIVITY_COUNT_LOOKAHEAD`. */
+  total: number
+  /** `true` when there are more rows than `total` says. */
+  totalCapped: boolean
+  hasMore: boolean
+}
 
 type ParseResult = { ok: true; query: ActivityQuery } | { ok: false; error: string }
 
@@ -78,11 +131,21 @@ function parseIntParam(
   return value < min ? null : Math.min(value, max)
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/** An optional id filter: absent is fine, anything but a UUID is `null` (a 400). */
+function parseIdParam(raw: string | undefined): { ok: true; id?: string } | { ok: false } {
+  if (raw === undefined || raw === '') return { ok: true }
+  return UUID_RE.test(raw) ? { ok: true, id: raw.toLowerCase() } : { ok: false }
+}
+
 /** Validate the query string; `limit` above the maximum is clamped, anything malformed is a 400. */
 export function parseActivityQuery(params: {
   filter?: string
   limit?: string
   offset?: string
+  projectId?: string
+  environmentId?: string
 }): ParseResult {
   const filter = params.filter === undefined || params.filter === '' ? 'all' : params.filter
   if (!(ACTIVITY_FILTERS as readonly string[]).includes(filter)) {
@@ -92,18 +155,42 @@ export function parseActivityQuery(params: {
   if (limit === null) return { ok: false, error: 'Invalid limit' }
   const offset = parseIntParam(params.offset, 0, 0, Number.MAX_SAFE_INTEGER)
   if (offset === null) return { ok: false, error: 'Invalid offset' }
-  return { ok: true, query: { filter: filter as ActivityFilter, limit, offset } }
+  const projectId = parseIdParam(params.projectId)
+  if (!projectId.ok) return { ok: false, error: 'Invalid projectId' }
+  const environmentId = parseIdParam(params.environmentId)
+  if (!environmentId.ok) return { ok: false, error: 'Invalid environmentId' }
+  return {
+    ok: true,
+    query: {
+      filter: filter as ActivityFilter,
+      limit,
+      offset,
+      ...(projectId.id === undefined ? {} : { projectId: projectId.id }),
+      ...(environmentId.id === undefined ? {} : { environmentId: environmentId.id }),
+    },
+  }
 }
 
-function stateCondition(filter: ActivityFilter, now: Date): SQL {
-  const inProgress = inArray(command.status, [...IN_PROGRESS_STATUSES])
-  const failed = and(
-    inArray(command.status, [...FAILED_STATUSES]),
-    gte(command.createdAt, new Date(now.getTime() - ACTIVITY_FAILED_WINDOW_MS).toISOString())
-  )!
-  if (filter === 'deploying') return inProgress
-  if (filter === 'failed') return failed
-  return sql`(${inProgress} or ${failed})`
+/** `'a', 'b'` from a constant list (never user input), for the index-matching predicates. */
+function literalList(values: readonly string[]): SQL {
+  return sql.raw(values.map((value) => `'${value}'`).join(', '))
+}
+
+function stateCondition(filter: ActivityFilter): SQL | undefined {
+  if (filter === 'deploying') return commandIsOpen()
+  if (filter === 'failed') return sql`${command.status} IN (${literalList(FAILED_STATUSES)})`
+  if (filter === 'succeeded') return sql`${command.status} = 'succeeded'`
+  return undefined
+}
+
+/** Project and environment narrowing; the organization is enforced on the command row anyway. */
+function placeCondition(query: ActivityQuery): SQL | undefined {
+  if (query.environmentId !== undefined) return eq(command.environmentId, query.environmentId)
+  if (query.projectId === undefined) return undefined
+  return inArray(
+    command.environmentId,
+    sql`(select ${environment.id} from ${environment} where ${environment.projectId} = ${query.projectId})`
+  )
 }
 
 export function activityActionOf(name: string, context: unknown): ActivityAction {
@@ -126,13 +213,24 @@ type ActivityRow = {
   name: string
   status: string
   context: unknown
+  metadata?: unknown
   progress?: unknown
+  actorType?: string
+  actorId?: string
+  /** `command.environment_id`; older rows only carry it in `context`. */
+  environmentId?: string | null
+  errorCode?: string | null
   errorMessage: string | null
   createdAt: string
   queuedAt: string | null
   startedAt: string | null
   finishedAt: string | null
 }
+
+type EnvironmentNames = Map<
+  string,
+  { name: string | null; projectId: string; projectName: string | null }
+>
 
 /**
  * "Step N of M" from a stored step plan: M counts every step that has work
@@ -164,19 +262,75 @@ export function isActivityQueued(status: string, progress: unknown): boolean {
   return parseStoredCommandProgress(progress)?.runningSince === null
 }
 
+/** The command status as the feed names it, plus how a failure ended. */
+export function activityStateOf(row: Pick<ActivityRow, 'status' | 'progress' | 'errorCode'>): {
+  state: ActivityState
+  failure: ActivityFailure | null
+} {
+  if (row.status === 'succeeded') return { state: 'succeeded', failure: null }
+  if (row.status === 'cancelled') return { state: 'cancelled', failure: null }
+  if (row.status === 'timed_out') return { state: 'failed', failure: 'timed_out' }
+  if (row.status === 'failed') {
+    return { state: 'failed', failure: outcomeFromErrorCode(row.errorCode) }
+  }
+  return {
+    state: isActivityQueued(row.status, row.progress) ? 'queued' : 'deploying',
+    failure: null,
+  }
+}
+
+/** The first commit the deploy recorded a release for, else the pushed SHA. */
+export function activityCommitOf(
+  context: unknown,
+  trigger: DeploymentTrigger | null
+): ActivityCommit | null {
+  const release = normalizeContextReleases(
+    (context as Record<string, unknown> | null)?.releases
+  )?.[0]
+  if (release) return { sha: release.commitSha, message: release.commitMessage ?? null }
+  return trigger?.commitSha ? { sha: trigger.commitSha, message: null } : null
+}
+
+function environmentIdOf(row: ActivityRow): string | null {
+  return row.environmentId ?? contextId(row.context, 'environmentId')
+}
+
+/** Shown for a person who is not (or no longer) a member, so their name and email stay private. */
+export const FORMER_MEMBER_LABEL = 'Former Member'
+export const PLATFORM_ADMIN_LABEL = 'Platform Admin'
+
+/** Live rows count up to now; a finished row stops at its end, and has none when no end was recorded. */
+function durationSecsOf(
+  startedAt: string,
+  finishedAt: string | null,
+  finished: boolean,
+  now: Date
+): number | null {
+  if (finished && finishedAt === null) return null
+  const end = finishedAt === null ? now.getTime() : Date.parse(finishedAt)
+  return Math.max(0, Math.round((end - Date.parse(startedAt)) / 1000))
+}
+
+function actorNameOf(row: ActivityRow, actors: Map<string, string>): string | null {
+  if (row.actorType !== 'user') return null
+  return (row.actorId ? actors.get(row.actorId) : undefined) ?? FORMER_MEMBER_LABEL
+}
+
 export function shapeActivityItem(
   row: ActivityRow,
-  names: Map<string, { name: string | null; projectId: string; projectName: string | null }>,
-  now: Date
+  names: EnvironmentNames,
+  now: Date,
+  actors: Map<string, string> = new Map()
 ): ActivityItem {
-  const environmentId = contextId(row.context, 'environmentId')
+  const environmentId = environmentIdOf(row)
   const env = environmentId === null ? undefined : names.get(environmentId)
-  const failed = (FAILED_STATUSES as readonly string[]).includes(row.status)
+  const { state, failure } = activityStateOf(row)
+  const finished = state !== 'queued' && state !== 'deploying'
   const startedAt = row.startedAt ?? row.queuedAt ?? row.createdAt
-  const end = failed && row.finishedAt !== null ? Date.parse(row.finishedAt) : now.getTime()
-  let state: 'failed' | 'queued' | 'deploying' = 'deploying'
-  if (failed) state = 'failed'
-  else if (isActivityQueued(row.status, row.progress)) state = 'queued'
+  const finishedAt = finished ? row.finishedAt : null
+  const durationSecs = durationSecsOf(startedAt, finishedAt, finished, now)
+  const actorType = row.actorType === 'user' ? 'user' : 'system'
+  const trigger = readDeploymentTrigger({ actorType, metadata: row.metadata })
   return {
     id: row.id,
     projectId: env?.projectId ?? null,
@@ -186,24 +340,27 @@ export function shapeActivityItem(
     serverId: row.serverId,
     action: activityActionOf(row.name, row.context),
     state,
+    failure,
     startedAt,
+    finishedAt,
     ...activityStepsOf(row.progress),
-    durationSecs: Math.max(0, Math.round((end - Date.parse(startedAt)) / 1000)),
-    errorMessage: failed ? row.errorMessage : null,
+    durationSecs,
+    errorMessage: state === 'failed' ? row.errorMessage : null,
+    actorType,
+    actorName: actorNameOf(row, actors),
+    trigger,
+    commit: activityCommitOf(row.context, trigger),
     crashCount: null,
   }
 }
 
-async function loadEnvironmentNames(db: Db, organizationId: string, rows: ActivityRow[]) {
-  const ids = [
-    ...new Set(
-      rows.map((row) => contextId(row.context, 'environmentId')).filter((id) => id !== null)
-    ),
-  ]
-  const names = new Map<
-    string,
-    { name: string | null; projectId: string; projectName: string | null }
-  >()
+async function loadEnvironmentNames(
+  db: Db,
+  organizationId: string,
+  rows: ActivityRow[]
+): Promise<EnvironmentNames> {
+  const ids = [...new Set(rows.map(environmentIdOf).filter((id) => id !== null))]
+  const names: EnvironmentNames = new Map()
   if (ids.length === 0) return names
   const found = await db
     .select({
@@ -219,57 +376,140 @@ async function loadEnvironmentNames(db: Db, organizationId: string, rows: Activi
   return names
 }
 
+/** Whether the user belongs to the organization: a team in it, or a grant on it or one of its teams. */
+function isOrganizationMember(organizationId: string): SQL {
+  const orgTeams = sql`(select ${team.id} from ${team} where ${team.organizationId} = ${organizationId})`
+  return sql`(exists (select 1 from ${teammate} where ${teammate.userId} = ${user.id} and ${teammate.teamId} in ${orgTeams})
+    or exists (select 1 from ${grant} where ${grant.actorType} = 'user' and ${grant.actorId} = ${user.id}
+      and ((${grant.entityType} = 'organization' and ${grant.entityId} = ${organizationId})
+        or (${grant.entityType} = 'team' and ${grant.entityId} in ${orgTeams}))))`
+}
+
+/**
+ * Who asked, as this organization may see them: a current member by name
+ * (else email), an instance administrator as `Platform Admin`, anyone else
+ * left out (the caller shows `Former Member`). Only this page's ids are read.
+ */
+async function loadActorNames(
+  db: Db,
+  organizationId: string,
+  rows: ActivityRow[]
+): Promise<Map<string, string>> {
+  const ids = [
+    ...new Set(rows.filter((row) => row.actorType === 'user').map((row) => row.actorId!)),
+  ]
+  const names = new Map<string, string>()
+  if (ids.length === 0) return names
+  const found = await db
+    .select({
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      role: user.role,
+      member: sql<boolean>`${isOrganizationMember(organizationId)}`,
+    })
+    .from(user)
+    .where(inArray(user.id, ids))
+  for (const row of found) {
+    if (row.member) names.set(row.id, row.name?.trim() || row.email)
+    else if (row.role === 'admin' || row.role === 'superadmin') {
+      names.set(row.id, PLATFORM_ADMIN_LABEL)
+    }
+  }
+  return names
+}
+
 /**
  * One page of the organization's activity, newest first. `visibleServerIds` is
  * the caller's `listVisible(server)` set; the organization is also enforced on
  * the command row (`command.organization_id`, copied from the server), so a
  * foreign server id can never surface a foreign command.
+ *
+ * The order is written as the indexes store it (`DESC NULLS LAST`; both
+ * columns are NOT NULL, so the rows are the same): a plain `DESC` means
+ * NULLS FIRST, no index supplies it, and every page would read and sort all
+ * of the organization's rows. With it, the page walks `idx_command_activity`
+ * (or `idx_command_feed` for in progress / failed) newest first and stops
+ * after `offset + limit` rows; the count stops `ACTIVITY_COUNT_LOOKAHEAD`
+ * rows past the page.
  */
+function feedWhere(organizationId: string, visibleServerIds: string[], query: ActivityQuery) {
+  return and(
+    eq(command.organizationId, organizationId),
+    inArray(command.serverId, visibleServerIds),
+    sql`${command.name} IN (${literalList(ACTIVITY_COMMAND_NAMES)})`,
+    stateCondition(query.filter),
+    placeCondition(query)
+  )
+}
+
+/** The page read itself, unexecuted, so a database test can EXPLAIN exactly this SQL. */
+export function activityPageSelect(
+  db: Db,
+  organizationId: string,
+  visibleServerIds: string[],
+  query: ActivityQuery
+) {
+  return db
+    .select({
+      id: command.id,
+      serverId: command.serverId,
+      name: command.name,
+      status: command.status,
+      context: command.context,
+      metadata: command.metadata,
+      progress: command.progress,
+      actorType: command.actorType,
+      actorId: command.actorId,
+      environmentId: command.environmentId,
+      errorCode: command.errorCode,
+      errorMessage: command.errorMessage,
+      createdAt: command.createdAt,
+      queuedAt: command.queuedAt,
+      startedAt: command.startedAt,
+      finishedAt: command.finishedAt,
+    })
+    .from(command)
+    .where(feedWhere(organizationId, visibleServerIds, query))
+    .orderBy(sql`${command.createdAt} desc nulls last`, sql`${command.id} desc nulls last`)
+    .limit(query.limit)
+    .offset(query.offset)
+}
+
 export async function queryOrgActivityFeed(
   db: Db,
   organizationId: string,
   visibleServerIds: string[],
-  { filter, limit, offset }: ActivityQuery,
+  query: ActivityQuery,
   now: Date = new Date()
 ): Promise<ActivityFeed> {
-  if (visibleServerIds.length === 0) return { items: [], total: 0, hasMore: false }
-
-  const where = and(
-    eq(command.organizationId, organizationId),
-    inArray(command.serverId, visibleServerIds),
-    inArray(command.name, [...ACTIVITY_COMMAND_NAMES]),
-    stateCondition(filter, now)
-  )
-  const [rows, [counted]] = await Promise.all([
-    db
-      .select({
-        id: command.id,
-        serverId: command.serverId,
-        name: command.name,
-        status: command.status,
-        context: command.context,
-        progress: command.progress,
-        errorMessage: command.errorMessage,
-        createdAt: command.createdAt,
-        queuedAt: command.queuedAt,
-        startedAt: command.startedAt,
-        finishedAt: command.finishedAt,
-      })
-      .from(command)
-      .where(where)
-      .orderBy(desc(command.createdAt), desc(command.id))
-      .limit(limit)
-      .offset(offset),
-    db
-      .select({ total: sql<number>`count(*)::int` })
-      .from(command)
-      .where(where),
+  if (visibleServerIds.length === 0) {
+    return { items: [], total: 0, totalCapped: false, hasMore: false }
+  }
+  const { limit, offset } = query
+  const countCap = offset + limit + ACTIVITY_COUNT_LOOKAHEAD
+  const [rows, [countRow]] = await Promise.all([
+    activityPageSelect(db, organizationId, visibleServerIds, query),
+    db.select({ total: sql<number>`count(*)::int` }).from(
+      db
+        .select({ one: sql`1`.as('one') })
+        .from(command)
+        .where(feedWhere(organizationId, visibleServerIds, query))
+        .limit(countCap + 1)
+        .as('capped')
+    ),
   ])
-  const names = await loadEnvironmentNames(db, organizationId, rows)
-  const total = counted?.total ?? 0
+  const [names, actors] = await Promise.all([
+    loadEnvironmentNames(db, organizationId, rows),
+    loadActorNames(db, organizationId, rows),
+  ])
+  const counted = countRow?.total ?? 0
+  const totalCapped = counted > countCap
+  const total = Math.min(counted, countCap)
   return {
-    items: rows.map((row) => shapeActivityItem(row, names, now)),
+    items: rows.map((row) => shapeActivityItem(row, names, now, actors)),
     total,
-    hasMore: offset + rows.length < total,
+    totalCapped,
+    hasMore: totalCapped || offset + rows.length < total,
   }
 }
