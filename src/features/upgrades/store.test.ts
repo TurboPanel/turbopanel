@@ -882,7 +882,9 @@ test('Postgres upgrades: the check row is created once with a stable minute, and
   await db.delete(setting).where(inArray(setting.key, keys))
   try {
     const first = await ensureUpgradeCheckSchedule(db, T0, () => 0.5)
-    assertEquals(first, { minute: 30, createdAt: T0, lastCheckAt: null })
+    assertEquals(first.minute, 30)
+    assertEquals(first.createdAt, T0)
+    assertEquals(first.lastCheckAt, null)
     const again = await ensureUpgradeCheckSchedule(db, minutesAfter(T0, 5), () => 0.1)
     assertEquals(again.minute, 30)
     await markUpgradeChecked(db, again, minutesAfter(T0, 30))

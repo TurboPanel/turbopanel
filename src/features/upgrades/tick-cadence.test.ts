@@ -1,5 +1,6 @@
 import { assertEquals } from '@std/assert'
 import {
+  parseUpgradeCheckMinutes,
   parseUpgradeTickMinutes,
   shouldRunUpgradeTick,
   UPGRADE_TICK_ALLOWED_MINUTES,
@@ -43,4 +44,14 @@ test('shouldRunUpgradeTick fires on every Nth UTC minute only', () => {
   assertEquals(shouldRunUpgradeTick(at('00:07'), 1), true)
   assertEquals(shouldRunUpgradeTick(at('00:30'), 60), false)
   assertEquals(shouldRunUpgradeTick(at('01:00'), 60), true)
+})
+
+test('the check runs hourly unless a test install sets a shorter interval', () => {
+  assertEquals(parseUpgradeCheckMinutes(undefined), 60)
+  assertEquals(parseUpgradeCheckMinutes(''), 60)
+  assertEquals(parseUpgradeCheckMinutes('5'), 5)
+  assertEquals(parseUpgradeCheckMinutes(' 15 '), 15)
+  for (const bad of ['0', '7', '61', '90', 'five', '-5', '5.5']) {
+    assertEquals(parseUpgradeCheckMinutes(bad), 60, bad)
+  }
 })

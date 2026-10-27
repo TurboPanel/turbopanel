@@ -331,6 +331,10 @@
         // Upgrade tick every 5 minutes instead of 15 so a testing-fleet rollout
         // finishes in minutes. Staging and live keep the 15-minute default.
         "TURBOPANEL_UPGRADE_TICK_MINUTES": "5",
+        // Look for a new build every 5 minutes instead of once an hour, so a
+        // canary reaches the testing fleet quickly. Staging and live keep the
+        // hourly check at each install's own minute.
+        "TURBOPANEL_UPGRADE_CHECK_MINUTES": "5",
         // The testing fleet updates all at once (also the built-in default);
         // a batch size saved in Admin > Updates wins.
         "TURBOPANEL_UPGRADE_BATCH": "percent:100",

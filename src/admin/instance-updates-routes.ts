@@ -24,13 +24,27 @@ import {
   parseUpgradeBatchDefault,
 } from '../features/settings/upgrade-settings.ts'
 import {
+  ensureUpgradeCheckSchedule,
   getUpgradePause,
+  markUpgradeCheckedByHand,
   pauseUpgrades,
   readUpgradeCheckSchedule,
   resumeUpgrades,
   type UpgradePause,
 } from '../features/settings/upgrade-control.ts'
-import { nextUpgradeCheckAt } from '../features/upgrades/schedule.ts'
+import {
+  latestUpgradeCheckAt,
+  manualCheckWaitSeconds,
+  nextUpgradeCheckAt,
+} from '../features/upgrades/schedule.ts'
+import {
+  parseUpgradeCheckMinutes,
+  UPGRADE_CHECK_MINUTES_ENV,
+} from '../features/upgrades/tick-cadence.ts'
+import {
+  resolveUpgradeTarget,
+  setLatestAvailableBuild,
+} from '../features/upgrades/target-resolve.ts'
 import { UPGRADE_ACTIVE_STATUSES } from '../features/upgrades/vocabulary.ts'
 import type { UpdateManifestTarget } from '../features/update/manifest.ts'
 import { resolvePlatformEnv } from './routes-helpers.ts'
@@ -43,6 +57,9 @@ const NO_DAEMON_ERROR = 'no co-located daemon connected to update the control pl
  */
 export const UPDATES_AUTOMATIC_ERROR = 'updates_automatic'
 
+/** Check Now pressed again within a minute (HTTP 429). */
+export const CHECK_TOO_SOON_ERROR = 'check_too_soon'
+
 export const UPDATES_AUTOMATIC_MESSAGE =
   'Updates are automatic and cannot be started, retried or cancelled by hand. To hold them, use Pause all updates in Admin > Updates.'
 
@@ -52,7 +69,6 @@ const RETIRED_UPDATE_ROUTES = [
   '/instance/updates/daemon',
   '/instance/updates/preflight',
   '/instance/updates/runs',
-  '/instance/updates/check',
   '/instance/updates/steps/:id/retry',
   '/instance/updates/runs/:id/cancel',
 ] as const
@@ -111,64 +127,36 @@ export function registerInstanceUpdatesAdminRoutes(
     getEnv?: () => Record<string, string | undefined>
   }
 ): void {
-  admin.get('/instance/updates', async (c) => {
-    const env = resolvePlatformEnv(c, opts)
-    const channel = resolveInstanceUpdateChannel(env)
-    const revision = resolveInstanceRevision(env)
-    const consoleCommit = readConsoleCommit(c.req.query('consoleCommit'))
-    const [instanceTarget, uiTarget, daemonTarget, daemon] = await Promise.all([
-      resolveUpdateManifest(channel, 'instance'),
-      resolveUpdateManifest(channel, 'ui'),
-      resolveUpdateManifest(channel, 'daemon'),
-      readColocatedDaemon(c),
-    ])
-    const instanceInstalled = {
-      version: INSTANCE_VERSION,
-      commit: revision.commit,
+  admin.get('/instance/updates', async (c) => c.json(await readUpdatesStatus(c, opts)))
+
+  // Check Now: a refresh only. It asks the release servers for the newest
+  // build (at most once a minute) and answers the fresh status; it never
+  // starts a run and never moves the schedule — the next scheduled check does.
+  admin.post('/instance/updates/check', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ ok: false, error: 'Database unavailable' }, 503)
+    const now = new Date()
+    const schedule = await ensureUpgradeCheckSchedule(db, now.toISOString())
+    const wait = manualCheckWaitSeconds(schedule, now)
+    if (wait > 0) {
+      c.header('Retry-After', String(wait))
+      return c.json(
+        {
+          ok: false,
+          error: CHECK_TOO_SOON_ERROR,
+          retryAfterSeconds: wait,
+          message: `Checked a moment ago. Try again in ${wait} seconds.`,
+        },
+        429
+      )
     }
-    // The exact label of the installed bytes (`0.1.3-canary.417`, `0.1.3-rc.2`),
-    // written by the installer from the manifest it installed. INSTANCE_VERSION
-    // is the plain deno.json number, which cannot tell a canary from its rc.
-    const buildLabel = resolveBuildLabel(env)
-    const daemonInstalled = daemon.serverId
-      ? { version: daemon.version, commit: daemon.commit, builtAt: daemon.builtAt }
-      : null
-    const instanceUpdateAvailable = updateAvailableFor(instanceInstalled, instanceTarget)
-    const uiUpdateAvailable = opts.runtime === 'deno' && uiBehindTarget(uiTarget, consoleCommit)
-    const automatic = await readAutomaticStatus(c, opts, daemonTarget)
-    return c.json({
-      ok: true,
-      channel,
-      runtime: opts.runtime,
-      managedUpgrade: true,
-      updatesManaged: opts.runtime === 'workers',
-      ...automatic,
-      // The hosted control plane is deploy-managed: only its daemons wait here.
-      updateWaiting:
-        automatic.daemonsBehind ||
-        (opts.runtime === 'deno' && (instanceUpdateAvailable || uiUpdateAvailable)),
-      units: {
-        instance: {
-          installed: buildLabel ? { ...instanceInstalled, label: buildLabel } : instanceInstalled,
-          target: instanceTarget,
-          uiTarget,
-          updateAvailable: instanceUpdateAvailable,
-          // The UI ships inside the control-plane install. On a self-hosted
-          // control plane it is behind when the console's own bundle differs
-          // from the channel's UI build; on Workers the UI is deployed, not
-          // installed, so it is never offered here.
-          uiUpdateAvailable,
-        },
-        daemon: {
-          installed: daemonInstalled,
-          target: daemonTarget,
-          serverId: daemon.serverId,
-          connected: daemon.connected,
-          updateAvailable:
-            daemonInstalled !== null && updateAvailableFor(daemonInstalled, daemonTarget),
-        },
-      },
-    })
+    await markUpgradeCheckedByHand(db, schedule, now.toISOString())
+    const channel = resolveInstanceUpdateChannel(resolvePlatformEnv(c, opts))
+    const target = await resolveUpgradeTarget(channel, (kind) =>
+      resolveUpdateManifest(channel, kind, { fresh: true })
+    )
+    await setLatestAvailableBuild(db, target)
+    return c.json(await readUpdatesStatus(c, opts))
   })
 
   for (const path of RETIRED_UPDATE_ROUTES) {
@@ -318,6 +306,74 @@ function readConsoleCommit(value: unknown): string | null {
   return /^[0-9a-f]{7,64}$/i.test(trimmed) ? trimmed.toLowerCase() : null
 }
 
+/**
+ * The Admin > Updates status: installed builds, channel targets and the
+ * automatic-update fields. `GET /instance/updates` answers it, and so does
+ * Check Now once it has refreshed the manifests.
+ */
+async function readUpdatesStatus(
+  c: Context<AppEnv>,
+  opts: { runtime: 'deno' | 'workers'; getEnv?: () => Record<string, string | undefined> }
+) {
+  const env = resolvePlatformEnv(c, opts)
+  const channel = resolveInstanceUpdateChannel(env)
+  const revision = resolveInstanceRevision(env)
+  const consoleCommit = readConsoleCommit(c.req.query('consoleCommit'))
+  const [instanceTarget, uiTarget, daemonTarget, daemon] = await Promise.all([
+    resolveUpdateManifest(channel, 'instance'),
+    resolveUpdateManifest(channel, 'ui'),
+    resolveUpdateManifest(channel, 'daemon'),
+    readColocatedDaemon(c),
+  ])
+  const instanceInstalled = {
+    version: INSTANCE_VERSION,
+    commit: revision.commit,
+  }
+  // The exact label of the installed bytes (`0.1.3-canary.417`, `0.1.3-rc.2`),
+  // written by the installer from the manifest it installed. INSTANCE_VERSION
+  // is the plain deno.json number, which cannot tell a canary from its rc.
+  const buildLabel = resolveBuildLabel(env)
+  const daemonInstalled = daemon.serverId
+    ? { version: daemon.version, commit: daemon.commit, builtAt: daemon.builtAt }
+    : null
+  const instanceUpdateAvailable = updateAvailableFor(instanceInstalled, instanceTarget)
+  const uiUpdateAvailable = opts.runtime === 'deno' && uiBehindTarget(uiTarget, consoleCommit)
+  const automatic = await readAutomaticStatus(c, opts, daemonTarget)
+  return {
+    ok: true,
+    channel,
+    runtime: opts.runtime,
+    managedUpgrade: true,
+    updatesManaged: opts.runtime === 'workers',
+    ...automatic,
+    // The hosted control plane is deploy-managed: only its daemons wait here.
+    updateWaiting:
+      automatic.daemonsBehind ||
+      (opts.runtime === 'deno' && (instanceUpdateAvailable || uiUpdateAvailable)),
+    units: {
+      instance: {
+        installed: buildLabel ? { ...instanceInstalled, label: buildLabel } : instanceInstalled,
+        target: instanceTarget,
+        uiTarget,
+        updateAvailable: instanceUpdateAvailable,
+        // The UI ships inside the control-plane install. On a self-hosted
+        // control plane it is behind when the console's own bundle differs
+        // from the channel's UI build; on Workers the UI is deployed, not
+        // installed, so it is never offered here.
+        uiUpdateAvailable,
+      },
+      daemon: {
+        installed: daemonInstalled,
+        target: daemonTarget,
+        serverId: daemon.serverId,
+        connected: daemon.connected,
+        updateAvailable:
+          daemonInstalled !== null && updateAvailableFor(daemonInstalled, daemonTarget),
+      },
+    },
+  }
+}
+
 type AutomaticStatus = {
   automatic: true
   updatesPaused: boolean
@@ -326,6 +382,8 @@ type AutomaticStatus = {
   daemonsBehind: boolean
   nextCheckAt: string | null
   lastCheckAt: string | null
+  /** How often this install checks: 60, or less where `TURBOPANEL_UPGRADE_CHECK_MINUTES` is set. */
+  checkIntervalMinutes: number
   activeRunId: string | null
 }
 
@@ -351,19 +409,22 @@ async function readAutomaticStatus(
   daemonTarget: UpdateManifestTarget | null
 ): Promise<AutomaticStatus> {
   const db = getDb(c)
+  const env = resolvePlatformEnv(c, opts)
+  const checkIntervalMinutes = parseUpgradeCheckMinutes(env[UPGRADE_CHECK_MINUTES_ENV])
   const empty: AutomaticStatus = {
     automatic: true,
     ...pauseFields(null),
     daemonsBehind: false,
     nextCheckAt: null,
     lastCheckAt: null,
+    checkIntervalMinutes,
     activeRunId: null,
   }
   if (!db) return empty
   const store = createDrizzleUpgradeStore(
     db,
     null,
-    parseUpgradeBatchDefault(resolvePlatformEnv(c, opts).TURBOPANEL_UPGRADE_BATCH)
+    parseUpgradeBatchDefault(env.TURBOPANEL_UPGRADE_BATCH)
   )
   const [pause, schedule, active, daemonsBehind] = await Promise.all([
     getUpgradePause(db),
@@ -381,8 +442,10 @@ async function readAutomaticStatus(
     ...empty,
     ...pauseFields(pause),
     daemonsBehind,
-    nextCheckAt: schedule ? nextUpgradeCheckAt(schedule, new Date()).toISOString() : null,
-    lastCheckAt: schedule?.lastCheckAt ?? null,
+    nextCheckAt: schedule
+      ? nextUpgradeCheckAt(schedule, new Date(), checkIntervalMinutes).toISOString()
+      : null,
+    lastCheckAt: schedule ? latestUpgradeCheckAt(schedule) : null,
     activeRunId: active[0]?.id ?? null,
   }
 }

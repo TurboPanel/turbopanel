@@ -69,7 +69,9 @@ export const INSTANCE_UPDATES_PATHS = {
         'is behind the target), `updateWaiting` (`daemonsBehind`, or on a ' +
         'self-hosted control plane its own or the UI update), `nextCheckAt` and ' +
         '`lastCheckAt` (the hourly check, at a minute of the hour drawn once per ' +
-        'install) and `activeRunId`. Each is one `limit 1` read.',
+        'install; `lastCheckAt` also counts Check Now), `checkIntervalMinutes` (60, or ' +
+        'less where `TURBOPANEL_UPGRADE_CHECK_MINUTES` is set on a test install) and ' +
+        '`activeRunId`. Each is one `limit 1` read.',
       security: [...cookieSecurity],
       responses: {
         '200': { description: 'Installed versions and channel targets' },
@@ -132,7 +134,25 @@ export const INSTANCE_UPDATES_PATHS = {
   ),
   [`${ADMIN_API_PREFIX}/instance/updates/preflight`]: retired('Retired: pre-flight an update'),
   [`${ADMIN_API_PREFIX}/instance/updates/runs`]: retired('Retired: start an update run'),
-  [`${ADMIN_API_PREFIX}/instance/updates/check`]: retired('Retired: check for updates now'),
+  [`${ADMIN_API_PREFIX}/instance/updates/check`]: {
+    post: {
+      tags: ['Instance'],
+      summary: 'Check Now: look for the newest build',
+      description:
+        'A refresh only. Asks the release servers for the newest build (skipping the ' +
+        'manifest cache), saves it, and answers the same body as `GET /instance/updates`. It ' +
+        'never starts an update and never moves the schedule: the next scheduled check ' +
+        'starts it. At most once a minute per install; sooner answers 429 `check_too_soon` ' +
+        'with `retryAfterSeconds` and a `Retry-After` header.',
+      security: [...cookieSecurity],
+      responses: {
+        '200': { description: 'The refreshed update status' },
+        '401': { description: 'Unauthorized' },
+        '403': { description: 'Forbidden — requires admin or superadmin role' },
+        '429': { description: '`check_too_soon`' },
+      },
+    },
+  },
   [`${ADMIN_API_PREFIX}/instance/updates/steps/{id}/retry`]: retired(
     'Retired: retry an update step (failed servers are retried automatically)'
   ),

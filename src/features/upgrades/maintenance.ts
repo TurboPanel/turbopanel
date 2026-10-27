@@ -12,6 +12,7 @@ import { createUpgradeCoordinator, type UpgradeTickDecision } from './coordinato
 import { parseUpgradeBatchDefault } from '../settings/upgrade-settings.ts'
 import { createDrizzleUpgradeStore, type UpgradeStore } from './store.ts'
 import { isUpgradeCheckDue } from './schedule.ts'
+import { parseUpgradeCheckMinutes, UPGRADE_CHECK_MINUTES_ENV } from './tick-cadence.ts'
 import { parseUpgradeVerifyTimeoutMs, UPGRADE_VERIFY_TIMEOUT_ENV } from './transitions.ts'
 import type { UpgradeRuntime } from './planner.ts'
 
@@ -51,7 +52,13 @@ export async function runUpgradeMaintenance(input: {
     verifyTimeoutMs: parseUpgradeVerifyTimeoutMs(env[UPGRADE_VERIFY_TIMEOUT_ENV]),
     trace: traceUpgradeTick,
   })
-  const check = input.resolveManifests && (await claimUpgradeCheck(store, new Date()))
+  const check =
+    input.resolveManifests &&
+    (await claimUpgradeCheck(
+      store,
+      new Date(),
+      parseUpgradeCheckMinutes(env[UPGRADE_CHECK_MINUTES_ENV])
+    ))
   await coordinator.tick({ resolveManifests: check })
 }
 
@@ -60,10 +67,14 @@ export async function runUpgradeMaintenance(input: {
  * check that fails (release server down) waits for the next slot instead of
  * retrying every pass.
  */
-export async function claimUpgradeCheck(store: UpgradeStore, now: Date): Promise<boolean> {
+export async function claimUpgradeCheck(
+  store: UpgradeStore,
+  now: Date,
+  intervalMinutes = 60
+): Promise<boolean> {
   const at = now.toISOString()
   const schedule = await store.checkSchedule(at)
-  if (!isUpgradeCheckDue(schedule, now)) return false
+  if (!isUpgradeCheckDue(schedule, now, intervalMinutes)) return false
   await store.markChecked(schedule, at)
   return true
 }

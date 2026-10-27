@@ -47,7 +47,7 @@ manifests and may start one. Hello, heartbeat, and
 
 There is no on/off switch and no manual start, retry or cancel. The routes that
 did those (`POST /instance/updates/instance`, `/daemon`, `/preflight`, `/runs`,
-`/check`, `/steps/:id/retry`, `/runs/:id/cancel`, client `POST /servers/updates`
+`/steps/:id/retry`, `/runs/:id/cancel`, client `POST /servers/updates`
 and `POST /servers/:id/update`) answer **410** `updates_automatic`. The legacy
 per-server updater and the client update gate are gone; the GET update-status
 routes carry `updatesAutomatic: true`. `UPGRADE_SOURCES` keeps `manual` and
@@ -61,6 +61,18 @@ routes carry `updatesAutomatic: true`. `UPGRADE_SOURCES` keeps `manual` and
   waits for the next slot instead of retrying every pass. On Workers the slot is
   taken by the first upgrade tick after it (up to `TURBOPANEL_UPGRADE_TICK_MINUTES`
   late). Before the first check the hour counts from the row's `createdAt`.
+  Test installs set `TURBOPANEL_UPGRADE_CHECK_MINUTES` (a divisor of 60; the
+  testing environment uses 5) to check every few minutes instead; slots stay
+  at the install's minute modulo that interval.
+- **Check Now** (`POST /instance/updates/check`, admins): a refresh only. It
+  asks the release servers for the newest build with `resolveUpdateManifest(…,
+{ fresh: true })`, saves it as the latest build and answers the `GET
+/instance/updates` body. It never starts a run and never moves the schedule:
+  it records `lastManualCheckAt`, not `lastCheckAt`, so the next scheduled
+  check (which starts the update) stays put. At most once a minute per install
+  (`manualCheckWaitSeconds`); sooner answers 429 `check_too_soon` with
+  `retryAfterSeconds` and `Retry-After`. The status `lastCheckAt` is the later
+  of the two.
 - **Pause** (`UPGRADE_PAUSE` row, `../settings/upgrade-control.ts`): `POST
 /instance/updates/pause` / `resume`, admins only, recorded in the activity log
   (`upgrade.pause` / `upgrade.resume`). It snapshots who paused and when, so the
@@ -90,7 +102,7 @@ routes carry `updatesAutomatic: true`. `UPGRADE_SOURCES` keeps `manual` and
 - `GET /instance/updates` adds `automatic`, `updatesPaused`, `pausedAt`,
   `pausedBy`, `daemonsBehind` (`anyDaemonBehind`, one `limit 1` read against
   the cached daemon manifest), `updateWaiting`, `nextCheckAt`, `lastCheckAt`,
-  `activeRunId`. Never read the whole server table on this path.
+  `checkIntervalMinutes`, `activeRunId`. Never read the whole server table on this path.
 
 ## Detecting new builds
 

@@ -336,3 +336,11 @@ test('the hourly check runs once per slot and records itself first', async () =>
   const schedule = await store.checkSchedule('2026-10-27T11:18:00.000Z')
   assertEquals(schedule.lastCheckAt, '2026-10-27T11:17:30.000Z')
 })
+
+test('a test install with TURBOPANEL_UPGRADE_CHECK_MINUTES=5 checks every 5 minutes', async () => {
+  const store = createMemoryUpgradeStore({ checkMinute: 17 })
+  assertEquals(await claimUpgradeCheck(store, new Date('2026-10-27T09:40:00.000Z'), 5), false)
+  assertEquals(await claimUpgradeCheck(store, new Date('2026-10-27T09:42:00.000Z'), 5), true)
+  assertEquals(await claimUpgradeCheck(store, new Date('2026-10-27T09:44:00.000Z'), 5), false)
+  assertEquals(await claimUpgradeCheck(store, new Date('2026-10-27T09:47:00.000Z'), 5), true)
+})

@@ -639,6 +639,62 @@ test('Pause all updates holds updates until Resume, shows who paused, and is in 
   })
 })
 
+test('Check Now refreshes what is waiting, never starts a run, and runs at most once a minute', async () => {
+  await withRoleUser('admin', async ({ app, cookie }) => {
+    const db = createDenoDb()
+    const headers = { Cookie: cookie, 'content-type': 'application/json' }
+    await db.delete(setting).where(eq(setting.key, 'UPGRADE_CHECK'))
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (() =>
+      Promise.resolve(new Response('missing', { status: 404 }))) as typeof fetch
+    try {
+      const first = await app.request(`${ADMIN_API_PREFIX}/instance/updates/check`, {
+        method: 'POST',
+        headers,
+        body: '{}',
+      })
+      assertEquals(first.status, 200)
+      const body = await jsonBody<{
+        ok: boolean
+        automatic: boolean
+        lastCheckAt: string | null
+        activeRunId: string | null
+        checkIntervalMinutes: number
+      }>(first)
+      assertEquals(body.ok, true)
+      assertEquals(body.automatic, true)
+      assertEquals(typeof body.lastCheckAt, 'string')
+      assertEquals(body.activeRunId, null)
+      assertEquals(body.checkIntervalMinutes, 60)
+      const runs = await db
+        .select({ id: upgrade.id })
+        .from(upgrade)
+        .where(inArray(upgrade.status, ['pending', 'running']))
+      assertEquals(runs.length, 0)
+
+      const again = await app.request(`${ADMIN_API_PREFIX}/instance/updates/check`, {
+        method: 'POST',
+        headers,
+        body: '{}',
+      })
+      assertEquals(again.status, 429)
+      const refused = await jsonBody<{ error: string; retryAfterSeconds: number }>(again)
+      assertEquals(refused.error, 'check_too_soon')
+      assertEquals(refused.retryAfterSeconds > 0 && refused.retryAfterSeconds <= 60, true)
+      assertEquals(again.headers.get('Retry-After'), String(refused.retryAfterSeconds))
+
+      // The scheduled check's clock did not move: only the press was recorded.
+      const [row] = await db.select().from(setting).where(eq(setting.key, 'UPGRADE_CHECK'))
+      const stored = row?.value as { lastCheckAt: string | null; lastManualCheckAt: string }
+      assertEquals(stored.lastCheckAt, null)
+      assertEquals(stored.lastManualCheckAt, body.lastCheckAt)
+    } finally {
+      globalThis.fetch = originalFetch
+      await db.delete(setting).where(eq(setting.key, 'UPGRADE_CHECK'))
+    }
+  })
+})
+
 test('the batch size setting keeps a saved value and drops the retired keys', async () => {
   await withRoleUser('admin', async ({ app, cookie }) => {
     const db = createDenoDb()

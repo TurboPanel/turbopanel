@@ -1369,7 +1369,6 @@ test('every route that started, retried or cancelled an update by hand answers 4
       '/instance/updates/daemon',
       '/instance/updates/preflight',
       '/instance/updates/runs',
-      '/instance/updates/check',
       `/instance/updates/steps/${crypto.randomUUID()}/retry`,
       `/instance/updates/runs/${crypto.randomUUID()}/cancel`,
     ]) {

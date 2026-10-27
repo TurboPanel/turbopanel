@@ -212,6 +212,22 @@ test('resolveUpdateManifest reuses the cached manifest within the TTL, per chann
   }
 })
 
+test('a fresh lookup (Check Now) skips the cache and refills it', async () => {
+  await resetUpdateManifestCacheForTests()
+  const stub = stubFetch(async () => new Response(await manifestBody('canary'), { status: 200 }))
+  try {
+    await resolveUpdateManifest('canary')
+    await resolveUpdateManifest('canary', 'daemon', { fresh: true })
+    assertEquals(stub.calls.length, 2)
+    // The fresh answer is cached for the next ordinary read.
+    await resolveUpdateManifest('canary')
+    assertEquals(stub.calls.length, 2)
+  } finally {
+    stub.restore()
+    await resetUpdateManifestCacheForTests()
+  }
+})
+
 test('resolveUpdateManifest returns null when the manifest is unavailable', async () => {
   await resetUpdateManifestCacheForTests()
   const stub = stubFetch(() => new Response('nope', { status: 500 }))

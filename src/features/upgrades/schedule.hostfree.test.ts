@@ -1,6 +1,8 @@
 import { assertEquals } from '@std/assert'
 import {
   isUpgradeCheckDue,
+  latestUpgradeCheckAt,
+  manualCheckWaitSeconds,
   nextUpgradeCheckAt,
   pickUpgradeCheckMinute,
   shouldAutoStartRun,
@@ -103,4 +105,47 @@ test('an automatic run starts only on drift, with no run open and updates not pa
   assertEquals(shouldAutoStartRun({ ...base, targetDiffers: false }), false)
   assertEquals(shouldAutoStartRun({ ...base, runActive: true }), false)
   assertEquals(shouldAutoStartRun({ ...base, paused: true }), false)
+})
+
+test('a test install with a 5 minute check keeps its own minute inside each 5 minutes', () => {
+  // Minute 17 -> slots at :02, :07, :12, :17 ... of every hour.
+  const s = schedule({ lastCheckAt: '2026-10-27T10:07:20.000Z' })
+  assertEquals(
+    nextUpgradeCheckAt(s, at('2026-10-27T10:08:00.000Z'), 5).toISOString(),
+    '2026-10-27T10:12:00.000Z'
+  )
+  assertEquals(isUpgradeCheckDue(s, at('2026-10-27T10:11:59.000Z'), 5), false)
+  assertEquals(isUpgradeCheckDue(s, at('2026-10-27T10:12:00.000Z'), 5), true)
+  // The hourly default is unchanged by the interval code.
+  assertEquals(
+    nextUpgradeCheckAt(s, at('2026-10-27T10:08:00.000Z'), 60).toISOString(),
+    '2026-10-27T10:17:00.000Z'
+  )
+})
+
+test('Check Now never moves the schedule, and the status shows the latest check of either kind', () => {
+  const s = schedule({
+    lastCheckAt: '2026-10-27T10:17:00.000Z',
+    lastManualCheckAt: '2026-10-27T10:40:00.000Z',
+  })
+  assertEquals(
+    nextUpgradeCheckAt(s, at('2026-10-27T10:41:00.000Z')).toISOString(),
+    '2026-10-27T11:17:00.000Z'
+  )
+  assertEquals(latestUpgradeCheckAt(s), '2026-10-27T10:40:00.000Z')
+  assertEquals(
+    latestUpgradeCheckAt(schedule({ lastCheckAt: '2026-10-27T11:17:00.000Z' })),
+    '2026-10-27T11:17:00.000Z'
+  )
+  assertEquals(latestUpgradeCheckAt(schedule()), null)
+})
+
+test('Check Now runs at most once a minute', () => {
+  const s = schedule({ lastManualCheckAt: '2026-10-27T10:40:00.000Z' })
+  assertEquals(manualCheckWaitSeconds(schedule(), at('2026-10-27T10:40:00.000Z')), 0)
+  assertEquals(manualCheckWaitSeconds(s, at('2026-10-27T10:40:00.500Z')), 60)
+  assertEquals(manualCheckWaitSeconds(s, at('2026-10-27T10:40:45.000Z')), 15)
+  assertEquals(manualCheckWaitSeconds(s, at('2026-10-27T10:41:00.000Z')), 0)
+  // A press stamped in the future (clock moved back) still waits one minute at most.
+  assertEquals(manualCheckWaitSeconds(s, at('2026-10-27T10:00:00.000Z')), 60)
 })

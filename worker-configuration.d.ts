@@ -150,6 +150,7 @@ interface CloudflareBindings {
    * pass.
    */
   TURBOPANEL_UPGRADE_TICK_MINUTES?: string
+  TURBOPANEL_UPGRADE_CHECK_MINUTES?: string
   /**
    * Starting batch for managed upgrades when none is saved in the panel:
    * `count:N` or `percent:N`. Unset means one server at a time.

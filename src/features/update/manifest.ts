@@ -244,9 +244,15 @@ export function seedUpdateManifestCacheForTests(
  * daemon checkout still drives the fleet-update view. Instance and UI
  * always read their own rail.
  */
+/**
+ * The channel manifest for `kind`, cached for {@link MANIFEST_CACHE_MS}.
+ * `fresh` skips the cached answer and asks the release server now (Check Now
+ * in Admin > Updates, rate-limited by its route); the answer refills the cache.
+ */
 export async function resolveUpdateManifest(
   channel: UpdateChannel,
-  kind: ReleaseArtifactKind = 'daemon'
+  kind: ReleaseArtifactKind = 'daemon',
+  options: { fresh?: boolean } = {}
 ): Promise<UpdateManifestTarget | null> {
   if (kind === 'daemon' && updateManifestProvider) {
     return await updateManifestProvider()
@@ -255,7 +261,7 @@ export async function resolveUpdateManifest(
   const key = manifestCacheKey(channel, kind)
   const now = Date.now()
   const cached = cache.get(key)
-  if (cached && now < cached.expiresAt) {
+  if (!options.fresh && cached && now < cached.expiresAt) {
     return cached.manifest
   }
 

@@ -57,7 +57,12 @@ export function parseUpgradeCheckSchedule(value: unknown): UpgradeCheckSchedule 
   }
   const createdAt = stringOrNull(value.createdAt)
   if (!createdAt) return null
-  return { minute, createdAt, lastCheckAt: stringOrNull(value.lastCheckAt) }
+  return {
+    minute,
+    createdAt,
+    lastCheckAt: stringOrNull(value.lastCheckAt),
+    lastManualCheckAt: stringOrNull(value.lastManualCheckAt),
+  }
 }
 
 async function readSettingValue(db: Db, key: string): Promise<unknown> {
@@ -141,6 +146,19 @@ export async function ensureUpgradeCheckSchedule(
     .set({ value: fresh, updatedAt: now })
     .where(eq(setting.key, UPGRADE_CHECK_KEY))
   return fresh
+}
+
+/** Record a Check Now press at `at`; the schedule itself does not move. */
+export async function markUpgradeCheckedByHand(
+  db: Db,
+  schedule: UpgradeCheckSchedule,
+  at: string
+): Promise<void> {
+  const next: UpgradeCheckSchedule = { ...schedule, lastManualCheckAt: at }
+  await db
+    .update(setting)
+    .set({ value: next, updatedAt: at })
+    .where(eq(setting.key, UPGRADE_CHECK_KEY))
 }
 
 /** Record that the hourly check ran at `at`, keeping the minute. */
