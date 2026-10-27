@@ -810,6 +810,30 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
   }
 
   /**
+   * Why an automatic start saves no run: the co-located daemon or control
+   * plane is waiting out its retry backoff, or nothing needs work (the no-op
+   * rule: every step on target or waiting out its backoff). Null to go on.
+   */
+  async function automaticStartRefusal(
+    steps: UpgradeStepRow[],
+    target: UpgradeTarget
+  ): Promise<{ ok: false; error: string; blockers: string[] } | null> {
+    if ((await deferFailedServers(steps, target)) === 'platform') {
+      return {
+        ok: false,
+        error: UPGRADE_RETRY_LATER,
+        blockers: ['This host failed to update to this build recently. It tries again later.'],
+      }
+    }
+    if (!steps.every(needsNoWork)) return null
+    return {
+      ok: false,
+      error: UPGRADE_NOTHING_TO_UPDATE,
+      blockers: ['Every server already runs the target build.'],
+    }
+  }
+
+  /**
    * Automatic retry with backoff: a planned step whose server failed this
    * build recently is settled `skipped` (`retry_later`) until its backoff
    * passes. Returns 'platform' when that is the co-located daemon or the
@@ -1110,20 +1134,8 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
           !input.serverId
         )
       )
-      if (input.source === 'auto' && (await deferFailedServers(steps, target)) === 'platform') {
-        return {
-          ok: false,
-          error: UPGRADE_RETRY_LATER,
-          blockers: ['This host failed to update to this build recently. It tries again later.'],
-        }
-      }
-      if (input.source === 'auto' && steps.every(needsNoWork)) {
-        return {
-          ok: false,
-          error: UPGRADE_NOTHING_TO_UPDATE,
-          blockers: ['Every server already runs the target build.'],
-        }
-      }
+      const refusal = input.source === 'auto' ? await automaticStartRefusal(steps, target) : null
+      if (refusal) return refusal
       run.phase = earliestOpenPhase(steps)
       const inserted = await deps.store.insertRun(run, steps)
       if (inserted === 'active') return runActiveRefusal()
