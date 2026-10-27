@@ -19,6 +19,7 @@ import type {
 } from '../../contracts/cell-protocol.ts'
 import type { Db } from '../../db/connection.ts'
 import { command } from '../../db/schema.ts'
+import { describeErrorCauses } from '../../lib/describe-error.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
 import { markDeploymentApplied } from '../deploy/deployment-records.ts'
 import { readDeployContext } from '../deploy/rollout.ts'
@@ -182,6 +183,21 @@ async function settleOutcome(
   return null
 }
 
+/** Longest error text {@link unconfirmedErrorText} keeps. */
+const UNCONFIRMED_ERROR_MAX = 600
+
+/**
+ * Why the check threw, reason first: the cause chain (where the database's own
+ * error sits under a wrapped query error), then the error itself without the
+ * query's bound values, which can carry deploy data.
+ */
+export function unconfirmedErrorText(err: unknown): string {
+  const head = (err instanceof Error ? err.message : String(err)).replace(/\s*params:[\s\S]*$/, '')
+  const causes = describeErrorCauses(err).replaceAll('\n', ' | ')
+  const text = causes === '' ? head : `${causes} | ${head}`
+  return text.slice(0, UNCONFIRMED_ERROR_MAX)
+}
+
 /** Most distinct keys {@link warnUnconfirmedOnce} remembers before it starts over. */
 const UNCONFIRMED_LOG_KEYS_MAX = 1000
 const unconfirmedLogKeys = new Set<string>()
@@ -230,7 +246,7 @@ export async function ackForReportedOutcome(
   } catch (err) {
     warnUnconfirmedOnce(
       `error:${id}`,
-      `result for command ${id} not confirmed: ${(err instanceof Error ? err.message : String(err)).slice(0, 300)}`
+      `result for command ${id} not confirmed: ${unconfirmedErrorText(err)}`
     )
     return null
   }
