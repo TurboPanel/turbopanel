@@ -18,7 +18,16 @@ import {
 import { verifyServerInOrg } from '../environments/deploy-prepare.ts'
 import { getCatalogEntry } from '../projects/catalog/index.ts'
 import { loadServerStatusRecords } from '../servers/update-status.ts'
-import { hasLiveBackupCommand } from '../../features/commands/command-records.ts'
+import {
+  type ManagedLifecycleLease,
+  releaseManagedLifecycleLease,
+  tryTakeManagedLifecycleLease,
+} from '../../features/managed/lifecycle-lease.ts'
+import { compatLogWarn } from '../../lib/log-compat.ts'
+import {
+  hasLiveBackupCommand,
+  hasLiveLifecycleCommand,
+} from '../../features/commands/command-records.ts'
 import { findInFlightRecovery } from '../../features/managed/recovery-records.ts'
 import type { ManagedStatus } from '../../features/managed/types.ts'
 
@@ -220,6 +229,60 @@ export async function assertNoBackupInFlight(
     },
     409
   )
+}
+
+function lifecycleInFlight(c: Context<AppEnv>): Response {
+  return c.json(
+    {
+      error: 'managed_busy',
+      reason: 'lifecycle_in_flight',
+      message:
+        'This database is already starting, stopping or being destroyed. Try again when that has finished.',
+    },
+    409
+  )
+}
+
+/**
+ * Runs `queue` only when no start, stop, restart or destroy of this database is
+ * queued or running (lifecycle commands never mark it `applying`), and holds
+ * the database's lifecycle lease from that check until `queue` has finished,
+ * so two requests that arrive together cannot both pass. 409 otherwise.
+ */
+export async function withManagedLifecycleTurn(
+  c: Context<AppEnv>,
+  db: Db,
+  params: Readonly<{ organizationId: string; managedId: string }>,
+  queue: () => Promise<Response>
+): Promise<Response> {
+  const held = await tryTakeManagedLifecycleLease(db, params)
+  if (!held) return lifecycleInFlight(c)
+  try {
+    if (await hasLiveLifecycleCommand(db, params.managedId)) return lifecycleInFlight(c)
+    return await queue()
+  } finally {
+    await releaseLifecycleLeaseQuietly(db, held, params.managedId)
+  }
+}
+
+/**
+ * A failed release must not turn a queued command into a 500: the command is
+ * already on its way, and the lease runs out on its own.
+ */
+async function releaseLifecycleLeaseQuietly(
+  db: Db,
+  held: ManagedLifecycleLease,
+  managedId: string
+): Promise<void> {
+  try {
+    await releaseManagedLifecycleLease(db, held)
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    compatLogWarn(
+      'managed-lifecycle',
+      `lifecycle lease release failed for managed ${managedId}; it expires on its own: ${message}`
+    )
+  }
 }
 
 /** 409 body when the target server has no live connection. */

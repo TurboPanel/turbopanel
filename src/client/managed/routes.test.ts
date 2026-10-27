@@ -78,6 +78,10 @@ import {
 import type { BackupRunReportMessage } from '../../contracts/cell-protocol.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import { removeLoginsDroppedByApply } from '../../features/managed/logins.ts'
+import {
+  releaseManagedLifecycleLease,
+  tryTakeManagedLifecycleLease,
+} from '../../features/managed/lifecycle-lease.ts'
 
 const dbUrl = getDatabaseUrl()
 
@@ -1328,6 +1332,127 @@ test('a second manual backup is refused at once while one is queued, and queues 
       assertEquals(after.status, 200)
     }
   )
+})
+
+const LIFECYCLE_BUSY_BODY = {
+  error: 'managed_busy',
+  reason: 'lifecycle_in_flight',
+  message:
+    'This database is already starting, stopping or being destroyed. Try again when that has finished.',
+}
+
+type ManagedRouteFixture = Parameters<Parameters<typeof withManagedFixtures>[1]>[0]
+
+/** A ready database in the fixture's environment, and a way to send it lifecycle requests. */
+async function readyManagedLifecycle(ctx: ManagedRouteFixture): Promise<{
+  headers: Record<string, string>
+  managedId: string
+  lifecycle: (action: string) => Response | Promise<Response>
+}> {
+  const { db, app, secrets, userId, organizationId, environmentId } = ctx
+  const headers = {
+    Cookie: await sessionCookie(db, secrets, userId),
+    [ORG_ID_HEADER]: organizationId,
+    'Content-Type': 'application/json',
+  }
+  const create = await app.request(`/environments/${environmentId}/managed`, {
+    method: 'POST',
+    headers,
+    body: '{}',
+  })
+  const created = (await create.json()) as { managed: { id: string } }
+  await db.update(managed).set({ status: 'ready' }).where(eq(managed.id, created.managed.id))
+  const lifecycleUrl = `/environments/${environmentId}/managed/lifecycle`
+  return {
+    headers,
+    managedId: created.managed.id,
+    lifecycle: (action) =>
+      app.request(lifecycleUrl, { method: 'POST', headers, body: JSON.stringify({ action }) }),
+  }
+}
+
+test('a lifecycle request is refused while another request holds the database lease, and queues nothing', async () => {
+  await withManagedFixtures({}, async (ctx) => {
+    const { db, commandQueue, organizationId } = ctx
+    const { managedId, lifecycle } = await readyManagedLifecycle(ctx)
+    const queued = commandQueue.envelopes.length
+    const lifecycleCommands = () =>
+      db
+        .select({ id: command.id })
+        .from(command)
+        .where(and(eq(command.managedId, managedId), eq(command.name, 'managed.lifecycle')))
+
+    // Another request is between its in-flight check and its enqueue.
+    const held = await tryTakeManagedLifecycleLease(db, { organizationId, managedId })
+    if (!held) throw new Error('the lease should be free')
+    const refused = await lifecycle('stop')
+    assertEquals(refused.status, 409)
+    assertEquals(await refused.json(), LIFECYCLE_BUSY_BODY)
+    assertEquals(await lifecycleCommands(), [])
+    assertEquals(commandQueue.envelopes.length, queued)
+
+    // The lease was the only thing in the way.
+    await releaseManagedLifecycleLease(db, held)
+    assertEquals((await lifecycle('stop')).status, 200)
+    assertEquals((await lifecycleCommands()).length, 1)
+  })
+})
+
+test('a start, stop or destroy is refused while another lifecycle command for the database is in flight', async () => {
+  await withManagedFixtures({}, async (ctx) => {
+    const { db, app, commandQueue, environmentId } = ctx
+    const { headers, managedId, lifecycle } = await readyManagedLifecycle(ctx)
+
+    const stop = await lifecycle('stop')
+    assertEquals(stop.status, 200)
+    const queued = commandQueue.envelopes.length
+
+    const start = await lifecycle('start')
+    assertEquals(start.status, 409)
+    assertEquals(await start.json(), LIFECYCLE_BUSY_BODY)
+    // Bad input is answered as such, busy or not.
+    const bad = await lifecycle('explode')
+    assertEquals(bad.status, 400)
+    const destroy = await app.request(`/environments/${environmentId}/managed`, {
+      method: 'DELETE',
+      headers,
+    })
+    assertEquals(destroy.status, 409)
+    assertEquals(await destroy.json(), LIFECYCLE_BUSY_BODY)
+    assertEquals(commandQueue.envelopes.length, queued)
+
+    // A command the server never answered stops counting once it expires.
+    await db
+      .update(command)
+      .set({ expiresAt: new Date(Date.now() - 1000).toISOString() })
+      .where(eq(command.managedId, managedId))
+    const afterExpiry = await lifecycle('start')
+    assertEquals(afterExpiry.status, 200)
+
+    // A finished command never counts.
+    await db.update(command).set({ status: 'failed' }).where(eq(command.managedId, managedId))
+    const afterEnd = await lifecycle('restart')
+    assertEquals(afterEnd.status, 200)
+  })
+})
+
+test('two lifecycle requests that arrive together queue one command, and a forced delete never waits', async () => {
+  await withManagedFixtures({}, async (ctx) => {
+    const { app, commandQueue, environmentId } = ctx
+    const { headers, lifecycle } = await readyManagedLifecycle(ctx)
+    const before = commandQueue.envelopes.length
+
+    const answers = await Promise.all(['stop', 'start', 'restart'].map(lifecycle))
+    assertEquals(answers.map((answer) => answer.status).sort(), [200, 409, 409])
+    assertEquals(commandQueue.envelopes.length, before + 1)
+
+    // The escape hatch for a database stuck behind a command: not refused.
+    const forced = await app.request(`/environments/${environmentId}/managed?force=true`, {
+      method: 'DELETE',
+      headers,
+    })
+    assertEquals(forced.status === 409, false)
+  })
 })
 
 test('managed_busy guard on backup create while status=applying', async () => {

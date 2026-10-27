@@ -1233,7 +1233,17 @@ running…`) is **queued again** by `resumeInterruptedPromote`
     The same sweep, when it times out a command that carries a `recoveryId`,
     calls the recovery hooks (`onRecoveryCommandTimedOut`) so the row settles at
     once. Every mutating managed route answers `managed_busy` while the journal
-    has an in-flight row (`assertManagedIdle`).
+    has an in-flight row (`assertManagedIdle`). Lifecycle and delete (not
+    `?force=true`) also answer `managed_busy` / `lifecycle_in_flight` while a
+    `managed.lifecycle` or `managed.destroy` for the cluster is queued or
+    running and not past its expiry (`withManagedLifecycleTurn`): lifecycle
+    never sets `applying`. The check and the enqueue run under a per-cluster
+    row in the `lease` table (`lifecycle-lease.ts`), so two requests that
+    arrive together cannot both pass. A lifecycle result writes its observed
+    status to the member it ran on: its `member` object, else `payload.memberId`
+    with a ready/stopped/failed status, never over `needs_resync` (the daemon
+    answers every stop with a plain status). A reported stop marks the
+    database's own containers on that server `exited`; ingress keeps its state.
 
 **Automatic failover switch** (`auto-failover-switch.ts`):
 `TURBOPANEL_AUTO_FAILOVER=on|off` (also `true`/`false`, `1`/`0`), read at
