@@ -87,6 +87,9 @@ export function formatUpgradeTickDecision(d: UpgradeTickDecision): string {
         `refused ${d.autoStart.error}` +
         (d.autoStart.blockers.length > 1 ? ` (+${d.autoStart.blockers.length - 1} more)` : '')
       break
+    case 'nothing-to-do':
+      auto = 'nothing-to-do (every server already runs the target, no run saved)'
+      break
     default:
       auto = 'not-attempted'
   }

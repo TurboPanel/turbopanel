@@ -1,6 +1,10 @@
 import { assertEquals, assertMatch } from '@std/assert'
 import type { DaemonOutboundEnvelope } from '../../contracts/cell-protocol.ts'
-import { createUpgradeCoordinator, type UpgradeTickDecision } from './coordinator.ts'
+import {
+  createUpgradeCoordinator,
+  UPGRADE_NOTHING_TO_UPDATE,
+  type UpgradeTickDecision,
+} from './coordinator.ts'
 import {
   formatUpgradeTickDecision,
   resetUpgradeTickLogForTests,
@@ -54,12 +58,12 @@ const canaryTarget: UpgradeTarget = {
   ui: null,
 }
 
-function workersFleet(facts: FleetServerFact[], autoUpdate = true) {
+function workersFleet(facts: FleetServerFact[], autoUpdate = true, target = canaryTarget) {
   const enqueued: { serverId: string; envelope: DaemonOutboundEnvelope }[] = []
   const decisions: UpgradeTickDecision[] = []
   const store = createMemoryUpgradeStore({
     facts,
-    latest: canaryTarget,
+    latest: target,
     settings: {
       ...DEFAULT_UPGRADE_SETTINGS,
       autoUpdate,
@@ -78,11 +82,137 @@ function workersFleet(facts: FleetServerFact[], autoUpdate = true) {
     now: () => '2026-09-27T19:00:00.000Z',
     colocatedServerId: null,
     instanceInstalled: { version: '0.1.1', commit: 'b12db099' },
-    resolveTarget: () => Promise.resolve(canaryTarget),
+    resolveTarget: () => Promise.resolve(target),
     trace: (decision) => decisions.push(decision),
   })
   return { coordinator, enqueued, decisions, store }
 }
+
+/**
+ * The channel as the hosted panel sees it: the instance manifest names the
+ * canary build commit, never the commit the hosted panel was deployed from.
+ */
+const hostedTarget: UpgradeTarget = {
+  ...canaryTarget,
+  instance: {
+    version: CANARY_VERSION,
+    commit: '5efa9c1e000000000000000000000000000000000',
+    buildId: '20260927-182044-5efa9c1',
+    builtAt: CANARY_BUILT_AT,
+    manifestUrl: 'https://example.test/instance.json',
+  },
+}
+
+const onTarget = { commit: canaryTarget.daemon!.commit, builtAt: CANARY_BUILT_AT }
+
+test('the hosted panel’s own deploy commit never opens an automatic run', async () => {
+  const { coordinator, enqueued, decisions, store } = workersFleet(
+    [fleetHost('adrastea', onTarget), fleetHost('kore', onTarget)],
+    true,
+    hostedTarget
+  )
+
+  await coordinator.tick({ resolveManifests: true })
+  await coordinator.tick({ resolveManifests: true })
+
+  assertEquals(
+    decisions.map((d) => [d.targetDiffers, d.autoStart.decision]),
+    [
+      [false, 'not-attempted'],
+      [false, 'not-attempted'],
+    ]
+  )
+  assertEquals((await store.history(0, 10)).total, 0)
+  assertEquals(enqueued, [])
+})
+
+test('a daemon behind on the hosted panel still starts an automatic run', async () => {
+  const { coordinator, enqueued, decisions, store } = workersFleet(
+    [fleetHost('adrastea', onTarget), fleetHost('kore')],
+    true,
+    hostedTarget
+  )
+
+  await coordinator.tick({ resolveManifests: true })
+
+  const started = decisions[0]?.autoStart
+  assertEquals(started?.decision, 'started')
+  if (started?.decision !== 'started') return
+  const steps = await store.stepsFor(started.runId)
+  assertEquals(steps.map((step) => [step.serverId, step.unit, step.status]).sort(), [
+    ['adrastea', 'daemon', 'done'],
+    ['kore', 'daemon', 'dispatched'],
+  ])
+  assertEquals(
+    enqueued.map((entry) => entry.serverId),
+    ['kore']
+  )
+})
+
+test('an automatic start with nothing to send saves no run; a manual one still does', async () => {
+  const { coordinator, enqueued, decisions, store } = workersFleet(
+    [fleetHost('adrastea', onTarget)],
+    true,
+    hostedTarget
+  )
+  // The drift query and the plan disagree (a host the plan does not reach).
+  store.anyDaemonBehind = () => Promise.resolve(true)
+
+  await coordinator.tick({ resolveManifests: true })
+
+  assertEquals(decisions[0]?.autoStart, { decision: 'nothing-to-do' })
+  assertMatch(formatUpgradeTickDecision(decisions[0]!), /autoStart=nothing-to-do \(.*\)$/)
+  const auto = await coordinator.start({ source: 'auto', startedBy: null })
+  assertEquals(auto.ok ? null : auto.error, UPGRADE_NOTHING_TO_UPDATE)
+  assertEquals((await store.history(0, 10)).total, 0)
+
+  const manual = await coordinator.start({ source: 'manual', startedBy: 'owner' })
+  assertEquals(manual.ok, true)
+  assertEquals((await store.history(0, 10)).runs[0]?.source, 'manual')
+  assertEquals(enqueued, [])
+})
+
+test('a self-hosted panel behind the channel starts a run with the control-plane step', async () => {
+  const colocated = fleetHost('panel', { ...onTarget, colocated: true })
+  const target: UpgradeTarget = {
+    ...hostedTarget,
+    ui: { ...hostedTarget.instance!, manifestUrl: 'https://example.test/ui.json' },
+  }
+  const decisions: UpgradeTickDecision[] = []
+  const store = createMemoryUpgradeStore({
+    facts: [colocated],
+    latest: target,
+    settings: { ...DEFAULT_UPGRADE_SETTINGS, autoUpdate: true },
+  })
+  const coordinator = createUpgradeCoordinator({
+    store,
+    enqueue: () => Promise.resolve(),
+    runtime: 'deno',
+    channel: 'canary',
+    development: false,
+    now: () => '2026-09-27T19:00:00.000Z',
+    colocatedServerId: 'panel',
+    instanceInstalled: { version: '0.1.1', commit: 'b12db099' },
+    resolveTarget: () => Promise.resolve(target),
+    trace: (decision) => decisions.push(decision),
+  })
+
+  await coordinator.tick({ resolveManifests: true })
+
+  assertEquals(decisions[0]?.daemonDrift, false)
+  assertEquals(decisions[0]?.targetDiffers, true)
+  const started = decisions[0]?.autoStart
+  assertEquals(started?.decision, 'started')
+  if (started?.decision !== 'started') return
+  const steps = await store.stepsFor(started.runId)
+  assertEquals(
+    steps.map((step) => [step.unit, step.status === 'done']),
+    [
+      ['daemon', true],
+      ['instance', false],
+    ]
+  )
+})
 
 test('a canary build of the installed base rolls out to the Workers fleet', async () => {
   const { coordinator, enqueued, decisions, store } = workersFleet([
