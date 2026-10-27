@@ -27,7 +27,11 @@ import {
   workspace,
 } from '../../db/schema.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
-import { ACTIVITY_COUNT_LOOKAHEAD } from '../../features/commands/activity-query.ts'
+import {
+  ACTIVITY_COUNT_LOOKAHEAD,
+  activityPageSelect,
+  type ActivityFilter,
+} from '../../features/commands/activity-query.ts'
 import { deriveEncryptionSecretsConfig, deriveSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from '../authn/crypto.ts'
@@ -45,6 +49,7 @@ async function insertId(promise: Promise<{ id: string }[]>): Promise<string> {
 }
 
 type Seeded = {
+  makeUser: (label: string, extra?: { name?: string; role?: string }) => Promise<string>
   db: Db
   app: Hono<AppEnv>
   orgA: string
@@ -83,7 +88,7 @@ async function seed(db: Db): Promise<Seeded> {
     .returning({ id: organization.id })
   const [orgA, orgB] = [orgs[0]!.id, orgs[1]!.id]
 
-  const makeUser = (label: string) =>
+  const makeUser = (label: string, extra: { name?: string; role?: string } = {}) =>
     insertId(
       db
         .insert(user)
@@ -91,6 +96,7 @@ async function seed(db: Db): Promise<Seeded> {
           email: `activity-${label}-${crypto.randomUUID()}@example.com`,
           isEmailVerified: true,
           role: 'user',
+          ...extra,
         })
         .returning({ id: user.id })
     )
@@ -178,6 +184,7 @@ async function seed(db: Db): Promise<Seeded> {
     'environment.deploy:failed',
   ])
   return {
+    makeUser,
     db,
     app,
     orgA,
@@ -317,6 +324,68 @@ test('the count stops a fixed distance past the page and says so', async () => {
     )
     const whole = await feedOf(s, '?limit=100&filter=failed')
     assertEquals([whole.total, whole.totalCapped], [1, false])
+  })
+})
+
+test('a person is named only while they are a member of the organization', async () => {
+  await withSeed(async (s) => {
+    const member = await s.makeUser('teammate', { name: 'Team Mate' })
+    const teamId = await insertId(
+      s.db
+        .insert(team)
+        .values({ organizationId: s.orgA, name: `names-${s.nonce}` })
+        .returning({ id: team.id })
+    )
+    await s.db.insert(teammate).values({ teamId, userId: member })
+    const admin = await s.makeUser('admin', { name: 'Instance Admin', role: 'superadmin' })
+    const outsider = await s.makeUser('outsider', { name: 'Gone Person' })
+    const { serverId, environmentId } = s.placeA
+    const at = (minutes: number) => new Date(Date.now() + minutes * 60_000).toISOString()
+    for (const [index, actorId] of [member, admin, outsider].entries()) {
+      await s.db.insert(command).values({
+        serverId,
+        actorType: 'user',
+        actorId,
+        name: 'environment.deploy',
+        status: 'succeeded',
+        organizationId: s.orgA,
+        environmentId,
+        createdAt: at(3 - index),
+      })
+    }
+    const res = await get(s, s.cookieOwnerA, s.orgA, '?limit=3')
+    const feed = JSON.parse(res.text) as Feed
+    assertEquals(
+      feed.items.map((i) => i.actorName),
+      ['Team Mate', 'Platform admin', 'Former member']
+    )
+    assert(!res.text.includes('Gone Person'))
+    assert(!res.text.includes('Instance Admin'))
+    assert(!res.text.includes('activity-outsider-'))
+  })
+})
+
+test('every filtered page is read in index order, with no sort', async () => {
+  await withSeed(async (s) => {
+    // Make the planner show its hand on a tiny table: no sequential or bitmap
+    // scan, and a sort only if no index can give the order.
+    await s.db.execute(sql`set local enable_seqscan = off`)
+    await s.db.execute(sql`set local enable_bitmapscan = off`)
+    await s.db.execute(sql`set local enable_sort = off`)
+    const filters: ActivityFilter[] = ['all', 'succeeded', 'failed', 'deploying']
+    for (const filter of filters) {
+      const page = activityPageSelect(s.db, s.orgA, [s.placeA.serverId], {
+        filter,
+        limit: 25,
+        offset: 0,
+      })
+      const plan = (await s.db.execute(sql`explain (costs off) ${page}`)) as unknown as {
+        'QUERY PLAN': string
+      }[]
+      const text = [...plan].map((row) => row['QUERY PLAN']).join('\n')
+      assert(/Index Scan using idx_command_(activity|feed)/.test(text), `${filter}:\n${text}`)
+      assert(!/\bSort\b/.test(text), `${filter} sorts:\n${text}`)
+    }
   })
 })
 

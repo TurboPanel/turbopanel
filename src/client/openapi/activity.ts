@@ -73,7 +73,12 @@ export const activitySchemas = {
         type: ['string', 'null'],
         description: 'Plain-words label of the running step, or null when none is running.',
       },
-      durationSecs: { type: 'integer', minimum: 0 },
+      durationSecs: {
+        type: ['integer', 'null'],
+        minimum: 0,
+        description:
+          'Running time so far, or how long it took. Null for a finished row with no recorded end.',
+      },
       errorMessage: { type: ['string', 'null'], description: 'Set when `state` is `failed`.' },
       actorType: {
         type: 'string',
@@ -82,7 +87,8 @@ export const activitySchemas = {
       },
       actorName: {
         type: ['string', 'null'],
-        description: 'The person’s name, else their email. Null for `system` or a removed account.',
+        description:
+          'For `user`: the person’s name (else email) while they are a member of the organization, `Platform admin` for an instance administrator who is not, `Former member` for anyone else. Null for `system`.',
       },
       trigger: {
         oneOf: [{ $ref: '#/components/schemas/ActivityTrigger' }, { type: 'null' }],

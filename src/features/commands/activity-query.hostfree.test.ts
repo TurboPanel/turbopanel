@@ -181,6 +181,16 @@ test('shapeActivityItem: a succeeded deploy freezes its duration and names the p
   assertEquals(pushed.commit, { sha: 'abc1234', message: null })
 })
 
+test('shapeActivityItem: a finished row with no recorded end has no duration', () => {
+  const item = shapeActivityItem({ ...BASE, status: 'succeeded', finishedAt: null }, NAMES, NOW)
+  assertEquals([item.state, item.finishedAt, item.durationSecs], ['succeeded', null, null])
+})
+
+test('shapeActivityItem: a person the organization cannot name reads as a former member', () => {
+  const item = shapeActivityItem({ ...BASE, actorType: 'user', actorId: 'gone' }, NAMES, NOW)
+  assertEquals([item.actorType, item.actorName], ['user', 'Former member'])
+})
+
 test('shapeActivityItem: prefers the environment column over the context copy', () => {
   const item = shapeActivityItem({ ...BASE, environmentId: 'e1', context: {} }, NAMES, NOW)
   assertEquals([item.environmentId, item.environmentName], ['e1', 'Production'])

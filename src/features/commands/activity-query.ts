@@ -16,9 +16,9 @@
  * control plane records no restart count to derive them from); `crashCount`
  * is always `null`.
  */
-import { and, desc, eq, inArray, sql, type SQL } from 'drizzle-orm'
+import { and, eq, inArray, sql, type SQL } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
-import { command, environment, project, user } from '../../db/schema.ts'
+import { command, environment, grant, project, team, teammate, user } from '../../db/schema.ts'
 import { outcomeFromErrorCode } from '../deploy/deploy-outcome.ts'
 import { readDeploymentTrigger, type DeploymentTrigger } from '../deploy/deployment-history.ts'
 import { parseStoredCommandProgress } from './command-progress.ts'
@@ -91,11 +91,16 @@ export type ActivityItem = {
   totalSteps: number | null
   /** Label of the running step, or `null` when none is running. */
   stepLabel: string | null
-  durationSecs: number
+  /** Running time so far, or how long it took; `null` for a finished row with no recorded end. */
+  durationSecs: number | null
   errorMessage: string | null
   /** `user` when a person asked for it, `system` when the panel did (a push, a schedule). */
   actorType: 'user' | 'system'
-  /** The person's name, else their email; `null` for `system` or a removed account. */
+  /**
+   * For `user`: the person's name (else email) while they are a member of the
+   * organization, `Platform admin` for an instance administrator who is not,
+   * and `Former member` for anyone else. `null` for `system`.
+   */
   actorName: string | null
   /** The push that set it off, `null` for a person's deploy. */
   trigger: DeploymentTrigger | null
@@ -290,9 +295,25 @@ function environmentIdOf(row: ActivityRow): string | null {
   return row.environmentId ?? contextId(row.context, 'environmentId')
 }
 
-function durationSecsOf(startedAt: string, finishedAt: string | null, now: Date): number {
+/** Shown for a person who is not (or no longer) a member, so their name and email stay private. */
+export const FORMER_MEMBER_LABEL = 'Former member'
+export const PLATFORM_ADMIN_LABEL = 'Platform admin'
+
+/** Live rows count up to now; a finished row stops at its end, and has none when no end was recorded. */
+function durationSecsOf(
+  startedAt: string,
+  finishedAt: string | null,
+  finished: boolean,
+  now: Date
+): number | null {
+  if (finished && finishedAt === null) return null
   const end = finishedAt === null ? now.getTime() : Date.parse(finishedAt)
   return Math.max(0, Math.round((end - Date.parse(startedAt)) / 1000))
+}
+
+function actorNameOf(row: ActivityRow, actors: Map<string, string>): string | null {
+  if (row.actorType !== 'user') return null
+  return (row.actorId ? actors.get(row.actorId) : undefined) ?? FORMER_MEMBER_LABEL
 }
 
 export function shapeActivityItem(
@@ -307,6 +328,7 @@ export function shapeActivityItem(
   const finished = state !== 'queued' && state !== 'deploying'
   const startedAt = row.startedAt ?? row.queuedAt ?? row.createdAt
   const finishedAt = finished ? row.finishedAt : null
+  const durationSecs = durationSecsOf(startedAt, finishedAt, finished, now)
   const actorType = row.actorType === 'user' ? 'user' : 'system'
   const trigger = readDeploymentTrigger({ actorType, metadata: row.metadata })
   return {
@@ -322,10 +344,10 @@ export function shapeActivityItem(
     startedAt,
     finishedAt,
     ...activityStepsOf(row.progress),
-    durationSecs: durationSecsOf(startedAt, finishedAt, now),
+    durationSecs,
     errorMessage: state === 'failed' ? row.errorMessage : null,
     actorType,
-    actorName: actorType === 'user' && row.actorId ? (actors.get(row.actorId) ?? null) : null,
+    actorName: actorNameOf(row, actors),
     trigger,
     commit: activityCommitOf(row.context, trigger),
     crashCount: null,
@@ -354,18 +376,46 @@ async function loadEnvironmentNames(
   return names
 }
 
-/** Who asked: the person's name, else their email. Only ids from this page's rows are read. */
-async function loadActorNames(db: Db, rows: ActivityRow[]): Promise<Map<string, string>> {
+/** Whether the user belongs to the organization: a team in it, or a grant on it or one of its teams. */
+function isOrganizationMember(organizationId: string): SQL {
+  const orgTeams = sql`(select ${team.id} from ${team} where ${team.organizationId} = ${organizationId})`
+  return sql`(exists (select 1 from ${teammate} where ${teammate.userId} = ${user.id} and ${teammate.teamId} in ${orgTeams})
+    or exists (select 1 from ${grant} where ${grant.actorType} = 'user' and ${grant.actorId} = ${user.id}
+      and ((${grant.entityType} = 'organization' and ${grant.entityId} = ${organizationId})
+        or (${grant.entityType} = 'team' and ${grant.entityId} in ${orgTeams}))))`
+}
+
+/**
+ * Who asked, as this organization may see them: a current member by name
+ * (else email), an instance administrator as `Platform admin`, anyone else
+ * left out (the caller shows `Former member`). Only this page's ids are read.
+ */
+async function loadActorNames(
+  db: Db,
+  organizationId: string,
+  rows: ActivityRow[]
+): Promise<Map<string, string>> {
   const ids = [
     ...new Set(rows.filter((row) => row.actorType === 'user').map((row) => row.actorId!)),
   ]
   const names = new Map<string, string>()
   if (ids.length === 0) return names
   const found = await db
-    .select({ id: user.id, name: user.name, email: user.email })
+    .select({
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      role: user.role,
+      member: sql<boolean>`${isOrganizationMember(organizationId)}`,
+    })
     .from(user)
     .where(inArray(user.id, ids))
-  for (const row of found) names.set(row.id, row.name?.trim() || row.email)
+  for (const row of found) {
+    if (row.member) names.set(row.id, row.name?.trim() || row.email)
+    else if (row.role === 'admin' || row.role === 'superadmin') {
+      names.set(row.id, PLATFORM_ADMIN_LABEL)
+    }
+  }
   return names
 }
 
@@ -375,10 +425,57 @@ async function loadActorNames(db: Db, rows: ActivityRow[]): Promise<Map<string, 
  * the command row (`command.organization_id`, copied from the server), so a
  * foreign server id can never surface a foreign command.
  *
- * Walks `idx_command_activity` (organization, newest first, these three
- * command names) and stops after the page; the count stops
- * `ACTIVITY_COUNT_LOOKAHEAD` rows past it.
+ * The order is written as the indexes store it (`DESC NULLS LAST`; both
+ * columns are NOT NULL, so the rows are the same): a plain `DESC` means
+ * NULLS FIRST, no index supplies it, and every page would read and sort all
+ * of the organization's rows. With it, the page walks `idx_command_activity`
+ * (or `idx_command_feed` for in progress / failed) newest first and stops
+ * after `offset + limit` rows; the count stops `ACTIVITY_COUNT_LOOKAHEAD`
+ * rows past the page.
  */
+function feedWhere(organizationId: string, visibleServerIds: string[], query: ActivityQuery) {
+  return and(
+    eq(command.organizationId, organizationId),
+    inArray(command.serverId, visibleServerIds),
+    sql`${command.name} IN (${literalList(ACTIVITY_COMMAND_NAMES)})`,
+    stateCondition(query.filter),
+    placeCondition(query)
+  )
+}
+
+/** The page read itself, unexecuted, so a database test can EXPLAIN exactly this SQL. */
+export function activityPageSelect(
+  db: Db,
+  organizationId: string,
+  visibleServerIds: string[],
+  query: ActivityQuery
+) {
+  return db
+    .select({
+      id: command.id,
+      serverId: command.serverId,
+      name: command.name,
+      status: command.status,
+      context: command.context,
+      metadata: command.metadata,
+      progress: command.progress,
+      actorType: command.actorType,
+      actorId: command.actorId,
+      environmentId: command.environmentId,
+      errorCode: command.errorCode,
+      errorMessage: command.errorMessage,
+      createdAt: command.createdAt,
+      queuedAt: command.queuedAt,
+      startedAt: command.startedAt,
+      finishedAt: command.finishedAt,
+    })
+    .from(command)
+    .where(feedWhere(organizationId, visibleServerIds, query))
+    .orderBy(sql`${command.createdAt} desc nulls last`, sql`${command.id} desc nulls last`)
+    .limit(query.limit)
+    .offset(query.offset)
+}
+
 export async function queryOrgActivityFeed(
   db: Db,
   organizationId: string,
@@ -390,51 +487,21 @@ export async function queryOrgActivityFeed(
     return { items: [], total: 0, totalCapped: false, hasMore: false }
   }
   const { limit, offset } = query
-  const where = and(
-    eq(command.organizationId, organizationId),
-    inArray(command.serverId, visibleServerIds),
-    sql`${command.name} IN (${literalList(ACTIVITY_COMMAND_NAMES)})`,
-    stateCondition(query.filter),
-    placeCondition(query)
-  )
   const countCap = offset + limit + ACTIVITY_COUNT_LOOKAHEAD
   const [rows, [countRow]] = await Promise.all([
-    db
-      .select({
-        id: command.id,
-        serverId: command.serverId,
-        name: command.name,
-        status: command.status,
-        context: command.context,
-        metadata: command.metadata,
-        progress: command.progress,
-        actorType: command.actorType,
-        actorId: command.actorId,
-        environmentId: command.environmentId,
-        errorCode: command.errorCode,
-        errorMessage: command.errorMessage,
-        createdAt: command.createdAt,
-        queuedAt: command.queuedAt,
-        startedAt: command.startedAt,
-        finishedAt: command.finishedAt,
-      })
-      .from(command)
-      .where(where)
-      .orderBy(desc(command.createdAt), desc(command.id))
-      .limit(limit)
-      .offset(offset),
+    activityPageSelect(db, organizationId, visibleServerIds, query),
     db.select({ total: sql<number>`count(*)::int` }).from(
       db
         .select({ one: sql`1`.as('one') })
         .from(command)
-        .where(where)
+        .where(feedWhere(organizationId, visibleServerIds, query))
         .limit(countCap + 1)
         .as('capped')
     ),
   ])
   const [names, actors] = await Promise.all([
     loadEnvironmentNames(db, organizationId, rows),
-    loadActorNames(db, rows),
+    loadActorNames(db, organizationId, rows),
   ])
   const counted = countRow?.total ?? 0
   const totalCapped = counted > countCap
