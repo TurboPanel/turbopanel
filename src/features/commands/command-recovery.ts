@@ -245,19 +245,70 @@ export async function settleReportedOutcome(
     record: PendingRequestRecord | null
   }
 ): Promise<boolean> {
+  return (await settleOutcome(db, input)) === null
+}
+
+/** {@link settleReportedOutcome}, with why the outcome is not stored (`null` when it is). */
+async function settleOutcome(
+  db: Db,
+  input: {
+    serverId: string
+    envelope: CommandOutcomeEnvelope
+    record: PendingRequestRecord | null
+  }
+): Promise<string | null> {
   const row = await getCommandRecord(db, input.envelope.requestId)
-  if (row?.serverId !== input.serverId) return true
-  if (!TERMINAL_COMMAND_STATUSES.has(row.status)) return input.record !== null
+  if (row?.serverId !== input.serverId) return null
+  if (!TERMINAL_COMMAND_STATUSES.has(row.status)) {
+    return input.record === null
+      ? `the command is still ${row.status} and no request in the cell is waiting for it`
+      : null
+  }
   if (row.status === 'timed_out' && row.type === 'environment.deploy' && input.envelope.ok) {
     await correctTimedOutDeploy(db, row, input.envelope)
   }
-  return true
+  return null
+}
+
+/** Longest error text {@link unconfirmedErrorText} keeps. */
+const UNCONFIRMED_ERROR_MAX = 600
+
+/**
+ * Why the check threw, reason first: the cause chain (where the database's own
+ * error sits under a wrapped query error), then the error itself without the
+ * query's bound values, which can carry deploy data.
+ */
+export function unconfirmedErrorText(err: unknown): string {
+  const message = err instanceof Error ? err.message : String(err)
+  const paramsAt = message.indexOf('\nparams:')
+  const head = paramsAt === -1 ? message : message.slice(0, paramsAt).trimEnd()
+  const causes = describeErrorCauses(err).replaceAll('\n', ' | ')
+  const text = causes === '' ? head : `${causes} | ${head}`
+  return text.slice(0, UNCONFIRMED_ERROR_MAX)
+}
+
+/** Most distinct keys {@link warnUnconfirmedOnce} remembers before it starts over. */
+const UNCONFIRMED_LOG_KEYS_MAX = 1000
+const unconfirmedLogKeys = new Set<string>()
+
+/**
+ * Say why a result was not confirmed, once per key per process: the daemon
+ * sends an unconfirmed result again every 30 seconds, and the first line is
+ * enough to see why it stays stuck.
+ */
+function warnUnconfirmedOnce(key: string, message: string): void {
+  if (unconfirmedLogKeys.has(key)) return
+  if (unconfirmedLogKeys.size >= UNCONFIRMED_LOG_KEYS_MAX) unconfirmedLogKeys.clear()
+  unconfirmedLogKeys.add(key)
+  compatLogWarn('command-recovery', message)
 }
 
 /**
  * After a `command-outcome` frame has been applied: the ack to send back, or
  * `null` when the daemon should keep its copy (an older daemon that does not
- * know the ack, or an outcome that is not stored yet). Never throws.
+ * know the ack, or an outcome that is not stored yet). Never throws. Each
+ * reason for keeping it unconfirmed is logged once, so a result the server
+ * keeps sending is never stuck without a trace.
  */
 export async function ackForReportedOutcome(
   db: Db,
@@ -268,11 +319,24 @@ export async function ackForReportedOutcome(
     at?: string
   }
 ): Promise<CommandOutcomeAckMessage | null> {
+  const id = input.envelope.requestId
   try {
-    if (!(await serverHasCommandRecovery(db, input.serverId))) return null
-    const stored = await settleReportedOutcome(db, input)
-    return stored ? commandOutcomeAckMessage(input.envelope.requestId, input.at ?? nowIso()) : null
-  } catch {
+    if (!(await serverHasCommandRecovery(db, input.serverId))) {
+      warnUnconfirmedOnce(
+        `features:${input.serverId}`,
+        `results from server ${input.serverId} are not confirmed: its stored daemon features do not list command-recovery-v1`
+      )
+      return null
+    }
+    const notStored = await settleOutcome(db, input)
+    if (notStored === null) return commandOutcomeAckMessage(id, input.at ?? nowIso())
+    warnUnconfirmedOnce(`kept:${id}`, `result for command ${id} not confirmed: ${notStored}`)
+    return null
+  } catch (err) {
+    warnUnconfirmedOnce(
+      `error:${id}`,
+      `result for command ${id} not confirmed: ${unconfirmedErrorText(err)}`
+    )
     return null
   }
 }
