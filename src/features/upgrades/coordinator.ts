@@ -810,6 +810,56 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
   }
 
   /**
+   * The hourly check: resolve and save the channel target, then start an
+   * automatic run when something is behind, no run is open and updates are
+   * not paused. Reports the decision through `trace`.
+   */
+  async function checkForUpdates(paused: boolean): Promise<void> {
+    const target = await resolveTarget()
+    await deps.store.saveLatestBuild(target)
+    const active = await deps.store.activeRun()
+    const daemonCommit = target.daemon?.commit ?? null
+    const daemonDrift = daemonCommit
+      ? await deps.store.anyDaemonBehind(daemonCommit, target.daemon?.builtAt)
+      : false
+    const differs = daemonDrift || instanceBehind(target)
+    let autoStart: UpgradeTickDecision['autoStart'] = { decision: 'not-attempted' }
+    if (
+      shouldAutoStartRun({
+        targetDiffers: differs,
+        runActive: active !== null,
+        paused,
+      })
+    ) {
+      const started = await createUpgradeCoordinator({ ...deps, trace: undefined }).start({
+        source: 'auto',
+        startedBy: null,
+      })
+      autoStart = started.ok
+        ? {
+            decision: 'started',
+            runId: started.runId,
+            steps: await deps.store.countSteps(started.runId),
+          }
+        : refusedAutoStart(started)
+    }
+    deps.trace?.({
+      channel: deps.channel,
+      targetDaemon: target.daemon
+        ? { version: target.daemon.version, commit: target.daemon.commit }
+        : null,
+      targetInstance: target.instance
+        ? { version: target.instance.version, commit: target.instance.commit }
+        : null,
+      daemonDrift,
+      targetDiffers: differs,
+      activeRun: active ? { id: active.id, status: active.status, phase: active.phase } : null,
+      paused,
+      autoStart,
+    })
+  }
+
+  /**
    * Why an automatic start saves no run: the co-located daemon or control
    * plane is waiting out its retry backoff, or nothing needs work (the no-op
    * rule: every step on target or waiting out its backoff). Null to go on.
@@ -1147,50 +1197,7 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
     },
     tick: async (input) => {
       const paused = (await deps.store.pause()) !== null
-      if (input?.resolveManifests !== false) {
-        const target = await resolveTarget()
-        await deps.store.saveLatestBuild(target)
-        const active = await deps.store.activeRun()
-        const daemonCommit = target.daemon?.commit ?? null
-        const daemonDrift = daemonCommit
-          ? await deps.store.anyDaemonBehind(daemonCommit, target.daemon?.builtAt)
-          : false
-        const differs = daemonDrift || instanceBehind(target)
-        let autoStart: UpgradeTickDecision['autoStart'] = { decision: 'not-attempted' }
-        if (
-          shouldAutoStartRun({
-            targetDiffers: differs,
-            runActive: active !== null,
-            paused,
-          })
-        ) {
-          const started = await createUpgradeCoordinator({ ...deps, trace: undefined }).start({
-            source: 'auto',
-            startedBy: null,
-          })
-          autoStart = started.ok
-            ? {
-                decision: 'started',
-                runId: started.runId,
-                steps: await deps.store.countSteps(started.runId),
-              }
-            : refusedAutoStart(started)
-        }
-        deps.trace?.({
-          channel: deps.channel,
-          targetDaemon: target.daemon
-            ? { version: target.daemon.version, commit: target.daemon.commit }
-            : null,
-          targetInstance: target.instance
-            ? { version: target.instance.version, commit: target.instance.commit }
-            : null,
-          daemonDrift,
-          targetDiffers: differs,
-          activeRun: active ? { id: active.id, status: active.status, phase: active.phase } : null,
-          paused,
-          autoStart,
-        })
-      }
+      if (input?.resolveManifests !== false) await checkForUpdates(paused)
       const active = await deps.store.activeRun()
       if (!active) return
       if (paused) await stopPausedRun(active)

@@ -704,11 +704,11 @@ export function createDrizzleUpgradeStore(
 }
 
 /** Statuses a never-sent step can be in (a pause settles these). */
-const UNDISPATCHED_STATUSES: readonly UpgradeStepStatus[] = ['pending', 'waiting']
+const UNDISPATCHED_STATUSES: ReadonlySet<UpgradeStepStatus> = new Set(['pending', 'waiting'])
 
 /** A step that was never sent to its host: a pause may settle it. */
 export function isUndispatchedStep(step: { status: UpgradeStepStatus; attempts: number }): boolean {
-  return step.attempts === 0 && UNDISPATCHED_STATUSES.includes(step.status)
+  return step.attempts === 0 && UNDISPATCHED_STATUSES.has(step.status)
 }
 
 /** One statement; the status and attempts guard makes it safe beside a concurrent report. */
@@ -737,7 +737,11 @@ async function skipUndispatchedStepRows(
   return rows.length
 }
 
-const FAILURE_STATUSES: readonly UpgradeStepStatus[] = ['failed', 'rolled_back', 'needs_attention']
+const FAILURE_STATUSES: ReadonlySet<UpgradeStepStatus> = new Set([
+  'failed',
+  'rolled_back',
+  'needs_attention',
+])
 
 function failureUnitTargets(targets: UpgradeFailureTargets): { unit: string; commit: string }[] {
   const out: { unit: string; commit: string }[] = []
@@ -753,7 +757,7 @@ function memoryFailureHistory(
   const wanted = failureUnitTargets(targets)
   const out = new Map<string, UpgradeFailureHistory>()
   for (const step of rows) {
-    if (!FAILURE_STATUSES.includes(step.status)) continue
+    if (!FAILURE_STATUSES.has(step.status)) continue
     if (!wanted.some((want) => want.unit === step.unit && want.commit === step.toCommit)) continue
     const key = upgradeFailureKey(step.serverId, step.unit)
     const prior = out.get(key)
