@@ -341,7 +341,13 @@ every 30 s. The control plane then works like this (`deploy-wait.ts`,
 - A result that arrives in that time settles the deploy as normal. A deploy
   already `timed_out` whose server later reports success is corrected to
   `succeeded` with a note in `metadata.lateOutcome` (`settleReportedOutcome`),
-  never dropped. The ack is sent only once the result is stored.
+  never dropped. The ack is sent only once the result is stored: the command
+  row flipped to `succeeded` (the status alone when the database refuses a value
+  in the report). The rest of the correction (step plan, deployment, containers) is
+  best effort, logged with the command id when it fails and not retried; it
+  never holds the ack back. An environment deleted since has no deployment row,
+  so nothing is written for it. A late success for a `cancelled` deploy or for
+  any other final command is confirmed and changes nothing.
 - A server without the feature keeps the fixed 10 minute cap, worded "no result
   came back" (the deploy may still have finished).
 

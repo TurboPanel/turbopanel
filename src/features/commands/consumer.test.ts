@@ -1,8 +1,9 @@
 import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { DENY_FIREWALL_APPLY } from '../firewall/enforcement.ts'
 import { assertEquals, assertRejects } from '@std/assert'
+import { stub } from '@std/testing/mock'
 import { projectServerDaemon } from '../../daemon/cell/postgres-projection.ts'
-import { eq, inArray } from 'drizzle-orm'
+import { eq, inArray, sql } from 'drizzle-orm'
 import { loadDeployRunCapMs } from './deploy-wait-settings.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
 import { createDenoDb, type Db, endDbConnection } from '../../db/connection.ts'
@@ -62,6 +63,7 @@ import {
 } from './command-records.ts'
 import { enableOrganizationFabric, listFabricRelays } from '../fabric/fabric-records.ts'
 import { environmentHasFolders, listEnvironmentFolders } from '../folders/records.ts'
+import { deleteProjectCascade } from '../projects/project-delete.ts'
 import {
   type DispatchableCommandRecord,
   isTransientError,
@@ -7150,22 +7152,41 @@ test('a server without sign-of-life reports keeps the fixed cap, worded as no re
   })
 })
 
+type DeployFixtures = Parameters<Parameters<typeof withDeployFixtures>[0]>[0]
+
+/** A deploy on a server that confirms results, given up on as `timed_out` after hours of silence. */
+async function timedOutDeploy(ctx: DeployFixtures) {
+  const record = await quietDeploy({
+    ctx,
+    environmentId: ctx.environmentId,
+    projectId: ctx.projectId,
+    ranMs: 7 * 60 * MIN,
+    silentMs: 7 * 60 * MIN,
+    recovery: true,
+  })
+  const registry = registryWithRequest(ctx.serverId, (id) => ACKED_REQUEST(ctx.serverId, id))
+  await processCommandEnvelope(ctx.db, registry, buildEnvelope(record, ctx.serverId), {
+    firewallApplyGate: DENY_FIREWALL_APPLY,
+    deployWaitHoldMs: 0,
+  })
+  assertEquals((await getCommandRecord(ctx.db, record.id))?.status, 'timed_out')
+  return record
+}
+
+/** A late `command-outcome` saying the command succeeded. */
+function lateSuccess(requestId: string, result: unknown = { containers: [] }) {
+  return {
+    kind: 'command-outcome' as const,
+    requestId,
+    at: new Date().toISOString(),
+    ok: true,
+    result,
+  }
+}
+
 test('a result that arrives after the deploy was given up on corrects it to succeeded, once', async () => {
   await withDeployFixtures(async (ctx) => {
-    const record = await quietDeploy({
-      ctx,
-      environmentId: ctx.environmentId,
-      projectId: ctx.projectId,
-      ranMs: 7 * 60 * MIN,
-      silentMs: 7 * 60 * MIN,
-      recovery: true,
-    })
-    const registry = registryWithRequest(ctx.serverId, (id) => ACKED_REQUEST(ctx.serverId, id))
-    await processCommandEnvelope(ctx.db, registry, buildEnvelope(record, ctx.serverId), {
-      firewallApplyGate: DENY_FIREWALL_APPLY,
-      deployWaitHoldMs: 0,
-    })
-    assertEquals((await getCommandRecord(ctx.db, record.id))?.status, 'timed_out')
+    const record = await timedOutDeploy(ctx)
 
     const envelope = {
       kind: 'command-outcome' as const,
@@ -7218,6 +7239,161 @@ test('a result that arrives after the deploy was given up on corrects it to succ
   })
 })
 
+test('a late success for a deploy whose project was deleted is confirmed and writes nothing for it', async () => {
+  await withDeployFixtures(async (ctx) => {
+    const record = await timedOutDeploy(ctx)
+    assertEquals((await deleteProjectCascade(ctx.db, ctx.projectId)).ok, true)
+
+    const replies: unknown[] = []
+    const at = new Date().toISOString()
+    await dispatchDaemonInboundMessage({
+      cell: expiringCellRequests(ctx.serverId, 0).registry.getCell(ctx.serverId),
+      db: ctx.db,
+      serverId: ctx.serverId,
+      connectionId: 'conn-late-result',
+      message: {
+        type: 'command-outcome',
+        id: record.id,
+        ok: true,
+        at,
+        daemonRespondedAt: at,
+        result: {
+          projectName: 'tp-deploy-test',
+          containers: [
+            {
+              composeServiceName: 'web',
+              containerId: 'late-cid',
+              containerName: 'tp-deploy-test-web-1',
+              status: 'running',
+              role: 'service',
+            },
+          ],
+        },
+      },
+      reply: (message) => replies.push(message),
+    })
+
+    assertEquals(replies.length, 1)
+    assertEquals((replies[0] as { type: string }).type, 'command-outcome-ack')
+    assertEquals((replies[0] as { id: string }).id, record.id)
+    assertEquals((await getCommandRecord(ctx.db, record.id))?.status, 'succeeded')
+    const deployments = await ctx.db
+      .select({ id: deployment.id })
+      .from(deployment)
+      .where(eq(deployment.environmentId, ctx.environmentId))
+    assertEquals(deployments, [])
+    const containers = await ctx.db
+      .select({ id: container.id })
+      .from(container)
+      .where(eq(container.serverId, ctx.serverId))
+    assertEquals(containers, [])
+    assertEquals(await getCommandDispatchPayload(ctx.db, record.id), null)
+  })
+})
+
+test('a late success whose report the database refuses is still confirmed, with the status corrected', async () => {
+  await withDeployFixtures(async (ctx) => {
+    const record = await timedOutDeploy(ctx)
+    // Postgres refuses a NUL character inside jsonb, so the full correction fails.
+    const envelope = lateSuccess(record.id, {
+      projectName: 'tp-deploy-test',
+      warnings: ['build printed \u0000'],
+    })
+
+    const ack = await ackForReportedOutcome(ctx.db, {
+      serverId: ctx.serverId,
+      envelope,
+      record: null,
+    })
+
+    assertEquals(ack?.type, 'command-outcome-ack')
+    assertEquals(ack?.id, record.id)
+    const stored = await getCommandRecord(ctx.db, record.id)
+    assertEquals(stored?.status, 'succeeded')
+    assertEquals(stored?.error ?? null, null)
+    assertEquals(stored?.result ?? null, null)
+    const [meta] = await ctx.db
+      .select({ metadata: command.metadata })
+      .from(command)
+      .where(eq(command.id, record.id))
+    assertEquals(
+      (meta?.metadata as { lateOutcome?: { note: string } }).lateOutcome?.note,
+      LATE_OUTCOME_NOTE
+    )
+  })
+})
+
+test('a late success is confirmed even when the deploy records cannot be updated', async () => {
+  await withDeployFixtures(async (ctx) => {
+    const record = await timedOutDeploy(ctx)
+    // Only this test's deployment row refuses writes, so the side effects fail.
+    const refuse = sql.raw(`tp_refuse_${ctx.environmentId.replaceAll('-', '')}`)
+    await ctx.db.execute(
+      sql`CREATE FUNCTION ${refuse}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'deployment row is read-only'; END $$`
+    )
+    await ctx.db.execute(
+      sql`CREATE TRIGGER ${refuse} BEFORE UPDATE ON deployment FOR EACH ROW WHEN (OLD.environment_id = ${sql.raw(`'${ctx.environmentId}'`)}) EXECUTE FUNCTION ${refuse}()`
+    )
+    try {
+      const ack = await ackForReportedOutcome(ctx.db, {
+        serverId: ctx.serverId,
+        envelope: lateSuccess(record.id),
+        record: null,
+      })
+      assertEquals(ack?.id, record.id)
+    } finally {
+      await ctx.db.execute(sql`DROP TRIGGER ${refuse} ON deployment`)
+      await ctx.db.execute(sql`DROP FUNCTION ${refuse}()`)
+    }
+    const stored = await getCommandRecord(ctx.db, record.id)
+    assertEquals(stored?.status, 'succeeded')
+    const [row] = await ctx.db
+      .select({ status: deployment.status })
+      .from(deployment)
+      .where(eq(deployment.environmentId, ctx.environmentId))
+    assertEquals(row?.status, 'failed')
+  })
+})
+
+test('a late success for a cancelled deploy or another command is confirmed and changes nothing', async () => {
+  await withDeployFixtures(async (ctx) => {
+    const cancelled = await timedOutDeploy(ctx)
+    await ctx.db.update(command).set({ status: 'cancelled' }).where(eq(command.id, cancelled.id))
+    const ping = await createCommandRecord(ctx.db, {
+      serverId: ctx.serverId,
+      ...TEST_COMMAND_ACTOR,
+      type: 'daemon.ping',
+      payload: {},
+    })
+    await transitionCommand(ctx.db, ping.id, { status: 'timed_out' })
+    const running = await createCommandRecord(ctx.db, {
+      serverId: ctx.serverId,
+      ...TEST_COMMAND_ACTOR,
+      type: 'daemon.ping',
+      payload: {},
+    })
+    await transitionCommand(ctx.db, running.id, {
+      status: 'sent',
+      sentAt: new Date().toISOString(),
+    })
+
+    const ackFor = (id: string) =>
+      ackForReportedOutcome(ctx.db, {
+        serverId: ctx.serverId,
+        envelope: lateSuccess(id),
+        record: null,
+      })
+    assertEquals((await ackFor(cancelled.id))?.id, cancelled.id)
+    assertEquals((await ackFor(ping.id))?.id, ping.id)
+    // Not final and nothing in the cell holds it: kept, so the daemon sends it again.
+    assertEquals(await ackFor(running.id), null)
+
+    assertEquals((await getCommandRecord(ctx.db, cancelled.id))?.status, 'cancelled')
+    assertEquals((await getCommandRecord(ctx.db, ping.id))?.status, 'timed_out')
+    assertEquals((await getCommandRecord(ctx.db, running.id))?.status, 'sent')
+  })
+})
+
 test('an outcome is confirmed to the daemon only when it is stored and the daemon knows the confirmation', async () => {
   await withConsumerFixtures(async ({ db, serverId }) => {
     await attachConnectedDaemonStatus(db, serverId)
@@ -7244,8 +7420,22 @@ test('an outcome is confirmed to the daemon only when it is stored and the daemo
     const ack = await ackForReportedOutcome(db, { serverId, envelope, record: stored })
     assertEquals(ack?.type, 'command-outcome-ack')
     assertEquals(ack?.id, record.id)
-    // Nothing holds it yet: not confirmed, so the daemon sends it again.
-    assertEquals(await ackForReportedOutcome(db, { serverId, envelope, record: null }), null)
+    // Nothing holds it yet: not confirmed, so the daemon sends it again. Why
+    // is logged once, not on every resend.
+    const writes: string[] = []
+    const writeStub = stub(Deno.stderr, 'writeSync', (data: Uint8Array) => {
+      writes.push(new TextDecoder().decode(data))
+      return data.byteLength
+    })
+    try {
+      assertEquals(await ackForReportedOutcome(db, { serverId, envelope, record: null }), null)
+      assertEquals(await ackForReportedOutcome(db, { serverId, envelope, record: null }), null)
+    } finally {
+      writeStub.restore()
+    }
+    const kept = writes.filter((line) => line.includes(`result for command ${record.id}`))
+    assertEquals(kept.length, 1)
+    assertEquals(kept[0]?.includes('still sent and no request in the cell is waiting for it'), true)
   })
 })
 
