@@ -1046,6 +1046,8 @@ export async function sweepCommandHistorySafely(db: Db): Promise<void> {
 /**
  * Advance managed upgrades. The cadence is `TURBOPANEL_UPGRADE_TICK_MINUTES`
  * (default 15, see features/upgrades/tick-cadence.ts), independent of history prune.
+ * The check for a new build (and an automatic start) runs on the first tick at
+ * or after this install's minute of the hour (`schedule.ts`), so once an hour.
  * Manifest fetches are cached. Dispatch is capped inside the coordinator.
  */
 export async function runUpgradeMaintenanceSafely(db: Db, env: CloudflareBindings): Promise<void> {

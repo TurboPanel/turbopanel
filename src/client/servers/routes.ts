@@ -5,7 +5,7 @@ import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { requireStepUpIfConfigured } from '../authn/step-up.ts'
 import { isAdminRole } from '../authn/session-store.ts'
-import { can, listVisible } from '../authz/index.ts'
+import { listVisible } from '../authz/index.ts'
 import { assertCanManageOr403, assertCanReadOr403, getOrgId, parseJsonBody } from '../shared.ts'
 import { type Db, getDaemonCellRegistry, getDb } from '../../db/connection.ts'
 import { recordAuditAndNotify } from '../../features/notifications/audit-bridge.ts'
@@ -29,7 +29,6 @@ import {
 import { readProjectionsForServers } from '../../daemon/cell/postgres-projection.ts'
 import {
   onDaemonUpdateExpired,
-  onDaemonUpdateQueued,
   onDaemonUpdateReset,
   onDaemonUpdateResult,
   repairStaleProjectedUpdate,
@@ -37,37 +36,16 @@ import {
 import type { DaemonCellRegistry } from '../../contracts/cell.ts'
 import type { UpdateProjection } from '../../features/servers/daemon-state.ts'
 import {
-  type DaemonOutboundEnvelope,
-  generateDeliveryId,
-  generateRequestId,
-} from '../../contracts/cell-protocol.ts'
-import {
   clearServerDaemonState,
   getServerDaemonStateByServerId,
   isDaemonKeyActive,
   revokeDaemonKey,
 } from '../../features/servers/server-identity-db.ts'
 import { datacenter, organization, principal, server } from '../../db/schema.ts'
-import { INSTANCE_VERSION } from '../../app/version.ts'
-import { resolveBuildLabel, resolveInstanceRevision } from '../../app/build-info.ts'
-import { isExplicitDevelopmentMode } from '../../lib/dev-mode.ts'
-import { createUpgradeCoordinator } from '../../features/upgrades/coordinator.ts'
-import { parseUpgradeBatchDefault } from '../../features/settings/upgrade-settings.ts'
-import { createDrizzleUpgradeStore } from '../../features/upgrades/store.ts'
-import {
-  parseUpgradeVerifyTimeoutMs,
-  UPGRADE_VERIFY_TIMEOUT_ENV,
-} from '../../features/upgrades/transitions.ts'
-import {
-  type ClientUpdateBlock,
-  clientUpdateBlockReason,
-  clientUpdateBlockStatus,
-  type ServerUpdateBlockedCode,
-} from '../../features/upgrades/decisions.ts'
 import { resolveUpdateManifest } from '../../features/update/manifest.ts'
 import { resolveInstanceUpdateChannel, type UpdateChannel } from '../../contracts/update-channel.ts'
-import { getServerUpdatePreparer } from '../../features/update/prepare.ts'
 import { revokeLicensesBoundToServer } from '../../features/licenses/license.ts'
+import { updatesAutomaticBody } from '../../features/upgrades/decisions.ts'
 import { syncSelfHostedGrant } from '../../features/tiers/self-hosted-grant-records.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
 import {
@@ -115,10 +93,8 @@ import {
   serverOnlineForgetBlockedResponse,
   serverSystemContainersDeleteBlockedResponse,
 } from './delete-guards.ts'
-import { resolveColocatedServerId } from '../authn/install-state.ts'
 import { hasActiveColocatedLicenseBinding, resolveColocatedServerIdSet } from './colocated.ts'
 import {
-  colocatedServerUpdateBlockedReason,
   isStaleProjectedUpdating,
   loadServerStatusRecords,
   resolveServerUpdateStatus,
@@ -149,14 +125,11 @@ import {
   isHostingDisableTransition,
   isHostingEnableTransition,
   parseServerPatchCore,
-  queueServerUpdateHttpStatus,
   repairedUpdateDoneProjection,
   repairedUpdateIdleProjection,
-  resolveBatchUpdateEligibility,
   resolveServerHostDefaultsFields,
   resolveServerTimezoneFields,
   resolveTrunkTargetFields,
-  runPreparedServerUpdate,
   serverDeletedPayload,
   type ServerPatchFields,
   shapeServerDatacenters,
@@ -170,8 +143,6 @@ import {
   loadDatacenterDisplayNames,
   loadDatacenterMembershipsForServers,
 } from '../../features/net/datacenter-membership.ts'
-
-const UPDATE_REQUEST_TTL_SECONDS = 300
 
 type BatchStatusPayload = {
   servers: Awaited<ReturnType<typeof loadServerStatusRecords>>
@@ -191,178 +162,17 @@ function evictExpiredBatchStatusEntries(now = Date.now()): void {
   }
 }
 
-type QueuedUpdateResult = {
-  ok: true
-  queued: true
-  status: 'updating'
-  serverId: string
-  requestId: string
-  channel: UpdateChannel
-}
-
-type QueueUpdateFailure = {
-  ok: false
-  error: string
-}
-
 /** The channel this control plane follows — the one every queued update targets. */
 function instanceUpdateChannel(c: Context<AppEnv>): UpdateChannel {
   return resolveInstanceUpdateChannel(c.get('platformEnv'))
 }
 
 /**
- * The instance's upgrade coordinator for this request, plus the co-located
- * server id it was built with (callers exclude that host from fleet runs).
+ * Every server updates on its own (the control plane's hourly check); the
+ * routes that started one by hand answer 410 `updates_automatic`.
  */
-async function buildUpgradeCoordinator(
-  c: Context<AppEnv>,
-  db: Db,
-  registry: DaemonCellRegistry,
-  runtime: 'deno' | 'workers'
-): Promise<{
-  coordinator: ReturnType<typeof createUpgradeCoordinator>
-  colocated: Awaited<ReturnType<typeof resolveColocatedServerId>>
-}> {
-  const revision = resolveInstanceRevision(c.get('platformEnv'))
-  const colocated = await resolveColocatedServerId(db, registry)
-  const coordinator = createUpgradeCoordinator({
-    store: createDrizzleUpgradeStore(
-      db,
-      registry,
-      parseUpgradeBatchDefault(c.get('platformEnv')?.TURBOPANEL_UPGRADE_BATCH)
-    ),
-    enqueue: (serverId, envelope) => registry.getCell(serverId).enqueue(envelope),
-    runtime,
-    channel: instanceUpdateChannel(c),
-    development: isExplicitDevelopmentMode(),
-    now: () => new Date().toISOString(),
-    colocatedServerId: colocated,
-    instanceInstalled: { version: INSTANCE_VERSION, commit: revision.commit },
-    buildLabel: resolveBuildLabel(c.get('platformEnv')),
-    verifyTimeoutMs: parseUpgradeVerifyTimeoutMs(
-      c.get('platformEnv')?.[UPGRADE_VERIFY_TIMEOUT_ENV]
-    ),
-  })
-  return { coordinator, colocated }
-}
-
-async function clientUpdateGate(
-  c: Context<AppEnv>,
-  runtime: 'deno' | 'workers'
-): Promise<ClientUpdateBlock> {
-  if (runtime === 'workers') {
-    return { blocked: true, error: 'updates_managed' }
-  }
-  const db = getDb(c)
-  const registry = getDaemonCellRegistry(c)
-  if (!db || !registry) return { blocked: false, useCoordinator: false }
-  const { coordinator } = await buildUpgradeCoordinator(c, db, registry, runtime)
-  try {
-    return await coordinator.updateGate()
-  } catch {
-    if (isExplicitDevelopmentMode()) {
-      return { blocked: false, useCoordinator: false }
-    }
-    return { blocked: true, error: 'upgrade_gate_unavailable' }
-  }
-}
-
-function blockedUpdateResponse(c: Context<AppEnv>, gate: ClientUpdateBlock): Response | null {
-  if (!gate.blocked) return null
-  return c.json({ ok: false, error: gate.error }, clientUpdateBlockStatus(gate.error))
-}
-
-/** Legacy per-server enqueue is development-only. Production fails closed. */
-function legacyUpdateAllowed(gate: ClientUpdateBlock): boolean {
-  return !gate.blocked && !gate.useCoordinator && isExplicitDevelopmentMode()
-}
-
-function gateFields(gate: ClientUpdateBlock): {
-  updateBlocked?: boolean
-  updateBlockedCode?: ServerUpdateBlockedCode
-  updateBlockedReason?: string
-} {
-  if (!gate.blocked) return {}
-  return {
-    updateBlocked: true,
-    updateBlockedCode: gate.error,
-    updateBlockedReason: clientUpdateBlockReason(gate.error),
-  }
-}
-
-async function queueServerUpdate(
-  registry: DaemonCellRegistry,
-  db: Db,
-  serverId: string,
-  channel: UpdateChannel
-): Promise<QueuedUpdateResult | QueueUpdateFailure> {
-  const presence = await resolveFleetPresence(db, registry, [serverId])
-  const live = presence.get(serverId)
-  if (!live?.connected) {
-    return { ok: false, error: 'Daemon not connected' }
-  }
-  // Includes the self-host pin: the "don't remote-update the host you run
-  // on" guard must hold on both runtimes, and the transport probes
-  // (`__direct__`, the local machine key) only ever fire on the self-hosted
-  // one. Against TurboPanel High Availability the co-located daemon connects
-  // over HTTPS like any other, so the pin is the only thing that still knows.
-  const colocatedIds = await resolveColocatedServerIdSet(db, registry, [serverId], {
-    includeSelfHostPin: true,
-  })
-  if (colocatedIds.has(serverId)) {
-    return { ok: false, error: colocatedServerUpdateBlockedReason() }
-  }
-
-  const requestId = generateRequestId()
-  const envelope: DaemonOutboundEnvelope = {
-    kind: 'update',
-    deliveryId: generateDeliveryId(),
-    requestId,
-    at: new Date().toISOString(),
-    channel: channel,
-  }
-
-  const preparer = getServerUpdatePreparer()
-  if (preparer) {
-    // Dev-only: rebuild the local daemon overlay before releasing the
-    // envelope. Mark the projection as updating now so the UI polls through
-    // the build; the envelope enqueues when the (single-flight) build lands.
-    await onDaemonUpdateQueued(db, serverId, requestId, channel, envelope.at)
-    void runPreparedServerUpdate({
-      prepare: preparer,
-      enqueue: async () => {
-        await registry.getCell(serverId).enqueue(envelope, {
-          ttlSeconds: UPDATE_REQUEST_TTL_SECONDS,
-        })
-      },
-      markQueued: (queuedAt) => onDaemonUpdateQueued(db, serverId, requestId, channel, queuedAt),
-      markFailed: (error, finishedAt) =>
-        onDaemonUpdateResult(db, serverId, requestId, false, finishedAt, error),
-    })
-    return {
-      ok: true,
-      queued: true,
-      status: 'updating',
-      serverId,
-      requestId,
-      channel: channel,
-    }
-  }
-
-  await registry.getCell(serverId).enqueue(envelope, {
-    ttlSeconds: UPDATE_REQUEST_TTL_SECONDS,
-  })
-
-  await onDaemonUpdateQueued(db, serverId, requestId, channel, envelope.at)
-
-  return {
-    ok: true,
-    queued: true,
-    status: 'updating',
-    serverId,
-    requestId,
-    channel: channel,
-  }
+function updatesAutomaticResponse(c: Context<AppEnv>): Response {
+  return c.json(updatesAutomaticBody(), 410)
 }
 
 async function repairProjectedUpdateIfStale(
@@ -1002,14 +812,13 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     const registry = getDaemonCellRegistry(c)
     const presence = await resolveFleetPresence(db, registry, visibleIds)
     const projections = await readProjectionsForServers(db, visibleIds)
-    // Self-host pin included — see `queueServerUpdate`.
+    // Self-host pin included — see `resolveColocatedServerIdSet`.
     const colocatedIds = await resolveColocatedServerIdSet(db, registry, visibleIds, {
       includeSelfHostPin: true,
     })
     const channel = instanceUpdateChannel(c)
     const targetManifest = await resolveUpdateManifest(channel)
     const { target, targetStatus, targetError } = resolveTrunkTargetFields(targetManifest, channel)
-    const gate = await clientUpdateGate(c, opts.runtime)
 
     const servers = await Promise.all(
       visibleIds.map(async (serverId) => {
@@ -1035,7 +844,6 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
           current,
           colocatedWithInstance: colocatedIds.has(serverId),
           ...resolved,
-          ...gateFields(gate),
         }
       })
     )
@@ -1050,107 +858,7 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     })
   })
 
-  router.post('/servers/updates', async (c) => {
-    const scope = await resolveOrgRequest(c)
-    if (scope instanceof Response) return scope
-    const { db, session, organizationId } = scope
-
-    // Starting a fleet update opens the one instance-wide upgrade run: the
-    // same organization:manage bar as updating a single server.
-    const denied = await assertCanManageOr403(c, 'organization', organizationId)
-    if (denied) return denied
-
-    const registry = getDaemonCellRegistry(c)
-    if (!registry) {
-      return c.json({ error: 'Daemon cell registry unavailable' }, 503)
-    }
-
-    const visibleIds = await listVisible(db, {
-      kind: 'server',
-      userId: session.userId,
-      organizationId,
-    })
-
-    if (opts.runtime === 'workers') {
-      return c.json({ ok: false, error: 'updates_managed' }, 409)
-    }
-    const gate = await clientUpdateGate(c, opts.runtime)
-    const blocked = blockedUpdateResponse(c, gate)
-    if (blocked) return blocked
-    if (!gate.blocked && gate.useCoordinator) {
-      const { coordinator, colocated } = await buildUpgradeCoordinator(
-        c,
-        db,
-        registry,
-        opts.runtime
-      )
-      const started = await coordinator.start({
-        source: 'server',
-        startedBy: session.userId,
-        fleetServerIds: visibleIds.filter((id) => id !== colocated),
-      })
-      if (!started.ok) return c.json(started, 409)
-      return c.json({ ok: true, runId: started.runId, queued: true })
-    }
-    if (!legacyUpdateAllowed(gate)) {
-      return c.json({ ok: false, error: 'upgrade_gate_unavailable' }, 503)
-    }
-
-    const channel = instanceUpdateChannel(c)
-    const targetManifest = await resolveUpdateManifest(channel)
-    const presence = await resolveFleetPresence(db, registry, visibleIds)
-    // Self-host pin included — see `queueServerUpdate`.
-    const colocatedIds = await resolveColocatedServerIdSet(db, registry, visibleIds, {
-      includeSelfHostPin: true,
-    })
-
-    const results = await Promise.all(
-      visibleIds.map(async (serverId) => {
-        const manageable = await can(db, session.userId, 'organization:manage', 'server', serverId)
-        if (!manageable) {
-          return {
-            serverId,
-            ok: false,
-            error: 'Forbidden',
-          }
-        }
-
-        const current = currentCommitFromDaemonBuild(presence.get(serverId)?.daemonBuild)
-        const eligibility = resolveBatchUpdateEligibility({
-          connected: presence.get(serverId)?.connected ?? false,
-          colocated: colocatedIds.has(serverId),
-          current,
-          targetCommit: targetManifest?.commit ?? null,
-        })
-        if (!eligibility.ok) {
-          return {
-            serverId,
-            ok: false,
-            error: eligibility.error,
-          }
-        }
-
-        const queued = await queueServerUpdate(registry, db, serverId, channel)
-        if (!queued.ok) {
-          return { serverId, ok: false, error: queued.error }
-        }
-
-        return {
-          serverId,
-          ok: true,
-          queued: true,
-          status: queued.status,
-          requestId: queued.requestId,
-          channel: queued.channel,
-        }
-      })
-    )
-
-    return c.json({
-      ok: results.every((result) => result.ok),
-      results,
-    })
-  })
+  router.post('/servers/updates', (c) => updatesAutomaticResponse(c))
 
   router.get('/servers/status', async (c) => {
     const scope = await resolveOrgRequest(c)
@@ -1301,7 +1009,7 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     try {
       const presence = await resolveFleetPresence(db, registry, [id])
       const projections = await readProjectionsForServers(db, [id])
-      // Self-host pin included — see `queueServerUpdate`.
+      // Self-host pin included — see `resolveColocatedServerIdSet`.
       const colocatedIds = await resolveColocatedServerIdSet(db, registry, [id], {
         includeSelfHostPin: true,
       })
@@ -1371,7 +1079,7 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     const registry = getDaemonCellRegistry(c)
     const presence = await resolveFleetPresence(db, registry, [id])
     const projections = await readProjectionsForServers(db, [id])
-    // Self-host pin included — see `queueServerUpdate`.
+    // Self-host pin included — see `resolveColocatedServerIdSet`.
     const colocatedIds = await resolveColocatedServerIdSet(db, registry, [id], {
       includeSelfHostPin: true,
     })
@@ -1395,7 +1103,6 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
       projectedUpdate: repairedUpdate ?? null,
     })
 
-    const gate = await clientUpdateGate(c, opts.runtime)
     return c.json({
       ok: true,
       serverId: id,
@@ -1403,50 +1110,10 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
       current,
       colocatedWithInstance: colocatedIds.has(id),
       ...resolved,
-      ...gateFields(gate),
     })
   })
 
-  router.post('/servers/:id/update', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const id = c.req.param('id')
-    const denied = await assertCanManageOr403(c, 'server', id)
-    if (denied) return denied
-
-    const registry = getDaemonCellRegistry(c)
-    if (!registry) {
-      return c.json({ error: 'Daemon cell registry unavailable' }, 503)
-    }
-
-    if (opts.runtime === 'workers') {
-      return c.json({ ok: false, error: 'updates_managed' }, 409)
-    }
-    const gate = await clientUpdateGate(c, opts.runtime)
-    const blocked = blockedUpdateResponse(c, gate)
-    if (blocked) return blocked
-    if (!gate.blocked && gate.useCoordinator) {
-      const { coordinator } = await buildUpgradeCoordinator(c, db, registry, opts.runtime)
-      const started = await coordinator.start({
-        source: 'server',
-        startedBy: c.get('session')?.userId ?? null,
-        serverId: id,
-      })
-      if (!started.ok) return c.json(started, 409)
-      return c.json({ ok: true, runId: started.runId, queued: true })
-    }
-    if (!legacyUpdateAllowed(gate)) {
-      return c.json({ ok: false, error: 'upgrade_gate_unavailable' }, 503)
-    }
-
-    const queued = await queueServerUpdate(registry, db, id, instanceUpdateChannel(c))
-    if (!queued.ok) {
-      return c.json({ ok: false, error: queued.error }, queueServerUpdateHttpStatus(queued.error))
-    }
-
-    return c.json(queued)
-  })
+  router.post('/servers/:id/update', (c) => updatesAutomaticResponse(c))
 
   router.get('/servers/:id', async (c) => {
     const db = getDb(c)

@@ -191,7 +191,6 @@ const OWNER_ONLY: Action[] = [
 ]
 
 const MANAGER_AND_UP: Action[] = [
-  { label: 'start a fleet update', method: 'POST', path: () => '/servers/updates', body: {} },
   {
     label: 'rename a server',
     method: 'PATCH',

@@ -58,6 +58,8 @@ export const AUDIT_ACTIONS = [
   'tls.certificate.key_erase',
   'tls.certificate.delete',
   'mail.dead_letter.replay',
+  'upgrade.pause',
+  'upgrade.resume',
   'binding.create',
   'binding.update',
   'binding.delete',

@@ -16,7 +16,6 @@ const test = Deno.test.bind(Deno)
 
 const COLOCATED = '11111111-1111-4111-8111-111111111111'
 const HOST = '22222222-2222-4222-8222-222222222222'
-const OTHER = '33333333-3333-4333-8333-333333333333'
 const START = Date.parse('2026-10-22T10:00:00.000Z')
 const OLD = 'old-daemon'
 const NEW = 'new-daemon'
@@ -278,57 +277,6 @@ test('a step names its server: live name, else hostname, else the planned snapsh
   assertEquals((await cleared.step())?.serverName, 'w')
   assertEquals((await cleared.step())?.hostname, 'w.lan')
 })
-
-test('retrying a step that failed after a restart error sends a fresh install that can succeed', async () => {
-  // A second server still updating keeps the run open, so the failed step can be retried.
-  const h = await harness({}, [fact(OTHER, { name: 'x', hostname: 'x.lan' })])
-  await h.restartFailedFrame(diagnostics)
-  await h.tick(UPGRADE_RESTART_RECONNECT_MS + 1_000)
-  const failed = await h.step()
-  assertEquals(failed?.status, 'failed')
-  assertEquals((await h.coordinator.retry(failed?.id ?? '')).ok, true)
-  const retried = await h.step()
-  assertEquals(retried?.status, 'dispatched')
-  assertEquals(retried?.attempts, 2)
-  const detail = retried?.detail as { restartPending?: unknown; restartNote?: unknown }
-  assertEquals(detail.restartPending, undefined)
-  assertEquals(detail.restartNote, undefined)
-  await h.tick(1_000)
-  assertEquals((await h.step())?.status, 'dispatched')
-  await h.comesBack(NEW)
-  const other = h.facts.find((item) => item.serverId === OTHER)
-  if (other) other.commit = NEW
-  await h.coordinator.noteDaemonCommit(OTHER, NEW, h.at())
-  await h.tick(1_000)
-  const done = await h.step()
-  assertEquals(done?.status, 'done')
-  assertEquals((done?.detail as { restartNote?: unknown }).restartNote, undefined)
-  assertEquals(await h.runStatus(), 'succeeded')
-})
-
-for (const skew of [
-  { label: 'behind', ms: -15 * 60_000 },
-  { label: 'ahead', ms: 15 * 60_000 },
-]) {
-  test(`the reconnect window runs on the panel's clock when the host's clock is 15 minutes ${skew.label}`, async () => {
-    const h = await harness()
-    await h.coordinator.noteProgress({
-      serverId: HOST,
-      unit: 'daemon',
-      stage: 'failed',
-      at: new Date(Date.parse(h.at()) + skew.ms).toISOString(),
-      requestId: h.requestId,
-      errorCode: 'restart_failed',
-      detail: 'daemon restart failed after reconcile',
-    })
-    h.host.connected = false
-    await h.tick(UPGRADE_RESTART_RECONNECT_MS - 60_000)
-    assertEquals((await h.step())?.status, 'restarting')
-    await h.tick(2 * 60_000)
-    assertEquals((await h.step())?.status, 'failed')
-    assertEquals((await h.step())?.errorCode, 'restart_failed')
-  })
-}
 
 test('a failed frame replayed after the host came back on the target is ignored', async () => {
   const h = await harness()

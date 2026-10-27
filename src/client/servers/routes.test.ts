@@ -3098,7 +3098,7 @@ test('GET /servers/updates does not call listRequests on the cell', async () => 
   }
 })
 
-test('POST /servers/updates refuses a member who cannot manage the organization', async () => {
+test('POST /servers/updates is retired: updates are automatic', async () => {
   if (!dbUrl) {
     skipWithoutDatabase('server route tests')
     return
@@ -3141,8 +3141,8 @@ test('POST /servers/updates refuses a member who cannot manage the organization'
       method: 'POST',
       headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
     })
-    assertEquals(res.status, 403)
-    assertEquals((await readJson<ErrorJson>(res)).error, 'Forbidden')
+    assertEquals(res.status, 410)
+    assertEquals((await readJson<ErrorJson>(res)).error, 'updates_automatic')
   } finally {
     await db.delete(server).where(eq(server.id, serverId))
     await db.delete(teammate).where(eq(teammate.teamId, teamId))
@@ -4222,7 +4222,7 @@ test('GET /servers/:id/update returns idle status for a disconnected server', as
   })
 })
 
-test('POST /servers/:id/update does not use the legacy updater when the gate cannot queue it', async () => {
+test('POST /servers/:id/update is retired: the server updates on its own', async () => {
   await withServerDeleteFixtures(async ({ db, app, secrets, userId, organizationId, serverId }) => {
     const cookie = await sessionCookie(db, secrets, userId)
     const res = await app.request(`/servers/${serverId}/update`, {
@@ -4232,17 +4232,11 @@ test('POST /servers/:id/update does not use the legacy updater when the gate can
         [ORG_ID_HEADER]: organizationId,
       },
     })
-
+    assertEquals(res.status, 410)
     const body = await readJson<{ ok: boolean; error?: string; requestId?: string }>(res)
+    assertEquals(body.ok, false)
+    assertEquals(body.error, 'updates_automatic')
     assertEquals(body.requestId, undefined)
-    if (res.status === 503) {
-      assertEquals(body.error, 'upgrade_gate_unavailable')
-    } else if (res.status === 409) {
-      assertEquals(body.ok, false)
-    } else {
-      assertEquals(res.status, 202)
-      assertEquals(body.ok, true)
-    }
   })
 })
 

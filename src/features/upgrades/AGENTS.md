@@ -28,31 +28,112 @@ do not import a DB/cell module here.
 | `planner.ts`        | phases + batch sizing → the run's step list                                                                                                                                           |
 | `transitions.ts`    | per-step next action (dispatch / wait / skip_offline / retry / needs_attention / done)                                                                                                |
 | `run.ts`            | batch gating, fleet hard-gate, control-plane failure, run outcome, settle-on-start predicate, Workers dispatch cap                                                                    |
-| `schedule.ts`       | pure maintenance-window + auto-start decision                                                                                                                                         |
+| `schedule.ts`       | pure hourly check slot (`nextUpgradeCheckAt` / `isUpgradeCheckDue`) + auto-start decision (drift, no active run, not paused)                                                          |
+| `retry-backoff.ts`  | when a server that failed a build is tried again (1 h, doubling, capped at 24 h, per server + unit + target commit)                                                                   |
 | `prune.ts`          | bounded history prune on the maintenance tick                                                                                                                                         |
 | `history.ts`        | how a step and a server read in the history (`stepOutcome`, worst-of `serverOutcome`, `already_current`), run `trigger`, history query parsing; SQL twin in `history-read.ts`         |
 
 The coordinator is `coordinator.ts` (decisions) plus `store.ts` (Postgres or the
 in-memory test store). `maintenance.ts` is the tick: Deno cleanup lane every
-pass, Workers offline-sweep on `TURBOPANEL_UPGRADE_TICK_MINUTES` (default 15, testing 5; `tick-cadence.ts`). Hello, heartbeat, and
+pass, Workers offline-sweep on `TURBOPANEL_UPGRADE_TICK_MINUTES` (default 15, testing 5; `tick-cadence.ts`).
+Every tick advances the open run; only the hourly check (below) resolves
+manifests and may start one. Hello, heartbeat, and
 `update-progress` / `update-result` / `instance-update-result` persist through
 `persist.ts` and do not enqueue. Admin routes live in
 `../../admin/instance-updates-routes.ts`. The client gate is
 `../../client/servers/routes.ts`.
 
+## Updates are always automatic (2026-10-27)
+
+There is no on/off switch and no manual start, retry or cancel. The routes that
+did those (`POST /instance/updates/instance`, `/daemon`, `/preflight`, `/runs`,
+`/steps/:id/retry`, `/runs/:id/cancel`, client `POST /servers/updates`
+and `POST /servers/:id/update`) answer **410** `updates_automatic`
+(`updatesAutomaticBody` in `decisions.ts`, one body for admin and client). The
+legacy per-server updater and the client update gate are gone. The developer
+surface's own daemon update route (`../../developer/update-routes.ts`) stays.
+`UPGRADE_SOURCES` keeps `manual` and
+`server` because older history rows carry them; new runs are `auto`.
+
+- **The hourly check.** The `UPGRADE_CHECK` setting row holds this install's
+  minute of the hour (drawn at random once, then stable, so many installs never
+  ask the release servers at the same minute) and `lastCheckAt`.
+  `claimUpgradeCheck` (`maintenance.ts`) runs the check on the first tick at or
+  after the next slot and records it before the check runs, so a failing check
+  waits for the next slot instead of retrying every pass. On Workers the slot is
+  taken by the first upgrade tick after it (up to `TURBOPANEL_UPGRADE_TICK_MINUTES`
+  late). Before the first check the hour counts from the row's `createdAt`.
+  Test installs set `TURBOPANEL_UPGRADE_CHECK_MINUTES` (a divisor of 60; the
+  testing environment uses 5) to check every few minutes instead; slots stay
+  at the install's minute modulo that interval.
+- **Check Now** (`POST /instance/updates/check`, admins): a refresh only. It
+  asks the release servers for the newest build with `resolveUpdateManifest(…,
+{ fresh: true })`, saves it as the latest build and answers the `GET
+/instance/updates` body. It never starts a run and never moves the schedule:
+  it records `lastManualCheckAt`, not `lastCheckAt`, so the next scheduled
+  check (which starts the update) stays put. At most once a minute per install
+  (`manualCheckWaitSeconds`); sooner answers 429 `check_too_soon` with
+  `retryAfterSeconds` and `Retry-After`. The status `lastCheckAt` is the later
+  of the two. The press is claimed with one conditional `jsonb_set` on that
+  field, and the scheduled check writes only `lastCheckAt`, so neither
+  overwrites the other.
+- **Pause** (`UPGRADE_PAUSE` row, `../settings/upgrade-control.ts`): `POST
+/instance/updates/pause` / `resume`, admins only, recorded in the activity log
+  (`upgrade.pause` / `upgrade.resume`). It snapshots who paused and when, so the
+  status read needs no join. While paused no run starts (`start()` answers
+  `upgrade_paused`) and each tick settles the open run's never-sent steps
+  (`attempts` 0, `pending` / `waiting`, one `UPDATE`) as `skipped`
+  `updates_paused`; steps already sent, and their retries, finish. The run then
+  ends `cancelled` with `error` `updates_paused`. Resume just deletes the row;
+  the next check starts what is waiting.
+- **Automatic retry with backoff** (`retry-backoff.ts`). An automatic start
+  reads, in one grouped query, earlier `failed` / `rolled_back` /
+  `needs_attention` steps at the target commits. A fleet server still inside its
+  backoff is planned `skipped` with `retry_later` and a "tries again after" time;
+  a co-located daemon or control plane in backoff refuses the whole start
+  (`upgrade_retry_later`, no run saved) because the fleet gate could never open.
+  The #666 no-op rule covers both: a run whose steps are all `done` or
+  `retry_later` saves nothing.
+- **The web interface on self-hosted** (`UPGRADE_UI_INSTALLED` row). The control
+  plane cannot read the installed bundle, so a finished control-plane step
+  records its run's `target.ui` commit (`install`); before any install the
+  console's `consoleCommit` on `GET /instance/updates` stands in (`console`),
+  and a console report never replaces an install record (a stale tab cannot
+  reopen a run). The hourly check counts UI drift (`uiBehindForRun`) only where
+  a run would plan the control-plane step, and an automatic start uses the
+  recorded build for `uiRefresh`. Hosted control planes never count it: the
+  platform deploys their web interface.
+- **What counts as waiting.** `updateWaiting` is `daemonsBehind`, or a
+  control-plane / UI update where a run would plan that step (self-hosted,
+  package channel, co-located daemon). There, `controlPlaneRecovery` gives
+  the pre-update backup path and the rollback command for the run id the next
+  automatic run will use (reserved by the read).
+- **Late servers.** A run never grows. A server added, reconnected or still on
+  an old daemon after a run was planned is picked up by the next check after
+  that run ends (daemon drift counts connected servers); `uniq_upgrade_active`
+  keeps it to one run at a time.
+- **Batch size** stays an admin setting (`UPGRADE_SETTINGS.batch`, default 100%
+  of the fleet). The maintenance window and `autoUpdate` are gone: a row saved
+  before keeps its batch, the other keys are read and ignored, and a save still
+  writes `autoUpdate: true` and a disabled window so a control plane rolled back
+  to an older build reads a valid row with updates on.
+- `GET /instance/updates` adds `automatic`, `updatesPaused`, `pausedAt`,
+  `pausedBy`, `daemonsBehind` (`anyDaemonBehind`, one `limit 1` read against
+  the cached daemon manifest), `updateWaiting`, `nextCheckAt`, `lastCheckAt`,
+  `checkIntervalMinutes`, `activeRunId`. Never read the whole server table on this path.
+
 ## Detecting new builds
 
-On the maintenance tick (Deno cleanup lane; Workers offline-sweep minute
-divisor, ~15 min, budgeted), resolve the daemon / instance / UI manifests for
+On the hourly check (above), resolve the daemon / instance / UI manifests for
 the channel through `resolveUpdateManifest` (cached — daemons never poll
 GitHub). Compute pinned targets with `pinnedChannelManifestUrl`; the dev overlay
 provider (`../../developer/dev-update-overlay.ts`) still wins for the daemon
-kind. Store the latest available build in a setting row. **Check now** bypasses
-the cache.
+kind. Store the latest available build in a setting row.
 
 ## Runs
 
-- **Manual** — pre-flight first; 409 when a run is already active
+- **Starting a run** (`start()`, called by the check with `source: 'auto'`;
+  the manual sources remain for tests and history only) — pre-flight first; 409 when a run is already active
   (`uniq_upgrade_active`), except a run whose only open steps are fleet
   `waiting` rows (never dispatched) for servers that are not connected:
   `start()` settles those as `skipped` (`server_offline`) and opens the new
@@ -63,10 +144,7 @@ the cache.
   single-server start) gets its step `skipped` at once with `server_offline`
   and "It was offline when the update started. It updates on its own when it
   reconnects."; a connected `pending` host is never skipped.
-- **Automatic** — only when `autoUpdate` is on, on every runtime and channel
-  (Workers included; it used to ignore the flag, which kept rolling canary
-  builds to the testing fleet with `autoUpdate` off, 2026-10-03). Only
-  inside the maintenance window (if one is set), only when the target differs
+- **Automatic** — on every runtime and channel, unless paused. Only when the target differs
   from what's installed (`differsFromInstalled`), and only when no run is
   active. Control-plane drift counts only where the run would plan the
   control-plane step (`unitsForPlannedRun`): the hosted (Workers) panel's
@@ -76,9 +154,8 @@ the cache.
   updates only. Manual starts and preflight are unchanged. Never replace a run in progress; the next run targets the newest
   build. Daemon drift counts **connected** servers only (`anyDaemonBehind`):
   an offline host would otherwise reopen a run on every tick. A skipped host
-  that reconnects while behind makes the next tick start an automatic run
-  (batch limits as usual) when `autoUpdate` is on and the window is open; with
-  `autoUpdate` off it waits for a person. If it drops again that run skips it
+  that reconnects while behind makes the next check start an automatic run
+  (batch limits as usual) unless updates are paused. If it drops again that run skips it
   at once, and drift ignores it while offline, so there is no loop.
 - **Never a downgrade.** Preflight refuses a run whose control-plane or
   co-located daemon target is older than what is installed (`isDowngrade` in
@@ -96,8 +173,8 @@ the cache.
     Equal and unparsable versions are not downgrades.
   - `anyDaemonBehind(commit, builtAt)` applies the same rule in SQL, so a host
     built after the target never reopens a no-op run on every tick.
-- **Single-server** — `planSingleServer`, one fleet step, for manual per-server
-  updates.
+- **Single-server** — `planSingleServer`, one fleet step; no route starts it
+  any more (kept for tests).
 
 ## Seeing what the tick decided
 
@@ -153,18 +230,17 @@ pre-flight fails with an explanation and the CLI command.
 ## Batches (`run.ts`)
 
 Size each batch from the settings (`computeBatchSize`: a percent or a count of
-the fleet steps). Start the next batch only when every step in the current one
+the fleet steps; 100% when nothing is saved). Start the next batch only when every step in the current one
 is terminal (`batchComplete` / `activeBatchIndex`); failed steps are terminal
 and never block it (no threshold). Workers caps enqueues per tick
 (`capWorkersDispatch`, `WORKERS_DISPATCH_BUDGET`) below the subrequest ceiling
 it shares with the sweep, so a 100% batch drains over several ticks.
 
 The batch is per environment: each control plane keeps its own `UPGRADE_SETTINGS`
-row. With no row saved the default is **one server per batch** (count 1), so
-customer fleets update one at a time, one batch per tick (15 minutes). An
-environment can start larger with `TURBOPANEL_UPGRADE_BATCH` (`count:N` /
-`percent:N`; testing sets `percent:100`); a value saved in Admin > Updates
-always wins. Not to be confused with `update_config.parallelism` (rolling
+row. With no row saved the default is **every server in one wave** (percent
+100, owner 2026-10-27). An environment can start elsewhere with
+`TURBOPANEL_UPGRADE_BATCH` (`count:N` / `percent:N`); a value saved in Admin >
+Updates always wins. Not to be confused with `update_config.parallelism` (rolling
 deploys of a site).
 
 ## Marking servers done
@@ -205,7 +281,8 @@ working.
   marks the run failed and holds the fleet gate shut.
 - A run whose last open step settles this tick finishes this tick (the
   recount covers the whole run, not just the page the tick read).
-- Endpoints exist for retrying a step and cancelling a run.
+- No endpoint retries a step or cancels a run: a failed server is retried by a
+  later automatic run (see **Automatic retry with backoff**) and Pause stops a run.
 - A control-plane (`instance`) step is never settled by the commit alone once it
   was dispatched: the new binary answers as soon as it restarts, while the
   daemon is still verifying it (and may roll it back). Only the daemon's `done`
@@ -278,26 +355,20 @@ grouped `count(*)`, not a materialised server or step list.
 
 ## Surfaces
 
-- Client gate (`../../client/servers/routes.ts`): `POST /servers/:id/update` and
-  `POST /servers/updates` answer 409 `control_plane_upgrade_required` while the
-  gate is closed (self-hosted) and 409 `updates_managed` on Workers; the GET
-  update-status routes carry `updateBlocked`, the machine `updateBlockedCode`
-  (`ServerUpdateBlockedCode` in `decisions.ts`: the three gate errors plus
-  `colocated_with_instance`) and the human `updateBlockedReason`. Clients
-  branch on the code, never the sentence. `POST /servers/updates`
-  creates a batched fleet run and requires `organization:manage` on the
-  organization (403 otherwise) — the same bar as `POST /servers/:id/update` —
-  because it opens the one instance-wide run.
+- Client routes (`../../client/servers/routes.ts`): `POST /servers/:id/update`
+  and `POST /servers/updates` answer 410 `updates_automatic`. On the GET
+  update-status routes only the control plane's own host still reports
+  `updateBlockedCode` `colocated_with_instance`
+  (`ServerUpdateBlockedCode` in `decisions.ts`). Clients branch on the code,
+  never the sentence.
 - Admin API (`../../admin/instance-updates-routes.ts` + `openapi/`): status,
-  preflight (with the recovery command), runs, check, history, servers list,
-  step-retry, run-cancel, settings. `GET /instance/updates/run` answers
+  pause, resume, runs, history, servers list, batch settings; the retired
+  manual routes answer 410. `GET /instance/updates/run` answers
   `{ run, lastRun }`: when nothing is active, `lastRun` is the most recent
   finished run (steps, `error`, each step's `errorCode` / `errorMessage`) if it
   ended within `UPGRADE_LAST_RUN_VISIBLE_MS` (24 h). A run leaves `activeRun`
   the moment it fails, so without it the console dropped the failure and its
-  reason and went back to "update available". The old `POST /instance/updates/instance`
-  and `/daemon` endpoints stay as aliases that start a platform run.
-  `GET /instance/updates` gives each unit `updateAvailable` from
+  reason and went back to "update available". `GET /instance/updates` gives each unit `updateAvailable` from
   `updateAvailableFor` (`target.ts`): the target names a commit the host is
   not running and installing it would not downgrade. That is the one rule; a
   client renders it and never compares version or commit strings itself.
@@ -324,10 +395,10 @@ grouped `count(*)`, not a materialised server or step list.
   `started` as unknown.
 - Error vocabulary (`vocabulary.ts`): `UPGRADE_STEP_ERROR_CODES` are the step
   `errorCode`s the control plane sets itself (`rolled_back`, `server_offline`,
-  `step_timeout`, `verify_timeout`, `dispatch_failed`, `managed_upgrade_required`, `downgrade_refused`); a daemon
+  `step_timeout`, `verify_timeout`, `dispatch_failed`, `managed_upgrade_required`, `downgrade_refused`, `updates_paused`, `retry_later`); a daemon
   result may add its own reason code, so a client names these and shows any
   other code verbatim. `UPGRADE_RUN_ERROR_CODES` are the run `error`s
-  (`colocated_daemon_failed`, `control_plane_failed`). The literals in
+  (`colocated_daemon_failed`, `control_plane_failed`, `updates_paused`). The literals in
   `transitions.ts` / `coordinator.ts` are `satisfies`-checked against them.
 
 ## A reported restart error is a hint

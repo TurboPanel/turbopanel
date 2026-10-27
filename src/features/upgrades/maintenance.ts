@@ -1,7 +1,8 @@
 /**
- * Maintenance-tick entry. Resolves channel manifests (cached), maybe starts
- * an automatic run, then advances the active run. Hello handlers do not
- * enqueue; this is the path that does.
+ * Maintenance-tick entry. Once an hour, at this install's own minute
+ * (`UPGRADE_CHECK` row, `schedule.ts`), it resolves the channel manifests
+ * (cached) and maybe starts an automatic run; every pass it advances the
+ * active run. Hello handlers do not enqueue; this is the path that does.
  */
 import type { DaemonCellRegistry } from '../../contracts/cell.ts'
 import { resolveInstanceUpdateChannel } from '../../contracts/update-channel.ts'
@@ -9,7 +10,9 @@ import type { Db } from '../../db/connection.ts'
 import { isExplicitDevelopmentMode } from '../../lib/dev-mode.ts'
 import { createUpgradeCoordinator, type UpgradeTickDecision } from './coordinator.ts'
 import { parseUpgradeBatchDefault } from '../settings/upgrade-settings.ts'
-import { createDrizzleUpgradeStore } from './store.ts'
+import { createDrizzleUpgradeStore, type UpgradeStore } from './store.ts'
+import { isUpgradeCheckDue } from './schedule.ts'
+import { parseUpgradeCheckMinutes, UPGRADE_CHECK_MINUTES_ENV } from './tick-cadence.ts'
 import { parseUpgradeVerifyTimeoutMs, UPGRADE_VERIFY_TIMEOUT_ENV } from './transitions.ts'
 import type { UpgradeRuntime } from './planner.ts'
 
@@ -26,12 +29,13 @@ export async function runUpgradeMaintenance(input: {
 }): Promise<void> {
   const env = input.env ?? (typeof Deno === 'undefined' ? {} : Deno.env.toObject())
   const channel = resolveInstanceUpdateChannel(env)
+  const store = createDrizzleUpgradeStore(
+    input.db,
+    input.registry,
+    parseUpgradeBatchDefault(env.TURBOPANEL_UPGRADE_BATCH)
+  )
   const coordinator = createUpgradeCoordinator({
-    store: createDrizzleUpgradeStore(
-      input.db,
-      input.registry,
-      parseUpgradeBatchDefault(env.TURBOPANEL_UPGRADE_BATCH)
-    ),
+    store,
     enqueue: async (serverId, envelope) => {
       // No registry means the command can never reach a daemon; failing here makes
       // the step say so instead of waiting out the stall timeout.
@@ -48,7 +52,31 @@ export async function runUpgradeMaintenance(input: {
     verifyTimeoutMs: parseUpgradeVerifyTimeoutMs(env[UPGRADE_VERIFY_TIMEOUT_ENV]),
     trace: traceUpgradeTick,
   })
-  await coordinator.tick({ resolveManifests: input.resolveManifests })
+  const check =
+    input.resolveManifests &&
+    (await claimUpgradeCheck(
+      store,
+      new Date(),
+      parseUpgradeCheckMinutes(env[UPGRADE_CHECK_MINUTES_ENV])
+    ))
+  await coordinator.tick({ resolveManifests: check })
+}
+
+/**
+ * True when this pass runs the hourly check, which is then recorded first: a
+ * check that fails (release server down) waits for the next slot instead of
+ * retrying every pass.
+ */
+export async function claimUpgradeCheck(
+  store: UpgradeStore,
+  now: Date,
+  intervalMinutes = 60
+): Promise<boolean> {
+  const at = now.toISOString()
+  const schedule = await store.checkSchedule(at)
+  if (!isUpgradeCheckDue(schedule, now, intervalMinutes)) return false
+  await store.markChecked(schedule, at)
+  return true
 }
 
 /** A repeated, unchanged decision is logged again at most this often. */
@@ -96,7 +124,8 @@ export function formatUpgradeTickDecision(d: UpgradeTickDecision): string {
   return (
     `upgrade-tick decision channel=${d.channel} daemonTarget=${target} ` +
     `daemonDrift=${d.daemonDrift} targetDiffers=${d.targetDiffers} ` +
-    `activeRun=${active} autoStart=${auto}`
+    `activeRun=${active} autoStart=${auto}` +
+    (d.paused ? ' paused=true' : '')
   )
 }
 

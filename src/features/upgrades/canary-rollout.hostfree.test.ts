@@ -58,17 +58,21 @@ const canaryTarget: UpgradeTarget = {
   ui: null,
 }
 
-function workersFleet(facts: FleetServerFact[], autoUpdate = true, target = canaryTarget) {
+const PAUSE = {
+  since: '2026-10-27T08:00:00.000Z',
+  byUserId: null,
+  byEmail: 'admin@example.test',
+  byName: 'Admin',
+}
+
+function workersFleet(facts: FleetServerFact[], running = true, target = canaryTarget) {
   const enqueued: { serverId: string; envelope: DaemonOutboundEnvelope }[] = []
   const decisions: UpgradeTickDecision[] = []
   const store = createMemoryUpgradeStore({
     facts,
     latest: target,
-    settings: {
-      ...DEFAULT_UPGRADE_SETTINGS,
-      autoUpdate,
-      batch: { mode: 'percent', value: 100 },
-    },
+    settings: { batch: { mode: 'percent', value: 100 } },
+    pause: running ? null : PAUSE,
   })
   const coordinator = createUpgradeCoordinator({
     store,
@@ -182,7 +186,7 @@ test('a self-hosted panel behind the channel starts a run with the control-plane
   const store = createMemoryUpgradeStore({
     facts: [colocated],
     latest: target,
-    settings: { ...DEFAULT_UPGRADE_SETTINGS, autoUpdate: true },
+    settings: DEFAULT_UPGRADE_SETTINGS,
   })
   const coordinator = createUpgradeCoordinator({
     store,
@@ -309,7 +313,7 @@ test('self-hosted preflight does not call a canary build of the installed base a
   )
 })
 
-test('a canary build never starts a Workers run while autoUpdate is off', async () => {
+test('a canary build never starts a Workers run while updates are paused', async () => {
   const { coordinator, enqueued, decisions, store } = workersFleet(
     [fleetHost('adrastea'), fleetHost('kore')],
     false

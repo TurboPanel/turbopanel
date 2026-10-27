@@ -55,12 +55,7 @@ function coordinator() {
     resolveTarget: () => Promise.resolve(target),
   })
   const app = new Hono()
-  app.post('/instance/updates/preflight', async (c) => c.json(await api.preflight()))
-  app.post('/instance/updates/runs', async (c) => {
-    const started = await api.start({ source: 'manual', startedBy: null })
-    if (!started.ok) return c.json(started, 409)
-    return c.json({ ok: true, runId: started.runId }, 202)
-  })
+  app.get('/instance/updates/run', async (c) => c.json({ ok: true, run: await api.activeRun() }))
   app.get('/instance/updates/runs/:id', async (c) => {
     const run = await api.run(c.req.param('id'))
     if (!run) return c.json({ ok: false, error: 'upgrade_run_not_found' }, 404)
@@ -74,28 +69,16 @@ function coordinator() {
       ...(await api.servers({ offset, limit, status: '' })),
     })
   })
-  app.post('/instance/updates/runs/:id/cancel', async (c) => {
-    const result = await api.cancel(c.req.param('id'))
-    return c.json(result, result.ok ? 200 : 404)
-  })
-  return { app, enqueued, api }
+  return { app, enqueued, api, store }
 }
 
 describe('managed upgrade HTTP', () => {
-  it('starts a fleet run and does not treat a missing run as success', async () => {
-    const { app, enqueued } = coordinator()
-    const preflight = await app.request('/instance/updates/preflight', {
-      method: 'POST',
-    })
-    expect(preflight.status).toBe(200)
-    const body = (await preflight.json()) as { canStart: boolean }
-    expect(body.canStart).toBe(true)
-
-    const started = await app.request('/instance/updates/runs', {
-      method: 'POST',
-    })
-    expect(started.status).toBe(202)
-    const created = (await started.json()) as { runId: string }
+  it('the hosted check starts a fleet run on its own and a missing run is not success', async () => {
+    const { app, enqueued, api } = coordinator()
+    await api.tick()
+    const active = await app.request('/instance/updates/run')
+    const created = ((await active.json()) as { run: { id: string; source: string } }).run
+    expect(created.source).toBe('auto')
     expect(enqueued.map((entry) => entry.kind)).toEqual(['update'])
 
     const missing = await app.request('/instance/updates/runs/does-not-exist')
@@ -105,10 +88,23 @@ describe('managed upgrade HTTP', () => {
       error: 'upgrade_run_not_found',
     })
 
-    const live = await app.request(`/instance/updates/runs/${created.runId}`)
+    const live = await app.request(`/instance/updates/runs/${created.id}`)
     expect(live.status).toBe(200)
     const run = (await live.json()) as { run: { status: string } }
     expect(run.run.status).not.toBe('succeeded')
+  })
+
+  it('a paused hosted control plane starts no run and sends nothing', async () => {
+    const { enqueued, api, store } = coordinator()
+    store.setPause({
+      since: '2026-09-24T11:00:00.000Z',
+      byUserId: null,
+      byEmail: null,
+      byName: null,
+    })
+    await api.tick()
+    expect(await api.activeRun()).toBeNull()
+    expect(enqueued).toEqual([])
   })
 
   it('returns the requested server page past the first fifty', async () => {
