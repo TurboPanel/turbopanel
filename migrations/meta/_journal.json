@@ -15,6 +15,13 @@
       "when": 1792968916599,
       "tag": "0001_delete_project_cleanup",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1793110673200,
+      "tag": "0002_upgrade_history_paging",
+      "breakpoints": true
     }
   ]
 }

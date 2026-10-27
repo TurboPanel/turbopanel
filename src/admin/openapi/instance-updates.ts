@@ -143,6 +143,54 @@ export const INSTANCE_UPDATES_PATHS = {
       },
     },
   },
+  [`${ADMIN_API_PREFIX}/instance/updates/history`]: {
+    get: {
+      tags: ['Instance'],
+      summary: 'Page the update runs, newest first',
+      description:
+        '`{ ok, runs, total }`, one row per run. Query: `offset`, `limit` (1 to 100, default 50), ' +
+        '`status` and `trigger`. Without `status` only finished runs are listed (the answer older ' +
+        'consoles expect); `status=any` lists every run, `status=active` the pending or running one, ' +
+        'or name one run status. `trigger` is `automatic` (source `auto`) or `manual` (sources ' +
+        '`manual` and `server`). Each run carries `trigger` and `summary` ' +
+        '`{ detail, total, updated, alreadyCurrent, skipped, failed, inProgress }`, counted per server ' +
+        '(a server with several steps takes the worst outcome). `alreadyCurrent` is a host the run ' +
+        'found already on the target and never sent anything to; it is never counted as updated. ' +
+        "`detail` `pruned` means retention removed the run's steps: the totals come from the stored " +
+        'step counts and `updated` / `alreadyCurrent` are null.',
+      security: [...cookieSecurity],
+      responses: {
+        '200': { description: '`{ ok: true, runs, total }`' },
+        '400': { description: '`invalid_filter` with the `field` it refused' },
+      },
+    },
+  },
+  [`${ADMIN_API_PREFIX}/instance/updates/runs/{id}/servers`]: {
+    get: {
+      tags: ['Instance'],
+      summary: "Page one run's servers",
+      description:
+        '`{ ok, run, units, statusCounts, organizations, servers, total }`, one row per server; ' +
+        'never every step of the run. Query: `offset`, `limit` (1 to 100), `sort` (`status` (default, ' +
+        'failed first), `organization`, `server`, `started`, `finished`, `duration`, `attempts`), ' +
+        '`dir` (`asc` default, `desc`), `status` (server outcome: `updated`, `already_current`, ' +
+        '`skipped`, `failed`, `in_progress`), `organizationId`, `serverId` and `q` (server name, ' +
+        'hostname or organization name contains it, or a server or organization id starts with it). ' +
+        '`statusCounts` (`all` plus one per outcome) honours every filter but `status`, for quick ' +
+        'filters. `organizations` lists up to 100 organizations in the run with their server count. ' +
+        'Each server row has organization, datacenter, from/to version and commit, outcome, started, ' +
+        'finished, duration, the reason of a failed or skipped component, attempts, `connected`, ' +
+        '`lastHeartbeatAt` (read for this page only) and `components` keyed by unit (`daemon`, ' +
+        '`instance`), each with its own step status, outcome, versions, times and error. `run` is ' +
+        'the history row of this run. Started and finished are null when they were not recorded.',
+      security: [...cookieSecurity],
+      responses: {
+        '200': { description: 'One page of servers with counts' },
+        '400': { description: '`invalid_filter` with the `field` it refused' },
+        '404': { description: '`upgrade_run_not_found`' },
+      },
+    },
+  },
   [`${ADMIN_API_PREFIX}/instance/updates/daemon`]: {
     post: {
       tags: ['Instance'],

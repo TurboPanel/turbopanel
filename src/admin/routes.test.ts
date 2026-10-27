@@ -595,6 +595,83 @@ test('POST /api/admin/v1/instance/updates/runs answers 409 upgrade_run_active wh
   })
 })
 
+test('GET /api/admin/v1/instance/updates/history pages runs with server totals and refuses unknown filters', async () => {
+  await withRoleUser('admin', async ({ app, cookie }) => {
+    const db = createDenoDb()
+    const [run] = await db
+      .insert(upgrade)
+      .values({ source: 'auto', channel: 'canary', status: 'succeeded' })
+      .returning({ id: upgrade.id })
+    try {
+      const res = await app.request(
+        `${ADMIN_API_PREFIX}/instance/updates/history?status=any&trigger=automatic&limit=100`,
+        { headers: { Cookie: cookie } }
+      )
+      assertEquals(res.status, 200)
+      const body = await jsonBody<{
+        ok: boolean
+        total: number
+        runs: { id: string; trigger: string; summary: { detail: string } }[]
+      }>(res)
+      const mine = body.runs.find((item) => item.id === run!.id)
+      assertEquals(mine?.trigger, 'automatic')
+      assertEquals(mine?.summary.detail, 'pruned')
+      const bad = await app.request(`${ADMIN_API_PREFIX}/instance/updates/history?status=done`, {
+        headers: { Cookie: cookie },
+      })
+      assertEquals(bad.status, 400)
+      assertEquals((await jsonBody<{ error: string }>(bad)).error, 'invalid_filter')
+    } finally {
+      await db.delete(upgrade).where(eq(upgrade.id, run!.id))
+    }
+  })
+})
+
+test('GET /api/admin/v1/instance/updates/runs/:id/servers answers a page, 400 on a bad filter and 404 for an unknown run', async () => {
+  await withRoleUser('admin', async ({ app, cookie }) => {
+    const db = createDenoDb()
+    const [run] = await db
+      .insert(upgrade)
+      .values({ source: 'manual', channel: 'canary', status: 'succeeded' })
+      .returning({ id: upgrade.id })
+    try {
+      const res = await app.request(
+        `${ADMIN_API_PREFIX}/instance/updates/runs/${run!.id}/servers?sort=server`,
+        { headers: { Cookie: cookie } }
+      )
+      assertEquals(res.status, 200)
+      const body = await jsonBody<{
+        ok: boolean
+        run: { id: string }
+        servers: unknown[]
+        total: number
+        statusCounts: { all: number }
+      }>(res)
+      assertEquals(body.run.id, run!.id)
+      assertEquals(body.servers, [])
+      assertEquals(body.total, 0)
+      assertEquals(body.statusCounts.all, 0)
+      const bad = await app.request(
+        `${ADMIN_API_PREFIX}/instance/updates/runs/${run!.id}/servers?sort=name`,
+        { headers: { Cookie: cookie } }
+      )
+      assertEquals(bad.status, 400)
+      const missing = await app.request(
+        `${ADMIN_API_PREFIX}/instance/updates/runs/${crypto.randomUUID()}/servers`,
+        { headers: { Cookie: cookie } }
+      )
+      assertEquals(missing.status, 404)
+      const garbage = await app.request(
+        `${ADMIN_API_PREFIX}/instance/updates/runs/not-a-run/servers`,
+        { headers: { Cookie: cookie } }
+      )
+      assertEquals(garbage.status, 404)
+    } finally {
+      await db.delete(upgrade).where(eq(upgrade.id, run!.id))
+    }
+  })
+})
+
 test('GET and PUT /api/admin/v1/settings/signup round-trip panel toggle', async () => {
   await withRoleUser('superadmin', async ({ app, cookie }) => {
     const db = createDenoDb()

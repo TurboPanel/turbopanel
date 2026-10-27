@@ -1932,6 +1932,10 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       error_message: 'Human-readable failure text set alongside `error_code`.',
       detail:
         'Small stage facts such as bytes fetched or an exit code; the orchestrator writes it, never a transcript.',
+      started_at:
+        'When the step was first dispatched to its server; NULL until then, and on rows written before this column existed.',
+      finished_at:
+        'When the step reached a terminal status (`done`, `skipped`, `failed`, `needs_attention`); cleared when a retry reopens it.',
     },
   },
 }

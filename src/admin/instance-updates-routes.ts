@@ -9,6 +9,8 @@ import { resolveUpdateManifest } from '../features/update/manifest.ts'
 import { isExplicitDevelopmentMode } from '../lib/dev-mode.ts'
 import { createUpgradeCoordinator } from '../features/upgrades/coordinator.ts'
 import { createDrizzleUpgradeStore } from '../features/upgrades/store.ts'
+import { isUuid, parseHistoryQuery, parseRunServersQuery } from '../features/upgrades/history.ts'
+import { readHistoryPage, readRunServersPage } from '../features/upgrades/history-read.ts'
 import {
   parseUpgradeVerifyTimeoutMs,
   UPGRADE_VERIFY_TIMEOUT_ENV,
@@ -188,12 +190,28 @@ export function registerInstanceUpdatesAdminRoutes(
     return c.json({ ok: true })
   })
 
+  // Paged run list. Without `status` it answers exactly as before (finished
+  // runs only); every run also carries `trigger` and a server `summary`.
   admin.get('/instance/updates/history', async (c) => {
-    const coordinator = await coordinatorFrom(c, opts)
-    if (coordinator instanceof Response) return coordinator
-    const page = pageQuery(c)
-    const history = await coordinator.history(page.offset, page.limit)
+    const db = getDb(c)
+    if (!db) return c.json({ ok: false, error: 'Database unavailable' }, 503)
+    const query = parseHistoryQuery(c.req.query())
+    if ('error' in query) return c.json({ ok: false, ...query }, 400)
+    const history = await readHistoryPage(db, query)
     return c.json({ ok: true, runs: history.runs, total: history.total })
+  })
+
+  // One page of a run's servers (one row per server) with quick-filter counts.
+  admin.get('/instance/updates/runs/:id/servers', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ ok: false, error: 'Database unavailable' }, 503)
+    const id = c.req.param('id')
+    if (!isUuid(id)) return c.json({ ok: false, error: 'upgrade_run_not_found' }, 404)
+    const query = parseRunServersQuery(c.req.query())
+    if ('error' in query) return c.json({ ok: false, ...query }, 400)
+    const page = await readRunServersPage(db, getDaemonCellRegistry(c) ?? null, id, query)
+    if (!page) return c.json({ ok: false, error: 'upgrade_run_not_found' }, 404)
+    return c.json({ ok: true, ...page })
   })
 
   admin.get('/instance/updates/servers', async (c) => {
