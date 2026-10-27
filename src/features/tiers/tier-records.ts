@@ -17,7 +17,7 @@
  * Workers-bundleable: nothing at module load.
  */
 
-import { and, asc, eq, inArray, isNull, sql } from 'drizzle-orm'
+import { and, asc, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import type { BillingProviderId } from '../billing/gateway.ts'
 import { type LadderEntry, ladderEntry } from './ladder.ts'
@@ -229,4 +229,34 @@ export async function countActiveLicenses(db: Db, organizationId: string): Promi
     .from(license)
     .where(and(eq(license.organizationId, organizationId), isNull(license.revokedAt)))
   return { active: Number(row?.active ?? 0), bound: Number(row?.bound ?? 0) }
+}
+
+/**
+ * Seats held by registration keys, per tier: active, still-unused keys that
+ * carry the tier a manager chose in Add Server (`license.tier_id`). Each one
+ * holds a seat at its tier until its server enrolls and takes it, so the
+ * seat cannot be handed to another server in between. A revoked or consumed
+ * key holds nothing.
+ */
+export async function countReservedLicenseTiers(
+  db: Db,
+  organizationId: string
+): Promise<Map<string, number>> {
+  const rows = await db
+    .select({ tierId: license.tierId, count: sql<number>`count(*)::int` })
+    .from(license)
+    .where(
+      and(
+        eq(license.organizationId, organizationId),
+        isNull(license.revokedAt),
+        isNull(license.serverId),
+        isNotNull(license.tierId)
+      )
+    )
+    .groupBy(license.tierId)
+  const out = new Map<string, number>()
+  for (const row of rows) {
+    if (row.tierId) out.set(row.tierId, Number(row.count))
+  }
+  return out
 }

@@ -20,6 +20,12 @@
       "tag": "0002_upgrade_history_paging",
       "when": 1793110673200,
       "sha256": "ba62cb5859f5d04f6fd59439b50bb8311edfb28e188dbdb921f1cba6d0e7a410"
+    },
+    {
+      "idx": 3,
+      "tag": "0003_license_tier",
+      "when": 1793115682365,
+      "sha256": "d39f404e7cbf41f7c3d56dbd5fa8e0294b784082bcc7fc463303d7d18ca17e94"
     }
   ]
 }

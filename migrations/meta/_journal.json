@@ -22,6 +22,13 @@
       "when": 1793110673200,
       "tag": "0002_upgrade_history_paging",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1793115682365,
+      "tag": "0003_license_tier",
+      "breakpoints": true
     }
   ]
 }

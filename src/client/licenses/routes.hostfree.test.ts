@@ -35,6 +35,7 @@ import {
   instanceHostname,
   lease,
   license,
+  organization,
   payer,
   server,
   setting,
@@ -55,6 +56,7 @@ import { COLOCATED_SERVER_DISPLAY_NAME } from '../authn/install-state.ts'
 import { deriveSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 import { registerLicenseRoutes } from './routes.ts'
+import { tierSeatExhaustionMessage } from './routes-helpers.ts'
 import { recordLicenseEnrollAttempt } from '../../features/licenses/enroll-attempt.ts'
 
 /**
@@ -97,8 +99,9 @@ type Fixture = {
     serverId?: string | null
     revokedAt?: string | null
     name?: string | null
+    tierId?: string | null
   }[]
-  servers?: { id: string; name: string | null }[]
+  servers?: { id: string; name: string | null; assignedTierId?: string | null }[]
   config?: BillingConfig | null
   role?: 'superadmin' | 'user'
   allowed?: boolean
@@ -195,7 +198,7 @@ async function buildApp(fx: Fixture = {}) {
           organizationId: ORG,
           name: row.name,
           metadata: null,
-          assignedTierId: null,
+          assignedTierId: row.assignedTierId ?? null,
           createdAt: NOW,
           updatedAt: NOW,
         })),
@@ -259,11 +262,13 @@ async function buildApp(fx: Fixture = {}) {
           name: row.name ?? null,
           token: 'hashed',
           revokedAt: row.revokedAt ?? null,
+          ...(row.tierId ? { tierId: row.tierId } : {}),
           createdAt: NOW,
           updatedAt: NOW,
         })),
       ],
       [lease, []],
+      [organization, [{ id: ORG, name: 'License Org', createdAt: NOW, updatedAt: NOW }]],
     ],
     { fallback: authDb }
   )
@@ -468,7 +473,7 @@ test('T9 · a purchase with room mints a key with no tier, once, and the lease i
   const minted = db.rows(license).find((row) => row.id === body.licenseId)
   assertEquals(minted?.name, 'edge-1')
   assertEquals(minted?.organizationId, ORG)
-  assertEquals('tierId' in (minted ?? {}), false)
+  assertEquals(minted?.tierId ?? null, null)
   assertEquals(lockRow(db), null)
 
   // Both purchased licenses are now held: the next mint is refused.
@@ -494,6 +499,74 @@ test('T9 · a revoked license does not hold a purchased license', async () => {
   const res = await mint(app, headers)
   assertEquals(res.status, 200)
   assertEquals(db.rows(license).filter((row) => row.revokedAt === null).length, 1)
+})
+
+test('Add Server · a chosen tier with a free seat mints a key that holds that seat', async () => {
+  const { app, headers, db } = await buildApp({
+    seats: [{ tierId: S3, quantity: 3 }],
+    servers: [{ id: SERVER, name: 'edge-1', assignedTierId: S3 }],
+    licenses: [{ id: L_BOUND, serverId: SERVER }],
+  })
+  const res = await mint(app, headers, { name: 'edge-2', tierId: S3 })
+  assertEquals(res.status, 200)
+  const body = (await res.json()) as { licenseId: string }
+  assertEquals(db.rows(license).find((row) => row.id === body.licenseId)?.tierId, S3)
+  assertEquals(lockRow(db), null)
+
+  // One S3 is on edge-1 and one is held by the new key: the third is the last.
+  const last = await mint(app, headers, { tierId: S3 })
+  assertEquals(last.status, 200)
+})
+
+test('Add Server · a chosen tier whose seats are on servers or held by keys is 409 with that tier named', async () => {
+  const { app, headers, db } = await buildApp({
+    seats: [
+      { tierId: S3, quantity: 2 },
+      { tierId: S4, quantity: 2 },
+    ],
+    servers: [{ id: SERVER, name: 'edge-1', assignedTierId: S3 }],
+    licenses: [
+      { id: L_BOUND, serverId: SERVER },
+      { id: L_ACTIVE, tierId: S3 },
+    ],
+  })
+  const res = await mint(app, headers, { tierId: S3 })
+  assertEquals(res.status, 409)
+  const body = (await res.json()) as Omit<RefusalBody, 'tiers'> & {
+    tiers: { tierId: string; available: number }[]
+  }
+  assertEquals(body.error, 'no_license_available')
+  assertEquals(body.message, tierSeatExhaustionMessage('S3'))
+  assertEquals(body.tiers.find((row) => row.tierId === S3)?.available, 0)
+  assertEquals(db.rows(license).length, 2)
+  assertEquals(lockRow(db), null)
+})
+
+test('Add Server · a revoked key holds no seat at its tier', async () => {
+  const { app, headers } = await buildApp({
+    seats: [{ tierId: S3, quantity: 1 }],
+    licenses: [{ id: L_REVOKED, revokedAt: NOW, tierId: S3 }],
+  })
+  const res = await mint(app, headers, { tierId: S3 })
+  assertEquals(res.status, 200)
+})
+
+test('Add Server · an unknown tier is 400 tier_not_found and a malformed one is 400', async () => {
+  const { app, headers, db } = await buildApp({ seats: [{ tierId: S3, quantity: 2 }] })
+  const unknown = await mint(app, headers, { tierId: '99999999-9999-4999-8999-999999999999' })
+  assertEquals(unknown.status, 400)
+  assertEquals(((await unknown.json()) as { code: string }).code, 'tier_not_found')
+  const malformed = await mint(app, headers, { tierId: 'S3' })
+  assertEquals(malformed.status, 400)
+  assertEquals(db.rows(license).length, 0)
+})
+
+test('Add Server · with billing off a chosen tier is not stored on the key', async () => {
+  const { app, headers, db } = await buildApp({ config: null, seats: null })
+  const res = await mint(app, headers, { tierId: S3 })
+  assertEquals(res.status, 200)
+  const body = (await res.json()) as { licenseId: string }
+  assertEquals(db.rows(license).find((row) => row.id === body.licenseId)?.tierId ?? null, null)
 })
 
 test('T9 · an outstanding release-seat intent counts against availability until the boundary lands', async () => {

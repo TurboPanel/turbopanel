@@ -177,9 +177,12 @@ higher tier when spare licenses exist. License endpoints (`GET`/`POST` `/license
 `/licenses/{id}`) require org ownership (`organization:own`). `DELETE /licenses/{id}`
 returns **409** `license_has_attached_server` (bound server id + name) while a
 live server is attached; delete the server first. Already-revoked seats are **404**.
-`POST /licenses` takes no tier — a license carries none; the tier a server
-sits on is derived from its hardware against the purchased quantities
-(`src/features/billing/AGENTS.md`, _Who chooses a tier: nobody_). When customer
+`POST /licenses` takes an optional `tierId` (hosted Add Server: the tier the
+manager chose). The key then holds one license at that tier, and the server
+that first enrolls with it is put on it; it is **409** `no_license_available`
+(with that tier's counts) when no license at that tier is free, and **400**
+`tier_not_found` for an unknown or inactive tier. Without `tierId`, or
+self-hosted, the key carries no tier and a manager assigns one later. When customer
 billing is operational it answers **409** `no_license_available` when every
 purchased license is in use (bound or provisioning), held by an unused
 registration key, or ending — with `message` (never calls an ending license or

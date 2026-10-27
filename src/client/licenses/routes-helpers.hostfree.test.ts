@@ -271,12 +271,15 @@ test('noLicenseAvailableBody carries the message, the counts, trimmed tier rows 
   )
 })
 
-test('parseLicenseCreateFields no longer reads a tierId: a license carries no tier', () => {
+test('parseLicenseCreateFields reads the tier chosen in Add Server and refuses a malformed one', () => {
   assertEquals(
     parseLicenseCreateFields(JSON.stringify({ tierId: '11111111-1111-4111-8111-111111111111' })),
-    {}
+    { tierId: '11111111-1111-4111-8111-111111111111' }
   )
-  assertEquals(parseLicenseCreateFields(JSON.stringify({ name: 'Edge', tierId: 'not-a-uuid' })), {
-    name: 'Edge',
-  })
+  assertEquals(
+    parseLicenseCreateFields(JSON.stringify({ name: 'Edge', tierId: 'not-a-uuid' })),
+    'invalid'
+  )
+  assertEquals(parseLicenseCreateFields(JSON.stringify({ name: 'Edge', tierId: 3 })), 'invalid')
+  assertEquals(parseLicenseCreateFields(JSON.stringify({ name: 'Edge' })), { name: 'Edge' })
 })

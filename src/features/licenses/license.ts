@@ -31,13 +31,14 @@ export async function verifyLicenseToken(plaintext: string, hashed: string): Pro
 }
 
 /**
- * Mint one registration key. A license carries no tier: which purchased
- * tier the server it binds ends up on is derived
- * (`src/features/tiers/assignment.ts`).
+ * Mint one registration key. `tierId` is the tier a manager chose in Add
+ * Server: the key holds a seat there, and the server that enrolls with it
+ * takes that seat (`applyAddServerTierAtEnroll`). Without one the key
+ * carries no tier and a manager assigns one later.
  */
 export async function createLicense(
   db: Db,
-  opts: { organizationId: string; name?: string }
+  opts: { organizationId: string; name?: string; tierId?: string }
 ): Promise<{ licenseId: string; licenseToken: string }> {
   const { plaintext, hashed } = await generateLicenseToken()
   const now = nowTs()
@@ -47,6 +48,7 @@ export async function createLicense(
     .values({
       organizationId: opts.organizationId,
       name: opts.name ?? null,
+      ...(opts.tierId ? { tierId: opts.tierId } : {}),
       token: hashed,
       createdAt: now,
       updatedAt: now,

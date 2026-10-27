@@ -184,14 +184,27 @@ moves it as soon as Stripe takes the swap (a `pending` swap moves nothing; the
 owner assigns it once it lands); a downgrade stores the server on its intent
 and `entitlements.ts` moves it when the intent lands, if it still holds the old
 tier. Without `serverId`, a change that would leave a server holding a tier
-nobody pays for is refused (`servers_uncovered`). Apart from these writes, the
+nobody pays for is refused (`servers_uncovered`).
+
+**Add Server is the same manager choice, made before the server exists.** The
+wizard sends the tier the manager chose with `POST /licenses` (`tierId`); the
+registration key stores it (`license.tier_id`) and holds a seat at that tier
+from then on — `spare`, `freeAtTier` and the per-tier `available` all count
+it — so no other server can be given that seat. When a server first enrolls
+with the key it takes exactly that seat (`applyAddServerTierAtEnroll`, under
+the organization row lock). If the seat is gone after all (seats removed in
+between), the server is left without a tier and its overview says why; it is
+never put on a different tier. A key with no tier assigns nothing.
+
+Apart from these writes, the
 route above is the only hosted writer of `server.assigned_tier_id`; `src/features/tiers/assignment.ts` only **reads** the
 assignment against the purchases (spare seats per tier; servers holding no tier,
 or more holders at a tier than were bought — the newest by bind order are the
 ones over).
 
 **No server is ever given a license tier automatically, and no license is ever
-moved between servers automatically** (only the owner-named moves above) — not on enroll, not on a hardware report
+moved between servers automatically** (only the owner-named moves above and
+the Add Server choice) — not on an enroll without a chosen tier, not on a reconnect, not on a hardware report
 (hello or heartbeat), not on a session, not on a seat or subscription change
 (webhook projection, mutation, reconcile), not on a server delete. A server that
 grows past its tier's CPU or RAM keeps its tier and is flagged. The hardware requirement (`tier-placement`:

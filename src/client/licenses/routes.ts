@@ -38,6 +38,8 @@ import { isDeveloperSurfaceEnabled } from '../../app/dev-mode.ts'
 import { buildLicenseInstallCommand } from '../../features/install/daemon-install-command.ts'
 import { resolveInstallOriginTls } from '../../features/install/install-trust.ts'
 import { syncSelfHostedGrant } from '../../features/tiers/self-hosted-grant-records.ts'
+import { lockOrganizationRow } from '../../features/tiers/assignment-records.ts'
+import { getTierById } from '../../features/tiers/tier-records.ts'
 import {
   parseInstallBaseUrl,
   resolvePublicBaseUrl,
@@ -63,6 +65,7 @@ import {
   reservedColocatedLicenseNameError,
   serializeLicenseListEntry,
   serverCapacityExceededBody,
+  tierSeatExhaustionMessage,
 } from './routes-helpers.ts'
 
 // License create/list/revoke are owner-only. Use the exact owner-only guard so
@@ -162,6 +165,46 @@ async function rejectIfNoLicenseAvailable(
       )
 }
 
+type MintedKey = Readonly<{ licenseId: string; licenseToken: string }>
+
+/**
+ * Mint the registration key. Hosted, with the tier a manager chose in Add
+ * Server: the key holds a seat at that tier for the server it will enroll,
+ * checked and written under the organization row lock a manager's
+ * assignment takes too, so the seat cannot be given to another server in
+ * between. No tier, or self-hosted (every server there gets the grant's
+ * tier): a plain key.
+ */
+async function mintRegistrationKey(
+  c: Context<AppEnv>,
+  db: Db,
+  input: Readonly<{ organizationId: string; name?: string; tierId?: string; hosted: boolean }>
+): Promise<MintedKey | Response> {
+  const { organizationId, name, tierId } = input
+  if (!input.hosted || !tierId) return await createLicense(db, { organizationId, name })
+  const chosen = await getTierById(db, tierId)
+  if (!chosen?.isActive) {
+    return c.json({ error: 'Unknown license tier', code: 'tier_not_found' }, 400)
+  }
+  return await db.transaction(async (tx) => {
+    await lockOrganizationRow(tx, organizationId)
+    const view = await loadBillingOrgView(tx, organizationId, Date.now())
+    const tiers = summarizeTiers(view)
+    const free = tiers.find((entry) => entry.tierId === tierId)?.available ?? 0
+    if (free < 1) {
+      return c.json(
+        noLicenseAvailableBody(
+          summarizeLicenses(view),
+          tiers,
+          tierSeatExhaustionMessage(chosen.label)
+        ),
+        409
+      )
+    }
+    return await createLicense(tx, { organizationId, name, tierId })
+  })
+}
+
 async function releaseMintLease(db: Db, lease: BillingQuantityLock | null): Promise<void> {
   if (!lease) return
   try {
@@ -227,7 +270,7 @@ export function registerLicenseRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       return c.json({ error: 'Invalid request' }, 400)
     }
     // `name` is already normalized (or omitted when blank) by the parser.
-    const { name, installBaseUrl } = parsedFields
+    const { name, installBaseUrl, tierId } = parsedFields
 
     // Reserved for the co-located control-plane license (install / disk recovery).
     if (isReservedColocatedLicenseName(name, COLOCATED_SERVER_DISPLAY_NAME)) {
@@ -259,17 +302,14 @@ export function registerLicenseRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     }
 
     // Hosted: a key is minted only while the organization holds fewer
-    // licenses than it has purchased. Which tier the server lands on is
-    // decided when it connects, from its hardware — never here.
+    // licenses than it has purchased, and — when the manager chose a tier in
+    // Add Server — only while that tier has a free seat, which the key then
+    // holds for its server. The tier is never picked here for anyone.
+    const hosted = isCustomerBillingOperational(c.get('billingConfig'))
     const mint = await prepareLicenseMint(c, db, organizationId)
     if (!mint.ok) return mint.response
     try {
-      const unavailable = await rejectIfNoLicenseAvailable(
-        c,
-        db,
-        organizationId,
-        isCustomerBillingOperational(c.get('billingConfig'))
-      )
+      const unavailable = await rejectIfNoLicenseAvailable(c, db, organizationId, hosted)
       if (unavailable) return unavailable
 
       const instanceUrl = parsedInstallBaseUrl ?? (await resolvePublicBaseUrl(c, opts))
@@ -289,10 +329,9 @@ export function registerLicenseRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       // The instance does not build daemon release artifacts. In self-hosted dev
       // the operator builds them via Developer → Rebuild daemon and upgrade
       // (`deno task release:dev`); Caddy serves `dist/` at `/downloads/daemon`.
-      const { licenseId, licenseToken } = await createLicense(db, {
-        organizationId,
-        name,
-      })
+      const minted = await mintRegistrationKey(c, db, { organizationId, name, tierId, hosted })
+      if (minted instanceof Response) return minted
+      const { licenseId, licenseToken } = minted
 
       // Self-hosted entitles what it mints: one granted `SX` unit per active
       // license (`src/features/tiers/self-hosted-grant.ts`), so this key is

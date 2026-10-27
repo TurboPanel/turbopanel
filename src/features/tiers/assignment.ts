@@ -4,11 +4,13 @@
  * An organization owns a quantity per tier (the `seat` rows). Which server
  * holds which of those licenses is **chosen by the organization's managers,
  * never by TurboPanel**: `server.assigned_tier_id` is written only by the
- * manager route (`PUT /servers/:id/license-tier`, `server-preferred-tier.ts`)
- * and by the self-hosted grant fill (`assignment-records.ts`, self-hosted
- * only, never on the hosted runtime). Nothing here or anywhere else assigns,
+ * manager route (`PUT /servers/:id/license-tier`, `server-preferred-tier.ts`),
+ * at enroll from the tier a manager chose in Add Server (the registration
+ * key carries it, `license.tier_id`, and holds that seat until then), and by
+ * the self-hosted grant fill (`assignment-records.ts`, self-hosted only,
+ * never on the hosted runtime). Nothing here or anywhere else assigns,
  * moves or releases a server's license on its own — not a hardware report,
- * not an enroll, not a seat change, not a server delete. An organization may
+ * an enroll without a chosen tier, a seat change or a server delete. An organization may
  * deliberately keep a server on a smaller tier than it measures; that server
  * keeps its tier and is only flagged.
  *
@@ -17,7 +19,8 @@
  *
  *   - `byServer` is each licensed server's held tier (`null` when none was
  *     assigned yet);
- *   - `spare` is, per tier, purchased quantity no server holds;
+ *   - `spare` is, per tier, purchased quantity no server and no unused
+ *     registration key holds;
  *   - `unassigned` lists, in bind order, licensed servers no manager has
  *     given a tier yet (a normal state for a new server, not an error);
  *   - `uncovered` lists, in bind order, licensed servers with no tier and
@@ -86,7 +89,9 @@ export function sortByBindOrder<T extends Pick<AssignableServer, 'serverId' | 'b
  */
 export function readAssignment(
   quantities: readonly TierQuantity[],
-  servers: readonly AssignableServer[]
+  servers: readonly AssignableServer[],
+  /** Seats held by unused registration keys per tier (`countReservedLicenseTiers`); not spare. */
+  reserved: ReadonlyMap<string, number> = new Map()
 ): TierAssignment {
   const left = new Map<string, number>()
   for (const entry of quantities) {
@@ -108,17 +113,24 @@ export function readAssignment(
   }
   const spare = new Map<string, number>()
   for (const entry of quantities) {
-    if (entry.quantity > 0) spare.set(entry.tierId, left.get(entry.tierId) ?? 0)
+    if (entry.quantity > 0) {
+      const held = reserved.get(entry.tierId) ?? 0
+      spare.set(entry.tierId, Math.max(0, (left.get(entry.tierId) ?? 0) - held))
+    }
   }
   return { byServer, spare, uncovered, unassigned }
 }
 
-/** Purchased quantity at `tierId` that no server other than `exceptServerId` holds. */
+/**
+ * Purchased quantity at `tierId` that no server other than `exceptServerId`
+ * holds, less the seats unused registration keys hold there (`reserved`).
+ */
 export function freeAtTier(
   quantities: readonly TierQuantity[],
   servers: readonly AssignableServer[],
   tierId: string,
-  exceptServerId?: string
+  exceptServerId?: string,
+  reserved: ReadonlyMap<string, number> = new Map()
 ): number {
   const bought = quantities
     .filter((entry) => entry.tierId === tierId)
@@ -126,7 +138,7 @@ export function freeAtTier(
   const held = servers.filter(
     (entry) => entry.assignedTierId === tierId && entry.serverId !== exceptServerId
   ).length
-  return bought - held
+  return bought - held - (reserved.get(tierId) ?? 0)
 }
 
 /**

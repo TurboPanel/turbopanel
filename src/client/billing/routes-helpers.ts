@@ -26,6 +26,7 @@ import {
 } from '../../features/billing/billing-records.ts'
 import {
   countActiveLicenses,
+  countReservedLicenseTiers,
   type LicenseCount,
   type TierRow,
 } from '../../features/tiers/tier-records.ts'
@@ -122,6 +123,8 @@ export type BillingOrgView = Readonly<{
   /** Every licensed server with its hardware requirement and current assignment. */
   servers: readonly AssignedServerRow[]
   ledger: PendingChangeLedger
+  /** Seats unused registration keys hold per tier (the Add Server choice); absent reads as none. */
+  reserved?: ReadonlyMap<string, number>
 }>
 
 export async function loadBillingOrgView(
@@ -140,12 +143,13 @@ export async function loadBillingOrgView(
         : 0,
   }
   const servers = await loadAssignableServers(db, organizationId)
+  const reserved = await countReservedLicenseTiers(db, organizationId)
   const { ledger } = state.subscription
     ? await readPendingChanges(db, organizationId, state.subscription.providerSubscriptionId)
     : {
         ledger: { version: 2 as const, providerSubscriptionId: '', intents: [] },
       }
-  return { state, licenses, servers, ledger }
+  return { state, licenses, servers, ledger, reserved }
 }
 
 export type TierSummary = Readonly<{
@@ -161,11 +165,12 @@ export type TierSummary = Readonly<{
   /** When they end (ISO), or `null` when nothing is ending. */
   endsAt: string | null
   /**
-   * `purchased − ending − inUse`, floored at zero and capped at the
-   * organization-wide `licenses.available`. The cap is what keeps the two in
-   * agreement: an unused registration key holds a license but has no tier
-   * until its server connects, so it can only be charged org-wide — without
-   * the cap a tier would show a license "free" that the mint gate refuses.
+   * `purchased − ending − inUse − held by keys`, floored at zero and capped
+   * at the organization-wide `licenses.available`. A key minted with the
+   * tier a manager chose in Add Server holds a seat at that tier until its
+   * server enrolls; a key with no tier holds a license only org-wide, which
+   * the cap charges — without it a tier would show a license "free" that the
+   * mint gate refuses.
    */
   available: number
   /**
@@ -194,6 +199,7 @@ export function summarizeTiers(view: BillingOrgView): TierSummary[] {
     if (out.some((entry) => entry.tierId === seat.tierId)) continue
     const purchased = seats.get(seat.tierId) ?? 0
     const used = inUse.get(seat.tierId) ?? 0
+    const held = view.reserved?.get(seat.tierId) ?? 0
     const endingHere = ending.get(seat.tierId)
     out.push({
       tierId: seat.tierId,
@@ -203,7 +209,10 @@ export function summarizeTiers(view: BillingOrgView): TierSummary[] {
       inUse: used,
       ending: endingHere?.count ?? 0,
       endsAt: endingHere?.endsAt ?? null,
-      available: Math.min(orgAvailable, Math.max(0, purchased - (endingHere?.count ?? 0) - used)),
+      available: Math.min(
+        orgAvailable,
+        Math.max(0, purchased - (endingHere?.count ?? 0) - used - held)
+      ),
       releasing: releases.get(seat.tierId) ?? 0,
       priceCents: seat.tier.priceCents,
       currency: seat.tier.currency,

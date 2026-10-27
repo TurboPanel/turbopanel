@@ -184,6 +184,7 @@ function viewWith(
     licenses: extra.licenses ?? { active: 0, bound: 0 },
     servers: extra.servers ?? [],
     ledger: extra.ledger ?? emptyLedger(state.subscription?.providerSubscriptionId ?? ''),
+    ...(extra.reserved ? { reserved: extra.reserved } : {}),
   }
 }
 
@@ -526,6 +527,23 @@ test('Add Server and the billing page agree: an unused registration key makes th
     licenseExhaustionMessage(licenses),
     '5 in use, 1 held by an unused registration key — delete it or use it to add this server.'
   )
+})
+
+test('a key minted with the Add Server tier holds a seat at that tier, not at the others', () => {
+  // 2 at S3 and 2 at S5, one server on S3, two unused keys: one chose S3, one chose nothing.
+  const view = viewWith(
+    stateWith('active', [
+      { tierId: S3, quantity: 2 },
+      { tierId: S5, quantity: 2 },
+    ]),
+    {
+      licenses: { active: 3, bound: 1 },
+      servers: [{ serverId: SRV, boundAt: NOW, requiredRank: 3, assignedTierId: S3 }],
+      reserved: new Map([[S3, 1]]),
+    }
+  )
+  const byTier = new Map(summarizeTiers(view).map((row) => [row.tierId, row.available]))
+  assertEquals([byTier.get(S3), byTier.get(S5)], [0, 1])
 })
 
 test('a key whose server is being provisioned is in use, not unused and not free', () => {

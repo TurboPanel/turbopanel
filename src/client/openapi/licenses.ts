@@ -68,6 +68,12 @@ export function buildLicenseSchemas(installCommandDescription: string) {
           description:
             'Development only: public http(s) URL for install command --host and download paths.',
         },
+        tierId: {
+          type: 'string',
+          format: 'uuid',
+          description:
+            'Hosted Add Server: the tier the manager chose. The key holds one license at that tier for the server that enrolls with it.',
+        },
       },
     },
     CreateLicenseResponse: {

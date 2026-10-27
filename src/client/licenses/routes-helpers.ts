@@ -7,7 +7,11 @@ import {
 export type LicenseCreateFields = {
   name?: string
   installBaseUrl?: string
+  /** Hosted Add Server: the tier the manager chose; the key holds a seat there for its server. */
+  tierId?: string
 }
+
+const TIER_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 function optionalStringField(value: unknown): { ok: true; value?: string } | { ok: false } {
   if (value === undefined) return { ok: true }
@@ -51,6 +55,8 @@ export function parseLicenseCreateFields(rawBody: string): LicenseCreateFields |
   if (!nameField.ok) return 'invalid'
   const installBaseUrl = optionalStringField(record.installBaseUrl)
   if (!installBaseUrl.ok) return 'invalid'
+  const tierId = optionalStringField(record.tierId)
+  if (!tierId.ok || (tierId.value !== undefined && !TIER_ID_RE.test(tierId.value))) return 'invalid'
 
   const parsedName = parseOptionalLicenseName(nameField.value)
   if (!parsedName.ok) return 'invalid'
@@ -62,11 +68,19 @@ export function parseLicenseCreateFields(rawBody: string): LicenseCreateFields |
   if (installBaseUrl.value !== undefined) {
     fields.installBaseUrl = installBaseUrl.value
   }
+  if (tierId.value !== undefined) {
+    fields.tierId = tierId.value
+  }
 
   return fields
 }
 
 export const NO_LICENSE_AVAILABLE_ERROR = 'no_license_available'
+
+/** Refusal message when the tier chosen in Add Server has no free seat for one more server. */
+export function tierSeatExhaustionMessage(label: string): string {
+  return `No ${label} license is free for this server — restore one that is ending or buy one, then continue.`
+}
 
 /** One tier's counts in the hosted mint refusal — `summarizeTiers` rows, trimmed. */
 export type LicenseTierCounts = {
