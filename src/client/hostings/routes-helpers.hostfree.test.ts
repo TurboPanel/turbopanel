@@ -6,8 +6,12 @@ import { assertEquals } from '@std/assert'
 import type { Context } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import type { Db } from '../../db/connection.ts'
+import { hosting } from '../../db/schema.ts'
+import { createMemoryDb } from '../../test-fixtures/memory-db.ts'
+import { isPinOnlyChange } from './letsencrypt-apply.ts'
 import {
   assertCreateHostingBindScope,
+  assertHostingNotComposeOwnedOr409,
   assertHostingPublicBindScope,
   assertMergedHostingBindScope,
   buildHostingPatchFields,
@@ -213,4 +217,63 @@ test('buildHostingPatchFields rejects invalid patch names', async () => {
     name: 42,
   })
   await expectErrorResponse(bad, 400, { error: 'Invalid request' })
+})
+
+function composeOwnedDb(tlsMode: string): Db {
+  return createMemoryDb([
+    [
+      hosting,
+      [
+        {
+          id: 'h-1',
+          serviceId: 's-1',
+          metadata: {
+            composeOwned: true,
+            composeServiceName: 'web',
+            composeRoute: 'app.example.com /',
+            composeTlsMode: tlsMode,
+          },
+        },
+      ],
+    ],
+  ])
+}
+
+test('assertHostingNotComposeOwnedOr409 lets an automatic compose route retry Lets Encrypt only', async () => {
+  const c = mockContext()
+  const automatic = composeOwnedDb('automatic')
+  assertEquals(
+    await assertHostingNotComposeOwnedOr409(c, automatic, 'h-1', { allowAutomaticTls: true }),
+    null
+  )
+  const refused = await assertHostingNotComposeOwnedOr409(c, automatic, 'h-1')
+  assertEquals(refused?.status, 409)
+  const internal = await assertHostingNotComposeOwnedOr409(c, composeOwnedDb('internal'), 'h-1', {
+    allowAutomaticTls: true,
+  })
+  assertEquals(internal?.status, 409)
+})
+
+test('isPinOnlyChange is true only for a new pin with nothing else changed', () => {
+  const before = {
+    tlsId: null,
+    ipId: 'ip-1',
+    options: { hostnames: ['app.example.com'], proxy: { gzip: true } },
+    updatedAt: '2026-10-25T00:00:00.000Z',
+  }
+  const pinned = {
+    ...before,
+    tlsId: 'tls-1',
+    // Key order is not a change.
+    options: { proxy: { gzip: true }, hostnames: ['app.example.com'] },
+    updatedAt: '2026-10-25T00:01:00.000Z',
+  }
+  assertEquals(isPinOnlyChange(before, pinned), true)
+  assertEquals(isPinOnlyChange(pinned, pinned), false)
+  assertEquals(isPinOnlyChange(pinned, { ...pinned, tlsId: null }), false)
+  assertEquals(isPinOnlyChange(before, { ...pinned, ipId: null }), false)
+  assertEquals(
+    isPinOnlyChange(before, { ...pinned, options: { hostnames: ['other.example.com'] } }),
+    false
+  )
 })

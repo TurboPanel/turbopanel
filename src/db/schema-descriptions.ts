@@ -899,7 +899,9 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'Write-only credential sealed as a `tpsecret` envelope, never returned on GET and resealed to `tpdaemon` for delivery; null when no engine password exists.',
       organization_id: 'Home organization set on every insert, not derived.',
       project_id:
-        'Optional project scope for compose-declared hosting principals; set to NULL when the project is deleted, the principal stays.',
+        'Optional project scope for compose-declared hosting principals; set to NULL when the project is deleted.',
+      removal_requested_at:
+        'When the delete of its project asked for this unused principal to go; the removal sweep deletes it and its host account once no folder names it.',
     },
   },
   folder: {

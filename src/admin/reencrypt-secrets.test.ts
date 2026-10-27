@@ -157,7 +157,8 @@ async function installIsolatedFixtureSchema(tx: Db, schemaName: string): Promise
       project_id uuid,
       metadata jsonb,
       options jsonb,
-      access text DEFAULT 'sftp' NOT NULL
+      access text DEFAULT 'sftp' NOT NULL,
+      removal_requested_at timestamptz(3)
     )
   `)
   )

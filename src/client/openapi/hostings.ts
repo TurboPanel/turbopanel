@@ -265,9 +265,9 @@ export const hostingSchemas = {
           },
           composeTlsMode: {
             type: 'string',
-            enum: ['internal', 'certificate'],
+            enum: ['automatic', 'internal', 'certificate'],
             description:
-              'Authored x-turbopanel.hosting[i].tls.mode. Only internal and certificate can reach a row: "automatic" has no deploy-payload spelling and is refused at save time and again at deploy-prepare (422 hosting_tls_mode_unsupported).',
+              'Authored x-turbopanel.hosting[i].tls.mode. "automatic" pins the organization\'s managed Let\'s Encrypt row for the name (created when missing) and needs the organization setting "Allow Let\'s Encrypt certificates"; otherwise the deploy is refused (400 acme_requires_org_opt_in).',
           },
           composeAdopted: {
             type: 'boolean',
@@ -384,7 +384,11 @@ const letsEncryptPaths = {
           description: 'Hosting not found',
           content: { 'application/json': { schema: clientErrorJson } },
         },
-        ...composeOwnedConflictResponse,
+        '409': {
+          description:
+            "hosting_owned_by_compose, except when compose asks for tls.mode automatic: then the request re-pins the managed Let's Encrypt row compose chose (Try again).",
+          content: { 'application/json': { schema: clientErrorJson } },
+        },
       },
     },
   },
@@ -413,13 +417,69 @@ const letsEncryptPaths = {
   },
 }
 
+const composeReleasePaths = {
+  [`${hostingIdPath}/release-from-compose`]: {
+    post: {
+      tags: ['Hostings'],
+      summary: 'Manage a compose-made hosting in the panel instead',
+      description:
+        "Removes the compose markers from the hosting, so it is edited in the panel again and keeps its id, names, certificate and variables. The caller then removes the route from the environment's compose file; if that write fails, the next deploy adopts the row again instead of deleting it. A hosting compose does not own is left alone (`released: false`).",
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+      ],
+      responses: {
+        '200': {
+          description: 'Released, or already managed in the panel',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['ok', 'released'],
+                properties: {
+                  ok: { type: 'boolean', enum: [true] },
+                  released: { type: 'boolean' },
+                },
+              },
+            },
+          },
+        },
+        '401': {
+          description: 'Not signed in',
+          content: { 'application/json': { schema: clientErrorJson } },
+        },
+        '403': {
+          description: 'No manage grant, or a system-owned hosting',
+          content: { 'application/json': { schema: clientErrorJson } },
+        },
+        '404': {
+          description: 'Hosting not found',
+          content: { 'application/json': { schema: clientErrorJson } },
+        },
+        '409': {
+          description:
+            'environment_deploy_running: a deploy of this environment is running; try again when it has finished',
+          content: { 'application/json': { schema: clientErrorJson } },
+        },
+        '503': {
+          description: 'Database unavailable',
+          content: { 'application/json': { schema: clientErrorJson } },
+        },
+      },
+    },
+  },
+}
+
 export const hostingPaths = {
   ...basePaths,
   ...letsEncryptPaths,
+  ...composeReleasePaths,
   [hostingIdPath]: {
     ...(basePaths[hostingIdPath] as Record<string, unknown>),
     patch: {
       ...((basePaths[hostingIdPath] as Record<string, unknown>).patch as Record<string, unknown>),
+      description:
+        "Pointing `tlsId` at a managed Let's Encrypt certificate, with nothing else the servers receive changed, sends it to the servers at once when the environment is deployed (the same hostings-only apply as use-letsencrypt); the answer then carries `needsDeploy`, true when a deploy is still needed to start it.",
       responses: {
         ...(((basePaths[hostingIdPath] as Record<string, unknown>).patch as Record<string, unknown>)
           .responses as Record<string, unknown>),

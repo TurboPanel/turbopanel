@@ -117,6 +117,26 @@ export function deployRunState(input: {
   return { state: 'queued' }
 }
 
+/**
+ * May a sent deploy stop holding its server's command lane while it is waited
+ * on? Yes once the server reports it (`runningSince` set, or `null` while it
+ * waits for another build): it then holds its environment's lock on the
+ * server, which also makes a later stop or destroy of that environment wait,
+ * and the server runs one build at a time. A server that has said nothing
+ * {@link DEPLOY_SIGNAL_GRACE_MS} after the send is an older build, offline (the
+ * request waits in its outbox, ahead of anything sent later) or has lost the
+ * deploy; waiting on it must not hold up the server's other commands either.
+ */
+export function deployMayLeaveLane(input: {
+  progress: unknown
+  sentAt: string | null
+  nowMs: number
+}): boolean {
+  if (parseStoredCommandProgress(input.progress)?.runningSince !== undefined) return true
+  const sentMs = toMs(input.sentAt)
+  return sentMs !== null && input.nowMs >= sentMs + DEPLOY_SIGNAL_GRACE_MS
+}
+
 export type DeployWaitVerdict =
   /** The wait ended with a result, or has not ended. */
   | 'none'
@@ -311,6 +331,8 @@ export type DeployWaiterDeps = {
   runCapMs?: number
   /** Called when a running deploy first goes quiet, with when the server was last heard. */
   onContactLost?: (lastHeardAt: string) => Promise<void>
+  /** Frees the server's command lane, once, when {@link deployMayLeaveLane} says so. */
+  leaveLane?: () => void
 }
 
 /**
@@ -326,6 +348,7 @@ export function createDeployWaiter(deps: DeployWaiterDeps): DeployWaiter {
   const holdUntilMs = startedMs + (deps.holdMs ?? DEPLOY_QUEUE_HOLD_MS)
   const endAtMs = startedMs + (deps.endMs ?? DEPLOY_INVOCATION_LIMIT_MS)
   let contactMarked = false
+  let laneLeft = false
   const waiter: DeployWaiter = {
     verdict: 'none',
     recovery: deps.recovery === true,
@@ -333,6 +356,7 @@ export function createDeployWaiter(deps: DeployWaiterDeps): DeployWaiter {
     lastProgress: null,
     async wait(cell, requestId) {
       for (;;) {
+        leaveLaneWhenTaken(waiter.lastProgress)
         const finished = await cell.waitForRequest(requestId, pollMs)
         if (finished) return finished
         const request = await cell.getRequest(requestId)
@@ -347,6 +371,12 @@ export function createDeployWaiter(deps: DeployWaiterDeps): DeployWaiter {
         }
       }
     },
+  }
+  function leaveLaneWhenTaken(progress: unknown): void {
+    if (laneLeft || deps.leaveLane === undefined) return
+    if (!deployMayLeaveLane({ progress, sentAt: deps.sentAt, nowMs: now() })) return
+    laneLeft = true
+    deps.leaveLane()
   }
   async function noteQuiet(
     request: PendingRequestRecord | null,

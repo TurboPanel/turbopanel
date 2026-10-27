@@ -916,7 +916,7 @@ test('DELETE /environments/:id returns 200 when teardown has nothing to reclaim'
     headers: sessionHeaders(cookie),
   })
   assertEquals(res.status, 200)
-  assertEquals(await res.json(), { ok: true })
+  assertEquals(await res.json(), { ok: true, cleanup: { folderServerIds: [] } })
 })
 
 test('DELETE /environments/:id returns 409 when child resources still exist', async () => {

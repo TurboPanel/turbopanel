@@ -18,6 +18,7 @@ import {
   DEPLOY_SIGNAL_GRACE_MS,
   DEPLOY_DEFAULT_TIMEOUT_MS,
   deployIsChecking,
+  deployMayLeaveLane,
   deployTimeLimitMessage,
   deployRunState,
   deployUnreachableMessage,
@@ -396,4 +397,67 @@ test('a server that cannot send signs of life keeps the ten minute cap whatever 
   }
   assertEquals(verdict({ ...base, nowMs: STARTED + DEPLOY_RUN_CAP_MS - 1 }), null)
   assertEquals(verdict({ ...base, nowMs: STARTED + DEPLOY_RUN_CAP_MS }), 'run_cap')
+})
+
+test('a deploy leaves its server lane once the server reports it, or once the grace has passed', () => {
+  const sentAt = iso(T0)
+  // Just sent, nothing heard: it still holds the lane.
+  assertEquals(deployMayLeaveLane({ progress: null, sentAt, nowMs: T0 + 1_000 }), false)
+  assertEquals(deployMayLeaveLane({ progress: plan(), sentAt, nowMs: T0 + 1_000 }), false)
+  // The server took it: started, or waiting for another build to free the host.
+  assertEquals(deployMayLeaveLane({ progress: plan(iso(T0)), sentAt, nowMs: T0 + 1_000 }), true)
+  assertEquals(deployMayLeaveLane({ progress: plan(null), sentAt, nowMs: T0 + 1_000 }), true)
+  // Silent, offline or lost: waiting on it must not hold up the server's other commands.
+  assertEquals(
+    deployMayLeaveLane({ progress: null, sentAt, nowMs: T0 + DEPLOY_SIGNAL_GRACE_MS }),
+    true
+  )
+  assertEquals(deployMayLeaveLane({ progress: null, sentAt: null, nowMs: T0 + 3_600_000 }), false)
+})
+
+/** A waiter whose request finishes after `rounds` polls, recording when it left the lane. */
+function laneHarness(progressAt: (nowMs: number) => unknown, rounds: number) {
+  let nowMs = T0
+  let polls = 0
+  const left: number[] = []
+  const cell = {
+    waitForRequest: (_id: string, ms: number) => {
+      nowMs += ms
+      polls++
+      return Promise.resolve(polls > rounds ? request('done') : null)
+    },
+    getRequest: () => Promise.resolve(request('acked')),
+  } as unknown as DaemonCell
+  const waiter = createDeployWaiter({
+    sentAt: iso(T0),
+    readCommand: () =>
+      Promise.resolve({ status: 'sent', progress: progressAt(nowMs), updatedAt: iso(nowMs) }),
+    now: () => nowMs,
+    holdMs: Number.POSITIVE_INFINITY,
+    endMs: Number.POSITIVE_INFINITY,
+    pollMs: 10_000,
+    leaveLane: () => left.push(nowMs),
+  })
+  return { cell, waiter, left }
+}
+
+test('the waiter frees the server lane, once, as soon as the server reports the deploy', async () => {
+  const h = laneHarness((nowMs) => (nowMs >= T0 + 20_000 ? plan(iso(T0 + 15_000)) : null), 30)
+  const result = await h.waiter.wait(h.cell, 'r1', 0)
+  assertEquals(result?.status, 'done')
+  // Read at the second poll, freed before the third wait; never freed twice.
+  assertEquals(h.left, [T0 + 20_000])
+})
+
+test('the waiter frees the server lane after the grace when the server never reports', async () => {
+  const h = laneHarness(() => null, 30)
+  await h.waiter.wait(h.cell, 'r1', 0)
+  assertEquals(h.left, [T0 + DEPLOY_SIGNAL_GRACE_MS])
+})
+
+test('a deploy that ends before the server reports it keeps the lane until it ends', async () => {
+  const h = laneHarness(() => null, 2)
+  const result = await h.waiter.wait(h.cell, 'r1', 0)
+  assertEquals(result?.status, 'done')
+  assertEquals(h.left, [])
 })

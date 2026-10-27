@@ -130,6 +130,8 @@ async function withEnvironmentFixtures(
     .values({
       organizationId,
       name: 'Environment Route Server',
+      // Connected: a delete refuses while a server it has to reach is offline.
+      isConnected: true,
       createdAt: now,
       updatedAt: now,
     })
@@ -592,15 +594,19 @@ function addContainer(ctx: EnvironmentTestContext, serviceId: string, status: st
   })
 }
 
-test('an environment with a running container is refused with environment_running and nothing is removed', async () => {
+test('a running environment whose stop cannot be sent is refused with environment_running and nothing is removed', async () => {
   await withEnvironmentFixtures(async (ctx) => {
     const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
     const { id, serviceId } = await createEnvironmentWithWeb(ctx, cookie, 'running')
     await addContainer(ctx, serviceId, 'running')
+    await ctx.db
+      .insert(deployment)
+      .values({ environmentId: id, serverId: ctx.serverId, status: 'applied' })
 
+    // No command queue here: the stop cannot go out, so nothing is deleted.
     const refused = await deleteEnvironmentRequest(ctx, cookie, id)
     assertEquals(refused.status, 409)
-    assertEquals(await refused.json(), { error: 'environment_running' })
+    assertEquals(((await refused.json()) as { error: string }).error, 'environment_running')
     assertEquals((await environmentRow(ctx, id))?.name, 'running')
     assertEquals((await countRows(ctx, id, serviceId)).containers, 1)
   })
@@ -616,7 +622,9 @@ test('an environment with a deploy in progress is refused with environment_runni
 
     const refused = await deleteEnvironmentRequest(ctx, cookie, id)
     assertEquals(refused.status, 409)
-    assertEquals(await refused.json(), { error: 'environment_running' })
+    const body = (await refused.json()) as { error: string; message: string }
+    assertEquals(body.error, 'environment_running')
+    assertEquals(body.message.includes('deploy is running'), true)
     assertEquals((await environmentRow(ctx, id))?.name, 'deploying')
 
     // A finished deploy no longer blocks.

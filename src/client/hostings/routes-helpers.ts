@@ -119,11 +119,17 @@ export async function assertHostingPublicBindScope(
  * Rows with no marker — everything created in the panel, and everything that
  * predates compose-authored ingress — return `null` and keep working exactly as
  * before. That is what makes this backward compatible rather than a migration.
+ *
+ * `allowAutomaticTls` lets the one-click Let's Encrypt route through for a row
+ * whose compose entry asks for `tls.mode: automatic`: retrying that request
+ * pins the same managed row the next deploy's reconcile would, so nothing the
+ * panel writes is overwritten.
  */
 export async function assertHostingNotComposeOwnedOr409(
   c: Context,
   db: Db,
-  id: string
+  id: string,
+  opts: { allowAutomaticTls?: boolean } = {}
 ): Promise<Response | null> {
   const [row] = await db
     .select({ serviceId: hosting.serviceId, metadata: hosting.metadata })
@@ -134,6 +140,7 @@ export async function assertHostingNotComposeOwnedOr409(
 
   const owner = readHostingComposeOwner(row.metadata)
   if (!owner) return null
+  if (opts.allowAutomaticTls === true && owner.tlsMode === 'automatic') return null
 
   return c.json(
     {

@@ -137,6 +137,8 @@ function reconcileDb(options: {
             where: () =>
               Promise.resolve((options.stillPlaced ?? []).map((username) => ({ username }))),
           }),
+          // The folder rows of the login on the server: none here.
+          where: () => Promise.resolve([]),
         }),
       }),
     }),

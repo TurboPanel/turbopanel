@@ -30,9 +30,10 @@ export const HOSTING_COMPOSE_ROUTE_METADATA_KEY = 'composeRoute'
 /**
  * The authored `tls.mode`.
  *
- * `certificate` resolves to a `tls_id` and needs no marker; `automatic` and
- * `internal` both resolve to *no* pin, and without recording which was asked
- * for the two are indistinguishable on the row.
+ * `certificate` (a library pick) and `automatic` (the managed Let's Encrypt
+ * row the reconcile finds or creates) both resolve to a `tls_id`, so the
+ * column alone cannot say which was asked for. The one-click routes read this
+ * to let an `automatic` route use Try again while compose still owns the pin.
  */
 export const HOSTING_COMPOSE_TLS_MODE_METADATA_KEY = 'composeTlsMode'
 
@@ -82,6 +83,11 @@ export function readHostingComposeOwner(metadata: unknown): HostingComposeOwner 
     ...(typeof tlsMode === 'string' ? { tlsMode } : {}),
     ...(metadata[HOSTING_COMPOSE_ADOPTED_METADATA_KEY] === true ? { adopted: true } : {}),
   }
+}
+
+/** True when compose owns this row and asks for a Let's Encrypt certificate (`tls.mode: automatic`). */
+export function isComposeAutomaticTlsHosting(metadata: unknown): boolean {
+  return readHostingComposeOwner(metadata)?.tlsMode === 'automatic'
 }
 
 /** True when compose took over a row the panel had already created. */

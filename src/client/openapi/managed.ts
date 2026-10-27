@@ -1082,6 +1082,47 @@ export const managedSchemas = {
       },
     },
   },
+  CreateManagedAppLoginsRequest: {
+    type: 'object',
+    properties: {
+      prefix: {
+        type: 'string',
+        description:
+          'Start of the three login names (`<prefix>_migrate`, `<prefix>_rw`, `<prefix>_ro`). Left out or empty: the database name. Letters, numbers and underscores, starting with a letter or underscore, short enough that `<prefix>_migrate` fits the engine limit for login names (400 `managed_app_login_prefix_invalid` / `managed_app_login_prefix_too_long`).',
+      },
+      allowedSources: ALLOWED_SOURCES_SCHEMA,
+      maxConnections: MAX_CONNECTIONS_SCHEMA,
+      straightThrough: STRAIGHT_THROUGH_REQUEST_SCHEMA,
+    },
+  },
+  CreateManagedAppLoginsResponse: {
+    type: 'object',
+    required: ['ok', 'logins', 'commandId', 'serverId'],
+    properties: {
+      ok: { type: 'boolean', const: true },
+      logins: {
+        type: 'array',
+        description:
+          'The three new logins in order (owner, read/write, read-only), each with its show-once password.',
+        items: {
+          type: 'object',
+          required: ['user', 'password'],
+          properties: {
+            user: { $ref: '#/components/schemas/ManagedUserRecord' },
+            password: { type: 'string', description: 'Show-once plaintext password' },
+          },
+        },
+      },
+      notes: {
+        type: 'array',
+        items: { type: 'string' },
+        description:
+          'Plain-words notes on what the owner login got when it is not the full owner rights (a database without an owner role, or an older daemon). Absent when there is nothing to say.',
+      },
+      commandId: { type: 'string' },
+      serverId: { type: 'string' },
+    },
+  },
   CreateManagedUserResponse: {
     type: 'object',
     required: ['ok', 'user', 'password', 'commandId', 'serverId'],
@@ -2365,6 +2406,38 @@ export const managedPaths = {
         400: { description: 'managed_owner_role_confirm_required and the refusals above' },
         404: { description: 'No such database' },
         409: { description: 'managed_database_convert_needs_daemon_update' },
+      },
+    },
+  },
+  '/api/client/v1/environments/{id}/managed/databases/{name}/app-logins': {
+    post: {
+      tags: ['Managed services'],
+      summary: 'Add the three app logins for one database in one step',
+      description:
+        "Adds `<prefix>_migrate`, `<prefix>_rw` and `<prefix>_ro` on this database only, with names exactly as written (the plain name scheme; 409 `principal_scheme_locked` when the organization locks another scheme), permissions set by the panel, and the same connect-from limit, connection cap and straight-through choice for all three. `_migrate` is the owner of the database (privilege `admin`, a tool login): on PostgreSQL a member of the database's owner role, so what it creates belongs to the owner role and it can hand out access; MySQL and MariaDB have no database owner, so it gets every right on the database with the right to grant them. `_rw` reads and changes rows only; `_ro` only reads. All or nothing: the three are saved in one transaction and made by one apply; a name already in use (409 `username_in_use` / `managed_user_exists`, with `username`) or any other refusal adds none of them.",
+      parameters: [ENV_ID_PARAM, DATABASE_NAME_PARAM],
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: { $ref: '#/components/schemas/CreateManagedAppLoginsRequest' },
+          },
+        },
+      },
+      responses: {
+        200: {
+          description: 'Logins created, apply queued',
+          ...jsonSchema('CreateManagedAppLoginsResponse'),
+        },
+        400: {
+          description:
+            'managed_app_login_prefix_invalid / managed_app_login_prefix_too_long and the single-login refusals',
+        },
+        404: { description: 'No such database' },
+        409: {
+          description:
+            'username_in_use / managed_user_exists / managed_busy / principal_scheme_locked',
+        },
       },
     },
   },

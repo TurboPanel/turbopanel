@@ -449,6 +449,28 @@ test('the node app settings parse and enabled: false survives the round-trip', (
   )
 })
 
+test('a custom node app mode parses trimmed and raises no issue', () => {
+  const parsed = parseServiceTurbopanelExtension({
+    serviceKind: 'node',
+    appMode: '  staging ',
+    source: { sourceId: NODE_SOURCE_ID },
+  })
+  assertEquals(parsed?.appMode, 'staging')
+  const issues = collectServiceTurbopanelValidationIssues({
+    web: {
+      'x-turbopanel': {
+        serviceKind: 'node',
+        appMode: 'pre-prod.eu_2',
+        source: { sourceId: NODE_SOURCE_ID },
+      },
+    },
+  })
+  assertEquals(
+    issues.some((issue) => issue.path === 'services.web.x-turbopanel.appMode'),
+    false
+  )
+})
+
 test('the node-only settings are rejected on non-node kinds', () => {
   // `enabled: false` on a site proves the check is presence, not truthiness.
   const issues = collectServiceTurbopanelValidationIssues({
@@ -511,7 +533,7 @@ test('bad node setting types are reported as raw type issues', () => {
       'x-turbopanel': {
         serviceKind: 'node',
         packageManager: 'bun',
-        appMode: 'staging',
+        appMode: 'my mode',
         enabled: 'yes',
         source: { sourceId: NODE_SOURCE_ID },
       },
@@ -529,7 +551,7 @@ test('bad node setting types are reported as raw type issues', () => {
     issues.some(
       (issue) =>
         issue.path === 'services.web.x-turbopanel.appMode' &&
-        issue.message.includes('"production" or "development"')
+        issue.message.includes('"production", "development", or a custom value')
     ),
     true
   )

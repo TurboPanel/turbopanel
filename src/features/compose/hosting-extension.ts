@@ -42,12 +42,12 @@ import type { ComposeServiceKind, ServiceTurbopanelValidationIssue } from './ser
 /**
  * How the edge terminates TLS for one authored hostname.
  *
- * `automatic` is **named but not yet deployable** — see
- * {@link HOSTING_TLS_MODE_AUTOMATIC_UNSUPPORTED_MESSAGE}. It stays in the type
- * (and in {@link HOSTING_TLS_MODES}) so an author who writes it hears the real
- * reason rather than "unknown mode", and so the reconcile can refuse it instead
- * of parsing it away into a route that silently terminates with a self-signed
- * certificate.
+ * - `automatic`: a free Let's Encrypt certificate. The deploy's reconcile pins
+ *   the organization's managed Let's Encrypt row for the name (creating it
+ *   when there is none), and the server's web server obtains and renews it.
+ *   Needs the organization's "Allow Let's Encrypt certificates" switch.
+ * - `internal`: the web server's own self-signed certificate.
+ * - `certificate`: a row from the organization library, by `certificateRef`.
  */
 export type ComposeHostingTlsMode = 'automatic' | 'internal' | 'certificate'
 
@@ -58,15 +58,11 @@ export const HOSTING_TLS_MODES: readonly ComposeHostingTlsMode[] = [
 ]
 
 /**
- * Default when `tls` is omitted — the self-signed certificate the edge
- * terminates with today.
+ * Default when `tls` is omitted — the web server's self-signed certificate.
  *
- * Deliberately **not** `automatic`: the deploy payload carries exactly one TLS
- * knob (`EnvironmentDeployHosting.tlsId` — a resolved pin, or null meaning
- * Caddy `tls internal`), so there is no wire spelling for "obtain one for me".
- * A default naming a mode the deploy cannot perform would promise managed
- * certificates and hand back self-signed ones, so the omitted case names what
- * actually happens.
+ * Deliberately **not** `automatic`: a document saved before `automatic` worked
+ * would otherwise start asking Let's Encrypt for certificates on its next
+ * deploy. The panel writes `automatic` explicitly when it wants one.
  */
 export const DEFAULT_HOSTING_TLS_MODE: ComposeHostingTlsMode = 'internal'
 
@@ -233,19 +229,6 @@ export const HOSTING_TARGET_PORT_NOT_FOR_SITE_MESSAGE =
 /** Message for `targetPort` on a `node`, where the daemon owns the port. */
 export const HOSTING_TARGET_PORT_NOT_FOR_NODE_MESSAGE =
   'targetPort is not valid on a node service; the daemon allocates the app listen port'
-
-/**
- * Message for `tls.mode: automatic`, which nothing downstream can perform yet.
- *
- * The deploy payload's only TLS field is a resolved certificate id, so the two
- * outcomes a route can actually have are "this pinned certificate" and "Caddy
- * `tls internal`". Accepting `automatic` and materializing the second is a
- * silent downgrade of the one setting an operator was most explicit about —
- * the same failure {@link hostingTlsRefUnresolvedMessage} exists to prevent —
- * so it is refused at save time and again at deploy-prepare.
- */
-export const HOSTING_TLS_MODE_AUTOMATIC_UNSUPPORTED_MESSAGE =
-  'tls.mode "automatic" is not supported yet; use "internal" for a self-signed certificate, or "certificate" with tls.certificateRef to pin one from this organization'
 
 /** Message for an out-of-range or non-integer `targetPort`. */
 export const HOSTING_TARGET_PORT_RANGE_MESSAGE = 'targetPort must be an integer between 1 and 65535'
@@ -604,11 +587,6 @@ function validateHostingTls(entryPath: string, value: unknown): ServiceTurbopane
     issues.push({
       path: `${path}.mode`,
       message: 'tls.mode must be "automatic", "internal", or "certificate"',
-    })
-  } else if (value.mode === 'automatic') {
-    issues.push({
-      path: `${path}.mode`,
-      message: HOSTING_TLS_MODE_AUTOMATIC_UNSUPPORTED_MESSAGE,
     })
   }
 

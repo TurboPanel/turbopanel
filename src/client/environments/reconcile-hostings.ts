@@ -64,6 +64,19 @@ import {
   withoutHostingComposeOwner,
 } from '../../features/hostings/hosting-compose-owner.ts'
 import { PanelHostnameClaimError } from '../../features/hostings/panel-hostname-guard.ts'
+import { lockEnvironmentRow } from '../../features/folders/records.ts'
+import {
+  type LetsEncryptRefusal,
+  letsEncryptNames,
+  letsEncryptRefusal,
+  pendingLetsEncryptPatch,
+} from '../../features/hostings/hosting-certificate.ts'
+import type { LetsEncryptStore } from '../../features/hostings/use-letsencrypt.ts'
+import {
+  certificateIdsPinnedBy,
+  removeUnusedSiteCertificates,
+} from '../../features/tls/unused-letsencrypt.ts'
+import { createLetsEncryptStore, loadAcmeEnabled } from '../hostings/letsencrypt-store.ts'
 import {
   type HostingOptions,
   parseHostingOptions,
@@ -102,22 +115,23 @@ export type ComposeHostingIpRefError = {
 export type ComposeHostingRefError = ComposeHostingTlsRefError | ComposeHostingIpRefError
 
 /**
- * An entry asked for a TLS mode nothing downstream can perform.
+ * An entry asked for `tls.mode: automatic` (a Let's Encrypt certificate) that
+ * cannot be given: the organization has not turned on "Allow Let's Encrypt
+ * certificates", the route is not bound to the public internet, or the name
+ * (or the www name its `www` setting adds) can never get a public certificate.
  *
- * Today that is `tls.mode: automatic`. The deploy payload's only TLS field is
- * `EnvironmentDeployHosting.tlsId` — a resolved pin, or null meaning Caddy
- * `tls internal` — so "obtain a certificate for me" has no wire spelling, and
- * projecting it as a null pin would serve a self-signed certificate to an
- * operator who asked for a real one. Refused here for the same reason
- * {@link ComposeHostingRefError} is: a quiet TLS downgrade is worse than a
- * loud refusal. The save-time linter refuses it first; reaching here means the
- * document was written before that rule existed.
+ * Refused for the same reason {@link ComposeHostingRefError} is: quietly
+ * serving a self-signed certificate to an operator who asked for a real one is
+ * worse than a loud refusal. `reason` uses the one-click button's refusal
+ * codes, so both paths explain a refusal the same way.
  */
-export type ComposeHostingTlsModeError = {
-  kind: 'hosting_tls_mode_unsupported'
+export type ComposeHostingLetsEncryptError = {
+  kind: 'hosting_letsencrypt_refused'
   composeServiceName: string
   hostname: string
-  mode: ComposeHostingTlsMode
+  reason: LetsEncryptRefusal
+  /** Every name the certificate would cover (the hostname plus the www name its `www` setting adds). */
+  names: string[]
 }
 
 /**
@@ -166,7 +180,7 @@ export type ComposeHostingPanelHostnameError = {
 export type ComposeHostingError =
   | ComposeHostingRefError
   | ComposeHostingPanelHostnameError
-  | ComposeHostingTlsModeError
+  | ComposeHostingLetsEncryptError
   | ComposeHostingRouteConflictError
   | ComposeHostingHostnameConflictError
 
@@ -482,6 +496,10 @@ type RouteReconcileContext = {
   serviceIdByComposeName: ReadonlyMap<string, string>
   resolveTls: (ref: string) => RefResolution
   resolveIp: (ref: string) => RefResolution
+  /** The organization's "Allow Let's Encrypt certificates" switch; read only when a route asks for `automatic`. */
+  acmeEnabled: boolean
+  /** Finds or creates the managed Let's Encrypt row an `automatic` route pins (the button's store). */
+  letsEncrypt: Pick<LetsEncryptStore, 'managedCertificateFor'>
   panelAuthored: readonly ExistingRow[]
   existingByKey: Map<string, ExistingRow>
   keptIds: Set<string>
@@ -543,10 +561,7 @@ async function reconcileDeclaredRoute(
   // hosting for if it ever happens.
   if (!serviceId) return null
 
-  const modeError = unsupportedTlsModeError(route)
-  if (modeError) return modeError
-
-  const pins = resolvePins(route, ctx.resolveTls, ctx.resolveIp)
+  const pins = await resolveRoutePins(route, ctx)
   if (!pins.ok) return pins.error
 
   const matched = matchOrAdoptExistingRow(ctx, serviceId, route)
@@ -554,12 +569,14 @@ async function reconcileDeclaredRoute(
   const { existing, isAdoption } = matched
 
   const options = mergeComposeHostingOptions(existing?.options, route.entry, route.serviceKind)
-  const metadata = withHostingComposeOwner(existing?.metadata, {
+  const tlsMode = hostingTlsModeOf(route.entry)
+  const owned = withHostingComposeOwner(existing?.metadata, {
     composeServiceName: route.composeServiceName,
     route: route.route,
-    tlsMode: hostingTlsModeOf(route.entry),
+    tlsMode,
     ...(isAdoption ? { adopted: true } : {}),
   })
+  const { metadata, pendingAt } = waitingRequestFor(owned, tlsMode)
 
   if (existing) {
     return persistExistingDeclaredRoute({
@@ -570,11 +587,26 @@ async function reconcileDeclaredRoute(
       serviceId,
       pins,
       metadata,
+      pendingAt,
       options,
       isAdoption,
     })
   }
   return insertDeclaredRoute(db, route, ctx, serviceId, pins, metadata, options)
+}
+
+/**
+ * A waiting Let's Encrypt request (from Try again while DNS was not ready)
+ * only means something while compose asks for `automatic`. Any other mode
+ * clears it, so the sweep can never pin Let's Encrypt onto a route compose
+ * gave another certificate.
+ */
+function waitingRequestFor(
+  metadata: Record<string, unknown>,
+  tlsMode: ComposeHostingTlsMode
+): { metadata: Record<string, unknown>; pendingAt: null | undefined } {
+  if (tlsMode === 'automatic') return { metadata, pendingAt: undefined }
+  return { metadata: pendingLetsEncryptPatch(metadata, null).metadata, pendingAt: null }
 }
 
 async function persistExistingDeclaredRoute(input: {
@@ -583,12 +615,15 @@ async function persistExistingDeclaredRoute(input: {
   ctx: RouteReconcileContext
   existingId: string
   serviceId: string
-  pins: Extract<ReturnType<typeof resolvePins>, { ok: true }>
+  pins: PinnedRoute
   metadata: ExistingRow['metadata']
+  /** `null` clears a waiting Let's Encrypt request; `undefined` leaves the column alone. */
+  pendingAt: null | undefined
   options: ExistingRow['options']
   isAdoption: boolean
 }): Promise<ComposeHostingError | null> {
-  const { db, route, ctx, existingId, serviceId, pins, metadata, options, isAdoption } = input
+  const { db, route, ctx, existingId, serviceId, pins, metadata, pendingAt, options, isAdoption } =
+    input
   try {
     await db.transaction(async (tx) => {
       await tx
@@ -599,6 +634,7 @@ async function persistExistingDeclaredRoute(input: {
           ipId: pins.ipId,
           metadata,
           options,
+          ...(pendingAt === undefined ? {} : { pendingAt }),
           updatedAt: new Date().toISOString(),
         })
         .where(eq(hosting.id, existingId))
@@ -638,7 +674,7 @@ async function insertDeclaredRoute(
   route: DeclaredRoute,
   ctx: RouteReconcileContext,
   serviceId: string,
-  pins: Extract<ReturnType<typeof resolvePins>, { ok: true }>,
+  pins: PinnedRoute,
   metadata: ExistingRow['metadata'],
   options: ExistingRow['options']
 ): Promise<ComposeHostingError | null> {
@@ -763,6 +799,10 @@ async function reconcileHostingsInTransaction(
   db: Db,
   params: ReconcileHostingsParams
 ): Promise<ComposeHostingReconcileResult> {
+  // The environment row's lock before reading the rows: a release to the panel
+  // (`../hostings/compose-release-route.ts`) takes it too, so the stale compose
+  // markers read here can never be written back over a release.
+  await lockEnvironmentRow(db, params.environmentId)
   const routes = collectDeclaredRoutes(params.merged)
   const { composeOwned: existingRows, panelAuthored } = await loadEnvironmentHostingRows(
     db,
@@ -783,6 +823,8 @@ async function reconcileHostingsInTransaction(
   const ipRefs = collectRefs(routes, (entry) => entry.bind?.ipRef)
   const resolveTls = await loadTlsIndex(db, params.organizationId, tlsRefs.length > 0)
   const resolveIp = await loadIpIndex(db, params.organizationId, ipRefs.length > 0)
+  const wantsLetsEncrypt = routes.some((route) => hostingTlsModeOf(route.entry) === 'automatic')
+  const acmeEnabled = wantsLetsEncrypt && (await loadAcmeEnabled(db, params.organizationId))
 
   const serviceIdByComposeName = new Map(
     params.serviceRows.map((row) => [row.composeServiceName, row.id])
@@ -799,6 +841,8 @@ async function reconcileHostingsInTransaction(
     serviceIdByComposeName,
     resolveTls,
     resolveIp,
+    acmeEnabled,
+    letsEncrypt: createLetsEncryptStore(db),
     panelAuthored,
     existingByKey,
     keptIds: new Set<string>(),
@@ -819,6 +863,12 @@ async function reconcileHostingsInTransaction(
     const route = readRouteFromMetadata(row.metadata)
     return route !== null && !declaredKeys.has(existingRowKey(row.serviceId, route))
   })
+  // Read before any row is removed or re-pinned: the Let's Encrypt entries
+  // these rows use, checked again once the reconcile is done.
+  const certificateIds = await certificateIdsPinnedBy(
+    db,
+    existingRows.map((row) => row.id)
+  )
   const early = await pruneOrphanedComposeRows(db, staleRows, new Set<string>())
   for (const row of staleRows) {
     const route = readRouteFromMetadata(row.metadata)
@@ -837,6 +887,12 @@ async function reconcileHostingsInTransaction(
     ctx.keptIds
   )
 
+  // A removed route, or one that no longer asks for Let's Encrypt, lets go of
+  // its entry; the entry goes when no other site in the organization uses it.
+  await removeUnusedSiteCertificates(db, certificateIds, {
+    reason: 'no site uses it after a deploy',
+  })
+
   return {
     ok: true,
     created: ctx.created,
@@ -847,37 +903,74 @@ async function reconcileHostingsInTransaction(
   }
 }
 
-/**
- * The refusal for a mode the deploy cannot perform, or nothing.
- *
- * Only `automatic` today. Split out rather than inlined so the reason lives
- * next to {@link ComposeHostingTlsModeError} rather than in the middle of the
- * upsert loop.
- */
-function unsupportedTlsModeError(route: DeclaredRoute): ComposeHostingTlsModeError | null {
-  const mode = hostingTlsModeOf(route.entry)
-  if (mode !== 'automatic') return null
-  return {
-    kind: 'hosting_tls_mode_unsupported',
-    composeServiceName: route.composeServiceName,
-    hostname: route.entry.hostname,
-    mode,
-  }
-}
-
 type ResolvedPins =
   | { ok: true; tlsId: string | null; ipId: string | null }
-  | { ok: false; error: ComposeHostingRefError }
+  | { ok: false; error: ComposeHostingRefError | ComposeHostingLetsEncryptError }
+
+type PinnedRoute = Extract<ResolvedPins, { ok: true }>
 
 /**
- * The `tls_id` / `ip_id` one entry pins.
+ * The managed Let's Encrypt row an `automatic` route pins, found or created.
  *
- * `tls.mode: internal` pins nothing — Caddy's own self-signed certificate needs
- * no row from the library. `automatic` never reaches here: it is refused by
- * {@link unsupportedTlsModeError} above, because a null pin would deploy as
- * `tls internal` and quietly answer a request for a managed certificate with a
- * self-signed one. The authored mode is still recorded in metadata rather than
- * inferred back from a null column.
+ * The same rules and the same store as the one-click button
+ * (`features/hostings/use-letsencrypt.ts`): the organization switch, a public
+ * bind, and names that can get a public certificate, then the organization's
+ * existing row for these names (or one that already covers them) before a new
+ * one. There is no DNS check here: the route deploys right away with the
+ * `acme` wire mode and the server's web server keeps retrying until DNS points
+ * at it. The deploy that runs this reconcile carries the pin, so nothing else
+ * needs to be queued.
+ */
+async function automaticCertificatePin(
+  route: DeclaredRoute,
+  ctx: RouteReconcileContext
+): Promise<{ ok: true; tlsId: string } | { ok: false; error: ComposeHostingLetsEncryptError }> {
+  const hostnames = [route.entry.hostname]
+  const www = route.entry.www ?? 'off'
+  const names = letsEncryptNames(hostnames, www)
+  const reason = letsEncryptRefusal({
+    acmeEnabled: ctx.acmeEnabled,
+    protocol: 'http',
+    bind: hostingBindScopeOf(route.entry),
+    hostnames,
+    www,
+  })
+  if (reason !== null) {
+    return {
+      ok: false,
+      error: {
+        kind: 'hosting_letsencrypt_refused',
+        composeServiceName: route.composeServiceName,
+        hostname: route.entry.hostname,
+        reason,
+        names,
+      },
+    }
+  }
+  const { id } = await ctx.letsEncrypt.managedCertificateFor(ctx.organizationId, names)
+  return { ok: true, tlsId: id }
+}
+
+/** {@link resolvePins}, plus the managed row an `automatic` route pins. */
+async function resolveRoutePins(
+  route: DeclaredRoute,
+  ctx: RouteReconcileContext
+): Promise<ResolvedPins> {
+  const pins = resolvePins(route, ctx.resolveTls, ctx.resolveIp)
+  if (!pins.ok || hostingTlsModeOf(route.entry) !== 'automatic') return pins
+  const automatic = await automaticCertificatePin(route, ctx)
+  if (!automatic.ok) return automatic
+  return { ...pins, tlsId: automatic.tlsId }
+}
+
+/**
+ * The `tls_id` / `ip_id` one entry pins from its refs.
+ *
+ * `tls.mode: internal` pins nothing — the web server's own self-signed
+ * certificate needs no row from the library. `automatic` pins the managed
+ * Let's Encrypt row {@link automaticCertificatePin} finds or creates. The
+ * authored mode is still recorded in metadata rather than inferred back from
+ * the column.
  */
 function resolvePins(
   route: DeclaredRoute,

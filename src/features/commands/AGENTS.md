@@ -155,10 +155,21 @@ in the execution-log store — there is no Postgres column for them. See
   follows the same rule.
   Commands run **one at a time per server** (`command-lanes.ts`): the consumer
   parses each delivery, hands it to the lane of its envelope's `serverId`, and
-  acks or nacks only after the lane has run it. Different servers run in
+  acks or nacks only after the command has finished. Different servers run in
   parallel (cap `COMMAND_LANE_CONCURRENCY`, lanes take turns); same-server
   commands keep arrival order, which keeps same-service ordering because a
-  managed service lives on one server. Cross-server ordering is never assumed:
+  managed service lives on one server. A deploy (`environment.deploy`) is the
+  one command that gives its lane up before it ends: once the server reports
+  it (`progress.runningSince` set or `null`), or `DEPLOY_SIGNAL_GRACE_MS`
+  after it was sent with no word (`deployMayLeaveLane` in `deploy-wait.ts`),
+  the rest of its wait runs outside the lane and the delivery is acked or
+  nacked when that wait ends. Before this a deploy the server had lost, or one
+  waiting on a result, held its server's lane in 12 minute turns for up to the
+  6 hour reconcile window, and every other command for that server waited
+  behind it. Order still holds: the deploy is put on the server's connection
+  inside the lane, the server deploys one environment at a time under the
+  environment's lock (a stop or destroy of that environment waits for it) and
+  runs one build at a time. Cross-server ordering is never assumed:
   it lives in command metadata (see multi-command sequencing). `prefetch` is
   `COMMAND_CONSUMER_PREFETCH` so a backlog can wait in its lane; a delivery
   still waiting when the session is lost or closed is skipped (left
@@ -330,7 +341,13 @@ every 30 s. The control plane then works like this (`deploy-wait.ts`,
 - A result that arrives in that time settles the deploy as normal. A deploy
   already `timed_out` whose server later reports success is corrected to
   `succeeded` with a note in `metadata.lateOutcome` (`settleReportedOutcome`),
-  never dropped. The ack is sent only once the result is stored.
+  never dropped. The ack is sent only once the result is stored: the command
+  row flipped to `succeeded` (the status alone when the database refuses a value
+  in the report). The rest of the correction (step plan, deployment, containers) is
+  best effort, logged with the command id when it fails and not retried; it
+  never holds the ack back. An environment deleted since has no deployment row,
+  so nothing is written for it. A late success for a `cancelled` deploy or for
+  any other final command is confirmed and changes nothing.
 - A server without the feature keeps the fixed 10 minute cap, worded "no result
   came back" (the deploy may still have finished).
 

@@ -632,16 +632,21 @@ ledger and never reads a hosting `targetPort`), `tls.certificateRef` required by
 `(hostname, pathPrefix)` within one service reported rather than last-wins
 merged.
 
-**`tls.mode`.** `internal` (the default when `tls` is omitted) is Caddy's own
-self-signed certificate; `certificate` resolves `certificateRef` to a `tls` row
-and pins it. **`automatic` is refused** — at save time
-(`HOSTING_TLS_MODE_AUTOMATIC_UNSUPPORTED_MESSAGE`) and again at deploy-prepare
-(**`422 hosting_tls_mode_unsupported`**). The deploy payload carries one TLS
-field, `EnvironmentDeployHosting.tlsId` — a resolved pin, or null meaning
-`tls internal` — so there is no wire spelling for "obtain one for me", and
-projecting `automatic` as a null pin would answer a request for a managed
-certificate with a self-signed one. The mode stays in the type so the refusal
-can say that, instead of "unknown mode". Whether a ref **resolves** is sourced
+**`tls.mode`.** `internal` (the default when `tls` is omitted) is the web
+server's own self-signed certificate; `certificate` resolves `certificateRef`
+to a `tls` row and pins it; `automatic` asks for a free Let's Encrypt
+certificate. At deploy the reconcile pins the organization's managed Let's
+Encrypt row for the name and the www name its `www` setting adds (an existing
+row with exactly those names, else one that covers them, else a new one; the
+same store as the one-click button), and deploy-prepare sends it as the `acme`
+wire mode. There is no DNS check on this path: the server keeps retrying until
+DNS points at it. The deploy is refused with **`400 acme_requires_org_opt_in`**
+when the organization has not turned on "Allow Let's Encrypt certificates",
+**`400 acme_requires_public_bind`** for a non-public route, and **`400
+letsencrypt_hostname_unsupported`** for a wildcard, IP or private name. The
+default stays `internal` so a document saved before `automatic` worked does not
+start asking for certificates; the panel writes `automatic` explicitly.
+Whether a ref **resolves** is sourced
 the way `knownSourceIds` is: `lintComposeYaml` takes **`knownTlsIds`** /
 **`knownIpIds`** (ids _and_ labels — a `tls` name, an `ip` address — since that
 is what an operator has in front of them) and emits a blocking error at
@@ -683,6 +688,13 @@ exact failure the field was added to prevent.
 **`409 hosting_owned_by_compose`** naming the owning `serviceId` and compose
 service — not 403, because it is not a permission problem: the next deploy would
 overwrite the write. Rows created in the panel keep working unchanged.
+`POST /hostings/{id}/release-from-compose` (`src/client/hostings/compose-release-route.ts`)
+hands a compose-made row back to the panel by stripping the markers, the same
+release the reconcile applies to an adopted row; the Hosting screen calls it
+before it removes the entry from the environment's compose file, so a failed
+file save leaves a row the next deploy adopts again instead of deleting it.
+It takes the environment row lock (as the reconcile does before it reads the
+rows) and refuses with `409 environment_deploy_running` while a deploy runs.
 
 ### Per-service Git source (`x-turbopanel.source`) — resolved into `sourceMaterial[]`
 

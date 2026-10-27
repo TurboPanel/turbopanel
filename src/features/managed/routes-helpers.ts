@@ -281,6 +281,7 @@ export function managedSessionPaths(): string[] {
     '/environments/:id/managed/databases',
     '/environments/:id/managed/databases/:databaseName',
     '/environments/:id/managed/databases/:databaseName/owner-role',
+    '/environments/:id/managed/databases/:databaseName/app-logins',
     '/environments/:id/managed/privilege-catalogue',
     '/environments/:id/managed/status',
     '/environments/:id/managed/logs',

@@ -16,7 +16,6 @@ import {
   isNodeComposeService,
   type NativeRuntime,
   type NativeRuntimeFramework,
-  type NodeAppMode,
   readServiceTurbopanelExtension,
 } from './service-kind.ts'
 import { allocateSiteListenPort } from './site.ts'
@@ -70,7 +69,7 @@ export type NativeAppServiceSpec = {
   /** Operator-pinned Deno series (a Deno app only). Omitted means the default. */
   denoVersion?: string
   /** `NODE_ENV` for build and unit. Omitted means `production`. */
-  appMode?: NodeAppMode
+  appMode?: string
   /**
    * Omitted means `true`. A disabled app is still emitted — dropping it would
    * make the daemon reconcile tear the unit down and strand the release; the
