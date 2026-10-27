@@ -31,6 +31,7 @@ import {
   planUpgrade,
   stepSatisfiedByInstalled,
   unitsForPlannedRun,
+  type UpgradePlan,
   type UpgradeRuntime,
 } from './planner.ts'
 import {
@@ -932,6 +933,24 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
     )
   }
 
+  /** The step list a start lays out: one server, a named fleet slice, or the whole install. */
+  function planRun(
+    input: { serverId?: string; fleetServerIds?: readonly string[] },
+    fleet: readonly FleetServerFact[],
+    batch: UpgradeSettings['batch']
+  ): UpgradePlan {
+    if (input.serverId) return planSingleServer(input.serverId)
+    const slice = input.fleetServerIds
+    return planUpgrade({
+      runtime: slice ? 'workers' : deps.runtime,
+      channelHasInstancePackage: slice ? false : channelHasInstancePackage(deps.channel),
+      colocatedServerId: slice ? null : deps.colocatedServerId,
+      fleetServerIds: slice ?? fleet.filter((fact) => !fact.colocated).map((fact) => fact.serverId),
+      connectedServerIds: connectedServerIds(fleet),
+      batch,
+    })
+  }
+
   return {
     preflight: async () => {
       const [target, fleet, active] = await Promise.all([
@@ -968,20 +987,7 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
           blockers: preflight.blockers,
         }
       }
-      const plan = input.serverId
-        ? planSingleServer(input.serverId)
-        : planUpgrade({
-            runtime: input.fleetServerIds ? 'workers' : deps.runtime,
-            channelHasInstancePackage: input.fleetServerIds
-              ? false
-              : channelHasInstancePackage(deps.channel),
-            colocatedServerId: input.fleetServerIds ? null : deps.colocatedServerId,
-            fleetServerIds:
-              input.fleetServerIds ??
-              fleet.filter((fact) => !fact.colocated).map((fact) => fact.serverId),
-            connectedServerIds: fleet.filter((fact) => fact.connected).map((fact) => fact.serverId),
-            batch: settings.batch,
-          })
+      const plan = planRun(input, fleet, settings.batch)
       const now = deps.now()
       const requested = input.runId?.trim() ?? ''
       const reserved = await deps.store.reservedRunId()
