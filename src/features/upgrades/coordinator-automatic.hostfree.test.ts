@@ -344,3 +344,80 @@ test('a test install with TURBOPANEL_UPGRADE_CHECK_MINUTES=5 checks every 5 minu
   assertEquals(await claimUpgradeCheck(store, new Date('2026-10-27T09:44:00.000Z'), 5), false)
   assertEquals(await claimUpgradeCheck(store, new Date('2026-10-27T09:47:00.000Z'), 5), true)
 })
+
+test('a new web interface build alone starts a self-hosted run that installs it, then nothing is waiting', async () => {
+  const colocated = host(COLOCATED, { colocated: true, commit: 'new-daemon' })
+  const f = fleet([], { runtime: 'deno', colocated })
+  await f.store.recordInstalledUi({ commit: 'old-ui', source: 'install', at: f.at() })
+  await f.coordinator.tick()
+  const run = await f.coordinator.activeRun()
+  const step = run?.steps.find((item) => item.unit === 'instance')
+  assertEquals(step?.status, 'dispatched')
+  assertEquals(f.enqueued.at(-1)?.envelope.kind, 'instance-update')
+  if (!step?.requestId) throw new TypeError('expected a dispatched control-plane step')
+  await f.coordinator.noteOutcome({
+    serverId: COLOCATED,
+    upgradeId: step.upgradeId,
+    unit: 'instance',
+    ok: true,
+    at: f.at(),
+    requestId: step.requestId,
+  })
+  assertEquals(await f.store.installedUi(), 'new-ui')
+  await f.coordinator.tick({ resolveManifests: false })
+  assertEquals(await f.coordinator.activeRun(), null)
+  const sent = f.enqueued.length
+  await f.coordinator.tick()
+  assertEquals(await f.coordinator.activeRun(), null)
+  assertEquals(f.enqueued.length, sent)
+})
+
+test('a console report never replaces a recorded install, so a stale tab cannot reopen a run', async () => {
+  const store = createMemoryUpgradeStore()
+  await store.recordInstalledUi({
+    commit: 'first',
+    source: 'console',
+    at: '2026-10-27T10:00:00.000Z',
+  })
+  await store.recordInstalledUi({
+    commit: 'second',
+    source: 'console',
+    at: '2026-10-27T10:01:00.000Z',
+  })
+  assertEquals(await store.installedUi(), 'second')
+  await store.recordInstalledUi({
+    commit: 'installed',
+    source: 'install',
+    at: '2026-10-27T10:02:00.000Z',
+  })
+  await store.recordInstalledUi({
+    commit: 'stale-tab',
+    source: 'console',
+    at: '2026-10-27T10:03:00.000Z',
+  })
+  assertEquals(await store.installedUi(), 'installed')
+})
+
+test('the hosted control plane never opens a run for a web interface build', async () => {
+  const f = fleet(['a'])
+  f.reachTarget('a')
+  await f.store.recordInstalledUi({ commit: 'old-ui', source: 'install', at: f.at() })
+  await f.coordinator.tick()
+  assertEquals(await f.coordinator.activeRun(), null)
+  assertEquals(f.enqueued.length, 0)
+})
+
+test('a pause that lands after every server was sent leaves the run its real outcome', async () => {
+  const f = fleet(['a', 'b'])
+  await f.coordinator.tick()
+  assertEquals(f.sentTo().sort(), ['a', 'b'])
+  const runId = (await f.coordinator.activeRun())?.id ?? ''
+  f.store.setPause(PAUSE)
+  f.reachTarget('a')
+  f.reachTarget('b')
+  await f.coordinator.tick({ resolveManifests: false })
+  const ended = await f.coordinator.run(runId)
+  // Nothing was held back, so the run is not reported as stopped.
+  assertEquals(ended?.status, 'succeeded')
+  assertEquals(ended?.error, null)
+})

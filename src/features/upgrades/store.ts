@@ -16,7 +16,10 @@ import {
 } from '../settings/upgrade-settings.ts'
 import {
   ensureUpgradeCheckSchedule,
+  getInstalledUi,
   getUpgradePause,
+  type InstalledUiRecord,
+  recordInstalledUi,
   markUpgradeChecked,
   type UpgradePause,
 } from '../settings/upgrade-control.ts'
@@ -163,6 +166,10 @@ export type UpgradeStore = {
   checkSchedule(now: string): Promise<UpgradeCheckSchedule>
   /** Record that the hourly check ran. */
   markChecked(schedule: UpgradeCheckSchedule, at: string): Promise<void>
+  /** The web interface build this self-hosted control plane serves, when recorded. One row. */
+  installedUi(): Promise<string | null>
+  /** Record the installed web interface build (see `UPGRADE_UI_INSTALLED_KEY`). */
+  recordInstalledUi(record: InstalledUiRecord): Promise<void>
   /**
    * Settle every step of `upgradeId` that was never sent (`attempts` 0,
    * `pending` / `waiting`) as `skipped` — what a pause does to a run. Steps
@@ -398,6 +405,7 @@ export function createMemoryUpgradeStore(input?: {
   latest?: UpgradeTarget | null
   pause?: UpgradePause | null
   checkMinute?: number
+  installedUi?: InstalledUiRecord | null
 }): UpgradeStore & {
   facts: FleetServerFact[]
   setPause(pause: UpgradePause | null): void
@@ -407,6 +415,7 @@ export function createMemoryUpgradeStore(input?: {
   let latest = input?.latest ?? null
   let pause = input?.pause ?? null
   let schedule: UpgradeCheckSchedule | null = null
+  let installedUi = input?.installedUi ?? null
   let reservedRunId: string | null = null
   let tickCursor: { runId: string; cursor: UpgradeTickCursor } | null = null
   const runs = new Map<string, UpgradeRunRow>()
@@ -429,6 +438,12 @@ export function createMemoryUpgradeStore(input?: {
     },
     markChecked: (current, at) => {
       schedule = { ...current, lastCheckAt: at }
+      return Promise.resolve()
+    },
+    installedUi: () => Promise.resolve(installedUi?.commit ?? null),
+    recordInstalledUi: (record) => {
+      const consoleMayReplace = installedUi === null || installedUi.source === 'console'
+      if (record.source === 'install' || consoleMayReplace) installedUi = { ...record }
       return Promise.resolve()
     },
     skipUndispatchedSteps: (upgradeId, skip) => {
@@ -561,7 +576,9 @@ export function createDrizzleUpgradeStore(
     saveSettings: (settings) => setUpgradeSettings(db, settings),
     pause: () => getUpgradePause(db),
     checkSchedule: (now) => ensureUpgradeCheckSchedule(db, now),
-    markChecked: (schedule, at) => markUpgradeChecked(db, schedule, at),
+    markChecked: (_schedule, at) => markUpgradeChecked(db, at),
+    installedUi: async () => (await getInstalledUi(db))?.commit ?? null,
+    recordInstalledUi: (record) => recordInstalledUi(db, record),
     skipUndispatchedSteps: (upgradeId, skip) => skipUndispatchedStepRows(db, upgradeId, skip),
     failureHistory: (targets) => loadFailureHistory(db, targets),
     latestBuild: () => getLatestAvailableBuild(db),

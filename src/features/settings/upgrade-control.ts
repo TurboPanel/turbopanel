@@ -10,7 +10,7 @@
  * Both are single-row reads (`limit 1`). No schema change: the rows live in the
  * existing `setting` table, like `UPGRADE_SETTINGS`.
  */
-import { eq } from 'drizzle-orm'
+import { and, eq, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { setting } from '../../db/schema.ts'
 import { pickUpgradeCheckMinute, type UpgradeCheckSchedule } from '../upgrades/schedule.ts'
@@ -18,6 +18,22 @@ import { pickUpgradeCheckMinute, type UpgradeCheckSchedule } from '../upgrades/s
 export const UPGRADE_PAUSE_KEY = 'UPGRADE_PAUSE'
 
 export const UPGRADE_CHECK_KEY = 'UPGRADE_CHECK'
+
+/**
+ * The web interface build this self-hosted control plane serves. The control
+ * plane cannot read the installed bundle itself: a finished control-plane
+ * install records its run's UI target (`install`), and before any install the
+ * console's own report of the bundle it was served stands in (`console`). An
+ * install record is never replaced by a console report, so a stale browser tab
+ * cannot reopen a UI install.
+ */
+export const UPGRADE_UI_INSTALLED_KEY = 'UPGRADE_UI_INSTALLED'
+
+export type InstalledUiRecord = {
+  commit: string
+  source: 'install' | 'console'
+  at: string
+}
 
 /** Who paused all updates, and when. */
 export type UpgradePause = {
@@ -63,6 +79,16 @@ export function parseUpgradeCheckSchedule(value: unknown): UpgradeCheckSchedule 
     lastCheckAt: stringOrNull(value.lastCheckAt),
     lastManualCheckAt: stringOrNull(value.lastManualCheckAt),
   }
+}
+
+/** A stored installed-UI row, or null when the value is not one. */
+export function parseInstalledUi(value: unknown): InstalledUiRecord | null {
+  if (!isRecord(value)) return null
+  const commit = stringOrNull(value.commit)
+  const at = stringOrNull(value.at)
+  const source = value.source
+  if (!commit || !at || (source !== 'install' && source !== 'console')) return null
+  return { commit, source, at }
 }
 
 async function readSettingValue(db: Db, key: string): Promise<unknown> {
@@ -148,28 +174,61 @@ export async function ensureUpgradeCheckSchedule(
   return fresh
 }
 
-/** Record a Check Now press at `at`; the schedule itself does not move. */
-export async function markUpgradeCheckedByHand(
-  db: Db,
-  schedule: UpgradeCheckSchedule,
-  at: string
-): Promise<void> {
-  const next: UpgradeCheckSchedule = { ...schedule, lastManualCheckAt: at }
+/**
+ * Record a Check Now press at `at` if the last one was at least `gapMs` ago.
+ * One conditional statement on the one field, so two presses (or a press and
+ * the scheduled check) never overwrite each other. False when too soon.
+ */
+export async function claimManualUpgradeCheck(db: Db, at: string, gapMs: number): Promise<boolean> {
+  const rows = await db
+    .update(setting)
+    .set({
+      value: sql`jsonb_set(${setting.value}, '{lastManualCheckAt}', to_jsonb(${at}::text))`,
+      updatedAt: at,
+    })
+    .where(
+      and(
+        eq(setting.key, UPGRADE_CHECK_KEY),
+        sql`(${setting.value}->>'lastManualCheckAt' is null or (${setting.value}->>'lastManualCheckAt')::timestamptz <= ${at}::timestamptz - make_interval(secs => ${gapMs / 1000}))`
+      )
+    )
+    .returning({ key: setting.key })
+  return rows.length > 0
+}
+
+/** Record that the scheduled check ran at `at`; only that field is written. */
+export async function markUpgradeChecked(db: Db, at: string): Promise<void> {
   await db
     .update(setting)
-    .set({ value: next, updatedAt: at })
+    .set({
+      value: sql`jsonb_set(${setting.value}, '{lastCheckAt}', to_jsonb(${at}::text))`,
+      updatedAt: at,
+    })
     .where(eq(setting.key, UPGRADE_CHECK_KEY))
 }
 
-/** Record that the hourly check ran at `at`, keeping the minute. */
-export async function markUpgradeChecked(
-  db: Db,
-  schedule: UpgradeCheckSchedule,
-  at: string
-): Promise<void> {
-  const next: UpgradeCheckSchedule = { ...schedule, lastCheckAt: at }
-  await db
-    .update(setting)
-    .set({ value: next, updatedAt: at })
-    .where(eq(setting.key, UPGRADE_CHECK_KEY))
+/** The installed web interface build, or null when nothing recorded it yet. */
+export async function getInstalledUi(db: Db): Promise<InstalledUiRecord | null> {
+  return parseInstalledUi(await readSettingValue(db, UPGRADE_UI_INSTALLED_KEY))
+}
+
+/**
+ * Record the installed web interface build. An `install` record always wins;
+ * a `console` report is written only while no install has been recorded and
+ * only when it names a different build.
+ */
+export async function recordInstalledUi(db: Db, record: InstalledUiRecord): Promise<void> {
+  const insert = db.insert(setting).values({ key: UPGRADE_UI_INSTALLED_KEY, value: record })
+  if (record.source === 'install') {
+    await insert.onConflictDoUpdate({
+      target: setting.key,
+      set: { value: record, updatedAt: record.at },
+    })
+    return
+  }
+  await insert.onConflictDoUpdate({
+    target: setting.key,
+    set: { value: record, updatedAt: record.at },
+    setWhere: sql`${setting.value}->>'source' = 'console' and ${setting.value}->>'commit' is distinct from ${record.commit}`,
+  })
 }

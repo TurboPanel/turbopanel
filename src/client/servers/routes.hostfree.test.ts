@@ -511,7 +511,6 @@ test('GET /servers/:id/update returns idle status without a live daemon', async 
     serverId: string
     status: string
     colocatedWithInstance: boolean
-    updatesAutomatic?: boolean
     updateBlocked?: boolean
   }
   if (!body.ok) throw new TypeError('expected ok update status')
@@ -519,7 +518,6 @@ test('GET /servers/:id/update returns idle status without a live daemon', async 
   assertEquals(body.colocatedWithInstance, false)
   assertEquals(typeof body.status, 'string')
   // Updates are automatic: there is no manual-update gate to report.
-  assertEquals(body.updatesAutomatic, true)
   assertEquals(body.updateBlocked, undefined)
 })
 

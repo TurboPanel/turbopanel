@@ -48,9 +48,11 @@ manifests and may start one. Hello, heartbeat, and
 There is no on/off switch and no manual start, retry or cancel. The routes that
 did those (`POST /instance/updates/instance`, `/daemon`, `/preflight`, `/runs`,
 `/steps/:id/retry`, `/runs/:id/cancel`, client `POST /servers/updates`
-and `POST /servers/:id/update`) answer **410** `updates_automatic`. The legacy
-per-server updater and the client update gate are gone; the GET update-status
-routes carry `updatesAutomatic: true`. `UPGRADE_SOURCES` keeps `manual` and
+and `POST /servers/:id/update`) answer **410** `updates_automatic`
+(`updatesAutomaticBody` in `decisions.ts`, one body for admin and client). The
+legacy per-server updater and the client update gate are gone. The developer
+surface's own daemon update route (`../../developer/update-routes.ts`) stays.
+`UPGRADE_SOURCES` keeps `manual` and
 `server` because older history rows carry them; new runs are `auto`.
 
 - **The hourly check.** The `UPGRADE_CHECK` setting row holds this install's
@@ -72,7 +74,9 @@ routes carry `updatesAutomatic: true`. `UPGRADE_SOURCES` keeps `manual` and
   check (which starts the update) stays put. At most once a minute per install
   (`manualCheckWaitSeconds`); sooner answers 429 `check_too_soon` with
   `retryAfterSeconds` and `Retry-After`. The status `lastCheckAt` is the later
-  of the two.
+  of the two. The press is claimed with one conditional `jsonb_set` on that
+  field, and the scheduled check writes only `lastCheckAt`, so neither
+  overwrites the other.
 - **Pause** (`UPGRADE_PAUSE` row, `../settings/upgrade-control.ts`): `POST
 /instance/updates/pause` / `resume`, admins only, recorded in the activity log
   (`upgrade.pause` / `upgrade.resume`). It snapshots who paused and when, so the
@@ -90,6 +94,20 @@ routes carry `updatesAutomatic: true`. `UPGRADE_SOURCES` keeps `manual` and
   (`upgrade_retry_later`, no run saved) because the fleet gate could never open.
   The #666 no-op rule covers both: a run whose steps are all `done` or
   `retry_later` saves nothing.
+- **The web interface on self-hosted** (`UPGRADE_UI_INSTALLED` row). The control
+  plane cannot read the installed bundle, so a finished control-plane step
+  records its run's `target.ui` commit (`install`); before any install the
+  console's `consoleCommit` on `GET /instance/updates` stands in (`console`),
+  and a console report never replaces an install record (a stale tab cannot
+  reopen a run). The hourly check counts UI drift (`uiBehindForRun`) only where
+  a run would plan the control-plane step, and an automatic start uses the
+  recorded build for `uiRefresh`. Hosted control planes never count it: the
+  platform deploys their web interface.
+- **What counts as waiting.** `updateWaiting` is `daemonsBehind`, or a
+  control-plane / UI update where a run would plan that step (self-hosted,
+  package channel, co-located daemon). There, `controlPlaneRecovery` gives
+  the pre-update backup path and the rollback command for the run id the next
+  automatic run will use (reserved by the read).
 - **Late servers.** A run never grows. A server added, reconnected or still on
   an old daemon after a run was planned is picked up by the next check after
   that run ends (daemon drift counts connected servers); `uniq_upgrade_active`
@@ -338,9 +356,9 @@ grouped `count(*)`, not a materialised server or step list.
 ## Surfaces
 
 - Client routes (`../../client/servers/routes.ts`): `POST /servers/:id/update`
-  and `POST /servers/updates` answer 410 `updates_automatic`. The GET
-  update-status routes carry `updatesAutomatic: true`; only the control
-  plane's own host still reports `updateBlockedCode` `colocated_with_instance`
+  and `POST /servers/updates` answer 410 `updates_automatic`. On the GET
+  update-status routes only the control plane's own host still reports
+  `updateBlockedCode` `colocated_with_instance`
   (`ServerUpdateBlockedCode` in `decisions.ts`). Clients branch on the code,
   never the sentence.
 - Admin API (`../../admin/instance-updates-routes.ts` + `openapi/`): status,

@@ -10,7 +10,13 @@ import { upgrade, user } from '../db/schema.ts'
 import { recordAudit } from '../features/audit/audit-records.ts'
 import { resolveUpdateManifest } from '../features/update/manifest.ts'
 import { isExplicitDevelopmentMode } from '../lib/dev-mode.ts'
-import { createUpgradeCoordinator } from '../features/upgrades/coordinator.ts'
+import { createUpgradeCoordinator, ensureReservedRunId } from '../features/upgrades/coordinator.ts'
+import { unitsForPlannedRun } from '../features/upgrades/planner.ts'
+import {
+  channelHasInstancePackage,
+  resolveUpgradeTarget,
+  setLatestAvailableBuild,
+} from '../features/upgrades/target-resolve.ts'
 import { createDrizzleUpgradeStore } from '../features/upgrades/store.ts'
 import { isUuid, parseHistoryQuery, parseRunServersQuery } from '../features/upgrades/history.ts'
 import { readHistoryPage, readRunServersPage } from '../features/upgrades/history-read.ts'
@@ -26,7 +32,9 @@ import {
 import {
   ensureUpgradeCheckSchedule,
   getUpgradePause,
-  markUpgradeCheckedByHand,
+  claimManualUpgradeCheck,
+  getInstalledUi,
+  recordInstalledUi,
   pauseUpgrades,
   readUpgradeCheckSchedule,
   resumeUpgrades,
@@ -36,32 +44,25 @@ import {
   latestUpgradeCheckAt,
   manualCheckWaitSeconds,
   nextUpgradeCheckAt,
+  UPGRADE_MANUAL_CHECK_MIN_GAP_MS,
 } from '../features/upgrades/schedule.ts'
 import {
   parseUpgradeCheckMinutes,
   UPGRADE_CHECK_MINUTES_ENV,
 } from '../features/upgrades/tick-cadence.ts'
-import {
-  resolveUpgradeTarget,
-  setLatestAvailableBuild,
-} from '../features/upgrades/target-resolve.ts'
 import { UPGRADE_ACTIVE_STATUSES } from '../features/upgrades/vocabulary.ts'
+import {
+  controlPlaneBackupPath,
+  controlPlaneRollbackCommand,
+  updatesAutomaticBody,
+} from '../features/upgrades/decisions.ts'
 import type { UpdateManifestTarget } from '../features/update/manifest.ts'
 import { resolvePlatformEnv } from './routes-helpers.ts'
 
 const NO_DAEMON_ERROR = 'no co-located daemon connected to update the control plane'
 
-/**
- * Machine code for every retired manual-update route (HTTP 410). Updates are
- * automatic; the only control is Pause all updates in Admin > Updates.
- */
-export const UPDATES_AUTOMATIC_ERROR = 'updates_automatic'
-
 /** Check Now pressed again within a minute (HTTP 429). */
 export const CHECK_TOO_SOON_ERROR = 'check_too_soon'
-
-export const UPDATES_AUTOMATIC_MESSAGE =
-  'Updates are automatic and cannot be started, retried or cancelled by hand. To hold them, use Pause all updates in Admin > Updates.'
 
 /** The routes that used to start, retry or cancel an update by hand. */
 const RETIRED_UPDATE_ROUTES = [
@@ -74,11 +75,8 @@ const RETIRED_UPDATE_ROUTES = [
 ] as const
 
 /** The answer every retired manual-update route gives. */
-export function updatesAutomaticResponse(c: Context): Response {
-  return c.json(
-    { ok: false, error: UPDATES_AUTOMATIC_ERROR, message: UPDATES_AUTOMATIC_MESSAGE },
-    410
-  )
+function updatesAutomaticResponse(c: Context): Response {
+  return c.json(updatesAutomaticBody(), 410)
 }
 
 type ColocatedDaemon = {
@@ -136,9 +134,11 @@ export function registerInstanceUpdatesAdminRoutes(
     const db = getDb(c)
     if (!db) return c.json({ ok: false, error: 'Database unavailable' }, 503)
     const now = new Date()
-    const schedule = await ensureUpgradeCheckSchedule(db, now.toISOString())
-    const wait = manualCheckWaitSeconds(schedule, now)
-    if (wait > 0) {
+    await ensureUpgradeCheckSchedule(db, now.toISOString())
+    // One conditional write claims the press, so two presses cannot both pass.
+    if (!(await claimManualUpgradeCheck(db, now.toISOString(), UPGRADE_MANUAL_CHECK_MIN_GAP_MS))) {
+      const schedule = await readUpgradeCheckSchedule(db)
+      const wait = Math.max(1, schedule ? manualCheckWaitSeconds(schedule, now) : 1)
       c.header('Retry-After', String(wait))
       return c.json(
         {
@@ -150,7 +150,6 @@ export function registerInstanceUpdatesAdminRoutes(
         429
       )
     }
-    await markUpgradeCheckedByHand(db, schedule, now.toISOString())
     const channel = resolveInstanceUpdateChannel(resolvePlatformEnv(c, opts))
     const target = await resolveUpgradeTarget(channel, (kind) =>
       resolveUpdateManifest(channel, kind, { fresh: true })
@@ -337,8 +336,21 @@ async function readUpdatesStatus(
     ? { version: daemon.version, commit: daemon.commit, builtAt: daemon.builtAt }
     : null
   const instanceUpdateAvailable = updateAvailableFor(instanceInstalled, instanceTarget)
-  const uiUpdateAvailable = opts.runtime === 'deno' && uiBehindTarget(uiTarget, consoleCommit)
+  const installedUi =
+    opts.runtime === 'deno' ? await readInstalledUi(getDb(c), consoleCommit) : null
+  const uiUpdateAvailable = opts.runtime === 'deno' && uiBehindTarget(uiTarget, installedUi)
+  // Only drift a run would act on counts as waiting: the hosted platform
+  // deploys its own control plane and web interface, and a self-hosted one
+  // needs a package channel and its co-located daemon.
+  const instancePlannable = unitsForPlannedRun({
+    runtime: opts.runtime,
+    channelHasInstancePackage: channelHasInstancePackage(channel),
+    hasColocated: Boolean(daemon.serverId),
+    fleetCount: 0,
+  }).includes('instance')
+  const controlPlaneWaiting = instancePlannable && (instanceUpdateAvailable || uiUpdateAvailable)
   const automatic = await readAutomaticStatus(c, opts, daemonTarget)
+  const controlPlaneRecovery = controlPlaneWaiting ? await readRecovery(getDb(c)) : null
   return {
     ok: true,
     channel,
@@ -346,10 +358,8 @@ async function readUpdatesStatus(
     managedUpgrade: true,
     updatesManaged: opts.runtime === 'workers',
     ...automatic,
-    // The hosted control plane is deploy-managed: only its daemons wait here.
-    updateWaiting:
-      automatic.daemonsBehind ||
-      (opts.runtime === 'deno' && (instanceUpdateAvailable || uiUpdateAvailable)),
+    updateWaiting: automatic.daemonsBehind || controlPlaneWaiting,
+    controlPlaneRecovery,
     units: {
       instance: {
         installed: buildLabel ? { ...instanceInstalled, label: buildLabel } : instanceInstalled,
@@ -371,6 +381,48 @@ async function readUpdatesStatus(
           daemonInstalled !== null && updateAvailableFor(daemonInstalled, daemonTarget),
       },
     },
+  }
+}
+
+/**
+ * The installed web interface build. Before any control-plane install has
+ * recorded one, the console's report of the bundle it was served is saved and
+ * used; after that the install record wins over any console.
+ */
+async function readInstalledUi(
+  db: Db | undefined,
+  consoleCommit: string | null
+): Promise<string | null> {
+  if (!db) return consoleCommit
+  const recorded = await getInstalledUi(db)
+  const consoleMayRecord =
+    consoleCommit !== null &&
+    (!recorded || (recorded.source === 'console' && recorded.commit !== consoleCommit))
+  if (consoleMayRecord) {
+    await recordInstalledUi(db, {
+      commit: consoleCommit,
+      source: 'console',
+      at: new Date().toISOString(),
+    })
+    return consoleCommit
+  }
+  return recorded?.commit ?? consoleCommit
+}
+
+/**
+ * The pre-update backup and the rollback command for the control-plane update
+ * that is waiting. The run id is reserved now and the next automatic run uses
+ * it, so the copied command names that run.
+ */
+async function readRecovery(
+  db: Db | undefined
+): Promise<{ runId: string; backupPath: string; rollbackCommand: string } | null> {
+  if (!db) return null
+  const runId = await ensureReservedRunId(createDrizzleUpgradeStore(db, null))
+  return {
+    runId,
+    backupPath: controlPlaneBackupPath(runId),
+    rollbackCommand: controlPlaneRollbackCommand(runId),
   }
 }
 

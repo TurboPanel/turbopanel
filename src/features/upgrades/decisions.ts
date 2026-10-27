@@ -189,3 +189,18 @@ export function uiRefreshFromDetail(detail: unknown): boolean {
  * the control plane's own host is: it updates in the platform phase.
  */
 export type ServerUpdateBlockedCode = 'colocated_with_instance'
+
+/**
+ * Machine code for every retired manual-update route (HTTP 410), admin and
+ * client alike. Updates are automatic; the only control is Pause All Updates
+ * in Admin > Updates.
+ */
+export const UPDATES_AUTOMATIC_ERROR = 'updates_automatic'
+
+export const UPDATES_AUTOMATIC_MESSAGE =
+  'Updates are automatic and cannot be started, retried or cancelled by hand. An administrator can use Pause All Updates in Admin > Updates.'
+
+/** The body every retired manual-update route answers with HTTP 410. */
+export function updatesAutomaticBody(): { ok: false; error: string; message: string } {
+  return { ok: false, error: UPDATES_AUTOMATIC_ERROR, message: UPDATES_AUTOMATIC_MESSAGE }
+}

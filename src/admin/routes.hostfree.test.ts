@@ -1380,7 +1380,7 @@ test('every route that started, retried or cancelled an update by hand answers 4
       const body = await jsonBody<{ ok: boolean; error: string; message: string }>(res)
       assertEquals(body.ok, false)
       assertEquals(body.error, 'updates_automatic')
-      assertEquals(body.message.includes('Pause all updates'), true)
+      assertEquals(body.message.includes('Pause All Updates'), true)
     }
   }
 })
@@ -1463,5 +1463,58 @@ test('other org-admin routes stay open to admin role', async () => {
   for (const path of ['/settings/email', '/instance/public-urls', '/daemon/events']) {
     const res = await app.request(`${ADMIN_API_PREFIX}${path}`, { headers: { Cookie: cookie } })
     assertEquals(res.status, 200, path)
+  }
+})
+
+test('a waiting self-hosted control-plane update shows its backup and rollback command; hosted never does', async () => {
+  for (const kind of ['daemon', 'instance', 'ui'] as const) {
+    seedUpdateManifestCacheForTests(
+      {
+        commit: 'targetcommit',
+        buildId: 'build-abc',
+        builtAt: '2099-01-01T00:00:00.000Z',
+        channel: 'release',
+        manifestUrl: 'https://example.invalid/manifest.json',
+        version: '99.0.0',
+      },
+      'release',
+      kind
+    )
+  }
+  try {
+    const serverId = crypto.randomUUID()
+    const selfHosted = await buildApp({
+      getEnv: () => ({ TURBOPANEL_UPDATE_CHANNEL: 'release' }),
+      colocatedServerId: serverId,
+      registry: createRegistry({
+        snapshots: new Map([[serverId, { connected: true, daemonVersion: '0.1.0' }]]),
+      }),
+    })
+    const res = await selfHosted.app.request(`${ADMIN_API_PREFIX}/instance/updates`, {
+      headers: { Cookie: selfHosted.cookie },
+    })
+    const body = await jsonBody<{
+      updateWaiting: boolean
+      controlPlaneRecovery: { runId: string; backupPath: string; rollbackCommand: string } | null
+    }>(res)
+    assertEquals(body.updateWaiting, true)
+    const recovery = body.controlPlaneRecovery
+    if (!recovery) throw new TypeError('expected the recovery command')
+    assertEquals(recovery.backupPath.endsWith(recovery.runId), true)
+    assertEquals(recovery.rollbackCommand.includes(recovery.runId), true)
+
+    const hosted = await buildApp({
+      runtime: 'workers',
+      getEnv: () => ({ TURBOPANEL_UPDATE_CHANNEL: 'release' }),
+    })
+    const hostedRes = await hosted.app.request(`${ADMIN_API_PREFIX}/instance/updates`, {
+      headers: { Cookie: hosted.cookie },
+    })
+    const hostedBody = await jsonBody<{ controlPlaneRecovery: unknown }>(hostedRes)
+    assertEquals(hostedBody.controlPlaneRecovery, null)
+  } finally {
+    for (const kind of ['daemon', 'instance', 'ui'] as const) {
+      seedUpdateManifestCacheForTests(null, 'release', kind)
+    }
   }
 })

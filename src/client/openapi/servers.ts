@@ -1089,18 +1089,13 @@ export const serverSchemas = {
       updateBlocked: {
         type: 'boolean',
         description:
-          'True when remote updates are refused for this server; `updateBlockedCode` says why.',
+          'True for the server this control plane runs on: it updates with the control plane, not on its own; `updateBlockedCode` says so.',
       },
       updateBlockedCode: {
         type: 'string',
-        enum: [
-          'updates_managed',
-          'control_plane_upgrade_required',
-          'upgrade_gate_unavailable',
-          'colocated_with_instance',
-        ],
+        enum: ['colocated_with_instance'],
         description:
-          'Machine code for why remote updates are blocked; present whenever `updateBlocked` is true. Clients branch on this, never on `updateBlockedReason`.',
+          'Machine code for why this server is not updated on its own; present whenever `updateBlocked` is true. Clients branch on this, never on `updateBlockedReason`.',
       },
       updateBlockedReason: {
         type: 'string',
@@ -1114,13 +1109,13 @@ export const serverSchemas = {
       daemonSupport: { $ref: '#/components/schemas/DaemonSupport' },
     },
   },
-  TriggerServerUpdateResponse: {
+  UpdatesAutomaticResponse: {
     type: 'object',
-    required: ['ok', 'queued', 'status'],
+    required: ['ok', 'error', 'message'],
     properties: {
-      ok: { type: 'boolean', const: true },
-      queued: { type: 'boolean', const: true },
-      status: { type: 'string' },
+      ok: { type: 'boolean', const: false },
+      error: { type: 'string', const: 'updates_automatic' },
+      message: { type: 'string' },
     },
   },
   DeleteServerResponse: {
@@ -1837,7 +1832,11 @@ export const serverPaths: Record<string, unknown> = {
     },
     post: {
       tags: ['Servers'],
-      summary: "Trigger a daemon update on a connected server, on the control plane's channel",
+      summary: 'Retired: start a daemon update by hand',
+      description:
+        'Servers update automatically (the control plane checks once an hour). Always answers ' +
+        '410 `updates_automatic` with a `message`; an administrator can pause all updates in ' +
+        'Admin > Updates.',
       security: [{ cookieAuth: [] }],
       parameters: [
         {
@@ -1848,16 +1847,6 @@ export const serverPaths: Record<string, unknown> = {
         },
       ],
       responses: {
-        '200': {
-          description: 'Update queued on the daemon',
-          content: {
-            'application/json': {
-              schema: {
-                $ref: '#/components/schemas/TriggerServerUpdateResponse',
-              },
-            },
-          },
-        },
         '401': {
           description: 'Unauthorized',
           content: {
@@ -1870,54 +1859,11 @@ export const serverPaths: Record<string, unknown> = {
             },
           },
         },
-        '403': {
-          description: 'Forbidden, or update blocked for the co-located development daemon',
+        '410': {
+          description: '`updates_automatic`',
           content: {
             'application/json': {
-              schema: {
-                type: 'object',
-                required: ['error'],
-                properties: { error: { type: 'string' } },
-              },
-            },
-          },
-        },
-        '404': {
-          description: 'Daemon not connected',
-          content: {
-            'application/json': {
-              schema: {
-                type: 'object',
-                required: ['error'],
-                properties: { error: { type: 'string' } },
-              },
-            },
-          },
-        },
-        '503': {
-          description: 'Daemon cell registry unavailable',
-          content: {
-            'application/json': {
-              schema: {
-                type: 'object',
-                required: ['error'],
-                properties: { error: { type: 'string' } },
-              },
-            },
-          },
-        },
-        '504': {
-          description: 'Timeout waiting for daemon acknowledgement',
-          content: {
-            'application/json': {
-              schema: {
-                type: 'object',
-                required: ['ok', 'error'],
-                properties: {
-                  ok: { type: 'boolean', const: false },
-                  error: { type: 'string' },
-                },
-              },
+              schema: { $ref: '#/components/schemas/UpdatesAutomaticResponse' },
             },
           },
         },

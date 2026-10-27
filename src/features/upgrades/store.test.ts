@@ -23,8 +23,12 @@ import {
 } from './store.ts'
 import type { UpgradeTarget } from './target.ts'
 import {
+  claimManualUpgradeCheck,
   ensureUpgradeCheckSchedule,
+  getInstalledUi,
   getUpgradePause,
+  recordInstalledUi,
+  UPGRADE_UI_INSTALLED_KEY,
   markUpgradeChecked,
   pauseUpgrades,
   readUpgradeCheckSchedule,
@@ -878,7 +882,7 @@ test('Postgres upgrades: the check row is created once with a stable minute, and
     return
   }
   const db = createDenoDb()
-  const keys = [UPGRADE_CHECK_KEY, UPGRADE_PAUSE_KEY]
+  const keys = [UPGRADE_CHECK_KEY, UPGRADE_PAUSE_KEY, UPGRADE_UI_INSTALLED_KEY]
   await db.delete(setting).where(inArray(setting.key, keys))
   try {
     const first = await ensureUpgradeCheckSchedule(db, T0, () => 0.5)
@@ -887,8 +891,25 @@ test('Postgres upgrades: the check row is created once with a stable minute, and
     assertEquals(first.lastCheckAt, null)
     const again = await ensureUpgradeCheckSchedule(db, minutesAfter(T0, 5), () => 0.1)
     assertEquals(again.minute, 30)
-    await markUpgradeChecked(db, again, minutesAfter(T0, 30))
+    await markUpgradeChecked(db, minutesAfter(T0, 30))
     assertEquals((await readUpgradeCheckSchedule(db))?.lastCheckAt, minutesAfter(T0, 30))
+    // Check Now claims once per minute with one conditional write, and never
+    // touches the scheduled check's field.
+    assertEquals(await claimManualUpgradeCheck(db, minutesAfter(T0, 31), 60_000), true)
+    assertEquals(await claimManualUpgradeCheck(db, minutesAfter(T0, 31.5), 60_000), false)
+    assertEquals(await claimManualUpgradeCheck(db, minutesAfter(T0, 32), 60_000), true)
+    const afterPresses = await readUpgradeCheckSchedule(db)
+    assertEquals(afterPresses?.lastCheckAt, minutesAfter(T0, 30))
+    assertEquals(afterPresses?.lastManualCheckAt, minutesAfter(T0, 32))
+    assertEquals(afterPresses?.minute, 30)
+
+    // The installed web interface: a console report stands in until an install records one.
+    await recordInstalledUi(db, { commit: 'console-a', source: 'console', at: T0 })
+    await recordInstalledUi(db, { commit: 'console-b', source: 'console', at: T0 })
+    assertEquals((await getInstalledUi(db))?.commit, 'console-b')
+    await recordInstalledUi(db, { commit: 'installed', source: 'install', at: T0 })
+    await recordInstalledUi(db, { commit: 'stale-tab', source: 'console', at: T0 })
+    assertEquals(await getInstalledUi(db), { commit: 'installed', source: 'install', at: T0 })
 
     const pause = { since: T0, byUserId: null, byEmail: 'a@example.test', byName: 'A' }
     assertEquals(await pauseUpgrades(db, pause), { pause, changed: true })

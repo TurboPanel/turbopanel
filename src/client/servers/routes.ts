@@ -45,6 +45,7 @@ import { datacenter, organization, principal, server } from '../../db/schema.ts'
 import { resolveUpdateManifest } from '../../features/update/manifest.ts'
 import { resolveInstanceUpdateChannel, type UpdateChannel } from '../../contracts/update-channel.ts'
 import { revokeLicensesBoundToServer } from '../../features/licenses/license.ts'
+import { updatesAutomaticBody } from '../../features/upgrades/decisions.ts'
 import { syncSelfHostedGrant } from '../../features/tiers/self-hosted-grant-records.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
 import {
@@ -167,20 +168,11 @@ function instanceUpdateChannel(c: Context<AppEnv>): UpdateChannel {
 }
 
 /**
- * Every server updates on its own (the control plane's hourly check). The
- * routes that started one by hand answer 410 with this code; the only control
- * is Pause all updates in Admin > Updates.
+ * Every server updates on its own (the control plane's hourly check); the
+ * routes that started one by hand answer 410 `updates_automatic`.
  */
-const UPDATES_AUTOMATIC_ERROR = 'updates_automatic'
-
-const UPDATES_AUTOMATIC_MESSAGE =
-  'Servers update automatically. An administrator can pause all updates in Admin > Updates.'
-
 function updatesAutomaticResponse(c: Context<AppEnv>): Response {
-  return c.json(
-    { ok: false, error: UPDATES_AUTOMATIC_ERROR, message: UPDATES_AUTOMATIC_MESSAGE },
-    410
-  )
+  return c.json(updatesAutomaticBody(), 410)
 }
 
 async function repairProjectedUpdateIfStale(
@@ -858,7 +850,6 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
 
     return c.json({
       ok: true,
-      updatesAutomatic: true,
       channel,
       target,
       targetStatus,
@@ -1114,7 +1105,6 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
 
     return c.json({
       ok: true,
-      updatesAutomatic: true,
       serverId: id,
       channel,
       current,
