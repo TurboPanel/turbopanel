@@ -2167,6 +2167,58 @@ export function lifecycleMemberObservation(
   return { memberId: payload.memberId, status: result.status }
 }
 
+/** Container states a database the server just saw stop can no longer be in. */
+const LIVE_CONTAINER_STATUSES = ['running', 'restarting', 'created', 'paused']
+
+/**
+ * A lifecycle result carries no container list, so the database's container
+ * rows on that server kept the state from before a stop and the screens kept
+ * saying Running. When the server reports the stop, the database's own
+ * containers there are exited; shared ingress keeps its state, and the next
+ * container report corrects anything else.
+ */
+async function projectManagedContainersStopped(
+  db: Db,
+  managedId: string,
+  serverId: string,
+  observedStatus: string
+): Promise<void> {
+  if (observedStatus !== 'stopped') return
+  const managedServices = db
+    .select({ id: service.id })
+    .from(service)
+    .innerJoin(managed, eq(managed.environmentId, service.environmentId))
+    .where(eq(managed.id, managedId))
+  await db
+    .update(container)
+    .set({ status: 'exited', updatedAt: nowIso() })
+    .where(
+      and(
+        eq(container.serverId, serverId),
+        ne(container.role, 'ingress'),
+        inArray(container.status, LIVE_CONTAINER_STATUSES),
+        inArray(container.serviceId, managedServices)
+      )
+    )
+}
+
+/** What a lifecycle result says about the member it ran on: its row and its containers. */
+async function projectLifecycleOnMember(
+  db: Db,
+  record: DispatchableCommandRecord,
+  payload: ManagedLifecyclePayload,
+  result: ManagedLifecycleCommandResult
+): Promise<void> {
+  const observation = lifecycleMemberObservation(payload, result)
+  await projectManagedMemberObservedStatus(db, observation, record.id, record.type)
+  await projectManagedContainersStopped(
+    db,
+    payload.managedId,
+    record.serverId,
+    observation?.status ?? result.status
+  )
+}
+
 async function applyManagedLifecycleSideEffect(
   db: Db,
   record: DispatchableCommandRecord,
@@ -2190,12 +2242,7 @@ async function applyManagedLifecycleSideEffect(
       record.id,
       record.type
     )
-    await projectManagedMemberObservedStatus(
-      db,
-      lifecycleMemberObservation(payload, lifecycleResult),
-      record.id,
-      record.type
-    )
+    await projectLifecycleOnMember(db, record, payload, lifecycleResult)
 
     const recoveryId = recoveryIdFromCommandMetadata(meta)
     if (recoveryId && payload.action === 'stop') {

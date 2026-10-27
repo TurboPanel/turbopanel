@@ -1237,6 +1237,10 @@ running…`) is **queued again** by `resumeInterruptedPromote`
     answer `managed_busy` / `lifecycle_in_flight` while a `managed.lifecycle` or
     `managed.destroy` for the cluster is queued or running and not past its
     expiry (`assertNoLifecycleInFlight`): lifecycle never sets `applying`.
+    A lifecycle result writes its observed status to the member it ran on
+    (`member`, else `payload.memberId`), and a reported stop marks the
+    database's own containers on that server `exited` (ingress keeps its
+    state): lifecycle results carry no container list.
 
 **Automatic failover switch** (`auto-failover-switch.ts`):
 `TURBOPANEL_AUTO_FAILOVER=on|off` (also `true`/`false`, `1`/`0`), read at

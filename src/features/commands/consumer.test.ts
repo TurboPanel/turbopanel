@@ -4622,6 +4622,93 @@ test('processCommandEnvelope marks managed failed when lifecycle command fails',
   })
 })
 
+test('a lifecycle stop result marks the member it ran on and its database containers there', async () => {
+  await withManagedDestroyFixtures(async ({ db, serverId, managedId }) => {
+    const [managedRow] = await db
+      .select({ environmentId: managed.environmentId })
+      .from(managed)
+      .where(eq(managed.id, managedId))
+    const memberId = crypto.randomUUID()
+    await db.insert(replica).values({
+      id: memberId,
+      managedId,
+      serverId,
+      role: 'primary',
+      isReadEligible: true,
+      ordinal: 1,
+      status: 'ready',
+    })
+    const [serviceRow] = await db
+      .insert(service)
+      .values({ environmentId: managedRow!.environmentId, name: 'db', composeServiceName: 'db' })
+      .returning({ id: service.id })
+    await db.insert(container).values([
+      {
+        serviceId: serviceRow!.id,
+        serverId,
+        containerId: 'db-cid',
+        containerName: 'db-1',
+        status: 'running',
+        role: 'service',
+        composeServiceName: 'db',
+        ordinal: 1,
+      },
+      {
+        serviceId: serviceRow!.id,
+        serverId,
+        containerId: 'ingress-cid',
+        containerName: 'ingress-1',
+        status: 'running',
+        role: 'ingress',
+        composeServiceName: 'db',
+        ordinal: 1,
+      },
+    ])
+
+    try {
+      const record = await createCommandRecord(db, {
+        serverId,
+        ...TEST_COMMAND_ACTOR,
+        type: 'managed.lifecycle',
+        payload: { managedId, action: 'stop', memberId },
+      })
+      const registry = createDispatchMockRegistry(serverId, {
+        waitForRequestResult: {
+          serverId,
+          requestId: record.id,
+          requestKind: 'command-dispatch',
+          status: 'done',
+          createdAt: record.createdAt,
+          expiresAt: record.createdAt,
+          finishedAt: new Date().toISOString(),
+          // An older server answers with a status only, no member object.
+          result: { status: 'stopped' },
+        },
+      })
+
+      await processCommandEnvelope(db, registry, buildEnvelope(record, serverId))
+
+      const [memberRow] = await db
+        .select({ status: replica.status })
+        .from(replica)
+        .where(eq(replica.id, memberId))
+      assertEquals(memberRow?.status, 'stopped')
+      const rows = await db
+        .select({ role: container.role, status: container.status })
+        .from(container)
+        .where(eq(container.serviceId, serviceRow!.id))
+      assertEquals(rows.map((row) => `${row.role}:${row.status}`).sort(), [
+        'ingress:running',
+        'service:exited',
+      ])
+    } finally {
+      await db.delete(container).where(eq(container.serviceId, serviceRow!.id))
+      await db.delete(service).where(eq(service.id, serviceRow!.id))
+      await db.delete(replica).where(eq(replica.id, memberId))
+    }
+  })
+})
+
 test('processCommandEnvelope ignores non-projectable managed lifecycle status', async () => {
   await withManagedDestroyFixtures(async ({ db, serverId, managedId }) => {
     await db.update(managed).set({ status: 'ready' }).where(eq(managed.id, managedId))
