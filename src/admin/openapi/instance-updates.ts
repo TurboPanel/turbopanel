@@ -205,7 +205,7 @@ export const INSTANCE_UPDATES_PATHS = {
         'found already on the target and never sent anything to; it is never counted as updated. ' +
         "`detail` `pruned` means retention removed the run's steps: the totals come from the stored " +
         'step counts and `updated` / `alreadyCurrent` are null. Each run also carries `units`, the ' +
-        'units it planned steps for (`daemon`, `instance`); an `instance` step installs the control ' +
+        'units it sent to a host (`daemon`, `instance`; steps settled at planning never count); an `instance` step installs the control ' +
         'plane and its web interface together, so list the `target.ui` build only when it is there ' +
         '(empty once pruned).',
       security: [...cookieSecurity],

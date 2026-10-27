@@ -376,7 +376,7 @@ grouped `count(*)`, not a materialised server or step list.
   pages runs newest first (`idx_upgrade_created_at`) with `status` / `trigger`
   filters; without `status` it answers finished runs only, as before. Every
   run carries `trigger`, a per-server `summary` and `units` (the units it
-  planned steps for; an `instance` step also installs the web interface, so
+  sent to a host; an `instance` step also installs the web interface, so
   clients list `target.ui` only when `units` holds `instance`). `GET
 /instance/updates/runs/:id/servers` pages one row per server (steps grouped
   by `server_id`, `idx_stage_upgrade_server`) with sort, outcome /

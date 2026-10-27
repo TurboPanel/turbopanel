@@ -4,7 +4,7 @@
  * (`idx_upgrade_created_at`, `idx_stage_upgrade_server`); nothing here loads
  * every step of a run or the fleet, and nothing writes.
  */
-import { and, asc, desc, eq, ilike, inArray, or, sql, type SQL } from 'drizzle-orm'
+import { and, asc, desc, eq, gt, ilike, inArray, or, sql, type SQL } from 'drizzle-orm'
 import type { DaemonCellRegistry } from '../../contracts/cell.ts'
 import type { Db } from '../../db/connection.ts'
 import { datacenter, organization, server, stage, upgrade, user } from '../../db/schema.ts'
@@ -45,10 +45,12 @@ export type UpgradeHistoryRun = UpgradeRunRow & {
   trigger: UpgradeRunTrigger
   summary: UpgradeRunServerSummary
   /**
-   * The units this run planned steps for (`daemon`, `instance`), in that
-   * order. An `instance` step installs the control plane and its web
-   * interface together, so a client lists the web interface target only when
-   * this holds `instance`. Empty once retention pruned the steps.
+   * The units this run sent to at least one host (`daemon`, `instance`), in
+   * that order. Steps settled when the run was planned (already current,
+   * waiting out a retry, paused, offline) never count. An `instance` step
+   * installs the control plane and its web interface together, so a client
+   * lists the web interface target only when this holds `instance`. Empty
+   * before anything was sent and once retention pruned the steps.
    */
   units: UpgradeStepUnit[]
 }
@@ -186,7 +188,7 @@ async function readRunSummaries(
   return out
 }
 
-/** Which units each run planned, from one grouped query over its steps. */
+/** Which units each run actually sent, from one grouped query over its steps. */
 async function readRunUnits(
   db: Db,
   runs: readonly UpgradeRunRow[]
@@ -197,9 +199,12 @@ async function readRunUnits(
     .select({ upgradeId: stage.upgradeId, unit: stage.unit })
     .from(stage)
     .where(
-      inArray(
-        stage.upgradeId,
-        runs.map((run) => run.id)
+      and(
+        inArray(
+          stage.upgradeId,
+          runs.map((run) => run.id)
+        ),
+        gt(stage.attempts, 0)
       )
     )
     .groupBy(stage.upgradeId, stage.unit)
