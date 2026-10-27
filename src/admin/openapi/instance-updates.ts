@@ -180,7 +180,7 @@ export const INSTANCE_UPDATES_PATHS = {
         'filters. `organizations` lists up to 100 organizations in the run with their server count. ' +
         'Each server row has organization, datacenter, from/to version and commit, outcome, started, ' +
         'finished, duration, the reason of a failed or skipped component, attempts, `connected`, ' +
-        '`lastHeartbeatAt` (read for this page only) and `components` keyed by unit (`daemon`, ' +
+        '`lastHeartbeatAt` (read for the first 51 rows of this page only, null beyond) and `components` keyed by unit (`daemon`, ' +
         '`instance`), each with its own step status, outcome, versions, times and error. `run` is ' +
         'the history row of this run. Started and finished are null when they were not recorded.',
       security: [...cookieSecurity],

@@ -31,6 +31,7 @@ import {
   type UpgradeServerOutcome,
 } from './history.ts'
 import { readServerSnapshot } from './restart-report.ts'
+import { FLEET_CELL_PROBE_BUDGET } from './run.ts'
 import { toRun, UPGRADE_RUN_COLUMNS, type UpgradeRunRow } from './store.ts'
 import {
   UPGRADE_PHASES,
@@ -511,9 +512,10 @@ function toServerRow(row: ServerPageDbRow, heartbeat: Map<string, string>): RunS
 }
 
 /**
- * Last heartbeat for the servers on this page only (at most one page of
- * ids), from the daemon cell. A failed read leaves the column empty rather
- * than failing the page.
+ * Last heartbeat for the servers on this page only, from the daemon cell. On
+ * Workers every id is one Durable Object call, so at most
+ * {@link FLEET_CELL_PROBE_BUDGET} rows are read (the default page fits); the
+ * rest, and a failed read, leave the column empty rather than failing the page.
  */
 async function readHeartbeats(
   registry: DaemonCellRegistry | null,
@@ -522,7 +524,7 @@ async function readHeartbeats(
   const out = new Map<string, string>()
   if (!registry || ids.length === 0) return out
   try {
-    const snapshots = await registry.getSnapshots(ids)
+    const snapshots = await registry.getSnapshots(ids.slice(0, FLEET_CELL_PROBE_BUDGET))
     for (const [id, snapshot] of snapshots) {
       const seen = isoOrNull(snapshot.lastSeenAt ?? snapshot.lastInboundAt)
       if (seen) out.set(id, seen)
