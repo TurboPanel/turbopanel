@@ -226,7 +226,7 @@ function asPhase(value: string | null): UpgradePhase | null {
   return null
 }
 
-type UpgradeDbRow = {
+export type UpgradeDbRow = {
   id: string
   createdAt: string
   source: string
@@ -243,7 +243,25 @@ type UpgradeDbRow = {
   startedByEmail?: string | null
 }
 
-function toRun(row: UpgradeDbRow): UpgradeRunRow {
+/** The run columns every run read selects (join `user` on `startedBy` for the email). */
+export const UPGRADE_RUN_COLUMNS = {
+  id: upgrade.id,
+  createdAt: upgrade.createdAt,
+  source: upgrade.source,
+  channel: upgrade.channel,
+  status: upgrade.status,
+  phase: upgrade.phase,
+  startedBy: upgrade.startedBy,
+  target: upgrade.target,
+  batchPolicy: upgrade.batchPolicy,
+  counts: upgrade.counts,
+  error: upgrade.error,
+  startedAt: upgrade.startedAt,
+  finishedAt: upgrade.finishedAt,
+  startedByEmail: user.email,
+}
+
+export function toRun(row: UpgradeDbRow): UpgradeRunRow {
   return {
     id: row.id,
     createdAt: row.createdAt,
@@ -330,6 +348,8 @@ function stepInsert(step: UpgradeStepRow) {
     errorCode: step.errorCode,
     errorMessage: step.errorMessage,
     detail: stepDetail(step.detail),
+    // A step planned already settled (on target, skipped) finishes when it is written.
+    finishedAt: isTerminalStepStatus(step.status) ? step.lastStageAt : null,
   }
 }
 
@@ -489,22 +509,7 @@ export function createDrizzleUpgradeStore(
     },
     runById: async (id) => {
       const rows = await db
-        .select({
-          id: upgrade.id,
-          createdAt: upgrade.createdAt,
-          source: upgrade.source,
-          channel: upgrade.channel,
-          status: upgrade.status,
-          phase: upgrade.phase,
-          startedBy: upgrade.startedBy,
-          target: upgrade.target,
-          batchPolicy: upgrade.batchPolicy,
-          counts: upgrade.counts,
-          error: upgrade.error,
-          startedAt: upgrade.startedAt,
-          finishedAt: upgrade.finishedAt,
-          startedByEmail: user.email,
-        })
+        .select(UPGRADE_RUN_COLUMNS)
         .from(upgrade)
         .leftJoin(user, eq(user.id, upgrade.startedBy))
         .where(eq(upgrade.id, id))
@@ -590,6 +595,7 @@ export function createDrizzleUpgradeStore(
           errorCode: step.errorCode,
           errorMessage: step.errorMessage,
           detail: stepDetail(step.detail),
+          ...stepTimesUpdate(step),
         })
         .where(
           expectedStatus !== undefined
@@ -603,22 +609,7 @@ export function createDrizzleUpgradeStore(
       const where = inArray(upgrade.status, [...UPGRADE_TERMINAL_STATUSES])
       const [rows, counted] = await Promise.all([
         db
-          .select({
-            id: upgrade.id,
-            createdAt: upgrade.createdAt,
-            source: upgrade.source,
-            channel: upgrade.channel,
-            status: upgrade.status,
-            phase: upgrade.phase,
-            startedBy: upgrade.startedBy,
-            target: upgrade.target,
-            batchPolicy: upgrade.batchPolicy,
-            counts: upgrade.counts,
-            error: upgrade.error,
-            startedAt: upgrade.startedAt,
-            finishedAt: upgrade.finishedAt,
-            startedByEmail: user.email,
-          })
+          .select(UPGRADE_RUN_COLUMNS)
           .from(upgrade)
           .leftJoin(user, eq(user.id, upgrade.startedBy))
           .where(where)
@@ -641,6 +632,20 @@ export function createDrizzleUpgradeStore(
     reservedRunId: () => readReservedRunId(db),
     reserveRunId: (id) => writeReservedRunId(db, id),
     clearReservedRunId: () => clearReservedRunId(db),
+  }
+}
+
+/**
+ * `started_at` is the first dispatch (kept across retries); `finished_at` is
+ * the first save in a terminal status, cleared when a retry reopens the step.
+ * Database time, so every step of every run reads on one clock.
+ */
+function stepTimesUpdate(step: UpgradeStepRow) {
+  return {
+    ...(step.attempts > 0 ? { startedAt: sql`coalesce(${stage.startedAt}, now())` } : {}),
+    finishedAt: isTerminalStepStatus(step.status)
+      ? sql`coalesce(${stage.finishedAt}, now())`
+      : null,
   }
 }
 

@@ -14,6 +14,12 @@
       "tag": "0001_delete_project_cleanup",
       "when": 1792968916599,
       "sha256": "0eda369252e51e368ecb08c5c93253590ca42156169f4d7c4c1f779f976373e1"
+    },
+    {
+      "idx": 2,
+      "tag": "0002_upgrade_history_paging",
+      "when": 1793110673200,
+      "sha256": "ba62cb5859f5d04f6fd59439b50bb8311edfb28e188dbdb921f1cba6d0e7a410"
     }
   ]
 }

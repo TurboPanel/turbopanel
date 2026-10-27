@@ -30,6 +30,7 @@ do not import a DB/cell module here.
 | `run.ts`            | batch gating, fleet hard-gate, control-plane failure, run outcome, settle-on-start predicate, Workers dispatch cap                                                                    |
 | `schedule.ts`       | pure maintenance-window + auto-start decision                                                                                                                                         |
 | `prune.ts`          | bounded history prune on the maintenance tick                                                                                                                                         |
+| `history.ts`        | how a step and a server read in the history (`stepOutcome`, worst-of `serverOutcome`, `already_current`), run `trigger`, history query parsing; SQL twin in `history-read.ts`         |
 
 The coordinator is `coordinator.ts` (decisions) plus `store.ts` (Postgres or the
 in-memory test store). `maintenance.ts` is the tick: Deno cleanup lane every
@@ -300,6 +301,27 @@ grouped `count(*)`, not a materialised server or step list.
   `updateAvailableFor` (`target.ts`): the target names a commit the host is
   not running and installing it would not downgrade. That is the one rule; a
   client renders it and never compares version or commit strings itself.
+- **Update history** (`history-read.ts`, read-only): `GET /instance/updates/history`
+  pages runs newest first (`idx_upgrade_created_at`) with `status` / `trigger`
+  filters; without `status` it answers finished runs only, as before. Every
+  run carries `trigger` and a per-server `summary`. `GET
+/instance/updates/runs/:id/servers` pages one row per server (steps grouped
+  by `server_id`, `idx_stage_upgrade_server`) with sort, outcome /
+  organization / free-text filters, `statusCounts` for quick filters, an
+  organization facet and `components` per unit. A step `done` with
+  `attempts` 0 was never sent (the host was already on target): it reads
+  `already_current` and is never counted as updated, so a run that changed
+  nothing shows as already up to date rather than `0.1.15 → 0.1.15`. Last
+  heartbeat is a cell read for the page's ids only, capped at
+  `FLEET_CELL_PROBE_BUDGET` (one Durable Object call per id on Workers). Once retention prunes a
+  run's steps its `summary.detail` is `pruned` and `updated` is null. Neither
+  route loads every step (`withSteps` and `fleetFacts` stay off these paths).
+  `stage.started_at` (first dispatch, kept across retries) and
+  `stage.finished_at` (first terminal save, cleared by a retry) are stamped
+  inside `store.saveStep` on database time (a step planned already settled
+  takes its planning time as `finished_at`), so the coordinator never sets
+  them; rows written before 0002 read `finished` from `status_changed_at` and
+  `started` as unknown.
 - Error vocabulary (`vocabulary.ts`): `UPGRADE_STEP_ERROR_CODES` are the step
   `errorCode`s the control plane sets itself (`rolled_back`, `server_offline`,
   `step_timeout`, `verify_timeout`, `dispatch_failed`, `managed_upgrade_required`, `downgrade_refused`); a daemon

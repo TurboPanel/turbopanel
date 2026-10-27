@@ -1441,6 +1441,7 @@ export const upgrade = pgTable(
       .on(sql`(true)`)
       .where(sql`${table.status} IN ('pending', 'running')`),
     index('idx_upgrade_started_by').on(table.startedBy),
+    index('idx_upgrade_created_at').on(table.createdAt.desc()),
     foreignKey({
       columns: [table.startedBy],
       foreignColumns: [user.id],
@@ -1512,9 +1513,22 @@ export const stage = pgTable(
     errorCode: text('error_code'),
     errorMessage: text('error_message'),
     detail: jsonb(),
+    /** First dispatch of this step; NULL until it is sent (and on rows written before the column). */
+    startedAt: timestamp('started_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }),
+    /** When the step reached a terminal status; cleared again by a retry. */
+    finishedAt: timestamp('finished_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }),
   },
   (table) => [
     index('idx_stage_upgrade_status').on(table.upgradeId, table.status),
+    index('idx_stage_upgrade_server').on(table.upgradeId, table.serverId),
     index('idx_stage_upgrade_phase').on(
       table.upgradeId,
       table.phase,
