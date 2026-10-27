@@ -2152,6 +2152,21 @@ export function oldPrimaryFinalFromStop(
   }
 }
 
+/**
+ * The member a lifecycle result speaks for: its own `member` object, else the
+ * single member the command was sent to (`payload.memberId`) with the status
+ * the server observed. Older servers answer a fan-out stop with only a status;
+ * without this a replica whose stop failed kept reading Running.
+ */
+export function lifecycleMemberObservation(
+  payload: Pick<ManagedLifecyclePayload, 'memberId'>,
+  result: Pick<ManagedLifecycleCommandResult, 'member' | 'status'>
+): Parameters<typeof projectManagedMemberObservedStatus>[1] {
+  if (result.member) return result.member
+  if (!payload.memberId) return undefined
+  return { memberId: payload.memberId, status: result.status }
+}
+
 async function applyManagedLifecycleSideEffect(
   db: Db,
   record: DispatchableCommandRecord,
@@ -2175,7 +2190,12 @@ async function applyManagedLifecycleSideEffect(
       record.id,
       record.type
     )
-    await projectManagedMemberObservedStatus(db, lifecycleResult.member, record.id, record.type)
+    await projectManagedMemberObservedStatus(
+      db,
+      lifecycleMemberObservation(payload, lifecycleResult),
+      record.id,
+      record.type
+    )
 
     const recoveryId = recoveryIdFromCommandMetadata(meta)
     if (recoveryId && payload.action === 'stop') {

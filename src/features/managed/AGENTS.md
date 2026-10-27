@@ -1233,7 +1233,10 @@ running…`) is **queued again** by `resumeInterruptedPromote`
     The same sweep, when it times out a command that carries a `recoveryId`,
     calls the recovery hooks (`onRecoveryCommandTimedOut`) so the row settles at
     once. Every mutating managed route answers `managed_busy` while the journal
-    has an in-flight row (`assertManagedIdle`).
+    has an in-flight row (`assertManagedIdle`). Lifecycle and delete also
+    answer `managed_busy` / `lifecycle_in_flight` while a `managed.lifecycle` or
+    `managed.destroy` for the cluster is queued or running and not past its
+    expiry (`assertNoLifecycleInFlight`): lifecycle never sets `applying`.
 
 **Automatic failover switch** (`auto-failover-switch.ts`):
 `TURBOPANEL_AUTO_FAILOVER=on|off` (also `true`/`false`, `1`/`0`), read at

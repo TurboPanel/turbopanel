@@ -18,7 +18,10 @@ import {
 import { verifyServerInOrg } from '../environments/deploy-prepare.ts'
 import { getCatalogEntry } from '../projects/catalog/index.ts'
 import { loadServerStatusRecords } from '../servers/update-status.ts'
-import { hasLiveBackupCommand } from '../../features/commands/command-records.ts'
+import {
+  hasLiveBackupCommand,
+  hasLiveLifecycleCommand,
+} from '../../features/commands/command-records.ts'
 import { findInFlightRecovery } from '../../features/managed/recovery-records.ts'
 import type { ManagedStatus } from '../../features/managed/types.ts'
 
@@ -217,6 +220,28 @@ export async function assertNoBackupInFlight(
       reason: 'backup_in_flight',
       message:
         'Another backup or restore of this database is already running. Try again when it has finished.',
+    },
+    409
+  )
+}
+
+/**
+ * 409 when a start, stop, restart or destroy of this cluster is still queued or
+ * running. Lifecycle commands never mark the cluster `applying`, so without
+ * this a second press (or another tab) queues a racing Start behind a Stop.
+ */
+export async function assertNoLifecycleInFlight(
+  c: Context<AppEnv>,
+  db: Db,
+  managedId: string
+): Promise<Response | null> {
+  if (!(await hasLiveLifecycleCommand(db, managedId))) return null
+  return c.json(
+    {
+      error: 'managed_busy',
+      reason: 'lifecycle_in_flight',
+      message:
+        'This database is already starting, stopping or being destroyed. Try again when that has finished.',
     },
     409
   )

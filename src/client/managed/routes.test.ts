@@ -1330,6 +1330,67 @@ test('a second manual backup is refused at once while one is queued, and queues 
   )
 })
 
+test('a start, stop or destroy is refused while another lifecycle command for the database is in flight', async () => {
+  await withManagedFixtures(
+    {},
+    async ({ db, app, secrets, commandQueue, userId, organizationId, environmentId }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const headers = {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      }
+      const create = await app.request(`/environments/${environmentId}/managed`, {
+        method: 'POST',
+        headers,
+        body: '{}',
+      })
+      const created = (await create.json()) as { managed: { id: string } }
+      await db.update(managed).set({ status: 'ready' }).where(eq(managed.id, created.managed.id))
+      const lifecycleUrl = `/environments/${environmentId}/managed/lifecycle`
+      const lifecycle = (action: string) =>
+        app.request(lifecycleUrl, { method: 'POST', headers, body: JSON.stringify({ action }) })
+
+      const stop = await lifecycle('stop')
+      assertEquals(stop.status, 200)
+      const queued = commandQueue.envelopes.length
+
+      const busyBody = {
+        error: 'managed_busy',
+        reason: 'lifecycle_in_flight',
+        message:
+          'This database is already starting, stopping or being destroyed. Try again when that has finished.',
+      }
+      const start = await lifecycle('start')
+      assertEquals(start.status, 409)
+      assertEquals(await start.json(), busyBody)
+      const destroy = await app.request(`/environments/${environmentId}/managed`, {
+        method: 'DELETE',
+        headers,
+      })
+      assertEquals(destroy.status, 409)
+      assertEquals(await destroy.json(), busyBody)
+      assertEquals(commandQueue.envelopes.length, queued)
+
+      // A command the server never answered stops counting once it expires.
+      await db
+        .update(command)
+        .set({ expiresAt: new Date(Date.now() - 1000).toISOString() })
+        .where(eq(command.managedId, created.managed.id))
+      const afterExpiry = await lifecycle('start')
+      assertEquals(afterExpiry.status, 200)
+
+      // A finished command never counts.
+      await db
+        .update(command)
+        .set({ status: 'failed' })
+        .where(eq(command.managedId, created.managed.id))
+      const afterEnd = await lifecycle('restart')
+      assertEquals(afterEnd.status, 200)
+    }
+  )
+})
+
 test('managed_busy guard on backup create while status=applying', async () => {
   await withManagedFixtures(
     {},

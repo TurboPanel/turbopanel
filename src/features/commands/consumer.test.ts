@@ -66,6 +66,7 @@ import {
   type DispatchableCommandRecord,
   isTransientError,
   markPlannedFoldersPresentSafely,
+  lifecycleMemberObservation,
   oldPrimaryFinalFromStop,
   processCommandEnvelope,
 } from './consumer.ts'
@@ -5023,6 +5024,21 @@ test('a failover recover result moves the primary role and the epoch goes up by 
       await cleanUpPromotePair(db, { serverId, managedId, standbyServerId })
     }
   })
+})
+
+test('a lifecycle result without a member object still lands on the member it was sent to', () => {
+  const failedReplicaStop = { status: 'failed' } as ManagedLifecycleCommandResult
+  assertEquals(lifecycleMemberObservation({ memberId: 'replica-1' }, failedReplicaStop), {
+    memberId: 'replica-1',
+    status: 'failed',
+  })
+  // A result that names its member wins, and a cluster-wide command names none.
+  const named = {
+    status: 'stopped',
+    member: { memberId: 'primary-1', role: 'primary', status: 'stopped' },
+  } as ManagedLifecycleCommandResult
+  assertEquals(lifecycleMemberObservation({ memberId: 'replica-1' }, named), named.member)
+  assertEquals(lifecycleMemberObservation({}, failedReplicaStop), undefined)
 })
 
 test('a fence stop result that answers another switchover stores no final position', () => {

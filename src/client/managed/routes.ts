@@ -117,6 +117,7 @@ import {
 import {
   assertManagedIdle,
   assertNoBackupInFlight,
+  assertNoLifecycleInFlight,
   assertTargetServerOnline,
   authorizeManagedBackupMutation,
   authorizeManagedRequest,
@@ -2259,7 +2260,8 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     if (scope instanceof Response) return scope
     const { db, auth, ctx, row } = scope
 
-    const busy = await assertManagedIdle(c, db, row)
+    const busy =
+      (await assertManagedIdle(c, db, row)) ?? (await assertNoLifecycleInFlight(c, db, row.id))
     if (busy) return busy
 
     const targetServerId = resolveManagedTargetServerId(c, row.serverId)
@@ -2306,7 +2308,8 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const stepUp = await requireStepUpIfConfigured(c, auth.organizationId, 'managed.delete')
     if (stepUp) return stepUp
 
-    const busy = await assertManagedIdle(c, db, row)
+    const busy =
+      (await assertManagedIdle(c, db, row)) ?? (await assertNoLifecycleInFlight(c, db, row.id))
     if (busy) return busy
 
     // Apps bound to this cluster would lose their connection variables with
