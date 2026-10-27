@@ -131,9 +131,10 @@ async function flipTimedOut(
 
 /** Log a late result that was confirmed although part of its correction failed. */
 function warnLateCorrection(commandId: string, what: string, err: unknown): void {
-  const causes = describeErrorCauses(err).replaceAll('\n', ' | ')
-  const reason = causes === '' ? String(err) : causes
-  compatLogWarn('command-recovery', `late result for command ${commandId}: ${what}: ${reason}`)
+  compatLogWarn(
+    'command-recovery',
+    `late result for command ${commandId}: ${what}: ${unconfirmedErrorText(err)}`
+  )
 }
 
 /**
