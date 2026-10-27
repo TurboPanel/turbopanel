@@ -1,6 +1,7 @@
 import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { DENY_FIREWALL_APPLY } from '../firewall/enforcement.ts'
 import { assertEquals, assertRejects } from '@std/assert'
+import { stub } from '@std/testing/mock'
 import { projectServerDaemon } from '../../daemon/cell/postgres-projection.ts'
 import { eq, inArray } from 'drizzle-orm'
 import { loadDeployRunCapMs } from './deploy-wait-settings.ts'
@@ -7029,8 +7030,22 @@ test('an outcome is confirmed to the daemon only when it is stored and the daemo
     const ack = await ackForReportedOutcome(db, { serverId, envelope, record: stored })
     assertEquals(ack?.type, 'command-outcome-ack')
     assertEquals(ack?.id, record.id)
-    // Nothing holds it yet: not confirmed, so the daemon sends it again.
-    assertEquals(await ackForReportedOutcome(db, { serverId, envelope, record: null }), null)
+    // Nothing holds it yet: not confirmed, so the daemon sends it again. Why
+    // is logged once, not on every resend.
+    const writes: string[] = []
+    const writeStub = stub(Deno.stderr, 'writeSync', (data: Uint8Array) => {
+      writes.push(new TextDecoder().decode(data))
+      return data.byteLength
+    })
+    try {
+      assertEquals(await ackForReportedOutcome(db, { serverId, envelope, record: null }), null)
+      assertEquals(await ackForReportedOutcome(db, { serverId, envelope, record: null }), null)
+    } finally {
+      writeStub.restore()
+    }
+    const kept = writes.filter((line) => line.includes(`result for command ${record.id}`))
+    assertEquals(kept.length, 1)
+    assertEquals(kept[0]?.includes('still sent and no request in the cell is waiting for it'), true)
   })
 })
 
