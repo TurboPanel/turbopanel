@@ -22,6 +22,7 @@ import type { Db } from '../../db/connection.ts'
 import type { BillingProviderId } from '../billing/gateway.ts'
 import { type LadderEntry, ladderEntry } from './ladder.ts'
 import { license, server, subscriptionItem, tier } from '../../db/schema.ts'
+import { isUnusedKeyExpired } from '../licenses/key-expiry.ts'
 
 export type TierRow = typeof tier.$inferSelect
 
@@ -218,32 +219,46 @@ export type LicenseCount = {
 
 /**
  * Active license counts for one organization — the "licenses held" side
- * of the mint gate (`active < purchased`) and of the reconcile report.
+ * of the mint gate (`active < purchased`) and of the reconcile report. An
+ * unused key past its expiry (`licenses/key-expiry.ts`) holds nothing and is
+ * not counted.
  */
-export async function countActiveLicenses(db: Db, organizationId: string): Promise<LicenseCount> {
-  const [row] = await db
-    .select({
-      active: sql<number>`count(*)::int`,
-      bound: sql<number>`count(${license.serverId})::int`,
-    })
+export async function countActiveLicenses(
+  db: Db,
+  organizationId: string,
+  nowMs: number = Date.now()
+): Promise<LicenseCount> {
+  const rows = await db
+    .select({ serverId: license.serverId, expiresAt: license.expiresAt })
     .from(license)
     .where(and(eq(license.organizationId, organizationId), isNull(license.revokedAt)))
-  return { active: Number(row?.active ?? 0), bound: Number(row?.bound ?? 0) }
+  const live = rows.filter((row) => !isUnusedKeyExpired(row, nowMs))
+  return { active: live.length, bound: live.filter((row) => row.serverId !== null).length }
 }
 
+/** An unused registration key holding a license at the tier chosen in Add Server. */
+export type HeldLicenseKey = Readonly<{ licenseId: string; name: string | null; tierId: string }>
+
 /**
- * Seats held by registration keys, per tier: active, still-unused keys that
+ * Seats held by registration keys: active, still-unused, unexpired keys that
  * carry the tier a manager chose in Add Server (`license.tier_id`). Each one
  * holds a seat at its tier until its server enrolls and takes it, so the
- * seat cannot be handed to another server in between. A revoked or consumed
- * key holds nothing.
+ * seat cannot be handed to another server in between. A revoked, consumed or
+ * expired key holds nothing.
  */
-export async function countReservedLicenseTiers(
+export async function listHeldLicenseKeys(
   db: Db,
-  organizationId: string
-): Promise<Map<string, number>> {
+  organizationId: string,
+  nowMs: number = Date.now()
+): Promise<HeldLicenseKey[]> {
   const rows = await db
-    .select({ tierId: license.tierId, count: sql<number>`count(*)::int` })
+    .select({
+      licenseId: license.id,
+      name: license.name,
+      tierId: license.tierId,
+      serverId: license.serverId,
+      expiresAt: license.expiresAt,
+    })
     .from(license)
     .where(
       and(
@@ -253,10 +268,27 @@ export async function countReservedLicenseTiers(
         isNotNull(license.tierId)
       )
     )
-    .groupBy(license.tierId)
-  const out = new Map<string, number>()
+  const out: HeldLicenseKey[] = []
   for (const row of rows) {
-    if (row.tierId) out.set(row.tierId, Number(row.count))
+    if (row.tierId && !isUnusedKeyExpired(row, nowMs)) {
+      out.push({ licenseId: row.licenseId, name: row.name, tierId: row.tierId })
+    }
   }
   return out
+}
+
+/** {@link listHeldLicenseKeys} counted per tier. */
+export function heldSeatsByTier(keys: readonly HeldLicenseKey[]): Map<string, number> {
+  const out = new Map<string, number>()
+  for (const key of keys) out.set(key.tierId, (out.get(key.tierId) ?? 0) + 1)
+  return out
+}
+
+/** Seats held by unused registration keys, per tier ({@link listHeldLicenseKeys}). */
+export async function countReservedLicenseTiers(
+  db: Db,
+  organizationId: string,
+  nowMs: number = Date.now()
+): Promise<Map<string, number>> {
+  return heldSeatsByTier(await listHeldLicenseKeys(db, organizationId, nowMs))
 }

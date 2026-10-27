@@ -1,5 +1,5 @@
 {
-  "id": "5c6660a7-0319-4af0-a899-a1aa426cd9ed",
+  "id": "bc996a15-6c6c-40c8-b986-cbce75ca1edc",
   "prevId": "c649c84a-b40e-4136-a249-d1c560f760db",
   "version": "7",
   "dialect": "postgresql",
@@ -5856,6 +5856,12 @@
         "tier_id": {
           "name": "tier_id",
           "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp(3) with time zone",
           "primaryKey": false,
           "notNull": false
         }

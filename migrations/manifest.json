@@ -23,9 +23,9 @@
     },
     {
       "idx": 3,
-      "tag": "0003_license_tier",
-      "when": 1793115682365,
-      "sha256": "d39f404e7cbf41f7c3d56dbd5fa8e0294b784082bcc7fc463303d7d18ca17e94"
+      "tag": "0003_license_key_tier_and_expiry",
+      "when": 1793119488037,
+      "sha256": "fbbb9577d85ee5299e644c07d9109c2d2b105d2fe48188d9c4b467b54890a8ea"
     }
   ]
 }

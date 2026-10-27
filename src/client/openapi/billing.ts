@@ -611,7 +611,7 @@ export const billingPaths: Record<string, unknown> = {
   [`${CLIENT_PREFIX}/billing/seats`]: mutationPath(
     'Buy or release licenses at one tier',
     'BillingSeatsRequest',
-    '`licenses_ending` (BillingLicensesEndingError), `subscription_past_due`, `no_subscription`, `servers_uncovered`, `licenses_in_use` (BillingLicensesInUseError)'
+    '`licenses_ending` (BillingLicensesEndingError), `subscription_past_due`, `no_subscription`, `servers_uncovered`, `license_held_by_key`, `licenses_in_use` (BillingLicensesInUseError)'
   ),
   [`${CLIENT_PREFIX}/billing/restore`]: {
     post: {
@@ -649,11 +649,11 @@ export const billingPaths: Record<string, unknown> = {
   [`${CLIENT_PREFIX}/billing/upgrade`]: mutationPath(
     'Move one purchased license to a higher tier, invoiced now',
     'BillingTierMoveRequest',
-    '`licenses_ending` (at the higher tier), `subscription_past_due`, `no_subscription`, `servers_uncovered`, `server_not_on_tier`, `server_move_pending`'
+    '`licenses_ending` (at the higher tier), `subscription_past_due`, `no_subscription`, `servers_uncovered`, `license_held_by_key`, `server_not_on_tier`, `server_move_pending`'
   ),
   [`${CLIENT_PREFIX}/billing/downgrade`]: mutationPath(
     'Move one purchased license to a lower tier at the period boundary',
     'BillingTierMoveRequest',
-    '`licenses_ending` (at the lower tier), `no_subscription`, `servers_uncovered`, `licenses_in_use` (BillingLicensesInUseError), `server_not_on_tier`, `server_move_pending`'
+    '`licenses_ending` (at the lower tier), `no_subscription`, `servers_uncovered`, `license_held_by_key`, `licenses_in_use` (BillingLicensesInUseError), `server_not_on_tier`, `server_move_pending`'
   ),
 }

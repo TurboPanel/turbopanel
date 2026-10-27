@@ -898,6 +898,12 @@ export const license = pgTable(
     }),
     /** Tier a manager chose in Add Server; the server that enrolls with this key takes it. */
     tierId: uuid('tier_id'),
+    /** An unused key stops working (and stops holding a license) at this time; null never expires. */
+    expiresAt: timestamp('expires_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }),
   },
   (table) => [
     index('idx_license_organization_id').using(

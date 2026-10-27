@@ -222,3 +222,30 @@ test('deleting a server gives its seat back, and re-adding it with the same tier
     assertEquals(await tierOf(again.serverId), { assigned: s1, preferred: s1 })
   })
 })
+
+test('an unused key past its expiry cannot enroll and no longer holds its tier', async () => {
+  await withOrg(1, async ({ db, organizationId, s1, mint, enroll, tierOf }) => {
+    const key = await mint(s1)
+    assertEquals((await countReservedLicenseTiers(db, organizationId)).get(s1), 1)
+    await db
+      .update(license)
+      .set({ expiresAt: new Date(Date.now() - 1000).toISOString() })
+      .where(eq(license.id, key.licenseId))
+    assertEquals((await countReservedLicenseTiers(db, organizationId)).size, 0)
+    const resolved = await resolveServerId(db, {
+      hostname: `add-server-expired-${crypto.randomUUID()}`,
+      machineKey: machineKey(),
+      ...key,
+    })
+    assertEquals(resolved, null)
+    // A bound key never expires: its server keeps the tier and keeps enrolling.
+    const fresh = await mint(s1)
+    const { serverId, hello } = await enroll(fresh)
+    await db
+      .update(license)
+      .set({ expiresAt: new Date(Date.now() - 1000).toISOString() })
+      .where(eq(license.id, fresh.licenseId))
+    assertEquals(await resolveServerId(db, hello), serverId)
+    assertEquals((await tierOf(serverId)).assigned, s1)
+  })
+})

@@ -57,6 +57,7 @@ import { deriveSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 import { registerLicenseRoutes } from './routes.ts'
 import { tierSeatExhaustionMessage } from './routes-helpers.ts'
+import { LICENSE_KEY_UNUSED_TTL_DAYS } from '../../features/licenses/key-expiry.ts'
 import { recordLicenseEnrollAttempt } from '../../features/licenses/enroll-attempt.ts'
 
 /**
@@ -100,6 +101,7 @@ type Fixture = {
     revokedAt?: string | null
     name?: string | null
     tierId?: string | null
+    expiresAt?: string | null
   }[]
   servers?: { id: string; name: string | null; assignedTierId?: string | null }[]
   config?: BillingConfig | null
@@ -263,6 +265,7 @@ async function buildApp(fx: Fixture = {}) {
           token: 'hashed',
           revokedAt: row.revokedAt ?? null,
           ...(row.tierId ? { tierId: row.tierId } : {}),
+          ...(row.expiresAt ? { expiresAt: row.expiresAt } : {}),
           createdAt: NOW,
           updatedAt: NOW,
         })),
@@ -357,6 +360,7 @@ async function withFetchGuard<T>(run: () => Promise<T>): Promise<{ result: T; fe
 const L_ACTIVE = '44444444-4444-4444-8444-444444444441'
 const L_REVOKED = '44444444-4444-4444-8444-444444444442'
 const L_BOUND = '44444444-4444-4444-8444-444444444443'
+const L_EXPIRED = '44444444-4444-4444-8444-444444444444'
 const SERVER = '55555555-5555-4555-8555-555555555551'
 
 type Refusal = {
@@ -536,10 +540,57 @@ test('Add Server · a chosen tier whose seats are on servers or held by keys is 
     tiers: { tierId: string; available: number }[]
   }
   assertEquals(body.error, 'no_license_available')
-  assertEquals(body.message, tierSeatExhaustionMessage('S3'))
+  // The one S3 not on a server is held by the unused key: the message says so.
+  assertEquals(body.message, tierSeatExhaustionMessage('S3', 1))
+  assertEquals(body.message.includes('held by an unused install command'), true)
   assertEquals(body.tiers.find((row) => row.tierId === S3)?.available, 0)
   assertEquals(db.rows(license).length, 2)
   assertEquals(lockRow(db), null)
+})
+
+test('Add Server · a minted key expires LICENSE_KEY_UNUSED_TTL_DAYS days after mint', async () => {
+  const { app, headers, db } = await buildApp({ seats: [{ tierId: S3, quantity: 2 }] })
+  const before = Date.now()
+  const res = await mint(app, headers, { tierId: S3 })
+  assertEquals(res.status, 200)
+  const body = (await res.json()) as { licenseId: string }
+  const expiresAt = db.rows(license).find((row) => row.id === body.licenseId)?.expiresAt
+  const ttlMs = LICENSE_KEY_UNUSED_TTL_DAYS * 24 * 60 * 60 * 1000
+  assertEquals(Date.parse(String(expiresAt)) >= before + ttlMs, true)
+  assertEquals(Date.parse(String(expiresAt)) <= Date.now() + ttlMs, true)
+})
+
+test('Add Server · an expired unused key holds no license and no seat at its tier', async () => {
+  const { app, headers } = await buildApp({
+    seats: [{ tierId: S3, quantity: 1 }],
+    licenses: [{ id: L_ACTIVE, tierId: S3, expiresAt: '2026-01-01T00:00:00.000Z' }],
+  })
+  const res = await mint(app, headers, { tierId: S3 })
+  assertEquals(res.status, 200)
+})
+
+test('GET /licenses shows the tier an unused key holds and when it expires', async () => {
+  const { app, headers } = await buildApp({
+    licenses: [
+      { id: L_ACTIVE, name: 'edge-2', tierId: S3, expiresAt: '2999-01-01T00:00:00.000Z' },
+      { id: L_EXPIRED, name: 'old', expiresAt: '2026-01-01T00:00:00.000Z' },
+    ],
+  })
+  const res = await listLicenses(app, headers)
+  assertEquals(res.status, 200)
+  const body = (await res.json()) as {
+    licenses: Array<{
+      id: string
+      tier: { id: string; label: string } | null
+      expiresAt: string | null
+      expired: boolean
+    }>
+  }
+  const byId = new Map(body.licenses.map((row) => [row.id, row]))
+  assertEquals(byId.get(L_ACTIVE)?.tier, { id: S3, label: 'S3' })
+  assertEquals(byId.get(L_ACTIVE)?.expired, false)
+  assertEquals(byId.get(L_EXPIRED)?.expired, true)
+  assertEquals(byId.get(L_EXPIRED)?.tier, null)
 })
 
 test('Add Server · a revoked key holds no seat at its tier', async () => {

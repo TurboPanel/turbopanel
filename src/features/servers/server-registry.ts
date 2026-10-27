@@ -43,6 +43,7 @@ import { daemonFeaturesColumnPatch } from './daemon-jsonb-write.ts'
 import { featuresMatch, parseServerDaemonState } from './daemon-state.ts'
 import { ensureSystemHierarchy } from '../system/hierarchy.ts'
 import { applyAddServerTierAtEnroll, lockOrganizationRow } from '../tiers/assignment-records.ts'
+import { isUnusedKeyExpired } from '../licenses/key-expiry.ts'
 import { describeError } from '../../lib/describe-error.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
 import type { CommandQueue } from '../commands/queue.ts'
@@ -692,9 +693,13 @@ async function insertLicensedServer(
       .update(license)
       .set({ serverId: id, updatedAt: now })
       .where(and(eq(license.id, licenseId), isNull(license.serverId), isNull(license.revokedAt)))
-      .returning({ id: license.id, tierId: license.tierId })
+      .returning({ id: license.id, tierId: license.tierId, expiresAt: license.expiresAt })
 
-    if (latched.length === 0) {
+    // Expired between the token check and this latch: refused like a lost
+    // race, so the transaction rolls back and nothing binds.
+    const expired =
+      latched[0] && isUnusedKeyExpired({ serverId: null, expiresAt: latched[0].expiresAt })
+    if (latched.length === 0 || expired) {
       const err = new Error('license already consumed') as Error & {
         code: string
       }

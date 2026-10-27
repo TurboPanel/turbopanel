@@ -21,6 +21,7 @@
 import { and, eq, inArray, isNull } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { license, setting } from '../../db/schema.ts'
+import { isUnusedKeyExpired } from './key-expiry.ts'
 
 export const LICENSE_ENROLL_ATTEMPT_KEY_PREFIX = 'LICENSE_ENROLL_ATTEMPT:'
 export const LICENSE_ENROLL_ATTEMPT_RECORD_VERSION = 1
@@ -84,8 +85,8 @@ export async function listProvisioningLicenses(
   db: Db,
   organizationId: string
 ): Promise<Map<string, LicenseEnrollAttemptRecord>> {
-  const unbound = await db
-    .select({ id: license.id })
+  const rows = await db
+    .select({ id: license.id, serverId: license.serverId, expiresAt: license.expiresAt })
     .from(license)
     .where(
       and(
@@ -94,6 +95,8 @@ export async function listProvisioningLicenses(
         isNull(license.serverId)
       )
     )
+  // An expired key cannot enroll, so it is not being provisioned either.
+  const unbound = rows.filter((row) => !isUnusedKeyExpired(row))
   const out = new Map<string, LicenseEnrollAttemptRecord>()
   if (unbound.length === 0) return out
   const idByKey = new Map(unbound.map((row) => [licenseEnrollAttemptKey(row.id), row.id]))

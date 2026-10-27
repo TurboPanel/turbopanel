@@ -1,7 +1,8 @@
 import { and, eq, inArray, isNull } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { revokeBoundDaemonKey } from './revoke-bound-daemon-key.ts'
-import { license, server } from '../../db/schema.ts'
+import { license, server, tier } from '../../db/schema.ts'
+import { isUnusedKeyExpired } from './key-expiry.ts'
 import { generatePassword } from '../../lib/secrets/generate-secret.ts'
 import { hashPassword, verifyPassword } from '../../lib/secrets/password.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
@@ -11,6 +12,11 @@ export type LicenseRecord = {
   organizationId: string
   name: string | null
   createdAt: string
+  /** The tier chosen in Add Server, which this key holds until its server enrolls. */
+  tierId: string | null
+  tierLabel: string | null
+  /** When an unused key stops working (`key-expiry.ts`); null never expires. */
+  expiresAt: string | null
 }
 
 function nowTs(): string {
@@ -38,7 +44,7 @@ export async function verifyLicenseToken(plaintext: string, hashed: string): Pro
  */
 export async function createLicense(
   db: Db,
-  opts: { organizationId: string; name?: string; tierId?: string }
+  opts: { organizationId: string; name?: string; tierId?: string; expiresAt?: string }
 ): Promise<{ licenseId: string; licenseToken: string }> {
   const { plaintext, hashed } = await generateLicenseToken()
   const now = nowTs()
@@ -49,6 +55,7 @@ export async function createLicense(
       organizationId: opts.organizationId,
       name: opts.name ?? null,
       ...(opts.tierId ? { tierId: opts.tierId } : {}),
+      ...(opts.expiresAt ? { expiresAt: opts.expiresAt } : {}),
       token: hashed,
       createdAt: now,
       updatedAt: now,
@@ -81,6 +88,32 @@ export async function revokeLicense(
     .returning({ id: license.id })
 
   return updated.length > 0
+}
+
+/**
+ * Retire the key(s) bound to a server, inside the server delete's own
+ * transaction: from the moment the row is gone no daemon still running on
+ * that host can enroll again with its key, and the key never sits active and
+ * unused (holding a license) in between. Returns how many were revoked.
+ */
+export async function revokeLicensesBoundToServer(
+  db: Db,
+  serverId: string,
+  organizationId: string
+): Promise<number> {
+  const now = nowTs()
+  const revoked = await db
+    .update(license)
+    .set({ revokedAt: now, updatedAt: now })
+    .where(
+      and(
+        eq(license.serverId, serverId),
+        eq(license.organizationId, organizationId),
+        isNull(license.revokedAt)
+      )
+    )
+    .returning({ id: license.id })
+  return revoked.length
 }
 
 export async function disconnectServersBoundToLicense(
@@ -232,8 +265,12 @@ export async function listLicenses(db: Db, organizationId: string): Promise<Lice
       organizationId: license.organizationId,
       name: license.name,
       createdAt: license.createdAt,
+      tierId: license.tierId,
+      tierLabel: tier.label,
+      expiresAt: license.expiresAt,
     })
     .from(license)
+    .leftJoin(tier, eq(tier.id, license.tierId))
     .where(and(eq(license.organizationId, organizationId), isNull(license.revokedAt)))
 }
 
@@ -245,10 +282,15 @@ export async function lookupActiveLicense(
     .select({
       organizationId: license.organizationId,
       token: license.token,
+      serverId: license.serverId,
+      expiresAt: license.expiresAt,
     })
     .from(license)
     .where(and(eq(license.id, licenseId), isNull(license.revokedAt)))
     .limit(1)
 
-  return rows[0] ?? null
+  const row = rows[0]
+  // An unused key past its expiry cannot enroll; a bound key never expires.
+  if (!row || isUnusedKeyExpired(row)) return null
+  return { organizationId: row.organizationId, token: row.token }
 }

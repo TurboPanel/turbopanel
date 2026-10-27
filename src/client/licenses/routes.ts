@@ -40,6 +40,7 @@ import { resolveInstallOriginTls } from '../../features/install/install-trust.ts
 import { syncSelfHostedGrant } from '../../features/tiers/self-hosted-grant-records.ts'
 import { lockOrganizationRow } from '../../features/tiers/assignment-records.ts'
 import { getTierById } from '../../features/tiers/tier-records.ts'
+import { unusedKeyExpiresAt } from '../../features/licenses/key-expiry.ts'
 import {
   parseInstallBaseUrl,
   resolvePublicBaseUrl,
@@ -181,7 +182,9 @@ async function mintRegistrationKey(
   input: Readonly<{ organizationId: string; name?: string; tierId?: string; hosted: boolean }>
 ): Promise<MintedKey | Response> {
   const { organizationId, name, tierId } = input
-  if (!input.hosted || !tierId) return await createLicense(db, { organizationId, name })
+  // Every key minted here stops working if no server enrolls with it in time.
+  const expiresAt = unusedKeyExpiresAt(Date.now())
+  if (!input.hosted || !tierId) return await createLicense(db, { organizationId, name, expiresAt })
   const chosen = await getTierById(db, tierId)
   if (!chosen?.isActive) {
     return c.json({ error: 'Unknown license tier', code: 'tier_not_found' }, 400)
@@ -196,12 +199,12 @@ async function mintRegistrationKey(
         noLicenseAvailableBody(
           summarizeLicenses(view),
           tiers,
-          tierSeatExhaustionMessage(chosen.label)
+          tierSeatExhaustionMessage(chosen.label, view.reserved?.get(tierId) ?? 0)
         ),
         409
       )
     }
-    return await createLicense(tx, { organizationId, name, tierId })
+    return await createLicense(tx, { organizationId, name, tierId, expiresAt })
   })
 }
 
@@ -242,7 +245,7 @@ export function registerLicenseRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const provisioning = await listProvisioningLicenses(db, organizationId)
 
     return c.json({
-      licenses: licenses.map(({ id, name, createdAt }) => {
+      licenses: licenses.map(({ id, name, createdAt, tierId, tierLabel, expiresAt }) => {
         const bound = boundServers.get(id)
         const status = bound ? statusByServerId.get(bound.id) : undefined
         const attempt = provisioning.get(id)
@@ -250,6 +253,8 @@ export function registerLicenseRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
           id,
           name,
           createdAt,
+          tier: tierId && tierLabel ? { id: tierId, label: tierLabel } : null,
+          expiresAt,
           revocable: !protectedIds.has(id),
           bound,
           status,

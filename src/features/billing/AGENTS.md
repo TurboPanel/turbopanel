@@ -194,7 +194,13 @@ it — so no other server can be given that seat. When a server first enrolls
 with the key it takes exactly that seat (`applyAddServerTierAtEnroll`, under
 the organization row lock). If the seat is gone after all (seats removed in
 between), the server is left without a tier and its overview says why; it is
-never put on a different tier. A key with no tier assigns nothing.
+never put on a different tier. A key with no tier assigns nothing. A seat
+change or tier move that would leave fewer licenses at a tier than its
+servers and its unused keys hold is refused (`license_held_by_key`, naming
+the key to delete). Keys minted by `POST /licenses` expire after
+`LICENSE_KEY_UNUSED_TTL_DAYS` (7) unused (`licenses/key-expiry.ts`, a
+read-time rule): an expired key cannot enroll and holds no license or seat.
+Keys minted before the rule, and the colocated key, have no expiry.
 
 Apart from these writes, the
 route above is the only hosted writer of `server.assigned_tier_id`; `src/features/tiers/assignment.ts` only **reads** the

@@ -3,6 +3,10 @@ import {
   normalizeDisplayName,
   normalizeDisplayNameKey,
 } from '../../lib/display-name-format.ts'
+import {
+  isUnusedKeyExpired,
+  LICENSE_KEY_UNUSED_TTL_DAYS,
+} from '../../features/licenses/key-expiry.ts'
 
 export type LicenseCreateFields = {
   name?: string
@@ -77,8 +81,19 @@ export function parseLicenseCreateFields(rawBody: string): LicenseCreateFields |
 
 export const NO_LICENSE_AVAILABLE_ERROR = 'no_license_available'
 
-/** Refusal message when the tier chosen in Add Server has no free seat for one more server. */
-export function tierSeatExhaustionMessage(label: string): string {
+/**
+ * Refusal message when the tier chosen in Add Server has no free seat for one
+ * more server. `heldByKeys` is how many of that tier's licenses unused install
+ * commands hold, which deleting one (or letting it expire) gives back.
+ */
+export function tierSeatExhaustionMessage(label: string, heldByKeys = 0): string {
+  if (heldByKeys > 0) {
+    const held =
+      heldByKeys === 1
+        ? `1 is held by an unused install command`
+        : `${heldByKeys} are held by unused install commands`
+    return `No ${label} license is free for this server — ${held} (delete it on Pending keys, or it expires ${LICENSE_KEY_UNUSED_TTL_DAYS} days after it was made), or restore one that is ending or buy one.`
+  }
   return `No ${label} license is free for this server — restore one that is ending or buy one, then continue.`
 }
 
@@ -194,6 +209,10 @@ export function serializeLicenseListEntry(params: {
   id: string
   name: string | null
   createdAt: string
+  /** The tier chosen in Add Server that this unused key holds; null when none. */
+  tier?: { id: string; label: string } | null
+  /** When an unused key stops working; null never expires. */
+  expiresAt?: string | null
   revocable: boolean
   bound: LicenseListBoundServer | undefined
   status: LicenseListStatus | undefined
@@ -203,6 +222,13 @@ export function serializeLicenseListEntry(params: {
     id: params.id,
     name: params.name,
     createdAt: params.createdAt,
+    // Once a server is bound the key never expires and its tier is the server's.
+    tier: params.bound ? null : (params.tier ?? null),
+    expiresAt: params.bound ? null : (params.expiresAt ?? null),
+    expired: isUnusedKeyExpired({
+      serverId: params.bound?.id ?? null,
+      expiresAt: params.expiresAt ?? null,
+    }),
     revocable: params.revocable,
     // Only for an unbound key: once its server binds, `boundServer` says it all.
     provisioning:

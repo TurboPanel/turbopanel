@@ -387,6 +387,8 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'Soft-delete timestamp set by a revoke or by an ended subscription revoking every license; non-null means inactive, and the row keeps `server_id` for audit.',
       tier_id:
         'Tier a manager chose in Add Server (hosted); holds a seat there until a server enrolls with this key and takes it. NULL when no tier was chosen.',
+      expires_at:
+        'Set at mint to 7 days later: past it an unused key cannot enroll and holds no license; ignored once bound. NULL (older keys, the colocated key) never expires.',
     },
   },
   payer: {
