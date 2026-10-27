@@ -57,6 +57,8 @@ import {
   SERVER_ONLINE_ERROR,
   SERVER_SYSTEM_CONTAINERS_ACTIVE_CODE,
   SERVER_SYSTEM_CONTAINERS_ACTIVE_ERROR,
+  SERVER_SYSTEM_CONTAINERS_RUNNING_CODE,
+  SERVER_SYSTEM_CONTAINERS_RUNNING_ERROR,
 } from './delete-guards.ts'
 import { WORKSPACE_KIND_USER } from '../../db/workspace-kind.ts'
 import { COLOCATED_SERVER_DISPLAY_NAME } from '../authn/install-state.ts'
@@ -547,6 +549,22 @@ async function sessionCookie(
   const { token } = await createSession(db, userId, {})
   const signed = await buildSignedCookie(token, secrets)
   return `${HTTP_SESSION_COOKIE_NAME}=${signed}`
+}
+
+/** `DELETE /servers/:id` as the given user, with no body. */
+async function deleteServerAsUser(
+  db: ReturnType<typeof createDenoDb>,
+  app: Hono<AppEnv>,
+  secrets: Awaited<ReturnType<typeof deriveSecretsConfig>>,
+  userId: string,
+  organizationId: string,
+  serverId: string
+): Promise<Response> {
+  const cookie = await sessionCookie(db, secrets, userId)
+  return await app.request(`/servers/${serverId}`, {
+    method: 'DELETE',
+    headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
+  })
 }
 
 /** Org-context access without grants — the `teammate` replacement for retired `membership`. */
@@ -2682,10 +2700,11 @@ test('DELETE /servers/:id returns 409 when stale system containers block deletio
   )
 })
 
-test('DELETE /servers/:id returns 409 for a pending ingress container on a connected server', async () => {
+test('DELETE /servers/:id removes a connected server whose ingress container the host never created', async () => {
   await withServerDeleteFixtures(
     async ({ db, app, secrets, userId, organizationId, serverId, registry }) => {
-      // A start may be in flight while the daemon is connected, so it still blocks.
+      // Enrolling leaves the ingress row pending with no container until the
+      // first site needs it: nothing on the host to stop, so it is no blocker.
       const hierarchy = await systemHierarchy.ensureSystemHierarchy(db, {
         organizationId,
         serverId,
@@ -2697,21 +2716,47 @@ test('DELETE /servers/:id returns 409 for a pending ingress container on a conne
       await db.update(server).set({ isConnected: true }).where(eq(server.id, serverId))
 
       try {
-        const cookie = await sessionCookie(db, secrets, userId)
-        const res = await app.request(`/servers/${serverId}`, {
-          method: 'DELETE',
-          headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
-        })
+        const res = await deleteServerAsUser(db, app, secrets, userId, organizationId, serverId)
+        assertEquals(res.status, 200)
+        assertEquals(registry.purgedIds, [serverId])
+        const remaining = await db
+          .select({ id: container.id })
+          .from(container)
+          .where(eq(container.id, hierarchy.containerRowId))
+        assertEquals(remaining.length, 0)
+      } finally {
+        await cleanupOrgSystemSubtree(db, organizationId)
+      }
+    }
+  )
+})
 
+test('DELETE /servers/:id names the next step when a connected server still runs its ingress container', async () => {
+  await withServerDeleteFixtures(
+    async ({ db, app, secrets, userId, organizationId, serverId, registry }) => {
+      const hierarchy = await systemHierarchy.ensureSystemHierarchy(db, {
+        organizationId,
+        serverId,
+      })
+      await db
+        .update(container)
+        .set({ status: 'running', containerId: 'running-on-host' })
+        .where(eq(container.id, hierarchy.containerRowId))
+      await db.update(server).set({ isConnected: true }).where(eq(server.id, serverId))
+
+      try {
+        const res = await deleteServerAsUser(db, app, secrets, userId, organizationId, serverId)
         assertEquals(res.status, 409)
-        const body = await readJson<{
-          code: string
-          blockers?: unknown[]
-        }>(res)
-        assertEquals(body.code, hierarchyDelete.HIERARCHY_DELETE_HAS_CHILDREN_CODE)
-        assertExists(body.blockers)
-        assertEquals(body.blockers!.length > 0, true)
+        const body = await readJson<{ error: string; code: string; blockers?: unknown[] }>(res)
+        assertEquals(body.code, SERVER_SYSTEM_CONTAINERS_RUNNING_CODE)
+        assertEquals(body.error, SERVER_SYSTEM_CONTAINERS_RUNNING_ERROR)
+        assertEquals(body.blockers?.length, 1)
         assertEquals(registry.purgedIds.length, 0)
+        const remaining = await db
+          .select({ id: server.id })
+          .from(server)
+          .where(eq(server.id, serverId))
+        assertEquals(remaining.length, 1)
       } finally {
         await cleanupOrgSystemSubtree(db, organizationId)
       }

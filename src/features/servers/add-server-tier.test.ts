@@ -8,23 +8,15 @@
  */
 
 import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
+import { seedTierSeats } from '../../test-fixtures/tier-seats.test.support.ts'
 import { assertEquals, assertExists } from '@std/assert'
 import { eq } from 'drizzle-orm'
 import { getDatabaseUrl } from '../../db/url.ts'
 import { createDenoDb } from '../../db/connection.ts'
-import {
-  container,
-  license,
-  organization,
-  payer,
-  server,
-  subscription,
-  subscriptionItem,
-  tier,
-} from '../../db/schema.ts'
+import { container, license, organization, server, subscriptionItem } from '../../db/schema.ts'
 import { createLicense, revokeLicense } from '../licenses/license.ts'
 import { assignServerTier } from '../tiers/assignment-records.ts'
-import { countReservedLicenseTiers, getTierByLabel, insertTier } from '../tiers/tier-records.ts'
+import { countReservedLicenseTiers } from '../tiers/tier-records.ts'
 import { loadTierPlacementsForServers } from '../tiers/tier-enforcement.ts'
 import {
   deleteSystemEnvironmentSubtree,
@@ -81,45 +73,13 @@ async function withOrg(s1Seats: number, fn: (org: Org) => Promise<void>): Promis
     return
   }
   const db = createDenoDb()
-  const now = new Date().toISOString()
-  const createdTiers: string[] = []
-  let s1 = (await getTierByLabel(db, 'S1'))?.id
-  if (!s1) {
-    const row = await insertTier(db, {
-      label: 'S1',
-      providerProductId: 'prod_add_server_s1',
-      priceCents: null,
-      currency: null,
-    })
-    createdTiers.push(row.id)
-    s1 = row.id
-  }
   const [org] = await db
     .insert(organization)
     .values({ name: 'Add Server Tier Org' })
     .returning({ id: organization.id })
   const organizationId = org!.id
-  const [payerRow] = await db
-    .insert(payer)
-    .values({ organizationId, provider: 'stripe', providerCustomerId: `cus_${now}` })
-    .returning({ id: payer.id })
-  const [subRow] = await db
-    .insert(subscription)
-    .values({
-      payerId: payerRow!.id,
-      providerSubscriptionId: `sub_add_server_${crypto.randomUUID()}`,
-      status: 'active',
-      providerStatus: 'active',
-    })
-    .returning({ id: subscription.id })
-  await db.insert(subscriptionItem).values({
-    subscriptionId: subRow!.id,
-    tierId: s1,
-    providerItemId: `si_${crypto.randomUUID()}`,
-    providerPriceId: `price_${crypto.randomUUID()}`,
-    quantity: s1Seats,
-  })
-  const tierId = s1
+  const seats = await seedTierSeats(db, organizationId, s1Seats)
+  const tierId = seats.tierId
   try {
     await fn({
       db,
@@ -151,11 +111,8 @@ async function withOrg(s1Seats: number, fn: (org: Org) => Promise<void>): Promis
       servers.map((row) => row.id)
     )
     await db.delete(license).where(eq(license.organizationId, organizationId))
-    await db.delete(subscriptionItem).where(eq(subscriptionItem.subscriptionId, subRow!.id))
-    await db.delete(subscription).where(eq(subscription.id, subRow!.id))
-    await db.delete(payer).where(eq(payer.id, payerRow!.id))
+    await seats.cleanup()
     await db.delete(organization).where(eq(organization.id, organizationId))
-    for (const id of createdTiers) await db.delete(tier).where(eq(tier.id, id))
   }
 }
 
