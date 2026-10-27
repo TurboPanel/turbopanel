@@ -40,20 +40,25 @@ const test = Deno.test.bind(Deno)
 
 type Db = ReturnType<typeof createDenoDb>
 
+type PurgeRecordingRegistry = DaemonCellRegistry & {
+  purgedIds: string[]
+  /** Runs when a cell is purged, to look at the database at that moment. */
+  onPurge?: (serverId: string) => Promise<void>
+}
+
 /** A daemon-cell registry that only records which servers were purged. */
-function createPurgeRecordingRegistry(): DaemonCellRegistry & { purgedIds: string[] } {
-  const purgedIds: string[] = []
-  const purge = (serverId: string): Promise<void> => {
-    purgedIds.push(serverId)
-    return Promise.resolve()
-  }
-  return {
-    purgedIds,
-    getCell: (serverId: string) => ({ purge: () => purge(serverId) }) as never,
+function createPurgeRecordingRegistry(): PurgeRecordingRegistry {
+  const registry: PurgeRecordingRegistry = {
+    purgedIds: [],
+    getCell: (serverId: string) => ({ purge: () => registry.purge(serverId) }) as never,
     listOnlineServerIds: () => Promise.resolve([]),
     getSnapshots: () => Promise.resolve(new Map()),
-    purge,
+    purge: async (serverId: string) => {
+      registry.purgedIds.push(serverId)
+      await registry.onPurge?.(serverId)
+    },
   }
+  return registry
 }
 
 function randomMachineKey(): string {
@@ -199,6 +204,39 @@ test('deleting a server fires server.deleted to the managers, frees its license 
       .from(server)
       .where(eq(server.id, ctx.serverId))
     assertEquals(remaining.length, 0)
+  })
+})
+
+test('deleting a server retires its key in the same step: a daemon still running there cannot enroll again', async () => {
+  await withFleetFixtures(async (ctx) => {
+    const { licenseId, licenseToken } = await createLicense(ctx.db, {
+      organizationId: ctx.organizationId,
+    })
+    await ctx.db
+      .update(license)
+      .set({ serverId: ctx.serverId, updatedAt: new Date().toISOString() })
+      .where(eq(license.id, licenseId))
+
+    // The first follow-up after the delete transaction is the cell purge: by
+    // then the key must already be revoked, so a re-enroll from the host fails.
+    const seen: { revoked: boolean; reEnrolled: string | null }[] = []
+    ctx.registry.onPurge = async () => {
+      const [row] = await ctx.db
+        .select({ revokedAt: license.revokedAt })
+        .from(license)
+        .where(eq(license.id, licenseId))
+      const reEnrolled = await resolveServerId(ctx.db, {
+        hostname: `still-running-${crypto.randomUUID()}`,
+        machineKey: randomMachineKey(),
+        licenseId,
+        licenseToken,
+      })
+      seen.push({ revoked: Boolean(row?.revokedAt), reEnrolled })
+    }
+
+    const res = await request(ctx, 'DELETE', `/servers/${ctx.serverId}`)
+    assertEquals(res.status, 200)
+    assertEquals(seen, [{ revoked: true, reEnrolled: null }])
   })
 })
 

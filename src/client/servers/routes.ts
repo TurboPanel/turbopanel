@@ -47,7 +47,7 @@ import {
   isDaemonKeyActive,
   revokeDaemonKey,
 } from '../../features/servers/server-identity-db.ts'
-import { datacenter, license, organization, principal, server } from '../../db/schema.ts'
+import { datacenter, organization, principal, server } from '../../db/schema.ts'
 import { INSTANCE_VERSION } from '../../app/version.ts'
 import { resolveBuildLabel, resolveInstanceRevision } from '../../app/build-info.ts'
 import { isExplicitDevelopmentMode } from '../../lib/dev-mode.ts'
@@ -67,7 +67,7 @@ import {
 import { resolveUpdateManifest } from '../../features/update/manifest.ts'
 import { resolveInstanceUpdateChannel, type UpdateChannel } from '../../contracts/update-channel.ts'
 import { getServerUpdatePreparer } from '../../features/update/prepare.ts'
-import { revokeLicense } from '../../features/licenses/license.ts'
+import { revokeLicensesBoundToServer } from '../../features/licenses/license.ts'
 import { syncSelfHostedGrant } from '../../features/tiers/self-hosted-grant-records.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
 import {
@@ -497,28 +497,6 @@ async function purgeServerDaemonCell(
   }
 }
 
-/**
- * Soft-revokes the registration key that enrolled this server.
- * Licenses are one-shot: deleting the server retires the key on every runtime
- * so it cannot enroll a replacement host.
- */
-async function revokeBoundLicenseOnServerDelete(
-  db: Db,
-  serverId: string,
-  licenseId: string | null,
-  organizationId: string
-): Promise<void> {
-  if (!licenseId) return
-
-  const invalidated = await revokeLicense(db, licenseId, organizationId)
-  if (!invalidated) {
-    compatLogWarn(
-      'servers',
-      `server ${serverId} deleted but license ${licenseId} was not invalidated (missing, wrong org, or already revoked)`
-    )
-  }
-}
-
 async function loadDatacenterOptionsMap(
   db: Db,
   datacenterIds: Array<string | null | undefined>
@@ -782,6 +760,10 @@ async function deleteServerWithSystemSubtree(
             and(inArray(principal.id, stillUnused), eq(principal.organizationId, organizationId))
           )
       }
+      // Licenses are one-shot: the key that enrolled this server is retired
+      // in the same step, so a daemon still running there cannot enroll
+      // again and the key never holds a license unbound in between.
+      await revokeLicensesBoundToServer(tx, serverId, organizationId)
       await tx.delete(server).where(eq(server.id, serverId))
     })
     return {
@@ -1755,12 +1737,6 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
       return c.json({ error: 'Daemon cell registry unavailable' }, 503)
     }
 
-    const [boundLicense] = await db
-      .select({ id: license.id })
-      .from(license)
-      .where(eq(license.serverId, id))
-      .limit(1)
-
     const serverConnected = await isServerConnectedStoredOrLive(db, registry, id, row.isConnected)
     const idleOrBlocked = await assertSystemEnvironmentIdleOrBlocked(c, db, id, {
       forgetResources,
@@ -1799,7 +1775,6 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     await clearServerDaemonState(db, id)
 
     const purgeError = await purgeServerDaemonCell(registry, id)
-    await revokeBoundLicenseOnServerDelete(db, id, boundLicense?.id ?? null, organizationId)
     // The freed seat stays free: no other server is moved onto it (only a
     // manager assigns licenses). The self-hosted grant is squared up, and
     // *shrinking* it is allowed on either runtime: the revoked license just

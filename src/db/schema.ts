@@ -896,6 +896,14 @@ export const license = pgTable(
       withTimezone: true,
       mode: 'string',
     }),
+    /** Tier a manager chose in Add Server; the server that enrolls with this key takes it. */
+    tierId: uuid('tier_id'),
+    /** An unused key stops working (and stops holding a license) at this time; null never expires. */
+    expiresAt: timestamp('expires_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }),
   },
   (table) => [
     index('idx_license_organization_id').using(
@@ -917,6 +925,12 @@ export const license = pgTable(
       columns: [table.serverId],
       foreignColumns: [server.id],
       name: 'license_server_id_server_id_fk',
+    }).onDelete('set null'),
+    index('idx_license_tier_id').on(table.tierId),
+    foreignKey({
+      columns: [table.tierId],
+      foreignColumns: [tier.id],
+      name: 'license_tier_id_tier_id_fk',
     }).onDelete('set null'),
   ]
 )
