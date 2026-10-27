@@ -91,11 +91,17 @@ export const UPGRADE_STEP_ERROR_CODES = [
   'dispatch_failed',
   'managed_upgrade_required',
   'downgrade_refused',
+  'updates_paused',
+  'retry_later',
 ] as const
 
 export type UpgradeStepErrorCode = (typeof UPGRADE_STEP_ERROR_CODES)[number]
 
 /** `upgrade.error` codes a run can end with (`<phase>_failed`). */
-export const UPGRADE_RUN_ERROR_CODES = ['colocated_daemon_failed', 'control_plane_failed'] as const
+export const UPGRADE_RUN_ERROR_CODES = [
+  'colocated_daemon_failed',
+  'control_plane_failed',
+  'updates_paused',
+] as const
 
 export type UpgradeRunErrorCode = (typeof UPGRADE_RUN_ERROR_CODES)[number]

@@ -1,64 +1,82 @@
 /**
- * Pure scheduling decisions for automatic runs. Host-free: the clock is passed.
+ * Pure scheduling decisions for automatic runs. Host-free: the clock and the
+ * random draw are passed in.
  *
- * Automatic runs start only when `autoUpdate` is on, on every runtime and
- * channel. Only inside the maintenance window (if one is set), only when the
- * target differs from what's installed, and only when no run is active — the
- * orchestrator never replaces a run in progress; the next run targets the
- * newest build.
+ * Updates are always automatic. Each install checks for a new build once an
+ * hour, at its own minute of the hour (`UpgradeCheckSchedule.minute`, drawn at
+ * random once and stored), so thousands of installs never ask the release
+ * servers at the same minute. A check starts a run only when the target differs
+ * from what is installed, no run is active, and an administrator has not paused
+ * updates. The orchestrator never replaces a run in progress; the next run
+ * targets the newest build.
  */
-import type { UpgradeSettings } from '../settings/upgrade-settings.ts'
-import type { UpgradeRuntime } from './planner.ts'
 
-const MINUTES_PER_DAY = 24 * 60
+const MINUTE_MS = 60_000
+const HOUR_MS = 60 * MINUTE_MS
+
+/** The stored check slot (`UPGRADE_CHECK` setting row). */
+export type UpgradeCheckSchedule = {
+  /** Minute of the hour (UTC, 0–59) this install checks at. */
+  minute: number
+  /** When the row was created; the hour clock starts here before the first check. */
+  createdAt: string
+  /** When the last check ran, or null before the first one. */
+  lastCheckAt: string | null
+}
+
+/** A stable minute of the hour from a draw in [0, 1). Out-of-range draws clamp. */
+export function pickUpgradeCheckMinute(draw: number): number {
+  if (!Number.isFinite(draw) || draw <= 0) return 0
+  return Math.min(59, Math.floor(draw * 60))
+}
+
+function slotAfter(anchorMs: number, minute: number): number {
+  const hourStart = Math.floor(anchorMs / HOUR_MS) * HOUR_MS
+  const slot = hourStart + minute * MINUTE_MS
+  return slot > anchorMs ? slot : slot + HOUR_MS
+}
+
+function parsedMs(value: string | null | undefined): number | null {
+  const ms = Date.parse(value ?? '')
+  return Number.isFinite(ms) ? ms : null
+}
 
 /**
- * True when `now` (UTC) is inside the maintenance window. A disabled window
- * imposes no restriction (always true). A window that runs past midnight stays
- * open into the following day regardless of that day's weekday membership — the
- * weekday gates when a window *opens*, not every minute it is open.
+ * The next time this install checks: the first slot (its minute of the hour)
+ * after the last check, or after the row was created before any check. An
+ * anchor in the future (clock moved back) counts as now, so the schedule never
+ * stalls for longer than an hour.
  */
-export function isWithinMaintenanceWindow(
-  window: UpgradeSettings['maintenanceWindow'],
-  now: Date
-): boolean {
-  if (!window.enabled) return true
+export function nextUpgradeCheckAt(schedule: UpgradeCheckSchedule, now: Date): Date {
+  const nowMs = now.getTime()
+  const anchor = parsedMs(schedule.lastCheckAt) ?? parsedMs(schedule.createdAt) ?? nowMs
+  return new Date(slotAfter(Math.min(anchor, nowMs), schedule.minute))
+}
 
-  const utcDay = now.getUTCDay()
-  const dayMinute = now.getUTCHours() * 60 + now.getUTCMinutes()
-  const weekdayAllowed = (day: number): boolean =>
-    window.weekdays.length === 0 || window.weekdays.includes(day)
-
-  // A window may have opened today (offset 0) or yesterday (offset 1) and still
-  // be running now; check both candidate open days.
-  for (const offset of [0, 1]) {
-    const openDay = (utcDay - offset + 7) % 7
-    if (!weekdayAllowed(openDay)) continue
-    const startAbsolute = window.startMinute - offset * MINUTES_PER_DAY
-    const elapsed = dayMinute - startAbsolute
-    if (elapsed >= 0 && elapsed < window.durationMinutes) return true
-  }
-  return false
+/**
+ * True when the check is due. A slot that a tick overshot (the Workers upgrade
+ * tick runs every few minutes, the self-hosted loop every minute) is caught up
+ * on the first tick after it; the next slot is then an hour on.
+ */
+export function isUpgradeCheckDue(schedule: UpgradeCheckSchedule, now: Date): boolean {
+  return now.getTime() >= nextUpgradeCheckAt(schedule, now).getTime()
 }
 
 export type AutoStartInput = {
-  runtime: UpgradeRuntime
-  settings: UpgradeSettings
-  now: Date
   /** The channel target differs from what is installed somewhere in the fleet. */
   targetDiffers: boolean
   /** A `pending` / `running` run already exists. */
   runActive: boolean
+  /** An administrator paused all updates (Admin > Updates). */
+  paused: boolean
 }
 
 /**
- * Whether the tick should start an automatic run this pass. `autoUpdate` off
- * means never, on Workers as on self-hosted. Never starts outside the window,
- * against no drift, or while a run is active.
+ * Whether a check should start an automatic run. Never while paused, against
+ * no drift, or while a run is active.
  */
 export function shouldAutoStartRun(input: AutoStartInput): boolean {
+  if (input.paused) return false
   if (input.runActive) return false
-  if (!input.targetDiffers) return false
-  if (!input.settings.autoUpdate) return false
-  return isWithinMaintenanceWindow(input.settings.maintenanceWindow, input.now)
+  return input.targetDiffers
 }

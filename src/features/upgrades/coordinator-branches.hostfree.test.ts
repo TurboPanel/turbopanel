@@ -720,6 +720,7 @@ test('tick: a live probe overrides the stored connection state and commit', asyn
 test('tick: the store is read and written in a fixed order', async () => {
   const { calls, step } = await tickOne({ status: 'pending' })
   assertEquals(calls, [
+    'pause',
     'activeRun',
     'readTickCursor',
     'tickWindow',
@@ -1118,14 +1119,6 @@ async function threeHostRun(options: Options = {}) {
   return built
 }
 
-/** The message of whatever `work` rejects with, or null when it resolves. */
-function rejection(work: Promise<unknown>): Promise<string | null> {
-  return work.then(
-    () => null,
-    (error: unknown) => (error instanceof Error ? error.message : String(error))
-  )
-}
-
 test('tick: several pending steps are claimed and dispatched one after another, in step order', async () => {
   const { coordinator, calls } = await threeHostRun({ traceEnqueue: true })
   await coordinator.tick({ resolveManifests: false })
@@ -1152,41 +1145,6 @@ test('tick: a failing enqueue is recorded on that step and the later steps are s
   )
   assertEquals(steps[1]?.errorMessage?.includes('queue down'), true)
   assertEquals(steps[1]?.attempts, 1)
-})
-
-test('cancel: skips open steps in order, leaves settled ones alone, then records the run', async () => {
-  const { coordinator, store, calls } = build({ colocatedServerId: null, facts: [] })
-  await store.insertRun(runRow(), [
-    stepRow('step-0', { status: 'pending' }),
-    stepRow('step-1', { status: 'done' }),
-    stepRow('step-2', { status: 'dispatched' }),
-    stepRow('step-3', { status: 'failed' }),
-  ])
-  calls.length = 0
-  assertEquals(await coordinator.cancel('upgrade-run-1'), { ok: true })
-  assertEquals(calls, ['runById', 'stepsFor', 'saveStep', 'saveStep', 'saveRun'])
-  const steps = await store.stepsFor('upgrade-run-1')
-  assertEquals(
-    steps.map((step) => step.status),
-    ['skipped', 'done', 'skipped', 'failed']
-  )
-  const run = await store.runById('upgrade-run-1')
-  assertEquals(run?.status, 'cancelled')
-  assertEquals(run?.counts?.skipped, 2)
-})
-
-test('cancel: a failing save stops at that step and the run is not recorded as cancelled', async () => {
-  const { coordinator, store } = await threeHostRun()
-  const saved: string[] = []
-  const innerSave = store.saveStep.bind(store)
-  store.saveStep = (row, expectedStatus) => {
-    saved.push(row.id)
-    if (row.id === 'step-1') return Promise.reject(new Error('write failed'))
-    return innerSave(row, expectedStatus)
-  }
-  assertEquals(await rejection(coordinator.cancel('upgrade-run-1')), 'write failed')
-  assertEquals(saved, ['step-0', 'step-1'])
-  assertEquals((await store.runById('upgrade-run-1'))?.status, 'running')
 })
 
 test('memory pageFleet: a negative, NaN or missing offset starts at the first row', async () => {

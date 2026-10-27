@@ -19,6 +19,7 @@ import {
   parseSecretsEnv,
 } from '../lib/secrets/secrets.ts'
 import {
+  audit,
   instanceHostname,
   notificationChannel,
   server,
@@ -28,7 +29,7 @@ import {
 } from '../db/schema.ts'
 import { OPERATOR_WEBHOOK_LABEL } from '../features/notifications/records.ts'
 import { encryptSecret } from '../lib/secrets/data-encryption.ts'
-import { eq, isNotNull } from 'drizzle-orm'
+import { and, eq, inArray, isNotNull } from 'drizzle-orm'
 import { ADMIN_API_PREFIX } from '../app/surfaces.ts'
 import {
   endReencryptSweep,
@@ -563,34 +564,135 @@ test('POST /api/admin/v1/secrets/reencrypt returns 409 when a sweep is already r
   })
 })
 
-test('POST /api/admin/v1/instance/updates/runs answers 409 upgrade_run_active while an update is running', async () => {
-  // canary update #2 (2026-10-01): a second Update press during a run got 409
-  // with only a sentence as `error`; clients branch on the code.
-  await withRoleUser('superadmin', async ({ app, cookie }) => {
+test('Pause all updates holds updates until Resume, shows who paused, and is in the activity log', async () => {
+  await withRoleUser('admin', async ({ app, cookie }) => {
     const db = createDenoDb()
+    const headers = { Cookie: cookie, 'content-type': 'application/json' }
+    const pauseKeys = ['UPGRADE_PAUSE']
+    await db.delete(setting).where(inArray(setting.key, pauseKeys))
     const [active] = await db
       .insert(upgrade)
-      .values({ source: 'manual', channel: 'canary', status: 'running' })
+      .values({ source: 'auto', channel: 'canary', status: 'running' })
       .returning({ id: upgrade.id })
     try {
-      const res = await app.request(`${ADMIN_API_PREFIX}/instance/updates/runs`, {
+      const paused = await app.request(`${ADMIN_API_PREFIX}/instance/updates/pause`, {
         method: 'POST',
-        headers: { Cookie: cookie, 'content-type': 'application/json' },
-        body: JSON.stringify({}),
+        headers,
+        body: '{}',
       })
-      assertEquals(res.status, 409)
+      assertEquals(paused.status, 200)
+      const first = await jsonBody<{ updatesPaused: boolean; pausedAt: string }>(paused)
+      assertEquals(first.updatesPaused, true)
+
+      // A second pause keeps the first one's time.
+      const again = await app.request(`${ADMIN_API_PREFIX}/instance/updates/pause`, {
+        method: 'POST',
+        headers,
+        body: '{}',
+      })
+      assertEquals((await jsonBody<{ pausedAt: string }>(again)).pausedAt, first.pausedAt)
+
+      const status = await app.request(`${ADMIN_API_PREFIX}/instance/updates`, { headers })
       const body = await jsonBody<{
-        ok: boolean
-        error: string
-        activeRunId?: string
-        blockers?: string[]
-      }>(res)
-      assertEquals(body.ok, false)
-      assertEquals(body.error, 'upgrade_run_active')
+        automatic: boolean
+        updatesPaused: boolean
+        pausedAt: string
+        pausedBy: { email: string | null } | null
+        activeRunId: string | null
+      }>(status)
+      assertEquals(body.automatic, true)
+      assertEquals(body.updatesPaused, true)
+      assertEquals(body.pausedAt, first.pausedAt)
+      assertEquals(body.pausedBy?.email?.startsWith('admin-cell-purge-admin-'), true)
       assertEquals(body.activeRunId, active!.id)
-      assertEquals(body.blockers, ['Another update is already in progress.'])
+
+      const resumed = await app.request(`${ADMIN_API_PREFIX}/instance/updates/resume`, {
+        method: 'POST',
+        headers,
+        body: '{}',
+      })
+      assertEquals(await jsonBody(resumed), {
+        ok: true,
+        updatesPaused: false,
+        pausedAt: null,
+        pausedBy: null,
+      })
+      const after = await app.request(`${ADMIN_API_PREFIX}/instance/updates`, { headers })
+      assertEquals((await jsonBody<{ updatesPaused: boolean }>(after)).updatesPaused, false)
+
+      const logged = await db
+        .select({ action: audit.action })
+        .from(audit)
+        .where(
+          and(
+            inArray(audit.action, ['upgrade.pause', 'upgrade.resume']),
+            eq(audit.targetType, 'instance_updates')
+          )
+        )
+      // One pause (the repeat changed nothing) and one resume.
+      assertEquals(logged.filter((row) => row.action === 'upgrade.pause').length >= 1, true)
+      assertEquals(logged.filter((row) => row.action === 'upgrade.resume').length >= 1, true)
     } finally {
+      await db.delete(setting).where(inArray(setting.key, pauseKeys))
       await db.delete(upgrade).where(eq(upgrade.id, active!.id))
+    }
+  })
+})
+
+test('the batch size setting keeps a saved value and drops the retired keys', async () => {
+  await withRoleUser('admin', async ({ app, cookie }) => {
+    const db = createDenoDb()
+    const headers = { Cookie: cookie, 'content-type': 'application/json' }
+    const prior = await db.select().from(setting).where(eq(setting.key, 'UPGRADE_SETTINGS'))
+    try {
+      // A row exactly as v0.1.20 saved it: auto-update off and a window.
+      await db
+        .insert(setting)
+        .values({
+          key: 'UPGRADE_SETTINGS',
+          value: {
+            autoUpdate: false,
+            batch: { mode: 'count', value: 3 },
+            maintenanceWindow: {
+              enabled: true,
+              startMinute: 60,
+              durationMinutes: 30,
+              weekdays: [],
+            },
+          },
+        })
+        .onConflictDoUpdate({
+          target: setting.key,
+          set: {
+            value: {
+              autoUpdate: false,
+              batch: { mode: 'count', value: 3 },
+              maintenanceWindow: {
+                enabled: true,
+                startMinute: 60,
+                durationMinutes: 30,
+                weekdays: [],
+              },
+            },
+          },
+        })
+      const read = await app.request(`${ADMIN_API_PREFIX}/instance/updates/settings`, { headers })
+      assertEquals(await jsonBody(read), {
+        ok: true,
+        settings: { batch: { mode: 'count', value: 3 } },
+      })
+      const saved = await app.request(`${ADMIN_API_PREFIX}/instance/updates/settings`, {
+        method: 'PUT',
+        headers,
+        body: JSON.stringify({ batch: { mode: 'percent', value: 25 } }),
+      })
+      assertEquals(await jsonBody(saved), {
+        ok: true,
+        settings: { batch: { mode: 'percent', value: 25 } },
+      })
+    } finally {
+      await db.delete(setting).where(eq(setting.key, 'UPGRADE_SETTINGS'))
+      if (prior[0]) await db.insert(setting).values({ key: prior[0].key, value: prior[0].value })
     }
   })
 })

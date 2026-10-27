@@ -4,7 +4,6 @@
  */
 import type { UpdateProgressStage } from '../../contracts/cell-protocol.ts'
 import { installScriptHostForChannel } from '../install/daemon-install-command.ts'
-import type { UpgradeRuntime } from './planner.ts'
 import {
   readRestartNote,
   readRestartPending,
@@ -184,61 +183,9 @@ export function uiRefreshFromDetail(detail: unknown): boolean {
   return detailRecord(detail).uiRefresh === true
 }
 
-export type ClientUpdateBlockError =
-  'updates_managed' | 'control_plane_upgrade_required' | 'upgrade_gate_unavailable'
-
 /**
- * Why remote updates are refused for a server, as the machine code clients
- * branch on (`updateBlockedCode`). `updateBlockedReason` carries the sentence.
+ * Why a server is never updated remotely, as the machine code clients branch
+ * on (`updateBlockedCode`; `updateBlockedReason` carries the sentence). Only
+ * the control plane's own host is: it updates in the platform phase.
  */
-export type ServerUpdateBlockedCode = ClientUpdateBlockError | 'colocated_with_instance'
-
-export type ClientUpdateBlock =
-  | { blocked: false; useCoordinator: boolean }
-  | {
-      blocked: true
-      error: ClientUpdateBlockError
-    }
-
-/**
- * Hard gate for `POST /servers/:id/update` and `POST /servers/updates`.
- * Workers always refuses. The legacy per-server updater runs only in explicit
- * development mode. Everywhere else a missing target or a failed gate read
- * fails closed, and a shut fleet gate refuses until the control plane is
- * on target.
- */
-export function clientUpdateBlock(input: {
-  runtime: UpgradeRuntime
-  development: boolean
-  targetCommitKnown: boolean
-  gateOpen: boolean
-}): ClientUpdateBlock {
-  if (input.runtime === 'workers') {
-    return { blocked: true, error: 'updates_managed' }
-  }
-  if (input.development) {
-    return { blocked: false, useCoordinator: false }
-  }
-  if (!input.targetCommitKnown) {
-    return { blocked: true, error: 'upgrade_gate_unavailable' }
-  }
-  if (!input.gateOpen) {
-    return { blocked: true, error: 'control_plane_upgrade_required' }
-  }
-  return { blocked: false, useCoordinator: true }
-}
-
-export function clientUpdateBlockStatus(error: ClientUpdateBlockError): 409 | 503 {
-  if (error === 'upgrade_gate_unavailable') return 503
-  return 409
-}
-
-export function clientUpdateBlockReason(error: ClientUpdateBlockError): string {
-  if (error === 'updates_managed') {
-    return 'Daemon updates on TurboPanel High Availability run from Admin → Updates.'
-  }
-  if (error === 'upgrade_gate_unavailable') {
-    return 'TurboPanel could not confirm that this control plane is ready for server updates.'
-  }
-  return 'Update this control plane from Admin → Updates before updating other servers.'
-}
+export type ServerUpdateBlockedCode = 'colocated_with_instance'

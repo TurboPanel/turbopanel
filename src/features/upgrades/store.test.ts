@@ -22,6 +22,16 @@ import {
   type UpgradeStepRow,
 } from './store.ts'
 import type { UpgradeTarget } from './target.ts'
+import {
+  ensureUpgradeCheckSchedule,
+  getUpgradePause,
+  markUpgradeChecked,
+  pauseUpgrades,
+  readUpgradeCheckSchedule,
+  resumeUpgrades,
+  UPGRADE_CHECK_KEY,
+  UPGRADE_PAUSE_KEY,
+} from '../settings/upgrade-control.ts'
 import type { UpgradePhase, UpgradeStepStatus, UpgradeStepUnit } from './vocabulary.ts'
 
 /**
@@ -788,3 +798,114 @@ test('Postgres upgrades: run steps name their server, from the servers table or 
     assertEquals((await stepOf())?.hostname, 'w.lan')
   })
 })
+
+test('Postgres upgrades: a pause settles only never-sent steps, then the run ends cancelled', async () => {
+  await withFixture('pause-settle', async (fx) => {
+    const sent = await addServer(fx, { connected: true, commit: 'old-daemon' })
+    const waiting = await addServer(fx, { connected: true, commit: 'old-daemon' })
+    const later = await addServer(fx, { connected: true, commit: 'old-daemon' })
+    let sentStepId = ''
+    const runId = await seedRun(fx, 'fleet', (id) => {
+      const first = { ...stepRow(id, { serverId: sent, unit: 'daemon', phase: 'fleet' }) }
+      first.status = 'dispatched'
+      first.attempts = 1
+      first.requestId = 'req-1'
+      sentStepId = first.id
+      return [
+        first,
+        stepRow(id, { serverId: waiting, unit: 'daemon', phase: 'fleet', status: 'waiting' }),
+        { ...stepRow(id, { serverId: later, unit: 'daemon', phase: 'fleet' }), batchIndex: 1 },
+      ]
+    })
+    const store = createDrizzleUpgradeStore(fx.db, null)
+    await setUpgradePauseForTest(fx, true)
+    try {
+      const { coordinator, enqueued, clock } = coordinatorFor(fx, {
+        runtime: 'workers',
+        colocatedServerId: null,
+      })
+      await coordinator.tick({ resolveManifests: false })
+      const steps = await store.stepsFor(runId)
+      const byId = new Map(steps.map((step) => [step.serverId, step]))
+      assertEquals(byId.get(sent)?.status, 'dispatched')
+      assertEquals(byId.get(waiting)?.status, 'skipped')
+      assertEquals(byId.get(waiting)?.errorCode, 'updates_paused')
+      assertEquals(byId.get(later)?.errorCode, 'updates_paused')
+      assertEquals(enqueued.length, 0)
+      assertEquals((await store.activeRun())?.error, 'updates_paused')
+
+      await fx.db.update(server).set({ daemonCommit: 'new-daemon' }).where(eq(server.id, sent))
+      await persistDaemonReachedTarget(fx.db, sent, 'new-daemon', minutesAfter(T0, 2))
+      clock.now = minutesAfter(T0, 3)
+      await coordinator.tick({ resolveManifests: false })
+      const ended = await store.runById(runId)
+      assertEquals(ended?.status, 'cancelled')
+      assertEquals(ended?.error, 'updates_paused')
+      assertEquals((await stepById(fx, runId, sentStepId))?.status, 'done')
+    } finally {
+      await setUpgradePauseForTest(fx, false)
+    }
+  })
+})
+
+test('Postgres upgrades: failure history counts failed steps per server and unit at the target', async () => {
+  await withFixture('failure-history', async (fx) => {
+    const host = await addServer(fx, { connected: true, commit: 'old-daemon' })
+    const other = await addServer(fx, { connected: true, commit: 'old-daemon' })
+    const first = await seedRun(fx, 'fleet', (id) => [
+      stepRow(id, { serverId: host, unit: 'daemon', phase: 'fleet', status: 'failed' }),
+      stepRow(id, { serverId: other, unit: 'daemon', phase: 'fleet', status: 'done' }),
+    ])
+    await fx.db.update(upgrade).set({ status: 'partially_failed' }).where(eq(upgrade.id, first))
+    await seedRun(fx, 'fleet', (id) => [
+      stepRow(id, { serverId: host, unit: 'daemon', phase: 'fleet', status: 'needs_attention' }),
+    ])
+    const store = createDrizzleUpgradeStore(fx.db, null)
+    const history = await store.failureHistory({ daemonCommit: 'new-daemon', instanceCommit: null })
+    const entry = history.get(`${host}:daemon`)
+    assertEquals(entry?.failures, 2)
+    assertEquals(Number.isFinite(Date.parse(entry?.lastFailedAt ?? '')), true)
+    assertEquals(entry?.lastFailedAt?.endsWith('Z'), true)
+    assertEquals(history.has(`${other}:daemon`), false)
+    const otherBuild = await store.failureHistory({ daemonCommit: 'newer', instanceCommit: null })
+    assertEquals(otherBuild.has(`${host}:daemon`), false)
+  })
+})
+
+test('Postgres upgrades: the check row is created once with a stable minute, and pause keeps the first pause', async () => {
+  if (!dbUrl) {
+    skipWithoutDatabase('upgrade control rows')
+    return
+  }
+  const db = createDenoDb()
+  const keys = [UPGRADE_CHECK_KEY, UPGRADE_PAUSE_KEY]
+  await db.delete(setting).where(inArray(setting.key, keys))
+  try {
+    const first = await ensureUpgradeCheckSchedule(db, T0, () => 0.5)
+    assertEquals(first, { minute: 30, createdAt: T0, lastCheckAt: null })
+    const again = await ensureUpgradeCheckSchedule(db, minutesAfter(T0, 5), () => 0.1)
+    assertEquals(again.minute, 30)
+    await markUpgradeChecked(db, again, minutesAfter(T0, 30))
+    assertEquals((await readUpgradeCheckSchedule(db))?.lastCheckAt, minutesAfter(T0, 30))
+
+    const pause = { since: T0, byUserId: null, byEmail: 'a@example.test', byName: 'A' }
+    assertEquals(await pauseUpgrades(db, pause), { pause, changed: true })
+    const second = await pauseUpgrades(db, { ...pause, since: minutesAfter(T0, 1), byName: 'B' })
+    assertEquals(second, { pause, changed: false })
+    assertEquals(await getUpgradePause(db), pause)
+    assertEquals(await resumeUpgrades(db), true)
+    assertEquals(await resumeUpgrades(db), false)
+    assertEquals(await getUpgradePause(db), null)
+  } finally {
+    await db.delete(setting).where(inArray(setting.key, keys))
+    await endDbConnection(db)
+  }
+})
+
+async function setUpgradePauseForTest(fx: Fixture, paused: boolean): Promise<void> {
+  if (paused) {
+    await pauseUpgrades(fx.db, { since: T0, byUserId: null, byEmail: null, byName: null })
+  } else {
+    await resumeUpgrades(fx.db)
+  }
+}

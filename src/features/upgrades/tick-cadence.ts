@@ -5,8 +5,10 @@
  * window. The upgrade tick used to share the 15-minute execution-log window, so
  * a five-server rollout took over an hour. The window is now an environment
  * setting (`TURBOPANEL_UPGRADE_TICK_MINUTES`); customer environments keep the
- * 15-minute default. Batch size is a separate, stored setting (`UPGRADE_SETTINGS`,
- * edited under Admin > Updates): this module only owns the tick.
+ * 15-minute default. The tick advances a run; the hourly check for a new build
+ * rides the first tick at or after this install's minute (`schedule.ts`). Batch
+ * size is a separate, stored setting (`UPGRADE_SETTINGS`, edited under Admin >
+ * Updates): this module only owns the tick.
  */
 
 export const UPGRADE_TICK_DEFAULT_MINUTES = 15

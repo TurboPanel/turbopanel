@@ -16,11 +16,8 @@ import {
   isHostingDisableTransition,
   hostingHierarchyFailedBody,
   serverDeletedPayload,
-  queueServerUpdateHttpStatus,
   emptyServersUpdatesPayload,
   resolveTrunkTargetFields,
-  resolveBatchUpdateEligibility,
-  runPreparedServerUpdate,
   updateResetErrorStatus,
   distinctNonEmptyIds,
   errorMessageFromUnknown,
@@ -33,7 +30,6 @@ import {
   repairedUpdateDoneProjection,
   repairedUpdateIdleProjection,
 } from './routes-helpers.ts'
-import { colocatedServerUpdateBlockedReason } from './update-status.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -221,11 +217,6 @@ test('serverDeletedPayload and hostingHierarchyFailedBody shapes', () => {
   })
 })
 
-test('queueServerUpdateHttpStatus maps colocated vs other errors', () => {
-  assertEquals(queueServerUpdateHttpStatus(colocatedServerUpdateBlockedReason()), 403)
-  assertEquals(queueServerUpdateHttpStatus('Daemon not connected'), 404)
-})
-
 test('emptyServersUpdatesPayload and resolveTrunkTargetFields', () => {
   assertEquals(emptyServersUpdatesPayload('trunk').channel, 'trunk')
   assertEquals(emptyServersUpdatesPayload('release').channel, 'release')
@@ -261,54 +252,6 @@ test('emptyServersUpdatesPayload and resolveTrunkTargetFields', () => {
     ...manifest,
     version: '0.1.1',
   })
-})
-
-test('resolveBatchUpdateEligibility covers each rejection path', () => {
-  assertEquals(
-    resolveBatchUpdateEligibility({
-      connected: false,
-      colocated: false,
-      current: null,
-      targetCommit: 't',
-    }),
-    { ok: false, error: 'Daemon not connected' }
-  )
-  assertEquals(
-    resolveBatchUpdateEligibility({
-      connected: true,
-      colocated: true,
-      current: null,
-      targetCommit: 't',
-    }),
-    { ok: false, error: colocatedServerUpdateBlockedReason() }
-  )
-  assertEquals(
-    resolveBatchUpdateEligibility({
-      connected: true,
-      colocated: false,
-      current: { commit: 't', buildId: '' },
-      targetCommit: 't',
-    }),
-    { ok: false, error: 'Up to date' }
-  )
-  assertEquals(
-    resolveBatchUpdateEligibility({
-      connected: true,
-      colocated: false,
-      current: null,
-      targetCommit: null,
-    }),
-    { ok: false, error: 'Target unavailable' }
-  )
-  assertEquals(
-    resolveBatchUpdateEligibility({
-      connected: true,
-      colocated: false,
-      current: { commit: 'old', buildId: '' },
-      targetCommit: 'new',
-    }),
-    { ok: true, updateAvailable: true }
-  )
 })
 
 test('updateResetErrorStatus and distinctNonEmptyIds / errorMessageFromUnknown', () => {
@@ -437,57 +380,6 @@ test('projected update repair helpers', () => {
 test('status cache constants stay stable for Cache-Control headers', () => {
   assertEquals(STATUS_CACHE_CONTROL, 'private, max-age=5')
   assertEquals(STATUS_CACHE_MAX_AGE_MS, 5_000)
-})
-
-test('runPreparedServerUpdate enqueues after prepare and refreshes queuedAt', async () => {
-  const events: string[] = []
-  await runPreparedServerUpdate({
-    prepare: async () => {
-      events.push('prepare')
-    },
-    enqueue: async () => {
-      events.push('enqueue')
-    },
-    markQueued: async (queuedAt) => {
-      events.push(`queued:${typeof queuedAt}`)
-    },
-    markFailed: async () => {
-      events.push('failed')
-    },
-  })
-  assertEquals(events, ['prepare', 'enqueue', 'queued:string'])
-})
-
-test('runPreparedServerUpdate surfaces prepare failures without enqueueing', async () => {
-  const events: string[] = []
-  await runPreparedServerUpdate({
-    prepare: () => Promise.reject(new Error('compile boom')),
-    enqueue: async () => {
-      events.push('enqueue')
-    },
-    markQueued: async () => {
-      events.push('queued')
-    },
-    markFailed: async (error) => {
-      events.push(`failed:${error}`)
-    },
-  })
-  assertEquals(events, ['failed:Dev daemon rebuild failed: compile boom'])
-})
-
-test('runPreparedServerUpdate surfaces enqueue failures', async () => {
-  const events: string[] = []
-  await runPreparedServerUpdate({
-    prepare: async () => {},
-    enqueue: () => Promise.reject(new Error('cell gone')),
-    markQueued: async () => {
-      events.push('queued')
-    },
-    markFailed: async (error) => {
-      events.push(`failed:${error}`)
-    },
-  })
-  assertEquals(events, ['failed:cell gone'])
 })
 
 test('parseServerPatchCore accepts machineClass pins and rejects unknown classes', () => {

@@ -14,7 +14,15 @@ import {
   setUpgradeSettings,
   type UpgradeSettings,
 } from '../settings/upgrade-settings.ts'
+import {
+  ensureUpgradeCheckSchedule,
+  getUpgradePause,
+  markUpgradeChecked,
+  type UpgradePause,
+} from '../settings/upgrade-control.ts'
 import { getLatestAvailableBuild, setLatestAvailableBuild } from './target-resolve.ts'
+import { upgradeFailureKey, type UpgradeFailureHistory } from './retry-backoff.ts'
+import type { UpgradeCheckSchedule } from './schedule.ts'
 import type { UpgradeTarget } from './target.ts'
 import { isUpgradeRunId, stepDetail } from './decisions.ts'
 import type {
@@ -133,9 +141,40 @@ export type UpgradeStepRow = {
   detail: unknown
 }
 
+/** The commits a run would install, per unit, for the failure-history read. */
+export type UpgradeFailureTargets = {
+  daemonCommit: string | null
+  instanceCommit: string | null
+}
+
+/** What a paused run writes on each step it never started. */
+export type UpgradePausedSkip = {
+  errorCode: string
+  errorMessage: string
+  at: string
+}
+
 export type UpgradeStore = {
   settings(): Promise<UpgradeSettings>
   saveSettings(settings: UpgradeSettings): Promise<void>
+  /** The pause in force (Admin > Updates), or null. One row. */
+  pause(): Promise<UpgradePause | null>
+  /** The hourly check slot, created with a random minute on first use. One row. */
+  checkSchedule(now: string): Promise<UpgradeCheckSchedule>
+  /** Record that the hourly check ran. */
+  markChecked(schedule: UpgradeCheckSchedule, at: string): Promise<void>
+  /**
+   * Settle every step of `upgradeId` that was never sent (`attempts` 0,
+   * `pending` / `waiting`) as `skipped` — what a pause does to a run. Steps
+   * already sent keep going. Returns how many were settled.
+   */
+  skipUndispatchedSteps(upgradeId: string, skip: UpgradePausedSkip): Promise<number>
+  /**
+   * Earlier failed steps (`failed`, `rolled_back`, `needs_attention`) per
+   * server and unit at these target commits, keyed by
+   * `upgradeFailureKey(serverId, unit)`. Only servers with failures appear.
+   */
+  failureHistory(targets: UpgradeFailureTargets): Promise<Map<string, UpgradeFailureHistory>>
   latestBuild(): Promise<UpgradeTarget | null>
   saveLatestBuild(target: UpgradeTarget): Promise<void>
   activeRun(): Promise<UpgradeRunRow | null>
@@ -357,19 +396,17 @@ export function createMemoryUpgradeStore(input?: {
   facts?: FleetServerFact[]
   settings?: UpgradeSettings
   latest?: UpgradeTarget | null
-}): UpgradeStore & { facts: FleetServerFact[] } {
+  pause?: UpgradePause | null
+  checkMinute?: number
+}): UpgradeStore & {
+  facts: FleetServerFact[]
+  setPause(pause: UpgradePause | null): void
+} {
   const facts = input?.facts ?? []
-  let settings = input?.settings ?? {
-    autoUpdate: false,
-    batch: { mode: 'percent' as const, value: 100 },
-    maintenanceWindow: {
-      enabled: false,
-      startMinute: 0,
-      durationMinutes: 60,
-      weekdays: [],
-    },
-  }
+  let settings = input?.settings ?? { batch: { mode: 'percent' as const, value: 100 } }
   let latest = input?.latest ?? null
+  let pause = input?.pause ?? null
+  let schedule: UpgradeCheckSchedule | null = null
   let reservedRunId: string | null = null
   let tickCursor: { runId: string; cursor: UpgradeTickCursor } | null = null
   const runs = new Map<string, UpgradeRunRow>()
@@ -377,11 +414,37 @@ export function createMemoryUpgradeStore(input?: {
 
   return {
     facts,
+    setPause: (next) => {
+      pause = next ? structuredClone(next) : null
+    },
     settings: () => Promise.resolve(structuredClone(settings)),
     saveSettings: (next) => {
       settings = structuredClone(next)
       return Promise.resolve()
     },
+    pause: () => Promise.resolve(pause ? structuredClone(pause) : null),
+    checkSchedule: (now) => {
+      schedule ??= { minute: input?.checkMinute ?? 0, createdAt: now, lastCheckAt: null }
+      return Promise.resolve(structuredClone(schedule))
+    },
+    markChecked: (current, at) => {
+      schedule = { ...current, lastCheckAt: at }
+      return Promise.resolve()
+    },
+    skipUndispatchedSteps: (upgradeId, skip) => {
+      let settled = 0
+      for (const step of steps.values()) {
+        if (step.upgradeId !== upgradeId || !isUndispatchedStep(step)) continue
+        step.status = 'skipped'
+        step.errorCode = skip.errorCode
+        step.errorMessage = skip.errorMessage
+        step.lastStageAt = skip.at
+        settled++
+      }
+      return Promise.resolve(settled)
+    },
+    failureHistory: (targets) =>
+      Promise.resolve(memoryFailureHistory([...steps.values()], targets)),
     latestBuild: () => Promise.resolve(latest ? structuredClone(latest) : null),
     saveLatestBuild: (target) => {
       latest = structuredClone(target)
@@ -496,6 +559,11 @@ export function createDrizzleUpgradeStore(
   return {
     settings: () => getUpgradeSettings(db, defaultBatch),
     saveSettings: (settings) => setUpgradeSettings(db, settings),
+    pause: () => getUpgradePause(db),
+    checkSchedule: (now) => ensureUpgradeCheckSchedule(db, now),
+    markChecked: (schedule, at) => markUpgradeChecked(db, schedule, at),
+    skipUndispatchedSteps: (upgradeId, skip) => skipUndispatchedStepRows(db, upgradeId, skip),
+    failureHistory: (targets) => loadFailureHistory(db, targets),
     latestBuild: () => getLatestAvailableBuild(db),
     saveLatestBuild: (target) => setLatestAvailableBuild(db, target),
     activeRun: async () => {
@@ -633,6 +701,114 @@ export function createDrizzleUpgradeStore(
     reserveRunId: (id) => writeReservedRunId(db, id),
     clearReservedRunId: () => clearReservedRunId(db),
   }
+}
+
+/** Statuses a never-sent step can be in (a pause settles these). */
+const UNDISPATCHED_STATUSES: readonly UpgradeStepStatus[] = ['pending', 'waiting']
+
+/** A step that was never sent to its host: a pause may settle it. */
+export function isUndispatchedStep(step: { status: UpgradeStepStatus; attempts: number }): boolean {
+  return step.attempts === 0 && UNDISPATCHED_STATUSES.includes(step.status)
+}
+
+/** One statement; the status and attempts guard makes it safe beside a concurrent report. */
+async function skipUndispatchedStepRows(
+  db: Db,
+  upgradeId: string,
+  skip: UpgradePausedSkip
+): Promise<number> {
+  const rows = await db
+    .update(stage)
+    .set({
+      status: 'skipped',
+      errorCode: skip.errorCode,
+      errorMessage: skip.errorMessage,
+      statusChangedAt: skip.at,
+      finishedAt: sql`now()`,
+    })
+    .where(
+      and(
+        eq(stage.upgradeId, upgradeId),
+        eq(stage.attempts, 0),
+        inArray(stage.status, [...UNDISPATCHED_STATUSES])
+      )
+    )
+    .returning({ id: stage.id })
+  return rows.length
+}
+
+const FAILURE_STATUSES: readonly UpgradeStepStatus[] = ['failed', 'rolled_back', 'needs_attention']
+
+function failureUnitTargets(targets: UpgradeFailureTargets): { unit: string; commit: string }[] {
+  const out: { unit: string; commit: string }[] = []
+  if (targets.daemonCommit) out.push({ unit: 'daemon', commit: targets.daemonCommit })
+  if (targets.instanceCommit) out.push({ unit: 'instance', commit: targets.instanceCommit })
+  return out
+}
+
+function memoryFailureHistory(
+  rows: readonly UpgradeStepRow[],
+  targets: UpgradeFailureTargets
+): Map<string, UpgradeFailureHistory> {
+  const wanted = failureUnitTargets(targets)
+  const out = new Map<string, UpgradeFailureHistory>()
+  for (const step of rows) {
+    if (!FAILURE_STATUSES.includes(step.status)) continue
+    if (!wanted.some((want) => want.unit === step.unit && want.commit === step.toCommit)) continue
+    const key = upgradeFailureKey(step.serverId, step.unit)
+    const prior = out.get(key)
+    const at = step.lastStageAt
+    const later = !prior?.lastFailedAt || (at !== null && at > prior.lastFailedAt)
+    out.set(key, {
+      failures: (prior?.failures ?? 0) + 1,
+      lastFailedAt: later ? at : prior.lastFailedAt,
+    })
+  }
+  return out
+}
+
+/**
+ * One grouped read over failed steps at the target commits. It runs only when
+ * an automatic run is being planned (at most once an hour), and its result
+ * holds only servers that failed.
+ */
+async function loadFailureHistory(
+  db: Db,
+  targets: UpgradeFailureTargets
+): Promise<Map<string, UpgradeFailureHistory>> {
+  const wanted = failureUnitTargets(targets)
+  const out = new Map<string, UpgradeFailureHistory>()
+  if (wanted.length === 0) return out
+  const rows = await db
+    .select({
+      serverId: stage.serverId,
+      unit: stage.unit,
+      failures: sql<number>`count(*)::int`,
+      // ISO text from the database, so no driver date format is parsed here.
+      lastFailedAt: sql<
+        string | null
+      >`to_char(max(coalesce(${stage.finishedAt}, ${stage.statusChangedAt}, ${stage.createdAt})) at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`,
+    })
+    .from(stage)
+    .where(
+      and(
+        inArray(stage.status, [...FAILURE_STATUSES]),
+        sql`(${sql.join(
+          wanted.map(
+            (want) => sql`(${stage.unit} = ${want.unit} and ${stage.toCommit} = ${want.commit})`
+          ),
+          sql` or `
+        )})`
+      )
+    )
+    .groupBy(stage.serverId, stage.unit)
+  for (const row of rows) {
+    out.set(upgradeFailureKey(row.serverId, row.unit), {
+      failures: Number(row.failures),
+      lastFailedAt: row.lastFailedAt,
+    })
+  }
+  return out
 }
 
 /**
