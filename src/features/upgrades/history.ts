@@ -237,10 +237,11 @@ function optionalOutcome(raw: string | undefined): UpgradeServerOutcome | null |
     : 'invalid'
 }
 
-function optionalUuid(raw: string | undefined): string | null | 'invalid' {
+/** `{ id }` (null when absent) for a valid or missing id, or null when it is not a uuid. */
+function optionalUuid(raw: string | undefined): { id: string | null } | null {
   const value = given(raw)
-  if (value === null) return null
-  return isUuid(value) ? value.toLowerCase() : 'invalid'
+  if (value === null) return { id: null }
+  return isUuid(value) ? { id: value.toLowerCase() } : null
 }
 
 function optionalSearch(raw: string | undefined): string | null {
@@ -254,24 +255,25 @@ export function parseRunServersQuery(params: Params): RunServersQuery | InvalidF
   if (!dir) return { error: 'invalid_filter', field: 'dir' }
   const outcome = optionalOutcome(params.status)
   if (outcome === 'invalid') return { error: 'invalid_filter', field: 'status' }
-  const organizationId = optionalUuid(params.organizationId)
-  if (organizationId === 'invalid') return { error: 'invalid_filter', field: 'organizationId' }
-  const serverId = optionalUuid(params.serverId)
-  if (serverId === 'invalid') return { error: 'invalid_filter', field: 'serverId' }
+  const organization = optionalUuid(params.organizationId)
+  if (!organization) return { error: 'invalid_filter', field: 'organizationId' }
+  const server = optionalUuid(params.serverId)
+  if (!server) return { error: 'invalid_filter', field: 'serverId' }
   return {
     ...parsePage(params.offset, params.limit),
     sort,
     dir,
     outcome,
-    organizationId,
-    serverId,
+    organizationId: organization.id,
+    serverId: server.id,
     search: optionalSearch(params.q),
   }
 }
 
 /** `%`, `_` and `\` matched literally inside an `ILIKE` pattern. */
 export function escapeLikePattern(value: string): string {
-  return value.replaceAll('\\', '\\\\').replaceAll('%', '\\%').replaceAll('_', '\\_')
+  // A backslash before each `\`, `%` and `_` (`$&` is the matched character).
+  return value.replaceAll(/[\\%_]/g, String.raw`\$&`)
 }
 
 /** A timestamp as ISO-8601 UTC, or null when absent or unreadable. */

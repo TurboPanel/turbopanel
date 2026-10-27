@@ -106,7 +106,8 @@ export const RUN_ORGANIZATION_FACET_LIMIT = 100
 const TERMINAL_STEP = sql.raw(`('done', 'skipped', 'failed', 'needs_attention')`)
 
 function quotedList(values: readonly string[]): SQL {
-  return sql.raw(`(${values.map((value) => `'${value}'`).join(', ')})`)
+  const quoted = values.map((value) => "'" + value + "'").join(', ')
+  return sql.raw('(' + quoted + ')')
 }
 
 function rankLiteral(outcome: UpgradeServerOutcome): SQL {
