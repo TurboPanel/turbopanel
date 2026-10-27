@@ -46,7 +46,10 @@ import { ORG_ID_HEADER } from '../org-context.ts'
 import { SERVER_SIZE_COMMAND } from '../../features/tiers/size-command.ts'
 import {
   type BillingOrgView,
+  coverageRefusal,
   formatEndsOn,
+  heldByKeyMessage,
+  LICENSE_HELD_BY_KEY_ERROR,
   type LicenseSummary,
   licenseExhaustionMessage,
   LICENSES_ENDING_ERROR,
@@ -184,6 +187,8 @@ function viewWith(
     licenses: extra.licenses ?? { active: 0, bound: 0 },
     servers: extra.servers ?? [],
     ledger: extra.ledger ?? emptyLedger(state.subscription?.providerSubscriptionId ?? ''),
+    ...(extra.reserved ? { reserved: extra.reserved } : {}),
+    ...(extra.heldKeys ? { heldKeys: extra.heldKeys } : {}),
   }
 }
 
@@ -526,6 +531,65 @@ test('Add Server and the billing page agree: an unused registration key makes th
     licenseExhaustionMessage(licenses),
     '5 in use, 1 held by an unused registration key — delete it or use it to add this server.'
   )
+})
+
+test('a key minted with the Add Server tier holds a seat at that tier, not at the others', () => {
+  // 2 at S3 and 2 at S5, one server on S3, two unused keys: one chose S3, one chose nothing.
+  const view = viewWith(
+    stateWith('active', [
+      { tierId: S3, quantity: 2 },
+      { tierId: S5, quantity: 2 },
+    ]),
+    {
+      licenses: { active: 3, bound: 1 },
+      servers: [{ serverId: SRV, boundAt: NOW, requiredRank: 3, assignedTierId: S3 }],
+      reserved: new Map([[S3, 1]]),
+    }
+  )
+  const byTier = new Map(summarizeTiers(view).map((row) => [row.tierId, row.available]))
+  assertEquals([byTier.get(S3), byTier.get(S5)], [0, 1])
+})
+
+test('a tier mix that would take the license an unused Add Server key holds is refused, naming the key', () => {
+  // 2 at S3: one server on it, one key minted for S3 and not used yet.
+  const keyed = viewWith(stateWith('active', [{ tierId: S3, quantity: 2 }]), {
+    licenses: { active: 2, bound: 1 },
+    servers: [{ serverId: SRV, boundAt: NOW, requiredRank: 3, assignedTierId: S3 }],
+    reserved: new Map([[S3, 1]]),
+    heldKeys: [{ licenseId: 'key-1', name: 'edge-2', tierId: S3 }],
+  })
+  const rankOf = (tierId: string) => (tierId === S5 ? 5 : 3)
+  const mix = [
+    { tierId: S3, delta: -1 },
+    { tierId: S5, delta: 1 },
+  ]
+  assertEquals(coverageRefusal(keyed, mix, rankOf), {
+    error: LICENSE_HELD_BY_KEY_ERROR,
+    message: heldByKeyMessage('S3', 'edge-2', 1),
+    tierId: S3,
+    tierLabel: 'S3',
+    licenseId: 'key-1',
+    keyName: 'edge-2',
+    keyCount: 1,
+  })
+  assertEquals(
+    heldByKeyMessage('S3', 'edge-2', 1),
+    'The unused install command “edge-2” holds one S3 license for a server that has not connected yet. Delete it on Pending keys first, or wait for it to expire.'
+  )
+  // The same change without the key is fine: the server keeps its S3.
+  const plain = viewWith(stateWith('active', [{ tierId: S3, quantity: 2 }]), {
+    licenses: { active: 1, bound: 1 },
+    servers: [{ serverId: SRV, boundAt: NOW, requiredRank: 3, assignedTierId: S3 }],
+  })
+  assertEquals(coverageRefusal(plain, mix, rankOf), null)
+  // With a spare S3 beyond the key, taking one away still leaves the key its license.
+  const roomy = viewWith(stateWith('active', [{ tierId: S3, quantity: 3 }]), {
+    licenses: { active: 2, bound: 1 },
+    servers: [{ serverId: SRV, boundAt: NOW, requiredRank: 3, assignedTierId: S3 }],
+    reserved: new Map([[S3, 1]]),
+    heldKeys: [{ licenseId: 'key-1', name: 'edge-2', tierId: S3 }],
+  })
+  assertEquals(coverageRefusal(roomy, mix, rankOf), null)
 })
 
 test('a key whose server is being provisioned is in use, not unused and not free', () => {

@@ -9,6 +9,7 @@ import { and, count, eq, isNull } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { license, organization, server } from '../../db/schema.ts'
 import { parseOrganizationOptions } from '../organizations/organization-options.ts'
+import { isUnusedKeyExpired } from '../licenses/key-expiry.ts'
 
 export const SERVER_CAPACITY_EXCEEDED_ERROR = 'server_capacity_exceeded'
 
@@ -17,7 +18,7 @@ export type OrgServerCapacity = {
   maxServers: number | null
   /** Rows in `server` for this organization. */
   serverCount: number
-  /** Active licenses not yet latched to a server (reserved seats). */
+  /** Active, unexpired licenses not yet latched to a server (reserved seats). */
   reservedSeatCount: number
   /** serverCount + reservedSeatCount. */
   usedSeats: number
@@ -32,7 +33,7 @@ function toCount(value: unknown): number {
 /** Load seat usage and the configured cap for an organization. */
 export async function loadOrgServerCapacity(
   db: Db,
-  organizationId: string,
+  organizationId: string
 ): Promise<OrgServerCapacity | null> {
   const [orgRow] = await db
     .select({ options: organization.options })
@@ -42,33 +43,27 @@ export async function loadOrgServerCapacity(
   if (!orgRow) return null
 
   const options = parseOrganizationOptions(orgRow.options)
-  const maxServers = typeof options.maxServers === 'number'
-    ? options.maxServers
-    : null
+  const maxServers = typeof options.maxServers === 'number' ? options.maxServers : null
 
-  const [[serverCountRow], [reservedSeatRow]] = await Promise.all([
+  const [[serverCountRow], unboundKeys] = await Promise.all([
+    db.select({ value: count() }).from(server).where(eq(server.organizationId, organizationId)),
     db
-      .select({ value: count() })
-      .from(server)
-      .where(eq(server.organizationId, organizationId)),
-    db
-      .select({ value: count() })
+      .select({ serverId: license.serverId, expiresAt: license.expiresAt })
       .from(license)
       .where(
         and(
           eq(license.organizationId, organizationId),
           isNull(license.revokedAt),
-          isNull(license.serverId),
-        ),
+          isNull(license.serverId)
+        )
       ),
   ])
 
   const serverCount = toCount(serverCountRow?.value)
-  const reservedSeatCount = toCount(reservedSeatRow?.value)
+  // An unused key past its expiry no longer holds a seat.
+  const reservedSeatCount = unboundKeys.filter((row) => !isUnusedKeyExpired(row)).length
   const usedSeats = serverCount + reservedSeatCount
-  const availableSeats = maxServers === null
-    ? null
-    : Math.max(0, maxServers - usedSeats)
+  const availableSeats = maxServers === null ? null : Math.max(0, maxServers - usedSeats)
 
   return {
     maxServers,

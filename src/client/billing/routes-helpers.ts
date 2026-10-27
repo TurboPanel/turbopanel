@@ -26,6 +26,9 @@ import {
 } from '../../features/billing/billing-records.ts'
 import {
   countActiveLicenses,
+  type HeldLicenseKey,
+  heldSeatsByTier,
+  listHeldLicenseKeys,
   type LicenseCount,
   type TierRow,
 } from '../../features/tiers/tier-records.ts'
@@ -53,6 +56,8 @@ export const NO_SUBSCRIPTION_ERROR = 'no_subscription'
 export const SERVERS_UNCOVERED_ERROR = 'servers_uncovered'
 /** A reduction would leave more licenses than purchased. */
 export const LICENSES_IN_USE_ERROR = 'licenses_in_use'
+/** A tier change would take the license an unused Add Server key holds at a tier. */
+export const LICENSE_HELD_BY_KEY_ERROR = 'license_held_by_key'
 /** Nothing purchased is free for another server. */
 export const NO_LICENSE_AVAILABLE_ERROR = 'no_license_available'
 /**
@@ -122,6 +127,10 @@ export type BillingOrgView = Readonly<{
   /** Every licensed server with its hardware requirement and current assignment. */
   servers: readonly AssignedServerRow[]
   ledger: PendingChangeLedger
+  /** Seats unused registration keys hold per tier (the Add Server choice); absent reads as none. */
+  reserved?: ReadonlyMap<string, number>
+  /** The unused keys behind `reserved`, so a refusal can name the one to delete. */
+  heldKeys?: readonly HeldLicenseKey[]
 }>
 
 export async function loadBillingOrgView(
@@ -140,12 +149,14 @@ export async function loadBillingOrgView(
         : 0,
   }
   const servers = await loadAssignableServers(db, organizationId)
+  const heldKeys = await listHeldLicenseKeys(db, organizationId)
+  const reserved = heldSeatsByTier(heldKeys)
   const { ledger } = state.subscription
     ? await readPendingChanges(db, organizationId, state.subscription.providerSubscriptionId)
     : {
         ledger: { version: 2 as const, providerSubscriptionId: '', intents: [] },
       }
-  return { state, licenses, servers, ledger }
+  return { state, licenses, servers, ledger, reserved, heldKeys }
 }
 
 export type TierSummary = Readonly<{
@@ -161,11 +172,12 @@ export type TierSummary = Readonly<{
   /** When they end (ISO), or `null` when nothing is ending. */
   endsAt: string | null
   /**
-   * `purchased − ending − inUse`, floored at zero and capped at the
-   * organization-wide `licenses.available`. The cap is what keeps the two in
-   * agreement: an unused registration key holds a license but has no tier
-   * until its server connects, so it can only be charged org-wide — without
-   * the cap a tier would show a license "free" that the mint gate refuses.
+   * `purchased − ending − inUse − held by keys`, floored at zero and capped
+   * at the organization-wide `licenses.available`. A key minted with the
+   * tier a manager chose in Add Server holds a seat at that tier until its
+   * server enrolls; a key with no tier holds a license only org-wide, which
+   * the cap charges — without it a tier would show a license "free" that the
+   * mint gate refuses.
    */
   available: number
   /**
@@ -194,6 +206,7 @@ export function summarizeTiers(view: BillingOrgView): TierSummary[] {
     if (out.some((entry) => entry.tierId === seat.tierId)) continue
     const purchased = seats.get(seat.tierId) ?? 0
     const used = inUse.get(seat.tierId) ?? 0
+    const held = view.reserved?.get(seat.tierId) ?? 0
     const endingHere = ending.get(seat.tierId)
     out.push({
       tierId: seat.tierId,
@@ -203,7 +216,10 @@ export function summarizeTiers(view: BillingOrgView): TierSummary[] {
       inUse: used,
       ending: endingHere?.count ?? 0,
       endsAt: endingHere?.endsAt ?? null,
-      available: Math.min(orgAvailable, Math.max(0, purchased - (endingHere?.count ?? 0) - used)),
+      available: Math.min(
+        orgAvailable,
+        Math.max(0, purchased - (endingHere?.count ?? 0) - used - held)
+      ),
       releasing: releases.get(seat.tierId) ?? 0,
       priceCents: seat.tier.priceCents,
       currency: seat.tier.currency,
@@ -445,6 +461,17 @@ export type CoverageRefusal =
       /** Registration keys nobody has used yet: delete them to free licenses. */
       unusedKeys: number
     }
+  | {
+      error: typeof LICENSE_HELD_BY_KEY_ERROR
+      message: string
+      tierId: string
+      tierLabel: string
+      /** The unused key (install command) to delete first, by id and name. */
+      licenseId: string
+      keyName: string | null
+      /** How many unused keys hold a license at that tier. */
+      keyCount: number
+    }
 
 /**
  * The gate every reduction and deferred change runs: apply the ledger's
@@ -496,7 +523,8 @@ export function coverageRefusal(
     }
   }
   for (const [serverId, tierId] of moves) named.set(serverId, tierId)
-  const loss = coverageLoss(current, future, view.servers, serversAfterMoves(view.servers, named))
+  const futureServers = serversAfterMoves(view.servers, named)
+  const loss = coverageLoss(current, future, view.servers, futureServers)
   if (loss) {
     return {
       error: SERVERS_UNCOVERED_ERROR,
@@ -504,7 +532,58 @@ export function coverageRefusal(
       requiredTier: ladderEntryByRank(loss.requiredRank)?.label ?? `rank ${loss.requiredRank}`,
     }
   }
+  return heldKeyRefusal(view, current, future, futureServers)
+}
+
+function freeAfterHolders(
+  quantities: readonly TierQuantity[],
+  servers: readonly AssignedServerRow[],
+  tierId: string
+): number {
+  const bought = quantities.find((entry) => entry.tierId === tierId)?.quantity ?? 0
+  return bought - servers.filter((entry) => entry.assignedTierId === tierId).length
+}
+
+/**
+ * An unused Add Server key holds a license at its tier like a server on that
+ * tier does, so a change (a tier mix such as S1 −1 / S2 +1, a release, a
+ * named move) that would leave fewer licenses at that tier than its servers
+ * and its keys hold is refused, naming the key to delete first. Only a
+ * change that makes a tier worse is refused.
+ */
+function heldKeyRefusal(
+  view: BillingOrgView,
+  current: readonly TierQuantity[],
+  future: readonly TierQuantity[],
+  futureServers: readonly AssignedServerRow[]
+): CoverageRefusal | null {
+  const keys = view.heldKeys ?? []
+  for (const [tierId, held] of heldSeatsByTier(keys)) {
+    const after = freeAfterHolders(future, futureServers, tierId)
+    if (after >= held || after >= freeAfterHolders(current, view.servers, tierId)) continue
+    const key = keys.find((entry) => entry.tierId === tierId)
+    if (!key) continue
+    const rank = [...current, ...future].find((entry) => entry.tierId === tierId)?.rank
+    const tierLabel = (rank === undefined ? undefined : ladderEntryByRank(rank)?.label) ?? tierId
+    const keyName = key.name
+    return {
+      error: LICENSE_HELD_BY_KEY_ERROR,
+      message: heldByKeyMessage(tierLabel, keyName, held),
+      tierId,
+      tierLabel,
+      licenseId: key.licenseId,
+      keyName,
+      keyCount: held,
+    }
+  }
   return null
+}
+
+/** The refusal sentence: which unused install command holds the license, and what to do. */
+export function heldByKeyMessage(tierLabel: string, keyName: string | null, count: number): string {
+  const which = keyName ? `The unused install command “${keyName}”` : 'An unused install command'
+  const others = count > 1 ? ` (and ${count - 1} more)` : ''
+  return `${which}${others} holds one ${tierLabel} license for a server that has not connected yet. Delete it on Pending keys first, or wait for it to expire.`
 }
 
 /** The catalogue entry the console renders: the row plus what the ladder says it entitles. */

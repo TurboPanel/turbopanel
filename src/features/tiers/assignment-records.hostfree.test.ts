@@ -20,6 +20,7 @@ import {
 import { listSeatsForOrganization } from '../billing/billing-records.ts'
 import { createMemoryDb } from '../../test-fixtures/memory-db.ts'
 import {
+  applyAddServerTierAtEnroll,
   assignServerTier,
   fillSelfHostedGrantTier,
   loadAssignableServers,
@@ -28,7 +29,7 @@ import {
   requiredRankFromResources,
   tierQuantitiesFromState,
 } from './assignment-records.ts'
-import { setServerPreferredTier } from './server-preferred-tier.ts'
+import { loadOrganizationTierSpare, setServerPreferredTier } from './server-preferred-tier.ts'
 import { CUSTOM_TIER_LABEL } from './ladder.ts'
 
 /**
@@ -86,13 +87,19 @@ const serverRow = (
   assignedTierId,
   preferredTierId,
 })
-const licenseRow = (id: string, serverId: string | null, revokedAt: string | null = null) => ({
+const licenseRow = (
+  id: string,
+  serverId: string | null,
+  revokedAt: string | null = null,
+  tierId: string | null = null
+) => ({
   id,
   organizationId: ORG,
   serverId,
   name: null,
   token: 'x',
   revokedAt,
+  tierId,
   createdAt: NOW,
   updatedAt: NOW,
 })
@@ -493,4 +500,66 @@ test('fillSelfHostedGrantTier with no grant writes nothing', async () => {
   await fillSelfHostedGrantTier(db, ORG)
   assertEquals(tierOf(db, SERVER_A), null)
   assertEquals(db.ops.filter((op) => op === 'update:server').length, 0)
+})
+
+const KEY_FREE = '99999999-9999-4999-8999-999999999991'
+const KEY_A = '99999999-9999-4999-8999-999999999992'
+const KEY_B = '99999999-9999-4999-8999-999999999993'
+
+test('a seat an unused Add Server key holds at its tier is not free for another server', async () => {
+  const db = seed({
+    seats: [{ tierId: S1, quantity: 1 }],
+    servers: [serverRow(SERVER_A, NOW, null, null)],
+    licenses: [licenseRow(KEY_A, SERVER_A), licenseRow(KEY_FREE, null, null, S1)],
+  })
+  assertEquals(await assignServerTier(db, ORG, SERVER_A, S1), {
+    ok: false,
+    code: 'no_free_seat',
+  })
+  assertEquals(db.rows(server).find((row) => row.id === SERVER_A)?.assignedTierId, null)
+  assertEquals(await loadOrganizationTierSpare(db, ORG), [])
+})
+
+test('a revoked or consumed Add Server key holds no seat', async () => {
+  const db = seed({
+    seats: [{ tierId: S1, quantity: 1 }],
+    servers: [serverRow(SERVER_A, NOW, null, null)],
+    licenses: [licenseRow(KEY_A, SERVER_A, null, S1), licenseRow(KEY_FREE, null, NOW, S1)],
+  })
+  assertEquals(await loadOrganizationTierSpare(db, ORG), [{ tierId: S1, label: 'S1', free: 1 }])
+  const result = await assignServerTier(db, ORG, SERVER_A, S1)
+  assertEquals(result.ok, true)
+})
+
+test('at enroll the server takes the seat its key held at the chosen tier, once', async () => {
+  // SERVER_A just enrolled with KEY_A (now consumed); KEY_B still holds one S1.
+  const db = seed({
+    seats: [{ tierId: S1, quantity: 2 }],
+    servers: [serverRow(SERVER_A, NOW, hardware(64, 256), null)],
+    licenses: [licenseRow(KEY_A, SERVER_A, null, S1), licenseRow(KEY_B, null, null, S1)],
+  })
+  // The chosen tier is honoured even though the box measures past S1: kept and flagged, never moved.
+  assertEquals(await applyAddServerTierAtEnroll(db, ORG, SERVER_A, S1, NOW), 'assigned')
+  const row = () => db.rows(server).find((entry) => entry.id === SERVER_A)
+  assertEquals([row()?.assignedTierId, row()?.preferredTierId], [S1, S1])
+  // A repeat changes nothing, and KEY_B's seat is still held for its own server.
+  assertEquals(await applyAddServerTierAtEnroll(db, ORG, SERVER_A, S1, NOW), 'already_set')
+  assertEquals(await loadOrganizationTierSpare(db, ORG), [])
+})
+
+test('at enroll a chosen tier whose seat is gone leaves the server uncovered with the choice kept', async () => {
+  // Seats at S1 were cut to one after the key was minted, and SERVER_B holds it.
+  const db = seed({
+    seats: [
+      { tierId: S1, quantity: 1 },
+      { tierId: S3, quantity: 2 },
+    ],
+    servers: [serverRow(SERVER_A, NOW, null, null), serverRow(SERVER_B, NOW, null, S1)],
+    licenses: [licenseRow(KEY_A, SERVER_A, null, S1), licenseRow(KEY_B, SERVER_B)],
+  })
+  assertEquals(await applyAddServerTierAtEnroll(db, ORG, SERVER_A, S1, NOW), 'no_free_seat')
+  const mine = db.rows(server).find((entry) => entry.id === SERVER_A)
+  // Never a different tier (S3 is free), never SERVER_B's seat.
+  assertEquals([mine?.assignedTierId, mine?.preferredTierId], [null, S1])
+  assertEquals(db.rows(server).find((entry) => entry.id === SERVER_B)?.assignedTierId, S1)
 })

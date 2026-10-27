@@ -177,9 +177,20 @@ higher tier when spare licenses exist. License endpoints (`GET`/`POST` `/license
 `/licenses/{id}`) require org ownership (`organization:own`). `DELETE /licenses/{id}`
 returns **409** `license_has_attached_server` (bound server id + name) while a
 live server is attached; delete the server first. Already-revoked seats are **404**.
-`POST /licenses` takes no tier — a license carries none; the tier a server
-sits on is derived from its hardware against the purchased quantities
-(`src/features/billing/AGENTS.md`, _Who chooses a tier: nobody_). When customer
+`POST /licenses` takes an optional `tierId` (hosted Add Server: the tier the
+manager chose). The key then holds one license at that tier, and the server
+that first enrolls with it is put on it; it is **409** `no_license_available`
+(with that tier's counts) when no license at that tier is free, and **400**
+`tier_not_found` for an unknown or inactive tier. Without `tierId`, or
+self-hosted, the key carries no tier and a manager assigns one later. Every
+key minted here expires 7 days later (`license.expires_at`,
+`LICENSE_KEY_UNUSED_TTL_DAYS`) if no server enrolls with it: an expired
+unused key cannot enroll and holds no license; a bound key never expires.
+`GET /licenses` rows carry `tier` (`{ id, label }` an unused key holds, else
+null), `expiresAt` and `expired`. A seat change, upgrade or downgrade that
+would take the license an unused key holds at its tier is **409**
+`license_held_by_key` (`message`, `tierId`, `tierLabel`, `licenseId`,
+`keyName`, `keyCount`). When customer
 billing is operational it answers **409** `no_license_available` when every
 purchased license is in use (bound or provisioning), held by an unused
 registration key, or ending — with `message` (never calls an ending license or

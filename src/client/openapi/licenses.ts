@@ -7,6 +7,28 @@ export function buildLicenseSchemas(installCommandDescription: string) {
         id: { type: 'string' },
         name: { type: ['string', 'null'] },
         createdAt: { type: 'string', format: 'date-time' },
+        tier: {
+          oneOf: [
+            {
+              type: 'object',
+              required: ['id', 'label'],
+              properties: { id: { type: 'string', format: 'uuid' }, label: { type: 'string' } },
+            },
+            { type: 'null' },
+          ],
+          description:
+            'For an unused key: the tier chosen in Add Server, whose license it holds until its server connects. Null once bound or when none was chosen.',
+        },
+        expiresAt: {
+          type: ['string', 'null'],
+          format: 'date-time',
+          description:
+            'For an unused key: when it stops working and stops holding a license (7 days after it was made). Null once bound, and for older keys that never expire.',
+        },
+        expired: {
+          type: 'boolean',
+          description: 'True for an unused key past `expiresAt`: it cannot add a server any more.',
+        },
         revocable: {
           type: 'boolean',
           description:
@@ -67,6 +89,12 @@ export function buildLicenseSchemas(installCommandDescription: string) {
           type: 'string',
           description:
             'Development only: public http(s) URL for install command --host and download paths.',
+        },
+        tierId: {
+          type: 'string',
+          format: 'uuid',
+          description:
+            'Hosted Add Server: the tier the manager chose. The key holds one license at that tier for the server that enrolls with it.',
         },
       },
     },

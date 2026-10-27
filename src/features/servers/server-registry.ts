@@ -42,6 +42,8 @@ import { normalizeMachineKey } from '../../lib/machine-key.ts'
 import { daemonFeaturesColumnPatch } from './daemon-jsonb-write.ts'
 import { featuresMatch, parseServerDaemonState } from './daemon-state.ts'
 import { ensureSystemHierarchy } from '../system/hierarchy.ts'
+import { applyAddServerTierAtEnroll, lockOrganizationRow } from '../tiers/assignment-records.ts'
+import { isUnusedKeyExpired } from '../licenses/key-expiry.ts'
 import { describeError } from '../../lib/describe-error.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
 import type { CommandQueue } from '../commands/queue.ts'
@@ -647,9 +649,14 @@ async function authorizeAndBindLicensedServer(
 }
 
 /**
- * Insert a server then latch the license. If the license was already consumed
- * (concurrent enroll), delete the orphan server and throw unique violation so
- * the caller can take the race-reuse path.
+ * Insert a server then latch the license, in one transaction under the
+ * organization row lock (the lock a manager's assignment and a mint take
+ * too). When the key carries the tier a manager chose in Add Server, the
+ * server takes the license that key held at that tier in the same
+ * transaction, so the seat can never be given away between the latch and the
+ * server taking it, and a failure rolls the latch back for the daemon's retry.
+ * If the license was already consumed (concurrent enroll), throw a unique
+ * violation so the caller can take the race-reuse path.
  */
 async function insertLicensedServer(
   db: Db,
@@ -662,40 +669,56 @@ async function insertLicensedServer(
   const columns = identityColumnPatch(identity)
   const osPatch = identityOsColumnPatch(identity, emptyOsColumns())
   const timePatch = identityTimeSyncColumnPatch(identity, emptyTimeSyncColumns(), now)
-  const inserted = await db
-    .insert(server)
-    .values({
-      organizationId,
-      name: defaultDisplayName(identity),
-      createdAt: now,
-      updatedAt: now,
-      ...(columns.hostname ? { hostname: columns.hostname } : {}),
-      ...(columns.machineKey ? { machineKey: columns.machineKey } : {}),
-      ...osPatch,
-      ...timePatch,
-      metadata: Object.keys(patch).length > 0 ? patch : null,
-    })
-    .returning({ id: server.id })
+  return await db.transaction(async (tx) => {
+    await lockOrganizationRow(tx, organizationId)
+    const inserted = await tx
+      .insert(server)
+      .values({
+        organizationId,
+        name: defaultDisplayName(identity),
+        createdAt: now,
+        updatedAt: now,
+        ...(columns.hostname ? { hostname: columns.hostname } : {}),
+        ...(columns.machineKey ? { machineKey: columns.machineKey } : {}),
+        ...osPatch,
+        ...timePatch,
+        metadata: Object.keys(patch).length > 0 ? patch : null,
+      })
+      .returning({ id: server.id })
 
-  const id = inserted[0]?.id
-  if (!id) throw new Error('failed to insert server row')
+    const id = inserted[0]?.id
+    if (!id) throw new Error('failed to insert server row')
 
-  const latched = await db
-    .update(license)
-    .set({ serverId: id, updatedAt: now })
-    .where(and(eq(license.id, licenseId), isNull(license.serverId), isNull(license.revokedAt)))
-    .returning({ id: license.id })
+    const latched = await tx
+      .update(license)
+      .set({ serverId: id, updatedAt: now })
+      .where(and(eq(license.id, licenseId), isNull(license.serverId), isNull(license.revokedAt)))
+      .returning({ id: license.id, tierId: license.tierId, expiresAt: license.expiresAt })
 
-  if (latched.length === 0) {
-    await db.delete(server).where(eq(server.id, id))
-    const err = new Error('license already consumed') as Error & {
-      code: string
+    // Expired between the token check and this latch: refused like a lost
+    // race, so the transaction rolls back and nothing binds.
+    const expired =
+      latched[0] && isUnusedKeyExpired({ serverId: null, expiresAt: latched[0].expiresAt })
+    if (latched.length === 0 || expired) {
+      const err = new Error('license already consumed') as Error & {
+        code: string
+      }
+      err.code = '23505'
+      throw err
     }
-    err.code = '23505'
-    throw err
-  }
 
-  return id
+    const tierId = latched[0]?.tierId
+    if (tierId) {
+      const outcome = await applyAddServerTierAtEnroll(tx, organizationId, id, tierId, now)
+      if (outcome === 'no_free_seat') {
+        compatLogWarn(
+          'server-registry',
+          `server ${id} enrolled without its Add Server tier: no license at that tier was free`
+        )
+      }
+    }
+    return id
+  })
 }
 
 async function resolveLicensedServerId(
