@@ -46,7 +46,7 @@ const STATUS_VALUES = new Set<string>([
 /** The metrics band on a server (20300 to 20899) holds 600 connectors. */
 const MAX_CONNECTORS = 600
 const MAX_REASON_LENGTH = 300
-const VERSION_RE = /^[0-9]+(?:\.[0-9]+){0,4}$/
+const VERSION_RE = /^\d+(?:\.\d+){0,4}$/
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 /** A strict ISO-8601 timestamp with a time zone, as `Date.toISOString` writes it. */
 const ISO_TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/

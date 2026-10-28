@@ -1,6 +1,7 @@
 import { and, eq, inArray, sql } from 'drizzle-orm'
 import type { createDenoDb } from '../../db/connection.ts'
 import { portal, tunnel } from '../../db/schema.ts'
+import { mapSequential } from '../../lib/sequential.ts'
 import type {
   TunnelStatusCommandResult,
   TunnelStatusConnector,
@@ -54,15 +55,14 @@ export async function recordTunnelStatus(
   now: Date = new Date()
 ): Promise<number> {
   const stamp = now.toISOString()
-  let updated = 0
-  for (const connector of result.connectors) {
-    if (connector.tunnelId === 'instance' || connector.tunnelId === 'default') continue
+  const counts = await mapSequential(result.connectors, async (connector) => {
+    if (connector.tunnelId === 'instance' || connector.tunnelId === 'default') return 0
     const portals = await db
       .select({ id: portal.id })
       .from(portal)
       .innerJoin(tunnel, eq(portal.tunnelId, tunnel.id))
       .where(and(eq(portal.serverId, serverId), eq(tunnel.externalId, connector.tunnelId)))
-    if (portals.length === 0) continue
+    if (portals.length === 0) return 0
     const info = {
       pinnedVersion: result.pinnedVersion,
       slot: connector.slot,
@@ -84,9 +84,9 @@ export async function recordTunnelStatus(
           portals.map((p) => p.id)
         )
       )
-    updated += portals.length
-  }
-  return updated
+    return portals.length
+  })
+  return counts.reduce((sum, n) => sum + n, 0)
 }
 
 /** What the screen says about a connector's version. */
