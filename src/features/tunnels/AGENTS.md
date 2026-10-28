@@ -245,11 +245,27 @@ provider accounts.
   A doorway keeps the hostname text, but its site link is read once when it is
   added, and a site's names are deleted and inserted again on every edit, a name
   can move to another site, and a site can be made later or deleted.
-- The local-only lock on tunnel names is **not enforced yet**: `doorway.is_local_only`
-  only records the wish. Enforcing it is the deploy-time `hostings[].tunnel`,
-  which is not built; until then the web server answers a tunnel name to
-  anyone who reaches it. Do not describe the lock as working in docs or
-  copy.
+- The local-only lock on tunnel names is applied at deploy time
+  (`name-lock.ts`, called from `deploy-prepare.ts`): a hosting with a doorway sends
+  `hostings[].tunnel`, which makes the daemon answer the name only to loopback and
+  the listed peers and drop everyone else. Peers are the exact datacenter
+  addresses of the _other_ servers that carry the same tunnel (the tunnels of the
+  doorways whose hostname the hosting serves, joined, sorted, cut at 64); when no other server carries it, `127.0.0.1`
+  is sent so the list is never empty (the contract refuses an empty list;
+  loopback is always allowed, so nothing widens). `extraBind` is this server's own
+  datacenter addresses and is sent only when there are real peers. A doorway with
+  `isLocalOnly = false` goes in `openHostnames` (lock off for that name). Only the
+  hosting's own non-removing doorways of the same organization count.
+  Refused with 409: `tunnel_daemon_too_old` (the daemon lacks
+  `tunnel-forwarding-v1` and the hosting has a locked name; an all-public hosting is
+  allowed and sends nothing) and `tunnel_name_public_certificate` (a locked name
+  pinned to a public Let's Encrypt certificate; the daemon contract needs every
+  name open in that mode).
+  **The lock follows the next deploy.** Adding or removing a carrier changes the
+  peer set, but nothing redeploys the site by itself: until the site is deployed
+  again, a newly added carrier's forwards to that server are dropped (closed, not
+  open) and a removed carrier stays allowed. The deploy-inputs digest already
+  covers the `tunnel` field, so the next deploy is never skipped as unchanged.
 - Limits: 50 tunnels and 2000 hostnames per organization, 200 hostnames per
   tunnel. A table is cut at the daemon contract caps (2000 names, 16 upstreams
   per name, 8 addresses per upstream, 64 peer and listen addresses) with a
@@ -274,5 +290,6 @@ provider accounts.
   first forwarded requests could be dropped. Default-drop must not ship before
   that order is fixed (send the rule before the routes, or apply it from the
   sync path).
-- Not in this slice: the deploy-time `hostings[].tunnel` (it must be gated on
-  the same feature when added).
+- Not in this slice: redeploying a site when its carrier set changes. The resend
+  (`nudge.ts`) covers forwarding tables and connector lists; the name lock on the
+  site follows its next deploy (see above).
