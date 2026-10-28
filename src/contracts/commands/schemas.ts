@@ -8919,6 +8919,8 @@ export function parseCommandPayload(
   | StorageBackupCommandPayload
   | StorageRestoreCommandPayload
   | SystemReconcileCommandPayload {
+  // Held outside the switch, which is at its size limit.
+  if (type === 'server.tunnel.status') return parseTunnelStatusPayload(value)
   switch (type) {
     case 'daemon.ping':
       return parsePingPayload(value)
@@ -8950,8 +8952,6 @@ export function parseCommandPayload(
       return parseTunnelRoutesPayload(value)
     case 'server.tunnel.connectors':
       return parseTunnelConnectorsPayload(value)
-    case 'server.tunnel.status':
-      return parseTunnelStatusPayload(value)
     case 'environment.deploy':
       return parseEnvironmentDeployPayload(value)
     case 'environment.lifecycle':
@@ -9020,6 +9020,7 @@ export function parseCommandResult(
   | StorageBackupCommandResult
   | StorageRestoreCommandResult
   | SystemReconcileCommandResult {
+  if (type === 'server.tunnel.status') return parseTunnelStatusResult(value)
   switch (type) {
     case 'daemon.ping':
       return parsePingResult(value)
@@ -9051,8 +9052,6 @@ export function parseCommandResult(
       return parseTunnelRoutesResult(value)
     case 'server.tunnel.connectors':
       return parseTunnelConnectorsResult(value)
-    case 'server.tunnel.status':
-      return parseTunnelStatusResult(value)
     case 'environment.deploy':
       return parseEnvironmentDeployResult(value)
     case 'environment.lifecycle':
