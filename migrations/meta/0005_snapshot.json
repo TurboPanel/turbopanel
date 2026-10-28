@@ -1,5 +1,5 @@
 {
-  "id": "85c1ace8-34ff-432f-94ba-fd0951b896e7",
+  "id": "3cfe7be4-506e-4e28-8bba-3b748509a319",
   "prevId": "89eebc09-24ec-4f45-809e-2b6cd96d2c5a",
   "version": "7",
   "dialect": "postgresql",
@@ -3230,15 +3230,21 @@
           "primaryKey": false,
           "notNull": false
         },
+        "routing_organization_id": {
+          "name": "routing_organization_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
         "tunnel_id": {
           "name": "tunnel_id",
           "type": "uuid",
           "primaryKey": false,
           "notNull": true
         },
-        "hostname_id": {
-          "name": "hostname_id",
-          "type": "uuid",
+        "hostname": {
+          "name": "hostname",
+          "type": "text",
           "primaryKey": false,
           "notNull": true
         },
@@ -3248,6 +3254,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'http'"
+        },
+        "hosting_id": {
+          "name": "hosting_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
         },
         "external_route_id": {
           "name": "external_route_id",
@@ -3277,11 +3289,34 @@
         }
       },
       "indexes": {
-        "idx_doorway_tunnel_id": {
-          "name": "idx_doorway_tunnel_id",
+        "idx_doorway_routing_organization_id_hostname": {
+          "name": "idx_doorway_routing_organization_id_hostname",
           "columns": [
             {
-              "expression": "tunnel_id",
+              "expression": "routing_organization_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "uuid_ops"
+            },
+            {
+              "expression": "hostname",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "text_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_doorway_hosting_id": {
+          "name": "idx_doorway_hosting_id",
+          "columns": [
+            {
+              "expression": "hosting_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last",
@@ -3295,6 +3330,19 @@
         }
       },
       "foreignKeys": {
+        "doorway_routing_organization_id_organization_id_fk": {
+          "name": "doorway_routing_organization_id_organization_id_fk",
+          "tableFrom": "doorway",
+          "tableTo": "organization",
+          "columnsFrom": [
+            "routing_organization_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
         "doorway_tunnel_id_tunnel_id_fk": {
           "name": "doorway_tunnel_id_tunnel_id_fk",
           "tableFrom": "doorway",
@@ -3308,27 +3356,28 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "doorway_hostname_id_hostname_id_fk": {
-          "name": "doorway_hostname_id_hostname_id_fk",
+        "doorway_hosting_id_hosting_id_fk": {
+          "name": "doorway_hosting_id_hosting_id_fk",
           "tableFrom": "doorway",
-          "tableTo": "hostname",
+          "tableTo": "hosting",
           "columnsFrom": [
-            "hostname_id"
+            "hosting_id"
           ],
           "columnsTo": [
             "id"
           ],
-          "onDelete": "restrict",
+          "onDelete": "set null",
           "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
-        "uniq_doorway_hostname_id": {
-          "name": "uniq_doorway_hostname_id",
+        "uniq_doorway_tunnel_id_hostname": {
+          "name": "uniq_doorway_tunnel_id_hostname",
           "nullsNotDistinct": false,
           "columns": [
-            "hostname_id"
+            "tunnel_id",
+            "hostname"
           ]
         }
       },

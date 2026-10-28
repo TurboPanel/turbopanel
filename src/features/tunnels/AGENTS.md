@@ -39,12 +39,23 @@ member there, a widened CHECK (forward migration) and one adapter.
   server reports the version it runs in `portal.connector_version`, with
   `portal.version_checked_at` for when, so the panel can show program and
   version per tunnel per server.
-- `doorway` has no hostname text of its own: `hostname_id` points at the
-  existing `hostname` row (unique, one doorway per hostname), so the
-  per-organization uniqueness and the `hostname_in_use` refusal stay in one
-  place and the site comes from that row. The foreign key is RESTRICT because
-  `replaceHostingHostnames` deletes and reinserts a hosting's hostnames; it
-  must be changed to keep rows that have a doorway before any doorway is written.
+- `doorway` keeps the hostname text and a nullable `hosting_id` (SET NULL),
+  and is unique only on (tunnel, hostname), with an index on
+  (`routing_organization_id`, `hostname`) for lookups. It has no foreign key to
+  `hostname`: `replaceHostingHostnames` deletes and reinserts a hosting's
+  hostname rows on every save. Global uniqueness stays with `hostname`; a name
+  is registered there through the hosting, and the doorway code path must
+  return the same 409 `hostname_in_use`.
+- Delete behavior of every new foreign key: organization deleted removes its
+  carriers, tunnels and doorways (cascade, both organization columns on
+  `tunnel`); server deleted removes its portals; tunnel deleted removes its
+  portals and doorways; carrier deleted removes its badges but is refused
+  while a tunnel uses it (restrict); hosting deleted sets `doorway.hosting_id`
+  NULL; datacenter deleted sets `tunnel.datacenter_id` NULL. A `secret` row is
+  never removed by the database: removing a badge deletes its secret in code
+  (`deleteBadge`) and removing a tunnel deletes its run-token secret
+  (`deleteTunnelRecord`); `badge.secret_id` is restrict so a secret cannot
+  vanish under a badge, and `tunnel.secret_id` is SET NULL.
 - `carrier` is unique on (organization, provider, external account id); a
   provider with no account stores NULL, and NULLs never collide.
 

@@ -6,7 +6,7 @@
  */
 import { and, asc, eq, inArray } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
-import { badge, carrier, secret } from '../../db/schema.ts'
+import { badge, carrier, secret, tunnel } from '../../db/schema.ts'
 import { decryptSecret, encryptSecret } from '../../lib/secrets/data-encryption.ts'
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import type { CredentialReport } from './adapter.ts'
@@ -313,5 +313,16 @@ export async function deleteCarrier(db: Db, row: CarrierRow): Promise<void> {
         )
       )
     }
+  })
+}
+
+/** Remove a tunnel and its sealed run token together (portals and doorways cascade). */
+export async function deleteTunnelRecord(
+  db: Db,
+  row: Pick<typeof tunnel.$inferSelect, 'id' | 'secretId'>
+): Promise<void> {
+  await db.transaction(async (tx) => {
+    await tx.delete(tunnel).where(eq(tunnel.id, row.id))
+    if (row.secretId) await tx.delete(secret).where(eq(secret.id, row.secretId))
   })
 }
