@@ -986,3 +986,14 @@ test('changing to a chosen placement clears the datacenter and warns about a dae
     assert(shown.warnings.some((w) => w.includes('too old')))
   })
 })
+
+test('the daemon warning shows on later loads of the list and of one tunnel, not only after a change', async () => {
+  await withFixture(async (f) => {
+    const id = await makeTunnel(f)
+    const listed = await call(f, 'GET', `/organizations/${f.orgA}/tunnels`, f.managerCookie)
+    const rows = listed.body.tunnels as { warnings: string[] }[]
+    assert(rows[0]!.warnings.some((w) => w.includes('too old')))
+    const one = await call(f, 'GET', `/organizations/${f.orgA}/tunnels/${id}`, f.managerCookie)
+    assert((one.body.tunnel as { warnings: string[] }).warnings.some((w) => w.includes('too old')))
+  })
+})

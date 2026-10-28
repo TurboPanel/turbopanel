@@ -110,14 +110,14 @@ function secretsOrFail(c: Context<AppEnv>) {
 
 async function listResponse(c: Context<AppEnv>, scope: Scope): Promise<Response> {
   const rows = await listTunnels(scope.db, scope.organizationId)
-  const tunnels = await Promise.all(rows.map((row) => toApiTunnel(scope.db, row)))
+  const tunnels = await Promise.all(rows.map((row) => tunnelWithSupportWarning(scope, row)))
   return c.json({ tunnels })
 }
 
 async function getResponse(c: Context<AppEnv>, scope: Scope): Promise<Response> {
   const row = await loadTunnelParam(c, scope)
   if (row instanceof Response) return row
-  return c.json({ tunnel: await toApiTunnel(scope.db, row) })
+  return c.json({ tunnel: await tunnelWithSupportWarning(scope, row) })
 }
 
 function createResponse(registry: TunnelAdapterRegistry) {
