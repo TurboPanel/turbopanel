@@ -11,6 +11,7 @@ import type { MetricsCapabilityPlan } from './capability-plan.ts'
 import type { ServiceRunState } from './service-run-state.ts'
 import type { ManagedPermissionsObserved } from '../features/managed/privileges/observed.ts'
 import { isValidWireguardEndpoint, isValidWireguardPublicKey } from '../features/fabric/wg.ts'
+import { DAEMON_WIRE_FEATURES } from '../lib/version-wire.ts'
 
 export type DaemonBuildInfo = {
   commit: string
@@ -1056,12 +1057,14 @@ export const MAX_DAEMON_WS_FRAME_BYTES = 256 * 1024
 export const MAX_DAEMON_WS_ID_CHARS = 128
 
 /**
- * Max advertised feature names on `hello` / the attach `version` frame. Far above
- * the daemon's `DAEMON_WIRE_FEATURES` on purpose: a frame over this cap is closed
- * with 1008, so a list that outgrew it disconnected every updated daemon. A test
- * in `protocol.test.ts` fails once the list passes three quarters of this cap.
+ * How many advertised feature names a `hello` is scanned for. This is a parse
+ * bound, not a limit on what a daemon may advertise: names this control plane
+ * does not know are ignored, never a reason to close the socket (a newer daemon
+ * must stay connected to an older control plane). Far above the daemon's
+ * `DAEMON_WIRE_FEATURES`; a test in `protocol.test.ts` fails once that list
+ * passes three quarters of it.
  */
-export const MAX_DAEMON_WS_FEATURES = 128
+export const MAX_DAEMON_WS_FEATURES = 4096
 
 /** Max characters for one advertised feature name. */
 export const MAX_DAEMON_WS_FEATURE_CHARS = 64
@@ -1250,21 +1253,91 @@ function validateOptionalIsoTimestamp(value: unknown, field: string): string | n
   return null
 }
 
+/**
+ * A `hello` only has to carry an array (or nothing). Which names it holds is
+ * not a reason to refuse it: {@link filterHelloFeatures} keeps the names this
+ * control plane knows and ignores the rest.
+ */
 function validateHelloFeatures(value: unknown): string | null {
   if (value === undefined) return null
-  if (!Array.isArray(value)) return 'invalid features'
-  if (value.length > MAX_DAEMON_WS_FEATURES) {
-    return 'features exceed max entries'
+  return Array.isArray(value) ? null : 'invalid features'
+}
+
+const KNOWN_DAEMON_FEATURES: ReadonlySet<string> = new Set<string>(DAEMON_WIRE_FEATURES)
+
+/** Result of {@link filterHelloFeatures}: the names kept and a bounded note about the rest. */
+export type FilteredHelloFeatures = { features: string[]; note: string | null }
+
+type FeatureVerdict = 'keep' | 'unknown' | 'malformed' | 'duplicate'
+
+function featureVerdict(
+  entry: unknown,
+  known: ReadonlySet<string>,
+  seen: Set<string>
+): FeatureVerdict {
+  if (
+    typeof entry !== 'string' ||
+    entry.length === 0 ||
+    entry.length > MAX_DAEMON_WS_FEATURE_CHARS
+  ) {
+    return 'malformed'
   }
-  for (const entry of value) {
-    if (typeof entry !== 'string' || entry.length === 0) {
-      return 'invalid features'
+  if (!known.has(entry)) return 'unknown'
+  if (seen.has(entry)) return 'duplicate'
+  seen.add(entry)
+  return 'keep'
+}
+
+/** A short, printable stand-in for an ignored entry, safe to put in a log line. */
+function featureSample(entry: unknown): string {
+  if (typeof entry !== 'string') return typeof entry
+  return entry.slice(0, 24).replace(/[^ -~]/g, '?')
+}
+
+/**
+ * Keep only the advertised feature names this control plane knows (its own
+ * `DAEMON_WIRE_FEATURES`), in the daemon's order and without duplicates. Names
+ * it does not know are ignored: it never gates on them, and a newer daemon
+ * must not be refused for advertising more than an older control plane
+ * expects. Malformed entries are dropped the same way. The stored list can
+ * therefore never exceed the control plane's own list, and a capable daemon
+ * never looks incapable, because every name the control plane gates on is
+ * kept. At most {@link MAX_DAEMON_WS_FEATURES} entries are scanned.
+ *
+ * `note` is one bounded line (counts, and at most three short samples) when
+ * anything was ignored, else `null`.
+ */
+export function filterHelloFeatures(
+  entries: readonly unknown[],
+  known: ReadonlySet<string> = KNOWN_DAEMON_FEATURES
+): FilteredHelloFeatures {
+  const features: string[] = []
+  const seen = new Set<string>()
+  const counts = { unknown: 0, malformed: 0, duplicate: 0 }
+  const samples: string[] = []
+  const scanned = Math.min(entries.length, MAX_DAEMON_WS_FEATURES)
+  for (let index = 0; index < scanned; index++) {
+    const entry = entries[index]
+    const verdict = featureVerdict(entry, known, seen)
+    if (verdict === 'keep') {
+      features.push(entry as string)
+      continue
     }
-    if (entry.length > MAX_DAEMON_WS_FEATURE_CHARS) {
-      return 'features exceed max length'
-    }
+    counts[verdict] += 1
+    if (samples.length < 3) samples.push(featureSample(entry))
   }
-  return null
+  const unscanned = entries.length - scanned
+  const ignored = counts.unknown + counts.malformed + counts.duplicate + unscanned
+  if (ignored === 0) return { features, note: null }
+  const detail =
+    `unknown=${counts.unknown} malformed=${counts.malformed} ` +
+    `duplicate=${counts.duplicate} unscanned=${unscanned}`
+  return {
+    features,
+    note:
+      `hello features: received=${entries.length} kept=${features.length} ` +
+      `ignored=${ignored} (${detail}) sample=[${samples.join(', ')}]`,
+  }
 }
 
 function validateHelloFields(record: Record<string, unknown>): string | null {
@@ -1272,6 +1345,17 @@ function validateHelloFields(record: Record<string, unknown>): string | null {
   const presence = validatePresenceFields(record)
   if (presence) return presence
   return validateHelloFeatures(record.features)
+}
+
+/**
+ * Prefix of a validation reason that means "a well-formed field holds a value
+ * this control plane does not know" (a newer daemon's enum value). The frame is
+ * ignored, the socket stays up. Every other reason is a rejection.
+ */
+const UNKNOWN_VALUE_PREFIX = 'unknown value: '
+
+function unknownValue(field: string): string {
+  return `${UNKNOWN_VALUE_PREFIX}${field}`
 }
 
 const UPDATE_PROGRESS_UNIT_SET = new Set<string>(UPDATE_PROGRESS_UNITS)
@@ -1293,12 +1377,10 @@ function validateUpdateProgressFields(record: Record<string, unknown>): string |
   if (record.upgradeId !== undefined && !isBoundedId(record.upgradeId)) {
     return 'invalid upgradeId'
   }
-  if (typeof record.unit !== 'string' || !UPDATE_PROGRESS_UNIT_SET.has(record.unit)) {
-    return 'invalid unit'
-  }
-  if (typeof record.stage !== 'string' || !UPDATE_PROGRESS_STAGE_SET.has(record.stage)) {
-    return 'invalid stage'
-  }
+  if (typeof record.unit !== 'string') return 'invalid unit'
+  if (!UPDATE_PROGRESS_UNIT_SET.has(record.unit)) return unknownValue('unit')
+  if (typeof record.stage !== 'string') return 'invalid stage'
+  if (!UPDATE_PROGRESS_STAGE_SET.has(record.stage)) return unknownValue('stage')
   if (!isIsoTimestamp(record.at)) return 'invalid at timestamp'
   return (
     validateOptionalBoundedString(record.detail, 'detail', MAX_DAEMON_WS_ERROR_CHARS) ??
@@ -1329,8 +1411,9 @@ function validateBoundedString(value: unknown, field: string, maxChars: number):
 
 function validateCommandProgressStep(value: unknown, index: number): string | null {
   if (!isRecord(value)) return `invalid step ${index}`
-  if (typeof value.state !== 'string' || !COMMAND_PROGRESS_STEP_STATE_SET.has(value.state)) {
-    return `invalid step ${index} state`
+  if (typeof value.state !== 'string') return `invalid step ${index} state`
+  if (!COMMAND_PROGRESS_STEP_STATE_SET.has(value.state)) {
+    return unknownValue(`step ${index} state`)
   }
   return (
     validateBoundedString(value.id, `step ${index} id`, MAX_DAEMON_WS_PROGRESS_STEP_ID_CHARS) ??
@@ -1601,9 +1684,8 @@ function validateBackupRunReportRun(record: Record<string, unknown>): string | n
   if (!isBackupRunToken(record.runId)) return 'invalid runId'
   if (!isIsoTimestamp(record.startedAt)) return 'invalid startedAt'
   if (!isIsoTimestamp(record.finishedAt)) return 'invalid finishedAt'
-  if (typeof record.status !== 'string' || !BACKUP_RUN_STATUSES.has(record.status)) {
-    return 'invalid status'
-  }
+  if (typeof record.status !== 'string') return 'invalid status'
+  if (!BACKUP_RUN_STATUSES.has(record.status)) return unknownValue('status')
   return (
     validateOptionalIsoTimestamp(record.nextRunAt, 'nextRunAt') ??
     validateOptionalError(record.error)
@@ -1677,9 +1759,8 @@ function validateBackupCopyReportFields(record: Record<string, unknown>): string
   ) {
     return 'invalid policyId'
   }
-  if (typeof record.state !== 'string' || !BACKUP_COPY_STATES.has(record.state)) {
-    return 'invalid state'
-  }
+  if (typeof record.state !== 'string') return 'invalid state'
+  if (!BACKUP_COPY_STATES.has(record.state)) return unknownValue('state')
   if (!isIsoTimestamp(record.finishedAt)) return 'invalid finishedAt'
   return validateBackupCopyReportOutcome(record)
 }
@@ -1958,13 +2039,11 @@ export type DeployCancelOutcome = (typeof DEPLOY_CANCEL_OUTCOMES)[number]
 function validateDeployCancelResultFields(record: Record<string, unknown>): string | null {
   const base = validateOkResultFields(record)
   if (base) return base
-  if (
-    record.outcome !== undefined &&
-    !(DEPLOY_CANCEL_OUTCOMES as readonly unknown[]).includes(record.outcome)
-  ) {
-    return 'invalid outcome'
-  }
-  return null
+  if (record.outcome === undefined) return null
+  if (typeof record.outcome !== 'string') return 'invalid outcome'
+  return (DEPLOY_CANCEL_OUTCOMES as readonly unknown[]).includes(record.outcome)
+    ? null
+    : unknownValue('outcome')
 }
 
 function validateOkResultFields(record: Record<string, unknown>): string | null {
@@ -2032,11 +2111,14 @@ function validateCommandOutcomeFields(record: Record<string, unknown>): string |
 /**
  * Result of {@link validateDaemonInboundFrame}.
  *
- * `ignored` is a well-formed object whose `type` this control plane does not
- * know. The socket stays up. Every other failure still closes with 1008.
+ * `ignored` is a well-formed object whose `type`, or an enum value in a known
+ * type, this control plane does not know: a newer daemon must not be refused
+ * for something optional. The socket stays up. Every other failure still closes
+ * with 1008. `notes` are bounded one-line warnings for the caller to log (the
+ * `hello` feature filter fills it).
  */
 export type DaemonInboundFrameResult =
-  | { ok: true; message: DaemonMessage }
+  | { ok: true; message: DaemonMessage; notes?: readonly string[] }
   | { ok: false; ignored: true; reason: string }
   | { ok: false; ignored: false; reason: string }
 
@@ -2078,7 +2160,17 @@ export function validateDaemonInboundFrame(raw: string): DaemonInboundFrameResul
   }
 
   const typeIssue = validateInboundMessageFields(parsed)
-  if (typeIssue) return rejectedInboundFrame(typeIssue)
+  if (typeIssue) {
+    return typeIssue.startsWith(UNKNOWN_VALUE_PREFIX)
+      ? ignoredInboundFrame(typeIssue)
+      : rejectedInboundFrame(typeIssue)
+  }
+
+  if (parsed.type === 'hello' && Array.isArray(parsed.features)) {
+    const { features, note } = filterHelloFeatures(parsed.features)
+    const message = { ...parsed, features } as DaemonMessage
+    return note ? { ok: true, message, notes: [note] } : { ok: true, message }
+  }
 
   return { ok: true, message: parsed as DaemonMessage }
 }

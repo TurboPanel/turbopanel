@@ -1,6 +1,7 @@
 import { assert, assertEquals, assertNotEquals } from '@std/assert'
 import { it } from '@std/testing/bdd'
 import type { CommandProgress } from '../../contracts/cell-protocol.ts'
+import * as versionWire from '../../lib/version-wire.ts'
 import { DAEMON_WIRE_FEATURES } from '../../lib/version-wire.ts'
 import {
   DAEMON_CELL_PING,
@@ -16,6 +17,8 @@ import {
   MAX_DAEMON_WS_DEFAULT_BRANCH_CHARS,
   MAX_DAEMON_WS_ERROR_CHARS,
   MAX_DAEMON_WS_FABRIC_PATH_ENTRIES,
+  filterHelloFeatures,
+  MAX_DAEMON_WS_FEATURE_CHARS,
   MAX_DAEMON_WS_FEATURES,
   MAX_DAEMON_WS_FRAME_BYTES,
   MAX_DAEMON_WS_HOST_FIELD_CHARS,
@@ -745,8 +748,8 @@ it('validateDaemonInboundFrame accepts a hello that carries every current wire f
 })
 
 it('the advertised wire feature list stays well under the hello cap', () => {
-  // A hello over MAX_DAEMON_WS_FEATURES is closed with 1008, which disconnects every
-  // daemon that advertises the longer list. Raise the cap before it gets close.
+  // MAX_DAEMON_WS_FEATURES bounds how many names a hello is scanned for. Names past it are
+  // ignored, so a known name beyond it would look missing. Raise it before the list gets close.
   const margin = Math.floor((MAX_DAEMON_WS_FEATURES * 3) / 4)
   assert(
     DAEMON_WIRE_FEATURES.length <= margin,
@@ -757,7 +760,7 @@ it('the advertised wire feature list stays well under the hello cap', () => {
   assertEquals(new Set(DAEMON_WIRE_FEATURES).size, DAEMON_WIRE_FEATURES.length)
 })
 
-it('validateDaemonInboundFrame bounds hello features and ignores them on heartbeat', () => {
+it('validateDaemonInboundFrame keeps hello features and ignores them on heartbeat', () => {
   const ok = validateDaemonInboundFrame(
     JSON.stringify({
       type: 'hello',
@@ -779,28 +782,6 @@ it('validateDaemonInboundFrame bounds hello features and ignores them on heartbe
     })
   )
   assertEquals(omitted.ok, true)
-
-  const tooMany = validateDaemonInboundFrame(
-    JSON.stringify({
-      type: 'hello',
-      at: VALID_AT,
-      daemonBuild: VALID_DAEMON_BUILD,
-      features: Array.from({ length: MAX_DAEMON_WS_FEATURES + 1 }, (_, index) => `f${index}`),
-    })
-  )
-  assertEquals(tooMany.ok, false)
-  if (!tooMany.ok) assertEquals(tooMany.ignored, false)
-
-  const badEntry = validateDaemonInboundFrame(
-    JSON.stringify({
-      type: 'hello',
-      at: VALID_AT,
-      daemonBuild: VALID_DAEMON_BUILD,
-      features: ['ok', 1],
-    })
-  )
-  assertEquals(badEntry.ok, false)
-  if (!badEntry.ok) assertEquals(badEntry.ignored, false)
 
   const heartbeat = validateDaemonInboundFrame(
     JSON.stringify({
@@ -839,10 +820,26 @@ it('validateDaemonInboundFrame validates update-progress', () => {
       at: VALID_AT,
     })
   )
+  // A stage this control plane does not know is a newer daemon's value: ignored, socket stays up.
   assertEquals(badStage.ok, false)
   if (!badStage.ok) {
-    assertEquals(badStage.ignored, false)
-    assertEquals(badStage.reason, 'invalid stage')
+    assertEquals(badStage.ignored, true)
+    assertEquals(badStage.reason, 'unknown value: stage')
+  }
+  // A stage of the wrong type is a malformed frame and stays a rejection.
+  const wrongType = validateDaemonInboundFrame(
+    JSON.stringify({
+      type: 'update-progress',
+      id: 'step-1',
+      unit: 'daemon',
+      stage: 7,
+      at: VALID_AT,
+    })
+  )
+  assertEquals(wrongType.ok, false)
+  if (!wrongType.ok) {
+    assertEquals(wrongType.ignored, false)
+    assertEquals(wrongType.reason, 'invalid stage')
   }
 })
 
@@ -2764,4 +2761,110 @@ it('validateDaemonInboundFrame bounds the commands report on hello and heartbeat
       assertEquals(frame(type, bad).ok, false, JSON.stringify(bad))
     }
   }
+})
+
+const helloWith = (extra: Record<string, unknown>): string =>
+  JSON.stringify({ type: 'hello', at: VALID_AT, daemonBuild: VALID_DAEMON_BUILD, ...extra })
+
+it('a hello advertising far more names than this panel knows still connects with the known ones', () => {
+  const known = [...DAEMON_WIRE_FEATURES]
+  // 500 entries: unknown newer names, malformed ones, duplicates, and every known name,
+  // the known ones placed last so a "keep the first N" filter would drop exactly them.
+  const noise: unknown[] = [
+    ...Array.from({ length: 400 }, (_, index) => `newer-feature-${index}-v1`),
+    '',
+    7,
+    null,
+    'x'.repeat(MAX_DAEMON_WS_FEATURE_CHARS + 1),
+    known[0],
+  ]
+  const result = validateDaemonInboundFrame(helloWith({ features: [...noise, ...known] }))
+  assertEquals(result.ok, true)
+  if (!result.ok || result.message.type !== 'hello') return
+  assertEquals(result.message.features, known)
+  assertEquals(result.notes?.length, 1)
+  const note = result.notes?.[0] ?? ''
+  assert(note.includes('unknown=400'), note)
+  assert(note.includes('malformed=4'), note)
+  assert(note.includes('duplicate=1'), note)
+  assert(note.length < 300, `the note stays one short line, got ${note.length} chars`)
+})
+
+it('every feature name this panel gates on is one it keeps', () => {
+  const gated = Object.entries(versionWire).filter(
+    ([name, value]) => name.endsWith('_FEATURE') && typeof value === 'string'
+  )
+  assert(gated.length > 0)
+  for (const [name, value] of gated) {
+    assert(
+      (DAEMON_WIRE_FEATURES as readonly string[]).includes(value as string),
+      `${name} (${value}) is not in DAEMON_WIRE_FEATURES, so a hello would drop it`
+    )
+  }
+})
+
+it('filterHelloFeatures drops unknown, malformed and repeated names, keeps order, and bounds the note', () => {
+  const known = new Set(['a-v1', 'b-v1', 'c-v1'])
+  const clean = filterHelloFeatures(['b-v1', 'a-v1'], known)
+  assertEquals(clean, { features: ['b-v1', 'a-v1'], note: null })
+
+  const mixed = filterHelloFeatures(['c-v1', 'z-v9', 'c-v1', 3, 'a\u0000b', 'b-v1'], known)
+  assertEquals(mixed.features, ['c-v1', 'b-v1'])
+  assert(mixed.note?.includes('received=6 kept=2 ignored=4'), mixed.note ?? '')
+  // At most three samples, printable only.
+  assertEquals((mixed.note?.match(/,/g) ?? []).length <= 8, true)
+  assert([...(mixed.note ?? '')].every((char) => char.charCodeAt(0) >= 32))
+})
+
+it('a hello is scanned for at most MAX_DAEMON_WS_FEATURES names', () => {
+  const known = new Set(['late-v1'])
+  const entries = Array.from({ length: MAX_DAEMON_WS_FEATURES + 5 }, () => 'unknown-v1')
+  entries[MAX_DAEMON_WS_FEATURES + 2] = 'late-v1'
+  const result = filterHelloFeatures(entries, known)
+  assertEquals(result.features, [])
+  assert(result.note?.includes('unscanned=5'), result.note ?? '')
+})
+
+it('a hello with unknown extra keys and an unknown optional shape still connects', () => {
+  const result = validateDaemonInboundFrame(
+    helloWith({
+      features: ['managed-upgrade-v1'],
+      someFutureField: { nested: [1, 2, 3] },
+      commands: { running: [], unacked: [], futureList: ['x'] },
+    })
+  )
+  assertEquals(result.ok, true)
+  if (result.ok) assertEquals(result.notes, undefined)
+})
+
+it('a genuinely malformed hello is still refused', () => {
+  const refused = (frame: string): void => {
+    const result = validateDaemonInboundFrame(frame)
+    assertEquals(result.ok, false)
+    if (!result.ok) assertEquals(result.ignored, false)
+  }
+  refused(helloWith({ features: 'managed-upgrade-v1' }))
+  refused(helloWith({ features: { 0: 'managed-upgrade-v1' } }))
+  refused(JSON.stringify({ type: 'hello', at: VALID_AT, features: [] }))
+  refused(JSON.stringify({ type: 'hello', at: 'yesterday', daemonBuild: VALID_DAEMON_BUILD }))
+  refused(helloWith({ hostname: 'h'.repeat(10_000) }))
+  refused(helloWith({ commands: { running: 'x', unacked: [] } }))
+  refused(helloWith({ features: ['a'.repeat(300_000)] }))
+})
+
+it('an unknown value in a known frame is ignored, not refused', () => {
+  const backup = validateDaemonInboundFrame(
+    JSON.stringify({
+      type: 'backup-run-report',
+      id: 'report-1',
+      at: VALID_AT,
+      policyId: '00000000-0000-4000-8000-000000000001',
+      runId: 'run-1',
+      startedAt: VALID_AT,
+      finishedAt: VALID_AT,
+      status: 'a-status-from-a-newer-daemon',
+    })
+  )
+  assertEquals(backup.ok, false)
+  if (!backup.ok) assertEquals(backup.ignored, true)
 })

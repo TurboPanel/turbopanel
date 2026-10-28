@@ -1999,6 +1999,11 @@ export class DaemonCellObject {
       return
     }
     const parsed = validated.message
+    for (const note of validated.notes ?? []) {
+      console.warn(
+        `daemon-cell event=inbound-note serverId=${attachment.serverId} conn=${attachment.connectionId} ${note}`
+      )
+    }
 
     this.#trace('inbound', {
       serverId: attachment.serverId,

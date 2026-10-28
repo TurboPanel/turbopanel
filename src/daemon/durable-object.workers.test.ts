@@ -1693,6 +1693,49 @@ describe.sequential('DaemonCellObject', () => {
     ws.close(1000, 'test done')
   })
 
+  it('a hello advertising many names this control plane does not know stays connected', async () => {
+    const serverId = 'test-srv-hello-newer-features'
+    const { db, updateCalls } = createProjectionRecordingDb({ connected: false })
+    setDaemonCellProjectionDbFactoryForTests(() => db)
+
+    const stub = env.DAEMON_CELL.getByName(serverId)
+    const { ws } = await openDaemonWebSocket(stub, serverId)
+    let closedWith: number | null = null
+    ws.addEventListener('close', (event) => {
+      closedWith = event.code
+    })
+
+    await waitFor(() => {
+      expect(updateCalls.length).toBeGreaterThan(0)
+    })
+
+    ws.send(
+      JSON.stringify({
+        type: 'hello',
+        at: new Date().toISOString(),
+        daemonBuild: { commit: 'abc', buildId: '1' },
+        features: [
+          ...Array.from({ length: 500 }, (_, index) => `newer-feature-${index}-v1`),
+          7,
+          'managed-upgrade-v1',
+        ],
+        someFutureField: { nested: true },
+      })
+    )
+
+    await waitFor(async () => {
+      const snapshotResponse = await cellRpc(stub, serverId, '/rpc/snapshot', { method: 'GET' })
+      const snapshot = (await snapshotResponse.json()) as {
+        lastSeenAt?: string
+        daemonBuild?: { commit: string }
+      }
+      expect(snapshot.daemonBuild?.commit).toBe('abc')
+    })
+    expect(closedWith).toBeNull()
+
+    ws.close(1000, 'test done')
+  })
+
   it('heartbeat without daemonBuild does not update Postgres status or snapshot lastSeenAt', async () => {
     const serverId = 'test-srv-heartbeat-no-daemonBuild'
     const { db, updateCalls, getStatus } = createProjectionRecordingDb({
