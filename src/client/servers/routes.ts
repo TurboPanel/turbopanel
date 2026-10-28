@@ -1,7 +1,7 @@
 import { and, eq, inArray, sql } from 'drizzle-orm'
 import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
-import { nudgeTunnelRoutesFromRequest } from '../organizations/tunnel-nudge.ts'
+import { nudgeTunnelRoutesAfterResponse } from '../organizations/tunnel-nudge.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { requireStepUpIfConfigured } from '../authn/step-up.ts'
@@ -1275,7 +1275,7 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
       })
     }
 
-    await nudgeTunnelRoutesFromRequest(c, db, organizationId)
+    nudgeTunnelRoutesAfterResponse(c, organizationId)
     return c.json({ ok: true as const })
   })
 
@@ -1437,7 +1437,7 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     }
 
     await reconcileFabricAfterServerDelete(c, db, organizationId, session.userId)
-    await nudgeTunnelRoutesFromRequest(c, db, organizationId)
+    nudgeTunnelRoutesAfterResponse(c, organizationId)
 
     await clearServerDaemonState(db, id)
 

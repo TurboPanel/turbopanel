@@ -67,7 +67,7 @@ export type Scenario = {
   doorwayId: string
 }
 
-async function newServer(db: Db, organizationId: string, name: string): Promise<string> {
+export async function newServer(db: Db, organizationId: string, name: string): Promise<string> {
   const [row] = await db
     .insert(server)
     .values({

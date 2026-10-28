@@ -1,7 +1,7 @@
 import { and, count, eq, inArray, isNotNull } from 'drizzle-orm'
 import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
-import { nudgeTunnelRoutesFromRequest } from '../organizations/tunnel-nudge.ts'
+import { nudgeTunnelRoutesAfterResponse } from '../organizations/tunnel-nudge.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { type OrgRequest, resolveOrgRequest } from '../org-request.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
@@ -972,7 +972,7 @@ export function registerDatacenterRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
         deployment
       )
 
-      await nudgeTunnelRoutesFromRequest(c, db, organizationId)
+      nudgeTunnelRoutesAfterResponse(c, organizationId)
       return c.json({ ok: true as const })
     } catch (err) {
       if (isIpAddressUniqueViolation(err)) {
@@ -998,7 +998,7 @@ export function registerDatacenterRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
     }
     await pruneClientAddressesWithoutPin(db, [serverId])
 
-    await nudgeTunnelRoutesFromRequest(c, db, organizationId)
+    nudgeTunnelRoutesAfterResponse(c, organizationId)
     return c.json({ ok: true as const, removed: deleted.length })
   })
 
@@ -1168,7 +1168,7 @@ export function registerDatacenterRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
       })
     }
 
-    await nudgeTunnelRoutesFromRequest(c, db, organizationId)
+    nudgeTunnelRoutesAfterResponse(c, organizationId)
     return c.json({ ok: true as const })
   })
 

@@ -9,7 +9,7 @@ import {
 } from '../../features/deploy/deploy-engine.ts'
 import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
-import { nudgeTunnelRoutesFromRequest } from '../organizations/tunnel-nudge.ts'
+import { nudgeTunnelRoutesAfterResponse } from '../organizations/tunnel-nudge.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { requireStepUpIfConfigured } from '../authn/step-up.ts'
@@ -2193,7 +2193,6 @@ async function runEnvironmentDeploy(
       projectName,
     })
     if (drainedError) return drainedError
-    await nudgeTunnelRoutesFromRequest(c, db, auth.organizationId)
 
     const releasedListeners = await releaseOrphanedComposeNetworks(db, environmentId, participating)
     await enqueueIngressReconcileAfterDeploy(c, db, commandQueue, {
@@ -2204,6 +2203,7 @@ async function runEnvironmentDeploy(
       releasedListeners,
       ...spanningCtx,
     })
+    nudgeTunnelRoutesAfterResponse(c, auth.organizationId)
 
     return Response.json(
       queuedCommandsResponseBody(

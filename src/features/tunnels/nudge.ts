@@ -7,9 +7,10 @@
  * that gains or loses a tunnel to carry starts or stops its connector too.
  *
  * Nothing here throws: a failure is logged and the sweep tries again. The work
- * is bounded (one organization, a capped number of servers, nothing sent for a
- * table that has not changed) and uses only the database and the command queue,
- * so it is safe inside a request on every edition.
+ * is bounded (one organization, a capped number of servers per pass, nothing
+ * sent for a table that has not changed) and uses only the database and the
+ * command queue. Request handlers run it after the response
+ * (`nudgeTunnelRoutesAfterResponse`), never inside the request.
  */
 import { and, eq, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
@@ -57,28 +58,47 @@ async function hasTunnelWork(db: Db, organizationId: string): Promise<boolean> {
   return serverRow !== undefined
 }
 
-/** Bring every involved server of the organization up to date. Never throws. */
-export async function nudgeTunnelRoutes(
-  db: Db,
-  deps: TunnelSyncDeps | null,
-  organizationId: string
-): Promise<void> {
-  if (!deps) return
+/** Run one pass; a failure is logged and the other pass still runs. */
+async function quietly(organizationId: string, pass: () => Promise<unknown>): Promise<void> {
   try {
-    if (!(await hasTunnelWork(db, organizationId))) return
-    await relinkDoorwayHostings(db, organizationId)
-    const serverIds = (await serversToCheck(db, organizationId)).slice(0, TUNNEL_NUDGE_MAX_SERVERS)
-    await forEachSequential(serverIds, async (serverId) => {
-      await syncServerQuietly(db, deps, organizationId, serverId)
-    })
-    // Servers that gained or lost a tunnel to carry start or stop its connector too.
-    await syncOrganizationTunnelConnectors(db, deps, organizationId)
+    await pass()
   } catch (err) {
     compatLogWarn(
       'tunnel-sync',
       `organization ${organizationId}: ${err instanceof Error ? err.message : err}`
     )
   }
+}
+
+/**
+ * Bring the servers of the organization up to date: forwarding tables first,
+ * then connector lists. Each pass stops after {@link TUNNEL_NUDGE_MAX_SERVERS}
+ * servers. Never throws.
+ */
+export async function nudgeTunnelRoutes(
+  db: Db,
+  deps: TunnelSyncDeps | null,
+  organizationId: string
+): Promise<void> {
+  if (!deps) return
+  let work = false
+  await quietly(organizationId, async () => {
+    work = await hasTunnelWork(db, organizationId)
+  })
+  if (!work) return
+  await quietly(organizationId, async () => {
+    await relinkDoorwayHostings(db, organizationId)
+    const serverIds = (await serversToCheck(db, organizationId)).slice(0, TUNNEL_NUDGE_MAX_SERVERS)
+    await forEachSequential(serverIds, async (serverId) => {
+      await syncServerQuietly(db, deps, organizationId, serverId)
+    })
+  })
+  // Servers that gained or lost a tunnel to carry start or stop its connector too.
+  await quietly(organizationId, () =>
+    syncOrganizationTunnelConnectors(db, deps, organizationId, {
+      maxServers: TUNNEL_NUDGE_MAX_SERVERS,
+    })
+  )
 }
 
 /** The organization an environment belongs to, or null when it is gone. */

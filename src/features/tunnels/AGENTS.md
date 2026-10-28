@@ -214,24 +214,32 @@ provider accounts.
   (`runTunnelConnectorsSweepTick`) and right after a tunnel is created, moved
   or removed (best effort). Changing a tunnel's run token is not supported
   yet: remove the connector, then send it again.
-- `nudge.ts` sends the tables right away instead of waiting for the sweep. It
-  never throws, does nothing for an organization with no tunnel (and no server
-  that once held a table), sends to at most 40 servers per call and leaves the
-  rest to the sweep. It runs inside the request on every runtime (database and
-  command queue only), after: a site is created, edited or deleted
-  (`/hostings`), a server is changed, deleted or has its addresses set
-  (`/servers`), a server joins or leaves a datacenter (`/datacenters/:id/members`)
-  or the datacenter is edited, an environment or project is deleted, a deploy
-  that moves sites is queued (`deploy-routes.ts`), and a deploy result lands
-  (`consumer.ts`, `applyEnvironmentDeploySideEffect`). The same call also
-  sends the connector list (`syncOrganizationTunnelConnectors`), so a server
-  that joins or leaves an "all" tunnel starts or stops its connector at once
-  too. Go through
-  `nudgeTunnelRoutesFromRequest` (`src/client/organizations/tunnel-nudge.ts`)
-  from a handler, or `nudgeTunnelRoutesForEnvironment` where only an
-  environment is known. Not covered, left to the sweep: the raw `/ips` routes,
-  which are not formatted by the repo formatter (editing them would fail the
-  format check).
+- `nudge.ts` sends the tables and then the connector lists
+  (`syncOrganizationTunnelConnectors`) right away instead of waiting for the
+  sweep, so a server that joins or leaves an "all" tunnel starts or stops its
+  connector at once too. It never throws (each pass is guarded on its own), does
+  nothing for an organization with no tunnel (and no server that once held a
+  table or a connector list), and each pass stops after 40 servers, in the order
+  they are found; the sweep reaches the rest. Triggers: a site is created,
+  edited or deleted (`/hostings`), a server is changed, deleted or has its
+  addresses set (`/servers`), a server joins or leaves a datacenter
+  (`/datacenters/:id/members`) or the datacenter is edited, an environment or
+  project is deleted, a deploy that moves sites is queued (`deploy-routes.ts`),
+  and a deploy result lands (`consumer.ts`, `applyEnvironmentDeploySideEffect`).
+  **A request handler never waits for it**: it calls
+  `nudgeTunnelRoutesAfterResponse` (`src/client/organizations/tunnel-nudge.ts`),
+  which runs the work after the response (`runAfterResponse`) on its own
+  database client on Workers (the request's client is closed by `src/workers.ts`)
+  and on the process client on Deno. Tests set `tunnelNudgeSchedule` on the
+  context to collect the task and run it. The consumer runs it as the very last
+  step of the deploy side effect (after all the bookkeeping, also when that
+  returned early), through `nudgeTunnelRoutesForEnvironment`. Not covered, left
+  to the sweep: the raw `/ips` routes, which are not formatted by the repo
+  formatter (editing them would fail the format check). Known follow-ups (not
+  built): the `tunnelRoutes` and `tunnelConnectors` markers on a server stay
+  after its last tunnel is deleted, so the organization keeps counting as having
+  tunnel work (clear them once the empty table or list is confirmed), and the
+  first 40 servers are always the same ones (rotate the start).
 - `doorway-links.ts` re-reads which site holds each doorway's name from the
   `hostname` table before tables are built (the nudge and the sweep both do).
   A doorway keeps the hostname text, but its site link is read once when it is

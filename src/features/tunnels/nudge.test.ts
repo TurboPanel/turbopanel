@@ -6,18 +6,34 @@
  */
 import { assert, assertEquals } from '@std/assert'
 import { eq } from 'drizzle-orm'
-import { deployment, doorway, hosting, ip, portal, server, tunnel } from '../../db/schema.ts'
+import {
+  deployment,
+  doorway,
+  hosting,
+  hostname,
+  ip,
+  portal,
+  server,
+  tunnel,
+} from '../../db/schema.ts'
+import type { Db } from '../../db/connection.ts'
 import { parseTunnelRoutesPayload } from '../../contracts/commands/tunnel-routes.ts'
 import { createCommandRecord, getCommandDispatchPayload } from '../commands/command-records.ts'
 import { applySucceededSideEffects } from '../commands/consumer.ts'
 import { DENY_FIREWALL_APPLY } from '../firewall/enforcement.ts'
 import { replaceHostingHostnames } from '../servers/hostname-records.ts'
-import { nudgeTunnelRoutes, nudgeTunnelRoutesForEnvironment } from './nudge.ts'
+import { relinkDoorwayHostings } from './doorway-links.ts'
+import {
+  nudgeTunnelRoutes,
+  nudgeTunnelRoutesForEnvironment,
+  TUNNEL_NUDGE_MAX_SERVERS,
+} from './nudge.ts'
 import {
   addAddress,
   connectorListOf,
   connectorsTo,
   NAME,
+  newServer,
   sentTo,
   tableOf,
   withScenario,
@@ -230,5 +246,88 @@ test('a server that joins an "all" tunnel starts its connector at once, and one 
     const left = connectorsTo(s, s.spareId)
     assertEquals(left.length, 2)
     assertEquals((await connectorListOf(s, left[1]!)).remove, [s.providerTunnelId])
+  })
+})
+
+test('another organization is left alone: nothing is sent to its servers and its doorway link does not move', async () => {
+  await withScenario({}, async (mine) => {
+    await withScenario({}, async (other) => {
+      // The other organization's name moves between its two sites, which would relink its doorway.
+      await replaceHostingHostnames(other.db, other.hostingAId, other.organizationId, [])
+      await replaceHostingHostnames(other.db, other.hostingBId, other.organizationId, [NAME])
+      await nudgeTunnelRoutes(mine.db, mine.deps, mine.organizationId)
+      const theirServers = new Set([other.carrierId, other.siteAId, other.siteBId, other.spareId])
+      assert(mine.queued.length > 0)
+      assert(mine.queued.every((envelope) => !theirServers.has(envelope.serverId)))
+      const [theirDoorway] = await other.db
+        .select({ hostingId: doorway.hostingId })
+        .from(doorway)
+        .where(eq(doorway.id, other.doorwayId))
+      assertEquals(theirDoorway!.hostingId, other.hostingAId)
+      assertEquals(other.queued.length, 0)
+    })
+  })
+})
+
+test('one change sends to at most the cap in each pass, tables and connector lists alike', async () => {
+  await withScenario({ tunnelPlacement: 'all' }, async (s) => {
+    const extra = TUNNEL_NUDGE_MAX_SERVERS + 5
+    for (let i = 0; i < extra; i += 1) {
+      const id = await newServer(s.db, s.organizationId, `Extra ${i}`)
+      await addAddress(s, id, `10.95.1.${i + 1}`)
+    }
+    await nudgeTunnelRoutes(s.db, s.deps, s.organizationId)
+    const tables = s.queued.filter((e) => e.type === 'server.tunnel.routes')
+    const lists = s.queued.filter((e) => e.type === 'server.tunnel.connectors')
+    assertEquals(tables.length, TUNNEL_NUDGE_MAX_SERVERS)
+    assertEquals(lists.length, TUNNEL_NUDGE_MAX_SERVERS)
+  })
+})
+
+test('a queue or a database that fails does not make the send throw', async () => {
+  await withScenario({}, async (s) => {
+    const failingQueue = {
+      commandQueue: {
+        enqueue: () => Promise.reject(new Error('queue down')),
+      },
+      secretsConfig: s.deps.secretsConfig,
+      dataEncryptionSecrets: s.deps.dataEncryptionSecrets,
+    }
+    await nudgeTunnelRoutes(s.db, failingQueue, s.organizationId)
+    await nudgeTunnelRoutesForEnvironment(s.db, failingQueue, s.environmentAId)
+    const brokenDb = {
+      select: () => {
+        throw new Error('database down')
+      },
+    } as unknown as Db
+    await nudgeTunnelRoutes(brokenDb, s.deps, s.organizationId)
+    await nudgeTunnelRoutesForEnvironment(brokenDb, s.deps, s.environmentAId)
+  })
+})
+
+test('a name held by a site of another organization is not linked to a doorway', async () => {
+  await withScenario({}, async (mine) => {
+    await withScenario({}, async (other) => {
+      // The other organization's site holds a name that this organization routes.
+      await mine.db.insert(hostname).values({
+        hostingId: other.hostingAId,
+        routingOrganizationId: mine.organizationId,
+        hostname: 'foreign.example.com',
+      })
+      await mine.db.insert(doorway).values({
+        routingOrganizationId: mine.organizationId,
+        tunnelId: mine.tunnelId,
+        hostname: 'foreign.example.com',
+        hostingId: null,
+        status: 'live',
+      })
+      assertEquals(await relinkDoorwayHostings(mine.db, mine.organizationId), 0)
+      const [row] = await mine.db
+        .select({ hostingId: doorway.hostingId })
+        .from(doorway)
+        .where(eq(doorway.hostname, 'foreign.example.com'))
+      assertEquals(row!.hostingId, null)
+      await mine.db.delete(hostname).where(eq(hostname.hostname, 'foreign.example.com'))
+    })
   })
 })

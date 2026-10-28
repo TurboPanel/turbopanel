@@ -338,7 +338,15 @@ export async function runTunnelRoutesSweepTick(
   let sent = 0
   let failed = 0
   await forEachSequential(await organizationsToCheck(db), async (organizationId) => {
-    await relinkDoorwayHostings(db, organizationId)
+    try {
+      await relinkDoorwayHostings(db, organizationId)
+    } catch (err) {
+      // One organization's failure must not stop the others; its tables still go out.
+      compatLogWarn(
+        'tunnel-sync',
+        `organization ${organizationId}: doorway links: ${err instanceof Error ? err.message : err}`
+      )
+    }
     await forEachSequential(await serversToCheck(db, organizationId), async (serverId) => {
       const outcome = await syncServerQuietly(db, deps, organizationId, serverId)
       if (outcome === 'sent') sent += 1

@@ -19,7 +19,7 @@
 import { and, eq } from 'drizzle-orm'
 import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
-import { nudgeTunnelRoutesFromRequest } from '../organizations/tunnel-nudge.ts'
+import { nudgeTunnelRoutesAfterResponse } from '../organizations/tunnel-nudge.ts'
 import { assertCanManageOr403, parseJsonBody } from '../shared.ts'
 import { resolveOrgRequest } from '../org-request.ts'
 import { assertDispatchInfrastructure } from './command-dispatch.ts'
@@ -177,7 +177,7 @@ export function registerServerAddressRoutes(router: Hono<AppEnv>) {
       serverId: loaded.serverId,
       entries,
     })
-    await nudgeTunnelRoutesFromRequest(c, loaded.db, loaded.organizationId)
+    nudgeTunnelRoutesAfterResponse(c, loaded.organizationId)
     const outcome = frontsDatabases
       ? await pushListenerNames(c, loaded.db, commandQueue, loaded.serverId, loaded.session.userId)
       : 'not_needed'
