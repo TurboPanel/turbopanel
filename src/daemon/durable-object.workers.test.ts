@@ -1732,6 +1732,14 @@ describe.sequential('DaemonCellObject', () => {
       expect(snapshot.daemonBuild?.commit).toBe('abc')
     })
     expect(closedWith).toBeNull()
+    // Only the one name this control plane knows is stored; the 500 newer names and the
+    // malformed entry are dropped.
+    await waitFor(() => {
+      const stored = updateCalls
+        .map((call) => (call.daemon as ServerDaemonJsonb | undefined)?.projection?.features)
+        .find((features) => features !== undefined)
+      expect(stored).toEqual(['managed-upgrade-v1'])
+    })
 
     ws.close(1000, 'test done')
   })

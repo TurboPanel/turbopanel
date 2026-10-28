@@ -1966,6 +1966,18 @@ export class DaemonCellObject {
     return false
   }
 
+  /** One bounded warning line per note the frame validator produced (see `filterHelloFeatures`). */
+  #warnInboundNotes(
+    attachment: { connectionId: string; serverId: string },
+    notes: readonly string[] | undefined
+  ): void {
+    for (const note of notes ?? []) {
+      console.warn(
+        `daemon-cell event=inbound-note serverId=${attachment.serverId} conn=${attachment.connectionId} ${note}`
+      )
+    }
+  }
+
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
     const attachment = ws.deserializeAttachment() as {
       connectionId: string
@@ -1999,11 +2011,7 @@ export class DaemonCellObject {
       return
     }
     const parsed = validated.message
-    for (const note of validated.notes ?? []) {
-      console.warn(
-        `daemon-cell event=inbound-note serverId=${attachment.serverId} conn=${attachment.connectionId} ${note}`
-      )
-    }
+    this.#warnInboundNotes(attachment, validated.notes)
 
     this.#trace('inbound', {
       serverId: attachment.serverId,

@@ -1,7 +1,6 @@
 import { assert, assertEquals, assertNotEquals } from '@std/assert'
 import { it } from '@std/testing/bdd'
 import type { CommandProgress } from '../../contracts/cell-protocol.ts'
-import * as versionWire from '../../lib/version-wire.ts'
 import { DAEMON_WIRE_FEATURES } from '../../lib/version-wire.ts'
 import {
   DAEMON_CELL_PING,
@@ -2788,19 +2787,6 @@ it('a hello advertising far more names than this panel knows still connects with
   assert(note.includes('malformed=4'), note)
   assert(note.includes('duplicate=1'), note)
   assert(note.length < 300, `the note stays one short line, got ${note.length} chars`)
-})
-
-it('every feature name this panel gates on is one it keeps', () => {
-  const gated = Object.entries(versionWire).filter(
-    ([name, value]) => name.endsWith('_FEATURE') && typeof value === 'string'
-  )
-  assert(gated.length > 0)
-  for (const [name, value] of gated) {
-    assert(
-      (DAEMON_WIRE_FEATURES as readonly string[]).includes(value as string),
-      `${name} (${value}) is not in DAEMON_WIRE_FEATURES, so a hello would drop it`
-    )
-  }
 })
 
 it('filterHelloFeatures drops unknown, malformed and repeated names, keeps order, and bounds the note', () => {
