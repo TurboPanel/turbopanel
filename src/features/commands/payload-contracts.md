@@ -351,7 +351,9 @@ local-only lock is off for them so the public side answers everyone, and the
 site block stays one block per address. `extraBind` lists addresses the web
 server must also listen on so peers can reach it (a loopback-only or pinned
 bind otherwise hides the name from them). Addresses are bare IP literals,
-never ranges.
+never ranges. `tlsMode: 'acme'` is refused on a hosting whose tunnel names
+are not all in `openHostnames`: a name that only arrives through a tunnel never
+asks for a public certificate (it uses `tls internal` or a pinned pair).
 
 **`EnvironmentDeployPayload.listenerPorts`:** optional server-owner org
 effective ProxySQL client listener ports echoed on every `environment.deploy`.

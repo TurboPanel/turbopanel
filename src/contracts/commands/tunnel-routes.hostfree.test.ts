@@ -188,3 +188,35 @@ test('environment.deploy carries hostings[].tunnel to the daemon and old payload
     peers: ['10.0.0.5'],
   })
 })
+
+test('environment.deploy refuses acme for a name that is only a tunnel name', () => {
+  const entry = (tunnel: Record<string, unknown>) => ({
+    environmentId: 'env-1',
+    projectId: 'proj-1',
+    organizationId: 'org-1',
+    projectName: 'tp-demo',
+    hostingIngressNetwork: 'tp-demo-net',
+    composeFiles: [{ filename: 'compose.yaml', role: 'runtime', content: 'services: {}' }],
+    hostings: [
+      {
+        hostingId: 'h1',
+        serviceId: 's1',
+        composeServiceName: 'web',
+        hostnames: ['app.example.com'],
+        tlsMode: 'acme',
+        tunnel,
+      },
+    ],
+  })
+  assertThrows(() =>
+    parseEnvironmentDeployPayload(entry({ hostnames: ['app.example.com'], peers: ['10.0.0.5'] }))
+  )
+  const ok = parseEnvironmentDeployPayload(
+    entry({
+      hostnames: ['app.example.com'],
+      openHostnames: ['app.example.com'],
+      peers: ['10.0.0.5'],
+    })
+  )
+  assertEquals(ok.hostings?.[0]?.tlsMode, 'acme')
+})

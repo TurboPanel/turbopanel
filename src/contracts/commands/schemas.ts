@@ -3010,6 +3010,16 @@ function applyOptionalDeployHostingFields(
   if (bindAddress) hosting.bindAddress = bindAddress
   const tunnel = parseDeployHostingTunnel(entry.tunnel, hosting.hostnames)
   if (tunnel) hosting.tunnel = tunnel
+  if (
+    tunnel &&
+    hosting.tlsMode === 'acme' &&
+    tunnel.hostnames.some((name) => !tunnel.openHostnames?.includes(name))
+  ) {
+    // A name that only arrives through a tunnel must never ask for a public certificate.
+    throw new TypeError(
+      'Invalid environment.deploy tunnel: tlsMode acme needs every tunnel name open'
+    )
+  }
   const protocol = parseDeployHostingProtocol(entry.protocol)
   if (protocol) hosting.protocol = protocol
   const ports = parseDeployHostingPorts(entry.ports)
