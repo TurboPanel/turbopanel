@@ -588,3 +588,10 @@ the route answers `501 source_ref_unsupported` to any request that sets `ref`.
 Building the declared branch while reporting `queued` for "deploy release/1.4" is
 the one outcome the caller cannot detect, so it refuses instead. Flipping that
 constant is what turns ref-directed deploys on.
+
+- `src/webhook/` — inbound webhook surface (`/webhook/*`). Its own top-level
+  directory for the same reason it has its own URL prefix: the caller is a
+  provider, not a session or an enrolled daemon. `gate.ts` holds the ordered
+  six-step gate every kind runs; `git/` holds the GitHub and GitLab adapters.
+  Registered from the entrypoints via `registerWebhookRoutes`, never inside
+  `registerClientRoutes`

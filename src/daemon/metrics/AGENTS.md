@@ -485,7 +485,7 @@ after a monotonic counter reset — daemon half of the battery lives in
 metrics `*.test.ts` files must be claimed** in `scripts/test-coverage.sh` (Deno
 `@std/assert` suites) or `vitest.config.ts` `test.include` (`validation.test.ts`
 is the Workers-pool exception) — then `pnpm check:test-inventory`. Unclaimed
-suites fail `test:hook` / CI and never reach Sonar LCOV. Root `AGENTS.md` →
+suites fail `test:hook` / CI and never reach Sonar LCOV. `src/AGENTS.md` →
 **Adding tests (inventory)**. The AE/v6-boundary guard
 (`scripts/check-metrics-boundaries.mjs`, run by the `checks` job in
 `build.yml` and by `verify-ci.sh`) enforces: (1) AE positional

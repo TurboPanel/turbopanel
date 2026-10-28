@@ -1,6 +1,6 @@
 # Caddy (production) — reference
 
-Referenced from `AGENTS.md` (**Caddy**). Covers the production Caddyfile:
+Referenced from `src/app/AGENTS.md` (**Caddy (production)**). Covers the production Caddyfile:
 server addresses, certs and entrypoint, the daemon TLS trust model, and the
 static UI catch-all. Read before editing the daemon's Caddyfile template or
 `scripts/download-caddy.mjs` (pinned **2.11.4**, SHA-256 verified — keep in
@@ -49,7 +49,7 @@ running beside Caddy can present them. See **Server addresses** below.
 **Co-located development** does not use this file. When `turbopanel_dev_user` is
 set, `turbopanel-caddy.service` loads `~/dev/orchestration/Caddyfile` instead
 (Expo proxy, optional wrangler upstream,
-`/downloads/daemon` + installer at `/run.sh`). See **`../dev/AGENTS.md`**
+`/downloads/daemon` + installer at `/run.sh`). See **`../dev/orchestration/AGENTS.md`**
 (Ansible overlay / Caddyfile).
 
 ## Server addresses

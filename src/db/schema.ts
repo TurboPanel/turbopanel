@@ -11,7 +11,7 @@
  *
  * Primary keys are UUIDv7 (`DEFAULT uuidv7()`, PostgreSQL 18+) under a
  * primary/standby model with one writable primary; sharded/distributed SQL is
- * out of scope. Guarded by `primary-key.test.ts` — see AGENTS.md (Multi-node
+ * out of scope. Guarded by `primary-key.test.ts` — see src/db/AGENTS.md (Multi-node
  * PostgreSQL model) before changing key strategy.
  */
 

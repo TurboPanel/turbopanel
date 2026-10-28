@@ -30,7 +30,7 @@
  * The deferred task **opens its own DB client and closes it in `finally`**.
  * `src/workers.ts` ends the per-request client in its own `waitUntil`; a
  * second `waitUntil` still using `c.get('db')` races that close and dies
- * with `write CONNECTION_ENDED` (the hard rule in `AGENTS.md`). Deno's
+ * with `write CONNECTION_ENDED` (the hard rule in `src/platform/workers/AGENTS.md`). Deno's
  * client is process-lived, so there the task uses it and closes nothing.
  *
  * If the after-response task crashes, the delivery stays claimed with
@@ -88,7 +88,9 @@ export type StripeWebhookRouteOpts = WebhookGateOpts & {
   createClient?: (config: BillingConfig) => StripeClient
 }
 
-function parseEvent(raw: Uint8Array): { id: string; type: string; payload: Record<string, unknown> } | null {
+function parseEvent(
+  raw: Uint8Array
+): { id: string; type: string; payload: Record<string, unknown> } | null {
   try {
     const parsed = JSON.parse(new TextDecoder().decode(raw)) as unknown
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null
@@ -141,7 +143,7 @@ function createStripeGate(opts: StripeWebhookRouteOpts): WebhookGate<StripeWebho
       verifyStripeSignature(
         raw,
         ctx.headers.get(STRIPE_SIGNATURE_HEADER),
-        holder.config?.webhookSigningSecret,
+        holder.config?.webhookSigningSecret
       ),
 
     // Both live in the body — the raw-bytes escape hatch.
@@ -161,7 +163,7 @@ function createStripeGate(opts: StripeWebhookRouteOpts): WebhookGate<StripeWebho
           STRIPE_PROJECTION_LOG_SCOPE,
           `event ${ref.id} (${ref.type}) projection handoff failed: ${
             err instanceof Error ? err.message : String(err)
-          }`,
+          }`
         )
         return retryable('projection_handoff_failed')
       }
@@ -171,7 +173,7 @@ function createStripeGate(opts: StripeWebhookRouteOpts): WebhookGate<StripeWebho
       if (!handles) {
         logWarn(
           STRIPE_PROJECTION_LOG_SCOPE,
-          `event ${ref.id} (${ref.type}) handed off; no task database — sweep will project`,
+          `event ${ref.id} (${ref.type}) handed off; no task database — sweep will project`
         )
         return accepted({ scheduled: false, deferred: 'database_unavailable' })
       }

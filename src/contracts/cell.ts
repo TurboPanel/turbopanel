@@ -206,8 +206,8 @@ export interface DaemonCell {
   /**
    * Optional — Workers-only read-only liveness probe used by the offline
    * sweep cron (`cell/offline-sweep.ts`). Redis/Deno does not need this: it
-   * already runs its own timer-driven `sweepStalePresence` (see AGENTS.md
-   * Daemon Cell → Presence model).
+   * already runs its own timer-driven `sweepStalePresence` (see src/daemon/cell/AGENTS.md
+   * → Presence model).
    */
   checkLiveness?(): Promise<DaemonCellLiveness>
 

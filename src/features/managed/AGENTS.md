@@ -788,7 +788,7 @@ row on the `managed-ingress` system service. Shared ProxySQL is the
 **`managed-ingress`** system component (project = its own `serviceId`, compose
 service `proxysql`, container `<serviceId>-in`, `role: 'ingress'`) and lives in
 the system inventory path when provisioned — not as an ordinal on the engine
-service. Suffix contract: repo-root `AGENTS.md` → **Container name suffix
+service. Suffix contract: `src/client/system/AGENTS.md` → **Container name suffix
 contract**. Apply writes `service.options.instances` to the member count so
 reconcile keeps pending ordinal-2/3 rows.
 
