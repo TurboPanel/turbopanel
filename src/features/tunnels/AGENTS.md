@@ -207,7 +207,16 @@ provider accounts.
   logged note, never sent whole to be refused. A hostname whose site belongs to
   another organization is refused (409 `hosting_mismatch`), and a site counts as
   running on a server only when its hosting is in the tunnel's organization.
+- Firewall: `peer-exposure.ts` turns the same `peerAddresses` the route builder
+  sends a server into one derived rule, accept tcp 443 on the host from exactly
+  those addresses (`facts.ts` adds it to the hosting exposures; not 80, not
+  443/udp, not the panel port). The rule and the Caddy address lock therefore
+  name the same servers, and a carrier-only server gets no rule. A successful
+  `server.tunnel.routes` is a firewall preview trigger
+  (`commandMayChangeFirewallPreview`), so the rule follows the table. It only
+  restricts anything once default-drop is enabled (still on hold); until then
+  it is shown in the preview. When the hosting is already public the rule is
+  redundant and the Caddy lock is the protection.
 - Not in this slice: the deploy-time `hostings[].tunnel` (it must be gated on
-  the same feature when added), triggers that resend at once on a hosting or
-  server change (the sweep catches them), and the firewall rules for the exact
-  peer addresses.
+  the same feature when added) and triggers that resend at once on a hosting or
+  server change (the sweep catches them).

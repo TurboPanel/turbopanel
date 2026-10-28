@@ -35,6 +35,12 @@ import { deriveEncryptionSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { TUNNEL_FORWARDING_FEATURE } from '../../lib/version-wire.ts'
 import { getCommandDispatchPayload } from '../commands/command-records.ts'
 import type { CommandEnvelope } from '../commands/envelope.ts'
+import { loadFirewallFacts } from '../firewall/facts.ts'
+import {
+  loadTunnelPeerExposures,
+  TUNNEL_PEER_COMMENT,
+  tunnelPeerExposures,
+} from './peer-exposure.ts'
 import { runTunnelRoutesSweepTick, syncServerTunnelRoutes } from './sync.ts'
 
 /** Sonar only recognises `test()`; see the note in the other suites. */
@@ -300,6 +306,17 @@ test('a carrying server and a site server are sent real tables with a peer certi
     assertEquals(sitePayload.routes, [])
     assertEquals(sitePayload.peerAddresses, ['10.94.0.10'])
     assertEquals(sitePayload.listenAddresses, ['10.94.0.11'])
+
+    // The firewall opens the hosting HTTPS port to exactly the peers the table names,
+    // and a server that only carries tunnels gets no such rule.
+    const sitePeers = await loadTunnelPeerExposures(db, organizationId, siteId)
+    assertEquals(sitePeers, tunnelPeerExposures(sitePayload.peerAddresses))
+    assertEquals(sitePeers[0]?.sources, ['10.94.0.10'])
+    assertEquals(await loadTunnelPeerExposures(db, organizationId, carrierId), [])
+    const facts = await loadFirewallFacts(db, siteId)
+    assert(facts?.input.exposures.some((e) => e.comment === TUNNEL_PEER_COMMENT))
+    const carrierFacts = await loadFirewallFacts(db, carrierId)
+    assert(!carrierFacts?.input.exposures.some((e) => e.comment === TUNNEL_PEER_COMMENT))
 
     // Nothing is tracked until the daemon confirmed.
     assertEquals(
