@@ -144,6 +144,104 @@ export const tunnelSchemas = {
       },
     },
   },
+  Tunnel: {
+    type: 'object',
+    description:
+      'A Tunnel: a named path from the provider to connectors on your servers. The run token is never part of it.',
+    properties: {
+      id: { type: 'string', format: 'uuid' },
+      name: { type: 'string' },
+      provider: { type: 'string', enum: ['cloudflare'] },
+      carrierId: { type: 'string', format: 'uuid', nullable: true },
+      placement: { type: 'string', enum: ['one', 'chosen', 'all'] },
+      datacenterId: { type: 'string', format: 'uuid', nullable: true },
+      status: { type: 'string', enum: ['pending', 'active', 'attention', 'removing'] },
+      createdAt: { type: 'string', format: 'date-time' },
+      portals: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            serverId: { type: 'string', format: 'uuid' },
+            wanted: { type: 'string', enum: ['run', 'skip'] },
+            reported: { type: 'string', enum: ['unknown', 'connected', 'down', 'error'] },
+            lastSeenAt: { type: 'string', format: 'date-time', nullable: true },
+            lastError: { type: 'string', nullable: true },
+            connectorVersion: { type: 'string', nullable: true },
+          },
+        },
+      },
+      carryingServerIds: {
+        type: 'array',
+        items: { type: 'string', format: 'uuid' },
+        description: 'Servers that run a connector now, from the placement rules.',
+      },
+      warnings: { type: 'array', items: { type: 'string' } },
+      doorwayCount: { type: 'integer' },
+    },
+  },
+  TunnelCreate: {
+    type: 'object',
+    title: 'Create Tunnel',
+    required: ['carrierId', 'name', 'placement'],
+    properties: {
+      carrierId: { type: 'string', format: 'uuid', title: 'Cloudflare Account' },
+      name: { type: 'string', minLength: 1, maxLength: 64, title: 'Name' },
+      placement: {
+        type: 'string',
+        enum: ['one', 'chosen', 'all'],
+        description:
+          '`one` and `chosen` use `serverIds`. `all` covers every server of `datacenterId` (new servers join by themselves) except `exceptServerIds`.',
+      },
+      serverIds: { type: 'array', items: { type: 'string', format: 'uuid' } },
+      exceptServerIds: { type: 'array', items: { type: 'string', format: 'uuid' } },
+      datacenterId: { type: 'string', format: 'uuid' },
+    },
+  },
+  TunnelPlacement: {
+    type: 'object',
+    required: ['placement'],
+    properties: {
+      placement: { type: 'string', enum: ['one', 'chosen', 'all'] },
+      serverIds: { type: 'array', items: { type: 'string', format: 'uuid' } },
+      exceptServerIds: { type: 'array', items: { type: 'string', format: 'uuid' } },
+      datacenterId: { type: 'string', format: 'uuid' },
+    },
+  },
+  TunnelHostname: {
+    type: 'object',
+    description: 'A hostname a Tunnel carries.',
+    properties: {
+      id: { type: 'string', format: 'uuid' },
+      tunnelId: { type: 'string', format: 'uuid' },
+      hostname: { type: 'string' },
+      hostingId: { type: 'string', format: 'uuid', nullable: true },
+      isLocalOnly: {
+        type: 'boolean',
+        description:
+          'The wish that only the Tunnel and peer servers answer this name (true), or that it is also public (false). It is recorded now; the web server does not enforce it yet.',
+      },
+      status: { type: 'string', enum: ['pending', 'live', 'attention', 'removing'] },
+      dns: { type: 'string', enum: ['created', 'none'] },
+      createdAt: { type: 'string', format: 'date-time' },
+    },
+  },
+  TunnelHostnameCreate: {
+    type: 'object',
+    title: 'Add Hostname',
+    required: ['hostname'],
+    properties: {
+      hostname: { type: 'string', title: 'Hostname' },
+      isLocalOnly: { type: 'boolean', default: true },
+    },
+  },
+  ServerTunnelCarrying: {
+    type: 'object',
+    required: ['carry'],
+    properties: {
+      carry: { type: 'boolean', description: 'False = this server never runs a Tunnel.' },
+    },
+  },
 } as const
 
 function errors(extra?: { badRequest?: boolean }) {
@@ -319,3 +417,199 @@ export const tunnelPaths: Record<string, unknown> = {
     },
   },
 }
+
+const TUNNEL_ID_PARAM = {
+  name: 'tunnelId',
+  in: 'path',
+  required: true,
+  schema: { type: 'string', format: 'uuid' },
+} as const
+
+const TUNNEL_ERRORS =
+  'Refusals: 400 `tunnel_invalid`, `datacenter_required`, `datacenter_invalid`, `server_invalid`, `server_not_in_datacenter`; 409 `tunnel_exists`, `tunnel_limit`, `server_never_carries`, `badge_cannot_tunnel`, `tunnel_in_use`; 503 `secrets_unavailable`; 502 `provider_unavailable`; 400 `badge_rejected` when the provider does not accept the API Token.'
+
+const DOORWAY_ERRORS =
+  'Refusals: 400 `hostname_invalid`; 409 `hostname_in_use`, `doorway_limit`, `tunnel_not_ready`, `carrier_missing`, `badge_cannot_tunnel`, `badge_cannot_dns`, `zone_not_found`, `hosting_mismatch`; 400 `badge_rejected`; 503 `secrets_unavailable`; 502 `provider_unavailable`.'
+
+Object.assign(tunnelPaths, {
+  '/api/client/v1/organizations/{id}/tunnels': {
+    get: {
+      tags: ['Organizations'],
+      summary: "List the organization's Tunnels",
+      description: 'Owners and managers only.',
+      security: [{ cookieAuth: [] }],
+      parameters: [ORG_ID_PARAM],
+      responses: {
+        ...jsonOk('Tunnels', {
+          type: 'object',
+          properties: {
+            tunnels: { type: 'array', items: { $ref: '#/components/schemas/Tunnel' } },
+          },
+        }),
+        ...errors(),
+      },
+    },
+    post: {
+      tags: ['Organizations'],
+      summary: 'Create a Tunnel',
+      description: `Owners and managers only. Creates the Tunnel at the provider and seals its run token. ${TUNNEL_ERRORS}`,
+      security: [{ cookieAuth: [] }],
+      parameters: [ORG_ID_PARAM],
+      requestBody: {
+        required: true,
+        content: { 'application/json': { schema: { $ref: '#/components/schemas/TunnelCreate' } } },
+      },
+      responses: {
+        ...jsonOk(
+          'Created',
+          { type: 'object', properties: { tunnel: { $ref: '#/components/schemas/Tunnel' } } },
+          '201'
+        ),
+        ...errors({ badRequest: true }),
+      },
+    },
+  },
+  '/api/client/v1/organizations/{id}/tunnels/{tunnelId}': {
+    get: {
+      tags: ['Organizations'],
+      summary: 'Read a Tunnel',
+      security: [{ cookieAuth: [] }],
+      parameters: [ORG_ID_PARAM, TUNNEL_ID_PARAM],
+      responses: {
+        ...jsonOk('Tunnel', {
+          type: 'object',
+          properties: { tunnel: { $ref: '#/components/schemas/Tunnel' } },
+        }),
+        ...errors(),
+      },
+    },
+    delete: {
+      tags: ['Organizations'],
+      summary: 'Remove a Tunnel',
+      description:
+        'Owners and managers only. Refused with 409 `tunnel_in_use` while it carries hostnames. Removes the Tunnel at the provider, then here.',
+      security: [{ cookieAuth: [] }],
+      parameters: [ORG_ID_PARAM, TUNNEL_ID_PARAM],
+      responses: {
+        ...jsonOk('Removed', { type: 'object', properties: { ok: { type: 'boolean' } } }),
+        ...errors(),
+      },
+    },
+  },
+  '/api/client/v1/organizations/{id}/tunnels/{tunnelId}/placement': {
+    put: {
+      tags: ['Organizations'],
+      summary: 'Change where a Tunnel runs',
+      description: `Owners and managers only. Replaces the servers the Tunnel runs on. Only an all-servers Tunnel picks up new servers by itself. ${TUNNEL_ERRORS}`,
+      security: [{ cookieAuth: [] }],
+      parameters: [ORG_ID_PARAM, TUNNEL_ID_PARAM],
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': { schema: { $ref: '#/components/schemas/TunnelPlacement' } },
+        },
+      },
+      responses: {
+        ...jsonOk('Updated', {
+          type: 'object',
+          properties: { tunnel: { $ref: '#/components/schemas/Tunnel' } },
+        }),
+        ...errors({ badRequest: true }),
+      },
+    },
+  },
+  '/api/client/v1/organizations/{id}/tunnels/{tunnelId}/hostnames': {
+    get: {
+      tags: ['Organizations'],
+      summary: 'List the hostnames a Tunnel carries',
+      security: [{ cookieAuth: [] }],
+      parameters: [ORG_ID_PARAM, TUNNEL_ID_PARAM],
+      responses: {
+        ...jsonOk('Hostnames', {
+          type: 'object',
+          properties: {
+            hostnames: { type: 'array', items: { $ref: '#/components/schemas/TunnelHostname' } },
+          },
+        }),
+        ...errors(),
+      },
+    },
+    post: {
+      tags: ['Organizations'],
+      summary: 'Add a hostname to a Tunnel',
+      description: `Owners and managers only. Routes the name at the provider and creates its DNS name when a zone this API Token can edit holds it (otherwise dns is none and the DNS name is made by hand). ${DOORWAY_ERRORS}`,
+      security: [{ cookieAuth: [] }],
+      parameters: [ORG_ID_PARAM, TUNNEL_ID_PARAM],
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': { schema: { $ref: '#/components/schemas/TunnelHostnameCreate' } },
+        },
+      },
+      responses: {
+        ...jsonOk(
+          'Added',
+          {
+            type: 'object',
+            properties: { hostname: { $ref: '#/components/schemas/TunnelHostname' } },
+          },
+          '201'
+        ),
+        ...errors({ badRequest: true }),
+      },
+    },
+  },
+  '/api/client/v1/organizations/{id}/tunnels/{tunnelId}/hostnames/{doorwayId}': {
+    delete: {
+      tags: ['Organizations'],
+      summary: 'Remove a hostname from a Tunnel',
+      description: `Owners and managers only. Removes its route, then its DNS name, then the row. A retry after a half-done removal works. ${DOORWAY_ERRORS}`,
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        ORG_ID_PARAM,
+        TUNNEL_ID_PARAM,
+        {
+          name: 'doorwayId',
+          in: 'path',
+          required: true,
+          schema: { type: 'string', format: 'uuid' },
+        },
+      ],
+      responses: {
+        ...jsonOk('Removed', { type: 'object', properties: { ok: { type: 'boolean' } } }),
+        ...errors(),
+      },
+    },
+  },
+  '/api/client/v1/organizations/{id}/servers/{serverId}/tunnel-carrying': {
+    put: {
+      tags: ['Organizations'],
+      summary: 'Allow or forbid Tunnels on a server',
+      description:
+        'Owners and managers only. A server set to `carry: false` never runs a Tunnel, whatever a Tunnel placement says. 400 `carry_invalid`.',
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        ORG_ID_PARAM,
+        {
+          name: 'serverId',
+          in: 'path',
+          required: true,
+          schema: { type: 'string', format: 'uuid' },
+        },
+      ],
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': { schema: { $ref: '#/components/schemas/ServerTunnelCarrying' } },
+        },
+      },
+      responses: {
+        ...jsonOk('Updated', {
+          type: 'object',
+          properties: { serverId: { type: 'string', format: 'uuid' }, carry: { type: 'boolean' } },
+        }),
+        ...errors({ badRequest: true }),
+      },
+    },
+  },
+})

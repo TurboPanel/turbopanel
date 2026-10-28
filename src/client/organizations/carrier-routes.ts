@@ -65,9 +65,9 @@ const CARRIER_PATHS = [
   '/organizations/:id/carriers/:carrierId/badges/:badgeId/check',
 ] as const
 
-type Scope = { db: Db; organizationId: string }
+export type Scope = { db: Db; organizationId: string }
 
-async function loadScope(c: Context<AppEnv>): Promise<Scope | Response> {
+export async function loadScope(c: Context<AppEnv>): Promise<Scope | Response> {
   const db = getDb(c)
   if (!db) return c.json({ error: 'Database unavailable' }, 503)
   const organizationId = c.req.param('id') as string

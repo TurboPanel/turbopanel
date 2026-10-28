@@ -72,6 +72,7 @@ import { runPrincipalRemovalSweep } from '../../client/principals/removal-sweep.
 import type { FirewallApplyGate } from '../../features/firewall/enforcement.ts'
 import { runFirewallPreviewSweep } from '../../features/firewall/preview.ts'
 import { runLeafRenewalSweepTick } from '../../client/tls/leaf-renewal-sweep.ts'
+import { peerLeafDelivery, runTunnelRoutesSweepTick } from '../../features/tunnels/sync.ts'
 import { runHostingLetsEncryptSweepTick } from '../../client/hostings/letsencrypt-sweep.ts'
 import { type AlertSender, NOOP_ALERT_SENDER } from '../../features/alerts/alert-sender.ts'
 import { cachedForEnv } from './notification-email-cache.ts'
@@ -1190,7 +1191,15 @@ async function runQueuedCronSweeps(
       // Resumes from the durable LEAF_RENEWAL_SWEEP_LOCK cursor (advanced per
       // bounded batch; reset when the sweep completes or the cursor is invalid).
       await runIsolatedSweep(signal, 'leaf-renewal-sweep-failed', () =>
-        runLeafRenewalSweepTick(db, commandQueue, tlsRenewal)
+        runLeafRenewalSweepTick(db, commandQueue, {
+          ...tlsRenewal,
+          deliverPeerLeaf: peerLeafDelivery(commandQueue, tlsRenewal),
+        })
+      )
+      // Tunnel forwarding tables: a changed table, or one a server missed while
+      // offline, goes out again. An unchanged table is a no-op on the daemon.
+      await runIsolatedSweep(signal, 'tunnel-routes-sweep-failed', () =>
+        runTunnelRoutesSweepTick(db, { commandQueue, ...tlsRenewal })
       )
       // Orphaned ProxySQL frontends: teardown needs a full
       // `managed.ingress.reconcile`, so it can only run when the cron has the
