@@ -13,6 +13,7 @@ import { assertCanManageOr403, parseJsonBody } from '../shared.ts'
 import { type Db, getDb } from '../../db/connection.ts'
 import { isUuid } from '../access/routes-helpers.ts'
 import { isForeignKeyViolation } from '../hierarchy-delete.ts'
+import { forEachSequential } from '../../lib/sequential.ts'
 import { isPostgresUniqueViolation } from '../../db/unique-violation.ts'
 import { recordAudit } from '../../features/audit/audit-records.ts'
 import type { CredentialReport, TokenDiscovery } from '../../features/tunnels/adapter.ts'
@@ -464,9 +465,9 @@ async function connectVetted(
 
 /** Remove carriers this call created that ended up with no badge. */
 async function removeEmptyCarriers(scope: Scope, carriers: readonly CarrierRow[]): Promise<void> {
-  for (const row of carriers) {
+  await forEachSequential(carriers, async (row) => {
     if ((await listBadges(scope.db, row.id)).length === 0) await deleteCarrier(scope.db, row)
-  }
+  })
 }
 
 async function ensureCarrier(
