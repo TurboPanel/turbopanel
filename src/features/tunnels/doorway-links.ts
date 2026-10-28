@@ -40,12 +40,14 @@ export async function relinkDoorwayHostings(db: Db, organizationId: string): Pro
   )
   const siteOfName = new Map<string, string>()
   for (const h of holders) if (own.has(h.hostingId)) siteOfName.set(h.hostname, h.hostingId)
-  let changed = 0
-  for (const d of doorways) {
-    const next = siteOfName.get(d.hostname) ?? null
-    if (next === d.hostingId) continue
-    await db.update(doorway).set({ hostingId: next }).where(eq(doorway.id, d.id))
-    changed += 1
-  }
-  return changed
+  const moved = doorways.filter((d) => (siteOfName.get(d.hostname) ?? null) !== d.hostingId)
+  await Promise.all(
+    moved.map((d) =>
+      db
+        .update(doorway)
+        .set({ hostingId: siteOfName.get(d.hostname) ?? null })
+        .where(eq(doorway.id, d.id))
+    )
+  )
+  return moved.length
 }

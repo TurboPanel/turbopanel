@@ -3,6 +3,9 @@
  * (a site, its names, a deploy, a server, an address), instead of waiting for
  * the periodic sweep. The sweep still runs and sends whatever this missed.
  *
+ * The connector list (`connector-sync.ts`) goes out with the tables, so a server
+ * that gains or loses a tunnel to carry starts or stops its connector too.
+ *
  * Nothing here throws: a failure is logged and the sweep tries again. The work
  * is bounded (one organization, a capped number of servers, nothing sent for a
  * table that has not changed) and uses only the database and the command queue,
@@ -15,6 +18,7 @@ import { compatLogWarn } from '../../lib/log-compat.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
 import type { CommandQueue } from '../commands/queue.ts'
 import type { DerivedSecretsConfig, SecretsConfig } from '../../lib/secrets/secrets.ts'
+import { syncOrganizationTunnelConnectors } from './connector-sync.ts'
 import { relinkDoorwayHostings } from './doorway-links.ts'
 import { serversToCheck, syncServerQuietly, type TunnelSyncDeps } from './sync.ts'
 
@@ -23,16 +27,16 @@ export const TUNNEL_NUDGE_MAX_SERVERS = 40
 
 /** The queue and secrets a send needs, or null when any is missing (nothing is sent then). */
 export function tunnelSyncDepsFrom(fields: {
-  commandQueue?: CommandQueue | undefined
-  secretsConfig?: SecretsConfig | undefined
-  dataEncryptionSecrets?: DerivedSecretsConfig | undefined
+  commandQueue: CommandQueue | undefined
+  secretsConfig: SecretsConfig | undefined
+  dataEncryptionSecrets: DerivedSecretsConfig | undefined
 }): TunnelSyncDeps | null {
   const { commandQueue, secretsConfig, dataEncryptionSecrets } = fields
   if (!commandQueue || !secretsConfig || !dataEncryptionSecrets) return null
   return { commandQueue, secretsConfig, dataEncryptionSecrets }
 }
 
-/** Does the organization have a tunnel, or a server that was once sent a table? */
+/** Does the organization have a tunnel, or a server that was once sent a table or a connector list? */
 async function hasTunnelWork(db: Db, organizationId: string): Promise<boolean> {
   const [tunnelRow] = await db
     .select({ id: tunnel.id })
@@ -46,7 +50,7 @@ async function hasTunnelWork(db: Db, organizationId: string): Promise<boolean> {
     .where(
       and(
         eq(server.organizationId, organizationId),
-        sql`${server.metadata} -> 'tunnelRoutes' IS NOT NULL`
+        sql`(${server.metadata} -> 'tunnelRoutes' IS NOT NULL OR ${server.metadata} -> 'tunnelConnectors' IS NOT NULL)`
       )
     )
     .limit(1)
@@ -67,6 +71,8 @@ export async function nudgeTunnelRoutes(
     await forEachSequential(serverIds, async (serverId) => {
       await syncServerQuietly(db, deps, organizationId, serverId)
     })
+    // Servers that gained or lost a tunnel to carry start or stop its connector too.
+    await syncOrganizationTunnelConnectors(db, deps, organizationId)
   } catch (err) {
     compatLogWarn(
       'tunnel-sync',

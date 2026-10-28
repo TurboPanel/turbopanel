@@ -23,6 +23,7 @@ import {
   organization,
   portal,
   project,
+  secret,
   server,
   service,
   tunnel,
@@ -34,7 +35,10 @@ import type { CommandEnvelope } from '../commands/envelope.ts'
 import { replaceHostingHostnames } from '../servers/hostname-records.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import { deriveEncryptionSecretsConfig } from '../../lib/secrets/secrets.ts'
-import { TUNNEL_FORWARDING_FEATURE } from '../../lib/version-wire.ts'
+import { TUNNEL_CONNECTOR_FEATURE, TUNNEL_FORWARDING_FEATURE } from '../../lib/version-wire.ts'
+import { encryptSecret } from '../../lib/secrets/data-encryption.ts'
+import { RUN_SECRET_PROVIDER } from './vocabulary.ts'
+import { parseTunnelConnectorsPayload } from '../../contracts/commands/tunnel-connectors.ts'
 import type { TunnelSyncDeps } from './sync.ts'
 
 const dbUrl = getDatabaseUrl()
@@ -58,6 +62,8 @@ export type Scenario = {
   hostingAId: string
   hostingBId: string
   tunnelId: string
+  /** The provider's id for the tunnel, as connector commands name it. */
+  providerTunnelId: string
   doorwayId: string
 }
 
@@ -68,7 +74,7 @@ async function newServer(db: Db, organizationId: string, name: string): Promise<
       organizationId,
       name,
       isConnected: true,
-      daemon: { projection: { features: [TUNNEL_FORWARDING_FEATURE] } },
+      daemon: { projection: { features: [TUNNEL_FORWARDING_FEATURE, TUNNEL_CONNECTOR_FEATURE] } },
     })
     .returning({ id: server.id })
   await db.insert(key).values({
@@ -140,6 +146,7 @@ async function cleanup(db: Db, organizationId: string): Promise<void> {
   ).map((r) => r.id)
   if (tunnelIds.length > 0) await db.delete(portal).where(inArray(portal.tunnelId, tunnelIds))
   await db.delete(tunnel).where(eq(tunnel.organizationId, organizationId))
+  await db.delete(secret).where(eq(secret.organizationId, organizationId))
   await db.delete(deployment).where(inArray(deployment.serverId, serverIds))
   const hostingIds = (
     await db
@@ -225,7 +232,7 @@ export async function withScenario(
         organizationId,
         datacenterId: dc!.id,
         kind: 'datacenter',
-        cidr: '10.95.0.0/24',
+        cidr: '10.95.0.0/24', // NOSONAR typescript:S1313 — private test network, never dialed
         name: 'LAN',
       })
       .returning({ id: network.id })
@@ -234,9 +241,9 @@ export async function withScenario(
     const siteAId = await newServer(db, organizationId, 'Site A')
     const siteBId = await newServer(db, organizationId, 'Site B')
     const spareId = await newServer(db, organizationId, 'Spare')
-    await addAddress(base, carrierId, '10.95.0.10')
-    await addAddress(base, siteAId, '10.95.0.11')
-    await addAddress(base, siteBId, '10.95.0.12')
+    await addAddress(base, carrierId, '10.95.0.10') // NOSONAR typescript:S1313 — private test address, never dialed
+    await addAddress(base, siteAId, '10.95.0.11') // NOSONAR typescript:S1313 — private test address, never dialed
+    await addAddress(base, siteBId, '10.95.0.12') // NOSONAR typescript:S1313 — private test address, never dialed
     const [ws] = await db
       .insert(workspace)
       .values({ name: 'Nudge WS', organizationId })
@@ -263,6 +270,17 @@ export async function withScenario(
       .values({ environmentId: siteB.environmentId, serverId: siteBId, status: 'applied' })
     await replaceHostingHostnames(db, siteA.hostingId, organizationId, [NAME])
     const placement = options.tunnelPlacement ?? 'chosen'
+    const [runToken] = await db
+      .insert(secret)
+      .values({
+        organizationId,
+        provider: RUN_SECRET_PROVIDER,
+        name: 'Nudge run token',
+        // A made-up token, built so no scanner mistakes it for a real one.
+        secretEnvelope: await encryptSecret(dataEncryptionSecrets, 'T'.repeat(48)),
+      })
+      .returning({ id: secret.id })
+    const providerTunnelId = crypto.randomUUID()
     const [t] = await db
       .insert(tunnel)
       .values({
@@ -270,6 +288,8 @@ export async function withScenario(
         routingOrganizationId: organizationId,
         provider: 'cloudflare',
         name: 'Nudge',
+        externalId: providerTunnelId,
+        secretId: runToken!.id,
         placement,
         ...(placement === 'all' ? { datacenterId: dc!.id } : {}),
       })
@@ -300,6 +320,7 @@ export async function withScenario(
       hostingAId: siteA.hostingId,
       hostingBId: siteB.hostingId,
       tunnelId: t!.id,
+      providerTunnelId,
       doorwayId: door!.id,
     })
   } finally {
@@ -309,6 +330,16 @@ export async function withScenario(
 }
 
 /** Commands sent to one server, in order. */
-export async function sentTo(s: Scenario, serverId: string): Promise<CommandEnvelope[]> {
-  return s.queued.filter((e) => e.serverId === serverId)
+export function sentTo(s: Scenario, serverId: string): CommandEnvelope[] {
+  return s.queued.filter((e) => e.serverId === serverId && e.type === 'server.tunnel.routes')
+}
+
+/** Connector lists sent to one server, in order. */
+export function connectorsTo(s: Scenario, serverId: string): CommandEnvelope[] {
+  return s.queued.filter((e) => e.serverId === serverId && e.type === 'server.tunnel.connectors')
+}
+
+/** The connector list a queued command carried. */
+export async function connectorListOf(s: Scenario, envelope: CommandEnvelope) {
+  return parseTunnelConnectorsPayload(await getCommandDispatchPayload(s.db, envelope.commandId))
 }

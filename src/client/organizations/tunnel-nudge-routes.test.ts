@@ -8,7 +8,6 @@ import { assertEquals } from '@std/assert'
 import { eq } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
-import { createDenoDb } from '../../db/connection.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
 import { grant, hosting, user } from '../../db/schema.ts'
 import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from '../authn/crypto.ts'
@@ -23,8 +22,8 @@ import {
   sentTo,
   tableOf,
   withScenario,
-  type Scenario,
 } from '../../features/tunnels/nudge-scenario.test.support.ts'
+import type { Scenario } from '../../features/tunnels/nudge-scenario.test.support.ts'
 
 /** Sonar only recognises `test()`; see the note in the other suites. */
 const test = Deno.test.bind(Deno)
@@ -99,7 +98,7 @@ test('editing a site’s names sends the carrier the new table before the answer
       assertEquals(off.status, 200)
       const on = await api(`/hostings/${s.hostingBId}`, 'PATCH', { options: { hostnames: [NAME] } })
       assertEquals(on.status, 200)
-      const toCarrier = await sentTo(s, s.carrierId)
+      const toCarrier = sentTo(s, s.carrierId)
       const latest = await tableOf(s, s.queued.indexOf(toCarrier.at(-1)!))
       assertEquals(latest.routes[0]!.upstreams[0]!.addresses, ['10.95.0.12'])
     })
@@ -116,7 +115,7 @@ test('deleting a site drops its name from the carrier before the answer', async 
     await withApi(s, async (api) => {
       const deleted = await api(`/hostings/${s.hostingAId}`, 'DELETE')
       assertEquals(deleted.status, 200)
-      const toCarrier = await sentTo(s, s.carrierId)
+      const toCarrier = sentTo(s, s.carrierId)
       assertEquals(toCarrier.length, 2)
       assertEquals((await tableOf(s, s.queued.indexOf(toCarrier[1]!))).routes, [])
     })
@@ -138,7 +137,7 @@ test('making a site with the name later brings it back to the carrier', async ()
         options: { hostnames: [NAME] },
       })
       assertEquals(created.status, 200)
-      const toCarrier = await sentTo(s, s.carrierId)
+      const toCarrier = sentTo(s, s.carrierId)
       assertEquals(toCarrier.length, 3)
       const latest = await tableOf(s, s.queued.indexOf(toCarrier[2]!))
       assertEquals(latest.routes[0]!.upstreams[0]!.addresses, ['10.95.0.12'])
@@ -154,13 +153,13 @@ test('taking a server out of a datacenter tells it to drop its table before the 
   await withScenario({ tunnelPlacement: 'all' }, async (s) => {
     // Every server of the datacenter carries the tunnel, so site B forwards the name to site A.
     await nudgeTunnelRoutes(s.db, s.deps, s.organizationId)
-    const before = await sentTo(s, s.siteBId)
+    const before = sentTo(s, s.siteBId)
     assertEquals(before.length, 1)
     assertEquals((await tableOf(s, s.queued.indexOf(before[0]!))).routes.length, 1)
     await withApi(s, async (api) => {
       const removed = await api(`/datacenters/${s.datacenterId}/members/${s.siteBId}`, 'DELETE')
       assertEquals(removed.status, 200)
-      const after = await sentTo(s, s.siteBId)
+      const after = sentTo(s, s.siteBId)
       assertEquals(after.length, 2)
       assertEquals((await tableOf(s, s.queued.indexOf(after[1]!))).routes, [])
     })

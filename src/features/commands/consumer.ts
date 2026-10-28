@@ -1316,7 +1316,8 @@ async function applyEnvironmentDeploySideEffect(
           db,
           tunnelSyncDepsFrom({
             commandQueue: deps?.commandQueue,
-            ...consumerFabricSecretFields(deps),
+            secretsConfig: consumerFabricSecretFields(deps).secretsConfig,
+            dataEncryptionSecrets: consumerFabricSecretFields(deps).dataEncryptionSecrets,
           }),
           payload.environmentId
         )
