@@ -1358,3 +1358,49 @@ docker exec turbopanel-database psql -U turbopanel -d turbopanel -c '\dt'
 
 Restart the instance only when **application code** changed — schema sync alone
 does not require a restart.
+
+## Database (Drizzle + Postgres.js)
+
+The instance uses **Drizzle ORM** over **postgres.js**. The Workers/Hyperdrive
+client uses `prepare: true` and `fetch_types: false`, and the cached client also sends drizzle's
+`unsafe()` calls as named prepared statements (see Workers Hyperdrive below); the Deno client uses
+`prepare: false` (direct Postgres, no Hyperdrive). Connection factories live in
+`src/db/connection.ts`; schema in `src/db/schema.ts`; drizzle-kit config in
+`drizzle.config.mjs`. **Read `src/db/AGENTS.md` before touching schema or the
+database.** Schema changes are versioned in `migrations/`; `pnpm migrate`
+applies pending SQL during Workers deploy (after a preflight that requires
+PostgreSQL 18+ / built-in `uuidv7()` — `scripts/check-postgres-compat.mjs`).
+Applied versions are recorded in `public.migration`.
+
+**Multi-node model:** "multi-node PostgreSQL" means primary/standby replication
+with exactly one writable primary (streaming replication for HA/failover;
+logical replication for read replicas/DR). UUIDv7 primary keys remove sequence
+coordination across writers and failovers — they are **not** distributed-SQL
+readiness, and sharded/distributed SQL (Citus, CockroachDB, YugabyteDB, …) is
+out of scope for this schema. See `src/db/AGENTS.md` (Multi-node PostgreSQL
+model) before changing key strategy or targeting a distributed engine.
+
+| Runtime            | Factory                                                                      | When connected                                                                                                                                                         |
+| ------------------ | ---------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Cloudflare Workers | `createWorkersDb(env.HYPERDRIVE)` or `createWorkersDb({ connectionString })` | `HYPERDRIVE` binding in `wrangler.jsonc` (all named envs including `testing`); **`wrangler dev`** may fall back to `TURBOPANEL_DATABASE_URL` when Hyperdrive is absent |
+| Deno (self-hosted) | `createDenoDb()`                                                             | `TURBOPANEL_DATABASE_URL` set by `instance-launch`                                                                                                                     |
+
+Route handlers read the per-request client via `getDb(c)` (set by
+`createApp({ db })`). **Deno boot requires `TURBOPANEL_DATABASE_URL`:**
+`createDenoDb()` throws before `createApp()` when the variable is missing or
+blank, so the process exits instead of serving without a database.
+
+| Variable                  | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `TURBOPANEL_DATABASE_URL` | Full postgres connection URL. **Deno mode:** required at boot — `createDenoDb()` throws immediately when missing or blank (self-hosted instance will not start). Passed directly to postgres.js (supports Unix socket URLs via libpq `?host=` / directory form, e.g. host `/var/run/turbopanel/postgres` or `/run/turbopanel/postgres`). **Workers runtime:** prefers the `HYPERDRIVE` binding; `src/workers.ts` falls back to this env var when Hyperdrive is unset (local `wrangler dev` without a binding). When the URL uses `?host=` for a Unix socket, ensure Deno has read access to that directory (`/run/turbopanel` covers the default Docker bind-mount path). |
+| `DATABASE_URL`            | **Tooling only** (drizzle-kit, `pnpm migrate`, `dev/scripts/introspect.sh` / `dev/scripts/sync.sh` overrides). Accepted as a fallback when `TURBOPANEL_DATABASE_URL` is unset — common in CI and Cloudflare dashboard deploy workflows. Not read by the Deno instance or Workers runtime at request time.                                                                                                                                                                                                                                                                                                                                                                 |
+
+
+### Tooling
+
+- `pnpm install` — pulls `drizzle-orm`, `postgres`, `drizzle-kit`
+- After editing `schema.ts`, run `pnpm drizzle-kit generate` to create SQL in
+  `migrations/`; apply locally with `TURBOPANEL_DATABASE_URL=… pnpm migrate` or
+  `DATABASE_URL=… pnpm migrate`. Workers deploy runs `pnpm migrate`
+  automatically (Node only — no Deno). Deno dev can still use
+  `dev/scripts/sync.sh` (`push`) — see `src/db/AGENTS.md`.
