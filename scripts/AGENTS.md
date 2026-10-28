@@ -1,6 +1,6 @@
 # CI analysis & coverage (`scripts/`, SonarQube) — AGENTS.md
 
-Moved from the root `AGENTS.md` (**Documentation discipline → SonarQube**).
+Moved from the root `AGENTS.md` (formerly **Documentation discipline → SonarQube**).
 Covers the SonarCloud CI job, the Vitest+Deno LCOV merge in
 `test-coverage.sh`, and the analysis-scope rules.
 
@@ -11,7 +11,7 @@ or `scripts/` (`test-coverage.sh` walks those trees and ignores
 Workers suffixes). Workers/DO suites are `*.workers.test.ts` /
 `*.workers-e2e.test.ts` / `*.entry.test.ts` (`vitest.config.ts` `test.include`
 suffix globs). Redis (etc.) suites go in `SERVICE_DEPENDENT` in
-`check-test-inventory.mjs` with a reason. Full checklist: root `AGENTS.md` →
+`check-test-inventory.mjs` with a reason. Full checklist: `src/AGENTS.md` →
 **Adding tests (inventory)**.
 The guard is wired into `pnpm test:hook`, **`pnpm verify:ci`**
 (`scripts/verify-ci.sh` — the local serial mirror of `build.yml` minus Sonar), and
@@ -169,7 +169,7 @@ exclusion rules, and the coverage-attribution traps moved to
 [`scripts/AGENTS.md`](./scripts/AGENTS.md). Read it before touching
 `scripts/test-coverage.sh`, `sonar-project.properties`, the SonarQube CI job, or
 when SonarCloud shows suspicious 0% coverage. Style rules Sonar enforces on
-everyday code stay below (**TypeScript style**).
+everyday code live in `src/AGENTS.md` (**TypeScript style**).
 
 
 `scripts/scan-secrets.sh`, `scripts/scan-secrets.patterns` and `scripts/scan-secrets.selftest.sh` are byte-identical in turbopanel, turbopaneld, ui, website and dev: change all five together (each repo keeps a copy because the pre-commit hook runs it locally). The rules in the patterns file cover private key blocks, vendor tokens, JWTs, connection URLs with credentials, secret-looking assignments and forbidden file names (dotenv files, `*.pem`, `*.key`, daemon identity files, …); the scanner reports the rule id and location, never the matching text. `--all` scans the tree; `--range BASE..HEAD` scans every line the PR's commits added, so a secret added and removed inside a PR is still caught (CI runs it on PRs into trunk). Allowlist entries in `.secretscan-allowlist` are `path:full line text` (or `@path exact/file` for a forbidden file name), each needs a `# reason:` comment above it, and wildcards are rejected. The self-test builds its fixtures at run time from fragments; dev's `src/lib/scan-secrets.test.ts` runs it and, with the siblings checked out in dev CI, fails if any copy drifts.

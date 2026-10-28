@@ -3,7 +3,7 @@
  * that closes the "hard poweroff never shows offline" gap: a daemon that
  * disappears without a clean WebSocket close (power loss, network partition,
  * kernel panic) leaves no `webSocketClose`/`webSocketError` event, so nothing
- * ever tells Postgres the server went away (see AGENTS.md → Daemon Cell →
+ * ever tells Postgres the server went away (see src/daemon/cell/AGENTS.md →
  * "Presence model" disconnect-first trade-off).
  *
  * Design ("Option B"):
@@ -34,7 +34,7 @@
  *
  * This intentionally does NOT reintroduce a per-DO recurring alarm — every
  * `setAlarm()` reschedule is a billed SQLite row write (see do.ts "Alarm /
- * hibernation" + AGENTS.md Daemon Cell billing model). Centralizing the
+ * hibernation" + src/daemon/cell/AGENTS.md billing model). Centralizing the
  * "when to check" clock into one Cron Trigger avoids that cost entirely and
  * scales with the number of *connected* servers, not the number of ticks.
  *

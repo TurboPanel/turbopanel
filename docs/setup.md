@@ -67,7 +67,7 @@
   and organization code must not reference instance ACME settings or the
   `origin` / `certificate` tables. Wired into `test:hook` and CI `build.yml`
   immediately after `check:ca-boundary`. See **Instance hostnames and instance
-  ACME** below.
+  ACME** in `src/features/install/AGENTS.md`.
 - `pnpm cf-typegen` — regenerate `worker-configuration.d.ts`. Keep the
   `Cloudflare.Env` / global `Env` aliases that extend `CloudflareBindings`
   (vitest `cloudflare:test` `env` is typed as `Cloudflare.Env`, not the retired

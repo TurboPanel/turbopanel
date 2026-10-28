@@ -4,7 +4,7 @@
  *
  * Instance ACME (the control plane's own names) and organization ACME
  * (`organization.options` opt-in, org `tls` rows) must not reference each
- * other. Canonical rule: `src/lib/tls/AGENTS.md` and root `AGENTS.md`
+ * other. Canonical rule: `src/lib/tls/AGENTS.md` and `src/features/install/AGENTS.md`
  * (Instance hostnames and instance ACME).
  *
  * Usage:

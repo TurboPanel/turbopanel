@@ -5,7 +5,7 @@
   the number is read (`package.json` and `sonar.projectVersion` mirror it;
   `src/app/version.test.ts` pins all three). Change it only with
   `node scripts/set-version.mjs X.Y.Z`, which rewrites all three; it is kept
-  equal to the version the tags give (see **Automatic promotion** below), so a
+  equal to the version the tags give (see **Automatic promotion** in `.github/AGENTS.md`), so a
   local build reports the version being worked on. It feeds the three OpenAPI
   `info.version`s, `/api/health`, and the `x-turbopanel-version` response header
   `createApp()` stamps on every response; a client that is not the bundled web

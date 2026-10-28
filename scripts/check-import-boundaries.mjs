@@ -276,7 +276,7 @@ function main() {
     }
     console.error(
       `\n${failures.size} problem(s). Kernel/feature/platform layers must not cross ` +
-        'surfaces or each other. See AGENTS.md (Layout) and scripts/check-import-boundaries.mjs.',
+        'surfaces or each other. See docs/source-layout.md and scripts/check-import-boundaries.mjs.',
     )
     process.exit(1)
   }

@@ -659,7 +659,7 @@ Generated names and principal paths live in **`src/lib/naming.ts`** — the sing
 source of truth for container names (`containerNameFromService` /
 `managedContainerName` / `ingressContainerNameFromService` → `<service.id>-in`
 for per-service Traefik **and** shared ProxySQL `managed-ingress` — suffix
-contract in the repo-root `AGENTS.md` → **Container name suffix contract**; all
+contract in `src/client/system/AGENTS.md` → **Container name suffix contract**; all
 keyed off the **service** UUID, not the container row), Docker volume names
 (`dockerVolumeNameFromStorageId` / `resolveDockerVolumeName` / legacy-only
 `legacyNamespacedDockerVolumeName`), principal home/SSH/volume paths under
@@ -938,8 +938,8 @@ or `hostname` columns), tracks presence in the **Daemon Cell**, and returns
 `serverId` in enrollment responses. The daemon persists it at
 `/var/lib/turbopanel/daemon/state/server.id` (production: owned by **`tp:tp`**;
 co-located dev: dev-user-owned under the same FHS path). See the canonical
-[Production UID/GID allocation](../../AGENTS.md#production-uidgid-allocation)
-table in the repo root `AGENTS.md`. Server rows are hard-deleted — there is no
+[Production UID/GID allocation](../../docs/host-layout.md#production-uidgid-allocation)
+table in `docs/host-layout.md`. Server rows are hard-deleted — there is no
 soft-delete column. `name` and `organization_id` match the old trunk shape;
 daemon registration stores `machine_key` / `hostname` on dedicated columns (not
 in `metadata` — see `server-metadata.ts`). Which registration key enrolled the
@@ -1363,7 +1363,7 @@ does not require a restart.
 
 The instance uses **Drizzle ORM** over **postgres.js**. The Workers/Hyperdrive
 client uses `prepare: true` and `fetch_types: false`, and the cached client also sends drizzle's
-`unsafe()` calls as named prepared statements (see Workers Hyperdrive below); the Deno client uses
+`unsafe()` calls as named prepared statements (see `src/platform/workers/AGENTS.md`); the Deno client uses
 `prepare: false` (direct Postgres, no Hyperdrive). Connection factories live in
 `src/db/connection.ts`; schema in `src/db/schema.ts`; drizzle-kit config in
 `drizzle.config.mjs`. **Read `src/db/AGENTS.md` before touching schema or the

@@ -30,7 +30,7 @@
  * The deferred task **opens its own DB client and closes it in `finally`**.
  * `src/workers.ts` ends the per-request client in its own `waitUntil`; a
  * second `waitUntil` still using `c.get('db')` races that close and dies
- * with `write CONNECTION_ENDED` (the hard rule in `AGENTS.md`). Deno's
+ * with `write CONNECTION_ENDED` (the hard rule in `src/platform/workers/AGENTS.md`). Deno's
  * client is process-lived, so there the task uses it and closes nothing.
  *
  * If the after-response task crashes, the delivery stays claimed with
