@@ -196,6 +196,24 @@ provider accounts.
   applied. The same table is not sent again sooner than ten minutes after the
   previous send, so a table a server keeps refusing does not mint a new
   certificate every tick; a different table is always sent at once.
+- `connector-sync.ts` sends each carrying server its connectors with
+  `server.tunnel.connectors` (feature `tunnel-connector-v1`): the provider's
+  tunnel id and the run token sealed for that one server (`tpdaemon.`; the
+  stored command never holds the token in the clear and no log line names it).
+  A server runs the tunnels whose placement names it (`carryingServers`) and
+  that have a provider id and a run token. The panel remembers, per server, the
+  hash of the last list, the command and the ids it asked the server to run in
+  `server.metadata.tunnelConnectors`; a tunnel that moved off a server or was
+  removed is listed under `remove` on the next send, and stays listed (in
+  `removing`) with every send until a command that carried it finished well,
+  so a removal that failed is never forgotten. Only ids this code
+  installed are ever removed, so the instance's own tunnel and a hand-placed
+  connector stay alone. A resend is harmless (the daemon leaves a running
+  connector as it is), and the same list is not sent again sooner than ten
+  minutes after a send that did not finish. It runs from the offline sweep
+  (`runTunnelConnectorsSweepTick`) and right after a tunnel is created, moved
+  or removed (best effort). Changing a tunnel's run token is not supported
+  yet: remove the connector, then send it again.
 - `nudge.ts` sends the tables right away instead of waiting for the sweep. It
   never throws, does nothing for an organization with no tunnel (and no server
   that once held a table), sends to at most 40 servers per call and leaves the
@@ -205,7 +223,10 @@ provider accounts.
   (`/servers`), a server joins or leaves a datacenter (`/datacenters/:id/members`)
   or the datacenter is edited, an environment or project is deleted, a deploy
   that moves sites is queued (`deploy-routes.ts`), and a deploy result lands
-  (`consumer.ts`, `applyEnvironmentDeploySideEffect`). Go through
+  (`consumer.ts`, `applyEnvironmentDeploySideEffect`). The same call also
+  sends the connector list (`syncOrganizationTunnelConnectors`), so a server
+  that joins or leaves an "all" tunnel starts or stops its connector at once
+  too. Go through
   `nudgeTunnelRoutesFromRequest` (`src/client/organizations/tunnel-nudge.ts`)
   from a handler, or `nudgeTunnelRoutesForEnvironment` where only an
   environment is known. Not covered, left to the sweep: the raw `/ips` routes,

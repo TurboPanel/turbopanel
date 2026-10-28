@@ -31,6 +31,7 @@ import {
   updatePlacement,
   type TunnelRow,
 } from '../../features/tunnels/lifecycle.ts'
+import { syncOrganizationTunnelConnectors } from '../../features/tunnels/connector-sync.ts'
 import { serversWithoutTunnelSupport } from '../../features/tunnels/daemon-gate.ts'
 import { parsePlacementBody } from '../../features/tunnels/placement.ts'
 import { findCarrier } from '../../features/tunnels/records.ts'
@@ -108,6 +109,26 @@ function secretsOrFail(c: Context<AppEnv>) {
   return c.get('dataEncryptionSecrets') ?? null
 }
 
+/**
+ * Tell the servers right away which connectors to run. The periodic sweep does
+ * the same, so a failure here is not an error for the person.
+ */
+async function nudgeConnectors(c: Context<AppEnv>, scope: Scope): Promise<void> {
+  const commandQueue = c.get('commandQueue')
+  const secretsConfig = c.get('secretsConfig')
+  const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
+  if (!commandQueue || !secretsConfig || !dataEncryptionSecrets) return
+  try {
+    await syncOrganizationTunnelConnectors(
+      scope.db,
+      { commandQueue, secretsConfig, dataEncryptionSecrets },
+      scope.organizationId
+    )
+  } catch {
+    // The sweep sends the list again.
+  }
+}
+
 async function listResponse(c: Context<AppEnv>, scope: Scope): Promise<Response> {
   const rows = await listTunnels(scope.db, scope.organizationId)
   const tunnels = await Promise.all(rows.map((row) => tunnelWithSupportWarning(scope, row)))
@@ -150,6 +171,7 @@ function createResponse(registry: TunnelAdapterRegistry) {
         provider: row.provider,
         placement: row.placement,
       })
+      await nudgeConnectors(c, scope)
       return c.json({ tunnel: await tunnelWithSupportWarning(scope, row) }, 201)
     } catch (err) {
       return refused(c, err)
@@ -174,6 +196,7 @@ async function placementResponse(c: Context<AppEnv>, scope: Scope): Promise<Resp
       name: row.name,
       placement: updated.placement,
     })
+    await nudgeConnectors(c, scope)
     return c.json({ tunnel: await tunnelWithSupportWarning(scope, updated) })
   } catch (err) {
     return refused(c, err)
@@ -200,6 +223,7 @@ function deleteResponse(registry: TunnelAdapterRegistry) {
       return refused(c, err)
     }
     await audit(c, scope, 'tunnel.delete', row.id, { name: row.name, provider: row.provider })
+    await nudgeConnectors(c, scope)
     return c.json({ ok: true })
   }
 }
