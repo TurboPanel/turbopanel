@@ -7209,7 +7209,9 @@ export const badge = pgTable(
 /**
  * A tunnel an organization created: a named path from a provider's edge to
  * connectors on its servers. `secret_id` is the sealed run token the
- * connectors use. `placement` says where connectors run; `datacenter_id` is
+ * connectors use. `organization_id` owns the tunnel and
+ * `routing_organization_id` is the organization whose servers and sites it
+ * carries (equal for now). `placement` says where connectors run; `datacenter_id` is
  * the datacenter that `all` means every server of, and it is nullable. It does
  * not limit the tunnel to one datacenter: connectors may later run in several.
  */
@@ -7238,6 +7240,7 @@ export const tunnel = pgTable(
     metadata: jsonb(),
     options: jsonb(),
     organizationId: uuid('organization_id').notNull(),
+    routingOrganizationId: uuid('routing_organization_id').notNull(),
     carrierId: uuid('carrier_id'),
     provider: text().notNull(),
     name: text().notNull(),
@@ -7248,6 +7251,10 @@ export const tunnel = pgTable(
     status: text().default('pending').notNull(),
   },
   (table) => [
+    index('idx_tunnel_routing_organization_id').using(
+      'btree',
+      table.routingOrganizationId.asc().nullsLast().op('uuid_ops')
+    ),
     index('idx_tunnel_carrier_id').using('btree', table.carrierId.asc().nullsLast().op('uuid_ops')),
     index('idx_tunnel_datacenter_id').using(
       'btree',
@@ -7258,6 +7265,13 @@ export const tunnel = pgTable(
       columns: [table.organizationId],
       foreignColumns: [organization.id],
       name: 'tunnel_organization_id_organization_id_fk',
+    }).onDelete('cascade'),
+    // No CHECK ties this to `organization_id`: cross-organization hosting is
+    // refused in code (`assertSameHostingOrganization`) so it can be allowed later.
+    foreignKey({
+      columns: [table.routingOrganizationId],
+      foreignColumns: [organization.id],
+      name: 'tunnel_routing_organization_id_organization_id_fk',
     }).onDelete('cascade'),
     foreignKey({
       columns: [table.carrierId],
@@ -7347,9 +7361,9 @@ export const portal = pgTable(
 )
 
 /**
- * One hostname a tunnel carries. `organization_id` repeats the tunnel's
- * organization so a name is unique per organization, the same rule `hostname`
- * applies with `routing_organization_id`. `hosting_id` is the site it serves
+ * One hostname a tunnel carries. Like `hostname`, it names only the routing
+ * organization (the one whose servers answer for it), and a name is unique
+ * per routing organization. `hosting_id` is the site it serves
  * (kept when the site goes: the row is then unattached).
  */
 export const doorway = pgTable(
@@ -7376,7 +7390,7 @@ export const doorway = pgTable(
       .notNull(),
     metadata: jsonb(),
     options: jsonb(),
-    organizationId: uuid('organization_id').notNull(),
+    routingOrganizationId: uuid('routing_organization_id').notNull(),
     tunnelId: uuid('tunnel_id').notNull(),
     hostname: text().notNull(),
     kind: text().default('http').notNull(),
@@ -7392,11 +7406,14 @@ export const doorway = pgTable(
       'btree',
       table.hostingId.asc().nullsLast().op('uuid_ops')
     ),
-    unique('uniq_doorway_organization_id_hostname').on(table.organizationId, table.hostname),
+    unique('uniq_doorway_routing_organization_id_hostname').on(
+      table.routingOrganizationId,
+      table.hostname
+    ),
     foreignKey({
-      columns: [table.organizationId],
+      columns: [table.routingOrganizationId],
       foreignColumns: [organization.id],
-      name: 'doorway_organization_id_organization_id_fk',
+      name: 'doorway_routing_organization_id_organization_id_fk',
     }).onDelete('cascade'),
     foreignKey({
       columns: [table.tunnelId],

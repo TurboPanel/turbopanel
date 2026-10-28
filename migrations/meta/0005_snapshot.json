@@ -1,5 +1,5 @@
 {
-  "id": "ea832e1a-95cc-49ed-9e82-df9bfee71bbb",
+  "id": "7c4c39da-8bec-4021-a6d2-52e3a4f89f0f",
   "prevId": "89eebc09-24ec-4f45-809e-2b6cd96d2c5a",
   "version": "7",
   "dialect": "postgresql",
@@ -3230,8 +3230,8 @@
           "primaryKey": false,
           "notNull": false
         },
-        "organization_id": {
-          "name": "organization_id",
+        "routing_organization_id": {
+          "name": "routing_organization_id",
           "type": "uuid",
           "primaryKey": false,
           "notNull": true
@@ -3323,12 +3323,12 @@
         }
       },
       "foreignKeys": {
-        "doorway_organization_id_organization_id_fk": {
-          "name": "doorway_organization_id_organization_id_fk",
+        "doorway_routing_organization_id_organization_id_fk": {
+          "name": "doorway_routing_organization_id_organization_id_fk",
           "tableFrom": "doorway",
           "tableTo": "organization",
           "columnsFrom": [
-            "organization_id"
+            "routing_organization_id"
           ],
           "columnsTo": [
             "id"
@@ -3365,11 +3365,11 @@
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
-        "uniq_doorway_organization_id_hostname": {
-          "name": "uniq_doorway_organization_id_hostname",
+        "uniq_doorway_routing_organization_id_hostname": {
+          "name": "uniq_doorway_routing_organization_id_hostname",
           "nullsNotDistinct": false,
           "columns": [
-            "organization_id",
+            "routing_organization_id",
             "hostname"
           ]
         }
@@ -15077,6 +15077,12 @@
           "primaryKey": false,
           "notNull": true
         },
+        "routing_organization_id": {
+          "name": "routing_organization_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
         "carrier_id": {
           "name": "carrier_id",
           "type": "uuid",
@@ -15129,6 +15135,22 @@
         }
       },
       "indexes": {
+        "idx_tunnel_routing_organization_id": {
+          "name": "idx_tunnel_routing_organization_id",
+          "columns": [
+            {
+              "expression": "routing_organization_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "uuid_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
         "idx_tunnel_carrier_id": {
           "name": "idx_tunnel_carrier_id",
           "columns": [
@@ -15169,6 +15191,19 @@
           "tableTo": "organization",
           "columnsFrom": [
             "organization_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "tunnel_routing_organization_id_organization_id_fk": {
+          "name": "tunnel_routing_organization_id_organization_id_fk",
+          "tableFrom": "tunnel",
+          "tableTo": "organization",
+          "columnsFrom": [
+            "routing_organization_id"
           ],
           "columnsTo": [
             "id"

@@ -28,8 +28,14 @@ member there, a widened CHECK (forward migration) and one adapter.
   server, so the key is (tunnel, server) and nothing assumes one tunnel per
   server. `portal.options` is reserved for per-server details (for example a
   local endpoint).
-- `doorway.organization_id` repeats the tunnel's organization so a hostname is
-  unique per organization, as `hostname.routing_organization_id` does.
+- `tunnel.organization_id` owns the tunnel; `tunnel.routing_organization_id`
+  is the organization whose servers and sites it carries (named as on
+  `hostname`). They must be equal for now: `assertSameHostingOrganization`
+  refuses a difference, and no CHECK enforces it, so it can be relaxed without
+  a migration. A tunnel can reach other organizations' hostnames on a shared
+  server; that is a documented risk, not isolated per tunnel.
+- `doorway.routing_organization_id` mirrors `hostname.routing_organization_id`
+  (a hostname is unique per routing organization).
 - `carrier` is unique on (organization, provider, external account id); a
   provider with no account stores NULL, and NULLs never collide.
 

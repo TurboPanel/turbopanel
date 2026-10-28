@@ -1393,8 +1393,8 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       metadata:
         'Non-secret descriptors written by the panel; no keys are read by the platform today.',
       options: 'Provider-specific route details; no keys are read by the platform today.',
-      organization_id:
-        'Owning organization, repeated from the tunnel so a hostname is unique per organization; cascade-deletes with it.',
+      routing_organization_id:
+        'Organization whose servers answer for this name, as on `hostname`; a name is unique per routing organization.',
       hostname: 'Lower-case DNS name the tunnel carries.',
       kind: 'Kind of traffic carried, `http` for now; ssh, rdp, vnc and tcp are added by a forward migration.',
       external_route_id: 'The provider id of the route for this name; NULL until published.',
@@ -1959,6 +1959,8 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       metadata:
         'Non-secret descriptors written by the panel; no keys are read by the platform today.',
       options: 'Provider-specific tunnel settings; no keys are read by the platform today.',
+      routing_organization_id:
+        'Organization whose servers and sites the tunnel carries; equal to `organization_id` for now, enforced in code only.',
       provider: 'Tunnel provider, `cloudflare` for now; widened by a forward migration.',
       name: 'Operator name, unique per organization.',
       external_id: 'The provider own tunnel id; NULL until the provider created it.',
