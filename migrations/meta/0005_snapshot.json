@@ -1,5 +1,5 @@
 {
-  "id": "857f5429-3e29-4e0a-8b0b-b8bb6af3bf8a",
+  "id": "190d1d83-8b98-4918-a874-b22c2ee6e63b",
   "prevId": "89eebc09-24ec-4f45-809e-2b6cd96d2c5a",
   "version": "7",
   "dialect": "postgresql",
@@ -1271,7 +1271,7 @@
           "columnsTo": [
             "id"
           ],
-          "onDelete": "no action",
+          "onDelete": "cascade",
           "onUpdate": "no action"
         }
       },
@@ -15229,7 +15229,7 @@
           "columnsTo": [
             "id"
           ],
-          "onDelete": "no action",
+          "onDelete": "set null",
           "onUpdate": "no action"
         },
         "tunnel_datacenter_id_datacenter_id_fk": {

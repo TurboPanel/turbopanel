@@ -55,14 +55,16 @@ member there, a widened CHECK (forward migration) and one adapter.
 - Delete behavior of every new foreign key: organization deleted removes its
   carriers, tunnels and doorways (cascade, both organization columns on
   `tunnel`); server deleted removes its portals; tunnel deleted removes its
-  portals and doorways; carrier deleted removes its badges but is refused
-  while a tunnel uses it (NO ACTION, with a 409 `carrier_in_use` first); hosting deleted sets `doorway.hosting_id`
+  portals and doorways; carrier deleted removes its badges and sets `tunnel.carrier_id` NULL, but the
+  route refuses it first (409 `carrier_in_use`) while a tunnel uses it; hosting deleted sets `doorway.hosting_id`
   NULL; datacenter deleted sets `tunnel.datacenter_id` NULL. A `secret` row is
   never removed by the database: removing a badge deletes its secret in code
   (`deleteBadge`) and removing a tunnel deletes its run-token secret
-  (`deleteTunnelRecord`); `badge.secret_id` is NO ACTION (checked at the end of the
-  statement, so an organization delete still succeeds) so a secret cannot
-  vanish under a badge, and `tunnel.secret_id` is SET NULL.
+  (`deleteTunnelRecord`); `badge.secret_id` is CASCADE and `tunnel.secret_id` and
+  `tunnel.carrier_id` are SET NULL. RESTRICT and NO ACTION were tried and
+  rejected: Postgres checks them per cascaded statement, and an organization
+  delete removes `secret` and `carrier` before `badge` and `tunnel`, so they
+  fail it.
 - `carrier` is unique on (organization, provider, external account id); a
   provider with no account stores NULL, and NULLs never collide.
 

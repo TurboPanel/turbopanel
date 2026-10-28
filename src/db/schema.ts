@@ -7203,9 +7203,10 @@ export const badge = pgTable(
       foreignColumns: [secret.id],
       name: 'badge_secret_id_secret_id_fk',
     })
-      // NO ACTION, not RESTRICT: checked at the end of the statement, so an
-      // organization delete (which cascades to both `secret` and `badge`) succeeds.
-      .onDelete('no action'),
+      // CASCADE, not RESTRICT or NO ACTION: an organization delete removes `secret`
+      // before `badge`, and both of those checks fire per cascaded statement and
+      // would fail it. Removing a badge deletes its secret in code (`deleteBadge`).
+      .onDelete('cascade'),
     check('badge_label_check', sql`char_length(label) BETWEEN 1 AND 64`),
     check('badge_status_check', sql`status IN ('active', 'attention')`),
   ]
@@ -7285,9 +7286,10 @@ export const tunnel = pgTable(
       foreignColumns: [carrier.id],
       name: 'tunnel_carrier_id_carrier_id_fk',
     })
-      // NO ACTION, not RESTRICT: a carrier with tunnels is refused (the route
-      // answers 409 first), yet an organization delete still succeeds.
-      .onDelete('no action'),
+      // SET NULL, not RESTRICT or NO ACTION: an organization delete may remove the
+      // carrier before the tunnel, and either check would fail it. A carrier with
+      // tunnels is refused in code (409 `carrier_in_use`) before it gets here.
+      .onDelete('set null'),
     foreignKey({
       columns: [table.datacenterId],
       foreignColumns: [datacenter.id],

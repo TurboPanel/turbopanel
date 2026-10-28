@@ -50,7 +50,7 @@ async function seed(db: Db) {
   const organizationId = org!.id
   const [srv] = await db
     .insert(server)
-    .values({ organizationId, name: 'Tunnel Server' })
+    .values({ name: 'Tunnel Server' })
     .returning({ id: server.id })
   const [c] = await db
     .insert(carrier)
@@ -81,7 +81,14 @@ async function seed(db: Db) {
   await db
     .insert(doorway)
     .values({ routingOrganizationId: organizationId, tunnelId: t!.id, hostname: 'a.example.com' })
-  return { organizationId, carrierId: c!.id, tunnelId: t!.id, runSecret, badgeSecret }
+  return {
+    serverId: srv!.id,
+    organizationId,
+    carrierId: c!.id,
+    tunnelId: t!.id,
+    runSecret,
+    badgeSecret,
+  }
 }
 
 async function withDb(fn: (db: Db) => Promise<void>): Promise<void> {
@@ -138,6 +145,7 @@ test('deleting a tunnel deletes its run token, and replacing the token deletes t
       )
     } finally {
       await db.delete(organization).where(eq(organization.id, s.organizationId))
+      await db.delete(server).where(eq(server.id, s.serverId))
     }
   })
 })
@@ -146,8 +154,6 @@ test('the new constraints refuse duplicates and incomplete rows', async () => {
   await withDb(async (db) => {
     const s = await seed(db)
     try {
-      // A carrier with a tunnel cannot be deleted directly (NO ACTION).
-      await assertRejects(() => db.delete(carrier).where(eq(carrier.id, s.carrierId)))
       // Two rows cannot stand for one provider tunnel.
       await assertRejects(() =>
         db.insert(tunnel).values({
@@ -204,6 +210,7 @@ test('the new constraints refuse duplicates and incomplete rows', async () => {
       )
     } finally {
       await db.delete(organization).where(eq(organization.id, s.organizationId))
+      await db.delete(server).where(eq(server.id, s.serverId))
     }
   })
 })

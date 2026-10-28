@@ -104,7 +104,7 @@ CREATE TABLE "tunnel" (
 --> statement-breakpoint
 ALTER TABLE "secret" DROP CONSTRAINT "secret_provider_check";--> statement-breakpoint
 ALTER TABLE "badge" ADD CONSTRAINT "badge_carrier_id_carrier_id_fk" FOREIGN KEY ("carrier_id") REFERENCES "public"."carrier"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "badge" ADD CONSTRAINT "badge_secret_id_secret_id_fk" FOREIGN KEY ("secret_id") REFERENCES "public"."secret"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "badge" ADD CONSTRAINT "badge_secret_id_secret_id_fk" FOREIGN KEY ("secret_id") REFERENCES "public"."secret"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "carrier" ADD CONSTRAINT "carrier_organization_id_organization_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "doorway" ADD CONSTRAINT "doorway_routing_organization_id_organization_id_fk" FOREIGN KEY ("routing_organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "doorway" ADD CONSTRAINT "doorway_tunnel_id_tunnel_id_fk" FOREIGN KEY ("tunnel_id") REFERENCES "public"."tunnel"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
@@ -113,7 +113,7 @@ ALTER TABLE "portal" ADD CONSTRAINT "portal_tunnel_id_tunnel_id_fk" FOREIGN KEY 
 ALTER TABLE "portal" ADD CONSTRAINT "portal_server_id_server_id_fk" FOREIGN KEY ("server_id") REFERENCES "public"."server"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "tunnel" ADD CONSTRAINT "tunnel_organization_id_organization_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "tunnel" ADD CONSTRAINT "tunnel_routing_organization_id_organization_id_fk" FOREIGN KEY ("routing_organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "tunnel" ADD CONSTRAINT "tunnel_carrier_id_carrier_id_fk" FOREIGN KEY ("carrier_id") REFERENCES "public"."carrier"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "tunnel" ADD CONSTRAINT "tunnel_carrier_id_carrier_id_fk" FOREIGN KEY ("carrier_id") REFERENCES "public"."carrier"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "tunnel" ADD CONSTRAINT "tunnel_datacenter_id_datacenter_id_fk" FOREIGN KEY ("datacenter_id") REFERENCES "public"."datacenter"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "tunnel" ADD CONSTRAINT "tunnel_secret_id_secret_id_fk" FOREIGN KEY ("secret_id") REFERENCES "public"."secret"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "idx_badge_carrier_id" ON "badge" USING btree ("carrier_id" uuid_ops);--> statement-breakpoint
@@ -126,7 +126,7 @@ CREATE INDEX "idx_tunnel_datacenter_id" ON "tunnel" USING btree ("datacenter_id"
 ALTER TABLE "secret" ADD CONSTRAINT "secret_provider_check" CHECK (provider IN ('s3', 's3_compatible', 'nfs', 'cifs', 'sftp', 'ftp', 'webdav',
         'git_deploy_key', 'carrier_badge', 'tunnel_run'));--> statement-breakpoint
 COMMENT ON TABLE "badge" IS 'One API token on a carrier; the token itself is sealed in the `secret` row it points to and this row keeps the label, last four characters and what it can do.';--> statement-breakpoint
-COMMENT ON COLUMN "badge"."secret_id" IS 'The sealed token in `secret`, one badge per secret and not deletable under it (NO ACTION); removing the badge deletes the secret in the same transaction.';--> statement-breakpoint
+COMMENT ON COLUMN "badge"."secret_id" IS 'The sealed token in `secret`, one badge per secret; deleting the secret deletes the badge, and removing a badge deletes its secret in the same transaction.';--> statement-breakpoint
 COMMENT ON COLUMN "badge"."label" IS 'Operator label for the token, shown beside its last four characters.';--> statement-breakpoint
 COMMENT ON COLUMN "badge"."capabilities" IS 'What the last check found the token can do: `tunnels`, `dns` and `certificates` as booleans, written by the panel after each check.';--> statement-breakpoint
 COMMENT ON COLUMN "badge"."last_four" IS 'Last 4 characters of the token, the only part of it ever shown; never enough to use the token.';--> statement-breakpoint
