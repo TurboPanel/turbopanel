@@ -217,6 +217,14 @@ provider accounts.
   restricts anything once default-drop is enabled (still on hold); until then
   it is shown in the preview. When the hosting is already public the rule is
   redundant and the Caddy lock is the protection.
+  Only bare IP addresses pass (the same test the table contract applies), so
+  an address row holding a range can never widen the rule while the table is
+  refused. The rule is derived without the sync readiness gate (offline or old
+  daemon servers are not skipped here). It currently lands after the table: the
+  preview fires once `server.tunnel.routes` succeeds, so under default-drop the
+  first forwarded requests could be dropped. Default-drop must not ship before
+  that order is fixed (send the rule before the routes, or apply it from the
+  sync path).
 - Not in this slice: the deploy-time `hostings[].tunnel` (it must be gated on
   the same feature when added) and triggers that resend at once on a hosting or
   server change (the sweep catches them).
