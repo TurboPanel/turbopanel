@@ -153,3 +153,14 @@ test('an unset row uses the environment default; a saved row wins', async () => 
   const fake = createFakeSettingDb(V0_1_20_ROW)
   assertEquals((await getUpgradeSettings(fake, fallback)).batch, { mode: 'count', value: 3 })
 })
+
+test('an install that saved one server at a time keeps it; only an install that never saved a batch gets every server at once', async () => {
+  const saved = createFakeSettingDb({ ...V0_1_20_ROW, batch: { mode: 'count', value: 1 } })
+  assertEquals((await getUpgradeSettings(saved)).batch, { mode: 'count', value: 1 })
+  // No row at all (canary until 2026-10-27): the old screen showed the old
+  // built-in default of one server; the default is now 100%.
+  assertEquals((await getUpgradeSettings(createFakeSettingDb())).batch, {
+    mode: 'percent',
+    value: 100,
+  })
+})

@@ -202,6 +202,22 @@ test('a run where every host was already current counts no server as updated', a
     assertEquals(byId.get(pruned)?.summary.detail, 'pruned')
     assertEquals(byId.get(pruned)?.summary.updated, null)
     assertEquals(byId.get(noop)?.trigger, 'manual')
+    // Nothing was sent in the no-op run, so it names no unit.
+    assertEquals(byId.get(noop)?.units, [])
+    assertEquals(byId.get(real)?.units, ['daemon'])
+    assertEquals(byId.get(pruned)?.units, [])
+  })
+})
+
+test('a daemon-only self-hosted run whose control-plane step was already current names only the daemon', async () => {
+  await withFixture('units sent', async (fx) => {
+    const host = await addServer(fx, 'control-plane', fx.orgA, true)
+    const runId = await addRun(fx, { status: 'succeeded', createdAt: minutes(-10) }, [
+      { serverId: host, unit: 'daemon', phase: 'colocated_daemon', status: 'done', attempts: 1 },
+      { serverId: host, unit: 'instance', phase: 'control_plane', status: 'done', attempts: 0 },
+    ])
+    const page = await readHistoryPage(fx.db, historyQuery({ status: 'any' }))
+    assertEquals(page.runs.find((run) => run.id === runId)?.units, ['daemon'])
   })
 })
 
@@ -266,6 +282,11 @@ test('a run page has one row per server with its components, counts and filters'
     const page = await readRunServersPage(fx.db, null, runId, serversQuery({}))
     assert(page)
     assertEquals(page.units, ['daemon', 'instance'])
+    // The run row names the units it planned, so a client lists the web
+    // interface (installed with the control plane) only when it is there.
+    assertEquals(page.run.units, ['daemon', 'instance'])
+    const listed = await readHistoryPage(fx.db, historyQuery({ status: 'any' }))
+    assertEquals(listed.runs.find((run) => run.id === runId)?.units, ['daemon', 'instance'])
     assertEquals(page.statusCounts, {
       all: 4,
       failed: 1,
