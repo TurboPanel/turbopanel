@@ -63,7 +63,7 @@ test('toGithubRepositorySummary narrows a GitHub repository payload', () => {
       defaultBranch: 'main',
       private: true,
       cloneUrl: 'https://github.com/org/app.git',
-    },
+    }
   )
   assertEquals(toGithubRepositorySummary({ id: 1 }), null)
   assertEquals(toGithubRepositorySummary('nope'), null)
@@ -91,13 +91,13 @@ test('successfulCheckSha honors only all-green suite-level signals', () => {
         check_suite: suite,
       },
     }),
-    SHA,
+    SHA
   )
   assertEquals(
     successfulCheckSha('check_suite', {
       check_suite: { ...suite, conclusion: 'failure' },
     }),
-    null,
+    null
   )
 })
 
@@ -118,7 +118,8 @@ test('github parsePush and parseCheck delegate through the provider registry', (
       branch: 'main',
       commitSha: pushSha,
       deleted: false,
-    },
+      pushedBy: null,
+    }
   )
   assertEquals(
     github.parseCheck('check_suite', {
@@ -135,7 +136,7 @@ test('github parsePush and parseCheck delegate through the provider registry', (
       repositoryExternalId: '15',
       commitSha: SHA,
       ref: null,
-    },
+    }
   )
 })
 

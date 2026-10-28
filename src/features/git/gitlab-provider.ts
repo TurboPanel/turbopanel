@@ -50,6 +50,7 @@ import type {
   RepositorySummary,
   WebhookHeaders,
 } from './git-provider.ts'
+import { pushLoginFrom } from './push-login.ts'
 import { normalizeCheckRef } from './check-ref.ts'
 import { firstSequential } from '../../lib/sequential.ts'
 import { branchFromGitRef, isCommitSha } from './clone-url.ts'
@@ -136,6 +137,8 @@ export function parseGitlabPush(payload: Record<string, unknown>): ProviderPushE
     branch,
     commitSha: head,
     deleted,
+    // The pusher's username only; `user_email` is never read.
+    pushedBy: pushLoginFrom(payload.user_username),
   }
 }
 

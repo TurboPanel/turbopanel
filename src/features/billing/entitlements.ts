@@ -42,7 +42,7 @@ import {
   peekOrganizationAssignment,
   requiredRankFromMetadata,
 } from '../tiers/assignment-records.ts'
-import { getTierById } from '../tiers/tier-records.ts'
+import { countReservedLicenseTiers, getTierById } from '../tiers/tier-records.ts'
 import { eq } from 'drizzle-orm'
 import { server } from '../../db/schema.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
@@ -295,7 +295,11 @@ export async function syncEntitlementsForOrganization(
     }
 
     // 2. The managers' assignment, read against the seats (never written).
-    const assignment = await peekOrganizationAssignment(deps.db, input.organizationId, { state })
+    const reserved = await countReservedLicenseTiers(deps.db, input.organizationId)
+    const assignment = await peekOrganizationAssignment(deps.db, input.organizationId, {
+      state,
+      reserved,
+    })
 
     // 4. The schedule, when the ledger still needs one.
     const scheduleRebuilt = await rebuildDeferredScheduleIfNeeded(

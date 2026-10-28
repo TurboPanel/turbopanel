@@ -26,7 +26,7 @@ import {
   type MetricsDeploymentKind,
   type ServerMachineClass,
 } from '../../contracts/capability-plan.ts'
-import { colocatedServerUpdateBlockedReason, type ServerUpdateCommit } from './update-status.ts'
+import type { ServerUpdateCommit } from './update-status.ts'
 import {
   parseHideWebServerNamesInput,
   parseNtpDefaultsInput,
@@ -341,10 +341,6 @@ export function serverDeletedPayload(
   return { ok: true, serverId, status: 200 }
 }
 
-export function queueServerUpdateHttpStatus(error: string): 403 | 404 {
-  return error === colocatedServerUpdateBlockedReason() ? 403 : 404
-}
-
 export function emptyServersUpdatesPayload(channel: UpdateChannel): {
   ok: true
   channel: UpdateChannel
@@ -401,71 +397,8 @@ export function resolveTrunkTargetFields(
   }
 }
 
-export type BatchUpdateEligibility =
-  { ok: false; error: string } | { ok: true; updateAvailable: true }
-
-/**
- * Decision tree for POST /servers/updates before enqueueing.
- * Caller still performs the manage check and queueServerUpdate.
- */
-export function resolveBatchUpdateEligibility(
-  params: Readonly<{
-    connected: boolean
-    colocated: boolean
-    current: ServerUpdateCommit | null
-    targetCommit: string | null
-  }>
-): BatchUpdateEligibility {
-  if (!params.connected) {
-    return { ok: false, error: 'Daemon not connected' }
-  }
-  if (params.colocated) {
-    return { ok: false, error: colocatedServerUpdateBlockedReason() }
-  }
-  const updateAvailable = params.targetCommit
-    ? params.current?.commit !== params.targetCommit
-    : false
-  if (!updateAvailable) {
-    return {
-      ok: false,
-      error: params.targetCommit ? 'Up to date' : 'Target unavailable',
-    }
-  }
-  return { ok: true, updateAvailable: true }
-}
-
 export function updateResetErrorStatus(message: string): 409 | 500 {
   return message === 'update in progress' ? 409 : 500
-}
-
-/**
- * Deferred update release for the dev-only prepare step (rebuild the local
- * daemon overlay before daemons install it). The projection was already marked
- * queued when the trigger was accepted; on success the envelope is enqueued and
- * the queued timestamp refreshed so the daemon gets the full request TTL after
- * the build. A failed prepare or enqueue lands as a failed update result.
- */
-export async function runPreparedServerUpdate(params: {
-  prepare: () => Promise<void>
-  enqueue: () => Promise<void>
-  markQueued: (queuedAt: string) => Promise<void>
-  markFailed: (error: string, finishedAt: string) => Promise<void>
-}): Promise<void> {
-  try {
-    await params.prepare()
-  } catch (err) {
-    await params.markFailed(
-      `Dev daemon rebuild failed: ${errorMessageFromUnknown(err)}`,
-      new Date().toISOString()
-    )
-    return
-  }
-  try {
-    await params.enqueue()
-    await params.markQueued(new Date().toISOString())
-  } catch (err) {
-    await params.markFailed(errorMessageFromUnknown(err), new Date().toISOString())
-  }
 }
 
 export function distinctNonEmptyIds(ids: Array<string | null | undefined>): string[] {

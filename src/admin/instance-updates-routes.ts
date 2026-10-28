@@ -1,14 +1,25 @@
+import { eq, inArray } from 'drizzle-orm'
 import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../app/app.ts'
 import { resolveBuildLabel, resolveInstanceRevision } from '../app/build-info.ts'
 import { INSTANCE_VERSION } from '../app/version.ts'
 import { resolveColocatedServerId } from '../client/authn/install-state.ts'
-import { resolveInstanceUpdateChannel, type UpdateChannel } from '../contracts/update-channel.ts'
-import { getDaemonCellRegistry, getDb } from '../db/connection.ts'
+import { resolveInstanceUpdateChannel } from '../contracts/update-channel.ts'
+import { type Db, getDaemonCellRegistry, getDb } from '../db/connection.ts'
+import { upgrade, user } from '../db/schema.ts'
+import { recordAudit } from '../features/audit/audit-records.ts'
 import { resolveUpdateManifest } from '../features/update/manifest.ts'
 import { isExplicitDevelopmentMode } from '../lib/dev-mode.ts'
-import { createUpgradeCoordinator } from '../features/upgrades/coordinator.ts'
+import { createUpgradeCoordinator, ensureReservedRunId } from '../features/upgrades/coordinator.ts'
+import { unitsForPlannedRun } from '../features/upgrades/planner.ts'
+import {
+  channelHasInstancePackage,
+  resolveUpgradeTarget,
+  setLatestAvailableBuild,
+} from '../features/upgrades/target-resolve.ts'
 import { createDrizzleUpgradeStore } from '../features/upgrades/store.ts'
+import { isUuid, parseHistoryQuery, parseRunServersQuery } from '../features/upgrades/history.ts'
+import { readHistoryPage, readRunServersPage } from '../features/upgrades/history-read.ts'
 import {
   parseUpgradeVerifyTimeoutMs,
   UPGRADE_VERIFY_TIMEOUT_ENV,
@@ -18,13 +29,55 @@ import {
   normalizeUpgradeSettings,
   parseUpgradeBatchDefault,
 } from '../features/settings/upgrade-settings.ts'
+import {
+  ensureUpgradeCheckSchedule,
+  getUpgradePause,
+  claimManualUpgradeCheck,
+  getInstalledUi,
+  recordInstalledUi,
+  pauseUpgrades,
+  readUpgradeCheckSchedule,
+  resumeUpgrades,
+  type UpgradePause,
+} from '../features/settings/upgrade-control.ts'
+import {
+  latestUpgradeCheckAt,
+  manualCheckWaitSeconds,
+  nextUpgradeCheckAt,
+  UPGRADE_MANUAL_CHECK_MIN_GAP_MS,
+} from '../features/upgrades/schedule.ts'
+import {
+  parseUpgradeCheckMinutes,
+  UPGRADE_CHECK_MINUTES_ENV,
+} from '../features/upgrades/tick-cadence.ts'
+import { UPGRADE_ACTIVE_STATUSES } from '../features/upgrades/vocabulary.ts'
+import {
+  controlPlaneBackupPath,
+  controlPlaneRollbackCommand,
+  updatesAutomaticBody,
+} from '../features/upgrades/decisions.ts'
+import type { UpdateManifestTarget } from '../features/update/manifest.ts'
 import { resolvePlatformEnv } from './routes-helpers.ts'
-
-const INSTANCE_UPDATE_RUNTIME_ERROR = 'control-plane update is not applicable on this runtime'
 
 const NO_DAEMON_ERROR = 'no co-located daemon connected to update the control plane'
 
-const DAEMON_DISCONNECTED_ERROR = 'co-located daemon disconnected'
+/** Check Now pressed again within a minute (HTTP 429). */
+export const CHECK_TOO_SOON_ERROR = 'check_too_soon'
+
+/** The routes that used to start, retry or cancel an update by hand. */
+const RETIRED_UPDATE_ROUTES = [
+  '/instance/updates/instance',
+  '/instance/updates/daemon',
+  '/instance/updates/preflight',
+  '/instance/updates/runs',
+  '/instance/updates/steps/:id/retry',
+  '/instance/updates/runs/:id/cancel',
+] as const
+
+/** The answer every retired manual-update route gives. */
+function updatesAutomaticResponse(c: Context): Response {
+  return c.json(updatesAutomaticBody(), 410)
+}
 
 type ColocatedDaemon = {
   serverId: string | null
@@ -32,14 +85,6 @@ type ColocatedDaemon = {
   version: string | null
   commit: string | null
   builtAt: string | null
-}
-
-function isInstancePackageChannel(channel: UpdateChannel): channel is 'canary' | 'rc' | 'release' {
-  return channel === 'canary' || channel === 'rc' || channel === 'release'
-}
-
-function instanceChannelError(channel: UpdateChannel): string {
-  return `This control plane follows ${channel}, which has no control-plane package. Use canary, rc, or release.`
 }
 
 async function readColocatedDaemon(c: Context<AppEnv>): Promise<ColocatedDaemon> {
@@ -68,10 +113,10 @@ async function readColocatedDaemon(c: Context<AppEnv>): Promise<ColocatedDaemon>
 }
 
 /**
- * Installed versions, channel targets, and the managed upgrade run API.
- *
- * `POST …/instance` and `POST …/daemon` start the same guarded run as
- * `POST …/runs`. The control-plane row is `INSTANCE_VERSION`.
+ * Installed versions, channel targets, the read-only run and history API, the
+ * batch size setting, and Pause / Resume. Updates start on their own (the
+ * hourly check); the routes that started, retried or cancelled one by hand
+ * answer 410 `updates_automatic`. The control-plane row is `INSTANCE_VERSION`.
  */
 export function registerInstanceUpdatesAdminRoutes(
   admin: Hono<AppEnv>,
@@ -80,87 +125,66 @@ export function registerInstanceUpdatesAdminRoutes(
     getEnv?: () => Record<string, string | undefined>
   }
 ): void {
-  admin.get('/instance/updates', async (c) => {
-    const env = resolvePlatformEnv(c, opts)
-    const channel = resolveInstanceUpdateChannel(env)
-    const revision = resolveInstanceRevision(env)
-    const consoleCommit = readConsoleCommit(c.req.query('consoleCommit'))
-    const [instanceTarget, uiTarget, daemonTarget, daemon] = await Promise.all([
-      resolveUpdateManifest(channel, 'instance'),
-      resolveUpdateManifest(channel, 'ui'),
-      resolveUpdateManifest(channel, 'daemon'),
-      readColocatedDaemon(c),
-    ])
-    const instanceInstalled = {
-      version: INSTANCE_VERSION,
-      commit: revision.commit,
-    }
-    // The exact label of the installed bytes (`0.1.3-canary.417`, `0.1.3-rc.2`),
-    // written by the installer from the manifest it installed. INSTANCE_VERSION
-    // is the plain deno.json number, which cannot tell a canary from its rc.
-    const buildLabel = resolveBuildLabel(env)
-    const daemonInstalled = daemon.serverId
-      ? { version: daemon.version, commit: daemon.commit, builtAt: daemon.builtAt }
-      : null
-    return c.json({
-      ok: true,
-      channel,
-      runtime: opts.runtime,
-      managedUpgrade: true,
-      updatesManaged: opts.runtime === 'workers',
-      units: {
-        instance: {
-          installed: buildLabel ? { ...instanceInstalled, label: buildLabel } : instanceInstalled,
-          target: instanceTarget,
-          uiTarget,
-          updateAvailable: updateAvailableFor(instanceInstalled, instanceTarget),
-          // The UI ships inside the control-plane install. On a self-hosted
-          // control plane it is behind when the console's own bundle differs
-          // from the channel's UI build; on Workers the UI is deployed, not
-          // installed, so it is never offered here.
-          uiUpdateAvailable: opts.runtime === 'deno' && uiBehindTarget(uiTarget, consoleCommit),
-        },
-        daemon: {
-          installed: daemonInstalled,
-          target: daemonTarget,
-          serverId: daemon.serverId,
-          connected: daemon.connected,
-          updateAvailable:
-            daemonInstalled !== null && updateAvailableFor(daemonInstalled, daemonTarget),
-        },
-      },
-    })
-  })
+  admin.get('/instance/updates', async (c) => c.json(await readUpdatesStatus(c, opts)))
 
-  admin.post('/instance/updates/instance', async (c) => {
-    if (opts.runtime === 'workers') {
-      return c.json({ ok: false, error: INSTANCE_UPDATE_RUNTIME_ERROR }, 422)
+  // Check Now: a refresh only. It asks the release servers for the newest
+  // build (at most once a minute) and answers the fresh status; it never
+  // starts a run and never moves the schedule — the next scheduled check does.
+  admin.post('/instance/updates/check', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ ok: false, error: 'Database unavailable' }, 503)
+    const now = new Date()
+    await ensureUpgradeCheckSchedule(db, now.toISOString())
+    // One conditional write claims the press, so two presses cannot both pass.
+    if (!(await claimManualUpgradeCheck(db, now.toISOString(), UPGRADE_MANUAL_CHECK_MIN_GAP_MS))) {
+      const schedule = await readUpgradeCheckSchedule(db)
+      const wait = Math.max(1, schedule ? manualCheckWaitSeconds(schedule, now) : 1)
+      c.header('Retry-After', String(wait))
+      return c.json(
+        {
+          ok: false,
+          error: CHECK_TOO_SOON_ERROR,
+          retryAfterSeconds: wait,
+          message: `Checked a moment ago. Try again in ${wait} seconds.`,
+        },
+        429
+      )
     }
     const channel = resolveInstanceUpdateChannel(resolvePlatformEnv(c, opts))
-    if (!isInstancePackageChannel(channel)) {
-      return c.json({ ok: false, error: instanceChannelError(channel) }, 422)
+    const target = await resolveUpgradeTarget(channel, (kind) =>
+      resolveUpdateManifest(channel, kind, { fresh: true })
+    )
+    await setLatestAvailableBuild(db, target)
+    return c.json(await readUpdatesStatus(c, opts))
+  })
+
+  for (const path of RETIRED_UPDATE_ROUTES) {
+    admin.post(path, (c) => updatesAutomaticResponse(c))
+  }
+
+  admin.post('/instance/updates/pause', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ ok: false, error: 'Database unavailable' }, 503)
+    const session = c.get('session')
+    const requested: UpgradePause = {
+      since: new Date().toISOString(),
+      byUserId: session?.userId ?? null,
+      byEmail: session?.email ?? null,
+      byName: session?.userId ? await readUserName(db, session.userId) : null,
     }
-    const refused = await refuseWithoutConnectedDaemon(c)
-    if (refused) return refused
-    return await startGuardedRun(c, opts)
+    const { pause, changed } = await pauseUpgrades(db, requested)
+    if (changed) await auditPause(c, db, 'upgrade.pause', { since: pause.since })
+    return c.json({ ok: true, ...pauseFields(pause) })
   })
 
-  admin.post('/instance/updates/daemon', async (c) => {
-    if (opts.runtime === 'deno') {
-      const refused = await refuseWithoutConnectedDaemon(c)
-      if (refused) return refused
+  admin.post('/instance/updates/resume', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ ok: false, error: 'Database unavailable' }, 503)
+    const prior = await getUpgradePause(db)
+    if (await resumeUpgrades(db)) {
+      await auditPause(c, db, 'upgrade.resume', { pausedSince: prior?.since ?? null })
     }
-    return await startGuardedRun(c, opts)
-  })
-
-  admin.post('/instance/updates/preflight', async (c) => {
-    const coordinator = await coordinatorFrom(c, opts)
-    if (coordinator instanceof Response) return coordinator
-    return c.json(await coordinator.preflight())
-  })
-
-  admin.post('/instance/updates/runs', async (c) => {
-    return await startGuardedRun(c, opts)
+    return c.json({ ok: true, ...pauseFields(null) })
   })
 
   admin.get('/instance/updates/run', async (c) => {
@@ -181,19 +205,28 @@ export function registerInstanceUpdatesAdminRoutes(
     return c.json({ ok: true, run })
   })
 
-  admin.post('/instance/updates/check', async (c) => {
-    const coordinator = await coordinatorFrom(c, opts)
-    if (coordinator instanceof Response) return coordinator
-    await coordinator.tick({ resolveManifests: true })
-    return c.json({ ok: true })
+  // Paged run list. Without `status` it answers exactly as before (finished
+  // runs only); every run also carries `trigger` and a server `summary`.
+  admin.get('/instance/updates/history', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ ok: false, error: 'Database unavailable' }, 503)
+    const query = parseHistoryQuery(c.req.query())
+    if ('error' in query) return c.json({ ok: false, ...query }, 400)
+    const history = await readHistoryPage(db, query)
+    return c.json({ ok: true, runs: history.runs, total: history.total })
   })
 
-  admin.get('/instance/updates/history', async (c) => {
-    const coordinator = await coordinatorFrom(c, opts)
-    if (coordinator instanceof Response) return coordinator
-    const page = pageQuery(c)
-    const history = await coordinator.history(page.offset, page.limit)
-    return c.json({ ok: true, runs: history.runs, total: history.total })
+  // One page of a run's servers (one row per server) with quick-filter counts.
+  admin.get('/instance/updates/runs/:id/servers', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ ok: false, error: 'Database unavailable' }, 503)
+    const id = c.req.param('id')
+    if (!isUuid(id)) return c.json({ ok: false, error: 'upgrade_run_not_found' }, 404)
+    const query = parseRunServersQuery(c.req.query())
+    if ('error' in query) return c.json({ ok: false, ...query }, 400)
+    const page = await readRunServersPage(db, getDaemonCellRegistry(c) ?? null, id, query)
+    if (!page) return c.json({ ok: false, error: 'upgrade_run_not_found' }, 404)
+    return c.json({ ok: true, ...page })
   })
 
   admin.get('/instance/updates/servers', async (c) => {
@@ -219,25 +252,6 @@ export function registerInstanceUpdatesAdminRoutes(
     if (!settings) return c.json({ ok: false, error: 'invalid_settings' }, 400)
     await coordinator.saveSettings(settings)
     return c.json({ ok: true, settings })
-  })
-
-  admin.post('/instance/updates/steps/:id/retry', async (c) => {
-    const coordinator = await coordinatorFrom(c, opts)
-    if (coordinator instanceof Response) return coordinator
-    const result = await coordinator.retry(c.req.param('id'))
-    if (!result.ok) return c.json(result, 409)
-    return c.json(result)
-  })
-
-  admin.post('/instance/updates/runs/:id/cancel', async (c) => {
-    const coordinator = await coordinatorFrom(c, opts)
-    if (coordinator instanceof Response) return coordinator
-    const result = await coordinator.cancel(c.req.param('id'))
-    if (!result.ok) {
-      const status = result.error === 'upgrade_run_not_found' ? 404 : 409
-      return c.json(result, status)
-    }
-    return c.json(result)
   })
 }
 
@@ -291,52 +305,222 @@ function readConsoleCommit(value: unknown): string | null {
   return /^[0-9a-f]{7,64}$/i.test(trimmed) ? trimmed.toLowerCase() : null
 }
 
-async function startGuardedRun(
+/**
+ * The Admin > Updates status: installed builds, channel targets and the
+ * automatic-update fields. `GET /instance/updates` answers it, and so does
+ * Check Now once it has refreshed the manifests.
+ */
+async function readUpdatesStatus(
   c: Context<AppEnv>,
-  opts: {
-    runtime: 'deno' | 'workers'
-    getEnv?: () => Record<string, string | undefined>
+  opts: { runtime: 'deno' | 'workers'; getEnv?: () => Record<string, string | undefined> }
+) {
+  const env = resolvePlatformEnv(c, opts)
+  const channel = resolveInstanceUpdateChannel(env)
+  const revision = resolveInstanceRevision(env)
+  const consoleCommit = readConsoleCommit(c.req.query('consoleCommit'))
+  const [instanceTarget, uiTarget, daemonTarget, daemon] = await Promise.all([
+    resolveUpdateManifest(channel, 'instance'),
+    resolveUpdateManifest(channel, 'ui'),
+    resolveUpdateManifest(channel, 'daemon'),
+    readColocatedDaemon(c),
+  ])
+  const instanceInstalled = {
+    version: INSTANCE_VERSION,
+    commit: revision.commit,
   }
-): Promise<Response> {
-  const coordinator = await coordinatorFrom(c, opts)
-  if (coordinator instanceof Response) return coordinator
-  const startedBy = c.get('session')?.userId ?? null
-  const body = await c.req.json().catch(() => null)
-  const runId = typeof body?.runId === 'string' ? body.runId : undefined
-  const consoleCommit = opts.runtime === 'deno' ? readConsoleCommit(body?.consoleCommit) : null
-  const result = await coordinator.start({
-    source: 'manual',
-    startedBy,
-    runId,
-    consoleCommit,
-  })
-  if (!result.ok) {
-    return c.json(
-      {
-        ok: false,
-        error: result.error,
-        blockers: result.blockers,
-        ...(result.activeRunId ? { activeRunId: result.activeRunId } : {}),
+  // The exact label of the installed bytes (`0.1.3-canary.417`, `0.1.3-rc.2`),
+  // written by the installer from the manifest it installed. INSTANCE_VERSION
+  // is the plain deno.json number, which cannot tell a canary from its rc.
+  const buildLabel = resolveBuildLabel(env)
+  const daemonInstalled = daemon.serverId
+    ? { version: daemon.version, commit: daemon.commit, builtAt: daemon.builtAt }
+    : null
+  const instanceUpdateAvailable = updateAvailableFor(instanceInstalled, instanceTarget)
+  const installedUi =
+    opts.runtime === 'deno' ? await readInstalledUi(getDb(c), consoleCommit) : null
+  const uiUpdateAvailable = opts.runtime === 'deno' && uiBehindTarget(uiTarget, installedUi)
+  // Only drift a run would act on counts as waiting: the hosted platform
+  // deploys its own control plane and web interface, and a self-hosted one
+  // needs a package channel and its co-located daemon.
+  const instancePlannable = unitsForPlannedRun({
+    runtime: opts.runtime,
+    channelHasInstancePackage: channelHasInstancePackage(channel),
+    hasColocated: Boolean(daemon.serverId),
+    fleetCount: 0,
+  }).includes('instance')
+  const controlPlaneWaiting = instancePlannable && (instanceUpdateAvailable || uiUpdateAvailable)
+  const automatic = await readAutomaticStatus(c, opts, daemonTarget)
+  const controlPlaneRecovery = controlPlaneWaiting ? await readRecovery(getDb(c)) : null
+  return {
+    ok: true,
+    channel,
+    runtime: opts.runtime,
+    managedUpgrade: true,
+    updatesManaged: opts.runtime === 'workers',
+    ...automatic,
+    updateWaiting: automatic.daemonsBehind || controlPlaneWaiting,
+    controlPlaneRecovery,
+    units: {
+      instance: {
+        installed: buildLabel ? { ...instanceInstalled, label: buildLabel } : instanceInstalled,
+        target: instanceTarget,
+        uiTarget,
+        updateAvailable: instanceUpdateAvailable,
+        // The UI ships inside the control-plane install. On a self-hosted
+        // control plane it is behind when the console's own bundle differs
+        // from the channel's UI build; on Workers the UI is deployed, not
+        // installed, so it is never offered here.
+        uiUpdateAvailable,
       },
-      409
-    )
+      daemon: {
+        installed: daemonInstalled,
+        target: daemonTarget,
+        serverId: daemon.serverId,
+        connected: daemon.connected,
+        updateAvailable:
+          daemonInstalled !== null && updateAvailableFor(daemonInstalled, daemonTarget),
+      },
+    },
   }
-  return c.json({ ok: true, dispatched: true, runId: result.runId }, 202)
 }
 
-async function refuseWithoutConnectedDaemon(c: Context<AppEnv>): Promise<Response | null> {
+/**
+ * The installed web interface build. Before any control-plane install has
+ * recorded one, the console's report of the bundle it was served is saved and
+ * used; after that the install record wins over any console.
+ */
+async function readInstalledUi(
+  db: Db | undefined,
+  consoleCommit: string | null
+): Promise<string | null> {
+  if (!db) return consoleCommit
+  const recorded = await getInstalledUi(db)
+  const consoleMayRecord =
+    consoleCommit !== null &&
+    (!recorded || (recorded.source === 'console' && recorded.commit !== consoleCommit))
+  if (consoleMayRecord) {
+    await recordInstalledUi(db, {
+      commit: consoleCommit,
+      source: 'console',
+      at: new Date().toISOString(),
+    })
+    return consoleCommit
+  }
+  return recorded?.commit ?? consoleCommit
+}
+
+/**
+ * The pre-update backup and the rollback command for the control-plane update
+ * that is waiting. The run id is reserved now and the next automatic run uses
+ * it, so the copied command names that run.
+ */
+async function readRecovery(
+  db: Db | undefined
+): Promise<{ runId: string; backupPath: string; rollbackCommand: string } | null> {
+  if (!db) return null
+  const runId = await ensureReservedRunId(createDrizzleUpgradeStore(db, null))
+  return {
+    runId,
+    backupPath: controlPlaneBackupPath(runId),
+    rollbackCommand: controlPlaneRollbackCommand(runId),
+  }
+}
+
+type AutomaticStatus = {
+  automatic: true
+  updatesPaused: boolean
+  pausedAt: string | null
+  pausedBy: { userId: string | null; email: string | null; name: string | null } | null
+  daemonsBehind: boolean
+  nextCheckAt: string | null
+  lastCheckAt: string | null
+  /** How often this install checks: 60, or less where `TURBOPANEL_UPGRADE_CHECK_MINUTES` is set. */
+  checkIntervalMinutes: number
+  activeRunId: string | null
+}
+
+function pauseFields(
+  pause: UpgradePause | null
+): Pick<AutomaticStatus, 'updatesPaused' | 'pausedAt' | 'pausedBy'> {
+  if (!pause) return { updatesPaused: false, pausedAt: null, pausedBy: null }
+  return {
+    updatesPaused: true,
+    pausedAt: pause.since,
+    pausedBy: { userId: pause.byUserId, email: pause.byEmail, name: pause.byName },
+  }
+}
+
+/**
+ * Pause state, the next hourly check, the open run and whether a connected
+ * daemon is behind. Each is one indexed, `limit 1` read: never a read of the
+ * whole server table per request.
+ */
+async function readAutomaticStatus(
+  c: Context<AppEnv>,
+  opts: { runtime: 'deno' | 'workers'; getEnv?: () => Record<string, string | undefined> },
+  daemonTarget: UpdateManifestTarget | null
+): Promise<AutomaticStatus> {
   const db = getDb(c)
-  if (!db) return c.json({ ok: false, error: 'Database unavailable' }, 503)
-  const registry = getDaemonCellRegistry(c)
-  if (!registry) {
-    return c.json({ ok: false, error: 'Daemon cell registry unavailable' }, 503)
+  const env = resolvePlatformEnv(c, opts)
+  const checkIntervalMinutes = parseUpgradeCheckMinutes(env[UPGRADE_CHECK_MINUTES_ENV])
+  const empty: AutomaticStatus = {
+    automatic: true,
+    ...pauseFields(null),
+    daemonsBehind: false,
+    nextCheckAt: null,
+    lastCheckAt: null,
+    checkIntervalMinutes,
+    activeRunId: null,
   }
-  const daemon = await readColocatedDaemon(c)
-  if (!daemon.serverId) {
-    return c.json({ ok: false, error: NO_DAEMON_ERROR }, 503)
+  if (!db) return empty
+  const store = createDrizzleUpgradeStore(
+    db,
+    null,
+    parseUpgradeBatchDefault(env.TURBOPANEL_UPGRADE_BATCH)
+  )
+  const [pause, schedule, active, daemonsBehind] = await Promise.all([
+    getUpgradePause(db),
+    readUpgradeCheckSchedule(db),
+    db
+      .select({ id: upgrade.id })
+      .from(upgrade)
+      .where(inArray(upgrade.status, [...UPGRADE_ACTIVE_STATUSES]))
+      .limit(1),
+    daemonTarget?.commit
+      ? store.anyDaemonBehind(daemonTarget.commit, daemonTarget.builtAt)
+      : Promise.resolve(false),
+  ])
+  return {
+    ...empty,
+    ...pauseFields(pause),
+    daemonsBehind,
+    nextCheckAt: schedule
+      ? nextUpgradeCheckAt(schedule, new Date(), checkIntervalMinutes).toISOString()
+      : null,
+    lastCheckAt: schedule ? latestUpgradeCheckAt(schedule) : null,
+    activeRunId: active[0]?.id ?? null,
   }
-  if (!daemon.connected) {
-    return c.json({ ok: false, error: DAEMON_DISCONNECTED_ERROR }, 503)
-  }
-  return null
+}
+
+async function readUserName(db: Db, userId: string): Promise<string | null> {
+  const rows = await db.select({ name: user.name }).from(user).where(eq(user.id, userId)).limit(1)
+  return rows[0]?.name ?? null
+}
+
+/** Pause and Resume go to the activity log (instance-wide: no organization). */
+async function auditPause(
+  c: Context<AppEnv>,
+  db: Db,
+  action: 'upgrade.pause' | 'upgrade.resume',
+  context: Record<string, unknown>
+): Promise<void> {
+  const session = c.get('session')
+  await recordAudit(db, {
+    organizationId: null,
+    actorUserId: session?.userId ?? null,
+    actorEmail: session?.email ?? null,
+    action,
+    targetType: 'instance_updates',
+    context,
+  })
 }

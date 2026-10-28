@@ -1,7 +1,11 @@
 import { assertEquals } from '@std/assert'
 import type { ServerHostResources } from '../servers/server-metadata.ts'
 import type { TopologyOverrides, TopologySnapshot } from '../../contracts/topology-types.ts'
-import { evaluateTierFloor, evaluateTierPlacement } from './tier-enforcement.ts'
+import {
+  addServerTierPickNotice,
+  evaluateTierFloor,
+  evaluateTierPlacement,
+} from './tier-enforcement.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -230,4 +234,16 @@ test('pinning many NIC slots raises the recommendation; only the unpinned uplink
   // The license does not cut the pinned list: every pinned slot is stored, and
   // only the unpinned uplink is left out.
   assertEquals(onS1.unwatched.nics, ['nic-7'])
+})
+
+test('the Add Server notice shows only when the chosen tier was kept without a seat', () => {
+  assertEquals(
+    addServerTierPickNotice({ assignedTierId: 'tier-s1', preferredTierLabel: 'S1' }),
+    null
+  )
+  assertEquals(addServerTierPickNotice({ assignedTierId: null, preferredTierLabel: null }), null)
+  assertEquals(
+    addServerTierPickNotice({ assignedTierId: null, preferredTierLabel: 'S1' }),
+    'S1 was chosen when this server was added, but no S1 license was free when it connected. Free or buy one, then put this server on S1.'
+  )
 })

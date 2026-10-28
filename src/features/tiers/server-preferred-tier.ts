@@ -1,8 +1,10 @@
 /**
  * A manager's choice of a server's license tier (`PUT /servers/:id/license-tier`).
- * The only hosted path that writes `server.assigned_tier_id`: the server
+ * With the Add Server choice applied at enroll (`applyAddServerTierAtEnroll`),
+ * one of the two hosted paths that write `server.assigned_tier_id`: the server
  * takes a free seat at the tier the manager picked, or gives its license back
- * (`null`). Nothing is bought, and no other server moves.
+ * (`null`). Nothing is bought, and no other server moves. A seat an unused
+ * registration key holds for its own server is not free here.
  *
  * CPU cores and RAM are hard limits: a tier whose core or memory ceiling is
  * below what the server reports is refused (`tier_below_required`, from
@@ -20,7 +22,7 @@ import {
   peekOrganizationAssignment,
   requiredRankFromMetadata,
 } from './assignment-records.ts'
-import { listActiveTiers } from './tier-records.ts'
+import { countReservedLicenseTiers, listActiveTiers } from './tier-records.ts'
 
 export type SetServerPreferredTierResult =
   | Readonly<{
@@ -96,7 +98,8 @@ export async function loadOrganizationTierSpare(
   db: Db,
   organizationId: string
 ): Promise<readonly { tierId: string; label: string; free: number }[]> {
-  const assignment = await peekOrganizationAssignment(db, organizationId)
+  const reserved = await countReservedLicenseTiers(db, organizationId)
+  const assignment = await peekOrganizationAssignment(db, organizationId, { reserved })
   const catalog = await listActiveTiers(db)
   return spareCountsFromAssignment(assignment.spare, catalog)
 }

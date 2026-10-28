@@ -1,6 +1,13 @@
 import { assertEquals } from '@std/assert'
-import { DEFAULT_UPGRADE_SETTINGS, type UpgradeSettings } from '../settings/upgrade-settings.ts'
-import { isWithinMaintenanceWindow, shouldAutoStartRun } from './schedule.ts'
+import {
+  isUpgradeCheckDue,
+  latestUpgradeCheckAt,
+  manualCheckWaitSeconds,
+  nextUpgradeCheckAt,
+  pickUpgradeCheckMinute,
+  shouldAutoStartRun,
+  type UpgradeCheckSchedule,
+} from './schedule.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -10,139 +17,135 @@ import { isWithinMaintenanceWindow, shouldAutoStartRun } from './schedule.ts'
  */
 const test = Deno.test.bind(Deno)
 
-function window(
-  overrides: Partial<UpgradeSettings['maintenanceWindow']> = {}
-): UpgradeSettings['maintenanceWindow'] {
+function schedule(overrides: Partial<UpgradeCheckSchedule> = {}): UpgradeCheckSchedule {
   return {
-    enabled: true,
-    startMinute: 0,
-    durationMinutes: 60,
-    weekdays: [],
+    minute: 17,
+    createdAt: '2026-10-27T09:40:00.000Z',
+    lastCheckAt: null,
     ...overrides,
   }
 }
 
-test('a disabled window imposes no restriction', () => {
+const at = (iso: string) => new Date(iso)
+
+test('the minute of the hour comes from the draw and stays in 0..59', () => {
+  assertEquals(pickUpgradeCheckMinute(0), 0)
+  assertEquals(pickUpgradeCheckMinute(0.5), 30)
+  assertEquals(pickUpgradeCheckMinute(0.9999), 59)
+  assertEquals(pickUpgradeCheckMinute(1), 59)
+  assertEquals(pickUpgradeCheckMinute(-1), 0)
+  assertEquals(pickUpgradeCheckMinute(Number.NaN), 0)
+})
+
+test('many installs spread their checks over the hour', () => {
+  const minutes = new Set<number>()
+  for (let i = 0; i < 600; i++) minutes.add(pickUpgradeCheckMinute((i * 0.6180339887) % 1))
+  // A golden-ratio walk stands in for random draws: every minute gets used.
+  assertEquals(minutes.size, 60)
+})
+
+test('before the first check the next one is the first slot after the row was created', () => {
+  const s = schedule()
   assertEquals(
-    isWithinMaintenanceWindow(window({ enabled: false }), new Date('2026-01-01T05:00:00Z')),
-    true
+    nextUpgradeCheckAt(s, at('2026-10-27T09:45:00.000Z')).toISOString(),
+    '2026-10-27T10:17:00.000Z'
+  )
+  assertEquals(isUpgradeCheckDue(s, at('2026-10-27T10:16:59.000Z')), false)
+  assertEquals(isUpgradeCheckDue(s, at('2026-10-27T10:17:00.000Z')), true)
+})
+
+test('after a check the next one is the same minute an hour later', () => {
+  const s = schedule({ lastCheckAt: '2026-10-27T10:17:00.300Z' })
+  assertEquals(
+    nextUpgradeCheckAt(s, at('2026-10-27T10:18:00.000Z')).toISOString(),
+    '2026-10-27T11:17:00.000Z'
+  )
+  assertEquals(isUpgradeCheckDue(s, at('2026-10-27T10:59:00.000Z')), false)
+  assertEquals(isUpgradeCheckDue(s, at('2026-10-27T11:17:00.000Z')), true)
+})
+
+test('the schedule is stable: the same row gives the same slot every hour', () => {
+  for (const hour of ['10', '11', '23']) {
+    const s = schedule({ lastCheckAt: `2026-10-27T${hour}:17:05.000Z` })
+    const next = nextUpgradeCheckAt(s, at(`2026-10-27T${hour}:30:00.000Z`))
+    assertEquals(next.getUTCMinutes(), 17)
+  }
+})
+
+test('a tick that lands after the slot (the hosted tick runs every few minutes) still checks once', () => {
+  const s = schedule({ lastCheckAt: '2026-10-27T10:30:00.000Z' })
+  // The slot is 11:17; a tick at 11:30 is the first one after it.
+  assertEquals(isUpgradeCheckDue(s, at('2026-10-27T11:15:00.000Z')), false)
+  assertEquals(isUpgradeCheckDue(s, at('2026-10-27T11:30:00.000Z')), true)
+  // Once that tick records its check, the next slot is 12:17.
+  const after = schedule({ lastCheckAt: '2026-10-27T11:30:00.000Z' })
+  assertEquals(isUpgradeCheckDue(after, at('2026-10-27T11:45:00.000Z')), false)
+  assertEquals(
+    nextUpgradeCheckAt(after, at('2026-10-27T11:45:00.000Z')).toISOString(),
+    '2026-10-27T12:17:00.000Z'
   )
 })
 
-test('a same-day window opens and closes on the minute', () => {
-  // 02:00–03:00 UTC.
-  const w = window({ startMinute: 120, durationMinutes: 60 })
-  assertEquals(isWithinMaintenanceWindow(w, new Date('2026-01-01T02:00:00Z')), true)
-  assertEquals(isWithinMaintenanceWindow(w, new Date('2026-01-01T02:59:00Z')), true)
-  assertEquals(isWithinMaintenanceWindow(w, new Date('2026-01-01T03:00:00Z')), false)
-  assertEquals(isWithinMaintenanceWindow(w, new Date('2026-01-01T01:59:00Z')), false)
+test('a control plane that was down catches up once, then keeps its minute', () => {
+  const s = schedule({ lastCheckAt: '2026-10-25T08:17:00.000Z' })
+  assertEquals(isUpgradeCheckDue(s, at('2026-10-27T10:02:00.000Z')), true)
 })
 
-test('a window that wraps past midnight stays open into the next day', () => {
-  // 23:00 for 120 min → until 01:00 the next day.
-  const w = window({ startMinute: 23 * 60, durationMinutes: 120 })
-  assertEquals(isWithinMaintenanceWindow(w, new Date('2026-01-01T23:30:00Z')), true)
-  assertEquals(isWithinMaintenanceWindow(w, new Date('2026-01-02T00:30:00Z')), true)
-  assertEquals(isWithinMaintenanceWindow(w, new Date('2026-01-02T01:30:00Z')), false)
+test('a last check in the future (clock moved back) never stalls the schedule past an hour', () => {
+  const s = schedule({ lastCheckAt: '2026-10-28T10:17:00.000Z' })
+  assertEquals(
+    nextUpgradeCheckAt(s, at('2026-10-27T10:00:00.000Z')).toISOString(),
+    '2026-10-27T10:17:00.000Z'
+  )
 })
 
-test('weekdays gate when the window opens', () => {
-  // 2026-01-01 is a Thursday (day 4); allow only Thursday.
-  const w = window({ startMinute: 0, durationMinutes: 60, weekdays: [4] })
-  assertEquals(isWithinMaintenanceWindow(w, new Date('2026-01-01T00:30:00Z')), true)
-  assertEquals(isWithinMaintenanceWindow(w, new Date('2026-01-02T00:30:00Z')), false)
+test('an automatic run starts only on drift, with no run open and updates not paused', () => {
+  const base = { targetDiffers: true, runActive: false, paused: false }
+  assertEquals(shouldAutoStartRun(base), true)
+  assertEquals(shouldAutoStartRun({ ...base, targetDiffers: false }), false)
+  assertEquals(shouldAutoStartRun({ ...base, runActive: true }), false)
+  assertEquals(shouldAutoStartRun({ ...base, paused: true }), false)
 })
 
-test('a wrapping window opened on an allowed weekday stays open past midnight', () => {
-  // Opens Thursday 23:00 for 120 min; still open Friday 00:30 even though
-  // Friday is not in the weekday set.
-  const w = window({
-    startMinute: 23 * 60,
-    durationMinutes: 120,
-    weekdays: [4],
+test('a test install with a 5 minute check keeps its own minute inside each 5 minutes', () => {
+  // Minute 17 -> slots at :02, :07, :12, :17 ... of every hour.
+  const s = schedule({ lastCheckAt: '2026-10-27T10:07:20.000Z' })
+  assertEquals(
+    nextUpgradeCheckAt(s, at('2026-10-27T10:08:00.000Z'), 5).toISOString(),
+    '2026-10-27T10:12:00.000Z'
+  )
+  assertEquals(isUpgradeCheckDue(s, at('2026-10-27T10:11:59.000Z'), 5), false)
+  assertEquals(isUpgradeCheckDue(s, at('2026-10-27T10:12:00.000Z'), 5), true)
+  // The hourly default is unchanged by the interval code.
+  assertEquals(
+    nextUpgradeCheckAt(s, at('2026-10-27T10:08:00.000Z'), 60).toISOString(),
+    '2026-10-27T10:17:00.000Z'
+  )
+})
+
+test('Check Now never moves the schedule, and the status shows the latest check of either kind', () => {
+  const s = schedule({
+    lastCheckAt: '2026-10-27T10:17:00.000Z',
+    lastManualCheckAt: '2026-10-27T10:40:00.000Z',
   })
-  assertEquals(isWithinMaintenanceWindow(w, new Date('2026-01-02T00:30:00Z')), true)
+  assertEquals(
+    nextUpgradeCheckAt(s, at('2026-10-27T10:41:00.000Z')).toISOString(),
+    '2026-10-27T11:17:00.000Z'
+  )
+  assertEquals(latestUpgradeCheckAt(s), '2026-10-27T10:40:00.000Z')
+  assertEquals(
+    latestUpgradeCheckAt(schedule({ lastCheckAt: '2026-10-27T11:17:00.000Z' })),
+    '2026-10-27T11:17:00.000Z'
+  )
+  assertEquals(latestUpgradeCheckAt(schedule()), null)
 })
 
-test('shouldAutoStartRun: autoUpdate gates every runtime', () => {
-  const now = new Date('2026-01-01T00:00:00Z')
-  const base = { now, targetDiffers: true, runActive: false }
-  const off = DEFAULT_UPGRADE_SETTINGS
-  const on: UpgradeSettings = { ...off, autoUpdate: true }
-
-  assertEquals(shouldAutoStartRun({ ...base, runtime: 'deno', settings: off }), false)
-  assertEquals(shouldAutoStartRun({ ...base, runtime: 'deno', settings: on }), true)
-  assertEquals(shouldAutoStartRun({ ...base, runtime: 'workers', settings: off }), false)
-  assertEquals(shouldAutoStartRun({ ...base, runtime: 'workers', settings: on }), true)
-})
-
-test('shouldAutoStartRun: Workers honours the maintenance window', () => {
-  // The testing fleet (2026-10-03): window Saturday 18:00 UTC for an hour.
-  const windowed: UpgradeSettings = {
-    ...DEFAULT_UPGRADE_SETTINGS,
-    autoUpdate: true,
-    maintenanceWindow: {
-      enabled: true,
-      startMinute: 1080,
-      durationMinutes: 60,
-      weekdays: [6],
-    },
-  }
-  const at = (iso: string, settings: UpgradeSettings) =>
-    shouldAutoStartRun({
-      runtime: 'workers',
-      settings,
-      now: new Date(iso),
-      targetDiffers: true,
-      runActive: false,
-    })
-  assertEquals(at('2026-10-03T05:31:49Z', windowed), false)
-  assertEquals(at('2026-10-02T18:25:00Z', windowed), false)
-  assertEquals(at('2026-10-03T18:25:00Z', windowed), true)
-  assertEquals(at('2026-10-03T18:25:00Z', { ...windowed, autoUpdate: false }), false)
-})
-
-test('shouldAutoStartRun: never on no drift, an active run, or outside the window', () => {
-  const now = new Date('2026-01-01T05:00:00Z')
-  const on: UpgradeSettings = { ...DEFAULT_UPGRADE_SETTINGS, autoUpdate: true }
-  assertEquals(
-    shouldAutoStartRun({
-      runtime: 'workers',
-      settings: on,
-      now,
-      targetDiffers: false,
-      runActive: false,
-    }),
-    false
-  )
-  assertEquals(
-    shouldAutoStartRun({
-      runtime: 'workers',
-      settings: on,
-      now,
-      targetDiffers: true,
-      runActive: true,
-    }),
-    false
-  )
-  const windowed: UpgradeSettings = {
-    ...on,
-    maintenanceWindow: {
-      enabled: true,
-      startMinute: 0,
-      durationMinutes: 60,
-      weekdays: [],
-    },
-  }
-  // 05:00 is outside 00:00–01:00.
-  assertEquals(
-    shouldAutoStartRun({
-      runtime: 'deno',
-      settings: windowed,
-      now,
-      targetDiffers: true,
-      runActive: false,
-    }),
-    false
-  )
+test('Check Now runs at most once a minute', () => {
+  const s = schedule({ lastManualCheckAt: '2026-10-27T10:40:00.000Z' })
+  assertEquals(manualCheckWaitSeconds(schedule(), at('2026-10-27T10:40:00.000Z')), 0)
+  assertEquals(manualCheckWaitSeconds(s, at('2026-10-27T10:40:00.500Z')), 60)
+  assertEquals(manualCheckWaitSeconds(s, at('2026-10-27T10:40:45.000Z')), 15)
+  assertEquals(manualCheckWaitSeconds(s, at('2026-10-27T10:41:00.000Z')), 0)
+  // A press stamped in the future (clock moved back) still waits one minute at most.
+  assertEquals(manualCheckWaitSeconds(s, at('2026-10-27T10:00:00.000Z')), 60)
 })

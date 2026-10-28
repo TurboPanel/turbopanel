@@ -250,6 +250,7 @@ test('a push-triggered deploy names the branch and commit it came from', async (
     branch: 'staging',
     commitSha: 'abc123def456',
     sourceId: PUSH_SOURCE_ID,
+    pushedBy: null,
   })
 })
 
@@ -269,14 +270,28 @@ test('readDeploymentTrigger attributes only automated deploys that recorded a se
     branch: 'main',
     commitSha: 'a1',
     sourceId: null,
+    pushedBy: null,
   })
   assertEquals(
     readDeploymentTrigger({
       actorType: 'system',
       metadata: { sourceSelection: { commitSha: 'only-sha' } },
     }),
-    { kind: 'push', branch: null, commitSha: 'only-sha', sourceId: null }
+    { kind: 'push', branch: null, commitSha: 'only-sha', sourceId: null, pushedBy: null }
   )
+})
+
+test('readDeploymentTrigger keeps the pusher login, cleaned of control characters', () => {
+  const triggerWith = (pushedBy: unknown) =>
+    readDeploymentTrigger({
+      actorType: 'system',
+      metadata: { sourceSelection: { ref: 'refs/heads/main', commitSha: 'a1', pushedBy } },
+    })?.pushedBy
+  assertEquals(triggerWith('octocat'), 'octocat')
+  assertEquals(triggerWith('octo\u0000cat\u001b[31m\u202e'), 'octocat[31m')
+  assertEquals(triggerWith('   '), null)
+  assertEquals(triggerWith(42), null)
+  assertEquals(triggerWith(undefined), null)
 })
 
 test('a deploy that was asked to cancel says so, whether it stopped or finished anyway', async () => {

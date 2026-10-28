@@ -612,7 +612,7 @@ type PreparedServerDeploy = {
  */
 function deploySelectionMetadata(selection: DeploySourceSelection):
   | {
-      sourceSelection: { ref?: string; commitSha?: string; sourceId?: string }
+      sourceSelection: { ref?: string; commitSha?: string; sourceId?: string; pushedBy?: string }
     }
   | undefined {
   const sourceSelection = definedFields({
@@ -622,6 +622,8 @@ function deploySelectionMetadata(selection: DeploySourceSelection):
     // say *what* was deployed when the environment binds more than one
     // repository.
     sourceId: selection.sourceId ?? undefined,
+    // Who pushed, so the activity list can name them (the actor is `system`).
+    pushedBy: selection.pushedBy ?? undefined,
   })
   if (Object.keys(sourceSelection).length === 0) return undefined
   return { sourceSelection }

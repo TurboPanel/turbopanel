@@ -14,6 +14,24 @@
       "tag": "0001_delete_project_cleanup",
       "when": 1792968916599,
       "sha256": "0eda369252e51e368ecb08c5c93253590ca42156169f4d7c4c1f779f976373e1"
+    },
+    {
+      "idx": 2,
+      "tag": "0002_upgrade_history_paging",
+      "when": 1793110673200,
+      "sha256": "ba62cb5859f5d04f6fd59439b50bb8311edfb28e188dbdb921f1cba6d0e7a410"
+    },
+    {
+      "idx": 3,
+      "tag": "0003_license_key_tier_and_expiry",
+      "when": 1793119488037,
+      "sha256": "fbbb9577d85ee5299e644c07d9109c2d2b105d2fe48188d9c4b467b54890a8ea"
+    },
+    {
+      "idx": 4,
+      "tag": "0004_command_activity_index",
+      "when": 1793122151433,
+      "sha256": "2d7c61e0818839f09eece916246fdcf953c145c5380853bc77e68a1c0713d7c9"
     }
   ]
 }

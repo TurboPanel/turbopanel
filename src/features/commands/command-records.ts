@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, notInArray, type SQL, sql } from 'drizzle-orm'
+import { and, desc, eq, gt, inArray, isNull, notInArray, or, type SQL, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { commandContextFromPayload } from './context.ts'
 import { lastErrorLine } from './error-line.ts'
@@ -459,6 +459,33 @@ export async function hasLiveBackupCommand(db: Db, managedId: string): Promise<b
         sql`coalesce(${command.context}->>'action', '') <> 'delete'`,
         inArray(command.name, ['managed.backup', 'managed.restore']),
         notInArray(command.status, [...TERMINAL_COMMAND_STATUSES])
+      )
+    )
+    .limit(1)
+  return rows.length > 0
+}
+
+/**
+ * True while a start, stop, restart or destroy command for this cluster is
+ * queued or running and has not passed its expiry. A lifecycle command never
+ * marks the cluster `applying`, so this is what stops a second one from racing
+ * it; the expiry bound keeps a command the server never answered from locking
+ * the database for good.
+ */
+export async function hasLiveLifecycleCommand(
+  db: Db,
+  managedId: string,
+  nowIso: string = new Date().toISOString()
+): Promise<boolean> {
+  const rows = await db
+    .select({ id: command.id })
+    .from(command)
+    .where(
+      and(
+        eq(command.managedId, managedId),
+        inArray(command.name, ['managed.lifecycle', 'managed.destroy']),
+        notInArray(command.status, [...TERMINAL_COMMAND_STATUSES]),
+        or(isNull(command.expiresAt), gt(command.expiresAt, nowIso))
       )
     )
     .limit(1)

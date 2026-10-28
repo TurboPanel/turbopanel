@@ -15,6 +15,7 @@
 
 import { normalizeCheckRef } from './check-ref.ts'
 import { isGitProviderFailure } from './git-provider.ts'
+import { pushLoginFrom } from './push-login.ts'
 import { MAX_REPOSITORY_FILE_BYTES, MAX_REPOSITORY_READ_PATHS } from './repository-read.ts'
 import type {
   GitProviderSourceRow,
@@ -103,6 +104,16 @@ function externalId(value: unknown): string | null {
 export function githubRepositoryExternalId(payload: Record<string, unknown>): string | null {
   const repository = payload.repository
   return isPlainObject(repository) ? externalId(repository.id) : null
+}
+
+/**
+ * Who pushed: the `sender` account's login, else the `pusher` name (GitHub
+ * puts the username there too). The pusher's email is never read.
+ */
+export function githubPusherLogin(payload: Record<string, unknown>): string | null {
+  const sender = isPlainObject(payload.sender) ? pushLoginFrom(payload.sender.login) : null
+  if (sender) return sender
+  return isPlainObject(payload.pusher) ? pushLoginFrom(payload.pusher.name) : null
 }
 
 export function githubInstallationExternalId(payload: Record<string, unknown>): string | null {
@@ -629,6 +640,7 @@ export const githubProvider: GitProvider = {
       branch,
       commitSha: deleted ? null : (payload.after as string),
       deleted,
+      pushedBy: githubPusherLogin(payload),
     }
   },
 
