@@ -40,14 +40,22 @@ test('a badge as the API shows it has no token, no secret id and only the known 
     carrierId: '00000000-0000-4000-8000-0000000000c1',
     secretId: '00000000-0000-4000-8000-0000000000e1',
     label: 'Main',
-    capabilities: { tunnels: true, dns: false, extra: true },
+    capabilities: {
+      tunnels: true,
+      dns: [{ id: 'z1', name: 'example.com', extra: 1 }, 'bad'],
+      extra: true,
+    },
     lastFour: TOKEN.slice(-4),
     lastCheckedAt: null,
     status: 'active',
   }
   const shown = toApiBadge(row)
   assertEquals(Object.keys(shown.capabilities), [...BADGE_CAPABILITIES])
-  assertEquals(shown.capabilities, { tunnels: true, dns: false, certificates: false })
+  assertEquals(shown.capabilities, {
+    tunnels: true,
+    dns: [{ id: 'z1', name: 'example.com' }],
+    certificates: [],
+  })
   const json = JSON.stringify(shown)
   assert(!json.includes(TOKEN))
   assert(!json.includes(row.secretId))

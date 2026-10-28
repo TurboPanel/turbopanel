@@ -34,9 +34,19 @@ export type DoorwayKind = (typeof DOORWAY_KINDS)[number]
 
 export const DOORWAY_STATUSES = ['pending', 'live', 'attention', 'removing'] as const
 
-/** What a badge (an API token) can do on its carrier. */
+/**
+ * What a badge (an API token) can do on its carrier. A tunnel belongs to the
+ * account, so `tunnels` is one account-wide yes or no. DNS and certificate
+ * rights can be limited to some zones, so those are the zones (id and name)
+ * the token was found to reach.
+ */
 export const BADGE_CAPABILITIES = ['tunnels', 'dns', 'certificates'] as const
-export type BadgeCapability = (typeof BADGE_CAPABILITIES)[number]
+export type BadgeCapabilities = {
+  tunnels: boolean
+  dns: { id: string; name: string }[]
+  certificates: { id: string; name: string }[]
+}
+export const NO_CAPABILITIES: BadgeCapabilities = { tunnels: false, dns: [], certificates: [] }
 
 /**
  * `secret.provider` values the sealed tokens are stored under. Neutral on

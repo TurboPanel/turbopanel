@@ -82,7 +82,12 @@ no new sealed column. Removing a badge or carrier deletes the `secret` rows in
 the same transaction.
 
 A badge row keeps the label, the last four characters and what the token
-reaches. Responses and audit rows carry only those. Provider errors are
+reaches: `capabilities` is `{ tunnels: boolean, dns: [{id, name}], certificates:
+[{id, name}] }`. A tunnel belongs to the account, so `tunnels` is one
+account-wide yes or no; DNS rights can be limited to zones, so `dns` lists the
+zones found reachable by one safe read each (`certificates` stays empty, since
+no safe read shows it). Looking up the zone for a hostname uses only those
+zones of the carrier's account. Responses and audit rows carry only those. Provider errors are
 scrubbed by `TunnelProviderError` (known secrets, bearer values and token-shaped
 runs are redacted) before they are logged, audited, stored or returned.
 

@@ -245,7 +245,11 @@ test('a token is checked, sealed in secret, and never comes back in a response, 
     assert(!added.text.includes(TOKEN))
     const shown = added.body.badge as Record<string, unknown>
     assertEquals(shown.lastFour, TOKEN.slice(-4))
-    assertEquals(shown.capabilities, { tunnels: true, dns: true, certificates: false })
+    assertEquals(shown.capabilities, {
+      tunnels: true,
+      dns: [{ id: 'z1', name: 'example.com' }],
+      certificates: [],
+    })
     assertEquals(added.body.zones, [{ id: 'z1', name: 'example.com' }])
 
     const listed = await call(f, 'GET', `/organizations/${f.orgA}/carriers`, f.managerCookie)
@@ -330,8 +334,8 @@ test('a re-check updates what the token reaches, and removing a badge or carrier
     assertEquals(checked.body.ok, true)
     assertEquals((checked.body.badge as { capabilities: unknown }).capabilities, {
       tunnels: true,
-      dns: false,
-      certificates: false,
+      dns: [],
+      certificates: [],
     })
     state.mode = 'rejected'
     const lost = await call(f, 'POST', `${base}/${badgeId}/check`, f.managerCookie)

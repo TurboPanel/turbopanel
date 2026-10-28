@@ -1,4 +1,4 @@
-import type { BadgeCapability, TunnelProvider } from './vocabulary.ts'
+import type { BadgeCapabilities, TunnelProvider } from './vocabulary.ts'
 
 export type ProviderAccount = { id: string; name: string }
 export type ProviderZone = { id: string; name: string }
@@ -9,8 +9,8 @@ export type CredentialReport = {
   zones: ProviderZone[]
   /** The carrier's own account is among the accounts the token can see. */
   accountVisible: boolean
-  /** True for each thing a read call proved the token reaches. */
-  capabilities: Record<BadgeCapability, boolean>
+  /** What read calls proved the token reaches: tunnels account-wide, DNS per zone. */
+  capabilities: BadgeCapabilities
   /** Plain-words names of the permissions a useful token still lacks. */
   missing: string[]
 }
@@ -47,9 +47,10 @@ export type TunnelAdapter = {
   ): Promise<void>
   /** Create the public DNS name for a hostname, pointing at the tunnel. */
   /**
-   * Find the zone for a hostname among the zones of the tunnel's own account.
-   * A tunnel can only route names whose zone is in the same account, so no
-   * other account is searched. Throws `zone_not_found` when none matches.
+   * Find the zone for a hostname among the zones of the tunnel's own account
+   * that this token can reach. A tunnel can only route names whose zone is in
+   * the same account, so no other account is searched. Throws `zone_not_found`
+   * when none matches.
    */
   findZone(
     token: string,

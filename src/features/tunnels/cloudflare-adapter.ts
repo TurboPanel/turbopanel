@@ -4,7 +4,7 @@
  * read that succeeds proves the token reaches that area, and edit rights are
  * confirmed by the first write that needs them.
  */
-import type { BadgeCapability } from './vocabulary.ts'
+import type { BadgeCapabilities } from './vocabulary.ts'
 import type { CredentialReport, TunnelAdapter } from './adapter.ts'
 import { CloudflareClient, type CloudflareIngressRule } from './cloudflare-client.ts'
 import { TunnelProviderError } from './errors.ts'
@@ -51,6 +51,19 @@ async function listOrEmpty<T>(read: () => Promise<T[]>): Promise<T[]> {
   }
 }
 
+/** The zones whose DNS records the token can read, found by one safe read per zone. */
+async function reachableZones(
+  api: CloudflareClient,
+  zones: readonly { id: string; name: string }[]
+): Promise<{ id: string; name: string }[]> {
+  const probed = await Promise.all(
+    zones.map(async (z) =>
+      (await probe(() => api.probeDns(z.id))) ? { id: z.id, name: z.name } : null
+    )
+  )
+  return probed.filter((z): z is { id: string; name: string } => z !== null)
+}
+
 export function buildIngress(hostnames: readonly string[]): CloudflareIngressRule[] {
   const seen = new Set<string>()
   const rules: CloudflareIngressRule[] = []
@@ -88,16 +101,17 @@ export function createCloudflareAdapter(options: { fetch?: typeof fetch } = {}):
         accountVisible && scope.accountId !== null
           ? await probe(() => api.probeTunnels(scope.accountId!))
           : false
-      const dns = zones.length > 0 ? await probe(() => api.probeDns(zones[0]!.id)) : false
-      const capabilities: Record<BadgeCapability, boolean> = {
+      // DNS rights can be limited to some zones, so each zone is probed on its own.
+      const dns = await reachableZones(api, zones)
+      const capabilities: BadgeCapabilities = {
         tunnels,
         dns,
-        // No safe read proves certificate rights, so it is reported as not shown.
-        certificates: false,
+        // No safe read proves certificate rights, so none are listed.
+        certificates: [],
       }
       const missing: string[] = []
       if (!tunnels) missing.push(CLOUDFLARE_PERMISSIONS.tunnels)
-      if (!dns) missing.push(CLOUDFLARE_PERMISSIONS.dns)
+      if (dns.length === 0) missing.push(CLOUDFLARE_PERMISSIONS.dns)
       return {
         accounts: accounts.map((a) => ({ id: a.id, name: a.name })),
         zones: zones.map((z) => ({ id: z.id, name: z.name })),
@@ -146,20 +160,22 @@ export function createCloudflareAdapter(options: { fetch?: typeof fetch } = {}):
       const name = input.hostname.trim().toLowerCase()
       // Only this account's zones are searched, and a zone that reports another
       // account is ignored: a CNAME to a tunnel works only inside one account.
-      const zones = (await client(token).listZones(account)).filter(
+      const api = client(token)
+      const zones = (await api.listZones(account)).filter(
         (z) => z.account?.id === undefined || z.account.id === account
       )
-      const match = zones
+      const candidates = zones
         .filter((z) => name === z.name || name.endsWith(`.${z.name}`))
-        .sort((a, b) => b.name.length - a.name.length)[0]
-      if (!match) {
-        throw new TunnelProviderError(
-          'zone_not_found',
-          `No zone for ${input.hostname} was found in this Cloudflare account`,
-          null
-        )
+        .sort((a, b) => b.name.length - a.name.length)
+      // The longest matching zone this token can reach wins.
+      for (const zone of candidates) {
+        if (await probe(() => api.probeDns(zone.id))) return { id: zone.id, name: zone.name }
       }
-      return { id: match.id, name: match.name }
+      throw new TunnelProviderError(
+        'zone_not_found',
+        `No zone for ${input.hostname} that this token can reach was found in this Cloudflare account`,
+        null
+      )
     },
 
     async createDnsName(token, input) {

@@ -44,7 +44,7 @@ import {
   createTunnelAdapterRegistry,
   type TunnelAdapterRegistry,
 } from '../../features/tunnels/registry.ts'
-import type { TunnelProvider } from '../../features/tunnels/vocabulary.ts'
+import { NO_CAPABILITIES, type TunnelProvider } from '../../features/tunnels/vocabulary.ts'
 
 const CARRIER_PATHS = [
   '/organizations/:id/carriers',
@@ -283,7 +283,7 @@ function checkBadgeResponse(registry: TunnelAdapterRegistry) {
     }
     const useful = report !== null && report.accountVisible && isUsefulReport(report)
     const updated = await recordBadgeCheck(scope.db, row, {
-      capabilities: report?.capabilities ?? { tunnels: false, dns: false, certificates: false },
+      capabilities: report?.capabilities ?? NO_CAPABILITIES,
       status: useful ? 'active' : 'attention',
     })
     await audit(c, scope, 'badge.check', row.id, { carrierId: current.id, ok: useful })

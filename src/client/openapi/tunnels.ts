@@ -45,6 +45,10 @@ const CHECK_PROPERTIES = {
 } as const
 
 export const tunnelSchemas = {
+  BadgeZone: {
+    type: 'object',
+    properties: { id: { type: 'string' }, name: { type: 'string' } },
+  },
   Badge: {
     type: 'object',
     description: 'An API token on a provider account. The token is never part of it.',
@@ -55,11 +59,12 @@ export const tunnelSchemas = {
       lastFour: { type: 'string', description: 'Last 4 characters of the token.' },
       capabilities: {
         type: 'object',
-        description: 'What the last check found the token reaches.',
+        description:
+          'What the last check found the token reaches. `tunnels` is account-wide. `dns` and `certificates` list the zones the token reaches (a token can be limited to some zones).',
         properties: {
           tunnels: { type: 'boolean' },
-          dns: { type: 'boolean' },
-          certificates: { type: 'boolean' },
+          dns: { type: 'array', items: { $ref: '#/components/schemas/BadgeZone' } },
+          certificates: { type: 'array', items: { $ref: '#/components/schemas/BadgeZone' } },
         },
       },
       status: { type: 'string', enum: ['active', 'attention'] },

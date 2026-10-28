@@ -1361,7 +1361,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'The sealed token in `secret`, one badge per secret; deleting the secret deletes the badge, and removing a badge deletes its secret in the same transaction.',
       label: 'Operator label for the token, shown beside its last four characters.',
       capabilities:
-        'What the last check found the token can do: `tunnels`, `dns` and `certificates` as booleans, written by the panel after each check.',
+        'Last check result written by the panel: `tunnels` (boolean, account-wide) and `dns` and `certificates` (lists of zone id and name the token reaches).',
       last_four:
         'Last 4 characters of the token, the only part of it ever shown; never enough to use the token.',
       last_checked_at: 'When the panel last checked the token with the provider; NULL until then.',

@@ -11,7 +11,7 @@ import { decryptSecret, encryptSecret } from '../../lib/secrets/data-encryption.
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import type { CredentialReport } from './adapter.ts'
 import {
-  BADGE_CAPABILITIES,
+  type BadgeCapabilities,
   BADGE_SECRET_PROVIDER,
   RUN_SECRET_PROVIDER,
   TUNNEL_PROVIDERS,
@@ -29,7 +29,7 @@ export type ApiBadge = {
   carrierId: string
   label: string
   lastFour: string
-  capabilities: Record<string, boolean>
+  capabilities: BadgeCapabilities
   status: string
   lastCheckedAt: string | null
   createdAt: string
@@ -99,11 +99,22 @@ export function parseBadgeBody(
   return { ok: true, value: { label: label.value, token } }
 }
 
+/** Keep only well-formed zone entries from stored data. */
+function zoneList(value: unknown): { id: string; name: string }[] {
+  if (!Array.isArray(value)) return []
+  return value.flatMap((z) =>
+    z && typeof z.id === 'string' && typeof z.name === 'string' ? [{ id: z.id, name: z.name }] : []
+  )
+}
+
 /** A badge as the API shows it: the label and the last four characters, never the token. */
 export function toApiBadge(row: BadgeRow): ApiBadge {
   const stored = (row.capabilities ?? {}) as Record<string, unknown>
-  const capabilities: Record<string, boolean> = {}
-  for (const key of BADGE_CAPABILITIES) capabilities[key] = stored[key] === true
+  const capabilities: BadgeCapabilities = {
+    tunnels: stored.tunnels === true,
+    dns: zoneList(stored.dns),
+    certificates: zoneList(stored.certificates),
+  }
   return {
     id: row.id,
     carrierId: row.carrierId,
@@ -225,7 +236,7 @@ export type CheckOutcome = { capabilities: CredentialReport['capabilities']; sta
 
 /** A token is useful when it reaches tunnels or DNS. */
 export function isUsefulReport(report: CredentialReport): boolean {
-  return report.capabilities.tunnels || report.capabilities.dns
+  return report.capabilities.tunnels || report.capabilities.dns.length > 0
 }
 
 /** Keep the carrier's status in step with its badges: active while any badge works. */

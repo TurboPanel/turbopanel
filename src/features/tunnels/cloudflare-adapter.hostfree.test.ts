@@ -54,7 +54,11 @@ test('a token that reaches tunnels and DNS is reported with its zones and no mis
   const report = await createCloudflareAdapter({ fetch: impl }).checkCredential(TOKEN, {
     accountId: ACCOUNT,
   })
-  assertEquals(report.capabilities, { tunnels: true, dns: true, certificates: false })
+  assertEquals(report.capabilities, {
+    tunnels: true,
+    dns: [{ id: 'z1', name: 'example.com' }],
+    certificates: [],
+  })
   assertEquals(report.missing, [])
   assertEquals(report.zones, [{ id: 'z1', name: 'example.com' }])
   assert(report.accountVisible)
@@ -74,7 +78,7 @@ test('a token without DNS access names the missing permission', async () => {
     accountId: ACCOUNT,
   })
   assertEquals(report.capabilities.tunnels, true)
-  assertEquals(report.capabilities.dns, false)
+  assertEquals(report.capabilities.dns, [])
   assertEquals(report.missing, ['Zone · DNS · Edit'])
 })
 
@@ -88,7 +92,7 @@ test('a token refused the account and zone lists is judged by the probes, not re
     accountId: ACCOUNT,
   })
   assertEquals(report.capabilities.tunnels, true)
-  assertEquals(report.capabilities.dns, false)
+  assertEquals(report.capabilities.dns, [])
   assert(report.accountVisible)
 })
 
@@ -212,6 +216,8 @@ test('the zone for a hostname is searched only in the tunnel account and the lon
       { id: 'z2', name: 'shop.example.com', account: { id: ACCOUNT } },
       { id: 'z3', name: 'other.org', account: { id: 'b'.repeat(32) } },
     ]),
+    'GET /client/v4/zones/z1/dns_records': ok([]),
+    'GET /client/v4/zones/z2/dns_records': ok([]),
   })
   const adapter = createCloudflareAdapter({ fetch: impl })
   const zone = await adapter.findZone(TOKEN, { accountId: ACCOUNT, hostname: 'a.shop.example.com' })
@@ -227,4 +233,38 @@ test('the zone for a hostname is searched only in the tunnel account and the lon
     TunnelProviderError
   )
   assertEquals(lookalike.code, 'zone_not_found')
+})
+
+test('a zone the token cannot reach is skipped in favor of a shorter one it can', async () => {
+  const { impl } = fakeFetch({
+    'GET /client/v4/zones': ok([
+      { id: 'z1', name: 'example.com', account: { id: ACCOUNT } },
+      { id: 'z2', name: 'shop.example.com', account: { id: ACCOUNT } },
+    ]),
+    'GET /client/v4/zones/z1/dns_records': ok([]),
+    'GET /client/v4/zones/z2/dns_records': refused(403, 'denied'),
+  })
+  const zone = await createCloudflareAdapter({ fetch: impl }).findZone(TOKEN, {
+    accountId: ACCOUNT,
+    hostname: 'a.shop.example.com',
+  })
+  assertEquals(zone.id, 'z1')
+})
+
+test('a token limited to some zones lists only those zones as DNS rights', async () => {
+  const { impl } = fakeFetch({
+    'GET /client/v4/accounts': ok([{ id: ACCOUNT, name: 'Main' }]),
+    'GET /client/v4/zones': ok([
+      { id: 'z1', name: 'example.com' },
+      { id: 'z2', name: 'other.com' },
+    ]),
+    [`GET /client/v4/accounts/${ACCOUNT}/cfd_tunnel`]: ok([]),
+    'GET /client/v4/zones/z1/dns_records': ok([]),
+    'GET /client/v4/zones/z2/dns_records': refused(403, 'denied'),
+  })
+  const report = await createCloudflareAdapter({ fetch: impl }).checkCredential(TOKEN, {
+    accountId: ACCOUNT,
+  })
+  assertEquals(report.capabilities.dns, [{ id: 'z1', name: 'example.com' }])
+  assertEquals(report.missing, [])
 })
