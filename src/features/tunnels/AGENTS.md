@@ -196,12 +196,30 @@ provider accounts.
   applied. The same table is not sent again sooner than ten minutes after the
   previous send, so a table a server keeps refusing does not mint a new
   certificate every tick.
+- `connector-sync.ts` sends each carrying server its connectors with
+  `server.tunnel.connectors` (feature `tunnel-connector-v1`): the provider's
+  tunnel id and the run token sealed for that one server (`tpdaemon.`; the
+  stored command never holds the token in the clear and no log line names it).
+  A server runs the tunnels whose placement names it (`carryingServers`) and
+  that have a provider id and a run token. The panel remembers, per server, the
+  hash of the last list, the command and the ids it asked the server to run in
+  `server.metadata.tunnelConnectors`; a tunnel that moved off a server or was
+  removed is listed under `remove` on the next send, and stays listed (in
+  `removing`) with every send until a command that carried it finished well,
+  so a removal that failed is never forgotten. Only ids this code
+  installed are ever removed, so the instance's own tunnel and a hand-placed
+  connector stay alone. A resend is harmless (the daemon leaves a running
+  connector as it is), and the same list is not sent again sooner than ten
+  minutes after a send that did not finish. It runs from the offline sweep
+  (`runTunnelConnectorsSweepTick`) and right after a tunnel is created, moved
+  or removed (best effort). Changing a tunnel's run token is not supported
+  yet: remove the connector, then send it again.
 - The local-only lock on tunnel names is applied at deploy time
   (`name-lock.ts`, called from `deploy-prepare.ts`): a hosting with a doorway sends
   `hostings[].tunnel`, which makes the daemon answer the name only to loopback and
   the listed peers and drop everyone else. Peers are the exact datacenter
-  addresses of the _other_ servers that carry the same tunnel (all tunnels of the
-  hosting joined, sorted, cut at 64); when no other server carries it, `127.0.0.1`
+  addresses of the _other_ servers that carry the same tunnel (the tunnels of the
+  doorways whose hostname the hosting serves, joined, sorted, cut at 64); when no other server carries it, `127.0.0.1`
   is sent so the list is never empty (the contract refuses an empty list;
   loopback is always allowed, so nothing widens). `extraBind` is this server's own
   datacenter addresses and is sent only when there are real peers. A doorway with

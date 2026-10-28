@@ -120,6 +120,8 @@ and 64 KB for each of `certificatePem`, `caCertPem` and `privateKeyEnvelope`
 `PRIVATE KEY` is refused, and `notAfter` must be an ISO-8601 timestamp with a
 time zone.
 
+`server.tunnel.connectors` (300 s, offline fail-fast, feature `tunnel-connector-v1`) is `{ install: [{ tunnelId, tokenEnvelope }], remove: [tunnelId] }`: install or remove the connector service of organization tunnels. `tunnelId` is the provider's tunnel id (lower-case UUID; `instance` and `default` are refused), `tokenEnvelope` is the run token sealed for that server's daemon (`tpdaemon.`, at most 8 KB). Each tunnel is named once, at most 64 per list, at least one. An install whose connector already runs changes nothing; a remove of a connector that is gone is a no-op. Result `{ installed, unchanged, removed }`.
+
 **For whoever builds the sender.** An older daemon ignores `hostings[].tunnel`
 (tunnel-only names would then be served unlocked) and rejects the unknown
 command type, so send neither until the server's daemon version carries them
