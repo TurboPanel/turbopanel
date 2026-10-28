@@ -50,7 +50,21 @@ test('parseGitlabPush reads the branch, head sha, and project', () => {
     branch: 'main',
     commitSha: SHA,
     deleted: false,
+    pushedBy: null,
   })
+})
+
+test('parseGitlabPush names the pusher by username, never by email', () => {
+  const push = parseGitlabPush(
+    pushPayload({ user_username: 'jsmith', user_name: 'John Smith', user_email: 'j@example.com' })
+  )
+  assertEquals(push?.pushedBy, 'jsmith')
+  assertEquals(
+    parseGitlabPush(pushPayload({ user_name: 'John Smith', user_email: 'j@example.com' }))
+      ?.pushedBy,
+    null
+  )
+  assertEquals(parseGitlabPush(pushPayload({ user_username: '\u0007' }))?.pushedBy, null)
 })
 
 test('a GitLab push names no connection — every live one is a candidate', () => {

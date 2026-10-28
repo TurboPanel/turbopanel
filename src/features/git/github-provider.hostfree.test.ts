@@ -14,6 +14,7 @@ import {
   type GitProviderSourceRow,
 } from './git-provider.ts'
 import { ForgeError } from './forge-records.ts'
+import { PUSH_LOGIN_MAX_LENGTH, pushLoginFrom } from './push-login.ts'
 import {
   clearGithubInstallationTokenCache,
   GITHUB_API_BASE,
@@ -396,6 +397,37 @@ test('successfulCheckSha only honors a fully green suite', () => {
   assertEquals(successfulCheckSha('push', {}), null)
 })
 
+test('githubProvider.parsePush names the pusher by login, never by email', () => {
+  const push = (extra: Record<string, unknown>) =>
+    githubProvider.parsePush({
+      ref: 'refs/heads/main',
+      after: SHA,
+      installation: { id: 9 },
+      repository: { id: 15 },
+      ...extra,
+    })?.pushedBy
+  assertEquals(
+    push({ sender: { login: 'octocat' }, pusher: { name: 'other', email: 'o@example.com' } }),
+    'octocat'
+  )
+  // No sender account: GitHub's `pusher.name` is the username too.
+  assertEquals(push({ pusher: { name: 'monalisa', email: 'm@example.com' } }), 'monalisa')
+  assertEquals(push({ sender: { login: '' }, pusher: { name: 'monalisa' } }), 'monalisa')
+  assertEquals(push({ pusher: { email: 'm@example.com' } }), null)
+  assertEquals(push({ sender: 'octocat' }), null)
+  assertEquals(push({}), null)
+})
+
+test('pushLoginFrom strips control characters and caps the length', () => {
+  assertEquals(pushLoginFrom('  octocat  '), 'octocat')
+  assertEquals(pushLoginFrom('octo\ncat\u200b'), 'octocat')
+  assertEquals(pushLoginFrom('\u0000\u001f'), null)
+  assertEquals(pushLoginFrom(7), null)
+  assertEquals(pushLoginFrom(null), null)
+  const long = pushLoginFrom('a'.repeat(PUSH_LOGIN_MAX_LENGTH + 50))
+  assertEquals(long?.length, PUSH_LOGIN_MAX_LENGTH)
+})
+
 test('githubProvider.parsePush and parseCheck', () => {
   assertEquals(
     githubProvider.parsePush({
@@ -411,6 +443,7 @@ test('githubProvider.parsePush and parseCheck', () => {
       branch: 'main',
       commitSha: SHA,
       deleted: false,
+      pushedBy: null,
     }
   )
   assertEquals(

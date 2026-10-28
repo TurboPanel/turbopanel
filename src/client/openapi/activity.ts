@@ -103,12 +103,18 @@ export const activitySchemas = {
   },
   ActivityTrigger: {
     type: 'object',
-    required: ['kind', 'branch', 'commitSha', 'sourceId'],
+    required: ['kind', 'branch', 'commitSha', 'sourceId', 'pushedBy'],
     properties: {
       kind: { type: 'string', const: 'push' },
       branch: { type: ['string', 'null'] },
       commitSha: { type: ['string', 'null'] },
       sourceId: { type: ['string', 'null'], format: 'uuid' },
+      pushedBy: {
+        type: ['string', 'null'],
+        maxLength: 100,
+        description:
+          'Git provider login of the person who pushed (never an email). Null when the push did not name one, including deploys recorded before it was kept.',
+      },
     },
   },
   ActivityCommit: {

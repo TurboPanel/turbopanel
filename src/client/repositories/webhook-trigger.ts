@@ -49,6 +49,7 @@ import {
   runEnvironmentDeployForActor,
 } from '../environments/deploy-routes.ts'
 import type { WebhookGitProviderName } from '../../features/git/git-provider.ts'
+import { pushLoginFrom } from '../../features/git/push-login.ts'
 import { listWatchingEnvironmentIds } from '../../features/git/watch-records.ts'
 import { forEachSequential, mapSequential } from '../../lib/sequential.ts'
 import {
@@ -260,6 +261,8 @@ export type PendingChecks = {
   commitSha: string
   ref: string | null
   recordedAt: string
+  /** Login of whoever pushed the parked commit, so the released deploy still names them. */
+  pushedBy?: string | null
 }
 
 function readOptions(value: unknown): Record<string, unknown> {
@@ -274,11 +277,13 @@ export function readPendingChecks(options: unknown): PendingChecks | null {
   }
   const record = pending as Record<string, unknown>
   if (typeof record.commitSha !== 'string' || record.commitSha.length === 0) return null
+  const pushedBy = pushLoginFrom(record.pushedBy)
   return {
     commitSha: record.commitSha,
     ref: typeof record.ref === 'string' ? record.ref : null,
     recordedAt:
       typeof record.recordedAt === 'string' ? record.recordedAt : new Date().toISOString(),
+    ...(pushedBy === null ? {} : { pushedBy }),
   }
 }
 
@@ -416,6 +421,7 @@ async function deployEnvironmentForSource(
     environmentId: string
     commitSha: string | null
     ref: string | null
+    pushedBy?: string | null
   },
   io: ReturnType<typeof resolveTriggerIo>
 ): Promise<TriggerOutcome> {
@@ -450,6 +456,7 @@ async function deployEnvironmentForSource(
       ref: params.ref,
       commitSha: params.commitSha,
       sourceId: params.row.id,
+      pushedBy: params.pushedBy ?? null,
     },
   }
 
@@ -555,6 +562,7 @@ async function deployEnvironments(
     environmentIds: readonly string[]
     commitSha: string | null
     ref: string | null
+    pushedBy?: string | null
   },
   io: ReturnType<typeof resolveTriggerIo>
 ): Promise<TriggerOutcome[]> {
@@ -568,6 +576,7 @@ async function deployEnvironments(
         environmentId,
         commitSha: params.commitSha,
         ref: params.ref,
+        pushedBy: params.pushedBy,
       },
       io
     )
@@ -583,6 +592,7 @@ async function deployAllEnvironmentsForSource(
     row: TriggerRepositoryRow
     commitSha: string | null
     ref: string | null
+    pushedBy?: string | null
   },
   io: ReturnType<typeof resolveTriggerIo>
 ): Promise<TriggerOutcome[]> {
@@ -683,6 +693,8 @@ export type PushTrigger = {
   branch: string
   /** Head commit after the push. */
   commitSha: string | null
+  /** Provider login of whoever pushed, already cleaned; `null` or absent when unknown. */
+  pushedBy?: string | null
 }
 
 /** One matched repository's answer to a push: what it parks, skips, or deploys. */
@@ -714,6 +726,7 @@ async function resolvePushForSource(
         commitSha: push.commitSha,
         ref: push.ref,
         recordedAt: new Date().toISOString(),
+        ...(push.pushedBy ? { pushedBy: push.pushedBy } : {}),
       })
     }
     return skipped('awaiting_checks')
@@ -730,7 +743,13 @@ async function resolvePushForSource(
     c,
     db,
     commandQueue,
-    { row, environmentIds: plan.deploy, commitSha: push.commitSha, ref: push.ref },
+    {
+      row,
+      environmentIds: plan.deploy,
+      commitSha: push.commitSha,
+      ref: push.ref,
+      pushedBy: push.pushedBy,
+    },
     io
   )
   return [...plan.skipped, ...deployed]
@@ -854,6 +873,7 @@ export async function resolveCheckTrigger(
         row,
         commitSha: pending.commitSha,
         ref: pending.ref,
+        pushedBy: pending.pushedBy,
       },
       io
     )

@@ -100,7 +100,13 @@ test('activityCommitOf reads the first recorded release, else the pushed SHA', (
     sha: 'abc1234def',
     message: 'Fix the login page',
   })
-  const trigger = { kind: 'push' as const, branch: 'main', commitSha: 'fff0000', sourceId: null }
+  const trigger = {
+    kind: 'push' as const,
+    branch: 'main',
+    commitSha: 'fff0000',
+    sourceId: null,
+    pushedBy: null,
+  }
   assertEquals(activityCommitOf({}, trigger), { sha: 'fff0000', message: null })
   assertEquals(activityCommitOf(null, null), null)
 })
@@ -178,7 +184,33 @@ test('shapeActivityItem: a succeeded deploy freezes its duration and names the p
   )
   assertEquals(pushed.actorName, null)
   assertEquals(pushed.trigger?.branch, 'main')
+  assertEquals(pushed.trigger?.pushedBy, null)
   assertEquals(pushed.commit, { sha: 'abc1234', message: null })
+})
+
+test('shapeActivityItem: a push names the git login of whoever pushed', () => {
+  const pushed = shapeActivityItem(
+    {
+      ...BASE,
+      status: 'succeeded',
+      finishedAt: '2026-10-04T12:09:00.000Z',
+      actorType: 'system',
+      actorId: 'u1',
+      metadata: {
+        sourceSelection: { ref: 'refs/heads/main', commitSha: 'abc1234', pushedBy: 'octocat' },
+      },
+    },
+    NAMES,
+    NOW
+  )
+  assertEquals(pushed.actorName, null)
+  assertEquals(pushed.trigger, {
+    kind: 'push',
+    branch: 'main',
+    commitSha: 'abc1234',
+    sourceId: null,
+    pushedBy: 'octocat',
+  })
 })
 
 test('shapeActivityItem: a finished row with no recorded end has no duration', () => {

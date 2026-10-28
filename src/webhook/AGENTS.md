@@ -530,8 +530,17 @@ merges — and `decideEnvironmentPush` answers `deploy`, `push_deploys_off` or
   filters on the repository's `organization_id`; an environment id from another
   organization is simply absent and never deploys.
 - **History.** The deploy command's `metadata.sourceSelection` (`ref`, `commitSha`,
-  `sourceId`) is surfaced as `trigger: { kind: 'push', branch, commitSha, sourceId }`
-  on each deployment-history entry for automated deploys (`readDeploymentTrigger`).
+  `sourceId`, `pushedBy`) is surfaced as
+  `trigger: { kind: 'push', branch, commitSha, sourceId, pushedBy }` on each
+  deployment-history entry and organization activity row for automated deploys
+  (`readDeploymentTrigger`).
+- **Who pushed.** `pushedBy` is the provider login only (GitHub `sender.login`,
+  else `pusher.name`; GitLab `user_username`), never an email. It is untrusted
+  text, so `pushLoginFrom` (`src/features/git/push-login.ts`) strips control and
+  formatting characters and caps it at 100 characters both when the webhook is
+  parsed and when history is read. A `checks_passed` push parks it with the SHA
+  in `pendingChecks` so the released deploy still names the pusher. Older rows
+  and payloads without a login read `null`.
 
 Known limitation: `pendingChecks` is one slot per repository, so with
 `checks_passed` and several tracked branches a newer push to another branch
