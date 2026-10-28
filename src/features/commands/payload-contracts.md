@@ -95,7 +95,12 @@ this server (visitors that are not peers are passed on too), and an upstream is
 `{ serverId, addresses[], port? }` with the exact datacenter addresses of one
 server that runs a copy (preferred family first; port defaults to 443; a remote
 route needs at least one). `peerAddresses` are the exact addresses of the
-servers allowed to forward to this one; `listenAddresses` are this server's
+servers allowed to forward TO this one (inbound standing: the daemon refuses
+re-forwarding for them, lets them reach the peer certificate site and trusts
+their visitor-address headers; it is never a firewall rule). A server that only
+carries tunnels and hosts nothing sends an empty list: do not pad it with the
+servers it forwards to. With no peers the daemon writes no peer certificate
+site; `listenAddresses` are this server's
 own addresses the peer-facing site listens on. `peerMaterial` is
 `{ certificatePem, privateKeyEnvelope, caCertPem, notAfter? }`: a leaf of the
 organization's certificate authority for the fixed name `tp-peer.internal`

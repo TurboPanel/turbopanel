@@ -181,7 +181,11 @@ export type TunnelRoutesCommandPayload = {
   hash: string
   /** Every tunnel name carried by this server, whole set. Empty = no forwarding. */
   routes: TunnelRoute[]
-  /** Exact datacenter addresses of the servers that may forward to this one. */
+  /**
+   * Exact datacenter addresses of the servers that may forward TO this one.
+   * Empty on a server that only carries tunnels and hosts nothing: nobody
+   * forwards to it. Never pad it with the servers this one forwards to.
+   */
   peerAddresses: string[]
   /** This server's own addresses the peer-facing site must listen on. */
   listenAddresses?: string[]
@@ -325,9 +329,6 @@ export function parseTunnelRoutesPayload(value: unknown): TunnelRoutesCommandPay
   const needsMaterial = routes.length > 0 || peerAddresses.length > 0
   if (needsMaterial && !payload.peerMaterial) {
     throw new TypeError('Invalid server.tunnel.routes peerMaterial: required with routes or peers')
-  }
-  if (routes.some((route) => !route.local) && peerAddresses.length === 0) {
-    throw new TypeError('Invalid server.tunnel.routes peerAddresses: required for forwarding')
   }
   return payload
 }

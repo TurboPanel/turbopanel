@@ -235,8 +235,6 @@ test('server.tunnel.routes: material, peers and size limits', () => {
   const cases: Record<string, unknown>[] = [
     // peers listed but no material
     payload({ peerMaterial: undefined, routes: [] }),
-    // a remote route with no peer addresses
-    payload({ peerAddresses: [] }),
     // size limits
     payload({ routes: Array.from({ length: 2001 }, (_, i) => route(i)) }),
     payload({ peerAddresses: ips(65) }),
@@ -294,4 +292,12 @@ test('hostings[].tunnel: upper-case names and size limits are refused', () => {
   assertThrows(() => parseDeployHostingTunnel({ hostnames: names, peers: ['10.0.0.5'] }, names))
   const peers = Array.from({ length: 65 }, (_, i) => `10.0.0.${i + 1}`)
   assertThrows(() => parseDeployHostingTunnel({ hostnames: ['app.example.com'], peers }, site))
+})
+
+test('server.tunnel.routes: a carrier-only server may send no peer addresses', () => {
+  const parsed = parseTunnelRoutesPayload(
+    payload({ peerAddresses: [], listenAddresses: undefined })
+  )
+  assertEquals(parsed.peerAddresses, [])
+  assertEquals(parsed.routes.length, 2)
 })
