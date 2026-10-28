@@ -32,6 +32,12 @@
       "tag": "0004_command_activity_index",
       "when": 1793122151433,
       "sha256": "2d7c61e0818839f09eece916246fdcf953c145c5380853bc77e68a1c0713d7c9"
+    },
+    {
+      "idx": 5,
+      "tag": "0005_tunnel_tables",
+      "when": 1793200722647,
+      "sha256": "a2e72b08f3e8b752dbff56a94d8dc311373215a12f9790d06bc76de30c1e6e5a"
     }
   ]
 }

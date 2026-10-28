@@ -1,0 +1,299 @@
+/**
+ * The Cloudflare tunnel adapter, built on the small client. Credentials are
+ * checked with read calls only (accounts, zones, tunnels, DNS records): a
+ * read that succeeds proves the token reaches that area, and edit rights are
+ * confirmed by the first write that needs them.
+ */
+import {
+  type BadgeCapabilities,
+  type TokenInfo,
+  type TokenKind,
+  UNKNOWN_TOKEN,
+} from './vocabulary.ts'
+import type { CredentialReport, TunnelAdapter } from './adapter.ts'
+import { CloudflareClient, type CloudflareIngressRule } from './cloudflare-client.ts'
+import { TunnelProviderError } from './errors.ts'
+
+/** Names of the permissions a token needs, as Cloudflare words them. */
+export const CLOUDFLARE_PERMISSIONS = {
+  tunnels: 'Account · Cloudflare Tunnel · Edit',
+  dns: 'Zone · DNS · Edit',
+} as const
+
+/** What a connector is told to reach: the web server on the same machine. */
+const LOCAL_ORIGIN = 'https://localhost'
+
+function requireAccount(accountId: string | null): string {
+  if (!accountId) throw new TypeError('A Cloudflare account id is required')
+  return accountId
+}
+
+/** Cloudflare permission failures are 401 or 403; anything else is not a missing permission. */
+function isPermissionFailure(err: unknown): boolean {
+  return (
+    err instanceof TunnelProviderError && (err.code === 'forbidden' || err.code === 'unauthorized')
+  )
+}
+
+/** Run a read probe: true when it works, false when the token lacks access, rethrow anything else. */
+async function probe(read: () => Promise<void>): Promise<boolean> {
+  try {
+    await read()
+    return true
+  } catch (err) {
+    if (isPermissionFailure(err)) return false
+    throw err
+  }
+}
+
+/** A list the token may not be allowed to read counts as empty; a rejected token still fails. */
+async function listOrEmpty<T>(read: () => Promise<T[]>): Promise<T[]> {
+  try {
+    return await read()
+  } catch (err) {
+    if (err instanceof TunnelProviderError && err.code === 'forbidden') return []
+    throw err
+  }
+}
+
+/** The zones whose DNS records the token can read, found by one safe read per zone. */
+async function reachableZones(
+  api: CloudflareClient,
+  zones: readonly { id: string; name: string }[]
+): Promise<{ id: string; name: string }[]> {
+  const probed = await Promise.all(
+    zones.map(async (z) =>
+      (await probe(() => api.probeDns(z.id))) ? { id: z.id, name: z.name } : null
+    )
+  )
+  return probed.filter((z): z is { id: string; name: string } => z !== null)
+}
+
+/**
+ * A Global API Key is a different credential (it needs an email and is not a
+ * bearer token). Legacy keys are 37 to 45 lowercase hex characters and new ones
+ * start with `cfk_`. API tokens are 40 alphanumeric characters or start with
+ * `cfut_` (user-owned) or `cfat_` (account-owned).
+ */
+export function cloudflareTokenProblem(token: string): string | null {
+  if (token.startsWith('cfk_') || /^[0-9a-f]{37,45}$/.test(token)) {
+    return 'This looks like a Global API Key, which does not work here. Create an API Token in Cloudflare and paste that instead.'
+  }
+  return null
+}
+
+function kindFromPrefix(token: string): TokenKind | null {
+  if (token.startsWith('cfat_')) return 'account'
+  if (token.startsWith('cfut_')) return 'user'
+  return null
+}
+
+type VerifyResult = { id?: string; status?: string; expires_on?: string }
+
+/** Run one verify call; a refusal means "not this kind", anything else is a real failure. */
+async function tryVerify(call: () => Promise<VerifyResult>): Promise<VerifyResult | null> {
+  try {
+    return await call()
+  } catch (err) {
+    if (
+      err instanceof TunnelProviderError &&
+      (err.code === 'unauthorized' || err.code === 'forbidden' || err.code === 'not_found')
+    ) {
+      return null
+    }
+    throw err
+  }
+}
+
+/**
+ * Ask Cloudflare about the token itself. An account-owned token is verified at
+ * the account endpoint and a user-owned one at the user endpoint, so the one
+ * that fits is tried first (by prefix, else by whether an account is known)
+ * and the other is the fallback. A token that verifies nowhere is reported as
+ * unknown, not rejected: the probes decide what it can do.
+ */
+async function inspectToken(
+  api: CloudflareClient,
+  token: string,
+  accountIds: readonly string[]
+): Promise<TokenInfo> {
+  const prefix = kindFromPrefix(token)
+  const asAccount = async (): Promise<TokenInfo | null> => {
+    for (const id of accountIds) {
+      const found = await tryVerify(() => api.verifyAccountToken(id))
+      if (found) return toInfo('account', found)
+    }
+    return null
+  }
+  const asUser = async (): Promise<TokenInfo | null> => {
+    const found = await tryVerify(() => api.verifyUserToken())
+    return found ? toInfo('user', found) : null
+  }
+  const accountFirst = prefix === 'account' || (prefix === null && accountIds.length === 1)
+  const order = accountFirst ? [asAccount, asUser] : [asUser, asAccount]
+  for (const attempt of order) {
+    const info = await attempt()
+    if (info) return prefix ? { ...info, kind: prefix } : info
+  }
+  return { ...UNKNOWN_TOKEN, kind: prefix }
+}
+
+function toInfo(kind: TokenKind, found: VerifyResult): TokenInfo {
+  return {
+    kind,
+    id: found.id ?? null,
+    status: found.status ?? null,
+    expiresAt: found.expires_on ?? null,
+  }
+}
+
+export function buildIngress(hostnames: readonly string[]): CloudflareIngressRule[] {
+  const seen = new Set<string>()
+  const rules: CloudflareIngressRule[] = []
+  for (const raw of hostnames) {
+    const hostname = raw.trim().toLowerCase()
+    if (hostname.length === 0 || seen.has(hostname)) continue
+    seen.add(hostname)
+    rules.push({
+      hostname,
+      service: LOCAL_ORIGIN,
+      originRequest: { httpHostHeader: hostname, originServerName: hostname, noTLSVerify: true },
+    })
+  }
+  // The last rule must match everything and carry no hostname.
+  rules.push({ service: 'http_status:404' })
+  return rules
+}
+
+export function createCloudflareAdapter(options: { fetch?: typeof fetch } = {}): TunnelAdapter {
+  const client = (token: string) => new CloudflareClient({ token, fetch: options.fetch })
+  return {
+    provider: 'cloudflare',
+
+    tokenShapeProblem: cloudflareTokenProblem,
+
+    async discoverAccounts(token) {
+      const api = client(token)
+      const accounts = await listOrEmpty(() => api.listAccounts())
+      const info = await inspectToken(
+        api,
+        token,
+        accounts.map((a) => a.id)
+      )
+      return { accounts: accounts.map((a) => ({ id: a.id, name: a.name })), token: info }
+    },
+
+    async checkCredential(token, scope): Promise<CredentialReport> {
+      const api = client(token)
+      // A token scoped to tunnels and DNS only may be refused the account and zone
+      // lists; that is not a bad token, so the probes below decide what it can do.
+      const accounts = await listOrEmpty(() => api.listAccounts())
+      const zones = await listOrEmpty(() => api.listZones(scope.accountId))
+      const accountVisible =
+        scope.accountId === null ||
+        accounts.length === 0 ||
+        accounts.some((a) => a.id === scope.accountId)
+      const tokenInfo = await inspectToken(
+        api,
+        token,
+        scope.accountId ? [scope.accountId] : accounts.map((a) => a.id)
+      )
+      const tunnels =
+        accountVisible && scope.accountId !== null
+          ? await probe(() => api.probeTunnels(scope.accountId!))
+          : false
+      // DNS rights can be limited to some zones, so each zone is probed on its own.
+      const dns = await reachableZones(api, zones)
+      const capabilities: BadgeCapabilities = {
+        tunnels,
+        dns,
+        // No safe read proves certificate rights, so none are listed.
+        certificates: [],
+      }
+      const missing: string[] = []
+      if (!tunnels) missing.push(CLOUDFLARE_PERMISSIONS.tunnels)
+      if (dns.length === 0) missing.push(CLOUDFLARE_PERMISSIONS.dns)
+      return {
+        accounts: accounts.map((a) => ({ id: a.id, name: a.name })),
+        zones: zones.map((z) => ({ id: z.id, name: z.name })),
+        accountVisible,
+        capabilities,
+        missing,
+        token: tokenInfo,
+      }
+    },
+
+    async createTunnel(token, input) {
+      const api = client(token)
+      const account = requireAccount(input.accountId)
+      const created = await api.createTunnel(account, input.name)
+      const runToken =
+        typeof created.token === 'string' && created.token.length > 0
+          ? created.token
+          : await api.getTunnelToken(account, created.id)
+      return { externalId: created.id, runToken }
+    },
+
+    fetchRunToken(token, input) {
+      return client(token).getTunnelToken(requireAccount(input.accountId), input.externalId)
+    },
+
+    rotateRunToken() {
+      // Cloudflare's way to issue a fresh run token is not confirmed yet, so nothing is guessed.
+      return Promise.reject(
+        new TunnelProviderError(
+          'unsupported',
+          'Rotating a Cloudflare run token is not supported yet',
+          null
+        )
+      )
+    },
+
+    async setRoutes(token, input) {
+      await client(token).putConfiguration(
+        requireAccount(input.accountId),
+        input.externalId,
+        buildIngress(input.hostnames)
+      )
+    },
+
+    async findZone(token, input) {
+      const account = requireAccount(input.accountId)
+      const name = input.hostname.trim().toLowerCase()
+      // Only this account's zones are searched, and a zone that reports another
+      // account is ignored: a CNAME to a tunnel works only inside one account.
+      const api = client(token)
+      const zones = (await api.listZones(account)).filter(
+        (z) => z.account?.id === undefined || z.account.id === account
+      )
+      const candidates = zones
+        .filter((z) => name === z.name || name.endsWith(`.${z.name}`))
+        .sort((a, b) => b.name.length - a.name.length)
+      // The longest matching zone this token can reach wins.
+      for (const zone of candidates) {
+        if (await probe(() => api.probeDns(zone.id))) return { id: zone.id, name: zone.name }
+      }
+      throw new TunnelProviderError(
+        'zone_not_found',
+        `No zone for ${input.hostname} that this token can reach was found in this Cloudflare account`,
+        null
+      )
+    },
+
+    async createDnsName(token, input) {
+      const record = await client(token).createDnsRecord(input.zoneId, {
+        name: input.hostname,
+        content: `${input.externalId}.cfargotunnel.com`,
+      })
+      return { recordId: record.id }
+    },
+
+    async removeDnsName(token, input) {
+      await client(token).deleteDnsRecord(input.zoneId, input.recordId)
+    },
+
+    async deleteTunnel(token, input) {
+      await client(token).deleteTunnel(requireAccount(input.accountId), input.externalId)
+    },
+  }
+}

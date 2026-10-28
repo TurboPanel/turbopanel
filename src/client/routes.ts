@@ -70,6 +70,7 @@ import { registerComposeRemoteBuildSourcesRoutes } from './organizations/compose
 import { registerReauthSettingsRoutes } from './organizations/reauth-settings-routes.ts'
 import { registerOrganizationFirewallRoutes } from './organizations/firewall-routes.ts'
 import { registerOrganizationBackupTargetRoutes } from './organizations/backup-target-routes.ts'
+import { registerOrganizationCarrierRoutes } from './organizations/carrier-routes.ts'
 import { registerWorkspaceRoutes } from './workspaces/routes.ts'
 import { type ClientOpenApiOptions, getClientOpenApiSpec } from './openapi/index.ts'
 import { buildClientScalarHtml } from '../app/scalar-html.ts'
@@ -159,6 +160,7 @@ export function registerClientRoutes(app: Hono<AppEnv>, opts: ClientRouteOpts) {
   registerReauthSettingsRoutes(client, opts)
   registerOrganizationFirewallRoutes(client, opts)
   registerOrganizationBackupTargetRoutes(client, opts)
+  registerOrganizationCarrierRoutes(client, opts)
   registerAccessRoutes(client, opts)
   // Before the catch-all session middleware the next call installs: the verify link has no session.
   registerNotificationVerifyRoutes(client, opts)
