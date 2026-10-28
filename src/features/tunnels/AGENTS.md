@@ -195,7 +195,27 @@ provider accounts.
   certificate and trust bundle, so a renewed leaf with the same routes is still
   applied. The same table is not sent again sooner than ten minutes after the
   previous send, so a table a server keeps refusing does not mint a new
-  certificate every tick.
+  certificate every tick; a different table is always sent at once.
+- `nudge.ts` sends the tables right away instead of waiting for the sweep. It
+  never throws, does nothing for an organization with no tunnel (and no server
+  that once held a table), sends to at most 40 servers per call and leaves the
+  rest to the sweep. It runs inside the request on every runtime (database and
+  command queue only), after: a site is created, edited or deleted
+  (`/hostings`), a server is changed, deleted or has its addresses set
+  (`/servers`), a server joins or leaves a datacenter (`/datacenters/:id/members`)
+  or the datacenter is edited, an environment or project is deleted, a deploy
+  that moves sites is queued (`deploy-routes.ts`), and a deploy result lands
+  (`consumer.ts`, `applyEnvironmentDeploySideEffect`). Go through
+  `nudgeTunnelRoutesFromRequest` (`src/client/organizations/tunnel-nudge.ts`)
+  from a handler, or `nudgeTunnelRoutesForEnvironment` where only an
+  environment is known. Not covered, left to the sweep: the raw `/ips` routes,
+  which are not formatted by the repo formatter (editing them would fail the
+  format check).
+- `doorway-links.ts` re-reads which site holds each doorway's name from the
+  `hostname` table before tables are built (the nudge and the sweep both do).
+  A doorway keeps the hostname text, but its site link is read once when it is
+  added, and a site's names are deleted and inserted again on every edit, a name
+  can move to another site, and a site can be made later or deleted.
 - The local-only lock on tunnel names is **not enforced yet**: `doorway.is_local_only`
   only records the wish. Enforcing it is the deploy-time `hostings[].tunnel`,
   which is not built; until then the web server answers a tunnel name to
@@ -208,6 +228,5 @@ provider accounts.
   another organization is refused (409 `hosting_mismatch`), and a site counts as
   running on a server only when its hosting is in the tunnel's organization.
 - Not in this slice: the deploy-time `hostings[].tunnel` (it must be gated on
-  the same feature when added), triggers that resend at once on a hosting or
-  server change (the sweep catches them), and the firewall rules for the exact
-  peer addresses.
+  the same feature when added) and the firewall rules for the exact peer
+  addresses.

@@ -1,0 +1,108 @@
+/**
+ * Send forwarding tables right away when something they are built from changed
+ * (a site, its names, a deploy, a server, an address), instead of waiting for
+ * the periodic sweep. The sweep still runs and sends whatever this missed.
+ *
+ * Nothing here throws: a failure is logged and the sweep tries again. The work
+ * is bounded (one organization, a capped number of servers, nothing sent for a
+ * table that has not changed) and uses only the database and the command queue,
+ * so it is safe inside a request on every edition.
+ */
+import { and, eq, sql } from 'drizzle-orm'
+import type { Db } from '../../db/connection.ts'
+import { environment, project, server, tunnel } from '../../db/schema.ts'
+import { compatLogWarn } from '../../lib/log-compat.ts'
+import { forEachSequential } from '../../lib/sequential.ts'
+import type { CommandQueue } from '../commands/queue.ts'
+import type { DerivedSecretsConfig, SecretsConfig } from '../../lib/secrets/secrets.ts'
+import { relinkDoorwayHostings } from './doorway-links.ts'
+import { serversToCheck, syncServerQuietly, type TunnelSyncDeps } from './sync.ts'
+
+/** The most servers one change sends to; the sweep reaches the rest. */
+export const TUNNEL_NUDGE_MAX_SERVERS = 40
+
+/** The queue and secrets a send needs, or null when any is missing (nothing is sent then). */
+export function tunnelSyncDepsFrom(fields: {
+  commandQueue?: CommandQueue | undefined
+  secretsConfig?: SecretsConfig | undefined
+  dataEncryptionSecrets?: DerivedSecretsConfig | undefined
+}): TunnelSyncDeps | null {
+  const { commandQueue, secretsConfig, dataEncryptionSecrets } = fields
+  if (!commandQueue || !secretsConfig || !dataEncryptionSecrets) return null
+  return { commandQueue, secretsConfig, dataEncryptionSecrets }
+}
+
+/** Does the organization have a tunnel, or a server that was once sent a table? */
+async function hasTunnelWork(db: Db, organizationId: string): Promise<boolean> {
+  const [tunnelRow] = await db
+    .select({ id: tunnel.id })
+    .from(tunnel)
+    .where(eq(tunnel.organizationId, organizationId))
+    .limit(1)
+  if (tunnelRow) return true
+  const [serverRow] = await db
+    .select({ id: server.id })
+    .from(server)
+    .where(
+      and(
+        eq(server.organizationId, organizationId),
+        sql`${server.metadata} -> 'tunnelRoutes' IS NOT NULL`
+      )
+    )
+    .limit(1)
+  return serverRow !== undefined
+}
+
+/** Bring every involved server of the organization up to date. Never throws. */
+export async function nudgeTunnelRoutes(
+  db: Db,
+  deps: TunnelSyncDeps | null,
+  organizationId: string
+): Promise<void> {
+  if (!deps) return
+  try {
+    if (!(await hasTunnelWork(db, organizationId))) return
+    await relinkDoorwayHostings(db, organizationId)
+    const serverIds = (await serversToCheck(db, organizationId)).slice(0, TUNNEL_NUDGE_MAX_SERVERS)
+    await forEachSequential(serverIds, async (serverId) => {
+      await syncServerQuietly(db, deps, organizationId, serverId)
+    })
+  } catch (err) {
+    compatLogWarn(
+      'tunnel-sync',
+      `organization ${organizationId}: ${err instanceof Error ? err.message : err}`
+    )
+  }
+}
+
+/** The organization an environment belongs to, or null when it is gone. */
+export async function organizationOfEnvironment(
+  db: Db,
+  environmentId: string
+): Promise<string | null> {
+  const [row] = await db
+    .select({ organizationId: project.organizationId })
+    .from(environment)
+    .innerJoin(project, eq(project.id, environment.projectId))
+    .where(eq(environment.id, environmentId))
+    .limit(1)
+  return row?.organizationId ?? null
+}
+
+/** Same as {@link nudgeTunnelRoutes}, for a change known only by its environment. */
+export async function nudgeTunnelRoutesForEnvironment(
+  db: Db,
+  deps: TunnelSyncDeps | null,
+  environmentId: string
+): Promise<void> {
+  if (!deps) return
+  try {
+    const organizationId = await organizationOfEnvironment(db, environmentId)
+    if (organizationId) await nudgeTunnelRoutes(db, deps, organizationId)
+  } catch (err) {
+    compatLogWarn(
+      'tunnel-sync',
+      `environment ${environmentId}: ${err instanceof Error ? err.message : err}`
+    )
+  }
+}

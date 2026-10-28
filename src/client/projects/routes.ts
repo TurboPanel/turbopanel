@@ -1,6 +1,7 @@
 import { and, eq, sql } from 'drizzle-orm'
 import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
+import { nudgeTunnelRoutesFromRequest } from '../organizations/tunnel-nudge.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { requireStepUpIfConfigured } from '../authn/step-up.ts'
 import { encryptSecret } from '../../lib/secrets/data-encryption.ts'
@@ -1146,6 +1147,7 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     const cleanup = await startDeleteCleanup(c, db, userId, result.cleanup)
     await retireIdleIngressOn(c, db, stoppedServerIds, userId)
+    await nudgeTunnelRoutesFromRequest(c, db, organizationId)
 
     return c.json({
       ok: true as const,

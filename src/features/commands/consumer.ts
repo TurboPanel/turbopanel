@@ -42,6 +42,7 @@ import {
   failTimedOutDeploy,
   haltRollout,
 } from '../deploy/rollout.ts'
+import { nudgeTunnelRoutesForEnvironment, tunnelSyncDepsFrom } from '../tunnels/nudge.ts'
 import {
   deploymentDurationMs,
   type DeploymentOutcome,
@@ -1306,6 +1307,17 @@ async function applyEnvironmentDeploySideEffect(
         await advanceRolloutSafely(db, deps, payload.environmentId, payload.generation)
       }
       current = marked !== null
+      // A site now runs here (or no longer does): servers forwarding to it need the new table.
+      if (marked !== null) {
+        await nudgeTunnelRoutesForEnvironment(
+          db,
+          tunnelSyncDepsFrom({
+            commandQueue: deps?.commandQueue,
+            ...consumerFabricSecretFields(deps),
+          }),
+          payload.environmentId
+        )
+      }
     }
     // A hostings-only run changed the web server config and nothing else: no
     // folders, accounts, sites or containers to record.
