@@ -35,8 +35,14 @@
     },
     {
       "idx": 5,
-      "tag": "0005_peer_leaf_kind",
-      "when": 1793200514425,
+      "tag": "0005_tunnel_tables",
+      "when": 1793200722647,
+      "sha256": "a2e72b08f3e8b752dbff56a94d8dc311373215a12f9790d06bc76de30c1e6e5a"
+    },
+    {
+      "idx": 6,
+      "tag": "0006_peer_leaf_kind",
+      "when": 1793203555856,
       "sha256": "163e17005143cd88deb53105f19f7ba8d5d790f5cdf74d85ea296101d6405772"
     }
   ]

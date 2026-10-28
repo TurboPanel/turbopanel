@@ -74,6 +74,11 @@ export const AUDIT_ACTIONS = [
   'backup_target.update',
   'backup_target.delete',
   'backup_target.assign',
+  'carrier.create',
+  'carrier.delete',
+  'badge.create',
+  'badge.check',
+  'badge.delete',
 ] as const
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[number]

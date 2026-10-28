@@ -1,5 +1,5 @@
 {
-  "id": "8e4cb16b-339f-49d0-b0c3-d44c47be3254",
+  "id": "398c9697-1172-4d86-91ea-6c52c4fb3c31",
   "prevId": "89eebc09-24ec-4f45-809e-2b6cd96d2c5a",
   "version": "7",
   "dialect": "postgresql",
@@ -1159,6 +1159,163 @@
       },
       "isRLSEnabled": false
     },
+    "public.badge": {
+      "name": "badge",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "uuidv7()"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "metadata": {
+          "name": "metadata",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "options": {
+          "name": "options",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "carrier_id": {
+          "name": "carrier_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "secret_id": {
+          "name": "secret_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "label": {
+          "name": "label",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "capabilities": {
+          "name": "capabilities",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::jsonb"
+        },
+        "last_four": {
+          "name": "last_four",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "last_checked_at": {
+          "name": "last_checked_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'active'"
+        }
+      },
+      "indexes": {
+        "idx_badge_carrier_id": {
+          "name": "idx_badge_carrier_id",
+          "columns": [
+            {
+              "expression": "carrier_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "uuid_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "badge_carrier_id_carrier_id_fk": {
+          "name": "badge_carrier_id_carrier_id_fk",
+          "tableFrom": "badge",
+          "tableTo": "carrier",
+          "columnsFrom": [
+            "carrier_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "badge_secret_id_secret_id_fk": {
+          "name": "badge_secret_id_secret_id_fk",
+          "tableFrom": "badge",
+          "tableTo": "secret",
+          "columnsFrom": [
+            "secret_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "uniq_badge_secret_id": {
+          "name": "uniq_badge_secret_id",
+          "nullsNotDistinct": false,
+          "columns": [
+            "secret_id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "badge_label_check": {
+          "name": "badge_label_check",
+          "value": "char_length(label) BETWEEN 1 AND 64"
+        },
+        "badge_status_check": {
+          "name": "badge_status_check",
+          "value": "status IN ('active', 'attention')"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.binding": {
       "name": "binding",
       "schema": "",
@@ -1472,6 +1629,137 @@
         "bulwark_digest_format_check": {
           "name": "bulwark_digest_format_check",
           "value": "last_digest IS NULL OR last_digest ~ '^[a-f0-9]{64}$'"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.carrier": {
+      "name": "carrier",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "uuidv7()"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "metadata": {
+          "name": "metadata",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "options": {
+          "name": "options",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "organization_id": {
+          "name": "organization_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "provider": {
+          "name": "provider",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "external_account_id": {
+          "name": "external_account_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'active'"
+        }
+      },
+      "indexes": {
+        "idx_carrier_organization_id": {
+          "name": "idx_carrier_organization_id",
+          "columns": [
+            {
+              "expression": "organization_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "uuid_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "carrier_organization_id_organization_id_fk": {
+          "name": "carrier_organization_id_organization_id_fk",
+          "tableFrom": "carrier",
+          "tableTo": "organization",
+          "columnsFrom": [
+            "organization_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "uniq_carrier_organization_id_provider_external_account_id": {
+          "name": "uniq_carrier_organization_id_provider_external_account_id",
+          "nullsNotDistinct": false,
+          "columns": [
+            "organization_id",
+            "provider",
+            "external_account_id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "carrier_name_check": {
+          "name": "carrier_name_check",
+          "value": "char_length(name) BETWEEN 1 AND 64"
+        },
+        "carrier_provider_check": {
+          "name": "carrier_provider_check",
+          "value": "provider IN ('cloudflare')"
+        },
+        "carrier_status_check": {
+          "name": "carrier_status_check",
+          "value": "status IN ('active', 'attention')"
         }
       },
       "isRLSEnabled": false
@@ -2929,6 +3217,188 @@
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.doorway": {
+      "name": "doorway",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "uuidv7()"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "metadata": {
+          "name": "metadata",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "options": {
+          "name": "options",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "routing_organization_id": {
+          "name": "routing_organization_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "tunnel_id": {
+          "name": "tunnel_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "hostname": {
+          "name": "hostname",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'http'"
+        },
+        "hosting_id": {
+          "name": "hosting_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "external_route_id": {
+          "name": "external_route_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "external_dns_record_id": {
+          "name": "external_dns_record_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "is_local_only": {
+          "name": "is_local_only",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'pending'"
+        }
+      },
+      "indexes": {
+        "idx_doorway_hosting_id": {
+          "name": "idx_doorway_hosting_id",
+          "columns": [
+            {
+              "expression": "hosting_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "uuid_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "doorway_routing_organization_id_organization_id_fk": {
+          "name": "doorway_routing_organization_id_organization_id_fk",
+          "tableFrom": "doorway",
+          "tableTo": "organization",
+          "columnsFrom": [
+            "routing_organization_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "doorway_tunnel_id_tunnel_id_fk": {
+          "name": "doorway_tunnel_id_tunnel_id_fk",
+          "tableFrom": "doorway",
+          "tableTo": "tunnel",
+          "columnsFrom": [
+            "tunnel_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "doorway_hosting_id_hosting_id_fk": {
+          "name": "doorway_hosting_id_hosting_id_fk",
+          "tableFrom": "doorway",
+          "tableTo": "hosting",
+          "columnsFrom": [
+            "hosting_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "uniq_doorway_routing_organization_id_hostname": {
+          "name": "uniq_doorway_routing_organization_id_hostname",
+          "nullsNotDistinct": false,
+          "columns": [
+            "routing_organization_id",
+            "hostname"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "doorway_hostname_check": {
+          "name": "doorway_hostname_check",
+          "value": "char_length(hostname) BETWEEN 1 AND 253 AND hostname = lower(hostname)"
+        },
+        "doorway_kind_check": {
+          "name": "doorway_kind_check",
+          "value": "kind IN ('http')"
+        },
+        "doorway_status_check": {
+          "name": "doorway_status_check",
+          "value": "status IN ('pending', 'live', 'attention', 'removing')"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.edict": {
@@ -5589,22 +6059,6 @@
           "method": "btree",
           "with": {}
         },
-        "uniq_leaf_peer_server": {
-          "name": "uniq_leaf_peer_server",
-          "columns": [
-            {
-              "expression": "server_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"leaf\".\"kind\" = 'peer'",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
         "uniq_leaf_engine_replica": {
           "name": "uniq_leaf_engine_replica",
           "columns": [
@@ -5710,7 +6164,7 @@
       "checkConstraints": {
         "leaf_kind_check": {
           "name": "leaf_kind_check",
-          "value": "kind IN ('ingress','engine','peer')"
+          "value": "\"leaf\".\"kind\" IN ('ingress','engine')"
         },
         "leaf_state_check": {
           "name": "leaf_state_check",
@@ -5734,7 +6188,7 @@
         },
         "leaf_kind_keys_check": {
           "name": "leaf_kind_keys_check",
-          "value": "(\n        (\"leaf\".\"kind\" IN ('ingress','peer') AND \"leaf\".\"replica_id\" IS NULL AND \"leaf\".\"managed_id\" IS NULL)\n        OR\n        (\"leaf\".\"kind\" = 'engine' AND \"leaf\".\"replica_id\" IS NOT NULL AND \"leaf\".\"managed_id\" IS NOT NULL)\n      )"
+          "value": "(\n        (\"leaf\".\"kind\" = 'ingress' AND \"leaf\".\"replica_id\" IS NULL AND \"leaf\".\"managed_id\" IS NULL)\n        OR\n        (\"leaf\".\"kind\" = 'engine' AND \"leaf\".\"replica_id\" IS NOT NULL AND \"leaf\".\"managed_id\" IS NOT NULL)\n      )"
         }
       },
       "isRLSEnabled": false
@@ -8856,6 +9310,164 @@
       },
       "isRLSEnabled": false
     },
+    "public.portal": {
+      "name": "portal",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "uuidv7()"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "metadata": {
+          "name": "metadata",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "options": {
+          "name": "options",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "tunnel_id": {
+          "name": "tunnel_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "server_id": {
+          "name": "server_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "wanted": {
+          "name": "wanted",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'run'"
+        },
+        "reported": {
+          "name": "reported",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'unknown'"
+        },
+        "last_seen_at": {
+          "name": "last_seen_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "last_error": {
+          "name": "last_error",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "connector_version": {
+          "name": "connector_version",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "version_checked_at": {
+          "name": "version_checked_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "idx_portal_server_id": {
+          "name": "idx_portal_server_id",
+          "columns": [
+            {
+              "expression": "server_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "uuid_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "portal_tunnel_id_tunnel_id_fk": {
+          "name": "portal_tunnel_id_tunnel_id_fk",
+          "tableFrom": "portal",
+          "tableTo": "tunnel",
+          "columnsFrom": [
+            "tunnel_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "portal_server_id_server_id_fk": {
+          "name": "portal_server_id_server_id_fk",
+          "tableFrom": "portal",
+          "tableTo": "server",
+          "columnsFrom": [
+            "server_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "uniq_portal_tunnel_id_server_id": {
+          "name": "uniq_portal_tunnel_id_server_id",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tunnel_id",
+            "server_id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "portal_wanted_check": {
+          "name": "portal_wanted_check",
+          "value": "wanted IN ('run', 'skip')"
+        },
+        "portal_reported_check": {
+          "name": "portal_reported_check",
+          "value": "reported IN ('unknown', 'connected', 'down', 'error')"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.principal": {
       "name": "principal",
       "schema": "",
@@ -10808,7 +11420,7 @@
       "checkConstraints": {
         "secret_provider_check": {
           "name": "secret_provider_check",
-          "value": "provider IN ('s3', 's3_compatible', 'nfs', 'cifs', 'sftp', 'ftp', 'webdav',\n        'git_deploy_key')"
+          "value": "provider IN ('s3', 's3_compatible', 'nfs', 'cifs', 'sftp', 'ftp', 'webdav',\n        'git_deploy_key', 'carrier_badge', 'tunnel_run')"
         }
       },
       "isRLSEnabled": false
@@ -14444,6 +15056,267 @@
         "tls_status_check": {
           "name": "tls_status_check",
           "value": "status IN ('ready', 'pending', 'expired', 'failed', 'revoked', 'automatic')"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.tunnel": {
+      "name": "tunnel",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "uuidv7()"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "metadata": {
+          "name": "metadata",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "options": {
+          "name": "options",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "organization_id": {
+          "name": "organization_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "routing_organization_id": {
+          "name": "routing_organization_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "carrier_id": {
+          "name": "carrier_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "provider": {
+          "name": "provider",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "external_id": {
+          "name": "external_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "placement": {
+          "name": "placement",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'chosen'"
+        },
+        "datacenter_id": {
+          "name": "datacenter_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "secret_id": {
+          "name": "secret_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'pending'"
+        }
+      },
+      "indexes": {
+        "idx_tunnel_routing_organization_id": {
+          "name": "idx_tunnel_routing_organization_id",
+          "columns": [
+            {
+              "expression": "routing_organization_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "uuid_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_tunnel_carrier_id": {
+          "name": "idx_tunnel_carrier_id",
+          "columns": [
+            {
+              "expression": "carrier_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "uuid_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_tunnel_datacenter_id": {
+          "name": "idx_tunnel_datacenter_id",
+          "columns": [
+            {
+              "expression": "datacenter_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "uuid_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "tunnel_organization_id_organization_id_fk": {
+          "name": "tunnel_organization_id_organization_id_fk",
+          "tableFrom": "tunnel",
+          "tableTo": "organization",
+          "columnsFrom": [
+            "organization_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "tunnel_routing_organization_id_organization_id_fk": {
+          "name": "tunnel_routing_organization_id_organization_id_fk",
+          "tableFrom": "tunnel",
+          "tableTo": "organization",
+          "columnsFrom": [
+            "routing_organization_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "tunnel_carrier_id_carrier_id_fk": {
+          "name": "tunnel_carrier_id_carrier_id_fk",
+          "tableFrom": "tunnel",
+          "tableTo": "carrier",
+          "columnsFrom": [
+            "carrier_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "tunnel_datacenter_id_datacenter_id_fk": {
+          "name": "tunnel_datacenter_id_datacenter_id_fk",
+          "tableFrom": "tunnel",
+          "tableTo": "datacenter",
+          "columnsFrom": [
+            "datacenter_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "tunnel_secret_id_secret_id_fk": {
+          "name": "tunnel_secret_id_secret_id_fk",
+          "tableFrom": "tunnel",
+          "tableTo": "secret",
+          "columnsFrom": [
+            "secret_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "uniq_tunnel_organization_id_name": {
+          "name": "uniq_tunnel_organization_id_name",
+          "nullsNotDistinct": false,
+          "columns": [
+            "organization_id",
+            "name"
+          ]
+        },
+        "uniq_tunnel_carrier_id_external_id": {
+          "name": "uniq_tunnel_carrier_id_external_id",
+          "nullsNotDistinct": false,
+          "columns": [
+            "carrier_id",
+            "external_id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "tunnel_name_check": {
+          "name": "tunnel_name_check",
+          "value": "char_length(name) BETWEEN 1 AND 64"
+        },
+        "tunnel_all_datacenter_check": {
+          "name": "tunnel_all_datacenter_check",
+          "value": "placement <> 'all' OR datacenter_id IS NOT NULL"
+        },
+        "tunnel_provider_check": {
+          "name": "tunnel_provider_check",
+          "value": "provider IN ('cloudflare')"
+        },
+        "tunnel_placement_check": {
+          "name": "tunnel_placement_check",
+          "value": "placement IN ('one', 'chosen', 'all')"
+        },
+        "tunnel_status_check": {
+          "name": "tunnel_status_check",
+          "value": "status IN ('pending', 'active', 'attention', 'removing')"
         }
       },
       "isRLSEnabled": false

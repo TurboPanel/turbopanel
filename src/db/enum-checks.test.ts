@@ -64,6 +64,16 @@ import { PLACEMENT_SOURCES, PLACEMENT_STATES } from '../features/principals/plac
 import { FOLDER_KINDS, FOLDER_STATES } from '../features/folders/vocabulary.ts'
 import { LEAF_KINDS, LEAF_STALE_CAUSES, LEAF_STATES } from '../features/tls/leaf-vocabulary.ts'
 import { CLIENT_ADDRESS_SCOPES } from '../features/net/client-addresses-pure.ts'
+import {
+  CARRIER_STATUSES,
+  DOORWAY_KINDS,
+  DOORWAY_STATUSES,
+  PORTAL_REPORTED_STATES,
+  PORTAL_WANTED_STATES,
+  TUNNEL_PLACEMENTS,
+  TUNNEL_PROVIDERS,
+  TUNNEL_STATUSES,
+} from '../features/tunnels/vocabulary.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -95,6 +105,16 @@ function checkValues(constraintName: string): string[] {
 }
 
 const CASES: Array<[constraint: string, values: readonly string[]]> = [
+  ['carrier_provider_check', TUNNEL_PROVIDERS],
+  ['carrier_status_check', CARRIER_STATUSES],
+  ['badge_status_check', CARRIER_STATUSES],
+  ['tunnel_provider_check', TUNNEL_PROVIDERS],
+  ['tunnel_placement_check', TUNNEL_PLACEMENTS],
+  ['tunnel_status_check', TUNNEL_STATUSES],
+  ['portal_wanted_check', PORTAL_WANTED_STATES],
+  ['portal_reported_check', PORTAL_REPORTED_STATES],
+  ['doorway_kind_check', DOORWAY_KINDS],
+  ['doorway_status_check', DOORWAY_STATUSES],
   ['command_status_check', COMMAND_STATUSES],
   ['command_actor_type_check', COMMAND_ACTOR_TYPES],
   ['container_status_check', CONTAINER_STATUSES],

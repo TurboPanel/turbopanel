@@ -9,6 +9,7 @@ import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import type { Db } from '../../db/connection.ts'
 import { getDaemonCellRegistry } from '../../db/connection.ts'
 import { datacenter, ip, network, server } from '../../db/schema.ts'
+import { datacenterHasAllTunnel } from '../../features/tunnels/records.ts'
 import { metricsDeploymentKindForRuntime } from '../../contracts/capability-plan.ts'
 import { autoMonitorNicsForDatacenterAttach } from '../../features/servers/nic-auto-monitor.ts'
 import {
@@ -1228,6 +1229,16 @@ export function registerDatacenterRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
     const members = await loadDatacenterMembershipsForDatacenter(db, id)
     if (members.length > 0) {
       return c.json({ error: 'datacenter_has_members' }, 409)
+    }
+
+    if (await datacenterHasAllTunnel(db, id)) {
+      return c.json(
+        {
+          error: 'datacenter_has_tunnels',
+          message: 'A Tunnel runs on every server of this datacenter. Change or remove it first.',
+        },
+        409
+      )
     }
 
     const scopedNetworks = await db
