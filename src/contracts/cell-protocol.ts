@@ -1055,8 +1055,13 @@ export const MAX_DAEMON_WS_FRAME_BYTES = 256 * 1024
 /** Max characters for correlation / delivery identifiers (`id`, `requestId`). */
 export const MAX_DAEMON_WS_ID_CHARS = 128
 
-/** Max advertised feature names on `hello` / the attach `version` frame. */
-export const MAX_DAEMON_WS_FEATURES = 32
+/**
+ * Max advertised feature names on `hello` / the attach `version` frame. Far above
+ * the daemon's `DAEMON_WIRE_FEATURES` on purpose: a frame over this cap is closed
+ * with 1008, so a list that outgrew it disconnected every updated daemon. A test
+ * in `protocol.test.ts` fails once the list passes three quarters of this cap.
+ */
+export const MAX_DAEMON_WS_FEATURES = 128
 
 /** Max characters for one advertised feature name. */
 export const MAX_DAEMON_WS_FEATURE_CHARS = 64
