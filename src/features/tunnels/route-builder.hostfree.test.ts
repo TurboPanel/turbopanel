@@ -39,9 +39,9 @@ test('a name whose site runs elsewhere is forwarded to that server', () => {
       upstreams: [{ serverId: B, addresses: ['fd00::b'] }],
     },
   ])
-  // The server it forwards to is a peer too, so a stale table can never loop.
-  assertEquals(built.peerAddresses, ['fd00::b'])
-  assertEquals(built.listenAddresses, ['fd00::a', '10.0.0.10'])
+  // A carrier-only server has no inbound peers: the list is empty and it listens on nothing extra.
+  assertEquals(built.peerAddresses, [])
+  assertEquals(built.listenAddresses, [])
   assertEquals(built.needsPeerMaterial, true)
 })
 

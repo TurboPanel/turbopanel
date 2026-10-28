@@ -5,10 +5,8 @@
  * the daemon has advertised the feature on its `hello`.
  */
 import type { Db } from '../../db/connection.ts'
+import { TUNNEL_FORWARDING_FEATURE } from '../../lib/version-wire.ts'
 import { getServerDaemonStateByServerId } from '../servers/server-identity-db.ts'
-
-/** The wire feature a daemon advertises when it can lock and forward tunnel names. */
-export const TUNNEL_FORWARDING_FEATURE = 'tunnel-forwarding-v1'
 
 export function daemonCanCarryTunnels(features: readonly string[] | undefined): boolean {
   return features?.includes(TUNNEL_FORWARDING_FEATURE) === true

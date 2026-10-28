@@ -173,9 +173,8 @@ provider accounts.
   runs on this server is `local`; otherwise the upstreams are the datacenter
   addresses of the servers that run the site (exact addresses, preferred
   family first). `peerAddresses` is the other carrying servers of a tunnel
-  whose site runs here, plus the servers this one forwards to (the daemon
-  answers a peer with an error instead of passing the request on again, so a
-  stale table cannot loop). Sites count as running on a server through an
+  whose site runs here (inbound only: servers allowed to forward to this one). A
+  server that only carries tunnels sends an empty list. Sites count as running on a server through an
   `applied` deployment of their environment. The hash covers the routes, the
   addresses, the certificate and the trust bundle, not the sealed key.
 - `daemon-gate.ts`: nothing tunnel related goes to a server, and no name is

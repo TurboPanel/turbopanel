@@ -1,5 +1,6 @@
 import { assertEquals } from '@std/assert'
-import { daemonCanCarryTunnels, TUNNEL_FORWARDING_FEATURE } from './daemon-gate.ts'
+import { TUNNEL_FORWARDING_FEATURE } from '../../lib/version-wire.ts'
+import { daemonCanCarryTunnels } from './daemon-gate.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.

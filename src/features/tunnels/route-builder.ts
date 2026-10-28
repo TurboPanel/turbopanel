@@ -81,9 +81,6 @@ export function buildTunnelRoutes(
         })
         continue
       }
-      // A server it forwards to must never forward back (the daemon answers a peer with an
-      // error instead of passing it on again), so those servers are peers here too.
-      for (const upstream of upstreams) upstream.addresses.forEach((a) => peers.add(a))
       routes.set(doorway.hostname, {
         hostname: doorway.hostname,
         local: siteHere,
