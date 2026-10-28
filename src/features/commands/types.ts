@@ -12,6 +12,7 @@ export const COMMAND_TYPES = [
   'server.backups.reconcile',
   'server.backups.test-target',
   'server.folders.remove',
+  'server.tunnel.routes',
   'environment.deploy',
   'environment.lifecycle',
   'environment.stop',
