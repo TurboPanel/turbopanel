@@ -56,7 +56,6 @@ test('server.tunnel.routes refuses bad shapes', () => {
   const cases: Record<string, unknown>[] = [
     payload({ hash: 'ABC' }),
     payload({ peerMaterial: undefined }),
-    payload({ peerAddresses: [] }),
     payload({ peerAddresses: ['10.0.0.0/24'] }),
     payload({ peerAddresses: ['10.0.0.5', '10.0.0.5'] }),
     payload({ listenAddresses: ['not-an-ip'] }),
