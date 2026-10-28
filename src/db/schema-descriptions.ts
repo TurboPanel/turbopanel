@@ -1388,14 +1388,11 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
   doorway: {
     group: 'networking',
     summary:
-      'One hostname a tunnel carries to a site, with the provider route and DNS record ids; unique per organization like `hostname`.',
+      'One hostname a tunnel carries, pointing at its `hostname` row (which keeps the name, site and uniqueness), with the provider route and DNS record ids.',
     columns: {
       metadata:
         'Non-secret descriptors written by the panel; no keys are read by the platform today.',
       options: 'Provider-specific route details; no keys are read by the platform today.',
-      routing_organization_id:
-        'Organization whose servers answer for this name, as on `hostname`; a name is unique per routing organization.',
-      hostname: 'Lower-case DNS name the tunnel carries.',
       kind: 'Kind of traffic carried, `http` for now; ssh, rdp, vnc and tcp are added by a forward migration.',
       external_route_id: 'The provider id of the route for this name; NULL until published.',
       external_dns_record_id:

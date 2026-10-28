@@ -39,8 +39,12 @@ member there, a widened CHECK (forward migration) and one adapter.
   server reports the version it runs in `portal.connector_version`, with
   `portal.version_checked_at` for when, so the panel can show program and
   version per tunnel per server.
-- `doorway.routing_organization_id` mirrors `hostname.routing_organization_id`
-  (a hostname is unique per routing organization).
+- `doorway` has no hostname text of its own: `hostname_id` points at the
+  existing `hostname` row (unique, one doorway per hostname), so the
+  per-organization uniqueness and the `hostname_in_use` refusal stay in one
+  place and the site comes from that row. The foreign key is RESTRICT because
+  `replaceHostingHostnames` deletes and reinserts a hosting's hostnames; it
+  must be changed to keep rows that have a doorway before any doorway is written.
 - `carrier` is unique on (organization, provider, external account id); a
   provider with no account stores NULL, and NULLs never collide.
 

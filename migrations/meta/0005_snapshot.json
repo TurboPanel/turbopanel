@@ -1,5 +1,5 @@
 {
-  "id": "c8b1b9fb-5245-4e08-afd2-956985e116af",
+  "id": "85c1ace8-34ff-432f-94ba-fd0951b896e7",
   "prevId": "89eebc09-24ec-4f45-809e-2b6cd96d2c5a",
   "version": "7",
   "dialect": "postgresql",
@@ -3230,21 +3230,15 @@
           "primaryKey": false,
           "notNull": false
         },
-        "routing_organization_id": {
-          "name": "routing_organization_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
         "tunnel_id": {
           "name": "tunnel_id",
           "type": "uuid",
           "primaryKey": false,
           "notNull": true
         },
-        "hostname": {
-          "name": "hostname",
-          "type": "text",
+        "hostname_id": {
+          "name": "hostname_id",
+          "type": "uuid",
           "primaryKey": false,
           "notNull": true
         },
@@ -3254,12 +3248,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'http'"
-        },
-        "hosting_id": {
-          "name": "hosting_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
         },
         "external_route_id": {
           "name": "external_route_id",
@@ -3304,38 +3292,9 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
-        },
-        "idx_doorway_hosting_id": {
-          "name": "idx_doorway_hosting_id",
-          "columns": [
-            {
-              "expression": "hosting_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last",
-              "opclass": "uuid_ops"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
         }
       },
       "foreignKeys": {
-        "doorway_routing_organization_id_organization_id_fk": {
-          "name": "doorway_routing_organization_id_organization_id_fk",
-          "tableFrom": "doorway",
-          "tableTo": "organization",
-          "columnsFrom": [
-            "routing_organization_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
         "doorway_tunnel_id_tunnel_id_fk": {
           "name": "doorway_tunnel_id_tunnel_id_fk",
           "tableFrom": "doorway",
@@ -3349,28 +3308,27 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "doorway_hosting_id_hosting_id_fk": {
-          "name": "doorway_hosting_id_hosting_id_fk",
+        "doorway_hostname_id_hostname_id_fk": {
+          "name": "doorway_hostname_id_hostname_id_fk",
           "tableFrom": "doorway",
-          "tableTo": "hosting",
+          "tableTo": "hostname",
           "columnsFrom": [
-            "hosting_id"
+            "hostname_id"
           ],
           "columnsTo": [
             "id"
           ],
-          "onDelete": "set null",
+          "onDelete": "restrict",
           "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
-        "uniq_doorway_routing_organization_id_hostname": {
-          "name": "uniq_doorway_routing_organization_id_hostname",
+        "uniq_doorway_hostname_id": {
+          "name": "uniq_doorway_hostname_id",
           "nullsNotDistinct": false,
           "columns": [
-            "routing_organization_id",
-            "hostname"
+            "hostname_id"
           ]
         }
       },

@@ -7368,10 +7368,13 @@ export const portal = pgTable(
 )
 
 /**
- * One hostname a tunnel carries. Like `hostname`, it names only the routing
- * organization (the one whose servers answer for it), and a name is unique
- * per routing organization. `hosting_id` is the site it serves
- * (kept when the site goes: the row is then unattached).
+ * One hostname a tunnel carries. It points at the existing `hostname` row, so
+ * the per-organization uniqueness (and the 409 `hostname_in_use` refusal) stay
+ * in one place and the site and routing organization come from that row. A
+ * doorway adds only the tunnel, the kind of traffic and the provider ids.
+ * `ON DELETE RESTRICT`: `replaceHostingHostnames` deletes and reinserts every
+ * hostname of a hosting, so it must be changed to keep rows that have a
+ * doorway before a doorway is ever written.
  */
 export const doorway = pgTable(
   'doorway',
@@ -7397,11 +7400,9 @@ export const doorway = pgTable(
       .notNull(),
     metadata: jsonb(),
     options: jsonb(),
-    routingOrganizationId: uuid('routing_organization_id').notNull(),
     tunnelId: uuid('tunnel_id').notNull(),
-    hostname: text().notNull(),
+    hostnameId: uuid('hostname_id').notNull(),
     kind: text().default('http').notNull(),
-    hostingId: uuid('hosting_id'),
     externalRouteId: text('external_route_id'),
     externalDnsRecordId: text('external_dns_record_id'),
     isLocalOnly: boolean('is_local_only').default(true).notNull(),
@@ -7409,29 +7410,17 @@ export const doorway = pgTable(
   },
   (table) => [
     index('idx_doorway_tunnel_id').using('btree', table.tunnelId.asc().nullsLast().op('uuid_ops')),
-    index('idx_doorway_hosting_id').using(
-      'btree',
-      table.hostingId.asc().nullsLast().op('uuid_ops')
-    ),
-    unique('uniq_doorway_routing_organization_id_hostname').on(
-      table.routingOrganizationId,
-      table.hostname
-    ),
-    foreignKey({
-      columns: [table.routingOrganizationId],
-      foreignColumns: [organization.id],
-      name: 'doorway_routing_organization_id_organization_id_fk',
-    }).onDelete('cascade'),
+    unique('uniq_doorway_hostname_id').on(table.hostnameId),
     foreignKey({
       columns: [table.tunnelId],
       foreignColumns: [tunnel.id],
       name: 'doorway_tunnel_id_tunnel_id_fk',
     }).onDelete('cascade'),
     foreignKey({
-      columns: [table.hostingId],
-      foreignColumns: [hosting.id],
-      name: 'doorway_hosting_id_hosting_id_fk',
-    }).onDelete('set null'),
+      columns: [table.hostnameId],
+      foreignColumns: [hostname.id],
+      name: 'doorway_hostname_id_hostname_id_fk',
+    }).onDelete('restrict'),
     // Mirror DOORWAY_KINDS / DOORWAY_STATUSES — pinned by enum-checks.test.ts.
     check('doorway_kind_check', sql`kind IN ('http')`),
     check('doorway_status_check', sql`status IN ('pending', 'live', 'attention', 'removing')`),

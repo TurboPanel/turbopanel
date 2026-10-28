@@ -46,6 +46,15 @@ export type TunnelAdapter = {
     input: { accountId: string | null; externalId: string; hostnames: readonly string[] }
   ): Promise<void>
   /** Create the public DNS name for a hostname, pointing at the tunnel. */
+  /**
+   * Find the zone for a hostname among the zones of the tunnel's own account.
+   * A tunnel can only route names whose zone is in the same account, so no
+   * other account is searched. Throws `zone_not_found` when none matches.
+   */
+  findZone(
+    token: string,
+    input: { accountId: string | null; hostname: string }
+  ): Promise<ProviderZone>
   createDnsName(
     token: string,
     input: { zoneId: string; hostname: string; externalId: string }

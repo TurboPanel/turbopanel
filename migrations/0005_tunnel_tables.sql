@@ -41,16 +41,14 @@ CREATE TABLE "doorway" (
 	"updated_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
 	"metadata" jsonb,
 	"options" jsonb,
-	"routing_organization_id" uuid NOT NULL,
 	"tunnel_id" uuid NOT NULL,
-	"hostname" text NOT NULL,
+	"hostname_id" uuid NOT NULL,
 	"kind" text DEFAULT 'http' NOT NULL,
-	"hosting_id" uuid,
 	"external_route_id" text,
 	"external_dns_record_id" text,
 	"is_local_only" boolean DEFAULT true NOT NULL,
 	"status" text DEFAULT 'pending' NOT NULL,
-	CONSTRAINT "uniq_doorway_routing_organization_id_hostname" UNIQUE("routing_organization_id","hostname"),
+	CONSTRAINT "uniq_doorway_hostname_id" UNIQUE("hostname_id"),
 	CONSTRAINT "doorway_kind_check" CHECK (kind IN ('http')),
 	CONSTRAINT "doorway_status_check" CHECK (status IN ('pending', 'live', 'attention', 'removing'))
 );
@@ -100,9 +98,8 @@ ALTER TABLE "secret" DROP CONSTRAINT "secret_provider_check";--> statement-break
 ALTER TABLE "badge" ADD CONSTRAINT "badge_carrier_id_carrier_id_fk" FOREIGN KEY ("carrier_id") REFERENCES "public"."carrier"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "badge" ADD CONSTRAINT "badge_secret_id_secret_id_fk" FOREIGN KEY ("secret_id") REFERENCES "public"."secret"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "carrier" ADD CONSTRAINT "carrier_organization_id_organization_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "doorway" ADD CONSTRAINT "doorway_routing_organization_id_organization_id_fk" FOREIGN KEY ("routing_organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "doorway" ADD CONSTRAINT "doorway_tunnel_id_tunnel_id_fk" FOREIGN KEY ("tunnel_id") REFERENCES "public"."tunnel"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "doorway" ADD CONSTRAINT "doorway_hosting_id_hosting_id_fk" FOREIGN KEY ("hosting_id") REFERENCES "public"."hosting"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "doorway" ADD CONSTRAINT "doorway_hostname_id_hostname_id_fk" FOREIGN KEY ("hostname_id") REFERENCES "public"."hostname"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "portal" ADD CONSTRAINT "portal_tunnel_id_tunnel_id_fk" FOREIGN KEY ("tunnel_id") REFERENCES "public"."tunnel"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "portal" ADD CONSTRAINT "portal_server_id_server_id_fk" FOREIGN KEY ("server_id") REFERENCES "public"."server"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "tunnel" ADD CONSTRAINT "tunnel_organization_id_organization_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
@@ -113,7 +110,6 @@ ALTER TABLE "tunnel" ADD CONSTRAINT "tunnel_secret_id_secret_id_fk" FOREIGN KEY 
 CREATE INDEX "idx_badge_carrier_id" ON "badge" USING btree ("carrier_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_carrier_organization_id" ON "carrier" USING btree ("organization_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_doorway_tunnel_id" ON "doorway" USING btree ("tunnel_id" uuid_ops);--> statement-breakpoint
-CREATE INDEX "idx_doorway_hosting_id" ON "doorway" USING btree ("hosting_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_portal_server_id" ON "portal" USING btree ("server_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_tunnel_routing_organization_id" ON "tunnel" USING btree ("routing_organization_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_tunnel_carrier_id" ON "tunnel" USING btree ("carrier_id" uuid_ops);--> statement-breakpoint
@@ -134,11 +130,9 @@ COMMENT ON COLUMN "carrier"."provider" IS 'Tunnel provider, `cloudflare` for now
 COMMENT ON COLUMN "carrier"."name" IS 'Operator label for the account; unique only together with the provider and account id.';--> statement-breakpoint
 COMMENT ON COLUMN "carrier"."external_account_id" IS 'The provider own account id; NULL for a provider with no account concept (rows with NULL never collide).';--> statement-breakpoint
 COMMENT ON COLUMN "carrier"."status" IS '`active` while a token on it works, `attention` when none does.';--> statement-breakpoint
-COMMENT ON TABLE "doorway" IS 'One hostname a tunnel carries to a site, with the provider route and DNS record ids; unique per organization like `hostname`.';--> statement-breakpoint
+COMMENT ON TABLE "doorway" IS 'One hostname a tunnel carries, pointing at its `hostname` row (which keeps the name, site and uniqueness), with the provider route and DNS record ids.';--> statement-breakpoint
 COMMENT ON COLUMN "doorway"."metadata" IS 'Non-secret descriptors written by the panel; no keys are read by the platform today.';--> statement-breakpoint
 COMMENT ON COLUMN "doorway"."options" IS 'Provider-specific route details; no keys are read by the platform today.';--> statement-breakpoint
-COMMENT ON COLUMN "doorway"."routing_organization_id" IS 'Organization whose servers answer for this name, as on `hostname`; a name is unique per routing organization.';--> statement-breakpoint
-COMMENT ON COLUMN "doorway"."hostname" IS 'Lower-case DNS name the tunnel carries.';--> statement-breakpoint
 COMMENT ON COLUMN "doorway"."kind" IS 'Kind of traffic carried, `http` for now; ssh, rdp, vnc and tcp are added by a forward migration.';--> statement-breakpoint
 COMMENT ON COLUMN "doorway"."external_route_id" IS 'The provider id of the route for this name; NULL until published.';--> statement-breakpoint
 COMMENT ON COLUMN "doorway"."external_dns_record_id" IS 'The provider id of the DNS record the panel created for this name; NULL until created.';--> statement-breakpoint

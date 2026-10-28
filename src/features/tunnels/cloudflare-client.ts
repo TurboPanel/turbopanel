@@ -19,7 +19,7 @@ type Envelope<T> = {
 }
 
 export type CloudflareAccount = { id: string; name: string }
-export type CloudflareZone = { id: string; name: string }
+export type CloudflareZone = { id: string; name: string; account?: { id?: string } }
 export type CloudflareTunnel = { id: string; name: string; token?: string }
 export type CloudflareIngressRule = {
   hostname?: string
@@ -115,8 +115,11 @@ export class CloudflareClient {
     return this.#list<CloudflareAccount>('/accounts')
   }
 
-  listZones(): Promise<CloudflareZone[]> {
-    return this.#list<CloudflareZone>('/zones')
+  /** Zones the token can see, limited to one account when given. */
+  listZones(accountId?: string | null): Promise<CloudflareZone[]> {
+    return this.#list<CloudflareZone>(
+      accountId ? `/zones?account.id=${encodeURIComponent(accountId)}` : '/zones'
+    )
   }
 
   /** One-row read: proves the token can read tunnels of the account. */

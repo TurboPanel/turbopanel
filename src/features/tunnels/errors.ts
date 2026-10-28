@@ -8,6 +8,7 @@ export type TunnelErrorCode =
   | 'provider_error'
   | 'unreachable'
   | 'unsupported'
+  | 'zone_not_found'
 
 /**
  * A failure talking to a tunnel provider. The message is scrubbed on

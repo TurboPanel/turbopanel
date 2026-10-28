@@ -79,7 +79,7 @@ export function createCloudflareAdapter(options: { fetch?: typeof fetch } = {}):
       // A token scoped to tunnels and DNS only may be refused the account and zone
       // lists; that is not a bad token, so the probes below decide what it can do.
       const accounts = await listOrEmpty(() => api.listAccounts())
-      const zones = await listOrEmpty(() => api.listZones())
+      const zones = await listOrEmpty(() => api.listZones(scope.accountId))
       const accountVisible =
         scope.accountId === null ||
         accounts.length === 0 ||
@@ -139,6 +139,27 @@ export function createCloudflareAdapter(options: { fetch?: typeof fetch } = {}):
         input.externalId,
         buildIngress(input.hostnames)
       )
+    },
+
+    async findZone(token, input) {
+      const account = requireAccount(input.accountId)
+      const name = input.hostname.trim().toLowerCase()
+      // Only this account's zones are searched, and a zone that reports another
+      // account is ignored: a CNAME to a tunnel works only inside one account.
+      const zones = (await client(token).listZones(account)).filter(
+        (z) => z.account?.id === undefined || z.account.id === account
+      )
+      const match = zones
+        .filter((z) => name === z.name || name.endsWith(`.${z.name}`))
+        .sort((a, b) => b.name.length - a.name.length)[0]
+      if (!match) {
+        throw new TunnelProviderError(
+          'zone_not_found',
+          `No zone for ${input.hostname} was found in this Cloudflare account`,
+          null
+        )
+      }
+      return { id: match.id, name: match.name }
     },
 
     async createDnsName(token, input) {

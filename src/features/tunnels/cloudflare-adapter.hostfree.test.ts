@@ -204,3 +204,27 @@ test('scrubbing removes known secrets, bearer values and token-shaped runs', () 
   assert(!out.includes('abc.def-ghi'))
   assert(!out.includes('Z'.repeat(40)))
 })
+
+test('the zone for a hostname is searched only in the tunnel account and the longest match wins', async () => {
+  const { impl, calls } = fakeFetch({
+    'GET /client/v4/zones': ok([
+      { id: 'z1', name: 'example.com', account: { id: ACCOUNT } },
+      { id: 'z2', name: 'shop.example.com', account: { id: ACCOUNT } },
+      { id: 'z3', name: 'other.org', account: { id: 'b'.repeat(32) } },
+    ]),
+  })
+  const adapter = createCloudflareAdapter({ fetch: impl })
+  const zone = await adapter.findZone(TOKEN, { accountId: ACCOUNT, hostname: 'a.shop.example.com' })
+  assertEquals(zone, { id: 'z2', name: 'shop.example.com' })
+  assert(calls[0]!.url.includes(`account.id=${ACCOUNT}`))
+  const err = await assertRejects(
+    () => adapter.findZone(TOKEN, { accountId: ACCOUNT, hostname: 'www.other.org' }),
+    TunnelProviderError
+  )
+  assertEquals(err.code, 'zone_not_found')
+  const lookalike = await assertRejects(
+    () => adapter.findZone(TOKEN, { accountId: ACCOUNT, hostname: 'notexample.com' }),
+    TunnelProviderError
+  )
+  assertEquals(lookalike.code, 'zone_not_found')
+})
