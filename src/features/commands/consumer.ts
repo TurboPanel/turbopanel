@@ -2960,7 +2960,11 @@ async function applyPendingTlsLeafSideEffect(
   db: Db,
   record: DispatchableCommandRecord
 ): Promise<void> {
-  if (record.type !== 'managed.apply' && record.type !== 'managed.ingress.reconcile') {
+  if (
+    record.type !== 'managed.apply' &&
+    record.type !== 'managed.ingress.reconcile' &&
+    record.type !== 'server.tunnel.routes'
+  ) {
     return
   }
   try {

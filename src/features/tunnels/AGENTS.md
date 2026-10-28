@@ -180,7 +180,21 @@ provider accounts.
 - `daemon-gate.ts`: nothing tunnel related goes to a server, and no name is
   tunnel-only there, unless the daemon advertised `tunnel-forwarding-v1` on its
   `hello` (an older daemon would serve a tunnel-only name unlocked).
-- Not in this slice: sending the payload (the sender uses the peer leaf from
-  `src/features/tls`), the deploy-time `hostings[].tunnel`, the triggers that
-  resend on a hosting or server change, and the firewall rules for the exact
+- `sync.ts` sends each server its table. It remembers the hash of the last
+  table (without the certificate) and the command in
+  `server.metadata.tunnelRoutes`, and sends again when the wanted table
+  changed, when the last command did not succeed (a server that was offline
+  never got it: the consumer does not queue for a disconnected server), or
+  when the daemon reported warnings or fewer forwarded names than wanted. The
+  periodic sweep (`runTunnelRoutesSweepTick`, from the offline sweep, same
+  gate as leaf renewal) covers reconnects. A server is only sent a table while
+  connected and advertising the feature. The peer leaf is minted when a table
+  needs a certificate; the renewal sweep hands a fresh leaf through
+  `peerLeafDelivery`, and the command carries `pendingTlsLeaf` so tracking is
+  committed only after the daemon confirmed. The route hash covers the
+  certificate and trust bundle, so a renewed leaf with the same routes is still
+  applied.
+- Not in this slice: the deploy-time `hostings[].tunnel` (it must be gated on
+  the same feature when added), triggers that resend at once on a hosting or
+  server change (the sweep catches them), and the firewall rules for the exact
   peer addresses.
