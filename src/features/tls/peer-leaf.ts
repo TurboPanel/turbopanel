@@ -80,7 +80,7 @@ export function peerLeafIsCurrent(
   activeCaGeneration: number,
   nowMs = Date.now()
 ): boolean {
-  if (!tracked || tracked.state !== 'active') return false
+  if (tracked?.state !== 'active') return false
   if (tracked.caGeneration !== activeCaGeneration) return false
   const notAfterMs = Date.parse(tracked.notAfter)
   return Number.isFinite(notAfterMs) && notAfterMs - nowMs >= PEER_LEAF_RENEW_BEFORE_MS
