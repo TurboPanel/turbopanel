@@ -235,6 +235,66 @@ test('a tunnel that moved away, or was removed, is taken off the server', async 
   })
 })
 
+test('a removal that failed is sent again until a command that carried it finishes', async () => {
+  await withServer({ connected: true, features: [TUNNEL_CONNECTOR_FEATURE] }, async (c) => {
+    const keep = await c.addTunnel('Keep')
+    const gone = await c.addTunnel('Gone')
+    assertEquals((await syncServerTunnelConnectors(c.db, c.deps, c)).status, 'sent')
+    await c.db.update(command).set({ status: 'succeeded' }).where(eq(command.serverId, c.serverId))
+    await ageLastSend(c.db, c.serverId)
+    await c.removeTunnel(gone)
+    assertEquals((await syncServerTunnelConnectors(c.db, c.deps, c)).status, 'sent')
+    assertEquals((await sentPayload(c)).remove, [gone])
+    // The command that carried the removal fails; the removal is not forgotten.
+    await c.db.update(command).set({ status: 'failed' }).where(eq(command.serverId, c.serverId))
+    await ageLastSend(c.db, c.serverId)
+    assertEquals((await syncServerTunnelConnectors(c.db, c.deps, c)).status, 'sent')
+    const again = await sentPayload(c)
+    assertEquals(again.remove, [gone])
+    assertEquals(
+      again.install.map((entry) => entry.tunnelId),
+      [keep]
+    )
+    // Once a command that carried it finished, it is dropped from the record.
+    await c.db.update(command).set({ status: 'succeeded' }).where(eq(command.serverId, c.serverId))
+    await ageLastSend(c.db, c.serverId)
+    assertEquals(await syncServerTunnelConnectors(c.db, c.deps, c), { status: 'unchanged' })
+    await c.removeTunnel(keep)
+    assertEquals((await syncServerTunnelConnectors(c.db, c.deps, c)).status, 'sent')
+    assertEquals((await sentPayload(c)).remove, [keep])
+  })
+})
+
+test('a tunnel whose run token is missing is skipped and the others still go out', async () => {
+  await withServer({ connected: true, features: [TUNNEL_CONNECTOR_FEATURE] }, async (c) => {
+    const good = await c.addTunnel('Good')
+    const broken = await c.addTunnel('Broken')
+    const [other] = await c.db.insert(organization).values({ name: 'Other Org' }).returning()
+    const [brokenRow] = await c.db
+      .select({ secretId: tunnel.secretId })
+      .from(tunnel)
+      .where(eq(tunnel.externalId, broken))
+    // The secret row now belongs to another organization, so this one cannot open it.
+    await c.db
+      .update(secret)
+      .set({ organizationId: other!.id })
+      .where(eq(secret.id, brokenRow!.secretId!))
+    try {
+      assertEquals((await syncServerTunnelConnectors(c.db, c.deps, c)).status, 'sent')
+      assertEquals(
+        (await sentPayload(c)).install.map((entry) => entry.tunnelId),
+        [good]
+      )
+    } finally {
+      await c.db
+        .update(secret)
+        .set({ organizationId: c.organizationId })
+        .where(eq(secret.id, brokenRow!.secretId!))
+      await c.db.delete(organization).where(eq(organization.id, other!.id))
+    }
+  })
+})
+
 test('a list that failed is sent again after the gap, and one that finished is not', async () => {
   await withServer({ connected: true, features: [TUNNEL_CONNECTOR_FEATURE] }, async (c) => {
     await c.addTunnel('Retry')

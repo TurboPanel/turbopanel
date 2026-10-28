@@ -204,7 +204,9 @@ provider accounts.
   that have a provider id and a run token. The panel remembers, per server, the
   hash of the last list, the command and the ids it asked the server to run in
   `server.metadata.tunnelConnectors`; a tunnel that moved off a server or was
-  removed is listed under `remove` on the next send. Only ids this code
+  removed is listed under `remove` on the next send, and stays listed (in
+  `removing`) with every send until a command that carried it finished well,
+  so a removal that failed is never forgotten. Only ids this code
   installed are ever removed, so the instance's own tunnel and a hand-placed
   connector stay alone. A resend is harmless (the daemon leaves a running
   connector as it is), and the same list is not sent again sooner than ten

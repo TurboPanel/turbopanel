@@ -55,11 +55,18 @@ export type TunnelConnectorsOutcome =
   | { status: 'failed'; reason: string }
 
 type SentState = {
+  /** Hash of the install list that was sent. */
   stateHash: string
   commandId: string
   sentAt: string
   /** Provider ids the server was asked to run, sorted. */
   installed: string[]
+  /**
+   * Provider ids the last send asked the server to drop. They stay here, and
+   * keep going out with every send, until a command that carried them finished
+   * well; a removal that failed must not be forgotten.
+   */
+  removing: string[]
 }
 
 /** One connector a server should run: the provider's tunnel id and the run token's secret row. */
@@ -80,6 +87,9 @@ function readSentState(metadata: unknown): SentState | null {
       commandId: raw.commandId,
       sentAt: raw.sentAt,
       installed: raw.installed,
+      removing: Array.isArray(raw.removing)
+        ? raw.removing.filter((id): id is string => typeof id === 'string')
+        : [],
     }
   }
   return null
@@ -125,13 +135,9 @@ export async function wantedConnectorsByServer(
   return wanted
 }
 
-async function hashList(install: readonly WantedConnector[], remove: readonly string[]) {
-  return await sha256Hex(
-    JSON.stringify({
-      install: install.map((entry) => [entry.tunnelId, entry.secretId]),
-      remove,
-    })
-  )
+/** Hash of the install list (tunnel ids and secret rows); removals are tracked on their own. */
+async function hashInstalls(install: readonly WantedConnector[]) {
+  return await sha256Hex(JSON.stringify(install.map((entry) => [entry.tunnelId, entry.secretId])))
 }
 
 type ServerReady =
@@ -176,16 +182,20 @@ async function loadLastSend(db: Db, state: SentState) {
  * One that did not finish waits out the gap before it is sent again, so a list
  * the server keeps refusing is not sealed and sent on every tick.
  */
-async function isAlreadyCurrent(
-  db: Db,
+function isAlreadyCurrent(
   sent: SentState | null,
-  stateHash: string,
+  last: { status: string } | undefined,
+  installHash: string,
+  remove: readonly string[],
   nothingToDo: boolean
-): Promise<boolean> {
+): boolean {
   if (sent === null) return nothingToDo
-  if (sent.stateHash !== stateHash) return false
-  const last = await loadLastSend(db, sent)
-  if (last?.status === 'succeeded') return true
+  if (sent.stateHash !== installHash) return false
+  // Removals the last command confirmed are done; unconfirmed ones must be the same ones.
+  const confirmed = last?.status === 'succeeded'
+  const carried = confirmed ? [] : sent.removing
+  if (remove.length !== carried.length || !remove.every((id) => carried.includes(id))) return false
+  if (confirmed) return true
   const open = ['queued', 'dispatching', 'sent', 'acked', 'running']
   if (last && open.includes(last.status)) {
     return Date.now() - Date.parse(sent.sentAt) < TUNNEL_CONNECTORS_STALE_MS
@@ -193,21 +203,28 @@ async function isAlreadyCurrent(
   return Date.now() - Date.parse(sent.sentAt) < TUNNEL_CONNECTORS_RESEND_GAP_MS
 }
 
-/** Seal every run token for this server alone. Null when a secret row is missing. */
+/**
+ * Seal every run token for this server alone. A tunnel whose secret row is
+ * missing is left out (and named in `missing`) so the others still go out.
+ */
 async function sealInstalls(
   db: Db,
   deps: TunnelConnectorsDeps,
   params: { organizationId: string; serverId: string; keyId: string },
   install: readonly WantedConnector[]
-): Promise<TunnelConnectorsCommandPayload['install'] | null> {
+): Promise<{ sealed: TunnelConnectorsCommandPayload['install']; missing: string[] }> {
   const sealed: TunnelConnectorsCommandPayload['install'] = []
+  const missing: string[] = []
   for (const entry of install) {
     const [stored] = await db
       .select({ secretEnvelope: secret.secretEnvelope })
       .from(secret)
       .where(and(eq(secret.id, entry.secretId), eq(secret.organizationId, params.organizationId)))
       .limit(1)
-    if (!stored) return null
+    if (!stored) {
+      missing.push(entry.tunnelId)
+      continue
+    }
     sealed.push({
       tunnelId: entry.tunnelId,
       tokenEnvelope: await resealSecretForDaemon(
@@ -218,7 +235,7 @@ async function sealInstalls(
       ),
     })
   }
-  return sealed
+  return { sealed, missing }
 }
 
 async function enqueueConnectors(
@@ -271,26 +288,42 @@ export async function syncServerTunnelConnectors(
     (await wantedConnectorsByServer(db, organizationId)).get(serverId) ??
     ([] as WantedConnector[])
   const sent = readSentState(ready.metadata)
+  const last = sent ? await loadLastSend(db, sent) : undefined
   const wantedIds = new Set(install.map((entry) => entry.tunnelId))
-  const remove = (sent?.installed ?? []).filter((id) => !wantedIds.has(id)).toSorted(compareText)
-  const stateHash = await hashList(install, remove)
-  if (await isAlreadyCurrent(db, sent, stateHash, install.length === 0 && remove.length === 0)) {
+  // What the server may still run: everything the last send asked it to run,
+  // and the removals that no finished command has confirmed yet.
+  const mayRun = sent
+    ? [...sent.installed, ...(last?.status === 'succeeded' ? [] : sent.removing)]
+    : []
+  const remove = [...new Set(mayRun)].filter((id) => !wantedIds.has(id)).toSorted(compareText)
+  const stateHash = await hashInstalls(install)
+  if (
+    isAlreadyCurrent(sent, last, stateHash, remove, install.length === 0 && remove.length === 0)
+  ) {
     return { status: 'unchanged' }
   }
   if (install.length === 0 && remove.length === 0) {
     // Nothing is wanted and nothing is left to remove: remember that and stop asking.
     if (sent) {
-      await recordSent(db, serverId, { ...sent, installed: [], stateHash })
+      await recordSent(db, serverId, { ...sent, installed: [], removing: [], stateHash })
     }
     return { status: 'unchanged' }
   }
-  const sealed = await sealInstalls(
+  const { sealed, missing } = await sealInstalls(
     db,
     deps,
     { organizationId, serverId, keyId: ready.keyId },
     install
   )
-  if (!sealed) return { status: 'failed', reason: 'a run token is missing' }
+  for (const tunnelId of missing) {
+    compatLogWarn(
+      'tunnel-connectors',
+      `server ${serverId}: no run token stored for tunnel ${tunnelId}`
+    )
+  }
+  if (sealed.length === 0 && remove.length === 0) {
+    return { status: 'failed', reason: 'a run token is missing' }
+  }
   const queued = await enqueueConnectors(db, deps.commandQueue, serverId, {
     install: sealed,
     remove,
@@ -300,7 +333,8 @@ export async function syncServerTunnelConnectors(
     stateHash,
     commandId: queued.commandId,
     sentAt: new Date().toISOString(),
-    installed: install.map((entry) => entry.tunnelId),
+    installed: sealed.map((entry) => entry.tunnelId),
+    removing: remove,
   })
   return { status: 'sent', commandId: queued.commandId }
 }
