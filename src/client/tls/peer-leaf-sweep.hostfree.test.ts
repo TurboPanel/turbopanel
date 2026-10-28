@@ -6,6 +6,8 @@
 import { assertEquals } from '@std/assert'
 import type { Db } from '../../db/connection.ts'
 import type { CommandQueue } from '../../features/commands/queue.ts'
+import { encryptSecret } from '../../lib/secrets/data-encryption.ts'
+import { mintOrganizationCa } from '../../lib/tls/index.ts'
 import { deriveEncryptionSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import {
@@ -110,4 +112,96 @@ test('a peer leaf on the previous Organization CA generation is due with months 
   const notAfterIso = new Date(Date.now() + 80 * 86_400_000).toISOString()
   assertEquals(isTlsLeafDue({ notAfterIso, caGeneration: 1, activeCaGeneration: 2 }), true)
   assertEquals(isTlsLeafDue({ notAfterIso, caGeneration: 2, activeCaGeneration: 2 }), false)
+})
+
+test('a due peer leaf is issued, handed to the delivery and counted as queued', async () => {
+  const secretsConfig = parseTestSecretsConfig('deno')
+  const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(
+    secretsConfig,
+    'data-encryption'
+  )
+  const ca = await mintOrganizationCa({ organizationId: 'Sweep Org' })
+  const rows = [
+    [
+      {
+        daemon: null,
+        metadata: null,
+        hostname: 'h',
+        machineKey: null,
+        connected: true,
+        statusChangedAt: null,
+        id: 'key-1',
+        algorithm: 'Ed25519',
+        publicJwk: { kty: 'OKP', crv: 'Ed25519', x: 'abc' },
+        fingerprint: 'fp',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        revokedAt: null,
+        lastUsedAt: null,
+      },
+    ],
+    [{ organizationId: 'org-1' }],
+    [
+      {
+        id: 'ca-1',
+        name: 'Organization CA',
+        source: 'organization_ca',
+        organizationId: 'org-1',
+        status: 'automatic',
+        notAfter: null,
+        fingerprintSha256: 'f',
+        metadata: null,
+        options: null,
+        certificatePem: ca.certificatePem,
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+        privateKeyPem: await encryptSecret(dataEncryptionSecrets, ca.privateKeyPem),
+        caState: 'active',
+        caGeneration: 2,
+      },
+    ],
+    [],
+  ]
+  let call = 0
+  const updates: Record<string, unknown>[] = []
+  const select = () => {
+    const result = rows[call++] ?? []
+    const node: Record<string, unknown> = {}
+    for (const name of ['from', 'leftJoin', 'innerJoin', 'where', 'orderBy'])
+      node[name] = () => node
+    node.limit = () => Promise.resolve(result)
+    node.then = (resolve: (value: unknown[]) => unknown) => resolve(result)
+    return node
+  }
+  const db = {
+    select,
+    update: () => ({
+      set: (values: Record<string, unknown>) => {
+        updates.push(values)
+        return { where: () => Promise.resolve([]) }
+      },
+    }),
+  } as unknown as Db
+
+  const delivered: string[] = []
+  const sweepDeps: LeafRenewalSweepDeps = {
+    secretsConfig,
+    dataEncryptionSecrets,
+    deliverPeerLeaf: (_db, issue) => {
+      delivered.push(issue.pendingTlsLeaf.serverId)
+      return Promise.resolve({ ok: true })
+    },
+  }
+  assertEquals(await renew(db, sweepDeps), 'enqueued')
+  assertEquals(delivered, [peerRow.serverId])
+  assertEquals(updates.length, 1)
+  assertEquals(updates[0]?.lastError, null)
+
+  // A delivery that cannot queue the command is a failed try with its reason.
+  call = 0
+  const failing: LeafRenewalSweepDeps = {
+    ...sweepDeps,
+    deliverPeerLeaf: () => Promise.resolve({ ok: false, reason: 'server offline' }),
+  }
+  assertEquals(await renew(db, failing), 'failed')
+  assertEquals(String(updates[1]?.lastError).includes('server offline'), true)
 })

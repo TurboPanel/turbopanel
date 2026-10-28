@@ -4,11 +4,13 @@
  */
 import { assert, assertEquals, assertRejects } from '@std/assert'
 import type { Db } from '../../db/connection.ts'
+import { clearLeafAttentionAfterDeploy, recordPendingTlsLeafFailure } from './leaf-state.ts'
 import { leaf } from '../../db/schema.ts'
 import {
   decryptSecretForDaemon,
   parseDaemonSecretEnvelope,
 } from '../../lib/secrets/data-encryption.ts'
+import { encryptSecret } from '../../lib/secrets/data-encryption.ts'
 import { deriveEncryptionSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { mintOrganizationCa, verifyCertificateSignature } from '../../lib/tls/index.ts'
 import { parseCertificatePem } from '../../lib/tls/parse.ts'
@@ -22,6 +24,8 @@ import {
 import {
   buildPeerLeafMaterial,
   ensurePeerLeaf,
+  issuePeerLeaf,
+  loadServerDatacenterAddresses,
   PEER_LEAF_NAME,
   PEER_LEAF_RENEW_BEFORE_MS,
   peerLeafIsCurrent,
@@ -229,4 +233,180 @@ test('a peer leaf is tracked once per server and survives the pending command me
   const where = conflicts[0]?.targetWhere as { queryChunks: { value?: string[] }[] }
   const text = where.queryChunks.flatMap((chunk) => chunk.value ?? []).join('')
   assertEquals(text.includes("'peer'"), true)
+})
+
+const ORG = '99999999-9999-4999-8999-999999999999'
+
+const daemonKeyRow = (revokedAt: string | null = null) => ({
+  daemon: null,
+  metadata: null,
+  hostname: 'host',
+  machineKey: null,
+  connected: true,
+  statusChangedAt: null,
+  id: serverA.keyId,
+  algorithm: 'Ed25519',
+  publicJwk: { kty: 'OKP', crv: 'Ed25519', x: 'abc' },
+  fingerprint: 'fp',
+  createdAt: '2026-01-01T00:00:00.000Z',
+  revokedAt,
+  lastUsedAt: null,
+})
+
+async function caRow(
+  dataEncryptionSecrets: Awaited<ReturnType<typeof setup>>['dataEncryptionSecrets'],
+  ca: Awaited<ReturnType<typeof setup>>['ca']
+) {
+  return {
+    id: 'ca-row-1',
+    name: 'Organization CA',
+    source: 'organization_ca',
+    organizationId: ORG,
+    status: 'automatic',
+    notAfter: null,
+    fingerprintSha256: 'f',
+    metadata: null,
+    options: null,
+    certificatePem: ca.certificatePem,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+    privateKeyPem: await encryptSecret(dataEncryptionSecrets, ca.privateKeyPem),
+    caState: 'active',
+    caGeneration: 4,
+  }
+}
+
+test('loadServerDatacenterAddresses lists each pinned address once and skips unusable ones', async () => {
+  const { db } = selectDb([
+    [
+      { address: '10.8.0.5/32' },
+      { address: 'fd00::5' },
+      { address: '10.8.0.5' },
+      { address: 'nope' },
+    ],
+  ])
+  assertEquals(await loadServerDatacenterAddresses(db, serverA.serverId), ['10.8.0.5', 'fd00::5'])
+})
+
+test('issuePeerLeaf mints for the server in its organization and names the tracking record', async () => {
+  const { secretsConfig, dataEncryptionSecrets, ca } = await setup()
+  const { db } = selectDb([
+    [daemonKeyRow()],
+    [{ organizationId: ORG }],
+    [await caRow(dataEncryptionSecrets, ca)],
+    [{ address: '10.8.0.5' }],
+  ])
+  const issued = await issuePeerLeaf(db, secretsConfig, dataEncryptionSecrets, {
+    organizationId: ORG,
+    serverId: serverA.serverId,
+  })
+  if (!issued.ok) throw new Error('expected an issued leaf')
+  assertEquals(issued.pendingTlsLeaf.kind, 'peer')
+  assertEquals(issued.pendingTlsLeaf.caId, 'ca-row-1')
+  assertEquals(issued.pendingTlsLeaf.caGeneration, 4)
+  assertEquals(issued.pendingTlsLeaf.notAfter, issued.material.notAfter)
+  assertEquals(
+    parseDaemonSecretEnvelope(issued.material.privateKeyEnvelope)?.serverId,
+    serverA.serverId
+  )
+  const parsed = await parseCertificatePem(issued.material.certificatePem)
+  assertEquals(parsed.ipAddresses, ['10.8.0.5'])
+})
+
+test('issuePeerLeaf refuses a revoked key, a server of another organization and a missing authority', async () => {
+  const { secretsConfig, dataEncryptionSecrets, ca } = await setup()
+  const params = { organizationId: ORG, serverId: serverA.serverId }
+  const run = (results: SelectRows) =>
+    issuePeerLeaf(selectDb(results).db, secretsConfig, dataEncryptionSecrets, params)
+
+  assertEquals(await run([[daemonKeyRow('2026-02-01T00:00:00.000Z')]]), {
+    ok: false,
+    error: { kind: 'daemon_key_unavailable', serverId: serverA.serverId },
+  })
+  assertEquals(await run([[daemonKeyRow()], [{ organizationId: 'someone-else' }]]), {
+    ok: false,
+    error: { kind: 'server_not_in_organization', serverId: serverA.serverId },
+  })
+  assertEquals(await run([[daemonKeyRow()], []]), {
+    ok: false,
+    error: { kind: 'server_not_in_organization', serverId: serverA.serverId },
+  })
+  // An authority row whose key is not sealed is refused.
+  const unsealed = { ...(await caRow(dataEncryptionSecrets, ca)), privateKeyPem: 'plain' }
+  assertEquals(await run([[daemonKeyRow()], [{ organizationId: ORG }], [unsealed]]), {
+    ok: false,
+    error: { kind: 'organization_ca_unavailable' },
+  })
+})
+
+test('ensurePeerLeaf returns the issued material when nothing is tracked', async () => {
+  const { secretsConfig, dataEncryptionSecrets, ca } = await setup()
+  const { db } = selectDb([
+    [],
+    [daemonKeyRow()],
+    [{ organizationId: ORG }],
+    [await caRow(dataEncryptionSecrets, ca)],
+    [],
+  ])
+  const outcome = await ensurePeerLeaf(db, secretsConfig, dataEncryptionSecrets, {
+    organizationId: ORG,
+    serverId: serverA.serverId,
+  })
+  assertEquals(outcome.status, 'issued')
+})
+
+test('pending leaf metadata with a missing or malformed field is refused', () => {
+  const good = {
+    kind: 'peer',
+    organizationId: 'org-1',
+    serverId: 'server-1',
+    caId: 'ca-1',
+    caGeneration: 1,
+    notAfter: '2026-04-01T00:00:00.000Z',
+  }
+  const parse = (override: Record<string, unknown>) =>
+    parsePendingTlsLeafTracking({ pendingTlsLeaf: { ...good, ...override } })
+  assertEquals(
+    parse({ issuedAt: '2026-01-01T00:00:00.000Z' })?.issuedAt,
+    '2026-01-01T00:00:00.000Z'
+  )
+  assertEquals(parse({ issuedAt: '' }), null)
+  assertEquals(parse({ kind: 'other' }), null)
+  assertEquals(parse({ caGeneration: Number.NaN }), null)
+  assertEquals(parse({ serverId: '' }), null)
+  assertEquals(parse({ kind: 'engine' }), null)
+  assertEquals(parseEngine(), { ...good, kind: 'engine', managedId: 'm', replicaId: 'r' })
+  assertEquals(parsePendingTlsLeafTracking(null), null)
+  assertEquals(parsePendingTlsLeafTracking({ pendingTlsLeaf: [] }), null)
+
+  function parseEngine() {
+    return parsePendingTlsLeafTracking({
+      pendingTlsLeaf: { ...good, kind: 'engine', managedId: 'm', replicaId: 'r' },
+    })
+  }
+})
+
+test('a delivered or failed peer leaf updates the one row of its server', async () => {
+  const sets: Record<string, unknown>[] = []
+  const db = {
+    update: () => ({
+      set: (values: Record<string, unknown>) => {
+        sets.push(values)
+        return { where: () => Promise.resolve([]) }
+      },
+    }),
+  } as unknown as Db
+  const metadata = pendingTlsLeafMetadata({
+    kind: 'peer',
+    organizationId: 'org-1',
+    serverId: 'server-1',
+    caId: 'ca-1',
+    caGeneration: 1,
+    notAfter: '2026-04-01T00:00:00.000Z',
+  })
+  assertEquals(await clearLeafAttentionAfterDeploy(db, metadata), true)
+  assertEquals(sets[0]?.state, 'active')
+  assertEquals(await recordPendingTlsLeafFailure(db, metadata, 'daemon said no'), true)
+  assertEquals(sets.length, 2)
+  assertEquals(await clearLeafAttentionAfterDeploy(db, {}), false)
 })
