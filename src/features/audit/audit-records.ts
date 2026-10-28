@@ -79,6 +79,12 @@ export const AUDIT_ACTIONS = [
   'badge.create',
   'badge.check',
   'badge.delete',
+  'tunnel.create',
+  'tunnel.update',
+  'tunnel.delete',
+  'doorway.create',
+  'doorway.delete',
+  'server.tunnel_carrying',
 ] as const
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[number]

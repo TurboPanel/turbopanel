@@ -1,8 +1,9 @@
 # Tunnels (`src/features/tunnels`)
 
 Provider-neutral tunnel plumbing. This first slice holds the tables, one
-adapter per provider and the routes that connect a provider account and its
-API tokens. No tunnel, portal or doorway route exists yet.
+adapter per provider, the routes that connect a provider account and its
+API tokens, and the tunnel lifecycle (create and remove a tunnel, where it
+runs, the hostnames it carries) with the pure route builder for the daemon.
 
 ## Tables
 
@@ -141,3 +142,46 @@ targets: `GET|POST /organizations/:id/carriers`, `DELETE .../carriers/:carrierId
 `DELETE .../badges/:badgeId`, `POST .../badges/:badgeId/check`. Adding a
 badge checks the token first and refuses one that cannot do anything useful,
 naming the missing permissions. OpenAPI: `src/client/openapi/tunnels.ts`.
+
+## Tunnel lifecycle
+
+`lifecycle.ts` (database writes and reads), `placement.ts` (pure rules and the
+body parser), `route-builder.ts` (pure), `route-facts.ts` (loads the facts),
+routes in `src/client/organizations/tunnel-routes.ts`, same permission as
+provider accounts.
+
+- Create: the tunnel is made at the provider first, then stored with its sealed
+  run token and its portals in one transaction; a failed store removes the
+  provider tunnel again. Remove: refused (409 `tunnel_in_use`) while the tunnel
+  carries hostnames, then removed at the provider, then here.
+- Placement is read from the portals (see Tables). `one` and `chosen` need
+  `run` portals, `all` needs a datacenter, only `all` picks up a new server by
+  itself, a `skip` portal leaves a server out of an `all` tunnel. A server with
+  `server.options.tunnels.carry === false` never carries any tunnel (set at
+  `PUT /organizations/:id/servers/:serverId/tunnel-carrying`). One carrying
+  server gets a warning in `warnings`, none gets another.
+- Adding a hostname stores the `doorway` row first (the unique keys settle
+  races), then sets the provider routes and creates the DNS name in the zone
+  found for the name; the zone id is kept in `doorway.metadata`. A name outside
+  every zone the carrier's tokens reach is still routed, with no DNS name made
+  (`dns: none`). Any failure removes the row again and writes the provider
+  route set back. A hostname may be both a site name and a tunnel name, so only
+  other doorways make `hostname_in_use`. DNS is never a gate for an ordinary
+  site hostname; nothing here is called from the site hostname paths.
+- The route builder turns the facts into the `server.tunnel.routes` payload for
+  one server: routes only for tunnels the server carries; a name whose site
+  runs on this server is `local`; otherwise the upstreams are the datacenter
+  addresses of the servers that run the site (exact addresses, preferred
+  family first). `peerAddresses` is the other carrying servers of a tunnel
+  whose site runs here, plus the servers this one forwards to (the daemon
+  answers a peer with an error instead of passing the request on again, so a
+  stale table cannot loop). Sites count as running on a server through an
+  `applied` deployment of their environment. The hash covers the routes, the
+  addresses, the certificate and the trust bundle, not the sealed key.
+- `daemon-gate.ts`: nothing tunnel related goes to a server, and no name is
+  tunnel-only there, unless the daemon advertised `tunnel-forwarding-v1` on its
+  `hello` (an older daemon would serve a tunnel-only name unlocked).
+- Not in this slice: sending the payload (the sender uses the peer leaf from
+  `src/features/tls`), the deploy-time `hostings[].tunnel`, the triggers that
+  resend on a hosting or server change, and the firewall rules for the exact
+  peer addresses.

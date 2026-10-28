@@ -61,7 +61,7 @@ export type ApiCarrier = {
   badges: ApiBadge[]
 }
 
-type Parsed<T> = { ok: true; value: T } | { ok: false; field: string; detail: string }
+export type Parsed<T> = { ok: true; value: T } | { ok: false; field: string; detail: string }
 
 const ACCOUNT_ID = /^[A-Za-z0-9_-]{1,64}$/
 const TOKEN_SHAPE = /^[\x21-\x7e]{8,512}$/
