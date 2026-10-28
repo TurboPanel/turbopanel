@@ -1,5 +1,5 @@
 {
-  "id": "3cfe7be4-506e-4e28-8bba-3b748509a319",
+  "id": "857f5429-3e29-4e0a-8b0b-b8bb6af3bf8a",
   "prevId": "89eebc09-24ec-4f45-809e-2b6cd96d2c5a",
   "version": "7",
   "dialect": "postgresql",
@@ -1271,7 +1271,7 @@
           "columnsTo": [
             "id"
           ],
-          "onDelete": "restrict",
+          "onDelete": "no action",
           "onUpdate": "no action"
         }
       },
@@ -1287,6 +1287,10 @@
       },
       "policies": {},
       "checkConstraints": {
+        "badge_label_check": {
+          "name": "badge_label_check",
+          "value": "char_length(label) BETWEEN 1 AND 64"
+        },
         "badge_status_check": {
           "name": "badge_status_check",
           "value": "status IN ('active', 'attention')"
@@ -1727,6 +1731,10 @@
       },
       "policies": {},
       "checkConstraints": {
+        "carrier_name_check": {
+          "name": "carrier_name_check",
+          "value": "char_length(name) BETWEEN 1 AND 64"
+        },
         "carrier_provider_check": {
           "name": "carrier_provider_check",
           "value": "provider IN ('cloudflare')"
@@ -3289,29 +3297,6 @@
         }
       },
       "indexes": {
-        "idx_doorway_routing_organization_id_hostname": {
-          "name": "idx_doorway_routing_organization_id_hostname",
-          "columns": [
-            {
-              "expression": "routing_organization_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last",
-              "opclass": "uuid_ops"
-            },
-            {
-              "expression": "hostname",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last",
-              "opclass": "text_ops"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
         "idx_doorway_hosting_id": {
           "name": "idx_doorway_hosting_id",
           "columns": [
@@ -3372,17 +3357,21 @@
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
-        "uniq_doorway_tunnel_id_hostname": {
-          "name": "uniq_doorway_tunnel_id_hostname",
+        "uniq_doorway_routing_organization_id_hostname": {
+          "name": "uniq_doorway_routing_organization_id_hostname",
           "nullsNotDistinct": false,
           "columns": [
-            "tunnel_id",
+            "routing_organization_id",
             "hostname"
           ]
         }
       },
       "policies": {},
       "checkConstraints": {
+        "doorway_hostname_check": {
+          "name": "doorway_hostname_check",
+          "value": "char_length(hostname) BETWEEN 1 AND 253 AND hostname = lower(hostname)"
+        },
         "doorway_kind_check": {
           "name": "doorway_kind_check",
           "value": "kind IN ('http')"
@@ -11413,7 +11402,7 @@
       "checkConstraints": {
         "secret_provider_check": {
           "name": "secret_provider_check",
-          "value": "provider IN ('s3', 's3_compatible', 'nfs', 'cifs', 'sftp', 'ftp', 'webdav',\n        'git_deploy_key', 'cloudflare', 'cloudflare_tunnel')"
+          "value": "provider IN ('s3', 's3_compatible', 'nfs', 'cifs', 'sftp', 'ftp', 'webdav',\n        'git_deploy_key', 'carrier_badge', 'tunnel_run')"
         }
       },
       "isRLSEnabled": false
@@ -15240,7 +15229,7 @@
           "columnsTo": [
             "id"
           ],
-          "onDelete": "restrict",
+          "onDelete": "no action",
           "onUpdate": "no action"
         },
         "tunnel_datacenter_id_datacenter_id_fk": {
@@ -15279,10 +15268,26 @@
             "organization_id",
             "name"
           ]
+        },
+        "uniq_tunnel_carrier_id_external_id": {
+          "name": "uniq_tunnel_carrier_id_external_id",
+          "nullsNotDistinct": false,
+          "columns": [
+            "carrier_id",
+            "external_id"
+          ]
         }
       },
       "policies": {},
       "checkConstraints": {
+        "tunnel_name_check": {
+          "name": "tunnel_name_check",
+          "value": "char_length(name) BETWEEN 1 AND 64"
+        },
+        "tunnel_all_datacenter_check": {
+          "name": "tunnel_all_datacenter_check",
+          "value": "placement <> 'all' OR datacenter_id IS NOT NULL"
+        },
         "tunnel_provider_check": {
           "name": "tunnel_provider_check",
           "value": "provider IN ('cloudflare')"

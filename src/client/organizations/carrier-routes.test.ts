@@ -15,7 +15,16 @@ import { createDenoDb, endDbConnection } from '../../db/connection.ts'
 import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from '../authn/crypto.ts'
 import { createSession } from '../authn/session-store.ts'
 import { deriveEncryptionSecretsConfig, deriveSecretsConfig } from '../../lib/secrets/secrets.ts'
-import { audit, badge, carrier, grant, organization, secret, user } from '../../db/schema.ts'
+import {
+  audit,
+  badge,
+  carrier,
+  grant,
+  organization,
+  secret,
+  tunnel,
+  user,
+} from '../../db/schema.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import { decryptSecret } from '../../lib/secrets/data-encryption.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
@@ -247,7 +256,7 @@ test('a token is checked, sealed in secret, and never comes back in a response, 
     const badges = await f.db.select().from(badge).where(eq(badge.carrierId, carrierId))
     assertEquals(badges.length, 1)
     const [stored] = await f.db.select().from(secret).where(eq(secret.id, badges[0]!.secretId))
-    assertEquals(stored!.provider, 'cloudflare')
+    assertEquals(stored!.provider, 'carrier_badge')
     assert(!stored!.secretEnvelope.includes(TOKEN))
     assertEquals(await decryptSecret(f.secrets, stored!.secretEnvelope), TOKEN)
 
@@ -352,5 +361,35 @@ test('a re-check updates what the token reaches, and removing a badge or carrier
       0
     )
     assertEquals((await f.db.select().from(carrier).where(eq(carrier.id, carrierId))).length, 0)
+  })
+})
+
+test('a carrier that still has tunnels is refused with 409 and keeps its tokens; removing the tunnel lets it go', async () => {
+  await withFixture(async (f) => {
+    const carrierId = await createCarrier(f)
+    const base = `/organizations/${f.orgA}/carriers/${carrierId}`
+    const added = await call(f, 'POST', `${base}/badges`, f.managerCookie, {
+      label: 'Main',
+      token: TOKEN,
+    })
+    assertEquals(added.status, 201, added.text)
+    const [row] = await f.db.select().from(badge).where(eq(badge.carrierId, carrierId))
+    const [t] = await f.db
+      .insert(tunnel)
+      .values({
+        organizationId: f.orgA,
+        routingOrganizationId: f.orgA,
+        carrierId,
+        provider: 'cloudflare',
+        name: 'web',
+      })
+      .returning({ id: tunnel.id })
+    const refused = await call(f, 'DELETE', base, f.managerCookie)
+    assertEquals(refused.status, 409)
+    assertEquals(refused.body.error, 'carrier_in_use')
+    assertEquals((await f.db.select().from(secret).where(eq(secret.id, row!.secretId))).length, 1)
+    await f.db.delete(tunnel).where(eq(tunnel.id, t!.id))
+    assertEquals((await call(f, 'DELETE', base, f.managerCookie)).status, 200)
+    assertEquals((await f.db.select().from(secret).where(eq(secret.id, row!.secretId))).length, 0)
   })
 })

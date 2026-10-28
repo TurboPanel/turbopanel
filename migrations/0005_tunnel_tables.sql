@@ -16,6 +16,7 @@ CREATE TABLE "badge" (
 	"last_checked_at" timestamp(3) with time zone,
 	"status" text DEFAULT 'active' NOT NULL,
 	CONSTRAINT "uniq_badge_secret_id" UNIQUE("secret_id"),
+	CONSTRAINT "badge_label_check" CHECK (char_length(label) BETWEEN 1 AND 64),
 	CONSTRAINT "badge_status_check" CHECK (status IN ('active', 'attention'))
 );
 --> statement-breakpoint
@@ -31,6 +32,7 @@ CREATE TABLE "carrier" (
 	"external_account_id" text,
 	"status" text DEFAULT 'active' NOT NULL,
 	CONSTRAINT "uniq_carrier_organization_id_provider_external_account_id" UNIQUE("organization_id","provider","external_account_id"),
+	CONSTRAINT "carrier_name_check" CHECK (char_length(name) BETWEEN 1 AND 64),
 	CONSTRAINT "carrier_provider_check" CHECK (provider IN ('cloudflare')),
 	CONSTRAINT "carrier_status_check" CHECK (status IN ('active', 'attention'))
 );
@@ -50,7 +52,8 @@ CREATE TABLE "doorway" (
 	"external_dns_record_id" text,
 	"is_local_only" boolean DEFAULT true NOT NULL,
 	"status" text DEFAULT 'pending' NOT NULL,
-	CONSTRAINT "uniq_doorway_tunnel_id_hostname" UNIQUE("tunnel_id","hostname"),
+	CONSTRAINT "uniq_doorway_routing_organization_id_hostname" UNIQUE("routing_organization_id","hostname"),
+	CONSTRAINT "doorway_hostname_check" CHECK (char_length(hostname) BETWEEN 1 AND 253 AND hostname = lower(hostname)),
 	CONSTRAINT "doorway_kind_check" CHECK (kind IN ('http')),
 	CONSTRAINT "doorway_status_check" CHECK (status IN ('pending', 'live', 'attention', 'removing'))
 );
@@ -91,6 +94,9 @@ CREATE TABLE "tunnel" (
 	"secret_id" uuid,
 	"status" text DEFAULT 'pending' NOT NULL,
 	CONSTRAINT "uniq_tunnel_organization_id_name" UNIQUE("organization_id","name"),
+	CONSTRAINT "uniq_tunnel_carrier_id_external_id" UNIQUE("carrier_id","external_id"),
+	CONSTRAINT "tunnel_name_check" CHECK (char_length(name) BETWEEN 1 AND 64),
+	CONSTRAINT "tunnel_all_datacenter_check" CHECK (placement <> 'all' OR datacenter_id IS NOT NULL),
 	CONSTRAINT "tunnel_provider_check" CHECK (provider IN ('cloudflare')),
 	CONSTRAINT "tunnel_placement_check" CHECK (placement IN ('one', 'chosen', 'all')),
 	CONSTRAINT "tunnel_status_check" CHECK (status IN ('pending', 'active', 'attention', 'removing'))
@@ -98,7 +104,7 @@ CREATE TABLE "tunnel" (
 --> statement-breakpoint
 ALTER TABLE "secret" DROP CONSTRAINT "secret_provider_check";--> statement-breakpoint
 ALTER TABLE "badge" ADD CONSTRAINT "badge_carrier_id_carrier_id_fk" FOREIGN KEY ("carrier_id") REFERENCES "public"."carrier"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "badge" ADD CONSTRAINT "badge_secret_id_secret_id_fk" FOREIGN KEY ("secret_id") REFERENCES "public"."secret"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "badge" ADD CONSTRAINT "badge_secret_id_secret_id_fk" FOREIGN KEY ("secret_id") REFERENCES "public"."secret"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "carrier" ADD CONSTRAINT "carrier_organization_id_organization_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "doorway" ADD CONSTRAINT "doorway_routing_organization_id_organization_id_fk" FOREIGN KEY ("routing_organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "doorway" ADD CONSTRAINT "doorway_tunnel_id_tunnel_id_fk" FOREIGN KEY ("tunnel_id") REFERENCES "public"."tunnel"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
@@ -107,21 +113,20 @@ ALTER TABLE "portal" ADD CONSTRAINT "portal_tunnel_id_tunnel_id_fk" FOREIGN KEY 
 ALTER TABLE "portal" ADD CONSTRAINT "portal_server_id_server_id_fk" FOREIGN KEY ("server_id") REFERENCES "public"."server"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "tunnel" ADD CONSTRAINT "tunnel_organization_id_organization_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "tunnel" ADD CONSTRAINT "tunnel_routing_organization_id_organization_id_fk" FOREIGN KEY ("routing_organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "tunnel" ADD CONSTRAINT "tunnel_carrier_id_carrier_id_fk" FOREIGN KEY ("carrier_id") REFERENCES "public"."carrier"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "tunnel" ADD CONSTRAINT "tunnel_carrier_id_carrier_id_fk" FOREIGN KEY ("carrier_id") REFERENCES "public"."carrier"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "tunnel" ADD CONSTRAINT "tunnel_datacenter_id_datacenter_id_fk" FOREIGN KEY ("datacenter_id") REFERENCES "public"."datacenter"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "tunnel" ADD CONSTRAINT "tunnel_secret_id_secret_id_fk" FOREIGN KEY ("secret_id") REFERENCES "public"."secret"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "idx_badge_carrier_id" ON "badge" USING btree ("carrier_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_carrier_organization_id" ON "carrier" USING btree ("organization_id" uuid_ops);--> statement-breakpoint
-CREATE INDEX "idx_doorway_routing_organization_id_hostname" ON "doorway" USING btree ("routing_organization_id" uuid_ops,"hostname" text_ops);--> statement-breakpoint
 CREATE INDEX "idx_doorway_hosting_id" ON "doorway" USING btree ("hosting_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_portal_server_id" ON "portal" USING btree ("server_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_tunnel_routing_organization_id" ON "tunnel" USING btree ("routing_organization_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_tunnel_carrier_id" ON "tunnel" USING btree ("carrier_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_tunnel_datacenter_id" ON "tunnel" USING btree ("datacenter_id" uuid_ops);--> statement-breakpoint
 ALTER TABLE "secret" ADD CONSTRAINT "secret_provider_check" CHECK (provider IN ('s3', 's3_compatible', 'nfs', 'cifs', 'sftp', 'ftp', 'webdav',
-        'git_deploy_key', 'cloudflare', 'cloudflare_tunnel'));--> statement-breakpoint
+        'git_deploy_key', 'carrier_badge', 'tunnel_run'));--> statement-breakpoint
 COMMENT ON TABLE "badge" IS 'One API token on a carrier; the token itself is sealed in the `secret` row it points to and this row keeps the label, last four characters and what it can do.';--> statement-breakpoint
-COMMENT ON COLUMN "badge"."secret_id" IS 'The sealed token in `secret`, one badge per secret and not deletable under it; removing the badge removes the secret in the same transaction.';--> statement-breakpoint
+COMMENT ON COLUMN "badge"."secret_id" IS 'The sealed token in `secret`, one badge per secret and not deletable under it (NO ACTION); removing the badge deletes the secret in the same transaction.';--> statement-breakpoint
 COMMENT ON COLUMN "badge"."label" IS 'Operator label for the token, shown beside its last four characters.';--> statement-breakpoint
 COMMENT ON COLUMN "badge"."capabilities" IS 'What the last check found the token can do: `tunnels`, `dns` and `certificates` as booleans, written by the panel after each check.';--> statement-breakpoint
 COMMENT ON COLUMN "badge"."last_four" IS 'Last 4 characters of the token, the only part of it ever shown; never enough to use the token.';--> statement-breakpoint
@@ -134,11 +139,11 @@ COMMENT ON COLUMN "carrier"."provider" IS 'Tunnel provider, `cloudflare` for now
 COMMENT ON COLUMN "carrier"."name" IS 'Operator label for the account; unique only together with the provider and account id.';--> statement-breakpoint
 COMMENT ON COLUMN "carrier"."external_account_id" IS 'The provider own account id; NULL for a provider with no account concept (rows with NULL never collide).';--> statement-breakpoint
 COMMENT ON COLUMN "carrier"."status" IS '`active` while a token on it works, `attention` when none does.';--> statement-breakpoint
-COMMENT ON TABLE "doorway" IS 'One hostname a tunnel carries to a site, with the provider route and DNS record ids; global uniqueness stays with `hostname`, here a name is unique per tunnel.';--> statement-breakpoint
+COMMENT ON TABLE "doorway" IS 'One hostname a tunnel carries to a site, with the provider route and DNS record ids; unique per routing organization, like `hostname`.';--> statement-breakpoint
 COMMENT ON COLUMN "doorway"."metadata" IS 'Non-secret descriptors written by the panel; no keys are read by the platform today.';--> statement-breakpoint
 COMMENT ON COLUMN "doorway"."options" IS 'Provider-specific route details; no keys are read by the platform today.';--> statement-breakpoint
-COMMENT ON COLUMN "doorway"."routing_organization_id" IS 'Organization whose servers answer for this name, named as on `hostname`; indexed with the name for lookups.';--> statement-breakpoint
-COMMENT ON COLUMN "doorway"."hostname" IS 'Lower-case DNS name the tunnel carries; also registered in `hostname` through the hosting.';--> statement-breakpoint
+COMMENT ON COLUMN "doorway"."routing_organization_id" IS 'Organization whose servers answer for this name, named as on `hostname`; half of the unique key with the name.';--> statement-breakpoint
+COMMENT ON COLUMN "doorway"."hostname" IS 'Lower-case DNS name (1 to 253 characters) the tunnel carries; unique per routing organization.';--> statement-breakpoint
 COMMENT ON COLUMN "doorway"."kind" IS 'Kind of traffic carried, `http` for now; ssh, rdp, vnc and tcp are added by a forward migration.';--> statement-breakpoint
 COMMENT ON COLUMN "doorway"."hosting_id" IS 'The site this name serves; SET NULL when the site is deleted, leaving the doorway unattached.';--> statement-breakpoint
 COMMENT ON COLUMN "doorway"."external_route_id" IS 'The provider id of the route for this name; NULL until published.';--> statement-breakpoint
@@ -154,7 +159,7 @@ COMMENT ON COLUMN "portal"."last_seen_at" IS 'When the server last reported on t
 COMMENT ON COLUMN "portal"."last_error" IS 'Plain-words error from the last failed report; NULL when none.';--> statement-breakpoint
 COMMENT ON COLUMN "portal"."connector_version" IS 'Version of the connector program the daemon reports running here; NULL until the first report.';--> statement-breakpoint
 COMMENT ON COLUMN "portal"."version_checked_at" IS 'When the daemon last reported the connector version; NULL until then.';--> statement-breakpoint
-COMMENT ON COLUMN "secret"."provider" IS '`s3`, `s3_compatible`, `nfs`, `cifs`, `sftp`, `ftp`, `webdav` (reserved), `git_deploy_key`, or `cloudflare` and `cloudflare_tunnel` (tunnel tokens).';--> statement-breakpoint
+COMMENT ON COLUMN "secret"."provider" IS '`s3`, `s3_compatible`, `nfs`, `cifs`, `sftp`, `ftp`, `webdav` (reserved), `git_deploy_key`, `carrier_badge` or `tunnel_run` (tunnel tokens).';--> statement-breakpoint
 COMMENT ON TABLE "tunnel" IS 'A tunnel an organization created: a named path from a provider edge to connectors on its servers; the sealed run token is a `secret` row.';--> statement-breakpoint
 COMMENT ON COLUMN "tunnel"."metadata" IS 'Non-secret descriptors written by the panel; no keys are read by the platform today.';--> statement-breakpoint
 COMMENT ON COLUMN "tunnel"."options" IS 'Provider-specific tunnel settings; no keys are read by the platform today.';--> statement-breakpoint
@@ -162,6 +167,6 @@ COMMENT ON COLUMN "tunnel"."routing_organization_id" IS 'Organization whose serv
 COMMENT ON COLUMN "tunnel"."provider" IS 'Tunnel provider, `cloudflare` for now; widened by a forward migration.';--> statement-breakpoint
 COMMENT ON COLUMN "tunnel"."name" IS 'Operator name, unique per organization.';--> statement-breakpoint
 COMMENT ON COLUMN "tunnel"."external_id" IS 'The provider own tunnel id; NULL until the provider created it.';--> statement-breakpoint
-COMMENT ON COLUMN "tunnel"."placement" IS '`one` (exactly one `run` portal), `chosen` (the `run` portals) or `all` (every server of the datacenter except the `skip` portals).';--> statement-breakpoint
+COMMENT ON COLUMN "tunnel"."placement" IS '`one` (exactly one `run` portal), `chosen` (the `run` portals) or `all` (every server of the datacenter except the `skip` portals; needs `datacenter_id`).';--> statement-breakpoint
 COMMENT ON COLUMN "tunnel"."secret_id" IS 'The sealed run token in `secret`; SET NULL if that row goes, NULL for a provider that needs none.';--> statement-breakpoint
 COMMENT ON COLUMN "tunnel"."status" IS '`pending` until created, `active`, `attention` after a provider error, `removing` while being taken down.';

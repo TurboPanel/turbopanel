@@ -1346,7 +1346,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       principal_id:
         'Optional association with a principal (SET NULL on delete so a principal delete never fails on an org secret); no current writer sets it.',
       provider:
-        '`s3`, `s3_compatible`, `nfs`, `cifs`, `sftp`, `ftp`, `webdav` (reserved), `git_deploy_key`, or `cloudflare` and `cloudflare_tunnel` (tunnel tokens).',
+        '`s3`, `s3_compatible`, `nfs`, `cifs`, `sftp`, `ftp`, `webdav` (reserved), `git_deploy_key`, `carrier_badge` or `tunnel_run` (tunnel tokens).',
       name: 'Operator label for the secret; not an identifier and not unique.',
       secret_envelope:
         '`tpsecret` envelope of provider-specific JSON; for `git_deploy_key` the sealed plaintext is the OpenSSH private key verbatim, resealed unopened for the daemon.',
@@ -1358,7 +1358,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       'One API token on a carrier; the token itself is sealed in the `secret` row it points to and this row keeps the label, last four characters and what it can do.',
     columns: {
       secret_id:
-        'The sealed token in `secret`, one badge per secret and not deletable under it; removing the badge removes the secret in the same transaction.',
+        'The sealed token in `secret`, one badge per secret and not deletable under it (NO ACTION); removing the badge deletes the secret in the same transaction.',
       label: 'Operator label for the token, shown beside its last four characters.',
       capabilities:
         'What the last check found the token can do: `tunnels`, `dns` and `certificates` as booleans, written by the panel after each check.',
@@ -1388,15 +1388,15 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
   doorway: {
     group: 'networking',
     summary:
-      'One hostname a tunnel carries to a site, with the provider route and DNS record ids; global uniqueness stays with `hostname`, here a name is unique per tunnel.',
+      'One hostname a tunnel carries to a site, with the provider route and DNS record ids; unique per routing organization, like `hostname`.',
     columns: {
       metadata:
         'Non-secret descriptors written by the panel; no keys are read by the platform today.',
       options: 'Provider-specific route details; no keys are read by the platform today.',
       routing_organization_id:
-        'Organization whose servers answer for this name, named as on `hostname`; indexed with the name for lookups.',
+        'Organization whose servers answer for this name, named as on `hostname`; half of the unique key with the name.',
       hostname:
-        'Lower-case DNS name the tunnel carries; also registered in `hostname` through the hosting.',
+        'Lower-case DNS name (1 to 253 characters) the tunnel carries; unique per routing organization.',
       kind: 'Kind of traffic carried, `http` for now; ssh, rdp, vnc and tcp are added by a forward migration.',
       hosting_id:
         'The site this name serves; SET NULL when the site is deleted, leaving the doorway unattached.',
@@ -1971,7 +1971,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       name: 'Operator name, unique per organization.',
       external_id: 'The provider own tunnel id; NULL until the provider created it.',
       placement:
-        '`one` (exactly one `run` portal), `chosen` (the `run` portals) or `all` (every server of the datacenter except the `skip` portals).',
+        '`one` (exactly one `run` portal), `chosen` (the `run` portals) or `all` (every server of the datacenter except the `skip` portals; needs `datacenter_id`).',
       secret_id:
         'The sealed run token in `secret`; SET NULL if that row goes, NULL for a provider that needs none.',
       status:

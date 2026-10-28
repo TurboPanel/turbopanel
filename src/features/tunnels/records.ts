@@ -10,7 +10,13 @@ import { badge, carrier, secret, tunnel } from '../../db/schema.ts'
 import { decryptSecret, encryptSecret } from '../../lib/secrets/data-encryption.ts'
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import type { CredentialReport } from './adapter.ts'
-import { BADGE_CAPABILITIES, TUNNEL_PROVIDERS, type TunnelProvider } from './vocabulary.ts'
+import {
+  BADGE_CAPABILITIES,
+  BADGE_SECRET_PROVIDER,
+  RUN_SECRET_PROVIDER,
+  TUNNEL_PROVIDERS,
+  type TunnelProvider,
+} from './vocabulary.ts'
 
 export const MAX_CARRIERS_PER_ORG = 10
 export const MAX_BADGES_PER_CARRIER = 5
@@ -247,7 +253,7 @@ export async function insertBadge(
       .insert(secret)
       .values({
         organizationId: params.organizationId,
-        provider: params.carrier.provider,
+        provider: BADGE_SECRET_PROVIDER,
         name: `${params.carrier.name} ${params.label}`.slice(0, 120),
         secretEnvelope: params.sealed,
       })
@@ -325,4 +331,52 @@ export async function deleteTunnelRecord(
     await tx.delete(tunnel).where(eq(tunnel.id, row.id))
     if (row.secretId) await tx.delete(secret).where(eq(secret.id, row.secretId))
   })
+}
+
+/**
+ * Seal a new run token for a tunnel and delete the old one, in one
+ * transaction, so a rotated token never leaves its predecessor behind.
+ */
+export async function replaceTunnelRunSecret(
+  db: Db,
+  params: { tunnelId: string; organizationId: string; name: string; sealed: string }
+): Promise<void> {
+  await db.transaction(async (tx) => {
+    const [current] = await tx
+      .select({ secretId: tunnel.secretId })
+      .from(tunnel)
+      .where(eq(tunnel.id, params.tunnelId))
+      .limit(1)
+    const [created] = await tx
+      .insert(secret)
+      .values({
+        organizationId: params.organizationId,
+        provider: RUN_SECRET_PROVIDER,
+        name: `${params.name} run token`.slice(0, 120),
+        secretEnvelope: params.sealed,
+      })
+      .returning({ id: secret.id })
+    await tx.update(tunnel).set({ secretId: created!.id }).where(eq(tunnel.id, params.tunnelId))
+    if (current?.secretId) await tx.delete(secret).where(eq(secret.id, current.secretId))
+  })
+}
+
+/** Does any tunnel still use this carrier? Used to answer 409 before a delete. */
+export async function carrierHasTunnels(db: Db, carrierId: string): Promise<boolean> {
+  const [row] = await db
+    .select({ id: tunnel.id })
+    .from(tunnel)
+    .where(eq(tunnel.carrierId, carrierId))
+    .limit(1)
+  return row !== undefined
+}
+
+/** Does an `all` tunnel still cover this datacenter? Used to answer 409 before a delete. */
+export async function datacenterHasAllTunnel(db: Db, datacenterId: string): Promise<boolean> {
+  const [row] = await db
+    .select({ id: tunnel.id })
+    .from(tunnel)
+    .where(and(eq(tunnel.datacenterId, datacenterId), eq(tunnel.placement, 'all')))
+    .limit(1)
+  return row !== undefined
 }

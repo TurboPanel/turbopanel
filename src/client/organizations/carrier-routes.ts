@@ -20,6 +20,7 @@ import { TunnelProviderError } from '../../features/tunnels/errors.ts'
 import {
   type BadgeRow,
   type CarrierRow,
+  carrierHasTunnels,
   deleteBadge,
   deleteCarrier,
   findBadge,
@@ -170,19 +171,12 @@ async function createCarrierResponse(c: Context<AppEnv>, scope: Scope): Promise<
 async function deleteCarrierResponse(c: Context<AppEnv>, scope: Scope): Promise<Response> {
   const current = await loadCarrierParam(c, scope)
   if (current instanceof Response) return current
+  if (await carrierHasTunnels(scope.db, current.id)) return carrierInUse(c)
   try {
     await deleteCarrier(scope.db, current)
   } catch (err) {
     // A tunnel still uses this account: the foreign key refuses the delete.
-    if (isForeignKeyViolation(err)) {
-      return c.json(
-        {
-          error: 'carrier_in_use',
-          message: 'Tunnels still use this account. Remove them first.',
-        },
-        409
-      )
-    }
+    if (isForeignKeyViolation(err)) return carrierInUse(c)
     throw err
   }
   await audit(c, scope, 'carrier.delete', current.id, {
@@ -190,6 +184,13 @@ async function deleteCarrierResponse(c: Context<AppEnv>, scope: Scope): Promise<
     name: current.name,
   })
   return c.json({ ok: true })
+}
+
+function carrierInUse(c: Context<AppEnv>): Response {
+  return c.json(
+    { error: 'carrier_in_use', message: 'This Carrier still has Tunnels. Remove them first.' },
+    409
+  )
 }
 
 async function listBadgesResponse(c: Context<AppEnv>, scope: Scope): Promise<Response> {

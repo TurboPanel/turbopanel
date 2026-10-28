@@ -38,5 +38,11 @@ export const DOORWAY_STATUSES = ['pending', 'live', 'attention', 'removing'] as 
 export const BADGE_CAPABILITIES = ['tunnels', 'dns', 'certificates'] as const
 export type BadgeCapability = (typeof BADGE_CAPABILITIES)[number]
 
-/** `secret.provider` values the sealed tokens are stored under. */
-export const TUNNEL_SECRET_PROVIDERS = ['cloudflare', 'cloudflare_tunnel'] as const
+/**
+ * `secret.provider` values the sealed tokens are stored under. Neutral on
+ * purpose: the vendor lives in `carrier.provider` / `tunnel.provider`, so a new
+ * tunnel provider never widens the shared secret check again.
+ */
+export const TUNNEL_SECRET_PROVIDERS = ['carrier_badge', 'tunnel_run'] as const
+export const BADGE_SECRET_PROVIDER = TUNNEL_SECRET_PROVIDERS[0]
+export const RUN_SECRET_PROVIDER = TUNNEL_SECRET_PROVIDERS[1]

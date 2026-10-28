@@ -4906,7 +4906,7 @@ export const secret = pgTable(
     check(
       'secret_provider_check',
       sql`provider IN ('s3', 's3_compatible', 'nfs', 'cifs', 'sftp', 'ftp', 'webdav',
-        'git_deploy_key', 'cloudflare', 'cloudflare_tunnel')`
+        'git_deploy_key', 'carrier_badge', 'tunnel_run')`
     ),
   ]
 )
@@ -7143,6 +7143,7 @@ export const carrier = pgTable(
       name: 'carrier_organization_id_organization_id_fk',
     }).onDelete('cascade'),
     // Mirror TUNNEL_PROVIDERS / CARRIER_STATUSES — pinned by enum-checks.test.ts.
+    check('carrier_name_check', sql`char_length(name) BETWEEN 1 AND 64`),
     check('carrier_provider_check', sql`provider IN ('cloudflare')`),
     check('carrier_status_check', sql`status IN ('active', 'attention')`),
   ]
@@ -7201,7 +7202,11 @@ export const badge = pgTable(
       columns: [table.secretId],
       foreignColumns: [secret.id],
       name: 'badge_secret_id_secret_id_fk',
-    }).onDelete('restrict'),
+    })
+      // NO ACTION, not RESTRICT: checked at the end of the statement, so an
+      // organization delete (which cascades to both `secret` and `badge`) succeeds.
+      .onDelete('no action'),
+    check('badge_label_check', sql`char_length(label) BETWEEN 1 AND 64`),
     check('badge_status_check', sql`status IN ('active', 'attention')`),
   ]
 )
@@ -7261,6 +7266,8 @@ export const tunnel = pgTable(
       table.datacenterId.asc().nullsLast().op('uuid_ops')
     ),
     unique('uniq_tunnel_organization_id_name').on(table.organizationId, table.name),
+    // Two rows cannot stand for the same provider tunnel (NULLs never collide).
+    unique('uniq_tunnel_carrier_id_external_id').on(table.carrierId, table.externalId),
     foreignKey({
       columns: [table.organizationId],
       foreignColumns: [organization.id],
@@ -7277,7 +7284,10 @@ export const tunnel = pgTable(
       columns: [table.carrierId],
       foreignColumns: [carrier.id],
       name: 'tunnel_carrier_id_carrier_id_fk',
-    }).onDelete('restrict'),
+    })
+      // NO ACTION, not RESTRICT: a carrier with tunnels is refused (the route
+      // answers 409 first), yet an organization delete still succeeds.
+      .onDelete('no action'),
     foreignKey({
       columns: [table.datacenterId],
       foreignColumns: [datacenter.id],
@@ -7289,6 +7299,10 @@ export const tunnel = pgTable(
       name: 'tunnel_secret_id_secret_id_fk',
     }).onDelete('set null'),
     // Mirror TUNNEL_PROVIDERS / TUNNEL_PLACEMENTS / TUNNEL_STATUSES — pinned by enum-checks.test.ts.
+    check('tunnel_name_check', sql`char_length(name) BETWEEN 1 AND 64`),
+    // `all` means every server of the datacenter, so it needs one. The datacenter
+    // delete route refuses to remove one an `all` tunnel still covers.
+    check('tunnel_all_datacenter_check', sql`placement <> 'all' OR datacenter_id IS NOT NULL`),
     check('tunnel_provider_check', sql`provider IN ('cloudflare')`),
     check('tunnel_placement_check', sql`placement IN ('one', 'chosen', 'all')`),
     check('tunnel_status_check', sql`status IN ('pending', 'active', 'attention', 'removing')`),
@@ -7371,9 +7385,9 @@ export const portal = pgTable(
  * One hostname a tunnel carries. It keeps the name as text and the site it
  * serves; it does not point at a `hostname` row, because
  * `replaceHostingHostnames` deletes and reinserts a hosting's hostname rows on
- * every save. Global uniqueness stays with `hostname` (the name is registered
- * there through the hosting, and the doorway code path surfaces the same 409
- * `hostname_in_use`); here a name is unique only within its tunnel.
+ * every save. A name is unique per routing organization here too, and the
+ * doorway code path surfaces the same 409 `hostname_in_use` when either this
+ * table or `hostname` already holds it.
  * `routing_organization_id` is named as on `hostname`.
  */
 export const doorway = pgTable(
@@ -7411,16 +7425,16 @@ export const doorway = pgTable(
     status: text().default('pending').notNull(),
   },
   (table) => [
-    index('idx_doorway_routing_organization_id_hostname').using(
-      'btree',
-      table.routingOrganizationId.asc().nullsLast().op('uuid_ops'),
-      table.hostname.asc().nullsLast().op('text_ops')
-    ),
     index('idx_doorway_hosting_id').using(
       'btree',
       table.hostingId.asc().nullsLast().op('uuid_ops')
     ),
-    unique('uniq_doorway_tunnel_id_hostname').on(table.tunnelId, table.hostname),
+    // One name sits on one tunnel per routing organization, also when the doorway has
+    // no hosting and so is not in `hostname`. Mirrors the `hostname` uniqueness.
+    unique('uniq_doorway_routing_organization_id_hostname').on(
+      table.routingOrganizationId,
+      table.hostname
+    ),
     foreignKey({
       columns: [table.routingOrganizationId],
       foreignColumns: [organization.id],
@@ -7437,6 +7451,10 @@ export const doorway = pgTable(
       name: 'doorway_hosting_id_hosting_id_fk',
     }).onDelete('set null'),
     // Mirror DOORWAY_KINDS / DOORWAY_STATUSES — pinned by enum-checks.test.ts.
+    check(
+      'doorway_hostname_check',
+      sql`char_length(hostname) BETWEEN 1 AND 253 AND hostname = lower(hostname)`
+    ),
     check('doorway_kind_check', sql`kind IN ('http')`),
     check('doorway_status_check', sql`status IN ('pending', 'live', 'attention', 'removing')`),
   ]

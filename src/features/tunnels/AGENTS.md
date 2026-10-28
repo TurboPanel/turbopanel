@@ -39,22 +39,29 @@ member there, a widened CHECK (forward migration) and one adapter.
   server reports the version it runs in `portal.connector_version`, with
   `portal.version_checked_at` for when, so the panel can show program and
   version per tunnel per server.
-- `doorway` keeps the hostname text and a nullable `hosting_id` (SET NULL),
-  and is unique only on (tunnel, hostname), with an index on
-  (`routing_organization_id`, `hostname`) for lookups. It has no foreign key to
-  `hostname`: `replaceHostingHostnames` deletes and reinserts a hosting's
-  hostname rows on every save. Global uniqueness stays with `hostname`; a name
-  is registered there through the hosting, and the doorway code path must
-  return the same 409 `hostname_in_use`.
+- `doorway` keeps the hostname text and a nullable `hosting_id` (SET NULL). It
+  is unique on (`routing_organization_id`, `hostname`), because a doorway with
+  no hosting is not in `hostname` and one name must not sit on two tunnels in
+  one organization. It has no foreign key to `hostname`:
+  `replaceHostingHostnames` deletes and reinserts a hosting's hostname rows on
+  every save. The doorway code path must return the same 409
+  `hostname_in_use` when either table already holds the name. The hostname
+  must be lower case and 1 to 253 characters (a CHECK); format is validated in
+  code with the existing hostname validator.
+- `tunnel` is unique on (`carrier_id`, `external_id`) so two rows cannot stand
+  for one provider tunnel. `placement = 'all'` needs a `datacenter_id` (a
+  CHECK), and the datacenter delete route answers 409 `datacenter_has_tunnels`
+  while an `all` tunnel covers it.
 - Delete behavior of every new foreign key: organization deleted removes its
   carriers, tunnels and doorways (cascade, both organization columns on
   `tunnel`); server deleted removes its portals; tunnel deleted removes its
   portals and doorways; carrier deleted removes its badges but is refused
-  while a tunnel uses it (restrict); hosting deleted sets `doorway.hosting_id`
+  while a tunnel uses it (NO ACTION, with a 409 `carrier_in_use` first); hosting deleted sets `doorway.hosting_id`
   NULL; datacenter deleted sets `tunnel.datacenter_id` NULL. A `secret` row is
   never removed by the database: removing a badge deletes its secret in code
   (`deleteBadge`) and removing a tunnel deletes its run-token secret
-  (`deleteTunnelRecord`); `badge.secret_id` is restrict so a secret cannot
+  (`deleteTunnelRecord`); `badge.secret_id` is NO ACTION (checked at the end of the
+  statement, so an organization delete still succeeds) so a secret cannot
   vanish under a badge, and `tunnel.secret_id` is SET NULL.
 - `carrier` is unique on (organization, provider, external account id); a
   provider with no account stores NULL, and NULLs never collide.
@@ -64,8 +71,9 @@ member there, a widened CHECK (forward migration) and one adapter.
 A token is never stored in these tables. `badge.secret_id` (and later
 `tunnel.secret_id` for the run token) points at a `secret` row whose
 `secret_envelope` is the token sealed with `encryptSecret`. `secret.provider`
-is `cloudflare` for an API token and `cloudflare_tunnel` for a run token
-(`secret_provider_check` was widened in `0005`). Because the tokens are
+is `carrier_badge` for an API token and `tunnel_run` for a run token, neutral
+so a new provider never widens `secret_provider_check` again (widened once in
+`0005`; the vendor is in `carrier.provider` / `tunnel.provider`). Because the tokens are
 `secret` rows, the at-rest re-encrypt sweep (`src/admin/reencrypt-secrets.ts`,
 the `secrets` stage reads every row of `secret`) already covers them; there is
 no new sealed column. Removing a badge or carrier deletes the `secret` rows in
