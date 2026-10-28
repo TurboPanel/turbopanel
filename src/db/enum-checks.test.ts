@@ -62,7 +62,7 @@ import {
 import { PRINCIPAL_ACCESS_LEVELS } from '../features/principals/principal-access.ts'
 import { PLACEMENT_SOURCES, PLACEMENT_STATES } from '../features/principals/placement-vocabulary.ts'
 import { FOLDER_KINDS, FOLDER_STATES } from '../features/folders/vocabulary.ts'
-import { LEAF_STALE_CAUSES, LEAF_STATES } from '../features/tls/leaf-vocabulary.ts'
+import { LEAF_KINDS, LEAF_STALE_CAUSES, LEAF_STATES } from '../features/tls/leaf-vocabulary.ts'
 import { CLIENT_ADDRESS_SCOPES } from '../features/net/client-addresses-pure.ts'
 import {
   CARRIER_STATUSES,
@@ -132,6 +132,7 @@ const CASES: Array<[constraint: string, values: readonly string[]]> = [
   ['project_icon_check', PROJECT_ICONS],
   ['folder_kind_check', FOLDER_KINDS],
   ['folder_state_check', FOLDER_STATES],
+  ['leaf_kind_check', LEAF_KINDS],
   ['leaf_state_check', LEAF_STATES],
   ['leaf_stale_cause_check', LEAF_STALE_CAUSES],
   ['address_scope_check', CLIENT_ADDRESS_SCOPES],

@@ -21,6 +21,7 @@ import { leaf, lease, server, tls } from '../../db/schema.ts'
 import { ORGANIZATION_CA_LEAF_VALID_DAYS } from '../../lib/tls/self-signed.ts'
 import { enqueueManagedIngressReconcile } from '../../features/managed/ingress-desired.ts'
 import { enqueueApplyForManagedCluster } from './changeover-fanout.ts'
+import { issuePeerLeaf, type PeerLeafIssue } from '../../features/tls/peer-leaf.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
 import { systemRotationContext } from './system-context.ts'
 import { retireOverdueRotations } from './rotation-retire.ts'
@@ -90,9 +91,22 @@ export type DueTlsLeafRow = {
   issuedAt?: string | null
 }
 
+/**
+ * Hands a freshly minted peer leaf to the server's daemon. The sender queues
+ * the delivery command with `pendingTlsLeafMetadata(issue.pendingTlsLeaf)` so
+ * `leaf` is updated only after the daemon confirmed. Without one the sweep
+ * leaves peer leaves alone (they stay due).
+ */
+export type PeerLeafDelivery = (
+  db: Db,
+  issue: PeerLeafIssue,
+  row: DueTlsLeafRow
+) => Promise<{ ok: true } | { ok: false; reason: string }>
+
 export type LeafRenewalSweepDeps = Readonly<{
   secretsConfig: SecretsConfig
   dataEncryptionSecrets: DerivedSecretsConfig
+  deliverPeerLeaf?: PeerLeafDelivery
 }>
 
 function nowIso(nowMs = Date.now()): string {
@@ -449,6 +463,29 @@ async function enqueueDueEngine(
   return { status: 'enqueued' }
 }
 
+async function renewDuePeerLeaf(
+  db: Db,
+  deps: LeafRenewalSweepDeps,
+  row: DueTlsLeafRow
+): Promise<DueLeafOutcome> {
+  if (!deps.deliverPeerLeaf) return { status: 'skipped' }
+  const issued = await issuePeerLeaf(db, deps.secretsConfig, deps.dataEncryptionSecrets, {
+    organizationId: row.organizationId,
+    serverId: row.serverId,
+  })
+  if (!issued.ok) {
+    return {
+      status: 'failed',
+      reason: `The peer certificate could not be issued (${issued.error.kind}).`,
+    }
+  }
+  const delivered = await deps.deliverPeerLeaf(db, issued, row)
+  if (!delivered.ok) {
+    return { status: 'failed', reason: `The renewal could not be queued (${delivered.reason}).` }
+  }
+  return { status: 'enqueued' }
+}
+
 async function enqueueOneDueLeaf(
   c: Context<AppEnv>,
   db: Db,
@@ -471,6 +508,7 @@ async function enqueueOneDueLeaf(
     seenManaged.add(row.managedId)
     return await enqueueDueEngine(c, db, commandQueue, row)
   }
+  if (row.kind === 'peer') return await renewDuePeerLeaf(db, deps, row)
   return { status: 'failed', reason: 'Unknown leaf kind.' }
 }
 
