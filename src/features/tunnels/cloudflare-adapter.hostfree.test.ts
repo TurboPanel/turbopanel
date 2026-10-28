@@ -334,7 +334,7 @@ test('discovering accounts lists what a pasted token reaches and who owns it', a
   assertEquals(found.token.id, 'tok-3')
 })
 
-test('a token that can read a zone\'s certificates lists that zone as a certificate right', async () => {
+test("a token that can read a zone's certificates lists that zone as a certificate right", async () => {
   const { impl, calls } = fakeFetch({
     'GET /client/v4/accounts': ok([{ id: ACCOUNT, name: 'Main' }]),
     'GET /client/v4/zones': ok([
@@ -351,7 +351,10 @@ test('a token that can read a zone\'s certificates lists that zone as a certific
   })
   assertEquals(report.capabilities.certificates.length, 2)
   assertEquals(
-    calls.filter((c) => c.url.startsWith('/client/v4/certificates')).map((c) => c.url).sort(),
+    calls
+      .filter((c) => c.url.startsWith('/client/v4/certificates'))
+      .map((c) => c.url)
+      .sort(),
     ['/client/v4/certificates?zone_id=z1', '/client/v4/certificates?zone_id=z2']
   )
   // A token without the permission is not told it is missing: certificates are optional.
@@ -421,7 +424,7 @@ test('revoking deletes the certificate by id', async () => {
   assertEquals(calls[0]!.method, 'DELETE')
 })
 
-test('expiry times are read in Cloudflare\'s form and in ISO form, and nothing else', () => {
+test("expiry times are read in Cloudflare's form and in ISO form, and nothing else", () => {
   assertEquals(parseExpiry('2026-11-04 17:43:00 +0000 UTC'), '2026-11-04T17:43:00.000Z')
   assertEquals(parseExpiry('2026-11-04T17:43:00Z'), '2026-11-04T17:43:00.000Z')
   assertEquals(parseExpiry('2026-11-04T17:43:00.123Z'), '2026-11-04T17:43:00.000Z')

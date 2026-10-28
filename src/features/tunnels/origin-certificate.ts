@@ -154,7 +154,10 @@ export async function hostingsPinning(db: Db, tlsId: string): Promise<string[]> 
 }
 
 /** A badge that can issue for the zone: it must have been proved to read the zone's certificates. */
-export function badgeCoversZone(row: BadgeRow, zoneName: string): { id: string; name: string } | null {
+export function badgeCoversZone(
+  row: BadgeRow,
+  zoneName: string
+): { id: string; name: string } | null {
   const zones = toApiBadge(row).capabilities.certificates
   const wanted = zoneName.trim().toLowerCase()
   return zones.find((z) => z.name.toLowerCase() === wanted) ?? null

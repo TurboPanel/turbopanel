@@ -1,10 +1,6 @@
 /** TLS certificate source discriminator — stored in `tls.source`. */
 export type TlsSource =
-  | 'upload'
-  | 'lets_encrypt'
-  | 'self_signed'
-  | 'organization_ca'
-  | 'provider_origin'
+  'upload' | 'lets_encrypt' | 'self_signed' | 'organization_ca' | 'provider_origin'
 
 /** Lifecycle status — dedicated `tls.status` column (also in API metadata DTO). */
 export type TlsStatus = 'ready' | 'pending' | 'expired' | 'failed' | 'revoked' | 'automatic'

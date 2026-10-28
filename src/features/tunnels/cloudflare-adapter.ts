@@ -178,7 +178,11 @@ export function parseExpiry(value: string): string {
   )
   const time = match ? Date.parse(`${match[1]}T${match[2]}Z`) : Number.NaN
   if (Number.isNaN(time)) {
-    throw new TunnelProviderError('provider_error', 'Cloudflare gave an expiry time it could not be read', null)
+    throw new TunnelProviderError(
+      'provider_error',
+      'Cloudflare gave an expiry time it could not be read',
+      null
+    )
   }
   return new Date(time).toISOString()
 }

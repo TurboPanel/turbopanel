@@ -67,7 +67,10 @@ const fakeProvider: typeof fetch = async (input, init) => {
     return ok({
       id: `cert-${state.issued}`,
       certificate: minted.certificatePem,
-      expires_on: minted.parsed.notAfter.toISOString().replace('T', ' ').replace(/\.\d+Z$/, ' +0000 UTC'),
+      expires_on: minted.parsed.notAfter
+        .toISOString()
+        .replace('T', ' ')
+        .replace(/\.\d+Z$/, ' +0000 UTC'),
     })
   }
   if (path.startsWith('/certificates/') && method === 'DELETE') {
@@ -126,7 +129,11 @@ async function withFixture(
     c.set('dataEncryptionSecrets', secrets)
     return next()
   })
-  const routeOpts = { secrets: sessionSecrets, runtime: 'deno' as const, signupEnvOverride: undefined }
+  const routeOpts = {
+    secrets: sessionSecrets,
+    runtime: 'deno' as const,
+    signupEnvOverride: undefined,
+  }
   registerOrganizationCarrierRoutes(app, routeOpts, fakeProvider)
   registerOrganizationOriginCertificateRoutes(app, routeOpts, fakeProvider)
   const orgs = await db
@@ -148,7 +155,12 @@ async function withFixture(
     }
     const [c] = await db
       .insert(carrier)
-      .values({ organizationId: orgA, provider: 'cloudflare', name: 'Main', externalAccountId: ACCOUNT })
+      .values({
+        organizationId: orgA,
+        provider: 'cloudflare',
+        name: 'Main',
+        externalAccountId: ACCOUNT,
+      })
       .returning({ id: carrier.id })
     const [sec] = await db
       .insert(secret)
@@ -212,7 +224,11 @@ async function call(
     body: body === undefined || method === 'GET' ? undefined : JSON.stringify(body),
   })
   const text = await res.text()
-  return { status: res.status, text, body: text ? (JSON.parse(text) as Record<string, unknown>) : {} }
+  return {
+    status: res.status,
+    text,
+    body: text ? (JSON.parse(text) as Record<string, unknown>) : {},
+  }
 }
 
 const base = (f: Fixture) => `/organizations/${f.orgA}/carriers/${f.carrierId}/origin-certificates`
@@ -227,7 +243,10 @@ test('every origin certificate route refuses a request without a session, a plai
     ]
     for (const [method, path] of routes) {
       assertEquals((await call(f, method, path, null, {})).status, 401, `${method} ${path}`)
-      assertEquals((await call(f, method, path, f.memberCookie, { zone: 'example.com' })).status, 403)
+      assertEquals(
+        (await call(f, method, path, f.memberCookie, { zone: 'example.com' })).status,
+        403
+      )
       const other = await call(f, method, path, f.otherManagerCookie, { zone: 'example.com' })
       assert(other.status === 403 || other.status === 404, `${method} other org: ${other.status}`)
     }
@@ -245,7 +264,10 @@ test('a manager gets a certificate for a zone, asking again returns it, and it c
     assertEquals(first.body.reused, false)
     // Nothing that looks like a key or the token is returned.
     assert(!first.text.includes('PRIVATE KEY') && !first.text.includes(TOKEN))
-    assertEquals(Object.keys(cert).some((k) => /key|pem|secret/i.test(k)), false)
+    assertEquals(
+      Object.keys(cert).some((k) => /key|pem|secret/i.test(k)),
+      false
+    )
 
     const again = await call(f, 'POST', base(f), f.managerCookie, { zone: 'example.com' })
     assertEquals(again.status, 200)
@@ -258,7 +280,11 @@ test('a manager gets a certificate for a zone, asking again returns it, and it c
     const removed = await call(f, 'DELETE', `${base(f)}/${cert.id}`, f.managerCookie)
     assertEquals(removed.status, 200, removed.text)
     assertEquals(state.revoked, ['cert-1'])
-    assertEquals(((await call(f, 'GET', base(f), f.managerCookie)).body.originCertificates as unknown[]).length, 0)
+    assertEquals(
+      ((await call(f, 'GET', base(f), f.managerCookie)).body.originCertificates as unknown[])
+        .length,
+      0
+    )
     assertEquals((await call(f, 'DELETE', `${base(f)}/${cert.id}`, f.managerCookie)).status, 404)
   })
 })
@@ -315,7 +341,10 @@ test('an account or token that issued a certificate cannot be removed until the 
     assertEquals(carrierRes.status, 409)
     assertEquals(carrierRes.body.error, 'origin_certificate_in_use')
     assertEquals((await call(f, 'DELETE', `${base(f)}/${id}`, f.managerCookie)).status, 200)
-    assertEquals((await call(f, 'DELETE', `${carrierPath}/badges/${f.badgeId}`, f.managerCookie)).status, 200)
+    assertEquals(
+      (await call(f, 'DELETE', `${carrierPath}/badges/${f.badgeId}`, f.managerCookie)).status,
+      200
+    )
     assertEquals((await call(f, 'DELETE', carrierPath, f.managerCookie)).status, 200)
     assertEquals((await f.db.select().from(carrier).where(eq(carrier.id, f.carrierId))).length, 0)
   })

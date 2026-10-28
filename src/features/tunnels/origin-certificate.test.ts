@@ -166,7 +166,10 @@ async function withWorld(
         .from(environment)
         .where(eq(environment.projectId, p.id))
       for (const e of envs) {
-        const svcs = await db.select({ id: service.id }).from(service).where(eq(service.environmentId, e.id))
+        const svcs = await db
+          .select({ id: service.id })
+          .from(service)
+          .where(eq(service.environmentId, e.id))
         for (const sv of svcs) await db.delete(hosting).where(eq(hosting.serviceId, sv.id))
         await db.delete(service).where(eq(service.environmentId, e.id))
       }
@@ -190,7 +193,13 @@ async function pin(db: Db, serviceId: string, tlsId: string, name: string): Prom
 test('an issued certificate is stored with its key sealed and the request is the only thing sent', async () => {
   await withWorld(async (w) => {
     const fake = fakeAdapter()
-    const row = await issueOriginCertificate({ ...w, adapter: fake.adapter, carrier: w.carrierRow, badge: w.badgeRow, zoneName: 'Example.com' })
+    const row = await issueOriginCertificate({
+      ...w,
+      adapter: fake.adapter,
+      carrier: w.carrierRow,
+      badge: w.badgeRow,
+      zoneName: 'Example.com',
+    })
     assertEquals(row.source, 'provider_origin')
     assertEquals(row.status, 'ready')
     assert(row.privateKeyPem?.startsWith('tpsecret.'), 'the key is a sealed envelope')
@@ -207,9 +216,18 @@ test('an issued certificate is stored with its key sealed and the request is the
     assertEquals(link?.zoneName, 'example.com')
     assertEquals(link?.externalId, 'ext-1')
     assertEquals(link?.badgeId, w.badgeRow.id)
-    assertEquals(await countOriginCertificatesFrom(w.db, w.organizationId, { badgeId: w.badgeRow.id }), 1)
-    assertEquals(await countOriginCertificatesFrom(w.db, w.organizationId, { carrierId: w.carrierRow.id }), 1)
-    assertEquals(await countOriginCertificatesFrom(w.db, w.organizationId, { badgeId: crypto.randomUUID() }), 0)
+    assertEquals(
+      await countOriginCertificatesFrom(w.db, w.organizationId, { badgeId: w.badgeRow.id }),
+      1
+    )
+    assertEquals(
+      await countOriginCertificatesFrom(w.db, w.organizationId, { carrierId: w.carrierRow.id }),
+      1
+    )
+    assertEquals(
+      await countOriginCertificatesFrom(w.db, w.organizationId, { badgeId: crypto.randomUUID() }),
+      0
+    )
   })
 })
 
@@ -217,7 +235,14 @@ test('a zone the token was not found to reach is refused before the provider is 
   await withWorld(async (w) => {
     const fake = fakeAdapter()
     const err = await assertRejects(
-      () => issueOriginCertificate({ ...w, adapter: fake.adapter, carrier: w.carrierRow, badge: w.badgeRow, zoneName: 'other.org' }),
+      () =>
+        issueOriginCertificate({
+          ...w,
+          adapter: fake.adapter,
+          carrier: w.carrierRow,
+          badge: w.badgeRow,
+          zoneName: 'other.org',
+        }),
       OriginCertificateRefusal
     )
     assertEquals(err.error, 'badge_cannot_certify')
@@ -229,7 +254,14 @@ test('a provider that does not issue certificates is refused', async () => {
   await withWorld(async (w) => {
     const adapter = { provider: 'cloudflare' } as unknown as TunnelAdapter
     const err = await assertRejects(
-      () => issueOriginCertificate({ ...w, adapter, carrier: w.carrierRow, badge: w.badgeRow, zoneName: 'example.com' }),
+      () =>
+        issueOriginCertificate({
+          ...w,
+          adapter,
+          carrier: w.carrierRow,
+          badge: w.badgeRow,
+          zoneName: 'example.com',
+        }),
       OriginCertificateRefusal
     )
     assertEquals(err.error, 'unsupported_provider')
@@ -240,9 +272,18 @@ test('a certificate that cannot be stored is revoked again at the provider', asy
   await withWorld(async (w) => {
     const fake = fakeAdapter('garbage')
     await assertRejects(() =>
-      issueOriginCertificate({ ...w, adapter: fake.adapter, carrier: w.carrierRow, badge: w.badgeRow, zoneName: 'example.com' })
+      issueOriginCertificate({
+        ...w,
+        adapter: fake.adapter,
+        carrier: w.carrierRow,
+        badge: w.badgeRow,
+        zoneName: 'example.com',
+      })
     )
-    assertEquals(fake.revoked.map((r) => r.externalId), ['ext-1'])
+    assertEquals(
+      fake.revoked.map((r) => r.externalId),
+      ['ext-1']
+    )
     assertEquals(fake.revoked[0]!.token, TOKEN)
     const rows = await w.db.select().from(tls).where(eq(tls.organizationId, w.organizationId))
     assertEquals(rows.length, 0)
@@ -261,7 +302,14 @@ test('an organization at its limit gets no more certificates', async () => {
     )
     const fake = fakeAdapter()
     const err = await assertRejects(
-      () => issueOriginCertificate({ ...w, adapter: fake.adapter, carrier: w.carrierRow, badge: w.badgeRow, zoneName: 'example.com' }),
+      () =>
+        issueOriginCertificate({
+          ...w,
+          adapter: fake.adapter,
+          carrier: w.carrierRow,
+          badge: w.badgeRow,
+          zoneName: 'example.com',
+        }),
       OriginCertificateRefusal
     )
     assertEquals(err.error, 'origin_certificate_limit')
@@ -272,7 +320,13 @@ test('an organization at its limit gets no more certificates', async () => {
 test('a certificate a site pins cannot be revoked; once free it is revoked and removed', async () => {
   await withWorld(async (w) => {
     const fake = fakeAdapter()
-    const row = await issueOriginCertificate({ ...w, adapter: fake.adapter, carrier: w.carrierRow, badge: w.badgeRow, zoneName: 'example.com' })
+    const row = await issueOriginCertificate({
+      ...w,
+      adapter: fake.adapter,
+      carrier: w.carrierRow,
+      badge: w.badgeRow,
+      zoneName: 'example.com',
+    })
     const hostingId = await pin(w.db, w.serviceId, row.id, 'app.example.com')
     assertEquals(await hostingsPinning(w.db, row.id), [hostingId])
     const err = await assertRejects(
@@ -283,7 +337,10 @@ test('a certificate a site pins cannot be revoked; once free it is revoked and r
     assertEquals(fake.revoked.length, 0)
     await w.db.delete(hosting).where(eq(hosting.id, hostingId))
     await revokeOriginCertificate({ db: w.db, secrets: w.secrets, adapter: fake.adapter, row })
-    assertEquals(fake.revoked.map((r) => r.externalId), ['ext-1'])
+    assertEquals(
+      fake.revoked.map((r) => r.externalId),
+      ['ext-1']
+    )
     assertEquals((await w.db.select().from(tls).where(eq(tls.id, row.id))).length, 0)
   })
 })
@@ -291,7 +348,13 @@ test('a certificate a site pins cannot be revoked; once free it is revoked and r
 test('a certificate the provider already forgot is simply removed', async () => {
   await withWorld(async (w) => {
     const fake = fakeAdapter('gone')
-    const row = await issueOriginCertificate({ ...w, adapter: fake.adapter, carrier: w.carrierRow, badge: w.badgeRow, zoneName: 'example.com' })
+    const row = await issueOriginCertificate({
+      ...w,
+      adapter: fake.adapter,
+      carrier: w.carrierRow,
+      badge: w.badgeRow,
+      zoneName: 'example.com',
+    })
     await revokeOriginCertificate({ db: w.db, secrets: w.secrets, adapter: fake.adapter, row })
     assertEquals((await w.db.select().from(tls).where(eq(tls.id, row.id))).length, 0)
   })
@@ -300,16 +363,42 @@ test('a certificate the provider already forgot is simply removed', async () => 
 test('with the issuing token gone a certificate is kept unless removal is forced', async () => {
   await withWorld(async (w) => {
     const fake = fakeAdapter()
-    const row = await issueOriginCertificate({ ...w, adapter: fake.adapter, carrier: w.carrierRow, badge: w.badgeRow, zoneName: 'example.com' })
-    await w.db.update(tls).set({ metadata: { ...(row.metadata as object), providerOrigin: { ...readProviderOrigin(row.metadata)!, badgeId: crypto.randomUUID() } } }).where(eq(tls.id, row.id))
+    const row = await issueOriginCertificate({
+      ...w,
+      adapter: fake.adapter,
+      carrier: w.carrierRow,
+      badge: w.badgeRow,
+      zoneName: 'example.com',
+    })
+    await w.db
+      .update(tls)
+      .set({
+        metadata: {
+          ...(row.metadata as object),
+          providerOrigin: { ...readProviderOrigin(row.metadata)!, badgeId: crypto.randomUUID() },
+        },
+      })
+      .where(eq(tls.id, row.id))
     const [changed] = await w.db.select().from(tls).where(eq(tls.id, row.id))
     const err = await assertRejects(
-      () => revokeOriginCertificate({ db: w.db, secrets: w.secrets, adapter: fake.adapter, row: changed! }),
+      () =>
+        revokeOriginCertificate({
+          db: w.db,
+          secrets: w.secrets,
+          adapter: fake.adapter,
+          row: changed!,
+        }),
       OriginCertificateRefusal
     )
     assertEquals(err.error, 'badge_missing')
     assertEquals((await w.db.select().from(tls).where(eq(tls.id, row.id))).length, 1)
-    await revokeOriginCertificate({ db: w.db, secrets: w.secrets, adapter: fake.adapter, row: changed!, force: true })
+    await revokeOriginCertificate({
+      db: w.db,
+      secrets: w.secrets,
+      adapter: fake.adapter,
+      row: changed!,
+      force: true,
+    })
     assertEquals((await w.db.select().from(tls).where(eq(tls.id, row.id))).length, 0)
     assertEquals(fake.revoked.length, 0)
   })
@@ -318,9 +407,21 @@ test('with the issuing token gone a certificate is kept unless removal is forced
 test('renewal issues a replacement, re-pins the sites and keeps the old row until it expires', async () => {
   await withWorld(async (w) => {
     const fake = fakeAdapter()
-    const old = await issueOriginCertificate({ ...w, adapter: fake.adapter, carrier: w.carrierRow, badge: w.badgeRow, zoneName: 'example.com' })
+    const old = await issueOriginCertificate({
+      ...w,
+      adapter: fake.adapter,
+      carrier: w.carrierRow,
+      badge: w.badgeRow,
+      zoneName: 'example.com',
+    })
     const hostingId = await pin(w.db, w.serviceId, old.id, 'app.example.com')
-    const renewed = await renewOriginCertificate({ db: w.db, secrets: w.secrets, adapter: fake.adapter, organizationId: w.organizationId, row: old })
+    const renewed = await renewOriginCertificate({
+      db: w.db,
+      secrets: w.secrets,
+      adapter: fake.adapter,
+      organizationId: w.organizationId,
+      row: old,
+    })
     assert(renewed)
     assert(renewed.replacement.id !== old.id)
     assertEquals(renewed.repinnedHostingIds, [hostingId])
@@ -335,7 +436,13 @@ test('renewal issues a replacement, re-pins the sites and keeps the old row unti
 test('the sweep renews a pinned certificate that is close to expiry and removes a replaced one only after it expired', async () => {
   await withWorld(async (w) => {
     const fake = fakeAdapter()
-    const old = await issueOriginCertificate({ ...w, adapter: fake.adapter, carrier: w.carrierRow, badge: w.badgeRow, zoneName: 'example.com' })
+    const old = await issueOriginCertificate({
+      ...w,
+      adapter: fake.adapter,
+      carrier: w.carrierRow,
+      badge: w.badgeRow,
+      zoneName: 'example.com',
+    })
     await pin(w.db, w.serviceId, old.id, 'app.example.com')
     const registry = () => fake.adapter
     const base = { db: w.db, secrets: w.secrets, registry, organizationId: w.organizationId }
@@ -343,7 +450,10 @@ test('the sweep renews a pinned certificate that is close to expiry and removes 
     let result = await sweepOriginCertificates(base)
     assertEquals([result.renewed, result.removed, result.failed], [[], [], []])
     // Ten days from expiry: renewed, and the site is reported for a push.
-    await w.db.update(tls).set({ notAfter: new Date(Date.now() + 10 * 86_400_000).toISOString() }).where(eq(tls.id, old.id))
+    await w.db
+      .update(tls)
+      .set({ notAfter: new Date(Date.now() + 10 * 86_400_000).toISOString() })
+      .where(eq(tls.id, old.id))
     result = await sweepOriginCertificates(base)
     assertEquals(result.renewed.length, 1)
     assertEquals(result.repinnedHostingIds.length, 1)
@@ -351,7 +461,10 @@ test('the sweep renews a pinned certificate that is close to expiry and removes 
     result = await sweepOriginCertificates(base)
     assertEquals(result.removed, [])
     // Past its own expiry: removed with no revoke call.
-    await w.db.update(tls).set({ notAfter: new Date(Date.now() - 86_400_000).toISOString() }).where(eq(tls.id, old.id))
+    await w.db
+      .update(tls)
+      .set({ notAfter: new Date(Date.now() - 86_400_000).toISOString() })
+      .where(eq(tls.id, old.id))
     result = await sweepOriginCertificates(base)
     assertEquals(result.removed, [old.id])
     assertEquals(fake.revoked.length, 0)

@@ -294,7 +294,8 @@ export const tunnelPaths: Record<string, unknown> = {
     get: {
       tags: ['Organizations'],
       summary: "List a provider account's origin certificates",
-      description: 'Owners and managers only. Names, expiry and whether a site uses each; never a key.',
+      description:
+        'Owners and managers only. Names, expiry and whether a site uses each; never a key.',
       security: [{ cookieAuth: [] }],
       parameters: [ORG_ID_PARAM, CARRIER_ID_PARAM],
       responses: {
@@ -386,7 +387,8 @@ export const tunnelPaths: Record<string, unknown> = {
     delete: {
       tags: ['Organizations'],
       summary: 'Remove a token',
-      description: 'Owners and managers only. The sealed token is deleted with it. 409 `origin_certificate_in_use` while origin certificates were issued through this token.',
+      description:
+        'Owners and managers only. The sealed token is deleted with it. 409 `origin_certificate_in_use` while origin certificates were issued through this token.',
       security: [{ cookieAuth: [] }],
       parameters: [ORG_ID_PARAM, CARRIER_ID_PARAM, BADGE_ID_PARAM],
       responses: {

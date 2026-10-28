@@ -39,7 +39,13 @@ import {
   type TunnelAdapterRegistry,
 } from '../../features/tunnels/registry.ts'
 import { NO_CAPABILITIES, type TunnelProvider } from '../../features/tunnels/vocabulary.ts'
-import { audit, loadCarrierParam, loadScope, providerFailure, type Scope } from './carrier-routes.ts'
+import {
+  audit,
+  loadCarrierParam,
+  loadScope,
+  providerFailure,
+  type Scope,
+} from './carrier-routes.ts'
 
 const ORIGIN_CERTIFICATE_PATHS = [
   '/organizations/:id/carriers/:carrierId/origin-certificates',
@@ -60,10 +66,7 @@ type ApiOriginCertificate = {
   renewalDue: boolean
 }
 
-async function toApi(
-  scope: Scope,
-  row: TlsRow
-): Promise<ApiOriginCertificate | null> {
+async function toApi(scope: Scope, row: TlsRow): Promise<ApiOriginCertificate | null> {
   const link = readProviderOrigin(row.metadata)
   if (!link) return null
   return {
@@ -153,7 +156,11 @@ function issueResponse(registry: TunnelAdapterRegistry) {
     const zone = typeof body.zone === 'string' ? body.zone.trim().toLowerCase() : ''
     if (!zone.includes('.') || !isValidHostname(zone)) {
       return c.json(
-        { error: 'origin_certificate_invalid', field: 'zone', detail: 'Give the zone name, such as example.com.' },
+        {
+          error: 'origin_certificate_invalid',
+          field: 'zone',
+          detail: 'Give the zone name, such as example.com.',
+        },
         400
       )
     }
@@ -162,7 +169,9 @@ function issueResponse(registry: TunnelAdapterRegistry) {
     if (!secrets) return c.json({ error: 'secrets_unavailable' }, 503)
 
     // One certificate per zone and account while it is healthy: asking again returns it.
-    const existing = (await listOriginCertificates(scope.db, scope.organizationId, current.id)).find(
+    const existing = (
+      await listOriginCertificates(scope.db, scope.organizationId, current.id)
+    ).find(
       (row) =>
         readProviderOrigin(row.metadata)?.zoneName === zone &&
         row.status === 'ready' &&

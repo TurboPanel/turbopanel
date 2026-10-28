@@ -108,7 +108,10 @@ export async function audit(
   })
 }
 
-export async function loadCarrierParam(c: Context<AppEnv>, scope: Scope): Promise<CarrierRow | Response> {
+export async function loadCarrierParam(
+  c: Context<AppEnv>,
+  scope: Scope
+): Promise<CarrierRow | Response> {
   const carrierId = c.req.param('carrierId') as string
   if (!isUuid(carrierId)) return c.json({ error: 'Not found' }, 404)
   return (
@@ -192,7 +195,9 @@ async function deleteCarrierResponse(c: Context<AppEnv>, scope: Scope): Promise<
   const current = await loadCarrierParam(c, scope)
   if (current instanceof Response) return current
   if (await carrierHasTunnels(scope.db, current.id)) return carrierInUse(c)
-  if (await countOriginCertificatesFrom(scope.db, scope.organizationId, { carrierId: current.id })) {
+  if (
+    await countOriginCertificatesFrom(scope.db, scope.organizationId, { carrierId: current.id })
+  ) {
     return originCertificateInUse(c)
   }
   try {
