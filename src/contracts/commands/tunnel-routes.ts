@@ -28,6 +28,10 @@ const MAX_TUNNEL_ADDRESSES = 64
 const MAX_TUNNEL_ROUTES = 2000
 const MAX_TUNNEL_UPSTREAMS = 16
 const MAX_TUNNEL_UPSTREAM_ADDRESSES = 8
+/** Longest certificate, trust bundle or sealed key accepted (bytes of text). */
+const MAX_PEM_LENGTH = 65_536
+/** A strict ISO-8601 timestamp with a time zone, as `Date.toISOString` writes it. */
+const ISO_TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/
 const SHA256_HEX_RE = /^[0-9a-f]{64}$/
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
@@ -248,15 +252,25 @@ function parseTunnelRoute(value: unknown): TunnelRoute {
   }
 }
 
+/** A certificate or bundle: sized, holds a certificate, and never a private key. */
+function isCertificateText(value: unknown): value is string {
+  return (
+    isString(value) &&
+    value.length <= MAX_PEM_LENGTH &&
+    value.includes('BEGIN CERTIFICATE') &&
+    !value.includes('PRIVATE KEY')
+  )
+}
+
 function parseTunnelPeerMaterial(value: unknown): TunnelPeerMaterial {
   if (
     !isRecord(value) ||
-    !isString(value.certificatePem) ||
-    !value.certificatePem.includes('BEGIN CERTIFICATE') ||
+    !isCertificateText(value.certificatePem) ||
     !isString(value.privateKeyEnvelope) ||
+    value.privateKeyEnvelope.length > MAX_PEM_LENGTH ||
     !value.privateKeyEnvelope.startsWith(ENVELOPE_PREFIX_DAEMON) ||
-    !isString(value.caCertPem) ||
-    !value.caCertPem.includes('BEGIN CERTIFICATE')
+    value.privateKeyEnvelope.length === ENVELOPE_PREFIX_DAEMON.length ||
+    !isCertificateText(value.caCertPem)
   ) {
     throw new TypeError('Invalid server.tunnel.routes peerMaterial')
   }
@@ -266,7 +280,11 @@ function parseTunnelPeerMaterial(value: unknown): TunnelPeerMaterial {
     caCertPem: value.caCertPem,
   }
   if (value.notAfter !== undefined) {
-    if (!isString(value.notAfter) || Number.isNaN(Date.parse(value.notAfter))) {
+    if (
+      !isString(value.notAfter) ||
+      !ISO_TIMESTAMP_RE.test(value.notAfter) ||
+      Number.isNaN(Date.parse(value.notAfter))
+    ) {
       throw new TypeError('Invalid server.tunnel.routes peerMaterial notAfter')
     }
     material.notAfter = value.notAfter

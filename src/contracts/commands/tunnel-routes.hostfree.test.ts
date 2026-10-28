@@ -220,3 +220,78 @@ test('environment.deploy refuses acme for a name that is only a tunnel name', ()
   )
   assertEquals(ok.hostings?.[0]?.tlsMode, 'acme')
 })
+
+test('server.tunnel.routes: material, peers and size limits', () => {
+  const route = (n: number) => ({
+    hostname: `n${n}.example.com`,
+    local: true,
+    lock: true,
+    upstreams: [],
+  })
+  const ips = (n: number) =>
+    Array.from({ length: n }, (_, i) => `10.0.${Math.floor(i / 200)}.${(i % 200) + 1}`)
+  const ok = payload()
+  const material = ok.peerMaterial as Record<string, unknown>
+  const cases: Record<string, unknown>[] = [
+    // peers listed but no material
+    payload({ peerMaterial: undefined, routes: [] }),
+    // a remote route with no peer addresses
+    payload({ peerAddresses: [] }),
+    // size limits
+    payload({ routes: Array.from({ length: 2001 }, (_, i) => route(i)) }),
+    payload({ peerAddresses: ips(65) }),
+    payload({
+      routes: [
+        {
+          hostname: 'a.example.com',
+          local: false,
+          lock: true,
+          upstreams: [{ serverId: SERVER_A, addresses: ips(9) }],
+        },
+      ],
+    }),
+    payload({
+      routes: [
+        {
+          hostname: 'a.example.com',
+          local: false,
+          lock: true,
+          upstreams: Array.from({ length: 17 }, (_, i) => ({
+            serverId: `0192f0a4-1c2b-7d3e-8f40-5a6b7c8d9e${String(i).padStart(2, '0')}`,
+            addresses: ['10.0.0.5'],
+          })),
+        },
+      ],
+    }),
+    // material
+    payload({
+      peerMaterial: { ...material, certificatePem: CERT + '-----BEGIN PRIVATE KEY-----\nx\n' },
+    }),
+    payload({ peerMaterial: { ...material, caCertPem: CERT + 'PRIVATE KEY' } }),
+    payload({ peerMaterial: { ...material, certificatePem: CERT + 'a'.repeat(70_000) } }),
+    payload({ peerMaterial: { ...material, caCertPem: CERT + 'a'.repeat(70_000) } }),
+    payload({
+      peerMaterial: { ...material, privateKeyEnvelope: 'tpdaemon.' + 'a'.repeat(70_000) },
+    }),
+    payload({ peerMaterial: { ...material, privateKeyEnvelope: 'tpdaemon.' } }),
+    payload({ peerMaterial: { ...material, notAfter: 'Jan 1 2027' } }),
+    payload({ peerMaterial: { ...material, notAfter: '2027-01-01' } }),
+  ]
+  cases.forEach((bad, index) => {
+    assertThrows(() => parseTunnelRoutesPayload(bad), TypeError, undefined, `case ${index}`)
+  })
+  // exactly at the limits is accepted
+  parseTunnelRoutesPayload(payload({ routes: Array.from({ length: 2000 }, (_, i) => route(i)) }))
+  parseTunnelRoutesPayload(payload({ peerAddresses: ips(64) }))
+})
+
+test('hostings[].tunnel: upper-case names and size limits are refused', () => {
+  const site = ['App.example.com', 'app.example.com']
+  assertThrows(() =>
+    parseDeployHostingTunnel({ hostnames: ['App.example.com'], peers: ['10.0.0.5'] }, site)
+  )
+  const names = Array.from({ length: 257 }, (_, i) => `n${i}.example.com`)
+  assertThrows(() => parseDeployHostingTunnel({ hostnames: names, peers: ['10.0.0.5'] }, names))
+  const peers = Array.from({ length: 65 }, (_, i) => `10.0.0.${i + 1}`)
+  assertThrows(() => parseDeployHostingTunnel({ hostnames: ['app.example.com'], peers }, site))
+})

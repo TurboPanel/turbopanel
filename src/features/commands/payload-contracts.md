@@ -84,8 +84,7 @@ next result while nothing is pending. The control plane runs no test or outside
 probe and sends no confirm; 60s consumer timeout kept for a manual confirm.
 Nothing enqueues it.
 
-`server.tunnel.routes` (**whole-server**, 120 s, offline fail-fast, resent on
-reconnect) carries every tunnel name a server carries, so a server whose
+`server.tunnel.routes` (**whole-server**, 120 s, offline fail-fast) carries every tunnel name a server carries, so a server whose
 connector receives a visitor for a site that runs elsewhere can pass the
 request on. Payload `{ hash, routes[], peerAddresses[], listenAddresses?[],
 peerMaterial? }`. A route is `{ hostname, local, lock, upstreams[] }`;
@@ -107,8 +106,24 @@ empty; an empty set removes the forwarding file. `hash` is the lower-case
 sha256 of the desired state: the daemon skips the rewrite when the hash is
 unchanged and the file is in place. Result `{ hash, applied, routeCount,
 dropped[], warnings[] }`. Parsers live in
-`src/contracts/commands/tunnel-routes.ts` and are byte-for-byte the daemon's
-rules. This change adds only the wire contract; nothing sends the command yet.
+`src/contracts/commands/tunnel-routes.ts` and follow the same rules as the
+daemon's (the control plane's IP check may be stricter about IPv6 forms with an
+embedded IPv4 part; a form the control plane sends is always accepted). Limits:
+256 names, 64 addresses, 8 addresses and 16 upstreams per route, 2000 routes,
+and 64 KB for each of `certificatePem`, `caCertPem` and `privateKeyEnvelope`
+(which needs a body after `tpdaemon.`); a certificate field that contains
+`PRIVATE KEY` is refused, and `notAfter` must be an ISO-8601 timestamp with a
+time zone.
+
+**For whoever builds the sender.** An older daemon ignores `hostings[].tunnel`
+(tunnel-only names would then be served unlocked) and rejects the unknown
+command type, so send neither until the server's daemon version carries them
+(gate on the daemon version). Like the other whole-server commands, a command
+for a server that is not connected fails at once (`Daemon not connected`); it
+is not queued or resent on reconnect by the consumer. Convergence after an
+offline period needs a reconnect sweep that sends the table again (the hash
+makes an unchanged table a no-op on the daemon). This change adds only the
+wire contract; nothing sends the command yet.
 
 `server.backups.reconcile` (added 2026-09-30, Road row `r2-backup-schema`)
 carries the **complete** set of scheduled backup policies whose target lives on
