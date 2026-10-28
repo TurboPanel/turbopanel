@@ -196,5 +196,5 @@ all 18 Workers-pool files/337 tests passed, including a real (non-mocked)
 in `src/daemon/acme-issuance-event.workers-e2e.test.ts`. Use a **dedicated
 throwaway database**, not a shared one — several tests insert real rows and
 none of them clean up after themselves (by design: they're meant to run
-against disposable databases per this project's "every database is
-disposable" pre-MVP convention, not against anything long-lived).
+against throwaway testing databases. Only throwaway testing hosts are
+disposable; the panel database is never reset (forward-only migrations).

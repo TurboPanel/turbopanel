@@ -27,8 +27,8 @@
   use **`/etc/turbopanel/instance/`** (dev-user-owned in development). The unit
   injects `TURBOPANEL_INSTANCE_RUNTIME_ENV` accordingly.
   `scripts/generate-self-signed-cert.mjs` and daemon `public-urls-apply`
-  read/write `runtime.env` there. Do not reintroduce checkout-root `.env` /
-  `.dev.vars` generation.
+  read/write `runtime.env` there. Never generate copies of checkout-root `.env` /
+  `.dev.vars`; the script symlinks them.
 - `pnpm install` — installs Hono and Wrangler into `node_modules/` for Workers
   bundling
 - Local Wrangler secrets come from Ansible-generated
