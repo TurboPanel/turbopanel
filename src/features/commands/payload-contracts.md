@@ -84,6 +84,52 @@ next result while nothing is pending. The control plane runs no test or outside
 probe and sends no confirm; 60s consumer timeout kept for a manual confirm.
 Nothing enqueues it.
 
+`server.tunnel.routes` (**whole-server**, 120 s, offline fail-fast) carries every tunnel name a server carries, so a server whose
+connector receives a visitor for a site that runs elsewhere can pass the
+request on. Payload `{ hash, routes[], peerAddresses[], listenAddresses?[],
+peerMaterial? }`. A route is `{ hostname, local, lock, upstreams[] }`;
+`local: true` means the site runs on this server (the daemon leaves the name
+out of the forwarding file and reports it as dropped, so a moving site can
+never cause a duplicate site), `lock: false` means the name is also public on
+this server (visitors that are not peers are passed on too), and an upstream is
+`{ serverId, addresses[], port? }` with the exact datacenter addresses of one
+server that runs a copy (preferred family first; port defaults to 443; a remote
+route needs at least one). `peerAddresses` are the exact addresses of the
+servers allowed to forward TO this one (inbound standing: the daemon refuses
+re-forwarding for them, lets them reach the peer certificate site and trusts
+their visitor-address headers; it is never a firewall rule). A server that only
+carries tunnels and hosts nothing sends an empty list: do not pad it with the
+servers it forwards to. With no peers the daemon writes no peer certificate
+site; `listenAddresses` are this server's
+own addresses the peer-facing site listens on. `peerMaterial` is
+`{ certificatePem, privateKeyEnvelope, caCertPem, notAfter? }`: a leaf of the
+organization's certificate authority for the fixed name `tp-peer.internal`
+(shape of `ManagedApplyOrgTlsMaterial`), the key sealed for this daemon
+(`tpdaemon.` envelope), `caCertPem` the trust bundle used only for the hop
+between servers. It is required whenever `routes` or `peerAddresses` is not
+empty; an empty set removes the forwarding file. `hash` is the lower-case
+sha256 of the desired state: the daemon skips the rewrite when the hash is
+unchanged and the file is in place. Result `{ hash, applied, routeCount,
+dropped[], warnings[] }`. Parsers live in
+`src/contracts/commands/tunnel-routes.ts` and follow the same rules as the
+daemon's (the control plane's IP check may be stricter about IPv6 forms with an
+embedded IPv4 part; a form the control plane sends is always accepted). Limits:
+256 names, 64 addresses, 8 addresses and 16 upstreams per route, 2000 routes,
+and 64 KB for each of `certificatePem`, `caCertPem` and `privateKeyEnvelope`
+(which needs a body after `tpdaemon.`); a certificate field that contains
+`PRIVATE KEY` is refused, and `notAfter` must be an ISO-8601 timestamp with a
+time zone.
+
+**For whoever builds the sender.** An older daemon ignores `hostings[].tunnel`
+(tunnel-only names would then be served unlocked) and rejects the unknown
+command type, so send neither until the server's daemon version carries them
+(gate on the daemon version). Like the other whole-server commands, a command
+for a server that is not connected fails at once (`Daemon not connected`); it
+is not queued or resent on reconnect by the consumer. Convergence after an
+offline period needs a reconnect sweep that sends the table again (the hash
+makes an unchanged table a no-op on the daemon). This change adds only the
+wire contract; nothing sends the command yet.
+
 `server.backups.reconcile` (added 2026-09-30, Road row `r2-backup-schema`)
 carries the **complete** set of scheduled backup policies whose target lives on
 one server, the same full-set contract as `server.principals.reconcile`:
@@ -312,6 +358,22 @@ directive — today's behavior). `local` → `127.0.0.1`. `datacenter` requires 
 validation fails with typed `DeployPrepareError`
 `{ kind: 'datacenter_ip_required', serverId }` (**422**
 `datacenter_ip_required`) before command dispatch — the daemon stays DB-free.
+
+**`EnvironmentDeployHosting.tunnel`:** optional, additive; an older daemon
+ignores it. `{ hostnames[], openHostnames?[], peers[], extraBind?[] }` for a
+hosting whose names are also reached through a tunnel connector.
+`hostnames` are the tunnel names (each also in the hosting's own `hostnames`);
+for these the server answers only the local connector (loopback) and the exact
+`peers` addresses (the other servers of the datacenter that carry the tunnel,
+never the whole subnet) and drops everyone else without a reply.
+`openHostnames` is the subset that is also a public name on this server: the
+local-only lock is off for them so the public side answers everyone, and the
+site block stays one block per address. `extraBind` lists addresses the web
+server must also listen on so peers can reach it (a loopback-only or pinned
+bind otherwise hides the name from them). Addresses are bare IP literals,
+never ranges. `tlsMode: 'acme'` is refused on a hosting whose tunnel names
+are not all in `openHostnames`: a name that only arrives through a tunnel never
+asks for a public certificate (it uses `tls internal` or a pinned pair).
 
 **`EnvironmentDeployPayload.listenerPorts`:** optional server-owner org
 effective ProxySQL client listener ports echoed on every `environment.deploy`.

@@ -59,6 +59,14 @@ import {
   isValidWireguardPublicKey,
 } from '../../features/fabric/wg.ts'
 import { ENVELOPE_PREFIX_DAEMON } from '../../lib/secrets/data-encryption.ts'
+import {
+  type EnvironmentDeployHostingTunnel,
+  parseDeployHostingTunnel,
+  parseTunnelRoutesPayload,
+  parseTunnelRoutesResult,
+  type TunnelRoutesCommandPayload,
+  type TunnelRoutesCommandResult,
+} from './tunnel-routes.ts'
 import type { CommandType } from '../../features/commands/types.ts'
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -2710,6 +2718,12 @@ export type EnvironmentDeployHosting = {
    */
   bindAddress?: string
   /**
+   * Tunnel names of this hosting and who may reach them. When present the
+   * server answers those names only to local connectors and the listed peer
+   * addresses, and also listens on `extraBind`. Absent = no tunnel names.
+   */
+  tunnel?: EnvironmentDeployHostingTunnel
+  /**
    * `http` (default/omitted) routes `hostnames` through Traefik + hosting Caddy.
    * `tcp` / `udp` publish `ports[]` straight through Traefik — no hostname/TLS
    * routing.
@@ -2994,6 +3008,18 @@ function applyOptionalDeployHostingFields(
   if (proxy) hosting.proxy = proxy
   const bindAddress = parseDeployHostingBindAddress(entry.bindAddress)
   if (bindAddress) hosting.bindAddress = bindAddress
+  const tunnel = parseDeployHostingTunnel(entry.tunnel, hosting.hostnames)
+  if (tunnel) hosting.tunnel = tunnel
+  if (
+    tunnel &&
+    hosting.tlsMode === 'acme' &&
+    tunnel.hostnames.some((name) => !tunnel.openHostnames?.includes(name))
+  ) {
+    // A name that only arrives through a tunnel must never ask for a public certificate.
+    throw new TypeError(
+      'Invalid environment.deploy tunnel: tlsMode acme needs every tunnel name open'
+    )
+  }
   const protocol = parseDeployHostingProtocol(entry.protocol)
   if (protocol) hosting.protocol = protocol
   const ports = parseDeployHostingPorts(entry.ports)
@@ -8863,6 +8889,7 @@ export function parseCommandPayload(
   | BackupsReconcileCommandPayload
   | BackupTargetTestCommandPayload
   | FoldersRemoveCommandPayload
+  | TunnelRoutesCommandPayload
   | EnvironmentDeployCommandPayload
   | EnvironmentLifecycleCommandPayload
   | EnvironmentStopCommandPayload
@@ -8905,6 +8932,8 @@ export function parseCommandPayload(
       return parseBackupTargetTestPayload(value)
     case 'server.folders.remove':
       return parseFoldersRemovePayload(value)
+    case 'server.tunnel.routes':
+      return parseTunnelRoutesPayload(value)
     case 'environment.deploy':
       return parseEnvironmentDeployPayload(value)
     case 'environment.lifecycle':
@@ -8955,6 +8984,7 @@ export function parseCommandResult(
   | BackupsReconcileCommandResult
   | BackupTargetTestCommandResult
   | FoldersRemoveCommandResult
+  | TunnelRoutesCommandResult
   | EnvironmentDeployCommandResult
   | EnvironmentLifecycleCommandResult
   | EnvironmentStopCommandResult
@@ -8997,6 +9027,8 @@ export function parseCommandResult(
       return parseBackupTargetTestResult(value)
     case 'server.folders.remove':
       return parseFoldersRemoveResult(value)
+    case 'server.tunnel.routes':
+      return parseTunnelRoutesResult(value)
     case 'environment.deploy':
       return parseEnvironmentDeployResult(value)
     case 'environment.lifecycle':

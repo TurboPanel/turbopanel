@@ -262,6 +262,8 @@ const COMMAND_TIMEOUT_MS: Record<CommandType, number> = {
   'server.backups.test-target': 120_000,
   // One `rm -rf` through the root helper per folder, up to 100 folders; a big volume takes minutes.
   'server.folders.remove': 600_000,
+  // Writes one site file, validates it with the web server and reloads once.
+  'server.tunnel.routes': 120_000,
   // The run cap: counted from when the server starts the deploy, not from when it was sent.
   'environment.deploy': DEPLOY_RUN_CAP_MS,
   'environment.lifecycle': 120_000,
@@ -308,6 +310,7 @@ export function commandTimeoutMs(type: string): number {
     type === 'server.backups.reconcile' ||
     type === 'server.backups.test-target' ||
     type === 'server.folders.remove' ||
+    type === 'server.tunnel.routes' ||
     type === 'environment.deploy' ||
     type === 'environment.lifecycle' ||
     type === 'environment.stop' ||

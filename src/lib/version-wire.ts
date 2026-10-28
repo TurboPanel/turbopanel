@@ -200,6 +200,7 @@ export const DAEMON_WIRE_FEATURES = [
   'backup-s3-copy-v1',
   'deploy-hostings-only-v1',
   'custom-node-app-mode-v1',
+  'tunnel-forwarding-v1',
 ] as const
 
 export type DaemonWireFeature = (typeof DAEMON_WIRE_FEATURES)[number]
@@ -220,6 +221,9 @@ export const DEPLOY_HOSTINGS_ONLY_FEATURE: DaemonWireFeature = 'deploy-hostings-
  * environment deploy at parse time, so the control plane refuses first.
  */
 export const CUSTOM_NODE_APP_MODE_FEATURE: DaemonWireFeature = 'custom-node-app-mode-v1'
+
+/** The daemon applies `server.tunnel.routes` and `hostings[].tunnel`. */
+export const TUNNEL_FORWARDING_FEATURE: DaemonWireFeature = 'tunnel-forwarding-v1'
 
 /**
  * The daemon opens `tpdaemon` envelopes on `public-urls-update`
