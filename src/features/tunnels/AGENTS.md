@@ -1,0 +1,70 @@
+# Tunnels (`src/features/tunnels`)
+
+Provider-neutral tunnel plumbing. This first slice holds the tables, one
+adapter per provider and the routes that connect a provider account and its
+API tokens. No tunnel, portal or doorway route exists yet.
+
+## Tables
+
+`carrier` (a provider account an organization connected), `badge` (one API
+token on a carrier), `tunnel`, `portal` (one server running one connector) and
+`doorway` (one hostname a tunnel carries). Created in `0005_tunnel_tables`.
+Nothing in a table name, column or migration says Cloudflare: the provider is
+a value (`TUNNEL_PROVIDERS` in `vocabulary.ts`, pinned to the CHECK
+constraints by `src/db/enum-checks.test.ts`). Adding a provider is one new
+member there, a widened CHECK (forward migration) and one adapter.
+
+- `tunnel.datacenter_id` is nullable and only says what `placement = 'all'`
+  means (every server of that datacenter). It does not limit a tunnel to one
+  datacenter, and `portal` is keyed by (tunnel, server) with no datacenter
+  constraint. The code that adds a portal requires the server to be in the
+  tunnel's datacenter for now; that rule lives in code so it can be relaxed
+  without a migration.
+- `doorway.organization_id` repeats the tunnel's organization so a hostname is
+  unique per organization, as `hostname.routing_organization_id` does.
+- `carrier` is unique on (organization, provider, external account id); a
+  provider with no account stores NULL, and NULLs never collide.
+
+## Tokens
+
+A token is never stored in these tables. `badge.secret_id` (and later
+`tunnel.secret_id` for the run token) points at a `secret` row whose
+`secret_envelope` is the token sealed with `encryptSecret`. `secret.provider`
+is `cloudflare` for an API token and `cloudflare_tunnel` for a run token
+(`secret_provider_check` was widened in `0005`). Because the tokens are
+`secret` rows, the at-rest re-encrypt sweep (`src/admin/reencrypt-secrets.ts`,
+the `secrets` stage reads every row of `secret`) already covers them; there is
+no new sealed column. Removing a badge or carrier deletes the `secret` rows in
+the same transaction.
+
+A badge row keeps the label, the last four characters and what the token
+reaches. Responses and audit rows carry only those. Provider errors are
+scrubbed by `TunnelProviderError` (known secrets, bearer values and token-shaped
+runs are redacted) before they are logged, audited, stored or returned.
+
+## Adapter
+
+`adapter.ts` is the interface: check a credential, create a tunnel, fetch or
+rotate the run token, set routes, create or remove the DNS name, delete a
+tunnel. `cloudflare-adapter.ts` builds on `cloudflare-client.ts` (a small
+typed client over an injected `fetch`; tests never call the real service).
+
+- A credential is checked with read calls only (accounts, zones, tunnels,
+  DNS records) and the report says what succeeded. A read proves the token
+  reaches that area, not that it can edit; edit rights are confirmed by the
+  first write. Certificate rights cannot be seen by a safe read and are
+  reported as not shown. The accounts and zones lists may be refused to a
+  narrow token; that is treated as empty, not as a bad token.
+- Routes always point at `https://localhost`; the last ingress rule is a
+  catch-all with no hostname.
+- Rotating a Cloudflare run token is not confirmed against the API, so the
+  adapter reports it as unsupported rather than guess an endpoint.
+
+## Routes
+
+`src/client/organizations/carrier-routes.ts`, `organization:manage` like backup
+targets: `GET|POST /organizations/:id/carriers`, `DELETE .../carriers/:carrierId`,
+`GET|POST .../carriers/:carrierId/badges`,
+`DELETE .../badges/:badgeId`, `POST .../badges/:badgeId/check`. Adding a
+badge checks the token first and refuses one that cannot do anything useful,
+naming the missing permissions. OpenAPI: `src/client/openapi/tunnels.ts`.

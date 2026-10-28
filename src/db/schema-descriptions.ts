@@ -1346,10 +1346,76 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       principal_id:
         'Optional association with a principal (SET NULL on delete so a principal delete never fails on an org secret); no current writer sets it.',
       provider:
-        '`s3`, `s3_compatible`, `nfs`, `cifs`, `sftp`, `ftp`, `webdav` (reserved storage providers) or `git_deploy_key` (the only one written today).',
+        '`s3`, `s3_compatible`, `nfs`, `cifs`, `sftp`, `ftp`, `webdav` (reserved), `git_deploy_key`, or `cloudflare` and `cloudflare_tunnel` (tunnel tokens).',
       name: 'Operator label for the secret; not an identifier and not unique.',
       secret_envelope:
         '`tpsecret` envelope of provider-specific JSON; for `git_deploy_key` the sealed plaintext is the OpenSSH private key verbatim, resealed unopened for the daemon.',
+    },
+  },
+  badge: {
+    group: 'networking',
+    summary:
+      'One API token on a carrier; the token itself is sealed in the `secret` row it points to and this row keeps the label, last four characters and what it can do.',
+    columns: {
+      secret_id:
+        'The sealed token in `secret`, one badge per secret and not deletable under it; removing the badge removes the secret in the same transaction.',
+      label: 'Operator label for the token, shown beside its last four characters.',
+      capabilities:
+        'What the last check found the token can do: `tunnels`, `dns` and `certificates` as booleans, written by the panel after each check.',
+      last_four:
+        'Last 4 characters of the token, the only part of it ever shown; never enough to use the token.',
+      last_checked_at: 'When the panel last checked the token with the provider; NULL until then.',
+      status:
+        '`active` while the last check succeeded, `attention` once a check was refused or failed.',
+    },
+  },
+  carrier: {
+    group: 'networking',
+    summary:
+      'A provider account an organization connected for tunnels; its API tokens are `badge` rows and nothing secret is stored here.',
+    columns: {
+      metadata:
+        'Non-secret descriptors written by the panel; no keys are read by the platform today.',
+      options:
+        'Provider-specific non-secret details from the provider (for example the account name); no keys are read by the platform today.',
+      provider: 'Tunnel provider, `cloudflare` for now; widened by a forward migration.',
+      name: 'Operator label for the account; unique only together with the provider and account id.',
+      external_account_id:
+        'The provider own account id; NULL for a provider with no account concept (rows with NULL never collide).',
+      status: '`active` while a token on it works, `attention` when none does.',
+    },
+  },
+  doorway: {
+    group: 'networking',
+    summary:
+      'One hostname a tunnel carries to a site, with the provider route and DNS record ids; unique per organization like `hostname`.',
+    columns: {
+      metadata:
+        'Non-secret descriptors written by the panel; no keys are read by the platform today.',
+      options: 'Provider-specific route details; no keys are read by the platform today.',
+      organization_id:
+        'Owning organization, repeated from the tunnel so a hostname is unique per organization; cascade-deletes with it.',
+      hostname: 'Lower-case DNS name the tunnel carries.',
+      kind: 'Kind of traffic carried, `http` for now; ssh, rdp, vnc and tcp are added by a forward migration.',
+      external_route_id: 'The provider id of the route for this name; NULL until published.',
+      external_dns_record_id:
+        'The provider id of the DNS record the panel created for this name; NULL until created.',
+      is_local_only:
+        'True (the default) when the web server answers this name only for the local connector and datacenter peers.',
+      status:
+        '`pending` until route and DNS name exist, `live`, `attention` after a provider error, `removing` while being taken down.',
+    },
+  },
+  portal: {
+    group: 'networking',
+    summary:
+      'One server running one connector of a tunnel, with the wanted and reported state of that connector.',
+    columns: {
+      wanted: 'What the panel wants the connector to do: `running` or `stopped`.',
+      reported:
+        'What the server last reported: `unknown` (default), `connected`, `down` or `error`.',
+      last_seen_at: 'When the server last reported on the connector; NULL until the first report.',
+      last_error: 'Plain-words error from the last failed report; NULL when none.',
     },
   },
   storage: {
@@ -1878,6 +1944,25 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       event: 'One catalogue event code, or `*` for every event; unique per channel.',
       min_severity:
         "Severity floor `info` (default), `warning` or `critical`; delivered only when the event's severity ranks at or above it.",
+    },
+  },
+  tunnel: {
+    group: 'networking',
+    summary:
+      'A tunnel an organization created: a named path from a provider edge to connectors on its servers; the sealed run token is a `secret` row.',
+    columns: {
+      metadata:
+        'Non-secret descriptors written by the panel; no keys are read by the platform today.',
+      options: 'Provider-specific tunnel settings; no keys are read by the platform today.',
+      provider: 'Tunnel provider, `cloudflare` for now; widened by a forward migration.',
+      name: 'Operator name, unique per organization.',
+      external_id: 'The provider own tunnel id; NULL until the provider created it.',
+      placement:
+        'Where connectors run: `one` server, `chosen` servers in the datacenter, or `all` servers there.',
+      secret_id:
+        'The sealed run token in `secret`; SET NULL if that row goes, NULL for a provider that needs none.',
+      status:
+        '`pending` until created, `active`, `attention` after a provider error, `removing` while being taken down.',
     },
   },
   upgrade: {

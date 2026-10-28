@@ -4906,7 +4906,7 @@ export const secret = pgTable(
     check(
       'secret_provider_check',
       sql`provider IN ('s3', 's3_compatible', 'nfs', 'cifs', 'sftp', 'ftp', 'webdav',
-        'git_deploy_key')`
+        'git_deploy_key', 'cloudflare', 'cloudflare_tunnel')`
     ),
   ]
 )
@@ -7087,5 +7087,322 @@ export const bulwark = pgTable(
       'bulwark_digest_format_check',
       sql`last_digest IS NULL OR last_digest ~ '^[a-f0-9]{64}$'`
     ),
+  ]
+)
+
+/**
+ * A provider account an organization connected for tunnels (a Cloudflare
+ * account today). Provider-neutral: the provider is a value, its own details
+ * live in `options`. `external_account_id` is null for a provider with no
+ * account concept. Tokens are never stored here: see `badge`.
+ */
+export const carrier = pgTable(
+  'carrier',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .$onUpdate(() => sql`now()`)
+      .notNull(),
+    metadata: jsonb(),
+    options: jsonb(),
+    organizationId: uuid('organization_id').notNull(),
+    provider: text().notNull(),
+    name: text().notNull(),
+    externalAccountId: text('external_account_id'),
+    status: text().default('active').notNull(),
+  },
+  (table) => [
+    index('idx_carrier_organization_id').using(
+      'btree',
+      table.organizationId.asc().nullsLast().op('uuid_ops')
+    ),
+    // Postgres treats NULLs as distinct, so a provider with no account id may hold several.
+    unique('uniq_carrier_organization_id_provider_external_account_id').on(
+      table.organizationId,
+      table.provider,
+      table.externalAccountId
+    ),
+    foreignKey({
+      columns: [table.organizationId],
+      foreignColumns: [organization.id],
+      name: 'carrier_organization_id_organization_id_fk',
+    }).onDelete('cascade'),
+    // Mirror TUNNEL_PROVIDERS / CARRIER_STATUSES — pinned by enum-checks.test.ts.
+    check('carrier_provider_check', sql`provider IN ('cloudflare')`),
+    check('carrier_status_check', sql`status IN ('active', 'attention')`),
+  ]
+)
+
+/**
+ * One API token on a carrier. The token itself is sealed in the `secret` row
+ * `secret_id` points at; this row holds only the label, what the token can do
+ * and its last check. Removing a badge removes its secret row too.
+ */
+export const badge = pgTable(
+  'badge',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .$onUpdate(() => sql`now()`)
+      .notNull(),
+    carrierId: uuid('carrier_id').notNull(),
+    secretId: uuid('secret_id').notNull(),
+    label: text().notNull(),
+    /** What the last check found the token can do: `{ tunnels, dns, certificates }` booleans. */
+    capabilities: jsonb().default({}).notNull(),
+    /** Last 4 characters of the token, kept so a screen can tell tokens apart. */
+    lastFour: text('last_four').notNull(),
+    lastCheckedAt: timestamp('last_checked_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }),
+    status: text().default('active').notNull(),
+  },
+  (table) => [
+    index('idx_badge_carrier_id').using('btree', table.carrierId.asc().nullsLast().op('uuid_ops')),
+    unique('uniq_badge_secret_id').on(table.secretId),
+    foreignKey({
+      columns: [table.carrierId],
+      foreignColumns: [carrier.id],
+      name: 'badge_carrier_id_carrier_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.secretId],
+      foreignColumns: [secret.id],
+      name: 'badge_secret_id_secret_id_fk',
+    }).onDelete('restrict'),
+    check('badge_status_check', sql`status IN ('active', 'attention')`),
+  ]
+)
+
+/**
+ * A tunnel an organization created: a named path from a provider's edge to
+ * connectors on its servers. `secret_id` is the sealed run token the
+ * connectors use. `placement` says where connectors run; `datacenter_id` is
+ * the datacenter that `all` means every server of, and it is nullable. It does
+ * not limit the tunnel to one datacenter: connectors may later run in several.
+ */
+export const tunnel = pgTable(
+  'tunnel',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .$onUpdate(() => sql`now()`)
+      .notNull(),
+    metadata: jsonb(),
+    options: jsonb(),
+    organizationId: uuid('organization_id').notNull(),
+    carrierId: uuid('carrier_id'),
+    provider: text().notNull(),
+    name: text().notNull(),
+    externalId: text('external_id'),
+    placement: text().default('chosen').notNull(),
+    datacenterId: uuid('datacenter_id'),
+    secretId: uuid('secret_id'),
+    status: text().default('pending').notNull(),
+  },
+  (table) => [
+    index('idx_tunnel_carrier_id').using('btree', table.carrierId.asc().nullsLast().op('uuid_ops')),
+    index('idx_tunnel_datacenter_id').using(
+      'btree',
+      table.datacenterId.asc().nullsLast().op('uuid_ops')
+    ),
+    unique('uniq_tunnel_organization_id_name').on(table.organizationId, table.name),
+    foreignKey({
+      columns: [table.organizationId],
+      foreignColumns: [organization.id],
+      name: 'tunnel_organization_id_organization_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.carrierId],
+      foreignColumns: [carrier.id],
+      name: 'tunnel_carrier_id_carrier_id_fk',
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.datacenterId],
+      foreignColumns: [datacenter.id],
+      name: 'tunnel_datacenter_id_datacenter_id_fk',
+    }).onDelete('set null'),
+    foreignKey({
+      columns: [table.secretId],
+      foreignColumns: [secret.id],
+      name: 'tunnel_secret_id_secret_id_fk',
+    }).onDelete('set null'),
+    // Mirror TUNNEL_PROVIDERS / TUNNEL_PLACEMENTS / TUNNEL_STATUSES — pinned by enum-checks.test.ts.
+    check('tunnel_provider_check', sql`provider IN ('cloudflare')`),
+    check('tunnel_placement_check', sql`placement IN ('one', 'chosen', 'all')`),
+    check('tunnel_status_check', sql`status IN ('pending', 'active', 'attention', 'removing')`),
+  ]
+)
+
+/**
+ * One server running one connector of a tunnel. Keyed by (tunnel, server)
+ * only: no constraint ties the server to the tunnel's datacenter. For now the
+ * code that adds a portal requires the server to be in that datacenter, so
+ * the rule can be relaxed later without a migration.
+ */
+export const portal = pgTable(
+  'portal',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .$onUpdate(() => sql`now()`)
+      .notNull(),
+    tunnelId: uuid('tunnel_id').notNull(),
+    serverId: uuid('server_id').notNull(),
+    wanted: text().default('running').notNull(),
+    reported: text().default('unknown').notNull(),
+    lastSeenAt: timestamp('last_seen_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }),
+    lastError: text('last_error'),
+  },
+  (table) => [
+    index('idx_portal_server_id').using('btree', table.serverId.asc().nullsLast().op('uuid_ops')),
+    unique('uniq_portal_tunnel_id_server_id').on(table.tunnelId, table.serverId),
+    foreignKey({
+      columns: [table.tunnelId],
+      foreignColumns: [tunnel.id],
+      name: 'portal_tunnel_id_tunnel_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.serverId],
+      foreignColumns: [server.id],
+      name: 'portal_server_id_server_id_fk',
+    }).onDelete('cascade'),
+    // Mirror PORTAL_WANTED_STATES / PORTAL_REPORTED_STATES — pinned by enum-checks.test.ts.
+    check('portal_wanted_check', sql`wanted IN ('running', 'stopped')`),
+    check('portal_reported_check', sql`reported IN ('unknown', 'connected', 'down', 'error')`),
+  ]
+)
+
+/**
+ * One hostname a tunnel carries. `organization_id` repeats the tunnel's
+ * organization so a name is unique per organization, the same rule `hostname`
+ * applies with `routing_organization_id`. `hosting_id` is the site it serves
+ * (kept when the site goes: the row is then unattached).
+ */
+export const doorway = pgTable(
+  'doorway',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .$onUpdate(() => sql`now()`)
+      .notNull(),
+    metadata: jsonb(),
+    options: jsonb(),
+    organizationId: uuid('organization_id').notNull(),
+    tunnelId: uuid('tunnel_id').notNull(),
+    hostname: text().notNull(),
+    kind: text().default('http').notNull(),
+    hostingId: uuid('hosting_id'),
+    externalRouteId: text('external_route_id'),
+    externalDnsRecordId: text('external_dns_record_id'),
+    isLocalOnly: boolean('is_local_only').default(true).notNull(),
+    status: text().default('pending').notNull(),
+  },
+  (table) => [
+    index('idx_doorway_tunnel_id').using('btree', table.tunnelId.asc().nullsLast().op('uuid_ops')),
+    index('idx_doorway_hosting_id').using(
+      'btree',
+      table.hostingId.asc().nullsLast().op('uuid_ops')
+    ),
+    unique('uniq_doorway_organization_id_hostname').on(table.organizationId, table.hostname),
+    foreignKey({
+      columns: [table.organizationId],
+      foreignColumns: [organization.id],
+      name: 'doorway_organization_id_organization_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.tunnelId],
+      foreignColumns: [tunnel.id],
+      name: 'doorway_tunnel_id_tunnel_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.hostingId],
+      foreignColumns: [hosting.id],
+      name: 'doorway_hosting_id_hosting_id_fk',
+    }).onDelete('set null'),
+    // Mirror DOORWAY_KINDS / DOORWAY_STATUSES — pinned by enum-checks.test.ts.
+    check('doorway_kind_check', sql`kind IN ('http')`),
+    check('doorway_status_check', sql`status IN ('pending', 'live', 'attention', 'removing')`),
   ]
 )

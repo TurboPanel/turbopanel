@@ -1,0 +1,188 @@
+/**
+ * A small typed client for the parts of the Cloudflare API the tunnels feature
+ * uses. `fetch` is injected so tests never reach the real service. The token
+ * is sent only in the Authorization header; every error message is scrubbed
+ * of it before it leaves this file.
+ */
+import { codeForStatus, TunnelProviderError } from './errors.ts'
+
+export const CLOUDFLARE_API_BASE = 'https://api.cloudflare.com/client/v4'
+const REQUEST_TIMEOUT_MS = 15_000
+const PAGE_SIZE = 50
+const MAX_PAGES = 10
+
+type Envelope<T> = {
+  success?: boolean
+  errors?: { code?: number; message?: string }[]
+  result?: T
+  result_info?: { total_pages?: number }
+}
+
+export type CloudflareAccount = { id: string; name: string }
+export type CloudflareZone = { id: string; name: string }
+export type CloudflareTunnel = { id: string; name: string; token?: string }
+export type CloudflareIngressRule = {
+  hostname?: string
+  service: string
+  originRequest?: Record<string, unknown>
+}
+export type CloudflareDnsRecord = { id: string; name?: string }
+
+export type CloudflareClientOptions = {
+  token: string
+  fetch?: typeof fetch
+  baseUrl?: string
+}
+
+export class CloudflareClient {
+  readonly #token: string
+  readonly #fetch: typeof fetch
+  readonly #base: string
+
+  constructor(options: CloudflareClientOptions) {
+    this.#token = options.token
+    this.#fetch = options.fetch ?? fetch
+    this.#base = options.baseUrl ?? CLOUDFLARE_API_BASE
+  }
+
+  async #send(
+    method: string,
+    path: string,
+    body?: unknown
+  ): Promise<{ result: unknown; totalPages: number }> {
+    let response: Response
+    try {
+      response = await this.#fetch(`${this.#base}${path}`, {
+        method,
+        headers: {
+          Authorization: `Bearer ${this.#token}`,
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+        },
+        body: body === undefined ? undefined : JSON.stringify(body),
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      })
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : 'request failed'
+      throw new TunnelProviderError(
+        'unreachable',
+        `Cloudflare could not be reached: ${reason}`,
+        null,
+        [this.#token]
+      )
+    }
+    let envelope: Envelope<unknown> | null = null
+    try {
+      envelope = (await response.json()) as Envelope<unknown>
+    } catch {
+      envelope = null
+    }
+    if (!response.ok || envelope?.success === false) {
+      const detail = (envelope?.errors ?? [])
+        .map((e) => e.message)
+        .filter((m): m is string => typeof m === 'string' && m.length > 0)
+        .join('; ')
+      throw new TunnelProviderError(
+        codeForStatus(response.status),
+        `Cloudflare refused the request (${response.status})${detail ? `: ${detail}` : ''}`,
+        response.status,
+        [this.#token]
+      )
+    }
+    return { result: envelope?.result ?? null, totalPages: envelope?.result_info?.total_pages ?? 1 }
+  }
+
+  async #call<T>(method: string, path: string, body?: unknown): Promise<T> {
+    return (await this.#send(method, path, body)).result as T
+  }
+
+  /** Read every page of a list endpoint, up to a fixed cap. */
+  async #list<T>(path: string): Promise<T[]> {
+    const joiner = path.includes('?') ? '&' : '?'
+    const items: T[] = []
+    for (let page = 1; page <= MAX_PAGES; page++) {
+      const { result, totalPages } = await this.#send(
+        'GET',
+        `${path}${joiner}page=${page}&per_page=${PAGE_SIZE}`
+      )
+      if (Array.isArray(result)) items.push(...(result as T[]))
+      if (page >= totalPages) break
+    }
+    return items
+  }
+
+  listAccounts(): Promise<CloudflareAccount[]> {
+    return this.#list<CloudflareAccount>('/accounts')
+  }
+
+  listZones(): Promise<CloudflareZone[]> {
+    return this.#list<CloudflareZone>('/zones')
+  }
+
+  /** One-row read: proves the token can read tunnels of the account. */
+  async probeTunnels(accountId: string): Promise<void> {
+    await this.#call(
+      'GET',
+      `/accounts/${encodeURIComponent(accountId)}/cfd_tunnel?is_deleted=false&per_page=1`
+    )
+  }
+
+  /** One-row read: proves the token can read DNS records of the zone. */
+  async probeDns(zoneId: string): Promise<void> {
+    await this.#call('GET', `/zones/${encodeURIComponent(zoneId)}/dns_records?per_page=1`)
+  }
+
+  createTunnel(accountId: string, name: string): Promise<CloudflareTunnel> {
+    return this.#call('POST', `/accounts/${encodeURIComponent(accountId)}/cfd_tunnel`, {
+      name,
+      config_src: 'cloudflare',
+    })
+  }
+
+  getTunnelToken(accountId: string, tunnelId: string): Promise<string> {
+    return this.#call(
+      'GET',
+      `/accounts/${encodeURIComponent(accountId)}/cfd_tunnel/${encodeURIComponent(tunnelId)}/token`
+    )
+  }
+
+  /** Replace the tunnel's ingress rules. The last rule must be a catch-all with no hostname. */
+  async putConfiguration(
+    accountId: string,
+    tunnelId: string,
+    ingress: readonly CloudflareIngressRule[]
+  ): Promise<void> {
+    await this.#call(
+      'PUT',
+      `/accounts/${encodeURIComponent(accountId)}/cfd_tunnel/${encodeURIComponent(tunnelId)}/configurations`,
+      { config: { ingress } }
+    )
+  }
+
+  async deleteTunnel(accountId: string, tunnelId: string): Promise<void> {
+    await this.#call(
+      'DELETE',
+      `/accounts/${encodeURIComponent(accountId)}/cfd_tunnel/${encodeURIComponent(tunnelId)}`
+    )
+  }
+
+  createDnsRecord(
+    zoneId: string,
+    record: { name: string; content: string }
+  ): Promise<CloudflareDnsRecord> {
+    return this.#call('POST', `/zones/${encodeURIComponent(zoneId)}/dns_records`, {
+      type: 'CNAME',
+      name: record.name,
+      content: record.content,
+      proxied: true,
+      ttl: 1,
+    })
+  }
+
+  async deleteDnsRecord(zoneId: string, recordId: string): Promise<void> {
+    await this.#call(
+      'DELETE',
+      `/zones/${encodeURIComponent(zoneId)}/dns_records/${encodeURIComponent(recordId)}`
+    )
+  }
+}

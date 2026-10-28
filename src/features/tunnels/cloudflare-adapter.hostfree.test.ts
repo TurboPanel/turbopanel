@@ -1,0 +1,206 @@
+import { assert, assertEquals, assertRejects } from '@std/assert'
+import { buildIngress, createCloudflareAdapter } from './cloudflare-adapter.ts'
+import { TunnelProviderError } from './errors.ts'
+import { scrubSecrets } from './scrub.ts'
+
+/**
+ * Jest/Mocha-shaped alias for {@link Deno.test}.
+ *
+ * Sonar typescript:S2187 only recognizes `test()` / `it()` / `describe()` and
+ * reports Deno suites as empty; keep this alias so analysis sees real tests.
+ */
+const test = Deno.test.bind(Deno)
+
+const TOKEN = 'cf-api-token-0123456789abcdefghijklmnopqrstuv'
+const ACCOUNT = 'a'.repeat(32)
+
+type Call = { method: string; url: string; auth: string | null; body: unknown }
+type Reply = { status?: number; body: unknown }
+
+/** A fetch that answers from a table keyed by `METHOD path` and records each call. */
+function fakeFetch(routes: Record<string, Reply>) {
+  const calls: Call[] = []
+  const impl: typeof fetch = (input, init) => {
+    const url = new URL(String(input))
+    const method = init?.method ?? 'GET'
+    const headers = new Headers(init?.headers)
+    calls.push({
+      method,
+      url: url.pathname + url.search,
+      auth: headers.get('Authorization'),
+      body: init?.body ? JSON.parse(String(init.body)) : undefined,
+    })
+    const reply = routes[`${method} ${url.pathname}`]
+    if (!reply)
+      return Promise.resolve(Response.json({ success: false, errors: [] }, { status: 404 }))
+    return Promise.resolve(Response.json(reply.body, { status: reply.status ?? 200 }))
+  }
+  return { impl, calls }
+}
+
+const ok = (result: unknown) => ({ body: { success: true, errors: [], result } })
+const refused = (status: number, message: string): Reply => ({
+  status,
+  body: { success: false, errors: [{ code: 1, message }] },
+})
+
+test('a token that reaches tunnels and DNS is reported with its zones and no missing permission', async () => {
+  const { impl, calls } = fakeFetch({
+    'GET /client/v4/accounts': ok([{ id: ACCOUNT, name: 'Main' }]),
+    'GET /client/v4/zones': ok([{ id: 'z1', name: 'example.com' }]),
+    [`GET /client/v4/accounts/${ACCOUNT}/cfd_tunnel`]: ok([]),
+    'GET /client/v4/zones/z1/dns_records': ok([]),
+  })
+  const report = await createCloudflareAdapter({ fetch: impl }).checkCredential(TOKEN, {
+    accountId: ACCOUNT,
+  })
+  assertEquals(report.capabilities, { tunnels: true, dns: true, certificates: false })
+  assertEquals(report.missing, [])
+  assertEquals(report.zones, [{ id: 'z1', name: 'example.com' }])
+  assert(report.accountVisible)
+  // Only reads, and the token travels only in the header.
+  assert(calls.every((c) => c.method === 'GET' && c.auth === `Bearer ${TOKEN}`))
+  assert(calls.every((c) => !c.url.includes(TOKEN)))
+})
+
+test('a token without DNS access names the missing permission', async () => {
+  const { impl } = fakeFetch({
+    'GET /client/v4/accounts': ok([{ id: ACCOUNT, name: 'Main' }]),
+    'GET /client/v4/zones': ok([{ id: 'z1', name: 'example.com' }]),
+    [`GET /client/v4/accounts/${ACCOUNT}/cfd_tunnel`]: ok([]),
+    'GET /client/v4/zones/z1/dns_records': refused(403, 'Authentication error'),
+  })
+  const report = await createCloudflareAdapter({ fetch: impl }).checkCredential(TOKEN, {
+    accountId: ACCOUNT,
+  })
+  assertEquals(report.capabilities.tunnels, true)
+  assertEquals(report.capabilities.dns, false)
+  assertEquals(report.missing, ['Zone · DNS · Edit'])
+})
+
+test('a token refused the account and zone lists is judged by the probes, not rejected', async () => {
+  const { impl } = fakeFetch({
+    'GET /client/v4/accounts': refused(403, 'forbidden'),
+    'GET /client/v4/zones': refused(403, 'forbidden'),
+    [`GET /client/v4/accounts/${ACCOUNT}/cfd_tunnel`]: ok([]),
+  })
+  const report = await createCloudflareAdapter({ fetch: impl }).checkCredential(TOKEN, {
+    accountId: ACCOUNT,
+  })
+  assertEquals(report.capabilities.tunnels, true)
+  assertEquals(report.capabilities.dns, false)
+  assert(report.accountVisible)
+})
+
+test('an account the token cannot see is reported as not visible', async () => {
+  const { impl } = fakeFetch({
+    'GET /client/v4/accounts': ok([{ id: 'b'.repeat(32), name: 'Other' }]),
+    'GET /client/v4/zones': ok([]),
+  })
+  const report = await createCloudflareAdapter({ fetch: impl }).checkCredential(TOKEN, {
+    accountId: ACCOUNT,
+  })
+  assertEquals(report.accountVisible, false)
+  assertEquals(report.capabilities.tunnels, false)
+})
+
+test('a token the provider rejects fails with an unauthorized error free of the token', async () => {
+  const { impl } = fakeFetch({
+    'GET /client/v4/accounts': refused(401, `Invalid token ${TOKEN}`),
+  })
+  const err = await assertRejects(
+    () => createCloudflareAdapter({ fetch: impl }).checkCredential(TOKEN, { accountId: ACCOUNT }),
+    TunnelProviderError
+  )
+  assertEquals(err.code, 'unauthorized')
+  assert(!err.message.includes(TOKEN))
+})
+
+test('a network failure that echoes the token is scrubbed', async () => {
+  const impl: typeof fetch = () =>
+    Promise.reject(new TypeError(`connect failed for Bearer ${TOKEN}`))
+  const err = await assertRejects(
+    () => createCloudflareAdapter({ fetch: impl }).checkCredential(TOKEN, { accountId: ACCOUNT }),
+    TunnelProviderError
+  )
+  assertEquals(err.code, 'unreachable')
+  assert(!err.message.includes(TOKEN))
+  assert(!JSON.stringify(err).includes(TOKEN))
+})
+
+test('creating a tunnel asks for a remotely managed tunnel and fetches the run token when none is returned', async () => {
+  const { impl, calls } = fakeFetch({
+    [`POST /client/v4/accounts/${ACCOUNT}/cfd_tunnel`]: ok({ id: 't-1', name: 'web' }),
+    [`GET /client/v4/accounts/${ACCOUNT}/cfd_tunnel/t-1/token`]: ok('run-token-value'),
+  })
+  const created = await createCloudflareAdapter({ fetch: impl }).createTunnel(TOKEN, {
+    accountId: ACCOUNT,
+    name: 'web',
+  })
+  assertEquals(created, { externalId: 't-1', runToken: 'run-token-value' })
+  assertEquals(calls[0]!.body, { name: 'web', config_src: 'cloudflare' })
+})
+
+test('routes end with a catch-all and point every name at the local web server', async () => {
+  const rules = buildIngress(['A.example.com', 'a.example.com', 'b.example.com'])
+  assertEquals(rules.length, 3)
+  assertEquals(rules[0]!.hostname, 'a.example.com')
+  assertEquals(rules[0]!.service, 'https://localhost')
+  assertEquals(rules[2], { service: 'http_status:404' })
+
+  const { impl, calls } = fakeFetch({
+    [`PUT /client/v4/accounts/${ACCOUNT}/cfd_tunnel/t-1/configurations`]: ok({}),
+  })
+  await createCloudflareAdapter({ fetch: impl }).setRoutes(TOKEN, {
+    accountId: ACCOUNT,
+    externalId: 't-1',
+    hostnames: ['a.example.com'],
+  })
+  const body = calls[0]!.body as { config: { ingress: { hostname?: string; service: string }[] } }
+  assertEquals(body.config.ingress.at(-1), { service: 'http_status:404' })
+})
+
+test('the DNS name is a proxied CNAME to the tunnel', async () => {
+  const { impl, calls } = fakeFetch({
+    'POST /client/v4/zones/z1/dns_records': ok({ id: 'r-1' }),
+    'DELETE /client/v4/zones/z1/dns_records/r-1': ok({ id: 'r-1' }),
+  })
+  const adapter = createCloudflareAdapter({ fetch: impl })
+  const made = await adapter.createDnsName(TOKEN, {
+    zoneId: 'z1',
+    hostname: 'a.example.com',
+    externalId: 't-1',
+  })
+  assertEquals(made, { recordId: 'r-1' })
+  assertEquals(calls[0]!.body, {
+    type: 'CNAME',
+    name: 'a.example.com',
+    content: 't-1.cfargotunnel.com',
+    proxied: true,
+    ttl: 1,
+  })
+  await adapter.removeDnsName(TOKEN, { zoneId: 'z1', recordId: 'r-1' })
+  assertEquals(calls[1]!.method, 'DELETE')
+})
+
+test('deleting a tunnel and rotating a run token behave as documented', async () => {
+  const { impl, calls } = fakeFetch({
+    [`DELETE /client/v4/accounts/${ACCOUNT}/cfd_tunnel/t-1`]: ok({}),
+  })
+  const adapter = createCloudflareAdapter({ fetch: impl })
+  await adapter.deleteTunnel(TOKEN, { accountId: ACCOUNT, externalId: 't-1' })
+  assertEquals(calls[0]!.method, 'DELETE')
+  const err = await assertRejects(
+    () => adapter.rotateRunToken(TOKEN, { accountId: ACCOUNT, externalId: 't-1' }),
+    TunnelProviderError
+  )
+  assertEquals(err.code, 'unsupported')
+})
+
+test('scrubbing removes known secrets, bearer values and token-shaped runs', () => {
+  const text = `bad ${TOKEN} header Bearer abc.def-ghi and blob ${'Z'.repeat(40)}`
+  const out = scrubSecrets(text, [TOKEN])
+  assert(!out.includes(TOKEN))
+  assert(!out.includes('abc.def-ghi'))
+  assert(!out.includes('Z'.repeat(40)))
+})

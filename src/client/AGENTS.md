@@ -37,6 +37,16 @@ Per-feature behavior contracts for the client surface (moved from the root
 `AGENTS.md` **API / WS surfaces** section). Keep current when endpoint behavior
 changes.
 
+- **Tunnel provider accounts (client surface):** `GET|POST /organizations/:id/carriers`,
+  `DELETE /organizations/:id/carriers/:carrierId` (409 `carrier_in_use` while a
+  tunnel uses it), `GET|POST .../carriers/:carrierId/badges`,
+  `DELETE .../badges/:badgeId`, `POST .../badges/:badgeId/check`. All
+  `organization:manage`. A token is write-only: checked with the provider,
+  sealed into `secret`, never returned (responses carry a label and the last
+  four characters; audit rows carry neither). Adding one is refused with
+  `badge_rejected`, `badge_wrong_account` or `badge_not_useful` (names the
+  missing permissions); 502 `provider_unavailable` when the provider cannot be
+  reached. See `src/features/tunnels/AGENTS.md`.
 - **Org activity feed (client surface):** `GET /organizations/:id/activity` —
   every deploy / restart / stop command across the org, newest first, whatever
   the outcome (queued, running, succeeded, failed, timed out, cancelled, rolled
