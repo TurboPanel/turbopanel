@@ -1,7 +1,6 @@
 import { assertEquals } from '@std/assert'
 import type { DaemonOutboundEnvelope } from '../../contracts/cell-protocol.ts'
 import { createUpgradeCoordinator } from './coordinator.ts'
-import { clientUpdateBlock } from './decisions.ts'
 import { compareUpgradeStepRows } from './run.ts'
 import { createMemoryUpgradeStore, type FleetServerFact } from './store.ts'
 import { DEFAULT_UPGRADE_SETTINGS } from '../settings/upgrade-settings.ts'
@@ -147,47 +146,6 @@ test('managed-upgrade-v1 updates the daemon before the control plane', async () 
 test('a missing run id is not a successful upgrade', async () => {
   const { coordinator } = harness(['managed-upgrade-v1'])
   assertEquals(await coordinator.run('missing-run'), null)
-})
-
-test('cancel records a cancelled run and retry reopens a failed step', async () => {
-  const { coordinator } = harness(['managed-upgrade-v1'])
-  const started = await coordinator.start({
-    source: 'manual',
-    startedBy: null,
-  })
-  if (!started.ok) throw new TypeError(started.error)
-  const active = await coordinator.activeRun()
-  const step = active?.steps[0]
-  if (!step?.requestId) throw new TypeError('expected a dispatched step')
-  await coordinator.noteProgress({
-    serverId: SERVER,
-    unit: 'daemon',
-    stage: 'failed',
-    at: '2026-09-24T12:01:00.000Z',
-    detail: 'disk full',
-    errorCode: 'preflight_disk',
-    requestId: step.requestId,
-  })
-  const failed = await coordinator.activeRun()
-  assertEquals(failed?.steps[0]?.status, 'failed')
-
-  const retried = await coordinator.retry(step.id)
-  assertEquals(retried, { ok: true })
-  const reopened = await coordinator.activeRun()
-  const again = reopened?.steps.find((item) => item.id === step.id)
-  assertEquals(again?.status, 'dispatched')
-  assertEquals(again?.attempts, 2)
-  assertEquals(again?.errorCode, null)
-  if (again?.requestId === step.requestId) {
-    throw new TypeError("a manual retry reused the failed attempt's request id")
-  }
-
-  const cancelled = await coordinator.cancel(started.runId)
-  assertEquals(cancelled.ok, true)
-  const gone = await coordinator.activeRun()
-  assertEquals(gone, null)
-  const recorded = await coordinator.run(started.runId)
-  assertEquals(recorded?.status, 'cancelled')
 })
 
 const FLEET_A = '33333333-3333-4333-8333-333333333333'
@@ -783,7 +741,7 @@ test('auto-update waits for an offline server to reconnect instead of opening ru
       },
     ],
     latest: target,
-    settings: { ...DEFAULT_UPGRADE_SETTINGS, autoUpdate: true },
+    settings: DEFAULT_UPGRADE_SETTINGS,
   })
   const enqueued: DaemonOutboundEnvelope[] = []
   const coordinator = createUpgradeCoordinator({
@@ -823,7 +781,7 @@ test('a fleet host skipped while offline is picked up on the first tick after it
   const store = createMemoryUpgradeStore({
     facts: [host],
     latest: target,
-    settings: { ...DEFAULT_UPGRADE_SETTINGS, autoUpdate: true },
+    settings: DEFAULT_UPGRADE_SETTINGS,
   })
   const coordinator = createUpgradeCoordinator({
     store,
@@ -859,7 +817,7 @@ test('a fleet host skipped while offline is picked up on the first tick after it
   assertEquals(next?.id === first.runId, false)
 })
 
-test('a reconnected host that was skipped waits for a person when auto-update is off', async () => {
+test('a reconnected host that was skipped waits while updates are paused', async () => {
   const host = {
     ...fact(['managed-upgrade-v1'], 'old-daemon'),
     serverId: FLEET_A,
@@ -869,7 +827,8 @@ test('a reconnected host that was skipped waits for a person when auto-update is
   const store = createMemoryUpgradeStore({
     facts: [host],
     latest: target,
-    settings: { ...DEFAULT_UPGRADE_SETTINGS, autoUpdate: false },
+    settings: DEFAULT_UPGRADE_SETTINGS,
+    pause: { since: T0, byUserId: null, byEmail: null, byName: null },
   })
   const coordinator = createUpgradeCoordinator({
     store,
@@ -897,7 +856,7 @@ test('the tick starts a run for a newer published build once the previous run ha
   const store = createMemoryUpgradeStore({
     facts: [host],
     latest: published,
-    settings: { ...DEFAULT_UPGRADE_SETTINGS, autoUpdate: true },
+    settings: DEFAULT_UPGRADE_SETTINGS,
   })
   const coordinator = createUpgradeCoordinator({
     store,
@@ -933,36 +892,6 @@ test('the tick starts a run for a newer published build once the previous run ha
   const next = await coordinator.activeRun()
   assertEquals(next?.target.daemon?.commit, 'newer-daemon')
   assertEquals(next?.id === first.runId, false)
-})
-
-test('a non-development gate fails closed when the target cannot be read', () => {
-  assertEquals(
-    clientUpdateBlock({
-      runtime: 'deno',
-      development: false,
-      targetCommitKnown: false,
-      gateOpen: false,
-    }),
-    { blocked: true, error: 'upgrade_gate_unavailable' }
-  )
-  assertEquals(
-    clientUpdateBlock({
-      runtime: 'deno',
-      development: true,
-      targetCommitKnown: false,
-      gateOpen: false,
-    }),
-    { blocked: false, useCoordinator: false }
-  )
-  assertEquals(
-    clientUpdateBlock({
-      runtime: 'deno',
-      development: false,
-      targetCommitKnown: true,
-      gateOpen: false,
-    }),
-    { blocked: true, error: 'control_plane_upgrade_required' }
-  )
 })
 
 test('a hello reporting the target commit while a tick is mid-redispatch is not clobbered', async () => {

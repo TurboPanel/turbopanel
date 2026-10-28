@@ -204,6 +204,12 @@ export type ProviderPushEvent = {
   commitSha: string | null
   /** The push removed the branch — no head to build, for any auto-deploy mode. */
   deleted: boolean
+  /**
+   * The provider login of whoever pushed, cleaned by `pushLoginFrom` (`push-login.ts`), or
+   * `null` when the delivery named nobody. Only the login is kept, never an
+   * email address.
+   */
+  pushedBy: string | null
 }
 
 /** A CI signal that released a parked `checks_passed` SHA. */

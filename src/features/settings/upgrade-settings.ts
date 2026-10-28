@@ -3,9 +3,11 @@
  *
  * Mirrors the server-metrics setting shape: one jsonb row keyed by a stable
  * name, read fresh on every call so a panel change applies without a
- * redeploy. `autoUpdate` gates automatic runs on every runtime, Workers
- * included (`shouldAutoStartRun` in `../upgrades/schedule.ts`). This module
- * only stores and validates.
+ * redeploy. Updates are always automatic, so the only stored choice is how many
+ * servers update at once (`batch`). Rows written before that change also carry
+ * `autoUpdate` and `maintenanceWindow`; they are read and ignored, never
+ * rejected, so a saved batch survives the upgrade. This module only stores and
+ * validates.
  */
 import { eq } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
@@ -18,50 +20,42 @@ export const UPGRADE_BATCH_MODES = ['percent', 'count'] as const
 export type UpgradeBatchMode = (typeof UPGRADE_BATCH_MODES)[number]
 
 export type UpgradeSettings = {
-  autoUpdate: boolean
   batch: { mode: UpgradeBatchMode; value: number }
-  maintenanceWindow: {
-    enabled: boolean
-    /** Minutes after 00:00 UTC when the window opens (0–1439). */
-    startMinute: number
-    /** Window length in minutes (1–1440). */
-    durationMinutes: number
-    /**
-     * UTC weekdays, 0 = Sunday through 6 = Saturday. Empty means every day.
-     */
-    weekdays: number[]
-  }
 }
 
 /**
- * Customer fleets update one server at a time (one batch per upgrade tick, 15
- * minutes by default). A throwaway environment can start larger through
- * `TURBOPANEL_UPGRADE_BATCH`; a value saved in the panel always wins.
+ * Every server in one wave unless an administrator saves a smaller batch in
+ * Admin > Updates (or the environment sets `TURBOPANEL_UPGRADE_BATCH`).
  */
 export const DEFAULT_UPGRADE_BATCH: UpgradeSettings['batch'] = {
-  mode: 'count',
-  value: 1,
+  mode: 'percent',
+  value: 100,
 }
 
 export const DEFAULT_UPGRADE_SETTINGS: UpgradeSettings = {
-  autoUpdate: false,
   batch: { ...DEFAULT_UPGRADE_BATCH },
-  maintenanceWindow: {
-    enabled: false,
-    startMinute: 0,
-    durationMinutes: 60,
-    weekdays: [],
-  },
+}
+
+/**
+ * Keys an older row (or an older console's save) may still carry. They are
+ * accepted and dropped; nothing reads them any more.
+ */
+const LEGACY_KEYS = ['autoUpdate', 'maintenanceWindow'] as const
+
+/**
+ * What a save writes beside `batch`, so a control plane rolled back to a build
+ * that still reads these keys sees a valid row with automatic updates on and
+ * no window.
+ */
+const LEGACY_COMPAT_FIELDS = {
+  autoUpdate: true,
+  maintenanceWindow: { enabled: false, startMinute: 0, durationMinutes: 60, weekdays: [] },
 }
 
 const PERCENT_MIN = 1
 const PERCENT_MAX = 100
 const COUNT_MIN = 1
 const COUNT_MAX = 10_000
-const START_MINUTE_MAX = 1439
-const DURATION_MIN = 1
-const DURATION_MAX = 1440
-const WEEKDAY_MAX = 6
 
 function nowTs(): string {
   return new Date().toISOString()
@@ -88,8 +82,8 @@ function isValidBatchValue(mode: UpgradeBatchMode, value: unknown): boolean {
 }
 
 /**
- * Parse `TURBOPANEL_UPGRADE_BATCH` (`count:5` or `percent:100`). Blank or
- * anything outside the stored limits falls back to one server at a time.
+ * Parse `TURBOPANEL_UPGRADE_BATCH` (`count:5` or `percent:25`). Blank or
+ * anything outside the stored limits falls back to {@link DEFAULT_UPGRADE_BATCH}.
  */
 export function parseUpgradeBatchDefault(raw: string | undefined): UpgradeSettings['batch'] {
   const match = /^(percent|count):(\d{1,5})$/.exec(raw?.trim() ?? '')
@@ -99,64 +93,27 @@ export function parseUpgradeBatchDefault(raw: string | undefined): UpgradeSettin
   return isValidBatchValue(mode, value) ? { mode, value } : { ...DEFAULT_UPGRADE_BATCH }
 }
 
-function isValidWeekdays(value: unknown): value is number[] {
-  if (!Array.isArray(value)) return false
-  const seen = new Set<number>()
-  for (const day of value) {
-    if (!Number.isInteger(day) || day < 0 || day > WEEKDAY_MAX) return false
-    if (seen.has(day)) return false
-    seen.add(day)
-  }
-  return true
-}
-
-function isIntegerInRange(value: unknown, min: number, max: number): value is number {
-  return typeof value === 'number' && Number.isInteger(value) && value >= min && value <= max
-}
-
-function isValidMaintenanceWindow(value: unknown): value is UpgradeSettings['maintenanceWindow'] {
-  if (!isRecord(value)) return false
-  if (!hasExactKeys(value, ['enabled', 'startMinute', 'durationMinutes', 'weekdays'])) {
-    return false
-  }
-  if (typeof value.enabled !== 'boolean') return false
-  if (!isIntegerInRange(value.startMinute, 0, START_MINUTE_MAX)) return false
-  if (!isIntegerInRange(value.durationMinutes, DURATION_MIN, DURATION_MAX)) {
-    return false
-  }
-  return isValidWeekdays(value.weekdays)
-}
-
-/** True when `value` is a complete upgrade-settings object. */
+/**
+ * True when `value` names a valid `batch`. Legacy keys (`autoUpdate`,
+ * `maintenanceWindow`) may be present and are ignored; any other key is not.
+ */
 export function isValidUpgradeSettings(value: unknown): value is UpgradeSettings {
   if (!isRecord(value)) return false
-  if (!hasExactKeys(value, ['autoUpdate', 'batch', 'maintenanceWindow'])) {
-    return false
-  }
-  if (typeof value.autoUpdate !== 'boolean') return false
+  const allowed = new Set<string>(['batch', ...LEGACY_KEYS])
+  if (!Object.keys(value).every((key) => allowed.has(key))) return false
   if (!isRecord(value.batch) || !hasExactKeys(value.batch, ['mode', 'value'])) {
     return false
   }
   if (!isBatchMode(value.batch.mode)) return false
-  if (!isValidBatchValue(value.batch.mode, value.batch.value)) return false
-  return isValidMaintenanceWindow(value.maintenanceWindow)
+  return isValidBatchValue(value.batch.mode, value.batch.value)
 }
 
 function copySettings(settings: UpgradeSettings): UpgradeSettings {
-  return {
-    autoUpdate: settings.autoUpdate,
-    batch: { mode: settings.batch.mode, value: settings.batch.value },
-    maintenanceWindow: {
-      enabled: settings.maintenanceWindow.enabled,
-      startMinute: settings.maintenanceWindow.startMinute,
-      durationMinutes: settings.maintenanceWindow.durationMinutes,
-      weekdays: [...settings.maintenanceWindow.weekdays].sort((a, b) => a - b),
-    },
-  }
+  return { batch: { mode: settings.batch.mode, value: settings.batch.value } }
 }
 
 /**
- * Return a detached copy with weekdays sorted, or `null` when invalid.
+ * Return a detached copy holding only `batch`, or `null` when invalid.
  */
 export function normalizeUpgradeSettings(value: unknown): UpgradeSettings | null {
   if (!isValidUpgradeSettings(value)) return null
@@ -177,10 +134,7 @@ export async function getUpgradeSettings(
     .from(setting)
     .where(eq(setting.key, UPGRADE_SETTINGS_KEY))
     .limit(1)
-  return (
-    normalizeUpgradeSettings(rows[0]?.value) ??
-    copySettings({ ...DEFAULT_UPGRADE_SETTINGS, batch: defaultBatch })
-  )
+  return normalizeUpgradeSettings(rows[0]?.value) ?? copySettings({ batch: defaultBatch })
 }
 
 /**
@@ -192,13 +146,14 @@ export async function setUpgradeSettings(db: Db, settings: UpgradeSettings): Pro
   if (!normalized) {
     throw new TypeError('upgrade settings are invalid')
   }
+  const stored = { ...LEGACY_COMPAT_FIELDS, ...normalized }
   await db
     .insert(setting)
-    .values({ key: UPGRADE_SETTINGS_KEY, value: normalized })
+    .values({ key: UPGRADE_SETTINGS_KEY, value: stored })
     .onConflictDoUpdate({
       target: setting.key,
       set: {
-        value: normalized,
+        value: stored,
         updatedAt: nowTs(),
       },
     })

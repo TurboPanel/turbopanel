@@ -2100,12 +2100,16 @@ async function projectManagedMemberObservedStatus(
       ...(member.replication !== undefined ? { replication: member.replication } : {}),
     })
   } catch (err) {
-    const message = errorMessage(err)
-    compatLogWarn(
-      'command-consumer',
-      `managed member projection failed for ${commandType} command ${commandId}: ${message}`
-    )
+    warnMemberProjectionFailed(err, commandId, commandType)
   }
+}
+
+/** A member-row projection is best effort: log it and let the steps after it run. */
+function warnMemberProjectionFailed(err: unknown, commandId: string, commandType: string): void {
+  compatLogWarn(
+    'command-consumer',
+    `managed member projection failed for ${commandType} command ${commandId}: ${errorMessage(err)}`
+  )
 }
 
 export function isManagedObservedStatus(value: string): value is 'ready' | 'stopped' | 'failed' {
@@ -2152,6 +2156,95 @@ export function oldPrimaryFinalFromStop(
   }
 }
 
+/**
+ * The status a lifecycle result without a `member` object carries for the one
+ * member it was sent to (`payload.memberId`). The daemon answers every stop
+ * that way (it cannot read health from a stopped container), so without this a
+ * replica whose stop failed kept reading Running. Only a status the cluster row
+ * also takes (ready, stopped, failed) is used; anything else is dropped.
+ */
+export function lifecycleFallbackMemberStatus(
+  payload: Pick<ManagedLifecyclePayload, 'memberId'>,
+  result: Pick<ManagedLifecycleCommandResult, 'member' | 'status'>
+): { memberId: string; status: 'ready' | 'stopped' | 'failed' } | undefined {
+  if (result.member || !payload.memberId) return undefined
+  if (!isManagedObservedStatus(result.status)) return undefined
+  return { memberId: payload.memberId, status: result.status }
+}
+
+/**
+ * Write a fallback member status, never over `needs_resync`: that mark is the
+ * only thing that keeps a demoted member's old data from being started, and the
+ * daemon answers a stop of such a member with a plain `stopped` too.
+ */
+async function projectFallbackMemberStatus(
+  db: Db,
+  observed: { memberId: string; status: string },
+  record: Pick<DispatchableCommandRecord, 'id' | 'type'>
+): Promise<void> {
+  try {
+    await db
+      .update(replica)
+      .set({ status: observed.status, updatedAt: nowIso() })
+      .where(and(eq(replica.id, observed.memberId), ne(replica.status, 'needs_resync')))
+  } catch (err) {
+    warnMemberProjectionFailed(err, record.id, record.type)
+  }
+}
+
+/** Container states a database the server just saw stop can no longer be in. */
+const LIVE_CONTAINER_STATUSES = ['running', 'restarting', 'created', 'paused']
+
+/**
+ * A lifecycle result carries no container list, so the database's container
+ * rows on that server kept the state from before a stop and the screens kept
+ * saying Running. When the server reports the stop, the database's own
+ * containers there are exited; shared ingress keeps its state, and the next
+ * container report corrects anything else.
+ */
+async function projectManagedContainersStopped(
+  db: Db,
+  managedId: string,
+  serverId: string,
+  observedStatus: string
+): Promise<void> {
+  if (observedStatus !== 'stopped') return
+  const managedServices = db
+    .select({ id: service.id })
+    .from(service)
+    .innerJoin(managed, eq(managed.environmentId, service.environmentId))
+    .where(eq(managed.id, managedId))
+  await db
+    .update(container)
+    .set({ status: 'exited', updatedAt: nowIso() })
+    .where(
+      and(
+        eq(container.serverId, serverId),
+        ne(container.role, 'ingress'),
+        inArray(container.status, LIVE_CONTAINER_STATUSES),
+        inArray(container.serviceId, managedServices)
+      )
+    )
+}
+
+/** What a lifecycle result says about the member it ran on: its row and its containers. */
+async function projectLifecycleOnMember(
+  db: Db,
+  record: DispatchableCommandRecord,
+  payload: ManagedLifecyclePayload,
+  result: ManagedLifecycleCommandResult
+): Promise<void> {
+  await projectManagedMemberObservedStatus(db, result.member, record.id, record.type)
+  const fallback = lifecycleFallbackMemberStatus(payload, result)
+  if (fallback) await projectFallbackMemberStatus(db, fallback, record)
+  await projectManagedContainersStopped(
+    db,
+    payload.managedId,
+    record.serverId,
+    result.member?.status ?? result.status
+  )
+}
+
 async function applyManagedLifecycleSideEffect(
   db: Db,
   record: DispatchableCommandRecord,
@@ -2175,7 +2268,7 @@ async function applyManagedLifecycleSideEffect(
       record.id,
       record.type
     )
-    await projectManagedMemberObservedStatus(db, lifecycleResult.member, record.id, record.type)
+    await projectLifecycleOnMember(db, record, payload, lifecycleResult)
 
     const recoveryId = recoveryIdFromCommandMetadata(meta)
     if (recoveryId && payload.action === 'stop') {

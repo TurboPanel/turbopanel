@@ -62,7 +62,6 @@ const SERVER_PATHS = [
 const ORG_SCOPED_PATHS = [
   ['GET', '/servers'],
   ['GET', '/servers/updates'],
-  ['POST', '/servers/updates'],
   ['GET', '/servers/status'],
   ['GET', `/servers/${SERVER_ID}`],
   ['PATCH', `/servers/${SERVER_ID}`],
@@ -479,100 +478,22 @@ test('GET /servers/updates returns idle rows for visible offline servers', async
   assertEquals(typeof body.servers[0]?.status, 'string')
 })
 
-test('POST /servers/updates returns 503 when the daemon cell registry is missing', async () => {
-  const { app, cookie } = await buildSessionApp()
-  const res = await app.request('/servers/updates', {
-    method: 'POST',
-    headers: sessionHeaders(cookie),
-  })
-  await expectJson(res, 503, { error: 'Daemon cell registry unavailable' })
-})
-
-test('POST /servers/updates fails closed when the upgrade gate cannot be read', async () => {
-  seedUpdateManifestCacheForTests(null)
-  const { app, cookie } = await buildSessionApp({
-    registry: stubRegistry(),
-    executeQueue: [[{ allowed: true }], [{ item_id: SERVER_ID }], [], [{ allowed: false }]],
-  })
-  const res = await app.request('/servers/updates', {
-    method: 'POST',
-    headers: sessionHeaders(cookie),
-  })
-  assertEquals(res.status, 503)
-  assertEquals(await res.json(), {
-    ok: false,
-    error: 'upgrade_gate_unavailable',
-  })
-})
-
-test('POST /servers/updates fails closed while the control-plane host is behind', async () => {
-  seedUpdateManifestCacheForTests(null)
-  let enqueued = 0
-  const registry = stubRegistry()
-  const cell = registry.getCell(SERVER_ID)
-  const enqueue = cell.enqueue.bind(cell)
-  cell.enqueue = (envelope) => {
-    enqueued += 1
-    return enqueue(envelope)
+test('starting a server update by hand answers 410 updates_automatic for every caller', async () => {
+  for (const role of ['superadmin', 'admin', 'user'] as const) {
+    const { app, cookie } = await buildSessionApp({
+      role,
+      defaultAllowed: true,
+      registry: stubRegistry(),
+    })
+    for (const path of ['/servers/updates', `/servers/${SERVER_ID}/update`]) {
+      const res = await app.request(path, { method: 'POST', headers: sessionHeaders(cookie) })
+      assertEquals(res.status, 410, `${role} ${path}`)
+      const body = (await res.json()) as { ok: boolean; error: string; message: string }
+      assertEquals(body.ok, false)
+      assertEquals(body.error, 'updates_automatic')
+      assertEquals(body.message.includes('Admin > Updates'), true)
+    }
   }
-  const { app, cookie } = await buildSessionApp({
-    registry,
-    executeQueue: [[{ allowed: true }], [{ item_id: SERVER_ID }], [], [{ allowed: true }]],
-  })
-  const res = await app.request('/servers/updates', {
-    method: 'POST',
-    headers: sessionHeaders(cookie),
-  })
-  assertEquals(res.status, 503)
-  assertEquals(await res.json(), {
-    ok: false,
-    error: 'upgrade_gate_unavailable',
-  })
-  assertEquals(enqueued, 0)
-})
-
-test('POST /servers/updates refuses a caller without organization:manage', async () => {
-  seedUpdateManifestCacheForTests(null)
-  let enqueued = 0
-  const registry = stubRegistry()
-  const cell = registry.getCell(SERVER_ID)
-  const enqueue = cell.enqueue.bind(cell)
-  cell.enqueue = (envelope) => {
-    enqueued += 1
-    return enqueue(envelope)
-  }
-  const { app, cookie } = await buildSessionApp({
-    registry,
-    executeQueue: [[{ allowed: false }]],
-  })
-  const res = await app.request('/servers/updates', {
-    method: 'POST',
-    headers: sessionHeaders(cookie),
-  })
-  assertEquals(res.status, 403)
-  assertEquals(await res.json(), { error: 'Forbidden' })
-  assertEquals(enqueued, 0)
-})
-
-test('GET /servers/status returns an empty batch when nothing is visible', async () => {
-  const { app, cookie } = await buildSessionApp({ executeQueue: [[]] })
-  const res = await app.request('/servers/status', {
-    headers: sessionHeaders(cookie),
-  })
-  assertEquals(res.status, 200)
-  assertEquals(res.headers.get('Cache-Control'), 'private, max-age=5')
-  assertEquals(await res.json(), { servers: [] })
-})
-
-test('GET /servers/status coalesces a second request onto the cached payload', async () => {
-  const { app, cookie } = await buildSessionApp({ executeQueue: [[], []] })
-  const headers = sessionHeaders(cookie)
-  const first = await app.request('/servers/status', { headers })
-  const second = await app.request('/servers/status', { headers })
-  assertEquals(first.status, 200)
-  assertEquals(second.status, 200)
-  assertEquals(await first.json(), { servers: [] })
-  assertEquals(await second.json(), { servers: [] })
 })
 
 test('GET /servers/:id/update returns idle status without a live daemon', async () => {
@@ -591,17 +512,13 @@ test('GET /servers/:id/update returns idle status without a live daemon', async 
     status: string
     colocatedWithInstance: boolean
     updateBlocked?: boolean
-    updateBlockedCode?: string
-    updateBlockedReason?: string
   }
   if (!body.ok) throw new TypeError('expected ok update status')
   assertEquals(body.serverId, SERVER_ID)
   assertEquals(body.colocatedWithInstance, false)
   assertEquals(typeof body.status, 'string')
-  // No manifest: the gate fails closed. Clients read the code, not the sentence.
-  assertEquals(body.updateBlocked, true)
-  assertEquals(body.updateBlockedCode, 'upgrade_gate_unavailable')
-  assertEquals(typeof body.updateBlockedReason, 'string')
+  // Updates are automatic: there is no manual-update gate to report.
+  assertEquals(body.updateBlocked, undefined)
 })
 
 test('GET /servers/:id/status returns 403 when read is denied', async () => {
@@ -649,46 +566,6 @@ test('GET /servers/:id/cell returns 404 when the snapshot has no serverId', asyn
     headers: sessionHeaders(cookie),
   })
   await expectJson(res, 404, { error: 'server not found' })
-})
-
-test('POST /servers/:id/update returns 403 when manage is denied', async () => {
-  const { app, cookie } = await buildSessionApp({ defaultAllowed: false })
-  const res = await app.request(`/servers/${SERVER_ID}/update`, {
-    method: 'POST',
-    headers: sessionHeaders(cookie),
-  })
-  await expectJson(res, 403, { error: 'Forbidden' })
-})
-
-test('POST /servers/:id/update returns 503 when the registry is missing', async () => {
-  const { app, cookie } = await buildSessionApp({ defaultAllowed: true })
-  const res = await app.request(`/servers/${SERVER_ID}/update`, {
-    method: 'POST',
-    headers: sessionHeaders(cookie),
-  })
-  await expectJson(res, 503, { error: 'Daemon cell registry unavailable' })
-})
-
-test('POST /servers/:id/update fails closed when the upgrade gate cannot be read', async () => {
-  seedUpdateManifestCacheForTests(null)
-  let enqueued = 0
-  const registry = stubRegistry()
-  const cell = registry.getCell(SERVER_ID)
-  const enqueue = cell.enqueue.bind(cell)
-  cell.enqueue = (envelope) => {
-    enqueued += 1
-    return enqueue(envelope)
-  }
-  const { app, cookie } = await buildSessionApp({
-    defaultAllowed: true,
-    registry,
-  })
-  const res = await app.request(`/servers/${SERVER_ID}/update`, {
-    method: 'POST',
-    headers: sessionHeaders(cookie),
-  })
-  await expectJson(res, 503, { ok: false, error: 'upgrade_gate_unavailable' })
-  assertEquals(enqueued, 0)
 })
 
 test('POST /servers/:id/update/reset returns 403 when manage is denied', async () => {

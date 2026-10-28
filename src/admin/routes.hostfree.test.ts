@@ -15,7 +15,6 @@ import { deriveEncryptionSecretsConfig, deriveSecretsConfig } from '../lib/secre
 import type { DaemonCell, DaemonCellRegistry, PendingRequestRecord } from '../contracts/cell.ts'
 import type { DaemonOutboundEnvelope } from '../contracts/cell-protocol.ts'
 import { ADMIN_API_PREFIX } from '../app/surfaces.ts'
-import { INSTANCE_VERSION } from '../app/version.ts'
 import { seedUpdateManifestCacheForTests } from '../features/update/manifest.ts'
 import { parseTestSecretsConfig } from '../test-fixtures/secrets.ts'
 import type { Db } from '../db/connection.ts'
@@ -1269,15 +1268,27 @@ test('instance updates: workers refuses the control plane, GET still reports its
     assertEquals(body.units.instance.updateAvailable, false)
     assertEquals(body.units.daemon.updateAvailable, false)
 
+    const automatic = body as unknown as {
+      automatic: boolean
+      updatesPaused: boolean
+      pausedAt: string | null
+      pausedBy: unknown
+      daemonsBehind: boolean
+      updateWaiting: boolean
+    }
+    assertEquals(automatic.automatic, true)
+    assertEquals(automatic.updatesPaused, false)
+    assertEquals(automatic.pausedAt, null)
+    assertEquals(automatic.pausedBy, null)
+    assertEquals(automatic.daemonsBehind, false)
+    assertEquals(automatic.updateWaiting, false)
+
     const upgrade = await workers.app.request(`${ADMIN_API_PREFIX}/instance/updates/instance`, {
       method: 'POST',
       headers: { Cookie: workers.cookie },
     })
-    assertEquals(upgrade.status, 422)
-    assertEquals(await upgrade.json(), {
-      ok: false,
-      error: 'control-plane update is not applicable on this runtime',
-    })
+    assertEquals(upgrade.status, 410)
+    assertEquals((await jsonBody<{ error: string }>(upgrade)).error, 'updates_automatic')
   } finally {
     globalThis.fetch = originalFetch
   }
@@ -1347,79 +1358,30 @@ test('instance updates: on Workers the UI is deployed, never offered as an insta
   }
 })
 
-test('instance updates refuse a missing or disconnected co-located daemon', async () => {
-  const releaseEnv = () => ({ TURBOPANEL_UPDATE_CHANNEL: 'release' })
-  const noRegistry = await buildApp({ registry: null, getEnv: releaseEnv })
-  const missing = await noRegistry.app.request(`${ADMIN_API_PREFIX}/instance/updates/instance`, {
-    method: 'POST',
-    headers: { Cookie: noRegistry.cookie },
-  })
-  assertEquals(missing.status, 503)
-
-  const serverId = crypto.randomUUID()
-  const disconnected = await buildApp({
-    getEnv: releaseEnv,
-    colocatedServerId: serverId,
-    registry: createRegistry({
-      snapshots: new Map([[serverId, { connected: false }]]),
-    }),
-  })
-  const down = await disconnected.app.request(`${ADMIN_API_PREFIX}/instance/updates/daemon`, {
-    method: 'POST',
-    headers: { Cookie: disconnected.cookie },
-  })
-  assertEquals(down.status, 503)
-  assertEquals(await down.json(), { ok: false, error: 'co-located daemon disconnected' })
-})
-
-test('legacy instance update refuses a daemon that cannot roll the control plane back', async () => {
-  const originalFetch = globalThis.fetch
-  // The control plane verifies signed manifests before use, so seed the target instead of faking the fetch.
-  for (const kind of ['daemon', 'instance', 'ui'] as const) {
-    seedUpdateManifestCacheForTests(
-      {
-        commit: 'targetcommit',
-        buildId: 'build-abc',
-        builtAt: '2020-01-01T00:00:00.000Z',
-        channel: 'release',
-        manifestUrl: 'https://example.invalid/manifest.json',
-        version: INSTANCE_VERSION,
-      },
-      'release',
-      kind
-    )
-  }
-  const serverId = crypto.randomUUID()
-  const enqueued: DaemonOutboundEnvelope[] = []
-  try {
+test('every route that started, retried or cancelled an update by hand answers 410 updates_automatic', async () => {
+  for (const runtime of ['deno', 'workers'] as const) {
     const { app, cookie } = await buildApp({
+      runtime,
       getEnv: () => ({ TURBOPANEL_UPDATE_CHANNEL: 'release' }),
-      colocatedServerId: serverId,
-      registry: createRegistry({
-        enqueued,
-        snapshots: new Map([[serverId, { connected: true, daemonVersion: '0.1.0' }]]),
-      }),
     })
-    const instance = await app.request(`${ADMIN_API_PREFIX}/instance/updates/instance`, {
-      method: 'POST',
-      headers: { Cookie: cookie },
-    })
-    assertEquals(instance.status, 409)
-    const body = await jsonBody<{ ok: boolean; error: string }>(instance)
-    assertEquals(body.ok, false)
-    assertEquals(body.error.includes('managed-upgrade-v1'), true)
-    assertEquals(enqueued.length, 0)
-    const daemon = await app.request(`${ADMIN_API_PREFIX}/instance/updates/daemon`, {
-      method: 'POST',
-      headers: { Cookie: cookie },
-    })
-    assertEquals(daemon.status, 409)
-    assertEquals(
-      enqueued.some((entry) => entry.kind === 'instance-update'),
-      false
-    )
-  } finally {
-    globalThis.fetch = originalFetch
+    for (const path of [
+      '/instance/updates/instance',
+      '/instance/updates/daemon',
+      '/instance/updates/preflight',
+      '/instance/updates/runs',
+      `/instance/updates/steps/${crypto.randomUUID()}/retry`,
+      `/instance/updates/runs/${crypto.randomUUID()}/cancel`,
+    ]) {
+      const res = await app.request(`${ADMIN_API_PREFIX}${path}`, {
+        method: 'POST',
+        headers: { Cookie: cookie },
+      })
+      assertEquals(res.status, 410, `${runtime} ${path}`)
+      const body = await jsonBody<{ ok: boolean; error: string; message: string }>(res)
+      assertEquals(body.ok, false)
+      assertEquals(body.error, 'updates_automatic')
+      assertEquals(body.message.includes('Pause All Updates'), true)
+    }
   }
 })
 
@@ -1501,5 +1463,58 @@ test('other org-admin routes stay open to admin role', async () => {
   for (const path of ['/settings/email', '/instance/public-urls', '/daemon/events']) {
     const res = await app.request(`${ADMIN_API_PREFIX}${path}`, { headers: { Cookie: cookie } })
     assertEquals(res.status, 200, path)
+  }
+})
+
+test('a waiting self-hosted control-plane update shows its backup and rollback command; hosted never does', async () => {
+  for (const kind of ['daemon', 'instance', 'ui'] as const) {
+    seedUpdateManifestCacheForTests(
+      {
+        commit: 'targetcommit',
+        buildId: 'build-abc',
+        builtAt: '2099-01-01T00:00:00.000Z',
+        channel: 'release',
+        manifestUrl: 'https://example.invalid/manifest.json',
+        version: '99.0.0',
+      },
+      'release',
+      kind
+    )
+  }
+  try {
+    const serverId = crypto.randomUUID()
+    const selfHosted = await buildApp({
+      getEnv: () => ({ TURBOPANEL_UPDATE_CHANNEL: 'release' }),
+      colocatedServerId: serverId,
+      registry: createRegistry({
+        snapshots: new Map([[serverId, { connected: true, daemonVersion: '0.1.0' }]]),
+      }),
+    })
+    const res = await selfHosted.app.request(`${ADMIN_API_PREFIX}/instance/updates`, {
+      headers: { Cookie: selfHosted.cookie },
+    })
+    const body = await jsonBody<{
+      updateWaiting: boolean
+      controlPlaneRecovery: { runId: string; backupPath: string; rollbackCommand: string } | null
+    }>(res)
+    assertEquals(body.updateWaiting, true)
+    const recovery = body.controlPlaneRecovery
+    if (!recovery) throw new TypeError('expected the recovery command')
+    assertEquals(recovery.backupPath.endsWith(recovery.runId), true)
+    assertEquals(recovery.rollbackCommand.includes(recovery.runId), true)
+
+    const hosted = await buildApp({
+      runtime: 'workers',
+      getEnv: () => ({ TURBOPANEL_UPDATE_CHANNEL: 'release' }),
+    })
+    const hostedRes = await hosted.app.request(`${ADMIN_API_PREFIX}/instance/updates`, {
+      headers: { Cookie: hosted.cookie },
+    })
+    const hostedBody = await jsonBody<{ controlPlaneRecovery: unknown }>(hostedRes)
+    assertEquals(hostedBody.controlPlaneRecovery, null)
+  } finally {
+    for (const kind of ['daemon', 'instance', 'ui'] as const) {
+      seedUpdateManifestCacheForTests(null, 'release', kind)
+    }
   }
 })

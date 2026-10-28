@@ -30,6 +30,8 @@ import {
   planSingleServer,
   planUpgrade,
   stepSatisfiedByInstalled,
+  unitsForPlannedRun,
+  type UpgradePlan,
   type UpgradeRuntime,
 } from './planner.ts'
 import {
@@ -38,9 +40,10 @@ import {
   earliestOpenPhase,
   failedPlatformPhase,
   finalRunStatus,
-  finalRunStatusFromSummary,
+  finishedRunStatus,
   fleetCellProbeIds,
   isFleetGateSatisfied,
+  PAUSED_RUN_ERROR,
   type PlatformPhase,
   platformFailureError,
   runWaitsOnlyOnOfflineServers,
@@ -69,8 +72,11 @@ import {
 } from './restart-report.ts'
 import { shouldAutoStartRun } from './schedule.ts'
 import {
-  type ClientUpdateBlock,
-  clientUpdateBlock,
+  upgradeFailureKey,
+  upgradeRetryNotBefore,
+  type UpgradeFailureHistory,
+} from './retry-backoff.ts'
+import {
   controlPlaneBackupPath,
   controlPlaneRollbackCommand,
   daemonOnlyUpdateCommand,
@@ -153,8 +159,6 @@ export type UpgradeCoordinator = {
   }>
   settings(): Promise<UpgradeSettings>
   saveSettings(settings: UpgradeSettings): Promise<void>
-  cancel(runId: string): Promise<{ ok: boolean; error?: string }>
-  retry(stepId: string): Promise<{ ok: boolean; error?: string }>
   noteDaemonCommit(serverId: string, commit: string, at: string): Promise<void>
   noteProgress(input: {
     serverId: string
@@ -180,7 +184,6 @@ export type UpgradeCoordinator = {
     /** Wire id of the `update` / `instance-update` this report belongs to. */
     requestId: string
   }): Promise<void>
-  updateGate(): Promise<ClientUpdateBlock>
 }
 
 export type UpgradeCoordinatorDeps = {
@@ -219,11 +222,36 @@ export type UpgradeTickDecision = {
   daemonDrift: boolean
   targetDiffers: boolean
   activeRun: { id: string; status: string; phase: string | null } | null
+  /** An administrator paused all updates; no run starts and an open one stops after its current servers. */
+  paused?: boolean
   autoStart:
     | { decision: 'not-attempted' }
     | { decision: 'started'; runId: string; steps: StepSummary }
     | { decision: 'refused'; error: string; blockers: string[] }
+    | { decision: 'nothing-to-do' }
 }
+
+/**
+ * `start()` error for an automatic run whose every step is already on the
+ * target. No run is saved: history shows real updates only.
+ */
+export const UPGRADE_NOTHING_TO_UPDATE = 'upgrade_nothing_to_update'
+
+/** `start()` error while an administrator has paused all updates. */
+export const UPGRADE_PAUSED = 'upgrade_paused'
+
+export const UPGRADE_PAUSED_MESSAGE = 'Updates are paused. Resume them in Admin > Updates.'
+
+/**
+ * `start()` error for an automatic run whose co-located daemon or control
+ * plane failed this build recently and is still inside its retry backoff. No
+ * run is saved; a later check tries again.
+ */
+export const UPGRADE_RETRY_LATER = 'upgrade_retry_later'
+
+/** Sentence on a step a pause settled before it was sent. */
+export const SKIPPED_PAUSED_MESSAGE =
+  'Updates were paused before this server started. It updates after they are resumed.'
 
 const ACTIVE = new Set<string>(UPGRADE_STEP_ACTIVE_STATUSES)
 
@@ -273,6 +301,15 @@ export const UPGRADE_RUN_ACTIVE = 'upgrade_run_active'
 
 export const UPGRADE_RUN_ACTIVE_MESSAGE = 'Another update is already in progress.'
 
+/** A refused automatic start, or the tick's "nothing to update" when every server is current. */
+function refusedAutoStart(started: {
+  error: string
+  blockers?: string[]
+}): UpgradeTickDecision['autoStart'] {
+  if (started.error === UPGRADE_NOTHING_TO_UPDATE) return { decision: 'nothing-to-do' }
+  return { decision: 'refused', error: started.error, blockers: started.blockers ?? [] }
+}
+
 function runActiveRefusal(activeRunId?: string) {
   return {
     ok: false as const,
@@ -300,6 +337,19 @@ function markStepSkippedOffline(step: UpgradeStepRow, message: string): void {
   step.status = 'skipped'
   step.errorCode = 'server_offline' satisfies UpgradeStepErrorCode
   step.errorMessage = message
+}
+
+function retryLaterMessage(history: UpgradeFailureHistory, notBefore: Date): string {
+  const times = history.failures === 1 ? 'once' : `${history.failures} times`
+  return `It failed to update to this build ${times}. It tries again automatically after ${notBefore.toISOString()}.`
+}
+
+/** A step an automatic run planned but that needs no work now (on target, or waiting out its retry backoff). */
+function needsNoWork(step: UpgradeStepRow): boolean {
+  if (step.status === 'done') return true
+  return (
+    step.status === 'skipped' && step.errorCode === ('retry_later' satisfies UpgradeStepErrorCode)
+  )
 }
 
 function connectedServerIds(fleet: readonly FleetServerFact[]): string[] {
@@ -654,7 +704,7 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
       running && running === step.toCommit
         ? `This control plane is running the target build ${want}`
         : `This control plane is running ${shortCommit(running)}, not the target build ${want}`
-    return `The daemon did not confirm the new control plane within ${minutes} minutes. ${where}. Check the daemon log on this host, then retry the step or cancel the update.`
+    return `The daemon did not confirm the new control plane within ${minutes} minutes. ${where}. Check the daemon log on this host; a later automatic check tries again.`
   }
 
   function stepActionFor(step: UpgradeStepRow, fact: FleetServerFact | undefined): StepAction {
@@ -744,6 +794,146 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
   }
 
   /**
+   * A finished control-plane install also installed its run's web interface
+   * build: record it, so a later UI-only build is seen as waiting.
+   */
+  async function recordUiOnInstall(step: UpgradeStepRow): Promise<void> {
+    if (step.unit !== 'instance' || step.status !== 'done') return
+    const run = await deps.store.runById(step.upgradeId)
+    const commit = run?.target.ui?.commit
+    if (!commit) return
+    await deps.store.recordInstalledUi({ commit, source: 'install', at: deps.now() })
+  }
+
+  /**
+   * Pause: settle every step that was never sent as `skipped`
+   * (`updates_paused`) and mark the run, so it ends once the servers already
+   * updating finish. Steps already sent (and their retries) keep going.
+   * A pause that finds nothing left to settle (every server was already sent
+   * the update) changes nothing: the run ends with its real outcome, because
+   * the pause held no server back.
+   */
+  async function stopPausedRun(run: UpgradeRunRow): Promise<void> {
+    const settled = await deps.store.skipUndispatchedSteps(run.id, {
+      errorCode: 'updates_paused' satisfies UpgradeStepErrorCode,
+      errorMessage: SKIPPED_PAUSED_MESSAGE,
+      at: deps.now(),
+    })
+    if (settled === 0 || run.error === PAUSED_RUN_ERROR) return
+    run.error = PAUSED_RUN_ERROR
+    await deps.store.saveRun(run)
+  }
+
+  /**
+   * The hourly check: resolve and save the channel target, then start an
+   * automatic run when something is behind, no run is open and updates are
+   * not paused. Reports the decision through `trace`.
+   */
+  async function checkForUpdates(paused: boolean): Promise<void> {
+    const target = await resolveTarget()
+    await deps.store.saveLatestBuild(target)
+    const active = await deps.store.activeRun()
+    const daemonCommit = target.daemon?.commit ?? null
+    const daemonDrift = daemonCommit
+      ? await deps.store.anyDaemonBehind(daemonCommit, target.daemon?.builtAt)
+      : false
+    const differs =
+      daemonDrift ||
+      instanceBehind(target) ||
+      uiBehindForRun(target, await deps.store.installedUi())
+    let autoStart: UpgradeTickDecision['autoStart'] = { decision: 'not-attempted' }
+    if (
+      shouldAutoStartRun({
+        targetDiffers: differs,
+        runActive: active !== null,
+        paused,
+      })
+    ) {
+      const started = await createUpgradeCoordinator({ ...deps, trace: undefined }).start({
+        source: 'auto',
+        startedBy: null,
+      })
+      autoStart = started.ok
+        ? {
+            decision: 'started',
+            runId: started.runId,
+            steps: await deps.store.countSteps(started.runId),
+          }
+        : refusedAutoStart(started)
+    }
+    deps.trace?.({
+      channel: deps.channel,
+      targetDaemon: target.daemon
+        ? { version: target.daemon.version, commit: target.daemon.commit }
+        : null,
+      targetInstance: target.instance
+        ? { version: target.instance.version, commit: target.instance.commit }
+        : null,
+      daemonDrift,
+      targetDiffers: differs,
+      activeRun: active ? { id: active.id, status: active.status, phase: active.phase } : null,
+      paused,
+      autoStart,
+    })
+  }
+
+  /**
+   * Why an automatic start saves no run: the co-located daemon or control
+   * plane is waiting out its retry backoff, or nothing needs work (the no-op
+   * rule: every step on target or waiting out its backoff). Null to go on.
+   */
+  async function automaticStartRefusal(
+    steps: UpgradeStepRow[],
+    target: UpgradeTarget
+  ): Promise<{ ok: false; error: string; blockers: string[] } | null> {
+    if ((await deferFailedServers(steps, target)) === 'platform') {
+      return {
+        ok: false,
+        error: UPGRADE_RETRY_LATER,
+        blockers: ['This host failed to update to this build recently. It tries again later.'],
+      }
+    }
+    if (!steps.every(needsNoWork)) return null
+    return {
+      ok: false,
+      error: UPGRADE_NOTHING_TO_UPDATE,
+      blockers: ['Every server already runs the target build.'],
+    }
+  }
+
+  /**
+   * Automatic retry with backoff: a planned step whose server failed this
+   * build recently is settled `skipped` (`retry_later`) until its backoff
+   * passes. Returns 'platform' when that is the co-located daemon or the
+   * control plane (the fleet cannot open without them, so the run waits).
+   */
+  async function deferFailedServers(
+    steps: UpgradeStepRow[],
+    target: UpgradeTarget
+  ): Promise<'platform' | 'fleet' | null> {
+    const open = steps.filter((step) => step.status === 'pending')
+    if (open.length === 0) return null
+    const history = await deps.store.failureHistory({
+      daemonCommit: target.daemon?.commit ?? null,
+      instanceCommit: target.instance?.commit ?? null,
+    })
+    if (history.size === 0) return null
+    const now = new Date(deps.now())
+    let deferred: 'platform' | 'fleet' | null = null
+    for (const step of open) {
+      const past = history.get(upgradeFailureKey(step.serverId, step.unit))
+      const notBefore = upgradeRetryNotBefore(past, now)
+      if (!past || !notBefore) continue
+      if (step.phase !== 'fleet') return 'platform'
+      step.status = 'skipped'
+      step.errorCode = 'retry_later' satisfies UpgradeStepErrorCode
+      step.errorMessage = retryLaterMessage(past, notBefore)
+      deferred = 'fleet'
+    }
+    return deferred
+  }
+
+  /**
    * A failed co-located daemon or control plane ends the run: the fleet gate
    * needs both on target, so the fleet phase behind it could never open.
    */
@@ -761,7 +951,7 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
   }
 
   async function finishRun(run: UpgradeRunRow, counts: StepSummary): Promise<void> {
-    run.status = finalRunStatusFromSummary(counts)
+    run.status = finishedRunStatus(counts, run.error)
     run.finishedAt = deps.now()
     run.counts = counts
     run.phase = null
@@ -895,6 +1085,56 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
     return fact?.commit ?? null
   }
 
+  /**
+   * The control plane is behind only where a run would plan its step. The
+   * hosted panel never installs itself (its deploy commit never matches the
+   * channel build), so its commit alone must not open a run. `fleetCount` only
+   * decides the daemon unit, so it does not matter here.
+   */
+  function instanceBehind(target: UpgradeTarget): boolean {
+    if (!instancePlannable()) return false
+    return differsFromInstalled(
+      { version: deps.instanceInstalled.version, commit: deps.instanceInstalled.commit },
+      target.instance
+    )
+  }
+
+  /**
+   * The web interface is behind only where a run would plan the control-plane
+   * step (self-hosted with a package and a co-located daemon): the hosted
+   * platform deploys its own web interface. Unknown builds are never behind.
+   */
+  function uiBehindForRun(target: UpgradeTarget, installedUi: string | null): boolean {
+    return instancePlannable() && uiBehindTarget(target.ui, installedUi)
+  }
+
+  function instancePlannable(): boolean {
+    return unitsForPlannedRun({
+      runtime: deps.runtime,
+      channelHasInstancePackage: channelHasInstancePackage(deps.channel),
+      hasColocated: Boolean(deps.colocatedServerId),
+      fleetCount: 0,
+    }).includes('instance')
+  }
+
+  /** The step list a start lays out: one server, a named fleet slice, or the whole install. */
+  function planRun(
+    input: { serverId?: string; fleetServerIds?: readonly string[] },
+    fleet: readonly FleetServerFact[],
+    batch: UpgradeSettings['batch']
+  ): UpgradePlan {
+    if (input.serverId) return planSingleServer(input.serverId)
+    const slice = input.fleetServerIds
+    return planUpgrade({
+      runtime: slice ? 'workers' : deps.runtime,
+      channelHasInstancePackage: slice ? false : channelHasInstancePackage(deps.channel),
+      colocatedServerId: slice ? null : deps.colocatedServerId,
+      fleetServerIds: slice ?? fleet.filter((fact) => !fact.colocated).map((fact) => fact.serverId),
+      connectedServerIds: connectedServerIds(fleet),
+      batch,
+    })
+  }
+
   return {
     preflight: async () => {
       const [target, fleet, active] = await Promise.all([
@@ -918,6 +1158,9 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
           return runActiveRefusal(active.id)
         }
       }
+      if (await deps.store.pause()) {
+        return { ok: false, error: UPGRADE_PAUSED, blockers: [UPGRADE_PAUSED_MESSAGE] }
+      }
       const [target, fleet, settings] = await Promise.all([
         resolveTarget(),
         facts(),
@@ -931,20 +1174,7 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
           blockers: preflight.blockers,
         }
       }
-      const plan = input.serverId
-        ? planSingleServer(input.serverId)
-        : planUpgrade({
-            runtime: input.fleetServerIds ? 'workers' : deps.runtime,
-            channelHasInstancePackage: input.fleetServerIds
-              ? false
-              : channelHasInstancePackage(deps.channel),
-            colocatedServerId: input.fleetServerIds ? null : deps.colocatedServerId,
-            fleetServerIds:
-              input.fleetServerIds ??
-              fleet.filter((fact) => !fact.colocated).map((fact) => fact.serverId),
-            connectedServerIds: fleet.filter((fact) => fact.connected).map((fact) => fact.serverId),
-            batch: settings.batch,
-          })
+      const plan = planRun(input, fleet, settings.batch)
       const now = deps.now()
       const requested = input.runId?.trim() ?? ''
       const reserved = await deps.store.reservedRunId()
@@ -967,7 +1197,11 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
         startedAt: now,
         finishedAt: null,
       }
-      const uiBehind = uiBehindTarget(target.ui, input.consoleCommit)
+      // An automatic start has no console: the recorded installed build stands in.
+      const uiBehind = uiBehindTarget(
+        target.ui,
+        input.consoleCommit ?? (await deps.store.installedUi())
+      )
       const daemonLabels = await knownDaemonLabels(deps.store)
       const steps = plan.steps.map((planned) =>
         stepFromPlan(
@@ -984,6 +1218,8 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
           !input.serverId
         )
       )
+      const refusal = input.source === 'auto' ? await automaticStartRefusal(steps, target) : null
+      if (refusal) return refusal
       run.phase = earliestOpenPhase(steps)
       const inserted = await deps.store.insertRun(run, steps)
       if (inserted === 'active') return runActiveRefusal()
@@ -994,68 +1230,11 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
       return { ok: true, runId: run.id }
     },
     tick: async (input) => {
-      if (input?.resolveManifests !== false) {
-        const target = await resolveTarget()
-        await deps.store.saveLatestBuild(target)
-        const [settings, active] = await Promise.all([
-          deps.store.settings(),
-          deps.store.activeRun(),
-        ])
-        const daemonCommit = target.daemon?.commit ?? null
-        const daemonDrift = daemonCommit
-          ? await deps.store.anyDaemonBehind(daemonCommit, target.daemon?.builtAt)
-          : false
-        const differs =
-          daemonDrift ||
-          differsFromInstalled(
-            {
-              version: deps.instanceInstalled.version,
-              commit: deps.instanceInstalled.commit,
-            },
-            target.instance
-          )
-        let autoStart: UpgradeTickDecision['autoStart'] = { decision: 'not-attempted' }
-        if (
-          shouldAutoStartRun({
-            runtime: deps.runtime,
-            settings,
-            now: new Date(deps.now()),
-            targetDiffers: differs,
-            runActive: active !== null,
-          })
-        ) {
-          const started = await createUpgradeCoordinator({ ...deps, trace: undefined }).start({
-            source: 'auto',
-            startedBy: null,
-          })
-          autoStart = started.ok
-            ? {
-                decision: 'started',
-                runId: started.runId,
-                steps: await deps.store.countSteps(started.runId),
-              }
-            : {
-                decision: 'refused',
-                error: started.error,
-                blockers: started.blockers ?? [],
-              }
-        }
-        deps.trace?.({
-          channel: deps.channel,
-          targetDaemon: target.daemon
-            ? { version: target.daemon.version, commit: target.daemon.commit }
-            : null,
-          targetInstance: target.instance
-            ? { version: target.instance.version, commit: target.instance.commit }
-            : null,
-          daemonDrift,
-          targetDiffers: differs,
-          activeRun: active ? { id: active.id, status: active.status, phase: active.phase } : null,
-          autoStart,
-        })
-      }
+      const paused = (await deps.store.pause()) !== null
+      if (input?.resolveManifests !== false) await checkForUpdates(paused)
       const active = await deps.store.activeRun()
       if (!active) return
+      if (paused) await stopPausedRun(active)
       await advanceWindow(active)
     },
     activeRun: async () => withSteps(await deps.store.activeRun()),
@@ -1091,46 +1270,6 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
     },
     settings: () => deps.store.settings(),
     saveSettings: (settings) => deps.store.saveSettings(settings),
-    cancel: async (runId) => {
-      const run = await deps.store.runById(runId)
-      if (!run) return { ok: false, error: 'upgrade_run_not_found' }
-      if (run.status !== 'pending' && run.status !== 'running') {
-        return { ok: false, error: 'upgrade_not_active' }
-      }
-      const steps = await deps.store.stepsFor(run.id)
-      await forEachSequential(steps, async (step) => {
-        if (isTerminal(step.status)) return
-        step.status = 'skipped'
-        await deps.store.saveStep(step)
-      })
-      run.status = 'cancelled'
-      run.finishedAt = deps.now()
-      run.counts = summarizeSteps(steps)
-      await deps.store.saveRun(run)
-      return { ok: true }
-    },
-    retry: async (stepId) => {
-      const active = await deps.store.activeRun()
-      if (!active) return { ok: false, error: 'upgrade_not_active' }
-      const steps = await deps.store.stepsFor(active.id)
-      const step = steps.find((item) => item.id === stepId)
-      if (!step) return { ok: false, error: 'upgrade_step_not_found' }
-      if (
-        step.status !== 'needs_attention' &&
-        step.status !== 'failed' &&
-        step.status !== 'rolled_back'
-      ) {
-        return { ok: false, error: 'upgrade_step_not_retryable' }
-      }
-      step.status = 'pending'
-      step.nextAttemptAt = null
-      step.errorCode = null
-      step.errorMessage = null
-      await deps.store.saveStep(step)
-      const fleet = await facts()
-      await advance(active, steps, fleet)
-      return { ok: true }
-    },
     noteDaemonCommit: async (serverId, commit, at) => {
       const active = await deps.store.activeRun()
       if (!active) return
@@ -1147,7 +1286,7 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
       await deps.store.saveStep(step)
     },
     noteProgress: async (input) => {
-      await applyReport(deps.store, input, (step, report) => {
+      await applyReport(deps.store, input, recordUiOnInstall, (step, report) => {
         if (input.stage === 'failed' && input.errorCode === DISPATCH_IN_PROGRESS) {
           if (report === 'current') markInProgressRefused(step, input.at)
           return report === 'current'
@@ -1169,17 +1308,8 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
         return true
       })
     },
-    updateGate: async () => {
-      const [target, fleet] = await Promise.all([resolveTarget(), facts()])
-      return clientUpdateBlock({
-        runtime: deps.runtime,
-        development: deps.development,
-        targetCommitKnown: Boolean(target.daemon?.commit),
-        gateOpen: fleetGateOpen(fleet, target),
-      })
-    },
     noteOutcome: async (input) => {
-      await applyReport(deps.store, input, (step, report) => {
+      await applyReport(deps.store, input, recordUiOnInstall, (step, report) => {
         if (!input.ok && input.errorCode === DISPATCH_IN_PROGRESS) {
           if (report === 'current') markInProgressRefused(step, input.at)
           return report === 'current'
@@ -1258,6 +1388,7 @@ const REPORT_WRITE_ATTEMPTS = 5
 async function applyReport(
   store: UpgradeStore,
   input: { serverId: string; unit: UpgradeStepUnit; upgradeId?: string; requestId: string },
+  afterSave: (step: UpgradeStepRow) => Promise<void>,
   mutate: (step: UpgradeStepRow, report: 'current' | 'prior') => boolean
 ): Promise<void> {
   for (let attempt = 0; attempt < REPORT_WRITE_ATTEMPTS; attempt += 1) {
@@ -1267,7 +1398,10 @@ async function applyReport(
     if (!report) return
     const readStatus = step.status
     if (!mutate(step, report)) return
-    if (await store.saveStep(step, readStatus)) return
+    if (await store.saveStep(step, readStatus)) {
+      await afterSave(step)
+      return
+    }
   }
 }
 
@@ -1283,7 +1417,7 @@ function shortCommit(commit: string | null): string {
   return commit ? commit.slice(0, 7) : 'an unknown build'
 }
 
-async function ensureReservedRunId(store: UpgradeStore): Promise<string> {
+export async function ensureReservedRunId(store: UpgradeStore): Promise<string> {
   const existing = await store.reservedRunId()
   if (existing && isUpgradeRunId(existing)) return existing
   const id = newId()

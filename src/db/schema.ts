@@ -896,6 +896,14 @@ export const license = pgTable(
       withTimezone: true,
       mode: 'string',
     }),
+    /** Tier a manager chose in Add Server; the server that enrolls with this key takes it. */
+    tierId: uuid('tier_id'),
+    /** An unused key stops working (and stops holding a license) at this time; null never expires. */
+    expiresAt: timestamp('expires_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }),
   },
   (table) => [
     index('idx_license_organization_id').using(
@@ -917,6 +925,12 @@ export const license = pgTable(
       columns: [table.serverId],
       foreignColumns: [server.id],
       name: 'license_server_id_server_id_fk',
+    }).onDelete('set null'),
+    index('idx_license_tier_id').on(table.tierId),
+    foreignKey({
+      columns: [table.tierId],
+      foreignColumns: [tier.id],
+      name: 'license_tier_id_tier_id_fk',
     }).onDelete('set null'),
   ]
 )
@@ -1290,6 +1304,17 @@ export const command = pgTable(
         sql`${table.name} IN ('environment.deploy', 'environment.lifecycle', 'environment.stop') AND ${table.status} IN ('queued', 'dispatching', 'sent', 'acked', 'running', 'failed', 'timed_out')`
       ),
     /**
+     * The organization activity feed with every outcome (succeeded and
+     * cancelled too): deploys, lifecycle and stops of one organization, newest
+     * first. Partial on the name only, written literally as the feed query
+     * writes it.
+     */
+    index('idx_command_activity')
+      .using('btree', table.organizationId.asc(), table.createdAt.desc(), table.id.desc())
+      .where(
+        sql`${table.name} IN ('environment.deploy', 'environment.lifecycle', 'environment.stop')`
+      ),
+    /**
      * Backs the per-minute reconcile sweeps' "has this server ever (or since
      * its last connect) been sent a `<x>.reconcile`" EXISTS probes, which
      * otherwise walk the server's whole command history. Not partial on
@@ -1441,6 +1466,7 @@ export const upgrade = pgTable(
       .on(sql`(true)`)
       .where(sql`${table.status} IN ('pending', 'running')`),
     index('idx_upgrade_started_by').on(table.startedBy),
+    index('idx_upgrade_created_at').on(table.createdAt.desc()),
     foreignKey({
       columns: [table.startedBy],
       foreignColumns: [user.id],
@@ -1512,9 +1538,22 @@ export const stage = pgTable(
     errorCode: text('error_code'),
     errorMessage: text('error_message'),
     detail: jsonb(),
+    /** First dispatch of this step; NULL until it is sent (and on rows written before the column). */
+    startedAt: timestamp('started_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }),
+    /** When the step reached a terminal status; cleared again by a retry. */
+    finishedAt: timestamp('finished_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }),
   },
   (table) => [
     index('idx_stage_upgrade_status').on(table.upgradeId, table.status),
+    index('idx_stage_upgrade_server').on(table.upgradeId, table.serverId),
     index('idx_stage_upgrade_phase').on(
       table.upgradeId,
       table.phase,

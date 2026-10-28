@@ -13,10 +13,7 @@
 import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import type { Db } from '../../db/connection.ts'
-import {
-  GITHUB_WEBHOOK_PATH,
-  GITHUB_WEBHOOK_SCOPED_PATH,
-} from '../../app/surfaces.ts'
+import { GITHUB_WEBHOOK_PATH, GITHUB_WEBHOOK_SCOPED_PATH } from '../../app/surfaces.ts'
 import { logInfo } from '../../lib/logger.ts'
 import { githubWebhookRateLimitKey } from '../../daemon/rate-limit/keys.ts'
 import { resolveGithubWebhookForge } from '../../features/git/resolve-webhook-forge.ts'
@@ -69,7 +66,7 @@ async function handlePush(
   c: Context<AppEnv>,
   db: Db,
   forgeId: string,
-  payload: Record<string, unknown>,
+  payload: Record<string, unknown>
 ): Promise<DeliveryOutcome> {
   // `githubProvider.parsePush` applies the branch-ref and identification rules;
   // `null` means the delivery is not a branch push this instance can route.
@@ -96,6 +93,7 @@ async function handlePush(
     ref: push.ref,
     branch: push.branch,
     commitSha: push.commitSha,
+    pushedBy: push.pushedBy,
   })
   return { retry: triggerSummaryNeedsRetry(summary), result: summary }
 }
@@ -105,7 +103,7 @@ async function handleChecks(
   db: Db,
   forgeId: string,
   event: string,
-  payload: Record<string, unknown>,
+  payload: Record<string, unknown>
 ): Promise<DeliveryOutcome> {
   // All-checks-green only: see `successfulCheckSha`. A single green `check_run`
   // inside a suite that is still running (or that later fails) is not a release
@@ -136,7 +134,7 @@ async function handleInstallation(
   db: Db,
   forgeId: string,
   event: string,
-  payload: Record<string, unknown>,
+  payload: Record<string, unknown>
 ): Promise<DeliveryOutcome> {
   const installation = installationExternalId(payload)
   if (!installation) return accepted({ skipped: 'unidentified_delivery' })
@@ -145,7 +143,7 @@ async function handleInstallation(
     logInfo(
       'git-webhook',
       `installation_repositories ${String(payload.action)} for ${installation} ` +
-        '(no source rows changed)',
+        '(no source rows changed)'
     )
     return accepted({ skipped: 'repositories_noted' })
   }
@@ -156,7 +154,7 @@ async function handleInstallation(
       forgeId,
       externalInstallationId: installation,
       action,
-    }),
+    })
   )
 }
 
@@ -165,7 +163,7 @@ async function dispatchDelivery(
   db: Db,
   forgeId: string,
   event: string,
-  payload: Record<string, unknown>,
+  payload: Record<string, unknown>
 ): Promise<DeliveryOutcome> {
   switch (event) {
     case 'push':
@@ -192,14 +190,15 @@ const githubGate: WebhookGate<Forge> = {
       ctx.db,
       ctx.dataEncryptionSecrets,
       ref,
-      ctx.headers,
+      ctx.headers
     )
     if (resolution.ok) return { ok: true, candidates: resolution.candidates }
     return {
       ok: false,
-      reason: resolution.reason === 'ref_header_mismatch'
-        ? 'webhook url and app id name different apps'
-        : 'names no registered app',
+      reason:
+        resolution.reason === 'ref_header_mismatch'
+          ? 'webhook url and app id name different apps'
+          : 'names no registered app',
     }
   },
 
@@ -209,23 +208,16 @@ const githubGate: WebhookGate<Forge> = {
   verify: (app, raw, ctx) =>
     githubProvider.verifyWebhook(app.webhookSecret ?? '', raw, ctx.headers),
 
-  deliveryId: (ctx) =>
-    Promise.resolve(ctx.headers.get(GITHUB_DELIVERY_HEADER)?.trim() || null),
+  deliveryId: (ctx) => Promise.resolve(ctx.headers.get(GITHUB_DELIVERY_HEADER)?.trim() || null),
 
   eventName: (ctx) => ctx.headers.get(GITHUB_EVENT_HEADER)?.trim() || null,
 
   // Every downstream lookup is scoped to the verified app's id, which is what
   // keeps one organization's push out of another's environments when both
   // connected the same provider account.
-  dispatch: (ctx, app, event, payload) =>
-    dispatchDelivery(ctx.c, ctx.db, app.id, event, payload),
+  dispatch: (ctx, app, event, payload) => dispatchDelivery(ctx.c, ctx.db, app.id, event, payload),
 }
 
 export function registerGithubWebhookRoutes(app: Hono<AppEnv>, opts: WebhookGateOpts) {
-  registerWebhookGate(
-    app,
-    [GITHUB_WEBHOOK_SCOPED_PATH, GITHUB_WEBHOOK_PATH],
-    githubGate,
-    opts,
-  )
+  registerWebhookGate(app, [GITHUB_WEBHOOK_SCOPED_PATH, GITHUB_WEBHOOK_PATH], githubGate, opts)
 }

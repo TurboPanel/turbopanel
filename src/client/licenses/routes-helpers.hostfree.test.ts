@@ -152,6 +152,9 @@ test('serializeLicenseListEntry shapes bound and unbound rows', () => {
       id: 'l1',
       name: 'Edge',
       createdAt: '2026-01-01T00:00:00.000Z',
+      tier: null,
+      expiresAt: null,
+      expired: false,
       revocable: true,
       boundServer: null,
       provisioning: null,
@@ -168,6 +171,38 @@ test('serializeLicenseListEntry shapes bound and unbound rows', () => {
     }).boundServer,
     { id: 's1', name: 'node', connected: true }
   )
+})
+
+test('serializeLicenseListEntry shows the tier an unused key holds and when it expires, never for a bound key', () => {
+  const base = {
+    id: 'l1',
+    name: 'edge-2',
+    createdAt: '2026-01-01T00:00:00.000Z',
+    tier: { id: 't1', label: 'S1' },
+    revocable: true,
+    status: undefined,
+  }
+  const live = serializeLicenseListEntry({
+    ...base,
+    bound: undefined,
+    expiresAt: '2999-01-01T00:00:00.000Z',
+  })
+  assertEquals(
+    [live.tier, live.expiresAt, live.expired],
+    [{ id: 't1', label: 'S1' }, '2999-01-01T00:00:00.000Z', false]
+  )
+  const lapsed = serializeLicenseListEntry({
+    ...base,
+    bound: undefined,
+    expiresAt: '2026-01-08T00:00:00.000Z',
+  })
+  assertEquals(lapsed.expired, true)
+  const bound = serializeLicenseListEntry({
+    ...base,
+    bound: { id: 's1', name: 'node' },
+    expiresAt: '2026-01-08T00:00:00.000Z',
+  })
+  assertEquals([bound.tier, bound.expiresAt, bound.expired], [null, null, false])
 })
 
 test('serializeLicenseListEntry marks an unbound key whose daemon is enrolling as provisioning, never a bound one', () => {
@@ -271,12 +306,15 @@ test('noLicenseAvailableBody carries the message, the counts, trimmed tier rows 
   )
 })
 
-test('parseLicenseCreateFields no longer reads a tierId: a license carries no tier', () => {
+test('parseLicenseCreateFields reads the tier chosen in Add Server and refuses a malformed one', () => {
   assertEquals(
     parseLicenseCreateFields(JSON.stringify({ tierId: '11111111-1111-4111-8111-111111111111' })),
-    {}
+    { tierId: '11111111-1111-4111-8111-111111111111' }
   )
-  assertEquals(parseLicenseCreateFields(JSON.stringify({ name: 'Edge', tierId: 'not-a-uuid' })), {
-    name: 'Edge',
-  })
+  assertEquals(
+    parseLicenseCreateFields(JSON.stringify({ name: 'Edge', tierId: 'not-a-uuid' })),
+    'invalid'
+  )
+  assertEquals(parseLicenseCreateFields(JSON.stringify({ name: 'Edge', tierId: 3 })), 'invalid')
+  assertEquals(parseLicenseCreateFields(JSON.stringify({ name: 'Edge' })), { name: 'Edge' })
 })

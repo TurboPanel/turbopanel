@@ -221,6 +221,18 @@ export function finalRunStatusFromSummary(summary: StepSummary): UpgradeStatus {
   return 'partially_failed'
 }
 
+/** The run `error` a pause leaves on the run it stopped. */
+export const PAUSED_RUN_ERROR = 'updates_paused' satisfies UpgradeRunErrorCode
+
+/**
+ * The terminal status for a finished run: one a pause stopped ends
+ * `cancelled` (its error says why), any other by its step summary.
+ */
+export function finishedRunStatus(summary: StepSummary, error: string | null): UpgradeStatus {
+  if (error === PAUSED_RUN_ERROR) return 'cancelled'
+  return finalRunStatusFromSummary(summary)
+}
+
 export function finalRunStatus(steps: readonly { status: UpgradeStepStatus }[]): UpgradeStatus {
   return finalRunStatusFromSummary(summarizeSteps(steps))
 }

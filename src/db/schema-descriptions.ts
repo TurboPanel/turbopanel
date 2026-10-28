@@ -376,7 +376,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
   license: {
     group: 'billing',
     summary:
-      'Organization-scoped server registration key: one row per minted key, latched to one server on first enroll, soft-deleted via `revoked_at`, never tied to a tier.',
+      'Organization-scoped server registration key: one row per minted key, latched to one server on first enroll, soft-deleted via `revoked_at`; may name a tier.',
     columns: {
       server_id:
         'Server that consumed this key, set once on first successful enroll (partial unique index: one license per server); null while unconsumed, SET NULL on delete.',
@@ -385,6 +385,10 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'Argon2id PHC hash of the registration key (same format as `account.password`); the plaintext is returned once at mint and cannot be recovered from this row.',
       revoked_at:
         'Soft-delete timestamp set by a revoke or by an ended subscription revoking every license; non-null means inactive, and the row keeps `server_id` for audit.',
+      tier_id:
+        'Tier a manager chose in Add Server (hosted); holds a seat there until a server enrolls with this key and takes it. NULL when no tier was chosen.',
+      expires_at:
+        'Set at mint to 7 days later: past it an unused key cannot enroll and holds no license; ignored once bound. NULL (older keys, the colocated key) never expires.',
     },
   },
   payer: {
@@ -1579,9 +1583,9 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       ntp_last_synced_at:
         'Last successful NTP sync: set from the daemon stamp or first synced observation, cleared when the host reports unsynced, never bumped to now() per heartbeat.',
       assigned_tier_id:
-        'Tier a manager assigned this server (license-tier route or a named size change); self-hosted fills the top tier when none. Never recomputed; NULL until set.',
+        'Tier a manager assigned this server (Add Server choice, license-tier route or a named size change); self-hosted fills the top tier. NULL until set.',
       preferred_tier_id:
-        "Written in step with `assigned_tier_id` by the manager route, for the console's picked label; never read to place a server.",
+        "Written in step with `assigned_tier_id`, for the console's picked label; set alone when the Add Server tier had no free seat at enroll.",
       is_connected:
         'Daemon liveness flag written by the cell projection on connect and disconnect; `online`, `offline` or `unknown` is derived from it and `status_changed_at`.',
       status_changed_at:
@@ -1932,6 +1936,10 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       error_message: 'Human-readable failure text set alongside `error_code`.',
       detail:
         'Small stage facts such as bytes fetched or an exit code; the orchestrator writes it, never a transcript.',
+      started_at:
+        'When the step was first dispatched to its server; NULL until then, and on rows written before this column existed.',
+      finished_at:
+        'When the step reached a terminal status (`done`, `skipped`, `failed`, `needs_attention`); cleared when a retry reopens it.',
     },
   },
 }

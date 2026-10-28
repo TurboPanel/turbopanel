@@ -151,8 +151,14 @@ interface CloudflareBindings {
    */
   TURBOPANEL_UPGRADE_TICK_MINUTES?: string
   /**
+   * How often this install looks for a new build, in minutes. One of the same
+   * divisors of 60; anything else (or unset) means once an hour, at the
+   * install's own minute. Test installs only (the testing environment sets 5).
+   */
+  TURBOPANEL_UPGRADE_CHECK_MINUTES?: string
+  /**
    * Starting batch for managed upgrades when none is saved in the panel:
-   * `count:N` or `percent:N`. Unset means one server at a time.
+   * `count:N` or `percent:N`. Unset means every server at once (100%).
    */
   TURBOPANEL_UPGRADE_BATCH?: string
   /**

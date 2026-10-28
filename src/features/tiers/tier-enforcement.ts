@@ -339,10 +339,23 @@ export async function loadTierPlacementsForServers(
     result.set(serverId, {
       ...base,
       pickedTier: row.preferredTierLabel ?? null,
-      tierPickNotice: null,
+      tierPickNotice: addServerTierPickNotice(row),
     })
   }
   return result
+}
+
+/**
+ * A pick with no tier held happens only when the tier a manager chose in Add
+ * Server had no free seat left when the server enrolled
+ * (`applyAddServerTierAtEnroll`): every other write sets both columns.
+ */
+export function addServerTierPickNotice(
+  row: Pick<ServerLicenseTierJoinRow, 'assignedTierId' | 'preferredTierLabel'>
+): string | null {
+  if (row.assignedTierId || !row.preferredTierLabel) return null
+  const label = row.preferredTierLabel
+  return `${label} was chosen when this server was added, but no ${label} license was free when it connected. Free or buy one, then put this server on ${label}.`
 }
 
 export { placementFromJoinRow }

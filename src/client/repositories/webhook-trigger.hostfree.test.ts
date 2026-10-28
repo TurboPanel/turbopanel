@@ -6,6 +6,7 @@ import type { CommandQueue } from '../../features/commands/queue.ts'
 import {
   applyGithubInstallationEvent,
   applyProviderInstallationEvent,
+  type PendingChecks,
   readPendingChecks,
   resolveEnvironmentBranches,
   resolveRepositoryEnvironmentIds,
@@ -75,6 +76,12 @@ test('readPendingChecks requires a non-empty commitSha', () => {
   assertEquals(withoutRef.commitSha, 'def456')
   assertEquals(withoutRef.ref, null)
   assertEquals(typeof withoutRef.recordedAt, 'string')
+  assertEquals(withoutRef.pushedBy, undefined)
+
+  const withPusher = readPendingChecks({
+    pendingChecks: { commitSha: 'abc123', ref: null, pushedBy: ' octo\u0000cat ' },
+  })
+  assertEquals(withPusher?.pushedBy, 'octocat')
 })
 
 const SOURCE_ID = '11111111-2222-4333-8444-555555555555'
@@ -1182,6 +1189,73 @@ test('a green check releases only the environment that builds the parked branch'
   assertEquals(deployed, [
     { environmentId: STAGING_ENV, ref: 'refs/heads/staging', commitSha: 'staging-sha' },
   ])
+})
+
+function recordingPushers(pushers: Array<string | null | undefined>) {
+  const runDeploy: NonNullable<WebhookTriggerDeps['runDeploy']> = async (
+    _c,
+    _db,
+    _queue,
+    _environmentId,
+    auth
+  ) => {
+    pushers.push(auth.selection.pushedBy)
+    return new Response(null, { status: 204 })
+  }
+  return runDeploy
+}
+
+test('an immediate push hands the pusher login to the deploy it starts', async () => {
+  const pushers: Array<string | null | undefined> = []
+  const deps = triggerDeps([sourceRow({ defaultBranch: 'trunk' })], {
+    runDeploy: recordingPushers(pushers),
+  })
+  await resolvePushTrigger(
+    unusedCtx,
+    unusedDb,
+    unusedQueue,
+    { ...samplePush, pushedBy: 'octocat' },
+    deps
+  )
+  await resolvePushTrigger(unusedCtx, unusedDb, unusedQueue, samplePush, deps)
+  assertEquals(pushers, ['octocat', null])
+})
+
+test('checks_passed parks the pusher login and the released deploy still names them', async () => {
+  let parked: PendingChecks | null = null
+  const row = sourceRow({ defaultBranch: 'trunk', autoDeploy: 'checks_passed' })
+  await resolvePushTrigger(
+    unusedCtx,
+    unusedDb,
+    unusedQueue,
+    { ...samplePush, pushedBy: 'octocat' },
+    triggerDeps([row], {
+      setPendingChecks: async (_db, _row, pending) => {
+        parked = pending
+      },
+    })
+  )
+  assertEquals(readPendingChecks({ pendingChecks: parked })?.pushedBy, 'octocat')
+
+  const pushers: Array<string | null | undefined> = []
+  const released = await resolveCheckTrigger(
+    unusedCtx,
+    unusedDb,
+    unusedQueue,
+    {
+      provider: 'github',
+      forgeId: APP_ID,
+      externalInstallationId: '42',
+      repositoryExternalId: '99',
+      commitSha: samplePush.commitSha,
+      ref: samplePush.ref,
+    },
+    triggerDeps([{ ...row, options: { pendingChecks: parked } }], {
+      runDeploy: recordingPushers(pushers),
+    })
+  )
+  assertEquals(released.queued, 1)
+  assertEquals(pushers, ['octocat'])
 })
 
 test('the default environment branch loader reads only this organization and resolves overlays', async () => {
