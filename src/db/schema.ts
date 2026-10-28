@@ -7340,6 +7340,13 @@ export const portal = pgTable(
       mode: 'string',
     }),
     lastError: text('last_error'),
+    /** Version of the connector program the daemon reports running on this server. */
+    connectorVersion: text('connector_version'),
+    versionCheckedAt: timestamp('version_checked_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }),
   },
   (table) => [
     index('idx_portal_server_id').using('btree', table.serverId.asc().nullsLast().op('uuid_ops')),

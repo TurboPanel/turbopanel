@@ -67,6 +67,8 @@ CREATE TABLE "portal" (
 	"reported" text DEFAULT 'unknown' NOT NULL,
 	"last_seen_at" timestamp(3) with time zone,
 	"last_error" text,
+	"connector_version" text,
+	"version_checked_at" timestamp(3) with time zone,
 	CONSTRAINT "uniq_portal_tunnel_id_server_id" UNIQUE("tunnel_id","server_id"),
 	CONSTRAINT "portal_wanted_check" CHECK (wanted IN ('run', 'skip')),
 	CONSTRAINT "portal_reported_check" CHECK (reported IN ('unknown', 'connected', 'down', 'error'))
@@ -149,6 +151,8 @@ COMMENT ON COLUMN "portal"."wanted" IS '`run` when the server carries a connecto
 COMMENT ON COLUMN "portal"."reported" IS 'What the server last reported: `unknown` (default), `connected`, `down` or `error`.';--> statement-breakpoint
 COMMENT ON COLUMN "portal"."last_seen_at" IS 'When the server last reported on the connector; NULL until the first report.';--> statement-breakpoint
 COMMENT ON COLUMN "portal"."last_error" IS 'Plain-words error from the last failed report; NULL when none.';--> statement-breakpoint
+COMMENT ON COLUMN "portal"."connector_version" IS 'Version of the connector program the daemon reports running here; NULL until the first report.';--> statement-breakpoint
+COMMENT ON COLUMN "portal"."version_checked_at" IS 'When the daemon last reported the connector version; NULL until then.';--> statement-breakpoint
 COMMENT ON COLUMN "secret"."provider" IS '`s3`, `s3_compatible`, `nfs`, `cifs`, `sftp`, `ftp`, `webdav` (reserved), `git_deploy_key`, or `cloudflare` and `cloudflare_tunnel` (tunnel tokens).';--> statement-breakpoint
 COMMENT ON TABLE "tunnel" IS 'A tunnel an organization created: a named path from a provider edge to connectors on its servers; the sealed run token is a `secret` row.';--> statement-breakpoint
 COMMENT ON COLUMN "tunnel"."metadata" IS 'Non-secret descriptors written by the panel; no keys are read by the platform today.';--> statement-breakpoint

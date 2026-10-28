@@ -34,6 +34,11 @@ member there, a widened CHECK (forward migration) and one adapter.
   refuses a difference, and no CHECK enforces it, so it can be relaxed without
   a migration. A tunnel can reach other organizations' hostnames on a shared
   server; that is a documented risk, not isolated per tunnel.
+- The connector program is not a column: `tunnel.options.connector` names it
+  (`cloudflared` for the Cloudflare provider) while only one exists. Each
+  server reports the version it runs in `portal.connector_version`, with
+  `portal.version_checked_at` for when, so the panel can show program and
+  version per tunnel per server.
 - `doorway.routing_organization_id` mirrors `hostname.routing_organization_id`
   (a hostname is unique per routing organization).
 - `carrier` is unique on (organization, provider, external account id); a

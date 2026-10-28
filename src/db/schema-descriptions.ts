@@ -1421,6 +1421,9 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'What the server last reported: `unknown` (default), `connected`, `down` or `error`.',
       last_seen_at: 'When the server last reported on the connector; NULL until the first report.',
       last_error: 'Plain-words error from the last failed report; NULL when none.',
+      connector_version:
+        'Version of the connector program the daemon reports running here; NULL until the first report.',
+      version_checked_at: 'When the daemon last reported the connector version; NULL until then.',
     },
   },
   storage: {
