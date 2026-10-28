@@ -7812,3 +7812,9 @@ test('a wal position of 0/0 is rejected, any other well formed position is kept'
   assertEquals(parseWalPosition('0/1', 1), { lsn: '0/1', timeline: 1 })
   assertEquals(parseWalPosition('1/0', 2), { lsn: '1/0', timeline: 2 })
 })
+
+test('parseCommandPayload and parseCommandResult dispatch server.tunnel.status', () => {
+  assertEquals(parseCommandPayload('server.tunnel.status' as CommandType, {}), {})
+  const result = { pinnedVersion: '2026.5.2', connectors: [] }
+  assertEquals(parseCommandResult('server.tunnel.status' as CommandType, result), result)
+})
