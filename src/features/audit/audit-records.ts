@@ -79,6 +79,8 @@ export const AUDIT_ACTIONS = [
   'badge.create',
   'badge.check',
   'badge.delete',
+  'origin_certificate.issue',
+  'origin_certificate.revoke',
 ] as const
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[number]

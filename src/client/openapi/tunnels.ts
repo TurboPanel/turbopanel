@@ -28,6 +28,13 @@ const BADGE_ID_PARAM = {
   schema: { type: 'string', format: 'uuid' },
 } as const
 
+const TLS_ID_PARAM = {
+  name: 'tlsId',
+  in: 'path',
+  required: true,
+  schema: { type: 'string', format: 'uuid' },
+} as const
+
 const CHECK_PROPERTIES = {
   zones: {
     type: 'array',
@@ -45,6 +52,34 @@ const CHECK_PROPERTIES = {
 } as const
 
 export const tunnelSchemas = {
+  OriginCertificate: {
+    type: 'object',
+    description:
+      'A certificate the provider issued for a zone (the zone and everything one label below it). The key stays sealed and is never returned.',
+    properties: {
+      id: { type: 'string', format: 'uuid', description: 'The certificate library row.' },
+      carrierId: { type: 'string', format: 'uuid' },
+      zone: { type: 'string' },
+      names: { type: 'array', items: { type: 'string' } },
+      notAfter: { type: ['string', 'null'] },
+      status: { type: 'string' },
+      createdAt: { type: 'string' },
+      inUse: { type: 'boolean', description: 'A site uses it; it cannot be removed meanwhile.' },
+      renewalDue: { type: 'boolean' },
+    },
+  },
+  OriginCertificateCreate: {
+    type: 'object',
+    required: ['zone'],
+    properties: {
+      zone: { type: 'string', description: 'The zone name, such as example.com.' },
+      badgeId: {
+        type: 'string',
+        format: 'uuid',
+        description: 'The token to ask with. Left out, the first token that covers the zone.',
+      },
+    },
+  },
   BadgeZone: {
     type: 'object',
     properties: { id: { type: 'string' }, name: { type: 'string' } },
@@ -246,11 +281,74 @@ export const tunnelPaths: Record<string, unknown> = {
       tags: ['Organizations'],
       summary: 'Remove a tunnel provider account',
       description:
-        'Owners and managers only. Removes its tokens too. 409 `carrier_in_use` while a tunnel still uses it.',
+        'Owners and managers only. Removes its tokens too. 409 `carrier_in_use` while a tunnel still uses it, or `origin_certificate_in_use` while origin certificates were issued through it.',
       security: [{ cookieAuth: [] }],
       parameters: [ORG_ID_PARAM, CARRIER_ID_PARAM],
       responses: {
         ...jsonOk('Removed', { type: 'object', properties: { ok: { type: 'boolean' } } }),
+        ...errors(),
+      },
+    },
+  },
+  '/api/client/v1/organizations/{id}/carriers/{carrierId}/origin-certificates': {
+    get: {
+      tags: ['Organizations'],
+      summary: "List a provider account's origin certificates",
+      description: 'Owners and managers only. Names, expiry and whether a site uses each; never a key.',
+      security: [{ cookieAuth: [] }],
+      parameters: [ORG_ID_PARAM, CARRIER_ID_PARAM],
+      responses: {
+        ...jsonOk('Certificates', {
+          type: 'object',
+          properties: {
+            originCertificates: {
+              type: 'array',
+              items: { $ref: '#/components/schemas/OriginCertificate' },
+            },
+          },
+        }),
+        ...errors(),
+      },
+    },
+    post: {
+      tags: ['Organizations'],
+      summary: 'Get an origin certificate for a zone',
+      description:
+        'Owners and managers only. Makes the key here, asks the provider for a certificate for the zone and everything one label below it, and keeps the pair sealed in the certificate library. A healthy certificate for the same zone is returned again (`reused`). A token added earlier is checked once if it has no certificate rights recorded. 400 `badge_cannot_certify` or `origin_certificate_invalid`; 409 `origin_certificate_limit` (50 per organization); 502 `provider_unavailable`.',
+      security: [{ cookieAuth: [] }],
+      parameters: [ORG_ID_PARAM, CARRIER_ID_PARAM],
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': { schema: { $ref: '#/components/schemas/OriginCertificateCreate' } },
+        },
+      },
+      responses: {
+        ...jsonOk(
+          'Issued',
+          {
+            type: 'object',
+            properties: {
+              originCertificate: { $ref: '#/components/schemas/OriginCertificate' },
+              reused: { type: 'boolean' },
+            },
+          },
+          '201'
+        ),
+        ...errors({ badRequest: true }),
+      },
+    },
+  },
+  '/api/client/v1/organizations/{id}/carriers/{carrierId}/origin-certificates/{tlsId}': {
+    delete: {
+      tags: ['Organizations'],
+      summary: 'Revoke an origin certificate',
+      description:
+        'Owners and managers only. Revokes it with the provider and removes it. 409 `tls_in_use` while a site uses it, or `badge_missing` when the token that issued it is gone.',
+      security: [{ cookieAuth: [] }],
+      parameters: [ORG_ID_PARAM, CARRIER_ID_PARAM, TLS_ID_PARAM],
+      responses: {
+        ...jsonOk('Revoked', { type: 'object', properties: { ok: { type: 'boolean' } } }),
         ...errors(),
       },
     },
@@ -288,7 +386,7 @@ export const tunnelPaths: Record<string, unknown> = {
     delete: {
       tags: ['Organizations'],
       summary: 'Remove a token',
-      description: 'Owners and managers only. The sealed token is deleted with it.',
+      description: 'Owners and managers only. The sealed token is deleted with it. 409 `origin_certificate_in_use` while origin certificates were issued through this token.',
       security: [{ cookieAuth: [] }],
       parameters: [ORG_ID_PARAM, CARRIER_ID_PARAM, BADGE_ID_PARAM],
       responses: {

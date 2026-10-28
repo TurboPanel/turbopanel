@@ -565,6 +565,9 @@ export function buildTlsRowPatch(
   }
 
   if (shouldRevokeTlsFromBody(body)) {
+    if (existing.source === 'provider_origin') {
+      return { ok: false, error: 'provider_origin_managed', status: 409 }
+    }
     if (existing.source === 'organization_ca') {
       return {
         ok: false,
@@ -950,6 +953,12 @@ export function registerTlsRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
 
     const denied = await assertCanOr403(c, 'organization:manage', 'tls', id)
     if (denied) return denied
+
+    // A certificate a tunnel provider issued is revoked there first (see features/tunnels).
+    const [existing] = await db.select({ source: tls.source }).from(tls).where(eq(tls.id, id))
+    if (existing?.source === 'provider_origin') {
+      return c.json({ error: 'provider_origin_managed' }, 409)
+    }
 
     const result = await runHierarchyDelete(db, async (tx) => {
       await tx.delete(tls).where(eq(tls.id, id))

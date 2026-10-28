@@ -15,5 +15,6 @@ test('TLS_SOURCES lists every stored source discriminator including Organization
     'lets_encrypt',
     'self_signed',
     'organization_ca',
+    'provider_origin',
   ])
 })

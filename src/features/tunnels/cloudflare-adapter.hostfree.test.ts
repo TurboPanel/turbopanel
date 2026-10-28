@@ -3,6 +3,7 @@ import {
   buildIngress,
   cloudflareTokenProblem,
   createCloudflareAdapter,
+  parseExpiry,
 } from './cloudflare-adapter.ts'
 import { TunnelProviderError } from './errors.ts'
 import { scrubSecrets } from './scrub.ts'
@@ -331,4 +332,116 @@ test('discovering accounts lists what a pasted token reaches and who owns it', a
   assertEquals(found.accounts.length, 2)
   assertEquals(found.token.kind, 'user')
   assertEquals(found.token.id, 'tok-3')
+})
+
+test('a token that can read a zone\'s certificates lists that zone as a certificate right', async () => {
+  const { impl, calls } = fakeFetch({
+    'GET /client/v4/accounts': ok([{ id: ACCOUNT, name: 'Main' }]),
+    'GET /client/v4/zones': ok([
+      { id: 'z1', name: 'example.com' },
+      { id: 'z2', name: 'other.org' },
+    ]),
+    [`GET /client/v4/accounts/${ACCOUNT}/cfd_tunnel`]: ok([]),
+    'GET /client/v4/zones/z1/dns_records': ok([]),
+    'GET /client/v4/zones/z2/dns_records': ok([]),
+    'GET /client/v4/certificates': ok([]),
+  })
+  const report = await createCloudflareAdapter({ fetch: impl }).checkCredential(TOKEN, {
+    accountId: ACCOUNT,
+  })
+  assertEquals(report.capabilities.certificates.length, 2)
+  assertEquals(
+    calls.filter((c) => c.url.startsWith('/client/v4/certificates')).map((c) => c.url).sort(),
+    ['/client/v4/certificates?zone_id=z1', '/client/v4/certificates?zone_id=z2']
+  )
+  // A token without the permission is not told it is missing: certificates are optional.
+  assertEquals(report.missing, [])
+})
+
+test('a token refused the certificate list has no certificate rights but is otherwise fine', async () => {
+  const { impl } = fakeFetch({
+    'GET /client/v4/accounts': ok([{ id: ACCOUNT, name: 'Main' }]),
+    'GET /client/v4/zones': ok([{ id: 'z1', name: 'example.com' }]),
+    [`GET /client/v4/accounts/${ACCOUNT}/cfd_tunnel`]: ok([]),
+    'GET /client/v4/zones/z1/dns_records': ok([]),
+    'GET /client/v4/certificates': refused(403, 'Authentication error'),
+  })
+  const report = await createCloudflareAdapter({ fetch: impl }).checkCredential(TOKEN, {
+    accountId: ACCOUNT,
+  })
+  assertEquals(report.capabilities.certificates, [])
+  assertEquals(report.capabilities.dns.length, 1)
+})
+
+test('issuing sends only the request and asks for an ECC certificate for the names', async () => {
+  const { impl, calls } = fakeFetch({
+    'POST /client/v4/certificates': ok({
+      id: 'cert-1',
+      certificate: '-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n',
+      expires_on: '2027-10-28 17:43:00 +0000 UTC',
+    }),
+  })
+  const issued = await createCloudflareAdapter({ fetch: impl }).issueOriginCertificate!(TOKEN, {
+    hostnames: ['example.com', '*.example.com'],
+    csrPem: 'CSR-TEXT',
+    validityDays: 365,
+  })
+  assertEquals(issued.externalId, 'cert-1')
+  assertEquals(issued.notAfter, '2027-10-28T17:43:00.000Z')
+  assertEquals(calls[0]!.body, {
+    hostnames: ['example.com', '*.example.com'],
+    requested_validity: 365,
+    request_type: 'origin-ecc',
+    csr: 'CSR-TEXT',
+  })
+  assertEquals(calls[0]!.auth, `Bearer ${TOKEN}`)
+})
+
+test('an answer without a certificate or expiry is a provider error', async () => {
+  const { impl } = fakeFetch({ 'POST /client/v4/certificates': ok({ id: 'cert-2' }) })
+  const err = await assertRejects(
+    () =>
+      createCloudflareAdapter({ fetch: impl }).issueOriginCertificate!(TOKEN, {
+        hostnames: ['example.com'],
+        csrPem: 'CSR',
+        validityDays: 7,
+      }),
+    TunnelProviderError
+  )
+  assertEquals(err.code, 'provider_error')
+})
+
+test('revoking deletes the certificate by id', async () => {
+  const { impl, calls } = fakeFetch({
+    'DELETE /client/v4/certificates/cert-1': ok({ id: 'cert-1' }),
+  })
+  await createCloudflareAdapter({ fetch: impl }).revokeOriginCertificate!(TOKEN, {
+    externalId: 'cert-1',
+  })
+  assertEquals(calls[0]!.method, 'DELETE')
+})
+
+test('expiry times are read in Cloudflare\'s form and in ISO form, and nothing else', () => {
+  assertEquals(parseExpiry('2026-11-04 17:43:00 +0000 UTC'), '2026-11-04T17:43:00.000Z')
+  assertEquals(parseExpiry('2026-11-04T17:43:00Z'), '2026-11-04T17:43:00.000Z')
+  assertEquals(parseExpiry('2026-11-04T17:43:00.123Z'), '2026-11-04T17:43:00.000Z')
+  for (const bad of ['', 'tomorrow', '2026-13-45 99:99:99 +0000 UTC', '2026-11-04']) {
+    try {
+      parseExpiry(bad)
+      throw new Error(`accepted ${bad}`)
+    } catch (err) {
+      assert(err instanceof TunnelProviderError)
+    }
+  }
+})
+
+test('with verification on, routes stop skipping verification and add no certificate file', () => {
+  const rules = buildIngress(['a.example.com'], true)
+  assertEquals(rules[0]!.originRequest, {
+    httpHostHeader: 'a.example.com',
+    originServerName: 'a.example.com',
+    noTLSVerify: false,
+  })
+  // Left out, the default stays as before.
+  assertEquals(buildIngress(['a.example.com'])[0]!.originRequest?.noTLSVerify, true)
 })

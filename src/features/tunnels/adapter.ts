@@ -22,6 +22,14 @@ export type TokenDiscovery = { accounts: ProviderAccount[]; token: TokenInfo }
 
 export type TunnelCreated = { externalId: string; runToken: string }
 
+/** A certificate the provider issued from a request, for the hop between its edge and the origin. */
+export type OriginCertificateIssued = {
+  externalId: string
+  certificatePem: string
+  /** ISO time the provider says the certificate stops being valid. */
+  notAfter: string
+}
+
 /**
  * One adapter per tunnel provider. Every method takes the credential as an
  * argument and never keeps it; errors are `TunnelProviderError`, already
@@ -52,7 +60,18 @@ export type TunnelAdapter = {
   /** Replace the full set of routes: every name goes to the local web server. */
   setRoutes(
     token: string,
-    input: { accountId: string | null; externalId: string; hostnames: readonly string[] }
+    input: {
+      accountId: string | null
+      externalId: string
+      hostnames: readonly string[]
+      /**
+       * Verify the hop to the local web server instead of skipping verification.
+       * The connector already trusts the provider's own origin roots, so this
+       * only helps names served with a provider origin certificate (or a public
+       * one). Left out, verification stays off.
+       */
+      verifyOrigin?: boolean
+    }
   ): Promise<void>
   /** Create the public DNS name for a hostname, pointing at the tunnel. */
   /**
@@ -74,4 +93,14 @@ export type TunnelAdapter = {
     token: string,
     input: { accountId: string | null; externalId: string }
   ): Promise<void>
+  /**
+   * Origin certificates, for providers that issue them. The caller makes the key
+   * and sends only the request, so the private key never reaches the provider.
+   */
+  issueOriginCertificate?(
+    token: string,
+    input: { hostnames: readonly string[]; csrPem: string; validityDays: number }
+  ): Promise<OriginCertificateIssued>
+  /** Revoke a certificate issued by `issueOriginCertificate`. */
+  revokeOriginCertificate?(token: string, input: { externalId: string }): Promise<void>
 }

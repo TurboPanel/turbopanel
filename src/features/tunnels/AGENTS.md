@@ -88,8 +88,9 @@ A badge row keeps the label, the last four characters and what the token
 reaches: `capabilities` is `{ tunnels: boolean, dns: [{id, name}], certificates:
 [{id, name}] }`. A tunnel belongs to the account, so `tunnels` is one
 account-wide yes or no; DNS rights can be limited to zones, so `dns` lists the
-zones found reachable by one safe read each (`certificates` stays empty, since
-no safe read shows it). Looking up the zone for a hostname uses only those
+zones found reachable by one safe read each (`certificates` lists the zones whose
+origin certificate list the token can read; a token added before this check
+has none until it is checked again, and the issue route does that once). Looking up the zone for a hostname uses only those
 zones of the carrier's account. Responses and audit rows carry only those. Provider errors are
 scrubbed by `TunnelProviderError` (known secrets, bearer values and token-shaped
 runs are redacted) before they are logged, audited, stored or returned.
@@ -125,8 +126,9 @@ typed client over an injected `fetch`; tests never call the real service).
 - A credential is checked with read calls only (accounts, zones, tunnels,
   DNS records) and the report says what succeeded. A read proves the token
   reaches that area, not that it can edit; edit rights are confirmed by the
-  first write. Certificate rights cannot be seen by a safe read and are
-  reported as not shown. The accounts and zones lists may be refused to a
+  first write. Reading a zone's origin certificate list proves certificate
+  rights the same way and is never reported as a missing permission, since
+  certificates are optional. The accounts and zones lists may be refused to a
   narrow token; that is treated as empty, not as a bad token.
 - Routes always point at `https://localhost`; the last ingress rule is a
   catch-all with no hostname.
@@ -141,3 +143,52 @@ targets: `GET|POST /organizations/:id/carriers`, `DELETE .../carriers/:carrierId
 `DELETE .../badges/:badgeId`, `POST .../badges/:badgeId/check`. Adding a
 badge checks the token first and refuses one that cannot do anything useful,
 naming the missing permissions. OpenAPI: `src/client/openapi/tunnels.ts`.
+
+## Origin certificates
+
+Optional. The default hop from the connector to the local web server skips
+certificate verification (`noTLSVerify: true`, the connector still sends the
+hostname as the origin server name). With an origin certificate on the web
+server the hop can be verified: `setRoutes` takes `verifyOrigin: true`, which
+sets `noTLSVerify: false` and nothing else. No certificate file or path is
+needed: the connector's origin pool is the system pool plus its built-in
+Cloudflare roots, which include the origin ECC and RSA roots (read from the
+upstream source on 2026-10-28 and not yet proved on a real connector; the
+testing round settles it). Nothing sets `verifyOrigin` yet.
+
+`origin-certificate.ts` keeps one certificate per account and zone in the
+organization certificate library (`tls`, source `provider_origin`): the zone and
+`*.` the zone. The key is an ECDSA P-256 key made in the panel
+(`mintCertificateRequest`); only the request goes to the provider; the key is
+sealed like every library key. `tls.metadata.providerOrigin` holds the account,
+the token that can revoke it, the zone and the provider's certificate id; the
+TLS routes never return it. Rules the code enforces:
+
+- A token may issue only for a zone its recorded `certificates` rights name.
+  Existing tokens have none recorded: the issue route runs one credential check
+  and stores the result before it refuses.
+- A site that pins the certificate blocks revoking it (`tls_in_use`); an account
+  or token that issued one cannot be removed first (`origin_certificate_in_use`),
+  because the certificate could then never be revoked. The TLS library routes
+  refuse to revoke, delete or create a `provider_origin` row (`409
+provider_origin_managed`, `400 provider_origin_unsupported`).
+- If storing fails after the provider issued the certificate, it is revoked
+  again. A provider that no longer knows the id counts as revoked.
+- Validity is 365 days and renewal starts 30 days before expiry. Renewal issues
+  a replacement and re-pins the sites; **it does not redeploy**. The old
+  certificate stays valid until its own expiry and is only removed after that,
+  so a site that has not been redeployed keeps a working certificate.
+  `renewOriginCertificate` returns the re-pinned hosting ids so a surface that
+  can queue a hostings-only deploy (`client/hostings/letsencrypt-apply.ts`)
+  can push them; the feature layer cannot import it.
+- `sweepOriginCertificates` (renew, then drop replaced and expired rows) is not
+  wired to any timer yet, and no tunnel option pins a hostname to a certificate
+  yet. Both wait for the tunnel hostname code and the automatic pin.
+- Deleting an organization removes the rows without revoking them at the
+  provider.
+
+Routes (`client/organizations/origin-certificate-routes.ts`, `organization:manage`):
+`GET|POST /organizations/:id/carriers/:carrierId/origin-certificates` and
+`DELETE .../origin-certificates/:tlsId`. A healthy certificate for the same
+zone is returned again instead of issuing a second one. Tunnel-only names never
+get an automatic public certificate request; nothing here touches that path.

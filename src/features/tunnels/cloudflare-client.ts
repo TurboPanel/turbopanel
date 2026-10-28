@@ -28,6 +28,12 @@ export type CloudflareIngressRule = {
 }
 export type CloudflareTokenVerify = { id?: string; status?: string; expires_on?: string }
 export type CloudflareDnsRecord = { id: string; name?: string }
+export type CloudflareOriginCertificate = {
+  id: string
+  certificate?: string
+  hostnames?: string[]
+  expires_on?: string
+}
 
 export type CloudflareClientOptions = {
   token: string
@@ -145,6 +151,30 @@ export class CloudflareClient {
   /** One-row read: proves the token can read DNS records of the zone. */
   async probeDns(zoneId: string): Promise<void> {
     await this.#call('GET', `/zones/${encodeURIComponent(zoneId)}/dns_records?per_page=1`)
+  }
+
+  /** One-row read: proves the token can read origin certificates of the zone. */
+  async probeCertificates(zoneId: string): Promise<void> {
+    await this.#call('GET', `/certificates?zone_id=${encodeURIComponent(zoneId)}`)
+  }
+
+  /** Ask for an origin certificate for `hostnames`, signed from the caller's own request. */
+  createOriginCertificate(input: {
+    hostnames: readonly string[]
+    csr: string
+    validityDays: number
+  }): Promise<CloudflareOriginCertificate> {
+    return this.#call('POST', '/certificates', {
+      hostnames: input.hostnames,
+      requested_validity: input.validityDays,
+      request_type: 'origin-ecc',
+      csr: input.csr,
+    })
+  }
+
+  /** Revoke an origin certificate; it stops being valid at once. */
+  async revokeOriginCertificate(certificateId: string): Promise<void> {
+    await this.#call('DELETE', `/certificates/${encodeURIComponent(certificateId)}`)
   }
 
   createTunnel(accountId: string, name: string): Promise<CloudflareTunnel> {

@@ -44,6 +44,12 @@
       "tag": "0006_peer_leaf_kind",
       "when": 1793203555856,
       "sha256": "163e17005143cd88deb53105f19f7ba8d5d790f5cdf74d85ea296101d6405772"
+    },
+    {
+      "idx": 7,
+      "tag": "0007_tunnel_origin_certificate",
+      "when": 1793209739351,
+      "sha256": "93e3315bf836df851833cb1923112e547a1ca716e983568199067bffd43cb243"
     }
   ]
 }

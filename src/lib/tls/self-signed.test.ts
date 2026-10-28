@@ -13,6 +13,7 @@ import {
   KEY_USAGE_DIGITAL_SIGNATURE,
   KEY_USAGE_KEY_CERT_SIGN,
   KEY_USAGE_KEY_ENCIPHERMENT,
+  mintCertificateRequest,
   mintOrganizationCa,
   mintSelfSignedCertificate,
   ORGANIZATION_CA_LEAF_VALID_DAYS,
@@ -438,4 +439,57 @@ test('ecdsaRawToDer encodes minimal INTEGERs and ecdsaDerToRaw restores the fixe
   assertEquals(ecdsaDerToRaw(der, 32), null)
   assertEquals(ecdsaDerToRaw(Uint8Array.of(0x30, 0x00), 48), null)
   assertEquals(ecdsaDerToRaw(Uint8Array.of(0x04, 0x00), 48), null)
+})
+
+test('mintCertificateRequest signs a PKCS#10 request that lists every name', async () => {
+  const { csrPem, privateKeyPem } = await mintCertificateRequest(['Example.com', '*.example.com'])
+  assertEquals(csrPem.startsWith('-----BEGIN CERTIFICATE REQUEST-----'), true)
+  assertEquals(privateKeyPem.startsWith('-----BEGIN PRIVATE KEY-----'), true)
+  const body = csrPem.replace(/-----[A-Z ]+-----|\s/g, '')
+  const der = Uint8Array.from(atob(body), (c) => c.charCodeAt(0))
+  const [info, algorithm, signature] = children(readNode(der, 0))
+  // version 0, subject, public key, then the [0] attributes carrying the names.
+  const [version, subject, spki, attributes] = children(info!)
+  assertEquals(content(version!), Uint8Array.of(0))
+  assertEquals(attributes!.tag, 0xa0)
+  // [0] holds one Attribute { extensionRequest, SET { SEQUENCE OF Extension } }.
+  const [attribute] = children(attributes!)
+  const [attributeOid, attributeValues] = children(attribute!)
+  assertEquals(readOid(attributeOid!), '1.2.840.113549.1.9.14')
+  const [extensionList] = children(attributeValues!)
+  const [sanExtension] = children(extensionList!)
+  assertEquals(readOid(children(sanExtension!)[0]!), '2.5.29.17')
+  const text = new TextDecoder().decode(der)
+  assertEquals(text.includes('example.com'), true)
+  assertEquals(text.includes('*.example.com'), true)
+  assertEquals(readOid(children(algorithm!)[0]!), '1.2.840.10045.4.3.2')
+  // Verify the request signature with the public key it carries.
+  const key = await crypto.subtle.importKey(
+    'spki',
+    der.subarray(spki!.contentOffset - spki!.headerLength, spki!.end),
+    { name: 'ECDSA', namedCurve: 'P-256' },
+    false,
+    ['verify']
+  )
+  const raw = ecdsaDerToRaw(content(signature!).subarray(1), 32)
+  assertEquals(raw === null, false)
+  const signed = der.subarray(info!.contentOffset - info!.headerLength, info!.end)
+  assertEquals(
+    await crypto.subtle.verify(
+      { name: 'ECDSA', hash: 'SHA-256' },
+      key,
+      Uint8Array.from(raw!),
+      Uint8Array.from(signed)
+    ),
+    true
+  )
+  // CN is the first name, lower-cased; the subject carries nothing else.
+  assertEquals(new TextDecoder().decode(content(subject!)).includes('example.com'), true)
+})
+
+test('mintCertificateRequest makes a new key each time and rejects an empty list', async () => {
+  const a = await mintCertificateRequest(['a.example.com'])
+  const b = await mintCertificateRequest(['a.example.com'])
+  assertEquals(a.privateKeyPem === b.privateKeyPem, false)
+  await assertRejects(() => mintCertificateRequest(['  ']), TypeError)
 })

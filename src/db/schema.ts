@@ -180,7 +180,7 @@ export const tls = pgTable(
     options: jsonb(),
     organizationId: uuid('organization_id').notNull(),
     name: text(),
-    /** `upload` | `lets_encrypt` | `self_signed` | `organization_ca` */
+    /** `upload` | `lets_encrypt` | `self_signed` | `organization_ca` | `provider_origin` */
     source: text().notNull(),
     /** Leaf + intermediate chain PEM; null while LE `pending`. */
     certificatePem: text('certificate_pem'),
@@ -238,7 +238,7 @@ export const tls = pgTable(
     }).onDelete('cascade'),
     check(
       'tls_source_check',
-      sql`source IN ('upload', 'lets_encrypt', 'self_signed', 'organization_ca')`
+      sql`source IN ('upload', 'lets_encrypt', 'self_signed', 'organization_ca', 'provider_origin')`
     ),
     check(
       'tls_name_format_check',
