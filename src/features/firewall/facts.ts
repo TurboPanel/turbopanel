@@ -59,6 +59,7 @@ import type {
   FirewallDeriveInput,
   FirewallSourceSets,
 } from './derive.ts'
+import { loadTunnelPeerExposures } from '../tunnels/peer-exposure.ts'
 import { type FirewallOrgPolicy, parseFirewallOrgPolicy } from './policy.ts'
 
 import type { FirewallModeValue } from './vocabulary.ts'
@@ -536,8 +537,9 @@ export async function loadFirewallFacts(
       loadEdictFacts(db, base.organizationId, serverId),
       loadSourceSets(db, serverId, base.organizationId, datacenterIds),
     ])
-  const [hosting, managed, cluster, fabricExposure, ha, compose] = await Promise.all([
+  const [hosting, tunnelPeers, managed, cluster, fabricExposure, ha, compose] = await Promise.all([
     loadHostingExposures(db, serverId),
+    loadTunnelPeerExposures(db, base.organizationId, serverId),
     loadManagedExposures(db, serverId),
     loadClusterPeerExposures(db, serverId, notes),
     loadFabricExposures(db, serverId),
@@ -553,7 +555,15 @@ export async function loadFirewallFacts(
       sshPortHint: sshPort,
       coLocated,
       controlPlaneTcpPorts,
-      exposures: [...hosting, ...managed, ...cluster, ...fabricExposure, ...ha, ...compose],
+      exposures: [
+        ...hosting,
+        ...tunnelPeers,
+        ...managed,
+        ...cluster,
+        ...fabricExposure,
+        ...ha,
+        ...compose,
+      ],
       edicts,
       sources,
     },
