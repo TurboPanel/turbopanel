@@ -355,7 +355,7 @@ export async function recordBadgeCheck(
       ...(result.token
         ? {
             options: {
-              ...((row.options as object | null) ?? {}),
+              ...(row.options as object | null),
               ...tokenOptions({ token: result.token }),
             },
             expiresAt: result.token.expiresAt,

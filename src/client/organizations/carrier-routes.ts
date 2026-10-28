@@ -357,9 +357,8 @@ function connectResponse(registry: TunnelAdapterRegistry) {
       if (current instanceof Response) return current
       const added = await addBadge(c, scope, registry, current, parsed.value)
       if (added instanceof Response) return added
-      const fresh = await findCarrier(scope.db, scope.organizationId, current.id)
       results.push({
-        carrier: toApiCarrier(fresh ?? current, []),
+        carrier: toApiCarrier({ ...current, status: 'active' }, []),
         badge: toApiBadge(added.badge),
         ...checkSummary(added.report),
       })
