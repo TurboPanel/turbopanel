@@ -8,12 +8,15 @@ CREATE TABLE "badge" (
 	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
 	"created_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
+	"metadata" jsonb,
+	"options" jsonb,
 	"carrier_id" uuid NOT NULL,
 	"secret_id" uuid NOT NULL,
 	"label" text NOT NULL,
 	"capabilities" jsonb DEFAULT '{}'::jsonb NOT NULL,
 	"last_four" text NOT NULL,
 	"last_checked_at" timestamp(3) with time zone,
+	"expires_at" timestamp(3) with time zone,
 	"status" text DEFAULT 'active' NOT NULL,
 	CONSTRAINT "uniq_badge_secret_id" UNIQUE("secret_id"),
 	CONSTRAINT "badge_label_check" CHECK (char_length(label) BETWEEN 1 AND 64),
@@ -126,11 +129,14 @@ CREATE INDEX "idx_tunnel_datacenter_id" ON "tunnel" USING btree ("datacenter_id"
 ALTER TABLE "secret" ADD CONSTRAINT "secret_provider_check" CHECK (provider IN ('s3', 's3_compatible', 'nfs', 'cifs', 'sftp', 'ftp', 'webdav',
         'git_deploy_key', 'carrier_badge', 'tunnel_run'));--> statement-breakpoint
 COMMENT ON TABLE "badge" IS 'One API token on a carrier; the token itself is sealed in the `secret` row it points to and this row keeps the label, last four characters and what it can do.';--> statement-breakpoint
+COMMENT ON COLUMN "badge"."metadata" IS 'Non-secret descriptors written by the panel; no keys are read by the platform today.';--> statement-breakpoint
+COMMENT ON COLUMN "badge"."options" IS 'Written by each check: `kind` (`account` or `user`, who owns the token), `tokenId` (the provider own token id, to catch the same token added twice) and extras.';--> statement-breakpoint
 COMMENT ON COLUMN "badge"."secret_id" IS 'The sealed token in `secret`, one badge per secret; deleting the secret deletes the badge, and removing a badge deletes its secret in the same transaction.';--> statement-breakpoint
 COMMENT ON COLUMN "badge"."label" IS 'Operator label for the token, shown beside its last four characters.';--> statement-breakpoint
 COMMENT ON COLUMN "badge"."capabilities" IS 'Last check result written by the panel: `tunnels` (boolean, account-wide) and `dns` and `certificates` (lists of zone id and name the token reaches).';--> statement-breakpoint
 COMMENT ON COLUMN "badge"."last_four" IS 'Last 4 characters of the token, the only part of it ever shown; never enough to use the token.';--> statement-breakpoint
 COMMENT ON COLUMN "badge"."last_checked_at" IS 'When the panel last checked the token with the provider; NULL until then.';--> statement-breakpoint
+COMMENT ON COLUMN "badge"."expires_at" IS 'When the provider says the token stops working; NULL when it reports none.';--> statement-breakpoint
 COMMENT ON COLUMN "badge"."status" IS '`active` while the last check succeeded, `attention` once a check was refused or failed.';--> statement-breakpoint
 COMMENT ON TABLE "carrier" IS 'A provider account an organization connected for tunnels; its API tokens are `badge` rows and nothing secret is stored here.';--> statement-breakpoint
 COMMENT ON COLUMN "carrier"."metadata" IS 'Non-secret descriptors written by the panel; no keys are read by the platform today.';--> statement-breakpoint

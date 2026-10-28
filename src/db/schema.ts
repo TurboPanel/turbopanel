@@ -7176,14 +7176,22 @@ export const badge = pgTable(
       .defaultNow()
       .$onUpdate(() => sql`now()`)
       .notNull(),
+    metadata: jsonb(),
+    options: jsonb(),
     carrierId: uuid('carrier_id').notNull(),
     secretId: uuid('secret_id').notNull(),
     label: text().notNull(),
-    /** What the last check found the token can do: `{ tunnels, dns, certificates }` booleans. */
+    /** What the last check found: `tunnels` (account-wide boolean), `dns` and `certificates` (zone lists). */
     capabilities: jsonb().default({}).notNull(),
     /** Last 4 characters of the token, kept so a screen can tell tokens apart. */
     lastFour: text('last_four').notNull(),
     lastCheckedAt: timestamp('last_checked_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }),
+    /** When the provider says the token stops working, so a sweep can warn first. */
+    expiresAt: timestamp('expires_at', {
       precision: 3,
       withTimezone: true,
       mode: 'string',

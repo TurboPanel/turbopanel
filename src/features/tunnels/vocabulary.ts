@@ -56,3 +56,16 @@ export const NO_CAPABILITIES: BadgeCapabilities = { tunnels: false, dns: [], cer
 export const TUNNEL_SECRET_PROVIDERS = ['carrier_badge', 'tunnel_run'] as const
 export const BADGE_SECRET_PROVIDER = TUNNEL_SECRET_PROVIDERS[0]
 export const RUN_SECRET_PROVIDER = TUNNEL_SECRET_PROVIDERS[1]
+
+/** Who owns an API token at the provider: one account, or a person who may reach several. */
+export type TokenKind = 'account' | 'user'
+
+/** What the provider says about a token itself, from its verify endpoint. */
+export type TokenInfo = {
+  kind: TokenKind | null
+  /** The provider's own id for the token (not the secret). */
+  id: string | null
+  status: string | null
+  expiresAt: string | null
+}
+export const UNKNOWN_TOKEN: TokenInfo = { kind: null, id: null, status: null, expiresAt: null }

@@ -57,6 +57,16 @@ export const tunnelSchemas = {
       carrierId: { type: 'string', format: 'uuid' },
       label: { type: 'string' },
       lastFour: { type: 'string', description: 'Last 4 characters of the token.' },
+      kind: {
+        type: ['string', 'null'],
+        enum: ['account', 'user', null],
+        description: 'Who owns the API Token at the provider, when known.',
+      },
+      expiresAt: {
+        type: ['string', 'null'],
+        format: 'date-time',
+        description: 'When the provider says the token stops working, if it reports one.',
+      },
       capabilities: {
         type: 'object',
         description:
@@ -92,6 +102,32 @@ export const tunnelSchemas = {
       provider: { type: 'string', enum: ['cloudflare'] },
       name: { type: 'string', minLength: 1, maxLength: 64 },
       externalAccountId: { type: 'string', description: 'The provider’s own account id.' },
+    },
+  },
+  CarrierConnect: {
+    type: 'object',
+    title: 'Connect Cloudflare Account',
+    required: ['provider', 'label', 'token'],
+    description:
+      'Paste only the API Token. The panel lists the accounts it reaches and connects the only one, or the ones named in `accountIds`.',
+    properties: {
+      provider: { type: 'string', enum: ['cloudflare'] },
+      label: { type: 'string', minLength: 1, maxLength: 64, title: 'Label' },
+      token: {
+        type: 'string',
+        title: 'API Token',
+        minLength: 8,
+        maxLength: 512,
+        writeOnly: true,
+        description:
+          'An API Token, not a Global API Key (that is refused). Stored sealed and never returned.',
+      },
+      accountIds: {
+        type: 'array',
+        title: 'Cloudflare Accounts',
+        items: { type: 'string' },
+        description: 'Required when the token reaches more than one account.',
+      },
     },
   },
   BadgeCreate: {
@@ -160,6 +196,45 @@ export const tunnelPaths: Record<string, unknown> = {
         ...jsonOk(
           'Created',
           { type: 'object', properties: { carrier: { $ref: '#/components/schemas/Carrier' } } },
+          '201'
+        ),
+        ...errors({ badRequest: true }),
+      },
+    },
+  },
+  '/api/client/v1/organizations/{id}/carriers/connect': {
+    post: {
+      tags: ['Organizations'],
+      summary: 'Connect accounts with an API token',
+      description:
+        'Owners and managers only. Send only the API Token: it is checked with the provider, its accounts are listed, and each chosen account becomes a carrier (created if missing) with its own separately sealed copy of the token. 409 `account_choice_needed` (with `accounts`) when it reaches several and `accountIds` is missing; 400 `badge_invalid` for a Global API Key; 409 `badge_exists` for a token already added to that account.',
+      security: [{ cookieAuth: [] }],
+      parameters: [ORG_ID_PARAM],
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': { schema: { $ref: '#/components/schemas/CarrierConnect' } },
+        },
+      },
+      responses: {
+        ...jsonOk(
+          'Connected',
+          {
+            type: 'object',
+            properties: {
+              connected: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  properties: {
+                    carrier: { $ref: '#/components/schemas/Carrier' },
+                    badge: { $ref: '#/components/schemas/Badge' },
+                    ...CHECK_PROPERTIES,
+                  },
+                },
+              },
+            },
+          },
           '201'
         ),
         ...errors({ badRequest: true }),

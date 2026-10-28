@@ -37,6 +37,9 @@ test('a badge as the API shows it has no token, no secret id and only the known 
     id: '00000000-0000-4000-8000-0000000000b1',
     createdAt: '2026-10-28T00:00:00.000Z',
     updatedAt: '2026-10-28T00:00:00.000Z',
+    metadata: null,
+    options: { kind: 'user', tokenId: 'tok-1' },
+    expiresAt: '2027-01-01T00:00:00.000Z',
     carrierId: '00000000-0000-4000-8000-0000000000c1',
     secretId: '00000000-0000-4000-8000-0000000000e1',
     label: 'Main',
@@ -60,6 +63,9 @@ test('a badge as the API shows it has no token, no secret id and only the known 
   assert(!json.includes(TOKEN))
   assert(!json.includes(row.secretId))
   assertEquals(shown.lastFour, TOKEN.slice(-4))
+  assertEquals(shown.kind, 'user')
+  assertEquals(shown.expiresAt, '2027-01-01T00:00:00.000Z')
+  assert(!json.includes('tok-1'))
 })
 
 test('a carrier body needs a known provider, a name and an account id', () => {

@@ -26,6 +26,7 @@ export type CloudflareIngressRule = {
   service: string
   originRequest?: Record<string, unknown>
 }
+export type CloudflareTokenVerify = { id?: string; status?: string; expires_on?: string }
 export type CloudflareDnsRecord = { id: string; name?: string }
 
 export type CloudflareClientOptions = {
@@ -121,6 +122,16 @@ export class CloudflareClient {
     return this.#list<CloudflareZone>(
       accountId ? `/zones?account.id=${encodeURIComponent(accountId)}` : '/zones'
     )
+  }
+
+  /** Verify a user-owned token (GET /user/tokens/verify). */
+  verifyUserToken(): Promise<CloudflareTokenVerify> {
+    return this.#call('GET', '/user/tokens/verify')
+  }
+
+  /** Verify an account-owned token (GET /accounts/{account_id}/tokens/verify). */
+  verifyAccountToken(accountId: string): Promise<CloudflareTokenVerify> {
+    return this.#call('GET', `/accounts/${encodeURIComponent(accountId)}/tokens/verify`)
   }
 
   /** One-row read: proves the token can read tunnels of the account. */

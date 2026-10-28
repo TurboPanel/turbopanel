@@ -91,6 +91,27 @@ zones of the carrier's account. Responses and audit rows carry only those. Provi
 scrubbed by `TunnelProviderError` (known secrets, bearer values and token-shaped
 runs are redacted) before they are logged, audited, stored or returned.
 
+## API tokens at the provider
+
+Say "API token" everywhere: a Global API Key is a different credential (it needs
+an email and is not a bearer token) and is refused by `tokenShapeProblem`
+(Cloudflare: `cfk_` prefix, or 37 to 45 lowercase hex characters). Checked
+against Cloudflare's documentation: user-owned tokens verify at
+`GET /user/tokens/verify` and account-owned tokens at
+`GET /accounts/{account_id}/tokens/verify` (both return `id`, `status`,
+optional `expires_on`); Tunnel and DNS are supported by account-owned tokens;
+new tokens carry a prefix (`cfut_` user-owned, `cfat_` account-owned), older
+ones are 40 plain characters. The check tries the endpoint that fits first
+(by prefix, else the account one when exactly one account is known) and falls
+back to the other. Not stated in the documentation and so not assumed: that an
+account-owned token belongs to exactly one account (a verify success is not
+used to prove it), and whether an account-owned token may list `/accounts`
+(a refusal is read as an empty list, so the person then adds the account by id).
+`badge.options` records `kind` and the provider's `tokenId` (a second add of
+the same token to one carrier is refused with 409 `badge_exists`; a user-owned
+token reaching two accounts becomes one badge under each carrier, sealed
+separately), and `badge.expires_at` holds the reported expiry.
+
 ## Adapter
 
 `adapter.ts` is the interface: check a credential, create a tunnel, fetch or

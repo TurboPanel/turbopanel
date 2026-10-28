@@ -45,6 +45,7 @@ type Called = { status: number; text: string; body: Record<string, unknown> }
 
 const TOKEN = 'cf-api-token-0123456789abcdefghijklmnopqrstuv'
 const ACCOUNT = 'a'.repeat(32)
+const EXPIRES = '2027-01-01T00:00:00.000Z'
 
 /** What the faked provider answers; each test sets the mode. */
 type Mode = 'good' | 'no-dns' | 'weak' | 'rejected' | 'echo-token'
@@ -62,6 +63,9 @@ const fakeProvider: typeof fetch = (input) => {
   if (state.mode === 'rejected') return Promise.resolve(refused(401, `Invalid token ${TOKEN}`))
   if (path === '/accounts') return Promise.resolve(ok([{ id: ACCOUNT, name: 'Main' }]))
   if (path === '/zones') return Promise.resolve(ok([{ id: 'z1', name: 'example.com' }]))
+  if (path === '/user/tokens/verify') {
+    return Promise.resolve(ok({ id: 'tok-1', status: 'active', expires_on: EXPIRES }))
+  }
   if (state.mode === 'weak') return Promise.resolve(refused(403, 'Authentication error'))
   if (path.endsWith('/cfd_tunnel')) return Promise.resolve(ok([]))
   if (path.endsWith('/dns_records')) {
@@ -395,5 +399,37 @@ test('a carrier that still has tunnels is refused with 409 and keeps its tokens;
     await f.db.delete(tunnel).where(eq(tunnel.id, t!.id))
     assertEquals((await call(f, 'DELETE', base, f.managerCookie)).status, 200)
     assertEquals((await f.db.select().from(secret).where(eq(secret.id, row!.secretId))).length, 0)
+  })
+})
+
+test('connecting with only an API token lists its account, stores the kind and expiry, and refuses repeats and Global API Keys', async () => {
+  await withFixture(async (f) => {
+    const path = `/organizations/${f.orgA}/carriers/connect`
+    const body = { provider: 'cloudflare', label: 'Main', token: TOKEN }
+    const connected = await call(f, 'POST', path, f.managerCookie, body)
+    assertEquals(connected.status, 201, connected.text)
+    assert(!connected.text.includes(TOKEN))
+    const [made] = connected.body.connected as {
+      carrier: { id: string; externalAccountId: string; name: string }
+      badge: { kind: string; expiresAt: string }
+    }[]
+    assertEquals(made!.carrier.externalAccountId, ACCOUNT)
+    assertEquals(made!.carrier.name, 'Main')
+    assertEquals(made!.badge.kind, 'user')
+    assertEquals(new Date(made!.badge.expiresAt).toISOString(), EXPIRES)
+    const [row] = await f.db.select().from(badge).where(eq(badge.carrierId, made!.carrier.id))
+    assertEquals((row!.options as { tokenId: string }).tokenId, 'tok-1')
+
+    const again = await call(f, 'POST', path, f.managerCookie, body)
+    assertEquals(again.status, 409)
+    assertEquals(again.body.error, 'badge_exists')
+
+    const globalKey = await call(f, 'POST', path, f.managerCookie, {
+      ...body,
+      token: '0123456789abcdef0123456789abcdef01234',
+    })
+    assertEquals(globalKey.status, 400)
+    assertEquals(globalKey.body.field, 'token')
+    assert(String(globalKey.body.detail).includes('Global API Key'))
   })
 })

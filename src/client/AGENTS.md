@@ -43,7 +43,9 @@ changes.
   `DELETE .../badges/:badgeId`, `POST .../badges/:badgeId/check`. All
   `organization:manage`. A token is write-only: checked with the provider,
   sealed into `secret`, never returned (responses carry a label and the last
-  four characters; audit rows carry neither). Adding one is refused with
+  four characters; audit rows carry neither). `POST .../carriers/connect`
+  takes only the API token, lists the accounts it reaches and connects the
+  chosen one (the only one, else `accountIds`; 409 `account_choice_needed`). Adding one is refused with
   `badge_rejected`, `badge_wrong_account` or `badge_not_useful` (names the
   missing permissions); 502 `provider_unavailable` when the provider cannot be
   reached. See `src/features/tunnels/AGENTS.md`.

@@ -1,5 +1,5 @@
 {
-  "id": "4e46ae2c-431a-4cfe-b8cb-ffb9720ccf3c",
+  "id": "e5ccf232-82b8-4511-b2c3-3b9ebb235700",
   "prevId": "89eebc09-24ec-4f45-809e-2b6cd96d2c5a",
   "version": "7",
   "dialect": "postgresql",
@@ -1184,6 +1184,18 @@
           "notNull": true,
           "default": "now()"
         },
+        "metadata": {
+          "name": "metadata",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "options": {
+          "name": "options",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
         "carrier_id": {
           "name": "carrier_id",
           "type": "uuid",
@@ -1217,6 +1229,12 @@
         },
         "last_checked_at": {
           "name": "last_checked_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "expires_at": {
+          "name": "expires_at",
           "type": "timestamp(3) with time zone",
           "primaryKey": false,
           "notNull": false

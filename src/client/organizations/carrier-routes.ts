@@ -15,16 +15,20 @@ import { isUuid } from '../access/routes-helpers.ts'
 import { isForeignKeyViolation } from '../hierarchy-delete.ts'
 import { isPostgresUniqueViolation } from '../../db/unique-violation.ts'
 import { recordAudit } from '../../features/audit/audit-records.ts'
-import type { CredentialReport } from '../../features/tunnels/adapter.ts'
+import type { CredentialReport, TokenDiscovery } from '../../features/tunnels/adapter.ts'
 import { TunnelProviderError } from '../../features/tunnels/errors.ts'
 import {
   type BadgeRow,
+  type ApiBadge,
+  type ApiCarrier,
   type CarrierRow,
   carrierHasTunnels,
   deleteBadge,
   deleteCarrier,
   findBadge,
+  findBadgeByTokenId,
   findCarrier,
+  findCarrierByAccount,
   insertBadge,
   insertCarrier,
   isUsefulReport,
@@ -44,10 +48,15 @@ import {
   createTunnelAdapterRegistry,
   type TunnelAdapterRegistry,
 } from '../../features/tunnels/registry.ts'
-import { NO_CAPABILITIES, type TunnelProvider } from '../../features/tunnels/vocabulary.ts'
+import {
+  NO_CAPABILITIES,
+  TUNNEL_PROVIDERS,
+  type TunnelProvider,
+} from '../../features/tunnels/vocabulary.ts'
 
 const CARRIER_PATHS = [
   '/organizations/:id/carriers',
+  '/organizations/:id/carriers/connect',
   '/organizations/:id/carriers/:carrierId',
   '/organizations/:id/carriers/:carrierId/badges',
   '/organizations/:id/carriers/:carrierId/badges/:badgeId',
@@ -220,6 +229,54 @@ function notUseful(c: Context<AppEnv>, report: CredentialReport): Response {
   )
 }
 
+type Added = { badge: BadgeRow; report: CredentialReport }
+
+/**
+ * Check a token against one carrier and, when it is useful, seal and store it.
+ * Returns the response to send instead when anything refuses it.
+ */
+async function addBadge(
+  c: Context<AppEnv>,
+  scope: Scope,
+  registry: TunnelAdapterRegistry,
+  current: CarrierRow,
+  input: { label: string; token: string }
+): Promise<Added | Response> {
+  const secrets = c.get('dataEncryptionSecrets')
+  if (!secrets) return c.json({ error: 'secrets_unavailable' }, 503)
+  if ((await listBadges(scope.db, current.id)).length >= MAX_BADGES_PER_CARRIER) {
+    return c.json({ error: 'badge_limit', limit: MAX_BADGES_PER_CARRIER }, 409)
+  }
+  const provider = current.provider as TunnelProvider
+  const problem = registry(provider).tokenShapeProblem(input.token)
+  if (problem) return invalid(c, 'badge_invalid', 'token', problem)
+  const report = await runCheck(c, registry, provider, input.token, current.externalAccountId)
+  if (report instanceof Response) return report
+  if (!report.accountVisible) return accountMismatch(c)
+  if (!isUsefulReport(report)) return notUseful(c, report)
+  if (report.token.id && (await findBadgeByTokenId(scope.db, current.id, report.token.id))) {
+    return c.json(
+      { error: 'badge_exists', message: 'This API Token is already added to this Carrier.' },
+      409
+    )
+  }
+  const row = await insertBadge(scope.db, {
+    organizationId: scope.organizationId,
+    carrier: current,
+    label: input.label,
+    sealed: await sealToken(secrets, input.token),
+    lastFour: input.token.slice(-4),
+    report,
+  })
+  await audit(c, scope, 'badge.create', row.id, {
+    carrierId: current.id,
+    label: input.label,
+    kind: report.token.kind,
+    capabilities: report.capabilities,
+  })
+  return { badge: row, report }
+}
+
 function createBadgeResponse(registry: TunnelAdapterRegistry) {
   return async (c: Context<AppEnv>, scope: Scope): Promise<Response> => {
     const current = await loadCarrierParam(c, scope)
@@ -228,37 +285,102 @@ function createBadgeResponse(registry: TunnelAdapterRegistry) {
     if (body instanceof Response) return body
     const parsed = parseBadgeBody(body)
     if (!parsed.ok) return invalid(c, 'badge_invalid', parsed.field, parsed.detail)
-    const secrets = c.get('dataEncryptionSecrets')
-    if (!secrets) return c.json({ error: 'secrets_unavailable' }, 503)
-    if ((await listBadges(scope.db, current.id)).length >= MAX_BADGES_PER_CARRIER) {
-      return c.json({ error: 'badge_limit', limit: MAX_BADGES_PER_CARRIER }, 409)
-    }
-    const { label, token } = parsed.value
-    const report = await runCheck(
-      c,
-      registry,
-      current.provider as TunnelProvider,
-      token,
-      current.externalAccountId
-    )
-    if (report instanceof Response) return report
-    if (!report.accountVisible) return accountMismatch(c)
-    if (!isUsefulReport(report)) return notUseful(c, report)
-    const row = await insertBadge(scope.db, {
-      organizationId: scope.organizationId,
-      carrier: current,
-      label,
-      sealed: await sealToken(secrets, token),
-      lastFour: token.slice(-4),
-      report,
-    })
-    await audit(c, scope, 'badge.create', row.id, {
-      carrierId: current.id,
-      label,
-      capabilities: report.capabilities,
-    })
-    return c.json({ badge: toApiBadge(row), ...checkSummary(report) }, 201)
+    const added = await addBadge(c, scope, registry, current, parsed.value)
+    if (added instanceof Response) return added
+    return c.json({ badge: toApiBadge(added.badge), ...checkSummary(added.report) }, 201)
   }
+}
+
+/** The accounts to connect: the ones asked for, or the only one there is. */
+function pickAccounts(
+  c: Context<AppEnv>,
+  accounts: readonly { id: string; name: string }[],
+  asked: unknown
+): { id: string; name: string }[] | Response {
+  if (accounts.length === 0) {
+    return invalid(
+      c,
+      'account_required',
+      'accountIds',
+      'The provider listed no accounts for this API Token. Add the Cloudflare Account by its id first, then add the token to it.'
+    )
+  }
+  if (asked === undefined) {
+    if (accounts.length === 1) return [...accounts]
+    return c.json(
+      {
+        error: 'account_choice_needed',
+        message: 'This API Token reaches more than one account. Choose which to connect.',
+        accounts,
+      },
+      409
+    )
+  }
+  const ids = Array.isArray(asked) ? asked : []
+  const chosen = accounts.filter((a) => ids.includes(a.id))
+  if (ids.length === 0 || chosen.length !== new Set(ids).size) {
+    return invalid(c, 'account_invalid', 'accountIds', 'Choose accounts this API Token can reach')
+  }
+  return chosen
+}
+
+/**
+ * The person pastes only the API token: the panel lists the accounts it
+ * reaches and connects the chosen one(s) (the only one, when there is exactly
+ * one). Each account gets its own carrier (created if missing) and its own
+ * separately sealed copy of the token.
+ */
+function connectResponse(registry: TunnelAdapterRegistry) {
+  return async (c: Context<AppEnv>, scope: Scope): Promise<Response> => {
+    const body = await parseJsonBody(c)
+    if (body instanceof Response) return body
+    const provider = TUNNEL_PROVIDERS.find((p) => p === body.provider)
+    const parsed = parseBadgeBody(body)
+    if (!provider) return invalid(c, 'carrier_invalid', 'provider', 'Choose a known provider')
+    if (!parsed.ok) return invalid(c, 'badge_invalid', parsed.field, parsed.detail)
+    const adapter = registry(provider)
+    const problem = adapter.tokenShapeProblem(parsed.value.token)
+    if (problem) return invalid(c, 'badge_invalid', 'token', problem)
+    let found: TokenDiscovery
+    try {
+      found = await adapter.discoverAccounts(parsed.value.token)
+    } catch (err) {
+      if (err instanceof TunnelProviderError) return providerFailure(c, err)
+      throw err
+    }
+    const accounts = pickAccounts(c, found.accounts, body.accountIds)
+    if (accounts instanceof Response) return accounts
+    const results: { carrier: ApiCarrier; badge: ApiBadge; zones: unknown; missing: string[] }[] =
+      []
+    for (const account of accounts) {
+      const current = await ensureCarrier(scope, provider, account)
+      if (current instanceof Response) return current
+      const added = await addBadge(c, scope, registry, current, parsed.value)
+      if (added instanceof Response) return added
+      const fresh = await findCarrier(scope.db, scope.organizationId, current.id)
+      results.push({
+        carrier: toApiCarrier(fresh ?? current, []),
+        badge: toApiBadge(added.badge),
+        ...checkSummary(added.report),
+      })
+    }
+    return c.json({ connected: results }, 201)
+  }
+}
+
+async function ensureCarrier(
+  scope: Scope,
+  provider: TunnelProvider,
+  account: { id: string; name: string }
+): Promise<CarrierRow | Response> {
+  const existing = await findCarrierByAccount(scope.db, scope.organizationId, provider, account.id)
+  if (existing) return existing
+  return await insertCarrier(scope.db, {
+    organizationId: scope.organizationId,
+    provider,
+    name: account.name.trim().slice(0, 64) || account.id,
+    externalAccountId: account.id,
+  })
 }
 
 function checkBadgeResponse(registry: TunnelAdapterRegistry) {
@@ -285,6 +407,7 @@ function checkBadgeResponse(registry: TunnelAdapterRegistry) {
     const updated = await recordBadgeCheck(scope.db, row, {
       capabilities: report?.capabilities ?? NO_CAPABILITIES,
       status: useful ? 'active' : 'attention',
+      token: report?.token,
     })
     await audit(c, scope, 'badge.check', row.id, { carrierId: current.id, ok: useful })
     return c.json({
@@ -328,6 +451,7 @@ export function registerOrganizationCarrierRoutes(
 
   router.get('/organizations/:id/carriers', guarded(listResponse))
   router.post('/organizations/:id/carriers', guarded(createCarrierResponse))
+  router.post('/organizations/:id/carriers/connect', guarded(connectResponse(registry)))
   router.delete('/organizations/:id/carriers/:carrierId', guarded(deleteCarrierResponse))
   router.get('/organizations/:id/carriers/:carrierId/badges', guarded(listBadgesResponse))
   router.post(

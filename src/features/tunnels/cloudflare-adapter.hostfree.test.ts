@@ -1,5 +1,9 @@
 import { assert, assertEquals, assertRejects } from '@std/assert'
-import { buildIngress, createCloudflareAdapter } from './cloudflare-adapter.ts'
+import {
+  buildIngress,
+  cloudflareTokenProblem,
+  createCloudflareAdapter,
+} from './cloudflare-adapter.ts'
 import { TunnelProviderError } from './errors.ts'
 import { scrubSecrets } from './scrub.ts'
 
@@ -267,4 +271,64 @@ test('a token limited to some zones lists only those zones as DNS rights', async
   })
   assertEquals(report.capabilities.dns, [{ id: 'z1', name: 'example.com' }])
   assertEquals(report.missing, [])
+})
+
+test('a Global API Key is refused in both its old and new formats, an API token is not', () => {
+  assert(cloudflareTokenProblem('0123456789abcdef0123456789abcdef01234') !== null) // 37 hex
+  assert(cloudflareTokenProblem('0123456789abcdef0123456789abcdef0123456789abc') !== null) // 45 hex
+  assert(cloudflareTokenProblem(`cfk_${'A'.repeat(40)}checksum`) !== null)
+  assert(cloudflareTokenProblem('cf-api-token-0123456789abcdefghijklmnopqrstuv') === null)
+  assert(cloudflareTokenProblem(`cfat_${'a'.repeat(40)}abcdef`) === null)
+  assert(cloudflareTokenProblem(`cfut_${'a'.repeat(40)}abcdef`) === null)
+  assert(cloudflareTokenProblem('0123456789abcdef0123456789abcdef0123') === null) // 36 hex is not a key
+  assert(cloudflareTokenProblem('AbCd0123456789abcdef0123456789abcdef0123') === null) // mixed case
+})
+
+test('an account-owned token is verified at the account endpoint and its expiry is reported', async () => {
+  const expires = '2027-03-01T00:00:00Z'
+  const { impl, calls } = fakeFetch({
+    'GET /client/v4/accounts': ok([{ id: ACCOUNT, name: 'Main' }]),
+    'GET /client/v4/zones': ok([]),
+    [`GET /client/v4/accounts/${ACCOUNT}/tokens/verify`]: ok({
+      id: 'tok-1',
+      status: 'active',
+      expires_on: expires,
+    }),
+    [`GET /client/v4/accounts/${ACCOUNT}/cfd_tunnel`]: ok([]),
+  })
+  const report = await createCloudflareAdapter({ fetch: impl }).checkCredential(TOKEN, {
+    accountId: ACCOUNT,
+  })
+  assertEquals(report.token, { kind: 'account', id: 'tok-1', status: 'active', expiresAt: expires })
+  // The account endpoint answered, so the user endpoint was never needed.
+  assert(!calls.some((c) => c.url.startsWith('/client/v4/user/tokens/verify')))
+})
+
+test('a user-owned token falls back to the user endpoint, and the prefix names the kind', async () => {
+  const { impl } = fakeFetch({
+    'GET /client/v4/accounts': ok([{ id: ACCOUNT, name: 'Main' }]),
+    'GET /client/v4/zones': ok([]),
+    'GET /client/v4/user/tokens/verify': ok({ id: 'tok-2', status: 'active' }),
+    [`GET /client/v4/accounts/${ACCOUNT}/cfd_tunnel`]: ok([]),
+  })
+  const adapter = createCloudflareAdapter({ fetch: impl })
+  const plain = await adapter.checkCredential(TOKEN, { accountId: ACCOUNT })
+  assertEquals(plain.token.kind, 'user')
+  assertEquals(plain.token.expiresAt, null)
+  const prefixed = await adapter.checkCredential(`cfut_${'a'.repeat(40)}`, { accountId: ACCOUNT })
+  assertEquals(prefixed.token.kind, 'user')
+})
+
+test('discovering accounts lists what a pasted token reaches and who owns it', async () => {
+  const { impl } = fakeFetch({
+    'GET /client/v4/accounts': ok([
+      { id: ACCOUNT, name: 'Main' },
+      { id: 'b'.repeat(32), name: 'Second' },
+    ]),
+    'GET /client/v4/user/tokens/verify': ok({ id: 'tok-3', status: 'active' }),
+  })
+  const found = await createCloudflareAdapter({ fetch: impl }).discoverAccounts(TOKEN)
+  assertEquals(found.accounts.length, 2)
+  assertEquals(found.token.kind, 'user')
+  assertEquals(found.token.id, 'tok-3')
 })

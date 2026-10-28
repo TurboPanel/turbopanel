@@ -1,4 +1,4 @@
-import type { BadgeCapabilities, TunnelProvider } from './vocabulary.ts'
+import type { BadgeCapabilities, TokenInfo, TunnelProvider } from './vocabulary.ts'
 
 export type ProviderAccount = { id: string; name: string }
 export type ProviderZone = { id: string; name: string }
@@ -13,7 +13,12 @@ export type CredentialReport = {
   capabilities: BadgeCapabilities
   /** Plain-words names of the permissions a useful token still lacks. */
   missing: string[]
+  /** What the provider says about the token itself: owner kind, id, status, expiry. */
+  token: TokenInfo
 }
+
+/** What a pasted token reaches before the person has chosen an account. */
+export type TokenDiscovery = { accounts: ProviderAccount[]; token: TokenInfo }
 
 export type TunnelCreated = { externalId: string; runToken: string }
 
@@ -25,6 +30,10 @@ export type TunnelCreated = { externalId: string; runToken: string }
  */
 export type TunnelAdapter = {
   readonly provider: TunnelProvider
+  /** A plain-words reason a pasted value cannot be an API token, or null. */
+  tokenShapeProblem(token: string): string | null
+  /** List the accounts a token can reach, for the person to pick from. */
+  discoverAccounts(token: string): Promise<TokenDiscovery>
   /** Check a credential with safe read calls and report what it reaches. */
   checkCredential(token: string, scope: { accountId: string | null }): Promise<CredentialReport>
   createTunnel(

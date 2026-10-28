@@ -30,6 +30,10 @@ export type ApiBadge = {
   label: string
   lastFour: string
   capabilities: BadgeCapabilities
+  /** Who owns the token at the provider, when known. */
+  kind: string | null
+  /** When the provider says the token stops working; null when it reports none. */
+  expiresAt: string | null
   status: string
   lastCheckedAt: string | null
   createdAt: string
@@ -99,6 +103,11 @@ export function parseBadgeBody(
   return { ok: true, value: { label: label.value, token } }
 }
 
+function optionString(options: unknown, key: string): string | null {
+  const value = (options as Record<string, unknown> | null)?.[key]
+  return typeof value === 'string' ? value : null
+}
+
 /** Keep only well-formed zone entries from stored data. */
 function zoneList(value: unknown): { id: string; name: string }[] {
   if (!Array.isArray(value)) return []
@@ -121,6 +130,8 @@ export function toApiBadge(row: BadgeRow): ApiBadge {
     label: row.label,
     lastFour: row.lastFour,
     capabilities,
+    kind: optionString(row.options, 'kind'),
+    expiresAt: row.expiresAt,
     status: row.status,
     lastCheckedAt: row.lastCheckedAt,
     createdAt: row.createdAt,
@@ -234,8 +245,46 @@ export async function openBadgeToken(
 
 export type CheckOutcome = { capabilities: CredentialReport['capabilities']; status: string }
 
+/** The non-secret facts a check learned about the token itself. */
+function tokenOptions(report: Pick<CredentialReport, 'token'>): Record<string, unknown> {
+  return { kind: report.token.kind, tokenId: report.token.id }
+}
+
+/** The badge on this carrier that holds the provider token with this id, if any. */
+export async function findBadgeByTokenId(
+  db: Db,
+  carrierId: string,
+  tokenId: string
+): Promise<BadgeRow | null> {
+  const badges = await listBadges(db, carrierId)
+  return badges.find((b) => optionString(b.options, 'tokenId') === tokenId) ?? null
+}
+
+export async function findCarrierByAccount(
+  db: Db,
+  organizationId: string,
+  provider: string,
+  externalAccountId: string
+): Promise<CarrierRow | null> {
+  const [row] = await db
+    .select()
+    .from(carrier)
+    .where(
+      and(
+        eq(carrier.organizationId, organizationId),
+        eq(carrier.provider, provider),
+        eq(carrier.externalAccountId, externalAccountId)
+      )
+    )
+    .limit(1)
+  return row ?? null
+}
+
 /** A token is useful when it reaches tunnels or DNS. */
 export function isUsefulReport(report: CredentialReport): boolean {
+  // A token the provider calls disabled or expired is no use, whatever it once reached.
+  const status = report.token.status
+  if (status !== null && status !== 'active') return false
   return report.capabilities.tunnels || report.capabilities.dns.length > 0
 }
 
@@ -277,6 +326,8 @@ export async function insertBadge(
         label: params.label,
         lastFour: params.lastFour,
         capabilities: params.report.capabilities,
+        options: tokenOptions(params.report),
+        expiresAt: params.report.token.expiresAt,
         lastCheckedAt: new Date().toISOString(),
         status: 'active',
       })
@@ -290,12 +341,26 @@ export async function insertBadge(
 export async function recordBadgeCheck(
   db: Db,
   row: BadgeRow,
-  result: { capabilities: CredentialReport['capabilities']; status: 'active' | 'attention' }
+  result: {
+    capabilities: CredentialReport['capabilities']
+    status: 'active' | 'attention'
+    token?: CredentialReport['token']
+  }
 ): Promise<BadgeRow> {
   const [updated] = await db
     .update(badge)
     .set({
       capabilities: result.capabilities,
+      // A check that could not reach the provider keeps what was known before.
+      ...(result.token
+        ? {
+            options: {
+              ...((row.options as object | null) ?? {}),
+              ...tokenOptions({ token: result.token }),
+            },
+            expiresAt: result.token.expiresAt,
+          }
+        : {}),
       status: result.status,
       lastCheckedAt: new Date().toISOString(),
     })

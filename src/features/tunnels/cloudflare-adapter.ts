@@ -4,7 +4,12 @@
  * read that succeeds proves the token reaches that area, and edit rights are
  * confirmed by the first write that needs them.
  */
-import type { BadgeCapabilities } from './vocabulary.ts'
+import {
+  type BadgeCapabilities,
+  type TokenInfo,
+  type TokenKind,
+  UNKNOWN_TOKEN,
+} from './vocabulary.ts'
 import type { CredentialReport, TunnelAdapter } from './adapter.ts'
 import { CloudflareClient, type CloudflareIngressRule } from './cloudflare-client.ts'
 import { TunnelProviderError } from './errors.ts'
@@ -64,6 +69,84 @@ async function reachableZones(
   return probed.filter((z): z is { id: string; name: string } => z !== null)
 }
 
+/**
+ * A Global API Key is a different credential (it needs an email and is not a
+ * bearer token). Legacy keys are 37 to 45 lowercase hex characters and new ones
+ * start with `cfk_`. API tokens are 40 alphanumeric characters or start with
+ * `cfut_` (user-owned) or `cfat_` (account-owned).
+ */
+export function cloudflareTokenProblem(token: string): string | null {
+  if (token.startsWith('cfk_') || /^[0-9a-f]{37,45}$/.test(token)) {
+    return 'This looks like a Global API Key, which does not work here. Create an API Token in Cloudflare and paste that instead.'
+  }
+  return null
+}
+
+function kindFromPrefix(token: string): TokenKind | null {
+  if (token.startsWith('cfat_')) return 'account'
+  if (token.startsWith('cfut_')) return 'user'
+  return null
+}
+
+type VerifyResult = { id?: string; status?: string; expires_on?: string }
+
+/** Run one verify call; a refusal means "not this kind", anything else is a real failure. */
+async function tryVerify(call: () => Promise<VerifyResult>): Promise<VerifyResult | null> {
+  try {
+    return await call()
+  } catch (err) {
+    if (
+      err instanceof TunnelProviderError &&
+      (err.code === 'unauthorized' || err.code === 'forbidden' || err.code === 'not_found')
+    ) {
+      return null
+    }
+    throw err
+  }
+}
+
+/**
+ * Ask Cloudflare about the token itself. An account-owned token is verified at
+ * the account endpoint and a user-owned one at the user endpoint, so the one
+ * that fits is tried first (by prefix, else by whether an account is known)
+ * and the other is the fallback. A token that verifies nowhere is reported as
+ * unknown, not rejected: the probes decide what it can do.
+ */
+async function inspectToken(
+  api: CloudflareClient,
+  token: string,
+  accountIds: readonly string[]
+): Promise<TokenInfo> {
+  const prefix = kindFromPrefix(token)
+  const asAccount = async (): Promise<TokenInfo | null> => {
+    for (const id of accountIds) {
+      const found = await tryVerify(() => api.verifyAccountToken(id))
+      if (found) return toInfo('account', found)
+    }
+    return null
+  }
+  const asUser = async (): Promise<TokenInfo | null> => {
+    const found = await tryVerify(() => api.verifyUserToken())
+    return found ? toInfo('user', found) : null
+  }
+  const accountFirst = prefix === 'account' || (prefix === null && accountIds.length === 1)
+  const order = accountFirst ? [asAccount, asUser] : [asUser, asAccount]
+  for (const attempt of order) {
+    const info = await attempt()
+    if (info) return prefix ? { ...info, kind: prefix } : info
+  }
+  return { ...UNKNOWN_TOKEN, kind: prefix }
+}
+
+function toInfo(kind: TokenKind, found: VerifyResult): TokenInfo {
+  return {
+    kind,
+    id: found.id ?? null,
+    status: found.status ?? null,
+    expiresAt: found.expires_on ?? null,
+  }
+}
+
 export function buildIngress(hostnames: readonly string[]): CloudflareIngressRule[] {
   const seen = new Set<string>()
   const rules: CloudflareIngressRule[] = []
@@ -87,6 +170,19 @@ export function createCloudflareAdapter(options: { fetch?: typeof fetch } = {}):
   return {
     provider: 'cloudflare',
 
+    tokenShapeProblem: cloudflareTokenProblem,
+
+    async discoverAccounts(token) {
+      const api = client(token)
+      const accounts = await listOrEmpty(() => api.listAccounts())
+      const info = await inspectToken(
+        api,
+        token,
+        accounts.map((a) => a.id)
+      )
+      return { accounts: accounts.map((a) => ({ id: a.id, name: a.name })), token: info }
+    },
+
     async checkCredential(token, scope): Promise<CredentialReport> {
       const api = client(token)
       // A token scoped to tunnels and DNS only may be refused the account and zone
@@ -97,6 +193,11 @@ export function createCloudflareAdapter(options: { fetch?: typeof fetch } = {}):
         scope.accountId === null ||
         accounts.length === 0 ||
         accounts.some((a) => a.id === scope.accountId)
+      const tokenInfo = await inspectToken(
+        api,
+        token,
+        scope.accountId ? [scope.accountId] : accounts.map((a) => a.id)
+      )
       const tunnels =
         accountVisible && scope.accountId !== null
           ? await probe(() => api.probeTunnels(scope.accountId!))
@@ -118,6 +219,7 @@ export function createCloudflareAdapter(options: { fetch?: typeof fetch } = {}):
         accountVisible,
         capabilities,
         missing,
+        token: tokenInfo,
       }
     },
 

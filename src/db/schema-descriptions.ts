@@ -1359,6 +1359,11 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
     columns: {
       secret_id:
         'The sealed token in `secret`, one badge per secret; deleting the secret deletes the badge, and removing a badge deletes its secret in the same transaction.',
+      metadata:
+        'Non-secret descriptors written by the panel; no keys are read by the platform today.',
+      options:
+        'Written by each check: `kind` (`account` or `user`, who owns the token), `tokenId` (the provider own token id, to catch the same token added twice) and extras.',
+      expires_at: 'When the provider says the token stops working; NULL when it reports none.',
       label: 'Operator label for the token, shown beside its last four characters.',
       capabilities:
         'Last check result written by the panel: `tunnels` (boolean, account-wide) and `dns` and `certificates` (lists of zone id and name the token reaches).',
