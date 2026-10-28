@@ -25,11 +25,7 @@ const ORG_TOKENS = [
   'instanceUploadedCertificate',
 ]
 
-const INSTANCE_TOKENS = [
-  'acmeEnabled',
-  'organization-options.ts',
-  'resolveAcmeEnabled',
-]
+const INSTANCE_TOKENS = ['acmeEnabled', 'organization-options.ts', 'resolveAcmeEnabled']
 
 const SKIP_DIR_NAMES = new Set([
   '.git',
@@ -110,9 +106,7 @@ export function checkInstanceAcmeBoundary(options = {}) {
         lines.forEach((line, i) => {
           for (const token of scan.tokens) {
             if (line.includes(token)) {
-              failures.push(
-                `${rel}:${i + 1} references "${token}" — ${scan.why}`,
-              )
+              failures.push(`${rel}:${i + 1} references "${token}" — ${scan.why}`)
             }
           }
         })
@@ -137,12 +131,12 @@ function main() {
     }
     console.error(
       `\n${failures.length} problem(s) found. Instance ACME and organization ACME stay separate. ` +
-        'See src/lib/tls/AGENTS.md. Do not widen this script\'s allowlist without review.',
+        "See src/lib/tls/AGENTS.md. Do not widen this script's allowlist without review."
     )
     process.exit(1)
   }
   console.log(
-    'check-instance-acme-boundary: instance ACME and organization ACME do not reference each other.',
+    'check-instance-acme-boundary: instance ACME and organization ACME do not reference each other.'
   )
 }
 

@@ -56,9 +56,7 @@ function walkTs(dir, out = []) {
     if (entry.isDirectory()) {
       if (SKIP_DIR_NAMES.has(entry.name)) continue
       walkTs(abs, out)
-    } else if (
-      entry.isFile() && (entry.name.endsWith('.ts') || entry.name.endsWith('.tsx'))
-    ) {
+    } else if (entry.isFile() && (entry.name.endsWith('.ts') || entry.name.endsWith('.tsx'))) {
       out.push(abs)
     }
   }
@@ -81,12 +79,7 @@ function resolveSpecifier(fromRel, spec) {
   const fromDir = path.posix.dirname(fromRel)
   const joined = path.posix.normalize(path.posix.join(fromDir, spec))
   const cleaned = stripTrailingSlash(joined)
-  const candidates = [
-    cleaned,
-    `${cleaned}.ts`,
-    `${cleaned}.tsx`,
-    `${cleaned}/index.ts`,
-  ]
+  const candidates = [cleaned, `${cleaned}.ts`, `${cleaned}.tsx`, `${cleaned}/index.ts`]
   for (const candidate of candidates) {
     if (fs.existsSync(path.join(ROOT, candidate))) return candidate
   }
@@ -94,8 +87,9 @@ function resolveSpecifier(fromRel, spec) {
 }
 
 function isWordChar(ch) {
-  return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
-    (ch >= '0' && ch <= '9') || ch === '_'
+  return (
+    (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch === '_'
+  )
 }
 
 function skipSpaceAndOpenParen(text, start) {
@@ -276,7 +270,7 @@ function main() {
     }
     console.error(
       `\n${failures.size} problem(s). Kernel/feature/platform layers must not cross ` +
-        'surfaces or each other. See docs/source-layout.md and scripts/check-import-boundaries.mjs.',
+        'surfaces or each other. See docs/source-layout.md and scripts/check-import-boundaries.mjs.'
     )
     process.exit(1)
   }

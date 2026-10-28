@@ -88,7 +88,9 @@ export type StripeWebhookRouteOpts = WebhookGateOpts & {
   createClient?: (config: BillingConfig) => StripeClient
 }
 
-function parseEvent(raw: Uint8Array): { id: string; type: string; payload: Record<string, unknown> } | null {
+function parseEvent(
+  raw: Uint8Array
+): { id: string; type: string; payload: Record<string, unknown> } | null {
   try {
     const parsed = JSON.parse(new TextDecoder().decode(raw)) as unknown
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null
@@ -141,7 +143,7 @@ function createStripeGate(opts: StripeWebhookRouteOpts): WebhookGate<StripeWebho
       verifyStripeSignature(
         raw,
         ctx.headers.get(STRIPE_SIGNATURE_HEADER),
-        holder.config?.webhookSigningSecret,
+        holder.config?.webhookSigningSecret
       ),
 
     // Both live in the body — the raw-bytes escape hatch.
@@ -161,7 +163,7 @@ function createStripeGate(opts: StripeWebhookRouteOpts): WebhookGate<StripeWebho
           STRIPE_PROJECTION_LOG_SCOPE,
           `event ${ref.id} (${ref.type}) projection handoff failed: ${
             err instanceof Error ? err.message : String(err)
-          }`,
+          }`
         )
         return retryable('projection_handoff_failed')
       }
@@ -171,7 +173,7 @@ function createStripeGate(opts: StripeWebhookRouteOpts): WebhookGate<StripeWebho
       if (!handles) {
         logWarn(
           STRIPE_PROJECTION_LOG_SCOPE,
-          `event ${ref.id} (${ref.type}) handed off; no task database — sweep will project`,
+          `event ${ref.id} (${ref.type}) handed off; no task database — sweep will project`
         )
         return accepted({ scheduled: false, deferred: 'database_unavailable' })
       }
