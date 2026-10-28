@@ -4,6 +4,10 @@
 -- nothing existing is dropped or rewritten, and the previous release never reads
 -- them. The one change to an existing object widens secret_provider_check with the
 -- two token providers; every value the previous release writes stays allowed.
+-- badge_secret_id_secret_id_fk and tunnel_carrier_id_carrier_id_fk are DEFERRABLE
+-- INITIALLY DEFERRED (drizzle cannot express it): they are checked at commit, so an
+-- organization delete that removes both sides succeeds, while deleting a secret that
+-- has a badge, or a carrier that has tunnels, fails at commit.
 CREATE TABLE "badge" (
 	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
 	"created_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
@@ -107,7 +111,7 @@ CREATE TABLE "tunnel" (
 --> statement-breakpoint
 ALTER TABLE "secret" DROP CONSTRAINT "secret_provider_check";--> statement-breakpoint
 ALTER TABLE "badge" ADD CONSTRAINT "badge_carrier_id_carrier_id_fk" FOREIGN KEY ("carrier_id") REFERENCES "public"."carrier"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "badge" ADD CONSTRAINT "badge_secret_id_secret_id_fk" FOREIGN KEY ("secret_id") REFERENCES "public"."secret"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "badge" ADD CONSTRAINT "badge_secret_id_secret_id_fk" FOREIGN KEY ("secret_id") REFERENCES "public"."secret"("id") ON DELETE no action ON UPDATE no action DEFERRABLE INITIALLY DEFERRED;--> statement-breakpoint
 ALTER TABLE "carrier" ADD CONSTRAINT "carrier_organization_id_organization_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "doorway" ADD CONSTRAINT "doorway_routing_organization_id_organization_id_fk" FOREIGN KEY ("routing_organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "doorway" ADD CONSTRAINT "doorway_tunnel_id_tunnel_id_fk" FOREIGN KEY ("tunnel_id") REFERENCES "public"."tunnel"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
@@ -116,7 +120,7 @@ ALTER TABLE "portal" ADD CONSTRAINT "portal_tunnel_id_tunnel_id_fk" FOREIGN KEY 
 ALTER TABLE "portal" ADD CONSTRAINT "portal_server_id_server_id_fk" FOREIGN KEY ("server_id") REFERENCES "public"."server"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "tunnel" ADD CONSTRAINT "tunnel_organization_id_organization_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "tunnel" ADD CONSTRAINT "tunnel_routing_organization_id_organization_id_fk" FOREIGN KEY ("routing_organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "tunnel" ADD CONSTRAINT "tunnel_carrier_id_carrier_id_fk" FOREIGN KEY ("carrier_id") REFERENCES "public"."carrier"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "tunnel" ADD CONSTRAINT "tunnel_carrier_id_carrier_id_fk" FOREIGN KEY ("carrier_id") REFERENCES "public"."carrier"("id") ON DELETE no action ON UPDATE no action DEFERRABLE INITIALLY DEFERRED;--> statement-breakpoint
 ALTER TABLE "tunnel" ADD CONSTRAINT "tunnel_datacenter_id_datacenter_id_fk" FOREIGN KEY ("datacenter_id") REFERENCES "public"."datacenter"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "tunnel" ADD CONSTRAINT "tunnel_secret_id_secret_id_fk" FOREIGN KEY ("secret_id") REFERENCES "public"."secret"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "idx_badge_carrier_id" ON "badge" USING btree ("carrier_id" uuid_ops);--> statement-breakpoint
@@ -131,7 +135,7 @@ ALTER TABLE "secret" ADD CONSTRAINT "secret_provider_check" CHECK (provider IN (
 COMMENT ON TABLE "badge" IS 'One API token on a carrier; the token itself is sealed in the `secret` row it points to and this row keeps the label, last four characters and what it can do.';--> statement-breakpoint
 COMMENT ON COLUMN "badge"."metadata" IS 'Non-secret descriptors written by the panel; no keys are read by the platform today.';--> statement-breakpoint
 COMMENT ON COLUMN "badge"."options" IS 'Written by each check: `kind` (`account` or `user`, who owns the token), `tokenId` (the provider own token id, to catch the same token added twice) and extras.';--> statement-breakpoint
-COMMENT ON COLUMN "badge"."secret_id" IS 'The sealed token in `secret`, one badge per secret; deleting the secret deletes the badge, and removing a badge deletes its secret in the same transaction.';--> statement-breakpoint
+COMMENT ON COLUMN "badge"."secret_id" IS 'The sealed token in `secret`, one badge per secret; a secret under a badge cannot be deleted alone (checked at commit), so a badge is removed with it.';--> statement-breakpoint
 COMMENT ON COLUMN "badge"."label" IS 'Operator label for the token, shown beside its last four characters.';--> statement-breakpoint
 COMMENT ON COLUMN "badge"."capabilities" IS 'Last check result written by the panel: `tunnels` (boolean, account-wide) and `dns` and `certificates` (lists of zone id and name the token reaches).';--> statement-breakpoint
 COMMENT ON COLUMN "badge"."last_four" IS 'Last 4 characters of the token, the only part of it ever shown; never enough to use the token.';--> statement-breakpoint

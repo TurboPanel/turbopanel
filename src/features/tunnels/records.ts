@@ -6,7 +6,7 @@
  */
 import { and, asc, eq, inArray } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
-import { badge, carrier, secret, tunnel } from '../../db/schema.ts'
+import { badge, carrier, organization, secret, tunnel } from '../../db/schema.ts'
 import { decryptSecret, encryptSecret } from '../../lib/secrets/data-encryption.ts'
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import type { CredentialReport } from './adapter.ts'
@@ -20,6 +20,18 @@ import {
 
 export const MAX_CARRIERS_PER_ORG = 10
 export const MAX_BADGES_PER_CARRIER = 5
+
+/** A per-organization or per-carrier limit was reached; counted under a row lock so races cannot pass it. */
+export class TunnelLimitError extends Error {
+  readonly error: 'carrier_limit' | 'badge_limit'
+  readonly limit: number
+  constructor(error: 'carrier_limit' | 'badge_limit', limit: number) {
+    super(error)
+    this.name = 'TunnelLimitError'
+    this.error = error
+    this.limit = limit
+  }
+}
 
 export type CarrierRow = typeof carrier.$inferSelect
 export type BadgeRow = typeof badge.$inferSelect
@@ -216,12 +228,28 @@ export async function insertCarrier(
     externalAccountId: string | null
   }
 ): Promise<CarrierRow> {
-  // A carrier with no working token yet needs attention until a badge is added.
-  const [row] = await db
-    .insert(carrier)
-    .values({ ...params, status: 'attention' })
-    .returning()
-  return row!
+  // The organization row is locked while the count and the insert happen, so two
+  // concurrent adds cannot both pass the limit.
+  return await db.transaction(async (tx) => {
+    await tx
+      .select({ id: organization.id })
+      .from(organization)
+      .where(eq(organization.id, params.organizationId))
+      .for('update')
+    const existing = await tx
+      .select({ id: carrier.id })
+      .from(carrier)
+      .where(eq(carrier.organizationId, params.organizationId))
+    if (existing.length >= MAX_CARRIERS_PER_ORG) {
+      throw new TunnelLimitError('carrier_limit', MAX_CARRIERS_PER_ORG)
+    }
+    // A carrier with no working token yet needs attention until a badge is added.
+    const [row] = await tx
+      .insert(carrier)
+      .values({ ...params, status: 'attention' })
+      .returning()
+    return row!
+  })
 }
 
 /** Seal a token for storage. */
@@ -309,6 +337,19 @@ export async function insertBadge(
   }
 ): Promise<BadgeRow> {
   const row = await db.transaction(async (tx) => {
+    // The carrier row is locked while the count and the insert happen.
+    await tx
+      .select({ id: carrier.id })
+      .from(carrier)
+      .where(eq(carrier.id, params.carrier.id))
+      .for('update')
+    const held = await tx
+      .select({ id: badge.id })
+      .from(badge)
+      .where(eq(badge.carrierId, params.carrier.id))
+    if (held.length >= MAX_BADGES_PER_CARRIER) {
+      throw new TunnelLimitError('badge_limit', MAX_BADGES_PER_CARRIER)
+    }
     const [stored] = await tx
       .insert(secret)
       .values({

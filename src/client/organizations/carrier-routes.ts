@@ -22,6 +22,7 @@ import {
   type ApiBadge,
   type ApiCarrier,
   type CarrierRow,
+  TunnelLimitError,
   carrierHasTunnels,
   deleteBadge,
   deleteCarrier,
@@ -173,6 +174,7 @@ async function createCarrierResponse(c: Context<AppEnv>, scope: Scope): Promise<
     return c.json({ carrier: toApiCarrier(row, []) }, 201)
   } catch (err) {
     if (isPostgresUniqueViolation(err)) return c.json({ error: 'carrier_exists' }, 409)
+    if (err instanceof TunnelLimitError) return limitReached(c, err)
     throw err
   }
 }
@@ -229,52 +231,81 @@ function notUseful(c: Context<AppEnv>, report: CredentialReport): Response {
   )
 }
 
-type Added = { badge: BadgeRow; report: CredentialReport }
+type Vetted = { report: CredentialReport }
+
+function limitReached(c: Context<AppEnv>, err: TunnelLimitError): Response {
+  return c.json({ error: err.error, limit: err.limit }, 409)
+}
 
 /**
- * Check a token against one carrier and, when it is useful, seal and store it.
- * Returns the response to send instead when anything refuses it.
+ * Everything that can refuse a token, before anything is written: the badge
+ * limit, the token's shape, the provider check, the account, whether it is
+ * useful, and whether this carrier already holds it. `existing` is null when
+ * the carrier has not been created yet.
  */
-async function addBadge(
+async function vetBadge(
   c: Context<AppEnv>,
   scope: Scope,
   registry: TunnelAdapterRegistry,
-  current: CarrierRow,
-  input: { label: string; token: string }
-): Promise<Added | Response> {
-  const secrets = c.get('dataEncryptionSecrets')
-  if (!secrets) return c.json({ error: 'secrets_unavailable' }, 503)
-  if ((await listBadges(scope.db, current.id)).length >= MAX_BADGES_PER_CARRIER) {
+  target: { provider: TunnelProvider; accountId: string | null; existing: CarrierRow | null },
+  token: string
+): Promise<Vetted | Response> {
+  if (
+    target.existing &&
+    (await listBadges(scope.db, target.existing.id)).length >= MAX_BADGES_PER_CARRIER
+  ) {
     return c.json({ error: 'badge_limit', limit: MAX_BADGES_PER_CARRIER }, 409)
   }
-  const provider = current.provider as TunnelProvider
-  const problem = registry(provider).tokenShapeProblem(input.token)
+  const problem = registry(target.provider).tokenShapeProblem(token)
   if (problem) return invalid(c, 'badge_invalid', 'token', problem)
-  const report = await runCheck(c, registry, provider, input.token, current.externalAccountId)
+  const report = await runCheck(c, registry, target.provider, token, target.accountId)
   if (report instanceof Response) return report
   if (!report.accountVisible) return accountMismatch(c)
   if (!isUsefulReport(report)) return notUseful(c, report)
-  if (report.token.id && (await findBadgeByTokenId(scope.db, current.id, report.token.id))) {
+  if (
+    target.existing &&
+    report.token.id &&
+    (await findBadgeByTokenId(scope.db, target.existing.id, report.token.id))
+  ) {
     return c.json(
       { error: 'badge_exists', message: 'This API Token is already added to this Carrier.' },
       409
     )
   }
-  const row = await insertBadge(scope.db, {
-    organizationId: scope.organizationId,
-    carrier: current,
-    label: input.label,
-    sealed: await sealToken(secrets, input.token),
-    lastFour: input.token.slice(-4),
-    report,
-  })
+  return { report }
+}
+
+/** Seal and store a vetted token on a carrier. */
+async function storeBadge(
+  c: Context<AppEnv>,
+  scope: Scope,
+  current: CarrierRow,
+  input: { label: string; token: string },
+  report: CredentialReport
+): Promise<BadgeRow | Response> {
+  const secrets = c.get('dataEncryptionSecrets')
+  if (!secrets) return c.json({ error: 'secrets_unavailable' }, 503)
+  let row: BadgeRow
+  try {
+    row = await insertBadge(scope.db, {
+      organizationId: scope.organizationId,
+      carrier: current,
+      label: input.label,
+      sealed: await sealToken(secrets, input.token),
+      lastFour: input.token.slice(-4),
+      report,
+    })
+  } catch (err) {
+    if (err instanceof TunnelLimitError) return limitReached(c, err)
+    throw err
+  }
   await audit(c, scope, 'badge.create', row.id, {
     carrierId: current.id,
     label: input.label,
     kind: report.token.kind,
     capabilities: report.capabilities,
   })
-  return { badge: row, report }
+  return row
 }
 
 function createBadgeResponse(registry: TunnelAdapterRegistry) {
@@ -285,9 +316,22 @@ function createBadgeResponse(registry: TunnelAdapterRegistry) {
     if (body instanceof Response) return body
     const parsed = parseBadgeBody(body)
     if (!parsed.ok) return invalid(c, 'badge_invalid', parsed.field, parsed.detail)
-    const added = await addBadge(c, scope, registry, current, parsed.value)
-    if (added instanceof Response) return added
-    return c.json({ badge: toApiBadge(added.badge), ...checkSummary(added.report) }, 201)
+    if (!c.get('dataEncryptionSecrets')) return c.json({ error: 'secrets_unavailable' }, 503)
+    const vetted = await vetBadge(
+      c,
+      scope,
+      registry,
+      {
+        provider: current.provider as TunnelProvider,
+        accountId: current.externalAccountId,
+        existing: current,
+      },
+      parsed.value.token
+    )
+    if (vetted instanceof Response) return vetted
+    const row = await storeBadge(c, scope, current, parsed.value, vetted.report)
+    if (row instanceof Response) return row
+    return c.json({ badge: toApiBadge(row), ...checkSummary(vetted.report) }, 201)
   }
 }
 
@@ -350,20 +394,78 @@ function connectResponse(registry: TunnelAdapterRegistry) {
     }
     const accounts = pickAccounts(c, found.accounts, body.accountIds)
     if (accounts instanceof Response) return accounts
-    const results: { carrier: ApiCarrier; badge: ApiBadge; zones: unknown; missing: string[] }[] =
-      []
+    if (!c.get('dataEncryptionSecrets')) return c.json({ error: 'secrets_unavailable' }, 503)
+    // Vet every account first: a refused token creates nothing, and a partly
+    // refused list creates nothing at all.
+    const vetted: { account: { id: string; name: string }; report: CredentialReport }[] = []
     for (const account of accounts) {
-      const current = await ensureCarrier(scope, provider, account)
-      if (current instanceof Response) return current
-      const added = await addBadge(c, scope, registry, current, parsed.value)
-      if (added instanceof Response) return added
+      const existing = await findCarrierByAccount(
+        scope.db,
+        scope.organizationId,
+        provider,
+        account.id
+      )
+      const result = await vetBadge(
+        c,
+        scope,
+        registry,
+        { provider, accountId: account.id, existing },
+        parsed.value.token
+      )
+      if (result instanceof Response) return result
+      vetted.push({ account, report: result.report })
+    }
+    return await connectVetted(c, scope, provider, parsed.value, vetted)
+  }
+}
+
+type ConnectResult = { carrier: ApiCarrier; badge: ApiBadge; zones: unknown; missing: string[] }
+
+/**
+ * Write the vetted accounts. Each carrier and its badge are stored separately,
+ * so if a write fails part-way the carriers this call created are removed again
+ * (an account that already had a carrier keeps it, and keeps any badge added
+ * before the failure).
+ */
+async function connectVetted(
+  c: Context<AppEnv>,
+  scope: Scope,
+  provider: TunnelProvider,
+  input: { label: string; token: string },
+  vetted: { account: { id: string; name: string }; report: CredentialReport }[]
+): Promise<Response> {
+  const created: CarrierRow[] = []
+  const results: ConnectResult[] = []
+  try {
+    for (const { account, report } of vetted) {
+      let current = await findCarrierByAccount(scope.db, scope.organizationId, provider, account.id)
+      if (!current) {
+        current = await ensureCarrier(scope, provider, account)
+        created.push(current)
+      }
+      const row = await storeBadge(c, scope, current, input, report)
+      if (row instanceof Response) {
+        await removeEmptyCarriers(scope, created)
+        return row
+      }
       results.push({
         carrier: toApiCarrier({ ...current, status: 'active' }, []),
-        badge: toApiBadge(added.badge),
-        ...checkSummary(added.report),
+        badge: toApiBadge(row),
+        ...checkSummary(report),
       })
     }
-    return c.json({ connected: results }, 201)
+  } catch (err) {
+    await removeEmptyCarriers(scope, created)
+    if (err instanceof TunnelLimitError) return limitReached(c, err)
+    throw err
+  }
+  return c.json({ connected: results }, 201)
+}
+
+/** Remove carriers this call created that ended up with no badge. */
+async function removeEmptyCarriers(scope: Scope, carriers: readonly CarrierRow[]): Promise<void> {
+  for (const row of carriers) {
+    if ((await listBadges(scope.db, row.id)).length === 0) await deleteCarrier(scope.db, row)
   }
 }
 
@@ -371,9 +473,7 @@ async function ensureCarrier(
   scope: Scope,
   provider: TunnelProvider,
   account: { id: string; name: string }
-): Promise<CarrierRow | Response> {
-  const existing = await findCarrierByAccount(scope.db, scope.organizationId, provider, account.id)
-  if (existing) return existing
+): Promise<CarrierRow> {
   return await insertCarrier(scope.db, {
     organizationId: scope.organizationId,
     provider,

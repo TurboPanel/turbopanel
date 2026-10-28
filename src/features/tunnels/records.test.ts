@@ -20,7 +20,13 @@ import {
   server,
   tunnel,
 } from '../../db/schema.ts'
-import { deleteTunnelRecord, replaceTunnelRunSecret } from './records.ts'
+import {
+  deleteTunnelRecord,
+  insertCarrier,
+  MAX_CARRIERS_PER_ORG,
+  replaceTunnelRunSecret,
+  TunnelLimitError,
+} from './records.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -211,6 +217,55 @@ test('the new constraints refuse duplicates and incomplete rows', async () => {
     } finally {
       await db.delete(organization).where(eq(organization.id, s.organizationId))
       await db.delete(server).where(eq(server.id, s.serverId))
+    }
+  })
+})
+
+test('the database itself refuses a carrier that still has tunnels and a secret that still has a badge', async () => {
+  await withDb(async (db) => {
+    const s = await seed(db)
+    try {
+      // Bypassing the route check: the deferred keys fail the delete at commit.
+      await assertRejects(() => db.delete(carrier).where(eq(carrier.id, s.carrierId)))
+      await assertRejects(() => db.delete(secret).where(eq(secret.id, s.badgeSecret)))
+      assertEquals((await db.select().from(carrier).where(eq(carrier.id, s.carrierId))).length, 1)
+      assertEquals((await db.select().from(secret).where(eq(secret.id, s.badgeSecret))).length, 1)
+      // Removing both sides in one transaction is allowed.
+      await db.transaction(async (tx) => {
+        await tx.delete(badge).where(eq(badge.secretId, s.badgeSecret))
+        await tx.delete(secret).where(eq(secret.id, s.badgeSecret))
+      })
+      assertEquals((await db.select().from(secret).where(eq(secret.id, s.badgeSecret))).length, 0)
+    } finally {
+      await db.delete(organization).where(eq(organization.id, s.organizationId))
+      await db.delete(server).where(eq(server.id, s.serverId))
+    }
+  })
+})
+
+test('concurrent carrier adds cannot pass the per-organization limit', async () => {
+  await withDb(async (db) => {
+    const [org] = await db
+      .insert(organization)
+      .values({ name: `Tunnel Limit Org ${crypto.randomUUID()}` })
+      .returning({ id: organization.id })
+    try {
+      const attempts = Array.from({ length: MAX_CARRIERS_PER_ORG + 4 }, (_, i) =>
+        insertCarrier(db, {
+          organizationId: org!.id,
+          provider: 'cloudflare',
+          name: `Account ${i}`,
+          externalAccountId: `acct-${i}`,
+        }).then(
+          () => 'ok',
+          (err: unknown) => (err instanceof TunnelLimitError ? 'limit' : 'other')
+        )
+      )
+      const outcomes = await Promise.all(attempts)
+      assertEquals(outcomes.filter((o) => o === 'ok').length, MAX_CARRIERS_PER_ORG)
+      assertEquals(outcomes.filter((o) => o === 'limit').length, 4)
+    } finally {
+      await db.delete(organization).where(eq(organization.id, org!.id))
     }
   })
 })

@@ -433,3 +433,47 @@ test('connecting with only an API token lists its account, stores the kind and e
     assert(String(globalKey.body.detail).includes('Global API Key'))
   })
 })
+
+test('a refused token creates no carrier, and another organization manager cannot reach these ids', async () => {
+  await withFixture(async (f) => {
+    const connect = `/organizations/${f.orgA}/carriers/connect`
+    state.mode = 'weak'
+    const weak = await call(f, 'POST', connect, f.managerCookie, {
+      provider: 'cloudflare',
+      label: 'Weak',
+      token: TOKEN,
+    })
+    assertEquals(weak.status, 400)
+    assertEquals(
+      (await f.db.select().from(carrier).where(eq(carrier.organizationId, f.orgA))).length,
+      0
+    )
+    state.mode = 'good'
+    const carrierId = await createCarrier(f)
+    const added = await call(
+      f,
+      'POST',
+      `/organizations/${f.orgA}/carriers/${carrierId}/badges`,
+      f.managerCookie,
+      { label: 'Main', token: TOKEN }
+    )
+    const badgeId = (added.body.badge as { id: string }).id
+    // Organization B's own manager, under organization B's path, asking for A's ids.
+    const base = `/organizations/${f.orgB}/carriers/${carrierId}`
+    for (const [method, path] of [
+      ['GET', `${base}/badges`],
+      ['POST', `${base}/badges`],
+      ['DELETE', base],
+      ['DELETE', `${base}/badges/${badgeId}`],
+      ['POST', `${base}/badges/${badgeId}/check`],
+    ]) {
+      const res = await call(f, method!, path!, f.otherManagerCookie, {
+        label: 'Nope',
+        token: TOKEN,
+      })
+      assertEquals(res.status, 404, `${method} ${path}`)
+    }
+    assertEquals((await f.db.select().from(badge).where(eq(badge.id, badgeId))).length, 1)
+    assertEquals((await f.db.select().from(carrier).where(eq(carrier.id, carrierId))).length, 1)
+  })
+})

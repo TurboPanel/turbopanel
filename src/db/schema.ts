@@ -7211,10 +7211,12 @@ export const badge = pgTable(
       foreignColumns: [secret.id],
       name: 'badge_secret_id_secret_id_fk',
     })
-      // CASCADE, not RESTRICT or NO ACTION: an organization delete removes `secret`
-      // before `badge`, and both of those checks fire per cascaded statement and
-      // would fail it. Removing a badge deletes its secret in code (`deleteBadge`).
-      .onDelete('cascade'),
+      // NO ACTION and DEFERRABLE INITIALLY DEFERRED (the migration adds the last
+      // two words, drizzle cannot express them): checked at commit, so an
+      // organization delete that removes `secret` and `badge` in one transaction
+      // succeeds, while deleting a secret that still has a badge fails at commit.
+      // Removing a badge deletes its secret in code (`deleteBadge`).
+      .onDelete('no action'),
     check('badge_label_check', sql`char_length(label) BETWEEN 1 AND 64`),
     check('badge_status_check', sql`status IN ('active', 'attention')`),
   ]
@@ -7294,10 +7296,11 @@ export const tunnel = pgTable(
       foreignColumns: [carrier.id],
       name: 'tunnel_carrier_id_carrier_id_fk',
     })
-      // SET NULL, not RESTRICT or NO ACTION: an organization delete may remove the
-      // carrier before the tunnel, and either check would fail it. A carrier with
-      // tunnels is refused in code (409 `carrier_in_use`) before it gets here.
-      .onDelete('set null'),
+      // NO ACTION and DEFERRABLE INITIALLY DEFERRED (added by the migration, see
+      // `badge_secret_id_secret_id_fk`): a carrier that still has tunnels fails at
+      // commit, an organization delete that removes both succeeds. The route
+      // answers 409 `carrier_in_use` first.
+      .onDelete('no action'),
     foreignKey({
       columns: [table.datacenterId],
       foreignColumns: [datacenter.id],

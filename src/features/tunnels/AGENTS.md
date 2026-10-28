@@ -55,16 +55,19 @@ member there, a widened CHECK (forward migration) and one adapter.
 - Delete behavior of every new foreign key: organization deleted removes its
   carriers, tunnels and doorways (cascade, both organization columns on
   `tunnel`); server deleted removes its portals; tunnel deleted removes its
-  portals and doorways; carrier deleted removes its badges and sets `tunnel.carrier_id` NULL, but the
-  route refuses it first (409 `carrier_in_use`) while a tunnel uses it; hosting deleted sets `doorway.hosting_id`
-  NULL; datacenter deleted sets `tunnel.datacenter_id` NULL. A `secret` row is
-  never removed by the database: removing a badge deletes its secret in code
-  (`deleteBadge`) and removing a tunnel deletes its run-token secret
-  (`deleteTunnelRecord`); `badge.secret_id` is CASCADE and `tunnel.secret_id` and
-  `tunnel.carrier_id` are SET NULL. RESTRICT and NO ACTION were tried and
-  rejected: Postgres checks them per cascaded statement, and an organization
-  delete removes `secret` and `carrier` before `badge` and `tunnel`, so they
-  fail it.
+  portals and doorways; hosting deleted sets `doorway.hosting_id` NULL;
+  datacenter deleted sets `tunnel.datacenter_id` NULL. `badge.secret_id` and
+  `tunnel.carrier_id` are NO ACTION and DEFERRABLE INITIALLY DEFERRED (the
+  migration adds the last words, drizzle cannot express them): checked at
+  commit, so an organization delete that removes both sides in one transaction
+  succeeds, while deleting a carrier that has tunnels, or a secret that has a
+  badge, fails at commit. RESTRICT and immediate NO ACTION were rejected because
+  Postgres checks them per cascaded statement and an organization delete
+  removes `secret` and `carrier` before `badge` and `tunnel`. The routes answer
+  409 `carrier_in_use` first. A `secret` row is never removed by the database:
+  removing a badge or carrier deletes its secrets in the same transaction
+  (`deleteBadge`, `deleteCarrier`), removing a tunnel deletes its run-token
+  secret (`deleteTunnelRecord`), and `tunnel.secret_id` is SET NULL.
 - `carrier` is unique on (organization, provider, external account id); a
   provider with no account stores NULL, and NULLs never collide.
 

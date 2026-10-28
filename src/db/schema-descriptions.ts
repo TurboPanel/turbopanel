@@ -1358,7 +1358,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       'One API token on a carrier; the token itself is sealed in the `secret` row it points to and this row keeps the label, last four characters and what it can do.',
     columns: {
       secret_id:
-        'The sealed token in `secret`, one badge per secret; deleting the secret deletes the badge, and removing a badge deletes its secret in the same transaction.',
+        'The sealed token in `secret`, one badge per secret; a secret under a badge cannot be deleted alone (checked at commit), so a badge is removed with it.',
       metadata:
         'Non-secret descriptors written by the panel; no keys are read by the platform today.',
       options:
