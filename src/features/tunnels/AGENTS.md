@@ -131,6 +131,11 @@ typed client over an injected `fetch`; tests never call the real service).
   narrow token; that is treated as empty, not as a bad token.
 - Routes always point at `https://localhost`; the last ingress rule is a
   catch-all with no hostname.
+- The client never stores the platform `fetch` and calls it as a method of
+  itself: on Workers that receiver is refused ("Illegal invocation") while Deno
+  accepts it, so tests alone would not catch it. The default is a wrapper that
+  calls `globalThis.fetch` as a plain function; `cloudflare-client.hostfree.test.ts`
+  stubs a fetch that refuses a wrong receiver.
 - Rotating a Cloudflare run token is not confirmed against the API, so the
   adapter reports it as unsupported rather than guess an endpoint.
 
