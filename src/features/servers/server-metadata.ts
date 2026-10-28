@@ -437,6 +437,8 @@ export type ServerOptions = {
    * Set through `/servers/:id/managed-external-access`, never a server PATCH.
    */
   managedExternalAccess?: ManagedExternalAccess
+  /** `carry: false` = this server never runs a tunnel connector, whatever a tunnel's placement says. */
+  tunnels?: { carry: boolean }
 }
 
 const OS_FAMILIES = new Set<ServerOsFamily>(['linux', 'windows', 'freebsd', 'darwin'])
@@ -1949,7 +1951,12 @@ export function parseServerOptions(value: unknown): ServerOptions | null {
   if ('managedExternalAccess' in value) {
     options.managedExternalAccess = parseManagedExternalAccess(value.managedExternalAccess)
   }
+  assignTunnelCarry(options, value.tunnels)
   return Object.keys(options).length > 0 ? options : {}
+}
+
+function assignTunnelCarry(options: ServerOptions, value: unknown): void {
+  if (isRecord(value) && typeof value.carry === 'boolean') options.tunnels = { carry: value.carry }
 }
 
 function assignServerPhpModes(options: ServerOptions, value: unknown): void {

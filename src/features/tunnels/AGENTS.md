@@ -1,8 +1,9 @@
 # Tunnels (`src/features/tunnels`)
 
 Provider-neutral tunnel plumbing. This first slice holds the tables, one
-adapter per provider and the routes that connect a provider account and its
-API tokens. No tunnel, portal or doorway route exists yet.
+adapter per provider, the routes that connect a provider account and its
+API tokens, and the tunnel lifecycle (create and remove a tunnel, where it
+runs, the hostnames it carries) with the pure route builder for the daemon.
 
 ## Tables
 
@@ -141,3 +142,72 @@ targets: `GET|POST /organizations/:id/carriers`, `DELETE .../carriers/:carrierId
 `DELETE .../badges/:badgeId`, `POST .../badges/:badgeId/check`. Adding a
 badge checks the token first and refuses one that cannot do anything useful,
 naming the missing permissions. OpenAPI: `src/client/openapi/tunnels.ts`.
+
+## Tunnel lifecycle
+
+`lifecycle.ts` (database writes and reads), `placement.ts` (pure rules and the
+body parser), `route-builder.ts` (pure), `route-facts.ts` (loads the facts),
+routes in `src/client/organizations/tunnel-routes.ts`, same permission as
+provider accounts.
+
+- Create: the tunnel is made at the provider first, then stored with its sealed
+  run token and its portals in one transaction; a failed store removes the
+  provider tunnel again. Remove: refused (409 `tunnel_in_use`) while the tunnel
+  carries hostnames, then removed at the provider, then here.
+- Placement is read from the portals (see Tables). `one` and `chosen` need
+  `run` portals, `all` needs a datacenter, only `all` picks up a new server by
+  itself, a `skip` portal leaves a server out of an `all` tunnel. A server with
+  `server.options.tunnels.carry === false` never carries any tunnel (set at
+  `PUT /organizations/:id/servers/:serverId/tunnel-carrying`). One carrying
+  server gets a warning in `warnings`, none gets another.
+- Adding a hostname stores the `doorway` row first (the unique keys settle
+  races), then sets the provider routes and creates the DNS name in the zone
+  found for the name; the zone id is kept in `doorway.metadata`. A name outside
+  every zone the carrier's tokens reach is still routed, with no DNS name made
+  (`dns: none`). Any failure removes the row again and writes the provider
+  route set back. A hostname may be both a site name and a tunnel name, so only
+  other doorways make `hostname_in_use`. DNS is never a gate for an ordinary
+  site hostname; nothing here is called from the site hostname paths.
+- The route builder turns the facts into the `server.tunnel.routes` payload for
+  one server: routes only for tunnels the server carries; a name whose site
+  runs on this server is `local`; otherwise the upstreams are the datacenter
+  addresses of the servers that run the site (exact addresses, preferred
+  family first). `peerAddresses` is the other carrying servers of a tunnel
+  whose site runs here (inbound only: servers allowed to forward to this one). A
+  server that only carries tunnels sends an empty list. Sites count as running on a server through an
+  `applied` deployment of their environment. The hash covers the routes, the
+  addresses, the certificate and the trust bundle, not the sealed key.
+- `daemon-gate.ts`: nothing tunnel related goes to a server, and no name is
+  tunnel-only there, unless the daemon advertised `tunnel-forwarding-v1` on its
+  `hello` (an older daemon would serve a tunnel-only name unlocked).
+- `sync.ts` sends each server its table. It remembers the hash of the last
+  table (without the certificate) and the command in
+  `server.metadata.tunnelRoutes`, and sends again when the wanted table
+  changed, when the last command did not succeed (a server that was offline
+  never got it: the consumer does not queue for a disconnected server), or
+  when the daemon reported warnings or fewer forwarded names than wanted. The
+  periodic sweep (`runTunnelRoutesSweepTick`, from the offline sweep, same
+  gate as leaf renewal) covers reconnects. A server is only sent a table while
+  connected and advertising the feature. The peer leaf is minted when a table
+  needs a certificate; the renewal sweep hands a fresh leaf through
+  `peerLeafDelivery`, and the command carries `pendingTlsLeaf` so tracking is
+  committed only after the daemon confirmed. The route hash covers the
+  certificate and trust bundle, so a renewed leaf with the same routes is still
+  applied. The same table is not sent again sooner than ten minutes after the
+  previous send, so a table a server keeps refusing does not mint a new
+  certificate every tick.
+- The local-only lock on tunnel names is **not enforced yet**: `doorway.is_local_only`
+  only records the wish. Enforcing it is the deploy-time `hostings[].tunnel`,
+  which is not built; until then the web server answers a tunnel name to
+  anyone who reaches it. Do not describe the lock as working in docs or
+  copy.
+- Limits: 50 tunnels and 2000 hostnames per organization, 200 hostnames per
+  tunnel. A table is cut at the daemon contract caps (2000 names, 16 upstreams
+  per name, 8 addresses per upstream, 64 peer and listen addresses) with a
+  logged note, never sent whole to be refused. A hostname whose site belongs to
+  another organization is refused (409 `hosting_mismatch`), and a site counts as
+  running on a server only when its hosting is in the tunnel's organization.
+- Not in this slice: the deploy-time `hostings[].tunnel` (it must be gated on
+  the same feature when added), triggers that resend at once on a hosting or
+  server change (the sweep catches them), and the firewall rules for the exact
+  peer addresses.
