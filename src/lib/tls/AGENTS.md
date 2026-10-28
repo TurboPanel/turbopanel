@@ -159,7 +159,7 @@ tracked in **`leaf`** (`src/db/schema.ts` `leaf`) as successfully
 
 | Column                    | Role                                                                          |
 | ------------------------- | ----------------------------------------------------------------------------- |
-| `kind`                    | `'ingress'` (ProxySQL frontend, one per server) or `'engine'` (per `replica`) |
+| `kind`                    | `'ingress'` (ProxySQL frontend, one per server), `'engine'` (per `replica`) or `'peer'` (web server certificate for the hop between servers, one per server) |
 | `ca_id` / `ca_generation` | signing Organization CA row + generation                                      |
 | `not_after`               | leaf expiry (`timestamptz`)                                                   |
 
@@ -177,6 +177,13 @@ default) **or** `ca_generation` no longer matches the org's active signer. Sweep
 query (`loadDueTlsLeaves`) is org-agnostic, ordered by `not_after` ascending,
 keyset-cursor paginated (`notAfter`, `id`), `LIMIT` `LEAF_RENEWAL_BATCH_SIZE`
 (10) — never `OFFSET`, never per-org enumeration.
+
+Peer leaves (`src/features/tls/peer-leaf.ts`) are for the fixed name `tp-peer.internal`
+plus the server's datacenter addresses, server-auth only. `ensurePeerLeaf` keeps a tracked
+leaf that is active, on the active generation and has a third of its life left; otherwise
+it mints one and seals the key for that server's daemon. The sweep renews a due peer leaf
+through `deps.deliverPeerLeaf` (the delivery command queues the material with the
+`pendingTlsLeaf` metadata); without it the row stays due and untouched.
 
 Per due row the sweep reuses existing enqueue paths
 (`enqueueManagedIngressReconcile` / `enqueueApplyForManagedCluster` from

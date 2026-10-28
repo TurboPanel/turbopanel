@@ -32,6 +32,12 @@
       "tag": "0004_command_activity_index",
       "when": 1793122151433,
       "sha256": "2d7c61e0818839f09eece916246fdcf953c145c5380853bc77e68a1c0713d7c9"
+    },
+    {
+      "idx": 5,
+      "tag": "0005_peer_leaf_kind",
+      "when": 1793200514425,
+      "sha256": "163e17005143cd88deb53105f19f7ba8d5d790f5cdf74d85ea296101d6405772"
     }
   ]
 }

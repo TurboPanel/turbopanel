@@ -43,6 +43,10 @@ export type LeafWorld = {
     serverId: string,
     options?: { generation?: number; notAfter?: string }
   ) => Promise<string>
+  addPeerLeaf: (
+    serverId: string,
+    options?: { generation?: number; notAfter?: string }
+  ) => Promise<string>
   addRotation: (state: string, options?: { retireBy?: string | null }) => Promise<string>
   request: (method: string, path: string, body?: unknown, orgId?: string) => Promise<Response>
 }
@@ -154,6 +158,21 @@ export async function withLeafWorld(fn: (world: LeafWorld) => Promise<void>): Pr
           organizationId,
           serverId,
           kind: 'ingress',
+          caId: generation === 2 ? activeCaId : retiredCaId,
+          caGeneration: generation,
+          notAfter: options.notAfter ?? new Date(Date.now() + 60 * 86_400_000).toISOString(),
+        })
+        .returning({ id: leaf.id })
+      return row!.id
+    },
+    addPeerLeaf: async (serverId, options = {}) => {
+      const generation = options.generation ?? 1
+      const [row] = await db
+        .insert(leaf)
+        .values({
+          organizationId,
+          serverId,
+          kind: 'peer',
           caId: generation === 2 ? activeCaId : retiredCaId,
           caGeneration: generation,
           notAfter: options.notAfter ?? new Date(Date.now() + 60 * 86_400_000).toISOString(),

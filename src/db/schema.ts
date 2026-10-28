@@ -2906,7 +2906,7 @@ export const leaf = pgTable(
       .notNull(),
     organizationId: uuid('organization_id').notNull(),
     serverId: uuid('server_id').notNull(),
-    /** `ingress` | `engine` */
+    /** `ingress` | `engine` | `peer` */
     kind: text().notNull(),
     /** Engine leaves only — the managed cluster that owns the replica. */
     managedId: uuid('managed_id'),
@@ -2970,6 +2970,9 @@ export const leaf = pgTable(
     uniqueIndex('uniq_leaf_ingress_server')
       .on(table.serverId)
       .where(sql`${table.kind} = 'ingress'`),
+    uniqueIndex('uniq_leaf_peer_server')
+      .on(table.serverId)
+      .where(sql`${table.kind} = 'peer'`),
     uniqueIndex('uniq_leaf_engine_replica')
       .on(table.replicaId)
       .where(sql`${table.kind} = 'engine'`),
@@ -3000,7 +3003,7 @@ export const leaf = pgTable(
       foreignColumns: [tls.id],
       name: 'leaf_ca_id_tls_id_fk',
     }).onDelete('cascade'),
-    check('leaf_kind_check', sql`${table.kind} IN ('ingress','engine')`),
+    check('leaf_kind_check', sql`kind IN ('ingress','engine','peer')`),
     check('leaf_state_check', sql`state IN ('active','stale')`),
     check(
       'leaf_stale_cause_check',
@@ -3018,7 +3021,7 @@ export const leaf = pgTable(
     check(
       'leaf_kind_keys_check',
       sql`(
-        (${table.kind} = 'ingress' AND ${table.replicaId} IS NULL AND ${table.managedId} IS NULL)
+        (${table.kind} IN ('ingress','peer') AND ${table.replicaId} IS NULL AND ${table.managedId} IS NULL)
         OR
         (${table.kind} = 'engine' AND ${table.replicaId} IS NOT NULL AND ${table.managedId} IS NOT NULL)
       )`

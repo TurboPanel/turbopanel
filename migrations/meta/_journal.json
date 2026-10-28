@@ -36,6 +36,13 @@
       "when": 1793122151433,
       "tag": "0004_command_activity_index",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1793200514425,
+      "tag": "0005_peer_leaf_kind",
+      "breakpoints": true
     }
   ]
 }
