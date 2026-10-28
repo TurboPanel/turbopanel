@@ -73,6 +73,12 @@ import {
   type TunnelConnectorsCommandPayload,
   type TunnelConnectorsCommandResult,
 } from './tunnel-connectors.ts'
+import {
+  parseTunnelStatusPayload,
+  parseTunnelStatusResult,
+  type TunnelStatusCommandPayload,
+  type TunnelStatusCommandResult,
+} from './tunnel-status.ts'
 import type { CommandType } from '../../features/commands/types.ts'
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -8897,6 +8903,7 @@ export function parseCommandPayload(
   | FoldersRemoveCommandPayload
   | TunnelRoutesCommandPayload
   | TunnelConnectorsCommandPayload
+  | TunnelStatusCommandPayload
   | EnvironmentDeployCommandPayload
   | EnvironmentLifecycleCommandPayload
   | EnvironmentStopCommandPayload
@@ -8912,6 +8919,8 @@ export function parseCommandPayload(
   | StorageBackupCommandPayload
   | StorageRestoreCommandPayload
   | SystemReconcileCommandPayload {
+  // Held outside the switch, which is at its size limit.
+  if (type === 'server.tunnel.status') return parseTunnelStatusPayload(value)
   switch (type) {
     case 'daemon.ping':
       return parsePingPayload(value)
@@ -8995,6 +9004,7 @@ export function parseCommandResult(
   | FoldersRemoveCommandResult
   | TunnelRoutesCommandResult
   | TunnelConnectorsCommandResult
+  | TunnelStatusCommandResult
   | EnvironmentDeployCommandResult
   | EnvironmentLifecycleCommandResult
   | EnvironmentStopCommandResult
@@ -9010,6 +9020,7 @@ export function parseCommandResult(
   | StorageBackupCommandResult
   | StorageRestoreCommandResult
   | SystemReconcileCommandResult {
+  if (type === 'server.tunnel.status') return parseTunnelStatusResult(value)
   switch (type) {
     case 'daemon.ping':
       return parsePingResult(value)

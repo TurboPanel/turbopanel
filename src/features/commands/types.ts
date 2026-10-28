@@ -14,6 +14,7 @@ export const COMMAND_TYPES = [
   'server.folders.remove',
   'server.tunnel.routes',
   'server.tunnel.connectors',
+  'server.tunnel.status',
   'environment.deploy',
   'environment.lifecycle',
   'environment.stop',

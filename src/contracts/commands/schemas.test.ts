@@ -160,6 +160,7 @@ const DAEMON_COMMAND_TYPES = [
   'server.folders.remove',
   'server.tunnel.routes',
   'server.tunnel.connectors',
+  'server.tunnel.status',
   'environment.deploy',
   'environment.lifecycle',
   'environment.stop',
@@ -7811,4 +7812,10 @@ test('a wal position of 0/0 is rejected, any other well formed position is kept'
   assertEquals(parseWalPosition('00000000/00000000', 1), undefined)
   assertEquals(parseWalPosition('0/1', 1), { lsn: '0/1', timeline: 1 })
   assertEquals(parseWalPosition('1/0', 2), { lsn: '1/0', timeline: 2 })
+})
+
+test('parseCommandPayload and parseCommandResult dispatch server.tunnel.status', () => {
+  assertEquals(parseCommandPayload('server.tunnel.status' as CommandType, {}), {})
+  const result = { pinnedVersion: '2026.5.2', connectors: [] }
+  assertEquals(parseCommandResult('server.tunnel.status' as CommandType, result), result)
 })

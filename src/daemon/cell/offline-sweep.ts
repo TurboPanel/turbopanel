@@ -73,6 +73,7 @@ import type { FirewallApplyGate } from '../../features/firewall/enforcement.ts'
 import { runFirewallPreviewSweep } from '../../features/firewall/preview.ts'
 import { runLeafRenewalSweepTick } from '../../client/tls/leaf-renewal-sweep.ts'
 import { runTunnelConnectorsSweepTick } from '../../features/tunnels/connector-sync.ts'
+import { runTunnelStatusPollTick } from '../../features/tunnels/status-poll.ts'
 import { peerLeafDelivery, runTunnelRoutesSweepTick } from '../../features/tunnels/sync.ts'
 import { runHostingLetsEncryptSweepTick } from '../../client/hostings/letsencrypt-sweep.ts'
 import { type AlertSender, NOOP_ALERT_SENDER } from '../../features/alerts/alert-sender.ts'
@@ -1206,6 +1207,10 @@ async function runQueuedCronSweeps(
       // to drop the ones that moved away. A resend leaves a running connector alone.
       await runIsolatedSweep(signal, 'tunnel-connectors-sweep-failed', () =>
         runTunnelConnectorsSweepTick(db, { commandQueue, ...tlsRenewal })
+      )
+      // Connector versions per server: record the last answer, ask again when due.
+      await runIsolatedSweep(signal, 'tunnel-status-poll-failed', () =>
+        runTunnelStatusPollTick(db, commandQueue)
       )
       // Orphaned ProxySQL frontends: teardown needs a full
       // `managed.ingress.reconcile`, so it can only run when the cron has the
