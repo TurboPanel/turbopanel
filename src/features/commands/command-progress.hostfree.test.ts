@@ -78,7 +78,7 @@ test('validateCommandProgress accepts a plan and names what is wrong otherwise',
       ...PLAN,
       steps: [{ id: 'fetch', label: 'Fetch the code', state: 'paused' }],
     }),
-    'invalid step 0 state'
+    'unknown value: step 0 state'
   )
   assertEquals(
     validateCommandProgress({
