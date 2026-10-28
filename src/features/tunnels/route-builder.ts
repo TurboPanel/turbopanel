@@ -10,8 +10,10 @@
 import type {
   TunnelPeerMaterial,
   TunnelRoute,
+  TunnelRouteUpstream,
   TunnelRoutesCommandPayload,
 } from '../../contracts/commands/tunnel-routes.ts'
+import { compareText } from './order.ts'
 
 /** The daemon contract's caps; a table above them would be refused whole. */
 export const TUNNEL_TABLE_CAPS = {
@@ -48,11 +50,61 @@ export type RouteBuildResult = {
 }
 
 function byHostname(a: { hostname: string }, b: { hostname: string }): number {
-  return a.hostname < b.hostname ? -1 : a.hostname > b.hostname ? 1 : 0
+  return compareText(a.hostname, b.hostname)
 }
 
 /** The exact datacenter addresses of a server, or none when it has no datacenter address. */
 type AddressBook = ReadonlyMap<string, readonly string[]>
+
+/** The servers that run the site, with their addresses; servers with no address are left out. */
+function remoteUpstreams(doorway: DoorwayFact, addresses: AddressBook): TunnelRouteUpstream[] {
+  return doorway.siteServerIds
+    .flatMap((id) => {
+      const list = addresses.get(id) ?? []
+      if (list.length === 0) return []
+      return [{ serverId: id, addresses: list.slice(0, TUNNEL_TABLE_CAPS.addressesPerUpstream) }]
+    })
+    .toSorted((a, b) => compareText(a.serverId, b.serverId))
+    .slice(0, TUNNEL_TABLE_CAPS.upstreamsPerRoute)
+}
+
+function skipReason(doorway: DoorwayFact): string {
+  if (doorway.siteServerIds.length === 0) {
+    return 'The site for this name does not run on any server yet'
+  }
+  return 'No server that runs this site has a datacenter address'
+}
+
+/** Other servers that carry the tunnel may pass visitors to a site that runs here. */
+function addInboundPeers(
+  peers: Set<string>,
+  tunnel: TunnelFact,
+  serverId: string,
+  addresses: AddressBook
+): void {
+  for (const carrier of tunnel.carrying) {
+    if (carrier === serverId) continue
+    for (const address of addresses.get(carrier) ?? []) peers.add(address)
+  }
+}
+
+/** One table entry for a name this server carries, or the reason it cannot be routed. */
+function routeFor(
+  doorway: DoorwayFact,
+  siteHere: boolean,
+  addresses: AddressBook
+): { route: TunnelRoute } | { reason: string } {
+  const upstreams = siteHere ? [] : remoteUpstreams(doorway, addresses)
+  if (!siteHere && upstreams.length === 0) return { reason: skipReason(doorway) }
+  return {
+    route: {
+      hostname: doorway.hostname,
+      local: siteHere,
+      lock: doorway.isLocalOnly,
+      upstreams,
+    },
+  }
+}
 
 export function buildTunnelRoutes(
   serverId: string,
@@ -67,62 +119,40 @@ export function buildTunnelRoutes(
     const carriesHere = tunnel.carrying.includes(serverId)
     for (const doorway of tunnel.doorways) {
       const siteHere = doorway.siteServerIds.includes(serverId)
-      if (siteHere) {
-        // Peers are the other servers that carry this tunnel and so may pass visitors on.
-        for (const carrier of tunnel.carrying) {
-          if (carrier === serverId) continue
-          for (const address of addresses.get(carrier) ?? []) peers.add(address)
-        }
-      }
+      if (siteHere) addInboundPeers(peers, tunnel, serverId, addresses)
       if (!carriesHere || routes.has(doorway.hostname)) continue
-      const upstreams = siteHere
-        ? []
-        : doorway.siteServerIds.flatMap((id) => {
-            const list = addresses.get(id) ?? []
-            return list.length > 0
-              ? [{ serverId: id, addresses: list.slice(0, TUNNEL_TABLE_CAPS.addressesPerUpstream) }]
-              : []
-          })
-      if (!siteHere && upstreams.length === 0) {
-        skipped.push({
-          hostname: doorway.hostname,
-          reason:
-            doorway.siteServerIds.length === 0
-              ? 'The site for this name does not run on any server yet'
-              : 'No server that runs this site has a datacenter address',
-        })
-        continue
-      }
-      routes.set(doorway.hostname, {
-        hostname: doorway.hostname,
-        local: siteHere,
-        lock: doorway.isLocalOnly,
-        upstreams: upstreams
-          .sort((a, b) => (a.serverId < b.serverId ? -1 : 1))
-          .slice(0, TUNNEL_TABLE_CAPS.upstreamsPerRoute),
-      })
+      const built = routeFor(doorway, siteHere, addresses)
+      if ('route' in built) routes.set(doorway.hostname, built.route)
+      else skipped.push({ hostname: doorway.hostname, reason: built.reason })
     }
   }
+  return finishTable(serverId, routes, peers, skipped, addresses)
+}
 
+/** Sort, cut at the contract caps (with a note), and decide whether a certificate is needed. */
+function finishTable(
+  serverId: string,
+  routes: ReadonlyMap<string, TunnelRoute>,
+  peers: ReadonlySet<string>,
+  skipped: RouteBuildResult['skipped'],
+  addresses: AddressBook
+): RouteBuildResult {
   const warnings: string[] = []
-  const allPeers = [...peers].sort()
+  const allPeers = [...peers].toSorted(compareText)
   const peerAddresses = allPeers.slice(0, TUNNEL_TABLE_CAPS.addresses)
   if (allPeers.length > peerAddresses.length) {
     warnings.push(`Only ${TUNNEL_TABLE_CAPS.addresses} peer addresses can be sent to one server`)
   }
-  const allRoutes = [...routes.values()].sort(byHostname)
+  const allRoutes = [...routes.values()].toSorted(byHostname)
   const kept = allRoutes.slice(0, TUNNEL_TABLE_CAPS.routes)
   if (allRoutes.length > kept.length) {
     warnings.push(`Only ${TUNNEL_TABLE_CAPS.routes} Tunnel hostnames can be sent to one server`)
   }
-  const own =
-    peerAddresses.length > 0
-      ? (addresses.get(serverId) ?? []).slice(0, TUNNEL_TABLE_CAPS.addresses)
-      : []
+  const own = peerAddresses.length > 0 ? (addresses.get(serverId) ?? []) : []
   return {
     routes: kept,
     peerAddresses,
-    listenAddresses: own,
+    listenAddresses: own.slice(0, TUNNEL_TABLE_CAPS.addresses),
     needsPeerMaterial: kept.length > 0 || peerAddresses.length > 0,
     skipped,
     warnings,

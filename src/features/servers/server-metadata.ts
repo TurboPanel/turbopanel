@@ -1951,10 +1951,12 @@ export function parseServerOptions(value: unknown): ServerOptions | null {
   if ('managedExternalAccess' in value) {
     options.managedExternalAccess = parseManagedExternalAccess(value.managedExternalAccess)
   }
-  if (isRecord(value.tunnels) && typeof value.tunnels.carry === 'boolean') {
-    options.tunnels = { carry: value.tunnels.carry }
-  }
+  assignTunnelCarry(options, value.tunnels)
   return Object.keys(options).length > 0 ? options : {}
+}
+
+function assignTunnelCarry(options: ServerOptions, value: unknown): void {
+  if (isRecord(value) && typeof value.carry === 'boolean') options.tunnels = { carry: value.carry }
 }
 
 function assignServerPhpModes(options: ServerOptions, value: unknown): void {

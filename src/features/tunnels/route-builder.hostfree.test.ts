@@ -253,3 +253,24 @@ test('a table above the contract caps is cut and says so, never sent whole', () 
     },
   })
 })
+
+test('the hash of a fixed table is pinned, so the order feeding it never drifts between runtimes', async () => {
+  const built = buildTunnelRoutes(
+    A,
+    [
+      {
+        carrying: [A],
+        doorways: [
+          { hostname: 'b.example.com', siteServerIds: [B, C], isLocalOnly: true },
+          { hostname: 'a.example.com', siteServerIds: [B], isLocalOnly: false },
+        ],
+      },
+    ],
+    book
+  )
+  const cert = '-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n'
+  assertEquals(
+    await hashTunnelRoutes(built, { certificatePem: cert, caCertPem: cert }),
+    '2d07617b9051cf5724a4c2980733b865d8914d320b5453ee08a178af2d8fb168'
+  )
+})

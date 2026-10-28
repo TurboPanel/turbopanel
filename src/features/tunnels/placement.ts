@@ -8,6 +8,7 @@
  *   portal. Only `all` picks up new servers by itself.
  * - A server marked "never carries tunnels" is left out of every placement.
  */
+import { compareText } from './order.ts'
 import type { Parsed } from './records.ts'
 import { TUNNEL_PLACEMENTS, type TunnelPlacement } from './vocabulary.ts'
 
@@ -30,7 +31,7 @@ export function resolveCarryingServers(facts: PlacementFacts): string[] {
   const carrying = new Set(
     candidates.filter((id) => !skipped.has(id) && !facts.neverServerIds.has(id))
   )
-  return [...carrying].sort()
+  return [...carrying].toSorted(compareText)
 }
 
 /** Plain-words warnings about a placement; a single connector is the one that matters. */

@@ -27,7 +27,12 @@ import { issuePeerLeaf, type PeerLeafIssue } from '../tls/peer-leaf.ts'
 import { pendingTlsLeafMetadata } from '../tls/leaf-tracking.ts'
 import { daemonCanCarryTunnels } from './daemon-gate.ts'
 import { getServerDaemonStateByServerId } from '../servers/server-identity-db.ts'
-import { buildTunnelRoutes, hashTunnelRoutes, toRoutesPayload } from './route-builder.ts'
+import {
+  buildTunnelRoutes,
+  hashTunnelRoutes,
+  type RouteBuildResult,
+  toRoutesPayload,
+} from './route-builder.ts'
 import { loadRoutingFacts } from './route-facts.ts'
 
 /** The least time between two sends of the same table to one server. */
@@ -155,6 +160,54 @@ async function enqueueRoutes(
   return { ok: true, commandId: record.id }
 }
 
+type ServerReady = { ok: true; metadata: unknown } | { ok: false; outcome: TunnelSyncOutcome }
+
+/** The server exists, is connected, and runs a daemon that advertises tunnel support. */
+async function checkServerReady(
+  db: Db,
+  organizationId: string,
+  serverId: string
+): Promise<ServerReady> {
+  const [row] = await db
+    .select({ isConnected: server.isConnected, metadata: server.metadata })
+    .from(server)
+    .where(and(eq(server.id, serverId), eq(server.organizationId, organizationId)))
+    .limit(1)
+  const skip = (reason: string): ServerReady => ({
+    ok: false,
+    outcome: { status: 'skipped', reason },
+  })
+  if (!row) return skip('unknown server')
+  if (!row.isConnected) return skip('server offline')
+  const state = await getServerDaemonStateByServerId(db, serverId)
+  if (!daemonCanCarryTunnels(state?.projection?.features)) return skip('daemon too old')
+  return { ok: true, metadata: row.metadata }
+}
+
+/**
+ * Is the table already where it should be? A table that finished is left alone.
+ * One that did not finish waits out the gap before it is sent again, so a table
+ * the server keeps refusing is not sent (and a new certificate minted) every tick.
+ */
+async function isAlreadyCurrent(
+  db: Db,
+  serverId: string,
+  sent: SentState | null,
+  built: RouteBuildResult,
+  stateHash: string
+): Promise<boolean> {
+  if (sent === null) return !built.needsPeerMaterial && built.routes.length === 0
+  if (sent.stateHash !== stateHash) return false
+  const last = await loadLastSend(db, sent)
+  if (lastSendIsSettled(last, sent, Date.now())) return true
+  if (Date.now() - Date.parse(sent.sentAt) < TUNNEL_ROUTES_RESEND_GAP_MS) return true
+  compatLogWarn(
+    'tunnel-sync',
+    `server ${serverId}: the last forwarding table was not applied (${describeUnsettled(last)}); sending it again`
+  )
+  return false
+}
+
 /**
  * Bring one server up to date. `issue` is a freshly minted peer leaf from the
  * renewal path; without it one is minted when the table needs a certificate.
@@ -164,51 +217,23 @@ export async function syncServerTunnelRoutes(
   deps: TunnelSyncDeps,
   params: { organizationId: string; serverId: string; issue?: PeerLeafIssue; force?: boolean }
 ): Promise<TunnelSyncOutcome> {
-  if (isNoopCommandQueue(deps.commandQueue))
+  if (isNoopCommandQueue(deps.commandQueue)) {
     return { status: 'skipped', reason: 'no command queue' }
-  const { organizationId, serverId } = params
-  const [row] = await db
-    .select({ isConnected: server.isConnected, metadata: server.metadata })
-    .from(server)
-    .where(and(eq(server.id, serverId), eq(server.organizationId, organizationId)))
-    .limit(1)
-  if (!row) return { status: 'skipped', reason: 'unknown server' }
-  if (!row.isConnected) return { status: 'skipped', reason: 'server offline' }
-  const state = await getServerDaemonStateByServerId(db, serverId)
-  if (!daemonCanCarryTunnels(state?.projection?.features)) {
-    return { status: 'skipped', reason: 'daemon too old' }
   }
+  const { organizationId, serverId } = params
+  const ready = await checkServerReady(db, organizationId, serverId)
+  if (!ready.ok) return ready.outcome
   const facts = await loadRoutingFacts(db, organizationId)
   const built = buildTunnelRoutes(serverId, facts.tunnels, facts.addresses)
   const stateHash = await hashTunnelRoutes(built, undefined)
-  const sent = readSentState(row.metadata)
-  const nothingWanted = !built.needsPeerMaterial && built.routes.length === 0
-  if (!params.force && !params.issue) {
-    if (sent === null && nothingWanted) return { status: 'unchanged' }
-    if (sent?.stateHash === stateHash) {
-      const last = await loadLastSend(db, sent)
-      if (lastSendIsSettled(last, sent, Date.now())) return { status: 'unchanged' }
-      // The same table did not finish. Wait before sending it again, so a table the
-      // server keeps refusing is not sent (and a new certificate minted) every tick.
-      if (Date.now() - Date.parse(sent.sentAt) < TUNNEL_ROUTES_RESEND_GAP_MS) {
-        return { status: 'unchanged' }
-      }
-      compatLogWarn(
-        'tunnel-sync',
-        `server ${serverId}: the last forwarding table was not applied (${describeUnsettled(last)}); sending it again`
-      )
-    }
+  const sent = readSentState(ready.metadata)
+  const open = !params.force && !params.issue
+  if (open && (await isAlreadyCurrent(db, serverId, sent, built, stateHash))) {
+    return { status: 'unchanged' }
   }
-  let issue = params.issue ?? null
-  if (built.needsPeerMaterial && !issue) {
-    const minted = await issuePeerLeaf(db, deps.secretsConfig, deps.dataEncryptionSecrets, {
-      organizationId,
-      serverId,
-    })
-    if (!minted.ok) return { status: 'failed', reason: `peer certificate: ${minted.error.kind}` }
-    issue = minted
-  }
-  const material = built.needsPeerMaterial ? issue?.material : undefined
+  const issue = await peerLeafFor(db, deps, built, params)
+  if ('failed' in issue) return { status: 'failed', reason: issue.failed }
+  const material = built.needsPeerMaterial ? issue.leaf?.material : undefined
   const payload = await toRoutesPayload(built, material)
   const notes = [...built.warnings, ...built.skipped.map((n) => `${n.hostname}: ${n.reason}`)]
   for (const note of notes) compatLogWarn('tunnel-sync', `server ${serverId}: ${note}`)
@@ -218,7 +243,7 @@ export async function syncServerTunnelRoutes(
     deps.commandQueue,
     serverId,
     payload,
-    material ? issue : null
+    material ? issue.leaf : null
   )
   if (!queued.ok) return { status: 'failed', reason: queued.reason }
   await recordSent(db, serverId, {
@@ -228,6 +253,22 @@ export async function syncServerTunnelRoutes(
     forwarded: built.routes.filter((r) => !r.local).length,
   })
   return { status: 'sent', commandId: queued.commandId }
+}
+
+/** The leaf to send: the one handed in, or a freshly minted one when the table needs a certificate. */
+async function peerLeafFor(
+  db: Db,
+  deps: TunnelSyncDeps,
+  built: RouteBuildResult,
+  params: { organizationId: string; serverId: string; issue?: PeerLeafIssue }
+): Promise<{ leaf: PeerLeafIssue | null } | { failed: string }> {
+  if (params.issue || !built.needsPeerMaterial) return { leaf: params.issue ?? null }
+  const minted = await issuePeerLeaf(db, deps.secretsConfig, deps.dataEncryptionSecrets, {
+    organizationId: params.organizationId,
+    serverId: params.serverId,
+  })
+  if (!minted.ok) return { failed: `peer certificate: ${minted.error.kind}` }
+  return { leaf: minted }
 }
 
 /** Servers that carry a tunnel, run a site on one, or were sent a table before. */

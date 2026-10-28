@@ -23,6 +23,7 @@ import { isUniqueViolationOn } from '../../db/unique-violation.ts'
 import { decryptSecret, encryptSecret } from '../../lib/secrets/data-encryption.ts'
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { hostingIdsOfOrganization } from './hosting-scope.ts'
+import { compareText } from './order.ts'
 import { parseServerOptions } from '../servers/server-metadata.ts'
 import type { TunnelAdapter } from './adapter.ts'
 import { TunnelProviderError } from './errors.ts'
@@ -38,7 +39,6 @@ import {
   NO_CAPABILITIES,
   RUN_SECRET_PROVIDER,
   type TunnelPlacement,
-  type TunnelProvider,
 } from './vocabulary.ts'
 
 export type TunnelRow = typeof tunnel.$inferSelect
@@ -610,7 +610,7 @@ async function routeNames(db: Db, tunnelId: string, extra: string | null): Promi
   const rows = await listDoorways(db, tunnelId)
   const names = rows.map((r) => r.hostname)
   if (extra && !names.includes(extra)) names.push(extra)
-  return names.sort()
+  return names.toSorted(compareText)
 }
 
 /**
@@ -634,27 +634,7 @@ export async function addDoorway(
       'This Tunnel does not exist at the provider yet'
     )
   }
-  if ((await listDoorways(db, row.id)).length >= MAX_DOORWAYS_PER_TUNNEL) {
-    throw new TunnelRefusal(
-      'doorway_limit',
-      409,
-      `A Tunnel can carry ${MAX_DOORWAYS_PER_TUNNEL} hostnames`
-    )
-  }
-  if (await hostnameTaken(db, row.routingOrganizationId, input.hostname)) {
-    throw new TunnelRefusal('hostname_in_use', 409, 'This hostname is already on a Tunnel')
-  }
-  const held = await db
-    .select({ id: doorway.id })
-    .from(doorway)
-    .where(eq(doorway.routingOrganizationId, row.routingOrganizationId))
-  if (held.length >= MAX_DOORWAYS_PER_ORG) {
-    throw new TunnelRefusal(
-      'doorway_limit',
-      409,
-      `An organization can carry ${MAX_DOORWAYS_PER_ORG} Tunnel hostnames in all`
-    )
-  }
+  await assertDoorwayRoom(db, row, input.hostname)
   const token = await openCarrierToken(db, deps.secrets, owner.id, { tunnels: true })
   if (!token) {
     throw new TunnelRefusal(
@@ -682,43 +662,87 @@ export async function addDoorway(
     await hostingOfName(db, row.routingOrganizationId, input.hostname)
   )
   try {
-    await deps.adapter.setRoutes(token, {
-      accountId: account,
-      externalId: row.externalId,
-      hostnames: await routeNames(db, row.id, null),
-    })
-    let recordId: string | null = null
-    if (zone && dnsToken) {
-      recordId = (
-        await deps.adapter.createDnsName(dnsToken, {
-          zoneId: zone.id,
-          hostname: input.hostname,
-          externalId: row.externalId,
-        })
-      ).recordId
-    }
-    try {
-      const [live] = await db
-        .update(doorway)
-        .set({
-          status: 'live',
-          externalDnsRecordId: recordId,
-          metadata: zone ? { zoneId: zone.id } : null,
-        })
-        .where(eq(doorway.id, created.id))
-        .returning()
-      return live!
-    } catch (err) {
-      // The DNS name exists but the row could not be kept: take the name away again.
-      if (recordId && zone && dnsToken) {
-        await deps.adapter.removeDnsName(dnsToken, { zoneId: zone.id, recordId }).catch(() => {})
-      }
-      throw err
-    }
+    return await publishDoorway(db, deps.adapter, { row, token, account, zone, dnsToken }, created)
   } catch (err) {
     await db.delete(doorway).where(eq(doorway.id, created.id))
     await restoreRoutesQuietly(db, deps.adapter, token, row, account)
     throw providerRefusal(err)
+  }
+}
+
+/** The limits and the name check that come before anything is written or sent. */
+async function assertDoorwayRoom(db: Db, row: TunnelRow, name: string): Promise<void> {
+  if ((await listDoorways(db, row.id)).length >= MAX_DOORWAYS_PER_TUNNEL) {
+    throw new TunnelRefusal(
+      'doorway_limit',
+      409,
+      `A Tunnel can carry ${MAX_DOORWAYS_PER_TUNNEL} hostnames`
+    )
+  }
+  if (await hostnameTaken(db, row.routingOrganizationId, name)) {
+    throw new TunnelRefusal('hostname_in_use', 409, 'This hostname is already on a Tunnel')
+  }
+  const held = await db
+    .select({ id: doorway.id })
+    .from(doorway)
+    .where(eq(doorway.routingOrganizationId, row.routingOrganizationId))
+  if (held.length >= MAX_DOORWAYS_PER_ORG) {
+    throw new TunnelRefusal(
+      'doorway_limit',
+      409,
+      `An organization can carry ${MAX_DOORWAYS_PER_ORG} Tunnel hostnames in all`
+    )
+  }
+}
+
+type PublishPlan = {
+  row: TunnelRow
+  token: string
+  account: string | null
+  zone: { id: string; name: string } | null
+  dnsToken: string | null
+}
+
+/** Route the name, make its DNS name when a zone holds it, and mark the row live. */
+async function publishDoorway(
+  db: Db,
+  adapter: TunnelAdapter,
+  plan: PublishPlan,
+  created: DoorwayRow
+): Promise<DoorwayRow> {
+  const { row, token, account, zone, dnsToken } = plan
+  await adapter.setRoutes(token, {
+    accountId: account,
+    externalId: row.externalId!,
+    hostnames: await routeNames(db, row.id, null),
+  })
+  const recordId =
+    zone && dnsToken
+      ? (
+          await adapter.createDnsName(dnsToken, {
+            zoneId: zone.id,
+            hostname: created.hostname,
+            externalId: row.externalId!,
+          })
+        ).recordId
+      : null
+  try {
+    const [live] = await db
+      .update(doorway)
+      .set({
+        status: 'live',
+        externalDnsRecordId: recordId,
+        metadata: zone ? { zoneId: zone.id } : null,
+      })
+      .where(eq(doorway.id, created.id))
+      .returning()
+    return live!
+  } catch (err) {
+    // The DNS name exists but the row could not be kept: take the name away again.
+    if (recordId && zone && dnsToken) {
+      await adapter.removeDnsName(dnsToken, { zoneId: zone.id, recordId }).catch(() => {})
+    }
+    throw err
   }
 }
 
@@ -846,5 +870,3 @@ async function removeDnsNameTolerant(
     throw err
   }
 }
-
-export type { TunnelProvider }

@@ -17,10 +17,8 @@ export async function serversWithoutTunnelSupport(
   db: Db,
   serverIds: readonly string[]
 ): Promise<string[]> {
-  const missing: string[] = []
-  for (const serverId of serverIds) {
-    const state = await getServerDaemonStateByServerId(db, serverId)
-    if (!daemonCanCarryTunnels(state?.projection?.features)) missing.push(serverId)
-  }
-  return missing
+  const states = await Promise.all(
+    serverIds.map((serverId) => getServerDaemonStateByServerId(db, serverId))
+  )
+  return serverIds.filter((_, index) => !daemonCanCarryTunnels(states[index]?.projection?.features))
 }

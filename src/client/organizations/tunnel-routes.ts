@@ -110,8 +110,7 @@ function secretsOrFail(c: Context<AppEnv>) {
 
 async function listResponse(c: Context<AppEnv>, scope: Scope): Promise<Response> {
   const rows = await listTunnels(scope.db, scope.organizationId)
-  const tunnels = []
-  for (const row of rows) tunnels.push(await toApiTunnel(scope.db, row))
+  const tunnels = await Promise.all(rows.map((row) => toApiTunnel(scope.db, row)))
   return c.json({ tunnels })
 }
 
@@ -292,7 +291,7 @@ async function carryingResponse(c: Context<AppEnv>, scope: Scope): Promise<Respo
     .where(and(eq(server.id, serverId), eq(server.organizationId, scope.organizationId)))
     .limit(1)
   if (!row) return c.json({ error: 'Not found' }, 404)
-  const options = { ...(parseServerOptions(row.options) ?? {}), tunnels: { carry: body.carry } }
+  const options = { ...parseServerOptions(row.options), tunnels: { carry: body.carry } }
   await scope.db
     .update(server)
     .set({ options })

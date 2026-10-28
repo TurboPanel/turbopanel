@@ -7,6 +7,7 @@
 import { and, eq, inArray, isNotNull } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { datacenter, deployment, doorway, hosting, ip, service } from '../../db/schema.ts'
+import { compareText } from './order.ts'
 import { hostingIdsOfOrganization } from './hosting-scope.ts'
 import { carryingServers, listTunnels } from './lifecycle.ts'
 import type { DoorwayFact, TunnelFact } from './route-builder.ts'
@@ -88,7 +89,7 @@ async function siteServersByHosting(
   for (const r of rows) {
     const list = result.get(r.hostingId) ?? []
     if (!list.includes(r.serverId)) list.push(r.serverId)
-    result.set(r.hostingId, list.sort())
+    result.set(r.hostingId, list.toSorted(compareText))
   }
   return result
 }
@@ -111,18 +112,19 @@ export async function loadRoutingFacts(db: Db, organizationId: string): Promise<
     doorways.flatMap((d) => (d.hostingId ? [d.hostingId] : [])),
     organizationId
   )
-  const tunnels: TunnelFact[] = []
-  for (const row of rows) {
-    const carrying = await carryingServers(db, row)
-    const facts: DoorwayFact[] = doorways
-      .filter((d) => d.tunnelId === row.id && d.status !== 'removing')
-      .map((d) => ({
-        hostname: d.hostname,
-        siteServerIds: d.hostingId ? (sites.get(d.hostingId) ?? []) : [],
-        isLocalOnly: d.isLocalOnly,
-      }))
-    tunnels.push({ carrying, doorways: facts })
-  }
+  const tunnels: TunnelFact[] = await Promise.all(
+    rows.map(async (row) => {
+      const carrying = await carryingServers(db, row)
+      const facts: DoorwayFact[] = doorways
+        .filter((d) => d.tunnelId === row.id && d.status !== 'removing')
+        .map((d) => ({
+          hostname: d.hostname,
+          siteServerIds: d.hostingId ? (sites.get(d.hostingId) ?? []) : [],
+          isLocalOnly: d.isLocalOnly,
+        }))
+      return { carrying, doorways: facts }
+    })
+  )
   const involved = new Set<string>()
   for (const t of tunnels) {
     t.carrying.forEach((id) => involved.add(id))
