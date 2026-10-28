@@ -111,6 +111,7 @@ import {
   shellForAccessLevel,
 } from '../../features/principals/principal-access.ts'
 import { renderPhpForDeploy } from '../../features/hostings/php-settings.ts'
+import { resolveDeployNameLock } from '../../features/tunnels/name-lock.ts'
 import { type PhpModePrepareError, withSitePhpModes } from './deploy-php-modes.ts'
 import {
   type NativeAppNodeVersionView,
@@ -4322,7 +4323,8 @@ async function resolveHttpHostingEntry(
   svc: Readonly<{ id: string; composeServiceName: string }>,
   candidates: OrgTlsCandidate[],
   serverId: string,
-  acmeEnabled: boolean
+  acmeEnabled: boolean,
+  organizationId: string
 ): Promise<
   | { entry: DeployHostingPayload }
   | { skip: true }
@@ -4387,12 +4389,34 @@ async function resolveHttpHostingEntry(
 
   const web = await resolveHostingDeployWeb(db, h.id, h.options)
 
+  const lock = await resolveDeployNameLock(db, {
+    organizationId,
+    serverId,
+    hostingId: h.id,
+    siteHostnames: hostnames,
+    tlsMode: tlsWire.tlsMode,
+  })
+  if ('refusal' in lock) {
+    return {
+      error: Response.json(
+        {
+          error: lock.refusal.code,
+          hostingId: h.id,
+          hostnames: lock.refusal.hostnames,
+          ...(lock.refusal.code === 'tunnel_daemon_too_old' ? { serverId } : {}),
+        },
+        { status: 409 }
+      ),
+    }
+  }
+
   return {
     entry: {
       hostingId: h.id,
       serviceId: svc.id,
       composeServiceName: svc.composeServiceName,
       hostnames,
+      ...(lock.tunnel === undefined ? {} : { tunnel: lock.tunnel }),
       pathPrefix: readPathPrefix(h.options),
       targetPort: readTargetPort(h.options),
       tlsId: tlsWire.tlsId,
@@ -4453,7 +4477,8 @@ function resolveHostingEntry(
   svc: Readonly<{ id: string; composeServiceName: string }>,
   candidates: OrgTlsCandidate[],
   serverId: string,
-  acmeEnabled: boolean
+  acmeEnabled: boolean,
+  organizationId: string
 ): Promise<
   | { entry: DeployHostingPayload }
   | { skip: true }
@@ -4462,7 +4487,7 @@ function resolveHostingEntry(
 > {
   const protocol = readHostingProtocol(h.options)
   if (protocol === 'http') {
-    return resolveHttpHostingEntry(db, h, svc, candidates, serverId, acmeEnabled)
+    return resolveHttpHostingEntry(db, h, svc, candidates, serverId, acmeEnabled, organizationId)
   }
   return resolveTcpUdpHostingEntry(db, h, svc, protocol, serverId)
 }
@@ -4511,7 +4536,8 @@ async function buildHostingsForService(
   svc: HostingServiceRow,
   candidates: OrgTlsCandidate[],
   serverId: string,
-  acmeEnabled: boolean
+  acmeEnabled: boolean,
+  organizationId: string
 ): Promise<
   | { hostings: DeployHostingPayload[]; tlsIds: string[] }
   | { error: Response }
@@ -4537,7 +4563,8 @@ async function buildHostingsForService(
       { id: svc.id, composeServiceName },
       candidates,
       serverId,
-      acmeEnabled
+      acmeEnabled,
+      organizationId
     )
     if ('skip' in result) continue
     if ('error' in result) return result
@@ -4575,7 +4602,14 @@ async function buildHostingPayload(
   const resolvedTlsIds = new Set<string>()
 
   for (const svc of serviceRows) {
-    const built = await buildHostingsForService(db, svc, candidates, serverId, acmeEnabled)
+    const built = await buildHostingsForService(
+      db,
+      svc,
+      candidates,
+      serverId,
+      acmeEnabled,
+      organizationId
+    )
     if ('error' in built) return built
     if ('prepareError' in built) return built
     hostingPayload.push(...built.hostings)

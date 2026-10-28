@@ -219,7 +219,7 @@ export const tunnelSchemas = {
       isLocalOnly: {
         type: 'boolean',
         description:
-          'The wish that only the Tunnel and peer servers answer this name (true), or that it is also public (false). It is recorded now; the web server does not enforce it yet.',
+          "True (the default) = only the Tunnel connector and the servers that carry the same Tunnel may reach this name on the server that runs the site; everyone else is dropped. False = the name is also public, so everyone is answered. The lock is applied when the site is deployed: a deploy to a server whose daemon is too old to enforce it is refused (409 `tunnel_daemon_too_old`), and a locked name that is pinned to a public Let's Encrypt certificate is refused (409 `tunnel_name_public_certificate`). Changing the servers of a Tunnel changes who may reach the name; the lock follows at the next deploy of the site.",
       },
       status: { type: 'string', enum: ['pending', 'live', 'attention', 'removing'] },
       dns: { type: 'string', enum: ['created', 'none'] },
