@@ -166,7 +166,7 @@ does (for a change whose whole-file reflow goes in its own commit). Without a
 
 CI analysis config, the Vitest+Deno LCOV coverage merge, analysis-scope /
 exclusion rules, and the coverage-attribution traps moved to
-[`scripts/AGENTS.md`](./scripts/AGENTS.md). Read it before touching
+[`scripts/AGENTS.md`](./AGENTS.md). Read it before touching
 `scripts/test-coverage.sh`, `sonar-project.properties`, the SonarQube CI job, or
 when SonarCloud shows suspicious 0% coverage. Style rules Sonar enforces on
 everyday code live in `src/AGENTS.md` (**TypeScript style**).

@@ -73,7 +73,7 @@ The production Caddyfile is **not in this repo**: the daemon's
 `instance-launch` role renders it on every converge from
 `turbopaneld/orchestration/roles/instance-launch/templates/Caddyfile.j2` (one
 template, the three TLS modes are its branches) into
-`/etc/turbopanel/caddy/Caddyfile`. Full detail in [`caddy.md`](./caddy.md)
+`/etc/turbopanel/caddy/Caddyfile`. Full detail in [`caddy.md`](../../caddy.md)
 (server addresses, certs/entrypoint, daemon TLS trust model, static UI). The
 one rule that must not be missed:
 
@@ -152,7 +152,7 @@ bounded readers and limiters).
   `environmentId`, or managed-cluster `managedEnvironmentId`. Create returns
   `{ ok, id }`; patch returns `{ ok }`.
 - The TurboPanel Development Environment calls developer routes via
-  [`dev/src/lib/developer-client.ts`](../dev/src/lib/developer-client.ts)
+  [`dev/src/lib/developer-client.ts`](../../../dev/src/lib/developer-client.ts)
   (Unix socket + HTTPS fallback).
 - Hard cutover: daemon, UI, Caddy (`/ws/*`), and Workers routes
   (`wrangler.jsonc`) moved together. The external CDN node installer must fetch

@@ -108,7 +108,7 @@ appears in `coverage/lcov.info`. After adding, renaming, or deleting a
 | Needs a service CI does not start (Redis, …)                                     | `SERVICE_DEPENDENT` in `scripts/check-test-inventory.mjs` **with a reason** — the only sanctioned way to leave a suite out of both runners                                           |
 
 Do not give a Deno suite a Workers suffix. Coverage-attribution traps and the
-LCOV merge live in [`scripts/AGENTS.md`](./scripts/AGENTS.md).
+LCOV merge live in [`scripts/AGENTS.md`](../scripts/AGENTS.md).
 
 **Suffix semantics.** Host-free Deno suites use **`.hostfree.test.ts`** only.
 Workers/Durable Object suites that must run under Vitest use
