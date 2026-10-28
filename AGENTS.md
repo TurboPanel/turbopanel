@@ -95,7 +95,7 @@ The **daemon is the constant** installed on every TurboPanel-managed host and is
 the only party that runs Ansible to install/update everything else (runtimes,
 users, the instance, UI, Caddy). The instance does not install itself. In
 co-located dev the daemon runs the `instance-dev-install` playbook (see
-`../turbopaneld/AGENTS.md`) when `TURBOPANEL_DEV_INSTANCE=1`. Updates are
+`../turbopaneld/orchestration/AGENTS.md`) when `TURBOPANEL_DEV_INSTANCE=1`. Updates are
 **managed upgrades** (`src/features/upgrades/`): the maintenance tick resolves
 the channel manifests, records the latest available build, and drives
 fleet-aware upgrade runs. Updates are always automatic on both runtimes: each

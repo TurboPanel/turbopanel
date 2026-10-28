@@ -32,7 +32,7 @@
   it is not a same-version lock and it does not impose an upgrade order.
   Bump `MIN_SUPPORTED_DAEMON_VERSION` and `MIN_SUPPORTED_INSTANCE_VERSION`
   together, in the same change, and record why in this note and in
-  `turbopaneld/AGENTS.md`. Never raise either floor silently.
+  `turbopaneld/src/instance/AGENTS.md`. Never raise either floor silently.
   Dispatching `instance-update` does not gate on the daemon version (the
   daemon only runs the reconcile). The downgrade guard lives on the daemon:
   it refuses a target below its own `MIN_SUPPORTED_INSTANCE_VERSION`.

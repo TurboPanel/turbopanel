@@ -15,7 +15,7 @@ co-located daemon can connect.
 **Production:** dedicated service users — `tp` (daemon + Ansible), `tpctrl`
 (instance, UI, website, dbstudio), `tpcache` (Redis), `tpdata`
 (Postgres), `tpqueue` (RabbitMQ), `tpcaddy` (control-plane Caddy). See
-`../turbopaneld/AGENTS.md` (Filesystem layout), the allocation table below, and
+`../turbopaneld/src/paths/AGENTS.md` (Filesystem layout), the allocation table below, and
 the systemd table for ownership, ACLs, and `/run/turbopanel` **`2770 tp:tp`**
 (setgid).
 
@@ -142,7 +142,7 @@ via env when needed. `resolveInstanceRuntimeConfigPaths` composes
 `<configDir>/instance/runtime.env` (+ `runtime.dev-vars`). Managed production
 installs also run the daemon as **`turbopaneld.service`** — native
 `/opt/turbopanel/bin/turbopaneld`, or `turbopaneld.js` via vendored Deno on
-hosts where that binary cannot load (see `../turbopaneld/AGENTS.md` → Filesystem
+hosts where that binary cannot load (see `../turbopaneld/src/paths/AGENTS.md` → Filesystem
 layout & path model). Defaults and overrides are pinned by
 `src/platform/deno/server-paths.deno.test.ts` (`deno task test:paths`).
 
