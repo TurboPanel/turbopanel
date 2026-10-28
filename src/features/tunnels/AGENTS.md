@@ -196,18 +196,33 @@ provider accounts.
   applied. The same table is not sent again sooner than ten minutes after the
   previous send, so a table a server keeps refusing does not mint a new
   certificate every tick.
-- The local-only lock on tunnel names is **not enforced yet**: `doorway.is_local_only`
-  only records the wish. Enforcing it is the deploy-time `hostings[].tunnel`,
-  which is not built; until then the web server answers a tunnel name to
-  anyone who reaches it. Do not describe the lock as working in docs or
-  copy.
+- The local-only lock on tunnel names is applied at deploy time
+  (`name-lock.ts`, called from `deploy-prepare.ts`): a hosting with a doorway sends
+  `hostings[].tunnel`, which makes the daemon answer the name only to loopback and
+  the listed peers and drop everyone else. Peers are the exact datacenter
+  addresses of the _other_ servers that carry the same tunnel (all tunnels of the
+  hosting joined, sorted, cut at 64); when no other server carries it, `127.0.0.1`
+  is sent so the list is never empty (the contract refuses an empty list;
+  loopback is always allowed, so nothing widens). `extraBind` is this server's own
+  datacenter addresses and is sent only when there are real peers. A doorway with
+  `isLocalOnly = false` goes in `openHostnames` (lock off for that name). Only the
+  hosting's own non-removing doorways of the same organization count.
+  Refused with 409: `tunnel_daemon_too_old` (the daemon lacks
+  `tunnel-forwarding-v1` and the hosting has a locked name; an all-public hosting is
+  allowed and sends nothing) and `tunnel_name_public_certificate` (a locked name
+  pinned to a public Let's Encrypt certificate; the daemon contract needs every
+  name open in that mode).
+  **The lock follows the next deploy.** Adding or removing a carrier changes the
+  peer set, but nothing redeploys the site by itself: until the site is deployed
+  again, a newly added carrier's forwards to that server are dropped (closed, not
+  open) and a removed carrier stays allowed. The deploy-inputs digest already
+  covers the `tunnel` field, so the next deploy is never skipped as unchanged.
 - Limits: 50 tunnels and 2000 hostnames per organization, 200 hostnames per
   tunnel. A table is cut at the daemon contract caps (2000 names, 16 upstreams
   per name, 8 addresses per upstream, 64 peer and listen addresses) with a
   logged note, never sent whole to be refused. A hostname whose site belongs to
   another organization is refused (409 `hosting_mismatch`), and a site counts as
   running on a server only when its hosting is in the tunnel's organization.
-- Not in this slice: the deploy-time `hostings[].tunnel` (it must be gated on
-  the same feature when added), triggers that resend at once on a hosting or
-  server change (the sweep catches them), and the firewall rules for the exact
-  peer addresses.
+- Not in this slice: triggers that resend at once on a hosting or server change
+  (the sweep catches the forwarding tables; the site lock waits for the next
+  deploy, see above), and the firewall rules for the exact peer addresses.

@@ -127,8 +127,10 @@ command type, so send neither until the server's daemon version carries them
 for a server that is not connected fails at once (`Daemon not connected`); it
 is not queued or resent on reconnect by the consumer. Convergence after an
 offline period needs a reconnect sweep that sends the table again (the hash
-makes an unchanged table a no-op on the daemon). This change adds only the
-wire contract; nothing sends the command yet.
+makes an unchanged table a no-op on the daemon). The table sender is
+`src/features/tunnels/sync.ts`; `hostings[].tunnel` is built at deploy time by
+`src/features/tunnels/name-lock.ts` (a lone carrier sends `127.0.0.1` as its one
+peer because the contract refuses an empty list).
 
 `server.backups.reconcile` (added 2026-09-30, Road row `r2-backup-schema`)
 carries the **complete** set of scheduled backup policies whose target lives on
