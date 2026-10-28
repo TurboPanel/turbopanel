@@ -20,8 +20,11 @@ export type TunnelPlacement = (typeof TUNNEL_PLACEMENTS)[number]
 export const TUNNEL_STATUSES = ['pending', 'active', 'attention', 'removing'] as const
 export type TunnelStatus = (typeof TUNNEL_STATUSES)[number]
 
-/** What the panel wants one connector to do. */
-export const PORTAL_WANTED_STATES = ['running', 'stopped'] as const
+/**
+ * A server's part in a tunnel: `run` carries a connector, `skip` leaves the
+ * server out of an `all` tunnel.
+ */
+export const PORTAL_WANTED_STATES = ['run', 'skip'] as const
 /** What the server last reported for one connector. */
 export const PORTAL_REPORTED_STATES = ['unknown', 'connected', 'down', 'error'] as const
 

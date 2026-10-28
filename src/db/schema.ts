@@ -7282,7 +7282,12 @@ export const tunnel = pgTable(
 )
 
 /**
- * One server running one connector of a tunnel. Keyed by (tunnel, server)
+ * A server's part in a tunnel: `run` (this server carries a connector) or
+ * `skip` (an `all` tunnel leaves this server out). `chosen` means the servers
+ * with a `run` row, `all` means every server of the tunnel's datacenter except
+ * the `skip` rows, `one` means exactly one `run` row. A server may appear in
+ * many tunnels and a tunnel in many organizations' servers, so nothing here
+ * assumes one tunnel per server. Keyed by (tunnel, server)
  * only: no constraint ties the server to the tunnel's datacenter. For now the
  * code that adds a portal requires the server to be in that datacenter, so
  * the rule can be relaxed later without a migration.
@@ -7309,9 +7314,11 @@ export const portal = pgTable(
       .defaultNow()
       .$onUpdate(() => sql`now()`)
       .notNull(),
+    metadata: jsonb(),
+    options: jsonb(),
     tunnelId: uuid('tunnel_id').notNull(),
     serverId: uuid('server_id').notNull(),
-    wanted: text().default('running').notNull(),
+    wanted: text().default('run').notNull(),
     reported: text().default('unknown').notNull(),
     lastSeenAt: timestamp('last_seen_at', {
       precision: 3,
@@ -7334,7 +7341,7 @@ export const portal = pgTable(
       name: 'portal_server_id_server_id_fk',
     }).onDelete('cascade'),
     // Mirror PORTAL_WANTED_STATES / PORTAL_REPORTED_STATES — pinned by enum-checks.test.ts.
-    check('portal_wanted_check', sql`wanted IN ('running', 'stopped')`),
+    check('portal_wanted_check', sql`wanted IN ('run', 'skip')`),
     check('portal_reported_check', sql`reported IN ('unknown', 'connected', 'down', 'error')`),
   ]
 )

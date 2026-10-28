@@ -1409,9 +1409,14 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
   portal: {
     group: 'networking',
     summary:
-      'One server running one connector of a tunnel, with the wanted and reported state of that connector.',
+      'A server part in a tunnel: it runs a connector (`run`) or is left out (`skip`), with the connector state the server last reported.',
     columns: {
-      wanted: 'What the panel wants the connector to do: `running` or `stopped`.',
+      wanted:
+        '`run` when the server carries a connector, `skip` when an `all` tunnel leaves it out; `chosen` is the `run` rows.',
+      metadata:
+        'Non-secret descriptors written by the panel; no keys are read by the platform today.',
+      options:
+        'Per-server details such as a local endpoint; no keys are read by the platform today.',
       reported:
         'What the server last reported: `unknown` (default), `connected`, `down` or `error`.',
       last_seen_at: 'When the server last reported on the connector; NULL until the first report.',
@@ -1958,7 +1963,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       name: 'Operator name, unique per organization.',
       external_id: 'The provider own tunnel id; NULL until the provider created it.',
       placement:
-        'Where connectors run: `one` server, `chosen` servers in the datacenter, or `all` servers there.',
+        '`one` (exactly one `run` portal), `chosen` (the `run` portals) or `all` (every server of the datacenter except the `skip` portals).',
       secret_id:
         'The sealed run token in `secret`; SET NULL if that row goes, NULL for a provider that needs none.',
       status:

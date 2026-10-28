@@ -1,5 +1,5 @@
 {
-  "id": "ccc18a36-da6f-4252-8c02-09547f41544d",
+  "id": "ea832e1a-95cc-49ed-9e82-df9bfee71bbb",
   "prevId": "89eebc09-24ec-4f45-809e-2b6cd96d2c5a",
   "version": "7",
   "dialect": "postgresql",
@@ -9321,6 +9321,18 @@
           "notNull": true,
           "default": "now()"
         },
+        "metadata": {
+          "name": "metadata",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "options": {
+          "name": "options",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
         "tunnel_id": {
           "name": "tunnel_id",
           "type": "uuid",
@@ -9338,7 +9350,7 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true,
-          "default": "'running'"
+          "default": "'run'"
         },
         "reported": {
           "name": "reported",
@@ -9421,7 +9433,7 @@
       "checkConstraints": {
         "portal_wanted_check": {
           "name": "portal_wanted_check",
-          "value": "wanted IN ('running', 'stopped')"
+          "value": "wanted IN ('run', 'skip')"
         },
         "portal_reported_check": {
           "name": "portal_reported_check",

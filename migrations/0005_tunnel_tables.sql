@@ -59,14 +59,16 @@ CREATE TABLE "portal" (
 	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
 	"created_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
+	"metadata" jsonb,
+	"options" jsonb,
 	"tunnel_id" uuid NOT NULL,
 	"server_id" uuid NOT NULL,
-	"wanted" text DEFAULT 'running' NOT NULL,
+	"wanted" text DEFAULT 'run' NOT NULL,
 	"reported" text DEFAULT 'unknown' NOT NULL,
 	"last_seen_at" timestamp(3) with time zone,
 	"last_error" text,
 	CONSTRAINT "uniq_portal_tunnel_id_server_id" UNIQUE("tunnel_id","server_id"),
-	CONSTRAINT "portal_wanted_check" CHECK (wanted IN ('running', 'stopped')),
+	CONSTRAINT "portal_wanted_check" CHECK (wanted IN ('run', 'skip')),
 	CONSTRAINT "portal_reported_check" CHECK (reported IN ('unknown', 'connected', 'down', 'error'))
 );
 --> statement-breakpoint
@@ -137,8 +139,10 @@ COMMENT ON COLUMN "doorway"."external_route_id" IS 'The provider id of the route
 COMMENT ON COLUMN "doorway"."external_dns_record_id" IS 'The provider id of the DNS record the panel created for this name; NULL until created.';--> statement-breakpoint
 COMMENT ON COLUMN "doorway"."is_local_only" IS 'True (the default) when the web server answers this name only for the local connector and datacenter peers.';--> statement-breakpoint
 COMMENT ON COLUMN "doorway"."status" IS '`pending` until route and DNS name exist, `live`, `attention` after a provider error, `removing` while being taken down.';--> statement-breakpoint
-COMMENT ON TABLE "portal" IS 'One server running one connector of a tunnel, with the wanted and reported state of that connector.';--> statement-breakpoint
-COMMENT ON COLUMN "portal"."wanted" IS 'What the panel wants the connector to do: `running` or `stopped`.';--> statement-breakpoint
+COMMENT ON TABLE "portal" IS 'A server part in a tunnel: it runs a connector (`run`) or is left out (`skip`), with the connector state the server last reported.';--> statement-breakpoint
+COMMENT ON COLUMN "portal"."metadata" IS 'Non-secret descriptors written by the panel; no keys are read by the platform today.';--> statement-breakpoint
+COMMENT ON COLUMN "portal"."options" IS 'Per-server details such as a local endpoint; no keys are read by the platform today.';--> statement-breakpoint
+COMMENT ON COLUMN "portal"."wanted" IS '`run` when the server carries a connector, `skip` when an `all` tunnel leaves it out; `chosen` is the `run` rows.';--> statement-breakpoint
 COMMENT ON COLUMN "portal"."reported" IS 'What the server last reported: `unknown` (default), `connected`, `down` or `error`.';--> statement-breakpoint
 COMMENT ON COLUMN "portal"."last_seen_at" IS 'When the server last reported on the connector; NULL until the first report.';--> statement-breakpoint
 COMMENT ON COLUMN "portal"."last_error" IS 'Plain-words error from the last failed report; NULL when none.';--> statement-breakpoint
@@ -149,6 +153,6 @@ COMMENT ON COLUMN "tunnel"."options" IS 'Provider-specific tunnel settings; no k
 COMMENT ON COLUMN "tunnel"."provider" IS 'Tunnel provider, `cloudflare` for now; widened by a forward migration.';--> statement-breakpoint
 COMMENT ON COLUMN "tunnel"."name" IS 'Operator name, unique per organization.';--> statement-breakpoint
 COMMENT ON COLUMN "tunnel"."external_id" IS 'The provider own tunnel id; NULL until the provider created it.';--> statement-breakpoint
-COMMENT ON COLUMN "tunnel"."placement" IS 'Where connectors run: `one` server, `chosen` servers in the datacenter, or `all` servers there.';--> statement-breakpoint
+COMMENT ON COLUMN "tunnel"."placement" IS '`one` (exactly one `run` portal), `chosen` (the `run` portals) or `all` (every server of the datacenter except the `skip` portals).';--> statement-breakpoint
 COMMENT ON COLUMN "tunnel"."secret_id" IS 'The sealed run token in `secret`; SET NULL if that row goes, NULL for a provider that needs none.';--> statement-breakpoint
 COMMENT ON COLUMN "tunnel"."status" IS '`pending` until created, `active`, `attention` after a provider error, `removing` while being taken down.';

@@ -20,6 +20,14 @@ member there, a widened CHECK (forward migration) and one adapter.
   constraint. The code that adds a portal requires the server to be in the
   tunnel's datacenter for now; that rule lives in code so it can be relaxed
   without a migration.
+- `placement` is read from `portal`: `chosen` is the servers with a `run`
+  portal, `all` is every server of `tunnel.datacenter_id` except those with a
+  `skip` portal, `one` is exactly one `run` portal. `portal.reported`
+  (`unknown`, `connected`, `down`, `error`) is separate from `wanted`. A
+  server runs many tunnels and tunnels of several organizations may share a
+  server, so the key is (tunnel, server) and nothing assumes one tunnel per
+  server. `portal.options` is reserved for per-server details (for example a
+  local endpoint).
 - `doorway.organization_id` repeats the tunnel's organization so a hostname is
   unique per organization, as `hostname.routing_organization_id` does.
 - `carrier` is unique on (organization, provider, external account id); a
