@@ -67,6 +67,12 @@ import {
   type TunnelRoutesCommandPayload,
   type TunnelRoutesCommandResult,
 } from './tunnel-routes.ts'
+import {
+  parseTunnelStatusPayload,
+  parseTunnelStatusResult,
+  type TunnelStatusCommandPayload,
+  type TunnelStatusCommandResult,
+} from './tunnel-status.ts'
 import type { CommandType } from '../../features/commands/types.ts'
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -8890,6 +8896,7 @@ export function parseCommandPayload(
   | BackupTargetTestCommandPayload
   | FoldersRemoveCommandPayload
   | TunnelRoutesCommandPayload
+  | TunnelStatusCommandPayload
   | EnvironmentDeployCommandPayload
   | EnvironmentLifecycleCommandPayload
   | EnvironmentStopCommandPayload
@@ -8934,6 +8941,8 @@ export function parseCommandPayload(
       return parseFoldersRemovePayload(value)
     case 'server.tunnel.routes':
       return parseTunnelRoutesPayload(value)
+    case 'server.tunnel.status':
+      return parseTunnelStatusPayload(value)
     case 'environment.deploy':
       return parseEnvironmentDeployPayload(value)
     case 'environment.lifecycle':
@@ -8985,6 +8994,7 @@ export function parseCommandResult(
   | BackupTargetTestCommandResult
   | FoldersRemoveCommandResult
   | TunnelRoutesCommandResult
+  | TunnelStatusCommandResult
   | EnvironmentDeployCommandResult
   | EnvironmentLifecycleCommandResult
   | EnvironmentStopCommandResult
@@ -9029,6 +9039,8 @@ export function parseCommandResult(
       return parseFoldersRemoveResult(value)
     case 'server.tunnel.routes':
       return parseTunnelRoutesResult(value)
+    case 'server.tunnel.status':
+      return parseTunnelStatusResult(value)
     case 'environment.deploy':
       return parseEnvironmentDeployResult(value)
     case 'environment.lifecycle':
