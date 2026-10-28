@@ -6,7 +6,7 @@
  */
 import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { assert, assertEquals, assertRejects } from '@std/assert'
-import { eq } from 'drizzle-orm'
+import { eq, sql } from 'drizzle-orm'
 import { getDatabaseUrl } from '../../db/url.ts'
 import { createDenoDb, endDbConnection } from '../../db/connection.ts'
 import {
@@ -267,5 +267,29 @@ test('concurrent carrier adds cannot pass the per-organization limit', async () 
     } finally {
       await db.delete(organization).where(eq(organization.id, org!.id))
     }
+  })
+})
+
+test('the two links an organization delete depends on stay deferrable and initially deferred', async () => {
+  await withDb(async (db) => {
+    const result = await db.execute(
+      sql`select conname, condeferrable, condeferred from pg_constraint
+          where conname in ('badge_secret_id_secret_id_fk', 'tunnel_carrier_id_carrier_id_fk')
+          order by conname`
+    )
+    const rows = (
+      Array.isArray(result) ? result : ((result as { rows?: unknown[] }).rows ?? [])
+    ) as {
+      conname: string
+      condeferrable: boolean
+      condeferred: boolean
+    }[]
+    assertEquals(
+      rows.map((r) => [r.conname, r.condeferrable, r.condeferred]),
+      [
+        ['badge_secret_id_secret_id_fk', true, true],
+        ['tunnel_carrier_id_carrier_id_fk', true, true],
+      ]
+    )
   })
 })

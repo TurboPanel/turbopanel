@@ -112,6 +112,20 @@ service or volume row names is taken over by the next asset planned under the sa
 site owner, scope, kind and name; `POST /folders/:id/remove` moves an orphan to
 `removing`, asks the server again for one already `removing`, and forgets a `missing` row.
 
+**The tunnel tables' two deferrable keys** (`0005_tunnel_tables`):
+`badge.secret_id` -> `secret.id` and `tunnel.carrier_id` -> `carrier.id` are `NO
+ACTION DEFERRABLE INITIALLY DEFERRED`, on purpose. Deleting an organization
+cascades through `secret`, `carrier`, `badge` and `tunnel` in one transaction,
+and Postgres checks `RESTRICT` and immediate `NO ACTION` per cascaded statement,
+so any other setting fails it depending on the order the cascades run. Checked
+at commit, the delete succeeds, while deleting a carrier that still has tunnels
+or a secret that still has a badge fails at commit. drizzle cannot express
+`DEFERRABLE`, so the migration adds it by hand after the generated statement and
+`schema.ts` only says `no action`; `drizzle-kit generate` still produces no diff
+because the snapshot has no such field. Any future migration that touches either
+key must keep `DEFERRABLE INITIALLY DEFERRED`; `src/features/tunnels/records.test.ts`
+reads `pg_constraint` and fails if it is lost.
+
 **The `share` table** (`0036_share_table`) records that an environment uses a
 common (shared) service or volume: an asset of a site owner that lives in the
 owner's `common` folder scope and belongs to no one environment, so an
