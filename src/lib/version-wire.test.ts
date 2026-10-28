@@ -3,6 +3,7 @@ import {
   CLIENT_VERSION_HEADER,
   compareSemver,
   CUSTOM_NODE_APP_MODE_FEATURE,
+  TUNNEL_CONNECTOR_FEATURE,
   TUNNEL_FORWARDING_FEATURE,
   TUNNEL_STATUS_FEATURE,
   DAEMON_FEATURE_MIN_VERSIONS,
@@ -332,10 +333,13 @@ test('custom-node-app-mode-v1 is advertised and raised no floor', () => {
 
 test('tunnel-forwarding-v1 is advertised and raised no floor', () => {
   assertEquals(TUNNEL_FORWARDING_FEATURE, 'tunnel-forwarding-v1')
-  assertEquals(
-    (DAEMON_WIRE_FEATURES as readonly string[]).includes(TUNNEL_FORWARDING_FEATURE),
-    true
-  )
+  assertEquals(DAEMON_WIRE_FEATURES.includes(TUNNEL_FORWARDING_FEATURE), true)
+  assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.0')
+})
+
+test('tunnel-connector-v1 is advertised and raised no floor', () => {
+  assertEquals(TUNNEL_CONNECTOR_FEATURE, 'tunnel-connector-v1')
+  assertEquals(DAEMON_WIRE_FEATURES.includes(TUNNEL_CONNECTOR_FEATURE), true)
   assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.0')
 })
 

@@ -264,6 +264,8 @@ const COMMAND_TIMEOUT_MS: Record<CommandType, number> = {
   'server.folders.remove': 600_000,
   // Writes one site file, validates it with the web server and reloads once.
   'server.tunnel.routes': 120_000,
+  // Installs or removes a few services; a first install may fetch the connector program.
+  'server.tunnel.connectors': 300_000,
   // Reads the connectors' records and asks each one if it is connected; never waits for an update.
   'server.tunnel.status': 30_000,
   // The run cap: counted from when the server starts the deploy, not from when it was sent.
@@ -313,6 +315,7 @@ export function commandTimeoutMs(type: string): number {
     type === 'server.backups.test-target' ||
     type === 'server.folders.remove' ||
     type === 'server.tunnel.routes' ||
+    type === 'server.tunnel.connectors' ||
     type === 'server.tunnel.status' ||
     type === 'environment.deploy' ||
     type === 'environment.lifecycle' ||

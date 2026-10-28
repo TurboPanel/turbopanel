@@ -196,6 +196,24 @@ provider accounts.
   applied. The same table is not sent again sooner than ten minutes after the
   previous send, so a table a server keeps refusing does not mint a new
   certificate every tick.
+- `connector-sync.ts` sends each carrying server its connectors with
+  `server.tunnel.connectors` (feature `tunnel-connector-v1`): the provider's
+  tunnel id and the run token sealed for that one server (`tpdaemon.`; the
+  stored command never holds the token in the clear and no log line names it).
+  A server runs the tunnels whose placement names it (`carryingServers`) and
+  that have a provider id and a run token. The panel remembers, per server, the
+  hash of the last list, the command and the ids it asked the server to run in
+  `server.metadata.tunnelConnectors`; a tunnel that moved off a server or was
+  removed is listed under `remove` on the next send, and stays listed (in
+  `removing`) with every send until a command that carried it finished well,
+  so a removal that failed is never forgotten. Only ids this code
+  installed are ever removed, so the instance's own tunnel and a hand-placed
+  connector stay alone. A resend is harmless (the daemon leaves a running
+  connector as it is), and the same list is not sent again sooner than ten
+  minutes after a send that did not finish. It runs from the offline sweep
+  (`runTunnelConnectorsSweepTick`) and right after a tunnel is created, moved
+  or removed (best effort). Changing a tunnel's run token is not supported
+  yet: remove the connector, then send it again.
 - The local-only lock on tunnel names is **not enforced yet**: `doorway.is_local_only`
   only records the wish. Enforcing it is the deploy-time `hostings[].tunnel`,
   which is not built; until then the web server answers a tunnel name to

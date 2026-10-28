@@ -68,6 +68,12 @@ import {
   type TunnelRoutesCommandResult,
 } from './tunnel-routes.ts'
 import {
+  parseTunnelConnectorsPayload,
+  parseTunnelConnectorsResult,
+  type TunnelConnectorsCommandPayload,
+  type TunnelConnectorsCommandResult,
+} from './tunnel-connectors.ts'
+import {
   parseTunnelStatusPayload,
   parseTunnelStatusResult,
   type TunnelStatusCommandPayload,
@@ -8896,6 +8902,7 @@ export function parseCommandPayload(
   | BackupTargetTestCommandPayload
   | FoldersRemoveCommandPayload
   | TunnelRoutesCommandPayload
+  | TunnelConnectorsCommandPayload
   | TunnelStatusCommandPayload
   | EnvironmentDeployCommandPayload
   | EnvironmentLifecycleCommandPayload
@@ -8941,6 +8948,8 @@ export function parseCommandPayload(
       return parseFoldersRemovePayload(value)
     case 'server.tunnel.routes':
       return parseTunnelRoutesPayload(value)
+    case 'server.tunnel.connectors':
+      return parseTunnelConnectorsPayload(value)
     case 'server.tunnel.status':
       return parseTunnelStatusPayload(value)
     case 'environment.deploy':
@@ -8994,6 +9003,7 @@ export function parseCommandResult(
   | BackupTargetTestCommandResult
   | FoldersRemoveCommandResult
   | TunnelRoutesCommandResult
+  | TunnelConnectorsCommandResult
   | TunnelStatusCommandResult
   | EnvironmentDeployCommandResult
   | EnvironmentLifecycleCommandResult
@@ -9039,6 +9049,8 @@ export function parseCommandResult(
       return parseFoldersRemoveResult(value)
     case 'server.tunnel.routes':
       return parseTunnelRoutesResult(value)
+    case 'server.tunnel.connectors':
+      return parseTunnelConnectorsResult(value)
     case 'server.tunnel.status':
       return parseTunnelStatusResult(value)
     case 'environment.deploy':
