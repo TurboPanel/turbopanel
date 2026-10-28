@@ -5,7 +5,7 @@
 
 const REDACTED = '[redacted]'
 /** A bearer header value, however it was echoed. */
-const BEARER = /\bBearer\s+[A-Za-z0-9._~+/=-]+/gi
+const BEARER = /\bBearer\s+[a-z0-9._~+/=-]+/gi
 /** A long unbroken run of token characters: API tokens, run tokens and base64 blobs. */
 const TOKEN_LIKE = /[A-Za-z0-9_+/=-]{32,}/g
 
