@@ -195,7 +195,7 @@ provider accounts.
   certificate and trust bundle, so a renewed leaf with the same routes is still
   applied. The same table is not sent again sooner than ten minutes after the
   previous send, so a table a server keeps refusing does not mint a new
-  certificate every tick.
+  certificate every tick; a different table is always sent at once.
 - `connector-sync.ts` sends each carrying server its connectors with
   `server.tunnel.connectors` (feature `tunnel-connector-v1`): the provider's
   tunnel id and the run token sealed for that one server (`tpdaemon.`; the
@@ -214,6 +214,37 @@ provider accounts.
   (`runTunnelConnectorsSweepTick`) and right after a tunnel is created, moved
   or removed (best effort). Changing a tunnel's run token is not supported
   yet: remove the connector, then send it again.
+- `nudge.ts` sends the tables and then the connector lists
+  (`syncOrganizationTunnelConnectors`) right away instead of waiting for the
+  sweep, so a server that joins or leaves an "all" tunnel starts or stops its
+  connector at once too. It never throws (each pass is guarded on its own), does
+  nothing for an organization with no tunnel (and no server that once held a
+  table or a connector list), and each pass stops after 40 servers, in the order
+  they are found; the sweep reaches the rest. Triggers: a site is created,
+  edited or deleted (`/hostings`), a server is changed, deleted or has its
+  addresses set (`/servers`), a server joins or leaves a datacenter
+  (`/datacenters/:id/members`) or the datacenter is edited, an environment or
+  project is deleted, a deploy that moves sites is queued (`deploy-routes.ts`),
+  and a deploy result lands (`consumer.ts`, `applyEnvironmentDeploySideEffect`).
+  **A request handler never waits for it**: it calls
+  `nudgeTunnelRoutesAfterResponse` (`src/client/organizations/tunnel-nudge.ts`),
+  which runs the work after the response (`runAfterResponse`) on its own
+  database client on Workers (the request's client is closed by `src/workers.ts`)
+  and on the process client on Deno. Tests set `tunnelNudgeSchedule` on the
+  context to collect the task and run it. The consumer runs it as the very last
+  step of the deploy side effect (after all the bookkeeping, also when that
+  returned early), through `nudgeTunnelRoutesForEnvironment`. Not covered, left
+  to the sweep: the raw `/ips` routes, which are not formatted by the repo
+  formatter (editing them would fail the format check). Known follow-ups (not
+  built): the `tunnelRoutes` and `tunnelConnectors` markers on a server stay
+  after its last tunnel is deleted, so the organization keeps counting as having
+  tunnel work (clear them once the empty table or list is confirmed), and the
+  first 40 servers are always the same ones (rotate the start).
+- `doorway-links.ts` re-reads which site holds each doorway's name from the
+  `hostname` table before tables are built (the nudge and the sweep both do).
+  A doorway keeps the hostname text, but its site link is read once when it is
+  added, and a site's names are deleted and inserted again on every edit, a name
+  can move to another site, and a site can be made later or deleted.
 - The local-only lock on tunnel names is applied at deploy time
   (`name-lock.ts`, called from `deploy-prepare.ts`): a hosting with a doorway sends
   `hostings[].tunnel`, which makes the daemon answer the name only to loopback and
@@ -259,6 +290,6 @@ provider accounts.
   first forwarded requests could be dropped. Default-drop must not ship before
   that order is fixed (send the rule before the routes, or apply it from the
   sync path).
-- Not in this slice: triggers that resend at once on a hosting or server change
-  (the sweep catches the forwarding tables; the site lock waits for the next
-  deploy, see above).
+- Not in this slice: redeploying a site when its carrier set changes. The resend
+  (`nudge.ts`) covers forwarding tables and connector lists; the name lock on the
+  site follows its next deploy (see above).

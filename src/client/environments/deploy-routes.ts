@@ -9,6 +9,7 @@ import {
 } from '../../features/deploy/deploy-engine.ts'
 import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
+import { nudgeTunnelRoutesAfterResponse } from '../organizations/tunnel-nudge.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { requireStepUpIfConfigured } from '../authn/step-up.ts'
@@ -2202,6 +2203,7 @@ async function runEnvironmentDeploy(
       releasedListeners,
       ...spanningCtx,
     })
+    nudgeTunnelRoutesAfterResponse(c, auth.organizationId)
 
     return Response.json(
       queuedCommandsResponseBody(

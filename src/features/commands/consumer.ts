@@ -42,6 +42,7 @@ import {
   failTimedOutDeploy,
   haltRollout,
 } from '../deploy/rollout.ts'
+import { nudgeTunnelRoutesForEnvironment, tunnelSyncDepsFrom } from '../tunnels/nudge.ts'
 import {
   deploymentDurationMs,
   type DeploymentOutcome,
@@ -1287,6 +1288,7 @@ async function applyEnvironmentDeploySideEffect(
   deps?: CommandConsumerDeps
 ): Promise<void> {
   if (record.type !== 'environment.deploy') return
+  let landedEnvironmentId: string | null = null
   try {
     const payload = parseEnvironmentDeployPayload(record.payload)
     // Only the newest deploy of the environment decides which folders are still in use. A
@@ -1312,6 +1314,7 @@ async function applyEnvironmentDeploySideEffect(
         await advanceRolloutSafely(db, deps, payload.environmentId, payload.generation)
       }
       current = marked !== null
+      if (current) landedEnvironmentId = payload.environmentId
     }
     // A hostings-only run changed the web server config and nothing else: no
     // folders, accounts, sites or containers to record.
@@ -1363,6 +1366,21 @@ async function applyEnvironmentDeploySideEffect(
       'command-consumer',
       `container reconcile failed for command ${record.id}: ${message}`
     )
+  } finally {
+    // The very last step, so the deploy bookkeeping above never waits for it: a
+    // site now runs here (or no longer does), and servers forwarding to it need the new table.
+    if (landedEnvironmentId !== null) {
+      const secrets = consumerFabricSecretFields(deps)
+      await nudgeTunnelRoutesForEnvironment(
+        db,
+        tunnelSyncDepsFrom({
+          commandQueue: deps?.commandQueue,
+          secretsConfig: secrets.secretsConfig,
+          dataEncryptionSecrets: secrets.dataEncryptionSecrets,
+        }),
+        landedEnvironmentId
+      )
+    }
   }
 }
 

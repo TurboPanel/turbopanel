@@ -33,6 +33,7 @@ import {
   type RouteBuildResult,
   toRoutesPayload,
 } from './route-builder.ts'
+import { relinkDoorwayHostings } from './doorway-links.ts'
 import { loadRoutingFacts } from './route-facts.ts'
 
 /** The least time between two sends of the same table to one server. */
@@ -272,7 +273,7 @@ async function peerLeafFor(
 }
 
 /** Servers that carry a tunnel, run a site on one, or were sent a table before. */
-async function serversToCheck(db: Db, organizationId: string): Promise<string[]> {
+export async function serversToCheck(db: Db, organizationId: string): Promise<string[]> {
   const facts = await loadRoutingFacts(db, organizationId)
   const wanted = new Set<string>()
   for (const t of facts.tunnels) {
@@ -305,6 +306,26 @@ async function organizationsToCheck(db: Db): Promise<string[]> {
   return [...ids]
 }
 
+/** One server's sync where a failure is logged and counted, never thrown. */
+export async function syncServerQuietly(
+  db: Db,
+  deps: TunnelSyncDeps,
+  organizationId: string,
+  serverId: string
+): Promise<'sent' | 'failed' | 'other'> {
+  try {
+    const outcome = await syncServerTunnelRoutes(db, deps, { organizationId, serverId })
+    if (outcome.status === 'failed') {
+      compatLogWarn('tunnel-sync', `server ${serverId}: ${outcome.reason}`)
+      return 'failed'
+    }
+    return outcome.status === 'sent' ? 'sent' : 'other'
+  } catch (err) {
+    compatLogWarn('tunnel-sync', `server ${serverId}: ${err instanceof Error ? err.message : err}`)
+    return 'failed'
+  }
+}
+
 /**
  * The sweep: send every involved server whatever it is missing. It also covers
  * a server that reconnects, because a table sent while it was offline never
@@ -317,21 +338,19 @@ export async function runTunnelRoutesSweepTick(
   let sent = 0
   let failed = 0
   await forEachSequential(await organizationsToCheck(db), async (organizationId) => {
+    try {
+      await relinkDoorwayHostings(db, organizationId)
+    } catch (err) {
+      // One organization's failure must not stop the others; its tables still go out.
+      compatLogWarn(
+        'tunnel-sync',
+        `organization ${organizationId}: doorway links: ${err instanceof Error ? err.message : err}`
+      )
+    }
     await forEachSequential(await serversToCheck(db, organizationId), async (serverId) => {
-      try {
-        const outcome = await syncServerTunnelRoutes(db, deps, { organizationId, serverId })
-        if (outcome.status === 'sent') sent += 1
-        if (outcome.status === 'failed') {
-          failed += 1
-          compatLogWarn('tunnel-sync', `server ${serverId}: ${outcome.reason}`)
-        }
-      } catch (err) {
-        failed += 1
-        compatLogWarn(
-          'tunnel-sync',
-          `server ${serverId}: ${err instanceof Error ? err.message : err}`
-        )
-      }
+      const outcome = await syncServerQuietly(db, deps, organizationId, serverId)
+      if (outcome === 'sent') sent += 1
+      if (outcome === 'failed') failed += 1
     })
   })
   return { sent, failed }

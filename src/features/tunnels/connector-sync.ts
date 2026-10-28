@@ -394,12 +394,14 @@ async function organizationsToCheck(db: Db): Promise<string[]> {
 async function syncOrganization(
   db: Db,
   deps: TunnelConnectorsDeps,
-  organizationId: string
+  organizationId: string,
+  maxServers?: number
 ): Promise<{ sent: number; failed: number }> {
   let sent = 0
   let failed = 0
   const wanted = await wantedConnectorsByServer(db, organizationId)
-  await forEachSequential(await serversToCheck(db, organizationId, wanted), async (serverId) => {
+  const serverIds = await serversToCheck(db, organizationId, wanted)
+  await forEachSequential(serverIds.slice(0, maxServers), async (serverId) => {
     try {
       const outcome = await syncServerTunnelConnectors(db, deps, {
         organizationId,
@@ -422,13 +424,18 @@ async function syncOrganization(
   return { sent, failed }
 }
 
-/** Send one organization's servers whatever connectors they are missing (after create, move or removal). */
+/**
+ * Send one organization's servers whatever connectors they are missing (after
+ * create, move or removal). `maxServers` stops after that many servers, in the
+ * order they are found; the sweep reaches the rest.
+ */
 export async function syncOrganizationTunnelConnectors(
   db: Db,
   deps: TunnelConnectorsDeps,
-  organizationId: string
+  organizationId: string,
+  options: { maxServers?: number } = {}
 ): Promise<{ sent: number; failed: number }> {
-  return await syncOrganization(db, deps, organizationId)
+  return await syncOrganization(db, deps, organizationId, options.maxServers)
 }
 
 /**
