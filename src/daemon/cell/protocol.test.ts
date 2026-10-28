@@ -1,6 +1,7 @@
 import { assert, assertEquals, assertNotEquals } from '@std/assert'
 import { it } from '@std/testing/bdd'
 import type { CommandProgress } from '../../contracts/cell-protocol.ts'
+import { DAEMON_WIRE_FEATURES } from '../../lib/version-wire.ts'
 import {
   DAEMON_CELL_PING,
   DAEMON_CELL_PONG,
@@ -15,6 +16,7 @@ import {
   MAX_DAEMON_WS_DEFAULT_BRANCH_CHARS,
   MAX_DAEMON_WS_ERROR_CHARS,
   MAX_DAEMON_WS_FABRIC_PATH_ENTRIES,
+  MAX_DAEMON_WS_FEATURES,
   MAX_DAEMON_WS_FRAME_BYTES,
   MAX_DAEMON_WS_HOST_FIELD_CHARS,
   MAX_DAEMON_WS_ID_CHARS,
@@ -727,6 +729,34 @@ it('validateDaemonInboundFrame rejects invalid json and message shape', () => {
   assertEquals(validateDaemonInboundFrame('{"at":"' + VALID_AT + '"}').ok, false)
 })
 
+it('validateDaemonInboundFrame accepts a hello that carries every current wire feature', () => {
+  const result = validateDaemonInboundFrame(
+    JSON.stringify({
+      type: 'hello',
+      at: VALID_AT,
+      daemonBuild: VALID_DAEMON_BUILD,
+      features: [...DAEMON_WIRE_FEATURES],
+    })
+  )
+  assertEquals(result.ok, true)
+  if (result.ok && result.message.type === 'hello') {
+    assertEquals(result.message.features, [...DAEMON_WIRE_FEATURES])
+  }
+})
+
+it('the advertised wire feature list stays well under the hello cap', () => {
+  // A hello over MAX_DAEMON_WS_FEATURES is closed with 1008, which disconnects every
+  // daemon that advertises the longer list. Raise the cap before it gets close.
+  const margin = Math.floor((MAX_DAEMON_WS_FEATURES * 3) / 4)
+  assert(
+    DAEMON_WIRE_FEATURES.length <= margin,
+    `DAEMON_WIRE_FEATURES has ${DAEMON_WIRE_FEATURES.length} entries, over three quarters of ` +
+      `MAX_DAEMON_WS_FEATURES (${MAX_DAEMON_WS_FEATURES}). Raise MAX_DAEMON_WS_FEATURES in ` +
+      'src/contracts/cell-protocol.ts before adding more features, or every updated daemon is disconnected.'
+  )
+  assertEquals(new Set(DAEMON_WIRE_FEATURES).size, DAEMON_WIRE_FEATURES.length)
+})
+
 it('validateDaemonInboundFrame bounds hello features and ignores them on heartbeat', () => {
   const ok = validateDaemonInboundFrame(
     JSON.stringify({
@@ -755,7 +785,7 @@ it('validateDaemonInboundFrame bounds hello features and ignores them on heartbe
       type: 'hello',
       at: VALID_AT,
       daemonBuild: VALID_DAEMON_BUILD,
-      features: Array.from({ length: 33 }, (_, index) => `f${index}`),
+      features: Array.from({ length: MAX_DAEMON_WS_FEATURES + 1 }, (_, index) => `f${index}`),
     })
   )
   assertEquals(tooMany.ok, false)
