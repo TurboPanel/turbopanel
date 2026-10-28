@@ -2956,7 +2956,7 @@ async function recordLeafRenewalFailure(
   }
 }
 
-async function applyPendingTlsLeafSideEffect(
+export async function applyPendingTlsLeafSideEffect(
   db: Db,
   record: DispatchableCommandRecord
 ): Promise<void> {

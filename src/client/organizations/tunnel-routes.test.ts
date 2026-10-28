@@ -17,16 +17,23 @@ import { deriveEncryptionSecretsConfig, deriveSecretsConfig } from '../../lib/se
 import {
   audit,
   datacenter,
+  deployment,
   doorway,
+  environment,
+  hostname,
+  hosting,
   grant,
   ip,
   network,
   organization,
   portal,
+  project,
   secret,
   server,
+  service,
   tunnel,
   user,
+  workspace,
 } from '../../db/schema.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import { decryptSecret } from '../../lib/secrets/data-encryption.ts'
@@ -52,6 +59,7 @@ type Called = { status: number; text: string; body: Record<string, unknown> }
 const TOKEN = 'cf-api-token-0123456789abcdefghijklmnopqrstuv'
 const RUN_TOKEN = 'run-token-abcdefghijklmnopqrstuvwxyz0123456789'
 const ACCOUNT = 'a'.repeat(32)
+const ACCOUNT_B = 'b'.repeat(32)
 
 /** What the faked provider saw and how it answers. */
 const provider = {
@@ -59,6 +67,8 @@ const provider = {
   routeBodies: [] as unknown[],
   failRoutes: false,
   failTunnelCreate: false,
+  failDnsDelete: false,
+  tunnelCount: 0,
 }
 
 const ok = (result: unknown) => Response.json({ success: true, errors: [], result })
@@ -71,21 +81,28 @@ const fakeProvider: typeof fetch = async (input, init) => {
   const method = init?.method ?? 'GET'
   provider.calls.push(`${method} ${path}`)
   if (path === '/accounts') return ok([{ id: ACCOUNT, name: 'Main' }])
-  if (path === `/accounts/${ACCOUNT}/cfd_tunnel` && method === 'POST') {
+  if (/^\/accounts\/[a-z]{32}\/cfd_tunnel$/.test(path) && method === 'POST') {
     if (provider.failTunnelCreate) return refused(500, 'could not create')
-    return ok({ id: 'tunnel-ext-1', token: RUN_TOKEN })
+    provider.tunnelCount += 1
+    return ok({ id: `tunnel-ext-${provider.tunnelCount}`, token: RUN_TOKEN })
   }
   if (path.endsWith('/configurations') && method === 'PUT') {
     if (provider.failRoutes) return refused(500, 'routes failed')
     provider.routeBodies.push(JSON.parse(String(init?.body)))
     return ok({})
   }
-  if (path === '/zones')
-    return ok([{ id: 'zone-1', name: 'example.com', account: { id: ACCOUNT } }])
+  if (path === '/zones') {
+    const account = url.searchParams.get('account.id') ?? ACCOUNT
+    return ok([{ id: 'zone-1', name: 'example.com', account: { id: account } }])
+  }
   if (path === '/zones/zone-1/dns_records' && method === 'POST') return ok({ id: 'rec-1' })
-  if (path === '/zones/zone-1/dns_records/rec-1' && method === 'DELETE') return ok({ id: 'rec-1' })
+  if (path === '/zones/zone-1/dns_records/rec-1' && method === 'DELETE') {
+    return provider.failDnsDelete ? refused(500, 'dns removal failed') : ok({ id: 'rec-1' })
+  }
   if (path === '/zones/zone-1/dns_records') return ok([])
-  if (path === `/accounts/${ACCOUNT}/cfd_tunnel/tunnel-ext-1` && method === 'DELETE') return ok({})
+  if (/^\/accounts\/[a-z]{32}\/cfd_tunnel\/tunnel-ext-\d+$/.test(path) && method === 'DELETE') {
+    return ok({})
+  }
   return refused(404, 'not found')
 }
 
@@ -101,6 +118,8 @@ type Fixture = {
   datacenterId: string
   servers: [string, string, string]
   secrets: Awaited<ReturnType<typeof deriveEncryptionSecretsConfig>>
+  /** Undo steps for rows a test added outside the usual cleanup. */
+  cleanup: Array<() => Promise<void>>
 }
 
 async function insertUser(db: Db, organizationId: string, permission: string): Promise<string> {
@@ -169,6 +188,8 @@ async function withFixture(fn: (fixture: Fixture) => Promise<void>): Promise<voi
   provider.routeBodies = []
   provider.failRoutes = false
   provider.failTunnelCreate = false
+  provider.failDnsDelete = false
+  provider.tunnelCount = 0
   const db = createDenoDb()
   const secretsConfig = parseTestSecretsConfig('deno')
   const sessionSecrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
@@ -191,6 +212,7 @@ async function withFixture(fn: (fixture: Fixture) => Promise<void>): Promise<voi
     .returning({ id: organization.id })
   const [orgA, orgB] = [orgs[0]!.id, orgs[1]!.id]
   const userIds: string[] = []
+  const cleanup: Array<() => Promise<void>> = []
   try {
     const ids = {
       manager: await insertUser(db, orgA, 'organization:manage'),
@@ -240,8 +262,10 @@ async function withFixture(fn: (fixture: Fixture) => Promise<void>): Promise<voi
       datacenterId: dc.datacenterId,
       servers: dc.servers,
       secrets,
+      cleanup,
     })
   } finally {
+    for (const undo of cleanup.reverse()) await undo()
     const orgIds = [orgA, orgB]
     await db.delete(audit).where(inArray(audit.organizationId, orgIds))
     // An all-servers tunnel blocks its datacenter, and servers hold the organization with
@@ -347,7 +371,8 @@ test('a tunnel is created at the provider, its run token is sealed and never ret
       warnings: string[]
     }
     assertEquals(shown.carryingServerIds.length, 2)
-    assertEquals(shown.warnings, [])
+    // The test servers run no daemon that advertises tunnel support.
+    assert(shown.warnings[0]!.includes('too old'))
     const [row] = await f.db.select().from(tunnel).where(eq(tunnel.id, shown.id))
     assertEquals(row!.externalId, 'tunnel-ext-1')
     assertEquals(row!.organizationId, row!.routingOrganizationId)
@@ -618,5 +643,346 @@ test('the placement can be changed, and the route facts carry exact datacenter a
       { placement: 'one', serverIds: [f.servers[0], f.servers[1]] }
     )
     assertEquals(bad.status, 400)
+  })
+})
+
+/** A site (hosting) in an organization, with the rows above it; undone at the end of the test. */
+async function insertHosting(
+  f: Fixture,
+  organizationId: string,
+  serverId: string | null = null
+): Promise<string> {
+  const [ws] = await f.db
+    .insert(workspace)
+    .values({ name: 'Tunnel Test Workspace', organizationId })
+    .returning({ id: workspace.id })
+  const [proj] = await f.db
+    .insert(project)
+    .values({ name: 'Tunnel Test Project', workspaceId: ws!.id, organizationId })
+    .returning({ id: project.id })
+  const [env] = await f.db
+    .insert(environment)
+    .values({ name: 'production', projectId: proj!.id, serverId })
+    .returning({ id: environment.id })
+  const [svc] = await f.db
+    .insert(service)
+    .values({ environmentId: env!.id, composeServiceName: 'web' })
+    .returning({ id: service.id })
+  const [site] = await f.db
+    .insert(hosting)
+    .values({ serviceId: svc!.id, options: { hostnames: [] } })
+    .returning({ id: hosting.id })
+  f.cleanup.push(async () => {
+    await f.db.delete(hostname).where(eq(hostname.hostingId, site!.id))
+    await f.db.delete(deployment).where(eq(deployment.environmentId, env!.id))
+    await f.db.delete(hosting).where(eq(hosting.id, site!.id))
+    await f.db.delete(service).where(eq(service.id, svc!.id))
+    await f.db.delete(environment).where(eq(environment.id, env!.id))
+    await f.db.delete(project).where(eq(project.id, proj!.id))
+    await f.db.delete(workspace).where(eq(workspace.id, ws!.id))
+  })
+  return site!.id
+}
+
+/** A second provider account whose API Token can do only what the test needs. */
+async function addCarrier(
+  f: Fixture,
+  account: string,
+  capabilities: { tunnels: boolean; dns: { id: string; name: string }[] }
+): Promise<string> {
+  const owner = await insertCarrier(f.db, {
+    organizationId: f.orgA,
+    provider: 'cloudflare',
+    name: `Account ${account.slice(0, 4)}`,
+    externalAccountId: account,
+  })
+  await insertBadge(f.db, {
+    organizationId: f.orgA,
+    carrier: owner,
+    label: 'Limited',
+    sealed: await sealToken(f.secrets, TOKEN),
+    lastFour: TOKEN.slice(-4),
+    report: {
+      accounts: [{ id: account, name: 'Other' }],
+      zones: [],
+      accountVisible: true,
+      capabilities: { ...NO_CAPABILITIES, ...capabilities },
+      missing: [],
+      token: {
+        kind: 'account',
+        id: `tok-${account.slice(0, 4)}`,
+        status: 'active',
+        expiresAt: null,
+      },
+    },
+  })
+  return owner.id
+}
+
+test("another organization's manager cannot reach a tunnel or a hostname by id", async () => {
+  await withFixture(async (f) => {
+    const id = await makeTunnel(f)
+    const added = await call(
+      f,
+      'POST',
+      `/organizations/${f.orgA}/tunnels/${id}/hostnames`,
+      f.managerCookie,
+      {
+        hostname: 'shop.example.com',
+      }
+    )
+    const doorwayId = (added.body.hostname as { id: string }).id
+    const base = `/organizations/${f.orgB}/tunnels/${id}`
+    const other = f.otherManagerCookie
+    assertEquals((await call(f, 'GET', base, other)).status, 404)
+    assertEquals(
+      (
+        await call(f, 'PUT', `${base}/placement`, other, {
+          placement: 'one',
+          serverIds: [f.servers[0]],
+        })
+      ).status,
+      404
+    )
+    assertEquals((await call(f, 'GET', `${base}/hostnames`, other)).status, 404)
+    assertEquals(
+      (await call(f, 'POST', `${base}/hostnames`, other, { hostname: 'x.example.com' })).status,
+      404
+    )
+    assertEquals((await call(f, 'DELETE', `${base}/hostnames/${doorwayId}`, other)).status, 404)
+    assertEquals((await call(f, 'DELETE', base, other)).status, 404)
+    // The server of another organization is not found either.
+    const carrying = await call(
+      f,
+      'PUT',
+      `/organizations/${f.orgB}/servers/${f.servers[0]}/tunnel-carrying`,
+      other,
+      { carry: false }
+    )
+    assertEquals(carrying.status, 404)
+    assertEquals((await f.db.select().from(tunnel).where(eq(tunnel.id, id))).length, 1)
+    assertEquals((await f.db.select().from(doorway).where(eq(doorway.id, doorwayId))).length, 1)
+  })
+})
+
+test('a hostname id under another tunnel is not found', async () => {
+  await withFixture(async (f) => {
+    const first = await makeTunnel(f)
+    const second = await makeTunnel(f, { name: 'Second Tunnel' })
+    const added = await call(
+      f,
+      'POST',
+      `/organizations/${f.orgA}/tunnels/${first}/hostnames`,
+      f.managerCookie,
+      {
+        hostname: 'shop.example.com',
+      }
+    )
+    const doorwayId = (added.body.hostname as { id: string }).id
+    const wrong = await call(
+      f,
+      'DELETE',
+      `/organizations/${f.orgA}/tunnels/${second}/hostnames/${doorwayId}`,
+      f.managerCookie
+    )
+    assertEquals(wrong.status, 404)
+    assertEquals((await f.db.select().from(doorway).where(eq(doorway.id, doorwayId))).length, 1)
+  })
+})
+
+test('the tunnel and hostname limits are enforced', async () => {
+  await withFixture(async (f) => {
+    const id = await makeTunnel(f)
+    await f.db.insert(doorway).values(
+      Array.from({ length: 199 }, (_, n) => ({
+        routingOrganizationId: f.orgA,
+        tunnelId: id,
+        hostname: `h${n}.example.com`,
+        status: 'live',
+      }))
+    )
+    const last = await call(
+      f,
+      'POST',
+      `/organizations/${f.orgA}/tunnels/${id}/hostnames`,
+      f.managerCookie,
+      { hostname: 'last.example.com' }
+    )
+    assertEquals(last.status, 201, last.text)
+    const over = await call(
+      f,
+      'POST',
+      `/organizations/${f.orgA}/tunnels/${id}/hostnames`,
+      f.managerCookie,
+      { hostname: 'over.example.com' }
+    )
+    assertEquals(over.status, 409)
+    assertEquals(over.body.error, 'doorway_limit')
+    await f.db.insert(tunnel).values(
+      Array.from({ length: 49 }, (_, n) => ({
+        organizationId: f.orgA,
+        routingOrganizationId: f.orgA,
+        provider: 'cloudflare',
+        name: `Filler ${n}`,
+      }))
+    )
+    const many = await call(f, 'POST', `/organizations/${f.orgA}/tunnels`, f.managerCookie, {
+      carrierId: f.carrierId,
+      name: 'One Too Many',
+      placement: 'one',
+      serverIds: [f.servers[0]],
+    })
+    assertEquals(many.status, 409)
+    assertEquals(many.body.error, 'tunnel_limit')
+  })
+})
+
+test('an API Token that cannot edit tunnels or DNS is refused with a plain error', async () => {
+  await withFixture(async (f) => {
+    const noTunnels = await addCarrier(f, ACCOUNT_B, { tunnels: false, dns: [] })
+    const refusedCreate = await call(
+      f,
+      'POST',
+      `/organizations/${f.orgA}/tunnels`,
+      f.managerCookie,
+      {
+        carrierId: noTunnels,
+        name: 'Cannot',
+        placement: 'one',
+        serverIds: [f.servers[0]],
+      }
+    )
+    assertEquals(refusedCreate.status, 409)
+    assertEquals(refusedCreate.body.error, 'badge_cannot_tunnel')
+
+    const noDns = await addCarrier(f, 'c'.repeat(32), { tunnels: true, dns: [] })
+    const made = await call(f, 'POST', `/organizations/${f.orgA}/tunnels`, f.managerCookie, {
+      carrierId: noDns,
+      name: 'No DNS',
+      placement: 'one',
+      serverIds: [f.servers[0]],
+    })
+    assertEquals(made.status, 201, made.text)
+    const id = (made.body.tunnel as { id: string }).id
+    const added = await call(
+      f,
+      'POST',
+      `/organizations/${f.orgA}/tunnels/${id}/hostnames`,
+      f.managerCookie,
+      {
+        hostname: 'shop.example.com',
+      }
+    )
+    assertEquals(added.status, 409)
+    assertEquals(added.body.error, 'badge_cannot_dns')
+    assertEquals((await f.db.select().from(doorway).where(eq(doorway.tunnelId, id))).length, 0)
+  })
+})
+
+test('a hostname that fails to lose its DNS name stays, and the removal can be repeated', async () => {
+  await withFixture(async (f) => {
+    const id = await makeTunnel(f)
+    const added = await call(
+      f,
+      'POST',
+      `/organizations/${f.orgA}/tunnels/${id}/hostnames`,
+      f.managerCookie,
+      {
+        hostname: 'shop.example.com',
+      }
+    )
+    const doorwayId = (added.body.hostname as { id: string }).id
+    provider.failDnsDelete = true
+    const failed = await call(
+      f,
+      'DELETE',
+      `/organizations/${f.orgA}/tunnels/${id}/hostnames/${doorwayId}`,
+      f.managerCookie
+    )
+    assertEquals(failed.status, 502)
+    assertEquals((await f.db.select().from(doorway).where(eq(doorway.id, doorwayId))).length, 1)
+    // The route was rewritten first, so the name answers nothing while the DNS name is still there.
+    const lastRoutes = JSON.stringify(provider.routeBodies.at(-1))
+    assert(!lastRoutes.includes('shop.example.com'))
+    provider.failDnsDelete = false
+    const again = await call(
+      f,
+      'DELETE',
+      `/organizations/${f.orgA}/tunnels/${id}/hostnames/${doorwayId}`,
+      f.managerCookie
+    )
+    assertEquals(again.status, 200, again.text)
+    assertEquals((await f.db.select().from(doorway).where(eq(doorway.id, doorwayId))).length, 0)
+  })
+})
+
+test("a name is linked to a site of the organization, and refused when the site is another organization's", async () => {
+  await withFixture(async (f) => {
+    const id = await makeTunnel(f)
+    const own = await insertHosting(f, f.orgA)
+    await f.db
+      .insert(hostname)
+      .values({ hostingId: own, routingOrganizationId: f.orgA, hostname: 'mine.example.com' })
+    const linked = await call(
+      f,
+      'POST',
+      `/organizations/${f.orgA}/tunnels/${id}/hostnames`,
+      f.managerCookie,
+      {
+        hostname: 'mine.example.com',
+      }
+    )
+    assertEquals(linked.status, 201, linked.text)
+    assertEquals((linked.body.hostname as { hostingId: string }).hostingId, own)
+
+    const foreign = await insertHosting(f, f.orgB)
+    await f.db
+      .insert(hostname)
+      .values({ hostingId: foreign, routingOrganizationId: f.orgA, hostname: 'theirs.example.com' })
+    const callsBefore = provider.calls.length
+    const refusedAdd = await call(
+      f,
+      'POST',
+      `/organizations/${f.orgA}/tunnels/${id}/hostnames`,
+      f.managerCookie,
+      {
+        hostname: 'theirs.example.com',
+      }
+    )
+    assertEquals(refusedAdd.status, 409)
+    assertEquals(refusedAdd.body.error, 'hosting_mismatch')
+    assertEquals(
+      provider.calls.slice(callsBefore).filter((c) => c.startsWith('PUT') || c.startsWith('POST'))
+        .length,
+      0
+    )
+    assertEquals(
+      (await f.db.select().from(doorway).where(eq(doorway.hostname, 'theirs.example.com'))).length,
+      0
+    )
+  })
+})
+
+test('changing to a chosen placement clears the datacenter and warns about a daemon that is too old', async () => {
+  await withFixture(async (f) => {
+    const id = await makeTunnel(f, {
+      placement: 'all',
+      datacenterId: f.datacenterId,
+      serverIds: undefined,
+    })
+    const moved = await call(
+      f,
+      'PUT',
+      `/organizations/${f.orgA}/tunnels/${id}/placement`,
+      f.managerCookie,
+      {
+        placement: 'chosen',
+        serverIds: [f.servers[0], f.servers[1]],
+      }
+    )
+    assertEquals(moved.status, 200, moved.text)
+    const shown = moved.body.tunnel as { datacenterId: string | null; warnings: string[] }
+    assertEquals(shown.datacenterId, null)
+    assert(shown.warnings.some((w) => w.includes('too old')))
   })
 })

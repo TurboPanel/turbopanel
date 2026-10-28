@@ -4,7 +4,7 @@
  * The provider is only reached through an adapter and a token opened here for
  * the call; nothing here returns a token.
  */
-import { and, asc, eq, inArray, isNotNull, ne } from 'drizzle-orm'
+import { and, asc, eq, inArray, isNotNull } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import {
   badge,
@@ -22,6 +22,7 @@ import { isValidHostname } from '../../contracts/commands/hostname.ts'
 import { isUniqueViolationOn } from '../../db/unique-violation.ts'
 import { decryptSecret, encryptSecret } from '../../lib/secrets/data-encryption.ts'
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
+import { hostingIdsOfOrganization } from './hosting-scope.ts'
 import { parseServerOptions } from '../servers/server-metadata.ts'
 import type { TunnelAdapter } from './adapter.ts'
 import { TunnelProviderError } from './errors.ts'
@@ -58,6 +59,8 @@ export class TunnelRefusal extends Error {
 
 export const MAX_TUNNELS_PER_ORG = 50
 export const MAX_DOORWAYS_PER_TUNNEL = 200
+/** One server's table holds at most this many names (the daemon's contract cap), so an organization stays under it. */
+export const MAX_DOORWAYS_PER_ORG = 2000
 
 export type ApiPortal = {
   serverId: string
@@ -355,7 +358,8 @@ export async function updatePlacement(
   input: PlacementInput,
   datacenterId: string | null
 ): Promise<TunnelRow> {
-  const dcId = input.placement === 'all' ? (datacenterId ?? row.datacenterId) : row.datacenterId
+  // Same rule as create: only an all-servers tunnel keeps a datacenter.
+  const dcId = input.placement === 'all' ? (datacenterId ?? row.datacenterId) : null
   const targets = await checkPlacementTargets(db, row.organizationId, input, dcId)
   return await db.transaction(async (tx) => {
     await replacePortals(tx, row.id, targets)
@@ -576,7 +580,11 @@ async function hostnameTaken(db: Db, organizationId: string, name: string): Prom
   return other !== undefined
 }
 
-/** The hosting that already owns this name, if the site was added first. */
+/**
+ * The hosting that already owns this name, if the site was added first. The
+ * hosting must really sit in the organization, or the name would tie a tunnel
+ * to another organization's site.
+ */
 async function hostingOfName(db: Db, organizationId: string, name: string): Promise<string | null> {
   const [site] = await db
     .select({ hostingId: hostnameTable.hostingId })
@@ -586,7 +594,16 @@ async function hostingOfName(db: Db, organizationId: string, name: string): Prom
       and(eq(hostnameTable.routingOrganizationId, organizationId), eq(hostnameTable.hostname, name))
     )
     .limit(1)
-  return site?.hostingId ?? null
+  if (!site) return null
+  const own = await hostingIdsOfOrganization(db, [site.hostingId], organizationId)
+  if (!own.has(site.hostingId)) {
+    throw new TunnelRefusal(
+      'hosting_mismatch',
+      409,
+      'This hostname belongs to a site of another organization'
+    )
+  }
+  return site.hostingId
 }
 
 async function routeNames(db: Db, tunnelId: string, extra: string | null): Promise<string[]> {
@@ -626,6 +643,17 @@ export async function addDoorway(
   }
   if (await hostnameTaken(db, row.routingOrganizationId, input.hostname)) {
     throw new TunnelRefusal('hostname_in_use', 409, 'This hostname is already on a Tunnel')
+  }
+  const held = await db
+    .select({ id: doorway.id })
+    .from(doorway)
+    .where(eq(doorway.routingOrganizationId, row.routingOrganizationId))
+  if (held.length >= MAX_DOORWAYS_PER_ORG) {
+    throw new TunnelRefusal(
+      'doorway_limit',
+      409,
+      `An organization can carry ${MAX_DOORWAYS_PER_ORG} Tunnel hostnames in all`
+    )
   }
   const token = await openCarrierToken(db, deps.secrets, owner.id, { tunnels: true })
   if (!token) {
@@ -669,16 +697,24 @@ export async function addDoorway(
         })
       ).recordId
     }
-    const [live] = await db
-      .update(doorway)
-      .set({
-        status: 'live',
-        externalDnsRecordId: recordId,
-        metadata: zone ? { zoneId: zone.id } : null,
-      })
-      .where(eq(doorway.id, created.id))
-      .returning()
-    return live!
+    try {
+      const [live] = await db
+        .update(doorway)
+        .set({
+          status: 'live',
+          externalDnsRecordId: recordId,
+          metadata: zone ? { zoneId: zone.id } : null,
+        })
+        .where(eq(doorway.id, created.id))
+        .returning()
+      return live!
+    } catch (err) {
+      // The DNS name exists but the row could not be kept: take the name away again.
+      if (recordId && zone && dnsToken) {
+        await deps.adapter.removeDnsName(dnsToken, { zoneId: zone.id, recordId }).catch(() => {})
+      }
+      throw err
+    }
   } catch (err) {
     await db.delete(doorway).where(eq(doorway.id, created.id))
     await restoreRoutesQuietly(db, deps.adapter, token, row, account)
@@ -771,6 +807,14 @@ export async function removeDoorway(
   }
   const zoneId = (current.metadata as { zoneId?: string } | null)?.zoneId
   try {
+    // The route goes first, so a failed DNS removal leaves a name that answers nothing,
+    // never a route to a name that is gone; a retry rewrites the same route.
+    const remaining = (await routeNames(db, row.id, null)).filter((n) => n !== current.hostname)
+    await deps.adapter.setRoutes(token, {
+      accountId: owner.externalAccountId,
+      externalId: row.externalId,
+      hostnames: remaining,
+    })
     if (current.externalDnsRecordId && zoneId) {
       const dnsToken = await openCarrierToken(db, deps.secrets, owner.id, { zoneId })
       if (!dnsToken) {
@@ -780,21 +824,27 @@ export async function removeDoorway(
           'No API Token on this Carrier can edit DNS for this hostname'
         )
       }
-      await deps.adapter.removeDnsName(dnsToken, {
-        zoneId,
-        recordId: current.externalDnsRecordId,
-      })
+      await removeDnsNameTolerant(deps.adapter, dnsToken, zoneId, current.externalDnsRecordId)
     }
-    const remaining = (await routeNames(db, row.id, null)).filter((n) => n !== current.hostname)
-    await deps.adapter.setRoutes(token, {
-      accountId: owner.externalAccountId,
-      externalId: row.externalId,
-      hostnames: remaining,
-    })
   } catch (err) {
     throw providerRefusal(err)
   }
-  await db.delete(doorway).where(and(eq(doorway.id, current.id), ne(doorway.status, 'removing')))
+  await db.delete(doorway).where(eq(doorway.id, current.id))
+}
+
+/** A DNS name that is already gone counts as removed, so a retry after a half-done removal works. */
+async function removeDnsNameTolerant(
+  adapter: TunnelAdapter,
+  token: string,
+  zoneId: string,
+  recordId: string
+): Promise<void> {
+  try {
+    await adapter.removeDnsName(token, { zoneId, recordId })
+  } catch (err) {
+    if (err instanceof TunnelProviderError && err.code === 'not_found') return
+    throw err
+  }
 }
 
 export type { TunnelProvider }

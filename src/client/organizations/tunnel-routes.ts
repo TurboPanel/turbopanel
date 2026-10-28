@@ -31,6 +31,7 @@ import {
   updatePlacement,
   type TunnelRow,
 } from '../../features/tunnels/lifecycle.ts'
+import { serversWithoutTunnelSupport } from '../../features/tunnels/daemon-gate.ts'
 import { parsePlacementBody } from '../../features/tunnels/placement.ts'
 import { findCarrier } from '../../features/tunnels/records.ts'
 import {
@@ -88,6 +89,21 @@ async function loadTunnelParam(c: Context<AppEnv>, scope: Scope): Promise<Tunnel
   )
 }
 
+/** The tunnel as the API shows it, with a warning for servers whose daemon is too old to carry it. */
+async function tunnelWithSupportWarning(scope: Scope, row: TunnelRow) {
+  const shown = await toApiTunnel(scope.db, row)
+  const old = await serversWithoutTunnelSupport(scope.db, shown.carryingServerIds)
+  if (old.length === 0) return shown
+  const names = old.length === 1 ? '1 server runs' : `${old.length} servers run`
+  return {
+    ...shown,
+    warnings: [
+      ...shown.warnings,
+      `${names} a daemon too old to carry Tunnels. Update it, or the Tunnel will not work there.`,
+    ],
+  }
+}
+
 function secretsOrFail(c: Context<AppEnv>) {
   return c.get('dataEncryptionSecrets') ?? null
 }
@@ -135,7 +151,7 @@ function createResponse(registry: TunnelAdapterRegistry) {
         provider: row.provider,
         placement: row.placement,
       })
-      return c.json({ tunnel: await toApiTunnel(scope.db, row) }, 201)
+      return c.json({ tunnel: await tunnelWithSupportWarning(scope, row) }, 201)
     } catch (err) {
       return refused(c, err)
     }
@@ -159,7 +175,7 @@ async function placementResponse(c: Context<AppEnv>, scope: Scope): Promise<Resp
       name: row.name,
       placement: updated.placement,
     })
-    return c.json({ tunnel: await toApiTunnel(scope.db, updated) })
+    return c.json({ tunnel: await tunnelWithSupportWarning(scope, updated) })
   } catch (err) {
     return refused(c, err)
   }

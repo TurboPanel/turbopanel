@@ -123,6 +123,7 @@ test('a server that carries nothing and hosts nothing gets an empty plan', () =>
     listenAddresses: [],
     needsPeerMaterial: false,
     skipped: [],
+    warnings: [],
   })
 })
 
@@ -192,8 +193,63 @@ test('the payload passes the daemon contract parser, and material is required wh
   })
   assertEquals(parseTunnelRoutesPayload(payload).routes.length, 1)
   const empty = await toRoutesPayload(
-    { routes: [], peerAddresses: [], listenAddresses: [], needsPeerMaterial: false, skipped: [] },
+    {
+      routes: [],
+      peerAddresses: [],
+      listenAddresses: [],
+      needsPeerMaterial: false,
+      skipped: [],
+      warnings: [],
+    },
     undefined
   )
   assertEquals(parseTunnelRoutesPayload(empty).routes, [])
+})
+
+test('a table above the contract caps is cut and says so, never sent whole', () => {
+  const many = Array.from(
+    { length: 20 },
+    (_, i) => `00000000-0000-4000-8000-0000000001${String(i).padStart(2, '0')}`
+  )
+  const book2 = new Map<string, string[]>([[A, ['10.0.0.1']]])
+  many.forEach((id, i) =>
+    book2.set(
+      id,
+      Array.from({ length: 10 }, (_, k) => `10.1.${i}.${k + 1}`)
+    )
+  )
+  const built = buildTunnelRoutes(
+    A,
+    [
+      {
+        carrying: [A],
+        doorways: [{ hostname: 'big.example.com', siteServerIds: many, isLocalOnly: true }],
+      },
+    ],
+    book2
+  )
+  assertEquals(built.routes[0]!.upstreams.length, 16)
+  assertEquals(built.routes[0]!.upstreams[0]!.addresses.length, 8)
+  const hosted = buildTunnelRoutes(
+    many[0]!,
+    [
+      {
+        carrying: many.slice(1),
+        doorways: [{ hostname: 'big.example.com', siteServerIds: [many[0]!], isLocalOnly: true }],
+      },
+    ],
+    new Map(many.map((id, i) => [id, [`10.1.${i}.1`, `10.2.${i}.1`, `10.3.${i}.1`, `10.4.${i}.1`]]))
+  )
+  assertEquals(hosted.peerAddresses.length, 64)
+  assert(hosted.warnings[0]!.includes('64 peer addresses'))
+  parseTunnelRoutesPayload({
+    hash: 'a'.repeat(64),
+    routes: built.routes,
+    peerAddresses: hosted.peerAddresses,
+    peerMaterial: {
+      certificatePem: '-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n',
+      privateKeyEnvelope: 'tpdaemon.sealed',
+      caCertPem: '-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n',
+    },
+  })
 })

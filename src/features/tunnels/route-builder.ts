@@ -13,6 +13,14 @@ import type {
   TunnelRoutesCommandPayload,
 } from '../../contracts/commands/tunnel-routes.ts'
 
+/** The daemon contract's caps; a table above them would be refused whole. */
+export const TUNNEL_TABLE_CAPS = {
+  routes: 2000,
+  upstreamsPerRoute: 16,
+  addressesPerUpstream: 8,
+  addresses: 64,
+} as const
+
 export type DoorwayFact = {
   hostname: string
   /** Servers that run the site this name belongs to. Empty = the site runs nowhere yet. */
@@ -35,6 +43,8 @@ export type RouteBuildResult = {
   needsPeerMaterial: boolean
   /** Names that could not be routed, with a plain-words reason. */
   skipped: { hostname: string; reason: string }[]
+  /** Plain-words notes when a contract cap cut the table short. */
+  warnings: string[]
 }
 
 function byHostname(a: { hostname: string }, b: { hostname: string }): number {
@@ -69,7 +79,9 @@ export function buildTunnelRoutes(
         ? []
         : doorway.siteServerIds.flatMap((id) => {
             const list = addresses.get(id) ?? []
-            return list.length > 0 ? [{ serverId: id, addresses: [...list] }] : []
+            return list.length > 0
+              ? [{ serverId: id, addresses: list.slice(0, TUNNEL_TABLE_CAPS.addressesPerUpstream) }]
+              : []
           })
       if (!siteHere && upstreams.length === 0) {
         skipped.push({
@@ -85,19 +97,35 @@ export function buildTunnelRoutes(
         hostname: doorway.hostname,
         local: siteHere,
         lock: doorway.isLocalOnly,
-        upstreams: upstreams.sort((a, b) => (a.serverId < b.serverId ? -1 : 1)),
+        upstreams: upstreams
+          .sort((a, b) => (a.serverId < b.serverId ? -1 : 1))
+          .slice(0, TUNNEL_TABLE_CAPS.upstreamsPerRoute),
       })
     }
   }
 
-  const peerAddresses = [...peers].sort()
-  const own = peerAddresses.length > 0 ? [...(addresses.get(serverId) ?? [])] : []
+  const warnings: string[] = []
+  const allPeers = [...peers].sort()
+  const peerAddresses = allPeers.slice(0, TUNNEL_TABLE_CAPS.addresses)
+  if (allPeers.length > peerAddresses.length) {
+    warnings.push(`Only ${TUNNEL_TABLE_CAPS.addresses} peer addresses can be sent to one server`)
+  }
+  const allRoutes = [...routes.values()].sort(byHostname)
+  const kept = allRoutes.slice(0, TUNNEL_TABLE_CAPS.routes)
+  if (allRoutes.length > kept.length) {
+    warnings.push(`Only ${TUNNEL_TABLE_CAPS.routes} Tunnel hostnames can be sent to one server`)
+  }
+  const own =
+    peerAddresses.length > 0
+      ? (addresses.get(serverId) ?? []).slice(0, TUNNEL_TABLE_CAPS.addresses)
+      : []
   return {
-    routes: [...routes.values()].sort(byHostname),
+    routes: kept,
     peerAddresses,
     listenAddresses: own,
-    needsPeerMaterial: routes.size > 0 || peerAddresses.length > 0,
+    needsPeerMaterial: kept.length > 0 || peerAddresses.length > 0,
     skipped,
+    warnings,
   }
 }
 

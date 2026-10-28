@@ -7,6 +7,7 @@
 import { and, eq, inArray, isNotNull } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { datacenter, deployment, doorway, hosting, ip, service } from '../../db/schema.ts'
+import { hostingIdsOfOrganization } from './hosting-scope.ts'
 import { carryingServers, listTunnels } from './lifecycle.ts'
 import type { DoorwayFact, TunnelFact } from './route-builder.ts'
 
@@ -70,16 +71,20 @@ export async function loadServerAddresses(
 /** Servers that have a finished deployment for each environment a hosting's service lives in. */
 async function siteServersByHosting(
   db: Db,
-  hostingIds: readonly string[]
+  hostingIds: readonly string[],
+  organizationId: string
 ): Promise<Map<string, string[]>> {
   const result = new Map<string, string[]>()
   if (hostingIds.length === 0) return result
+  // Only hostings that really sit in this organization count as running the site.
+  const own = await hostingIdsOfOrganization(db, hostingIds, organizationId)
+  if (own.size === 0) return result
   const rows = await db
     .select({ hostingId: hosting.id, serverId: deployment.serverId })
     .from(hosting)
     .innerJoin(service, eq(service.id, hosting.serviceId))
     .innerJoin(deployment, eq(deployment.environmentId, service.environmentId))
-    .where(and(inArray(hosting.id, [...hostingIds]), eq(deployment.status, 'applied')))
+    .where(and(inArray(hosting.id, [...own]), eq(deployment.status, 'applied')))
   for (const r of rows) {
     const list = result.get(r.hostingId) ?? []
     if (!list.includes(r.serverId)) list.push(r.serverId)
@@ -103,7 +108,8 @@ export async function loadRoutingFacts(db: Db, organizationId: string): Promise<
     : []
   const sites = await siteServersByHosting(
     db,
-    doorways.flatMap((d) => (d.hostingId ? [d.hostingId] : []))
+    doorways.flatMap((d) => (d.hostingId ? [d.hostingId] : [])),
+    organizationId
   )
   const tunnels: TunnelFact[] = []
   for (const row of rows) {

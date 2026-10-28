@@ -193,7 +193,20 @@ provider accounts.
   `peerLeafDelivery`, and the command carries `pendingTlsLeaf` so tracking is
   committed only after the daemon confirmed. The route hash covers the
   certificate and trust bundle, so a renewed leaf with the same routes is still
-  applied.
+  applied. The same table is not sent again sooner than ten minutes after the
+  previous send, so a table a server keeps refusing does not mint a new
+  certificate every tick.
+- The local-only lock on tunnel names is **not enforced yet**: `doorway.is_local_only`
+  only records the wish. Enforcing it is the deploy-time `hostings[].tunnel`,
+  which is not built; until then the web server answers a tunnel name to
+  anyone who reaches it. Do not describe the lock as working in docs or
+  copy.
+- Limits: 50 tunnels and 2000 hostnames per organization, 200 hostnames per
+  tunnel. A table is cut at the daemon contract caps (2000 names, 16 upstreams
+  per name, 8 addresses per upstream, 64 peer and listen addresses) with a
+  logged note, never sent whole to be refused. A hostname whose site belongs to
+  another organization is refused (409 `hosting_mismatch`), and a site counts as
+  running on a server only when its hosting is in the tunnel's organization.
 - Not in this slice: the deploy-time `hostings[].tunnel` (it must be gated on
   the same feature when added), triggers that resend at once on a hosting or
   server change (the sweep catches them), and the firewall rules for the exact

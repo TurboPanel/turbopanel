@@ -30,6 +30,9 @@ import { getServerDaemonStateByServerId } from '../servers/server-identity-db.ts
 import { buildTunnelRoutes, hashTunnelRoutes, toRoutesPayload } from './route-builder.ts'
 import { loadRoutingFacts } from './route-facts.ts'
 
+/** The least time between two sends of the same table to one server. */
+export const TUNNEL_ROUTES_RESEND_GAP_MS = 10 * 60 * 1000
+
 /** How long a command that has not finished is trusted before the table is sent again. */
 export const TUNNEL_ROUTES_STALE_MS = 10 * 60 * 1000
 
@@ -105,6 +108,12 @@ export function lastSendIsSettled(
   )
 }
 
+function describeUnsettled(row: { status: string; resultSummary: unknown } | undefined): string {
+  if (!row) return 'the command is gone'
+  if (row.status !== 'succeeded') return `the command ended as ${row.status}`
+  return 'the server reported warnings or fewer forwarded names than wanted'
+}
+
 async function loadLastSend(db: Db, state: SentState) {
   const [row] = await db
     .select({ status: command.status, resultSummary: command.resultSummary })
@@ -176,11 +185,18 @@ export async function syncServerTunnelRoutes(
   const nothingWanted = !built.needsPeerMaterial && built.routes.length === 0
   if (!params.force && !params.issue) {
     if (sent === null && nothingWanted) return { status: 'unchanged' }
-    if (
-      sent?.stateHash === stateHash &&
-      lastSendIsSettled(await loadLastSend(db, sent), sent, Date.now())
-    ) {
-      return { status: 'unchanged' }
+    if (sent?.stateHash === stateHash) {
+      const last = await loadLastSend(db, sent)
+      if (lastSendIsSettled(last, sent, Date.now())) return { status: 'unchanged' }
+      // The same table did not finish. Wait before sending it again, so a table the
+      // server keeps refusing is not sent (and a new certificate minted) every tick.
+      if (Date.now() - Date.parse(sent.sentAt) < TUNNEL_ROUTES_RESEND_GAP_MS) {
+        return { status: 'unchanged' }
+      }
+      compatLogWarn(
+        'tunnel-sync',
+        `server ${serverId}: the last forwarding table was not applied (${describeUnsettled(last)}); sending it again`
+      )
     }
   }
   let issue = params.issue ?? null
@@ -192,11 +208,18 @@ export async function syncServerTunnelRoutes(
     if (!minted.ok) return { status: 'failed', reason: `peer certificate: ${minted.error.kind}` }
     issue = minted
   }
-  const payload = await toRoutesPayload(
-    built,
-    built.needsPeerMaterial ? issue?.material : undefined
+  const material = built.needsPeerMaterial ? issue?.material : undefined
+  const payload = await toRoutesPayload(built, material)
+  const notes = [...built.warnings, ...built.skipped.map((n) => `${n.hostname}: ${n.reason}`)]
+  for (const note of notes) compatLogWarn('tunnel-sync', `server ${serverId}: ${note}`)
+  // The leaf is tracked as delivered only when the certificate really went out.
+  const queued = await enqueueRoutes(
+    db,
+    deps.commandQueue,
+    serverId,
+    payload,
+    material ? issue : null
   )
-  const queued = await enqueueRoutes(db, deps.commandQueue, serverId, payload, issue)
   if (!queued.ok) return { status: 'failed', reason: queued.reason }
   await recordSent(db, serverId, {
     stateHash,

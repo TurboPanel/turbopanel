@@ -219,7 +219,7 @@ export const tunnelSchemas = {
       isLocalOnly: {
         type: 'boolean',
         description:
-          'True = only the Tunnel and peer servers are answered; false = the name is also public.',
+          'The wish that only the Tunnel and peer servers answer this name (true), or that it is also public (false). It is recorded now; the web server does not enforce it yet.',
       },
       status: { type: 'string', enum: ['pending', 'live', 'attention', 'removing'] },
       dns: { type: 'string', enum: ['created', 'none'] },
@@ -426,7 +426,10 @@ const TUNNEL_ID_PARAM = {
 } as const
 
 const TUNNEL_ERRORS =
-  'Refusals: 400 `tunnel_invalid`, `server_invalid`, `datacenter_invalid`, `server_not_in_datacenter`; 409 `tunnel_exists`, `tunnel_limit`, `server_never_carries`, `badge_cannot_tunnel`, `tunnel_in_use`; 502 `provider_unavailable`.'
+  'Refusals: 400 `tunnel_invalid`, `datacenter_required`, `datacenter_invalid`, `server_invalid`, `server_not_in_datacenter`; 409 `tunnel_exists`, `tunnel_limit`, `server_never_carries`, `badge_cannot_tunnel`, `tunnel_in_use`; 503 `secrets_unavailable`; 502 `provider_unavailable`; 400 `badge_rejected` when the provider does not accept the API Token.'
+
+const DOORWAY_ERRORS =
+  'Refusals: 400 `hostname_invalid`; 409 `hostname_in_use`, `doorway_limit`, `tunnel_not_ready`, `carrier_missing`, `badge_cannot_tunnel`, `badge_cannot_dns`, `zone_not_found`, `hosting_mismatch`; 400 `badge_rejected`; 503 `secrets_unavailable`; 502 `provider_unavailable`.'
 
 Object.assign(tunnelPaths, {
   '/api/client/v1/organizations/{id}/tunnels': {
@@ -534,8 +537,7 @@ Object.assign(tunnelPaths, {
     post: {
       tags: ['Organizations'],
       summary: 'Add a hostname to a Tunnel',
-      description:
-        'Owners and managers only. Routes the name at the provider and creates its DNS name when a zone this API Token can edit holds it (otherwise `dns` is `none` and the DNS name is made by hand). 409 `hostname_in_use`, `badge_cannot_dns`, `doorway_limit`.',
+      description: `Owners and managers only. Routes the name at the provider and creates its DNS name when a zone this API Token can edit holds it (otherwise dns is none and the DNS name is made by hand). ${DOORWAY_ERRORS}`,
       security: [{ cookieAuth: [] }],
       parameters: [ORG_ID_PARAM, TUNNEL_ID_PARAM],
       requestBody: {
@@ -561,7 +563,7 @@ Object.assign(tunnelPaths, {
     delete: {
       tags: ['Organizations'],
       summary: 'Remove a hostname from a Tunnel',
-      description: 'Owners and managers only. Removes its DNS name and route, then the row.',
+      description: `Owners and managers only. Removes its route, then its DNS name, then the row. A retry after a half-done removal works. ${DOORWAY_ERRORS}`,
       security: [{ cookieAuth: [] }],
       parameters: [
         ORG_ID_PARAM,
@@ -584,7 +586,7 @@ Object.assign(tunnelPaths, {
       tags: ['Organizations'],
       summary: 'Allow or forbid Tunnels on a server',
       description:
-        'Owners and managers only. A server set to `carry: false` never runs a Tunnel, whatever a Tunnel placement says.',
+        'Owners and managers only. A server set to `carry: false` never runs a Tunnel, whatever a Tunnel placement says. 400 `carry_invalid`.',
       security: [{ cookieAuth: [] }],
       parameters: [
         ORG_ID_PARAM,
