@@ -411,7 +411,8 @@ Nothing tries to cancel a queued command, and nothing needs to.
 
 Requested commits ride on `command.metadata.sourceSelection`
 (`{ ref?,
-commitSha?, sourceId? }`) **as well as** the payload's
+commitSha?, sourceId?, pushedBy? }`, where `pushedBy` is the pusher's cleaned git
+login and only attribution) **as well as** the payload's
 `sourceMaterial[]` — `dispatch.payload` is deleted at terminal state, so the
 attribution has to live somewhere durable. The same selection is handed to
 `prepareDeployCompose`, which honors a supplied `commitSha` **for the binding

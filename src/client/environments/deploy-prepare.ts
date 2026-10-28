@@ -418,6 +418,11 @@ export type DeploySourceSelection = {
    * `commitSha` with no `sourceId` matches nothing and is therefore ignored.
    */
   sourceId: string | null
+  /**
+   * Provider login of whoever pushed, for attribution only (never used to pick
+   * what is built). Absent or `null` outside the webhook path.
+   */
+  pushedBy?: string | null
 }
 
 /**

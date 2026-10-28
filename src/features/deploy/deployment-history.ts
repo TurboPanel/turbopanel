@@ -18,6 +18,7 @@ import type { Db } from '../../db/connection.ts'
 import { normalizeReplicaCounts } from '../commands/context.ts'
 import { lastErrorLine } from '../commands/error-line.ts'
 import { normalizeBranchName } from '../git/environment-branch-tracking.ts'
+import { pushLoginFrom } from '../git/push-login.ts'
 import type { ExecutionLogStore } from '../execution-logs/types.ts'
 
 /**
@@ -154,6 +155,8 @@ export type DeploymentTrigger = {
   commitSha: string | null
   /** The repository (`repository.id`) the push came from. */
   sourceId: string | null
+  /** Provider login of whoever pushed, or `null` when the push did not name one. */
+  pushedBy: string | null
 }
 
 export type ListDeploymentHistoryParams = {
@@ -281,6 +284,8 @@ export function readDeploymentTrigger(row: {
     branch: ref === null ? null : (normalizeBranchName(ref) ?? ref),
     commitSha,
     sourceId: contextString(selection, 'sourceId'),
+    // Cleaned again on the way out: metadata is stored text, not a trusted claim.
+    pushedBy: pushLoginFrom(selection.pushedBy),
   }
 }
 

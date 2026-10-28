@@ -544,7 +544,7 @@ export const deploySchemas = {
           { type: 'null' },
           {
             type: 'object',
-            required: ['kind', 'branch', 'commitSha', 'sourceId'],
+            required: ['kind', 'branch', 'commitSha', 'sourceId', 'pushedBy'],
             properties: {
               kind: { type: 'string', const: 'push' },
               branch: {
@@ -555,6 +555,12 @@ export const deploySchemas = {
               sourceId: {
                 type: ['string', 'null'],
                 description: 'The repository (`repository.id`) the push came from.',
+              },
+              pushedBy: {
+                type: ['string', 'null'],
+                maxLength: 100,
+                description:
+                  'Git provider login of the person who pushed (never an email). Null when the push did not name one, including deploys recorded before it was kept.',
               },
             },
           },
