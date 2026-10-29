@@ -5,7 +5,7 @@
  * once. Skips without TURBOPANEL_DATABASE_URL.
  */
 import { assert, assertEquals, assertNotEquals, assertStringIncludes } from '@std/assert'
-import { eq } from 'drizzle-orm'
+import { eq, inArray } from 'drizzle-orm'
 import { createDenoDb, endDbConnection } from '../../../db/connection.ts'
 import { badge, carrier, organization, secret, tls } from '../../../db/schema.ts'
 import { ACME_ACCOUNT_SECRET_PROVIDER } from './account.ts'
@@ -30,6 +30,9 @@ const test = Deno.test.bind(Deno)
 const dbUrl = getDatabaseUrl()
 type Db = ReturnType<typeof createDenoDb>
 
+/** Organizations a test made; removed with their secrets and certificates when it ends. */
+const madeOrganizations: string[] = []
+
 async function withDb(fn: (db: Db) => Promise<void>): Promise<void> {
   if (!dbUrl) {
     skipWithoutDatabase('dns certificate tests')
@@ -39,6 +42,9 @@ async function withDb(fn: (db: Db) => Promise<void>): Promise<void> {
   try {
     await fn(db)
   } finally {
+    // The shared test database must be left as it was: other suites count every secret row.
+    const made = madeOrganizations.splice(0)
+    if (made.length > 0) await db.delete(organization).where(inArray(organization.id, made))
     await endDbConnection(db)
   }
 }
@@ -85,6 +91,7 @@ async function setup(db: Db, options: SetupOptions = {}) {
     .values({ name: `Dns Org ${crypto.randomUUID()}` })
     .returning({ id: organization.id })
   const organizationId = org!.id
+  madeOrganizations.push(organizationId)
   const secrets = await deriveEncryptionSecretsConfig(
     parseTestSecretsConfig('deno'),
     'data-encryption'
