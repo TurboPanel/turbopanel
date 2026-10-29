@@ -776,7 +776,13 @@ async function sweepRow(
   }
 }
 
-/** Rows one pass handles at most (each can cost a provider call), oldest first. */
+/** The certificate that ends soonest goes first (one with no end date, first of all). */
+function byDueTime(a: TlsRow, b: TlsRow): number {
+  const end = (row: TlsRow) => (row.notAfter ? Date.parse(row.notAfter) : Number.NEGATIVE_INFINITY)
+  return end(a) - end(b)
+}
+
+/** Rows one pass handles at most (each can cost a provider call), soonest due first. */
 export const ORIGIN_SWEEP_BATCH = 10
 
 /** Rows a pass can do something with: retired ones, and live ones close to expiry, unless they are waiting out a failure. */
@@ -806,6 +812,7 @@ export async function sweepOriginCertificates(params: SweepParams): Promise<Orig
   }
   const rows = (await listOriginCertificates(params.db, params.organizationId))
     .filter((row) => needsSweep(row, now))
+    .sort(byDueTime)
     .slice(0, params.limit ?? ORIGIN_SWEEP_BATCH)
   const paused = new Set<string>()
   const steps = await mapSequential(rows, (row) => sweepRow(params, row, now, paused))

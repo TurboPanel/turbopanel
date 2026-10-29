@@ -7,13 +7,15 @@
  * back-off, or a renewal that has come due. One failing row never stops the
  * others.
  */
-import { and, asc, eq, inArray, sql } from 'drizzle-orm'
+import { and, eq, sql } from 'drizzle-orm'
 import { tls } from '../../../db/schema.ts'
 import { logWarn } from '../../../lib/logger.ts'
 import { forEachSequential } from '../../../lib/sequential.ts'
 import { reportSweep } from '../../../lib/sweep-report.ts'
 import { parseTlsOptions } from '../../../lib/tls/match.ts'
+import { pausedAccounts } from './account.ts'
 import { clock, type DnsCertContext } from './context.ts'
+import { selectDueSteps, selectDueUpkeep } from './sweep-select.ts'
 import {
   type AdvanceOutcome,
   advanceDnsCertificate,
@@ -21,12 +23,6 @@ import {
   renewAtOf,
 } from './issuance.ts'
 import { readDnsCertState } from './order-state.ts'
-
-/** Certificates stepped per tick; the rest wait for the next one. */
-export const DNS_CERT_SWEEP_BATCH = 10
-/** Certificates tidied per tick. */
-export const DNS_CERT_MAINTAIN_BATCH = 25
-const SCAN_LIMIT = 200
 
 /**
  * How many renewals one organization may begin in one tick, and how many may
@@ -58,12 +54,6 @@ function wantsStep(row: Row, now: number): boolean {
   if (!state || row.status === 'failed') return false
   if (row.status === 'pending' || state.order) return true
   return parseTlsOptions(row.options)?.autoRenew !== false && renewAtOf(row) <= now
-}
-
-function wantsTidying(row: Row): boolean {
-  const state = readDnsCertState(row.metadata)
-  if (!state) return false
-  return row.status === 'ready' || state.records.length > 0
 }
 
 /** Does stepping this row begin a renewal (a certificate in use with no order open)? */
@@ -111,56 +101,88 @@ async function openRenewals(ctx: DnsCertContext, organizationId?: string) {
   return new Map(counted.map((c) => [c.organizationId, c.open]))
 }
 
-/** `organizationId` limits a tick to one organization (tests share a database). */
+/** Certificates stepped per tick (the default of `options.batch`); the rest wait for the next one. */
+export const DNS_CERT_SWEEP_BATCH = 25
+/** Certificates tidied per tick (the default of `options.maintainBatch`). */
+export const DNS_CERT_MAINTAIN_BATCH = 25
+/**
+ * Wall-clock time after which a tick starts no new certificate (the default of
+ * `options.budgetMs`). Each step makes a few requests, so batch times the
+ * calls per step also keeps a Workers invocation inside its subrequest limit;
+ * a tick that runs out of time leaves the rest due for the next minute.
+ */
+export const DNS_CERT_SWEEP_BUDGET_MS = 20_000
+/** Candidates read per slot, so the renewal limits can drop some and the batch still fills. */
+const CANDIDATE_FACTOR = 3
+
+export type DnsCertSweepOptions = {
+  /** Limits a tick to one organization (tests share a database). */
+  organizationId?: string
+  renewalLimits?: Partial<RenewalLimits>
+  batch?: number
+  maintainBatch?: number
+  budgetMs?: number
+}
+
+/** Runs `work` over the rows until the budget is spent; the remaining rows are simply not started. */
+async function withinBudget(
+  rows: readonly Row[],
+  startedAt: number,
+  budgetMs: number,
+  work: (row: Row) => Promise<void>
+): Promise<void> {
+  await forEachSequential(rows, async (row) => {
+    if (Date.now() - startedAt <= budgetMs) await work(row)
+  })
+}
+
 export async function runDnsCertificateSweepTick(
   ctx: DnsCertContext,
-  options: { organizationId?: string; renewalLimits?: Partial<RenewalLimits> } = {}
+  options: DnsCertSweepOptions = {}
 ): Promise<DnsCertSweepResult> {
-  const now = clock(ctx).getTime()
-  const rows = await ctx.db
-    .select()
-    .from(tls)
-    .where(
-      and(
-        eq(tls.source, 'upload'),
-        sql`${tls.metadata} #>> '{acme,managedBy}' = 'panel'`,
-        inArray(tls.status, ['pending', 'ready', 'failed']),
-        ...(options.organizationId ? [eq(tls.organizationId, options.organizationId)] : [])
-      )
-    )
-    .orderBy(asc(tls.updatedAt))
-    .limit(SCAN_LIMIT)
-  let maintained = 0
-  await forEachSequential(
-    rows.filter(wantsTidying).slice(0, DNS_CERT_MAINTAIN_BATCH),
-    async (row) => {
-      try {
-        await maintainDnsCertificate(ctx, row.id)
-        maintained += 1
-      } catch (err) {
-        logWarn('tls', `dns certificate upkeep failed for ${row.id}: ${String(err)}`)
-      }
-    }
+  const startedAt = Date.now()
+  const now = clock(ctx)
+  const budgetMs = options.budgetMs ?? DNS_CERT_SWEEP_BUDGET_MS
+  const batch = options.batch ?? DNS_CERT_SWEEP_BATCH
+  const paused = await pausedOrganizationIds(ctx, now)
+  const scope = { organizationId: options.organizationId, pausedOrganizations: paused }
+  const upkeep = await selectDueUpkeep(
+    ctx.db,
+    now,
+    options.maintainBatch ?? DNS_CERT_MAINTAIN_BATCH,
+    scope
   )
-  // Upkeep may have moved a renewal time, so look at the rows again.
-  const fresh = maintained === 0 ? rows : await reload(ctx, rows)
+  let maintained = 0
+  await withinBudget(upkeep, startedAt, budgetMs, async (row) => {
+    try {
+      await maintainDnsCertificate(ctx, row.id)
+      maintained += 1
+    } catch (err) {
+      logWarn('tls', `dns certificate upkeep failed for ${row.id}: ${String(err)}`)
+    }
+  })
+  // Upkeep may have moved a renewal time, so the steps are chosen after it.
+  const candidates = await selectDueSteps(ctx.db, now, batch * CANDIDATE_FACTOR, scope)
   const limits: RenewalLimits = {
     startsPerTick: RENEWAL_STARTS_PER_ORG_PER_TICK,
     openPerOrg: RENEWALS_OPEN_PER_ORG,
     ...options.renewalLimits,
   }
-  const wanted = fresh.filter((row) => wantsStep(row, now))
   const open = await openRenewals(ctx, options.organizationId)
-  const due = limitRenewalStarts(wanted, open, limits).slice(0, DNS_CERT_SWEEP_BATCH)
+  const due = limitRenewalStarts(
+    candidates.filter((row) => wantsStep(row, now.getTime())),
+    open,
+    limits
+  ).slice(0, batch)
   const out: DnsCertSweepResult = {
-    scanned: rows.length,
+    scanned: candidates.length + upkeep.length,
     advanced: 0,
     maintained,
     issued: 0,
     failed: 0,
     waiting: 0,
   }
-  await forEachSequential(due, async (row) => {
+  await withinBudget(due, startedAt, budgetMs, async (row) => {
     try {
       tally(out, await advanceDnsCertificate(ctx, row.id))
     } catch (err) {
@@ -177,23 +199,16 @@ export async function runDnsCertificateSweepTick(
   return out
 }
 
+/** Organizations whose authority pause is running (either directory), so their rows are not even picked. */
+async function pausedOrganizationIds(ctx: DnsCertContext, now: Date): Promise<string[]> {
+  const keys = await pausedAccounts(ctx, now)
+  return [...new Set([...keys].map((key) => key.slice(0, key.indexOf(':'))))]
+}
+
 function tally(out: DnsCertSweepResult, outcome: AdvanceOutcome): void {
   if (outcome === 'busy') return
   if (outcome === 'backoff') out.waiting += 1
   else out.advanced += 1
   if (outcome === 'issued') out.issued += 1
   if (outcome === 'failed') out.failed += 1
-}
-
-async function reload(ctx: DnsCertContext, rows: readonly Row[]): Promise<Row[]> {
-  if (rows.length === 0) return []
-  return await ctx.db
-    .select()
-    .from(tls)
-    .where(
-      inArray(
-        tls.id,
-        rows.map((r) => r.id)
-      )
-    )
 }

@@ -67,6 +67,21 @@ at once cannot run the same step twice (`busy`). The routes only start an order
 and report; the sweep carries it on (`sweep.ts`, wired into the Workers
 offline sweep and the Deno interval).
 
+## The sweep tick
+
+`runDnsCertificateSweepTick` (`sweep.ts`, `sweep-select.ts`) runs every minute
+on both editions. It picks work by due time, read out of the private state in
+the database with no column or index (a certificate's back-off and renewal
+time, an open order is due now), skips rows another worker holds and
+organizations whose authority pause is running, and takes rank one of every
+organization before rank two, so one organization cannot starve the rest. Per
+tick: up to 25 steps and 25 upkeep jobs (`options.batch`, `maintainBatch`), no new
+certificate started after 20 seconds (`budgetMs`), each step a few requests, so
+a Workers invocation stays inside its subrequest limit; whatever is left stays
+due for the next minute. Upkeep only visits certificates whose renewal-information
+check came due or that hold leftover records. The result also counts issued,
+failed and waiting.
+
 ## Checks before the authority is asked
 
 Before an order is opened the DNS host is asked a cheap read for every zone

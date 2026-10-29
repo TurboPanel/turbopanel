@@ -19,6 +19,20 @@ import { ORIGIN_SWEEP_BATCH, sweepOriginCertificates } from './origin-certificat
 import { createTunnelAdapterRegistry, type TunnelAdapterRegistry } from './registry.ts'
 import { verifyOriginHostnames } from './verify-state.ts'
 
+/** Wall-clock time after which a pass starts no further organization. */
+export const ORIGIN_SWEEP_BUDGET_MS = 20_000
+
+/**
+ * The organizations in the order they get their turn: the list is rotated by
+ * the minute, so with more organizations than a pass can serve every one is
+ * reached within a few passes instead of the first few always going first.
+ */
+export function turnOrder<T>(orgs: readonly T[], now: Date): T[] {
+  if (orgs.length === 0) return []
+  const offset = Math.floor(now.getTime() / 60_000) % orgs.length
+  return [...orgs.slice(offset), ...orgs.slice(0, offset)]
+}
+
 export type OriginCertificateSweepTick = {
   renewed: number
   removed: number
@@ -30,8 +44,15 @@ export type OriginCertificateSweepTick = {
 export async function runOriginCertificateSweepTick(
   db: Db,
   secrets: DerivedSecretsConfig,
-  deps: { registry?: TunnelAdapterRegistry; now?: Date; limit?: number } = {}
+  deps: {
+    registry?: TunnelAdapterRegistry
+    now?: Date
+    limit?: number
+    /** Wall-clock time after which no further organization is started. */
+    budgetMs?: number
+  } = {}
 ): Promise<OriginCertificateSweepTick> {
+  const startedAt = Date.now()
   const out: OriginCertificateSweepTick = { renewed: 0, removed: 0, failed: 0, repinned: [] }
   const orgs = await db
     .selectDistinct({ organizationId: tls.organizationId })
@@ -39,8 +60,11 @@ export async function runOriginCertificateSweepTick(
     .where(eq(tls.source, 'provider_origin'))
   const registry = deps.registry ?? createTunnelAdapterRegistry()
   let budget = deps.limit ?? ORIGIN_SWEEP_BATCH
-  await forEachSequential(orgs, async ({ organizationId }) => {
-    if (budget <= 0) return
+  const turns = turnOrder(orgs, deps.now ?? new Date())
+  await forEachSequential(turns, async ({ organizationId }, index) => {
+    if (budget <= 0 || Date.now() - startedAt > (deps.budgetMs ?? ORIGIN_SWEEP_BUDGET_MS)) return
+    // A fair share of what is left, so the first organizations cannot use the whole pass.
+    const share = Math.max(1, Math.ceil(budget / (turns.length - index)))
     try {
       const done = await sweepOriginCertificates({
         db,
@@ -48,7 +72,7 @@ export async function runOriginCertificateSweepTick(
         registry,
         organizationId,
         usedHostnames: await verifyOriginHostnames(db, organizationId),
-        limit: budget,
+        limit: share,
         ...(deps.now ? { now: deps.now } : {}),
       })
       budget -= done.renewed.length + done.removed.length + done.failed.length

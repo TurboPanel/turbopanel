@@ -642,6 +642,81 @@ test('the challenge is only answered once the record can be read back from the D
     assertEquals(await advanceDnsCertificate(s.ctx, id), 'issued')
   }))
 
+/** A second organization that is served by the first one's authority and DNS host. */
+async function secondOrg(db: Db, s: Awaited<ReturnType<typeof setup>>) {
+  const other = await setup(db)
+  other.ctx.acmeFetch = s.ctx.acmeFetch
+  other.ctx.dns = s.ctx.dns
+  return other
+}
+
+const opened = async (db: Db, id: string) =>
+  !!readDnsCertState((await rowOf(db, id)).metadata)?.order
+
+test('a busy organization cannot starve another: each gets a turn before anyone gets two', () =>
+  withDb(async (db) => {
+    const a = await setup(db)
+    const b = await secondOrg(db, a)
+    const big = []
+    for (const n of ['a1', 'a2', 'a3']) {
+      big.push(
+        ((await startDnsCertificate(a.ctx, a.input([`${n}.example.com`]))) as { id: string }).id
+      )
+    }
+    const small = (
+      (await startDnsCertificate(b.ctx, b.input(['b1.example.com']))) as { id: string }
+    ).id
+    const done = await runDnsCertificateSweepTick(a.ctx, { batch: 2 })
+    assertEquals(done.advanced, 2)
+    assertEquals(await opened(db, small), true)
+    assertEquals((await Promise.all(big.map((id) => opened(db, id)))).filter(Boolean).length, 1)
+  }))
+
+test('the soonest due certificate goes first, and one that is not due is left alone', () =>
+  withDb(async (db) => {
+    const s = await setup(db)
+    const first = ((await startDnsCertificate(s.ctx, s.input(['f.example.com']))) as { id: string })
+      .id
+    const second = (
+      (await startDnsCertificate(s.ctx, s.input(['g.example.com']))) as { id: string }
+    ).id
+    const waiting = (
+      (await startDnsCertificate(s.ctx, s.input(['h.example.com']))) as { id: string }
+    ).id
+    const at = (ms: number) => new Date(s.clock.now.getTime() + ms).toISOString()
+    for (const [id, nextAttemptAt] of [
+      [first, at(-3_600_000)],
+      [second, at(-60_000)],
+      [waiting, at(3_600_000)],
+    ] as const) {
+      const row = await rowOf(db, id)
+      const state = readDnsCertState(row.metadata)!
+      await db
+        .update(tls)
+        .set({ metadata: withDnsCertState(row.metadata, { ...state, nextAttemptAt }) })
+        .where(eq(tls.id, id))
+    }
+    await runDnsCertificateSweepTick(s.ctx, { organizationId: s.organizationId, batch: 1 })
+    assertEquals([await opened(db, first), await opened(db, second)], [true, false])
+    await runDnsCertificateSweepTick(s.ctx, { organizationId: s.organizationId, batch: 5 })
+    assertEquals([await opened(db, second), await opened(db, waiting)], [true, false])
+  }))
+
+test('an organization the authority paused is not picked, and a spent time budget starts nothing', () =>
+  withDb(async (db) => {
+    const s = await setup(db, { ca: { busyOrders: { status: 503, retryAfter: '900' } } })
+    const id = ((await startDnsCertificate(s.ctx, s.input(['p.example.com']))) as { id: string }).id
+    const only = { organizationId: s.organizationId }
+    assertEquals((await runDnsCertificateSweepTick(s.ctx, { ...only, budgetMs: -1 })).advanced, 0)
+    assertEquals(s.ca.hits.signed, 0)
+    // The first try is answered 503: the order waits and the organization is paused.
+    assertEquals((await runDnsCertificateSweepTick(s.ctx, only)).waiting, 1)
+    const asked = s.ca.hits.signed
+    const idle = await runDnsCertificateSweepTick(s.ctx, only)
+    assertEquals([idle.advanced, idle.waiting, s.ca.hits.signed], [0, 0, asked])
+    assertEquals((await rowOf(db, id)).status, 'pending')
+  }))
+
 /** Make a certificate due for renewal now. */
 async function makeDue(db: Db, id: string) {
   const row = await rowOf(db, id)

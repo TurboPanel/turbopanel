@@ -508,7 +508,10 @@ provider_origin_managed`, `400 provider_origin_unsupported`). Deleting one from
 - **Scheduled pass:** `runOriginCertificateSweepTick` (`origin-certificate-sweep.ts`)
   rides `runHostingLetsEncryptSweepTick`, which both the Deno interval and the
   Workers cron already call, so there is no new timer. Per tick it handles at most
-  10 rows (`ORIGIN_SWEEP_BATCH`) across organizations, oldest first, and only rows
+  10 rows (`ORIGIN_SWEEP_BATCH`) across organizations, soonest-ending certificate
+  first, each organization getting a fair share and the list rotated by the minute
+  so none is always last (a pass also stops starting organizations after 20
+  seconds), and only rows
   that need it (retired, or close to expiry); a pinned certificate close to expiry
   is renewed even when retired (verification turned off), so a server never keeps
   an expired one. Sites re-pinned by a renewal get their hostings-only apply. It
