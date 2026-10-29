@@ -518,12 +518,71 @@ test('the authority’s renewal window sets the renewal time, never later than t
     const latest = Date.parse(row.notAfter!) - 2 * DAY_MS
     assert(renewAt >= window.start.getTime() - 1000)
     assert(renewAt <= Math.min(window.end.getTime(), latest) + 1000)
-    // Not asked again until it is due; then the new answer replaces the time.
+    // No Retry-After was sent, so it is asked again after twelve hours (and a little), not sooner.
     await maintainDnsCertificate(s.ctx, id)
     assertEquals(s.ca.renewalAsked.length, 1)
-    tick(s.clock, 7 * 3_600_000)
+    tick(s.clock, 11 * 3_600_000)
+    await maintainDnsCertificate(s.ctx, id)
+    assertEquals(s.ca.renewalAsked.length, 1)
+    tick(s.clock, 3 * 3_600_000)
     await maintainDnsCertificate(s.ctx, id)
     assertEquals(s.ca.renewalAsked.length, 2)
+  }))
+
+/** A certificate the authority advises on, issued, with a chosen answer to the renewal questions. */
+async function issuedWithAdvice(
+  db: Db,
+  ca: Partial<Parameters<typeof createFakeCa>[0]>
+): Promise<{ s: Awaited<ReturnType<typeof setup>>; id: string }> {
+  const org = await mintOrganizationCa({ organizationId: crypto.randomUUID() })
+  const s = await setup(db, {
+    ca: {
+      issueCertificate: async (names) =>
+        (await issueLeafCertificate(org.certificatePem, org.privateKeyPem, names)).certificatePem,
+      renewalWindow: {
+        start: new Date(Date.now() + 20 * DAY_MS),
+        end: new Date(Date.now() + 21 * DAY_MS),
+      },
+      ...ca,
+    },
+  })
+  return { s, id: await issue(s, ['example.com']) }
+}
+
+test('the next renewal check follows the authority’s Retry-After, kept between a minute and a day', () =>
+  withDb(async (db) => {
+    for (const [header, low, high] of [
+      ['21600', 6 * 3_600_000, 6.6 * 3_600_000],
+      ['5', 60_000, 66_000],
+      ['999999', 86_400_000, 95_040_000],
+    ] as const) {
+      const { s, id } = await issuedWithAdvice(db, { renewalRetryAfter: header })
+      const state = readDnsCertState((await rowOf(db, id)).metadata)!
+      const wait = Date.parse(state.ariNextCheckAt!) - s.clock.now.getTime()
+      assert(wait >= low && wait <= high, `${header}: ${wait}`)
+    }
+  }))
+
+test('a renewal check that fails keeps the stored time and asks again later, not at once', () =>
+  withDb(async (db) => {
+    const { s, id } = await issuedWithAdvice(db, {})
+    const before = readDnsCertState((await rowOf(db, id)).metadata)!
+    const busy = createFakeCa({
+      txt: s.dns.txt,
+      renewalWindow: { start: new Date(), end: new Date() },
+      renewalBusy: true,
+      renewalRetryAfter: '3600',
+    })
+    s.ctx.acmeFetch = busy.fetch
+    tick(s.clock, 14 * 3_600_000)
+    await maintainDnsCertificate(s.ctx, id)
+    const after = readDnsCertState((await rowOf(db, id)).metadata)!
+    assertEquals(after.renewAt, before.renewAt)
+    assertEquals(busy.renewalAsked.length, 1)
+    const wait = Date.parse(after.ariNextCheckAt!) - s.clock.now.getTime()
+    assert(wait >= 3_600_000 && wait <= 3_960_000, `${wait}`)
+    await maintainDnsCertificate(s.ctx, id)
+    assertEquals(busy.renewalAsked.length, 1)
   }))
 
 async function accountRows(db: Db, organizationId: string) {

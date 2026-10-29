@@ -297,34 +297,72 @@ export class AcmeClient {
 
 export type RenewalWindow = { start: Date; end: Date }
 
+/** What asking the authority about a certificate's renewal time came to (RFC 9773). */
+export type RenewalInfo = {
+  /** The suggested window; null when the authority gave none. */
+  window: RenewalWindow | null
+  /**
+   * True when the authority answered (even "no such service" or "unknown
+   * certificate"), false when asking failed (unreachable, 429, 503, junk), so
+   * a caller keeps the time it already has instead of falling back.
+   */
+  answered: boolean
+  /** The `Retry-After` of the answer: how long the authority wants callers to wait before asking again. */
+  retryAfterMs: number | null
+  /** The HTTP status of the renewal-information answer; null when there was none. */
+  status: number | null
+}
+
+const NO_ANSWER: RenewalInfo = { window: null, answered: false, retryAfterMs: null, status: null }
+
+function readWindow(body: { suggestedWindow?: { start?: string; end?: string } }) {
+  const start = Date.parse(body.suggestedWindow?.start ?? '')
+  const end = Date.parse(body.suggestedWindow?.end ?? '')
+  return Number.isNaN(start) || Number.isNaN(end) || end < start
+    ? null
+    : { start: new Date(start), end: new Date(end) }
+}
+
 /**
- * When the authority suggests renewing a certificate (RFC 9773), or null when
- * it has no such service or does not know the certificate. Never throws: the
- * caller has its own fallback. `certId` comes from {@link renewalCertId}.
+ * Ask the authority when to renew a certificate (RFC 9773) and how soon to ask
+ * again. Never throws: the caller has its own fallback. `certId` comes from
+ * `renewalCertId`.
  */
-export async function fetchRenewalWindow(options: {
+export async function fetchRenewalInfo(options: {
   directoryUrl: string
   certId: string
   fetch?: typeof fetch
-}): Promise<RenewalWindow | null> {
+}): Promise<RenewalInfo> {
   const send = options.fetch ?? ((input, init) => globalThis.fetch(input, init))
   try {
     const directory = await send(options.directoryUrl, {
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     })
+    if (!directory.ok) return { ...NO_ANSWER, status: directory.status }
     const base = ((await directory.json()) as Partial<AcmeDirectory>).renewalInfo
-    if (!base) return null
+    // An authority without the service will not start offering it today.
+    if (!base) return { window: null, answered: true, retryAfterMs: null, status: null }
     const response = await send(`${base.replace(/\/$/, '')}/${options.certId}`, {
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     })
-    if (!response.ok) return null
-    const body = (await response.json()) as { suggestedWindow?: { start?: string; end?: string } }
-    const start = Date.parse(body.suggestedWindow?.start ?? '')
-    const end = Date.parse(body.suggestedWindow?.end ?? '')
-    return Number.isNaN(start) || Number.isNaN(end) || end < start
-      ? null
-      : { start: new Date(start), end: new Date(end) }
+    const retryAfterMs = parseRetryAfterMs(response.headers.get('retry-after'))
+    if (!response.ok) {
+      // A certificate the authority does not know is an answer; a throttle or an outage is not.
+      const answered = response.status === 404
+      return { window: null, answered, retryAfterMs, status: response.status }
+    }
+    const window = readWindow((await response.json()) as Parameters<typeof readWindow>[0])
+    return { window, answered: window !== null, retryAfterMs, status: response.status }
   } catch {
-    return null
+    return NO_ANSWER
   }
+}
+
+/** The suggested renewal window of a certificate, or null; see {@link fetchRenewalInfo}. */
+export async function fetchRenewalWindow(options: {
+  directoryUrl: string
+  certId: string
+  fetch?: typeof fetch
+}): Promise<RenewalWindow | null> {
+  return (await fetchRenewalInfo(options)).window
 }

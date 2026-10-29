@@ -40,6 +40,10 @@ export type FakeCaOptions = {
   alwaysDeactivated?: boolean
   /** Offers renewal information; the window is what it suggests for any certificate. */
   renewalWindow?: { start: Date; end: Date }
+  /** `Retry-After` sent with each renewal-information answer. */
+  renewalRetryAfter?: string
+  /** Renewal information answers 503 (with `renewalRetryAfter` if set) instead of a window. */
+  renewalBusy?: boolean
 }
 
 export type FakeCa = {
@@ -330,12 +334,19 @@ export function createFakeCa(options: FakeCaOptions): FakeCa {
     if (path.startsWith('/renewal/') && options.renewalWindow) {
       hits.renewal += 1
       renewalAsked.push(path.slice('/renewal/'.length))
-      return json({
-        suggestedWindow: {
-          start: options.renewalWindow.start.toISOString(),
-          end: options.renewalWindow.end.toISOString(),
+      const headers: Record<string, string> = options.renewalRetryAfter
+        ? { 'Retry-After': options.renewalRetryAfter }
+        : {}
+      if (options.renewalBusy) return json({}, { status: 503, headers })
+      return json(
+        {
+          suggestedWindow: {
+            start: options.renewalWindow.start.toISOString(),
+            end: options.renewalWindow.end.toISOString(),
+          },
         },
-      })
+        { headers }
+      )
     }
     if (path === '/nonce') {
       hits.nonce += 1

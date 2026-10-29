@@ -59,6 +59,8 @@ export type DnsCertState = {
   renewAt: string | null
   /** When the authority was last asked about renewal timing. */
   ariCheckedAt: string | null
+  /** Not before this is the authority asked again: its own `Retry-After`, kept between a minute and a day. */
+  ariNextCheckAt: string | null
 }
 
 export const DNS_CERT_KEY = 'dnsCert'
@@ -158,6 +160,7 @@ export function readDnsCertState(metadata: unknown): DnsCertState | null {
     records: readRecords(r.records),
     renewAt: text(r.renewAt),
     ariCheckedAt: text(r.ariCheckedAt),
+    ariNextCheckAt: text(r.ariNextCheckAt),
   }
 }
 

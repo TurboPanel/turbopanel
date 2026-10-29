@@ -161,6 +161,7 @@ function emptyState(input: StartInput): DnsCertState {
     records: [],
     renewAt: null,
     ariCheckedAt: null,
+    ariNextCheckAt: null,
   }
 }
 
@@ -338,6 +339,12 @@ async function step(ctx: DnsCertContext, row: TlsRow, state: DnsCertState): Prom
   return await answerChallenges(ctx, state, order)
 }
 
+/** Has the authority asked this organization to wait, and is that wait still running? */
+async function accountPaused(ctx: DnsCertContext, row: TlsRow, state: DnsCertState) {
+  const until = await acmePausedUntil(ctx, row.organizationId, state.staging)
+  return until !== null && until > clock(ctx).getTime()
+}
+
 /** How long the authority or the DNS host asked callers to wait, or null when this was not that kind of answer. */
 function throttleWaitOf(err: unknown): number | null {
   if (err instanceof AcmeError || err instanceof TunnelProviderError) return err.retryAfterMs
@@ -426,7 +433,7 @@ async function completeOrder(
   const { columns } = splitTlsMetadata(metadata)
   const now = clock(ctx)
   const cleaned = await cleanRecords(ctx, rowForSteps(row), state)
-  const renewAt = await refreshedRenewAt(ctx, state, {
+  const timing = await refreshedRenewAt(ctx, state, {
     pem: chainPem,
     notBefore: parsed.notBefore,
     notAfter: parsed.notAfter,
@@ -436,8 +443,9 @@ async function completeOrder(
     attempts: 0,
     nextAttemptAt: null,
     order: null,
-    renewAt,
+    renewAt: timing.renewAt,
     ariCheckedAt: now.toISOString(),
+    ariNextCheckAt: timing.nextCheckAt,
   }
   const base = withDnsCertState(row.metadata, { ...next, claimUntil: null })
   const acme = {
@@ -521,8 +529,7 @@ export async function advanceDnsCertificate(
     await writeState(ctx, row, state, { stage: acmeOf(row).stage ?? 'issued' })
     return early
   }
-  const paused = await acmePausedUntil(ctx, row.organizationId, state.staging)
-  if (paused !== null && paused > clock(ctx).getTime()) {
+  if (await accountPaused(ctx, row, state)) {
     await release(ctx, row.id)
     return 'backoff'
   }
@@ -625,16 +632,23 @@ export async function maintainDnsCertificate(ctx: DnsCertContext, id: string): P
     state = { ...state, records: [...state.records.filter((r) => !isStale(r)), ...cleaned.records] }
   }
   const idle = row.status === 'ready' && !state.order
-  if (idle && ariDue(ctx, state) && row.certificatePem) {
+  if (idle && ariDue(ctx, state) && row.certificatePem && !(await accountPaused(ctx, row, state))) {
     const notBefore = (row.metadata as { notBefore?: string } | null)?.notBefore
-    state = {
-      ...state,
-      ariCheckedAt: now.toISOString(),
-      renewAt: await refreshedRenewAt(ctx, state, {
+    const timing = await refreshedRenewAt(
+      ctx,
+      state,
+      {
         pem: row.certificatePem,
         notBefore: new Date(notBefore ?? row.createdAt),
         notAfter: new Date(row.notAfter ?? row.createdAt),
-      }),
+      },
+      { keep: state.renewAt }
+    )
+    state = {
+      ...state,
+      ariCheckedAt: now.toISOString(),
+      ariNextCheckAt: timing.nextCheckAt,
+      renewAt: timing.renewAt,
     }
   }
   const warning = idle ? await renewalBlocker(ctx, row, state) : null
