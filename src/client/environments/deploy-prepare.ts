@@ -4317,6 +4317,23 @@ function tlsPinErrorResponse(
   )
 }
 
+/** The 409 for a hosting whose tunnel names cannot be locked; `serverId` is named when the daemon is the problem. */
+function nameLockRefusalResponse(
+  refusal: { code: string; hostnames: string[] },
+  hostingId: string,
+  serverId: string
+): Response {
+  return Response.json(
+    {
+      error: refusal.code,
+      hostingId,
+      hostnames: refusal.hostnames,
+      ...(refusal.code === 'tunnel_daemon_too_old' ? { serverId } : {}),
+    },
+    { status: 409 }
+  )
+}
+
 async function resolveHttpHostingEntry(
   db: Db,
   h: HostingRow,
@@ -4394,22 +4411,13 @@ async function resolveHttpHostingEntry(
     serverId,
     hostingId: h.id,
     siteHostnames: hostnames,
+    www,
     tlsMode: tlsWire.tlsMode,
   })
-  if ('refusal' in lock) {
-    return {
-      error: Response.json(
-        {
-          error: lock.refusal.code,
-          hostingId: h.id,
-          hostnames: lock.refusal.hostnames,
-          ...(lock.refusal.code === 'tunnel_daemon_too_old' ? { serverId } : {}),
-        },
-        { status: 409 }
-      ),
-    }
-  }
+  if ('refusal' in lock) return { error: nameLockRefusalResponse(lock.refusal, h.id, serverId) }
 
+  // A hosting whose names are all tunnel-only never asks for a public certificate.
+  const tlsMode = lock.dropPublicCertificate === true ? undefined : tlsWire.tlsMode
   return {
     entry: {
       hostingId: h.id,
@@ -4420,7 +4428,7 @@ async function resolveHttpHostingEntry(
       pathPrefix: readPathPrefix(h.options),
       targetPort: readTargetPort(h.options),
       tlsId: tlsWire.tlsId,
-      ...(tlsWire.tlsMode === undefined ? {} : { tlsMode: tlsWire.tlsMode }),
+      ...(tlsMode === undefined ? {} : { tlsMode }),
       proxy: readHostingProxyFromOptions(h.options),
       ...(www === 'off' ? {} : { www }),
       ...(bindResolved === undefined ? {} : { bindAddress: bindResolved }),

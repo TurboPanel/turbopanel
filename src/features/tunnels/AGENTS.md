@@ -69,6 +69,32 @@ member there, a widened CHECK (forward migration) and one adapter.
   removing a badge or carrier deletes its secrets in the same transaction
   (`deleteBadge`, `deleteCarrier`), removing a tunnel deletes its run-token
   secret (`deleteTunnelRecord`), and `tunnel.secret_id` is SET NULL.
+- **Removing a tunnel (`deleteTunnel`, `removal.ts`).** The mark is one guarded
+  `UPDATE ... WHERE NOT EXISTS (doorway)`, and `addDoorway` re-reads the status
+  after storing its row, so a hostname added at the same moment either stops the
+  removal (`tunnel_in_use`) or is refused (`tunnel_removing`); `finishTunnelRemoval`
+  checks for hostnames again right before the provider delete. A `removing`
+  tunnel takes no new hostname and no placement change (`tunnel_removing`).
+  A tunnel with a provider id but no usable account or token stays `removing`
+  with the reason instead of being deleted, so a provider tunnel is never
+  forgotten. The sweep query takes only the tunnels whose wait is over. The provider refuses to
+  delete a tunnel with a connected connector (409, mapped to the error code
+  `conflict`), so a tunnel that has a connector somewhere is first marked
+  `removing`. `carryingServers` is empty for a `removing` tunnel, so the next
+  connector send tells its servers to stop (the usual remove list), and the
+  provider delete is tried by `runTunnelRemovalSweepTick` (offline sweep) after
+  each wait: 30 s, doubling, up to 10 min (`tunnel.metadata.removal` holds
+  `attempts`, `nextAt` and the plain reason, shown as a warning on the tunnel).
+  A tunnel with no connector is deleted at once; one the provider no longer has
+  (404) counts as removed. The token wipe, the run-token secret and the portals
+  go in `deleteTunnelRecord` as before; hostnames must be removed first.
+- **Tunnel status follows the connectors.** `recordTunnelStatus` (status poll) moves
+  `tunnel.status` with `nextTunnelStatus`: a connected connector makes it
+  `active`; with none connected, a down or failed one makes it `attention`; a
+  tunnel being removed keeps `removing`. An all-servers tunnel has no portal
+  rows (only `one` and `chosen` store them), so the answer is applied to the
+  tunnel directly and a down answer only moves it off `pending`. Only a server
+  that carries the tunnel (`carryingServers`) can move it.
 - `carrier` is unique on (organization, provider, external account id); a
   provider with no account stores NULL, and NULLs never collide.
 
@@ -261,11 +287,27 @@ provider accounts.
   datacenter addresses and is sent only when there are real peers. A doorway with
   `isLocalOnly = false` goes in `openHostnames` (lock off for that name). Only the
   hosting's own non-removing doorways of the same organization count.
+  A doorway put on the tunnel before the site has the name has no `hostingId`
+  yet (the sweep and the resend fill it in later); the lock is built before
+  that, so `loadNameLock` also takes the organization's non-removing doorways
+  that have no site and whose name (compared without case) the deploying
+  hosting lists (`unlinkedDoorwayNamed`). It is read only (a deploy
+  preparation writes nothing), and a doorway already linked to another site is
+  never taken. Without it the first deploy sent no lock.
   Refused with 409: `tunnel_daemon_too_old` (the daemon lacks
   `tunnel-forwarding-v1` and the hosting has a locked name; an all-public hosting is
   allowed and sends nothing) and `tunnel_name_public_certificate` (a locked name
-  pinned to a public Let's Encrypt certificate; the daemon contract needs every
-  name open in that mode).
+  pinned to a public Let's Encrypt certificate while the hosting also serves
+  ordinary public names; the daemon contract needs every name open in that mode).
+  The names counted are those the certificate would cover
+  (`hostingCertificateNames`): under a `www` mode the other spelling is served or
+  redirected too, is not a tunnel name unless typed as one, and so counts as a
+  public name.
+  A tunnel block never asks for a public certificate: when every name the
+  hosting serves is a locked tunnel name, the pin (the Let's Encrypt box that
+  switches on when a hostname is typed) is set aside for the deploy
+  (`dropPublicCertificate`: no `tlsMode` on the wire, internal certificate) and
+  nothing is refused.
   **The lock follows the next deploy.** Adding or removing a carrier changes the
   peer set, but nothing redeploys the site by itself: until the site is deployed
   again, a newly added carrier's forwards to that server are dropped (closed, not

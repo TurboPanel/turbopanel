@@ -251,15 +251,115 @@ test('an older daemon refuses a locked name and ignores an all-public hosting', 
   })
 })
 
-test('a name that is also public stays open, and a public certificate on a locked name is refused', async () => {
+test('a name that is also public stays open, and a public certificate pin on a locked name is set aside when every name is tunnel-only', async () => {
   await withSite({ hereFeatures: [TUNNEL_FORWARDING_FEATURE] }, async (c) => {
     await addDoorway(c)
+    // Every name the hosting serves is a locked tunnel name: it deploys on the internal certificate.
     assertEquals(await resolveDeployNameLock(c.db, { ...params(c), tlsMode: 'acme' }), {
-      refusal: { code: 'tunnel_name_public_certificate', hostnames: [NAME] },
+      tunnel: { hostnames: [NAME], peers: ['10.95.0.11'], extraBind: ['10.95.0.10'] },
+      dropPublicCertificate: true,
     })
+    // The hosting also serves an ordinary public name: the pin cannot be set aside, so it is refused.
+    assertEquals(
+      await resolveDeployNameLock(c.db, {
+        ...params(c),
+        siteHostnames: [NAME, 'www.other.example.org'],
+        tlsMode: 'acme',
+      }),
+      { refusal: { code: 'tunnel_name_public_certificate', hostnames: [NAME] } }
+    )
     await c.db.update(doorway).set({ isLocalOnly: false }).where(eq(doorway.hostname, NAME))
     const open = await resolveDeployNameLock(c.db, { ...params(c), tlsMode: 'acme' })
     assertEquals('tunnel' in open ? open.tunnel?.openHostnames : undefined, [NAME])
+    assertEquals('tunnel' in open ? open.dropPublicCertificate : 'refused', undefined)
+  })
+})
+
+test('a name put on the tunnel before the site had it is locked on the very first deploy', async () => {
+  await withSite({ hereFeatures: [TUNNEL_FORWARDING_FEATURE] }, async (c) => {
+    // The doorway has no site yet (the site gets the name later); the sweep has not run.
+    await addDoorway(c, { hostingId: null })
+    const result = await resolveDeployNameLock(c.db, params(c))
+    assertEquals(result, {
+      tunnel: { hostnames: [NAME], peers: ['10.95.0.11'], extraBind: ['10.95.0.10'] },
+    })
+    // Read only: the link to the site is filled in later by the sweep and the resend.
+    const [row] = await c.db.select().from(doorway).where(eq(doorway.tunnelId, c.tunnelId))
+    assertEquals(row?.hostingId, null)
+  })
+})
+
+test('a name already linked to another site of the organization is not taken by a second site that lists it', async () => {
+  await withSite({ hereFeatures: [TUNNEL_FORWARDING_FEATURE] }, async (c) => {
+    await addDoorway(c)
+    const [first] = await c.db
+      .select({ serviceId: hosting.serviceId })
+      .from(hosting)
+      .where(eq(hosting.id, c.hostingId))
+    const [svc] = await c.db
+      .select({ environmentId: service.environmentId })
+      .from(service)
+      .where(eq(service.id, first!.serviceId))
+    const [second] = await c.db
+      .insert(service)
+      .values({ environmentId: svc!.environmentId, composeServiceName: 'web2' })
+      .returning({ id: service.id })
+    const [other] = await c.db
+      .insert(hosting)
+      .values({ serviceId: second!.id, options: { hostnames: [NAME] } })
+      .returning({ id: hosting.id })
+    assertEquals(await resolveDeployNameLock(c.db, { ...params(c), hostingId: other!.id }), {
+      tunnel: undefined,
+    })
+    // The site that holds the link still gets its lock.
+    assertEquals('tunnel' in (await resolveDeployNameLock(c.db, params(c))), true)
+  })
+})
+
+test('a www mode makes the other spelling a public name, so a public certificate pin is refused unless the mode is off', async () => {
+  await withSite({ hereFeatures: [TUNNEL_FORWARDING_FEATURE] }, async (c) => {
+    await addDoorway(c)
+    const pinned = { ...params(c), tlsMode: 'acme' as const }
+    for (const www of ['both', 'www-to-root', 'root-to-www'] as const) {
+      assertEquals(await resolveDeployNameLock(c.db, { ...pinned, www }), {
+        refusal: { code: 'tunnel_name_public_certificate', hostnames: [NAME] },
+      })
+    }
+    const off = await resolveDeployNameLock(c.db, { ...pinned, www: 'off' })
+    assertEquals('tunnel' in off ? off.dropPublicCertificate : undefined, true)
+    const none = await resolveDeployNameLock(c.db, pinned)
+    assertEquals('tunnel' in none ? none.dropPublicCertificate : undefined, true)
+    // The sibling spelling typed too and on the tunnel: every name is a locked tunnel name.
+    await addDoorway(c, { hostname: `www.${NAME}` })
+    const both = await resolveDeployNameLock(c.db, {
+      ...pinned,
+      siteHostnames: [NAME, `www.${NAME}`],
+      www: 'both',
+    })
+    assertEquals('tunnel' in both ? both.dropPublicCertificate : undefined, true)
+  })
+})
+
+test('the first deploy finds the doorway by the site’s own spelling of the name, and ignores another organization’s doorway', async () => {
+  await withSite({ hereFeatures: [TUNNEL_FORWARDING_FEATURE] }, async (c) => {
+    await addDoorway(c, { hostingId: null })
+    const result = await resolveDeployNameLock(c.db, {
+      ...params(c),
+      siteHostnames: ['Shop.Example.COM'],
+    })
+    assertEquals('tunnel' in result ? result.tunnel?.hostnames : undefined, ['Shop.Example.COM'])
+    await c.db.delete(doorway).where(eq(doorway.tunnelId, c.tunnelId))
+
+    const [other] = await c.db.insert(organization).values({ name: 'Other Claim Org' }).returning()
+    try {
+      await addDoorway(c, { routingOrganizationId: other!.id, hostingId: null })
+      assertEquals(await resolveDeployNameLock(c.db, params(c)), { tunnel: undefined })
+      const [row] = await c.db.select().from(doorway).where(eq(doorway.tunnelId, c.tunnelId))
+      assertEquals(row?.hostingId, null)
+    } finally {
+      await c.db.delete(doorway).where(eq(doorway.tunnelId, c.tunnelId))
+      await c.db.delete(organization).where(eq(organization.id, other!.id))
+    }
   })
 })
 

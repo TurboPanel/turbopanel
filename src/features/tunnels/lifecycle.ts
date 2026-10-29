@@ -4,7 +4,7 @@
  * The provider is only reached through an adapter and a token opened here for
  * the call; nothing here returns a token.
  */
-import { and, asc, eq, inArray, isNotNull } from 'drizzle-orm'
+import { and, asc, eq, inArray, isNotNull, ne, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import {
   badge,
@@ -142,6 +142,8 @@ export async function listPortals(db: Db, tunnelId: string): Promise<PortalRow[]
 
 /** The servers that run a connector for a tunnel right now. */
 export async function carryingServers(db: Db, row: TunnelRow): Promise<string[]> {
+  // A tunnel being removed runs no connector: they are told to stop before it is deleted.
+  if (row.status === 'removing') return []
   const [portals, never, inDatacenter] = await Promise.all([
     listPortals(db, row.id),
     neverCarryingServerIds(db, row.organizationId),
@@ -181,7 +183,7 @@ export async function toApiTunnel(db: Db, row: TunnelRow): Promise<ApiTunnel> {
       connectorVersion: p.connectorVersion,
     })),
     carryingServerIds: carrying,
-    warnings: placementWarnings(carrying),
+    warnings: [...removalWarnings(row), ...placementWarnings(carrying)],
     doorwayCount: doorways.length,
   }
 }
@@ -358,6 +360,7 @@ export async function updatePlacement(
   input: PlacementInput,
   datacenterId: string | null
 ): Promise<TunnelRow> {
+  assertNotRemoving(row)
   // Same rule as create: only an all-servers tunnel keeps a datacenter.
   const dcId = input.placement === 'all' ? (datacenterId ?? row.datacenterId) : null
   const targets = await checkPlacementTargets(db, row.organizationId, input, dcId)
@@ -514,39 +517,179 @@ export function providerRefusal(err: unknown): unknown {
   return err
 }
 
-/** Remove a tunnel: refused while it carries hostnames, otherwise gone at the provider, then here. */
+export type RemovalOutcome = 'removed' | 'removing'
+
+/** The wait before the next try, doubling from 30 seconds up to ten minutes. */
+export function removalBackoffMs(attempts: number): number {
+  return Math.min(30_000 * 2 ** Math.max(0, attempts - 1), 10 * 60_000)
+}
+
+type RemovalState = { attempts: number; nextAt: string; error: string }
+
+function readRemovalState(metadata: unknown): RemovalState | null {
+  const raw = (metadata as { removal?: Partial<RemovalState> } | null)?.removal
+  if (
+    raw &&
+    typeof raw.attempts === 'number' &&
+    typeof raw.nextAt === 'string' &&
+    typeof raw.error === 'string'
+  ) {
+    return { attempts: raw.attempts, nextAt: raw.nextAt, error: raw.error }
+  }
+  return null
+}
+
+function removalWarnings(row: Pick<TunnelRow, 'status' | 'metadata'>): string[] {
+  if (row.status !== 'removing') return []
+  const state = readRemovalState(row.metadata)
+  if (state === null) return ['This Tunnel is being removed. Its connectors are stopping first.']
+  return [`Removing this Tunnel is waiting: ${state.error}`]
+}
+
+async function noteRemovalWaiting(
+  db: Db,
+  row: Pick<TunnelRow, 'id' | 'metadata'>,
+  error: string,
+  now: Date
+): Promise<void> {
+  const attempts = (readRemovalState(row.metadata)?.attempts ?? 0) + 1
+  const state: RemovalState = {
+    attempts,
+    nextAt: new Date(now.getTime() + removalBackoffMs(attempts)).toISOString(),
+    error,
+  }
+  await db
+    .update(tunnel)
+    .set({
+      metadata: sql`jsonb_set(coalesce(${tunnel.metadata}, '{}'::jsonb), '{removal}', ${JSON.stringify(state)}::jsonb)`,
+    })
+    .where(eq(tunnel.id, row.id))
+}
+
+function removalWaitingText(err: unknown): string {
+  if (err instanceof TunnelProviderError && err.code === 'conflict') {
+    return 'Cloudflare still sees a connector for it. The connectors are being stopped and the removal finishes on its own.'
+  }
+  if (err instanceof TunnelProviderError) return err.message
+  return 'The removal could not be finished yet. It is tried again shortly.'
+}
+
+/**
+ * Finish removing a tunnel that is marked `removing`: delete it at the provider,
+ * then here with its sealed run token. The provider refuses (409) while a
+ * connector is still connected, and may be out of reach or the token may have
+ * changed; none of that loses the tunnel. It stays `removing` with the reason
+ * shown, and the sweep tries again after a growing wait. A tunnel the provider
+ * no longer has counts as removed.
+ */
+export async function finishTunnelRemoval(
+  db: Db,
+  deps: { adapter: TunnelAdapter; secrets: DerivedSecretsConfig },
+  row: TunnelRow,
+  owner: CarrierRow | null,
+  now: Date = new Date()
+): Promise<RemovalOutcome> {
+  // Never reached the provider: nothing there to take down.
+  if (!row.externalId) {
+    await deleteTunnelRecord(db, row)
+    return 'removed'
+  }
+  // A hostname added in the wait would be left routed with a DNS name nobody tracks.
+  if ((await listDoorways(db, row.id)).length > 0) {
+    await noteRemovalWaiting(
+      db,
+      row,
+      'This Tunnel still carries hostnames. Remove them and the removal finishes on its own.',
+      now
+    )
+    return 'removing'
+  }
+  const token = owner ? await openCarrierToken(db, deps.secrets, owner.id, { tunnels: true }) : null
+  if (!owner || !token) {
+    await noteRemovalWaiting(
+      db,
+      row,
+      owner
+        ? 'No API Token on this Carrier can remove Tunnels. Add or fix one and it finishes on its own.'
+        : 'The provider account of this Tunnel is not connected here. Connect it again, or remove the Tunnel at the provider yourself.',
+      now
+    )
+    return 'removing'
+  }
+  try {
+    await deps.adapter.deleteTunnel(token, {
+      accountId: owner.externalAccountId,
+      externalId: row.externalId,
+    })
+  } catch (err) {
+    if (!(err instanceof TunnelProviderError && err.code === 'not_found')) {
+      await noteRemovalWaiting(db, row, removalWaitingText(err), now)
+      return 'removing'
+    }
+  }
+  await deleteTunnelRecord(db, row)
+  return 'removed'
+}
+
+/**
+ * Remove a tunnel: refused while it carries hostnames. A tunnel with a
+ * connector somewhere is marked `removing` first, which tells its servers to
+ * stop (they leave `carryingServers`); the provider only lets go of a tunnel
+ * with no connected connector, so the delete is finished by the sweep. A tunnel
+ * with nothing running is deleted at once.
+ */
 export async function deleteTunnel(
   db: Db,
   deps: { adapter: TunnelAdapter; secrets: DerivedSecretsConfig },
   row: TunnelRow,
   owner: CarrierRow | null
-): Promise<void> {
-  if ((await listDoorways(db, row.id)).length > 0) {
+): Promise<RemovalOutcome> {
+  if ((await listDoorways(db, row.id)).length > 0) throw tunnelInUse()
+  if (!row.externalId) return await finishTunnelRemoval(db, deps, row, owner)
+  if (owner && !(await openCarrierToken(db, deps.secrets, owner.id, { tunnels: true }))) {
     throw new TunnelRefusal(
-      'tunnel_in_use',
+      'badge_cannot_tunnel',
       409,
-      'This Tunnel still carries hostnames. Remove them first.'
+      'No API Token on this Carrier can remove Tunnels'
     )
   }
-  if (owner && row.externalId) {
-    const token = await openCarrierToken(db, deps.secrets, owner.id, { tunnels: true })
-    if (!token) {
-      throw new TunnelRefusal(
-        'badge_cannot_tunnel',
-        409,
-        'No API Token on this Carrier can remove Tunnels'
+  const carrying = await carryingServers(db, row)
+  // One guarded statement: it marks the tunnel only if no hostname is on it at
+  // this moment, so a hostname added at the same time is refused or refuses us.
+  const [marked] = await db
+    .update(tunnel)
+    .set({ status: 'removing' })
+    .where(
+      and(
+        eq(tunnel.id, row.id),
+        ne(tunnel.status, 'removing'),
+        sql`NOT EXISTS (SELECT 1 FROM doorway d WHERE d.tunnel_id = ${tunnel.id})`
       )
-    }
-    try {
-      await deps.adapter.deleteTunnel(token, {
-        accountId: owner.externalAccountId,
-        externalId: row.externalId,
-      })
-    } catch (err) {
-      throw providerRefusal(err)
-    }
+    )
+    .returning()
+  const current = marked ?? (row.status === 'removing' ? row : undefined)
+  if (current === undefined) throw tunnelInUse()
+  if (carrying.length > 0 || !owner) return 'removing'
+  return await finishTunnelRemoval(db, deps, current, owner)
+}
+
+function tunnelInUse(): TunnelRefusal {
+  return new TunnelRefusal(
+    'tunnel_in_use',
+    409,
+    'This Tunnel still carries hostnames. Remove them first.'
+  )
+}
+
+/** A tunnel being removed takes no new hostnames and no placement change. */
+function assertNotRemoving(row: Pick<TunnelRow, 'status'>): void {
+  if (row.status === 'removing') {
+    throw new TunnelRefusal(
+      'tunnel_removing',
+      409,
+      'This Tunnel is being removed. Use another Tunnel, or wait until it is gone.'
+    )
   }
-  await deleteTunnelRecord(db, row)
 }
 
 // ---------------------------------------------------------------------------
@@ -627,6 +770,7 @@ export async function addDoorway(
   owner: CarrierRow,
   input: { hostname: string; isLocalOnly: boolean }
 ): Promise<DoorwayRow> {
+  assertNotRemoving(row)
   if (!row.externalId) {
     throw new TunnelRefusal(
       'tunnel_not_ready',
@@ -662,6 +806,13 @@ export async function addDoorway(
     await hostingOfName(db, row.routingOrganizationId, input.hostname)
   )
   try {
+    // A removal that started while this add was running: take the row back before anything is routed.
+    const [now] = await db
+      .select({ status: tunnel.status })
+      .from(tunnel)
+      .where(eq(tunnel.id, row.id))
+      .limit(1)
+    assertNotRemoving({ status: now?.status ?? 'removing' })
     return await publishDoorway(db, deps.adapter, { row, token, account, zone, dnsToken }, created)
   } catch (err) {
     await db.delete(doorway).where(eq(doorway.id, created.id))

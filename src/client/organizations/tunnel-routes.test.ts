@@ -41,6 +41,10 @@ import { ORG_ID_HEADER } from '../org-context.ts'
 import { insertBadge, insertCarrier, sealToken } from '../../features/tunnels/records.ts'
 import { loadRoutingFacts } from '../../features/tunnels/route-facts.ts'
 import { NO_CAPABILITIES } from '../../features/tunnels/vocabulary.ts'
+import { carryingServers } from '../../features/tunnels/lifecycle.ts'
+import { createTunnelAdapterRegistry } from '../../features/tunnels/registry.ts'
+import { runTunnelRemovalSweepTick } from '../../features/tunnels/removal.ts'
+import { recordTunnelStatus } from '../../features/tunnels/status.ts'
 import { registerOrganizationTunnelRoutes } from './tunnel-routes.ts'
 
 /**
@@ -68,6 +72,8 @@ const provider = {
   failRoutes: false,
   failTunnelCreate: false,
   failDnsDelete: false,
+  /** How many times the provider still refuses to delete a tunnel that has connectors. */
+  tunnelDeleteConflicts: 0,
   tunnelCount: 0,
 }
 
@@ -101,6 +107,13 @@ const fakeProvider: typeof fetch = async (input, init) => {
   }
   if (path === '/zones/zone-1/dns_records') return ok([])
   if (/^\/accounts\/[a-z]{32}\/cfd_tunnel\/tunnel-ext-\d+$/.test(path) && method === 'DELETE') {
+    if (provider.tunnelDeleteConflicts > 0) {
+      provider.tunnelDeleteConflicts -= 1
+      return refused(
+        409,
+        'This tunnel has active connections. Please stop all cloudflared replicas'
+      )
+    }
     return ok({})
   }
   return refused(404, 'not found')
@@ -189,6 +202,7 @@ async function withFixture(fn: (fixture: Fixture) => Promise<void>): Promise<voi
   provider.failRoutes = false
   provider.failTunnelCreate = false
   provider.failDnsDelete = false
+  provider.tunnelDeleteConflicts = 0
   provider.tunnelCount = 0
   const db = createDenoDb()
   const secretsConfig = parseTestSecretsConfig('deno')
@@ -303,6 +317,11 @@ async function call(
     text,
     body: text ? (JSON.parse(text) as Record<string, unknown>) : {},
   }
+}
+
+/** What the removal sweep needs, with the faked provider standing in for the real one. */
+function removalDeps(f: Fixture) {
+  return { secrets: f.secrets, registry: createTunnelAdapterRegistry(fakeProvider) }
 }
 
 async function makeTunnel(f: Fixture, extra: Record<string, unknown> = {}): Promise<string> {
@@ -540,8 +559,16 @@ test('a hostname gets its route and its DNS name, and removing it takes both awa
       0
     )
 
+    // The tunnel runs on servers, so it is marked removing first; the provider only
+    // lets go of it once the connectors have stopped, and the sweep finishes that.
     const gone = await call(f, 'DELETE', `/organizations/${f.orgA}/tunnels/${id}`, f.managerCookie)
     assertEquals(gone.status, 200, gone.text)
+    assertEquals(gone.body.removing, true)
+    assert(!provider.calls.includes('DELETE /accounts/' + ACCOUNT + '/cfd_tunnel/tunnel-ext-1'))
+    const [marked] = await f.db.select().from(tunnel).where(eq(tunnel.organizationId, f.orgA))
+    assertEquals(marked?.status, 'removing')
+    const finished = await runTunnelRemovalSweepTick(f.db, removalDeps(f))
+    assertEquals(finished, { removed: 1, waiting: 0 })
     assert(provider.calls.includes('DELETE /accounts/' + ACCOUNT + '/cfd_tunnel/tunnel-ext-1'))
     assertEquals(
       (await f.db.select().from(tunnel).where(eq(tunnel.organizationId, f.orgA))).length,
@@ -550,6 +577,214 @@ test('a hostname gets its route and its DNS name, and removing it takes both awa
     assertEquals(
       (await f.db.select().from(secret).where(eq(secret.organizationId, f.orgA))).length,
       1
+    )
+  })
+})
+
+test('a tunnel whose connectors are still running is removed once the provider lets go, with growing waits', async () => {
+  await withFixture(async (f) => {
+    const id = await makeTunnel(f)
+    provider.tunnelDeleteConflicts = 2
+    const t0 = new Date('2026-10-28T20:00:00Z')
+    const minutes = (n: number) => new Date(t0.getTime() + n * 60_000)
+
+    const gone = await call(f, 'DELETE', `/organizations/${f.orgA}/tunnels/${id}`, f.managerCookie)
+    assertEquals(gone.status, 200, gone.text)
+    assertEquals(gone.body.removing, true)
+
+    // It carries no connector any more, so its servers are told to stop.
+    const [row] = await f.db.select().from(tunnel).where(eq(tunnel.id, id))
+    assertEquals(await carryingServers(f.db, row!), [])
+
+    // Try 1: the provider still sees a connector (409). The tunnel stays, with the reason.
+    assertEquals(await runTunnelRemovalSweepTick(f.db, removalDeps(f), t0), {
+      removed: 0,
+      waiting: 1,
+    })
+    const shown = await call(f, 'GET', `/organizations/${f.orgA}/tunnels`, f.managerCookie)
+    const listed = (shown.body.tunnels as Array<{ status: string; warnings: string[] }>)[0]
+    assertEquals(listed?.status, 'removing')
+    assert(listed?.warnings.some((w) => w.includes('still sees a connector')))
+
+    // Not due yet: nothing is tried inside the wait.
+    const before = provider.calls.length
+    assertEquals(await runTunnelRemovalSweepTick(f.db, removalDeps(f), minutes(0.2)), {
+      removed: 0,
+      waiting: 0,
+    })
+    assertEquals(provider.calls.length, before)
+
+    // Try 2 after the first wait: refused again.
+    assertEquals(await runTunnelRemovalSweepTick(f.db, removalDeps(f), minutes(1)), {
+      removed: 0,
+      waiting: 1,
+    })
+    // Try 3 after the longer wait: the provider has let go.
+    assertEquals(await runTunnelRemovalSweepTick(f.db, removalDeps(f), minutes(5)), {
+      removed: 1,
+      waiting: 0,
+    })
+    assertEquals(
+      (await f.db.select().from(tunnel).where(eq(tunnel.organizationId, f.orgA))).length,
+      0
+    )
+  })
+})
+
+test('a tunnel is active once a connector reported in, also when it has no portal rows', async () => {
+  await withFixture(async (f) => {
+    const id = await makeTunnel(f)
+    const report = (serverId: string, status: 'connected' | 'failed') =>
+      recordTunnelStatus(f.db, serverId, {
+        pinnedVersion: '2026.5.2',
+        connectors: [{ tunnelId: 'tunnel-ext-1', status, version: '2026.5.2', slot: 'a' }],
+      })
+    const status = async (tunnelId: string) =>
+      (
+        (await call(f, 'GET', `/organizations/${f.orgA}/tunnels/${tunnelId}`, f.managerCookie)).body
+          .tunnel as { status: string }
+      ).status
+    assertEquals(await status(id), 'pending')
+    await report(f.servers[0], 'failed')
+    assertEquals(await status(id), 'attention')
+    await report(f.servers[1], 'connected')
+    assertEquals(await status(id), 'active')
+
+    // A server that does not carry the tunnel has no say in its status.
+    await f.db.update(tunnel).set({ status: 'pending' }).where(eq(tunnel.id, id))
+    await report(f.servers[2], 'connected')
+    assertEquals(await status(id), 'pending')
+
+    // An all-servers tunnel has no portal rows: the answer still moves it.
+    await f.db.delete(portal).where(eq(portal.tunnelId, id))
+    await f.db
+      .update(tunnel)
+      .set({ status: 'pending', placement: 'all', datacenterId: f.datacenterId })
+      .where(eq(tunnel.id, id))
+    await report(f.servers[2], 'connected')
+    assertEquals(await status(id), 'active')
+  })
+})
+
+test('a tunnel being removed takes no new hostname and no placement change', async () => {
+  await withFixture(async (f) => {
+    const id = await makeTunnel(f)
+    const gone = await call(f, 'DELETE', `/organizations/${f.orgA}/tunnels/${id}`, f.managerCookie)
+    assertEquals(gone.body.removing, true)
+    const add = await call(
+      f,
+      'POST',
+      `/organizations/${f.orgA}/tunnels/${id}/hostnames`,
+      f.managerCookie,
+      { hostname: 'late.example.com' }
+    )
+    assertEquals(add.status, 409)
+    assertEquals(add.body.error, 'tunnel_removing')
+    assertEquals(
+      (await f.db.select().from(doorway).where(eq(doorway.routingOrganizationId, f.orgA))).length,
+      0
+    )
+    const move = await call(
+      f,
+      'PUT',
+      `/organizations/${f.orgA}/tunnels/${id}/placement`,
+      f.managerCookie,
+      { placement: 'chosen', serverIds: [f.servers[2]] }
+    )
+    assertEquals(move.status, 409)
+    assertEquals(move.body.error, 'tunnel_removing')
+  })
+})
+
+test('a hostname found on a tunnel just before the provider delete keeps it, with the reason, until it is removed', async () => {
+  await withFixture(async (f) => {
+    const id = await makeTunnel(f)
+    await call(f, 'DELETE', `/organizations/${f.orgA}/tunnels/${id}`, f.managerCookie)
+    await f.db
+      .insert(doorway)
+      .values({ routingOrganizationId: f.orgA, tunnelId: id, hostname: 'sneaky.example.com' })
+    const t0 = new Date('2026-10-28T20:00:00Z')
+    assertEquals(await runTunnelRemovalSweepTick(f.db, removalDeps(f), t0), {
+      removed: 0,
+      waiting: 1,
+    })
+    assert(!provider.calls.includes('DELETE /accounts/' + ACCOUNT + '/cfd_tunnel/tunnel-ext-1'))
+    const shown = await call(f, 'GET', `/organizations/${f.orgA}/tunnels/${id}`, f.managerCookie)
+    const warnings = (shown.body.tunnel as { warnings: string[] }).warnings
+    assert(warnings.some((w) => w.includes('still carries hostnames')))
+    await f.db.delete(doorway).where(eq(doorway.tunnelId, id))
+    assertEquals(
+      await runTunnelRemovalSweepTick(f.db, removalDeps(f), new Date(t0.getTime() + 20 * 60_000)),
+      { removed: 1, waiting: 0 }
+    )
+  })
+})
+
+test('removals that are still waiting cannot starve one that is due, and a tunnel with no account stays with its reason', async () => {
+  await withFixture(async (f) => {
+    const now = new Date('2026-10-28T20:00:00Z')
+    const waiting = { removal: { attempts: 1, nextAt: '2026-10-28T23:00:00.000Z', error: 'later' } }
+    const base = {
+      organizationId: f.orgA,
+      routingOrganizationId: f.orgA,
+      provider: 'cloudflare',
+      status: 'removing',
+    }
+    await f.db.insert(tunnel).values(
+      Array.from({ length: 30 }, (_, i) => ({
+        ...base,
+        carrierId: f.carrierId,
+        name: `Waiting ${i}`,
+        externalId: `tunnel-ext-${100 + i}`,
+        metadata: waiting,
+      }))
+    )
+    await f.db.insert(tunnel).values({
+      ...base,
+      carrierId: f.carrierId,
+      name: 'Due',
+      externalId: 'tunnel-ext-1',
+    })
+    assertEquals(await runTunnelRemovalSweepTick(f.db, removalDeps(f), now), {
+      removed: 1,
+      waiting: 0,
+    })
+    assert(provider.calls.includes('DELETE /accounts/' + ACCOUNT + '/cfd_tunnel/tunnel-ext-1'))
+    assertEquals(
+      (await f.db.select().from(tunnel).where(eq(tunnel.organizationId, f.orgA))).length,
+      30
+    )
+
+    // A provider tunnel whose account is gone is not forgotten: it stays, with the reason.
+    await f.db.delete(tunnel).where(eq(tunnel.organizationId, f.orgA))
+    await f.db.insert(tunnel).values({
+      ...base,
+      carrierId: null,
+      name: 'No account',
+      externalId: 'tunnel-ext-2',
+    })
+    assertEquals(await runTunnelRemovalSweepTick(f.db, removalDeps(f), now), {
+      removed: 0,
+      waiting: 1,
+    })
+    const [kept] = await f.db.select().from(tunnel).where(eq(tunnel.organizationId, f.orgA))
+    assert(JSON.stringify(kept?.metadata).includes('not connected here'))
+  })
+})
+
+test('a tunnel with no connector is deleted at once', async () => {
+  await withFixture(async (f) => {
+    const id = await makeTunnel(f)
+    // Take every server off the tunnel's portals so nothing runs it.
+    await f.db.delete(portal).where(eq(portal.tunnelId, id))
+    await f.db.update(tunnel).set({ placement: 'chosen' }).where(eq(tunnel.id, id))
+    const gone = await call(f, 'DELETE', `/organizations/${f.orgA}/tunnels/${id}`, f.managerCookie)
+    assertEquals(gone.status, 200, gone.text)
+    assertEquals(gone.body.removing, false)
+    assert(provider.calls.includes('DELETE /accounts/' + ACCOUNT + '/cfd_tunnel/tunnel-ext-1'))
+    assertEquals(
+      (await f.db.select().from(tunnel).where(eq(tunnel.organizationId, f.orgA))).length,
+      0
     )
   })
 })

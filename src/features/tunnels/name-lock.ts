@@ -6,10 +6,11 @@
  * open to everyone. Servers that forward here are the other servers that carry
  * the same tunnel, by their exact datacenter addresses.
  */
-import { and, eq, ne } from 'drizzle-orm'
+import { and, eq, inArray, ne, or, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { doorway } from '../../db/schema.ts'
 import type { EnvironmentDeployHostingTunnel } from '../../contracts/commands/tunnel-routes.ts'
+import { hostingCertificateNames, type HostingWwwMode } from '../../contracts/commands/hostname.ts'
 import { TUNNEL_TABLE_CAPS } from './route-builder.ts'
 import { compareText } from './order.ts'
 import { daemonCanCarryTunnels } from './daemon-gate.ts'
@@ -80,6 +81,21 @@ export function buildNameLock(input: NameLockInput): NameLock {
   return { lockedHostnames: locked, tunnel }
 }
 
+/**
+ * A doorway with no site yet whose name the deploying hosting lists. A name may
+ * be put on a tunnel before the site has it, and the link to the site is only
+ * filled in after a deploy (by the sweep and the resend), so the first deploy
+ * finds the doorway by the name instead. Read only: a doorway already linked to
+ * another site is never taken, and nothing is written from a deploy preparation.
+ */
+function unlinkedDoorwayNamed(siteHostnames: readonly string[]) {
+  const names = [...new Set(siteHostnames.map((name) => name.toLowerCase()))]
+  return and(
+    sql`${doorway.hostingId} IS NULL`,
+    names.length > 0 ? inArray(sql`lower(${doorway.hostname})`, names) : sql`false`
+  )
+}
+
 /** The lock for one hosting of an organization on one server. Hostings with no doorway cost one query. */
 export async function loadNameLock(
   db: Db,
@@ -99,9 +115,9 @@ export async function loadNameLock(
     .from(doorway)
     .where(
       and(
-        eq(doorway.hostingId, params.hostingId),
         eq(doorway.routingOrganizationId, params.organizationId),
-        ne(doorway.status, 'removing')
+        ne(doorway.status, 'removing'),
+        or(eq(doorway.hostingId, params.hostingId), unlinkedDoorwayNamed(params.siteHostnames))
       )
     )
   if (rows.length === 0) return { lockedHostnames: [], tunnel: undefined }
@@ -127,11 +143,41 @@ export type NameLockRefusal = {
 }
 
 /**
+ * Is every name the hosting's certificate would cover a locked tunnel name?
+ * That is the typed names and, under a `www` mode, their other spelling, served
+ * or only redirected. The other spelling is never a tunnel name unless it was
+ * typed too, so it counts as an ordinary public name. Compared without case.
+ */
+function everyNameLocked(
+  siteHostnames: readonly string[],
+  www: HostingWwwMode | undefined,
+  locked: readonly string[]
+): boolean {
+  const lockedLower = new Set(locked.map((name) => name.toLowerCase()))
+  return hostingCertificateNames({ hostnames: siteHostnames, www }).every((name) =>
+    lockedLower.has(name.toLowerCase())
+  )
+}
+
+export type DeployNameLock = {
+  tunnel: EnvironmentDeployHostingTunnel | undefined
+  /** The hosting was pinned to a public certificate; its names are all tunnel-only, so it deploys on the internal one. */
+  dropPublicCertificate?: true
+}
+
+/**
  * What a deploy sends as `hostings[].tunnel`, or why it must be refused. An
  * older daemon would serve a locked name to everyone, so a hosting with a
  * locked name waits until the server's daemon carries tunnels; a hosting whose
- * names are all public needs nothing from it. A name pinned to a public
- * certificate (`acme`) is public by choice and cannot also be locked.
+ * names are all public needs nothing from it.
+ *
+ * A tunnel block never asks for a public certificate, and a public certificate
+ * is one choice for the whole hosting. When every name the hosting serves is a
+ * locked tunnel name, a Let's Encrypt pin (the box that switches on by itself
+ * when a hostname is typed) is set aside and the hosting deploys on the
+ * internal certificate: nothing else could have used it. When the hosting also
+ * serves ordinary public names, the pin cannot be set aside, and the deploy is
+ * refused with the locked names so the owner can choose.
  */
 export async function resolveDeployNameLock(
   db: Db,
@@ -140,13 +186,16 @@ export async function resolveDeployNameLock(
     serverId: string
     hostingId: string
     siteHostnames: readonly string[]
+    /** The hosting's `www` mode: the other spelling of each name is served or redirected too. */
+    www?: HostingWwwMode
     tlsMode: 'acme' | undefined
   }
-): Promise<{ tunnel: EnvironmentDeployHostingTunnel | undefined } | { refusal: NameLockRefusal }> {
+): Promise<DeployNameLock | { refusal: NameLockRefusal }> {
   const lock = await loadNameLock(db, params)
   if (lock.tunnel === undefined) return { tunnel: undefined }
   const locked = lock.lockedHostnames
-  if (params.tlsMode === 'acme' && locked.length > 0) {
+  const acmePinned = params.tlsMode === 'acme' && locked.length > 0
+  if (acmePinned && !everyNameLocked(params.siteHostnames, params.www, locked)) {
     return { refusal: { code: 'tunnel_name_public_certificate', hostnames: locked } }
   }
   const state = await getServerDaemonStateByServerId(db, params.serverId)
@@ -154,5 +203,5 @@ export async function resolveDeployNameLock(
     if (locked.length === 0) return { tunnel: undefined }
     return { refusal: { code: 'tunnel_daemon_too_old', hostnames: locked } }
   }
-  return { tunnel: lock.tunnel }
+  return { tunnel: lock.tunnel, ...(acmePinned ? { dropPublicCertificate: true as const } : {}) }
 }
