@@ -513,6 +513,14 @@ provider_origin_managed`, `400 provider_origin_unsupported`). Deleting one from
   is renewed even when retired (verification turned off), so a server never keeps
   an expired one. Sites re-pinned by a renewal get their hostings-only apply. It
   needs the data-encryption secrets and does nothing without them.
+- **Back-off** (`origin-certificate-retry.ts`): a row whose renewal or revoke
+  fails (or that has no token able to issue) waits one hour, then two, doubling
+  to a day, kept in `metadata.originRetry` (`attempts`, `nextTryAt`; a sibling
+  of `providerOrigin` so rebuilding the link never drops it, and never copied
+  to the public row). The sweep skips rows whose time has not come. A provider
+  answer of 429 or 503 with `Retry-After` (`TunnelProviderError.retryAfterMs`)
+  is used as the wait as given, does not count as an attempt, and holds back
+  every other row of the same API Token for that long. A renewal clears it.
 - Deleting an organization removes the rows without revoking them at the
   provider.
 

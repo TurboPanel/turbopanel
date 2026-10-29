@@ -4,6 +4,7 @@
  * is sent only in the Authorization header; every error message is scrubbed
  * of it before it leaves this file.
  */
+import { throttleWaitMs } from '../../lib/http/retry-after.ts'
 import { codeForStatus, TunnelProviderError } from './errors.ts'
 
 export const CLOUDFLARE_API_BASE = 'https://api.cloudflare.com/client/v4'
@@ -98,7 +99,8 @@ export class CloudflareClient {
         codeForStatus(response.status),
         `Cloudflare refused the request (${response.status})${suffix}`,
         response.status,
-        [this.#token]
+        [this.#token],
+        throttleWaitMs(response)
       )
     }
     return { result: envelope?.result ?? null, totalPages: envelope?.result_info?.total_pages ?? 1 }

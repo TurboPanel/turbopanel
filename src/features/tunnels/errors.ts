@@ -18,17 +18,21 @@ export type TunnelErrorCode =
 export class TunnelProviderError extends Error {
   readonly code: TunnelErrorCode
   readonly status: number | null
+  /** How long the provider asked callers to wait (429 or 503 with `Retry-After`); null when it did not say. */
+  readonly retryAfterMs: number | null
 
   constructor(
     code: TunnelErrorCode,
     message: string,
     status: number | null,
-    secrets: string[] = []
+    secrets: string[] = [],
+    retryAfterMs: number | null = null
   ) {
     super(clip(scrubSecrets(message, secrets)))
     this.name = 'TunnelProviderError'
     this.code = code
     this.status = status
+    this.retryAfterMs = retryAfterMs
   }
 }
 
