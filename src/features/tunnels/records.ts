@@ -668,15 +668,20 @@ export function pickBadges(badges: readonly BadgeRow[], need: BadgeNeed): BadgeP
     return need.capability === 'tunnels' ? caps.tunnels : caps[need.capability].length > 0
   })
   if (need.capability === 'tunnels') {
-    return { badges: withRight.sort(byRecency), missing: withRight.length ? null : 'capability' }
+    return {
+      badges: withRight.toSorted(byRecency),
+      missing: withRight.length ? null : 'capability',
+    }
   }
   const { capability, zone } = need
   const covering = withRight.filter((b) =>
     capabilitiesOfRow(b)[capability].some((z) => z.id === zone.id)
   )
   if (covering.length > 0) {
-    covering.sort((a, b) => scopeSize(a, capability) - scopeSize(b, capability) || byRecency(a, b))
-    return { badges: covering, missing: null }
+    const ordered = covering.toSorted(
+      (a, b) => scopeSize(a, capability) - scopeSize(b, capability) || byRecency(a, b)
+    )
+    return { badges: ordered, missing: null }
   }
   return { badges: [], missing: withRight.length ? 'zone' : 'capability' }
 }
@@ -710,6 +715,21 @@ export function findStoredZone(
   return best[0] ?? null
 }
 
+/** What a token still reaches once the provider refused one right (or the whole token). */
+function capabilitiesAfterFailure(
+  caps: BadgeCapabilities,
+  failure: {
+    capability: 'tunnels' | 'dns' | 'certificates'
+    zone: { id: string; name: string } | null
+    whole?: boolean
+  }
+): BadgeCapabilities {
+  if (failure.whole) return { tunnels: false, dns: [], certificates: [] }
+  if (failure.capability === 'tunnels') return { ...caps, tunnels: false }
+  const left = failure.zone ? caps[failure.capability].filter((z) => z.id !== failure.zone!.id) : []
+  return { ...caps, [failure.capability]: left }
+}
+
 /**
  * The provider refused a write this token needed: take that right (or that
  * zone) away from the stored scope, so no other call picks it again, and keep
@@ -725,17 +745,7 @@ export async function recordBadgeFailure(
     whole?: boolean
   }
 ): Promise<void> {
-  const caps = capabilitiesOfRow(row)
-  const next: BadgeCapabilities = failure.whole
-    ? { tunnels: false, dns: [], certificates: [] }
-    : failure.capability === 'tunnels'
-      ? { ...caps, tunnels: false }
-      : {
-          ...caps,
-          [failure.capability]: failure.zone
-            ? caps[failure.capability].filter((z) => z.id !== failure.zone!.id)
-            : [],
-        }
+  const next = capabilitiesAfterFailure(capabilitiesOfRow(row), failure)
   const usable = next.tunnels || next.dns.length > 0
   await db
     .update(badge)
