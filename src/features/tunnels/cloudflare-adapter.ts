@@ -77,6 +77,8 @@ async function reachableCertificateZones(
   zones: readonly { id: string; name: string }[]
 ): Promise<{ id: string; name: string }[]> {
   // The certificate list answers 404 or 400 as well as 403 to a token without the permission.
+  // A 400 reads as "no right" here; a truly malformed request would too, which is accepted
+  // because certificates are optional.
   const readable = async (zoneId: string): Promise<boolean> => {
     try {
       return await probe(() => api.probeCertificates(zoneId))

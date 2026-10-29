@@ -527,7 +527,14 @@ export async function recordBadgeCheck(
             },
             expiresAt: result.token.expiresAt,
           }
-        : {}),
+        : {
+            // Still stamped, so a token the provider no longer accepts is not picked
+            // again on every tick for lacking the stamp.
+            options: {
+              ...(row.options as object | null),
+              capabilityProbe: CAPABILITY_PROBE_REVISION,
+            },
+          }),
       status: result.status,
       lastCheckedAt: new Date().toISOString(),
     })

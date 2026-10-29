@@ -213,9 +213,10 @@ typed client over an injected `fetch`; tests never call the real service).
   certificates are optional. `badge.options.capabilityProbe` stamps which set
   of rights a check looked for; the daily recheck takes any token stamped lower
   (or unstamped, checked before certificates were probed) at its next tick, so
-  raise `CAPABILITY_PROBE_REVISION` whenever a check learns a new right. The accounts and zones lists may be refused to a
-  narrow token; that is treated as empty, not as a bad token, and zones the
-  person named are probed one by one instead.
+  raise `CAPABILITY_PROBE_REVISION` whenever a check learns a new right. The
+  accounts and zones lists may be refused to a narrow token; that is treated
+  as empty, not as a bad token, and zones the person named are probed one by
+  one instead.
 - Routes always point at `https://localhost`; the last ingress rule is a
   catch-all with no hostname.
 - The client never stores the platform `fetch` and calls it as a method of
