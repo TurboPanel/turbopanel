@@ -1027,6 +1027,19 @@ export function registerTlsRoutes(
         registry
       )
     }
+    // The Organization CA is replaced with Rotate and retired with POST /tls/ca/retire.
+    // Deleting it would let the next managed apply mint a new CA silently, breaking
+    // clients pinned to the old one and orphaning the server certificates it signed.
+    if (existing?.source === 'organization_ca') {
+      return c.json(
+        {
+          error: 'tls_organization_ca',
+          message:
+            "The Organization CA can't be deleted. Use Rotate on the Organization CA panel to replace it.",
+        },
+        409
+      )
+    }
 
     const result = await runHierarchyDelete(db, async (tx) => {
       await tx.delete(tls).where(eq(tls.id, id))

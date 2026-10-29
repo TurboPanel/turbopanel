@@ -109,7 +109,9 @@ caGeneration, caNotAfter }` (one
   `awaiting_retire`, gone targets `skipped` + `target_gone` do not block).
   `PATCH /tls/:id` with `revoke: true` on an Organization CA row is rejected
   (`409` `organization_ca_retire_required`); Organization CA retirement is
-  exclusively `POST /tls/ca/retire`. Orchestrator hosts hold the bundle too
+  exclusively `POST /tls/ca/retire`. `DELETE /tls/:id` on an Organization CA
+  row (active or retired) is refused too (`409` `tls_organization_ca`): a
+  deleted CA lets the next managed apply mint a new one silently. Orchestrator hosts hold the bundle too
   (`managed.ha.reconcile` → `tls/ca.pem`, read once at process start): when the
   rotate fan-out completes and again after retire, every Orchestrator host of
   the organization gets `managed.ha.reconcile`
