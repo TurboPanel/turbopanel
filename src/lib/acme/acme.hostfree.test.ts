@@ -134,3 +134,41 @@ test('an unreachable authority is reported as such', async () => {
   const err = await assertRejects(() => acme.ensureAccount(), AcmeError)
   assertEquals(err.code, 'unreachable')
 })
+
+test('a 503 with a wait carries it on every kind of request, and a bare 429 gets the default', async () => {
+  const ca = createFakeCa({ txt: () => [], busyOrders: { status: 503, retryAfter: '120' } })
+  const acme = await client(ca)
+  await acme.ensureAccount()
+  const busy = await assertRejects(() => acme.newOrder(['example.com']), AcmeError)
+  assertEquals([busy.status, busy.retryAfterMs], [503, 120_000])
+
+  // The directory and the nonce answer 503 too: the wait is carried the same way.
+  const throttled = (path: string, status: number, wait?: string) =>
+    (async (input: RequestInfo | URL, init?: RequestInit) =>
+      String(input).endsWith(path)
+        ? new Response(null, { status, headers: wait ? { 'Retry-After': wait } : {} })
+        : await ca.fetch(input, init)) as typeof fetch
+  const key = await importAccountKey(await generateAccountKeyPem())
+  const noDirectory = new AcmeClient({
+    directoryUrl: FAKE_CA_DIRECTORY,
+    key,
+    fetch: throttled('/directory', 503, '30'),
+  })
+  const first = await assertRejects(() => noDirectory.ensureAccount(), AcmeError)
+  assertEquals([first.status, first.retryAfterMs], [503, 30_000])
+  const noNonce = new AcmeClient({
+    directoryUrl: FAKE_CA_DIRECTORY,
+    key,
+    fetch: throttled('/nonce', 429),
+  })
+  const second = await assertRejects(() => noNonce.ensureAccount(), AcmeError)
+  assertEquals([second.code, second.status, second.retryAfterMs], ['rate_limited', 429, 3_600_000])
+})
+
+test('a plain server error carries no wait', async () => {
+  const ca = createFakeCa({ txt: () => [], busyOrders: { status: 500 } })
+  const acme = await client(ca)
+  await acme.ensureAccount()
+  const err = await assertRejects(() => acme.newOrder(['example.com']), AcmeError)
+  assertEquals([err.status, err.retryAfterMs], [500, null])
+})

@@ -248,13 +248,53 @@ test('a rate limit is waited out for as long as the authority said and is not co
     const s = await setup(db, { rateLimit: true })
     const id = ((await startDnsCertificate(s.ctx, s.input(['example.com']))) as { id: string }).id
     for (let i = 0; i < 4; i += 1) {
-      assertEquals(await advanceDnsCertificate(s.ctx, id), 'failed')
+      assertEquals(await advanceDnsCertificate(s.ctx, id), 'backoff')
       tick(s.clock, 11 * 60_000)
     }
     const row = await rowOf(db, id)
     assertEquals(row.status, 'pending')
     assertEquals(s.dns.records.size, 0)
     assert((row.metadata as { acme: { lastError: string } }).acme.lastError.includes('wait'))
+  }))
+
+test('an authority that says to wait pauses the whole organization and counts no attempt', () =>
+  withDb(async (db) => {
+    const s = await setup(db, { ca: { busyOrders: { status: 503, retryAfter: '900' } } })
+    const idA = ((await startDnsCertificate(s.ctx, s.input(['example.com']))) as { id: string }).id
+    const idB = ((await startDnsCertificate(s.ctx, s.input(['www.example.com']))) as { id: string })
+      .id
+    assertEquals(await advanceDnsCertificate(s.ctx, idA), 'backoff')
+    const state = readDnsCertState((await rowOf(db, idA)).metadata)
+    assertEquals(state?.attempts, 0)
+    assertEquals(Date.parse(state!.nextAttemptAt!) - s.clock.now.getTime(), 900_000)
+    // The other order of the organization does not even ask the authority.
+    const before = s.ca.hits.signed
+    assertEquals(await advanceDnsCertificate(s.ctx, idB), 'backoff')
+    assertEquals(s.ca.hits.signed, before)
+    assertEquals((await rowOf(db, idB)).status, 'pending')
+    assertEquals(readDnsCertState((await rowOf(db, idB)).metadata)?.attempts, 0)
+  }))
+
+test('a wait asked for in the middle of an order keeps the order and its records', () =>
+  withDb(async (db) => {
+    const s = await setup(db)
+    const id = ((await startDnsCertificate(s.ctx, s.input(['example.com']))) as { id: string }).id
+    assertEquals(await advanceDnsCertificate(s.ctx, id), 'waiting')
+    const fair = s.ctx.acmeFetch!
+    s.ctx.acmeFetch = ((input: RequestInfo | URL, init?: RequestInit) =>
+      new URL(String(input)).pathname.startsWith('/chall/')
+        ? Promise.resolve(new Response(null, { status: 503, headers: { 'Retry-After': '60' } }))
+        : fair(input, init)) as typeof fetch
+    tick(s.clock, PRESENT_GRACE_MS + 1000)
+    assertEquals(await advanceDnsCertificate(s.ctx, id), 'backoff')
+    const held = readDnsCertState((await rowOf(db, id)).metadata)
+    assert(held?.order)
+    assertEquals([held.attempts, held.records.length, s.dns.records.size], [0, 1, 1])
+    // Once the wait is over the same order carries on to a certificate.
+    s.ctx.acmeFetch = fair
+    tick(s.clock, 61_000)
+    assertEquals(await advanceDnsCertificate(s.ctx, id), 'issued')
+    assertEquals(s.dns.records.size, 0)
   }))
 
 test('a renewal signs with a new key, swaps the pair at the end and tells the sites', () =>

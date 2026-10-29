@@ -29,7 +29,7 @@ export type OrgAccount = {
 
 const directoryName = (staging: boolean) => (staging ? 'staging' : 'production')
 
-async function readRow(ctx: DnsCertContext, organizationId: string, staging: boolean) {
+async function readRow(ctx: Pick<DnsCertContext, 'db'>, organizationId: string, staging: boolean) {
   const [row] = await ctx.db
     .select()
     .from(secret)
@@ -75,7 +75,11 @@ function storedUrl(metadata: unknown): string | null {
 /** A new key for the account (the authority stopped accepting the old one); it is registered again on use. */
 async function replaceKey(ctx: DnsCertContext, id: string): Promise<void> {
   const sealed = await encryptSecret(ctx.secrets, await generateAccountKeyPem())
-  await ctx.db.update(secret).set({ secretEnvelope: sealed, metadata: {} }).where(eq(secret.id, id))
+  // The wait the authority asked for belongs to the organization, not to the key.
+  await ctx.db
+    .update(secret)
+    .set({ secretEnvelope: sealed, metadata: sql`${secret.metadata} - 'accountUrl'` })
+    .where(eq(secret.id, id))
 }
 
 /**
@@ -104,7 +108,73 @@ export async function orgAccount(
   })
   const accountUrl = await client.ensureAccount()
   if (accountUrl !== known) {
-    await ctx.db.update(secret).set({ metadata: { accountUrl } }).where(eq(secret.id, row.id))
+    await ctx.db
+      .update(secret)
+      .set({
+        metadata: sql`coalesce(${secret.metadata}, '{}'::jsonb) || ${JSON.stringify({ accountUrl })}::jsonb`,
+      })
+      .where(eq(secret.id, row.id))
   }
   return { client, sealedKey: row.secretEnvelope, accountUrl }
+}
+
+/**
+ * Hold all of an organization's work with one directory until `until`, because
+ * the authority answered 429 or 503 and said how long to wait. Kept in the
+ * account row's metadata (`pausedUntil`), beside the account address, so no
+ * table is needed; a later, longer pause is never shortened.
+ */
+export async function pauseAcme(
+  ctx: Pick<DnsCertContext, 'db'>,
+  organizationId: string,
+  staging: boolean,
+  until: Date
+): Promise<void> {
+  await ctx.db
+    .update(secret)
+    .set({
+      metadata: sql`coalesce(${secret.metadata}, '{}'::jsonb) || ${JSON.stringify({ pausedUntil: until.toISOString() })}::jsonb`,
+    })
+    .where(
+      and(
+        eq(secret.organizationId, organizationId),
+        eq(secret.provider, ACME_ACCOUNT_SECRET_PROVIDER),
+        eq(secret.name, directoryName(staging)),
+        sql`coalesce((${secret.metadata} ->> 'pausedUntil')::timestamptz, 'epoch'::timestamptz) < ${until.toISOString()}::timestamptz`
+      )
+    )
+}
+
+/** When the organization's pause with this directory ends (epoch ms), or null when there is none. */
+export async function acmePausedUntil(
+  ctx: Pick<DnsCertContext, 'db'>,
+  organizationId: string,
+  staging: boolean
+): Promise<number | null> {
+  const row = await readRow(ctx, organizationId, staging)
+  const at = (row?.metadata as { pausedUntil?: unknown } | null)?.pausedUntil
+  const parsed = typeof at === 'string' ? Date.parse(at) : Number.NaN
+  return Number.isNaN(parsed) ? null : parsed
+}
+
+/** The accounts (as `organizationId:directory`) whose pause has not ended, for a sweep to skip. */
+export async function pausedAccounts(
+  ctx: Pick<DnsCertContext, 'db'>,
+  now: Date
+): Promise<Set<string>> {
+  const rows = await ctx.db
+    .select({ organizationId: secret.organizationId, name: secret.name })
+    .from(secret)
+    .where(
+      and(
+        eq(secret.provider, ACME_ACCOUNT_SECRET_PROVIDER),
+        sql`coalesce((${secret.metadata} ->> 'pausedUntil')::timestamptz, 'epoch'::timestamptz) > ${now.toISOString()}::timestamptz`
+      )
+    )
+  return new Set(rows.map((r) => `${r.organizationId}:${r.name}`))
+}
+
+/** Key of one account in {@link pausedAccounts}. */
+export function accountKey(organizationId: string, staging: boolean): string {
+  return `${organizationId}:${directoryName(staging)}`
 }

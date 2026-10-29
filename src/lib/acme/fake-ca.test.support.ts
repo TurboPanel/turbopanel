@@ -28,6 +28,8 @@ export type FakeCaOptions = {
   txt: (name: string) => string[]
   /** Refuse new orders with a rate-limit error. */
   rateLimitOrders?: boolean
+  /** Refuse new orders with this plain status (for example 503) and an optional `Retry-After`. */
+  busyOrders?: { status: number; retryAfter?: string }
   /** Answer the first nonce-bearing request with a stale-nonce error. */
   staleNonceOnce?: boolean
   /** The order stays `processing` for this many polls after the request. */
@@ -50,6 +52,8 @@ export type FakeCa = {
   issued: string[][]
   /** Renewal-information requests received (the identifier of each). */
   renewalAsked: string[]
+  /** How many times each kind of request reached the authority. */
+  hits: { directory: number; nonce: number; renewal: number; signed: number }
   /** From now on every request signed by an account that exists is refused as deactivated. */
   deactivateAccounts: () => void
 }
@@ -117,6 +121,7 @@ export function createFakeCa(options: FakeCaOptions): FakeCa {
   const log: FakeCa['log'] = []
   const issued: string[][] = []
   const renewalAsked: string[] = []
+  const hits = { directory: 0, nonce: 0, renewal: 0, signed: 0 }
   const deactivated = new Set<string>()
   const nonces = new Set<string>()
   let stale = options.staleNonceOnce === true
@@ -226,6 +231,13 @@ export function createFakeCa(options: FakeCaOptions): FakeCa {
   }
 
   const newOrder = async (signed: Signed, headers: Record<string, string>): Promise<Response> => {
+    if (options.busyOrders) {
+      const { status, retryAfter } = options.busyOrders
+      return problem('serverInternal', 'busy', status, {
+        ...headers,
+        ...(retryAfter ? { 'Retry-After': retryAfter } : {}),
+      })
+    }
     if (options.rateLimitOrders) {
       return problem('rateLimited', 'too many new orders', 429, {
         ...headers,
@@ -307,6 +319,7 @@ export function createFakeCa(options: FakeCaOptions): FakeCa {
     else url = input instanceof URL ? input.href : input.url
     const path = new URL(url).pathname
     if (path === '/directory') {
+      hits.directory += 1
       return json({
         newNonce: `${BASE}/nonce`,
         newAccount: `${BASE}/acct`,
@@ -315,6 +328,7 @@ export function createFakeCa(options: FakeCaOptions): FakeCa {
       })
     }
     if (path.startsWith('/renewal/') && options.renewalWindow) {
+      hits.renewal += 1
       renewalAsked.push(path.slice('/renewal/'.length))
       return json({
         suggestedWindow: {
@@ -323,8 +337,11 @@ export function createFakeCa(options: FakeCaOptions): FakeCa {
         },
       })
     }
-    if (path === '/nonce')
+    if (path === '/nonce') {
+      hits.nonce += 1
       return new Response(null, { status: 200, headers: { 'Replay-Nonce': freshNonce() } })
+    }
+    hits.signed += 1
     return await handlePost(url, typeof init?.body === 'string' ? init.body : '')
   }) as typeof fetch
 
@@ -335,6 +352,7 @@ export function createFakeCa(options: FakeCaOptions): FakeCa {
     log,
     issued,
     renewalAsked,
+    hits,
     deactivateAccounts: () => {
       for (const id of accounts.keys()) deactivated.add(id)
     },

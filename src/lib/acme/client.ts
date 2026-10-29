@@ -5,6 +5,7 @@
  * never leaves the object that holds it.
  */
 import { base64urlEncode } from '../encoding/base64url.ts'
+import { isThrottleStatus, parseRetryAfterMs, throttleWaitMs } from '../http/retry-after.ts'
 import { type AcmeAccountKey, dnsChallengeValue, signJws } from './jws.ts'
 
 const REQUEST_TIMEOUT_MS = 20_000
@@ -25,13 +26,21 @@ export type AcmeErrorCode =
 /** A refusal or failure from the certificate authority, in words a person can act on. */
 export class AcmeError extends Error {
   readonly code: AcmeErrorCode
-  /** How long to wait before asking again, when the authority said. */
+  /** How long to wait before asking again, when the authority said (429 or 503 with `Retry-After`, or a rate limit). */
   readonly retryAfterMs: number | null
-  constructor(code: AcmeErrorCode, message: string, retryAfterMs: number | null = null) {
+  /** The HTTP status of the answer; null when there was none. */
+  readonly status: number | null
+  constructor(
+    code: AcmeErrorCode,
+    message: string,
+    retryAfterMs: number | null = null,
+    status: number | null = null
+  ) {
     super(message)
     this.name = 'AcmeError'
     this.code = code
     this.retryAfterMs = retryAfterMs
+    this.status = status
   }
 }
 
@@ -53,13 +62,16 @@ function problemCode(problem: Problem | null): AcmeErrorCode {
   return PROBLEM_CODES[suffix] ?? 'unknown'
 }
 
-function retryAfterMs(response: Response): number | null {
-  const header = response.headers.get('retry-after')
-  if (!header) return null
-  const seconds = Number(header)
-  if (Number.isFinite(seconds) && seconds >= 0) return Math.min(seconds * 1000, 86_400_000)
-  const at = Date.parse(header)
-  return Number.isNaN(at) ? null : Math.min(Math.max(at - Date.now(), 0), 86_400_000)
+/** An answer that is not a success on a plain endpoint (the directory, the nonce): 429 and 503 carry their wait. */
+function statusError(response: Response): AcmeError {
+  const wait = throttleWaitMs(response)
+  const limited = response.status === 429
+  return new AcmeError(
+    limited ? 'rate_limited' : 'server',
+    `The certificate authority answered ${response.status}`,
+    wait ?? (limited ? DEFAULT_RETRY_AFTER_MS : null),
+    response.status
+  )
 }
 
 export type AcmeDirectory = {
@@ -140,9 +152,7 @@ export class AcmeClient {
   async #loadDirectory(): Promise<AcmeDirectory> {
     if (this.#directory) return this.#directory
     const response = await this.#request(this.#directoryUrl, { method: 'GET' })
-    if (!response.ok) {
-      throw new AcmeError('server', `The certificate authority answered ${response.status}`)
-    }
+    if (!response.ok) throw statusError(response)
     const body = (await response.json()) as Partial<AcmeDirectory>
     if (!body.newNonce || !body.newAccount || !body.newOrder) {
       throw new AcmeError('server', 'The certificate authority sent an incomplete directory')
@@ -164,6 +174,7 @@ export class AcmeClient {
     }
     const directory = await this.#loadDirectory()
     const response = await this.#request(directory.newNonce, { method: 'HEAD' })
+    if (!response.ok) throw statusError(response)
     const nonce = response.headers.get('replay-nonce')
     if (!nonce) throw new AcmeError('server', 'The certificate authority sent no nonce')
     return nonce
@@ -193,7 +204,7 @@ export class AcmeClient {
     } catch {
       problem = null
     }
-    const raw = problemCode(problem)
+    const raw = response.status === 429 ? 'rate_limited' : problemCode(problem)
     // An account the authority has switched off is refused as unauthorized.
     const code =
       raw === 'unauthorized' && /deactivat|not valid|revoked/i.test(problem?.detail ?? '')
@@ -201,8 +212,12 @@ export class AcmeClient {
         : raw
     const detail = problem?.detail ?? `The certificate authority answered ${response.status}`
     const sub = problem?.subproblems?.find((p) => p.detail)?.detail
-    const wait = code === 'rate_limited' ? (retryAfterMs(response) ?? DEFAULT_RETRY_AFTER_MS) : null
-    return new AcmeError(code, sub ? `${detail} (${sub})` : detail, wait)
+    const asked = parseRetryAfterMs(response.headers.get('retry-after'))
+    const throttled = code === 'rate_limited' || isThrottleStatus(response.status)
+    const wait = throttled
+      ? (asked ?? (code === 'rate_limited' ? DEFAULT_RETRY_AFTER_MS : null))
+      : null
+    return new AcmeError(code, sub ? `${detail} (${sub})` : detail, wait, response.status)
   }
 
   /** POST a signed request; a stale nonce is replaced and tried once more. */

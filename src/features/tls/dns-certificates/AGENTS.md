@@ -84,7 +84,14 @@ stops with the plain-words reason and nothing is written.
 ## Waiting, limits and renewal
 
 - A refusal because of rate limits is waited out for as long as the authority
-  said. Other failures wait one hour, then two, doubling up to a day; a first
+  said. The same holds for any 429 or 503 with a `Retry-After`, on any
+  request (directory, nonce, order, challenge, certificate) and for the DNS
+  host: it is not a failed order, so the open order and its records stay, no
+  attempt is counted, and the row waits as told (`holdOrder`). An answer from the
+  authority also pauses every other order of the organization for that long,
+  kept as `pausedUntil` in the account row's metadata (`pauseAcme`), so one
+  throttled organization sends no more requests while it lasts. A validation
+  that failed is never retried before its back-off ends. Other failures wait one hour, then two, doubling up to a day; a first
   certificate gives up after three failed orders (`failed`, a person can retry
   after a quarter hour). A renewal that keeps failing keeps trying and keeps
   the certificate it has.

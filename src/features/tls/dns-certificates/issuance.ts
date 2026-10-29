@@ -22,6 +22,8 @@ import { coversAllHostnames } from '../../../lib/tls/match.ts'
 import { metadataFromParsed, splitTlsMetadata } from '../../../lib/tls/metadata.ts'
 import { parseCertificatePem } from '../../../lib/tls/parse.ts'
 import { lockOrganizationLetsEncrypt } from '../unused-letsencrypt.ts'
+import { TunnelProviderError } from '../../tunnels/errors.ts'
+import { acmePausedUntil, pauseAcme } from './account.ts'
 import {
   CLAIM_MS,
   clock,
@@ -336,6 +338,38 @@ async function step(ctx: DnsCertContext, row: TlsRow, state: DnsCertState): Prom
   return await answerChallenges(ctx, state, order)
 }
 
+/** How long the authority or the DNS host asked callers to wait, or null when this was not that kind of answer. */
+function throttleWaitOf(err: unknown): number | null {
+  if (err instanceof AcmeError || err instanceof TunnelProviderError) return err.retryAfterMs
+  return null
+}
+
+/**
+ * The authority (or the DNS host) said "slow down" and for how long. That is
+ * not a failed order: nothing is cleaned up, the open order and its progress
+ * stay, no attempt is counted, and the row waits as long as it was told. An
+ * authority answer also pauses every other order of the organization.
+ */
+async function holdOrder(
+  ctx: DnsCertContext,
+  row: TlsRow,
+  state: DnsCertState,
+  err: unknown,
+  waitMs: number
+): Promise<void> {
+  const until = new Date(clock(ctx).getTime() + waitMs)
+  const kept = new Set(state.records.map((r) => r.recordId))
+  const left = leftoverRecords(err).filter((r) => !kept.has(r.recordId))
+  if (err instanceof AcmeError) await pauseAcme(ctx, row.organizationId, state.staging, until)
+  logWarn('tls', `dns certificate order ${row.id} paused until ${until.toISOString()}`)
+  const next: DnsCertState = {
+    ...state,
+    records: [...state.records, ...left],
+    nextAttemptAt: until.toISOString(),
+  }
+  await writeState(ctx, row, next, { stage: 'backoff', lastError: plainFailure(err) })
+}
+
 function backoffFor(err: unknown, attempts: number, now: Date): string {
   const wait =
     err instanceof AcmeError && err.retryAfterMs !== null
@@ -487,6 +521,11 @@ export async function advanceDnsCertificate(
     await writeState(ctx, row, state, { stage: acmeOf(row).stage ?? 'issued' })
     return early
   }
+  const paused = await acmePausedUntil(ctx, row.organizationId, state.staging)
+  if (paused !== null && paused > clock(ctx).getTime()) {
+    await release(ctx, row.id)
+    return 'backoff'
+  }
   try {
     if (orderTimedOut(ctx, state)) {
       throw new AcmeError('server', 'The order took too long and was dropped')
@@ -504,6 +543,11 @@ export async function advanceDnsCertificate(
     await writeState(ctx, row, state, { stage: stageOf(state) })
     return 'waiting'
   } catch (err) {
+    const wait = throttleWaitOf(err)
+    if (wait !== null) {
+      await holdOrder(ctx, row, state, err, wait)
+      return 'backoff'
+    }
     await failOrder(ctx, row, state, err)
     return 'failed'
   }
