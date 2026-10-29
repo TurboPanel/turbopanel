@@ -149,8 +149,8 @@ export async function runDnsCertificateSweepTick(
   const now = clock(ctx)
   const budgetMs = options.budgetMs ?? DNS_CERT_SWEEP_BUDGET_MS
   const batch = options.batch ?? DNS_CERT_SWEEP_BATCH
-  const paused = await pausedOrganizationIds(ctx, now)
-  const scope = { organizationId: options.organizationId, pausedOrganizations: paused }
+  const paused = await pausedAccounts(ctx, now)
+  const scope = { organizationId: options.organizationId, paused }
   const upkeep = await selectDueUpkeep(
     ctx.db,
     now,
@@ -209,12 +209,6 @@ export async function runDnsCertificateSweepTick(
     { tried: out.advanced + out.failed, failed: out.failed }
   )
   return out
-}
-
-/** Organizations whose authority pause is running (either directory), so their rows are not even picked. */
-async function pausedOrganizationIds(ctx: DnsCertContext, now: Date): Promise<string[]> {
-  const keys = await pausedAccounts(ctx, now)
-  return [...new Set([...keys].map((key) => key.slice(0, key.indexOf(':'))))]
 }
 
 function tally(out: DnsCertSweepResult, outcome: AdvanceOutcome): void {

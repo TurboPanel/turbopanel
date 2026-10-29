@@ -25,7 +25,7 @@ import { parseCertificatePem } from '../../../lib/tls/parse.ts'
 import { lockOrganizationLetsEncrypt } from '../unused-letsencrypt.ts'
 import { countThrottle } from '../../../lib/throttle-counters.ts'
 import { TunnelProviderError } from '../../tunnels/errors.ts'
-import { acmePausedUntil, pauseAcme } from './account.ts'
+import { acmePausedUntil, pauseAcme, safeTimestamp } from './account.ts'
 import {
   CLAIM_MS,
   clock,
@@ -287,6 +287,11 @@ async function writeState(
     .where(eq(tls.id, row.id))
 }
 
+/** The claim end on a row, as a time; an unreadable one counts as no claim. */
+function claimedUntil() {
+  return safeTimestamp(sql`${tls.metadata} #>> '{dnsCert,claimUntil}'`)
+}
+
 async function claim(ctx: DnsCertContext, id: string): Promise<TlsRow | null> {
   const now = clock(ctx)
   const until = new Date(now.getTime() + CLAIM_MS).toISOString()
@@ -300,7 +305,7 @@ async function claim(ctx: DnsCertContext, id: string): Promise<TlsRow | null> {
         eq(tls.id, id),
         eq(tls.source, 'upload'),
         sql`${tls.metadata} #>> '{acme,managedBy}' = 'panel'`,
-        sql`coalesce((${tls.metadata} #>> '{dnsCert,claimUntil}')::timestamptz, 'epoch'::timestamptz) < ${now.toISOString()}::timestamptz`
+        sql`${claimedUntil()} < ${now.toISOString()}::timestamptz`
       )
     )
     .returning()
@@ -350,13 +355,13 @@ async function accountPaused(ctx: DnsCertContext, row: TlsRow, state: DnsCertSta
   return until !== null && until > clock(ctx).getTime()
 }
 
-/** How long the authority or the DNS host asked callers to wait, or null when this was not that kind of answer. */
 /** Count a 429 or 503 by who sent it. */
 function countAnswer(ctx: DnsCertContext, err: unknown): void {
   if (err instanceof AcmeError) countThrottle(ctx.counters, 'authority', err.status)
   else if (err instanceof TunnelProviderError) countThrottle(ctx.counters, 'cloudflare', err.status)
 }
 
+/** How long the authority or the DNS host asked callers to wait, or null when this was not that kind of answer. */
 function throttleWaitOf(err: unknown): number | null {
   if (err instanceof AcmeError || err instanceof TunnelProviderError) return err.retryAfterMs
   return null

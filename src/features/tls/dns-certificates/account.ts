@@ -10,7 +10,7 @@
  * and so the same key. Registering is safe to repeat too, because the authority
  * answers a key it already knows with the account it already made.
  */
-import { and, eq, sql } from 'drizzle-orm'
+import { and, eq, type SQL, sql } from 'drizzle-orm'
 import { secret } from '../../../db/schema.ts'
 import { AcmeClient } from '../../../lib/acme/client.ts'
 import { acmeDirectoryUrl } from '../../../lib/acme/directories.ts'
@@ -140,7 +140,7 @@ export async function pauseAcme(
         eq(secret.organizationId, organizationId),
         eq(secret.provider, ACME_ACCOUNT_SECRET_PROVIDER),
         eq(secret.name, directoryName(staging)),
-        sql`coalesce((${secret.metadata} ->> 'pausedUntil')::timestamptz, 'epoch'::timestamptz) < ${until.toISOString()}::timestamptz`
+        sql`${pausedUntilAt()} < ${until.toISOString()}::timestamptz`
       )
     )
 }
@@ -155,4 +155,37 @@ export async function acmePausedUntil(
   const at = (row?.metadata as { pausedUntil?: unknown } | null)?.pausedUntil
   const parsed = typeof at === 'string' ? Date.parse(at) : Number.NaN
   return Number.isNaN(parsed) ? null : parsed
+}
+
+/** The pause end stored on the account row, as a time (the epoch when there is none). */
+function pausedUntilAt(): SQL {
+  return safeTimestamp(sql`${secret.metadata} ->> 'pausedUntil'`)
+}
+
+/** An organization's account with one directory whose authority pause is still running. */
+export type PausedAccount = { organizationId: string; staging: boolean }
+
+/** Every account whose pause has not ended, for a sweep to skip only that directory's certificates. */
+export async function pausedAccounts(
+  ctx: Pick<DnsCertContext, 'db'>,
+  now: Date
+): Promise<PausedAccount[]> {
+  const rows = await ctx.db
+    .select({ organizationId: secret.organizationId, name: secret.name })
+    .from(secret)
+    .where(
+      and(
+        eq(secret.provider, ACME_ACCOUNT_SECRET_PROVIDER),
+        sql`${pausedUntilAt()} > ${now.toISOString()}::timestamptz`
+      )
+    )
+  return rows.map((r) => ({ organizationId: r.organizationId, staging: r.name === 'staging' }))
+}
+
+/**
+ * A text value read as a time, or the epoch when it is missing or not a time,
+ * so one bad value in metadata never fails a whole query.
+ */
+export function safeTimestamp(text: SQL): SQL {
+  return sql`(case when pg_input_is_valid(${text}, 'timestamptz') then (${text})::timestamptz else 'epoch'::timestamptz end)`
 }

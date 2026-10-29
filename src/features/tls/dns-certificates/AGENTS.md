@@ -72,8 +72,13 @@ offline sweep and the Deno interval).
 `runDnsCertificateSweepTick` (`sweep.ts`, `sweep-select.ts`) runs every minute
 on both editions. It picks work by due time, read out of the private state in
 the database with no column or index (a certificate's back-off and renewal
-time, an open order is due now), skips rows another worker holds and
-organizations whose authority pause is running, and takes rank one of every
+time, an open order is due now; with no stored renewal time, a third of the
+lifetime before the end, as `renewAtOf` reads it). A time that cannot be read
+counts as due rather than failing the query (`safeTimestamp`). It skips rows
+another worker holds and the directory (staging or production) of an
+organization whose authority pause is running. Work already begun (open orders,
+first certificates) ranks ahead of renewals that would begin now, so the renewal
+limits can never crowd an open order out; within that it takes rank one of every
 organization before rank two, so one organization cannot starve the rest. Per
 tick: up to 25 steps and 25 upkeep jobs (`options.batch`, `maintainBatch`), no new
 certificate started after 20 seconds (`budgetMs`), each step a few requests, so
@@ -92,7 +97,9 @@ Before an order is opened the DNS host is asked a cheap read for every zone
 nothing spent at the authority. Before the challenges are answered the TXT
 values are read back through the host's own API (`txtValues`); the authority is
 not asked to validate a record that is not yet published (one of its few failed
-validations an hour). A host without these calls is answered after the usual
+validations an hour). A record not seen yet is looked at again after two
+minutes (`READBACK_RETRY_MS`), not every tick, so 25 certificates of ten names
+on one token stay well under Cloudflare's 1,200 requests in five minutes. A host without these calls is answered after the usual
 short pause. Each sweep tick that did anything logs one summary line
 (`src/lib/sweep-report.ts`) and an alert line when three or more attempts failed
 and at least half of those tried.

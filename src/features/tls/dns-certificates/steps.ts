@@ -21,7 +21,7 @@ import { findCarrier } from '../../tunnels/records.ts'
 import type { TunnelProvider } from '../../tunnels/vocabulary.ts'
 import { orgAccount } from './account.ts'
 import { openDnsToken } from './token.ts'
-import { clock, type DnsCertContext, PRESENT_GRACE_MS } from './context.ts'
+import { clock, type DnsCertContext, PRESENT_GRACE_MS, READBACK_RETRY_MS } from './context.ts'
 import {
   ChallengeTargetError,
   challengeRecordName,
@@ -358,7 +358,10 @@ export async function answerChallenges(
 ): Promise<StepResult> {
   const waited = clock(ctx).getTime() - Date.parse(order.presentedAt ?? order.startedAt)
   if (waited < (ctx.presentGraceMs ?? PRESENT_GRACE_MS)) return { kind: 'wait', state }
-  if (!(await recordsVisible(ctx, row, state, order))) return { kind: 'wait', state }
+  if (!(await recordsVisible(ctx, row, state, order))) {
+    const nextAttemptAt = new Date(clock(ctx).getTime() + READBACK_RETRY_MS).toISOString()
+    return { kind: 'wait', state: { ...state, nextAttemptAt } }
+  }
   const client = await openClient(ctx, state, order)
   await mapSequential(order.challenges, (c) => client.answerChallenge(c.challengeUrl))
   const answeredAt = clock(ctx).toISOString()

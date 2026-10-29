@@ -30,6 +30,12 @@ export const DAY_MS = 86_400_000
 export const RECORD_KEEP_MS = 2 * 3_600_000
 /** The records are given a moment to reach the authority's resolvers before it looks. */
 export const PRESENT_GRACE_MS = 10_000
+/**
+ * A record not yet seen through the DNS host's API is looked at again after
+ * this long, not every tick: 25 certificates of ten names on one token then
+ * cost at most about 625 reads in five minutes, well under Cloudflare's 1,200.
+ */
+export const READBACK_RETRY_MS = 2 * 60_000
 /** One step may hold a certificate this long before another worker may take it. */
 export const CLAIM_MS = 90_000
 /** An order that has not finished by now is dropped and started over after a wait. */
