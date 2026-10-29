@@ -34,6 +34,8 @@ export type OrderState = {
   answeredAt: string | null
   /** The request for the certificate was sent. */
   finalizedAt: string | null
+  /** Where to download the certificate, when the answer to the request already named it. */
+  certificateUrl?: string | null
   /** Renewals only: the sealed new key, swapped in with the new certificate. */
   pendingKey: string | null
   renewal: boolean
@@ -59,6 +61,8 @@ export type DnsCertState = {
   renewAt: string | null
   /** When the authority was last asked about renewal timing. */
   ariCheckedAt: string | null
+  /** Not before this is the authority asked again: its own `Retry-After`, kept between a minute and twelve hours. */
+  ariNextCheckAt: string | null
 }
 
 export const DNS_CERT_KEY = 'dnsCert'
@@ -114,6 +118,7 @@ function readOrder(value: unknown): OrderState | null {
     presentedAt: text(r?.presentedAt),
     answeredAt: text(r?.answeredAt),
     finalizedAt: text(r?.finalizedAt),
+    certificateUrl: text(r?.certificateUrl),
     pendingKey: text(r?.pendingKey),
     renewal: r?.renewal === true,
   }
@@ -158,6 +163,7 @@ export function readDnsCertState(metadata: unknown): DnsCertState | null {
     records: readRecords(r.records),
     renewAt: text(r.renewAt),
     ariCheckedAt: text(r.ariCheckedAt),
+    ariNextCheckAt: text(r.ariNextCheckAt),
   }
 }
 

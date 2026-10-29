@@ -3,7 +3,7 @@
  * authority that checks every signature, nonce and the request itself.
  */
 import { assert, assertEquals, assertRejects } from '@std/assert'
-import { AcmeClient, AcmeError } from './client.ts'
+import { AcmeClient, AcmeError, fetchRenewalInfo } from './client.ts'
 import { buildCertificateRequest, generateCertificateKey } from './csr.ts'
 import {
   ACME_PRODUCTION_DIRECTORY,
@@ -133,4 +133,85 @@ test('an unreachable authority is reported as such', async () => {
   })
   const err = await assertRejects(() => acme.ensureAccount(), AcmeError)
   assertEquals(err.code, 'unreachable')
+})
+
+test('a 503 with a wait carries it on every kind of request, and a bare 429 gets the default', async () => {
+  const ca = createFakeCa({ txt: () => [], busyOrders: { status: 503, retryAfter: '120' } })
+  const acme = await client(ca)
+  await acme.ensureAccount()
+  const busy = await assertRejects(() => acme.newOrder(['example.com']), AcmeError)
+  assertEquals([busy.status, busy.retryAfterMs], [503, 120_000])
+
+  // The directory and the nonce answer 503 too: the wait is carried the same way.
+  const throttled = (path: string, status: number, wait?: string) =>
+    (async (input: RequestInfo | URL, init?: RequestInit) =>
+      String(input).endsWith(path)
+        ? new Response(null, { status, headers: wait ? { 'Retry-After': wait } : {} })
+        : await ca.fetch(input, init)) as typeof fetch
+  const key = await importAccountKey(await generateAccountKeyPem())
+  const noDirectory = new AcmeClient({
+    directoryUrl: FAKE_CA_DIRECTORY,
+    key,
+    fetch: throttled('/directory', 503, '30'),
+  })
+  const first = await assertRejects(() => noDirectory.ensureAccount(), AcmeError)
+  assertEquals([first.status, first.retryAfterMs], [503, 30_000])
+  const noNonce = new AcmeClient({
+    directoryUrl: FAKE_CA_DIRECTORY,
+    key,
+    fetch: throttled('/nonce', 429),
+  })
+  const second = await assertRejects(() => noNonce.ensureAccount(), AcmeError)
+  assertEquals([second.code, second.status, second.retryAfterMs], ['rate_limited', 429, 3_600_000])
+})
+
+test('a plain server error carries no wait', async () => {
+  const ca = createFakeCa({ txt: () => [], busyOrders: { status: 500 } })
+  const acme = await client(ca)
+  await acme.ensureAccount()
+  const err = await assertRejects(() => acme.newOrder(['example.com']), AcmeError)
+  assertEquals([err.status, err.retryAfterMs], [500, null])
+})
+
+test('clients of one authority share the directory and pass the nonce on', async () => {
+  const ca = createFakeCa({ txt: () => [], renewalWindow: { start: new Date(), end: new Date() } })
+  const key = await importAccountKey(await generateAccountKeyPem())
+  const open = (accountUrl?: string) =>
+    new AcmeClient({ directoryUrl: FAKE_CA_DIRECTORY, key, accountUrl, fetch: ca.fetch })
+  const account = await open().ensureAccount()
+  // A second client (a later step) needs neither the directory nor a new nonce.
+  await open(account).newOrder(['example.com'])
+  await open(account).newOrder(['www.example.com'])
+  assertEquals([ca.hits.directory, ca.hits.nonce, ca.hits.signed], [1, 1, 3])
+  // Asking for renewal information reuses the cached directory too.
+  await fetchRenewalInfo({ directoryUrl: FAKE_CA_DIRECTORY, certId: 'a.b', fetch: ca.fetch })
+  assertEquals([ca.hits.directory, ca.hits.renewal], [1, 1])
+})
+
+test('a different fetch never sees another one’s cache', async () => {
+  const one = createFakeCa({ txt: () => [] })
+  const two = createFakeCa({ txt: () => [] })
+  await (await client(one)).ensureAccount()
+  await (await client(two)).ensureAccount()
+  assertEquals([one.hits.directory, two.hits.directory], [1, 1])
+})
+
+test('a second stale nonce in a row is an error, with no third request', async () => {
+  const ca = createFakeCa({ txt: () => [] })
+  let posts = 0
+  const stale = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (init?.method !== 'POST') return await ca.fetch(input, init)
+    posts += 1
+    return new Response(
+      JSON.stringify({ type: 'urn:ietf:params:acme:error:badNonce', detail: 'stale nonce' }),
+      { status: 400, headers: { 'Replay-Nonce': `n${posts}` } }
+    )
+  }) as typeof fetch
+  const acme = new AcmeClient({
+    directoryUrl: FAKE_CA_DIRECTORY,
+    key: await importAccountKey(await generateAccountKeyPem()),
+    fetch: stale,
+  })
+  await assertRejects(() => acme.ensureAccount(), AcmeError)
+  assertEquals(posts, 2)
 })

@@ -16,9 +16,10 @@ export function plainFailure(err: unknown): string {
     )
   }
   if (err instanceof AcmeError) {
+    if (err.retryAfterMs !== null) {
+      return "Let's Encrypt asked us to wait before trying again. It will be tried again later."
+    }
     switch (err.code) {
-      case 'rate_limited':
-        return "Let's Encrypt asked us to wait before trying again. It will be tried again later."
       case 'account_gone':
         return "Let's Encrypt no longer accepts this organization's account, even after it was registered again once. It will be tried again later."
       case 'caa':
@@ -36,6 +37,9 @@ export function plainFailure(err: unknown): string {
     }
   }
   if (err instanceof TunnelProviderError) {
+    if (err.retryAfterMs !== null) {
+      return 'The DNS host asked us to wait before trying again. It will be tried again later.'
+    }
     if (err.code === 'forbidden' || err.code === 'unauthorized') {
       return 'The token cannot edit DNS records for this domain. Give it the DNS edit permission for the zone.'
     }

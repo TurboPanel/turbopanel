@@ -67,6 +67,21 @@ at once cannot run the same step twice (`busy`). The routes only start an order
 and report; the sweep carries it on (`sweep.ts`, wired into the Workers
 offline sweep and the Deno interval).
 
+## Calls to the authority
+
+Clients share what is safe to share inside one process (`src/lib/acme/session.ts`):
+the directory for an hour and spare `Replay-Nonce` values for five minutes,
+keyed by the `fetch` in use. It is only a cache: no keys, no account addresses,
+no clients, and an isolate that starts empty just asks. A stale nonce is
+answered with `badNonce` and the client retries once. The requests of one step
+go one after the other so each answer hands the next its nonce. The order is
+polled first (one request); the authorizations are read only to learn why an
+order went invalid, and when the answer to the request for the certificate
+already names it (`order.certificateUrl`) it is downloaded without another poll.
+An order for one name costs about eight calls (directory and nonce once, then
+account, order, authorization, answer, poll, request, download) and the next one
+six.
+
 ## Records are removed by id, never by name
 
 A zone may hold someone else's `_acme-challenge` records. Only a record the
@@ -84,15 +99,29 @@ stops with the plain-words reason and nothing is written.
 ## Waiting, limits and renewal
 
 - A refusal because of rate limits is waited out for as long as the authority
-  said. Other failures wait one hour, then two, doubling up to a day; a first
-  certificate gives up after three failed orders (`failed`, a person can retry
+  said. The same holds for any 429 or 503 with a `Retry-After`, on any
+  request (directory, nonce, order, challenge, certificate) and for the DNS
+  host: it is not a failed order, so the open order and its records stay, no
+  attempt is counted, and the row waits as told (`holdOrder`). An answer from the
+  authority also pauses every other order of the organization for that long,
+  kept as `pausedUntil` in the account row's metadata (`pauseAcme`), so one
+  throttled organization sends no more requests while it lasts. A validation
+  that failed is never retried before its back-off ends. Other failures wait
+  one hour, then two, doubling up to a day; a first certificate gives up
+  after three failed orders (`failed`, a person can retry
   after a quarter hour). A renewal that keeps failing keeps trying and keeps
   the certificate it has.
 - At most ten new certificates per organization per day.
 - Renewal time is the authority's own advice (ACME Renewal Information,
   RFC 9773: a random moment in the suggested window, never later than two days
-  before the end), refreshed at most every six hours. Without it, when a third
-  of the lifetime is left. The new pair is swapped in only when the order
+  before the end). The authority is asked again no sooner than its own
+  `Retry-After`, less up to a tenth so certificates do not ask together, then
+  kept between a minute and twelve hours (twelve hours when it sends none, six
+  after a failed ask): never fewer than two asks a day, two to four instead of
+  eight. The next-ask time is
+  `ariNextCheckAt` in the private state. A failed ask keeps the stored renewal
+  time rather than dropping to the fallback. Without advice, when a third of
+  the lifetime is left. The new pair is swapped in only when the order
   succeeds, and the sites that pin it are sent the new pair by the same apply a
   library pick queues.
 - Renewal needs the stored token. Between orders the sweep checks that the

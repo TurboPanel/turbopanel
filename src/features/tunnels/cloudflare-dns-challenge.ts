@@ -10,6 +10,7 @@ import type {
   DnsChallengeProvider,
 } from '../tls/dns-certificates/dns-provider.ts'
 import { CLOUDFLARE_API_BASE } from './cloudflare-client.ts'
+import { throttleWaitMs } from '../../lib/http/retry-after.ts'
 import { codeForStatus, TunnelProviderError } from './errors.ts'
 
 const REQUEST_TIMEOUT_MS = 15_000
@@ -62,7 +63,8 @@ export function createCloudflareDnsChallenge(options: {
         codeForStatus(response.status),
         `Cloudflare refused the request (${response.status})${reason}`,
         response.status,
-        [options.token]
+        [options.token],
+        throttleWaitMs(response)
       )
     }
     return envelope

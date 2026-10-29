@@ -39,8 +39,17 @@ import type { ProviderOriginCertificate, TunnelAdapter } from './adapter.ts'
 import type { TunnelProvider } from './vocabulary.ts'
 import { TunnelProviderError } from './errors.ts'
 import { compareText } from './order.ts'
+import { logWarn } from '../../lib/logger.ts'
 import { mapSequential } from '../../lib/sequential.ts'
 import { BadgeRefused, BadgeUnavailable, useBadges } from './badge-use.ts'
+import {
+  nextOriginRetry,
+  originRetryWaiting,
+  pauseOriginRow,
+  readOriginRetry,
+  saveOriginRetry,
+  throttleWait,
+} from './origin-certificate-retry.ts'
 import {
   type BadgeRow,
   type CarrierRow,
@@ -522,6 +531,13 @@ type RevokeParams = {
  * Returns the first result with the token used, or `undefined` when no token
  * qualified or every one was refused.
  */
+const failedWith = new WeakMap<object, string>()
+
+/** The API token a failed call used, when it got as far as one (a provider that says "slow down" is per token). */
+export function tokenOfFailure(err: unknown): string | null {
+  return typeof err === 'object' && err !== null ? (failedWith.get(err) ?? null) : null
+}
+
 async function withZoneToken<R>(
   params: { db: Db; secrets: DerivedSecretsConfig },
   link: Pick<ProviderOriginLink, 'carrierId' | 'zoneId' | 'zoneName'>,
@@ -533,7 +549,14 @@ async function withZoneToken<R>(
       params.secrets,
       link.carrierId,
       { capability: 'certificates', zone: { id: link.zoneId, name: link.zoneName } },
-      act
+      async (token, badgeRow) => {
+        try {
+          return await act(token, badgeRow)
+        } catch (err) {
+          if (typeof err === 'object' && err !== null) failedWith.set(err, badgeRow.id)
+          throw err
+        }
+      }
     )
     return { result: used.value, badgeId: used.badge.id }
   } catch (err) {
@@ -668,33 +691,87 @@ async function renewStep(
     row,
     now,
   })
-  return renewed
-    ? { kind: 'renewed', id: renewed.replacement.id, repinned: renewed.repinnedHostingIds }
-    : { kind: 'none' }
+  if (!renewed) {
+    // No account or no token that can issue for the zone: a failure, so it backs off like one.
+    throw new OriginCertificateRefusal(
+      'badge_missing',
+      'No active API Token can issue certificates for this zone'
+    )
+  }
+  return { kind: 'renewed', id: renewed.replacement.id, repinned: renewed.repinnedHostingIds }
 }
 
-async function sweepRow(params: SweepParams, row: TlsRow, now: Date): Promise<SweepStep> {
+/** The work for one row that is not waiting: renew, drop an expired one, or revoke a retired one. */
+async function sweepRowWork(
+  params: SweepParams,
+  adapter: TunnelAdapter,
+  row: TlsRow,
+  link: ProviderOriginLink,
+  now: Date
+): Promise<SweepStep> {
+  // A certificate a site still pins stays renewable even when it is retired
+  // (verification turned off), so the server never serves an expired one.
+  if ((await hostingsPinning(params.db, row.id)).length > 0) {
+    return originCertificateIsDue(row.notAfter, now)
+      ? await renewStep(params, adapter, row, now)
+      : { kind: 'none' }
+  }
+  if (link.retiredAt === null) return { kind: 'none' }
+  if (row.notAfter !== null && Date.parse(row.notAfter) <= now.getTime()) {
+    await params.db.delete(tls).where(eq(tls.id, row.id))
+    return { kind: 'removed', id: row.id }
+  }
+  const waitedMs = now.getTime() - Date.parse(link.retiredAt)
+  if (waitedMs < ORIGIN_CERTIFICATE_RETIRE_GRACE_HOURS * MS_PER_HOUR) return { kind: 'none' }
+  await revokeOriginCertificate({ db: params.db, secrets: params.secrets, adapter, row })
+  return { kind: 'removed', id: row.id }
+}
+
+/**
+ * Remember a failure on the row. A provider that said how long to wait also
+ * holds back every other row of the same API token for that long, in this pass
+ * (`paused`) and in later ones.
+ */
+async function recordFailure(
+  params: SweepParams,
+  row: TlsRow,
+  link: ProviderOriginLink,
+  err: unknown,
+  now: Date,
+  paused: Set<string>
+): Promise<void> {
+  try {
+    const retry = nextOriginRetry(readOriginRetry(row.metadata), err, now)
+    await saveOriginRetry(params.db, row.id, retry)
+    const wait = throttleWait(err)
+    if (wait === null || retry.nextTryAt === null) return
+    const badgeId = tokenOfFailure(err) ?? link.badgeId
+    paused.add(badgeId)
+    const until = new Date(retry.nextTryAt)
+    const siblings = (await listOriginCertificates(params.db, params.organizationId)).filter(
+      (other) => other.id !== row.id && readProviderOrigin(other.metadata)?.badgeId === badgeId
+    )
+    await mapSequential(siblings, (other) => pauseOriginRow(params.db, other, until))
+  } catch (saveErr) {
+    logWarn('tls', `origin certificate back-off was not saved: ${String(saveErr)}`)
+  }
+}
+
+async function sweepRow(
+  params: SweepParams,
+  row: TlsRow,
+  now: Date,
+  paused: Set<string>
+): Promise<SweepStep> {
   const link = readProviderOrigin(row.metadata)
-  if (!link) return { kind: 'none' }
+  if (!link || paused.has(link.badgeId)) return { kind: 'none' }
   const adapter = params.registry(link.provider as TunnelProvider)
   try {
-    // A certificate a site still pins stays renewable even when it is retired
-    // (verification turned off), so the server never serves an expired one.
-    if ((await hostingsPinning(params.db, row.id)).length > 0) {
-      return originCertificateIsDue(row.notAfter, now)
-        ? await renewStep(params, adapter, row, now)
-        : { kind: 'none' }
-    }
-    if (link.retiredAt === null) return { kind: 'none' }
-    if (row.notAfter !== null && Date.parse(row.notAfter) <= now.getTime()) {
-      await params.db.delete(tls).where(eq(tls.id, row.id))
-      return { kind: 'removed', id: row.id }
-    }
-    const waitedMs = now.getTime() - Date.parse(link.retiredAt)
-    if (waitedMs < ORIGIN_CERTIFICATE_RETIRE_GRACE_HOURS * MS_PER_HOUR) return { kind: 'none' }
-    await revokeOriginCertificate({ db: params.db, secrets: params.secrets, adapter, row })
-    return { kind: 'removed', id: row.id }
-  } catch {
+    const step = await sweepRowWork(params, adapter, row, link, now)
+    if (step.kind === 'renewed') await saveOriginRetry(params.db, row.id, null)
+    return step
+  } catch (err) {
+    await recordFailure(params, row, link, err, now, paused)
     return { kind: 'failed', id: row.id }
   }
 }
@@ -702,10 +779,11 @@ async function sweepRow(params: SweepParams, row: TlsRow, now: Date): Promise<Sw
 /** Rows one pass handles at most (each can cost a provider call), oldest first. */
 export const ORIGIN_SWEEP_BATCH = 10
 
-/** Rows a pass can do something with: retired ones, and live ones close to expiry. */
+/** Rows a pass can do something with: retired ones, and live ones close to expiry, unless they are waiting out a failure. */
 function needsSweep(row: TlsRow, now: Date): boolean {
   const link = readProviderOrigin(row.metadata)
-  return link !== null && (link.retiredAt !== null || originCertificateIsDue(row.notAfter, now))
+  if (link === null || originRetryWaiting(row.metadata, now)) return false
+  return link.retiredAt !== null || originCertificateIsDue(row.notAfter, now)
 }
 
 /**
@@ -713,7 +791,8 @@ function needsSweep(row: TlsRow, now: Date): boolean {
  * pinned and close to expiry, and clear those that were retired: revoked at
  * the provider once no site pins them and the grace period has passed, or just
  * dropped once expired (an expired certificate needs no revoking). A failure on
- * one row is recorded and does not stop the others.
+ * one row is recorded with a back-off (an hour, doubling to a day, or the time
+ * the provider asked for) and does not stop the others.
  */
 export async function sweepOriginCertificates(params: SweepParams): Promise<OriginSweepResult> {
   const now = params.now ?? new Date()
@@ -728,7 +807,8 @@ export async function sweepOriginCertificates(params: SweepParams): Promise<Orig
   const rows = (await listOriginCertificates(params.db, params.organizationId))
     .filter((row) => needsSweep(row, now))
     .slice(0, params.limit ?? ORIGIN_SWEEP_BATCH)
-  const steps = await mapSequential(rows, (row) => sweepRow(params, row, now))
+  const paused = new Set<string>()
+  const steps = await mapSequential(rows, (row) => sweepRow(params, row, now, paused))
   const result: OriginSweepResult = { renewed: [], repinnedHostingIds: [], removed: [], failed: [] }
   for (const step of steps) {
     if (step.kind === 'renewed') {

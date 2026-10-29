@@ -8,7 +8,7 @@ import { assert, assertEquals, assertNotEquals, assertStringIncludes } from '@st
 import { eq, inArray } from 'drizzle-orm'
 import { createDenoDb, endDbConnection } from '../../../db/connection.ts'
 import { badge, carrier, organization, secret, tls } from '../../../db/schema.ts'
-import { ACME_ACCOUNT_SECRET_PROVIDER } from './account.ts'
+import { ACME_ACCOUNT_SECRET_PROVIDER, acmePausedUntil, pauseAcme } from './account.ts'
 import { getDatabaseUrl } from '../../../db/url.ts'
 import { createFakeCa } from '../../../lib/acme/fake-ca.test.support.ts'
 import { issueLeafCertificate, mintOrganizationCa } from '../../../lib/tls/self-signed.ts'
@@ -248,13 +248,99 @@ test('a rate limit is waited out for as long as the authority said and is not co
     const s = await setup(db, { rateLimit: true })
     const id = ((await startDnsCertificate(s.ctx, s.input(['example.com']))) as { id: string }).id
     for (let i = 0; i < 4; i += 1) {
-      assertEquals(await advanceDnsCertificate(s.ctx, id), 'failed')
+      assertEquals(await advanceDnsCertificate(s.ctx, id), 'backoff')
       tick(s.clock, 11 * 60_000)
     }
     const row = await rowOf(db, id)
     assertEquals(row.status, 'pending')
     assertEquals(s.dns.records.size, 0)
     assert((row.metadata as { acme: { lastError: string } }).acme.lastError.includes('wait'))
+  }))
+
+test('an authority that says to wait pauses the whole organization and counts no attempt', () =>
+  withDb(async (db) => {
+    const s = await setup(db, { ca: { busyOrders: { status: 503, retryAfter: '900' } } })
+    const idA = ((await startDnsCertificate(s.ctx, s.input(['example.com']))) as { id: string }).id
+    const idB = ((await startDnsCertificate(s.ctx, s.input(['www.example.com']))) as { id: string })
+      .id
+    assertEquals(await advanceDnsCertificate(s.ctx, idA), 'backoff')
+    const state = readDnsCertState((await rowOf(db, idA)).metadata)
+    assertEquals(state?.attempts, 0)
+    assertEquals(Date.parse(state!.nextAttemptAt!) - s.clock.now.getTime(), 900_000)
+    // The other order of the organization does not even ask the authority.
+    const before = s.ca.hits.signed
+    assertEquals(await advanceDnsCertificate(s.ctx, idB), 'backoff')
+    assertEquals(s.ca.hits.signed, before)
+    assertEquals((await rowOf(db, idB)).status, 'pending')
+    assertEquals(readDnsCertState((await rowOf(db, idB)).metadata)?.attempts, 0)
+  }))
+
+test('a pause is never shortened by a later, shorter one', () =>
+  withDb(async (db) => {
+    const s = await setup(db)
+    await issue(s, ['example.com'])
+    const long = new Date(Date.now() + 2 * 3_600_000)
+    await pauseAcme(s.ctx, s.organizationId, true, long)
+    await pauseAcme(s.ctx, s.organizationId, true, new Date(Date.now() + 3_600_000))
+    assertEquals(await acmePausedUntil(s.ctx, s.organizationId, true), long.getTime())
+    // The other directory is not paused.
+    assertEquals(await acmePausedUntil(s.ctx, s.organizationId, false), null)
+  }))
+
+test('a DNS host that says to wait holds that order only, not the organization', () =>
+  withDb(async (db) => {
+    const s = await setup(db)
+    const real = s.dns.provider.present
+    s.dns.provider.present = () =>
+      Promise.reject(new TunnelProviderError('rate_limited', 'slow', 429, [], 120_000))
+    const held = ((await startDnsCertificate(s.ctx, s.input(['example.com']))) as { id: string }).id
+    assertEquals(await advanceDnsCertificate(s.ctx, held), 'backoff')
+    const state = readDnsCertState((await rowOf(db, held)).metadata)!
+    assertEquals(state.attempts, 0)
+    assertEquals(Date.parse(state.nextAttemptAt!) - s.clock.now.getTime(), 120_000)
+    assertEquals(await acmePausedUntil(s.ctx, s.organizationId, true), null)
+    // Another order of the organization carries on.
+    s.dns.provider.present = real
+    const other = (
+      (await startDnsCertificate(s.ctx, s.input(['www.example.com']))) as { id: string }
+    ).id
+    assertEquals(await advanceDnsCertificate(s.ctx, other), 'waiting')
+  }))
+
+test('a wait asked for in the middle of an order keeps the order and its records', () =>
+  withDb(async (db) => {
+    const s = await setup(db)
+    const id = ((await startDnsCertificate(s.ctx, s.input(['example.com']))) as { id: string }).id
+    assertEquals(await advanceDnsCertificate(s.ctx, id), 'waiting')
+    const fair = s.ctx.acmeFetch!
+    s.ctx.acmeFetch = ((input: RequestInfo | URL, init?: RequestInit) =>
+      new URL(String(input)).pathname.startsWith('/chall/')
+        ? Promise.resolve(new Response(null, { status: 503, headers: { 'Retry-After': '60' } }))
+        : fair(input, init)) as typeof fetch
+    tick(s.clock, PRESENT_GRACE_MS + 1000)
+    assertEquals(await advanceDnsCertificate(s.ctx, id), 'backoff')
+    const held = readDnsCertState((await rowOf(db, id)).metadata)
+    assert(held?.order)
+    assertEquals([held.attempts, held.records.length, s.dns.records.size], [0, 1, 1])
+    // Once the wait is over the same order carries on to a certificate.
+    s.ctx.acmeFetch = fair
+    tick(s.clock, 61_000)
+    assertEquals(await advanceDnsCertificate(s.ctx, id), 'issued')
+    assertEquals(s.dns.records.size, 0)
+  }))
+
+test('an order for one name costs the authority about eight calls, and the next one fewer', () =>
+  withDb(async (db) => {
+    const s = await setup(db)
+    await issue(s, ['example.com'])
+    const first = { ...s.ca.hits }
+    // Directory and nonce once; account, order, authorization, answer, poll, request, download.
+    assertEquals([first.directory, first.nonce, first.signed], [1, 1, 7])
+    assert(first.directory + first.nonce + first.signed <= 9)
+    await issue(s, ['www.example.com'])
+    // The account exists and the directory and the spare nonce are reused: only the signed requests.
+    assertEquals([s.ca.hits.directory, s.ca.hits.nonce], [1, 1])
+    assertEquals(s.ca.hits.signed - first.signed, 6)
   }))
 
 test('a renewal signs with a new key, swaps the pair at the end and tells the sites', () =>
@@ -478,12 +564,71 @@ test('the authority’s renewal window sets the renewal time, never later than t
     const latest = Date.parse(row.notAfter!) - 2 * DAY_MS
     assert(renewAt >= window.start.getTime() - 1000)
     assert(renewAt <= Math.min(window.end.getTime(), latest) + 1000)
-    // Not asked again until it is due; then the new answer replaces the time.
+    // No Retry-After was sent, so it is asked again within twelve hours (a little sooner), not at once.
     await maintainDnsCertificate(s.ctx, id)
     assertEquals(s.ca.renewalAsked.length, 1)
-    tick(s.clock, 7 * 3_600_000)
+    tick(s.clock, 10 * 3_600_000)
+    await maintainDnsCertificate(s.ctx, id)
+    assertEquals(s.ca.renewalAsked.length, 1)
+    tick(s.clock, 3 * 3_600_000)
     await maintainDnsCertificate(s.ctx, id)
     assertEquals(s.ca.renewalAsked.length, 2)
+  }))
+
+/** A certificate the authority advises on, issued, with a chosen answer to the renewal questions. */
+async function issuedWithAdvice(
+  db: Db,
+  ca: Partial<Parameters<typeof createFakeCa>[0]>
+): Promise<{ s: Awaited<ReturnType<typeof setup>>; id: string }> {
+  const org = await mintOrganizationCa({ organizationId: crypto.randomUUID() })
+  const s = await setup(db, {
+    ca: {
+      issueCertificate: async (names) =>
+        (await issueLeafCertificate(org.certificatePem, org.privateKeyPem, names)).certificatePem,
+      renewalWindow: {
+        start: new Date(Date.now() + 20 * DAY_MS),
+        end: new Date(Date.now() + 21 * DAY_MS),
+      },
+      ...ca,
+    },
+  })
+  return { s, id: await issue(s, ['example.com']) }
+}
+
+test('the next renewal check follows the authority’s Retry-After, kept between a minute and twelve hours', () =>
+  withDb(async (db) => {
+    for (const [header, low, high] of [
+      ['21600', 5.4 * 3_600_000, 6 * 3_600_000],
+      ['5', 60_000, 60_000],
+      ['999999', 39_600_000, 43_200_000],
+    ] as const) {
+      const { s, id } = await issuedWithAdvice(db, { renewalRetryAfter: header })
+      const state = readDnsCertState((await rowOf(db, id)).metadata)!
+      const wait = Date.parse(state.ariNextCheckAt!) - s.clock.now.getTime()
+      assert(wait >= low && wait <= high, `${header}: ${wait}`)
+    }
+  }))
+
+test('a renewal check that fails keeps the stored time and asks again later, not at once', () =>
+  withDb(async (db) => {
+    const { s, id } = await issuedWithAdvice(db, {})
+    const before = readDnsCertState((await rowOf(db, id)).metadata)!
+    const busy = createFakeCa({
+      txt: s.dns.txt,
+      renewalWindow: { start: new Date(), end: new Date() },
+      renewalBusy: true,
+      renewalRetryAfter: '3600',
+    })
+    s.ctx.acmeFetch = busy.fetch
+    tick(s.clock, 14 * 3_600_000)
+    await maintainDnsCertificate(s.ctx, id)
+    const after = readDnsCertState((await rowOf(db, id)).metadata)!
+    assertEquals(after.renewAt, before.renewAt)
+    assertEquals(busy.renewalAsked.length, 1)
+    const wait = Date.parse(after.ariNextCheckAt!) - s.clock.now.getTime()
+    assert(wait >= 3_240_000 && wait <= 3_600_000, `${wait}`)
+    await maintainDnsCertificate(s.ctx, id)
+    assertEquals(busy.renewalAsked.length, 1)
   }))
 
 async function accountRows(db: Db, organizationId: string) {

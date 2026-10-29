@@ -28,6 +28,8 @@ export type FakeCaOptions = {
   txt: (name: string) => string[]
   /** Refuse new orders with a rate-limit error. */
   rateLimitOrders?: boolean
+  /** Refuse new orders with this plain status (for example 503) and an optional `Retry-After`. */
+  busyOrders?: { status: number; retryAfter?: string }
   /** Answer the first nonce-bearing request with a stale-nonce error. */
   staleNonceOnce?: boolean
   /** The order stays `processing` for this many polls after the request. */
@@ -38,6 +40,10 @@ export type FakeCaOptions = {
   alwaysDeactivated?: boolean
   /** Offers renewal information; the window is what it suggests for any certificate. */
   renewalWindow?: { start: Date; end: Date }
+  /** `Retry-After` sent with each renewal-information answer. */
+  renewalRetryAfter?: string
+  /** Renewal information answers 503 (with `renewalRetryAfter` if set) instead of a window. */
+  renewalBusy?: boolean
 }
 
 export type FakeCa = {
@@ -50,6 +56,8 @@ export type FakeCa = {
   issued: string[][]
   /** Renewal-information requests received (the identifier of each). */
   renewalAsked: string[]
+  /** How many times each kind of request reached the authority. */
+  hits: { directory: number; nonce: number; renewal: number; signed: number }
   /** From now on every request signed by an account that exists is refused as deactivated. */
   deactivateAccounts: () => void
 }
@@ -117,6 +125,7 @@ export function createFakeCa(options: FakeCaOptions): FakeCa {
   const log: FakeCa['log'] = []
   const issued: string[][] = []
   const renewalAsked: string[] = []
+  const hits = { directory: 0, nonce: 0, renewal: 0, signed: 0 }
   const deactivated = new Set<string>()
   const nonces = new Set<string>()
   let stale = options.staleNonceOnce === true
@@ -212,6 +221,8 @@ export function createFakeCa(options: FakeCaOptions): FakeCa {
     const states = await Promise.all(order.authz.map((a) => authzBody(a, jwk)))
     const allValid = states.every((s) => s.status === 'valid')
     let status = allValid ? 'ready' : 'pending'
+    // As the protocol says: one failed authorization makes the whole order invalid.
+    if (states.some((a) => a.status === 'invalid')) status = 'invalid'
     if (order.finalized) {
       order.polls += 1
       status = order.polls > (options.processingPolls ?? 0) ? 'valid' : 'processing'
@@ -226,6 +237,13 @@ export function createFakeCa(options: FakeCaOptions): FakeCa {
   }
 
   const newOrder = async (signed: Signed, headers: Record<string, string>): Promise<Response> => {
+    if (options.busyOrders) {
+      const { status, retryAfter } = options.busyOrders
+      return problem('serverInternal', 'busy', status, {
+        ...headers,
+        ...(retryAfter ? { 'Retry-After': retryAfter } : {}),
+      })
+    }
     if (options.rateLimitOrders) {
       return problem('rateLimited', 'too many new orders', 429, {
         ...headers,
@@ -307,6 +325,7 @@ export function createFakeCa(options: FakeCaOptions): FakeCa {
     else url = input instanceof URL ? input.href : input.url
     const path = new URL(url).pathname
     if (path === '/directory') {
+      hits.directory += 1
       return json({
         newNonce: `${BASE}/nonce`,
         newAccount: `${BASE}/acct`,
@@ -315,16 +334,27 @@ export function createFakeCa(options: FakeCaOptions): FakeCa {
       })
     }
     if (path.startsWith('/renewal/') && options.renewalWindow) {
+      hits.renewal += 1
       renewalAsked.push(path.slice('/renewal/'.length))
-      return json({
-        suggestedWindow: {
-          start: options.renewalWindow.start.toISOString(),
-          end: options.renewalWindow.end.toISOString(),
+      const headers: Record<string, string> = options.renewalRetryAfter
+        ? { 'Retry-After': options.renewalRetryAfter }
+        : {}
+      if (options.renewalBusy) return json({}, { status: 503, headers })
+      return json(
+        {
+          suggestedWindow: {
+            start: options.renewalWindow.start.toISOString(),
+            end: options.renewalWindow.end.toISOString(),
+          },
         },
-      })
+        { headers }
+      )
     }
-    if (path === '/nonce')
+    if (path === '/nonce') {
+      hits.nonce += 1
       return new Response(null, { status: 200, headers: { 'Replay-Nonce': freshNonce() } })
+    }
+    hits.signed += 1
     return await handlePost(url, typeof init?.body === 'string' ? init.body : '')
   }) as typeof fetch
 
@@ -335,6 +365,7 @@ export function createFakeCa(options: FakeCaOptions): FakeCa {
     log,
     issued,
     renewalAsked,
+    hits,
     deactivateAccounts: () => {
       for (const id of accounts.keys()) deactivated.add(id)
     },

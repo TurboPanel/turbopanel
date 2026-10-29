@@ -41,6 +41,7 @@ import {
   revokeOriginCertificate,
   sweepOriginCertificates,
 } from './origin-certificate.ts'
+import { readOriginRetry } from './origin-certificate-retry.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -823,5 +824,112 @@ test('a pass handles at most the batch of rows that need it, and leaves healthy 
     const second = await sweepOriginCertificates({ ...base, limit: 2 })
     assertEquals(second.removed.length, 1)
     assertEquals((await sweepOriginCertificates(base)).removed, [])
+  })
+})
+
+/** A provider whose certificate requests fail the way a test says, counting the asks. */
+function failingAdapter(good: Fake, failure: () => Error | null) {
+  const calls = { issue: 0 }
+  const adapter = {
+    ...good.adapter,
+    issueOriginCertificate: (
+      ...args: Parameters<NonNullable<TunnelAdapter['issueOriginCertificate']>>
+    ) => {
+      calls.issue += 1
+      const err = failure()
+      return err ? Promise.reject(err) : good.adapter.issueOriginCertificate!(...args)
+    },
+  } as unknown as TunnelAdapter
+  return { adapter, calls }
+}
+
+async function pinnedDueRows(
+  w: Parameters<Parameters<typeof withWorld>[0]>[0],
+  good: Fake,
+  n: number
+) {
+  const rows = []
+  for (let i = 0; i < n; i += 1) {
+    const row = await issueOriginCertificate({
+      ...w,
+      adapter: good.adapter,
+      carrier: w.carrierRow,
+      badge: w.badgeRow,
+      zoneName: 'example.com',
+      names: [`due${i}.example.com`],
+    })
+    await pin(w.db, w.serviceId, row.id, `due${i}.example.com`)
+    await w.db
+      .update(tls)
+      .set({ notAfter: new Date(Date.now() + 5 * 86_400_000).toISOString() })
+      .where(eq(tls.id, row.id))
+    rows.push(row)
+  }
+  return rows
+}
+
+test('a failing renewal waits an hour, then two, and a success clears the wait', async () => {
+  await withWorld(async (w) => {
+    const good = fakeAdapter()
+    const [row] = await pinnedDueRows(w, good, 1)
+    let broken = true
+    const flaky = failingAdapter(good, () =>
+      broken ? new TunnelProviderError('provider_error', 'boom', 500) : null
+    )
+    const t0 = new Date()
+    const base = {
+      db: w.db,
+      secrets: w.secrets,
+      registry: () => flaky.adapter,
+      organizationId: w.organizationId,
+    }
+    assertEquals((await sweepOriginCertificates({ ...base, now: t0 })).failed, [row!.id])
+    assertEquals(flaky.calls.issue, 1)
+    // Same tick time and half an hour later: not due, so the provider is not asked.
+    const half = new Date(t0.getTime() + 1_800_000)
+    assertEquals((await sweepOriginCertificates({ ...base, now: half })).failed, [])
+    assertEquals(flaky.calls.issue, 1)
+    // After the hour it is tried again and the wait doubles.
+    const hour = new Date(t0.getTime() + 3_600_000 + 1000)
+    assertEquals((await sweepOriginCertificates({ ...base, now: hour })).failed, [row!.id])
+    const [after] = await w.db.select().from(tls).where(eq(tls.id, row!.id))
+    const retry = readOriginRetry(after!.metadata)
+    assertEquals(retry.attempts, 2)
+    assertEquals(Date.parse(retry.nextTryAt!) - hour.getTime(), 7_200_000)
+    // A success after the wait renews the certificate and leaves no wait behind.
+    broken = false
+    const later = new Date(hour.getTime() + 7_200_000 + 1000)
+    const done = await sweepOriginCertificates({ ...base, now: later })
+    assertEquals(done.renewed.length, 1)
+    const [cleared] = await w.db.select().from(tls).where(eq(tls.id, row!.id))
+    assertEquals(readOriginRetry(cleared!.metadata), { attempts: 0, nextTryAt: null })
+  })
+})
+
+test('a provider that says how long to wait pauses every row of that token for that long', async () => {
+  await withWorld(async (w) => {
+    const good = fakeAdapter()
+    const rows = await pinnedDueRows(w, good, 2)
+    const limited = failingAdapter(
+      good,
+      () => new TunnelProviderError('rate_limited', 'slow down', 429, [], 7_200_000)
+    )
+    const t0 = new Date()
+    const result = await sweepOriginCertificates({
+      db: w.db,
+      secrets: w.secrets,
+      registry: () => limited.adapter,
+      organizationId: w.organizationId,
+      now: t0,
+    })
+    // One request was made; the second row did not get its own.
+    assertEquals(limited.calls.issue, 1)
+    assertEquals(result.failed.length, 1)
+    for (const row of rows) {
+      const [now] = await w.db.select().from(tls).where(eq(tls.id, row.id))
+      const retry = readOriginRetry(now!.metadata)
+      assertEquals(retry.attempts, 0)
+      assertEquals(Date.parse(retry.nextTryAt!) - t0.getTime(), 7_200_000)
+    }
   })
 })

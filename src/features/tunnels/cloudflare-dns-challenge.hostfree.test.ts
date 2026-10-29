@@ -104,3 +104,19 @@ test('a reply without a record id is an error, not a silent success', async () =
     TunnelProviderError
   )
 })
+
+test('a 429 or 503 carries the wait the host asked for', async () => {
+  const api = recorder(
+    () =>
+      new Response(JSON.stringify({ success: false, errors: [{ message: 'slow' }] }), {
+        status: 429,
+        headers: { 'Retry-After': '90' },
+      })
+  )
+  const dns = createCloudflareDnsChallenge({ token: TOKEN, fetch: api.fetch })
+  const err = await assertRejects(
+    () => dns.present({ zoneId: 'z1', name: '_acme-challenge.example.com', value: 'v1' }),
+    TunnelProviderError
+  )
+  assertEquals([err.code, err.status, err.retryAfterMs], ['rate_limited', 429, 90_000])
+})
