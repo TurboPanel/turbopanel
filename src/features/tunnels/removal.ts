@@ -4,13 +4,13 @@
  * of a tunnel with no connected connector, so the delete is tried here, from
  * the periodic sweep, after a growing wait between tries (`finishTunnelRemoval`).
  */
-import { asc, eq } from 'drizzle-orm'
+import { and, asc, eq, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { tunnel } from '../../db/schema.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import type { TunnelProvider } from './vocabulary.ts'
-import { finishTunnelRemoval, removalDue } from './lifecycle.ts'
+import { finishTunnelRemoval } from './lifecycle.ts'
 import { findCarrier } from './records.ts'
 import { createTunnelAdapterRegistry, type TunnelAdapterRegistry } from './registry.ts'
 
@@ -31,25 +31,28 @@ export async function runTunnelRemovalSweepTick(
   const rows = await db
     .select()
     .from(tunnel)
-    .where(eq(tunnel.status, 'removing'))
+    .where(
+      and(
+        eq(tunnel.status, 'removing'),
+        // Only the ones whose wait is over, so a crowd of waiting tunnels cannot starve a due one.
+        sql`coalesce((${tunnel.metadata} #>> '{removal,nextAt}')::timestamptz <= ${now.toISOString()}::timestamptz, true)`
+      )
+    )
     .orderBy(asc(tunnel.updatedAt))
     .limit(TUNNEL_REMOVALS_PER_TICK)
   let removed = 0
   let waiting = 0
-  await forEachSequential(
-    rows.filter((row) => removalDue(row.metadata, now.getTime())),
-    async (row) => {
-      const owner = row.carrierId ? await findCarrier(db, row.organizationId, row.carrierId) : null
-      const outcome = await finishTunnelRemoval(
-        db,
-        { adapter: registry(row.provider as TunnelProvider), secrets: deps.secrets },
-        row,
-        owner,
-        now
-      )
-      if (outcome === 'removed') removed++
-      else waiting++
-    }
-  )
+  await forEachSequential(rows, async (row) => {
+    const owner = row.carrierId ? await findCarrier(db, row.organizationId, row.carrierId) : null
+    const outcome = await finishTunnelRemoval(
+      db,
+      { adapter: registry(row.provider as TunnelProvider), secrets: deps.secrets },
+      row,
+      owner,
+      now
+    )
+    if (outcome === 'removed') removed++
+    else waiting++
+  })
   return { removed, waiting }
 }

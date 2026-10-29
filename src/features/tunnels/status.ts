@@ -2,6 +2,7 @@ import { and, eq, inArray, sql } from 'drizzle-orm'
 import type { createDenoDb } from '../../db/connection.ts'
 import { portal, server, tunnel } from '../../db/schema.ts'
 import { mapSequential } from '../../lib/sequential.ts'
+import { carryingServers } from './lifecycle.ts'
 import type {
   TunnelStatusCommandResult,
   TunnelStatusConnector,
@@ -72,13 +73,16 @@ async function followTunnelStatus(
   providerId: string,
   answer: PortalAnswer
 ): Promise<void> {
-  const [found] = await db
-    .select({ id: tunnel.id, status: tunnel.status })
+  const [match] = await db
+    .select({ tunnel })
     .from(tunnel)
     .innerJoin(server, eq(server.organizationId, tunnel.organizationId))
     .where(and(eq(server.id, serverId), eq(tunnel.externalId, providerId)))
     .limit(1)
-  if (!found) return
+  if (!match) return
+  const found = match.tunnel
+  // A server that does not carry the tunnel has no say in its status.
+  if (!(await carryingServers(db, found)).includes(serverId)) return
   const reports = await db
     .select({ reported: portal.reported })
     .from(portal)

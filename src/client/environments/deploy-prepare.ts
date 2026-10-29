@@ -4411,6 +4411,7 @@ async function resolveHttpHostingEntry(
     serverId,
     hostingId: h.id,
     siteHostnames: hostnames,
+    www,
     tlsMode: tlsWire.tlsMode,
   })
   if ('refusal' in lock) return { error: nameLockRefusalResponse(lock.refusal, h.id, serverId) }

@@ -69,7 +69,15 @@ member there, a widened CHECK (forward migration) and one adapter.
   removing a badge or carrier deletes its secrets in the same transaction
   (`deleteBadge`, `deleteCarrier`), removing a tunnel deletes its run-token
   secret (`deleteTunnelRecord`), and `tunnel.secret_id` is SET NULL.
-- **Removing a tunnel (`deleteTunnel`, `removal.ts`).** The provider refuses to
+- **Removing a tunnel (`deleteTunnel`, `removal.ts`).** The mark is one guarded
+  `UPDATE ... WHERE NOT EXISTS (doorway)`, and `addDoorway` re-reads the status
+  after storing its row, so a hostname added at the same moment either stops the
+  removal (`tunnel_in_use`) or is refused (`tunnel_removing`); `finishTunnelRemoval`
+  checks for hostnames again right before the provider delete. A `removing`
+  tunnel takes no new hostname and no placement change (`tunnel_removing`).
+  A tunnel with a provider id but no usable account or token stays `removing`
+  with the reason instead of being deleted, so a provider tunnel is never
+  forgotten. The sweep query takes only the tunnels whose wait is over. The provider refuses to
   delete a tunnel with a connected connector (409, mapped to the error code
   `conflict`), so a tunnel that has a connector somewhere is first marked
   `removing`. `carryingServers` is empty for a `removing` tunnel, so the next
@@ -85,7 +93,8 @@ member there, a widened CHECK (forward migration) and one adapter.
   `active`; with none connected, a down or failed one makes it `attention`; a
   tunnel being removed keeps `removing`. An all-servers tunnel has no portal
   rows (only `one` and `chosen` store them), so the answer is applied to the
-  tunnel directly and a down answer only moves it off `pending`.
+  tunnel directly and a down answer only moves it off `pending`. Only a server
+  that carries the tunnel (`carryingServers`) can move it.
 - `carrier` is unique on (organization, provider, external account id); a
   provider with no account stores NULL, and NULLs never collide.
 
@@ -280,16 +289,20 @@ provider accounts.
   hosting's own non-removing doorways of the same organization count.
   A doorway put on the tunnel before the site has the name has no `hostingId`
   yet (the sweep and the resend fill it in later); the lock is built before
-  that, so `loadNameLock` first claims the organization's non-removing doorways
-  whose name (compared without case) the deploying hosting lists
-  (`claimDoorwaysForHosting`). The hosting being deployed is already one of the
-  organization's and a name sits on one hosting, so the claim cannot cross
-  organizations. Without it the first deploy sent no lock.
+  that, so `loadNameLock` also takes the organization's non-removing doorways
+  that have no site and whose name (compared without case) the deploying
+  hosting lists (`unlinkedDoorwayNamed`). It is read only (a deploy
+  preparation writes nothing), and a doorway already linked to another site is
+  never taken. Without it the first deploy sent no lock.
   Refused with 409: `tunnel_daemon_too_old` (the daemon lacks
   `tunnel-forwarding-v1` and the hosting has a locked name; an all-public hosting is
   allowed and sends nothing) and `tunnel_name_public_certificate` (a locked name
   pinned to a public Let's Encrypt certificate while the hosting also serves
   ordinary public names; the daemon contract needs every name open in that mode).
+  The names counted are those the certificate would cover
+  (`hostingCertificateNames`): under a `www` mode the other spelling is served or
+  redirected too, is not a tunnel name unless typed as one, and so counts as a
+  public name.
   A tunnel block never asks for a public certificate: when every name the
   hosting serves is a locked tunnel name, the pin (the Let's Encrypt box that
   switches on when a hostname is typed) is set aside for the deploy

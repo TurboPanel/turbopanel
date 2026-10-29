@@ -426,10 +426,10 @@ const TUNNEL_ID_PARAM = {
 } as const
 
 const TUNNEL_ERRORS =
-  'Refusals: 400 `tunnel_invalid`, `datacenter_required`, `datacenter_invalid`, `server_invalid`, `server_not_in_datacenter`; 409 `tunnel_exists`, `tunnel_limit`, `server_never_carries`, `badge_cannot_tunnel`, `tunnel_in_use`; 503 `secrets_unavailable`; 502 `provider_unavailable`; 400 `badge_rejected` when the provider does not accept the API Token.'
+  'Refusals: 400 `tunnel_invalid`, `datacenter_required`, `datacenter_invalid`, `server_invalid`, `server_not_in_datacenter`; 409 `tunnel_exists`, `tunnel_limit`, `server_never_carries`, `badge_cannot_tunnel`, `tunnel_in_use`, `tunnel_removing` (a Tunnel being removed takes no placement change); 503 `secrets_unavailable`; 502 `provider_unavailable`; 400 `badge_rejected` when the provider does not accept the API Token.'
 
 const DOORWAY_ERRORS =
-  'Refusals: 400 `hostname_invalid`; 409 `hostname_in_use`, `doorway_limit`, `tunnel_not_ready`, `carrier_missing`, `badge_cannot_tunnel`, `badge_cannot_dns`, `zone_not_found`, `hosting_mismatch`; 400 `badge_rejected`; 503 `secrets_unavailable`; 502 `provider_unavailable`.'
+  'Refusals: 400 `hostname_invalid`; 409 `hostname_in_use`, `doorway_limit`, `tunnel_not_ready`, `tunnel_removing` (a Tunnel being removed takes no new hostnames), `carrier_missing`, `badge_cannot_tunnel`, `badge_cannot_dns`, `zone_not_found`, `hosting_mismatch`; 400 `badge_rejected`; 503 `secrets_unavailable`; 502 `provider_unavailable`.'
 
 Object.assign(tunnelPaths, {
   '/api/client/v1/organizations/{id}/tunnels': {
@@ -487,7 +487,7 @@ Object.assign(tunnelPaths, {
       tags: ['Organizations'],
       summary: 'Remove a Tunnel',
       description:
-        'Owners and managers only. Refused with 409 `tunnel_in_use` while it carries hostnames. A Tunnel with no connector running is removed at the provider and here at once (`removing: false`). A Tunnel whose servers run a connector is marked `removing`: its servers are told to stop first, the provider only lets go of a Tunnel with no connected connector, and the removal is finished by the periodic sweep after growing waits (`removing: true`). While it waits, the Tunnel keeps status `removing` and a warning says why.',
+        'Owners and managers only. Refused with 409 `tunnel_in_use` while it carries hostnames (also when a hostname is being added at the same moment). A Tunnel with no connector running is removed at the provider and here at once (`removing: false`). A Tunnel whose servers run a connector is marked `removing`: its servers are told to stop first, the provider only lets go of a Tunnel with no connected connector, and the removal is finished by the periodic sweep after growing waits (`removing: true`). While it waits, the Tunnel keeps status `removing` and a warning says why; it takes no new hostnames and no placement change (409 `tunnel_removing`), and if a hostname is somehow on it the removal waits until it is removed.',
       security: [{ cookieAuth: [] }],
       parameters: [ORG_ID_PARAM, TUNNEL_ID_PARAM],
       responses: {

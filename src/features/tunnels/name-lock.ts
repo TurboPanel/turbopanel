@@ -10,6 +10,7 @@ import { and, eq, inArray, ne, or, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { doorway } from '../../db/schema.ts'
 import type { EnvironmentDeployHostingTunnel } from '../../contracts/commands/tunnel-routes.ts'
+import { hostingCertificateNames, type HostingWwwMode } from '../../contracts/commands/hostname.ts'
 import { TUNNEL_TABLE_CAPS } from './route-builder.ts'
 import { compareText } from './order.ts'
 import { daemonCanCarryTunnels } from './daemon-gate.ts'
@@ -81,35 +82,21 @@ export function buildNameLock(input: NameLockInput): NameLock {
 }
 
 /**
- * Point the organization's doorways at the hosting that holds their names.
- *
- * A name may be put on a tunnel before the site has it, so the doorway has no
- * hosting yet (the sweep and the resend fill that in after a deploy). The lock
- * is built before that, so the deploy reads the link from the hosting's own
- * names. The hosting being deployed is already one of the organization's, and
- * a name sits on one hosting, so a doorway whose name this hosting lists is
- * this hosting's.
+ * A doorway with no site yet whose name the deploying hosting lists. A name may
+ * be put on a tunnel before the site has it, and the link to the site is only
+ * filled in after a deploy (by the sweep and the resend), so the first deploy
+ * finds the doorway by the name instead. Read only: a doorway already linked to
+ * another site is never taken, and nothing is written from a deploy preparation.
  */
-async function claimDoorwaysForHosting(
-  db: Db,
-  params: { organizationId: string; hostingId: string; siteHostnames: readonly string[] }
-): Promise<void> {
-  const names = [...new Set(params.siteHostnames.map((name) => name.toLowerCase()))]
-  if (names.length === 0) return
-  await db
-    .update(doorway)
-    .set({ hostingId: params.hostingId })
-    .where(
-      and(
-        eq(doorway.routingOrganizationId, params.organizationId),
-        inArray(sql`lower(${doorway.hostname})`, names),
-        ne(doorway.status, 'removing'),
-        or(sql`${doorway.hostingId} IS NULL`, ne(doorway.hostingId, params.hostingId))
-      )
-    )
+function unlinkedDoorwayNamed(siteHostnames: readonly string[]) {
+  const names = [...new Set(siteHostnames.map((name) => name.toLowerCase()))]
+  return and(
+    sql`${doorway.hostingId} IS NULL`,
+    names.length > 0 ? inArray(sql`lower(${doorway.hostname})`, names) : sql`false`
+  )
 }
 
-/** The lock for one hosting of an organization on one server. Hostings with no doorway cost two queries. */
+/** The lock for one hosting of an organization on one server. Hostings with no doorway cost one query. */
 export async function loadNameLock(
   db: Db,
   params: {
@@ -119,7 +106,6 @@ export async function loadNameLock(
     siteHostnames: readonly string[]
   }
 ): Promise<NameLock> {
-  await claimDoorwaysForHosting(db, params)
   const rows = await db
     .select({
       hostname: doorway.hostname,
@@ -129,9 +115,9 @@ export async function loadNameLock(
     .from(doorway)
     .where(
       and(
-        eq(doorway.hostingId, params.hostingId),
         eq(doorway.routingOrganizationId, params.organizationId),
-        ne(doorway.status, 'removing')
+        ne(doorway.status, 'removing'),
+        or(eq(doorway.hostingId, params.hostingId), unlinkedDoorwayNamed(params.siteHostnames))
       )
     )
   if (rows.length === 0) return { lockedHostnames: [], tunnel: undefined }
@@ -156,10 +142,21 @@ export type NameLockRefusal = {
   hostnames: string[]
 }
 
-/** Is every name the hosting serves a locked tunnel name? Compared without regard to case. */
-function everyNameLocked(siteHostnames: readonly string[], locked: readonly string[]): boolean {
+/**
+ * Is every name the hosting's certificate would cover a locked tunnel name?
+ * That is the typed names and, under a `www` mode, their other spelling, served
+ * or only redirected. The other spelling is never a tunnel name unless it was
+ * typed too, so it counts as an ordinary public name. Compared without case.
+ */
+function everyNameLocked(
+  siteHostnames: readonly string[],
+  www: HostingWwwMode | undefined,
+  locked: readonly string[]
+): boolean {
   const lockedLower = new Set(locked.map((name) => name.toLowerCase()))
-  return siteHostnames.every((name) => lockedLower.has(name.toLowerCase()))
+  return hostingCertificateNames({ hostnames: siteHostnames, www }).every((name) =>
+    lockedLower.has(name.toLowerCase())
+  )
 }
 
 export type DeployNameLock = {
@@ -189,6 +186,8 @@ export async function resolveDeployNameLock(
     serverId: string
     hostingId: string
     siteHostnames: readonly string[]
+    /** The hosting's `www` mode: the other spelling of each name is served or redirected too. */
+    www?: HostingWwwMode
     tlsMode: 'acme' | undefined
   }
 ): Promise<DeployNameLock | { refusal: NameLockRefusal }> {
@@ -196,7 +195,7 @@ export async function resolveDeployNameLock(
   if (lock.tunnel === undefined) return { tunnel: undefined }
   const locked = lock.lockedHostnames
   const acmePinned = params.tlsMode === 'acme' && locked.length > 0
-  if (acmePinned && !everyNameLocked(params.siteHostnames, locked)) {
+  if (acmePinned && !everyNameLocked(params.siteHostnames, params.www, locked)) {
     return { refusal: { code: 'tunnel_name_public_certificate', hostnames: locked } }
   }
   const state = await getServerDaemonStateByServerId(db, params.serverId)
