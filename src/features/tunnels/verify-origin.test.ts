@@ -31,10 +31,10 @@ import { deriveEncryptionSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { mintSelfSignedCertificate } from '../../lib/tls/index.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import type { TunnelAdapter } from './adapter.ts'
-import { readProviderOrigin } from './origin-certificate.ts'
+import { readProviderOrigin, sweepOriginCertificates } from './origin-certificate.ts'
 import { MAX_CERTIFICATES_PER_VERIFY, setVerifyOrigin } from './verify-origin.ts'
 import { tunnelVerifyState } from './verify-state.ts'
-import { TunnelRefusal } from './lifecycle.ts'
+import { deleteTunnel, TunnelRefusal } from './lifecycle.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -89,6 +89,7 @@ function fakeAdapter(): Fake {
         notAfter: minted.parsed.notAfter.toISOString(),
       }
     },
+    deleteTunnel: () => Promise.resolve(),
     revokeOriginCertificate: (_token: string, input: { externalId: string }) => {
       revoked.push(input.externalId)
       return Promise.resolve()
@@ -366,6 +367,32 @@ test('when the site gains a name a new certificate lists both, the site moves to
     // The old certificate is not revoked while a server could still be using it.
     assertEquals(w.fake.revoked, [])
     assertEquals(result.state.active, true)
+  })
+})
+
+test('removing the tunnel retires its origin certificate and the sweep revokes it a day later', async () => {
+  await withWorld(async (w) => {
+    const hostingId = await addSite(w, ['app.example.com'])
+    await setVerifyOrigin(w.deps, w.carrierRow, await tunnelRow(w), true)
+    // The project is gone: the site and its names are removed without the tunnel code running.
+    await w.db.delete(doorway).where(eq(doorway.tunnelId, w.tunnelId))
+    await w.db.delete(hosting).where(eq(hosting.id, hostingId))
+    const [before] = await w.db.select().from(tls).where(eq(tls.organizationId, w.organizationId))
+    assertEquals(readProviderOrigin(before!.metadata)!.retiredAt, null)
+
+    assertEquals(await deleteTunnel(w.db, w.deps, await tunnelRow(w), w.carrierRow), 'removed')
+    const [retired] = await w.db.select().from(tls).where(eq(tls.organizationId, w.organizationId))
+    assert(readProviderOrigin(retired!.metadata)!.retiredAt !== null)
+
+    const swept = await sweepOriginCertificates({
+      db: w.db,
+      secrets: w.deps.secrets,
+      registry: () => w.fake.adapter,
+      organizationId: w.organizationId,
+      now: new Date(Date.now() + 25 * 3_600_000),
+    })
+    assertEquals(swept.removed, [retired!.id])
+    assertEquals(w.fake.revoked, ['ext-1'])
   })
 })
 

@@ -22,6 +22,7 @@ import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 import { registerOrganizationCarrierRoutes } from './carrier-routes.ts'
 import { registerOrganizationOriginCertificateRoutes } from './origin-certificate-routes.ts'
+import { registerTlsRoutes } from '../tls/routes.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -144,6 +145,7 @@ async function withFixture(
   }
   registerOrganizationCarrierRoutes(app, routeOpts, fakeProvider)
   registerOrganizationOriginCertificateRoutes(app, routeOpts, fakeProvider)
+  registerTlsRoutes(app, routeOpts, fakeProvider)
   const orgs = await db
     .insert(organization)
     .values([{ name: 'Origin Route Org A' }, { name: 'Origin Route Org B' }])
@@ -304,6 +306,28 @@ test('a manager gets a certificate for a zone, asking again returns it, and it c
       0
     )
     assertEquals((await call(f, 'DELETE', `${base(f)}/${cert.id}`, f.managerCookie)).status, 404)
+  })
+})
+
+test('deleting an unpinned origin certificate from the library revokes it at the provider and removes the row', async () => {
+  await withFixture(async (f) => {
+    const made = await call(f, 'POST', base(f), f.managerCookie, {
+      zone: 'example.com',
+      names: ['app.example.com'],
+    })
+    const cert = made.body.originCertificate as Record<string, unknown>
+    const removed = await call(f, 'DELETE', `/tls/${cert.id}`, f.managerCookie)
+    assertEquals(removed.status, 200, removed.text)
+    assertEquals(state.revoked, ['cert-1'])
+    assertEquals(
+      (
+        await f.db
+          .select({ id: tls.id })
+          .from(tls)
+          .where(eq(tls.id, cert.id as string))
+      ).length,
+      0
+    )
   })
 })
 

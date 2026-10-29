@@ -36,7 +36,8 @@
  */
 
 import { firstSequential, forEachSequential } from '../../lib/sequential.ts'
-import { eq, inArray } from 'drizzle-orm'
+import { readProviderOrigin } from '../../features/tunnels/origin-certificate.ts'
+import { and, eq, inArray } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import {
   type ComposeDocument,
@@ -561,12 +562,12 @@ async function reconcileDeclaredRoute(
   // hosting for if it ever happens.
   if (!serviceId) return null
 
-  const pins = await resolveRoutePins(route, ctx)
-  if (!pins.ok) return pins.error
-
   const matched = matchOrAdoptExistingRow(ctx, serviceId, route)
   if (isComposeHostingError(matched)) return matched
   const { existing, isAdoption } = matched
+
+  const pins = await resolveRoutePinsKeepingOrigin(db, route, ctx, existing?.id)
+  if (!pins.ok) return pins.error
 
   const options = mergeComposeHostingOptions(existing?.options, route.entry, route.serviceKind)
   const tlsMode = hostingTlsModeOf(route.entry)
@@ -949,6 +950,43 @@ async function automaticCertificatePin(
   }
   const { id } = await ctx.letsEncrypt.managedCertificateFor(ctx.organizationId, names)
   return { ok: true, tlsId: id }
+}
+
+/**
+ * The origin certificate a site is pinned to by its tunnel's verified
+ * connection, when the declaration does not name a certificate of its own.
+ * Compose is the truth for the pin, but a site on a tunnel name with a verified
+ * connection can only be served by that certificate: giving the pin back to
+ * Let's Encrypt (the default) would drop it at deploy and the connector would
+ * answer 502. A retired origin certificate is not kept, so turning the verified
+ * connection off lets the next deploy hand the site back to the declaration.
+ */
+async function keptOriginPin(
+  db: Db,
+  hostingId: string | undefined,
+  tlsMode: ComposeHostingTlsMode
+): Promise<string | null> {
+  if (hostingId === undefined || tlsMode === 'certificate') return null
+  const [row] = await db
+    .select({ id: tls.id, metadata: tls.metadata })
+    .from(hosting)
+    .innerJoin(tls, eq(tls.id, hosting.tlsId))
+    .where(and(eq(hosting.id, hostingId), eq(tls.source, 'provider_origin')))
+    .limit(1)
+  return row && readProviderOrigin(row.metadata)?.retiredAt === null ? row.id : null
+}
+
+/** {@link resolveRoutePins}, except a site pinned to its tunnel's origin certificate keeps that pin. */
+async function resolveRoutePinsKeepingOrigin(
+  db: Db,
+  route: DeclaredRoute,
+  ctx: RouteReconcileContext,
+  hostingId: string | undefined
+): Promise<ResolvedPins> {
+  const kept = await keptOriginPin(db, hostingId, hostingTlsModeOf(route.entry))
+  if (kept === null) return await resolveRoutePins(route, ctx)
+  const pins = resolvePins(route, ctx.resolveTls, ctx.resolveIp)
+  return pins.ok ? { ...pins, tlsId: kept } : pins
 }
 
 /** {@link resolvePins}, plus the managed row an `automatic` route pins. */

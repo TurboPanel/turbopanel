@@ -485,8 +485,20 @@ Rules the code enforces:
   unless forced. Removing a token is refused (`origin_certificate_in_use`) only
   when it is the last active token that could revoke a certificate; removing the
   account is refused while it still owns certificates. The TLS library routes
-  refuse to revoke, delete or create a `provider_origin` row (`409
-provider_origin_managed`, `400 provider_origin_unsupported`).
+  refuse to revoke or create a `provider_origin` row (`409
+provider_origin_managed`, `400 provider_origin_unsupported`). Deleting one from
+  the library (`DELETE /tls/:id`) revokes it at the provider through the same
+  selector and then removes the row; a site that pins it answers `409 tls_in_use`
+  with a plain sentence, and a row without a provider link is never touched.
+- **Compose-owned sites keep the pin.** The compose reconcile re-asserts a
+  site's `tls_id` from its declaration on every deploy, which used to hand a site
+  pinned by the verified connection back to the declared mode (internal or
+  Let's Encrypt) and left the connector with no matching certificate (502). The
+  reconcile now keeps a pin on an unretired `provider_origin` row unless the
+  declaration names a certificate itself; once the certificate is retired
+  (verified connection off) the next deploy returns the site to its declaration
+  and the sweep can revoke the certificate. Removing a tunnel also retires the
+  certificates nothing needs.
 - If storing fails after the provider issued the certificate, it is revoked
   again. A provider that no longer knows the id counts as revoked.
 - Renewal issues a replacement for the same names and scope, re-pins the sites
