@@ -95,6 +95,8 @@ export async function dependentsOf(
 
 /** Convenience: the loss of removing one whole badge from its carrier. */
 export async function lossOfRemoving(db: Db, row: BadgeRow): Promise<BadgeLoss> {
+  // A token that is not active serves nothing, so removing it loses nothing.
+  if (row.status !== 'active') return { tunnels: false, dnsZones: [] }
   const others = (await listBadges(db, row.carrierId)).filter((b) => b.id !== row.id)
   return lossOf(capsOf(row), others)
 }

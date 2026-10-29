@@ -763,9 +763,15 @@ async function hostingOfName(db: Db, organizationId: string, name: string): Prom
   return site.hostingId
 }
 
+/** A removal that took the route down and is waiting for a token that can edit the DNS of its zone. */
+function routeTakenDown(row: DoorwayRow): boolean {
+  return row.status === 'attention' && doorwayWarning(row) !== null
+}
+
 async function routeNames(db: Db, tunnelId: string, extra: string | null): Promise<string[]> {
   const rows = await listDoorways(db, tunnelId)
-  const names = rows.map((r) => r.hostname)
+  // A hostname waiting in attention for its DNS token has had its route taken down; it stays down.
+  const names = rows.filter((r) => !routeTakenDown(r)).map((r) => r.hostname)
   if (extra && !names.includes(extra)) names.push(extra)
   return names.toSorted(compareText)
 }

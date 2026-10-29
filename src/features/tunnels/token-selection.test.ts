@@ -397,6 +397,19 @@ test('removing a hostname finds its DNS token first; with none, the route goes, 
     const [kept] = await w.db.select().from(doorway).where(eq(doorway.id, made.id))
     assertEquals(kept!.status, 'attention')
     assert((kept!.metadata as { warning: string }).warning.includes('blog.example.com'))
+    // The route stays down: a later change to the same tunnel does not bring it back.
+    await addToken(w, 'tok-dns-b', { dns: [ZONE_B] })
+    const sent: string[][] = []
+    const setRoutes = adapter.setRoutes
+    adapter.setRoutes = (token, input) => {
+      sent.push([...input.hostnames])
+      return setRoutes(token, input)
+    }
+    await addDoorway(w.db, { adapter, secrets: w.secrets }, t, w.carrier, {
+      hostname: 'www.shop.example.org',
+      isLocalOnly: true,
+    })
+    assertEquals(sent.at(-1), ['www.shop.example.org'])
     // A token that covers the zone again: the retry takes the DNS name away and the row goes.
     await addToken(w, 'tok-dns-new', { dns: [ZONE_A] })
     calls.length = 0
