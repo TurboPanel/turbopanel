@@ -219,7 +219,7 @@ export const tunnelSchemas = {
       isLocalOnly: {
         type: 'boolean',
         description:
-          "True (the default) = only the Tunnel connector and the servers that carry the same Tunnel may reach this name on the server that runs the site; everyone else is dropped. False = the name is also public, so everyone is answered. The lock is applied when the site is deployed: a deploy to a server whose daemon is too old to enforce it is refused (409 `tunnel_daemon_too_old`), and a locked name that is pinned to a public Let's Encrypt certificate is refused (409 `tunnel_name_public_certificate`). Changing the servers of a Tunnel changes who may reach the name; the lock follows at the next deploy of the site.",
+          "True (the default) = only the Tunnel connector and the servers that carry the same Tunnel may reach this name on the server that runs the site; everyone else is dropped. False = the name is also public, so everyone is answered. The lock is applied when the site is deployed: a deploy to a server whose daemon is too old to enforce it is refused (409 `tunnel_daemon_too_old`), and a locked name that is pinned to a public Let's Encrypt certificate is refused (409 `tunnel_name_public_certificate`) only when the site also serves ordinary public names; a site whose names are all tunnel-only deploys on the internal certificate instead. A name added to a Tunnel before the site has it is locked on the site's first deploy. Changing the servers of a Tunnel changes who may reach the name; the lock follows at the next deploy of the site.",
       },
       status: { type: 'string', enum: ['pending', 'live', 'attention', 'removing'] },
       dns: { type: 'string', enum: ['created', 'none'] },
@@ -487,11 +487,14 @@ Object.assign(tunnelPaths, {
       tags: ['Organizations'],
       summary: 'Remove a Tunnel',
       description:
-        'Owners and managers only. Refused with 409 `tunnel_in_use` while it carries hostnames. Removes the Tunnel at the provider, then here.',
+        'Owners and managers only. Refused with 409 `tunnel_in_use` while it carries hostnames. A Tunnel with no connector running is removed at the provider and here at once (`removing: false`). A Tunnel whose servers run a connector is marked `removing`: its servers are told to stop first, the provider only lets go of a Tunnel with no connected connector, and the removal is finished by the periodic sweep after growing waits (`removing: true`). While it waits, the Tunnel keeps status `removing` and a warning says why.',
       security: [{ cookieAuth: [] }],
       parameters: [ORG_ID_PARAM, TUNNEL_ID_PARAM],
       responses: {
-        ...jsonOk('Removed', { type: 'object', properties: { ok: { type: 'boolean' } } }),
+        ...jsonOk('Removed, or marked removing', {
+          type: 'object',
+          properties: { ok: { type: 'boolean' }, removing: { type: 'boolean' } },
+        }),
         ...errors(),
       },
     },

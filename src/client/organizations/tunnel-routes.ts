@@ -212,8 +212,9 @@ function deleteResponse(registry: TunnelAdapterRegistry) {
     const owner = row.carrierId
       ? await findCarrier(scope.db, scope.organizationId, row.carrierId)
       : null
+    let outcome: 'removed' | 'removing'
     try {
-      await deleteTunnel(
+      outcome = await deleteTunnel(
         scope.db,
         { adapter: registry(row.provider as TunnelProvider), secrets },
         row,
@@ -222,9 +223,13 @@ function deleteResponse(registry: TunnelAdapterRegistry) {
     } catch (err) {
       return refused(c, err)
     }
-    await audit(c, scope, 'tunnel.delete', row.id, { name: row.name, provider: row.provider })
+    await audit(c, scope, 'tunnel.delete', row.id, {
+      name: row.name,
+      provider: row.provider,
+      removing: outcome === 'removing',
+    })
     await nudgeConnectors(c, scope)
-    return c.json({ ok: true })
+    return c.json({ ok: true, removing: outcome === 'removing' })
   }
 }
 

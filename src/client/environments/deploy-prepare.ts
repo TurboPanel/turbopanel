@@ -4410,6 +4410,8 @@ async function resolveHttpHostingEntry(
     }
   }
 
+  // A hosting whose names are all tunnel-only never asks for a public certificate.
+  const tlsMode = lock.dropPublicCertificate === true ? undefined : tlsWire.tlsMode
   return {
     entry: {
       hostingId: h.id,
@@ -4420,7 +4422,7 @@ async function resolveHttpHostingEntry(
       pathPrefix: readPathPrefix(h.options),
       targetPort: readTargetPort(h.options),
       tlsId: tlsWire.tlsId,
-      ...(tlsWire.tlsMode === undefined ? {} : { tlsMode: tlsWire.tlsMode }),
+      ...(tlsMode === undefined ? {} : { tlsMode }),
       proxy: readHostingProxyFromOptions(h.options),
       ...(www === 'off' ? {} : { www }),
       ...(bindResolved === undefined ? {} : { bindAddress: bindResolved }),

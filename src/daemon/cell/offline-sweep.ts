@@ -73,6 +73,7 @@ import type { FirewallApplyGate } from '../../features/firewall/enforcement.ts'
 import { runFirewallPreviewSweep } from '../../features/firewall/preview.ts'
 import { runLeafRenewalSweepTick } from '../../client/tls/leaf-renewal-sweep.ts'
 import { runTunnelConnectorsSweepTick } from '../../features/tunnels/connector-sync.ts'
+import { runTunnelRemovalSweepTick } from '../../features/tunnels/removal.ts'
 import { runTunnelStatusPollTick } from '../../features/tunnels/status-poll.ts'
 import { peerLeafDelivery, runTunnelRoutesSweepTick } from '../../features/tunnels/sync.ts'
 import { runHostingLetsEncryptSweepTick } from '../../client/hostings/letsencrypt-sweep.ts'
@@ -1207,6 +1208,11 @@ async function runQueuedCronSweeps(
       // to drop the ones that moved away. A resend leaves a running connector alone.
       await runIsolatedSweep(signal, 'tunnel-connectors-sweep-failed', () =>
         runTunnelConnectorsSweepTick(db, { commandQueue, ...tlsRenewal })
+      )
+      // Tunnels being removed: once their connectors have stopped the provider
+      // lets go of them; tried again after a growing wait until it does.
+      await runIsolatedSweep(signal, 'tunnel-removal-sweep-failed', () =>
+        runTunnelRemovalSweepTick(db, { secrets: tlsRenewal.dataEncryptionSecrets })
       )
       // Connector versions per server: record the last answer, ask again when due.
       await runIsolatedSweep(signal, 'tunnel-status-poll-failed', () =>

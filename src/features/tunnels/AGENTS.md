@@ -69,6 +69,17 @@ member there, a widened CHECK (forward migration) and one adapter.
   removing a badge or carrier deletes its secrets in the same transaction
   (`deleteBadge`, `deleteCarrier`), removing a tunnel deletes its run-token
   secret (`deleteTunnelRecord`), and `tunnel.secret_id` is SET NULL.
+- **Removing a tunnel (`deleteTunnel`, `removal.ts`).** The provider refuses to
+  delete a tunnel with a connected connector (409, mapped to the error code
+  `conflict`), so a tunnel that has a connector somewhere is first marked
+  `removing`. `carryingServers` is empty for a `removing` tunnel, so the next
+  connector send tells its servers to stop (the usual remove list), and the
+  provider delete is tried by `runTunnelRemovalSweepTick` (offline sweep) after
+  each wait: 30 s, doubling, up to 10 min (`tunnel.metadata.removal` holds
+  `attempts`, `nextAt` and the plain reason, shown as a warning on the tunnel).
+  A tunnel with no connector is deleted at once; one the provider no longer has
+  (404) counts as removed. The token wipe, the run-token secret and the portals
+  go in `deleteTunnelRecord` as before; hostnames must be removed first.
 - `carrier` is unique on (organization, provider, external account id); a
   provider with no account stores NULL, and NULLs never collide.
 
@@ -261,11 +272,23 @@ provider accounts.
   datacenter addresses and is sent only when there are real peers. A doorway with
   `isLocalOnly = false` goes in `openHostnames` (lock off for that name). Only the
   hosting's own non-removing doorways of the same organization count.
+  A doorway put on the tunnel before the site has the name has no `hostingId`
+  yet (the sweep and the resend fill it in later); the lock is built before
+  that, so `loadNameLock` first claims the organization's non-removing doorways
+  whose name (compared without case) the deploying hosting lists
+  (`claimDoorwaysForHosting`). The hosting being deployed is already one of the
+  organization's and a name sits on one hosting, so the claim cannot cross
+  organizations. Without it the first deploy sent no lock.
   Refused with 409: `tunnel_daemon_too_old` (the daemon lacks
   `tunnel-forwarding-v1` and the hosting has a locked name; an all-public hosting is
   allowed and sends nothing) and `tunnel_name_public_certificate` (a locked name
-  pinned to a public Let's Encrypt certificate; the daemon contract needs every
-  name open in that mode).
+  pinned to a public Let's Encrypt certificate while the hosting also serves
+  ordinary public names; the daemon contract needs every name open in that mode).
+  A tunnel block never asks for a public certificate: when every name the
+  hosting serves is a locked tunnel name, the pin (the Let's Encrypt box that
+  switches on when a hostname is typed) is set aside for the deploy
+  (`dropPublicCertificate`: no `tlsMode` on the wire, internal certificate) and
+  nothing is refused.
   **The lock follows the next deploy.** Adding or removing a carrier changes the
   peer set, but nothing redeploys the site by itself: until the site is deployed
   again, a newly added carrier's forwards to that server are dropped (closed, not
