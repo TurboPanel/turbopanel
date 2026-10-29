@@ -18,7 +18,14 @@ export function scrubSecrets(text: string, secrets: readonly string[] = []): str
   return out.replace(BEARER, `Bearer ${REDACTED}`).replace(TOKEN_LIKE, REDACTED)
 }
 
-/** Cut a message to a length the screens and audit rows can carry. */
+/**
+ * Cut a message to a length the screens and audit rows can carry. The cut
+ * falls on the last space before the limit, so no word is broken in half.
+ */
 export function clip(text: string, max = 300): string {
-  return text.length > max ? `${text.slice(0, max - 1)}…` : text
+  if (text.length <= max) return text
+  const head = text.slice(0, max - 1)
+  const space = head.lastIndexOf(' ')
+  const cut = space > max / 2 ? head.slice(0, space) : head
+  return `${cut.trimEnd()}…`
 }

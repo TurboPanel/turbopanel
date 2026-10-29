@@ -1,6 +1,8 @@
 import { assertEquals } from '@std/assert'
 import { CloudflareClient } from './cloudflare-client.ts'
 import { createCloudflareAdapter } from './cloudflare-adapter.ts'
+import { TunnelProviderError } from './errors.ts'
+import { clip } from './scrub.ts'
 
 /** Jest/Mocha-shaped alias for {@link Deno.test}; Sonar only recognizes `test()`. */
 const test = Deno.test.bind(Deno)
@@ -60,4 +62,40 @@ test('a stubbed global fetch set after the client is built is still honoured', a
   } finally {
     stub.restore()
   }
+})
+
+function refusingFetch(status: number, message: string): typeof fetch {
+  return () =>
+    Promise.resolve(
+      Response.json({ success: false, errors: [{ code: 1022, message }] }, { status })
+    )
+}
+
+test('a tunnel delete refused for active connections is a conflict, not a provider error', async () => {
+  const client = new CloudflareClient({
+    token: TOKEN,
+    fetch: refusingFetch(400, 'This tunnel has active connections'),
+  })
+  const err = await client.deleteTunnel('a'.repeat(32), 'tunnel-1').catch((e) => e)
+  assertEquals(err instanceof TunnelProviderError, true)
+  assertEquals(err.code, 'conflict')
+  assertEquals(
+    err.message,
+    'Cloudflare refused the request (400): This tunnel has active connections'
+  )
+})
+
+test('any other 400 stays a provider error', async () => {
+  const client = new CloudflareClient({ token: TOKEN, fetch: refusingFetch(400, 'Bad name') })
+  const err = await client.deleteTunnel('a'.repeat(32), 'tunnel-1').catch((e) => e)
+  assertEquals(err.code, 'provider_error')
+})
+
+test('a long provider message is cut between words, never inside one', () => {
+  const text = `${'word '.repeat(80)}connections`
+  const out = clip(text, 50)
+  assertEquals(out.length <= 50, true)
+  assertEquals(out.endsWith('word…'), true)
+  assertEquals(clip('short message'), 'short message')
+  assertEquals(clip('x'.repeat(60), 20), `${'x'.repeat(19)}…`)
 })
