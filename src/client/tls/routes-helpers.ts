@@ -36,12 +36,22 @@ export function isTlsUuid(value: string): boolean {
   return TLS_UUID_RE.test(value)
 }
 
+/**
+ * The metadata a response carries. A row that has no certificate yet stores an
+ * epoch placeholder for its dates; those two go out as `null` (not as 1970,
+ * which a browser in the Americas shows as 12/31/1969).
+ */
+export type TlsPublicMetadata = Omit<TlsMetadata, 'notBefore' | 'notAfter'> & {
+  notBefore: string | null
+  notAfter: string | null
+}
+
 export type TlsPublicRow = {
   id: string
   name: string | null
   source: string
   organizationId: string
-  metadata: TlsMetadata
+  metadata: TlsPublicMetadata
   options: TlsOptions | null
   certificatePem: string | null
   /**
@@ -56,6 +66,24 @@ export type TlsPublicRow = {
   caGeneration?: number | null
   createdAt: string
   updatedAt: string
+}
+
+/** True for the epoch a not-yet-issued row stores in place of a date. */
+function isPlaceholderDate(value: string): boolean {
+  const time = Date.parse(value)
+  return Number.isNaN(time) || time <= 0
+}
+
+export function publicTlsMetadata(
+  metadata: TlsMetadata,
+  hasCertificate: boolean
+): TlsPublicMetadata {
+  if (hasCertificate) return metadata
+  return {
+    ...metadata,
+    notBefore: isPlaceholderDate(metadata.notBefore) ? null : metadata.notBefore,
+    notAfter: isPlaceholderDate(metadata.notAfter) ? null : metadata.notAfter,
+  }
 }
 
 export function toPublicTlsRow(
@@ -76,7 +104,7 @@ export function toPublicTlsRow(
     name: row.name,
     source: row.source,
     organizationId: row.organizationId,
-    metadata: refreshTlsStatus(metadata),
+    metadata: publicTlsMetadata(refreshTlsStatus(metadata), row.certificatePem !== null),
     options: parseTlsOptions(row.options),
     certificatePem: row.certificatePem,
     caGeneration: row.caGeneration ?? null,

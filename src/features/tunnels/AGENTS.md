@@ -366,6 +366,13 @@ provider accounts.
   switches on when a hostname is typed) is set aside for the deploy
   (`dropPublicCertificate`: no `tlsMode` on the wire, internal certificate) and
   nothing is refused.
+  Such a hosting also keeps no Let's Encrypt library row: `settleTunnelOnlyHosting`
+  (`tunnel-only-certificate.ts`) drops its pin to a row made for sites, forgets
+  a waiting request and removes the row once nothing else pins it. The deploy
+  calls it when it sets the pin aside, `PUT /hostings/{id}/use-letsencrypt`
+  calls it first (answering 200 with `tunnelOnly: true` and creating nothing),
+  and the waiting-request sweep calls it before retrying, so nothing is ordered
+  from or retried at the authority for a tunnel-only name.
   **The lock follows the next deploy.** Adding or removing a carrier changes the
   peer set, but nothing redeploys the site by itself: until the site is deployed
   again, a newly added carrier's forwards to that server are dropped (closed, not

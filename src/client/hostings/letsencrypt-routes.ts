@@ -36,6 +36,7 @@ import {
   resolveHostingBind,
   resolveHostingProtocol,
 } from '../../features/hostings/hosting-options.ts'
+import { settleTunnelOnlyHosting } from '../../features/tunnels/tunnel-only-certificate.ts'
 import { requestLetsEncrypt } from '../../features/hostings/use-letsencrypt.ts'
 import { getCommandQueue } from '../../features/commands/queue.ts'
 import { assertNotSystemOwnedOr403, getOrgId, parseJsonBody } from '../shared.ts'
@@ -252,6 +253,27 @@ async function withLibraryPickApply(
   }
 }
 
+/** The hosting as the page shows it after a Let's Encrypt request, with its derived certificate. */
+async function loadFreshHosting(db: Db, organizationId: string, id: string, at: Date) {
+  const [fresh] = await db
+    .select({
+      id: hosting.id,
+      name: hosting.name,
+      serviceId: hosting.serviceId,
+      tlsId: hosting.tlsId,
+      options: hosting.options,
+      metadata: hosting.metadata,
+      pendingAt: hosting.pendingAt,
+      updatedAt: hosting.updatedAt,
+    })
+    .from(hosting)
+    .where(eq(hosting.id, id))
+    .limit(1)
+  if (!fresh) return null
+  const certificate = (await loadHostingCertificates(db, organizationId, [fresh], at)).get(id)
+  return { fresh, certificate }
+}
+
 export function registerHostingLetsEncryptRoutes(
   router: Hono<AppEnv>,
   opts: AuthRouteOpts,
@@ -303,6 +325,19 @@ export function registerHostingLetsEncryptRoutes(
       .limit(1)
     if (!row) return c.json({ error: 'Not found' }, 404)
 
+    // Names that only a tunnel serves need no public certificate: no row, no
+    // order. Answer with the hosting as it is; `tunnelOnly` says why.
+    if (await settleTunnelOnlyHosting(db, { organizationId, hostingId: id })) {
+      const settled = await loadFreshHosting(db, organizationId, id, now())
+      if (!settled) return c.json({ error: 'Not found' }, 404)
+      return c.json({
+        hosting: settled.fresh,
+        certificate: settled.certificate ?? null,
+        needsDeploy: false,
+        tunnelOnly: true,
+      })
+    }
+
     const www = readHostingWwwMode(row.options)
     const result = await requestLetsEncrypt({
       store: createLetsEncryptStore(db),
@@ -344,22 +379,9 @@ export function registerHostingLetsEncryptRoutes(
       context: requestAuditContext(result.outcome, www, applyOutcome),
     })
 
-    const [fresh] = await db
-      .select({
-        id: hosting.id,
-        name: hosting.name,
-        serviceId: hosting.serviceId,
-        tlsId: hosting.tlsId,
-        options: hosting.options,
-        metadata: hosting.metadata,
-        pendingAt: hosting.pendingAt,
-        updatedAt: hosting.updatedAt,
-      })
-      .from(hosting)
-      .where(eq(hosting.id, id))
-      .limit(1)
-    if (!fresh) return c.json({ error: 'Not found' }, 404)
-    const certificate = (await loadHostingCertificates(db, organizationId, [fresh], now())).get(id)
+    const loaded = await loadFreshHosting(db, organizationId, id, now())
+    if (!loaded) return c.json({ error: 'Not found' }, 404)
+    const { fresh, certificate } = loaded
     return c.json({
       hosting: fresh,
       certificate: certificate ? { ...certificate, dns: result.dns } : null,

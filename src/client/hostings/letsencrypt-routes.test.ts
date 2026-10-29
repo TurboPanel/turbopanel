@@ -19,6 +19,8 @@ import {
   server,
   service,
   tls,
+  tunnel,
+  doorway,
   user,
   workspace,
 } from '../../db/schema.ts'
@@ -924,6 +926,81 @@ test('PATCH /hostings: someone who may not edit the hosting gets the route refus
     })
     assertEquals(res.status, 401)
     assertEquals(calls.length, 0)
+  } finally {
+    await f.cleanup()
+  }
+})
+
+test('PUT use-letsencrypt: a site whose only name is a locked tunnel name gets no row, and an old row and waiting request go', async () => {
+  if (!dbUrl) return skipWithoutDatabase("hosting Let's Encrypt route tests")
+  const f = await setup({ acmeEnabled: true, hostingOptions: PUBLIC_SITE })
+  try {
+    const [t] = await f.db
+      .insert(tunnel)
+      .values({
+        organizationId: f.organizationId,
+        routingOrganizationId: f.organizationId,
+        provider: 'cloudflare',
+        name: 'T',
+        placement: 'chosen',
+      })
+      .returning({ id: tunnel.id })
+    await f.db.insert(doorway).values({
+      routingOrganizationId: f.organizationId,
+      tunnelId: t!.id,
+      hostname: 'shop.example.com',
+      hostingId: f.hostingId,
+      status: 'live',
+    })
+    try {
+      const res = await f.call('PUT', `/hostings/${f.hostingId}/use-letsencrypt`, {})
+      assertEquals(res.status, 200)
+      const body = (await res.json()) as { tunnelOnly?: boolean; needsDeploy: boolean }
+      assertEquals(body.tunnelOnly, true)
+      assertEquals(body.needsDeploy, false)
+      const none = await f.db
+        .select({ id: tls.id })
+        .from(tls)
+        .where(eq(tls.organizationId, f.organizationId))
+      assertEquals(none.length, 0)
+
+      // A name that becomes tunnel-only later: the row and the waiting request are released.
+      await f.db.delete(doorway).where(eq(doorway.tunnelId, t!.id))
+      const pinned = await f.call('PUT', `/hostings/${f.hostingId}/use-letsencrypt`, {})
+      assertEquals(pinned.status, 200)
+      assertEquals(
+        (
+          await f.db
+            .select({ id: tls.id })
+            .from(tls)
+            .where(eq(tls.organizationId, f.organizationId))
+        ).length,
+        1
+      )
+      await f.db.insert(doorway).values({
+        routingOrganizationId: f.organizationId,
+        tunnelId: t!.id,
+        hostname: 'shop.example.com',
+        hostingId: f.hostingId,
+        status: 'live',
+      })
+      const sweep = await runHostingLetsEncryptSweepTick(f.db, { lookup: pointing })
+      assertEquals(sweep.pinned, 0)
+      const again = await f.call('PUT', `/hostings/${f.hostingId}/use-letsencrypt`, {})
+      assertEquals(((await again.json()) as { tunnelOnly?: boolean }).tunnelOnly, true)
+      assertEquals(
+        (
+          await f.db
+            .select({ id: tls.id })
+            .from(tls)
+            .where(eq(tls.organizationId, f.organizationId))
+        ).length,
+        0
+      )
+    } finally {
+      await f.db.delete(doorway).where(eq(doorway.tunnelId, t!.id))
+      await f.db.delete(tunnel).where(eq(tunnel.id, t!.id))
+    }
   } finally {
     await f.cleanup()
   }

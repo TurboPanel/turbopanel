@@ -20,11 +20,18 @@ export const tlsSchemas = {
     properties: {
       dnsNames: { type: 'array', items: { type: 'string' } },
       hasWildcard: { type: 'boolean' },
-      notBefore: { type: 'string', format: 'date-time' },
+      notBefore: {
+        type: 'string',
+        format: 'date-time',
+        nullable: true,
+        description: 'Null while the certificate has not been issued yet.',
+      },
       notAfter: {
         type: 'string',
         format: 'date-time',
-        description: 'Column value mirrored into metadata for API stability (shape unchanged).',
+        nullable: true,
+        description:
+          'Column value mirrored into metadata. Null while the certificate has not been issued yet (older panels sent a 1970 placeholder).',
       },
       fingerprintSha256: {
         type: 'string',

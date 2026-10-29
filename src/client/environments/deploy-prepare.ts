@@ -111,6 +111,7 @@ import {
   shellForAccessLevel,
 } from '../../features/principals/principal-access.ts'
 import { renderPhpForDeploy } from '../../features/hostings/php-settings.ts'
+import { settleTunnelOnlyHosting } from '../../features/tunnels/tunnel-only-certificate.ts'
 import { resolveDeployNameLock } from '../../features/tunnels/name-lock.ts'
 import { type PhpModePrepareError, withSitePhpModes } from './deploy-php-modes.ts'
 import {
@@ -870,7 +871,7 @@ function warningFromPrepareError(
     case 'principal_required_for_service_kind':
       return {
         code: 'principal_required_for_service_kind',
-        message: `${error.serviceKind} service "${error.composeServiceName}" has no principal — declare one under x-turbopanel.principals and name it with x-turbopanel.principal.`,
+        message: `This ${error.serviceKind === 'site' ? 'site' : 'Node app'} ("${error.composeServiceName}") needs a Hosting Account. Add one under Bindings first.`,
         details: {
           composeServiceName: error.composeServiceName,
           serviceKind: error.serviceKind,
@@ -4419,7 +4420,11 @@ async function resolveHttpHostingEntry(
   })
   if ('refusal' in lock) return { error: nameLockRefusalResponse(lock.refusal, h.id, serverId) }
 
-  // A hosting whose names are all tunnel-only never asks for a public certificate.
+  // A hosting whose names are all tunnel-only never asks for a public certificate,
+  // and keeps no Let's Encrypt row waiting on one.
+  if (lock.dropPublicCertificate === true) {
+    await settleTunnelOnlyHosting(db, { organizationId, hostingId: h.id })
+  }
   const tlsMode = lock.dropPublicCertificate === true ? undefined : tlsWire.tlsMode
   return {
     entry: {
