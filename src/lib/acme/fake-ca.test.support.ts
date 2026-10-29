@@ -121,7 +121,10 @@ export function createFakeCa(options: FakeCaOptions): FakeCa {
   const nonces = new Set<string>()
   let stale = options.staleNonceOnce === true
   let counter = 0
-  const next = (prefix: string) => `${prefix}${(counter += 1)}`
+  const next = (prefix: string) => {
+    counter += 1
+    return `${prefix}${counter}`
+  }
 
   const freshNonce = () => {
     const nonce = base64urlEncode(crypto.getRandomValues(new Uint8Array(12)))
@@ -222,6 +225,32 @@ export function createFakeCa(options: FakeCaOptions): FakeCa {
     }
   }
 
+  const newOrder = async (signed: Signed, headers: Record<string, string>): Promise<Response> => {
+    if (options.rateLimitOrders) {
+      return problem('rateLimited', 'too many new orders', 429, {
+        ...headers,
+        'Retry-After': '600',
+      })
+    }
+    const names = (signed.payload as { identifiers: { value: string }[] }).identifiers.map(
+      (i) => i.value
+    )
+    const id = next('o')
+    const authz = names.map((name) => ({
+      id: next('z'),
+      identifier: name.replace(/^\*\./, ''),
+      wildcard: name.startsWith('*.'),
+      token: base64urlEncode(crypto.getRandomValues(new Uint8Array(16))),
+      answered: false,
+    }))
+    const order: Order = { id, names, authz, finalized: false, polls: 0 }
+    orders.push(order)
+    return json(await orderBody(order, signed.jwk), {
+      status: 201,
+      headers: { ...headers, Location: `${BASE}/order/${id}` },
+    })
+  }
+
   const handlePost = async (url: string, body: string): Promise<Response> => {
     const path = new URL(url).pathname
     const signed = await open(url, body)
@@ -235,31 +264,7 @@ export function createFakeCa(options: FakeCaOptions): FakeCa {
       accounts.set(id, signed.jwk)
       return json({ status: 'valid' }, { status: 201, headers: { ...headers, Location: id } })
     }
-    if (path === '/order') {
-      if (options.rateLimitOrders) {
-        return problem('rateLimited', 'too many new orders', 429, {
-          ...headers,
-          'Retry-After': '600',
-        })
-      }
-      const names = (signed.payload as { identifiers: { value: string }[] }).identifiers.map(
-        (i) => i.value
-      )
-      const id = next('o')
-      const authz = names.map((name) => ({
-        id: next('z'),
-        identifier: name.replace(/^\*\./, ''),
-        wildcard: name.startsWith('*.'),
-        token: base64urlEncode(crypto.getRandomValues(new Uint8Array(16))),
-        answered: false,
-      }))
-      const order: Order = { id, names, authz, finalized: false, polls: 0 }
-      orders.push(order)
-      return json(await orderBody(order, signed.jwk), {
-        status: 201,
-        headers: { ...headers, Location: `${BASE}/order/${id}` },
-      })
-    }
+    if (path === '/order') return await newOrder(signed, headers)
     const [, kind, id] = path.split('/')
     const order = orders.find((o) => o.id === id || o.authz.some((a) => a.id === id))
     if (kind === 'chall') {
@@ -297,7 +302,9 @@ export function createFakeCa(options: FakeCaOptions): FakeCa {
   }
 
   const fakeFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+    let url: string
+    if (typeof input === 'string') url = input
+    else url = input instanceof URL ? input.href : input.url
     const path = new URL(url).pathname
     if (path === '/directory') {
       return json({
@@ -318,7 +325,7 @@ export function createFakeCa(options: FakeCaOptions): FakeCa {
     }
     if (path === '/nonce')
       return new Response(null, { status: 200, headers: { 'Replay-Nonce': freshNonce() } })
-    return await handlePost(url, String(init?.body ?? ''))
+    return await handlePost(url, typeof init?.body === 'string' ? init.body : '')
   }) as typeof fetch
 
   return {

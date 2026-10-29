@@ -163,7 +163,7 @@ export function readDnsCertState(metadata: unknown): DnsCertState | null {
 
 /** The metadata object with the private state replaced; nothing else is touched. */
 export function withDnsCertState(metadata: unknown, state: DnsCertState): Record<string, unknown> {
-  return { ...(record(metadata) ?? {}), [DNS_CERT_KEY]: state }
+  return { ...record(metadata), [DNS_CERT_KEY]: state }
 }
 
 /** Does the row belong to the DNS-validated flow (public marker, not the private block)? */

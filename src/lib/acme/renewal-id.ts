@@ -15,7 +15,7 @@ function serialBytes(certificatePem: string): Uint8Array | null {
   const fields = tbs ? children(tbs) : []
   // The first field is the explicit version when present; the serial follows it.
   const serial = fields[0]?.tag === 0xa0 ? fields[1] : fields[0]
-  return serial && serial.tag === 0x02 ? content(serial) : null
+  return serial?.tag === 0x02 ? content(serial) : null
 }
 
 /** The renewal-information identifier of a leaf certificate, or null when it lacks the fields. */

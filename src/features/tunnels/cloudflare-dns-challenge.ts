@@ -57,9 +57,10 @@ export function createCloudflareDnsChallenge(options: {
         .map((e) => e.message)
         .filter((m): m is string => typeof m === 'string' && m.length > 0)
         .join('; ')
+      const reason = detail ? `: ${detail}` : ''
       throw new TunnelProviderError(
         codeForStatus(response.status),
-        `Cloudflare refused the request (${response.status})${detail ? `: ${detail}` : ''}`,
+        `Cloudflare refused the request (${response.status})${reason}`,
         response.status,
         [options.token]
       )

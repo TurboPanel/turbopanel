@@ -212,7 +212,7 @@ function createResponse(wiring: Wiring) {
     }
     const carrier = await findCarrier(scope.db, scope.organizationId, carrierId)
     if (!carrier) return c.json({ error: 'Not found' }, 404)
-    if (!TUNNEL_PROVIDERS.some((p) => p === carrier.provider)) {
+    if (!(TUNNEL_PROVIDERS as readonly string[]).includes(carrier.provider)) {
       return c.json({ error: 'provider_unsupported' }, 400)
     }
     const ctx = contextOf(c, scope, wiring)

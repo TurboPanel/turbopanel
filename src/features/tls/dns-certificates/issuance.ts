@@ -76,9 +76,14 @@ function isoOrNull(value: string | null): number | null {
   return Number.isNaN(at) ? null : at
 }
 
+function byCodePoint(x: string, y: string): number {
+  if (x < y) return -1
+  return x > y ? 1 : 0
+}
+
 function sameNames(a: readonly string[], b: readonly string[]): boolean {
-  const left = [...a].sort((x, y) => (x < y ? -1 : x > y ? 1 : 0))
-  const right = [...b].sort((x, y) => (x < y ? -1 : x > y ? 1 : 0))
+  const left = [...a].sort(byCodePoint)
+  const right = [...b].sort(byCodePoint)
   return left.length === right.length && left.every((name, i) => name === right[i])
 }
 
