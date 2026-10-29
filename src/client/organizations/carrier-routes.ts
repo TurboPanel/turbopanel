@@ -51,6 +51,7 @@ import {
   toApiBadge,
   toApiCarrier,
 } from '../../features/tunnels/records.ts'
+import { countOriginCertificatesFrom } from '../../features/tunnels/origin-certificate.ts'
 import {
   createTunnelAdapterRegistry,
   type TunnelAdapterRegistry,
@@ -89,7 +90,7 @@ function invalid(c: Context<AppEnv>, error: string, field: string, detail: strin
   return c.json({ error, field, detail }, 400)
 }
 
-async function audit(
+export async function audit(
   c: Context<AppEnv>,
   scope: Scope,
   action:
@@ -98,6 +99,9 @@ async function audit(
     | 'badge.create'
     | 'badge.check'
     | 'badge.delete'
+    | 'origin_certificate.issue'
+    | 'origin_certificate.revoke'
+    | 'tunnel.update'
     | 'badge.zone_add'
     | 'badge.zone_remove',
   targetId: string,
@@ -115,7 +119,10 @@ async function audit(
   })
 }
 
-async function loadCarrierParam(c: Context<AppEnv>, scope: Scope): Promise<CarrierRow | Response> {
+export async function loadCarrierParam(
+  c: Context<AppEnv>,
+  scope: Scope
+): Promise<CarrierRow | Response> {
   const carrierId = c.req.param('carrierId') as string
   if (!isUuid(carrierId)) return c.json({ error: 'Not found' }, 404)
   return (
@@ -135,7 +142,7 @@ async function loadBadgeParam(
 }
 
 /** The plain-words reply for a provider failure; the message is already scrubbed. */
-function providerFailure(c: Context<AppEnv>, err: TunnelProviderError): Response {
+export function providerFailure(c: Context<AppEnv>, err: TunnelProviderError): Response {
   if (err.code === 'unauthorized') {
     return c.json(
       { error: 'badge_rejected', message: 'The provider did not accept this token.' },
@@ -200,6 +207,11 @@ async function deleteCarrierResponse(c: Context<AppEnv>, scope: Scope): Promise<
   const current = await loadCarrierParam(c, scope)
   if (current instanceof Response) return current
   if (await carrierHasTunnels(scope.db, current.id)) return carrierInUse(c)
+  if (
+    await countOriginCertificatesFrom(scope.db, scope.organizationId, { carrierId: current.id })
+  ) {
+    return originCertificateInUse(c)
+  }
   try {
     await deleteCarrier(scope.db, current)
   } catch (err) {
@@ -212,6 +224,17 @@ async function deleteCarrierResponse(c: Context<AppEnv>, scope: Scope): Promise<
     name: current.name,
   })
   return c.json({ ok: true })
+}
+
+/** A certificate issued through this account or token must be removed first, or it could not be revoked. */
+function originCertificateInUse(c: Context<AppEnv>): Response {
+  return c.json(
+    {
+      error: 'origin_certificate_in_use',
+      message: 'Origin certificates were issued through this. Remove them first.',
+    },
+    409
+  )
 }
 
 function carrierInUse(c: Context<AppEnv>): Response {
@@ -593,6 +616,9 @@ async function deleteBadgeResponse(c: Context<AppEnv>, scope: Scope): Promise<Re
   if (current instanceof Response) return current
   const row = await loadBadgeParam(c, scope, current)
   if (row instanceof Response) return row
+  if (await countOriginCertificatesFrom(scope.db, scope.organizationId, { badgeId: row.id })) {
+    return originCertificateInUse(c)
+  }
   const blocked = await dependentsOf(scope.db, current.id, await lossOfRemoving(scope.db, row))
   if (blocked.total > 0) return badgeInUse(c, blocked)
   await deleteBadge(scope.db, row)

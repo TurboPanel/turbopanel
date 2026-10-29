@@ -28,6 +28,13 @@ const BADGE_ID_PARAM = {
   schema: { type: 'string', format: 'uuid' },
 } as const
 
+const TLS_ID_PARAM = {
+  name: 'tlsId',
+  in: 'path',
+  required: true,
+  schema: { type: 'string', format: 'uuid' },
+} as const
+
 const CHECK_PROPERTIES = {
   zones: {
     type: 'array',
@@ -44,7 +51,83 @@ const CHECK_PROPERTIES = {
   },
 } as const
 
+const TUNNEL_ID_PARAM = {
+  name: 'tunnelId',
+  in: 'path',
+  required: true,
+  schema: { type: 'string', format: 'uuid' },
+} as const
+
 export const tunnelSchemas = {
+  OriginCertificate: {
+    type: 'object',
+    description:
+      'A certificate the provider issued through TurboPanel. By default it lists exact hostnames; a wildcard (the zone and everything one label below it) exists only when it was asked for. The key stays sealed and is never returned.',
+    properties: {
+      id: { type: 'string', format: 'uuid', description: 'The certificate library row.' },
+      carrierId: { type: 'string', format: 'uuid' },
+      zone: { type: 'string' },
+      names: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'The names on the certificate.',
+      },
+      scope: {
+        type: 'string',
+        enum: ['names', 'wildcard'],
+        description:
+          'names: exact hostnames (the default). wildcard: the zone and one label below it.',
+      },
+      retired: {
+        type: 'boolean',
+        description:
+          'No longer needed (replaced, or its last name was removed); revoked once no site uses it.',
+      },
+      notAfter: { type: ['string', 'null'] },
+      status: { type: 'string' },
+      createdAt: { type: 'string' },
+      inUse: { type: 'boolean', description: 'A site uses it; it cannot be removed meanwhile.' },
+      renewalDue: { type: 'boolean' },
+    },
+  },
+  ExistingOriginCertificate: {
+    type: 'object',
+    description:
+      'A certificate the provider holds for the zone. The provider never gives out a private key, so only one TurboPanel issued (issuedHere) can be installed on a server.',
+    properties: {
+      externalId: { type: 'string' },
+      hostnames: { type: 'array', items: { type: 'string' } },
+      notAfter: { type: ['string', 'null'] },
+      issuedHere: { type: 'boolean' },
+      tlsId: { type: ['string', 'null'], format: 'uuid' },
+      retired: { type: 'boolean' },
+      wildcard: { type: 'boolean', description: 'It lists the zone wildcard name.' },
+      note: { type: 'string', description: 'Plain words about whether it can be used.' },
+    },
+  },
+  OriginCertificateCreate: {
+    type: 'object',
+    required: ['zone'],
+    properties: {
+      zone: { type: 'string', description: 'The zone name, such as example.com.' },
+      names: {
+        type: 'array',
+        items: { type: 'string' },
+        description:
+          'The exact hostnames inside the zone the certificate is for (at most 100, no wildcard). Required unless wildcard is true.',
+      },
+      wildcard: {
+        type: 'boolean',
+        description:
+          'Ask for one wildcard certificate (the zone and one label below it) instead. Its key could impersonate any name under the zone and it does not cover names two labels down; use it only on purpose.',
+      },
+      badgeId: {
+        type: 'string',
+        format: 'uuid',
+        description: 'The token to ask with. Left out, the first token that covers the zone.',
+      },
+    },
+  },
   BadgeZone: {
     type: 'object',
     properties: { id: { type: 'string' }, name: { type: 'string' } },
@@ -173,6 +256,20 @@ export const tunnelSchemas = {
       },
     },
   },
+  VerifyOrigin: {
+    type: 'object',
+    description:
+      'The verified connection to your web server: asked for, in effect, and which names still wait for a site or a certificate.',
+    properties: {
+      enabled: { type: 'boolean' },
+      active: {
+        type: 'boolean',
+        description:
+          'Every name is served with a covering origin certificate, so the connector verifies.',
+      },
+      pendingNames: { type: 'array', items: { type: 'string' } },
+    },
+  },
   Tunnel: {
     type: 'object',
     description:
@@ -206,6 +303,7 @@ export const tunnelSchemas = {
         description: 'Servers that run a connector now, from the placement rules.',
       },
       warnings: { type: 'array', items: { type: 'string' } },
+      verifyOrigin: { $ref: '#/components/schemas/VerifyOrigin' },
       doorwayCount: { type: 'integer' },
     },
   },
@@ -378,11 +476,153 @@ export const tunnelPaths: Record<string, unknown> = {
       tags: ['Organizations'],
       summary: 'Remove a tunnel provider account',
       description:
-        'Owners and managers only. Removes its tokens too. 409 `carrier_in_use` while a tunnel still uses it.',
+        'Owners and managers only. Removes its tokens too. 409 `carrier_in_use` while a tunnel still uses it, or `origin_certificate_in_use` while origin certificates were issued through it.',
       security: [{ cookieAuth: [] }],
       parameters: [ORG_ID_PARAM, CARRIER_ID_PARAM],
       responses: {
         ...jsonOk('Removed', { type: 'object', properties: { ok: { type: 'boolean' } } }),
+        ...errors(),
+      },
+    },
+  },
+  '/api/client/v1/organizations/{id}/carriers/{carrierId}/origin-certificates': {
+    get: {
+      tags: ['Organizations'],
+      summary: "List a provider account's origin certificates",
+      description:
+        'Owners and managers only. Names, expiry and whether a site uses each; never a key.',
+      security: [{ cookieAuth: [] }],
+      parameters: [ORG_ID_PARAM, CARRIER_ID_PARAM],
+      responses: {
+        ...jsonOk('Certificates', {
+          type: 'object',
+          properties: {
+            originCertificates: {
+              type: 'array',
+              items: { $ref: '#/components/schemas/OriginCertificate' },
+            },
+          },
+        }),
+        ...errors(),
+      },
+    },
+    post: {
+      tags: ['Organizations'],
+      summary: 'Get an origin certificate for hostnames in a zone',
+      description:
+        'Owners and managers only. Makes the key here, asks the provider for a certificate for exactly the given hostnames (or, only when `wildcard` is true, for the zone and one label below it), and keeps the pair sealed in the certificate library. A healthy TurboPanel certificate that already covers every name is returned again (`reused`, 200); when a new certificate makes older exact ones redundant they are marked retired (`replaces`) and revoked later, once no site uses them. A token added earlier is checked once if it has no certificate rights recorded. 400 `badge_cannot_certify`, `origin_certificate_invalid` or `origin_certificate_names`; 409 `origin_certificate_limit` (50 per organization); 502 `provider_unavailable`.',
+      security: [{ cookieAuth: [] }],
+      parameters: [ORG_ID_PARAM, CARRIER_ID_PARAM],
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': { schema: { $ref: '#/components/schemas/OriginCertificateCreate' } },
+        },
+      },
+      responses: {
+        ...jsonOk(
+          'Issued',
+          {
+            type: 'object',
+            properties: {
+              originCertificate: { $ref: '#/components/schemas/OriginCertificate' },
+              reused: { type: 'boolean' },
+              replaces: {
+                type: 'array',
+                items: { type: 'string', format: 'uuid' },
+                description: 'Certificates this one replaces, now retired.',
+              },
+            },
+          },
+          '201'
+        ),
+        ...errors({ badRequest: true }),
+      },
+    },
+  },
+  '/api/client/v1/organizations/{id}/carriers/{carrierId}/origin-certificates/existing': {
+    get: {
+      tags: ['Organizations'],
+      summary: 'See the origin certificates the provider holds for a zone',
+      description:
+        "Owners and managers only. Read-only. Lists every valid certificate the provider holds for the zone, whoever made it, and marks the ones TurboPanel issued. A certificate made outside TurboPanel is shown but cannot be installed (its private key was never TurboPanel's): upload its certificate and key to the certificate library to use it, or issue a new one. TurboPanel never revokes a certificate it did not issue. 400 `origin_certificate_invalid` or `badge_cannot_certify`.",
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        ORG_ID_PARAM,
+        CARRIER_ID_PARAM,
+        {
+          name: 'zone',
+          in: 'query',
+          required: true,
+          schema: { type: 'string' },
+          description: 'The zone name, such as example.com.',
+        },
+      ],
+      responses: {
+        ...jsonOk('Certificates', {
+          type: 'object',
+          properties: {
+            zone: { type: 'string' },
+            certificates: {
+              type: 'array',
+              items: { $ref: '#/components/schemas/ExistingOriginCertificate' },
+            },
+          },
+        }),
+        ...errors({ badRequest: true }),
+      },
+    },
+  },
+  '/api/client/v1/organizations/{id}/tunnels/{tunnelId}/verify-origin': {
+    put: {
+      tags: ['Organizations'],
+      summary: 'Verify the connection between a tunnel and your web server',
+      description:
+        "Owners and managers only. On: every site that serves the tunnel names gets an origin certificate for exactly the names it serves (a certificate TurboPanel already issued that covers them is reused; `wildcard` asks for one wildcard instead), is pointed at it, and the connector is told to verify. A site that does not exist yet keeps its names `pending`, and the connector keeps skipping verification for the whole tunnel until this is applied again (it is safe to repeat). Servers pick up a new certificate with the site's next deploy (`needsDeploy`). Off: the connector skips verification again. 409 `verify_origin_public_names` (the site also serves a name that is not a verified tunnel name), `verify_origin_zones` (names in more than one zone), `verify_origin_names` (a wildcard does not cover a deeper name), `badge_cannot_certify`, `badge_cannot_dns`, `badge_cannot_tunnel`.",
+      security: [{ cookieAuth: [] }],
+      parameters: [ORG_ID_PARAM, TUNNEL_ID_PARAM],
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              required: ['enabled'],
+              properties: { enabled: { type: 'boolean' }, wildcard: { type: 'boolean' } },
+            },
+          },
+        },
+      },
+      responses: {
+        ...jsonOk('Updated', {
+          type: 'object',
+          properties: {
+            tunnel: { $ref: '#/components/schemas/Tunnel' },
+            verifyOrigin: { $ref: '#/components/schemas/VerifyOrigin' },
+            pinnedHostingIds: { type: 'array', items: { type: 'string', format: 'uuid' } },
+            deferredHostingIds: {
+              type: 'array',
+              items: { type: 'string', format: 'uuid' },
+              description:
+                'Sites left for the next request: one request asks the provider for at most 10 certificates. Apply again to continue; it is idempotent.',
+            },
+            needsDeploy: { type: 'boolean' },
+          },
+        }),
+        ...errors({ badRequest: true }),
+      },
+    },
+  },
+  '/api/client/v1/organizations/{id}/carriers/{carrierId}/origin-certificates/{tlsId}': {
+    delete: {
+      tags: ['Organizations'],
+      summary: 'Revoke an origin certificate',
+      description:
+        'Owners and managers only. Revokes it with the provider and removes it. 409 `tls_in_use` while a site uses it, or `badge_missing` when the token that issued it is gone.',
+      security: [{ cookieAuth: [] }],
+      parameters: [ORG_ID_PARAM, CARRIER_ID_PARAM, TLS_ID_PARAM],
+      responses: {
+        ...jsonOk('Revoked', { type: 'object', properties: { ok: { type: 'boolean' } } }),
         ...errors(),
       },
     },
@@ -421,7 +661,7 @@ export const tunnelPaths: Record<string, unknown> = {
       tags: ['Organizations'],
       summary: 'Remove a token',
       description:
-        'Owners and managers only. The sealed token is deleted with it. 409 `badge_in_use` (with `dependents`, at most 50, and `total`) while it is the only token that reaches tunnels for an account that has Tunnels, or the only one that reaches DNS for a zone whose hostnames have DNS names made with it.',
+        'Owners and managers only. The sealed token is deleted with it. 409 `badge_in_use` (with `dependents`, at most 50, and `total`) while it is the only token that reaches tunnels for an account that has Tunnels, or the only one that reaches DNS for a zone whose hostnames have DNS names made with it, or the only one that can revoke an origin certificate of a zone.',
       security: [{ cookieAuth: [] }],
       parameters: [ORG_ID_PARAM, CARRIER_ID_PARAM, BADGE_ID_PARAM],
       responses: {
@@ -491,13 +731,6 @@ export const tunnelPaths: Record<string, unknown> = {
     },
   },
 }
-
-const TUNNEL_ID_PARAM = {
-  name: 'tunnelId',
-  in: 'path',
-  required: true,
-  schema: { type: 'string', format: 'uuid' },
-} as const
 
 const TUNNEL_ERRORS =
   'Refusals: 400 `tunnel_invalid`, `datacenter_required`, `datacenter_invalid`, `server_invalid`, `server_not_in_datacenter`; 409 `tunnel_exists`, `tunnel_limit`, `server_never_carries`, `badge_cannot_tunnel`, `tunnel_in_use`, `tunnel_removing` (a Tunnel being removed takes no placement change); 503 `secrets_unavailable`; 502 `provider_unavailable`; 400 `badge_rejected` when the provider does not accept the API Token.'

@@ -28,6 +28,12 @@ export type CloudflareIngressRule = {
 }
 export type CloudflareTokenVerify = { id?: string; status?: string; expires_on?: string }
 export type CloudflareDnsRecord = { id: string; name?: string }
+export type CloudflareOriginCertificate = {
+  id: string
+  certificate?: string
+  hostnames?: string[]
+  expires_on?: string
+}
 
 export type CloudflareClientOptions = {
   token: string
@@ -154,6 +160,59 @@ export class CloudflareClient {
   /** One-row read: proves the token can read DNS records of the zone. */
   async probeDns(zoneId: string): Promise<void> {
     await this.#call('GET', `/zones/${encodeURIComponent(zoneId)}/dns_records?per_page=1`)
+  }
+
+  /** One-row read: proves the token can read origin certificates of the zone. */
+  async probeCertificates(zoneId: string): Promise<void> {
+    await this.#call('GET', `/certificates?zone_id=${encodeURIComponent(zoneId)}`)
+  }
+
+  /** Ask for an origin certificate for `hostnames`, signed from the caller's own request. */
+  createOriginCertificate(input: {
+    hostnames: readonly string[]
+    csr: string
+    validityDays: number
+  }): Promise<CloudflareOriginCertificate> {
+    return this.#call('POST', '/certificates', {
+      hostnames: input.hostnames,
+      requested_validity: input.validityDays,
+      request_type: 'origin-ecc',
+      csr: input.csr,
+    })
+  }
+
+  /**
+   * The origin certificates of a zone that are still valid; revoked ones are not
+   * listed. Each item carries the certificate and its names, never a private key
+   * (the person who made the request keeps that).
+   */
+  async listOriginCertificates(zoneId: string): Promise<CloudflareOriginCertificate[]> {
+    const list = await this.#call<CloudflareOriginCertificate[] | null>(
+      'GET',
+      `/certificates?zone_id=${encodeURIComponent(zoneId)}&limit=100`
+    )
+    return Array.isArray(list) ? list : []
+  }
+
+  /**
+   * Revoke an origin certificate; it stops being valid at once. Cloudflare
+   * answers 400 (not 404) for a certificate that is already revoked ("Certificate
+   * already revoked") or that it does not know ("Failed to read certificate"),
+   * so those are reported as `not_found`, which callers treat as already gone.
+   */
+  async revokeOriginCertificate(certificateId: string): Promise<void> {
+    try {
+      await this.#call('DELETE', `/certificates/${encodeURIComponent(certificateId)}`)
+    } catch (err) {
+      if (
+        err instanceof TunnelProviderError &&
+        err.status === 400 &&
+        /already revoked|failed to read certificate/i.test(err.message)
+      ) {
+        throw new TunnelProviderError('not_found', err.message, err.status)
+      }
+      throw err
+    }
   }
 
   createTunnel(accountId: string, name: string): Promise<CloudflareTunnel> {

@@ -38,6 +38,7 @@ export {
   KEY_USAGE_DIGITAL_SIGNATURE,
   KEY_USAGE_KEY_CERT_SIGN,
   KEY_USAGE_KEY_ENCIPHERMENT,
+  mintCertificateRequest,
   mintOrganizationCa,
   mintSelfSignedCertificate,
   readAuthorityKeyIdentifier,

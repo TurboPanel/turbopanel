@@ -73,7 +73,7 @@ export const tlsSchemas = {
       name: { type: ['string', 'null'] },
       source: {
         type: 'string',
-        enum: ['upload', 'lets_encrypt', 'self_signed', 'organization_ca'],
+        enum: ['upload', 'lets_encrypt', 'self_signed', 'organization_ca', 'provider_origin'],
       },
       metadata: { $ref: '#/components/schemas/TlsMetadata' },
       options: { type: ['object', 'null'] },

@@ -1,5 +1,6 @@
 /** TLS certificate source discriminator — stored in `tls.source`. */
-export type TlsSource = 'upload' | 'lets_encrypt' | 'self_signed' | 'organization_ca'
+export type TlsSource =
+  'upload' | 'lets_encrypt' | 'self_signed' | 'organization_ca' | 'provider_origin'
 
 /** Lifecycle status — dedicated `tls.status` column (also in API metadata DTO). */
 export type TlsStatus = 'ready' | 'pending' | 'expired' | 'failed' | 'revoked' | 'automatic'
@@ -84,4 +85,5 @@ export const TLS_SOURCES: readonly TlsSource[] = [
   'lets_encrypt',
   'self_signed',
   'organization_ca',
+  'provider_origin',
 ] as const
