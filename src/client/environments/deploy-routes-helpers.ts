@@ -1,3 +1,4 @@
+import type { TlsPinError } from '../../lib/tls/types.ts'
 import { attachWebMetadataToSites } from '../../features/hostings/hosting-web-env.ts'
 import { panelHostnameInUseMessage } from '../../features/hostings/panel-hostname-guard.ts'
 import { hostnameUnsupportedReason } from '../../features/hostings/hosting-certificate.ts'
@@ -100,8 +101,10 @@ export function composeProjectName(environmentId: string): string {
   return environmentId
 }
 
-export function tlsPinErrorCode(error: 'pin_not_found' | 'pin_mismatch' | 'pin_not_ready'): string {
+export function tlsPinErrorCode(error: TlsPinError): string {
   switch (error) {
+    case 'pin_staging':
+      return 'tls_pin_staging'
     case 'pin_mismatch':
       return 'tls_pin_mismatch'
     case 'pin_not_ready':

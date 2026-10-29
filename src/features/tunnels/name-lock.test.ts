@@ -240,6 +240,22 @@ test('a server that carries the tunnel itself and has no other carrier trusts on
   })
 })
 
+test('a locked name pinned to a library certificate stays locked and is not refused, whatever names that certificate covers', async () => {
+  // A DNS-validated certificate is a library pin (`tlsId`, no `tlsMode`): the server presents
+  // it, nothing is asked of the authority from the server, and which addresses may connect
+  // is the lock's business alone. Only the Caddy-issued kind (`tlsMode: 'acme'`) is refused.
+  await withSite({ hereFeatures: [TUNNEL_FORWARDING_FEATURE] }, async (c) => {
+    await addDoorway(c)
+    for (const www of [undefined, 'off', 'both', 'www-to-root'] as const) {
+      const result = await resolveDeployNameLock(c.db, { ...params(c), tlsMode: undefined, www })
+      assertEquals('refusal' in result, false)
+      assertEquals(result, {
+        tunnel: { hostnames: [NAME], peers: ['10.95.0.11'], extraBind: ['10.95.0.10'] },
+      })
+    }
+  })
+})
+
 test('an older daemon refuses a locked name and ignores an all-public hosting', async () => {
   await withSite({ hereFeatures: [] }, async (c) => {
     await addDoorway(c)

@@ -29,6 +29,7 @@ import { storagePaths, storageSchemas } from './storage.ts'
 import { storageBackupPaths, storageBackupSchemas } from './storage-backups.ts'
 import { firewallPaths, firewallSchemas } from './firewall.ts'
 import { backupTargetPaths, backupTargetSchemas } from './backup-targets.ts'
+import { dnsCertificatePaths, dnsCertificateSchemas } from './dns-certificates.ts'
 import { tunnelPaths, tunnelSchemas } from './tunnels.ts'
 import { activityPaths, activitySchemas } from './activity.ts'
 import { organizationMemberPaths, organizationMemberSchemas } from './organization-members.ts'
@@ -180,6 +181,7 @@ export function getClientOpenApiSpec(serverUrl: string, options?: ClientOpenApiO
         ...firewallSchemas,
         ...backupTargetSchemas,
         ...tunnelSchemas,
+        ...dnsCertificateSchemas,
         ...organizationMemberSchemas,
         ...activitySchemas,
         ...repositorySchemas,
@@ -220,6 +222,7 @@ export function getClientOpenApiSpec(serverUrl: string, options?: ClientOpenApiO
       ...firewallPaths,
       ...backupTargetPaths,
       ...tunnelPaths,
+      ...dnsCertificatePaths,
       ...organizationMemberPaths,
       ...activityPaths,
       ...repositoryPaths,

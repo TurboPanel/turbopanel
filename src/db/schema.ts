@@ -4909,8 +4909,14 @@ export const secret = pgTable(
     check(
       'secret_provider_check',
       sql`provider IN ('s3', 's3_compatible', 'nfs', 'cifs', 'sftp', 'ftp', 'webdav',
-        'git_deploy_key', 'carrier_badge', 'tunnel_run')`
+        'git_deploy_key', 'carrier_badge', 'tunnel_run', 'acme_account')`
     ),
+    // One certificate-authority account per organization and directory (`name` is
+    // the directory, staging or production), so two first orders at once end with
+    // one account.
+    uniqueIndex('uniq_secret_acme_account')
+      .on(table.organizationId, table.name)
+      .where(sql`${table.provider} = 'acme_account'`),
   ]
 )
 /**

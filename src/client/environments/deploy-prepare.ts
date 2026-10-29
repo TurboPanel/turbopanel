@@ -4297,16 +4297,19 @@ function tlsPinErrorResponse(
   const missing = hostingCertificateNames(hosting).filter(
     (name) => !coversAllHostnames(dnsNames, [name])
   )
-  const message =
-    error === 'pin_mismatch' && typedCovered && missing.length > 0
-      ? `The certificate on this hosting covers ${hosting.hostnames.join(
-          ', '
-        )} but not ${missing.join(
-          ', '
-        )}, which its www setting adds. Upload one that lists every name, or set www to "Only ${hosting.hostnames.join(
-          ', '
-        )}".`
-      : undefined
+  let message: string | undefined
+  if (error === 'pin_mismatch' && typedCovered && missing.length > 0) {
+    message = `The certificate on this hosting covers ${hosting.hostnames.join(
+      ', '
+    )} but not ${missing.join(
+      ', '
+    )}, which its www setting adds. Upload one that lists every name, or set www to "Only ${hosting.hostnames.join(
+      ', '
+    )}".`
+  } else if (error === 'pin_staging') {
+    message =
+      'The certificate on this hosting is a Test Certificate. Browsers do not trust it, so it cannot be used on a site. Order a normal certificate instead.'
+  }
   return Response.json(
     {
       error: tlsPinErrorCode(error),

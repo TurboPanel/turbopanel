@@ -89,6 +89,8 @@ export const AUDIT_ACTIONS = [
   'doorway.create',
   'doorway.delete',
   'server.tunnel_carrying',
+  'tls.dns_certificate.create',
+  'tls.dns_certificate.retry',
 ] as const
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[number]

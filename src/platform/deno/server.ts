@@ -68,6 +68,8 @@ import {
   runLeafRenewalSweepTick,
 } from '../../client/tls/leaf-renewal-sweep.ts'
 import { runHostingLetsEncryptSweepTick } from '../../client/hostings/letsencrypt-sweep.ts'
+import { buildDnsCertContext } from '../../client/tls/dns-certificate-context.ts'
+import { runDnsCertificateSweepTick } from '../../features/tls/dns-certificates/sweep.ts'
 import {
   assertPasswordHasherAvailable,
   configureArgon2idWorkFactor,
@@ -891,6 +893,13 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
         await runHostingLetsEncryptSweepTick(tickDb, {
           apply: { commandQueue, secretsConfig, dataEncryptionSecrets },
         })
+        // DNS-validated certificates: the next step of each order, upkeep, renewals.
+        await runDnsCertificateSweepTick(
+          buildDnsCertContext(tickDb, {
+            secrets: dataEncryptionSecrets,
+            push: { commandQueue, secretsConfig },
+          })
+        )
       } catch (err) {
         logWarn('tls-leaf-renewal', `sweep error: ${String(err)}`)
       } finally {

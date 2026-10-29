@@ -50,6 +50,7 @@ export {
 export type {
   ParsedCertificate,
   ResolveTlsResult,
+  TlsPinError,
   TlsAcmeMetadata,
   TlsCandidate,
   TlsMetadata,

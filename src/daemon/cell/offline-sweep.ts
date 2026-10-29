@@ -75,6 +75,8 @@ import { runLeafRenewalSweepTick } from '../../client/tls/leaf-renewal-sweep.ts'
 import { runTunnelConnectorsSweepTick } from '../../features/tunnels/connector-sync.ts'
 import { runBadgeRecheckSweepTick } from '../../features/tunnels/badge-recheck.ts'
 import { runTunnelRemovalSweepTick } from '../../features/tunnels/removal.ts'
+import { runDnsCertificateSweepTick } from '../../features/tls/dns-certificates/sweep.ts'
+import { buildDnsCertContext } from '../../client/tls/dns-certificate-context.ts'
 import { runTunnelStatusPollTick } from '../../features/tunnels/status-poll.ts'
 import { peerLeafDelivery, runTunnelRoutesSweepTick } from '../../features/tunnels/sync.ts'
 import { runHostingLetsEncryptSweepTick } from '../../client/hostings/letsencrypt-sweep.ts'
@@ -1214,6 +1216,16 @@ async function runQueuedCronSweeps(
       // lets go of them; tried again after a growing wait until it does.
       await runIsolatedSweep(signal, 'tunnel-removal-sweep-failed', () =>
         runTunnelRemovalSweepTick(db, { secrets: tlsRenewal.dataEncryptionSecrets })
+      )
+      // DNS-validated certificates: each order moves one step, leftovers are tidied,
+      // and a certificate near its renewal time is ordered again.
+      await runIsolatedSweep(signal, 'dns-certificate-sweep-failed', () =>
+        runDnsCertificateSweepTick(
+          buildDnsCertContext(db, {
+            secrets: tlsRenewal.dataEncryptionSecrets,
+            push: { commandQueue, secretsConfig: tlsRenewal.secretsConfig },
+          })
+        )
       )
       // API Tokens of provider accounts: a daily look at what each still reaches, so a
       // rolled or removed token is found before a write fails.

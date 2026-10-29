@@ -14,8 +14,23 @@ export type TlsAcmeMetadata = {
   lastIssuedAt?: string
   /** Expiry of the certificate Caddy is serving, as the daemon's probe read it (ISO 8601). */
   notAfter?: string
-  /** Present on `lets_encrypt` rows Caddy issues and renews on the host. */
-  managedBy?: 'caddy'
+  /**
+   * `caddy` on `lets_encrypt` rows Caddy issues and renews on the host; `panel`
+   * on a library certificate this panel ordered itself through a DNS challenge.
+   */
+  managedBy?: 'caddy' | 'panel'
+  /** DNS-challenge certificates: where the order stands (queued, presented, validating, finalizing, issued, backoff, failed). */
+  stage?: string
+  /** DNS-challenge certificates: the authority's test directory, whose certificates no browser trusts. */
+  staging?: boolean
+  /** DNS-challenge certificates: failed orders since the last good certificate. */
+  attempts?: number
+  /** DNS-challenge certificates: no new attempt before this time (ISO 8601). */
+  nextAttemptAt?: string
+  /** DNS-challenge certificates: when renewal starts (ISO 8601). */
+  renewAt?: string
+  /** DNS-challenge certificates: something that will stop the next renewal, in plain words. */
+  warning?: string
   /** DNS names the stored certificate covers (set when the pair is stored). */
   storedNames?: string[]
   /** The server whose Caddy issued the stored certificate (its daemon sent the pair). */
@@ -76,9 +91,11 @@ export type TlsCandidate = {
   source?: TlsSource
 }
 
+/** Why a pinned library certificate cannot serve a hosting. */
+export type TlsPinError = 'pin_not_found' | 'pin_mismatch' | 'pin_not_ready' | 'pin_staging'
+
 export type ResolveTlsResult =
-  | { ok: true; tlsId: string | null; reason: 'pin' | 'internal' }
-  | { ok: false; error: 'pin_not_found' | 'pin_mismatch' | 'pin_not_ready' }
+  { ok: true; tlsId: string | null; reason: 'pin' | 'internal' } | { ok: false; error: TlsPinError }
 
 export const TLS_SOURCES: readonly TlsSource[] = [
   'upload',

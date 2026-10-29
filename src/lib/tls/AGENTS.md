@@ -24,6 +24,8 @@ Turning the gate off never revokes certificates already issued. `PATCH
 hatch: deploy-prepare treats that pin as the self-signed certificate instead of
 `tls_pin_not_ready`. Deleted or hostname-mismatched pins still fail.
 
+**DNS-validated certificates (built).** The panel can also order a library certificate itself with a DNS challenge through the connected DNS account; see `../../features/tls/dns-certificates/AGENTS.md`. It is a normal `upload` row marked `metadata.acme.managedBy = 'panel'`, not a `lets_encrypt` row, so none of the Caddy-managed paths below apply to it.
+
 **Issuance-failure visibility (built).** The daemon's `AcmeIssuanceObserver`
 (`turbopaneld/src/instance/acme-observe.ts`) live-probes every deployed
 `tlsMode: 'acme'` hostname every 60s and reports a state change as
