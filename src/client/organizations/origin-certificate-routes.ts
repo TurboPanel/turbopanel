@@ -12,7 +12,7 @@ import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { parseJsonBody } from '../shared.ts'
 import { isUuid } from '../access/routes-helpers.ts'
-import { firstResult } from '../../features/tunnels/sequence.ts'
+import { firstSequential } from '../../lib/sequential.ts'
 import { isValidHostname } from '../../contracts/commands/hostname.ts'
 import { tls } from '../../db/schema.ts'
 import { TunnelProviderError } from '../../features/tunnels/errors.ts'
@@ -35,6 +35,7 @@ import {
   type CarrierRow,
   findCarrier,
   listBadges,
+  pickBadges,
   openBadgeToken,
   recordBadgeCheck,
 } from '../../features/tunnels/records.ts'
@@ -139,6 +140,16 @@ async function checkedBadge(
   }
 }
 
+/** The best active token whose recorded certificate rights name the zone (the shared selector, by the zone's id). */
+function coveringBadge(candidates: readonly BadgeRow[], zone: string): BadgeRow | null {
+  const found = candidates.flatMap((b) => {
+    const named = badgeCoversZone(b, zone)
+    return b.status === 'active' && named ? [named] : []
+  })[0]
+  if (!found) return null
+  return pickBadges(candidates, { capability: 'certificates', zone: found }).badges[0] ?? null
+}
+
 async function badgeForZone(
   c: Context<AppEnv>,
   scope: Scope,
@@ -150,10 +161,10 @@ async function badgeForZone(
   if (!c.get('dataEncryptionSecrets')) return c.json({ error: 'secrets_unavailable' }, 503)
   const listed = await listBadges(scope.db, current.id)
   const candidates = wanted ? listed.filter((b) => b.id === wanted) : listed
-  const covering = candidates.find((b) => badgeCoversZone(b, zone))
+  const covering = coveringBadge(candidates, zone)
   if (covering) return covering
   // One token after another; a provider failure other than a refused token stops the search.
-  const found = await firstResult(candidates, async (candidate) => {
+  const found = await firstSequential(candidates, async (candidate) => {
     const checked = await checkedBadge(c, scope, registry, current, candidate, zone)
     return checked ?? undefined
   })
@@ -358,10 +369,6 @@ function verifyOriginResponse(registry: TunnelAdapterRegistry) {
           secrets,
           adapter: registry(owner.provider as TunnelProvider),
           organizationId: scope.organizationId,
-          chooseBadge: async (zone) => {
-            const found = await badgeForZone(c, scope, registry, owner, zone, null)
-            return found instanceof Response ? null : found
-          },
         },
         owner,
         row,

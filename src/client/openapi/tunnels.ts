@@ -163,6 +163,18 @@ export const tunnelSchemas = {
       status: { type: 'string', enum: ['active', 'attention'] },
       lastCheckedAt: { type: ['string', 'null'], format: 'date-time' },
       createdAt: { type: 'string', format: 'date-time' },
+      declaredZones: {
+        type: 'array',
+        items: { $ref: '#/components/schemas/BadgeZone' },
+        description:
+          'Zones the person named for this token. Every check probes them again, so a token that cannot list zones still covers them.',
+      },
+      warnings: {
+        type: 'array',
+        items: { type: 'string' },
+        description:
+          'Plain-words things to look at: a token that expires within 14 days or has expired, or a right the provider refused when it was used.',
+      },
     },
   },
   Carrier: {
@@ -224,6 +236,23 @@ export const tunnelSchemas = {
         maxLength: 512,
         writeOnly: true,
         description: 'Checked with the provider, stored sealed and never returned.',
+      },
+      zones: {
+        type: 'array',
+        maxItems: 50,
+        items: {
+          type: 'object',
+          required: ['id'],
+          properties: {
+            id: { type: 'string', description: 'The provider zone id.' },
+            name: {
+              type: 'string',
+              description: 'The zone name, needed when the token may not read the zone.',
+            },
+          },
+        },
+        description:
+          'Zones this token covers. A token limited to some zones is usually refused the zone list, so name them here; each is checked with the token.',
       },
     },
   },
@@ -321,6 +350,11 @@ export const tunnelSchemas = {
       },
       status: { type: 'string', enum: ['pending', 'live', 'attention', 'removing'] },
       dns: { type: 'string', enum: ['created', 'none'] },
+      warning: {
+        type: ['string', 'null'],
+        description:
+          'Why a removal is waiting, in plain words (for example no API Token can edit the DNS of its zone); the row stays in `attention` and a retry finishes it. Null otherwise.',
+      },
       createdAt: { type: 'string', format: 'date-time' },
     },
   },
@@ -606,7 +640,7 @@ export const tunnelPaths: Record<string, unknown> = {
       tags: ['Organizations'],
       summary: 'Add a token to a provider account',
       description:
-        'Owners and managers only. At most 5 per account. The token is checked with the provider first: 400 `badge_rejected` (not accepted), `badge_wrong_account`, or `badge_not_useful` (names the missing permissions in `missing`); 502 `provider_unavailable`. It is then sealed and never returned.',
+        'Owners and managers only. At most 50 per account: one token for tunnels and others for DNS, each limited to some zones. The token is checked with the provider first: 400 `badge_rejected` (not accepted), `badge_wrong_account`, `badge_not_useful` (names the missing permissions in `missing`), or for a named zone `zone_not_reachable`, `zone_wrong_account`, `zone_name_needed`; 502 `provider_unavailable`. It is then sealed and never returned.',
       security: [{ cookieAuth: [] }],
       parameters: [ORG_ID_PARAM, CARRIER_ID_PARAM],
       requestBody: {
@@ -621,13 +655,52 @@ export const tunnelPaths: Record<string, unknown> = {
       tags: ['Organizations'],
       summary: 'Remove a token',
       description:
-        'Owners and managers only. The sealed token is deleted with it. 409 `origin_certificate_in_use` while origin certificates were issued through this token.',
+        'Owners and managers only. The sealed token is deleted with it. 409 `badge_in_use` (with `dependents`, at most 50, and `total`) while it is the only token that reaches tunnels for an account that has Tunnels, or the only one that reaches DNS for a zone whose hostnames have DNS names made with it, or the only one that can revoke an origin certificate of a zone.',
       security: [{ cookieAuth: [] }],
       parameters: [ORG_ID_PARAM, CARRIER_ID_PARAM, BADGE_ID_PARAM],
       responses: {
         ...jsonOk('Removed', { type: 'object', properties: { ok: { type: 'boolean' } } }),
         ...errors(),
       },
+    },
+  },
+  '/api/client/v1/organizations/{id}/carriers/{carrierId}/badges/{badgeId}/zones': {
+    post: {
+      tags: ['Organizations'],
+      summary: 'Name a zone a token covers',
+      description:
+        'Owners and managers only. Checks the zone with the token (a DNS read, and a zone read when the token may make one) and keeps it for every later check. 400 `zone_invalid`, `zone_not_reachable`, `zone_wrong_account`, `zone_name_needed`; 409 `zone_limit` (50 per token).',
+      security: [{ cookieAuth: [] }],
+      parameters: [ORG_ID_PARAM, CARRIER_ID_PARAM, BADGE_ID_PARAM],
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              required: ['id'],
+              properties: { id: { type: 'string' }, name: { type: 'string' } },
+            },
+          },
+        },
+      },
+      responses: { ...jsonOk('Added', BADGE_WITH_CHECK), ...errors({ badRequest: true }) },
+    },
+  },
+  '/api/client/v1/organizations/{id}/carriers/{carrierId}/badges/{badgeId}/zones/{zoneId}': {
+    delete: {
+      tags: ['Organizations'],
+      summary: 'Stop naming a zone for a token',
+      description:
+        'Owners and managers only. The token is checked again without the zone. 404 when the zone was not named; 409 `badge_in_use` (with `dependents`) when no other token covers it and hostnames have DNS names there.',
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        ORG_ID_PARAM,
+        CARRIER_ID_PARAM,
+        BADGE_ID_PARAM,
+        { name: 'zoneId', in: 'path', required: true, schema: { type: 'string' } },
+      ],
+      responses: { ...jsonOk('Removed', BADGE_WITH_CHECK), ...errors() },
     },
   },
   '/api/client/v1/organizations/{id}/carriers/{carrierId}/badges/{badgeId}/check': {
@@ -657,7 +730,7 @@ const TUNNEL_ERRORS =
   'Refusals: 400 `tunnel_invalid`, `datacenter_required`, `datacenter_invalid`, `server_invalid`, `server_not_in_datacenter`; 409 `tunnel_exists`, `tunnel_limit`, `server_never_carries`, `badge_cannot_tunnel`, `tunnel_in_use`, `tunnel_removing` (a Tunnel being removed takes no placement change); 503 `secrets_unavailable`; 502 `provider_unavailable`; 400 `badge_rejected` when the provider does not accept the API Token.'
 
 const DOORWAY_ERRORS =
-  'Refusals: 400 `hostname_invalid`; 409 `hostname_in_use`, `doorway_limit`, `tunnel_not_ready`, `tunnel_removing` (a Tunnel being removed takes no new hostnames), `carrier_missing`, `badge_cannot_tunnel`, `badge_cannot_dns`, `zone_not_found`, `hosting_mismatch`; 400 `badge_rejected`; 503 `secrets_unavailable`; 502 `provider_unavailable`.'
+  'Refusals: 400 `hostname_invalid`; 409 `hostname_in_use`, `doorway_limit`, `tunnel_not_ready`, `tunnel_removing` (a Tunnel being removed takes no new hostnames), `carrier_missing`, `badge_cannot_tunnel`, `badge_cannot_dns` (the message says whether no API Token has DNS rights, none covers the zone, or the provider refused every one; on a removal the route is taken down and the hostname waits in `attention`), `zone_not_found`, `hosting_mismatch`; 400 `badge_rejected`; 503 `secrets_unavailable`; 502 `provider_unavailable`.'
 
 Object.assign(tunnelPaths, {
   '/api/client/v1/organizations/{id}/tunnels': {

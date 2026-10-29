@@ -7,7 +7,6 @@
 import { and, asc, eq, inArray, isNotNull, ne, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import {
-  badge,
   datacenter,
   doorway,
   hostname as hostnameTable,
@@ -28,6 +27,13 @@ import { type VerifyState, tunnelVerifyState, verifyOriginHostnames } from './ve
 import { retireUnusedOriginCertificates } from './origin-certificate.ts'
 import { parseServerOptions } from '../servers/server-metadata.ts'
 import type { TunnelAdapter } from './adapter.ts'
+import {
+  BadgeRefused,
+  BadgeUnavailable,
+  needZoneName,
+  openBestBadge,
+  useBadges,
+} from './badge-use.ts'
 import { TunnelProviderError } from './errors.ts'
 import {
   type PlacementInput,
@@ -35,13 +41,16 @@ import {
   resolveCarryingServers,
   type PortalFact,
 } from './placement.ts'
-import { deleteTunnelRecord, type BadgeRow, type CarrierRow, type Parsed } from './records.ts'
 import {
-  type BadgeCapabilities,
-  NO_CAPABILITIES,
-  RUN_SECRET_PROVIDER,
-  type TunnelPlacement,
-} from './vocabulary.ts'
+  deleteTunnelRecord,
+  findStoredZone,
+  listBadges,
+  pickBadges,
+  type BadgeNeed,
+  type CarrierRow,
+  type Parsed,
+} from './records.ts'
+import { RUN_SECRET_PROVIDER, type TunnelPlacement } from './vocabulary.ts'
 
 export type TunnelRow = typeof tunnel.$inferSelect
 export type PortalRow = typeof portal.$inferSelect
@@ -99,6 +108,8 @@ export type ApiDoorway = {
   isLocalOnly: boolean
   status: string
   dns: 'created' | 'none'
+  /** A plain-words reason a removal is waiting (for example no API Token can edit its DNS), else null. */
+  warning: string | null
   createdAt: string
 }
 
@@ -111,8 +122,15 @@ export function toApiDoorway(row: DoorwayRow): ApiDoorway {
     isLocalOnly: row.isLocalOnly,
     status: row.status,
     dns: row.externalDnsRecordId ? 'created' : 'none',
+    warning: doorwayWarning(row),
     createdAt: row.createdAt,
   }
+}
+
+function doorwayWarning(row: DoorwayRow): string | null {
+  if (row.status !== 'attention') return null
+  const warning = (row.metadata as { warning?: unknown } | null)?.warning
+  return typeof warning === 'string' ? warning : null
 }
 
 // ---------------------------------------------------------------------------
@@ -226,44 +244,47 @@ export async function listDoorways(db: Db, tunnelId: string): Promise<DoorwayRow
 // ---------------------------------------------------------------------------
 // Tokens
 
-function capabilitiesOf(row: BadgeRow): BadgeCapabilities {
-  const stored = (row.capabilities ?? NO_CAPABILITIES) as Partial<BadgeCapabilities>
-  return {
-    tunnels: stored.tunnels === true,
-    dns: Array.isArray(stored.dns) ? stored.dns : [],
-    certificates: Array.isArray(stored.certificates) ? stored.certificates : [],
+/**
+ * A refusal the person can act on, from the reason no API Token served a call:
+ * none has the right, none covers the zone, or the provider refused every one.
+ * `action` finishes "can ..." for tunnel calls ("create Tunnels").
+ */
+export function badgeRefusal(err: BadgeUnavailable | BadgeRefused, action: string): TunnelRefusal {
+  const need = err.need
+  const zone = needZoneName(need)
+  if (need.capability === 'tunnels') {
+    return new TunnelRefusal(
+      'badge_cannot_tunnel',
+      409,
+      err instanceof BadgeRefused
+        ? `The provider refused every API Token that could ${action}. Check that one has Account · Cloudflare Tunnel · Edit.`
+        : `No API Token on this Carrier can ${action}`
+    )
   }
+  const area = need.capability === 'dns' ? 'DNS' : 'certificates'
+  const code = need.capability === 'dns' ? 'badge_cannot_dns' : 'badge_cannot_certify'
+  if (err instanceof BadgeRefused) {
+    return new TunnelRefusal(
+      code,
+      409,
+      `The provider lets an API Token read ${area} for ${zone} but refused to change it. Give that token the edit permission for the zone.`
+    )
+  }
+  return new TunnelRefusal(
+    code,
+    409,
+    err.missing === 'zone'
+      ? `No API Token on this Carrier covers ${area} for ${zone}. Add one for that zone, or use Add Zone on an existing token.`
+      : `No API Token on this Carrier can edit ${area}. Add one that has the permission.`
+  )
 }
 
-/**
- * Open an API token of the carrier that can do what is needed: any token that
- * reaches tunnels, or one that reaches the DNS zone `zoneId`. Returns null
- * when no active token on the carrier qualifies.
- */
-export async function openCarrierToken(
-  db: Db,
-  secrets: DerivedSecretsConfig,
-  carrierId: string,
-  need: { tunnels: true } | { zoneId: string } | { anyDns: true }
-): Promise<string | null> {
-  const badges = await db
-    .select()
-    .from(badge)
-    .where(and(eq(badge.carrierId, carrierId), eq(badge.status, 'active')))
-    .orderBy(asc(badge.createdAt))
-  const usable = badges.find((b) => {
-    const caps = capabilitiesOf(b)
-    if ('tunnels' in need) return caps.tunnels
-    if ('zoneId' in need) return caps.dns.some((z) => z.id === need.zoneId)
-    return caps.dns.length > 0
-  })
-  if (!usable) return null
-  const [stored] = await db
-    .select({ secretEnvelope: secret.secretEnvelope })
-    .from(secret)
-    .where(eq(secret.id, usable.secretId))
-    .limit(1)
-  return stored ? await decryptSecret(secrets, stored.secretEnvelope) : null
+/** A failed provider call as a refusal: no-token cases get the actionable text, the rest the provider's. */
+export function refuse(err: unknown, action: string): unknown {
+  if (err instanceof BadgeUnavailable || err instanceof BadgeRefused) {
+    return badgeRefusal(err, action)
+  }
+  return providerRefusal(err)
 }
 
 /** Open the run token a tunnel's connectors use. */
@@ -436,15 +457,13 @@ export async function createTunnel(
   }
   const dcId = input.placement.placement === 'all' ? input.datacenterId : null
   const targets = await checkPlacementTargets(db, owner.organizationId, input.placement, dcId)
-  const token = await openCarrierToken(db, deps.secrets, owner.id, { tunnels: true })
-  if (!token) {
-    throw new TunnelRefusal(
-      'badge_cannot_tunnel',
-      409,
-      'No API Token on this Carrier can create Tunnels'
-    )
-  }
-  const created = await createAtProvider(deps.adapter, token, owner, input.name)
+  const used = await useBadges(db, deps.secrets, owner.id, { capability: 'tunnels' }, (token) =>
+    deps.adapter.createTunnel(token, { accountId: owner.externalAccountId, name: input.name })
+  ).catch((err: unknown) => {
+    throw refuse(err, 'create Tunnels')
+  })
+  const created = used.value
+  const token = used.token
   try {
     return await db.transaction(async (tx) => {
       const [sealed] = await tx
@@ -480,19 +499,6 @@ export async function createTunnel(
       throw new TunnelRefusal('tunnel_exists', 409, 'A Tunnel with this name already exists')
     }
     throw err
-  }
-}
-
-async function createAtProvider(
-  adapter: TunnelAdapter,
-  token: string,
-  owner: CarrierRow,
-  name: string
-): Promise<{ externalId: string; runToken: string }> {
-  try {
-    return await adapter.createTunnel(token, { accountId: owner.externalAccountId, name })
-  } catch (err) {
-    throw providerRefusal(err)
   }
 }
 
@@ -573,6 +579,12 @@ async function noteRemovalWaiting(
 }
 
 function removalWaitingText(err: unknown): string {
+  if (err instanceof BadgeUnavailable) {
+    return 'No API Token on this Carrier can remove Tunnels. Add or fix one and it finishes on its own.'
+  }
+  if (err instanceof BadgeRefused) {
+    return 'The provider refused every API Token that could remove Tunnels. Fix their permissions and it finishes on its own.'
+  }
   if (err instanceof TunnelProviderError && err.code === 'conflict') {
     return 'Cloudflare still sees a connector for it. The connectors are being stopped and the removal finishes on its own.'
   }
@@ -610,28 +622,30 @@ export async function finishTunnelRemoval(
     )
     return 'removing'
   }
-  const token = owner ? await openCarrierToken(db, deps.secrets, owner.id, { tunnels: true }) : null
-  if (!owner || !token) {
+  if (!owner) {
     await noteRemovalWaiting(
       db,
       row,
-      owner
-        ? 'No API Token on this Carrier can remove Tunnels. Add or fix one and it finishes on its own.'
-        : 'The provider account of this Tunnel is not connected here. Connect it again, or remove the Tunnel at the provider yourself.',
+      'The provider account of this Tunnel is not connected here. Connect it again, or remove the Tunnel at the provider yourself.',
       now
     )
     return 'removing'
   }
   try {
-    await deps.adapter.deleteTunnel(token, {
-      accountId: owner.externalAccountId,
-      externalId: row.externalId,
+    await useBadges(db, deps.secrets, owner.id, { capability: 'tunnels' }, async (token) => {
+      try {
+        await deps.adapter.deleteTunnel(token, {
+          accountId: owner.externalAccountId,
+          externalId: row.externalId!,
+        })
+      } catch (err) {
+        // Already gone at the provider counts as removed.
+        if (!(err instanceof TunnelProviderError && err.code === 'not_found')) throw err
+      }
     })
   } catch (err) {
-    if (!(err instanceof TunnelProviderError && err.code === 'not_found')) {
-      await noteRemovalWaiting(db, row, removalWaitingText(err), now)
-      return 'removing'
-    }
+    await noteRemovalWaiting(db, row, removalWaitingText(err), now)
+    return 'removing'
   }
   await deleteTunnelRecord(db, row)
   return 'removed'
@@ -652,7 +666,7 @@ export async function deleteTunnel(
 ): Promise<RemovalOutcome> {
   if ((await listDoorways(db, row.id)).length > 0) throw tunnelInUse()
   if (!row.externalId) return await finishTunnelRemoval(db, deps, row, owner)
-  if (owner && !(await openCarrierToken(db, deps.secrets, owner.id, { tunnels: true }))) {
+  if (owner && !(await openBestBadge(db, deps.secrets, owner.id, { capability: 'tunnels' }))) {
     throw new TunnelRefusal(
       'badge_cannot_tunnel',
       409,
@@ -755,13 +769,19 @@ async function hostingOfName(db: Db, organizationId: string, name: string): Prom
   return site.hostingId
 }
 
+/** A removal that took the route down and is waiting for a token that can edit the DNS of its zone. */
+function routeTakenDown(row: DoorwayRow): boolean {
+  return row.status === 'attention' && doorwayWarning(row) !== null
+}
+
 export async function routeNames(
   db: Db,
   tunnelId: string,
   extra: string | null
 ): Promise<string[]> {
   const rows = await listDoorways(db, tunnelId)
-  const names = rows.map((r) => r.hostname)
+  // A hostname waiting in attention for its DNS token has had its route taken down; it stays down.
+  const names = rows.filter((r) => !routeTakenDown(r)).map((r) => r.hostname)
   if (extra && !names.includes(extra)) names.push(extra)
   return names.toSorted(compareText)
 }
@@ -789,8 +809,8 @@ export async function addDoorway(
     )
   }
   await assertDoorwayRoom(db, row, input.hostname)
-  const token = await openCarrierToken(db, deps.secrets, owner.id, { tunnels: true })
-  if (!token) {
+  const tunnelBadge = await openBestBadge(db, deps.secrets, owner.id, { capability: 'tunnels' })
+  if (!tunnelBadge) {
     throw new TunnelRefusal(
       'badge_cannot_tunnel',
       409,
@@ -798,17 +818,16 @@ export async function addDoorway(
     )
   }
   const account = owner.externalAccountId
-  const zone = await findZoneFor(deps.adapter, token, account, input.hostname)
-  const dnsToken = zone
-    ? await openCarrierToken(db, deps.secrets, owner.id, { zoneId: zone.id })
-    : null
-  if (zone && !dnsToken) {
-    throw new TunnelRefusal(
-      'badge_cannot_dns',
-      409,
-      'No API Token on this Carrier can edit DNS for this hostname'
-    )
-  }
+  const zone = await findZoneFor(
+    db,
+    deps.adapter,
+    owner.id,
+    tunnelBadge.token,
+    account,
+    input.hostname
+  )
+  // A zone with no token that can edit its DNS is refused before anything is written.
+  if (zone) assertDnsTokenExists(await listBadges(db, owner.id), zone)
   const created = await insertDoorway(
     db,
     row,
@@ -823,12 +842,22 @@ export async function addDoorway(
       .where(eq(tunnel.id, row.id))
       .limit(1)
     assertNotRemoving({ status: now?.status ?? 'removing' })
-    return await publishDoorway(db, deps.adapter, { row, token, account, zone, dnsToken }, created)
+    return await publishDoorway(db, deps, { row, owner, account, zone }, created)
   } catch (err) {
     await db.delete(doorway).where(eq(doorway.id, created.id))
-    await restoreRoutesQuietly(db, deps.adapter, token, row, account)
-    throw providerRefusal(err)
+    await restoreRoutesQuietly(db, deps, row, owner)
+    throw refuse(err, 'edit Tunnels')
   }
+}
+
+/** Refuse, with the reason, when no active token reaches DNS for this zone. */
+function assertDnsTokenExists(
+  badges: Parameters<typeof pickBadges>[0],
+  zone: { id: string; name: string }
+): void {
+  const need: BadgeNeed = { capability: 'dns', zone }
+  const picked = pickBadges(badges, need)
+  if (picked.missing) throw badgeRefusal(new BadgeUnavailable(need, picked.missing), 'edit DNS')
 }
 
 /** The limits and the name check that come before anything is written or sent. */
@@ -858,67 +887,87 @@ async function assertDoorwayRoom(db: Db, row: TunnelRow, name: string): Promise<
 
 type PublishPlan = {
   row: TunnelRow
-  token: string
+  owner: CarrierRow
   account: string | null
   zone: { id: string; name: string } | null
-  dnsToken: string | null
 }
+
+type Deps = { adapter: TunnelAdapter; secrets: DerivedSecretsConfig }
 
 /** Route the name, make its DNS name when a zone holds it, and mark the row live. */
 async function publishDoorway(
   db: Db,
-  adapter: TunnelAdapter,
+  deps: Deps,
   plan: PublishPlan,
   created: DoorwayRow
 ): Promise<DoorwayRow> {
-  const { row, token, account, zone, dnsToken } = plan
-  await adapter.setRoutes(token, {
-    accountId: account,
-    externalId: row.externalId!,
-    hostnames: await routeNames(db, row.id, null),
-    verifyOrigin: (await tunnelVerifyState(db, row)).active,
-  })
-  const recordId =
-    zone && dnsToken
-      ? (
-          await adapter.createDnsName(dnsToken, {
-            zoneId: zone.id,
-            hostname: created.hostname,
-            externalId: row.externalId!,
-          })
-        ).recordId
-      : null
+  const { row, owner, account, zone } = plan
+  const hostnames = await routeNames(db, row.id, null)
+  const verifyOrigin = (await tunnelVerifyState(db, row)).active
+  await useBadges(db, deps.secrets, owner.id, { capability: 'tunnels' }, (token) =>
+    deps.adapter.setRoutes(token, {
+      accountId: account,
+      externalId: row.externalId!,
+      hostnames,
+      verifyOrigin,
+    })
+  )
+  const dns = zone
+    ? await useBadges(db, deps.secrets, owner.id, { capability: 'dns', zone }, (token) =>
+        deps.adapter.createDnsName(token, {
+          zoneId: zone.id,
+          hostname: created.hostname,
+          externalId: row.externalId!,
+        })
+      )
+    : null
+  const recordId = dns?.value.recordId ?? null
   try {
     const [live] = await db
       .update(doorway)
       .set({
         status: 'live',
         externalDnsRecordId: recordId,
-        metadata: zone ? { zoneId: zone.id } : null,
+        // The token used is kept for the record only; any token that covers the zone can remove the name later.
+        metadata: zone ? { zoneId: zone.id, dnsBadgeId: dns?.badge.id ?? null } : null,
       })
       .where(eq(doorway.id, created.id))
       .returning()
     return live!
   } catch (err) {
     // The DNS name exists but the row could not be kept: take the name away again.
-    if (recordId && zone && dnsToken) {
-      await adapter.removeDnsName(dnsToken, { zoneId: zone.id, recordId }).catch(() => {})
+    if (recordId && zone && dns) {
+      await deps.adapter.removeDnsName(dns.token, { zoneId: zone.id, recordId }).catch(() => {})
     }
     throw err
   }
 }
 
+/**
+ * The zone for a hostname: first among the zones the account's active tokens
+ * were found (or told) to reach, longest name first; only when none matches
+ * is the provider asked, with the tunnel token. A token that cannot list zones
+ * is not an error here: the route still works and the person makes the DNS name.
+ */
 async function findZoneFor(
+  db: Db,
   adapter: TunnelAdapter,
-  token: string,
+  carrierId: string,
+  tunnelToken: string,
   accountId: string | null,
   name: string
 ): Promise<{ id: string; name: string } | null> {
+  const stored = findStoredZone(await listBadges(db, carrierId), name)
+  if (stored) return stored
   try {
-    return await adapter.findZone(token, { accountId, hostname: name })
+    return await adapter.findZone(tunnelToken, { accountId, hostname: name })
   } catch (err) {
-    // The route still works without a zone in this account; the person makes the DNS name.
-    if (err instanceof TunnelProviderError && err.code === 'zone_not_found') return null
+    if (
+      err instanceof TunnelProviderError &&
+      (err.code === 'zone_not_found' || err.code === 'forbidden')
+    ) {
+      return null
+    }
     throw providerRefusal(err)
   }
 }
@@ -955,27 +1004,36 @@ async function insertDoorway(
 
 async function restoreRoutesQuietly(
   db: Db,
-  adapter: TunnelAdapter,
-  token: string,
+  deps: Deps,
   row: TunnelRow,
-  accountId: string | null
+  owner: CarrierRow
 ): Promise<void> {
   try {
-    await adapter.setRoutes(token, {
-      accountId,
-      externalId: row.externalId!,
-      hostnames: await routeNames(db, row.id, null),
-      verifyOrigin: (await tunnelVerifyState(db, row)).active,
-    })
+    const hostnames = await routeNames(db, row.id, null)
+    const verifyOrigin = (await tunnelVerifyState(db, row)).active
+    await useBadges(db, deps.secrets, owner.id, { capability: 'tunnels' }, (token) =>
+      deps.adapter.setRoutes(token, {
+        accountId: owner.externalAccountId,
+        externalId: row.externalId!,
+        hostnames,
+        verifyOrigin,
+      })
+    )
   } catch {
     // The next successful change writes the whole set again.
   }
 }
 
-/** Remove a hostname from a tunnel: its DNS name, its route, then the row. */
+/**
+ * Remove a hostname from a tunnel: its route, its DNS name, then the row. The
+ * tokens are looked up before anything changes. With no token that can edit
+ * the zone's DNS the route is still taken down (the name answers nothing) and
+ * the row stays in `attention` with the reason, so a retry with a fixed token
+ * finishes it.
+ */
 export async function removeDoorway(
   db: Db,
-  deps: { adapter: TunnelAdapter; secrets: DerivedSecretsConfig },
+  deps: Deps,
   row: TunnelRow,
   owner: CarrierRow,
   current: DoorwayRow
@@ -985,8 +1043,7 @@ export async function removeDoorway(
     await retireUnusedCertificatesQuietly(db, row.organizationId)
     return
   }
-  const token = await openCarrierToken(db, deps.secrets, owner.id, { tunnels: true })
-  if (!token) {
+  if (!(await openBestBadge(db, deps.secrets, owner.id, { capability: 'tunnels' }))) {
     throw new TunnelRefusal(
       'badge_cannot_tunnel',
       409,
@@ -994,30 +1051,24 @@ export async function removeDoorway(
     )
   }
   const zoneId = (current.metadata as { zoneId?: string } | null)?.zoneId
+  const hasDnsName = Boolean(current.externalDnsRecordId && zoneId)
   try {
     // The route goes first, so a failed DNS removal leaves a name that answers nothing,
     // never a route to a name that is gone; a retry rewrites the same route.
     const remaining = (await routeNames(db, row.id, null)).filter((n) => n !== current.hostname)
-    await deps.adapter.setRoutes(token, {
-      accountId: owner.externalAccountId,
-      externalId: row.externalId,
-      hostnames: remaining,
-      verifyOrigin: (await tunnelVerifyState(db, row)).active && remaining.length > 0,
-    })
-    if (current.externalDnsRecordId && zoneId) {
-      const dnsToken = await openCarrierToken(db, deps.secrets, owner.id, { zoneId })
-      if (!dnsToken) {
-        throw new TunnelRefusal(
-          'badge_cannot_dns',
-          409,
-          'No API Token on this Carrier can edit DNS for this hostname'
-        )
-      }
-      await removeDnsNameTolerant(deps.adapter, dnsToken, zoneId, current.externalDnsRecordId)
-    }
+    const verifyOrigin = remaining.length > 0 && (await tunnelVerifyState(db, row)).active
+    await useBadges(db, deps.secrets, owner.id, { capability: 'tunnels' }, (token) =>
+      deps.adapter.setRoutes(token, {
+        accountId: owner.externalAccountId,
+        externalId: row.externalId!,
+        hostnames: remaining,
+        verifyOrigin,
+      })
+    )
   } catch (err) {
-    throw providerRefusal(err)
+    throw refuse(err, 'edit Tunnels')
   }
+  if (hasDnsName) await removeDnsNameOrKeep(db, deps, owner, current, zoneId!)
   await db.delete(doorway).where(eq(doorway.id, current.id))
   await retireUnusedCertificatesQuietly(db, row.organizationId)
 }
@@ -1035,6 +1086,38 @@ async function retireUnusedCertificatesQuietly(db: Db, organizationId: string): 
     )
   } catch {
     // The sweep retires it on its next pass.
+  }
+}
+
+/** Take the DNS name away with any token that covers the zone; if none can, keep the row in `attention` and say why. */
+async function removeDnsNameOrKeep(
+  db: Db,
+  deps: Deps,
+  owner: CarrierRow,
+  current: DoorwayRow,
+  zoneId: string
+): Promise<void> {
+  const need: BadgeNeed = { capability: 'dns', zone: { id: zoneId } }
+  try {
+    await useBadges(db, deps.secrets, owner.id, need, (token) =>
+      removeDnsNameTolerant(deps.adapter, token, zoneId, current.externalDnsRecordId!)
+    )
+  } catch (err) {
+    if (err instanceof BadgeUnavailable || err instanceof BadgeRefused) {
+      const refusal = badgeRefusal(err, 'edit DNS')
+      await db
+        .update(doorway)
+        .set({
+          status: 'attention',
+          metadata: {
+            ...(current.metadata as object | null),
+            warning: `The DNS name of ${current.hostname} is still there. ${refusal.message}`,
+          },
+        })
+        .where(eq(doorway.id, current.id))
+      throw refusal
+    }
+    throw providerRefusal(err)
   }
 }
 

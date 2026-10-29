@@ -29,7 +29,7 @@
 import { and, eq, sql } from 'drizzle-orm'
 import { isValidHostname } from '../../contracts/commands/hostname.ts'
 import type { Db } from '../../db/connection.ts'
-import { badge, carrier, hosting, tls } from '../../db/schema.ts'
+import { carrier, hosting, tls } from '../../db/schema.ts'
 import { encryptSecret, isSealedEnvelope } from '../../lib/secrets/data-encryption.ts'
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { mintCertificateRequest, parseCertificatePem } from '../../lib/tls/index.ts'
@@ -38,8 +38,16 @@ import { metadataFromParsed, splitTlsMetadata } from '../../lib/tls/metadata.ts'
 import type { ProviderOriginCertificate, TunnelAdapter } from './adapter.ts'
 import { TunnelProviderError } from './errors.ts'
 import { compareText } from './order.ts'
-import { firstResult, inSequence } from './sequence.ts'
-import { type BadgeRow, type CarrierRow, openBadgeToken, toApiBadge } from './records.ts'
+import { mapSequential } from '../../lib/sequential.ts'
+import { BadgeRefused, BadgeUnavailable, useBadges } from './badge-use.ts'
+import {
+  type BadgeRow,
+  type CarrierRow,
+  listBadges,
+  openBadgeToken,
+  pickBadges,
+  toApiBadge,
+} from './records.ts'
 
 const MS_PER_DAY = 86_400_000
 const MS_PER_HOUR = 3_600_000
@@ -241,41 +249,16 @@ export function badgeCoversZone(
 }
 
 /**
- * THE one place a token is chosen for certificate work (issue, renew, revoke):
- * active tokens only, matched to the zone by its provider id when known (else
- * by name), narrowest first, so the token with the fewest other rights is tried
- * first. Revoking and renewing are NOT tied to the token that issued a
- * certificate: any active token with certificate rights for the zone works.
- * Swap this for the shared token selector when it lands.
+ * The active tokens that can manage certificates for a zone, best first: the
+ * shared selector, matched by the zone's id and narrowest first. Revoking and
+ * renewing are NOT tied to the token that issued a certificate.
  */
 export async function pickCertificateBadges(
   db: Db,
   carrierId: string,
-  zone: { id?: string; name: string }
+  zone: { id: string; name: string }
 ): Promise<BadgeRow[]> {
-  const rows = await db
-    .select()
-    .from(badge)
-    .where(and(eq(badge.carrierId, carrierId), eq(badge.status, 'active')))
-  const wanted = zone.name.trim().toLowerCase()
-  const narrowness = (row: BadgeRow): number => {
-    const caps = toApiBadge(row).capabilities
-    return caps.certificates.length + caps.dns.length + (caps.tunnels ? 1 : 0)
-  }
-  return rows
-    .filter((row) =>
-      toApiBadge(row).capabilities.certificates.some((z) =>
-        zone.id ? z.id === zone.id : z.name.toLowerCase() === wanted
-      )
-    )
-    .sort((a, b) => narrowness(a) - narrowness(b) || compareText(a.createdAt, b.createdAt))
-}
-
-/** A token the provider refused (expired, revoked or without the right) is skipped for the next one. */
-function isTokenRefusal(err: unknown): boolean {
-  return (
-    err instanceof TunnelProviderError && (err.code === 'unauthorized' || err.code === 'forbidden')
-  )
+  return pickBadges(await listBadges(db, carrierId), { capability: 'certificates', zone }).badges
 }
 
 type IssueParams = {
@@ -533,29 +516,29 @@ type RevokeParams = {
 }
 
 /**
- * Try the account's tokens for this zone in order, using `act` with each one's
- * secret; a token the provider refuses is skipped for the next. Returns the
- * first result, or `undefined` when no token was usable.
+ * Do `act` with the account's tokens for this zone, best first; the shared
+ * helper takes a right off a token the provider refuses and tries the next.
+ * Returns the first result with the token used, or `undefined` when no token
+ * qualified or every one was refused.
  */
 async function withZoneToken<R>(
   params: { db: Db; secrets: DerivedSecretsConfig },
   link: Pick<ProviderOriginLink, 'carrierId' | 'zoneId' | 'zoneName'>,
   act: (token: string, badgeRow: BadgeRow) => Promise<R>
 ): Promise<{ result: R; badgeId: string } | undefined> {
-  const candidates = await pickCertificateBadges(params.db, link.carrierId, {
-    id: link.zoneId,
-    name: link.zoneName,
-  })
-  return await firstResult(candidates, async (candidate) => {
-    const token = await openBadgeToken(params.db, params.secrets, candidate)
-    if (token === null) return undefined
-    try {
-      return { result: await act(token, candidate), badgeId: candidate.id }
-    } catch (err) {
-      if (isTokenRefusal(err)) return undefined
-      throw err
-    }
-  })
+  try {
+    const used = await useBadges(
+      params.db,
+      params.secrets,
+      link.carrierId,
+      { capability: 'certificates', zone: { id: link.zoneId, name: link.zoneName } },
+      act
+    )
+    return { result: used.value, badgeId: used.badge.id }
+  } catch (err) {
+    if (err instanceof BadgeUnavailable || err instanceof BadgeRefused) return undefined
+    throw err
+  }
 }
 
 /**
@@ -723,7 +706,7 @@ export async function sweepOriginCertificates(params: SweepParams): Promise<Orig
     )
   }
   const rows = await listOriginCertificates(params.db, params.organizationId)
-  const steps = await inSequence(rows, (row) => sweepRow(params, row, now))
+  const steps = await mapSequential(rows, (row) => sweepRow(params, row, now))
   const result: OriginSweepResult = { renewed: [], repinnedHostingIds: [], removed: [], failed: [] }
   for (const step of steps) {
     if (step.kind === 'renewed') {

@@ -512,3 +512,36 @@ test('with verification on, routes stop skipping verification and add no certifi
   // Left out, the default stays as before.
   assertEquals(buildIngress(['a.example.com'])[0]!.originRequest?.noTLSVerify, true)
 })
+
+test('zones the person names are probed one by one, so a token that cannot list zones still covers them', async () => {
+  const { impl, calls } = fakeFetch({
+    'GET /client/v4/accounts': refused(403, 'denied'),
+    'GET /client/v4/zones': refused(403, 'denied'),
+    [`GET /client/v4/accounts/${ACCOUNT}/cfd_tunnel`]: refused(403, 'denied'),
+    'GET /client/v4/zones/z9/dns_records': ok([]),
+    'GET /client/v4/zones/z9': ok({ id: 'z9', name: 'shop.example.org', account: { id: ACCOUNT } }),
+    'GET /client/v4/zones/z8/dns_records': ok([]),
+    'GET /client/v4/zones/z8': refused(403, 'denied'),
+    'GET /client/v4/zones/z7/dns_records': ok([]),
+    'GET /client/v4/zones/z7': ok({ id: 'z7', name: 'other.net', account: { id: 'b'.repeat(32) } }),
+  })
+  const report = await createCloudflareAdapter({ fetch: impl }).checkCredential(TOKEN, {
+    accountId: ACCOUNT,
+    declaredZones: [
+      { id: 'z9', name: '' },
+      { id: 'z8', name: 'docs.example.net' },
+      { id: 'z7', name: '' },
+      { id: 'z5', name: 'gone.dev' },
+    ],
+  })
+  assertEquals(report.declared, [
+    { id: 'z9', name: 'shop.example.org', reachable: true, accountMatch: true },
+    { id: 'z8', name: 'docs.example.net', reachable: true, accountMatch: null },
+    { id: 'z7', name: 'other.net', reachable: true, accountMatch: false },
+    { id: 'z5', name: 'gone.dev', reachable: false, accountMatch: null },
+  ])
+  // Reached zones count as DNS rights; a zone of another account and an unreachable one do not.
+  assertEquals(report.capabilities.dns.map((z) => z.id).sort(), ['z8', 'z9'])
+  assertEquals(report.capabilities.tunnels, false)
+  assert(calls.every((c) => c.method === 'GET'))
+})

@@ -1,4 +1,4 @@
-import type { BadgeCapabilities, TokenInfo, TunnelProvider } from './vocabulary.ts'
+import type { BadgeCapabilities, DeclaredZone, TokenInfo, TunnelProvider } from './vocabulary.ts'
 
 export type ProviderAccount = { id: string; name: string }
 export type ProviderZone = { id: string; name: string }
@@ -15,6 +15,19 @@ export type CredentialReport = {
   missing: string[]
   /** What the provider says about the token itself: owner kind, id, status, expiry. */
   token: TokenInfo
+  /** One entry per zone the person declared, in the order given. */
+  declared?: DeclaredZoneResult[]
+}
+
+/** What checking one declared zone found. */
+export type DeclaredZoneResult = {
+  id: string
+  /** The provider's name for the zone, else the name the person gave, else null. */
+  name: string | null
+  /** The token can read DNS records of the zone. */
+  reachable: boolean
+  /** False when the provider says the zone belongs to another account; null when it could not tell. */
+  accountMatch: boolean | null
 }
 
 /** What a pasted token reaches before the person has chosen an account. */
@@ -52,7 +65,10 @@ export type TunnelAdapter = {
   /** List the accounts a token can reach, for the person to pick from. */
   discoverAccounts(token: string): Promise<TokenDiscovery>
   /** Check a credential with safe read calls and report what it reaches. */
-  checkCredential(token: string, scope: { accountId: string | null }): Promise<CredentialReport>
+  checkCredential(
+    token: string,
+    scope: { accountId: string | null; declaredZones?: readonly DeclaredZone[] }
+  ): Promise<CredentialReport>
   createTunnel(
     token: string,
     input: { accountId: string | null; name: string }

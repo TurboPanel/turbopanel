@@ -6,11 +6,12 @@
  */
 import {
   type BadgeCapabilities,
+  type DeclaredZone,
   type TokenInfo,
   type TokenKind,
   UNKNOWN_TOKEN,
 } from './vocabulary.ts'
-import type { CredentialReport, TunnelAdapter } from './adapter.ts'
+import type { CredentialReport, DeclaredZoneResult, TunnelAdapter } from './adapter.ts'
 import { CloudflareClient, type CloudflareIngressRule } from './cloudflare-client.ts'
 import { TunnelProviderError } from './errors.ts'
 
@@ -88,6 +89,68 @@ async function reachableCertificateZones(
     zones.map(async (z) => ((await readable(z.id)) ? { id: z.id, name: z.name } : null))
   )
   return probed.filter((z): z is { id: string; name: string } => z !== null)
+}
+
+/**
+ * A zone the person named: a zone the token is not allowed to read, one that does
+ * not exist, or an id the provider calls invalid all mean "not reachable"; an
+ * outage or any other failure is still an error.
+ */
+async function probeNamedZone(api: CloudflareClient, zoneId: string): Promise<boolean> {
+  try {
+    await api.probeDns(zoneId)
+    return true
+  } catch (err) {
+    if (!(err instanceof TunnelProviderError)) throw err
+    if (isPermissionFailure(err) || err.code === 'not_found' || err.status === 400) return false
+    throw err
+  }
+}
+
+/**
+ * Check zones the person named. A token limited to one zone is usually refused
+ * the zone list, so the zone's id is probed directly with a DNS read. The zone's
+ * own name and account come from a zone read when the token may make one; a
+ * token without Zone · Zone · Read falls back to the name the person typed.
+ */
+async function checkDeclaredZones(
+  api: CloudflareClient,
+  declared: readonly DeclaredZone[],
+  accountId: string | null
+): Promise<DeclaredZoneResult[]> {
+  return await Promise.all(
+    declared.map(async (z) => {
+      const reachable = await probeNamedZone(api, z.id)
+      if (!reachable) return { id: z.id, name: z.name || null, reachable, accountMatch: null }
+      let found: { name?: string; account?: { id?: string } } | null = null
+      try {
+        found = await api.getZone(z.id)
+      } catch (err) {
+        if (!isPermissionFailure(err) && !(err instanceof TunnelProviderError)) throw err
+      }
+      const owner = found?.account?.id
+      return {
+        id: z.id,
+        name: found?.name ?? (z.name || null),
+        reachable,
+        accountMatch: accountId && owner ? owner === accountId : null,
+      }
+    })
+  )
+}
+
+/** Zones found by listing, plus declared zones that were reached on this account. */
+function mergeZones(
+  listed: readonly { id: string; name: string }[],
+  declared: readonly DeclaredZoneResult[]
+): { id: string; name: string }[] {
+  const byId = new Map(listed.map((z) => [z.id, z]))
+  for (const z of declared) {
+    if (z.reachable && z.name && z.accountMatch !== false && !byId.has(z.id)) {
+      byId.set(z.id, { id: z.id, name: z.name })
+    }
+  }
+  return [...byId.values()]
 }
 
 /**
@@ -260,12 +323,13 @@ export function createCloudflareAdapter(options: { fetch?: typeof fetch } = {}):
           ? await probe(() => api.probeTunnels(scope.accountId!))
           : false
       // DNS rights can be limited to some zones, so each zone is probed on its own.
-      const dns = await reachableZones(api, zones)
-      // Certificate rights are per zone too, proved by one safe read of the zone's list.
+      const declared = await checkDeclaredZones(api, scope.declaredZones ?? [], scope.accountId)
+      const dns = mergeZones(await reachableZones(api, zones), declared)
       const capabilities: BadgeCapabilities = {
         tunnels,
         dns,
-        certificates: await reachableCertificateZones(api, zones),
+        // Certificate rights are per zone too, proved by one safe read of the zone's list.
+        certificates: await reachableCertificateZones(api, mergeZones(zones, declared)),
       }
       const missing: string[] = []
       if (!tunnels) missing.push(CLOUDFLARE_PERMISSIONS.tunnels)
@@ -277,6 +341,7 @@ export function createCloudflareAdapter(options: { fetch?: typeof fetch } = {}):
         capabilities,
         missing,
         token: tokenInfo,
+        declared,
       }
     },
 

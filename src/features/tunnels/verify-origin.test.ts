@@ -194,7 +194,6 @@ async function withWorld(fn: (w: World) => Promise<void>): Promise<void> {
         secrets,
         adapter: fake.adapter,
         organizationId,
-        chooseBadge: () => Promise.resolve(b!),
       },
     })
   } finally {

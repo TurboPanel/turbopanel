@@ -18,8 +18,9 @@ import type { TunnelAdapter } from './adapter.ts'
 import {
   type TunnelRow,
   listDoorways,
-  openCarrierToken,
+  badgeRefusal,
   providerRefusal,
+  refuse,
   routeNames,
   TunnelRefusal,
 } from './lifecycle.ts'
@@ -30,8 +31,9 @@ import {
   readProviderOrigin,
   retireUnusedOriginCertificates,
 } from './origin-certificate.ts'
-import type { BadgeRow, CarrierRow } from './records.ts'
-import { inSequence } from './sequence.ts'
+import { type CarrierRow, findStoredZone, listBadges, pickBadges } from './records.ts'
+import { mapSequential } from '../../lib/sequential.ts'
+import { BadgeUnavailable, openBestBadge, useBadges } from './badge-use.ts'
 import { type VerifyState, tunnelVerifyState, verifyOriginHostnames } from './verify-state.ts'
 
 export type VerifyOriginDeps = {
@@ -39,8 +41,6 @@ export type VerifyOriginDeps = {
   secrets: DerivedSecretsConfig
   adapter: TunnelAdapter
   organizationId: string
-  /** The API token (badge) of the carrier that can manage certificates for the zone, or null. */
-  chooseBadge(zoneName: string): Promise<BadgeRow | null>
 }
 
 export type VerifyOriginResult = {
@@ -69,16 +69,38 @@ async function hostingNames(db: Db, hostingId: string): Promise<string[]> {
   })
 }
 
+/** The zone of one name: a zone an active token was found to reach first, else the provider is asked. */
+async function zoneOf(
+  deps: VerifyOriginDeps,
+  owner: CarrierRow,
+  name: string
+): Promise<{ id: string; name: string }> {
+  const stored = findStoredZone(await listBadges(deps.db, owner.id), name)
+  if (stored) return stored
+  const opened = await openBestBadge(deps.db, deps.secrets, owner.id, { capability: 'tunnels' })
+  if (!opened) {
+    throw badgeRefusal(
+      new BadgeUnavailable({ capability: 'tunnels' }, 'capability'),
+      'edit Tunnels'
+    )
+  }
+  try {
+    return await deps.adapter.findZone(opened.token, {
+      accountId: owner.externalAccountId,
+      hostname: name,
+    })
+  } catch (err) {
+    throw providerRefusal(err)
+  }
+}
+
 /** The zone a set of names lives in; they must all share one (a site pins one certificate). */
 async function singleZone(
-  adapter: TunnelAdapter,
-  token: string,
-  accountId: string | null,
+  deps: VerifyOriginDeps,
+  owner: CarrierRow,
   names: readonly string[]
 ): Promise<{ id: string; name: string }> {
-  const zones = await Promise.all(
-    names.map((n) => adapter.findZone(token, { accountId, hostname: n }))
-  )
+  const zones = await Promise.all(names.map((n) => zoneOf(deps, owner, n)))
   const first = zones[0]!
   if (zones.some((z) => z.id !== first.id)) {
     throw new TunnelRefusal(
@@ -112,21 +134,16 @@ async function certifyHosting(
       `This site also serves ${outside.join(', ')}, which is not a Tunnel name with a verified connection, so an origin certificate would break it`
     )
   }
-  const dnsToken = await openCarrierToken(deps.db, deps.secrets, owner.id, { anyDns: true })
-  if (!dnsToken) {
-    throw new TunnelRefusal(
-      'badge_cannot_dns',
-      409,
-      'No API Token on this Carrier can read DNS zones'
-    )
-  }
-  const zone = await singleZone(deps.adapter, dnsToken, owner.externalAccountId, names)
-  const badge = await deps.chooseBadge(zone.name)
-  if (badge === null) {
-    throw new TunnelRefusal(
-      'badge_cannot_certify',
-      409,
-      'No API Token on this Carrier can manage certificates for that zone'
+  const zone = await singleZone(deps, owner, names)
+  const picked = pickBadges(await listBadges(deps.db, owner.id), {
+    capability: 'certificates',
+    zone,
+  })
+  const badge = picked.badges[0]
+  if (!badge) {
+    throw badgeRefusal(
+      new BadgeUnavailable({ capability: 'certificates', zone }, picked.missing ?? 'capability'),
+      'manage certificates'
     )
   }
   const ensured = await ensureOriginCertificate({
@@ -175,20 +192,22 @@ async function saveOption(db: Db, row: TunnelRow, enabled: boolean): Promise<Tun
 async function pushRoutes(
   deps: VerifyOriginDeps,
   owner: CarrierRow,
-  row: TunnelRow,
-  token: string
+  row: TunnelRow
 ): Promise<VerifyState> {
   const state = await tunnelVerifyState(deps.db, row)
   if (!row.externalId) return state
+  const hostnames = await routeNames(deps.db, row.id, null)
   try {
-    await deps.adapter.setRoutes(token, {
-      accountId: owner.externalAccountId,
-      externalId: row.externalId,
-      hostnames: await routeNames(deps.db, row.id, null),
-      verifyOrigin: state.active,
-    })
+    await useBadges(deps.db, deps.secrets, owner.id, { capability: 'tunnels' }, (token) =>
+      deps.adapter.setRoutes(token, {
+        accountId: owner.externalAccountId,
+        externalId: row.externalId!,
+        hostnames,
+        verifyOrigin: state.active,
+      })
+    )
   } catch (err) {
-    throw providerRefusal(err)
+    throw refuse(err, 'edit Tunnels')
   }
   return state
 }
@@ -206,12 +225,10 @@ export async function setVerifyOrigin(
   enabled: boolean,
   scope: OriginCertificateScope = 'names'
 ): Promise<VerifyOriginResult & { tunnel: TunnelRow }> {
-  const token = await openCarrierToken(deps.db, deps.secrets, owner.id, { tunnels: true })
-  if (!token) {
-    throw new TunnelRefusal(
-      'badge_cannot_tunnel',
-      409,
-      'No API Token on this Carrier can edit Tunnels'
+  if (!(await openBestBadge(deps.db, deps.secrets, owner.id, { capability: 'tunnels' }))) {
+    throw badgeRefusal(
+      new BadgeUnavailable({ capability: 'tunnels' }, 'capability'),
+      'edit Tunnels'
     )
   }
   const result: VerifyOriginResult = {
@@ -228,7 +245,7 @@ export async function setVerifyOrigin(
     ])
     const hostingIds = [...new Set(doorways.flatMap((d) => (d.hostingId ? [d.hostingId] : [])))]
     // One site after another: each request counts against the certificate limit.
-    const done = await inSequence(hostingIds, async (hostingId) => ({
+    const done = await mapSequential(hostingIds, async (hostingId) => ({
       hostingId,
       ...(await certifyHosting(deps, owner, hostingId, tunnelNames, scope)),
     }))
@@ -238,7 +255,7 @@ export async function setVerifyOrigin(
     }
   }
   const saved = await saveOption(deps.db, row, enabled)
-  result.state = await pushRoutes(deps, owner, saved, token)
+  result.state = await pushRoutes(deps, owner, saved)
   if (!enabled) {
     await retireUnusedOriginCertificates(
       deps.db,
