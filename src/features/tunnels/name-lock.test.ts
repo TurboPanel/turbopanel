@@ -301,7 +301,7 @@ test('the first deploy finds the doorway by the site’s own spelling of the nam
     const [other] = await c.db.insert(organization).values({ name: 'Other Claim Org' }).returning()
     try {
       await addDoorway(c, { routingOrganizationId: other!.id, hostingId: null })
-      assertEquals((await resolveDeployNameLock(c.db, params(c))), { tunnel: undefined })
+      assertEquals(await resolveDeployNameLock(c.db, params(c)), { tunnel: undefined })
       const [row] = await c.db.select().from(doorway).where(eq(doorway.tunnelId, c.tunnelId))
       assertEquals(row?.hostingId, null)
     } finally {
