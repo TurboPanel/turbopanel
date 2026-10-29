@@ -14,6 +14,7 @@ import { tls } from '../../db/schema.ts'
 import { logWarn } from '../../lib/logger.ts'
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
+import { reportSweep } from '../../lib/sweep-report.ts'
 import { ORIGIN_SWEEP_BATCH, sweepOriginCertificates } from './origin-certificate.ts'
 import { createTunnelAdapterRegistry, type TunnelAdapterRegistry } from './registry.ts'
 import { verifyOriginHostnames } from './verify-state.ts'
@@ -62,5 +63,11 @@ export async function runOriginCertificateSweepTick(
       logWarn('tls', `origin certificate sweep failed: ${err instanceof Error ? err.message : err}`)
     }
   })
+  reportSweep(
+    'tls',
+    'origin certificate sweep',
+    { renewed: out.renewed, removed: out.removed, failed: out.failed },
+    { tried: out.renewed + out.failed, failed: out.failed }
+  )
   return out
 }

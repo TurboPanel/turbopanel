@@ -84,6 +84,23 @@ export function createCloudflareDnsChallenge(options: {
         : null
     },
 
+    async checkZone(zoneId: string): Promise<void> {
+      await call('GET', `/zones/${encodeURIComponent(zoneId)}/dns_records?per_page=1`)
+    },
+
+    async txtValues(input): Promise<string[]> {
+      const query = `type=TXT&name=${encodeURIComponent(input.name)}&per_page=100`
+      const envelope = await call(
+        'GET',
+        `/zones/${encodeURIComponent(input.zoneId)}/dns_records?${query}`
+      )
+      const rows = Array.isArray(envelope?.result) ? envelope.result : []
+      // Cloudflare may return the content wrapped in quotes.
+      return rows.flatMap((r) =>
+        typeof r.content === 'string' ? [r.content.replace(/^"(.*)"$/, '$1')] : []
+      )
+    },
+
     async present(input: ChallengeRecordInput): Promise<ChallengeRecordRef> {
       const envelope = await call(
         'POST',

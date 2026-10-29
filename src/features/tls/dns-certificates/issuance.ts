@@ -340,7 +340,7 @@ async function step(ctx: DnsCertContext, row: TlsRow, state: DnsCertState): Prom
   if (!order) return await openOrder(ctx, steps, state, await renewalKey(ctx, row))
   if (order.finalizedAt) return await collectCertificate(ctx, state, order)
   if (order.answeredAt) return await checkValidation(ctx, steps, state, order)
-  return await answerChallenges(ctx, state, order)
+  return await answerChallenges(ctx, steps, state, order)
 }
 
 /** Has the authority asked this organization to wait, and is that wait still running? */

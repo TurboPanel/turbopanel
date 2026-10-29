@@ -120,3 +120,17 @@ test('a 429 or 503 carries the wait the host asked for', async () => {
   )
   assertEquals([err.code, err.status, err.retryAfterMs], ['rate_limited', 429, 90_000])
 })
+
+test('the zone check is a cheap read and the TXT read-back strips quotes', async () => {
+  const api = recorder((call) =>
+    call.url.includes('type=TXT') ? ok([{ content: '"v1"' }, { content: 'v2' }]) : ok([])
+  )
+  const dns = createCloudflareDnsChallenge({ token: TOKEN, fetch: api.fetch })
+  await dns.checkZone!('z1')
+  assertEquals(api.calls[0]!.method, 'GET')
+  assertEquals(api.calls[0]!.url.endsWith('/zones/z1/dns_records?per_page=1'), true)
+  assertEquals(await dns.txtValues!({ zoneId: 'z1', name: '_acme-challenge.example.com' }), [
+    'v1',
+    'v2',
+  ])
+})

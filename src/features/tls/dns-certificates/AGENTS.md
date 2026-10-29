@@ -67,6 +67,18 @@ at once cannot run the same step twice (`busy`). The routes only start an order
 and report; the sweep carries it on (`sweep.ts`, wired into the Workers
 offline sweep and the Deno interval).
 
+## Checks before the authority is asked
+
+Before an order is opened the DNS host is asked a cheap read for every zone
+(`checkZone`), so a token that was rolled or narrowed stops the order with
+nothing spent at the authority. Before the challenges are answered the TXT
+values are read back through the host's own API (`txtValues`); the authority is
+not asked to validate a record that is not yet published (one of its few failed
+validations an hour). A host without these calls is answered after the usual
+short pause. Each sweep tick that did anything logs one summary line
+(`src/lib/sweep-report.ts`) and an alert line when three or more attempts failed
+and at least half of those tried.
+
 ## Calls to the authority
 
 Clients share what is safe to share inside one process (`src/lib/acme/session.ts`):

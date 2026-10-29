@@ -281,6 +281,22 @@ async function startOrder(ctx: DnsCertContext, row: OrderRow, state: DnsCertStat
   }
 }
 
+/**
+ * Before the authority is asked for anything: the DNS host still accepts the
+ * token for every zone of the certificate. A rolled or narrowed token stops the
+ * order here, with nothing spent at the authority and nothing to clean up.
+ */
+async function checkZonesReachable(
+  ctx: DnsCertContext,
+  row: OrderRow,
+  state: DnsCertState
+): Promise<void> {
+  await mapSequential(state.zones, async (zone) => {
+    const dns = await dnsFor(ctx, row, state, zone.id)
+    await dns.checkZone?.(zone.id)
+  })
+}
+
 /** Open an order and publish the challenge records. */
 export async function openOrder(
   ctx: DnsCertContext,
@@ -288,6 +304,7 @@ export async function openOrder(
   state: DnsCertState,
   renewal: { pendingKey: string } | null
 ): Promise<StepResult> {
+  await checkZonesReachable(ctx, row, state)
   const { account, order } = await startOrder(ctx, row, state)
   // One after the other: each answer hands the next request its nonce.
   const authorizations = await mapSequential(order.authorizations, (u) =>
@@ -313,14 +330,35 @@ export async function openOrder(
   return { kind: 'wait', state: { ...state, records, order: next } }
 }
 
-/** After a short pause, tell the authority the records are in place. */
+/**
+ * Is every challenge record visible through the DNS host's own API? A host that
+ * cannot say counts as visible. Asking the authority to validate a record that
+ * is not there yet would spend one of its few failed validations.
+ */
+async function recordsVisible(
+  ctx: DnsCertContext,
+  row: OrderRow,
+  state: DnsCertState,
+  order: OrderState
+): Promise<boolean> {
+  const seen = await mapSequential(order.challenges, async (c) => {
+    const dns = await dnsFor(ctx, row, state, c.zoneId)
+    if (!dns.txtValues) return true
+    return (await dns.txtValues({ zoneId: c.zoneId, name: c.name })).includes(c.value)
+  })
+  return seen.every(Boolean)
+}
+
+/** After a short pause, and once the records can be seen, tell the authority they are in place. */
 export async function answerChallenges(
   ctx: DnsCertContext,
+  row: OrderRow,
   state: DnsCertState,
   order: OrderState
 ): Promise<StepResult> {
   const waited = clock(ctx).getTime() - Date.parse(order.presentedAt ?? order.startedAt)
   if (waited < (ctx.presentGraceMs ?? PRESENT_GRACE_MS)) return { kind: 'wait', state }
+  if (!(await recordsVisible(ctx, row, state, order))) return { kind: 'wait', state }
   const client = await openClient(ctx, state, order)
   await mapSequential(order.challenges, (c) => client.answerChallenge(c.challengeUrl))
   const answeredAt = clock(ctx).toISOString()

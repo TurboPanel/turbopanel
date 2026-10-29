@@ -56,7 +56,24 @@ function fakeDns(silent = false) {
   /** Names that are a CNAME to another name. */
   const cnames = new Map<string, string>()
   let n = 0
+  /** Set to make the host refuse the token on a read, like a rolled token. */
+  const state = { refuseToken: false, checks: 0 }
   const provider: DnsChallengeProvider = {
+    checkZone: () => {
+      state.checks += 1
+      return state.refuseToken
+        ? Promise.reject(new TunnelProviderError('unauthorized', 'bad token', 401))
+        : Promise.resolve()
+    },
+    // A host that publishes nothing (`silent`) cannot be read back either.
+    ...(silent
+      ? {}
+      : {
+          txtValues: (input: { name: string }) =>
+            Promise.resolve(
+              [...records.values()].filter((r) => r.name === input.name).map((r) => r.value)
+            ),
+        }),
     lookupCname: (input) => Promise.resolve(cnames.get(input.name) ?? null),
     present: (input) => {
       n += 1
@@ -74,7 +91,7 @@ function fakeDns(silent = false) {
     const at = cnames.get(name) ?? name
     return [...records.values()].filter((r) => r.name === at).map((r) => r.value)
   }
-  return { provider, records, cnames, txt }
+  return { provider, records, cnames, txt, state }
 }
 
 type SetupOptions = {
@@ -598,6 +615,32 @@ async function issuedWithAdvice(
   })
   return { s, id: await issue(s, ['example.com']) }
 }
+
+test('a token the DNS host no longer accepts stops the order before the authority is asked', () =>
+  withDb(async (db) => {
+    const s = await setup(db)
+    s.dns.state.refuseToken = true
+    const id = ((await startDnsCertificate(s.ctx, s.input(['example.com']))) as { id: string }).id
+    assertEquals(await advanceDnsCertificate(s.ctx, id), 'failed')
+    assertEquals(s.ca.hits.signed + s.ca.hits.nonce + s.ca.hits.directory, 0)
+    assertStringIncludes(JSON.stringify((await rowOf(db, id)).metadata), 'cannot edit DNS')
+  }))
+
+test('the challenge is only answered once the record can be read back from the DNS host', () =>
+  withDb(async (db) => {
+    const s = await setup(db)
+    const real = s.dns.provider.txtValues!
+    let visible = false
+    s.dns.provider.txtValues = (input) => (visible ? real(input) : Promise.resolve([]))
+    const id = ((await startDnsCertificate(s.ctx, s.input(['example.com']))) as { id: string }).id
+    await advanceDnsCertificate(s.ctx, id)
+    tick(s.clock, PRESENT_GRACE_MS + 1000)
+    assertEquals(await advanceDnsCertificate(s.ctx, id), 'waiting')
+    // Not visible yet: the authority has been asked to validate nothing.
+    assert(!s.ca.orders[0]!.authz.some((a) => a.answered))
+    visible = true
+    assertEquals(await advanceDnsCertificate(s.ctx, id), 'issued')
+  }))
 
 /** Make a certificate due for renewal now. */
 async function makeDue(db: Db, id: string) {

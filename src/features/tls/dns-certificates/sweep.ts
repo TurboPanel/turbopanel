@@ -11,9 +11,15 @@ import { and, asc, eq, inArray, sql } from 'drizzle-orm'
 import { tls } from '../../../db/schema.ts'
 import { logWarn } from '../../../lib/logger.ts'
 import { forEachSequential } from '../../../lib/sequential.ts'
+import { reportSweep } from '../../../lib/sweep-report.ts'
 import { parseTlsOptions } from '../../../lib/tls/match.ts'
 import { clock, type DnsCertContext } from './context.ts'
-import { advanceDnsCertificate, maintainDnsCertificate, renewAtOf } from './issuance.ts'
+import {
+  type AdvanceOutcome,
+  advanceDnsCertificate,
+  maintainDnsCertificate,
+  renewAtOf,
+} from './issuance.ts'
 import { readDnsCertState } from './order-state.ts'
 
 /** Certificates stepped per tick; the rest wait for the next one. */
@@ -34,7 +40,16 @@ export const RENEWALS_OPEN_PER_ORG = 5
 
 export type RenewalLimits = { startsPerTick: number; openPerOrg: number }
 
-export type DnsCertSweepResult = { scanned: number; advanced: number; maintained: number }
+export type DnsCertSweepResult = {
+  scanned: number
+  advanced: number
+  maintained: number
+  /** What the steps came to this tick. */
+  issued: number
+  failed: number
+  /** Orders held back by a back-off or an organization pause. */
+  waiting: number
+}
 
 type Row = typeof tls.$inferSelect
 
@@ -137,15 +152,37 @@ export async function runDnsCertificateSweepTick(
   const wanted = fresh.filter((row) => wantsStep(row, now))
   const open = await openRenewals(ctx, options.organizationId)
   const due = limitRenewalStarts(wanted, open, limits).slice(0, DNS_CERT_SWEEP_BATCH)
-  let advanced = 0
+  const out: DnsCertSweepResult = {
+    scanned: rows.length,
+    advanced: 0,
+    maintained,
+    issued: 0,
+    failed: 0,
+    waiting: 0,
+  }
   await forEachSequential(due, async (row) => {
     try {
-      if ((await advanceDnsCertificate(ctx, row.id)) !== 'busy') advanced += 1
+      tally(out, await advanceDnsCertificate(ctx, row.id))
     } catch (err) {
+      out.failed += 1
       logWarn('tls', `dns certificate sweep failed for ${row.id}: ${String(err)}`)
     }
   })
-  return { scanned: rows.length, advanced, maintained }
+  reportSweep(
+    'tls',
+    'dns certificate sweep',
+    { advanced: out.advanced, issued: out.issued, failed: out.failed, waiting: out.waiting },
+    { tried: out.advanced + out.failed, failed: out.failed }
+  )
+  return out
+}
+
+function tally(out: DnsCertSweepResult, outcome: AdvanceOutcome): void {
+  if (outcome === 'busy') return
+  if (outcome === 'backoff') out.waiting += 1
+  else out.advanced += 1
+  if (outcome === 'issued') out.issued += 1
+  if (outcome === 'failed') out.failed += 1
 }
 
 async function reload(ctx: DnsCertContext, rows: readonly Row[]): Promise<Row[]> {
