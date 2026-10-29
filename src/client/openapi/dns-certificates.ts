@@ -42,7 +42,8 @@ export const dnsCertificateSchemas = {
       },
       staging: {
         type: 'boolean',
-        description: 'Ordered from the test directory: no browser trusts it.',
+        description:
+          'A Test Certificate, ordered from the test directory: no browser trusts it. It cannot be pinned to a site (`tls_pin_staging`).',
       },
       lastError: { type: 'string', nullable: true },
       warning: {

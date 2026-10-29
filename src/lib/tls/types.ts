@@ -90,9 +90,11 @@ export type TlsCandidate = {
   source?: TlsSource
 }
 
+/** Why a pinned library certificate cannot serve a hosting. */
+export type TlsPinError = 'pin_not_found' | 'pin_mismatch' | 'pin_not_ready' | 'pin_staging'
+
 export type ResolveTlsResult =
-  | { ok: true; tlsId: string | null; reason: 'pin' | 'internal' }
-  | { ok: false; error: 'pin_not_found' | 'pin_mismatch' | 'pin_not_ready' }
+  { ok: true; tlsId: string | null; reason: 'pin' | 'internal' } | { ok: false; error: TlsPinError }
 
 export const TLS_SOURCES: readonly TlsSource[] = [
   'upload',

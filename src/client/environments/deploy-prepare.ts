@@ -4306,7 +4306,9 @@ function tlsPinErrorResponse(
         )}, which its www setting adds. Upload one that lists every name, or set www to "Only ${hosting.hostnames.join(
           ', '
         )}".`
-      : undefined
+      : error === 'pin_staging'
+        ? 'The certificate on this hosting is a Test Certificate. Browsers do not trust it, so it cannot be used on a site. Order a normal certificate instead.'
+        : undefined
   return Response.json(
     {
       error: tlsPinErrorCode(error),

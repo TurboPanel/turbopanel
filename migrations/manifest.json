@@ -44,6 +44,12 @@
       "tag": "0006_peer_leaf_kind",
       "when": 1793203555856,
       "sha256": "163e17005143cd88deb53105f19f7ba8d5d790f5cdf74d85ea296101d6405772"
+    },
+    {
+      "idx": 7,
+      "tag": "0007_acme_account_secret",
+      "when": 1793242264502,
+      "sha256": "5e82a4dbc0cb18e8e9463abdbb1960f1dad2cd897b7421f83d9904246e599a3e"
     }
   ]
 }

@@ -13,6 +13,7 @@ const DEFAULT_RETRY_AFTER_MS = 3_600_000
 export type AcmeErrorCode =
   | 'rate_limited'
   | 'unauthorized'
+  | 'account_gone'
   | 'rejected_name'
   | 'caa'
   | 'dns'
@@ -38,6 +39,7 @@ type Problem = { type?: string; detail?: string; subproblems?: { detail?: string
 
 const PROBLEM_CODES: Record<string, AcmeErrorCode> = {
   rateLimited: 'rate_limited',
+  accountDoesNotExist: 'account_gone',
   unauthorized: 'unauthorized',
   rejectedIdentifier: 'rejected_name',
   caa: 'caa',
@@ -191,7 +193,12 @@ export class AcmeClient {
     } catch {
       problem = null
     }
-    const code = problemCode(problem)
+    const raw = problemCode(problem)
+    // An account the authority has switched off is refused as unauthorized.
+    const code =
+      raw === 'unauthorized' && /deactivat|not valid|revoked/i.test(problem?.detail ?? '')
+        ? 'account_gone'
+        : raw
     const detail = problem?.detail ?? `The certificate authority answered ${response.status}`
     const sub = problem?.subproblems?.find((p) => p.detail)?.detail
     const wait = code === 'rate_limited' ? (retryAfterMs(response) ?? DEFAULT_RETRY_AFTER_MS) : null

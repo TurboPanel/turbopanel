@@ -50,6 +50,13 @@
       "when": 1793203555856,
       "tag": "0006_peer_leaf_kind",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1793242264502,
+      "tag": "0007_acme_account_secret",
+      "breakpoints": true
     }
   ]
 }

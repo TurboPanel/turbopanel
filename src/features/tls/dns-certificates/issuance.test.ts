@@ -8,6 +8,7 @@ import { assert, assertEquals, assertNotEquals, assertStringIncludes } from '@st
 import { eq } from 'drizzle-orm'
 import { createDenoDb, endDbConnection } from '../../../db/connection.ts'
 import { badge, carrier, organization, secret, tls } from '../../../db/schema.ts'
+import { ACME_ACCOUNT_SECRET_PROVIDER } from './account.ts'
 import { getDatabaseUrl } from '../../../db/url.ts'
 import { createFakeCa } from '../../../lib/acme/fake-ca.test.support.ts'
 import { issueLeafCertificate, mintOrganizationCa } from '../../../lib/tls/self-signed.ts'
@@ -445,4 +446,98 @@ test('the authority’s renewal window sets the renewal time, never later than t
     tick(s.clock, 7 * 3_600_000)
     await maintainDnsCertificate(s.ctx, id)
     assertEquals(s.ca.renewalAsked.length, 2)
+  }))
+
+async function accountRows(db: Db, organizationId: string) {
+  const rows = await db.select().from(secret).where(eq(secret.organizationId, organizationId))
+  return rows.filter((r) => r.provider === ACME_ACCOUNT_SECRET_PROVIDER)
+}
+
+async function issue(s: Awaited<ReturnType<typeof setup>>, names: string[], staging = true) {
+  const started = await startDnsCertificate(s.ctx, { ...s.input(names), staging })
+  const id = (started as { id: string }).id
+  await advanceDnsCertificate(s.ctx, id)
+  tick(s.clock, PRESENT_GRACE_MS + 1000)
+  assertEquals(await advanceDnsCertificate(s.ctx, id), 'issued')
+  return id
+}
+
+test('two first orders at once end with one account for the organization, at the authority and in the database', () =>
+  withDb(async (db) => {
+    const s = await setup(db)
+    const a = ((await startDnsCertificate(s.ctx, s.input(['a.example.com']))) as { id: string }).id
+    const b = ((await startDnsCertificate(s.ctx, s.input(['b.example.com']))) as { id: string }).id
+    const outcomes = await Promise.all([
+      advanceDnsCertificate(s.ctx, a),
+      advanceDnsCertificate(s.ctx, b),
+    ])
+    assertEquals(outcomes, ['waiting', 'waiting'])
+    const rows = await accountRows(db, s.organizationId)
+    assertEquals(
+      rows.map((r) => r.name),
+      ['staging']
+    )
+    assert(isSealedEnvelope(rows[0]!.secretEnvelope))
+    assertEquals(s.ca.accounts.size, 1)
+    assertEquals(
+      (rows[0]!.metadata as { accountUrl: string }).accountUrl,
+      [...s.ca.accounts.keys()][0]
+    )
+  }))
+
+test('later orders and renewals use the same account, and staging and production never share one', () =>
+  withDb(async (db) => {
+    const s = await setup(db)
+    const first = await issue(s, ['a.example.com'])
+    const second = await issue(s, ['b.example.com'])
+    assertEquals(s.ca.accounts.size, 1)
+    assertEquals((await accountRows(db, s.organizationId)).length, 1)
+
+    // A renewal of the first certificate orders on the same account.
+    await db
+      .update(tls)
+      .set({ notAfter: new Date(s.clock.now.getTime() + DAY_MS).toISOString() })
+      .where(eq(tls.id, first))
+    const only = { organizationId: s.organizationId }
+    await runDnsCertificateSweepTick(s.ctx, only)
+    tick(s.clock, PRESENT_GRACE_MS + 1000)
+    await runDnsCertificateSweepTick(s.ctx, only)
+    assertEquals(s.ca.accounts.size, 1)
+    assertNotEquals(second, first)
+
+    // The production directory has its own account.
+    await issue(s, ['c.example.com'], false)
+    assertEquals(s.ca.accounts.size, 2)
+    assertEquals((await accountRows(db, s.organizationId)).map((r) => r.name).sort(), [
+      'production',
+      'staging',
+    ])
+  }))
+
+test('an account the authority has switched off is registered again once, and the order goes on', () =>
+  withDb(async (db) => {
+    const s = await setup(db)
+    await issue(s, ['a.example.com'])
+    const before = (await accountRows(db, s.organizationId))[0]!
+    s.ca.deactivateAccounts()
+    const second = await issue(s, ['b.example.com'])
+    const after = (await accountRows(db, s.organizationId))[0]!
+    assertEquals((await rowOf(db, second)).status, 'ready')
+    assertEquals(s.ca.accounts.size, 2)
+    assertNotEquals(after.secretEnvelope, before.secretEnvelope)
+    assertNotEquals(
+      (after.metadata as { accountUrl: string }).accountUrl,
+      (before.metadata as { accountUrl: string }).accountUrl
+    )
+  }))
+
+test('an account that is refused even after registering again fails the order with a clear reason', () =>
+  withDb(async (db) => {
+    const s = await setup(db, { ca: { alwaysDeactivated: true } })
+    // The first order registers the account (no kid is used yet) and then trips on its first signed request.
+    const id = ((await startDnsCertificate(s.ctx, s.input(['a.example.com']))) as { id: string }).id
+    assertEquals(await advanceDnsCertificate(s.ctx, id), 'failed')
+    const note = ((await rowOf(db, id)).metadata as { acme: { lastError: string } }).acme.lastError
+    assertStringIncludes(note, "no longer accepts this organization's account")
+    assertEquals(s.dns.records.size, 0)
   }))

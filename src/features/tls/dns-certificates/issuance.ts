@@ -134,10 +134,11 @@ function findInFlight(rows: TlsRow[], input: StartInput): TlsRow | undefined {
   )
 }
 
-function rowName(names: readonly string[]): string {
+function rowName(names: readonly string[], staging: boolean): string {
   const first = (names[0] ?? 'certificate').replace(/^\*\./, '')
   const label = names.some((n) => n.startsWith('*.')) ? `${first} wildcard` : first
-  return `DNS ${label}`.replace(/[^A-Za-z0-9 ._-]/g, '-').slice(0, 120)
+  const prefix = staging ? 'Test Certificate DNS' : 'DNS'
+  return `${prefix} ${label}`.replace(/[^A-Za-z0-9 ._-]/g, '-').slice(0, 120)
 }
 
 function emptyState(input: StartInput): DnsCertState {
@@ -187,7 +188,7 @@ async function insertRow(ctx: DnsCertContext, input: StartInput): Promise<string
     .insert(tls)
     .values({
       organizationId: input.organizationId,
-      name: rowName(input.names),
+      name: rowName(input.names, input.staging),
       source: 'upload',
       certificatePem: null,
       privateKeyPem: sealedKey,

@@ -19,6 +19,8 @@ export function plainFailure(err: unknown): string {
     switch (err.code) {
       case 'rate_limited':
         return "Let's Encrypt asked us to wait before trying again. It will be tried again later."
+      case 'account_gone':
+        return "Let's Encrypt no longer accepts this organization's account, even after it was registered again once. It will be tried again later."
       case 'caa':
         return "A CAA record on this domain does not allow Let's Encrypt to issue certificates."
       case 'dns':

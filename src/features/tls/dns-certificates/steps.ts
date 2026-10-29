@@ -13,11 +13,12 @@ import { tls } from '../../../db/schema.ts'
 import { AcmeClient, AcmeError, type AcmeAuthorization } from '../../../lib/acme/client.ts'
 import { buildCertificateRequest, loadCertificateKey } from '../../../lib/acme/csr.ts'
 import { acmeDirectoryUrl } from '../../../lib/acme/directories.ts'
-import { generateAccountKeyPem, importAccountKey } from '../../../lib/acme/jws.ts'
-import { decryptSecret, encryptSecret } from '../../../lib/secrets/data-encryption.ts'
+import { importAccountKey } from '../../../lib/acme/jws.ts'
+import { decryptSecret } from '../../../lib/secrets/data-encryption.ts'
 import { TunnelProviderError } from '../../tunnels/errors.ts'
 import { findCarrier } from '../../tunnels/records.ts'
 import type { TunnelProvider } from '../../tunnels/vocabulary.ts'
+import { orgAccount } from './account.ts'
 import { openDnsToken } from './token.ts'
 import { clock, type DnsCertContext, PRESENT_GRACE_MS } from './context.ts'
 import {
@@ -226,6 +227,20 @@ export async function cleanRecords(
   return { ...state, records: left.filter((r): r is PublishedRecord => r !== null) }
 }
 
+/** The organization's account and a new order on it; an account the authority has switched off is replaced once. */
+async function startOrder(ctx: DnsCertContext, row: OrderRow, state: DnsCertState) {
+  const attempt = async (replace: boolean) => {
+    const account = await orgAccount(ctx, row.organizationId, state.staging, { replace })
+    return { account, order: await account.client.newOrder(row.names) }
+  }
+  try {
+    return await attempt(false)
+  } catch (err) {
+    if (!(err instanceof AcmeError) || err.code !== 'account_gone') throw err
+    return await attempt(true)
+  }
+}
+
 /** Open an order and publish the challenge records. */
 export async function openOrder(
   ctx: DnsCertContext,
@@ -233,23 +248,16 @@ export async function openOrder(
   state: DnsCertState,
   renewal: { pendingKey: string } | null
 ): Promise<StepResult> {
-  const accountPem = await generateAccountKeyPem()
-  const client = new AcmeClient({
-    directoryUrl: acmeDirectoryUrl(state.staging),
-    key: await importAccountKey(accountPem),
-    fetch: ctx.acmeFetch,
-  })
-  const accountUrl = await client.ensureAccount()
-  const order = await client.newOrder(row.names)
+  const { account, order } = await startOrder(ctx, row, state)
   const authorizations = await Promise.all(
-    order.authorizations.map((u) => client.getAuthorization(u))
+    order.authorizations.map((u) => account.client.getAuthorization(u))
   )
-  const pending = await Promise.all(authorizations.map((a) => pendingChallenge(client, a)))
+  const pending = await Promise.all(authorizations.map((a) => pendingChallenge(account.client, a)))
   const published = await publishAll(ctx, row, state, pending)
   const at = clock(ctx).toISOString()
   const next: OrderState = {
-    accountKey: await encryptSecret(ctx.secrets, accountPem),
-    accountUrl,
+    accountKey: account.sealedKey,
+    accountUrl: account.accountUrl,
     orderUrl: order.url,
     finalizeUrl: order.finalize,
     challenges: published.challenges,

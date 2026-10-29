@@ -1,7 +1,7 @@
 import { eq } from 'drizzle-orm'
 import type { Context } from 'hono'
 import type { Db } from '../../db/connection.ts'
-import { hosting, ip } from '../../db/schema.ts'
+import { hosting, ip, tls } from '../../db/schema.ts'
 import {
   HOSTING_COMPOSE_ADOPTED_METADATA_KEY,
   HOSTING_COMPOSE_OWNED_METADATA_KEY,
@@ -63,9 +63,32 @@ export async function parseOptionalTlsId(
     if (tlsOrgId !== organizationId) {
       return { kind: 'error', response: c.json({ error: 'Not found' }, 404) }
     }
+    if (await isStagingCertificate(db, tlsIdRaw)) {
+      return {
+        kind: 'error',
+        response: c.json(
+          {
+            error: 'tls_pin_staging',
+            message:
+              'This is a Test Certificate. Browsers do not trust it, so it cannot be used on a site. Order a normal certificate instead.',
+          },
+          400
+        ),
+      }
+    }
     return { kind: 'value', value: tlsIdRaw }
   }
   return { kind: 'error', response: c.json({ error: 'Invalid request' }, 400) }
+}
+
+/** A certificate ordered from the authority's test directory: no browser trusts it. */
+async function isStagingCertificate(db: Db, tlsId: string): Promise<boolean> {
+  const [row] = await db
+    .select({ metadata: tls.metadata })
+    .from(tls)
+    .where(eq(tls.id, tlsId))
+    .limit(1)
+  return (row?.metadata as { acme?: { staging?: unknown } } | null)?.acme?.staging === true
 }
 
 export type OptionalIpIdResult =

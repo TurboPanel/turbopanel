@@ -20,6 +20,7 @@ import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.su
 import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from '../authn/crypto.ts'
 import { createSession } from '../authn/session-store.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
+import { parseOptionalTlsId } from '../hostings/routes-helpers.ts'
 import { toPublicTlsRow } from '../tls/routes-helpers.ts'
 import { registerOrganizationDnsCertificateRoutes } from './dns-certificate-routes.ts'
 
@@ -344,6 +345,16 @@ test('an order is started, carried on, finished, reused, and never shows anythin
     assert(
       !shown.includes('accountKey') && !shown.includes('dnsCert') && !shown.includes('records')
     )
+
+    // A Test Certificate is named so, and cannot be pinned to a site.
+    assertStringIncludes(row!.name ?? '', 'Test Certificate')
+    const jsonContext = { json: (b: unknown, status?: number) => Response.json(b, { status }) }
+    const pinned = await parseOptionalTlsId(jsonContext as never, f.db, f.orgA, created.id)
+    assertEquals(pinned.kind, 'error')
+    if (pinned.kind === 'error') {
+      assertEquals(pinned.response.status, 400)
+      assertEquals(((await pinned.response.json()) as { error: string }).error, 'tls_pin_staging')
+    }
 
     // Retry is for a certificate that gave up.
     assertEquals(

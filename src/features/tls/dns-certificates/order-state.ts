@@ -21,7 +21,7 @@ export type ChallengeState = {
 }
 
 export type OrderState = {
-  /** Sealed PKCS#8 PEM of the one-order account key. */
+  /** The organization's account key, sealed, kept so an open order can finish on its own. */
   accountKey: string
   accountUrl: string
   orderUrl: string

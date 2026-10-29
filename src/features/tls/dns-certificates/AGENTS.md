@@ -15,7 +15,7 @@ the first certificate arrives. The public marker is `metadata.acme`
 (`managedBy: 'panel'`, `challengeType: 'dns-01'`, `stage`, `staging`,
 `lastError`, `warning`, `renewAt`). Everything private lives under
 `metadata.dnsCert` (`order-state.ts`): the carrier and zones, the open order
-(sealed one-order account key, the authority's addresses, the challenge
+(a sealed copy of the account key, the authority's addresses, the challenge
 records), the list of records made, `renewAt`, back-off. `toPublicTlsRow`
 never copies that key. No table and no migration: a step reads the row, does a
 few requests and writes it back.
@@ -34,6 +34,27 @@ both allowed in one order (two challenges, two TXT values at the same name).
 Nothing turns a name into a wildcard on its own. An existing certificate that
 covers the names (an exact one, or a wildcard the person ordered) is reused;
 an order already running for the same names is returned instead of a second.
+
+## The account
+
+One certificate-authority account per organization and per directory (staging
+and production never share one), made on the first order and used by every
+later order and every renewal (`account.ts`). The key is sealed in `secret`
+(`provider = 'acme_account'`, `name` the directory); the account address sits
+in the row's `metadata`. A unique index on (organization, name) for these rows
+makes the first insert race-safe: two first orders at once read back the same
+row and so the same key, and registering again with a known key returns the
+account the authority already made. If the authority stops accepting the
+account (deactivated or unknown) the key is replaced and registered again
+once; if that is refused too the order fails with a plain reason.
+
+## Test certificates
+
+An order with `staging: true` uses the authority's test directory. Its
+library row is named `Test Certificate …` and carries `acme.staging`, so a
+screen can mark it. It can be listed and deleted but never pinned to a site:
+`parseOptionalTlsId` refuses it when a hosting is saved (`tls_pin_staging`) and
+`resolveTlsForHosting` refuses it at deploy (`pin_staging`).
 
 ## One order, in small steps (`steps.ts`, `issuance.ts`)
 

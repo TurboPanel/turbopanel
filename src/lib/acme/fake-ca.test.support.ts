@@ -34,6 +34,8 @@ export type FakeCaOptions = {
   processingPolls?: number
   /** Makes the certificate for an order; the default is a self-signed one. */
   issueCertificate?: (names: string[]) => Promise<string>
+  /** Every account refuses its requests as deactivated. */
+  alwaysDeactivated?: boolean
   /** Offers renewal information; the window is what it suggests for any certificate. */
   renewalWindow?: { start: Date; end: Date }
 }
@@ -48,6 +50,8 @@ export type FakeCa = {
   issued: string[][]
   /** Renewal-information requests received (the identifier of each). */
   renewalAsked: string[]
+  /** From now on every request signed by an account that exists is refused as deactivated. */
+  deactivateAccounts: () => void
 }
 
 function json(body: unknown, init: { status?: number; headers?: Record<string, string> } = {}) {
@@ -113,6 +117,7 @@ export function createFakeCa(options: FakeCaOptions): FakeCa {
   const log: FakeCa['log'] = []
   const issued: string[][] = []
   const renewalAsked: string[] = []
+  const deactivated = new Set<string>()
   const nonces = new Set<string>()
   let stale = options.staleNonceOnce === true
   let counter = 0
@@ -142,6 +147,9 @@ export function createFakeCa(options: FakeCaOptions): FakeCa {
     if (header.url !== url) return problem('malformed', 'wrong url', 400)
     const jwk = header.jwk ?? (header.kid ? accounts.get(header.kid) : undefined)
     if (!jwk) return problem('accountDoesNotExist', 'unknown account', 400)
+    if (header.kid && (options.alwaysDeactivated || deactivated.has(header.kid))) {
+      return problem('unauthorized', "Account is not valid, has status 'deactivated'", 403)
+    }
     const key = await crypto.subtle.importKey(
       'jwk',
       jwk,
@@ -220,6 +228,9 @@ export function createFakeCa(options: FakeCaOptions): FakeCa {
     if (signed instanceof Response) return signed
     const headers = { 'Replay-Nonce': freshNonce() }
     if (path === '/acct') {
+      // A key the authority already knows gets its account back, as the protocol says.
+      const known = [...accounts].find(([, k]) => k.x === signed.jwk.x && k.y === signed.jwk.y)
+      if (known) return json({ status: 'valid' }, { headers: { ...headers, Location: known[0] } })
       const id = `${BASE}/acct/${next('a')}`
       accounts.set(id, signed.jwk)
       return json({ status: 'valid' }, { status: 201, headers: { ...headers, Location: id } })
@@ -310,5 +321,15 @@ export function createFakeCa(options: FakeCaOptions): FakeCa {
     return await handlePost(url, String(init?.body ?? ''))
   }) as typeof fetch
 
-  return { fetch: fakeFetch, accounts, orders, log, issued, renewalAsked }
+  return {
+    fetch: fakeFetch,
+    accounts,
+    orders,
+    log,
+    issued,
+    renewalAsked,
+    deactivateAccounts: () => {
+      for (const id of accounts.keys()) deactivated.add(id)
+    },
+  }
 }
