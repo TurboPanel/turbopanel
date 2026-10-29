@@ -34,6 +34,8 @@ export type OrderState = {
   answeredAt: string | null
   /** The request for the certificate was sent. */
   finalizedAt: string | null
+  /** Where to download the certificate, when the answer to the request already named it. */
+  certificateUrl?: string | null
   /** Renewals only: the sealed new key, swapped in with the new certificate. */
   pendingKey: string | null
   renewal: boolean
@@ -116,6 +118,7 @@ function readOrder(value: unknown): OrderState | null {
     presentedAt: text(r?.presentedAt),
     answeredAt: text(r?.answeredAt),
     finalizedAt: text(r?.finalizedAt),
+    certificateUrl: text(r?.certificateUrl),
     pendingKey: text(r?.pendingKey),
     renewal: r?.renewal === true,
   }

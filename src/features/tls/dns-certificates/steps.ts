@@ -15,6 +15,7 @@ import { buildCertificateRequest, loadCertificateKey } from '../../../lib/acme/c
 import { acmeDirectoryUrl } from '../../../lib/acme/directories.ts'
 import { importAccountKey } from '../../../lib/acme/jws.ts'
 import { decryptSecret } from '../../../lib/secrets/data-encryption.ts'
+import { mapSequential } from '../../../lib/sequential.ts'
 import { TunnelProviderError } from '../../tunnels/errors.ts'
 import { findCarrier } from '../../tunnels/records.ts'
 import type { TunnelProvider } from '../../tunnels/vocabulary.ts'
@@ -263,8 +264,9 @@ export async function openOrder(
   renewal: { pendingKey: string } | null
 ): Promise<StepResult> {
   const { account, order } = await startOrder(ctx, row, state)
-  const authorizations = await Promise.all(
-    order.authorizations.map((u) => account.client.getAuthorization(u))
+  // One after the other: each answer hands the next request its nonce.
+  const authorizations = await mapSequential(order.authorizations, (u) =>
+    account.client.getAuthorization(u)
   )
   const pending = await Promise.all(authorizations.map((a) => pendingChallenge(account.client, a)))
   const published = await publishAll(ctx, row, state, pending)
@@ -295,7 +297,7 @@ export async function answerChallenges(
   const waited = clock(ctx).getTime() - Date.parse(order.presentedAt ?? order.startedAt)
   if (waited < (ctx.presentGraceMs ?? PRESENT_GRACE_MS)) return { kind: 'wait', state }
   const client = await openClient(ctx, state, order)
-  await Promise.all(order.challenges.map((c) => client.answerChallenge(c.challengeUrl)))
+  await mapSequential(order.challenges, (c) => client.answerChallenge(c.challengeUrl))
   const answeredAt = clock(ctx).toISOString()
   return { kind: 'continue', state: { ...state, order: { ...order, answeredAt } } }
 }
@@ -330,7 +332,25 @@ async function sendRequest(
   return await client.finalize(order.finalizeUrl, csr)
 }
 
-/** Check the authorizations; when all are valid, send the request for the certificate. */
+/** The reason the authority gave for an invalid order: the first authorization that failed. */
+async function invalidOrderError(
+  client: AcmeClient,
+  order: OrderState,
+  current: { error?: { detail?: string } }
+): Promise<AcmeError> {
+  const urls = [...new Set(order.challenges.map((c) => c.authzUrl))]
+  const authorizations = await mapSequential(urls, (u) => client.getAuthorization(u))
+  return (
+    invalidReason(authorizations) ??
+    new AcmeError('server', current.error?.detail ?? 'The order was not completed')
+  )
+}
+
+/**
+ * Ask about the order (one request); once the authority calls it ready, send
+ * the request for the certificate. The authorizations are only read to find
+ * out why when the order went invalid.
+ */
 export async function checkValidation(
   ctx: DnsCertContext,
   row: OrderRow,
@@ -338,21 +358,17 @@ export async function checkValidation(
   order: OrderState
 ): Promise<StepResult> {
   const client = await openClient(ctx, state, order)
-  const urls = [...new Set(order.challenges.map((c) => c.authzUrl))]
-  const authorizations = await Promise.all(urls.map((u) => client.getAuthorization(u)))
-  const invalid = invalidReason(authorizations)
-  if (invalid) throw invalid
-  if (authorizations.some((a) => a.status !== 'valid')) return { kind: 'wait', state }
   const current = await client.getOrder(order.orderUrl)
-  if (current.status === 'invalid') {
-    throw new AcmeError('server', current.error?.detail ?? 'The order was not completed')
-  }
+  if (current.status === 'invalid') throw await invalidOrderError(client, order, current)
   if (current.status !== 'ready') return { kind: 'wait', state }
   const sent = await sendRequest(ctx, row, client, order)
   const finalizedAt = clock(ctx).toISOString()
   return {
     kind: sent.status === 'valid' ? 'continue' : 'wait',
-    state: { ...state, order: { ...order, finalizedAt } },
+    state: {
+      ...state,
+      order: { ...order, finalizedAt, certificateUrl: sent.certificate ?? null },
+    },
   }
 }
 
@@ -363,11 +379,16 @@ export async function collectCertificate(
   order: OrderState
 ): Promise<StepResult> {
   const client = await openClient(ctx, state, order)
-  const current = await client.getOrder(order.orderUrl)
-  if (current.status === 'invalid') {
-    throw new AcmeError('server', current.error?.detail ?? 'The order was not completed')
+  // The answer to the request for the certificate may already have named it.
+  let url = order.certificateUrl ?? null
+  if (!url) {
+    const current = await client.getOrder(order.orderUrl)
+    if (current.status === 'invalid') {
+      throw new AcmeError('server', current.error?.detail ?? 'The order was not completed')
+    }
+    if (current.status !== 'valid' || !current.certificate) return { kind: 'wait', state }
+    url = current.certificate
   }
-  if (current.status !== 'valid' || !current.certificate) return { kind: 'wait', state }
-  const chainPem = await client.downloadCertificate(current.certificate)
+  const chainPem = await client.downloadCertificate(url)
   return { kind: 'issued', state, chainPem }
 }

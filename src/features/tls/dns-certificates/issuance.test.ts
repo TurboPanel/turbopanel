@@ -297,6 +297,20 @@ test('a wait asked for in the middle of an order keeps the order and its records
     assertEquals(s.dns.records.size, 0)
   }))
 
+test('an order for one name costs the authority about eight calls, and the next one fewer', () =>
+  withDb(async (db) => {
+    const s = await setup(db)
+    await issue(s, ['example.com'])
+    const first = { ...s.ca.hits }
+    // Directory and nonce once; account, order, authorization, answer, poll, request, download.
+    assertEquals([first.directory, first.nonce, first.signed], [1, 1, 7])
+    assert(first.directory + first.nonce + first.signed <= 9)
+    await issue(s, ['www.example.com'])
+    // The account exists and the directory and the spare nonce are reused: only the signed requests.
+    assertEquals([s.ca.hits.directory, s.ca.hits.nonce], [1, 1])
+    assertEquals(s.ca.hits.signed - first.signed, 6)
+  }))
+
 test('a renewal signs with a new key, swaps the pair at the end and tells the sites', () =>
   withDb(async (db) => {
     const s = await setup(db, { processing: 1 })

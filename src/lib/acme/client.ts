@@ -7,6 +7,7 @@
 import { base64urlEncode } from '../encoding/base64url.ts'
 import { isThrottleStatus, parseRetryAfterMs, throttleWaitMs } from '../http/retry-after.ts'
 import { type AcmeAccountKey, dnsChallengeValue, signJws } from './jws.ts'
+import { type AcmeSession, sessionFor } from './session.ts'
 
 const REQUEST_TIMEOUT_MS = 20_000
 const DEFAULT_RETRY_AFTER_MS = 3_600_000
@@ -116,62 +117,73 @@ export type AcmeClientOptions = {
   fetch?: typeof fetch
 }
 
+/** A plain function so the Workers runtime accepts the global `fetch`. */
+const networkFetch: typeof fetch = (input, init) => globalThis.fetch(input, init)
+
+async function sendTimed(send: typeof fetch, url: string, init: RequestInit): Promise<Response> {
+  try {
+    return await send(url, { ...init, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) })
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : 'request failed'
+    throw new AcmeError('unreachable', `The certificate authority could not be reached: ${reason}`)
+  }
+}
+
+/** The authority's directory, from the session's cache while it is fresh. */
+async function loadDirectory(
+  directoryUrl: string,
+  send: typeof fetch,
+  session: AcmeSession
+): Promise<AcmeDirectory> {
+  const cached = session.directory(directoryUrl)
+  if (cached) return cached
+  const response = await sendTimed(send, directoryUrl, { method: 'GET' })
+  if (!response.ok) throw statusError(response)
+  const body = (await response.json()) as Partial<AcmeDirectory>
+  if (!body.newNonce || !body.newAccount || !body.newOrder) {
+    throw new AcmeError('server', 'The certificate authority sent an incomplete directory')
+  }
+  const directory: AcmeDirectory = {
+    newNonce: body.newNonce,
+    newAccount: body.newAccount,
+    newOrder: body.newOrder,
+    ...(body.renewalInfo ? { renewalInfo: body.renewalInfo } : {}),
+  }
+  session.rememberDirectory(directoryUrl, directory)
+  return directory
+}
+
 export class AcmeClient {
   readonly #directoryUrl: string
   readonly #key: AcmeAccountKey
   readonly #fetch: typeof fetch
-  #directory: AcmeDirectory | null = null
-  #nonce: string | null = null
+  readonly #session: AcmeSession
   #accountUrl: string | null
 
   constructor(options: AcmeClientOptions) {
     this.#directoryUrl = options.directoryUrl
     this.#key = options.key
     this.#accountUrl = options.accountUrl ?? null
-    // Called as a plain function so the Workers runtime accepts it.
-    this.#fetch = options.fetch ?? ((input, init) => globalThis.fetch(input, init))
+    this.#fetch = options.fetch ?? networkFetch
+    this.#session = sessionFor(options.fetch)
   }
 
   get accountUrl(): string | null {
     return this.#accountUrl
   }
 
-  async #request(url: string, init: RequestInit): Promise<Response> {
-    try {
-      const send = this.#fetch
-      return await send(url, { ...init, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) })
-    } catch (err) {
-      const reason = err instanceof Error ? err.message : 'request failed'
-      throw new AcmeError(
-        'unreachable',
-        `The certificate authority could not be reached: ${reason}`
-      )
-    }
+  #request(url: string, init: RequestInit): Promise<Response> {
+    return sendTimed(this.#fetch, url, init)
   }
 
-  async #loadDirectory(): Promise<AcmeDirectory> {
-    if (this.#directory) return this.#directory
-    const response = await this.#request(this.#directoryUrl, { method: 'GET' })
-    if (!response.ok) throw statusError(response)
-    const body = (await response.json()) as Partial<AcmeDirectory>
-    if (!body.newNonce || !body.newAccount || !body.newOrder) {
-      throw new AcmeError('server', 'The certificate authority sent an incomplete directory')
-    }
-    this.#directory = {
-      newNonce: body.newNonce,
-      newAccount: body.newAccount,
-      newOrder: body.newOrder,
-      ...(body.renewalInfo ? { renewalInfo: body.renewalInfo } : {}),
-    }
-    return this.#directory
+  #loadDirectory(): Promise<AcmeDirectory> {
+    return loadDirectory(this.#directoryUrl, this.#fetch, this.#session)
   }
 
+  /** A spare nonce from an earlier answer, or a fresh one from the authority. */
   async #takeNonce(): Promise<string> {
-    if (this.#nonce) {
-      const nonce = this.#nonce
-      this.#nonce = null
-      return nonce
-    }
+    const spare = this.#session.takeNonce(this.#directoryUrl)
+    if (spare) return spare
     const directory = await this.#loadDirectory()
     const response = await this.#request(directory.newNonce, { method: 'HEAD' })
     if (!response.ok) throw statusError(response)
@@ -193,7 +205,8 @@ export class AcmeClient {
       headers: { 'Content-Type': 'application/jose+json', Accept: 'application/json' },
       body,
     })
-    this.#nonce = response.headers.get('replay-nonce')
+    // Every answer carries the next nonce, errors included.
+    this.#session.rememberNonce(this.#directoryUrl, response.headers.get('replay-nonce'))
     return response
   }
 
@@ -333,16 +346,13 @@ export async function fetchRenewalInfo(options: {
   certId: string
   fetch?: typeof fetch
 }): Promise<RenewalInfo> {
-  const send = options.fetch ?? ((input, init) => globalThis.fetch(input, init))
+  const send = options.fetch ?? networkFetch
   try {
-    const directory = await send(options.directoryUrl, {
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    })
-    if (!directory.ok) return { ...NO_ANSWER, status: directory.status }
-    const base = ((await directory.json()) as Partial<AcmeDirectory>).renewalInfo
+    const directory = await loadDirectory(options.directoryUrl, send, sessionFor(options.fetch))
     // An authority without the service will not start offering it today.
-    if (!base) return { window: null, answered: true, retryAfterMs: null, status: null }
-    const response = await send(`${base.replace(/\/$/, '')}/${options.certId}`, {
+    if (!directory.renewalInfo)
+      return { window: null, answered: true, retryAfterMs: null, status: null }
+    const response = await send(`${directory.renewalInfo.replace(/\/$/, '')}/${options.certId}`, {
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     })
     const retryAfterMs = parseRetryAfterMs(response.headers.get('retry-after'))
@@ -353,7 +363,10 @@ export async function fetchRenewalInfo(options: {
     }
     const window = readWindow((await response.json()) as Parameters<typeof readWindow>[0])
     return { window, answered: window !== null, retryAfterMs, status: response.status }
-  } catch {
+  } catch (err) {
+    if (err instanceof AcmeError) {
+      return { ...NO_ANSWER, retryAfterMs: err.retryAfterMs, status: err.status }
+    }
     return NO_ANSWER
   }
 }

@@ -3,7 +3,7 @@
  * authority that checks every signature, nonce and the request itself.
  */
 import { assert, assertEquals, assertRejects } from '@std/assert'
-import { AcmeClient, AcmeError } from './client.ts'
+import { AcmeClient, AcmeError, fetchRenewalInfo } from './client.ts'
 import { buildCertificateRequest, generateCertificateKey } from './csr.ts'
 import {
   ACME_PRODUCTION_DIRECTORY,
@@ -171,4 +171,27 @@ test('a plain server error carries no wait', async () => {
   await acme.ensureAccount()
   const err = await assertRejects(() => acme.newOrder(['example.com']), AcmeError)
   assertEquals([err.status, err.retryAfterMs], [500, null])
+})
+
+test('clients of one authority share the directory and pass the nonce on', async () => {
+  const ca = createFakeCa({ txt: () => [], renewalWindow: { start: new Date(), end: new Date() } })
+  const key = await importAccountKey(await generateAccountKeyPem())
+  const open = (accountUrl?: string) =>
+    new AcmeClient({ directoryUrl: FAKE_CA_DIRECTORY, key, accountUrl, fetch: ca.fetch })
+  const account = await open().ensureAccount()
+  // A second client (a later step) needs neither the directory nor a new nonce.
+  await open(account).newOrder(['example.com'])
+  await open(account).newOrder(['www.example.com'])
+  assertEquals([ca.hits.directory, ca.hits.nonce, ca.hits.signed], [1, 1, 3])
+  // Asking for renewal information reuses the cached directory too.
+  await fetchRenewalInfo({ directoryUrl: FAKE_CA_DIRECTORY, certId: 'a.b', fetch: ca.fetch })
+  assertEquals([ca.hits.directory, ca.hits.renewal], [1, 1])
+})
+
+test('a different fetch never sees another one’s cache', async () => {
+  const one = createFakeCa({ txt: () => [] })
+  const two = createFakeCa({ txt: () => [] })
+  await (await client(one)).ensureAccount()
+  await (await client(two)).ensureAccount()
+  assertEquals([one.hits.directory, two.hits.directory], [1, 1])
 })

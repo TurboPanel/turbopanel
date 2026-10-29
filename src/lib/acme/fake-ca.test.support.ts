@@ -221,6 +221,8 @@ export function createFakeCa(options: FakeCaOptions): FakeCa {
     const states = await Promise.all(order.authz.map((a) => authzBody(a, jwk)))
     const allValid = states.every((s) => s.status === 'valid')
     let status = allValid ? 'ready' : 'pending'
+    // As the protocol says: one failed authorization makes the whole order invalid.
+    if (states.some((a) => a.status === 'invalid')) status = 'invalid'
     if (order.finalized) {
       order.polls += 1
       status = order.polls > (options.processingPolls ?? 0) ? 'valid' : 'processing'

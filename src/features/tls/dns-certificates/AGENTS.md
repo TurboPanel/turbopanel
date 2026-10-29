@@ -67,6 +67,21 @@ at once cannot run the same step twice (`busy`). The routes only start an order
 and report; the sweep carries it on (`sweep.ts`, wired into the Workers
 offline sweep and the Deno interval).
 
+## Calls to the authority
+
+Clients share what is safe to share inside one process (`src/lib/acme/session.ts`):
+the directory for an hour and spare `Replay-Nonce` values for five minutes,
+keyed by the `fetch` in use. It is only a cache: no keys, no account addresses,
+no clients, and an isolate that starts empty just asks. A stale nonce is
+answered with `badNonce` and the client retries once. The requests of one step
+go one after the other so each answer hands the next its nonce. The order is
+polled first (one request); the authorizations are read only to learn why an
+order went invalid, and when the answer to the request for the certificate
+already names it (`order.certificateUrl`) it is downloaded without another poll.
+An order for one name costs about eight calls (directory and nonce once, then
+account, order, authorization, answer, poll, request, download) and the next one
+six.
+
 ## Records are removed by id, never by name
 
 A zone may hold someone else's `_acme-challenge` records. Only a record the
