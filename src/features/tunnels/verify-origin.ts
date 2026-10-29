@@ -31,6 +31,7 @@ import {
   retireUnusedOriginCertificates,
 } from './origin-certificate.ts'
 import type { BadgeRow, CarrierRow } from './records.ts'
+import { inSequence } from './sequence.ts'
 import { type VerifyState, tunnelVerifyState, verifyOriginHostnames } from './verify-state.ts'
 
 export type VerifyOriginDeps = {
@@ -226,10 +227,14 @@ export async function setVerifyOrigin(
       ...doorways.map((d) => d.hostname),
     ])
     const hostingIds = [...new Set(doorways.flatMap((d) => (d.hostingId ? [d.hostingId] : [])))]
-    for (const hostingId of hostingIds) {
-      const done = await certifyHosting(deps, owner, hostingId, tunnelNames, scope)
-      ;(done.reused ? result.reusedCertificateIds : result.issuedCertificateIds).push(done.tlsId)
-      if (done.changed) result.pinnedHostingIds.push(hostingId)
+    // One site after another: each request counts against the certificate limit.
+    const done = await inSequence(hostingIds, async (hostingId) => ({
+      hostingId,
+      ...(await certifyHosting(deps, owner, hostingId, tunnelNames, scope)),
+    }))
+    for (const item of done) {
+      ;(item.reused ? result.reusedCertificateIds : result.issuedCertificateIds).push(item.tlsId)
+      if (item.changed) result.pinnedHostingIds.push(item.hostingId)
     }
   }
   const saved = await saveOption(deps.db, row, enabled)

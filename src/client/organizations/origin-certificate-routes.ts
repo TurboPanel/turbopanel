@@ -12,6 +12,7 @@ import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { parseJsonBody } from '../shared.ts'
 import { isUuid } from '../access/routes-helpers.ts'
+import { firstResult } from '../../features/tunnels/sequence.ts'
 import { isValidHostname } from '../../contracts/commands/hostname.ts'
 import { tls } from '../../db/schema.ts'
 import { TunnelProviderError } from '../../features/tunnels/errors.ts'
@@ -93,16 +94,15 @@ async function toApi(scope: Scope, row: TlsRow): Promise<ApiOriginCertificate | 
   }
 }
 
+const REFUSAL_STATUS: Partial<Record<OriginCertificateRefusal['error'], 409 | 503>> = {
+  secrets_unavailable: 503,
+  tls_in_use: 409,
+  origin_certificate_limit: 409,
+  badge_missing: 409,
+}
+
 function refusalResponse(c: Context<AppEnv>, err: OriginCertificateRefusal): Response {
-  const status =
-    err.error === 'secrets_unavailable'
-      ? 503
-      : err.error === 'tls_in_use' ||
-          err.error === 'origin_certificate_limit' ||
-          err.error === 'badge_missing'
-        ? 409
-        : 400
-  return c.json({ error: err.error, message: err.message }, status)
+  return c.json({ error: err.error, message: err.message }, REFUSAL_STATUS[err.error] ?? 400)
 }
 
 /**
@@ -110,6 +110,35 @@ function refusalResponse(c: Context<AppEnv>, err: OriginCertificateRefusal): Res
  * recorded. Check the carrier's tokens once, store what they reach, and pick
  * the first that covers the zone.
  */
+async function checkedBadge(
+  c: Context<AppEnv>,
+  scope: Scope,
+  registry: TunnelAdapterRegistry,
+  current: CarrierRow,
+  candidate: BadgeRow,
+  zone: string
+): Promise<BadgeRow | null | Response> {
+  const secrets = c.get('dataEncryptionSecrets')
+  const token = secrets ? await openBadgeToken(scope.db, secrets, candidate) : null
+  if (token === null) return null
+  try {
+    const report = await registry(current.provider as TunnelProvider).checkCredential(token, {
+      accountId: current.externalAccountId,
+    })
+    const updated = await recordBadgeCheck(scope.db, candidate, {
+      capabilities: report.capabilities ?? NO_CAPABILITIES,
+      status: candidate.status === 'active' ? 'active' : 'attention',
+      token: report.token,
+    })
+    return badgeCoversZone(updated, zone) ? updated : null
+  } catch (err) {
+    if (err instanceof TunnelProviderError && err.code !== 'unauthorized') {
+      return providerFailure(c, err)
+    }
+    return null
+  }
+}
+
 async function badgeForZone(
   c: Context<AppEnv>,
   scope: Scope,
@@ -118,32 +147,17 @@ async function badgeForZone(
   zone: string,
   wanted: string | null
 ): Promise<BadgeRow | null | Response> {
-  const secrets = c.get('dataEncryptionSecrets')
-  if (!secrets) return c.json({ error: 'secrets_unavailable' }, 503)
-  let candidates = await listBadges(scope.db, current.id)
-  if (wanted) candidates = candidates.filter((b) => b.id === wanted)
+  if (!c.get('dataEncryptionSecrets')) return c.json({ error: 'secrets_unavailable' }, 503)
+  const listed = await listBadges(scope.db, current.id)
+  const candidates = wanted ? listed.filter((b) => b.id === wanted) : listed
   const covering = candidates.find((b) => badgeCoversZone(b, zone))
   if (covering) return covering
-  for (const candidate of candidates) {
-    const token = await openBadgeToken(scope.db, secrets, candidate)
-    if (token === null) continue
-    try {
-      const report = await registry(current.provider as TunnelProvider).checkCredential(token, {
-        accountId: current.externalAccountId,
-      })
-      const updated = await recordBadgeCheck(scope.db, candidate, {
-        capabilities: report.capabilities ?? NO_CAPABILITIES,
-        status: candidate.status === 'active' ? 'active' : 'attention',
-        token: report.token,
-      })
-      if (badgeCoversZone(updated, zone)) return updated
-    } catch (err) {
-      if (err instanceof TunnelProviderError && err.code !== 'unauthorized') {
-        return providerFailure(c, err)
-      }
-    }
-  }
-  return null
+  // One token after another; a provider failure other than a refused token stops the search.
+  const found = await firstResult(candidates, async (candidate) => {
+    const checked = await checkedBadge(c, scope, registry, current, candidate, zone)
+    return checked ?? undefined
+  })
+  return found ?? null
 }
 
 function listResponse() {
@@ -158,39 +172,50 @@ function listResponse() {
   }
 }
 
+type IssueBody = {
+  zone: string
+  wildcard: boolean
+  names: string[] | undefined
+}
+
+/** The zone and the names (or the wildcard choice) of an issue request, or what is wrong with them. */
+function parseIssueBody(
+  body: Record<string, unknown>
+): { ok: true; value: IssueBody } | { ok: false; field: string; detail: string } {
+  const zone = typeof body.zone === 'string' ? body.zone.trim().toLowerCase() : ''
+  if (!zone.includes('.') || !isValidHostname(zone)) {
+    return { ok: false, field: 'zone', detail: 'Give the zone name, such as example.com.' }
+  }
+  // The default is a certificate for exact hostnames; a wildcard is an explicit choice.
+  const wildcard = body.wildcard === true
+  const names =
+    Array.isArray(body.names) && body.names.every((n) => typeof n === 'string')
+      ? (body.names as string[])
+      : undefined
+  if (!wildcard && !names?.length) {
+    return {
+      ok: false,
+      field: 'names',
+      detail: 'Give the hostnames the certificate is for, or choose the wildcard option.',
+    }
+  }
+  return { ok: true, value: { zone, wildcard, names } }
+}
+
 function issueResponse(registry: TunnelAdapterRegistry) {
   return async (c: Context<AppEnv>, scope: Scope): Promise<Response> => {
     const current = await loadCarrierParam(c, scope)
     if (current instanceof Response) return current
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
-    const zone = typeof body.zone === 'string' ? body.zone.trim().toLowerCase() : ''
-    if (!zone.includes('.') || !isValidHostname(zone)) {
+    const parsed = parseIssueBody(body)
+    if (!parsed.ok) {
       return c.json(
-        {
-          error: 'origin_certificate_invalid',
-          field: 'zone',
-          detail: 'Give the zone name, such as example.com.',
-        },
+        { error: 'origin_certificate_invalid', field: parsed.field, detail: parsed.detail },
         400
       )
     }
-    // The default is a certificate for exact hostnames; a wildcard is an explicit choice.
-    const wildcard = body.wildcard === true
-    const names =
-      Array.isArray(body.names) && body.names.every((n) => typeof n === 'string')
-        ? (body.names as string[])
-        : undefined
-    if (!wildcard && (!names || names.length === 0)) {
-      return c.json(
-        {
-          error: 'origin_certificate_invalid',
-          field: 'names',
-          detail: 'Give the hostnames the certificate is for, or choose the wildcard option.',
-        },
-        400
-      )
-    }
+    const { zone, wildcard, names } = parsed.value
     const wanted = typeof body.badgeId === 'string' && isUuid(body.badgeId) ? body.badgeId : null
     const secrets = c.get('dataEncryptionSecrets')
     if (!secrets) return c.json({ error: 'secrets_unavailable' }, 503)
@@ -367,7 +392,7 @@ function revokeResponse(registry: TunnelAdapterRegistry) {
     const secrets = c.get('dataEncryptionSecrets')
     if (!secrets) return c.json({ error: 'secrets_unavailable' }, 503)
     const [row] = await scope.db.select().from(tls).where(eq(tls.id, tlsId)).limit(1)
-    const link = row ? readProviderOrigin(row.metadata) : null
+    const link = readProviderOrigin(row?.metadata)
     if (
       !row ||
       row.organizationId !== scope.organizationId ||

@@ -59,8 +59,7 @@ export async function tunnelVerifyState(
     .filter((d) => {
       const tlsId = d.hostingId ? pinOf.get(d.hostingId) : null
       const cert = tlsId ? certOf.get(tlsId) : null
-      const link =
-        cert && cert.source === 'provider_origin' ? readProviderOrigin(cert.metadata) : null
+      const link = cert?.source === 'provider_origin' ? readProviderOrigin(cert.metadata) : null
       return !(
         cert &&
         link &&

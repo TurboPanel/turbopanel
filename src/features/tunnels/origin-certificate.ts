@@ -38,6 +38,7 @@ import { metadataFromParsed, splitTlsMetadata } from '../../lib/tls/metadata.ts'
 import type { ProviderOriginCertificate, TunnelAdapter } from './adapter.ts'
 import { TunnelProviderError } from './errors.ts'
 import { compareText } from './order.ts'
+import { firstResult, inSequence } from './sequence.ts'
 import { type BadgeRow, type CarrierRow, openBadgeToken, toApiBadge } from './records.ts'
 
 const MS_PER_DAY = 86_400_000
@@ -163,7 +164,7 @@ export function findCoveringCertificate(
   const usable = rows.flatMap((row) => {
     if (row.source !== 'provider_origin' || row.status !== 'ready') return []
     const link = readProviderOrigin(row.metadata)
-    if (!link || link.retiredAt !== null) return []
+    if (link?.retiredAt !== null) return []
     if (carrierId !== null && link.carrierId !== carrierId) return []
     if (originCertificateIsDue(row.notAfter, now)) return []
     return certificateCoversAll(link, names) ? [{ row, link }] : []
@@ -208,19 +209,19 @@ export async function countOriginCertificatesFrom(
     return rows.filter((row) => readProviderOrigin(row.metadata)?.carrierId === from.carrierId)
       .length
   }
-  let stranded = 0
-  for (const row of rows) {
-    const link = readProviderOrigin(row.metadata)
-    if (!link) continue
-    const others = await pickCertificateBadges(db, link.carrierId, {
-      id: link.zoneId,
-      name: link.zoneName,
+  const stranding = await Promise.all(
+    rows.map(async (row) => {
+      const link = readProviderOrigin(row.metadata)
+      if (!link) return false
+      const holders = await pickCertificateBadges(db, link.carrierId, {
+        id: link.zoneId,
+        name: link.zoneName,
+      })
+      // Only this token could still revoke it.
+      return holders.length > 0 && holders.every((b) => b.id === from.badgeId)
     })
-    if (others.some((b) => b.id === from.badgeId) && others.every((b) => b.id === from.badgeId)) {
-      stranded += 1
-    }
-  }
-  return stranded
+  )
+  return stranding.filter(Boolean).length
 }
 
 /** Ids of hostings that pin a certificate. */
@@ -409,11 +410,7 @@ export async function issueOriginCertificate(params: IssueParams): Promise<TlsRo
       .insert(tls)
       .values({
         organizationId,
-        // The library allows letters, digits, space, dot, underscore and hyphen in a name.
-        name: `Origin ${names[0]!.replace('*.', 'wildcard ')}${names.length > 1 ? ` and ${names.length - 1} more` : ''}`.slice(
-          0,
-          255
-        ),
+        name: libraryName(names),
         source: 'provider_origin',
         certificatePem: issued.certificatePem,
         privateKeyPem: sealedKey,
@@ -430,6 +427,13 @@ export async function issueOriginCertificate(params: IssueParams): Promise<TlsRo
     await revokeAtProvider(adapter, token, issued.externalId).catch(() => undefined)
     throw err
   }
+}
+
+/** The library allows letters, digits, space, dot, underscore and hyphen in a certificate name. */
+function libraryName(names: readonly string[]): string {
+  const first = (names[0] ?? 'certificate').replace('*.', 'wildcard ')
+  const more = names.length > 1 ? ` and ${names.length - 1} more` : ''
+  return `Origin ${first}${more}`.slice(0, 255)
 }
 
 /** Write a link back into a row's metadata, leaving everything else in it alone. */
@@ -475,22 +479,26 @@ export async function ensureOriginCertificate(
   const rows = await listOriginCertificates(params.db, params.organizationId, params.carrier.id)
   const sameZone = rows.filter((row) => readProviderOrigin(row.metadata)?.zoneName === zone)
   const covering = findCoveringCertificate(sameZone, params.carrier.id, wanted, now)
-  if (
-    covering &&
-    (scope === 'names' || readProviderOrigin(covering.metadata)?.scope === 'wildcard')
-  ) {
+  if (covering && (scope === 'names' || isWildcardRow(covering))) {
     return { row: covering, reused: true, retiredIds: [] }
   }
   const row = await issueOriginCertificate(params)
   const link = readProviderOrigin(row.metadata)!
-  const retiredIds: string[] = []
-  for (const old of sameZone) {
-    const oldLink = readProviderOrigin(old.metadata)
-    if (!oldLink || oldLink.scope !== 'names') continue
-    if (!certificateCoversAll(link, oldLink.hostnames)) continue
-    if (await retireRow(params.db, old, now)) retiredIds.push(old.id)
-  }
-  return { row, reused: false, retiredIds }
+  const redundant = sameZone.filter((old) => isRedundantExact(old, link))
+  const retired = await Promise.all(
+    redundant.map(async (old) => ((await retireRow(params.db, old, now)) ? old.id : null))
+  )
+  return { row, reused: false, retiredIds: retired.filter((id): id is string => id !== null) }
+}
+
+function isWildcardRow(row: TlsRow): boolean {
+  return readProviderOrigin(row.metadata)?.scope === 'wildcard'
+}
+
+/** An exact certificate whose names the new certificate also lists. */
+function isRedundantExact(old: TlsRow, replacement: ProviderOriginLink): boolean {
+  const oldLink = readProviderOrigin(old.metadata)
+  return oldLink?.scope === 'names' && certificateCoversAll(replacement, oldLink.hostnames)
 }
 
 /**
@@ -505,14 +513,14 @@ export async function retireUnusedOriginCertificates(
   now: Date = new Date()
 ): Promise<string[]> {
   const rows = await listOriginCertificates(db, organizationId)
-  const retired: string[] = []
-  for (const row of rows) {
+  const unused = rows.filter((row) => {
     const link = readProviderOrigin(row.metadata)
-    if (!link || link.retiredAt !== null) continue
-    const inUse = usedHostnames.some((name) => coversHostname(link.hostnames, name))
-    if (!inUse && (await retireRow(db, row, now))) retired.push(row.id)
-  }
-  return retired
+    return link?.retiredAt === null && !usedHostnames.some((n) => coversHostname(link.hostnames, n))
+  })
+  const retired = await Promise.all(
+    unused.map(async (row) => ((await retireRow(db, row, now)) ? row.id : null))
+  )
+  return retired.filter((id): id is string => id !== null)
 }
 
 type RevokeParams = {
@@ -522,6 +530,32 @@ type RevokeParams = {
   row: TlsRow
   /** Remove the row even when the provider cannot be reached or no token can revoke it. */
   force?: boolean
+}
+
+/**
+ * Try the account's tokens for this zone in order, using `act` with each one's
+ * secret; a token the provider refuses is skipped for the next. Returns the
+ * first result, or `undefined` when no token was usable.
+ */
+async function withZoneToken<R>(
+  params: { db: Db; secrets: DerivedSecretsConfig },
+  link: Pick<ProviderOriginLink, 'carrierId' | 'zoneId' | 'zoneName'>,
+  act: (token: string, badgeRow: BadgeRow) => Promise<R>
+): Promise<{ result: R; badgeId: string } | undefined> {
+  const candidates = await pickCertificateBadges(params.db, link.carrierId, {
+    id: link.zoneId,
+    name: link.zoneName,
+  })
+  return await firstResult(candidates, async (candidate) => {
+    const token = await openBadgeToken(params.db, params.secrets, candidate)
+    if (token === null) return undefined
+    try {
+      return { result: await act(token, candidate), badgeId: candidate.id }
+    } catch (err) {
+      if (isTokenRefusal(err)) return undefined
+      throw err
+    }
+  })
 }
 
 /**
@@ -541,21 +575,10 @@ export async function revokeOriginCertificate(
   const link = readProviderOrigin(row.metadata)
   let usedBadgeId: string | null = null
   if (link && adapter.revokeOriginCertificate) {
-    const candidates = await pickCertificateBadges(db, link.carrierId, {
-      id: link.zoneId,
-      name: link.zoneName,
-    })
-    for (const candidate of candidates) {
-      const token = await openBadgeToken(db, secrets, candidate)
-      if (token === null) continue
-      try {
-        await revokeAtProvider(adapter, token, link.externalId)
-        usedBadgeId = candidate.id
-        break
-      } catch (err) {
-        if (!isTokenRefusal(err)) throw err
-      }
-    }
+    const done = await withZoneToken({ db, secrets }, link, (token) =>
+      revokeAtProvider(adapter, token, link.externalId)
+    )
+    usedBadgeId = done?.badgeId ?? null
     if (usedBadgeId === null && !params.force) {
       throw new OriginCertificateRefusal(
         'badge_missing',
@@ -581,7 +604,8 @@ export type RenewResult = {
 /**
  * Replace a certificate that is close to expiry: issue a new one for the same
  * names and scope and re-point the sites that pinned the old one. The old row
- * is retired and goes once nothing pins it.
+ * is retired and goes once nothing pins it. Any active token with certificate
+ * rights for the zone may issue it.
  */
 export async function renewOriginCertificate(
   params: Omit<IssueParams, 'zoneName' | 'carrier' | 'badge' | 'names' | 'scope'> & {
@@ -597,27 +621,18 @@ export async function renewOriginCertificate(
     .where(and(eq(carrier.id, link.carrierId), eq(carrier.organizationId, params.organizationId)))
     .limit(1)
   if (!carrierRow) return null
-  const candidates = await pickCertificateBadges(params.db, link.carrierId, {
-    id: link.zoneId,
-    name: link.zoneName,
-  })
-  let replacement: TlsRow | null = null
-  for (const candidate of candidates) {
-    try {
-      replacement = await issueOriginCertificate({
-        ...params,
-        carrier: carrierRow,
-        badge: candidate,
-        zoneName: link.zoneName,
-        names: link.hostnames,
-        scope: link.scope,
-      })
-      break
-    } catch (err) {
-      if (!isTokenRefusal(err)) throw err
-    }
-  }
-  if (replacement === null) return null
+  const issued = await withZoneToken(params, link, (_token, badgeRow) =>
+    issueOriginCertificate({
+      ...params,
+      carrier: carrierRow,
+      badge: badgeRow,
+      zoneName: link.zoneName,
+      names: link.hostnames,
+      scope: link.scope,
+    })
+  )
+  if (!issued) return null
+  const replacement = issued.result
   const moved = await params.db
     .update(hosting)
     .set({ tlsId: replacement.id })
@@ -636,14 +651,7 @@ export type OriginSweepResult = {
   failed: string[]
 }
 
-/**
- * One pass over an organization's origin certificates: renew those that are
- * pinned and close to expiry, and clear those that were retired: revoked at
- * the provider once no site pins them and the grace period has passed, or just
- * dropped once expired (an expired certificate needs no revoking). A failure on
- * one row is recorded and does not stop the others.
- */
-export async function sweepOriginCertificates(params: {
+type SweepParams = {
   db: Db
   secrets: DerivedSecretsConfig
   registry: (provider: CarrierRow['provider']) => TunnelAdapter
@@ -651,9 +659,61 @@ export async function sweepOriginCertificates(params: {
   /** Hostnames still asking for a verified connection; when given, certificates nothing needs are retired first. */
   usedHostnames?: readonly string[]
   now?: Date
-}): Promise<OriginSweepResult> {
+}
+
+/** What one pass did to one row. */
+type SweepStep =
+  | { kind: 'renewed'; id: string; repinned: string[] }
+  | { kind: 'removed'; id: string }
+  | { kind: 'failed'; id: string }
+  | { kind: 'none' }
+
+async function sweepRow(params: SweepParams, row: TlsRow, now: Date): Promise<SweepStep> {
+  const link = readProviderOrigin(row.metadata)
+  if (!link) return { kind: 'none' }
+  const adapter = params.registry(link.provider as CarrierRow['provider'])
+  try {
+    const pinned = (await hostingsPinning(params.db, row.id)).length > 0
+    if (link.retiredAt === null) {
+      if (!pinned || !originCertificateIsDue(row.notAfter, now)) return { kind: 'none' }
+      const renewed = await renewOriginCertificate({
+        db: params.db,
+        secrets: params.secrets,
+        adapter,
+        organizationId: params.organizationId,
+        row,
+        now,
+      })
+      return renewed
+        ? { kind: 'renewed', id: renewed.replacement.id, repinned: renewed.repinnedHostingIds }
+        : { kind: 'none' }
+    }
+    if (pinned) return { kind: 'none' }
+    const expired = row.notAfter !== null && Date.parse(row.notAfter) <= now.getTime()
+    const waited =
+      now.getTime() - Date.parse(link.retiredAt) >=
+      ORIGIN_CERTIFICATE_RETIRE_GRACE_HOURS * MS_PER_HOUR
+    if (expired) {
+      await params.db.delete(tls).where(eq(tls.id, row.id))
+      return { kind: 'removed', id: row.id }
+    }
+    if (!waited) return { kind: 'none' }
+    await revokeOriginCertificate({ db: params.db, secrets: params.secrets, adapter, row })
+    return { kind: 'removed', id: row.id }
+  } catch {
+    return { kind: 'failed', id: row.id }
+  }
+}
+
+/**
+ * One pass over an organization's origin certificates: renew those that are
+ * pinned and close to expiry, and clear those that were retired: revoked at
+ * the provider once no site pins them and the grace period has passed, or just
+ * dropped once expired (an expired certificate needs no revoking). A failure on
+ * one row is recorded and does not stop the others.
+ */
+export async function sweepOriginCertificates(params: SweepParams): Promise<OriginSweepResult> {
   const now = params.now ?? new Date()
-  const result: OriginSweepResult = { renewed: [], repinnedHostingIds: [], removed: [], failed: [] }
   if (params.usedHostnames) {
     await retireUnusedOriginCertificates(
       params.db,
@@ -663,47 +723,16 @@ export async function sweepOriginCertificates(params: {
     )
   }
   const rows = await listOriginCertificates(params.db, params.organizationId)
-  for (const row of rows) {
-    const link = readProviderOrigin(row.metadata)
-    if (!link) continue
-    try {
-      const pinned = (await hostingsPinning(params.db, row.id)).length > 0
-      if (link.retiredAt === null) {
-        if (pinned && originCertificateIsDue(row.notAfter, now)) {
-          const renewed = await renewOriginCertificate({
-            db: params.db,
-            secrets: params.secrets,
-            adapter: params.registry(link.provider as CarrierRow['provider']),
-            organizationId: params.organizationId,
-            row,
-            now,
-          })
-          if (renewed) {
-            result.renewed.push(renewed.replacement.id)
-            result.repinnedHostingIds.push(...renewed.repinnedHostingIds)
-          }
-        }
-        continue
-      }
-      if (pinned) continue
-      const expired = row.notAfter !== null && Date.parse(row.notAfter) <= now.getTime()
-      const waited =
-        now.getTime() - Date.parse(link.retiredAt) >=
-        ORIGIN_CERTIFICATE_RETIRE_GRACE_HOURS * MS_PER_HOUR
-      if (expired) {
-        await params.db.delete(tls).where(eq(tls.id, row.id))
-        result.removed.push(row.id)
-      } else if (waited) {
-        await revokeOriginCertificate({
-          db: params.db,
-          secrets: params.secrets,
-          adapter: params.registry(link.provider as CarrierRow['provider']),
-          row,
-        })
-        result.removed.push(row.id)
-      }
-    } catch {
-      result.failed.push(row.id)
+  const steps = await inSequence(rows, (row) => sweepRow(params, row, now))
+  const result: OriginSweepResult = { renewed: [], repinnedHostingIds: [], removed: [], failed: [] }
+  for (const step of steps) {
+    if (step.kind === 'renewed') {
+      result.renewed.push(step.id)
+      result.repinnedHostingIds.push(...step.repinned)
+    } else if (step.kind === 'removed') {
+      result.removed.push(step.id)
+    } else if (step.kind === 'failed') {
+      result.failed.push(step.id)
     }
   }
   return result
