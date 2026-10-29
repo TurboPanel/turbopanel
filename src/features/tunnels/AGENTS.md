@@ -352,8 +352,8 @@ connection" (`tunnel.options.verifyOrigin`) the sites that serve the tunnel's
 names present an origin certificate and the connector verifies it
 (`setRoutes` with `verifyOrigin: true`, which sets `noTLSVerify: false` and
 nothing else; no certificate file or path is needed, the connector's origin pool
-includes the provider's origin roots. **Proved on a real connector?** See the
-note at the end of this section.)
+includes the provider's origin roots, proved on a real connector, see the end of
+this section.)
 
 **The default is a certificate for EXACT hostnames, not a wildcard.** One
 certificate per site (a site pins one `tlsId`), listing exactly the names that
@@ -448,7 +448,14 @@ Routes (`client/organizations/origin-certificate-routes.ts`, `organization:manag
 and the tunnel route above. Tunnel-only names never get an automatic public
 certificate request; nothing here touches that path.
 
-Not proved yet: that a real connector accepts the origin certificate on the hop
-(the connector's built-in roots are read from its source, not yet tried against
-a live origin). It is a one-line check on the testing round: turn the option on
-for a tunnel with one site and read `/ready` and a request through the tunnel.
+**Proved on a real connector (2026-10-28, testing server w, connector 2026.5.2):**
+a throwaway tunnel routed one hostname to a small TLS server on the same machine
+that presented an origin certificate issued for exactly that name, with the
+route set to `originServerName` = the hostname and `noTLSVerify: false`. A request
+through Cloudflare returned the page (200), so the connector verifies the origin
+certificate against its built-in roots with no file or path configured. The same
+server presenting a self-signed certificate answered 502 and the connector log
+said `x509: certificate signed by unknown authority`, so verification really was
+on. The tunnel, DNS name and certificate were removed afterwards. Not yet tried
+through the full panel flow (turning the option on for a tunnel with a site): that
+is the next testing round.
