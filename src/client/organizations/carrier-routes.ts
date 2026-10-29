@@ -92,7 +92,8 @@ export async function audit(
     | 'badge.check'
     | 'badge.delete'
     | 'origin_certificate.issue'
-    | 'origin_certificate.revoke',
+    | 'origin_certificate.revoke'
+    | 'tunnel.update',
   targetId: string,
   context: Record<string, unknown>
 ) {

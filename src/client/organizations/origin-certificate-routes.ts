@@ -15,13 +15,15 @@ import { isUuid } from '../access/routes-helpers.ts'
 import { isValidHostname } from '../../contracts/commands/hostname.ts'
 import { tls } from '../../db/schema.ts'
 import { TunnelProviderError } from '../../features/tunnels/errors.ts'
+import { findTunnel, toApiTunnel, TunnelRefusal } from '../../features/tunnels/lifecycle.ts'
+import { setVerifyOrigin } from '../../features/tunnels/verify-origin.ts'
 import {
   badgeCoversZone,
+  describeExistingOriginCertificates,
+  ensureOriginCertificate,
   hostingsPinning,
-  issueOriginCertificate,
   listOriginCertificates,
   originCertificateIsDue,
-  originCertificateNames,
   OriginCertificateRefusal,
   readProviderOrigin,
   revokeOriginCertificate,
@@ -30,6 +32,7 @@ import {
 import {
   type BadgeRow,
   type CarrierRow,
+  findCarrier,
   listBadges,
   openBadgeToken,
   recordBadgeCheck,
@@ -50,6 +53,8 @@ import {
 const ORIGIN_CERTIFICATE_PATHS = [
   '/organizations/:id/carriers/:carrierId/origin-certificates',
   '/organizations/:id/carriers/:carrierId/origin-certificates/:tlsId',
+  '/organizations/:id/carriers/:carrierId/origin-certificates/existing',
+  '/organizations/:id/tunnels/:tunnelId/verify-origin',
 ] as const
 
 type ApiOriginCertificate = {
@@ -57,6 +62,10 @@ type ApiOriginCertificate = {
   carrierId: string
   zone: string
   names: string[]
+  /** `names` is a certificate for exact hostnames (the default); `wildcard` covers the zone and one label below it. */
+  scope: 'names' | 'wildcard'
+  /** No longer needed; it is revoked once no site uses it. */
+  retired: boolean
   notAfter: string | null
   status: string
   createdAt: string
@@ -73,7 +82,9 @@ async function toApi(scope: Scope, row: TlsRow): Promise<ApiOriginCertificate | 
     id: row.id,
     carrierId: link.carrierId,
     zone: link.zoneName,
-    names: originCertificateNames(link.zoneName),
+    names: link.hostnames,
+    scope: link.scope,
+    retired: link.retiredAt !== null,
     notAfter: row.notAfter,
     status: row.status,
     createdAt: row.createdAt,
@@ -164,23 +175,25 @@ function issueResponse(registry: TunnelAdapterRegistry) {
         400
       )
     }
+    // The default is a certificate for exact hostnames; a wildcard is an explicit choice.
+    const wildcard = body.wildcard === true
+    const names =
+      Array.isArray(body.names) && body.names.every((n) => typeof n === 'string')
+        ? (body.names as string[])
+        : undefined
+    if (!wildcard && (!names || names.length === 0)) {
+      return c.json(
+        {
+          error: 'origin_certificate_invalid',
+          field: 'names',
+          detail: 'Give the hostnames the certificate is for, or choose the wildcard option.',
+        },
+        400
+      )
+    }
     const wanted = typeof body.badgeId === 'string' && isUuid(body.badgeId) ? body.badgeId : null
     const secrets = c.get('dataEncryptionSecrets')
     if (!secrets) return c.json({ error: 'secrets_unavailable' }, 503)
-
-    // One certificate per zone and account while it is healthy: asking again returns it.
-    const existing = (
-      await listOriginCertificates(scope.db, scope.organizationId, current.id)
-    ).find(
-      (row) =>
-        readProviderOrigin(row.metadata)?.zoneName === zone &&
-        row.status === 'ready' &&
-        !originCertificateIsDue(row.notAfter)
-    )
-    if (existing) {
-      return c.json({ originCertificate: await toApi(scope, existing), reused: true })
-    }
-
     const chosen = await badgeForZone(c, scope, registry, current, zone, wanted)
     if (chosen instanceof Response) return chosen
     if (chosen === null) {
@@ -193,7 +206,8 @@ function issueResponse(registry: TunnelAdapterRegistry) {
       )
     }
     try {
-      const row = await issueOriginCertificate({
+      // A certificate TurboPanel already issued that covers every name is returned again.
+      const ensured = await ensureOriginCertificate({
         db: scope.db,
         secrets,
         adapter: registry(current.provider as TunnelProvider),
@@ -201,13 +215,142 @@ function issueResponse(registry: TunnelAdapterRegistry) {
         carrier: current,
         badge: chosen,
         zoneName: zone,
+        names,
+        scope: wildcard ? 'wildcard' : 'names',
       })
-      await audit(c, scope, 'origin_certificate.issue', row.id, {
-        carrierId: current.id,
-        zone,
-      })
-      return c.json({ originCertificate: await toApi(scope, row), reused: false }, 201)
+      if (!ensured.reused) {
+        await audit(c, scope, 'origin_certificate.issue', ensured.row.id, {
+          carrierId: current.id,
+          zone,
+          scope: wildcard ? 'wildcard' : 'names',
+        })
+      }
+      return c.json(
+        {
+          originCertificate: await toApi(scope, ensured.row),
+          reused: ensured.reused,
+          replaces: ensured.retiredIds,
+        },
+        ensured.reused ? 200 : 201
+      )
     } catch (err) {
+      if (err instanceof OriginCertificateRefusal) return refusalResponse(c, err)
+      if (err instanceof TunnelProviderError) return providerFailure(c, err)
+      throw err
+    }
+  }
+}
+
+/**
+ * What the provider already holds for a zone, next to what TurboPanel issued.
+ * Read-only. A certificate made outside TurboPanel is listed but cannot be
+ * installed: its private key was never ours.
+ */
+function existingResponse(registry: TunnelAdapterRegistry) {
+  return async (c: Context<AppEnv>, scope: Scope): Promise<Response> => {
+    const current = await loadCarrierParam(c, scope)
+    if (current instanceof Response) return current
+    const zone = (c.req.query('zone') ?? '').trim().toLowerCase()
+    if (!zone.includes('.') || !isValidHostname(zone)) {
+      return c.json(
+        {
+          error: 'origin_certificate_invalid',
+          field: 'zone',
+          detail: 'Give the zone name, such as example.com.',
+        },
+        400
+      )
+    }
+    const secrets = c.get('dataEncryptionSecrets')
+    if (!secrets) return c.json({ error: 'secrets_unavailable' }, 503)
+    const chosen = await badgeForZone(c, scope, registry, current, zone, null)
+    if (chosen instanceof Response) return chosen
+    const zoneInfo = chosen ? badgeCoversZone(chosen, zone) : null
+    if (chosen === null || zoneInfo === null) {
+      return c.json(
+        {
+          error: 'badge_cannot_certify',
+          message: 'No API Token on this account can read certificates for that zone.',
+        },
+        400
+      )
+    }
+    const adapter = registry(current.provider as TunnelProvider)
+    if (!adapter.listOriginCertificates) {
+      return c.json({ error: 'unsupported_provider' }, 400)
+    }
+    const token = await openBadgeToken(scope.db, secrets, chosen)
+    if (token === null) return c.json({ error: 'secrets_unavailable' }, 503)
+    try {
+      const provider = await adapter.listOriginCertificates(token, { zoneId: zoneInfo.id })
+      const rows = await listOriginCertificates(scope.db, scope.organizationId, current.id)
+      return c.json({
+        zone,
+        certificates: describeExistingOriginCertificates(provider, rows, zone),
+      })
+    } catch (err) {
+      if (err instanceof TunnelProviderError) return providerFailure(c, err)
+      throw err
+    }
+  }
+}
+
+/** Turn the verified connection on or off for one tunnel (see `setVerifyOrigin`). */
+function verifyOriginResponse(registry: TunnelAdapterRegistry) {
+  return async (c: Context<AppEnv>, scope: Scope): Promise<Response> => {
+    const tunnelId = c.req.param('tunnelId') as string
+    if (!isUuid(tunnelId)) return c.json({ error: 'Not found' }, 404)
+    const row = await findTunnel(scope.db, scope.organizationId, tunnelId)
+    const owner = row?.carrierId
+      ? await findCarrier(scope.db, scope.organizationId, row.carrierId)
+      : null
+    if (!row || !owner) return c.json({ error: 'Not found' }, 404)
+    const body = await parseJsonBody(c)
+    if (body instanceof Response) return body
+    if (typeof body.enabled !== 'boolean') {
+      return c.json(
+        {
+          error: 'tunnel_invalid',
+          field: 'enabled',
+          detail: 'Say whether to verify the connection.',
+        },
+        400
+      )
+    }
+    const secrets = c.get('dataEncryptionSecrets')
+    if (!secrets) return c.json({ error: 'secrets_unavailable' }, 503)
+    try {
+      const done = await setVerifyOrigin(
+        {
+          db: scope.db,
+          secrets,
+          adapter: registry(owner.provider as TunnelProvider),
+          organizationId: scope.organizationId,
+          chooseBadge: async (zone) => {
+            const found = await badgeForZone(c, scope, registry, owner, zone, null)
+            return found instanceof Response ? null : found
+          },
+        },
+        owner,
+        row,
+        body.enabled,
+        body.wildcard === true ? 'wildcard' : 'names'
+      )
+      await audit(c, scope, 'tunnel.update', row.id, {
+        name: row.name,
+        verifyOrigin: body.enabled,
+      })
+      return c.json({
+        tunnel: await toApiTunnel(scope.db, done.tunnel),
+        verifyOrigin: done.state,
+        pinnedHostingIds: done.pinnedHostingIds,
+        // The servers pick up a new certificate with the site's next deploy.
+        needsDeploy: done.pinnedHostingIds.length > 0,
+      })
+    } catch (err) {
+      if (err instanceof TunnelRefusal) {
+        return c.json({ error: err.code, message: err.message }, err.status)
+      }
       if (err instanceof OriginCertificateRefusal) return refusalResponse(c, err)
       if (err instanceof TunnelProviderError) return providerFailure(c, err)
       throw err
@@ -275,4 +418,6 @@ export function registerOrganizationOriginCertificateRoutes(
   router.get(ORIGIN_CERTIFICATE_PATHS[0], guarded(listResponse()))
   router.post(ORIGIN_CERTIFICATE_PATHS[0], guarded(issueResponse(registry)))
   router.delete(ORIGIN_CERTIFICATE_PATHS[1], guarded(revokeResponse(registry)))
+  router.get(ORIGIN_CERTIFICATE_PATHS[2], guarded(existingResponse(registry)))
+  router.put(ORIGIN_CERTIFICATE_PATHS[3], guarded(verifyOriginResponse(registry)))
 }

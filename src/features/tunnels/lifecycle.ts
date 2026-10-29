@@ -24,6 +24,8 @@ import { decryptSecret, encryptSecret } from '../../lib/secrets/data-encryption.
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { hostingIdsOfOrganization } from './hosting-scope.ts'
 import { compareText } from './order.ts'
+import { type VerifyState, tunnelVerifyState, verifyOriginHostnames } from './verify-state.ts'
+import { retireUnusedOriginCertificates } from './origin-certificate.ts'
 import { parseServerOptions } from '../servers/server-metadata.ts'
 import type { TunnelAdapter } from './adapter.ts'
 import { TunnelProviderError } from './errors.ts'
@@ -85,6 +87,8 @@ export type ApiTunnel = {
   carryingServerIds: string[]
   warnings: string[]
   doorwayCount: number
+  /** The verified connection to the web server: asked for, in effect, and which names still wait. */
+  verifyOrigin: VerifyState
 }
 
 export type ApiDoorway = {
@@ -160,10 +164,11 @@ export async function carryingServers(db: Db, row: TunnelRow): Promise<string[]>
 }
 
 export async function toApiTunnel(db: Db, row: TunnelRow): Promise<ApiTunnel> {
-  const [portals, carrying, doorways] = await Promise.all([
+  const [portals, carrying, doorways, verify] = await Promise.all([
     listPortals(db, row.id),
     carryingServers(db, row),
     db.select({ id: doorway.id }).from(doorway).where(eq(doorway.tunnelId, row.id)),
+    tunnelVerifyState(db, row),
   ])
   return {
     id: row.id,
@@ -185,6 +190,7 @@ export async function toApiTunnel(db: Db, row: TunnelRow): Promise<ApiTunnel> {
     carryingServerIds: carrying,
     warnings: [...removalWarnings(row), ...placementWarnings(carrying)],
     doorwayCount: doorways.length,
+    verifyOrigin: verify,
   }
 }
 
@@ -749,7 +755,11 @@ async function hostingOfName(db: Db, organizationId: string, name: string): Prom
   return site.hostingId
 }
 
-async function routeNames(db: Db, tunnelId: string, extra: string | null): Promise<string[]> {
+export async function routeNames(
+  db: Db,
+  tunnelId: string,
+  extra: string | null
+): Promise<string[]> {
   const rows = await listDoorways(db, tunnelId)
   const names = rows.map((r) => r.hostname)
   if (extra && !names.includes(extra)) names.push(extra)
@@ -866,6 +876,7 @@ async function publishDoorway(
     accountId: account,
     externalId: row.externalId!,
     hostnames: await routeNames(db, row.id, null),
+    verifyOrigin: (await tunnelVerifyState(db, row)).active,
   })
   const recordId =
     zone && dnsToken
@@ -954,6 +965,7 @@ async function restoreRoutesQuietly(
       accountId,
       externalId: row.externalId!,
       hostnames: await routeNames(db, row.id, null),
+      verifyOrigin: (await tunnelVerifyState(db, row)).active,
     })
   } catch {
     // The next successful change writes the whole set again.
@@ -970,6 +982,7 @@ export async function removeDoorway(
 ): Promise<void> {
   if (!row.externalId) {
     await db.delete(doorway).where(eq(doorway.id, current.id))
+    await retireUnusedCertificatesQuietly(db, row.organizationId)
     return
   }
   const token = await openCarrierToken(db, deps.secrets, owner.id, { tunnels: true })
@@ -989,6 +1002,7 @@ export async function removeDoorway(
       accountId: owner.externalAccountId,
       externalId: row.externalId,
       hostnames: remaining,
+      verifyOrigin: (await tunnelVerifyState(db, row)).active && remaining.length > 0,
     })
     if (current.externalDnsRecordId && zoneId) {
       const dnsToken = await openCarrierToken(db, deps.secrets, owner.id, { zoneId })
@@ -1005,6 +1019,23 @@ export async function removeDoorway(
     throw providerRefusal(err)
   }
   await db.delete(doorway).where(eq(doorway.id, current.id))
+  await retireUnusedCertificatesQuietly(db, row.organizationId)
+}
+
+/**
+ * A certificate whose last hostname is gone is marked retired (the sweep revokes
+ * it once no site pins it). Never fails the removal that triggered it.
+ */
+async function retireUnusedCertificatesQuietly(db: Db, organizationId: string): Promise<void> {
+  try {
+    await retireUnusedOriginCertificates(
+      db,
+      organizationId,
+      await verifyOriginHostnames(db, organizationId)
+    )
+  } catch {
+    // The sweep retires it on its next pass.
+  }
 }
 
 /** A DNS name that is already gone counts as removed, so a retry after a half-done removal works. */

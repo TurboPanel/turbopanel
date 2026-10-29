@@ -39,10 +39,17 @@ const TOKEN = 'cf-api-token-0123456789abcdefghijklmnopqrstuv'
 const ACCOUNT = 'a'.repeat(32)
 
 /** What the faked provider answers for the certificate list. */
-const state: { certificates: 'allowed' | 'denied'; issued: number; revoked: string[] } = {
+const state: {
+  certificates: 'allowed' | 'denied'
+  issued: number
+  revoked: string[]
+  /** Certificates the provider already holds for the zone, as its list answers them. */
+  listing: unknown[]
+} = {
   certificates: 'allowed',
   issued: 0,
   revoked: [],
+  listing: [],
 }
 
 const ok = (result: unknown) => Response.json({ success: true, errors: [], result })
@@ -58,7 +65,7 @@ const fakeProvider: typeof fetch = async (input, init) => {
   if (path === '/user/tokens/verify') return ok({ id: 'tok-1', status: 'active' })
   if (path.endsWith('/cfd_tunnel') || path.endsWith('/dns_records')) return ok([])
   if (path === '/certificates' && method === 'GET') {
-    return state.certificates === 'allowed' ? ok([]) : refused(403, 'denied')
+    return state.certificates === 'allowed' ? ok(state.listing) : refused(403, 'denied')
   }
   if (path === '/certificates' && method === 'POST') {
     const body = JSON.parse(String(init?.body)) as { hostnames: string[] }
@@ -118,6 +125,7 @@ async function withFixture(
   state.certificates = 'allowed'
   state.issued = 0
   state.revoked = []
+  state.listing = []
   const db = createDenoDb()
   const secretsConfig = parseTestSecretsConfig('deno')
   const sessionSecrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
@@ -240,6 +248,8 @@ test('every origin certificate route refuses a request without a session, a plai
       ['GET', base(f)],
       ['POST', base(f)],
       ['DELETE', `${base(f)}/${id}`],
+      ['GET', `${base(f)}/existing?zone=example.com`],
+      ['PUT', `/organizations/${f.orgA}/tunnels/${id}/verify-origin`],
     ]
     for (const [method, path] of routes) {
       assertEquals((await call(f, method, path, null, {})).status, 401, `${method} ${path}`)
@@ -255,11 +265,16 @@ test('every origin certificate route refuses a request without a session, a plai
 
 test('a manager gets a certificate for a zone, asking again returns it, and it can be revoked', async () => {
   await withFixture(async (f) => {
-    const first = await call(f, 'POST', base(f), f.managerCookie, { zone: ' Example.com ' })
+    const first = await call(f, 'POST', base(f), f.managerCookie, {
+      zone: ' Example.com ',
+      names: ['app.example.com'],
+    })
     assertEquals(first.status, 201, first.text)
     const cert = first.body.originCertificate as Record<string, unknown>
     assertEquals(cert.zone, 'example.com')
-    assertEquals(cert.names, ['example.com', '*.example.com'])
+    assertEquals(cert.names, ['app.example.com'])
+    assertEquals(cert.scope, 'names')
+    assertEquals(cert.retired, false)
     assertEquals(cert.inUse, false)
     assertEquals(first.body.reused, false)
     // Nothing that looks like a key or the token is returned.
@@ -269,7 +284,10 @@ test('a manager gets a certificate for a zone, asking again returns it, and it c
       false
     )
 
-    const again = await call(f, 'POST', base(f), f.managerCookie, { zone: 'example.com' })
+    const again = await call(f, 'POST', base(f), f.managerCookie, {
+      zone: 'example.com',
+      names: ['app.example.com'],
+    })
     assertEquals(again.status, 200)
     assertEquals(again.body.reused, true)
     assertEquals(state.issued, 1)
@@ -292,7 +310,10 @@ test('a manager gets a certificate for a zone, asking again returns it, and it c
 test('a token with no certificate rights recorded is checked once and then used', async () => {
   await withFixture(
     async (f) => {
-      const res = await call(f, 'POST', base(f), f.managerCookie, { zone: 'example.com' })
+      const res = await call(f, 'POST', base(f), f.managerCookie, {
+        zone: 'example.com',
+        names: ['app.example.com'],
+      })
       assertEquals(res.status, 201, res.text)
       const [row] = await f.db.select().from(badge).where(eq(badge.id, f.badgeId))
       assertEquals(
@@ -308,7 +329,10 @@ test('with no token that can manage certificates for the zone nothing is issued'
   await withFixture(
     async (f) => {
       state.certificates = 'denied'
-      const res = await call(f, 'POST', base(f), f.managerCookie, { zone: 'example.com' })
+      const res = await call(f, 'POST', base(f), f.managerCookie, {
+        zone: 'example.com',
+        names: ['app.example.com'],
+      })
       assertEquals(res.status, 400)
       assertEquals(res.body.error, 'badge_cannot_certify')
       assertEquals(state.issued, 0)
@@ -330,7 +354,10 @@ test('a zone that is not a domain name is refused', async () => {
 
 test('an account or token that issued a certificate cannot be removed until the certificate is', async () => {
   await withFixture(async (f) => {
-    const issued = await call(f, 'POST', base(f), f.managerCookie, { zone: 'example.com' })
+    const issued = await call(f, 'POST', base(f), f.managerCookie, {
+      zone: 'example.com',
+      names: ['app.example.com'],
+    })
     assertEquals(issued.status, 201, issued.text)
     const id = (issued.body.originCertificate as { id: string }).id
     const carrierPath = `/organizations/${f.orgA}/carriers/${f.carrierId}`
@@ -347,5 +374,97 @@ test('an account or token that issued a certificate cannot be removed until the 
     )
     assertEquals((await call(f, 'DELETE', carrierPath, f.managerCookie)).status, 200)
     assertEquals((await f.db.select().from(carrier).where(eq(carrier.id, f.carrierId))).length, 0)
+  })
+})
+
+test('a certificate needs names, or the wildcard option; the wildcard lists the zone and one label below it', async () => {
+  await withFixture(async (f) => {
+    const none = await call(f, 'POST', base(f), f.managerCookie, { zone: 'example.com' })
+    assertEquals(none.status, 400)
+    assertEquals(none.body.error, 'origin_certificate_invalid')
+    assertEquals(none.body.field, 'names')
+    for (const names of [[], ['*.example.com'], ['elsewhere.org'], [3]]) {
+      const bad = await call(f, 'POST', base(f), f.managerCookie, { zone: 'example.com', names })
+      assertEquals(bad.status, 400, JSON.stringify(names))
+    }
+    assertEquals(state.issued, 0)
+    const wide = await call(f, 'POST', base(f), f.managerCookie, {
+      zone: 'example.com',
+      wildcard: true,
+    })
+    assertEquals(wide.status, 201, wide.text)
+    const cert = wide.body.originCertificate as Record<string, unknown>
+    assertEquals(cert.names, ['example.com', '*.example.com'])
+    assertEquals(cert.scope, 'wildcard')
+    // The wildcard already covers a name one label down, so that request issues nothing new.
+    const covered = await call(f, 'POST', base(f), f.managerCookie, {
+      zone: 'example.com',
+      names: ['app.example.com'],
+    })
+    assertEquals(covered.status, 200)
+    assertEquals(covered.body.reused, true)
+    assertEquals(state.issued, 1)
+  })
+})
+
+test('the existing certificates view lists what the provider holds and marks what TurboPanel issued', async () => {
+  await withFixture(async (f) => {
+    const minted = await mintSelfSignedCertificate(['made-elsewhere.example.com'], {
+      validDays: 365,
+    })
+    state.listing = [
+      {
+        id: 'foreign-1',
+        certificate: minted.certificatePem,
+        hostnames: ['made-elsewhere.example.com'],
+        expires_on: '2027-10-29 02:12:00 +0000 UTC',
+      },
+    ]
+    const issued = await call(f, 'POST', base(f), f.managerCookie, {
+      zone: 'example.com',
+      names: ['app.example.com'],
+    })
+    assertEquals(issued.status, 201, issued.text)
+    state.listing = [
+      ...state.listing,
+      {
+        id: 'cert-1',
+        certificate: minted.certificatePem,
+        hostnames: ['app.example.com'],
+        expires_on: '2027-10-29 02:12:00 +0000 UTC',
+      },
+    ]
+    const res = await call(f, 'GET', `${base(f)}/existing?zone=Example.com`, f.managerCookie)
+    assertEquals(res.status, 200, res.text)
+    const items = res.body.certificates as {
+      externalId: string
+      issuedHere: boolean
+      note: string
+    }[]
+    assertEquals(
+      items.map((i) => [i.externalId, i.issuedHere]),
+      [
+        ['cert-1', true],
+        ['foreign-1', false],
+      ]
+    )
+    assert(items[1]!.note.includes('never revokes a certificate it did not issue'))
+    // Neither a key nor the token nor the certificate text is returned.
+    assert(!res.text.includes('PRIVATE KEY') && !res.text.includes('BEGIN CERTIFICATE'))
+    assert(!res.text.includes(TOKEN))
+    const bad = await call(f, 'GET', `${base(f)}/existing`, f.managerCookie)
+    assertEquals(bad.status, 400)
+  })
+})
+
+test('the verified connection option needs a tunnel of this organization and a yes or no', async () => {
+  await withFixture(async (f) => {
+    const path = (id: string) => `/organizations/${f.orgA}/tunnels/${id}/verify-origin`
+    const missing = await call(f, 'PUT', path(crypto.randomUUID()), f.managerCookie, {
+      enabled: true,
+    })
+    assertEquals(missing.status, 404)
+    const notUuid = await call(f, 'PUT', path('nope'), f.managerCookie, { enabled: true })
+    assertEquals(notUuid.status, 404)
   })
 })

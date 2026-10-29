@@ -30,6 +30,15 @@ export type OriginCertificateIssued = {
   notAfter: string
 }
 
+/** A certificate the provider already holds for a zone; the private key is never part of it. */
+export type ProviderOriginCertificate = {
+  externalId: string
+  hostnames: string[]
+  /** ISO time the certificate stops being valid, or null when the provider did not say. */
+  notAfter: string | null
+  certificatePem: string | null
+}
+
 /**
  * One adapter per tunnel provider. Every method takes the credential as an
  * argument and never keeps it; errors are `TunnelProviderError`, already
@@ -101,6 +110,11 @@ export type TunnelAdapter = {
     token: string,
     input: { hostnames: readonly string[]; csrPem: string; validityDays: number }
   ): Promise<OriginCertificateIssued>
+  /** The valid origin certificates of a zone, whoever issued them. */
+  listOriginCertificates?(
+    token: string,
+    input: { zoneId: string }
+  ): Promise<ProviderOriginCertificate[]>
   /** Revoke a certificate issued by `issueOriginCertificate`. */
   revokeOriginCertificate?(token: string, input: { externalId: string }): Promise<void>
 }

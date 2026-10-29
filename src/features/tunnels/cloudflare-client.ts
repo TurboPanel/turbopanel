@@ -176,9 +176,38 @@ export class CloudflareClient {
     })
   }
 
-  /** Revoke an origin certificate; it stops being valid at once. */
+  /**
+   * The origin certificates of a zone that are still valid; revoked ones are not
+   * listed. Each item carries the certificate and its names, never a private key
+   * (the person who made the request keeps that).
+   */
+  async listOriginCertificates(zoneId: string): Promise<CloudflareOriginCertificate[]> {
+    const list = await this.#call<CloudflareOriginCertificate[] | null>(
+      'GET',
+      `/certificates?zone_id=${encodeURIComponent(zoneId)}&limit=100`
+    )
+    return Array.isArray(list) ? list : []
+  }
+
+  /**
+   * Revoke an origin certificate; it stops being valid at once. Cloudflare
+   * answers 400 (not 404) for a certificate that is already revoked ("Certificate
+   * already revoked") or that it does not know ("Failed to read certificate"),
+   * so those are reported as `not_found`, which callers treat as already gone.
+   */
   async revokeOriginCertificate(certificateId: string): Promise<void> {
-    await this.#call('DELETE', `/certificates/${encodeURIComponent(certificateId)}`)
+    try {
+      await this.#call('DELETE', `/certificates/${encodeURIComponent(certificateId)}`)
+    } catch (err) {
+      if (
+        err instanceof TunnelProviderError &&
+        err.status === 400 &&
+        /already revoked|failed to read certificate/i.test(err.message)
+      ) {
+        throw new TunnelProviderError('not_found', err.message, err.status)
+      }
+      throw err
+    }
   }
 
   createTunnel(accountId: string, name: string): Promise<CloudflareTunnel> {

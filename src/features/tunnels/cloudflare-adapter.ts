@@ -168,6 +168,16 @@ function toInfo(kind: TokenKind, found: VerifyResult): TokenInfo {
   }
 }
 
+/** `parseExpiry` for a list item: an unreadable or missing time is null, not an error. */
+function safeExpiry(value: string | undefined): string | null {
+  if (!value) return null
+  try {
+    return parseExpiry(value)
+  } catch {
+    return null
+  }
+}
+
 /**
  * Cloudflare writes expiry as `2026-11-04 17:43:00 +0000 UTC`; an ISO time is
  * accepted too. Anything else is a provider error, not a guess.
@@ -361,6 +371,16 @@ export function createCloudflareAdapter(options: { fetch?: typeof fetch } = {}):
         certificatePem: issued.certificate,
         notAfter: parseExpiry(issued.expires_on),
       }
+    },
+
+    async listOriginCertificates(token, input) {
+      const list = await client(token).listOriginCertificates(input.zoneId)
+      return list.map((item) => ({
+        externalId: item.id,
+        hostnames: (item.hostnames ?? []).map((name) => name.trim().toLowerCase()),
+        notAfter: safeExpiry(item.expires_on),
+        certificatePem: item.certificate ?? null,
+      }))
     },
 
     async revokeOriginCertificate(token, input) {

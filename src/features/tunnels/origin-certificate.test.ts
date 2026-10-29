@@ -30,8 +30,10 @@ import type { TunnelAdapter } from './adapter.ts'
 import { TunnelProviderError } from './errors.ts'
 import {
   countOriginCertificatesFrom,
+  ensureOriginCertificate,
   hostingsPinning,
   issueOriginCertificate,
+  retireUnusedOriginCertificates,
   MAX_ORIGIN_CERTIFICATES_PER_ORG,
   OriginCertificateRefusal,
   readProviderOrigin,
@@ -199,6 +201,7 @@ test('an issued certificate is stored with its key sealed and the request is the
       carrier: w.carrierRow,
       badge: w.badgeRow,
       zoneName: 'Example.com',
+      names: ['app.example.com'],
     })
     assertEquals(row.source, 'provider_origin')
     assertEquals(row.status, 'ready')
@@ -210,11 +213,14 @@ test('an issued certificate is stored with its key sealed and the request is the
     assertEquals(JSON.stringify(fake.issued).includes('PRIVATE KEY'), false)
     assertEquals(fake.issued.length, 1)
     assertEquals(fake.issued[0]!.token, TOKEN)
-    assertEquals(fake.issued[0]!.hostnames, ['example.com', '*.example.com'])
+    assertEquals(fake.issued[0]!.hostnames, ['app.example.com'])
     assert(fake.issued[0]!.csrPem.startsWith('-----BEGIN CERTIFICATE REQUEST-----'))
     const link = readProviderOrigin(row.metadata)
     assertEquals(link?.zoneName, 'example.com')
     assertEquals(link?.externalId, 'ext-1')
+    assertEquals(link?.hostnames, ['app.example.com'])
+    assertEquals(link?.scope, 'names')
+    assertEquals(link?.retiredAt, null)
     assertEquals(link?.badgeId, w.badgeRow.id)
     assertEquals(
       await countOriginCertificatesFrom(w.db, w.organizationId, { badgeId: w.badgeRow.id }),
@@ -242,6 +248,7 @@ test('a zone the token was not found to reach is refused before the provider is 
           carrier: w.carrierRow,
           badge: w.badgeRow,
           zoneName: 'other.org',
+          names: ['app.example.com'],
         }),
       OriginCertificateRefusal
     )
@@ -261,6 +268,7 @@ test('a provider that does not issue certificates is refused', async () => {
           carrier: w.carrierRow,
           badge: w.badgeRow,
           zoneName: 'example.com',
+          names: ['app.example.com'],
         }),
       OriginCertificateRefusal
     )
@@ -278,6 +286,7 @@ test('a certificate that cannot be stored is revoked again at the provider', asy
         carrier: w.carrierRow,
         badge: w.badgeRow,
         zoneName: 'example.com',
+        names: ['app.example.com'],
       })
     )
     assertEquals(
@@ -309,6 +318,7 @@ test('an organization at its limit gets no more certificates', async () => {
           carrier: w.carrierRow,
           badge: w.badgeRow,
           zoneName: 'example.com',
+          names: ['app.example.com'],
         }),
       OriginCertificateRefusal
     )
@@ -326,6 +336,7 @@ test('a certificate a site pins cannot be revoked; once free it is revoked and r
       carrier: w.carrierRow,
       badge: w.badgeRow,
       zoneName: 'example.com',
+      names: ['app.example.com'],
     })
     const hostingId = await pin(w.db, w.serviceId, row.id, 'app.example.com')
     assertEquals(await hostingsPinning(w.db, row.id), [hostingId])
@@ -354,6 +365,7 @@ test('a certificate the provider already forgot is simply removed', async () => 
       carrier: w.carrierRow,
       badge: w.badgeRow,
       zoneName: 'example.com',
+      names: ['app.example.com'],
     })
     await revokeOriginCertificate({ db: w.db, secrets: w.secrets, adapter: fake.adapter, row })
     assertEquals((await w.db.select().from(tls).where(eq(tls.id, row.id))).length, 0)
@@ -369,6 +381,7 @@ test('with the issuing token gone a certificate is kept unless removal is forced
       carrier: w.carrierRow,
       badge: w.badgeRow,
       zoneName: 'example.com',
+      names: ['app.example.com'],
     })
     await w.db
       .update(tls)
@@ -413,6 +426,7 @@ test('renewal issues a replacement, re-pins the sites and keeps the old row unti
       carrier: w.carrierRow,
       badge: w.badgeRow,
       zoneName: 'example.com',
+      names: ['app.example.com'],
     })
     const hostingId = await pin(w.db, w.serviceId, old.id, 'app.example.com')
     const renewed = await renewOriginCertificate({
@@ -433,7 +447,7 @@ test('renewal issues a replacement, re-pins the sites and keeps the old row unti
   })
 })
 
-test('the sweep renews a pinned certificate that is close to expiry and removes a replaced one only after it expired', async () => {
+test('the sweep renews a pinned certificate that is close to expiry and retires the old one', async () => {
   await withWorld(async (w) => {
     const fake = fakeAdapter()
     const old = await issueOriginCertificate({
@@ -442,31 +456,172 @@ test('the sweep renews a pinned certificate that is close to expiry and removes 
       carrier: w.carrierRow,
       badge: w.badgeRow,
       zoneName: 'example.com',
+      names: ['app.example.com'],
     })
-    await pin(w.db, w.serviceId, old.id, 'app.example.com')
+    const hostingId = await pin(w.db, w.serviceId, old.id, 'app.example.com')
     const registry = () => fake.adapter
     const base = { db: w.db, secrets: w.secrets, registry, organizationId: w.organizationId }
     // Healthy and pinned: nothing to do.
     let result = await sweepOriginCertificates(base)
     assertEquals([result.renewed, result.removed, result.failed], [[], [], []])
-    // Ten days from expiry: renewed, and the site is reported for a push.
+    // Ten days from expiry: renewed for the same names, and the site is reported for a push.
     await w.db
       .update(tls)
       .set({ notAfter: new Date(Date.now() + 10 * 86_400_000).toISOString() })
       .where(eq(tls.id, old.id))
     result = await sweepOriginCertificates(base)
     assertEquals(result.renewed.length, 1)
-    assertEquals(result.repinnedHostingIds.length, 1)
-    // Replaced but not yet expired: kept.
+    assertEquals(result.repinnedHostingIds, [hostingId])
+    assertEquals(fake.issued[1]!.hostnames, ['app.example.com'])
+    const [retired] = await w.db.select().from(tls).where(eq(tls.id, old.id))
+    assert(readProviderOrigin(retired!.metadata)!.retiredAt !== null)
+    // Retired, no longer pinned, but inside the grace period: kept, nothing revoked.
     result = await sweepOriginCertificates(base)
     assertEquals(result.removed, [])
-    // Past its own expiry: removed with no revoke call.
+    assertEquals(fake.revoked.length, 0)
+    // Past the grace period: revoked at the provider and removed.
+    result = await sweepOriginCertificates({
+      ...base,
+      now: new Date(Date.now() + 25 * 3_600_000),
+    })
+    assertEquals(result.removed, [old.id])
+    assertEquals(
+      fake.revoked.map((r) => r.externalId),
+      ['ext-1']
+    )
+  })
+})
+
+test('a retired certificate that is already expired is dropped without a revoke call', async () => {
+  await withWorld(async (w) => {
+    const fake = fakeAdapter()
+    const old = await issueOriginCertificate({
+      ...w,
+      adapter: fake.adapter,
+      carrier: w.carrierRow,
+      badge: w.badgeRow,
+      zoneName: 'example.com',
+      names: ['app.example.com'],
+    })
+    await retireUnusedOriginCertificates(w.db, w.organizationId, [])
     await w.db
       .update(tls)
       .set({ notAfter: new Date(Date.now() - 86_400_000).toISOString() })
       .where(eq(tls.id, old.id))
-    result = await sweepOriginCertificates(base)
+    const result = await sweepOriginCertificates({
+      db: w.db,
+      secrets: w.secrets,
+      registry: () => fake.adapter,
+      organizationId: w.organizationId,
+    })
     assertEquals(result.removed, [old.id])
     assertEquals(fake.revoked.length, 0)
+  })
+})
+
+test('asking again for names a TurboPanel certificate already covers reuses it', async () => {
+  await withWorld(async (w) => {
+    const fake = fakeAdapter()
+    const params = {
+      ...w,
+      adapter: fake.adapter,
+      carrier: w.carrierRow,
+      badge: w.badgeRow,
+      zoneName: 'example.com',
+    }
+    const first = await ensureOriginCertificate({
+      ...params,
+      names: ['a.example.com', 'b.example.com'],
+    })
+    assertEquals(first.reused, false)
+    const again = await ensureOriginCertificate({ ...params, names: ['b.example.com'] })
+    assertEquals(again.reused, true)
+    assertEquals(again.row.id, first.row.id)
+    assertEquals(fake.issued.length, 1)
+  })
+})
+
+test('when a site gains a name a new certificate replaces the old one, which is retired not revoked', async () => {
+  await withWorld(async (w) => {
+    const fake = fakeAdapter()
+    const params = {
+      ...w,
+      adapter: fake.adapter,
+      carrier: w.carrierRow,
+      badge: w.badgeRow,
+      zoneName: 'example.com',
+    }
+    const first = await ensureOriginCertificate({ ...params, names: ['a.example.com'] })
+    const second = await ensureOriginCertificate({
+      ...params,
+      names: ['a.example.com', 'b.example.com'],
+    })
+    assertEquals(second.reused, false)
+    assertEquals(second.retiredIds, [first.row.id])
+    assertEquals(
+      fake.issued.map((i) => i.hostnames),
+      [['a.example.com'], ['a.example.com', 'b.example.com']]
+    )
+    // Nothing is revoked while the old one could still be installed on a server.
+    assertEquals(fake.revoked.length, 0)
+    const [oldRow] = await w.db.select().from(tls).where(eq(tls.id, first.row.id))
+    assert(readProviderOrigin(oldRow!.metadata)!.retiredAt !== null)
+    // The retired one is not offered for reuse any more.
+    const third = await ensureOriginCertificate({ ...params, names: ['a.example.com'] })
+    assertEquals(third.row.id, second.row.id)
+  })
+})
+
+test('a wildcard is issued only when asked for, lists the zone and one label below it, and is reused', async () => {
+  await withWorld(async (w) => {
+    const fake = fakeAdapter()
+    const params = {
+      ...w,
+      adapter: fake.adapter,
+      carrier: w.carrierRow,
+      badge: w.badgeRow,
+      zoneName: 'example.com',
+    }
+    // Exact names never turn into a wildcard.
+    await assertRejects(
+      () => ensureOriginCertificate({ ...params, names: ['*.example.com'] }),
+      OriginCertificateRefusal
+    )
+    const wide = await ensureOriginCertificate({ ...params, scope: 'wildcard' })
+    assertEquals(fake.issued[0]!.hostnames, ['example.com', '*.example.com'])
+    assertEquals(readProviderOrigin(wide.row.metadata)?.scope, 'wildcard')
+    // The opted-in wildcard serves any name one label down without another request.
+    const reuse = await ensureOriginCertificate({ ...params, names: ['app.example.com'] })
+    assertEquals(reuse.reused, true)
+    assertEquals(reuse.row.id, wide.row.id)
+    // A name two labels down is not covered, so a new exact certificate is issued for it.
+    const deep = await ensureOriginCertificate({ ...params, names: ['a.b.example.com'] })
+    assertEquals(deep.reused, false)
+    assertEquals(fake.issued[1]!.hostnames, ['a.b.example.com'])
+  })
+})
+
+test('certificates nobody needs any more are retired, others are left alone', async () => {
+  await withWorld(async (w) => {
+    const fake = fakeAdapter()
+    const params = {
+      ...w,
+      adapter: fake.adapter,
+      carrier: w.carrierRow,
+      badge: w.badgeRow,
+      zoneName: 'example.com',
+    }
+    const kept = await ensureOriginCertificate({ ...params, names: ['a.example.com'] })
+    const dropped = await ensureOriginCertificate({ ...params, names: ['gone.example.com'] })
+    const retired = await retireUnusedOriginCertificates(w.db, w.organizationId, ['a.example.com'])
+    assertEquals(retired, [dropped.row.id])
+    // Running it again changes nothing, and nothing was revoked here.
+    assertEquals(
+      await retireUnusedOriginCertificates(w.db, w.organizationId, ['a.example.com']),
+      []
+    )
+    assertEquals(fake.revoked.length, 0)
+    const [row] = await w.db.select().from(tls).where(eq(tls.id, kept.row.id))
+    assertEquals(readProviderOrigin(row!.metadata)!.retiredAt, null)
   })
 })

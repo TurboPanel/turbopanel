@@ -424,6 +424,70 @@ test('revoking deletes the certificate by id', async () => {
   assertEquals(calls[0]!.method, 'DELETE')
 })
 
+test('revoking a certificate that is already revoked, or that the provider does not know, counts as gone', async () => {
+  for (const message of [
+    'Certificate already revoked',
+    'Failed to read certificate from Database',
+  ]) {
+    const { impl } = fakeFetch({
+      'DELETE /client/v4/certificates/cert-1': refused(400, message),
+    })
+    const err = await assertRejects(
+      () =>
+        createCloudflareAdapter({ fetch: impl }).revokeOriginCertificate!(TOKEN, {
+          externalId: 'cert-1',
+        }),
+      TunnelProviderError
+    )
+    // Cloudflare answers 400, not 404; the caller treats not_found as already revoked.
+    assertEquals(err.code, 'not_found')
+  }
+  const other = fakeFetch({
+    'DELETE /client/v4/certificates/cert-1': refused(400, 'Something else is wrong'),
+  })
+  const err = await assertRejects(
+    () =>
+      createCloudflareAdapter({ fetch: other.impl }).revokeOriginCertificate!(TOKEN, {
+        externalId: 'cert-1',
+      }),
+    TunnelProviderError
+  )
+  assertEquals(err.code, 'provider_error')
+})
+
+test('the certificates a zone holds are listed with names and expiry, whoever issued them', async () => {
+  const { impl, calls } = fakeFetch({
+    'GET /client/v4/certificates': ok([
+      {
+        id: 'c1',
+        certificate: '-----BEGIN CERTIFICATE-----\nAA\n-----END CERTIFICATE-----',
+        hostnames: ['*.Example.com', 'example.com'],
+        expires_on: '2027-10-29 02:12:00 +0000 UTC',
+      },
+      { id: 'c2', hostnames: ['app.example.com'], expires_on: 'not a time' },
+    ]),
+  })
+  const list = await createCloudflareAdapter({ fetch: impl }).listOriginCertificates!(TOKEN, {
+    zoneId: 'z1',
+  })
+  assertEquals(calls[0]!.url, '/client/v4/certificates?zone_id=z1&limit=100')
+  assertEquals(
+    list.map((c) => [c.externalId, c.hostnames, c.notAfter, c.certificatePem === null]),
+    [
+      ['c1', ['*.example.com', 'example.com'], '2027-10-29T02:12:00.000Z', false],
+      ['c2', ['app.example.com'], null, true],
+    ]
+  )
+  // An empty answer is an empty list.
+  const none = fakeFetch({ 'GET /client/v4/certificates': ok(null) })
+  assertEquals(
+    await createCloudflareAdapter({ fetch: none.impl }).listOriginCertificates!(TOKEN, {
+      zoneId: 'z1',
+    }),
+    []
+  )
+})
+
 test("expiry times are read in Cloudflare's form and in ISO form, and nothing else", () => {
   assertEquals(parseExpiry('2026-11-04 17:43:00 +0000 UTC'), '2026-11-04T17:43:00.000Z')
   assertEquals(parseExpiry('2026-11-04T17:43:00Z'), '2026-11-04T17:43:00.000Z')

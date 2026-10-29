@@ -345,27 +345,69 @@ provider accounts.
 
 ## Origin certificates
 
-Optional. The default hop from the connector to the local web server skips
-certificate verification (`noTLSVerify: true`, the connector still sends the
-hostname as the origin server name). With an origin certificate on the web
-server the hop can be verified: `setRoutes` takes `verifyOrigin: true`, which
-sets `noTLSVerify: false` and nothing else. No certificate file or path is
-needed: the connector's origin pool is the system pool plus its built-in
-Cloudflare roots, which include the origin ECC and RSA roots (read from the
-upstream source on 2026-10-28 and not yet proved on a real connector; the
-testing round settles it). Nothing sets `verifyOrigin` yet.
+Optional, per tunnel. The default hop from the connector to the local web server
+skips certificate verification (`noTLSVerify: true`; the connector still sends
+the hostname as the origin server name). With the choice "verify the
+connection" (`tunnel.options.verifyOrigin`) the sites that serve the tunnel's
+names present an origin certificate and the connector verifies it
+(`setRoutes` with `verifyOrigin: true`, which sets `noTLSVerify: false` and
+nothing else; no certificate file or path is needed, the connector's origin pool
+includes the provider's origin roots. **Proved on a real connector?** See the
+note at the end of this section.)
 
-`origin-certificate.ts` keeps one certificate per account and zone in the
-organization certificate library (`tls`, source `provider_origin`): the zone and
-`*.` the zone. The key is an ECDSA P-256 key made in the panel
-(`mintCertificateRequest`); only the request goes to the provider; the key is
-sealed like every library key. `tls.metadata.providerOrigin` holds the account,
-the token that can revoke it, the zone and the provider's certificate id; the
-TLS routes never return it. Rules the code enforces:
+**The default is a certificate for EXACT hostnames, not a wildcard.** One
+certificate per site (a site pins one `tlsId`), listing exactly the names that
+site serves, issued on demand. A wildcard (the zone and `*.` the zone) exists
+only when the person asks for it (`wildcard: true`). Why: a wildcard key can
+impersonate any name under the zone, revoking it takes every site with it, it
+does not cover a name two labels down (`a.b.zone`), and names are added one at a
+time anyway.
+
+`origin-certificate.ts` keeps the issued pairs in the organization certificate
+library (`tls`, source `provider_origin`), one row per certificate. The key is
+an ECDSA P-256 key made in the panel (`mintCertificateRequest`); only the
+request goes to the provider; the key is sealed like every library key.
+`tls.metadata.providerOrigin` holds the account, the token that can revoke it,
+the zone, the provider's certificate id, the exact names (`hostnames`), the
+`scope` (`names` or `wildcard`) and `retiredAt`; the TLS routes never return it.
+
+Real API facts (checked against the live service on 2026-10-28):
+
+- Validity must be one of 7, 30, 90, 365, 730, 1095 or 5475 days. We use 365 and
+  renew 30 days before expiry.
+- A certificate lists at most 100 names ("up to 100 per certificate"); the code
+  refuses more. Names must be inside a zone of the account; a foreign name is
+  refused (code 1010).
+- Only one wildcard, and only first: `*.zone` is allowed (also `*.sub.zone`),
+  `*.*.zone` and `a.*.zone` are not. A wildcard covers one label.
+- The list (`GET /certificates?zone_id=`) returns `id`, `hostnames`, `expires_on`
+  and the certificate PEM; never a private key, and it carries no request type
+  or validity. Revoked certificates drop out of it. `expires_on` is
+  `2027-10-29 02:12:00 +0000 UTC`.
+- Revoking twice answers 400 "Certificate already revoked" (code 1014), and an
+  unknown id answers 400 "Failed to read certificate" (1101), not 404. The client
+  reports both as `not_found`, which callers treat as already gone.
+
+Rules the code enforces:
 
 - A token may issue only for a zone its recorded `certificates` rights name.
   Existing tokens have none recorded: the issue route runs one credential check
   and stores the result before it refuses.
+- **Reuse:** a healthy, unretired TurboPanel certificate of the same account
+  that already covers every name (an exact certificate, or an opted-in wildcard
+  one label up) is returned instead of issuing another (`findCoveringCertificate`).
+- **Replace, never edit:** when a site gains a name, a new certificate lists all
+  of them; the exact certificates it makes redundant are marked **retired**
+  (`retiredAt`), not revoked. A certificate whose last name is gone is retired
+  too (`retireUnusedOriginCertificates`, run when a hostname is removed and by
+  the sweep). The sweep (`sweepOriginCertificates`) revokes a retired certificate
+  only once no site pins it and 24 hours have passed, or just drops it when it has
+  expired. So a server that has not been redeployed keeps a working certificate.
+- **Only certificates TurboPanel issued are ever revoked.** The provider list
+  (`describeExistingOriginCertificates`, `GET .../origin-certificates/existing`)
+  shows every certificate the zone holds and marks the ones issued here; a
+  certificate made elsewhere is shown but cannot be installed (its key was never
+  ours): upload its certificate and key to the library, or issue a new one.
 - A site that pins the certificate blocks revoking it (`tls_in_use`); an account
   or token that issued one cannot be removed first (`origin_certificate_in_use`),
   because the certificate could then never be revoked. The TLS library routes
@@ -373,21 +415,40 @@ TLS routes never return it. Rules the code enforces:
 provider_origin_managed`, `400 provider_origin_unsupported`).
 - If storing fails after the provider issued the certificate, it is revoked
   again. A provider that no longer knows the id counts as revoked.
-- Validity is 365 days and renewal starts 30 days before expiry. Renewal issues
-  a replacement and re-pins the sites; **it does not redeploy**. The old
-  certificate stays valid until its own expiry and is only removed after that,
-  so a site that has not been redeployed keeps a working certificate.
-  `renewOriginCertificate` returns the re-pinned hosting ids so a surface that
-  can queue a hostings-only deploy (`client/hostings/letsencrypt-apply.ts`)
-  can push them; the feature layer cannot import it.
-- `sweepOriginCertificates` (renew, then drop replaced and expired rows) is not
-  wired to any timer yet, and no tunnel option pins a hostname to a certificate
-  yet. Both wait for the tunnel hostname code and the automatic pin.
+- Renewal issues a replacement for the same names and scope, re-pins the sites
+  (it does not redeploy: `renewOriginCertificate` returns the re-pinned hosting
+  ids so a surface that can queue a hostings-only deploy can push them) and
+  retires the old row. The sweep is not on a timer yet.
 - Deleting an organization removes the rows without revoking them at the
   provider.
 
+**Turning it on** (`verify-origin.ts`, `PUT /organizations/:id/tunnels/:tunnelId/verify-origin`
+`{ enabled, wildcard? }`): each site that serves the tunnel's names gets the
+certificate for exactly the names it serves (`hostingCertificateNames`, so the
+`www` sibling counts) and `hosting.tlsId` is pointed at it. The daemon already
+renders a pinned pair for a locked tunnel name instead of `tls internal`, so no
+daemon change is needed; the server gets the new pair with the site's next
+deploy (`needsDeploy`). Refused (409) when the site also serves a name that is
+not a verified tunnel name (`verify_origin_public_names`: browsers do not trust
+an origin certificate), when its names span more than one zone
+(`verify_origin_zones`), or when a chosen wildcard does not cover a deeper name
+(`verify_origin_names`). Safe to repeat: run it again when a site was missing or
+names were added.
+
+**The connector only verifies while every name is covered.** `tunnelVerifyState`
+(`verify-state.ts`) is `active` only when every non-removing name of the tunnel
+belongs to a site that pins a ready, unexpired origin certificate covering it;
+the routes sent to the provider use `active`, never the bare choice, so a site
+that does not exist yet can never make a verified tunnel unreachable. `pendingNames`
+(in the tunnel's `verifyOrigin`) says which names still wait.
+
 Routes (`client/organizations/origin-certificate-routes.ts`, `organization:manage`):
-`GET|POST /organizations/:id/carriers/:carrierId/origin-certificates` and
-`DELETE .../origin-certificates/:tlsId`. A healthy certificate for the same
-zone is returned again instead of issuing a second one. Tunnel-only names never
-get an automatic public certificate request; nothing here touches that path.
+`GET|POST /organizations/:id/carriers/:carrierId/origin-certificates`,
+`GET .../origin-certificates/existing?zone=`, `DELETE .../origin-certificates/:tlsId`
+and the tunnel route above. Tunnel-only names never get an automatic public
+certificate request; nothing here touches that path.
+
+Not proved yet: that a real connector accepts the origin certificate on the hop
+(the connector's built-in roots are read from its source, not yet tried against
+a live origin). It is a one-line check on the testing round: turn the option on
+for a tunnel with one site and read `/ready` and a request through the tunnel.
