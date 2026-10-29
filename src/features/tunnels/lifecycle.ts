@@ -23,6 +23,8 @@ import { decryptSecret, encryptSecret } from '../../lib/secrets/data-encryption.
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { hostingIdsOfOrganization } from './hosting-scope.ts'
 import { compareText } from './order.ts'
+import { type VerifyState, tunnelVerifyState, verifyOriginHostnames } from './verify-state.ts'
+import { retireUnusedOriginCertificates } from './origin-certificate.ts'
 import { parseServerOptions } from '../servers/server-metadata.ts'
 import type { TunnelAdapter } from './adapter.ts'
 import {
@@ -94,6 +96,8 @@ export type ApiTunnel = {
   carryingServerIds: string[]
   warnings: string[]
   doorwayCount: number
+  /** The verified connection to the web server: asked for, in effect, and which names still wait. */
+  verifyOrigin: VerifyState
 }
 
 export type ApiDoorway = {
@@ -178,10 +182,11 @@ export async function carryingServers(db: Db, row: TunnelRow): Promise<string[]>
 }
 
 export async function toApiTunnel(db: Db, row: TunnelRow): Promise<ApiTunnel> {
-  const [portals, carrying, doorways] = await Promise.all([
+  const [portals, carrying, doorways, verify] = await Promise.all([
     listPortals(db, row.id),
     carryingServers(db, row),
     db.select({ id: doorway.id }).from(doorway).where(eq(doorway.tunnelId, row.id)),
+    tunnelVerifyState(db, row),
   ])
   return {
     id: row.id,
@@ -203,6 +208,7 @@ export async function toApiTunnel(db: Db, row: TunnelRow): Promise<ApiTunnel> {
     carryingServerIds: carrying,
     warnings: [...removalWarnings(row), ...placementWarnings(carrying)],
     doorwayCount: doorways.length,
+    verifyOrigin: verify,
   }
 }
 
@@ -274,7 +280,7 @@ export function badgeRefusal(err: BadgeUnavailable | BadgeRefused, action: strin
 }
 
 /** A failed provider call as a refusal: no-token cases get the actionable text, the rest the provider's. */
-function refuse(err: unknown, action: string): unknown {
+export function refuse(err: unknown, action: string): unknown {
   if (err instanceof BadgeUnavailable || err instanceof BadgeRefused) {
     return badgeRefusal(err, action)
   }
@@ -768,7 +774,11 @@ function routeTakenDown(row: DoorwayRow): boolean {
   return row.status === 'attention' && doorwayWarning(row) !== null
 }
 
-async function routeNames(db: Db, tunnelId: string, extra: string | null): Promise<string[]> {
+export async function routeNames(
+  db: Db,
+  tunnelId: string,
+  extra: string | null
+): Promise<string[]> {
   const rows = await listDoorways(db, tunnelId)
   // A hostname waiting in attention for its DNS token has had its route taken down; it stays down.
   const names = rows.filter((r) => !routeTakenDown(r)).map((r) => r.hostname)
@@ -893,8 +903,14 @@ async function publishDoorway(
 ): Promise<DoorwayRow> {
   const { row, owner, account, zone } = plan
   const hostnames = await routeNames(db, row.id, null)
+  const verifyOrigin = (await tunnelVerifyState(db, row)).active
   await useBadges(db, deps.secrets, owner.id, { capability: 'tunnels' }, (token) =>
-    deps.adapter.setRoutes(token, { accountId: account, externalId: row.externalId!, hostnames })
+    deps.adapter.setRoutes(token, {
+      accountId: account,
+      externalId: row.externalId!,
+      hostnames,
+      verifyOrigin,
+    })
   )
   const dns = zone
     ? await useBadges(db, deps.secrets, owner.id, { capability: 'dns', zone }, (token) =>
@@ -994,11 +1010,13 @@ async function restoreRoutesQuietly(
 ): Promise<void> {
   try {
     const hostnames = await routeNames(db, row.id, null)
+    const verifyOrigin = (await tunnelVerifyState(db, row)).active
     await useBadges(db, deps.secrets, owner.id, { capability: 'tunnels' }, (token) =>
       deps.adapter.setRoutes(token, {
         accountId: owner.externalAccountId,
         externalId: row.externalId!,
         hostnames,
+        verifyOrigin,
       })
     )
   } catch {
@@ -1022,6 +1040,7 @@ export async function removeDoorway(
 ): Promise<void> {
   if (!row.externalId) {
     await db.delete(doorway).where(eq(doorway.id, current.id))
+    await retireUnusedCertificatesQuietly(db, row.organizationId)
     return
   }
   if (!(await openBestBadge(db, deps.secrets, owner.id, { capability: 'tunnels' }))) {
@@ -1037,11 +1056,13 @@ export async function removeDoorway(
     // The route goes first, so a failed DNS removal leaves a name that answers nothing,
     // never a route to a name that is gone; a retry rewrites the same route.
     const remaining = (await routeNames(db, row.id, null)).filter((n) => n !== current.hostname)
+    const verifyOrigin = remaining.length > 0 && (await tunnelVerifyState(db, row)).active
     await useBadges(db, deps.secrets, owner.id, { capability: 'tunnels' }, (token) =>
       deps.adapter.setRoutes(token, {
         accountId: owner.externalAccountId,
         externalId: row.externalId!,
         hostnames: remaining,
+        verifyOrigin,
       })
     )
   } catch (err) {
@@ -1049,6 +1070,23 @@ export async function removeDoorway(
   }
   if (hasDnsName) await removeDnsNameOrKeep(db, deps, owner, current, zoneId!)
   await db.delete(doorway).where(eq(doorway.id, current.id))
+  await retireUnusedCertificatesQuietly(db, row.organizationId)
+}
+
+/**
+ * A certificate whose last hostname is gone is marked retired (the sweep revokes
+ * it once no site pins it). Never fails the removal that triggered it.
+ */
+async function retireUnusedCertificatesQuietly(db: Db, organizationId: string): Promise<void> {
+  try {
+    await retireUnusedOriginCertificates(
+      db,
+      organizationId,
+      await verifyOriginHostnames(db, organizationId)
+    )
+  } catch {
+    // The sweep retires it on its next pass.
+  }
 }
 
 /** Take the DNS name away with any token that covers the zone; if none can, keep the row in `attention` and say why. */

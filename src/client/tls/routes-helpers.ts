@@ -447,5 +447,8 @@ export async function buildCreateTlsMaterial(
       return materialFromLetsEncrypt(body)
     case 'organization_ca':
       return await materialFromOrganizationCa(secrets, { organizationId })
+    case 'provider_origin':
+      // Issued through a tunnel's carrier (see features/tunnels), never created here.
+      return createFailure('provider_origin_unsupported')
   }
 }

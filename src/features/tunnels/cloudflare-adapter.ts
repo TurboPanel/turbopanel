@@ -19,6 +19,7 @@ import { TunnelProviderError } from './errors.ts'
 export const CLOUDFLARE_PERMISSIONS = {
   tunnels: 'Account · Cloudflare Tunnel · Edit',
   dns: 'Zone · DNS · Edit',
+  certificates: 'Zone · SSL and Certificates · Edit',
 } as const
 
 /** What a connector is told to reach: the web server on the same machine. */
@@ -66,6 +67,26 @@ async function reachableZones(
     zones.map(async (z) =>
       (await probe(() => api.probeDns(z.id))) ? { id: z.id, name: z.name } : null
     )
+  )
+  return probed.filter((z): z is { id: string; name: string } => z !== null)
+}
+
+/** The zones whose origin certificates the token can read, found by one safe read per zone. */
+async function reachableCertificateZones(
+  api: CloudflareClient,
+  zones: readonly { id: string; name: string }[]
+): Promise<{ id: string; name: string }[]> {
+  // The certificate list answers 404 as well as 403 to a token without the permission.
+  const readable = async (zoneId: string): Promise<boolean> => {
+    try {
+      return await probe(() => api.probeCertificates(zoneId))
+    } catch (err) {
+      if (err instanceof TunnelProviderError && err.code === 'not_found') return false
+      throw err
+    }
+  }
+  const probed = await Promise.all(
+    zones.map(async (z) => ((await readable(z.id)) ? { id: z.id, name: z.name } : null))
   )
   return probed.filter((z): z is { id: string; name: string } => z !== null)
 }
@@ -210,7 +231,39 @@ function toInfo(kind: TokenKind, found: VerifyResult): TokenInfo {
   }
 }
 
-export function buildIngress(hostnames: readonly string[]): CloudflareIngressRule[] {
+/** `parseExpiry` for a list item: an unreadable or missing time is null, not an error. */
+function safeExpiry(value: string | undefined): string | null {
+  if (!value) return null
+  try {
+    return parseExpiry(value)
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Cloudflare writes expiry as `2026-11-04 17:43:00 +0000 UTC`; an ISO time is
+ * accepted too. Anything else is a provider error, not a guess.
+ */
+export function parseExpiry(value: string): string {
+  const match = /^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})(?:\.\d+)?(?: \+0000 UTC|Z)?$/.exec(
+    value.trim()
+  )
+  const time = match ? Date.parse(`${match[1]}T${match[2]}Z`) : Number.NaN
+  if (Number.isNaN(time)) {
+    throw new TunnelProviderError(
+      'provider_error',
+      'Cloudflare gave an expiry time it could not be read',
+      null
+    )
+  }
+  return new Date(time).toISOString()
+}
+
+export function buildIngress(
+  hostnames: readonly string[],
+  verifyOrigin = false
+): CloudflareIngressRule[] {
   const seen = new Set<string>()
   const rules: CloudflareIngressRule[] = []
   for (const raw of hostnames) {
@@ -220,7 +273,11 @@ export function buildIngress(hostnames: readonly string[]): CloudflareIngressRul
     rules.push({
       hostname,
       service: LOCAL_ORIGIN,
-      originRequest: { httpHostHeader: hostname, originServerName: hostname, noTLSVerify: true },
+      originRequest: {
+        httpHostHeader: hostname,
+        originServerName: hostname,
+        noTLSVerify: !verifyOrigin,
+      },
     })
   }
   // The last rule must match everything and carry no hostname.
@@ -271,8 +328,8 @@ export function createCloudflareAdapter(options: { fetch?: typeof fetch } = {}):
       const capabilities: BadgeCapabilities = {
         tunnels,
         dns,
-        // No safe read proves certificate rights, so none are listed.
-        certificates: [],
+        // Certificate rights are per zone too, proved by one safe read of the zone's list.
+        certificates: await reachableCertificateZones(api, mergeZones(zones, declared)),
       }
       const missing: string[] = []
       if (!tunnels) missing.push(CLOUDFLARE_PERMISSIONS.tunnels)
@@ -318,7 +375,7 @@ export function createCloudflareAdapter(options: { fetch?: typeof fetch } = {}):
       await client(token).putConfiguration(
         requireAccount(input.accountId),
         input.externalId,
-        buildIngress(input.hostnames)
+        buildIngress(input.hostnames, input.verifyOrigin)
       )
     },
 
@@ -359,6 +416,40 @@ export function createCloudflareAdapter(options: { fetch?: typeof fetch } = {}):
 
     async deleteTunnel(token, input) {
       await client(token).deleteTunnel(requireAccount(input.accountId), input.externalId)
+    },
+
+    async issueOriginCertificate(token, input) {
+      const issued = await client(token).createOriginCertificate({
+        hostnames: input.hostnames,
+        csr: input.csrPem,
+        validityDays: input.validityDays,
+      })
+      if (!issued.certificate || !issued.expires_on) {
+        throw new TunnelProviderError(
+          'provider_error',
+          'Cloudflare answered without a certificate',
+          null
+        )
+      }
+      return {
+        externalId: issued.id,
+        certificatePem: issued.certificate,
+        notAfter: parseExpiry(issued.expires_on),
+      }
+    },
+
+    async listOriginCertificates(token, input) {
+      const list = await client(token).listOriginCertificates(input.zoneId)
+      return list.map((item) => ({
+        externalId: item.id,
+        hostnames: (item.hostnames ?? []).map((name) => name.trim().toLowerCase()),
+        notAfter: safeExpiry(item.expires_on),
+        certificatePem: item.certificate ?? null,
+      }))
+    },
+
+    async revokeOriginCertificate(token, input) {
+      await client(token).revokeOriginCertificate(input.externalId)
     },
   }
 }

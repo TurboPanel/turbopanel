@@ -81,6 +81,8 @@ export const AUDIT_ACTIONS = [
   'badge.delete',
   'badge.zone_add',
   'badge.zone_remove',
+  'origin_certificate.issue',
+  'origin_certificate.revoke',
   'tunnel.create',
   'tunnel.update',
   'tunnel.delete',

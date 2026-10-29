@@ -10,7 +10,7 @@
  * when the tick has a command queue and the secrets the deploy needs; without
  * them, or when the apply cannot be queued, the panel asks for a redeploy.
  */
-import { asc, isNotNull, sql } from 'drizzle-orm'
+import { asc, eq, isNotNull, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { hosting } from '../../db/schema.ts'
 import { HOSTING_LETS_ENCRYPT_DNS_KEY } from '../../features/hostings/hosting-certificate.ts'
@@ -23,6 +23,7 @@ import { runStoredPairSweepTick } from '../tls/stored-pair.ts'
 import { systemRotationContext } from '../tls/system-context.ts'
 import type { CommandQueue } from '../../features/commands/queue.ts'
 import type { DerivedSecretsConfig, SecretsConfig } from '../../lib/secrets/secrets.ts'
+import { runOriginCertificateSweepTick } from '../../features/tunnels/origin-certificate-sweep.ts'
 import { createLetsEncryptStore, loadAcmeEnabled } from './letsencrypt-store.ts'
 import { type HostingApplyDeps, queueHostingCertificateApply } from './letsencrypt-apply.ts'
 
@@ -71,6 +72,37 @@ function pinSender(
       { hostingId, organizationId, actor: { actorType: 'system', actorId: hostingId }, editedAt },
       applyDeps
     )) === 'queued'
+}
+
+/**
+ * Origin certificates ride the same tick (renew, revoke retired ones, drop
+ * expired ones). Needs the data-encryption secrets to open the tokens; without
+ * them it does nothing. A site re-pinned to a renewed certificate gets its
+ * hostings-only apply, like a newly pinned Let's Encrypt certificate. A failure
+ * here must not hide the result of the tick.
+ */
+async function sweepOriginCertificatesToo(
+  db: Db,
+  deps: { now?: () => Date; apply?: HostingLetsEncryptSweepApply },
+  sendPin: (hostingId: string, organizationId: string, editedAt: string) => Promise<boolean>
+): Promise<void> {
+  const secrets = deps.apply?.dataEncryptionSecrets
+  if (!secrets) return
+  try {
+    const done = await runOriginCertificateSweepTick(db, secrets, {
+      ...(deps.now ? { now: deps.now() } : {}),
+    })
+    await forEachSequential(done.repinned, async ({ hostingId, organizationId }) => {
+      const [site] = await db
+        .select({ updatedAt: hosting.updatedAt })
+        .from(hosting)
+        .where(eq(hosting.id, hostingId))
+        .limit(1)
+      if (site) await sendPin(hostingId, organizationId, site.updatedAt)
+    })
+  } catch (err) {
+    logWarn('tls', `origin certificate sweep failed: ${err instanceof Error ? err.message : err}`)
+  }
 }
 
 export async function runHostingLetsEncryptSweepTick(
@@ -134,5 +166,6 @@ export async function runHostingLetsEncryptSweepTick(
   } catch (err) {
     logWarn('tls', `stored certificate sweep failed: ${err instanceof Error ? err.message : err}`)
   }
+  await sweepOriginCertificatesToo(db, deps, sendPin)
   return result
 }

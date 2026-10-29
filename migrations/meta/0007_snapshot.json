@@ -1,5 +1,5 @@
 {
-  "id": "43bfd337-c948-47fd-aca4-1dc4bd000e06",
+  "id": "27f88ff9-677c-45c8-aa9e-815274d472a0",
   "prevId": "45abaa63-0e17-4b70-820d-5c866aa04646",
   "version": "7",
   "dialect": "postgresql",
@@ -11400,28 +11400,6 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
-        },
-        "uniq_secret_acme_account": {
-          "name": "uniq_secret_acme_account",
-          "columns": [
-            {
-              "expression": "organization_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "name",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"secret\".\"provider\" = 'acme_account'",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
         }
       },
       "foreignKeys": {
@@ -11458,7 +11436,7 @@
       "checkConstraints": {
         "secret_provider_check": {
           "name": "secret_provider_check",
-          "value": "provider IN ('s3', 's3_compatible', 'nfs', 'cifs', 'sftp', 'ftp', 'webdav',\n        'git_deploy_key', 'carrier_badge', 'tunnel_run', 'acme_account')"
+          "value": "provider IN ('s3', 's3_compatible', 'nfs', 'cifs', 'sftp', 'ftp', 'webdav',\n        'git_deploy_key', 'carrier_badge', 'tunnel_run')"
         }
       },
       "isRLSEnabled": false
@@ -15069,7 +15047,7 @@
       "checkConstraints": {
         "tls_source_check": {
           "name": "tls_source_check",
-          "value": "source IN ('upload', 'lets_encrypt', 'self_signed', 'organization_ca')"
+          "value": "source IN ('upload', 'lets_encrypt', 'self_signed', 'organization_ca', 'provider_origin')"
         },
         "tls_name_format_check": {
           "name": "tls_name_format_check",
