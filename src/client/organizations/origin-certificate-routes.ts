@@ -202,6 +202,23 @@ function parseIssueBody(
   return { ok: true, value: { zone, wildcard, names } }
 }
 
+function cannotCertify(c: Context<AppEnv>): Response {
+  return c.json(
+    {
+      error: 'badge_cannot_certify',
+      message: 'No API Token on this account can manage certificates for that zone.',
+    },
+    400
+  )
+}
+
+/** Turn a failed certificate call into its reply; anything unexpected is rethrown. */
+function failureResponse(c: Context<AppEnv>, err: unknown): Response {
+  if (err instanceof OriginCertificateRefusal) return refusalResponse(c, err)
+  if (err instanceof TunnelProviderError) return providerFailure(c, err)
+  throw err
+}
+
 function issueResponse(registry: TunnelAdapterRegistry) {
   return async (c: Context<AppEnv>, scope: Scope): Promise<Response> => {
     const current = await loadCarrierParam(c, scope)
@@ -221,15 +238,7 @@ function issueResponse(registry: TunnelAdapterRegistry) {
     if (!secrets) return c.json({ error: 'secrets_unavailable' }, 503)
     const chosen = await badgeForZone(c, scope, registry, current, zone, wanted)
     if (chosen instanceof Response) return chosen
-    if (chosen === null) {
-      return c.json(
-        {
-          error: 'badge_cannot_certify',
-          message: 'No API Token on this account can manage certificates for that zone.',
-        },
-        400
-      )
-    }
+    if (chosen === null) return cannotCertify(c)
     try {
       // A certificate TurboPanel already issued that covers every name is returned again.
       const ensured = await ensureOriginCertificate({
@@ -259,9 +268,7 @@ function issueResponse(registry: TunnelAdapterRegistry) {
         ensured.reused ? 200 : 201
       )
     } catch (err) {
-      if (err instanceof OriginCertificateRefusal) return refusalResponse(c, err)
-      if (err instanceof TunnelProviderError) return providerFailure(c, err)
-      throw err
+      return failureResponse(c, err)
     }
   }
 }
@@ -394,8 +401,7 @@ function revokeResponse(registry: TunnelAdapterRegistry) {
     const [row] = await scope.db.select().from(tls).where(eq(tls.id, tlsId)).limit(1)
     const link = readProviderOrigin(row?.metadata)
     if (
-      !row ||
-      row.organizationId !== scope.organizationId ||
+      row?.organizationId !== scope.organizationId ||
       row.source !== 'provider_origin' ||
       link?.carrierId !== current.id
     ) {

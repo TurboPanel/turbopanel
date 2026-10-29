@@ -30,7 +30,7 @@ export async function firstResult<T, R>(
   run: (item: T) => Promise<R | undefined>
 ): Promise<R | undefined> {
   return await items.reduce<Promise<R | undefined>>(
-    (previous, item) => previous.then((found) => (found === undefined ? run(item) : found)),
+    (previous, item) => previous.then((found) => found ?? run(item)),
     Promise.resolve(undefined)
   )
 }

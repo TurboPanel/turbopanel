@@ -448,7 +448,7 @@ async function saveLink(db: Db, row: TlsRow, link: ProviderOriginLink): Promise<
 /** Mark a certificate as no longer needed; it is revoked later by the sweep. Already retired stays as it was. */
 async function retireRow(db: Db, row: TlsRow, now: Date): Promise<boolean> {
   const link = readProviderOrigin(row.metadata)
-  if (!link || link.retiredAt !== null) return false
+  if (link?.retiredAt !== null) return false
   await saveLink(db, row, { ...link, retiredAt: now.toISOString() })
   return true
 }
