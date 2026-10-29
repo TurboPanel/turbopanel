@@ -15,6 +15,8 @@ import { tls } from '../../db/schema.ts'
 import { TunnelProviderError } from './errors.ts'
 
 export const ORIGIN_RETRY_KEY = 'originRetry'
+/** The JSON path of the back-off inside the row's metadata. */
+const ORIGIN_RETRY_PATH = `{${ORIGIN_RETRY_KEY}}`
 const HOUR_MS = 3_600_000
 /** Longest wait between tries on a row that keeps failing. */
 export const ORIGIN_RETRY_MAX_MS = 24 * HOUR_MS
@@ -68,7 +70,7 @@ export async function saveOriginRetry(db: Db, id: string, retry: OriginRetry | n
       metadata:
         retry === null
           ? sql`${tls.metadata} - ${ORIGIN_RETRY_KEY}::text`
-          : sql`jsonb_set(coalesce(${tls.metadata}, '{}'::jsonb), ${`{${ORIGIN_RETRY_KEY}}`}::text[], ${JSON.stringify(retry)}::jsonb)`,
+          : sql`jsonb_set(coalesce(${tls.metadata}, '{}'::jsonb), ${ORIGIN_RETRY_PATH}::text[], ${JSON.stringify(retry)}::jsonb)`,
     })
     .where(eq(tls.id, id))
 }

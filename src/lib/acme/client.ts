@@ -63,6 +63,19 @@ function problemCode(problem: Problem | null): AcmeErrorCode {
   return PROBLEM_CODES[suffix] ?? 'unknown'
 }
 
+/**
+ * How long a refusal asks callers to wait: the `Retry-After` of a rate limit,
+ * 429 or 503 (a rate limit without one waits the default), or null for any
+ * other refusal.
+ */
+function waitAsked(code: AcmeErrorCode, response: Response): number | null {
+  const limited = code === 'rate_limited'
+  if (!limited && !isThrottleStatus(response.status)) return null
+  const asked = parseRetryAfterMs(response.headers.get('retry-after'))
+  if (asked !== null) return asked
+  return limited ? DEFAULT_RETRY_AFTER_MS : null
+}
+
 /** An answer that is not a success on a plain endpoint (the directory, the nonce): 429 and 503 carry their wait. */
 function statusError(response: Response): AcmeError {
   const wait = throttleWaitMs(response)
@@ -225,11 +238,7 @@ export class AcmeClient {
         : raw
     const detail = problem?.detail ?? `The certificate authority answered ${response.status}`
     const sub = problem?.subproblems?.find((p) => p.detail)?.detail
-    const asked = parseRetryAfterMs(response.headers.get('retry-after'))
-    const throttled = code === 'rate_limited' || isThrottleStatus(response.status)
-    const wait = throttled
-      ? (asked ?? (code === 'rate_limited' ? DEFAULT_RETRY_AFTER_MS : null))
-      : null
+    const wait = waitAsked(code, response)
     return new AcmeError(code, sub ? `${detail} (${sub})` : detail, wait, response.status)
   }
 
