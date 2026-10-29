@@ -72,6 +72,7 @@ import { registerOrganizationFirewallRoutes } from './organizations/firewall-rou
 import { registerOrganizationBackupTargetRoutes } from './organizations/backup-target-routes.ts'
 import { registerOrganizationCarrierRoutes } from './organizations/carrier-routes.ts'
 import { registerOrganizationOriginCertificateRoutes } from './organizations/origin-certificate-routes.ts'
+import { registerOrganizationTunnelRoutes } from './organizations/tunnel-routes.ts'
 import { registerWorkspaceRoutes } from './workspaces/routes.ts'
 import { type ClientOpenApiOptions, getClientOpenApiSpec } from './openapi/index.ts'
 import { buildClientScalarHtml } from '../app/scalar-html.ts'
@@ -163,6 +164,7 @@ export function registerClientRoutes(app: Hono<AppEnv>, opts: ClientRouteOpts) {
   registerOrganizationBackupTargetRoutes(client, opts)
   registerOrganizationCarrierRoutes(client, opts)
   registerOrganizationOriginCertificateRoutes(client, opts)
+  registerOrganizationTunnelRoutes(client, opts)
   registerAccessRoutes(client, opts)
   // Before the catch-all session middleware the next call installs: the verify link has no session.
   registerNotificationVerifyRoutes(client, opts)

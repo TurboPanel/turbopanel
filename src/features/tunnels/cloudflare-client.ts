@@ -48,7 +48,10 @@ export class CloudflareClient {
 
   constructor(options: CloudflareClientOptions) {
     this.#token = options.token
-    this.#fetch = options.fetch ?? fetch
+    // The platform fetch must be called as a plain function: stored on this object and
+    // called as a method it gets the wrong receiver and Workers throws "Illegal invocation".
+    // Looked up at call time so a stubbed global fetch is honoured.
+    this.#fetch = options.fetch ?? ((input, init) => globalThis.fetch(input, init))
     this.#base = options.baseUrl ?? CLOUDFLARE_API_BASE
   }
 
@@ -59,7 +62,8 @@ export class CloudflareClient {
   ): Promise<{ result: unknown; totalPages: number }> {
     let response: Response
     try {
-      response = await this.#fetch(`${this.#base}${path}`, {
+      const send = this.#fetch
+      response = await send(`${this.#base}${path}`, {
         method,
         headers: {
           Authorization: `Bearer ${this.#token}`,

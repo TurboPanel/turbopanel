@@ -81,6 +81,12 @@ export const AUDIT_ACTIONS = [
   'badge.delete',
   'origin_certificate.issue',
   'origin_certificate.revoke',
+  'tunnel.create',
+  'tunnel.update',
+  'tunnel.delete',
+  'doorway.create',
+  'doorway.delete',
+  'server.tunnel_carrying',
 ] as const
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[number]

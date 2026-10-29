@@ -4,6 +4,7 @@ export type TunnelErrorCode =
   | 'unauthorized'
   | 'forbidden'
   | 'not_found'
+  | 'conflict'
   | 'rate_limited'
   | 'provider_error'
   | 'unreachable'
@@ -35,6 +36,7 @@ export function codeForStatus(status: number): TunnelErrorCode {
   if (status === 401) return 'unauthorized'
   if (status === 403) return 'forbidden'
   if (status === 404) return 'not_found'
+  if (status === 409) return 'conflict'
   if (status === 429) return 'rate_limited'
   return 'provider_error'
 }

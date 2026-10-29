@@ -1,6 +1,7 @@
 import { eq } from 'drizzle-orm'
 import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
+import { nudgeTunnelRoutesAfterResponse } from '../organizations/tunnel-nudge.ts'
 import { requireStepUpIfConfigured } from '../authn/step-up.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
@@ -704,6 +705,7 @@ export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteO
 
     await reclaimDeletedEnvironmentHosts(c, db, teardownPlans, session.userId)
     const cleanup = await startDeleteCleanup(c, db, session.userId, result.cleanup)
+    nudgeTunnelRoutesAfterResponse(c, organizationId)
 
     return c.json({
       ok: true as const,

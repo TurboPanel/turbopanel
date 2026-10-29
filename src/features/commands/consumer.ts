@@ -42,6 +42,7 @@ import {
   failTimedOutDeploy,
   haltRollout,
 } from '../deploy/rollout.ts'
+import { nudgeTunnelRoutesForEnvironment, tunnelSyncDepsFrom } from '../tunnels/nudge.ts'
 import {
   deploymentDurationMs,
   type DeploymentOutcome,
@@ -264,6 +265,10 @@ const COMMAND_TIMEOUT_MS: Record<CommandType, number> = {
   'server.folders.remove': 600_000,
   // Writes one site file, validates it with the web server and reloads once.
   'server.tunnel.routes': 120_000,
+  // Installs or removes a few services; a first install may fetch the connector program.
+  'server.tunnel.connectors': 300_000,
+  // Reads the connectors' records and asks each one if it is connected; never waits for an update.
+  'server.tunnel.status': 30_000,
   // The run cap: counted from when the server starts the deploy, not from when it was sent.
   'environment.deploy': DEPLOY_RUN_CAP_MS,
   'environment.lifecycle': 120_000,
@@ -311,6 +316,8 @@ export function commandTimeoutMs(type: string): number {
     type === 'server.backups.test-target' ||
     type === 'server.folders.remove' ||
     type === 'server.tunnel.routes' ||
+    type === 'server.tunnel.connectors' ||
+    type === 'server.tunnel.status' ||
     type === 'environment.deploy' ||
     type === 'environment.lifecycle' ||
     type === 'environment.stop' ||
@@ -1281,6 +1288,7 @@ async function applyEnvironmentDeploySideEffect(
   deps?: CommandConsumerDeps
 ): Promise<void> {
   if (record.type !== 'environment.deploy') return
+  let landedEnvironmentId: string | null = null
   try {
     const payload = parseEnvironmentDeployPayload(record.payload)
     // Only the newest deploy of the environment decides which folders are still in use. A
@@ -1306,6 +1314,7 @@ async function applyEnvironmentDeploySideEffect(
         await advanceRolloutSafely(db, deps, payload.environmentId, payload.generation)
       }
       current = marked !== null
+      if (current) landedEnvironmentId = payload.environmentId
     }
     // A hostings-only run changed the web server config and nothing else: no
     // folders, accounts, sites or containers to record.
@@ -1357,6 +1366,21 @@ async function applyEnvironmentDeploySideEffect(
       'command-consumer',
       `container reconcile failed for command ${record.id}: ${message}`
     )
+  } finally {
+    // The very last step, so the deploy bookkeeping above never waits for it: a
+    // site now runs here (or no longer does), and servers forwarding to it need the new table.
+    if (landedEnvironmentId !== null) {
+      const secrets = consumerFabricSecretFields(deps)
+      await nudgeTunnelRoutesForEnvironment(
+        db,
+        tunnelSyncDepsFrom({
+          commandQueue: deps?.commandQueue,
+          secretsConfig: secrets.secretsConfig,
+          dataEncryptionSecrets: secrets.dataEncryptionSecrets,
+        }),
+        landedEnvironmentId
+      )
+    }
   }
 }
 
@@ -2956,11 +2980,15 @@ async function recordLeafRenewalFailure(
   }
 }
 
-async function applyPendingTlsLeafSideEffect(
+export async function applyPendingTlsLeafSideEffect(
   db: Db,
   record: DispatchableCommandRecord
 ): Promise<void> {
-  if (record.type !== 'managed.apply' && record.type !== 'managed.ingress.reconcile') {
+  if (
+    record.type !== 'managed.apply' &&
+    record.type !== 'managed.ingress.reconcile' &&
+    record.type !== 'server.tunnel.routes'
+  ) {
     return
   }
   try {

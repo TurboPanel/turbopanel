@@ -1,6 +1,7 @@
 import { and, eq, inArray } from 'drizzle-orm'
 import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
+import { nudgeTunnelRoutesAfterResponse } from '../organizations/tunnel-nudge.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { assertCanOr403, listVisible } from '../authz/index.ts'
@@ -276,6 +277,7 @@ export function registerHostingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     try {
       const id = await insertHostingFromCreate(db, fields, serviceId, organizationId, fks)
+      nudgeTunnelRoutesAfterResponse(c, organizationId)
       return c.json({ ok: true as const, id })
     } catch (err) {
       if (isHostnameUniqueViolation(err)) {
@@ -320,6 +322,7 @@ export function registerHostingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     )
     if (conflict) return conflict
 
+    nudgeTunnelRoutesAfterResponse(c, organizationId)
     return c.json({ ok: true as const })
   })
 
@@ -347,6 +350,7 @@ export function registerHostingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       return hierarchyDeleteHasChildrenResponse(c)
     }
 
+    nudgeTunnelRoutesAfterResponse(c, organizationId)
     return c.json({ ok: true as const })
   })
 }

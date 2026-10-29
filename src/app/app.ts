@@ -30,6 +30,8 @@ export type AppEnv = {
     db?: Db
     emailQueue?: EmailQueue
     commandQueue?: CommandQueue
+    /** Test seam: receives the deferred tunnel nudge instead of running it after the response. */
+    tunnelNudgeSchedule?: (task: () => Promise<void>) => void
     emailFrom?: string
     baseUrl?: string
     session?: SessionData

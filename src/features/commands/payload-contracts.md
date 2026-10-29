@@ -120,6 +120,8 @@ and 64 KB for each of `certificatePem`, `caCertPem` and `privateKeyEnvelope`
 `PRIVATE KEY` is refused, and `notAfter` must be an ISO-8601 timestamp with a
 time zone.
 
+`server.tunnel.connectors` (300 s, offline fail-fast, feature `tunnel-connector-v1`) is `{ install: [{ tunnelId, tokenEnvelope }], remove: [tunnelId] }`: install or remove the connector service of organization tunnels. `tunnelId` is the provider's tunnel id (lower-case UUID; `instance` and `default` are refused), `tokenEnvelope` is the run token sealed for that server's daemon (`tpdaemon.`, at most 8 KB). Each tunnel is named once, at most 64 per list, at least one. An install whose connector already runs changes nothing; a remove of a connector that is gone is a no-op. Result `{ installed, unchanged, removed }`.
+
 **For whoever builds the sender.** An older daemon ignores `hostings[].tunnel`
 (tunnel-only names would then be served unlocked) and rejects the unknown
 command type, so send neither until the server's daemon version carries them
@@ -127,8 +129,10 @@ command type, so send neither until the server's daemon version carries them
 for a server that is not connected fails at once (`Daemon not connected`); it
 is not queued or resent on reconnect by the consumer. Convergence after an
 offline period needs a reconnect sweep that sends the table again (the hash
-makes an unchanged table a no-op on the daemon). This change adds only the
-wire contract; nothing sends the command yet.
+makes an unchanged table a no-op on the daemon). The table sender is
+`src/features/tunnels/sync.ts`; `hostings[].tunnel` is built at deploy time by
+`src/features/tunnels/name-lock.ts` (a lone carrier sends `127.0.0.1` as its one
+peer because the contract refuses an empty list).
 
 `server.backups.reconcile` (added 2026-09-30, Road row `r2-backup-schema`)
 carries the **complete** set of scheduled backup policies whose target lives on

@@ -61,13 +61,22 @@ test('well-formed copied and failed reports pass the frame check', () => {
   )
 })
 
+test('a state this control plane does not know is ignored, not refused', () => {
+  const result = validateDaemonInboundFrame(JSON.stringify(report({ state: 'pending' })))
+  assertEquals(result.ok, false)
+  if (!result.ok) {
+    assertEquals(result.ignored, true)
+    assertEquals(result.reason, 'unknown value: state')
+  }
+})
+
 test('a malformed report is refused with a reason', () => {
   for (const [override, expected] of [
     [{ destinationId: 'nope' }, 'invalid destinationId'],
     [{ managedId: 'nope' }, 'invalid managedId'],
     [{ backupId: 'a/b' }, 'invalid backupId'],
     [{ policyId: 'X' }, 'invalid policyId'],
-    [{ state: 'pending' }, 'invalid state'],
+    [{ state: 7 }, 'invalid state'],
     [{ finishedAt: 'yesterday' }, 'invalid finishedAt'],
     [{ attempts: -1 }, 'invalid attempts'],
     [{ sizeBytes: 1.5 }, 'invalid sizeBytes'],
