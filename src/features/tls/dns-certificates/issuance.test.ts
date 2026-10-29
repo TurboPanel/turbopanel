@@ -383,6 +383,37 @@ test('a leftover record is removed by its own id once old enough, and nothing el
     assertEquals([...s.dns.records.keys()].sort(), ['theirs', 'young'])
   }))
 
+test('when one record cannot be made and another cannot be removed again, the stuck id is kept and the sweep removes it later', () =>
+  withDb(async (db) => {
+    const s = await setup(db)
+    let presents = 0
+    let removable = false
+    const flaky: DnsChallengeProvider = {
+      ...s.dns.provider,
+      present: (input) => {
+        presents += 1
+        if (presents === 2) return Promise.reject(new Error('the provider is down'))
+        return s.dns.provider.present(input)
+      },
+      remove: (ref) =>
+        removable ? s.dns.provider.remove(ref) : Promise.reject(new Error('the provider is down')),
+    }
+    const ctx: DnsCertContext = { ...s.ctx, dns: () => flaky }
+    const id = (
+      (await startDnsCertificate(ctx, s.input(['example.com', '*.example.com']))) as { id: string }
+    ).id
+    assertEquals(await advanceDnsCertificate(ctx, id), 'failed')
+    const kept = readDnsCertState((await rowOf(db, id)).metadata)!.records
+    assertEquals(kept.length, 1)
+    assertEquals(s.dns.records.size, 1)
+    // The provider recovers; once the record is old enough the sweep removes it by its id.
+    removable = true
+    tick(s.clock, 3 * 3_600_000)
+    await maintainDnsCertificate(ctx, id)
+    assertEquals(s.dns.records.size, 0)
+    assertEquals(readDnsCertState((await rowOf(db, id)).metadata)!.records.length, 0)
+  }))
+
 test('the renewal time follows the authority’s window and falls back to a third of the lifetime', () =>
   withDb(async (db) => {
     const fallback = await setup(db)

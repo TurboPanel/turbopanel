@@ -45,6 +45,7 @@ import {
   answerChallenges,
   checkValidation,
   cleanRecords,
+  leftoverRecords,
   collectCertificate,
   openOrder,
   type OrderRow,
@@ -298,6 +299,17 @@ async function claim(ctx: DnsCertContext, id: string): Promise<TlsRow | null> {
   return row ?? null
 }
 
+/** Push the claim out again, so a slow step cannot let a second worker in. */
+async function extendClaim(ctx: DnsCertContext, id: string): Promise<void> {
+  const until = new Date(clock(ctx).getTime() + CLAIM_MS).toISOString()
+  await ctx.db
+    .update(tls)
+    .set({
+      metadata: sql`jsonb_set(${tls.metadata}, '{dnsCert,claimUntil}', to_jsonb(${until}::text))`,
+    })
+    .where(eq(tls.id, id))
+}
+
 async function release(ctx: DnsCertContext, id: string): Promise<void> {
   await ctx.db
     .update(tls)
@@ -340,7 +352,12 @@ async function failOrder(
   err: unknown
 ): Promise<void> {
   const now = clock(ctx)
-  const cleaned = await cleanRecords(ctx, rowForSteps(row), state)
+  const kept = new Set(state.records.map((r) => r.recordId))
+  const left = leftoverRecords(err).filter((r) => !kept.has(r.recordId))
+  const cleaned = await cleanRecords(ctx, rowForSteps(row), {
+    ...state,
+    records: [...state.records, ...left],
+  })
   const attempts = state.attempts + 1
   const message = plainFailure(err)
   const renewal = row.status === 'ready'
@@ -475,6 +492,7 @@ export async function advanceDnsCertificate(
       throw new AcmeError('server', 'The order took too long and was dropped')
     }
     for (let i = 0; i < MAX_STEPS_PER_CALL; i += 1) {
+      if (i > 0) await extendClaim(ctx, row.id)
       const result = await step(ctx, row, state)
       state = result.state
       if (result.kind === 'issued') {

@@ -156,6 +156,20 @@ async function pendingChallenge(
   }
 }
 
+const leftovers = new WeakMap<object, PublishedRecord[]>()
+
+/** Tie the records that could not be removed to the error, so the failure handler keeps them for the sweep. */
+function withLeftovers(reason: unknown, records: PublishedRecord[]): object {
+  const err = typeof reason === 'object' && reason !== null ? reason : new Error(String(reason))
+  leftovers.set(err, records)
+  return err
+}
+
+/** The records a failed publish could not take away again (empty for any other error). */
+export function leftoverRecords(err: unknown): readonly PublishedRecord[] {
+  return typeof err === 'object' && err !== null ? (leftovers.get(err) ?? []) : []
+}
+
 /** Remember a record the moment it exists, apart from the rest of the state. */
 async function rememberRecord(ctx: DnsCertContext, rowId: string, rec: PublishedRecord) {
   await ctx.db
@@ -198,8 +212,8 @@ async function publishAll(
   const failed = settled.find((s): s is PromiseRejectedResult => s.status === 'rejected')
   const challenges = settled.flatMap((s) => (s.status === 'fulfilled' ? [s.value] : []))
   if (failed) {
-    await cleanRecords(ctx, row, { ...state, records: [...state.records, ...made] })
-    throw failed.reason
+    const cleaned = await cleanRecords(ctx, row, { ...state, records: [...state.records, ...made] })
+    throw withLeftovers(failed.reason, cleaned.records)
   }
   return { challenges, records: made }
 }
@@ -330,6 +344,9 @@ export async function checkValidation(
   if (invalid) throw invalid
   if (authorizations.some((a) => a.status !== 'valid')) return { kind: 'wait', state }
   const current = await client.getOrder(order.orderUrl)
+  if (current.status === 'invalid') {
+    throw new AcmeError('server', current.error?.detail ?? 'The order was not completed')
+  }
   if (current.status !== 'ready') return { kind: 'wait', state }
   const sent = await sendRequest(ctx, row, client, order)
   const finalizedAt = clock(ctx).toISOString()
