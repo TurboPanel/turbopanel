@@ -633,6 +633,10 @@ export const tlsPaths = {
             },
           },
         },
+        409: {
+          description:
+            'tls_organization_ca (the Organization CA cannot be deleted; replace it with POST /tls/ca/rotate), tls_in_use, or the certificate still has dependent rows',
+        },
       },
     },
   },
