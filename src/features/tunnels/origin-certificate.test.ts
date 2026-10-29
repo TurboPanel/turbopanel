@@ -372,7 +372,7 @@ test('a certificate the provider already forgot is simply removed', async () => 
   })
 })
 
-test('with the issuing token gone a certificate is kept unless removal is forced', async () => {
+test('revoking is not tied to the token that issued the certificate: another active token with the rights works', async () => {
   await withWorld(async (w) => {
     const fake = fakeAdapter()
     const row = await issueOriginCertificate({
@@ -383,37 +383,162 @@ test('with the issuing token gone a certificate is kept unless removal is forced
       zoneName: 'example.com',
       names: ['app.example.com'],
     })
-    await w.db
-      .update(tls)
-      .set({
-        metadata: {
-          ...(row.metadata as object),
-          providerOrigin: { ...readProviderOrigin(row.metadata)!, badgeId: crypto.randomUUID() },
-        },
+    // The issuing token is gone; a second active token has certificate rights for the zone.
+    const OTHER = 'cf-other-token-0123456789abcdefghijklmnopqrstuv'
+    const [sec] = await w.db
+      .insert(secret)
+      .values({
+        organizationId: w.organizationId,
+        provider: 'carrier_badge',
+        name: 'other',
+        secretEnvelope: await encryptSecret(w.secrets, OTHER),
       })
-      .where(eq(tls.id, row.id))
-    const [changed] = await w.db.select().from(tls).where(eq(tls.id, row.id))
+      .returning({ id: secret.id })
+    await w.db.insert(badge).values({
+      carrierId: w.carrierRow.id,
+      secretId: sec!.id,
+      label: 'Other',
+      lastFour: OTHER.slice(-4),
+      capabilities: { tunnels: false, dns: [], certificates: [{ id: 'z1', name: 'example.com' }] },
+    })
+    await w.db.delete(badge).where(eq(badge.id, w.badgeRow.id))
+    const done = await revokeOriginCertificate({
+      db: w.db,
+      secrets: w.secrets,
+      adapter: fake.adapter,
+      row,
+    })
+    assert(done.revokedWithBadgeId !== null && done.revokedWithBadgeId !== w.badgeRow.id)
+    assertEquals(
+      fake.revoked.map((r) => [r.token, r.externalId]),
+      [[OTHER, 'ext-1']]
+    )
+    assertEquals((await w.db.select().from(tls).where(eq(tls.id, row.id))).length, 0)
+  })
+})
+
+test('with no active token that can manage the zone a certificate is kept unless removal is forced', async () => {
+  await withWorld(async (w) => {
+    const fake = fakeAdapter()
+    const row = await issueOriginCertificate({
+      ...w,
+      adapter: fake.adapter,
+      carrier: w.carrierRow,
+      badge: w.badgeRow,
+      zoneName: 'example.com',
+      names: ['app.example.com'],
+    })
+    // The only token is no longer active: it is not used.
+    await w.db.update(badge).set({ status: 'attention' }).where(eq(badge.id, w.badgeRow.id))
     const err = await assertRejects(
-      () =>
-        revokeOriginCertificate({
-          db: w.db,
-          secrets: w.secrets,
-          adapter: fake.adapter,
-          row: changed!,
-        }),
+      () => revokeOriginCertificate({ db: w.db, secrets: w.secrets, adapter: fake.adapter, row }),
       OriginCertificateRefusal
     )
     assertEquals(err.error, 'badge_missing')
     assertEquals((await w.db.select().from(tls).where(eq(tls.id, row.id))).length, 1)
-    await revokeOriginCertificate({
+    assertEquals(fake.revoked.length, 0)
+    const done = await revokeOriginCertificate({
       db: w.db,
       secrets: w.secrets,
       adapter: fake.adapter,
-      row: changed!,
+      row,
       force: true,
     })
+    assertEquals(done.revokedWithBadgeId, null)
     assertEquals((await w.db.select().from(tls).where(eq(tls.id, row.id))).length, 0)
     assertEquals(fake.revoked.length, 0)
+  })
+})
+
+test('a token the provider refuses is skipped for the next one', async () => {
+  await withWorld(async (w) => {
+    const refusing = 'cf-refused-token-0123456789abcdefghijklmnopqrstuv'
+    const fake = fakeAdapter()
+    const first = fake.adapter.revokeOriginCertificate!
+    fake.adapter.revokeOriginCertificate = (token, input) =>
+      token === refusing
+        ? Promise.reject(new TunnelProviderError('forbidden', 'no rights', 403))
+        : first(token, input)
+    const row = await issueOriginCertificate({
+      ...w,
+      adapter: fake.adapter,
+      carrier: w.carrierRow,
+      badge: w.badgeRow,
+      zoneName: 'example.com',
+      names: ['app.example.com'],
+    })
+    // A narrower token (fewer other rights) is tried first and the provider refuses it.
+    const [sec] = await w.db
+      .insert(secret)
+      .values({
+        organizationId: w.organizationId,
+        provider: 'carrier_badge',
+        name: 'narrow',
+        secretEnvelope: await encryptSecret(w.secrets, refusing),
+      })
+      .returning({ id: secret.id })
+    await w.db.insert(badge).values({
+      carrierId: w.carrierRow.id,
+      secretId: sec!.id,
+      label: 'Narrow',
+      lastFour: refusing.slice(-4),
+      capabilities: { tunnels: false, dns: [], certificates: [{ id: 'z1', name: 'example.com' }] },
+    })
+    const done = await revokeOriginCertificate({
+      db: w.db,
+      secrets: w.secrets,
+      adapter: fake.adapter,
+      row,
+    })
+    assertEquals(done.revokedWithBadgeId, w.badgeRow.id)
+    assertEquals(
+      fake.revoked.map((r) => r.token),
+      [TOKEN]
+    )
+  })
+})
+
+test('removing a token strands only the certificates no other active token could revoke', async () => {
+  await withWorld(async (w) => {
+    const fake = fakeAdapter()
+    await issueOriginCertificate({
+      ...w,
+      adapter: fake.adapter,
+      carrier: w.carrierRow,
+      badge: w.badgeRow,
+      zoneName: 'example.com',
+      names: ['app.example.com'],
+    })
+    assertEquals(
+      await countOriginCertificatesFrom(w.db, w.organizationId, { badgeId: w.badgeRow.id }),
+      1
+    )
+    const second = 'cf-second-token-0123456789abcdefghijklmnopqrstuv'
+    const [sec] = await w.db
+      .insert(secret)
+      .values({
+        organizationId: w.organizationId,
+        provider: 'carrier_badge',
+        name: 'second',
+        secretEnvelope: await encryptSecret(w.secrets, second),
+      })
+      .returning({ id: secret.id })
+    await w.db.insert(badge).values({
+      carrierId: w.carrierRow.id,
+      secretId: sec!.id,
+      label: 'Second',
+      lastFour: second.slice(-4),
+      capabilities: { tunnels: true, dns: [], certificates: [{ id: 'z1', name: 'example.com' }] },
+    })
+    assertEquals(
+      await countOriginCertificatesFrom(w.db, w.organizationId, { badgeId: w.badgeRow.id }),
+      0
+    )
+    // The account still owns the certificate whichever token goes.
+    assertEquals(
+      await countOriginCertificatesFrom(w.db, w.organizationId, { carrierId: w.carrierRow.id }),
+      1
+    )
   })
 })
 

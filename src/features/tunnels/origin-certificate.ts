@@ -192,18 +192,35 @@ export async function listOriginCertificates(
     : rows
 }
 
-/** How many origin certificates a badge or a carrier issued; removing either needs them gone first. */
+/**
+ * How many origin certificates removing a badge or a carrier would strand.
+ * A carrier takes all of its tokens with it, so every certificate counts. A
+ * token only strands the certificates no other active token of the carrier
+ * could still revoke, because revoking is not tied to the issuing token.
+ */
 export async function countOriginCertificatesFrom(
   db: Db,
   organizationId: string,
   from: { badgeId: string } | { carrierId: string }
 ): Promise<number> {
   const rows = await listOriginCertificates(db, organizationId)
-  return rows.filter((row) => {
+  if ('carrierId' in from) {
+    return rows.filter((row) => readProviderOrigin(row.metadata)?.carrierId === from.carrierId)
+      .length
+  }
+  let stranded = 0
+  for (const row of rows) {
     const link = readProviderOrigin(row.metadata)
-    if (!link) return false
-    return 'badgeId' in from ? link.badgeId === from.badgeId : link.carrierId === from.carrierId
-  }).length
+    if (!link) continue
+    const others = await pickCertificateBadges(db, link.carrierId, {
+      id: link.zoneId,
+      name: link.zoneName,
+    })
+    if (others.some((b) => b.id === from.badgeId) && others.every((b) => b.id === from.badgeId)) {
+      stranded += 1
+    }
+  }
+  return stranded
 }
 
 /** Ids of hostings that pin a certificate. */
@@ -220,6 +237,44 @@ export function badgeCoversZone(
   const zones = toApiBadge(row).capabilities.certificates
   const wanted = zoneName.trim().toLowerCase()
   return zones.find((z) => z.name.toLowerCase() === wanted) ?? null
+}
+
+/**
+ * THE one place a token is chosen for certificate work (issue, renew, revoke):
+ * active tokens only, matched to the zone by its provider id when known (else
+ * by name), narrowest first, so the token with the fewest other rights is tried
+ * first. Revoking and renewing are NOT tied to the token that issued a
+ * certificate: any active token with certificate rights for the zone works.
+ * Swap this for the shared token selector when it lands.
+ */
+export async function pickCertificateBadges(
+  db: Db,
+  carrierId: string,
+  zone: { id?: string; name: string }
+): Promise<BadgeRow[]> {
+  const rows = await db
+    .select()
+    .from(badge)
+    .where(and(eq(badge.carrierId, carrierId), eq(badge.status, 'active')))
+  const wanted = zone.name.trim().toLowerCase()
+  const narrowness = (row: BadgeRow): number => {
+    const caps = toApiBadge(row).capabilities
+    return caps.certificates.length + caps.dns.length + (caps.tunnels ? 1 : 0)
+  }
+  return rows
+    .filter((row) =>
+      toApiBadge(row).capabilities.certificates.some((z) =>
+        zone.id ? z.id === zone.id : z.name.toLowerCase() === wanted
+      )
+    )
+    .sort((a, b) => narrowness(a) - narrowness(b) || compareText(a.createdAt, b.createdAt))
+}
+
+/** A token the provider refused (expired, revoked or without the right) is skipped for the next one. */
+function isTokenRefusal(err: unknown): boolean {
+  return (
+    err instanceof TunnelProviderError && (err.code === 'unauthorized' || err.code === 'forbidden')
+  )
 }
 
 type IssueParams = {
@@ -465,40 +520,51 @@ type RevokeParams = {
   secrets: DerivedSecretsConfig
   adapter: TunnelAdapter
   row: TlsRow
-  /** Remove the row even when the provider cannot be reached or its token is gone. */
+  /** Remove the row even when the provider cannot be reached or no token can revoke it. */
   force?: boolean
 }
 
 /**
  * Revoke a certificate at the provider and remove the row. Refused while a
  * site pins it; the caller moves the site first. Only a certificate TurboPanel
- * issued has a link, so one it did not issue is never touched.
+ * issued has a link, so one it did not issue is never touched. Any active token
+ * of the account with certificate rights for the zone may revoke it, not only
+ * the one that issued it; the token used is returned so the caller can record it.
  */
-export async function revokeOriginCertificate(params: RevokeParams): Promise<void> {
+export async function revokeOriginCertificate(
+  params: RevokeParams
+): Promise<{ revokedWithBadgeId: string | null }> {
   const { db, secrets, adapter, row } = params
   if ((await hostingsPinning(db, row.id)).length > 0) {
     throw new OriginCertificateRefusal('tls_in_use', 'A site still uses this certificate')
   }
   const link = readProviderOrigin(row.metadata)
+  let usedBadgeId: string | null = null
   if (link && adapter.revokeOriginCertificate) {
-    const [badgeRow] = await db
-      .select()
-      .from(badge)
-      .where(and(eq(badge.id, link.badgeId), eq(badge.carrierId, link.carrierId)))
-      .limit(1)
-    const token = badgeRow ? await openBadgeToken(db, secrets, badgeRow) : null
-    if (token === null) {
-      if (!params.force) {
-        throw new OriginCertificateRefusal(
-          'badge_missing',
-          'The API token that issued this certificate is gone, so it cannot be revoked'
-        )
+    const candidates = await pickCertificateBadges(db, link.carrierId, {
+      id: link.zoneId,
+      name: link.zoneName,
+    })
+    for (const candidate of candidates) {
+      const token = await openBadgeToken(db, secrets, candidate)
+      if (token === null) continue
+      try {
+        await revokeAtProvider(adapter, token, link.externalId)
+        usedBadgeId = candidate.id
+        break
+      } catch (err) {
+        if (!isTokenRefusal(err)) throw err
       }
-    } else {
-      await revokeAtProvider(adapter, token, link.externalId)
+    }
+    if (usedBadgeId === null && !params.force) {
+      throw new OriginCertificateRefusal(
+        'badge_missing',
+        'No active API Token can manage certificates for this zone, so the certificate cannot be revoked'
+      )
     }
   }
   await db.delete(tls).where(eq(tls.id, row.id))
+  return { revokedWithBadgeId: usedBadgeId }
 }
 
 export type RenewResult = {
@@ -530,20 +596,28 @@ export async function renewOriginCertificate(
     .from(carrier)
     .where(and(eq(carrier.id, link.carrierId), eq(carrier.organizationId, params.organizationId)))
     .limit(1)
-  const [badgeRow] = await params.db
-    .select()
-    .from(badge)
-    .where(and(eq(badge.id, link.badgeId), eq(badge.carrierId, link.carrierId)))
-    .limit(1)
-  if (!carrierRow || !badgeRow) return null
-  const replacement = await issueOriginCertificate({
-    ...params,
-    carrier: carrierRow,
-    badge: badgeRow,
-    zoneName: link.zoneName,
-    names: link.hostnames,
-    scope: link.scope,
+  if (!carrierRow) return null
+  const candidates = await pickCertificateBadges(params.db, link.carrierId, {
+    id: link.zoneId,
+    name: link.zoneName,
   })
+  let replacement: TlsRow | null = null
+  for (const candidate of candidates) {
+    try {
+      replacement = await issueOriginCertificate({
+        ...params,
+        carrier: carrierRow,
+        badge: candidate,
+        zoneName: link.zoneName,
+        names: link.hostnames,
+        scope: link.scope,
+      })
+      break
+    } catch (err) {
+      if (!isTokenRefusal(err)) throw err
+    }
+  }
+  if (replacement === null) return null
   const moved = await params.db
     .update(hosting)
     .set({ tlsId: replacement.id })

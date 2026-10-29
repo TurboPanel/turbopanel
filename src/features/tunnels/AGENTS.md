@@ -392,7 +392,9 @@ Rules the code enforces:
 
 - A token may issue only for a zone its recorded `certificates` rights name.
   Existing tokens have none recorded: the issue route runs one credential check
-  and stores the result before it refuses.
+  and stores the result before it refuses. (Token selection for the routes is
+  being replaced by the shared selector; `pickCertificateBadges` is the single
+  function to swap.)
 - **Reuse:** a healthy, unretired TurboPanel certificate of the same account
   that already covers every name (an exact certificate, or an opted-in wildcard
   one label up) is returned instead of issuing another (`findCoveringCertificate`).
@@ -408,9 +410,16 @@ Rules the code enforces:
   shows every certificate the zone holds and marks the ones issued here; a
   certificate made elsewhere is shown but cannot be installed (its key was never
   ours): upload its certificate and key to the library, or issue a new one.
-- A site that pins the certificate blocks revoking it (`tls_in_use`); an account
-  or token that issued one cannot be removed first (`origin_certificate_in_use`),
-  because the certificate could then never be revoked. The TLS library routes
+- A site that pins the certificate blocks revoking it (`tls_in_use`). **Revoking
+  and renewing are not tied to the token that issued a certificate:**
+  `pickCertificateBadges` (the one place a token is chosen for certificate work)
+  returns the account's active tokens with certificate rights for the zone,
+  matched by zone id, narrowest first; the next one is tried when the provider
+  refuses a token. The token used is recorded in the audit row
+  (`revokedWithBadgeId`). With no such token a revoke is refused (`badge_missing`)
+  unless forced. Removing a token is refused (`origin_certificate_in_use`) only
+  when it is the last active token that could revoke a certificate; removing the
+  account is refused while it still owns certificates. The TLS library routes
   refuse to revoke, delete or create a `provider_origin` row (`409
 provider_origin_managed`, `400 provider_origin_unsupported`).
 - If storing fails after the provider issued the certificate, it is revoked

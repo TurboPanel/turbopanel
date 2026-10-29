@@ -376,21 +376,24 @@ function revokeResponse(registry: TunnelAdapterRegistry) {
     ) {
       return c.json({ error: 'Not found' }, 404)
     }
+    let revokedWithBadgeId: string | null = null
     try {
-      await revokeOriginCertificate({
+      ;({ revokedWithBadgeId } = await revokeOriginCertificate({
         db: scope.db,
         secrets,
         adapter: registry(current.provider as TunnelProvider),
         row,
-      })
+      }))
     } catch (err) {
       if (err instanceof OriginCertificateRefusal) return refusalResponse(c, err)
       if (err instanceof TunnelProviderError) return providerFailure(c, err)
       throw err
     }
+    // Which token revoked it is recorded; it need not be the one that issued it.
     await audit(c, scope, 'origin_certificate.revoke', row.id, {
       carrierId: current.id,
       zone: link?.zoneName ?? null,
+      revokedWithBadgeId,
     })
     return c.json({ ok: true })
   }
