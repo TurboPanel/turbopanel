@@ -264,7 +264,8 @@ async function certifyAll(
     }
     const done = await certifyHosting(deps, owner, hostingId, tunnelNames, scope)
     if (!done.reused) issued += 1
-    ;(done.reused ? result.reusedCertificateIds : result.issuedCertificateIds).push(done.tlsId)
+    const into = done.reused ? result.reusedCertificateIds : result.issuedCertificateIds
+    into.push(done.tlsId)
     if (done.changed) result.pinnedHostingIds.push(hostingId)
   })
 }
