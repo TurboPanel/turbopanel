@@ -15,7 +15,21 @@ import { createDenoDb, endDbConnection } from '../../db/connection.ts'
 import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from '../authn/crypto.ts'
 import { createSession } from '../authn/session-store.ts'
 import { deriveEncryptionSecretsConfig, deriveSecretsConfig } from '../../lib/secrets/secrets.ts'
-import { audit, badge, carrier, grant, organization, secret, tls, user } from '../../db/schema.ts'
+import {
+  audit,
+  badge,
+  carrier,
+  environment,
+  grant,
+  hosting,
+  organization,
+  project,
+  secret,
+  service,
+  tls,
+  user,
+  workspace,
+} from '../../db/schema.ts'
 import { encryptSecret } from '../../lib/secrets/data-encryption.ts'
 import { mintSelfSignedCertificate } from '../../lib/tls/index.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
@@ -44,12 +58,15 @@ const state: {
   certificates: 'allowed' | 'denied'
   issued: number
   revoked: string[]
+  /** How the provider answers a revoke. */
+  revoke: 'ok' | 'fail'
   /** Certificates the provider already holds for the zone, as its list answers them. */
   listing: unknown[]
 } = {
   certificates: 'allowed',
   issued: 0,
   revoked: [],
+  revoke: 'ok',
   listing: [],
 }
 
@@ -83,6 +100,7 @@ const fakeProvider: typeof fetch = async (input, init) => {
   }
   if (path.startsWith('/certificates/') && method === 'DELETE') {
     state.revoked.push(path.slice('/certificates/'.length))
+    if (state.revoke === 'fail') return refused(500, 'Internal server error')
     return ok({ id: path.slice('/certificates/'.length) })
   }
   return refused(404, 'not found')
@@ -126,6 +144,7 @@ async function withFixture(
   state.certificates = 'allowed'
   state.issued = 0
   state.revoked = []
+  state.revoke = 'ok'
   state.listing = []
   const db = createDenoDb()
   const secretsConfig = parseTestSecretsConfig('deno')
@@ -328,6 +347,97 @@ test('deleting an unpinned origin certificate from the library revokes it at the
       ).length,
       0
     )
+  })
+})
+
+/** Issue a certificate for app.example.com through the route and return its id. */
+async function issueForApp(f: Fixture): Promise<string> {
+  const made = await call(f, 'POST', base(f), f.managerCookie, {
+    zone: 'example.com',
+    names: ['app.example.com'],
+  })
+  assertEquals(made.status, 201, made.text)
+  return (made.body.originCertificate as Record<string, unknown>).id as string
+}
+
+async function rowExists(f: Fixture, id: string): Promise<boolean> {
+  return (await f.db.select({ id: tls.id }).from(tls).where(eq(tls.id, id))).length === 1
+}
+
+test('deleting an origin certificate a site still uses is refused with a plain sentence and nothing is revoked', async () => {
+  await withFixture(async (f) => {
+    const id = await issueForApp(f)
+    const [ws] = await f.db
+      .insert(workspace)
+      .values({ organizationId: f.orgA, name: 'WS' })
+      .returning({ id: workspace.id })
+    const [proj] = await f.db
+      .insert(project)
+      .values({ workspaceId: ws!.id, organizationId: f.orgA, name: 'P' })
+      .returning({ id: project.id })
+    const [env] = await f.db
+      .insert(environment)
+      .values({ projectId: proj!.id, name: 'production', isPrimary: true })
+      .returning({ id: environment.id })
+    const [svc] = await f.db
+      .insert(service)
+      .values({ environmentId: env!.id, name: 'web', composeServiceName: 'web' })
+      .returning({ id: service.id })
+    try {
+      await f.db.insert(hosting).values({
+        serviceId: svc!.id,
+        name: 'app.example.com',
+        tlsId: id,
+        options: { hostnames: ['app.example.com'] },
+      })
+      const removed = await call(f, 'DELETE', `/tls/${id}`, f.managerCookie)
+      assertEquals(removed.status, 409, removed.text)
+      assertEquals(removed.body.error, 'tls_in_use')
+      assertEquals(
+        removed.body.message,
+        'A site still uses this certificate. Choose another certificate for that site first, then delete this one.'
+      )
+      assertEquals(state.revoked, [])
+      assert(await rowExists(f, id))
+    } finally {
+      await f.db.delete(hosting).where(eq(hosting.serviceId, svc!.id))
+      await f.db.delete(service).where(eq(service.id, svc!.id))
+      await f.db.delete(environment).where(eq(environment.id, env!.id))
+      await f.db.delete(project).where(eq(project.id, proj!.id))
+      await f.db.delete(workspace).where(eq(workspace.id, ws!.id))
+    }
+  })
+})
+
+test('a plain member cannot delete an origin certificate and another organization does not see it', async () => {
+  await withFixture(async (f) => {
+    const id = await issueForApp(f)
+    const member = await call(f, 'DELETE', `/tls/${id}`, f.memberCookie)
+    assertEquals(member.status, 403, member.text)
+    const other = await call(f, 'DELETE', `/tls/${id}`, f.otherManagerCookie)
+    assertEquals(other.status, 404, other.text)
+    assertEquals(state.revoked, [])
+    assert(await rowExists(f, id))
+  })
+})
+
+test('a revoke the provider fails keeps the certificate and answers with a plain error', async () => {
+  await withFixture(async (f) => {
+    const id = await issueForApp(f)
+    state.revoke = 'fail'
+    const removed = await call(f, 'DELETE', `/tls/${id}`, f.managerCookie)
+    assertEquals(removed.status, 502, removed.text)
+    assertEquals(removed.body.error, 'provider_unavailable')
+    const message = removed.body.message
+    assert(typeof message === 'string' && message.length > 0, removed.text)
+    assert(!message.includes('{'), 'the message is a sentence, not a raw provider answer')
+    assertEquals(state.revoked, ['cert-1'])
+    assert(await rowExists(f, id))
+    // Once the provider answers again the same delete goes through.
+    state.revoke = 'ok'
+    const retried = await call(f, 'DELETE', `/tls/${id}`, f.managerCookie)
+    assertEquals(retried.status, 200, retried.text)
+    assertEquals(await rowExists(f, id), false)
   })
 })
 

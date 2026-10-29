@@ -38,8 +38,11 @@ async function isTunnelOnlyNow(
   })
 }
 
-/** Drop the site's own Let's Encrypt pin and waiting request. False when the names are no longer all tunnel-only. */
-/** Checked again under the locks: a public name added meanwhile keeps its pin. */
+/**
+ * Drop the site's own Let's Encrypt pin and waiting request. The names are
+ * checked again under the locks, so a public name added meanwhile keeps its
+ * pin; false when they are no longer all tunnel-only.
+ */
 async function releaseSitePin(db: Db, hostingId: string, organizationId: string): Promise<boolean> {
   return await db.transaction(async (tx) => {
     await tx
