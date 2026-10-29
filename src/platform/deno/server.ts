@@ -872,7 +872,7 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
   // First Deno-side scheduled surface besides cell maintain: Organization CA
   // leaf renewal. Fresh createDenoDb() per tick, always endDbConnection in
   // finally — do not reuse the process-long `db` (same discipline as Workers
-  // Hyperdrive). Overlap-guarded; cadence is minutes, not the 60s cell tick.
+  // Hyperdrive). Overlap-guarded; one minute, like the hosted cron.
   let leafRenewalInFlight = false
   const leafRenewalTimer = setInterval(() => {
     if (leafRenewalInFlight) return

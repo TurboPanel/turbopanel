@@ -67,6 +67,43 @@ at once cannot run the same step twice (`busy`). The routes only start an order
 and report; the sweep carries it on (`sweep.ts`, wired into the Workers
 offline sweep and the Deno interval).
 
+## The sweep tick
+
+`runDnsCertificateSweepTick` (`sweep.ts`, `sweep-select.ts`) runs every minute
+on both editions. It picks work by due time, read out of the private state in
+the database with no column or index (a certificate's back-off and renewal
+time, an open order is due now; with no stored renewal time, a third of the
+lifetime before the end, as `renewAtOf` reads it). A time that cannot be read
+counts as due rather than failing the query (`safeTimestamp`). It skips rows
+another worker holds and the directory (staging or production) of an
+organization whose authority pause is running. Work already begun (open orders,
+first certificates) ranks ahead of renewals that would begin now, so the renewal
+limits can never crowd an open order out; within that it takes rank one of every
+organization before rank two, so one organization cannot starve the rest. Per
+tick: up to 25 steps and 25 upkeep jobs (`options.batch`, `maintainBatch`), no new
+certificate started after 20 seconds (`budgetMs`), each step a few requests, so
+a Workers invocation stays inside its subrequest limit; whatever is left stays
+due for the next minute. Upkeep only visits certificates whose renewal-information
+check came due or that hold leftover records. The result also counts issued,
+failed and waiting, and `throttled`: the 429 and 503 answers met, by who sent them
+(`authority429`, `authority503`, `cloudflare429`, `cloudflare503`), repeated in the
+summary log line. The origin certificate sweep result carries the same counters.
+Nothing is stored.
+
+## Checks before the authority is asked
+
+Before an order is opened the DNS host is asked a cheap read for every zone
+(`checkZone`), so a token that was rolled or narrowed stops the order with
+nothing spent at the authority. Before the challenges are answered the TXT
+values are read back through the host's own API (`txtValues`); the authority is
+not asked to validate a record that is not yet published (one of its few failed
+validations an hour). A record not seen yet is looked at again after two
+minutes (`READBACK_RETRY_MS`), not every tick, so 25 certificates of ten names
+on one token stay well under Cloudflare's 1,200 requests in five minutes. A host without these calls is answered after the usual
+short pause. Each sweep tick that did anything logs one summary line
+(`src/lib/sweep-report.ts`) and an alert line when three or more attempts failed
+and at least half of those tried.
+
 ## Calls to the authority
 
 Clients share what is safe to share inside one process (`src/lib/acme/session.ts`):
@@ -121,7 +158,17 @@ stops with the plain-words reason and nothing is written.
   eight. The next-ask time is
   `ariNextCheckAt` in the private state. A failed ask keeps the stored renewal
   time rather than dropping to the fallback. Without advice, when a third of
-  the lifetime is left. The new pair is swapped in only when the order
+  the lifetime is left, started up to a tenth of the lifetime earlier at a random
+  moment that is stored with the certificate, so certificates issued together do
+  not all renew on one day.
+- A renewal order carries `replaces` (the old certificate's renewal-information
+  identifier) so the authority recognises it as a renewal; if the authority
+  refuses because of it (`alreadyReplaced`, `malformed`) the order is opened again
+  without it. Renewals add no rows, so they never count toward the ten new
+  certificates a day. The sweep begins at most two renewals per organization per
+  tick and keeps at most five open per organization (`limitRenewalStarts`), so a
+  mass event cannot start them all at once; open orders and first certificates
+  are not held back. The new pair is swapped in only when the order
   succeeds, and the sites that pin it are sent the new pair by the same apply a
   library pick queues.
 - Renewal needs the stored token. Between orders the sweep checks that the

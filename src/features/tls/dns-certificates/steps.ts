@@ -21,7 +21,7 @@ import { findCarrier } from '../../tunnels/records.ts'
 import type { TunnelProvider } from '../../tunnels/vocabulary.ts'
 import { orgAccount } from './account.ts'
 import { openDnsToken } from './token.ts'
-import { clock, type DnsCertContext, PRESENT_GRACE_MS } from './context.ts'
+import { clock, type DnsCertContext, PRESENT_GRACE_MS, READBACK_RETRY_MS } from './context.ts'
 import {
   ChallengeTargetError,
   challengeRecordName,
@@ -43,6 +43,8 @@ export type OrderRow = {
   names: string[]
   /** The sealed key of a first certificate (a renewal carries its own in the order). */
   sealedKey: string | null
+  /** The renewal-information identifier of the certificate a renewal replaces; null for a first certificate. */
+  replaces?: string | null
 }
 
 export type StepResult =
@@ -242,11 +244,34 @@ export async function cleanRecords(
   return { ...state, records: left.filter((r): r is PublishedRecord => r !== null) }
 }
 
+/**
+ * A refusal that comes from `replaces` itself: the old certificate was already
+ * replaced by another order, or the identifier was not understood. The order is
+ * then opened again without it, as a plain new order.
+ */
+function replacesRefused(err: unknown, sent: boolean): boolean {
+  return (
+    sent &&
+    err instanceof AcmeError &&
+    (err.code === 'already_replaced' || err.code === 'malformed')
+  )
+}
+
+async function newOrderFor(client: AcmeClient, row: OrderRow) {
+  const replaces = row.replaces ?? undefined
+  try {
+    return await client.newOrder(row.names, { replaces })
+  } catch (err) {
+    if (!replacesRefused(err, replaces !== undefined)) throw err
+    return await client.newOrder(row.names)
+  }
+}
+
 /** The organization's account and a new order on it; an account the authority has switched off is replaced once. */
 async function startOrder(ctx: DnsCertContext, row: OrderRow, state: DnsCertState) {
   const attempt = async (replace: boolean) => {
     const account = await orgAccount(ctx, row.organizationId, state.staging, { replace })
-    return { account, order: await account.client.newOrder(row.names) }
+    return { account, order: await newOrderFor(account.client, row) }
   }
   try {
     return await attempt(false)
@@ -256,6 +281,22 @@ async function startOrder(ctx: DnsCertContext, row: OrderRow, state: DnsCertStat
   }
 }
 
+/**
+ * Before the authority is asked for anything: the DNS host still accepts the
+ * token for every zone of the certificate. A rolled or narrowed token stops the
+ * order here, with nothing spent at the authority and nothing to clean up.
+ */
+async function checkZonesReachable(
+  ctx: DnsCertContext,
+  row: OrderRow,
+  state: DnsCertState
+): Promise<void> {
+  await mapSequential(state.zones, async (zone) => {
+    const dns = await dnsFor(ctx, row, state, zone.id)
+    await dns.checkZone?.(zone.id)
+  })
+}
+
 /** Open an order and publish the challenge records. */
 export async function openOrder(
   ctx: DnsCertContext,
@@ -263,6 +304,7 @@ export async function openOrder(
   state: DnsCertState,
   renewal: { pendingKey: string } | null
 ): Promise<StepResult> {
+  await checkZonesReachable(ctx, row, state)
   const { account, order } = await startOrder(ctx, row, state)
   // One after the other: each answer hands the next request its nonce.
   const authorizations = await mapSequential(order.authorizations, (u) =>
@@ -288,14 +330,38 @@ export async function openOrder(
   return { kind: 'wait', state: { ...state, records, order: next } }
 }
 
-/** After a short pause, tell the authority the records are in place. */
+/**
+ * Is every challenge record visible through the DNS host's own API? A host that
+ * cannot say counts as visible. Asking the authority to validate a record that
+ * is not there yet would spend one of its few failed validations.
+ */
+async function recordsVisible(
+  ctx: DnsCertContext,
+  row: OrderRow,
+  state: DnsCertState,
+  order: OrderState
+): Promise<boolean> {
+  const seen = await mapSequential(order.challenges, async (c) => {
+    const dns = await dnsFor(ctx, row, state, c.zoneId)
+    if (!dns.txtValues) return true
+    return (await dns.txtValues({ zoneId: c.zoneId, name: c.name })).includes(c.value)
+  })
+  return seen.every(Boolean)
+}
+
+/** After a short pause, and once the records can be seen, tell the authority they are in place. */
 export async function answerChallenges(
   ctx: DnsCertContext,
+  row: OrderRow,
   state: DnsCertState,
   order: OrderState
 ): Promise<StepResult> {
   const waited = clock(ctx).getTime() - Date.parse(order.presentedAt ?? order.startedAt)
   if (waited < (ctx.presentGraceMs ?? PRESENT_GRACE_MS)) return { kind: 'wait', state }
+  if (!(await recordsVisible(ctx, row, state, order))) {
+    const nextAttemptAt = new Date(clock(ctx).getTime() + READBACK_RETRY_MS).toISOString()
+    return { kind: 'wait', state: { ...state, nextAttemptAt } }
+  }
   const client = await openClient(ctx, state, order)
   await mapSequential(order.challenges, (c) => client.answerChallenge(c.challengeUrl))
   const answeredAt = clock(ctx).toISOString()

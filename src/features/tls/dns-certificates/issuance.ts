@@ -16,14 +16,16 @@ import type { Db } from '../../../db/connection.ts'
 import { tls } from '../../../db/schema.ts'
 import { AcmeError } from '../../../lib/acme/client.ts'
 import { generateCertificateKey } from '../../../lib/acme/csr.ts'
+import { renewalCertId } from '../../../lib/acme/renewal-id.ts'
 import { logWarn } from '../../../lib/logger.ts'
 import { encryptSecret } from '../../../lib/secrets/data-encryption.ts'
 import { coversAllHostnames } from '../../../lib/tls/match.ts'
 import { metadataFromParsed, splitTlsMetadata } from '../../../lib/tls/metadata.ts'
 import { parseCertificatePem } from '../../../lib/tls/parse.ts'
 import { lockOrganizationLetsEncrypt } from '../unused-letsencrypt.ts'
+import { countThrottle } from '../../../lib/throttle-counters.ts'
 import { TunnelProviderError } from '../../tunnels/errors.ts'
-import { acmePausedUntil, pauseAcme } from './account.ts'
+import { acmePausedUntil, pauseAcme, safeTimestamp } from './account.ts'
 import {
   CLAIM_MS,
   clock,
@@ -243,6 +245,9 @@ function rowForSteps(row: TlsRow): OrderRow {
     organizationId: row.organizationId,
     names: dnsNamesOf(row),
     sealedKey: row.privateKeyPem,
+    // A renewal tells the authority which certificate it replaces, so it is recognised as one.
+    replaces:
+      row.status === 'ready' && row.certificatePem ? renewalCertId(row.certificatePem) : null,
   }
 }
 
@@ -282,6 +287,11 @@ async function writeState(
     .where(eq(tls.id, row.id))
 }
 
+/** The claim end on a row, as a time; an unreadable one counts as no claim. */
+function claimedUntil() {
+  return safeTimestamp(sql`${tls.metadata} #>> '{dnsCert,claimUntil}'`)
+}
+
 async function claim(ctx: DnsCertContext, id: string): Promise<TlsRow | null> {
   const now = clock(ctx)
   const until = new Date(now.getTime() + CLAIM_MS).toISOString()
@@ -295,7 +305,7 @@ async function claim(ctx: DnsCertContext, id: string): Promise<TlsRow | null> {
         eq(tls.id, id),
         eq(tls.source, 'upload'),
         sql`${tls.metadata} #>> '{acme,managedBy}' = 'panel'`,
-        sql`coalesce((${tls.metadata} #>> '{dnsCert,claimUntil}')::timestamptz, 'epoch'::timestamptz) < ${now.toISOString()}::timestamptz`
+        sql`${claimedUntil()} < ${now.toISOString()}::timestamptz`
       )
     )
     .returning()
@@ -336,13 +346,19 @@ async function step(ctx: DnsCertContext, row: TlsRow, state: DnsCertState): Prom
   if (!order) return await openOrder(ctx, steps, state, await renewalKey(ctx, row))
   if (order.finalizedAt) return await collectCertificate(ctx, state, order)
   if (order.answeredAt) return await checkValidation(ctx, steps, state, order)
-  return await answerChallenges(ctx, state, order)
+  return await answerChallenges(ctx, steps, state, order)
 }
 
 /** Has the authority asked this organization to wait, and is that wait still running? */
 async function accountPaused(ctx: DnsCertContext, row: TlsRow, state: DnsCertState) {
   const until = await acmePausedUntil(ctx, row.organizationId, state.staging)
   return until !== null && until > clock(ctx).getTime()
+}
+
+/** Count a 429 or 503 by who sent it. */
+function countAnswer(ctx: DnsCertContext, err: unknown): void {
+  if (err instanceof AcmeError) countThrottle(ctx.counters, 'authority', err.status)
+  else if (err instanceof TunnelProviderError) countThrottle(ctx.counters, 'cloudflare', err.status)
 }
 
 /** How long the authority or the DNS host asked callers to wait, or null when this was not that kind of answer. */
@@ -550,6 +566,7 @@ export async function advanceDnsCertificate(
     await writeState(ctx, row, state, { stage: stageOf(state) })
     return 'waiting'
   } catch (err) {
+    countAnswer(ctx, err)
     const wait = throttleWaitOf(err)
     if (wait !== null) {
       await holdOrder(ctx, row, state, err, wait)

@@ -925,6 +925,8 @@ test('a provider that says how long to wait pauses every row of that token for t
     // One request was made; the second row did not get its own.
     assertEquals(limited.calls.issue, 1)
     assertEquals(result.failed.length, 1)
+    assertEquals(result.throttled.cloudflare429, 1)
+    assertEquals(result.throttled.authority429 + result.throttled.cloudflare503, 0)
     for (const row of rows) {
       const [now] = await w.db.select().from(tls).where(eq(tls.id, row.id))
       const retry = readOriginRetry(now!.metadata)

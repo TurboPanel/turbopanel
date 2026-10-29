@@ -54,7 +54,12 @@ function fakeProvider() {
       records.delete(path.split('/').pop()!)
       return ok({ id: 'gone' })
     }
-    if (path === '/zones/z1/dns_records') return ok([])
+    if (path === '/zones/z1/dns_records') {
+      // A TXT read-back lists the records at the name, as the real host does.
+      const name = url.searchParams.get('name')
+      const wanted = url.searchParams.get('type') === 'TXT' && name
+      return ok(wanted ? [...records.values()].filter((r) => r.name === name) : [])
+    }
     return Promise.resolve(
       Response.json({ success: false, errors: [{ message: 'nope' }] }, { status: 404 })
     )

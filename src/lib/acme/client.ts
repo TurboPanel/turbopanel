@@ -14,6 +14,7 @@ const DEFAULT_RETRY_AFTER_MS = 3_600_000
 
 export type AcmeErrorCode =
   | 'rate_limited'
+  | 'already_replaced'
   | 'unauthorized'
   | 'account_gone'
   | 'rejected_name'
@@ -49,6 +50,7 @@ type Problem = { type?: string; detail?: string; subproblems?: { detail?: string
 
 const PROBLEM_CODES: Record<string, AcmeErrorCode> = {
   rateLimited: 'rate_limited',
+  alreadyReplaced: 'already_replaced',
   accountDoesNotExist: 'account_gone',
   unauthorized: 'unauthorized',
   rejectedIdentifier: 'rejected_name',
@@ -274,10 +276,23 @@ export class AcmeClient {
     return location
   }
 
-  async newOrder(names: readonly string[]): Promise<AcmeOrder> {
+  /**
+   * Open an order. `replaces` is the renewal-information identifier of the
+   * certificate this one renews (RFC 9773): the authority then treats the
+   * order as a renewal. It is only sent to an authority that offers renewal
+   * information.
+   */
+  async newOrder(
+    names: readonly string[],
+    options: { replaces?: string } = {}
+  ): Promise<AcmeOrder> {
     const directory = await this.#loadDirectory()
     const identifiers = names.map((value) => ({ type: 'dns' as const, value }))
-    const response = await this.#post(directory.newOrder, { identifiers })
+    const replaces = directory.renewalInfo ? options.replaces : undefined
+    const response = await this.#post(directory.newOrder, {
+      identifiers,
+      ...(replaces ? { replaces } : {}),
+    })
     const order = (await response.json()) as Omit<AcmeOrder, 'url'>
     const url = response.headers.get('location')
     if (!url) throw new AcmeError('server', 'The certificate authority sent no order address')

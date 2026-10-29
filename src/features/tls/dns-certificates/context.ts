@@ -2,6 +2,7 @@ import type { Db } from '../../../db/connection.ts'
 import type { DerivedSecretsConfig } from '../../../lib/secrets/secrets.ts'
 import type { TunnelAdapterRegistry } from '../../tunnels/registry.ts'
 import type { TunnelProvider } from '../../tunnels/vocabulary.ts'
+import type { ThrottleCounters } from '../../../lib/throttle-counters.ts'
 import type { DnsChallengeProvider } from './dns-provider.ts'
 
 /** Everything a step needs. Tests replace the fetch, the DNS host and the clock. */
@@ -16,6 +17,8 @@ export type DnsCertContext = {
   /** The certificate authority's HTTP client. */
   acmeFetch?: typeof fetch
   now?: () => Date
+  /** Where a sweep tick counts the 429 and 503 answers it meets. */
+  counters?: ThrottleCounters
   /** How long the records are given to reach the authority's resolvers (tests shorten it). */
   presentGraceMs?: number
   /** Told when a renewed certificate replaced the old one, so the sites pinning it can be refreshed. */
@@ -27,6 +30,12 @@ export const DAY_MS = 86_400_000
 export const RECORD_KEEP_MS = 2 * 3_600_000
 /** The records are given a moment to reach the authority's resolvers before it looks. */
 export const PRESENT_GRACE_MS = 10_000
+/**
+ * A record not yet seen through the DNS host's API is looked at again after
+ * this long, not every tick: 25 certificates of ten names on one token then
+ * cost at most about 625 reads in five minutes, well under Cloudflare's 1,200.
+ */
+export const READBACK_RETRY_MS = 2 * 60_000
 /** One step may hold a certificate this long before another worker may take it. */
 export const CLAIM_MS = 90_000
 /** An order that has not finished by now is dropped and started over after a wait. */

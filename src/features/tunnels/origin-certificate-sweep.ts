@@ -14,9 +14,29 @@ import { tls } from '../../db/schema.ts'
 import { logWarn } from '../../lib/logger.ts'
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
+import { reportSweep } from '../../lib/sweep-report.ts'
+import {
+  addThrottleCounters,
+  emptyThrottleCounters,
+  type ThrottleCounters,
+} from '../../lib/throttle-counters.ts'
 import { ORIGIN_SWEEP_BATCH, sweepOriginCertificates } from './origin-certificate.ts'
 import { createTunnelAdapterRegistry, type TunnelAdapterRegistry } from './registry.ts'
 import { verifyOriginHostnames } from './verify-state.ts'
+
+/** Wall-clock time after which a pass starts no further organization. */
+export const ORIGIN_SWEEP_BUDGET_MS = 20_000
+
+/**
+ * The organizations in the order they get their turn: the list is rotated by
+ * the minute, so with more organizations than a pass can serve every one is
+ * reached within a few passes instead of the first few always going first.
+ */
+export function turnOrder<T>(orgs: readonly T[], now: Date): T[] {
+  if (orgs.length === 0) return []
+  const offset = Math.floor(now.getTime() / 60_000) % orgs.length
+  return [...orgs.slice(offset), ...orgs.slice(0, offset)]
+}
 
 export type OriginCertificateSweepTick = {
   renewed: number
@@ -24,22 +44,40 @@ export type OriginCertificateSweepTick = {
   failed: number
   /** Sites now pinned to a renewed certificate, with their organization. */
   repinned: { hostingId: string; organizationId: string }[]
+  /** 429 and 503 answers from the provider met this tick. */
+  throttled: ThrottleCounters
 }
 
 export async function runOriginCertificateSweepTick(
   db: Db,
   secrets: DerivedSecretsConfig,
-  deps: { registry?: TunnelAdapterRegistry; now?: Date; limit?: number } = {}
+  deps: {
+    registry?: TunnelAdapterRegistry
+    now?: Date
+    limit?: number
+    /** Wall-clock time after which no further organization is started. */
+    budgetMs?: number
+  } = {}
 ): Promise<OriginCertificateSweepTick> {
-  const out: OriginCertificateSweepTick = { renewed: 0, removed: 0, failed: 0, repinned: [] }
+  const startedAt = Date.now()
+  const out: OriginCertificateSweepTick = {
+    renewed: 0,
+    removed: 0,
+    failed: 0,
+    repinned: [],
+    throttled: emptyThrottleCounters(),
+  }
   const orgs = await db
     .selectDistinct({ organizationId: tls.organizationId })
     .from(tls)
     .where(eq(tls.source, 'provider_origin'))
   const registry = deps.registry ?? createTunnelAdapterRegistry()
   let budget = deps.limit ?? ORIGIN_SWEEP_BATCH
-  await forEachSequential(orgs, async ({ organizationId }) => {
-    if (budget <= 0) return
+  const turns = turnOrder(orgs, deps.now ?? new Date())
+  await forEachSequential(turns, async ({ organizationId }, index) => {
+    if (budget <= 0 || Date.now() - startedAt > (deps.budgetMs ?? ORIGIN_SWEEP_BUDGET_MS)) return
+    // A fair share of what is left, so the first organizations cannot use the whole pass.
+    const share = Math.max(1, Math.ceil(budget / (turns.length - index)))
     try {
       const done = await sweepOriginCertificates({
         db,
@@ -47,13 +85,14 @@ export async function runOriginCertificateSweepTick(
         registry,
         organizationId,
         usedHostnames: await verifyOriginHostnames(db, organizationId),
-        limit: budget,
+        limit: share,
         ...(deps.now ? { now: deps.now } : {}),
       })
       budget -= done.renewed.length + done.removed.length + done.failed.length
       out.renewed += done.renewed.length
       out.removed += done.removed.length
       out.failed += done.failed.length
+      addThrottleCounters(out.throttled, done.throttled)
       out.repinned.push(
         ...done.repinnedHostingIds.map((hostingId) => ({ hostingId, organizationId }))
       )
@@ -62,5 +101,11 @@ export async function runOriginCertificateSweepTick(
       logWarn('tls', `origin certificate sweep failed: ${err instanceof Error ? err.message : err}`)
     }
   })
+  reportSweep(
+    'tls',
+    'origin certificate sweep',
+    { renewed: out.renewed, removed: out.removed, failed: out.failed, ...out.throttled },
+    { tried: out.renewed + out.failed, failed: out.failed }
+  )
   return out
 }

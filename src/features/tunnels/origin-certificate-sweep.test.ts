@@ -14,7 +14,7 @@ import { organization, tls } from '../../db/schema.ts'
 import { deriveEncryptionSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import type { TunnelAdapter } from './adapter.ts'
-import { runOriginCertificateSweepTick } from './origin-certificate-sweep.ts'
+import { runOriginCertificateSweepTick, turnOrder } from './origin-certificate-sweep.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -52,4 +52,13 @@ test('the tick does nothing on an instance with no origin certificates', async (
     await db.delete(organization).where(eq(organization.id, org!.id))
     await endDbConnection(db)
   }
+})
+
+test('organizations take turns: the list is rotated by the minute so none is always last', () => {
+  const orgs = ['a', 'b', 'c']
+  const at = (minute: number) => new Date(minute * 60_000)
+  assertEquals(turnOrder(orgs, at(0)), ['a', 'b', 'c'])
+  assertEquals(turnOrder(orgs, at(1)), ['b', 'c', 'a'])
+  assertEquals(turnOrder(orgs, at(5)), ['c', 'a', 'b'])
+  assertEquals(turnOrder([], at(7)), [])
 })

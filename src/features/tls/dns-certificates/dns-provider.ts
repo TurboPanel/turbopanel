@@ -20,6 +20,20 @@ export type DnsChallengeProvider = {
    * challenge is written at the target instead.
    */
   lookupCname(input: { zoneId: string; name: string }): Promise<string | null>
+  /**
+   * A cheap read that proves the provider still accepts the token for the
+   * zone. Throws the provider's refusal (a token that was rolled or limited) so
+   * an order is never started with a token that can no longer write. Optional:
+   * a host without one is not checked.
+   */
+  checkZone?(zoneId: string): Promise<void>
+  /**
+   * The TXT values the provider holds at a name, read back through its own
+   * API. The challenge is only answered once the record is seen here, so the
+   * authority is not asked to validate a record that is not published yet.
+   * Optional: a host without one is answered after the usual short pause.
+   */
+  txtValues?(input: { zoneId: string; name: string }): Promise<string[]>
   present(input: ChallengeRecordInput): Promise<ChallengeRecordRef>
   /** Remove a record; one that is already gone counts as removed. */
   remove(ref: ChallengeRecordRef): Promise<void>
