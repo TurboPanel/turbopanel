@@ -172,7 +172,7 @@ export async function toApiTunnel(db: Db, row: TunnelRow): Promise<ApiTunnel> {
     carrierId: row.carrierId,
     placement: row.placement,
     datacenterId: row.datacenterId,
-    status: apiStatusOf(row, portals),
+    status: row.status,
     createdAt: row.createdAt,
     portals: portals.map((p) => ({
       serverId: p.serverId,
@@ -186,16 +186,6 @@ export async function toApiTunnel(db: Db, row: TunnelRow): Promise<ApiTunnel> {
     warnings: [...removalWarnings(row), ...placementWarnings(carrying)],
     doorwayCount: doorways.length,
   }
-}
-
-/**
- * The status the screens show. The panel stores `pending` when a tunnel is made
- * and never advances it, so a tunnel with a connector that reported in is
- * shown as `active`.
- */
-function apiStatusOf(row: TunnelRow, portals: readonly PortalRow[]): string {
-  if (row.status === 'pending' && portals.some((p) => p.reported === 'connected')) return 'active'
-  return row.status
 }
 
 export async function listTunnels(db: Db, organizationId: string): Promise<TunnelRow[]> {

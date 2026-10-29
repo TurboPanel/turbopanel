@@ -1,5 +1,5 @@
 import { assertEquals } from '@std/assert'
-import { connectorUpdateNotice, portalErrorOf, portalStateOf } from './status.ts'
+import { connectorUpdateNotice, nextTunnelStatus, portalErrorOf, portalStateOf } from './status.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -73,4 +73,20 @@ test('an update is pending only when the running version differs from the one th
   assertEquals(connectorUpdateNotice(null, null).pending, false)
   assertEquals(connectorUpdateNotice('2026.5.2', []).pending, false)
   assertEquals(connectorUpdateNotice('2026.5.2', { connector: 7 }).pending, false)
+})
+
+test('a tunnel is active once a connector is connected, attention when none is and one is not, and keeps removing', () => {
+  assertEquals(nextTunnelStatus('pending', ['unknown'], 'connected'), 'active')
+  assertEquals(nextTunnelStatus('pending', ['connected', 'down'], 'down'), 'active')
+  assertEquals(nextTunnelStatus('active', ['down', 'unknown'], 'down'), 'attention')
+  assertEquals(nextTunnelStatus('active', ['unknown'], 'unknown'), 'active')
+  assertEquals(nextTunnelStatus('pending', ['unknown'], 'unknown'), 'pending')
+  assertEquals(nextTunnelStatus('attention', ['connected'], 'connected'), 'active')
+  assertEquals(nextTunnelStatus('removing', ['connected'], 'connected'), 'removing')
+})
+
+test('an all-servers tunnel has no portal rows, so one server going down only moves it off pending', () => {
+  assertEquals(nextTunnelStatus('pending', [], 'connected'), 'active')
+  assertEquals(nextTunnelStatus('pending', [], 'error'), 'attention')
+  assertEquals(nextTunnelStatus('active', [], 'down'), 'active')
 })

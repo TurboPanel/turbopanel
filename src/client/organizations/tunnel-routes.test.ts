@@ -6,7 +6,7 @@
 
 import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { assert, assertEquals } from '@std/assert'
-import { and, eq, inArray } from 'drizzle-orm'
+import { eq, inArray } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
@@ -44,6 +44,7 @@ import { NO_CAPABILITIES } from '../../features/tunnels/vocabulary.ts'
 import { carryingServers } from '../../features/tunnels/lifecycle.ts'
 import { createTunnelAdapterRegistry } from '../../features/tunnels/registry.ts'
 import { runTunnelRemovalSweepTick } from '../../features/tunnels/removal.ts'
+import { recordTunnelStatus } from '../../features/tunnels/status.ts'
 import { registerOrganizationTunnelRoutes } from './tunnel-routes.ts'
 
 /**
@@ -630,17 +631,33 @@ test('a tunnel whose connectors are still running is removed once the provider l
   })
 })
 
-test('a tunnel shows as active once one of its connectors has reported in', async () => {
+test('a tunnel is active once a connector reported in, also when it has no portal rows', async () => {
   await withFixture(async (f) => {
     const id = await makeTunnel(f)
-    const before = await call(f, 'GET', `/organizations/${f.orgA}/tunnels/${id}`, f.managerCookie)
-    assertEquals((before.body.tunnel as { status: string }).status, 'pending')
+    const report = (serverId: string, status: 'connected' | 'failed') =>
+      recordTunnelStatus(f.db, serverId, {
+        pinnedVersion: '2026.5.2',
+        connectors: [{ tunnelId: 'tunnel-ext-1', status, version: '2026.5.2', slot: 'a' }],
+      })
+    const status = async (tunnelId: string) =>
+      (
+        (await call(f, 'GET', `/organizations/${f.orgA}/tunnels/${tunnelId}`, f.managerCookie)).body
+          .tunnel as { status: string }
+      ).status
+    assertEquals(await status(id), 'pending')
+    await report(f.servers[0], 'failed')
+    assertEquals(await status(id), 'attention')
+    await report(f.servers[1], 'connected')
+    assertEquals(await status(id), 'active')
+
+    // An all-servers tunnel has no portal rows: the answer still moves it.
+    await f.db.delete(portal).where(eq(portal.tunnelId, id))
     await f.db
-      .update(portal)
-      .set({ reported: 'connected' })
-      .where(and(eq(portal.tunnelId, id), eq(portal.serverId, f.servers[0])))
-    const after = await call(f, 'GET', `/organizations/${f.orgA}/tunnels/${id}`, f.managerCookie)
-    assertEquals((after.body.tunnel as { status: string }).status, 'active')
+      .update(tunnel)
+      .set({ status: 'pending', placement: 'all', datacenterId: f.datacenterId })
+      .where(eq(tunnel.id, id))
+    await report(f.servers[2], 'connected')
+    assertEquals(await status(id), 'active')
   })
 })
 

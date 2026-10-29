@@ -1,6 +1,6 @@
 import { and, eq, inArray, sql } from 'drizzle-orm'
 import type { createDenoDb } from '../../db/connection.ts'
-import { portal, tunnel } from '../../db/schema.ts'
+import { portal, server, tunnel } from '../../db/schema.ts'
 import { mapSequential } from '../../lib/sequential.ts'
 import type {
   TunnelStatusCommandResult,
@@ -43,6 +43,57 @@ export function portalErrorOf(connector: TunnelStatusConnector): string | null {
 }
 
 /**
+ * Where a tunnel's own status goes after a connector answered. A connected
+ * connector makes it `active`; with none connected, one that is down or in
+ * error makes it `attention`; otherwise it stays as it is. A tunnel being
+ * removed keeps `removing`. An all-servers tunnel has no portal rows to read,
+ * so a down answer only moves it off `pending`: one server going down must
+ * not undo what the others reported.
+ */
+export function nextTunnelStatus(
+  current: string,
+  portalStates: readonly string[],
+  answer: 'connected' | 'unknown' | 'down' | 'error'
+): string {
+  if (current === 'removing') return current
+  if (answer === 'connected' || portalStates.includes('connected')) return 'active'
+  const trouble = answer === 'down' || answer === 'error'
+  if (portalStates.length === 0) return trouble && current === 'pending' ? 'attention' : current
+  return trouble || portalStates.some((s) => s === 'down' || s === 'error') ? 'attention' : current
+}
+
+/** Move the tunnel the daemon names by its provider id to the status its reports now show. */
+async function followTunnelStatus(
+  db: Db,
+  serverId: string,
+  providerId: string,
+  answer: 'connected' | 'unknown' | 'down' | 'error'
+): Promise<void> {
+  const [found] = await db
+    .select({ id: tunnel.id, status: tunnel.status })
+    .from(tunnel)
+    .innerJoin(server, eq(server.organizationId, tunnel.organizationId))
+    .where(and(eq(server.id, serverId), eq(tunnel.externalId, providerId)))
+    .limit(1)
+  if (!found) return
+  const reports = await db
+    .select({ reported: portal.reported })
+    .from(portal)
+    .where(eq(portal.tunnelId, found.id))
+  const next = nextTunnelStatus(
+    found.status,
+    reports.map((r) => r.reported),
+    answer
+  )
+  if (next !== found.status) {
+    await db
+      .update(tunnel)
+      .set({ status: next })
+      .where(and(eq(tunnel.id, found.id), eq(tunnel.status, found.status)))
+  }
+}
+
+/**
  * Write one status answer for one server. Only portals of this server for a
  * tunnel the daemon names by its provider id are touched; ids the panel does
  * not know (and the instance's own tunnel) are ignored. Returns how many
@@ -62,7 +113,10 @@ export async function recordTunnelStatus(
       .from(portal)
       .innerJoin(tunnel, eq(portal.tunnelId, tunnel.id))
       .where(and(eq(portal.serverId, serverId), eq(tunnel.externalId, connector.tunnelId)))
-    if (portals.length === 0) return 0
+    if (portals.length === 0) {
+      await followTunnelStatus(db, serverId, connector.tunnelId, portalStateOf(connector.status))
+      return 0
+    }
     const info = {
       pinnedVersion: result.pinnedVersion,
       slot: connector.slot,
@@ -84,6 +138,7 @@ export async function recordTunnelStatus(
           portals.map((p) => p.id)
         )
       )
+    await followTunnelStatus(db, serverId, connector.tunnelId, portalStateOf(connector.status))
     return portals.length
   })
   return counts.reduce((sum, n) => sum + n, 0)

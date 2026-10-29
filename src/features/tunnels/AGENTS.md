@@ -80,6 +80,12 @@ member there, a widened CHECK (forward migration) and one adapter.
   A tunnel with no connector is deleted at once; one the provider no longer has
   (404) counts as removed. The token wipe, the run-token secret and the portals
   go in `deleteTunnelRecord` as before; hostnames must be removed first.
+- **Tunnel status follows the connectors.** `recordTunnelStatus` (status poll) moves
+  `tunnel.status` with `nextTunnelStatus`: a connected connector makes it
+  `active`; with none connected, a down or failed one makes it `attention`; a
+  tunnel being removed keeps `removing`. An all-servers tunnel has no portal
+  rows (only `one` and `chosen` store them), so the answer is applied to the
+  tunnel directly and a down answer only moves it off `pending`.
 - `carrier` is unique on (organization, provider, external account id); a
   provider with no account stores NULL, and NULLs never collide.
 
