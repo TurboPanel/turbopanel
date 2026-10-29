@@ -600,6 +600,12 @@ export const tunnelPaths: Record<string, unknown> = {
             tunnel: { $ref: '#/components/schemas/Tunnel' },
             verifyOrigin: { $ref: '#/components/schemas/VerifyOrigin' },
             pinnedHostingIds: { type: 'array', items: { type: 'string', format: 'uuid' } },
+            deferredHostingIds: {
+              type: 'array',
+              items: { type: 'string', format: 'uuid' },
+              description:
+                'Sites left for the next request: one request asks the provider for at most 10 certificates. Apply again to continue; it is idempotent.',
+            },
             needsDeploy: { type: 'boolean' },
           },
         }),

@@ -36,6 +36,7 @@ import { mintCertificateRequest, parseCertificatePem } from '../../lib/tls/index
 import { coversHostname } from '../../lib/tls/match.ts'
 import { metadataFromParsed, splitTlsMetadata } from '../../lib/tls/metadata.ts'
 import type { ProviderOriginCertificate, TunnelAdapter } from './adapter.ts'
+import type { TunnelProvider } from './vocabulary.ts'
 import { TunnelProviderError } from './errors.ts'
 import { compareText } from './order.ts'
 import { mapSequential } from '../../lib/sequential.ts'
@@ -637,10 +638,12 @@ export type OriginSweepResult = {
 type SweepParams = {
   db: Db
   secrets: DerivedSecretsConfig
-  registry: (provider: CarrierRow['provider']) => TunnelAdapter
+  registry: (provider: TunnelProvider) => TunnelAdapter
   organizationId: string
   /** Hostnames still asking for a verified connection; when given, certificates nothing needs are retired first. */
   usedHostnames?: readonly string[]
+  /** Most rows handled in this pass; the rest wait for the next one. Defaults to ORIGIN_SWEEP_BATCH. */
+  limit?: number
   now?: Date
 }
 
@@ -651,41 +654,58 @@ type SweepStep =
   | { kind: 'failed'; id: string }
   | { kind: 'none' }
 
+async function renewStep(
+  params: SweepParams,
+  adapter: TunnelAdapter,
+  row: TlsRow,
+  now: Date
+): Promise<SweepStep> {
+  const renewed = await renewOriginCertificate({
+    db: params.db,
+    secrets: params.secrets,
+    adapter,
+    organizationId: params.organizationId,
+    row,
+    now,
+  })
+  return renewed
+    ? { kind: 'renewed', id: renewed.replacement.id, repinned: renewed.repinnedHostingIds }
+    : { kind: 'none' }
+}
+
 async function sweepRow(params: SweepParams, row: TlsRow, now: Date): Promise<SweepStep> {
   const link = readProviderOrigin(row.metadata)
   if (!link) return { kind: 'none' }
-  const adapter = params.registry(link.provider as CarrierRow['provider'])
+  const adapter = params.registry(link.provider as TunnelProvider)
   try {
-    const pinned = (await hostingsPinning(params.db, row.id)).length > 0
-    if (link.retiredAt === null) {
-      if (!pinned || !originCertificateIsDue(row.notAfter, now)) return { kind: 'none' }
-      const renewed = await renewOriginCertificate({
-        db: params.db,
-        secrets: params.secrets,
-        adapter,
-        organizationId: params.organizationId,
-        row,
-        now,
-      })
-      return renewed
-        ? { kind: 'renewed', id: renewed.replacement.id, repinned: renewed.repinnedHostingIds }
+    // A certificate a site still pins stays renewable even when it is retired
+    // (verification turned off), so the server never serves an expired one.
+    if ((await hostingsPinning(params.db, row.id)).length > 0) {
+      return originCertificateIsDue(row.notAfter, now)
+        ? await renewStep(params, adapter, row, now)
         : { kind: 'none' }
     }
-    if (pinned) return { kind: 'none' }
-    const expired = row.notAfter !== null && Date.parse(row.notAfter) <= now.getTime()
-    const waited =
-      now.getTime() - Date.parse(link.retiredAt) >=
-      ORIGIN_CERTIFICATE_RETIRE_GRACE_HOURS * MS_PER_HOUR
-    if (expired) {
+    if (link.retiredAt === null) return { kind: 'none' }
+    if (row.notAfter !== null && Date.parse(row.notAfter) <= now.getTime()) {
       await params.db.delete(tls).where(eq(tls.id, row.id))
       return { kind: 'removed', id: row.id }
     }
-    if (!waited) return { kind: 'none' }
+    const waitedMs = now.getTime() - Date.parse(link.retiredAt)
+    if (waitedMs < ORIGIN_CERTIFICATE_RETIRE_GRACE_HOURS * MS_PER_HOUR) return { kind: 'none' }
     await revokeOriginCertificate({ db: params.db, secrets: params.secrets, adapter, row })
     return { kind: 'removed', id: row.id }
   } catch {
     return { kind: 'failed', id: row.id }
   }
+}
+
+/** Rows one pass handles at most (each can cost a provider call), oldest first. */
+export const ORIGIN_SWEEP_BATCH = 10
+
+/** Rows a pass can do something with: retired ones, and live ones close to expiry. */
+function needsSweep(row: TlsRow, now: Date): boolean {
+  const link = readProviderOrigin(row.metadata)
+  return link !== null && (link.retiredAt !== null || originCertificateIsDue(row.notAfter, now))
 }
 
 /**
@@ -705,7 +725,9 @@ export async function sweepOriginCertificates(params: SweepParams): Promise<Orig
       now
     )
   }
-  const rows = await listOriginCertificates(params.db, params.organizationId)
+  const rows = (await listOriginCertificates(params.db, params.organizationId))
+    .filter((row) => needsSweep(row, now))
+    .slice(0, params.limit ?? ORIGIN_SWEEP_BATCH)
   const steps = await mapSequential(rows, (row) => sweepRow(params, row, now))
   const result: OriginSweepResult = { renewed: [], repinnedHostingIds: [], removed: [], failed: [] }
   for (const step of steps) {

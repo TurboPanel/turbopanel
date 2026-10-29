@@ -26,12 +26,14 @@ import {
 } from './lifecycle.ts'
 import {
   certificateCoversAll,
+  originCertificateNames,
   ensureOriginCertificate,
   type OriginCertificateScope,
   readProviderOrigin,
   retireUnusedOriginCertificates,
 } from './origin-certificate.ts'
 import { type CarrierRow, findStoredZone, listBadges, pickBadges } from './records.ts'
+import { coversHostname } from '../../lib/tls/match.ts'
 import { mapSequential } from '../../lib/sequential.ts'
 import { BadgeUnavailable, openBestBadge, useBadges } from './badge-use.ts'
 import { type VerifyState, tunnelVerifyState, verifyOriginHostnames } from './verify-state.ts'
@@ -51,7 +53,12 @@ export type VerifyOriginResult = {
   reusedCertificateIds: string[]
   /** Certificates issued now. */
   issuedCertificateIds: string[]
+  /** Sites left for the next request: one request issues at most `MAX_CERTIFICATES_PER_VERIFY`. */
+  deferredHostingIds: string[]
 }
+
+/** Most certificates one request asks the provider for; apply again to continue (it is idempotent). */
+export const MAX_CERTIFICATES_PER_VERIFY = 10
 
 async function hostingNames(db: Db, hostingId: string): Promise<string[]> {
   const [site] = await db
@@ -213,6 +220,56 @@ async function pushRoutes(
 }
 
 /**
+ * Before anything is issued: a wildcard covers the zone and one label below it,
+ * so a site with a deeper name is refused up front rather than after other
+ * sites already got certificates.
+ */
+async function assertWildcardReaches(
+  deps: VerifyOriginDeps,
+  owner: CarrierRow,
+  hostingIds: readonly string[]
+): Promise<void> {
+  await mapSequential(hostingIds, async (hostingId) => {
+    const names = await hostingNames(deps.db, hostingId)
+    const zone = await singleZone(deps, owner, names)
+    const covered = originCertificateNames(zone.name)
+    if (!names.every((name) => coversHostname(covered, name))) {
+      throw new TunnelRefusal(
+        'verify_origin_names',
+        409,
+        `A wildcard certificate covers one label below the zone, and a site serves a deeper name than that (${names.join(', ')}). Use certificates for exact hostnames instead`
+      )
+    }
+  })
+}
+
+/** One site after another, at most `MAX_CERTIFICATES_PER_VERIFY` new certificates; the rest are deferred. */
+async function certifyAll(
+  deps: VerifyOriginDeps,
+  owner: CarrierRow,
+  input: {
+    hostingIds: readonly string[]
+    tunnelNames: ReadonlySet<string>
+    scope: OriginCertificateScope
+    result: VerifyOriginResult
+  }
+): Promise<void> {
+  const { hostingIds, tunnelNames, scope, result } = input
+  if (scope === 'wildcard') await assertWildcardReaches(deps, owner, hostingIds)
+  let issued = 0
+  await mapSequential(hostingIds, async (hostingId) => {
+    if (issued >= MAX_CERTIFICATES_PER_VERIFY) {
+      result.deferredHostingIds.push(hostingId)
+      return
+    }
+    const done = await certifyHosting(deps, owner, hostingId, tunnelNames, scope)
+    if (!done.reused) issued += 1
+    ;(done.reused ? result.reusedCertificateIds : result.issuedCertificateIds).push(done.tlsId)
+    if (done.changed) result.pinnedHostingIds.push(hostingId)
+  })
+}
+
+/**
  * Apply the choice. Safe to repeat: run it again when a site that was missing
  * has been created, or after names were added. Fails as a whole before the
  * option is saved, so a refusal leaves the tunnel as it was (certificates
@@ -236,6 +293,7 @@ export async function setVerifyOrigin(
     pinnedHostingIds: [],
     reusedCertificateIds: [],
     issuedCertificateIds: [],
+    deferredHostingIds: [],
   }
   if (enabled) {
     const doorways = (await listDoorways(deps.db, row.id)).filter((d) => d.status !== 'removing')
@@ -244,15 +302,7 @@ export async function setVerifyOrigin(
       ...doorways.map((d) => d.hostname),
     ])
     const hostingIds = [...new Set(doorways.flatMap((d) => (d.hostingId ? [d.hostingId] : [])))]
-    // One site after another: each request counts against the certificate limit.
-    const done = await mapSequential(hostingIds, async (hostingId) => ({
-      hostingId,
-      ...(await certifyHosting(deps, owner, hostingId, tunnelNames, scope)),
-    }))
-    for (const item of done) {
-      ;(item.reused ? result.reusedCertificateIds : result.issuedCertificateIds).push(item.tlsId)
-      if (item.changed) result.pinnedHostingIds.push(item.hostingId)
-    }
+    await certifyAll(deps, owner, { hostingIds, tunnelNames, scope, result })
   }
   const saved = await saveOption(deps.db, row, enabled)
   result.state = await pushRoutes(deps, owner, saved)

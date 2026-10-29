@@ -383,6 +383,8 @@ function verifyOriginResponse(registry: TunnelAdapterRegistry) {
         tunnel: await toApiTunnel(scope.db, done.tunnel),
         verifyOrigin: done.state,
         pinnedHostingIds: done.pinnedHostingIds,
+        // More sites than one request handles: apply again to continue.
+        deferredHostingIds: done.deferredHostingIds,
         // The servers pick up a new certificate with the site's next deploy.
         needsDeploy: done.pinnedHostingIds.length > 0,
       })

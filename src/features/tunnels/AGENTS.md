@@ -481,7 +481,15 @@ provider_origin_managed`, `400 provider_origin_unsupported`).
 - Renewal issues a replacement for the same names and scope, re-pins the sites
   (it does not redeploy: `renewOriginCertificate` returns the re-pinned hosting
   ids so a surface that can queue a hostings-only deploy can push them) and
-  retires the old row. The sweep is not on a timer yet.
+  retires the old row.
+- **Scheduled pass:** `runOriginCertificateSweepTick` (`origin-certificate-sweep.ts`)
+  rides `runHostingLetsEncryptSweepTick`, which both the Deno interval and the
+  Workers cron already call, so there is no new timer. Per tick it handles at most
+  10 rows (`ORIGIN_SWEEP_BATCH`) across organizations, oldest first, and only rows
+  that need it (retired, or close to expiry); a pinned certificate close to expiry
+  is renewed even when retired (verification turned off), so a server never keeps
+  an expired one. Sites re-pinned by a renewal get their hostings-only apply. It
+  needs the data-encryption secrets and does nothing without them.
 - Deleting an organization removes the rows without revoking them at the
   provider.
 
@@ -496,7 +504,10 @@ not a verified tunnel name (`verify_origin_public_names`: browsers do not trust
 an origin certificate), when its names span more than one zone
 (`verify_origin_zones`), or when a chosen wildcard does not cover a deeper name
 (`verify_origin_names`). Safe to repeat: run it again when a site was missing or
-names were added.
+names were added. One request asks the provider for at most 10 certificates
+(`MAX_CERTIFICATES_PER_VERIFY`); the other sites come back as
+`deferredHostingIds` and the next apply continues without issuing anything twice.
+A wildcard request is checked against every site's names before anything is issued.
 
 **The connector only verifies while every name is covered.** `tunnelVerifyState`
 (`verify-state.ts`) is `active` only when every non-removing name of the tunnel

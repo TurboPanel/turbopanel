@@ -750,3 +750,78 @@ test('certificates nobody needs any more are retired, others are left alone', as
     assertEquals(readProviderOrigin(row!.metadata)!.retiredAt, null)
   })
 })
+
+test('a retired certificate a site still pins is renewed when close to expiry, not stranded', async () => {
+  await withWorld(async (w) => {
+    const fake = fakeAdapter()
+    const old = await issueOriginCertificate({
+      ...w,
+      adapter: fake.adapter,
+      carrier: w.carrierRow,
+      badge: w.badgeRow,
+      zoneName: 'example.com',
+      names: ['app.example.com'],
+    })
+    const hostingId = await pin(w.db, w.serviceId, old.id, 'app.example.com')
+    // Verification was turned off, so nothing needs it, but a site still serves it.
+    await retireUnusedOriginCertificates(w.db, w.organizationId, [])
+    await w.db
+      .update(tls)
+      .set({ notAfter: new Date(Date.now() + 5 * 86_400_000).toISOString() })
+      .where(eq(tls.id, old.id))
+    const result = await sweepOriginCertificates({
+      db: w.db,
+      secrets: w.secrets,
+      registry: () => fake.adapter,
+      organizationId: w.organizationId,
+    })
+    assertEquals(result.renewed.length, 1)
+    assertEquals(result.repinnedHostingIds, [hostingId])
+    assertEquals(fake.revoked.length, 0)
+  })
+})
+
+test('a pass handles at most the batch of rows that need it, and leaves healthy rows alone', async () => {
+  await withWorld(async (w) => {
+    const fake = fakeAdapter()
+    const rows = await Promise.all(
+      [0, 1, 2].map((i) =>
+        issueOriginCertificate({
+          ...w,
+          adapter: fake.adapter,
+          carrier: w.carrierRow,
+          badge: w.badgeRow,
+          zoneName: 'example.com',
+          names: [`n${i}.example.com`],
+        })
+      )
+    )
+    await retireUnusedOriginCertificates(w.db, w.organizationId, [])
+    const longAgo = new Date(Date.now() - 3 * 86_400_000).toISOString()
+    await Promise.all(
+      rows.map(async (row) => {
+        const link = readProviderOrigin(row.metadata)!
+        await w.db
+          .update(tls)
+          .set({
+            metadata: {
+              ...(row.metadata as object),
+              providerOrigin: { ...link, retiredAt: longAgo },
+            },
+          })
+          .where(eq(tls.id, row.id))
+      })
+    )
+    const base = {
+      db: w.db,
+      secrets: w.secrets,
+      registry: () => fake.adapter,
+      organizationId: w.organizationId,
+    }
+    const first = await sweepOriginCertificates({ ...base, limit: 2 })
+    assertEquals(first.removed.length, 2)
+    const second = await sweepOriginCertificates({ ...base, limit: 2 })
+    assertEquals(second.removed.length, 1)
+    assertEquals((await sweepOriginCertificates(base)).removed, [])
+  })
+})

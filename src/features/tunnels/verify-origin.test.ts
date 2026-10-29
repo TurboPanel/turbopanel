@@ -32,7 +32,7 @@ import { mintSelfSignedCertificate } from '../../lib/tls/index.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import type { TunnelAdapter } from './adapter.ts'
 import { readProviderOrigin } from './origin-certificate.ts'
-import { setVerifyOrigin } from './verify-origin.ts'
+import { MAX_CERTIFICATES_PER_VERIFY, setVerifyOrigin } from './verify-origin.ts'
 import { tunnelVerifyState } from './verify-state.ts'
 import { TunnelRefusal } from './lifecycle.ts'
 
@@ -403,5 +403,36 @@ test('the wildcard is used only when chosen, covers one label, and refuses a dee
       TunnelRefusal
     )
     assertEquals(err.code, 'verify_origin_names')
+    // Refused before anything was issued.
+    assertEquals(w.fake.issued.length, 0)
+  })
+})
+
+test('a wildcard request refuses before issuing for any site when another site has a deeper name', async () => {
+  await withWorld(async (w) => {
+    await addSite(w, ['app.example.com'])
+    await addSite(w, ['a.b.example.com'])
+    await assertRejects(
+      async () => setVerifyOrigin(w.deps, w.carrierRow, await tunnelRow(w), true, 'wildcard'),
+      TunnelRefusal
+    )
+    assertEquals(w.fake.issued.length, 0)
+  })
+})
+
+test('one request issues at most the cap and defers the rest; applying again finishes, issuing nothing twice', async () => {
+  await withWorld(async (w) => {
+    const total = MAX_CERTIFICATES_PER_VERIFY + 2
+    for (let i = 0; i < total; i += 1) await addSite(w, [`s${i}.example.com`])
+    const first = await setVerifyOrigin(w.deps, w.carrierRow, await tunnelRow(w), true)
+    assertEquals(first.issuedCertificateIds.length, MAX_CERTIFICATES_PER_VERIFY)
+    assertEquals(first.deferredHostingIds.length, 2)
+    assertEquals(first.state.active, false)
+    const second = await setVerifyOrigin(w.deps, w.carrierRow, await tunnelRow(w), true)
+    assertEquals(second.issuedCertificateIds.length, 2)
+    assertEquals(second.reusedCertificateIds.length, MAX_CERTIFICATES_PER_VERIFY)
+    assertEquals(second.deferredHostingIds, [])
+    assertEquals(second.state.active, true)
+    assertEquals(w.fake.issued.length, total)
   })
 })
