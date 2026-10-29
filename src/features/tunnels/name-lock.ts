@@ -96,17 +96,12 @@ function unlinkedDoorwayNamed(siteHostnames: readonly string[]) {
   )
 }
 
-/** The lock for one hosting of an organization on one server. Hostings with no doorway cost one query. */
-export async function loadNameLock(
+/** The organization's live doorways for a hosting: linked to it, or unlinked and named by it. */
+async function loadDoorwayRows(
   db: Db,
-  params: {
-    organizationId: string
-    serverId: string
-    hostingId: string
-    siteHostnames: readonly string[]
-  }
-): Promise<NameLock> {
-  const rows = await db
+  params: { organizationId: string; hostingId: string; siteHostnames: readonly string[] }
+): Promise<NameLockDoorway[]> {
+  return await db
     .select({
       hostname: doorway.hostname,
       tunnelId: doorway.tunnelId,
@@ -120,6 +115,19 @@ export async function loadNameLock(
         or(eq(doorway.hostingId, params.hostingId), unlinkedDoorwayNamed(params.siteHostnames))
       )
     )
+}
+
+/** The lock for one hosting of an organization on one server. Hostings with no doorway cost one query. */
+export async function loadNameLock(
+  db: Db,
+  params: {
+    organizationId: string
+    serverId: string
+    hostingId: string
+    siteHostnames: readonly string[]
+  }
+): Promise<NameLock> {
+  const rows = await loadDoorwayRows(db, params)
   if (rows.length === 0) return { lockedHostnames: [], tunnel: undefined }
   const tunnelIds = new Set(rows.map((r) => r.tunnelId))
   const tunnels = (await listTunnels(db, params.organizationId)).filter((t) => tunnelIds.has(t.id))
@@ -148,7 +156,7 @@ export type NameLockRefusal = {
  * or only redirected. The other spelling is never a tunnel name unless it was
  * typed too, so it counts as an ordinary public name. Compared without case.
  */
-function everyNameLocked(
+export function everyNameLocked(
   siteHostnames: readonly string[],
   www: HostingWwwMode | undefined,
   locked: readonly string[]
@@ -204,4 +212,27 @@ export async function resolveDeployNameLock(
     return { refusal: { code: 'tunnel_daemon_too_old', hostnames: locked } }
   }
   return { tunnel: lock.tunnel, ...(acmePinned ? { dropPublicCertificate: true as const } : {}) }
+}
+
+/**
+ * Is every name this hosting serves (typed names and their `www` spelling) a
+ * locked tunnel name? Then nothing public can use a certificate for it: the
+ * edge ends TLS and the server uses its internal one. Read only.
+ */
+export async function isTunnelOnlyHosting(
+  db: Db,
+  params: {
+    organizationId: string
+    hostingId: string
+    siteHostnames: readonly string[]
+    www?: HostingWwwMode
+  }
+): Promise<boolean> {
+  if (params.siteHostnames.length === 0) return false
+  const rows = await loadDoorwayRows(db, params)
+  const siteLower = new Set(params.siteHostnames.map((name) => name.toLowerCase()))
+  const locked = rows
+    .filter((row) => row.isLocalOnly && siteLower.has(row.hostname.toLowerCase()))
+    .map((row) => row.hostname)
+  return locked.length > 0 && everyNameLocked(params.siteHostnames, params.www, locked)
 }

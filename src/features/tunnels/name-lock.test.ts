@@ -23,10 +23,12 @@ import {
   project,
   server,
   service,
+  tls,
   tunnel,
   workspace,
 } from '../../db/schema.ts'
 import { TUNNEL_FORWARDING_FEATURE } from '../../lib/version-wire.ts'
+import { settleTunnelOnlyHosting } from './tunnel-only-certificate.ts'
 import { LOOPBACK_PEER, loadNameLock, resolveDeployNameLock } from './name-lock.ts'
 
 /** Sonar only recognises `test()`; see the note in the other suites. */
@@ -402,5 +404,110 @@ test('no doorway, a name being removed and a doorway of another organization loc
       await c.db.delete(doorway).where(eq(doorway.tunnelId, c.tunnelId))
       await c.db.delete(organization).where(eq(organization.id, other!.id))
     }
+  })
+})
+
+async function pinSiteLetsEncrypt(
+  c: { db: Db; organizationId: string; hostingId: string },
+  names: string[]
+): Promise<string> {
+  const [row] = await c.db
+    .insert(tls)
+    .values({
+      organizationId: c.organizationId,
+      source: 'lets_encrypt',
+      status: 'automatic',
+      notAfter: new Date(0).toISOString(),
+      metadata: {
+        dnsNames: names,
+        hasWildcard: false,
+        notBefore: new Date(0).toISOString(),
+        subject: '',
+        issuer: '',
+        acme: { challengeType: 'http-01', managedBy: 'caddy', createdFor: 'hosting' },
+      },
+      options: { autoRenew: true, requestedHostnames: names },
+    })
+    .returning({ id: tls.id })
+  await c.db
+    .update(hosting)
+    .set({
+      tlsId: row!.id,
+      pendingAt: new Date().toISOString(),
+    })
+    .where(eq(hosting.id, c.hostingId))
+  return row!.id
+}
+
+async function libraryRows(db: Db, organizationId: string) {
+  return await db.select({ id: tls.id }).from(tls).where(eq(tls.organizationId, organizationId))
+}
+
+test('a site that only serves tunnel names loses its Let’s Encrypt row, pin and waiting request', async () => {
+  await withSite({ hereFeatures: [TUNNEL_FORWARDING_FEATURE] }, async (c) => {
+    await addDoorway(c)
+    await pinSiteLetsEncrypt(c, [NAME])
+    assertEquals((await libraryRows(c.db, c.organizationId)).length, 1)
+    assertEquals(await settleTunnelOnlyHosting(c.db, c), true)
+    assertEquals((await libraryRows(c.db, c.organizationId)).length, 0)
+    const [site] = await c.db.select().from(hosting).where(eq(hosting.id, c.hostingId))
+    assertEquals(site!.tlsId, null)
+    assertEquals(site!.pendingAt, null)
+    // Settling again changes nothing.
+    assertEquals(await settleTunnelOnlyHosting(c.db, c), true)
+  })
+})
+
+test('a name that is also public, an ordinary name or no doorway keeps the Let’s Encrypt row', async () => {
+  await withSite({ hereFeatures: [TUNNEL_FORWARDING_FEATURE] }, async (c) => {
+    await pinSiteLetsEncrypt(c, [NAME])
+    // No doorway at all.
+    assertEquals(await settleTunnelOnlyHosting(c.db, c), false)
+    await addDoorway(c, { isLocalOnly: false })
+    // The name is also public.
+    assertEquals(await settleTunnelOnlyHosting(c.db, c), false)
+    await c.db.update(doorway).set({ isLocalOnly: true }).where(eq(doorway.hostname, NAME))
+    // The site also serves an ordinary public name.
+    await c.db
+      .update(hosting)
+      .set({ options: { hostnames: [NAME, 'www.other.example.org'] } })
+      .where(eq(hosting.id, c.hostingId))
+    assertEquals(await settleTunnelOnlyHosting(c.db, c), false)
+    const [site] = await c.db.select().from(hosting).where(eq(hosting.id, c.hostingId))
+    assertEquals(site!.tlsId === null, false)
+    assertEquals((await libraryRows(c.db, c.organizationId)).length, 1)
+  })
+})
+
+test('a library row another site still pins stays, and only this site lets go of it', async () => {
+  await withSite({ hereFeatures: [TUNNEL_FORWARDING_FEATURE] }, async (c) => {
+    await addDoorway(c)
+    const tlsId = await pinSiteLetsEncrypt(c, [NAME])
+    const [other] = await c.db
+      .insert(hosting)
+      .values({
+        serviceId: (await c.db.select().from(hosting).where(eq(hosting.id, c.hostingId)))[0]!
+          .serviceId,
+        options: { hostnames: ['public.example.org'] },
+        tlsId,
+      })
+      .returning({ id: hosting.id })
+    assertEquals(await settleTunnelOnlyHosting(c.db, c), true)
+    assertEquals((await libraryRows(c.db, c.organizationId)).length, 1)
+    const [kept] = await c.db.select().from(hosting).where(eq(hosting.id, other!.id))
+    assertEquals(kept!.tlsId, tlsId)
+  })
+})
+
+test('a www mode makes the other spelling a public name, so the Let’s Encrypt row stays', async () => {
+  await withSite({ hereFeatures: [TUNNEL_FORWARDING_FEATURE] }, async (c) => {
+    await addDoorway(c)
+    await pinSiteLetsEncrypt(c, [NAME])
+    await c.db
+      .update(hosting)
+      .set({ options: { hostnames: [NAME], www: 'both' } })
+      .where(eq(hosting.id, c.hostingId))
+    assertEquals(await settleTunnelOnlyHosting(c.db, c), false)
+    assertEquals((await libraryRows(c.db, c.organizationId)).length, 1)
   })
 })

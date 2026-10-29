@@ -15,6 +15,7 @@ import type { Db } from '../../db/connection.ts'
 import { hosting } from '../../db/schema.ts'
 import { HOSTING_LETS_ENCRYPT_DNS_KEY } from '../../features/hostings/hosting-certificate.ts'
 import { type DnsLookup, runtimeDnsLookup } from '../../features/hostings/hosting-dns-check.ts'
+import { settleTunnelOnlyHosting } from '../../features/tunnels/tunnel-only-certificate.ts'
 import { retryPendingLetsEncrypt } from '../../features/hostings/use-letsencrypt.ts'
 import { logWarn } from '../../lib/logger.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
@@ -145,6 +146,11 @@ export async function runHostingLetsEncryptSweepTick(
     if (organizationId === null) return
     if (!acmeByOrganization.has(organizationId)) {
       acmeByOrganization.set(organizationId, await loadAcmeEnabled(db, organizationId))
+    }
+    // A request waiting on a name that has since become tunnel-only is dropped.
+    if (await settleTunnelOnlyHosting(db, { organizationId, hostingId: row.id })) {
+      result.dropped += 1
+      return
     }
     const outcome = await retryPendingLetsEncrypt({
       store,

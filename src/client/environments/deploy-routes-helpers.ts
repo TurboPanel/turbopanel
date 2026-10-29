@@ -583,14 +583,14 @@ function mapPrincipalPrepareError(
     }
   }
   if (prepared.kind === 'principal_required_for_service_kind') {
-    const kindLabel = prepared.serviceKind === 'site' ? 'Site' : 'Node app'
+    const kindLabel = prepared.serviceKind === 'site' ? 'site' : 'Node app'
     return {
       status: 422,
       body: {
         error: 'principal_required_for_service_kind',
         composeServiceName: prepared.composeServiceName,
         serviceKind: prepared.serviceKind,
-        message: `${kindLabel} "${prepared.composeServiceName}" has no account to run as. Declare an alias under the top-level x-turbopanel.principals and name it from this service's x-turbopanel.principal.`,
+        message: `This ${kindLabel} ("${prepared.composeServiceName}") needs a Hosting Account. Add one under Bindings first.`,
       },
     }
   }
