@@ -9,6 +9,7 @@
 import { fetchRenewalInfo, type RenewalInfo } from '../../../lib/acme/client.ts'
 import { acmeDirectoryUrl } from '../../../lib/acme/directories.ts'
 import { renewalCertId } from '../../../lib/acme/renewal-id.ts'
+import { countThrottle } from '../../../lib/throttle-counters.ts'
 import { DAY_MS, clock, type DnsCertContext } from './context.ts'
 import type { DnsCertState } from './order-state.ts'
 
@@ -92,6 +93,7 @@ export async function refreshedRenewAt(
         fetch: ctx.acmeFetch,
       })
     : { window: null, answered: true, retryAfterMs: null, status: null }
+  countThrottle(ctx.counters, 'authority', info.status)
   const nextCheckAt = nextAriCheckAt(clock(ctx), info, random)
   if (!info.window) {
     // No advice: the time already stored stands (it was spread when first chosen).

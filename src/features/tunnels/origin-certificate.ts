@@ -41,6 +41,11 @@ import { TunnelProviderError } from './errors.ts'
 import { compareText } from './order.ts'
 import { logWarn } from '../../lib/logger.ts'
 import { mapSequential } from '../../lib/sequential.ts'
+import {
+  countThrottle,
+  emptyThrottleCounters,
+  type ThrottleCounters,
+} from '../../lib/throttle-counters.ts'
 import { BadgeRefused, BadgeUnavailable, useBadges } from './badge-use.ts'
 import {
   nextOriginRetry,
@@ -656,6 +661,8 @@ export type OriginSweepResult = {
   /** Retired certificates revoked and removed (or removed after their own expiry). */
   removed: string[]
   failed: string[]
+  /** 429 and 503 answers from the provider met in this pass. */
+  throttled: ThrottleCounters
 }
 
 type SweepParams = {
@@ -761,7 +768,8 @@ async function sweepRow(
   params: SweepParams,
   row: TlsRow,
   now: Date,
-  paused: Set<string>
+  paused: Set<string>,
+  throttled: ThrottleCounters
 ): Promise<SweepStep> {
   const link = readProviderOrigin(row.metadata)
   if (!link || paused.has(link.badgeId)) return { kind: 'none' }
@@ -771,6 +779,7 @@ async function sweepRow(
     if (step.kind === 'renewed') await saveOriginRetry(params.db, row.id, null)
     return step
   } catch (err) {
+    if (err instanceof TunnelProviderError) countThrottle(throttled, 'cloudflare', err.status)
     await recordFailure(params, row, link, err, now, paused)
     return { kind: 'failed', id: row.id }
   }
@@ -815,8 +824,15 @@ export async function sweepOriginCertificates(params: SweepParams): Promise<Orig
     .sort(byDueTime)
     .slice(0, params.limit ?? ORIGIN_SWEEP_BATCH)
   const paused = new Set<string>()
-  const steps = await mapSequential(rows, (row) => sweepRow(params, row, now, paused))
-  const result: OriginSweepResult = { renewed: [], repinnedHostingIds: [], removed: [], failed: [] }
+  const throttled = emptyThrottleCounters()
+  const steps = await mapSequential(rows, (row) => sweepRow(params, row, now, paused, throttled))
+  const result: OriginSweepResult = {
+    renewed: [],
+    repinnedHostingIds: [],
+    removed: [],
+    failed: [],
+    throttled,
+  }
   for (const step of steps) {
     if (step.kind === 'renewed') {
       result.renewed.push(step.id)

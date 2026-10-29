@@ -2,6 +2,7 @@ import type { Db } from '../../../db/connection.ts'
 import type { DerivedSecretsConfig } from '../../../lib/secrets/secrets.ts'
 import type { TunnelAdapterRegistry } from '../../tunnels/registry.ts'
 import type { TunnelProvider } from '../../tunnels/vocabulary.ts'
+import type { ThrottleCounters } from '../../../lib/throttle-counters.ts'
 import type { DnsChallengeProvider } from './dns-provider.ts'
 
 /** Everything a step needs. Tests replace the fetch, the DNS host and the clock. */
@@ -16,6 +17,8 @@ export type DnsCertContext = {
   /** The certificate authority's HTTP client. */
   acmeFetch?: typeof fetch
   now?: () => Date
+  /** Where a sweep tick counts the 429 and 503 answers it meets. */
+  counters?: ThrottleCounters
   /** How long the records are given to reach the authority's resolvers (tests shorten it). */
   presentGraceMs?: number
   /** Told when a renewed certificate replaced the old one, so the sites pinning it can be refreshed. */

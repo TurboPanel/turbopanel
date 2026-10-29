@@ -710,7 +710,14 @@ test('an organization the authority paused is not picked, and a spent time budge
     assertEquals((await runDnsCertificateSweepTick(s.ctx, { ...only, budgetMs: -1 })).advanced, 0)
     assertEquals(s.ca.hits.signed, 0)
     // The first try is answered 503: the order waits and the organization is paused.
-    assertEquals((await runDnsCertificateSweepTick(s.ctx, only)).waiting, 1)
+    const throttled = await runDnsCertificateSweepTick(s.ctx, only)
+    assertEquals(throttled.waiting, 1)
+    assertEquals(throttled.throttled, {
+      authority429: 0,
+      authority503: 1,
+      cloudflare429: 0,
+      cloudflare503: 0,
+    })
     const asked = s.ca.hits.signed
     const idle = await runDnsCertificateSweepTick(s.ctx, only)
     assertEquals([idle.advanced, idle.waiting, s.ca.hits.signed], [0, 0, asked])

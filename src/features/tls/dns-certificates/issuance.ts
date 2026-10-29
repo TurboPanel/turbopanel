@@ -23,6 +23,7 @@ import { coversAllHostnames } from '../../../lib/tls/match.ts'
 import { metadataFromParsed, splitTlsMetadata } from '../../../lib/tls/metadata.ts'
 import { parseCertificatePem } from '../../../lib/tls/parse.ts'
 import { lockOrganizationLetsEncrypt } from '../unused-letsencrypt.ts'
+import { countThrottle } from '../../../lib/throttle-counters.ts'
 import { TunnelProviderError } from '../../tunnels/errors.ts'
 import { acmePausedUntil, pauseAcme } from './account.ts'
 import {
@@ -350,6 +351,12 @@ async function accountPaused(ctx: DnsCertContext, row: TlsRow, state: DnsCertSta
 }
 
 /** How long the authority or the DNS host asked callers to wait, or null when this was not that kind of answer. */
+/** Count a 429 or 503 by who sent it. */
+function countAnswer(ctx: DnsCertContext, err: unknown): void {
+  if (err instanceof AcmeError) countThrottle(ctx.counters, 'authority', err.status)
+  else if (err instanceof TunnelProviderError) countThrottle(ctx.counters, 'cloudflare', err.status)
+}
+
 function throttleWaitOf(err: unknown): number | null {
   if (err instanceof AcmeError || err instanceof TunnelProviderError) return err.retryAfterMs
   return null
@@ -554,6 +561,7 @@ export async function advanceDnsCertificate(
     await writeState(ctx, row, state, { stage: stageOf(state) })
     return 'waiting'
   } catch (err) {
+    countAnswer(ctx, err)
     const wait = throttleWaitOf(err)
     if (wait !== null) {
       await holdOrder(ctx, row, state, err, wait)

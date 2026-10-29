@@ -80,7 +80,10 @@ certificate started after 20 seconds (`budgetMs`), each step a few requests, so
 a Workers invocation stays inside its subrequest limit; whatever is left stays
 due for the next minute. Upkeep only visits certificates whose renewal-information
 check came due or that hold leftover records. The result also counts issued,
-failed and waiting.
+failed and waiting, and `throttled`: the 429 and 503 answers met, by who sent them
+(`authority429`, `authority503`, `cloudflare429`, `cloudflare503`), repeated in the
+summary log line. The origin certificate sweep result carries the same counters.
+Nothing is stored.
 
 ## Checks before the authority is asked
 

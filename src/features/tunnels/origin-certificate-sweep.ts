@@ -15,6 +15,11 @@ import { logWarn } from '../../lib/logger.ts'
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
 import { reportSweep } from '../../lib/sweep-report.ts'
+import {
+  addThrottleCounters,
+  emptyThrottleCounters,
+  type ThrottleCounters,
+} from '../../lib/throttle-counters.ts'
 import { ORIGIN_SWEEP_BATCH, sweepOriginCertificates } from './origin-certificate.ts'
 import { createTunnelAdapterRegistry, type TunnelAdapterRegistry } from './registry.ts'
 import { verifyOriginHostnames } from './verify-state.ts'
@@ -39,6 +44,8 @@ export type OriginCertificateSweepTick = {
   failed: number
   /** Sites now pinned to a renewed certificate, with their organization. */
   repinned: { hostingId: string; organizationId: string }[]
+  /** 429 and 503 answers from the provider met this tick. */
+  throttled: ThrottleCounters
 }
 
 export async function runOriginCertificateSweepTick(
@@ -53,7 +60,13 @@ export async function runOriginCertificateSweepTick(
   } = {}
 ): Promise<OriginCertificateSweepTick> {
   const startedAt = Date.now()
-  const out: OriginCertificateSweepTick = { renewed: 0, removed: 0, failed: 0, repinned: [] }
+  const out: OriginCertificateSweepTick = {
+    renewed: 0,
+    removed: 0,
+    failed: 0,
+    repinned: [],
+    throttled: emptyThrottleCounters(),
+  }
   const orgs = await db
     .selectDistinct({ organizationId: tls.organizationId })
     .from(tls)
@@ -79,6 +92,7 @@ export async function runOriginCertificateSweepTick(
       out.renewed += done.renewed.length
       out.removed += done.removed.length
       out.failed += done.failed.length
+      addThrottleCounters(out.throttled, done.throttled)
       out.repinned.push(
         ...done.repinnedHostingIds.map((hostingId) => ({ hostingId, organizationId }))
       )
@@ -90,7 +104,7 @@ export async function runOriginCertificateSweepTick(
   reportSweep(
     'tls',
     'origin certificate sweep',
-    { renewed: out.renewed, removed: out.removed, failed: out.failed },
+    { renewed: out.renewed, removed: out.removed, failed: out.failed, ...out.throttled },
     { tried: out.renewed + out.failed, failed: out.failed }
   )
   return out

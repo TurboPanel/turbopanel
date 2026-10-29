@@ -12,6 +12,7 @@ import { tls } from '../../../db/schema.ts'
 import { logWarn } from '../../../lib/logger.ts'
 import { forEachSequential } from '../../../lib/sequential.ts'
 import { reportSweep } from '../../../lib/sweep-report.ts'
+import { emptyThrottleCounters, type ThrottleCounters } from '../../../lib/throttle-counters.ts'
 import { parseTlsOptions } from '../../../lib/tls/match.ts'
 import { pausedAccounts } from './account.ts'
 import { clock, type DnsCertContext } from './context.ts'
@@ -45,6 +46,8 @@ export type DnsCertSweepResult = {
   failed: number
   /** Orders held back by a back-off or an organization pause. */
   waiting: number
+  /** 429 and 503 answers met this tick, by who sent them. */
+  throttled: ThrottleCounters
 }
 
 type Row = typeof tls.$inferSelect
@@ -137,9 +140,11 @@ async function withinBudget(
 }
 
 export async function runDnsCertificateSweepTick(
-  ctx: DnsCertContext,
+  base: DnsCertContext,
   options: DnsCertSweepOptions = {}
 ): Promise<DnsCertSweepResult> {
+  const throttled = emptyThrottleCounters()
+  const ctx: DnsCertContext = { ...base, counters: throttled }
   const startedAt = Date.now()
   const now = clock(ctx)
   const budgetMs = options.budgetMs ?? DNS_CERT_SWEEP_BUDGET_MS
@@ -181,6 +186,7 @@ export async function runDnsCertificateSweepTick(
     issued: 0,
     failed: 0,
     waiting: 0,
+    throttled,
   }
   await withinBudget(due, startedAt, budgetMs, async (row) => {
     try {
@@ -193,7 +199,13 @@ export async function runDnsCertificateSweepTick(
   reportSweep(
     'tls',
     'dns certificate sweep',
-    { advanced: out.advanced, issued: out.issued, failed: out.failed, waiting: out.waiting },
+    {
+      advanced: out.advanced,
+      issued: out.issued,
+      failed: out.failed,
+      waiting: out.waiting,
+      ...throttled,
+    },
     { tried: out.advanced + out.failed, failed: out.failed }
   )
   return out
