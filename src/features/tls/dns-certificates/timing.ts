@@ -12,9 +12,9 @@ import { renewalCertId } from '../../../lib/acme/renewal-id.ts'
 import { DAY_MS, clock, type DnsCertContext } from './context.ts'
 import type { DnsCertState } from './order-state.ts'
 
-/** Shortest and longest wait the authority's `Retry-After` is allowed to set (RFC 9773). */
+/** Shortest wait the authority's `Retry-After` may set (RFC 9773), and the longest we accept: never fewer than two asks a day. */
 export const ARI_MIN_WAIT_MS = 60_000
-export const ARI_MAX_WAIT_MS = DAY_MS
+export const ARI_MAX_WAIT_MS = 12 * 3_600_000
 /** Without a `Retry-After`: twice a day, inside the one to four checks a day aimed for. */
 export const ARI_DEFAULT_WAIT_MS = 12 * 3_600_000
 /** After a failed ask (outage, 429 or 503 without a wait): four times a day at most. */

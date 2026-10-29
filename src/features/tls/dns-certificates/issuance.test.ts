@@ -563,12 +563,12 @@ async function issuedWithAdvice(
   return { s, id: await issue(s, ['example.com']) }
 }
 
-test('the next renewal check follows the authority’s Retry-After, kept between a minute and a day', () =>
+test('the next renewal check follows the authority’s Retry-After, kept between a minute and twelve hours', () =>
   withDb(async (db) => {
     for (const [header, low, high] of [
       ['21600', 6 * 3_600_000, 6.6 * 3_600_000],
       ['5', 60_000, 66_000],
-      ['999999', 86_400_000, 95_040_000],
+      ['999999', 43_200_000, 47_520_000],
     ] as const) {
       const { s, id } = await issuedWithAdvice(db, { renewalRetryAfter: header })
       const state = readDnsCertState((await rowOf(db, id)).metadata)!

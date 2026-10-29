@@ -114,9 +114,9 @@ stops with the plain-words reason and nothing is written.
 - Renewal time is the authority's own advice (ACME Renewal Information,
   RFC 9773: a random moment in the suggested window, never later than two days
   before the end). The authority is asked again no sooner than its own
-  `Retry-After`, kept between a minute and a day (twelve hours when it sends none,
-  six after a failed ask), with up to a tenth added so certificates do not ask
-  together: one to four asks a day instead of eight. The next-ask time is
+  `Retry-After`, kept between a minute and twelve hours (twelve hours when it sends
+  none, six after a failed ask), so never fewer than two asks a day, with up to a tenth added so certificates do not ask
+  together: two to four asks a day instead of eight. The next-ask time is
   `ariNextCheckAt` in the private state. A failed ask keeps the stored renewal
   time rather than dropping to the fallback. Without advice, when a third of
   the lifetime is left. The new pair is swapped in only when the order
