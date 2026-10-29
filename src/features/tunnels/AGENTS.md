@@ -210,7 +210,10 @@ typed client over an injected `fetch`; tests never call the real service).
   reaches that area, not that it can edit; edit rights are confirmed by the
   first write. Reading a zone's origin certificate list proves certificate
   rights the same way and is never reported as a missing permission, since
-  certificates are optional. The accounts and zones lists may be refused to a
+  certificates are optional. `badge.options.capabilityProbe` stamps which set
+  of rights a check looked for; the daily recheck takes any token stamped lower
+  (or unstamped, checked before certificates were probed) at its next tick, so
+  raise `CAPABILITY_PROBE_REVISION` whenever a check learns a new right. The accounts and zones lists may be refused to a
   narrow token; that is treated as empty, not as a bad token, and zones the
   person named are probed one by one instead.
 - Routes always point at `https://localhost`; the last ingress rule is a

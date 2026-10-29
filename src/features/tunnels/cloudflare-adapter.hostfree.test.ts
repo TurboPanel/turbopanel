@@ -376,6 +376,21 @@ test('a token refused the certificate list has no certificate rights but is othe
   assertEquals(report.capabilities.dns.length, 1)
 })
 
+test('a certificate list answered with a bad request is no certificate right, not a failed check', async () => {
+  const { impl } = fakeFetch({
+    'GET /client/v4/accounts': ok([{ id: ACCOUNT, name: 'Main' }]),
+    'GET /client/v4/zones': ok([{ id: 'z1', name: 'example.com' }]),
+    [`GET /client/v4/accounts/${ACCOUNT}/cfd_tunnel`]: ok([]),
+    'GET /client/v4/zones/z1/dns_records': ok([]),
+    'GET /client/v4/certificates': refused(400, 'Please provide a zone id'),
+  })
+  const report = await createCloudflareAdapter({ fetch: impl }).checkCredential(TOKEN, {
+    accountId: ACCOUNT,
+  })
+  assertEquals(report.capabilities.certificates, [])
+  assertEquals(report.capabilities.dns.length, 1)
+})
+
 test('issuing sends only the request and asks for an ECC certificate for the names', async () => {
   const { impl, calls } = fakeFetch({
     'POST /client/v4/certificates': ok({

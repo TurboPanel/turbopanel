@@ -14,6 +14,7 @@ import { TunnelProviderError } from './errors.ts'
 import { createTunnelAdapterRegistry, type TunnelAdapterRegistry } from './registry.ts'
 import {
   type BadgeRow,
+  CAPABILITY_PROBE_REVISION,
   declaredZonesOf,
   isUsefulReport,
   openBadgeToken,
@@ -55,7 +56,12 @@ export async function runBadgeRecheckSweepTick(
     .innerJoin(carrier, eq(carrier.id, badge.carrierId))
     .where(
       and(
-        or(isNull(badge.lastCheckedAt), lt(badge.lastCheckedAt, checkedBefore)),
+        or(
+          isNull(badge.lastCheckedAt),
+          lt(badge.lastCheckedAt, checkedBefore),
+          // Checked before the check learned to see every kind of right (certificates).
+          sql`coalesce((${badge.options} ->> 'capabilityProbe')::int, 0) < ${CAPABILITY_PROBE_REVISION}`
+        ),
         sql`coalesce((${badge.options} ->> 'recheckTryAt')::timestamptz < ${triedBefore}::timestamptz, true)`
       )
     )

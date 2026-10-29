@@ -76,12 +76,14 @@ async function reachableCertificateZones(
   api: CloudflareClient,
   zones: readonly { id: string; name: string }[]
 ): Promise<{ id: string; name: string }[]> {
-  // The certificate list answers 404 as well as 403 to a token without the permission.
+  // The certificate list answers 404 or 400 as well as 403 to a token without the permission.
   const readable = async (zoneId: string): Promise<boolean> => {
     try {
       return await probe(() => api.probeCertificates(zoneId))
     } catch (err) {
-      if (err instanceof TunnelProviderError && err.code === 'not_found') return false
+      if (err instanceof TunnelProviderError && (err.code === 'not_found' || err.status === 400)) {
+        return false
+      }
       throw err
     }
   }

@@ -572,3 +572,38 @@ test('the daily recheck refreshes old tokens, finds a rolled one, keeps declared
     assertEquals((await badgeById(w, recent.id)).lastCheckedAt !== old, true)
   })
 })
+
+test('a token stored before certificates were probed is rechecked at the next tick and gains its certificate zones', async () => {
+  await withWorld(async (w) => {
+    const zone = { id: 'zone-c', name: 'cert.example' }
+    // Checked a minute ago, but by a check that never looked for certificate rights.
+    const stale = await addToken(w, 'tok-stale', { tunnels: true, dns: [zone] })
+    const [unstamped] = await w.db
+      .update(badge)
+      .set({
+        lastCheckedAt: new Date().toISOString(),
+        options: { kind: 'account', tokenId: null },
+      })
+      .where(eq(badge.id, stale.id))
+      .returning()
+    assertEquals((unstamped!.capabilities as BadgeCapabilities).certificates, [])
+    const checking: TunnelAdapter = {
+      ...fakeProvider().adapter,
+      checkCredential: () =>
+        Promise.resolve(reportFor({ tunnels: true, dns: [zone], certificates: [zone] })),
+    }
+    const first = await runBadgeRecheckSweepTick(w.db, {
+      secrets: w.secrets,
+      registry: () => checking,
+    })
+    assertEquals(first, { checked: 1, attention: 0 })
+    const after = await badgeById(w, stale.id)
+    assertEquals((after.capabilities as BadgeCapabilities).certificates, [zone])
+    // Now stamped and recent, so the next tick leaves it alone.
+    const second = await runBadgeRecheckSweepTick(w.db, {
+      secrets: w.secrets,
+      registry: () => checking,
+    })
+    assertEquals(second, { checked: 0, attention: 0 })
+  })
+})
