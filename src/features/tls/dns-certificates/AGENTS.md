@@ -106,17 +106,19 @@ stops with the plain-words reason and nothing is written.
   authority also pauses every other order of the organization for that long,
   kept as `pausedUntil` in the account row's metadata (`pauseAcme`), so one
   throttled organization sends no more requests while it lasts. A validation
-  that failed is never retried before its back-off ends. Other failures wait one hour, then two, doubling up to a day; a first
-  certificate gives up after three failed orders (`failed`, a person can retry
+  that failed is never retried before its back-off ends. Other failures wait
+  one hour, then two, doubling up to a day; a first certificate gives up
+  after three failed orders (`failed`, a person can retry
   after a quarter hour). A renewal that keeps failing keeps trying and keeps
   the certificate it has.
 - At most ten new certificates per organization per day.
 - Renewal time is the authority's own advice (ACME Renewal Information,
   RFC 9773: a random moment in the suggested window, never later than two days
   before the end). The authority is asked again no sooner than its own
-  `Retry-After`, kept between a minute and twelve hours (twelve hours when it sends
-  none, six after a failed ask), so never fewer than two asks a day, with up to a tenth added so certificates do not ask
-  together: two to four asks a day instead of eight. The next-ask time is
+  `Retry-After`, less up to a tenth so certificates do not ask together, then
+  kept between a minute and twelve hours (twelve hours when it sends none, six
+  after a failed ask): never fewer than two asks a day, two to four instead of
+  eight. The next-ask time is
   `ariNextCheckAt` in the private state. A failed ask keeps the stored renewal
   time rather than dropping to the fallback. Without advice, when a third of
   the lifetime is left. The new pair is swapped in only when the order

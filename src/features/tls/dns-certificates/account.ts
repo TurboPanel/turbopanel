@@ -156,25 +156,3 @@ export async function acmePausedUntil(
   const parsed = typeof at === 'string' ? Date.parse(at) : Number.NaN
   return Number.isNaN(parsed) ? null : parsed
 }
-
-/** The accounts (as `organizationId:directory`) whose pause has not ended, for a sweep to skip. */
-export async function pausedAccounts(
-  ctx: Pick<DnsCertContext, 'db'>,
-  now: Date
-): Promise<Set<string>> {
-  const rows = await ctx.db
-    .select({ organizationId: secret.organizationId, name: secret.name })
-    .from(secret)
-    .where(
-      and(
-        eq(secret.provider, ACME_ACCOUNT_SECRET_PROVIDER),
-        sql`coalesce((${secret.metadata} ->> 'pausedUntil')::timestamptz, 'epoch'::timestamptz) > ${now.toISOString()}::timestamptz`
-      )
-    )
-  return new Set(rows.map((r) => `${r.organizationId}:${r.name}`))
-}
-
-/** Key of one account in {@link pausedAccounts}. */
-export function accountKey(organizationId: string, staging: boolean): string {
-  return `${organizationId}:${directoryName(staging)}`
-}

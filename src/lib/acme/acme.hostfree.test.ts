@@ -195,3 +195,23 @@ test('a different fetch never sees another one’s cache', async () => {
   await (await client(two)).ensureAccount()
   assertEquals([one.hits.directory, two.hits.directory], [1, 1])
 })
+
+test('a second stale nonce in a row is an error, with no third request', async () => {
+  const ca = createFakeCa({ txt: () => [] })
+  let posts = 0
+  const stale = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (init?.method !== 'POST') return await ca.fetch(input, init)
+    posts += 1
+    return new Response(
+      JSON.stringify({ type: 'urn:ietf:params:acme:error:badNonce', detail: 'stale nonce' }),
+      { status: 400, headers: { 'Replay-Nonce': `n${posts}` } }
+    )
+  }) as typeof fetch
+  const acme = new AcmeClient({
+    directoryUrl: FAKE_CA_DIRECTORY,
+    key: await importAccountKey(await generateAccountKeyPem()),
+    fetch: stale,
+  })
+  await assertRejects(() => acme.ensureAccount(), AcmeError)
+  assertEquals(posts, 2)
+})

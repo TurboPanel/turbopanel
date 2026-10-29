@@ -4,7 +4,7 @@
  * certificate is renewed when a third of its lifetime is left, which is what
  * keeps working for a 90-day certificate and for the shorter ones to come.
  * The authority is asked again no sooner than its own `Retry-After` (kept
- * between a minute and a day), which comes to one to four asks a day.
+ * between a minute and twelve hours), which comes to two to four asks a day.
  */
 import { fetchRenewalInfo, type RenewalInfo } from '../../../lib/acme/client.ts'
 import { acmeDirectoryUrl } from '../../../lib/acme/directories.ts'
@@ -15,7 +15,7 @@ import type { DnsCertState } from './order-state.ts'
 /** Shortest wait the authority's `Retry-After` may set (RFC 9773), and the longest we accept: never fewer than two asks a day. */
 export const ARI_MIN_WAIT_MS = 60_000
 export const ARI_MAX_WAIT_MS = 12 * 3_600_000
-/** Without a `Retry-After`: twice a day, inside the one to four checks a day aimed for. */
+/** Without a `Retry-After`: twice a day, inside the two to four checks a day aimed for. */
 export const ARI_DEFAULT_WAIT_MS = 12 * 3_600_000
 /** After a failed ask (outage, 429 or 503 without a wait): four times a day at most. */
 export const ARI_ERROR_WAIT_MS = 6 * 3_600_000
@@ -31,16 +31,18 @@ function pickInWindow(start: Date, end: Date, random: () => number): Date {
   return new Date(start.getTime() + random() * (end.getTime() - start.getTime()))
 }
 
-/** The next time the authority may be asked: its own wait kept between a minute and a day, plus a little spread. */
+/** The next time the authority may be asked: its own wait less a little spread, then kept between a minute and twelve hours. */
 export function nextAriCheckAt(
   now: Date,
   info: Pick<RenewalInfo, 'answered' | 'retryAfterMs'>,
   random: () => number = Math.random
 ): string {
   const asked = info.retryAfterMs ?? (info.answered ? ARI_DEFAULT_WAIT_MS : ARI_ERROR_WAIT_MS)
-  const wait = Math.min(Math.max(asked, ARI_MIN_WAIT_MS), ARI_MAX_WAIT_MS)
-  // Up to a tenth later, so certificates ordered together do not all ask together.
-  return new Date(now.getTime() + wait * (1 + random() * 0.1)).toISOString()
+  // Up to a tenth sooner, so certificates ordered together do not all ask together;
+  // the clamp comes last so the wait never exceeds twelve hours.
+  const spread = asked * (1 - random() * 0.1)
+  const wait = Math.min(Math.max(spread, ARI_MIN_WAIT_MS), ARI_MAX_WAIT_MS)
+  return new Date(now.getTime() + wait).toISOString()
 }
 
 export type RenewalTiming = {

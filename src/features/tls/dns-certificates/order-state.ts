@@ -61,7 +61,7 @@ export type DnsCertState = {
   renewAt: string | null
   /** When the authority was last asked about renewal timing. */
   ariCheckedAt: string | null
-  /** Not before this is the authority asked again: its own `Retry-After`, kept between a minute and a day. */
+  /** Not before this is the authority asked again: its own `Retry-After`, kept between a minute and twelve hours. */
   ariNextCheckAt: string | null
 }
 

@@ -8,7 +8,7 @@ import { assert, assertEquals, assertNotEquals, assertStringIncludes } from '@st
 import { eq, inArray } from 'drizzle-orm'
 import { createDenoDb, endDbConnection } from '../../../db/connection.ts'
 import { badge, carrier, organization, secret, tls } from '../../../db/schema.ts'
-import { ACME_ACCOUNT_SECRET_PROVIDER } from './account.ts'
+import { ACME_ACCOUNT_SECRET_PROVIDER, acmePausedUntil, pauseAcme } from './account.ts'
 import { getDatabaseUrl } from '../../../db/url.ts'
 import { createFakeCa } from '../../../lib/acme/fake-ca.test.support.ts'
 import { issueLeafCertificate, mintOrganizationCa } from '../../../lib/tls/self-signed.ts'
@@ -275,6 +275,38 @@ test('an authority that says to wait pauses the whole organization and counts no
     assertEquals(readDnsCertState((await rowOf(db, idB)).metadata)?.attempts, 0)
   }))
 
+test('a pause is never shortened by a later, shorter one', () =>
+  withDb(async (db) => {
+    const s = await setup(db)
+    await issue(s, ['example.com'])
+    const long = new Date(Date.now() + 2 * 3_600_000)
+    await pauseAcme(s.ctx, s.organizationId, true, long)
+    await pauseAcme(s.ctx, s.organizationId, true, new Date(Date.now() + 3_600_000))
+    assertEquals(await acmePausedUntil(s.ctx, s.organizationId, true), long.getTime())
+    // The other directory is not paused.
+    assertEquals(await acmePausedUntil(s.ctx, s.organizationId, false), null)
+  }))
+
+test('a DNS host that says to wait holds that order only, not the organization', () =>
+  withDb(async (db) => {
+    const s = await setup(db)
+    const real = s.dns.provider.present
+    s.dns.provider.present = () =>
+      Promise.reject(new TunnelProviderError('rate_limited', 'slow', 429, [], 120_000))
+    const held = ((await startDnsCertificate(s.ctx, s.input(['example.com']))) as { id: string }).id
+    assertEquals(await advanceDnsCertificate(s.ctx, held), 'backoff')
+    const state = readDnsCertState((await rowOf(db, held)).metadata)!
+    assertEquals(state.attempts, 0)
+    assertEquals(Date.parse(state.nextAttemptAt!) - s.clock.now.getTime(), 120_000)
+    assertEquals(await acmePausedUntil(s.ctx, s.organizationId, true), null)
+    // Another order of the organization carries on.
+    s.dns.provider.present = real
+    const other = (
+      (await startDnsCertificate(s.ctx, s.input(['www.example.com']))) as { id: string }
+    ).id
+    assertEquals(await advanceDnsCertificate(s.ctx, other), 'waiting')
+  }))
+
 test('a wait asked for in the middle of an order keeps the order and its records', () =>
   withDb(async (db) => {
     const s = await setup(db)
@@ -532,10 +564,10 @@ test('the authority’s renewal window sets the renewal time, never later than t
     const latest = Date.parse(row.notAfter!) - 2 * DAY_MS
     assert(renewAt >= window.start.getTime() - 1000)
     assert(renewAt <= Math.min(window.end.getTime(), latest) + 1000)
-    // No Retry-After was sent, so it is asked again after twelve hours (and a little), not sooner.
+    // No Retry-After was sent, so it is asked again within twelve hours (a little sooner), not at once.
     await maintainDnsCertificate(s.ctx, id)
     assertEquals(s.ca.renewalAsked.length, 1)
-    tick(s.clock, 11 * 3_600_000)
+    tick(s.clock, 10 * 3_600_000)
     await maintainDnsCertificate(s.ctx, id)
     assertEquals(s.ca.renewalAsked.length, 1)
     tick(s.clock, 3 * 3_600_000)
@@ -566,9 +598,9 @@ async function issuedWithAdvice(
 test('the next renewal check follows the authority’s Retry-After, kept between a minute and twelve hours', () =>
   withDb(async (db) => {
     for (const [header, low, high] of [
-      ['21600', 6 * 3_600_000, 6.6 * 3_600_000],
-      ['5', 60_000, 66_000],
-      ['999999', 43_200_000, 47_520_000],
+      ['21600', 5.4 * 3_600_000, 6 * 3_600_000],
+      ['5', 60_000, 60_000],
+      ['999999', 39_600_000, 43_200_000],
     ] as const) {
       const { s, id } = await issuedWithAdvice(db, { renewalRetryAfter: header })
       const state = readDnsCertState((await rowOf(db, id)).metadata)!
@@ -594,7 +626,7 @@ test('a renewal check that fails keeps the stored time and asks again later, not
     assertEquals(after.renewAt, before.renewAt)
     assertEquals(busy.renewalAsked.length, 1)
     const wait = Date.parse(after.ariNextCheckAt!) - s.clock.now.getTime()
-    assert(wait >= 3_600_000 && wait <= 3_960_000, `${wait}`)
+    assert(wait >= 3_240_000 && wait <= 3_600_000, `${wait}`)
     await maintainDnsCertificate(s.ctx, id)
     assertEquals(busy.renewalAsked.length, 1)
   }))
