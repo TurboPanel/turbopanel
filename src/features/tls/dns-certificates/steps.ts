@@ -43,6 +43,8 @@ export type OrderRow = {
   names: string[]
   /** The sealed key of a first certificate (a renewal carries its own in the order). */
   sealedKey: string | null
+  /** The renewal-information identifier of the certificate a renewal replaces; null for a first certificate. */
+  replaces?: string | null
 }
 
 export type StepResult =
@@ -242,11 +244,34 @@ export async function cleanRecords(
   return { ...state, records: left.filter((r): r is PublishedRecord => r !== null) }
 }
 
+/**
+ * A refusal that comes from `replaces` itself: the old certificate was already
+ * replaced by another order, or the identifier was not understood. The order is
+ * then opened again without it, as a plain new order.
+ */
+function replacesRefused(err: unknown, sent: boolean): boolean {
+  return (
+    sent &&
+    err instanceof AcmeError &&
+    (err.code === 'already_replaced' || err.code === 'malformed')
+  )
+}
+
+async function newOrderFor(client: AcmeClient, row: OrderRow) {
+  const replaces = row.replaces ?? undefined
+  try {
+    return await client.newOrder(row.names, { replaces })
+  } catch (err) {
+    if (!replacesRefused(err, replaces !== undefined)) throw err
+    return await client.newOrder(row.names)
+  }
+}
+
 /** The organization's account and a new order on it; an account the authority has switched off is replaced once. */
 async function startOrder(ctx: DnsCertContext, row: OrderRow, state: DnsCertState) {
   const attempt = async (replace: boolean) => {
     const account = await orgAccount(ctx, row.organizationId, state.staging, { replace })
-    return { account, order: await account.client.newOrder(row.names) }
+    return { account, order: await newOrderFor(account.client, row) }
   }
   try {
     return await attempt(false)

@@ -21,8 +21,9 @@ import type { TunnelAdapterRegistry } from '../../tunnels/registry.ts'
 import { DAY_MS, type DnsCertContext, MAX_NEW_PER_DAY, PRESENT_GRACE_MS } from './context.ts'
 import type { DnsChallengeProvider } from './dns-provider.ts'
 import { advanceDnsCertificate, maintainDnsCertificate, startDnsCertificate } from './issuance.ts'
-import { readDnsCertState } from './order-state.ts'
-import { runDnsCertificateSweepTick } from './sweep.ts'
+import { readDnsCertState, withDnsCertState } from './order-state.ts'
+import { renewalCertId } from '../../../lib/acme/renewal-id.ts'
+import { limitRenewalStarts, runDnsCertificateSweepTick } from './sweep.ts'
 
 /** Jest/Mocha-shaped alias so Sonar sees real tests (typescript:S2187). */
 const test = Deno.test.bind(Deno)
@@ -516,7 +517,10 @@ test('the renewal time follows the authority’s window and falls back to a thir
     const renewAt = Date.parse(state.renewAt!)
     // The self-signed test certificate has no key identifier, so the authority is not asked.
     assertEquals(fallback.ca.renewalAsked.length, 0)
-    assert(Math.abs(renewAt - (notAfter - (notAfter - notBefore) / 3)) < 1000)
+    // A third of the lifetime before the end, started up to a tenth of the lifetime earlier.
+    const third = notAfter - (notAfter - notBefore) / 3
+    assert(renewAt <= third + 1000)
+    assert(renewAt >= third - (notAfter - notBefore) / 10 - 1000)
   }))
 
 test('a renewal that cannot work is flagged on the certificate, and cleared when the token is back', () =>
@@ -594,6 +598,103 @@ async function issuedWithAdvice(
   })
   return { s, id: await issue(s, ['example.com']) }
 }
+
+/** Make a certificate due for renewal now. */
+async function makeDue(db: Db, id: string) {
+  const row = await rowOf(db, id)
+  const state = readDnsCertState(row.metadata)!
+  const renewAt = new Date(Date.now() - DAY_MS).toISOString()
+  await db
+    .update(tls)
+    .set({ metadata: withDnsCertState(row.metadata, { ...state, renewAt }) })
+    .where(eq(tls.id, id))
+}
+
+test('a renewal names the certificate it replaces; a first order names none', () =>
+  withDb(async (db) => {
+    const { s, id } = await issuedWithAdvice(db, {})
+    assertEquals(s.ca.orderReplaces, [undefined])
+    await makeDue(db, id)
+    assertEquals(await advanceDnsCertificate(s.ctx, id), 'waiting')
+    const row = await rowOf(db, id)
+    assertEquals(s.ca.orderReplaces[1], renewalCertId(row.certificatePem!))
+    assert(readDnsCertState(row.metadata)?.order?.renewal)
+  }))
+
+test('a renewal the authority refuses because of replaces is opened again as a plain order', () =>
+  withDb(async (db) => {
+    const { s, id } = await issuedWithAdvice(db, { refuseReplaces: 'alreadyReplaced' })
+    await makeDue(db, id)
+    assertEquals(await advanceDnsCertificate(s.ctx, id), 'waiting')
+    assertEquals(s.ca.orderReplaces, [undefined, undefined])
+    assertEquals(s.ca.orders.length, 2)
+    assert(readDnsCertState((await rowOf(db, id)).metadata)?.order?.renewal)
+  }))
+
+test('renewals are not new certificates: they go on when the daily cap for new ones is used up', () =>
+  withDb(async (db) => {
+    const { s, id } = await issuedWithAdvice(db, {})
+    for (let i = 1; i < MAX_NEW_PER_DAY; i += 1) {
+      await startDnsCertificate(s.ctx, s.input([`n${i}.example.com`]))
+    }
+    assertEquals((await startDnsCertificate(s.ctx, s.input(['more.example.com']))).kind, 'limit')
+    await makeDue(db, id)
+    assertEquals(await advanceDnsCertificate(s.ctx, id), 'waiting')
+    assert(readDnsCertState((await rowOf(db, id)).metadata)?.order?.renewal)
+  }))
+
+test('a mass renewal is started a few at a time, not all in one tick', () =>
+  withDb(async (db) => {
+    const org = await mintOrganizationCa({ organizationId: crypto.randomUUID() })
+    const s = await setup(db, {
+      ca: {
+        issueCertificate: async (names) =>
+          (await issueLeafCertificate(org.certificatePem, org.privateKeyPem, names)).certificatePem,
+      },
+    })
+    const ids: string[] = []
+    for (const name of ['a', 'b', 'c', 'd']) ids.push(await issue(s, [`${name}.example.com`]))
+    for (const id of ids) await makeDue(db, id)
+    const only = { organizationId: s.organizationId, renewalLimits: { startsPerTick: 2 } }
+    const orders = async () =>
+      (await Promise.all(ids.map((id) => rowOf(db, id)))).filter(
+        (r) => readDnsCertState(r.metadata)?.order
+      ).length
+    await runDnsCertificateSweepTick(s.ctx, only)
+    assertEquals(await orders(), 2)
+    // Orders already open are carried on; the next two renewals begin on the next tick.
+    await runDnsCertificateSweepTick(s.ctx, only)
+    assertEquals(await orders(), 4)
+  }))
+
+const OPEN_ORDER = {
+  accountKey: 'k',
+  accountUrl: 'u',
+  orderUrl: 'o',
+  finalizeUrl: 'f',
+  startedAt: '2026-01-01T00:00:00Z',
+}
+
+test('renewals beyond the per-tick start limit and the open limit are held back, per organization', () => {
+  const row = (organizationId: string, order: object | null) =>
+    ({
+      organizationId,
+      status: 'ready',
+      metadata: { dnsCert: { carrierId: 'c', order } },
+    }) as unknown as Parameters<typeof limitRenewalStarts>[0][number]
+  const rows = [
+    row('a', null),
+    row('a', null),
+    row('a', null),
+    row('b', null),
+    row('a', OPEN_ORDER),
+  ]
+  const kept = limitRenewalStarts(rows, new Map([['b', 4]]), { startsPerTick: 2, openPerOrg: 5 })
+  // Organization a begins two (the third waits) and carries on its open order; b has four open, so one more fits.
+  assertEquals(kept, [rows[0], rows[1], rows[3], rows[4]])
+  const crowded = limitRenewalStarts(rows, new Map([['a', 4]]), { startsPerTick: 9, openPerOrg: 5 })
+  assertEquals(crowded, [rows[0], rows[3], rows[4]])
+})
 
 test('the next renewal check follows the authority’s Retry-After, kept between a minute and twelve hours', () =>
   withDb(async (db) => {

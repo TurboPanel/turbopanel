@@ -28,6 +28,8 @@ export type FakeCaOptions = {
   txt: (name: string) => string[]
   /** Refuse new orders with a rate-limit error. */
   rateLimitOrders?: boolean
+  /** Refuse an order that names a certificate it replaces, with this problem (for example `alreadyReplaced`). */
+  refuseReplaces?: string
   /** Refuse new orders with this plain status (for example 503) and an optional `Retry-After`. */
   busyOrders?: { status: number; retryAfter?: string }
   /** Answer the first nonce-bearing request with a stale-nonce error. */
@@ -56,6 +58,8 @@ export type FakeCa = {
   issued: string[][]
   /** Renewal-information requests received (the identifier of each). */
   renewalAsked: string[]
+  /** The `replaces` field of each new order, in order (undefined when it named none). */
+  orderReplaces: (string | undefined)[]
   /** How many times each kind of request reached the authority. */
   hits: { directory: number; nonce: number; renewal: number; signed: number }
   /** From now on every request signed by an account that exists is refused as deactivated. */
@@ -125,6 +129,7 @@ export function createFakeCa(options: FakeCaOptions): FakeCa {
   const log: FakeCa['log'] = []
   const issued: string[][] = []
   const renewalAsked: string[] = []
+  const orderReplaces: (string | undefined)[] = []
   const hits = { directory: 0, nonce: 0, renewal: 0, signed: 0 }
   const deactivated = new Set<string>()
   const nonces = new Set<string>()
@@ -250,9 +255,12 @@ export function createFakeCa(options: FakeCaOptions): FakeCa {
         'Retry-After': '600',
       })
     }
-    const names = (signed.payload as { identifiers: { value: string }[] }).identifiers.map(
-      (i) => i.value
-    )
+    const payload = signed.payload as { identifiers: { value: string }[]; replaces?: string }
+    if (payload.replaces && options.refuseReplaces) {
+      return problem(options.refuseReplaces, 'refused', 409, headers)
+    }
+    orderReplaces.push(payload.replaces)
+    const names = payload.identifiers.map((i) => i.value)
     const id = next('o')
     const authz = names.map((name) => ({
       id: next('z'),
@@ -365,6 +373,7 @@ export function createFakeCa(options: FakeCaOptions): FakeCa {
     log,
     issued,
     renewalAsked,
+    orderReplaces,
     hits,
     deactivateAccounts: () => {
       for (const id of accounts.keys()) deactivated.add(id)

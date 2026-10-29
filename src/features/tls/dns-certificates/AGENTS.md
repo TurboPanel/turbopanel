@@ -121,7 +121,17 @@ stops with the plain-words reason and nothing is written.
   eight. The next-ask time is
   `ariNextCheckAt` in the private state. A failed ask keeps the stored renewal
   time rather than dropping to the fallback. Without advice, when a third of
-  the lifetime is left. The new pair is swapped in only when the order
+  the lifetime is left, started up to a tenth of the lifetime earlier at a random
+  moment that is stored with the certificate, so certificates issued together do
+  not all renew on one day.
+- A renewal order carries `replaces` (the old certificate's renewal-information
+  identifier) so the authority recognises it as a renewal; if the authority
+  refuses because of it (`alreadyReplaced`, `malformed`) the order is opened again
+  without it. Renewals add no rows, so they never count toward the ten new
+  certificates a day. The sweep begins at most two renewals per organization per
+  tick and keeps at most five open per organization (`limitRenewalStarts`), so a
+  mass event cannot start them all at once; open orders and first certificates
+  are not held back. The new pair is swapped in only when the order
   succeeds, and the sites that pin it are sent the new pair by the same apply a
   library pick queues.
 - Renewal needs the stored token. Between orders the sweep checks that the

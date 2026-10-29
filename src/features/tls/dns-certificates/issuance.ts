@@ -16,6 +16,7 @@ import type { Db } from '../../../db/connection.ts'
 import { tls } from '../../../db/schema.ts'
 import { AcmeError } from '../../../lib/acme/client.ts'
 import { generateCertificateKey } from '../../../lib/acme/csr.ts'
+import { renewalCertId } from '../../../lib/acme/renewal-id.ts'
 import { logWarn } from '../../../lib/logger.ts'
 import { encryptSecret } from '../../../lib/secrets/data-encryption.ts'
 import { coversAllHostnames } from '../../../lib/tls/match.ts'
@@ -243,6 +244,9 @@ function rowForSteps(row: TlsRow): OrderRow {
     organizationId: row.organizationId,
     names: dnsNamesOf(row),
     sealedKey: row.privateKeyPem,
+    // A renewal tells the authority which certificate it replaces, so it is recognised as one.
+    replaces:
+      row.status === 'ready' && row.certificatePem ? renewalCertId(row.certificatePem) : null,
   }
 }
 

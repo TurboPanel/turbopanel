@@ -27,6 +27,24 @@ export function fallbackRenewAt(notBefore: Date, notAfter: Date): Date {
   return new Date(notAfter.getTime() - (notAfter.getTime() - notBefore.getTime()) / 3)
 }
 
+/** How much of the lifetime, before the one-third mark, the fallback may be spread over. */
+const FALLBACK_SPREAD = 0.1
+
+/**
+ * The fallback with a random head start of up to a tenth of the lifetime, so
+ * certificates issued together (a bulk order, a restore) do not all renew on
+ * the same day. It is stored with the certificate and not drawn again.
+ */
+export function jitteredFallbackRenewAt(
+  notBefore: Date,
+  notAfter: Date,
+  random: () => number = Math.random
+): Date {
+  const lifetime = notAfter.getTime() - notBefore.getTime()
+  const base = fallbackRenewAt(notBefore, notAfter)
+  return new Date(base.getTime() - random() * lifetime * FALLBACK_SPREAD)
+}
+
 function pickInWindow(start: Date, end: Date, random: () => number): Date {
   return new Date(start.getTime() + random() * (end.getTime() - start.getTime()))
 }
@@ -56,8 +74,8 @@ export type RenewalTiming = {
 /**
  * The renewal time to keep and when to ask again: a random moment in the
  * authority's suggested window (never later than two days before the end), or
- * the fallback. When asking failed, `keep` (the time already stored) stays
- * rather than being replaced by the fallback.
+ * a fallback spread over a tenth of the lifetime. Without advice, `keep` (the
+ * time already stored) stays rather than being drawn again.
  */
 export async function refreshedRenewAt(
   ctx: DnsCertContext,
@@ -66,7 +84,6 @@ export async function refreshedRenewAt(
   options: { keep?: string | null; random?: () => number } = {}
 ): Promise<RenewalTiming> {
   const random = options.random ?? Math.random
-  const fallback = fallbackRenewAt(certificate.notBefore, certificate.notAfter)
   const certId = renewalCertId(certificate.pem)
   const info: RenewalInfo = certId
     ? await fetchRenewalInfo({
@@ -77,8 +94,9 @@ export async function refreshedRenewAt(
     : { window: null, answered: true, retryAfterMs: null, status: null }
   const nextCheckAt = nextAriCheckAt(clock(ctx), info, random)
   if (!info.window) {
-    const kept = !info.answered && options.keep ? options.keep : null
-    return { renewAt: kept ?? fallback.toISOString(), nextCheckAt, info }
+    // No advice: the time already stored stands (it was spread when first chosen).
+    const fallback = jitteredFallbackRenewAt(certificate.notBefore, certificate.notAfter, random)
+    return { renewAt: options.keep ?? fallback.toISOString(), nextCheckAt, info }
   }
   const latest = new Date(certificate.notAfter.getTime() - LAST_START_BEFORE_END_MS)
   const picked = pickInWindow(info.window.start, info.window.end, random)
