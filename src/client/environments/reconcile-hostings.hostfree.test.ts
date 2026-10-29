@@ -45,6 +45,7 @@ type ExistingRow = {
   serviceId: string
   metadata: unknown
   options: unknown
+  tlsId?: string | null
 }
 
 function composeDoc(services: Record<string, unknown>): ComposeDocument {
@@ -320,6 +321,71 @@ test('reconcileHostingsFromCompose updates an existing compose-owned row and rep
   assertEquals(db.rows(hostname).length, 1)
   assertEquals(db.rows(hostname)[0]?.hostingId, existingId)
   assertEquals(db.rows(hostname)[0]?.hostname, HOSTNAME)
+})
+
+function originLink(retiredAt: string | null): Record<string, unknown> {
+  return {
+    providerOrigin: {
+      provider: 'cloudflare',
+      carrierId: 'carrier-1',
+      badgeId: 'badge-1',
+      zoneId: 'zone-1',
+      zoneName: 'example.com',
+      externalId: 'cert-1',
+      hostnames: [HOSTNAME],
+      scope: 'names',
+      retiredAt,
+    },
+  }
+}
+
+async function reconcileOriginPinned(
+  retiredAt: string | null,
+  entry: Record<string, unknown>
+): Promise<string | null | undefined> {
+  const existingId = 'host-origin'
+  const db = createReconcileDb({
+    hostingRows: [
+      {
+        id: existingId,
+        serviceId: SVC_WEB,
+        metadata: composeOwnedMetadata('web', ROUTE),
+        options: { hostnames: [HOSTNAME] },
+        tlsId: 'tls-origin',
+      },
+    ],
+    tlsRows: [
+      {
+        id: 'tls-origin',
+        label: 'Origin',
+        source: 'provider_origin',
+        metadata: originLink(retiredAt),
+      },
+    ],
+  })
+  db.rows(hostname).push({
+    id: 'hn-origin',
+    hostingId: existingId,
+    routingOrganizationId: ORG_ID,
+    hostname: HOSTNAME,
+  })
+  const result = await reconcileHostingsFromCompose(db, {
+    organizationId: ORG_ID,
+    environmentId: ENV_ID,
+    merged: composeDoc({ web: hostingService([{ hostname: HOSTNAME, ...entry }]) }),
+    serviceRows: [{ id: SVC_WEB, composeServiceName: 'web' }],
+  })
+  if (!result.ok) throw new TypeError('expected update to succeed')
+  return hostingRow(db, existingId)?.tlsId as string | null | undefined
+}
+
+test('reconcileHostingsFromCompose keeps the origin certificate a verified tunnel connection pinned', async () => {
+  assertEquals(await reconcileOriginPinned(null, {}), 'tls-origin')
+  assertEquals(await reconcileOriginPinned(null, { tls: { mode: 'internal' } }), 'tls-origin')
+})
+
+test('reconcileHostingsFromCompose lets a retired origin certificate go back to the declaration', async () => {
+  assertEquals(await reconcileOriginPinned('2026-10-01T00:00:00.000Z', {}), null)
 })
 
 test('reconcileHostingsFromCompose adopts a matching panel-authored row', async () => {

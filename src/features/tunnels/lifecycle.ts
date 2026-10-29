@@ -610,6 +610,7 @@ export async function finishTunnelRemoval(
   // Never reached the provider: nothing there to take down.
   if (!row.externalId) {
     await deleteTunnelRecord(db, row)
+    await retireUnusedCertificatesQuietly(db, row.organizationId)
     return 'removed'
   }
   // A hostname added in the wait would be left routed with a DNS name nobody tracks.
@@ -648,6 +649,7 @@ export async function finishTunnelRemoval(
     return 'removing'
   }
   await deleteTunnelRecord(db, row)
+  await retireUnusedCertificatesQuietly(db, row.organizationId)
   return 'removed'
 }
 
