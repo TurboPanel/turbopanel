@@ -49,6 +49,13 @@ export type BadgeCapabilities = {
 export const NO_CAPABILITIES: BadgeCapabilities = { tunnels: false, dns: [], certificates: [] }
 
 /**
+ * A zone the person says a token covers. A token limited to one zone is often
+ * refused the zone list, so the person names the zone (its id is what the
+ * provider checks; the name is for matching hostnames and for display).
+ */
+export type DeclaredZone = { id: string; name: string }
+
+/**
  * `secret.provider` values the sealed tokens are stored under. Neutral on
  * purpose: the vendor lives in `carrier.provider` / `tunnel.provider`, so a new
  * tunnel provider never widens the shared secret check again.

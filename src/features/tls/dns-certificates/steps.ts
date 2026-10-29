@@ -70,7 +70,7 @@ async function dnsFor(
   zoneId: string
 ): Promise<DnsChallengeProvider> {
   const carrier = await findCarrier(ctx.db, row.organizationId, state.carrierId)
-  const token = carrier ? await openDnsToken(ctx, carrier.id, { zoneId }) : null
+  const token = carrier ? await openDnsToken(ctx, carrier.id, { zone: { id: zoneId } }) : null
   if (!carrier || !token) {
     throw new TunnelProviderError(
       'forbidden',

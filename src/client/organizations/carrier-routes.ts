@@ -17,6 +17,7 @@ import { forEachSequential } from '../../lib/sequential.ts'
 import { isPostgresUniqueViolation } from '../../db/unique-violation.ts'
 import { recordAudit } from '../../features/audit/audit-records.ts'
 import type { CredentialReport, TokenDiscovery } from '../../features/tunnels/adapter.ts'
+import { dependentsOf, lossOf, lossOfRemoving } from '../../features/tunnels/badge-dependents.ts'
 import { TunnelProviderError } from '../../features/tunnels/errors.ts'
 import {
   type BadgeRow,
@@ -25,6 +26,7 @@ import {
   type CarrierRow,
   TunnelLimitError,
   carrierHasTunnels,
+  declaredZonesOf,
   deleteBadge,
   deleteCarrier,
   findBadge,
@@ -41,7 +43,10 @@ import {
   openBadgeToken,
   parseBadgeBody,
   parseCarrierBody,
+  parseDeclaredZone,
+  MAX_DECLARED_ZONES,
   recordBadgeCheck,
+  setDeclaredZones,
   sealToken,
   toApiBadge,
   toApiCarrier,
@@ -51,6 +56,7 @@ import {
   type TunnelAdapterRegistry,
 } from '../../features/tunnels/registry.ts'
 import {
+  type DeclaredZone,
   NO_CAPABILITIES,
   TUNNEL_PROVIDERS,
   type TunnelProvider,
@@ -63,6 +69,8 @@ const CARRIER_PATHS = [
   '/organizations/:id/carriers/:carrierId/badges',
   '/organizations/:id/carriers/:carrierId/badges/:badgeId',
   '/organizations/:id/carriers/:carrierId/badges/:badgeId/check',
+  '/organizations/:id/carriers/:carrierId/badges/:badgeId/zones',
+  '/organizations/:id/carriers/:carrierId/badges/:badgeId/zones/:zoneId',
 ] as const
 
 export type Scope = { db: Db; organizationId: string }
@@ -84,7 +92,14 @@ function invalid(c: Context<AppEnv>, error: string, field: string, detail: strin
 async function audit(
   c: Context<AppEnv>,
   scope: Scope,
-  action: 'carrier.create' | 'carrier.delete' | 'badge.create' | 'badge.check' | 'badge.delete',
+  action:
+    | 'carrier.create'
+    | 'carrier.delete'
+    | 'badge.create'
+    | 'badge.check'
+    | 'badge.delete'
+    | 'badge.zone_add'
+    | 'badge.zone_remove',
   targetId: string,
   context: Record<string, unknown>
 ) {
@@ -136,10 +151,11 @@ async function runCheck(
   registry: TunnelAdapterRegistry,
   provider: TunnelProvider,
   token: string,
-  accountId: string | null
+  accountId: string | null,
+  declaredZones: readonly DeclaredZone[] = []
 ): Promise<CredentialReport | Response> {
   try {
-    return await registry(provider).checkCredential(token, { accountId })
+    return await registry(provider).checkCredential(token, { accountId, declaredZones })
   } catch (err) {
     if (err instanceof TunnelProviderError) return providerFailure(c, err)
     throw err
@@ -234,6 +250,46 @@ function notUseful(c: Context<AppEnv>, report: CredentialReport): Response {
 
 type Vetted = { report: CredentialReport }
 
+/** A zone the person named that cannot be used: unreachable, in another account, or without a name. */
+function declaredProblem(c: Context<AppEnv>, report: CredentialReport): Response | null {
+  for (const z of report.declared ?? []) {
+    if (!z.reachable) {
+      return c.json(
+        {
+          error: 'zone_not_reachable',
+          zone: z.id,
+          message:
+            'This API Token cannot read DNS for that zone. It needs Zone · DNS · Edit on the zone, and the zone id must be right.',
+        },
+        400
+      )
+    }
+    if (z.accountMatch === false) {
+      return c.json(
+        {
+          error: 'zone_wrong_account',
+          zone: z.id,
+          message:
+            'That zone belongs to another Cloudflare account. A Tunnel can only use zones of its own account.',
+        },
+        400
+      )
+    }
+    if (!z.name) {
+      return c.json(
+        {
+          error: 'zone_name_needed',
+          zone: z.id,
+          message:
+            'Cloudflare did not tell us the name of that zone. Type the zone name (for example example.com) as well.',
+        },
+        400
+      )
+    }
+  }
+  return null
+}
+
 function limitReached(c: Context<AppEnv>, err: TunnelLimitError): Response {
   return c.json({ error: err.error, limit: err.limit }, 409)
 }
@@ -249,7 +305,8 @@ async function vetBadge(
   scope: Scope,
   registry: TunnelAdapterRegistry,
   target: { provider: TunnelProvider; accountId: string | null; existing: CarrierRow | null },
-  token: string
+  token: string,
+  declaredZones: readonly DeclaredZone[] = []
 ): Promise<Vetted | Response> {
   if (
     target.existing &&
@@ -259,8 +316,17 @@ async function vetBadge(
   }
   const problem = registry(target.provider).tokenShapeProblem(token)
   if (problem) return invalid(c, 'badge_invalid', 'token', problem)
-  const report = await runCheck(c, registry, target.provider, token, target.accountId)
+  const report = await runCheck(
+    c,
+    registry,
+    target.provider,
+    token,
+    target.accountId,
+    declaredZones
+  )
   if (report instanceof Response) return report
+  const unusable = declaredProblem(c, report)
+  if (unusable) return unusable
   if (!report.accountVisible) return accountMismatch(c)
   if (!isUsefulReport(report)) return notUseful(c, report)
   if (
@@ -281,7 +347,7 @@ async function storeBadge(
   c: Context<AppEnv>,
   scope: Scope,
   current: CarrierRow,
-  input: { label: string; token: string },
+  input: { label: string; token: string; zones?: readonly DeclaredZone[] },
   report: CredentialReport
 ): Promise<BadgeRow | Response> {
   const secrets = c.get('dataEncryptionSecrets')
@@ -295,6 +361,7 @@ async function storeBadge(
       sealed: await sealToken(secrets, input.token),
       lastFour: input.token.slice(-4),
       report,
+      declaredZones: input.zones,
     })
   } catch (err) {
     if (err instanceof TunnelLimitError) return limitReached(c, err)
@@ -327,7 +394,8 @@ function createBadgeResponse(registry: TunnelAdapterRegistry) {
         accountId: current.externalAccountId,
         existing: current,
       },
-      parsed.value.token
+      parsed.value.token,
+      parsed.value.zones
     )
     if (vetted instanceof Response) return vetted
     const row = await storeBadge(c, scope, current, parsed.value, vetted.report)
@@ -411,7 +479,8 @@ function connectResponse(registry: TunnelAdapterRegistry) {
         scope,
         registry,
         { provider, accountId: account.id, existing },
-        parsed.value.token
+        parsed.value.token,
+        parsed.value.zones
       )
       if (result instanceof Response) return result
       vetted.push({ account, report: result.report })
@@ -432,7 +501,7 @@ async function connectVetted(
   c: Context<AppEnv>,
   scope: Scope,
   provider: TunnelProvider,
-  input: { label: string; token: string },
+  input: { label: string; token: string; zones?: readonly DeclaredZone[] },
   vetted: { account: { id: string; name: string }; report: CredentialReport }[]
 ): Promise<Response> {
   const created: CarrierRow[] = []
@@ -497,6 +566,7 @@ function checkBadgeResponse(registry: TunnelAdapterRegistry) {
     try {
       report = await registry(current.provider as TunnelProvider).checkCredential(token, {
         accountId: current.externalAccountId,
+        declaredZones: declaredZonesOf(row),
       })
     } catch (err) {
       if (!(err instanceof TunnelProviderError)) throw err
@@ -523,9 +593,132 @@ async function deleteBadgeResponse(c: Context<AppEnv>, scope: Scope): Promise<Re
   if (current instanceof Response) return current
   const row = await loadBadgeParam(c, scope, current)
   if (row instanceof Response) return row
+  const blocked = await dependentsOf(scope.db, current.id, await lossOfRemoving(scope.db, row))
+  if (blocked.total > 0) return badgeInUse(c, blocked)
   await deleteBadge(scope.db, row)
   await audit(c, scope, 'badge.delete', row.id, { carrierId: current.id, label: row.label })
   return c.json({ ok: true })
+}
+
+function badgeInUse(
+  c: Context<AppEnv>,
+  blocked: { dependents: unknown[]; total: number }
+): Response {
+  return c.json(
+    {
+      error: 'badge_in_use',
+      message:
+        'Other API Tokens do not cover everything this one does. Add one that does first, or remove what depends on it.',
+      dependents: blocked.dependents,
+      total: blocked.total,
+    },
+    409
+  )
+}
+
+/** Name a zone this token covers, check it with the token, and keep it for every later check. */
+function addZoneResponse(registry: TunnelAdapterRegistry) {
+  return async (c: Context<AppEnv>, scope: Scope): Promise<Response> => {
+    const current = await loadCarrierParam(c, scope)
+    if (current instanceof Response) return current
+    const row = await loadBadgeParam(c, scope, current)
+    if (row instanceof Response) return row
+    const body = await parseJsonBody(c)
+    if (body instanceof Response) return body
+    const parsed = parseDeclaredZone(body)
+    if (!parsed.ok) return invalid(c, 'zone_invalid', parsed.field, parsed.detail)
+    const known = declaredZonesOf(row)
+    if (known.length >= MAX_DECLARED_ZONES && !known.some((z) => z.id === parsed.value.id)) {
+      return c.json({ error: 'zone_limit', limit: MAX_DECLARED_ZONES }, 409)
+    }
+    const secrets = c.get('dataEncryptionSecrets')
+    if (!secrets) return c.json({ error: 'secrets_unavailable' }, 503)
+    const token = await openBadgeToken(scope.db, secrets, row)
+    if (token === null) return c.json({ error: 'Not found' }, 404)
+    const declared = [...known.filter((z) => z.id !== parsed.value.id), parsed.value]
+    const report = await runCheck(
+      c,
+      registry,
+      current.provider as TunnelProvider,
+      token,
+      current.externalAccountId,
+      declared
+    )
+    if (report instanceof Response) return report
+    const unusable = declaredProblem(c, report)
+    if (unusable) return unusable
+    return await storeZones(c, scope, { current, row, declared, report }, 'badge.zone_add')
+  }
+}
+
+/** Keep the declared zones with the names the check found, then record the check. */
+async function storeZones(
+  c: Context<AppEnv>,
+  scope: Scope,
+  found: { current: CarrierRow; row: BadgeRow; declared: DeclaredZone[]; report: CredentialReport },
+  action: 'badge.zone_add' | 'badge.zone_remove'
+): Promise<Response> {
+  const { current, row, declared, report } = found
+  const named = declared.map((z) => ({
+    id: z.id,
+    name: report.declared?.find((d) => d.id === z.id)?.name ?? z.name,
+  }))
+  const withZones = await setDeclaredZones(scope.db, row, named)
+  const updated = await recordBadgeCheck(scope.db, withZones, {
+    capabilities: report.capabilities,
+    status: isUsefulReport(report) ? 'active' : 'attention',
+    token: report.token,
+  })
+  await audit(c, scope, action, row.id, {
+    carrierId: current.id,
+    zones: named.map((z) => z.name || z.id),
+  })
+  return c.json({ badge: toApiBadge(updated), ...checkSummary(report) })
+}
+
+/** Stop telling the panel a token covers a zone; refused while that leaves hostnames without a token. */
+function removeZoneResponse(registry: TunnelAdapterRegistry) {
+  return async (c: Context<AppEnv>, scope: Scope): Promise<Response> => {
+    const current = await loadCarrierParam(c, scope)
+    if (current instanceof Response) return current
+    const row = await loadBadgeParam(c, scope, current)
+    if (row instanceof Response) return row
+    const zoneId = c.req.param('zoneId') as string
+    const known = declaredZonesOf(row)
+    if (!known.some((z) => z.id === zoneId)) return c.json({ error: 'Not found' }, 404)
+    const secrets = c.get('dataEncryptionSecrets')
+    if (!secrets) return c.json({ error: 'secrets_unavailable' }, 503)
+    const token = await openBadgeToken(scope.db, secrets, row)
+    if (token === null) return c.json({ error: 'Not found' }, 404)
+    const declared = known.filter((z) => z.id !== zoneId)
+    const report = await runCheck(
+      c,
+      registry,
+      current.provider as TunnelProvider,
+      token,
+      current.externalAccountId,
+      declared
+    )
+    if (report instanceof Response) return report
+    const others = (await listBadges(scope.db, current.id)).filter((b) => b.id !== row.id)
+    const blocked = await dependentsOf(
+      scope.db,
+      current.id,
+      lossOf(
+        {
+          ...toApiBadge(row).capabilities,
+          tunnels: false,
+          dns: toApiBadge(row).capabilities.dns.filter((z) => z.id === zoneId),
+          certificates: [],
+        },
+        others
+      )
+    )
+    if (blocked.total > 0 && !report.capabilities.dns.some((z) => z.id === zoneId)) {
+      return badgeInUse(c, blocked)
+    }
+    return await storeZones(c, scope, { current, row, declared, report }, 'badge.zone_remove')
+  }
 }
 
 /** `fetchImpl` lets tests stand in for the provider; production uses the real one. */
@@ -565,5 +758,13 @@ export function registerOrganizationCarrierRoutes(
   router.post(
     '/organizations/:id/carriers/:carrierId/badges/:badgeId/check',
     guarded(checkBadgeResponse(registry))
+  )
+  router.post(
+    '/organizations/:id/carriers/:carrierId/badges/:badgeId/zones',
+    guarded(addZoneResponse(registry))
+  )
+  router.delete(
+    '/organizations/:id/carriers/:carrierId/badges/:badgeId/zones/:zoneId',
+    guarded(removeZoneResponse(registry))
   )
 }

@@ -1,15 +1,15 @@
 /**
- * The ONE place a DNS-validated certificate picks the provider token it uses:
- * an active token on the account that can edit DNS for the given zone (or, to
- * look a zone up, any DNS token). Any such token will do, so renewal and
- * cleanup never depend on one particular token. When the shared token
- * selector for accounts lands, this function becomes a call to it and nothing
- * else here changes.
+ * The ONE place a DNS-validated certificate picks the provider token it uses.
+ * It asks the shared token selector for an active token on the account that can
+ * edit DNS for the zone (matched by zone id), so renewal and cleanup never
+ * depend on one particular token. To look a zone up before it is known, any
+ * token that reaches some DNS zone will do.
  */
-import { openCarrierToken } from '../../tunnels/lifecycle.ts'
+import { listBadges, toApiBadge } from '../../tunnels/records.ts'
+import { openBestBadge } from '../../tunnels/badge-use.ts'
 import type { DnsCertContext } from './context.ts'
 
-export type DnsTokenNeed = { zoneId: string } | 'any'
+export type DnsTokenNeed = { zone: { id: string; name?: string } } | 'any'
 
 /** The plain token text, or null when no active token on the account fits. */
 export async function openDnsToken(
@@ -17,10 +17,21 @@ export async function openDnsToken(
   carrierId: string,
   need: DnsTokenNeed
 ): Promise<string | null> {
-  return await openCarrierToken(
-    ctx.db,
-    ctx.secrets,
-    carrierId,
-    need === 'any' ? { anyDns: true } : { zoneId: need.zoneId }
-  )
+  const zone = need === 'any' ? await anyDnsZone(ctx, carrierId) : need.zone
+  if (!zone) return null
+  const opened = await openBestBadge(ctx.db, ctx.secrets, carrierId, { capability: 'dns', zone })
+  return opened?.token ?? null
+}
+
+/** A zone some active token on the account reaches, to find the token that can look zones up. */
+async function anyDnsZone(
+  ctx: Pick<DnsCertContext, 'db'>,
+  carrierId: string
+): Promise<{ id: string; name: string } | null> {
+  for (const row of await listBadges(ctx.db, carrierId)) {
+    if (row.status !== 'active') continue
+    const zone = toApiBadge(row).capabilities.dns[0]
+    if (zone) return zone
+  }
+  return null
 }

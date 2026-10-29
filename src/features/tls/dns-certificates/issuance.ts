@@ -530,7 +530,7 @@ async function renewalBlocker(
   const checks = await Promise.all(
     state.zones.map(async (zone) => ({
       zone,
-      token: await openDnsToken(ctx, carrier.id, { zoneId: zone.id }),
+      token: await openDnsToken(ctx, carrier.id, { zone }),
     }))
   )
   const missing = checks.find((c) => c.token === null)
