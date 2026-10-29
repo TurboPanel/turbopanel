@@ -23,7 +23,23 @@ import { isTunnelOnlyHosting } from './name-lock.ts'
 
 const REMOVED_REASON = 'The site only serves tunnel names, which need no public certificate'
 
-/** Drop the site's own Let's Encrypt pin and waiting request. True when something changed. */
+/** Is every name of this hosting, as stored now, a locked tunnel name? */
+async function isTunnelOnlyNow(
+  db: Db,
+  organizationId: string,
+  hostingId: string,
+  options: unknown
+): Promise<boolean> {
+  return await isTunnelOnlyHosting(db, {
+    organizationId,
+    hostingId,
+    siteHostnames: parseHostingOptions(options)?.hostnames ?? [],
+    www: readHostingWwwMode(options),
+  })
+}
+
+/** Drop the site's own Let's Encrypt pin and waiting request. False when the names are no longer all tunnel-only. */
+/** Checked again under the locks: a public name added meanwhile keeps its pin. */
 async function releaseSitePin(db: Db, hostingId: string, organizationId: string): Promise<boolean> {
   return await db.transaction(async (tx) => {
     await tx
@@ -35,11 +51,17 @@ async function releaseSitePin(db: Db, hostingId: string, organizationId: string)
       .for('update', { of: environment })
     await lockOrganizationLetsEncrypt(tx, organizationId)
     const [row] = await tx
-      .select({ tlsId: hosting.tlsId, metadata: hosting.metadata, pendingAt: hosting.pendingAt })
+      .select({
+        tlsId: hosting.tlsId,
+        metadata: hosting.metadata,
+        pendingAt: hosting.pendingAt,
+        options: hosting.options,
+      })
       .from(hosting)
       .where(eq(hosting.id, hostingId))
       .for('update')
     if (!row) return false
+    if (!(await isTunnelOnlyNow(tx, organizationId, hostingId, row.options))) return false
     const waiting = readPendingLetsEncrypt({ metadata: row.metadata, pendingAt: row.pendingAt })
     let pinnedId: string | null = null
     if (row.tlsId !== null) {
@@ -49,7 +71,7 @@ async function releaseSitePin(db: Db, hostingId: string, organizationId: string)
         .where(eq(tls.id, row.tlsId))
       if (pinned && isSiteLetsEncrypt(pinned)) pinnedId = row.tlsId
     }
-    if (waiting === null && pinnedId === null) return false
+    if (waiting === null && pinnedId === null) return true
     await tx
       .update(hosting)
       .set({
@@ -79,14 +101,12 @@ export async function settleTunnelOnlyHosting(
     .where(eq(hosting.id, params.hostingId))
     .limit(1)
   if (!site) return false
-  const options = parseHostingOptions(site.options)
-  const tunnelOnly = await isTunnelOnlyHosting(db, {
-    organizationId: params.organizationId,
-    hostingId: params.hostingId,
-    siteHostnames: options?.hostnames ?? [],
-    www: readHostingWwwMode(site.options),
-  })
+  const tunnelOnly = await isTunnelOnlyNow(
+    db,
+    params.organizationId,
+    params.hostingId,
+    site.options
+  )
   if (!tunnelOnly) return false
-  await releaseSitePin(db, params.hostingId, params.organizationId)
-  return true
+  return await releaseSitePin(db, params.hostingId, params.organizationId)
 }

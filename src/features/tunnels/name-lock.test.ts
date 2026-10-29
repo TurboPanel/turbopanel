@@ -498,3 +498,16 @@ test('a library row another site still pins stays, and only this site lets go of
     assertEquals(kept!.tlsId, tlsId)
   })
 })
+
+test('a www mode makes the other spelling a public name, so the Let’s Encrypt row stays', async () => {
+  await withSite({ hereFeatures: [TUNNEL_FORWARDING_FEATURE] }, async (c) => {
+    await addDoorway(c)
+    await pinSiteLetsEncrypt(c, [NAME])
+    await c.db
+      .update(hosting)
+      .set({ options: { hostnames: [NAME], www: 'both' } })
+      .where(eq(hosting.id, c.hostingId))
+    assertEquals(await settleTunnelOnlyHosting(c.db, c), false)
+    assertEquals((await libraryRows(c.db, c.organizationId)).length, 1)
+  })
+})

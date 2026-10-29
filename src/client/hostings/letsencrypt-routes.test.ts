@@ -984,8 +984,13 @@ test('PUT use-letsencrypt: a site whose only name is a locked tunnel name gets n
         hostingId: f.hostingId,
         status: 'live',
       })
+      await f.db
+        .update(hosting)
+        .set({ pendingAt: new Date().toISOString() })
+        .where(eq(hosting.id, f.hostingId))
       const sweep = await runHostingLetsEncryptSweepTick(f.db, { lookup: pointing })
       assertEquals(sweep.pinned, 0)
+      assertEquals(sweep.dropped, 1)
       const again = await f.call('PUT', `/hostings/${f.hostingId}/use-letsencrypt`, {})
       assertEquals(((await again.json()) as { tunnelOnly?: boolean }).tunnelOnly, true)
       assertEquals(

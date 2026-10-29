@@ -274,6 +274,29 @@ async function loadFreshHosting(db: Db, organizationId: string, id: string, at: 
   return { fresh, certificate }
 }
 
+/**
+ * The answer for a site whose names only a tunnel serves, or null when a
+ * public certificate may still be wanted. Any row made for the site is
+ * released first; the body says why with `tunnelOnly`.
+ */
+async function answerTunnelOnly(
+  c: Context<AppEnv>,
+  db: Db,
+  organizationId: string,
+  id: string,
+  at: Date
+): Promise<Response | null> {
+  if (!(await settleTunnelOnlyHosting(db, { organizationId, hostingId: id }))) return null
+  const settled = await loadFreshHosting(db, organizationId, id, at)
+  if (!settled) return c.json({ error: 'Not found' }, 404)
+  return c.json({
+    hosting: settled.fresh,
+    certificate: settled.certificate ?? null,
+    needsDeploy: false,
+    tunnelOnly: true,
+  })
+}
+
 export function registerHostingLetsEncryptRoutes(
   router: Hono<AppEnv>,
   opts: AuthRouteOpts,
@@ -325,18 +348,9 @@ export function registerHostingLetsEncryptRoutes(
       .limit(1)
     if (!row) return c.json({ error: 'Not found' }, 404)
 
-    // Names that only a tunnel serves need no public certificate: no row, no
-    // order. Answer with the hosting as it is; `tunnelOnly` says why.
-    if (await settleTunnelOnlyHosting(db, { organizationId, hostingId: id })) {
-      const settled = await loadFreshHosting(db, organizationId, id, now())
-      if (!settled) return c.json({ error: 'Not found' }, 404)
-      return c.json({
-        hosting: settled.fresh,
-        certificate: settled.certificate ?? null,
-        needsDeploy: false,
-        tunnelOnly: true,
-      })
-    }
+    // Names that only a tunnel serves need no public certificate: no row, no order.
+    const tunnelOnly = await answerTunnelOnly(c, db, organizationId, id, now())
+    if (tunnelOnly) return tunnelOnly
 
     const www = readHostingWwwMode(row.options)
     const result = await requestLetsEncrypt({
