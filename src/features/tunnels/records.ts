@@ -372,9 +372,21 @@ export async function openBadgeToken(
 
 export type CheckOutcome = { capabilities: CredentialReport['capabilities']; status: string }
 
+/**
+ * Which set of rights a check looked for. A token checked before certificate
+ * rights were probed stored none, so the daily recheck looks at every token
+ * stamped lower than this at its next tick instead of waiting out the day.
+ * Raise it whenever a check learns to see a new kind of right.
+ */
+export const CAPABILITY_PROBE_REVISION = 2
+
 /** The non-secret facts a check learned about the token itself. */
 function tokenOptions(report: Pick<CredentialReport, 'token'>): Record<string, unknown> {
-  return { kind: report.token.kind, tokenId: report.token.id }
+  return {
+    kind: report.token.kind,
+    tokenId: report.token.id,
+    capabilityProbe: CAPABILITY_PROBE_REVISION,
+  }
 }
 
 /** The badge on this carrier that holds the provider token with this id, if any. */
@@ -515,7 +527,14 @@ export async function recordBadgeCheck(
             },
             expiresAt: result.token.expiresAt,
           }
-        : {}),
+        : {
+            // Still stamped, so a token the provider no longer accepts is not picked
+            // again on every tick for lacking the stamp.
+            options: {
+              ...(row.options as object | null),
+              capabilityProbe: CAPABILITY_PROBE_REVISION,
+            },
+          }),
       status: result.status,
       lastCheckedAt: new Date().toISOString(),
     })
