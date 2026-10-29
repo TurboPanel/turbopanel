@@ -43,7 +43,7 @@ import { getDb } from '../db/connection.ts'
 import type { Db } from '../db/connection.ts'
 import { compatLogError, compatLogWarn } from '../lib/log-compat.ts'
 import { forEachSequential } from '../lib/sequential.ts'
-import { cellTrace, daemonCellLog } from '../lib/logger.ts'
+import { cellTrace, daemonCellLog, logWarn } from '../lib/logger.ts'
 import {
   onDaemonConnected,
   onDaemonDisconnected,
@@ -951,6 +951,12 @@ export function registerDaemonWebSocket<E extends Env>(
           return
         }
         const message = validated.message
+        for (const note of validated.notes ?? []) {
+          logWarn(
+            'daemon-cell',
+            `inbound-note serverId=${payload.sub} conn=${connectionId} ${note}`
+          )
+        }
 
         if (!(await keyStillActive(ws))) return
 
