@@ -42,6 +42,9 @@ export function portalErrorOf(connector: TunnelStatusConnector): string | null {
   return null
 }
 
+/** What one connector answer means for a portal. */
+type PortalAnswer = 'connected' | 'unknown' | 'down' | 'error'
+
 /**
  * Where a tunnel's own status goes after a connector answered. A connected
  * connector makes it `active`; with none connected, one that is down or in
@@ -53,7 +56,7 @@ export function portalErrorOf(connector: TunnelStatusConnector): string | null {
 export function nextTunnelStatus(
   current: string,
   portalStates: readonly string[],
-  answer: 'connected' | 'unknown' | 'down' | 'error'
+  answer: PortalAnswer
 ): string {
   if (current === 'removing') return current
   if (answer === 'connected' || portalStates.includes('connected')) return 'active'
@@ -67,7 +70,7 @@ async function followTunnelStatus(
   db: Db,
   serverId: string,
   providerId: string,
-  answer: 'connected' | 'unknown' | 'down' | 'error'
+  answer: PortalAnswer
 ): Promise<void> {
   const [found] = await db
     .select({ id: tunnel.id, status: tunnel.status })
