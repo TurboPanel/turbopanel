@@ -44,19 +44,38 @@ type Db = ReturnType<typeof createDenoDb>
 type Called = { status: number; text: string; body: Record<string, unknown> }
 
 const TOKEN = 'cf-api-token-0123456789abcdefghijklmnopqrstuv'
+const SECOND_TOKEN = 'cf-api-token-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz'
 const ACCOUNT = 'a'.repeat(32)
 const EXPIRES = '2027-01-01T00:00:00.000Z'
 
 /** What the faked provider answers; each test sets the mode. */
-type Mode = 'good' | 'no-dns' | 'weak' | 'rejected' | 'echo-token'
+type Mode = 'good' | 'no-dns' | 'weak' | 'rejected' | 'echo-token' | 'narrow'
 const state: { mode: Mode } = { mode: 'good' }
 
 const ok = (result: unknown) => Response.json({ success: true, errors: [], result })
 const refused = (status: number, message: string) =>
   Response.json({ success: false, errors: [{ code: 1, message }] }, { status })
 
-const fakeProvider: typeof fetch = (input) => {
+/**
+ * A token limited to a few zones: it cannot list accounts or zones, cannot read tunnels, and
+ * reads DNS only for the zones it was given. zone-9 shows its name, zone-8 hides it (no zone
+ * read), zone-7 belongs to another account.
+ */
+function narrowAnswer(path: string): Response {
+  if (path === '/user/tokens/verify') return ok({ id: 'tok-narrow', status: 'active' })
+  const zone = /^\/zones\/(zone-\d)(\/dns_records)?$/.exec(path)
+  if (!zone) return refused(403, 'denied')
+  const [, id, records] = zone
+  if (records) return ['zone-9', 'zone-8', 'zone-7'].includes(id!) ? ok([]) : refused(403, 'denied')
+  if (id === 'zone-9') return ok({ id, name: 'shop.example.org', account: { id: ACCOUNT } })
+  if (id === 'zone-7') return ok({ id, name: 'other.net', account: { id: 'b'.repeat(32) } })
+  return refused(403, 'denied')
+}
+
+const fakeProvider: typeof fetch = (input, init) => {
   const path = new URL(String(input)).pathname.replace('/client/v4', '')
+  if (state.mode === 'narrow') return Promise.resolve(narrowAnswer(path))
+  const bearer = new Headers(init?.headers).get('authorization') ?? ''
   if (state.mode === 'echo-token') {
     return Promise.resolve(refused(500, `internal failure for Bearer ${TOKEN}`))
   }
@@ -64,7 +83,9 @@ const fakeProvider: typeof fetch = (input) => {
   if (path === '/accounts') return Promise.resolve(ok([{ id: ACCOUNT, name: 'Main' }]))
   if (path === '/zones') return Promise.resolve(ok([{ id: 'z1', name: 'example.com' }]))
   if (path === '/user/tokens/verify') {
-    return Promise.resolve(ok({ id: 'tok-1', status: 'active', expires_on: EXPIRES }))
+    // The first token keeps one id, any other token its own, so two can sit on one account.
+    const id = bearer.endsWith(TOKEN) ? 'tok-1' : `tok-${bearer.slice(-6)}`
+    return Promise.resolve(ok({ id, status: 'active', expires_on: EXPIRES }))
   }
   if (state.mode === 'weak') return Promise.resolve(refused(403, 'Authentication error'))
   if (path.endsWith('/cfd_tunnel')) return Promise.resolve(ok([]))
@@ -475,5 +496,172 @@ test('a refused token creates no carrier, and another organization manager canno
     }
     assertEquals((await f.db.select().from(badge).where(eq(badge.id, badgeId))).length, 1)
     assertEquals((await f.db.select().from(carrier).where(eq(carrier.id, carrierId))).length, 1)
+  })
+})
+
+const zonesPath = (f: Fixture, carrierId: string, badgeId: string) =>
+  `/organizations/${f.orgA}/carriers/${carrierId}/badges/${badgeId}/zones`
+
+type DnsZones = { id: string; name: string }[]
+const dnsOf = (res: Called) =>
+  (res.body.badge as { capabilities: { dns: DnsZones } }).capabilities.dns
+
+test('a token limited to some zones is added by naming the zones it covers', async () => {
+  await withFixture(async (f) => {
+    const carrierId = await createCarrier(f)
+    const path = `/organizations/${f.orgA}/carriers/${carrierId}/badges`
+    state.mode = 'narrow'
+    const bare = await call(f, 'POST', path, f.managerCookie, { label: 'Narrow', token: TOKEN })
+    assertEquals(bare.status, 400)
+    assertEquals(bare.body.error, 'badge_not_useful')
+
+    const named = await call(f, 'POST', path, f.managerCookie, {
+      label: 'Narrow',
+      token: TOKEN,
+      zones: [{ id: 'zone-9' }],
+    })
+    assertEquals(named.status, 201, named.text)
+    assertEquals(dnsOf(named), [{ id: 'zone-9', name: 'shop.example.org' }])
+    const shown = named.body.badge as {
+      capabilities: { tunnels: boolean }
+      declaredZones: DnsZones
+    }
+    assertEquals(shown.capabilities.tunnels, false)
+    assertEquals(shown.declaredZones, [{ id: 'zone-9', name: 'shop.example.org' }])
+    assert(!named.text.includes(TOKEN))
+  })
+})
+
+test('a named zone must be readable, in this account, and have a name', async () => {
+  await withFixture(async (f) => {
+    const carrierId = await createCarrier(f)
+    const path = `/organizations/${f.orgA}/carriers/${carrierId}/badges`
+    state.mode = 'narrow'
+    const body = (zone: Record<string, string>) => ({
+      label: 'Narrow',
+      token: TOKEN,
+      zones: [zone],
+    })
+    const unreachable = await call(f, 'POST', path, f.managerCookie, body({ id: 'zone-5' }))
+    assertEquals([unreachable.status, unreachable.body.error], [400, 'zone_not_reachable'])
+    const elsewhere = await call(f, 'POST', path, f.managerCookie, body({ id: 'zone-7' }))
+    assertEquals([elsewhere.status, elsewhere.body.error], [400, 'zone_wrong_account'])
+    // A token without Zone · Zone · Read cannot say what the zone is called: the person does.
+    const unnamed = await call(f, 'POST', path, f.managerCookie, body({ id: 'zone-8' }))
+    assertEquals([unnamed.status, unnamed.body.error], [400, 'zone_name_needed'])
+    const typed = await call(
+      f,
+      'POST',
+      path,
+      f.managerCookie,
+      body({ id: 'zone-8', name: 'Docs.Example.net' })
+    )
+    assertEquals(typed.status, 201, typed.text)
+    assertEquals(dnsOf(typed), [{ id: 'zone-8', name: 'docs.example.net' }])
+    assertEquals((await f.db.select().from(badge).where(eq(badge.carrierId, carrierId))).length, 1)
+  })
+})
+
+test('zones are added to and removed from a token later, and every check keeps probing them', async () => {
+  await withFixture(async (f) => {
+    const carrierId = await createCarrier(f)
+    state.mode = 'narrow'
+    const added = await call(
+      f,
+      'POST',
+      `/organizations/${f.orgA}/carriers/${carrierId}/badges`,
+      f.managerCookie,
+      {
+        label: 'Narrow',
+        token: TOKEN,
+        zones: [{ id: 'zone-9' }],
+      }
+    )
+    const badgeId = (added.body.badge as { id: string }).id
+    const more = await call(f, 'POST', zonesPath(f, carrierId, badgeId), f.managerCookie, {
+      id: 'zone-8',
+      name: 'docs.example.net',
+    })
+    assertEquals(more.status, 200, more.text)
+    assertEquals(
+      dnsOf(more)
+        .map((z) => z.id)
+        .sort(),
+      ['zone-8', 'zone-9']
+    )
+    const checked = await call(
+      f,
+      'POST',
+      `/organizations/${f.orgA}/carriers/${carrierId}/badges/${badgeId}/check`,
+      f.managerCookie
+    )
+    assertEquals(
+      dnsOf(checked)
+        .map((z) => z.id)
+        .sort(),
+      ['zone-8', 'zone-9']
+    )
+    const gone = await call(
+      f,
+      'DELETE',
+      `${zonesPath(f, carrierId, badgeId)}/zone-8`,
+      f.managerCookie
+    )
+    assertEquals(gone.status, 200, gone.text)
+    assertEquals(
+      dnsOf(gone).map((z) => z.id),
+      ['zone-9']
+    )
+    const unknown = await call(
+      f,
+      'DELETE',
+      `${zonesPath(f, carrierId, badgeId)}/zone-1`,
+      f.managerCookie
+    )
+    assertEquals(unknown.status, 404)
+    for (const [method, path] of [
+      ['POST', zonesPath(f, carrierId, badgeId)],
+      ['DELETE', `${zonesPath(f, carrierId, badgeId)}/zone-9`],
+    ]) {
+      assertEquals((await call(f, method!, path!, null, {})).status, 401)
+      assertEquals((await call(f, method!, path!, f.memberCookie, {})).status, 403)
+    }
+  })
+})
+
+test('a token that others do not cover cannot be removed while tunnels or hostnames depend on it', async () => {
+  await withFixture(async (f) => {
+    const carrierId = await createCarrier(f)
+    const path = `/organizations/${f.orgA}/carriers/${carrierId}/badges`
+    const first = await call(f, 'POST', path, f.managerCookie, { label: 'First', token: TOKEN })
+    const firstId = (first.body.badge as { id: string }).id
+    const [t] = await f.db
+      .insert(tunnel)
+      .values({
+        organizationId: f.orgA,
+        routingOrganizationId: f.orgA,
+        carrierId,
+        provider: 'cloudflare',
+        name: 'web',
+        externalId: 'ext-1',
+        placement: 'chosen',
+        status: 'active',
+      })
+      .returning()
+    const refused = await call(f, 'DELETE', `${path}/${firstId}`, f.managerCookie)
+    assertEquals(refused.status, 409)
+    assertEquals(refused.body.error, 'badge_in_use')
+    assertEquals(
+      (refused.body.dependents as { kind: string; name: string }[]).map((d) => [d.kind, d.name]),
+      [['tunnel', t!.name]]
+    )
+    assertEquals((await f.db.select().from(badge).where(eq(badge.id, firstId))).length, 1)
+    // A second token with the same rights takes the dependency over.
+    const second = await call(f, 'POST', path, f.managerCookie, {
+      label: 'Second',
+      token: SECOND_TOKEN,
+    })
+    assertEquals(second.status, 201, second.text)
+    assertEquals((await call(f, 'DELETE', `${path}/${firstId}`, f.managerCookie)).status, 200)
   })
 })

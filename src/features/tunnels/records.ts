@@ -10,16 +10,18 @@ import { badge, carrier, organization, secret, tunnel } from '../../db/schema.ts
 import { decryptSecret, encryptSecret } from '../../lib/secrets/data-encryption.ts'
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import type { CredentialReport } from './adapter.ts'
+import { compareText } from './order.ts'
 import {
   type BadgeCapabilities,
   BADGE_SECRET_PROVIDER,
+  type DeclaredZone,
   RUN_SECRET_PROVIDER,
   TUNNEL_PROVIDERS,
   type TunnelProvider,
 } from './vocabulary.ts'
 
 export const MAX_CARRIERS_PER_ORG = 10
-export const MAX_BADGES_PER_CARRIER = 5
+export const MAX_BADGES_PER_CARRIER = 50
 
 /** A per-organization or per-carrier limit was reached; counted under a row lock so races cannot pass it. */
 export class TunnelLimitError extends Error {
@@ -49,6 +51,10 @@ export type ApiBadge = {
   status: string
   lastCheckedAt: string | null
   createdAt: string
+  /** Zones the person named for this token, so they can be shown and removed. */
+  declaredZones: DeclaredZone[]
+  /** Plain-words things to look at: a token about to expire, a right the provider refused. */
+  warnings: string[]
 }
 
 export type ApiCarrier = {
@@ -99,9 +105,32 @@ export function parseCarrierBody(body: Record<string, unknown>): Parsed<{
   return { ok: true, value: { provider, name: name.value, externalAccountId: rawAccount.trim() } }
 }
 
+/** Zones one token may be told it covers. */
+export const MAX_DECLARED_ZONES = 50
+const ZONE_ID = /^[A-Za-z0-9_-]{1,64}$/
+const ZONE_NAME = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/
+
+/** One zone the person names: its id, and its name when the provider may not tell us. */
+export function parseDeclaredZone(value: unknown): Parsed<DeclaredZone> {
+  const z = (value ?? {}) as Record<string, unknown>
+  const id = typeof z.id === 'string' ? z.id.trim() : ''
+  if (!ZONE_ID.test(id)) {
+    return {
+      ok: false,
+      field: 'zones',
+      detail: 'A zone id is 1 to 64 letters, numbers, dashes or underscores',
+    }
+  }
+  const raw = typeof z.name === 'string' ? z.name.trim().toLowerCase() : ''
+  if (raw && !ZONE_NAME.test(raw)) {
+    return { ok: false, field: 'zones', detail: 'A zone name looks like example.com' }
+  }
+  return { ok: true, value: { id, name: raw } }
+}
+
 export function parseBadgeBody(
   body: Record<string, unknown>
-): Parsed<{ label: string; token: string }> {
+): Parsed<{ label: string; token: string; zones: DeclaredZone[] }> {
   const label = textField(body.label, 'label', 'The label', 64)
   if (!label.ok) return label
   const token = typeof body.token === 'string' ? body.token.trim() : ''
@@ -112,7 +141,18 @@ export function parseBadgeBody(
       detail: 'The token must be 8 to 512 visible characters, with no spaces',
     }
   }
-  return { ok: true, value: { label: label.value, token } }
+  const zones: DeclaredZone[] = []
+  if (body.zones !== undefined) {
+    if (!Array.isArray(body.zones) || body.zones.length > MAX_DECLARED_ZONES) {
+      return { ok: false, field: 'zones', detail: `Name up to ${MAX_DECLARED_ZONES} zones` }
+    }
+    for (const entry of body.zones) {
+      const parsed = parseDeclaredZone(entry)
+      if (!parsed.ok) return parsed
+      if (!zones.some((z) => z.id === parsed.value.id)) zones.push(parsed.value)
+    }
+  }
+  return { ok: true, value: { label: label.value, token, zones } }
 }
 
 function optionString(options: unknown, key: string): string | null {
@@ -126,6 +166,59 @@ function zoneList(value: unknown): { id: string; name: string }[] {
   return value.flatMap((z) =>
     z && typeof z.id === 'string' && typeof z.name === 'string' ? [{ id: z.id, name: z.name }] : []
   )
+}
+
+/** Days before a token's expiry from which it is flagged. */
+export const BADGE_EXPIRY_WARNING_DAYS = 14
+
+/** The zones the person named for a token; checks keep probing them. */
+export function declaredZonesOf(row: Pick<BadgeRow, 'options'>): DeclaredZone[] {
+  const stored = (row.options as Record<string, unknown> | null)?.declaredZones
+  if (!Array.isArray(stored)) return []
+  return stored.flatMap((z) =>
+    z && typeof z.id === 'string'
+      ? [{ id: z.id, name: typeof z.name === 'string' ? z.name : '' }]
+      : []
+  )
+}
+
+/** The last permission the provider refused for this token, kept so the screen can say so. */
+export type BadgeFailure = {
+  capability: 'tunnels' | 'dns' | 'certificates'
+  zone: string | null
+  at: string
+}
+
+function lastFailureOf(row: Pick<BadgeRow, 'options'>): BadgeFailure | null {
+  const f = (row.options as Record<string, unknown> | null)?.lastFailure as
+    Record<string, unknown> | undefined
+  if (!f || typeof f.capability !== 'string' || typeof f.at !== 'string') return null
+  const capability = f.capability
+  if (capability !== 'tunnels' && capability !== 'dns' && capability !== 'certificates') return null
+  return { capability, zone: typeof f.zone === 'string' ? f.zone : null, at: f.at }
+}
+
+/** Plain-words notes for a token: nearing expiry, or a right the provider refused. */
+export function badgeWarnings(row: BadgeRow, now: Date = new Date()): string[] {
+  const out: string[] = []
+  if (row.expiresAt) {
+    const days = Math.ceil((Date.parse(row.expiresAt) - now.getTime()) / 86_400_000)
+    if (days <= 0) out.push('This API Token has expired.')
+    else if (days <= BADGE_EXPIRY_WARNING_DAYS) {
+      out.push(`This API Token expires in ${days} day${days === 1 ? '' : 's'}.`)
+    }
+  }
+  const failure = lastFailureOf(row)
+  if (failure) {
+    const what =
+      failure.capability === 'tunnels'
+        ? 'change Tunnels'
+        : failure.capability === 'dns'
+          ? `edit DNS${failure.zone ? ` for ${failure.zone}` : ''}`
+          : `manage certificates${failure.zone ? ` for ${failure.zone}` : ''}`
+    out.push(`Cloudflare refused this API Token when it tried to ${what}. Check its permissions.`)
+  }
+  return out
 }
 
 /** A badge as the API shows it: the label and the last four characters, never the token. */
@@ -147,6 +240,8 @@ export function toApiBadge(row: BadgeRow): ApiBadge {
     status: row.status,
     lastCheckedAt: row.lastCheckedAt,
     createdAt: row.createdAt,
+    declaredZones: declaredZonesOf(row),
+    warnings: badgeWarnings(row),
   }
 }
 
@@ -334,6 +429,7 @@ export async function insertBadge(
     sealed: string
     lastFour: string
     report: CredentialReport
+    declaredZones?: readonly DeclaredZone[]
   }
 ): Promise<BadgeRow> {
   const row = await db.transaction(async (tx) => {
@@ -367,7 +463,10 @@ export async function insertBadge(
         label: params.label,
         lastFour: params.lastFour,
         capabilities: params.report.capabilities,
-        options: tokenOptions(params.report),
+        options: {
+          ...tokenOptions(params.report),
+          ...(params.declaredZones?.length ? { declaredZones: namedZones(params) } : {}),
+        },
         expiresAt: params.report.token.expiresAt,
         lastCheckedAt: new Date().toISOString(),
         status: 'active',
@@ -377,6 +476,17 @@ export async function insertBadge(
   })
   await refreshCarrierStatus(db, params.carrier.id)
   return row
+}
+
+/** The declared zones with the names the check found for them. */
+function namedZones(params: {
+  report: CredentialReport
+  declaredZones?: readonly DeclaredZone[]
+}): DeclaredZone[] {
+  return (params.declaredZones ?? []).map((z) => ({
+    id: z.id,
+    name: params.report.declared?.find((d) => d.id === z.id)?.name ?? z.name,
+  }))
 }
 
 export async function recordBadgeCheck(
@@ -396,7 +506,7 @@ export async function recordBadgeCheck(
       ...(result.token
         ? {
             options: {
-              ...(row.options as object | null),
+              ...clearFailure(row.options),
               ...tokenOptions({ token: result.token }),
             },
             expiresAt: result.token.expiresAt,
@@ -409,6 +519,12 @@ export async function recordBadgeCheck(
     .returning()
   await refreshCarrierStatus(db, row.carrierId)
   return updated!
+}
+
+/** The stored options without the last refused right; a fresh check replaces it. */
+function clearFailure(options: unknown): Record<string, unknown> {
+  const { lastFailure: _dropped, ...rest } = (options ?? {}) as Record<string, unknown>
+  return rest
 }
 
 /** Remove a badge and its sealed token together. */
@@ -496,4 +612,155 @@ export async function datacenterHasAllTunnel(db: Db, datacenterId: string): Prom
     .where(and(eq(tunnel.datacenterId, datacenterId), eq(tunnel.placement, 'all')))
     .limit(1)
   return row !== undefined
+}
+
+// ---------------------------------------------------------------------------
+// Choosing a token
+
+/** What a call needs: account-wide tunnel rights, or DNS / certificate rights for one zone. */
+export type BadgeNeed =
+  | { capability: 'tunnels' }
+  | { capability: 'dns' | 'certificates'; zone: { id: string; name?: string } }
+
+/**
+ * Why no token qualified: `capability` means no active token has that right at
+ * all, `zone` means some do but none for this zone. Null when one qualifies.
+ */
+export type BadgeMissing = 'capability' | 'zone' | null
+
+export type BadgePick = { badges: BadgeRow[]; missing: BadgeMissing }
+
+function capabilitiesOfRow(row: Pick<BadgeRow, 'capabilities'>): BadgeCapabilities {
+  const stored = (row.capabilities ?? {}) as Record<string, unknown>
+  return {
+    tunnels: stored.tunnels === true,
+    dns: zoneList(stored.dns),
+    certificates: zoneList(stored.certificates),
+  }
+}
+
+/** The number of zones a token is limited to for one right (smaller is narrower). */
+function scopeSize(row: BadgeRow, capability: 'dns' | 'certificates'): number {
+  return capabilitiesOfRow(row)[capability].length
+}
+
+/** Most recently checked first; a never-checked token sorts last. */
+function checkedAt(row: BadgeRow): number {
+  return row.lastCheckedAt ? Date.parse(row.lastCheckedAt) || 0 : 0
+}
+
+/**
+ * The tokens of one account that can do what is needed, best first. Only
+ * active tokens qualify. For DNS and certificates the zone is matched by its
+ * id (a zone deleted and added again has a new id), and a token limited to
+ * fewer zones comes before one that reaches many; then the most recently
+ * checked; then the oldest. The rows are returned so a caller can try the next
+ * one when the provider refuses a write, and can record which token was used.
+ */
+export function pickBadges(badges: readonly BadgeRow[], need: BadgeNeed): BadgePick {
+  const active = badges.filter((b) => b.status === 'active')
+  const withRight = active.filter((b) => {
+    const caps = capabilitiesOfRow(b)
+    return need.capability === 'tunnels' ? caps.tunnels : caps[need.capability].length > 0
+  })
+  if (need.capability === 'tunnels') {
+    return { badges: withRight.sort(byRecency), missing: withRight.length ? null : 'capability' }
+  }
+  const { capability, zone } = need
+  const covering = withRight.filter((b) =>
+    capabilitiesOfRow(b)[capability].some((z) => z.id === zone.id)
+  )
+  if (covering.length > 0) {
+    covering.sort((a, b) => scopeSize(a, capability) - scopeSize(b, capability) || byRecency(a, b))
+    return { badges: covering, missing: null }
+  }
+  return { badges: [], missing: withRight.length ? 'zone' : 'capability' }
+}
+
+function byRecency(a: BadgeRow, b: BadgeRow): number {
+  return (
+    checkedAt(b) - checkedAt(a) || compareText(a.createdAt, b.createdAt) || compareText(a.id, b.id)
+  )
+}
+
+/**
+ * The zone a hostname belongs to, among the zones the account's active tokens
+ * were found (or told) to reach for DNS. The longest matching zone name wins.
+ */
+export function findStoredZone(
+  badges: readonly BadgeRow[],
+  hostname: string
+): { id: string; name: string } | null {
+  const name = hostname.trim().toLowerCase()
+  const zones = new Map<string, { id: string; name: string }>()
+  for (const b of badges) {
+    if (b.status !== 'active') continue
+    for (const z of capabilitiesOfRow(b).dns) {
+      const zoneName = z.name.toLowerCase()
+      if (name === zoneName || name.endsWith(`.${zoneName}`)) zones.set(z.id, z)
+    }
+  }
+  const best = [...zones.values()].sort(
+    (a, b) => b.name.length - a.name.length || compareText(a.id, b.id)
+  )
+  return best[0] ?? null
+}
+
+/**
+ * The provider refused a write this token needed: take that right (or that
+ * zone) away from the stored scope, so no other call picks it again, and keep
+ * what was refused so the screen can say so. A check restores it if it works.
+ */
+export async function recordBadgeFailure(
+  db: Db,
+  row: BadgeRow,
+  failure: {
+    capability: 'tunnels' | 'dns' | 'certificates'
+    zone: { id: string; name: string } | null
+    /** The provider no longer accepts the token at all (rolled or removed). */
+    whole?: boolean
+  }
+): Promise<void> {
+  const caps = capabilitiesOfRow(row)
+  const next: BadgeCapabilities = failure.whole
+    ? { tunnels: false, dns: [], certificates: [] }
+    : failure.capability === 'tunnels'
+      ? { ...caps, tunnels: false }
+      : {
+          ...caps,
+          [failure.capability]: failure.zone
+            ? caps[failure.capability].filter((z) => z.id !== failure.zone!.id)
+            : [],
+        }
+  const usable = next.tunnels || next.dns.length > 0
+  await db
+    .update(badge)
+    .set({
+      capabilities: next,
+      status: usable ? row.status : 'attention',
+      options: {
+        ...(row.options as object | null),
+        lastFailure: {
+          capability: failure.capability,
+          zone: failure.zone?.name ?? null,
+          at: new Date().toISOString(),
+        },
+      },
+    })
+    .where(eq(badge.id, row.id))
+  await refreshCarrierStatus(db, row.carrierId)
+}
+
+/** Keep the zones the person named with the token, so every later check probes them again. */
+export async function setDeclaredZones(
+  db: Db,
+  row: BadgeRow,
+  zones: readonly DeclaredZone[]
+): Promise<BadgeRow> {
+  const [updated] = await db
+    .update(badge)
+    .set({ options: { ...(row.options as object | null), declaredZones: zones } })
+    .where(eq(badge.id, row.id))
+    .returning()
+  return updated!
 }

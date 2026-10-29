@@ -79,6 +79,8 @@ export const AUDIT_ACTIONS = [
   'badge.create',
   'badge.check',
   'badge.delete',
+  'badge.zone_add',
+  'badge.zone_remove',
   'tunnel.create',
   'tunnel.update',
   'tunnel.delete',

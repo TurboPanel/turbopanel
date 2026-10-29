@@ -128,6 +128,11 @@ export class CloudflareClient {
     )
   }
 
+  /** One zone by id: its name and account. Needs Zone · Zone · Read, which a narrow token may lack. */
+  getZone(zoneId: string): Promise<CloudflareZone> {
+    return this.#call('GET', `/zones/${encodeURIComponent(zoneId)}`)
+  }
+
   /** Verify a user-owned token (GET /user/tokens/verify). */
   verifyUserToken(): Promise<CloudflareTokenVerify> {
     return this.#call('GET', '/user/tokens/verify')

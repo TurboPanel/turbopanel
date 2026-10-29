@@ -142,6 +142,61 @@ the same token to one carrier is refused with 409 `badge_exists`; a user-owned
 token reaching two accounts becomes one badge under each carrier, sealed
 separately), and `badge.expires_at` holds the reported expiry.
 
+## Several API tokens on one account
+
+One account (carrier) holds up to 50 tokens (badges): for example one that
+edits tunnels and others that edit DNS, each limited to one zone or a few. What a
+token reaches is stored in `badge.capabilities`: `tunnels` account-wide, `dns`
+and `certificates` as zone lists (id and name). The zone **id** is what matches
+(a zone deleted and added again has a new id); the name is for matching
+hostnames and display.
+
+- **One selector.** `pickBadges(badges, need)` in `records.ts` takes
+  `{capability: 'tunnels'}` or `{capability: 'dns' | 'certificates', zone: {id, name?}}`
+  and returns `{badges, missing}`: the active tokens that qualify, best first (a
+  token limited to fewer zones before one that reaches many, then the most
+  recently checked, then the oldest), and when none does `missing` is
+  `'capability'` (no active token has that right) or `'zone'` (some do, none for
+  this zone). `badge-use.ts` `useBadges(db, secrets, carrierId, need, run)` does
+  the call with each in turn and returns `{value, badge, token}`; `openBestBadge`
+  opens the first without a call. Features that need a token (origin certificates,
+  Let's Encrypt DNS challenges, tunnels, hostnames) call these, never a private
+  copy. `badgeRefusal` turns `BadgeUnavailable` / `BadgeRefused` into the plain
+  409 text.
+- **Refusal fallback.** Only read probes run when a token is added, so an edit
+  right is first proved by a write. When the provider answers 403 the right (or
+  that zone) is taken off the stored scope and `options.lastFailure` keeps what
+  was refused (shown as a warning); a 401 takes the whole token out of use. The
+  next qualifying token is tried. A check restores the scope if the right works.
+- **Zone of a hostname.** First the stored zones of the account's active tokens
+  (longest name wins); only when none matches is the provider asked with the
+  tunnel token. A refused zone list is not an error: the route still works and
+  the person makes the DNS name. Before a hostname is written, a zone with no
+  token that can edit its DNS is refused (`badge_cannot_dns`, with the reason).
+- **Narrow tokens.** A token limited to a zone is usually refused the account and
+  zone lists, so the person names the zone (`zones` when adding the token, or
+  `POST .../badges/:badgeId/zones`). Each named zone is probed with that token
+  (a DNS read; a zone read too when it may make one, to learn the name and the
+  account) and kept in `options.declaredZones`, so every later check and the
+  daily recheck probe it again. A zone of another account is refused; a zone the
+  token cannot read is refused; a token that cannot read the zone needs its name
+  typed.
+- **Removal order.** `removeDoorway` looks for the DNS token before it changes
+  anything. With none, the route is still taken down (the name answers nothing)
+  and the row stays in `attention` with the reason in `warning`; a retry with a
+  token that covers the zone finishes it. Any token that covers the zone can
+  remove the DNS name; the token that made it is recorded in the hostname's
+  metadata (`dnsBadgeId`) for the record only.
+- **Deleting a token** is refused (409 `badge_in_use`, up to 50 `dependents`) while
+  it is the only active token that reaches tunnels for an account with Tunnels, or
+  the only one that reaches DNS for a zone whose hostnames have DNS names
+  (`badge-dependents.ts`). Certificates and certificate orders that only this
+  token can revoke or renew add themselves there.
+- **Daily recheck.** `badge-recheck.ts` (offline sweep) re-checks up to 10 tokens a
+  tick whose last check is a day old: scopes refresh, a token the provider no
+  longer accepts goes to `attention`, an outage changes nothing and the token is
+  tried again in an hour. `badgeWarnings` flags a token 14 days before its expiry.
+
 ## Adapter
 
 `adapter.ts` is the interface: check a credential, create a tunnel, fetch or
@@ -154,7 +209,8 @@ typed client over an injected `fetch`; tests never call the real service).
   reaches that area, not that it can edit; edit rights are confirmed by the
   first write. Certificate rights cannot be seen by a safe read and are
   reported as not shown. The accounts and zones lists may be refused to a
-  narrow token; that is treated as empty, not as a bad token.
+  narrow token; that is treated as empty, not as a bad token, and zones the
+  person named are probed one by one instead.
 - Routes always point at `https://localhost`; the last ingress rule is a
   catch-all with no hostname.
 - The client never stores the platform `fetch` and calls it as a method of
