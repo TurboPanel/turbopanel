@@ -198,6 +198,14 @@ function lastFailureOf(row: Pick<BadgeRow, 'options'>): BadgeFailure | null {
   return { capability, zone: typeof f.zone === 'string' ? f.zone : null, at: f.at }
 }
 
+/** What the provider refused, as the end of "when it tried to ...". */
+function refusedAction(failure: BadgeFailure): string {
+  const zone = failure.zone ? ` for ${failure.zone}` : ''
+  if (failure.capability === 'tunnels') return 'change Tunnels'
+  if (failure.capability === 'dns') return `edit DNS${zone}`
+  return `manage certificates${zone}`
+}
+
 /** Plain-words notes for a token: nearing expiry, or a right the provider refused. */
 export function badgeWarnings(row: BadgeRow, now: Date = new Date()): string[] {
   const out: string[] = []
@@ -210,13 +218,9 @@ export function badgeWarnings(row: BadgeRow, now: Date = new Date()): string[] {
   }
   const failure = lastFailureOf(row)
   if (failure) {
-    const what =
-      failure.capability === 'tunnels'
-        ? 'change Tunnels'
-        : failure.capability === 'dns'
-          ? `edit DNS${failure.zone ? ` for ${failure.zone}` : ''}`
-          : `manage certificates${failure.zone ? ` for ${failure.zone}` : ''}`
-    out.push(`Cloudflare refused this API Token when it tried to ${what}. Check its permissions.`)
+    out.push(
+      `Cloudflare refused this API Token when it tried to ${refusedAction(failure)}. Check its permissions.`
+    )
   }
   return out
 }
