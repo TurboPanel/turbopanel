@@ -40,13 +40,13 @@ export async function certificateFingerprints(pem: string): Promise<string[]> {
   } catch {
     return []
   }
-  const out: string[] = []
-  for (const block of blocks) {
-    const der = decodePemBlock(block, 'CERTIFICATE')
-    const digest = await crypto.subtle.digest('SHA-256', new Uint8Array(der))
-    out.push(bytesToHex(new Uint8Array(digest)))
-  }
-  return out
+  return await Promise.all(
+    blocks.map(async (block) => {
+      const der = decodePemBlock(block, 'CERTIFICATE')
+      const digest = await crypto.subtle.digest('SHA-256', new Uint8Array(der))
+      return bytesToHex(new Uint8Array(digest))
+    })
+  )
 }
 
 /**
@@ -57,10 +57,8 @@ export async function certificateFingerprints(pem: string): Promise<string[]> {
 export async function installCaFingerprints(
   documents: readonly (string | null | undefined)[]
 ): Promise<string[]> {
-  const seen = new Set<string>()
-  for (const pem of documents) {
-    if (!pem) continue
-    for (const fingerprint of await certificateFingerprints(pem)) seen.add(fingerprint)
-  }
-  return [...seen]
+  const perDocument = await Promise.all(
+    documents.map((pem) => (pem ? certificateFingerprints(pem) : Promise.resolve([])))
+  )
+  return [...new Set(perDocument.flat())]
 }
