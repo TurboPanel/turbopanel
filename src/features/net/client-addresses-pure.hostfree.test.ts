@@ -14,6 +14,7 @@ import {
   parseClientAddressesBody,
   parseClientAddressOptions,
   resolveClientAddresses,
+  servingPublicAddresses,
 } from './client-addresses-pure.ts'
 
 /**
@@ -385,4 +386,33 @@ test('hostHasIpv6 ignores stored ip rows, datacenter pins and address overrides'
     saved: [entry({ addressV6: '2001:db8::99' })],
   })
   assertEquals(hostHasIpv6(stored.reportedIps), false)
+})
+
+test('serving public addresses: managed rows, public overrides and every reported public address', () => {
+  const entry = (scope: 'public' | 'datacenter', v4: string | null): ClientAddressEntry => ({
+    scope,
+    datacenterId: scope === 'datacenter' ? DC_A : null,
+    hostname: null,
+    addressV4: v4,
+    addressV6: null,
+    ports: {},
+    primary: false,
+  })
+  const reported: ServerReportedIp[] = [
+    { address: '45.32.200.170', version: 4, scope: 'public', interface: 'enp1s0' },
+    { address: '2001:db8::10', version: 6, scope: 'public', interface: 'enp1s0' },
+    { address: '2001:DB8::11', version: 6, scope: 'public', interface: 'enp1s0' },
+    { address: '10.0.0.5', version: 4, scope: 'private', interface: 'enp6s0' },
+    { address: '198.51.100.9', version: 4, scope: 'public', interface: 'wg0' },
+    { address: '198.51.100.10', version: 4, scope: 'public', interface: 'eth1', link: 'down' },
+  ]
+  assertEquals(
+    servingPublicAddresses({
+      publicIps: ['203.0.113.7', '45.32.200.170'],
+      saved: [entry('public', '203.0.113.50'), entry('datacenter', '203.0.113.60')],
+      reportedIps: reported,
+    }),
+    ['203.0.113.7', '45.32.200.170', '203.0.113.50', '2001:db8::10', '2001:db8::11']
+  )
+  assertEquals(servingPublicAddresses({ publicIps: [], saved: [], reportedIps: [] }), [])
 })

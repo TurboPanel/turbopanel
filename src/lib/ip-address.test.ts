@@ -3,6 +3,7 @@ import {
   addressInCidr,
   alignedNetworkCidr,
   bigIntToIp,
+  canonicalIpAddress,
   cidrContains,
   cidrHostRange,
   cidrsOverlap,
@@ -289,4 +290,12 @@ test('ipAddressScope keeps reserved ranges out of public', () => {
   assertEquals(ipAddressScope('192.0.1.1'), 'public')
   assertEquals(ipAddressScope('198.20.0.1'), 'public')
   assertEquals(ipAddressScope('223.255.255.255'), 'public')
+})
+
+test('canonicalIpAddress gives one spelling per address', () => {
+  assertEquals(canonicalIpAddress('2001:DB8:0:0::1'), '2001:db8::1')
+  assertEquals(canonicalIpAddress('[2001:db8::1]'), '2001:db8::1')
+  assertEquals(canonicalIpAddress('203.0.113.7/32'), '203.0.113.7')
+  assertEquals(canonicalIpAddress('::ffff:203.0.113.7'), '203.0.113.7')
+  assertEquals(canonicalIpAddress('not an address'), null)
 })
