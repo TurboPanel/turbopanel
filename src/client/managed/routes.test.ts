@@ -5307,3 +5307,121 @@ test('the pending sweep re-pushes a server that never confirmed, even when the e
     }
   )
 })
+
+test('backup login: a member without manage gets 403 on list, create and delete', async () => {
+  await withManagedFixtures(
+    { withManageGrant: false },
+    async ({ db, app, secrets, userId, organizationId, environmentId }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const headers = {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      }
+      const path = `/environments/${environmentId}/managed/backup-login`
+      for (const init of [
+        { method: 'GET' },
+        { method: 'POST', body: JSON.stringify({ allowedSources: ['internal'] }) },
+        { method: 'DELETE' },
+      ]) {
+        const res = await app.request(path, { ...init, headers })
+        assertEquals(res.status, 403, init.method)
+      }
+      assertEquals(await listAuditForOrganization(db, { organizationId }), [])
+    }
+  )
+})
+
+test('backup login: create, one per cluster, list, delete, and both audited', async () => {
+  await withManagedFixtures(
+    {},
+    async ({ db, app, secrets, commandQueue, userId, organizationId, environmentId, serverId }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const headers = {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      }
+      const create = await app.request(`/environments/${environmentId}/managed`, {
+        method: 'POST',
+        headers,
+        body: '{}',
+      })
+      assertEquals(create.status, 200)
+      const managedId = ((await create.json()) as { managed: { id: string } }).managed.id
+      const ready = () =>
+        db.update(managed).set({ status: 'ready' }).where(eq(managed.id, managedId))
+      await ready()
+
+      const [current] = await db
+        .select({ daemon: server.daemon })
+        .from(server)
+        .where(eq(server.id, serverId))
+      const daemon = (current?.daemon ?? {}) as { projection?: { features?: string[] } }
+      await db
+        .update(server)
+        .set({
+          daemon: {
+            ...daemon,
+            projection: {
+              ...daemon.projection,
+              features: [
+                ...(daemon.projection?.features ?? []),
+                'managed-backup-login-v1',
+                'managed-login-limits-v1',
+              ],
+            },
+          },
+        })
+        .where(eq(server.id, serverId))
+
+      const path = `/environments/${environmentId}/managed/backup-login`
+      const before = commandQueue.envelopes.length
+      const made = await app.request(path, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ allowedSources: ['internal'] }),
+      })
+      assertEquals(made.status, 200)
+      const madeBody = (await made.json()) as {
+        login: { id: string; username: string; appliedUsername: string; tool: boolean }
+        password: string
+      }
+      // The typed name; the applied one follows the organization's name scheme.
+      assertEquals(madeBody.login.username, 'backup')
+      assertEquals(madeBody.login.tool, true)
+      assertEquals(madeBody.password.length > 0, true)
+      assertEquals(commandQueue.envelopes.length > before, true)
+
+      await ready()
+      const second = await app.request(path, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ allowedSources: ['internal'], username: 'nightly' }),
+      })
+      assertEquals(second.status, 409)
+      assertEquals(
+        ((await second.json()) as { error: string }).error,
+        'managed_backup_login_exists'
+      )
+
+      const listed = (await (await app.request(path, { headers })).json()) as {
+        login: { id: string } | null
+      }
+      assertEquals(listed.login?.id, madeBody.login.id)
+
+      await ready()
+      const removed = await app.request(path, { method: 'DELETE', headers })
+      assertEquals(removed.status, 200)
+
+      const actions = (await listAuditForOrganization(db, { organizationId }))
+        .filter((row) => row.action.startsWith('managed.backup_login.'))
+        .map((row) => [row.action, row.targetId])
+        .sort((a, b) => String(a[0]).localeCompare(String(b[0])))
+      assertEquals(actions, [
+        ['managed.backup_login.create', managedId],
+        ['managed.backup_login.delete', managedId],
+      ])
+    }
+  )
+})
