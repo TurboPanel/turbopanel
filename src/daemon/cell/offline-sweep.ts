@@ -1180,9 +1180,9 @@ async function runQueuedCronSweeps(
     // Let's Encrypt requests waiting for DNS. With the secrets bundle a newly
     // pinned certificate goes out at once; without it the panel asks for a redeploy.
     await runIsolatedSweep(signal, 'hosting-letsencrypt-sweep-failed', () =>
-      runHostingLetsEncryptSweepTick(
-        db,
-        tlsRenewal
+      runHostingLetsEncryptSweepTick(db, {
+        ...(signal ? { signal } : {}),
+        ...(tlsRenewal
           ? {
               apply: {
                 commandQueue,
@@ -1190,8 +1190,8 @@ async function runQueuedCronSweeps(
                 dataEncryptionSecrets: tlsRenewal.dataEncryptionSecrets,
               },
             }
-          : {}
-      )
+          : {}),
+      })
     )
     if (tlsRenewal) {
       // Resumes from the durable LEAF_RENEWAL_SWEEP_LOCK cursor (advanced per

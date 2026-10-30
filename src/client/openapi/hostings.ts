@@ -31,7 +31,8 @@ export const hostingSchemas = {
             port80: {
               type: 'string',
               enum: ['open', 'closed'],
-              description: 'Port 80 from the panel; absent when not checked.',
+              description:
+                'Port 80 from the panel: `open` when anything accepts a connection there (any listener counts; no check file is fetched), `closed` only for a clear refusal. Absent when not checked or when the panel cannot tell (a timeout, no route from its own network), which never blocks.',
             },
             caa: {
               type: 'string',
@@ -39,6 +40,11 @@ export const hostingSchemas = {
               description: "Whether CAA lets Let's Encrypt issue; absent when unknown.",
             },
             problem: { type: 'string', description: 'What stops this name, in plain words.' },
+            warning: {
+              type: 'string',
+              description:
+                'Worth fixing but not blocking: a wrong answer beside a right one of the same address family.',
+            },
           },
         },
       },

@@ -348,18 +348,20 @@ test('a waiting request is checked again after a wait that doubles up to an hour
     hosting: record(),
     acmeEnabled: true,
   })
-  assertEquals(out.ok && out.outcome === 'waiting' && out.dns.checks, 1)
+  // A button press checks at once but does not count toward the growing wait.
+  assertEquals(out.ok && out.outcome === 'waiting' && out.dns.checks, 0)
   const again = await requestLetsEncrypt({
     store,
     lookup: nowhere,
     now: NOW,
+    scheduled: true,
     hosting: record({ metadata: saved[0]![1].metadata, pendingAt: saved[0]![1].pendingAt }),
     acmeEnabled: true,
   })
-  assertEquals(again.ok && again.outcome === 'waiting' && again.dns.checks, 2)
+  assertEquals(again.ok && again.outcome === 'waiting' && again.dns.checks, 1)
   assertEquals(
     again.ok && again.outcome === 'waiting' && again.dns.nextCheckAt,
-    nextLetsEncryptCheckAt(NOW, 2)
+    nextLetsEncryptCheckAt(NOW, 1)
   )
 })
 
@@ -368,7 +370,9 @@ test('port 80 closed: nothing is pinned, and the request waits with the reason',
   const out = await requestLetsEncrypt({
     store,
     lookup: pointing,
-    probes: { port80: () => Promise.resolve({ open: false, error: 'Connection refused' }) },
+    probes: {
+      port80: () => Promise.resolve({ state: 'closed' as const, error: 'Connection refused' }),
+    },
     now: NOW,
     hosting: record(),
     acmeEnabled: true,

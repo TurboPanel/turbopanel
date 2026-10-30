@@ -41,8 +41,6 @@ async function addressesOf(lookup: DnsLookup, name: string): Promise<string[]> {
   return [...new Set(found)]
 }
 
-const UNREACHABLE_SCOPES = new Set(['loopback', 'link-local', 'private'])
-
 function listed(addresses: readonly string[]): string {
   return addresses.join(', ')
 }
@@ -55,9 +53,11 @@ function addressProblem(
   expected: ReadonlySet<string>
 ): string | null {
   if (addresses.length === 0) return `${hostname} has no A or AAAA record yet.`
-  const unreachable = addresses.filter((a) => UNREACHABLE_SCOPES.has(ipAddressScope(a) ?? ''))
+  // Anything but a public address (private, loopback, 0.0.0.0, multicast,
+  // broadcast) is never probed and never reachable by the authority.
+  const unreachable = addresses.filter((a) => ipAddressScope(a) !== 'public')
   if (unreachable.length > 0) {
-    return `${hostname} points at ${listed(unreachable)}, a private address the internet cannot reach.`
+    return `${hostname} points at ${listed(unreachable)}, an address the internet cannot reach.`
   }
   if (wrong.length === 0) return null
   const servers = listed([...expected])
@@ -65,6 +65,22 @@ function addressProblem(
     ? " Let's Encrypt tries IPv6 first, so a wrong AAAA record fails even when the A record is right."
     : " Let's Encrypt may use any of the addresses."
   return `${hostname} points at ${listed(wrong)}, which is not this site's server (${servers}).${ipv6}`
+}
+
+const isIpv6 = (address: string) => address.includes(':')
+
+/**
+ * The wrong answers that still leave every address family with at least one
+ * answer pointing at a serving server: the authority may still pick a wrong
+ * one, so they warn, but they do not block. A family whose answers are all
+ * wrong (such as an AAAA record when the server has no IPv6) blocks.
+ */
+function onlyWarns(addresses: readonly string[], wrong: readonly string[]): boolean {
+  if (wrong.length === 0) return false
+  return [true, false].every((v6) => {
+    const family = addresses.filter((a) => isIpv6(a) === v6)
+    return family.length === 0 || family.some((a) => !wrong.includes(a))
+  })
 }
 
 async function checkOneName(
@@ -75,14 +91,16 @@ async function checkOneName(
 ): Promise<HostingDnsHostname> {
   const addresses = await addressesOf(lookup, hostname)
   const wrong = expected.size === 0 ? [] : addresses.filter((a) => !expected.has(a))
+  const warnOnly = onlyWarns(addresses, wrong)
   const entry: HostingDnsHostname = {
     hostname,
-    resolves: addresses.length > 0 && wrong.length === 0,
+    resolves: addresses.length > 0 && (wrong.length === 0 || warnOnly),
     addresses,
     ...(wrong.length > 0 ? { wrongAddresses: wrong } : {}),
   }
   const problem = addressProblem(hostname, addresses, wrong, expected)
-  if (problem !== null) return { ...entry, problem }
+  if (problem !== null && !warnOnly) return { ...entry, problem }
+  if (problem !== null) entry.warning = problem
   const port80 = await checkPort80(probes.port80, hostname, addresses)
   if (port80.problem !== undefined) return { ...entry, ...port80 }
   return { ...entry, ...port80, ...(await checkCaaOf(probes.caaLookup, hostname)) }
@@ -96,13 +114,15 @@ async function checkPort80(
   addresses: readonly string[]
 ): Promise<ProbeFinding> {
   if (!probe) return {}
-  const result = await probe(hostname)
-  if (result.open) return { port80: 'open' }
+  const result = await probe(hostname, addresses)
+  if (result.state === 'unknown') return {}
+  if (result.state === 'open') return { port80: 'open' }
+  const where = result.address ?? listed(addresses)
   const why = result.error ? ` (${result.error})` : ''
   return {
     port80: 'closed',
     problem:
-      `${hostname} points at ${listed(addresses)}, but port 80 there isn't reachable from the internet${why}. ` +
+      `${hostname} points at ${where}, but port 80 there refused the connection${why}, so it isn't reachable from the internet. ` +
       "Let's Encrypt checks the name over port 80, so open or forward port 80 to the server.",
   }
 }

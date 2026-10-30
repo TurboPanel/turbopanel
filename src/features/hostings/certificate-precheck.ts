@@ -19,8 +19,20 @@ export type CaaRecord = { critical: boolean; tag: string; value: string }
 /** CAA records at exactly `name`; an empty list when there are none (or the name does not exist). */
 export type CaaLookup = (name: string) => Promise<CaaRecord[]>
 
-/** Whether port 80 answers for `hostname`, and the reason when it does not. */
-export type Port80Probe = (hostname: string) => Promise<{ open: boolean; error?: string }>
+/**
+ * Port 80 for `hostname`, tried at the `addresses` the DNS check already
+ * judged public (where the runtime can dial an address), never resolved again.
+ * `closed` only for a clear refusal; anything else the panel cannot judge
+ * (a timeout, no route from the panel's own network) is `unknown`, which
+ * never blocks.
+ */
+export type Port80Probe = (hostname: string, addresses: readonly string[]) => Promise<Port80Result>
+
+export type Port80Result = {
+  state: 'open' | 'closed' | 'unknown'
+  address?: string
+  error?: string
+}
 
 /** The certificate authority's CAA identity. */
 export const LETS_ENCRYPT_CAA_DOMAIN = 'letsencrypt.org'
@@ -100,10 +112,14 @@ export type CaaVerdict =
   /** The lookup failed, so nothing is known; never blocks on its own. */
   | { allowed: null }
 
-/** `a.b.example.com` → `a.b.example.com`, `b.example.com`, `example.com`, `com`. */
+/**
+ * `a.b.example.com` → `a.b.example.com`, `b.example.com`, `example.com`. The
+ * top-level label is never asked: no registry publishes CAA for a whole
+ * top-level domain that a name owner could change.
+ */
 function selfAndParents(hostname: string): string[] {
   const labels = hostname.replace(/\.$/, '').split('.')
-  return labels.map((_, index) => labels.slice(index).join('.'))
+  return labels.slice(0, -1).map((_, index) => labels.slice(index).join('.'))
 }
 
 /** Does this record set let Let's Encrypt issue a certificate for a plain (not wildcard) name? */
@@ -144,13 +160,58 @@ function errorLine(err: unknown): string {
   return text.length > 200 ? text.slice(-200) : text
 }
 
+/** A refused connection, the one failure that means "nothing listens on port 80 there". */
+function isRefused(err: unknown): boolean {
+  if (err instanceof Error && err.name === 'ConnectionRefused') return true
+  return /refused|ECONNREFUSED/i.test(errorLine(err))
+}
+
+type DenoConnect = (options: {
+  hostname: string
+  port: number
+  transport?: 'tcp'
+  signal?: AbortSignal
+}) => Promise<{ close(): void }>
+
 /**
- * Port 80, the way the authority reaches it: an HTTP request to the name on
- * the well-known check path. Any answer at all (a 404 included) means port 80
- * is reachable; a refused or timed-out connection, or Cloudflare's own
- * "origin unreachable" answer, means it is not. Redirects are not followed.
+ * Deno: a TCP connection to port 80 on each exact address. Any listener that
+ * accepts counts as open (no check file is fetched, so whatever answers on
+ * that address counts); a refusal is closed; anything else is unknown.
  */
-export function runtimePort80Probe(fetchImpl: typeof fetch = fetch): Port80Probe {
+export function addressPort80Probe(connect: DenoConnect): Port80Probe {
+  return async (_hostname, addresses) => {
+    const results = await Promise.all(
+      addresses.map(async (address): Promise<Port80Result> => {
+        try {
+          const conn = await connect({
+            hostname: address,
+            port: 80,
+            transport: 'tcp',
+            signal: AbortSignal.timeout(PORT80_TIMEOUT_MS),
+          })
+          conn.close()
+          return { state: 'open', address }
+        } catch (err) {
+          return { state: isRefused(err) ? 'closed' : 'unknown', address, error: errorLine(err) }
+        }
+      })
+    )
+    return (
+      results.find((r) => r.state === 'closed') ??
+      results.find((r) => r.state === 'unknown') ?? { state: 'open' }
+    )
+  }
+}
+
+/**
+ * Workers (no DNS API, no fetch to an IP literal, no private ranges): an HTTP
+ * request to the name on the well-known check path, the way the authority
+ * makes it. Any answer at all (a 404 included, from whatever host answers)
+ * counts as open; a refused connection or Cloudflare's own "origin
+ * unreachable" answer is closed; anything else is unknown. Redirects are not
+ * followed.
+ */
+export function namePort80Probe(fetchImpl: typeof fetch = fetch): Port80Probe {
   return async (hostname) => {
     try {
       const response = await fetchImpl(
@@ -159,13 +220,20 @@ export function runtimePort80Probe(fetchImpl: typeof fetch = fetch): Port80Probe
       )
       await response.body?.cancel()
       if (EDGE_UNREACHABLE.has(response.status)) {
-        return { open: false, error: `the proxy in front answered HTTP ${response.status}` }
+        return { state: 'closed', error: `the proxy in front answered HTTP ${response.status}` }
       }
-      return { open: true }
+      return { state: 'open' }
     } catch (err) {
-      return { open: false, error: errorLine(err) }
+      return { state: isRefused(err) ? 'closed' : 'unknown', error: errorLine(err) }
     }
   }
+}
+
+/** Exact addresses where the runtime can dial them (Deno), the name otherwise (Workers). */
+export function runtimePort80Probe(): Port80Probe {
+  const deno = (globalThis as { Deno?: { connect?: unknown } }).Deno
+  if (typeof deno?.connect === 'function') return addressPort80Probe(deno.connect as DenoConnect)
+  return namePort80Probe()
 }
 
 /** The pre-check probes besides the A/AAAA lookup; a missing probe is skipped. */

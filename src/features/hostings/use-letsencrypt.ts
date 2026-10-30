@@ -95,6 +95,8 @@ type RequestParams = {
   acmeEnabled: boolean
   /** Port 80 and CAA probes; a missing one is skipped. */
   probes?: CertificatePrecheckProbes
+  /** The sweep's own check (counts toward the growing wait); a button press does not. */
+  scheduled?: boolean
 }
 
 const MS_PER_MINUTE = 60_000
@@ -149,11 +151,11 @@ async function rememberWaiting(
   dns: HostingDnsReport
 ): Promise<LetsEncryptRequestResult> {
   const previous = readPendingLetsEncrypt(params.hosting)
-  const checks = (previous?.dns?.checks ?? 0) + 1
+  const checks = (previous?.dns?.checks ?? 0) + (params.scheduled === true ? 1 : 0)
   const scheduled: HostingDnsReport = {
     ...dns,
     checks,
-    nextCheckAt: nextLetsEncryptCheckAt(params.now, checks),
+    nextCheckAt: nextLetsEncryptCheckAt(params.now, Math.max(checks, 1)),
   }
   const pending: PendingLetsEncrypt = {
     requestedAt: previous?.requestedAt ?? params.now.toISOString(),
@@ -232,7 +234,7 @@ export async function retryPendingLetsEncrypt(params: RequestParams): Promise<Pe
   }
   if (isPendingExpired(pending, params.now)) return dropPending('expired')
   if (composeOwnsAnotherCertificate(params.hosting.metadata)) return dropPending('refused')
-  const result = await requestLetsEncrypt(params)
+  const result = await requestLetsEncrypt({ ...params, scheduled: true })
   if (!result.ok) return dropPending('refused')
   if (result.outcome === 'pinned' && !result.changed) return 'unchanged'
   return result.outcome

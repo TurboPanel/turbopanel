@@ -41,6 +41,16 @@ import { type HostingApplyDeps, queueHostingCertificateApply } from './letsencry
 /** Waiting hostings looked at per tick (each one costs a DNS lookup or two). */
 export const HOSTING_LETS_ENCRYPT_SWEEP_BATCH = 10
 
+/** Waiting hostings checked at the same time (each check can wait out a port-80 timeout). */
+export const HOSTING_LETS_ENCRYPT_SWEEP_CONCURRENCY = 3
+
+/**
+ * The longest the waiting-request part of a tick may run. Rows not started by
+ * then wait for the next tick, so a batch of unreachable names never holds up
+ * the sweeps queued after this one.
+ */
+export const HOSTING_LETS_ENCRYPT_SWEEP_DEADLINE_MS = 20_000
+
 export type HostingLetsEncryptSweepResult = {
   scanned: number
   pinned: number
@@ -146,6 +156,27 @@ async function announceDropped(
   }
 }
 
+/**
+ * Runs `each` over `items`, at most `limit` at a time, and starts no new item
+ * once `stop` has aborted (items already running finish).
+ */
+export async function forEachBounded<T>(
+  items: readonly T[],
+  limit: number,
+  stop: AbortSignal,
+  each: (item: T) => Promise<void>
+): Promise<void> {
+  let next = 0
+  const worker = async (): Promise<void> => {
+    while (next < items.length && !stop.aborted) {
+      const item = items[next]!
+      next += 1
+      await each(item)
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker))
+}
+
 export async function runHostingLetsEncryptSweepTick(
   db: Db,
   deps: {
@@ -154,8 +185,14 @@ export async function runHostingLetsEncryptSweepTick(
     port80?: Port80Probe
     now?: () => Date
     apply?: HostingLetsEncryptSweepApply
+    /** The caller's tick: once it aborts, no further row is started. */
+    signal?: AbortSignal
+    /** Test seam for {@link HOSTING_LETS_ENCRYPT_SWEEP_DEADLINE_MS}. */
+    deadlineMs?: number
   } = {}
 ): Promise<HostingLetsEncryptSweepResult> {
+  const deadline = AbortSignal.timeout(deps.deadlineMs ?? HOSTING_LETS_ENCRYPT_SWEEP_DEADLINE_MS)
+  const stop = deps.signal ? AbortSignal.any([deps.signal, deadline]) : deadline
   const lookup = deps.lookup ?? runtimeDnsLookup()
   const probes = precheckProbes(deps)
   const now = deps.now ?? (() => new Date())
@@ -197,7 +234,7 @@ export async function runHostingLetsEncryptSweepTick(
   }
   const sendPin = pinSender(db, deps.apply)
   const acmeByOrganization = new Map<string, boolean>()
-  await forEachSequential(rows, async (row) => {
+  await forEachBounded(rows, HOSTING_LETS_ENCRYPT_SWEEP_CONCURRENCY, stop, async (row) => {
     const organizationId = await resolveEntityOrganizationId(db, 'hosting', row.id)
     if (organizationId === null) return
     if (!acmeByOrganization.has(organizationId)) {
@@ -224,7 +261,9 @@ export async function runHostingLetsEncryptSweepTick(
     if (outcome === 'expired' || outcome === 'refused') result.dropped += 1
   })
   // Stored certificates nothing pins any more ride the same tick; a failure
-  // here must not hide the result above.
+  // here must not hide the result above. Nothing more starts once the caller's
+  // tick has ended.
+  if (deps.signal?.aborted) return result
   try {
     await runStoredPairSweepTick(db, deps.now ? { now: deps.now } : {})
   } catch (err) {

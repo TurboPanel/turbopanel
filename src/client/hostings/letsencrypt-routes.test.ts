@@ -34,6 +34,7 @@ import { registerHostingLetsEncryptRoutes } from './letsencrypt-routes.ts'
 import {
   HOSTING_LETS_ENCRYPT_SWEEP_BATCH,
   runHostingLetsEncryptSweepTick,
+  forEachBounded,
 } from './letsencrypt-sweep.ts'
 import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
 
@@ -870,6 +871,48 @@ test('certificate block: an apply still running is "working", never "not on the 
     await undeployOld()
     await f.cleanup()
   }
+})
+
+test('sweep: a tick that has ended starts no row', async () => {
+  if (!dbUrl) return skipWithoutDatabase("hosting Let's Encrypt route tests")
+  const f = await setup({ acmeEnabled: true, hostingOptions: PUBLIC_SITE })
+  try {
+    await f.db
+      .update(hosting)
+      .set({ pendingAt: new Date().toISOString() })
+      .where(eq(hosting.id, f.hostingId))
+    let lookups = 0
+    const counting: typeof pointing = (...args) => {
+      lookups += 1
+      return pointing(...args)
+    }
+    const ended = new AbortController()
+    ended.abort()
+    const none = await runHostingLetsEncryptSweepTick(f.db, {
+      lookup: counting,
+      signal: ended.signal,
+    })
+    assertEquals([none.pinned, lookups], [0, 0])
+  } finally {
+    await f.cleanup()
+  }
+})
+
+test('sweep rows: at most the limit run at once, and none starts after the deadline', async () => {
+  const stop = new AbortController()
+  let running = 0
+  let most = 0
+  const started: number[] = []
+  await forEachBounded([1, 2, 3, 4, 5, 6], 2, stop.signal, async (item) => {
+    started.push(item)
+    running += 1
+    most = Math.max(most, running)
+    await Promise.resolve()
+    if (item === 3) stop.abort()
+    running -= 1
+  })
+  assertEquals(most, 2)
+  assertEquals(started, [1, 2, 3, 4])
 })
 
 async function insertCertificate(

@@ -47,12 +47,14 @@ export type HostingDnsHostname = {
   addresses: string[]
   /** Answers that are not a serving server's address; omitted when there are none. */
   wrongAddresses?: string[]
-  /** Port 80 from the panel: `open`, `closed`, or omitted when it was not checked. */
+  /** Port 80 from the panel: `open`, `closed` (refused), or omitted when not checked or unknown. */
   port80?: 'open' | 'closed'
   /** CAA lets Let's Encrypt issue (`allowed`), forbids it (`blocked`), or omitted when unknown. */
   caa?: 'allowed' | 'blocked'
   /** What stops this name, in plain words; omitted when nothing does. */
   problem?: string
+  /** Something worth fixing that does not stop the certificate (a wrong answer beside right ones). */
+  warning?: string
 }
 
 export type HostingDnsReport = {

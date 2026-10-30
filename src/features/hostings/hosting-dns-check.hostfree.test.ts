@@ -97,7 +97,7 @@ test('a name behind a NAT address with port 80 not forwarded says so plainly', a
     now: NOW,
     probes: {
       port80: () =>
-        Promise.resolve({ open: false, error: 'fetch failed: Connection refused (os error 111)' }),
+        Promise.resolve({ state: 'closed' as const, error: 'Connection refused (os error 111)' }),
     },
   })
   assertEquals(report.ready, false)
@@ -105,7 +105,7 @@ test('a name behind a NAT address with port 80 not forwarded says so plainly', a
   assertEquals(entry.port80, 'closed')
   assertEquals(
     entry.problem?.startsWith(
-      "w.example.com points at 198.203.204.120, but port 80 there isn't reachable from the internet"
+      'w.example.com points at 198.203.204.120, but port 80 there refused the connection'
     ),
     true
   )
@@ -121,13 +121,72 @@ test('a private answer is named and port 80 is never probed for it', async () =>
     probes: {
       port80: () => {
         probed = true
-        return Promise.resolve({ open: true })
+        return Promise.resolve({ state: 'open' as const })
       },
     },
   })
   assertEquals(report.ready, false)
   assertEquals(probed, false)
-  assertEquals(report.hostnames[0]!.problem?.includes('private address'), true)
+  assertEquals(report.hostnames[0]!.problem?.includes('cannot reach'), true)
+})
+
+test('0.0.0.0, multicast and broadcast answers are refused and never probed', async () => {
+  for (const address of ['0.0.0.0', '224.0.0.1', '255.255.255.255']) {
+    let probed = false
+    const report = await checkHostingDns({
+      hostnames: ['a.example.com'],
+      expectedAddresses: [],
+      lookup: table({ 'a.example.com/A': [address] }),
+      now: NOW,
+      probes: {
+        port80: () => {
+          probed = true
+          return Promise.resolve({ state: 'open' as const })
+        },
+      },
+    })
+    assertEquals(report.ready, false, address)
+    assertEquals(probed, false, address)
+  }
+})
+
+test('the port-80 probe gets the exact addresses the check judged, and unknown never blocks', async () => {
+  const seen: string[][] = []
+  const report = await checkHostingDns({
+    hostnames: ['a.example.com'],
+    expectedAddresses: [],
+    lookup: table({ 'a.example.com/A': ['198.51.100.7'], 'a.example.com/AAAA': ['2001:db8::7'] }),
+    now: NOW,
+    probes: {
+      port80: (_name, addresses) => {
+        seen.push([...addresses])
+        return Promise.resolve({ state: 'unknown' as const, error: 'timed out' })
+      },
+    },
+  })
+  assertEquals(seen, [['198.51.100.7', '2001:db8::7']])
+  assertEquals(report.ready, true)
+  assertEquals(report.hostnames[0]!.port80, undefined)
+})
+
+test('a wrong answer beside a right one in the same family warns; an all-wrong family blocks', async () => {
+  const warns = await checkHostingDns({
+    hostnames: ['a.example.com'],
+    expectedAddresses: ['198.51.100.7'],
+    lookup: table({ 'a.example.com/A': ['198.51.100.7', '198.51.100.99'] }),
+    now: NOW,
+  })
+  assertEquals(warns.ready, true)
+  assertEquals(warns.hostnames[0]!.wrongAddresses, ['198.51.100.99'])
+  assertEquals(typeof warns.hostnames[0]!.warning, 'string')
+  // The server has no IPv6, so any AAAA record is wrong and blocks.
+  const blocks = await checkHostingDns({
+    hostnames: ['a.example.com'],
+    expectedAddresses: ['198.51.100.7'],
+    lookup: table({ 'a.example.com/A': ['198.51.100.7'], 'a.example.com/AAAA': ['2001:db8::99'] }),
+    now: NOW,
+  })
+  assertEquals(blocks.ready, false)
 })
 
 test('a CAA record that names another authority blocks; one that names Let’s Encrypt passes', async () => {
@@ -137,7 +196,7 @@ test('a CAA record that names another authority blocks; one that names Let’s E
     lookup: table({ 'shop.example.com/A': ['198.51.100.7'] }),
     now: NOW,
     probes: {
-      port80: () => Promise.resolve({ open: true }),
+      port80: () => Promise.resolve({ state: 'open' as const }),
       caaLookup: (name) =>
         Promise.resolve(
           name === 'example.com' ? [{ critical: false, tag: 'issue', value: 'other.example' }] : []
@@ -154,7 +213,7 @@ test('a CAA record that names another authority blocks; one that names Let’s E
     lookup: table({ 'shop.example.com/A': ['198.51.100.7'] }),
     now: NOW,
     probes: {
-      port80: () => Promise.resolve({ open: true }),
+      port80: () => Promise.resolve({ state: 'open' as const }),
       caaLookup: () =>
         Promise.resolve([
           { critical: false, tag: 'issue', value: 'letsencrypt.org; validationmethods=http-01' },
