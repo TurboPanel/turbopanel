@@ -83,7 +83,7 @@ function unknownServerAddressProblem(
   expected: ReadonlySet<string>
 ): string | null {
   if (expected.size > 0) return null
-  return `TurboPanel doesn't know a public address for this site's server, so it can't check that ${hostname} points at it. Add the server's public address to TurboPanel, or wait until the server reports one, then check again.`
+  return `TurboPanel doesn't know a public address for this site's server, so it can't check that ${hostname} points at it. Deploy the site to a server, or add the server's public address to TurboPanel, then check again.`
 }
 
 const isIpv6 = (address: string) => address.includes(':')

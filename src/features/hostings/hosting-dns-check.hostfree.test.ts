@@ -60,7 +60,7 @@ test('with no known server address the name is held and the reason says so, and 
   assertEquals(report.expectedAddresses, [])
   assertEquals(
     report.hostnames[0]?.problem,
-    "TurboPanel doesn't know a public address for this site's server, so it can't check that a.example.com points at it. Add the server's public address to TurboPanel, or wait until the server reports one, then check again."
+    "TurboPanel doesn't know a public address for this site's server, so it can't check that a.example.com points at it. Deploy the site to a server, or add the server's public address to TurboPanel, then check again."
   )
 })
 
