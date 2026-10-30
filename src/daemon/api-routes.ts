@@ -783,17 +783,33 @@ async function loadIngestServerPlanRow(
 }
 
 /**
- * A server with more RAM or more physical CPU cores than its licensed box size
- * keeps its metrics and gets flagged on the server record (`over-plan-flag.ts`).
- * Fire-and-forget, like the other ingest-side marks: a failure logs and never
- * blocks the sample.
+ * A server whose highest RAM or physical CPU cores of the last 7 days are past
+ * its licensed box size keeps its metrics and gets flagged on the server record
+ * (`over-plan-flag.ts`, readings kept per hour in the `peak` table).
+ * Awaited inside the request: on Workers the per-request client is closed
+ * once the handler returns, so unawaited work on it would die. The per-isolate
+ * memo keeps a steady server to about one round trip per hour; a failure logs
+ * and never blocks the sample.
  */
-function flagOverPlanInBackground(db: Db, serverId: string, planRow: IngestServerPlanRow): void {
-  recordOverPlan(db, serverId, planRow.tierRank, planRow.serverMetadata).catch((err) => {
+async function flagOverPlan(
+  db: Db,
+  serverId: string,
+  planRow: IngestServerPlanRow,
+  sample: AuthenticatedMetricsSample
+): Promise<void> {
+  try {
+    await recordOverPlan(
+      db,
+      serverId,
+      planRow.tierRank,
+      planRow.serverMetadata,
+      sample.extended?.sizes?.memoryTotalBytes
+    )
+  } catch (err) {
     rateLimitedMetricsLog(serverId, 'over_plan_record_failed', () => {
       console.warn(`metrics over-plan flag failed for ${serverId}: ${describeError(err)}`)
     })
-  })
+  }
 }
 
 /**
@@ -847,7 +863,7 @@ async function resolveIngestPlanAndReconcileTopology(
       })
     }
 
-    if (durable && planRow !== undefined) flagOverPlanInBackground(db, serverId, planRow)
+    if (durable && planRow !== undefined) await flagOverPlan(db, serverId, planRow, sample)
 
     const snapshotForClass = topologyMatch?.snapshot ?? latestTopology?.snapshot
     const machineClass = resolveServerMachineClass(
