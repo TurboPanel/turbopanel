@@ -5,6 +5,7 @@ import { buildFabricReconcilePayload, type RelayRecord } from './fabric-records.
 import {
   awaitParticipatingFabricConvergence,
   enqueueFabricReconcileForServers,
+  FABRIC_TURNED_OFF_MESSAGE,
   fabricEnqueueTypedError,
   isFabricEnqueueTypedError,
   isFabricMembershipConverged,
@@ -1375,6 +1376,6 @@ test('awaitParticipatingFabricConvergence stops when the fabric is paused while 
     serverIds: ['srv-1', 'srv-2'],
     sleep: () => Promise.resolve(),
   })
-  assertEquals(outcome.kind, 'failed')
+  assertEquals(outcome, { kind: 'turned_off', message: FABRIC_TURNED_OFF_MESSAGE })
   assertEquals(fabricPayloads, [])
 })

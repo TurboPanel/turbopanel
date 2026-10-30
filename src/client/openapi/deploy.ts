@@ -712,7 +712,7 @@ export const deployPaths = {
         },
         409: {
           description:
-            'Health-check, resource-limit, no eligible server (`server_placement_required`), or TurboFabric still converging (`fabric_reconcile_pending`)',
+            'Health-check, resource-limit, no eligible server (`server_placement_required`), TurboFabric still converging (`fabric_reconcile_pending`), or TurboFabric turned off while the deploy waited for it (`fabric_turned_off`, with a plain `message`)',
           content: {
             'application/json': {
               schema: {

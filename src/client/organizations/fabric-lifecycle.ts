@@ -35,6 +35,7 @@ import {
   type FabricDependent,
   fabricDependentsMessage,
   findFabricDependents,
+  findStoredFabricDependents,
   loadFabricServerMemberships,
   updateServerFabricMembership,
 } from '../../features/fabric/membership.ts'
@@ -303,7 +304,8 @@ async function switchServerOut(c: Context, params: SwitchParams): Promise<Respon
   if (before.length > 0) return serverInUseResponse(c, params.serverName, before)
 
   await updateServerFabricMembership(db, { serverId, enabled: false })
-  const after = await findFabricDependents(db, scope)
+  // Stored rows only: see findStoredFabricDependents for why connections are not re-read.
+  const after = await findStoredFabricDependents(db, serverId)
   if (after.length > 0) {
     await updateServerFabricMembership(db, { serverId, enabled: true })
     return serverInUseResponse(c, params.serverName, after)

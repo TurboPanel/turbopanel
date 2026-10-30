@@ -321,7 +321,7 @@ async function loadLanGatewayDependents(db: Db, serverId: string): Promise<Fabri
     out.push({
       kind: 'lan_gateway',
       id: pin.datacenterId,
-      label: `the LAN of datacenter "${pin.name ?? pin.datacenterId}" (it is the only server sharing it)`,
+      label: `datacenter "${pin.name ?? pin.datacenterId}"`,
     })
   })
   return out
@@ -337,17 +337,49 @@ export async function findFabricDependents(
   db: Db,
   params: { serverId: string; organizationId: string }
 ): Promise<FabricDependent[]> {
-  const networks = await loadSpanningNetworkDependents(db, params.serverId)
-  const replication = await loadFabricReplicationDependents(db, params.serverId)
+  const stored = await findStoredFabricDependents(db, params.serverId)
   const connections = await loadDatabaseConnectionDependents(db, params)
-  const gateways = await loadLanGatewayDependents(db, params.serverId)
-  return [...networks, ...replication, ...connections, ...gateways]
+  return [...stored, ...connections]
 }
 
-/** The plain sentence a refused opt-out answers with. */
-export function fabricDependentsMessage(serverName: string, dependents: FabricDependent[]): string {
-  const labels = dependents.map((row) => row.label)
+/**
+ * The dependents read from stored rows only (container networks, fabric
+ * replication, LAN sharing). This is what the check after the switch is
+ * written re-reads: those rows can be created by a deploy or an edit racing
+ * the switch. App-to-database connections are left out there on purpose:
+ * they are worked out from the address ladder, which already leaves a
+ * switched-off server out, so any connection resolved after the switch
+ * picks another path instead of depending on the server; the ones that did
+ * depend on it were refused by the check before the write.
+ */
+export async function findStoredFabricDependents(
+  db: Db,
+  serverId: string
+): Promise<FabricDependent[]> {
+  const networks = await loadSpanningNetworkDependents(db, serverId)
+  const replication = await loadFabricReplicationDependents(db, serverId)
+  const gateways = await loadLanGatewayDependents(db, serverId)
+  return [...networks, ...replication, ...gateways]
+}
+
+function lanGatewaySentence(gateways: readonly FabricDependent[]): string {
+  const labels = gateways.map((row) => row.label).join(', ')
+  return `This server is the only one sharing the LAN of ${labels} over TurboFabric. Let another server share it first, or stop sharing it.`
+}
+
+function reachSentence(serverName: string, others: readonly FabricDependent[]): string {
+  const labels = others.map((row) => row.label)
   return `TurboFabric stays on for ${serverName} because ${labels.join(', ')} ${
     labels.length === 1 ? 'reaches' : 'reach'
   } it over TurboFabric. Move or remove ${labels.length === 1 ? 'it' : 'them'} first, then switch TurboFabric off for this server.`
+}
+
+/** The plain sentences a refused opt-out answers with. */
+export function fabricDependentsMessage(serverName: string, dependents: FabricDependent[]): string {
+  const gateways = dependents.filter((row) => row.kind === 'lan_gateway')
+  const others = dependents.filter((row) => row.kind !== 'lan_gateway')
+  return [
+    ...(others.length > 0 ? [reachSentence(serverName, others)] : []),
+    ...(gateways.length > 0 ? [lanGatewaySentence(gateways)] : []),
+  ].join(' ')
 }
