@@ -224,3 +224,25 @@ test('a CAA record that names another authority blocks; one that names Let’s E
   assertEquals(allowed.hostnames[0]!.port80, 'open')
   assertEquals(allowed.hostnames[0]!.caa, 'allowed')
 })
+
+test('a right public A beside a private or loopback A still blocks and the private one is never dialed', async () => {
+  for (const other of ['10.0.0.5', '127.0.0.1']) {
+    const dialed: string[][] = []
+    const report = await checkHostingDns({
+      hostnames: ['a.example.com'],
+      expectedAddresses: ['198.51.100.7'],
+      lookup: table({ 'a.example.com/A': ['198.51.100.7', other] }),
+      now: NOW,
+      probes: {
+        port80: (_name, addresses) => {
+          dialed.push([...addresses])
+          return Promise.resolve({ state: 'open' as const })
+        },
+      },
+    })
+    assertEquals(report.ready, false, other)
+    assertEquals(report.hostnames[0]!.warning, undefined, other)
+    assertEquals(report.hostnames[0]!.problem?.includes(other), true, other)
+    assertEquals(dialed, [], other)
+  }
+})

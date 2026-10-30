@@ -45,20 +45,26 @@ function listed(addresses: readonly string[]): string {
   return addresses.join(', ')
 }
 
-/** The plain sentence for an address problem, or null when the addresses are fine. */
-function addressProblem(
+const isPublic = (address: string) => ipAddressScope(address) === 'public'
+
+/**
+ * What always blocks: no address at all, or any answer that is not a public
+ * address (private, loopback, 0.0.0.0, multicast, broadcast). Such an answer
+ * is never probed, and the authority can never reach it.
+ */
+function blockingAddressProblem(hostname: string, addresses: readonly string[]): string | null {
+  if (addresses.length === 0) return `${hostname} has no A or AAAA record yet.`
+  const unreachable = addresses.filter((a) => !isPublic(a))
+  if (unreachable.length === 0) return null
+  return `${hostname} points at ${listed(unreachable)}, an address the internet cannot reach.`
+}
+
+/** The plain sentence for public answers that are not a serving server's, or null. */
+function wrongAddressProblem(
   hostname: string,
-  addresses: readonly string[],
   wrong: readonly string[],
   expected: ReadonlySet<string>
 ): string | null {
-  if (addresses.length === 0) return `${hostname} has no A or AAAA record yet.`
-  // Anything but a public address (private, loopback, 0.0.0.0, multicast,
-  // broadcast) is never probed and never reachable by the authority.
-  const unreachable = addresses.filter((a) => ipAddressScope(a) !== 'public')
-  if (unreachable.length > 0) {
-    return `${hostname} points at ${listed(unreachable)}, an address the internet cannot reach.`
-  }
   if (wrong.length === 0) return null
   const servers = listed([...expected])
   const ipv6 = wrong.some((a) => a.includes(':'))
@@ -91,17 +97,20 @@ async function checkOneName(
 ): Promise<HostingDnsHostname> {
   const addresses = await addressesOf(lookup, hostname)
   const wrong = expected.size === 0 ? [] : addresses.filter((a) => !expected.has(a))
-  const warnOnly = onlyWarns(addresses, wrong)
+  const blocking = blockingAddressProblem(hostname, addresses)
+  // A non-public answer never reaches the warn-only rule: it always blocks.
+  const warnOnly = blocking === null && onlyWarns(addresses, wrong)
   const entry: HostingDnsHostname = {
     hostname,
     resolves: addresses.length > 0 && (wrong.length === 0 || warnOnly),
     addresses,
     ...(wrong.length > 0 ? { wrongAddresses: wrong } : {}),
   }
-  const problem = addressProblem(hostname, addresses, wrong, expected)
+  if (blocking !== null) return { ...entry, resolves: false, problem: blocking }
+  const problem = wrongAddressProblem(hostname, wrong, expected)
   if (problem !== null && !warnOnly) return { ...entry, problem }
   if (problem !== null) entry.warning = problem
-  const port80 = await checkPort80(probes.port80, hostname, addresses)
+  const port80 = await checkPort80(probes.port80, hostname, addresses.filter(isPublic))
   if (port80.problem !== undefined) return { ...entry, ...port80 }
   return { ...entry, ...port80, ...(await checkCaaOf(probes.caaLookup, hostname)) }
 }
