@@ -40,6 +40,7 @@ import {
   BACKUP_S3_COPY_FEATURE,
   DEPLOY_HOSTINGS_ONLY_FEATURE,
   TLS_CAPTURE_FEATURE,
+  ACME_ISSUE_FEATURE,
   COMMAND_RECOVERY_FEATURE,
 } from './version-wire.ts'
 import { INSTANCE_VERSION } from '../app/version.ts'
@@ -244,6 +245,12 @@ test('managed-login-limits-v1 is an advertised wire feature and raised no floor'
 test('tls-capture-v1 is an advertised wire feature and raised no floor', () => {
   assertEquals(TLS_CAPTURE_FEATURE, 'tls-capture-v1')
   assertEquals((DAEMON_WIRE_FEATURES as readonly string[]).includes(TLS_CAPTURE_FEATURE), true)
+  assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.0')
+})
+
+test('acme-issue-v1 is an advertised wire feature and raised no floor', () => {
+  assertEquals(ACME_ISSUE_FEATURE, 'acme-issue-v1')
+  assertEquals((DAEMON_WIRE_FEATURES as readonly string[]).includes(ACME_ISSUE_FEATURE), true)
   assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.0')
 })
 

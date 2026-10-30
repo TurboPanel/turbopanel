@@ -29,6 +29,7 @@ import { normalizePrivateKeyPem, PemError, splitCertificateChain } from '../../l
 import { privateKeyMatchesCertificate, TlsKeyError } from '../../lib/tls/keys.ts'
 import { CertificateParseError, parseCertificatePem } from '../../lib/tls/parse.ts'
 import type { ParsedCertificate, TlsAcmeMetadata } from '../../lib/tls/types.ts'
+import { canAcceptCapture, readHttpIssuanceState } from '../../features/tls/http-issuance/state.ts'
 import { assertTpSecretPrivateKey } from './routes-helpers.ts'
 
 /** A chain longer than this is not an ordinary leaf plus intermediates. */
@@ -42,6 +43,13 @@ export type IssuedCertificateInput = {
   hostname: string
   certificatePem: string
   privateKeyPem: string
+  /**
+   * The open order this pair answers (`acme-issue-request`). Absent: the pair
+   * is a server's own order, accepted only from a server that holds a pin.
+   * Present: accepted only from the server that was asked, for a row holding
+   * that open request.
+   */
+  requestId?: string
 }
 
 export type IssuedCertificateRefusal =
@@ -55,6 +63,7 @@ export type IssuedCertificateRefusal =
   | 'server_not_in_organization'
   | 'acme_disabled'
   | 'no_matching_certificate'
+  | 'request_not_open'
 
 export type IssuedCertificateResult =
   | { ok: true; stored: boolean; tlsIds: string[] }
@@ -76,6 +85,7 @@ const REFUSAL_STATUS: Record<IssuedCertificateRefusal, 400 | 403 | 404 | 409> = 
   server_not_in_organization: 403,
   acme_disabled: 409,
   no_matching_certificate: 404,
+  request_not_open: 404,
 }
 
 /** Plain words for each refusal, never carrying any part of the pair. */
@@ -94,6 +104,8 @@ export const REFUSAL_MESSAGE: Record<IssuedCertificateRefusal, string> = {
   acme_disabled: "Let's Encrypt is turned off for the organization.",
   no_matching_certificate:
     "No managed Let's Encrypt certificate for this hostname is pinned by a site on the sending server.",
+  request_not_open:
+    'No open certificate request with this id was made to the sending server for this hostname.',
 }
 
 function refuse(error: IssuedCertificateRefusal): IssuedCertificateResult {
@@ -297,6 +309,44 @@ export async function storeIssuedCertificate(
   return { ok: true, stored: outcome.stored.length > 0, tlsIds: outcome.stored.map((r) => r.id) }
 }
 
+/** Whether the row holds the open request this pair answers, asked of the reporting server. */
+function requestIsOpenFor(metadata: unknown, input: IssuedCertificateInput, now: Date): boolean {
+  return (
+    canAcceptCapture(readHttpIssuanceState(metadata), {
+      serverId: input.serverId,
+      requestId: input.requestId ?? '',
+      now,
+    }).ok === true
+  )
+}
+
+/**
+ * A daemon may only supply the certificate of a hosting placed on its own
+ * server; a pin on any other server's hosting is none of its business.
+ */
+async function rowsPinnedOnServer<T extends { id: string }>(
+  tx: Db,
+  candidates: T[],
+  serverId: string
+): Promise<T[]> {
+  const pinned = await tx
+    .select({ tlsId: hosting.tlsId })
+    .from(hosting)
+    .innerJoin(service, eq(service.id, hosting.serviceId))
+    .innerJoin(environment, eq(environment.id, service.environmentId))
+    .where(
+      and(
+        eq(environment.serverId, serverId),
+        inArray(
+          hosting.tlsId,
+          candidates.map((row) => row.id)
+        )
+      )
+    )
+  const pinnedIds = new Set(pinned.map((row) => row.tlsId))
+  return candidates.filter((row) => pinnedIds.has(row.id))
+}
+
 async function writePair(
   tx: Db,
   params: {
@@ -331,25 +381,12 @@ async function writePair(
   )
   if (candidates.length === 0) return { refusal: 'no_matching_certificate' }
 
-  // A daemon may only supply the certificate of a hosting placed on its own
-  // server; a pin on any other server's hosting is none of its business.
-  const pinned = await tx
-    .select({ tlsId: hosting.tlsId })
-    .from(hosting)
-    .innerJoin(service, eq(service.id, hosting.serviceId))
-    .innerJoin(environment, eq(environment.id, service.environmentId))
-    .where(
-      and(
-        eq(environment.serverId, input.serverId),
-        inArray(
-          hosting.tlsId,
-          candidates.map((row) => row.id)
-        )
-      )
-    )
-  const pinnedIds = new Set(pinned.map((row) => row.tlsId))
-  const rows = candidates.filter((row) => pinnedIds.has(row.id))
-  if (rows.length === 0) return { refusal: 'no_matching_certificate' }
+  const rows = input.requestId
+    ? candidates.filter((row) => requestIsOpenFor(row.metadata, input, now))
+    : await rowsPinnedOnServer(tx, candidates, input.serverId)
+  if (rows.length === 0) {
+    return { refusal: input.requestId ? 'request_not_open' : 'no_matching_certificate' }
+  }
 
   const stored: StoredRow[] = []
   await forEachSequential(rows, async (row) => {

@@ -384,3 +384,38 @@ test('toPublicTlsRow sends null dates for a row with no certificate yet and keep
   assertEquals(issued?.metadata.notAfter, '2099-01-01T00:00:00.000Z')
   assertEquals(issued?.metadata.notBefore, '2026-01-01T00:00:00.000Z')
 })
+
+test('toPublicTlsRow never carries the private state of a server-ordered certificate', () => {
+  const shown = toPublicTlsRow({
+    id: '11111111-1111-4111-8111-111111111111',
+    name: 'Leaf',
+    source: 'lets_encrypt',
+    organizationId: '22222222-2222-4222-8222-222222222222',
+    status: 'automatic',
+    notAfter: '2099-01-01T00:00:00.000Z',
+    fingerprintSha256: 'a'.repeat(64),
+    metadata: {
+      dnsNames: ['app.example.com'],
+      hasWildcard: false,
+      notBefore: '2026-01-01T00:00:00.000Z',
+      subject: 'CN=app.example.com',
+      issuer: 'CN=app.example.com',
+      acme: { managedBy: 'server', challengeType: 'http-01' },
+      httpCert: {
+        issuingServerId: 'server-secret-id',
+        requestId: 'req_secret',
+        startedAt: '2026-01-01T00:00:00.000Z',
+        startByAt: '2026-01-01T01:00:00.000Z',
+      },
+    },
+    options: {},
+    certificatePem: null,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-02T00:00:00.000Z',
+  })
+  const text = JSON.stringify(shown)
+  assertEquals(text.includes('httpCert'), false)
+  assertEquals(text.includes('req_secret'), false)
+  assertEquals(text.includes('server-secret-id'), false)
+  assertEquals(shown?.metadata.acme?.managedBy, 'server')
+})

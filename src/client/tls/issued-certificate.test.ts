@@ -27,6 +27,7 @@ import { deriveEncryptionSecretsConfig, parseSecretsEnv } from '../../lib/secret
 import { issueLeafCertificate, mintOrganizationCa } from '../../lib/tls/self-signed.ts'
 import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
 import { REFUSAL_MESSAGE, replaces, storeIssuedCertificate } from './issued-certificate.ts'
+import { withHttpIssuanceState } from '../../features/tls/http-issuance/state.ts'
 import {
   type CaddyKeyKind,
   makeCaddyPair,
@@ -616,6 +617,122 @@ test('a key of another kind or curve than the certificate is a key mismatch, in 
       assertEquals(result.status, 400)
       assertEquals(JSON.stringify(result).includes('PRIVATE'), false)
     }
+    assertEquals((await readRow(f)).privateKeyPem, null)
+  } finally {
+    await f.cleanup()
+  }
+})
+
+const REQUEST_ID = 'req_open_1'
+
+/** Record an open request on the row, asked of `issuingServerId`. */
+async function openRequest(
+  f: Fixture,
+  issuingServerId: string,
+  overrides: { endedAt?: string | null; startByAt?: string } = {}
+) {
+  const row = await readRow(f)
+  await f.db
+    .update(tls)
+    .set({
+      metadata: withHttpIssuanceState(row.metadata, {
+        issuingServerId,
+        requestId: REQUEST_ID,
+        startedAt: new Date().toISOString(),
+        startByAt: overrides.startByAt ?? new Date(Date.now() + 3_600_000).toISOString(),
+        endedAt: overrides.endedAt ?? null,
+        forwards: [],
+        attemptTimes: [],
+        nextAttemptAt: null,
+      }),
+    })
+    .where(eq(tls.id, f.tlsId))
+}
+
+function withRequest(pair: Awaited<ReturnType<typeof issuedPair>>, serverId: string) {
+  return {
+    serverId,
+    hostname: HOST,
+    certificatePem: pair.certificatePem,
+    privateKeyPem: pair.privateKeyPem,
+    requestId: REQUEST_ID,
+  }
+}
+
+test('a pair for an open request is stored sealed in the existing row, even from a server with no pin', async () => {
+  if (!dbUrl) return skipWithoutDatabase('issued certificate storage tests')
+  // The row is pinned on the other server; the asked server holds no pin.
+  const f = await setup({ pinnedOnOtherServer: true })
+  try {
+    await openRequest(f, f.serverId)
+    const pair = await issuedPair([HOST])
+    const result = await storeIssuedCertificate(f.db, withRequest(pair, f.serverId), f.deps)
+    assertEquals(result, { ok: true, stored: true, tlsIds: [f.tlsId] })
+    const row = await readRow(f)
+    assertEquals(row.id, f.tlsId)
+    assertEquals(row.certificatePem, pair.certificatePem)
+    assertEquals(row.privateKeyPem?.startsWith('tpsecret.'), true)
+    assertEquals(row.privateKeyPem?.includes('BEGIN'), false)
+    assertEquals(
+      await decryptSecret(f.deps.dataEncryptionSecrets, row.privateKeyPem!),
+      pair.privateKeyPem
+    )
+    // The private request state stays on the row.
+    assertEquals(JSON.stringify(row.metadata).includes(REQUEST_ID), true)
+  } finally {
+    await f.cleanup()
+  }
+})
+
+test('a pair for an open request is refused from another server, a closed or expired request and an unknown id', async () => {
+  if (!dbUrl) return skipWithoutDatabase('issued certificate storage tests')
+  const f = await setup()
+  try {
+    const pair = await issuedPair([HOST])
+    const notOpen = {
+      ok: false as const,
+      error: 'request_not_open' as const,
+      message: REFUSAL_MESSAGE.request_not_open,
+      status: 404 as const,
+    }
+    // No request recorded yet.
+    assertEquals(await storeIssuedCertificate(f.db, withRequest(pair, f.serverId), f.deps), notOpen)
+    await openRequest(f, f.serverId)
+    // The server that was not asked.
+    assertEquals(
+      await storeIssuedCertificate(f.db, withRequest(pair, f.otherServerId), f.deps),
+      notOpen
+    )
+    assertEquals(
+      await storeIssuedCertificate(
+        f.db,
+        { ...withRequest(pair, f.serverId), requestId: 'req_other' },
+        f.deps
+      ),
+      notOpen
+    )
+    // The request was made to the other server: the pin holder cannot use the pin rule instead.
+    await openRequest(f, f.otherServerId)
+    assertEquals(await storeIssuedCertificate(f.db, withRequest(pair, f.serverId), f.deps), notOpen)
+    await openRequest(f, f.serverId, { endedAt: new Date().toISOString() })
+    assertEquals(await storeIssuedCertificate(f.db, withRequest(pair, f.serverId), f.deps), notOpen)
+    await openRequest(f, f.serverId, { startByAt: new Date(Date.now() - 1000).toISOString() })
+    assertEquals(await storeIssuedCertificate(f.db, withRequest(pair, f.serverId), f.deps), notOpen)
+    assertEquals((await readRow(f)).privateKeyPem, null)
+  } finally {
+    await f.cleanup()
+  }
+})
+
+test('a pair for a different hostname than the request is still refused by the name check', async () => {
+  if (!dbUrl) return skipWithoutDatabase('issued certificate storage tests')
+  const f = await setup()
+  try {
+    await openRequest(f, f.serverId)
+    const pair = await issuedPair(['other.example.com'])
+    const result = await storeIssuedCertificate(f.db, withRequest(pair, f.serverId), f.deps)
+    assertEquals(result.ok, false)
+    if (!result.ok) assertEquals(result.error, 'certificate_not_for_hostname')
     assertEquals((await readRow(f)).privateKeyPem, null)
   } finally {
     await f.cleanup()
