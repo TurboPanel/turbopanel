@@ -2789,6 +2789,23 @@ test('POST /environments/:id/deploy: a first-batch server that cannot be reached
   })
 })
 
+/** Dispatch payload of the first queued `environment.stop` (for one server when given). */
+async function queuedStopPayload(
+  ctx: Pick<TwoServerCtx, 'db' | 'commandQueue'>,
+  serverId?: string
+): Promise<Record<string, unknown>> {
+  const stopCommand = ctx.commandQueue.envelopes.find(
+    (envelope) =>
+      envelope.type === 'environment.stop' &&
+      (serverId === undefined || envelope.serverId === serverId)
+  )
+  assertEquals(stopCommand !== undefined, true)
+  return (await getCommandDispatchPayload(ctx.db, stopCommand!.commandId)) as Record<
+    string,
+    unknown
+  >
+}
+
 test('an explicit stop clears releases but removes no folder, and delete teardown still removes them', async () => {
   await withDeployFixtures(async (ctx) => {
     const recorded = [
@@ -2816,20 +2833,73 @@ test('an explicit stop clears releases but removes no folder, and delete teardow
 
     const stopped = await postEnvironment(ctx as unknown as TwoServerCtx, 'stop')
     assertEquals(stopped.status, 200)
-    const stopCommand = ctx.commandQueue.envelopes.find(
-      (envelope) => envelope.type === 'environment.stop'
-    )
-    const payload = (await getCommandDispatchPayload(ctx.db, stopCommand!.commandId)) as Record<
-      string,
-      unknown
-    >
+    const payload = await queuedStopPayload(ctx)
     // Destroy clears the releases but names no folder to remove, so uploads stay.
     assertEquals('siteReleases' in payload, false)
     assertEquals(payload.releaseCleanup, recorded)
+    // Destroy keeps the compose folder, so a relative bind's data survives.
+    assertEquals('removeDeploymentDir' in payload, false)
 
     // The same record is what a delete reclaims, with the folder components.
     assertEquals(await resolveEnvironmentSiteReleases(ctx.db, ctx.environmentId), recorded)
     await ctx.db.delete(deployment).where(eq(deployment.environmentId, ctx.environmentId))
+  })
+})
+
+test('a server leaving the environment is stopped without removing its compose folder', async () => {
+  await withDeployFixtures(async (ctx) => {
+    const now = new Date().toISOString()
+    const [leaving] = await ctx.db
+      .insert(server)
+      .values({
+        organizationId: ctx.organizationId,
+        name: 'Deploy Route Leaving Server',
+        isConnected: true,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .returning({ id: server.id })
+    const leavingId = leaving!.id
+    try {
+      await ctx.db
+        .update(server)
+        .set({ isConnected: true, updatedAt: now })
+        .where(eq(server.id, ctx.serverId))
+      const compose: ComposeDocument = {
+        version: 1,
+        data: { services: { web: { image: 'nginx:alpine' } } },
+        presentation: { keyOrder: ['services'], comments: {} },
+      }
+      await ctx.db
+        .update(environment)
+        .set({ serverId: ctx.serverId, options: { compose } })
+        .where(eq(environment.id, ctx.environmentId))
+      // The environment used to run on a second server; this deploy plans only the first.
+      await upsertDeploymentTargets(ctx.db, {
+        environmentId: ctx.environmentId,
+        targets: [
+          {
+            serverId: leavingId,
+            desiredGeneration: 1,
+            status: 'applied',
+            options: { secretPlan: [], siteReleases: [] },
+          },
+        ],
+      })
+
+      const res = await postEnvironment(ctx as unknown as TwoServerCtx, 'deploy')
+      assertEquals(res.status, 200)
+      const payload = await queuedStopPayload(ctx, leavingId)
+      // A drained server keeps its compose folder; only a delete removes it.
+      assertEquals('removeDeploymentDir' in payload, false)
+    } finally {
+      await cleanupMultiServerFabricDeploy(ctx.db, {
+        environmentId: ctx.environmentId,
+        organizationId: ctx.organizationId,
+        serverIds: [ctx.serverId, leavingId],
+        extraServerId: leavingId,
+      })
+    }
   })
 })
 
