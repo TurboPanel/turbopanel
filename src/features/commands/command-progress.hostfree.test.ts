@@ -267,7 +267,7 @@ test('finalizeCommandProgress leaves a settled or live plan alone', () => {
 })
 
 test('finalizeStoredCommandProgress writes back only when the plan changed', async () => {
-  const { db, calls } = fakeUpdateDb([])
+  const { db, calls } = fakeUpdateDb([{ id: COMMAND_ID }])
   const written = await finalizeStoredCommandProgress(db, {
     commandId: COMMAND_ID,
     status: 'cancelled',
@@ -362,16 +362,27 @@ const CERT_DONE: CommandProgress = {
  * A db double that holds one command row and applies updates the way the
  * guards read: a `status not in (...)` update never touches a finished row.
  */
-function fakeRowDb(row: {
-  status: string
-  serverId: string
-  progress: unknown
-  updatedAt: string
-}) {
+function fakeRowDb(
+  row: { status: string; serverId: string; progress: unknown; updatedAt: string },
+  afterFirstSelect?: () => void
+) {
   const writes: Record<string, unknown>[] = []
   const db = {
     select: () => ({
-      from: () => ({ where: () => ({ limit: () => Promise.resolve([{ ...row }]) }) }),
+      from: () => ({
+        where: (predicate: SQL) => ({
+          limit: () => {
+            const { params } = dialect.sqlToQuery(predicate)
+            const { sql } = dialect.sqlToQuery(predicate)
+            const found =
+              !sql.includes('server_id') || params.includes(row.serverId) ? [{ ...row }] : []
+            const hook = afterFirstSelect
+            afterFirstSelect = undefined
+            hook?.()
+            return Promise.resolve(found)
+          },
+        }),
+      }),
     }),
     update: () => ({
       set: (patch: Record<string, unknown>) => ({
@@ -479,13 +490,32 @@ test('the terminal settle does not erase a note that landed first', async () => 
     commandId: COMMAND_ID,
     progress: CERT_DONE,
   })
-  await finalizeStoredCommandProgress(db, {
+  const returned = await finalizeStoredCommandProgress(db, {
     commandId: COMMAND_ID,
     status: 'succeeded',
     progress: CERT_RUNNING,
     at: '2026-10-12T10:00:05.000Z',
   })
+  assertEquals(returned?.steps[1].detail, CERT_NOTE)
   const stored = parseStoredCommandProgress(row.progress)
   assertEquals(stored?.steps[1].state, 'done')
   assertEquals(stored?.steps[1].detail, CERT_NOTE)
+})
+
+test('a late note retries when the terminal settle wins the write', async () => {
+  // The late handler reads the unsettled plan; the settle then lands before its write.
+  const settled = finalizeCommandProgress(CERT_RUNNING, 'succeeded', '2026-10-12T10:00:05.000Z')
+  const { db, row } = fakeRowDb(
+    { status: 'succeeded', serverId: SERVER_ID, progress: CERT_RUNNING, updatedAt: AT },
+    () => {
+      row.progress = settled
+    }
+  )
+  const result = await recordCommandProgress(db, {
+    serverId: SERVER_ID,
+    commandId: COMMAND_ID,
+    progress: CERT_DONE,
+  })
+  assertEquals(result, 'stored')
+  assertEquals(parseStoredCommandProgress(row.progress)?.steps[1].detail, CERT_NOTE)
 })
