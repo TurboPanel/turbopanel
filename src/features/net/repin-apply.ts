@@ -25,7 +25,7 @@
  * throws: a failed write is logged and the rest of the pass continues.
  */
 
-import { and, eq, inArray } from 'drizzle-orm'
+import { and, eq, inArray, isNotNull } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { ip } from '../../db/schema.ts'
 import { inetAddressToString } from '../../lib/ip-address.ts'
@@ -309,4 +309,23 @@ export async function applyReportedAddressRepin(
     )
     return []
   }
+}
+
+/**
+ * Stamp `ip.repin_pending_fanout_at` on every datacenter pin of the server, so
+ * the repin fan-out sweep re-converges its routing (stored transports, the
+ * TurboFabric mesh and LAN routes) from the maintenance tick. Used when the
+ * daemon starts or stops routing container ranges over a LAN: the hello path
+ * may write but must not enqueue. A server with no datacenter pin is in no
+ * trusted LAN pair, so there is nothing to re-plan.
+ */
+export async function stampServerRoutingFanout(
+  db: Db,
+  serverId: string,
+  nowIso: string
+): Promise<void> {
+  await db
+    .update(ip)
+    .set({ repinPendingFanoutAt: nowIso, updatedAt: nowIso })
+    .where(and(eq(ip.serverId, serverId), eq(ip.scope, 'datacenter'), isNotNull(ip.datacenterId)))
 }

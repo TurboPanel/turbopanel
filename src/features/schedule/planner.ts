@@ -8,7 +8,9 @@
  * bridge/default-only document scheduled across two hosts gets two ordinary
  * local bridges and deploys, while a document that declares an overlay network
  * whose members land on two hosts is refused with `turbofabric_required` until
- * the organization enables the fabric.
+ * the organization enables the fabric — unless every pair of servers on that
+ * network shares a trusted datacenter network (`pairSharesTrustedLan`): such a
+ * network rides the LAN and needs no TurboFabric at all.
  *
  * Three independent things can empty a candidate list, and each has its own
  * {@link ScheduleErrorCode} because each sends the operator somewhere else:
@@ -35,7 +37,10 @@
 
 import type { DesiredSlotInput } from '../servers/slot-records.ts'
 import type { ComposeDocument } from '../compose/types.ts'
-import { collectSpanningComposeNetworkKeys } from '../fabric/spanning.ts'
+import {
+  collectSpanningComposeNetworkKeys,
+  participatingServerIdsForNetwork,
+} from '../fabric/spanning.ts'
 import type { PlacementConstraint, ServiceScheduleSpec } from './interpret.ts'
 
 export type FleetServer = {
@@ -105,6 +110,18 @@ export type PlanEnvironmentInput = {
    * fabric.
    */
   document?: ComposeDocument
+  /**
+   * The pair rule: the two servers share a trusted datacenter network and
+   * both daemons route container ranges over it, so their traffic needs no
+   * tunnel. Absent: no pair does (every span needs TurboFabric, as before).
+   */
+  pairSharesTrustedLan?: (a: string, b: string) => boolean
+  /**
+   * A direct TurboFabric path exists between the two servers (either way).
+   * Read only for a network that mixes LAN pairs with remote ones. Absent:
+   * every pair has one.
+   */
+  pairHasDirectTunnel?: (a: string, b: string) => boolean
 }
 
 function constraintMatches(
@@ -398,7 +415,8 @@ function placeColocationGroup(
 }
 
 /**
- * Whether this plan needs TurboFabric the organization has not enabled.
+ * The networks this plan spans across servers, each with its participating
+ * servers.
  *
  * Authored intent decides, not arithmetic. Landing on two hosts is only a
  * problem when the document declared a `driver: overlay` network whose member
@@ -411,48 +429,136 @@ function placeColocationGroup(
  * A whole-environment pin short-circuits ahead of all of that: everything lands
  * on one host, so nothing spans.
  */
-function planSpansOverlay(
+function spanningNetworksForPlan(
   input: PlanEnvironmentInput,
   slots: readonly DesiredSlotInput[],
   serverIds: readonly string[]
-): boolean {
-  if (serverIds.length <= 1) return false
-  if (input.pinServerId) return false
+): string[][] {
+  if (serverIds.length <= 1) return []
+  if (input.pinServerId) return []
   const document = input.document
-  if (!document) return false
-  const spanning = collectSpanningComposeNetworkKeys(
-    document,
-    slots.map((slot) => ({ serviceId: slot.serviceId, serverId: slot.serverId })),
-    input.services.map((row) => ({
-      id: row.serviceId,
-      composeServiceName: row.spec.composeServiceName,
-    }))
+  if (!document) return []
+  const spanningSlots = slots.map((slot) => ({
+    serviceId: slot.serviceId,
+    serverId: slot.serverId,
+  }))
+  const serviceRows = input.services.map((row) => ({
+    id: row.serviceId,
+    composeServiceName: row.spec.composeServiceName,
+  }))
+  return collectSpanningComposeNetworkKeys(document, spanningSlots, serviceRows).map((key) =>
+    participatingServerIdsForNetwork(document, spanningSlots, serviceRows, key)
   )
-  return spanning.length > 0
+}
+
+type SpanPairs = {
+  /** Pairs that share a trusted LAN (no tunnel). */
+  lan: Array<[string, string]>
+  /** Pairs that need a TurboFabric tunnel. */
+  remote: Array<[string, string]>
+}
+
+function splitSpanPairs(input: PlanEnvironmentInput, participants: readonly string[]): SpanPairs {
+  const pairs: SpanPairs = { lan: [], remote: [] }
+  const sorted = [...participants].sort((a, b) => a.localeCompare(b))
+  for (const [index, a] of sorted.entries()) {
+    for (const b of sorted.slice(index + 1)) {
+      if (input.pairSharesTrustedLan?.(a, b) === true) pairs.lan.push([a, b])
+      else pairs.remote.push([a, b])
+    }
+  }
+  return pairs
+}
+
+function serverName(input: PlanEnvironmentInput, id: string): string {
+  return input.servers.find((row) => row.id === id)?.name ?? id
+}
+
+function joinNames(names: readonly string[]): string {
+  return names.join(', ')
 }
 
 /**
- * Why a spanning plan cannot get its fabric, or null when it can (or needs
- * none): the org has TurboFabric off, or a participating server is switched
- * out of it (that server gets no `tp0`, so nothing can reach its bridge).
+ * The servers outside the biggest shared-LAN group of a mixed network: the
+ * ones "in a different datacenter" from the rest.
+ */
+function serversOutsideLanGroup(participants: readonly string[], pairs: SpanPairs): string[] {
+  const partners = new Map<string, Set<string>>(participants.map((id) => [id, new Set([id])]))
+  for (const [a, b] of pairs.lan) {
+    partners.get(a)?.add(b)
+    partners.get(b)?.add(a)
+  }
+  let anchor = new Set<string>()
+  for (const group of partners.values()) if (group.size > anchor.size) anchor = group
+  return participants.filter((id) => !anchor.has(id))
+}
+
+function fabricOffRefusal(
+  input: PlanEnvironmentInput,
+  participants: readonly string[],
+  pairs: SpanPairs
+): string {
+  if (pairs.lan.length === 0) {
+    return 'Enable TurboFabric to span a `driver: overlay` network across servers'
+  }
+  const outside = serversOutsideLanGroup(participants, pairs).map((id) => serverName(input, id))
+  return `${joinNames(outside)} ${
+    outside.length === 1 ? 'is' : 'are'
+  } in a different datacenter from the other servers on this network, so it needs TurboFabric. Turn TurboFabric on, or keep the network on servers that share a trusted datacenter network.`
+}
+
+function switchedOffRefusal(input: PlanEnvironmentInput, pairs: SpanPairs): string | null {
+  const inRemotePair = new Set(pairs.remote.flat())
+  const optedOut = input.servers
+    .filter((row) => inRemotePair.has(row.id) && row.fabricEnabled === false)
+    .map((row) => row.name ?? row.id)
+  if (optedOut.length === 0) return null
+  return `TurboFabric is switched off for ${joinNames(optedOut)}. Switch it on for ${
+    optedOut.length === 1 ? 'that server' : 'those servers'
+  } to span a \`driver: overlay\` network across servers`
+}
+
+/**
+ * Phase scope: a network that mixes LAN pairs with remote ones needs a direct
+ * tunnel for every remote pair; traffic is not sent across datacenters
+ * through a gateway for a server that is on the LAN.
+ */
+function noDirectTunnelRefusal(input: PlanEnvironmentInput, pairs: SpanPairs): string | null {
+  if (pairs.lan.length === 0 || !input.pairHasDirectTunnel) return null
+  const missing = pairs.remote.find(([a, b]) => input.pairHasDirectTunnel?.(a, b) === false)
+  if (!missing) return null
+  const [a, b] = missing.map((id) => serverName(input, id))
+  return `${a} has no direct TurboFabric path to ${b}. A network that mixes servers on a shared LAN with servers elsewhere needs a direct tunnel between them: give ${a} or ${b} a public address, or keep the network on one side.`
+}
+
+function networkRefusal(
+  input: PlanEnvironmentInput,
+  participants: readonly string[]
+): string | null {
+  const pairs = splitSpanPairs(input, participants)
+  if (pairs.remote.length === 0) return null
+  if (!input.fabricEnabled) return fabricOffRefusal(input, participants, pairs)
+  return switchedOffRefusal(input, pairs) ?? noDirectTunnelRefusal(input, pairs)
+}
+
+/**
+ * Why a spanning plan cannot be carried, or null when it can (or needs
+ * nothing). A network whose servers all share a trusted LAN needs no
+ * TurboFabric. Otherwise the org must have TurboFabric on (a mixed network
+ * names the servers in a different datacenter), every server in a pair that
+ * needs a tunnel must be switched on, and a mixed network needs a direct
+ * tunnel for each remote pair.
  */
 function fabricRefusalForPlan(
   input: PlanEnvironmentInput,
   slots: readonly DesiredSlotInput[],
   serverIds: readonly string[]
 ): string | null {
-  if (!planSpansOverlay(input, slots, serverIds)) return null
-  if (!input.fabricEnabled) {
-    return 'Enable TurboFabric to span a `driver: overlay` network across servers'
+  for (const participants of spanningNetworksForPlan(input, slots, serverIds)) {
+    const refusal = networkRefusal(input, participants)
+    if (refusal) return refusal
   }
-  const participating = new Set(serverIds)
-  const optedOut = input.servers
-    .filter((row) => participating.has(row.id) && row.fabricEnabled === false)
-    .map((row) => row.name ?? row.id)
-  if (optedOut.length === 0) return null
-  return `TurboFabric is switched off for ${optedOut.join(', ')}. Switch it on for ${
-    optedOut.length === 1 ? 'that server' : 'those servers'
-  } to span a \`driver: overlay\` network across servers`
+  return null
 }
 
 /**

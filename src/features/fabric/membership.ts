@@ -25,7 +25,13 @@ import {
 } from '../../db/schema.ts'
 import { firstSequential, forEachSequential } from '../../lib/sequential.ts'
 import { consumerServerIdsForManaged } from '../bindings/resolve-endpoint.ts'
-import { isPrivateEndpointError, resolvePrivateEndpoints } from '../net/private-endpoint.ts'
+import {
+  isPrivateEndpointError,
+  resolvePrivateEndpoints,
+  serversShareTrustedLan,
+} from '../net/private-endpoint.ts'
+import { containerNetworkLabel } from './lan-pair-guard.ts'
+import { loadLanPairInputs } from './lan-pairs.ts'
 import { relayServerSwitchedOn } from './relay-filters.ts'
 import {
   loadEndpointCaches,
@@ -147,6 +153,26 @@ export type FabricDependent = {
   label: string
 }
 
+async function loadNetworkPieces(
+  db: Db,
+  networkIds: readonly string[]
+): Promise<Map<string, string[]>> {
+  const out = new Map<string, string[]>()
+  if (networkIds.length === 0) return out
+  const rows = await db
+    .select({ networkId: subnet.networkId, serverId: subnet.serverId })
+    .from(subnet)
+    .where(inArray(subnet.networkId, [...networkIds]))
+  for (const row of rows) out.set(row.networkId, [...(out.get(row.networkId) ?? []), row.serverId])
+  return out
+}
+
+/**
+ * Cross-server container networks with a piece on this server that reach it
+ * through a tunnel. A network whose other servers all share a trusted LAN
+ * with this one rides the LAN and does not depend on TurboFabric; one with no
+ * other piece yet (a deploy may be adding them) still counts.
+ */
 async function loadSpanningNetworkDependents(db: Db, serverId: string): Promise<FabricDependent[]> {
   const rows = await db
     .select({
@@ -159,14 +185,26 @@ async function loadSpanningNetworkDependents(db: Db, serverId: string): Promise<
     .innerJoin(network, eq(network.id, subnet.networkId))
     .leftJoin(environment, eq(environment.id, network.environmentId))
     .where(eq(subnet.serverId, serverId))
-  return rows.map((row) => {
+  if (rows.length === 0) return []
+  const pieces = await loadNetworkPieces(
+    db,
+    rows.map((row) => row.id)
+  )
+  const others = new Set([...pieces.values()].flat())
+  const lanInputs = await loadLanPairInputs(db, [serverId, ...others])
+  const tunnelled = rows.filter((row) => {
+    const peers = (pieces.get(row.id) ?? []).filter((other) => other !== serverId)
+    return (
+      peers.length === 0 ||
+      peers.some((other) => !serversShareTrustedLan(serverId, other, lanInputs))
+    )
+  })
+  return tunnelled.map((row) => {
     const name = row.composeKey ?? row.name ?? row.id
     return {
       kind: 'container_network',
       id: row.id,
-      label: row.environmentName
-        ? `container network "${name}" in environment "${row.environmentName}"`
-        : `container network "${name}"`,
+      label: containerNetworkLabel(name, row.environmentName),
     }
   })
 }

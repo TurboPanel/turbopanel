@@ -6,7 +6,7 @@ import { assertEquals } from '@std/assert'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import type { Db } from '../../db/connection.ts'
-import { fabric, ip, network, relay, server } from '../../db/schema.ts'
+import { fabric, ip, network, organization, relay, server, subnet } from '../../db/schema.ts'
 import {
   createEmptyMockAuthState,
   createMockAuthDb,
@@ -224,12 +224,51 @@ const EXHAUSTED_HOST_CIDRS = [
   '10.253.0.0/16',
 ] as const
 
+/** A query on `subnet` in an org with no cross-server container network: any chain, no rows. */
+function noContainerNetworks(): unknown {
+  const chain: Record<string, unknown> = {}
+  for (const key of ['where', 'innerJoin', 'leftJoin', 'orderBy', 'limit']) chain[key] = () => chain
+  chain.then = (resolve: (rows: unknown[]) => unknown, reject: (err: unknown) => unknown) =>
+    Promise.resolve([]).then(resolve, reject)
+  return chain
+}
+
 function thenableRows<T>(rows: T[]) {
   const promise = Promise.resolve(rows)
   return Object.assign(promise, {
     limit: (n: number) => Promise.resolve(rows.slice(0, n)),
     orderBy: () => Promise.resolve(rows),
+    for: () => Promise.resolve(rows),
   })
+}
+
+/** String values a drizzle condition carries (walks its SQL chunks). */
+function conditionStrings(
+  condition: unknown,
+  out = new Set<string>(),
+  seen = new Set<unknown>()
+): Set<string> {
+  if (typeof condition === 'string') out.add(condition)
+  if (!condition || typeof condition !== 'object' || seen.has(condition)) return out
+  seen.add(condition)
+  for (const value of Object.values(condition as Record<string, unknown>)) {
+    if (typeof value === 'string') out.add(value)
+    else if (Array.isArray(value)) for (const item of value) conditionStrings(item, out, seen)
+    else if (value && typeof value === 'object' && !('table' in value))
+      conditionStrings(value, out, seen)
+  }
+  return out
+}
+
+/** Relay rows a `where` names by server id, or every row when it names none of them. */
+function relaysForCondition<T extends Record<string, unknown>>(
+  rows: T[],
+  condition: unknown,
+  serverIds: readonly string[]
+): T[] {
+  const named = conditionStrings(condition)
+  const asked = serverIds.filter((id) => named.has(id))
+  return asked.length === 0 ? rows : rows.filter((row) => asked.includes(String(row.serverId)))
 }
 
 async function buildFabricEnableApp(opts: {
@@ -291,6 +330,7 @@ async function buildFabricEnableApp(opts: {
     execute: () => Promise.resolve([{ allowed: true }]),
     select: (fields?: unknown) => ({
       from: (table: unknown) => {
+        if (table === subnet) return noContainerNetworks()
         if (opts.exhaustHostCidrs && table === network) {
           return {
             where: () => thenableRows(EXHAUSTED_HOST_CIDRS.map((cidr) => ({ cidr }))),
@@ -313,7 +353,18 @@ async function buildFabricEnableApp(opts: {
           }
         }
         if (persistFabric && table === relay) {
-          return { where: () => thenableRows(relays) }
+          return {
+            where: (condition?: unknown) =>
+              thenableRows(relaysForCondition(relays, condition, opts.serverIds ?? [serverId])),
+            // Container ranges held by relays of the org's fabric.
+            innerJoin: () => ({
+              where: () => thenableRows(relays.map((row) => ({ prefix: row.prefix }))),
+            }),
+          }
+        }
+        if (persistFabric && table === organization) {
+          // The allocation lock on the org row.
+          return { where: () => thenableRows([{ id: orgId }]) }
         }
         if (opts.enableWithServers && table === server) {
           return {
@@ -370,6 +421,10 @@ async function buildFabricEnableApp(opts: {
       return origInsert(table)
     },
     update: (table: unknown) => {
+      if (persistFabric && table === server) {
+        // A server's new container range: the relay row carries the same value.
+        return { set: () => ({ where: () => Promise.resolve([]) }) }
+      }
       if (persistFabric && table === fabric) {
         return {
           set: (patch: Record<string, unknown>) => ({
@@ -866,8 +921,11 @@ async function buildEnabledFabricApp(opts: {
 
   const db = Object.assign(authDb, {
     execute: () => Promise.resolve([{ allowed: true }]),
+    // Servers holding a cross-server network piece: none here.
+    selectDistinct: () => ({ from: () => noContainerNetworks() }),
     select: (fields?: unknown) => ({
       from: (table: unknown) => {
+        if (table === subnet) return noContainerNetworks()
         if (table === fabric) {
           return {
             where: () =>

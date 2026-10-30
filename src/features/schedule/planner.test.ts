@@ -730,3 +730,106 @@ test('planEnvironmentSchedule allows a multi-server spread when no compose docum
   if (!plan.ok) throw new TypeError('expected a successful multi-server plan')
   assertEquals(plan.serverIds, [SERVER_A, SERVER_B])
 })
+
+/** Three services, one per server (A, B, C), all on one overlay network. */
+function threeWaySpanInput(
+  overrides: Partial<PlanEnvironmentInput>,
+  servers: PlanEnvironmentInput['servers'] = [
+    server(SERVER_A, { labels: { role: 'a' }, name: 'alpha' }),
+    server(SERVER_B, { labels: { role: 'b' }, name: 'bravo' }),
+    server(SERVER_C, { labels: { role: 'c' }, name: 'charlie' }),
+  ]
+): PlanEnvironmentInput {
+  return input({
+    fabricEnabled: false,
+    pinServerId: null,
+    defaultServerId: null,
+    document: composeDoc({
+      services: {
+        web: { networks: ['app'] },
+        db: { networks: ['app'] },
+        cache: { networks: ['app'] },
+      },
+      networks: { app: { driver: 'overlay' } },
+    }),
+    services: [
+      planned(SERVICE_WEB, 'web', { constraints: [{ key: 'role', op: 'eq', value: 'a' }] }),
+      planned(SERVICE_DB, 'db', { constraints: [{ key: 'role', op: 'eq', value: 'b' }] }),
+      planned(SERVICE_CACHE, 'cache', { constraints: [{ key: 'role', op: 'eq', value: 'c' }] }),
+    ],
+    servers,
+    ...overrides,
+  })
+}
+
+/** A, B and C all share one trusted LAN. */
+const allOnLan = (): boolean => true
+/** A and B share a trusted LAN; C is in another datacenter. */
+const abOnLan = (a: string, b: string): boolean =>
+  [a, b].sort((x, y) => x.localeCompare(y)).join() === [SERVER_A, SERVER_B].join()
+
+test('an overlay network whose servers all share a trusted LAN plans with TurboFabric off', () => {
+  const plan = planEnvironmentSchedule(threeWaySpanInput({ pairSharesTrustedLan: allOnLan }))
+  assertEquals(plan.ok, true)
+})
+
+test('a LAN-only network plans onto a server switched out of TurboFabric', () => {
+  const plan = planEnvironmentSchedule(
+    threeWaySpanInput({ fabricEnabled: true, pairSharesTrustedLan: allOnLan }, [
+      server(SERVER_A, { labels: { role: 'a' } }),
+      server(SERVER_B, { labels: { role: 'b' }, fabricEnabled: false }),
+      server(SERVER_C, { labels: { role: 'c' } }),
+    ])
+  )
+  assertEquals(plan.ok, true)
+})
+
+test('a mixed network with TurboFabric off is refused, naming the server in another datacenter', () => {
+  const plan = planEnvironmentSchedule(threeWaySpanInput({ pairSharesTrustedLan: abOnLan }))
+  assertEquals(plan.ok, false)
+  if (!plan.ok) {
+    assertEquals(plan.error, 'turbofabric_required')
+    assertEquals(
+      plan.message,
+      'charlie is in a different datacenter from the other servers on this network, so it needs TurboFabric. Turn TurboFabric on, or keep the network on servers that share a trusted datacenter network.'
+    )
+  }
+})
+
+test('a switched-off server is refused only when it has a pair outside the LAN', () => {
+  const lanMemberOff = planEnvironmentSchedule(
+    threeWaySpanInput({ fabricEnabled: true, pairSharesTrustedLan: abOnLan }, [
+      server(SERVER_A, { labels: { role: 'a' }, name: 'alpha', fabricEnabled: false }),
+      server(SERVER_B, { labels: { role: 'b' }, name: 'bravo' }),
+      server(SERVER_C, { labels: { role: 'c' }, name: 'charlie' }),
+    ])
+  )
+  assertEquals(lanMemberOff.ok, false)
+  if (!lanMemberOff.ok) assertEquals(lanMemberOff.message.includes('switched off for alpha'), true)
+})
+
+test('a mixed network needs a direct tunnel from each LAN member to the remote one', () => {
+  const missing = planEnvironmentSchedule(
+    threeWaySpanInput({
+      fabricEnabled: true,
+      pairSharesTrustedLan: abOnLan,
+      pairHasDirectTunnel: (a, b) => a !== SERVER_B && b !== SERVER_B,
+    })
+  )
+  assertEquals(missing.ok, false)
+  if (!missing.ok) {
+    assertEquals(missing.error, 'turbofabric_required')
+    assertEquals(
+      missing.message.startsWith('bravo has no direct TurboFabric path to charlie.'),
+      true
+    )
+  }
+  const direct = planEnvironmentSchedule(
+    threeWaySpanInput({
+      fabricEnabled: true,
+      pairSharesTrustedLan: abOnLan,
+      pairHasDirectTunnel: () => true,
+    })
+  )
+  assertEquals(direct.ok, true)
+})

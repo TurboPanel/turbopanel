@@ -1097,6 +1097,14 @@ async function applyEnabledFabricReconcileSideEffect(
   const payload = parseFabricReconcilePayload(record.payload)
   if (!payload.enabled) return
   const fabricResult = parseFabricReconcileResult(result)
+  if (payload.tunnel === false) {
+    // No tunnel, so no key comes back: the applied hash alone is the proof.
+    // Without a fabric row there is no relay to record it on.
+    if (payload.fabricId) {
+      await stampFabricSuccessFromResult(db, record, envelope, payload.fabricId, fabricResult)
+    }
+    return
+  }
   // Stamp-match skips (`skipped: true`) still carry a valid publicKey — stamp
   // the desired hash so membership convergence does not re-enqueue forever.
   if (!fabricResult.publicKey) return

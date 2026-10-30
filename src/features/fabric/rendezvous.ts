@@ -531,11 +531,30 @@ function hasAlternateGateway(
   )
 }
 
+/** How one pair is summarized: skipped (no tunnel), or tagged when it runs over an untrusted LAN. */
+export type RendezvousPairPath = (
+  selfServerId: string,
+  otherServerId: string
+) => { skip: boolean; untrustedLanAddress?: string }
+
 type RendezvousPairContext = {
   keyed: readonly RelayRecord[]
   merged: ReadonlyMap<string, readonly ObservedPeerPath[]>
   candidatesByServerId: ReadonlyMap<string, FabricPathWireCandidate[]>
   orgAllowRelay: boolean
+  pairPath?: RendezvousPairPath
+}
+
+/** The host part of `host:port` or `[v6]:port`. */
+function endpointHost(endpoint: string): string {
+  if (endpoint.startsWith('[')) return endpoint.slice(1, endpoint.indexOf(']'))
+  const colon = endpoint.lastIndexOf(':')
+  return colon === -1 || endpoint.indexOf(':') !== colon ? endpoint : endpoint.slice(0, colon)
+}
+
+function tagUntrustedLan(entry: FabricPathSummaryEntry, untrustedLanAddress?: string): void {
+  if (!untrustedLanAddress || !entry.endpoint) return
+  if (endpointHost(entry.endpoint) === untrustedLanAddress) entry.network = 'untrusted_lan'
 }
 
 type PairPathOutcome = { next: FabricPathState; health: FabricPeerHealth }
@@ -600,11 +619,14 @@ function applyPairOutcome(
   entries: FabricPathSummaryEntry[],
   pairKey: string,
   previous: FabricPathState,
-  outcome: PairPathOutcome
+  outcome: PairPathOutcome,
+  untrustedLanAddress?: string
 ): void {
   const { next, health } = outcome
   acc.pathStates.set(pairKey, next)
-  entries.push(summaryFromState(next))
+  const entry = summaryFromState(next)
+  tagUntrustedLan(entry, untrustedLanAddress)
+  entries.push(entry)
   if (next.degraded) acc.degradedPeers += 1
   if (next.selected === 'direct_nat' && next.endpoint) {
     acc.natEndpointByPair.set(pairKey, next.endpoint)
@@ -629,6 +651,8 @@ function summarizeRelayPaths(
   }
   for (const other of ctx.keyed) {
     if (other.serverId === self.serverId || !other.publicKey) continue
+    const pair = ctx.pairPath?.(self.serverId, other.serverId)
+    if (pair?.skip) continue
     const pairKey = fabricPairCacheKey(self.serverId, other.serverId)
     const previous = acc.pathStates.get(pairKey) ?? initialFabricPathState(other.serverId)
     const outcome = computePairPathState(
@@ -638,7 +662,7 @@ function summarizeRelayPaths(
       { serverId: other.serverId, publicKey: other.publicKey },
       previous
     )
-    applyPairOutcome(acc, entries, pairKey, previous, outcome)
+    applyPairOutcome(acc, entries, pairKey, previous, outcome, pair?.untrustedLanAddress)
   }
   acc.summariesByServerId.set(self.serverId, entries)
 }
@@ -650,6 +674,7 @@ export async function runFabricRendezvousRound(params: {
   relays: readonly RelayRecord[]
   pathStates?: Map<string, FabricPathState>
   orgAllowRelay: boolean
+  pairPath?: RendezvousPairPath
 }): Promise<FabricRendezvousRoundResult | null> {
   const keyed = params.relays.filter((row) => row.publicKey)
   if (keyed.length < 2) return null
@@ -692,6 +717,7 @@ export async function runFabricRendezvousRound(params: {
     merged,
     candidatesByServerId,
     orgAllowRelay: params.orgAllowRelay,
+    ...(params.pairPath ? { pairPath: params.pairPath } : {}),
   }
   const failedAtByPair = failedKindsCacheByFabric.get(params.fabricId) ?? new Map()
   failedKindsCacheByFabric.set(params.fabricId, failedAtByPair)

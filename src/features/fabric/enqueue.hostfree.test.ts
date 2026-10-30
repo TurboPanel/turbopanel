@@ -193,6 +193,20 @@ function createEndpointlessFabricDb(
         }
       }
 
+      // Server container ranges ({ id, prefix }) and daemon features ({ id, daemon }):
+      // none here, so every pair keeps its tunnel and no LAN routes are built.
+      if (keys.length === 2 && keySet.has('id') && (keySet.has('prefix') || keySet.has('daemon'))) {
+        return {
+          from() {
+            return {
+              where() {
+                return thenable([])
+              },
+            }
+          },
+        }
+      }
+
       throw new TypeError(`unexpected select keys: ${keys.join(',')}`)
     },
   } as unknown as Db

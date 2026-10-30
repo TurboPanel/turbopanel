@@ -156,9 +156,12 @@ import type { ManagedIngressPorts } from '../../features/managed/ingress-ports.t
 import { ensureManagedIngressHierarchy } from '../../features/system/hierarchy.ts'
 import {
   composeServiceNetworkKeys,
+  participatingServerIdsForNetwork,
   type PlatformAttachment,
 } from '../../features/fabric/spanning.ts'
+import { findDeployLanPairRefusal } from '../../features/fabric/lan-pair-guard.ts'
 import { environment, project, server } from '../../db/schema.ts'
+import { reconcileServerNetworking } from '../../features/fabric/server-networking.ts'
 import { type Db, getDaemonCellRegistry, getDb } from '../../db/connection.ts'
 import { principalHomeDir } from '../../lib/naming.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
@@ -236,11 +239,22 @@ async function loadSpanningNetworks(
     attachments: [],
     consumers: [],
   }
-  if (!planned.plan.ok || !planned.fabricEnabled) {
-    return empty
-  }
+  if (!planned.plan.ok) return empty
   const fabricRow = await getOrganizationFabric(db, organizationId)
-  if (!fabricRow || isFabricPaused(fabricRow)) return empty
+  if (!planned.fabricEnabled || !fabricRow || isFabricPaused(fabricRow)) {
+    // TurboFabric off or paused: only authored networks whose servers all
+    // share a trusted LAN can span (the planner refused the rest); managed
+    // database attachments keep their non-spanning path.
+    const spanning = await materializeSpanningNetworks(db, {
+      organizationId,
+      environmentId,
+      fabric: null,
+      document: planned.merged,
+      slots: planned.plan.slots,
+      serviceRows: planned.serviceRows,
+    })
+    return { ...empty, spanning }
+  }
   const { attachments, consumers } = await loadManagedIngressPlatformAttachments(db, {
     environmentId,
     document: planned.merged,
@@ -1735,6 +1749,77 @@ export function deployParticipation(params: {
   return { attachmentServers, participating, drainedIds }
 }
 
+async function serversSwitchedOn(db: Db, serverIds: readonly string[]): Promise<string[]> {
+  if (serverIds.length === 0) return []
+  const rows = await db
+    .select({ id: server.id, isFabricEnabled: server.isFabricEnabled })
+    .from(server)
+    .where(inArray(server.id, [...serverIds]))
+  const off = new Set(rows.filter((row) => row.isFabricEnabled === false).map((row) => row.id))
+  return serverIds.filter((id) => !off.has(id))
+}
+
+/**
+ * Give LAN routes to the servers a running mesh does not reach: every server
+ * on a cross-server network when TurboFabric is off or paused, or the ones
+ * switched out of it. No wait: the deploy creates the bridges itself
+ * (`fabricNetworks` on `environment.deploy`); the routes follow on their own.
+ */
+async function deliverOutsideMeshNetworking(
+  c: Context<AppEnv>,
+  db: Db,
+  commandQueue: CommandQueue,
+  params: {
+    spanning: ReadonlyMap<string, string>
+    auth: DeployRequestAuth
+    dataEncryptionSecrets: DerivedSecretsConfig
+  }
+): Promise<void> {
+  if (params.spanning.size === 0) return
+  const secretsConfig = c.get('secretsConfig')
+  await reconcileServerNetworking({
+    db,
+    commandQueue,
+    actor: { type: params.auth.actorType, id: params.auth.actorId },
+    organizationId: params.auth.organizationId,
+    secrets: {
+      ...(secretsConfig ? { secretsConfig } : {}),
+      dataEncryptionSecrets: params.dataEncryptionSecrets,
+    },
+    meshAlreadyConverging: true,
+  })
+}
+
+/**
+ * Re-check the pair rule after planning and materializing, before anything is
+ * delivered: a pair that stopped being a trusted LAN pair since planning is
+ * refused (422 `turbofabric_required`) unless TurboFabric carries it.
+ */
+async function recheckLanPairsBeforeDelivery(
+  c: Context<AppEnv>,
+  db: Db,
+  planned: SuccessfulPlannedDeploy,
+  spanningCtx: DeploySpanningContext,
+  auth: DeployRequestAuth
+): Promise<Response | null> {
+  if (spanningCtx.spanning.size === 0) return null
+  const refusal = await findDeployLanPairRefusal(db, {
+    organizationId: auth.organizationId,
+    networks: [...spanningCtx.spanning.keys()].map((key) => ({
+      key,
+      serverIds: participatingServerIdsForNetwork(
+        planned.merged,
+        planned.plan.slots,
+        planned.serviceRows,
+        key,
+        spanningCtx.attachments
+      ),
+    })),
+  })
+  if (!refusal) return null
+  return c.json({ error: 'turbofabric_required', message: refusal.message }, 422)
+}
+
 async function awaitDeployFabricGate(
   c: Context<AppEnv>,
   db: Db,
@@ -1754,6 +1839,11 @@ async function awaitDeployFabricGate(
   }
   const fabricRow = await getOrganizationFabric(db, params.auth.organizationId)
   if (!fabricRow || isFabricPaused(fabricRow)) return null
+  // A server switched out of the mesh has no relay to converge; the planner
+  // only lets it join networks it reaches over a shared trusted LAN, and
+  // deliverOutsideMeshNetworking sends it its payload with no tunnel.
+  const meshServerIds = await serversSwitchedOn(db, fabricServerIds)
+  if (meshServerIds.length <= 1) return null
 
   const secretsConfig = c.get('secretsConfig')
   const fabricGate = await awaitParticipatingFabricConvergence({
@@ -1762,7 +1852,7 @@ async function awaitDeployFabricGate(
     actorType: params.auth.actorType,
     actorId: params.auth.actorId,
     fabric: fabricRow,
-    serverIds: fabricServerIds,
+    serverIds: meshServerIds,
     ...(secretsConfig ? { secretsConfig } : {}),
     dataEncryptionSecrets: params.dataEncryptionSecrets,
   })
@@ -2132,6 +2222,8 @@ async function runEnvironmentDeploy(
       environmentId
     )
     if (spanningCtx instanceof Response) return spanningCtx
+    const lanRefusal = await recheckLanPairsBeforeDelivery(c, db, planned, spanningCtx, auth)
+    if (lanRefusal) return lanRefusal
     const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
     if (!dataEncryptionSecrets) {
       return c.json({ error: 'Encryption unavailable' }, 503)
@@ -2144,6 +2236,11 @@ async function runEnvironmentDeploy(
       dataEncryptionSecrets,
     })
     if (fabricGateError) return fabricGateError
+    await deliverOutsideMeshNetworking(c, db, commandQueue, {
+      spanning: spanningCtx.spanning,
+      auth,
+      dataEncryptionSecrets,
+    })
 
     const preparedByServer = await prepareAllServerDeploys(c, db, {
       planned,

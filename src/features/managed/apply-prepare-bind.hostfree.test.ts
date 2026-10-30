@@ -128,6 +128,18 @@ function fixtureDb(fixture: Fixture): Db {
         return { from: () => ({ where: () => thenable(datacenterOptions) }) }
       }
 
+      // Daemon features ({ id, daemon }) and connection state ({ id, connected }):
+      // no daemon routes over a LAN, every server is connected.
+      if (
+        keys.length === 2 &&
+        keySet.has('id') &&
+        (keySet.has('daemon') || keySet.has('connected'))
+      ) {
+        const ids = [...new Set(relays.map((row) => row.serverId))]
+        const rows = keySet.has('daemon') ? [] : ids.map((id) => ({ id, connected: true }))
+        return { from: () => ({ where: () => thenable(rows) }) }
+      }
+
       throw new TypeError(`unexpected select keys: ${keys.join(',')}`)
     },
   } as unknown as Db
