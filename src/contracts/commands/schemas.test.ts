@@ -4014,6 +4014,24 @@ test('parseEnvironmentStopPayload round-trips siteReleases and rejects unsafe se
   )
 })
 
+test('parseEnvironmentStopPayload keeps removeDeploymentDir only when it is true', () => {
+  const base = {
+    environmentId: 'env-1',
+    projectId: 'proj-1',
+    projectName: 'tp-demo',
+  }
+  assertEquals(parseEnvironmentStopPayload({ ...base, removeDeploymentDir: true }), {
+    ...base,
+    removeDeploymentDir: true,
+  })
+  for (const removeDeploymentDir of [false, 'true', 1, undefined]) {
+    assertEquals(
+      'removeDeploymentDir' in parseEnvironmentStopPayload({ ...base, removeDeploymentDir }),
+      false
+    )
+  }
+})
+
 test('parseEnvironmentStopPayload round-trips retirePrincipals and rejects unsafe names', () => {
   const base = {
     environmentId: 'env-1',

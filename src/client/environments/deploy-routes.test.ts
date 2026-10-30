@@ -2775,6 +2775,8 @@ test('an explicit stop clears releases but removes no folder, and delete teardow
     // Destroy clears the releases but names no folder to remove, so uploads stay.
     assertEquals('siteReleases' in payload, false)
     assertEquals(payload.releaseCleanup, recorded)
+    // Destroy keeps the compose folder, so a relative bind's data survives.
+    assertEquals('removeDeploymentDir' in payload, false)
 
     // The same record is what a delete reclaims, with the folder components.
     assertEquals(await resolveEnvironmentSiteReleases(ctx.db, ctx.environmentId), recorded)

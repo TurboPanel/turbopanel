@@ -4948,6 +4948,15 @@ export type EnvironmentStopCommandPayload = {
    * Only a delete teardown sets it, on the last stop it sends to a server.
    */
   retirePrincipals?: Array<{ username: string }>
+  /**
+   * Remove the environment's compose folder
+   * (`<stateDir>/deployments/<projectId>/<environmentId>`), including anything a
+   * relative bind such as `./data` wrote there. Only an environment or project
+   * delete sets it. Without it the daemon removes only its own compose files and
+   * keeps everything a service wrote, so a Destroy or a server leaving the
+   * environment never loses that data.
+   */
+  removeDeploymentDir?: true
 }
 
 export type EnvironmentStopCommandResult = {
@@ -5124,6 +5133,7 @@ export function parseEnvironmentStopPayload(value: unknown): EnvironmentStopComm
     ...(siteReleases !== undefined ? { siteReleases } : {}),
     ...(releaseCleanup !== undefined ? { releaseCleanup } : {}),
     ...(retirePrincipals !== undefined ? { retirePrincipals } : {}),
+    ...(value.removeDeploymentDir === true ? { removeDeploymentDir: true as const } : {}),
   }
 }
 
