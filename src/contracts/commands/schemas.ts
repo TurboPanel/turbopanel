@@ -1755,6 +1755,15 @@ function parseEnabledFabricPayload(
   if (value.fabricId !== undefined) {
     payload.fabricId = parseFabricUuid(value.fabricId, 'fabricId')
   }
+  applyOptionalFabricFields(payload, value)
+  return payload
+}
+
+/** The optional tunnel settings of an enabled payload, each checked when present. */
+function applyOptionalFabricFields(
+  payload: Extract<FabricReconcileCommandPayload, { enabled: true }>,
+  value: Record<string, unknown>
+): void {
   if (value.listenPort !== undefined) {
     if (!isValidWireguardListenPort(value.listenPort)) {
       throw new TypeError('Invalid fabric listenPort')
@@ -1776,7 +1785,6 @@ function parseEnabledFabricPayload(
     }
     payload.gateway = value.gateway
   }
-  return payload
 }
 
 export function parseFabricReconcilePayload(value: unknown): FabricReconcileCommandPayload {

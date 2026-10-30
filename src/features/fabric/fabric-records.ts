@@ -37,6 +37,7 @@ import {
 import type { ComposeDocument } from '../compose/types.ts'
 import type {
   FabricReconcileCommandPayload,
+  FabricReconcileLanRoute,
   FabricReconcileObservedPeer,
 } from '../../contracts/commands/schemas.ts'
 import { sha256HexUtf8 } from '../compose/desired-hash.ts'
@@ -64,7 +65,6 @@ import {
   splitTrustedByLink,
   trustedLanIpv4,
 } from '../net/private-endpoint.ts'
-import type { FabricReconcileLanRoute } from '../../contracts/commands/schemas.ts'
 import { loadCidrAllocationExclusions } from '../net/cidr-collisions.ts'
 import { checkAdvertisedRangeShape } from './advertised-ranges.ts'
 import {

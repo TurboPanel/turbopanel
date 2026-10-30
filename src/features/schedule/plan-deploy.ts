@@ -473,7 +473,7 @@ export async function planEnvironmentDeploy(
       serverId: task.serverId,
     })),
     storagePins,
-    ...(pairRules ?? {}),
+    ...pairRules,
   })
 
   return {
