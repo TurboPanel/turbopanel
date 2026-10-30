@@ -110,7 +110,13 @@ export async function handleForwardReport(db: Db, input: ForwardReportInput): Pr
     const reason = input.reason ? redactUrlSecrets(input.reason) : undefined
     const next = applyForwardReports(
       found.state,
-      [{ serverId: input.serverId, ok: input.ok, ...(reason ? { reason } : {}) }],
+      [
+        {
+          serverId: input.serverId,
+          outcome: input.ok ? 'ready' : 'failed',
+          ...(reason ? { reason } : {}),
+        },
+      ],
       now
     )
     await save(tx, found, next, now)

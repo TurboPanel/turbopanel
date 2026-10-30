@@ -38,6 +38,17 @@ const since = (iso: string | null, now: Date): number =>
   iso === null || Number.isNaN(Date.parse(iso)) ? 0 : now.getTime() - Date.parse(iso)
 
 function forwardingAction(state: HttpIssuanceState, now: Date): OpenAction {
+  // A helper that answered but could not pass the proof path on would let the
+  // authority land on a server that cannot answer, which spends a failed check.
+  const failed = state.forwards.find((f) => f.outcome === 'failed')
+  if (failed) {
+    const label = state.roster.find((r) => r.serverId === failed.serverId)?.label ?? 'A server'
+    return {
+      kind: 'fail',
+      reason: `${label} could not pass the check along${failed.reason ? `: ${failed.reason}` : '.'}`,
+      blameIssuer: false,
+    }
+  }
   const pending = state.forwards.filter((f) => f.outcome === 'pending').map((f) => f.serverId)
   if (pending.length === 0) return { kind: 'order', skip: [] }
   return since(state.startedAt, now) >= READY_WAIT_MS
@@ -110,12 +121,13 @@ export function publicMarker(
     ...previous,
     managedBy: HTTP_ISSUANCE_MANAGED_BY,
     challengeType: HTTP_ISSUANCE_CHALLENGE_TYPE,
-    staging: state.directory === 'staging',
     stage: stageOf(state),
     attempts: state.consecutiveFailures,
     serverStatus: serverStatusLines(state),
   }
   delete next.warning
+  // Only a Test Certificate carries this flag, and it cannot be pinned to a site.
+  delete next.staging
   if (state.phase === 'failed' && state.lastError) next.lastError = state.lastError
   else delete next.lastError
   if (state.nextAttemptAt !== null && state.phase === 'failed') {
@@ -170,9 +182,15 @@ export function nextStateForEvent(
 }
 
 /** Helper answers folded into the state; an answer from a server that was not asked is ignored. */
+export type ForwardReport = {
+  serverId: string
+  outcome: 'ready' | 'failed' | 'skipped'
+  reason?: string
+}
+
 export function applyForwardReports(
   state: HttpIssuanceState,
-  reports: Array<{ serverId: string; ok: boolean; reason?: string }>,
+  reports: ForwardReport[],
   now: Date
 ): HttpIssuanceState {
   if (state.endedAt !== null) return state
@@ -181,8 +199,8 @@ export function applyForwardReports(
     if (!report || f.outcome !== 'pending') return f
     return {
       ...f,
-      outcome: report.ok ? ('ready' as const) : ('failed' as const),
-      reason: report.ok ? null : (report.reason ?? 'Unknown reason.'),
+      outcome: report.outcome,
+      reason: report.outcome === 'ready' ? null : (report.reason ?? 'Unknown reason.'),
       at: now.toISOString(),
     }
   })

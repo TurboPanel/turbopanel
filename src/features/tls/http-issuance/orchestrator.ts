@@ -13,7 +13,19 @@
  */
 import { and, eq, inArray, ne, sql } from 'drizzle-orm'
 import type { Db } from '../../../db/connection.ts'
-import { deployment, environment, hosting, server, service, tls } from '../../../db/schema.ts'
+import {
+  deployment,
+  environment,
+  hosting,
+  organization,
+  server,
+  service,
+  tls,
+} from '../../../db/schema.ts'
+import {
+  parseOrganizationOptions,
+  resolveAcmeEnabled,
+} from '../../organizations/organization-options.ts'
 import type { DaemonOutboundEnvelope } from '../../../contracts/cell-protocol.ts'
 import { generateDeliveryId, generateRequestId } from '../../../contracts/cell-protocol.ts'
 import { loadServerPublicAddresses } from '../../net/client-addresses.ts'
@@ -26,6 +38,7 @@ import { type Choice, chooseParticipants, type ServingServer } from './choose.ts
 import {
   applyForwardReports,
   decideOpen,
+  type ForwardReport,
   failedState,
   publicMarker,
   REQUEST_LIFETIME_MS,
@@ -90,6 +103,16 @@ async function lockRow(tx: Db, tlsId: string): Promise<RowFacts | null> {
     hasPair: row.hasKey === true,
     metadata: (row.metadata ?? {}) as Record<string, unknown>,
   }
+}
+
+/** The organization's Let's Encrypt switch, read under the row lock. */
+async function acmeEnabledFor(tx: Db, organizationId: string): Promise<boolean> {
+  const [org] = await tx
+    .select({ options: organization.options })
+    .from(organization)
+    .where(eq(organization.id, organizationId))
+    .limit(1)
+  return resolveAcmeEnabled(parseOrganizationOptions(org?.options))
 }
 
 async function writeState(
@@ -230,15 +253,24 @@ export function isHttpOrderable(names: readonly string[]): boolean {
 export type StartOutcome =
   'started' | 'ordering' | 'waiting' | 'backoff' | 'not_due' | 'not_eligible'
 
-async function gather(deps: HttpIssuanceDeps, row: RowFacts, previous: HttpIssuanceState | null) {
+async function gather(
+  deps: HttpIssuanceDeps,
+  row: Pick<RowFacts, 'id' | 'names'>,
+  previous: HttpIssuanceState | null
+): Promise<{ choice: Choice; servers: ServingServer[] }> {
   const servers = await describeServers(deps, await loadServingServers(deps.db, row.id))
+  // Nothing to choose from until the first pass over the servers: skip the DNS lookup.
+  if (!servers.some((s) => s.hasFeature)) {
+    return { choice: { ok: false, reason: 'no_servers', skipped: [] }, servers }
+  }
   const dnsAddresses = await dnsAddressesOf(deps.dnsLookup, row.names)
-  return chooseParticipants({
+  const choice = chooseParticipants({
     servers,
     dnsAddresses,
     previousIssuerId: previous?.issuingServerId ?? null,
     avoidServerId: previous?.avoidServerId ?? null,
   })
+  return { choice, servers }
 }
 
 function rosterOf(choice: Extract<Choice, { ok: true }>): RosterEntry[] {
@@ -342,6 +374,7 @@ async function startInTransaction(
   const { deps, now, choice, contact } = params
   const row = await lockRow(tx, params.tlsId)
   if (!row) return { outcome: 'not_eligible', send: [] }
+  if (!(await acmeEnabledFor(tx, row.organizationId))) return { outcome: 'not_eligible', send: [] }
   const previous = readHttpIssuanceState(row.metadata)
   if (previous && previous.endedAt === null) return { outcome: 'not_due', send: [] }
   if (!params.due({ hasPair: row.hasPair, metadata: row.metadata })) {
@@ -395,11 +428,9 @@ export async function startHttpIssuance(
   const previous = readHttpIssuanceState(peek.metadata)
   if (previous && previous.endedAt === null) return 'not_due'
   const contact = await deps.contact()
-  const choice = await gather(
-    deps,
-    { id: tlsId, organizationId: '', names, hasPair: false, metadata: {} },
-    previous
-  )
+  const { choice, servers } = await gather(deps, { id: tlsId, names }, previous)
+  // Every serving server on an older daemon keeps ordering for itself; the row is left alone.
+  if (!servers.some((s) => s.hasFeature)) return 'not_eligible'
   const result = await deps.db.transaction((tx) =>
     startInTransaction(tx as unknown as Db, { deps, now, tlsId, choice, contact, due })
   )
@@ -430,7 +461,7 @@ async function deliverOrFail(
       state.requestId,
       failed.map((serverId) => ({
         serverId,
-        ok: false,
+        outcome: 'skipped' as const,
         reason: 'The server could not be reached.',
       }))
     )
@@ -443,7 +474,7 @@ async function recordForwardReports(
   deps: HttpIssuanceDeps,
   tlsId: string,
   requestId: string,
-  reports: Array<{ serverId: string; ok: boolean; reason?: string }>
+  reports: ForwardReport[]
 ): Promise<void> {
   const now = clock(deps)
   await deps.db.transaction(async (tx0) => {

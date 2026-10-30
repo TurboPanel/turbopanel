@@ -211,7 +211,7 @@ test('the first server by id issues; the others get a forward first and the orde
   }
 })
 
-test('the order goes out only after every helper answered, and carries the ready helpers', async () => {
+test('the order goes out only after every helper answered, and carries the helpers', async () => {
   if (!dbUrl) return skipWithoutDatabase('http issuance tests')
   const f = await setup()
   try {
@@ -219,43 +219,112 @@ test('the order goes out only after every helper answered, and carries the ready
     const state = readHttpIssuanceState((await readRow(f)).metadata)!
     const [h1, h2] = state.forwards.map((x) => x.serverId)
     f.sent.length = 0
+    const ready = (serverId: string, ms: number) =>
+      handleForwardReport(f.db, { serverId, requestId: 'req_test_1', ok: true, now: at(ms) })
     assertEquals(await advanceHttpIssuance(f.deps({ now: () => at(10_000) }), f.tlsId), 'not_due')
     assertEquals(f.sent.length, 0)
-    assert(
-      await handleForwardReport(f.db, {
-        serverId: h1!,
-        requestId: 'req_test_1',
-        ok: true,
-        now: at(11_000),
-      })
-    )
+    assert(await ready(h1!, 11_000))
     assertEquals(await advanceHttpIssuance(f.deps({ now: () => at(12_000) }), f.tlsId), 'not_due')
-    assert(
-      await handleForwardReport(f.db, {
-        serverId: h2!,
-        requestId: 'req_test_1',
-        ok: false,
-        reason: 'No room',
-        now: at(13_000),
-      })
-    )
+    assert(await ready(h2!, 13_000))
     assertEquals(await advanceHttpIssuance(f.deps({ now: () => at(14_000) }), f.tlsId), 'ordering')
     assertEquals(f.sent.length, 1)
     const order = f.sent[0]!.envelope
     assertEquals(f.sent[0]!.serverId, state.issuingServerId)
     assert(order.kind === 'acme-issue-request')
-    assertEquals(
-      order.helpers.map((h) => h.serverId),
-      [h1]
-    )
+    assertEquals(order.helpers.map((h) => h.serverId).sort(), [h1, h2].sort())
     assertEquals(order.directory, 'staging')
     assertEquals(order.names, [HOST])
     const after = readHttpIssuanceState((await readRow(f)).metadata)!
     assertEquals(after.phase, 'ordering')
     assertEquals(
       after.forwards.map((x) => x.outcome),
-      ['ready', 'failed']
+      ['ready', 'ready']
     )
+  } finally {
+    await f.cleanup()
+  }
+})
+
+test('a helper that cannot pass the proof path on stops the attempt, and nothing is ordered', async () => {
+  if (!dbUrl) return skipWithoutDatabase('http issuance tests')
+  const f = await setup()
+  try {
+    await startHttpIssuance(f.deps(), f.tlsId, always)
+    const state = readHttpIssuanceState((await readRow(f)).metadata)!
+    const [h1, h2] = state.forwards.map((x) => x.serverId)
+    await handleForwardReport(f.db, {
+      serverId: h1!,
+      requestId: 'req_test_1',
+      ok: true,
+      now: at(1000),
+    })
+    await handleForwardReport(f.db, {
+      serverId: h2!,
+      requestId: 'req_test_1',
+      ok: false,
+      reason: 'Port 80 is held',
+      now: at(2000),
+    })
+    f.sent.length = 0
+    assertEquals(await advanceHttpIssuance(f.deps({ now: () => at(3000) }), f.tlsId), 'backoff')
+    assert(f.sent.every((s) => s.envelope.kind === 'acme-proof-forward-end'))
+    assertEquals(f.sent.length, 2)
+    const row = await readRow(f)
+    const failed = readHttpIssuanceState(row.metadata)!
+    assertEquals(failed.phase, 'failed')
+    assert(failed.lastError?.endsWith('could not pass the check along: Port 80 is held'))
+    // The helper is not blamed as issuer: the same issuing server is kept for the retry.
+    assertEquals(failed.avoidServerId, null)
+    const acme = (row.metadata as { acme: { staging?: boolean } }).acme
+    assertEquals(acme.staging, undefined)
+  } finally {
+    await f.cleanup()
+  }
+})
+
+test('a forward that cannot be sent to a helper leaves that helper out and the order still goes', async () => {
+  if (!dbUrl) return skipWithoutDatabase('http issuance tests')
+  const f = await setup({ servers: 2 })
+  try {
+    const deps = f.deps({
+      send: (serverId, envelope) =>
+        envelope.kind === 'acme-proof-forward'
+          ? Promise.reject(new Error('socket closed'))
+          : (f.sent.push({ serverId, envelope }), Promise.resolve()),
+    })
+    assertEquals(await startHttpIssuance(deps, f.tlsId, always), 'started')
+    const state = readHttpIssuanceState((await readRow(f)).metadata)!
+    assertEquals(state.forwards[0]!.outcome, 'skipped')
+    assertEquals(await advanceHttpIssuance(f.deps({ now: () => at(5000) }), f.tlsId), 'ordering')
+  } finally {
+    await f.cleanup()
+  }
+})
+
+test('a row whose serving servers all run older daemons is left alone', async () => {
+  if (!dbUrl) return skipWithoutDatabase('http issuance tests')
+  const f = await setup({ servers: 2, noFeature: [0, 1] })
+  try {
+    const before = (await readRow(f)).metadata
+    assertEquals(await startHttpIssuance(f.deps(), f.tlsId, always), 'not_eligible')
+    assertEquals((await readRow(f)).metadata, before)
+    assertEquals(f.sent.length, 0)
+  } finally {
+    await f.cleanup()
+  }
+})
+
+test("nothing starts while the organization has Let's Encrypt turned off", async () => {
+  if (!dbUrl) return skipWithoutDatabase('http issuance tests')
+  const f = await setup({ servers: 1 })
+  try {
+    await f.db
+      .update(organization)
+      .set({ options: { acmeEnabled: false } })
+      .where(eq(organization.id, f.organizationId))
+    assertEquals(await startHttpIssuance(f.deps(), f.tlsId, always), 'not_eligible')
+    assertEquals(f.sent.length, 0)
+    assertEquals(readHttpIssuanceState((await readRow(f)).metadata), null)
   } finally {
     await f.cleanup()
   }

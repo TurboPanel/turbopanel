@@ -61,38 +61,57 @@ function open(over: Partial<HttpIssuanceState> = {}): HttpIssuanceState {
 
 test('the order waits for every helper, then goes out', () => {
   assertEquals(decideOpen(open(), at(30_000)), { kind: 'wait' })
-  const one = applyForwardReports(open(), [{ serverId: 'b', ok: true }], at(10_000))
+  const one = applyForwardReports(open(), [{ serverId: 'b', outcome: 'ready' }], at(10_000))
   assertEquals(decideOpen(one, at(30_000)), { kind: 'wait' })
-  const both = applyForwardReports(one, [{ serverId: 'c', ok: true }], at(20_000))
+  const both = applyForwardReports(one, [{ serverId: 'c', outcome: 'ready' }], at(20_000))
   assertEquals(decideOpen(both, at(30_000)), { kind: 'order', skip: [] })
 })
 
 test('a helper that never answers is left out after the wait', () => {
-  const one = applyForwardReports(open(), [{ serverId: 'b', ok: true }], at(10_000))
+  const one = applyForwardReports(open(), [{ serverId: 'b', outcome: 'ready' }], at(10_000))
   assertEquals(decideOpen(one, at(READY_WAIT_MS)), { kind: 'order', skip: ['c'] })
 })
 
-test('a helper that failed does not hold the order back', () => {
+test('a helper that could not pass the proof path on stops the attempt before the order', () => {
+  const state = applyForwardReports(
+    open(),
+    [{ serverId: 'b', outcome: 'failed', reason: 'Caddy would not reload' }],
+    at(5_000)
+  )
+  const action = decideOpen(state, at(10_000))
+  assertEquals(action, {
+    kind: 'fail',
+    reason: 'Server B could not pass the check along: Caddy would not reload',
+    blameIssuer: false,
+  })
+  const failed = failedState(state, at(10_000), 'x', false)
+  assertEquals(failed.avoidServerId, null)
+})
+
+test('a helper that could not be reached is left out and the order goes ahead', () => {
   const state = applyForwardReports(
     open(),
     [
-      { serverId: 'b', ok: false, reason: 'Caddy would not reload' },
-      { serverId: 'c', ok: true },
+      { serverId: 'b', outcome: 'skipped', reason: 'The server could not be reached.' },
+      { serverId: 'c', outcome: 'ready' },
     ],
     at(5_000)
   )
   assertEquals(decideOpen(state, at(10_000)), { kind: 'order', skip: [] })
-  assertEquals(state.forwards[0].reason, 'Caddy would not reload')
 })
 
 test('an answer from a server that was not asked, or arriving twice, changes nothing', () => {
   const state = open()
   assertEquals(
-    applyForwardReports(state, [{ serverId: 'x', ok: true }], at(1)).forwards,
+    applyForwardReports(state, [{ serverId: 'x', outcome: 'ready' }], at(1)).forwards,
     state.forwards
   )
-  const once = applyForwardReports(state, [{ serverId: 'b', ok: true }], at(1))
-  const twice = applyForwardReports(once, [{ serverId: 'b', ok: false, reason: 'late' }], at(2))
+  const once = applyForwardReports(state, [{ serverId: 'b', outcome: 'ready' }], at(1))
+  const twice = applyForwardReports(
+    once,
+    [{ serverId: 'b', outcome: 'failed', reason: 'late' }],
+    at(2)
+  )
   assertEquals(twice.forwards[0].outcome, 'ready')
 })
 
@@ -175,8 +194,8 @@ test('status lines describe each server and the public marker carries them', () 
   const state = applyForwardReports(
     open(),
     [
-      { serverId: 'b', ok: true },
-      { serverId: 'c', ok: false, reason: 'No port 80' },
+      { serverId: 'b', outcome: 'ready' },
+      { serverId: 'c', outcome: 'failed', reason: 'No port 80' },
     ],
     at(1)
   )
