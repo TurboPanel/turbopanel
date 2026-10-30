@@ -56,7 +56,8 @@ ACME issuer through hosting Caddy. A miss fails the apply; the admin route
 records that error on the hostname. The detail phrase is
 `did not reach the instance ACME issuer`. Issuance results come back as
 `instance-acme-issuance-event` and update `origin.acme_last_attempt_at` /
-`acme_last_error`. A successful probe may also include `notAfter`, which
+`acme_last_error`, accepted only from a server that runs the control plane
+(`src/daemon/instance-acme-inbound.ts`). A successful probe may also include `notAfter`, which
 is stored on the hostname. A failure does not clear `notAfter`. Changing
 the source away from Let's Encrypt does. That message is not the tenant
 `acme-issuance-event` stream.
