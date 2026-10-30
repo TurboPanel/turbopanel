@@ -99,6 +99,11 @@ export type AuthRouteOpts = {
   signupEnvOverride: SignupEnvOverride | undefined
   emailFrom?: string
   baseUrl?: string
+  /**
+   * Reads the Platform CA bundle `GET /api/daemon/v1/instance/ca` serves, so
+   * a self-hosted install command can carry its fingerprints. Deno only.
+   */
+  readPlatformCaPem?: () => Promise<string>
 }
 
 export type SessionResponse = {

@@ -41,6 +41,17 @@ alias, listed or not — is accepted only when that leaf's SANs cover it.
 Otherwise `POST /licenses` refuses the command before it is returned.
 Let's Encrypt and uploaded hostnames are checked against their own leaf.
 
+A self-hosted command that bootstraps insecure TLS also carries
+`TURBOPANEL_INSTANCE_CA_FINGERPRINT`: the SHA-256 of the DER of every
+certificate the installer may fetch over that leg (the Platform CA bundle that
+`/instance/ca` serves, read by the same injected `readPlatformCaPem`, plus a
+private upload's issuer), lowercase hex, comma-separated so a rotation bundle
+installs. The installer refuses a fetched certificate outside that list, and
+the daemon refuses to connect when its stored trust drifts from it. When no
+fingerprint can be computed, `POST /licenses` refuses the command instead of
+emitting an unpinned one (`install-ca-pin.ts`). Hosted and publicly trusted
+origins carry no fingerprint.
+
 Every hostname, whatever its certificate source, is reached at
 `https://<host>:8443`. `POST /api/admin/v1/instance/public-urls/apply` sends
 `public-urls-update`. Daemons at or above

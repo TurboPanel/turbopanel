@@ -1,3 +1,4 @@
+import { isInstallCaFingerprint } from './install-ca-pin.ts'
 import { formatInstanceDlBase } from './install-tls.ts'
 
 export function encodeLicenseArg(licenseId: string, licenseToken: string): string {
@@ -66,6 +67,20 @@ export function formatInstallScriptCurlUrl(origin: string): string {
 }
 
 /**
+ * Comma-joined expected CA fingerprints, or null when there are none. Values
+ * are emitted unquoted, so anything but 64 lowercase hex digits is refused.
+ */
+function caFingerprintEnvValue(fingerprints: readonly string[] | undefined): string | null {
+  if (!fingerprints || fingerprints.length === 0) return null
+  for (const value of fingerprints) {
+    if (!isInstallCaFingerprint(value)) {
+      throw new TypeError('install CA fingerprint must be 64 lowercase hex digits')
+    }
+  }
+  return fingerprints.join(',')
+}
+
+/**
  * Build the install pipeline. Callers must pass a validated origin / host and a
  * base64url license (no shell metacharacters) — values are emitted unquoted.
  */
@@ -74,6 +89,7 @@ function buildInstallPipeline(opts: {
   licenseArg: string
   host?: string
   insecureTls?: boolean
+  caFingerprints?: readonly string[]
   curlInsecure?: boolean
   dlBase?: string
   updateChannel?: string
@@ -81,7 +97,11 @@ function buildInstallPipeline(opts: {
   const curl = opts.curlInsecure ? 'curl -fsSLk' : 'curl -fsSL'
   const envParts = [`TURBOPANEL_LICENSE=${opts.licenseArg}`]
   if (opts.host) envParts.push(`TURBOPANEL_HOST=${opts.host}`)
-  if (opts.insecureTls) envParts.push('TURBOPANEL_INSECURE_TLS=1')
+  if (opts.insecureTls) {
+    envParts.push('TURBOPANEL_INSECURE_TLS=1')
+    const pin = caFingerprintEnvValue(opts.caFingerprints)
+    if (pin) envParts.push(`TURBOPANEL_INSTANCE_CA_FINGERPRINT=${pin}`)
+  }
   if (opts.dlBase) {
     // A dev overlay serves unsigned builds. run.sh skips signature checks only
     // when it is told twice (overlay + opt-in), so a stray TURBOPANEL_DL_BASE
@@ -112,6 +132,13 @@ export function buildLicenseInstallCommand(opts: {
    */
   insecureTls?: boolean
   /**
+   * SHA-256 fingerprints of every CA the installer may fetch over that
+   * insecure bootstrap (`TURBOPANEL_INSTANCE_CA_FINGERPRINT`). Emitted only
+   * with `insecureTls` on the Deno runtime; the installer refuses a fetched
+   * CA outside this list.
+   */
+  caFingerprints?: readonly string[]
+  /**
    * Dev overlay only: fetch the installer from the instance host `/run.sh`
    * (served by the dev Caddyfile). Production / self-hosted Deno installs must
    * leave this unset so the command curls `CDN_INSTALL_HOST` and passes
@@ -132,6 +159,7 @@ export function buildLicenseInstallCommand(opts: {
     licenseId,
     licenseToken,
     insecureTls: insecureTlsOpt = false,
+    caFingerprints,
     useInstanceRunScript = false,
     dlBase,
     updateChannel,
@@ -152,6 +180,7 @@ export function buildLicenseInstallCommand(opts: {
       licenseArg,
       host,
       insecureTls,
+      caFingerprints,
       curlInsecure: insecureTls,
       dlBase: overlayDlBase,
       updateChannel,

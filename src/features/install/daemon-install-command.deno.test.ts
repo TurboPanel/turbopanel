@@ -1,4 +1,4 @@
-import { assertEquals } from '@std/assert'
+import { assertEquals, assertThrows } from '@std/assert'
 import {
   buildLicenseInstallCommand,
   CDN_INSTALL_HOST,
@@ -272,4 +272,61 @@ test("buildLicenseInstallCommand curls the installer host for the control plane'
     })
     assertEquals(release.startsWith(`curl -fsSL ${CDN_INSTALL_HOST} | `), true)
   }
+})
+
+const CURRENT_CA_FP = 'a'.repeat(64)
+const RETIRED_CA_FP = 'b'.repeat(64)
+
+test('a self-hosted insecure-TLS command carries every expected CA fingerprint', () => {
+  const command = buildLicenseInstallCommand({
+    runtime: 'deno',
+    instanceUrl: 'https://panel.example.com:8443',
+    licenseId: 'license-id',
+    licenseToken: 'token',
+    insecureTls: true,
+    caFingerprints: [CURRENT_CA_FP, RETIRED_CA_FP],
+  })
+  assertEquals(
+    command.includes(
+      `TURBOPANEL_INSECURE_TLS=1 TURBOPANEL_INSTANCE_CA_FINGERPRINT=${CURRENT_CA_FP},${RETIRED_CA_FP}`
+    ),
+    true
+  )
+})
+
+test('a CA fingerprint is never emitted without insecure TLS or on the hosted runtime', () => {
+  const verified = buildLicenseInstallCommand({
+    runtime: 'deno',
+    instanceUrl: 'https://panel.example.com',
+    licenseId: 'license-id',
+    licenseToken: 'token',
+    insecureTls: false,
+    caFingerprints: [CURRENT_CA_FP],
+  })
+  assertEquals(verified.includes('TURBOPANEL_INSTANCE_CA_FINGERPRINT'), false)
+  const hosted = buildLicenseInstallCommand({
+    runtime: 'workers',
+    instanceUrl: 'https://panel.example.com',
+    licenseId: 'license-id',
+    licenseToken: 'token',
+    insecureTls: true,
+    caFingerprints: [CURRENT_CA_FP],
+  })
+  assertEquals(hosted.includes('TURBOPANEL_INSTANCE_CA_FINGERPRINT'), false)
+  assertEquals(hosted.includes('TURBOPANEL_INSECURE_TLS'), false)
+})
+
+test('a CA fingerprint that is not 64 lowercase hex digits is refused', () => {
+  assertThrows(
+    () =>
+      buildLicenseInstallCommand({
+        runtime: 'deno',
+        instanceUrl: 'https://panel.example.com:8443',
+        licenseId: 'license-id',
+        licenseToken: 'token',
+        insecureTls: true,
+        caFingerprints: ['abc; rm -rf /'],
+      }),
+    TypeError
+  )
 })

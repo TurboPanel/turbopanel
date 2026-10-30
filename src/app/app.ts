@@ -138,6 +138,7 @@ export function createApp({
   getPlatformEnv,
   registerBilling,
   getClientOpenApiSpec,
+  readPlatformCaPem,
 }: {
   db?: Db
   emailQueue?: EmailQueue
@@ -190,6 +191,8 @@ export function createApp({
    */
   registerBilling?: NonNullable<ClientRouteOpts['registerBilling']>
   getClientOpenApiSpec?: NonNullable<ClientRouteOpts['getOpenApiSpec']>
+  /** Platform CA bundle reader for self-hosted install commands (Deno only). */
+  readPlatformCaPem?: () => Promise<string>
 }): Hono<AppEnv> {
   const app = new Hono<AppEnv>()
   // First, so every response carries them — including ones a later
@@ -272,6 +275,7 @@ export function createApp({
       baseUrl,
       ...(registerBilling ? { registerBilling } : {}),
       ...(getClientOpenApiSpec ? { getOpenApiSpec: getClientOpenApiSpec } : {}),
+      ...(readPlatformCaPem ? { readPlatformCaPem } : {}),
     })
   }
   return app
