@@ -5,8 +5,17 @@
  * engine from `kind: 'backup'` on the apply credential:
  *
  * - PostgreSQL: `pg_read_all_data`, `BYPASSRLS` and `CONNECT` on every database.
- * - MySQL: `SELECT`, `SHOW VIEW`, `TRIGGER`, `EVENT` and `SHOW_ROUTINE` at
- *   global level (`*.*`), so databases made with plain SQL are covered too.
+ * - MySQL: `SELECT`, `SHOW VIEW`, `TRIGGER`, `EVENT`, `SHOW_ROUTINE` and
+ *   `FLUSH_TABLES` at global level (`*.*`), so databases made with plain SQL
+ *   are covered too. `FLUSH_TABLES` (not `RELOAD`): on a server with GTIDs on,
+ *   `mysqldump --single-transaction` takes `FLUSH TABLES WITH READ LOCK` around
+ *   the start of its snapshot, then `UNLOCK TABLES`. Each dump holds that lock
+ *   for a moment, after waiting for running statements to finish, so one long
+ *   query holds writers up for that long. The right also lets the login take
+ *   that global read lock by hand, which blocks every write on the server until
+ *   it unlocks or disconnects, so treat the backup password like an admin
+ *   password. An existing backup login gets it on the next apply of its
+ *   cluster, not when the daemon is updated.
  * - MariaDB: `SELECT`, `SHOW VIEW`, `TRIGGER`, `EVENT`, `LOCK TABLES` and
  *   `SHOW CREATE ROUTINE` at global level.
  *
