@@ -304,6 +304,21 @@ test('deploy hooks are off unless the organization opted in', () => {
   assertEquals(parseOrganizationOptions({ deployHooksEnabled: false }).deployHooksEnabled, false)
 })
 
+test('the new-project form switches keep only booleans', () => {
+  assertEquals(
+    parseOrganizationOptions({
+      openEnvironmentSectionByDefault: true,
+      openWorkspaceSectionByDefault: 'yes',
+    }),
+    { openEnvironmentSectionByDefault: true }
+  )
+  assertEquals(
+    parseOrganizationOptions({ openWorkspaceSectionByDefault: false })
+      .openWorkspaceSectionByDefault,
+    false
+  )
+})
+
 test('the deploy time limit is 30 minutes unless the organization set a whole number from 5 to 240', () => {
   assertEquals(resolveDeployTimeoutMs(null), 30 * 60_000)
   assertEquals(resolveDeployTimeoutMs(undefined), 30 * 60_000)
