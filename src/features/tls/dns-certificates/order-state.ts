@@ -32,6 +32,8 @@ export type OrderState = {
   presentedAt: string | null
   /** The challenges were answered. */
   answeredAt: string | null
+  /** When the authorizations of a still-pending order were last read after the answer. */
+  authzCheckedAt?: string | null
   /** The request for the certificate was sent. */
   finalizedAt: string | null
   /** Where to download the certificate, when the answer to the request already named it. */
@@ -117,6 +119,7 @@ function readOrder(value: unknown): OrderState | null {
     startedAt,
     presentedAt: text(r?.presentedAt),
     answeredAt: text(r?.answeredAt),
+    authzCheckedAt: text(r?.authzCheckedAt),
     finalizedAt: text(r?.finalizedAt),
     certificateUrl: text(r?.certificateUrl),
     pendingKey: text(r?.pendingKey),

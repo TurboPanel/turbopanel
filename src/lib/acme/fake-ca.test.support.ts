@@ -34,6 +34,8 @@ export type FakeCaOptions = {
   busyOrders?: { status: number; retryAfter?: string }
   /** Answer the first nonce-bearing request with a stale-nonce error. */
   staleNonceOnce?: boolean
+  /** This many challenge answers are accepted but lost, as if they never arrived. */
+  loseAnswers?: number
   /** The order stays `processing` for this many polls after the request. */
   processingPolls?: number
   /** Makes the certificate for an order; the default is a self-signed one. */
@@ -54,6 +56,8 @@ export type FakeCa = {
   orders: Order[]
   /** Every signed request: path and the account address it used, if any. */
   log: { path: string; kid: string | null }[]
+  /** Challenge answers received (the challenge id of each), lost ones included. */
+  answers: string[]
   /** The names on each certificate issued, in order. */
   issued: string[][]
   /** Renewal-information requests received (the identifier of each). */
@@ -128,12 +132,14 @@ export function createFakeCa(options: FakeCaOptions): FakeCa {
   const orders: Order[] = []
   const log: FakeCa['log'] = []
   const issued: string[][] = []
+  const answers: string[] = []
   const renewalAsked: string[] = []
   const orderReplaces: (string | undefined)[] = []
   const hits = { directory: 0, nonce: 0, renewal: 0, signed: 0 }
   const deactivated = new Set<string>()
   const nonces = new Set<string>()
   let stale = options.staleNonceOnce === true
+  let toLose = options.loseAnswers ?? 0
   let counter = 0
   const next = (prefix: string) => {
     counter += 1
@@ -294,7 +300,9 @@ export function createFakeCa(options: FakeCaOptions): FakeCa {
     const [, kind, id] = path.split('/')
     const order = orders.find((o) => o.id === id || o.authz.some((a) => a.id === id))
     if (kind === 'chall') {
-      order!.authz.find((a) => a.id === id)!.answered = true
+      answers.push(id!)
+      if (toLose > 0) toLose -= 1
+      else order!.authz.find((a) => a.id === id)!.answered = true
       return json({ status: 'processing' }, { headers })
     }
     if (kind === 'authz') {
@@ -372,6 +380,7 @@ export function createFakeCa(options: FakeCaOptions): FakeCa {
     orders,
     log,
     issued,
+    answers,
     renewalAsked,
     orderReplaces,
     hits,
