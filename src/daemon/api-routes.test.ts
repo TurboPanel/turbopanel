@@ -27,6 +27,7 @@ import {
   license,
   organization,
   payer,
+  peak,
   project,
   server,
   service,
@@ -89,6 +90,7 @@ import {
   resetDenoMetricsChartCacheForTests,
 } from './metrics/query/cache.ts'
 import { markServerLiveSessionActive, readLiveSample } from './metrics/query/live-session.ts'
+import { resetOverPlanMemoForTests } from './metrics/over-plan-flag.ts'
 
 const dbUrl = getDatabaseUrl()
 const encoder = new TextEncoder()
@@ -3420,7 +3422,7 @@ test('POST /metrics: a declared machine_class=physical retains sensors with no t
   })
 })
 
-test('POST /metrics keeps the sample and flags the server when its RAM or physical cores are past the licensed box size', async () => {
+test('POST /metrics keeps the sample and flags the server while its highest RAM or physical cores of the last 7 days are past the licensed box size', async () => {
   await withEnrollFixture(async ({ db, serverId, keyId }) => {
     const { app, writes } = await createMetricsTestAppWithDb(db)
     const daemonToken = await issueDaemonToken(serverId, keyId)
@@ -3433,7 +3435,7 @@ test('POST /metrics keeps the sample and flags the server when its RAM or physic
         },
         body: JSON.stringify(
           buildValidMetricsFrame({
-            // The sample's own sizes are never the plan's unit: only the host report counts.
+            // Logical CPUs are never the plan's unit: only the host report's physical cores count.
             extended: { sizes: { memoryTotalBytes: 1024, logicalCores: 128 } },
             metadata: { sampledAt: at },
           })
@@ -3442,6 +3444,11 @@ test('POST /metrics keeps the sample and flags the server when its RAM or physic
     const metadataOf = async () =>
       ((await db.select({ m: server.metadata }).from(server).where(eq(server.id, serverId)))[0]!
         .m ?? {}) as Record<string, unknown>
+    const peakRows = () =>
+      db
+        .select({ memoryBytes: peak.memoryBytes, cores: peak.cores, updatedAt: peak.updatedAt })
+        .from(peak)
+        .where(eq(peak.serverId, serverId))
     const GIB = 1024 ** 3
     const setHostReport = (gib: number, ...perSocket: number[]) =>
       db
@@ -3458,12 +3465,14 @@ test('POST /metrics keeps the sample and flags the server when its RAM or physic
     const settle = () => new Promise((resolve) => setTimeout(resolve, 200))
 
     // The fixture's tier is S1 (16 GiB, 4 physical cores). 128 logical CPUs on
-    // the sample change nothing: only the host report's RAM and physical cores count.
+    // the sample change nothing.
     await setHostReport(8, 2, 2)
     const fits = await post(new Date().toISOString())
     assertEquals(fits.status, 202)
     await settle()
     assertEquals('overPlan' in (await metadataOf()), false)
+    const [first] = await peakRows()
+    assertEquals([first!.memoryBytes, first!.cores], [8 * GIB, 4])
 
     // 64 GiB of RAM and 6 physical cores (3 + 3) are both past S1.
     await setHostReport(64, 3, 3)
@@ -3473,12 +3482,33 @@ test('POST /metrics keeps the sample and flags the server when its RAM or physic
     await settle()
     const stamp = (await metadataOf()).overPlan as Record<string, unknown>
     assertEquals([stamp.memory, stamp.cpu], [true, true])
+    assertEquals(stamp.since, stamp.at)
+    const raised = await peakRows()
+    assertEquals(raised.length, 1, 'one row per server per hour')
+    assertEquals([raised[0]!.memoryBytes, raised[0]!.cores], [64 * GIB, 6])
+    assertEquals(
+      Date.parse(raised[0]!.updatedAt) > Date.parse(first!.updatedAt),
+      true,
+      'the upsert moves updated_at'
+    )
 
-    // Back inside the box: the flag clears and the sample is still stored.
+    // Back inside the box: the highest reading of the window still counts, so
+    // the flag stays and the sample is still stored.
     await setHostReport(8, 2, 2)
     const back = await post(new Date(Date.now() + 2000).toISOString())
     assertEquals(back.status, 202)
     assertEquals(writes.length, 3)
+    await settle()
+    assertEquals(((await metadataOf()).overPlan as Record<string, unknown>).memory, true)
+
+    // Once the over reading is older than the 7-day window, the flag clears.
+    await db
+      .update(peak)
+      .set({ bucket: new Date(Date.now() - 8 * 24 * 3_600_000).toISOString() })
+      .where(eq(peak.serverId, serverId))
+    resetOverPlanMemoForTests()
+    const later = await post(new Date(Date.now() + 3000).toISOString())
+    assertEquals(later.status, 202)
     await settle()
     assertEquals('overPlan' in (await metadataOf()), false)
   })
