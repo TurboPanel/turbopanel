@@ -700,7 +700,9 @@ export function resolveOneFromCaches(params: {
     return {
       address: publicAddress,
       transport: 'public',
-      ...(partition.untrusted.length > 0 ? { untrustedPublic: true as const } : {}),
+      ...(partition.untrusted.length > 0 && partition.trusted.length === 0
+        ? { untrustedPublic: true as const }
+        : {}),
     }
   }
 

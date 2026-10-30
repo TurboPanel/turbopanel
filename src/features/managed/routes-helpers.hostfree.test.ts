@@ -45,6 +45,7 @@ import {
   parseReplicaClassCreate,
   pickPrimaryCommandResult,
   replicaEndpointPurpose,
+  placementNeedsHealthyFabric,
   replicaPlacementNeedsDatacenter,
   validateManagedDatabaseCreateName,
 } from './routes-helpers.ts'
@@ -880,4 +881,10 @@ test('evaluateOperatorPromoteGate postgres received vs replayed LSN', () => {
     null
   )
   assertEquals(evaluateOperatorPromoteGate({ ...base }, false, now, pg), 'managed_replica_lagging')
+})
+
+test('placementNeedsHealthyFabric refuses a public fallback or a down tunnel, allows a healthy path', () => {
+  assertEquals(placementNeedsHealthyFabric({ untrustedPublic: true }), true)
+  assertEquals(placementNeedsHealthyFabric({ tunnelDown: true }), true)
+  assertEquals(placementNeedsHealthyFabric({}), false)
 })

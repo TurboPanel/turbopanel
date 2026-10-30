@@ -1198,6 +1198,17 @@ export function assertFailoverReplicaTransportAllowed(
  * public is rejected earlier). Read replicas skip the CIDR check on
  * fabric/public (already overlay/TLS).
  */
+/**
+ * A new placement (replica create, class change) never lands on a path that
+ * fell to the public address on an untrusted network or on a tunnel with no
+ * recent handshake: TurboFabric has to carry it. Running traffic is untouched.
+ */
+export function placementNeedsHealthyFabric(
+  resolved: Readonly<{ untrustedPublic?: true; tunnelDown?: true }>
+): boolean {
+  return resolved.untrustedPublic === true || resolved.tunnelDown === true
+}
+
 export function replicaPlacementNeedsDatacenter(
   transport: 'local' | 'datacenter' | 'fabric' | 'public',
   replicaClass: 'failover' | 'read'
