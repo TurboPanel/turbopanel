@@ -7,6 +7,11 @@ import type { HttpIssuanceState, RosterEntry } from './state.ts'
 
 export type ServerStatusLine = { serverId: string; text: string }
 
+/** `: reason` when there is one, else a full stop. */
+function reasonSuffix(reason: string | null | undefined): string {
+  return reason ? `: ${reason}` : '.'
+}
+
 function skippedLine(entry: RosterEntry): string {
   switch (entry.skip) {
     case 'offline':
@@ -23,7 +28,7 @@ function helperLine(entry: RosterEntry, state: HttpIssuanceState, issuerLabel: s
   if (forward?.outcome === 'ready')
     return `${entry.label} passed the check along to ${issuerLabel}.`
   if (forward?.outcome === 'failed') {
-    return `${entry.label} could not pass the check along${forward.reason ? `: ${forward.reason}` : '.'}`
+    return `${entry.label} could not pass the check along${reasonSuffix(forward.reason)}`
   }
   if (forward?.outcome === 'skipped') {
     return `${entry.label} did not answer in time and was left out of this attempt.`
@@ -34,7 +39,7 @@ function helperLine(entry: RosterEntry, state: HttpIssuanceState, issuerLabel: s
 function issuerLine(entry: RosterEntry, state: HttpIssuanceState): string {
   if (state.phase === 'issued') return `${entry.label} answered the check.`
   if (state.phase === 'failed') {
-    return `${entry.label} could not finish the order${state.lastError ? `: ${state.lastError}` : '.'}`
+    return `${entry.label} could not finish the order${reasonSuffix(state.lastError)}`
   }
   return state.phase === 'ordering'
     ? `${entry.label} is ordering the certificate.`
@@ -45,15 +50,12 @@ function issuerLine(entry: RosterEntry, state: HttpIssuanceState): string {
 export function serverStatusLines(state: HttpIssuanceState): ServerStatusLine[] {
   const issuer = state.roster.find((e) => e.role === 'issuer')
   const issuerLabel = issuer?.label ?? 'the issuing server'
-  return state.roster.map((entry) => ({
-    serverId: entry.serverId,
-    text:
-      entry.role === 'issuer'
-        ? issuerLine(entry, state)
-        : entry.role === 'helper'
-          ? helperLine(entry, state, issuerLabel)
-          : skippedLine(entry),
-  }))
+  const lineFor = (entry: RosterEntry): string => {
+    if (entry.role === 'issuer') return issuerLine(entry, state)
+    if (entry.role === 'helper') return helperLine(entry, state, issuerLabel)
+    return skippedLine(entry)
+  }
+  return state.roster.map((entry) => ({ serverId: entry.serverId, text: lineFor(entry) }))
 }
 
 /** What the Certificate panel says when no server can take the order yet. */

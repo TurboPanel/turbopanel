@@ -1982,6 +1982,13 @@ export class DaemonCellObject {
       })
       return true
     }
+    if (isHttpIssuanceMessage(parsed)) {
+      await this.#recordInboundRepairingPresence(attachment, parsed.at)
+      await this.#withProjectionDb(parsed.type, attachment.serverId, async (db) => {
+        await handleHttpIssuanceInbound(db, attachment.serverId, parsed)
+      })
+      return true
+    }
     if (parsed.type === 'topology-report') {
       await this.#recordInboundRepairingPresence(attachment, parsed.at)
       await this.#withProjectionDb('topology-report', attachment.serverId, async (db) => {
@@ -2097,14 +2104,6 @@ export class DaemonCellObject {
                 emitCertificateRenewalFailed(db, await this.#dataEncryptionSecrets(), failure),
             }
           )
-        })
-        return
-      }
-
-      if (isHttpIssuanceMessage(parsed)) {
-        await this.#recordInboundRepairingPresence(attachment, parsed.at)
-        await this.#withProjectionDb(parsed.type, attachment.serverId, async (db) => {
-          await handleHttpIssuanceInbound(db, attachment.serverId, parsed)
         })
         return
       }
