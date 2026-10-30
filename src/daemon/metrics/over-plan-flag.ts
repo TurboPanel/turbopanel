@@ -106,8 +106,7 @@ export async function recordOverPlan(
   const rank = tierRank ?? null
   const memo = peakMemo.get(serverId)
   if (
-    memo !== undefined &&
-    memo.bucket === bucket &&
+    memo?.bucket === bucket &&
     memo.tierRank === rank &&
     reading.memoryBytes <= memo.memoryBytes &&
     reading.cores <= memo.cores
@@ -126,11 +125,11 @@ export async function recordOverPlan(
   await applyOverPlanStamp(db, serverId, result, readOverPlanStamp(serverMetadata), now)
 
   if (peakMemo.size >= PEAK_MEMO_LIMIT && memo === undefined) peakMemo.clear()
-  const sameHour = memo !== undefined && memo.bucket === bucket
+  const sameHour = memo?.bucket === bucket ? memo : undefined
   peakMemo.set(serverId, {
     bucket,
-    memoryBytes: Math.max(reading.memoryBytes, sameHour ? memo.memoryBytes : 0),
-    cores: Math.max(reading.cores, sameHour ? memo.cores : 0),
+    memoryBytes: Math.max(reading.memoryBytes, sameHour?.memoryBytes ?? 0),
+    cores: Math.max(reading.cores, sameHour?.cores ?? 0),
     tierRank: rank,
   })
 }
