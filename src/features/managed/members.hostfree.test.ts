@@ -577,6 +577,26 @@ function privateEndpointSelect(memberships: MembershipPinRow[], opts?: PrivateEn
       }
     }
 
+    // Daemon features ({ id, daemon }) and connection state ({ id, connected }):
+    // no daemon routes over a LAN, every server is connected.
+    if (
+      keys.length === 2 &&
+      keySet.has('id') &&
+      (keySet.has('daemon') || keySet.has('connected'))
+    ) {
+      const ids = [...new Set((opts?.relays ?? []).map((row) => row.serverId))]
+      const rows = keySet.has('daemon') ? [] : ids.map((id) => ({ id, connected: true }))
+      return {
+        from() {
+          return {
+            where() {
+              return thenableRows(rows)
+            },
+          }
+        },
+      }
+    }
+
     throw new TypeError(`unexpected private-endpoint select keys: ${keys.join(',')}`)
   }
 }

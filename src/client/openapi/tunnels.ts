@@ -476,7 +476,7 @@ export const tunnelPaths: Record<string, unknown> = {
       tags: ['Organizations'],
       summary: 'Remove a tunnel provider account',
       description:
-        'Owners and managers only. Removes its tokens too. 409 `carrier_in_use` while a tunnel still uses it, or `origin_certificate_in_use` while origin certificates were issued through it.',
+        'Owners and managers only. Removes its tokens too. 409 `carrier_in_use` while a tunnel still uses it, or `origin_certificate_in_use` while origin certificates were issued through the account.',
       security: [{ cookieAuth: [] }],
       parameters: [ORG_ID_PARAM, CARRIER_ID_PARAM],
       responses: {
@@ -661,7 +661,7 @@ export const tunnelPaths: Record<string, unknown> = {
       tags: ['Organizations'],
       summary: 'Remove a token',
       description:
-        'Owners and managers only. The sealed token is deleted with it. 409 `badge_in_use` (with `dependents`, at most 50, and `total`) while it is the only token that reaches tunnels for an account that has Tunnels, or the only one that reaches DNS for a zone whose hostnames have DNS names made with it, or the only one that can revoke an origin certificate of a zone.',
+        'Owners and managers only. The sealed token is deleted with it. Tunnels, hostnames and certificates belong to the account, so removing a token is refused only when no other active token of the account covers something that needs it: 409 `badge_in_use` (with a plain `message` naming them, `dependents`, at most 50, each `kind` `tunnel`, `hostname` or `certificate`, and `total`) while it is the only token that reaches tunnels for an account that has Tunnels, the only one that reaches DNS for a zone whose hostnames have DNS names or whose Let’s Encrypt certificates are validated there, or the only one that manages origin certificates of a zone that has them.',
       security: [{ cookieAuth: [] }],
       parameters: [ORG_ID_PARAM, CARRIER_ID_PARAM, BADGE_ID_PARAM],
       responses: {
@@ -698,7 +698,7 @@ export const tunnelPaths: Record<string, unknown> = {
       tags: ['Organizations'],
       summary: 'Stop naming a zone for a token',
       description:
-        'Owners and managers only. The token is checked again without the zone. 404 when the zone was not named; 409 `badge_in_use` (with `dependents`) when no other token covers it and hostnames have DNS names there.',
+        'Owners and managers only. The token is checked again without the zone. 404 when the zone was not named; 409 `badge_in_use` (with `message` and `dependents`) when no other token covers the zone and hostnames or certificates there need it.',
       security: [{ cookieAuth: [] }],
       parameters: [
         ORG_ID_PARAM,

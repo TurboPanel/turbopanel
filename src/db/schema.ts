@@ -703,6 +703,13 @@ export const server = pgTable(
      */
     fabricRole: text('fabric_role'),
     /**
+     * The server's container range (a /16 from the org container pool), set
+     * the first time a cross-server container network or TurboFabric needs
+     * it. Subnets of cross-server networks are carved from it, and a relay's
+     * `prefix` mirrors it. NULL until first needed.
+     */
+    containerPrefix: cidr('container_prefix'),
+    /**
      * Latest hardware layout the daemon reported (`generation`,
      * `bootGeneration`, `snapshot`, `appliedAt`, `updatedAt`, `changes`), at
      * most 64 KiB, rewritten at most once per cooldown. Overwritten in

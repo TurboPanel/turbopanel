@@ -71,6 +71,13 @@
       "when": 1793330850701,
       "tag": "0009_fabric_membership_role_kind",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1793351069170,
+      "tag": "0010_server_container_prefix",
+      "breakpoints": true
     }
   ]
 }

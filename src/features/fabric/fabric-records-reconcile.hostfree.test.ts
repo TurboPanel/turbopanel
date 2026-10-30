@@ -1013,7 +1013,7 @@ test('buildFabricReconcilePayloadFromSnapshot hash reflects peer pathKind', asyn
   assertNotEquals(lanBuilt.desiredHash, publicBuilt.desiredHash)
 })
 
-test('buildFabricReconcilePayloadFromSnapshot never dials an untrusted shared datacenter LAN', async () => {
+test('buildFabricReconcilePayloadFromSnapshot runs the tunnel over an untrusted LAN only when nothing trusted is shared', async () => {
   const selfRelay = relayRecord({
     id: 'r1',
     serverId: 'srv-1',
@@ -1072,16 +1072,17 @@ test('buildFabricReconcilePayloadFromSnapshot never dials an untrusted shared da
   assertEquals(built.payload.peers[0]?.endpoint, '10.7.0.2:51830')
   assertEquals(built.payload.peers[0]?.pathKind, 'direct_lan')
 
-  // Untrusted-only: LAN is skipped entirely and the peer is dialed publicly.
+  // Untrusted-only: the tunnel runs over that LAN (encrypted) ahead of the
+  // public address, instead of crossing the internet.
   caches.datacenterMembershipsByServer.set('srv-1', [
     membershipPin('srv-1', 'dc-untrusted', '10.0.0.1'),
   ])
-  const publicOnly = await buildFabricReconcilePayloadFromSnapshot(snapshot, {
+  const overLan = await buildFabricReconcilePayloadFromSnapshot(snapshot, {
     serverId: 'srv-1',
   })
-  if (!publicOnly?.payload.enabled) throw new TypeError('expected enabled payload')
-  assertEquals(publicOnly.payload.peers[0]?.endpoint, '198.51.100.11:51830')
-  assertEquals(publicOnly.payload.peers[0]?.pathKind, 'direct_public')
+  if (!overLan?.payload.enabled) throw new TypeError('expected enabled payload')
+  assertEquals(overLan.payload.peers[0]?.endpoint, '10.0.0.2:51830')
+  assertEquals(overLan.payload.peers[0]?.pathKind, 'direct_lan')
 })
 
 test('buildFabricReconcilePayloadFromSnapshot omits a reported private IPv4 as a public path', async () => {

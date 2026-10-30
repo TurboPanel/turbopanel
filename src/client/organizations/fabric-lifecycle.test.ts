@@ -7,13 +7,26 @@
  */
 import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { assertEquals } from '@std/assert'
-import { eq } from 'drizzle-orm'
+import { eq, inArray } from 'drizzle-orm'
 import type { Context } from 'hono'
 import { getDatabaseUrl } from '../../db/url.ts'
 import { createDenoDb, type Db, endDbConnection } from '../../db/connection.ts'
-import { fabric, network, organization, relay, server, subnet } from '../../db/schema.ts'
+import {
+  command,
+  datacenter,
+  dispatch,
+  fabric,
+  ip,
+  network,
+  organization,
+  relay,
+  server,
+  subnet,
+} from '../../db/schema.ts'
+import type { FabricReconcileCommandPayload } from '../../contracts/commands/schemas.ts'
+import type { CommandEnvelope } from '../../features/commands/envelope.ts'
 import type { CommandQueue } from '../../features/commands/queue.ts'
-import { applyServerFabricPatch } from './fabric-lifecycle.ts'
+import { applyServerFabricPatch, removeFabric } from './fabric-lifecycle.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -33,6 +46,7 @@ const fakeContext = {
 type Rig = {
   db: ReturnType<typeof createDenoDb>
   organizationId: string
+  fabricId: string
   serverId: string
 }
 
@@ -65,14 +79,30 @@ async function withRig(fn: (rig: Rig) => Promise<void>): Promise<void> {
     await db
       .insert(relay)
       .values({ fabricId: fab!.id, serverId, address: '10.250.0.1', prefix: '10.192.0.0/16' })
-    await fn({ db, organizationId, serverId })
+    await fn({ db, organizationId, fabricId: fab!.id, serverId })
   } finally {
     await db.delete(subnet).where(eq(subnet.cidr, '10.192.1.0/24'))
+    await db.delete(ip).where(eq(ip.organizationId, organizationId))
     await db.delete(network).where(eq(network.organizationId, organizationId))
+    await db.delete(datacenter).where(eq(datacenter.organizationId, organizationId))
     const rows = await db
       .select({ id: server.id })
       .from(server)
       .where(eq(server.organizationId, organizationId))
+    const commands = await db
+      .select({ id: command.id })
+      .from(command)
+      .where(
+        inArray(
+          command.serverId,
+          rows.map((row) => row.id)
+        )
+      )
+    if (commands.length > 0) {
+      const commandIds = commands.map((row) => row.id)
+      await db.delete(dispatch).where(inArray(dispatch.commandId, commandIds))
+      await db.delete(command).where(inArray(command.id, commandIds))
+    }
     for (const row of rows) await db.delete(relay).where(eq(relay.serverId, row.id))
     await db.delete(fabric).where(eq(fabric.organizationId, organizationId))
     await db.delete(server).where(eq(server.organizationId, organizationId))
@@ -183,5 +213,174 @@ test('a network created on the server while switching off undoes the switch', as
     assertEquals(body.error, 'fabric_server_in_use')
     assertEquals(body.message.includes('container network "tpn_race"'), true)
     assertEquals(await switchedOn(rig.db, rig.serverId), true)
+  })
+})
+
+const LAN_ROUTES = { projection: { features: ['fabric-lan-routes-v1'] } }
+
+async function addServer(rig: Rig, name: string, prefix: string, address: string): Promise<string> {
+  const [srv] = await rig.db
+    .insert(server)
+    .values({
+      organizationId: rig.organizationId,
+      name,
+      isConnected: true,
+      statusChangedAt: new Date().toISOString(),
+      daemon: LAN_ROUTES,
+      containerPrefix: prefix,
+    })
+    .returning({ id: server.id })
+  await rig.db.insert(relay).values({ fabricId: rig.fabricId, serverId: srv!.id, address, prefix })
+  return srv!.id
+}
+
+/**
+ * `switch-me` and a new `partner` share a trusted LAN and hold the LAN-only
+ * container network `lan-app`; `faraway` (another datacenter) and `switch-me`
+ * hold `wide-app`, which needs a tunnel, unless `withWide` is false.
+ */
+async function seedLanNetworks(
+  rig: Rig,
+  withWide: boolean
+): Promise<{ partner: string; lanApp: string; wideApp: string | null }> {
+  await rig.db
+    .update(server)
+    .set({ daemon: LAN_ROUTES, containerPrefix: '10.192.0.0/16' })
+    .where(eq(server.id, rig.serverId))
+  const partner = await addServer(rig, 'partner', '10.193.0.0/16', '10.250.0.2')
+  const [dc] = await rig.db
+    .insert(datacenter)
+    .values({ organizationId: rig.organizationId, name: 'rack-a', addressPreference: 'ipv4' })
+    .returning({ id: datacenter.id })
+  const [lan] = await rig.db
+    .insert(network)
+    .values({
+      organizationId: rig.organizationId,
+      datacenterId: dc!.id,
+      kind: 'datacenter',
+      cidr: '10.0.0.0/24',
+      name: 'lan',
+    })
+    .returning({ id: network.id })
+  await rig.db.insert(ip).values(
+    [
+      [rig.serverId, '10.0.0.1'],
+      [partner, '10.0.0.2'],
+    ].map(([serverId, address]) => ({
+      organizationId: rig.organizationId,
+      serverId,
+      datacenterId: dc!.id,
+      networkId: lan!.id,
+      address,
+      allocation: 'dedicated',
+      scope: 'datacenter',
+    }))
+  )
+  const lanApp = await composeNetwork(rig, 'lan-app', [
+    [rig.serverId, '10.192.2.0/24'],
+    [partner, '10.193.2.0/24'],
+  ])
+  if (!withWide) return { partner, lanApp, wideApp: null }
+  const faraway = await addServer(rig, 'faraway', '10.194.0.0/16', '10.250.0.3')
+  const wideApp = await composeNetwork(rig, 'wide-app', [
+    [rig.serverId, '10.192.3.0/24'],
+    [faraway, '10.194.3.0/24'],
+  ])
+  return { partner, lanApp, wideApp }
+}
+
+async function composeNetwork(
+  rig: Rig,
+  name: string,
+  pieces: ReadonlyArray<[string, string]>
+): Promise<string> {
+  const [net] = await rig.db
+    .insert(network)
+    .values({ organizationId: rig.organizationId, kind: 'compose', name, composeKey: name })
+    .returning({ id: network.id })
+  await rig.db
+    .insert(subnet)
+    .values(pieces.map(([serverId, cidr]) => ({ networkId: net!.id, serverId, cidr })))
+  return net!.id
+}
+
+type Enabled = Extract<FabricReconcileCommandPayload, { enabled: true }>
+
+/** A queue that records what was put on it. */
+function recordingQueue(): CommandQueue & { sent: CommandEnvelope[] } {
+  const sent: CommandEnvelope[] = []
+  return {
+    sent,
+    enqueue: (envelope: CommandEnvelope) => {
+      sent.push(envelope)
+      return Promise.resolve()
+    },
+  } as unknown as CommandQueue & { sent: CommandEnvelope[] }
+}
+
+/** The last payload with a tunnel field queued for each server. */
+async function lastPayloads(
+  db: Db,
+  sent: readonly CommandEnvelope[]
+): Promise<Map<string, FabricReconcileCommandPayload>> {
+  const out = new Map<string, FabricReconcileCommandPayload>()
+  for (const envelope of sent) {
+    const [row] = await db
+      .select({ payload: dispatch.payload })
+      .from(dispatch)
+      .where(eq(dispatch.commandId, envelope.commandId))
+    out.set(envelope.serverId, row!.payload as FabricReconcileCommandPayload)
+  }
+  return out
+}
+
+async function networkExists(db: Db, id: string): Promise<boolean> {
+  return (await db.select({ id: network.id }).from(network).where(eq(network.id, id))).length === 1
+}
+
+test('removing TurboFabric completely keeps a LAN-only network and resends its servers their payload', async () => {
+  await withRig(async (rig) => {
+    const { partner, lanApp, wideApp } = await seedLanNetworks(rig, true)
+    const commandQueue = recordingQueue()
+    const refused = await removeFabric(fakeContext, {
+      db: rig.db,
+      commandQueue,
+      organizationId: rig.organizationId,
+      actorId: crypto.randomUUID(),
+      secrets: {},
+    })
+    assertEquals(refused, null)
+    assertEquals(await networkExists(rig.db, lanApp), true)
+    assertEquals(await networkExists(rig.db, wideApp!), false)
+
+    const last = await lastPayloads(rig.db, commandQueue.sent)
+    for (const [serverId, via] of [
+      [rig.serverId, '10.0.0.2'],
+      [partner, '10.0.0.1'],
+    ]) {
+      const payload = last.get(serverId!) as Enabled
+      assertEquals(payload.enabled, true)
+      assertEquals(payload.tunnel, false)
+      assertEquals(payload.lanRoutes?.[0]?.via, via)
+    }
+    const [mine] = [last.get(rig.serverId) as Enabled]
+    assertEquals(
+      mine.networks?.map((row) => row.subnet),
+      ['10.192.2.0/24']
+    )
+  })
+})
+
+test('a server holding only LAN-only networks switches off and keeps its network', async () => {
+  await withRig(async (rig) => {
+    const { lanApp } = await seedLanNetworks(rig, false)
+    const commandQueue = recordingQueue()
+    const refused = await switchOff(rig.db, rig, commandQueue)
+    assertEquals(refused, null)
+    assertEquals(await switchedOn(rig.db, rig.serverId), false)
+    assertEquals(await networkExists(rig.db, lanApp), true)
+    const last = (await lastPayloads(rig.db, commandQueue.sent)).get(rig.serverId) as Enabled
+    assertEquals(last.tunnel, false)
+    assertEquals(last.lanRoutes, [{ cidr: '10.193.0.0/16', via: '10.0.0.2' }])
   })
 })

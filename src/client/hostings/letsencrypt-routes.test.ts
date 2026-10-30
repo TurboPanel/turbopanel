@@ -14,6 +14,7 @@ import {
   environment,
   grant,
   hosting,
+  ip,
   organization,
   project,
   server,
@@ -29,6 +30,7 @@ import type { DeployRequestAuth } from '../environments/deploy-routes.ts'
 import type { HostingApplyDeps } from './letsencrypt-apply.ts'
 import { DEPLOY_HOSTINGS_ONLY_FEATURE } from '../../lib/version-wire.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
+import type { DnsLookup } from '../../features/hostings/hosting-dns-check.ts'
 import { registerHostingRoutes } from './routes.ts'
 import { registerHostingLetsEncryptRoutes } from './letsencrypt-routes.ts'
 import {
@@ -52,7 +54,7 @@ type Fixture = {
   hostingId: string
   environmentId: string
   cookie: string
-  setLookup: (lookup: () => Promise<string[]>) => void
+  setLookup: (lookup: DnsLookup) => void
   call: (method: string, path: string, body?: unknown) => Promise<Response>
   cleanup: () => Promise<void>
 }
@@ -62,13 +64,15 @@ async function setup(options: {
   hostingOptions: Record<string, unknown>
   hostingMetadata?: Record<string, unknown>
   applyDeps?: HostingApplyDeps
+  /** Pin the site to a known public address (what `pointing` answers); default true. */
+  pinAddress?: boolean
 }): Promise<Fixture> {
   const db = createDenoDb()
   const secrets = await deriveSecretsConfig(
     parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`, 'deno'),
     'session-signing'
   )
-  let lookup: () => Promise<string[]> = pointing
+  let lookup: DnsLookup = pointing
   const app = new Hono<AppEnv>()
   app.use('*', (c, next) => {
     c.set('db', db)
@@ -77,7 +81,7 @@ async function setup(options: {
   const routeOpts = { secrets, runtime: 'deno' as const, signupEnvOverride: undefined }
   const applyDeps = options.applyDeps
   registerHostingLetsEncryptRoutes(app, routeOpts, {
-    lookup: () => lookup(),
+    lookup: (name, recordType) => lookup(name, recordType),
     ...(applyDeps ? { applyDeps: () => applyDeps } : {}),
   })
   registerHostingRoutes(app, routeOpts)
@@ -122,10 +126,25 @@ async function setup(options: {
       updatedAt: now,
     })
     .returning({ id: service.id })
+  // The pre-check holds a name while no public address is known for the site,
+  // so the site is pinned to the address `pointing` answers with.
+  const [siteIp] =
+    options.pinAddress === false
+      ? []
+      : await db
+          .insert(ip)
+          .values({
+            organizationId,
+            address: '203.0.113.7',
+            allocation: 'dedicated',
+            scope: 'public',
+          })
+          .returning({ id: ip.id })
   const [host] = await db
     .insert(hosting)
     .values({
       serviceId: svc!.id,
+      ipId: siteIp?.id ?? null,
       name: 'Site',
       options: options.hostingOptions,
       metadata: options.hostingMetadata ?? null,
@@ -156,6 +175,7 @@ async function setup(options: {
     async cleanup() {
       await db.delete(audit).where(eq(audit.organizationId, organizationId))
       await db.delete(hosting).where(eq(hosting.id, host!.id))
+      await db.delete(ip).where(eq(ip.organizationId, organizationId))
       await db.delete(tls).where(eq(tls.organizationId, organizationId))
       await db.delete(service).where(eq(service.id, svc!.id))
       await db.delete(environment).where(eq(environment.id, env!.id))
@@ -292,6 +312,40 @@ test('PUT use-letsencrypt: waits for DNS, then the sweep pins it once the name r
     assertEquals(body.hosting.certificate.needsDeploy, true)
     assertEquals(body.hosting.certificate.www, 'www-to-root')
   } finally {
+    await f.cleanup()
+  }
+})
+
+test('dns-check: a server with no managed address is checked against the addresses its daemon reports', async () => {
+  if (!dbUrl) return skipWithoutDatabase("hosting Let's Encrypt route tests")
+  const f = await setup({ acmeEnabled: true, hostingOptions: PUBLIC_SITE, pinAddress: false })
+  const removeServer = await deployedOn(f, true, {
+    resources: {
+      ips: [
+        { address: '203.0.113.7', version: 4, scope: 'public', interface: 'enp1s0' },
+        { address: '2001:db8::7', version: 6, scope: 'public', interface: 'enp1s0' },
+        { address: '10.0.0.7', version: 4, scope: 'private', interface: 'enp6s0' },
+      ],
+    },
+  })
+  try {
+    f.setLookup((_name, recordType) =>
+      Promise.resolve(recordType === 'A' ? ['203.0.113.7'] : ['2001:db8::99'])
+    )
+    const check = await f.call('GET', `/hostings/${f.hostingId}/dns-check`)
+    assertEquals(check.status, 200)
+    const { dns } = (await check.json()) as {
+      dns: {
+        ready: boolean
+        expectedAddresses: string[]
+        hostnames: { wrongAddresses?: string[] }[]
+      }
+    }
+    assertEquals(dns.ready, false)
+    assertEquals(dns.expectedAddresses.toSorted(), ['2001:db8::7', '203.0.113.7'])
+    assertEquals(dns.hostnames[0]?.wrongAddresses, ['2001:db8::99'])
+  } finally {
+    await removeServer()
     await f.cleanup()
   }
 })
@@ -541,7 +595,11 @@ function fakeDeploy(db: Db, calls: DeployCall[]): NonNullable<HostingApplyDeps['
 }
 
 /** A server that finished a deploy of the fixture's environment just now (after every edit). */
-async function deployedOn(f: Fixture, connected: boolean): Promise<() => Promise<void>> {
+async function deployedOn(
+  f: Fixture,
+  connected: boolean,
+  metadata?: Record<string, unknown>
+): Promise<() => Promise<void>> {
   const now = new Date().toISOString()
   const [srv] = await f.db
     .insert(server)
@@ -549,6 +607,7 @@ async function deployedOn(f: Fixture, connected: boolean): Promise<() => Promise
       organizationId: f.organizationId,
       name: `le-${crypto.randomUUID().slice(0, 8)}`,
       isConnected: connected,
+      ...(metadata ? { metadata } : {}),
       createdAt: now,
       updatedAt: now,
     })

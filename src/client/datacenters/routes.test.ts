@@ -28,9 +28,11 @@ import {
   network,
   organization,
   project,
+  relay,
   replica,
   server,
   service,
+  subnet,
   tls,
   user,
   workspace,
@@ -2371,5 +2373,157 @@ test('PATCH /datacenters/:id policy change without a command queue still saves',
       .where(eq(datacenter.id, dc!.id))
       .limit(1)
     assertEquals(after, { options: null, isTrusted: false })
+  })
+})
+
+/**
+ * Two servers on one trusted LAN holding the LAN-only container network
+ * `lan-app`; with `fabricOn` an org fabric with both as members.
+ */
+async function seedLanOnlyNetwork(
+  db: ReturnType<typeof createDenoDb>,
+  organizationId: string,
+  fabricOn: boolean
+): Promise<{ datacenterId: string; serverIds: string[]; networkId: string }> {
+  const daemon = { projection: { features: ['fabric-lan-routes-v1'] } }
+  const [dc] = await db
+    .insert(datacenter)
+    .values({ organizationId, name: 'LAN Guard DC', addressPreference: 'ipv4' })
+    .returning({ id: datacenter.id })
+  const [lan] = await db
+    .insert(network)
+    .values({
+      organizationId,
+      datacenterId: dc!.id,
+      kind: 'datacenter',
+      cidr: '10.0.0.0/24',
+      name: 'LAN Guard LAN',
+    })
+    .returning({ id: network.id })
+  const serverIds: string[] = []
+  for (const [name, prefix] of [
+    ['lan-one', '10.192.0.0/16'],
+    ['lan-two', '10.193.0.0/16'],
+  ]) {
+    const [srv] = await db
+      .insert(server)
+      .values({ organizationId, name, daemon, containerPrefix: prefix })
+      .returning({ id: server.id })
+    serverIds.push(srv!.id)
+  }
+  await db.insert(ip).values(
+    serverIds.map((serverId, index) => ({
+      organizationId,
+      datacenterId: dc!.id,
+      networkId: lan!.id,
+      serverId,
+      address: `10.0.0.${index + 1}`,
+      allocation: 'dedicated',
+      scope: 'datacenter',
+    }))
+  )
+  const [app] = await db
+    .insert(network)
+    .values({ organizationId, kind: 'compose', name: 'lan-app', composeKey: 'lan-app' })
+    .returning({ id: network.id })
+  await db.insert(subnet).values(
+    serverIds.map((serverId, index) => ({
+      networkId: app!.id,
+      serverId,
+      cidr: `10.${192 + index}.1.0/24`,
+    }))
+  )
+  if (fabricOn) {
+    const [fab] = await db
+      .insert(fabric)
+      .values({ organizationId, cidr: '10.250.0.0/16', options: null })
+      .returning({ id: fabric.id })
+    await db.insert(relay).values(
+      serverIds.map((serverId, index) => ({
+        fabricId: fab!.id,
+        serverId,
+        address: `10.250.0.${index + 1}`,
+        prefix: `10.${192 + index}.0.0/16`,
+      }))
+    )
+  }
+  return { datacenterId: dc!.id, serverIds, networkId: app!.id }
+}
+
+async function dropLanOnlyNetwork(
+  db: ReturnType<typeof createDenoDb>,
+  seeded: { serverIds: string[]; networkId: string }
+): Promise<void> {
+  await db.delete(network).where(eq(network.id, seeded.networkId))
+  await db.delete(relay).where(inArray(relay.serverId, seeded.serverIds))
+}
+
+test('marking a datacenter untrusted or removing a member is refused while a LAN-only network needs it and TurboFabric is off', async () => {
+  await withDatacenterFixtures(async ({ db, app, secrets, userId, organizationId }) => {
+    const seeded = await seedLanOnlyNetwork(db, organizationId, false)
+    try {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const headers = {
+        cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'content-type': 'application/json',
+      }
+      const untrust = await app.request(`/datacenters/${seeded.datacenterId}`, {
+        method: 'PATCH',
+        headers,
+        body: JSON.stringify({ options: { trusted: false } }),
+      })
+      assertEquals(untrust.status, 409)
+      const body = (await untrust.json()) as { error: string; message: string }
+      assertEquals(body.error, 'lan_pair_in_use')
+      assertEquals(body.message.includes('container network "lan-app"'), true)
+      assertEquals(body.message.includes('lan-one and lan-two'), true)
+      const [dc] = await db
+        .select({ isTrusted: datacenter.isTrusted })
+        .from(datacenter)
+        .where(eq(datacenter.id, seeded.datacenterId))
+      assertEquals(dc?.isTrusted, true)
+
+      const leave = await app.request(
+        `/datacenters/${seeded.datacenterId}/members/${seeded.serverIds[1]}`,
+        { method: 'DELETE', headers }
+      )
+      assertEquals(leave.status, 409)
+      assertEquals(((await leave.json()) as { error: string }).error, 'lan_pair_in_use')
+      const pins = await db
+        .select({ id: ip.id })
+        .from(ip)
+        .where(eq(ip.datacenterId, seeded.datacenterId))
+      assertEquals(pins.length, 2)
+    } finally {
+      await dropLanOnlyNetwork(db, seeded)
+    }
+  })
+})
+
+test('marking a datacenter untrusted and removing a member are allowed while TurboFabric runs', async () => {
+  await withDatacenterFixtures(async ({ db, app, secrets, userId, organizationId }) => {
+    const seeded = await seedLanOnlyNetwork(db, organizationId, true)
+    try {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const headers = {
+        cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'content-type': 'application/json',
+      }
+      const untrust = await app.request(`/datacenters/${seeded.datacenterId}`, {
+        method: 'PATCH',
+        headers,
+        body: JSON.stringify({ options: { trusted: false } }),
+      })
+      assertEquals(untrust.status, 200)
+      const leave = await app.request(
+        `/datacenters/${seeded.datacenterId}/members/${seeded.serverIds[1]}`,
+        { method: 'DELETE', headers }
+      )
+      assertEquals(leave.status, 200)
+    } finally {
+      await dropLanOnlyNetwork(db, seeded)
+    }
   })
 })

@@ -20,7 +20,7 @@ import { TunnelProviderError } from '../../tunnels/errors.ts'
 import { findCarrier } from '../../tunnels/records.ts'
 import type { TunnelProvider } from '../../tunnels/vocabulary.ts'
 import { orgAccount } from './account.ts'
-import { openDnsToken } from './token.ts'
+import { noDnsTokenError, openDnsToken, withAnyDnsToken, withDnsToken } from './token.ts'
 import {
   ANSWER_RECHECK_MS,
   clock,
@@ -71,7 +71,11 @@ async function openClient(ctx: DnsCertContext, state: DnsCertState, order: Order
   })
 }
 
-/** The DNS host for one zone: the carrier's provider and a token that reaches the zone. */
+/**
+ * The DNS host for one zone. Each call is made with a token of the account
+ * that reaches the zone, picked at call time, so a token removed or refused
+ * after the order started is replaced by another one that covers the zone.
+ */
 async function dnsFor(
   ctx: DnsCertContext,
   row: OrderRow,
@@ -80,14 +84,26 @@ async function dnsFor(
 ): Promise<DnsChallengeProvider> {
   const carrier = await findCarrier(ctx.db, row.organizationId, state.carrierId)
   const token = carrier ? await openDnsToken(ctx, carrier.id, { zone: { id: zoneId } }) : null
-  if (!carrier || !token) {
-    throw new TunnelProviderError(
-      'forbidden',
-      'No token on this account can edit DNS records for the zone',
-      null
-    )
+  if (!carrier || !token) throw noDnsTokenError()
+  const provider = carrier.provider as TunnelProvider
+  const call = <T>(fn: (dns: DnsChallengeProvider) => Promise<T>) =>
+    withDnsToken(ctx, carrier.id, { id: zoneId }, (t) => fn(ctx.dns(provider, t)))
+  // The optional reads stay optional: a host without them is not asked.
+  const shape = ctx.dns(provider, token)
+  return {
+    lookupCname: (input) => call((dns) => dns.lookupCname(input)),
+    present: (input) => call((dns) => dns.present(input)),
+    remove: (ref) => call((dns) => dns.remove(ref)),
+    ...(shape.checkZone
+      ? { checkZone: (id: string) => call(async (dns) => await dns.checkZone?.(id)) }
+      : {}),
+    ...(shape.txtValues
+      ? {
+          txtValues: (input: { zoneId: string; name: string }) =>
+            call(async (dns) => (await dns.txtValues?.(input)) ?? []),
+        }
+      : {}),
   }
-  return ctx.dns(carrier.provider as TunnelProvider, token)
 }
 
 function zoneFor(zones: readonly ZoneRef[], name: string): ZoneRef | undefined {
@@ -106,13 +122,15 @@ async function findZoneOf(
   const known = zoneFor(state.zones, name)
   if (known) return known
   const carrier = await findCarrier(ctx.db, row.organizationId, state.carrierId)
-  const token = carrier ? await openDnsToken(ctx, carrier.id, 'any') : null
-  if (!carrier || !token) return null
+  if (!carrier) return null
   try {
-    return await ctx.adapters(carrier.provider as TunnelProvider).findZone(token, {
-      accountId: carrier.externalAccountId,
-      hostname: name,
-    })
+    const found = await withAnyDnsToken(ctx, carrier.id, (token) =>
+      ctx.adapters(carrier.provider as TunnelProvider).findZone(token, {
+        accountId: carrier.externalAccountId,
+        hostname: name,
+      })
+    )
+    return found?.value ?? null
   } catch (err) {
     if (err instanceof TunnelProviderError && err.code === 'zone_not_found') return null
     throw err

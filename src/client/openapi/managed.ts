@@ -1043,7 +1043,7 @@ export const managedSchemas = {
         type: 'array',
         items: { type: 'string' },
         description:
-          'Places the backup login may connect from: `internal`, `server:<id>` or `address:<ip, prefix% or range>`. Required and never `any` (400 `managed_backup_login_sources_required`).',
+          "Places the backup login may connect from: `internal` (this server only: its own programs and containers), `server:<id>` (one of the organization's servers) or `address:<ip, prefix% or range>`. Required and never `any` (400 `managed_backup_login_sources_required`).",
       },
       username: {
         type: 'string',
@@ -2155,7 +2155,7 @@ export const managedPaths = {
       tags: ['Managed services'],
       summary: 'Create the backup login (one per cluster, show-once password) and enqueue apply',
       description:
-        'A read-only login for a backup tool: on PostgreSQL `pg_read_all_data`, `BYPASSRLS` and `CONNECT` on every database; on MySQL `SELECT`, `SHOW VIEW`, `TRIGGER`, `EVENT` on every database and `SHOW_ROUTINE`; on MariaDB the same plus `LOCK TABLES` and `SHOW CREATE ROUTINE`, without `SHOW_ROUTINE`. Always routed to the primary. Refusals: 400 `managed_backup_login_sources_required`, 409 `managed_backup_login_exists`, 409 `managed_backup_login_needs_daemon_update`, 409 `managed_login_limits_need_daemon_update`, 409 `username_in_use`.',
+        'A read-only login for a backup tool: on PostgreSQL `pg_read_all_data`, `BYPASSRLS` and `CONNECT` on every database; on MySQL `SELECT`, `SHOW VIEW`, `TRIGGER`, `EVENT` and `SHOW_ROUTINE` at global level (`*.*`); on MariaDB `SELECT`, `SHOW VIEW`, `TRIGGER`, `EVENT`, `LOCK TABLES` and `SHOW CREATE ROUTINE` at global level. Global, so a database made with plain SQL is covered too; that includes the system schemas (`mysql`, with its account rows, `sys` and `performance_schema`). `TRIGGER` and `EVENT` also allow creating and dropping triggers and events, because the engines need them to read their definitions. No write, table or database DDL, or account right. A server daemon from before global grants gives these rights only on the databases the panel made. Always routed to the primary. Refusals: 400 `managed_backup_login_sources_required`, 409 `managed_backup_login_exists`, 409 `managed_backup_login_needs_daemon_update`, 409 `managed_login_limits_need_daemon_update`, 409 `username_in_use`.',
       parameters: [ENV_ID_PARAM],
       requestBody: {
         required: true,
