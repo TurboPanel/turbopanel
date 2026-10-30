@@ -1,6 +1,9 @@
 import { and, eq, isNull, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
-import { verifyDaemonLicense } from '../licenses/verify-daemon-license.ts'
+import {
+  type VerifiedDaemonLicense,
+  verifyDaemonLicense,
+} from '../licenses/verify-daemon-license.ts'
 import {
   mergeServerHostResources,
   osColumnsEqual,
@@ -721,16 +724,25 @@ async function insertLicensedServer(
   })
 }
 
+export type ResolveServerIdOptions = {
+  /** `identity.licenseId` + `licenseToken`, already checked by the caller. */
+  verifiedLicense?: VerifiedDaemonLicense
+}
+
 async function resolveLicensedServerId(
   db: Db,
   identity: ServerHelloIdentity,
-  fabricDeps?: FabricMembershipDeps
+  fabricDeps?: FabricMembershipDeps,
+  opts: ResolveServerIdOptions = {}
 ): Promise<string | null> {
   const licenseId = identity.licenseId?.trim()
   const licenseToken = identity.licenseToken?.trim()
   if (!licenseId || !licenseToken) return null
 
-  const verified = await verifyDaemonLicense(db, licenseId, licenseToken)
+  // The token check is an Argon2 hash; a caller that has just run it passes
+  // the result instead of paying for it twice. Revocation and expiry between
+  // the two are still caught by the latch below, which re-reads both.
+  const verified = opts.verifiedLicense ?? (await verifyDaemonLicense(db, licenseId, licenseToken))
   if (!verified) return null
 
   // Already latched: only the bound server may re-enroll (with matching serverId).
@@ -823,10 +835,11 @@ export async function findServerIdForIdentity(
 export async function resolveServerId(
   db: Db,
   identity: ServerHelloIdentity,
-  fabricDeps?: FabricMembershipDeps
+  fabricDeps?: FabricMembershipDeps,
+  opts: ResolveServerIdOptions = {}
 ): Promise<string | null> {
   if (identity.licenseId?.trim()) {
-    return resolveLicensedServerId(db, identity, fabricDeps)
+    return resolveLicensedServerId(db, identity, fabricDeps, opts)
   }
 
   const existing = await findExistingServerId(db, identity)

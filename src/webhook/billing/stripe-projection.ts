@@ -32,6 +32,8 @@
  */
 
 import type { Db } from '../../db/connection.ts'
+import type { DaemonCellRegistry } from '../../contracts/cell.ts'
+import { purgeDaemonCellBestEffort } from '../../features/servers/daemon-cell-purge.ts'
 import { revokeDaemonKey } from '../../features/servers/server-identity-db.ts'
 import { logInfo, logWarn } from '../../lib/logger.ts'
 import { StripeApiError } from '../../features/billing/errors.ts'
@@ -217,7 +219,26 @@ export type StripeProjectionDeps = Readonly<{
   readClock?: () => string
   /** How long the entitlement sync waits for a held quantity lease. */
   leaseRetry?: Readonly<{ attempts: number; delayMs: number }>
+  /**
+   * Where a server whose daemon key an ended subscription revokes has its
+   * cell purged, so its live socket closes the way a manual revoke's does.
+   * Without one the key is still revoked; the socket then lasts until its
+   * next key check.
+   */
+  daemonCellRegistry?: DaemonCellRegistry
 }>
+
+/**
+ * An ended subscription revokes each bound server's daemon key, then closes
+ * its live socket. The purge is best effort and never fails the projection:
+ * the revoke is what refuses the host from here on.
+ */
+async function revokeBoundDaemon(deps: StripeProjectionDeps, serverId: string): Promise<void> {
+  await revokeDaemonKey(deps.db, serverId)
+  if (deps.daemonCellRegistry) {
+    await purgeDaemonCellBestEffort(deps.daemonCellRegistry, serverId, 'after subscription end')
+  }
+}
 
 export type ProjectSubscriptionOpts = Readonly<{
   /**
@@ -389,7 +410,7 @@ async function projectSubscriptionPass(
         client: deps.client,
         logScope: STRIPE_PROJECTION_LOG_SCOPE,
         nowMs: deps.now ? Date.parse(deps.now) : Date.now(),
-        onRevokeBound: (serverId) => revokeDaemonKey(deps.db, serverId),
+        onRevokeBound: (serverId) => revokeBoundDaemon(deps, serverId),
         leaseRetry: deps.leaseRetry,
       },
       {

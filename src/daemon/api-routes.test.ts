@@ -1108,6 +1108,69 @@ test('POST /enroll stores public key only after proof-of-possession', async () =
   })
 })
 
+test('POST /enroll stores only the public members of the submitted key', async () => {
+  await withEnrollFixture(
+    async ({ db, app, licenseId, licenseToken, machineKey, hostname }) => {
+      const key = await generateKeyMaterial()
+      const padded: KeyMaterial = {
+        ...key,
+        publicJwk: { ...key.publicJwk, alg: 'EdDSA', note: 'not part of the key' } as JsonWebKey,
+      }
+      const response = await postEnroll(app, {
+        licenseId,
+        licenseToken,
+        machineKey,
+        hostname,
+        key: padded,
+      })
+      assertEquals(response.status, 200)
+      const { serverId } = (await response.json()) as { serverId: string }
+      const daemonState = await readDaemonState(db, serverId)
+      assertEquals(daemonState?.key.publicJwk, {
+        kty: key.publicJwk.kty,
+        crv: key.publicJwk.crv,
+        x: key.publicJwk.x,
+      })
+    },
+    { enroll: false }
+  )
+})
+
+test('POST /enroll charges the per-license bucket before checking the license token', async () => {
+  await withEnrollFixture(
+    async ({ db, licenseId, machineKey, hostname }) => {
+      const limitedKey = `daemon:rest:enroll:${licenseId}`
+      const charged: string[] = []
+      const app = new Hono<AppEnv>()
+      app.use('*', (c, next) => {
+        c.set('db', db)
+        return next()
+      })
+      registerDaemonApiRoutes(app, {
+        secrets: await createTestSecrets(),
+        challengeSigningSecrets: await createTestChallengeSecrets(),
+        secretsConfig: createTestSecretsConfig(),
+        restLimiter: {
+          limit: ({ key }) => {
+            charged.push(key)
+            return Promise.resolve({ success: key !== limitedKey })
+          },
+        },
+      })
+      const response = await postEnroll(app, {
+        licenseId,
+        licenseToken: 'wrong-token',
+        machineKey,
+        hostname,
+        key: await generateKeyMaterial(),
+      })
+      assertEquals(response.status, 429)
+      assertEquals(charged.includes(limitedKey), true)
+    },
+    { enroll: false }
+  )
+})
+
 test('POST /enroll returns serverId and server.daemon.key.id', async () => {
   await withEnrollFixture(async ({ enrollBody, db }) => {
     assertExists(enrollBody.serverId)
@@ -1525,6 +1588,59 @@ test('POST /auth/session rejects invalid signature', async () => {
     })
     assertEquals(response.status, 403)
   })
+})
+
+test('POST /auth/session checks the signature before the license', async () => {
+  await withEnrollFixture(
+    async ({ db, app, organizationId, licenseId, serverId, keyId, machineKey, hostname }) => {
+      await revokeLicense(db, licenseId, organizationId)
+      const challenge = await issueAuthChallenge(app, serverId, keyId)
+      const response = await app.request('/api/daemon/v1/auth/session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          serverId,
+          keyId,
+          challengeId: challenge.challengeId,
+          signature: 'invalid-signature',
+          machineKey,
+          hostname,
+          at: new Date().toISOString(),
+        }),
+      })
+      assertEquals(response.status, 403)
+      assertEquals(((await response.json()) as { error: string }).error, 'Invalid signature')
+    }
+  )
+})
+
+test('a self-hosted session with a bad signature writes no tier', async () => {
+  await withEnrollFixture(
+    async (fixture) => {
+      await assignTier(fixture.db, fixture.serverId, null)
+      const challenge = await issueAuthChallenge(fixture.app, fixture.serverId, fixture.keyId)
+      const refused = await fixture.app.request('/api/daemon/v1/auth/session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          serverId: fixture.serverId,
+          keyId: fixture.keyId,
+          challengeId: challenge.challengeId,
+          signature: 'invalid-signature',
+          machineKey: fixture.machineKey,
+          hostname: fixture.hostname,
+          at: new Date().toISOString(),
+        }),
+      })
+      assertEquals(refused.status, 403)
+      assertEquals(await readAssignedTierId(fixture.db, fixture.serverId), null)
+
+      const session = await postAuthSession(fixture.app, fixture)
+      assertEquals(session.status, 200)
+      assertEquals((await readAssignedTierId(fixture.db, fixture.serverId)) !== null, true)
+    },
+    { runtime: 'deno', tierRank: null }
+  )
 })
 
 test('POST /auth/session returns a 15-minute JWT', async () => {

@@ -98,6 +98,16 @@ test('GET /instance/ca serves the injected Platform CA PEM', async () => {
   assertEquals(response.headers.get('content-type'), 'application/x-pem-file')
 })
 
+test('GET /instance/ca hides the read error from the caller', async () => {
+  const app = daemonApp({
+    readPlatformCaPem: () =>
+      Promise.reject(new Error('ENOENT: /etc/turbopanel/tls/private/ca.pem')),
+  })
+  const response = await app.request(`${DAEMON_API_PREFIX}/instance/ca`)
+  assertEquals(response.status, 500)
+  assertEquals(await response.json(), { error: 'platform CA unavailable' })
+})
+
 test('readiness, enroll, and session fail closed without a database', async () => {
   const app = daemonApp()
   assertEquals((await app.request(`${DAEMON_API_PREFIX}/readiness`)).status, 503)
