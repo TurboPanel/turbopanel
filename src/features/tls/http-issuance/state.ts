@@ -44,7 +44,7 @@ export type HttpIssuanceState = {
   nextAttemptAt: string | null
 }
 
-const FORWARD_OUTCOMES: readonly string[] = ['pending', 'ready', 'failed', 'skipped']
+const FORWARD_OUTCOMES: ReadonlySet<string> = new Set(['pending', 'ready', 'failed', 'skipped'])
 
 function record(value: unknown): Record<string, unknown> | null {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -62,7 +62,7 @@ function readForwards(value: unknown): ForwardResult[] {
   for (const item of value) {
     const r = record(item)
     const serverId = text(r?.serverId)
-    if (!r || !serverId || typeof r.outcome !== 'string' || !FORWARD_OUTCOMES.includes(r.outcome)) {
+    if (!r || !serverId || typeof r.outcome !== 'string' || !FORWARD_OUTCOMES.has(r.outcome)) {
       continue
     }
     out.push({
@@ -119,7 +119,7 @@ export function canAcceptCapture(
   state: HttpIssuanceState | null,
   call: { serverId: string; requestId: string; now: Date }
 ): CaptureDecision {
-  if (!state || state.requestId !== call.requestId) return { ok: false, reason: 'unknown_request' }
+  if (state?.requestId !== call.requestId) return { ok: false, reason: 'unknown_request' }
   if (state.endedAt !== null) return { ok: false, reason: 'closed' }
   const until = Date.parse(state.startByAt)
   if (Number.isNaN(until) || call.now.getTime() > until) return { ok: false, reason: 'expired' }
