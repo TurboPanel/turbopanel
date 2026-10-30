@@ -5,7 +5,7 @@
  * and the warnings a token carries. No database.
  */
 import { assert, assertEquals } from '@std/assert'
-import { lossOf } from './badge-dependents.ts'
+import { dependentsSentence, lossOf } from './badge-dependents.ts'
 import {
   type BadgeRow,
   badgeWarnings,
@@ -156,6 +156,38 @@ test('what a token alone covers is what would be lost without it', () => {
     badgeRow('x', { dns: [ZONE_A] }, { status: 'attention' }),
   ])
   assertEquals(coveredByBroken.dnsZones.length, 1)
+})
+
+test('certificate rights follow the account: a second token for the zone covers them', () => {
+  const old = badgeRow('old', { certificates: [ZONE_A] })
+  const alone = lossOf(old.capabilities as BadgeCapabilities, [])
+  assertEquals(
+    alone.certificateZones.map((z) => z.id),
+    ['zone-a']
+  )
+  const rotated = lossOf(old.capabilities as BadgeCapabilities, [
+    badgeRow('new', { certificates: [ZONE_A] }),
+  ])
+  assertEquals(rotated.certificateZones, [])
+})
+
+test('a refusal names what still needs the token in one plain sentence', () => {
+  const one = dependentsSentence([{ kind: 'tunnel', id: 't', name: 'web', zone: null }], 1)
+  assertEquals(
+    one,
+    'No other API Token on this account covers the tunnel web. Add a token that does, then remove this one.'
+  )
+  const two = dependentsSentence(
+    [
+      { kind: 'hostname', id: 'h', name: 'blog.example.com', zone: 'example.com' },
+      { kind: 'certificate', id: 'c', name: 'DNS example.com', zone: 'example.com' },
+    ],
+    9
+  )
+  assertEquals(
+    two,
+    'No other API Token on this account covers the hostname blog.example.com (example.com), the certificate DNS example.com (example.com) and 7 more. Add a token that does, then remove this one.'
+  )
 })
 
 test('a token near its expiry, or one the provider refused, carries a plain warning', () => {

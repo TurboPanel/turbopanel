@@ -6,7 +6,7 @@
  * removed first. Skips without TURBOPANEL_DATABASE_URL.
  */
 import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
-import { assert, assertEquals } from '@std/assert'
+import { assert, assertEquals, assertStringIncludes } from '@std/assert'
 import { eq, inArray } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
@@ -486,7 +486,7 @@ test('a zone that is not a domain name is refused', async () => {
   })
 })
 
-test('an account or token that issued a certificate cannot be removed until the certificate is', async () => {
+test('an account, or its only token that manages certificates, cannot be removed until the certificate is', async () => {
   await withFixture(async (f) => {
     const issued = await call(f, 'POST', base(f), f.managerCookie, {
       zone: 'example.com',
@@ -497,7 +497,16 @@ test('an account or token that issued a certificate cannot be removed until the 
     const carrierPath = `/organizations/${f.orgA}/carriers/${f.carrierId}`
     const badgeRes = await call(f, 'DELETE', `${carrierPath}/badges/${f.badgeId}`, f.managerCookie)
     assertEquals(badgeRes.status, 409)
-    assertEquals(badgeRes.body.error, 'origin_certificate_in_use')
+    assertEquals(badgeRes.body.error, 'badge_in_use')
+    assertEquals(
+      (badgeRes.body.dependents as { kind: string; id: string; zone: string }[]).map((d) => [
+        d.kind,
+        d.id,
+        d.zone,
+      ]),
+      [['certificate', id, 'example.com']]
+    )
+    assertStringIncludes(String(badgeRes.body.message), 'the certificate ')
     const carrierRes = await call(f, 'DELETE', carrierPath, f.managerCookie)
     assertEquals(carrierRes.status, 409)
     assertEquals(carrierRes.body.error, 'origin_certificate_in_use')
@@ -508,6 +517,29 @@ test('an account or token that issued a certificate cannot be removed until the 
     )
     assertEquals((await call(f, 'DELETE', carrierPath, f.managerCookie)).status, 200)
     assertEquals((await f.db.select().from(carrier).where(eq(carrier.id, f.carrierId))).length, 0)
+  })
+})
+
+test('rotating a token is adding the new one and removing the old one: the certificate stays with the account', async () => {
+  await withFixture(async (f) => {
+    const issued = await call(f, 'POST', base(f), f.managerCookie, {
+      zone: 'example.com',
+      names: ['app.example.com'],
+    })
+    assertEquals(issued.status, 201, issued.text)
+    const id = (issued.body.originCertificate as { id: string }).id
+    const badges = `/organizations/${f.orgA}/carriers/${f.carrierId}/badges`
+    const added = await call(f, 'POST', badges, f.managerCookie, {
+      label: 'New',
+      token: 'cf-new-api-token-0123456789abcdefghijklmnopqr',
+    })
+    assertEquals(added.status, 201, added.text)
+    assertEquals((await call(f, 'DELETE', `${badges}/${f.badgeId}`, f.managerCookie)).status, 200)
+    const left = await f.db.select().from(tls).where(eq(tls.id, id))
+    assertEquals(left.length, 1)
+    // The new token revokes what the old one issued.
+    assertEquals((await call(f, 'DELETE', `${base(f)}/${id}`, f.managerCookie)).status, 200)
+    assertEquals(state.revoked, ['cert-1'])
   })
 })
 

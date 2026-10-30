@@ -94,7 +94,9 @@ Nothing is stored.
 
 Before an order is opened the DNS host is asked a cheap read for every zone
 (`checkZone`), so a token that was rolled or narrowed stops the order with
-nothing spent at the authority. Before the challenges are answered the TXT
+nothing spent at the authority, unless another token of the account covers the
+zone: every DNS call goes through `withDnsToken` (`token.ts`), which tries the
+account's tokens for the zone in turn, and zone lookups use `withAnyDnsToken`. Before the challenges are answered the TXT
 values are read back through the host's own API (`txtValues`); the authority is
 not asked to validate a record that is not yet published (one of its few failed
 validations an hour). A record not seen yet is looked at again after two
@@ -181,7 +183,10 @@ stops with the plain-words reason and nothing is written.
   are not held back. The new pair is swapped in only when the order
   succeeds, and the sites that pin it are sent the new pair by the same apply a
   library pick queues.
-- Renewal needs the stored token. Between orders the sweep checks that the
+- Renewal needs a token of the account for each zone, not the token the order
+  was made with: the order keeps only the account (`carrierId`). A token cannot
+  be removed while it is the only one that covers a zone of such a certificate
+  (`badge-dependents.ts`). Between orders the sweep checks that the
   account still exists and a token still reaches each zone; if not,
   `metadata.acme.warning` says so, with the date, long before the certificate
   matters. It clears itself when the token is back.

@@ -188,11 +188,21 @@ hostnames and display.
   token that covers the zone finishes it. Any token that covers the zone can
   remove the DNS name; the token that made it is recorded in the hostname's
   metadata (`dnsBadgeId`) for the record only.
-- **Deleting a token** is refused (409 `badge_in_use`, up to 50 `dependents`) while
-  it is the only active token that reaches tunnels for an account with Tunnels, or
-  the only one that reaches DNS for a zone whose hostnames have DNS names
-  (`badge-dependents.ts`). Certificates and certificate orders that only this
-  token can revoke or renew add themselves there.
+- **Items belong to the account, never to a token.** Tunnels, hostnames, origin
+  certificates and Let's Encrypt DNS orders keep only the account (`carrierId`);
+  every later call picks a working token at call time. A token id kept with an
+  item (`dnsBadgeId`, `providerOrigin.badgeId`) is a record of what was used, no
+  foreign key points at `badge`, and nothing is moved when a token goes. Rotating
+  a token is: add the new one, remove the old one.
+- **Deleting a token** is refused (409 `badge_in_use`, a plain `message` naming
+  them, up to 50 `dependents`) only while no other active token of the account
+  covers something that needs it (`badge-dependents.ts`): it is the only token
+  that reaches tunnels for an account with Tunnels, the only one that reaches DNS
+  for a zone whose hostnames have DNS names or whose DNS-validated certificates
+  renew there (`kind: 'certificate'`), or the only one that manages origin
+  certificates of a zone that has them (`kind: 'certificate'`, retired ones too,
+  since they are revoked later). Removing a named zone from a token checks the
+  same.
 - **Daily recheck.** `badge-recheck.ts` (offline sweep) re-checks up to 10 tokens a
   tick whose last check is a day old: scopes refresh, a token the provider no
   longer accepts goes to `attention`, an outage changes nothing and the token is
@@ -482,9 +492,10 @@ Rules the code enforces:
   account's active tokens with certificate rights for the zone, matched by zone
   id, narrowest first; the next one is tried when the provider refuses a token. The token used is recorded in the audit row
   (`revokedWithBadgeId`). With no such token a revoke is refused (`badge_missing`)
-  unless forced. Removing a token is refused (`origin_certificate_in_use`) only
-  when it is the last active token that could revoke a certificate; removing the
-  account is refused while it still owns certificates. The TLS library routes
+  unless forced. Removing a token is refused (`badge_in_use`, the
+  certificate named) only when it is the last active token that could renew or
+  revoke a certificate; removing the account is refused
+  (`origin_certificate_in_use`) while it still owns certificates. The TLS library routes
   refuse to revoke or create a `provider_origin` row (`409
 provider_origin_managed`, `400 provider_origin_unsupported`). Deleting one from
   the library (`DELETE /tls/:id`) revokes it at the provider through the same
