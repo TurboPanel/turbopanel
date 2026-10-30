@@ -2826,7 +2826,7 @@ export const managedPaths = {
       tags: ['Managed services'],
       summary: 'Add a managed replica member',
       description:
-        'Body `{ serverId, replicaClass?, readEligible? }`. `replicaClass` defaults to `failover` (same datacenter as primary, promotable). `read` replicas may use local/datacenter/fabric/public paths to any org server. Requires private reachability to primary; failover additionally requires a ready datacenter CIDR. Refused with 422 `managed_failover_unsupported` when the cluster image cannot take a replica (MariaDB 12.3: single server until automatic failover supports it).',
+        'Body `{ serverId, replicaClass?, readEligible? }`. `replicaClass` defaults to `failover` (same datacenter as primary, or TurboFabric over an untrusted one; promotable). `read` replicas may use local/datacenter/fabric/public paths to any org server. Requires private reachability to primary; failover additionally requires a ready datacenter CIDR unless it rides TurboFabric. Refused with 422 `managed_failover_unsupported` when the cluster image cannot take a replica (MariaDB 12.3: single server until automatic failover supports it).',
       parameters: [ENV_ID_PARAM],
       requestBody: {
         content: {

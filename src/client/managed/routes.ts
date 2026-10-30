@@ -1335,7 +1335,8 @@ async function resolveReplicaPlacement(
   if ('kind' in toPrimary) return privateEndpointErrorResponse(c, toPrimary)
   // A pair on an untrusted network never gets a new placement that would fall
   // to the public address in plain; TurboFabric has to carry it.
-  if (toPrimary.untrustedPublic) return c.json({ error: 'untrusted_network_needs_fabric' }, 422)
+  if (toPrimary.untrustedPublic || toPrimary.tunnelDown)
+    return c.json({ error: 'untrusted_network_needs_fabric' }, 422)
   if (params.replicaClass === 'failover') {
     const transportErr = assertFailoverReplicaTransportAllowed(toPrimary.transport)
     if (transportErr) {
@@ -1389,6 +1390,7 @@ async function resolveFailoverConversionPlacement(
     purpose: replicaEndpointPurpose('failover'),
   })
   if ('kind' in toPrimary) return privateEndpointErrorResponse(c, toPrimary)
+  if (toPrimary.tunnelDown) return c.json({ error: 'untrusted_network_needs_fabric' }, 422)
   if (assertFailoverReplicaTransportAllowed(toPrimary.transport)) return false
   if (replicaPlacementNeedsDatacenter(toPrimary.transport, 'failover')) {
     const dcReady = await assertServerDatacenterReady(db, params.memberServerId)

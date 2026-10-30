@@ -1021,6 +1021,21 @@ test('failover-replication over an untrusted-only shared datacenter rides fabric
   )
 })
 
+test('failover-replication keeps the fabric address when the other daemon is offline, marked tunnelDown', async () => {
+  const db = createFixtureDb({
+    ...UNTRUSTED_ONLY_FIXTURE,
+    disconnected: ['s2'],
+  })
+  assertEquals(
+    await resolvePrivateEndpoint(db, {
+      fromServerId: 's1',
+      purpose: 'failover-replication',
+      toServerId: 's2',
+    }),
+    { address: '10.250.0.2', transport: 'fabric', fabricId: 'fabric-1', tunnelDown: true }
+  )
+})
+
 test('failover-replication over an untrusted-only shared datacenter without fabric is refused, never public', async () => {
   const db = createFixtureDb({ ...UNTRUSTED_ONLY_FIXTURE, relays: [] })
   assertEquals(

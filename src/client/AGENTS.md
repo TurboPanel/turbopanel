@@ -653,11 +653,14 @@ sourceServerId? }`
   through to fabric → public as before. Every purpose on a pair that shares an
   untrusted datacenter rides TurboFabric over the LAN when the tunnel is
   healthy. `failover-replication` never uses the public address: on an
-  untrusted-only pair with no healthy tunnel it is **422**
-  `untrusted_network_needs_fabric` (replica create, member class patch,
-  managed apply prepare), and the other purposes that fall to public on such a
-  pair carry `untrustedPublic: true` (new placements refuse it with the same
-  422; running traffic keeps the TLS public path and the paths view warns).
+  untrusted-only pair with a keyed tunnel that is not healthy it keeps the
+  fabric address marked `tunnelDown: true` (a lost host must not break a
+  running cluster), and with no keyed tunnel (fabric off, opted out) it is
+  **422** `untrusted_network_needs_fabric`. The other purposes that fall to
+  public on such a pair carry `untrustedPublic: true`. New placements (replica
+  create, class change) refuse `untrustedPublic` and `tunnelDown` with the same
+  422; running traffic keeps its path and `GET` server traffic map reports both
+  flags on `planned` (the console does not render the traffic map yet).
   No shared datacenter at all stays `private_path_unavailable`. TurboFabric path planning
   (`lanPathCandidate` in `src/features/fabric/fabric-records.ts`) consumes the same
   partition through `EndpointAddressCaches.policyByDatacenter`, so a
