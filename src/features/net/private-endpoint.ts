@@ -551,13 +551,9 @@ function resolveFabricFromCaches(params: {
     if (!params.allowTunnelDown) return null
     const keyed = params.relays
       .filter((row) => {
+        if (row.serverId !== params.toServerId || row.publicKey === null) return false
         const from = fromByFabric.get(row.fabricId)
-        return (
-          row.serverId === params.toServerId &&
-          from !== undefined &&
-          from.publicKey !== null &&
-          row.publicKey !== null
-        )
+        return from !== undefined && from.publicKey !== null
       })
       .sort((a, b) => a.fabricCreatedAt.localeCompare(b.fabricCreatedAt))[0]
     if (!keyed) return null
