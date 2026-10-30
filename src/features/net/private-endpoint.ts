@@ -165,7 +165,7 @@ export type RelayJoinRow = {
   /** WireGuard public key once the daemon reported one; a keyless relay has no tunnel yet. */
   publicKey: string | null
   /** This relay's last reading of its peers (`relay.metadata.observed`). */
-  observed?: RelayMetadata['observed']
+  observed?: NonNullable<RelayMetadata['observed']>
 }
 
 /**
