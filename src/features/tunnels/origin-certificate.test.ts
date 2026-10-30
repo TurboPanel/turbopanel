@@ -3,7 +3,8 @@
  * issued pair is stored with its key sealed, a refusal or a failed store
  * leaves nothing at the provider, a certificate a site pins cannot be
  * revoked, and renewal re-pins the site and keeps the old certificate until
- * it expires. Skips without TURBOPANEL_DATABASE_URL.
+ * it expires. A row that keeps failing backs off, so it does not take the
+ * scheduled tick's batch from healthy rows. Skips without TURBOPANEL_DATABASE_URL.
  */
 import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { assert, assertEquals, assertRejects } from '@std/assert'
@@ -42,6 +43,7 @@ import {
   sweepOriginCertificates,
 } from './origin-certificate.ts'
 import { readOriginRetry } from './origin-certificate-retry.ts'
+import { runOriginCertificateSweepTick } from './origin-certificate-sweep.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -903,6 +905,71 @@ test('a failing renewal waits an hour, then two, and a success clears the wait',
     assertEquals(done.renewed.length, 1)
     const [cleared] = await w.db.select().from(tls).where(eq(tls.id, row!.id))
     assertEquals(readOriginRetry(cleared!.metadata), { attempts: 0, nextTryAt: null })
+  })
+})
+
+test('failing rows back off so the next tick spends its batch on the healthy row', async () => {
+  await withWorld(async (w) => {
+    const good = fakeAdapter()
+    const asked: string[] = []
+    const adapter = {
+      ...good.adapter,
+      issueOriginCertificate: (
+        ...args: Parameters<NonNullable<TunnelAdapter['issueOriginCertificate']>>
+      ) => {
+        const name = args[1].hostnames[0]!
+        asked.push(name)
+        return name.startsWith('bad')
+          ? Promise.reject(new TunnelProviderError('provider_error', 'boom', 500))
+          : good.adapter.issueOriginCertificate!(...args)
+      },
+    } as unknown as TunnelAdapter
+    // Two failing rows end first, so a pass reaches them before the healthy one.
+    const rows: { id: string; name: string; hostingId: string }[] = []
+    for (const [name, days] of [
+      ['bad0.example.com', 3],
+      ['bad1.example.com', 3],
+      ['ok.example.com', 4],
+    ] as const) {
+      const row = await issueOriginCertificate({
+        ...w,
+        adapter: good.adapter,
+        carrier: w.carrierRow,
+        badge: w.badgeRow,
+        zoneName: 'example.com',
+        names: [name],
+      })
+      const hostingId = await pin(w.db, w.serviceId, row.id, name)
+      await w.db
+        .update(tls)
+        .set({ notAfter: new Date(Date.now() + days * 86_400_000).toISOString() })
+        .where(eq(tls.id, row.id))
+      rows.push({ id: row.id, name, hostingId })
+    }
+    const [bad0, bad1, healthy] = rows
+    const t0 = new Date()
+    const tick = (now: Date) =>
+      runOriginCertificateSweepTick(w.db, w.secrets, { registry: () => adapter, now, limit: 2 })
+    // First tick: the two failing rows use the batch and each gets a back-off.
+    const first = await tick(t0)
+    assertEquals(asked.sort(), ['bad0.example.com', 'bad1.example.com'])
+    assertEquals(first.repinned, [])
+    for (const row of [bad0!, bad1!]) {
+      const [now] = await w.db.select().from(tls).where(eq(tls.id, row.id))
+      assertEquals(readOriginRetry(now!.metadata).attempts, 1)
+    }
+    // A minute later the failing rows are still waiting, so the healthy one is renewed.
+    const second = await tick(new Date(t0.getTime() + 60_000))
+    assertEquals(asked.slice(2), ['ok.example.com'])
+    assertEquals(second.renewed, 1)
+    assertEquals(second.repinned, [
+      { hostingId: healthy!.hostingId, organizationId: w.organizationId },
+    ])
+    const [site] = await w.db
+      .select({ tlsId: hosting.tlsId })
+      .from(hosting)
+      .where(eq(hosting.id, healthy!.hostingId))
+    assert(site!.tlsId !== healthy!.id, 'the site moved to the renewed certificate')
   })
 })
 

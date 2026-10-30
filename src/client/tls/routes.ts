@@ -645,7 +645,7 @@ async function deleteProviderOriginCertificate(
       actorUserId: session?.userId ?? null,
       actorEmail: session?.email ?? null,
       action: 'origin_certificate.revoke',
-      targetType: 'organization',
+      targetType: 'tls',
       targetId: row.id,
       context: { carrierId: link.carrierId, zone: link.zoneName, revokedWithBadgeId },
     })
