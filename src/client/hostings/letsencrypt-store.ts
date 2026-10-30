@@ -307,7 +307,11 @@ async function loadNeedsDeploy(
   const deployedAt = new Map<string, string>()
   for (const row of rows) {
     const found = byHosting.get(row.id)
-    if (found?.finishedAt) deployedAt.set(row.id, found.finishedAt)
+    // Only a deploy that carried the current pin counts: while a later apply
+    // is still running, the older deploy says nothing about this certificate.
+    if (found?.finishedAt && since(found.finishedAt, row.updatedAt)) {
+      deployedAt.set(row.id, found.finishedAt)
+    }
     if (!since(found?.finishedAt, row.updatedAt) && !since(found?.runningSince, row.updatedAt)) {
       stale.add(row.id)
     }

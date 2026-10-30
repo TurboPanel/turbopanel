@@ -11,7 +11,7 @@
  * literal) uses DNS-over-HTTPS and a plain fetch of the name.
  */
 
-import { DOH_ENDPOINT, DOH_TIMEOUT_MS } from '../../lib/http/doh-resolve.ts'
+import { dohQuery } from '../../lib/http/doh-resolve.ts'
 
 /** One CAA record, as Deno's resolver returns it. */
 export type CaaRecord = { critical: boolean; tag: string; value: string }
@@ -58,17 +58,7 @@ function parseGenericCaa(text: string): CaaRecord | null {
 
 /** CAA over DNS-over-HTTPS (Workers). "No such name" is an empty answer; any other failure throws. */
 export async function dohCaaLookup(name: string): Promise<CaaRecord[]> {
-  const query = new URLSearchParams({ name, type: 'CAA' })
-  const response = await fetch(`${DOH_ENDPOINT}?${query}`, {
-    headers: { accept: 'application/dns-json' },
-    redirect: 'manual',
-    signal: AbortSignal.timeout(DOH_TIMEOUT_MS),
-  })
-  if (!response.ok) {
-    await response.body?.cancel()
-    throw new Error(`doh: CAA lookup failed with HTTP ${response.status}`)
-  }
-  const reply = (await response.json()) as { Status?: unknown; Answer?: unknown }
+  const reply = await dohQuery(name, 'CAA')
   if (reply.Status === NXDOMAIN) return []
   if (reply.Status !== NOERROR) throw new Error(`doh: CAA lookup answered ${String(reply.Status)}`)
   const answers = Array.isArray(reply.Answer)

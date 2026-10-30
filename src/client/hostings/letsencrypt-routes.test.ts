@@ -838,6 +838,40 @@ test('sweep: a request still waiting after 7 days is dropped and recorded in the
   }
 })
 
+test('certificate block: an apply still running is "working", never "not on the server yet"', async () => {
+  if (!dbUrl) return skipWithoutDatabase("hosting Let's Encrypt route tests")
+  const f = await setup({ acmeEnabled: true, hostingOptions: PUBLIC_SITE })
+  const undeployOld = await deployedOn(f, true)
+  const undeployRunning = await deployedOn(f, true)
+  try {
+    const tlsId = await insertCertificate(f, { source: 'lets_encrypt', status: 'automatic' })
+    await f.db.update(hosting).set({ tlsId }).where(eq(hosting.id, f.hostingId))
+    const rows = await f.db
+      .select({ serverId: deployment.serverId })
+      .from(deployment)
+      .where(eq(deployment.environmentId, f.environmentId))
+    const twoDaysAgo = new Date(Date.now() - 2 * 86_400_000).toISOString()
+    await f.db
+      .update(deployment)
+      .set({ finishedAt: twoDaysAgo })
+      .where(eq(deployment.serverId, rows[0]!.serverId))
+    await f.db
+      .update(deployment)
+      .set({ status: 'applying', updatedAt: new Date(Date.now() + 1000).toISOString() })
+      .where(eq(deployment.serverId, rows[1]!.serverId))
+    const certificate = (await readCertificate(f)) as {
+      needsDeploy: boolean
+      serverProgress?: string
+    }
+    assertEquals(certificate.needsDeploy, false)
+    assertEquals(certificate.serverProgress, 'working')
+  } finally {
+    await undeployRunning()
+    await undeployOld()
+    await f.cleanup()
+  }
+})
+
 async function insertCertificate(
   f: Fixture,
   values: { source: 'lets_encrypt' | 'upload'; status: 'automatic' | 'ready' }
