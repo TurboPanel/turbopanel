@@ -110,11 +110,11 @@ stays its default for footprint.
 **Adding, promoting, or retiring a series** means editing
 `MANAGED_ENGINE_RELEASES` here plus the two mirrors, in the same change:
 
-| Layer                           | File                                                                                   | Pinned by                      |
-| ------------------------------- | -------------------------------------------------------------------------------------- | ------------------------------ |
-| Control plane (source of truth) | `releases.ts`                                                                          | `releases.test.ts`             |
-| Daemon payload allowlist        | `turbopaneld/src/contracts/commands-contracts.ts` (`MANAGED_ALLOWED_IMAGES_BY_ENGINE`) | `command-types-parity.test.ts` |
-| UI picker                       | `ui/src/lib/managed-releases.ts`                                                       | `managed-releases.test.ts`     |
+| Layer                           | File                                                                                      | Pinned by                      |
+| ------------------------------- | ----------------------------------------------------------------------------------------- | ------------------------------ |
+| Control plane (source of truth) | `releases.ts`                                                                             | `releases.test.ts`             |
+| Daemon payload allowlist        | `../turbopaneld/src/contracts/commands-contracts.ts` (`MANAGED_ALLOWED_IMAGES_BY_ENGINE`) | `command-types-parity.test.ts` |
+| UI picker                       | `ui/src/lib/managed-releases.ts`                                                          | `managed-releases.test.ts`     |
 
 Everything else derives: `settings.ts` allowlists (`POSTGRES_ALLOWED_IMAGES` /
 `MYSQL_ALLOWED_IMAGES` / `MARIADB_ALLOWED_IMAGES`, via
@@ -128,7 +128,7 @@ every spec's `parseSettings`, as does `parseManagedApplyPayload`
 
 **Create-time selection:** `POST …/managed` accepts `engineSeries` +
 `imageVariant` (`parseManagedVersionSelection` in
-`../../client/managed/routes-helpers.ts`), resolved to an image and merged into
+`routes-helpers.ts`), resolved to an image and merged into
 settings; an unknown **or untested** series/variant is **422**
 `managed_version_unsupported`. Omitting both takes the engine default (always a
 tested series). Create always provisions a single primary; a replica is added
@@ -311,7 +311,7 @@ stays internal.
   IPv4); loopback clients still show the managed network's gateway. The daemon
   does this only on Docker Engine 28+ / Compose 2.33.1+; older hosts keep the
   old path. Details:
-  `turbopaneld/src/managed/AGENTS.md` → **Real client addresses (IPv6 network)**.
+  `../turbopaneld/src/managed/AGENTS.md` → **Real client addresses (IPv6 network)**.
 
 Each `managed.ingress.reconcile` cluster also carries `engineVersion`, the
 release series of the image the row stores (`ingressEngineVersionFromOptions`,
@@ -676,11 +676,11 @@ already weak before this rule. For those:
   keep the old value until the binding is materialized again (a deploy, a
   password rotation).
 
-| Layer            | Module                                                                                           | Route                                                                                                    |
-| ---------------- | ------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------- |
-| Org default      | `org-defaults.ts` (`parseManagedOrganizationDefaults`, `parseManagedSslModeInput`)               | `GET`/`PUT /api/client/v1/organizations/:id/managed-defaults` (manage-gated; PUT `sslMode: null` clears) |
-| Per-request load | `../../client/managed/org-defaults.ts` (`loadManagedOrgDefaults`) → `ManagedContext.orgDefaults` | every managed route                                                                                      |
-| Effective view   | `buildManagedSslView` (`routes-helpers.ts`)                                                      | `GET …/managed` → `ssl: { configured, effective, organizationDefault, raisedForExternalAccess }`         |
+| Layer            | Module                                                                             | Route                                                                                                    |
+| ---------------- | ---------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| Org default      | `org-defaults.ts` (`parseManagedOrganizationDefaults`, `parseManagedSslModeInput`) | `GET`/`PUT /api/client/v1/organizations/:id/managed-defaults` (manage-gated; PUT `sslMode: null` clears) |
+| Per-request load | `org-defaults.ts` (`loadManagedOrgDefaults`) → `ManagedContext.orgDefaults`        | every managed route                                                                                      |
+| Effective view   | `buildManagedSslView` (`routes-helpers.ts`)                                        | `GET …/managed` → `ssl: { configured, effective, organizationDefault, raisedForExternalAccess }`         |
 
 The detail `ssl` view is present even **before** provisioning
 (`buildEmptyManagedDetailResponse` takes the org default) so the create surface
@@ -717,12 +717,12 @@ pointing at a port nothing listens on, and would make the bind flap. Both
 longer means "Postgres", so the wire payload carries `family` (`pgsql` |
 `mysql`) explicitly alongside `protocolPort`.
 
-| Rule                                                                      | Where                                                                                             |
-| ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
-| Range `1024`–`65535` (privileged ports refused outright, not preflighted) | `rejectManagedIngressPort`                                                                        |
-| Not ProxySQL admin `6032` / `6132`; not the `45000`–`45999` private range | `rejectManagedIngressPort`                                                                        |
-| `postgres !== mysqlFamily`                                                | `validateManagedIngressPorts` (`collision`)                                                       |
-| Existing **host** listener conflict                                       | daemon-side preflight before any compose write (see `../../../turbopaneld/src/managed/AGENTS.md`) |
+| Rule                                                                      | Where                                                                                       |
+| ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| Range `1024`–`65535` (privileged ports refused outright, not preflighted) | `rejectManagedIngressPort`                                                                  |
+| Not ProxySQL admin `6032` / `6132`; not the `45000`–`45999` private range | `rejectManagedIngressPort`                                                                  |
+| `postgres !== mysqlFamily`                                                | `validateManagedIngressPorts` (`collision`)                                                 |
+| Existing **host** listener conflict                                       | daemon-side preflight before any compose write (see `../turbopaneld/src/managed/AGENTS.md`) |
 
 Read paths are lenient and write paths are strict: `resolveManagedIngressPorts`
 ignores malformed stored jsonb (and falls back wholesale on a stored collision,
@@ -733,14 +733,14 @@ named. Store/serve `ports` (configured, `null` per family = inherit) and
 
 ## Exposure / connection shape
 
-| Surface                    | Shape                                                                                                                                                                                                                                                                                                                                                   |
-| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Client connection endpoint | Shared ProxySQL host:port on the **placement server** (member or bound consumer) — port from the **server-owner** org's listener config, default pgsql `15432` / mysql `13306` (see Client listener ports above), TLS to the **server-owner Organization CA**, DSN TLS parameter from the effective `ManagedSslMode` (see Client TLS above)             |
-| Routing                    | ProxySQL hostgroups map each login's `connectionRole` → primary/replica backends over the local Docker network, a fabric relay address over `tp0`, or a datacenter private address (see Client routing above; `^SELECT` rules only under `routing.autoReadSplit`)                                                                                       |
-| Engine containers          | Reachable only on the organization's managed network (container DNS / IP from apply peers); no host `ports:`. That network's name is the `network(kind='managed')` row's bare UUID — allocated by `ensureOrganizationManagedNetwork`, never a literal (`../db/AGENTS.md`; daemon side: `turbopaneld/src/managed/AGENTS.md` → **Compose project names**) |
-| Desired-state command      | Whole-server `managed.ingress.reconcile` builds `clusters[]` + **resealed frontend user passwords** for every managed cluster needed on that server (local members **and** clusters bound by compose services placed on the server). Binding lookup is scoped to the target org + server; cluster members/users/endpoints are batched per reconcile     |
-| Organization CA scoping    | Organization CA and frontend leaf for ProxySQL come from **`server.organization_id`**, with SANs for advertised listener host/IP — not only synthetic names                                                                                                                                                                                             |
-| Username uniqueness        | Logins unique across every cluster on servers owned by the same organization (see Login namespace)                                                                                                                                                                                                                                                      |
+| Surface                    | Shape                                                                                                                                                                                                                                                                                                                                                      |
+| -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Client connection endpoint | Shared ProxySQL host:port on the **placement server** (member or bound consumer) — port from the **server-owner** org's listener config, default pgsql `15432` / mysql `13306` (see Client listener ports above), TLS to the **server-owner Organization CA**, DSN TLS parameter from the effective `ManagedSslMode` (see Client TLS above)                |
+| Routing                    | ProxySQL hostgroups map each login's `connectionRole` → primary/replica backends over the local Docker network, a fabric relay address over `tp0`, or a datacenter private address (see Client routing above; `^SELECT` rules only under `routing.autoReadSplit`)                                                                                          |
+| Engine containers          | Reachable only on the organization's managed network (container DNS / IP from apply peers); no host `ports:`. That network's name is the `network(kind='managed')` row's bare UUID — allocated by `ensureOrganizationManagedNetwork`, never a literal (`../db/AGENTS.md`; daemon side: `../turbopaneld/src/managed/AGENTS.md` → **Compose project names**) |
+| Desired-state command      | Whole-server `managed.ingress.reconcile` builds `clusters[]` + **resealed frontend user passwords** for every managed cluster needed on that server (local members **and** clusters bound by compose services placed on the server). Binding lookup is scoped to the target org + server; cluster members/users/endpoints are batched per reconcile        |
+| Organization CA scoping    | Organization CA and frontend leaf for ProxySQL come from **`server.organization_id`**, with SANs for advertised listener host/IP — not only synthetic names                                                                                                                                                                                                |
+| Username uniqueness        | Logins unique across every cluster on servers owned by the same organization (see Login namespace)                                                                                                                                                                                                                                                         |
 
 Connection info helpers surface the ProxySQL frontend port/host: loopback
 always, plus, when external access is on, one endpoint per **address clients
@@ -785,7 +785,7 @@ check for its presence rather than special-casing engine codes). It carries
 
 **Same rule as `userOperations`: no argv or SQL text here.** The descriptor only
 names the client binaries (`pg_dump` / `pg_restore` for Postgres) — the daemon's
-`ManagedEngineRuntime.backup` (mirrored in `turbopaneld/src/managed/engines/`)
+`ManagedEngineRuntime.backup` (mirrored in `../turbopaneld/src/managed/engines/`)
 owns actual argv construction. This keeps the instance spec import-safe on both
 Workers and Deno and keeps command construction in one place (the daemon, which
 also validates identifiers before they reach argv).
@@ -1156,7 +1156,7 @@ switch for which detectors may start automatic failover, per engine:
   only** — Orchestrator's image has only the MySQL driver, so an
   Orchestrator-shaped event for Postgres is always rejected.
 - `postgres-probe`: the daemon's own probe on the Postgres primary's host
-  (`turbopaneld/src/managed/AGENTS.md` → **Postgres dead-primary detection**):
+  (`../turbopaneld/src/managed/AGENTS.md` → **Postgres dead-primary detection**):
   engine dead, host alive. Sent only when the attach frame advertises
   `managed-ha-probe-v1`.
 
@@ -1370,7 +1370,7 @@ the row ends `blocked` (`HOST_LOSS_HOST_RETURNED_MESSAGE`) with nothing changed.
 **The old primary when it returns** (`ha-return-fence.ts`), keyed on the role
 the control plane holds, not on how it was replaced:
 
-- The daemon's boot hold (`turbopaneld/src/managed/AGENTS.md`) stopped it after
+- The daemon's boot hold (`../turbopaneld/src/managed/AGENTS.md`) stopped it after
   an unclean boot and reports `detector: 'boot-hold'`. `handleManagedHaEvent`
   answers it (never as a failover): still `primary` and no recovery in flight
   and no `needsOperator` row = `managed.lifecycle start` (`bootHoldRelease`); a
@@ -1471,7 +1471,7 @@ environment delete return **409** `managed_runtime_present` while a `managed`
 row remains (`environment_id` CASCADE must not drop live host runtime). Hard-delete
 the Postgres row only when the cluster was never placed.
 
-Daemon teardown: `turbopaneld/src/managed/AGENTS.md` (`destroy.ts`).
+Daemon teardown: `../turbopaneld/src/managed/AGENTS.md` (`destroy.ts`).
 
 ## Privilege catalogue
 

@@ -22,6 +22,7 @@ tests**). Package manager is pnpm; Deno tasks are in `deno.json`.
   `check:vocabulary`, `check:ca-boundary`, `check:instance-acme-boundary`,
   `check:contract-drift`, `check:migration-*`, `check:metrics-boundaries`,
   `check:query-cache-boundaries`, `notices:check`.
+- Guide pointers: `pnpm check:guide-references` (paths named in `AGENTS.md` and `docs/*.md` must exist).
 - Database: `pnpm generate` (new migration), `pnpm migrate`.
 - Format: `pnpm exec prettier --write <changed files>` then `--check`; the
   pre-commit hook (`.githooks/pre-commit`) runs the secret scan and the same
