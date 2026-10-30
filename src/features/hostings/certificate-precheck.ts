@@ -35,11 +35,17 @@ const EDGE_UNREACHABLE = new Set([520, 521, 522, 523, 524, 525, 526, 530])
 /** `0 issue "letsencrypt.org"` or the generic `\# 22 00 05 69 73 ...` form. */
 export function parseCaaData(data: string): CaaRecord | null {
   const text = data.trim()
-  if (text.startsWith('\\#')) return parseGenericCaa(text)
-  const match = /^(\d+)\s+([A-Za-z0-9]+)\s+(.*)$/.exec(text)
-  if (!match) return null
-  const value = match[3].trim().replace(/^"(.*)"$/, '$1')
-  return { critical: (Number(match[1]) & 128) !== 0, tag: match[2].toLowerCase(), value }
+  if (text.startsWith(String.raw`\#`)) return parseGenericCaa(text)
+  const [flags, tag, ...rest] = text.split(/\s+/)
+  if (!flags || !tag || rest.length === 0 || !/^\d+$/.test(flags) || !/^[A-Za-z0-9]+$/.test(tag)) {
+    return null
+  }
+  const joined = rest.join(' ')
+  const value =
+    joined.length >= 2 && joined.startsWith('"') && joined.endsWith('"')
+      ? joined.slice(1, -1)
+      : joined
+  return { critical: (Number(flags) & 128) !== 0, tag: tag.toLowerCase(), value }
 }
 
 function parseGenericCaa(text: string): CaaRecord | null {

@@ -83,26 +83,42 @@ async function checkOneName(
   }
   const problem = addressProblem(hostname, addresses, wrong, expected)
   if (problem !== null) return { ...entry, problem }
+  const port80 = await checkPort80(probes.port80, hostname, addresses)
+  if (port80.problem !== undefined) return { ...entry, ...port80 }
+  return { ...entry, ...port80, ...(await checkCaaOf(probes.caaLookup, hostname)) }
+}
 
-  if (probes.port80) {
-    const port80 = await probes.port80(hostname)
-    entry.port80 = port80.open ? 'open' : 'closed'
-    if (!port80.open) {
-      const why = port80.error ? ` (${port80.error})` : ''
-      entry.problem =
-        `${hostname} points at ${listed(addresses)}, but port 80 there isn't reachable from the internet${why}. ` +
-        "Let's Encrypt checks the name over port 80, so open or forward port 80 to the server."
-      return entry
-    }
+type ProbeFinding = Pick<HostingDnsHostname, 'port80' | 'caa' | 'problem'>
+
+async function checkPort80(
+  probe: CertificatePrecheckProbes['port80'],
+  hostname: string,
+  addresses: readonly string[]
+): Promise<ProbeFinding> {
+  if (!probe) return {}
+  const result = await probe(hostname)
+  if (result.open) return { port80: 'open' }
+  const why = result.error ? ` (${result.error})` : ''
+  return {
+    port80: 'closed',
+    problem:
+      `${hostname} points at ${listed(addresses)}, but port 80 there isn't reachable from the internet${why}. ` +
+      "Let's Encrypt checks the name over port 80, so open or forward port 80 to the server.",
   }
-  if (probes.caaLookup) {
-    const caa = await checkCaa(probes.caaLookup, hostname)
-    if (caa.allowed !== null) entry.caa = caa.allowed ? 'allowed' : 'blocked'
-    if (caa.allowed === false) {
-      entry.problem = `A CAA record on ${caa.recordAt} does not allow Let's Encrypt to issue for ${hostname}. Add letsencrypt.org to it, or remove the record.`
-    }
+}
+
+async function checkCaaOf(
+  lookup: CertificatePrecheckProbes['caaLookup'],
+  hostname: string
+): Promise<ProbeFinding> {
+  if (!lookup) return {}
+  const caa = await checkCaa(lookup, hostname)
+  if (caa.allowed === null) return {}
+  if (caa.allowed) return { caa: 'allowed' }
+  return {
+    caa: 'blocked',
+    problem: `A CAA record on ${caa.recordAt} does not allow Let's Encrypt to issue for ${hostname}. Add letsencrypt.org to it, or remove the record.`,
   }
-  return entry
 }
 
 /**
