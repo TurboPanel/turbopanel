@@ -29,8 +29,8 @@ import { type AuditEntry, recordAudit } from '../../features/audit/audit-records
 import {
   enqueueFabricReconcileForServers,
   type FabricEnqueueResult,
-  reconcileFabricMembership,
 } from '../../features/fabric/enqueue.ts'
+import { reconcileServerNetworking } from '../../features/fabric/server-networking.ts'
 import {
   type FabricDependent,
   fabricDependentsMessage,
@@ -349,13 +349,14 @@ export async function applyServerFabricPatch(
     },
   })
   if (patch.enabled === undefined || patch.enabled === params.currentlyEnabled) return null
-  const results = await reconcileFabricMembership({
+  // Re-plan the mesh and reach a switched-off server that still holds a
+  // network it shares over a trusted LAN (its payload has no tunnel).
+  const results = await reconcileServerNetworking({
     db,
     commandQueue: params.commandQueue,
-    actorType: 'user',
-    actorId: params.actorId,
+    actor: { type: 'user', id: params.actorId },
     organizationId: params.organizationId,
-    ...params.secrets,
+    secrets: params.secrets,
   })
   return fabricTypedEnqueueErrorResponse(results)
 }

@@ -391,6 +391,21 @@ export const organizationSchemas = {
           "Every org server's TurboFabric switch and role, whether or not the fabric exists.",
         items: { $ref: '#/components/schemas/OrganizationFabricServer' },
       },
+      pairs: {
+        type: 'array',
+        description:
+          'How each pair of org servers talks, listed once per pair. `lan`: they share a trusted datacenter network and both daemons route over it, so there is no tunnel (cross-server container networks ride the LAN, with or without TurboFabric). `fabric`: a TurboFabric tunnel carries it. `fabric_over_untrusted_lan`: the tunnel runs over a shared network marked untrusted, encrypted. `none`: no private path. `reason` is one plain sentence for the page.',
+        items: {
+          type: 'object',
+          required: ['fromServerId', 'toServerId', 'path', 'reason'],
+          properties: {
+            fromServerId: { type: 'string', format: 'uuid' },
+            toServerId: { type: 'string', format: 'uuid' },
+            path: { type: 'string', enum: ['lan', 'fabric', 'fabric_over_untrusted_lan', 'none'] },
+            reason: { type: 'string' },
+          },
+        },
+      },
       fabric: {
         type: 'object',
         required: ['id', 'cidr', 'mtu', 'allowRelay', 'containerPool'],
@@ -2300,7 +2315,7 @@ export const organizationPaths: Record<string, unknown> = {
       tags: ['Organizations'],
       summary: "Set one server's TurboFabric switch and role",
       description:
-        "Manage-gated. `{ enabled?, role? }`; `role` is `gateway`, `client` or null (automatic: gateway when the server has a public address). `enabled: false` takes the server's `tp0` down (keeping its key when its daemon can) and re-plans the mesh so no peer lists it, no ladder hands out its fabric address and its WireGuard port closes; its relay row stays, so its address, endpoint pin, preshared key and LAN sharing come back when it is switched on. Refused with 409 `fabric_server_in_use` (plain `message`, `dependents[]`) while a cross-server container network, a managed database replicating over TurboFabric, an app-to-database connection that resolves to its fabric address, or a datacenter LAN only it shares depends on it, and 503 `fabric_teardown_not_queued` when its teardown could not be queued. `enabled: true` lets it join on the next reconcile (immediately when TurboFabric is on). Returns `{ ok, server }`.",
+        "Manage-gated. `{ enabled?, role? }`; `role` is `gateway`, `client` or null (automatic: gateway when the server has a public address). `enabled: false` takes the server's `tp0` down (keeping its key when its daemon can) and re-plans the mesh so no peer lists it, no ladder hands out its fabric address and its WireGuard port closes; its relay row stays, so its address, endpoint pin, preshared key and LAN sharing come back when it is switched on. Refused with 409 `fabric_server_in_use` (plain `message`, `dependents[]`) while a cross-server container network that reaches it through a tunnel (one whose other servers all share a trusted LAN with it does not count), a managed database replicating over TurboFabric, an app-to-database connection that resolves to its fabric address, or a datacenter LAN only it shares depends on it, and 503 `fabric_teardown_not_queued` when its teardown could not be queued. `enabled: true` lets it join on the next reconcile (immediately when TurboFabric is on). Returns `{ ok, server }`.",
       security: [{ cookieAuth: [] }],
       parameters: [
         { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },

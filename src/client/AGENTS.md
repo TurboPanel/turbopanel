@@ -188,6 +188,23 @@ changes.
   payload hash that includes peers) before enqueueing `environment.deploy`
   (`422 fabric_reconcile_failed` / `409 fabric_reconcile_pending`). PUT disable
   is a teardown (reclaims `network(kind='compose')` + `subnet`).
+  **Trusted LAN wins (one pair rule, `serversShareTrustedLan` in
+  `features/net/private-endpoint.ts`):** two servers that share a trusted
+  datacenter network, both daemons listing `fabric-lan-routes-v1`, have **no
+  tunnel**: they are not WireGuard peers, the ladder never gives them a fabric
+  address, and a cross-server container network between them rides the LAN
+  (`lanRoutes`: each routes the other's `server.container_prefix` via its IPv4
+  LAN address) with TurboFabric on, paused or off
+  (`reconcileServerNetworking`; outside a running mesh the payload is
+  `tunnel: false`). A pair with an older daemon keeps its tunnel over the LAN.
+  Traffic between datacenters rides TurboFabric; a pair that shares only an
+  untrusted network runs its tunnel over that LAN (`direct_lan` marked
+  untrusted, GET `pairs[].path` `fabric_over_untrusted_lan`), while plain
+  traffic never crosses an untrusted LAN. Failover replication and Raft never
+  use fabric. The planner refuses a span only for pairs outside a shared
+  trusted LAN (TurboFabric off, a switched-off server in such a pair, or no
+  direct tunnel in a network that mixes LAN and remote servers). The fabric
+  rung also needs both relays keyed and the other daemon connected.
   Whole-environment `environment.server_id` pins never require it. User-facing
   copy is **TurboFabric**; backend identifiers stay `fabric` / `tp0` / `relay` /
   `subnet`. Never ask which WireGuard network a container should join. NAT

@@ -7876,3 +7876,44 @@ test('parseCommandPayload and parseCommandResult dispatch server.tunnel.status',
   const result = { pinnedVersion: '2026.5.2', connectors: [] }
   assertEquals(parseCommandResult('server.tunnel.status' as CommandType, result), result)
 })
+
+test('parseFabricReconcilePayload keeps tunnel and lanRoutes, address optional only with no tunnel', () => {
+  const tunnelless = parseFabricReconcilePayload({
+    enabled: true,
+    tunnel: false,
+    prefix: '10.192.0.0/16',
+    peers: [],
+    lanRoutes: [{ cidr: ' 10.193.0.0/16 ', via: '10.0.0.2' }],
+  })
+  assertEquals(tunnelless, {
+    enabled: true,
+    tunnel: false,
+    prefix: '10.192.0.0/16',
+    peers: [],
+    lanRoutes: [{ cidr: '10.193.0.0/16', via: '10.0.0.2' }],
+  })
+  const base = { enabled: true, prefix: '10.192.0.0/16', peers: [] }
+  const refused: Array<[Record<string, unknown>, string]> = [
+    [base, 'Invalid fabric address'],
+    [{ ...base, tunnel: true }, 'Invalid fabric address'],
+    [{ ...base, tunnel: 'no' }, 'Invalid fabric tunnel'],
+    [{ ...base, tunnel: false, lanRoutes: {} }, 'Invalid fabric lanRoutes'],
+    [{ ...base, tunnel: false, lanRoutes: [null] }, 'Invalid fabric lanRoutes entry'],
+    [
+      { ...base, tunnel: false, lanRoutes: [{ cidr: '10.1.0.0', via: '10.0.0.1' }] },
+      'lanRoutes cidr',
+    ],
+    [{ ...base, tunnel: false, lanRoutes: [{ cidr: '10.1.0.0/24', via: 'x' }] }, 'lanRoutes via'],
+    [
+      {
+        ...base,
+        tunnel: false,
+        peers: [{ publicKey: `${'A'.repeat(43)}=`, allowedIPs: ['10.250.0.2/32'] }],
+      },
+      'a payload with no tunnel',
+    ],
+  ]
+  for (const [value, message] of refused) {
+    assertThrows(() => parseFabricReconcilePayload(value), TypeError, message)
+  }
+})

@@ -37,6 +37,8 @@ import { interpretServiceSchedule } from './interpret.ts'
 import { reconcileServicesFromCompose } from '../deploy/reconcile-services.ts'
 import { registerComposeVolumes } from '../deploy/register-compose-volumes.ts'
 import { registerComposeMounts } from '../deploy/register-compose-mounts.ts'
+import { loadPairRules } from '../fabric/pair-rules.ts'
+import { readOverlayDeclaredNetworkKeys } from '../fabric/spanning.ts'
 import {
   planEnvironmentSchedule,
   type FleetServer,
@@ -446,6 +448,15 @@ export async function planEnvironmentDeploy(
     })
   }
   const storagePins = await loadStoragePins(db, params.environmentId)
+  // Pure pair rules for the planner: a network whose servers all share a
+  // trusted LAN needs no TurboFabric. Read only when something could span.
+  const pairRules =
+    fleet.length > 1 && readOverlayDeclaredNetworkKeys(merged).size > 0
+      ? await loadPairRules(db, {
+          organizationId: params.organizationId,
+          serverIds: fleet.map((row) => row.id),
+        })
+      : null
 
   const plan = planEnvironmentSchedule({
     pinServerId,
@@ -462,6 +473,7 @@ export async function planEnvironmentDeploy(
       serverId: task.serverId,
     })),
     storagePins,
+    ...(pairRules ?? {}),
   })
 
   return {

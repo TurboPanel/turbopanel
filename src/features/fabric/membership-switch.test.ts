@@ -289,7 +289,20 @@ async function insertBoundDatabase(
 
 test('an app reaching its database over TurboFabric blocks switching either server off', async () => {
   await withSwitchRig(async ({ db, organizationId, onId, offId }) => {
-    // No shared datacenter and no public address: the ladder picks TurboFabric.
+    // No shared datacenter and no public address: the ladder picks TurboFabric
+    // (its tunnel can carry traffic: both relays keyed, both daemons online).
+    await db
+      .update(relay)
+      .set({ publicKey: `${'A'.repeat(43)}=` })
+      .where(eq(relay.serverId, onId))
+    await db
+      .update(relay)
+      .set({ publicKey: `${'B'.repeat(43)}=` })
+      .where(eq(relay.serverId, offId))
+    await db
+      .update(server)
+      .set({ isConnected: true })
+      .where(eq(server.organizationId, organizationId))
     const cleanup = await insertBoundDatabase(db, {
       organizationId,
       appServerId: onId,

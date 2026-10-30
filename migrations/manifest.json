@@ -62,6 +62,12 @@
       "tag": "0009_fabric_membership_role_kind",
       "when": 1793330850701,
       "sha256": "0eadede25ecc86906397b9a85b933bcb8d89fe28077f24486c4f3b421383ab44"
+    },
+    {
+      "idx": 10,
+      "tag": "0010_server_container_prefix",
+      "when": 1793351069170,
+      "sha256": "78e848312b0e745c571b066f4da541bc138ba8ae7574b79d4bf434e70a833f36"
     }
   ]
 }

@@ -28,6 +28,7 @@ import {
   type RelayRecord,
   updateFabricRelay,
 } from '../../features/fabric/fabric-records.ts'
+import { loadFabricPairs } from '../../features/fabric/pair-paths.ts'
 import { parseFabricPolicy } from '../../features/fabric/policy.ts'
 import { checkAdvertisedRangesAgainstPool } from '../../features/fabric/advertised-ranges.ts'
 import { loadResolvedGatewayRanges } from '../../features/fabric/gateway-ranges.ts'
@@ -152,11 +153,13 @@ async function fabricSettingsBody(
   const record = await getOrganizationFabric(db, organizationId)
   const relays = record ? await listFabricRelays(db, record.id) : []
   const servers = await loadFabricServerMemberships(db, { organizationId, relays })
-  if (!record) return fabricSettingsResponse(null, [], servers)
+  const pairs = await loadFabricPairs(db, { organizationId, fabric: record })
+  if (!record) return fabricSettingsResponse(null, [], servers, pairs)
   return fabricSettingsResponse(
     record,
     await loadFabricRelayApiRows(db, relays, parseFabricPolicy(record.options).allowRelay),
-    servers
+    servers,
+    pairs
   )
 }
 

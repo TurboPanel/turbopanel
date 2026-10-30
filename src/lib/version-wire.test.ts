@@ -7,6 +7,7 @@ import {
   TUNNEL_FORWARDING_FEATURE,
   TUNNEL_STATUS_FEATURE,
   MANAGED_BACKUP_LOGIN_FEATURE,
+  FABRIC_LAN_ROUTES_FEATURE,
   FABRIC_RETAIN_KEYS_FEATURE,
   DAEMON_FEATURE_MIN_VERSIONS,
   DAEMON_WIRE_FEATURES,
@@ -357,8 +358,14 @@ test('managed-backup-login-v1 is advertised and raised no floor', () => {
   assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.0')
 })
 
-test('fabric-retain-keys-v1 is advertised last and raised no floor', () => {
+test('fabric-retain-keys-v1 is advertised and raised no floor', () => {
   assertEquals(FABRIC_RETAIN_KEYS_FEATURE, 'fabric-retain-keys-v1')
-  assertEquals(DAEMON_WIRE_FEATURES.at(-1), FABRIC_RETAIN_KEYS_FEATURE)
+  assertEquals(DAEMON_WIRE_FEATURES.includes(FABRIC_RETAIN_KEYS_FEATURE), true)
+  assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.0')
+})
+
+test('fabric-lan-routes-v1 is advertised last and raised no floor', () => {
+  assertEquals(FABRIC_LAN_ROUTES_FEATURE, 'fabric-lan-routes-v1')
+  assertEquals(DAEMON_WIRE_FEATURES.at(-1), FABRIC_LAN_ROUTES_FEATURE)
   assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.0')
 })

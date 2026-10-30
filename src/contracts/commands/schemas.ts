@@ -1496,12 +1496,28 @@ export type FabricReconcileNetworkMaterial = {
 }
 
 /**
+ * Must stay in sync with the daemon `server.fabric.reconcile` shape. A
+ * container range of a server on a shared trusted LAN, routed via that
+ * server's LAN address (`fabric-lan-routes-v1`). The daemon installs IPv4
+ * routes only and picks the NIC whose connected subnet holds `via`.
+ */
+export type FabricReconcileLanRoute = {
+  cidr: string
+  via: string
+}
+
+/**
  * Must stay in sync with the daemon `server.fabric.reconcile` shape.
  * `{ enabled: false }` is a **tear down** (`tp0`, routed bridges, `TP-FORWARD`,
- * keys, state) — not a no-op. `{ enabled: false, retainKeys: true }` is a
- * pause: `tp0` goes down, the key, bridges and forwarding rules stay, so the
- * next enable is instant. It is sent only to a daemon that lists
- * `fabric-retain-keys-v1`.
+ * LAN routes, keys, state) — not a no-op. `{ enabled: false, retainKeys: true }`
+ * is a pause: `tp0` goes down, the key, bridges, LAN routes and forwarding
+ * rules stay, so the next enable is instant. It is sent only to a daemon that
+ * lists `fabric-retain-keys-v1`.
+ *
+ * `tunnel: false` (absent means true) and `lanRoutes` are sent only to a
+ * daemon that lists `fabric-lan-routes-v1`. With no tunnel there is no `tp0`
+ * (an existing key is kept), `address` may be absent and `peers` must be
+ * empty; `networks`, `lanRoutes` and forwarding are still applied.
  */
 export type FabricReconcileCommandPayload =
   | { enabled: false; retainKeys?: boolean }
@@ -1510,11 +1526,14 @@ export type FabricReconcileCommandPayload =
       fabricId?: string
       listenPort?: number
       mtu?: number
-      address: string
+      /** Absent only when `tunnel` is false. */
+      address?: string
       prefix: string
       peers: FabricReconcilePeerMaterial[]
       networks?: FabricReconcileNetworkMaterial[]
       gateway?: boolean
+      tunnel?: boolean
+      lanRoutes?: FabricReconcileLanRoute[]
     }
 
 export type FabricPeerHealth = 'healthy' | 'stale' | 'never'
@@ -1674,13 +1693,46 @@ function parseFabricNetworkEntry(value: unknown): FabricReconcileNetworkMaterial
   return network
 }
 
+function parseFabricLanRouteEntry(value: unknown): FabricReconcileLanRoute {
+  if (!isRecord(value)) {
+    throw new TypeError('Invalid fabric lanRoutes entry')
+  }
+  const { cidr, via } = value
+  if (!isString(cidr) || !isValidWireguardAllowedIp(cidr.trim())) {
+    throw new TypeError('Invalid fabric lanRoutes cidr')
+  }
+  if (!isString(via) || !isValidIpAddress(via.trim())) {
+    throw new TypeError('Invalid fabric lanRoutes via')
+  }
+  return { cidr: cidr.trim(), via: via.trim() }
+}
+
+function parseFabricTunnelFlag(value: unknown): boolean | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== 'boolean') throw new TypeError('Invalid fabric tunnel')
+  return value
+}
+
+/** `address` is required unless the payload asks for no tunnel. */
+function parseFabricAddress(value: unknown, tunnel: boolean | undefined): string | undefined {
+  if (value === undefined && tunnel === false) return undefined
+  if (!isString(value) || !isValidWireguardAllowedIp(value)) {
+    throw new TypeError('Invalid fabric address')
+  }
+  return value.trim()
+}
+
+function parseFabricLanRoutes(value: unknown): FabricReconcileLanRoute[] | undefined {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value)) throw new TypeError('Invalid fabric lanRoutes')
+  return value.map(parseFabricLanRouteEntry)
+}
+
 function parseEnabledFabricPayload(
   value: Record<string, unknown>
 ): Extract<FabricReconcileCommandPayload, { enabled: true }> {
-  const address = value.address
-  if (!isString(address) || !isValidWireguardAllowedIp(address)) {
-    throw new TypeError('Invalid fabric address')
-  }
+  const tunnel = parseFabricTunnelFlag(value.tunnel)
+  const address = parseFabricAddress(value.address, tunnel)
   const prefix = value.prefix
   if (!isString(prefix) || !isValidWireguardAllowedIp(prefix)) {
     throw new TypeError('Invalid fabric prefix')
@@ -1688,12 +1740,18 @@ function parseEnabledFabricPayload(
   if (!Array.isArray(value.peers)) {
     throw new TypeError('Invalid fabric peers')
   }
+  if (tunnel === false && value.peers.length > 0) {
+    throw new TypeError('Invalid fabric peers: a payload with no tunnel')
+  }
   const payload: Extract<FabricReconcileCommandPayload, { enabled: true }> = {
     enabled: true,
-    address: address.trim(),
+    ...(address === undefined ? {} : { address }),
     prefix: prefix.trim(),
     peers: value.peers.map(parseFabricPeerEntry),
   }
+  if (tunnel !== undefined) payload.tunnel = tunnel
+  const lanRoutes = parseFabricLanRoutes(value.lanRoutes)
+  if (lanRoutes) payload.lanRoutes = lanRoutes
   if (value.fabricId !== undefined) {
     payload.fabricId = parseFabricUuid(value.fabricId, 'fabricId')
   }

@@ -34,6 +34,7 @@ import { isNoopCommandQueue } from '../../features/commands/noop-command-queue.t
 import { compatLogWarn } from '../../lib/log-compat.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
 import { fanOutDatacenterRoutingChange } from './routing-fanout.ts'
+import { reconcileServerNetworking } from '../../features/fabric/server-networking.ts'
 import { runNetworkCheck } from './network-check-run.ts'
 import { chosenNetworkDownWarnings } from '../../features/net/server-network-check.ts'
 import { suggestDatacenterNames } from '../../features/datacenters/datacenter-name-suggestions.ts'
@@ -219,6 +220,36 @@ function parseDatacenterPatchFields(
     patchFields.options = parseDatacenterOptions(optionsResult)
   }
   return patchFields
+}
+
+/**
+ * A server joined or left a datacenter: which pairs share a trusted LAN may
+ * have changed, so peer lists and LAN routes are re-planned
+ * (`reconcileServerNetworking`). Skipped without a queue or secrets; failures
+ * are logged, the membership change already succeeded.
+ */
+async function fanOutDatacenterMembershipChange(
+  c: Context<AppEnv>,
+  db: Db,
+  organizationId: string,
+  actorId: string
+): Promise<void> {
+  const commandQueue = getCommandQueue(c)
+  const secretsConfig = c.get('secretsConfig')
+  const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
+  if (!commandQueue || isNoopCommandQueue(commandQueue) || !secretsConfig) return
+  try {
+    await reconcileServerNetworking({
+      db,
+      commandQueue,
+      actor: { type: 'user', id: actorId },
+      organizationId,
+      secrets: { secretsConfig, ...(dataEncryptionSecrets ? { dataEncryptionSecrets } : {}) },
+    })
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    compatLogWarn('datacenters', `networking fan-out failed after a membership change: ${message}`)
+  }
 }
 
 /**
@@ -972,6 +1003,7 @@ export function registerDatacenterRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
         deployment
       )
 
+      await fanOutDatacenterMembershipChange(c, db, organizationId, session.userId)
       nudgeTunnelRoutesAfterResponse(c, organizationId)
       return c.json({ ok: true as const })
     } catch (err) {
@@ -985,7 +1017,7 @@ export function registerDatacenterRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
   router.delete('/datacenters/:id/members/:serverId', async (c) => {
     const scope = await resolveDatacenterRequest(c, 'manage')
     if (scope instanceof Response) return scope
-    const { db, organizationId, id } = scope
+    const { db, session, organizationId, id } = scope
     const serverId = c.req.param('serverId')
 
     const deleted = await db
@@ -998,6 +1030,7 @@ export function registerDatacenterRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
     }
     await pruneClientAddressesWithoutPin(db, [serverId])
 
+    await fanOutDatacenterMembershipChange(c, db, organizationId, session.userId)
     nudgeTunnelRoutesAfterResponse(c, organizationId)
     return c.json({ ok: true as const, removed: deleted.length })
   })
@@ -1124,6 +1157,7 @@ export function registerDatacenterRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
         options: datacenter.options,
         priority: datacenter.priority,
         isTrusted: datacenter.isTrusted,
+        addressPreference: datacenter.addressPreference,
       })
       .from(datacenter)
       .where(eq(datacenter.id, id))
@@ -1155,12 +1189,15 @@ export function registerDatacenterRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
       .where(eq(datacenter.id, id))
 
     // A name/description edit stays a single UPDATE; only a `priority` /
-    // `trusted` change re-converges stored transports and fabric payloads.
-    // The fan-out runs after the UPDATE so recomputation reads the new policy.
-    const policyAfter = policySent
-      ? resolveDatacenterPolicy(policyColumnsFromOptions(nextOptions))
-      : policyBefore
-    if (datacenterPolicyChanged(policyBefore, policyAfter)) {
+    // `trusted` / `addressPreference` change re-converges stored transports,
+    // fabric payloads and LAN routes. The fan-out runs after the UPDATE so
+    // recomputation reads the new policy.
+    const columnsAfter = policySent ? policyColumnsFromOptions(nextOptions) : current
+    const policyAfter = policySent ? resolveDatacenterPolicy(columnsAfter) : policyBefore
+    if (
+      datacenterPolicyChanged(policyBefore, policyAfter) ||
+      columnsAfter.addressPreference !== current.addressPreference
+    ) {
       await fanOutDatacenterPolicyChange(c, db, {
         datacenterId: id,
         organizationId,
