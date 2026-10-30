@@ -417,7 +417,9 @@ async function buildCredentials(
   dataEncryptionSecrets: DerivedSecretsConfig,
   managedId: string,
   serverId: string,
-  omitLoginIds?: string[]
+  omitLoginIds?: string[],
+  /** Every database the cluster has after this apply; the backup login reaches all of them. */
+  clusterDatabases: readonly string[] = []
 ): Promise<ManagedApplyCommandPayload['credentials'] | ManagedApplyPrepareError> {
   const omit = new Set(omitLoginIds ?? [])
   const rows = (await listManagedLoginCredentials(db, managedId)).filter((row) => !omit.has(row.id))
@@ -454,12 +456,15 @@ async function buildCredentials(
       sealed
     )
 
+    if (row.role === 'backup') {
+      credentials.push(backupCredential(row, resealed, clusterDatabases))
+      return undefined
+    }
     const credential: ManagedApplyCommandPayload['credentials'][number] = {
       principalId: row.id,
       // Applied login — the engine role name, not the internal short name.
       username: row.appliedUsername,
-      // The daemon knows three roles; a backup login is an ordinary login on the wire for now.
-      role: row.role === 'backup' ? 'user' : row.role,
+      role: row.role,
       databases: row.databases,
       password: resealed,
     }
@@ -477,6 +482,27 @@ async function buildCredentials(
   if (failure) return failure
 
   return credentials
+}
+
+/**
+ * The backup login on the wire: role `user` (the daemon knows three roles, and
+ * an older one drops `kind` and makes a login with no rights), `kind: 'backup'`,
+ * every database of the cluster and no privileges. The daemon derives the
+ * per-engine dump rights from `kind`.
+ */
+export function backupCredential(
+  row: { id: string; appliedUsername: string },
+  password: string,
+  clusterDatabases: readonly string[]
+): ManagedApplyCommandPayload['credentials'][number] {
+  return {
+    principalId: row.id,
+    username: row.appliedUsername,
+    role: 'user',
+    kind: 'backup',
+    databases: [...new Set(clusterDatabases)],
+    password,
+  }
 }
 
 function organizationCaSetOrSealedError(
@@ -1437,7 +1463,8 @@ async function buildPayloadForMember(
     dataEncryptionSecrets,
     input.managedRow.id,
     member.serverId,
-    input.omitLoginIds
+    input.omitLoginIds,
+    input.databases
   )
   if (!Array.isArray(credentials)) return credentials
 

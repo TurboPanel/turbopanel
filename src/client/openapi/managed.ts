@@ -1025,6 +1025,45 @@ export const managedSchemas = {
       message: { type: 'string' },
     },
   },
+  ManagedBackupLoginResponse: {
+    type: 'object',
+    required: ['login'],
+    properties: {
+      login: {
+        oneOf: [{ $ref: '#/components/schemas/ManagedUserRecord' }, { type: 'null' }],
+        description: "The cluster's backup login, or null when it has none.",
+      },
+    },
+  },
+  CreateManagedBackupLoginRequest: {
+    type: 'object',
+    required: ['allowedSources'],
+    properties: {
+      allowedSources: {
+        type: 'array',
+        items: { type: 'string' },
+        description:
+          'Places the backup login may connect from: `internal`, `server:<id>` or `address:<ip, prefix% or range>`. Required and never `any` (400 `managed_backup_login_sources_required`).',
+      },
+      username: {
+        type: 'string',
+        description: 'Login name; `backup` when absent. The organization name rules apply.',
+      },
+      nameScheme: { type: 'string', enum: ['plain', 'partial', 'random'] },
+      maxConnections: { type: 'integer', minimum: 1, maximum: 10000 },
+    },
+  },
+  CreateManagedBackupLoginResponse: {
+    type: 'object',
+    required: ['ok', 'login', 'password', 'commandId', 'serverId'],
+    properties: {
+      ok: { type: 'boolean', const: true },
+      login: { $ref: '#/components/schemas/ManagedUserRecord' },
+      password: { type: 'string', description: 'Show-once plaintext password' },
+      commandId: { type: 'string' },
+      serverId: { type: 'string' },
+    },
+  },
   ManagedUsersResponse: {
     type: 'object',
     required: ['users'],
@@ -2097,6 +2136,49 @@ export const managedPaths = {
           description: 'privilege_catalogue_unsupported_version',
           ...jsonSchema('PrivilegeCatalogueUnsupportedError'),
         },
+      },
+    },
+  },
+  '/api/client/v1/environments/{id}/managed/backup-login': {
+    get: {
+      tags: ['Managed services'],
+      summary: "Show the cluster's backup login (never the password)",
+      parameters: [ENV_ID_PARAM],
+      responses: {
+        200: {
+          description: 'The backup login or null',
+          ...jsonSchema('ManagedBackupLoginResponse'),
+        },
+      },
+    },
+    post: {
+      tags: ['Managed services'],
+      summary: 'Create the backup login (one per cluster, show-once password) and enqueue apply',
+      description:
+        'A read-only login for a backup tool: on PostgreSQL `pg_read_all_data`, `BYPASSRLS` and `CONNECT` on every database; on MySQL `SELECT`, `SHOW VIEW`, `TRIGGER`, `EVENT` on every database and `SHOW_ROUTINE`; on MariaDB the same plus `LOCK TABLES` and `SHOW CREATE ROUTINE`, without `SHOW_ROUTINE`. Always routed to the primary. Refusals: 400 `managed_backup_login_sources_required`, 409 `managed_backup_login_exists`, 409 `managed_backup_login_needs_daemon_update`, 409 `managed_login_limits_need_daemon_update`, 409 `username_in_use`.',
+      parameters: [ENV_ID_PARAM],
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: { $ref: '#/components/schemas/CreateManagedBackupLoginRequest' },
+          },
+        },
+      },
+      responses: {
+        200: {
+          description: 'Backup login created',
+          ...jsonSchema('CreateManagedBackupLoginResponse'),
+        },
+      },
+    },
+    delete: {
+      tags: ['Managed services'],
+      summary: 'Delete the backup login and enqueue apply',
+      parameters: [ENV_ID_PARAM],
+      responses: {
+        200: { description: 'Delete queued' },
+        404: { description: 'The cluster has no backup login' },
       },
     },
   },

@@ -203,6 +203,7 @@ export const DAEMON_WIRE_FEATURES = [
   'tunnel-forwarding-v1',
   'tunnel-connector-v1',
   'tunnel-status-v1',
+  'managed-backup-login-v1',
 ] as const
 
 export type DaemonWireFeature = (typeof DAEMON_WIRE_FEATURES)[number]
@@ -452,6 +453,15 @@ export const MANAGED_DATABASE_OWNER_FEATURE: DaemonWireFeature = 'managed-databa
  * `managed_database_convert_needs_daemon_update`.
  */
 export const MANAGED_DATABASE_CONVERT_FEATURE: DaemonWireFeature = 'managed-database-convert-v1'
+
+/**
+ * The daemon honours `credentials[].kind: 'backup'` on `managed.apply`: it
+ * gives that login the read-only rights a full logical dump needs on every
+ * database (per engine), instead of an ordinary login's rights. Without it the
+ * control plane refuses to add a backup login with 409
+ * `managed_backup_login_needs_daemon_update`.
+ */
+export const MANAGED_BACKUP_LOGIN_FEATURE: DaemonWireFeature = 'managed-backup-login-v1'
 
 /**
  * The daemon answers `server-network-check-request` with

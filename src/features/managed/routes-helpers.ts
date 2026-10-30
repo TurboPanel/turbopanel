@@ -278,6 +278,7 @@ export function managedSessionPaths(): string[] {
     '/environments/:id/managed/users/:loginId',
     '/environments/:id/managed/users/:loginId/password',
     '/environments/:id/managed/users/:loginId/effective-permissions',
+    '/environments/:id/managed/backup-login',
     '/environments/:id/managed/databases',
     '/environments/:id/managed/databases/:databaseName',
     '/environments/:id/managed/databases/:databaseName/owner-role',
@@ -605,7 +606,25 @@ export function parseManagedUserCreateFields(
   | Response {
   const username = requireStringField(c, body, 'username')
   if (username instanceof Response) return username
+  const nameError = checkManagedLoginName(c, ctx, username, rootUsername, nameScheme)
+  if (nameError) return nameError
 
+  const grants = parseManagedLoginGrantFields(c, ctx, body, options)
+  if (grants instanceof Response) return grants
+  return { username, ...grants }
+}
+
+/**
+ * A typed login name the engine accepts under `nameScheme` and that is not a
+ * reserved name: `null` when fine, else the 400/422 answer.
+ */
+export function checkManagedLoginName(
+  c: Context,
+  ctx: ManagedContext,
+  username: string,
+  rootUsername: string | undefined,
+  nameScheme: PrincipalNameScheme
+): Response | null {
   const effectiveRoot = rootUsername ?? ctx.spec.rootUsername
   const { pattern, maxLength } = ctx.spec.userOperations.identifier
   const maxShortLength = maxTypedNameLength(nameScheme, maxLength)
@@ -621,10 +640,7 @@ export function parseManagedUserCreateFields(
       422
     )
   }
-
-  const grants = parseManagedLoginGrantFields(c, ctx, body, options)
-  if (grants instanceof Response) return grants
-  return { username, ...grants }
+  return null
 }
 
 /**
