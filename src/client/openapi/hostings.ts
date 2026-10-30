@@ -331,8 +331,45 @@ export const hostingSchemas = {
         oneOf: [{ $ref: '#/components/schemas/HostingCertificate' }, { type: 'null' }],
         description: 'Derived certificate state; present on GET responses.',
       },
+      tunnels: {
+        type: 'array',
+        items: { $ref: '#/components/schemas/HostingTunnelPath' },
+        description:
+          'The names of this hosting a tunnel carries, one entry per name; empty when none. Present on GET responses; absent from older panels.',
+      },
       createdAt: { type: 'string', format: 'date-time' },
       updatedAt: { type: 'string', format: 'date-time' },
+    },
+  },
+  HostingTunnelPath: {
+    type: 'object',
+    description:
+      'One hostname visitors reach through a tunnel: the tunnel ends TLS at its edge with a trusted certificate, then reaches the site on its server over HTTPS.',
+    required: [
+      'hostname',
+      'tunnelId',
+      'tunnelName',
+      'provider',
+      'tunnelOnly',
+      'originVerified',
+      'status',
+    ],
+    properties: {
+      hostname: { type: 'string' },
+      tunnelId: { type: 'string', format: 'uuid' },
+      tunnelName: { type: 'string' },
+      provider: { type: 'string', description: 'The tunnel provider, for example `cloudflare`.' },
+      tunnelOnly: {
+        type: 'boolean',
+        description:
+          'True: only the tunnel reaches this name (the server answers it for the tunnel and its peer servers only). False: the name is also served directly.',
+      },
+      originVerified: {
+        type: 'boolean',
+        description:
+          "True: the tunnel checks the server's certificate (the verified connection is in effect). False: the tunnel accepts the server's own certificate without checking it, on purpose.",
+      },
+      status: { type: 'string', enum: ['pending', 'live', 'attention'] },
     },
   },
   HostingsResponse: {
