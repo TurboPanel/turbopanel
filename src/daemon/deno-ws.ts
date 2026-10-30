@@ -83,6 +83,11 @@ import {
 import { handleManagedHaEvent } from '../features/managed/ha-event.ts'
 import { handleManagedHealthReport } from '../features/managed/health-report.ts'
 import {
+  FabricPeerReportThrottle,
+  handleFabricPeersReport,
+  takeFabricPeersReport,
+} from '../features/fabric/peer-report.ts'
+import {
   resolveAutoFailoverFromDenoEnv,
   resolveFreshStandbyMarginMsFromDenoEnv,
 } from '../features/managed/auto-failover-switch.ts'
@@ -464,6 +469,32 @@ async function handleDaemonManagedHealthReportInbound(params: {
   await cell.recordInbound({ connectionId, at: message.at })
 }
 
+/**
+ * Process-wide "once per 60 s per server, unless a peer's health class
+ * changed" gate for `fabric-peers-report`.
+ */
+const fabricPeerReportThrottle = new FabricPeerReportThrottle()
+
+async function handleDaemonFabricPeersReportInbound(params: {
+  cell: ReturnType<DaemonCellRegistry['getCell']>
+  db: Db
+  connectionId: string | undefined
+  message: Extract<DaemonMessage, { type: 'fabric-peers-report' }>
+  reporterServerId: string
+}): Promise<void> {
+  const { cell, db, connectionId, message } = params
+  if (
+    takeFabricPeersReport(fabricPeerReportThrottle, params.reporterServerId, message, Date.now())
+  ) {
+    await handleFabricPeersReport(db, {
+      reporterServerId: params.reporterServerId,
+      peers: message.peers,
+      observedAt: message.observedAt,
+    })
+  }
+  await cell.recordInbound({ connectionId, at: message.at })
+}
+
 async function handleAcmeIssuanceInbound(params: {
   cell: ReturnType<DaemonCellRegistry['getCell']>
   db: Db
@@ -691,6 +722,15 @@ async function dispatchDaemonInboundByType(params: DaemonInboundDispatch): Promi
       return
     case 'managed-health-report':
       await handleDaemonManagedHealthReportInbound({
+        cell,
+        db,
+        connectionId,
+        message,
+        reporterServerId: serverId,
+      })
+      return
+    case 'fabric-peers-report':
+      await handleDaemonFabricPeersReportInbound({
         cell,
         db,
         connectionId,
