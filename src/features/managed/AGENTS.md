@@ -462,6 +462,39 @@ listed databases. `PATCH /managed/users/:loginId` (`login-patch.ts`) plans
 the change; `dryRun` returns plain-words statement kinds because the SQL is
 built by the daemon.
 
+## Backup login
+
+One per cluster (`role = 'backup'`, `recipe = 'backup'`, `is_all_databases`,
+`is_tool`), made by `POST /managed/backup-login` (`backup-login.ts`), listed
+by `GET` there (never in `GET /managed/users`) and dropped by `DELETE` there
+or `DELETE /managed/users/:loginId`. It always names the places it connects
+from (`any` is refused). Its rights are not stored: the apply credential is
+`role: 'user'`, `kind: 'backup'`, every database of the cluster and no
+privileges (`backupCredential` in `apply-prepare.ts`), and the daemon derives
+the rights per engine (PostgreSQL `pg_read_all_data` + `BYPASSRLS` +
+`CONNECT`; MySQL `SELECT, SHOW VIEW, TRIGGER, EVENT` per database + global
+`SHOW_ROUTINE`; MariaDB the same plus `LOCK TABLES` and `SHOW CREATE
+ROUTINE`). A daemon without `managed-backup-login-v1` would drop `kind` and
+make a login with no rights, so creation refuses with 409
+`managed_backup_login_needs_daemon_update`. On the shared front door it is a
+tool login (primary only, no split rules), so a dump in one transaction stays
+on one backend. Large objects on PostgreSQL 18 are not covered yet.
+Create and delete are audited (`managed.backup_login.create` with the
+login name and its places, `managed.backup_login.delete`), whichever route
+deletes it, because this login reads every database. The one-per-cluster
+check reads the logins under the organization lock (`inLoginCreateTransaction`
+lists them after `lockOrganizationsForUpdate`), and an insert that still
+meets `uniq_login_managed_backup` answers 409 `managed_backup_login_exists`,
+never 500. On MySQL and MariaDB the database-level `TRIGGER` and `EVENT`
+rights also let the login create and drop triggers and events on those
+databases: the engine checks the same rights for reading their definitions,
+so a dump needs them. Never flip a login's kind: the panel never turns an
+existing login into the backup login or back (a new backup login is always a
+new row). Nothing on the daemon takes back `BYPASSRLS`, `pg_read_all_data` or
+the global `SHOW_ROUTINE`, so a backup login turned into an ordinary one
+would keep them, and an ordinary login turned into a backup one would keep
+its own grants.
+
 ## Postgres owner role per database and the Database admin login
 
 `database.is_role_owned` (a database row; false reads as none) marks the Postgres

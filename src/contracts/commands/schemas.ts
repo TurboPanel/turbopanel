@@ -5439,6 +5439,14 @@ export type ManagedApplyCredential = {
    * behaviour); only sent for `recipe` or `self`.
    */
   grantMode?: 'preset' | 'recipe' | 'self'
+  /**
+   * `backup`: the cluster's backup login. `role` stays `user` so an older
+   * daemon still reads the entry (it drops this field and makes a login with
+   * no rights); a daemon with `managed-backup-login-v1` gives it the read-only
+   * rights a full dump needs on every listed database. Absent for every other
+   * login.
+   */
+  kind?: 'backup'
   /** Daemon-recipient sealed password (`tpdaemon.…`). */
   password: string
 }
@@ -6639,6 +6647,12 @@ function parseManagedApplyCredentialEntry(entry: unknown): ManagedApplyCredentia
       throw new Error('Invalid managed.apply credentials grantMode')
     }
     credential.grantMode = entry.grantMode
+  }
+  if (entry.kind !== undefined) {
+    if (entry.kind !== 'backup') {
+      throw new Error('Invalid managed.apply credentials kind')
+    }
+    credential.kind = entry.kind
   }
   return credential
 }

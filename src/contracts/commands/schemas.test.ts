@@ -4964,6 +4964,28 @@ test('parseManagedApplyPayload reads an optional credential grantMode', () => {
   )
 })
 
+test('parseManagedApplyPayload reads an optional backup credential kind', () => {
+  const base = VALID_MANAGED_APPLY.credentials[0]
+  assertEquals(
+    parseManagedApplyPayload({ ...VALID_MANAGED_APPLY, credentials: [base] }).credentials[0]?.kind,
+    undefined
+  )
+  const parsed = parseManagedApplyPayload({
+    ...VALID_MANAGED_APPLY,
+    credentials: [{ ...base, kind: 'backup' }],
+  })
+  assertEquals(parsed.credentials[0]?.kind, 'backup')
+  assertThrows(
+    () =>
+      parseManagedApplyPayload({
+        ...VALID_MANAGED_APPLY,
+        credentials: [{ ...base, kind: 'admin' }],
+      }),
+    Error,
+    'Invalid managed.apply credentials kind'
+  )
+})
+
 test('parseManagedApplyPayload accepts resources, IPv6 bind, databases, and replication', () => {
   const payload = parseManagedApplyPayload({
     ...VALID_MANAGED_APPLY,
