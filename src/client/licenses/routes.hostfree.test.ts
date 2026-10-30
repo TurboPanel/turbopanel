@@ -21,6 +21,7 @@ import type { AuthRouteOpts } from '../authn/http.ts'
 import type { Db } from '../../db/connection.ts'
 import type { DaemonCell, DaemonCellRegistry } from '../../contracts/cell.ts'
 import type { BillingConfig } from '../../features/billing/config.ts'
+import { INSTALL_CA_PIN_UNAVAILABLE } from '../../features/install/install-ca-pin.ts'
 import {
   emptyLedger,
   newDeferredIntent,
@@ -111,6 +112,7 @@ type Fixture = {
   afterSession?: 'drop-db' | 'swallow-session'
   platformEnv?: Record<string, string | undefined>
   omitBaseUrl?: boolean
+  runtime?: 'deno' | 'workers'
 }
 
 function noopRegistry(): DaemonCellRegistry {
@@ -294,7 +296,7 @@ async function buildApp(fx: Fixture = {}) {
   }
   registerLicenseRoutes(app, {
     secrets,
-    runtime: 'workers',
+    runtime: fx.runtime ?? 'workers',
     signupEnvOverride: undefined,
     ...(fx.omitBaseUrl ? {} : { baseUrl: 'https://panel.example.com' }),
   })
@@ -972,6 +974,13 @@ test('POST /licenses uses a valid https installBaseUrl in the install command', 
   assertEquals(res.status, 200)
   const body = (await res.json()) as { installCommand: string }
   assertEquals(body.installCommand.includes('https://panel.example.com'), true)
+})
+
+test('a self-hosted insecure-TLS install command is refused when no CA fingerprint can be read', async () => {
+  const { app, headers } = await buildApp({ config: null, seats: null, runtime: 'deno' })
+  const res = await mint(app, headers, { name: 'lan', installBaseUrl: 'https://10.0.0.5' })
+  assertEquals(res.status, 400)
+  assertEquals(((await res.json()) as { error: string }).error, INSTALL_CA_PIN_UNAVAILABLE)
 })
 
 test('DELETE /licenses/:id still succeeds when a cell registry is present', async () => {
