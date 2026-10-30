@@ -1,6 +1,6 @@
 import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { assertEquals } from '@std/assert'
-import { eq, inArray } from 'drizzle-orm'
+import { desc, eq, inArray } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
@@ -34,6 +34,7 @@ import { registerHostingLetsEncryptRoutes } from './letsencrypt-routes.ts'
 import {
   HOSTING_LETS_ENCRYPT_SWEEP_BATCH,
   runHostingLetsEncryptSweepTick,
+  forEachBounded,
 } from './letsencrypt-sweep.ts'
 import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
 
@@ -223,6 +224,9 @@ test('PUT use-letsencrypt: refuses a local bind and hostings owned by compose', 
   }
 })
 
+/** A clock this many hours ahead, past a waiting request's next check. */
+const hoursLater = (hours: number) => () => new Date(Date.now() + hours * 3_600_000)
+
 test('PUT use-letsencrypt: waits for DNS, then the sweep pins it once the name resolves', async () => {
   if (!dbUrl) return skipWithoutDatabase("hosting Let's Encrypt route tests")
   const f = await setup({
@@ -257,11 +261,21 @@ test('PUT use-letsencrypt: waits for DNS, then the sweep pins it once the name r
       2
     )
 
+    // Not due yet: a request is checked again only after its wait.
+    const early = await runHostingLetsEncryptSweepTick(f.db, { lookup: pointing })
+    assertEquals(early.scanned, 0)
+
     // DNS still not ready: the sweep keeps the request.
-    const still = await runHostingLetsEncryptSweepTick(f.db, { lookup: nowhere })
+    const still = await runHostingLetsEncryptSweepTick(f.db, {
+      lookup: nowhere,
+      now: hoursLater(1),
+    })
     assertEquals(still.pinned, 0)
 
-    const sweep = await runHostingLetsEncryptSweepTick(f.db, { lookup: pointing })
+    const sweep = await runHostingLetsEncryptSweepTick(f.db, {
+      lookup: pointing,
+      now: hoursLater(2),
+    })
     assertEquals(sweep.pinned, 1)
     const [pinned] = await f.db
       .select({ tlsId: hosting.tlsId, options: hosting.options })
@@ -649,6 +663,7 @@ test('sweep: a certificate pinned once DNS resolves queues the hostings-only app
 
     const sweep = await runHostingLetsEncryptSweepTick(f.db, {
       lookup: pointing,
+      now: hoursLater(1),
       apply: {
         commandQueue: LIVE_QUEUE,
         secretsConfig: null,
@@ -796,6 +811,108 @@ test('sweep: with more waiting hostings than one batch, every one is checked ove
     )
     await f.cleanup()
   }
+})
+
+test('sweep: a request still waiting after 7 days is dropped and recorded in the audit log', async () => {
+  if (!dbUrl) return skipWithoutDatabase("hosting Let's Encrypt route tests")
+  const f = await setup({ acmeEnabled: true, hostingOptions: PUBLIC_SITE })
+  try {
+    const eightDaysAgo = new Date(Date.now() - 8 * 86_400_000).toISOString()
+    await f.db.update(hosting).set({ pendingAt: eightDaysAgo }).where(eq(hosting.id, f.hostingId))
+    const sweep = await runHostingLetsEncryptSweepTick(f.db, { lookup: nowhere })
+    assertEquals(sweep.dropped, 1)
+    const [row] = await f.db
+      .select({ pendingAt: hosting.pendingAt })
+      .from(hosting)
+      .where(eq(hosting.id, f.hostingId))
+    assertEquals(row?.pendingAt, null)
+    const [dropped] = await f.db
+      .select({ action: audit.action, context: audit.context })
+      .from(audit)
+      .where(eq(audit.targetId, f.hostingId))
+      .orderBy(desc(audit.createdAt))
+      .limit(1)
+    assertEquals(dropped?.action, 'hosting.letsencrypt.dropped')
+    assertEquals((dropped?.context as { reason?: string } | null)?.reason, 'dns_not_ready')
+  } finally {
+    await f.cleanup()
+  }
+})
+
+test('certificate block: an apply still running is "working", never "not on the server yet"', async () => {
+  if (!dbUrl) return skipWithoutDatabase("hosting Let's Encrypt route tests")
+  const f = await setup({ acmeEnabled: true, hostingOptions: PUBLIC_SITE })
+  const undeployOld = await deployedOn(f, true)
+  const undeployRunning = await deployedOn(f, true)
+  try {
+    const tlsId = await insertCertificate(f, { source: 'lets_encrypt', status: 'automatic' })
+    await f.db.update(hosting).set({ tlsId }).where(eq(hosting.id, f.hostingId))
+    const rows = await f.db
+      .select({ serverId: deployment.serverId })
+      .from(deployment)
+      .where(eq(deployment.environmentId, f.environmentId))
+    const twoDaysAgo = new Date(Date.now() - 2 * 86_400_000).toISOString()
+    await f.db
+      .update(deployment)
+      .set({ finishedAt: twoDaysAgo })
+      .where(eq(deployment.serverId, rows[0]!.serverId))
+    await f.db
+      .update(deployment)
+      .set({ status: 'applying', updatedAt: new Date(Date.now() + 1000).toISOString() })
+      .where(eq(deployment.serverId, rows[1]!.serverId))
+    const certificate = (await readCertificate(f)) as {
+      needsDeploy: boolean
+      serverProgress?: string
+    }
+    assertEquals(certificate.needsDeploy, false)
+    assertEquals(certificate.serverProgress, 'working')
+  } finally {
+    await undeployRunning()
+    await undeployOld()
+    await f.cleanup()
+  }
+})
+
+test('sweep: a tick that has ended starts no row', async () => {
+  if (!dbUrl) return skipWithoutDatabase("hosting Let's Encrypt route tests")
+  const f = await setup({ acmeEnabled: true, hostingOptions: PUBLIC_SITE })
+  try {
+    await f.db
+      .update(hosting)
+      .set({ pendingAt: new Date().toISOString() })
+      .where(eq(hosting.id, f.hostingId))
+    let lookups = 0
+    const counting: typeof pointing = (...args) => {
+      lookups += 1
+      return pointing(...args)
+    }
+    const ended = new AbortController()
+    ended.abort()
+    const none = await runHostingLetsEncryptSweepTick(f.db, {
+      lookup: counting,
+      signal: ended.signal,
+    })
+    assertEquals([none.pinned, lookups], [0, 0])
+  } finally {
+    await f.cleanup()
+  }
+})
+
+test('sweep rows: at most the limit run at once, and none starts after the deadline', async () => {
+  const stop = new AbortController()
+  let running = 0
+  let most = 0
+  const started: number[] = []
+  await forEachBounded([1, 2, 3, 4, 5, 6], 2, stop.signal, async (item) => {
+    started.push(item)
+    running += 1
+    most = Math.max(most, running)
+    await Promise.resolve()
+    if (item === 3) stop.abort()
+    running -= 1
+  })
+  assertEquals(most, 2)
+  assertEquals(started, [1, 2, 3, 4])
 })
 
 async function insertCertificate(

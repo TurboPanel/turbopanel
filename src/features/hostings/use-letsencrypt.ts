@@ -20,6 +20,7 @@ import {
   wwwRedirectConflictMessage,
 } from './hosting-certificate.ts'
 import { type DnsLookup, checkHostingDns } from './hosting-dns-check.ts'
+import type { CertificatePrecheckProbes } from './certificate-precheck.ts'
 import { isComposeAutomaticTlsHosting, isComposeOwnedHosting } from './hosting-compose-owner.ts'
 import {
   parseHostingOptions,
@@ -48,7 +49,7 @@ export type LetsEncryptStore = {
     hosting: LetsEncryptHostingRecord,
     use: (store: LetsEncryptStore) => Promise<T>
   ): Promise<T>
-  /** The public addresses of the server this hosting is deployed to (the pinned IP wins). */
+  /** The public addresses of every server this hosting is served from (the pinned IP wins). */
   expectedAddresses(hosting: LetsEncryptHostingRecord): Promise<string[]>
   /** Hostnames of the other web hostings in this hosting's environment (what a www twin must not collide with). */
   otherWebHostnames(hosting: LetsEncryptHostingRecord): Promise<string[]>
@@ -92,6 +93,25 @@ type RequestParams = {
   now: Date
   hosting: LetsEncryptHostingRecord
   acmeEnabled: boolean
+  /** Port 80 and CAA probes; a missing one is skipped. */
+  probes?: CertificatePrecheckProbes
+  /** The sweep's own check (counts toward the growing wait); a button press does not. */
+  scheduled?: boolean
+}
+
+const MS_PER_MINUTE = 60_000
+/** The first wait before a waiting request is checked again; it doubles after each miss. */
+export const LETS_ENCRYPT_RECHECK_FIRST_MINUTES = 5
+/** The longest wait between two checks of a waiting request. */
+export const LETS_ENCRYPT_RECHECK_MAX_MINUTES = 60
+
+/** When the next check of a waiting request is due, after `checks` misses. */
+export function nextLetsEncryptCheckAt(now: Date, checks: number): string {
+  const minutes = Math.min(
+    LETS_ENCRYPT_RECHECK_FIRST_MINUTES * 2 ** Math.max(0, checks - 1),
+    LETS_ENCRYPT_RECHECK_MAX_MINUTES
+  )
+  return new Date(now.getTime() + minutes * MS_PER_MINUTE).toISOString()
 }
 
 /** Compose owns this row and chose a certificate other than Let's Encrypt, so the panel must not pin one. */
@@ -131,22 +151,29 @@ async function rememberWaiting(
   dns: HostingDnsReport
 ): Promise<LetsEncryptRequestResult> {
   const previous = readPendingLetsEncrypt(params.hosting)
+  const checks = (previous?.dns?.checks ?? 0) + (params.scheduled === true ? 1 : 0)
+  const scheduled: HostingDnsReport = {
+    ...dns,
+    checks,
+    nextCheckAt: nextLetsEncryptCheckAt(params.now, Math.max(checks, 1)),
+  }
   const pending: PendingLetsEncrypt = {
     requestedAt: previous?.requestedAt ?? params.now.toISOString(),
-    dns,
+    dns: scheduled,
   }
   await params.store.saveHosting(params.hosting.id, {
     ...pendingLetsEncryptPatch(params.hosting.metadata, pending),
   })
-  return { ok: true, outcome: 'waiting', dns }
+  return { ok: true, outcome: 'waiting', dns: scheduled }
 }
 
 /**
- * The button. Refuses what can never work, checks DNS on every name the
- * hosting's www setting adds (so "www.<name> does not point here yet" shows up
- * as a waiting name rather than a silent failed issuance), then either pins a
- * certificate (DNS ready) or remembers the request for the sweep (DNS not
- * ready). Clicking again repeats the whole thing and changes nothing twice.
+ * The button. Refuses what can never work, runs the pre-check (DNS, port 80,
+ * CAA) on every name the hosting's www setting adds (so "www.<name> does not
+ * point here yet" shows up as a waiting name rather than a silent failed
+ * issuance), then either pins a certificate (all ready) or remembers the
+ * request for the sweep, which checks again later with a growing wait. Nothing
+ * is pinned, so nothing is ordered, until the pre-check passes. Clicking again repeats the whole thing and changes nothing twice.
  */
 export async function requestLetsEncrypt(params: RequestParams): Promise<LetsEncryptRequestResult> {
   const options = parseHostingOptions(params.hosting.options)
@@ -182,6 +209,7 @@ export async function requestLetsEncrypt(params: RequestParams): Promise<LetsEnc
     expectedAddresses: expected,
     lookup: params.lookup,
     now: params.now,
+    ...(params.probes ? { probes: params.probes } : {}),
   })
   return dns.ready ? pinCertificate(params, names, dns) : rememberWaiting(params, dns)
 }
@@ -206,7 +234,7 @@ export async function retryPendingLetsEncrypt(params: RequestParams): Promise<Pe
   }
   if (isPendingExpired(pending, params.now)) return dropPending('expired')
   if (composeOwnsAnotherCertificate(params.hosting.metadata)) return dropPending('refused')
-  const result = await requestLetsEncrypt(params)
+  const result = await requestLetsEncrypt({ ...params, scheduled: true })
   if (!result.ok) return dropPending('refused')
   if (result.outcome === 'pinned' && !result.changed) return 'unchanged'
   return result.outcome

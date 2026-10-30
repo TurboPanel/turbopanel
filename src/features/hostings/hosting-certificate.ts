@@ -26,6 +26,13 @@ export const HOSTING_LETS_ENCRYPT_DNS_KEY = 'letsEncryptDns'
 /** A waiting request older than this is dropped by the sweep (the owner can click again). */
 export const LETS_ENCRYPT_PENDING_MAX_AGE_DAYS = 7
 
+/**
+ * A server reports on a new certificate within a few minutes of the deploy (a
+ * failure after two bad probes a minute apart, a success at once). Silence
+ * longer than this after the deploy finished means the server never got it.
+ */
+export const SERVER_REPORT_GRACE_MINUTES = 10
+
 export type HostingCertificateState =
   'test_certificate' | 'uploaded' | 'secure' | 'waiting_for_dns' | 'issuing' | 'renewal_failed'
 
@@ -35,8 +42,19 @@ export type UploadedExpiryWarning = 'none' | '14d' | '3d' | '1d' | 'expired'
 
 export type HostingDnsHostname = {
   hostname: string
+  /** Has an address, and every address is one of the serving servers' (when those are known). */
   resolves: boolean
   addresses: string[]
+  /** Answers that are not a serving server's address; omitted when there are none. */
+  wrongAddresses?: string[]
+  /** Port 80 from the panel: `open`, `closed` (refused), or omitted when not checked or unknown. */
+  port80?: 'open' | 'closed'
+  /** CAA lets Let's Encrypt issue (`allowed`), forbids it (`blocked`), or omitted when unknown. */
+  caa?: 'allowed' | 'blocked'
+  /** What stops this name, in plain words; omitted when nothing does. */
+  problem?: string
+  /** Something worth fixing that does not stop the certificate (a wrong answer beside right ones). */
+  warning?: string
 }
 
 export type HostingDnsReport = {
@@ -44,6 +62,10 @@ export type HostingDnsReport = {
   checkedAt: string
   hostnames: HostingDnsHostname[]
   expectedAddresses: string[]
+  /** When the waiting request is checked again (the wait grows after each miss). */
+  nextCheckAt?: string
+  /** How many checks this waiting request has had. */
+  checks?: number
 }
 
 export type HostingCertificate = {
@@ -61,6 +83,17 @@ export type HostingCertificate = {
   www: HostingWwwMode
   /** True when the pin is saved but the environment has not been deployed since. */
   needsDeploy: boolean
+  /**
+   * While `issuing`: `waiting_for_deploy` (no deploy has carried it yet),
+   * `working` (the server has it, or the deploy just finished), or
+   * `not_reported` (the deploy finished a while ago and no server has said
+   * anything about it). Null in every other state.
+   */
+  serverProgress: 'waiting_for_deploy' | 'working' | 'not_reported' | null
+  /** When it was last tried: the last DNS check while waiting, the last reported failure when failing. */
+  lastTriedAt: string | null
+  /** When the panel checks again; only known while waiting for DNS (a server retries on its own schedule). */
+  nextTryAt: string | null
 }
 
 /** The pinned certificate row, as far as the status needs it. */
@@ -93,6 +126,8 @@ function readAcme(metadata: unknown): {
   lastError: string | null
   lastIssuedAt: string | null
   notAfter: string | null
+  lastReportedAt: string | null
+  lastFailedAt: string | null
 } {
   const acme = isRecord(metadata) && isRecord(metadata.acme) ? metadata.acme : {}
   const lastError =
@@ -101,6 +136,8 @@ function readAcme(metadata: unknown): {
     lastError,
     lastIssuedAt: readIso(acme.lastIssuedAt),
     notAfter: readIso(acme.notAfter),
+    lastReportedAt: readIso(acme.lastReportedAt),
+    lastFailedAt: readIso(acme.lastFailedAt),
   }
 }
 
@@ -236,6 +273,8 @@ export type DeriveHostingCertificateInput = {
   letsEncryptAvailable: boolean
   /** Pinned, but no deployment has finished since the pin was saved. */
   needsDeploy: boolean
+  /** When the environment's last deploy finished (ISO), if any; tells silence from "just deployed". */
+  deployedAt?: string | null
   now: Date
 }
 
@@ -253,7 +292,30 @@ function baseCertificate(
     letsEncryptAvailable: input.letsEncryptAvailable,
     www: input.www,
     needsDeploy: false,
+    serverProgress: null,
+    lastTriedAt: null,
+    nextTryAt: null,
   }
+}
+
+/** The DNS report's own times, for a request waiting on DNS. */
+function waitingTimes(
+  dns: HostingDnsReport | null
+): Pick<HostingCertificate, 'lastTriedAt' | 'nextTryAt'> {
+  return { lastTriedAt: readIso(dns?.checkedAt), nextTryAt: readIso(dns?.nextCheckAt) }
+}
+
+/** Where a certificate that has not shown up yet stands on the servers. */
+function serverProgress(
+  input: DeriveHostingCertificateInput,
+  lastReportedAt: string | null
+): NonNullable<HostingCertificate['serverProgress']> {
+  if (input.needsDeploy) return 'waiting_for_deploy'
+  if (lastReportedAt !== null) return 'working'
+  const deployedAt = input.deployedAt ? Date.parse(input.deployedAt) : Number.NaN
+  if (Number.isNaN(deployedAt)) return 'working'
+  const silentMs = input.now.getTime() - deployedAt
+  return silentMs > SERVER_REPORT_GRACE_MINUTES * 60_000 ? 'not_reported' : 'working'
 }
 
 function deriveUploaded(
@@ -285,15 +347,32 @@ function deriveLetsEncrypt(
     expiresInDays: acme.notAfter === null ? null : daysUntil(acme.notAfter, input.now),
   }
   if (acme.lastError !== null) {
-    return { ...base, state: 'renewal_failed', lastError: acme.lastError }
+    // A pre-check that ran since (Try again) says what to fix.
+    return {
+      ...base,
+      state: 'renewal_failed',
+      lastError: acme.lastError,
+      dns: input.pending?.dns ?? null,
+      lastTriedAt: acme.lastFailedAt,
+    }
   }
   // New names (a www choice) are waiting on DNS: say which, even though the
   // names already covered keep their certificate meanwhile.
   if (input.pending !== null) {
-    return { ...base, state: 'waiting_for_dns', dns: input.pending.dns }
+    return {
+      ...base,
+      state: 'waiting_for_dns',
+      dns: input.pending.dns,
+      ...waitingTimes(input.pending.dns),
+    }
   }
   if (acme.notAfter === null) {
-    return { ...base, state: 'issuing', needsDeploy: input.needsDeploy }
+    return {
+      ...base,
+      state: 'issuing',
+      needsDeploy: input.needsDeploy,
+      serverProgress: serverProgress(input, acme.lastReportedAt ?? acme.lastIssuedAt),
+    }
   }
   if (Date.parse(acme.notAfter) <= input.now.getTime()) {
     return { ...base, state: 'renewal_failed', lastError: 'The certificate has expired.' }
@@ -309,6 +388,7 @@ function deriveTest(input: DeriveHostingCertificateInput): HostingCertificate {
       state: 'waiting_for_dns',
       source: 'test',
       dns: input.pending.dns,
+      ...waitingTimes(input.pending.dns),
     }
   }
   return { ...baseCertificate(input), state: 'test_certificate', source: 'test' }

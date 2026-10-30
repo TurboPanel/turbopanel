@@ -4,6 +4,7 @@ import type { DnsLookup } from './hosting-dns-check.ts'
 import {
   type LetsEncryptHostingRecord,
   type LetsEncryptStore,
+  nextLetsEncryptCheckAt,
   requestLetsEncrypt,
   retryPendingLetsEncrypt,
 } from './use-letsencrypt.ts'
@@ -333,4 +334,51 @@ test('a www name that does not point here yet keeps the request waiting and is n
     dns?.hostnames.map((h) => h.hostname),
     ['shop.example.com', 'www.shop.example.com']
   )
+})
+
+test('a waiting request is checked again after a wait that doubles up to an hour', async () => {
+  assertEquals(nextLetsEncryptCheckAt(NOW, 1), new Date(NOW.getTime() + 5 * 60_000).toISOString())
+  assertEquals(nextLetsEncryptCheckAt(NOW, 3), new Date(NOW.getTime() + 20 * 60_000).toISOString())
+  assertEquals(nextLetsEncryptCheckAt(NOW, 9), new Date(NOW.getTime() + 60 * 60_000).toISOString())
+  const { store, saved } = fakeStore()
+  const out = await requestLetsEncrypt({
+    store,
+    lookup: nowhere,
+    now: NOW,
+    hosting: record(),
+    acmeEnabled: true,
+  })
+  // A button press checks at once but does not count toward the growing wait.
+  assertEquals(out.ok && out.outcome === 'waiting' && out.dns.checks, 0)
+  const again = await requestLetsEncrypt({
+    store,
+    lookup: nowhere,
+    now: NOW,
+    scheduled: true,
+    hosting: record({ metadata: saved[0]![1].metadata, pendingAt: saved[0]![1].pendingAt }),
+    acmeEnabled: true,
+  })
+  assertEquals(again.ok && again.outcome === 'waiting' && again.dns.checks, 1)
+  assertEquals(
+    again.ok && again.outcome === 'waiting' && again.dns.nextCheckAt,
+    nextLetsEncryptCheckAt(NOW, 1)
+  )
+})
+
+test('port 80 closed: nothing is pinned, and the request waits with the reason', async () => {
+  const { store, saved } = fakeStore()
+  const out = await requestLetsEncrypt({
+    store,
+    lookup: pointing,
+    probes: {
+      port80: () => Promise.resolve({ state: 'closed' as const, error: 'Connection refused' }),
+    },
+    now: NOW,
+    hosting: record(),
+    acmeEnabled: true,
+  })
+  assertEquals(out.ok && out.outcome, 'waiting')
+  assertEquals(saved[0]![1].tlsId, undefined)
+  const entry = out.ok && out.outcome === 'waiting' ? out.dns.hostnames[0] : undefined
+  assertEquals(entry?.port80, 'closed')
 })
