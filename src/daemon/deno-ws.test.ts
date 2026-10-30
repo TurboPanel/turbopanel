@@ -2166,6 +2166,11 @@ test('live WS colocated path closes when postgres row is missing', async () => {
       const closeEvent = await closed
       assertEquals(closeEvent.code, 4401)
       assertEquals(closeEvent.reason, 'server row missing')
+      // Closed before attach: no lease, no online mark, nothing queued or read.
+      assertEquals(tracking.calls.attach, 0)
+      assertEquals(tracking.calls.readOutboxBatch, 0)
+      assertEquals(tracking.enqueued.length, 0)
+      assertEquals(tracking.getSnapshot().connected, false)
     }
   )
 })

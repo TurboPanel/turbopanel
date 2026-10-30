@@ -4,6 +4,8 @@ import { createDenoDb, endDbConnection } from '../db/connection.ts'
 import { instanceHostname, organization, server } from '../db/schema.ts'
 import { getDatabaseUrl } from '../db/url.ts'
 import { skipWithoutDatabase } from '../test-fixtures/require-service.test.support.ts'
+import type { DaemonCell } from '../contracts/cell.ts'
+import { dispatchDaemonInboundMessage } from './deno-ws.ts'
 import {
   type InstanceAcmeIssuanceMessage,
   recordInstanceAcmeIssuanceFromServer,
@@ -100,10 +102,35 @@ test('instance ACME result from the server that runs the control plane is record
   })
 })
 
-test('both daemon inbound paths record instance ACME results only through the server check', async () => {
-  for (const path of ['./deno-ws.ts', './cell/do.ts']) {
-    const source = await Deno.readTextFile(new URL(path, import.meta.url))
-    assertEquals(source.includes('recordInstanceAcmeIssuanceFromServer('), true, path)
-    assertEquals(/\brecordInstanceAcmeIssuance\(/.test(source), false, path)
-  }
+/** A cell that is already connected, so the dispatch records nothing else. */
+function connectedCell(): DaemonCell {
+  return {
+    getSnapshot: () => Promise.resolve({ connected: true }),
+    recordInbound: () => Promise.resolve(),
+  } as unknown as DaemonCell
+}
+
+function dispatchFrom(fixture: Fixture, serverId: string): Promise<void> {
+  return dispatchDaemonInboundMessage({
+    cell: connectedCell(),
+    db: fixture.db,
+    serverId,
+    connectionId: 'conn-acme',
+    message: issuanceFailure(fixture.host),
+    reply: () => {},
+  })
+}
+
+test('the self-hosted inbound path drops an instance ACME result from another server', async () => {
+  await withInstanceAcmeFixture(async (fixture) => {
+    await dispatchFrom(fixture, fixture.strayServerId)
+    assertEquals(await readAcmeError(fixture), null)
+  })
+})
+
+test('the self-hosted inbound path records an instance ACME result from the panel server', async () => {
+  await withInstanceAcmeFixture(async (fixture) => {
+    await dispatchFrom(fixture, fixture.hostedServerId)
+    assertEquals(await readAcmeError(fixture), 'rate limited')
+  })
 })

@@ -998,6 +998,24 @@ export function registerDaemonWebSocket<E extends Env>(
 
       return {
         async onOpen(_event, ws) {
+          // Before attaching, so a co-located daemon whose row is gone (the one
+          // case the upgrade lets through without a current key) never takes a
+          // lease, joins the online set or reclaims queued work.
+          if (identityAddress === DIRECT_ATTACH_SENTINEL) {
+            const daemonRow = colocatedRowMissing
+              ? null
+              : await getServerDaemonStateByServerId(db, payload.sub)
+            if (!daemonRow) {
+              compatLogWarn(
+                'ws',
+                `colocated daemon ${payload.sub} has no postgres row; forcing re-enroll`
+              )
+              pumpControl.abort = true
+              ws.close(4401, 'server row missing')
+              return
+            }
+          }
+
           const cell = registry.getCell(payload.sub)
           try {
             const attached = await cell.attachDaemonSocket({
@@ -1011,19 +1029,6 @@ export function registerDaemonWebSocket<E extends Env>(
             daemonCellLog('WARN', payload.sub, undefined, `daemon attach failed: ${String(err)}`)
             ws.close(1013, 'attach failed')
             return
-          }
-
-          if (identityAddress === DIRECT_ATTACH_SENTINEL) {
-            const daemonRow = await getServerDaemonStateByServerId(db, payload.sub)
-            if (!daemonRow) {
-              compatLogWarn(
-                'ws',
-                `colocated daemon ${payload.sub} has no postgres row; forcing re-enroll`
-              )
-              pumpControl.abort = true
-              ws.close(4401, 'server row missing')
-              return
-            }
           }
 
           const geo = resolveSelfHostedGeo(remoteAddress)

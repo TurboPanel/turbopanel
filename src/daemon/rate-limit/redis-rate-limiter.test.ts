@@ -219,6 +219,17 @@ test('local bucket fallback stays bounded when every key is still draining', asy
   assertEquals(await limiter.limit({ key: 'c' }), { success: false })
 })
 
+test('local bucket fallback evicts the least recently used key, not the first inserted', async () => {
+  const limiter = createLocalTokenBucketLimiter({ limit: 1, periodSeconds: 60, maxKeys: 2 })
+  assertEquals(await limiter.limit({ key: 'a' }), { success: true })
+  assertEquals(await limiter.limit({ key: 'b' }), { success: true })
+  assertEquals(await limiter.limit({ key: 'a' }), { success: false })
+  assertEquals(await limiter.limit({ key: 'c' }), { success: true })
+  // `a` was used after `b`, so `b` went and `a` keeps its drained bucket.
+  assertEquals(await limiter.limit({ key: 'a' }), { success: false })
+  assertEquals(await limiter.limit({ key: 'b' }), { success: true })
+})
+
 test('createRedisRateLimiter satisfies RateLimiter with shared keys', async () => {
   const seen: string[] = []
   const client = {

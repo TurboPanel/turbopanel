@@ -262,7 +262,8 @@ export function createLocalTokenBucketLimiter(opts: {
 
   // A bucket untouched for a full refill is back at capacity, the same as no
   // bucket at all, so dropping it changes no answer. Only when every bucket
-  // is still draining does the oldest one go (Map order is insertion order).
+  // is still draining does the least recently used one go: every touch moves
+  // its key to the end, so Map order is last-use order.
   const makeRoom = (now: number): void => {
     for (const [key, bucket] of buckets) {
       if (now - bucket.lastMs >= refillMs) buckets.delete(key)
@@ -276,11 +277,13 @@ export function createLocalTokenBucketLimiter(opts: {
     limit(args: { key: string }): Promise<{ success: boolean }> {
       const now = Date.now()
       let bucket = buckets.get(args.key)
-      if (!bucket) {
+      if (bucket) {
+        buckets.delete(args.key)
+      } else {
         if (buckets.size >= maxKeys) makeRoom(now)
         bucket = { tokens: capacity, lastMs: now }
-        buckets.set(args.key, bucket)
       }
+      buckets.set(args.key, bucket)
       const elapsed = now - bucket.lastMs
       bucket.tokens = Math.min(capacity, bucket.tokens + elapsed / msPerToken)
       bucket.lastMs = now
