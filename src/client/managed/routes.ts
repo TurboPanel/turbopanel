@@ -1377,7 +1377,7 @@ async function resolveReplicaPlacement(
  * `untrusted_network_needs_fabric`) are surfaced as their own 422 via
  * `privateEndpointErrorResponse` — never collapsed into
  * `failover_replica_requires_datacenter_transport`, because the operator
- * needs the specific reason (e.g. "mark the shared datacenter trusted").
+ * needs the specific reason (e.g. "turn on TurboFabric or mark the datacenter trusted").
  */
 async function resolveFailoverConversionPlacement(
   c: Context<AppEnv>,
