@@ -1089,10 +1089,10 @@ test('read-replication and client-backend fall from an untrusted shared datacent
   }
 })
 
-test('a pair that also shares a trusted datacenter never gets the untrusted marker', async () => {
+test('a trusted datacenter whose link is down is still used before public, with no untrusted marker', async () => {
   const db = createFixtureDb({
     memberships: [
-      membershipPin('s1', 'dc-trusted', '10.0.0.1'),
+      { ...membershipPin('s1', 'dc-trusted', '10.0.0.1'), linkDown: true },
       membershipPin('s2', 'dc-trusted', '10.0.0.2'),
       membershipPin('s1', 'dc-untrusted', '10.1.0.1'),
       membershipPin('s2', 'dc-untrusted', '10.1.0.2'),
@@ -1105,7 +1105,12 @@ test('a pair that also shares a trusted datacenter never gets the untrusted mark
     purpose: 'client-backend',
     toServerId: 's2',
   })
-  assertEquals('untrustedPublic' in resolved, false)
+  assertEquals(resolved, {
+    address: '10.0.0.2',
+    transport: 'datacenter',
+    datacenterId: 'dc-trusted',
+    linkDown: true,
+  })
 })
 
 test('a public fallback with no shared datacenter carries no untrusted marker', async () => {

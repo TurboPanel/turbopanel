@@ -1193,12 +1193,6 @@ export function assertFailoverReplicaTransportAllowed(
 }
 
 /**
- * Whether placement still needs a ready datacenter CIDR after transport resolve.
- * Failover needs a datacenter unless it rides fabric (an untrusted-only pair;
- * public is rejected earlier). Read replicas skip the CIDR check on
- * fabric/public (already overlay/TLS).
- */
-/**
  * A new placement (replica create, class change) never lands on a path that
  * fell to the public address on an untrusted network or on a tunnel with no
  * recent handshake: TurboFabric has to carry it. Running traffic is untouched.
@@ -1209,6 +1203,12 @@ export function placementNeedsHealthyFabric(
   return resolved.untrustedPublic === true || resolved.tunnelDown === true
 }
 
+/**
+ * Whether placement still needs a ready datacenter CIDR after transport resolve.
+ * Failover needs a datacenter unless it rides fabric (an untrusted-only pair;
+ * public is rejected earlier). Read replicas skip the CIDR check on
+ * fabric/public (already overlay/TLS).
+ */
 export function replicaPlacementNeedsDatacenter(
   transport: 'local' | 'datacenter' | 'fabric' | 'public',
   replicaClass: 'failover' | 'read'

@@ -44,8 +44,8 @@ import {
   parsePromoteForce,
   parseReplicaClassCreate,
   pickPrimaryCommandResult,
-  replicaEndpointPurpose,
   placementNeedsHealthyFabric,
+  replicaEndpointPurpose,
   replicaPlacementNeedsDatacenter,
   validateManagedDatabaseCreateName,
 } from './routes-helpers.ts'
