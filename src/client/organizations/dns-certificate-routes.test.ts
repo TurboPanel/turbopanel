@@ -358,7 +358,12 @@ test('an order is started, carried on, finished, reused, and never shows anythin
     assertEquals(pinned.kind, 'error')
     if (pinned.kind === 'error') {
       assertEquals(pinned.response.status, 400)
-      assertEquals(((await pinned.response.json()) as { error: string }).error, 'tls_pin_staging')
+      const refusal = (await pinned.response.json()) as { error: string; message: string }
+      assertEquals(refusal.error, 'tls_pin_staging')
+      assertEquals(
+        refusal.message,
+        "Test certificates are only for trying out ordering. Browsers show a security warning for them, so they can't be attached to a site."
+      )
     }
 
     // Retry is for a certificate that gave up.
