@@ -88,7 +88,7 @@ export function buildNameLock(input: NameLockInput): NameLock {
  * finds the doorway by the name instead. Read only: a doorway already linked to
  * another site is never taken, and nothing is written from a deploy preparation.
  */
-function unlinkedDoorwayNamed(siteHostnames: readonly string[]) {
+export function unlinkedDoorwayNamed(siteHostnames: readonly string[]) {
   const names = [...new Set(siteHostnames.map((name) => name.toLowerCase()))]
   return and(
     sql`${doorway.hostingId} IS NULL`,

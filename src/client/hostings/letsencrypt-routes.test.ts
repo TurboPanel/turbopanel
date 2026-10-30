@@ -1048,6 +1048,81 @@ test('PATCH /hostings: someone who may not edit the hosting gets the route refus
   }
 })
 
+test('GET hostings: a name a tunnel carries is listed under tunnels, a site with none has an empty list', async () => {
+  if (!dbUrl) return skipWithoutDatabase("hosting Let's Encrypt route tests")
+  const f = await setup({
+    acmeEnabled: true,
+    hostingOptions: { hostnames: ['shop.example.com', 'www.shop.example.com'] },
+  })
+  try {
+    const before = await f.call('GET', `/hostings/${f.hostingId}`)
+    assertEquals(((await before.json()) as { hosting: { tunnels: unknown[] } }).hosting.tunnels, [])
+    const [t] = await f.db
+      .insert(tunnel)
+      .values({
+        organizationId: f.organizationId,
+        routingOrganizationId: f.organizationId,
+        provider: 'cloudflare',
+        name: 'Edge',
+        placement: 'chosen',
+      })
+      .returning({ id: tunnel.id })
+    // One linked tunnel-only name, one not linked yet that is also public.
+    await f.db.insert(doorway).values([
+      {
+        routingOrganizationId: f.organizationId,
+        tunnelId: t!.id,
+        hostname: 'shop.example.com',
+        hostingId: f.hostingId,
+        status: 'live',
+      },
+      {
+        routingOrganizationId: f.organizationId,
+        tunnelId: t!.id,
+        hostname: 'www.shop.example.com',
+        isLocalOnly: false,
+        status: 'pending',
+      },
+    ])
+    try {
+      const expected = [
+        {
+          hostname: 'shop.example.com',
+          tunnelId: t!.id,
+          tunnelName: 'Edge',
+          provider: 'cloudflare',
+          tunnelOnly: true,
+          originVerified: false,
+          status: 'live',
+        },
+        {
+          hostname: 'www.shop.example.com',
+          tunnelId: t!.id,
+          tunnelName: 'Edge',
+          provider: 'cloudflare',
+          tunnelOnly: false,
+          originVerified: false,
+          status: 'pending',
+        },
+      ]
+      const one = await f.call('GET', `/hostings/${f.hostingId}`)
+      assertEquals(
+        ((await one.json()) as { hosting: { tunnels: unknown } }).hosting.tunnels,
+        expected
+      )
+      const list = await f.call('GET', '/hostings')
+      const rows = ((await list.json()) as { hostings: { id: string; tunnels: unknown }[] })
+        .hostings
+      assertEquals(rows.find((row) => row.id === f.hostingId)?.tunnels, expected)
+    } finally {
+      await f.db.delete(doorway).where(eq(doorway.tunnelId, t!.id))
+      await f.db.delete(tunnel).where(eq(tunnel.id, t!.id))
+    }
+  } finally {
+    await f.cleanup()
+  }
+})
+
 test('PUT use-letsencrypt: a site whose only name is a locked tunnel name gets no row, and an old row and waiting request go', async () => {
   if (!dbUrl) return skipWithoutDatabase("hosting Let's Encrypt route tests")
   const f = await setup({ acmeEnabled: true, hostingOptions: PUBLIC_SITE })
