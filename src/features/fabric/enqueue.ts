@@ -14,6 +14,11 @@ import type { CommandEnvelope } from '../commands/envelope.ts'
 import type { CommandQueue } from '../commands/queue.ts'
 import { createCommandRecord, transitionCommand } from '../commands/command-records.ts'
 import {
+  fabricReconcileAction,
+  stampFabricReconcileFinished,
+  stampFabricReconcilePending,
+} from './reconcile-outcome.ts'
+import {
   buildFabricReconcilePayloadFromSnapshot,
   ensureFabricRelays,
   type UnallocatedFabricServer,
@@ -537,12 +542,24 @@ export async function enqueueFabricReconcileCommand(params: {
       attempt: 1,
       queuedAt: record.queuedAt ?? record.createdAt,
     }
+    await stampFabricReconcilePending(params.db, {
+      serverId: params.serverId,
+      commandId: record.id,
+      action: fabricReconcileAction(params.payload),
+    })
     try {
       await params.commandQueue.enqueue(envelope)
     } catch {
       await transitionCommand(params.db, record.id, {
         status: 'failed',
         error: 'Command queue unavailable',
+      })
+      await stampFabricReconcileFinished(params.db, {
+        serverId: params.serverId,
+        commandId: record.id,
+        action: fabricReconcileAction(params.payload),
+        ok: false,
+        error: 'The command queue was unavailable, so the server was never asked.',
       })
       return {
         serverId: params.serverId,

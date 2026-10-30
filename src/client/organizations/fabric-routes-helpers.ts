@@ -1,4 +1,8 @@
 import type { Db } from '../../db/connection.ts'
+import {
+  type FabricReconcileOutcome,
+  readFabricReconcileOutcome,
+} from '../../features/fabric/reconcile-outcome.ts'
 import type { CommandQueue } from '../../features/commands/queue.ts'
 import {
   type FabricEnqueueResult,
@@ -198,7 +202,11 @@ function parseKeepaliveField(value: unknown): FieldResult<number | null> {
 function parseEndpointAddressField(value: unknown): FieldResult<string | null> {
   if (value === null) return { ok: true, value: null }
   if (typeof value !== 'string' || !isValidIpAddress(value)) {
-    return { ok: false, error: 'Invalid endpointAddress' }
+    return {
+      ok: false,
+      error:
+        'Invalid endpointAddress: enter an IP address only, without a port. Other servers connect to it on the fabric port.',
+    }
   }
   return { ok: true, value }
 }
@@ -573,6 +581,12 @@ export type FabricRelayApiRow = {
   gatewayEligible: boolean
   /** Diagnostics-only per-peer path summary. */
   paths: FabricPathSummaryEntry[]
+  /**
+   * How the last reconcile sent to this server ended: `pending` until it
+   * answers, then `done` (with any `warnings`) or `failed` (with `error`).
+   * `null` before the first one is recorded.
+   */
+  reconcile: FabricReconcileOutcome | null
 }
 
 export function observedForRelay(
@@ -646,6 +660,7 @@ export function toFabricRelayApiRow(params: {
     preferredGatewayIds: params.relay.preferredGatewayIds,
     gatewayEligible: params.relay.role === 'gateway',
     paths: params.relay.metadata.paths?.entries ?? [],
+    reconcile: readFabricReconcileOutcome(params.relay.metadata),
   }
 }
 

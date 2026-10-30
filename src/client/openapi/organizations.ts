@@ -482,6 +482,7 @@ export const organizationSchemas = {
       'preferredGatewayIds',
       'gatewayEligible',
       'paths',
+      'reconcile',
     ],
     properties: {
       serverId: { type: 'string', format: 'uuid' },
@@ -577,6 +578,20 @@ export const organizationSchemas = {
           },
         },
       },
+      reconcile: {
+        type: ['object', 'null'],
+        description:
+          "How the last server.fabric.reconcile sent to this server ended. `pending` until the server answers, then `done` (with any `warnings`: what an apply that worked left out, such as a route another interface holds or container networks that wait for Docker) or `failed` (with the server's own `error`). A pause only counts as down once its server is `done`. null before the first one is recorded.",
+        required: ['commandId', 'action', 'state', 'at'],
+        properties: {
+          commandId: { type: 'string', format: 'uuid' },
+          action: { type: 'string', enum: ['apply', 'pause', 'remove'] },
+          state: { type: 'string', enum: ['pending', 'done', 'failed'] },
+          at: { type: 'string', format: 'date-time' },
+          error: { type: 'string' },
+          warnings: { type: 'array', items: { type: 'string' } },
+        },
+      },
     },
   },
   OrganizationFabricRelayUpdate: {
@@ -590,7 +605,11 @@ export const organizationSchemas = {
           "empty list = derive from the relay's datacenter IPv4 subnets. Each range must be private (RFC 1918, 100.64.0.0/10 or fc00::/7) and no shorter than /8 (IPv4) or /48 (IPv6): default routes and public ranges are 400. A range that overlaps the fabric range, the container pool, a server's fabric container range or a range another gateway advertises (the very same range on two gateways is fine; partly overlapping or nested ranges are not) is 400 gateway_range_overlaps_* with { message, cidr, conflictsWith, otherServerId? }. The daemon refuses a host's whole peer list over one such range, so the same rule also covers the ranges a gateway falls back to from its datacenter subnets when the list is empty.",
       },
       keepalive: { type: ['integer', 'null'], minimum: 1, maximum: 65535 },
-      endpointAddress: { type: ['string', 'null'] },
+      endpointAddress: {
+        type: ['string', 'null'],
+        description:
+          'An IP address only, never with a port: other servers connect to it on the fabric listen port. null clears the pin.',
+      },
       presharedKey: {
         type: ['string', 'null'],
         description: 'Write-only WireGuard PSK. Never echoed on GET.',

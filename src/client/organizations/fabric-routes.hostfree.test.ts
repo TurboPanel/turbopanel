@@ -238,6 +238,7 @@ test('fabricSettingsResponse includes relay rows without presharedKey', () => {
       preferredGatewayIds: [],
       gatewayEligible: false,
       paths: [],
+      reconcile: null,
     },
     {
       serverId: 'srv-2',
@@ -258,6 +259,7 @@ test('fabricSettingsResponse includes relay rows without presharedKey', () => {
       preferredGatewayIds: [],
       gatewayEligible: false,
       paths: [],
+      reconcile: null,
     },
   ]
   const body = fabricSettingsResponse(

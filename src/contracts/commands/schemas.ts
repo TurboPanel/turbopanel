@@ -1564,6 +1564,13 @@ export type FabricReconcileCommandResult = {
   publicKey?: string
   skipped?: boolean
   peers?: FabricReconcileObservedPeer[]
+  /**
+   * Plain sentences about what an apply that worked had to leave out (a LAN
+   * or `tp0` route another interface already holds, container bridges that
+   * wait for Docker). Absent when nothing was left out. Older daemons never
+   * send it.
+   */
+  warnings?: string[]
 }
 
 /** Linux interface name: at most 15 bytes, no slash or whitespace (daemon twin). */
@@ -1830,7 +1837,25 @@ export function parseFabricReconcileResult(value: unknown): FabricReconcileComma
     }
     result.peers = value.peers.map(parseFabricObservedPeer)
   }
+  if (value.warnings !== undefined) {
+    result.warnings = parseFabricResultWarnings(value.warnings)
+  }
   return result
+}
+
+const FABRIC_RESULT_WARNINGS_MAX = 64
+const FABRIC_RESULT_WARNING_MAX_LENGTH = 500
+
+function parseFabricResultWarnings(value: unknown): string[] {
+  if (!Array.isArray(value) || value.length > FABRIC_RESULT_WARNINGS_MAX) {
+    throw new TypeError('Invalid fabric reconcile result warnings')
+  }
+  return value.map((entry) => {
+    if (!isString(entry) || entry.length === 0 || entry.length > FABRIC_RESULT_WARNING_MAX_LENGTH) {
+      throw new TypeError('Invalid fabric reconcile result warning')
+    }
+    return entry
+  })
 }
 
 function parseNonNegativeInteger(value: unknown, field: string): number {

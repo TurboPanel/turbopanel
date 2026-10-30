@@ -2907,6 +2907,17 @@ test('parseFabricReconcileResult accepts skipped, reconciled, and teardown shape
   })
 })
 
+test('parseFabricReconcileResult carries warnings and refuses malformed ones', () => {
+  const warning = 'LAN route 10.194.0.0/16 via 10.10.3.86 not installed: eth0 already routes it'
+  assertEquals(
+    parseFabricReconcileResult({ summary: 'TurboFabric reconciled', warnings: [warning] }).warnings,
+    [warning]
+  )
+  for (const warnings of ['one', [''], [7], Array.from({ length: 65 }, () => 'x')]) {
+    assertThrows(() => parseFabricReconcileResult({ summary: 'TurboFabric reconciled', warnings }))
+  }
+})
+
 test('parseFabricReconcileResult carries the peer interface and refuses a bad name', () => {
   const peer = (iface: unknown) => ({
     summary: 'TurboFabric reconciled',
