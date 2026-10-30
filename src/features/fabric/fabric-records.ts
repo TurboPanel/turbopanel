@@ -68,6 +68,7 @@ import {
   withoutUnsafeRanges,
 } from './gateway-ranges.ts'
 import { WIREGUARD_PERSISTENT_KEEPALIVE } from './wg.ts'
+import { fabricPeerHealthClasses } from './peer-health.ts'
 import {
   type FabricPolicy,
   mergeRelayPolicyOptions,
@@ -853,7 +854,10 @@ export async function stampRelayPathSummary(
 /**
  * Merged metadata carrying a fresh `observed` reading, or null when the row
  * already holds one at least as new, or one stamped less than `minIntervalMs`
- * before `nowMs`. Never touches `appliedPayloadHash` / `appliedAt`.
+ * before `nowMs` that gives every peer the same health class. A change of
+ * class is always written, however recent the stored reading (a reconcile
+ * stamp must not hide a tunnel that just went down). Never touches
+ * `appliedPayloadHash` / `appliedAt`.
  */
 export function planRelayObservedStamp(
   existing: unknown,
@@ -864,7 +868,10 @@ export function planRelayObservedStamp(
   const currentMs = current ? Date.parse(current.at) : Number.NaN
   if (Number.isFinite(currentMs)) {
     if (currentMs >= Date.parse(observed.at)) return null
-    if (options.nowMs - currentMs < options.minIntervalMs) return null
+    const recent = options.nowMs - currentMs < options.minIntervalMs
+    if (recent && fabricPeerHealthClasses(current) === fabricPeerHealthClasses(observed)) {
+      return null
+    }
   }
   return mergeRelayMetadata(existing, { observed })
 }

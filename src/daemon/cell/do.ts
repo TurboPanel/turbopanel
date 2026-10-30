@@ -40,6 +40,7 @@ import { handleManagedHealthReport } from '../../features/managed/health-report.
 import {
   FabricPeerReportThrottle,
   handleFabricPeersReport,
+  takeFabricPeersReport,
 } from '../../features/fabric/peer-report.ts'
 import {
   backupRunReportResultMessage,
@@ -1960,8 +1961,14 @@ export class DaemonCellObject {
     }
     if (parsed.type === 'fabric-peers-report') {
       await this.#recordInboundRepairingPresence(attachment, parsed.at)
-      // In-memory gate first: a throttled frame opens no database client.
-      if (!this.#fabricPeerReportThrottle.take(attachment.serverId, Date.now())) return true
+      // In-memory gate first: a same-class frame inside 60 s opens no database client.
+      const take = takeFabricPeersReport(
+        this.#fabricPeerReportThrottle,
+        attachment.serverId,
+        parsed,
+        Date.now()
+      )
+      if (!take) return true
       await this.#withProjectionDb('fabric-peers-report', attachment.serverId, async (db) => {
         await handleFabricPeersReport(db, {
           reporterServerId: attachment.serverId,

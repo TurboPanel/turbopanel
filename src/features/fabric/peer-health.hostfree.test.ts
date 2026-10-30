@@ -2,6 +2,7 @@ import { assertEquals } from '@std/assert'
 import {
   FABRIC_HANDSHAKE_HEALTHY_MS,
   FABRIC_OBSERVATION_MAX_AGE_MS,
+  fabricPeerHealthClasses,
   pairTunnelHealth,
 } from './peer-health.ts'
 
@@ -52,6 +53,29 @@ test('pairTunnelHealth is unknown without a fresh reading or a key', () => {
     'unknown'
   )
   assertEquals(pairTunnelHealth({ at: 'nope', peers: [] }, OTHER, AT_MS), 'unknown')
-  // Exactly ten minutes old still counts.
+  // Exactly seven minutes old still counts (5 min re-send plus margin).
+  assertEquals(FABRIC_OBSERVATION_MAX_AGE_MS, 7 * 60_000)
   assertEquals(pairTunnelHealth(observed, OTHER, AT_MS + FABRIC_OBSERVATION_MAX_AGE_MS), 'healthy')
+})
+
+test('fabricPeerHealthClasses names each peer and class in key order', () => {
+  const A = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='
+  assertEquals(fabricPeerHealthClasses(undefined), '')
+  assertEquals(
+    fabricPeerHealthClasses({
+      at: iso(AT_MS),
+      peers: [
+        { publicKey: OTHER, health: 'stale' },
+        { publicKey: A, health: 'healthy' },
+      ],
+    }),
+    `${A}=healthy,${OTHER}=stale`
+  )
+  // Without a daemon class, the handshake decides with the same rule.
+  assertEquals(fabricPeerHealthClasses(observedWith(AT_MS)), `${OTHER}=healthy`)
+  assertEquals(
+    fabricPeerHealthClasses(observedWith(AT_MS - FABRIC_HANDSHAKE_HEALTHY_MS - 1)),
+    `${OTHER}=stale`
+  )
+  assertEquals(fabricPeerHealthClasses(observedWith(undefined)), `${OTHER}=never`)
 })

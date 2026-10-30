@@ -82,6 +82,7 @@ import { handleManagedHealthReport } from '../features/managed/health-report.ts'
 import {
   FabricPeerReportThrottle,
   handleFabricPeersReport,
+  takeFabricPeersReport,
 } from '../features/fabric/peer-report.ts'
 import {
   resolveAutoFailoverFromDenoEnv,
@@ -463,7 +464,10 @@ async function handleDaemonManagedHealthReportInbound(params: {
   await cell.recordInbound({ connectionId, at: message.at })
 }
 
-/** Process-wide "once per 60 s per server" gate for `fabric-peers-report`. */
+/**
+ * Process-wide "once per 60 s per server, unless a peer's health class
+ * changed" gate for `fabric-peers-report`.
+ */
 const fabricPeerReportThrottle = new FabricPeerReportThrottle()
 
 async function handleDaemonFabricPeersReportInbound(params: {
@@ -474,7 +478,9 @@ async function handleDaemonFabricPeersReportInbound(params: {
   reporterServerId: string
 }): Promise<void> {
   const { cell, db, connectionId, message } = params
-  if (fabricPeerReportThrottle.take(params.reporterServerId, Date.now())) {
+  if (
+    takeFabricPeersReport(fabricPeerReportThrottle, params.reporterServerId, message, Date.now())
+  ) {
     await handleFabricPeersReport(db, {
       reporterServerId: params.reporterServerId,
       peers: message.peers,
