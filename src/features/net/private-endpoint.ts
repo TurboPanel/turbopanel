@@ -5,6 +5,8 @@ import { fabric, ip, relay, server } from '../../db/schema.ts'
 import { inetAddressToString } from '../../lib/ip-address.ts'
 import { relayCarriesTraffic, relayServerSwitchedOn } from '../fabric/relay-filters.ts'
 import { loadLanRouteServerIds } from '../fabric/lan-pairs.ts'
+import { pairTunnelHealth } from '../fabric/peer-health.ts'
+import type { RelayMetadata } from '../fabric/fabric-records.ts'
 import {
   defaultDatacenterPolicyRow,
   loadDatacenterPolicies,
@@ -162,6 +164,8 @@ export type RelayJoinRow = {
   address: string
   /** WireGuard public key once the daemon reported one; a keyless relay has no tunnel yet. */
   publicKey?: string | null
+  /** This relay's last reading of its peers (`relay.metadata.observed`). */
+  observed?: RelayMetadata['observed']
 }
 
 /**
@@ -187,6 +191,7 @@ async function loadFabricRelayRows(db: Db, serverIds: string[]): Promise<RelayJo
       fabricCreatedAt: fabric.createdAt,
       address: relay.address,
       publicKey: relay.publicKey,
+      metadata: relay.metadata,
     })
     .from(relay)
     .innerJoin(fabric, eq(relay.fabricId, fabric.id))
@@ -206,6 +211,7 @@ async function loadFabricRelayRows(db: Db, serverIds: string[]): Promise<RelayJo
       fabricCreatedAt: row.fabricCreatedAt,
       address,
       publicKey: row.publicKey,
+      observed: (row.metadata as RelayMetadata | null)?.observed,
     })
   }
   return out
@@ -452,18 +458,22 @@ function resolveDatacenterFromCaches(params: {
 
 /**
  * The tunnel to `toServerId` can carry traffic: both relays have a key (a
- * keyless relay has no tunnel yet) and the other server's daemon is connected.
- * A relay row alone is not enough: aiming at a `tp0` address with no live
- * tunnel behind it sends traffic nowhere, so the ladder moves on instead.
+ * keyless relay has no tunnel yet), the other server's daemon is connected,
+ * and this relay's live reading shows a recent handshake with it
+ * (`pairTunnelHealth` is `healthy`). A relay row alone is not enough: aiming
+ * at a `tp0` address with no live tunnel behind it sends traffic nowhere, so
+ * the ladder moves on instead. A row read without its key (`undefined`, not
+ * loaded) is not judged.
  */
 function fabricTunnelUsable(
   from: RelayJoinRow,
   to: RelayJoinRow,
-  connectedServerIds: ReadonlySet<string> | undefined
+  params: { connectedServerIds?: ReadonlySet<string>; nowMs: number }
 ): boolean {
   if (from.publicKey === null || to.publicKey === null) return false
-  if (connectedServerIds && !connectedServerIds.has(to.serverId)) return false
-  return true
+  if (params.connectedServerIds && !params.connectedServerIds.has(to.serverId)) return false
+  if (to.publicKey === undefined) return true
+  return pairTunnelHealth(from.observed, to.publicKey, params.nowMs) === 'healthy'
 }
 
 function resolveFabricFromCaches(params: {
@@ -471,7 +481,12 @@ function resolveFabricFromCaches(params: {
   toServerId: string
   relays: RelayJoinRow[]
   connectedServerIds?: ReadonlySet<string>
+  nowMs?: number
 }): ResolvedPrivateEndpoint | null {
+  const usable = {
+    ...(params.connectedServerIds ? { connectedServerIds: params.connectedServerIds } : {}),
+    nowMs: params.nowMs ?? Date.now(),
+  }
   const fromByFabric = new Map(
     params.relays
       .filter((row) => row.serverId === params.fromServerId)
@@ -483,7 +498,7 @@ function resolveFabricFromCaches(params: {
       return (
         row.serverId === params.toServerId &&
         from !== undefined &&
-        fabricTunnelUsable(from, row, params.connectedServerIds)
+        fabricTunnelUsable(from, row, usable)
       )
     })
     .sort((a, b) => a.fabricCreatedAt.localeCompare(b.fabricCreatedAt))
@@ -547,9 +562,9 @@ function datacenterRung(
  * - `read-replication` / `client-backend`: `local` → `datacenter` → `fabric`
  *   → `public`. The fabric rung is skipped for a pair that shares a trusted
  *   LAN (no tunnel exists between them, {@link serversShareTrustedLan}) and
- *   when the tunnel cannot carry traffic (a keyless relay or the other
- *   daemon offline); the public address, then a network that is down, is
- *   used instead.
+ *   when the tunnel cannot carry traffic (a keyless relay, the other daemon
+ *   offline, or no recent handshake in the live reading); the public
+ *   address, then a network that is down, is used instead.
  *
  * A trusted shared-datacenter family mismatch is returned before fabric/public
  * for every purpose.
@@ -566,6 +581,8 @@ export function resolveOneFromCaches(params: {
   lanRouteServerIds?: ReadonlySet<string>
   /** Servers whose daemon is connected; absent skips the check. */
   connectedServerIds?: ReadonlySet<string>
+  /** Clock for tunnel health; defaults to now. */
+  nowMs?: number
 }): ResolvedPrivateEndpoint | PrivateEndpointError {
   if (params.fromServerId === params.toServerId) {
     return { address: '127.0.0.1', transport: 'local' }

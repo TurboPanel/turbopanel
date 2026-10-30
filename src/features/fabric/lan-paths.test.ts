@@ -371,7 +371,27 @@ test('the ladder never aims at a fabric address for a LAN pair or over a dead tu
       'public',
       '203.0.113.32',
     ])
-    // The same pair with an older daemon still has a tunnel, so it takes it.
+
+    // alpha's live reading shows fresh handshakes with bravo and charlie.
+    const now = new Date().toISOString()
+    const fresh = (at: string) => ({
+      observed: {
+        at: now,
+        peers: [KEY_B, KEY_C].map((publicKey) => ({ publicKey, lastHandshakeAt: at })),
+      },
+    })
+    await rig.db
+      .update(relay)
+      .set({ metadata: fresh(now) })
+      .where(eq(relay.serverId, rig.a))
+    const remote = await resolvePrivateEndpoint(rig.db, {
+      fromServerId: rig.a,
+      toServerId: rig.c,
+      purpose: 'client-backend',
+    })
+    assertEquals('transport' in remote ? remote.transport : remote, 'fabric')
+
+    // The same LAN pair with an older daemon still has a live tunnel, so it takes it.
     await rig.db.update(server).set({ daemon: null }).where(eq(server.id, rig.b))
     const olderPair = await resolvePrivateEndpoint(rig.db, {
       fromServerId: rig.a,
@@ -380,13 +400,23 @@ test('the ladder never aims at a fabric address for a LAN pair or over a dead tu
     })
     assertEquals('transport' in olderPair ? olderPair.transport : olderPair, 'fabric')
 
-    const remote = await resolvePrivateEndpoint(rig.db, {
+    // A stale handshake means the tunnel is down: never aim at its tp0 address.
+    const stale = new Date(Date.now() - 600_000).toISOString()
+    await rig.db
+      .update(relay)
+      .set({ metadata: fresh(stale) })
+      .where(eq(relay.serverId, rig.a))
+    const downTunnel = await resolvePrivateEndpoint(rig.db, {
       fromServerId: rig.a,
       toServerId: rig.c,
       purpose: 'client-backend',
     })
-    assertEquals('transport' in remote ? remote.transport : remote, 'fabric')
+    assertEquals('transport' in downTunnel ? downTunnel.transport : downTunnel, 'public')
 
+    await rig.db
+      .update(relay)
+      .set({ metadata: fresh(now) })
+      .where(eq(relay.serverId, rig.a))
     await rig.db.update(server).set({ isConnected: false }).where(eq(server.id, rig.c))
     const offline = await resolvePrivateEndpoint(rig.db, {
       fromServerId: rig.a,

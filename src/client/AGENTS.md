@@ -204,7 +204,9 @@ changes.
   use fabric. The planner refuses a span only for pairs outside a shared
   trusted LAN (TurboFabric off, a switched-off server in such a pair, or no
   direct tunnel in a network that mixes LAN and remote servers). The fabric
-  rung also needs both relays keyed and the other daemon connected.
+  rung also needs both relays keyed, the other daemon connected and a fresh
+  handshake in the live reading (`pairTunnelHealth` `healthy`); otherwise the
+  ladder falls to public, then a network that is down.
   Whole-environment `environment.server_id` pins never require it. User-facing
   copy is **TurboFabric**; backend identifiers stay `fabric` / `tp0` / `relay` /
   `subnet`. Never ask which WireGuard network a container should join. NAT

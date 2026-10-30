@@ -290,14 +290,21 @@ async function insertBoundDatabase(
 test('an app reaching its database over TurboFabric blocks switching either server off', async () => {
   await withSwitchRig(async ({ db, organizationId, onId, offId }) => {
     // No shared datacenter and no public address: the ladder picks TurboFabric
-    // (its tunnel can carry traffic: both relays keyed, both daemons online).
+    // (its tunnel can carry traffic: both relays keyed, both daemons online,
+    // each side's live reading shows a fresh handshake with the other).
+    const keyOn = `${'A'.repeat(43)}=`
+    const keyOff = `${'B'.repeat(43)}=`
+    const now = new Date().toISOString()
+    const seen = (publicKey: string) => ({
+      observed: { at: now, peers: [{ publicKey, lastHandshakeAt: now }] },
+    })
     await db
       .update(relay)
-      .set({ publicKey: `${'A'.repeat(43)}=` })
+      .set({ publicKey: keyOn, metadata: seen(keyOff) })
       .where(eq(relay.serverId, onId))
     await db
       .update(relay)
-      .set({ publicKey: `${'B'.repeat(43)}=` })
+      .set({ publicKey: keyOff, metadata: seen(keyOn) })
       .where(eq(relay.serverId, offId))
     await db
       .update(server)
