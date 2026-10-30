@@ -551,6 +551,37 @@ test('enqueueFabricReconcileForServers sends a pause (retainKeys) instead of a t
   assertEquals(payloads, [{ enabled: false, retainKeys: true }])
 })
 
+test('enqueueFabricReconcileForServers sends no enable while the fabric is paused', async () => {
+  const base = createMembershipFabricDb(hashGateRelays()) as unknown as {
+    select: (fields: Record<string, unknown>) => unknown
+  }
+  const db = {
+    ...base,
+    select(fields: Record<string, unknown>) {
+      if ('isEnabled' in fields && 'cidr' in fields) {
+        return {
+          from: () => ({
+            where: () => ({ limit: () => thenable([{ ...FABRIC, isEnabled: false }]) }),
+          }),
+        }
+      }
+      return base.select(fields)
+    },
+  } as unknown as Db
+  const enqueued: string[] = []
+  const results = await enqueueFabricReconcileForServers({
+    db,
+    commandQueue: recordingQueue(enqueued),
+    actorType: 'user',
+    actorId: 'user-1',
+    fabric: FABRIC,
+    serverIds: ['srv-1'],
+    enabled: true,
+  })
+  assertEquals(enqueued, [])
+  assertEquals(results, [{ serverId: 'srv-1', status: 'skipped' }])
+})
+
 test('enqueueFabricReconcileForServers reports queue unavailable after create', async () => {
   const base = createMembershipFabricDb(hashGateRelays())
   const db = {
@@ -1315,4 +1346,35 @@ test('fabricNeedsRendezvous requires two public-keyed relays and non-direct path
     ]),
     true
   )
+})
+
+test('awaitParticipatingFabricConvergence stops when the fabric is paused while a deploy waits', async () => {
+  const fabricPayloads: Array<{ peers?: unknown[] }> = []
+  const base = createConvergenceFabricDb(nullKeyRelays(), fabricPayloads) as unknown as {
+    select: (fields: Record<string, unknown>) => unknown
+  }
+  const db = {
+    ...base,
+    select(fields: Record<string, unknown>) {
+      if ('isEnabled' in fields && 'cidr' in fields) {
+        return {
+          from: () => ({
+            where: () => ({ limit: () => thenable([{ ...FABRIC, isEnabled: false }]) }),
+          }),
+        }
+      }
+      return base.select(fields)
+    },
+  } as unknown as Db
+  const outcome = await awaitParticipatingFabricConvergence({
+    db,
+    commandQueue: recordingQueue([]),
+    actorType: 'user',
+    actorId: 'user-1',
+    fabric: FABRIC,
+    serverIds: ['srv-1', 'srv-2'],
+    sleep: () => Promise.resolve(),
+  })
+  assertEquals(outcome.kind, 'failed')
+  assertEquals(fabricPayloads, [])
 })

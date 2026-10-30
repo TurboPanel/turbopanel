@@ -8,6 +8,7 @@ import type { Db } from '../../db/connection.ts'
 import { fabric, ip, relay, server } from '../../db/schema.ts'
 import { reportedIpsFromServerMetadata } from '../../contracts/server-addresses.ts'
 import { inetAddressToString } from '../../lib/ip-address.ts'
+import { relayCarriesTraffic } from '../fabric/relay-filters.ts'
 import { organizationRootAllowedSources } from './root-login-sources.ts'
 
 /** The ids among `serverIds` that belong to `organizationId`. */
@@ -45,7 +46,7 @@ export async function loadServerAddressMap(
       .select({ serverId: relay.serverId, address: relay.address })
       .from(relay)
       .innerJoin(fabric, eq(relay.fabricId, fabric.id))
-      .where(inArray(relay.serverId, ids)),
+      .where(and(inArray(relay.serverId, ids), relayCarriesTraffic())),
   ])
   for (const row of servers) {
     result.set(

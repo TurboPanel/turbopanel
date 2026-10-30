@@ -36,6 +36,7 @@ import { resolveComposeLayerChain, isComposeChainError } from '../compose/layer-
 import { mergeComposeLayers } from '../compose/layers.ts'
 import { parseDatacenterOptions } from '../datacenters/datacenter-options.ts'
 import { parseFabricOptions } from '../fabric/cidr.ts'
+import { relayCarriesTraffic } from '../fabric/relay-filters.ts'
 import { resolveHostingBind } from '../hostings/hosting-options.ts'
 import { MANAGED_HA_HTTP_PORT, MANAGED_HA_RAFT_PORT } from '../managed/ha-ports.ts'
 import { serverHostsManagedHa } from '../managed/ha-policy.ts'
@@ -241,12 +242,13 @@ async function loadManagedExposures(db: Db, serverId: string): Promise<DerivedEx
 }
 
 /** TurboFabric: a relay on this server listens for WireGuard peers (any address: peers sit behind NAT). */
-async function loadFabricExposures(db: Db, serverId: string): Promise<DerivedExposure[]> {
+export async function loadFabricExposures(db: Db, serverId: string): Promise<DerivedExposure[]> {
   const [row] = await db
     .select({ options: fabric.options })
     .from(relay)
     .innerJoin(fabric, eq(fabric.id, relay.fabricId))
-    .where(eq(relay.serverId, serverId))
+    // Closed while TurboFabric is paused or this server is switched out of it.
+    .where(and(eq(relay.serverId, serverId), relayCarriesTraffic()))
     .limit(1)
   if (!row) return []
   return [

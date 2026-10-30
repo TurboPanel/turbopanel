@@ -5,7 +5,7 @@
  */
 import { assertEquals } from '@std/assert'
 import type { Db } from '../../db/connection.ts'
-import { replica } from '../../db/schema.ts'
+import { replica, subnet } from '../../db/schema.ts'
 import {
   automaticFabricRole,
   fabricDependentsMessage,
@@ -42,7 +42,12 @@ function rows<T>(value: T[]) {
   return Object.assign(promise, { limit: () => promise })
 }
 
-/** Answers the three dependent queries: subnets, the server's clusters, fabric replicas. */
+/**
+ * Answers the dependent queries by the table they start from: subnets
+ * (container networks), replicas (the server's clusters, then the ones
+ * replicating over the fabric), bindings (app connections) and relays (LAN
+ * gateway). Joins are accepted and ignored.
+ */
 function dependentsDb(opts: {
   networks: Array<{
     id: string
@@ -53,13 +58,23 @@ function dependentsDb(opts: {
   clusters: Array<{ managedId: string }>
   fabricClusters: Array<{ id: string; name: string | null }>
 }): Db {
-  const chain = (table: unknown, distinct: boolean) => ({
-    innerJoin: () => ({
-      leftJoin: () => ({ where: () => rows(opts.networks) }),
-      where: () => rows(opts.fabricClusters),
-    }),
-    where: () => rows(table === replica && distinct ? opts.clusters : []),
-  })
+  const chain = (table: unknown, distinct: boolean) => {
+    let joined = false
+    const node = {
+      innerJoin: () => {
+        joined = true
+        return node
+      },
+      leftJoin: () => node,
+      where: () => {
+        if (table === subnet) return rows(opts.networks)
+        if (table === replica && distinct && !joined) return rows(opts.clusters)
+        if (table === replica) return rows(opts.fabricClusters)
+        return rows([])
+      },
+    }
+    return node
+  }
   return {
     select: () => ({ from: (table: unknown) => chain(table, false) }),
     selectDistinct: () => ({ from: (table: unknown) => chain(table, true) }),
@@ -73,7 +88,7 @@ test('findFabricDependents names cross-server container networks and fabric repl
       clusters: [{ managedId: 'm-1' }],
       fabricClusters: [{ id: 'm-1', name: 'orders' }],
     }),
-    'srv-1'
+    { serverId: 'srv-1', organizationId: 'org-1' }
   )
   assertEquals(found, [
     {
@@ -88,7 +103,7 @@ test('findFabricDependents names cross-server container networks and fabric repl
 test('findFabricDependents is empty for a server nothing reaches over the fabric', async () => {
   const found = await findFabricDependents(
     dependentsDb({ networks: [], clusters: [], fabricClusters: [] }),
-    'srv-1'
+    { serverId: 'srv-1', organizationId: 'org-1' }
   )
   assertEquals(found, [])
 })

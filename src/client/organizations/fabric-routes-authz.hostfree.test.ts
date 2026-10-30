@@ -933,7 +933,7 @@ async function buildEnabledFabricApp(opts: {
         return {
           set: (patch: Record<string, unknown>) => {
             fabricPatches.push(patch)
-            if (patch.isEnabled === false) fabricPaused = true
+            if ('isEnabled' in patch) fabricPaused = patch.isEnabled === false
             return { where: () => Promise.resolve(undefined) }
           },
         }
@@ -1156,7 +1156,13 @@ test('PUT /fabric enabled:false keeps the mesh on when a pause cannot reach a se
   const res = await putFabricOff(app, cookie)
   assertEquals(res.status, 503)
   assertEquals(((await res.json()) as { error: string }).error, 'fabric_teardown_not_queued')
-  assertEquals(fabricPatches, [])
+  // Marked paused before the teardowns went out, then turned back on.
+  assertEquals(
+    fabricPatches.map((patch) => patch.isEnabled),
+    [false, true]
+  )
+  const get = await app.request(`/organizations/${orgId}/fabric`, { headers: { Cookie: cookie } })
+  assertEquals(((await get.json()) as { paused: boolean }).paused, false)
 })
 
 test('PATCH /fabric/servers/:serverId returns 400 for an invalid role', async () => {

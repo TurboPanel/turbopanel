@@ -20,6 +20,7 @@ import {
   FabricAllocationError,
   type FabricReconcileSnapshot,
   type FabricRecord,
+  getFabricById,
   getOrganizationFabric,
   isFabricPaused,
   loadFabricReconcileSnapshot,
@@ -358,6 +359,16 @@ async function desiredHashesForServers(params: {
   return desiredHashByServer
 }
 
+/** Shown when TurboFabric is turned off or removed while a deploy waits for it. */
+export const FABRIC_TURNED_OFF_MESSAGE =
+  'TurboFabric was turned off while this deploy waited for it. Turn it back on, then deploy again.'
+
+/** The fabric still exists and is not paused (read fresh from the database). */
+async function fabricCarriesTraffic(db: Db, fabricId: string): Promise<boolean> {
+  const current = await getFabricById(db, fabricId)
+  return current !== null && !isFabricPaused(current)
+}
+
 async function participatingConvergenceAttempt(params: {
   db: Db
   commandQueue: CommandQueue
@@ -372,6 +383,16 @@ async function participatingConvergenceAttempt(params: {
   now: () => number
   startedAt: number
 }): Promise<FabricGateOutcome | 'retry'> {
+  // Re-read on every attempt: a pause (or removal) while the deploy waits must
+  // stop it here, never send a tunnel back up.
+  if (!(await fabricCarriesTraffic(params.db, params.fabric.id))) {
+    return {
+      kind: 'failed',
+      serverId: params.serverIds[0] ?? '',
+      commandId: '',
+      error: FABRIC_TURNED_OFF_MESSAGE,
+    }
+  }
   const remainingMs = Math.max(0, params.timeoutMs - (params.now() - params.startedAt))
   const results = await enqueueFabricReconcileForServers({
     db: params.db,
@@ -628,6 +649,14 @@ export async function enqueueFabricReconcileForServers(params: {
   secretsConfig?: SecretsConfig
   dataEncryptionSecrets?: DerivedSecretsConfig
 }): Promise<FabricEnqueueResult[]> {
+  // Never send enabled:true for a fabric that is paused or gone by now.
+  if (
+    params.enabled &&
+    params.fabric &&
+    !(await fabricCarriesTraffic(params.db, params.fabric.id))
+  ) {
+    return params.serverIds.map((serverId) => ({ serverId, status: 'skipped' }))
+  }
   const expiresAt = new Date(Date.now() + 300_000).toISOString()
   const secrets = fabricSecretEnqueueFields(params)
   const snapshot = await loadEnabledFabricSnapshot(params.db, params.enabled, params.fabric)

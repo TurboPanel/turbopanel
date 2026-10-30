@@ -20,6 +20,7 @@ import {
   type FabricEnablePolicy,
   type FabricRecord,
   getOrganizationFabric,
+  isFabricPaused,
   listFabricRelays,
   listSubnetsForServers,
   loadEndpointCaches,
@@ -38,7 +39,12 @@ import { cidrContains } from '../../lib/ip-address.ts'
 import { cidrCollisionResponse } from '../networks/network-scope.ts'
 import { reconcileFabricMembership } from '../../features/fabric/enqueue.ts'
 import { loadFabricServerMemberships } from '../../features/fabric/membership.ts'
-import { applyServerFabricPatch, pauseFabric, removeFabric } from './fabric-lifecycle.ts'
+import {
+  applyServerFabricPatch,
+  auditFabricResume,
+  pauseFabric,
+  removeFabric,
+} from './fabric-lifecycle.ts'
 import {
   advertisedRangeProblemResponse,
   bindSecretEncryptFn,
@@ -89,7 +95,7 @@ async function assertContainerPoolWritable(
   )
   if (collision) return cidrCollisionResponse(c, collision)
   if (!existing) return null
-  const relays = await listFabricRelays(db, existing.id)
+  const relays = await listFabricRelays(db, existing.id, { includeSwitchedOff: true })
   const orphaned = relays.find((row) => !cidrContains(containerPool, row.prefix))
   if (orphaned) {
     return c.json(
@@ -134,6 +140,11 @@ function fabricSecretsFromContext(c: {
 }
 
 /** The GET body: settings, relays and every server's membership. */
+async function isOrganizationFabricPaused(db: Db, organizationId: string): Promise<boolean> {
+  const record = await getOrganizationFabric(db, organizationId)
+  return record !== null && isFabricPaused(record)
+}
+
 async function fabricSettingsBody(
   db: Db,
   organizationId: string
@@ -165,6 +176,7 @@ async function mutatingFabricContext<T>(
       organizationId: string
       parsed: T | null
       actorId: string
+      actorEmail: string | null
       commandQueue: CommandQueue
     }
 > {
@@ -191,7 +203,14 @@ async function mutatingFabricContext<T>(
   if (!session) return c.json({ error: 'Unauthorized' }, 401)
   const commandQueue = assertDispatchInfrastructure(c)
   if (commandQueue instanceof Response) return commandQueue
-  return { db, organizationId, parsed, actorId: session.userId, commandQueue }
+  return {
+    db,
+    organizationId,
+    parsed,
+    actorId: session.userId,
+    actorEmail: session.email ?? null,
+    commandQueue,
+  }
 }
 
 /** Refuse a requested container pool that cannot be written; null when none was asked for or it is fine. */
@@ -365,7 +384,7 @@ export function registerOrganizationFabricRoutes(router: Hono<AppEnv>, opts: Aut
     const record = await getOrganizationFabric(db, id)
     if (!record) return fabricNotEnabledErrorResponse()
 
-    const fabricRelays = await listFabricRelays(db, record.id)
+    const fabricRelays = await listFabricRelays(db, record.id, { includeSwitchedOff: true })
     const existing = findByServerId(fabricRelays, serverId)
     if (!existing) return c.json({ error: 'Not found' }, 404)
 
@@ -408,7 +427,7 @@ export function registerOrganizationFabricRoutes(router: Hono<AppEnv>, opts: Aut
     })
     if (enqueueDenied) return enqueueDenied
 
-    const relays = await listFabricRelays(db, record.id)
+    const relays = await listFabricRelays(db, record.id, { includeSwitchedOff: true })
     const row = findByServerId(
       await loadFabricRelayApiRows(db, relays, parseFabricPolicy(record.options).allowRelay),
       serverId
@@ -434,6 +453,16 @@ export function registerOrganizationFabricRoutes(router: Hono<AppEnv>, opts: Aut
 
     const record = await getOrganizationFabric(db, id)
     if (!record) return fabricNotEnabledErrorResponse()
+    if (isFabricPaused(record)) {
+      return c.json(
+        {
+          error: 'fabric_paused',
+          message:
+            'TurboFabric is turned off for this organization, so there is nothing to apply. Turn it back on first.',
+        },
+        409
+      )
+    }
 
     const session = c.get('session')
     if (!session) return c.json({ error: 'Unauthorized' }, 401)
@@ -499,8 +528,10 @@ export function registerOrganizationFabricRoutes(router: Hono<AppEnv>, opts: Aut
     // from the requested pool (never the default) and the fabric row, policy
     // and relays land — or roll back — together.
     const policy = fabricEnablePolicyFromBody(parsed)
+    const wasPaused = await isOrganizationFabricPaused(db, id)
     const record = await enableOrganizationFabricOrResponse(c, db, id, policy)
     if (record instanceof Response) return record
+    if (wasPaused) await auditFabricResume({ ...ctx, secrets })
     const enqueueResults = await reconcileFabricMembership({
       db,
       commandQueue,

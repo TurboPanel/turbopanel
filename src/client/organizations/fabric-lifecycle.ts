@@ -13,10 +13,8 @@ import { FABRIC_RETAIN_KEYS_FEATURE } from '../../lib/version-wire.ts'
 import { inArray } from 'drizzle-orm'
 import { server } from '../../db/schema.ts'
 import { parseServerDaemonState } from '../../features/servers/daemon-state.ts'
-import { mapSequential } from '../../lib/sequential.ts'
 import {
   clearRelayAppliedPayloadHash,
-  deleteServerFabricMembership,
   disableOrganizationFabric,
   type FabricRecord,
   getOrganizationFabric,
@@ -25,13 +23,16 @@ import {
   pauseOrganizationFabric,
   purgeOrganizationComposeNetworks,
   resetRelaysAfterQueuedTeardown,
+  setFabricEnabled,
 } from '../../features/fabric/fabric-records.ts'
+import { type AuditEntry, recordAudit } from '../../features/audit/audit-records.ts'
 import {
   enqueueFabricReconcileForServers,
   type FabricEnqueueResult,
   reconcileFabricMembership,
 } from '../../features/fabric/enqueue.ts'
 import {
+  type FabricDependent,
   fabricDependentsMessage,
   findFabricDependents,
   loadFabricServerMemberships,
@@ -48,6 +49,7 @@ export type FabricLifecycleParams = {
   commandQueue: CommandQueue
   organizationId: string
   actorId: string
+  actorEmail?: string | null
   secrets: FabricMembershipSecrets
 }
 
@@ -114,10 +116,39 @@ async function serverNames(
   return rows.filter((row) => wanted.has(row.serverId)).map((row) => row.name)
 }
 
+function pauseNeedsUpdateResponse(c: Context, names: string[], serverIds: string[]): Response {
+  return c.json(
+    {
+      error: 'fabric_pause_needs_daemon_update',
+      message: `TurboFabric is still on: ${names.join(', ')} ${
+        names.length === 1 ? 'runs a TurboPanel daemon' : 'run TurboPanel daemons'
+      } too old to turn TurboFabric off and keep the keys. Update ${
+        names.length === 1 ? 'that server' : 'those servers'
+      }, or remove TurboFabric completely instead.`,
+      serverIds,
+    },
+    409
+  )
+}
+
+async function audit(
+  params: FabricLifecycleParams,
+  entry: Pick<AuditEntry, 'action' | 'targetType' | 'targetId' | 'context'>
+): Promise<void> {
+  await recordAudit(params.db, {
+    organizationId: params.organizationId,
+    actorUserId: params.actorId,
+    actorEmail: params.actorEmail ?? null,
+    ...entry,
+  })
+}
+
 /**
  * Pause: every server takes `tp0` down and keeps its key; the fabric row,
- * relays and container networks stay. Answers null when done (or nothing to
- * do), else the refusal.
+ * relays and container networks stay. The row is marked paused first, so a
+ * deploy waiting on the fabric never sends a tunnel back up meanwhile; when a
+ * teardown cannot be queued the mark is undone. Answers null when done (or
+ * nothing to do), else the refusal.
  */
 export async function pauseFabric(
   c: Context,
@@ -130,44 +161,45 @@ export async function pauseFabric(
 
   const tooOld = await serversThatCannotPause(db, serverIds)
   if (tooOld.length > 0) {
-    const names = await serverNames(db, organizationId, tooOld)
-    return c.json(
-      {
-        error: 'fabric_pause_needs_daemon_update',
-        message: `TurboFabric is still on: ${names.join(', ')} ${
-          names.length === 1 ? 'runs a TurboPanel daemon' : 'run TurboPanel daemons'
-        } too old to turn TurboFabric off and keep the keys. Update ${
-          names.length === 1 ? 'that server' : 'those servers'
-        }, or remove TurboFabric completely instead.`,
-        serverIds: tooOld,
-      },
-      409
-    )
+    return pauseNeedsUpdateResponse(c, await serverNames(db, organizationId, tooOld), tooOld)
   }
 
-  const results = await sendTeardown(params, existing, serverIds, true)
-  const notQueued = notQueuedServerIds(results)
+  const paused = await pauseOrganizationFabric(db, existing)
+  const notQueued = notQueuedServerIds(await sendTeardown(params, paused, serverIds, true))
   if (notQueued.length > 0) {
-    // The reached servers dropped their tunnel; forget what they applied so
-    // the next reconcile brings them back. Their keys are kept.
-    await mapSequential(queuedServerIds(results), (serverId) =>
-      clearRelayAppliedPayloadHash(db, { serverId, fabricId: existing.id })
-    )
+    // Back on: the servers that were reached get their tunnel back on the next
+    // apply (what they applied was forgotten above). Their keys are kept.
+    await setFabricEnabled(db, existing, true)
     return teardownNotQueuedResponse(
       c,
       'TurboFabric is still on: turning it off could not reach every server. Servers that were reached have dropped their tunnel and get it back on the next apply. Try turning it off again.',
       notQueued
     )
   }
-  await pauseOrganizationFabric(db, existing)
+  await audit(params, {
+    action: 'fabric.pause',
+    targetType: 'organization',
+    targetId: organizationId,
+    context: { servers: serverIds.length },
+  })
   return null
 }
 
+/** Record a resume (PUT enabled:true on a paused fabric). */
+export async function auditFabricResume(params: FabricLifecycleParams): Promise<void> {
+  await audit(params, {
+    action: 'fabric.resume',
+    targetType: 'organization',
+    targetId: params.organizationId,
+  })
+}
+
 /**
- * Remove completely: tear every server down (keys deleted), then purge the
- * cross-server container networks and the fabric row together. The rows go
- * only once every teardown is queued: with the relay rows deleted nothing
- * could ever send a teardown again. A never-enabled org is a no-op.
+ * Remove completely: tear every server down (keys deleted, including servers
+ * switched out of the mesh, which kept theirs), then purge the cross-server
+ * container networks and the fabric row together. The rows go only once every
+ * teardown is queued: with the relay rows deleted nothing could ever send a
+ * teardown again. A never-enabled org is a no-op.
  */
 export async function removeFabric(
   c: Context,
@@ -176,7 +208,7 @@ export async function removeFabric(
   const { db, organizationId } = params
   const existing = await getOrganizationFabric(db, organizationId)
   if (!existing) return null
-  const relays = await listFabricRelays(db, existing.id)
+  const relays = await listFabricRelays(db, existing.id, { includeSwitchedOff: true })
   const results = await sendTeardown(
     params,
     existing,
@@ -199,46 +231,88 @@ export async function removeFabric(
     await purgeOrganizationComposeNetworks(tx, organizationId)
     await disableOrganizationFabric(tx, organizationId)
   })
+  await audit(params, {
+    action: 'fabric.remove',
+    targetType: 'organization',
+    targetId: organizationId,
+    context: { servers: relays.length },
+  })
+  return null
+}
+
+type SwitchParams = FabricLifecycleParams & { serverId: string; serverName: string }
+
+function serverInUseResponse(
+  c: Context,
+  serverName: string,
+  dependents: FabricDependent[]
+): Response {
+  return c.json(
+    {
+      error: 'fabric_server_in_use',
+      message: fabricDependentsMessage(serverName, dependents),
+      dependents,
+    },
+    409
+  )
+}
+
+/**
+ * Take one switched-off server's tunnel down and keep its key when its daemon
+ * can (an older daemon drops the key, so the relay forgets it and the next
+ * key reaches the peers). Null when queued (or nothing to do).
+ */
+async function tearDownSwitchedOffServer(
+  c: Context,
+  params: SwitchParams
+): Promise<Response | null> {
+  const { db, serverId } = params
+  const existing = await getOrganizationFabric(db, params.organizationId)
+  if (!existing || isFabricPaused(existing)) return null
+  const relays = await listFabricRelays(db, existing.id, { includeSwitchedOff: true })
+  if (!relays.some((row) => row.serverId === serverId)) return null
+  const keepKey = (await serversThatCannotPause(db, [serverId])).length === 0
+  const results = await sendTeardown(params, existing, [serverId], keepKey)
+  if (notQueuedServerIds(results).length > 0) {
+    return teardownNotQueuedResponse(
+      c,
+      `TurboFabric is still on for ${params.serverName}: its tunnel could not be taken down. Try again when the server is online.`,
+      [serverId]
+    )
+  }
+  if (keepKey) {
+    await clearRelayAppliedPayloadHash(db, { serverId, fabricId: existing.id })
+  } else {
+    await resetRelaysAfterQueuedTeardown(db, { fabricId: existing.id, serverIds: [serverId] })
+  }
   return null
 }
 
 /**
- * Switch one server out: refuse while something reaches it over the fabric,
- * tear its `tp0` down, drop its relay, then re-plan the rest of the mesh so
- * no peer lists it any more.
+ * Switch one server out. The relay row stays (address, prefix, endpoint pin,
+ * preshared key and LAN sharing are kept for when it comes back), but the
+ * server leaves every peer list, ladder and exposure. Refused while something
+ * reaches it over the fabric; the check runs again after the switch is
+ * written, so a deploy that planned onto the server in between is caught and
+ * the switch is undone.
  */
-async function switchServerOut(
-  c: Context,
-  params: FabricLifecycleParams & { serverId: string; serverName: string }
-): Promise<Response | null> {
+async function switchServerOut(c: Context, params: SwitchParams): Promise<Response | null> {
   const { db, serverId } = params
-  const dependents = await findFabricDependents(db, serverId)
-  if (dependents.length > 0) {
-    return c.json(
-      {
-        error: 'fabric_server_in_use',
-        message: fabricDependentsMessage(params.serverName, dependents),
-        dependents,
-      },
-      409
-    )
+  const scope = { serverId, organizationId: params.organizationId }
+  const before = await findFabricDependents(db, scope)
+  if (before.length > 0) return serverInUseResponse(c, params.serverName, before)
+
+  await updateServerFabricMembership(db, { serverId, enabled: false })
+  const after = await findFabricDependents(db, scope)
+  if (after.length > 0) {
+    await updateServerFabricMembership(db, { serverId, enabled: true })
+    return serverInUseResponse(c, params.serverName, after)
   }
-  const existing = await getOrganizationFabric(db, params.organizationId)
-  const relays = existing ? await listFabricRelays(db, existing.id) : []
-  if (existing && relays.some((row) => row.serverId === serverId)) {
-    const results = await sendTeardown(params, existing, [serverId], false)
-    if (notQueuedServerIds(results).length > 0) {
-      return teardownNotQueuedResponse(
-        c,
-        `TurboFabric is still on for ${params.serverName}: its tunnel could not be taken down. Try again when the server is online.`,
-        [serverId]
-      )
-    }
+  const refused = await tearDownSwitchedOffServer(c, params)
+  if (refused) {
+    await updateServerFabricMembership(db, { serverId, enabled: true })
+    return refused
   }
-  await db.transaction(async (tx) => {
-    await updateServerFabricMembership(tx, { serverId, enabled: false })
-    await deleteServerFabricMembership(tx, serverId)
-  })
   return null
 }
 
@@ -248,9 +322,7 @@ async function switchServerOut(
  */
 export async function applyServerFabricPatch(
   c: Context,
-  params: FabricLifecycleParams & {
-    serverId: string
-    serverName: string
+  params: SwitchParams & {
     currentlyEnabled: boolean
     patch: FabricServerPatch
   }
@@ -264,6 +336,15 @@ export async function applyServerFabricPatch(
     serverId,
     ...(patch.enabled === undefined ? {} : { enabled: patch.enabled }),
     ...(patch.role === undefined ? {} : { role: patch.role }),
+  })
+  await audit(params, {
+    action: 'server.fabric.set',
+    targetType: 'server',
+    targetId: serverId,
+    context: {
+      ...(patch.enabled === undefined ? {} : { enabled: patch.enabled }),
+      ...(patch.role === undefined ? {} : { role: patch.role }),
+    },
   })
   if (patch.enabled === undefined || patch.enabled === params.currentlyEnabled) return null
   const results = await reconcileFabricMembership({

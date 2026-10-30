@@ -2176,7 +2176,7 @@ export const organizationPaths: Record<string, unknown> = {
       tags: ['Organizations'],
       summary: 'Remove TurboFabric completely',
       description:
-        "Manage-gated. Tears TurboFabric down on every member (`server.fabric.reconcile` `{ enabled: false }`: `tp0`, routed bridges, `TP-FORWARD`, keys, state), then deletes the fabric row and its relays and reclaims `network(kind='compose')` / `subnet` rows. Works whether TurboFabric is on or paused; a never-enabled org is a no-op. 503 `fabric_teardown_not_queued` (with `message` and `serverIds`) keeps everything when a teardown could not be queued. Returns the cleared settings.",
+        "Manage-gated. Tears TurboFabric down on every member (`server.fabric.reconcile` `{ enabled: false }`: `tp0`, routed bridges, `TP-FORWARD`, keys, state), then deletes the fabric row and its relays and reclaims `network(kind='compose')` / `subnet` rows. Works whether TurboFabric is on or paused; a never-enabled org is a no-op. Servers switched out of the mesh are torn down too (they kept their key). 503 `fabric_teardown_not_queued` (with `message` and `serverIds`) keeps the fabric row, relays and container networks when a teardown could not be queued; servers that were already reached have dropped their tunnel and key and get a new key on the next apply. Returns the cleared settings.",
       security: [{ cookieAuth: [] }],
       parameters: [
         { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
@@ -2199,7 +2199,8 @@ export const organizationPaths: Record<string, unknown> = {
           },
         },
         '503': {
-          description: 'A teardown could not be queued; nothing was removed',
+          description:
+            'A teardown could not be queued; the fabric row, relays and container networks stay, but servers already reached have dropped their tunnel and key',
           content: {
             'application/json': {
               schema: { $ref: '#/components/schemas/ErrorResponse' },
@@ -2299,7 +2300,7 @@ export const organizationPaths: Record<string, unknown> = {
       tags: ['Organizations'],
       summary: "Set one server's TurboFabric switch and role",
       description:
-        "Manage-gated. `{ enabled?, role? }`; `role` is `gateway`, `client` or null (automatic: gateway when the server has a public address). `enabled: false` tears the server's `tp0` down, drops its relay and re-plans the mesh so no peer lists it and no ladder hands out its fabric address; refused with 409 `fabric_server_in_use` (plain `message`, `dependents[]`) while a cross-server container network or a managed database replicating over TurboFabric depends on it, and 503 `fabric_teardown_not_queued` when its teardown could not be queued. `enabled: true` lets it join on the next reconcile (immediately when TurboFabric is on). Returns `{ ok, server }`.",
+        "Manage-gated. `{ enabled?, role? }`; `role` is `gateway`, `client` or null (automatic: gateway when the server has a public address). `enabled: false` takes the server's `tp0` down (keeping its key when its daemon can) and re-plans the mesh so no peer lists it, no ladder hands out its fabric address and its WireGuard port closes; its relay row stays, so its address, endpoint pin, preshared key and LAN sharing come back when it is switched on. Refused with 409 `fabric_server_in_use` (plain `message`, `dependents[]`) while a cross-server container network, a managed database replicating over TurboFabric, an app-to-database connection that resolves to its fabric address, or a datacenter LAN only it shares depends on it, and 503 `fabric_teardown_not_queued` when its teardown could not be queued. `enabled: true` lets it join on the next reconcile (immediately when TurboFabric is on). Returns `{ ok, server }`.",
       security: [{ cookieAuth: [] }],
       parameters: [
         { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
@@ -2372,7 +2373,7 @@ export const organizationPaths: Record<string, unknown> = {
       tags: ['Organizations'],
       summary: 'Apply TurboFabric membership',
       description:
-        'Manage-gated. Force-reconciles `server.fabric.reconcile` on every org relay. Returns per-server `results[]` (`queued` / `failed` / `skipped`, optional `unreachablePeers` / `gatewayRoutedPeers` / `natCandidates` / `degradedPeers`). 409 when TurboFabric is off.',
+        'Manage-gated. Force-reconciles `server.fabric.reconcile` on every org relay whose server is switched on. Returns per-server `results[]` (`queued` / `failed` / `skipped`, optional `unreachablePeers` / `gatewayRoutedPeers` / `natCandidates` / `degradedPeers`). 409 when TurboFabric is off, and 409 `fabric_paused` (with a plain `message`) while it is paused.',
       security: [{ cookieAuth: [] }],
       parameters: [
         {

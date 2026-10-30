@@ -6,9 +6,27 @@
  * Phase 1 stores and shows the role only. Path planning, peer lists and
  * forwarding read neither value, so either one is safe for every server.
  */
-import { and, asc, eq, inArray } from 'drizzle-orm'
+import { and, asc, eq, inArray, isNotNull, ne } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
-import { environment, managed, network, replica, server, subnet } from '../../db/schema.ts'
+import {
+  binding,
+  datacenter,
+  environment,
+  ip,
+  login,
+  managed,
+  network,
+  project,
+  relay,
+  replica,
+  server,
+  service,
+  subnet,
+} from '../../db/schema.ts'
+import { firstSequential, forEachSequential } from '../../lib/sequential.ts'
+import { consumerServerIdsForManaged } from '../bindings/resolve-endpoint.ts'
+import { isPrivateEndpointError, resolvePrivateEndpoints } from '../net/private-endpoint.ts'
+import { relayServerSwitchedOn } from './relay-filters.ts'
 import {
   loadEndpointCaches,
   type RelayRecord,
@@ -124,7 +142,7 @@ export async function updateServerFabricMembership(
 
 /** Something that reaches a server over TurboFabric, in words an operator knows. */
 export type FabricDependent = {
-  kind: 'container_network' | 'database_replication'
+  kind: 'container_network' | 'database_replication' | 'database_connection' | 'lan_gateway'
   id: string
   label: string
 }
@@ -182,17 +200,148 @@ async function loadFabricReplicationDependents(
   }))
 }
 
+async function managedNames(db: Db, managedIds: readonly string[]): Promise<Map<string, string>> {
+  if (managedIds.length === 0) return new Map()
+  const rows = await db
+    .select({ id: managed.id, name: managed.name })
+    .from(managed)
+    .where(inArray(managed.id, [...managedIds]))
+  return new Map(rows.map((row) => [row.id, row.name ?? row.id]))
+}
+
+/** Clusters an app in the organization connects to, with the servers they run on. */
+async function loadBoundClusters(
+  db: Db,
+  organizationId: string
+): Promise<Map<string, Set<string>>> {
+  const rows = await db
+    .selectDistinct({ managedId: replica.managedId, serverId: replica.serverId })
+    .from(binding)
+    .innerJoin(login, eq(login.id, binding.loginId))
+    .innerJoin(replica, eq(replica.managedId, login.managedId))
+    .innerJoin(service, eq(service.id, binding.serviceId))
+    .innerJoin(environment, eq(environment.id, service.environmentId))
+    .innerJoin(project, eq(project.id, environment.projectId))
+    .where(eq(project.organizationId, organizationId))
+  const out = new Map<string, Set<string>>()
+  for (const row of rows) {
+    const members = out.get(row.managedId) ?? new Set<string>()
+    members.add(row.serverId)
+    out.set(row.managedId, members)
+  }
+  return out
+}
+
+async function anyFabricPath(
+  db: Db,
+  fromServerIds: readonly string[],
+  toServerIds: readonly string[]
+): Promise<boolean> {
+  return (
+    (await firstSequential(fromServerIds, async (fromServerId) => {
+      const targets = toServerIds.filter((id) => id !== fromServerId)
+      const resolved = await resolvePrivateEndpoints(db, {
+        fromServerId,
+        toServerIds: targets,
+        purpose: 'client-backend',
+      })
+      return [...resolved.values()].some(
+        (row) => !isPrivateEndpointError(row) && row.transport === 'fabric'
+      )
+        ? true
+        : undefined
+    })) === true
+  )
+}
+
+/**
+ * App-to-database connections that resolve to a TurboFabric address on this
+ * server: an app here reaching a database elsewhere, or an app elsewhere
+ * reaching a database member here.
+ */
+async function loadDatabaseConnectionDependents(
+  db: Db,
+  params: { serverId: string; organizationId: string }
+): Promise<FabricDependent[]> {
+  const clusters = await loadBoundClusters(db, params.organizationId)
+  const found: string[] = []
+  await forEachSequential([...clusters], async ([managedId, members]) => {
+    const consumers = await consumerServerIdsForManaged(db, managedId)
+    const hostsMember = members.has(params.serverId)
+    const fromHere = consumers.includes(params.serverId)
+    if (!hostsMember && !fromHere) return
+    const dependent =
+      (hostsMember && (await anyFabricPath(db, consumers, [params.serverId]))) ||
+      (fromHere && (await anyFabricPath(db, [params.serverId], [...members])))
+    if (dependent) found.push(managedId)
+  })
+  const names = await managedNames(db, found)
+  return found.map((id) => ({
+    kind: 'database_connection',
+    id,
+    label: `app connections to managed database "${names.get(id) ?? id}"`,
+  }))
+}
+
+/**
+ * Datacenters where this server is the only switched-on member sharing the
+ * LAN ranges (`relay.role = 'gateway'`): other servers reach that LAN only
+ * through it.
+ */
+async function loadLanGatewayDependents(db: Db, serverId: string): Promise<FabricDependent[]> {
+  const [own] = await db
+    .select({ fabricId: relay.fabricId })
+    .from(relay)
+    .where(and(eq(relay.serverId, serverId), eq(relay.role, 'gateway')))
+    .limit(1)
+  if (!own) return []
+  const pins = await db
+    .selectDistinct({ datacenterId: ip.datacenterId, name: datacenter.name })
+    .from(ip)
+    .innerJoin(datacenter, eq(datacenter.id, ip.datacenterId))
+    .where(and(eq(ip.serverId, serverId), isNotNull(ip.datacenterId)))
+  const out: FabricDependent[] = []
+  await forEachSequential(pins, async (pin) => {
+    if (!pin.datacenterId) return
+    const [other] = await db
+      .select({ id: relay.id })
+      .from(relay)
+      .innerJoin(ip, eq(ip.serverId, relay.serverId))
+      .where(
+        and(
+          eq(relay.fabricId, own.fabricId),
+          eq(relay.role, 'gateway'),
+          ne(relay.serverId, serverId),
+          eq(ip.datacenterId, pin.datacenterId),
+          relayServerSwitchedOn()
+        )
+      )
+      .limit(1)
+    if (other) return
+    out.push({
+      kind: 'lan_gateway',
+      id: pin.datacenterId,
+      label: `the LAN of datacenter "${pin.name ?? pin.datacenterId}" (it is the only server sharing it)`,
+    })
+  })
+  return out
+}
+
 /**
  * What would break if this server left the mesh: a cross-server container
- * network with a piece on it, or a managed database whose replication runs
- * over TurboFabric with a member on it.
+ * network with a piece on it, a managed database whose replication runs over
+ * TurboFabric with a member on it, an app-to-database connection that resolves
+ * to its TurboFabric address, or a datacenter LAN only it shares.
  */
-export async function findFabricDependents(db: Db, serverId: string): Promise<FabricDependent[]> {
-  const [networks, replication] = await Promise.all([
-    loadSpanningNetworkDependents(db, serverId),
-    loadFabricReplicationDependents(db, serverId),
-  ])
-  return [...networks, ...replication]
+export async function findFabricDependents(
+  db: Db,
+  params: { serverId: string; organizationId: string }
+): Promise<FabricDependent[]> {
+  const networks = await loadSpanningNetworkDependents(db, params.serverId)
+  const replication = await loadFabricReplicationDependents(db, params.serverId)
+  const connections = await loadDatabaseConnectionDependents(db, params)
+  const gateways = await loadLanGatewayDependents(db, params.serverId)
+  return [...networks, ...replication, ...connections, ...gateways]
 }
 
 /** The plain sentence a refused opt-out answers with. */

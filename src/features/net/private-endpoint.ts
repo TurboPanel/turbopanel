@@ -3,6 +3,7 @@ import type { Context } from 'hono'
 import type { Db } from '../../db/connection.ts'
 import { fabric, ip, relay } from '../../db/schema.ts'
 import { inetAddressToString } from '../../lib/ip-address.ts'
+import { relayCarriesTraffic, relayServerSwitchedOn } from '../fabric/relay-filters.ts'
 import {
   defaultDatacenterPolicyRow,
   loadDatacenterPolicies,
@@ -99,7 +100,7 @@ export async function loadServerFabricAddress(db: Db, serverId: string): Promise
     .select({ address: relay.address })
     .from(relay)
     .innerJoin(fabric, eq(relay.fabricId, fabric.id))
-    .where(and(eq(relay.serverId, serverId), eq(fabric.isEnabled, true)))
+    .where(and(eq(relay.serverId, serverId), relayCarriesTraffic()))
     .orderBy(asc(fabric.createdAt))
     .limit(1)
   if (row === undefined) return null
@@ -170,7 +171,7 @@ async function loadFabricRelayRows(db: Db, serverIds: string[]): Promise<RelayJo
   const membership = await db
     .select({ fabricId: relay.fabricId })
     .from(relay)
-    .where(inArray(relay.serverId, serverIds))
+    .where(and(inArray(relay.serverId, serverIds), relayServerSwitchedOn()))
 
   const fabricIds = [...new Set(membership.map((row) => row.fabricId))]
   if (fabricIds.length === 0) return []
@@ -185,7 +186,7 @@ async function loadFabricRelayRows(db: Db, serverIds: string[]): Promise<RelayJo
     })
     .from(relay)
     .innerJoin(fabric, eq(relay.fabricId, fabric.id))
-    .where(and(inArray(relay.fabricId, fabricIds), eq(fabric.isEnabled, true)))
+    .where(and(inArray(relay.fabricId, fabricIds), relayCarriesTraffic()))
     .orderBy(asc(fabric.createdAt))
 
   const out: RelayJoinRow[] = []
