@@ -70,7 +70,7 @@ export async function parseOptionalTlsId(
           {
             error: 'tls_pin_staging',
             message:
-              'This is a Test Certificate. Browsers do not trust it, so it cannot be used on a site. Order a normal certificate instead.',
+              "Test certificates are only for trying out ordering. Browsers show a security warning for them, so they can't be attached to a site.",
           },
           400
         ),
