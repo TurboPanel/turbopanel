@@ -125,9 +125,9 @@ export async function handleForwardReport(db: Db, input: ForwardReportInput): Pr
 }
 
 /** Whether a validated inbound frame is one of the three server-placed order replies. */
-export function isHttpIssuanceMessage(
-  message: { type: string }
-): message is AcmeIssueEventMessage | AcmeProofForwardReportMessage {
+export function isHttpIssuanceMessage(message: {
+  type: string
+}): message is AcmeIssueEventMessage | AcmeProofForwardReportMessage {
   return (
     message.type === 'acme-issue-event' ||
     message.type === 'acme-proof-forward-ready' ||

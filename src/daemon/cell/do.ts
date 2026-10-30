@@ -36,7 +36,10 @@ import {
 import { createDurableObjectDaemonCellRegistry } from './do-registry.ts'
 import { createFreshStandbyProbe } from '../../client/managed/health-probe.ts'
 import { handleAcmeIssuanceEvent } from '../../client/tls/acme-issuance-event.ts'
-import { handleHttpIssuanceInbound, isHttpIssuanceMessage } from '../../features/tls/http-issuance/events.ts'
+import {
+  handleHttpIssuanceInbound,
+  isHttpIssuanceMessage,
+} from '../../features/tls/http-issuance/events.ts'
 import { handleManagedHealthReport } from '../../features/managed/health-report.ts'
 import {
   FabricPeerReportThrottle,
