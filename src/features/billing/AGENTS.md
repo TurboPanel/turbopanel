@@ -567,7 +567,7 @@ all in the daemon's `instance-launch` role:
   `TURBOPANEL_STRIPE_WEBHOOK_SIGNING_SECRET`; editing `.dev.vars` directly is
   lost on the next converge. The Deno unit never loads either. On the co-located
   VM, keep the two values in the dev checkout's gitignored
-  `dev/local/stripe.env` (see `dev/local/README.md`): the checkout is mounted
+  `dev/local/stripe.env` (see `../dev/local/README.md`): the checkout is mounted
   into the guest, and the converge seeds both protected files from it, so a VM
   rebuild needs no re-entry.
 - **Postgres on `localhost:5432`** (the Hyperdrive local connection string),

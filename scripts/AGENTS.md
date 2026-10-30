@@ -15,7 +15,7 @@ suffix globs). Redis (etc.) suites go in `SERVICE_DEPENDENT` in
 **Adding tests (inventory)**.
 The guard is wired into `pnpm test:hook`, **`pnpm verify:ci`**
 (`scripts/verify-ci.sh` — the local serial mirror of `build.yml` minus Sonar), and
-CI `build.yml`. Fleet-wide from the host `dev` checkout: `./scripts/ci-verify.sh`.
+CI `build.yml`. Fleet-wide from the host `dev` checkout: `../dev/scripts/ci-verify.sh`.
 
 CI does not run that script as one job. `build.yml` sets `TEST_PHASE` /
 `DENO_SHARD` so Vitest, the host-free Deno shard, and three Postgres Deno
@@ -198,3 +198,16 @@ throwaway database**, not a shared one — several tests insert real rows and
 none of them clean up after themselves (by design: they're meant to run
 against throwaway testing databases. Only throwaway testing hosts are
 disposable; the panel database is never reset (forward-only migrations).
+
+## Contributor guide reference check
+
+`pnpm check:guide-references` (`check-guide-references.mjs`) fails when any
+`AGENTS.md` or `docs/*.md` points at an in-repo file that does not exist, so
+a guide split or move cannot leave stale pointers. It reads markdown links
+(resolved from the guide) and backticked paths that start with `./` or `../` or
+are repo-root `.md` paths (resolved from the guide or the repo root). Only
+existence is checked, not headings. Paths into a sibling checkout
+(`../turbopaneld/...`, `../dev/...`) are skipped when that checkout is absent,
+as in CI, and checked when it is present. A path that is not a repo file (a
+command run elsewhere, a generated file) goes in `ALLOWLIST` in the script
+with a reason. Wired into `pnpm test:hook`, `pnpm verify:ci` and `build.yml`.

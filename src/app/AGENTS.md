@@ -17,7 +17,7 @@
   commands with `daemon_unsupported`; a build reporting no version is
   **unknown** and passes — flag, not refusal, until the fleet is re-enrolled
   on tagged builds. The other direction lives on the daemon
-  (`turbopaneld/src/instance/version-wire.ts`): every daemon REST response
+  (`../turbopaneld/src/instance/version-wire.ts`): every daemon REST response
   (including non-OK and the 401 before a refresh) and the cell attach
   `{ type: "version", instanceVersion }` frame (`src/daemon/attach-version.ts`,
   sent from `deno-ws.ts` and the Durable Object upgrade) feed
@@ -32,7 +32,7 @@
   it is not a same-version lock and it does not impose an upgrade order.
   Bump `MIN_SUPPORTED_DAEMON_VERSION` and `MIN_SUPPORTED_INSTANCE_VERSION`
   together, in the same change, and record why in this note and in
-  `turbopaneld/src/instance/AGENTS.md`. Never raise either floor silently.
+  `../turbopaneld/src/instance/AGENTS.md`. Never raise either floor silently.
   Dispatching `instance-update` does not gate on the daemon version (the
   daemon only runs the reconcile). The downgrade guard lives on the daemon:
   it refuses a target below its own `MIN_SUPPORTED_INSTANCE_VERSION`.
