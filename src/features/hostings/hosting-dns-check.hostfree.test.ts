@@ -41,7 +41,7 @@ test('a name pointing somewhere else, or nowhere, is not ready', async () => {
   assertEquals(report.expectedAddresses, ['203.0.113.7'])
 })
 
-test('with no known server address any answer counts', async () => {
+test('with no known server address any answer counts, and the result says it was not compared', async () => {
   const report = await checkHostingDns({
     hostnames: ['a.example.com'],
     expectedAddresses: [],
@@ -49,6 +49,39 @@ test('with no known server address any answer counts', async () => {
     now: NOW,
   })
   assertEquals(report.ready, true)
+  assertEquals(report.expectedAddresses, [])
+  assertEquals(
+    report.hostnames[0]?.warning,
+    "The panel knows no public address for this site's server, so it could not check that a.example.com points at it. Make sure it does before Let's Encrypt checks it."
+  )
+})
+
+test('a wrong AAAA is caught against reported addresses: alone it blocks, beside a right one it warns', async () => {
+  // A server with no managed addresses, checked against what its daemon reports.
+  const reported = ['45.32.200.170', '2001:db8:10::1', '2001:db8:10::2']
+  const alone = await checkHostingDns({
+    hostnames: ['a.example.com'],
+    expectedAddresses: reported,
+    lookup: table({
+      'a.example.com/A': ['45.32.200.170'],
+      'a.example.com/AAAA': ['2001:db8:99::1'],
+    }),
+    now: NOW,
+  })
+  assertEquals(alone.ready, false)
+  assertEquals(alone.hostnames[0]?.wrongAddresses, ['2001:db8:99::1'])
+  assertEquals(alone.hostnames[0]?.problem?.includes('tries IPv6 first'), true)
+  const beside = await checkHostingDns({
+    hostnames: ['a.example.com'],
+    expectedAddresses: reported,
+    lookup: table({
+      'a.example.com/A': ['45.32.200.170'],
+      'a.example.com/AAAA': ['2001:db8:10::2', '2001:db8:99::1'],
+    }),
+    now: NOW,
+  })
+  assertEquals(beside.ready, true)
+  assertEquals(beside.hostnames[0]?.warning?.includes('2001:db8:99::1'), true)
 })
 
 test('duplicate answers are listed once', async () => {

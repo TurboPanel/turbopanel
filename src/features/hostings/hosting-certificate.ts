@@ -53,7 +53,10 @@ export type HostingDnsHostname = {
   caa?: 'allowed' | 'blocked'
   /** What stops this name, in plain words; omitted when nothing does. */
   problem?: string
-  /** Something worth fixing that does not stop the certificate (a wrong answer beside right ones). */
+  /**
+   * Something worth fixing that does not stop the certificate: a wrong answer
+   * beside right ones, or no known server address to compare the answers with.
+   */
   warning?: string
 }
 
