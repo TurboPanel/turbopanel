@@ -698,7 +698,7 @@ test('a pair for an open request is refused from another server, a closed or exp
     // No request recorded yet.
     assertEquals(await storeIssuedCertificate(f.db, withRequest(pair, f.serverId), f.deps), notOpen)
     await openRequest(f, f.serverId)
-    // The server that was not asked, even though it holds the pin.
+    // The server that was not asked.
     assertEquals(
       await storeIssuedCertificate(f.db, withRequest(pair, f.otherServerId), f.deps),
       notOpen
@@ -711,6 +711,9 @@ test('a pair for an open request is refused from another server, a closed or exp
       ),
       notOpen
     )
+    // The request was made to the other server: the pin holder cannot use the pin rule instead.
+    await openRequest(f, f.otherServerId)
+    assertEquals(await storeIssuedCertificate(f.db, withRequest(pair, f.serverId), f.deps), notOpen)
     await openRequest(f, f.serverId, { endedAt: new Date().toISOString() })
     assertEquals(await storeIssuedCertificate(f.db, withRequest(pair, f.serverId), f.deps), notOpen)
     await openRequest(f, f.serverId, { startByAt: new Date(Date.now() - 1000).toISOString() })
