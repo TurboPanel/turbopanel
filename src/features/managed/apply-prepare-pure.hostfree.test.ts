@@ -134,13 +134,13 @@ const ALL_PREPARE_ERRORS: Array<{
   },
   {
     error: {
-      kind: 'failover_requires_trusted_datacenter',
+      kind: 'untrusted_network_needs_fabric',
       fromServerId: 's1',
       toServerId: 's2',
       datacenterId: 'dc-a',
     },
     status: 422,
-    body: 'failover_requires_trusted_datacenter',
+    body: 'untrusted_network_needs_fabric',
   },
 ]
 

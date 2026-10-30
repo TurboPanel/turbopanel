@@ -815,7 +815,7 @@ test('resolveMemberTransports walks shared datacenters in priority order', async
   assertEquals(peers[0]?.address, '10.1.0.2')
 })
 
-test('resolveMemberTransports surfaces failover_requires_trusted_datacenter for an untrusted-only failover pair', async () => {
+test('resolveMemberTransports surfaces untrusted_network_needs_fabric for an untrusted-only failover pair', async () => {
   const primary = member({
     id: 'p',
     serverId: 's1',
@@ -841,7 +841,7 @@ test('resolveMemberTransports surfaces failover_requires_trusted_datacenter for 
     }
   )
   assertEquals(await resolveMemberTransports(db, [primary, failover], 'failover-replication'), {
-    kind: 'failover_requires_trusted_datacenter',
+    kind: 'untrusted_network_needs_fabric',
     fromServerId: 's1',
     toServerId: 's2',
     datacenterId: 'dc-shared',

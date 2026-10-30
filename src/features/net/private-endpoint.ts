@@ -36,6 +36,21 @@ export type ResolvedPrivateEndpoint = {
   linkDown?: true
   /** Present when transport is `fabric`. */
   fabricId?: string
+  /**
+   * Present (`true`) when transport is `public` although the two servers share
+   * a datacenter network marked untrusted: TurboFabric could not carry the
+   * traffic (off, paused, switched out or not healthy), so it falls to the
+   * public address with engine TLS only. New placements refuse this; running
+   * traffic keeps it and the server traffic map reports it.
+   */
+  untrustedPublic?: true
+  /**
+   * Present (`true`) when transport is `fabric` but the tunnel has no recent
+   * handshake or the other daemon is offline. The tunnel address is still
+   * returned so a replication path never turns into an error just because of
+   * a short gap (or a lost host during a failover); new placements refuse it.
+   */
+  tunnelDown?: true
 }
 
 export type PrivateEndpointError =
@@ -53,12 +68,14 @@ export type PrivateEndpointError =
     }
   | {
       /**
-       * The only datacenters the pair shares are `trusted: false`. Failover
-       * replication never rides an untrusted L2, and it never falls through to
-       * fabric/public either. `datacenterId` is the first untrusted shared
-       * datacenter (priority order) for operator messaging.
+       * The only datacenters the pair shares are `trusted: false`, and
+       * TurboFabric cannot carry the traffic right now (off, paused, switched
+       * out or not healthy). Failover replication never rides an untrusted
+       * network in plain and never falls to the public address. `datacenterId`
+       * is the first untrusted shared datacenter (priority order) for
+       * operator messaging.
        */
-      kind: 'failover_requires_trusted_datacenter'
+      kind: 'untrusted_network_needs_fabric'
       fromServerId: string
       toServerId: string
       datacenterId: string
@@ -506,6 +523,8 @@ function resolveFabricFromCaches(params: {
   relays: RelayJoinRow[]
   connectedServerIds?: ReadonlySet<string>
   nowMs?: number
+  /** Fall back to a keyed relay whose tunnel is not healthy, marked `tunnelDown`. */
+  allowTunnelDown?: boolean
 }): ResolvedPrivateEndpoint | null {
   const usable = {
     ...(params.connectedServerIds ? { connectedServerIds: params.connectedServerIds } : {}),
@@ -528,7 +547,23 @@ function resolveFabricFromCaches(params: {
     .sort((a, b) => a.fabricCreatedAt.localeCompare(b.fabricCreatedAt))
 
   const chosen = sharedOnTo[0]
-  if (!chosen) return null
+  if (!chosen) {
+    if (!params.allowTunnelDown) return null
+    const keyed = params.relays
+      .filter((row) => {
+        if (row.serverId !== params.toServerId || row.publicKey === null) return false
+        const from = fromByFabric.get(row.fabricId)
+        return from !== undefined && from.publicKey !== null
+      })
+      .sort((a, b) => a.fabricCreatedAt.localeCompare(b.fabricCreatedAt))[0]
+    if (!keyed) return null
+    return {
+      address: keyed.address,
+      transport: 'fabric',
+      fabricId: keyed.fabricId,
+      tunnelDown: true,
+    }
+  }
   return {
     address: chosen.address,
     transport: 'fabric',
@@ -569,6 +604,19 @@ function datacenterRung(
   return { preferred, lastResort }
 }
 
+/** Public rung; flagged when the pair shares only untrusted datacenters. */
+function publicEndpoint(
+  address: string,
+  partition: SharedDatacenterPartition
+): ResolvedPrivateEndpoint {
+  const untrustedOnly = partition.untrusted.length > 0 && partition.trusted.length === 0
+  return {
+    address,
+    transport: 'public',
+    ...(untrustedOnly ? { untrustedPublic: true as const } : {}),
+  }
+}
+
 /**
  * Purpose-aware ladder. Same-host loopback is always first. Cross-host order
  * is inverted from the former fabric-first path: datacenter (LAN) before
@@ -579,10 +627,13 @@ function datacenterRung(
  * `(priority asc, id asc)` order (see {@link partitionSharedDatacenters}).
  * Untrusted shared datacenters are skipped for every purpose.
  *
- * - `failover-replication`: `local` → `datacenter` only (never fabric/public).
- *   When the pair shares only untrusted datacenters the error is
- *   `failover_requires_trusted_datacenter`; with no shared datacenter at all
- *   it stays `private_path_unavailable`.
+ * - `failover-replication`: `local` → `datacenter`, then `fabric` only for a
+ *   pair that shares untrusted datacenters (never public). When such a pair
+ *   has a keyed tunnel that is not healthy right now (host lost, short gap)
+ *   it keeps the fabric address marked `tunnelDown`, so a running cluster is
+ *   not broken by a gap; with no keyed tunnel (fabric off, opted out) the error
+ *   is `untrusted_network_needs_fabric`; with no shared datacenter at all it
+ *   stays `private_path_unavailable`.
  * - `read-replication` / `client-backend`: `local` → `datacenter` → `fabric`
  *   → `public`. The fabric rung is skipped for a pair that shares a trusted
  *   LAN (no tunnel exists between them, {@link serversShareTrustedLan}) and
@@ -637,8 +688,10 @@ export function resolveOneFromCaches(params: {
     if (fallback) return fallback
     const untrustedDatacenterId = partition.untrusted[0]
     if (untrustedDatacenterId !== undefined) {
+      const viaFabric = resolveFabricFromCaches({ ...params, allowTunnelDown: true })
+      if (viaFabric) return viaFabric
       return {
-        kind: 'failover_requires_trusted_datacenter',
+        kind: 'untrusted_network_needs_fabric',
         fromServerId: params.fromServerId,
         toServerId: params.toServerId,
         datacenterId: untrustedDatacenterId,
@@ -657,7 +710,7 @@ export function resolveOneFromCaches(params: {
 
   const publicAddress = params.publicAddressesByServer.get(params.toServerId)
   if (publicAddress) {
-    return { address: publicAddress, transport: 'public' }
+    return publicEndpoint(publicAddress, partition)
   }
 
   return rung.lastResort() ?? unavailablePath(params.fromServerId, params.toServerId)

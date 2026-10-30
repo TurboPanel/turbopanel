@@ -248,3 +248,27 @@ test('TurboFabric with two LANs, one up and one down: LAN-up, public, NAT, then 
     { kind: 'direct_lan', address: '10.9.0.11', datacenterId: BACKHAUL },
   ])
 })
+
+test('a public fallback past trusted networks that are all down carries no untrusted marker', () => {
+  const caches: PrivateEndpointCaches = {
+    membershipsByServer: new Map([
+      ['a', [pin('a', 'dc-trusted', '10.0.0.1', true), pin('a', 'dc-untrusted', '10.1.0.1')]],
+      ['b', [pin('b', 'dc-trusted', '10.0.0.2'), pin('b', 'dc-untrusted', '10.1.0.2')]],
+    ]),
+    relays: [],
+    policiesByDatacenter: new Map([
+      ['dc-trusted', policy(100)],
+      ['dc-untrusted', policy(100, false)],
+    ]),
+    publicAddressesByServer: new Map([['b', '203.0.113.2']]),
+  }
+  for (const purpose of ['client-backend', 'read-replication'] as const) {
+    assertEquals(resolve(caches, purpose), { address: '203.0.113.2', transport: 'public' })
+  }
+  assertEquals(resolve(caches, 'failover-replication'), {
+    address: '10.0.0.2',
+    transport: 'datacenter',
+    datacenterId: 'dc-trusted',
+    linkDown: true,
+  })
+})

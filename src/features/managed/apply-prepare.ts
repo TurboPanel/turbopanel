@@ -351,7 +351,7 @@ export function prepareErrorResponse(c: Context, error: ManagedApplyPrepareError
       return c.json({ error: 'managed_listener_bind_conflict' }, 422)
     case 'private_path_unavailable':
     case 'private_family_mismatch':
-    case 'failover_requires_trusted_datacenter':
+    case 'untrusted_network_needs_fabric':
       return privateEndpointErrorResponse(c, error)
   }
 }
