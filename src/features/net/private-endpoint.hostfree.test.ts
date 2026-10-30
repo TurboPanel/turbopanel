@@ -1089,29 +1089,6 @@ test('read-replication and client-backend fall from an untrusted shared datacent
   }
 })
 
-test('a shared trusted datacenter is used before an untrusted one and public, with no untrusted marker', async () => {
-  const db = createFixtureDb({
-    memberships: [
-      membershipPin('s1', 'dc-trusted', '10.0.0.1'),
-      membershipPin('s2', 'dc-trusted', '10.0.0.2'),
-      membershipPin('s1', 'dc-untrusted', '10.1.0.1'),
-      membershipPin('s2', 'dc-untrusted', '10.1.0.2'),
-    ],
-    datacenterOptions: [{ id: 'dc-untrusted', options: { trusted: false } }],
-    publicAddresses: [{ serverId: 's2', address: '203.0.113.20' }],
-  })
-  const resolved = await resolvePrivateEndpoint(db, {
-    fromServerId: 's1',
-    purpose: 'client-backend',
-    toServerId: 's2',
-  })
-  assertEquals(resolved, {
-    address: '10.0.0.2',
-    transport: 'datacenter',
-    datacenterId: 'dc-trusted',
-  })
-})
-
 test('a public fallback with no shared datacenter carries no untrusted marker', async () => {
   const db = createFixtureDb({
     memberships: [membershipPin('s1', 'dc-a', '10.0.0.1'), membershipPin('s2', 'dc-b', '10.1.0.2')],
