@@ -128,7 +128,7 @@ Ordering is load-bearing — each stage assumes the ones before it passed, and
    `environment.server_id`).
 3. **Semantic linter** — `lintComposeYaml` (`lint.ts`): unknown keys against
    `field-policy.ts`, services missing `image`/`build` (host-native and
-   Railpack-built kinds exempt), `x-turbopanel.source.sourceId` resolution +
+   image-built kinds exempt), `x-turbopanel.source.sourceId` resolution +
    one-repository-per-project, `x-turbopanel.principal` alias resolution,
    hosting hostname/`targetPort`-matches-kind and `tls`/`bind` ref resolution,
    overlay tag advisories, and the `deploy:` field-state pass below. (The
