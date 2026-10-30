@@ -698,8 +698,9 @@ export const server = pgTable(
     isFabricEnabled: boolean('is_fabric_enabled').default(true).notNull(),
     /**
      * Operator-chosen TurboFabric role (`gateway` accepts connections, `client`
-     * only dials out). NULL = automatic: gateway when the server has a public
-     * address, else client. Stored and shown only; routing does not read it yet.
+     * only dials out). NULL = automatic: gateway when the server has its own
+     * public address (an endpoint override does not count), else client. Stored
+     * and shown only; routing does not read it yet.
      */
     fabricRole: text('fabric_role'),
     /**

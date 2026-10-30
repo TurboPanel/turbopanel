@@ -7,6 +7,7 @@ import { relayServerSwitchedOn } from './relay-filters.ts'
 import { FabricAllocationError, type FabricAllocationErrorKind } from './allocation-error.ts'
 import { ensureServerContainerPrefix, loadServerContainerPrefixes } from './container-prefix.ts'
 import { loadLanRouteServerIds } from './lan-pairs.ts'
+import type { FabricReconcileOutcome } from './reconcile-outcome.ts'
 import type { Db } from '../../db/connection.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
 import { nowIso } from '../commands/ids.ts'
@@ -106,6 +107,8 @@ export type RelayMetadata = {
     at: string
     peers: RelayObservedPeer[]
   }
+  /** How the last reconcile sent to this server ended (`reconcile-outcome.ts`). */
+  reconcile?: FabricReconcileOutcome
   /** Diagnostics-only path summary; never hashed into desired reconcile state. */
   paths?: {
     at: string
@@ -231,7 +234,8 @@ export type RelayPathPlan = {
 export type RelayPeerMaterial = {
   publicKey: string
   allowedIPs: string[]
-  endpoint: string
+  /** Absent for a dial-in peer: WireGuard learns it from the peer's handshake. */
+  endpoint?: string
   keepalive: number | null
   sealedPresharedKey: string | null
   presharedKey: string | null
@@ -1738,6 +1742,24 @@ function appendUniqueCidrs(target: string[], values: readonly string[]): void {
   }
 }
 
+function peerEndpoint(
+  selected: RelayPathSelected & {
+    kind: 'direct_lan' | 'direct_public' | 'direct_nat'
+    endpoint: string
+  },
+  listenPort: number
+): string {
+  return selected.kind === 'direct_nat'
+    ? selected.endpoint
+    : joinHostPort(selected.endpoint, listenPort)
+}
+
+/** A dial-in peer (no direct path from here) is a NAT path the other end opens. */
+function peerPathKind(carriesTransit: boolean, directKind: RelayPathKind | null): RelayPathKind {
+  if (carriesTransit) return 'gateway'
+  return directKind ?? 'direct_nat'
+}
+
 export async function buildPeerMaterial(params: {
   self: Pick<RelayRecord, 'serverId'>
   other: RelayRecord
@@ -1748,8 +1770,12 @@ export async function buildPeerMaterial(params: {
   extraAllowedIPs?: readonly string[]
   resealPresharedKey?: (sealed: string) => Promise<string | null>
   advertisedCidrs?: readonly string[]
+  /** The other server dials this one: no endpoint, learned on its handshake. */
+  dialIn?: boolean
 }): Promise<RelayPeerMaterial | null> {
-  if (!isEmittedDirectPath(params.plan.selected)) return null
+  const selected = params.plan.selected
+  const direct = isEmittedDirectPath(selected)
+  if (!direct && params.dialIn !== true) return null
 
   const host32 = hostRoute32(params.other.address)
   const allowedIPs: string[] = []
@@ -1778,18 +1804,14 @@ export async function buildPeerMaterial(params: {
   // Every direct pair keeps the tunnel (and its NAT mapping) alive; WireGuard
   // only re-handshakes while data flows, so an idle LAN pair needs it too.
   const keepalive = params.other.keepalive ?? WIREGUARD_PERSISTENT_KEEPALIVE
-  const endpoint =
-    params.plan.selected.kind === 'direct_nat'
-      ? params.plan.selected.endpoint
-      : joinHostPort(params.plan.selected.endpoint, params.listenPort)
   const material: RelayPeerMaterial = {
     publicKey: params.other.publicKey ?? '',
     allowedIPs,
-    endpoint,
+    ...(direct ? { endpoint: peerEndpoint(selected, params.listenPort) } : {}),
     keepalive,
     sealedPresharedKey: params.sealedPresharedKey,
     presharedKey,
-    pathKind: carriesTransit ? 'gateway' : params.plan.selected.kind,
+    pathKind: peerPathKind(carriesTransit, direct ? selected.kind : null),
   }
   if (carriesTransit) material.viaServerId = params.other.serverId
   return material
@@ -1973,16 +1995,17 @@ function reconcilePeerViews(material: RelayPeerMaterial): {
   peer: FabricReconcilePeer
   hashPeer: Record<string, unknown>
 } {
+  const endpointField = material.endpoint === undefined ? {} : { endpoint: material.endpoint }
   const peer: FabricReconcilePeer = {
     publicKey: material.publicKey,
     allowedIPs: material.allowedIPs,
-    endpoint: material.endpoint,
+    ...endpointField,
   }
   const hashPeer: Record<string, unknown> = {
     publicKey: material.publicKey,
     allowedIPs: material.allowedIPs,
-    endpoint: material.endpoint,
-    pathKind: material.pathKind,
+    ...endpointField,
+    pathKind: material.endpoint === undefined ? 'dial_in' : material.pathKind,
   }
   if (
     material.pathKind === 'direct_lan' ||
@@ -2049,6 +2072,8 @@ async function emitPeerStanza(
   extraAllowedIPs: readonly string[],
   params: {
     resealPresharedKey?: (sealed: string) => Promise<string | null>
+    /** The other server dials this one: its stanza has no endpoint. */
+    dialIn?: boolean
   },
   listenPort: number
 ): Promise<{ peer: FabricReconcilePeer; hashPeer: Record<string, unknown> } | null> {
@@ -2068,9 +2093,114 @@ async function emitPeerStanza(
     advertisedCidrs:
       snapshot.derivedAdvertisedCidrsByRelayId.get(other.id) ?? other.advertisedCidrs,
     ...(params.resealPresharedKey ? { resealPresharedKey: params.resealPresharedKey } : {}),
+    ...(params.dialIn ? { dialIn: true } : {}),
   })
   if (!material) return null
   return reconcilePeerViews(material)
+}
+
+/**
+ * `caller` can open the tunnel to `target` itself: it has a public path to it
+ * (its public address or operator pin). A server behind NAT that nothing can
+ * dial still joins this way: it dials out with keepalive, and the other side has no
+ * endpoint for it until its handshake arrives.
+ */
+export function peerCanDialIn(
+  target: Pick<RelayRecord, 'serverId' | 'endpointAddress'>,
+  caller: Pick<RelayRecord, 'serverId'>,
+  caches: EndpointAddressCaches
+): boolean {
+  return directCandidates(caller.serverId, target, caches).some(
+    (row) => row.kind === 'direct_public'
+  )
+}
+
+/**
+ * Peers that would all be dialled at one endpoint (servers behind one NAT
+ * pinned to the same address) cannot all be right: WireGuard would send every
+ * one of them to the same place until their keepalives move it. Those that
+ * can dial in lose the endpoint and are learned from their own handshake.
+ */
+function dropSharedEndpoints(
+  emitted: readonly EmittedPeer[],
+  canDialIn: (other: RelayRecord) => boolean
+): void {
+  const counts = new Map<string, number>()
+  for (const row of emitted) {
+    if (row.peer.endpoint) counts.set(row.peer.endpoint, (counts.get(row.peer.endpoint) ?? 0) + 1)
+  }
+  for (const row of emitted) {
+    const endpoint = row.peer.endpoint
+    if (!endpoint || (counts.get(endpoint) ?? 0) < 2 || !canDialIn(row.other)) continue
+    delete row.peer.endpoint
+    delete row.hashPeer.endpoint
+    row.hashPeer.pathKind = 'dial_in'
+  }
+}
+
+type EmittedPeer = {
+  other: RelayRecord
+  peer: FabricReconcilePeer
+  hashPeer: Record<string, unknown>
+}
+
+type PeerClassification = {
+  emitIds: Set<string>
+  dialInIds: Set<string>
+  plansByRelayId: Map<string, RelayPathPlan>
+  extraByNextHopId: Map<string, string[]>
+  unreachablePeers: Array<{ serverId: string }>
+  gatewayRoutedPeers: GatewayRoutedPeer[]
+}
+
+/** Route one gateway-routed destination through its next hop's stanza. */
+function addGatewayRoute(
+  out: PeerClassification,
+  other: RelayRecord,
+  viaRelayId: string,
+  viaServerId: string
+): void {
+  const extra = out.extraByNextHopId.get(viaRelayId) ?? []
+  appendUniqueCidrs(extra, destinationOwnedCidrs(other))
+  out.extraByNextHopId.set(viaRelayId, extra)
+  out.emitIds.add(viaRelayId)
+  out.gatewayRoutedPeers.push({ serverId: other.serverId, viaServerId })
+}
+
+/**
+ * How `self` reaches each peer: a direct stanza, through a gateway's stanza,
+ * a dial-in stanza (the peer dials us), or not at all.
+ */
+function classifyPeerRelays(
+  snapshot: FabricReconcileSnapshot,
+  self: RelayRecord,
+  peerRelays: readonly RelayRecord[],
+  gateways: readonly RelayRecord[]
+): PeerClassification {
+  const out: PeerClassification = {
+    emitIds: new Set(),
+    dialInIds: new Set(),
+    plansByRelayId: new Map(),
+    extraByNextHopId: new Map(),
+    unreachablePeers: [],
+    gatewayRoutedPeers: [],
+  }
+  for (const other of peerRelays) {
+    const plan = planPathToOther(snapshot, self, other, gateways)
+    out.plansByRelayId.set(other.id, plan)
+    const { selected } = plan
+    if (isEmittedDirectPath(selected)) {
+      out.emitIds.add(other.id)
+    } else if (selected.kind === 'gateway' && selected.viaRelayId && selected.viaServerId) {
+      addGatewayRoute(out, other, selected.viaRelayId, selected.viaServerId)
+    } else if (peerCanDialIn(self, other, snapshot.caches)) {
+      out.emitIds.add(other.id)
+      out.dialInIds.add(other.id)
+    } else {
+      out.unreachablePeers.push({ serverId: other.serverId })
+    }
+  }
+  return out
 }
 
 async function buildReconcilePeerLists(
@@ -2082,10 +2212,6 @@ async function buildReconcilePeerLists(
   },
   listenPort: number
 ): Promise<PeerListBuild> {
-  const peers: FabricReconcilePeer[] = []
-  const hashPeers: unknown[] = []
-  const unreachablePeers: Array<{ serverId: string }> = []
-  const gatewayRoutedPeers: GatewayRoutedPeer[] = []
   // A trusted LAN pair has no tunnel: it is neither a peer nor unreachable.
   const peerRelays = snapshot.relays.filter(
     (row) =>
@@ -2094,45 +2220,38 @@ async function buildReconcilePeerLists(
       !pairSharesTrustedLan(params.serverId, row.serverId, snapshot.caches)
   )
   const gateways = snapshot.relays.filter((row) => row.role === 'gateway' && Boolean(row.publicKey))
-  const extraByNextHopId = new Map<string, string[]>()
-  const emitIds = new Set<string>()
-  const plansByRelayId = new Map<string, RelayPathPlan>()
+  const classified = classifyPeerRelays(snapshot, self, peerRelays, gateways)
+  const { unreachablePeers, gatewayRoutedPeers } = classified
 
-  for (const other of peerRelays) {
-    const plan = planPathToOther(snapshot, self, other, gateways)
-    plansByRelayId.set(other.id, plan)
-    if (isEmittedDirectPath(plan.selected)) {
-      emitIds.add(other.id)
-      continue
-    }
-    if (plan.selected.kind === 'gateway' && plan.selected.viaRelayId && plan.selected.viaServerId) {
-      const extra = extraByNextHopId.get(plan.selected.viaRelayId) ?? []
-      appendUniqueCidrs(extra, destinationOwnedCidrs(other))
-      extraByNextHopId.set(plan.selected.viaRelayId, extra)
-      emitIds.add(plan.selected.viaRelayId)
-      gatewayRoutedPeers.push({
-        serverId: other.serverId,
-        viaServerId: plan.selected.viaServerId,
-      })
-      continue
-    }
-    unreachablePeers.push({ serverId: other.serverId })
-  }
-
+  const emitted: EmittedPeer[] = []
   await forEachSequential(peerRelays, async (other) => {
-    if (!emitIds.has(other.id)) return
-    const plan = plansByRelayId.get(other.id) ?? planPathToOther(snapshot, self, other, gateways)
-    const extra = extraByNextHopId.get(other.id) ?? []
+    if (!classified.emitIds.has(other.id)) return
+    const plan =
+      classified.plansByRelayId.get(other.id) ?? planPathToOther(snapshot, self, other, gateways)
+    const extra = classified.extraByNextHopId.get(other.id) ?? []
     extra.sort((a, b) => a.localeCompare(b))
-    const views = await emitPeerStanza(snapshot, self, other, plan, extra, params, listenPort)
+    const views = await emitPeerStanza(
+      snapshot,
+      self,
+      other,
+      plan,
+      extra,
+      { ...params, dialIn: classified.dialInIds.has(other.id) },
+      listenPort
+    )
     if (!views) {
       unreachablePeers.push({ serverId: other.serverId })
       return
     }
-    peers.push(views.peer)
-    hashPeers.push(views.hashPeer)
+    emitted.push({ other, ...views })
   })
-  return { peers, hashPeers, unreachablePeers, gatewayRoutedPeers }
+  dropSharedEndpoints(emitted, (other) => peerCanDialIn(self, other, snapshot.caches))
+  return {
+    peers: emitted.map((row) => row.peer),
+    hashPeers: emitted.map((row) => row.hashPeer),
+    unreachablePeers,
+    gatewayRoutedPeers,
+  }
 }
 
 type FabricReconcileBuild = {

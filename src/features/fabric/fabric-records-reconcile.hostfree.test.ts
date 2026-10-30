@@ -845,7 +845,7 @@ test('buildFabricReconcilePayloadFromSnapshot hash reflects peer keepalive', asy
   assertEquals(withKeepalive.payload.peers[0]?.keepalive, 25)
 })
 
-test('buildFabricReconcilePayloadFromSnapshot omits unreachable peers and still builds', async () => {
+test('a public server accepts a NAT-only server as a dial-in peer with no endpoint', async () => {
   const selfRelay: RelayRecord = {
     id: 'r1',
     fabricId: FABRIC.id,
@@ -912,9 +912,68 @@ test('buildFabricReconcilePayloadFromSnapshot omits unreachable peers and still 
     { serverId: 'srv-1' }
   )
   if (!built?.payload.enabled) throw new TypeError('expected enabled payload')
-  assertEquals(built.payload.peers.length, 1)
+  assertEquals(built.payload.peers.length, 2)
   assertEquals(built.payload.peers[0]?.publicKey, WG_KEY_B)
-  assertEquals(built.unreachablePeers, [{ serverId: 'srv-3' }])
+  // srv-3 has no address anyone can dial, but it can dial srv-1's public
+  // address: its peer has no endpoint and is learned from its handshake.
+  const dialIn = built.payload.peers[1]
+  assertEquals(dialIn?.publicKey, WG_KEY_C)
+  assertEquals(dialIn?.endpoint, undefined)
+  assertEquals(dialIn?.allowedIPs, ['10.250.0.3/32', '10.194.0.0/16'])
+  assertEquals(dialIn?.pathKind, 'direct_nat')
+  assertEquals(built.unreachablePeers, [])
+})
+
+test('peers pinned to one shared NAT address lose the endpoint and dial in instead', async () => {
+  const self = relayRecord({
+    id: 'r1',
+    serverId: 'srv-1',
+    address: '10.250.0.1',
+    endpointAddress: '203.0.113.10',
+    publicKey: WG_KEY_A,
+    prefix: '10.192.0.0/16',
+  })
+  const behindNat = (n: number, key: string) =>
+    relayRecord({
+      id: `r${n}`,
+      serverId: `srv-${n}`,
+      address: `10.250.0.${n}`,
+      endpointAddress: '198.51.100.7',
+      publicKey: key,
+      prefix: `10.19${n}.0.0/16`,
+    })
+  const built = await buildFabricReconcilePayloadFromSnapshot(
+    {
+      fabric: FABRIC,
+      relays: [self, behindNat(2, WG_KEY_B), behindNat(3, WG_KEY_C)],
+      caches: emptyCaches(),
+      sealedPresharedKeyByRelayId: new Map(),
+      segmentsByServer: new Map(),
+      derivedAdvertisedCidrsByRelayId: new Map(),
+      policy: { allowRelay: false },
+    },
+    { serverId: 'srv-1' }
+  )
+  if (!built?.payload.enabled) throw new TypeError('expected enabled payload')
+  assertEquals(
+    built.payload.peers.map((peer) => peer.endpoint),
+    [undefined, undefined]
+  )
+  // Seen from a NAT server, the public server keeps its endpoint.
+  const fromNat = await buildFabricReconcilePayloadFromSnapshot(
+    {
+      fabric: FABRIC,
+      relays: [self, behindNat(2, WG_KEY_B)],
+      caches: emptyCaches(),
+      sealedPresharedKeyByRelayId: new Map(),
+      segmentsByServer: new Map(),
+      derivedAdvertisedCidrsByRelayId: new Map(),
+      policy: { allowRelay: false },
+    },
+    { serverId: 'srv-2' }
+  )
+  if (!fromNat?.payload.enabled) throw new TypeError('expected enabled payload')
+  assertEquals(fromNat.payload.peers[0]?.endpoint, '203.0.113.10:51830')
 })
 
 test('buildFabricReconcilePayloadFromSnapshot hash reflects peer pathKind', async () => {
@@ -1162,8 +1221,11 @@ test('buildFabricReconcilePayloadFromSnapshot omits a reported private IPv4 as a
   if (!privateOnly?.payload.enabled) {
     throw new TypeError('expected enabled payload')
   }
-  assertEquals(privateOnly.payload.peers, [])
-  assertEquals(privateOnly.unreachablePeers, [{ serverId: 'srv-2' }])
+  // The private address is never dialled: srv-2 dials srv-1's public
+  // address instead, so its peer has no endpoint.
+  assertEquals(privateOnly.payload.peers.length, 1)
+  assertEquals(privateOnly.payload.peers[0]?.endpoint, undefined)
+  assertEquals(privateOnly.unreachablePeers, [])
 
   caches.reportedByServer.set('srv-2', [
     { address: '10.8.0.5', version: 4, scope: 'private' },
@@ -1592,11 +1654,11 @@ test('buildFabricReconcilePayloadFromSnapshot hash changes when the next hop cha
 })
 
 test('buildFabricReconcilePayloadFromSnapshot still builds when one pair is unreachable', async () => {
+  // Neither srv-1 nor srv-3 has an address the other can dial.
   const selfRelay = relayRecord({
     id: 'r1',
     serverId: 'srv-1',
     address: '10.250.0.1',
-    endpointAddress: '203.0.113.10',
     publicKey: WG_KEY_A,
     prefix: '10.192.0.0/16',
   })

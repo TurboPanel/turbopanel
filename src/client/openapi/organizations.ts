@@ -457,7 +457,8 @@ export const organizationSchemas = {
       automaticRole: {
         type: 'string',
         enum: ['gateway', 'client'],
-        description: 'What automatic picks today: gateway when the server has a public address.',
+        description:
+          'What automatic picks today: gateway when the server has its own public address (an endpoint override does not count).',
       },
     },
   },
@@ -482,6 +483,7 @@ export const organizationSchemas = {
       'preferredGatewayIds',
       'gatewayEligible',
       'paths',
+      'reconcile',
     ],
     properties: {
       serverId: { type: 'string', format: 'uuid' },
@@ -577,6 +579,20 @@ export const organizationSchemas = {
           },
         },
       },
+      reconcile: {
+        type: ['object', 'null'],
+        description:
+          "How the last server.fabric.reconcile sent to this server ended. `pending` until the server answers, then `done` (with any `warnings`: what an apply that worked left out, such as a route another interface holds or container networks that wait for Docker) or `failed` (with the server's own `error`). A pause only counts as down once its server is `done`. null before the first one is recorded.",
+        required: ['commandId', 'action', 'state', 'at'],
+        properties: {
+          commandId: { type: 'string', format: 'uuid' },
+          action: { type: 'string', enum: ['apply', 'pause', 'remove'] },
+          state: { type: 'string', enum: ['pending', 'done', 'failed'] },
+          at: { type: 'string', format: 'date-time' },
+          error: { type: 'string' },
+          warnings: { type: 'array', items: { type: 'string' } },
+        },
+      },
     },
   },
   OrganizationFabricRelayUpdate: {
@@ -590,7 +606,11 @@ export const organizationSchemas = {
           "empty list = derive from the relay's datacenter IPv4 subnets. Each range must be private (RFC 1918, 100.64.0.0/10 or fc00::/7) and no shorter than /8 (IPv4) or /48 (IPv6): default routes and public ranges are 400. A range that overlaps the fabric range, the container pool, a server's fabric container range or a range another gateway advertises (the very same range on two gateways is fine; partly overlapping or nested ranges are not) is 400 gateway_range_overlaps_* with { message, cidr, conflictsWith, otherServerId? }. The daemon refuses a host's whole peer list over one such range, so the same rule also covers the ranges a gateway falls back to from its datacenter subnets when the list is empty.",
       },
       keepalive: { type: ['integer', 'null'], minimum: 1, maximum: 65535 },
-      endpointAddress: { type: ['string', 'null'] },
+      endpointAddress: {
+        type: ['string', 'null'],
+        description:
+          'An IP address only, never with a port: other servers connect to it on the fabric listen port. null clears the pin.',
+      },
       presharedKey: {
         type: ['string', 'null'],
         description: 'Write-only WireGuard PSK. Never echoed on GET.',
@@ -2315,7 +2335,7 @@ export const organizationPaths: Record<string, unknown> = {
       tags: ['Organizations'],
       summary: "Set one server's TurboFabric switch and role",
       description:
-        "Manage-gated. `{ enabled?, role? }`; `role` is `gateway`, `client` or null (automatic: gateway when the server has a public address). `enabled: false` takes the server's `tp0` down (keeping its key when its daemon can) and re-plans the mesh so no peer lists it, no ladder hands out its fabric address and its WireGuard port closes; its relay row stays, so its address, endpoint pin, preshared key and LAN sharing come back when it is switched on. Refused with 409 `fabric_server_in_use` (plain `message`, `dependents[]`) while a cross-server container network that reaches it through a tunnel (one whose other servers all share a trusted LAN with it does not count), a managed database replicating over TurboFabric, an app-to-database connection that resolves to its fabric address, or a datacenter LAN only it shares depends on it, and 503 `fabric_teardown_not_queued` when its teardown could not be queued. `enabled: true` lets it join on the next reconcile (immediately when TurboFabric is on). Returns `{ ok, server }`.",
+        "Manage-gated. `{ enabled?, role? }`; `role` is `gateway`, `client` or null (automatic: gateway when the server has its own public address; an endpoint override does not count). `enabled: false` takes the server's `tp0` down (keeping its key when its daemon can) and re-plans the mesh so no peer lists it, no ladder hands out its fabric address and its WireGuard port closes; its relay row stays, so its address, endpoint pin, preshared key and LAN sharing come back when it is switched on. Refused with 409 `fabric_server_in_use` (plain `message`, `dependents[]`) while a cross-server container network that reaches it through a tunnel (one whose other servers all share a trusted LAN with it does not count), a managed database replicating over TurboFabric, an app-to-database connection that resolves to its fabric address, or a datacenter LAN only it shares depends on it, and 503 `fabric_teardown_not_queued` when its teardown could not be queued. `enabled: true` lets it join on the next reconcile (immediately when TurboFabric is on). Returns `{ ok, server }`.",
       security: [{ cookieAuth: [] }],
       parameters: [
         { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },

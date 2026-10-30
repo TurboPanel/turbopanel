@@ -357,7 +357,8 @@ const FLEET_RELAYS: RelayRow[] = [
     address: '10.250.0.1',
     role: 'member',
     keepalive: null,
-    endpointAddress: '203.0.113.10',
+    // srv-1 and srv-3 are behind NAT: they dial srv-2 but not each other.
+    endpointAddress: null,
     publicKey: 'pk1',
     prefix: '10.192.0.0/16',
     advertisedCidrs: [],
@@ -407,8 +408,9 @@ test('enqueueFabricReconcileForServers queues the rest of the fleet when one pai
     ['queued', 'queued', 'queued']
   )
   assertEquals(results[0]?.unreachablePeers, [{ serverId: 'srv-3' }])
-  assertEquals(results[1]?.unreachablePeers, [{ serverId: 'srv-3' }])
-  assertEquals(results[2]?.unreachablePeers, undefined)
+  // srv-2 is public: both NAT servers dial in, so none is unreachable.
+  assertEquals(results[1]?.unreachablePeers, undefined)
+  assertEquals(results[2]?.unreachablePeers, [{ serverId: 'srv-1' }])
   assertEquals(
     enqueued.sort((a, b) => a.localeCompare(b)),
     ['srv-1', 'srv-2', 'srv-3']

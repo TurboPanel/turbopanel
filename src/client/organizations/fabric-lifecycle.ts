@@ -163,13 +163,14 @@ export async function pauseFabric(
 ): Promise<Response | null> {
   const { db, organizationId } = params
   const existing = await getOrganizationFabric(db, organizationId)
-  if (!existing || isFabricPaused(existing)) return null
+  if (!existing) return null
   const serverIds = (await listFabricRelays(db, existing.id)).map((row) => row.serverId)
 
   const tooOld = await serversThatCannotPause(db, serverIds)
   if (tooOld.length > 0) {
     return pauseNeedsUpdateResponse(c, await serverNames(db, organizationId, tooOld), tooOld)
   }
+  if (isFabricPaused(existing)) return await repeatPause(c, params, existing, serverIds)
 
   const paused = await pauseOrganizationFabric(db, existing)
   const notQueued = notQueuedServerIds(await sendTeardown(params, paused, serverIds, true))
@@ -190,6 +191,26 @@ export async function pauseFabric(
     context: { servers: serverIds.length },
   })
   return null
+}
+
+/**
+ * Turning off a fabric that is already off asks every server again: a server
+ * whose earlier pause failed (its tunnel still up) gets another try, and one
+ * that is already down answers at once. The fabric stays paused either way.
+ */
+async function repeatPause(
+  c: Context,
+  params: FabricLifecycleParams,
+  existing: FabricRecord,
+  serverIds: readonly string[]
+): Promise<Response | null> {
+  const notQueued = notQueuedServerIds(await sendTeardown(params, existing, serverIds, true))
+  if (notQueued.length === 0) return null
+  return teardownNotQueuedResponse(
+    c,
+    'TurboFabric is off, but asking every server again to take its tunnel down could not reach all of them. Try again when they are online.',
+    notQueued
+  )
 }
 
 /** Record a resume (PUT enabled:true on a paused fabric). */

@@ -6,7 +6,7 @@
  * suite is.
  */
 import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
-import { assertEquals } from '@std/assert'
+import { assertEquals, assertNotEquals } from '@std/assert'
 import { eq, inArray } from 'drizzle-orm'
 import type { Context } from 'hono'
 import { getDatabaseUrl } from '../../db/url.ts'
@@ -26,7 +26,9 @@ import {
 import type { FabricReconcileCommandPayload } from '../../contracts/commands/schemas.ts'
 import type { CommandEnvelope } from '../../features/commands/envelope.ts'
 import type { CommandQueue } from '../../features/commands/queue.ts'
-import { applyServerFabricPatch, removeFabric } from './fabric-lifecycle.ts'
+import { applyServerFabricPatch, pauseFabric, removeFabric } from './fabric-lifecycle.ts'
+import { readFabricReconcileOutcome } from '../../features/fabric/reconcile-outcome.ts'
+import { FABRIC_RETAIN_KEYS_FEATURE } from '../../lib/version-wire.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -150,6 +152,39 @@ test('switching off writes the switch, keeps the relay and takes the tunnel down
     assertEquals(refused, null)
     assertEquals(await switchedOn(rig.db, rig.serverId), false)
     assertEquals(await relayKept(rig.db, rig.serverId), true)
+  })
+})
+
+async function reconcileOf(db: Db, serverId: string) {
+  const [row] = await db
+    .select({ metadata: relay.metadata })
+    .from(relay)
+    .where(eq(relay.serverId, serverId))
+  return readFabricReconcileOutcome(row?.metadata)
+}
+
+test('turning off an already-off TurboFabric asks every server again', async () => {
+  await withRig(async (rig) => {
+    await rig.db
+      .update(server)
+      .set({ daemon: { projection: { features: [FABRIC_RETAIN_KEYS_FEATURE] } } })
+      .where(eq(server.id, rig.serverId))
+    const params = {
+      db: rig.db,
+      commandQueue: queue(false),
+      organizationId: rig.organizationId,
+      actorId: crypto.randomUUID(),
+      secrets: {},
+    }
+    assertEquals(await pauseFabric(fakeContext, params), null)
+    const first = await reconcileOf(rig.db, rig.serverId)
+    assertEquals(first?.action, 'pause')
+    assertEquals(first?.state, 'pending')
+
+    assertEquals(await pauseFabric(fakeContext, params), null)
+    const again = await reconcileOf(rig.db, rig.serverId)
+    assertEquals(again?.state, 'pending')
+    assertNotEquals(again?.commandId, first?.commandId)
   })
 })
 

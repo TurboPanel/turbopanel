@@ -55,6 +55,7 @@ import {
   stampRelayPublicKey,
   stampRelayReconcileSuccess,
 } from '../fabric/fabric-records.ts'
+import { fabricReconcileAction, stampFabricReconcileFinished } from '../fabric/reconcile-outcome.ts'
 import { reconcileFabricMembership } from '../fabric/enqueue.ts'
 import {
   command,
@@ -836,7 +837,7 @@ async function settleUnansweredCommand(
     'timed_out',
     deps
   )
-  await applyFabricFailedSideEffect(db, record, envelope)
+  await applyFabricFailedSideEffect(db, record, envelope, timeoutMessage ?? 'Command timed out')
 }
 
 /**
@@ -1131,6 +1132,7 @@ async function applyFabricSideEffect(
 ): Promise<void> {
   if (record.type !== 'server.fabric.reconcile') return
   try {
+    await stampFabricOutcomeFromResult(db, record, envelope, result)
     await applyEnabledFabricReconcileSideEffect(db, record, envelope, result, deps)
   } catch (err) {
     compatLogWarn(
@@ -1140,14 +1142,45 @@ async function applyFabricSideEffect(
   }
 }
 
+/** Record that the server answered, with the warnings an apply came back with. */
+async function stampFabricOutcomeFromResult(
+  db: Db,
+  record: DispatchableCommandRecord,
+  envelope: CommandEnvelope,
+  result: unknown
+): Promise<void> {
+  const payload = parseFabricReconcilePayload(record.payload)
+  let warnings: string[] | undefined
+  try {
+    warnings = parseFabricReconcileResult(result).warnings
+  } catch {
+    warnings = undefined
+  }
+  await stampFabricReconcileFinished(db, {
+    serverId: envelope.serverId,
+    commandId: record.id,
+    action: fabricReconcileAction(payload),
+    ok: true,
+    ...(warnings ? { warnings } : {}),
+  })
+}
+
 async function applyFabricFailedSideEffect(
   db: Db,
   record: DispatchableCommandRecord,
-  envelope: CommandEnvelope
+  envelope: CommandEnvelope,
+  error: string
 ): Promise<void> {
   if (record.type !== 'server.fabric.reconcile') return
   try {
     const payload = parseFabricReconcilePayload(record.payload)
+    await stampFabricReconcileFinished(db, {
+      serverId: envelope.serverId,
+      commandId: record.id,
+      action: fabricReconcileAction(payload),
+      ok: false,
+      error,
+    })
     await clearRelayAppliedPayloadHash(db, {
       serverId: envelope.serverId,
       ...(payload.enabled && payload.fabricId ? { fabricId: payload.fabricId } : {}),
@@ -3541,7 +3574,7 @@ async function handlePendingFailed(
   })
   await applyManagedFailedSideEffect(db, record, deps, error)
   await applyEnvironmentDeployFailedSideEffect(db, record, envelope, error, 'failed', deps)
-  await applyFabricFailedSideEffect(db, record, envelope)
+  await applyFabricFailedSideEffect(db, record, envelope, error)
   await applyFirewallFailedSideEffect(db, record, envelope, error)
   await applyPrincipalIdRefusedSideEffect(db, record, error)
 }
@@ -3578,7 +3611,7 @@ async function handlePendingExpired(
     'timed_out',
     deps
   )
-  await applyFabricFailedSideEffect(db, record, envelope)
+  await applyFabricFailedSideEffect(db, record, envelope, pending.error ?? 'Command timed out')
   await applyFirewallFailedSideEffect(db, record, envelope, pending.error ?? 'Command timed out')
 }
 
@@ -3737,7 +3770,7 @@ export async function processCommandEnvelope(
     // A deploy that never reached its server fails its row and halts the
     // rollout, or later batches would wait on an `applying` row forever.
     await applyEnvironmentDeployFailedSideEffect(db, record, envelope, notReady, 'failed', deps)
-    await applyFabricFailedSideEffect(db, record, envelope)
+    await applyFabricFailedSideEffect(db, record, envelope, notReady)
     await settleIngressRecoveryOfCommand(db, record)
     return
   }

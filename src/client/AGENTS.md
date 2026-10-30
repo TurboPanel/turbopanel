@@ -202,7 +202,7 @@ changes.
   off), a change that would end a LAN pair holding a cross-server network is
   refused (`409 lan_pair_in_use`: marking the datacenter untrusted, removing a
   member) and the deploy re-checks the rule before delivering (`422
-  turbofabric_required`); `features/fabric/lan-pair-guard.ts`. A daemon gaining
+turbofabric_required`); `features/fabric/lan-pair-guard.ts`. A daemon gaining
   or losing the feature stamps `ip.repin_pending_fanout_at` so the repin sweep
   re-plans. Remove completely keeps networks whose servers are all LAN pairs
   and resends their payload with no tunnel. The WireGuard port opens only when
@@ -224,7 +224,15 @@ changes.
   handshake (observer-mapped endpoints stay in candidate exchange). Path-state
   strike counters are process-local across reconcile rounds. `allowRelay` is
   reserved for a future relay slot and does not loosen gateway datacenter
-  locality.
+  locality. **Dial-in peers:** a server nothing can dial (behind NAT, no pin)
+  is never dropped as unreachable when it can dial us (we have a public path
+  for it, `peerCanDialIn`): its peer has no `endpoint`, WireGuard learns it from
+  the server's own keepalive handshake. Peers pinned to one shared endpoint
+  (servers behind one NAT) lose it the same way. GET `relays[].reconcile`
+  (`features/fabric/reconcile-outcome.ts`, `relay.metadata.reconcile`) says how
+  the last reconcile sent to the server ended: `pending` from enqueue until it
+  answers, then `done` with the daemon's `warnings` or `failed` with its error;
+  a pause counts as down only once its server is `done`.
 - **Compiled runtime compose:** users author project + optional environment
   ComposeDocuments. Deploy compiles **one** `compose.yaml` (`role: 'runtime'`)
   per participating server plus a project `.env` for non-secrets. Secret

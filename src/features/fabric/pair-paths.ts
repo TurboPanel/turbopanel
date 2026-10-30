@@ -22,6 +22,7 @@ import {
   listFabricRelays,
   loadEndpointCaches,
   pairSharesTrustedLan,
+  peerCanDialIn,
   planRelayPath,
   type RelayRecord,
 } from './fabric-records.ts'
@@ -94,6 +95,15 @@ function tunnelPath(ctx: PairContext, a: string, b: string): FabricPairApiRow {
     preferredGatewayIds: self.preferredGatewayIds,
   })
   if (plan.selected.kind === 'unreachable') {
+    // A server behind NAT that nothing can dial still joins by dialling out.
+    if (peerCanDialIn(self, other, ctx.caches) || peerCanDialIn(other, self, ctx.caches)) {
+      return row(
+        a,
+        b,
+        'fabric',
+        'One server is behind NAT: it connects out to the other, and traffic goes through TurboFabric.'
+      )
+    }
     return row(a, b, 'none', 'TurboFabric found no path between these servers.')
   }
   if (plan.selected.untrusted) {
