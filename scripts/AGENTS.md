@@ -199,7 +199,7 @@ none of them clean up after themselves (by design: they're meant to run
 against throwaway testing databases. Only throwaway testing hosts are
 disposable; the panel database is never reset (forward-only migrations).
 
-## Contributor guide reference check
+## Contributor Guide Reference Check
 
 `pnpm check:guide-references` (`check-guide-references.mjs`) fails when any
 `AGENTS.md` or `docs/*.md` points at an in-repo file that does not exist, so
