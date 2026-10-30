@@ -167,12 +167,13 @@ export async function forEachBounded<T>(
   each: (item: T) => Promise<void>
 ): Promise<void> {
   let next = 0
+  // Each worker takes the next item when its last one settles.
   const worker = async (): Promise<void> => {
-    while (next < items.length && !stop.aborted) {
-      const item = items[next]!
-      next += 1
-      await each(item)
-    }
+    if (next >= items.length || stop.aborted) return
+    const item = items[next]!
+    next += 1
+    await each(item)
+    return worker()
   }
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker))
 }
