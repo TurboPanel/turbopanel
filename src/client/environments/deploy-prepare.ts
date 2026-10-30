@@ -4309,7 +4309,7 @@ function tlsPinErrorResponse(
     )}".`
   } else if (error === 'pin_staging') {
     message =
-      'The certificate on this hosting is a Test Certificate. Browsers do not trust it, so it cannot be used on a site. Order a normal certificate instead.'
+      "The certificate on this hosting is a Test Certificate. Test certificates are only for trying out ordering. Browsers show a security warning for them, so they can't be attached to a site. Order a normal certificate instead."
   }
   return Response.json(
     {

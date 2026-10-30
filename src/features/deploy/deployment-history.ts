@@ -65,7 +65,8 @@ const DEPLOY_COMMAND_COLUMNS = {
   queuedAt: command.queuedAt,
   startedAt: command.startedAt,
   finishedAt: command.finishedAt,
-  serverName: server.name,
+  // A server without a display name goes by its hostname, as it does in the UI.
+  serverName: sql<string | null>`coalesce(nullif(btrim(${server.name}), ''), ${server.hostname})`,
 } as const
 
 type DeployCommandRow = {
