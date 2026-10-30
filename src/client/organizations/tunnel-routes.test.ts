@@ -110,7 +110,7 @@ const fakeProvider: typeof fetch = async (input, init) => {
     if (provider.tunnelDeleteConflicts > 0) {
       provider.tunnelDeleteConflicts -= 1
       return refused(
-        409,
+        400,
         'This tunnel has active connections. Please stop all cloudflared replicas'
       )
     }
@@ -596,7 +596,7 @@ test('a tunnel whose connectors are still running is removed once the provider l
     const [row] = await f.db.select().from(tunnel).where(eq(tunnel.id, id))
     assertEquals(await carryingServers(f.db, row!), [])
 
-    // Try 1: the provider still sees a connector (409). The tunnel stays, with the reason.
+    // Try 1: the provider still sees a connector (Cloudflare answers 400). The tunnel stays, with the reason.
     assertEquals(await runTunnelRemovalSweepTick(f.db, removalDeps(f), t0), {
       removed: 0,
       waiting: 1,
@@ -604,7 +604,7 @@ test('a tunnel whose connectors are still running is removed once the provider l
     const shown = await call(f, 'GET', `/organizations/${f.orgA}/tunnels`, f.managerCookie)
     const listed = (shown.body.tunnels as Array<{ status: string; warnings: string[] }>)[0]
     assertEquals(listed?.status, 'removing')
-    assert(listed?.warnings.some((w) => w.includes('still sees a connector')))
+    assert(listed?.warnings.some((w) => w.includes("waiting for the server's connector to stop")))
 
     // Not due yet: nothing is tried inside the wait.
     const before = provider.calls.length

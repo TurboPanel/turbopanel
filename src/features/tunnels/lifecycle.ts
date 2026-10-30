@@ -555,7 +555,7 @@ function removalWarnings(row: Pick<TunnelRow, 'status' | 'metadata'>): string[] 
   if (row.status !== 'removing') return []
   const state = readRemovalState(row.metadata)
   if (state === null) return ['This Tunnel is being removed. Its connectors are stopping first.']
-  return [`Removing this Tunnel is waiting: ${state.error}`]
+  return [`This Tunnel is being removed. ${state.error}`]
 }
 
 async function noteRemovalWaiting(
@@ -586,7 +586,7 @@ function removalWaitingText(err: unknown): string {
     return 'The provider refused every API Token that could remove Tunnels. Fix their permissions and it finishes on its own.'
   }
   if (err instanceof TunnelProviderError && err.code === 'conflict') {
-    return 'Cloudflare still sees a connector for it. The connectors are being stopped and the removal finishes on its own.'
+    return "It is waiting for the server's connector to stop, and the removal finishes by itself."
   }
   if (err instanceof TunnelProviderError) return err.message
   return 'The removal could not be finished yet. It is tried again shortly.'

@@ -36,6 +36,18 @@ export class TunnelProviderError extends Error {
   }
 }
 
+/**
+ * Cloudflare answers a tunnel delete with 400 (not 409) while a connector is
+ * still connected, so the wording is what tells that case apart.
+ */
+const ACTIVE_CONNECTIONS = /\bactive connections?\b/i
+
+/** The code for a refused request: its status, or `conflict` for a tunnel that still has connectors. */
+export function codeForRefusal(status: number, detail: string): TunnelErrorCode {
+  if (ACTIVE_CONNECTIONS.test(detail)) return 'conflict'
+  return codeForStatus(status)
+}
+
 export function codeForStatus(status: number): TunnelErrorCode {
   if (status === 401) return 'unauthorized'
   if (status === 403) return 'forbidden'

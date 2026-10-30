@@ -5,7 +5,7 @@
  * of it before it leaves this file.
  */
 import { throttleWaitMs } from '../../lib/http/retry-after.ts'
-import { codeForStatus, TunnelProviderError } from './errors.ts'
+import { codeForRefusal, TunnelProviderError } from './errors.ts'
 
 export const CLOUDFLARE_API_BASE = 'https://api.cloudflare.com/client/v4'
 const REQUEST_TIMEOUT_MS = 15_000
@@ -96,7 +96,7 @@ export class CloudflareClient {
         .join('; ')
       const suffix = detail ? `: ${detail}` : ''
       throw new TunnelProviderError(
-        codeForStatus(response.status),
+        codeForRefusal(response.status, detail),
         `Cloudflare refused the request (${response.status})${suffix}`,
         response.status,
         [this.#token],
