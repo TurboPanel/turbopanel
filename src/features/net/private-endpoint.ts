@@ -604,6 +604,19 @@ function datacenterRung(
   return { preferred, lastResort }
 }
 
+/** Public rung; flagged when the pair shares only untrusted datacenters. */
+function publicEndpoint(
+  address: string,
+  partition: SharedDatacenterPartition
+): ResolvedPrivateEndpoint {
+  const untrustedOnly = partition.untrusted.length > 0 && partition.trusted.length === 0
+  return {
+    address,
+    transport: 'public',
+    ...(untrustedOnly ? { untrustedPublic: true as const } : {}),
+  }
+}
+
 /**
  * Purpose-aware ladder. Same-host loopback is always first. Cross-host order
  * is inverted from the former fabric-first path: datacenter (LAN) before
@@ -697,13 +710,7 @@ export function resolveOneFromCaches(params: {
 
   const publicAddress = params.publicAddressesByServer.get(params.toServerId)
   if (publicAddress) {
-    return {
-      address: publicAddress,
-      transport: 'public',
-      ...(partition.untrusted.length > 0 && partition.trusted.length === 0
-        ? { untrustedPublic: true as const }
-        : {}),
-    }
+    return publicEndpoint(publicAddress, partition)
   }
 
   return rung.lastResort() ?? unavailablePath(params.fromServerId, params.toServerId)
