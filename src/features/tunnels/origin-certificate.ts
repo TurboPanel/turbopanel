@@ -60,7 +60,6 @@ import {
   type CarrierRow,
   listBadges,
   openBadgeToken,
-  pickBadges,
   toApiBadge,
 } from './records.ts'
 
@@ -245,19 +244,6 @@ export function badgeCoversZone(
   const zones = toApiBadge(row).capabilities.certificates
   const wanted = zoneName.trim().toLowerCase()
   return zones.find((z) => z.name.toLowerCase() === wanted) ?? null
-}
-
-/**
- * The active tokens that can manage certificates for a zone, best first: the
- * shared selector, matched by the zone's id and narrowest first. Revoking and
- * renewing are NOT tied to the token that issued a certificate.
- */
-export async function pickCertificateBadges(
-  db: Db,
-  carrierId: string,
-  zone: { id: string; name: string }
-): Promise<BadgeRow[]> {
-  return pickBadges(await listBadges(db, carrierId), { capability: 'certificates', zone }).badges
 }
 
 type IssueParams = {

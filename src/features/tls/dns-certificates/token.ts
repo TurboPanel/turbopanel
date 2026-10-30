@@ -33,6 +33,15 @@ export async function openDnsToken(
   return opened?.token ?? null
 }
 
+/** The provider's own refusal, so an order with no token for a zone fails in plain words. */
+export function noDnsTokenError(): TunnelProviderError {
+  return new TunnelProviderError(
+    'forbidden',
+    'No token on this account can edit DNS records for the zone',
+    null
+  )
+}
+
 /**
  * Do one DNS call for a zone with the account's tokens that can edit it, best
  * first. A token the provider refuses (401, or 403 for the zone) is marked as
@@ -50,11 +59,7 @@ export async function withDnsToken<T>(
     return used.value
   } catch (err) {
     if (err instanceof BadgeUnavailable || err instanceof BadgeRefused) {
-      throw new TunnelProviderError(
-        'forbidden',
-        'No token on this account can edit DNS records for the zone',
-        null
-      )
+      throw noDnsTokenError()
     }
     throw err
   }

@@ -20,7 +20,7 @@ import { TunnelProviderError } from '../../tunnels/errors.ts'
 import { findCarrier } from '../../tunnels/records.ts'
 import type { TunnelProvider } from '../../tunnels/vocabulary.ts'
 import { orgAccount } from './account.ts'
-import { openDnsToken, withAnyDnsToken, withDnsToken } from './token.ts'
+import { noDnsTokenError, openDnsToken, withAnyDnsToken, withDnsToken } from './token.ts'
 import {
   ANSWER_RECHECK_MS,
   clock,
@@ -84,13 +84,7 @@ async function dnsFor(
 ): Promise<DnsChallengeProvider> {
   const carrier = await findCarrier(ctx.db, row.organizationId, state.carrierId)
   const token = carrier ? await openDnsToken(ctx, carrier.id, { zone: { id: zoneId } }) : null
-  if (!carrier || !token) {
-    throw new TunnelProviderError(
-      'forbidden',
-      'No token on this account can edit DNS records for the zone',
-      null
-    )
-  }
+  if (!carrier || !token) throw noDnsTokenError()
   const provider = carrier.provider as TunnelProvider
   const call = <T>(fn: (dns: DnsChallengeProvider) => Promise<T>) =>
     withDnsToken(ctx, carrier.id, { id: zoneId }, (t) => fn(ctx.dns(provider, t)))
