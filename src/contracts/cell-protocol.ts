@@ -10,6 +10,7 @@ import type {
 import type { MetricsCapabilityPlan } from './capability-plan.ts'
 import type { ServiceRunState } from './service-run-state.ts'
 import type { ManagedPermissionsObserved } from '../features/managed/privileges/observed.ts'
+import type { FabricPeerHealth, FabricReconcileObservedPeer } from './commands/schemas.ts'
 import { isValidWireguardEndpoint, isValidWireguardPublicKey } from '../features/fabric/wg.ts'
 import { DAEMON_WIRE_FEATURES } from '../lib/version-wire.ts'
 
@@ -669,6 +670,18 @@ export type DaemonMessage =
       at: string
     }
   | {
+      /**
+       * Daemon-initiated, fire-and-forget: every `tp0` peer as read by the
+       * daemon's 60 s refresh, sent when a peer's health class changed and at
+       * most every 5 minutes otherwise (feature `fabric-peer-report-v1`).
+       * `observedAt` is when the dump was read (daemon clock).
+       */
+      type: 'fabric-peers-report'
+      peers: FabricReconcileObservedPeer[]
+      observedAt: string
+      at: string
+    }
+  | {
       type: 'container-logs-request'
       id: string
       containerId: string
@@ -1033,6 +1046,7 @@ export const DAEMON_INBOUND_ALLOWED = new Set([
   'repo-default-branch-result',
   'managed-ha-event',
   'managed-health-report',
+  'fabric-peers-report',
   'topology-report',
   'acme-issuance-event',
   'instance-acme-issuance-event',
@@ -1972,6 +1986,78 @@ function validateManagedHealthReportFields(record: Record<string, unknown>): str
   return null
 }
 
+/** Max peers on one `fabric-peers-report` (daemon twin `FABRIC_PEER_REPORT_MAX_PEERS`). */
+export const MAX_DAEMON_WS_FABRIC_PEER_REPORT_PEERS = 256
+
+const FABRIC_PEER_HEALTH_VALUES: ReadonlySet<string> = new Set<FabricPeerHealth>([
+  'healthy',
+  'stale',
+  'never',
+])
+
+/** Linux interface name: at most 15 bytes, no slash or whitespace. */
+const FABRIC_PEER_INTERFACE_RE = /^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,14}$/
+
+function validateOptionalCounter(value: unknown, field: string): string | null {
+  if (value === undefined) return null
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0
+    ? null
+    : `invalid ${field}`
+}
+
+function validateFabricPeerHealthValue(value: unknown): string | null {
+  if (value === undefined) return null
+  if (!isBoundedHealthString(value)) return 'invalid peer.health'
+  // A health class this control plane does not know yet: ignore the frame.
+  return FABRIC_PEER_HEALTH_VALUES.has(value) ? null : unknownValue('peer.health')
+}
+
+function validateFabricPeerLink(value: Record<string, unknown>): string | null {
+  if (
+    value.endpoint !== undefined &&
+    (typeof value.endpoint !== 'string' || !isValidWireguardEndpoint(value.endpoint))
+  ) {
+    return 'invalid peer.endpoint'
+  }
+  if (
+    value.interface !== undefined &&
+    (typeof value.interface !== 'string' || !FABRIC_PEER_INTERFACE_RE.test(value.interface))
+  ) {
+    return 'invalid peer.interface'
+  }
+  return null
+}
+
+function validateFabricReportPeer(value: unknown): string | null {
+  if (!isRecord(value)) return 'invalid peer'
+  if (typeof value.publicKey !== 'string' || !isValidWireguardPublicKey(value.publicKey)) {
+    return 'invalid peer.publicKey'
+  }
+  if (value.lastHandshakeAt !== undefined && !isIsoTimestamp(value.lastHandshakeAt)) {
+    return 'invalid peer.lastHandshakeAt'
+  }
+  return (
+    validateOptionalCounter(value.transferRx, 'peer.transferRx') ??
+    validateOptionalCounter(value.transferTx, 'peer.transferTx') ??
+    validateFabricPeerLink(value) ??
+    validateFabricPeerHealthValue(value.health)
+  )
+}
+
+function validateFabricPeersReportFields(record: Record<string, unknown>): string | null {
+  if (!isIsoTimestamp(record.at)) return 'invalid at timestamp'
+  if (!isIsoTimestamp(record.observedAt)) return 'invalid observedAt timestamp'
+  if (!Array.isArray(record.peers)) return 'invalid peers'
+  if (record.peers.length > MAX_DAEMON_WS_FABRIC_PEER_REPORT_PEERS) {
+    return 'peers exceed max entries'
+  }
+  for (const entry of record.peers) {
+    const issue = validateFabricReportPeer(entry)
+    if (issue) return issue
+  }
+  return null
+}
+
 function validateManagedHealthResultFields(record: Record<string, unknown>): string | null {
   const base = validateOkResultFields(record)
   if (base) return base
@@ -2200,6 +2286,8 @@ function validateInboundMessageFields(record: Record<string, unknown>): string |
       return validateManagedHaEventFields(record)
     case 'managed-health-report':
       return validateManagedHealthReportFields(record)
+    case 'fabric-peers-report':
+      return validateFabricPeersReportFields(record)
     case 'topology-report':
       return validateTopologyReportFields(record)
     case 'acme-issuance-event':
@@ -2703,6 +2791,7 @@ export function wireMessageToInboundEnvelope(msg: DaemonMessage): DaemonInboundE
     case 'heartbeat':
     case 'managed-ha-event':
     case 'managed-health-report':
+    case 'fabric-peers-report':
     case 'topology-report':
     case 'acme-issuance-event':
     case 'instance-acme-issuance-event':

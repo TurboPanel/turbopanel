@@ -38,6 +38,10 @@ import { createFreshStandbyProbe } from '../../client/managed/health-probe.ts'
 import { handleAcmeIssuanceEvent } from '../../client/tls/acme-issuance-event.ts'
 import { handleManagedHealthReport } from '../../features/managed/health-report.ts'
 import {
+  FabricPeerReportThrottle,
+  handleFabricPeersReport,
+} from '../../features/fabric/peer-report.ts'
+import {
   backupRunReportResultMessage,
   createBackupRunReportStore,
   handleBackupRunReport,
@@ -427,6 +431,8 @@ export class DaemonCellObject {
   readonly #sweptOffline = new Set<string>()
   #runtimeConnected = false
   #lastProjectedAtMs: number | null = null
+  /** `fabric-peers-report` stamps at most once per 60 s (in memory, no SQLite). */
+  readonly #fabricPeerReportThrottle = new FabricPeerReportThrottle()
   #lastKnownDaemonBuild: DaemonBuildInfo | undefined
   #lastRemoteAddress: string | undefined
   #lastConnectedAt: string | undefined
@@ -1935,7 +1941,8 @@ export class DaemonCellObject {
 
   /**
    * Fire-and-forget daemon reports that only write a projection
-   * (`managed-health-report`, `topology-report`). Returns true when handled.
+   * (`managed-health-report`, `fabric-peers-report`, `topology-report`).
+   * Returns true when handled.
    */
   async #handleReportInbound(
     attachment: { connectionId: string; serverId: string },
@@ -1947,6 +1954,19 @@ export class DaemonCellObject {
         await handleManagedHealthReport(db, {
           reporterServerId: attachment.serverId,
           members: parsed.members,
+        })
+      })
+      return true
+    }
+    if (parsed.type === 'fabric-peers-report') {
+      await this.#recordInboundRepairingPresence(attachment, parsed.at)
+      // In-memory gate first: a throttled frame opens no database client.
+      if (!this.#fabricPeerReportThrottle.take(attachment.serverId, Date.now())) return true
+      await this.#withProjectionDb('fabric-peers-report', attachment.serverId, async (db) => {
+        await handleFabricPeersReport(db, {
+          reporterServerId: attachment.serverId,
+          peers: parsed.peers,
+          observedAt: parsed.observedAt,
         })
       })
       return true

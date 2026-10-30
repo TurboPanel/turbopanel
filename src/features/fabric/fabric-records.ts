@@ -850,6 +850,54 @@ export async function stampRelayPathSummary(
     .where(and(eq(relay.fabricId, params.fabricId), eq(relay.serverId, params.serverId)))
 }
 
+/**
+ * Merged metadata carrying a fresh `observed` reading, or null when the row
+ * already holds one at least as new, or one stamped less than `minIntervalMs`
+ * before `nowMs`. Never touches `appliedPayloadHash` / `appliedAt`.
+ */
+export function planRelayObservedStamp(
+  existing: unknown,
+  observed: NonNullable<RelayMetadata['observed']>,
+  options: { nowMs: number; minIntervalMs: number }
+): RelayMetadata | null {
+  const current = serializeRelayMetadata(existing).observed
+  const currentMs = current ? Date.parse(current.at) : Number.NaN
+  if (Number.isFinite(currentMs)) {
+    if (currentMs >= Date.parse(observed.at)) return null
+    if (options.nowMs - currentMs < options.minIntervalMs) return null
+  }
+  return mergeRelayMetadata(existing, { observed })
+}
+
+/**
+ * Stamp a daemon's pushed peer reading (`fabric-peers-report`) into
+ * `relay.metadata.observed` on every relay of the reporting server. The
+ * server comes from the authenticated socket, never from the frame. Returns
+ * how many rows were written.
+ */
+export async function stampRelayObservedPeers(
+  db: Db,
+  params: {
+    serverId: string
+    observed: NonNullable<RelayMetadata['observed']>
+    nowMs: number
+    minIntervalMs: number
+  }
+): Promise<number> {
+  const rows = await db
+    .select({ id: relay.id, metadata: relay.metadata })
+    .from(relay)
+    .where(eq(relay.serverId, params.serverId))
+  let stamped = 0
+  await forEachSequential(rows, async (row) => {
+    const metadata = planRelayObservedStamp(row.metadata, params.observed, params)
+    if (!metadata) return
+    await db.update(relay).set({ metadata, updatedAt: nowIso() }).where(eq(relay.id, row.id))
+    stamped++
+  })
+  return stamped
+}
+
 export async function stampRelayReconcileSuccess(
   db: Db,
   params: {
