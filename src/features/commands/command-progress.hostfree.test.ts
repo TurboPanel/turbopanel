@@ -171,7 +171,16 @@ test('recordCommandProgress writes a valid plan guarded by server and live statu
   assertEquals(calls[0].where.includes('"command"."server_id" ='), true)
   assertEquals(calls[0].where.includes('"command"."status" not in'), true)
   assertEquals(calls[0].params.slice(0, 2), [COMMAND_ID, SERVER_ID])
-  assertEquals(calls[0].params.slice(2), ['succeeded', 'failed', 'timed_out', 'cancelled'])
+  assertEquals(calls[0].params.slice(2, 6), ['succeeded', 'failed', 'timed_out', 'cancelled'])
+})
+
+test('recordCommandProgress never replaces a newer stored plan with an older frame', async () => {
+  // Frames are handled one connection each, so two sent a few milliseconds
+  // apart can finish in either order; the older one must not win.
+  const { db, calls } = fakeUpdateDb([{ id: COMMAND_ID }])
+  await recordCommandProgress(db, { serverId: SERVER_ID, commandId: COMMAND_ID, progress: PLAN })
+  assertEquals(calls[0].where.includes(`'updatedAt'`), true)
+  assertEquals(calls[0].params.includes(PLAN.updatedAt), true)
 })
 
 test('recordCommandProgress stores only the fields it knows', async () => {
