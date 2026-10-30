@@ -24,7 +24,8 @@
 
 import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
-import { type Db, getDb } from '../../db/connection.ts'
+import { type Db, getDaemonCellRegistry, getDb } from '../../db/connection.ts'
+import type { DaemonCellRegistry } from '../../contracts/cell.ts'
 import { createStripeClient, type StripeClient } from '../../features/billing/client.ts'
 import { type BillingConfig, isCustomerBillingOperational } from '../../features/billing/config.ts'
 import {
@@ -113,6 +114,7 @@ type Authed = {
   organizationId: string
   config: BillingConfig
   userEmail: string | null
+  daemonCellRegistry: DaemonCellRegistry | undefined
 }
 
 /** Session → org → owner → billing on. The order keeps 401/403 ahead of 503. */
@@ -134,6 +136,7 @@ async function authenticate(c: Ctx): Promise<Authed | Response> {
     organizationId: orgResult,
     config,
     userEmail: session.email ?? null,
+    daemonCellRegistry: getDaemonCellRegistry(c),
   }
 }
 
@@ -423,6 +426,7 @@ export function registerBillingRoutes(
     return {
       db: auth.db,
       client: createClient(auth.config),
+      ...(auth.daemonCellRegistry ? { daemonCellRegistry: auth.daemonCellRegistry } : {}),
       loadView,
       beginMutation,
       endMutation,

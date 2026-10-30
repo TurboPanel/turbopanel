@@ -491,26 +491,32 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
   const githubWebhookRate = resolveGithubWebhookRateLimit()
   const gitlabWebhookRate = resolveGitlabWebhookRateLimit()
   const inboundLimits = resolveDaemonWsInboundLimits()
+  // Daemon limiters fall back to a process-local bucket when Redis errors:
+  // fail-open made enroll, session and connect unlimited during an outage,
+  // and fail-closed would lock enrolled daemons out over a broker blip.
   const daemonConnectLimiter = createRedisRateLimiter({
     client: daemonCellRegistry.client,
     limit: connectRate.limit,
     periodSeconds: connectRate.periodSeconds,
+    onError: 'local',
   })
   const daemonRestLimiter = createRedisRateLimiter({
     client: daemonCellRegistry.client,
     limit: restRate.limit,
     periodSeconds: restRate.periodSeconds,
+    onError: 'local',
   })
   const daemonMetricsLimiter = createRedisRateLimiter({
     client: daemonCellRegistry.client,
     limit: metricsRate.limit,
     periodSeconds: metricsRate.periodSeconds,
+    onError: 'local',
   })
   // Inbound GitHub webhooks: keyed per peer address, not per server, because the
   // caller has no identity until its HMAC has been checked (see
   // `githubWebhookRateLimitKey`). Redis eval failures fall through to a
   // process-local token bucket so a broker hiccup still throttles per peer
-  // instead of making ingress unlimited (daemon connect/REST stay fail-open).
+  // instead of making ingress unlimited (the daemon limiters above do the same).
   const githubWebhookLimiter = createRedisRateLimiter({
     client: daemonCellRegistry.client,
     limit: githubWebhookRate.limit,
