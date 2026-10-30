@@ -42,6 +42,9 @@ function state(overrides: Partial<HttpIssuanceState> = {}): HttpIssuanceState {
     deliveredAt: null,
     roster: [],
     helperAddresses: [],
+    centralPair: false,
+    issueTimes: [],
+    renewAt: null,
     ...overrides,
   }
 }
@@ -147,4 +150,12 @@ test('an old state without the newer fields still reads', () => {
   assertEquals(read?.phase, 'forwarding')
   assertEquals(read?.directory, 'production')
   assertEquals(read?.consecutiveFailures, 0)
+})
+
+test("closing as issued marks the pair as the flow's own and notes the time", () => {
+  const closed = afterCapture(state({ issuedEventAt: '2026-11-01T11:59:00.000Z' }), NOW)
+  assertEquals(closed.centralPair, true)
+  assertEquals(closed.issueTimes, [NOW.toISOString()])
+  assertEquals(closed.deliveredAt, null)
+  assertEquals(afterCapture(state(), NOW).centralPair, true)
 })

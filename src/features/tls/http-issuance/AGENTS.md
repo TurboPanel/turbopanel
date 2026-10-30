@@ -25,3 +25,28 @@ The wire side is in `src/daemon/AGENTS.md`.
 - `events.ts`: the three daemon messages. A request closes only when both the
   pair (the capture call) and the `issued` event have arrived, in either order.
 - Status wording never says the key was exposed (`status-text.ts`).
+
+## The sweep, delivery and renewal
+
+`src/client/tls/http-issuance-sweep.ts` runs each minute inside the Workers cron
+and the Deno interval (a bounded batch, oldest first, 20 seconds at most). It
+picks rows with work to do in SQL from the private state: no certificate yet, an
+open request, a finished pair not handed out or due for renewal, a failed attempt
+whose wait is over. A row a server's own web server captured (a pair, no request)
+is never picked.
+
+- Delivery: when a request closes as issued, the sweep queues the certificate
+  apply for every site pinned to the row (the pair goes out sealed per server)
+  and tells the helpers to stop. Marked delivered once tried; a site the apply
+  cannot reach gets the pair on its next deploy.
+- Pin switch (`deploy-prepare.ts`): an automatic pin goes out as a pinned
+  certificate with its pair, and no `tlsMode: 'acme'`, only when the pair came
+  from this flow (`centralPair`, set by the capture of an open request) and the
+  target daemon lists the feature. A pair a server captured itself keeps the
+  server's own web server ordering and renewing.
+- Renewal starts at the stored renewal time (about two thirds in, with a random
+  head start), preferring the server that issued last time.
+- Replace Key (`replaceKey`): a new order for the same names, which always makes
+  a new key. At most once a day and five a week for one name set, never while an
+  order runs, and the old pair keeps serving until the new one is installed.
+  No route yet: the screen change adds it.

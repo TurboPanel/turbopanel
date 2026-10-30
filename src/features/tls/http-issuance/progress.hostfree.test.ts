@@ -3,9 +3,11 @@ import {
   applyForwardReports,
   decideOpen,
   failedState,
+  mayReplaceKey,
   nextStateForEvent,
   publicMarker,
   READY_WAIT_MS,
+  renewalDue,
 } from './progress.ts'
 import { serverStatusLines } from './status-text.ts'
 import type { HttpIssuanceState } from './state.ts'
@@ -49,6 +51,9 @@ function open(over: Partial<HttpIssuanceState> = {}): HttpIssuanceState {
     consecutiveFailures: 0,
     avoidServerId: null,
     deliveredAt: null,
+    centralPair: false,
+    issueTimes: [],
+    renewAt: null,
     roster: [
       { serverId: 'a', label: 'Server A', role: 'issuer' },
       { serverId: 'b', label: 'Server B', role: 'helper' },
@@ -223,4 +228,50 @@ test('no status line uses alarming words', () => {
     .map((l) => l.text)
     .join(' ')
   assert(!/compromis|breach|leak|hack/i.test(all))
+})
+
+test('renewal is due only for a pair the flow ordered, once its renewal time has come', () => {
+  const state = open({
+    centralPair: true,
+    renewAt: at(1000).toISOString(),
+    endedAt: T0.toISOString(),
+    phase: 'issued',
+  })
+  assertEquals(renewalDue(state, at(999)), false)
+  assertEquals(renewalDue(state, at(1000)), true)
+  assertEquals(renewalDue({ ...state, centralPair: false }, at(5000)), false)
+  assertEquals(renewalDue(null, at(5000)), false)
+  assertEquals(renewalDue({ ...state, renewAt: null }, at(1)), true)
+})
+
+test('Replace Key: once a day, five a week, never while an order runs, never without a certificate', () => {
+  const day = 86_400_000
+  const issued = (offsetsDays: number[]) =>
+    open({
+      endedAt: T0.toISOString(),
+      phase: 'issued',
+      issueTimes: offsetsDays.map((d) => new Date(T0.getTime() - d * day).toISOString()),
+    })
+  assertEquals(mayReplaceKey(issued([30]), true, T0), { ok: true, leftThisWeek: 5 })
+  assertEquals(mayReplaceKey(null, true, T0), { ok: true, leftThisWeek: 5 })
+  assertEquals(mayReplaceKey(issued([30]), false, T0), {
+    ok: false,
+    reason: 'no_certificate',
+    leftThisWeek: 5,
+  })
+  const soon = mayReplaceKey(issued([0.5]), true, T0)
+  assert(!soon.ok && soon.reason === 'too_soon' && soon.leftThisWeek === 4)
+  assertEquals(
+    !soon.ok && soon.notBefore?.toISOString(),
+    new Date(T0.getTime() + day / 2).toISOString()
+  )
+  assertEquals(mayReplaceKey(issued([2]), true, T0), { ok: true, leftThisWeek: 4 })
+  const full = mayReplaceKey(issued([6, 5, 4, 3, 2]), true, T0)
+  assert(!full.ok && full.reason === 'weekly_limit' && full.leftThisWeek === 0)
+  assertEquals(
+    !full.ok && full.notBefore?.toISOString(),
+    new Date(T0.getTime() + day).toISOString()
+  )
+  assert(!mayReplaceKey(open({ phase: 'ordering' }), true, T0).ok)
+  assertEquals(mayReplaceKey(issued([8, 9]), true, T0), { ok: true, leftThisWeek: 5 })
 })

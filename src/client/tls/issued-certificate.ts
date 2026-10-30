@@ -29,6 +29,7 @@ import { normalizePrivateKeyPem, PemError, splitCertificateChain } from '../../l
 import { privateKeyMatchesCertificate, TlsKeyError } from '../../lib/tls/keys.ts'
 import { CertificateParseError, parseCertificatePem } from '../../lib/tls/parse.ts'
 import type { ParsedCertificate, TlsAcmeMetadata } from '../../lib/tls/types.ts'
+import { jitteredFallbackRenewAt } from '../../features/tls/dns-certificates/timing.ts'
 import { publicMarker } from '../../features/tls/http-issuance/progress.ts'
 import {
   afterCapture,
@@ -358,10 +359,14 @@ async function rowsPinnedOnServer<T extends { id: string }>(
  * notes the pair (and closes if the issuing server already said `issued`), and
  * the public marker follows.
  */
-function withCapturedRequest(metadata: ManagedRowMetadata, now: Date): Record<string, unknown> {
+function withCapturedRequest(
+  metadata: ManagedRowMetadata,
+  now: Date,
+  parsed: ParsedCertificate
+): Record<string, unknown> {
   const state = readHttpIssuanceState(metadata)
   if (!state) return metadata
-  const after = afterCapture(state, now)
+  const after = afterCapture(state, now, jitteredFallbackRenewAt(parsed.notBefore, parsed.notAfter))
   return {
     ...withHttpIssuanceState(metadata, after),
     acme: publicMarker(metadata.acme, after),
@@ -458,7 +463,7 @@ async function writePair(
         notAfter: parsed.notAfter.toISOString(),
         fingerprintSha256: duplicate ? null : parsed.fingerprintSha256,
         issuedByServerId: input.serverId,
-        metadata: input.requestId ? withCapturedRequest(nextMetadata, now) : nextMetadata,
+        metadata: input.requestId ? withCapturedRequest(nextMetadata, now, parsed) : nextMetadata,
         updatedAt: now.toISOString(),
       })
       .where(and(eq(tls.id, row.id), eq(tls.organizationId, organizationId)))

@@ -140,7 +140,8 @@ import {
   deliveryByServiceId,
   hostRunDeliveryByComposeName,
 } from '../../features/bindings/host-run.ts'
-import { PHP_SITE_MODES_FEATURE } from '../../lib/version-wire.ts'
+import { ACME_ISSUE_FEATURE, PHP_SITE_MODES_FEATURE } from '../../lib/version-wire.ts'
+import { readHttpIssuanceState } from '../../features/tls/http-issuance/state.ts'
 import {
   isComposeChainError,
   resolveComposeLayerChain,
@@ -4234,6 +4235,8 @@ function isTlsSource(value: string): value is TlsSource {
 type OrgTlsCandidate = TlsCandidate & {
   certificatePem: string | null
   privateKeyPem: string | null
+  /** The stored pair was ordered by a serving server at the panel's request (see `http-issuance`). */
+  httpCentralPair?: boolean
 }
 
 export type HostingTlsWire =
@@ -4255,6 +4258,12 @@ export function hostingTlsWireFromResolved(params: {
   status: TlsStatus | undefined
   bindScope: HostingBindScope
   acmeEnabled: boolean
+  /**
+   * The row holds a pair this panel had a server order for it and the target
+   * daemon takes it as a pinned certificate: send the pair, and the server's own
+   * web server stops ordering. Never true for a pair a server captured itself.
+   */
+  centralPair?: boolean
 }): HostingTlsWire {
   if (params.status !== 'automatic') {
     return { ok: true, tlsId: params.tlsId }
@@ -4265,6 +4274,7 @@ export function hostingTlsWireFromResolved(params: {
   if (params.bindScope === 'local' || params.bindScope === 'datacenter') {
     return { ok: false, error: 'acme_requires_public_bind' }
   }
+  if (params.centralPair === true) return { ok: true, tlsId: params.tlsId }
   return { ok: true, tlsId: null, tlsMode: 'acme' }
 }
 
@@ -4352,6 +4362,17 @@ function nameLockRefusalResponse(
   )
 }
 
+/** The pinned row holds a pair ordered by this flow, and the target server's daemon lists the feature. */
+async function takesCentralPair(
+  db: Db,
+  pinned: OrgTlsCandidate | undefined,
+  serverId: string
+): Promise<boolean> {
+  if (!pinned?.httpCentralPair || !pinned.certificatePem || !pinned.privateKeyPem) return false
+  const state = await getServerDaemonStateByServerId(db, serverId)
+  return state?.projection?.features?.includes(ACME_ISSUE_FEATURE) === true
+}
+
 async function resolveHttpHostingEntry(
   db: Db,
   h: HostingRow,
@@ -4401,6 +4422,7 @@ async function resolveHttpHostingEntry(
     status: pinned?.metadata.status,
     bindScope,
     acmeEnabled,
+    centralPair: await takesCentralPair(db, pinned, serverId),
   })
   if (!tlsWire.ok) {
     return {
@@ -4556,6 +4578,7 @@ async function loadOrgTlsCandidates(db: Db, organizationId: string): Promise<Org
       ...(isTlsSource(row.source) ? { source: row.source } : {}),
       certificatePem: row.certificatePem,
       privateKeyPem: row.privateKeyPem,
+      httpCentralPair: readHttpIssuanceState(row.metadata)?.centralPair === true,
     })
   }
   return out

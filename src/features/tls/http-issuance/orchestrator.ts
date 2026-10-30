@@ -39,9 +39,11 @@ import {
   applyForwardReports,
   decideOpen,
   type ForwardReport,
+  mayReplaceKey,
   failedState,
   publicMarker,
   REQUEST_LIFETIME_MS,
+  type ReplaceKeyRefusal,
   waitingMarker,
 } from './progress.ts'
 import {
@@ -250,6 +252,15 @@ export function isHttpOrderable(names: readonly string[]): boolean {
   return names.length > 0 && names.every((n) => !n.includes('*'))
 }
 
+/**
+ * A row this flow does not order (a wildcard, or only older daemons serve it).
+ * Its time is touched so the sweep's oldest-first batch moves on to other rows.
+ */
+async function notMine(deps: HttpIssuanceDeps, tlsId: string, now: Date): Promise<StartOutcome> {
+  await deps.db.update(tls).set({ updatedAt: now.toISOString() }).where(eq(tls.id, tlsId))
+  return 'not_eligible'
+}
+
 export type StartOutcome =
   'started' | 'ordering' | 'waiting' | 'backoff' | 'not_due' | 'not_eligible'
 
@@ -329,6 +340,8 @@ function freshState(params: {
     directory: params.staging ? 'staging' : 'production',
     consecutiveFailures: previous?.consecutiveFailures ?? 0,
     roster: rosterOf(choice),
+    centralPair: previous?.centralPair ?? false,
+    issueTimes: previous?.issueTimes ?? [],
   })
 }
 
@@ -424,13 +437,13 @@ export async function startHttpIssuance(
     .limit(1)
   if (!peek || peek.source !== 'lets_encrypt' || peek.status !== 'automatic') return 'not_eligible'
   const names = namesOf(peek.metadata)
-  if (!isHttpOrderable(names)) return 'not_eligible'
+  if (!isHttpOrderable(names)) return await notMine(deps, tlsId, now)
   const previous = readHttpIssuanceState(peek.metadata)
   if (previous && previous.endedAt === null) return 'not_due'
   const contact = await deps.contact()
   const { choice, servers } = await gather(deps, { id: tlsId, names }, previous)
   // Every serving server on an older daemon keeps ordering for itself; the row is left alone.
-  if (!servers.some((s) => s.hasFeature)) return 'not_eligible'
+  if (!servers.some((s) => s.hasFeature)) return await notMine(deps, tlsId, now)
   const result = await deps.db.transaction((tx) =>
     startInTransaction(tx as unknown as Db, { deps, now, tlsId, choice, contact, due })
   )
@@ -590,4 +603,74 @@ export async function advanceHttpIssuance(
   )
   await deliverOrFail(deps, tlsId, result)
   return result.outcome
+}
+
+export type DeliveryOutcome = 'delivered' | 'not_due' | 'waiting'
+
+/**
+ * Hand a finished pair to the serving servers: `push` queues the certificate
+ * apply for every site pinned to the row (the pair goes out sealed per server,
+ * and an offline server gets it when it is back). The helpers are told to stop
+ * passing the proof path on. Marked delivered once the push was tried, so it is
+ * not repeated every minute; a site the apply could not reach (not deployed
+ * yet, or edits waiting) gets the pair on its next deploy.
+ */
+export async function deliverIssuedPair(
+  deps: HttpIssuanceDeps,
+  tlsId: string,
+  push: ((tlsId: string, organizationId: string) => Promise<void>) | null
+): Promise<DeliveryOutcome> {
+  const now = clock(deps)
+  const [peek] = await deps.db
+    .select({ metadata: tls.metadata, organizationId: tls.organizationId })
+    .from(tls)
+    .where(eq(tls.id, tlsId))
+    .limit(1)
+  const state = peek ? readHttpIssuanceState(peek.metadata) : null
+  if (!peek || !state || state.phase !== 'issued' || state.deliveredAt !== null) return 'not_due'
+  if (!push) return 'waiting'
+  await push(tlsId, peek.organizationId)
+  const ends = await deps.db.transaction(async (tx0) => {
+    const tx = tx0 as unknown as Db
+    const row = await lockRow(tx, tlsId)
+    const current = row ? readHttpIssuanceState(row.metadata) : null
+    if (!row || !current || current.requestId !== state.requestId) return []
+    await writeState(tx, row, { ...current, deliveredAt: now.toISOString() }, now)
+    return endMessages(now, current)
+  })
+  await sendAll(deps, ends)
+  return 'delivered'
+}
+
+export type ReplaceKeyResult =
+  | { ok: true; started: StartOutcome; leftThisWeek: number }
+  | {
+      ok: false
+      reason: ReplaceKeyRefusal | 'cannot_start'
+      leftThisWeek: number
+      notBefore?: Date
+    }
+
+/**
+ * "Replace Key": a fresh order for the same names with a new key (each order
+ * makes one), issued by an online server and delivered only to the servers that
+ * serve the name now. The old certificate keeps serving until the new pair is
+ * installed. Offered at most once a day and counted against the authority's 5 a
+ * week for one name set.
+ */
+export async function replaceKey(deps: HttpIssuanceDeps, tlsId: string): Promise<ReplaceKeyResult> {
+  const now = clock(deps)
+  const [row] = await deps.db
+    .select({ metadata: tls.metadata, hasKey: sql<boolean>`${tls.privateKeyPem} is not null` })
+    .from(tls)
+    .where(eq(tls.id, tlsId))
+    .limit(1)
+  const state = row ? readHttpIssuanceState(row.metadata) : null
+  const verdict = mayReplaceKey(state, row?.hasKey === true, now)
+  if (!verdict.ok) return verdict
+  const started = await startHttpIssuance(deps, tlsId, () => true)
+  const running = started === 'started' || started === 'ordering'
+  return running
+    ? { ok: true, started, leftThisWeek: verdict.leftThisWeek }
+    : { ok: false, reason: 'cannot_start', leftThisWeek: verdict.leftThisWeek }
 }

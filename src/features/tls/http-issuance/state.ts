@@ -81,6 +81,17 @@ export type HttpIssuanceState = {
   deliveredAt: string | null
   /** The serving servers and their parts, for the per-server status lines. */
   roster: RosterEntry[]
+  /**
+   * The stored pair came from this flow (a pair reported for an open request).
+   * Only then is the pair sent to the servers as a pinned certificate and
+   * renewed by the panel; a pair a server's own web server captured stays with
+   * that server's own renewal.
+   */
+  centralPair: boolean
+  /** When this flow finished an order, newest last, kept a week: the count for Replace Key. */
+  issueTimes: string[]
+  /** When the panel orders this pair again (about two thirds into its life), set when the pair is stored. */
+  renewAt: string | null
 }
 
 const FORWARD_OUTCOMES: ReadonlySet<string> = new Set(['pending', 'ready', 'failed', 'skipped'])
@@ -171,6 +182,9 @@ export function newHttpIssuanceState(
     avoidServerId: null,
     deliveredAt: null,
     roster: [],
+    centralPair: false,
+    issueTimes: [],
+    renewAt: null,
     ...base,
   }
 }
@@ -213,6 +227,11 @@ export function readHttpIssuanceState(metadata: unknown): HttpIssuanceState | nu
     avoidServerId: text(r.avoidServerId),
     deliveredAt: text(r.deliveredAt),
     roster: readRoster(r.roster),
+    centralPair: r.centralPair === true,
+    issueTimes: Array.isArray(r.issueTimes)
+      ? r.issueTimes.filter((t): t is string => typeof t === 'string' && t.length > 0)
+      : [],
+    renewAt: text(r.renewAt),
   }
 }
 
@@ -229,11 +248,23 @@ export function withHttpIssuanceState(
  * server already said `issued`; otherwise it stays open until that event, so
  * the pair and the event may arrive in either order.
  */
-export function afterCapture(state: HttpIssuanceState, now: Date): HttpIssuanceState {
+export function afterCapture(
+  state: HttpIssuanceState,
+  now: Date,
+  renewAt: Date | null = null
+): HttpIssuanceState {
   const at = now.toISOString()
-  const next = { ...state, capturedAt: at }
+  const next = {
+    ...state,
+    capturedAt: at,
+    centralPair: true,
+    renewAt: renewAt ? renewAt.toISOString() : state.renewAt,
+  }
   return next.issuedEventAt === null ? next : closedAsIssued(next, at)
 }
+
+/** The most issue times kept; the authority allows 5 for one name set in a week. */
+const ISSUE_TIMES_KEPT = 10
 
 /** The request closed with a stored pair: nothing left to wait for, failures forgotten. */
 export function closedAsIssued(state: HttpIssuanceState, at: string): HttpIssuanceState {
@@ -241,6 +272,9 @@ export function closedAsIssued(state: HttpIssuanceState, at: string): HttpIssuan
     ...state,
     phase: 'issued',
     endedAt: at,
+    centralPair: true,
+    issueTimes: [...state.issueTimes, at].slice(-ISSUE_TIMES_KEPT),
+    deliveredAt: null,
     lastError: null,
     consecutiveFailures: 0,
     nextAttemptAt: null,
