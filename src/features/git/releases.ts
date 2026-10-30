@@ -12,7 +12,7 @@
  * secret-bearing `dispatch` payload (which is deleted at terminal state anyway).
  *
  * **Two lanes, one read model.** A native release is identified by its commit
- * and a promoted directory; a Railpack release is identified by the OCI image
+ * and a promoted directory; an image-built release is identified by the OCI image
  * tag it produced, and rolling one back means redeploying that tag. The commit
  * half comes from `context.releases[]` (written at enqueue time); the image half
  * can only come from the daemon's own deploy result in `command.result_summary`,
@@ -88,16 +88,22 @@ export type ServiceReleaseRecord = {
   /** `deno` when a native app's release ran on Deno; absent means Node. */
   runtime?: 'deno'
   /**
-   * Railpack lane only: the OCI image this release resolved to, and the pinned
+   * Image lane only: the OCI image this release resolved to, and the pinned
    * build inputs that produced it.
    *
-   * A Railpack release has **no promoted directory** — its identity is the image
+   * An image-built release has **no promoted directory** — its identity is the image
    * tag, and rolling one back is "redeploy this tag", not "re-point `current`".
    * So a release list that only ever showed a commit could not tell an operator
    * which image a historical release actually ran. Absent on every native
    * (directory) release, which is how the two lanes are told apart.
    */
   imageTag?: string
+  builderFrontendVersion?: string
+  builderPlanVersion?: string
+  /**
+   * Old names for the two fields above, still emitted so a UI that has not
+   * moved to the new names keeps showing them. Dropped in the contract phase.
+   */
   railpackFrontendVersion?: string
   railpackPlanVersion?: string
   /** Aggregate status across every host in {@link ServiceReleaseRecord.attempts}. */
@@ -147,7 +153,7 @@ function contextBag(value: unknown): Record<string, unknown> {
 }
 
 /**
- * Railpack image identity for one release, as the daemon reported it.
+ * Image identity for one image-built release, as the daemon reported it.
  *
  * It cannot come from `context.releases[]`: that array is written when the
  * command is *enqueued*, and none of these values exist yet — the image is not
@@ -157,10 +163,10 @@ function contextBag(value: unknown): Record<string, unknown> {
  * secret-bearing `dispatch` payload. Merging the two here keeps a single
  * release read model spanning both lanes.
  */
-export type RailpackReleaseIdentity = {
+export type ReleaseImageIdentity = {
   imageTag?: string
-  railpackFrontendVersion?: string
-  railpackPlanVersion?: string
+  builderFrontendVersion?: string
+  builderPlanVersion?: string
 }
 
 /** Non-empty string, else `undefined`. */
@@ -170,18 +176,16 @@ function resultField(record: Record<string, unknown>, key: string): string | und
 }
 
 /**
- * `(composeServiceName, releaseId)` → Railpack identity, off one deploy result.
+ * `(composeServiceName, releaseId)` → image identity, off one deploy result.
  *
  * Unlike {@link normalizeContextReleases} a malformed entry is skipped rather
  * than dropping the whole map: this is display metadata layered onto a release
  * row that already exists, so a bad entry costs a caption, never a rollback
- * target. Entries carrying no Railpack fields at all — every native release —
+ * target. Entries carrying no image fields at all — every native release —
  * are simply absent.
  */
-export function railpackIdentitiesFromResult(
-  result: unknown
-): Map<string, RailpackReleaseIdentity> {
-  const identities = new Map<string, RailpackReleaseIdentity>()
+export function imageIdentitiesFromResult(result: unknown): Map<string, ReleaseImageIdentity> {
+  const identities = new Map<string, ReleaseImageIdentity>()
   const releases = contextBag(result).releases
   if (!Array.isArray(releases)) return identities
   for (const entry of releases) {
@@ -191,13 +195,18 @@ export function railpackIdentitiesFromResult(
     const releaseId = resultField(record, 'releaseId')
     if (!composeServiceName || !releaseId) continue
     const imageTag = resultField(record, 'imageTag')
-    const railpackFrontendVersion = resultField(record, 'railpackFrontendVersion')
-    const railpackPlanVersion = resultField(record, 'railpackPlanVersion')
-    if (!imageTag && !railpackFrontendVersion && !railpackPlanVersion) continue
+    // Accept both spellings: a daemon that has not moved yet still reports the
+    // old field names. The new name wins when both are present.
+    const builderFrontendVersion =
+      resultField(record, 'builderFrontendVersion') ??
+      resultField(record, 'railpackFrontendVersion')
+    const builderPlanVersion =
+      resultField(record, 'builderPlanVersion') ?? resultField(record, 'railpackPlanVersion')
+    if (!imageTag && !builderFrontendVersion && !builderPlanVersion) continue
     identities.set(releaseKey(composeServiceName, releaseId), {
       ...(imageTag === undefined ? {} : { imageTag }),
-      ...(railpackFrontendVersion === undefined ? {} : { railpackFrontendVersion }),
-      ...(railpackPlanVersion === undefined ? {} : { railpackPlanVersion }),
+      ...(builderFrontendVersion === undefined ? {} : { builderFrontendVersion }),
+      ...(builderPlanVersion === undefined ? {} : { builderPlanVersion }),
     })
   }
   return identities
@@ -245,26 +254,28 @@ function releaseKey(composeServiceName: string, releaseId: string): string {
  * Fill in whatever this host's result knew that the record does not yet.
  *
  * Rows arrive newest-first and every host of one fan-out reports the same
- * image, but a host whose result was truncated (or a pre-Railpack row) simply
+ * image, but a host whose result was truncated (or a row from before image releases) simply
  * has nothing to say — so the first host that *does* answer wins, rather than
  * the first row seen.
  */
-function mergeRailpackIdentity(
+function mergeImageIdentity(
   release: ServiceReleaseRecord,
-  identity: RailpackReleaseIdentity | undefined
+  identity: ReleaseImageIdentity | undefined
 ): void {
   if (!identity) return
   if (release.imageTag === undefined && identity.imageTag !== undefined) {
     release.imageTag = identity.imageTag
   }
   if (
-    release.railpackFrontendVersion === undefined &&
-    identity.railpackFrontendVersion !== undefined
+    release.builderFrontendVersion === undefined &&
+    identity.builderFrontendVersion !== undefined
   ) {
-    release.railpackFrontendVersion = identity.railpackFrontendVersion
+    release.builderFrontendVersion = identity.builderFrontendVersion
+    release.railpackFrontendVersion = identity.builderFrontendVersion
   }
-  if (release.railpackPlanVersion === undefined && identity.railpackPlanVersion !== undefined) {
-    release.railpackPlanVersion = identity.railpackPlanVersion
+  if (release.builderPlanVersion === undefined && identity.builderPlanVersion !== undefined) {
+    release.builderPlanVersion = identity.builderPlanVersion
+    release.railpackPlanVersion = identity.builderPlanVersion
   }
 }
 
@@ -324,7 +335,7 @@ export async function listServiceReleases(
       context: command.context,
       // The daemon's own deploy result. `context.releases[]` is written at
       // enqueue time and cannot know an image that had not been built yet, so
-      // the Railpack identity of a release is only readable from here.
+      // the image identity of a release is only readable from here.
       resultSummary: command.resultSummary,
       queuedAt: command.queuedAt,
       finishedAt: command.finishedAt,
@@ -339,7 +350,7 @@ export async function listServiceReleases(
   for (const row of rows) {
     const releases = normalizeContextReleases(contextBag(row.context).releases)
     if (!releases) continue
-    const identities = railpackIdentitiesFromResult(row.resultSummary)
+    const identities = imageIdentitiesFromResult(row.resultSummary)
     const resolvedShas = resolvedCommitShasFromResult(row.resultSummary)
     for (const release of releases) {
       if (
@@ -400,11 +411,11 @@ export function applyResolvedCommitSha(
 function foldReleaseAttempt(
   existing: ServiceReleaseRecord,
   attempt: ServiceReleaseAttempt,
-  identity: RailpackReleaseIdentity | undefined,
+  identity: ReleaseImageIdentity | undefined,
   queuedAt: string | null,
   finishedAt: string | null
 ): void {
-  mergeRailpackIdentity(existing, identity)
+  mergeImageIdentity(existing, identity)
   existing.attempts.push(attempt)
   existing.status = aggregateReleaseStatus(existing.attempts)
   // The release finished when its *last* host did — and rows arrive in command
@@ -422,11 +433,11 @@ function foldReleaseAttempt(
 function newReleaseRecord(
   release: CommandContextRelease,
   attempt: ServiceReleaseAttempt,
-  identity: RailpackReleaseIdentity | undefined,
+  identity: ReleaseImageIdentity | undefined,
   queuedAt: string | null,
   finishedAt: string | null
 ): ServiceReleaseRecord {
-  return {
+  const record: ServiceReleaseRecord = {
     commandId: attempt.commandId,
     serverId: attempt.serverId,
     attempts: [attempt],
@@ -438,8 +449,6 @@ function newReleaseRecord(
     ...(release.commitAuthor === undefined ? {} : { commitAuthor: release.commitAuthor }),
     ...(release.nodeVersion === undefined ? {} : { nodeVersion: release.nodeVersion }),
     ...(release.runtime === undefined ? {} : { runtime: release.runtime }),
-    // Railpack identity rides in from the deploy result, not the context.
-    ...identity,
     status: aggregateReleaseStatus([attempt]),
     queuedAt,
     finishedAt,
@@ -450,6 +459,9 @@ function newReleaseRecord(
       ? {}
       : { rollbackToReleaseId: release.rollbackToReleaseId }),
   }
+  // The image identity rides in from the deploy result, not the context.
+  mergeImageIdentity(record, identity)
+  return record
 }
 
 /**

@@ -68,15 +68,17 @@ import {
   type ComposeServiceKind,
   type ComposeServiceSourceExtension,
   isHostNativeServiceKind,
+  isImageBuildKind,
   type NodePackageManager,
   readServiceTurbopanelExtension,
 } from '../../features/compose/index.ts'
-import type {
-  EnvironmentDeployPrincipalMaterial,
-  EnvironmentDeploySource,
-  EnvironmentDeploySourceBuild,
-  EnvironmentDeploySourceCredentialKind,
-  EnvironmentDeploySitePrincipal,
+import {
+  IMAGE_BUILD_WIRE_KIND,
+  type EnvironmentDeployPrincipalMaterial,
+  type EnvironmentDeploySource,
+  type EnvironmentDeploySourceBuild,
+  type EnvironmentDeploySourceCredentialKind,
+  type EnvironmentDeploySitePrincipal,
 } from '../../contracts/commands/schemas.ts'
 import { secret, repository } from '../../db/schema.ts'
 import {
@@ -317,10 +319,10 @@ function toDeploySourcePrincipal(
  *
  * `x-turbopanel.source.buildKind` picks the backend and nothing else: `native`
  * (the default when omitted) is the checkout → build → promote directory
- * release, `railpack` is Railpack + BuildKit producing an OCI image. Every
- * other field flows through unchanged either way — Railpack's zero-config
- * detection is the default and the commands are advisory overrides it may or
- * may not honor, while `outputDirectory` simply has no meaning once the output
+ * release, `image` (or its old spelling) is an auto-detected container image
+ * build producing an OCI image. Every other field flows through unchanged
+ * either way — the zero-config detection is the default and the commands are
+ * advisory overrides it may or may not honor, while `outputDirectory` simply has no meaning once the output
  * is an image (the daemon ignores it rather than failing, so switching modes
  * back and forth never strands a payload).
  *
@@ -335,7 +337,9 @@ function resolveSourceBuild(
   packageManager?: NodePackageManager
 ): EnvironmentDeploySourceBuild {
   const build: EnvironmentDeploySourceBuild = {
-    kind: binding.buildKind === 'railpack' ? 'railpack' : 'native',
+    // Expand phase: an older daemon rejects `image`, so the wire keeps the old
+    // value for either spelling of the image kind.
+    kind: isImageBuildKind(binding.buildKind) ? IMAGE_BUILD_WIRE_KIND : 'native',
   }
   // The owning service's package-manager choice rides the build object so the
   // daemon can derive the right install command after checkout.

@@ -4786,8 +4786,8 @@ test('parseEnvironmentDeployResult keeps well-formed releases and drops junk row
           releaseId: 'rel-1',
           commitSha: 'abc123',
           imageTag: 'web:abc123',
-          railpackFrontendVersion: '0.1.0',
-          railpackPlanVersion: '0.2.0',
+          builderFrontendVersion: '0.1.0',
+          builderPlanVersion: '0.2.0',
         },
         { composeServiceName: 'incomplete' },
         'skip-me',
@@ -4802,11 +4802,38 @@ test('parseEnvironmentDeployResult keeps well-formed releases and drops junk row
           releaseId: 'rel-1',
           commitSha: 'abc123',
           imageTag: 'web:abc123',
+          builderFrontendVersion: '0.1.0',
+          builderPlanVersion: '0.2.0',
+        },
+      ],
+    }
+  )
+  // A daemon that has not moved yet reports the old field names; they come out
+  // under the new ones.
+  assertEquals(
+    parseEnvironmentDeployResult({
+      projectName: 'tp-demo',
+      releases: [
+        {
+          composeServiceName: 'web',
+          serviceId: 'svc-web',
+          releaseId: 'rel-1',
+          commitSha: 'abc123',
           railpackFrontendVersion: '0.1.0',
           railpackPlanVersion: '0.2.0',
         },
       ],
-    }
+    })?.releases,
+    [
+      {
+        composeServiceName: 'web',
+        serviceId: 'svc-web',
+        releaseId: 'rel-1',
+        commitSha: 'abc123',
+        builderFrontendVersion: '0.1.0',
+        builderPlanVersion: '0.2.0',
+      },
+    ]
   )
   assertEquals(
     parseEnvironmentDeployResult({
@@ -6693,6 +6720,14 @@ test('parseEnvironmentDeployPayload covers sourceMaterial cloneUrl, railpack, an
     installCommand: 'pnpm install',
     env: { NODE_ENV: 'production' },
   })
+
+  // The new value parses too; the panel does not send it yet, but it must not
+  // be refused once the contract phase flips the send.
+  const image = parseEnvironmentDeployPayload({
+    ...NATIVE_APP_BASE,
+    sourceMaterial: [{ ...GITLAB_SOURCE_ENTRY, build: { kind: 'image' } }],
+  })
+  assertEquals(image.sourceMaterial?.[0]?.build, { kind: 'image' })
 
   const staticBuild = parseEnvironmentDeployPayload({
     ...NATIVE_APP_BASE,

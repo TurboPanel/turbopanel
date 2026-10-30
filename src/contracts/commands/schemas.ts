@@ -2114,6 +2114,13 @@ export type EnvironmentDeploySite = {
 }
 
 /**
+ * The build kind the panel puts on the wire for an image-built source during
+ * the expand phase of the rename. An older daemon only accepts this value, so
+ * the new `image` value stays inside the panel until the contract phase.
+ */
+export const IMAGE_BUILD_WIRE_KIND = 'railpack' as const
+
+/**
  * How the daemon turns a Git checkout into a runnable release.
  *
  * `env` is a **non-secret** build-time map only — build secrets keep riding
@@ -2121,19 +2128,24 @@ export type EnvironmentDeploySite = {
  * never land in a release manifest.
  *
  * `kind: 'native'` is the checkout → build → promote directory release.
- * `kind: 'railpack'` swaps the build step for Railpack + BuildKit, which emits
- * an OCI image the daemon tags and feeds back into runtime compose as
- * `services.<name>.image` — there is no promoted tree and no `current` symlink
- * for it, so `outputDirectory` is meaningless and is **ignored** (never
- * rejected: a stale value left behind by a mode switch must not fail parsing).
- * `installCommand` / `buildCommand` / `env` stay optional hints Railpack's
- * zero-config detection may or may not honor.
+ * `kind: 'image'` swaps the build step for an auto-detected container image
+ * build, which emits an OCI image the daemon tags and feeds back into runtime
+ * compose as `services.<name>.image` — there is no promoted tree and no
+ * `current` symlink for it, so `outputDirectory` is meaningless and is
+ * **ignored** (never rejected: a stale value left behind by a mode switch must
+ * not fail parsing). `installCommand` / `buildCommand` / `env` stay optional
+ * hints the zero-config detection may or may not honor.
  *
- * `kind: 'static'` is reserved for the site release phase; only
- * `native` and `railpack` are produced today.
+ * `kind: 'static'` is reserved for the site release phase; only `native` and
+ * the image kind are produced today.
+ *
+ * Expand phase of the rename: the panel accepts both the new `image` value and
+ * the old value everywhere it reads one, but keeps SENDING the old value on the
+ * wire (`IMAGE_BUILD_WIRE_KIND`) because an older daemon rejects `image` at its
+ * set check. The contract phase flips the send once every daemon accepts both.
  */
 export type EnvironmentDeploySourceBuild = {
-  kind: 'native' | 'static' | 'railpack'
+  kind: 'native' | 'static' | 'image' | 'railpack'
   /**
    * Package manager for a `kind: 'native'` node-app install. Omitted means
    * the daemon auto-detects from the lockfile at build time. An explicit
@@ -2775,10 +2787,12 @@ export type EnvironmentDeployContainer = {
  * result.
  *
  * Lets the release-history / rollback surface name a release without a second
- * round trip to the host. A **Railpack** release has no promoted directory and
+ * round trip to the host. An image-built release has no promoted directory and
  * no commit-backed tree to point at, so its identity there is the image tag
- * plus the pinned tools that produced it (`railpackFrontendVersion` /
- * `railpackPlanVersion`); a native release omits all three.
+ * plus the pinned tools that produced it (`builderFrontendVersion` /
+ * `builderPlanVersion`); a native release omits all three. The parser also
+ * accepts the older field names from a daemon that has not moved yet and
+ * reports them under the new names.
  */
 export type EnvironmentDeployResultRelease = {
   composeServiceName: string
@@ -2786,8 +2800,8 @@ export type EnvironmentDeployResultRelease = {
   releaseId: string
   commitSha: string
   imageTag?: string
-  railpackFrontendVersion?: string
-  railpackPlanVersion?: string
+  builderFrontendVersion?: string
+  builderPlanVersion?: string
 }
 
 /**
@@ -3703,6 +3717,7 @@ const SOURCE_PROVIDERS = new Set<EnvironmentDeploySource['provider']>(['github',
 const SOURCE_BUILD_KINDS = new Set<EnvironmentDeploySourceBuild['kind']>([
   'native',
   'static',
+  'image',
   'railpack',
 ])
 
@@ -4778,6 +4793,11 @@ function parseDeployResultSites(value: unknown): EnvironmentDeployResultSite[] |
   return out.length > 0 ? out : undefined
 }
 
+/** First argument that is a string (the new field name wins over the old one). */
+function firstString(...values: unknown[]): string | undefined {
+  return values.find(isString)
+}
+
 /** Cap mirrors {@link MAX_ENVIRONMENT_DEPLOY_CONTAINERS} — same blast radius. */
 const MAX_ENVIRONMENT_DEPLOY_RESULT_RELEASES = 100
 
@@ -4799,18 +4819,19 @@ function parseDeployResultReleases(value: unknown): EnvironmentDeployResultRelea
     ) {
       continue
     }
+    const builderFrontendVersion = firstString(
+      entry.builderFrontendVersion,
+      entry.railpackFrontendVersion
+    )
+    const builderPlanVersion = firstString(entry.builderPlanVersion, entry.railpackPlanVersion)
     out.push({
       composeServiceName: entry.composeServiceName,
       serviceId: entry.serviceId,
       releaseId: entry.releaseId,
       commitSha: entry.commitSha,
       ...(isString(entry.imageTag) ? { imageTag: entry.imageTag } : {}),
-      ...(isString(entry.railpackFrontendVersion)
-        ? { railpackFrontendVersion: entry.railpackFrontendVersion }
-        : {}),
-      ...(isString(entry.railpackPlanVersion)
-        ? { railpackPlanVersion: entry.railpackPlanVersion }
-        : {}),
+      ...(builderFrontendVersion === undefined ? {} : { builderFrontendVersion }),
+      ...(builderPlanVersion === undefined ? {} : { builderPlanVersion }),
     })
   }
   return out.length > 0 ? out : undefined
