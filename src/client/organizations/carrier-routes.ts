@@ -17,7 +17,13 @@ import { forEachSequential } from '../../lib/sequential.ts'
 import { isPostgresUniqueViolation } from '../../db/unique-violation.ts'
 import { recordAudit } from '../../features/audit/audit-records.ts'
 import type { CredentialReport, TokenDiscovery } from '../../features/tunnels/adapter.ts'
-import { dependentsOf, lossOf, lossOfRemoving } from '../../features/tunnels/badge-dependents.ts'
+import {
+  type BadgeDependent,
+  dependentsOf,
+  dependentsSentence,
+  lossOf,
+  lossOfRemoving,
+} from '../../features/tunnels/badge-dependents.ts'
 import { TunnelProviderError } from '../../features/tunnels/errors.ts'
 import {
   type BadgeRow,
@@ -57,6 +63,7 @@ import {
   type TunnelAdapterRegistry,
 } from '../../features/tunnels/registry.ts'
 import {
+  type BadgeCapabilities,
   type DeclaredZone,
   NO_CAPABILITIES,
   TUNNEL_PROVIDERS,
@@ -231,7 +238,7 @@ function originCertificateInUse(c: Context<AppEnv>): Response {
   return c.json(
     {
       error: 'origin_certificate_in_use',
-      message: 'Origin certificates were issued through this. Remove them first.',
+      message: 'Origin Certificates were issued through this account. Remove them first.',
     },
     409
   )
@@ -616,9 +623,6 @@ async function deleteBadgeResponse(c: Context<AppEnv>, scope: Scope): Promise<Re
   if (current instanceof Response) return current
   const row = await loadBadgeParam(c, scope, current)
   if (row instanceof Response) return row
-  if (await countOriginCertificatesFrom(scope.db, scope.organizationId, { badgeId: row.id })) {
-    return originCertificateInUse(c)
-  }
   const blocked = await dependentsOf(scope.db, current.id, await lossOfRemoving(scope.db, row))
   if (blocked.total > 0) return badgeInUse(c, blocked)
   await deleteBadge(scope.db, row)
@@ -628,13 +632,12 @@ async function deleteBadgeResponse(c: Context<AppEnv>, scope: Scope): Promise<Re
 
 function badgeInUse(
   c: Context<AppEnv>,
-  blocked: { dependents: unknown[]; total: number }
+  blocked: { dependents: BadgeDependent[]; total: number }
 ): Response {
   return c.json(
     {
       error: 'badge_in_use',
-      message:
-        'Other API Tokens do not cover everything this one does. Add one that does first, or remove what depends on it.',
+      message: dependentsSentence(blocked.dependents, blocked.total),
       dependents: blocked.dependents,
       total: blocked.total,
     },
@@ -727,22 +730,23 @@ function removeZoneResponse(registry: TunnelAdapterRegistry) {
     )
     if (report instanceof Response) return report
     const others = (await listBadges(scope.db, current.id)).filter((b) => b.id !== row.id)
+    const caps = toApiBadge(row).capabilities
+    // What the token stops reaching once the zone is no longer named for it.
+    const dropped = (had: BadgeCapabilities['dns'], keeps: BadgeCapabilities['dns']) =>
+      keeps.some((z) => z.id === zoneId) ? [] : had.filter((z) => z.id === zoneId)
     const blocked = await dependentsOf(
       scope.db,
       current.id,
       lossOf(
         {
-          ...toApiBadge(row).capabilities,
           tunnels: false,
-          dns: toApiBadge(row).capabilities.dns.filter((z) => z.id === zoneId),
-          certificates: [],
+          dns: dropped(caps.dns, report.capabilities.dns),
+          certificates: dropped(caps.certificates, report.capabilities.certificates),
         },
         others
       )
     )
-    if (blocked.total > 0 && !report.capabilities.dns.some((z) => z.id === zoneId)) {
-      return badgeInUse(c, blocked)
-    }
+    if (blocked.total > 0) return badgeInUse(c, blocked)
     return await storeZones(c, scope, { current, row, declared, report }, 'badge.zone_remove')
   }
 }

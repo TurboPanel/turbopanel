@@ -12,7 +12,7 @@
  */
 
 import { dohLookup } from '../../lib/http/doh-resolve.ts'
-import { ipAddressScope, normalizeIpAddress } from '../../lib/ip-address.ts'
+import { canonicalIpAddress, ipAddressScope } from '../../lib/ip-address.ts'
 import { type CertificatePrecheckProbes, checkCaa } from './certificate-precheck.ts'
 import type { HostingDnsHostname, HostingDnsReport } from './hosting-certificate.ts'
 
@@ -34,7 +34,7 @@ async function addressesOf(lookup: DnsLookup, name: string): Promise<string[]> {
   for (const result of settled) {
     if (result.status !== 'fulfilled') continue
     for (const raw of result.value) {
-      const address = normalizeIpAddress(raw)
+      const address = canonicalIpAddress(raw)
       if (address !== null) found.push(address)
     }
   }
@@ -73,6 +73,19 @@ function wrongAddressProblem(
   return `${hostname} points at ${listed(wrong)}, which is not this site's server (${servers}).${ipv6}`
 }
 
+/**
+ * With no public address known for any serving server the answers cannot be
+ * compared, so the name is held and the reason says so plainly instead of
+ * letting any public answer through (a wrong AAAA record would pass unseen).
+ */
+function unknownServerAddressProblem(
+  hostname: string,
+  expected: ReadonlySet<string>
+): string | null {
+  if (expected.size > 0) return null
+  return `TurboPanel doesn't know a public address for this site's server, so it can't check that ${hostname} points at it. Deploy the site to a server, or add the server's public address to TurboPanel, then check again.`
+}
+
 const isIpv6 = (address: string) => address.includes(':')
 
 /**
@@ -107,6 +120,8 @@ async function checkOneName(
     ...(wrong.length > 0 ? { wrongAddresses: wrong } : {}),
   }
   if (blocking !== null) return { ...entry, resolves: false, problem: blocking }
+  const unknown = unknownServerAddressProblem(hostname, expected)
+  if (unknown !== null) return { ...entry, problem: unknown }
   const problem = wrongAddressProblem(hostname, wrong, expected)
   if (problem !== null && !warnOnly) return { ...entry, problem }
   if (problem !== null) entry.warning = problem
@@ -152,10 +167,9 @@ async function checkCaaOf(
 
 /**
  * A name is ready when it resolves, every answer is one of the serving
- * servers' public addresses (when those are known; with none on record any
- * public answer counts, since the owner may use a proxy or an address the panel
- * cannot see), port 80 answers, and CAA allows Let's Encrypt. Probes that are
- * not passed are skipped.
+ * servers' public addresses (managed addresses, public-side overrides and the
+ * addresses each server's daemon reports; with none known the name is held,
+ * saying so), port 80 answers, and CAA allows Let's Encrypt. Probes that are not passed are skipped.
  */
 export async function checkHostingDns(params: {
   hostnames: readonly string[]
@@ -166,7 +180,7 @@ export async function checkHostingDns(params: {
 }): Promise<HostingDnsReport> {
   const expected = new Set(
     params.expectedAddresses
-      .map((address) => normalizeIpAddress(address))
+      .map((address) => canonicalIpAddress(address))
       .filter((address): address is string => address !== null)
   )
   const hostnames = await Promise.all(

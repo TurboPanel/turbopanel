@@ -42,6 +42,8 @@ import {
   revokeOriginCertificate,
   sweepOriginCertificates,
 } from './origin-certificate.ts'
+import { dependentsOf, lossOfRemoving } from './badge-dependents.ts'
+import type { BadgeRow } from './records.ts'
 import { readOriginRetry } from './origin-certificate-retry.ts'
 import { runOriginCertificateSweepTick } from './origin-certificate-sweep.ts'
 
@@ -57,6 +59,12 @@ const dbUrl = getDatabaseUrl()
 type Db = ReturnType<typeof createDenoDb>
 
 const TOKEN = 'cf-api-token-0123456789abcdefghijklmnopqrstuv'
+
+/** Certificates that removing this token would leave with no token to renew or revoke them. */
+async function certificatesStrandedBy(db: Db, row: BadgeRow): Promise<number> {
+  const { dependents } = await dependentsOf(db, row.carrierId, await lossOfRemoving(db, row))
+  return dependents.filter((d) => d.kind === 'certificate').length
+}
 
 type Fake = {
   adapter: TunnelAdapter
@@ -225,17 +233,10 @@ test('an issued certificate is stored with its key sealed and the request is the
     assertEquals(link?.scope, 'names')
     assertEquals(link?.retiredAt, null)
     assertEquals(link?.badgeId, w.badgeRow.id)
-    assertEquals(
-      await countOriginCertificatesFrom(w.db, w.organizationId, { badgeId: w.badgeRow.id }),
-      1
-    )
+    assertEquals(await certificatesStrandedBy(w.db, w.badgeRow), 1)
     assertEquals(
       await countOriginCertificatesFrom(w.db, w.organizationId, { carrierId: w.carrierRow.id }),
       1
-    )
-    assertEquals(
-      await countOriginCertificatesFrom(w.db, w.organizationId, { badgeId: crypto.randomUUID() }),
-      0
     )
   })
 })
@@ -512,10 +513,7 @@ test('removing a token strands only the certificates no other active token could
       zoneName: 'example.com',
       names: ['app.example.com'],
     })
-    assertEquals(
-      await countOriginCertificatesFrom(w.db, w.organizationId, { badgeId: w.badgeRow.id }),
-      1
-    )
+    assertEquals(await certificatesStrandedBy(w.db, w.badgeRow), 1)
     const second = 'cf-second-token-0123456789abcdefghijklmnopqrstuv'
     const [sec] = await w.db
       .insert(secret)
@@ -533,10 +531,7 @@ test('removing a token strands only the certificates no other active token could
       lastFour: second.slice(-4),
       capabilities: { tunnels: true, dns: [], certificates: [{ id: 'z1', name: 'example.com' }] },
     })
-    assertEquals(
-      await countOriginCertificatesFrom(w.db, w.organizationId, { badgeId: w.badgeRow.id }),
-      0
-    )
+    assertEquals(await certificatesStrandedBy(w.db, w.badgeRow), 0)
     // The account still owns the certificate whichever token goes.
     assertEquals(
       await countOriginCertificatesFrom(w.db, w.organizationId, { carrierId: w.carrierRow.id }),

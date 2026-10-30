@@ -24,6 +24,7 @@
 import { isValidHostname } from '../../contracts/commands/hostname.ts'
 import type { ServerReportedIp } from '../../contracts/server-addresses.ts'
 import {
+  canonicalIpAddress,
   ipAddressScope,
   isRoutableHostAddress,
   normalizeIpAddress,
@@ -110,6 +111,40 @@ export function isQualifiedHostname(value: string): boolean {
   return !/^\d+$/.test(last)
 }
 
+/** Reported public interface addresses on a link that is up and not a mesh tunnel. */
+function usablePublicReported(reported: readonly ServerReportedIp[]): ServerReportedIp[] {
+  return reported.filter(
+    (row) =>
+      row.link !== 'down' &&
+      !MESH_INTERFACE_RE.test(row.interface ?? '') &&
+      ipAddressScope(row.address) === 'public'
+  )
+}
+
+/**
+ * Every public address visitors may reach one server on, for checking where a
+ * site's DNS points: its public `ip` rows, the address overrides saved for its
+ * public side (a router or 1:1 NAT in front of it), and every public interface
+ * address the daemon reports (all of them, not one per family: a host with two
+ * IPv6 addresses may serve on either). Normalized and without repeats.
+ */
+export function servingPublicAddresses(facts: {
+  publicIps: readonly string[]
+  saved: readonly ClientAddressEntry[]
+  reportedIps: readonly ServerReportedIp[]
+}): string[] {
+  const overrides = facts.saved
+    .filter((entry) => entry.scope === 'public')
+    .flatMap((entry) => [entry.addressV4, entry.addressV6])
+  const reported = usablePublicReported(facts.reportedIps).map((row) => row.address)
+  const found = new Set<string>()
+  for (const raw of [...facts.publicIps, ...overrides, ...reported]) {
+    const address = canonicalIpAddress(raw)
+    if (address !== null && ipAddressScope(address) === 'public') found.add(address)
+  }
+  return [...found]
+}
+
 /**
  * Public interface addresses the daemon reported, by the control plane's
  * classification: CGNAT, link-local, private and mesh addresses are dropped,
@@ -119,12 +154,7 @@ export function detectedPublicAddresses(reported: readonly ServerReportedIp[]): 
   v4: string | null
   v6: string | null
 } {
-  const usable = reported.filter(
-    (row) =>
-      row.link !== 'down' &&
-      !MESH_INTERFACE_RE.test(row.interface ?? '') &&
-      ipAddressScope(row.address) === 'public'
-  )
+  const usable = usablePublicReported(reported)
   const ordered = [...usable.filter((row) => row.preferred), ...usable.filter((r) => !r.preferred)]
   const pick = (version: 4 | 6) => {
     const row = ordered.find((r) => parseIpVersion(r.address) === version)

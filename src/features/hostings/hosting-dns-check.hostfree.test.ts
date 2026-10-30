@@ -41,14 +41,55 @@ test('a name pointing somewhere else, or nowhere, is not ready', async () => {
   assertEquals(report.expectedAddresses, ['203.0.113.7'])
 })
 
-test('with no known server address any answer counts', async () => {
+test('with no known server address the name is held and the reason says so, and port 80 is not probed', async () => {
+  let probed = false
   const report = await checkHostingDns({
     hostnames: ['a.example.com'],
     expectedAddresses: [],
     lookup: table({ 'a.example.com/AAAA': ['2001:db8::1'] }),
     now: NOW,
+    probes: {
+      port80: () => {
+        probed = true
+        return Promise.resolve({ state: 'open' as const })
+      },
+    },
   })
-  assertEquals(report.ready, true)
+  assertEquals(report.ready, false)
+  assertEquals(probed, false)
+  assertEquals(report.expectedAddresses, [])
+  assertEquals(
+    report.hostnames[0]?.problem,
+    "TurboPanel doesn't know a public address for this site's server, so it can't check that a.example.com points at it. Deploy the site to a server, or add the server's public address to TurboPanel, then check again."
+  )
+})
+
+test('a wrong AAAA is caught against reported addresses: alone it blocks, beside a right one it warns', async () => {
+  // A server with no managed addresses, checked against what its daemon reports.
+  const reported = ['45.32.200.170', '2001:db8:10::1', '2001:db8:10::2']
+  const alone = await checkHostingDns({
+    hostnames: ['a.example.com'],
+    expectedAddresses: reported,
+    lookup: table({
+      'a.example.com/A': ['45.32.200.170'],
+      'a.example.com/AAAA': ['2001:db8:99::1'],
+    }),
+    now: NOW,
+  })
+  assertEquals(alone.ready, false)
+  assertEquals(alone.hostnames[0]?.wrongAddresses, ['2001:db8:99::1'])
+  assertEquals(alone.hostnames[0]?.problem?.includes('tries IPv6 first'), true)
+  const beside = await checkHostingDns({
+    hostnames: ['a.example.com'],
+    expectedAddresses: reported,
+    lookup: table({
+      'a.example.com/A': ['45.32.200.170'],
+      'a.example.com/AAAA': ['2001:db8:10::2', '2001:db8:99::1'],
+    }),
+    now: NOW,
+  })
+  assertEquals(beside.ready, true)
+  assertEquals(beside.hostnames[0]?.warning?.includes('2001:db8:99::1'), true)
 })
 
 test('duplicate answers are listed once', async () => {
@@ -92,7 +133,7 @@ test('round-robin across the serving servers is ready', async () => {
 test('a name behind a NAT address with port 80 not forwarded says so plainly', async () => {
   const report = await checkHostingDns({
     hostnames: ['w.example.com'],
-    expectedAddresses: [],
+    expectedAddresses: ['198.203.204.120'],
     lookup: table({ 'w.example.com/A': ['198.203.204.120'] }),
     now: NOW,
     probes: {
@@ -154,7 +195,7 @@ test('the port-80 probe gets the exact addresses the check judged, and unknown n
   const seen: string[][] = []
   const report = await checkHostingDns({
     hostnames: ['a.example.com'],
-    expectedAddresses: [],
+    expectedAddresses: ['198.51.100.7', '2001:db8::7'],
     lookup: table({ 'a.example.com/A': ['198.51.100.7'], 'a.example.com/AAAA': ['2001:db8::7'] }),
     now: NOW,
     probes: {

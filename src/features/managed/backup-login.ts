@@ -5,10 +5,13 @@
  * engine from `kind: 'backup'` on the apply credential:
  *
  * - PostgreSQL: `pg_read_all_data`, `BYPASSRLS` and `CONNECT` on every database.
- * - MySQL: `SELECT`, `SHOW VIEW`, `TRIGGER`, `EVENT` on every database and the
- *   global `SHOW_ROUTINE`.
+ * - MySQL: `SELECT`, `SHOW VIEW`, `TRIGGER`, `EVENT` and `SHOW_ROUTINE` at
+ *   global level (`*.*`), so databases made with plain SQL are covered too.
  * - MariaDB: `SELECT`, `SHOW VIEW`, `TRIGGER`, `EVENT`, `LOCK TABLES` and
- *   `SHOW CREATE ROUTINE` on every database.
+ *   `SHOW CREATE ROUTINE` at global level.
+ *
+ * A daemon from before the global grants gives the MySQL and MariaDB rights
+ * only on the databases sent in the credential.
  *
  * On the shared front door it is a tool login (always the primary, no
  * read/write split), so a dump in one transaction stays on one server.
@@ -32,7 +35,7 @@ type Refusal = { error: string; message: string }
 export const BACKUP_LOGIN_SOURCES_REQUIRED: Refusal = {
   error: 'managed_backup_login_sources_required',
   message:
-    "A backup login can read every database, so it must say where it connects from. Choose at least one place, such as 'internal' or one of your servers. 'any' is not allowed.",
+    "A backup login can read every database, so it must say where it connects from. Choose at least one place, such as 'internal' (this server only) or one of your servers. 'any' is not allowed.",
 }
 
 export const BACKUP_LOGIN_EXISTS: Refusal = {

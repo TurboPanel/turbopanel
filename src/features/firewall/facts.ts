@@ -36,6 +36,8 @@ import { resolveComposeLayerChain, isComposeChainError } from '../compose/layer-
 import { mergeComposeLayers } from '../compose/layers.ts'
 import { parseDatacenterOptions } from '../datacenters/datacenter-options.ts'
 import { parseFabricOptions } from '../fabric/cidr.ts'
+import { serverPayloadNeedsTunnel } from '../fabric/fabric-records.ts'
+import { loadLanPairInputs } from '../fabric/lan-pairs.ts'
 import { relayCarriesTraffic } from '../fabric/relay-filters.ts'
 import { resolveHostingBind } from '../hostings/hosting-options.ts'
 import { MANAGED_HA_HTTP_PORT, MANAGED_HA_RAFT_PORT } from '../managed/ha-ports.ts'
@@ -241,16 +243,29 @@ async function loadManagedExposures(db: Db, serverId: string): Promise<DerivedEx
   }))
 }
 
-/** TurboFabric: a relay on this server listens for WireGuard peers (any address: peers sit behind NAT). */
+/**
+ * TurboFabric: a relay on this server listens for WireGuard peers (any
+ * address: peers sit behind NAT). Closed while TurboFabric is paused, this
+ * server is switched out of it, or its payload has no tunnel (every other
+ * member is a trusted LAN pair), read from the same answer the payload
+ * builder uses.
+ */
 export async function loadFabricExposures(db: Db, serverId: string): Promise<DerivedExposure[]> {
   const [row] = await db
-    .select({ options: fabric.options })
+    .select({ fabricId: relay.fabricId, options: fabric.options })
     .from(relay)
     .innerJoin(fabric, eq(fabric.id, relay.fabricId))
-    // Closed while TurboFabric is paused or this server is switched out of it.
     .where(and(eq(relay.serverId, serverId), relayCarriesTraffic()))
     .limit(1)
   if (!row) return []
+  const members = await db
+    .select({ serverId: relay.serverId })
+    .from(relay)
+    .innerJoin(fabric, eq(fabric.id, relay.fabricId))
+    .where(and(eq(relay.fabricId, row.fabricId), relayCarriesTraffic()))
+  const memberIds = members.map((member) => member.serverId)
+  const inputs = await loadLanPairInputs(db, [serverId, ...memberIds])
+  if (!serverPayloadNeedsTunnel(serverId, memberIds, inputs)) return []
   return [
     {
       source: 'fabric',

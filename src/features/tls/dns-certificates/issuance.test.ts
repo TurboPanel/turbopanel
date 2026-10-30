@@ -24,6 +24,7 @@ import { parseTestSecretsConfig } from '../../../test-fixtures/secrets.ts'
 import { skipWithoutDatabase } from '../../../test-fixtures/require-service.test.support.ts'
 import { TunnelProviderError } from '../../tunnels/errors.ts'
 import type { TunnelAdapterRegistry } from '../../tunnels/registry.ts'
+import { dependentsOf, dependentsSentence, lossOfRemoving } from '../../tunnels/badge-dependents.ts'
 import {
   ANSWER_RECHECK_MS,
   DAY_MS,
@@ -1121,4 +1122,83 @@ test('an account that is refused even after registering again fails the order wi
     const note = ((await rowOf(db, id)).metadata as { acme: { lastError: string } }).acme.lastError
     assertStringIncludes(note, "no longer accepts this organization's account")
     assertEquals(s.dns.records.size, 0)
+  }))
+
+/** A second DNS token on the same account, for the same zone: what rotating a token adds first. */
+async function addSecondDnsToken(db: Db, s: Awaited<ReturnType<typeof setup>>) {
+  const carrierId = s.input([]).carrierId
+  const [stored] = await db
+    .insert(secret)
+    .values({
+      organizationId: s.organizationId,
+      provider: 'carrier_badge',
+      name: 'token',
+      secretEnvelope: await encryptSecret(s.ctx.secrets, 'dns-token-second'),
+    })
+    .returning({ id: secret.id })
+  const [row] = await db
+    .insert(badge)
+    .values({
+      carrierId,
+      secretId: stored!.id,
+      label: 'dns new',
+      lastFour: 'cond',
+      capabilities: {
+        tunnels: false,
+        dns: [{ id: 'zone-1', name: 'example.com' }],
+        certificates: [],
+      },
+    })
+    .returning()
+  return row!
+}
+
+test('a token the DNS host refuses is replaced by another token of the account for the zone', () =>
+  withDb(async (db) => {
+    const s = await setup(db)
+    const carrierId = s.input([]).carrierId
+    // The old token was checked most recently, so it is tried first.
+    await db
+      .update(badge)
+      .set({ lastCheckedAt: new Date().toISOString() })
+      .where(eq(badge.carrierId, carrierId))
+    await addSecondDnsToken(db, s)
+    const used: string[] = []
+    const refusing: DnsChallengeProvider = {
+      ...s.dns.provider,
+      checkZone: () => Promise.reject(new TunnelProviderError('unauthorized', 'bad token', 401)),
+      present: () => Promise.reject(new TunnelProviderError('unauthorized', 'bad token', 401)),
+    }
+    s.ctx.dns = (_provider, token) => {
+      used.push(token)
+      return token === 'dns-token-value' ? refusing : s.dns.provider
+    }
+    const id = await issue(s, ['example.com'])
+    assertEquals((await rowOf(db, id)).status, 'ready')
+    assert(used.includes('dns-token-value'))
+    assert(used.includes('dns-token-second'))
+    // The refused token is taken out of use; the account's other token carried the order.
+    const rows = await db.select().from(badge).where(eq(badge.carrierId, carrierId))
+    assertEquals(rows.find((b) => b.lastFour === 'alue')?.status, 'attention')
+  }))
+
+test('a DNS-validated certificate keeps its token from being removed until another token covers its zone', () =>
+  withDb(async (db) => {
+    const s = await setup(db)
+    const id = await issue(s, ['example.com'])
+    const carrierId = s.input([]).carrierId
+    const [first] = await db.select().from(badge).where(eq(badge.carrierId, carrierId))
+    const alone = await dependentsOf(db, carrierId, await lossOfRemoving(db, first!))
+    assertEquals(
+      alone.dependents.map((d) => [d.kind, d.id, d.zone]),
+      [['certificate', id, 'example.com']]
+    )
+    assertStringIncludes(dependentsSentence(alone.dependents, alone.total), 'the certificate')
+    await addSecondDnsToken(db, s)
+    assertEquals((await dependentsOf(db, carrierId, await lossOfRemoving(db, first!))).total, 0)
+    // With the old token gone the renewal still finds a token for the zone.
+    await db.delete(badge).where(eq(badge.id, first!.id))
+    await maintainDnsCertificate(s.ctx, id)
+    const acme = (await rowOf(db, id)).metadata as { acme: { warning?: string } }
+    assertEquals(acme.acme.warning, undefined)
   }))

@@ -9,9 +9,11 @@
  *   `fanOutManagedIngressReconcile` (recompute `replica.replication_transport`,
  *   re-materialize bindings, enqueue `managed.ingress.reconcile` on members
  *   and bound consumers);
- * - the org fabric (when present) → `reconcileFabricMembership`, which
- *   re-plans every relay path and enqueues `server.fabric.reconcile` only
- *   where the desired payload hash moved.
+ * - cross-server networking → `reconcileServerNetworking`: with TurboFabric
+ *   on it re-plans every relay path (which pairs share a trusted LAN, LAN
+ *   routes) and enqueues `server.fabric.reconcile` only where the desired
+ *   payload hash moved; servers outside a running mesh that hold a
+ *   cross-server network get their payload with no tunnel.
  *
  * Needs a real command queue and the secrets bundle; callers gate on those
  * and decide whether a failure is logged or propagated.
@@ -20,7 +22,7 @@
 import type { Db } from '../../db/connection.ts'
 import type { CommandQueue } from '../../features/commands/queue.ts'
 import type { DerivedSecretsConfig, SecretsConfig } from '../../lib/secrets/secrets.ts'
-import { reconcileFabricMembership } from '../../features/fabric/enqueue.ts'
+import { reconcileServerNetworking } from '../../features/fabric/server-networking.ts'
 import { listManagedIdsForDatacenter } from '../../features/bindings/resolve-endpoint.ts'
 import { fanOutManagedIngressReconcile } from '../../features/managed/ingress-desired.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
@@ -55,14 +57,15 @@ export async function fanOutDatacenterRoutingChange(
       dataEncryptionSecrets: params.dataEncryptionSecrets,
     })
   })
-  await reconcileFabricMembership({
+  await reconcileServerNetworking({
     db,
     commandQueue,
-    actorType: params.actorType,
-    actorId: params.actorId,
+    actor: { type: params.actorType, id: params.actorId },
     organizationId: params.organizationId,
-    secretsConfig: params.secretsConfig,
-    dataEncryptionSecrets: params.dataEncryptionSecrets,
+    secrets: {
+      secretsConfig: params.secretsConfig,
+      dataEncryptionSecrets: params.dataEncryptionSecrets,
+    },
   })
   return { managedIds }
 }

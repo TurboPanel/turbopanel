@@ -519,6 +519,11 @@ export const datacenterPaths: Record<string, unknown> = {
           description: 'Not found',
           content: { 'application/json': { schema: clientErrorJson } },
         },
+        '409': {
+          description:
+            '`lan_pair_in_use` (with `message`, `networks` and `servers`): marking the datacenter untrusted would stop servers sharing a trusted LAN that a cross-server container network runs over with no tunnel, while TurboFabric is not running for them (off, paused, or a server switched off). Nothing is changed.',
+          content: { 'application/json': { schema: clientErrorJson } },
+        },
       },
     },
     delete: {
@@ -820,6 +825,11 @@ export const datacenterPaths: Record<string, unknown> = {
         },
         '404': {
           description: 'Datacenter or membership not found',
+          content: { 'application/json': { schema: clientErrorJson } },
+        },
+        '409': {
+          description:
+            '`lan_pair_in_use` (with `message`, `networks` and `servers`): removing this server would stop it sharing a trusted LAN with servers it holds a cross-server container network with, while TurboFabric is not running for them. Nothing is removed.',
           content: { 'application/json': { schema: clientErrorJson } },
         },
       },

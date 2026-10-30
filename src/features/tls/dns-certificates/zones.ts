@@ -2,7 +2,7 @@ import type { CarrierRow } from '../../tunnels/records.ts'
 import type { TunnelProvider } from '../../tunnels/vocabulary.ts'
 import type { DnsCertContext } from './context.ts'
 import { baseName } from './names.ts'
-import { openDnsToken } from './token.ts'
+import { withAnyDnsToken } from './token.ts'
 import type { ZoneRef } from './order-state.ts'
 
 export class NoDnsTokenError extends Error {
@@ -22,15 +22,17 @@ export async function resolveZones(
   carrier: CarrierRow,
   names: readonly string[]
 ): Promise<ZoneRef[]> {
-  const token = await openDnsToken(ctx, carrier.id, 'any')
-  if (!token) throw new NoDnsTokenError()
   const adapter = ctx.adapters(carrier.provider as TunnelProvider)
   const bases = [...new Set(names.map(baseName))]
-  const zones = await Promise.all(
-    bases.map((hostname) =>
-      adapter.findZone(token, { accountId: carrier.externalAccountId, hostname })
+  const found = await withAnyDnsToken(ctx, carrier.id, (token) =>
+    Promise.all(
+      bases.map((hostname) =>
+        adapter.findZone(token, { accountId: carrier.externalAccountId, hostname })
+      )
     )
   )
+  if (!found) throw new NoDnsTokenError()
+  const zones = found.value
   const seen = new Map<string, ZoneRef>()
   for (const zone of zones) seen.set(zone.id, { id: zone.id, name: zone.name })
   return [...seen.values()]

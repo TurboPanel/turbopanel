@@ -403,6 +403,19 @@ export function normalizeIpAddress(value: unknown): string | null {
   return isValidIpAddress(candidate) ? candidate : null
 }
 
+/**
+ * {@link normalizeIpAddress} plus one spelling per address (`2001:DB8:0::1`
+ * and `2001:db8::1` become `2001:db8::1`), so addresses from different sources
+ * (DNS answers, daemon reports, stored rows) compare equal.
+ */
+export function canonicalIpAddress(value: unknown): string | null {
+  const address = normalizeIpAddress(value)
+  if (address === null) return null
+  const version = parseIpVersion(address)
+  const numeric = ipToBigInt(address)
+  return version === null || numeric === null ? address : bigIntToIp(numeric, version)
+}
+
 export type IpAddressScope = 'loopback' | 'link-local' | 'private' | 'public'
 
 const LOOPBACK_CIDRS = ['127.0.0.0/8', '::1/128'] as const // NOSONAR typescript:S1313 — IANA loopback classification ranges

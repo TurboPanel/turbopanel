@@ -55,14 +55,7 @@ import {
   saveOriginRetry,
   throttleWait,
 } from './origin-certificate-retry.ts'
-import {
-  type BadgeRow,
-  type CarrierRow,
-  listBadges,
-  openBadgeToken,
-  pickBadges,
-  toApiBadge,
-} from './records.ts'
+import { type BadgeRow, type CarrierRow, openBadgeToken, toApiBadge } from './records.ts'
 
 const MS_PER_DAY = 86_400_000
 const MS_PER_HOUR = 3_600_000
@@ -217,34 +210,18 @@ export async function listOriginCertificates(
 }
 
 /**
- * How many origin certificates removing a badge or a carrier would strand.
- * A carrier takes all of its tokens with it, so every certificate counts. A
- * token only strands the certificates no other active token of the carrier
- * could still revoke, because revoking is not tied to the issuing token.
+ * How many origin certificates removing a carrier (the whole account and all
+ * its tokens) would strand. Removing one token is checked with the other
+ * dependents (`badge-dependents.ts`): it strands only certificates no other
+ * active token of the account can renew or revoke.
  */
 export async function countOriginCertificatesFrom(
   db: Db,
   organizationId: string,
-  from: { badgeId: string } | { carrierId: string }
+  from: { carrierId: string }
 ): Promise<number> {
-  const rows = await listOriginCertificates(db, organizationId)
-  if ('carrierId' in from) {
-    return rows.filter((row) => readProviderOrigin(row.metadata)?.carrierId === from.carrierId)
-      .length
-  }
-  const stranding = await Promise.all(
-    rows.map(async (row) => {
-      const link = readProviderOrigin(row.metadata)
-      if (!link) return false
-      const holders = await pickCertificateBadges(db, link.carrierId, {
-        id: link.zoneId,
-        name: link.zoneName,
-      })
-      // Only this token could still revoke it.
-      return holders.length > 0 && holders.every((b) => b.id === from.badgeId)
-    })
-  )
-  return stranding.filter(Boolean).length
+  const rows = await listOriginCertificates(db, organizationId, from.carrierId)
+  return rows.length
 }
 
 /** Ids of hostings that pin a certificate. */
@@ -261,19 +238,6 @@ export function badgeCoversZone(
   const zones = toApiBadge(row).capabilities.certificates
   const wanted = zoneName.trim().toLowerCase()
   return zones.find((z) => z.name.toLowerCase() === wanted) ?? null
-}
-
-/**
- * The active tokens that can manage certificates for a zone, best first: the
- * shared selector, matched by the zone's id and narrowest first. Revoking and
- * renewing are NOT tied to the token that issued a certificate.
- */
-export async function pickCertificateBadges(
-  db: Db,
-  carrierId: string,
-  zone: { id: string; name: string }
-): Promise<BadgeRow[]> {
-  return pickBadges(await listBadges(db, carrierId), { capability: 'certificates', zone }).badges
 }
 
 type IssueParams = {

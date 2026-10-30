@@ -206,6 +206,7 @@ export const DAEMON_WIRE_FEATURES = [
   'managed-backup-login-v1',
   'fabric-retain-keys-v1',
   'fabric-peer-report-v1',
+  'fabric-lan-routes-v1',
 ] as const
 
 export type DaemonWireFeature = (typeof DAEMON_WIRE_FEATURES)[number]
@@ -428,6 +429,15 @@ export const FABRIC_RETAIN_KEYS_FEATURE: DaemonWireFeature = 'fabric-retain-keys
  * send the frame; an older daemon simply never does.
  */
 export const FABRIC_PEER_REPORT_FEATURE: DaemonWireFeature = 'fabric-peer-report-v1'
+
+/**
+ * The daemon understands `tunnel: false` and `lanRoutes` on
+ * `server.fabric.reconcile`: with no tunnel it keeps `tp0` down (and its key),
+ * and it routes each listed container range via that server's LAN address.
+ * Two servers that share a trusted datacenter network skip the tunnel only
+ * when both daemons list it; otherwise the pair keeps its tunnel over the LAN.
+ */
+export const FABRIC_LAN_ROUTES_FEATURE: DaemonWireFeature = 'fabric-lan-routes-v1'
 
 /**
  * The daemon answers `managed-permissions-request` with

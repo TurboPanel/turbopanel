@@ -7,6 +7,7 @@ import {
   TUNNEL_FORWARDING_FEATURE,
   TUNNEL_STATUS_FEATURE,
   MANAGED_BACKUP_LOGIN_FEATURE,
+  FABRIC_LAN_ROUTES_FEATURE,
   FABRIC_PEER_REPORT_FEATURE,
   FABRIC_RETAIN_KEYS_FEATURE,
   DAEMON_FEATURE_MIN_VERSIONS,
@@ -364,8 +365,14 @@ test('fabric-retain-keys-v1 is advertised and raised no floor', () => {
   assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.0')
 })
 
-test('fabric-peer-report-v1 is advertised last and raised no floor', () => {
+test('fabric-peer-report-v1 is advertised and raised no floor', () => {
   assertEquals(FABRIC_PEER_REPORT_FEATURE, 'fabric-peer-report-v1')
-  assertEquals(DAEMON_WIRE_FEATURES.at(-1), FABRIC_PEER_REPORT_FEATURE)
+  assertEquals(DAEMON_WIRE_FEATURES.includes(FABRIC_PEER_REPORT_FEATURE), true)
+  assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.0')
+})
+
+test('fabric-lan-routes-v1 is advertised last and raised no floor', () => {
+  assertEquals(FABRIC_LAN_ROUTES_FEATURE, 'fabric-lan-routes-v1')
+  assertEquals(DAEMON_WIRE_FEATURES.at(-1), FABRIC_LAN_ROUTES_FEATURE)
   assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.0')
 })

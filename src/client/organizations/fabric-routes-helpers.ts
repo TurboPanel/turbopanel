@@ -57,6 +57,7 @@ export type FabricMembershipSecrets = Pick<
 export type RelayPatchReconcileFn = typeof reconcileFabricMembership
 
 export type { RelayMetadata } from '../../features/fabric/fabric-records.ts'
+import type { FabricPairApiRow } from '../../features/fabric/pair-paths.ts'
 
 const ADVERTISED_CIDRS_MAX = 32
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -657,10 +658,13 @@ export function toFabricRelayApiRow(params: {
 export function fabricSettingsResponse(
   record: FabricRecord | null,
   relays: FabricRelayApiRow[] = [],
-  servers: FabricServerMembership[] = []
+  servers: FabricServerMembership[] = [],
+  pairs?: FabricPairApiRow[]
 ): {
   enabled: boolean
   paused: boolean
+  /** How each pair of servers talks (LAN, TurboFabric, over an untrusted LAN, or no path). */
+  pairs?: FabricPairApiRow[]
   fabric?: {
     id: string
     cidr: string
@@ -671,13 +675,15 @@ export function fabricSettingsResponse(
   relays: FabricRelayApiRow[]
   servers: FabricServerMembership[]
 } {
-  if (!record) return { enabled: false, paused: false, relays: [], servers }
+  const pairsField = pairs && pairs.length > 0 ? { pairs } : {}
+  if (!record) return { enabled: false, paused: false, relays: [], servers, ...pairsField }
   const options = parseFabricOptions(record.options)
   const paused = isFabricPaused(record)
   return {
     enabled: !paused,
     paused,
     servers,
+    ...pairsField,
     fabric: {
       id: record.id,
       cidr: record.cidr,
