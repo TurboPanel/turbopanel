@@ -47,7 +47,7 @@ export class FabricPeerReportThrottle {
    */
   take(serverId: string, nowMs: number, classes = ''): boolean {
     const last = this.#last.get(serverId)
-    if (last && last.classes === classes && nowMs - last.ms < this.#minIntervalMs) return false
+    if (last?.classes === classes && nowMs - last.ms < this.#minIntervalMs) return false
     this.#last.delete(serverId)
     if (this.#last.size >= THROTTLE_MAX_SERVERS) {
       const oldest = this.#last.keys().next().value
