@@ -129,7 +129,7 @@ test('header names are lower-case, as Hono and fetch normalize them', () => {
 const CERT_SOURCES = 'instance-cert-sources-per-hostname'
 
 test('the daemon floor pin is the documented 0.1.0 window', () => {
-  // Changing the constant requires the Versions-on-the-wires note in src/app/AGENTS.md and ../turbopaneld/src/instance/AGENTS.md.
+  // Changing the constant requires the Versions-on-the-wires note in src/app/AGENTS.md and turbopaneld/src/instance/AGENTS.md (Versions on the wires).
   assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.0')
 })
 
