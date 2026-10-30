@@ -41,18 +41,26 @@ test('a name pointing somewhere else, or nowhere, is not ready', async () => {
   assertEquals(report.expectedAddresses, ['203.0.113.7'])
 })
 
-test('with no known server address any answer counts, and the result says it was not compared', async () => {
+test('with no known server address the name is held and the reason says so, and port 80 is not probed', async () => {
+  let probed = false
   const report = await checkHostingDns({
     hostnames: ['a.example.com'],
     expectedAddresses: [],
     lookup: table({ 'a.example.com/AAAA': ['2001:db8::1'] }),
     now: NOW,
+    probes: {
+      port80: () => {
+        probed = true
+        return Promise.resolve({ state: 'open' as const })
+      },
+    },
   })
-  assertEquals(report.ready, true)
+  assertEquals(report.ready, false)
+  assertEquals(probed, false)
   assertEquals(report.expectedAddresses, [])
   assertEquals(
-    report.hostnames[0]?.warning,
-    "The panel knows no public address for this site's server, so it could not check that a.example.com points at it. Make sure it does before Let's Encrypt checks it."
+    report.hostnames[0]?.problem,
+    "TurboPanel doesn't know a public address for this site's server, so it can't check that a.example.com points at it. Add the server's public address to TurboPanel, or wait until the server reports one, then check again."
   )
 })
 
@@ -125,7 +133,7 @@ test('round-robin across the serving servers is ready', async () => {
 test('a name behind a NAT address with port 80 not forwarded says so plainly', async () => {
   const report = await checkHostingDns({
     hostnames: ['w.example.com'],
-    expectedAddresses: [],
+    expectedAddresses: ['198.203.204.120'],
     lookup: table({ 'w.example.com/A': ['198.203.204.120'] }),
     now: NOW,
     probes: {
@@ -187,7 +195,7 @@ test('the port-80 probe gets the exact addresses the check judged, and unknown n
   const seen: string[][] = []
   const report = await checkHostingDns({
     hostnames: ['a.example.com'],
-    expectedAddresses: [],
+    expectedAddresses: ['198.51.100.7', '2001:db8::7'],
     lookup: table({ 'a.example.com/A': ['198.51.100.7'], 'a.example.com/AAAA': ['2001:db8::7'] }),
     now: NOW,
     probes: {

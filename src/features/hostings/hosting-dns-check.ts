@@ -75,15 +75,15 @@ function wrongAddressProblem(
 
 /**
  * With no public address known for any serving server the answers cannot be
- * compared, so the name passes (the owner may use a proxy or an address the
- * panel cannot see), but the result says so instead of passing silently.
+ * compared, so the name is held and the reason says so plainly instead of
+ * letting any public answer through (a wrong AAAA record would pass unseen).
  */
-function unknownServerAddressWarning(
+function unknownServerAddressProblem(
   hostname: string,
   expected: ReadonlySet<string>
 ): string | null {
   if (expected.size > 0) return null
-  return `The panel knows no public address for this site's server, so it could not check that ${hostname} points at it. Make sure it does before Let's Encrypt checks it.`
+  return `TurboPanel doesn't know a public address for this site's server, so it can't check that ${hostname} points at it. Add the server's public address to TurboPanel, or wait until the server reports one, then check again.`
 }
 
 const isIpv6 = (address: string) => address.includes(':')
@@ -120,10 +120,11 @@ async function checkOneName(
     ...(wrong.length > 0 ? { wrongAddresses: wrong } : {}),
   }
   if (blocking !== null) return { ...entry, resolves: false, problem: blocking }
+  const unknown = unknownServerAddressProblem(hostname, expected)
+  if (unknown !== null) return { ...entry, problem: unknown }
   const problem = wrongAddressProblem(hostname, wrong, expected)
   if (problem !== null && !warnOnly) return { ...entry, problem }
-  const warning = problem ?? unknownServerAddressWarning(hostname, expected)
-  if (warning !== null) entry.warning = warning
+  if (problem !== null) entry.warning = problem
   const port80 = await checkPort80(probes.port80, hostname, addresses.filter(isPublic))
   if (port80.problem !== undefined) return { ...entry, ...port80 }
   return { ...entry, ...port80, ...(await checkCaaOf(probes.caaLookup, hostname)) }
@@ -167,9 +168,8 @@ async function checkCaaOf(
 /**
  * A name is ready when it resolves, every answer is one of the serving
  * servers' public addresses (managed addresses, public-side overrides and the
- * addresses each server's daemon reports; with none known any public answer
- * counts, with a warning that says it was not compared), port 80 answers, and
- * CAA allows Let's Encrypt. Probes that are not passed are skipped.
+ * addresses each server's daemon reports; with none known the name is held,
+ * saying so), port 80 answers, and CAA allows Let's Encrypt. Probes that are not passed are skipped.
  */
 export async function checkHostingDns(params: {
   hostnames: readonly string[]

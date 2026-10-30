@@ -14,6 +14,7 @@ import {
   environment,
   grant,
   hosting,
+  ip,
   organization,
   project,
   server,
@@ -63,6 +64,8 @@ async function setup(options: {
   hostingOptions: Record<string, unknown>
   hostingMetadata?: Record<string, unknown>
   applyDeps?: HostingApplyDeps
+  /** Pin the site to a known public address (what `pointing` answers); default true. */
+  pinAddress?: boolean
 }): Promise<Fixture> {
   const db = createDenoDb()
   const secrets = await deriveSecretsConfig(
@@ -123,10 +126,25 @@ async function setup(options: {
       updatedAt: now,
     })
     .returning({ id: service.id })
+  // The pre-check holds a name while no public address is known for the site,
+  // so the site is pinned to the address `pointing` answers with.
+  const [siteIp] =
+    options.pinAddress === false
+      ? []
+      : await db
+          .insert(ip)
+          .values({
+            organizationId,
+            address: '203.0.113.7',
+            allocation: 'dedicated',
+            scope: 'public',
+          })
+          .returning({ id: ip.id })
   const [host] = await db
     .insert(hosting)
     .values({
       serviceId: svc!.id,
+      ipId: siteIp?.id ?? null,
       name: 'Site',
       options: options.hostingOptions,
       metadata: options.hostingMetadata ?? null,
@@ -157,6 +175,7 @@ async function setup(options: {
     async cleanup() {
       await db.delete(audit).where(eq(audit.organizationId, organizationId))
       await db.delete(hosting).where(eq(hosting.id, host!.id))
+      await db.delete(ip).where(eq(ip.organizationId, organizationId))
       await db.delete(tls).where(eq(tls.organizationId, organizationId))
       await db.delete(service).where(eq(service.id, svc!.id))
       await db.delete(environment).where(eq(environment.id, env!.id))
@@ -299,7 +318,7 @@ test('PUT use-letsencrypt: waits for DNS, then the sweep pins it once the name r
 
 test('dns-check: a server with no managed address is checked against the addresses its daemon reports', async () => {
   if (!dbUrl) return skipWithoutDatabase("hosting Let's Encrypt route tests")
-  const f = await setup({ acmeEnabled: true, hostingOptions: PUBLIC_SITE })
+  const f = await setup({ acmeEnabled: true, hostingOptions: PUBLIC_SITE, pinAddress: false })
   const removeServer = await deployedOn(f, true, {
     resources: {
       ips: [

@@ -7,7 +7,7 @@ export const hostingSchemas = {
     type: 'object',
     required: ['ready', 'checkedAt', 'hostnames', 'expectedAddresses'],
     description:
-      "Live pre-check of the names the certificate must cover. `ready` is true when, for every name, every A and AAAA answer is a serving server's public address (any public answer, with a warning, when the panel knows none), port 80 answers from the internet and CAA allows Let's Encrypt.",
+      "Live pre-check of the names the certificate must cover. `ready` is true when, for every name, every A and AAAA answer is a serving server's public address (when the panel knows none, the name is held with a problem saying so), port 80 answers from the internet and CAA allows Let's Encrypt.",
     properties: {
       ready: { type: 'boolean' },
       checkedAt: { type: 'string', format: 'date-time' },
@@ -43,7 +43,7 @@ export const hostingSchemas = {
             warning: {
               type: 'string',
               description:
-                'Worth fixing but not blocking: a wrong answer beside a right one of the same address family, or no known public address for the serving servers, so the answers were not compared.',
+                'Worth fixing but not blocking: a wrong answer beside a right one of the same address family.',
             },
           },
         },
