@@ -4,6 +4,7 @@ import type { AppEnv } from '../../app/app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { recordAudit } from '../../features/audit/audit-records.ts'
+import { isUniqueViolationOn } from '../../db/unique-violation.ts'
 import { requireStepUpIfConfigured } from '../authn/step-up.ts'
 import type { StepUpAction } from '../authn/step-up-actions.ts'
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
@@ -30,6 +31,7 @@ import { registerManagedPrivilegeRoutes } from './privilege-routes.ts'
 import {
   BACKUP_LOGIN_DEFAULT_NAME,
   BACKUP_LOGIN_EXISTS,
+  BACKUP_LOGIN_UNIQUE_INDEX,
   backupLoginSettings,
   backupLoginSourcesRefusal,
   refuseBackupLoginOnOldDaemon,
@@ -1844,7 +1846,6 @@ async function inLoginCreateTransaction<T>(
 ): Promise<T> {
   const { ctx, managedId, targetServerId } = params
   return await db.transaction(async (tx) => {
-    const existingLogins = await listManagedLogins(tx, managedId)
     await ensureManagedPrimaryMember(tx, { managedId, serverId: targetServerId })
     const owningOrgIds = await resolveManagedOwningOrganizationIds(
       tx,
@@ -1853,6 +1854,9 @@ async function inLoginCreateTransaction<T>(
       ctx.organizationId
     )
     await lockOrganizationsForUpdate(tx, owningOrgIds)
+    // Read under the lock, so a check against them (one backup login per
+    // cluster, a name already on the cluster) cannot race another create.
+    const existingLogins = await listManagedLogins(tx, managedId)
     return await fn(tx, { ctx, managedId, existingLogins, owningOrgIds })
   })
 }
@@ -2078,6 +2082,42 @@ async function createAppLogins(c: Context<AppEnv>): Promise<Response> {
   })
 }
 
+/**
+ * Insert the backup login under the organization lock. The one-per-cluster
+ * check reads the logins under that lock; a create that still lands second
+ * (the unique index `uniq_login_managed_backup`) answers the same 409.
+ */
+async function insertBackupLogin(
+  db: ManagedDb,
+  dataEncryptionSecrets: DerivedSecretsConfig,
+  params: {
+    ctx: ManagedContext
+    managedId: string
+    targetServerId: string
+    settings: LoginSettingsPatch
+    username: string
+    nameScheme: PrincipalNameScheme
+  }
+): Promise<LoginCreateOutcome> {
+  const exists = { ok: false, error: BACKUP_LOGIN_EXISTS.error, status: 409 } as const
+  try {
+    return await inLoginCreateTransaction(db, params, (tx, shared) =>
+      shared.existingLogins.some((entry) => entry.role === 'backup')
+        ? Promise.resolve(exists)
+        : createLoginWithNewName(tx, dataEncryptionSecrets, {
+            ...shared,
+            settings: params.settings,
+            username: params.username,
+            nameScheme: params.nameScheme,
+            role: 'backup',
+          })
+    )
+  } catch (err) {
+    if (isUniqueViolationOn(err, BACKUP_LOGIN_UNIQUE_INDEX)) return exists
+    throw err
+  }
+}
+
 /** The 409 for a refused backup login create, with plain words when the cluster already has one. */
 function loginCreateRefusal(c: Context<AppEnv>, outcome: { error: string; status: 409 }): Response {
   if (outcome.error === BACKUP_LOGIN_EXISTS.error) return c.json(BACKUP_LOGIN_EXISTS, 409)
@@ -2150,21 +2190,14 @@ async function createBackupLoginRoute(c: Context<AppEnv>): Promise<Response> {
   if (gate instanceof Response) return gate
   const { commandQueue, limits } = gate
 
-  const settings = backupLoginSettings(limits)
-  const userCreate = await inLoginCreateTransaction(
-    db,
-    { ctx, managedId: row.id, targetServerId },
-    (tx, shared): Promise<LoginCreateOutcome> =>
-      shared.existingLogins.some((entry) => entry.role === 'backup')
-        ? Promise.resolve({ ok: false, error: BACKUP_LOGIN_EXISTS.error, status: 409 })
-        : createLoginWithNewName(tx, dataEncryptionSecrets, {
-            ...shared,
-            settings,
-            username,
-            nameScheme,
-            role: 'backup',
-          })
-  )
+  const userCreate = await insertBackupLogin(db, dataEncryptionSecrets, {
+    ctx,
+    managedId: row.id,
+    targetServerId,
+    settings: backupLoginSettings(limits),
+    username,
+    nameScheme,
+  })
   if (!userCreate.ok) return loginCreateRefusal(c, userCreate)
 
   const enqueued = await applyCreatedLogins(c, db, {
@@ -2178,6 +2211,18 @@ async function createBackupLoginRoute(c: Context<AppEnv>): Promise<Response> {
   })
   if (enqueued instanceof Response) return enqueued
 
+  // This login reads every database on the cluster: keep who made it.
+  await recordAudit(db, {
+    organizationId: auth.organizationId,
+    actorUserId: auth.userId,
+    action: 'managed.backup_login.create',
+    targetType: 'managed',
+    targetId: row.id,
+    context: {
+      login: userCreate.appliedUsername,
+      allowedSources: limits.allowedSources ?? null,
+    },
+  })
   const created = await findManagedLogin(db, row.id, userCreate.loginId)
   const primaryResult = pickPrimaryCommandResult(enqueued)
   return c.json({
@@ -2267,6 +2312,16 @@ async function deleteManagedLoginRoute(
     members: prepared.members,
   })
   if (enqueued instanceof Response) return enqueued
+  if (target.role === 'backup') {
+    await recordAudit(db, {
+      organizationId: auth.organizationId,
+      actorUserId: auth.userId,
+      action: 'managed.backup_login.delete',
+      targetType: 'managed',
+      targetId: row.id,
+      context: { login: target.appliedUsername },
+    })
+  }
 
   // A database this login owned goes back to its default owner role on the
   // server (the apply above hands it back before dropping the login), and

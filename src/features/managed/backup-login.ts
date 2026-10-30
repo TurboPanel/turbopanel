@@ -21,6 +21,9 @@ import { loginLimitSettings, type LoginLimitFields } from './login-limit-fields.
 import { parseLoginAllowedSources } from './login-sources.ts'
 import type { LoginSettingsPatch } from './logins.ts'
 
+/** The partial unique index that keeps a cluster to one backup login (`login` table). */
+export const BACKUP_LOGIN_UNIQUE_INDEX = 'uniq_login_managed_backup'
+
 /** The name a backup login gets when the request names none. */
 export const BACKUP_LOGIN_DEFAULT_NAME = 'backup'
 

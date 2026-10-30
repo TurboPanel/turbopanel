@@ -4516,3 +4516,52 @@ test('DELETE backup-login answers 404 when the cluster has none', async () => {
     { error: 'Not found' }
   )
 })
+
+test('POST backup-login answers 409, not 500, when a create racing it took the one backup login', async () => {
+  const { db, commandQueue } = recordingUserCreate(PRIMARY_ONLY, {
+    serverRows: [serverAdvertising(BACKUP_FEATURES)],
+  })
+  // The unique index refuses the insert: the shape postgres.js gives drizzle.
+  const raced = {
+    ...db,
+    transaction: () =>
+      Promise.reject(
+        Object.assign(
+          new Error('duplicate key value violates unique constraint "uniq_login_managed_backup"'),
+          { code: '23505' }
+        )
+      ),
+  } as unknown as Db
+  const { app, cookie } = await buildApp({ db: raced, registry: stubRegistry(), commandQueue })
+  const res = await app.request(envPath('/backup-login'), {
+    method: 'POST',
+    headers: { ...authHeaders(cookie), 'content-type': 'application/json' },
+    body: JSON.stringify({ allowedSources: ['internal'] }),
+  })
+  await expectJson(res, 409, {
+    error: 'managed_backup_login_exists',
+    message: 'This cluster already has a backup login. Delete it first to make a new one.',
+  })
+})
+
+test('POST backup-login lets any other database error through', async () => {
+  const { db, commandQueue } = recordingUserCreate(PRIMARY_ONLY, {
+    serverRows: [serverAdvertising(BACKUP_FEATURES)],
+  })
+  const broken = {
+    ...db,
+    transaction: () =>
+      Promise.reject(
+        Object.assign(new Error('duplicate key value violates unique constraint "other"'), {
+          code: '23505',
+        })
+      ),
+  } as unknown as Db
+  const { app, cookie } = await buildApp({ db: broken, registry: stubRegistry(), commandQueue })
+  const res = await app.request(envPath('/backup-login'), {
+    method: 'POST',
+    headers: { ...authHeaders(cookie), 'content-type': 'application/json' },
+    body: JSON.stringify({ allowedSources: ['internal'] }),
+  })
+  assertEquals(res.status, 500)
+})
