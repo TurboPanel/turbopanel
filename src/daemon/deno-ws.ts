@@ -28,6 +28,7 @@ import type { DaemonJwtKeyring } from './authn/daemon-jwt-keyring.ts'
 import { tryAssignColocatedDaemonToInstalledOrganization } from '../client/authn/install-state.ts'
 import { emitCertificateRenewalFailed } from '../features/notifications/certificate-alerts.ts'
 import { handleAcmeIssuanceEvent } from '../client/tls/acme-issuance-event.ts'
+import { handleHttpIssuanceInbound } from '../features/tls/http-issuance/events.ts'
 import {
   type InstanceAcmeIssuanceMessage,
   recordInstanceAcmeIssuanceFromServer,
@@ -756,6 +757,12 @@ async function dispatchDaemonInboundByType(params: DaemonInboundDispatch): Promi
         message,
         dataEncryptionSecrets: params.dataEncryptionSecrets,
       })
+      return
+    case 'acme-issue-event':
+    case 'acme-proof-forward-ready':
+    case 'acme-proof-forward-failed':
+      await cell.recordInbound({ connectionId, at: message.at })
+      await handleHttpIssuanceInbound(db, serverId, message)
       return
     case 'instance-acme-issuance-event':
       await handleInstanceAcmeIssuanceInbound({

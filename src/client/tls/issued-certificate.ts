@@ -29,7 +29,13 @@ import { normalizePrivateKeyPem, PemError, splitCertificateChain } from '../../l
 import { privateKeyMatchesCertificate, TlsKeyError } from '../../lib/tls/keys.ts'
 import { CertificateParseError, parseCertificatePem } from '../../lib/tls/parse.ts'
 import type { ParsedCertificate, TlsAcmeMetadata } from '../../lib/tls/types.ts'
-import { canAcceptCapture, readHttpIssuanceState } from '../../features/tls/http-issuance/state.ts'
+import { publicMarker } from '../../features/tls/http-issuance/progress.ts'
+import {
+  afterCapture,
+  canAcceptCapture,
+  readHttpIssuanceState,
+  withHttpIssuanceState,
+} from '../../features/tls/http-issuance/state.ts'
 import { assertTpSecretPrivateKey } from './routes-helpers.ts'
 
 /** A chain longer than this is not an ordinary leaf plus intermediates. */
@@ -347,6 +353,21 @@ async function rowsPinnedOnServer<T extends { id: string }>(
   return candidates.filter((row) => pinnedIds.has(row.id))
 }
 
+/**
+ * The row's metadata after a pair arrived for its open request: the request
+ * notes the pair (and closes if the issuing server already said `issued`), and
+ * the public marker follows.
+ */
+function withCapturedRequest(metadata: ManagedRowMetadata, now: Date): Record<string, unknown> {
+  const state = readHttpIssuanceState(metadata)
+  if (!state) return metadata
+  const after = afterCapture(state, now)
+  return {
+    ...withHttpIssuanceState(metadata, after),
+    acme: publicMarker(metadata.acme, after),
+  }
+}
+
 async function writePair(
   tx: Db,
   params: {
@@ -421,6 +442,14 @@ async function writePair(
       issuedByServerId: input.serverId,
     }
     delete acme.lastError
+    const nextMetadata = {
+      ...metadata,
+      hasWildcard: parsed.hasWildcard,
+      notBefore: parsed.notBefore.toISOString(),
+      subject: parsed.subject,
+      issuer: parsed.issuer,
+      acme,
+    }
     await tx
       .update(tls)
       .set({
@@ -429,14 +458,7 @@ async function writePair(
         notAfter: parsed.notAfter.toISOString(),
         fingerprintSha256: duplicate ? null : parsed.fingerprintSha256,
         issuedByServerId: input.serverId,
-        metadata: {
-          ...metadata,
-          hasWildcard: parsed.hasWildcard,
-          notBefore: parsed.notBefore.toISOString(),
-          subject: parsed.subject,
-          issuer: parsed.issuer,
-          acme,
-        },
+        metadata: input.requestId ? withCapturedRequest(nextMetadata, now) : nextMetadata,
         updatedAt: now.toISOString(),
       })
       .where(and(eq(tls.id, row.id), eq(tls.organizationId, organizationId)))

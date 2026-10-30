@@ -37,6 +37,8 @@ export type TlsAcmeMetadata = {
   renewAt?: string
   /** DNS-challenge certificates: something that will stop the next renewal, in plain words. */
   warning?: string
+  /** Server-placed certificates: one plain line per serving server about its part in the order. */
+  serverStatus?: Array<{ serverId: string; text: string }>
   /** DNS names the stored certificate covers (set when the pair is stored). */
   storedNames?: string[]
   /** The server whose Caddy issued the stored certificate (its daemon sent the pair). */

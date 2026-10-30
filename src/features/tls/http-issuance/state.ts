@@ -27,6 +27,20 @@ export type ForwardResult = {
   at: string | null
 }
 
+/** Where an open or finished request stands. */
+export type HttpIssuancePhase = 'forwarding' | 'ordering' | 'issued' | 'failed'
+
+const PHASES: ReadonlySet<string> = new Set(['forwarding', 'ordering', 'issued', 'failed'])
+
+/** One serving server's part in the request, kept so its status line can be written again. */
+export type RosterEntry = {
+  serverId: string
+  label: string
+  role: 'issuer' | 'helper' | 'skipped'
+  /** Why a `skipped` server did not take part. */
+  skip?: 'offline' | 'not_in_dns' | 'old_daemon'
+}
+
 export type HttpIssuanceState = {
   /** The server asked to place the order. */
   issuingServerId: string
@@ -38,10 +52,35 @@ export type HttpIssuanceState = {
   /** Set when the request finished or was given up; a closed request takes no pair. */
   endedAt: string | null
   forwards: ForwardResult[]
+  /** The address each helper is checked at (the issuing server tries it before asking the authority). */
+  helperAddresses: Array<{ serverId: string; address: string }>
   /** When orders were started, newest last; the attempt cap counts these. */
   attemptTimes: string[]
   /** Do not start another attempt before this time (back-off). */
   nextAttemptAt: string | null
+  /** The authority's directory this request uses. */
+  directory: 'production' | 'staging'
+  phase: HttpIssuancePhase
+  /** When `acme-issue-request` was sent; null while the helpers are still answering. */
+  orderSentAt: string | null
+  /** The last event the issuing server reported. */
+  lastEventAt: string | null
+  /** The pair for this request was stored (it arrives by the capture call). */
+  capturedAt: string | null
+  /** The issuing server said `issued` (the request closes once the pair is stored too). */
+  issuedEventAt: string | null
+  /** Leaf expiry the issuing server reported (ISO 8601). */
+  notAfterIso: string | null
+  /** A plain reason when the attempt failed. */
+  lastError: string | null
+  /** Failed attempts in a row since the last good certificate; sets the back-off. */
+  consecutiveFailures: number
+  /** The server that failed the last attempt; the next attempt prefers another one. */
+  avoidServerId: string | null
+  /** When the sealed pair was queued to the serving servers; null until then. */
+  deliveredAt: string | null
+  /** The serving servers and their parts, for the per-server status lines. */
+  roster: RosterEntry[]
 }
 
 const FORWARD_OUTCOMES: ReadonlySet<string> = new Set(['pending', 'ready', 'failed', 'skipped'])
@@ -54,6 +93,30 @@ function record(value: unknown): Record<string, unknown> | null {
 
 function text(value: unknown): string | null {
   return typeof value === 'string' && value.length > 0 ? value : null
+}
+
+const ROSTER_ROLES: ReadonlySet<string> = new Set(['issuer', 'helper', 'skipped'])
+const SKIP_REASONS: ReadonlySet<string> = new Set(['offline', 'not_in_dns', 'old_daemon'])
+
+function readRoster(value: unknown): RosterEntry[] {
+  if (!Array.isArray(value)) return []
+  const out: RosterEntry[] = []
+  for (const item of value) {
+    const r = record(item)
+    const serverId = text(r?.serverId)
+    const label = text(r?.label)
+    if (!r || !serverId || !label || typeof r.role !== 'string' || !ROSTER_ROLES.has(r.role)) {
+      continue
+    }
+    const skip = typeof r.skip === 'string' && SKIP_REASONS.has(r.skip) ? r.skip : undefined
+    out.push({
+      serverId,
+      label,
+      role: r.role as RosterEntry['role'],
+      ...(skip ? { skip: skip as RosterEntry['skip'] } : {}),
+    })
+  }
+  return out
 }
 
 function readForwards(value: unknown): ForwardResult[] {
@@ -75,6 +138,43 @@ function readForwards(value: unknown): ForwardResult[] {
   return out
 }
 
+function readHelperAddresses(value: unknown): Array<{ serverId: string; address: string }> {
+  if (!Array.isArray(value)) return []
+  return value.flatMap((item) => {
+    const r = record(item)
+    const serverId = text(r?.serverId)
+    const address = text(r?.address)
+    return serverId && address ? [{ serverId, address }] : []
+  })
+}
+
+/** A request that has just been opened: nothing answered, nothing stored, no failures. */
+export function newHttpIssuanceState(
+  base: Pick<HttpIssuanceState, 'issuingServerId' | 'requestId' | 'startedAt' | 'startByAt'> &
+    Partial<HttpIssuanceState>
+): HttpIssuanceState {
+  return {
+    endedAt: null,
+    forwards: [],
+    helperAddresses: [],
+    attemptTimes: [base.startedAt],
+    nextAttemptAt: null,
+    directory: 'production',
+    phase: 'forwarding',
+    orderSentAt: null,
+    lastEventAt: null,
+    capturedAt: null,
+    issuedEventAt: null,
+    notAfterIso: null,
+    lastError: null,
+    consecutiveFailures: 0,
+    avoidServerId: null,
+    deliveredAt: null,
+    roster: [],
+    ...base,
+  }
+}
+
 /** The private state of a row ordered over the HTTP proof, or null when the row has none. */
 export function readHttpIssuanceState(metadata: unknown): HttpIssuanceState | null {
   const r = record(record(metadata)?.[HTTP_CERT_KEY])
@@ -90,10 +190,29 @@ export function readHttpIssuanceState(metadata: unknown): HttpIssuanceState | nu
     startByAt,
     endedAt: text(r.endedAt),
     forwards: readForwards(r.forwards),
+    helperAddresses: readHelperAddresses(r.helperAddresses),
     attemptTimes: Array.isArray(r.attemptTimes)
       ? r.attemptTimes.filter((t): t is string => typeof t === 'string' && t.length > 0)
       : [],
     nextAttemptAt: text(r.nextAttemptAt),
+    directory: r.directory === 'staging' ? 'staging' : 'production',
+    phase:
+      typeof r.phase === 'string' && PHASES.has(r.phase)
+        ? (r.phase as HttpIssuancePhase)
+        : 'forwarding',
+    orderSentAt: text(r.orderSentAt),
+    lastEventAt: text(r.lastEventAt),
+    capturedAt: text(r.capturedAt),
+    issuedEventAt: text(r.issuedEventAt),
+    notAfterIso: text(r.notAfterIso),
+    lastError: text(r.lastError),
+    consecutiveFailures:
+      typeof r.consecutiveFailures === 'number' && r.consecutiveFailures > 0
+        ? Math.floor(r.consecutiveFailures)
+        : 0,
+    avoidServerId: text(r.avoidServerId),
+    deliveredAt: text(r.deliveredAt),
+    roster: readRoster(r.roster),
   }
 }
 
@@ -103,6 +222,30 @@ export function withHttpIssuanceState(
   state: HttpIssuanceState
 ): Record<string, unknown> {
   return { ...record(metadata), [HTTP_CERT_KEY]: state }
+}
+
+/**
+ * The request after its pair was stored. It closes at once when the issuing
+ * server already said `issued`; otherwise it stays open until that event, so
+ * the pair and the event may arrive in either order.
+ */
+export function afterCapture(state: HttpIssuanceState, now: Date): HttpIssuanceState {
+  const at = now.toISOString()
+  const next = { ...state, capturedAt: at }
+  return next.issuedEventAt === null ? next : closedAsIssued(next, at)
+}
+
+/** The request closed with a stored pair: nothing left to wait for, failures forgotten. */
+export function closedAsIssued(state: HttpIssuanceState, at: string): HttpIssuanceState {
+  return {
+    ...state,
+    phase: 'issued',
+    endedAt: at,
+    lastError: null,
+    consecutiveFailures: 0,
+    nextAttemptAt: null,
+    avoidServerId: null,
+  }
 }
 
 export type CaptureRefusalReason = 'unknown_request' | 'closed' | 'expired' | 'wrong_server'
@@ -122,7 +265,7 @@ export function canAcceptCapture(
   if (state?.requestId !== call.requestId) return { ok: false, reason: 'unknown_request' }
   if (state.endedAt !== null) return { ok: false, reason: 'closed' }
   const until = Date.parse(state.startByAt)
-  if (Number.isNaN(until) || call.now.getTime() > until) return { ok: false, reason: 'expired' }
+  if (Number.isNaN(until) || call.now.getTime() >= until) return { ok: false, reason: 'expired' }
   if (state.issuingServerId !== call.serverId) return { ok: false, reason: 'wrong_server' }
   return { ok: true }
 }

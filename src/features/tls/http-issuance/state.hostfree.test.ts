@@ -1,5 +1,6 @@
 import { assertEquals } from '@std/assert'
 import {
+  afterCapture,
   canAcceptCapture,
   type HttpIssuanceState,
   readHttpIssuanceState,
@@ -28,6 +29,19 @@ function state(overrides: Partial<HttpIssuanceState> = {}): HttpIssuanceState {
     ],
     attemptTimes: ['2026-11-01T11:55:00.000Z'],
     nextAttemptAt: null,
+    directory: 'production',
+    phase: 'forwarding',
+    orderSentAt: null,
+    lastEventAt: null,
+    capturedAt: null,
+    issuedEventAt: null,
+    notAfterIso: null,
+    lastError: null,
+    consecutiveFailures: 0,
+    avoidServerId: null,
+    deliveredAt: null,
+    roster: [],
+    helperAddresses: [],
     ...overrides,
   }
 }
@@ -92,4 +106,45 @@ test('capture is refused from another server, for another or unknown request, wh
     ok: false,
     reason: 'expired',
   })
+})
+
+test('a pair stored first leaves the request open until the issued event', () => {
+  const stored = afterCapture(state(), NOW)
+  assertEquals(stored.capturedAt, NOW.toISOString())
+  assertEquals(stored.endedAt, null)
+})
+
+test('a pair stored after the issued event closes the request as issued', () => {
+  const closed = afterCapture(
+    state({ issuedEventAt: '2026-11-01T11:59:00.000Z', consecutiveFailures: 2, lastError: 'x' }),
+    NOW
+  )
+  assertEquals(closed.endedAt, NOW.toISOString())
+  assertEquals(closed.phase, 'issued')
+  assertEquals(closed.consecutiveFailures, 0)
+  assertEquals(closed.lastError, null)
+})
+
+test('the request is expired at exactly the start-by time', () => {
+  const call = {
+    serverId: 'server-a',
+    requestId: 'req_1',
+    now: new Date('2026-11-01T12:30:00.000Z'),
+  }
+  assertEquals(canAcceptCapture(state(), call), { ok: false, reason: 'expired' })
+})
+
+test('an old state without the newer fields still reads', () => {
+  const metadata = {
+    httpCert: {
+      issuingServerId: 'a',
+      requestId: 'r',
+      startedAt: '2026-11-01T11:55:00.000Z',
+      startByAt: '2026-11-01T12:30:00.000Z',
+    },
+  }
+  const read = readHttpIssuanceState(metadata)
+  assertEquals(read?.phase, 'forwarding')
+  assertEquals(read?.directory, 'production')
+  assertEquals(read?.consecutiveFailures, 0)
 })

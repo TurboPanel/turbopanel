@@ -1117,6 +1117,9 @@ export const DAEMON_INBOUND_ALLOWED = new Set([
   'topology-report',
   'acme-issuance-event',
   'instance-acme-issuance-event',
+  'acme-issue-event',
+  'acme-proof-forward-ready',
+  'acme-proof-forward-failed',
   'backup-run-report',
   'backup-copy-report',
   'fabric-paths-result',
@@ -1736,8 +1739,29 @@ export const MAX_ACME_ISSUE_HELPERS = 64
 /** A plain lower-case DNS name: no wildcard, no upper case, no trailing dot. */
 const ACME_NAME_RE =
   /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/
-/** An IPv4 or IPv6 address literal as text. */
-const ACME_ADDRESS_RE = /^[0-9a-f:.]{2,45}$/
+/** One IPv4 address in dotted form, each part 0 to 255 with no leading zeros. */
+const ACME_IPV4_RE =
+  /^(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)$/
+const ACME_IPV6_GROUP_RE = /^[0-9a-f]{1,4}$/
+
+/** A lower-case IPv6 literal: at most one `::`, groups of 1 to 4 hex digits, and an optional IPv4 tail. */
+function isAcmeIpv6(value: string): boolean {
+  if (value.length > 45 || !value.includes(':') || value.includes(':::')) return false
+  const parts = value.split('::')
+  if (parts.length > 2) return false
+  const groups = parts.flatMap((part) => (part === '' ? [] : part.split(':')))
+  const last = groups.at(-1)
+  const tail = last !== undefined && last.includes('.')
+  if (tail && !ACME_IPV4_RE.test(last)) return false
+  const hex = tail ? groups.slice(0, -1) : groups
+  if (!hex.every((g) => ACME_IPV6_GROUP_RE.test(g))) return false
+  const width = hex.length + (tail ? 2 : 0)
+  return parts.length === 2 ? width < 8 : width === 8
+}
+
+function isAcmeAddress(value: string): boolean {
+  return ACME_IPV4_RE.test(value) || isAcmeIpv6(value)
+}
 const ACME_REQUEST_ID_RE = /^[A-Za-z0-9_-]{1,64}$/
 /** Field names that would carry certificate material; refused on every acme-issue message. */
 const ACME_FORBIDDEN_KEYS = [
@@ -1762,7 +1786,7 @@ function validateAcmeNames(value: unknown): string | null {
 }
 
 function validateAcmeAddress(value: unknown): boolean {
-  return typeof value === 'string' && ACME_ADDRESS_RE.test(value)
+  return typeof value === 'string' && isAcmeAddress(value)
 }
 
 function validateAcmeHelpers(value: unknown): string | null {
@@ -1773,6 +1797,7 @@ function validateAcmeHelpers(value: unknown): string | null {
       return 'invalid helpers'
     }
     if (!validateAcmeAddress(helper.address)) return 'invalid helpers'
+    if (acmeForbiddenKey(helper as Record<string, unknown>) !== null) return 'invalid helpers'
   }
   return null
 }
@@ -1823,7 +1848,8 @@ export function validateAcmeProofForwardFields(record: Record<string, unknown>):
 export function validateAcmeProofForwardEndFields(record: Record<string, unknown>): string | null {
   return firstProblem(
     validateAcmeRequestId(record.requestId),
-    isIsoTimestamp(record.at) ? null : 'invalid at timestamp'
+    isIsoTimestamp(record.at) ? null : 'invalid at timestamp',
+    acmeForbiddenKey(record)
   )
 }
 
@@ -2487,6 +2513,11 @@ function validateInboundMessageFields(record: Record<string, unknown>): string |
     case 'acme-issuance-event':
     case 'instance-acme-issuance-event':
       return validateAcmeIssuanceEventFields(record)
+    case 'acme-issue-event':
+      return validateAcmeIssueEventFields(record)
+    case 'acme-proof-forward-ready':
+    case 'acme-proof-forward-failed':
+      return validateAcmeProofForwardReportFields(record)
     case 'backup-run-report':
       return validateBackupRunReportFields(record)
     case 'backup-copy-report':
@@ -2779,6 +2810,25 @@ export type DaemonOutboundEnvelope =
       upgradeId?: string
       targetCommit?: string
     })
+  | (OutboundEnvelopeBase & {
+      kind: 'acme-issue-request'
+      /** The order's id (wire `requestId`); `requestId` above is the cell's own correlation key. */
+      acmeRequestId: string
+      tlsId: string
+      names: string[]
+      directory: 'production' | 'staging'
+      contactEmail: string
+      startByIso: string
+      helpers: AcmeProofHelper[]
+    })
+  | (OutboundEnvelopeBase & {
+      kind: 'acme-proof-forward'
+      acmeRequestId: string
+      names: string[]
+      targetAddress: string
+      expiresAtIso: string
+    })
+  | (OutboundEnvelopeBase & { kind: 'acme-proof-forward-end'; acmeRequestId: string })
   | (OutboundEnvelopeBase & { kind: 'echo'; payload: unknown })
   | (OutboundEnvelopeBase & {
       kind: 'command-dispatch'
@@ -3299,6 +3349,29 @@ export function outboundEnvelopeToWireMessage(env: DaemonOutboundEnvelope): Daem
         targets: env.targets,
         at: env.at,
       }
+    case 'acme-issue-request':
+      return {
+        type: 'acme-issue-request',
+        requestId: env.acmeRequestId,
+        tlsId: env.tlsId,
+        names: env.names,
+        directory: env.directory,
+        contactEmail: env.contactEmail,
+        startByIso: env.startByIso,
+        helpers: env.helpers,
+        at: env.at,
+      }
+    case 'acme-proof-forward':
+      return {
+        type: 'acme-proof-forward',
+        requestId: env.acmeRequestId,
+        names: env.names,
+        targetAddress: env.targetAddress,
+        expiresAtIso: env.expiresAtIso,
+        at: env.at,
+      }
+    case 'acme-proof-forward-end':
+      return { type: 'acme-proof-forward-end', requestId: env.acmeRequestId, at: env.at }
     case 'container-logs-request':
       return {
         type: 'container-logs-request',

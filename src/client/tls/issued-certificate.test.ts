@@ -27,7 +27,12 @@ import { deriveEncryptionSecretsConfig, parseSecretsEnv } from '../../lib/secret
 import { issueLeafCertificate, mintOrganizationCa } from '../../lib/tls/self-signed.ts'
 import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
 import { REFUSAL_MESSAGE, replaces, storeIssuedCertificate } from './issued-certificate.ts'
-import { withHttpIssuanceState } from '../../features/tls/http-issuance/state.ts'
+import {
+  type HttpIssuanceState,
+  newHttpIssuanceState,
+  readHttpIssuanceState,
+  withHttpIssuanceState,
+} from '../../features/tls/http-issuance/state.ts'
 import {
   type CaddyKeyKind,
   makeCaddyPair,
@@ -629,22 +634,28 @@ const REQUEST_ID = 'req_open_1'
 async function openRequest(
   f: Fixture,
   issuingServerId: string,
-  overrides: { endedAt?: string | null; startByAt?: string } = {}
+  overrides: {
+    endedAt?: string | null
+    startByAt?: string
+    state?: Partial<HttpIssuanceState>
+  } = {}
 ) {
   const row = await readRow(f)
   await f.db
     .update(tls)
     .set({
-      metadata: withHttpIssuanceState(row.metadata, {
-        issuingServerId,
-        requestId: REQUEST_ID,
-        startedAt: new Date().toISOString(),
-        startByAt: overrides.startByAt ?? new Date(Date.now() + 3_600_000).toISOString(),
-        endedAt: overrides.endedAt ?? null,
-        forwards: [],
-        attemptTimes: [],
-        nextAttemptAt: null,
-      }),
+      metadata: withHttpIssuanceState(
+        row.metadata,
+        newHttpIssuanceState({
+          issuingServerId,
+          requestId: REQUEST_ID,
+          startedAt: new Date().toISOString(),
+          startByAt: overrides.startByAt ?? new Date(Date.now() + 3_600_000).toISOString(),
+          endedAt: overrides.endedAt ?? null,
+          attemptTimes: [],
+          ...overrides.state,
+        })
+      ),
     })
     .where(eq(tls.id, f.tlsId))
 }
@@ -734,6 +745,43 @@ test('a pair for a different hostname than the request is still refused by the n
     assertEquals(result.ok, false)
     if (!result.ok) assertEquals(result.error, 'certificate_not_for_hostname')
     assertEquals((await readRow(f)).privateKeyPem, null)
+  } finally {
+    await f.cleanup()
+  }
+})
+
+test('a pair for an open request notes the capture, and the issued event then closes it', async () => {
+  if (!dbUrl) return skipWithoutDatabase('issued certificate storage tests')
+  const f = await setup()
+  try {
+    await openRequest(f, f.serverId)
+    const pair = await issuedPair([HOST])
+    await storeIssuedCertificate(f.db, withRequest(pair, f.serverId), f.deps)
+    const stored = readHttpIssuanceState((await readRow(f)).metadata)
+    assertEquals(typeof stored?.capturedAt, 'string')
+    assertEquals(stored?.endedAt, null)
+  } finally {
+    await f.cleanup()
+  }
+})
+
+test('a pair arriving after the issued event closes the request as issued', async () => {
+  if (!dbUrl) return skipWithoutDatabase('issued certificate storage tests')
+  const f = await setup()
+  try {
+    await openRequest(f, f.serverId, { state: { issuedEventAt: new Date().toISOString() } })
+    const pair = await issuedPair([HOST])
+    await storeIssuedCertificate(f.db, withRequest(pair, f.serverId), f.deps)
+    const row = await readRow(f)
+    const stored = readHttpIssuanceState(row.metadata)
+    assertEquals(stored?.phase, 'issued')
+    assertEquals(typeof stored?.endedAt, 'string')
+    const acme = (row.metadata as { acme: { stage: string; managedBy: string } }).acme
+    assertEquals(acme.stage, 'issued')
+    assertEquals(acme.managedBy, 'server')
+    // A second send of the same request is refused: the request is closed.
+    const again = await storeIssuedCertificate(f.db, withRequest(pair, f.serverId), f.deps)
+    assertEquals(again.ok, false)
   } finally {
     await f.cleanup()
   }
