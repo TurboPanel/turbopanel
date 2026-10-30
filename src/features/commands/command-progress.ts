@@ -184,7 +184,12 @@ export async function recordCommandProgress(
         and(
           eq(command.id, input.commandId),
           eq(command.serverId, input.serverId),
-          notInArray(command.status, [...TERMINAL_COMMAND_STATUSES])
+          notInArray(command.status, [...TERMINAL_COMMAND_STATUSES]),
+          // Frames are handled on separate connections, so one sent earlier can
+          // finish later. A frame older than the stored plan is dropped, which
+          // keeps a finished step's note from being overwritten by the frame
+          // that was sent while the step was still running.
+          sql`COALESCE((${command.progress}->>'updatedAt')::timestamptz, '-infinity'::timestamptz) <= ${progress.updatedAt}::timestamptz`
         )
       )
       .returning({ id: command.id })
