@@ -3,6 +3,7 @@ import { MAX_CRON_JOBS_PER_SERVICE } from '../deploy/cron.ts'
 import {
   collectServiceTurbopanelValidationIssues,
   isHostNativeServiceKind,
+  isImageBuildKind,
   isNodeComposeService,
   isPrincipalAlias,
   isSafeRoot,
@@ -565,19 +566,36 @@ test('bad node setting types are reported as raw type issues', () => {
   )
 })
 
-const RAILPACK_SOURCE_ID = '11111111-2222-3333-4444-555555555555'
+const IMAGE_SOURCE_ID = '11111111-2222-3333-4444-555555555555'
 
-test('parseServiceSourceExtension keeps a railpack buildKind', () => {
+test('parseServiceSourceExtension keeps an image buildKind', () => {
   const parsed = parseServiceTurbopanelExtension({
     serviceKind: 'container',
-    source: { sourceId: RAILPACK_SOURCE_ID, buildKind: 'railpack' },
+    source: { sourceId: IMAGE_SOURCE_ID, buildKind: 'image' },
   })
-  assertEquals(parsed?.source?.buildKind, 'railpack')
+  assertEquals(parsed?.source?.buildKind, 'image')
+})
+
+test('parseServiceSourceExtension normalizes the old buildKind value to image', () => {
+  for (const buildKind of ['railpack', '  railpack  ']) {
+    const parsed = parseServiceTurbopanelExtension({
+      serviceKind: 'container',
+      source: { sourceId: IMAGE_SOURCE_ID, buildKind },
+    })
+    assertEquals(parsed?.source?.buildKind, 'image')
+  }
+})
+
+test('isImageBuildKind accepts both spellings and nothing else', () => {
+  assertEquals(isImageBuildKind('image'), true)
+  assertEquals(isImageBuildKind('railpack'), true)
+  assertEquals(isImageBuildKind('native'), false)
+  assertEquals(isImageBuildKind(undefined), false)
 })
 
 test('an unknown buildKind is dropped and reported', () => {
   const parsed = parseServiceTurbopanelExtension({
-    source: { sourceId: RAILPACK_SOURCE_ID, buildKind: 'nixpacks' },
+    source: { sourceId: IMAGE_SOURCE_ID, buildKind: 'nixpacks' },
   })
   assertEquals(parsed?.source?.buildKind, undefined)
 
@@ -585,7 +603,7 @@ test('an unknown buildKind is dropped and reported', () => {
     api: {
       image: 'nginx',
       'x-turbopanel': {
-        source: { sourceId: RAILPACK_SOURCE_ID, buildKind: 'nixpacks' },
+        source: { sourceId: IMAGE_SOURCE_ID, buildKind: 'nixpacks' },
       },
     },
   })
@@ -597,22 +615,22 @@ test('an unknown buildKind is dropped and reported', () => {
 
 test('deployOnPush false survives parsing and true is kept as authored', () => {
   const off = parseServiceTurbopanelExtension({
-    source: { sourceId: RAILPACK_SOURCE_ID, deployOnPush: false },
+    source: { sourceId: IMAGE_SOURCE_ID, deployOnPush: false },
   })
   assertEquals(off?.source?.deployOnPush, false)
   const on = parseServiceTurbopanelExtension({
-    source: { sourceId: RAILPACK_SOURCE_ID, deployOnPush: true },
+    source: { sourceId: IMAGE_SOURCE_ID, deployOnPush: true },
   })
   assertEquals(on?.source?.deployOnPush, true)
   const absent = parseServiceTurbopanelExtension({
-    source: { sourceId: RAILPACK_SOURCE_ID },
+    source: { sourceId: IMAGE_SOURCE_ID },
   })
   assertEquals(absent?.source?.deployOnPush, undefined)
 })
 
 test('a non-boolean deployOnPush is dropped and reported', () => {
   const parsed = parseServiceTurbopanelExtension({
-    source: { sourceId: RAILPACK_SOURCE_ID, deployOnPush: 'false' },
+    source: { sourceId: IMAGE_SOURCE_ID, deployOnPush: 'false' },
   })
   assertEquals(parsed?.source?.deployOnPush, undefined)
 
@@ -620,7 +638,7 @@ test('a non-boolean deployOnPush is dropped and reported', () => {
     api: {
       image: 'nginx',
       'x-turbopanel': {
-        source: { sourceId: RAILPACK_SOURCE_ID, deployOnPush: 'false' },
+        source: { sourceId: IMAGE_SOURCE_ID, deployOnPush: 'false' },
       },
     },
   })
@@ -630,41 +648,45 @@ test('a non-boolean deployOnPush is dropped and reported', () => {
   )
 })
 
-test('railpack is rejected on a host-native service kind', () => {
-  const issues = collectServiceTurbopanelValidationIssues({
-    site: {
-      'x-turbopanel': {
-        serviceKind: 'node',
-        principal: 'app',
-        source: { sourceId: RAILPACK_SOURCE_ID, buildKind: 'railpack' },
+test('the image build kind is rejected on a host-native service kind, in either spelling', () => {
+  for (const buildKind of ['image', 'railpack']) {
+    const issues = collectServiceTurbopanelValidationIssues({
+      site: {
+        'x-turbopanel': {
+          serviceKind: 'node',
+          principal: 'app',
+          source: { sourceId: IMAGE_SOURCE_ID, buildKind },
+        },
       },
-    },
-  })
-  assertEquals(
-    issues.map((issue) => issue.path),
-    ['services.site.x-turbopanel.source.buildKind']
-  )
+    })
+    assertEquals(
+      issues.map((issue) => issue.path),
+      ['services.site.x-turbopanel.source.buildKind']
+    )
+  }
 })
 
-test('railpack is accepted on a container service with no image', () => {
-  const issues = collectServiceTurbopanelValidationIssues({
-    api: {
-      'x-turbopanel': {
-        serviceKind: 'container',
-        source: { sourceId: RAILPACK_SOURCE_ID, buildKind: 'railpack' },
+test('the image build kind is accepted on a container service with no image, in either spelling', () => {
+  for (const buildKind of ['image', 'railpack']) {
+    const issues = collectServiceTurbopanelValidationIssues({
+      api: {
+        'x-turbopanel': {
+          serviceKind: 'container',
+          source: { sourceId: IMAGE_SOURCE_ID, buildKind },
+        },
       },
-    },
-  })
-  assertEquals(issues, [])
+    })
+    assertEquals(issues, [])
+  }
 })
 
-test('a railpack container service needs neither image nor build', () => {
+test('an image-built container service needs neither image nor build', () => {
   const source = `services:
   api:
     x-turbopanel:
       serviceKind: container
       source:
-        sourceId: ${RAILPACK_SOURCE_ID}
+        sourceId: ${IMAGE_SOURCE_ID}
         buildKind: railpack
 `
   const issues = lintComposeYaml(source).filter((issue) =>
@@ -869,12 +891,12 @@ test('parseServiceSourceExtension drops unusable or over-long fields', () => {
   assertEquals(parseServiceSourceExtension({ sourceId: 'not-a-uuid' }), null)
   assertEquals(
     parseServiceSourceExtension({
-      sourceId: RAILPACK_SOURCE_ID,
+      sourceId: IMAGE_SOURCE_ID,
       branch: '   ',
       buildCommand: 'x'.repeat(1001),
       subdirectory: 'apps/web',
     }),
-    { sourceId: RAILPACK_SOURCE_ID, subdirectory: 'apps/web' }
+    { sourceId: IMAGE_SOURCE_ID, subdirectory: 'apps/web' }
   )
 })
 
@@ -883,10 +905,10 @@ test('readServiceSourceExtension reads a bound source off the service', () => {
     readServiceSourceExtension({
       image: 'nginx',
       'x-turbopanel': {
-        source: { sourceId: RAILPACK_SOURCE_ID, branch: 'trunk' },
+        source: { sourceId: IMAGE_SOURCE_ID, branch: 'trunk' },
       },
     }),
-    { sourceId: RAILPACK_SOURCE_ID, branch: 'trunk' }
+    { sourceId: IMAGE_SOURCE_ID, branch: 'trunk' }
   )
   assertEquals(readServiceSourceExtension({ image: 'nginx' }), undefined)
 })
@@ -987,7 +1009,7 @@ test('unsafe source path fields are rejected', () => {
       image: 'nginx',
       'x-turbopanel': {
         source: {
-          sourceId: RAILPACK_SOURCE_ID,
+          sourceId: IMAGE_SOURCE_ID,
           subdirectory: '../etc',
           outputDirectory: '/abs',
         },
@@ -1265,7 +1287,7 @@ test('isNodeComposeService is false for invalid extension mappings', () => {
     isNodeComposeService({
       'x-turbopanel': {
         serviceKind: 'node',
-        source: { sourceId: RAILPACK_SOURCE_ID },
+        source: { sourceId: IMAGE_SOURCE_ID },
       },
     }),
     true
@@ -1318,7 +1340,7 @@ test('a legacy site or node service without a principal alias still validates', 
       api: {
         'x-turbopanel': {
           serviceKind: 'node',
-          source: { sourceId: RAILPACK_SOURCE_ID },
+          source: { sourceId: IMAGE_SOURCE_ID },
         },
       },
     }),
@@ -1340,7 +1362,7 @@ test('a whole legacy document with no principals block lints clean', () => {
     x-turbopanel:
       serviceKind: node
       source:
-        sourceId: ${RAILPACK_SOURCE_ID}
+        sourceId: ${IMAGE_SOURCE_ID}
 `)
   assertEquals(
     blockingComposeLintIssues(issues).map((issue) => issue.path),

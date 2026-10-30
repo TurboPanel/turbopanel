@@ -92,6 +92,16 @@ after structural checks — unknown keys, services missing `image`/`build` (exce
 warnings are allowed). Deploy uses `composeDocumentToRuntimeYaml` (presentation
 stripped).
 
+`x-turbopanel.source.buildKind` is `native` or `image` ("Container Image
+(Auto-Detected)"). It is a different key from a service's own `image:`, which
+names an image to pull. Documents saved before the rename hold the old value
+(`LEGACY_IMAGE_BUILD_KIND`); the reader accepts both and returns `image`
+(`readSourceBuildKind`), and the linter treats either as an image-built source
+(`isImageBuildKind`). During the expand phase the panel still sends the old
+value to the daemon (`IMAGE_BUILD_WIRE_KIND` in `src/contracts/commands/schemas.ts`),
+because an older daemon rejects `image`; the contract phase flips that send after
+a forward-only backfill rewrites the stored value.
+
 ### Validation pipeline (five stages, in this order)
 
 Ordering is load-bearing — each stage assumes the ones before it passed, and
