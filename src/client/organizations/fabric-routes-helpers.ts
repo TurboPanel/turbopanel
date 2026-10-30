@@ -11,6 +11,7 @@ import {
   type FabricPathSummaryEntry,
   type FabricRecord,
   type FabricSegmentMaterial,
+  isFabricPaused,
   type RelayRecord,
   type RelayRole,
   resolveRelayGlobalEndpointAddress,
@@ -42,6 +43,11 @@ import {
 } from '../../features/net/datacenter-networks.ts'
 import { alignedNetworkCidr, isValidIpAddress } from '../../lib/ip-address.ts'
 import { isValidWireguardPublicKey } from '../../features/fabric/wg.ts'
+import type { FabricServerMembership } from '../../features/fabric/membership.ts'
+import {
+  type FabricServerRole,
+  isFabricServerRole,
+} from '../../features/fabric/membership-vocabulary.ts'
 
 export type FabricMembershipSecrets = Pick<
   Parameters<typeof reconcileFabricMembership>[0],
@@ -59,6 +65,34 @@ type FieldResult<T> = { ok: true; value: T } | { ok: false; error: string }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+export type FabricServerPatch = {
+  enabled?: boolean
+  /** `null` = automatic. */
+  role?: FabricServerRole | null
+}
+
+/** `PATCH /organizations/:id/fabric/servers/:serverId` body: `{ enabled?, role? }`. */
+export function parseFabricServerPatchBody(
+  body: unknown
+): { ok: true; patch: FabricServerPatch } | { ok: false; error: string } {
+  if (!isPlainObject(body)) return { ok: false, error: 'Invalid request' }
+  const patch: FabricServerPatch = {}
+  if (body.enabled !== undefined) {
+    if (typeof body.enabled !== 'boolean') return { ok: false, error: 'Invalid enabled' }
+    patch.enabled = body.enabled
+  }
+  if (body.role !== undefined) {
+    if (body.role !== null && !isFabricServerRole(body.role)) {
+      return { ok: false, error: 'Invalid role' }
+    }
+    patch.role = body.role
+  }
+  if (patch.enabled === undefined && patch.role === undefined) {
+    return { ok: false, error: 'Nothing to change' }
+  }
+  return { ok: true, patch }
 }
 
 export type FabricPutBody = {
@@ -614,11 +648,19 @@ export function toFabricRelayApiRow(params: {
   }
 }
 
+/**
+ * `enabled` is true only while the mesh carries traffic; a paused fabric
+ * answers `enabled: false, paused: true` and still returns its settings and
+ * relays (kept for an instant resume). `servers` lists every org server's
+ * membership switch and role, whether or not the fabric exists.
+ */
 export function fabricSettingsResponse(
   record: FabricRecord | null,
-  relays: FabricRelayApiRow[] = []
+  relays: FabricRelayApiRow[] = [],
+  servers: FabricServerMembership[] = []
 ): {
   enabled: boolean
+  paused: boolean
   fabric?: {
     id: string
     cidr: string
@@ -627,11 +669,15 @@ export function fabricSettingsResponse(
     containerPool: string
   }
   relays: FabricRelayApiRow[]
+  servers: FabricServerMembership[]
 } {
-  if (!record) return { enabled: false, relays: [] }
+  if (!record) return { enabled: false, paused: false, relays: [], servers }
   const options = parseFabricOptions(record.options)
+  const paused = isFabricPaused(record)
   return {
-    enabled: true,
+    enabled: !paused,
+    paused,
+    servers,
     fabric: {
       id: record.id,
       cidr: record.cidr,

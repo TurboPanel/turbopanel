@@ -64,6 +64,13 @@
       "when": 1793248402724,
       "tag": "0008_acme_account_secret",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1793330850701,
+      "tag": "0009_fabric_membership_role_kind",
+      "breakpoints": true
     }
   ]
 }

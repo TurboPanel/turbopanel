@@ -1498,10 +1498,13 @@ export type FabricReconcileNetworkMaterial = {
 /**
  * Must stay in sync with the daemon `server.fabric.reconcile` shape.
  * `{ enabled: false }` is a **tear down** (`tp0`, routed bridges, `TP-FORWARD`,
- * keys, state) — not a no-op.
+ * keys, state) — not a no-op. `{ enabled: false, retainKeys: true }` is a
+ * pause: `tp0` goes down, the key, bridges and forwarding rules stay, so the
+ * next enable is instant. It is sent only to a daemon that lists
+ * `fabric-retain-keys-v1`.
  */
 export type FabricReconcileCommandPayload =
-  | { enabled: false }
+  | { enabled: false; retainKeys?: boolean }
   | {
       enabled: true
       fabricId?: string
@@ -1726,7 +1729,10 @@ export function parseFabricReconcilePayload(value: unknown): FabricReconcileComm
     throw new TypeError('Invalid fabric enabled')
   }
   if (!value.enabled) {
-    return { enabled: false }
+    if (value.retainKeys !== undefined && typeof value.retainKeys !== 'boolean') {
+      throw new TypeError('Invalid fabric retainKeys')
+    }
+    return value.retainKeys === true ? { enabled: false, retainKeys: true } : { enabled: false }
   }
   return parseEnabledFabricPayload(value)
 }

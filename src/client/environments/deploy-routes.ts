@@ -122,7 +122,9 @@ import {
 import {
   composeNetworkNamesByServer,
   type FabricSegmentMaterial,
+  FabricServerSwitchedOffError,
   getOrganizationFabric,
+  isFabricPaused,
   listEnvironmentComposeNetworks,
   listSubnetsForServers,
   materializeSpanningNetworks,
@@ -238,7 +240,7 @@ async function loadSpanningNetworks(
     return empty
   }
   const fabricRow = await getOrganizationFabric(db, organizationId)
-  if (!fabricRow) return empty
+  if (!fabricRow || isFabricPaused(fabricRow)) return empty
   const { attachments, consumers } = await loadManagedIngressPlatformAttachments(db, {
     environmentId,
     document: planned.merged,
@@ -1751,7 +1753,7 @@ async function awaitDeployFabricGate(
     return null
   }
   const fabricRow = await getOrganizationFabric(db, params.auth.organizationId)
-  if (!fabricRow) return null
+  if (!fabricRow || isFabricPaused(fabricRow)) return null
 
   const secretsConfig = c.get('secretsConfig')
   const fabricGate = await awaitParticipatingFabricConvergence({
@@ -2087,6 +2089,21 @@ async function loadDeploySpanningContext(
   return { spanning, attachments, consumers, enriched, listenerNames }
 }
 
+/** The spanning context, or a plain 422 when a needed server is switched out of TurboFabric. */
+async function loadDeploySpanningContextOrRefuse(
+  c: Context<AppEnv>,
+  ...args: Parameters<typeof loadDeploySpanningContext>
+): Promise<DeploySpanningContext | Response> {
+  try {
+    return await loadDeploySpanningContext(...args)
+  } catch (err) {
+    if (err instanceof FabricServerSwitchedOffError) {
+      return c.json({ error: 'turbofabric_required', message: err.message }, 422)
+    }
+    throw err
+  }
+}
+
 async function runEnvironmentDeploy(
   c: Context<AppEnv>,
   db: Db,
@@ -2107,12 +2124,14 @@ async function runEnvironmentDeploy(
   const priorNetworks = await listEnvironmentComposeNetworks(db, environmentId)
   let spanningCommitted = false
   try {
-    const spanningCtx = await loadDeploySpanningContext(
+    const spanningCtx = await loadDeploySpanningContextOrRefuse(
+      c,
       db,
       planned,
       auth.organizationId,
       environmentId
     )
+    if (spanningCtx instanceof Response) return spanningCtx
     const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
     if (!dataEncryptionSecrets) {
       return c.json({ error: 'Encryption unavailable' }, 503)

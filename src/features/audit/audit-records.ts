@@ -94,6 +94,10 @@ export const AUDIT_ACTIONS = [
   'server.tunnel_carrying',
   'tls.dns_certificate.create',
   'tls.dns_certificate.retry',
+  'fabric.pause',
+  'fabric.resume',
+  'fabric.remove',
+  'server.fabric.set',
 ] as const
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[number]

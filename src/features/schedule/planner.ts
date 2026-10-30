@@ -42,6 +42,10 @@ export type FleetServer = {
   id: string
   connected: boolean
   labels: Record<string, string>
+  /** Display name for messages; falls back to the id. */
+  name?: string
+  /** TurboFabric membership switch; absent reads as on. */
+  fabricEnabled?: boolean
 }
 
 export type ExistingSlot = {
@@ -105,7 +109,7 @@ export type PlanEnvironmentInput = {
 
 function constraintMatches(
   labels: Record<string, string>,
-  constraint: PlacementConstraint,
+  constraint: PlacementConstraint
 ): boolean {
   const actual = labels[constraint.key]
   if (constraint.op === 'eq') return actual === constraint.value
@@ -114,7 +118,7 @@ function constraintMatches(
 
 function serverMatchesConstraints(
   server: FleetServer,
-  constraints: readonly PlacementConstraint[],
+  constraints: readonly PlacementConstraint[]
 ): boolean {
   return constraints.every((constraint) => constraintMatches(server.labels, constraint))
 }
@@ -123,10 +127,7 @@ function connectedServers(servers: readonly FleetServer[]): FleetServer[] {
   return servers.filter((row) => row.connected)
 }
 
-function findServer(
-  servers: readonly FleetServer[],
-  id: string | null,
-): FleetServer | undefined {
+function findServer(servers: readonly FleetServer[], id: string | null): FleetServer | undefined {
   if (!id) return undefined
   return servers.find((row) => row.id === id)
 }
@@ -139,7 +140,7 @@ function findServer(
 function schedulingPool(
   servers: readonly FleetServer[],
   pinServerId: string | null,
-  defaultServerId: string | null,
+  defaultServerId: string | null
 ): FleetServer[] {
   const online = connectedServers(servers)
   const extras: FleetServer[] = []
@@ -158,7 +159,7 @@ function eligibleForService(
   spec: ServiceScheduleSpec,
   pinServerId: string | null,
   defaultServerId: string | null,
-  storagePin: string | undefined,
+  storagePin: string | undefined
 ): FleetServer[] {
   let pool = schedulingPool(servers, pinServerId, defaultServerId)
   if (pinServerId) {
@@ -170,9 +171,7 @@ function eligibleForService(
   return pool.filter((row) => serverMatchesConstraints(row, spec.constraints))
 }
 
-function existingByServiceSlot(
-  existing: readonly ExistingSlot[],
-): Map<string, string> {
+function existingByServiceSlot(existing: readonly ExistingSlot[]): Map<string, string> {
   const map = new Map<string, string>()
   for (const task of existing) {
     map.set(`${task.serviceId}:${String(task.slot)}`, task.serverId)
@@ -183,7 +182,7 @@ function existingByServiceSlot(
 function spreadScore(
   server: FleetServer,
   spreadKeys: readonly string[],
-  usedLabelValues: Map<string, number>,
+  usedLabelValues: Map<string, number>
 ): number {
   let score = 0
   for (const key of spreadKeys) {
@@ -204,12 +203,10 @@ function spreadScore(
 function withCapacityRemaining(
   candidates: readonly FleetServer[],
   perNodeCounts: ReadonlyMap<string, number>,
-  maxReplicasPerNode: number | null,
+  maxReplicasPerNode: number | null
 ): FleetServer[] {
   if (maxReplicasPerNode === null) return [...candidates]
-  return candidates.filter(
-    (row) => (perNodeCounts.get(row.id) ?? 0) < maxReplicasPerNode,
-  )
+  return candidates.filter((row) => (perNodeCounts.get(row.id) ?? 0) < maxReplicasPerNode)
 }
 
 function pickServer(params: {
@@ -235,11 +232,7 @@ function pickServer(params: {
   const withPortRoom = requireEmptyHost
     ? eligible.filter((row) => !occupied.has(row.id))
     : [...eligible]
-  const candidates = withCapacityRemaining(
-    withPortRoom,
-    perNodeCounts,
-    maxReplicasPerNode,
-  )
+  const candidates = withCapacityRemaining(withPortRoom, perNodeCounts, maxReplicasPerNode)
   if (candidates.length === 0) return null
   // `preferredId` is the **last** thing consulted, not the first. Returning it
   // outright is what used to make `placement.preferences` inert for every
@@ -249,11 +242,10 @@ function pickServer(params: {
   // replicas keep packing onto it — while a document that asked to spread
   // actually spreads.
   candidates.sort((a, b) => {
-    const spread = spreadScore(a, spreadKeys, usedLabelValues) -
-      spreadScore(b, spreadKeys, usedLabelValues)
+    const spread =
+      spreadScore(a, spreadKeys, usedLabelValues) - spreadScore(b, spreadKeys, usedLabelValues)
     if (spread !== 0) return spread
-    const preference = (a.id === preferredId ? 0 : 1) -
-      (b.id === preferredId ? 0 : 1)
+    const preference = (a.id === preferredId ? 0 : 1) - (b.id === preferredId ? 0 : 1)
     if (preference !== 0) return preference
     return a.id.localeCompare(b.id)
   })
@@ -263,7 +255,7 @@ function pickServer(params: {
 function recordSpread(
   server: FleetServer,
   spreadKeys: readonly string[],
-  usedLabelValues: Map<string, number>,
+  usedLabelValues: Map<string, number>
 ): void {
   for (const key of spreadKeys) {
     const token = `${key}=${server.labels[key] ?? ''}`
@@ -290,9 +282,7 @@ function colocationGroups(services: readonly PlannedService[]): string[][] {
     const rootB = find(b)
     if (rootA !== rootB) parent.set(rootA, rootB)
   }
-  const nameToId = new Map(
-    services.map((row) => [row.spec.composeServiceName, row.serviceId]),
-  )
+  const nameToId = new Map(services.map((row) => [row.spec.composeServiceName, row.serviceId]))
   for (const row of services) {
     parent.set(row.serviceId, row.serviceId)
   }
@@ -317,8 +307,7 @@ function fail(error: ScheduleErrorCode, message: string): SchedulePlan {
 }
 
 type GroupPlaceResult =
-  | { ok: true; slots: DesiredSlotInput[] }
-  | { ok: false; error: ScheduleErrorCode; message: string }
+  { ok: true; slots: DesiredSlotInput[] } | { ok: false; error: ScheduleErrorCode; message: string }
 
 function planEmptyEnvironment(input: PlanEnvironmentInput): SchedulePlan {
   const fallbackId = input.pinServerId ?? input.defaultServerId
@@ -338,7 +327,7 @@ function missingPinnedServer(input: PlanEnvironmentInput): SchedulePlan | null {
 function intersectGroupEligible(
   pool: readonly FleetServer[],
   groupServices: readonly PlannedService[],
-  input: PlanEnvironmentInput,
+  input: PlanEnvironmentInput
 ): FleetServer[] {
   let eligible = [...pool]
   if (input.pinServerId) {
@@ -350,7 +339,7 @@ function intersectGroupEligible(
       row.spec,
       input.pinServerId,
       input.defaultServerId,
-      input.storagePins.get(row.serviceId),
+      input.storagePins.get(row.serviceId)
     )
     const allowed = new Set(next.map((server) => server.id))
     eligible = eligible.filter((server) => allowed.has(server.id))
@@ -363,7 +352,7 @@ function emptyGroupError(groupServices: readonly PlannedService[]): GroupPlaceRe
   const colocated = groupServices.some((row) => row.spec.colocateWith.length > 0)
   return fail(
     colocated ? 'colocation_conflict' : 'constraint_unsatisfiable',
-    `No eligible server for ${names}`,
+    `No eligible server for ${names}`
   )
 }
 
@@ -371,7 +360,7 @@ function placeGroupServices(
   groupServices: readonly PlannedService[],
   eligible: FleetServer[],
   existing: Map<string, string>,
-  preferredId: string | null,
+  preferredId: string | null
 ): GroupPlaceResult {
   const fallback = findServer(eligible, preferredId) ?? eligible[0]
   if (!fallback) {
@@ -398,7 +387,7 @@ function placeColocationGroup(
   byId: ReadonlyMap<string, PlannedService>,
   pool: readonly FleetServer[],
   existing: Map<string, string>,
-  input: PlanEnvironmentInput,
+  input: PlanEnvironmentInput
 ): GroupPlaceResult {
   const groupServices = group
     .map((id) => byId.get(id))
@@ -422,13 +411,12 @@ function placeColocationGroup(
  * A whole-environment pin short-circuits ahead of all of that: everything lands
  * on one host, so nothing spans.
  */
-function fabricRequiredForPlan(
+function planSpansOverlay(
   input: PlanEnvironmentInput,
   slots: readonly DesiredSlotInput[],
-  serverIds: readonly string[],
+  serverIds: readonly string[]
 ): boolean {
   if (serverIds.length <= 1) return false
-  if (input.fabricEnabled) return false
   if (input.pinServerId) return false
   const document = input.document
   if (!document) return false
@@ -438,9 +426,33 @@ function fabricRequiredForPlan(
     input.services.map((row) => ({
       id: row.serviceId,
       composeServiceName: row.spec.composeServiceName,
-    })),
+    }))
   )
   return spanning.length > 0
+}
+
+/**
+ * Why a spanning plan cannot get its fabric, or null when it can (or needs
+ * none): the org has TurboFabric off, or a participating server is switched
+ * out of it (that server gets no `tp0`, so nothing can reach its bridge).
+ */
+function fabricRefusalForPlan(
+  input: PlanEnvironmentInput,
+  slots: readonly DesiredSlotInput[],
+  serverIds: readonly string[]
+): string | null {
+  if (!planSpansOverlay(input, slots, serverIds)) return null
+  if (!input.fabricEnabled) {
+    return 'Enable TurboFabric to span a `driver: overlay` network across servers'
+  }
+  const participating = new Set(serverIds)
+  const optedOut = input.servers
+    .filter((row) => participating.has(row.id) && row.fabricEnabled === false)
+    .map((row) => row.name ?? row.id)
+  if (optedOut.length === 0) return null
+  return `TurboFabric is switched off for ${optedOut.join(', ')}. Switch it on for ${
+    optedOut.length === 1 ? 'that server' : 'those servers'
+  } to span a \`driver: overlay\` network across servers`
 }
 
 /**
@@ -460,9 +472,7 @@ function unplacedSlotError(params: {
   cap: number | null
 }): { error: ScheduleErrorCode; message: string } {
   const { name, slot, eligible, occupied, requireEmptyHost, cap } = params
-  const withPortRoom = requireEmptyHost
-    ? eligible.filter((row) => !occupied.has(row.id))
-    : eligible
+  const withPortRoom = requireEmptyHost ? eligible.filter((row) => !occupied.has(row.id)) : eligible
   if (cap !== null && withPortRoom.length > 0) {
     return {
       error: 'max_replicas_per_node_exceeded',
@@ -522,24 +532,24 @@ function placeService(params: {
 
   for (let slot = 0; slot < count; slot += 1) {
     const stickyId = existing.get(`${service.serviceId}:${String(slot)}`)
-    const sticky = stickyId
-      ? eligible.find((row) => row.id === stickyId)
-      : undefined
+    const sticky = stickyId ? eligible.find((row) => row.id === stickyId) : undefined
     // Stickiness yields to the cap. A cap lowered since the last deploy would
     // otherwise be honoured for new slots and quietly violated by the ones that
     // were already somewhere, which is not a cap at all.
-    const stickyFits = sticky !== undefined &&
-      (cap === null || (perNodeCounts.get(sticky.id) ?? 0) < cap)
-    const chosen = (stickyFits ? sticky : undefined) ?? pickServer({
-      eligible,
-      spreadKeys: service.spec.spreadKeys,
-      usedLabelValues,
-      occupied,
-      requireEmptyHost,
-      preferredId,
-      perNodeCounts,
-      maxReplicasPerNode: cap,
-    })
+    const stickyFits =
+      sticky !== undefined && (cap === null || (perNodeCounts.get(sticky.id) ?? 0) < cap)
+    const chosen =
+      (stickyFits ? sticky : undefined) ??
+      pickServer({
+        eligible,
+        spreadKeys: service.spec.spreadKeys,
+        usedLabelValues,
+        occupied,
+        requireEmptyHost,
+        preferredId,
+        perNodeCounts,
+        maxReplicasPerNode: cap,
+      })
     if (!chosen) {
       return unplacedSlotError({
         name,
@@ -570,11 +580,7 @@ function placeService(params: {
 export function planEnvironmentSchedule(input: PlanEnvironmentInput): SchedulePlan {
   if (input.services.length === 0) return planEmptyEnvironment(input)
 
-  const pool = schedulingPool(
-    input.servers,
-    input.pinServerId,
-    input.defaultServerId,
-  )
+  const pool = schedulingPool(input.servers, input.pinServerId, input.defaultServerId)
   if (pool.length === 0) {
     return fail('no_eligible_server', 'No connected servers are available')
   }
@@ -592,14 +598,11 @@ export function planEnvironmentSchedule(input: PlanEnvironmentInput): SchedulePl
     allTasks.push(...placed.slots)
   }
 
-  const serverIds = [...new Set(allTasks.map((task) => task.serverId))]
-    .sort((a, b) => a.localeCompare(b))
-  if (fabricRequiredForPlan(input, allTasks, serverIds)) {
-    return fail(
-      'turbofabric_required',
-      'Enable TurboFabric to span a `driver: overlay` network across servers',
-    )
-  }
+  const serverIds = [...new Set(allTasks.map((task) => task.serverId))].sort((a, b) =>
+    a.localeCompare(b)
+  )
+  const fabricRefusal = fabricRefusalForPlan(input, allTasks, serverIds)
+  if (fabricRefusal) return fail('turbofabric_required', fabricRefusal)
 
   allTasks.sort((a, b) => {
     const byService = a.serviceId.localeCompare(b.serviceId)
@@ -612,7 +615,7 @@ export function planEnvironmentSchedule(input: PlanEnvironmentInput): SchedulePl
 export function localReplicaCounts(
   slots: readonly DesiredSlotInput[],
   serviceIdToName: ReadonlyMap<string, string>,
-  serverId: string,
+  serverId: string
 ): Map<string, number> {
   const counts = new Map<string, number>()
   for (const task of slots) {
@@ -627,7 +630,7 @@ export function localReplicaCounts(
 export function localServiceNames(
   slots: readonly DesiredSlotInput[],
   serviceIdToName: ReadonlyMap<string, string>,
-  serverId: string,
+  serverId: string
 ): Set<string> {
   const names = new Set<string>()
   for (const task of slots) {

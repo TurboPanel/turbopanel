@@ -38,6 +38,7 @@ import {
   LOGIN_RECIPES,
 } from '../features/managed/logins.ts'
 import { PROJECT_ICONS, PROJECT_KINDS } from '../features/projects/vocabulary.ts'
+import { FABRIC_PEER_KINDS, FABRIC_SERVER_ROLES } from '../features/fabric/membership-vocabulary.ts'
 import {
   DATACENTER_ADDRESS_PREFERENCES,
   DATACENTER_KINDS,
@@ -166,6 +167,8 @@ const CASES: Array<[constraint: string, values: readonly string[]]> = [
   ['server_machine_class_source_check', SERVER_MACHINE_CLASS_SOURCES],
   ['server_os_architecture_check', SERVER_OS_ARCHITECTURES],
   ['server_offline_reason_check', SERVER_OFFLINE_REASONS],
+  ['server_fabric_role_check', FABRIC_SERVER_ROLES],
+  ['relay_kind_check', FABRIC_PEER_KINDS],
   ['server_daemon_update_status_check', SERVER_DAEMON_UPDATE_STATUSES],
   ['login_grant_mode_check', LOGIN_GRANT_MODES],
   ['login_recipe_check', LOGIN_RECIPES],

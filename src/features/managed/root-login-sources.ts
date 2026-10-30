@@ -15,10 +15,11 @@
  * behaviour.
  */
 
-import { eq, inArray } from 'drizzle-orm'
+import { and, eq, inArray } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { fabric, ip, relay, server } from '../../db/schema.ts'
 import { reportedIpsFromServerMetadata } from '../../contracts/server-addresses.ts'
+import { relayCarriesTraffic } from '../fabric/relay-filters.ts'
 import {
   inetAddressToString,
   isRoutableHostAddress,
@@ -79,7 +80,7 @@ export async function loadOrganizationRootAllowedSources(
       .select({ address: relay.address })
       .from(relay)
       .innerJoin(fabric, eq(relay.fabricId, fabric.id))
-      .where(inArray(relay.serverId, serverIds)),
+      .where(and(inArray(relay.serverId, serverIds), relayCarriesTraffic())),
   ])
   return organizationRootAllowedSources({
     reported: servers.flatMap((row) => reportedIpsFromServerMetadata(row.metadata) ?? []),

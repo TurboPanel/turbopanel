@@ -20,7 +20,9 @@ import {
   FabricAllocationError,
   type FabricReconcileSnapshot,
   type FabricRecord,
+  getFabricById,
   getOrganizationFabric,
+  isFabricPaused,
   loadFabricReconcileSnapshot,
   type RelayRecord,
 } from './fabric-records.ts'
@@ -357,6 +359,16 @@ async function desiredHashesForServers(params: {
   return desiredHashByServer
 }
 
+/** Shown when TurboFabric is turned off or removed while a deploy waits for it. */
+export const FABRIC_TURNED_OFF_MESSAGE =
+  'TurboFabric was turned off while this deploy waited for it. Turn it back on, then deploy again.'
+
+/** The fabric still exists and is not paused (read fresh from the database). */
+async function fabricCarriesTraffic(db: Db, fabricId: string): Promise<boolean> {
+  const current = await getFabricById(db, fabricId)
+  return current !== null && !isFabricPaused(current)
+}
+
 async function participatingConvergenceAttempt(params: {
   db: Db
   commandQueue: CommandQueue
@@ -371,6 +383,16 @@ async function participatingConvergenceAttempt(params: {
   now: () => number
   startedAt: number
 }): Promise<FabricGateOutcome | 'retry'> {
+  // Re-read on every attempt: a pause (or removal) while the deploy waits must
+  // stop it here, never send a tunnel back up.
+  if (!(await fabricCarriesTraffic(params.db, params.fabric.id))) {
+    return {
+      kind: 'failed',
+      serverId: params.serverIds[0] ?? '',
+      commandId: '',
+      error: FABRIC_TURNED_OFF_MESSAGE,
+    }
+  }
   const remainingMs = Math.max(0, params.timeoutMs - (params.now() - params.startedAt))
   const results = await enqueueFabricReconcileForServers({
     db: params.db,
@@ -559,6 +581,8 @@ async function enqueueFabricReconcileForServer(params: {
   expiresAt: string
   secrets: FabricSecretDeps
   enabled: boolean
+  /** With `enabled: false`: pause (keep the key) instead of a full tear down. */
+  retainKeys?: boolean
   fabric: FabricRecord | null
   snapshot: FabricReconcileSnapshot | null
   serverId: string
@@ -572,7 +596,7 @@ async function enqueueFabricReconcileForServer(params: {
       actorType: params.actorType,
       actorId: params.actorId,
       serverId: params.serverId,
-      payload: { enabled: false },
+      payload: params.retainKeys ? { enabled: false, retainKeys: true } : { enabled: false },
       expiresAt: params.expiresAt,
     })
   }
@@ -619,10 +643,20 @@ export async function enqueueFabricReconcileForServers(params: {
   fabric: FabricRecord | null
   serverIds: readonly string[]
   enabled: boolean
+  /** With `enabled: false`: pause (keep the key) instead of a full tear down. */
+  retainKeys?: boolean
   skipConverged?: boolean
   secretsConfig?: SecretsConfig
   dataEncryptionSecrets?: DerivedSecretsConfig
 }): Promise<FabricEnqueueResult[]> {
+  // Never send enabled:true for a fabric that is paused or gone by now.
+  if (
+    params.enabled &&
+    params.fabric &&
+    !(await fabricCarriesTraffic(params.db, params.fabric.id))
+  ) {
+    return params.serverIds.map((serverId) => ({ serverId, status: 'skipped' }))
+  }
   const expiresAt = new Date(Date.now() + 300_000).toISOString()
   const secrets = fabricSecretEnqueueFields(params)
   const snapshot = await loadEnabledFabricSnapshot(params.db, params.enabled, params.fabric)
@@ -636,6 +670,7 @@ export async function enqueueFabricReconcileForServers(params: {
       expiresAt,
       secrets,
       enabled: params.enabled,
+      ...(params.retainKeys ? { retainKeys: true } : {}),
       fabric: params.fabric,
       snapshot,
       serverId,
@@ -657,7 +692,8 @@ export async function reconcileFabricMembership(params: {
   registry?: DaemonCellRegistry
 }): Promise<FabricEnqueueResult[]> {
   const fabric = await getOrganizationFabric(params.db, params.organizationId)
-  if (!fabric) return []
+  // A paused fabric sends nothing: its servers keep the tunnel down until resume.
+  if (!fabric || isFabricPaused(fabric)) return []
 
   const unallocated: UnallocatedFabricServer[] = []
   await ensureFabricRelays(params.db, {

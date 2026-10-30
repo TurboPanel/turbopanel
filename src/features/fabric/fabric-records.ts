@@ -3,6 +3,7 @@
  */
 
 import { and, asc, eq, inArray } from 'drizzle-orm'
+import { relayServerSwitchedOn } from './relay-filters.ts'
 import type { Db } from '../../db/connection.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
 import { nowIso } from '../commands/ids.ts'
@@ -79,6 +80,13 @@ export type FabricRecord = {
   organizationId: string
   cidr: string
   options: unknown
+  /** False while paused (tunnels down, rows and keys kept); absent reads as on. */
+  enabled?: boolean
+}
+
+/** A paused fabric keeps its rows but carries no traffic. */
+export function isFabricPaused(record: Pick<FabricRecord, 'enabled'>): boolean {
+  return record.enabled === false
 }
 
 export type RelayRole = 'gateway' | 'member'
@@ -148,6 +156,40 @@ export class FabricAllocationError extends Error {
     super(message)
     this.name = 'FabricAllocationError'
     this.kind = kind
+  }
+}
+
+/**
+ * A cross-server network (for example a managed database attached by a
+ * spanning network) needs a server whose TurboFabric switch is off. Carries a
+ * plain sentence naming the server.
+ */
+export class FabricServerSwitchedOffError extends FabricAllocationError {
+  readonly serverName: string
+
+  constructor(serverName: string) {
+    super(
+      'relay_missing',
+      `TurboFabric is switched off for ${serverName}. Switch it on for that server, or keep this network on one server.`
+    )
+    this.name = 'FabricServerSwitchedOffError'
+    this.serverName = serverName
+  }
+}
+
+/** Throw the plain refusal when the server is switched out of TurboFabric. */
+async function assertServerSwitchedOn(db: Db, serverId: string): Promise<void> {
+  const [row] = await db
+    .select({
+      name: server.name,
+      hostname: server.hostname,
+      isFabricEnabled: server.isFabricEnabled,
+    })
+    .from(server)
+    .where(eq(server.id, serverId))
+    .limit(1)
+  if (row?.isFabricEnabled === false) {
+    throw new FabricServerSwitchedOffError(row.name ?? row.hostname ?? serverId)
   }
 }
 
@@ -289,17 +331,20 @@ function occupiedCidrs(db: Db, organizationId: string): Promise<string[]> {
   return loadCidrAllocationExclusions(db, organizationId)
 }
 
+const FABRIC_RECORD_SELECT = {
+  id: fabric.id,
+  organizationId: fabric.organizationId,
+  cidr: fabric.cidr,
+  options: fabric.options,
+  isEnabled: fabric.isEnabled,
+}
+
 export async function getOrganizationFabric(
   db: Db,
   organizationId: string
 ): Promise<FabricRecord | null> {
   const [row] = await db
-    .select({
-      id: fabric.id,
-      organizationId: fabric.organizationId,
-      cidr: fabric.cidr,
-      options: fabric.options,
-    })
+    .select(FABRIC_RECORD_SELECT)
     .from(fabric)
     .where(eq(fabric.organizationId, organizationId))
     .limit(1)
@@ -309,12 +354,7 @@ export async function getOrganizationFabric(
 
 export async function getFabricById(db: Db, fabricId: string): Promise<FabricRecord | null> {
   const [row] = await db
-    .select({
-      id: fabric.id,
-      organizationId: fabric.organizationId,
-      cidr: fabric.cidr,
-      options: fabric.options,
-    })
+    .select(FABRIC_RECORD_SELECT)
     .from(fabric)
     .where(eq(fabric.id, fabricId))
     .limit(1)
@@ -327,12 +367,14 @@ function serializeFabric(row: {
   organizationId: string
   cidr: unknown
   options: unknown
+  isEnabled?: boolean
 }): FabricRecord {
   return {
     id: row.id,
     organizationId: row.organizationId,
     cidr: typeof row.cidr === 'string' ? row.cidr : String(row.cidr),
     options: row.options,
+    enabled: row.isEnabled !== false,
   }
 }
 
@@ -404,8 +446,23 @@ const RELAY_SELECT = {
   options: relay.options,
 }
 
-export async function listFabricRelays(db: Db, fabricId: string): Promise<RelayRecord[]> {
-  const rows = await db.select(RELAY_SELECT).from(relay).where(eq(relay.fabricId, fabricId))
+export { relayServerSwitchedOn }
+
+/**
+ * The fabric's relays. By default only servers with TurboFabric switched on;
+ * `includeSwitchedOff` also returns the kept rows of servers switched off
+ * (for removal, allocation checks and editing their settings).
+ */
+export async function listFabricRelays(
+  db: Db,
+  fabricId: string,
+  opts: { includeSwitchedOff?: boolean } = {}
+): Promise<RelayRecord[]> {
+  const scope = eq(relay.fabricId, fabricId)
+  const rows = await db
+    .select(RELAY_SELECT)
+    .from(relay)
+    .where(opts.includeSwitchedOff ? scope : and(scope, relayServerSwitchedOn()))
 
   return rows.map((row) => serializeRelay(row))
 }
@@ -595,8 +652,9 @@ async function loadRelayAllocationExclusions(
 }
 
 /**
- * Give every org server a relay. By default a full pool throws (enable rolls
- * back). When `unallocated` is passed, a pool-full server is reported there
+ * Give every org server that has TurboFabric switched on a relay (a server
+ * switched off keeps the relay it had and gets no new one) and return the
+ * switched-on relays. By default a full pool throws (enable rolls back). When `unallocated` is passed, a pool-full server is reported there
  * instead and the others carry on, so one extra server never blocks the rest
  * of the fabric from reconciling.
  */
@@ -609,12 +667,14 @@ export async function ensureFabricRelays(
   }
 ): Promise<RelayRecord[]> {
   const options = parseFabricOptions(params.fabric.options)
-  const orgServers = await db
-    .select({ id: server.id })
-    .from(server)
-    .where(eq(server.organizationId, params.organizationId))
+  const orgServers = (
+    await db
+      .select({ id: server.id, isFabricEnabled: server.isFabricEnabled })
+      .from(server)
+      .where(eq(server.organizationId, params.organizationId))
+  ).filter((row) => row.isFabricEnabled !== false)
 
-  const existing = await listFabricRelays(db, params.fabric.id)
+  const existing = await listFabricRelays(db, params.fabric.id, { includeSwitchedOff: true })
   const have = new Set(existing.map((row) => row.serverId))
 
   let exclusions: readonly string[] | null = null
@@ -665,6 +725,7 @@ export async function enableOrganizationFabric(
   if (existing) {
     return db.transaction(async (tx) => {
       let record = existing
+      if (isFabricPaused(existing)) record = await setFabricEnabled(tx, existing, true)
       if (hasFabricEnablePolicy(policy)) {
         record =
           (await updateFabricPolicy(tx, {
@@ -693,29 +754,48 @@ export async function enableOrganizationFabric(
   }
 
   return db.transaction(async (tx) => {
-    const [row] = await tx.insert(fabric).values({ organizationId, cidr, options }).returning({
-      id: fabric.id,
-      organizationId: fabric.organizationId,
-      cidr: fabric.cidr,
-      options: fabric.options,
-    })
+    const [row] = await tx
+      .insert(fabric)
+      .values({ organizationId, cidr, options })
+      .returning(FABRIC_RECORD_SELECT)
     if (!row) throw new Error('TurboFabric insert failed')
 
-    const record: FabricRecord = {
-      id: row.id,
-      organizationId: row.organizationId,
-      cidr: typeof row.cidr === 'string' ? row.cidr : String(row.cidr),
-      options: row.options,
-    }
+    const record = serializeFabric(row)
     await ensureFabricRelays(tx, { fabric: record, organizationId })
     return record
   })
 }
 
+export async function setFabricEnabled(
+  db: Db,
+  record: FabricRecord,
+  enabled: boolean
+): Promise<FabricRecord> {
+  await db
+    .update(fabric)
+    .set({ isEnabled: enabled, updatedAt: nowIso() })
+    .where(eq(fabric.id, record.id))
+  return { ...record, enabled }
+}
+
+/**
+ * Pause the fabric: keep the row, every relay (address, prefix, public key)
+ * and every container network, so turning it back on is instant. What each
+ * server last applied is forgotten, so the resume sends every server its full
+ * config again.
+ */
+export async function pauseOrganizationFabric(db: Db, record: FabricRecord): Promise<FabricRecord> {
+  const relays = await listFabricRelays(db, record.id, { includeSwitchedOff: true })
+  await forEachSequential(relays, async (row) => {
+    await clearRelayAppliedPayloadHash(db, { serverId: row.serverId, fabricId: record.id })
+  })
+  return setFabricEnabled(db, record, false)
+}
+
 export async function disableOrganizationFabric(db: Db, organizationId: string): Promise<string[]> {
   const existing = await getOrganizationFabric(db, organizationId)
   if (!existing) return []
-  const relays = await listFabricRelays(db, existing.id)
+  const relays = await listFabricRelays(db, existing.id, { includeSwitchedOff: true })
   const serverIds = relays.map((row) => row.serverId)
   await db.delete(fabric).where(eq(fabric.id, existing.id))
   return serverIds
@@ -896,13 +976,6 @@ export async function updateFabricRelay(
     .returning(RELAY_SELECT)
   if (!row) return null
   return serializeRelay(row)
-}
-
-const FABRIC_RECORD_SELECT = {
-  id: fabric.id,
-  organizationId: fabric.organizationId,
-  cidr: fabric.cidr,
-  options: fabric.options,
 }
 
 /**
@@ -2234,6 +2307,7 @@ export async function materializeSpanningNetworks(
     await forEachSequential(serverIds, async (serverId) => {
       const relayRow = relayByServer.get(serverId)
       if (!relayRow) {
+        await assertServerSwitchedOn(db, serverId)
         throw new FabricAllocationError('relay_missing')
       }
       const [have] = await db
