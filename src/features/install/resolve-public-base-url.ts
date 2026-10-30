@@ -48,7 +48,10 @@ async function resolveStoredPublicUrlOrigin(c: Context): Promise<string | null> 
   const publicUrls = Deno.env.get('TURBOPANEL_PUBLIC_URLS')?.trim()
   if (!publicUrls) return null
 
-  return originFromFirstPublicUrlEntry(publicUrls.split(','))
+  // The installer writes the self-hosted panel's own names here, so each one
+  // dials the panel's listener on 8443 even when written as `https://host`.
+  const first = publicUrls.split(',')[0]?.trim()
+  return first ? publicUrlEntryToInstallOrigin(first) : null
 }
 
 /**

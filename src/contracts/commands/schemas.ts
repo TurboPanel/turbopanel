@@ -372,8 +372,8 @@ export type FirewallCommandPolicy = {
  *
  * `rules` is the **complete** desired set for one server, the way
  * `server.principals.reconcile` carries every account. `controlPlane.tcpPorts`
- * names the co-located control plane's entrypoint (8443, or 80 + 443 under
- * `lets_encrypt`); the daemon treats those as invariants and refuses a
+ * names the co-located control plane's entrypoint (always 8443; 80 and 443
+ * belong to hosting); the daemon treats those as invariants and refuses a
  * default-drop apply on a co-located host that names none. `sshPorts` is the
  * panel's belief; the daemon unions it with `sshd -T`.
  */
