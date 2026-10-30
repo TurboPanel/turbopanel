@@ -123,7 +123,7 @@ export const managedSchemas = {
         nullable: true,
         enum: ['failover', 'read'],
         description:
-          'Null on primary. Failover replicas are same-datacenter and promotable; read replicas may use fabric/public.',
+          'Null on primary. Failover replicas are same-datacenter (or TurboFabric over an untrusted network) and promotable; read replicas may use fabric/public.',
       },
       readEligible: { type: 'boolean' },
       ordinal: { type: 'integer', minimum: 1 },
@@ -1755,7 +1755,7 @@ export const managedSchemas = {
   DatacenterRequiredError: errorSchema('datacenter_required'),
   DatacenterCidrRequiredError: errorSchema('datacenter_cidr_required'),
   PrivatePathUnavailableError: errorSchema('private_path_unavailable'),
-  FailoverRequiresTrustedDatacenterError: errorSchema('failover_requires_trusted_datacenter'),
+  UntrustedNetworkNeedsFabricError: errorSchema('untrusted_network_needs_fabric'),
   ManagedFailoverUnsupportedError: {
     type: 'object',
     required: ['error', 'code'],
@@ -2874,7 +2874,7 @@ export const managedPaths = {
         },
         422: {
           description:
-            'managed_failover_unsupported / failover_replica_requires_datacenter_transport / datacenter_required / datacenter_cidr_required / private_path_unavailable / failover_requires_trusted_datacenter',
+            'managed_failover_unsupported / failover_replica_requires_datacenter_transport / datacenter_required / datacenter_cidr_required / private_path_unavailable / untrusted_network_needs_fabric',
           content: {
             'application/json': {
               schema: {
@@ -2887,7 +2887,7 @@ export const managedPaths = {
                   { $ref: '#/components/schemas/DatacenterCidrRequiredError' },
                   { $ref: '#/components/schemas/PrivatePathUnavailableError' },
                   {
-                    $ref: '#/components/schemas/FailoverRequiresTrustedDatacenterError',
+                    $ref: '#/components/schemas/UntrustedNetworkNeedsFabricError',
                   },
                 ],
               },
@@ -2931,7 +2931,7 @@ export const managedPaths = {
         },
         422: {
           description:
-            'failover_replica_requires_datacenter_transport / datacenter_required / datacenter_cidr_required / private_path_unavailable / failover_requires_trusted_datacenter',
+            'failover_replica_requires_datacenter_transport / datacenter_required / datacenter_cidr_required / private_path_unavailable / untrusted_network_needs_fabric',
           content: {
             'application/json': {
               schema: {
@@ -2943,7 +2943,7 @@ export const managedPaths = {
                   { $ref: '#/components/schemas/DatacenterCidrRequiredError' },
                   { $ref: '#/components/schemas/PrivatePathUnavailableError' },
                   {
-                    $ref: '#/components/schemas/FailoverRequiresTrustedDatacenterError',
+                    $ref: '#/components/schemas/UntrustedNetworkNeedsFabricError',
                   },
                 ],
               },

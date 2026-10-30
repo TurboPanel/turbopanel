@@ -88,7 +88,7 @@ export const serverTrafficMapSchemas = {
       error: {
         type: ['string', 'null'],
         description:
-          'Set when no path exists: `private_path_unavailable`, `private_family_mismatch`, `failover_requires_trusted_datacenter`, `datacenter_ip_required`.',
+          'Set when no path exists: `private_path_unavailable`, `private_family_mismatch`, `untrusted_network_needs_fabric`, `datacenter_ip_required`.',
       },
       onChosenNetwork: {
         type: 'boolean',

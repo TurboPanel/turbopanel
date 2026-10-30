@@ -1333,6 +1333,9 @@ async function resolveReplicaPlacement(
     purpose,
   })
   if ('kind' in toPrimary) return privateEndpointErrorResponse(c, toPrimary)
+  // A pair on an untrusted network never gets a new placement that would fall
+  // to the public address in plain; TurboFabric has to carry it.
+  if (toPrimary.untrustedPublic) return c.json({ error: 'untrusted_network_needs_fabric' }, 422)
   if (params.replicaClass === 'failover') {
     const transportErr = assertFailoverReplicaTransportAllowed(toPrimary.transport)
     if (transportErr) {
@@ -1370,7 +1373,7 @@ async function resolveReplicaPlacement(
  * caller can surface the class-conversion error instead.
  *
  * Resolver errors (`private_path_unavailable`, `private_family_mismatch`,
- * `failover_requires_trusted_datacenter`) are surfaced as their own 422 via
+ * `untrusted_network_needs_fabric`) are surfaced as their own 422 via
  * `privateEndpointErrorResponse` — never collapsed into
  * `failover_replica_requires_datacenter_transport`, because the operator
  * needs the specific reason (e.g. "mark the shared datacenter trusted").

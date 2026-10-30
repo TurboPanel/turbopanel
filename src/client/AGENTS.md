@@ -650,12 +650,15 @@ sourceServerId? }`
   deterministic. The datacenter rung walks **only the trusted list**, for
   every purpose; an untrusted datacenter can neither win nor raise
   `private_family_mismatch`. `read-replication` / `client-backend` then fall
-  through to fabric → public as before. `failover-replication` never leaves
-  the LAN: an untrusted-only pair is **422**
-  `failover_requires_trusted_datacenter` (replica create, member class patch,
-  managed apply prepare — never collapsed into
-  `failover_replica_requires_datacenter_transport`), no shared datacenter at
-  all stays `private_path_unavailable`. TurboFabric path planning
+  through to fabric → public as before. Every purpose on a pair that shares an
+  untrusted datacenter rides TurboFabric over the LAN when the tunnel is
+  healthy. `failover-replication` never uses the public address: on an
+  untrusted-only pair with no healthy tunnel it is **422**
+  `untrusted_network_needs_fabric` (replica create, member class patch,
+  managed apply prepare), and the other purposes that fall to public on such a
+  pair carry `untrustedPublic: true` (new placements refuse it with the same
+  422; running traffic keeps the TLS public path and the paths view warns).
+  No shared datacenter at all stays `private_path_unavailable`. TurboFabric path planning
   (`lanPathCandidate` in `src/features/fabric/fabric-records.ts`) consumes the same
   partition through `EndpointAddressCaches.policyByDatacenter`, so a
   `direct_lan` WireGuard endpoint is never emitted on a segment the managed
