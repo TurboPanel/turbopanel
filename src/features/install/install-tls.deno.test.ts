@@ -242,8 +242,14 @@ function installCommandFor(
   })
 }
 
+/**
+ * Insecure TLS covers only the installer's legs to the panel. The installer
+ * script itself always comes from the public host over verified HTTPS.
+ */
 function bootstrapsInsecure(command: string): boolean {
-  return command.includes('curl -fsSLk') && command.includes('TURBOPANEL_INSECURE_TLS=1')
+  assertEquals(command.includes('curl -fsSLk'), false)
+  assertEquals(command.startsWith('curl -fsSL https://'), true)
+  return command.includes('TURBOPANEL_INSECURE_TLS=1')
 }
 
 test('install commands choose -k independently for each uploaded hostname', () => {

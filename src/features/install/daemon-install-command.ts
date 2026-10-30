@@ -7,7 +7,12 @@ export function encodeLicenseArg(licenseId: string, licenseToken: string): strin
   return btoa(combined).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '')
 }
 
-/** CDN bootstrap host shown in production install commands (HTTP→HTTPS via CF). */
+/**
+ * CDN bootstrap host in production install commands. Always emitted as
+ * `https://` (see {@link installScriptUrl}): a bare host makes curl ask over
+ * plain HTTP first, and whoever answers that request picks the script that
+ * runs as root.
+ */
 export const CDN_INSTALL_HOST = 'turbopanel.sh'
 
 /**
@@ -43,21 +48,41 @@ export function installScriptHostForChannel(channel: string | undefined): string
   }
 }
 
+/** The HTTPS URL curl fetches an installer host's script from. */
+export function installScriptUrl(host: string): string {
+  return `https://${host}`
+}
+
+/** HTTPS installer URL for an update channel (see {@link installScriptHostForChannel}). */
+export function installScriptUrlForChannel(channel: string | undefined): string {
+  return installScriptUrl(installScriptHostForChannel(channel))
+}
+
+/** True when `curlUrl` is a public installer host, which always verifies TLS. */
+function isInstallerHostUrl(curlUrl: string): boolean {
+  try {
+    return INSTALL_HOSTS.has(new URL(curlUrl).hostname)
+  } catch {
+    return false
+  }
+}
+
 /**
- * Curl target for the installer script: bare `turbopanel.sh` on the CDN, otherwise
- * the validated origin with `/run.sh` appended (dev overlay only).
+ * Curl target for the installer script: `https://turbopanel.sh` (or its
+ * staging/testing host) on the CDN, otherwise the validated origin with
+ * `/run.sh` appended (dev overlay only).
  */
 export function formatInstallScriptCurlUrl(origin: string): string {
   const trimmed = origin.replace(/\/$/, '')
-  // Bare CDN host must stay bare — `new URL('turbopanel.sh')` throws and the
-  // catch path would otherwise append `/run.sh` (invalid CDN contract).
+  // A bare installer host has no scheme — `new URL('turbopanel.sh')` throws
+  // and the catch path would otherwise append `/run.sh` (invalid CDN contract).
   if (INSTALL_HOSTS.has(trimmed)) {
-    return trimmed
+    return installScriptUrl(trimmed)
   }
   try {
     const url = new URL(trimmed)
     if (INSTALL_HOSTS.has(url.hostname) && !url.port) {
-      return url.hostname
+      return installScriptUrl(url.hostname)
     }
     return `${trimmed}/run.sh`
   } catch {
@@ -174,21 +199,23 @@ export function buildLicenseInstallCommand(opts: {
   if (runtime === 'deno') {
     const curlUrl = useInstanceRunScript
       ? formatInstallScriptCurlUrl(scriptBase)
-      : installScriptHostForChannel(updateChannel)
+      : installScriptUrlForChannel(updateChannel)
     return buildInstallPipeline({
       curlUrl,
       licenseArg,
       host,
       insecureTls,
       caFingerprints,
-      curlInsecure: insecureTls,
+      // Only the instance's own origin (dev overlay `/run.sh`) may need -k.
+      // A public installer host always presents a trusted certificate.
+      curlInsecure: insecureTls && !isInstallerHostUrl(curlUrl),
       dlBase: overlayDlBase,
       updateChannel,
     })
   }
 
   return buildInstallPipeline({
-    curlUrl: installScriptHostForChannel(updateChannel),
+    curlUrl: installScriptUrlForChannel(updateChannel),
     licenseArg,
     host,
     updateChannel,

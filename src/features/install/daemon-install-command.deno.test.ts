@@ -25,9 +25,9 @@ function extractLicenseArg(command: string): string {
   return match[1]
 }
 
-test('formatInstallScriptCurlUrl keeps bare CDN host and appends /run.sh elsewhere', () => {
-  assertEquals(formatInstallScriptCurlUrl('https://turbopanel.sh'), CDN_INSTALL_HOST)
-  assertEquals(formatInstallScriptCurlUrl(CDN_INSTALL_HOST), CDN_INSTALL_HOST)
+test('formatInstallScriptCurlUrl fetches the CDN over https and appends /run.sh elsewhere', () => {
+  assertEquals(formatInstallScriptCurlUrl('https://turbopanel.sh'), 'https://turbopanel.sh')
+  assertEquals(formatInstallScriptCurlUrl(CDN_INSTALL_HOST), 'https://turbopanel.sh')
   assertEquals(formatInstallScriptCurlUrl('https://huey.lan:8443'), 'https://huey.lan:8443/run.sh')
   assertEquals(formatInstallScriptCurlUrl('https://huey.lan:8443'), 'https://huey.lan:8443/run.sh')
 })
@@ -96,7 +96,7 @@ test('buildLicenseInstallCommand self-hosted Deno curls CDN with TURBOPANEL_HOST
     licenseToken: 'token',
   })
 
-  assertEquals(command.includes(`curl -fsSL ${CDN_INSTALL_HOST}`), true)
+  assertEquals(command.includes(`curl -fsSL https://${CDN_INSTALL_HOST} |`), true)
   assertEquals(command.includes('/run.sh'), false)
   assertEquals(command.includes('TURBOPANEL_HOST=https://panel.example.com'), true)
   assertEquals(command.includes('TURBOPANEL_INSECURE_TLS'), false)
@@ -111,7 +111,7 @@ test('buildLicenseInstallCommand Workers omits host on production URL', () => {
     licenseToken: 'token',
   })
 
-  assertEquals(command, `curl -fsSL ${CDN_INSTALL_HOST} | TURBOPANEL_LICENSE=${encoded} sh`)
+  assertEquals(command, `curl -fsSL https://${CDN_INSTALL_HOST} | TURBOPANEL_LICENSE=${encoded} sh`)
   assertEquals(command.includes('TURBOPANEL_HOST'), false)
 })
 
@@ -154,7 +154,8 @@ test('no stored hostnames: a public DNS name on the self-hosted listener bootstr
   })
   assertEquals(instanceUrl, 'https://panel.example.com:8443')
   assertEquals(insecureTls, true)
-  assertEquals(command.includes('curl -fsSLk'), true)
+  // Insecure TLS covers the panel legs only; the public installer host is verified.
+  assertEquals(command.startsWith(`curl -fsSL https://${CDN_INSTALL_HOST} | `), true)
   assertEquals(command.includes('TURBOPANEL_INSECURE_TLS=1'), true)
   assertEquals(command.includes('TURBOPANEL_HOST=https://panel.example.com:8443'), true)
   const hosted = installOriginNeedsInsecureTls(
@@ -238,10 +239,26 @@ test('installScriptHostForChannel: rc is staging, the canary rail is testing, ev
   assertEquals(installScriptHostForChannel('nonsense'), CDN_INSTALL_HOST)
 })
 
-test("formatInstallScriptCurlUrl keeps each environment's bare installer host", () => {
+test("formatInstallScriptCurlUrl fetches each environment's installer host over https", () => {
   for (const host of [CDN_INSTALL_HOST, STAGING_INSTALL_HOST, TESTING_INSTALL_HOST]) {
-    assertEquals(formatInstallScriptCurlUrl(host), host)
-    assertEquals(formatInstallScriptCurlUrl(`https://${host}`), host)
+    assertEquals(formatInstallScriptCurlUrl(host), `https://${host}`)
+    assertEquals(formatInstallScriptCurlUrl(`https://${host}`), `https://${host}`)
+  }
+})
+
+test('no install command fetches the installer over plain HTTP or skips TLS checks for it', () => {
+  for (const runtime of ['deno', 'workers'] as const) {
+    for (const insecureTls of [false, true]) {
+      const command = buildLicenseInstallCommand({
+        runtime,
+        instanceUrl: 'https://10.0.0.5:8443',
+        licenseId: 'license-id',
+        licenseToken: 'token',
+        insecureTls,
+        caFingerprints: ['a'.repeat(64)],
+      })
+      assertEquals(/^curl -fsSL https:\/\/[a-z.]*turbopanel\.sh \| /.test(command), true, command)
+    }
   }
 })
 
@@ -257,20 +274,20 @@ test("buildLicenseInstallCommand curls the installer host for the control plane'
       runtime,
       updateChannel: 'canary',
     })
-    assertEquals(canary.startsWith(`curl -fsSL ${TESTING_INSTALL_HOST} | `), true)
+    assertEquals(canary.startsWith(`curl -fsSL https://${TESTING_INSTALL_HOST} | `), true)
     const rc = buildLicenseInstallCommand({
       ...base,
       runtime,
       updateChannel: 'rc',
     })
-    assertEquals(rc.startsWith(`curl -fsSL ${STAGING_INSTALL_HOST} | `), true)
+    assertEquals(rc.startsWith(`curl -fsSL https://${STAGING_INSTALL_HOST} | `), true)
     assertEquals(rc.includes('TURBOPANEL_UPDATE_CHANNEL=rc'), true)
     const release = buildLicenseInstallCommand({
       ...base,
       runtime,
       updateChannel: 'release',
     })
-    assertEquals(release.startsWith(`curl -fsSL ${CDN_INSTALL_HOST} | `), true)
+    assertEquals(release.startsWith(`curl -fsSL https://${CDN_INSTALL_HOST} | `), true)
   }
 })
 
