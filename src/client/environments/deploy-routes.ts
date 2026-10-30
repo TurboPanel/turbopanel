@@ -123,6 +123,7 @@ import {
   composeNetworkNamesByServer,
   type FabricSegmentMaterial,
   getOrganizationFabric,
+  isFabricPaused,
   listEnvironmentComposeNetworks,
   listSubnetsForServers,
   materializeSpanningNetworks,
@@ -238,7 +239,7 @@ async function loadSpanningNetworks(
     return empty
   }
   const fabricRow = await getOrganizationFabric(db, organizationId)
-  if (!fabricRow) return empty
+  if (!fabricRow || isFabricPaused(fabricRow)) return empty
   const { attachments, consumers } = await loadManagedIngressPlatformAttachments(db, {
     environmentId,
     document: planned.merged,
@@ -1751,7 +1752,7 @@ async function awaitDeployFabricGate(
     return null
   }
   const fabricRow = await getOrganizationFabric(db, params.auth.organizationId)
-  if (!fabricRow) return null
+  if (!fabricRow || isFabricPaused(fabricRow)) return null
 
   const secretsConfig = c.get('secretsConfig')
   const fabricGate = await awaitParticipatingFabricConvergence({

@@ -691,6 +691,18 @@ export const server = pgTable(
      */
     isHostingEnabled: boolean('is_hosting_enabled'),
     /**
+     * TurboFabric membership switch. True (the default) lets the server join
+     * the organization's mesh whenever it is on; false keeps it out: no relay
+     * row, no `tp0`, no peer entry anywhere, no fabric address in any ladder.
+     */
+    isFabricEnabled: boolean('is_fabric_enabled').default(true).notNull(),
+    /**
+     * Operator-chosen TurboFabric role (`gateway` accepts connections, `client`
+     * only dials out). NULL = automatic: gateway when the server has a public
+     * address, else client. Stored and shown only; routing does not read it yet.
+     */
+    fabricRole: text('fabric_role'),
+    /**
      * Latest hardware layout the daemon reported (`generation`,
      * `bootGeneration`, `snapshot`, `appliedAt`, `updatedAt`, `changes`), at
      * most 64 KiB, rewritten at most once per cooldown. Overwritten in
@@ -788,6 +800,10 @@ export const server = pgTable(
     check(
       'server_daemon_update_status_check',
       sql`daemon_update_status IN ('idle', 'updating', 'done', 'failed', 'expired')`
+    ),
+    check(
+      'server_fabric_role_check',
+      sql`fabric_role IS NULL OR fabric_role IN ('gateway', 'client')`
     ),
   ]
 )
@@ -1755,6 +1771,11 @@ export const fabric = pgTable(
     /** Host fabric subnet for `tp0` addresses (e.g. `10.250.0.0/16`). */
     cidr: cidr().notNull(),
     name: text(),
+    /**
+     * False = paused: every tunnel is down but the row, relays, keys and
+     * container networks are kept so turning it back on is instant.
+     */
+    isEnabled: boolean('is_enabled').default(true).notNull(),
   },
   (table) => [
     uniqueIndex('uniq_fabric_organization_id').on(table.organizationId),
@@ -2054,6 +2075,8 @@ export const relay = pgTable(
       .default(sql`'{}'::cidr[]`),
     /** Sealed `tpsecret` envelope — write-only, same handling as `principal.password`. */
     presharedKey: text('preshared_key'),
+    /** Peer kind: `server` today; `external` (a person's device) is reserved. */
+    kind: text().notNull().default('server'),
   },
   (table) => [
     index('idx_relay_server_id').using('btree', table.serverId.asc().nullsLast().op('uuid_ops')),
@@ -2079,6 +2102,7 @@ export const relay = pgTable(
       'relay_member_advertised_cidrs_empty_check',
       sql`${table.role} <> 'member' OR cardinality(${table.advertisedCidrs}) = 0`
     ),
+    check('relay_kind_check', sql`kind IN ('server', 'external')`),
   ]
 )
 /**

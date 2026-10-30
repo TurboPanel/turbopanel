@@ -267,6 +267,9 @@ async function loadFleet(
     .select({
       id: server.id,
       connected: server.isConnected,
+      name: server.name,
+      hostname: server.hostname,
+      fabricEnabled: server.isFabricEnabled,
     })
     .from(server)
     .where(eq(server.organizationId, organizationId))
@@ -284,6 +287,8 @@ async function loadFleet(
       id: row.id,
       connected: row.connected,
       labels,
+      name: row.name ?? row.hostname ?? row.id,
+      fabricEnabled: row.fabricEnabled,
     }
   })
 }
@@ -418,7 +423,7 @@ export async function planEnvironmentDeploy(
   }
 
   const [fabricRow] = await db
-    .select({ id: fabric.id })
+    .select({ id: fabric.id, isEnabled: fabric.isEnabled })
     .from(fabric)
     .where(eq(fabric.organizationId, params.organizationId))
     .limit(1)
@@ -445,7 +450,7 @@ export async function planEnvironmentDeploy(
   const plan = planEnvironmentSchedule({
     pinServerId,
     defaultServerId,
-    fabricEnabled: Boolean(fabricRow),
+    fabricEnabled: fabricRow !== undefined && fabricRow.isEnabled !== false,
     servers: fleet,
     services: planned,
     // `turbofabric_required` is decided from authored `driver: overlay` intent,
@@ -466,7 +471,7 @@ export async function planEnvironmentDeploy(
     remoteBuildSourcesApproved: composeRemoteBuildSourcesEnabled,
     pinServerId,
     defaultServerId,
-    fabricEnabled: Boolean(fabricRow),
+    fabricEnabled: fabricRow !== undefined && fabricRow.isEnabled !== false,
     fabricId: fabricRow?.id ?? null,
     merged,
     serviceRows,

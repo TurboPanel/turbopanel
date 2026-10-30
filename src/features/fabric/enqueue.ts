@@ -21,6 +21,7 @@ import {
   type FabricReconcileSnapshot,
   type FabricRecord,
   getOrganizationFabric,
+  isFabricPaused,
   loadFabricReconcileSnapshot,
   type RelayRecord,
 } from './fabric-records.ts'
@@ -559,6 +560,8 @@ async function enqueueFabricReconcileForServer(params: {
   expiresAt: string
   secrets: FabricSecretDeps
   enabled: boolean
+  /** With `enabled: false`: pause (keep the key) instead of a full tear down. */
+  retainKeys?: boolean
   fabric: FabricRecord | null
   snapshot: FabricReconcileSnapshot | null
   serverId: string
@@ -572,7 +575,7 @@ async function enqueueFabricReconcileForServer(params: {
       actorType: params.actorType,
       actorId: params.actorId,
       serverId: params.serverId,
-      payload: { enabled: false },
+      payload: params.retainKeys ? { enabled: false, retainKeys: true } : { enabled: false },
       expiresAt: params.expiresAt,
     })
   }
@@ -619,6 +622,8 @@ export async function enqueueFabricReconcileForServers(params: {
   fabric: FabricRecord | null
   serverIds: readonly string[]
   enabled: boolean
+  /** With `enabled: false`: pause (keep the key) instead of a full tear down. */
+  retainKeys?: boolean
   skipConverged?: boolean
   secretsConfig?: SecretsConfig
   dataEncryptionSecrets?: DerivedSecretsConfig
@@ -636,6 +641,7 @@ export async function enqueueFabricReconcileForServers(params: {
       expiresAt,
       secrets,
       enabled: params.enabled,
+      ...(params.retainKeys ? { retainKeys: true } : {}),
       fabric: params.fabric,
       snapshot,
       serverId,
@@ -657,7 +663,8 @@ export async function reconcileFabricMembership(params: {
   registry?: DaemonCellRegistry
 }): Promise<FabricEnqueueResult[]> {
   const fabric = await getOrganizationFabric(params.db, params.organizationId)
-  if (!fabric) return []
+  // A paused fabric sends nothing: its servers keep the tunnel down until resume.
+  if (!fabric || isFabricPaused(fabric)) return []
 
   const unallocated: UnallocatedFabricServer[] = []
   await ensureFabricRelays(params.db, {

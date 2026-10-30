@@ -204,6 +204,7 @@ export const DAEMON_WIRE_FEATURES = [
   'tunnel-connector-v1',
   'tunnel-status-v1',
   'managed-backup-login-v1',
+  'fabric-retain-keys-v1',
 ] as const
 
 export type DaemonWireFeature = (typeof DAEMON_WIRE_FEATURES)[number]
@@ -407,6 +408,15 @@ export const MANAGED_INGRESS_IPV6_FEATURE: DaemonWireFeature = 'managed-ingress-
  * so a limited login is left out of that server's payload instead.
  */
 export const MANAGED_LOGIN_LIMITS_FEATURE: DaemonWireFeature = 'managed-login-limits-v1'
+
+/**
+ * The daemon understands `server.fabric.reconcile` `{ enabled: false,
+ * retainKeys: true }`: it takes `tp0` down and keeps its key, routed bridges
+ * and forwarding rules, so turning TurboFabric back on is instant. Without it
+ * the control plane refuses to pause (an older daemon would read the message
+ * as a full tear down and drop its key); removing TurboFabric still works.
+ */
+export const FABRIC_RETAIN_KEYS_FEATURE: DaemonWireFeature = 'fabric-retain-keys-v1'
 
 /**
  * The daemon answers `managed-permissions-request` with

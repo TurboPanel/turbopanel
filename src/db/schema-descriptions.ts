@@ -586,13 +586,15 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
   fabric: {
     group: 'networking',
     summary:
-      'Org TurboFabric WireGuard mesh (host interface `tp0`), at most one row per organization; absence means TurboFabric is off and private keys are never stored.',
+      'Org TurboFabric WireGuard mesh (`tp0`), at most one row per organization; absent means off, `is_enabled = false` means paused; never holds private keys.',
     columns: {
       metadata: 'Free-form jsonb; no control-plane code path writes or reads it today.',
       options:
         'Mesh policy jsonb: `containerPool` (relay prefix pool, default `10.192.0.0/12`), `listenPort` (default 51821), `mtu` (1280..9000, default 1420), `allowRelay`.',
       cidr: 'Host `tp0` address range that relay `address` values are carved from, auto-picked at enable to avoid every occupied org range (default `10.250.0.0/16`).',
       name: 'Optional display name (1..255 chars of letters, digits, space, dot, underscore, dash); no control-plane code path writes it today.',
+      is_enabled:
+        'False while the mesh is paused: every tunnel is down but relays, keys and container networks are kept so turning it back on is instant.',
     },
   },
   address: {
@@ -695,6 +697,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         "Operator-configured LAN CIDRs a `gateway` relay advertises to remote peers (native cidr[], host bits cleared); must be empty when `role = 'member'`.",
       preshared_key:
         'Sealed `tpsecret` envelope of the operator-set WireGuard preshared key; write-only, never returned by the API, resealed for the daemon at reconcile.',
+      kind: "Peer kind, `server` (an org server, the only kind built) or `external` (reserved for a person's device; nothing writes it yet).",
     },
   },
   subnet: {
@@ -1634,6 +1637,10 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
     columns: {
       preferred_datacenter_id:
         'The datacenter whose network this server prefers when it belongs to several; NULL means no preference; set null when the datacenter is deleted.',
+      is_fabric_enabled:
+        'TurboFabric membership switch, default true; false keeps the server out of the mesh (no relay, no `tp0`, no peer entry, no fabric address).',
+      fabric_role:
+        'Operator TurboFabric role, `gateway` (accepts connections) or `client` (only dials out); NULL means automatic, gateway when a public address is known.',
       metadata:
         'Daemon-projected host facts jsonb: `resources`, `geo`, `docker`, `runtimes`, `cell` plus the operator `hardwareProfile`; hostname, OS and NTP have own columns.',
       options:

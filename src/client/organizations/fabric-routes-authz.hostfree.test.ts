@@ -37,6 +37,8 @@ const FABRIC_PATHS = [
   ['PUT', `/organizations/${orgId}/fabric`],
   ['PATCH', `/organizations/${orgId}/fabric/relays/${serverId}`],
   ['POST', `/organizations/${orgId}/fabric/apply`],
+  ['DELETE', `/organizations/${orgId}/fabric`],
+  ['PATCH', `/organizations/${orgId}/fabric/servers/${serverId}`],
 ] as const
 
 async function buildSessionApp(opts: {
@@ -60,8 +62,18 @@ async function buildSessionApp(opts: {
     state.organizations.push({ id: orgId, name: 'Fabric Org' })
   }
   const authDb = createMockAuthDb(state)
+  const origSelect = (
+    authDb as unknown as {
+      select: (fields?: unknown) => { from: (table: unknown) => unknown }
+    }
+  ).select.bind(authDb)
   const db = Object.assign(authDb, {
     execute: () => Promise.resolve([{ allowed: opts.manageAllowed }]),
+    // The org has no servers: the membership list is empty.
+    select: (fields?: unknown) => ({
+      from: (table: unknown) =>
+        table === server ? { where: () => thenableRows([]) } : origSelect(fields).from(table),
+    }),
   }) as unknown as Db
   const signed = await buildSignedCookie(token, secrets)
   const cookie = `${HTTP_SESSION_COOKIE_NAME}=${signed}`
@@ -201,7 +213,7 @@ test('PUT /fabric enabled:false returns settings when TurboFabric is already off
     body: JSON.stringify({ enabled: false }),
   })
   assertEquals(res.status, 200)
-  assertEquals(await res.json(), { enabled: false, relays: [] })
+  assertEquals(await res.json(), { enabled: false, paused: false, relays: [], servers: [] })
 })
 
 /** Candidate host CIDRs from `pickDefaultFabricHostCidr` — all occupied → route 409. */
@@ -502,7 +514,8 @@ test("PUT /fabric enabled:true returns 409 for a containerPool too small for the
   const get = await app.request(`/organizations/${orgId}/fabric`, {
     headers: { Cookie: cookie },
   })
-  assertEquals(await get.json(), { enabled: false, relays: [] })
+  const settings = (await get.json()) as { enabled: boolean; paused: boolean; relays: unknown[] }
+  assertEquals([settings.enabled, settings.paused, settings.relays], [false, false, []])
 })
 
 test('PUT /fabric enabled:true refuses a containerPool the auto-picked host range lands in without enabling', async () => {
@@ -544,7 +557,7 @@ test('GET /fabric returns disabled settings when TurboFabric is off', async () =
     headers: { Cookie: cookie },
   })
   assertEquals(res.status, 200)
-  assertEquals(await res.json(), { enabled: false, relays: [] })
+  assertEquals(await res.json(), { enabled: false, paused: false, relays: [], servers: [] })
 })
 
 test('POST /fabric/apply returns 503 when command dispatch is unavailable', async () => {
@@ -663,7 +676,7 @@ test('GET /fabric returns settings when TurboFabric is enabled with no relays', 
               ]),
           }
         }
-        if (table === relay) {
+        if (table === relay || table === server) {
           return { where: () => thenableRows([]) }
         }
         return origSelect(fields).from(table)
@@ -798,10 +811,14 @@ async function buildEnabledFabricApp(opts: {
   queueFails?: boolean
   /** A second relay on this server; the queue refuses only its teardown. */
   secondRelayFailsOn?: string
+  /** Wire features every relay server's daemon advertised (default none). */
+  daemonFeatures?: string[]
 }): Promise<{
   app: Hono<AppEnv>
   cookie: string
   relayPatches: Record<string, unknown>[]
+  fabricPatches: Record<string, unknown>[]
+  enqueued: Array<{ serverId: string; payload?: unknown }>
 }> {
   const secretsConfig = parseTestSecretsConfig('deno')
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
@@ -843,6 +860,9 @@ async function buildEnabledFabricApp(opts: {
     })
   }
   const relayPatches: Record<string, unknown>[] = []
+  const fabricPatches: Record<string, unknown>[] = []
+  const enqueued: Array<{ serverId: string; payload?: unknown }> = []
+  let fabricPaused = false
 
   const db = Object.assign(authDb, {
     execute: () => Promise.resolve([{ allowed: true }]),
@@ -850,7 +870,12 @@ async function buildEnabledFabricApp(opts: {
       from: (table: unknown) => {
         if (table === fabric) {
           return {
-            where: () => thenableRows(fabricPresent ? [{ ...FABRIC_ROW }] : []),
+            where: () =>
+              thenableRows(
+                fabricPresent
+                  ? [{ ...FABRIC_ROW, ...(fabricPaused ? { isEnabled: false } : {}) }]
+                  : []
+              ),
           }
         }
         if (table === relay) {
@@ -885,6 +910,18 @@ async function buildEnabledFabricApp(opts: {
               ]),
           }
         }
+        if (table === server && opts.daemonFeatures) {
+          const features = opts.daemonFeatures
+          return {
+            where: () =>
+              thenableRows(
+                relays.map((row) => ({
+                  id: row.serverId,
+                  daemon: { projection: { features } },
+                }))
+              ),
+          }
+        }
         if (table === server || table === network || table === ip) {
           return { where: () => thenableRows([]) }
         }
@@ -892,6 +929,15 @@ async function buildEnabledFabricApp(opts: {
       },
     }),
     update: (table: unknown) => {
+      if (table === fabric) {
+        return {
+          set: (patch: Record<string, unknown>) => {
+            fabricPatches.push(patch)
+            if (patch.isEnabled === false) fabricPaused = true
+            return { where: () => Promise.resolve(undefined) }
+          },
+        }
+      }
       if (table === relay) {
         return {
           set: (patch: Record<string, unknown>) => {
@@ -928,10 +974,13 @@ async function buildEnabledFabricApp(opts: {
     c.set('db', db)
     c.set('daemonCellRegistry', { cells: new Map() } as never)
     c.set('commandQueue', {
-      enqueue: (envelope: { serverId: string }) =>
-        opts.queueFails || envelope.serverId === opts.secondRelayFailsOn
-          ? Promise.reject(new Error('queue down'))
-          : Promise.resolve(),
+      enqueue: (envelope: { serverId: string; payload?: unknown }) => {
+        if (opts.queueFails || envelope.serverId === opts.secondRelayFailsOn) {
+          return Promise.reject(new Error('queue down'))
+        }
+        enqueued.push(envelope)
+        return Promise.resolve()
+      },
     })
     return next()
   })
@@ -940,22 +989,21 @@ async function buildEnabledFabricApp(opts: {
     runtime: 'deno',
     signupEnvOverride: undefined,
   })
-  return { app, cookie, relayPatches }
+  return { app, cookie, relayPatches, fabricPatches, enqueued }
 }
 
-test("PUT /fabric enabled:false keeps the mesh when a server's teardown cannot be queued", async () => {
+test("DELETE /fabric keeps the mesh when a server's teardown cannot be queued", async () => {
   const { app, cookie } = await buildEnabledFabricApp({
     withRelay: true,
     removeFabricOnDelete: true,
     queueFails: true,
   })
   const res = await app.request(`/organizations/${orgId}/fabric`, {
-    method: 'PUT',
+    method: 'DELETE',
     headers: {
       'content-type': 'application/json',
       Cookie: cookie,
     },
-    body: JSON.stringify({ enabled: false }),
   })
   assertEquals(res.status, 503)
   const body = (await res.json()) as { error: string; serverIds: string[] }
@@ -970,7 +1018,7 @@ test("PUT /fabric enabled:false keeps the mesh when a server's teardown cannot b
   assertEquals(settings.enabled, true)
 })
 
-test('PUT /fabric enabled:false resets the servers it did reach when another cannot be reached', async () => {
+test('DELETE /fabric resets the servers it did reach when another cannot be reached', async () => {
   const unreachable = crypto.randomUUID()
   const { app, cookie, relayPatches } = await buildEnabledFabricApp({
     withRelay: true,
@@ -978,9 +1026,8 @@ test('PUT /fabric enabled:false resets the servers it did reach when another can
     secondRelayFailsOn: unreachable,
   })
   const res = await app.request(`/organizations/${orgId}/fabric`, {
-    method: 'PUT',
+    method: 'DELETE',
     headers: { 'content-type': 'application/json', Cookie: cookie },
-    body: JSON.stringify({ enabled: false }),
   })
   assertEquals(res.status, 503)
   const body = (await res.json()) as { serverIds: string[] }
@@ -997,16 +1044,15 @@ test('PUT /fabric enabled:false resets the servers it did reach when another can
   assertEquals(((await get.json()) as { enabled: boolean }).enabled, true)
 })
 
-test('PUT /fabric enabled:false resets nothing when no server was reached', async () => {
+test('DELETE /fabric resets nothing when no server was reached', async () => {
   const { app, cookie, relayPatches } = await buildEnabledFabricApp({
     withRelay: true,
     removeFabricOnDelete: true,
     queueFails: true,
   })
   const res = await app.request(`/organizations/${orgId}/fabric`, {
-    method: 'PUT',
+    method: 'DELETE',
     headers: { 'content-type': 'application/json', Cookie: cookie },
-    body: JSON.stringify({ enabled: false }),
   })
   assertEquals(res.status, 503)
   assertEquals(
@@ -1038,20 +1084,100 @@ test('POST /fabric/apply returns results when TurboFabric is enabled', async () 
   assertEquals(body.results, [])
 })
 
-test('PUT /fabric enabled:false disables an existing mesh', async () => {
+test('DELETE /fabric removes an existing mesh completely', async () => {
   const { app, cookie } = await buildEnabledFabricApp({
     removeFabricOnDelete: true,
   })
   const res = await app.request(`/organizations/${orgId}/fabric`, {
-    method: 'PUT',
+    method: 'DELETE',
     headers: {
       'content-type': 'application/json',
       Cookie: cookie,
     },
-    body: JSON.stringify({ enabled: false }),
   })
   assertEquals(res.status, 200)
-  assertEquals(await res.json(), { enabled: false, relays: [] })
+  assertEquals(await res.json(), { enabled: false, paused: false, relays: [], servers: [] })
+})
+
+async function putFabricOff(app: Hono<AppEnv>, cookie: string): Promise<Response> {
+  return await app.request(`/organizations/${orgId}/fabric`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json', Cookie: cookie },
+    body: JSON.stringify({ enabled: false }),
+  })
+}
+
+test('PUT /fabric enabled:false pauses the mesh, keeps relays and keys, and sends retainKeys', async () => {
+  const { app, cookie, relayPatches, fabricPatches, enqueued } = await buildEnabledFabricApp({
+    withRelay: true,
+    removeFabricOnDelete: true,
+    daemonFeatures: ['fabric-retain-keys-v1'],
+  })
+  const res = await putFabricOff(app, cookie)
+  assertEquals(res.status, 200)
+  const body = (await res.json()) as { enabled: boolean; paused: boolean; fabric?: { id: string } }
+  assertEquals(body.enabled, false)
+  assertEquals(body.paused, true)
+  assertEquals(body.fabric?.id, fabricId)
+  assertEquals(
+    fabricPatches.some((patch) => patch.isEnabled === false),
+    true
+  )
+  // Keys are kept: nothing nulls a relay public key on pause.
+  assertEquals(
+    relayPatches.some((patch) => 'publicKey' in patch),
+    false
+  )
+  assertEquals(
+    enqueued.map((envelope) => envelope.serverId),
+    [serverId]
+  )
+})
+
+test('PUT /fabric enabled:false refuses to pause when a daemon is too old to keep its key', async () => {
+  const { app, cookie, fabricPatches, enqueued } = await buildEnabledFabricApp({
+    withRelay: true,
+  })
+  const res = await putFabricOff(app, cookie)
+  assertEquals(res.status, 409)
+  const body = (await res.json()) as { error: string; serverIds: string[]; message: string }
+  assertEquals(body.error, 'fabric_pause_needs_daemon_update')
+  assertEquals(body.serverIds, [serverId])
+  assertEquals(fabricPatches, [])
+  assertEquals(enqueued, [])
+})
+
+test('PUT /fabric enabled:false keeps the mesh on when a pause cannot reach a server', async () => {
+  const { app, cookie, fabricPatches } = await buildEnabledFabricApp({
+    withRelay: true,
+    queueFails: true,
+    daemonFeatures: ['fabric-retain-keys-v1'],
+  })
+  const res = await putFabricOff(app, cookie)
+  assertEquals(res.status, 503)
+  assertEquals(((await res.json()) as { error: string }).error, 'fabric_teardown_not_queued')
+  assertEquals(fabricPatches, [])
+})
+
+test('PATCH /fabric/servers/:serverId returns 400 for an invalid role', async () => {
+  const { app, cookie } = await buildSessionApp({ manageAllowed: true })
+  const res = await app.request(`/organizations/${orgId}/fabric/servers/${serverId}`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json', Cookie: cookie },
+    body: JSON.stringify({ role: 'router' }),
+  })
+  assertEquals(res.status, 400)
+  assertEquals(await res.json(), { error: 'Invalid role' })
+})
+
+test('PATCH /fabric/servers/:serverId returns 404 for a server outside the organization', async () => {
+  const { app, cookie } = await buildEnabledFabricApp({})
+  const res = await app.request(`/organizations/${orgId}/fabric/servers/${serverId}`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json', Cookie: cookie },
+    body: JSON.stringify({ enabled: false }),
+  })
+  assertEquals(res.status, 404)
 })
 
 test('PATCH /fabric/relays/:serverId returns 400 for an invalid keepalive', async () => {

@@ -79,6 +79,13 @@ export type FabricRecord = {
   organizationId: string
   cidr: string
   options: unknown
+  /** False while paused (tunnels down, rows and keys kept); absent reads as on. */
+  enabled?: boolean
+}
+
+/** A paused fabric keeps its rows but carries no traffic. */
+export function isFabricPaused(record: Pick<FabricRecord, 'enabled'>): boolean {
+  return record.enabled === false
 }
 
 export type RelayRole = 'gateway' | 'member'
@@ -289,17 +296,20 @@ function occupiedCidrs(db: Db, organizationId: string): Promise<string[]> {
   return loadCidrAllocationExclusions(db, organizationId)
 }
 
+const FABRIC_RECORD_SELECT = {
+  id: fabric.id,
+  organizationId: fabric.organizationId,
+  cidr: fabric.cidr,
+  options: fabric.options,
+  isEnabled: fabric.isEnabled,
+}
+
 export async function getOrganizationFabric(
   db: Db,
   organizationId: string
 ): Promise<FabricRecord | null> {
   const [row] = await db
-    .select({
-      id: fabric.id,
-      organizationId: fabric.organizationId,
-      cidr: fabric.cidr,
-      options: fabric.options,
-    })
+    .select(FABRIC_RECORD_SELECT)
     .from(fabric)
     .where(eq(fabric.organizationId, organizationId))
     .limit(1)
@@ -309,12 +319,7 @@ export async function getOrganizationFabric(
 
 export async function getFabricById(db: Db, fabricId: string): Promise<FabricRecord | null> {
   const [row] = await db
-    .select({
-      id: fabric.id,
-      organizationId: fabric.organizationId,
-      cidr: fabric.cidr,
-      options: fabric.options,
-    })
+    .select(FABRIC_RECORD_SELECT)
     .from(fabric)
     .where(eq(fabric.id, fabricId))
     .limit(1)
@@ -327,12 +332,14 @@ function serializeFabric(row: {
   organizationId: string
   cidr: unknown
   options: unknown
+  isEnabled?: boolean
 }): FabricRecord {
   return {
     id: row.id,
     organizationId: row.organizationId,
     cidr: typeof row.cidr === 'string' ? row.cidr : String(row.cidr),
     options: row.options,
+    enabled: row.isEnabled !== false,
   }
 }
 
@@ -595,7 +602,8 @@ async function loadRelayAllocationExclusions(
 }
 
 /**
- * Give every org server a relay. By default a full pool throws (enable rolls
+ * Give every org server that has TurboFabric switched on a relay (a server
+ * switched off gets none, so it is in no peer list and no ladder). By default a full pool throws (enable rolls
  * back). When `unallocated` is passed, a pool-full server is reported there
  * instead and the others carry on, so one extra server never blocks the rest
  * of the fabric from reconciling.
@@ -609,10 +617,12 @@ export async function ensureFabricRelays(
   }
 ): Promise<RelayRecord[]> {
   const options = parseFabricOptions(params.fabric.options)
-  const orgServers = await db
-    .select({ id: server.id })
-    .from(server)
-    .where(eq(server.organizationId, params.organizationId))
+  const orgServers = (
+    await db
+      .select({ id: server.id, isFabricEnabled: server.isFabricEnabled })
+      .from(server)
+      .where(eq(server.organizationId, params.organizationId))
+  ).filter((row) => row.isFabricEnabled !== false)
 
   const existing = await listFabricRelays(db, params.fabric.id)
   const have = new Set(existing.map((row) => row.serverId))
@@ -665,6 +675,7 @@ export async function enableOrganizationFabric(
   if (existing) {
     return db.transaction(async (tx) => {
       let record = existing
+      if (isFabricPaused(existing)) record = await setFabricEnabled(tx, existing, true)
       if (hasFabricEnablePolicy(policy)) {
         record =
           (await updateFabricPolicy(tx, {
@@ -693,23 +704,42 @@ export async function enableOrganizationFabric(
   }
 
   return db.transaction(async (tx) => {
-    const [row] = await tx.insert(fabric).values({ organizationId, cidr, options }).returning({
-      id: fabric.id,
-      organizationId: fabric.organizationId,
-      cidr: fabric.cidr,
-      options: fabric.options,
-    })
+    const [row] = await tx
+      .insert(fabric)
+      .values({ organizationId, cidr, options })
+      .returning(FABRIC_RECORD_SELECT)
     if (!row) throw new Error('TurboFabric insert failed')
 
-    const record: FabricRecord = {
-      id: row.id,
-      organizationId: row.organizationId,
-      cidr: typeof row.cidr === 'string' ? row.cidr : String(row.cidr),
-      options: row.options,
-    }
+    const record = serializeFabric(row)
     await ensureFabricRelays(tx, { fabric: record, organizationId })
     return record
   })
+}
+
+async function setFabricEnabled(
+  db: Db,
+  record: FabricRecord,
+  enabled: boolean
+): Promise<FabricRecord> {
+  await db
+    .update(fabric)
+    .set({ isEnabled: enabled, updatedAt: nowIso() })
+    .where(eq(fabric.id, record.id))
+  return { ...record, enabled }
+}
+
+/**
+ * Pause the fabric: keep the row, every relay (address, prefix, public key)
+ * and every container network, so turning it back on is instant. What each
+ * server last applied is forgotten, so the resume sends every server its full
+ * config again.
+ */
+export async function pauseOrganizationFabric(db: Db, record: FabricRecord): Promise<FabricRecord> {
+  const relays = await listFabricRelays(db, record.id)
+  await forEachSequential(relays, async (row) => {
+    await clearRelayAppliedPayloadHash(db, { serverId: row.serverId, fabricId: record.id })
+  })
+  return setFabricEnabled(db, record, false)
 }
 
 export async function disableOrganizationFabric(db: Db, organizationId: string): Promise<string[]> {
@@ -896,13 +926,6 @@ export async function updateFabricRelay(
     .returning(RELAY_SELECT)
   if (!row) return null
   return serializeRelay(row)
-}
-
-const FABRIC_RECORD_SELECT = {
-  id: fabric.id,
-  organizationId: fabric.organizationId,
-  cidr: fabric.cidr,
-  options: fabric.options,
 }
 
 /**

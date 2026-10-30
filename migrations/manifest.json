@@ -56,6 +56,12 @@
       "tag": "0008_acme_account_secret",
       "when": 1793248402724,
       "sha256": "5e82a4dbc0cb18e8e9463abdbb1960f1dad2cd897b7421f83d9904246e599a3e"
+    },
+    {
+      "idx": 9,
+      "tag": "0009_fabric_membership_role_kind",
+      "when": 1793330850701,
+      "sha256": "0eadede25ecc86906397b9a85b933bcb8d89fe28077f24486c4f3b421383ab44"
     }
   ]
 }

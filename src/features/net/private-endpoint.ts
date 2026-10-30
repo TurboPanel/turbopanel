@@ -99,7 +99,7 @@ export async function loadServerFabricAddress(db: Db, serverId: string): Promise
     .select({ address: relay.address })
     .from(relay)
     .innerJoin(fabric, eq(relay.fabricId, fabric.id))
-    .where(eq(relay.serverId, serverId))
+    .where(and(eq(relay.serverId, serverId), eq(fabric.isEnabled, true)))
     .orderBy(asc(fabric.createdAt))
     .limit(1)
   if (row === undefined) return null
@@ -185,7 +185,7 @@ async function loadFabricRelayRows(db: Db, serverIds: string[]): Promise<RelayJo
     })
     .from(relay)
     .innerJoin(fabric, eq(relay.fabricId, fabric.id))
-    .where(inArray(relay.fabricId, fabricIds))
+    .where(and(inArray(relay.fabricId, fabricIds), eq(fabric.isEnabled, true)))
     .orderBy(asc(fabric.createdAt))
 
   const out: RelayJoinRow[] = []

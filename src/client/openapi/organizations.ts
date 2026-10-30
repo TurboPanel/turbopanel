@@ -378,7 +378,18 @@ export const organizationSchemas = {
       enabled: {
         type: 'boolean',
         description:
-          'Whether TurboFabric is on for this organization. Absence of a fabric row is off. Not required for single-engine Docker standalone.',
+          'Whether TurboFabric is carrying traffic for this organization. False when there is no fabric row (off) and while it is paused. Not required for single-engine Docker standalone.',
+      },
+      paused: {
+        type: 'boolean',
+        description:
+          'True when TurboFabric was turned off and kept: every tunnel is down, but relays, keys and container networks stay so turning it back on is instant. `fabric` and `relays` are still returned.',
+      },
+      servers: {
+        type: 'array',
+        description:
+          "Every org server's TurboFabric switch and role, whether or not the fabric exists.",
+        items: { $ref: '#/components/schemas/OrganizationFabricServer' },
       },
       fabric: {
         type: 'object',
@@ -403,6 +414,35 @@ export const organizationSchemas = {
       relays: {
         type: 'array',
         items: { $ref: '#/components/schemas/OrganizationFabricRelay' },
+      },
+    },
+  },
+  OrganizationFabricServer: {
+    type: 'object',
+    required: ['serverId', 'name', 'enabled', 'member', 'role', 'roleSource', 'automaticRole'],
+    properties: {
+      serverId: { type: 'string', format: 'uuid' },
+      name: { type: 'string' },
+      enabled: {
+        type: 'boolean',
+        description:
+          'The server switch (default true for new servers). False keeps it out of the mesh: no `tp0`, in no peer list, no fabric address.',
+      },
+      member: {
+        type: 'boolean',
+        description: 'Holds a relay (a `tp0` address) in the fabric right now.',
+      },
+      role: {
+        type: 'string',
+        enum: ['gateway', 'client'],
+        description:
+          'gateway accepts connections, client only dials out. Stored and shown; routing does not use it yet.',
+      },
+      roleSource: { type: 'string', enum: ['automatic', 'operator'] },
+      automaticRole: {
+        type: 'string',
+        enum: ['gateway', 'client'],
+        description: 'What automatic picks today: gateway when the server has a public address.',
       },
     },
   },
@@ -2070,7 +2110,7 @@ export const organizationPaths: Record<string, unknown> = {
       tags: ['Organizations'],
       summary: 'Enable or disable TurboFabric',
       description:
-        "Manage-gated. `{ enabled: true }` creates the org fabric (if missing) and change-driven `server.fabric.reconcile` on enrolled servers. `{ enabled: false }` enqueues teardown (`tp0`, routed bridges, `TP-FORWARD`, keys, state) then deletes the fabric row and reclaims `network(kind='compose')` / `segment` rows. Does not auto-enable on install, enroll, or first deploy. Returns 409 `fabric_cidr_unavailable` / `fabric_address_pool_exhausted` when the default host CIDR cannot be allocated. Optional `allowRelay` and `containerPool` update `fabric.options`; `containerPool` (IPv4, prefix <= /16 so a relay /16 fits) runs the CIDR collision authority with the current pool excluded (409 `cidr_overlaps_*` / `subnet_overlaps`) and is refused with 409 `fabric_container_pool_in_use` when an allocated relay prefix would fall outside it. Changing the pool does **not** renumber existing relay prefixes — only future allocations are carved from the new pool. The policy is written before any relay is allocated, in one transaction with the fabric row: a first-time enable carves every relay prefix from the requested pool, and a pool too small for the org's servers (409 `fabric_prefix_pool_exhausted`) or one the auto-picked host range lands in (409 `cidr_overlaps_fabric`) leaves TurboFabric disabled.",
+        "Manage-gated. `{ enabled: true }` creates the org fabric (if missing) and change-driven `server.fabric.reconcile` on enrolled servers. `{ enabled: false }` pauses: every server takes `tp0` down and keeps its key, routed bridges and forwarding rules (`server.fabric.reconcile` `{ enabled: false, retainKeys: true }`), and the fabric row, relays and container networks are kept, so `{ enabled: true }` turns it back on instantly. A pause is refused with 409 `fabric_pause_needs_daemon_update` (with `message` and `serverIds`) while any member's daemon does not list `fabric-retain-keys-v1`. DELETE removes TurboFabric completely. Does not auto-enable on install, enroll, or first deploy. Returns 409 `fabric_cidr_unavailable` / `fabric_address_pool_exhausted` when the default host CIDR cannot be allocated. Optional `allowRelay` and `containerPool` update `fabric.options`; `containerPool` (IPv4, prefix <= /16 so a relay /16 fits) runs the CIDR collision authority with the current pool excluded (409 `cidr_overlaps_*` / `subnet_overlaps`) and is refused with 409 `fabric_container_pool_in_use` when an allocated relay prefix would fall outside it. Changing the pool does **not** renumber existing relay prefixes — only future allocations are carved from the new pool. The policy is written before any relay is allocated, in one transaction with the fabric row: a first-time enable carves every relay prefix from the requested pool, and a pool too small for the org's servers (409 `fabric_prefix_pool_exhausted`) or one the auto-picked host range lands in (409 `cidr_overlaps_fabric`) leaves TurboFabric disabled.",
       security: [{ cookieAuth: [] }],
       parameters: [
         {
@@ -2123,7 +2163,43 @@ export const organizationPaths: Record<string, unknown> = {
         },
         '503': {
           description:
-            '`fabric_teardown_not_queued` (with `message` and `serverIds`): `enabled: false` could not queue the teardown for every server; the servers listed did not get it. TurboFabric stays on (its settings and relays are kept); servers whose teardown was queued drop their tunnel and are re-applied by the next reconcile. Retry.',
+            '`fabric_teardown_not_queued` (with `message` and `serverIds`): `enabled: false` could not queue the pause for every server; the servers listed did not get it. TurboFabric stays on; servers that were reached drop their tunnel (keeping their key) and are re-applied by the next reconcile. Retry.',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+      },
+    },
+    delete: {
+      tags: ['Organizations'],
+      summary: 'Remove TurboFabric completely',
+      description:
+        "Manage-gated. Tears TurboFabric down on every member (`server.fabric.reconcile` `{ enabled: false }`: `tp0`, routed bridges, `TP-FORWARD`, keys, state), then deletes the fabric row and its relays and reclaims `network(kind='compose')` / `subnet` rows. Works whether TurboFabric is on or paused; a never-enabled org is a no-op. 503 `fabric_teardown_not_queued` (with `message` and `serverIds`) keeps everything when a teardown could not be queued. Returns the cleared settings.",
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+      ],
+      responses: {
+        '200': {
+          description: 'Removed',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/OrganizationFabric' },
+            },
+          },
+        },
+        '403': {
+          description: 'Forbidden',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '503': {
+          description: 'A teardown could not be queued; nothing was removed',
           content: {
             'application/json': {
               schema: { $ref: '#/components/schemas/ErrorResponse' },
@@ -2209,6 +2285,79 @@ export const organizationPaths: Record<string, unknown> = {
         '422': {
           description:
             '`gateway_datacenter_required` / `gateway_datacenter_cidr_required` / `preferred_gateway_invalid`',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+      },
+    },
+  },
+  '/api/client/v1/organizations/{id}/fabric/servers/{serverId}': {
+    patch: {
+      tags: ['Organizations'],
+      summary: "Set one server's TurboFabric switch and role",
+      description:
+        "Manage-gated. `{ enabled?, role? }`; `role` is `gateway`, `client` or null (automatic: gateway when the server has a public address). `enabled: false` tears the server's `tp0` down, drops its relay and re-plans the mesh so no peer lists it and no ladder hands out its fabric address; refused with 409 `fabric_server_in_use` (plain `message`, `dependents[]`) while a cross-server container network or a managed database replicating over TurboFabric depends on it, and 503 `fabric_teardown_not_queued` when its teardown could not be queued. `enabled: true` lets it join on the next reconcile (immediately when TurboFabric is on). Returns `{ ok, server }`.",
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+        {
+          name: 'serverId',
+          in: 'path',
+          required: true,
+          schema: { type: 'string', format: 'uuid' },
+        },
+      ],
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              properties: {
+                enabled: { type: 'boolean' },
+                role: { type: 'string', enum: ['gateway', 'client'], nullable: true },
+              },
+            },
+          },
+        },
+      },
+      responses: {
+        '200': {
+          description: 'Saved',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['ok'],
+                properties: {
+                  ok: { type: 'boolean' },
+                  server: { $ref: '#/components/schemas/OrganizationFabricServer' },
+                },
+              },
+            },
+          },
+        },
+        '403': {
+          description: 'Forbidden',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '404': {
+          description: 'No such server in this organization',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '409': {
+          description: 'Something reaches this server over TurboFabric',
           content: {
             'application/json': {
               schema: { $ref: '#/components/schemas/ErrorResponse' },

@@ -180,6 +180,18 @@ function createEndpointlessFabricDb(
         }
       }
 
+      if (keySet.has('isFabricEnabled')) {
+        return {
+          from() {
+            return {
+              where() {
+                return thenable(relays.map((row) => ({ id: row.serverId, isFabricEnabled: true })))
+              },
+            }
+          },
+        }
+      }
+
       throw new TypeError(`unexpected select keys: ${keys.join(',')}`)
     },
   } as unknown as Db
@@ -422,7 +434,7 @@ function createMembershipFabricDb(
         }
       }
 
-      if (keys.length === 1 && keys[0] === 'id') {
+      if (keySet.has('id') && (keys.length === 1 || keySet.has('isFabricEnabled'))) {
         return {
           from() {
             return {
@@ -504,6 +516,39 @@ test('enqueueFabricReconcileForServers enqueues disable payloads when fabric is 
   })
   assertEquals(enqueued, ['srv-1'])
   assertEquals(results, [{ serverId: 'srv-1', commandId: 'cmd-1', status: 'queued' }])
+})
+
+test('enqueueFabricReconcileForServers sends a pause (retainKeys) instead of a tear down when asked', async () => {
+  const base = createMembershipFabricDb([]) as unknown as {
+    insert: () => { values: (values: { payload: unknown }) => unknown }
+  }
+  const payloads: unknown[] = []
+  const db = Object.assign(base, {
+    insert: () => {
+      const inner = createMembershipFabricDb([]) as unknown as {
+        insert: () => { values: (values: { payload: unknown }) => unknown }
+      }
+      return {
+        values: (values: { payload: unknown }) => {
+          if (values.payload !== undefined) payloads.push(values.payload)
+          return inner.insert().values(values)
+        },
+      }
+    },
+  }) as unknown as Db
+  const enqueued: string[] = []
+  await enqueueFabricReconcileForServers({
+    db,
+    commandQueue: recordingQueue(enqueued),
+    actorType: 'user',
+    actorId: 'user-1',
+    fabric: FABRIC,
+    serverIds: ['srv-1'],
+    enabled: false,
+    retainKeys: true,
+  })
+  assertEquals(enqueued, ['srv-1'])
+  assertEquals(payloads, [{ enabled: false, retainKeys: true }])
 })
 
 test('enqueueFabricReconcileForServers reports queue unavailable after create', async () => {
@@ -1069,7 +1114,7 @@ function createConvergenceFabricDb(
           },
         }
       }
-      if (keys.length === 1 && keys[0] === 'id') {
+      if (keySet.has('id') && (keys.length === 1 || keySet.has('isFabricEnabled'))) {
         return {
           from() {
             return {

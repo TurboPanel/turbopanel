@@ -15,7 +15,6 @@ import {
   resolveDerivedAdvertisedCidrsByRelay,
 } from '../../features/net/datacenter-networks.ts'
 import {
-  disableOrganizationFabric,
   enableOrganizationFabric,
   FabricContainerPoolOverlapError,
   type FabricEnablePolicy,
@@ -25,9 +24,7 @@ import {
   listSubnetsForServers,
   loadEndpointCaches,
   loadRelayPresharedKeyPresence,
-  purgeOrganizationComposeNetworks,
   type RelayRecord,
-  resetRelaysAfterQueuedTeardown,
   updateFabricRelay,
 } from '../../features/fabric/fabric-records.ts'
 import { parseFabricPolicy } from '../../features/fabric/policy.ts'
@@ -39,10 +36,9 @@ import {
 } from '../../features/net/cidr-collisions.ts'
 import { cidrContains } from '../../lib/ip-address.ts'
 import { cidrCollisionResponse } from '../networks/network-scope.ts'
-import {
-  enqueueFabricReconcileForServers,
-  reconcileFabricMembership,
-} from '../../features/fabric/enqueue.ts'
+import { reconcileFabricMembership } from '../../features/fabric/enqueue.ts'
+import { loadFabricServerMemberships } from '../../features/fabric/membership.ts'
+import { applyServerFabricPatch, pauseFabric, removeFabric } from './fabric-lifecycle.ts'
 import {
   advertisedRangeProblemResponse,
   bindSecretEncryptFn,
@@ -58,6 +54,7 @@ import {
   gatewayRangePatchErrorResponse,
   gatewayRolePatchErrorResponse,
   parseFabricPutBody,
+  parseFabricServerPatchBody,
   parseRelayPatchBody,
   preferredGatewayPatchErrorResponse,
   relayPatchUpdateFields,
@@ -136,78 +133,65 @@ function fabricSecretsFromContext(c: {
   }
 }
 
-/**
- * `PUT { enabled: false }`: tear relays down, purge compose networks and
- * clear the fabric row together. A never-enabled org is a no-op.
- *
- * The rows go only once every server's teardown is queued: with the relay
- * rows deleted nothing could ever send a teardown again, and that host would
- * keep its tunnel, key and bridges. Returns the servers whose teardown could
- * not be queued; the rows then stay (the caller retries), and the servers
- * whose teardown did go out are reset so the next reconcile re-applies them.
- */
-async function disableOrganizationFabricForPut(params: {
-  db: Db
-  commandQueue: CommandQueue
+/** The GET body: settings, relays and every server's membership. */
+async function fabricSettingsBody(
+  db: Db,
   organizationId: string
-  actorId: string
-  secrets: FabricMembershipSecrets
-}): Promise<{ notQueued: string[] }> {
-  const { db, commandQueue, organizationId, actorId, secrets } = params
-  const existing = await getOrganizationFabric(db, organizationId)
-  if (!existing) return { notQueued: [] }
-  const relays = await listFabricRelays(db, existing.id)
-  const results = await enqueueFabricReconcileForServers({
-    db,
-    commandQueue,
-    actorType: 'user',
-    actorId,
-    fabric: existing,
-    serverIds: relays.map((row) => row.serverId),
-    enabled: false,
-    ...secrets,
-  })
-  const notQueued = results
-    .filter((result) => result.status === 'failed')
-    .map((result) => result.serverId)
-  if (notQueued.length > 0) {
-    await resetRelaysAfterQueuedTeardown(db, {
-      fabricId: existing.id,
-      serverIds: results
-        .filter((result) => result.status !== 'failed')
-        .map((result) => result.serverId),
-    })
-    return { notQueued }
-  }
-  await db.transaction(async (tx) => {
-    await purgeOrganizationComposeNetworks(tx, organizationId)
-    await disableOrganizationFabric(tx, organizationId)
-  })
-  return { notQueued: [] }
+): Promise<ReturnType<typeof fabricSettingsResponse>> {
+  const record = await getOrganizationFabric(db, organizationId)
+  const relays = record ? await listFabricRelays(db, record.id) : []
+  const servers = await loadFabricServerMemberships(db, { organizationId, relays })
+  if (!record) return fabricSettingsResponse(null, [], servers)
+  return fabricSettingsResponse(
+    record,
+    await loadFabricRelayApiRows(db, relays, parseFabricPolicy(record.options).allowRelay),
+    servers
+  )
 }
 
+type BodyParser<T> = (body: unknown) => ({ ok: true } & T) | { ok: false; error: string }
+
 /**
- * Turn the fabric off and answer the PUT: 200 with the cleared settings, or
- * 503 `fabric_teardown_not_queued` naming the servers whose teardown could
- * not be queued (the rows stay so the caller can retry).
+ * Shared preamble for the mutating routes, in the order every route answers:
+ * db, manage permission, body (400), org (404), session, command queue.
  */
-async function disableFabricResponse(
-  c: Context,
-  params: Parameters<typeof disableOrganizationFabricForPut>[0]
-): Promise<Response> {
-  const { notQueued } = await disableOrganizationFabricForPut(params)
-  if (notQueued.length > 0) {
-    return c.json(
-      {
-        error: 'fabric_teardown_not_queued',
-        message:
-          'TurboFabric is still on: turning it off could not reach every server. Servers that were reached have dropped their tunnel and get it back on the next apply. Try turning it off again.',
-        serverIds: notQueued,
-      },
-      503
-    )
+async function mutatingFabricContext<T>(
+  c: Context<AppEnv>,
+  parse: BodyParser<T> | null
+): Promise<
+  | Response
+  | {
+      db: Db
+      organizationId: string
+      parsed: T | null
+      actorId: string
+      commandQueue: CommandQueue
+    }
+> {
+  const db = getDb(c)
+  if (!db) return c.json({ error: 'Database unavailable' }, 503)
+  const organizationId = c.req.param('id') ?? ''
+  const denied = await assertCanManageOr403(c, 'organization', organizationId)
+  if (denied) return denied
+  let parsed: T | null = null
+  if (parse) {
+    const body = await parseJsonBody(c)
+    if (body instanceof Response) return body
+    const result = parse(body)
+    if (!result.ok) return c.json({ error: result.error }, 400)
+    parsed = result
   }
-  return c.json(fabricSettingsResponse(null))
+  const [orgRow] = await db
+    .select({ id: organization.id })
+    .from(organization)
+    .where(eq(organization.id, organizationId))
+    .limit(1)
+  if (!orgRow) return c.json({ error: 'Not found' }, 404)
+  const session = c.get('session')
+  if (!session) return c.json({ error: 'Unauthorized' }, 401)
+  const commandQueue = assertDispatchInfrastructure(c)
+  if (commandQueue instanceof Response) return commandQueue
+  return { db, organizationId, parsed, actorId: session.userId, commandQueue }
 }
 
 /** Refuse a requested container pool that cannot be written; null when none was asked for or it is fine. */
@@ -300,6 +284,7 @@ export function registerOrganizationFabricRoutes(router: Hono<AppEnv>, opts: Aut
   router.use('/organizations/:id/fabric', createSessionMiddleware(secrets))
   router.use('/organizations/:id/fabric/relays/:serverId', createSessionMiddleware(secrets))
   router.use('/organizations/:id/fabric/apply', createSessionMiddleware(secrets))
+  router.use('/organizations/:id/fabric/servers/:serverId', createSessionMiddleware(secrets))
 
   router.get('/organizations/:id/fabric', async (c) => {
     const db = getDb(c)
@@ -316,15 +301,43 @@ export function registerOrganizationFabricRoutes(router: Hono<AppEnv>, opts: Aut
       .limit(1)
     if (!orgRow) return c.json({ error: 'Not found' }, 404)
 
-    const record = await getOrganizationFabric(db, id)
-    if (!record) return c.json(fabricSettingsResponse(null))
-    const relays = await listFabricRelays(db, record.id)
-    return c.json(
-      fabricSettingsResponse(
-        record,
-        await loadFabricRelayApiRows(db, relays, parseFabricPolicy(record.options).allowRelay)
-      )
-    )
+    return c.json(await fabricSettingsBody(db, id))
+  })
+
+  // Remove TurboFabric completely: tear down every server, delete keys,
+  // cross-server container networks and the fabric row.
+  router.delete('/organizations/:id/fabric', async (c) => {
+    const ctx = await mutatingFabricContext(c, null)
+    if (ctx instanceof Response) return ctx
+    const refused = await removeFabric(c, { ...ctx, secrets: fabricSecretsFromContext(c) })
+    if (refused) return refused
+    return c.json(await fabricSettingsBody(ctx.db, ctx.organizationId))
+  })
+
+  // One server's membership switch and role (`null` role = automatic).
+  router.patch('/organizations/:id/fabric/servers/:serverId', async (c) => {
+    const ctx = await mutatingFabricContext(c, parseFabricServerPatchBody)
+    if (ctx instanceof Response) return ctx
+    const patch = ctx.parsed?.patch ?? {}
+    const serverId = c.req.param('serverId')
+    const [current] = await loadFabricServerMemberships(ctx.db, {
+      organizationId: ctx.organizationId,
+      relays: [],
+      serverId,
+    })
+    if (!current) return c.json({ error: 'Not found' }, 404)
+    const refused = await applyServerFabricPatch(c, {
+      ...ctx,
+      secrets: fabricSecretsFromContext(c),
+      serverId,
+      serverName: current.name,
+      currentlyEnabled: current.enabled,
+      patch,
+    })
+    if (refused) return refused
+    const body = await fabricSettingsBody(ctx.db, ctx.organizationId)
+    const server = body.servers.find((row) => row.serverId === serverId)
+    return c.json({ ok: true, server })
   })
 
   router.patch('/organizations/:id/fabric/relays/:serverId', async (c) => {
@@ -463,42 +476,20 @@ export function registerOrganizationFabricRoutes(router: Hono<AppEnv>, opts: Aut
   })
 
   router.put('/organizations/:id/fabric', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+    const ctx = await mutatingFabricContext(c, parseFabricPutBody)
+    if (ctx instanceof Response) return ctx
+    const parsed = ctx.parsed
+    if (!parsed) return c.json({ error: 'Invalid request' }, 400)
 
-    const id = c.req.param('id')
-    const denied = await assertCanManageOr403(c, 'organization', id)
-    if (denied) return denied
-
-    const body = await parseJsonBody(c)
-    if (body instanceof Response) return body
-
-    const parsed = parseFabricPutBody(body)
-    if (!parsed.ok) return c.json({ error: parsed.error }, 400)
-
-    const [orgRow] = await db
-      .select({ id: organization.id })
-      .from(organization)
-      .where(eq(organization.id, id))
-      .limit(1)
-    if (!orgRow) return c.json({ error: 'Not found' }, 404)
-
-    const session = c.get('session')
-    if (!session) return c.json({ error: 'Unauthorized' }, 401)
-
-    const commandQueue = assertDispatchInfrastructure(c)
-    if (commandQueue instanceof Response) return commandQueue
-
+    const { db, commandQueue, organizationId: id } = ctx
     const secrets = fabricSecretsFromContext(c)
 
     if (!parsed.enabled) {
-      return disableFabricResponse(c, {
-        db,
-        commandQueue,
-        organizationId: id,
-        actorId: session.userId,
-        secrets,
-      })
+      // Turning TurboFabric off pauses it and keeps the keys; removing it
+      // completely is DELETE.
+      const refused = await pauseFabric(c, { ...ctx, secrets })
+      if (refused) return refused
+      return c.json(await fabricSettingsBody(db, id))
     }
 
     const poolDenied = await containerPoolDenial(c, db, id, parsed.containerPool)
@@ -514,19 +505,13 @@ export function registerOrganizationFabricRoutes(router: Hono<AppEnv>, opts: Aut
       db,
       commandQueue,
       actorType: 'user',
-      actorId: session.userId,
+      actorId: ctx.actorId,
       organizationId: id,
       registry: getDaemonCellRegistry(c),
       ...secrets,
     })
     const enqueueDenied = fabricTypedEnqueueErrorResponse(enqueueResults)
     if (enqueueDenied) return enqueueDenied
-    const relays = await listFabricRelays(db, record.id)
-    return c.json(
-      fabricSettingsResponse(
-        record,
-        await loadFabricRelayApiRows(db, relays, parseFabricPolicy(record.options).allowRelay)
-      )
-    )
+    return c.json(await fabricSettingsBody(db, id))
   })
 }
