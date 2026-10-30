@@ -16,8 +16,8 @@ co-located daemon can connect.
 (instance, UI, website, dbstudio), `tpcache` (Redis), `tpdata`
 (Postgres), `tpqueue` (RabbitMQ), `tpcaddy` (control-plane Caddy). See
 `../turbopaneld/src/paths/AGENTS.md` (Filesystem layout), the allocation table below, and
-the systemd table for ownership, ACLs, and `/run/turbopanel` **`2770 tp:tp`**
-(setgid).
+the systemd table for ownership, ACLs, and `/run/turbopanel` **`3770 tp:tp`**
+(setgid and sticky).
 
 ### Production UID/GID allocation
 
@@ -92,8 +92,9 @@ and `/ws/*` to that socket.
 
 All TurboPanel runtime sockets live under **`/run/turbopanel/`** (on Linux,
 `/var/run` symlinks to `/run`). In **development** the directory is owned by the
-dev user. In **production** it is **`2770 tp:tp`** (setgid) so the
-`tpctrl`/`tpcaddy` users (in group `tp`) can bind:
+dev user. In **production** it is **`3770 tp:tp`** (setgid and sticky) so the
+`tpctrl`/`tpcaddy` users (in group `tp`) can bind, but none of them can remove
+or replace another account's socket:
 
 | Socket file                              | Service                                                                   |
 | ---------------------------------------- | ------------------------------------------------------------------------- |
@@ -173,7 +174,7 @@ on the instance side, so relocating the socket for Caddy means setting
 
 The daemon's `runtime-sockets` role (and `scripts/ensure-socket-dir.mjs` for
 manual runs) ensures `/run/turbopanel` exists and is owned by the dev user in
-development (**`2770 tp:tp`** in production), using passwordless `sudo` when
+development (**`3770 tp:tp`** in production), using passwordless `sudo` when
 needed. After bind, the instance hardens the socket file to `0660` (owner+group
 only) so the daemon can connect.
 
