@@ -128,7 +128,10 @@ import {
 import { ExecutionLogGapError, ExecutionLogSealedError } from '../features/execution-logs/types.ts'
 import { sealExecutionLogOnTerminal } from '../features/execution-logs/seal-on-terminal.ts'
 import { isNoopCommandQueue } from '../features/commands/noop-command-queue.ts'
-import { verifyDaemonLicense } from '../features/licenses/verify-daemon-license.ts'
+import {
+  type VerifiedDaemonLicense,
+  verifyDaemonLicense,
+} from '../features/licenses/verify-daemon-license.ts'
 import { issueDaemonJwt, verifyDaemonJwt } from './authn/daemon-jwt.ts'
 import type { ServerDaemonStateWithMetadata } from '../features/servers/server-identity-db.ts'
 import {
@@ -280,6 +283,18 @@ function challengeExpiresAt(at: string, ttlMs: number): string {
   return new Date(atMs + ttlMs).toISOString()
 }
 
+/**
+ * `/instance/ca` answers anyone, before any credential: the read error (a file
+ * path, a decode fault) goes to the log, and the caller gets a fixed message.
+ */
+function platformCaReadFailure(c: Context, err: unknown): Response {
+  logWarn(
+    'daemon-api',
+    `platform CA read failed: ${err instanceof Error ? err.message : String(err)}`
+  )
+  return c.json({ error: 'platform CA unavailable' }, 500)
+}
+
 /** Shared shape for helpers that either succeed with a value or fail with an HTTP status + message. */
 type FieldResult<T> =
   | { ok: true; value: T }
@@ -312,6 +327,17 @@ type EnrollFields = {
   serverIdBody: string | undefined
 }
 
+/**
+ * Only the members an Ed25519 public key is made of. The enrolled key is
+ * stored and handed back to every later signature check, so anything else a
+ * caller sent (a private `d`, `key_ops`, arbitrary fields) is dropped before
+ * the signature is checked, and what is checked is exactly what is stored.
+ * The fingerprint already hashes these same three.
+ */
+function ed25519PublicJwk(jwk: JsonWebKey): JsonWebKey {
+  return { kty: jwk.kty, crv: jwk.crv, x: jwk.x }
+}
+
 /** Parses and validates the `POST /enroll` body, keeping every field check in one place. */
 function parseEnrollFields(body: Record<string, unknown>): FieldResult<EnrollFields> {
   const licenseId = normalizeRequiredString(body.licenseId)
@@ -320,7 +346,9 @@ function parseEnrollFields(body: Record<string, unknown>): FieldResult<EnrollFie
   const hostname = normalizeRequiredString(body.hostname)
   const challengeId = normalizeRequiredString(body.challengeId)
   const signature = normalizeRequiredString(body.signature)
-  const publicJwk = isObjectRecord(body.publicJwk) ? (body.publicJwk as JsonWebKey) : null
+  const publicJwk = isObjectRecord(body.publicJwk)
+    ? ed25519PublicJwk(body.publicJwk as JsonWebKey)
+    : null
 
   // Keep malformed or omitted auth credentials on the same unauthorized path.
   if (!licenseId || !licenseToken) {
@@ -363,10 +391,11 @@ function enrollFailureBody(failure: { error: string; message?: string }) {
 async function resolveServerIdOrConflict(
   db: Db,
   identity: Parameters<typeof resolveServerId>[1],
-  fabricDeps: Parameters<typeof resolveServerId>[2]
+  fabricDeps: Parameters<typeof resolveServerId>[2],
+  verifiedLicense: VerifiedDaemonLicense
 ): Promise<{ serverId: string | null } | { conflict: true }> {
   try {
-    return { serverId: await resolveServerId(db, identity, fabricDeps) }
+    return { serverId: await resolveServerId(db, identity, fabricDeps, { verifiedLicense }) }
   } catch (err) {
     if (isMachineKeyInUse(err)) return { conflict: true }
     throw err
@@ -383,6 +412,8 @@ async function finalizeDaemonEnrollment(
     licenseToken: string
     fingerprint: string
     publicJwk: JsonWebKey
+    /** The route already checked the token; the licensed path reuses it. */
+    verifiedLicense: VerifiedDaemonLicense
     fabricDeps?: FabricMembershipDeps
   }
 ): Promise<
@@ -397,6 +428,7 @@ async function finalizeDaemonEnrollment(
     licenseToken,
     fingerprint,
     publicJwk,
+    verifiedLicense,
     fabricDeps,
   } = params
 
@@ -429,7 +461,7 @@ async function finalizeDaemonEnrollment(
     }
   }
 
-  const resolved = await resolveServerIdOrConflict(db, identity, fabricDeps)
+  const resolved = await resolveServerIdOrConflict(db, identity, fabricDeps, verifiedLicense)
   if ('conflict' in resolved) return MACHINE_KEY_IN_USE_RESULT
   const serverId = resolved.serverId
   if (!serverId) {
@@ -1240,8 +1272,7 @@ export function registerDaemonApiRoutes<E extends Env>(
         const pem = atob(b64)
         return c.body(pem, 200, { 'content-type': 'application/x-pem-file' })
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err)
-        return c.json({ error: message }, 500)
+        return platformCaReadFailure(c, err)
       }
     }
     let presentsPlatformCaLeaf = false
@@ -1261,8 +1292,7 @@ export function registerDaemonApiRoutes<E extends Env>(
       const cert = await readPlatformCaPem()
       return c.body(cert, 200, { 'content-type': 'application/x-pem-file' })
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
-      return c.json({ error: message }, 500)
+      return platformCaReadFailure(c, err)
     }
   })
 
@@ -1406,15 +1436,18 @@ export function registerDaemonApiRoutes<E extends Env>(
       return c.json({ ok: false, error: 'Invalid or expired challenge' }, 400)
     }
 
-    const verifiedLicense = await verifyDaemonLicense(db, licenseId, licenseToken)
-    if (!verifiedLicense) {
-      return c.json({ ok: false, error: 'Invalid license' }, 401)
-    }
+    // The per-license bucket is charged before the token check: verifying it
+    // is an Argon2 hash, so charging after let a wrong token buy one hash per
+    // attempt from every address the per-peer bucket did not yet cover.
     const licenseLimited = await enforceDaemonRestLimit(
       c,
       daemonRestRateLimitKey(licenseId, 'enroll')
     )
     if (licenseLimited) return licenseLimited
+    const verifiedLicense = await verifyDaemonLicense(db, licenseId, licenseToken)
+    if (!verifiedLicense) {
+      return c.json({ ok: false, error: 'Invalid license' }, 401)
+    }
 
     const fingerprint = await computePublicKeyFingerprint(publicJwk)
     const payload = buildEnrollmentPayload({
@@ -1455,6 +1488,7 @@ export function registerDaemonApiRoutes<E extends Env>(
       licenseToken,
       fingerprint,
       publicJwk,
+      verifiedLicense,
       ...(fabricDeps ? { fabricDeps } : {}),
     })
     if (!enrolled.ok) {
@@ -1503,11 +1537,6 @@ export function registerDaemonApiRoutes<E extends Env>(
       return c.json({ ok: false, error: keyState.error }, keyState.status)
     }
 
-    const licenseState = await checkServerLicenseEntitlement(db, serverId, deployment)
-    if (!licenseState.ok) {
-      return c.json({ ok: false, error: licenseState.error }, licenseState.status)
-    }
-
     if (!authStore) {
       return c.json({ ok: false, error: 'Challenge unavailable' }, 503)
     }
@@ -1542,6 +1571,14 @@ export function registerDaemonApiRoutes<E extends Env>(
       daemonRestRateLimitKey(serverId, 'auth-session')
     )
     if (serverSessionLimited) return serverSessionLimited
+
+    // After the signature, not before: on self-hosted this check writes the
+    // grant and fills an empty tier, and anyone who knows a server id and its
+    // key id could otherwise trigger those writes without holding the key.
+    const licenseState = await checkServerLicenseEntitlement(db, serverId, deployment)
+    if (!licenseState.ok) {
+      return c.json({ ok: false, error: licenseState.error }, licenseState.status)
+    }
 
     await touchDaemonKeyLastUsed(db, serverId)
     await touchServerMetadata(db, serverId, { machineKey, hostname })

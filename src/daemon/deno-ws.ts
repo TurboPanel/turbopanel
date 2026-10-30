@@ -28,7 +28,10 @@ import type { DaemonJwtKeyring } from './authn/daemon-jwt-keyring.ts'
 import { tryAssignColocatedDaemonToInstalledOrganization } from '../client/authn/install-state.ts'
 import { emitCertificateRenewalFailed } from '../features/notifications/certificate-alerts.ts'
 import { handleAcmeIssuanceEvent } from '../client/tls/acme-issuance-event.ts'
-import { recordInstanceAcmeIssuance } from '../features/install/instance-hostnames.ts'
+import {
+  type InstanceAcmeIssuanceMessage,
+  recordInstanceAcmeIssuanceFromServer,
+} from './instance-acme-inbound.ts'
 import {
   persistDaemonReachedTarget,
   persistUpgradeOutcome,
@@ -63,7 +66,7 @@ import { touchServerMetadata } from '../features/servers/server-registry.ts'
 import { verifyDaemonJwt } from './authn/daemon-jwt.ts'
 import {
   getServerDaemonStateByServerId,
-  isDaemonKeyActive,
+  isCurrentActiveDaemonKey,
 } from '../features/servers/server-identity-db.ts'
 import type { CommandQueue } from '../features/commands/queue.ts'
 import type { RateLimiter } from './rate-limit/contracts.ts'
@@ -117,7 +120,9 @@ function assignColocatedDaemonOnConnect(db: Db, registry: DaemonCellRegistry): v
 
 /**
  * After license invalidation, Redis purge cannot close the live socket — reject
- * the next inbound frame when the JWT kid no longer matches an active key.
+ * the next inbound frame when the JWT kid no longer matches an active key. The
+ * upgrade runs the same check first, so this one only catches a key revoked
+ * while the socket was already open.
  */
 async function assertDaemonKeyStillActive(
   db: Db,
@@ -126,7 +131,7 @@ async function assertDaemonKeyStillActive(
   ws: WSContext<WebSocket>
 ): Promise<boolean> {
   const daemonRow = await getServerDaemonStateByServerId(db, serverId)
-  if (daemonRow?.key.id !== keyId || !isDaemonKeyActive(daemonRow.key)) {
+  if (!isCurrentActiveDaemonKey(daemonRow, keyId)) {
     cellTrace('inbound-key-revoked', { serverId, keyId })
     ws.close(DAEMON_WS_POLICY_VIOLATION_CLOSE, 'key_revoked')
     return false
@@ -489,18 +494,13 @@ async function handleAcmeIssuanceInbound(params: {
 async function handleInstanceAcmeIssuanceInbound(params: {
   cell: ReturnType<DaemonCellRegistry['getCell']>
   db: Db
+  serverId: string
   connectionId: string | undefined
-  message: Extract<DaemonMessage, { type: 'instance-acme-issuance-event' }>
+  message: InstanceAcmeIssuanceMessage
 }): Promise<void> {
-  const { cell, db, connectionId, message } = params
+  const { cell, db, serverId, connectionId, message } = params
   await cell.recordInbound({ connectionId, at: message.at })
-  await recordInstanceAcmeIssuance(db, {
-    hostname: message.hostname,
-    ok: message.ok,
-    at: message.at,
-    ...(message.errorMessage ? { errorMessage: message.errorMessage } : {}),
-    ...(message.notAfter ? { notAfter: message.notAfter } : {}),
-  })
+  await recordInstanceAcmeIssuanceFromServer(db, serverId, message)
 }
 
 async function handleDaemonTopologyReportInbound(params: {
@@ -721,6 +721,7 @@ async function dispatchDaemonInboundByType(params: DaemonInboundDispatch): Promi
       await handleInstanceAcmeIssuanceInbound({
         cell,
         db,
+        serverId,
         connectionId,
         message,
       })
@@ -863,22 +864,38 @@ export function registerDaemonWebSocket<E extends Env>(
       return c.json({ ok: false, error: 'Daemon cell registry unavailable' }, 503)
     }
 
-    return upgradeWebSocket((c) => {
-      // CF-Connecting-IP is honoured only when the immediate peer is a trusted
-      // local proxy, so a Cloudflare Tunnel in front of the instance reports
-      // the daemon's real address while a daemon dialling Caddy directly
-      // cannot forge one. See `peer-address.ts`.
-      const peer = resolvePeerAddress(
-        {
-          realIp: c.req.header('x-real-ip'),
-          forwardedFor: c.req.header('x-forwarded-for'),
-          cfConnectingIp: c.req.header('cf-connecting-ip'),
-        },
-        {
-          runtime: 'deno',
-          trustedProxyCidrs: options.trustedProxyCidrs ?? trustedProxyCidrs(),
-        }
-      )
+    // CF-Connecting-IP is honoured only when the immediate peer is a trusted
+    // local proxy, so a Cloudflare Tunnel in front of the instance reports
+    // the daemon's real address while a daemon dialling Caddy directly
+    // cannot forge one. See `peer-address.ts`.
+    const peer = resolvePeerAddress(
+      {
+        realIp: c.req.header('x-real-ip'),
+        forwardedFor: c.req.header('x-forwarded-for'),
+        cfConnectingIp: c.req.header('cf-connecting-ip'),
+      },
+      {
+        runtime: 'deno',
+        trustedProxyCidrs: options.trustedProxyCidrs ?? trustedProxyCidrs(),
+      }
+    )
+
+    // A valid JWT is not enough to open a socket: it outlives a revoke by up
+    // to its full lifetime. Without this, a revoked host reconnected with its
+    // cached token, and the open handler re-created its lease, marked it
+    // online and pushed its capability plan before the first inbound frame
+    // was checked. Hosted refuses at the same point (`workers-ws.ts`).
+    //
+    // One case passes through: a co-located daemon whose server row is gone.
+    // The open handler closes it with 4401 `server row missing`, which is the
+    // signal that makes it enroll again.
+    const daemonState = await getServerDaemonStateByServerId(db, payload.sub)
+    const colocatedRowMissing = daemonState === null && peer?.address === undefined
+    if (!colocatedRowMissing && !isCurrentActiveDaemonKey(daemonState, payload.kid)) {
+      return c.json({ ok: false, error: 'forbidden' }, 403)
+    }
+
+    return upgradeWebSocket(() => {
       const remoteAddress = peer?.address
       const identityAddress = remoteAddress ?? DIRECT_ATTACH_SENTINEL
       const connectedAt = new Date().toISOString()

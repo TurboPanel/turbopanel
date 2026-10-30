@@ -1515,7 +1515,11 @@ async function runBillingOptionalPhases(
       phasesSkipped,
       async () => {
         const client = createStripeClient(billingConfig)
-        await runPendingStripeProjections({ db, client })
+        await runPendingStripeProjections({
+          db,
+          client,
+          daemonCellRegistry: createDurableObjectDaemonCellRegistry(env, db),
+        })
       }
     ))
   ) {
