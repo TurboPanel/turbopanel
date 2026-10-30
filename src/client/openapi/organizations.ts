@@ -457,7 +457,8 @@ export const organizationSchemas = {
       automaticRole: {
         type: 'string',
         enum: ['gateway', 'client'],
-        description: 'What automatic picks today: gateway when the server has a public address.',
+        description:
+          'What automatic picks today: gateway when the server has its own public address (an endpoint override does not count).',
       },
     },
   },
@@ -2334,7 +2335,7 @@ export const organizationPaths: Record<string, unknown> = {
       tags: ['Organizations'],
       summary: "Set one server's TurboFabric switch and role",
       description:
-        "Manage-gated. `{ enabled?, role? }`; `role` is `gateway`, `client` or null (automatic: gateway when the server has a public address). `enabled: false` takes the server's `tp0` down (keeping its key when its daemon can) and re-plans the mesh so no peer lists it, no ladder hands out its fabric address and its WireGuard port closes; its relay row stays, so its address, endpoint pin, preshared key and LAN sharing come back when it is switched on. Refused with 409 `fabric_server_in_use` (plain `message`, `dependents[]`) while a cross-server container network that reaches it through a tunnel (one whose other servers all share a trusted LAN with it does not count), a managed database replicating over TurboFabric, an app-to-database connection that resolves to its fabric address, or a datacenter LAN only it shares depends on it, and 503 `fabric_teardown_not_queued` when its teardown could not be queued. `enabled: true` lets it join on the next reconcile (immediately when TurboFabric is on). Returns `{ ok, server }`.",
+        "Manage-gated. `{ enabled?, role? }`; `role` is `gateway`, `client` or null (automatic: gateway when the server has its own public address; an endpoint override does not count). `enabled: false` takes the server's `tp0` down (keeping its key when its daemon can) and re-plans the mesh so no peer lists it, no ladder hands out its fabric address and its WireGuard port closes; its relay row stays, so its address, endpoint pin, preshared key and LAN sharing come back when it is switched on. Refused with 409 `fabric_server_in_use` (plain `message`, `dependents[]`) while a cross-server container network that reaches it through a tunnel (one whose other servers all share a trusted LAN with it does not count), a managed database replicating over TurboFabric, an app-to-database connection that resolves to its fabric address, or a datacenter LAN only it shares depends on it, and 503 `fabric_teardown_not_queued` when its teardown could not be queued. `enabled: true` lets it join on the next reconcile (immediately when TurboFabric is on). Returns `{ ok, server }`.",
       security: [{ cookieAuth: [] }],
       parameters: [
         { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },

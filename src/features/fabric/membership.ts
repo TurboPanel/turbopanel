@@ -64,9 +64,11 @@ type MembershipServerRow = {
 }
 
 /**
- * Automatic role: a server with a public address (operator pin, public `ip`
- * row or a reported public IPv4 — the same rule the path planner uses for a
- * `direct_public` endpoint) is a gateway; anything else is a client.
+ * Automatic role: a server with its own public address (a public `ip` row or a
+ * reported public IPv4) is a gateway; anything else is a client. An endpoint
+ * override never counts: it is only a hint for reaching the server, so a
+ * port-forwarded server behind NAT becomes a gateway only when Gateway is
+ * picked for it.
  */
 export function automaticFabricRole(publicEndpoint: string | null): FabricServerRole {
   return publicEndpoint ? 'gateway' : 'client'
@@ -118,10 +120,7 @@ export async function loadFabricServerMemberships(
   return rows.map((row) => {
     const relayRow = relayByServer.get(row.id)
     const automaticRole = automaticFabricRole(
-      resolveRelayGlobalEndpointAddress(
-        { serverId: row.id, endpointAddress: relayRow?.endpointAddress ?? null },
-        caches
-      )
+      resolveRelayGlobalEndpointAddress({ serverId: row.id, endpointAddress: null }, caches)
     )
     return {
       serverId: row.id,

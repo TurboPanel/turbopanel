@@ -37,7 +37,11 @@ import {
   loadFabricReconcileSnapshot,
   setFabricEnabled,
 } from './fabric-records.ts'
-import { findFabricDependents, updateServerFabricMembership } from './membership.ts'
+import {
+  findFabricDependents,
+  loadFabricServerMemberships,
+  updateServerFabricMembership,
+} from './membership.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -330,5 +334,24 @@ test('an app reaching its database over TurboFabric blocks switching either serv
     } finally {
       await cleanup()
     }
+  })
+})
+
+test('an endpoint override never makes the automatic role a gateway; picking Gateway does', async () => {
+  await withSwitchRig(async ({ db, organizationId, fabricId, offId }) => {
+    const relays = await listFabricRelays(db, fabricId)
+    // fabric-off has only an endpoint override (192.0.2.10), no public address of its own.
+    const automatic = await loadFabricServerMemberships(db, { organizationId, relays })
+    const row = automatic.find((entry) => entry.serverId === offId)
+    assertEquals(row?.automaticRole, 'client')
+    assertEquals(row?.role, 'client')
+    assertEquals(row?.roleSource, 'automatic')
+
+    await db.update(server).set({ fabricRole: 'gateway' }).where(eq(server.id, offId))
+    const picked = await loadFabricServerMemberships(db, { organizationId, relays })
+    const chosen = picked.find((entry) => entry.serverId === offId)
+    assertEquals(chosen?.role, 'gateway')
+    assertEquals(chosen?.roleSource, 'operator')
+    assertEquals(chosen?.automaticRole, 'client')
   })
 })
