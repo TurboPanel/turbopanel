@@ -1,31 +1,10 @@
 import type { Context } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
-import { createWorkersDb, endDbConnection, getDb, type Db } from '../../db/connection.ts'
 import { runAfterResponse } from '../../lib/http/after-response.ts'
 import { nudgeTunnelRoutes, tunnelSyncDepsFrom } from '../../features/tunnels/nudge.ts'
+import { taskDbOpener } from './task-db.ts'
 
 const LOG_SCOPE = 'tunnel-sync'
-
-type TaskDb = { db: Db; close: () => Promise<void> }
-
-/**
- * The deferred task's own database client. Workers: a fresh one from the
- * connection string, closed when the task ends (`src/workers.ts` closes the
- * request's client in its own `waitUntil`, and a task that kept using it would
- * race that close). Deno: the process client, which nothing closes.
- */
-function taskDbOpener(c: Context<AppEnv>): (() => TaskDb) | null {
-  if (c.get('runtime') === 'workers') {
-    const connectionString = c.get('postgresConnectionString')
-    if (!connectionString) return null
-    return () => {
-      const db = createWorkersDb({ connectionString })
-      return { db, close: () => endDbConnection(db) }
-    }
-  }
-  const db = getDb(c)
-  return db ? () => ({ db, close: () => Promise.resolve() }) : null
-}
 
 /**
  * After a change that forwarding tables and connector lists are built from (a

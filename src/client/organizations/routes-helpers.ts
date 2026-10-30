@@ -72,6 +72,12 @@ export type DeployHooksPatch = {
   deployHooksEnabled: boolean
 }
 
+/** Either switch, or both; a key left out keeps its stored value. */
+export type ProjectSettingsPatch = {
+  openEnvironmentSectionByDefault?: boolean
+  openWorkspaceSectionByDefault?: boolean
+}
+
 export type ComposeDefaultResourceLimitsPatch = {
   composeDefaultResourceLimits: { cpus?: number; memoryBytes?: number } | null
 }
@@ -399,6 +405,34 @@ export function parseDeployHooksPatch(
   return { ok: true, patch: { deployHooksEnabled: body.deployHooksEnabled } }
 }
 
+const PROJECT_SETTINGS_KEYS = [
+  'openEnvironmentSectionByDefault',
+  'openWorkspaceSectionByDefault',
+] as const
+
+/** At least one of the two switches, each a boolean when present. */
+export function parseProjectSettingsPatch(
+  body: Record<string, unknown>
+): { ok: true; patch: ProjectSettingsPatch } | OrganizationRouteValidationError {
+  const patch: ProjectSettingsPatch = {}
+  for (const key of PROJECT_SETTINGS_KEYS) {
+    if (!(key in body)) continue
+    const value = body[key]
+    if (typeof value !== 'boolean') {
+      return { ok: false, error: `Invalid ${key}`, status: 400 }
+    }
+    patch[key] = value
+  }
+  if (Object.keys(patch).length === 0) {
+    return {
+      ok: false,
+      error: 'Send openEnvironmentSectionByDefault, openWorkspaceSectionByDefault or both',
+      status: 400,
+    }
+  }
+  return { ok: true, patch }
+}
+
 /**
  * The organization's opt-in per-service ceiling. `null` clears it (back to
  * the 0.1.0 default of no platform number); an object must carry at least
@@ -671,6 +705,23 @@ export function composeGatedFieldsPutResponse(options: { composeGatedFieldsEnabl
 
 export function deployHooksGetResponse(options: { deployHooksEnabled?: boolean }) {
   return { deployHooksEnabled: resolveDeployHooksEnabled(options) }
+}
+
+export function projectSettingsGetResponse(options: {
+  openEnvironmentSectionByDefault?: boolean
+  openWorkspaceSectionByDefault?: boolean
+}) {
+  return {
+    openEnvironmentSectionByDefault: options.openEnvironmentSectionByDefault ?? false,
+    openWorkspaceSectionByDefault: options.openWorkspaceSectionByDefault ?? false,
+  }
+}
+
+export function projectSettingsPutResponse(options: {
+  openEnvironmentSectionByDefault?: boolean
+  openWorkspaceSectionByDefault?: boolean
+}) {
+  return { ok: true as const, ...projectSettingsGetResponse(options) }
 }
 
 export function deployHooksPutResponse(options: { deployHooksEnabled?: boolean }) {

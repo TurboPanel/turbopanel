@@ -36,6 +36,12 @@ export const PRESENT_GRACE_MS = 10_000
  * cost at most about 625 reads in five minutes, well under Cloudflare's 1,200.
  */
 export const READBACK_RETRY_MS = 2 * 60_000
+/**
+ * An order still pending this long after its challenges were answered has its
+ * authorizations read (at most once per this long): a challenge the authority
+ * still holds as pending is answered again, and a failed one stops the order.
+ */
+export const ANSWER_RECHECK_MS = 30_000
 /** One step may hold a certificate this long before another worker may take it. */
 export const CLAIM_MS = 90_000
 /** An order that has not finished by now is dropped and started over after a wait. */

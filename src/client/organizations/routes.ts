@@ -67,12 +67,15 @@ import {
   parseManagedDefaultsPatch,
   parseOrganizationCreateDisplayName,
   parseOrganizationPatchDisplayName,
+  parseProjectSettingsPatch,
   parseServerCapacityPutBody,
   parseTemperatureUnitPatch,
   parseTlsSettingsPatch,
   deployTimeoutGetResponse,
   deployTimeoutPutResponse,
   parseDeployTimeoutPatch,
+  projectSettingsGetResponse,
+  projectSettingsPutResponse,
   temperatureUnitGetResponse,
   temperatureUnitPutResponse,
   tlsSettingsGetResponse,
@@ -108,6 +111,7 @@ export function registerOrganizationRoutes(router: Hono<AppEnv>, opts: AuthRoute
   router.use('/organizations/:id/deploy-timeout', createSessionMiddleware(secrets))
   router.use('/organizations/:id/host-defaults', createSessionMiddleware(secrets))
   router.use('/organizations/:id/default-environment', createSessionMiddleware(secrets))
+  router.use('/organizations/:id/project-settings', createSessionMiddleware(secrets))
   router.use('/organizations/:id/server-capacity', createSessionMiddleware(secrets))
   router.use('/organizations/:id/managed-defaults', createSessionMiddleware(secrets))
   router.use('/organizations/:id/principal-defaults', createSessionMiddleware(secrets))
@@ -406,6 +410,21 @@ export function registerOrganizationRoutes(router: Hono<AppEnv>, opts: AuthRoute
           : parsed
       },
       respond: defaultEnvironmentPutResponse,
+    })
+  )
+
+  // The new-project form's "open by default" switches (Organization Settings
+  // › Project Settings). Managers only, like everything a project create needs.
+  router.get(
+    '/organizations/:id/project-settings',
+    orgOptionsGetRoute('manage', projectSettingsGetResponse)
+  )
+  router.put(
+    '/organizations/:id/project-settings',
+    orgOptionsPatchRoute({
+      gate: 'manage',
+      parse: parseProjectSettingsPatch,
+      respond: projectSettingsPutResponse,
     })
   )
 

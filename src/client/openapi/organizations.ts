@@ -209,6 +209,30 @@ export const organizationSchemas = {
       },
     },
   },
+  OrganizationProjectSettings: {
+    type: 'object',
+    required: ['openEnvironmentSectionByDefault', 'openWorkspaceSectionByDefault'],
+    properties: {
+      openEnvironmentSectionByDefault: {
+        type: 'boolean',
+        description:
+          'Whether the new-project form opens its Environment section (the primary environment name) without being asked. Unset is off.',
+      },
+      openWorkspaceSectionByDefault: {
+        type: 'boolean',
+        description:
+          'Whether the new-project form opens its Workspace section without being asked. Unset is off.',
+      },
+    },
+  },
+  OrganizationProjectSettingsUpdate: {
+    type: 'object',
+    description: 'Send one switch or both; a switch left out keeps its stored value.',
+    properties: {
+      openEnvironmentSectionByDefault: { type: 'boolean' },
+      openWorkspaceSectionByDefault: { type: 'boolean' },
+    },
+  },
   OrganizationServerCapacity: {
     type: 'object',
     required: ['maxServers', 'serverCount', 'reservedSeatCount', 'usedSeats', 'availableSeats'],
@@ -1242,6 +1266,117 @@ export const organizationPaths: Record<string, unknown> = {
         },
         '400': {
           description: 'Invalid defaultEnvironmentName or body',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '403': {
+          description: 'Forbidden',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '404': {
+          description: 'Organization not found',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+      },
+    },
+  },
+  '/api/client/v1/organizations/{id}/project-settings': {
+    get: {
+      tags: ['Organizations'],
+      summary: 'Get organization project settings',
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        {
+          name: 'id',
+          in: 'path',
+          required: true,
+          schema: { type: 'string', format: 'uuid' },
+        },
+      ],
+      responses: {
+        '200': {
+          description: 'Org project settings',
+          content: {
+            'application/json': {
+              schema: {
+                $ref: '#/components/schemas/OrganizationProjectSettings',
+              },
+            },
+          },
+        },
+        '403': {
+          description: 'Forbidden',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '404': {
+          description: 'Organization not found',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+      },
+    },
+    put: {
+      tags: ['Organizations'],
+      summary: 'Update organization project settings',
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        {
+          name: 'id',
+          in: 'path',
+          required: true,
+          schema: { type: 'string', format: 'uuid' },
+        },
+      ],
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: {
+              $ref: '#/components/schemas/OrganizationProjectSettingsUpdate',
+            },
+          },
+        },
+      },
+      responses: {
+        '200': {
+          description: 'Updated org project settings',
+          content: {
+            'application/json': {
+              schema: {
+                allOf: [
+                  {
+                    $ref: '#/components/schemas/OrganizationProjectSettings',
+                  },
+                  {
+                    type: 'object',
+                    required: ['ok'],
+                    properties: { ok: { type: 'boolean', const: true } },
+                  },
+                ],
+              },
+            },
+          },
+        },
+        '400': {
+          description: 'Invalid switch value, no switch sent, or body',
           content: {
             'application/json': {
               schema: { $ref: '#/components/schemas/ErrorResponse' },

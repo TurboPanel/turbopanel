@@ -198,6 +198,18 @@ export type OrganizationOptions = {
    */
   deployHooksEnabled?: boolean
   /**
+   * Whether the new-project form opens its Environment section (the primary
+   * environment name) without being asked. Off by default: most projects keep
+   * one environment, so the name stays tucked away. A display preference for
+   * the client; nothing on the server branches on it.
+   */
+  openEnvironmentSectionByDefault?: boolean
+  /**
+   * Whether the new-project form opens its Workspace section without being
+   * asked. Off by default: a new project goes into the default workspace.
+   */
+  openWorkspaceSectionByDefault?: boolean
+  /**
    * Per-service ceiling applied at deploy to any container service whose
    * compose sets none (`mem_limit` / `cpus` / `deploy.resources.limits`).
    *
@@ -346,6 +358,19 @@ function assignRequireReauth(options: OrganizationOptions, value: Record<string,
   }
 }
 
+/** The new-project form's "open by default" switches; anything but a boolean is dropped. */
+function assignProjectFormDefaults(
+  options: OrganizationOptions,
+  value: Record<string, unknown>
+): void {
+  if (typeof value.openEnvironmentSectionByDefault === 'boolean') {
+    options.openEnvironmentSectionByDefault = value.openEnvironmentSectionByDefault
+  }
+  if (typeof value.openWorkspaceSectionByDefault === 'boolean') {
+    options.openWorkspaceSectionByDefault = value.openWorkspaceSectionByDefault
+  }
+}
+
 /** Parse organization.options jsonb (missing/invalid keys → omitted). */
 export function parseOrganizationOptions(value: unknown): OrganizationOptions {
   if (!isRecord(value)) return {}
@@ -390,6 +415,7 @@ export function parseOrganizationOptions(value: unknown): OrganizationOptions {
   if (typeof value.deployHooksEnabled === 'boolean') {
     options.deployHooksEnabled = value.deployHooksEnabled
   }
+  assignProjectFormDefaults(options, value)
   assignComposeDefaultResourceLimits(options, value)
   assignPhpModes(options, value)
   assignDirectoryNames(options, value)

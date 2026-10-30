@@ -21,7 +21,13 @@ import { findCarrier } from '../../tunnels/records.ts'
 import type { TunnelProvider } from '../../tunnels/vocabulary.ts'
 import { orgAccount } from './account.ts'
 import { openDnsToken } from './token.ts'
-import { clock, type DnsCertContext, PRESENT_GRACE_MS, READBACK_RETRY_MS } from './context.ts'
+import {
+  ANSWER_RECHECK_MS,
+  clock,
+  type DnsCertContext,
+  PRESENT_GRACE_MS,
+  READBACK_RETRY_MS,
+} from './context.ts'
 import {
   ChallengeTargetError,
   challengeRecordName,
@@ -404,18 +410,90 @@ async function invalidOrderError(
   order: OrderState,
   current: { error?: { detail?: string } }
 ): Promise<AcmeError> {
-  const urls = [...new Set(order.challenges.map((c) => c.authzUrl))]
-  const authorizations = await mapSequential(urls, (u) => client.getAuthorization(u))
+  const authorizations = await readAuthorizations(client, order)
   return (
     invalidReason(authorizations) ??
     new AcmeError('server', current.error?.detail ?? 'The order was not completed')
   )
 }
 
+async function readAuthorizations(client: AcmeClient, order: OrderState) {
+  const urls = [...new Set(order.challenges.map((c) => c.authzUrl))]
+  return await mapSequential(urls, (u) => client.getAuthorization(u))
+}
+
+/** The challenges of the order that the authority still holds as pending: their answer never arrived. */
+function unansweredChallenges(
+  order: OrderState,
+  authorizations: readonly AcmeAuthorization[]
+): ChallengeState[] {
+  return order.challenges.filter((c) => {
+    const authz = authorizations.find((a) => a.url === c.authzUrl)
+    const challenge = authz?.challenges.find((ch) => ch.url === c.challengeUrl)
+    return authz?.status === 'pending' && challenge?.status === 'pending'
+  })
+}
+
+/**
+ * The order is still pending after the answer. Once in a while, read its
+ * authorizations: a failed one stops the order with the authority's reason,
+ * and a challenge the authority still holds as pending (its answer was lost)
+ * is answered again. Without this an order whose answer went missing waits,
+ * with no error, until it times out.
+ */
+async function recheckPending(
+  ctx: DnsCertContext,
+  client: AcmeClient,
+  state: DnsCertState,
+  order: OrderState
+): Promise<StepResult> {
+  const now = clock(ctx)
+  const since = Date.parse(order.authzCheckedAt ?? order.answeredAt ?? order.startedAt)
+  if (now.getTime() - since < ANSWER_RECHECK_MS) return { kind: 'wait', state }
+  const authorizations = await readAuthorizations(client, order)
+  const failed = invalidReason(authorizations)
+  if (failed) throw failed
+  const unanswered = unansweredChallenges(order, authorizations)
+  await mapSequential(unanswered, (c) => client.answerChallenge(c.challengeUrl))
+  const authzCheckedAt = now.toISOString()
+  return { kind: 'wait', state: { ...state, order: { ...order, authzCheckedAt } } }
+}
+
+/**
+ * Why an order that ran out of time never finished, naming what the authority
+ * was still waiting on; the plain timeout when it cannot be asked.
+ */
+export async function timedOutError(
+  ctx: DnsCertContext,
+  state: DnsCertState,
+  order: OrderState | null
+): Promise<AcmeError> {
+  const plain = new AcmeError('server', 'The order took too long and was dropped')
+  if (!order?.answeredAt) return plain
+  try {
+    const client = await openClient(ctx, state, order)
+    const authorizations = await readAuthorizations(client, order)
+    const failed = invalidReason(authorizations)
+    if (failed) return failed
+    const waiting = authorizations
+      .filter((a) => a.status === 'pending')
+      .map((a) => (a.wildcard ? `*.${a.identifier.value}` : a.identifier.value))
+    if (waiting.length === 0) return plain
+    return new AcmeError(
+      'server',
+      `The order took too long and was dropped. Still not checked: ${waiting.join(', ')}`
+    )
+  } catch {
+    return plain
+  }
+}
+
 /**
  * Ask about the order (one request); once the authority calls it ready, send
- * the request for the certificate. The authorizations are only read to find
- * out why when the order went invalid.
+ * the request for the certificate. An order the authority already took the
+ * request for (an earlier step's answer was lost) goes on to the download. The
+ * authorizations are read when the order went invalid, and now and then while
+ * it stays pending after the answer.
  */
 export async function checkValidation(
   ctx: DnsCertContext,
@@ -426,6 +504,15 @@ export async function checkValidation(
   const client = await openClient(ctx, state, order)
   const current = await client.getOrder(order.orderUrl)
   if (current.status === 'invalid') throw await invalidOrderError(client, order, current)
+  if (current.status === 'processing' || current.status === 'valid') {
+    const finalizedAt = clock(ctx).toISOString()
+    const certificateUrl = current.certificate ?? null
+    return {
+      kind: 'continue',
+      state: { ...state, order: { ...order, finalizedAt, certificateUrl } },
+    }
+  }
+  if (current.status === 'pending') return await recheckPending(ctx, client, state, order)
   if (current.status !== 'ready') return { kind: 'wait', state }
   const sent = await sendRequest(ctx, row, client, order)
   const finalizedAt = clock(ctx).toISOString()
