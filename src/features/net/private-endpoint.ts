@@ -349,8 +349,10 @@ export function trustedLanBlocker(
     inputs.policiesByDatacenter
   )
   if (trusted.length === 0) return 'no_trusted_network'
-  if (!trustedLanIpv4(fromServerId, toServerId, inputs)) return 'no_ipv4'
-  if (!trustedLanIpv4(toServerId, fromServerId, inputs)) return 'no_ipv4'
+  // Both directions: each server needs an IPv4 address on the shared network.
+  const [first, second] = [fromServerId, toServerId]
+  if (!trustedLanIpv4(first, second, inputs)) return 'no_ipv4'
+  if (!trustedLanIpv4(second, first, inputs)) return 'no_ipv4'
   return null
 }
 
