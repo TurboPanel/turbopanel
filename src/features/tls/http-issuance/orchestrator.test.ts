@@ -46,6 +46,13 @@ const HOST = 'shop.example.com'
 const T0 = new Date('2026-11-01T12:00:00.000Z')
 const at = (ms: number) => new Date(T0.getTime() + ms)
 
+/** One connection pool for the whole file: a pool per fixture runs the server out of clients. */
+let sharedDb: Db | undefined
+function database(): Db {
+  sharedDb ??= createDenoDb()
+  return sharedDb
+}
+
 type Fixture = {
   db: Db
   organizationId: string
@@ -60,7 +67,7 @@ type Fixture = {
 async function setup(
   options: { servers?: number; offline?: number[]; noFeature?: number[]; dnsFor?: number[] } = {}
 ): Promise<Fixture> {
-  const db = createDenoDb()
+  const db = database()
   const count = options.servers ?? 3
   const now = new Date().toISOString()
   const [org] = await db
