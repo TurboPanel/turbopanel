@@ -209,7 +209,7 @@ export function serverLabel(row: Pick<DeletePlanServer, 'name' | 'hostname'>): s
   const name = row.name?.trim()
   if (name) return name
   const hostname = row.hostname?.trim()
-  return hostname ? hostname : 'without a name'
+  return hostname || 'without a name'
 }
 
 export function offlineBlocker(offline: readonly DeletePlanServer[]): DeletePlanBlocker | null {
