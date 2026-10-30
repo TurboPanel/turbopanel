@@ -1,6 +1,6 @@
 import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { assertEquals } from '@std/assert'
-import { eq, inArray } from 'drizzle-orm'
+import { desc, eq, inArray } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
@@ -223,6 +223,9 @@ test('PUT use-letsencrypt: refuses a local bind and hostings owned by compose', 
   }
 })
 
+/** A clock this many hours ahead, past a waiting request's next check. */
+const hoursLater = (hours: number) => () => new Date(Date.now() + hours * 3_600_000)
+
 test('PUT use-letsencrypt: waits for DNS, then the sweep pins it once the name resolves', async () => {
   if (!dbUrl) return skipWithoutDatabase("hosting Let's Encrypt route tests")
   const f = await setup({
@@ -257,11 +260,21 @@ test('PUT use-letsencrypt: waits for DNS, then the sweep pins it once the name r
       2
     )
 
+    // Not due yet: a request is checked again only after its wait.
+    const early = await runHostingLetsEncryptSweepTick(f.db, { lookup: pointing })
+    assertEquals(early.scanned, 0)
+
     // DNS still not ready: the sweep keeps the request.
-    const still = await runHostingLetsEncryptSweepTick(f.db, { lookup: nowhere })
+    const still = await runHostingLetsEncryptSweepTick(f.db, {
+      lookup: nowhere,
+      now: hoursLater(1),
+    })
     assertEquals(still.pinned, 0)
 
-    const sweep = await runHostingLetsEncryptSweepTick(f.db, { lookup: pointing })
+    const sweep = await runHostingLetsEncryptSweepTick(f.db, {
+      lookup: pointing,
+      now: hoursLater(2),
+    })
     assertEquals(sweep.pinned, 1)
     const [pinned] = await f.db
       .select({ tlsId: hosting.tlsId, options: hosting.options })
@@ -649,6 +662,7 @@ test('sweep: a certificate pinned once DNS resolves queues the hostings-only app
 
     const sweep = await runHostingLetsEncryptSweepTick(f.db, {
       lookup: pointing,
+      now: hoursLater(1),
       apply: {
         commandQueue: LIVE_QUEUE,
         secretsConfig: null,
@@ -794,6 +808,32 @@ test('sweep: with more waiting hostings than one batch, every one is checked ove
         extra.map((row) => row.id)
       )
     )
+    await f.cleanup()
+  }
+})
+
+test('sweep: a request still waiting after 7 days is dropped and recorded in the audit log', async () => {
+  if (!dbUrl) return skipWithoutDatabase("hosting Let's Encrypt route tests")
+  const f = await setup({ acmeEnabled: true, hostingOptions: PUBLIC_SITE })
+  try {
+    const eightDaysAgo = new Date(Date.now() - 8 * 86_400_000).toISOString()
+    await f.db.update(hosting).set({ pendingAt: eightDaysAgo }).where(eq(hosting.id, f.hostingId))
+    const sweep = await runHostingLetsEncryptSweepTick(f.db, { lookup: nowhere })
+    assertEquals(sweep.dropped, 1)
+    const [row] = await f.db
+      .select({ pendingAt: hosting.pendingAt })
+      .from(hosting)
+      .where(eq(hosting.id, f.hostingId))
+    assertEquals(row?.pendingAt, null)
+    const [dropped] = await f.db
+      .select({ action: audit.action, context: audit.context })
+      .from(audit)
+      .where(eq(audit.targetId, f.hostingId))
+      .orderBy(desc(audit.createdAt))
+      .limit(1)
+    assertEquals(dropped?.action, 'hosting.letsencrypt.dropped')
+    assertEquals((dropped?.context as { reason?: string } | null)?.reason, 'dns_not_ready')
+  } finally {
     await f.cleanup()
   }
 })

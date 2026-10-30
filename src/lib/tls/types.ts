@@ -14,6 +14,10 @@ export type TlsAcmeMetadata = {
   lastIssuedAt?: string
   /** Expiry of the certificate Caddy is serving, as the daemon's probe read it (ISO 8601). */
   notAfter?: string
+  /** When a server last reported on this certificate, good or bad (ISO 8601). */
+  lastReportedAt?: string
+  /** When a server last reported a failure (ISO 8601); kept after a recovery. */
+  lastFailedAt?: string
   /**
    * `caddy` on `lets_encrypt` rows Caddy issues and renews on the host; `panel`
    * on a library certificate this panel ordered itself through a DNS challenge.

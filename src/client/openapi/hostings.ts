@@ -7,7 +7,7 @@ export const hostingSchemas = {
     type: 'object',
     required: ['ready', 'checkedAt', 'hostnames', 'expectedAddresses'],
     description:
-      'Live DNS check of the names the certificate must cover. `ready` is true when every name resolves to the server (or to anything, when the server address is unknown).',
+      "Live pre-check of the names the certificate must cover. `ready` is true when, for every name, every A and AAAA answer is a serving server's public address (any public answer when none is on record), port 80 answers from the internet and CAA allows Let's Encrypt.",
     properties: {
       ready: { type: 'boolean' },
       checkedAt: { type: 'string', format: 'date-time' },
@@ -18,12 +18,37 @@ export const hostingSchemas = {
           required: ['hostname', 'resolves', 'addresses'],
           properties: {
             hostname: { type: 'string' },
-            resolves: { type: 'boolean' },
+            resolves: {
+              type: 'boolean',
+              description: "Has an address, and every address is a serving server's.",
+            },
             addresses: { type: 'array', items: { type: 'string' } },
+            wrongAddresses: {
+              type: 'array',
+              items: { type: 'string' },
+              description: "Answers that are not a serving server's address.",
+            },
+            port80: {
+              type: 'string',
+              enum: ['open', 'closed'],
+              description: 'Port 80 from the panel; absent when not checked.',
+            },
+            caa: {
+              type: 'string',
+              enum: ['allowed', 'blocked'],
+              description: "Whether CAA lets Let's Encrypt issue; absent when unknown.",
+            },
+            problem: { type: 'string', description: 'What stops this name, in plain words.' },
           },
         },
       },
       expectedAddresses: { type: 'array', items: { type: 'string' } },
+      nextCheckAt: {
+        type: 'string',
+        format: 'date-time',
+        description: 'When a waiting request is checked again; the wait grows after each miss.',
+      },
+      checks: { type: 'integer', description: 'Checks this waiting request has had.' },
     },
   },
   HostingCertificate: {
@@ -85,6 +110,24 @@ export const hostingSchemas = {
         type: 'boolean',
         description:
           'The certificate is pinned but no deploy has picked it up: none has finished since and none queued since is running.',
+      },
+      serverProgress: {
+        type: ['string', 'null'],
+        enum: ['waiting_for_deploy', 'working', 'not_reported', null],
+        description:
+          'While `issuing`: no deploy has carried the certificate yet, the server has it (or the deploy just finished), or the deploy finished a while ago and no server has reported on it. Null otherwise.',
+      },
+      lastTriedAt: {
+        ...nullableString,
+        format: 'date-time',
+        description:
+          'The last DNS check while waiting for DNS, or when a server last reported a failure.',
+      },
+      nextTryAt: {
+        ...nullableString,
+        format: 'date-time',
+        description:
+          'When the panel checks a waiting request again. Null when failing: the server retries on its own, waiting longer each time.',
       },
     },
   },

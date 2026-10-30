@@ -3,18 +3,28 @@
  *
  * Runs inside the scheduled surfaces that already exist (the Deno interval that
  * renews organization CA leaves, and the Workers cron), so it adds no timer of
- * its own. A tick looks at a bounded number of waiting hostings, oldest check
- * first; each one repeats the DNS check and pins its certificate as soon as the
- * names point at the server. A pinned certificate is sent to the servers by
- * the same hostings-only apply the button queues (`letsencrypt-apply.ts`),
- * when the tick has a command queue and the secrets the deploy needs; without
- * them, or when the apply cannot be queued, the panel asks for a redeploy.
+ * its own. A tick looks at a bounded number of waiting hostings, the earliest
+ * due first; each one repeats the pre-check (DNS, port 80, CAA) and pins its
+ * certificate as soon as it passes. A request still waiting after 7 days is
+ * dropped, with an audit entry and a notification. A pinned certificate is
+ * sent to the servers by the same hostings-only apply the button queues
+ * (`letsencrypt-apply.ts`), when the tick has a command queue and the secrets
+ * the deploy needs; without them, or when the apply cannot be queued, the
+ * panel asks for a redeploy.
  */
-import { asc, eq, isNotNull, sql } from 'drizzle-orm'
+import { and, asc, eq, isNotNull, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { hosting } from '../../db/schema.ts'
 import { HOSTING_LETS_ENCRYPT_DNS_KEY } from '../../features/hostings/hosting-certificate.ts'
 import { type DnsLookup, runtimeDnsLookup } from '../../features/hostings/hosting-dns-check.ts'
+import {
+  type CaaLookup,
+  type Port80Probe,
+  precheckProbes,
+} from '../../features/hostings/certificate-precheck.ts'
+import { parseHostingOptions } from '../../features/hostings/hosting-options.ts'
+import { recordAudit } from '../../features/audit/audit-records.ts'
+import { emitCertificateRequestDropped } from '../../features/notifications/certificate-alerts.ts'
 import { settleTunnelOnlyHosting } from '../../features/tunnels/tunnel-only-certificate.ts'
 import { retryPendingLetsEncrypt } from '../../features/hostings/use-letsencrypt.ts'
 import { logWarn } from '../../lib/logger.ts'
@@ -106,13 +116,51 @@ async function sweepOriginCertificatesToo(
   }
 }
 
+/**
+ * A waiting request that ran out of time goes back to the self-signed
+ * certificate; say so in the audit log and in the organization's
+ * notifications, so it is not a silent change. Never fails the tick.
+ */
+async function announceDropped(
+  db: Db,
+  apply: HostingLetsEncryptSweepApply | undefined,
+  row: { id: string; options: unknown; pendingAt: string | null },
+  organizationId: string
+): Promise<void> {
+  const hostnames = parseHostingOptions(row.options)?.hostnames ?? []
+  await recordAudit(db, {
+    organizationId,
+    actorUserId: null,
+    action: 'hosting.letsencrypt.dropped',
+    targetType: 'hosting',
+    targetId: row.id,
+    context: { reason: 'dns_not_ready', requestedAt: row.pendingAt, hostnames },
+  })
+  try {
+    await emitCertificateRequestDropped(db, apply?.dataEncryptionSecrets ?? undefined, {
+      organizationId,
+      hostname: hostnames[0] ?? 'a domain',
+    })
+  } catch (err) {
+    logWarn('tls', `dropped request alert failed: ${err instanceof Error ? err.message : err}`)
+  }
+}
+
 export async function runHostingLetsEncryptSweepTick(
   db: Db,
-  deps: { lookup?: DnsLookup; now?: () => Date; apply?: HostingLetsEncryptSweepApply } = {}
+  deps: {
+    lookup?: DnsLookup
+    caaLookup?: CaaLookup
+    port80?: Port80Probe
+    now?: () => Date
+    apply?: HostingLetsEncryptSweepApply
+  } = {}
 ): Promise<HostingLetsEncryptSweepResult> {
   const lookup = deps.lookup ?? runtimeDnsLookup()
+  const probes = precheckProbes(deps)
   const now = deps.now ?? (() => new Date())
   const store = createLetsEncryptStore(db)
+  const nextCheckAt = sql`(${hosting.metadata} -> ${HOSTING_LETS_ENCRYPT_DNS_KEY}::text ->> 'nextCheckAt')`
   const rows = await db
     .select({
       id: hosting.id,
@@ -123,11 +171,19 @@ export async function runHostingLetsEncryptSweepTick(
       updatedAt: hosting.updatedAt,
     })
     .from(hosting)
-    .where(isNotNull(hosting.pendingAt))
-    // Never-checked requests first, then the oldest DNS check. A retry that is
-    // still waiting stamps a new `checkedAt` (and leaves `updatedAt` alone), so
-    // the batch rotates through every waiting hosting.
+    // Only requests whose next check is due (ISO times compare as text). Each
+    // miss doubles the wait, from 5 minutes up to an hour.
+    .where(
+      and(
+        isNotNull(hosting.pendingAt),
+        sql`(${nextCheckAt} is null or ${nextCheckAt} <= ${now().toISOString()})`
+      )
+    )
+    // Never-checked requests first, then the earliest due. A retry that is
+    // still waiting stamps a new `nextCheckAt` (and leaves `updatedAt` alone),
+    // so the batch rotates through every waiting hosting.
     .orderBy(
+      sql`${nextCheckAt} asc nulls first`,
       sql`(${hosting.metadata} -> ${HOSTING_LETS_ENCRYPT_DNS_KEY}::text ->> 'checkedAt') asc nulls first`,
       asc(hosting.id)
     )
@@ -155,10 +211,12 @@ export async function runHostingLetsEncryptSweepTick(
     const outcome = await retryPendingLetsEncrypt({
       store,
       lookup,
+      probes,
       now: now(),
       hosting: { ...row, organizationId },
       acmeEnabled: acmeByOrganization.get(organizationId) === true,
     })
+    if (outcome === 'expired') await announceDropped(db, deps.apply, row, organizationId)
     if (outcome === 'pinned') {
       result.pinned += 1
       if (await sendPin(row.id, organizationId, row.updatedAt)) result.applied += 1

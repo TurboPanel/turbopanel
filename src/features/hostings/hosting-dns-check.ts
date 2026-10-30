@@ -1,15 +1,20 @@
 /**
- * "Does this name already point at this server?" for the Let's Encrypt button.
+ * "Can Let's Encrypt check this name on this server?" for the Let's Encrypt
+ * button, the waiting sweep and the Check DNS action.
  *
- * Asking Let's Encrypt to issue before the name resolves to the server just
- * burns its failed-validation limit, so the control plane looks first. The
- * lookup is injected: tests never touch the network, Deno uses its own
- * resolver, and Workers (which has no DNS API) uses DNS-over-HTTPS.
+ * Asking Let's Encrypt to issue before the name is ready just burns its
+ * failed-validation limit (five per name per hour), so the control plane looks
+ * first: every A and AAAA answer must be a serving server's address (the
+ * authority tries IPv6 first, so a stale AAAA record fails even beside a right
+ * A record), port 80 must answer from the internet, and CAA must allow the
+ * authority. The lookups are injected: tests never touch the network, Deno uses
+ * its own resolver, and Workers (which has no DNS API) uses DNS-over-HTTPS.
  */
 
 import { dohLookup } from '../../lib/http/doh-resolve.ts'
-import { normalizeIpAddress } from '../../lib/ip-address.ts'
-import type { HostingDnsReport } from './hosting-certificate.ts'
+import { ipAddressScope, normalizeIpAddress } from '../../lib/ip-address.ts'
+import { type CertificatePrecheckProbes, checkCaa } from './certificate-precheck.ts'
+import type { HostingDnsHostname, HostingDnsReport } from './hosting-certificate.ts'
 
 export type DnsLookup = (name: string, recordType: 'A' | 'AAAA') => Promise<string[]>
 
@@ -36,16 +41,83 @@ async function addressesOf(lookup: DnsLookup, name: string): Promise<string[]> {
   return [...new Set(found)]
 }
 
+const UNREACHABLE_SCOPES = new Set(['loopback', 'link-local', 'private'])
+
+function listed(addresses: readonly string[]): string {
+  return addresses.join(', ')
+}
+
+/** The plain sentence for an address problem, or null when the addresses are fine. */
+function addressProblem(
+  hostname: string,
+  addresses: readonly string[],
+  wrong: readonly string[],
+  expected: ReadonlySet<string>
+): string | null {
+  if (addresses.length === 0) return `${hostname} has no A or AAAA record yet.`
+  const unreachable = addresses.filter((a) => UNREACHABLE_SCOPES.has(ipAddressScope(a) ?? ''))
+  if (unreachable.length > 0) {
+    return `${hostname} points at ${listed(unreachable)}, a private address the internet cannot reach.`
+  }
+  if (wrong.length === 0) return null
+  const servers = listed([...expected])
+  const ipv6 = wrong.some((a) => a.includes(':'))
+    ? " Let's Encrypt tries IPv6 first, so a wrong AAAA record fails even when the A record is right."
+    : " Let's Encrypt may use any of the addresses."
+  return `${hostname} points at ${listed(wrong)}, which is not this site's server (${servers}).${ipv6}`
+}
+
+async function checkOneName(
+  hostname: string,
+  expected: ReadonlySet<string>,
+  lookup: DnsLookup,
+  probes: CertificatePrecheckProbes
+): Promise<HostingDnsHostname> {
+  const addresses = await addressesOf(lookup, hostname)
+  const wrong = expected.size === 0 ? [] : addresses.filter((a) => !expected.has(a))
+  const entry: HostingDnsHostname = {
+    hostname,
+    resolves: addresses.length > 0 && wrong.length === 0,
+    addresses,
+    ...(wrong.length > 0 ? { wrongAddresses: wrong } : {}),
+  }
+  const problem = addressProblem(hostname, addresses, wrong, expected)
+  if (problem !== null) return { ...entry, problem }
+
+  if (probes.port80) {
+    const port80 = await probes.port80(hostname)
+    entry.port80 = port80.open ? 'open' : 'closed'
+    if (!port80.open) {
+      const why = port80.error ? ` (${port80.error})` : ''
+      entry.problem =
+        `${hostname} points at ${listed(addresses)}, but port 80 there isn't reachable from the internet${why}. ` +
+        "Let's Encrypt checks the name over port 80, so open or forward port 80 to the server."
+      return entry
+    }
+  }
+  if (probes.caaLookup) {
+    const caa = await checkCaa(probes.caaLookup, hostname)
+    if (caa.allowed !== null) entry.caa = caa.allowed ? 'allowed' : 'blocked'
+    if (caa.allowed === false) {
+      entry.problem = `A CAA record on ${caa.recordAt} does not allow Let's Encrypt to issue for ${hostname}. Add letsencrypt.org to it, or remove the record.`
+    }
+  }
+  return entry
+}
+
 /**
- * A name is ready when it resolves, and, when the server's public addresses are
- * known, at least one answer is one of them. With no known addresses any answer
- * counts (the owner may use a proxy or an address we cannot see).
+ * A name is ready when it resolves, every answer is one of the serving
+ * servers' public addresses (when those are known; with none on record any
+ * public answer counts, since the owner may use a proxy or an address the panel
+ * cannot see), port 80 answers, and CAA allows Let's Encrypt. Probes that are
+ * not passed are skipped.
  */
 export async function checkHostingDns(params: {
   hostnames: readonly string[]
   expectedAddresses: readonly string[]
   lookup: DnsLookup
   now: Date
+  probes?: CertificatePrecheckProbes
 }): Promise<HostingDnsReport> {
   const expected = new Set(
     params.expectedAddresses
@@ -53,14 +125,12 @@ export async function checkHostingDns(params: {
       .filter((address): address is string => address !== null)
   )
   const hostnames = await Promise.all(
-    params.hostnames.map(async (hostname) => {
-      const addresses = await addressesOf(params.lookup, hostname)
-      const pointsHere = expected.size === 0 || addresses.some((a) => expected.has(a))
-      return { hostname, resolves: addresses.length > 0 && pointsHere, addresses }
-    })
+    params.hostnames.map((hostname) =>
+      checkOneName(hostname, expected, params.lookup, params.probes ?? {})
+    )
   )
   return {
-    ready: hostnames.every((entry) => entry.resolves),
+    ready: hostnames.every((entry) => entry.problem === undefined),
     checkedAt: params.now.toISOString(),
     hostnames,
     expectedAddresses: [...expected],

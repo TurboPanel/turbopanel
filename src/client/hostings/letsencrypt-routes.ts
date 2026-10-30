@@ -36,6 +36,11 @@ import {
   resolveHostingBind,
   resolveHostingProtocol,
 } from '../../features/hostings/hosting-options.ts'
+import {
+  type CaaLookup,
+  type Port80Probe,
+  precheckProbes,
+} from '../../features/hostings/certificate-precheck.ts'
 import { settleTunnelOnlyHosting } from '../../features/tunnels/tunnel-only-certificate.ts'
 import { requestLetsEncrypt } from '../../features/hostings/use-letsencrypt.ts'
 import { getCommandQueue } from '../../features/commands/queue.ts'
@@ -59,6 +64,9 @@ import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 
 export type HostingLetsEncryptDeps = {
   lookup?: DnsLookup
+  /** CAA and port-80 probes; when `lookup` is injected only the probes passed here run. */
+  caaLookup?: CaaLookup
+  port80?: Port80Probe
   now?: () => Date
   /** Where the hostings-only apply is queued; defaults to the request's queue and registry. */
   applyDeps?: (c: Context<AppEnv>) => HostingApplyDeps
@@ -307,6 +315,7 @@ export function registerHostingLetsEncryptRoutes(
   }
   const secrets = opts.secrets
   const lookup = deps.lookup ?? runtimeDnsLookup()
+  const probes = precheckProbes(deps)
   const now = deps.now ?? (() => new Date())
   const applyDeps = deps.applyDeps ?? requestApplyDeps
 
@@ -356,6 +365,7 @@ export function registerHostingLetsEncryptRoutes(
     const result = await requestLetsEncrypt({
       store: createLetsEncryptStore(db),
       lookup,
+      probes,
       now: now(),
       hosting: { ...row, organizationId },
       acmeEnabled: await loadAcmeEnabled(db, organizationId),
@@ -451,6 +461,7 @@ export function registerHostingLetsEncryptRoutes(
       expectedAddresses: await store.expectedAddresses({ ...row, organizationId }),
       lookup,
       now: now(),
+      probes,
     })
     return c.json({ dns })
   })

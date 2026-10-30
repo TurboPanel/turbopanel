@@ -45,16 +45,20 @@ function isResidualMetadata(value: unknown): value is {
  * records the served expiry, and stamps `lastIssuedAt` when this is the first
  * good sighting, a recovery from a failure, or the expiry moved (a renewal);
  * a repeat of the same good state leaves the stamp alone. A failure sets
- * `lastError` and leaves the last known expiry and stamp in place.
+ * `lastError` and `lastFailedAt` and leaves the last known expiry and stamp in
+ * place. Every report stamps `lastReportedAt`, which is how the panel tells
+ * "the server is working on it" from "the server never got it".
  */
 export function applyIssuanceOutcome(
   previous: TlsAcmeMetadata | undefined,
   input: Pick<AcmeIssuanceEventInput, 'ok' | 'errorMessage' | 'notAfter' | 'at'>,
   now: () => string = () => new Date().toISOString()
 ): TlsAcmeMetadata {
-  const next: TlsAcmeMetadata = { ...previous }
+  const at = input.at ?? now()
+  const next: TlsAcmeMetadata = { ...previous, lastReportedAt: at }
   if (!input.ok) {
     next.lastError = redactUrlSecrets(input.errorMessage ?? 'ACME issuance failed')
+    next.lastFailedAt = at
     return next
   }
   const recovered = previous?.lastError !== undefined
@@ -62,13 +66,24 @@ export function applyIssuanceOutcome(
   delete next.lastError
   if (input.notAfter !== undefined) next.notAfter = input.notAfter
   if (recovered || expiryMoved || previous?.lastIssuedAt === undefined) {
-    next.lastIssuedAt = input.at ?? now()
+    next.lastIssuedAt = at
   }
   return next
 }
 
 /** What the caller needs to tell people a certificate just started failing. */
-export type NewAcmeFailure = { organizationId: string; hostname: string; rawError?: string }
+export type NewAcmeFailure = {
+  organizationId: string
+  hostname: string
+  rawError?: string
+  /** No certificate was ever seen for this name: the first one could not be obtained. */
+  firstIssuance?: boolean
+}
+
+/** No good probe has ever been recorded on this row. */
+function neverIssued(previous: TlsAcmeMetadata | undefined): boolean {
+  return previous?.lastIssuedAt === undefined && previous?.notAfter === undefined
+}
 
 export type AcmeIssuanceEventDeps = {
   /**
@@ -123,6 +138,7 @@ export async function handleAcmeIssuanceEvent(
 
   let updated = false
   let newlyFailing = false
+  let firstIssuance = true
   await forEachSequential(rows, async (row) => {
     if (row.status !== 'automatic') return
     if (!isResidualMetadata(row.metadata)) return
@@ -130,6 +146,7 @@ export async function handleAcmeIssuanceEvent(
 
     const nextAcme = applyIssuanceOutcome(row.metadata.acme, input)
     if (!input.ok && row.metadata.acme?.lastError === undefined) newlyFailing = true
+    if (!neverIssued(row.metadata.acme)) firstIssuance = false
 
     await db
       .update(tls)
@@ -146,20 +163,19 @@ export async function handleAcmeIssuanceEvent(
   if (newlyFailing) {
     const safeError =
       input.errorMessage === undefined ? undefined : redactUrlSecrets(input.errorMessage)
-    await announceNewFailure(deps, organizationId, hostname, safeError)
+    await announceNewFailure(deps, { organizationId, hostname, firstIssuance }, safeError)
   }
   return { updated }
 }
 
 async function announceNewFailure(
   deps: AcmeIssuanceEventDeps,
-  organizationId: string,
-  hostname: string,
+  failure: Omit<NewAcmeFailure, 'rawError'>,
   rawError: string | undefined
 ): Promise<void> {
   if (!deps.onNewFailure) return
   try {
-    await deps.onNewFailure({ organizationId, hostname, ...(rawError ? { rawError } : {}) })
+    await deps.onNewFailure({ ...failure, ...(rawError ? { rawError } : {}) })
   } catch {
     // The record is already written; a failed alert must not fail the event.
   }

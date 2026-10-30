@@ -160,19 +160,34 @@ export const NOTIFICATION_EVENT_DEFINITIONS = {
       )} from ${name(ctx, 'subjectKind', 'a subject')} ${name(ctx, 'subjectId', '')}`.trimEnd() +
       '.',
   },
+  // One stored code for three alerts; `ctx.kind` (`issuance`, `renewal`,
+  // `request_dropped`) picks the words. Rows from before `kind` read as renewal.
   'certificate.renewal_failed': {
-    label: 'A certificate failed to renew',
+    label: 'A certificate could not be issued or renewed',
     severity: 'warning',
     scope: 'organization',
     audience: 'members',
     urgent: true,
-    title: (ctx) => `Certificate renewal failed for ${name(ctx, 'hostname', 'a domain')}`,
-    body: (ctx) =>
-      `${name(
+    title: (ctx) => {
+      const domain = name(ctx, 'hostname', 'a domain')
+      if (ctx.kind === 'issuance') return `Couldn't get a certificate for ${domain}`
+      if (ctx.kind === 'request_dropped') return `Stopped waiting for DNS for ${domain}`
+      return `Certificate renewal failed for ${domain}`
+    },
+    body: (ctx) => {
+      if (ctx.kind === 'request_dropped') {
+        return `${name(
+          ctx,
+          'reason',
+          'The certificate request waited too long for DNS and was dropped.'
+        )} Point the domain at the server, then press Use Let's Encrypt again.`
+      }
+      return `${name(
         ctx,
         'reason',
         "Let's Encrypt could not issue or renew the certificate."
-      )} Visitors may see a browser warning until it is fixed; check the domain's DNS, then try again.`,
+      )} Visitors may see a browser warning until it is fixed; check the domain's DNS, then try again.`
+    },
   },
   'folder.orphans_found': {
     label: 'A folder was left behind on a server',

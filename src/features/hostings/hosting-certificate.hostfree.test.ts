@@ -246,3 +246,47 @@ test('the conflict sentence names both spellings', () => {
     'x has no www or non-www spelling, so its www setting must be "Only x".'
   )
 })
+
+test('issuing: tells "waiting for a deploy", "working on it" and "never heard from the server" apart', () => {
+  const pinned = managed({})
+  const minutesAgo = (m: number) => new Date(NOW.getTime() - m * 60_000).toISOString()
+  assertEquals(
+    deriveHostingCertificate(input({ pinned, needsDeploy: true })).serverProgress,
+    'waiting_for_deploy'
+  )
+  assertEquals(
+    deriveHostingCertificate(input({ pinned, deployedAt: minutesAgo(2) })).serverProgress,
+    'working'
+  )
+  assertEquals(
+    deriveHostingCertificate(input({ pinned, deployedAt: minutesAgo(30) })).serverProgress,
+    'not_reported'
+  )
+  assertEquals(
+    deriveHostingCertificate(
+      input({ pinned: managed({ lastReportedAt: minutesAgo(29) }), deployedAt: minutesAgo(30) })
+    ).serverProgress,
+    'working'
+  )
+  assertEquals(
+    deriveHostingCertificate(input({ pinned: managed({ notAfter: iso(60) }) })).serverProgress,
+    null
+  )
+})
+
+test('last tried and next try: the DNS check times while waiting, the reported failure when failing', () => {
+  const dns = {
+    ready: false,
+    checkedAt: iso(0),
+    nextCheckAt: iso(1),
+    hostnames: [],
+    expectedAddresses: [],
+  }
+  const waiting = deriveHostingCertificate(input({ pending: { requestedAt: iso(-1), dns } }))
+  assertEquals([waiting.lastTriedAt, waiting.nextTryAt], [iso(0), iso(1)])
+  const failing = deriveHostingCertificate(
+    input({ pinned: managed({ lastError: 'boom', lastFailedAt: iso(-2) }) })
+  )
+  assertEquals(failing.state, 'renewal_failed')
+  assertEquals([failing.lastTriedAt, failing.nextTryAt], [iso(-2), null])
+})

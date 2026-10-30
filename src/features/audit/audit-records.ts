@@ -54,6 +54,7 @@ export const AUDIT_ACTIONS = [
   'server.addresses.set',
   'deployment.cancel',
   'hosting.letsencrypt.requested',
+  'hosting.letsencrypt.dropped',
   'tls.certificate.store',
   'tls.certificate.key_erase',
   'tls.certificate.delete',

@@ -61,3 +61,107 @@ test('duplicate answers are listed once', async () => {
   assertEquals(report.ready, true)
   assertEquals(report.hostnames[0]?.addresses.length, 1)
 })
+
+test('every answer must be a serving server: a stale AAAA beside a right A is not ready', async () => {
+  const report = await checkHostingDns({
+    hostnames: ['a.example.com'],
+    expectedAddresses: ['198.51.100.7', '198.51.100.8'],
+    lookup: table({
+      'a.example.com/A': ['198.51.100.7', '198.51.100.8'],
+      'a.example.com/AAAA': ['2001:db8::99'],
+    }),
+    now: NOW,
+  })
+  assertEquals(report.ready, false)
+  const entry = report.hostnames[0]!
+  assertEquals(entry.resolves, false)
+  assertEquals(entry.wrongAddresses, ['2001:db8::99'])
+  assertEquals(entry.problem?.includes('tries IPv6 first'), true)
+})
+
+test('round-robin across the serving servers is ready', async () => {
+  const report = await checkHostingDns({
+    hostnames: ['a.example.com'],
+    expectedAddresses: ['198.51.100.7', '198.51.100.8'],
+    lookup: table({ 'a.example.com/A': ['198.51.100.7', '198.51.100.8'] }),
+    now: NOW,
+  })
+  assertEquals(report.ready, true)
+})
+
+test('a name behind a NAT address with port 80 not forwarded says so plainly', async () => {
+  const report = await checkHostingDns({
+    hostnames: ['w.example.com'],
+    expectedAddresses: [],
+    lookup: table({ 'w.example.com/A': ['198.203.204.120'] }),
+    now: NOW,
+    probes: {
+      port80: () =>
+        Promise.resolve({ open: false, error: 'fetch failed: Connection refused (os error 111)' }),
+    },
+  })
+  assertEquals(report.ready, false)
+  const entry = report.hostnames[0]!
+  assertEquals(entry.port80, 'closed')
+  assertEquals(
+    entry.problem?.startsWith(
+      "w.example.com points at 198.203.204.120, but port 80 there isn't reachable from the internet"
+    ),
+    true
+  )
+})
+
+test('a private answer is named and port 80 is never probed for it', async () => {
+  let probed = false
+  const report = await checkHostingDns({
+    hostnames: ['a.example.com'],
+    expectedAddresses: [],
+    lookup: table({ 'a.example.com/A': ['10.0.0.5'] }),
+    now: NOW,
+    probes: {
+      port80: () => {
+        probed = true
+        return Promise.resolve({ open: true })
+      },
+    },
+  })
+  assertEquals(report.ready, false)
+  assertEquals(probed, false)
+  assertEquals(report.hostnames[0]!.problem?.includes('private address'), true)
+})
+
+test('a CAA record that names another authority blocks; one that names Let’s Encrypt passes', async () => {
+  const blocked = await checkHostingDns({
+    hostnames: ['shop.example.com'],
+    expectedAddresses: ['198.51.100.7'],
+    lookup: table({ 'shop.example.com/A': ['198.51.100.7'] }),
+    now: NOW,
+    probes: {
+      port80: () => Promise.resolve({ open: true }),
+      caaLookup: (name) =>
+        Promise.resolve(
+          name === 'example.com' ? [{ critical: false, tag: 'issue', value: 'other.example' }] : []
+        ),
+    },
+  })
+  assertEquals(blocked.ready, false)
+  assertEquals(blocked.hostnames[0]!.caa, 'blocked')
+  assertEquals(blocked.hostnames[0]!.problem?.includes('CAA record on example.com'), true)
+
+  const allowed = await checkHostingDns({
+    hostnames: ['shop.example.com'],
+    expectedAddresses: ['198.51.100.7'],
+    lookup: table({ 'shop.example.com/A': ['198.51.100.7'] }),
+    now: NOW,
+    probes: {
+      port80: () => Promise.resolve({ open: true }),
+      caaLookup: () =>
+        Promise.resolve([
+          { critical: false, tag: 'issue', value: 'letsencrypt.org; validationmethods=http-01' },
+        ]),
+    },
+  })
+  assertEquals(allowed.ready, true)
+  assertEquals(allowed.hostnames[0]!.port80, 'open')
+  assertEquals(allowed.hostnames[0]!.caa, 'allowed')
+})
