@@ -561,7 +561,7 @@ daemon injects `extra_hosts: host.docker.internal:host-gateway` plus
 container service (instance does not duplicate those fields in the payload).
 Daemon applies nginx/apache/OpenLiteSpeed vhosts + hosting Caddy reverse_proxy
 to `127.0.0.1:<listenPort>` — see
-`../../turbopaneld/src/deploy/AGENTS.md`. Editor | Visual tab preference
+`../turbopaneld/src/deploy/AGENTS.md`. Editor | Visual tab preference
 lives in `presentation.editorView` only (never in compose YAML). Swarm `deploy:`
 (replicas, constraints, spread) is scheduler input compiled out of runtime YAML;
 it is not a per-service compose pin.
@@ -731,7 +731,7 @@ the repository's `defaultBranch`) is the pushed branch, and `deployOnPush: false
 opts a binding out of push deploys while leaving a manual deploy untouched — see
 `src/webhook/AGENTS.md` ("Which environments a push deploys") and
 `src/features/git/environment-branch-tracking.ts`.
-The daemon release engine (`../../turbopaneld/src/deploy/release/`) checks
+The daemon release engine (`../turbopaneld/src/deploy/release/`) checks
 out, builds, and atomically promotes
 `<principalHome>/sites/<serviceId>/current`.
 
@@ -897,7 +897,7 @@ systemd applies the environment file over the unit's own `Environment=` lines;
 names or values the daemon would refuse are held back and listed with a reason
 rather than failing the deploy. `source` comes from `resolveVariableSource`
 (`features/variables/resolve-inherited.ts`) in the same order deploy merges
-scopes. The daemon side is `../../turbopaneld/src/deploy/native/AGENTS.md`
+scopes. The daemon side is `../turbopaneld/src/deploy/native/AGENTS.md`
 ("Variables").
 
 Both ride the wire. `deploy-prepare.ts` copies them onto
@@ -936,7 +936,7 @@ inputs would point a unit's `WorkingDirectory` at a tree nothing ever published.
 `resources` comes from the same clamped service options containers use;
 `accountLimits` is the effective org ∩ server ceiling, repeated on every app of
 a principal so the daemon can build one `turbopanel-<username>.slice` per
-account. Daemon side: `../../turbopaneld/src/deploy/native/`.
+account. Daemon side: `../turbopaneld/src/deploy/native/`.
 
 ### Changes for {env} are a partial layer
 
