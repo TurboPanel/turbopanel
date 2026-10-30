@@ -49,7 +49,7 @@ private upload's issuer), lowercase hex, comma-separated so a rotation bundle
 installs. The installer refuses a fetched certificate outside that list, and
 the daemon refuses to connect when its stored trust drifts from it. When no
 fingerprint can be computed, `POST /licenses` refuses the command instead of
-emitting an unpinned one (`install-ca-pin.ts`). Hosted and publicly trusted
+emitting an unpinned one (`install-ca-pin.ts`); a document with any block that cannot be decoded counts as unreadable, and `buildLicenseInstallCommand` throws if asked for an insecure-TLS command with no fingerprint. Hosted and publicly trusted
 origins carry no fingerprint.
 
 Every hostname, whatever its certificate source, is reached at

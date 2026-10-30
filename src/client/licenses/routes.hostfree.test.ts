@@ -21,7 +21,13 @@ import type { AuthRouteOpts } from '../authn/http.ts'
 import type { Db } from '../../db/connection.ts'
 import type { DaemonCell, DaemonCellRegistry } from '../../contracts/cell.ts'
 import type { BillingConfig } from '../../features/billing/config.ts'
-import { INSTALL_CA_PIN_UNAVAILABLE } from '../../features/install/install-ca-pin.ts'
+import {
+  certificateFingerprints,
+  INSTALL_CA_PIN_UNAVAILABLE,
+} from '../../features/install/install-ca-pin.ts'
+import { mintOrganizationCa } from '../../lib/tls/self-signed.ts'
+import { createApp } from '../../app/app.ts'
+import { CLIENT_API_PREFIX } from '../../app/surfaces.ts'
 import {
   emptyLedger,
   newDeferredIntent,
@@ -33,6 +39,7 @@ import {
   BILLING_QUANTITY_LOCK_NAME,
 } from '../../features/billing/quantity-lock.ts'
 import {
+  allowance,
   instanceHostname,
   lease,
   license,
@@ -273,6 +280,7 @@ async function buildApp(fx: Fixture = {}) {
         })),
       ],
       [lease, []],
+      [allowance, []],
       [organization, [{ id: ORG, name: 'License Org', createdAt: NOW, updatedAt: NOW }]],
     ],
     { fallback: authDb }
@@ -306,7 +314,7 @@ async function buildApp(fx: Fixture = {}) {
     [ORG_ID_HEADER]: ORG,
     'content-type': 'application/json',
   }
-  return { app, headers, db }
+  return { app, headers, db, secrets }
 }
 
 function listLicenses(app: Hono<AppEnv>, headers: Record<string, string>): Promise<Response> {
@@ -994,4 +1002,34 @@ test('DELETE /licenses/:id still succeeds when a cell registry is present', asyn
   assertEquals(res.status, 200)
   assertEquals(await res.json(), { ok: true })
   assertEquals(typeof db.rows(license).find((row) => row.id === L_ACTIVE)?.revokedAt, 'string')
+})
+
+test('a self-hosted panel puts the Platform CA fingerprint in the install command', async () => {
+  const ca = await mintOrganizationCa({ organizationId: 'licenses-ca-pin' })
+  const [expected] = await certificateFingerprints(ca.certificatePem)
+  const { db, headers, secrets } = await buildApp({ config: null, seats: null, runtime: 'deno' })
+  // Through createApp, so the reader wiring (app.ts → client routes) is covered.
+  const app = createApp({
+    db,
+    secrets,
+    runtime: 'deno',
+    signupEnvOverride: undefined,
+    baseUrl: 'https://panel.example.com',
+    readPlatformCaPem: () => Promise.resolve(ca.certificatePem),
+  })
+  const res = await app.request(`${CLIENT_API_PREFIX}/licenses`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ name: 'lan', installBaseUrl: 'https://10.0.0.5' }),
+  })
+  assertEquals(res.status, 200, await res.clone().text())
+  const body = (await res.json()) as { installCommand: string }
+  assertEquals(
+    body.installCommand.includes(
+      `TURBOPANEL_INSECURE_TLS=1 TURBOPANEL_INSTANCE_CA_FINGERPRINT=${expected}`
+    ),
+    true,
+    body.installCommand
+  )
+  assertEquals(body.installCommand.startsWith('curl -fsSL https://turbopanel.sh | '), true)
 })

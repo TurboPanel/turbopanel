@@ -45,6 +45,7 @@ test('buildLicenseInstallCommand uses dev /run.sh with insecure TLS', () => {
     instanceUrl: 'https://huey.turbopanel.dev:8443',
     licenseId: 'license-id',
     licenseToken: 'token',
+    caFingerprints: ['a'.repeat(64)],
     insecureTls: true,
     useInstanceRunScript: true,
   })
@@ -150,6 +151,7 @@ test('no stored hostnames: a public DNS name on the self-hosted listener bootstr
     instanceUrl,
     licenseId: 'license-id',
     licenseToken: 'token',
+    caFingerprints: ['a'.repeat(64)],
     insecureTls,
   })
   assertEquals(instanceUrl, 'https://panel.example.com:8443')
@@ -346,4 +348,22 @@ test('a CA fingerprint that is not 64 lowercase hex digits is refused', () => {
       }),
     TypeError
   )
+})
+
+test('an insecure-TLS install command without a CA fingerprint is refused', () => {
+  for (const caFingerprints of [undefined, []]) {
+    assertThrows(
+      () =>
+        buildLicenseInstallCommand({
+          runtime: 'deno',
+          instanceUrl: 'https://panel.example.com:8443',
+          licenseId: 'license-id',
+          licenseToken: 'token',
+          insecureTls: true,
+          caFingerprints,
+        }),
+      TypeError,
+      'needs at least one CA fingerprint'
+    )
+  }
 })

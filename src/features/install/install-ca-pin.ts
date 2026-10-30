@@ -32,17 +32,20 @@ export function isInstallCaFingerprint(value: string): boolean {
   return FINGERPRINT_PATTERN.test(value)
 }
 
-/** SHA-256 fingerprint of every certificate in `pem`; empty when none parse. */
+/**
+ * SHA-256 fingerprint of every certificate in `pem`. Empty when the document
+ * holds no certificate or any block cannot be decoded: a partial list would
+ * pin a bundle the installer then refuses, so the caller treats it as none.
+ */
 export async function certificateFingerprints(pem: string): Promise<string[]> {
-  let blocks: string[]
+  let ders: Uint8Array[]
   try {
-    blocks = splitCertificateChain(pem)
+    ders = splitCertificateChain(pem).map((block) => decodePemBlock(block, 'CERTIFICATE'))
   } catch {
     return []
   }
   return await Promise.all(
-    blocks.map(async (block) => {
-      const der = decodePemBlock(block, 'CERTIFICATE')
+    ders.map(async (der) => {
       const digest = await crypto.subtle.digest('SHA-256', new Uint8Array(der))
       return bytesToHex(new Uint8Array(digest))
     })
@@ -52,13 +55,15 @@ export async function certificateFingerprints(pem: string): Promise<string[]> {
 /**
  * Fingerprints of every certificate in the trust documents the installer may
  * fetch over insecure TLS, de-duplicated and in first-seen order. A missing
- * document contributes nothing.
+ * document contributes nothing. A present document that cannot be
+ * fingerprinted makes the whole list empty, so the command is refused
+ * instead of pinning only part of what the installer will download.
  */
 export async function installCaFingerprints(
   documents: readonly (string | null | undefined)[]
 ): Promise<string[]> {
-  const perDocument = await Promise.all(
-    documents.map((pem) => (pem ? certificateFingerprints(pem) : Promise.resolve([])))
-  )
+  const present = documents.filter((pem): pem is string => Boolean(pem))
+  const perDocument = await Promise.all(present.map((pem) => certificateFingerprints(pem)))
+  if (perDocument.some((fingerprints) => fingerprints.length === 0)) return []
   return [...new Set(perDocument.flat())]
 }

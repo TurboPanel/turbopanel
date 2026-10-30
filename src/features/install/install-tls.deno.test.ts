@@ -39,6 +39,9 @@ import {
  */
 const test = Deno.test.bind(Deno)
 
+/** Any well-formed fingerprint; these tests check TLS choices, not the pin. */
+const TEST_CA_FINGERPRINT = 'a'.repeat(64)
+
 test('installOriginNeedsInsecureTls trusts public HTTPS on 443', () => {
   assertEquals(installOriginNeedsInsecureTls('https://turbopanel.dev'), false)
   assertEquals(installOriginNeedsInsecureTls('https://panel.example.com'), false)
@@ -231,6 +234,7 @@ function installCommandFor(
     instanceUrl: origin,
     licenseId: 'lic',
     licenseToken: 'tok',
+    caFingerprints: [TEST_CA_FINGERPRINT],
     insecureTls: installOriginNeedsInsecureTls(
       origin,
       installOriginTlsOptions(source, env, {
@@ -494,6 +498,8 @@ test("an unlisted public name on a Let's Encrypt-only listener keeps the Platfor
       licenseId: 'lic',
       licenseToken: 'tok',
       insecureTls: covered.insecureTls,
+      caFingerprints:
+        covered.caFingerprints.length > 0 ? covered.caFingerprints : [TEST_CA_FINGERPRINT],
     })
     assertEquals(bootstrapsInsecure(fromRoute), true)
 

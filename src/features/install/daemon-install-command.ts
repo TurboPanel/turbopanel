@@ -123,9 +123,13 @@ function buildInstallPipeline(opts: {
   const envParts = [`TURBOPANEL_LICENSE=${opts.licenseArg}`]
   if (opts.host) envParts.push(`TURBOPANEL_HOST=${opts.host}`)
   if (opts.insecureTls) {
-    envParts.push('TURBOPANEL_INSECURE_TLS=1')
+    // Never an insecure-TLS command without the CA it may keep: the installer
+    // would trust whatever answered.
     const pin = caFingerprintEnvValue(opts.caFingerprints)
-    if (pin) envParts.push(`TURBOPANEL_INSTANCE_CA_FINGERPRINT=${pin}`)
+    if (!pin) {
+      throw new TypeError('an insecure-TLS install command needs at least one CA fingerprint')
+    }
+    envParts.push('TURBOPANEL_INSECURE_TLS=1', `TURBOPANEL_INSTANCE_CA_FINGERPRINT=${pin}`)
   }
   if (opts.dlBase) {
     // A dev overlay serves unsigned builds. run.sh skips signature checks only

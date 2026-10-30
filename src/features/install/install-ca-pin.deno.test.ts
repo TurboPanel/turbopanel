@@ -77,12 +77,36 @@ function memoryInstallDb(
   } as unknown as Db
 }
 
-test('certificate fingerprints match openssl with the colons removed', async () => {
+async function opensslAvailable(): Promise<boolean> {
+  try {
+    const out = await new Deno.Command('openssl', {
+      args: ['version'],
+      stdout: 'null',
+      stderr: 'null',
+    }).output()
+    return out.success
+  } catch {
+    return false
+  }
+}
+
+const HAS_OPENSSL = await opensslAvailable()
+
+test('certificate fingerprints are 64 lowercase hex digits', async () => {
   const ca = await mintOrganizationCa({ organizationId: 'install-ca-pin' })
   const [fingerprint] = await certificateFingerprints(ca.certificatePem)
   assertEquals(isInstallCaFingerprint(fingerprint ?? ''), true)
-  const fromOpenssl = await opensslFingerprint(ca.certificatePem)
-  if (fromOpenssl !== null) assertEquals(fingerprint, fromOpenssl)
+})
+
+test({
+  // Skipped, and reported as ignored, where openssl is not installed.
+  name: 'certificate fingerprints match openssl with the colons removed (needs openssl)',
+  ignore: !HAS_OPENSSL,
+  fn: async () => {
+    const ca = await mintOrganizationCa({ organizationId: 'install-ca-pin' })
+    const [fingerprint] = await certificateFingerprints(ca.certificatePem)
+    assertEquals(fingerprint, await opensslFingerprint(ca.certificatePem))
+  },
 })
 
 test('every certificate in a bundle is fingerprinted once, in order', async () => {
@@ -142,4 +166,12 @@ test('a private upload also pins the issuer the installer stores', async () => {
     insecureTls: true,
     caFingerprints: [platformFp, issuerFp],
   })
+})
+
+test('an undecodable certificate block yields no fingerprints instead of throwing', async () => {
+  const ca = await mintOrganizationCa({ organizationId: 'install-ca-pin-broken' })
+  const broken = '-----BEGIN CERTIFICATE-----\n!!not base64!!\n-----END CERTIFICATE-----\n'
+  assertEquals(await certificateFingerprints(`${ca.certificatePem}\n${broken}`), [])
+  assertEquals(await installCaFingerprints([ca.certificatePem, broken]), [])
+  assertEquals((await installCaFingerprints([ca.certificatePem, null])).length, 1)
 })
