@@ -277,7 +277,7 @@ test('finalizeStoredCommandProgress writes back only when the plan changed', asy
   assertEquals(calls.length, 1)
   assertEquals(calls[0].set.progress, written)
   assertEquals(calls[0].set.updatedAt, AT)
-  assertEquals(calls[0].params, [COMMAND_ID])
+  assertEquals(calls[0].params, [COMMAND_ID, PLAN.updatedAt])
   assertEquals(states(written!), ['ready', 'done', 'skipped', 'skipped', 'skipped'])
 
   // Already settled: no second write. No plan at all: nothing to do.
@@ -327,4 +327,165 @@ test('validateCommandProgress accepts runningSince as a time, null, or absent, a
     validateCommandProgress({ ...base, runningSince: 5 }),
     'invalid progress runningSince'
   )
+})
+
+const CERT_NOTE = 'Requested in the background; the Certificate panel shows progress: example.test'
+
+const CERT_RUNNING: CommandProgress = {
+  version: 1,
+  steps: [
+    { id: 'build', label: 'Build', state: 'done', startedAt: AT, finishedAt: AT },
+    { id: 'certificates', label: 'Set up certificates', state: 'running', startedAt: AT },
+  ],
+  current: 'certificates',
+  updatedAt: AT,
+}
+
+const CERT_DONE: CommandProgress = {
+  version: 1,
+  steps: [
+    { id: 'build', label: 'Build', state: 'done', startedAt: AT, finishedAt: AT },
+    {
+      id: 'certificates',
+      label: 'Set up certificates',
+      state: 'done',
+      startedAt: AT,
+      finishedAt: AT,
+      detail: CERT_NOTE,
+    },
+  ],
+  current: null,
+  updatedAt: AT,
+}
+
+/**
+ * A db double that holds one command row and applies updates the way the
+ * guards read: a `status not in (...)` update never touches a finished row.
+ */
+function fakeRowDb(row: {
+  status: string
+  serverId: string
+  progress: unknown
+  updatedAt: string
+}) {
+  const writes: Record<string, unknown>[] = []
+  const db = {
+    select: () => ({
+      from: () => ({ where: () => ({ limit: () => Promise.resolve([{ ...row }]) }) }),
+    }),
+    update: () => ({
+      set: (patch: Record<string, unknown>) => ({
+        where: (predicate: SQL) => {
+          const { sql, params } = dialect.sqlToQuery(predicate)
+          const guardedUpdatedAt = sql.includes(`->>'updatedAt' =`)
+          const current = (row.progress as { updatedAt?: string } | null)?.updatedAt
+          const blocked =
+            (sql.includes('not in') && params.includes(row.status)) ||
+            (guardedUpdatedAt && !params.includes(current))
+          const applied = !blocked
+          if (applied) {
+            writes.push(patch)
+            Object.assign(row, patch)
+          }
+          const outcome = Promise.resolve(applied ? [{ id: COMMAND_ID }] : [])
+          return Object.assign(outcome, { returning: () => outcome })
+        },
+      }),
+    }),
+  } as unknown as Db
+  return { db, row, writes }
+}
+
+test('a settled frame that arrives after the command finished keeps the step note', async () => {
+  // The result won the race: the panel already settled the running step.
+  const settled = finalizeCommandProgress(CERT_RUNNING, 'succeeded', '2026-10-12T10:00:05.000Z')
+  const { db, row } = fakeRowDb({
+    status: 'succeeded',
+    serverId: SERVER_ID,
+    progress: settled,
+    updatedAt: AT,
+  })
+  const result = await recordCommandProgress(db, {
+    serverId: SERVER_ID,
+    commandId: COMMAND_ID,
+    progress: CERT_DONE,
+  })
+  assertEquals(result, 'stored')
+  const stored = parseStoredCommandProgress(row.progress)
+  assertEquals(stored?.steps[1].state, 'done')
+  assertEquals(stored?.steps[1].detail, CERT_NOTE)
+  assertEquals(stored?.current, null)
+})
+
+test('a late frame never reopens a finished command or overwrites a settled step', async () => {
+  const settled = finalizeCommandProgress(CERT_DONE, 'succeeded', '2026-10-12T10:00:05.000Z')
+  const { db, row } = fakeRowDb({
+    status: 'succeeded',
+    serverId: SERVER_ID,
+    progress: settled,
+    updatedAt: AT,
+  })
+  // An older frame with the step still running adds nothing.
+  assertEquals(
+    await recordCommandProgress(db, {
+      serverId: SERVER_ID,
+      commandId: COMMAND_ID,
+      progress: CERT_RUNNING,
+    }),
+    'not-applied'
+  )
+  // Another server's frame adds nothing either.
+  assertEquals(
+    await recordCommandProgress(db, {
+      serverId: 'other',
+      commandId: COMMAND_ID,
+      progress: CERT_DONE,
+    }),
+    'not-applied'
+  )
+  assertEquals(row.progress, settled)
+})
+
+test('a step note replaces the live line the step showed while it ran', async () => {
+  const live: CommandProgress = {
+    ...CERT_RUNNING,
+    steps: [CERT_RUNNING.steps[0], { ...CERT_RUNNING.steps[1], detail: 'Checking names' }],
+  }
+  const settled = finalizeCommandProgress(live, 'succeeded', '2026-10-12T10:00:05.000Z')
+  const { db, row } = fakeRowDb({
+    status: 'succeeded',
+    serverId: SERVER_ID,
+    progress: settled,
+    updatedAt: AT,
+  })
+  await recordCommandProgress(db, {
+    serverId: SERVER_ID,
+    commandId: COMMAND_ID,
+    progress: CERT_DONE,
+  })
+  assertEquals(parseStoredCommandProgress(row.progress)?.steps[1].detail, CERT_NOTE)
+})
+
+test('the terminal settle does not erase a note that landed first', async () => {
+  // The result row committed, but its settle has not been written yet.
+  const { db, row } = fakeRowDb({
+    status: 'succeeded',
+    serverId: SERVER_ID,
+    progress: CERT_RUNNING,
+    updatedAt: AT,
+  })
+  await recordCommandProgress(db, {
+    serverId: SERVER_ID,
+    commandId: COMMAND_ID,
+    progress: CERT_DONE,
+  })
+  await finalizeStoredCommandProgress(db, {
+    commandId: COMMAND_ID,
+    status: 'succeeded',
+    progress: CERT_RUNNING,
+    at: '2026-10-12T10:00:05.000Z',
+  })
+  const stored = parseStoredCommandProgress(row.progress)
+  assertEquals(stored?.steps[1].state, 'done')
+  assertEquals(stored?.steps[1].detail, CERT_NOTE)
 })
