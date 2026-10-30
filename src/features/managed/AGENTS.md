@@ -472,10 +472,13 @@ from (`any` is refused). Its rights are not stored: the apply credential is
 `role: 'user'`, `kind: 'backup'`, every database of the cluster and no
 privileges (`backupCredential` in `apply-prepare.ts`), and the daemon derives
 the rights per engine (PostgreSQL `pg_read_all_data` + `BYPASSRLS` +
-`CONNECT`; MySQL `SELECT, SHOW VIEW, TRIGGER, EVENT` per database + global
-`SHOW_ROUTINE`; MariaDB the same plus `LOCK TABLES` and `SHOW CREATE
-ROUTINE`). A daemon without `managed-backup-login-v1` would drop `kind` and
-make a login with no rights, so creation refuses with 409
+`CONNECT`; MySQL `SELECT, SHOW VIEW, TRIGGER, EVENT, SHOW_ROUTINE` and
+MariaDB `SELECT, SHOW VIEW, TRIGGER, EVENT, LOCK TABLES, SHOW CREATE ROUTINE`,
+both at global level `*.*` so a database made with plain SQL is covered; a
+daemon from before that grants them per listed database only, so such a
+database stays unreadable until the daemon is updated). A daemon without
+`managed-backup-login-v1` would drop `kind` and make a login with no rights, so
+creation refuses with 409
 `managed_backup_login_needs_daemon_update`. On the shared front door it is a
 tool login (primary only, no split rules), so a dump in one transaction stays
 on one backend. Large objects on PostgreSQL 18 are not covered yet.
@@ -485,15 +488,17 @@ deletes it, because this login reads every database. The one-per-cluster
 check reads the logins under the organization lock (`inLoginCreateTransaction`
 lists them after `lockOrganizationsForUpdate`), and an insert that still
 meets `uniq_login_managed_backup` answers 409 `managed_backup_login_exists`,
-never 500. On MySQL and MariaDB the database-level `TRIGGER` and `EVENT`
-rights also let the login create and drop triggers and events on those
-databases: the engine checks the same rights for reading their definitions,
-so a dump needs them. Never flip a login's kind: the panel never turns an
-existing login into the backup login or back (a new backup login is always a
-new row). Nothing on the daemon takes back `BYPASSRLS`, `pg_read_all_data` or
-the global `SHOW_ROUTINE`, so a backup login turned into an ordinary one
-would keep them, and an ordinary login turned into a backup one would keep
-its own grants.
+never 500. On MySQL and MariaDB the `TRIGGER` and `EVENT` rights also let
+the login create and drop triggers and events in every database: the engine
+checks the same rights for reading their definitions, so a dump needs them.
+The global scope includes the system schemas (`mysql` with its account rows,
+`sys`, `performance_schema`): neither engine can leave one schema out of a
+global grant without a server-wide switch. Never flip a login's kind: the
+panel never turns an existing login into the backup login or back (a new
+backup login is always a new row). Nothing on the daemon takes back
+`BYPASSRLS`, `pg_read_all_data` or the global MySQL and MariaDB backup rights,
+so a backup login turned into an ordinary one would keep them, and an ordinary
+login turned into a backup one would keep its own grants.
 
 ## Postgres owner role per database and the Database admin login
 
