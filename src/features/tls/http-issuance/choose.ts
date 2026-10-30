@@ -41,6 +41,12 @@ function addressInDns(server: ServingServer, dns: ReadonlySet<string>): string |
   return server.addresses.find((a) => dns.has(a)) ?? null
 }
 
+/** Plain code-unit order, so every runtime picks the same server first. */
+function compareIds(a: string, b: string): number {
+  if (a === b) return 0
+  return a < b ? -1 : 1
+}
+
 export function chooseParticipants(params: {
   servers: readonly ServingServer[]
   /** The A and AAAA answers for the name, canonical form. */
@@ -54,9 +60,7 @@ export function chooseParticipants(params: {
   const anyKnown = params.servers.some((s) => s.addresses.length > 0)
   const skipped: Participants['skipped'] = []
   const eligible: Array<{ server: ServingServer; address: string }> = []
-  const ordered = [...params.servers].sort((a, b) =>
-    a.serverId < b.serverId ? -1 : a.serverId > b.serverId ? 1 : 0
-  )
+  const ordered = [...params.servers].sort((a, b) => compareIds(a.serverId, b.serverId))
   for (const server of ordered) {
     if (!server.online) skipped.push({ server, reason: 'offline' })
     else if (!server.hasFeature) skipped.push({ server, reason: 'old_daemon' })

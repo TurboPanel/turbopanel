@@ -95,7 +95,7 @@ async function lockRow(tx: Db, tlsId: string): Promise<RowFacts | null> {
     .from(tls)
     .where(eq(tls.id, tlsId))
     .for('update')
-  if (!row || row.source !== 'lets_encrypt' || row.status !== 'automatic') return null
+  if (row?.source !== 'lets_encrypt' || row.status !== 'automatic') return null
   return {
     id: row.id,
     organizationId: row.organizationId,
@@ -376,7 +376,7 @@ async function startInTransaction(
   if (!row) return { outcome: 'not_eligible', send: [] }
   if (!(await acmeEnabledFor(tx, row.organizationId))) return { outcome: 'not_eligible', send: [] }
   const previous = readHttpIssuanceState(row.metadata)
-  if (previous && previous.endedAt === null) return { outcome: 'not_due', send: [] }
+  if (previous?.endedAt === null) return { outcome: 'not_due', send: [] }
   if (!params.due({ hasPair: row.hasPair, metadata: row.metadata })) {
     return { outcome: 'not_due', send: [] }
   }
@@ -422,7 +422,7 @@ export async function startHttpIssuance(
     .from(tls)
     .where(eq(tls.id, tlsId))
     .limit(1)
-  if (!peek || peek.source !== 'lets_encrypt' || peek.status !== 'automatic') return 'not_eligible'
+  if (peek?.source !== 'lets_encrypt' || peek.status !== 'automatic') return 'not_eligible'
   const names = namesOf(peek.metadata)
   if (!isHttpOrderable(names)) return 'not_eligible'
   const previous = readHttpIssuanceState(peek.metadata)
