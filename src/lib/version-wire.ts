@@ -205,6 +205,7 @@ export const DAEMON_WIRE_FEATURES = [
   'tunnel-status-v1',
   'managed-backup-login-v1',
   'fabric-retain-keys-v1',
+  'fabric-peer-report-v1',
 ] as const
 
 export type DaemonWireFeature = (typeof DAEMON_WIRE_FEATURES)[number]
@@ -417,6 +418,16 @@ export const MANAGED_LOGIN_LIMITS_FEATURE: DaemonWireFeature = 'managed-login-li
  * as a full tear down and drop its key); removing TurboFabric still works.
  */
 export const FABRIC_RETAIN_KEYS_FEATURE: DaemonWireFeature = 'fabric-retain-keys-v1'
+
+/**
+ * The daemon pushes `fabric-peers-report` (every `tp0` peer's handshake reading
+ * from its 60 s refresh) when a peer's health class changes, and at most every
+ * 5 minutes otherwise. The control plane stamps it into
+ * `relay.metadata.observed` (at most once per 60 s per server), so tunnel
+ * health never goes stale between reconciles. Listing it is what lets a daemon
+ * send the frame; an older daemon simply never does.
+ */
+export const FABRIC_PEER_REPORT_FEATURE: DaemonWireFeature = 'fabric-peer-report-v1'
 
 /**
  * The daemon answers `managed-permissions-request` with
