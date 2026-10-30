@@ -439,7 +439,7 @@ export async function startHttpIssuance(
   const names = namesOf(peek.metadata)
   if (!isHttpOrderable(names)) return await notMine(deps, tlsId, now)
   const previous = readHttpIssuanceState(peek.metadata)
-  if (previous && previous.endedAt === null) return 'not_due'
+  if (previous?.endedAt === null) return 'not_due'
   const contact = await deps.contact()
   const { choice, servers } = await gather(deps, { id: tlsId, names }, previous)
   // Every serving server on an older daemon keeps ordering for itself; the row is left alone.
@@ -494,7 +494,7 @@ async function recordForwardReports(
     const tx = tx0 as unknown as Db
     const row = await lockRow(tx, tlsId)
     const state = row ? readHttpIssuanceState(row.metadata) : null
-    if (!row || !state || state.requestId !== requestId) return
+    if (!row || state?.requestId !== requestId) return
     await writeState(tx, row, applyForwardReports(state, reports, now), now)
   })
 }
@@ -512,7 +512,7 @@ export async function failOpenRequest(
     const tx = tx0 as unknown as Db
     const row = await lockRow(tx, tlsId)
     const state = row ? readHttpIssuanceState(row.metadata) : null
-    if (!row || !state || state.requestId !== requestId || state.endedAt !== null) return
+    if (!row || state?.requestId !== requestId || state.endedAt !== null) return
     await writeState(tx, row, failedState(state, now, reason, blameIssuer), now)
   })
 }
@@ -524,7 +524,7 @@ async function advanceInTransaction(
   const { now } = params
   const row = await lockRow(tx, params.tlsId)
   const state = row ? readHttpIssuanceState(row.metadata) : null
-  if (!row || !state || state.endedAt !== null) return { outcome: 'not_due', send: [] }
+  if (!row || state?.endedAt !== null) return { outcome: 'not_due', send: [] }
   const action = decideOpen(state, now)
   if (action.kind === 'wait') return { outcome: 'not_due', send: [] }
   if (action.kind === 'fail') {
@@ -596,7 +596,7 @@ export async function advanceHttpIssuance(
     .where(eq(tls.id, tlsId))
     .limit(1)
   const state = peek ? readHttpIssuanceState(peek.metadata) : null
-  if (!state || state.endedAt !== null) return 'not_due'
+  if (state?.endedAt !== null) return 'not_due'
   const { contactEmail } = await deps.contact()
   const result = await deps.db.transaction((tx) =>
     advanceInTransaction(tx as unknown as Db, { deps, now, tlsId, contactEmail })
