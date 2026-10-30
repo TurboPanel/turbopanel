@@ -1082,8 +1082,9 @@ The `key` object above is the `key` table row; only `projection` is stored in
 `machineKey` (also mirrored onto dedicated columns), `remoteAddress`, `keyId`,
 optional `daemonBuild` (`commit`/`buildId`/`builtAt`/`channel`), optional
 `update`, `features` (wire features advertised in `hello`) and `offlineReason`
-(`disconnect` or `sweep_stale`). Updated on identity changes and daemon build identity changes (via
-`control-plane-monitor.ts` outside the DO hot path on Workers). No monitor
+(`disconnect` or `sweep_stale`). Updated on identity changes and daemon build
+identity changes (via `control-plane-monitor.ts` outside the DO hot path on
+Workers). No monitor
 health counts or resource graph are stored. Projection is not path-queried for
 reconnect dedup — use `hostname` / `machine_key` columns.
 

@@ -6212,7 +6212,11 @@ export const audit = pgTable(
     actorEmail: text('actor_email'),
     /** Dot-joined verb, e.g. `server.daemon_key.revoke` — AUDIT_ACTIONS. */
     action: text().notNull(),
-    /** What it was done to: `organization`, `server`, `forge`, or the entity type of a grant. */
+    /**
+     * What it was done to: an entity kind such as `organization`, `server`,
+     * `forge`, `environment`, `hosting`, `tls`, `managed` or `binding`, a grant's
+     * entity type, or a platform area such as `instance_updates` or `mail_queue`.
+     */
     targetType: text('target_type').notNull(),
     targetId: uuid('target_id'),
     /** Small, non-secret facts worth keeping beside the action. */
