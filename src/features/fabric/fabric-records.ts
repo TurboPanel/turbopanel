@@ -2119,11 +2119,7 @@ export function peerCanDialIn(
  * can dial in lose the endpoint and are learned from their own handshake.
  */
 function dropSharedEndpoints(
-  emitted: readonly {
-    other: RelayRecord
-    peer: FabricReconcilePeer
-    hashPeer: Record<string, unknown>
-  }[],
+  emitted: readonly EmittedPeer[],
   canDialIn: (other: RelayRecord) => boolean
 ): void {
   const counts = new Map<string, number>()
@@ -2139,6 +2135,71 @@ function dropSharedEndpoints(
   }
 }
 
+type EmittedPeer = {
+  other: RelayRecord
+  peer: FabricReconcilePeer
+  hashPeer: Record<string, unknown>
+}
+
+type PeerClassification = {
+  emitIds: Set<string>
+  dialInIds: Set<string>
+  plansByRelayId: Map<string, RelayPathPlan>
+  extraByNextHopId: Map<string, string[]>
+  unreachablePeers: Array<{ serverId: string }>
+  gatewayRoutedPeers: GatewayRoutedPeer[]
+}
+
+/** Route one gateway-routed destination through its next hop's stanza. */
+function addGatewayRoute(
+  out: PeerClassification,
+  other: RelayRecord,
+  viaRelayId: string,
+  viaServerId: string
+): void {
+  const extra = out.extraByNextHopId.get(viaRelayId) ?? []
+  appendUniqueCidrs(extra, destinationOwnedCidrs(other))
+  out.extraByNextHopId.set(viaRelayId, extra)
+  out.emitIds.add(viaRelayId)
+  out.gatewayRoutedPeers.push({ serverId: other.serverId, viaServerId })
+}
+
+/**
+ * How `self` reaches each peer: a direct stanza, through a gateway's stanza,
+ * a dial-in stanza (the peer dials us), or not at all.
+ */
+function classifyPeerRelays(
+  snapshot: FabricReconcileSnapshot,
+  self: RelayRecord,
+  peerRelays: readonly RelayRecord[],
+  gateways: readonly RelayRecord[]
+): PeerClassification {
+  const out: PeerClassification = {
+    emitIds: new Set(),
+    dialInIds: new Set(),
+    plansByRelayId: new Map(),
+    extraByNextHopId: new Map(),
+    unreachablePeers: [],
+    gatewayRoutedPeers: [],
+  }
+  for (const other of peerRelays) {
+    const plan = planPathToOther(snapshot, self, other, gateways)
+    out.plansByRelayId.set(other.id, plan)
+    const { selected } = plan
+    if (isEmittedDirectPath(selected)) {
+      out.emitIds.add(other.id)
+    } else if (selected.kind === 'gateway' && selected.viaRelayId && selected.viaServerId) {
+      addGatewayRoute(out, other, selected.viaRelayId, selected.viaServerId)
+    } else if (peerCanDialIn(self, other, snapshot.caches)) {
+      out.emitIds.add(other.id)
+      out.dialInIds.add(other.id)
+    } else {
+      out.unreachablePeers.push({ serverId: other.serverId })
+    }
+  }
+  return out
+}
+
 async function buildReconcilePeerLists(
   snapshot: FabricReconcileSnapshot,
   self: RelayRecord,
@@ -2148,10 +2209,6 @@ async function buildReconcilePeerLists(
   },
   listenPort: number
 ): Promise<PeerListBuild> {
-  const peers: FabricReconcilePeer[] = []
-  const hashPeers: unknown[] = []
-  const unreachablePeers: Array<{ serverId: string }> = []
-  const gatewayRoutedPeers: GatewayRoutedPeer[] = []
   // A trusted LAN pair has no tunnel: it is neither a peer nor unreachable.
   const peerRelays = snapshot.relays.filter(
     (row) =>
@@ -2160,47 +2217,15 @@ async function buildReconcilePeerLists(
       !pairSharesTrustedLan(params.serverId, row.serverId, snapshot.caches)
   )
   const gateways = snapshot.relays.filter((row) => row.role === 'gateway' && Boolean(row.publicKey))
-  const extraByNextHopId = new Map<string, string[]>()
-  const emitIds = new Set<string>()
-  const dialInIds = new Set<string>()
-  const plansByRelayId = new Map<string, RelayPathPlan>()
-  const canDialIn = (other: RelayRecord) => peerCanDialIn(self, other, snapshot.caches)
+  const classified = classifyPeerRelays(snapshot, self, peerRelays, gateways)
+  const { unreachablePeers, gatewayRoutedPeers } = classified
 
-  for (const other of peerRelays) {
-    const plan = planPathToOther(snapshot, self, other, gateways)
-    plansByRelayId.set(other.id, plan)
-    if (isEmittedDirectPath(plan.selected)) {
-      emitIds.add(other.id)
-      continue
-    }
-    if (plan.selected.kind === 'gateway' && plan.selected.viaRelayId && plan.selected.viaServerId) {
-      const extra = extraByNextHopId.get(plan.selected.viaRelayId) ?? []
-      appendUniqueCidrs(extra, destinationOwnedCidrs(other))
-      extraByNextHopId.set(plan.selected.viaRelayId, extra)
-      emitIds.add(plan.selected.viaRelayId)
-      gatewayRoutedPeers.push({
-        serverId: other.serverId,
-        viaServerId: plan.selected.viaServerId,
-      })
-      continue
-    }
-    if (canDialIn(other)) {
-      emitIds.add(other.id)
-      dialInIds.add(other.id)
-      continue
-    }
-    unreachablePeers.push({ serverId: other.serverId })
-  }
-
-  const emitted: {
-    other: RelayRecord
-    peer: FabricReconcilePeer
-    hashPeer: Record<string, unknown>
-  }[] = []
+  const emitted: EmittedPeer[] = []
   await forEachSequential(peerRelays, async (other) => {
-    if (!emitIds.has(other.id)) return
-    const plan = plansByRelayId.get(other.id) ?? planPathToOther(snapshot, self, other, gateways)
-    const extra = extraByNextHopId.get(other.id) ?? []
+    if (!classified.emitIds.has(other.id)) return
+    const plan =
+      classified.plansByRelayId.get(other.id) ?? planPathToOther(snapshot, self, other, gateways)
+    const extra = classified.extraByNextHopId.get(other.id) ?? []
     extra.sort((a, b) => a.localeCompare(b))
     const views = await emitPeerStanza(
       snapshot,
@@ -2210,7 +2235,7 @@ async function buildReconcilePeerLists(
       extra,
       params,
       listenPort,
-      dialInIds.has(other.id)
+      classified.dialInIds.has(other.id)
     )
     if (!views) {
       unreachablePeers.push({ serverId: other.serverId })
@@ -2218,12 +2243,13 @@ async function buildReconcilePeerLists(
     }
     emitted.push({ other, ...views })
   })
-  dropSharedEndpoints(emitted, canDialIn)
-  for (const row of emitted) {
-    peers.push(row.peer)
-    hashPeers.push(row.hashPeer)
+  dropSharedEndpoints(emitted, (other) => peerCanDialIn(self, other, snapshot.caches))
+  return {
+    peers: emitted.map((row) => row.peer),
+    hashPeers: emitted.map((row) => row.hashPeer),
+    unreachablePeers,
+    gatewayRoutedPeers,
   }
-  return { peers, hashPeers, unreachablePeers, gatewayRoutedPeers }
 }
 
 type FabricReconcileBuild = {
