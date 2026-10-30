@@ -472,7 +472,16 @@ from (`any` is refused). Its rights are not stored: the apply credential is
 `role: 'user'`, `kind: 'backup'`, every database of the cluster and no
 privileges (`backupCredential` in `apply-prepare.ts`), and the daemon derives
 the rights per engine (PostgreSQL `pg_read_all_data` + `BYPASSRLS` +
-`CONNECT`; MySQL `SELECT, SHOW VIEW, TRIGGER, EVENT, SHOW_ROUTINE` and
+`CONNECT`; MySQL `SELECT, SHOW VIEW, TRIGGER, EVENT, SHOW_ROUTINE,
+FLUSH_TABLES` (`FLUSH_TABLES`, not `RELOAD`: on a server with GTIDs on,
+`mysqldump --single-transaction` takes `FLUSH TABLES WITH READ LOCK` around the
+start of its snapshot, then `UNLOCK TABLES`. Each dump holds that lock for a
+moment, after waiting for running statements to finish, so one long query holds
+writers up for that long. The right also lets the login take that global read
+lock by hand, which blocks every write on the server until it unlocks or
+disconnects, so treat the backup password like an admin password. An existing
+backup login gets it on the next apply of its cluster, not when the daemon is
+updated) and
 MariaDB `SELECT, SHOW VIEW, TRIGGER, EVENT, LOCK TABLES, SHOW CREATE ROUTINE`,
 both at global level `*.*` so a database made with plain SQL is covered; a
 daemon from before that grants them per listed database only, so such a
