@@ -5,8 +5,10 @@
  * engine from `kind: 'backup'` on the apply credential:
  *
  * - PostgreSQL: `pg_read_all_data`, `BYPASSRLS` and `CONNECT` on every database.
- * - MySQL: `SELECT`, `SHOW VIEW`, `TRIGGER`, `EVENT` and `SHOW_ROUTINE` at
- *   global level (`*.*`), so databases made with plain SQL are covered too.
+ * - MySQL: `SELECT`, `SHOW VIEW`, `TRIGGER`, `EVENT`, `SHOW_ROUTINE` and
+ *   `FLUSH_TABLES` at global level (`*.*`), so databases made with plain SQL
+ *   are covered too. `FLUSH_TABLES` (not `RELOAD`) lets `mysqldump
+ *   --single-transaction` flush tables before its snapshot when GTIDs are on.
  * - MariaDB: `SELECT`, `SHOW VIEW`, `TRIGGER`, `EVENT`, `LOCK TABLES` and
  *   `SHOW CREATE ROUTINE` at global level.
  *

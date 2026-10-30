@@ -472,7 +472,10 @@ from (`any` is refused). Its rights are not stored: the apply credential is
 `role: 'user'`, `kind: 'backup'`, every database of the cluster and no
 privileges (`backupCredential` in `apply-prepare.ts`), and the daemon derives
 the rights per engine (PostgreSQL `pg_read_all_data` + `BYPASSRLS` +
-`CONNECT`; MySQL `SELECT, SHOW VIEW, TRIGGER, EVENT, SHOW_ROUTINE` and
+`CONNECT`; MySQL `SELECT, SHOW VIEW, TRIGGER, EVENT, SHOW_ROUTINE,
+FLUSH_TABLES` (`FLUSH_TABLES`, not `RELOAD`, so `mysqldump
+--single-transaction` can flush tables before its snapshot when GTIDs are on;
+an updated daemon adds it to an existing backup login on the next apply) and
 MariaDB `SELECT, SHOW VIEW, TRIGGER, EVENT, LOCK TABLES, SHOW CREATE ROUTINE`,
 both at global level `*.*` so a database made with plain SQL is covered; a
 daemon from before that grants them per listed database only, so such a
