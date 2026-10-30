@@ -298,6 +298,12 @@ changes.
   literal "production" catalog environments is unchanged. The name is also the
   scope folder on every server, so the PUT only takes a valid environment name
   (`isValidEnvironmentName`) and a saved value that is not one is ignored.
+- **New-project form switches:** `organization.options.openEnvironmentSectionByDefault`
+  and `openWorkspaceSectionByDefault` (unset = off).
+  `GET`/`PUT /organizations/:id/project-settings` (manage-gated) read and write
+  them; a PUT takes one switch or both. The client uses them only to decide
+  whether the new-project form opens its Environment and Workspace sections;
+  nothing on the server branches on them.
 - **Folder names (`folder` table):** one row per service or volume directory per
   server (`features/folders/records.ts`). While a row exists (any state but
   `missing`) the environment's name (`environments/rename-lock.ts`) and server

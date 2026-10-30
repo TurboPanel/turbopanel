@@ -23,8 +23,11 @@ import {
   parseManagedDefaultsPatch,
   parseOrganizationCreateDisplayName,
   parseOrganizationPatchDisplayName,
+  parseProjectSettingsPatch,
   parseServerCapacityPutBody,
   parseTemperatureUnitPatch,
+  projectSettingsGetResponse,
+  projectSettingsPutResponse,
   temperatureUnitGetResponse,
   temperatureUnitPutResponse,
   toOrganizationRecord,
@@ -343,6 +346,42 @@ test('parseTemperatureUnitPatch requires the field and validates the value', () 
   assertEquals(parseTemperatureUnitPatch({ temperatureUnit: 'fahrenheit' }), {
     ok: true,
     patch: { temperatureUnit: 'fahrenheit' },
+  })
+})
+
+test('project settings patch takes one switch or both, each a boolean', () => {
+  assertEquals(parseProjectSettingsPatch({ openWorkspaceSectionByDefault: true }), {
+    ok: true,
+    patch: { openWorkspaceSectionByDefault: true },
+  })
+  assertEquals(
+    parseProjectSettingsPatch({
+      openEnvironmentSectionByDefault: false,
+      openWorkspaceSectionByDefault: true,
+      other: 1,
+    }),
+    {
+      ok: true,
+      patch: { openEnvironmentSectionByDefault: false, openWorkspaceSectionByDefault: true },
+    }
+  )
+  assertEquals(parseProjectSettingsPatch({ openWorkspaceSectionByDefault: null }), {
+    ok: false,
+    error: 'Invalid openWorkspaceSectionByDefault',
+    status: 400,
+  })
+  assertEquals(parseProjectSettingsPatch({}).ok, false)
+})
+
+test('project settings response shapers default both switches to off', () => {
+  assertEquals(projectSettingsGetResponse({}), {
+    openEnvironmentSectionByDefault: false,
+    openWorkspaceSectionByDefault: false,
+  })
+  assertEquals(projectSettingsPutResponse({ openEnvironmentSectionByDefault: true }), {
+    ok: true,
+    openEnvironmentSectionByDefault: true,
+    openWorkspaceSectionByDefault: false,
   })
 })
 

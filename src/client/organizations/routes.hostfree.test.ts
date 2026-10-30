@@ -44,6 +44,8 @@ const ORG_PATHS = [
   ['PUT', `/organizations/${orgId}/host-defaults`],
   ['GET', `/organizations/${orgId}/default-environment`],
   ['PUT', `/organizations/${orgId}/default-environment`],
+  ['GET', `/organizations/${orgId}/project-settings`],
+  ['PUT', `/organizations/${orgId}/project-settings`],
   ['GET', `/organizations/${orgId}/server-capacity`],
   ['PUT', `/organizations/${orgId}/server-capacity`],
   ['GET', `/organizations/${orgId}/managed-defaults`],
@@ -637,6 +639,70 @@ test('PUT /temperature-unit writes a valid unit', async () => {
       'content-type': 'application/json',
     },
     body: JSON.stringify({ temperatureUnit: 'fahrenheit' }),
+  })
+  assertEquals(res.status, 200)
+})
+
+test('GET /project-settings answers both switches off when unset', async () => {
+  const { app, cookie } = await buildSessionApp({
+    manageAllowed: true,
+    executeQueue: [[{ allowed: true }]],
+  })
+  const res = await app.request(`/organizations/${orgId}/project-settings`, {
+    headers: { Cookie: cookie },
+  })
+  assertEquals(res.status, 200)
+  assertEquals(await res.json(), {
+    openEnvironmentSectionByDefault: false,
+    openWorkspaceSectionByDefault: false,
+  })
+})
+
+test('GET /project-settings returns the stored switches', async () => {
+  const { app, cookie } = await buildSessionApp({
+    manageAllowed: true,
+    executeQueue: [[{ allowed: true }]],
+    orgOptions: { openWorkspaceSectionByDefault: true },
+  })
+  const res = await app.request(`/organizations/${orgId}/project-settings`, {
+    headers: { Cookie: cookie },
+  })
+  assertEquals(res.status, 200)
+  assertEquals(await res.json(), {
+    openEnvironmentSectionByDefault: false,
+    openWorkspaceSectionByDefault: true,
+  })
+})
+
+test('PUT /project-settings returns 400 for a switch that is not a boolean', async () => {
+  const { app, cookie } = await buildSessionApp({
+    manageAllowed: true,
+    executeQueue: [[{ allowed: true }]],
+  })
+  const res = await app.request(`/organizations/${orgId}/project-settings`, {
+    method: 'PUT',
+    headers: {
+      Cookie: cookie,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({ openEnvironmentSectionByDefault: 'yes' }),
+  })
+  assertEquals(res.status, 400)
+  assertEquals(await res.json(), { error: 'Invalid openEnvironmentSectionByDefault' })
+})
+
+test('PUT /project-settings writes one switch', async () => {
+  const { app, cookie } = await buildSessionApp({
+    manageAllowed: true,
+    executeQueue: [[{ allowed: true }]],
+  })
+  const res = await app.request(`/organizations/${orgId}/project-settings`, {
+    method: 'PUT',
+    headers: {
+      Cookie: cookie,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({ openEnvironmentSectionByDefault: true }),
   })
   assertEquals(res.status, 200)
 })
