@@ -283,56 +283,89 @@ export function createFakeCa(options: FakeCaOptions): FakeCa {
     })
   }
 
+  type ReplyHeaders = Record<string, string>
+
+  const account = (signed: Signed, headers: ReplyHeaders): Response => {
+    // A key the authority already knows gets its account back, as the protocol says.
+    const known = [...accounts].find(([, k]) => k.x === signed.jwk.x && k.y === signed.jwk.y)
+    if (known) return json({ status: 'valid' }, { headers: { ...headers, Location: known[0] } })
+    const id = `${BASE}/acct/${next('a')}`
+    accounts.set(id, signed.jwk)
+    return json({ status: 'valid' }, { status: 201, headers: { ...headers, Location: id } })
+  }
+
+  const answer = (order: Order, id: string, headers: ReplyHeaders): Response => {
+    answers.push(id)
+    if (toLose > 0) toLose -= 1
+    else order.authz.find((a) => a.id === id)!.answered = true
+    return json({ status: 'processing' }, { headers })
+  }
+
+  const finalize = async (
+    order: Order,
+    signed: Signed,
+    headers: ReplyHeaders
+  ): Promise<Response> => {
+    const csr = base64urlDecode((signed.payload as { csr: string }).csr)
+    const names = await verifyCsr(csr)
+    if (names.join() !== order.names.join()) return problem('badCSR', 'names differ', 400, headers)
+    order.finalized = true
+    return json(await orderBody(order, signed.jwk), { headers })
+  }
+
+  const certificate = async (order: Order, headers: ReplyHeaders): Promise<Response> => {
+    const pem = options.issueCertificate
+      ? await options.issueCertificate(order.names)
+      : (await mintSelfSignedCertificate(order.names)).certificatePem
+    issued.push(order.names)
+    return new Response(pem, {
+      headers: { ...headers, 'Content-Type': 'application/pem-certificate-chain' },
+    })
+  }
+
+  /** A request about one order or one of its authorizations (`/<kind>/<id>`). */
+  const orderRequest = async (
+    kind: string,
+    id: string,
+    signed: Signed,
+    headers: ReplyHeaders
+  ): Promise<Response | null> => {
+    const order = orders.find((o) => o.id === id || o.authz.some((a) => a.id === id))
+    if (!order) return null
+    switch (kind) {
+      case 'chall':
+        return answer(order, id, headers)
+      case 'authz':
+        return json(
+          await authzBody(
+            order.authz.find((a) => a.id === id)!,
+            signed.jwk
+          ),
+          {
+            headers,
+          }
+        )
+      case 'order':
+        return json(await orderBody(order, signed.jwk), { headers })
+      case 'finalize':
+        return await finalize(order, signed, headers)
+      case 'cert':
+        return await certificate(order, headers)
+      default:
+        return null
+    }
+  }
+
   const handlePost = async (url: string, body: string): Promise<Response> => {
     const path = new URL(url).pathname
     const signed = await open(url, body)
     if (signed instanceof Response) return signed
     const headers = { 'Replay-Nonce': freshNonce() }
-    if (path === '/acct') {
-      // A key the authority already knows gets its account back, as the protocol says.
-      const known = [...accounts].find(([, k]) => k.x === signed.jwk.x && k.y === signed.jwk.y)
-      if (known) return json({ status: 'valid' }, { headers: { ...headers, Location: known[0] } })
-      const id = `${BASE}/acct/${next('a')}`
-      accounts.set(id, signed.jwk)
-      return json({ status: 'valid' }, { status: 201, headers: { ...headers, Location: id } })
-    }
+    if (path === '/acct') return account(signed, headers)
     if (path === '/order') return await newOrder(signed, headers)
-    const [, kind, id] = path.split('/')
-    const order = orders.find((o) => o.id === id || o.authz.some((a) => a.id === id))
-    if (kind === 'chall') {
-      answers.push(id!)
-      if (toLose > 0) toLose -= 1
-      else order!.authz.find((a) => a.id === id)!.answered = true
-      return json({ status: 'processing' }, { headers })
-    }
-    if (kind === 'authz') {
-      return json(
-        await authzBody(
-          order!.authz.find((a) => a.id === id)!,
-          signed.jwk
-        ),
-        { headers }
-      )
-    }
-    if (kind === 'order') return json(await orderBody(order!, signed.jwk), { headers })
-    if (kind === 'finalize') {
-      const csr = base64urlDecode((signed.payload as { csr: string }).csr)
-      const names = await verifyCsr(csr)
-      if (names.join() !== order!.names.join())
-        return problem('badCSR', 'names differ', 400, headers)
-      order!.finalized = true
-      return json(await orderBody(order!, signed.jwk), { headers })
-    }
-    if (kind === 'cert') {
-      const pem = options.issueCertificate
-        ? await options.issueCertificate(order!.names)
-        : (await mintSelfSignedCertificate(order!.names)).certificatePem
-      issued.push(order!.names)
-      return new Response(pem, {
-        headers: { ...headers, 'Content-Type': 'application/pem-certificate-chain' },
-      })
-    }
-    return problem('malformed', `unknown path ${path}`, 404, headers)
+    const [, kind = '', id = ''] = path.split('/')
+    const answered = await orderRequest(kind, id, signed, headers)
+    return answered ?? problem('malformed', `unknown path ${path}`, 404, headers)
   }
 
   const fakeFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
