@@ -153,7 +153,7 @@ function sameNames(left: readonly string[], right: readonly string[]): boolean {
  * same one: one certificate per hostname per organization, so the row with
  * exactly these names wins, else any row that already covers all of them.
  */
-async function findManagedCertificate(
+export async function findManagedCertificate(
   db: Db,
   organizationId: string,
   names: readonly string[]

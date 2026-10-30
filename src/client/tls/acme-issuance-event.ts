@@ -8,6 +8,7 @@
  * not become a second, accidental deploy gate by touching that column.
  */
 
+import { plainCertificateFailure } from '../../features/hostings/acme-failure-text.ts'
 import { and, eq } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { server, tls } from '../../db/schema.ts'
@@ -115,11 +116,17 @@ export type AcmeIssuanceEventDeps = {
  */
 export async function handleAcmeIssuanceEvent(
   db: Db,
-  input: AcmeIssuanceEventInput,
+  reported: AcmeIssuanceEventInput,
   deps: AcmeIssuanceEventDeps = {}
 ): Promise<{ updated: boolean }> {
-  const hostname = normalizeHostname(input.hostname)
+  const hostname = normalizeHostname(reported.hostname)
   if (hostname.length === 0) return { updated: false }
+  // The server's own failed HTTPS check is stored and announced as one plain
+  // sentence about the name, never as the raw network error.
+  const input: AcmeIssuanceEventInput =
+    reported.errorMessage === undefined
+      ? reported
+      : { ...reported, errorMessage: plainCertificateFailure(reported.errorMessage, hostname) }
 
   const [serverRow] = await db
     .select({ organizationId: server.organizationId })

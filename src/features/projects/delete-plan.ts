@@ -49,7 +49,12 @@ import {
 
 export const SERVER_OFFLINE_ERROR = 'server_offline'
 
-export type DeletePlanServer = { id: string; name: string | null; connected: boolean }
+export type DeletePlanServer = {
+  id: string
+  name: string | null
+  hostname: string | null
+  connected: boolean
+}
 
 export type DeletePlanFolder = {
   id: string
@@ -183,19 +188,33 @@ async function loadServers(
 ): Promise<DeletePlanServer[]> {
   if (serverIds.length === 0) return []
   const rows = await db
-    .select({ id: server.id, name: server.name, connected: server.isConnected })
+    .select({
+      id: server.id,
+      name: server.name,
+      hostname: server.hostname,
+      connected: server.isConnected,
+    })
     .from(server)
     .where(inArray(server.id, [...new Set(serverIds)]))
   return sortByName(rows, (row) => row.name ?? '').map((row) => ({
     id: row.id,
     name: row.name,
+    hostname: row.hostname,
     connected: row.connected === true,
   }))
 }
 
-function offlineBlocker(offline: readonly DeletePlanServer[]): DeletePlanBlocker | null {
+/** What a person calls the server: its name, else its hostname; never its raw id. */
+export function serverLabel(row: Pick<DeletePlanServer, 'name' | 'hostname'>): string {
+  const name = row.name?.trim()
+  if (name) return name
+  const hostname = row.hostname?.trim()
+  return hostname ? hostname : 'without a name'
+}
+
+export function offlineBlocker(offline: readonly DeletePlanServer[]): DeletePlanBlocker | null {
   if (offline.length === 0) return null
-  const names = offline.map((row) => row.name ?? row.id).join(', ')
+  const names = offline.map(serverLabel).join(', ')
   const one = offline.length === 1
   return {
     error: SERVER_OFFLINE_ERROR,

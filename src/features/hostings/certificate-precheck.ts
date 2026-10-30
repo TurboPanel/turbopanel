@@ -220,7 +220,9 @@ export function namePort80Probe(fetchImpl: typeof fetch = fetch): Port80Probe {
       )
       await response.body?.cancel()
       if (EDGE_UNREACHABLE.has(response.status)) {
-        return { state: 'closed', error: `the proxy in front answered HTTP ${response.status}` }
+        // The edge answers these itself when nothing reached the server on
+        // port 80, proxied or not (the probe runs through Cloudflare's fetch).
+        return { state: 'closed', error: `no answer on port 80 (HTTP ${response.status})` }
       }
       return { state: 'open' }
     } catch (err) {

@@ -17,6 +17,7 @@ import type { ExecutionLogStore } from '../features/execution-logs/types.ts'
 import type { Db } from '../db/connection.ts'
 import type { SignupEnvOverride } from '../client/authn/install-state.ts'
 import type { CommandQueue } from '../features/commands/queue.ts'
+import type { HeldLetsEncryptDeps } from '../client/hostings/letsencrypt-held.ts'
 import type { EmailQueue } from '../features/email/types.ts'
 import type { QueryCache } from '../query-cache/contracts.ts'
 import type { BillingConfig } from '../features/billing/config.ts'
@@ -32,6 +33,8 @@ export type AppEnv = {
     commandQueue?: CommandQueue
     /** Test seam: receives the deferred tunnel nudge instead of running it after the response. */
     tunnelNudgeSchedule?: (task: () => Promise<void>) => void
+    /** Test seam: the DNS lookup and probes a deploy's certificate pre-check uses instead of the network. */
+    letsEncryptPrecheck?: HeldLetsEncryptDeps
     emailFrom?: string
     baseUrl?: string
     session?: SessionData

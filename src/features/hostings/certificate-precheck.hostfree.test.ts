@@ -55,7 +55,10 @@ test('port 80 by name (Workers): any answer is open, a refusal or an origin-unre
   const answering = namePort80Probe(() => Promise.resolve(new Response('nope', { status: 404 })))
   assertEquals(await answering('a.example.com', []), { state: 'open' })
   const proxyDown = namePort80Probe(() => Promise.resolve(new Response('', { status: 521 })))
-  assertEquals((await proxyDown('a.example.com', [])).state, 'closed')
+  assertEquals(await proxyDown('a.example.com', []), {
+    state: 'closed',
+    error: 'no answer on port 80 (HTTP 521)',
+  })
   const refused = namePort80Probe(() =>
     Promise.reject(
       new TypeError('fetch failed', { cause: new Error('Connection refused (os error 111)') })

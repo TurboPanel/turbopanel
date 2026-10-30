@@ -146,10 +146,12 @@ test('a name behind a NAT address with port 80 not forwarded says so plainly', a
   assertEquals(entry.port80, 'closed')
   assertEquals(
     entry.problem?.startsWith(
-      'w.example.com points at 198.203.204.120, but port 80 there refused the connection'
+      'w.example.com points at 198.203.204.120, but nothing answered on port 80 there, so'
     ),
     true
   )
+  // The probe's raw error never reaches the sentence.
+  assertEquals(entry.problem?.includes('os error'), false)
 })
 
 test('a private answer is named and port 80 is never probed for it', async () => {

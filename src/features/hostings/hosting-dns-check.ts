@@ -142,11 +142,10 @@ async function checkPort80(
   if (result.state === 'unknown') return {}
   if (result.state === 'open') return { port80: 'open' }
   const where = result.address ?? listed(addresses)
-  const why = result.error ? ` (${result.error})` : ''
   return {
     port80: 'closed',
     problem:
-      `${hostname} points at ${where}, but port 80 there refused the connection${why}, so it isn't reachable from the internet. ` +
+      `${hostname} points at ${where}, but nothing answered on port 80 there, so it isn't reachable from the internet. ` +
       "Let's Encrypt checks the name over port 80, so open or forward port 80 to the server.",
   }
 }
