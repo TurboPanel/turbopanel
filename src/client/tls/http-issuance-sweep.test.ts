@@ -16,7 +16,7 @@ import {
   newHttpIssuanceState,
   withHttpIssuanceState,
 } from '../../features/tls/http-issuance/state.ts'
-import { selectHttpIssuanceCandidates } from './http-issuance-sweep.ts'
+import { httpIssuanceContact, selectHttpIssuanceCandidates } from './http-issuance-sweep.ts'
 
 const dbUrl = getDatabaseUrl()
 
@@ -117,4 +117,15 @@ test('the sweep picks up exactly the rows with work to do', async () => {
     await db.delete(tls).where(eq(tls.organizationId, organizationId))
     await db.delete(organization).where(eq(organization.id, organizationId))
   }
+})
+
+test('the contact address and directory come from the platform environment', () => {
+  assertEquals(httpIssuanceContact({}), { contactEmail: '', staging: false })
+  assertEquals(
+    httpIssuanceContact({
+      TURBOPANEL_ACME_CONTACT_EMAIL: ' ops@example.com ',
+      TURBOPANEL_ACME_STAGING: 'TRUE',
+    }),
+    { contactEmail: 'ops@example.com', staging: true }
+  )
 })

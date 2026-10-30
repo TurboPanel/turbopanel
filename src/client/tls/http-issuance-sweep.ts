@@ -14,7 +14,6 @@ import { tls } from '../../db/schema.ts'
 import { isServerConnected } from '../../daemon/cell/server-status.ts'
 import type { CommandQueue } from '../../features/commands/queue.ts'
 import { runtimeDnsLookup } from '../../features/hostings/hosting-dns-check.ts'
-import { resolveInstanceAcmeSettings } from '../../features/install/instance-acme-settings.ts'
 import { getServerDaemonStateByServerId } from '../../features/servers/server-identity-db.ts'
 import {
   advanceHttpIssuance,
@@ -52,6 +51,22 @@ export type HttpIssuanceSweepResult = {
   delivered: number
 }
 
+/**
+ * The authority contact and directory for server-placed orders, from the
+ * platform's environment. Kept apart from the control plane's own certificate
+ * settings on purpose (the two must not reference each other). With no contact
+ * address set, no order starts and the row says so.
+ */
+export function httpIssuanceContact(env: Record<string, string | undefined>): {
+  contactEmail: string
+  staging: boolean
+} {
+  return {
+    contactEmail: (env.TURBOPANEL_ACME_CONTACT_EMAIL ?? '').trim(),
+    staging: (env.TURBOPANEL_ACME_STAGING ?? '').trim().toLowerCase() === 'true',
+  }
+}
+
 /** The orchestrator's seams, wired to the real cells, presence and settings. */
 export function buildHttpIssuanceDeps(db: Db, wiring: HttpIssuanceSweepWiring): HttpIssuanceDeps {
   return {
@@ -66,10 +81,7 @@ export function buildHttpIssuanceDeps(db: Db, wiring: HttpIssuanceSweepWiring): 
     isOnline: (serverId) => isServerConnected(db, wiring.registry, serverId),
     daemonFeatures: async (serverId) =>
       (await getServerDaemonStateByServerId(db, serverId))?.projection?.features ?? [],
-    contact: async () => {
-      const settings = await resolveInstanceAcmeSettings(db, wiring.env)
-      return { contactEmail: settings.contactEmail, staging: settings.useStaging }
-    },
+    contact: () => Promise.resolve(httpIssuanceContact(wiring.env)),
   }
 }
 
