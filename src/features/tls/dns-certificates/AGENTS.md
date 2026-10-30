@@ -112,9 +112,19 @@ keyed by the `fetch` in use. It is only a cache: no keys, no account addresses,
 no clients, and an isolate that starts empty just asks. A stale nonce is
 answered with `badNonce` and the client retries once. The requests of one step
 go one after the other so each answer hands the next its nonce. The order is
-polled first (one request); the authorizations are read only to learn why an
-order went invalid, and when the answer to the request for the certificate
-already names it (`order.certificateUrl`) it is downloaded without another poll.
+polled first (one request); the authorizations are read to learn why an
+order went invalid, and at most every `ANSWER_RECHECK_MS` while an answered
+order stays pending: a challenge the authority still holds as pending (its
+answer was lost) is answered again, and an order that times out names the
+names that were never checked instead of a bare timeout. An order the authority
+reports as `processing` or `valid` while the panel has no `finalizedAt` (the
+step that sent the request was not saved) goes straight to the download, so it
+cannot wait at "checking the records" forever. When the answer to the request
+for the certificate already names it (`order.certificateUrl`) it is downloaded
+without another poll. The create route runs the first step after the response
+on its own database client (`src/client/organizations/task-db.ts`); on Workers
+the request's client is closed by then, which used to leave the row claimed for
+`CLAIM_MS` until the sweep took it.
 An order for one name costs about eight calls (directory and nonce once, then
 account, order, authorization, answer, poll, request, download) and the next one
 six.

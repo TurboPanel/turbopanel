@@ -25,9 +25,11 @@ import { skipWithoutDatabase } from '../../../test-fixtures/require-service.test
 import { TunnelProviderError } from '../../tunnels/errors.ts'
 import type { TunnelAdapterRegistry } from '../../tunnels/registry.ts'
 import {
+  ANSWER_RECHECK_MS,
   DAY_MS,
   type DnsCertContext,
   MAX_NEW_PER_DAY,
+  ORDER_TIMEOUT_MS,
   PRESENT_GRACE_MS,
   READBACK_RETRY_MS,
 } from './context.ts'
@@ -232,6 +234,69 @@ test('a wildcard and its apex are ordered, validated by two records at one name,
     const acme = (row.metadata as { acme: { stage: string; managedBy: string; staging: boolean } })
       .acme
     assertEquals([acme.stage, acme.managedBy, acme.staging], ['issued', 'panel', true])
+  }))
+
+test('a wildcard and apex order whose answer to one challenge was lost answers it again and is issued', () =>
+  withDb(async (db) => {
+    const s = await setup(db, { ca: { loseAnswers: 1 } })
+    const started = await startDnsCertificate(s.ctx, s.input(['example.com', '*.example.com']))
+    const id = (started as { id: string }).id
+    assertEquals(await advanceDnsCertificate(s.ctx, id), 'waiting')
+    tick(s.clock, PRESENT_GRACE_MS + 1000)
+    // Both challenges are answered, but the authority only heard one: the order stays pending.
+    assertEquals(await advanceDnsCertificate(s.ctx, id), 'waiting')
+    assertEquals(s.ca.answers.length, 2)
+    const stalled = await rowOf(db, id)
+    assertEquals((stalled.metadata as { acme: { stage: string } }).acme.stage, 'validating')
+    // Polled again before the recheck time, nothing is asked twice.
+    assertEquals(await advanceDnsCertificate(s.ctx, id), 'waiting')
+    assertEquals(s.ca.answers.length, 2)
+
+    tick(s.clock, ANSWER_RECHECK_MS + 1000)
+    assertEquals(await advanceDnsCertificate(s.ctx, id), 'waiting')
+    // Only the challenge the authority still held as pending was answered again.
+    assertEquals(s.ca.answers.length, 3)
+    assertEquals(await advanceDnsCertificate(s.ctx, id), 'issued')
+    assertEquals(s.ca.issued, [['example.com', '*.example.com']])
+    assertEquals(s.dns.records.size, 0)
+  }))
+
+test('an order the authority already took the request for goes on to the download', () =>
+  withDb(async (db) => {
+    const s = await setup(db, { processing: 1 })
+    const started = await startDnsCertificate(s.ctx, s.input(['example.com', '*.example.com']))
+    const id = (started as { id: string }).id
+    assertEquals(await advanceDnsCertificate(s.ctx, id), 'waiting')
+    tick(s.clock, PRESENT_GRACE_MS + 1000)
+    assertEquals(await advanceDnsCertificate(s.ctx, id), 'waiting')
+    // The request for the certificate was sent, but the step that sent it was not saved.
+    const row = await rowOf(db, id)
+    const state = readDnsCertState(row.metadata)!
+    assert(state.order?.finalizedAt)
+    const lost = { ...state, order: { ...state.order, finalizedAt: null, certificateUrl: null } }
+    await db
+      .update(tls)
+      .set({ metadata: withDnsCertState(row.metadata, lost) })
+      .where(eq(tls.id, id))
+    assertEquals(await advanceDnsCertificate(s.ctx, id), 'issued')
+    assertEquals(s.ca.issued, [['example.com', '*.example.com']])
+  }))
+
+test('an order that runs out of time says which names the authority never checked', () =>
+  withDb(async (db) => {
+    const s = await setup(db, { ca: { loseAnswers: 100 } })
+    const started = await startDnsCertificate(s.ctx, s.input(['example.com', '*.example.com']))
+    const id = (started as { id: string }).id
+    assertEquals(await advanceDnsCertificate(s.ctx, id), 'waiting')
+    tick(s.clock, PRESENT_GRACE_MS + 1000)
+    assertEquals(await advanceDnsCertificate(s.ctx, id), 'waiting')
+    tick(s.clock, ORDER_TIMEOUT_MS)
+    assertEquals(await advanceDnsCertificate(s.ctx, id), 'failed')
+    const row = await rowOf(db, id)
+    const lastError = (row.metadata as { acme: { lastError: string } }).acme.lastError
+    assertStringIncludes(lastError, 'took too long')
+    assertStringIncludes(lastError, 'example.com, *.example.com')
+    assertEquals(s.dns.records.size, 0)
   }))
 
 test('a certificate that already covers the names is reused, and a running order is not doubled', () =>

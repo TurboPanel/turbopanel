@@ -54,6 +54,7 @@ import {
   openOrder,
   type OrderRow,
   type StepResult,
+  timedOutError,
 } from './steps.ts'
 import { ariDue, fallbackRenewAt, refreshedRenewAt } from './timing.ts'
 import { findCarrier } from '../../tunnels/records.ts'
@@ -550,9 +551,7 @@ export async function advanceDnsCertificate(
     return 'backoff'
   }
   try {
-    if (orderTimedOut(ctx, state)) {
-      throw new AcmeError('server', 'The order took too long and was dropped')
-    }
+    if (orderTimedOut(ctx, state)) throw await timedOutError(ctx, state, state.order)
     for (let i = 0; i < MAX_STEPS_PER_CALL; i += 1) {
       if (i > 0) await extendClaim(ctx, row.id)
       const result = await step(ctx, row, state)

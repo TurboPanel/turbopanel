@@ -30,6 +30,7 @@ import { loadAcmeEnabled } from '../hostings/letsencrypt-store.ts'
 import { parseJsonBody } from '../shared.ts'
 import { buildDnsCertContext } from '../tls/dns-certificate-context.ts'
 import { loadScope, type Scope } from './carrier-routes.ts'
+import { taskDbOpener } from './task-db.ts'
 
 const PATHS = [
   '/organizations/:id/dns-certificates',
@@ -101,7 +102,11 @@ export function toApiDnsCertificate(row: Row, now: Date = new Date()): ApiDnsCer
 
 type Wiring = { fetch?: typeof fetch; acmeFetch?: typeof fetch; presentGraceMs?: number }
 
-function contextOf(c: Context<AppEnv>, scope: Scope, wiring: Wiring): DnsCertContext | null {
+function contextOf(
+  c: Context<AppEnv>,
+  scope: Pick<Scope, 'db'>,
+  wiring: Wiring
+): DnsCertContext | null {
   const secrets = c.get('dataEncryptionSecrets')
   if (!secrets) return null
   const commandQueue = c.get('commandQueue')
@@ -237,9 +242,17 @@ function createResponse(wiring: Wiring) {
         names: names.names,
         staging,
       })
-      // The first steps (the order and the records) run after the answer is sent.
+      // The first steps (the order and the records) run after the answer is sent,
+      // on their own database client: the request's is closed once it is answered.
+      const open = taskDbOpener(c) ?? (() => ({ db: scope.db, close: () => Promise.resolve() }))
       runAfterResponse(c, 'tls', async () => {
-        await advanceDnsCertificate(ctx, started.id)
+        const handles = open()
+        try {
+          const taskCtx = contextOf(c, handles, wiring)
+          if (taskCtx) await advanceDnsCertificate(taskCtx, started.id)
+        } finally {
+          await handles.close().catch(() => {})
+        }
       })
     }
     const [row] = await scope.db.select().from(tls).where(eq(tls.id, started.id)).limit(1)

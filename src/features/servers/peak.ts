@@ -65,6 +65,7 @@ export async function recordPeak(
       set: {
         memoryBytes: sql`GREATEST(${peak.memoryBytes}, excluded.memory_bytes)`,
         cores: sql`GREATEST(${peak.cores}, excluded.cores)`,
+        updatedAt: sql`now()`,
       },
       setWhere: sql`excluded.memory_bytes > COALESCE(${peak.memoryBytes}, -1)
         OR excluded.cores > COALESCE(${peak.cores}, -1)`,
