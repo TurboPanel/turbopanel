@@ -67,10 +67,16 @@ import { type FirewallOrgPolicy, parseFirewallOrgPolicy } from './policy.ts'
 
 import type { FirewallModeValue } from './vocabulary.ts'
 
-/** The control plane's entrypoint on its own host (Caddy, HTTPS). */
+/**
+ * The self-hosted control plane's only entrypoint on its own host (Caddy,
+ * HTTPS). Ports 80 and 443 belong to hosting, never to the panel.
+ */
 export const CONTROL_PLANE_PORT = 8443
 
-/** Port 80 is opened for Let's Encrypt HTTP-01 issuance and renewal only. */
+/**
+ * Hosting's port 80, opened for the panel's Let's Encrypt HTTP-01 issuance and
+ * renewal: hosting owns the port and hands only the challenge to the panel.
+ */
 export const ACME_HTTP_PORT = 80
 
 export type LoadedFirewallFacts = {
@@ -152,11 +158,38 @@ export async function isCoLocatedServer(db: Db, serverId: string): Promise<boole
   return [...rows][0]?.pinned === true
 }
 
-/** 8443 always; plus 80 while any instance hostname uses Let's Encrypt (HTTP-01 needs it). */
-async function loadControlPlanePorts(db: Db): Promise<number[]> {
+/** True while any panel hostname takes its certificate from Let's Encrypt. */
+async function panelUsesLetsEncrypt(db: Db): Promise<boolean> {
   const rows = await db.select({ source: instanceHostname.source }).from(instanceHostname)
-  const usesAcme = rows.some((row) => row.source === 'lets-encrypt')
-  return usesAcme ? [CONTROL_PLANE_PORT, ACME_HTTP_PORT] : [CONTROL_PLANE_PORT]
+  return rows.some((row) => row.source === 'lets-encrypt')
+}
+
+/**
+ * Hosting's port 80 on the panel's own host while a panel hostname uses Let's
+ * Encrypt: HTTP-01 reaches hosting there, which passes only the challenge to
+ * the panel. It is a hosting rule, not a control-plane port, and is skipped
+ * when hosting already opens 80 to everyone.
+ */
+export function panelAcmeExposures(
+  coLocated: boolean,
+  usesLetsEncrypt: boolean,
+  hosting: readonly DerivedExposure[]
+): DerivedExposure[] {
+  if (!coLocated || !usesLetsEncrypt) return []
+  const open = hosting.some(
+    (e) => e.proto === 'tcp' && e.ports === String(ACME_HTTP_PORT) && e.reach === 'public'
+  )
+  if (open) return []
+  return [
+    {
+      source: 'hosting',
+      scope: 'host',
+      proto: 'tcp',
+      ports: String(ACME_HTTP_PORT),
+      reach: 'public',
+      comment: 'Hosting HTTP (panel certificate)',
+    },
+  ]
 }
 
 function hostingReach(bind: string): ExposureReach | null {
@@ -544,16 +577,15 @@ export async function loadFirewallFacts(
   if (!base) return null
   const notes: string[] = []
   const datacenterIds = await loadDatacenterIds(db, serverId)
-  const [coLocated, controlPlaneTcpPorts, sshPort, policy, mode, edicts, sources] =
-    await Promise.all([
-      isCoLocatedServer(db, serverId),
-      loadControlPlanePorts(db),
-      loadSshPortHint(db, base, datacenterIds),
-      loadOrganizationPolicy(db, base.organizationId),
-      loadServerMode(db, serverId),
-      loadEdictFacts(db, base.organizationId, serverId),
-      loadSourceSets(db, serverId, base.organizationId, datacenterIds),
-    ])
+  const [coLocated, usesLetsEncrypt, sshPort, policy, mode, edicts, sources] = await Promise.all([
+    isCoLocatedServer(db, serverId),
+    panelUsesLetsEncrypt(db),
+    loadSshPortHint(db, base, datacenterIds),
+    loadOrganizationPolicy(db, base.organizationId),
+    loadServerMode(db, serverId),
+    loadEdictFacts(db, base.organizationId, serverId),
+    loadSourceSets(db, serverId, base.organizationId, datacenterIds),
+  ])
   const [hosting, tunnelPeers, managed, cluster, fabricExposure, ha, compose] = await Promise.all([
     loadHostingExposures(db, serverId),
     loadTunnelPeerExposures(db, base.organizationId, serverId),
@@ -571,9 +603,10 @@ export async function loadFirewallFacts(
       policy,
       sshPortHint: sshPort,
       coLocated,
-      controlPlaneTcpPorts,
+      controlPlaneTcpPorts: [CONTROL_PLANE_PORT],
       exposures: [
         ...hosting,
+        ...panelAcmeExposures(coLocated, usesLetsEncrypt, hosting),
         ...tunnelPeers,
         ...managed,
         ...cluster,

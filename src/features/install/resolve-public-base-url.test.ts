@@ -167,7 +167,7 @@ test('a configured base URL still wins for mailed links', async () => {
   assertEquals(await res.text(), 'https://panel.example.com')
 })
 
-test('resolvePublicBaseUrl uses TURBOPANEL_PUBLIC_URLS first entry when set', async () => {
+test('resolvePublicBaseUrl dials 8443 for the first TURBOPANEL_PUBLIC_URLS entry, even written as https://host', async () => {
   const previousBase = Deno.env.get('TURBOPANEL_BASE_URL')
   const previousPublic = Deno.env.get('TURBOPANEL_PUBLIC_URLS')
   Deno.env.delete('TURBOPANEL_BASE_URL')
@@ -179,7 +179,7 @@ test('resolvePublicBaseUrl uses TURBOPANEL_PUBLIC_URLS first entry when set', as
       return c.text(await resolvePublicBaseUrl(c))
     })
     const res = await app.request('https://internal.invalid/t')
-    assertEquals(await res.text(), 'https://public.example.com')
+    assertEquals(await res.text(), 'https://public.example.com:8443')
   } finally {
     if (previousBase === undefined) Deno.env.delete('TURBOPANEL_BASE_URL')
     else Deno.env.set('TURBOPANEL_BASE_URL', previousBase)
