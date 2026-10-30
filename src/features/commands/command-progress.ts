@@ -226,7 +226,7 @@ async function keepLateStepNotes(
   let changed = false
   const steps = stored.steps.map((step) => {
     const late = progress.steps.find((item) => item.id === step.id)
-    if (late === undefined || late.detail === undefined || late.detail === step.detail) return step
+    if (late?.detail === undefined || late.detail === step.detail) return step
     if (late.state !== 'done' && late.state !== 'failed' && late.state !== 'skipped') return step
     changed = true
     return {
