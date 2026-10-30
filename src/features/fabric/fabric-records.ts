@@ -2072,9 +2072,10 @@ async function emitPeerStanza(
   extraAllowedIPs: readonly string[],
   params: {
     resealPresharedKey?: (sealed: string) => Promise<string | null>
+    /** The other server dials this one: its stanza has no endpoint. */
+    dialIn?: boolean
   },
-  listenPort: number,
-  dialIn = false
+  listenPort: number
 ): Promise<{ peer: FabricReconcilePeer; hashPeer: Record<string, unknown> } | null> {
   const sealedPresharedKey = selectPairPresharedEnvelope(
     self.id,
@@ -2092,24 +2093,26 @@ async function emitPeerStanza(
     advertisedCidrs:
       snapshot.derivedAdvertisedCidrsByRelayId.get(other.id) ?? other.advertisedCidrs,
     ...(params.resealPresharedKey ? { resealPresharedKey: params.resealPresharedKey } : {}),
-    ...(dialIn ? { dialIn: true } : {}),
+    ...(params.dialIn ? { dialIn: true } : {}),
   })
   if (!material) return null
   return reconcilePeerViews(material)
 }
 
 /**
- * `other` can open the tunnel to `self` itself: it has a public path to us
- * (our public address or operator pin). A server behind NAT that nothing can
- * dial still joins this way: it dials us with keepalive, and our side has no
+ * `caller` can open the tunnel to `target` itself: it has a public path to it
+ * (its public address or operator pin). A server behind NAT that nothing can
+ * dial still joins this way: it dials out with keepalive, and the other side has no
  * endpoint for it until its handshake arrives.
  */
 export function peerCanDialIn(
-  self: Pick<RelayRecord, 'serverId' | 'endpointAddress'>,
-  other: Pick<RelayRecord, 'serverId'>,
+  target: Pick<RelayRecord, 'serverId' | 'endpointAddress'>,
+  caller: Pick<RelayRecord, 'serverId'>,
   caches: EndpointAddressCaches
 ): boolean {
-  return directCandidates(other.serverId, self, caches).some((row) => row.kind === 'direct_public')
+  return directCandidates(caller.serverId, target, caches).some(
+    (row) => row.kind === 'direct_public'
+  )
 }
 
 /**
@@ -2233,9 +2236,8 @@ async function buildReconcilePeerLists(
       other,
       plan,
       extra,
-      params,
-      listenPort,
-      classified.dialInIds.has(other.id)
+      { ...params, dialIn: classified.dialInIds.has(other.id) },
+      listenPort
     )
     if (!views) {
       unreachablePeers.push({ serverId: other.serverId })
