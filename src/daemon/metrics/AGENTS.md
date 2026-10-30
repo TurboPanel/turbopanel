@@ -593,7 +593,7 @@ UI charts: **`../ui/AGENTS.md`** (Server metrics). Operator glossary:
     unresolved too.
     11a. A hosted server with more RAM or more physical CPU cores than its licensed box size keeps
     every metric; ingest stamps `server.metadata.overPlan` (`over-plan.ts`, `over-plan-flag.ts`;
-    `at` refreshed at most hourly, `since` kept from the first over reading, cleared once the
+    `at` refreshed at most hourly, `since` kept from the first over reading (a stamp written before `since` existed reads it as its last refresh `at`), cleared once the
     7-day window holds no reading past the box). The units are the box-size bands' own: RAM
     bytes (the higher of the sample's `sizes.memoryTotalBytes` and the host report's) and
     physical cores (host report only, `server.metadata.resources`, one entry per socket; the

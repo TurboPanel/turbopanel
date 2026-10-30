@@ -38,9 +38,16 @@ type PeakMemo = {
 
 const peakMemo = new Map<string, PeakMemo>()
 
+let clock: () => number = () => Date.now()
+
 /** Test hook: forget what this isolate already wrote and judged. */
 export function resetOverPlanMemoForTests(): void {
   peakMemo.clear()
+}
+
+/** Test hook: pin the clock the hour buckets are taken from; `null` restores it. */
+export function setOverPlanClockForTests(now: (() => number) | null): void {
+  clock = now ?? (() => Date.now())
 }
 
 /** The stamp on a server's metadata, or `null` when it is not flagged. */
@@ -99,7 +106,7 @@ export async function recordOverPlan(
   tierRank: number | null | undefined,
   serverMetadata: unknown,
   sampleMemoryTotalBytes?: number | null,
-  now: number = Date.now()
+  now: number = clock()
 ): Promise<void> {
   const reading = peakReadingFromReport(serverMetadata, sampleMemoryTotalBytes)
   const bucket = peakBucket(now)
