@@ -645,12 +645,18 @@ merged.
 **`tls.mode`.** `internal` (the default when `tls` is omitted) is the web
 server's own self-signed certificate; `certificate` resolves `certificateRef`
 to a `tls` row and pins it; `automatic` asks for a free Let's Encrypt
-certificate. At deploy the reconcile pins the organization's managed Let's
-Encrypt row for the name and the www name its `www` setting adds (an existing
-row with exactly those names, else one that covers them, else a new one; the
-same store as the one-click button), and deploy-prepare sends it as the `acme`
-wire mode. There is no DNS check on this path: the server keeps retrying until
-DNS points at it. The deploy is refused with **`400 acme_requires_org_opt_in`**
+certificate. It goes through the same certificate pre-check (DNS, port 80,
+CAA) and hold as a hostname added in the Hosting tab: the reconcile keeps a pin
+only when the route is already pinned to the organization's managed row for the
+name and the www name its `www` setting adds; otherwise it pins nothing (the
+site serves `tls internal`) and records a waiting request (`pending_at`). After
+the reconcile's transaction, deploy-prepare runs the pre-check on those rows
+(`client/hostings/letsencrypt-held.ts`, never in a preview): a name that passes
+is pinned (an existing row with exactly those names, else one that covers them,
+else a new one) and goes out with this deploy as the `acme` wire mode; a name
+that fails stays waiting and the sweep checks it again with a growing wait. No
+name reaches the web server's own issuance before it passes, so a name with no
+DNS never spends Let's Encrypt's failed-validation limit. The deploy is refused with **`400 acme_requires_org_opt_in`**
 when the organization has not turned on "Allow Let's Encrypt certificates",
 **`400 acme_requires_public_bind`** for a non-public route, and **`400
 letsencrypt_hostname_unsupported`** for a wildcard, IP or private name. The

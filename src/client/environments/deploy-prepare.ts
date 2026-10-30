@@ -232,6 +232,7 @@ import {
 import { inetAddressToString } from '../../lib/ip-address.ts'
 import { loadServerDatacenterAddress } from '../../features/net/private-endpoint.ts'
 import { reconcileServicesFromCompose } from '../../features/deploy/reconcile-services.ts'
+import { precheckHeldLetsEncrypt } from '../hostings/letsencrypt-held.ts'
 import { type ComposeHostingError, reconcileHostingsFromCompose } from './reconcile-hostings.ts'
 import type { Db } from '../../db/connection.ts'
 import {
@@ -3171,6 +3172,19 @@ async function reconcileComposeDeclaredRows(
   })
   if (!hostingReconcile.ok) {
     return { ok: false, failure: hostingReconcile.error }
+  }
+  // Routes asking for Let's Encrypt pin nothing until the certificate
+  // pre-check passes, the same hold as a hostname added in the Hosting tab.
+  // Checked here, after the reconcile's transaction and before the fan-out
+  // reads the rows, so a name that is ready goes out with this deploy. A
+  // preview never probes; the sweep checks what it leaves waiting.
+  if (args.mode !== 'preview') {
+    await precheckHeldLetsEncrypt(
+      db,
+      args.organizationId,
+      hostingReconcile.letsEncryptWaiting,
+      c.get('letsEncryptPrecheck')
+    )
   }
 
   // Re-materialize bindings so endpoint / CA / topology drift is picked up.

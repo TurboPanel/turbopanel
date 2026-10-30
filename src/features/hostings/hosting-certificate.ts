@@ -14,6 +14,7 @@ import {
   hostingCertificateNames,
   wwwSiblingHostname,
 } from '../../contracts/commands/hostname.ts'
+import { plainCertificateFailure } from './acme-failure-text.ts'
 import { isLoopbackOrPrivateHostname } from '../install/install-tls.ts'
 import { normalizeIpAddress } from '../../lib/ip-address.ts'
 import type { HostingBindScope, HostingProtocol } from './hosting-options.ts'
@@ -130,8 +131,11 @@ function readAcme(metadata: unknown): {
   lastFailedAt: string | null
 } {
   const acme = isRecord(metadata) && isRecord(metadata.acme) ? metadata.acme : {}
+  // A row stored before failures were put in plain words still holds the raw text.
   const lastError =
-    typeof acme.lastError === 'string' && acme.lastError.length > 0 ? acme.lastError : null
+    typeof acme.lastError === 'string' && acme.lastError.length > 0
+      ? plainCertificateFailure(acme.lastError)
+      : null
   return {
     lastError,
     lastIssuedAt: readIso(acme.lastIssuedAt),

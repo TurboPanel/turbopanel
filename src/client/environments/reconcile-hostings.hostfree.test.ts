@@ -3,6 +3,7 @@
  */
 
 import { assertEquals } from '@std/assert'
+import { eq } from 'drizzle-orm'
 import type { ComposeDocument } from '../../features/compose/index.ts'
 import { hostingEntryKey } from '../../features/compose/index.ts'
 import {
@@ -46,6 +47,7 @@ type ExistingRow = {
   metadata: unknown
   options: unknown
   tlsId?: string | null
+  pendingAt?: string | null
 }
 
 function composeDoc(services: Record<string, unknown>): ComposeDocument {
@@ -194,6 +196,7 @@ test('reconcileHostingsFromCompose is a no-op when nothing is declared or owned'
     adopted: [],
     removed: [],
     released: [],
+    letsEncryptWaiting: [],
   })
   assertEquals(db.rows(hosting), [])
 })
@@ -496,13 +499,15 @@ function automaticDoc(entry: Record<string, unknown> = {}): ComposeDocument {
 
 function reconcileAutomatic(
   db: ReturnType<typeof createReconcileDb>,
-  entry: Record<string, unknown> = {}
+  entry: Record<string, unknown> = {},
+  now: Date = HELD_AT
 ) {
   return reconcileHostingsFromCompose(db, {
     organizationId: ORG_ID,
     environmentId: ENV_ID,
     merged: automaticDoc(entry),
     serviceRows: [{ id: SVC_WEB, composeServiceName: 'web' }],
+    now,
   })
 }
 
@@ -510,71 +515,71 @@ function managedRow(id: string, dnsNames: string[]): TlsSeed {
   return { id, label: null, source: 'lets_encrypt', status: 'automatic', metadata: { dnsNames } }
 }
 
-test('reconcileHostingsFromCompose pins a new managed Lets Encrypt row for tls.mode automatic', async () => {
+/** A managed row the one-click button (or the held pre-check) made for sites. */
+function siteRow(id: string, dnsNames: string[]): TlsSeed {
+  return { ...managedRow(id, dnsNames), metadata: { dnsNames, acme: { createdFor: 'hosting' } } }
+}
+
+const HELD_AT = new Date('2026-10-30T12:00:00.000Z')
+
+/** What a passing certificate pre-check does to a held row: pin the managed row, clear the request. */
+async function passPrecheck(db: ReturnType<typeof createReconcileDb>, id: string, tlsId: string) {
+  await db
+    .update(hosting)
+    .set({ tlsId, pendingAt: null, metadata: { ...(hostingRow(db, id)?.metadata as object) } })
+    .where(eq(hosting.id, id))
+}
+
+/** An automatic route reconciled once, then pinned by a passing pre-check. */
+async function pinnedAutomatic(db: ReturnType<typeof createReconcileDb>, tlsId: string) {
+  const first = await reconcileAutomatic(db)
+  if (!first.ok) throw new TypeError(`expected a held route, got ${first.error.kind}`)
+  await passPrecheck(db, first.created[0], tlsId)
+  return first
+}
+
+test('reconcileHostingsFromCompose holds a new automatic route until the certificate pre-check passes', async () => {
   const db = createReconcileDb({ acmeEnabled: true })
   const result = await reconcileAutomatic(db, { www: 'www-to-root' })
-  if (!result.ok) throw new TypeError(`expected automatic pin, got ${result.error.kind}`)
-  const [created] = db.rows(tls)
-  assertEquals(created.source, 'lets_encrypt')
-  assertEquals(created.status, 'automatic')
-  assertEquals(created.name, null)
-  assertEquals(created.privateKeyPem, null)
-  assertEquals((created.metadata as { dnsNames: string[] }).dnsNames, [HOSTNAME, `www.${HOSTNAME}`])
+  if (!result.ok) throw new TypeError(`expected a held route, got ${result.error.kind}`)
+  // Nothing is pinned, so the server is asked for no certificate yet.
+  assertEquals(db.rows(tls), [])
   const row = hostingRow(db, result.created[0])
-  assertEquals(row?.tlsId, created.id)
+  assertEquals(row?.tlsId, null)
+  assertEquals(row?.pendingAt, HELD_AT.toISOString())
   assertEquals((row?.metadata as Record<string, unknown>).composeTlsMode, 'automatic')
+  assertEquals(result.letsEncryptWaiting, result.created)
 })
 
-test('reconcileHostingsFromCompose keeps one managed row across repeated deploys', async () => {
+test('reconcileHostingsFromCompose keeps the first request time across repeated deploys', async () => {
   const db = createReconcileDb({ acmeEnabled: true })
   const first = await reconcileAutomatic(db)
-  const second = await reconcileAutomatic(db)
-  if (!first.ok || !second.ok) throw new TypeError('expected both reconciles to pin')
-  assertEquals(db.rows(tls).length, 1)
+  const second = await reconcileAutomatic(db, {}, new Date('2026-10-30T13:00:00.000Z'))
+  if (!first.ok || !second.ok) throw new TypeError('expected both reconciles to hold')
   assertEquals(second.updated, first.created)
-  assertEquals(hostingRow(db, first.created[0])?.tlsId, db.rows(tls)[0].id)
+  assertEquals(second.letsEncryptWaiting, first.created)
+  assertEquals(hostingRow(db, first.created[0])?.pendingAt, HELD_AT.toISOString())
+  assertEquals(db.rows(tls), [])
 })
 
-test('reconcileHostingsFromCompose reuses an existing Lets Encrypt row covering the hostname', async () => {
-  const db = createReconcileDb({
-    acmeEnabled: true,
-    tlsRows: [
-      managedRow('tls-other', ['other.example.com']),
-      managedRow('tls-covering', [`www.${HOSTNAME}`, HOSTNAME]),
-    ],
-  })
-  const result = await reconcileAutomatic(db)
-  if (!result.ok) throw new TypeError('expected automatic pin')
-  assertEquals(db.rows(tls).length, 2)
-  assertEquals(hostingRow(db, result.created[0])?.tlsId, 'tls-covering')
+test('reconcileHostingsFromCompose keeps a pin to the organizations row for these names', async () => {
+  const db = createReconcileDb({ acmeEnabled: true, tlsRows: [siteRow('tls-exact', [HOSTNAME])] })
+  const first = await pinnedAutomatic(db, 'tls-exact')
+  const again = await reconcileAutomatic(db)
+  if (!again.ok) throw new TypeError('expected the pin to be kept')
+  assertEquals(again.letsEncryptWaiting, [])
+  const row = hostingRow(db, first.created[0])
+  assertEquals(row?.tlsId, 'tls-exact')
+  assertEquals(row?.pendingAt, null)
 })
 
-test('reconcileHostingsFromCompose prefers the row with exactly the needed names', async () => {
-  const db = createReconcileDb({
-    acmeEnabled: true,
-    tlsRows: [
-      managedRow('tls-covering', [HOSTNAME, `www.${HOSTNAME}`]),
-      managedRow('tls-exact', [HOSTNAME]),
-    ],
-  })
-  const result = await reconcileAutomatic(db)
-  if (!result.ok) throw new TypeError('expected automatic pin')
-  assertEquals(hostingRow(db, result.created[0])?.tlsId, 'tls-exact')
-})
-
-test('reconcileHostingsFromCompose does not reuse a revoked or uploaded row for automatic', async () => {
-  const db = createReconcileDb({
-    acmeEnabled: true,
-    tlsRows: [
-      { ...managedRow('tls-revoked', [HOSTNAME]), status: 'revoked' },
-      { id: 'tls-upload', label: 'mine', metadata: { dnsNames: [HOSTNAME] } },
-    ],
-  })
-  const result = await reconcileAutomatic(db)
-  if (!result.ok) throw new TypeError('expected automatic pin')
-  const pinned = hostingRow(db, result.created[0])?.tlsId
-  assertEquals(db.rows(tls).length, 3)
-  assertEquals(pinned === 'tls-revoked' || pinned === 'tls-upload', false)
+test('reconcileHostingsFromCompose holds again when the pinned row lacks the www name the route adds', async () => {
+  const db = createReconcileDb({ acmeEnabled: true, tlsRows: [siteRow('tls-bare', [HOSTNAME])] })
+  const first = await pinnedAutomatic(db, 'tls-bare')
+  const www = await reconcileAutomatic(db, { www: 'www-to-root' })
+  if (!www.ok) throw new TypeError('expected a held route')
+  assertEquals(www.letsEncryptWaiting, first.created)
+  assertEquals(hostingRow(db, first.created[0])?.tlsId, null)
 })
 
 /** The compose document once the route is gone ("Remove hostname"). */
@@ -588,25 +593,21 @@ function reconcileWithoutRoute(db: ReturnType<typeof createReconcileDb>) {
 }
 
 test('reconcileHostingsFromCompose removes the Lets Encrypt entry with the last route that used it', async () => {
-  const db = createReconcileDb({ acmeEnabled: true })
-  const first = await reconcileAutomatic(db)
-  if (!first.ok) throw new TypeError('expected automatic pin')
-  assertEquals(db.rows(tls).length, 1)
-  const entryId = db.rows(tls)[0].id
+  const db = createReconcileDb({ acmeEnabled: true, tlsRows: [siteRow('tls-site', [HOSTNAME])] })
+  const first = await pinnedAutomatic(db, 'tls-site')
   const removed = await reconcileWithoutRoute(db)
   if (!removed.ok) throw new TypeError('expected the route to be removed')
   assertEquals(removed.removed, first.created)
   assertEquals(db.rows(tls), [])
   assertEquals(
     db.rows(audit).map((row) => [row.action, row.targetId]),
-    [['tls.certificate.delete', entryId]]
+    [['tls.certificate.delete', 'tls-site']]
   )
 })
 
 test('reconcileHostingsFromCompose removes the entry once the route stops asking for Lets Encrypt', async () => {
-  const db = createReconcileDb({ acmeEnabled: true })
-  const first = await reconcileAutomatic(db)
-  if (!first.ok) throw new TypeError('expected automatic pin')
+  const db = createReconcileDb({ acmeEnabled: true, tlsRows: [siteRow('tls-site', [HOSTNAME])] })
+  const first = await pinnedAutomatic(db, 'tls-site')
   const internal = await reconcileAutomatic(db, { tls: { mode: 'internal' } })
   if (!internal.ok) throw new TypeError('expected the route to be kept')
   assertEquals(hostingRow(db, first.created[0])?.tlsId, null)
@@ -614,14 +615,12 @@ test('reconcileHostingsFromCompose removes the entry once the route stops asking
 })
 
 test('reconcileHostingsFromCompose keeps the entry while a site elsewhere in the organization uses it', async () => {
-  const db = createReconcileDb({ acmeEnabled: true })
-  const first = await reconcileAutomatic(db)
-  if (!first.ok) throw new TypeError('expected automatic pin')
-  const entryId = db.rows(tls)[0].id as string
+  const db = createReconcileDb({ acmeEnabled: true, tlsRows: [siteRow('tls-site', [HOSTNAME])] })
+  await pinnedAutomatic(db, 'tls-site')
   await db.insert(hosting).values({
     id: 'host-elsewhere',
     serviceId: SVC_OTHER,
-    tlsId: entryId,
+    tlsId: 'tls-site',
     metadata: {},
     options: { hostnames: [HOSTNAME] },
   })
@@ -629,7 +628,7 @@ test('reconcileHostingsFromCompose keeps the entry while a site elsewhere in the
   if (!removed.ok) throw new TypeError('expected the route to be removed')
   assertEquals(
     db.rows(tls).map((row) => row.id),
-    [entryId]
+    ['tls-site']
   )
 })
 
@@ -656,6 +655,7 @@ test('reconcileHostingsFromCompose never removes an uploaded or hand-added certi
     serviceRows: [{ id: SVC_WEB, composeServiceName: 'web' }],
   })
   if (!pinned.ok) throw new TypeError(`expected both routes to pin, got ${pinned.error.kind}`)
+  await passPrecheck(db, pinned.letsEncryptWaiting[0], 'tls-library')
   assertEquals(
     db
       .rows(hosting)
@@ -718,24 +718,13 @@ test('reconcileHostingsFromCompose refuses automatic for a wildcard name', async
   assertEquals(result.error.reason, 'letsencrypt_hostname_unsupported')
 })
 
-test('reconcileHostingsFromCompose takes the organization lock before creating a managed row', async () => {
+test('reconcileHostingsFromCompose creates no certificate row and takes no organization lock for a held route', async () => {
   executed.length = 0
-  const result = await reconcileAutomatic(createReconcileDb({ acmeEnabled: true }))
-  if (!result.ok) throw new TypeError('expected automatic pin')
-  assertEquals(executed.length, 1)
-})
-
-test('reconcileHostingsFromCompose does not reuse a row lacking the www name the route adds', async () => {
-  const db = createReconcileDb({
-    acmeEnabled: true,
-    tlsRows: [managedRow('tls-bare', [HOSTNAME])],
-  })
-  const result = await reconcileAutomatic(db, { www: 'www-to-root' })
-  if (!result.ok) throw new TypeError('expected automatic pin')
-  const pinned = hostingRow(db, result.created[0])?.tlsId
-  const row = db.rows(tls).find((candidate) => candidate.id === pinned)
-  assertEquals(pinned === 'tls-bare', false)
-  assertEquals((row?.metadata as { dnsNames: string[] }).dnsNames, [HOSTNAME, `www.${HOSTNAME}`])
+  const db = createReconcileDb({ acmeEnabled: true })
+  const result = await reconcileAutomatic(db)
+  if (!result.ok) throw new TypeError('expected a held route')
+  assertEquals(executed.length, 0)
+  assertEquals(db.rows(tls), [])
 })
 
 function waitingComposeRow(tlsMode: string): ExistingRow & Record<string, unknown> {
