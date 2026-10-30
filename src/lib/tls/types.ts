@@ -20,9 +20,11 @@ export type TlsAcmeMetadata = {
   lastFailedAt?: string
   /**
    * `caddy` on `lets_encrypt` rows Caddy issues and renews on the host; `panel`
-   * on a library certificate this panel ordered itself through a DNS challenge.
+   * on a library certificate this panel ordered itself through a DNS challenge;
+   * `server` on a certificate one serving server's daemon ordered over the HTTP
+   * proof at the panel's request (`acme-issue-request`).
    */
-  managedBy?: 'caddy' | 'panel'
+  managedBy?: 'caddy' | 'panel' | 'server'
   /** DNS-challenge certificates: where the order stands (queued, presented, validating, finalizing, issued, backoff, failed). */
   stage?: string
   /** DNS-challenge certificates: the authority's test directory, whose certificates no browser trusts. */

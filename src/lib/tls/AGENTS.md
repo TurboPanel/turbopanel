@@ -238,3 +238,9 @@ waits on.
 
 Never write bare "the CA" in code comments, docs, API copy, or UI strings —
 always **Platform CA** or **Organization CA**.
+
+**Certificates ordered by a server over the HTTP proof.** The panel's private
+state for such a row (`metadata.httpCert`) and the rule for accepting its pair live
+in `src/features/tls/http-issuance/`; the public marker in `metadata.acme` is
+`managedBy: 'server'` with `challengeType: 'http-01'`. Details: the "Certificate
+orders placed by a server" section of `src/daemon/AGENTS.md`.

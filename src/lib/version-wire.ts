@@ -193,6 +193,7 @@ export const DAEMON_WIRE_FEATURES = [
   'managed-database-owner-v1',
   'managed-database-convert-v1',
   'tls-capture-v1',
+  'acme-issue-v1',
   'command-recovery-v1',
   'managed-switchover-final-position-v1',
   'host-capacity-v1',
@@ -257,6 +258,15 @@ export const SEALED_INSTANCE_SECRETS_FEATURE: DaemonWireFeature = 'sealed-instan
 export const BACKUP_S3_COPY_FEATURE: DaemonWireFeature = 'backup-s3-copy-v1'
 
 export const TLS_CAPTURE_FEATURE: DaemonWireFeature = 'tls-capture-v1'
+
+/**
+ * The daemon places the certificate order for a name set when the control plane
+ * asks (`acme-issue-request`), and passes the HTTP proof path on for another
+ * server (`acme-proof-forward`). The control plane sends these messages only to
+ * a daemon that lists the feature. No message ever carries the certificate or
+ * its key; the finished pair goes through `POST /api/daemon/v1/tls/issued`.
+ */
+export const ACME_ISSUE_FEATURE: DaemonWireFeature = 'acme-issue-v1'
 
 /**
  * The daemon keeps each command's final result on the host until this control

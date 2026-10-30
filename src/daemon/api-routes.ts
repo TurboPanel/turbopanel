@@ -206,9 +206,15 @@ export const MAX_SECRETS_DECRYPT_BODY_BYTES = 2 * 1024 * 1024
 
 /**
  * `POST /tls/issued` — hostname plus one certificate chain and one private key
- * (32 KiB chain + 8 KiB key at most) with JSON quoting overhead.
+ * (32 KiB chain + 8 KiB key at most) with JSON quoting overhead, and an
+ * optional short `requestId`.
  */
 export const MAX_TLS_ISSUED_BODY_BYTES = 64 * 1024
+
+/** The optional `requestId` of `POST /tls/issued`: 1 to 64 characters of letters, digits, `_` and `-`. */
+function isTlsIssuedRequestId(value: unknown): value is string {
+  return typeof value === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(value)
+}
 
 /** `POST /auth/challenge` — optional serverId/keyId only. */
 export const MAX_AUTH_CHALLENGE_BODY_BYTES = 4 * 1024
@@ -1884,7 +1890,9 @@ export function registerDaemonApiRoutes<E extends Env>(
 
   /**
    * The certificate and private key Caddy issued on the calling server for one
-   * hostname. Stored sealed next to the other certificates (see
+   * hostname. An optional `requestId` answers an open `acme-issue-request`
+   * from the server that was asked (otherwise only a server holding a pin may
+   * report). Stored sealed next to the other certificates (see
    * `client/tls/issued-certificate.ts` for every check). The body is never
    * logged and nothing from it comes back in the answer.
    */
@@ -1900,6 +1908,7 @@ export function registerDaemonApiRoutes<E extends Env>(
         hostname?: unknown
         certificatePem?: unknown
         privateKeyPem?: unknown
+        requestId?: unknown
       }
       try {
         body = JSON.parse(bodyRead.text) as typeof body
@@ -1919,6 +1928,9 @@ export function registerDaemonApiRoutes<E extends Env>(
           400
         )
       }
+      if (body.requestId !== undefined && !isTlsIssuedRequestId(body.requestId)) {
+        return c.json({ ok: false, error: 'requestId is not valid' }, 400)
+      }
       const db = getDb(c)
       const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
       if (!db || !dataEncryptionSecrets) {
@@ -1931,6 +1943,7 @@ export function registerDaemonApiRoutes<E extends Env>(
           hostname: body.hostname,
           certificatePem: body.certificatePem,
           privateKeyPem: body.privateKeyPem,
+          ...(body.requestId === undefined ? {} : { requestId: body.requestId }),
         },
         { dataEncryptionSecrets }
       )

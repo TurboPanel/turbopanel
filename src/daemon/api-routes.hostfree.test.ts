@@ -635,3 +635,22 @@ test('POST /tls/issued rejects bad JSON, missing fields and an oversized body, a
   )
   assertEquals(tooBig.status, 413)
 })
+
+test('POST /tls/issued rejects a requestId that is not 1 to 64 plain characters', async () => {
+  const { app, token } = await tlsIssuedApp()
+  const post = (requestId: unknown) =>
+    app.request(`${DAEMON_API_PREFIX}/tls/issued`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ ...JSON.parse(TLS_ISSUED_BODY), requestId }),
+    })
+  for (const bad of ['', 'x'.repeat(65), 'has space', 'a/b', 12, null, ['a']]) {
+    const response = await post(bad)
+    assertEquals(response.status, 400, String(bad))
+    const text = await response.text()
+    assertEquals(text.includes('PRIVATE KEY'), false)
+    assertEquals(text.includes('BEGIN'), false)
+  }
+  // A well-formed id passes the shape check and reaches the storage check (no database here).
+  assertEquals((await post('req_0123-abc')).status, 503)
+})

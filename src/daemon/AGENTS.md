@@ -80,3 +80,23 @@ the transport probes (`__direct__`, `/etc/machine-id`, `Deno.hostname()`) all
 come up empty. The cached read models deliberately do _not_ pass it, so their
 approved-SQL profile stays unchanged; their `colocatedWithInstance` is a display
 badge, not a guard.
+
+## Certificate orders placed by a server (`acme-issue-v1`)
+
+A daemon that lists the `acme-issue-v1` feature in `hello.features` can be asked
+to place one certificate order for a name set from its own addresses over the
+HTTP proof. The messages are `acme-issue-request`, `acme-proof-forward` and
+`acme-proof-forward-end` (control plane to daemon) and `acme-issue-event`,
+`acme-proof-forward-ready` and `acme-proof-forward-failed` (daemon to control
+plane). Their shapes and validators are in `src/contracts/cell-protocol.ts`.
+
+- No message ever carries the certificate or its key. The finished pair goes
+  through `POST /api/daemon/v1/tls/issued` with the `requestId` of the open
+  request; the validators refuse any field that looks like certificate material.
+- The control plane sends these only to a daemon that lists the feature, receivers
+  ignore unknown optional fields, and no version floor moves.
+- A pair with a `requestId` is accepted only from the server the request was made
+  to, while the request is open (`src/features/tls/http-issuance/state.ts`). A pair
+  without one follows the older rule: only a server that holds a pin may report.
+- The inbound messages are not in `DAEMON_INBOUND_ALLOWED` yet; the scheduler that
+  sends and handles them adds them.

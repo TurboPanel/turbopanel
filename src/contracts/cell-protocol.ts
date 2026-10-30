@@ -543,6 +543,68 @@ export type ManagedHealthReportMember = {
   replication?: NonNullable<ManagedHealthObservedMember['replication']>
 }
 
+/**
+ * Control plane → daemon (feature `acme-issue-v1`): place the certificate order
+ * for `names` from this server's own addresses over the HTTP proof. The finished
+ * pair is reported through `POST /api/daemon/v1/tls/issued` with `requestId`;
+ * no message ever carries the pair. Twin of the daemon's `AcmeIssueRequestMessage`.
+ */
+export type AcmeIssueRequestMessage = {
+  type: 'acme-issue-request'
+  requestId: string
+  tlsId: string
+  names: string[]
+  directory: 'production' | 'staging'
+  contactEmail: string
+  /** The request is open until this time (ISO 8601). */
+  startByIso: string
+  /** Other servers that pass the proof path on; the issuer checks each before asking the authority. */
+  helpers: AcmeProofHelper[]
+  at: string
+}
+
+export type AcmeProofHelper = { serverId: string; address: string }
+
+/** Control plane → daemon: pass `/.well-known/acme-challenge/*` for `names` to `targetAddress` until `expiresAtIso`. */
+export type AcmeProofForwardMessage = {
+  type: 'acme-proof-forward'
+  requestId: string
+  names: string[]
+  targetAddress: string
+  expiresAtIso: string
+  at: string
+}
+
+/** Control plane → daemon: stop passing the proof path on for this request. */
+export type AcmeProofForwardEndMessage = {
+  type: 'acme-proof-forward-end'
+  requestId: string
+  at: string
+}
+
+/**
+ * Daemon → control plane: how the order is going. Never carries the certificate
+ * or its key (the validator refuses those field names).
+ */
+export type AcmeIssueEventMessage = {
+  type: 'acme-issue-event'
+  requestId: string
+  stage: 'started' | 'issued' | 'failed'
+  /** A plain reason when `stage` is `failed`. */
+  reason?: string
+  /** Leaf expiry (ISO 8601) when `stage` is `issued`. */
+  notAfterIso?: string
+  at: string
+}
+
+/** Daemon → control plane: the proof path is passed on (`acme-proof-forward-ready`) or could not be (`-failed`). */
+export type AcmeProofForwardReportMessage = {
+  type: 'acme-proof-forward-ready' | 'acme-proof-forward-failed'
+  requestId: string
+  reason?: string
+  at: string
+}
+
 export type DaemonMessage =
   | {
       type: 'hello'
@@ -658,6 +720,11 @@ export type DaemonMessage =
   | ManagedPermissionsResultMessage
   | ServerNetworkCheckRequestMessage
   | ServerNetworkCheckResultMessage
+  | AcmeIssueRequestMessage
+  | AcmeProofForwardMessage
+  | AcmeProofForwardEndMessage
+  | AcmeIssueEventMessage
+  | AcmeProofForwardReportMessage
   | {
       /**
        * Daemon-initiated, fire-and-forget: every managed replica the host runs,
@@ -1659,6 +1726,133 @@ function validateAcmeIssuanceEventFields(record: Record<string, unknown>): strin
     return 'invalid notAfter'
   }
   return validateOptionalError(record.errorMessage)
+}
+
+/** Most names one certificate order carries (matches the authority's own cap of 100; we send far fewer). */
+export const MAX_ACME_ISSUE_NAMES = 100
+/** Most helper servers one order lists. */
+export const MAX_ACME_ISSUE_HELPERS = 64
+
+/** A plain lower-case DNS name: no wildcard, no upper case, no trailing dot. */
+const ACME_NAME_RE =
+  /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/
+/** An IPv4 or IPv6 address literal as text. */
+const ACME_ADDRESS_RE = /^[0-9a-f:.]{2,45}$/
+const ACME_REQUEST_ID_RE = /^[A-Za-z0-9_-]{1,64}$/
+/** Field names that would carry certificate material; refused on every acme-issue message. */
+const ACME_FORBIDDEN_KEYS = [
+  'certificatePem',
+  'privateKeyPem',
+  'privateKey',
+  'certificate',
+  'key',
+  'pem',
+]
+
+function validateAcmeRequestId(value: unknown): string | null {
+  return typeof value === 'string' && ACME_REQUEST_ID_RE.test(value) ? null : 'invalid requestId'
+}
+
+function validateAcmeNames(value: unknown): string | null {
+  if (!Array.isArray(value) || value.length === 0 || value.length > MAX_ACME_ISSUE_NAMES) {
+    return 'invalid names'
+  }
+  const ok = value.every((n) => typeof n === 'string' && n.length <= 253 && ACME_NAME_RE.test(n))
+  return ok ? null : 'invalid names'
+}
+
+function validateAcmeAddress(value: unknown): boolean {
+  return typeof value === 'string' && ACME_ADDRESS_RE.test(value)
+}
+
+function validateAcmeHelpers(value: unknown): string | null {
+  if (!Array.isArray(value) || value.length > MAX_ACME_ISSUE_HELPERS) return 'invalid helpers'
+  for (const item of value) {
+    const helper = item as { serverId?: unknown; address?: unknown } | null
+    if (typeof helper !== 'object' || helper === null || !isBoundedId(helper.serverId)) {
+      return 'invalid helpers'
+    }
+    if (!validateAcmeAddress(helper.address)) return 'invalid helpers'
+  }
+  return null
+}
+
+/** Unknown optional fields are ignored (expand-only), but never one that could carry the pair. */
+function acmeForbiddenKey(record: Record<string, unknown>): string | null {
+  return ACME_FORBIDDEN_KEYS.some((k) => k in record) ? 'must not carry certificate material' : null
+}
+
+function firstProblem(...problems: Array<string | null>): string | null {
+  return problems.find((p) => p !== null) ?? null
+}
+
+/** Shape check for `acme-issue-request` (control plane to daemon; the sender and the daemon both use it). */
+export function validateAcmeIssueRequestFields(record: Record<string, unknown>): string | null {
+  return firstProblem(
+    validateAcmeRequestId(record.requestId),
+    isBoundedId(record.tlsId) ? null : 'invalid tlsId',
+    validateAcmeNames(record.names),
+    record.directory === 'production' || record.directory === 'staging'
+      ? null
+      : 'invalid directory',
+    typeof record.contactEmail === 'string' &&
+      record.contactEmail.length > 0 &&
+      record.contactEmail.length <= 254
+      ? null
+      : 'invalid contactEmail',
+    isIsoTimestamp(record.startByIso) ? null : 'invalid startByIso',
+    validateAcmeHelpers(record.helpers),
+    isIsoTimestamp(record.at) ? null : 'invalid at timestamp',
+    acmeForbiddenKey(record)
+  )
+}
+
+/** Shape check for `acme-proof-forward`. */
+export function validateAcmeProofForwardFields(record: Record<string, unknown>): string | null {
+  return firstProblem(
+    validateAcmeRequestId(record.requestId),
+    validateAcmeNames(record.names),
+    validateAcmeAddress(record.targetAddress) ? null : 'invalid targetAddress',
+    isIsoTimestamp(record.expiresAtIso) ? null : 'invalid expiresAtIso',
+    isIsoTimestamp(record.at) ? null : 'invalid at timestamp',
+    acmeForbiddenKey(record)
+  )
+}
+
+/** Shape check for `acme-proof-forward-end`. */
+export function validateAcmeProofForwardEndFields(record: Record<string, unknown>): string | null {
+  return firstProblem(
+    validateAcmeRequestId(record.requestId),
+    isIsoTimestamp(record.at) ? null : 'invalid at timestamp'
+  )
+}
+
+/** Shape check for `acme-issue-event` (daemon to control plane). Never accepts a pair. */
+export function validateAcmeIssueEventFields(record: Record<string, unknown>): string | null {
+  return firstProblem(
+    validateAcmeRequestId(record.requestId),
+    record.stage === 'started' || record.stage === 'issued' || record.stage === 'failed'
+      ? null
+      : 'invalid stage',
+    record.notAfterIso === undefined || isIsoTimestamp(record.notAfterIso)
+      ? null
+      : 'invalid notAfterIso',
+    validateOptionalError(record.reason),
+    isIsoTimestamp(record.at) ? null : 'invalid at timestamp',
+    acmeForbiddenKey(record)
+  )
+}
+
+/** Shape check for `acme-proof-forward-ready` and `acme-proof-forward-failed`. */
+export function validateAcmeProofForwardReportFields(
+  record: Record<string, unknown>
+): string | null {
+  return firstProblem(
+    validateAcmeRequestId(record.requestId),
+    validateOptionalError(record.reason),
+    isIsoTimestamp(record.at) ? null : 'invalid at timestamp',
+    acmeForbiddenKey(record)
+  )
 }
 
 /** A backup policy id: lower-case, because the host also uses it as a systemd unit name. */
@@ -2795,6 +2989,9 @@ export function wireMessageToInboundEnvelope(msg: DaemonMessage): DaemonInboundE
     case 'topology-report':
     case 'acme-issuance-event':
     case 'instance-acme-issuance-event':
+    case 'acme-issue-event':
+    case 'acme-proof-forward-ready':
+    case 'acme-proof-forward-failed':
     case 'update-progress':
     case 'command-progress':
       // Fire-and-forget (or session setup). Not a correlated request.
