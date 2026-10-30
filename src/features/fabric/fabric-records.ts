@@ -68,6 +68,7 @@ import {
   withoutUnsafeRanges,
 } from './gateway-ranges.ts'
 import { WIREGUARD_PERSISTENT_KEEPALIVE } from './wg.ts'
+import { fabricPeerHealthClasses } from './peer-health.ts'
 import {
   type FabricPolicy,
   mergeRelayPolicyOptions,
@@ -848,6 +849,60 @@ export async function stampRelayPathSummary(
     .update(relay)
     .set({ metadata, updatedAt: nowIso() })
     .where(and(eq(relay.fabricId, params.fabricId), eq(relay.serverId, params.serverId)))
+}
+
+/**
+ * Merged metadata carrying a fresh `observed` reading, or null when the row
+ * already holds one at least as new, or one stamped less than `minIntervalMs`
+ * before `nowMs` that gives every peer the same health class. A change of
+ * class is always written, however recent the stored reading (a reconcile
+ * stamp must not hide a tunnel that just went down). Never touches
+ * `appliedPayloadHash` / `appliedAt`.
+ */
+export function planRelayObservedStamp(
+  existing: unknown,
+  observed: NonNullable<RelayMetadata['observed']>,
+  options: { nowMs: number; minIntervalMs: number }
+): RelayMetadata | null {
+  const current = serializeRelayMetadata(existing).observed
+  const currentMs = current ? Date.parse(current.at) : Number.NaN
+  if (Number.isFinite(currentMs)) {
+    if (currentMs >= Date.parse(observed.at)) return null
+    const recent = options.nowMs - currentMs < options.minIntervalMs
+    if (recent && fabricPeerHealthClasses(current) === fabricPeerHealthClasses(observed)) {
+      return null
+    }
+  }
+  return mergeRelayMetadata(existing, { observed })
+}
+
+/**
+ * Stamp a daemon's pushed peer reading (`fabric-peers-report`) into
+ * `relay.metadata.observed` on every relay of the reporting server. The
+ * server comes from the authenticated socket, never from the frame. Returns
+ * how many rows were written.
+ */
+export async function stampRelayObservedPeers(
+  db: Db,
+  params: {
+    serverId: string
+    observed: NonNullable<RelayMetadata['observed']>
+    nowMs: number
+    minIntervalMs: number
+  }
+): Promise<number> {
+  const rows = await db
+    .select({ id: relay.id, metadata: relay.metadata })
+    .from(relay)
+    .where(eq(relay.serverId, params.serverId))
+  let stamped = 0
+  await forEachSequential(rows, async (row) => {
+    const metadata = planRelayObservedStamp(row.metadata, params.observed, params)
+    if (!metadata) return
+    await db.update(relay).set({ metadata, updatedAt: nowIso() }).where(eq(relay.id, row.id))
+    stamped++
+  })
+  return stamped
 }
 
 export async function stampRelayReconcileSuccess(
