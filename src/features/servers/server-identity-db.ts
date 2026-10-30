@@ -5,6 +5,7 @@ import { normalizeMachineKey } from '../../lib/machine-key.ts'
 import { key, server } from '../../db/schema.ts'
 import {
   buildDefaultDaemonStatus,
+  isDaemonKeyActive,
   mapServerDaemonStatusFromColumns,
   parseServerDaemonKeyRow,
   parseServerDaemonState,
@@ -83,6 +84,18 @@ export async function getServerDaemonStateByServerId(
     machineKey: row.machineKey ?? null,
     metadata: (row.metadata ?? null) as ServerMetadata | null,
   }
+}
+
+/**
+ * True when `keyId` (a daemon JWT's `kid`) is still the server's current,
+ * unrevoked daemon key. A valid token says nothing about either: it outlives
+ * a revoke by up to its full lifetime, so every socket check asks this.
+ */
+export function isCurrentActiveDaemonKey(
+  daemonState: Pick<ServerDaemonState, 'key'> | null,
+  keyId: string
+): boolean {
+  return daemonState?.key.id === keyId && isDaemonKeyActive(daemonState.key)
 }
 
 export async function getServerDaemonStateByFingerprint(

@@ -35,6 +35,7 @@ import {
   repairStaleProjectedUpdate,
 } from '../../daemon/cell/control-plane-monitor.ts'
 import type { DaemonCellRegistry } from '../../contracts/cell.ts'
+import { purgeDaemonCellBestEffort } from '../../features/servers/daemon-cell-purge.ts'
 import type { UpdateProjection } from '../../features/servers/daemon-state.ts'
 import {
   clearServerDaemonState,
@@ -298,14 +299,8 @@ async function purgeServerDaemonCell(
   registry: DaemonCellRegistry,
   serverId: string
 ): Promise<DaemonCellPurgeFailure | null> {
-  try {
-    await registry.getCell(serverId).purge()
-    return null
-  } catch (err) {
-    const message = errorMessageFromUnknown(err)
-    console.error(`Failed to purge daemon cell for server ${serverId}: ${message}`)
-    return 'purge_failed'
-  }
+  const purged = await purgeDaemonCellBestEffort(registry, serverId, 'after key revoke')
+  return purged ? null : 'purge_failed'
 }
 
 async function loadDatacenterOptionsMap(

@@ -57,6 +57,7 @@ import {
 } from '../../features/licenses/enroll-attempt.ts'
 import { resolveInstanceUpdateChannel } from '../../contracts/update-channel.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
+import { purgeDaemonCellBestEffort } from '../../features/servers/daemon-cell-purge.ts'
 import {
   installBaseUrlValidationError,
   isInvalidInstallBaseUrl,
@@ -83,16 +84,9 @@ async function purgeInvalidatedDaemonCells(
   serverIds: string[]
 ): Promise<void> {
   if (!registry) return
-  await forEachSequential(serverIds, async (serverId) => {
-    try {
-      await registry.getCell(serverId).purge()
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
-      console.error(
-        `Failed to purge daemon cell after license invalidate for server ${serverId}: ${message}`
-      )
-    }
-  })
+  await forEachSequential(serverIds, (serverId) =>
+    purgeDaemonCellBestEffort(registry, serverId, 'after license invalidate')
+  )
 }
 
 type LicenseOwnerContext = Readonly<{ db: Db; organizationId: string }>

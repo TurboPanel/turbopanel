@@ -52,7 +52,7 @@ import {
   createBackupCopyReportStore,
   handleBackupCopyReport,
 } from '../../features/backups/copy-report.ts'
-import { recordInstanceAcmeIssuance } from '../../features/install/instance-hostnames.ts'
+import { recordInstanceAcmeIssuanceFromServer } from '../instance-acme-inbound.ts'
 import { recordCommandProgress } from '../../features/commands/command-progress.ts'
 import {
   ackForReportedOutcome,
@@ -2103,13 +2103,7 @@ export class DaemonCellObject {
           'instance-acme-issuance-event',
           attachment.serverId,
           async (db) => {
-            await recordInstanceAcmeIssuance(db, {
-              hostname: parsed.hostname,
-              ok: parsed.ok,
-              at: parsed.at,
-              ...(parsed.errorMessage ? { errorMessage: parsed.errorMessage } : {}),
-              ...(parsed.notAfter ? { notAfter: parsed.notAfter } : {}),
-            })
+            await recordInstanceAcmeIssuanceFromServer(db, attachment.serverId, parsed)
           }
         )
         return
