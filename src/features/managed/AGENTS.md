@@ -462,6 +462,24 @@ listed databases. `PATCH /managed/users/:loginId` (`login-patch.ts`) plans
 the change; `dryRun` returns plain-words statement kinds because the SQL is
 built by the daemon.
 
+## Backup login
+
+One per cluster (`role = 'backup'`, `recipe = 'backup'`, `is_all_databases`,
+`is_tool`), made by `POST /managed/backup-login` (`backup-login.ts`), listed
+by `GET` there (never in `GET /managed/users`) and dropped by `DELETE` there
+or `DELETE /managed/users/:loginId`. It always names the places it connects
+from (`any` is refused). Its rights are not stored: the apply credential is
+`role: 'user'`, `kind: 'backup'`, every database of the cluster and no
+privileges (`backupCredential` in `apply-prepare.ts`), and the daemon derives
+the rights per engine (PostgreSQL `pg_read_all_data` + `BYPASSRLS` +
+`CONNECT`; MySQL `SELECT, SHOW VIEW, TRIGGER, EVENT` per database + global
+`SHOW_ROUTINE`; MariaDB the same plus `LOCK TABLES` and `SHOW CREATE
+ROUTINE`). A daemon without `managed-backup-login-v1` would drop `kind` and
+make a login with no rights, so creation refuses with 409
+`managed_backup_login_needs_daemon_update`. On the shared front door it is a
+tool login (primary only, no split rules), so a dump in one transaction stays
+on one backend. Large objects on PostgreSQL 18 are not covered yet.
+
 ## Postgres owner role per database and the Database admin login
 
 `database.is_role_owned` (a database row; false reads as none) marks the Postgres

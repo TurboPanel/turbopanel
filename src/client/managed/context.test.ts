@@ -185,6 +185,8 @@ test('every mutating managed route that can disturb a running cluster checks the
     'post /environments/:id/managed/users',
     'post /environments/:id/managed/users/:loginId/password',
     'delete /environments/:id/managed/users/:loginId',
+    'post /environments/:id/managed/backup-login',
+    'delete /environments/:id/managed/backup-login',
     'post /environments/:id/managed/databases',
     'delete /environments/:id/managed/databases/:databaseName',
     'post /environments/:id/managed/databases/:databaseName/app-logins',
@@ -194,11 +196,13 @@ test('every mutating managed route that can disturb a running cluster checks the
     source.split(`\nasync function ${name}`)[1]?.split(/\n(?:async )?function /)[0] ?? ''
   assertEquals(functionBody('gateLoginCreate').includes('assertManagedApplyReady('), true)
   assertEquals(functionBody('createAppLogins').includes('gateLoginCreate('), true)
+  assertEquals(functionBody('createBackupLoginRoute').includes('gateLoginCreate('), true)
+  assertEquals(functionBody('deleteManagedLoginRoute').includes('prepareApplyForManaged('), true)
   for (const key of gatedViaApply) {
     const handler = handlers.get(key)
     if (handler === undefined) throw new TypeError(`route not found: ${key}`)
     const viaApply =
-      /assertManagedApplyReady\(|prepareApplyForManaged\(|runApplyForManaged\(|gateLoginCreate\(|createAppLogins\(/.test(
+      /assertManagedApplyReady\(|prepareApplyForManaged\(|runApplyForManaged\(|gateLoginCreate\(|createAppLogins\(|createBackupLoginRoute\(|deleteManagedLoginRoute\(/.test(
         handler
       )
     assertEquals(viaApply, true, `${key} must go through the journal-gated apply helpers`)

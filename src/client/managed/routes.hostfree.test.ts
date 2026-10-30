@@ -3440,8 +3440,8 @@ test('POST users past apply-ready hits namespace and insert short-circuits', asy
  * Wraps a fake db so the test can see which principal rows were inserted
  * (the new login) and which commands were queued.
  */
-function recordingUserCreate(memberRows: unknown[]) {
-  const base = applyReadyDb({ principalRows: [], loginRows: [], memberRows })
+function recordingUserCreate(memberRows: unknown[], extra: FakeDbConfig = {}) {
+  const base = applyReadyDb({ principalRows: [], loginRows: [], memberRows, ...extra })
   const inserted: Array<Record<string, unknown>> = []
   const db = {
     ...base,
@@ -4360,4 +4360,159 @@ test('GET status?refresh=1 falls back quietly when the daemon lacks the feature 
     observed: 0,
     unavailable: 1,
   })
+})
+
+// ---------------------------------------------------------------------------
+// The cluster's backup login (`/managed/backup-login`)
+// ---------------------------------------------------------------------------
+
+const BACKUP_FEATURES = ['managed-backup-login-v1', 'managed-login-limits-v1']
+const BACKUP_LOGIN_ID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'
+
+function backupLoginRow(overrides: Record<string, unknown> = {}) {
+  return loginRow({
+    id: BACKUP_LOGIN_ID,
+    role: 'backup',
+    username: 'backup',
+    appliedUsername: 'backup',
+    isTool: true,
+    databases: [],
+    privileges: [],
+    allowedSources: ['internal'],
+    ...overrides,
+  })
+}
+
+async function postBackupLogin(
+  body: Record<string, unknown>,
+  features: string[] = BACKUP_FEATURES,
+  loginRows: unknown[] = []
+) {
+  const { db, inserted, commandQueue } = recordingUserCreate(PRIMARY_ONLY, {
+    loginRows,
+    serverRows: [serverAdvertising(features)],
+  })
+  const { app, cookie } = await buildApp({ db, registry: stubRegistry(), commandQueue })
+  const res = await app.request(envPath('/backup-login'), {
+    method: 'POST',
+    headers: { ...authHeaders(cookie), 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  return { res, inserted: inserted.filter((row) => row.role === 'backup') }
+}
+
+test('GET backup-login answers null without a cluster or a backup login, and the login when there is one', async () => {
+  const empty = await buildApp({ db: fakeDb({ managedRows: [] }) })
+  await expectJson(
+    await empty.app.request(envPath('/backup-login'), { headers: authHeaders(empty.cookie) }),
+    200,
+    { login: null }
+  )
+  const none = await buildApp({
+    db: fakeDb({ managedRows: [managedRow()], loginRows: [loginRow()] }),
+  })
+  await expectJson(
+    await none.app.request(envPath('/backup-login'), { headers: authHeaders(none.cookie) }),
+    200,
+    { login: null }
+  )
+  const withBackup = await buildApp({
+    db: fakeDb({ managedRows: [managedRow()], loginRows: [loginRow(), backupLoginRow()] }),
+  })
+  const body = await jsonOf(
+    await withBackup.app.request(envPath('/backup-login'), {
+      headers: authHeaders(withBackup.cookie),
+    })
+  )
+  const found = body.login as Record<string, unknown>
+  assertEquals(found.id, BACKUP_LOGIN_ID)
+  assertEquals(found.username, 'backup')
+  assertEquals(found.tool, true)
+  assertEquals(found.allowedSources, ['internal'])
+  // The ordinary users list never shows it.
+  const users = await jsonOf(
+    await withBackup.app.request(envPath('/users'), { headers: authHeaders(withBackup.cookie) })
+  )
+  assertEquals(
+    (users.users as Array<{ id: string }>).map((entry) => entry.id),
+    [LOGIN_ID]
+  )
+})
+
+test('POST backup-login refuses a login with no place to connect from, or anywhere', async () => {
+  for (const body of [{}, { allowedSources: null }, { allowedSources: ['any'] }]) {
+    const { res, inserted } = await postBackupLogin(body)
+    const answer = await jsonOf(res)
+    assertEquals(res.status, 400)
+    assertEquals(answer.error, 'managed_backup_login_sources_required')
+    assertEquals(inserted, [])
+  }
+  const bad = await postBackupLogin({ allowedSources: ['nowhere'] })
+  assertEquals(bad.res.status, 400)
+  assertEquals((await jsonOf(bad.res)).error, 'managed_login_source_invalid')
+  assertEquals(bad.inserted, [])
+})
+
+test('POST backup-login refuses an invalid or reserved name', async () => {
+  const invalid = await postBackupLogin({ allowedSources: ['internal'], username: 'bad name' })
+  assertEquals(invalid.res.status, 400)
+  const reserved = await postBackupLogin({ allowedSources: ['internal'], username: 'tp_backup' })
+  assertEquals(reserved.res.status, 422)
+  assertEquals((await jsonOf(reserved.res)).error, 'reserved_username')
+  const wrongType = await postBackupLogin({ allowedSources: ['internal'], username: 7 })
+  assertEquals(wrongType.res.status, 400)
+})
+
+test('POST backup-login refuses a server whose daemon cannot give the login its rights', async () => {
+  const { res, inserted } = await postBackupLogin({ allowedSources: ['internal'] }, [
+    'managed-login-limits-v1',
+  ])
+  assertEquals(res.status, 409)
+  assertEquals((await jsonOf(res)).error, 'managed_backup_login_needs_daemon_update')
+  assertEquals(inserted, [])
+})
+
+test('POST backup-login refuses a second backup login on the cluster', async () => {
+  const { res, inserted } = await postBackupLogin(
+    { allowedSources: ['internal'] },
+    BACKUP_FEATURES,
+    [backupLoginRow()]
+  )
+  await expectJson(res, 409, {
+    error: 'managed_backup_login_exists',
+    message: 'This cluster already has a backup login. Delete it first to make a new one.',
+  })
+  assertEquals(inserted, [])
+})
+
+// The fake db has no organization CA, so the apply step after the insert may
+// still answer an error: this test judges only the row that was written.
+test('POST backup-login stores a panel-set backup tool login limited to its places', async () => {
+  const { inserted } = await postBackupLogin({ allowedSources: ['internal'] })
+  assertEquals(inserted.length, 1)
+  const row = inserted[0]
+  assertEquals(row.role, 'backup')
+  assertEquals(row.recipe, 'backup')
+  assertEquals(row.grantMode, 'recipe')
+  assertEquals(row.username, 'backup')
+  assertEquals(row.isTool, true)
+  assertEquals(row.isAllDatabases, true)
+  assertEquals(row.privileges, [])
+  assertEquals(row.allowedSources, ['internal'])
+  const named = await postBackupLogin({ allowedSources: ['internal'], username: 'nightly' })
+  assertEquals(named.inserted[0]?.username, 'nightly')
+})
+
+test('DELETE backup-login answers 404 when the cluster has none', async () => {
+  const { app, cookie } = await buildApp({
+    db: fakeDb({ managedRows: [managedRow()], loginRows: [loginRow()] }),
+  })
+  await expectJson(
+    await app.request(envPath('/backup-login'), {
+      method: 'DELETE',
+      headers: authHeaders(cookie),
+    }),
+    404,
+    { error: 'Not found' }
+  )
 })
