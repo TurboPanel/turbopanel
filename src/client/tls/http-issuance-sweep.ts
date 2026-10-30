@@ -24,6 +24,7 @@ import {
 import { renewalDue } from '../../features/tls/http-issuance/progress.ts'
 import { readHttpIssuanceState } from '../../features/tls/http-issuance/state.ts'
 import { logWarn } from '../../lib/logger.ts'
+import { forEachSequential } from '../../lib/sequential.ts'
 import type { DerivedSecretsConfig, SecretsConfig } from '../../lib/secrets/secrets.ts'
 import { renewalPusher } from './dns-certificate-context.ts'
 
@@ -128,7 +129,7 @@ async function stepRow(
   out: HttpIssuanceSweepResult
 ): Promise<void> {
   const state = readHttpIssuanceState(row.metadata)
-  if (state && state.endedAt === null) {
+  if (state?.endedAt === null) {
     await advanceHttpIssuance(deps, row.id)
     out.advanced += 1
     return
@@ -166,13 +167,14 @@ export async function runHttpIssuanceSweepTick(
     delivered: 0,
   }
   const budgetMs = options.budgetMs ?? HTTP_ISSUANCE_SWEEP_BUDGET_MS
-  for (const row of rows) {
-    if (Date.now() - startedAt > budgetMs) break
+  // Rows not started inside the budget simply wait for the next minute.
+  await forEachSequential(rows, async (row) => {
+    if (Date.now() - startedAt > budgetMs) return
     try {
       await stepRow(deps, row, push, now, out)
     } catch (err) {
       logWarn('tls', `server-placed certificate step failed for ${row.id}: ${String(err)}`)
     }
-  }
+  })
   return out
 }

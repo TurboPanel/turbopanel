@@ -250,8 +250,7 @@ export function mayReplaceKey(
   const week = times.filter((x) => x > t - 7 * DAY)
   const left = Math.max(0, ISSUES_PER_WEEK - week.length)
   if (!hasPair) return { ok: false, reason: 'no_certificate', leftThisWeek: left }
-  if (state && state.endedAt === null)
-    return { ok: false, reason: 'in_progress', leftThisWeek: left }
+  if (state?.endedAt === null) return { ok: false, reason: 'in_progress', leftThisWeek: left }
   const last = times.at(-1)
   if (last !== undefined && last > t - DAY) {
     return { ok: false, reason: 'too_soon', leftThisWeek: left, notBefore: new Date(last + DAY) }

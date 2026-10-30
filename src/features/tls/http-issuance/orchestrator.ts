@@ -627,14 +627,14 @@ export async function deliverIssuedPair(
     .where(eq(tls.id, tlsId))
     .limit(1)
   const state = peek ? readHttpIssuanceState(peek.metadata) : null
-  if (!peek || !state || state.phase !== 'issued' || state.deliveredAt !== null) return 'not_due'
+  if (!peek || state?.phase !== 'issued' || state.deliveredAt !== null) return 'not_due'
   if (!push) return 'waiting'
   await push(tlsId, peek.organizationId)
   const ends = await deps.db.transaction(async (tx0) => {
     const tx = tx0 as unknown as Db
     const row = await lockRow(tx, tlsId)
     const current = row ? readHttpIssuanceState(row.metadata) : null
-    if (!row || !current || current.requestId !== state.requestId) return []
+    if (!row || current?.requestId !== state.requestId) return []
     await writeState(tx, row, { ...current, deliveredAt: now.toISOString() }, now)
     return endMessages(now, current)
   })
