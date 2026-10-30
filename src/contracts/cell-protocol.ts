@@ -1751,7 +1751,7 @@ function isAcmeIpv6(value: string): boolean {
   if (parts.length > 2) return false
   const groups = parts.flatMap((part) => (part === '' ? [] : part.split(':')))
   const last = groups.at(-1)
-  const tail = last !== undefined && last.includes('.')
+  const tail = last?.includes('.') === true
   if (tail && !ACME_IPV4_RE.test(last)) return false
   const hex = tail ? groups.slice(0, -1) : groups
   if (!hex.every((g) => ACME_IPV6_GROUP_RE.test(g))) return false

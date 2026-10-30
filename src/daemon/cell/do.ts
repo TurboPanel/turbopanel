@@ -36,7 +36,10 @@ import {
 import { createDurableObjectDaemonCellRegistry } from './do-registry.ts'
 import { createFreshStandbyProbe } from '../../client/managed/health-probe.ts'
 import { handleAcmeIssuanceEvent } from '../../client/tls/acme-issuance-event.ts'
-import { handleHttpIssuanceInbound } from '../../features/tls/http-issuance/events.ts'
+import {
+  handleHttpIssuanceInbound,
+  isHttpIssuanceMessage,
+} from '../../features/tls/http-issuance/events.ts'
 import { handleManagedHealthReport } from '../../features/managed/health-report.ts'
 import {
   FabricPeerReportThrottle,
@@ -2098,11 +2101,7 @@ export class DaemonCellObject {
         return
       }
 
-      if (
-        parsed.type === 'acme-issue-event' ||
-        parsed.type === 'acme-proof-forward-ready' ||
-        parsed.type === 'acme-proof-forward-failed'
-      ) {
+      if (isHttpIssuanceMessage(parsed)) {
         await this.#recordInboundRepairingPresence(attachment, parsed.at)
         await this.#withProjectionDb(parsed.type, attachment.serverId, async (db) => {
           await handleHttpIssuanceInbound(db, attachment.serverId, parsed)

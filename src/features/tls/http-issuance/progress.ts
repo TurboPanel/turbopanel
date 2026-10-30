@@ -44,9 +44,10 @@ function forwardingAction(state: HttpIssuanceState, now: Date): OpenAction {
   const failed = state.forwards.find((f) => f.outcome === 'failed')
   if (failed) {
     const label = state.roster.find((r) => r.serverId === failed.serverId)?.label ?? 'A server'
+    const why = failed.reason ? `: ${failed.reason}` : '.'
     return {
       kind: 'fail',
-      reason: `${label} could not pass the check along${failed.reason ? `: ${failed.reason}` : '.'}`,
+      reason: `${label} could not pass the check along${why}`,
       blameIssuer: false,
     }
   }

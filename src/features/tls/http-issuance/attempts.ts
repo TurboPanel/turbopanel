@@ -23,7 +23,7 @@ const WAITS_MS = [10 * MINUTE, 30 * MINUTE, HOUR, 2 * HOUR]
 export function backoffMs(failures: number): number {
   if (failures <= 0) return 0
   if (failures <= WAITS_MS.length) return WAITS_MS[failures - 1]
-  const doubled = WAITS_MS[WAITS_MS.length - 1] * 2 ** (failures - WAITS_MS.length)
+  const doubled = 2 * HOUR * 2 ** (failures - WAITS_MS.length)
   return Math.min(doubled, DAY)
 }
 

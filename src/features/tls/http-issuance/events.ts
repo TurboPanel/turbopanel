@@ -80,7 +80,7 @@ export async function handleIssueEvent(db: Db, input: IssueEventInput): Promise<
   return await db.transaction(async (tx0) => {
     const tx = tx0 as unknown as Db
     const found = await locate(tx, input.serverId, input.requestId)
-    if (!found || found.state.issuingServerId !== input.serverId) return false
+    if (found?.state.issuingServerId !== input.serverId) return false
     const next = nextStateForEvent(found.state, input, now)
     if (next === found.state) return false
     await save(tx, found, next, now)
@@ -102,7 +102,7 @@ export async function handleForwardReport(db: Db, input: ForwardReportInput): Pr
   return await db.transaction(async (tx0) => {
     const tx = tx0 as unknown as Db
     const found = await locate(tx, input.serverId, input.requestId)
-    if (!found || found.state.endedAt !== null) return false
+    if (found?.state.endedAt !== null) return false
     const asked = found.state.forwards.some(
       (f) => f.serverId === input.serverId && f.outcome === 'pending'
     )
@@ -122,6 +122,17 @@ export async function handleForwardReport(db: Db, input: ForwardReportInput): Pr
     await save(tx, found, next, now)
     return true
   })
+}
+
+/** Whether a validated inbound frame is one of the three server-placed order replies. */
+export function isHttpIssuanceMessage(message: {
+  type: string
+}): message is AcmeIssueEventMessage | AcmeProofForwardReportMessage {
+  return (
+    message.type === 'acme-issue-event' ||
+    message.type === 'acme-proof-forward-ready' ||
+    message.type === 'acme-proof-forward-failed'
+  )
 }
 
 /** Route one validated inbound frame of the three server-placed order types to its handler. */
