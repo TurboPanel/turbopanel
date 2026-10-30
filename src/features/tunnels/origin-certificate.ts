@@ -55,13 +55,7 @@ import {
   saveOriginRetry,
   throttleWait,
 } from './origin-certificate-retry.ts'
-import {
-  type BadgeRow,
-  type CarrierRow,
-  listBadges,
-  openBadgeToken,
-  toApiBadge,
-} from './records.ts'
+import { type BadgeRow, type CarrierRow, openBadgeToken, toApiBadge } from './records.ts'
 
 const MS_PER_DAY = 86_400_000
 const MS_PER_HOUR = 3_600_000
