@@ -326,27 +326,49 @@ export type LanPairInputs = {
   lanRouteServerIds: ReadonlySet<string>
 }
 
+/** Why two servers are not a trusted LAN pair, or null when they are. */
+export type TrustedLanBlocker = 'same_server' | 'daemon_too_old' | 'no_trusted_network' | 'no_ipv4'
+
+/**
+ * What stops two servers from being a trusted LAN pair: both daemons must
+ * route container ranges over a LAN, they must share a trusted datacenter
+ * network, and that network must give both an IPv4 address (container
+ * forwarding and the daemon's LAN routes are IPv4). Null when nothing does.
+ */
+export function trustedLanBlocker(
+  fromServerId: string,
+  toServerId: string,
+  inputs: LanPairInputs
+): TrustedLanBlocker | null {
+  if (fromServerId === toServerId) return 'same_server'
+  if (!inputs.lanRouteServerIds.has(fromServerId)) return 'daemon_too_old'
+  if (!inputs.lanRouteServerIds.has(toServerId)) return 'daemon_too_old'
+  const { trusted } = partitionSharedDatacenters(
+    inputs.membershipsByServer.get(fromServerId) ?? [],
+    inputs.membershipsByServer.get(toServerId) ?? [],
+    inputs.policiesByDatacenter
+  )
+  if (trusted.length === 0) return 'no_trusted_network'
+  if (!trustedLanIpv4(fromServerId, toServerId, inputs)) return 'no_ipv4'
+  if (!trustedLanIpv4(toServerId, fromServerId, inputs)) return 'no_ipv4'
+  return null
+}
+
 /**
  * The one pair rule: two different servers share a trusted datacenter network
- * (whatever its link state) and both daemons can route container ranges over
- * it. Such a pair has no tunnel between them; all their traffic, container
- * networks included, rides the LAN. A pair where either daemon is older keeps
- * the tunnel (over the LAN) so it keeps working.
+ * (whatever its link state) that gives both an IPv4 address, and both daemons
+ * can route container ranges over it. Such a pair has no tunnel between them;
+ * all their traffic, container networks included, rides the LAN. A pair where
+ * either daemon is older, or whose shared trusted network is IPv6-only, keeps
+ * the tunnel (over the LAN) so it keeps working. Symmetric on purpose: both
+ * servers must agree there is no tunnel.
  */
 export function serversShareTrustedLan(
   fromServerId: string,
   toServerId: string,
   inputs: LanPairInputs
 ): boolean {
-  if (fromServerId === toServerId) return false
-  if (!inputs.lanRouteServerIds.has(fromServerId)) return false
-  if (!inputs.lanRouteServerIds.has(toServerId)) return false
-  const { trusted } = partitionSharedDatacenters(
-    inputs.membershipsByServer.get(fromServerId) ?? [],
-    inputs.membershipsByServer.get(toServerId) ?? [],
-    inputs.policiesByDatacenter
-  )
-  return trusted.length > 0
+  return trustedLanBlocker(fromServerId, toServerId, inputs) === null
 }
 
 /**

@@ -10,7 +10,7 @@
  */
 import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { assertEquals } from '@std/assert'
-import { eq, inArray } from 'drizzle-orm'
+import { and, eq, inArray } from 'drizzle-orm'
 import { getDatabaseUrl } from '../../db/url.ts'
 import { createDenoDb, endDbConnection } from '../../db/connection.ts'
 import {
@@ -28,7 +28,9 @@ import {
 import type { FabricReconcileCommandPayload } from '../../contracts/commands/schemas.ts'
 import type { CommandEnvelope } from '../commands/envelope.ts'
 import type { CommandQueue } from '../commands/queue.ts'
+import { loadFabricExposures } from '../firewall/facts.ts'
 import { resolvePrivateEndpoint } from '../net/private-endpoint.ts'
+import { touchServerMetadata } from '../servers/server-registry.ts'
 import { isFabricMembershipConverged } from './enqueue.ts'
 import {
   buildFabricReconcilePayloadFromSnapshot,
@@ -36,6 +38,7 @@ import {
   loadFabricReconcileSnapshot,
   type RelayRecord,
 } from './fabric-records.ts'
+import { findDeployLanPairRefusal, findLanPairChangeRefusal } from './lan-pair-guard.ts'
 import { loadPairRules } from './pair-rules.ts'
 import { loadFabricPairs } from './pair-paths.ts'
 import { reconcileServerNetworking } from './server-networking.ts'
@@ -430,9 +433,13 @@ test('the ladder never aims at a fabric address for a LAN pair or over a dead tu
   })
 })
 
-test('the container range migration backfills a server from its relay', async () => {
+test('the container range migration backfills a server from its relay and keeps a range already set', async () => {
   await withRig(async (rig) => {
     await rig.db.update(server).set({ containerPrefix: null }).where(eq(server.id, rig.b))
+    await rig.db
+      .update(server)
+      .set({ containerPrefix: '10.200.0.0/16' })
+      .where(eq(server.id, rig.a))
     const sql = await Deno.readTextFile(
       new URL('../../../migrations/0010_server_container_prefix.sql', import.meta.url)
     )
@@ -446,5 +453,218 @@ test('the container range migration backfills a server from its relay', async ()
       .from(server)
       .where(eq(server.id, rig.b))
     assertEquals(row?.prefix, '10.193.0.0/16')
+    const [kept] = await rig.db
+      .select({ prefix: server.containerPrefix })
+      .from(server)
+      .where(eq(server.id, rig.a))
+    assertEquals(kept?.prefix, '10.200.0.0/16')
+  })
+})
+
+/** A cross-server container network with a piece on each listed server. */
+async function addContainerNetwork(rig: Rig, serverIds: readonly string[]): Promise<string> {
+  const [net] = await rig.db
+    .insert(network)
+    .values({ organizationId: rig.organizationId, kind: 'compose', name: 'app', composeKey: 'app' })
+    .returning({ id: network.id })
+  const thirdOctet: Record<string, string> = { [rig.a]: '192', [rig.b]: '193', [rig.c]: '194' }
+  await rig.db.insert(subnet).values(
+    serverIds.map((serverId) => ({
+      networkId: net!.id,
+      serverId,
+      cidr: `10.${thirdOctet[serverId]}.0.0/24`,
+    }))
+  )
+  return net!.id
+}
+
+async function turnFabricOff(rig: Rig): Promise<void> {
+  await rig.db.delete(relay).where(eq(relay.fabricId, rig.fabricId))
+  await rig.db.delete(fabric).where(eq(fabric.id, rig.fabricId))
+}
+
+/** Move the shared LAN to IPv6 only: the pair still shares a trusted network. */
+async function makeLanIpv6Only(rig: Rig): Promise<void> {
+  for (const [serverId, address] of [
+    [rig.a, '2001:db8::1'],
+    [rig.b, '2001:db8::2'],
+  ]) {
+    await rig.db
+      .update(ip)
+      .set({ address })
+      .where(and(eq(ip.serverId, serverId!), eq(ip.datacenterId, rig.datacenterId)))
+  }
+}
+
+test('an IPv6-only trusted LAN keeps the tunnel with TurboFabric on', async () => {
+  await withRig(async (rig) => {
+    await makeLanIpv6Only(rig)
+    const rules = await loadPairRules(rig.db, {
+      organizationId: rig.organizationId,
+      serverIds: [rig.a, rig.b],
+    })
+    assertEquals(rules.pairSharesTrustedLan(rig.a, rig.b), false)
+    const alpha = await payloadFor(rig, rig.a)
+    assertEquals(alpha.peers.map((peer) => peer.publicKey).sort(), [KEY_B, KEY_C].sort())
+    assertEquals(alpha.tunnel, true)
+    assertEquals(alpha.lanRoutes, [])
+    const pairs = await loadFabricPairs(rig.db, {
+      organizationId: rig.organizationId,
+      fabric: await getFabricById(rig.db, rig.fabricId),
+    })
+    const ab = pairs.find(
+      (row) => [row.fromServerId, row.toServerId].sort().join() === [rig.a, rig.b].sort().join()
+    )
+    assertEquals(ab?.path, 'fabric')
+    assertEquals(
+      ab?.reason,
+      'Same trusted network, but it has no IPv4 address on both servers: TurboFabric runs over the LAN.'
+    )
+  })
+})
+
+test('an IPv6-only trusted LAN is refused for a container network with TurboFabric off', async () => {
+  await withRig(async (rig) => {
+    await makeLanIpv6Only(rig)
+    await turnFabricOff(rig)
+    const refusal = await findDeployLanPairRefusal(rig.db, {
+      organizationId: rig.organizationId,
+      networks: [{ key: 'app', serverIds: [rig.a, rig.b] }],
+    })
+    assertEquals(
+      refusal?.servers.map((row) => row.name),
+      ['alpha', 'bravo'].sort()
+    )
+    assertEquals(
+      refusal?.message,
+      'alpha and bravo no longer share a trusted LAN, and container network "app" needs one while TurboFabric is not running for them. Turn TurboFabric on, or deploy again to keep the network on servers that share a trusted datacenter network.'
+    )
+    // No route over an IPv6-only network: nothing is sent that would not work.
+    await addContainerNetwork(rig, [rig.a, rig.b])
+    const sent = await networking(rig)
+    assertEquals(sent.get(rig.a)?.lanRoutes, [])
+  })
+})
+
+test('marking the LAN untrusted or a server leaving it is refused while TurboFabric is off', async () => {
+  await withRig(async (rig) => {
+    await addContainerNetwork(rig, [rig.a, rig.b])
+    await turnFabricOff(rig)
+    const untrust = await findLanPairChangeRefusal(rig.db, {
+      organizationId: rig.organizationId,
+      change: { kind: 'untrust_datacenter', datacenterId: rig.datacenterId },
+    })
+    assertEquals(
+      untrust?.networks.map((row) => row.label),
+      ['container network "app"']
+    )
+    assertEquals(
+      untrust?.message,
+      'This change would stop alpha and bravo sharing a trusted LAN, and container network "app" runs over it with no tunnel while TurboFabric is not running for them. Turn TurboFabric on first, or move or remove that network.'
+    )
+    const leave = await findLanPairChangeRefusal(rig.db, {
+      organizationId: rig.organizationId,
+      change: { kind: 'leave_datacenter', datacenterId: rig.datacenterId, serverId: rig.b },
+    })
+    assertEquals(leave?.servers.map((row) => row.id).sort(), [rig.a, rig.b].sort())
+  })
+})
+
+test('marking the LAN untrusted is allowed while TurboFabric runs for both servers', async () => {
+  await withRig(async (rig) => {
+    await addContainerNetwork(rig, [rig.a, rig.b])
+    const change = { kind: 'untrust_datacenter' as const, datacenterId: rig.datacenterId }
+    assertEquals(
+      await findLanPairChangeRefusal(rig.db, { organizationId: rig.organizationId, change }),
+      null
+    )
+    // A server switched out of the mesh has no tunnel to fall back on.
+    await rig.db.update(server).set({ isFabricEnabled: false }).where(eq(server.id, rig.b))
+    const refused = await findLanPairChangeRefusal(rig.db, {
+      organizationId: rig.organizationId,
+      change,
+    })
+    assertEquals(refused?.networks.length, 1)
+    // A paused fabric carries nothing either.
+    await rig.db.update(server).set({ isFabricEnabled: true }).where(eq(server.id, rig.b))
+    await rig.db.update(fabric).set({ isEnabled: false }).where(eq(fabric.id, rig.fabricId))
+    const paused = await findLanPairChangeRefusal(rig.db, {
+      organizationId: rig.organizationId,
+      change,
+    })
+    assertEquals(paused?.networks.length, 1)
+  })
+})
+
+test('the deploy re-check refuses a pair whose daemon stopped routing over the LAN while TurboFabric is off', async () => {
+  await withRig(async (rig) => {
+    const networks = [{ key: 'app', serverIds: [rig.a, rig.b] }]
+    assertEquals(
+      await findDeployLanPairRefusal(rig.db, { organizationId: rig.organizationId, networks }),
+      null
+    )
+    await rig.db.update(server).set({ daemon: null }).where(eq(server.id, rig.b))
+    // TurboFabric on: the tunnel carries the pair.
+    assertEquals(
+      await findDeployLanPairRefusal(rig.db, { organizationId: rig.organizationId, networks }),
+      null
+    )
+    await turnFabricOff(rig)
+    const refusal = await findDeployLanPairRefusal(rig.db, {
+      organizationId: rig.organizationId,
+      networks,
+    })
+    assertEquals(refusal?.networks, [{ id: 'app', label: 'container network "app"' }])
+    // The TurboFabric page names the network the missing path cuts.
+    await addContainerNetwork(rig, [rig.a, rig.b])
+    const pairs = await loadFabricPairs(rig.db, {
+      organizationId: rig.organizationId,
+      fabric: null,
+    })
+    const ab = pairs.find(
+      (row) => [row.fromServerId, row.toServerId].sort().join() === [rig.a, rig.b].sort().join()
+    )
+    assertEquals(ab?.path, 'none')
+    assertEquals(
+      ab?.reason,
+      'TurboFabric is off and these servers share a trusted network but a daemon is too old to route container networks over it, so they have no private path for container networks. Cut between them: container network "app".'
+    )
+  })
+})
+
+test('the WireGuard port stays closed on a server whose payload has no tunnel', async () => {
+  await withRig(async (rig) => {
+    assertEquals((await loadFabricExposures(rig.db, rig.a)).length, 1)
+    await rig.db.update(server).set({ isFabricEnabled: false }).where(eq(server.id, rig.c))
+    assertEquals((await payloadFor(rig, rig.a)).tunnel, false)
+    assertEquals(await loadFabricExposures(rig.db, rig.a), [])
+    // An older daemon has no tunnel field and keeps the tunnel: the port stays open.
+    await rig.db.update(server).set({ daemon: null }).where(eq(server.id, rig.a))
+    assertEquals((await loadFabricExposures(rig.db, rig.a)).length, 1)
+  })
+})
+
+async function pendingFanout(rig: Rig, serverId: string): Promise<boolean> {
+  const rows = await rig.db
+    .select({ at: ip.repinPendingFanoutAt })
+    .from(ip)
+    .where(and(eq(ip.serverId, serverId), eq(ip.datacenterId, rig.datacenterId)))
+  return rows.length > 0 && rows.every((row) => row.at !== null)
+}
+
+test('a daemon gaining or losing LAN routes marks its routing for a re-plan', async () => {
+  await withRig(async (rig) => {
+    await touchServerMetadata(rig.db, rig.b, { features: ['fabric-lan-routes-v1', 'other'] })
+    assertEquals(await pendingFanout(rig, rig.b), false)
+
+    await touchServerMetadata(rig.db, rig.b, { features: ['other'] })
+    assertEquals(await pendingFanout(rig, rig.b), true)
+
+    await rig.db
+      .update(ip)
+      .set({ repinPendingFanoutAt: null })
+      .where(eq(ip.datacenterId, rig.datacenterId))
+    await touchServerMetadata(rig.db, rig.b, { features: ['fabric-lan-routes-v1'] })
+    assertEquals(await pendingFanout(rig, rig.b), true)
   })
 })

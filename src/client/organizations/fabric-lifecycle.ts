@@ -1,6 +1,6 @@
 /**
  * TurboFabric lifecycle answers for the org fabric routes: pause (turn off and
- * keep keys), remove completely (today's purge), and switching one server in
+ * keep keys), remove completely (purges what needs a tunnel), and switching one server in
  * or out of the mesh.
  *
  * Every database write happens inside the request: on Workers the request's
@@ -10,18 +10,18 @@ import type { Context } from 'hono'
 import type { Db } from '../../db/connection.ts'
 import type { CommandQueue } from '../../features/commands/queue.ts'
 import { FABRIC_RETAIN_KEYS_FEATURE } from '../../lib/version-wire.ts'
-import { inArray } from 'drizzle-orm'
-import { server } from '../../db/schema.ts'
+import { and, eq, inArray } from 'drizzle-orm'
+import { network, server } from '../../db/schema.ts'
 import { parseServerDaemonState } from '../../features/servers/daemon-state.ts'
 import {
   clearRelayAppliedPayloadHash,
+  deleteComposeNetworkIds,
   disableOrganizationFabric,
   type FabricRecord,
   getOrganizationFabric,
   isFabricPaused,
   listFabricRelays,
   pauseOrganizationFabric,
-  purgeOrganizationComposeNetworks,
   resetRelaysAfterQueuedTeardown,
   setFabricEnabled,
 } from '../../features/fabric/fabric-records.ts'
@@ -31,6 +31,12 @@ import {
   type FabricEnqueueResult,
 } from '../../features/fabric/enqueue.ts'
 import { reconcileServerNetworking } from '../../features/fabric/server-networking.ts'
+import {
+  loadContainerNetworkPieces,
+  networkRidesLan,
+} from '../../features/fabric/lan-pair-guard.ts'
+import { loadLanPairInputs } from '../../features/fabric/lan-pairs.ts'
+import { compatLogWarn } from '../../lib/log-compat.ts'
 import {
   type FabricDependent,
   fabricDependentsMessage,
@@ -196,11 +202,58 @@ export async function auditFabricResume(params: FabricLifecycleParams): Promise<
 }
 
 /**
+ * The compose networks to purge: those that need a tunnel (some pair of their
+ * servers is not a trusted LAN pair) and those with no piece left. A network
+ * whose servers all share a trusted LAN rides the LAN and survives the removal.
+ */
+async function tunnelledComposeNetworkIds(db: Db, organizationId: string): Promise<string[]> {
+  const [networks, rows] = await Promise.all([
+    loadContainerNetworkPieces(db, organizationId),
+    db
+      .select({ id: network.id })
+      .from(network)
+      .where(and(eq(network.organizationId, organizationId), eq(network.kind, 'compose'))),
+  ])
+  const inputs = await loadLanPairInputs(
+    db,
+    networks.flatMap((row) => row.serverIds)
+  )
+  const kept = new Set(networks.filter((row) => networkRidesLan(row, inputs)).map((row) => row.id))
+  // A network with no piece left rides nothing: it goes too, as before.
+  return rows.map((row) => row.id).filter((id) => !kept.has(id))
+}
+
+/**
+ * The teardown also removed LAN routes and bridges: send the payload with no
+ * tunnel again to every server still holding a network that rides the LAN.
+ * Best effort: the removal is done; a server not reached now is reached by
+ * the next networking change or deploy.
+ */
+async function resendLanOnlyNetworking(params: FabricLifecycleParams): Promise<void> {
+  const results = await reconcileServerNetworking({
+    db: params.db,
+    commandQueue: params.commandQueue,
+    actor: { type: 'user', id: params.actorId },
+    organizationId: params.organizationId,
+    secrets: params.secrets,
+  })
+  const failed = notQueuedServerIds(results)
+  if (failed.length > 0) {
+    compatLogWarn(
+      'fabric-remove',
+      `LAN-only container networking was not resent to ${failed.join(', ')} after TurboFabric was removed`
+    )
+  }
+}
+
+/**
  * Remove completely: tear every server down (keys deleted, including servers
  * switched out of the mesh, which kept theirs), then purge the cross-server
- * container networks and the fabric row together. The rows go only once every
- * teardown is queued: with the relay rows deleted nothing could ever send a
- * teardown again. A never-enabled org is a no-op.
+ * container networks that need a tunnel and the fabric row together, and
+ * send the payload with no tunnel again to servers whose networks ride a
+ * trusted LAN (they keep working without TurboFabric). The rows go only once
+ * every teardown is queued: with the relay rows deleted nothing could ever
+ * send a teardown again. A never-enabled org is a no-op.
  */
 export async function removeFabric(
   c: Context,
@@ -228,10 +281,12 @@ export async function removeFabric(
       notQueued
     )
   }
+  const purgeIds = await tunnelledComposeNetworkIds(db, organizationId)
   await db.transaction(async (tx) => {
-    await purgeOrganizationComposeNetworks(tx, organizationId)
+    await deleteComposeNetworkIds(tx, purgeIds)
     await disableOrganizationFabric(tx, organizationId)
   })
+  await resendLanOnlyNetworking(params)
   await audit(params, {
     action: 'fabric.remove',
     targetType: 'organization',

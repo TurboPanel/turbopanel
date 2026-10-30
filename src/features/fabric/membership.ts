@@ -30,6 +30,7 @@ import {
   resolvePrivateEndpoints,
   serversShareTrustedLan,
 } from '../net/private-endpoint.ts'
+import { containerNetworkLabel } from './lan-pair-guard.ts'
 import { loadLanPairInputs } from './lan-pairs.ts'
 import { relayServerSwitchedOn } from './relay-filters.ts'
 import {
@@ -203,9 +204,7 @@ async function loadSpanningNetworkDependents(db: Db, serverId: string): Promise<
     return {
       kind: 'container_network',
       id: row.id,
-      label: row.environmentName
-        ? `container network "${name}" in environment "${row.environmentName}"`
-        : `container network "${name}"`,
+      label: containerNetworkLabel(name, row.environmentName),
     }
   })
 }

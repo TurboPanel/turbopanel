@@ -35,6 +35,10 @@ import { compatLogWarn } from '../../lib/log-compat.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
 import { fanOutDatacenterRoutingChange } from './routing-fanout.ts'
 import { reconcileServerNetworking } from '../../features/fabric/server-networking.ts'
+import {
+  findLanPairChangeRefusal,
+  type LanPairRefusal,
+} from '../../features/fabric/lan-pair-guard.ts'
 import { runNetworkCheck } from './network-check-run.ts'
 import { chosenNetworkDownWarnings } from '../../features/net/server-network-check.ts'
 import { suggestDatacenterNames } from '../../features/datacenters/datacenter-name-suggestions.ts'
@@ -98,6 +102,33 @@ export {
   resolveOrCreateSubnetForAddress,
   resolveSeededFields,
 } from './create-input.ts'
+
+/**
+ * 409 `lan_pair_in_use`: the change would cut a container network that runs
+ * over a trusted LAN with no tunnel while TurboFabric is not running for it.
+ */
+function lanPairRefusalResponse(c: Context, refusal: LanPairRefusal): Response {
+  return c.json({ error: 'lan_pair_in_use', ...refusal }, 409)
+}
+
+/** Refuse marking a datacenter untrusted while a LAN-only container network needs it. */
+async function refuseUntrustingLanPairs(
+  c: Context,
+  db: Db,
+  params: {
+    organizationId: string
+    datacenterId: string
+    trustedBefore: boolean
+    trustedAfter: boolean
+  }
+): Promise<Response | null> {
+  if (!params.trustedBefore || params.trustedAfter) return null
+  const refusal = await findLanPairChangeRefusal(db, {
+    organizationId: params.organizationId,
+    change: { kind: 'untrust_datacenter', datacenterId: params.datacenterId },
+  })
+  return refusal ? lanPairRefusalResponse(c, refusal) : null
+}
 
 /**
  * {@link resolveOrgRequest}, then the `:id` datacenter: `404` unless it belongs
@@ -1020,6 +1051,12 @@ export function registerDatacenterRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
     const { db, session, organizationId, id } = scope
     const serverId = c.req.param('serverId')
 
+    const refusal = await findLanPairChangeRefusal(db, {
+      organizationId,
+      change: { kind: 'leave_datacenter', datacenterId: id, serverId },
+    })
+    if (refusal) return lanPairRefusalResponse(c, refusal)
+
     const deleted = await db
       .delete(ip)
       .where(and(eq(ip.scope, 'datacenter'), eq(ip.datacenterId, id), eq(ip.serverId, serverId)))
@@ -1177,6 +1214,15 @@ export function registerDatacenterRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
       )
     }
     const { options: nextOptions, ...otherFields } = updateFields
+    const columnsAfter = policySent ? policyColumnsFromOptions(nextOptions) : current
+    const policyAfter = policySent ? resolveDatacenterPolicy(columnsAfter) : policyBefore
+    const untrustRefusal = await refuseUntrustingLanPairs(c, db, {
+      organizationId,
+      datacenterId: id,
+      trustedBefore: policyBefore.trusted,
+      trustedAfter: policyAfter.trusted,
+    })
+    if (untrustRefusal) return untrustRefusal
     await db
       .update(datacenter)
       .set({
@@ -1192,8 +1238,6 @@ export function registerDatacenterRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
     // `trusted` / `addressPreference` change re-converges stored transports,
     // fabric payloads and LAN routes. The fan-out runs after the UPDATE so
     // recomputation reads the new policy.
-    const columnsAfter = policySent ? policyColumnsFromOptions(nextOptions) : current
-    const policyAfter = policySent ? resolveDatacenterPolicy(columnsAfter) : policyBefore
     if (
       datacenterPolicyChanged(policyBefore, policyAfter) ||
       columnsAfter.addressPreference !== current.addressPreference

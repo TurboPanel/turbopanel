@@ -1049,7 +1049,8 @@ export type EnvironmentComposeNetwork = {
   segments: EnvironmentComposeNetworkSubnet[]
 }
 
-async function deleteComposeNetworkIds(db: Db, ids: readonly string[]): Promise<void> {
+/** Delete these compose networks and their subnets. */
+export async function deleteComposeNetworkIds(db: Db, ids: readonly string[]): Promise<void> {
   if (ids.length === 0) return
   await db.delete(subnet).where(inArray(subnet.networkId, [...ids]))
   await db.delete(network).where(inArray(network.id, [...ids]))
@@ -2157,17 +2158,26 @@ export function buildLanRoutes(
 }
 
 /**
- * Whether `self` needs `tp0`: some other switched-on member is not a trusted
- * LAN pair (it is reached through a tunnel). Read from membership, not from
- * the peer list, so a first enable (no keys anywhere yet) still brings the
- * tunnel up and reports a key.
+ * Whether `selfServerId`'s payload brings `tp0` up: always for a daemon that
+ * does not list `fabric-lan-routes-v1` (it gets no `tunnel` field and keeps
+ * the tunnel on), otherwise when some other switched-on member is not a
+ * trusted LAN pair (it is reached through a tunnel). Read from membership,
+ * not from the peer list, so a first enable (no keys anywhere yet) still
+ * brings the tunnel up and reports a key. The payload builder and the
+ * firewall (WireGuard port) both read this one answer.
  */
-function needsTunnel(snapshot: FabricReconcileSnapshot, selfServerId: string): boolean {
-  return snapshot.relays.some(
-    (row) =>
-      row.serverId !== selfServerId &&
-      !pairSharesTrustedLan(selfServerId, row.serverId, snapshot.caches)
-  )
+export function serverPayloadNeedsTunnel(
+  selfServerId: string,
+  memberServerIds: Iterable<string>,
+  inputs: LanPairInputs
+): boolean {
+  if (!inputs.lanRouteServerIds.has(selfServerId)) return true
+  for (const serverId of memberServerIds) {
+    if (serverId !== selfServerId && !serversShareTrustedLan(selfServerId, serverId, inputs)) {
+      return true
+    }
+  }
+  return false
 }
 
 /**
@@ -2179,13 +2189,14 @@ function lanRouteFields(
   selfServerId: string
 ): { tunnel?: boolean; lanRoutes?: FabricReconcileLanRoute[] } {
   if (!snapshot.caches.lanRouteServerIds?.has(selfServerId)) return {}
+  const inputs = lanPairInputs(snapshot.caches)
   return {
-    tunnel: needsTunnel(snapshot, selfServerId),
-    lanRoutes: buildLanRoutes(
+    tunnel: serverPayloadNeedsTunnel(
       selfServerId,
-      snapshot.containerPrefixByServer ?? new Map(),
-      lanPairInputs(snapshot.caches)
+      snapshot.relays.map((row) => row.serverId),
+      inputs
     ),
+    lanRoutes: buildLanRoutes(selfServerId, snapshot.containerPrefixByServer ?? new Map(), inputs),
   }
 }
 

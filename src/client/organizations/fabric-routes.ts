@@ -326,8 +326,8 @@ export function registerOrganizationFabricRoutes(router: Hono<AppEnv>, opts: Aut
     return c.json(await fabricSettingsBody(db, id))
   })
 
-  // Remove TurboFabric completely: tear down every server, delete keys,
-  // cross-server container networks and the fabric row.
+  // Remove TurboFabric completely: tear down every server, delete keys, the
+  // cross-server container networks that need a tunnel and the fabric row.
   router.delete('/organizations/:id/fabric', async (c) => {
     const ctx = await mutatingFabricContext(c, null)
     if (ctx instanceof Response) return ctx

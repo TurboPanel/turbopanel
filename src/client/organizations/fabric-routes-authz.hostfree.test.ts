@@ -6,7 +6,7 @@ import { assertEquals } from '@std/assert'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import type { Db } from '../../db/connection.ts'
-import { fabric, ip, network, organization, relay, server } from '../../db/schema.ts'
+import { fabric, ip, network, organization, relay, server, subnet } from '../../db/schema.ts'
 import {
   createEmptyMockAuthState,
   createMockAuthDb,
@@ -224,6 +224,15 @@ const EXHAUSTED_HOST_CIDRS = [
   '10.253.0.0/16',
 ] as const
 
+/** A query on `subnet` in an org with no cross-server container network: any chain, no rows. */
+function noContainerNetworks(): unknown {
+  const chain: Record<string, unknown> = {}
+  for (const key of ['where', 'innerJoin', 'leftJoin', 'orderBy', 'limit']) chain[key] = () => chain
+  chain.then = (resolve: (rows: unknown[]) => unknown, reject: (err: unknown) => unknown) =>
+    Promise.resolve([]).then(resolve, reject)
+  return chain
+}
+
 function thenableRows<T>(rows: T[]) {
   const promise = Promise.resolve(rows)
   return Object.assign(promise, {
@@ -321,6 +330,7 @@ async function buildFabricEnableApp(opts: {
     execute: () => Promise.resolve([{ allowed: true }]),
     select: (fields?: unknown) => ({
       from: (table: unknown) => {
+        if (table === subnet) return noContainerNetworks()
         if (opts.exhaustHostCidrs && table === network) {
           return {
             where: () => thenableRows(EXHAUSTED_HOST_CIDRS.map((cidr) => ({ cidr }))),
@@ -911,8 +921,11 @@ async function buildEnabledFabricApp(opts: {
 
   const db = Object.assign(authDb, {
     execute: () => Promise.resolve([{ allowed: true }]),
+    // Servers holding a cross-server network piece: none here.
+    selectDistinct: () => ({ from: () => noContainerNetworks() }),
     select: (fields?: unknown) => ({
       from: (table: unknown) => {
+        if (table === subnet) return noContainerNetworks()
         if (table === fabric) {
           return {
             where: () =>

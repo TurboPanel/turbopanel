@@ -13,17 +13,19 @@
 import { eq, inArray } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { datacenter, server } from '../../db/schema.ts'
-import { partitionSharedDatacenters } from '../net/private-endpoint.ts'
+import { partitionSharedDatacenters, trustedLanBlocker } from '../net/private-endpoint.ts'
 import {
   type EndpointAddressCaches,
   type FabricRecord,
   isFabricPaused,
+  lanPairInputs,
   listFabricRelays,
   loadEndpointCaches,
   pairSharesTrustedLan,
   planRelayPath,
   type RelayRecord,
 } from './fabric-records.ts'
+import { loadContainerNetworkPieces, pairsOf } from './lan-pair-guard.ts'
 import { loadLanPairInputs } from './lan-pairs.ts'
 
 export type FabricPairPath = 'lan' | 'fabric' | 'fabric_over_untrusted_lan' | 'none'
@@ -42,6 +44,8 @@ type PairContext = {
   caches: EndpointAddressCaches
   names: ReadonlyMap<string, string>
   datacenterNames: ReadonlyMap<string, string>
+  /** Container network labels held by both servers of a pair, keyed `a>b` (sorted ids). */
+  networksByPair?: ReadonlyMap<string, readonly string[]>
 }
 
 function sharedNetworks(
@@ -100,6 +104,15 @@ function tunnelPath(ctx: PairContext, a: string, b: string): FabricPairApiRow {
       `Shared network "${networkName(ctx, plan.selected.datacenterId)}" is untrusted: TurboFabric runs over it, encrypted.`
     )
   }
+  const blocker = trustedLanBlocker(a, b, lanPairInputs(ctx.caches))
+  if (blocker === 'no_ipv4') {
+    return row(
+      a,
+      b,
+      'fabric',
+      'Same trusted network, but it has no IPv4 address on both servers: TurboFabric runs over the LAN.'
+    )
+  }
   if (sharedNetworks(ctx, a, b).trusted.length > 0) {
     return row(
       a,
@@ -109,6 +122,40 @@ function tunnelPath(ctx: PairContext, a: string, b: string): FabricPairApiRow {
     )
   }
   return row(a, b, 'fabric', 'Different datacenters: traffic goes through TurboFabric.')
+}
+
+/** Why the pair is not a trusted LAN pair, as the end of a sentence. */
+function noLanReason(ctx: PairContext, a: string, b: string): string {
+  const blocker = trustedLanBlocker(a, b, lanPairInputs(ctx.caches))
+  if (blocker === 'no_ipv4') {
+    return 'their shared trusted network has no IPv4 address on both servers'
+  }
+  if (sharedNetworks(ctx, a, b).trusted.length > 0) {
+    return 'these servers share a trusted network but a daemon is too old to route container networks over it'
+  }
+  return 'these servers are in different datacenters'
+}
+
+/** Names the container networks the missing path cuts, or nothing. */
+function cutNetworksSentence(ctx: PairContext, a: string, b: string): string {
+  const key = [a, b].sort((x, y) => x.localeCompare(y)).join('>')
+  const labels = ctx.networksByPair?.get(key) ?? []
+  if (labels.length === 0) return ''
+  return ` Cut between them: ${labels.join(', ')}.`
+}
+
+/** Container network labels per pair of servers holding a piece of it. */
+function networksByPair(
+  networks: Awaited<ReturnType<typeof loadContainerNetworkPieces>>
+): Map<string, string[]> {
+  const out = new Map<string, string[]>()
+  for (const entry of networks) {
+    for (const [a, b] of pairsOf(entry.serverIds)) {
+      const key = `${a}>${b}`
+      out.set(key, [...(out.get(key) ?? []), entry.label])
+    }
+  }
+  return out
 }
 
 /** The path and reason for one pair. */
@@ -124,16 +171,11 @@ export function describeFabricPair(ctx: PairContext, a: string, b: string): Fabr
   }
   const missing = meshMissingReason(ctx, a, b)
   if (missing) {
-    const shared = sharedNetworks(ctx, a, b)
-    const where =
-      shared.trusted.length > 0
-        ? 'these servers share a trusted network but a daemon is too old to route container networks over it'
-        : 'these servers are in different datacenters'
     return row(
       a,
       b,
       'none',
-      `${missing} and ${where}, so they have no private path for container networks.`
+      `${missing} and ${noLanReason(ctx, a, b)}, so they have no private path for container networks.${cutNetworksSentence(ctx, a, b)}`
     )
   }
   return tunnelPath(ctx, a, b)
@@ -170,10 +212,11 @@ export async function loadFabricPairs(
 ): Promise<FabricPairApiRow[]> {
   const { ids, names } = await loadNames(db, params.organizationId)
   if (ids.length < 2) return []
-  const [{ caches: endpointCaches }, lanInputs, relays] = await Promise.all([
+  const [{ caches: endpointCaches }, lanInputs, relays, networks] = await Promise.all([
     loadEndpointCaches(db, ids),
     loadLanPairInputs(db, ids),
     params.fabric ? listFabricRelays(db, params.fabric.id) : Promise.resolve([]),
+    loadContainerNetworkPieces(db, params.organizationId),
   ])
   const caches: EndpointAddressCaches = {
     ...endpointCaches,
@@ -190,6 +233,7 @@ export async function loadFabricPairs(
     caches,
     names,
     datacenterNames: await loadDatacenterNames(db, [...caches.policyByDatacenter.keys()]),
+    networksByPair: networksByPair(networks),
   }
   const out: FabricPairApiRow[] = []
   for (const [index, a] of ids.entries()) {

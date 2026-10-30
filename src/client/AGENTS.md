@@ -190,13 +190,23 @@ changes.
   is a teardown (reclaims `network(kind='compose')` + `subnet`).
   **Trusted LAN wins (one pair rule, `serversShareTrustedLan` in
   `features/net/private-endpoint.ts`):** two servers that share a trusted
-  datacenter network, both daemons listing `fabric-lan-routes-v1`, have **no
-  tunnel**: they are not WireGuard peers, the ladder never gives them a fabric
+  datacenter network giving both an IPv4 address, both daemons listing
+  `fabric-lan-routes-v1`, have **no tunnel** (an IPv6-only shared network keeps
+  the tunnel; the managed-database ladder still uses it): they are not WireGuard peers, the ladder never gives them a fabric
   address, and a cross-server container network between them rides the LAN
   (`lanRoutes`: each routes the other's `server.container_prefix` via its IPv4
   LAN address) with TurboFabric on, paused or off
   (`reconcileServerNetworking`; outside a running mesh the payload is
   `tunnel: false`). A pair with an older daemon keeps its tunnel over the LAN.
+  While TurboFabric is not running for a pair (off, paused, a server switched
+  off), a change that would end a LAN pair holding a cross-server network is
+  refused (`409 lan_pair_in_use`: marking the datacenter untrusted, removing a
+  member) and the deploy re-checks the rule before delivering (`422
+  turbofabric_required`); `features/fabric/lan-pair-guard.ts`. A daemon gaining
+  or losing the feature stamps `ip.repin_pending_fanout_at` so the repin sweep
+  re-plans. Remove completely keeps networks whose servers are all LAN pairs
+  and resends their payload with no tunnel. The WireGuard port opens only when
+  the payload has a tunnel (`serverPayloadNeedsTunnel`).
   Traffic between datacenters rides TurboFabric; a pair that shares only an
   untrusted network runs its tunnel over that LAN (`direct_lan` marked
   untrusted, GET `pairs[].path` `fabric_over_untrusted_lan`), while plain

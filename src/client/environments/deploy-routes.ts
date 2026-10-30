@@ -156,8 +156,10 @@ import type { ManagedIngressPorts } from '../../features/managed/ingress-ports.t
 import { ensureManagedIngressHierarchy } from '../../features/system/hierarchy.ts'
 import {
   composeServiceNetworkKeys,
+  participatingServerIdsForNetwork,
   type PlatformAttachment,
 } from '../../features/fabric/spanning.ts'
+import { findDeployLanPairRefusal } from '../../features/fabric/lan-pair-guard.ts'
 import { environment, project, server } from '../../db/schema.ts'
 import { reconcileServerNetworking } from '../../features/fabric/server-networking.ts'
 import { type Db, getDaemonCellRegistry, getDb } from '../../db/connection.ts'
@@ -1788,6 +1790,36 @@ async function deliverOutsideMeshNetworking(
   })
 }
 
+/**
+ * Re-check the pair rule after planning and materializing, before anything is
+ * delivered: a pair that stopped being a trusted LAN pair since planning is
+ * refused (422 `turbofabric_required`) unless TurboFabric carries it.
+ */
+async function recheckLanPairsBeforeDelivery(
+  c: Context<AppEnv>,
+  db: Db,
+  planned: SuccessfulPlannedDeploy,
+  spanningCtx: DeploySpanningContext,
+  auth: DeployRequestAuth
+): Promise<Response | null> {
+  if (spanningCtx.spanning.size === 0) return null
+  const refusal = await findDeployLanPairRefusal(db, {
+    organizationId: auth.organizationId,
+    networks: [...spanningCtx.spanning.keys()].map((key) => ({
+      key,
+      serverIds: participatingServerIdsForNetwork(
+        planned.merged,
+        planned.plan.slots,
+        planned.serviceRows,
+        key,
+        spanningCtx.attachments
+      ),
+    })),
+  })
+  if (!refusal) return null
+  return c.json({ error: 'turbofabric_required', message: refusal.message }, 422)
+}
+
 async function awaitDeployFabricGate(
   c: Context<AppEnv>,
   db: Db,
@@ -2190,6 +2222,8 @@ async function runEnvironmentDeploy(
       environmentId
     )
     if (spanningCtx instanceof Response) return spanningCtx
+    const lanRefusal = await recheckLanPairsBeforeDelivery(c, db, planned, spanningCtx, auth)
+    if (lanRefusal) return lanRefusal
     const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
     if (!dataEncryptionSecrets) {
       return c.json({ error: 'Encryption unavailable' }, 503)
