@@ -581,6 +581,9 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     dataEncryptionSecrets,
   })
 
+  // One reader for the CA route and the install command, so the fingerprints
+  // in a command always describe the document the installer downloads.
+  const readPlatformCaPem = () => Deno.readTextFile(resolveInstanceTlsCaServePath())
   const app = createApp({
     db,
     emailQueue,
@@ -610,6 +613,7 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     // Must be registered inside createApp() *before* GET /api/health, or the
     // health handler never sees TURBOPANEL_REVISION from systemd.
     getPlatformEnv: () => Deno.env.toObject(),
+    readPlatformCaPem,
   })
   // Daemon + developer registrars are generic over the env, so the app's own
   // `AppEnv` typing carries through — no cast.
@@ -633,7 +637,7 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     tlsPublic: resolvePublicInstanceTls(Deno.env.toObject()),
     platformCaLeafPresented: async (hostname: string) =>
       hostnamePresentsPlatformCaLeaf(hostname, await listInstanceHostnames(db)),
-    readPlatformCaPem: () => Deno.readTextFile(resolveInstanceTlsCaServePath()),
+    readPlatformCaPem,
   })
   // Unversioned, session-free surface: mounted on the top-level app next to the
   // daemon API rather than under CLIENT_API_PREFIX, and authenticating itself.
