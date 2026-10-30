@@ -122,6 +122,9 @@ export type PrepareErrorResponse = {
 export function fabricGateErrorResponse(
   outcome: Exclude<FabricGateOutcome, { kind: 'ready' }>
 ): PrepareErrorResponse {
+  if (outcome.kind === 'turned_off') {
+    return { status: 409, body: { error: 'fabric_turned_off', message: outcome.message } }
+  }
   if (outcome.kind === 'failed') {
     return {
       status: 422,

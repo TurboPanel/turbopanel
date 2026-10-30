@@ -386,12 +386,7 @@ async function participatingConvergenceAttempt(params: {
   // Re-read on every attempt: a pause (or removal) while the deploy waits must
   // stop it here, never send a tunnel back up.
   if (!(await fabricCarriesTraffic(params.db, params.fabric.id))) {
-    return {
-      kind: 'failed',
-      serverId: params.serverIds[0] ?? '',
-      commandId: '',
-      error: FABRIC_TURNED_OFF_MESSAGE,
-    }
+    return { kind: 'turned_off', message: FABRIC_TURNED_OFF_MESSAGE }
   }
   const remainingMs = Math.max(0, params.timeoutMs - (params.now() - params.startedAt))
   const results = await enqueueFabricReconcileForServers({

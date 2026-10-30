@@ -11,7 +11,24 @@ import { assertEquals } from '@std/assert'
 import { eq } from 'drizzle-orm'
 import { getDatabaseUrl } from '../../db/url.ts'
 import { createDenoDb, endDbConnection } from '../../db/connection.ts'
-import { datacenter, fabric, ip, network, organization, relay, server } from '../../db/schema.ts'
+import {
+  binding,
+  datacenter,
+  environment,
+  fabric,
+  ip,
+  login,
+  managed,
+  managedDatabase,
+  network,
+  organization,
+  project,
+  relay,
+  replica,
+  server,
+  service,
+  workspace,
+} from '../../db/schema.ts'
 import { loadFabricExposures } from '../firewall/facts.ts'
 import { loadServerFabricAddress } from '../net/private-endpoint.ts'
 import {
@@ -192,10 +209,106 @@ test('the only server sharing a datacenter LAN cannot be switched out; a second 
     const blocked = await findFabricDependents(db, { serverId: offId, organizationId })
     assertEquals(
       blocked.map((row) => [row.kind, row.label]),
-      [['lan_gateway', 'the LAN of datacenter "rack-a" (it is the only server sharing it)']]
+      [['lan_gateway', 'datacenter "rack-a"']]
     )
 
     await db.update(relay).set({ role: 'gateway' }).where(eq(relay.serverId, onId))
     assertEquals(await findFabricDependents(db, { serverId: offId, organizationId }), [])
+  })
+})
+
+/** An app on `appServerId` bound to a Postgres whose only member runs on `dbServerId`. */
+async function insertBoundDatabase(
+  db: ReturnType<typeof createDenoDb>,
+  params: { organizationId: string; appServerId: string; dbServerId: string }
+): Promise<() => Promise<void>> {
+  const [ws] = await db
+    .insert(workspace)
+    .values({ name: 'Fabric Switch Workspace', organizationId: params.organizationId })
+    .returning({ id: workspace.id })
+  const [proj] = await db
+    .insert(project)
+    .values({
+      name: 'Fabric Switch App',
+      workspaceId: ws!.id,
+      organizationId: params.organizationId,
+    })
+    .returning({ id: project.id })
+  const [env] = await db
+    .insert(environment)
+    .values({ name: 'production', projectId: proj!.id, serverId: params.appServerId })
+    .returning({ id: environment.id })
+  const [svc] = await db
+    .insert(service)
+    .values({ environmentId: env!.id, composeServiceName: 'web' })
+    .returning({ id: service.id })
+  const [cluster] = await db
+    .insert(managed)
+    .values({
+      environmentId: env!.id,
+      serverId: params.dbServerId,
+      name: 'orders',
+      engine: 'postgres',
+      status: 'ready',
+    })
+    .returning({ id: managed.id })
+  const managedId = cluster!.id
+  await db.insert(replica).values({ managedId, serverId: params.dbServerId, role: 'primary' })
+  const [database] = await db
+    .insert(managedDatabase)
+    .values({ managedId, name: 'appdb' })
+    .returning({ id: managedDatabase.id })
+  const [appLogin] = await db
+    .insert(login)
+    .values({
+      recipe: 'app',
+      managedId,
+      role: 'user',
+      username: 'orders_app',
+      appliedUsername: 'orders_app',
+    })
+    .returning({ id: login.id })
+  await db.insert(binding).values({
+    loginId: appLogin!.id,
+    serviceId: svc!.id,
+    databaseId: database!.id,
+    keyPrefix: 'DATABASE',
+  })
+  return async () => {
+    await db.delete(binding).where(eq(binding.loginId, appLogin!.id))
+    await db.delete(login).where(eq(login.managedId, managedId))
+    await db.delete(managedDatabase).where(eq(managedDatabase.managedId, managedId))
+    await db.delete(replica).where(eq(replica.managedId, managedId))
+    await db.delete(managed).where(eq(managed.id, managedId))
+    await db.delete(service).where(eq(service.id, svc!.id))
+    await db.delete(environment).where(eq(environment.id, env!.id))
+    await db.delete(project).where(eq(project.id, proj!.id))
+    await db.delete(workspace).where(eq(workspace.id, ws!.id))
+  }
+}
+
+test('an app reaching its database over TurboFabric blocks switching either server off', async () => {
+  await withSwitchRig(async ({ db, organizationId, onId, offId }) => {
+    // No shared datacenter and no public address: the ladder picks TurboFabric.
+    const cleanup = await insertBoundDatabase(db, {
+      organizationId,
+      appServerId: onId,
+      dbServerId: offId,
+    })
+    try {
+      const expected = [['database_connection', 'app connections to managed database "orders"']]
+      const fromDatabaseSide = await findFabricDependents(db, { serverId: offId, organizationId })
+      assertEquals(
+        fromDatabaseSide.map((row) => [row.kind, row.label]),
+        expected
+      )
+      const fromAppSide = await findFabricDependents(db, { serverId: onId, organizationId })
+      assertEquals(
+        fromAppSide.map((row) => [row.kind, row.label]),
+        expected
+      )
+    } finally {
+      await cleanup()
+    }
   })
 })

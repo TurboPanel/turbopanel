@@ -123,3 +123,19 @@ test('fabricDependentsMessage is one plain sentence naming what depends on the s
     true
   )
 })
+
+test('fabricDependentsMessage gives the LAN-sharing refusal its own sentence', () => {
+  assertEquals(
+    fabricDependentsMessage('gw-1', [
+      { kind: 'lan_gateway', id: 'dc', label: 'datacenter "rack-a"' },
+    ]),
+    'This server is the only one sharing the LAN of datacenter "rack-a" over TurboFabric. Let another server share it first, or stop sharing it.'
+  )
+  assertEquals(
+    fabricDependentsMessage('gw-1', [
+      { kind: 'container_network', id: 'n', label: 'container network "app"' },
+      { kind: 'lan_gateway', id: 'dc', label: 'datacenter "rack-a"' },
+    ]),
+    'TurboFabric stays on for gw-1 because container network "app" reaches it over TurboFabric. Move or remove it first, then switch TurboFabric off for this server. This server is the only one sharing the LAN of datacenter "rack-a" over TurboFabric. Let another server share it first, or stop sharing it.'
+  )
+})
