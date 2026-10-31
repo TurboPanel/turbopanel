@@ -11,6 +11,7 @@ import {
   container,
   environment,
   folder,
+  hostname,
   managed,
   project,
   repository,
@@ -267,8 +268,8 @@ async function buildSessionApp(opts: SessionAppOpts): Promise<{
               ),
           }
         }
-        // The delete plan's folder list: this project has none.
-        if (table === folder || table === share) return emptyChain()
+        // The delete plan's folder list and the audit snapshot's hostnames: none here.
+        if (table === folder || table === share || table === hostname) return emptyChain()
         if (table === server) {
           return {
             where: () => ({
