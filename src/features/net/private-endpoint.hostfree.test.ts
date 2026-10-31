@@ -1255,3 +1255,23 @@ test('partitionSharedDatacenters sorts by (priority, id) and defaults absent pol
     untrusted: [],
   })
 })
+
+test('resolver: an offline replica daemon marks only the primary-to-replica direction (tunnelDown or untrustedPublic)', async () => {
+  const db = createFixtureDb({ ...UNTRUSTED_ONLY_FIXTURE, disconnected: ['s2'] })
+  for (const purpose of ['failover-replication', 'read-replication'] as const) {
+    // replica (s2) to primary (s1): the primary is connected, the path is healthy.
+    assertEquals(
+      await resolvePrivateEndpoint(db, { fromServerId: 's2', purpose, toServerId: 's1' }),
+      { address: '10.250.0.1', transport: 'fabric', fabricId: 'fabric-1' }
+    )
+    // primary (s1) to replica (s2): the replica is offline, so the tunnel is
+    // down (failover) or the path falls to the public address (read); a new
+    // placement is refused either way.
+    assertEquals(
+      await resolvePrivateEndpoint(db, { fromServerId: 's1', purpose, toServerId: 's2' }),
+      purpose === 'failover-replication'
+        ? { address: '10.250.0.2', transport: 'fabric', fabricId: 'fabric-1', tunnelDown: true }
+        : { address: '203.0.113.20', transport: 'public', untrustedPublic: true }
+    )
+  }
+})
