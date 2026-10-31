@@ -39,12 +39,10 @@ async function consumerCanDialPublishedBind(
     purpose: 'client-backend',
   })
   if (isPrivateEndpointError(resolved)) return 'unreachable'
-  if (resolved.transport === 'local') return 'ok'
   // A new binding never rides the public address on an untrusted network.
   if (placementNeedsHealthyFabric(resolved)) return 'untrusted'
-  return resolved.address === bind.address && resolved.transport === bind.transport
-    ? 'ok'
-    : 'unreachable'
+  const sameBind = resolved.address === bind.address && resolved.transport === bind.transport
+  return resolved.transport === 'local' || sameBind ? 'ok' : 'unreachable'
 }
 
 function remoteConsumerPathMissingError(message: string): BindingReachError {
@@ -94,10 +92,6 @@ async function remoteConsumersReachMember(
     })
     if (isPrivateEndpointError(resolved)) {
       return remoteConsumerPathMissingError(BINDING_NO_PRIVATE_PATH_MESSAGE)
-    }
-    // A new binding never rides the public address on an untrusted network.
-    if (placementNeedsHealthyFabric(resolved)) {
-      return remoteConsumerPathMissingError(BINDING_UNTRUSTED_NEEDS_FABRIC_MESSAGE)
     }
   }
   return null

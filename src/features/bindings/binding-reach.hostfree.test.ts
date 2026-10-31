@@ -272,3 +272,32 @@ test('remoteBindingReachError keeps a public path for a pair with no shared data
   )
   assertEquals(error, null)
 })
+
+test('remoteBindingReachError refuses when a published bind exists but the app host has no path to it', async () => {
+  const error = await remoteBindingReachError(
+    fixtureDb({
+      members: [memberRow(DB_SERVER), memberRow(FAILOVER_SERVER, 'replica')],
+      memberships: [
+        {
+          ipId: 'ip-db',
+          serverId: DB_SERVER,
+          datacenterId: 'dc-a',
+          networkId: null,
+          address: '10.0.0.1',
+        },
+        {
+          ipId: 'ip-failover',
+          serverId: FAILOVER_SERVER,
+          datacenterId: 'dc-a',
+          networkId: null,
+          address: '10.0.0.2',
+        },
+      ],
+    }),
+    { managedId: MANAGED_ID, consumerServerIds: [APP_SERVER] }
+  )
+  assertEquals(error, {
+    error: BINDING_ENDPOINT_UNAVAILABLE_ERROR,
+    message: BINDING_PUBLISHED_LISTENER_UNREACHABLE_MESSAGE,
+  })
+})
