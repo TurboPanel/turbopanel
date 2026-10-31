@@ -12,7 +12,7 @@
 
 /** The shape of the server's own HTTPS check failing, as opposed to a reason from the authority. */
 const PROBE_ERROR =
-  /fetch failed|error sending request|client error \(connect\)|os error \d+|tcp connect error/i
+  /fetch failed|error sending request|client error \(connect\)|os error \d+|tcp connect error|operation was aborted|aborted due to timeout|signal timed out|\b(?:Timeout|Abort)Error\b/i
 
 const NO_DNS =
   /dns error|failed to lookup address|name or service not known|nodename nor servname|no address associated|nxdomain|temporary failure in name resolution/i
@@ -38,7 +38,7 @@ export function plainCertificateFailure(text: string, hostname?: string): string
     return `Nothing answered on port 443 at ${name}, so the server could not check its certificate.`
   }
   if (TIMED_OUT.test(text)) {
-    return `${name} did not answer in time, so the server could not check its certificate.`
+    return `${name} did not answer in time, so the server could not check its certificate. The server tries again by itself.`
   }
   if (UNTRUSTED.test(text)) {
     return `${name} still shows a certificate Let's Encrypt did not issue, so the certificate has not been issued yet.`
