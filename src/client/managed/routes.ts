@@ -1327,6 +1327,11 @@ async function resolveReplicaPlacement(
     return c.json({ error: precheck.error }, precheck.status)
   }
 
+  // An offline target says offline, before the fabric checks below can read
+  // its missing handshake as an untrusted-network refusal.
+  const offline = await assertTargetServerOnline(c, db, params.serverId)
+  if (offline) return offline
+
   const purpose = replicaEndpointPurpose(params.replicaClass)
   const toPrimary = await resolvePrivateEndpoint(db, {
     fromServerId: params.serverId,
@@ -1361,9 +1366,6 @@ async function resolveReplicaPlacement(
   }
   if (placementNeedsHealthyFabric(fromPrimary))
     return c.json({ error: 'untrusted_network_needs_fabric' }, 422)
-
-  const offline = await assertTargetServerOnline(c, db, params.serverId)
-  if (offline) return offline
 
   return {
     toPrimaryTransport: toPrimary.transport,

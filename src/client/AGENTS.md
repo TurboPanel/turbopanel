@@ -657,10 +657,16 @@ sourceServerId? }`
   fabric address marked `tunnelDown: true` (a lost host must not break a
   running cluster), and with no keyed tunnel (fabric off, opted out) it is
   **422** `untrusted_network_needs_fabric`. The other purposes that fall to
-  public on such a pair carry `untrustedPublic: true`. New placements (replica
-  create, class change, both directions of the pair) refuse `untrustedPublic` and `tunnelDown` with the same
-  422, and so does a new binding whose app host would dial the database over
-  that public address (`binding_endpoint_unavailable` with the TurboFabric message); running traffic keeps its path and `GET` server traffic map reports both
+  public on such a pair carry `untrustedPublic: true`. New placements refuse
+  `untrustedPublic` and `tunnelDown` with the same 422:
+  a replica create checks both directions of the pair (the primary-to-replica
+  direction turns `tunnelDown` when the replica's daemon is offline, so the
+  offline check runs first and says offline), and a class change to failover
+  checks only the replica-to-primary direction. A new binding whose app host
+  would dial the database over that public address is refused too
+  (`binding_endpoint_unavailable` with the TurboFabric message; the console
+  tells it apart by the words "marked untrusted" in the server sentence).
+  Running traffic keeps its path and `GET` server traffic map reports both
   flags on `planned` (the console does not render the traffic map yet).
   No shared datacenter at all stays `private_path_unavailable`. TurboFabric path planning
   (`lanPathCandidate` in `src/features/fabric/fabric-records.ts`) consumes the same

@@ -246,7 +246,7 @@ const UNTRUSTED_PAIR_PINS: MembershipPinRow[] = [
   },
 ]
 
-test('remoteBindingReachError refuses a new binding on an untrusted-only pair without TurboFabric', async () => {
+test('remoteBindingReachError refuses a new binding through the published bind on an untrusted-only pair without TurboFabric', async () => {
   const error = await remoteBindingReachError(
     fixtureDb({
       members: [memberRow(DB_SERVER)],
