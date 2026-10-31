@@ -68,6 +68,12 @@
       "tag": "0010_server_container_prefix",
       "when": 1793351069170,
       "sha256": "32a1eca2fcd410d5fa45f8c400da18de84168b653ae75780a93cfa4967bf3a24"
+    },
+    {
+      "idx": 11,
+      "tag": "0011_repo_key_changed_notifications",
+      "when": 1793475009745,
+      "sha256": "8fc52f5747a6724d8dcee31fc2c3b95dc9e4f75e70fd05dfcc02363c2af08809"
     }
   ]
 }

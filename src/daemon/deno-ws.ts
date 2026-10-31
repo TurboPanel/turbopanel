@@ -27,6 +27,7 @@ import { instanceAttachVersionFrame } from './attach-version.ts'
 import type { DaemonJwtKeyring } from './authn/daemon-jwt-keyring.ts'
 import { tryAssignColocatedDaemonToInstalledOrganization } from '../client/authn/install-state.ts'
 import { emitCertificateRenewalFailed } from '../features/notifications/certificate-alerts.ts'
+import { handleRepoKeyChanged } from '../features/notifications/repo-key-alerts.ts'
 import { handleAcmeIssuanceEvent } from '../client/tls/acme-issuance-event.ts'
 import { handleHttpIssuanceInbound } from '../features/tls/http-issuance/events.ts'
 import {
@@ -496,6 +497,19 @@ async function handleDaemonFabricPeersReportInbound(params: {
   await cell.recordInbound({ connectionId, at: message.at })
 }
 
+async function handleDaemonRepoKeyChangedInbound(params: {
+  cell: ReturnType<DaemonCellRegistry['getCell']>
+  db: Db
+  serverId: string
+  connectionId: string | undefined
+  message: Extract<DaemonMessage, { type: 'repo-key-changed' }>
+  dataEncryptionSecrets: DerivedSecretsConfig | undefined
+}): Promise<void> {
+  const { cell, db, serverId, connectionId, message } = params
+  await handleRepoKeyChanged(db, params.dataEncryptionSecrets, serverId, message)
+  await cell.recordInbound({ connectionId, at: message.at })
+}
+
 async function handleAcmeIssuanceInbound(params: {
   cell: ReturnType<DaemonCellRegistry['getCell']>
   db: Db
@@ -746,6 +760,16 @@ async function dispatchDaemonInboundByType(params: DaemonInboundDispatch): Promi
         connectionId,
         message,
         reporterServerId: serverId,
+      })
+      return
+    case 'repo-key-changed':
+      await handleDaemonRepoKeyChangedInbound({
+        cell,
+        db,
+        serverId,
+        connectionId,
+        message,
+        dataEncryptionSecrets: params.dataEncryptionSecrets,
       })
       return
     case 'acme-issuance-event':
