@@ -8,6 +8,7 @@ import { backoffMs, isRateLimitReason, RATE_LIMIT_WAIT_MS } from './attempts.ts'
 import { plainCertificateFailure } from '../../hostings/acme-failure-text.ts'
 import { redactUrlSecrets } from '../../upgrades/redact-url-secrets.ts'
 import {
+  allNamesCovered,
   closedAsIssued,
   HTTP_ISSUANCE_CHALLENGE_TYPE,
   HTTP_ISSUANCE_MANAGED_BY,
@@ -163,7 +164,8 @@ export type IssueEventFacts = {
 export function nextStateForEvent(
   state: HttpIssuanceState,
   input: IssueEventFacts,
-  now: Date
+  now: Date,
+  expectedNames: readonly string[] = []
 ): HttpIssuanceState {
   if (state.endedAt !== null) return state
   const at = now.toISOString()
@@ -179,7 +181,9 @@ export function nextStateForEvent(
     issuedEventAt: at,
     notAfterIso: input.notAfterIso ?? state.notAfterIso,
   }
-  return issued.capturedAt === null ? issued : closedAsIssued(issued, at)
+  return issued.capturedAt !== null && allNamesCovered(issued, expectedNames)
+    ? closedAsIssued(issued, at)
+    : issued
 }
 
 /** Helper answers folded into the state; an answer from a server that was not asked is ignored. */

@@ -81,7 +81,9 @@ export async function handleIssueEvent(db: Db, input: IssueEventInput): Promise<
     const tx = tx0 as unknown as Db
     const found = await locate(tx, input.serverId, input.requestId)
     if (found?.state.issuingServerId !== input.serverId) return false
-    const next = nextStateForEvent(found.state, input, now)
+    const names = (found.metadata.dnsNames as unknown[] | undefined) ?? []
+    const expected = names.filter((n): n is string => typeof n === 'string')
+    const next = nextStateForEvent(found.state, input, now, expected)
     if (next === found.state) return false
     await save(tx, found, next, now)
     return true

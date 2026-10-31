@@ -34,6 +34,7 @@ function state(overrides: Partial<HttpIssuanceState> = {}): HttpIssuanceState {
     orderSentAt: null,
     lastEventAt: null,
     capturedAt: null,
+    coveredNames: [],
     issuedEventAt: null,
     notAfterIso: null,
     lastError: null,
@@ -147,4 +148,39 @@ test('an old state without the newer fields still reads', () => {
   assertEquals(read?.phase, 'forwarding')
   assertEquals(read?.directory, 'production')
   assertEquals(read?.consecutiveFailures, 0)
+})
+
+test('a request for two names closes only when both are covered and issued has arrived', () => {
+  const names = ['a.example.com', 'www.a.example.com']
+  const issued = state({ issuedEventAt: '2026-11-01T11:59:00.000Z' })
+  const one = afterCapture(issued, NOW, ['a.example.com'], names)
+  assertEquals(one.endedAt, null)
+  const both = afterCapture(one, NOW, ['www.a.example.com'], names)
+  assertEquals(both.phase, 'issued')
+  const together = afterCapture(issued, NOW, names, names)
+  assertEquals(together.phase, 'issued')
+  // Pairs first, event later: the event closes it (see progress tests).
+  assertEquals(afterCapture(state(), NOW, names, names).endedAt, null)
+})
+
+test('a late pair for another name is accepted briefly after the close, from the asked server only', () => {
+  const closed = state({ phase: 'issued', endedAt: '2026-11-01T11:59:00.000Z' })
+  const call = { serverId: 'server-a', requestId: 'req_1', now: NOW }
+  assertEquals(canAcceptCapture(closed, call), { ok: true })
+  assertEquals(canAcceptCapture(closed, { ...call, serverId: 'server-b' }), {
+    ok: false,
+    reason: 'wrong_server',
+  })
+  assertEquals(canAcceptCapture(closed, { ...call, now: new Date('2026-11-01T12:10:00.000Z') }), {
+    ok: false,
+    reason: 'closed',
+  })
+  assertEquals(
+    canAcceptCapture(state({ phase: 'failed', endedAt: '2026-11-01T11:59:00.000Z' }), call),
+    {
+      ok: false,
+      reason: 'closed',
+    }
+  )
+  assertEquals(afterCapture(closed, NOW, ['x.example.com']).endedAt, closed.endedAt)
 })
