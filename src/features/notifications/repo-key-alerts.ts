@@ -12,6 +12,7 @@
 import { eq } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { server } from '../../db/schema.ts'
+import { compatLogWarn } from '../../lib/log-compat.ts'
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { emitNotification } from './emit.ts'
 
@@ -77,7 +78,11 @@ export async function handleRepoKeyChanged(
       { allowPrivateTargets: true }
     )
     return true
-  } catch {
+  } catch (err) {
+    compatLogWarn(
+      'repo-key-alerts',
+      `repo key alert not sent: ${err instanceof Error ? err.message : String(err)}`
+    )
     return false
   }
 }
