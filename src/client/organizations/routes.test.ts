@@ -8,7 +8,7 @@ import { createDenoDb } from '../../db/connection.ts'
 import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from '../authn/crypto.ts'
 import { createSession } from '../authn/session-store.ts'
 import { deriveSecretsConfig, parseSecretsEnv } from '../../lib/secrets/secrets.ts'
-import { fabric, grant, network, organization, user } from '../../db/schema.ts'
+import { audit, fabric, grant, network, organization, user } from '../../db/schema.ts'
 import { registerOrganizationRoutes } from './routes.ts'
 import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
 import { organizationAcmeContactEmail } from '../../features/organizations/acme-contact-email.ts'
@@ -612,6 +612,25 @@ test('PUT /organizations/:id/tls-settings stores the contact email, keeps other 
       .where(eq(organization.id, organizationId))
     assertEquals(parseOrganizationOptions(row!.options).defaultEnvironmentName, 'staging')
     assertEquals(await organizationAcmeContactEmail(db, organizationId), 'Ops@example.com')
+
+    // Saving the same address again changes nothing, so it writes no audit row.
+    const again = await app.request(url, {
+      method: 'PUT',
+      headers,
+      body: JSON.stringify({ acmeContactEmail: 'Ops@example.com' }),
+    })
+    assertEquals(again.status, 200)
+    const auditRows = await db
+      .select({ context: audit.context })
+      .from(audit)
+      .where(
+        and(
+          eq(audit.organizationId, organizationId),
+          eq(audit.action, 'organization.acme_contact.set')
+        )
+      )
+    assertEquals(auditRows.length, 1)
+    assertEquals(auditRows[0]!.context, { acmeContactEmail: 'Ops@example.com', previous: null })
 
     const cleared = await app.request(url, {
       method: 'PUT',

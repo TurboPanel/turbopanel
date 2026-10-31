@@ -1,11 +1,11 @@
 /**
- * The contact address on an organization's Let's Encrypt orders.
+ * The contact address kept for an organization's Let's Encrypt account.
  *
  * It lives in `organization.options.acmeContactEmail` (set through
  * `PUT /organizations/:id/tls-settings`). There is no fallback to a member's
  * account address: an organization can have several owners, and one person's
- * address is not handed to the authority unasked. Unset means no shared order
- * starts, and the panel asks the organization to add one.
+ * address is not handed to the authority unasked. It is stored for central
+ * certificate ordering, which will read it; unset means none.
  */
 
 import { eq } from 'drizzle-orm'

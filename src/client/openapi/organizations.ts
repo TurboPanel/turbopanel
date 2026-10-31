@@ -99,7 +99,7 @@ export const organizationSchemas = {
         type: ['string', 'null'],
         maxLength: 254,
         description:
-          "The one address that goes on this organization's Let's Encrypt orders. null or an empty string clears it.",
+          "The one address kept as this organization's Let's Encrypt account contact (central certificate ordering will use it; nothing reads it yet). null or an empty string clears it.",
       },
     },
   },
@@ -1081,7 +1081,7 @@ export const organizationPaths: Record<string, unknown> = {
       tags: ['Organizations'],
       summary: 'Get organization certificate settings',
       description:
-        'Organization managers only, for the contact address too. The contact address is stored with the organization and is not yet read by certificate ordering.',
+        'Organization managers only, for the contact address too. The contact address is stored with the organization; nothing reads it yet.',
       security: [{ cookieAuth: [] }],
       parameters: [
         {
