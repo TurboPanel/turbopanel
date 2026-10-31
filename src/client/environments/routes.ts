@@ -40,8 +40,10 @@ import {
 import { hierarchyDeleteHasChildrenResponse, isForeignKeyViolation } from '../hierarchy-delete.ts'
 import { reclaimDeletedEnvironmentHosts, stopEnvironmentHosts } from './teardown.ts'
 import {
+  environmentDeleteAuditEntry,
   planEnvironmentDelete,
   refuseOnPlanBlockers,
+  snapshotDeleteForAudit,
   startDeleteCleanup,
 } from '../projects/delete-flow.ts'
 import {
@@ -689,6 +691,8 @@ export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteO
     const { plan, teardownPlans } = await planEnvironmentDelete(db, id)
     const refused = refuseOnPlanBlockers(c, plan)
     if (refused) return refused
+    // Read now: the name and hostnames are gone once the rows are.
+    const snapshot = await snapshotDeleteForAudit(db, plan)
 
     // A running stack is stopped before the rows go (the stop retires no
     // account: the environment still names them until it is deleted). The
@@ -702,6 +706,17 @@ export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteO
     )
     if (result === 'has_children') return hierarchyDeleteHasChildrenResponse(c)
     if (!result.ok) return environmentDeleteRefusal(c, result.error, result.detail)
+
+    // Recorded as soon as the rows are gone and before any host is asked to
+    // remove anything, so the trail has the delete even if the cleanup fails.
+    await recordAudit(
+      db,
+      environmentDeleteAuditEntry(
+        { organizationId, actorUserId: session.userId, actorEmail: session.email ?? null },
+        id,
+        snapshot
+      )
+    )
 
     await reclaimDeletedEnvironmentHosts(c, db, teardownPlans, session.userId)
     const cleanup = await startDeleteCleanup(c, db, session.userId, result.cleanup)

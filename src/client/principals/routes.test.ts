@@ -15,6 +15,7 @@ import {
   login,
   managed,
   organization,
+  audit,
   principal,
   project,
   server,
@@ -812,6 +813,18 @@ test('DELETE /projects/:projectId/principals/:id removes principal', async () =>
         .from(principal)
         .where(eq(principal.id, created.id))
       assertEquals(rows.length, 0)
+
+      const trail = await db.select().from(audit).where(eq(audit.targetId, created.id))
+      try {
+        assertEquals(trail.length, 1)
+        assertEquals(trail[0]!.action, 'principal.delete')
+        assertEquals(trail[0]!.actorUserId, userId)
+        const context = trail[0]!.context as { username: string; appliedUsername: string }
+        assertEquals(context.username, 'deleteme')
+        assertEquals(typeof context.appliedUsername, 'string')
+      } finally {
+        await db.delete(audit).where(eq(audit.targetId, created.id))
+      }
     }
   )
 })

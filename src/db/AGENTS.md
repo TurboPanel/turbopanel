@@ -76,8 +76,12 @@ the trail survives the account's deletion (`actor_user_id` is a plain
 id with no foreign key, so history outlives the user). `context` is a small jsonb bag of non-secret facts —
 the same rule `setting` rows follow. Written from `recordAudit`
 (`audit-records.ts`) at the security-relevant routes: daemon-key revoke,
-server delete, grant create/delete, forge create/update/delete, and the three
-organization gates. Read by owners only, at `GET /organizations/:id/audit`.
+server delete, grant create/delete, forge create/update/delete, the three
+organization gates, and project, environment and Hosting Account (`principal`)
+deletes. A project delete writes one entry (its environments and hostnames ride
+in `context`), after the rows are gone and before any host is asked to remove
+folders; a refused delete writes none. The automatic removal sweep
+(`removal-sweep.ts`) does not audit yet. Read by owners only, at `GET /organizations/:id/audit`.
 
 **The notification tables** (`channel`, `rule`, `notification`, `attempt` —
 created in `0002_notifications` under `notification_*` names and renamed to

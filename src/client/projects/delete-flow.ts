@@ -6,12 +6,13 @@
  * folders are already gone, and the response says what is still under way).
  */
 import type { Context } from 'hono'
-import { eq } from 'drizzle-orm'
+import { eq, inArray } from 'drizzle-orm'
 import type { AppEnv } from '../../app/app.ts'
 import type { Db } from '../../db/connection.ts'
-import { environment } from '../../db/schema.ts'
+import { environment, hosting, hostname, project, service } from '../../db/schema.ts'
 import { getCommandQueue } from '../../features/commands/queue.ts'
 import { sendFolderRemovalsAfterDelete } from '../../features/folders/removal.ts'
+import type { AuditEntry } from '../../features/audit/audit-records.ts'
 import { buildDeletePlan, type DeletePlan } from '../../features/projects/delete-plan.ts'
 import type { ProjectPrincipalFate } from '../../features/principals/removal.ts'
 import {
@@ -102,6 +103,127 @@ export async function startDeleteCleanup(
         removed: removedNow.has(row.id),
       })),
       kept: cleanup.principals.kept,
+    },
+  }
+}
+
+/** Longest list written into one audit entry; the total always rides beside it. */
+export const DELETE_AUDIT_LIST_CAP = 50
+
+function capped<T>(rows: readonly T[]): { items: T[]; total: number } {
+  return { items: rows.slice(0, DELETE_AUDIT_LIST_CAP), total: rows.length }
+}
+
+/** What a delete removes that is worth keeping in the trail, read before it runs. */
+export type DeleteAuditSnapshot = {
+  /** Project name (project delete only). */
+  projectName?: string | null
+  environments: Array<{ id: string; name: string | null }>
+  hostnames: string[]
+  serverIds: string[]
+  /** Hosting Accounts going with a project delete. */
+  hostingAccounts: string[]
+}
+
+/**
+ * Read the names, ids and public hostnames a delete is about to remove. The
+ * rows are gone once the delete commits, so this runs first. The plan has no
+ * hostnames, so they are read through hosting, service and environment.
+ */
+export async function snapshotDeleteForAudit(
+  db: Db,
+  plan: DeletePlan,
+  projectId?: string
+): Promise<DeleteAuditSnapshot> {
+  const serviceIds = plan.services.map((row) => row.id)
+  const hostRows =
+    serviceIds.length === 0
+      ? []
+      : await db
+          .select({ hostname: hostname.hostname })
+          .from(hostname)
+          .innerJoin(hosting, eq(hosting.id, hostname.hostingId))
+          .innerJoin(service, eq(service.id, hosting.serviceId))
+          .where(inArray(service.id, serviceIds))
+  let projectName: string | null | undefined
+  if (projectId) {
+    const [row] = await db
+      .select({ name: project.name })
+      .from(project)
+      .where(eq(project.id, projectId))
+      .limit(1)
+    projectName = row?.name ?? null
+  }
+  return {
+    ...(projectId ? { projectName } : {}),
+    environments: plan.environments.map(({ id, name }) => ({ id, name })),
+    hostnames: [...new Set(hostRows.map((row) => row.hostname))].sort((a, b) => a.localeCompare(b)),
+    serverIds: plan.servers.map((row) => row.id).sort((a, b) => a.localeCompare(b)),
+    hostingAccounts: plan.hostingAccounts
+      .filter((row) => row.action === 'remove')
+      .map((row) => row.username)
+      .sort((a, b) => a.localeCompare(b)),
+  }
+}
+
+/** The small, non-secret context of a delete entry: lists are capped with their totals. */
+export function deleteAuditContext(
+  snapshot: DeleteAuditSnapshot,
+  options: { environmentList?: boolean } = {}
+): Record<string, unknown> {
+  const environments = capped(snapshot.environments)
+  const hostnames = capped(snapshot.hostnames)
+  const hostingAccounts = capped(snapshot.hostingAccounts)
+  return {
+    ...(snapshot.projectName === undefined ? {} : { name: snapshot.projectName }),
+    ...(options.environmentList === false
+      ? {}
+      : { environments: environments.items, environmentCount: environments.total }),
+    hostnames: hostnames.items,
+    hostnameCount: hostnames.total,
+    serverIds: snapshot.serverIds.slice(0, DELETE_AUDIT_LIST_CAP),
+    ...(snapshot.hostingAccounts.length > 0
+      ? { hostingAccounts: hostingAccounts.items, hostingAccountCount: hostingAccounts.total }
+      : {}),
+  }
+}
+
+type DeleteAuditWho = {
+  organizationId: string
+  actorUserId: string
+  actorEmail: string | null
+}
+
+/** The audit entry for a project delete (one entry; the environments ride in its context). */
+export function projectDeleteAuditEntry(
+  who: DeleteAuditWho,
+  projectId: string,
+  snapshot: DeleteAuditSnapshot
+): AuditEntry {
+  return {
+    ...who,
+    action: 'project.delete',
+    targetType: 'project',
+    targetId: projectId,
+    context: deleteAuditContext(snapshot),
+  }
+}
+
+/** The audit entry for an environment delete. */
+export function environmentDeleteAuditEntry(
+  who: DeleteAuditWho,
+  environmentId: string,
+  snapshot: DeleteAuditSnapshot
+): AuditEntry {
+  const [env] = snapshot.environments
+  return {
+    ...who,
+    action: 'environment.delete',
+    targetType: 'environment',
+    targetId: environmentId,
+    context: {
+      name: env?.name ?? null,
+      ...deleteAuditContext(snapshot, { environmentList: false }),
     },
   }
 }

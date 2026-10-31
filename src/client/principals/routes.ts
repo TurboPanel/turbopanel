@@ -31,6 +31,8 @@ import {
   parseServiceIdsField,
   servicesBelongToProject,
 } from './tenancies.ts'
+import { principalDeleteAuditEntry } from './delete-audit.ts'
+import { recordAudit } from '../../features/audit/audit-records.ts'
 import { getCommandQueue } from '../../features/commands/queue.ts'
 import {
   reconcilePrincipalAccess,
@@ -445,6 +447,18 @@ export function registerProjectPrincipalRoutes(router: Hono<AppEnv>, opts: AuthR
     const serverIds = await serversForPrincipal(db, id)
 
     await db.delete(principal).where(eq(principal.id, id))
+    await recordAudit(
+      db,
+      principalDeleteAuditEntry(
+        {
+          organizationId: row.organizationId,
+          actorUserId: session.userId,
+          actorEmail: session.email ?? null,
+        },
+        id,
+        { username: row.username, appliedUsername: row.appliedUsername, serverIds, projectId }
+      )
+    )
 
     // The row is gone; now the account. Same best-effort outcome shape as a
     // PATCH, so the operator sees which servers were and were not reached.
