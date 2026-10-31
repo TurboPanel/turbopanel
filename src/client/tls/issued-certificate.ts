@@ -395,7 +395,9 @@ async function noteCaptureOnly(
   if (!input.requestId) return
   const metadata = row.metadata as ManagedRowMetadata
   // The renewal time follows the pair the row keeps, not the one just refused.
-  const keptNotBefore = Date.parse(String((metadata as { notBefore?: unknown }).notBefore ?? ''))
+  const storedNotBefore = (metadata as { notBefore?: unknown }).notBefore
+  const keptNotBefore =
+    typeof storedNotBefore === 'string' ? Date.parse(storedNotBefore) : Number.NaN
   const keptNotAfter = row.notAfter === null ? Number.NaN : Date.parse(row.notAfter)
   const renewAt =
     Number.isNaN(keptNotBefore) || Number.isNaN(keptNotAfter)
