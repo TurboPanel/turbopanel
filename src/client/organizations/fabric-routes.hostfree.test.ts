@@ -607,6 +607,7 @@ test('observedForRelay picks the newest peer observation by public key', () => {
     }),
   ]
   assertEquals(observedForRelay(relays, WG_KEY), {
+    at: '2020-01-02T00:00:00.000Z',
     lastHandshakeAt: '2020-01-02T00:01:00.000Z',
     transferTx: 99,
   })

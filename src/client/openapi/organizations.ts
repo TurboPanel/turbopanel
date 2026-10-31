@@ -528,6 +528,12 @@ export const organizationSchemas = {
       observed: {
         type: ['object', 'null'],
         properties: {
+          at: {
+            type: 'string',
+            format: 'date-time',
+            description:
+              'When the server took this reading. Judge the handshake against it, not against now: a steady mesh is read every few minutes.',
+          },
           lastHandshakeAt: { type: 'string', format: 'date-time' },
           transferRx: { type: 'integer', minimum: 0 },
           transferTx: { type: 'integer', minimum: 0 },
