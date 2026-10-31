@@ -784,9 +784,10 @@ test('a pair arriving after the issued event closes the request as issued', asyn
     const acme = (row.metadata as { acme: { stage: string; managedBy: string } }).acme
     assertEquals(acme.stage, 'issued')
     assertEquals(acme.managedBy, 'server')
-    // A second send of the same request is refused: the request is closed.
+    // A second send of the same pair is harmless and changes nothing.
     const again = await storeIssuedCertificate(f.db, withRequest(pair, f.serverId), f.deps)
-    assertEquals(again.ok, false)
+    assertEquals(again.ok, true)
+    assertEquals(readHttpIssuanceState((await readRow(f)).metadata)?.endedAt, stored?.endedAt)
   } finally {
     await f.cleanup()
   }
