@@ -36,6 +36,23 @@ export type FabricPairApiRow = {
   toServerId: string
   path: FabricPairPath
   reason: string
+  /**
+   * What each end's own latest peer report says about the other end, for a
+   * pair a tunnel carries. The live reading, unlike the stored path summary
+   * (which only a reconcile rewrites), so the page can judge it against the
+   * reading time. Absent when neither end has reported.
+   */
+  tunnel?: { readings: FabricPairTunnelReading[] }
+}
+
+/** One end's report about the other end of a pair. */
+export type FabricPairTunnelReading = {
+  /** The server that took the reading. */
+  reporterServerId: string
+  /** When the reporting server read its peers (never ahead of the panel's receive time). */
+  observedAt: string
+  /** The other end's last handshake in that reading; absent when it is a peer that never handshook. */
+  lastHandshakeAt?: string
 }
 
 type PairContext = {
@@ -168,8 +185,44 @@ function networksByPair(
   return out
 }
 
+/**
+ * One end's own report about the other end, or null when it has not reported
+ * or does not list the other end as a WireGuard peer (two servers behind NAT
+ * reach each other through a gateway and are not peers; their stored path
+ * stays the source then).
+ */
+function tunnelReadingFrom(
+  reporter: RelayRecord | undefined,
+  other: RelayRecord | undefined
+): FabricPairTunnelReading | null {
+  const observed = reporter?.metadata.observed
+  if (!reporter || !observed?.at || !other?.publicKey) return null
+  const peer = observed.peers.find((entry) => entry.publicKey === other.publicKey)
+  if (!peer) return null
+  return {
+    reporterServerId: reporter.serverId,
+    observedAt: observed.at,
+    ...(peer?.lastHandshakeAt ? { lastHandshakeAt: peer.lastHandshakeAt } : {}),
+  }
+}
+
+/** Both ends' readings for a pair a tunnel carries, so the page does not depend on the stored path. */
+function withTunnelReadings(ctx: PairContext, pair: FabricPairApiRow): FabricPairApiRow {
+  if (pair.path !== 'fabric' && pair.path !== 'fabric_over_untrusted_lan') return pair
+  const a = ctx.relayByServer.get(pair.fromServerId)
+  const b = ctx.relayByServer.get(pair.toServerId)
+  const readings = [tunnelReadingFrom(a, b), tunnelReadingFrom(b, a)].filter(
+    (reading): reading is FabricPairTunnelReading => reading !== null
+  )
+  return readings.length === 0 ? pair : { ...pair, tunnel: { readings } }
+}
+
 /** The path and reason for one pair. */
 export function describeFabricPair(ctx: PairContext, a: string, b: string): FabricPairApiRow {
+  return withTunnelReadings(ctx, describeFabricPairPath(ctx, a, b))
+}
+
+function describeFabricPairPath(ctx: PairContext, a: string, b: string): FabricPairApiRow {
   if (pairSharesTrustedLan(a, b, ctx.caches)) {
     const [first] = sharedNetworks(ctx, a, b).trusted
     return row(

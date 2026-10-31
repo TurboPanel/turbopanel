@@ -209,7 +209,9 @@ turbofabric_required`); `features/fabric/lan-pair-guard.ts`. A daemon gaining
   the payload has a tunnel (`serverPayloadNeedsTunnel`).
   Traffic between datacenters rides TurboFabric; a pair that shares only an
   untrusted network runs its tunnel over that LAN (`direct_lan` marked
-  untrusted, GET `pairs[].path` `fabric_over_untrusted_lan`), while plain
+  untrusted, GET `pairs[].path` `fabric_over_untrusted_lan`; a tunnel pair also carries
+  `pairs[].tunnel.readings`, each end's own latest peer report about the other, which the
+  page judges instead of the stored path summary), while plain
   traffic never crosses an untrusted LAN. Failover replication and Raft never
   use fabric. The planner refuses a span only for pairs outside a shared
   trusted LAN (TurboFabric off, a switched-off server in such a pair, or no
