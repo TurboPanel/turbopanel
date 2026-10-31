@@ -6214,7 +6214,8 @@ export const audit = pgTable(
     action: text().notNull(),
     /**
      * What it was done to: an entity kind such as `organization`, `server`,
-     * `forge`, `environment`, `hosting`, `tls`, `managed` or `binding`, a grant's
+     * `forge`, `environment`, `project`, `principal` (a Hosting Account), `hosting`,
+     * `tls`, `managed` or `binding`, a grant's
      * entity type, or a platform area such as `instance_updates` or `mail_queue`.
      */
     targetType: text('target_type').notNull(),
