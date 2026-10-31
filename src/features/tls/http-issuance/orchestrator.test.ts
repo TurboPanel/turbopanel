@@ -985,3 +985,30 @@ test('a row with several names (apex and www) is left entirely alone', async () 
     await f.cleanup()
   }
 })
+
+test('a request whose pair is stored but whose issued event was lost closes as issued', async () => {
+  if (!dbUrl) return skipWithoutDatabase('http issuance tests')
+  const f = await setup({ servers: 1 })
+  try {
+    await startHttpIssuance(f.deps(), f.tlsId, always)
+    const row = await readRow(f)
+    const state = readHttpIssuanceState(row.metadata)!
+    await f.db
+      .update(tls)
+      .set({
+        metadata: {
+          ...(row.metadata as object),
+          httpCert: { ...state, capturedAt: at(1000).toISOString(), coveredNames: [HOST] },
+        },
+      })
+      .where(eq(tls.id, f.tlsId))
+    assertEquals(await advanceHttpIssuance(f.deps({ now: () => at(30_000) }), f.tlsId), 'not_due')
+    assertEquals(readHttpIssuanceState((await readRow(f)).metadata)!.endedAt, null)
+    await advanceHttpIssuance(f.deps({ now: () => at(70_000) }), f.tlsId)
+    const closed = readHttpIssuanceState((await readRow(f)).metadata)!
+    assertEquals(closed.phase, 'issued')
+    assertEquals(closed.endedAt, at(70_000).toISOString())
+  } finally {
+    await f.cleanup()
+  }
+})

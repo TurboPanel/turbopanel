@@ -898,3 +898,41 @@ test('a pair that is not newer than the stored one still counts toward the reque
     await f.cleanup()
   }
 })
+
+test('a pair a server captured by itself clears a waiting marker', async () => {
+  if (!dbUrl) return skipWithoutDatabase('issued certificate storage tests')
+  const f = await setup()
+  try {
+    const row = await readRow(f)
+    await f.db
+      .update(tls)
+      .set({
+        metadata: {
+          ...(row.metadata as object),
+          acme: {
+            managedBy: 'caddy',
+            stage: 'waiting',
+            warning: 'Waiting for a contact email address.',
+          },
+        },
+      })
+      .where(eq(tls.id, f.tlsId))
+    const pair = await issuedPair([HOST])
+    const result = await storeIssuedCertificate(
+      f.db,
+      {
+        serverId: f.serverId,
+        hostname: HOST,
+        certificatePem: pair.certificatePem,
+        privateKeyPem: pair.privateKeyPem,
+      },
+      f.deps
+    )
+    assertEquals(result.ok, true)
+    const acme = ((await readRow(f)).metadata as { acme: Record<string, unknown> }).acme
+    assertEquals(acme.stage, undefined)
+    assertEquals(acme.warning, undefined)
+  } finally {
+    await f.cleanup()
+  }
+})

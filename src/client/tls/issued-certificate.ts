@@ -488,6 +488,11 @@ async function writePair(
       issuedByServerId: input.serverId,
     }
     delete acme.lastError
+    // A pair has arrived, so a row that was waiting for one is no longer waiting.
+    if (acme.stage === 'waiting') {
+      delete acme.stage
+      delete acme.warning
+    }
     const nextMetadata = {
       ...metadata,
       hasWildcard: parsed.hasWildcard,
