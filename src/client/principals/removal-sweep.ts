@@ -49,7 +49,7 @@ export type UnusedPrincipalDelete =
   | { status: 'missing' }
   | { status: 'has_project' }
   | { status: 'in_use'; usedBy: PrincipalReferences }
-  | { status: 'deleted'; serverIds: string[]; appliedUsername: string }
+  | { status: 'deleted'; serverIds: string[]; username: string; appliedUsername: string }
 
 /**
  * Delete a principal row that nothing uses (the organization's own delete),
@@ -64,7 +64,11 @@ export async function deleteUnusedPrincipal(
   where: Readonly<{ principalId: string; organizationId: string }>
 ): Promise<UnusedPrincipalDelete> {
   const [row] = await tx
-    .select({ projectId: principal.projectId, appliedUsername: principal.appliedUsername })
+    .select({
+      projectId: principal.projectId,
+      username: principal.username,
+      appliedUsername: principal.appliedUsername,
+    })
     .from(principal)
     .where(
       and(eq(principal.id, where.principalId), eq(principal.organizationId, where.organizationId))
@@ -79,7 +83,12 @@ export async function deleteUnusedPrincipal(
 
   const serverIds = await serversForPrincipal(tx, where.principalId)
   await tx.delete(principal).where(eq(principal.id, where.principalId))
-  return { status: 'deleted', serverIds, appliedUsername: row.appliedUsername }
+  return {
+    status: 'deleted',
+    serverIds,
+    username: row.username,
+    appliedUsername: row.appliedUsername,
+  }
 }
 
 /**
