@@ -413,6 +413,35 @@ test('PUT /temperature-unit returns 400 for an invalid unit', async () => {
   assertEquals(await res.json(), { error: 'Invalid temperatureUnit' })
 })
 
+test('PUT /tls-settings returns 400 for an invalid contact email', async () => {
+  for (const bad of ['a@b.c, d@e.fg', 'not-an-email', 'x@localhost', 'a@1.2.3.4', 5]) {
+    const { app, cookie } = await buildSessionApp({
+      manageAllowed: true,
+      executeQueue: [[{ allowed: true }]],
+    })
+    const res = await app.request(`/organizations/${orgId}/tls-settings`, {
+      method: 'PUT',
+      headers: { Cookie: cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ acmeContactEmail: bad }),
+    })
+    assertEquals(res.status, 400)
+    assertEquals(await res.json(), { error: 'Invalid acmeContactEmail' })
+  }
+})
+
+test('PUT /tls-settings returns 400 when no key is given', async () => {
+  const { app, cookie } = await buildSessionApp({
+    manageAllowed: true,
+    executeQueue: [[{ allowed: true }]],
+  })
+  const res = await app.request(`/organizations/${orgId}/tls-settings`, {
+    method: 'PUT',
+    headers: { Cookie: cookie, 'content-type': 'application/json' },
+    body: JSON.stringify({}),
+  })
+  assertEquals(res.status, 400)
+})
+
 test('GET /temperature-unit defaults to celsius when unset', async () => {
   const { app, cookie } = await buildSessionApp({
     manageAllowed: true,

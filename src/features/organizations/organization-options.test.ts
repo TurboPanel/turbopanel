@@ -1,10 +1,12 @@
 import { assertEquals } from '@std/assert'
 import {
   isUnlimitedMaxServers,
+  normalizeAcmeContactEmail,
   parseDefaultEnvironmentNameInput,
   parseMaxServersInput,
   parseOrganizationOptions,
   parseTemperatureUnitInput,
+  resolveAcmeContactEmail,
   resolveComposeDefaultResourceLimits,
   resolveDefaultEnvironmentName,
   resolveDeployHooksEnabled,
@@ -328,4 +330,43 @@ test('the deploy time limit is 30 minutes unless the organization set a whole nu
   }
   assertEquals(resolveDeployTimeoutMs(5), 5 * 60_000)
   assertEquals(resolveDeployTimeoutMs(240), 240 * 60_000)
+})
+
+test('normalizeAcmeContactEmail accepts one public mailbox and lowercases the domain', () => {
+  assertEquals(normalizeAcmeContactEmail(' Ops@Example.COM '), 'Ops@example.com')
+  assertEquals(normalizeAcmeContactEmail('a+b@mail.example.co'), 'a+b@mail.example.co')
+})
+
+test('normalizeAcmeContactEmail rejects lists, header breaks, display names and non-public domains', () => {
+  const bad = [
+    '',
+    'a@b.cd, e@f.gh',
+    'a@b.cd;e@f.gh',
+    'a@b.cd\r\nBcc: x@y.zz',
+    'Name <a@b.cd>',
+    '<a@b.cd>',
+    'a b@c.de',
+    'a@localhost',
+    'a@10.0.0.1',
+    'a@[10.0.0.1]',
+    'a@exa_mple.com',
+    'a@-bad.com',
+    'a@b..com',
+    'é@example.com',
+    `${'a'.repeat(65)}@example.com`,
+    `a@${'b'.repeat(250)}.com`,
+    5,
+    null,
+  ]
+  for (const value of bad) assertEquals(normalizeAcmeContactEmail(value), null, String(value))
+})
+
+test('parseOrganizationOptions keeps a valid contact email and drops an invalid one', () => {
+  assertEquals(
+    parseOrganizationOptions({ acmeContactEmail: 'ops@example.com' }).acmeContactEmail,
+    'ops@example.com'
+  )
+  assertEquals(parseOrganizationOptions({ acmeContactEmail: 'nope' }).acmeContactEmail, undefined)
+  assertEquals(parseOrganizationOptions({ acmeContactEmail: null }).acmeContactEmail, undefined)
+  assertEquals(resolveAcmeContactEmail({}), null)
 })

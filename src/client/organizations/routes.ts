@@ -261,10 +261,21 @@ export function registerOrganizationRoutes(router: Hono<AppEnv>, opts: AuthRoute
           await eraseStoredPairs(db, organizationId)
         }
       },
-      audit: (patch) => ({
-        action: 'organization.acme.set',
-        context: { acmeEnabled: patch.acmeEnabled },
-      }),
+      audit: (patch) =>
+        patch.acmeEnabled === undefined
+          ? {
+              action: 'organization.acme_contact.set',
+              context: { acmeContactEmail: patch.acmeContactEmail ?? null },
+            }
+          : {
+              action: 'organization.acme.set',
+              context: {
+                acmeEnabled: patch.acmeEnabled,
+                ...('acmeContactEmail' in patch
+                  ? { acmeContactEmail: patch.acmeContactEmail ?? null }
+                  : {}),
+              },
+            },
     })
   )
 
