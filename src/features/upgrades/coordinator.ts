@@ -321,7 +321,7 @@ function runActiveRefusal(activeRunId?: string) {
 
 /** Sentence on a fleet step that was already offline when the update started. */
 export const SKIPPED_OFFLINE_AT_START_MESSAGE =
-  'It was offline when the update started. It updates on its own when it reconnects.'
+  'Skipped: offline when the update started. It updates at the next automatic check after it reconnects (within the hour), unless updates are paused.'
 
 /**
  * Sentence on a fleet step that lost its connection during the run and stayed
@@ -330,7 +330,7 @@ export const SKIPPED_OFFLINE_AT_START_MESSAGE =
  */
 function skipOfflineTimeoutMessage(): string {
   const minutes = Math.round(UPGRADE_OFFLINE_DEADLINE_MS / 60_000)
-  return `It stayed offline for ${minutes} minutes during the update. It updates on its own when it reconnects.`
+  return `Skipped: offline for ${minutes} minutes during the update. It updates at the next automatic check after it reconnects (within the hour), unless updates are paused.`
 }
 
 function markStepSkippedOffline(step: UpgradeStepRow, message: string): void {

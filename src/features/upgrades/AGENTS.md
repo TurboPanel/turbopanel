@@ -142,8 +142,9 @@ kind. Store the latest available build in a setting row.
   Preflight reports `canStart` in that case and does not mutate. A fleet host
   that is not connected when a run is planned (manual or automatic, not a
   single-server start) gets its step `skipped` at once with `server_offline`
-  and "It was offline when the update started. It updates on its own when it
-  reconnects."; a connected `pending` host is never skipped.
+  and "Skipped: offline when the update started. It updates at the next
+  automatic check after it reconnects (within the hour), unless updates are
+  paused."; a connected `pending` host is never skipped.
 - **Automatic** — on every runtime and channel, unless paused. Only when the target differs
   from what's installed (`differsFromInstalled`), and only when no run is
   active. Control-plane drift counts only where the run would plan the
@@ -266,8 +267,9 @@ working.
   (`attempts === 0`) **fleet** step on a host that went offline during the run;
   one still waiting after that is `skipped` (`skip_offline`, strictly more than
   15:00 elapsed) with `errorCode`
-  `server_offline` and "It stayed offline for 15 minutes during the update. It
-  updates on its own when it reconnects." The run then ends `succeeded` when
+  `server_offline` and "Skipped: offline for 15 minutes during the update. It updates at the
+  next automatic check after it reconnects (within the hour), unless updates
+  are paused." The run then ends `succeeded` when
   every other step is done/skipped. Co-located daemon and control-plane steps
   still become `needs_attention` / `server_offline` (the fleet gate depends on
   them). A host that dropped mid-install (`attempts > 0`) is never skipped: it
