@@ -7,6 +7,7 @@ import {
   type DerivedSecretsConfig,
 } from '../../lib/secrets/secrets.ts'
 import { emitCertificateRenewalFailed } from '../../features/notifications/certificate-alerts.ts'
+import { handleRepoKeyChanged } from '../../features/notifications/repo-key-alerts.ts'
 import {
   createWorkersDb,
   type Db,
@@ -1946,7 +1947,7 @@ export class DaemonCellObject {
 
   /**
    * Fire-and-forget daemon reports that only write a projection
-   * (`managed-health-report`, `fabric-peers-report`, `topology-report`).
+   * (`managed-health-report`, `fabric-peers-report`, `repo-key-changed`, `topology-report`).
    * Returns true when handled.
    */
   async #handleReportInbound(
@@ -1979,6 +1980,18 @@ export class DaemonCellObject {
           peers: parsed.peers,
           observedAt: parsed.observedAt,
         })
+      })
+      return true
+    }
+    if (parsed.type === 'repo-key-changed') {
+      await this.#recordInboundRepairingPresence(attachment, parsed.at)
+      await this.#withProjectionDb('repo-key-changed', attachment.serverId, async (db) => {
+        await handleRepoKeyChanged(
+          db,
+          await this.#dataEncryptionSecrets(),
+          attachment.serverId,
+          parsed
+        )
       })
       return true
     }

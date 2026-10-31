@@ -210,6 +210,28 @@ export const NOTIFICATION_EVENT_DEFINITIONS = {
       'Open Folders that need attention in the organization settings to remove it, ' +
       'or put the service back to use it again.',
   },
+  'server.repo_key_changed': {
+    label: "A software source's signing key changed",
+    severity: 'warning',
+    scope: 'organization',
+    audience: 'managers',
+    // A signing key is what vouches for the software installed on a server.
+    urgent: true,
+    title: (ctx) =>
+      `The ${name(ctx, 'keyName', 'software source')} signing key changed on ${name(
+        ctx,
+        'serverName',
+        'a server'
+      )}`,
+    body: (ctx) =>
+      `The ${name(ctx, 'keyName', 'software source')} package source now publishes a different signing key than TurboPanel expects (expected ${name(
+        ctx,
+        'expected',
+        'unknown'
+      )}, got ${name(ctx, 'got', 'unknown')}). ` +
+      'The server went on using it, and every package is still checked against that key. ' +
+      'This is usually the publisher rotating its key; if you did not expect that, check the source before the next install.',
+  },
 } as const satisfies Record<string, EventDefinition>
 
 export type NotificationEvent = keyof typeof NOTIFICATION_EVENT_DEFINITIONS

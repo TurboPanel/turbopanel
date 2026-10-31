@@ -749,6 +749,21 @@ export type DaemonMessage =
       at: string
     }
   | {
+      /**
+       * Daemon-initiated, fire-and-forget (feature `repo-key-report-v1`): the
+       * package source named `keyName` publishes a signing key whose
+       * fingerprint (`got`, hex) is not in the daemon's `expected` list. The
+       * install went on (package signatures are still checked); the control
+       * plane tells the organization's managers. The daemon sends it once per
+       * key name and fingerprint.
+       */
+      type: 'repo-key-changed'
+      keyName: string
+      expected: string[]
+      got: string
+      at: string
+    }
+  | {
       type: 'container-logs-request'
       id: string
       containerId: string
@@ -1114,6 +1129,7 @@ export const DAEMON_INBOUND_ALLOWED = new Set([
   'managed-ha-event',
   'managed-health-report',
   'fabric-peers-report',
+  'repo-key-changed',
   'topology-report',
   'acme-issuance-event',
   'instance-acme-issuance-event',
@@ -2264,6 +2280,32 @@ function validateFabricReportPeer(value: unknown): string | null {
   )
 }
 
+/** A package source's short name, such as `docker` or `php`. */
+const REPO_KEY_NAME_RE = /^[a-z0-9][a-z0-9._-]{0,31}$/
+/** A full OpenPGP fingerprint in hex (v4: 40 digits, v5/v6: 64). */
+const REPO_KEY_FINGERPRINT_RE = /^(?:[0-9A-Fa-f]{40}|[0-9A-Fa-f]{64})$/
+/** Most expected fingerprints one `repo-key-changed` frame lists. */
+export const MAX_DAEMON_WS_REPO_KEY_EXPECTED = 16
+
+function validateRepoKeyChangedFields(record: Record<string, unknown>): string | null {
+  if (!isIsoTimestamp(record.at)) return 'invalid at timestamp'
+  if (typeof record.keyName !== 'string' || !REPO_KEY_NAME_RE.test(record.keyName)) {
+    return 'invalid keyName'
+  }
+  if (typeof record.got !== 'string' || !REPO_KEY_FINGERPRINT_RE.test(record.got)) {
+    return 'invalid got'
+  }
+  if (
+    !Array.isArray(record.expected) ||
+    record.expected.length === 0 ||
+    record.expected.length > MAX_DAEMON_WS_REPO_KEY_EXPECTED ||
+    !record.expected.every((item) => typeof item === 'string' && REPO_KEY_FINGERPRINT_RE.test(item))
+  ) {
+    return 'invalid expected'
+  }
+  return null
+}
+
 function validateFabricPeersReportFields(record: Record<string, unknown>): string | null {
   if (!isIsoTimestamp(record.at)) return 'invalid at timestamp'
   if (!isIsoTimestamp(record.observedAt)) return 'invalid observedAt timestamp'
@@ -2508,6 +2550,8 @@ function validateInboundMessageFields(record: Record<string, unknown>): string |
       return validateManagedHealthReportFields(record)
     case 'fabric-peers-report':
       return validateFabricPeersReportFields(record)
+    case 'repo-key-changed':
+      return validateRepoKeyChangedFields(record)
     case 'topology-report':
       return validateTopologyReportFields(record)
     case 'acme-issuance-event':
@@ -3036,6 +3080,7 @@ export function wireMessageToInboundEnvelope(msg: DaemonMessage): DaemonInboundE
     case 'managed-ha-event':
     case 'managed-health-report':
     case 'fabric-peers-report':
+    case 'repo-key-changed':
     case 'topology-report':
     case 'acme-issuance-event':
     case 'instance-acme-issuance-event':
