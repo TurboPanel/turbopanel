@@ -1046,9 +1046,11 @@ export const payer = pgTable(
 /**
  * One provider subscription for a `payer`.
  *
- * **No CHECK on `status`.** Stripe adds statuses; a CHECK would turn a
- * Stripe product change into a webhook that 500s. The value is narrowed in
- * code (`src/features/billing/billing-records.ts`) instead.
+ * **`status` is CHECKed** (`subscription_status_check`) against the known
+ * Stripe statuses plus `unknown`. Stripe adds statuses, so a new one is not
+ * refused: `parseSubscriptionStatus` in `src/features/billing/billing-records.ts`
+ * narrows anything it does not know to `unknown` before the insert, so a
+ * Stripe product change never turns into a webhook that 500s.
  */
 export const subscription = pgTable(
   'subscription',
@@ -1809,7 +1811,7 @@ export const fabric = pgTable(
  * Public VPS addresses carry no `network_id`. TurboFabric `tp0` addresses live
  * on `relay.address`, not here. Address family (`version`) is derived from
  * `address` in the API — not stored. Optional `description` is an operator
- * note (`varchar(255)`); IPs are not named.
+ * note (`text`); IPs are not named.
  */
 export const ip = pgTable(
   'ip',
@@ -2684,11 +2686,9 @@ export const replica = pgTable(
  * other `managed` child row does (`managed → environment → project →
  * workspace → organization`), matching `replica`, not denormalized.
  *
- * `id` deliberately breaks the uuid-PK house style: it stays the daemon's
- * `bk_<hex>` token (`generateBackupId` in `client/managed/backups.ts`)
- * because that exact string becomes the backup artifact's filename on the
- * host — swapping to a fresh uuid PK would decouple the row's identity from
- * the file it names.
+ * `id` is a uuid like every other table. The daemon's own `bk_<hex>` token
+ * (`generateBackupId` in `client/managed/backups.ts`) lives in `backup_id`,
+ * because that exact string is the backup file's name on the host.
  */
 export const backup = pgTable(
   'backup',
@@ -3513,7 +3513,12 @@ export const deployment = pgTable(
       .defaultNow()
       .$onUpdate(() => sql`now()`)
       .notNull(),
-    /** Last failure message / planner warnings. */
+    /**
+     * Last apply attempt's facts, patched on each outcome: `error` (the last
+     * failure message, reset to null on success), `strategyOutcome` and
+     * `cancelled` (how a deploy that did not finish ended), and `rollout`
+     * (`not_started` when a rollout never began).
+     */
     metadata: jsonb(),
     options: jsonb(),
     environmentId: uuid('environment_id').notNull(),
@@ -6207,7 +6212,11 @@ export const audit = pgTable(
     actorEmail: text('actor_email'),
     /** Dot-joined verb, e.g. `server.daemon_key.revoke` — AUDIT_ACTIONS. */
     action: text().notNull(),
-    /** What it was done to: a catalog entity kind, or `organization`. */
+    /**
+     * What it was done to: an entity kind such as `organization`, `server`,
+     * `forge`, `environment`, `hosting`, `tls`, `managed` or `binding`, a grant's
+     * entity type, or a platform area such as `instance_updates` or `mail_queue`.
+     */
     targetType: text('target_type').notNull(),
     targetId: uuid('target_id'),
     /** Small, non-secret facts worth keeping beside the action. */

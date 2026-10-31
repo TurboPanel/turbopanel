@@ -970,12 +970,9 @@ raw machine-id, and not a sealed secret (it is non-reversible and safe to
 index/equality-match). It is echoed into signed enroll/auth payloads and used
 for reconnect/reuse matching alongside `hostname`.
 
-Canonical column order: `id`, `created_at`, `updated_at`, `metadata`, `options`,
-`organization_id`, `name`, `hostname`, `machine_key`, `os_id`, `os_family`,
-`os_version`, `os_codename`, `os_pretty_name`, `os_architecture`, `timezone`,
-`is_time_sync_enabled`, `ntp_servers`, `ntp_last_synced_at`, `is_connected`,
-`status_changed_at`, `daemon` (shared `metadata`/`options` pair immediately
-after timestamps — remaining columns follow). **No `datacenter_id`** —
+Column order: see `server` in `schema.ts` for the current list (the shared
+`metadata`/`options` pair sits immediately after the timestamps, remaining
+columns follow). **No `datacenter_id`** —
 membership is via `ip` pins only. Indexes: `idx_server_organization_id`,
 unique `uniq_server_machine_key` (one machine belongs to exactly one organization), and partial
 `idx_server_connected` on `(id) WHERE is_connected`, `idx_server_offline` and `idx_server_updating`. Latest hardware and the latest metrics plan are the jsonb columns `hardware` and `capability` (latest only: older generations are not kept); `machine_class_source` says whether `machine_class` was `detected` or set by an `operator`; `offline_reason`, `daemon_commit`, `daemon_built_at`, `daemon_update_status` and `external_access_pending_at` are the columns the sweeps filter on. There is no `daemon_status`
@@ -1036,9 +1033,14 @@ is the NTP client enabled flag. `ntp_servers` is a jsonb array of
 a stamp, the host becomes unsynced (`null`), or the first synced observation
 arrives while the column is still null.
 
-**Daemon identity (`server.daemon` jsonb):** sparse `{ key, projection? }` only.
-Fleet liveness lives on dedicated columns (below). No separate `serverkey` table
-exists for MVP.
+**Daemon identity:** the key lives in its own `key` table, one row per server
+(unique `uniq_key_server` on `server_id`, `ON DELETE CASCADE`), and the sparse
+`server.daemon` jsonb holds only the optional projection. The assembled shape
+is `{ key, projection? }` (`ServerDaemonState` in
+`src/features/servers/daemon-state.ts`), built by the readers in
+`src/features/servers/server-identity-db.ts`, which join `key` to `server`; a
+server with no `key` row is not enrolled. Fleet liveness lives on dedicated
+columns (below).
 
 ```json
 {
@@ -1048,7 +1050,8 @@ exists for MVP.
     "publicJwk": {},
     "fingerprint": "sha256-public-jwk-fingerprint",
     "createdAt": "iso timestamp",
-    "revokedAt": "iso timestamp or null"
+    "revokedAt": "iso timestamp or null",
+    "lastUsedAt": "iso timestamp or null"
   },
   "projection": {
     "hostname": "host.example",
@@ -1065,18 +1068,23 @@ exists for MVP.
 }
 ```
 
-| Field             | Purpose                                                                                                       |
-| ----------------- | ------------------------------------------------------------------------------------------------------------- |
-| `key.id`          | Logical key identifier returned to the daemon as `keyId` on enrollment                                        |
-| `key.publicJwk`   | Raw Ed25519 public JWK `{ crv, kty, x }`                                                                      |
-| `key.fingerprint` | SHA-256 hex over the canonical public JWK — duplicate-checked at enrollment (no DB unique constraint for MVP) |
-| `key.revokedAt`   | Non-null blocks new JWT issuance; existing JWTs remain valid until their 15-minute expiry                     |
+The `key` object above is the `key` table row; only `projection` is stored in
+`server.daemon`.
+
+| Field             | Purpose                                                                                    |
+| ----------------- | ------------------------------------------------------------------------------------------ |
+| `key.id`          | Logical key identifier returned to the daemon as `keyId` on enrollment                     |
+| `key.publicJwk`   | Raw Ed25519 public JWK `{ crv, kty, x }`                                                   |
+| `key.fingerprint` | SHA-256 hex over the canonical public JWK — unique across servers (`uniq_key_fingerprint`) |
+| `key.revokedAt`   | Non-null blocks new JWT issuance; existing JWTs remain valid until their 15-minute expiry  |
 
 **`server.daemon.projection` (sparse identity summary):** optional `hostname` /
 `machineKey` (also mirrored onto dedicated columns), `remoteAddress`, `keyId`,
 optional `daemonBuild` (`commit`/`buildId`/`builtAt`/`channel`), optional
-`update`. Updated on identity changes and daemon build identity changes (via
-`control-plane-monitor.ts` outside the DO hot path on Workers). No monitor
+`update`, `features` (wire features advertised in `hello`) and `offlineReason`
+(`disconnect` or `sweep_stale`). Updated on identity changes and daemon build
+identity changes (via `control-plane-monitor.ts` outside the DO hot path on
+Workers). No monitor
 health counts or resource graph are stored. Projection is not path-queried for
 reconnect dedup — use `hostname` / `machine_key` columns.
 
@@ -1115,18 +1123,18 @@ Engine/DuckDB (`src/daemon/metrics/AGENTS.md`) exists for historical
 uptime/downtime charts — it is history-only and never authoritative for current
 liveness. See `src/daemon/cell/AGENTS.md` for cost/parity rules.
 
-**Key use tracking:** `server.daemon.key.lastUsedAt` is updated on JWT session
+**Key use tracking:** `key.last_used_at` is updated on JWT session
 issuance via `touchDaemonKeyLastUsed()` (Postgres only — no cell wake).
 `lastInboundAt` remains cell-only (Redis/DO snapshot), coalesced on connect and
 inbound WS activity.
 
-The `key` field is always preserved on write (read-modify-write via
-`parseServerDaemonState` + merge). Status is never written into `server.daemon`
-jsonb.
+Status is never written into `server.daemon` jsonb.
 
-Re-enrollment with a valid license token replaces `server.daemon` atomically
-(and resets status columns). No historical key rows are kept for MVP. To revoke
-daemon auth, set `server.daemon.key.revokedAt` (via `revokeDaemonKey` helper).
+Re-enrollment with a valid license token replaces the server's `key` row (a new
+`id`, fingerprint and `created_at`; the old key is not kept) and resets
+`server.daemon` to null together with the status columns, in one transaction.
+A revoked key is never replaced by re-enrollment. To revoke daemon auth, set
+`key.revoked_at` (via the `revokeDaemonKey` helper).
 
 ## `command` table
 

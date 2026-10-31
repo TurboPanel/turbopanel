@@ -67,6 +67,8 @@ export type HttpIssuanceState = {
   lastEventAt: string | null
   /** The pair for this request was stored (it arrives by the capture call). */
   capturedAt: string | null
+  /** Names of the request that a stored pair covers (a daemon reports one pair per name). */
+  coveredNames: string[]
   /** The issuing server said `issued` (the request closes once the pair is stored too). */
   issuedEventAt: string | null
   /** Leaf expiry the issuing server reported (ISO 8601). */
@@ -175,6 +177,7 @@ export function newHttpIssuanceState(
     orderSentAt: null,
     lastEventAt: null,
     capturedAt: null,
+    coveredNames: [],
     issuedEventAt: null,
     notAfterIso: null,
     lastError: null,
@@ -217,6 +220,9 @@ export function readHttpIssuanceState(metadata: unknown): HttpIssuanceState | nu
     orderSentAt: text(r.orderSentAt),
     lastEventAt: text(r.lastEventAt),
     capturedAt: text(r.capturedAt),
+    coveredNames: Array.isArray(r.coveredNames)
+      ? r.coveredNames.filter((n): n is string => typeof n === 'string')
+      : [],
     issuedEventAt: text(r.issuedEventAt),
     notAfterIso: text(r.notAfterIso),
     lastError: text(r.lastError),
@@ -245,22 +251,46 @@ export function withHttpIssuanceState(
 
 /**
  * The request after its pair was stored. It closes at once when the issuing
- * server already said `issued`; otherwise it stays open until that event, so
- * the pair and the event may arrive in either order.
+ * server already said `issued` and every name of the request has a stored pair;
+ * otherwise it stays open, so the pairs (one per name) and the event may arrive
+ * in any order.
  */
 export function afterCapture(
   state: HttpIssuanceState,
   now: Date,
-  renewAt: Date | null = null
+  options: CaptureOptions = {}
 ): HttpIssuanceState {
   const at = now.toISOString()
+  const covered = options.covered ?? []
+  // A late pair for another name, inside the grace window after the close.
+  if (state.endedAt !== null) {
+    return { ...state, coveredNames: [...new Set([...state.coveredNames, ...covered])] }
+  }
   const next = {
     ...state,
     capturedAt: at,
     centralPair: true,
-    renewAt: renewAt ? renewAt.toISOString() : state.renewAt,
+    renewAt: options.renewAt ? options.renewAt.toISOString() : state.renewAt,
+    coveredNames: [...new Set([...state.coveredNames, ...covered])],
   }
-  return next.issuedEventAt === null ? next : closedAsIssued(next, at)
+  return next.issuedEventAt !== null && allNamesCovered(next, options.expected ?? [])
+    ? closedAsIssued(next, at)
+    : next
+}
+
+/** What a stored pair tells the request. */
+export type CaptureOptions = {
+  /** The request's names that the pair's certificate covers. */
+  covered?: readonly string[]
+  /** All the names the request is for. */
+  expected?: readonly string[]
+  /** When the panel orders again (about two thirds into the stored certificate's life). */
+  renewAt?: Date | null
+}
+
+/** Every name the request was for has a stored pair (a request for no names has nothing to wait for). */
+export function allNamesCovered(state: HttpIssuanceState, expected: readonly string[]): boolean {
+  return expected.every((name) => state.coveredNames.includes(name))
 }
 
 /** The most issue times kept; the authority allows 5 for one name set in a week. */
@@ -282,6 +312,9 @@ export function closedAsIssued(state: HttpIssuanceState, at: string): HttpIssuan
   }
 }
 
+/** How long after a request closes as issued a late pair for another of its names is still accepted. */
+export const LATE_PAIR_GRACE_MS = 10 * 60_000
+
 export type CaptureRefusalReason = 'unknown_request' | 'closed' | 'expired' | 'wrong_server'
 
 export type CaptureDecision = { ok: true } | { ok: false; reason: CaptureRefusalReason }
@@ -297,7 +330,19 @@ export function canAcceptCapture(
   call: { serverId: string; requestId: string; now: Date }
 ): CaptureDecision {
   if (state?.requestId !== call.requestId) return { ok: false, reason: 'unknown_request' }
-  if (state.endedAt !== null) return { ok: false, reason: 'closed' }
+  if (state.endedAt !== null) {
+    // A daemon reports one pair per name, so the last name's pair may arrive just
+    // after the request closed as issued. Only the asked server, and only briefly.
+    const closedAt = Date.parse(state.endedAt)
+    const late =
+      state.phase === 'issued' &&
+      !Number.isNaN(closedAt) &&
+      call.now.getTime() < closedAt + LATE_PAIR_GRACE_MS
+    if (!late) return { ok: false, reason: 'closed' }
+    return state.issuingServerId === call.serverId
+      ? { ok: true }
+      : { ok: false, reason: 'wrong_server' }
+  }
   const until = Date.parse(state.startByAt)
   if (Number.isNaN(until) || call.now.getTime() >= until) return { ok: false, reason: 'expired' }
   if (state.issuingServerId !== call.serverId) return { ok: false, reason: 'wrong_server' }

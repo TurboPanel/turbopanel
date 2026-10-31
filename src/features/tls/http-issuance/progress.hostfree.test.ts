@@ -45,6 +45,7 @@ function open(over: Partial<HttpIssuanceState> = {}): HttpIssuanceState {
     orderSentAt: null,
     lastEventAt: null,
     capturedAt: null,
+    coveredNames: [],
     issuedEventAt: null,
     notAfterIso: null,
     lastError: null,
@@ -274,4 +275,18 @@ test('Replace Key: once a day, five a week, never while an order runs, never wit
   )
   assert(!mayReplaceKey(open({ phase: 'ordering' }), true, T0).ok)
   assertEquals(mayReplaceKey(issued([8, 9]), true, T0), { ok: true, leftThisWeek: 5 })
+})
+
+test('the issued event does not close a two-name request until both names have a pair', () => {
+  const names = ['a.example.com', 'www.a.example.com']
+  const base = open({
+    phase: 'ordering',
+    forwards: [],
+    coveredNames: ['a.example.com'],
+    capturedAt: T0.toISOString(),
+  })
+  const event = { stage: 'issued' as const }
+  assertEquals(nextStateForEvent(base, event, at(1000), names).endedAt, null)
+  const covered = { ...base, coveredNames: names }
+  assertEquals(nextStateForEvent(covered, event, at(1000), names).phase, 'issued')
 })

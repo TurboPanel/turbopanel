@@ -8,7 +8,7 @@
  * and `daemon/deno-ws.ts`) and by the terminal transitions in
  * `command-records.ts`.
  */
-import { and, eq, notInArray, sql } from 'drizzle-orm'
+import { and, eq, inArray, notInArray, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { command } from '../../db/schema.ts'
 import {
@@ -185,18 +185,103 @@ export async function recordCommandProgress(
           eq(command.id, input.commandId),
           eq(command.serverId, input.serverId),
           notInArray(command.status, [...TERMINAL_COMMAND_STATUSES]),
-          // Frames are handled on separate connections, so one sent earlier can
-          // finish later. A frame older than the stored plan is dropped, which
+          // Frames arrive in order on one socket but each is handled on its own
+          // database connection, so one sent earlier can finish later. A frame older than the stored plan is dropped, which
           // keeps a finished step's note from being overwritten by the frame
           // that was sent while the step was still running.
           sql`COALESCE((${command.progress}->>'updatedAt')::timestamptz, '-infinity'::timestamptz) <= ${progress.updatedAt}::timestamptz`
         )
       )
       .returning({ id: command.id })
-    return rows.length > 0 ? 'stored' : 'not-applied'
+    if (rows.length > 0) return 'stored'
+    return await keepLateStepNotes(db, input, progress, receivedAt)
   } catch {
     return 'not-applied'
   }
+}
+
+/**
+ * The stored steps with the notes of steps the frame reports finished, or
+ * `null` when the frame adds none.
+ */
+function withLateNotes(
+  stored: readonly CommandProgressStep[],
+  late: readonly CommandProgressStep[]
+): CommandProgressStep[] | null {
+  let changed = false
+  const steps = stored.map((step) => {
+    const item = late.find((candidate) => candidate.id === step.id)
+    if (item?.detail === undefined || item.detail === step.detail) return step
+    if (item.state !== 'done' && item.state !== 'failed' && item.state !== 'skipped') return step
+    changed = true
+    return { ...step, detail: item.detail }
+  })
+  return changed ? steps : null
+}
+
+/** How many times a late note retries after losing a write race. */
+const LATE_NOTE_ATTEMPTS = 3
+
+/**
+ * The command already ended, so the frame cannot replace its plan. The daemon
+ * sends its frames and the result in order on one socket, but the control plane
+ * handles each on its own database connection, so the result can commit before
+ * the last frame (the one carrying a finished step's note) is stored. Copy only
+ * what the settled plan lost: the note of a step the frame reports finished,
+ * replacing the live line the step showed while it ran. Everything else, the
+ * states, times and outcome, stays as the terminal transition settled it, and a
+ * frame that adds nothing (an older one, another server's) changes nothing.
+ * The write is compare-and-set on the stored plan, so when it loses to the
+ * terminal settle or to another late frame the plan is read and merged again.
+ */
+async function keepLateStepNotes(
+  db: Db,
+  input: { serverId: string; commandId: string },
+  progress: CommandProgress,
+  receivedAt: string
+): Promise<RecordCommandProgressResult> {
+  for (let attempt = 0; attempt < LATE_NOTE_ATTEMPTS; attempt++) {
+    const [row] = await db
+      .select({ progress: command.progress, status: command.status })
+      .from(command)
+      .where(and(eq(command.id, input.commandId), eq(command.serverId, input.serverId)))
+      .limit(1)
+    if (!row || !TERMINAL_COMMAND_STATUSES.has(row.status as CommandStatus)) return 'not-applied'
+    const stored = parseStoredCommandProgress(row.progress)
+    if (stored === null) return 'not-applied'
+    const steps = withLateNotes(stored.steps, progress.steps)
+    if (steps === null) return 'not-applied'
+    const merged = finalizeCommandProgress(
+      { ...stored, steps, updatedAt: receivedAt },
+      row.status as CommandStatus,
+      receivedAt
+    )
+    // Leaves the command's own `updated_at` alone.
+    const rows = await db
+      .update(command)
+      .set({ progress: merged })
+      .where(
+        and(
+          eq(command.id, input.commandId),
+          eq(command.serverId, input.serverId),
+          inArray(command.status, [...TERMINAL_COMMAND_STATUSES]),
+          sql`${command.progress}->>'updatedAt' = ${stored.updatedAt}`
+        )
+      )
+      .returning({ id: command.id })
+    if (rows.length > 0) return 'stored'
+  }
+  return 'not-applied'
+}
+
+/** The progress now on the row, for a caller whose own write was skipped. */
+async function storedProgressOf(db: Db, commandId: string): Promise<StoredCommandProgress | null> {
+  const [row] = await db
+    .select({ progress: command.progress })
+    .from(command)
+    .where(eq(command.id, commandId))
+    .limit(1)
+  return parseStoredCommandProgress(row?.progress)
 }
 
 /**
@@ -216,10 +301,19 @@ export async function finalizeStoredCommandProgress(
   const finalized = finalizeCommandProgress(stored, input.status, input.at)
   if (finalized === stored) return stored
   try {
-    await db
+    const rows = await db
       .update(command)
       .set({ progress: finalized, updatedAt: input.at })
-      .where(eq(command.id, input.commandId))
+      .where(
+        and(
+          eq(command.id, input.commandId),
+          // A late frame that stored a step note in between already settled
+          // the plan itself; writing the older settled copy would drop it.
+          sql`${command.progress}->>'updatedAt' = ${stored.updatedAt}`
+        )
+      )
+      .returning({ id: command.id })
+    if (rows.length === 0) return (await storedProgressOf(db, input.commandId)) ?? finalized
   } catch (err) {
     console.warn(
       `command-progress finalize failed (${input.commandId}): ${

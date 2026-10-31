@@ -33,6 +33,7 @@ import { jitteredFallbackRenewAt } from '../../features/tls/dns-certificates/tim
 import { publicMarker } from '../../features/tls/http-issuance/progress.ts'
 import {
   afterCapture,
+  type CaptureOptions,
   canAcceptCapture,
   readHttpIssuanceState,
   withHttpIssuanceState,
@@ -362,15 +363,49 @@ async function rowsPinnedOnServer<T extends { id: string }>(
 function withCapturedRequest(
   metadata: ManagedRowMetadata,
   now: Date,
-  parsed: ParsedCertificate
+  options: CaptureOptions
 ): Record<string, unknown> {
   const state = readHttpIssuanceState(metadata)
   if (!state) return metadata
-  const after = afterCapture(state, now, jitteredFallbackRenewAt(parsed.notBefore, parsed.notAfter))
+  const after = afterCapture(state, now, { ...options, expected: metadata.dnsNames })
   return {
     ...withHttpIssuanceState(metadata, after),
     acme: publicMarker(metadata.acme, after),
   }
+}
+
+/** The names of the row that this pair's certificate covers. */
+function coveredBy(parsed: ParsedCertificate, metadata: ManagedRowMetadata): string[] {
+  return metadata.dnsNames.filter((name) => coversHostname(parsed.dnsNames, name))
+}
+
+/**
+ * A pair for an open request that does not replace what the row holds (the same
+ * certificate sent again for another name, or one that is not newer): nothing is
+ * stored, but the request notes that these names are served, so it can close.
+ * Repeating the same call is therefore harmless.
+ */
+async function noteCaptureOnly(
+  tx: Db,
+  row: { id: string; metadata: unknown; notAfter: string | null },
+  input: IssuedCertificateInput,
+  parsed: ParsedCertificate,
+  now: Date
+): Promise<void> {
+  if (!input.requestId) return
+  const metadata = row.metadata as ManagedRowMetadata
+  // The renewal time follows the pair the row keeps, not the one just refused.
+  const keptNotBefore = Date.parse(String((metadata as { notBefore?: unknown }).notBefore ?? ''))
+  const keptNotAfter = row.notAfter === null ? Number.NaN : Date.parse(row.notAfter)
+  const renewAt =
+    Number.isNaN(keptNotBefore) || Number.isNaN(keptNotAfter)
+      ? null
+      : jitteredFallbackRenewAt(new Date(keptNotBefore), new Date(keptNotAfter))
+  const next = withCapturedRequest(metadata, now, { covered: coveredBy(parsed, metadata), renewAt })
+  await tx
+    .update(tls)
+    .set({ metadata: next, updatedAt: now.toISOString() })
+    .where(eq(tls.id, row.id))
 }
 
 async function writePair(
@@ -418,9 +453,13 @@ async function writePair(
   await forEachSequential(rows, async (row) => {
     const metadata = row.metadata as ManagedRowMetadata
     const hasStoredPair = row.hasKey === true
-    if (hasStoredPair && row.fingerprintSha256 === parsed.fingerprintSha256) return
+    if (hasStoredPair && row.fingerprintSha256 === parsed.fingerprintSha256) {
+      await noteCaptureOnly(tx, row, input, parsed, now)
+      return
+    }
     const storedNames = hasStoredPair ? metadata.acme?.storedNames : undefined
     if (!replaces({ names: storedNames, notAfter: row.notAfter }, hasStoredPair, parsed, now)) {
+      await noteCaptureOnly(tx, row, input, parsed, now)
       return
     }
 
@@ -463,7 +502,12 @@ async function writePair(
         notAfter: parsed.notAfter.toISOString(),
         fingerprintSha256: duplicate ? null : parsed.fingerprintSha256,
         issuedByServerId: input.serverId,
-        metadata: input.requestId ? withCapturedRequest(nextMetadata, now, parsed) : nextMetadata,
+        metadata: input.requestId
+          ? withCapturedRequest(nextMetadata, now, {
+              covered: coveredBy(parsed, nextMetadata),
+              renewAt: jitteredFallbackRenewAt(parsed.notBefore, parsed.notAfter),
+            })
+          : nextMetadata,
         updatedAt: now.toISOString(),
       })
       .where(and(eq(tls.id, row.id), eq(tls.organizationId, organizationId)))
