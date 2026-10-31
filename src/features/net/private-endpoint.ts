@@ -617,6 +617,21 @@ function publicEndpoint(
   }
 }
 
+function untrustedOnlyPairError(
+  params: Readonly<{ fromServerId: string; toServerId: string; purpose: PrivateEndpointPurpose }>,
+  partition: SharedDatacenterPartition
+): PrivateEndpointError | null {
+  const datacenterId = partition.untrusted[0]
+  if (params.purpose !== 'client-backend' || datacenterId === undefined) return null
+  if (partition.trusted.length > 0) return null
+  return {
+    kind: 'untrusted_network_needs_fabric',
+    fromServerId: params.fromServerId,
+    toServerId: params.toServerId,
+    datacenterId,
+  }
+}
+
 /**
  * Purpose-aware ladder. Same-host loopback is always first. Cross-host order
  * is inverted from the former fabric-first path: datacenter (LAN) before
@@ -713,7 +728,15 @@ export function resolveOneFromCaches(params: {
     return publicEndpoint(publicAddress, partition)
   }
 
-  return rung.lastResort() ?? unavailablePath(params.fromServerId, params.toServerId)
+  const lastResort = rung.lastResort()
+  if (lastResort) return lastResort
+
+  // A client path over an untrusted-only pair with nothing to ride (no keyed
+  // tunnel, no public address) is the untrusted-network rule, not a missing
+  // network, so the refusal can say TurboFabric is what is needed.
+  const untrustedOnly = untrustedOnlyPairError(params, partition)
+  if (untrustedOnly) return untrustedOnly
+  return unavailablePath(params.fromServerId, params.toServerId)
 }
 
 /**

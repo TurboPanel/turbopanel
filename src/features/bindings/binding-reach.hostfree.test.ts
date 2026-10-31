@@ -5,6 +5,7 @@ import {
   BINDING_ENDPOINT_UNAVAILABLE_ERROR,
   BINDING_NO_PRIVATE_PATH_MESSAGE,
   BINDING_PUBLISHED_LISTENER_UNREACHABLE_MESSAGE,
+  BINDING_REASON_UNTRUSTED_NEEDS_FABRIC,
   BINDING_UNTRUSTED_NEEDS_FABRIC_MESSAGE,
   remoteBindingReachError,
 } from './binding-reach.ts'
@@ -259,6 +260,23 @@ test('remoteBindingReachError refuses a new binding through the published bind o
   assertEquals(error, {
     error: BINDING_ENDPOINT_UNAVAILABLE_ERROR,
     message: BINDING_UNTRUSTED_NEEDS_FABRIC_MESSAGE,
+    reason: BINDING_REASON_UNTRUSTED_NEEDS_FABRIC,
+  })
+})
+
+test('remoteBindingReachError names TurboFabric on an untrusted-only pair when the database has no published listener', async () => {
+  const error = await remoteBindingReachError(
+    fixtureDb({
+      members: [memberRow(DB_SERVER)],
+      memberships: UNTRUSTED_PAIR_PINS,
+      untrustedDatacenters: ['dc-u'],
+    }),
+    { managedId: MANAGED_ID, consumerServerIds: [APP_SERVER] }
+  )
+  assertEquals(error, {
+    error: BINDING_ENDPOINT_UNAVAILABLE_ERROR,
+    message: BINDING_UNTRUSTED_NEEDS_FABRIC_MESSAGE,
+    reason: BINDING_REASON_UNTRUSTED_NEEDS_FABRIC,
   })
 })
 
