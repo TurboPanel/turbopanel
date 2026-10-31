@@ -21,6 +21,7 @@ import {
   tenancy,
   user,
   workspace,
+  audit,
 } from '../../db/schema.ts'
 import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from '../authn/crypto.ts'
 import { createSession } from '../authn/session-store.ts'
@@ -333,6 +334,17 @@ test('DELETE /organizations/:id/principals/:principalId removes an orphan and re
       reconciled: { queuedServerIds: [], failedServerIds: [serverId] },
     })
     assertEquals((await db.select().from(principal).where(eq(principal.id, orphan))).length, 0)
+    const trail = await db.select().from(audit).where(eq(audit.targetId, orphan))
+    try {
+      assertEquals(trail.length, 1)
+      assertEquals(trail[0]!.action, 'principal.delete')
+      assertEquals(trail[0]!.targetType, 'principal')
+      assertEquals(trail[0]!.organizationId, organizationId)
+      const context = trail[0]!.context as { username: string; appliedUsername: string }
+      assertEquals([context.username, context.appliedUsername], [`gone_${tag}`, `gone_${tag}`])
+    } finally {
+      await db.delete(audit).where(eq(audit.targetId, orphan))
+    }
     assertEquals(
       (await db.select().from(principalPlacement).where(eq(principalPlacement.principalId, orphan)))
         .length,

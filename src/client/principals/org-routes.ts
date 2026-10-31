@@ -26,6 +26,8 @@ import {
   listServerPrincipals,
 } from '../../features/principals/org-listing.ts'
 import { PRINCIPAL_IN_USE_ERROR } from '../../features/principals/store.ts'
+import { principalDeleteAuditEntry } from './delete-audit.ts'
+import { recordAudit } from '../../features/audit/audit-records.ts'
 import { getCommandQueue } from '../../features/commands/queue.ts'
 import { isUuid } from '../access/routes-helpers.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
@@ -99,6 +101,15 @@ export function registerOrganizationPrincipalRoutes(router: Hono<AppEnv>, opts: 
       )
     }
     if (outcome.status !== 'deleted') return c.json({ error: 'Not found' }, 404)
+
+    await recordAudit(
+      db,
+      principalDeleteAuditEntry(
+        { organizationId, actorUserId: session.userId, actorEmail: session.email ?? null },
+        principalId,
+        outcome
+      )
+    )
 
     const reconciled = await retireDeletedPrincipal(
       db,
