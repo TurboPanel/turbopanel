@@ -1256,7 +1256,7 @@ test('partitionSharedDatacenters sorts by (priority, id) and defaults absent pol
   })
 })
 
-test('an offline replica daemon refuses only the primary-to-replica direction, so placement checks both directions', async () => {
+test('resolver: an offline replica daemon marks only the primary-to-replica direction (tunnelDown or untrustedPublic)', async () => {
   const db = createFixtureDb({ ...UNTRUSTED_ONLY_FIXTURE, disconnected: ['s2'] })
   for (const purpose of ['failover-replication', 'read-replication'] as const) {
     // replica (s2) to primary (s1): the primary is connected, the path is healthy.
