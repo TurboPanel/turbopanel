@@ -1359,6 +1359,8 @@ async function resolveReplicaPlacement(
   if ('kind' in fromPrimary) {
     return privateEndpointErrorResponse(c, fromPrimary)
   }
+  if (placementNeedsHealthyFabric(fromPrimary))
+    return c.json({ error: 'untrusted_network_needs_fabric' }, 422)
 
   const offline = await assertTargetServerOnline(c, db, params.serverId)
   if (offline) return offline
