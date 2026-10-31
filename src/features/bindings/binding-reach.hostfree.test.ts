@@ -5,6 +5,7 @@ import {
   BINDING_ENDPOINT_UNAVAILABLE_ERROR,
   BINDING_NO_PRIVATE_PATH_MESSAGE,
   BINDING_PUBLISHED_LISTENER_UNREACHABLE_MESSAGE,
+  BINDING_UNTRUSTED_NEEDS_FABRIC_MESSAGE,
   remoteBindingReachError,
 } from './binding-reach.ts'
 
@@ -66,13 +67,19 @@ function fixtureDb(params: {
     address: string
   }>
   publicAddresses?: Array<{ serverId: string; address: string }>
+  untrustedDatacenters?: string[]
 }): Db {
   const memberships = params.memberships ?? []
   const relays = params.relays ?? []
   const publicAddresses = params.publicAddresses ?? []
   const datacenterOptions = [...new Set(memberships.map((row) => row.datacenterId))]
     .sort((a, b) => a.localeCompare(b))
-    .map((id) => ({ id, priority: 100, isTrusted: true, addressPreference: 'ipv6' }))
+    .map((id) => ({
+      id,
+      priority: 100,
+      isTrusted: !(params.untrustedDatacenters ?? []).includes(id),
+      addressPreference: 'ipv6',
+    }))
 
   return {
     select(fields: Record<string, unknown>) {
@@ -220,4 +227,48 @@ test('remoteBindingReachError refuses when the published bind disagrees with the
     error: BINDING_ENDPOINT_UNAVAILABLE_ERROR,
     message: BINDING_PUBLISHED_LISTENER_UNREACHABLE_MESSAGE,
   })
+})
+
+const UNTRUSTED_PAIR_PINS: MembershipPinRow[] = [
+  {
+    ipId: 'ip-db',
+    serverId: DB_SERVER,
+    datacenterId: 'dc-u',
+    networkId: null,
+    address: '10.0.0.1',
+  },
+  {
+    ipId: 'ip-app',
+    serverId: APP_SERVER,
+    datacenterId: 'dc-u',
+    networkId: null,
+    address: '10.0.0.9',
+  },
+]
+
+test('remoteBindingReachError refuses a new binding on an untrusted-only pair without TurboFabric', async () => {
+  const error = await remoteBindingReachError(
+    fixtureDb({
+      members: [memberRow(DB_SERVER)],
+      memberships: UNTRUSTED_PAIR_PINS,
+      untrustedDatacenters: ['dc-u'],
+      publicAddresses: [{ serverId: DB_SERVER, address: '203.0.113.20' }],
+    }),
+    { managedId: MANAGED_ID, consumerServerIds: [APP_SERVER] }
+  )
+  assertEquals(error, {
+    error: BINDING_ENDPOINT_UNAVAILABLE_ERROR,
+    message: BINDING_UNTRUSTED_NEEDS_FABRIC_MESSAGE,
+  })
+})
+
+test('remoteBindingReachError keeps a public path for a pair with no shared datacenter', async () => {
+  const error = await remoteBindingReachError(
+    fixtureDb({
+      members: [memberRow(DB_SERVER)],
+      publicAddresses: [{ serverId: DB_SERVER, address: '203.0.113.20' }],
+    }),
+    { managedId: MANAGED_ID, consumerServerIds: [APP_SERVER] }
+  )
+  assertEquals(error, null)
 })
