@@ -10,13 +10,25 @@ import { assertEquals } from '@std/assert'
 import { eq } from 'drizzle-orm'
 import { createDenoDb } from '../../db/connection.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
-import { organization, tls } from '../../db/schema.ts'
+import {
+  environment,
+  hosting,
+  organization,
+  project,
+  service,
+  tls,
+  workspace,
+} from '../../db/schema.ts'
 import {
   type HttpIssuanceState,
   newHttpIssuanceState,
   withHttpIssuanceState,
 } from '../../features/tls/http-issuance/state.ts'
-import { httpIssuanceContact, selectHttpIssuanceCandidates } from './http-issuance-sweep.ts'
+import {
+  httpIssuanceContact,
+  markChecked as markCheckedForTest,
+  selectHttpIssuanceCandidates,
+} from './http-issuance-sweep.ts'
 
 const dbUrl = getDatabaseUrl()
 
@@ -34,17 +46,45 @@ const iso = (ms: number) => new Date(NOW.getTime() + ms).toISOString()
 test('the sweep picks up exactly the rows with work to do', async () => {
   if (!dbUrl) return skipWithoutDatabase('http issuance sweep tests')
   const db = createDenoDb()
+  const stamp = new Date().toISOString()
   const [org] = await db
     .insert(organization)
     .values({ name: 'Sweep Org', options: { acmeEnabled: true } })
     .returning({ id: organization.id })
   const organizationId = org!.id
+  const [ws] = await db
+    .insert(workspace)
+    .values({ organizationId, name: 'WS', createdAt: stamp, updatedAt: stamp })
+    .returning({ id: workspace.id })
+  const [proj] = await db
+    .insert(project)
+    .values({ workspaceId: ws!.id, organizationId, name: 'P', createdAt: stamp, updatedAt: stamp })
+    .returning({ id: project.id })
+  const [env] = await db
+    .insert(environment)
+    .values({ projectId: proj!.id, name: 'e', createdAt: stamp, updatedAt: stamp })
+    .returning({ id: environment.id })
+  const [svc] = await db
+    .insert(service)
+    .values({
+      environmentId: env!.id,
+      name: 's',
+      composeServiceName: 's',
+      createdAt: stamp,
+      updatedAt: stamp,
+    })
+    .returning({ id: service.id })
   const make = async (
     label: string,
-    options: { key?: boolean; state?: Partial<HttpIssuanceState> | null }
+    options: {
+      key?: boolean
+      state?: Partial<HttpIssuanceState> | null
+      names?: string[]
+      pinned?: boolean
+    }
   ): Promise<string> => {
     const metadata: Record<string, unknown> = {
-      dnsNames: [`${label}.example.com`],
+      dnsNames: options.names ?? [`${label}.example.com`],
       acme: { managedBy: 'caddy' },
     }
     const withState =
@@ -72,49 +112,133 @@ test('the sweep picks up exactly the rows with work to do', async () => {
         options: {},
       })
       .returning({ id: tls.id })
+    if (options.pinned !== false) {
+      await db.insert(hosting).values({
+        serviceId: svc!.id,
+        name: label,
+        tlsId: row!.id,
+        options: { hostnames: [`${label}.example.com`] },
+        createdAt: stamp,
+        updatedAt: stamp,
+      })
+    }
     return row!.id
   }
+  const issued = { phase: 'issued' as const, endedAt: iso(-1000), endsSentAt: iso(-900) }
   try {
     const ids = {
       fresh: await make('fresh', {}),
       open: await make('open', { state: {} }),
       undelivered: await make('undelivered', {
         key: true,
-        state: {
-          phase: 'issued',
-          endedAt: iso(-1000),
-          deliveredAt: null,
-          renewAt: iso(86_400_000),
-        },
+        state: { ...issued, deliveredAt: null, centralPair: true, renewAt: iso(86_400_000) },
       }),
       renewDue: await make('renewdue', {
         key: true,
-        state: { phase: 'issued', endedAt: iso(-1000), deliveredAt: iso(-500), renewAt: iso(-10) },
+        state: { ...issued, deliveredAt: iso(-500), centralPair: true, renewAt: iso(-10) },
+      }),
+      renewMissing: await make('renewmissing', {
+        key: true,
+        state: { ...issued, deliveredAt: iso(-500), centralPair: true },
       }),
       idle: await make('idle', {
         key: true,
+        state: { ...issued, deliveredAt: iso(-500), centralPair: true, renewAt: iso(86_400_000) },
+      }),
+      notOurPair: await make('notourpair', {
+        key: true,
+        state: { ...issued, deliveredAt: iso(-500), centralPair: false },
+      }),
+      retryDue: await make('retrydue', {
         state: {
-          phase: 'issued',
+          phase: 'failed',
           endedAt: iso(-1000),
-          deliveredAt: iso(-500),
+          endsSentAt: iso(-900),
+          nextAttemptAt: iso(-1),
+        },
+      }),
+      waiting: await make('waiting', {
+        state: {
+          phase: 'failed',
+          endedAt: iso(-1000),
+          endsSentAt: iso(-900),
+          nextAttemptAt: iso(600_000),
+        },
+      }),
+      failedWithPairNotDue: await make('failedpair', {
+        key: true,
+        state: {
+          phase: 'failed',
+          endedAt: iso(-1000),
+          endsSentAt: iso(-900),
+          nextAttemptAt: iso(-1),
+          centralPair: true,
           renewAt: iso(86_400_000),
         },
       }),
-      retryDue: await make('retrydue', {
-        state: { phase: 'failed', endedAt: iso(-1000), nextAttemptAt: iso(-1) },
+      failedWithPairDue: await make('failedpairdue', {
+        key: true,
+        state: {
+          phase: 'failed',
+          endedAt: iso(-1000),
+          endsSentAt: iso(-900),
+          nextAttemptAt: iso(-1),
+          centralPair: true,
+          renewAt: iso(-5),
+        },
       }),
-      waiting: await make('waiting', {
-        state: { phase: 'failed', endedAt: iso(-1000), nextAttemptAt: iso(600_000) },
+      endsPending: await make('endspending', {
+        state: {
+          phase: 'failed',
+          endedAt: iso(-1000),
+          endsSentAt: null,
+          nextAttemptAt: iso(600_000),
+          forwards: [{ serverId: 'b', outcome: 'ready', reason: null, at: null }],
+        },
       }),
       ownCaptured: await make('owncaptured', { key: true }),
+      unpinned: await make('unpinned', { pinned: false }),
+      wildcard: await make('wildcard', { names: ['*.example.com'] }),
     }
     const picked = (await selectHttpIssuanceCandidates(db, NOW, 100))
       .map((r) => r.id)
       .filter((id) => Object.values(ids).includes(id))
       .sort()
-    assertEquals(picked, [ids.fresh, ids.open, ids.undelivered, ids.renewDue, ids.retryDue].sort())
+    assertEquals(
+      picked,
+      [
+        ids.fresh,
+        ids.open,
+        ids.undelivered,
+        ids.renewDue,
+        ids.renewMissing,
+        ids.retryDue,
+        ids.failedWithPairDue,
+        ids.endsPending,
+      ].sort()
+    )
+    // Looking at a row notes it inside its request, leaves its own time alone and sends it to the back.
+    const before = (await db.select().from(tls).where(eq(tls.id, ids.retryDue)))[0]!
+    await markCheckedForTest(db, ids.retryDue, NOW)
+    const after = (await db.select().from(tls).where(eq(tls.id, ids.retryDue)))[0]!
+    assertEquals(after.updatedAt, before.updatedAt)
+    assertEquals(
+      (after.metadata as { httpCert: { checkedAt: string } }).httpCert.checkedAt,
+      NOW.toISOString()
+    )
+    const order = (await selectHttpIssuanceCandidates(db, NOW, 100)).map((r) => r.id)
+    assertEquals(order.indexOf(ids.retryDue) > order.indexOf(ids.fresh), true)
+    // A row with no request is never written to by being looked at.
+    await markCheckedForTest(db, ids.fresh, NOW)
+    const fresh = (await db.select().from(tls).where(eq(tls.id, ids.fresh)))[0]!
+    assertEquals('httpCert' in (fresh.metadata as object), false)
   } finally {
+    await db.delete(hosting).where(eq(hosting.serviceId, svc!.id))
     await db.delete(tls).where(eq(tls.organizationId, organizationId))
+    await db.delete(service).where(eq(service.id, svc!.id))
+    await db.delete(environment).where(eq(environment.id, env!.id))
+    await db.delete(project).where(eq(project.id, proj!.id))
+    await db.delete(workspace).where(eq(workspace.id, ws!.id))
     await db.delete(organization).where(eq(organization.id, organizationId))
   }
 })

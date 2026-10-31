@@ -7,10 +7,10 @@
  * through its life, gets a new request. No timer of its own: it runs inside
  * the Workers cron and the Deno interval that already exist.
  */
-import { and, asc, eq, sql } from 'drizzle-orm'
+import { and, eq, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import type { DaemonCellRegistry } from '../../contracts/cell.ts'
-import { tls } from '../../db/schema.ts'
+import { hosting, tls } from '../../db/schema.ts'
 import { isServerConnected } from '../../daemon/cell/server-status.ts'
 import type { CommandQueue } from '../../features/commands/queue.ts'
 import { runtimeDnsLookup } from '../../features/hostings/hosting-dns-check.ts'
@@ -18,6 +18,7 @@ import { getServerDaemonStateByServerId } from '../../features/servers/server-id
 import {
   advanceHttpIssuance,
   deliverIssuedPair,
+  sendPendingEnds,
   type HttpIssuanceDeps,
   startHttpIssuance,
 } from '../../features/tls/http-issuance/orchestrator.ts'
@@ -96,6 +97,11 @@ export function buildHttpIssuanceDeps(db: Db, wiring: HttpIssuanceSweepWiring): 
 export function selectHttpIssuanceCandidates(db: Db, now: Date, limit: number) {
   const at = now.toISOString()
   const h = sql`${tls.metadata} -> 'httpCert'`
+  const central = sql`${h} ->> 'centralPair' = 'true'`
+  const renewDue = sql`(${central} and coalesce(${h} ->> 'renewAt', '') <= ${at})`
+  // A fair order without writing to rows the flow has not started on: rows with a
+  // request go by the time they were last looked at; the rest by a per-minute hash.
+  const minute = Math.floor(now.getTime() / 60_000)
   return db
     .select({
       id: tls.id,
@@ -107,27 +113,66 @@ export function selectHttpIssuanceCandidates(db: Db, now: Date, limit: number) {
       and(
         eq(tls.source, 'lets_encrypt'),
         eq(tls.status, 'automatic'),
+        // Only a row that a site pins, and never a wildcard (that is the connected DNS host's).
+        sql`exists (select 1 from ${hosting} where ${hosting.tlsId} = ${tls.id})`,
+        sql`not exists (
+          select 1 from jsonb_array_elements_text(coalesce(${tls.metadata} -> 'dnsNames', '[]'::jsonb)) as n
+          where n like '*%'
+        )`,
         sql`(
           (${h} is null and ${tls.privateKeyPem} is null)
           or (${h} is not null and ${h} ->> 'endedAt' is null)
-          or (${h} ->> 'phase' = 'issued' and (${h} ->> 'deliveredAt' is null or ${h} ->> 'renewAt' <= ${at}))
-          or (${h} ->> 'phase' = 'failed' and (${h} ->> 'nextAttemptAt' is null or ${h} ->> 'nextAttemptAt' <= ${at}))
+          or (${h} ->> 'phase' = 'issued' and (${h} ->> 'deliveredAt' is null or ${renewDue}))
+          or (${h} ->> 'phase' = 'failed' and (${h} ->> 'nextAttemptAt' is null or ${h} ->> 'nextAttemptAt' <= ${at})
+              and (${tls.privateKeyPem} is null or ${renewDue}))
+          or (${h} ->> 'endedAt' is not null and ${h} ->> 'endsSentAt' is null
+              and jsonb_array_length(coalesce(${h} -> 'forwards', '[]'::jsonb)) > 0)
         )`
       )
     )
-    .orderBy(asc(tls.updatedAt), asc(tls.id))
+    .orderBy(
+      sql`coalesce(${h} ->> 'checkedAt', '')`,
+      sql`md5(${tls.id}::text || ${String(minute)})`
+    )
     .limit(limit)
+}
+
+/**
+ * Note that a row with a request on record was looked at and nothing came of it,
+ * so it drops behind the rows not yet looked at. Written inside `httpCert`, with
+ * the row's own time left alone.
+ */
+export async function markChecked(db: Db, row: { id: string } | string, now: Date): Promise<void> {
+  await db
+    .update(tls)
+    .set({
+      metadata: sql`jsonb_set(${tls.metadata}, '{httpCert,checkedAt}', to_jsonb(${now.toISOString()}::text))`,
+      updatedAt: sql`${tls.updatedAt}`,
+    })
+    .where(
+      and(
+        eq(tls.id, typeof row === 'string' ? row : row.id),
+        sql`${tls.metadata} -> 'httpCert' is not null`
+      )
+    )
 }
 
 type Candidate = Awaited<ReturnType<typeof selectHttpIssuanceCandidates>>[number]
 
+/** New orders begun in one tick, so a first run after a rollout is gradual. */
+export const HTTP_ISSUANCE_STARTS_PER_TICK = 3
+
 async function stepRow(
   deps: HttpIssuanceDeps,
   row: Candidate,
-  push: ((tlsId: string, organizationId: string) => Promise<void>) | null,
-  now: Date,
-  out: HttpIssuanceSweepResult
+  step: {
+    push: ((tlsId: string, organizationId: string) => Promise<void>) | null
+    now: Date
+    out: HttpIssuanceSweepResult
+    startsLeft: number
+  }
 ): Promise<void> {
+  const { out, now } = step
   const state = readHttpIssuanceState(row.metadata)
   if (state?.endedAt === null) {
     await advanceHttpIssuance(deps, row.id)
@@ -135,13 +180,18 @@ async function stepRow(
     return
   }
   if (state?.phase === 'issued' && state.deliveredAt === null) {
-    if ((await deliverIssuedPair(deps, row.id, push)) === 'delivered') out.delivered += 1
+    if ((await deliverIssuedPair(deps, row.id, step.push)) === 'delivered') out.delivered += 1
     return
   }
+  if (state?.endedAt && state.endsSentAt === null && state.forwards.length > 0) {
+    await sendPendingEnds(deps, row.id)
+  }
+  if (step.startsLeft <= 0) return
   const outcome = await startHttpIssuance(deps, row.id, (facts) =>
     facts.hasPair ? renewalDue(state, now) : true
   )
   if (outcome === 'started' || outcome === 'ordering') out.started += 1
+  else await markChecked(deps.db, row, now)
 }
 
 export async function runHttpIssuanceSweepTick(
@@ -171,7 +221,8 @@ export async function runHttpIssuanceSweepTick(
   await forEachSequential(rows, async (row) => {
     if (Date.now() - startedAt > budgetMs) return
     try {
-      await stepRow(deps, row, push, now, out)
+      const startsLeft = HTTP_ISSUANCE_STARTS_PER_TICK - out.started
+      await stepRow(deps, row, { push, now, out, startsLeft })
     } catch (err) {
       logWarn('tls', `server-placed certificate step failed for ${row.id}: ${String(err)}`)
     }

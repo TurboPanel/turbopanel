@@ -42,7 +42,10 @@ is never picked.
 - Pin switch (`deploy-prepare.ts`): an automatic pin goes out as a pinned
   certificate with its pair, and no `tlsMode: 'acme'`, only when the pair came
   from this flow (`centralPair`, set by the capture of an open request) and the
-  target daemon lists the feature. A pair a server captured itself keeps the
+  target daemon lists the feature and the stored certificate covers every name of the
+  row (a daemon reports one certificate per name, and a row holds one pair, so a
+  two-name row stays on the server's own web server until one certificate covers
+  both). A pair a server captured itself keeps the
   server's own web server ordering and renewing.
 - Renewal starts at the stored renewal time (about two thirds in, with a random
   head start), preferring the server that issued last time.
@@ -56,3 +59,11 @@ Contact address and directory come from the platform environment
 authority's test directory), not from the control plane's own certificate
 settings: the two must not reference each other (`check-instance-acme-boundary`).
 With no contact address, no order starts and the row says it is waiting.
+
+Sweep selection is plain SQL and writes nothing to rows the flow does not own:
+only pinned rows without a wildcard name are looked at, a row is ordered by when
+it was last looked at (written inside its own request, never to the row's own
+time) or by a per-minute hash when it has no request yet, and at most three new
+orders begin per tick so a first run after a rollout is gradual. The cheap
+answers (nothing due, a wait or cap in force, no contact address) come before any
+DNS or per-server lookup.

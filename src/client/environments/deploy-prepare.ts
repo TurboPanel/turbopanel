@@ -4369,6 +4369,11 @@ async function takesCentralPair(
   serverId: string
 ): Promise<boolean> {
   if (!pinned?.httpCentralPair || !pinned.certificatePem || !pinned.privateKeyPem) return false
+  // One stored pair serves every site that pins the row, so it must cover all the
+  // row's names. A pair that covers only some of them (a daemon reports one
+  // certificate per name) stays with the server's own web server.
+  const stored = pinned.metadata.acme?.storedNames
+  if (!stored || !coversAllHostnames(stored, pinned.metadata.dnsNames)) return false
   const state = await getServerDaemonStateByServerId(db, serverId)
   return state?.projection?.features?.includes(ACME_ISSUE_FEATURE) === true
 }

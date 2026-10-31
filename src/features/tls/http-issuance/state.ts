@@ -81,6 +81,8 @@ export type HttpIssuanceState = {
   avoidServerId: string | null
   /** When the sealed pair was queued to the serving servers; null until then. */
   deliveredAt: string | null
+  /** When the helpers were told to stop passing the proof path on; null until then. */
+  endsSentAt: string | null
   /** The serving servers and their parts, for the per-server status lines. */
   roster: RosterEntry[]
   /**
@@ -184,6 +186,7 @@ export function newHttpIssuanceState(
     consecutiveFailures: 0,
     avoidServerId: null,
     deliveredAt: null,
+    endsSentAt: null,
     roster: [],
     centralPair: false,
     issueTimes: [],
@@ -232,6 +235,7 @@ export function readHttpIssuanceState(metadata: unknown): HttpIssuanceState | nu
         : 0,
     avoidServerId: text(r.avoidServerId),
     deliveredAt: text(r.deliveredAt),
+    endsSentAt: text(r.endsSentAt),
     roster: readRoster(r.roster),
     centralPair: r.centralPair === true,
     issueTimes: Array.isArray(r.issueTimes)

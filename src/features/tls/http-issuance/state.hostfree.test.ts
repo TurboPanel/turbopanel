@@ -41,6 +41,7 @@ function state(overrides: Partial<HttpIssuanceState> = {}): HttpIssuanceState {
     consecutiveFailures: 0,
     avoidServerId: null,
     deliveredAt: null,
+    endsSentAt: null,
     roster: [],
     helperAddresses: [],
     centralPair: false,

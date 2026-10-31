@@ -28,6 +28,7 @@ import {
   deliverIssuedPair,
   type HttpIssuanceDeps,
   replaceKey,
+  sendPendingEnds,
   startHttpIssuance,
 } from './orchestrator.ts'
 import { newHttpIssuanceState, readHttpIssuanceState } from './state.ts'
@@ -428,7 +429,7 @@ test('events move the request: issued before the pair waits, issued after the pa
       .set({
         metadata: {
           ...((await readRow(f)).metadata as object),
-          httpCert: { ...state, capturedAt: at(1500).toISOString() },
+          httpCert: { ...state, capturedAt: at(1500).toISOString(), coveredNames: [HOST] },
         },
       })
       .where(eq(tls.id, f.tlsId))
@@ -783,6 +784,139 @@ test('Replace Key is refused within a day of the last issue and with no certific
     const soon = await replaceKey(f.deps(), f.tlsId)
     assertEquals(!soon.ok && soon.reason, 'too_soon')
     assertEquals(f.sent.length, 0)
+  } finally {
+    await f.cleanup()
+  }
+})
+
+test('two sweeps at once start only one order', async () => {
+  if (!dbUrl) return skipWithoutDatabase('http issuance tests')
+  const f = await setup({ servers: 2 })
+  try {
+    const outcomes = await Promise.all([
+      startHttpIssuance(f.deps(), f.tlsId, always),
+      startHttpIssuance(f.deps(), f.tlsId, always),
+    ])
+    assertEquals(outcomes.filter((o) => o === 'started').length, 1)
+    assertEquals(outcomes.filter((o) => o === 'started' || o === 'ordering').length, 1)
+    assertEquals(f.sent.filter((s) => s.envelope.kind === 'acme-proof-forward').length, 1)
+  } finally {
+    await f.cleanup()
+  }
+})
+
+test('two deliveries at once push the pair once and tell the helpers once', async () => {
+  if (!dbUrl) return skipWithoutDatabase('http issuance tests')
+  const f = await setup()
+  try {
+    const helpers = f.servers.slice(1).map((s) => s.id)
+    await giveFlowPair(f, {
+      forwards: helpers.map((serverId) => ({
+        serverId,
+        outcome: 'ready' as const,
+        reason: null,
+        at: null,
+      })),
+    })
+    let pushes = 0
+    const push = () => {
+      pushes += 1
+      return Promise.resolve()
+    }
+    const results = await Promise.all([
+      deliverIssuedPair(f.deps(), f.tlsId, push),
+      deliverIssuedPair(f.deps(), f.tlsId, push),
+    ])
+    assertEquals(results.filter((r) => r === 'delivered').length, 1)
+    assertEquals(pushes, 1)
+    assertEquals(f.sent.filter((s) => s.envelope.kind === 'acme-proof-forward-end').length, 2)
+  } finally {
+    await f.cleanup()
+  }
+})
+
+test('a push that throws releases the delivery so the next sweep tries again', async () => {
+  if (!dbUrl) return skipWithoutDatabase('http issuance tests')
+  const f = await setup({ servers: 1 })
+  try {
+    await giveFlowPair(f)
+    let threw = false
+    try {
+      await deliverIssuedPair(f.deps(), f.tlsId, () => Promise.reject(new Error('queue down')))
+    } catch {
+      threw = true
+    }
+    assertEquals(threw, true)
+    assertEquals(readHttpIssuanceState((await readRow(f)).metadata)!.deliveredAt, null)
+    assertEquals(await deliverIssuedPair(f.deps(), f.tlsId, () => Promise.resolve()), 'delivered')
+  } finally {
+    await f.cleanup()
+  }
+})
+
+test('after the issuing server reports a failure the helpers are told to stop, once', async () => {
+  if (!dbUrl) return skipWithoutDatabase('http issuance tests')
+  const f = await setup()
+  try {
+    await startHttpIssuance(f.deps(), f.tlsId, always)
+    const state = readHttpIssuanceState((await readRow(f)).metadata)!
+    await handleIssueEvent(f.db, {
+      serverId: state.issuingServerId,
+      requestId: 'req_test_1',
+      stage: 'failed',
+      reason: 'no',
+      now: at(2000),
+    })
+    f.sent.length = 0
+    assertEquals(await sendPendingEnds(f.deps(), f.tlsId), true)
+    assertEquals(
+      f.sent.map((s) => s.envelope.kind),
+      ['acme-proof-forward-end', 'acme-proof-forward-end']
+    )
+    assertEquals(await sendPendingEnds(f.deps(), f.tlsId), false)
+    assertEquals(f.sent.length, 2)
+  } finally {
+    await f.cleanup()
+  }
+})
+
+test('with no contact address nothing is looked up, sent or written', async () => {
+  if (!dbUrl) return skipWithoutDatabase('http issuance tests')
+  const f = await setup({ servers: 2 })
+  try {
+    let lookups = 0
+    const before = (await readRow(f)).metadata
+    const deps = f.deps({
+      contact: () => Promise.resolve({ contactEmail: ' ', staging: false }),
+      dnsLookup: () => {
+        lookups += 1
+        return Promise.resolve([])
+      },
+    })
+    assertEquals(await startHttpIssuance(deps, f.tlsId, always), 'waiting')
+    assertEquals(lookups, 0)
+    assertEquals(f.sent.length, 0)
+    assertEquals((await readRow(f)).metadata, before)
+  } finally {
+    await f.cleanup()
+  }
+})
+
+test('a row that is not due or is waiting out a back-off costs no lookups', async () => {
+  if (!dbUrl) return skipWithoutDatabase('http issuance tests')
+  const f = await setup({ servers: 1 })
+  try {
+    let lookups = 0
+    const deps = f.deps({
+      dnsLookup: () => {
+        lookups += 1
+        return Promise.resolve([])
+      },
+    })
+    assertEquals(await startHttpIssuance(deps, f.tlsId, () => false), 'not_due')
+    await giveFlowPair(f, { phase: 'failed', nextAttemptAt: at(600_000).toISOString() }, false)
+    assertEquals(await startHttpIssuance(deps, f.tlsId, always), 'backoff')
+    assertEquals(lookups, 0)
   } finally {
     await f.cleanup()
   }

@@ -52,6 +52,7 @@ function open(over: Partial<HttpIssuanceState> = {}): HttpIssuanceState {
     consecutiveFailures: 0,
     avoidServerId: null,
     deliveredAt: null,
+    endsSentAt: null,
     centralPair: false,
     issueTimes: [],
     renewAt: null,

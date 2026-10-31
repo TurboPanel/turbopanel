@@ -134,7 +134,10 @@ async function writeState(
 }
 
 async function writeWaiting(tx: Db, row: RowFacts, text: string, now: Date): Promise<void> {
-  const acme = waitingMarker(row.metadata.acme as TlsAcmeMetadata | undefined, text)
+  const previous = row.metadata.acme as TlsAcmeMetadata | undefined
+  // The same words again: leave the row alone, so a waiting row is not rewritten every minute.
+  if (previous?.stage === 'waiting' && previous.warning === text) return
+  const acme = waitingMarker(previous, text)
   await tx
     .update(tls)
     .set({ metadata: { ...row.metadata, acme }, updatedAt: now.toISOString() })
@@ -250,15 +253,6 @@ function orderEnvelope(
 /** Whether a row may be ordered centrally at all: plain names only (a wildcard needs the DNS proof). */
 export function isHttpOrderable(names: readonly string[]): boolean {
   return names.length > 0 && names.every((n) => !n.includes('*'))
-}
-
-/**
- * A row this flow does not order (a wildcard, or only older daemons serve it).
- * Its time is touched so the sweep's oldest-first batch moves on to other rows.
- */
-async function notMine(deps: HttpIssuanceDeps, tlsId: string, now: Date): Promise<StartOutcome> {
-  await deps.db.update(tls).set({ updatedAt: now.toISOString() }).where(eq(tls.id, tlsId))
-  return 'not_eligible'
 }
 
 export type StartOutcome =
@@ -431,19 +425,34 @@ export async function startHttpIssuance(
 ): Promise<StartOutcome> {
   const now = clock(deps)
   const [peek] = await deps.db
-    .select({ metadata: tls.metadata, source: tls.source, status: tls.status })
+    .select({
+      metadata: tls.metadata,
+      source: tls.source,
+      status: tls.status,
+      hasKey: sql<boolean>`${tls.privateKeyPem} is not null`,
+    })
     .from(tls)
     .where(eq(tls.id, tlsId))
     .limit(1)
   if (peek?.source !== 'lets_encrypt' || peek.status !== 'automatic') return 'not_eligible'
   const names = namesOf(peek.metadata)
-  if (!isHttpOrderable(names)) return await notMine(deps, tlsId, now)
+  if (!isHttpOrderable(names)) return 'not_eligible'
   const previous = readHttpIssuanceState(peek.metadata)
   if (previous?.endedAt === null) return 'not_due'
+  // The cheap answers first: nothing to do, a wait or a cap in force, no contact
+  // address. None of them looks at DNS or at the servers.
+  const meta = (peek.metadata ?? {}) as Record<string, unknown>
+  if (!due({ hasPair: peek.hasKey === true, metadata: meta })) return 'not_due'
+  const attempts = {
+    attemptTimes: previous?.attemptTimes ?? [],
+    nextAttemptAt: previous?.nextAttemptAt ?? null,
+  }
+  if (!mayStartAttempt(attempts, now).ok) return 'backoff'
   const contact = await deps.contact()
+  if (contact.contactEmail.trim() === '') return 'waiting'
   const { choice, servers } = await gather(deps, { id: tlsId, names }, previous)
   // Every serving server on an older daemon keeps ordering for itself; the row is left alone.
-  if (!servers.some((s) => s.hasFeature)) return await notMine(deps, tlsId, now)
+  if (!servers.some((s) => s.hasFeature)) return 'not_eligible'
   const result = await deps.db.transaction((tx) =>
     startInTransaction(tx as unknown as Db, { deps, now, tlsId, choice, contact, due })
   )
@@ -529,8 +538,9 @@ async function advanceInTransaction(
   if (action.kind === 'wait') return { outcome: 'not_due', send: [] }
   if (action.kind === 'fail') {
     const failed = failedState(state, now, action.reason, action.blameIssuer)
-    await writeState(tx, row, failed, now)
-    return { outcome: 'backoff', send: endMessages(now, failed), state: failed, required: false }
+    const ended = { ...failed, endsSentAt: now.toISOString() }
+    await writeState(tx, row, ended, now)
+    return { outcome: 'backoff', send: endMessages(now, ended), state: ended, required: false }
   }
   const forwards = state.forwards.map((f) =>
     action.skip.includes(f.serverId)
@@ -608,38 +618,98 @@ export async function advanceHttpIssuance(
 export type DeliveryOutcome = 'delivered' | 'not_due' | 'waiting'
 
 /**
+ * Claim the delivery of a finished pair: under the row lock, only the caller that
+ * finds it unclaimed sets `deliveredAt` (and `endsSentAt`), so two sweeps never
+ * push twice. Answers the ends to send, or null when it was not this caller's.
+ */
+async function claimDelivery(
+  deps: HttpIssuanceDeps,
+  tlsId: string,
+  now: Date
+): Promise<{ organizationId: string; ends: Outgoing; requestId: string } | null> {
+  return await deps.db.transaction(async (tx0) => {
+    const tx = tx0 as unknown as Db
+    const row = await lockRow(tx, tlsId)
+    const state = row ? readHttpIssuanceState(row.metadata) : null
+    if (!row || state?.phase !== 'issued' || state.deliveredAt !== null) return null
+    const at = now.toISOString()
+    await writeState(
+      tx,
+      row,
+      { ...state, deliveredAt: at, endsSentAt: state.endsSentAt ?? at },
+      now
+    )
+    return {
+      organizationId: row.organizationId,
+      requestId: state.requestId,
+      ends: state.endsSentAt === null ? endMessages(now, state) : [],
+    }
+  })
+}
+
+/** Undo a claim whose push threw, so the next sweep tries again. */
+async function releaseDelivery(deps: HttpIssuanceDeps, tlsId: string, requestId: string) {
+  const now = clock(deps)
+  await deps.db.transaction(async (tx0) => {
+    const tx = tx0 as unknown as Db
+    const row = await lockRow(tx, tlsId)
+    const state = row ? readHttpIssuanceState(row.metadata) : null
+    if (!row || state?.requestId !== requestId) return
+    await writeState(tx, row, { ...state, deliveredAt: null }, now)
+  })
+}
+
+/**
  * Hand a finished pair to the serving servers: `push` queues the certificate
  * apply for every site pinned to the row (the pair goes out sealed per server,
  * and an offline server gets it when it is back). The helpers are told to stop
- * passing the proof path on. Marked delivered once the push was tried, so it is
- * not repeated every minute; a site the apply could not reach (not deployed
- * yet, or edits waiting) gets the pair on its next deploy.
+ * passing the proof path on. The delivery is claimed first, under the row lock,
+ * so it happens once; a push that throws releases the claim. A site the apply
+ * could not reach gets the pair on its next deploy.
  */
 export async function deliverIssuedPair(
   deps: HttpIssuanceDeps,
   tlsId: string,
   push: ((tlsId: string, organizationId: string) => Promise<void>) | null
 ): Promise<DeliveryOutcome> {
+  if (!push) {
+    const [peek] = await deps.db
+      .select({ metadata: tls.metadata })
+      .from(tls)
+      .where(eq(tls.id, tlsId))
+      .limit(1)
+    const state = peek ? readHttpIssuanceState(peek.metadata) : null
+    return state?.phase === 'issued' && state.deliveredAt === null ? 'waiting' : 'not_due'
+  }
+  const claim = await claimDelivery(deps, tlsId, clock(deps))
+  if (!claim) return 'not_due'
+  try {
+    await push(tlsId, claim.organizationId)
+  } catch (err) {
+    await releaseDelivery(deps, tlsId, claim.requestId)
+    throw err
+  }
+  await sendAll(deps, claim.ends)
+  return 'delivered'
+}
+
+/**
+ * Tell the helpers of a request that ended without a delivery (the issuing server
+ * reported a failure) to stop passing the proof path on. Claimed under the row
+ * lock, so it is sent once.
+ */
+export async function sendPendingEnds(deps: HttpIssuanceDeps, tlsId: string): Promise<boolean> {
   const now = clock(deps)
-  const [peek] = await deps.db
-    .select({ metadata: tls.metadata, organizationId: tls.organizationId })
-    .from(tls)
-    .where(eq(tls.id, tlsId))
-    .limit(1)
-  const state = peek ? readHttpIssuanceState(peek.metadata) : null
-  if (!peek || state?.phase !== 'issued' || state.deliveredAt !== null) return 'not_due'
-  if (!push) return 'waiting'
-  await push(tlsId, peek.organizationId)
   const ends = await deps.db.transaction(async (tx0) => {
     const tx = tx0 as unknown as Db
     const row = await lockRow(tx, tlsId)
-    const current = row ? readHttpIssuanceState(row.metadata) : null
-    if (!row || current?.requestId !== state.requestId) return []
-    await writeState(tx, row, { ...current, deliveredAt: now.toISOString() }, now)
-    return endMessages(now, current)
+    const state = row ? readHttpIssuanceState(row.metadata) : null
+    if (!row || !state?.endedAt || state.endsSentAt !== null) return []
+    await writeState(tx, row, { ...state, endsSentAt: now.toISOString() }, now)
+    return endMessages(now, state)
   })
   await sendAll(deps, ends)
-  return 'delivered'
+  return ends.length > 0
 }
 
 export type ReplaceKeyResult =
