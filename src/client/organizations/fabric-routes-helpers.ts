@@ -556,6 +556,8 @@ export async function enqueueRelayPatchReconcile(params: {
 }
 
 export type FabricRelayObserved = {
+  /** When the daemon took this reading; a handshake is judged against it, not against now. */
+  at?: string
   lastHandshakeAt?: string
   transferRx?: number
   transferTx?: number
@@ -604,6 +606,7 @@ export function observedForRelay(
     if (latestAt && observed.at <= latestAt) continue
     latestAt = observed.at
     match = {
+      at: observed.at,
       ...(peer.lastHandshakeAt ? { lastHandshakeAt: peer.lastHandshakeAt } : {}),
       ...(peer.transferRx !== undefined ? { transferRx: peer.transferRx } : {}),
       ...(peer.transferTx !== undefined ? { transferTx: peer.transferTx } : {}),
