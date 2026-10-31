@@ -667,8 +667,13 @@ sourceServerId? }`
   offline check runs), and a class change to failover
   checks only the replica-to-primary direction. A new binding whose app host
   would dial the database over that public address is refused too
-  (`binding_endpoint_unavailable` with the TurboFabric message; the console
-  tells it apart by the words "marked untrusted" in the server sentence).
+  (`binding_endpoint_unavailable` with the TurboFabric message and
+  `reason: "untrusted_network_needs_fabric"`; the console tells it apart by the
+  words "marked untrusted" in the server sentence). The same refusal holds when
+  the database has no published listener and no public address: a
+  `client-backend` pair that shares only untrusted datacenters and has nothing
+  to ride resolves to `untrusted_network_needs_fabric`, not
+  `private_path_unavailable`.
   Running traffic keeps its path and `GET` server traffic map reports both
   flags on `planned` (the console does not render the traffic map yet).
   No shared datacenter at all stays `private_path_unavailable`. TurboFabric path planning

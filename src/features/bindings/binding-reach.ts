@@ -22,9 +22,13 @@ export const BINDING_UNTRUSTED_NEEDS_FABRIC_MESSAGE =
 export const BINDING_PUBLISHED_LISTENER_UNREACHABLE_MESSAGE =
   'The server this app runs on cannot use the private address the database would publish for this cluster. Place both servers on the same private network path, then try again.'
 
+/** Extra detail on the refusal; older clients ignore it and show the message. */
+export const BINDING_REASON_UNTRUSTED_NEEDS_FABRIC = 'untrusted_network_needs_fabric'
+
 export type BindingReachError = {
   error: typeof BINDING_ENDPOINT_UNAVAILABLE_ERROR
   message: string
+  reason?: typeof BINDING_REASON_UNTRUSTED_NEEDS_FABRIC
 }
 
 async function consumerCanDialPublishedBind(
@@ -49,6 +53,14 @@ function remoteConsumerPathMissingError(message: string): BindingReachError {
   return { error: BINDING_ENDPOINT_UNAVAILABLE_ERROR, message }
 }
 
+function untrustedNeedsFabricError(): BindingReachError {
+  return {
+    error: BINDING_ENDPOINT_UNAVAILABLE_ERROR,
+    message: BINDING_UNTRUSTED_NEEDS_FABRIC_MESSAGE,
+    reason: BINDING_REASON_UNTRUSTED_NEEDS_FABRIC,
+  }
+}
+
 async function remoteConsumersReachMember(
   db: Db,
   member: ManagedMemberRow,
@@ -56,6 +68,19 @@ async function remoteConsumersReachMember(
   remoteConsumers: readonly string[],
   consumerServerIds: readonly string[]
 ): Promise<BindingReachError | null> {
+  // The untrusted-network rule wins over a generic missing path, whether or
+  // not the database publishes a listener.
+  for (const fromServerId of remoteConsumers) {
+    const pair = await resolvePrivateEndpoint(db, {
+      fromServerId,
+      toServerId: member.serverId,
+      purpose: 'client-backend',
+    })
+    if (isPrivateEndpointError(pair) && pair.kind === 'untrusted_network_needs_fabric') {
+      return untrustedNeedsFabricError()
+    }
+  }
+
   const publishedBind = await resolveMemberPrivateBindAddress(
     db,
     member,
@@ -75,7 +100,7 @@ async function remoteConsumersReachMember(
         publishedBind
       )
       if (canDial === 'untrusted') {
-        return remoteConsumerPathMissingError(BINDING_UNTRUSTED_NEEDS_FABRIC_MESSAGE)
+        return untrustedNeedsFabricError()
       }
       if (canDial === 'unreachable') {
         return remoteConsumerPathMissingError(BINDING_PUBLISHED_LISTENER_UNREACHABLE_MESSAGE)

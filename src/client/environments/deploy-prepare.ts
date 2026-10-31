@@ -2487,8 +2487,7 @@ async function resolveBindingMaterializationOutcome(
     bindResult.kind === 'binding_endpoint_unavailable' ||
     bindResult.kind === 'datacenter_ip_required' ||
     bindResult.kind === 'private_path_unavailable' ||
-    // `client-backend` never raises this; listed so the mapping over
-    // `PrivateEndpointError` stays total.
+    // An untrusted-only pair with nothing to ride; still a soft binding error.
     bindResult.kind === 'untrusted_network_needs_fabric'
 
   const error: DeployPrepareError = { kind: 'binding_endpoint_unavailable' }

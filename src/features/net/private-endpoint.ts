@@ -713,7 +713,26 @@ export function resolveOneFromCaches(params: {
     return publicEndpoint(publicAddress, partition)
   }
 
-  return rung.lastResort() ?? unavailablePath(params.fromServerId, params.toServerId)
+  const lastResort = rung.lastResort()
+  if (lastResort) return lastResort
+
+  // A client path over an untrusted-only pair with nothing to ride (no keyed
+  // tunnel, no public address) is the untrusted-network rule, not a missing
+  // network, so the refusal can say TurboFabric is what is needed.
+  const untrustedDatacenterId = partition.untrusted[0]
+  if (
+    params.purpose === 'client-backend' &&
+    untrustedDatacenterId !== undefined &&
+    partition.trusted.length === 0
+  ) {
+    return {
+      kind: 'untrusted_network_needs_fabric',
+      fromServerId: params.fromServerId,
+      toServerId: params.toServerId,
+      datacenterId: untrustedDatacenterId,
+    }
+  }
+  return unavailablePath(params.fromServerId, params.toServerId)
 }
 
 /**
