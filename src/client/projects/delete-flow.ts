@@ -157,12 +157,12 @@ export async function snapshotDeleteForAudit(
   return {
     ...(projectId ? { projectName } : {}),
     environments: plan.environments.map(({ id, name }) => ({ id, name })),
-    hostnames: [...new Set(hostRows.map((row) => row.hostname))].sort(),
-    serverIds: plan.servers.map((row) => row.id).sort(),
+    hostnames: [...new Set(hostRows.map((row) => row.hostname))].sort((a, b) => a.localeCompare(b)),
+    serverIds: plan.servers.map((row) => row.id).sort((a, b) => a.localeCompare(b)),
     hostingAccounts: plan.hostingAccounts
       .filter((row) => row.action === 'remove')
       .map((row) => row.username)
-      .sort(),
+      .sort((a, b) => a.localeCompare(b)),
   }
 }
 
