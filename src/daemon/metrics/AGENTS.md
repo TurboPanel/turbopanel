@@ -485,7 +485,7 @@ after a monotonic counter reset — daemon half of the battery lives in
 metrics `*.test.ts` files must be claimed** in `scripts/test-coverage.sh` (Deno
 `@std/assert` suites) or `vitest.config.ts` `test.include` (`validation.test.ts`
 is the Workers-pool exception) — then `pnpm check:test-inventory`. Unclaimed
-suites fail `test:hook` / CI and never reach Sonar LCOV. Root `AGENTS.md` →
+suites fail `test:hook` / CI and never reach Sonar LCOV. `src/AGENTS.md` →
 **Adding tests (inventory)**. The AE/v6-boundary guard
 (`scripts/check-metrics-boundaries.mjs`, run by the `checks` job in
 `build.yml` and by `verify-ci.sh`) enforces: (1) AE positional
@@ -592,12 +592,16 @@ UI charts: **`../ui/AGENTS.md`** (Server metrics). Operator glossary:
     generation is kept (`server.hardware`), so a sample naming an older one is
     unresolved too.
     11a. A hosted server with more RAM or more physical CPU cores than its licensed box size keeps
-    every metric; ingest stamps `server.metadata.overPlan` (`over-plan.ts`, `over-plan-flag.ts`,
-    refreshed at most hourly, cleared when it fits again). The units are the box-size bands' own:
-    RAM bytes and physical cores, both from the daemon's host report
-    (`server.metadata.resources`, one entry per socket), so the flag does not flip between two
-    sources; the sample's own sizes are never compared. Box size only: the flag never refuses a sample and
-    never looks at a plan name.
+    every metric; ingest stamps `server.metadata.overPlan` (`over-plan.ts`, `over-plan-flag.ts`;
+    `at` refreshed at most hourly, `since` kept from the first over reading (a stamp written before `since` existed reads it as its last refresh `at`), cleared once the
+    7-day window holds no reading past the box). The units are the box-size bands' own: RAM
+    bytes (the higher of the sample's `sizes.memoryTotalBytes` and the host report's) and
+    physical cores (host report only, `server.metadata.resources`, one entry per socket; the
+    sample's `logicalCores` is never compared). Each durable sample raises the hour's row in the
+    `peak` table and the verdict is the highest of the last 7 days (`evaluateOverPlanFromPeak`).
+    A per-isolate memo skips the upsert and the window read unless the hour, a reading or the
+    tier changed, so a steady server costs about one write and one read per hour. Box size only:
+    the flag never refuses a sample, never touches the server and never looks at a plan name.
 12. `HARDWARE_HEALTH_EVENT_KIND` is a `Record` over every `MetricEventKind` — a
     new event kind that isn't classified fails to compile, never silently
     defaults either way.

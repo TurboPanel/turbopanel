@@ -22,6 +22,7 @@ import {
 } from '../../db/schema.ts'
 import { buildDeletePlan } from '../projects/delete-plan.ts'
 import { deleteEnvironmentCascade, deleteProjectCascade } from '../projects/project-delete.ts'
+import { newHttpIssuanceState, withHttpIssuanceState } from './http-issuance/state.ts'
 import { lockOrganizationLetsEncrypt } from './unused-letsencrypt.ts'
 
 const dbUrl = getDatabaseUrl()
@@ -253,4 +254,37 @@ test('a project delete waits for a site being pinned elsewhere, and keeps the en
   } finally {
     await w.cleanup()
   }
+})
+
+async function removalKeeps(open: boolean): Promise<boolean> {
+  const db = createDenoDb()
+  const w = await world(db)
+  try {
+    const [row] = await db.select().from(tls).where(eq(tls.id, w.certs.staging))
+    await db
+      .update(tls)
+      .set({
+        metadata: withHttpIssuanceState(
+          row!.metadata,
+          newHttpIssuanceState({
+            issuingServerId: 'a',
+            requestId: 'req_open',
+            startedAt: new Date().toISOString(),
+            startByAt: new Date(Date.now() + 3_600_000).toISOString(),
+            endedAt: open ? null : new Date().toISOString(),
+          })
+        ),
+      })
+      .where(eq(tls.id, w.certs.staging))
+    assertEquals((await deleteEnvironmentCascade(db, w.a2.environmentId)).ok, true)
+    return (await w.remaining()).includes(w.certs.staging)
+  } finally {
+    await w.cleanup()
+  }
+}
+
+test('an entry with a server-placed order under way is kept when no site pins it, and removed once the order is over', async () => {
+  if (!dbUrl) return skipWithoutDatabase('unused Lets Encrypt entry tests')
+  assertEquals(await removalKeeps(true), true)
+  assertEquals(await removalKeeps(false), false)
 })

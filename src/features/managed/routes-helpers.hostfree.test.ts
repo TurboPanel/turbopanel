@@ -44,6 +44,7 @@ import {
   parsePromoteForce,
   parseReplicaClassCreate,
   pickPrimaryCommandResult,
+  placementNeedsHealthyFabric,
   replicaEndpointPurpose,
   replicaPlacementNeedsDatacenter,
   validateManagedDatabaseCreateName,
@@ -245,24 +246,22 @@ test('replicaPlacementNeedsDatacenter is class-aware', () => {
   assertEquals(replicaPlacementNeedsDatacenter('public', 'read'), false)
   assertEquals(replicaPlacementNeedsDatacenter('datacenter', 'read'), true)
   assertEquals(replicaPlacementNeedsDatacenter('local', 'read'), true)
-  assertEquals(replicaPlacementNeedsDatacenter('fabric', 'failover'), true)
+  assertEquals(replicaPlacementNeedsDatacenter('fabric', 'failover'), false)
   assertEquals(replicaPlacementNeedsDatacenter('public', 'failover'), true)
   assertEquals(replicaPlacementNeedsDatacenter('datacenter', 'failover'), true)
   assertEquals(replicaPlacementNeedsDatacenter('local', 'failover'), true)
 })
 
-test('assertFailoverReplicaTransportAllowed rejects fabric and public', () => {
+test('assertFailoverReplicaTransportAllowed allows fabric and rejects public', () => {
   assertEquals(assertFailoverReplicaTransportAllowed('local'), null)
   assertEquals(assertFailoverReplicaTransportAllowed('datacenter'), null)
-  assertEquals(assertFailoverReplicaTransportAllowed('fabric'), {
-    kind: 'failover_replica_requires_datacenter_transport',
-  })
+  assertEquals(assertFailoverReplicaTransportAllowed('fabric'), null)
   assertEquals(assertFailoverReplicaTransportAllowed('public'), {
     kind: 'failover_replica_requires_datacenter_transport',
   })
 })
 
-test('failover_requires_trusted_datacenter maps to a 422 with an error-only body', async () => {
+test('untrusted_network_needs_fabric maps to a 422 with an error-only body', async () => {
   // The managed routes surface resolver errors through
   // `privateEndpointErrorResponse` (replica create / member class patch);
   // the untrusted-datacenter refusal must keep its own code rather than
@@ -273,14 +272,14 @@ test('failover_requires_trusted_datacenter maps to a 422 with an error-only body
     },
   } as unknown as Parameters<typeof privateEndpointErrorResponse>[0]
   const response = privateEndpointErrorResponse(c, {
-    kind: 'failover_requires_trusted_datacenter',
+    kind: 'untrusted_network_needs_fabric',
     fromServerId: 's-replica',
     toServerId: 's-primary',
     datacenterId: 'dc-untrusted',
   })
   assertEquals(response.status, 422)
   assertEquals(await response.json(), {
-    error: 'failover_requires_trusted_datacenter',
+    error: 'untrusted_network_needs_fabric',
   })
   // A trusted-derived `datacenter` transport still passes the class gate.
   assertEquals(assertFailoverReplicaTransportAllowed('datacenter'), null)
@@ -882,4 +881,10 @@ test('evaluateOperatorPromoteGate postgres received vs replayed LSN', () => {
     null
   )
   assertEquals(evaluateOperatorPromoteGate({ ...base }, false, now, pg), 'managed_replica_lagging')
+})
+
+test('placementNeedsHealthyFabric refuses a public fallback or a down tunnel, allows a healthy path', () => {
+  assertEquals(placementNeedsHealthyFabric({ untrustedPublic: true }), true)
+  assertEquals(placementNeedsHealthyFabric({ tunnelDown: true }), true)
+  assertEquals(placementNeedsHealthyFabric({}), false)
 })

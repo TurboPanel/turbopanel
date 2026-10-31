@@ -38,6 +38,7 @@ import {
   LOGIN_RECIPES,
 } from '../features/managed/logins.ts'
 import { PROJECT_ICONS, PROJECT_KINDS } from '../features/projects/vocabulary.ts'
+import { FABRIC_PEER_KINDS, FABRIC_SERVER_ROLES } from '../features/fabric/membership-vocabulary.ts'
 import {
   DATACENTER_ADDRESS_PREFERENCES,
   DATACENTER_KINDS,
@@ -62,8 +63,18 @@ import {
 import { PRINCIPAL_ACCESS_LEVELS } from '../features/principals/principal-access.ts'
 import { PLACEMENT_SOURCES, PLACEMENT_STATES } from '../features/principals/placement-vocabulary.ts'
 import { FOLDER_KINDS, FOLDER_STATES } from '../features/folders/vocabulary.ts'
-import { LEAF_STALE_CAUSES, LEAF_STATES } from '../features/tls/leaf-vocabulary.ts'
+import { LEAF_KINDS, LEAF_STALE_CAUSES, LEAF_STATES } from '../features/tls/leaf-vocabulary.ts'
 import { CLIENT_ADDRESS_SCOPES } from '../features/net/client-addresses-pure.ts'
+import {
+  CARRIER_STATUSES,
+  DOORWAY_KINDS,
+  DOORWAY_STATUSES,
+  PORTAL_REPORTED_STATES,
+  PORTAL_WANTED_STATES,
+  TUNNEL_PLACEMENTS,
+  TUNNEL_PROVIDERS,
+  TUNNEL_STATUSES,
+} from '../features/tunnels/vocabulary.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -95,6 +106,16 @@ function checkValues(constraintName: string): string[] {
 }
 
 const CASES: Array<[constraint: string, values: readonly string[]]> = [
+  ['carrier_provider_check', TUNNEL_PROVIDERS],
+  ['carrier_status_check', CARRIER_STATUSES],
+  ['badge_status_check', CARRIER_STATUSES],
+  ['tunnel_provider_check', TUNNEL_PROVIDERS],
+  ['tunnel_placement_check', TUNNEL_PLACEMENTS],
+  ['tunnel_status_check', TUNNEL_STATUSES],
+  ['portal_wanted_check', PORTAL_WANTED_STATES],
+  ['portal_reported_check', PORTAL_REPORTED_STATES],
+  ['doorway_kind_check', DOORWAY_KINDS],
+  ['doorway_status_check', DOORWAY_STATUSES],
   ['command_status_check', COMMAND_STATUSES],
   ['command_actor_type_check', COMMAND_ACTOR_TYPES],
   ['container_status_check', CONTAINER_STATUSES],
@@ -112,6 +133,7 @@ const CASES: Array<[constraint: string, values: readonly string[]]> = [
   ['project_icon_check', PROJECT_ICONS],
   ['folder_kind_check', FOLDER_KINDS],
   ['folder_state_check', FOLDER_STATES],
+  ['leaf_kind_check', LEAF_KINDS],
   ['leaf_state_check', LEAF_STATES],
   ['leaf_stale_cause_check', LEAF_STALE_CAUSES],
   ['address_scope_check', CLIENT_ADDRESS_SCOPES],
@@ -145,6 +167,8 @@ const CASES: Array<[constraint: string, values: readonly string[]]> = [
   ['server_machine_class_source_check', SERVER_MACHINE_CLASS_SOURCES],
   ['server_os_architecture_check', SERVER_OS_ARCHITECTURES],
   ['server_offline_reason_check', SERVER_OFFLINE_REASONS],
+  ['server_fabric_role_check', FABRIC_SERVER_ROLES],
+  ['relay_kind_check', FABRIC_PEER_KINDS],
   ['server_daemon_update_status_check', SERVER_DAEMON_UPDATE_STATUSES],
   ['login_grant_mode_check', LOGIN_GRANT_MODES],
   ['login_recipe_check', LOGIN_RECIPES],

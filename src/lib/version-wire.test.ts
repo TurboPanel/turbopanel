@@ -3,6 +3,13 @@ import {
   CLIENT_VERSION_HEADER,
   compareSemver,
   CUSTOM_NODE_APP_MODE_FEATURE,
+  TUNNEL_CONNECTOR_FEATURE,
+  TUNNEL_FORWARDING_FEATURE,
+  TUNNEL_STATUS_FEATURE,
+  MANAGED_BACKUP_LOGIN_FEATURE,
+  FABRIC_LAN_ROUTES_FEATURE,
+  FABRIC_PEER_REPORT_FEATURE,
+  FABRIC_RETAIN_KEYS_FEATURE,
   DAEMON_FEATURE_MIN_VERSIONS,
   DAEMON_WIRE_FEATURES,
   daemonUnsupportedReason,
@@ -33,6 +40,7 @@ import {
   BACKUP_S3_COPY_FEATURE,
   DEPLOY_HOSTINGS_ONLY_FEATURE,
   TLS_CAPTURE_FEATURE,
+  ACME_ISSUE_FEATURE,
   COMMAND_RECOVERY_FEATURE,
 } from './version-wire.ts'
 import { INSTANCE_VERSION } from '../app/version.ts'
@@ -126,7 +134,7 @@ test('header names are lower-case, as Hono and fetch normalize them', () => {
 const CERT_SOURCES = 'instance-cert-sources-per-hostname'
 
 test('the daemon floor pin is the documented 0.1.0 window', () => {
-  // Changing the constant requires the Versions-on-the-wires note in both AGENTS.md files.
+  // Changing the constant requires the Versions-on-the-wires note in src/app/AGENTS.md and turbopaneld/src/instance/AGENTS.md (Versions on the wires).
   assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.0')
 })
 
@@ -240,6 +248,12 @@ test('tls-capture-v1 is an advertised wire feature and raised no floor', () => {
   assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.0')
 })
 
+test('acme-issue-v1 is an advertised wire feature and raised no floor', () => {
+  assertEquals(ACME_ISSUE_FEATURE, 'acme-issue-v1')
+  assertEquals((DAEMON_WIRE_FEATURES as readonly string[]).includes(ACME_ISSUE_FEATURE), true)
+  assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.0')
+})
+
 test('command-recovery-v1 is an advertised wire feature and raised no floor', () => {
   assertEquals(COMMAND_RECOVERY_FEATURE, 'command-recovery-v1')
   assertEquals(DAEMON_WIRE_FEATURES.includes(COMMAND_RECOVERY_FEATURE), true)
@@ -319,8 +333,53 @@ test('deploy-hostings-only-v1 is advertised and raised no floor', () => {
   assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.0')
 })
 
-test('custom-node-app-mode-v1 is advertised last and raised no floor', () => {
+test('custom-node-app-mode-v1 is advertised and raised no floor', () => {
   assertEquals(CUSTOM_NODE_APP_MODE_FEATURE, 'custom-node-app-mode-v1')
-  assertEquals(DAEMON_WIRE_FEATURES.at(-1), CUSTOM_NODE_APP_MODE_FEATURE)
+  assertEquals(
+    (DAEMON_WIRE_FEATURES as readonly string[]).includes(CUSTOM_NODE_APP_MODE_FEATURE),
+    true
+  )
+  assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.0')
+})
+
+test('tunnel-forwarding-v1 is advertised and raised no floor', () => {
+  assertEquals(TUNNEL_FORWARDING_FEATURE, 'tunnel-forwarding-v1')
+  assertEquals(DAEMON_WIRE_FEATURES.includes(TUNNEL_FORWARDING_FEATURE), true)
+  assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.0')
+})
+
+test('tunnel-connector-v1 is advertised and raised no floor', () => {
+  assertEquals(TUNNEL_CONNECTOR_FEATURE, 'tunnel-connector-v1')
+  assertEquals(DAEMON_WIRE_FEATURES.includes(TUNNEL_CONNECTOR_FEATURE), true)
+  assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.0')
+})
+
+test('tunnel-status-v1 is advertised and raised no floor', () => {
+  assertEquals(TUNNEL_STATUS_FEATURE, 'tunnel-status-v1')
+  assertEquals(DAEMON_WIRE_FEATURES.includes(TUNNEL_STATUS_FEATURE), true)
+  assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.0')
+})
+
+test('managed-backup-login-v1 is advertised and raised no floor', () => {
+  assertEquals(MANAGED_BACKUP_LOGIN_FEATURE, 'managed-backup-login-v1')
+  assertEquals(DAEMON_WIRE_FEATURES.includes(MANAGED_BACKUP_LOGIN_FEATURE), true)
+  assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.0')
+})
+
+test('fabric-retain-keys-v1 is advertised and raised no floor', () => {
+  assertEquals(FABRIC_RETAIN_KEYS_FEATURE, 'fabric-retain-keys-v1')
+  assertEquals(DAEMON_WIRE_FEATURES.includes(FABRIC_RETAIN_KEYS_FEATURE), true)
+  assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.0')
+})
+
+test('fabric-peer-report-v1 is advertised and raised no floor', () => {
+  assertEquals(FABRIC_PEER_REPORT_FEATURE, 'fabric-peer-report-v1')
+  assertEquals(DAEMON_WIRE_FEATURES.includes(FABRIC_PEER_REPORT_FEATURE), true)
+  assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.0')
+})
+
+test('fabric-lan-routes-v1 is advertised last and raised no floor', () => {
+  assertEquals(FABRIC_LAN_ROUTES_FEATURE, 'fabric-lan-routes-v1')
+  assertEquals(DAEMON_WIRE_FEATURES.at(-1), FABRIC_LAN_ROUTES_FEATURE)
   assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.0')
 })

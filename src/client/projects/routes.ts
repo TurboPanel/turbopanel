@@ -1,6 +1,7 @@
 import { and, eq, sql } from 'drizzle-orm'
 import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
+import { nudgeTunnelRoutesAfterResponse } from '../organizations/tunnel-nudge.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { requireStepUpIfConfigured } from '../authn/step-up.ts'
 import { encryptSecret } from '../../lib/secrets/data-encryption.ts'
@@ -32,7 +33,14 @@ import {
 } from '../shared.ts'
 import { deleteProjectCascade } from '../../features/projects/project-delete.ts'
 import { retireIdleIngressOn, stopEnvironmentHosts } from '../environments/teardown.ts'
-import { planProjectDelete, refuseOnPlanBlockers, startDeleteCleanup } from './delete-flow.ts'
+import {
+  planProjectDelete,
+  projectDeleteAuditEntry,
+  refuseOnPlanBlockers,
+  snapshotDeleteForAudit,
+  startDeleteCleanup,
+} from './delete-flow.ts'
+import { recordAudit } from '../../features/audit/audit-records.ts'
 import { verifyServerInOrg } from '../environments/deploy-prepare.ts'
 import { reconcileServicesForProject } from '../environments/reconcile-after-compose-save.ts'
 import {
@@ -1126,6 +1134,8 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const { plan, teardownPlans } = await planProjectDelete(db, id)
     const refused = refuseOnPlanBlockers(c, plan)
     if (refused) return refused
+    // Read now: the names and hostnames are gone once the rows are.
+    const snapshot = await snapshotDeleteForAudit(db, plan, id)
 
     // The stop goes out after the delete is checked and before any row is
     // removed; when it cannot be sent the delete is refused and nothing changes.
@@ -1144,8 +1154,20 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       return c.json({ error: result.error, ...result.detail }, 409)
     }
 
+    // Recorded as soon as the rows are gone and before any host is asked to
+    // remove anything, so the trail has the delete even if the cleanup fails.
+    await recordAudit(
+      db,
+      projectDeleteAuditEntry(
+        { organizationId, actorUserId: userId, actorEmail: c.get('session')?.email ?? null },
+        id,
+        snapshot
+      )
+    )
+
     const cleanup = await startDeleteCleanup(c, db, userId, result.cleanup)
     await retireIdleIngressOn(c, db, stoppedServerIds, userId)
+    nudgeTunnelRoutesAfterResponse(c, organizationId)
 
     return c.json({
       ok: true as const,

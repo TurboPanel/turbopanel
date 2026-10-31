@@ -21,6 +21,7 @@ import { leaf, lease, server, tls } from '../../db/schema.ts'
 import { ORGANIZATION_CA_LEAF_VALID_DAYS } from '../../lib/tls/self-signed.ts'
 import { enqueueManagedIngressReconcile } from '../../features/managed/ingress-desired.ts'
 import { enqueueApplyForManagedCluster } from './changeover-fanout.ts'
+import { issuePeerLeaf, type PeerLeafIssue } from '../../features/tls/peer-leaf.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
 import { systemRotationContext } from './system-context.ts'
 import { retireOverdueRotations } from './rotation-retire.ts'
@@ -45,10 +46,13 @@ export const LEAF_RENEWAL_SWEEP_LOCK_KEY = 'LEAF_RENEWAL_SWEEP_LOCK'
 export const LEAF_RENEWAL_SWEEP_LEASE_MS = 120_000
 
 /**
- * Deno-side cadence. 90-day leaves do not need a 60s tick; Workers still
- * piggybacks the existing cron and relies on the lease.
+ * Deno-side cadence, the same one minute as the Workers cron. The tick also
+ * carries the certificate sweeps (Let's Encrypt waiting requests, DNS-validated
+ * and origin certificates), whose orders move one small step per tick, so a
+ * slower tick would stretch an order over many minutes. Each part is bounded
+ * and the leaf sweep keeps its lease; the timer's overlap guard stays.
  */
-export const LEAF_RENEWAL_SWEEP_INTERVAL_MS = 5 * 60 * 1000
+export const LEAF_RENEWAL_SWEEP_INTERVAL_MS = 60 * 1000
 
 /** Remaining lifetime below which a 90-day leaf is due (lifetime / 3). */
 export const LEAF_RENEWAL_REMAINING_MS = (ORGANIZATION_CA_LEAF_VALID_DAYS * MS_PER_DAY) / 3
@@ -90,9 +94,22 @@ export type DueTlsLeafRow = {
   issuedAt?: string | null
 }
 
+/**
+ * Hands a freshly minted peer leaf to the server's daemon. The sender queues
+ * the delivery command with `pendingTlsLeafMetadata(issue.pendingTlsLeaf)` so
+ * `leaf` is updated only after the daemon confirmed. Without one the sweep
+ * leaves peer leaves alone (they stay due).
+ */
+export type PeerLeafDelivery = (
+  db: Db,
+  issue: PeerLeafIssue,
+  row: DueTlsLeafRow
+) => Promise<{ ok: true } | { ok: false; reason: string }>
+
 export type LeafRenewalSweepDeps = Readonly<{
   secretsConfig: SecretsConfig
   dataEncryptionSecrets: DerivedSecretsConfig
+  deliverPeerLeaf?: PeerLeafDelivery
 }>
 
 function nowIso(nowMs = Date.now()): string {
@@ -449,6 +466,29 @@ async function enqueueDueEngine(
   return { status: 'enqueued' }
 }
 
+async function renewDuePeerLeaf(
+  db: Db,
+  deps: LeafRenewalSweepDeps,
+  row: DueTlsLeafRow
+): Promise<DueLeafOutcome> {
+  if (!deps.deliverPeerLeaf) return { status: 'skipped' }
+  const issued = await issuePeerLeaf(db, deps.secretsConfig, deps.dataEncryptionSecrets, {
+    organizationId: row.organizationId,
+    serverId: row.serverId,
+  })
+  if (!issued.ok) {
+    return {
+      status: 'failed',
+      reason: `The peer certificate could not be issued (${issued.error.kind}).`,
+    }
+  }
+  const delivered = await deps.deliverPeerLeaf(db, issued, row)
+  if (!delivered.ok) {
+    return { status: 'failed', reason: `The renewal could not be queued (${delivered.reason}).` }
+  }
+  return { status: 'enqueued' }
+}
+
 async function enqueueOneDueLeaf(
   c: Context<AppEnv>,
   db: Db,
@@ -471,6 +511,7 @@ async function enqueueOneDueLeaf(
     seenManaged.add(row.managedId)
     return await enqueueDueEngine(c, db, commandQueue, row)
   }
+  if (row.kind === 'peer') return await renewDuePeerLeaf(db, deps, row)
   return { status: 'failed', reason: 'Unknown leaf kind.' }
 }
 

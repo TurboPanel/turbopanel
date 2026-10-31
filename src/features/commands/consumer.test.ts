@@ -860,6 +860,51 @@ test('processCommandEnvelope stamps appliedPayloadHash when fabric reconcile is 
   })
 })
 
+test('processCommandEnvelope stamps appliedPayloadHash for a payload with no tunnel and no key', async () => {
+  await withConsumerFixtures(async ({ db, organizationId, serverId }) => {
+    await attachConnectedDaemonStatus(db, serverId)
+    const fabricRow = await enableOrganizationFabric(db, organizationId)
+    try {
+      const record = await createCommandRecord(db, {
+        serverId,
+        ...TEST_COMMAND_ACTOR,
+        type: 'server.fabric.reconcile',
+        payload: {
+          enabled: true,
+          fabricId: fabricRow.id,
+          tunnel: false,
+          prefix: '10.192.0.0/16',
+          peers: [],
+          lanRoutes: [],
+        },
+        metadata: { desiredHash: 'tunnelless-desired-hash' },
+      })
+
+      const registry = createDispatchMockRegistry(serverId, {
+        waitForRequestResult: {
+          serverId,
+          requestId: record.id,
+          requestKind: 'command-dispatch',
+          status: 'done',
+          createdAt: record.createdAt,
+          expiresAt: record.createdAt,
+          finishedAt: new Date().toISOString(),
+          result: { summary: 'TurboFabric reconciled without a tunnel' },
+        },
+      })
+
+      await processCommandEnvelope(db, registry, buildEnvelope(record, serverId))
+
+      const relays = await listFabricRelays(db, fabricRow.id)
+      const stamped = relays.find((row) => row.serverId === serverId)
+      assertEquals(stamped?.publicKey, null)
+      assertEquals(stamped?.metadata.appliedPayloadHash, 'tunnelless-desired-hash')
+    } finally {
+      await db.delete(fabric).where(eq(fabric.organizationId, organizationId))
+    }
+  })
+})
+
 /**
  * Full workspace → project → environment → managed → principal chain, plus a
  * connected daemon on `serverId` — the minimal fixture that satisfies the FK

@@ -353,6 +353,21 @@ test('preview resolves a generic-git binding from the source default branch', as
   assertEquals(result[0]?.principal, undefined)
 })
 
+test('preview keeps sending the old build kind on the wire for the new image value', async () => {
+  const result = await resolveDeploySourceMaterial(
+    mockContext(),
+    fakeDb([[sourceRow({ subdirectory: 'apps/web' })], []]),
+    baseParams({
+      services: sourcedService({ buildKind: 'image', buildCommand: 'pnpm build' }),
+      releaseIds: createReleaseIdAllocator(),
+    })
+  )
+  if (!Array.isArray(result)) {
+    throw new TypeError('expected preview source material')
+  }
+  assertEquals(result[0]?.build, { kind: 'railpack', buildCommand: 'pnpm build' })
+})
+
 test('preview prefers the compose branch and binding subdirectory', async () => {
   const result = await resolveDeploySourceMaterial(
     mockContext(),
@@ -921,7 +936,7 @@ test('withBuildEnv leaves a rollback, a static build and a service with nothing 
   assertEquals(builds([bare], new Map())[0], bare)
 })
 
-test('withBuildEnv covers the Railpack build too', () => {
+test('withBuildEnv covers the image build too', () => {
   const [web] = builds(
     [source({ build: { kind: 'railpack' } })],
     new Map([['web', [{ name: 'A', value: '1' }]]])

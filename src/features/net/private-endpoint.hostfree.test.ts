@@ -63,6 +63,10 @@ type Fixture = {
   /** Single-row result for loadServerDatacenterAddress / loadServerPublicAddress. */
   singleAddress?: string | null
   datacenterOptions?: Array<{ id: string; options: unknown }>
+  /** Servers whose daemon lists `fabric-lan-routes-v1`. */
+  lanRouteServerIds?: string[]
+  /** Servers whose daemon is offline (every other server reads connected). */
+  disconnected?: string[]
 }
 
 function thenable<T>(value: T) {
@@ -212,6 +216,39 @@ function createFixtureDb(fixture: Fixture): Parameters<typeof resolvePrivateEndp
         }
       }
 
+      // loadLanRouteServerIds: { id, daemon }; loadConnectedServerIds: { id, connected }
+      if (
+        keys.length === 2 &&
+        keySet.has('id') &&
+        (keySet.has('daemon') || keySet.has('connected'))
+      ) {
+        const ids = new Set([
+          ...relays.map((row) => row.serverId),
+          ...memberships.map((row) => row.serverId),
+          ...(fixture.lanRouteServerIds ?? []),
+          ...(fixture.disconnected ?? []),
+        ])
+        const lan = new Set(fixture.lanRouteServerIds ?? [])
+        const offline = new Set(fixture.disconnected ?? [])
+        const rows = [...ids].map((id) =>
+          keySet.has('daemon')
+            ? {
+                id,
+                daemon: lan.has(id) ? { projection: { features: ['fabric-lan-routes-v1'] } } : null,
+              }
+            : { id, connected: !offline.has(id) }
+        )
+        return {
+          from() {
+            return {
+              where() {
+                return thenable(rows)
+              },
+            }
+          },
+        }
+      }
+
       throw new TypeError(`unexpected select keys: ${keys.join(',')}`)
     },
   } as unknown as Parameters<typeof resolvePrivateEndpoint>[0]
@@ -247,7 +284,7 @@ test('privateEndpointErrorResponse returns 422 with error-only body', async () =
       datacenterId: 'dc-a',
     },
     {
-      kind: 'failover_requires_trusted_datacenter',
+      kind: 'untrusted_network_needs_fabric',
       fromServerId: 'a',
       toServerId: 'b',
       datacenterId: 'dc-a',
@@ -972,7 +1009,7 @@ const UNTRUSTED_ONLY_FIXTURE: Fixture = {
   publicAddresses: [{ serverId: 's2', address: '203.0.113.20' }],
 }
 
-test('failover-replication over an untrusted-only shared datacenter is failover_requires_trusted_datacenter', async () => {
+test('failover-replication over an untrusted-only shared datacenter rides fabric', async () => {
   const db = createFixtureDb(UNTRUSTED_ONLY_FIXTURE)
   assertEquals(
     await resolvePrivateEndpoint(db, {
@@ -980,8 +1017,35 @@ test('failover-replication over an untrusted-only shared datacenter is failover_
       purpose: 'failover-replication',
       toServerId: 's2',
     }),
+    { address: '10.250.0.2', transport: 'fabric', fabricId: 'fabric-1' }
+  )
+})
+
+test('failover-replication keeps the fabric address when the other daemon is offline, marked tunnelDown', async () => {
+  const db = createFixtureDb({
+    ...UNTRUSTED_ONLY_FIXTURE,
+    disconnected: ['s2'],
+  })
+  assertEquals(
+    await resolvePrivateEndpoint(db, {
+      fromServerId: 's1',
+      purpose: 'failover-replication',
+      toServerId: 's2',
+    }),
+    { address: '10.250.0.2', transport: 'fabric', fabricId: 'fabric-1', tunnelDown: true }
+  )
+})
+
+test('failover-replication over an untrusted-only shared datacenter without fabric is refused, never public', async () => {
+  const db = createFixtureDb({ ...UNTRUSTED_ONLY_FIXTURE, relays: [] })
+  assertEquals(
+    await resolvePrivateEndpoint(db, {
+      fromServerId: 's1',
+      purpose: 'failover-replication',
+      toServerId: 's2',
+    }),
     {
-      kind: 'failover_requires_trusted_datacenter',
+      kind: 'untrusted_network_needs_fabric',
       fromServerId: 's1',
       toServerId: 's2',
       datacenterId: 'dc-shared',
@@ -1019,9 +1083,25 @@ test('read-replication and client-backend fall from an untrusted shared datacent
       {
         address: '203.0.113.20',
         transport: 'public',
+        untrustedPublic: true,
       }
     )
   }
+})
+
+test('a public fallback with no shared datacenter carries no untrusted marker', async () => {
+  const db = createFixtureDb({
+    memberships: [membershipPin('s1', 'dc-a', '10.0.0.1'), membershipPin('s2', 'dc-b', '10.1.0.2')],
+    publicAddresses: [{ serverId: 's2', address: '203.0.113.20' }],
+  })
+  assertEquals(
+    await resolvePrivateEndpoint(db, {
+      fromServerId: 's1',
+      purpose: 'client-backend',
+      toServerId: 's2',
+    }),
+    { address: '203.0.113.20', transport: 'public' }
+  )
 })
 
 test('failover-replication with no shared datacenter at all stays private_path_unavailable', async () => {
@@ -1116,6 +1196,7 @@ test('untrusted datacenters never raise a family mismatch', async () => {
     {
       address: '203.0.113.20',
       transport: 'public',
+      untrustedPublic: true,
     }
   )
   assertEquals(
@@ -1125,7 +1206,7 @@ test('untrusted datacenters never raise a family mismatch', async () => {
       toServerId: 's2',
     }),
     {
-      kind: 'failover_requires_trusted_datacenter',
+      kind: 'untrusted_network_needs_fabric',
       fromServerId: 's1',
       toServerId: 's2',
       datacenterId: 'dc-untrusted',
@@ -1173,4 +1254,24 @@ test('partitionSharedDatacenters sorts by (priority, id) and defaults absent pol
     trusted: [],
     untrusted: [],
   })
+})
+
+test('resolver: an offline replica daemon marks only the primary-to-replica direction (tunnelDown or untrustedPublic)', async () => {
+  const db = createFixtureDb({ ...UNTRUSTED_ONLY_FIXTURE, disconnected: ['s2'] })
+  for (const purpose of ['failover-replication', 'read-replication'] as const) {
+    // replica (s2) to primary (s1): the primary is connected, the path is healthy.
+    assertEquals(
+      await resolvePrivateEndpoint(db, { fromServerId: 's2', purpose, toServerId: 's1' }),
+      { address: '10.250.0.1', transport: 'fabric', fabricId: 'fabric-1' }
+    )
+    // primary (s1) to replica (s2): the replica is offline, so the tunnel is
+    // down (failover) or the path falls to the public address (read); a new
+    // placement is refused either way.
+    assertEquals(
+      await resolvePrivateEndpoint(db, { fromServerId: 's1', purpose, toServerId: 's2' }),
+      purpose === 'failover-replication'
+        ? { address: '10.250.0.2', transport: 'fabric', fabricId: 'fabric-1', tunnelDown: true }
+        : { address: '203.0.113.20', transport: 'public', untrustedPublic: true }
+    )
+  }
 })

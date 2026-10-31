@@ -87,7 +87,7 @@ test('isPlainObject accepts records only', () => {
 
 test('managedSessionPaths lists every managed session route', () => {
   const paths = managedSessionPaths()
-  assertEquals(paths.length, 29)
+  assertEquals(paths.length, 30)
   assertEquals(paths.includes('/environments/:id/managed/databases/:databaseName/owner-role'), true)
   assertEquals(paths.includes('/environments/:id/managed/databases/:databaseName/app-logins'), true)
   assertEquals(
@@ -95,6 +95,7 @@ test('managedSessionPaths lists every managed session route', () => {
     true
   )
   assertEquals(paths.includes('/environments/:id/managed/privilege-catalogue'), true)
+  assertEquals(paths.includes('/environments/:id/managed/backup-login'), true)
   assertEquals(paths.includes('/environments/:id/managed/logs'), true)
   assertEquals(paths.includes('/environments/:id/managed/backup-policies'), true)
   assertEquals(paths.includes('/environments/:id/managed/backup-policies/:policyId'), true)

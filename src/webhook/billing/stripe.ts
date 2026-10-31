@@ -30,7 +30,7 @@
  * The deferred task **opens its own DB client and closes it in `finally`**.
  * `src/workers.ts` ends the per-request client in its own `waitUntil`; a
  * second `waitUntil` still using `c.get('db')` races that close and dies
- * with `write CONNECTION_ENDED` (the hard rule in `AGENTS.md`). Deno's
+ * with `write CONNECTION_ENDED` (the hard rule in `src/platform/workers/AGENTS.md`). Deno's
  * client is process-lived, so there the task uses it and closes nothing.
  *
  * If the after-response task crashes, the delivery stays claimed with
@@ -42,6 +42,7 @@
 import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import { createWorkersDb, endDbConnection, getDb, type Db } from '../../db/connection.ts'
+import type { DaemonCellRegistry } from '../../contracts/cell.ts'
 import { logWarn } from '../../lib/logger.ts'
 import { STRIPE_WEBHOOK_PATH } from '../../app/surfaces.ts'
 import { stripeWebhookRateLimitKey } from '../../daemon/rate-limit/keys.ts'
@@ -86,9 +87,17 @@ export type StripeWebhookRouteOpts = WebhookGateOpts & {
   schedule?: AfterResponseScheduler
   /** Test seam: a client over an injected `fetch`. */
   createClient?: (config: BillingConfig) => StripeClient
+  /**
+   * The registry the deferred task purges a revoked server's cell through,
+   * built over the task's own client: a Durable Object stub reads the
+   * database to place its call, and the request's client is closed by then.
+   */
+  taskDaemonCellRegistry?: (c: Context<AppEnv>, db: Db) => DaemonCellRegistry | undefined
 }
 
-function parseEvent(raw: Uint8Array): { id: string; type: string; payload: Record<string, unknown> } | null {
+function parseEvent(
+  raw: Uint8Array
+): { id: string; type: string; payload: Record<string, unknown> } | null {
   try {
     const parsed = JSON.parse(new TextDecoder().decode(raw)) as unknown
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null
@@ -141,7 +150,7 @@ function createStripeGate(opts: StripeWebhookRouteOpts): WebhookGate<StripeWebho
       verifyStripeSignature(
         raw,
         ctx.headers.get(STRIPE_SIGNATURE_HEADER),
-        holder.config?.webhookSigningSecret,
+        holder.config?.webhookSigningSecret
       ),
 
     // Both live in the body — the raw-bytes escape hatch.
@@ -161,7 +170,7 @@ function createStripeGate(opts: StripeWebhookRouteOpts): WebhookGate<StripeWebho
           STRIPE_PROJECTION_LOG_SCOPE,
           `event ${ref.id} (${ref.type}) projection handoff failed: ${
             err instanceof Error ? err.message : String(err)
-          }`,
+          }`
         )
         return retryable('projection_handoff_failed')
       }
@@ -171,14 +180,18 @@ function createStripeGate(opts: StripeWebhookRouteOpts): WebhookGate<StripeWebho
       if (!handles) {
         logWarn(
           STRIPE_PROJECTION_LOG_SCOPE,
-          `event ${ref.id} (${ref.type}) handed off; no task database — sweep will project`,
+          `event ${ref.id} (${ref.type}) handed off; no task database — sweep will project`
         )
         return accepted({ scheduled: false, deferred: 'database_unavailable' })
       }
       const client = createClient(config)
+      const daemonCellRegistry = opts.taskDaemonCellRegistry?.(ctx.c, handles.db)
       const task = async (): Promise<void> => {
         try {
-          await projectAndSettleStripeEvent({ db: handles.db, client }, ref)
+          await projectAndSettleStripeEvent(
+            { db: handles.db, client, ...(daemonCellRegistry ? { daemonCellRegistry } : {}) },
+            ref
+          )
         } finally {
           await handles.close().catch(() => {})
         }

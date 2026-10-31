@@ -123,7 +123,7 @@ export const managedSchemas = {
         nullable: true,
         enum: ['failover', 'read'],
         description:
-          'Null on primary. Failover replicas are same-datacenter and promotable; read replicas may use fabric/public.',
+          'Null on primary. Failover replicas are same-datacenter (or TurboFabric over an untrusted network) and promotable; read replicas may use fabric/public.',
       },
       readEligible: { type: 'boolean' },
       ordinal: { type: 'integer', minimum: 1 },
@@ -1025,6 +1025,45 @@ export const managedSchemas = {
       message: { type: 'string' },
     },
   },
+  ManagedBackupLoginResponse: {
+    type: 'object',
+    required: ['login'],
+    properties: {
+      login: {
+        oneOf: [{ $ref: '#/components/schemas/ManagedUserRecord' }, { type: 'null' }],
+        description: "The cluster's backup login, or null when it has none.",
+      },
+    },
+  },
+  CreateManagedBackupLoginRequest: {
+    type: 'object',
+    required: ['allowedSources'],
+    properties: {
+      allowedSources: {
+        type: 'array',
+        items: { type: 'string' },
+        description:
+          "Places the backup login may connect from: `internal` (this server only: its own programs and containers), `server:<id>` (one of the organization's servers) or `address:<ip, prefix% or range>`. Required and never `any` (400 `managed_backup_login_sources_required`).",
+      },
+      username: {
+        type: 'string',
+        description: 'Login name; `backup` when absent. The organization name rules apply.',
+      },
+      nameScheme: { type: 'string', enum: ['plain', 'partial', 'random'] },
+      maxConnections: { type: 'integer', minimum: 1, maximum: 10000 },
+    },
+  },
+  CreateManagedBackupLoginResponse: {
+    type: 'object',
+    required: ['ok', 'login', 'password', 'commandId', 'serverId'],
+    properties: {
+      ok: { type: 'boolean', const: true },
+      login: { $ref: '#/components/schemas/ManagedUserRecord' },
+      password: { type: 'string', description: 'Show-once plaintext password' },
+      commandId: { type: 'string' },
+      serverId: { type: 'string' },
+    },
+  },
   ManagedUsersResponse: {
     type: 'object',
     required: ['users'],
@@ -1716,7 +1755,7 @@ export const managedSchemas = {
   DatacenterRequiredError: errorSchema('datacenter_required'),
   DatacenterCidrRequiredError: errorSchema('datacenter_cidr_required'),
   PrivatePathUnavailableError: errorSchema('private_path_unavailable'),
-  FailoverRequiresTrustedDatacenterError: errorSchema('failover_requires_trusted_datacenter'),
+  UntrustedNetworkNeedsFabricError: errorSchema('untrusted_network_needs_fabric'),
   ManagedFailoverUnsupportedError: {
     type: 'object',
     required: ['error', 'code'],
@@ -2097,6 +2136,49 @@ export const managedPaths = {
           description: 'privilege_catalogue_unsupported_version',
           ...jsonSchema('PrivilegeCatalogueUnsupportedError'),
         },
+      },
+    },
+  },
+  '/api/client/v1/environments/{id}/managed/backup-login': {
+    get: {
+      tags: ['Managed services'],
+      summary: "Show the cluster's backup login (never the password)",
+      parameters: [ENV_ID_PARAM],
+      responses: {
+        200: {
+          description: 'The backup login or null',
+          ...jsonSchema('ManagedBackupLoginResponse'),
+        },
+      },
+    },
+    post: {
+      tags: ['Managed services'],
+      summary: 'Create the backup login (one per cluster, show-once password) and enqueue apply',
+      description:
+        'A read-only login for a backup tool: on PostgreSQL `pg_read_all_data`, `BYPASSRLS` and `CONNECT` on every database; on MySQL `SELECT`, `SHOW VIEW`, `TRIGGER`, `EVENT`, `SHOW_ROUTINE` and `FLUSH_TABLES` at global level (`*.*`); on MariaDB `SELECT`, `SHOW VIEW`, `TRIGGER`, `EVENT`, `LOCK TABLES` and `SHOW CREATE ROUTINE` at global level. Global, so a database made with plain SQL is covered too; that includes the system schemas (`mysql`, with its account rows, `sys` and `performance_schema`). `TRIGGER` and `EVENT` also allow creating and dropping triggers and events, because the engines need them to read their definitions. MySQL `FLUSH_TABLES` (not `RELOAD`) is there because on a server with GTIDs on, `mysqldump --single-transaction` takes `FLUSH TABLES WITH READ LOCK` around the start of its snapshot, then `UNLOCK TABLES`. Each dump holds that lock for a moment, after waiting for running statements to finish, so one long query holds writers up for that long. The right also lets the login take that global read lock by hand, which blocks every write on the server until it unlocks or disconnects, so treat the backup password like an admin password. No write, table or database DDL, or account right. An existing backup login gets `FLUSH_TABLES` on the next apply of its cluster by an updated server daemon, not when the daemon is updated. A server daemon from before global grants gives these rights only on the databases the panel made. Always routed to the primary. Refusals: 400 `managed_backup_login_sources_required`, 409 `managed_backup_login_exists`, 409 `managed_backup_login_needs_daemon_update`, 409 `managed_login_limits_need_daemon_update`, 409 `username_in_use`.',
+      parameters: [ENV_ID_PARAM],
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: { $ref: '#/components/schemas/CreateManagedBackupLoginRequest' },
+          },
+        },
+      },
+      responses: {
+        200: {
+          description: 'Backup login created',
+          ...jsonSchema('CreateManagedBackupLoginResponse'),
+        },
+      },
+    },
+    delete: {
+      tags: ['Managed services'],
+      summary: 'Delete the backup login and enqueue apply',
+      parameters: [ENV_ID_PARAM],
+      responses: {
+        200: { description: 'Delete queued' },
+        404: { description: 'The cluster has no backup login' },
       },
     },
   },
@@ -2744,7 +2826,7 @@ export const managedPaths = {
       tags: ['Managed services'],
       summary: 'Add a managed replica member',
       description:
-        'Body `{ serverId, replicaClass?, readEligible? }`. `replicaClass` defaults to `failover` (same datacenter as primary, promotable). `read` replicas may use local/datacenter/fabric/public paths to any org server. Requires private reachability to primary; failover additionally requires a ready datacenter CIDR. Refused with 422 `managed_failover_unsupported` when the cluster image cannot take a replica (MariaDB 12.3: single server until automatic failover supports it).',
+        'Body `{ serverId, replicaClass?, readEligible? }`. `replicaClass` defaults to `failover` (same datacenter as primary, or TurboFabric over an untrusted one; promotable). `read` replicas may use local/datacenter/fabric/public paths to any org server. Requires private reachability to primary; failover additionally requires a ready datacenter CIDR unless it rides TurboFabric. Refused with 422 `managed_failover_unsupported` when the cluster image cannot take a replica (MariaDB 12.3: single server until automatic failover supports it).',
       parameters: [ENV_ID_PARAM],
       requestBody: {
         content: {
@@ -2792,7 +2874,7 @@ export const managedPaths = {
         },
         422: {
           description:
-            'managed_failover_unsupported / failover_replica_requires_datacenter_transport / datacenter_required / datacenter_cidr_required / private_path_unavailable / failover_requires_trusted_datacenter',
+            'managed_failover_unsupported / failover_replica_requires_datacenter_transport / datacenter_required / datacenter_cidr_required / private_path_unavailable / untrusted_network_needs_fabric',
           content: {
             'application/json': {
               schema: {
@@ -2805,7 +2887,7 @@ export const managedPaths = {
                   { $ref: '#/components/schemas/DatacenterCidrRequiredError' },
                   { $ref: '#/components/schemas/PrivatePathUnavailableError' },
                   {
-                    $ref: '#/components/schemas/FailoverRequiresTrustedDatacenterError',
+                    $ref: '#/components/schemas/UntrustedNetworkNeedsFabricError',
                   },
                 ],
               },
@@ -2849,7 +2931,7 @@ export const managedPaths = {
         },
         422: {
           description:
-            'failover_replica_requires_datacenter_transport / datacenter_required / datacenter_cidr_required / private_path_unavailable / failover_requires_trusted_datacenter',
+            'failover_replica_requires_datacenter_transport / datacenter_required / datacenter_cidr_required / private_path_unavailable / untrusted_network_needs_fabric',
           content: {
             'application/json': {
               schema: {
@@ -2861,7 +2943,7 @@ export const managedPaths = {
                   { $ref: '#/components/schemas/DatacenterCidrRequiredError' },
                   { $ref: '#/components/schemas/PrivatePathUnavailableError' },
                   {
-                    $ref: '#/components/schemas/FailoverRequiresTrustedDatacenterError',
+                    $ref: '#/components/schemas/UntrustedNetworkNeedsFabricError',
                   },
                 ],
               },

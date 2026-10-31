@@ -39,3 +39,78 @@ control plane enqueues, change this repo first, then the daemon twin.
 - Daemon JWT authn (`authn/`)
 - Metrics **ingest** (control-plane store + query). Discovery of what to
   sample lives on the daemon.
+
+### Co-location is not the transport
+
+A **co-located** daemon runs on the control plane's own host. Whether it
+_reaches_ the instance over the Unix socket is a separate fact, and it follows
+the runtime:
+
+| Runtime                     | Co-located daemon connects via                      | Stored peer address                     |
+| --------------------------- | --------------------------------------------------- | --------------------------------------- |
+| Deno (self-hosted)          | `/run/turbopanel/instance.sock`                     | `__direct__` (`DIRECT_ATTACH_SENTINEL`) |
+| Workers (High Availability) | HTTPS/WSS to the hosted URL, like any remote daemon | its real peer address                   |
+
+`shapeServerPresenceFields` therefore takes the transport from
+`presence.directAttach` (the stored peer address _was_ the sentinel), narrowed
+by the deployment — never from `colocated`:
+
+- **`colocated` must not substitute the sentinel.** It used to, which labelled a
+  co-located host on Workers "via Local Unix Socket" for a connection that never
+  touched a socket.
+- **`directAttach` is ignored when the deployment is hosted.** Only the Deno
+  transport writes the sentinel, so on Workers it is necessarily a stale row
+  from a control plane that used to run on Deno — precisely what a development
+  instance switching runtimes leaves behind. Believing it pins the co-located
+  host to the socket label until something else rewrites the projection, and
+  under `wrangler dev` nothing does:
+  `resolvePeerAddress(…, {runtime:'workers'})` reads `CF-Connecting-IP` only,
+  and the dev Caddy in front of wrangler sends `X-Real-IP`, so
+  `identity.remoteAddress` arrives undefined and `postgres-projection.ts` keeps
+  whatever was there.
+
+The console's connection line follows `addressSource === 'local'` for the same
+reason.
+
+Identity guards are the other way round: "you may not delete, or remotely
+update, the host this control plane runs on" must hold on **both** runtimes, so
+they pass `includeSelfHostPin: true` to `resolveColocatedServerIdSet`. The pin
+is the `turbopanel` system environment — plain SQL that works on Workers, where
+the transport probes (`__direct__`, `/etc/machine-id`, `Deno.hostname()`) all
+come up empty. The cached read models deliberately do _not_ pass it, so their
+approved-SQL profile stays unchanged; their `colocatedWithInstance` is a display
+badge, not a guard.
+
+## Certificate orders placed by a server (`acme-issue-v1`)
+
+A daemon that lists the `acme-issue-v1` feature in `hello.features` can be asked
+to place one certificate order for a name set from its own addresses over the
+HTTP proof. The messages are `acme-issue-request`, `acme-proof-forward` and
+`acme-proof-forward-end` (control plane to daemon) and `acme-issue-event`,
+`acme-proof-forward-ready` and `acme-proof-forward-failed` (daemon to control
+plane). Their shapes and validators are in `src/contracts/cell-protocol.ts`.
+
+- No message ever carries the certificate or its key. The finished pair goes
+  through `POST /api/daemon/v1/tls/issued` with the `requestId` of the open
+  request; the validators refuse any field that looks like certificate material.
+- The control plane sends these only to a daemon that lists the feature, receivers
+  ignore unknown optional fields, and no version floor moves.
+- A pair with a `requestId` is accepted only from the server the request was made
+  to, while the request is open (`src/features/tls/http-issuance/state.ts`). A pair
+  without one follows the older rule: only a server that holds a pin may report.
+- The three daemon-to-control-plane messages are in `DAEMON_INBOUND_ALLOWED` and
+  handled on both runtimes (`src/features/tls/http-issuance/events.ts`: the Deno
+  socket handler and the Durable Object, no timers). A message only changes the
+  stored request; the scheduler's sweep sends whatever comes next. Each is matched
+  to its row by request id inside the reporting server's organization, and only
+  the server the request names may answer for it.
+- The control plane sends the three outbound messages as cell outbox envelopes
+  (`acme-issue-request`, `acme-proof-forward`, `acme-proof-forward-end` kinds in
+  `DaemonOutboundEnvelope`, mapped by `outboundEnvelopeToWireMessage`). The cell's
+  own correlation id is separate from the order's `requestId`; the replies are
+  fire and forget.
+- What the daemon must do: post the pair with `POST /api/daemon/v1/tls/issued`
+  first and send `issued` after (either order is tolerated, but a request closes
+  only when both have arrived); send `failed` with a plain reason (an authority
+  rate-limit answer should keep the words `rateLimited`, so the panel waits an
+  hour); answer every `acme-proof-forward` with `-ready` or `-failed`.

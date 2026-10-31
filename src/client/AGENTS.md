@@ -37,6 +37,18 @@ Per-feature behavior contracts for the client surface (moved from the root
 `AGENTS.md` **API / WS surfaces** section). Keep current when endpoint behavior
 changes.
 
+- **Tunnel provider accounts (client surface):** `GET|POST /organizations/:id/carriers`,
+  `DELETE /organizations/:id/carriers/:carrierId` (409 `carrier_in_use` while a
+  tunnel uses it), `GET|POST .../carriers/:carrierId/badges`,
+  `DELETE .../badges/:badgeId`, `POST .../badges/:badgeId/check`. All
+  `organization:manage`. A token is write-only: checked with the provider,
+  sealed into `secret`, never returned (responses carry a label and the last
+  four characters; audit rows carry neither). `POST .../carriers/connect`
+  takes only the API token, lists the accounts it reaches and connects the
+  chosen one (the only one, else `accountIds`; 409 `account_choice_needed`). Adding one is refused with
+  `badge_rejected`, `badge_wrong_account` or `badge_not_useful` (names the
+  missing permissions); 502 `provider_unavailable` when the provider cannot be
+  reached. See `src/features/tunnels/AGENTS.md`.
 - **Org activity feed (client surface):** `GET /organizations/:id/activity` —
   every deploy / restart / stop command across the org, newest first, whatever
   the outcome (queued, running, succeeded, failed, timed out, cancelled, rolled
@@ -176,6 +188,37 @@ changes.
   payload hash that includes peers) before enqueueing `environment.deploy`
   (`422 fabric_reconcile_failed` / `409 fabric_reconcile_pending`). PUT disable
   is a teardown (reclaims `network(kind='compose')` + `subnet`).
+  **Trusted LAN wins (one pair rule, `serversShareTrustedLan` in
+  `features/net/private-endpoint.ts`):** two servers that share a trusted
+  datacenter network giving both an IPv4 address, both daemons listing
+  `fabric-lan-routes-v1`, have **no tunnel** (an IPv6-only shared network keeps
+  the tunnel; the managed-database ladder still uses it): they are not WireGuard peers, the ladder never gives them a fabric
+  address, and a cross-server container network between them rides the LAN
+  (`lanRoutes`: each routes the other's `server.container_prefix` via its IPv4
+  LAN address) with TurboFabric on, paused or off
+  (`reconcileServerNetworking`; outside a running mesh the payload is
+  `tunnel: false`). A pair with an older daemon keeps its tunnel over the LAN.
+  While TurboFabric is not running for a pair (off, paused, a server switched
+  off), a change that would end a LAN pair holding a cross-server network is
+  refused (`409 lan_pair_in_use`: marking the datacenter untrusted, removing a
+  member) and the deploy re-checks the rule before delivering (`422
+turbofabric_required`); `features/fabric/lan-pair-guard.ts`. A daemon gaining
+  or losing the feature stamps `ip.repin_pending_fanout_at` so the repin sweep
+  re-plans. Remove completely keeps networks whose servers are all LAN pairs
+  and resends their payload with no tunnel. The WireGuard port opens only when
+  the payload has a tunnel (`serverPayloadNeedsTunnel`).
+  Traffic between datacenters rides TurboFabric; a pair that shares only an
+  untrusted network runs its tunnel over that LAN (`direct_lan` marked
+  untrusted, GET `pairs[].path` `fabric_over_untrusted_lan`; a tunnel pair also carries
+  `pairs[].tunnel.readings`, each end's own latest peer report about the other, which the
+  page judges instead of the stored path summary), while plain
+  traffic never crosses an untrusted LAN. Failover replication and Raft never
+  use fabric. The planner refuses a span only for pairs outside a shared
+  trusted LAN (TurboFabric off, a switched-off server in such a pair, or no
+  direct tunnel in a network that mixes LAN and remote servers). The fabric
+  rung also needs both relays keyed, the other daemon connected and a fresh
+  handshake in the live reading (`pairTunnelHealth` `healthy`); otherwise the
+  ladder falls to public, then a network that is down.
   Whole-environment `environment.server_id` pins never require it. User-facing
   copy is **TurboFabric**; backend identifiers stay `fabric` / `tp0` / `relay` /
   `subnet`. Never ask which WireGuard network a container should join. NAT
@@ -183,7 +226,15 @@ changes.
   handshake (observer-mapped endpoints stay in candidate exchange). Path-state
   strike counters are process-local across reconcile rounds. `allowRelay` is
   reserved for a future relay slot and does not loosen gateway datacenter
-  locality.
+  locality. **Dial-in peers:** a server nothing can dial (behind NAT, no pin)
+  is never dropped as unreachable when it can dial us (we have a public path
+  for it, `peerCanDialIn`): its peer has no `endpoint`, WireGuard learns it from
+  the server's own keepalive handshake. Peers pinned to one shared endpoint
+  (servers behind one NAT) lose it the same way. GET `relays[].reconcile`
+  (`features/fabric/reconcile-outcome.ts`, `relay.metadata.reconcile`) says how
+  the last reconcile sent to the server ended: `pending` from enqueue until it
+  answers, then `done` with the daemon's `warnings` or `failed` with its error;
+  a pause counts as down only once its server is `done`.
 - **Compiled runtime compose:** users author project + optional environment
   ComposeDocuments. Deploy compiles **one** `compose.yaml` (`role: 'runtime'`)
   per participating server plus a project `.env` for non-secrets. Secret
@@ -286,6 +337,12 @@ changes.
   literal "production" catalog environments is unchanged. The name is also the
   scope folder on every server, so the PUT only takes a valid environment name
   (`isValidEnvironmentName`) and a saved value that is not one is ignored.
+- **New-project form switches:** `organization.options.openEnvironmentSectionByDefault`
+  and `openWorkspaceSectionByDefault` (unset = off).
+  `GET`/`PUT /organizations/:id/project-settings` (manage-gated) read and write
+  them; a PUT takes one switch or both. The client uses them only to decide
+  whether the new-project form opens its Environment and Workspace sections;
+  nothing on the server branches on them.
 - **Folder names (`folder` table):** one row per service or volume directory per
   server (`features/folders/records.ts`). While a row exists (any state but
   `missing`) the environment's name (`environments/rename-lock.ts`) and server
@@ -595,12 +652,31 @@ sourceServerId? }`
   deterministic. The datacenter rung walks **only the trusted list**, for
   every purpose; an untrusted datacenter can neither win nor raise
   `private_family_mismatch`. `read-replication` / `client-backend` then fall
-  through to fabric → public as before. `failover-replication` never leaves
-  the LAN: an untrusted-only pair is **422**
-  `failover_requires_trusted_datacenter` (replica create, member class patch,
-  managed apply prepare — never collapsed into
-  `failover_replica_requires_datacenter_transport`), no shared datacenter at
-  all stays `private_path_unavailable`. TurboFabric path planning
+  through to fabric → public as before. Every purpose on a pair that shares an
+  untrusted datacenter rides TurboFabric over the LAN when the tunnel is
+  healthy. `failover-replication` never uses the public address: on an
+  untrusted-only pair with a keyed tunnel that is not healthy it keeps the
+  fabric address marked `tunnelDown: true` (a lost host must not break a
+  running cluster), and with no keyed tunnel (fabric off, opted out) it is
+  **422** `untrusted_network_needs_fabric`. The other purposes that fall to
+  public on such a pair carry `untrustedPublic: true`. New placements refuse
+  `untrustedPublic` and `tunnelDown` with the same 422:
+  a replica create checks both directions of the pair (the primary-to-replica
+  direction turns `tunnelDown` when the replica's daemon is offline, so an
+  offline replica on an untrusted-only pair reads as this refusal before the
+  offline check runs), and a class change to failover
+  checks only the replica-to-primary direction. A new binding whose app host
+  would dial the database over that public address is refused too
+  (`binding_endpoint_unavailable` with the TurboFabric message and
+  `reason: "untrusted_network_needs_fabric"`; the console tells it apart by the
+  words "marked untrusted" in the server sentence). The same refusal holds when
+  the database has no published listener and no public address: a
+  `client-backend` pair that shares only untrusted datacenters and has nothing
+  to ride resolves to `untrusted_network_needs_fabric`, not
+  `private_path_unavailable`.
+  Running traffic keeps its path and `GET` server traffic map reports both
+  flags on `planned` (the console does not render the traffic map yet).
+  No shared datacenter at all stays `private_path_unavailable`. TurboFabric path planning
   (`lanPathCandidate` in `src/features/fabric/fabric-records.ts`) consumes the same
   partition through `EndpointAddressCaches.policyByDatacenter`, so a
   `direct_lan` WireGuard endpoint is never emitted on a segment the managed

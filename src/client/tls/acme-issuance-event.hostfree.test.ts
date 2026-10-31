@@ -359,6 +359,7 @@ test('applyIssuanceOutcome stamps lastIssuedAt and notAfter on the first good si
   assertEquals(next, {
     notAfter: '2027-01-01T00:00:00.000Z',
     lastIssuedAt: AT,
+    lastReportedAt: AT,
   })
 })
 
@@ -369,7 +370,7 @@ test('applyIssuanceOutcome keeps the stamp on a repeat of the same good state', 
     notAfter: '2027-01-01T00:00:00.000Z',
     at: LATER,
   })
-  assertEquals(next, previous)
+  assertEquals(next, { ...previous, lastReportedAt: LATER })
 })
 
 test('applyIssuanceOutcome restamps when the expiry moves (a renewal)', () => {
@@ -380,6 +381,7 @@ test('applyIssuanceOutcome restamps when the expiry moves (a renewal)', () => {
   assertEquals(next, {
     notAfter: '2027-04-01T00:00:00.000Z',
     lastIssuedAt: LATER,
+    lastReportedAt: LATER,
   })
 })
 
@@ -388,7 +390,7 @@ test('applyIssuanceOutcome restamps on recovery even when the expiry is unknown'
     { lastError: 'boom', lastIssuedAt: AT },
     { ok: true, at: LATER }
   )
-  assertEquals(next, { lastIssuedAt: LATER })
+  assertEquals(next, { lastIssuedAt: LATER, lastReportedAt: LATER })
 })
 
 test('applyIssuanceOutcome records a failure without touching the last good expiry or stamp', () => {
@@ -405,6 +407,8 @@ test('applyIssuanceOutcome records a failure without touching the last good expi
     lastIssuedAt: AT,
     managedBy: 'caddy',
     lastError: 'no route to host',
+    lastReportedAt: LATER,
+    lastFailedAt: LATER,
   })
 })
 
@@ -451,6 +455,7 @@ test('handleAcmeIssuanceEvent writes notAfter and lastIssuedAt on a good event, 
     managedBy: 'caddy',
     notAfter: '2027-01-01T00:00:00.000Z',
     lastIssuedAt: AT,
+    lastReportedAt: AT,
   })
 })
 
@@ -475,7 +480,20 @@ test('a first failure announces once, with the organization and the raw reason',
     { serverId: SERVER_ID, hostname: 'App.Example.com.', ok: false, errorMessage: 'boom' },
     { onNewFailure: (failure) => Promise.resolve(void seen.push(failure)) }
   )
-  assertEquals(seen, [{ organizationId: ORG_ID, hostname: 'app.example.com', rawError: 'boom' }])
+  assertEquals(seen, [
+    { organizationId: ORG_ID, hostname: 'app.example.com', firstIssuance: true, rawError: 'boom' },
+  ])
+})
+
+test('a failure after a certificate was in place is announced as a renewal', async () => {
+  const { db } = fakeDb([FAILING_ROW({ managedBy: 'caddy', lastIssuedAt: AT })])
+  const seen: Array<{ firstIssuance?: boolean }> = []
+  await handleAcmeIssuanceEvent(
+    db,
+    { serverId: SERVER_ID, hostname: 'app.example.com', ok: false, errorMessage: 'boom' },
+    { onNewFailure: (failure) => Promise.resolve(void seen.push(failure)) }
+  )
+  assertEquals(seen[0]?.firstIssuance, false)
 })
 
 test('the announced reason never carries a URL token', async () => {
@@ -495,6 +513,7 @@ test('the announced reason never carries a URL token', async () => {
     {
       organizationId: ORG_ID,
       hostname: 'app.example.com',
+      firstIssuance: true,
       rawError: 'probe failed for https://app.example.com/check?[redacted]',
     },
   ])

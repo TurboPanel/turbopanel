@@ -759,6 +759,60 @@ test('PATCH /tls/:id revoke:true on an Organization CA is rejected', async () =>
   })
 })
 
+test('a certificate a tunnel provider issued cannot be revoked, deleted or created through the library', async () => {
+  await withTlsFixtures(async ({ db, app, secrets, userId, organizationId }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const headers = {
+      cookie,
+      [ORG_ID_HEADER]: organizationId,
+      'content-type': 'application/json',
+    }
+    const [row] = await db
+      .insert(tls)
+      .values({
+        organizationId,
+        source: 'provider_origin',
+        status: 'ready',
+        notAfter: new Date(Date.now() + 86_400_000 * 100).toISOString(),
+        metadata: {
+          dnsNames: ['example.com'],
+          hasWildcard: false,
+          notBefore: new Date().toISOString(),
+          subject: 'CN=x',
+          issuer: 'CN=y',
+        },
+      })
+      .returning({ id: tls.id })
+
+    const revoke = await app.request(`/tls/${row!.id}`, {
+      method: 'PATCH',
+      headers,
+      body: JSON.stringify({ revoke: true }),
+    })
+    assertEquals(revoke.status, 409)
+    assertEquals(((await revoke.json()) as { error: string }).error, 'provider_origin_managed')
+
+    const removed = await app.request(`/tls/${row!.id}`, { method: 'DELETE', headers })
+    assertEquals(removed.status, 409)
+    assertEquals(((await removed.json()) as { error: string }).error, 'provider_origin_managed')
+
+    const created = await app.request('/tls', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ source: 'provider_origin', name: 'Made By Hand' }),
+    })
+    assertEquals(created.status, 400)
+    assertEquals(((await created.json()) as { error: string }).error, 'provider_origin_unsupported')
+
+    const [still] = await db
+      .select({ status: tls.status })
+      .from(tls)
+      .where(eq(tls.id, row!.id))
+      .limit(1)
+    assertEquals(still?.status, 'ready')
+  })
+})
+
 test('GET /tls/ca/download returns the Organization CA trust-bundle PEM', async () => {
   await withTlsFixtures(async ({ db, app, secrets, userId, organizationId }) => {
     const cookie = await sessionCookie(db, secrets, userId)

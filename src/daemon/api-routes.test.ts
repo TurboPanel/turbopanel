@@ -27,6 +27,7 @@ import {
   license,
   organization,
   payer,
+  peak,
   project,
   server,
   service,
@@ -89,6 +90,7 @@ import {
   resetDenoMetricsChartCacheForTests,
 } from './metrics/query/cache.ts'
 import { markServerLiveSessionActive, readLiveSample } from './metrics/query/live-session.ts'
+import { resetOverPlanMemoForTests, setOverPlanClockForTests } from './metrics/over-plan-flag.ts'
 
 const dbUrl = getDatabaseUrl()
 const encoder = new TextEncoder()
@@ -1106,6 +1108,69 @@ test('POST /enroll stores public key only after proof-of-possession', async () =
   })
 })
 
+test('POST /enroll stores only the public members of the submitted key', async () => {
+  await withEnrollFixture(
+    async ({ db, app, licenseId, licenseToken, machineKey, hostname }) => {
+      const key = await generateKeyMaterial()
+      const padded: KeyMaterial = {
+        ...key,
+        publicJwk: { ...key.publicJwk, alg: 'EdDSA', note: 'not part of the key' } as JsonWebKey,
+      }
+      const response = await postEnroll(app, {
+        licenseId,
+        licenseToken,
+        machineKey,
+        hostname,
+        key: padded,
+      })
+      assertEquals(response.status, 200)
+      const { serverId } = (await response.json()) as { serverId: string }
+      const daemonState = await readDaemonState(db, serverId)
+      assertEquals(daemonState?.key.publicJwk, {
+        kty: key.publicJwk.kty,
+        crv: key.publicJwk.crv,
+        x: key.publicJwk.x,
+      })
+    },
+    { enroll: false }
+  )
+})
+
+test('POST /enroll charges the per-license bucket before checking the license token', async () => {
+  await withEnrollFixture(
+    async ({ db, licenseId, machineKey, hostname }) => {
+      const limitedKey = `daemon:rest:enroll:${licenseId}`
+      const charged: string[] = []
+      const app = new Hono<AppEnv>()
+      app.use('*', (c, next) => {
+        c.set('db', db)
+        return next()
+      })
+      registerDaemonApiRoutes(app, {
+        secrets: await createTestSecrets(),
+        challengeSigningSecrets: await createTestChallengeSecrets(),
+        secretsConfig: createTestSecretsConfig(),
+        restLimiter: {
+          limit: ({ key }) => {
+            charged.push(key)
+            return Promise.resolve({ success: key !== limitedKey })
+          },
+        },
+      })
+      const response = await postEnroll(app, {
+        licenseId,
+        licenseToken: 'wrong-token',
+        machineKey,
+        hostname,
+        key: await generateKeyMaterial(),
+      })
+      assertEquals(response.status, 429)
+      assertEquals(charged.includes(limitedKey), true)
+    },
+    { enroll: false }
+  )
+})
+
 test('POST /enroll returns serverId and server.daemon.key.id', async () => {
   await withEnrollFixture(async ({ enrollBody, db }) => {
     assertExists(enrollBody.serverId)
@@ -1523,6 +1588,59 @@ test('POST /auth/session rejects invalid signature', async () => {
     })
     assertEquals(response.status, 403)
   })
+})
+
+test('POST /auth/session checks the signature before the license', async () => {
+  await withEnrollFixture(
+    async ({ db, app, organizationId, licenseId, serverId, keyId, machineKey, hostname }) => {
+      await revokeLicense(db, licenseId, organizationId)
+      const challenge = await issueAuthChallenge(app, serverId, keyId)
+      const response = await app.request('/api/daemon/v1/auth/session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          serverId,
+          keyId,
+          challengeId: challenge.challengeId,
+          signature: 'invalid-signature',
+          machineKey,
+          hostname,
+          at: new Date().toISOString(),
+        }),
+      })
+      assertEquals(response.status, 403)
+      assertEquals(((await response.json()) as { error: string }).error, 'Invalid signature')
+    }
+  )
+})
+
+test('a self-hosted session with a bad signature writes no tier', async () => {
+  await withEnrollFixture(
+    async (fixture) => {
+      await assignTier(fixture.db, fixture.serverId, null)
+      const challenge = await issueAuthChallenge(fixture.app, fixture.serverId, fixture.keyId)
+      const refused = await fixture.app.request('/api/daemon/v1/auth/session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          serverId: fixture.serverId,
+          keyId: fixture.keyId,
+          challengeId: challenge.challengeId,
+          signature: 'invalid-signature',
+          machineKey: fixture.machineKey,
+          hostname: fixture.hostname,
+          at: new Date().toISOString(),
+        }),
+      })
+      assertEquals(refused.status, 403)
+      assertEquals(await readAssignedTierId(fixture.db, fixture.serverId), null)
+
+      const session = await postAuthSession(fixture.app, fixture)
+      assertEquals(session.status, 200)
+      assertEquals((await readAssignedTierId(fixture.db, fixture.serverId)) !== null, true)
+    },
+    { runtime: 'deno', tierRank: null }
+  )
 })
 
 test('POST /auth/session returns a 15-minute JWT', async () => {
@@ -3420,68 +3538,108 @@ test('POST /metrics: a declared machine_class=physical retains sensors with no t
   })
 })
 
-test('POST /metrics keeps the sample and flags the server when its RAM or physical cores are past the licensed box size', async () => {
-  await withEnrollFixture(async ({ db, serverId, keyId }) => {
-    const { app, writes } = await createMetricsTestAppWithDb(db)
-    const daemonToken = await issueDaemonToken(serverId, keyId)
-    const post = (at: string) =>
-      app.request('/api/daemon/v1/metrics', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${daemonToken}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(
-          buildValidMetricsFrame({
-            // The sample's own sizes are never the plan's unit: only the host report counts.
-            extended: { sizes: { memoryTotalBytes: 1024, logicalCores: 128 } },
-            metadata: { sampledAt: at },
-          })
-        ),
-      })
-    const metadataOf = async () =>
-      ((await db.select({ m: server.metadata }).from(server).where(eq(server.id, serverId)))[0]!
-        .m ?? {}) as Record<string, unknown>
-    const GIB = 1024 ** 3
-    const setHostReport = (gib: number, ...perSocket: number[]) =>
-      db
-        .update(server)
-        .set({
-          metadata: sql`COALESCE(${server.metadata}, '{}'::jsonb) || ${JSON.stringify({
-            resources: {
-              cpus: perSocket.map((total) => ({ cores: { total } })),
-              memory: { totalBytes: gib * GIB },
-            },
-          })}::jsonb`,
+test('POST /metrics keeps the sample and flags the server while its highest RAM or physical cores of the last 7 days are past the licensed box size', async () => {
+  // The hour buckets follow a pinned clock (mid-hour), so an hour boundary
+  // between posts cannot split the readings over two rows.
+  const HOUR = 3_600_000
+  const pinned = Math.floor(Date.now() / HOUR) * HOUR + HOUR / 2
+  setOverPlanClockForTests(() => pinned)
+  try {
+    await withEnrollFixture(async ({ db, serverId, keyId }) => {
+      const { app, writes } = await createMetricsTestAppWithDb(db)
+      const daemonToken = await issueDaemonToken(serverId, keyId)
+      const post = (at: string) =>
+        app.request('/api/daemon/v1/metrics', {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${daemonToken}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(
+            buildValidMetricsFrame({
+              // Logical CPUs are never the plan's unit: only the host report's physical cores count.
+              extended: { sizes: { memoryTotalBytes: 1024, logicalCores: 128 } },
+              metadata: { sampledAt: at },
+            })
+          ),
         })
-        .where(eq(server.id, serverId))
-    const settle = () => new Promise((resolve) => setTimeout(resolve, 200))
+      const metadataOf = async () =>
+        ((await db.select({ m: server.metadata }).from(server).where(eq(server.id, serverId)))[0]!
+          .m ?? {}) as Record<string, unknown>
+      const peakRows = () =>
+        db
+          .select({ memoryBytes: peak.memoryBytes, cores: peak.cores, updatedAt: peak.updatedAt })
+          .from(peak)
+          .where(eq(peak.serverId, serverId))
+      const GIB = 1024 ** 3
+      const setHostReport = (gib: number, ...perSocket: number[]) =>
+        db
+          .update(server)
+          .set({
+            metadata: sql`COALESCE(${server.metadata}, '{}'::jsonb) || ${JSON.stringify({
+              resources: {
+                cpus: perSocket.map((total) => ({ cores: { total } })),
+                memory: { totalBytes: gib * GIB },
+              },
+            })}::jsonb`,
+          })
+          .where(eq(server.id, serverId))
+      const settle = () => new Promise((resolve) => setTimeout(resolve, 200))
 
-    // The fixture's tier is S1 (16 GiB, 4 physical cores). 128 logical CPUs on
-    // the sample change nothing: only the host report's RAM and physical cores count.
-    await setHostReport(8, 2, 2)
-    const fits = await post(new Date().toISOString())
-    assertEquals(fits.status, 202)
-    await settle()
-    assertEquals('overPlan' in (await metadataOf()), false)
+      // The fixture's tier is S1 (16 GiB, 4 physical cores). 128 logical CPUs on
+      // the sample change nothing.
+      await setHostReport(8, 2, 2)
+      const fits = await post(new Date().toISOString())
+      assertEquals(fits.status, 202)
+      await settle()
+      assertEquals('overPlan' in (await metadataOf()), false)
+      const [first] = await peakRows()
+      assertEquals([first!.memoryBytes, first!.cores], [8 * GIB, 4])
 
-    // 64 GiB of RAM and 6 physical cores (3 + 3) are both past S1.
-    await setHostReport(64, 3, 3)
-    const over = await post(new Date(Date.now() + 1000).toISOString())
-    assertEquals(over.status, 202)
-    assertEquals(writes.length, 2, 'the sample is stored')
-    await settle()
-    const stamp = (await metadataOf()).overPlan as Record<string, unknown>
-    assertEquals([stamp.memory, stamp.cpu], [true, true])
+      // 64 GiB of RAM and 6 physical cores (3 + 3) are both past S1.
+      await setHostReport(64, 3, 3)
+      const over = await post(new Date(Date.now() + 1000).toISOString())
+      assertEquals(over.status, 202)
+      assertEquals(writes.length, 2, 'the sample is stored')
+      await settle()
+      const stamp = (await metadataOf()).overPlan as Record<string, unknown>
+      assertEquals([stamp.memory, stamp.cpu], [true, true])
+      assertEquals(stamp.since, stamp.at)
+      const raised = await peakRows()
+      assertEquals(raised.length, 1, 'one row per server per hour')
+      assertEquals([raised[0]!.memoryBytes, raised[0]!.cores], [64 * GIB, 6])
+      assertEquals(
+        Date.parse(raised[0]!.updatedAt) > Date.parse(first!.updatedAt),
+        true,
+        'the upsert moves updated_at'
+      )
 
-    // Back inside the box: the flag clears and the sample is still stored.
-    await setHostReport(8, 2, 2)
-    const back = await post(new Date(Date.now() + 2000).toISOString())
-    assertEquals(back.status, 202)
-    assertEquals(writes.length, 3)
-    await settle()
-    assertEquals('overPlan' in (await metadataOf()), false)
-  })
+      // Back inside the box: the highest reading of the window still counts, so
+      // the flag stays and the sample is still stored.
+      // The memo is dropped first, so the window read decides, not the memo.
+      await setHostReport(8, 2, 2)
+      resetOverPlanMemoForTests()
+      const back = await post(new Date(Date.now() + 2000).toISOString())
+      assertEquals(back.status, 202)
+      assertEquals(writes.length, 3)
+      await settle()
+      assertEquals(((await metadataOf()).overPlan as Record<string, unknown>).memory, true)
+
+      // Once the over reading is older than the 7-day window, the flag clears.
+      await db
+        .update(peak)
+        .set({ bucket: new Date(pinned - 8 * 24 * HOUR).toISOString() })
+        .where(eq(peak.serverId, serverId))
+      resetOverPlanMemoForTests()
+      const later = await post(new Date(Date.now() + 3000).toISOString())
+      assertEquals(later.status, 202)
+      await settle()
+      assertEquals('overPlan' in (await metadataOf()), false)
+    })
+  } finally {
+    resetOverPlanMemoForTests()
+    setOverPlanClockForTests(null)
+  }
 })
 
 test('POST /metrics does not cut hardwareSignals when the org overrides physicalHardwareSignalSlots to 0', async () => {

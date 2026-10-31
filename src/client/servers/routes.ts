@@ -1,6 +1,7 @@
 import { and, eq, inArray, sql } from 'drizzle-orm'
 import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
+import { nudgeTunnelRoutesAfterResponse } from '../organizations/tunnel-nudge.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { requireStepUpIfConfigured } from '../authn/step-up.ts'
@@ -34,6 +35,7 @@ import {
   repairStaleProjectedUpdate,
 } from '../../daemon/cell/control-plane-monitor.ts'
 import type { DaemonCellRegistry } from '../../contracts/cell.ts'
+import { purgeDaemonCellBestEffort } from '../../features/servers/daemon-cell-purge.ts'
 import type { UpdateProjection } from '../../features/servers/daemon-state.ts'
 import {
   clearServerDaemonState,
@@ -297,14 +299,8 @@ async function purgeServerDaemonCell(
   registry: DaemonCellRegistry,
   serverId: string
 ): Promise<DaemonCellPurgeFailure | null> {
-  try {
-    await registry.getCell(serverId).purge()
-    return null
-  } catch (err) {
-    const message = errorMessageFromUnknown(err)
-    console.error(`Failed to purge daemon cell for server ${serverId}: ${message}`)
-    return 'purge_failed'
-  }
+  const purged = await purgeDaemonCellBestEffort(registry, serverId, 'after key revoke')
+  return purged ? null : 'purge_failed'
 }
 
 async function loadDatacenterOptionsMap(
@@ -1274,6 +1270,7 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
       })
     }
 
+    nudgeTunnelRoutesAfterResponse(c, organizationId)
     return c.json({ ok: true as const })
   })
 
@@ -1435,6 +1432,7 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     }
 
     await reconcileFabricAfterServerDelete(c, db, organizationId, session.userId)
+    nudgeTunnelRoutesAfterResponse(c, organizationId)
 
     await clearServerDaemonState(db, id)
 

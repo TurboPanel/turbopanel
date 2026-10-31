@@ -24,6 +24,8 @@ Turning the gate off never revokes certificates already issued. `PATCH
 hatch: deploy-prepare treats that pin as the self-signed certificate instead of
 `tls_pin_not_ready`. Deleted or hostname-mismatched pins still fail.
 
+**DNS-validated certificates (built).** The panel can also order a library certificate itself with a DNS challenge through the connected DNS account; see `../../features/tls/dns-certificates/AGENTS.md`. It is a normal `upload` row marked `metadata.acme.managedBy = 'panel'`, not a `lets_encrypt` row, so none of the Caddy-managed paths below apply to it.
+
 **Issuance-failure visibility (built).** The daemon's `AcmeIssuanceObserver`
 (`turbopaneld/src/instance/acme-observe.ts`) live-probes every deployed
 `tlsMode: 'acme'` hostname every 60s and reports a state change as
@@ -47,31 +49,31 @@ link here rather than restating the table.
 
 ## Platform CA vs Organization CA
 
-|             | **Platform CA**                                                                  | **Organization CA**                                                                                                                   |
-| ----------- | -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| Scope       | one per control plane                                                            | one active per organization                                                                                                           |
-| Storage     | files under `<stateDir>/tls/` (`ca.crt`, `ca.key`, `ca-bundle.pem`)              | `tls` row, `source='organization_ca'`, `ca_state` / `ca_generation`, key sealed `tpsecret`                                            |
+|             | **Platform CA**                                                                  | **Organization CA**                                                                                                                                          |
+| ----------- | -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Scope       | one per control plane                                                            | one active per organization                                                                                                                                  |
+| Storage     | files under `<stateDir>/tls/` (`ca.crt`, `ca.key`, `ca-bundle.pem`)              | `tls` row, `source='organization_ca'`, `ca_state` / `ca_generation`, key sealed `tpsecret`                                                                   |
 | Minted by   | `turbopanel/scripts/generate-self-signed-cert.mjs` (`ensureCa()`)                | `mintOrganizationCa({ organizationId })` in `turbopanel/src/lib/tls/self-signed.ts` (`O=TurboPanel, OU=Organization CA, CN={org.id}`; ECDSA P-384, 15 years) |
-| Signs       | the control-plane Caddy leaf only                                                | managed-database / ProxySQL / replication leaves for that org                                                                         |
-| Consumed by | daemons (`/etc/turbopanel/instance-ca.pem` via `GET /api/daemon/v1/instance/ca`) | ProxySQL, managed engines, binding `<PREFIX>_CA_CERT`, SQL clients                                                                    |
-| Rotation    | `TURBOPANEL_TLS_CA_ROTATE=1` + `server.tls.trust.reconcile`                      | `POST /api/client/v1/tls/ca/rotate` then `POST /tls/ca/retire`                                                                        |
-| Hard rule   | org TLS code must never read or write these paths                                | never anchors daemon → control-plane trust                                                                                            |
+| Signs       | the control-plane Caddy leaf only                                                | managed-database / ProxySQL / replication leaves for that org                                                                                                |
+| Consumed by | daemons (`/etc/turbopanel/instance-ca.pem` via `GET /api/daemon/v1/instance/ca`) | ProxySQL, managed engines, binding `<PREFIX>_CA_CERT`, SQL clients                                                                                           |
+| Rotation    | `TURBOPANEL_TLS_CA_ROTATE=1` + `server.tls.trust.reconcile`                      | `POST /api/client/v1/tls/ca/rotate` then `POST /tls/ca/retire`                                                                                               |
+| Hard rule   | org TLS code must never read or write these paths                                | never anchors daemon → control-plane trust                                                                                                                   |
 
 ## Module map
 
 All of this package is Web-Crypto-only and Workers-safe.
 
-| File             | Role                                                                                                                                                                                                               |
-| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| File             | Role                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `self-signed.ts` | `mintOrganizationCa` (ECDSA P-384 key, `ORGANIZATION_CA_VALID_YEARS` = 15 calendar years, for the first CA and every rotation; subject `O=TurboPanel, OU=Organization CA, CN={organizationId}`; carries a subjectKeyIdentifier, which strict verifiers such as Python 3.13+ require — CAs minted before it only gain it on rotation. Organization CAs minted before P-384 are RSA 2048 / 10 years and stay so until an owner rotates; nothing replaces them automatically), `issueLeafCertificate` (RSA 2048 leaf key, `ORGANIZATION_CA_LEAF_VALID_DAYS` = 90; signed ecdsa-with-SHA384 under a P-384 CA, sha256WithRSAEncryption under an older RSA CA — the scheme follows the CA certificate's key; carries its own SKI and an authorityKeyIdentifier taken from the CA's SKI, or computed from the CA key for a legacy CA), `mintSelfSignedCertificate`, `verifyCertificateSignature` (RSA, P-256 and P-384 issuers), `encodeValidityTime` (UTCTime 1950–2049, GeneralizedTime otherwise). `organization-ca-interop.deno.test.ts` checks the chain with `node:crypto`, `openssl verify -x509_strict` and a real TLS handshake |
-| `parse.ts`       | Certificate PEM parse                                                                                                                                                                                              |
-| `pem.ts`         | PEM encode / decode                                                                                                                                                                                                |
-| `keys.ts`        | Private-key / certificate match                                                                                                                                                                                    |
-| `asn1.ts`        | Minimal ASN.1 reader used by parse / issue                                                                                                                                                                         |
-| `match.ts`       | Hostname coverage for library certs                                                                                                                                                                                |
-| `metadata.ts`    | Persistable TLS metadata columns                                                                                                                                                                                   |
-| `types.ts`       | Shared types (`TlsSource`, parsed cert, …)                                                                                                                                                                         |
-| `index.ts`       | Barrel re-exports                                                                                                                                                                                                  |
+| `parse.ts`       | Certificate PEM parse                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `pem.ts`         | PEM encode / decode                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `keys.ts`        | Private-key / certificate match                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `asn1.ts`        | Minimal ASN.1 reader used by parse / issue                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `match.ts`       | Hostname coverage for library certs                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `metadata.ts`    | Persistable TLS metadata columns                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `types.ts`       | Shared types (`TlsSource`, parsed cert, …)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `index.ts`       | Barrel re-exports                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 
 ## Consumers of the Organization CA
 
@@ -98,7 +100,7 @@ Read-only reference — no behavior claims beyond today:
   bindings — see `../../features/commands/AGENTS.md`. Repeat POST while `in_progress`
   resumes the stored cursor without minting another generation. `GET /tls/ca`
   also returns `leafHealth: { dueCount, staleCount,
-  caGeneration, caNotAfter }` (one
+caGeneration, caNotAfter }` (one
   indexed pass over `leaf` for this org plus the active Organization CA
   generation and expiry; stale leaves are counted apart and never as due). `TlsPublicRow` includes `caGeneration`.
   `POST /tls/ca/retire` advances `retired` → `revoked` only after every live
@@ -107,7 +109,9 @@ Read-only reference — no behavior claims beyond today:
   `awaiting_retire`, gone targets `skipped` + `target_gone` do not block).
   `PATCH /tls/:id` with `revoke: true` on an Organization CA row is rejected
   (`409` `organization_ca_retire_required`); Organization CA retirement is
-  exclusively `POST /tls/ca/retire`. Orchestrator hosts hold the bundle too
+  exclusively `POST /tls/ca/retire`. `DELETE /tls/:id` on an Organization CA
+  row (active or retired) is refused too (`409` `tls_organization_ca`): a
+  deleted CA lets the next managed apply mint a new one silently. Orchestrator hosts hold the bundle too
   (`managed.ha.reconcile` → `tls/ca.pem`, read once at process start): when the
   rotate fan-out completes and again after retire, every Orchestrator host of
   the organization gets `managed.ha.reconcile`
@@ -157,11 +161,11 @@ transiently on every `managed.apply` / `managed.ingress.reconcile`. They are now
 tracked in **`leaf`** (`src/db/schema.ts` `leaf`) as successfully
 **deployed** leaf state — not payload generation:
 
-| Column                    | Role                                                                          |
-| ------------------------- | ----------------------------------------------------------------------------- |
-| `kind`                    | `'ingress'` (ProxySQL frontend, one per server) or `'engine'` (per `replica`) |
-| `ca_id` / `ca_generation` | signing Organization CA row + generation                                      |
-| `not_after`               | leaf expiry (`timestamptz`)                                                   |
+| Column                    | Role                                                                                                                                                         |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `kind`                    | `'ingress'` (ProxySQL frontend, one per server), `'engine'` (per `replica`) or `'peer'` (web server certificate for the hop between servers, one per server) |
+| `ca_id` / `ca_generation` | signing Organization CA row + generation                                                                                                                     |
+| `not_after`               | leaf expiry (`timestamptz`)                                                                                                                                  |
 
 Re-issuance **upserts** (partial uniques `uniq_leaf_ingress_server` /
 `uniq_leaf_engine_replica` on `leaf.replica_id`) — no history. Helpers:
@@ -177,6 +181,13 @@ default) **or** `ca_generation` no longer matches the org's active signer. Sweep
 query (`loadDueTlsLeaves`) is org-agnostic, ordered by `not_after` ascending,
 keyset-cursor paginated (`notAfter`, `id`), `LIMIT` `LEAF_RENEWAL_BATCH_SIZE`
 (10) — never `OFFSET`, never per-org enumeration.
+
+Peer leaves (`src/features/tls/peer-leaf.ts`) are for the fixed name `tp-peer.internal`
+plus the server's datacenter addresses, server-auth only. `ensurePeerLeaf` keeps a tracked
+leaf that is active, on the active generation and has a third of its life left; otherwise
+it mints one and seals the key for that server's daemon. The sweep renews a due peer leaf
+through `deps.deliverPeerLeaf` (the delivery command queues the material with the
+`pendingTlsLeaf` metadata); without it the row stays due and untouched.
 
 Per due row the sweep reuses existing enqueue paths
 (`enqueueManagedIngressReconcile` / `enqueueApplyForManagedCluster` from
@@ -195,10 +206,10 @@ progress when earlier rows keep failing.
 
 **Scheduled entry points:**
 
-| Runtime | Tick                                                                                                                                                                                            | DB client                                                                  |
-| ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
-| Workers | existing cron (`workers.ts` `scheduled()` → `runOfflineSweep`) piggybacks one bounded batch on the **already-open** Hyperdrive client after `runSystemReconcileSweep`                           | reuse; never a second client                                               |
-| Deno    | `startDenoServer` (`src/platform/deno/server.ts`, covers `deno.ts` / `deno-dev.ts`) — first Deno-side scheduled surface besides cell maintain; `LEAF_RENEWAL_SWEEP_INTERVAL_MS` (5 min), overlap-guarded | **fresh** `createDenoDb()` per tick, always `endDbConnection` in `finally` |
+| Runtime | Tick                                                                                                                                                                                                     | DB client                                                                  |
+| ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| Workers | existing cron (`workers.ts` `scheduled()` → `runOfflineSweep`) piggybacks one bounded batch on the **already-open** Hyperdrive client after `runSystemReconcileSweep`                                    | reuse; never a second client                                               |
+| Deno    | `startDenoServer` (`src/platform/deno/server.ts`, covers `deno.ts` / `deno-dev.ts`) — first Deno-side scheduled surface besides cell maintain; `LEAF_RENEWAL_SWEEP_INTERVAL_MS` (1 min), overlap-guarded | **fresh** `createDenoDb()` per tick, always `endDbConnection` in `finally` |
 
 Module: `src/client/tls/leaf-renewal-sweep.ts`. `GET /tls/ca` exposes
 `leafHealth: { dueCount, staleCount, caGeneration, caNotAfter }` via one org-scoped pass
@@ -215,7 +226,7 @@ its record (`/tls/ca/leaves`, `leaf-routes.ts`). `leaf.stale_cause` says which: 
 (`DEPLOYED_LEAF_RESET` in `features/tls/leaf-tracking.ts`).
 
 **Retiring is guarded and has a deadline.** `POST /tls/ca/retire` also refuses with
-409 `ca_leaves_outstanding` while an *active* leaf is still signed by an older
+409 `ca_leaves_outstanding` while an _active_ leaf is still signed by an older
 generation, or a leaf marked stale because its server was offline has a connected server again (the sweep is about to renew it). Rotations already waiting to be retired when `retire_by` was added got a 30 day deadline from the migration. When fan-out finishes the rotation gets `retire_by` (30 days,
 `CA_RETIRE_GRACE_DAYS`); once it has passed, the sweep tick retires the previous
 generation by itself, but only if every live target converged and no active leaf is
@@ -227,3 +238,9 @@ waits on.
 
 Never write bare "the CA" in code comments, docs, API copy, or UI strings —
 always **Platform CA** or **Organization CA**.
+
+**Certificates ordered by a server over the HTTP proof.** The panel's private
+state for such a row (`metadata.httpCert`) and the rule for accepting its pair live
+in `src/features/tls/http-issuance/`; the public marker in `metadata.acme` is
+`managedBy: 'server'` with `challengeType: 'http-01'`. Details: the "Certificate
+orders placed by a server" section of `src/daemon/AGENTS.md`.

@@ -3,7 +3,7 @@
  * cell. Ordering and gating stay in `planner.ts` / `run.ts` / `transitions.ts`.
  */
 import type { UpdateProgressStage } from '../../contracts/cell-protocol.ts'
-import { installScriptHostForChannel } from '../install/daemon-install-command.ts'
+import { installScriptUrlForChannel } from '../install/daemon-install-command.ts'
 import {
   readRestartNote,
   readRestartPending,
@@ -63,7 +63,7 @@ export function isRunnableRollbackCommand(command: string): boolean {
  */
 export function daemonOnlyUpdateCommand(manifestUrl: string | null, channel?: string): string {
   const pin = manifestUrl?.trim() ? manifestUrl.trim() : '<pinned daemon manifest url>'
-  return `curl -fsSL ${installScriptHostForChannel(
+  return `curl -fsSL ${installScriptUrlForChannel(
     channel
   )} | TURBOPANEL_DAEMON_ONLY=1 TURBOPANEL_MANIFEST_URL=${pin} sh`
 }

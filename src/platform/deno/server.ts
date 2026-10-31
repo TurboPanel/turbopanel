@@ -68,6 +68,9 @@ import {
   runLeafRenewalSweepTick,
 } from '../../client/tls/leaf-renewal-sweep.ts'
 import { runHostingLetsEncryptSweepTick } from '../../client/hostings/letsencrypt-sweep.ts'
+import { buildDnsCertContext } from '../../client/tls/dns-certificate-context.ts'
+import { runHttpIssuanceSweepTick } from '../../client/tls/http-issuance-sweep.ts'
+import { runDnsCertificateSweepTick } from '../../features/tls/dns-certificates/sweep.ts'
 import {
   assertPasswordHasherAvailable,
   configureArgon2idWorkFactor,
@@ -489,26 +492,32 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
   const githubWebhookRate = resolveGithubWebhookRateLimit()
   const gitlabWebhookRate = resolveGitlabWebhookRateLimit()
   const inboundLimits = resolveDaemonWsInboundLimits()
+  // Daemon limiters fall back to a process-local bucket when Redis errors:
+  // fail-open made enroll, session and connect unlimited during an outage,
+  // and fail-closed would lock enrolled daemons out over a broker blip.
   const daemonConnectLimiter = createRedisRateLimiter({
     client: daemonCellRegistry.client,
     limit: connectRate.limit,
     periodSeconds: connectRate.periodSeconds,
+    onError: 'local',
   })
   const daemonRestLimiter = createRedisRateLimiter({
     client: daemonCellRegistry.client,
     limit: restRate.limit,
     periodSeconds: restRate.periodSeconds,
+    onError: 'local',
   })
   const daemonMetricsLimiter = createRedisRateLimiter({
     client: daemonCellRegistry.client,
     limit: metricsRate.limit,
     periodSeconds: metricsRate.periodSeconds,
+    onError: 'local',
   })
   // Inbound GitHub webhooks: keyed per peer address, not per server, because the
   // caller has no identity until its HMAC has been checked (see
   // `githubWebhookRateLimitKey`). Redis eval failures fall through to a
   // process-local token bucket so a broker hiccup still throttles per peer
-  // instead of making ingress unlimited (daemon connect/REST stay fail-open).
+  // instead of making ingress unlimited (the daemon limiters above do the same).
   const githubWebhookLimiter = createRedisRateLimiter({
     client: daemonCellRegistry.client,
     limit: githubWebhookRate.limit,
@@ -573,6 +582,9 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     dataEncryptionSecrets,
   })
 
+  // One reader for the CA route and the install command, so the fingerprints
+  // in a command always describe the document the installer downloads.
+  const readPlatformCaPem = () => Deno.readTextFile(resolveInstanceTlsCaServePath())
   const app = createApp({
     db,
     emailQueue,
@@ -602,6 +614,7 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     // Must be registered inside createApp() *before* GET /api/health, or the
     // health handler never sees TURBOPANEL_REVISION from systemd.
     getPlatformEnv: () => Deno.env.toObject(),
+    readPlatformCaPem,
   })
   // Daemon + developer registrars are generic over the env, so the app's own
   // `AppEnv` typing carries through — no cast.
@@ -625,7 +638,7 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     tlsPublic: resolvePublicInstanceTls(Deno.env.toObject()),
     platformCaLeafPresented: async (hostname: string) =>
       hostnamePresentsPlatformCaLeaf(hostname, await listInstanceHostnames(db)),
-    readPlatformCaPem: () => Deno.readTextFile(resolveInstanceTlsCaServePath()),
+    readPlatformCaPem,
   })
   // Unversioned, session-free surface: mounted on the top-level app next to the
   // daemon API rather than under CLIENT_API_PREFIX, and authenticating itself.
@@ -870,7 +883,7 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
   // First Deno-side scheduled surface besides cell maintain: Organization CA
   // leaf renewal. Fresh createDenoDb() per tick, always endDbConnection in
   // finally — do not reuse the process-long `db` (same discipline as Workers
-  // Hyperdrive). Overlap-guarded; cadence is minutes, not the 60s cell tick.
+  // Hyperdrive). Overlap-guarded; one minute, like the hosted cron.
   let leafRenewalInFlight = false
   const leafRenewalTimer = setInterval(() => {
     if (leafRenewalInFlight) return
@@ -890,6 +903,20 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
         // The secrets let a newly pinned certificate go out at once.
         await runHostingLetsEncryptSweepTick(tickDb, {
           apply: { commandQueue, secretsConfig, dataEncryptionSecrets },
+        })
+        // DNS-validated certificates: the next step of each order, upkeep, renewals.
+        await runDnsCertificateSweepTick(
+          buildDnsCertContext(tickDb, {
+            secrets: dataEncryptionSecrets,
+            push: { commandQueue, secretsConfig },
+          })
+        )
+        // Certificates a serving server orders at the panel's request.
+        await runHttpIssuanceSweepTick(tickDb, {
+          registry: daemonCellRegistry,
+          push: { commandQueue, secretsConfig },
+          secrets: dataEncryptionSecrets,
+          env: runtimeEnv,
         })
       } catch (err) {
         logWarn('tls-leaf-renewal', `sweep error: ${String(err)}`)

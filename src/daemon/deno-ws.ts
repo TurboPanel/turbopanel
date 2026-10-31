@@ -28,7 +28,11 @@ import type { DaemonJwtKeyring } from './authn/daemon-jwt-keyring.ts'
 import { tryAssignColocatedDaemonToInstalledOrganization } from '../client/authn/install-state.ts'
 import { emitCertificateRenewalFailed } from '../features/notifications/certificate-alerts.ts'
 import { handleAcmeIssuanceEvent } from '../client/tls/acme-issuance-event.ts'
-import { recordInstanceAcmeIssuance } from '../features/install/instance-hostnames.ts'
+import { handleHttpIssuanceInbound } from '../features/tls/http-issuance/events.ts'
+import {
+  type InstanceAcmeIssuanceMessage,
+  recordInstanceAcmeIssuanceFromServer,
+} from './instance-acme-inbound.ts'
 import {
   persistDaemonReachedTarget,
   persistUpgradeOutcome,
@@ -43,7 +47,7 @@ import { getDb } from '../db/connection.ts'
 import type { Db } from '../db/connection.ts'
 import { compatLogError, compatLogWarn } from '../lib/log-compat.ts'
 import { forEachSequential } from '../lib/sequential.ts'
-import { cellTrace, daemonCellLog } from '../lib/logger.ts'
+import { cellTrace, daemonCellLog, logWarn } from '../lib/logger.ts'
 import {
   onDaemonConnected,
   onDaemonDisconnected,
@@ -63,7 +67,7 @@ import { touchServerMetadata } from '../features/servers/server-registry.ts'
 import { verifyDaemonJwt } from './authn/daemon-jwt.ts'
 import {
   getServerDaemonStateByServerId,
-  isDaemonKeyActive,
+  isCurrentActiveDaemonKey,
 } from '../features/servers/server-identity-db.ts'
 import type { CommandQueue } from '../features/commands/queue.ts'
 import type { RateLimiter } from './rate-limit/contracts.ts'
@@ -79,6 +83,11 @@ import {
 } from '../features/backups/copy-report.ts'
 import { handleManagedHaEvent } from '../features/managed/ha-event.ts'
 import { handleManagedHealthReport } from '../features/managed/health-report.ts'
+import {
+  FabricPeerReportThrottle,
+  handleFabricPeersReport,
+  takeFabricPeersReport,
+} from '../features/fabric/peer-report.ts'
 import {
   resolveAutoFailoverFromDenoEnv,
   resolveFreshStandbyMarginMsFromDenoEnv,
@@ -117,7 +126,9 @@ function assignColocatedDaemonOnConnect(db: Db, registry: DaemonCellRegistry): v
 
 /**
  * After license invalidation, Redis purge cannot close the live socket — reject
- * the next inbound frame when the JWT kid no longer matches an active key.
+ * the next inbound frame when the JWT kid no longer matches an active key. The
+ * upgrade runs the same check first, so this one only catches a key revoked
+ * while the socket was already open.
  */
 async function assertDaemonKeyStillActive(
   db: Db,
@@ -126,7 +137,7 @@ async function assertDaemonKeyStillActive(
   ws: WSContext<WebSocket>
 ): Promise<boolean> {
   const daemonRow = await getServerDaemonStateByServerId(db, serverId)
-  if (daemonRow?.key.id !== keyId || !isDaemonKeyActive(daemonRow.key)) {
+  if (!isCurrentActiveDaemonKey(daemonRow, keyId)) {
     cellTrace('inbound-key-revoked', { serverId, keyId })
     ws.close(DAEMON_WS_POLICY_VIOLATION_CLOSE, 'key_revoked')
     return false
@@ -459,6 +470,32 @@ async function handleDaemonManagedHealthReportInbound(params: {
   await cell.recordInbound({ connectionId, at: message.at })
 }
 
+/**
+ * Process-wide "once per 60 s per server, unless a peer's health class
+ * changed" gate for `fabric-peers-report`.
+ */
+const fabricPeerReportThrottle = new FabricPeerReportThrottle()
+
+async function handleDaemonFabricPeersReportInbound(params: {
+  cell: ReturnType<DaemonCellRegistry['getCell']>
+  db: Db
+  connectionId: string | undefined
+  message: Extract<DaemonMessage, { type: 'fabric-peers-report' }>
+  reporterServerId: string
+}): Promise<void> {
+  const { cell, db, connectionId, message } = params
+  if (
+    takeFabricPeersReport(fabricPeerReportThrottle, params.reporterServerId, message, Date.now())
+  ) {
+    await handleFabricPeersReport(db, {
+      reporterServerId: params.reporterServerId,
+      peers: message.peers,
+      observedAt: message.observedAt,
+    })
+  }
+  await cell.recordInbound({ connectionId, at: message.at })
+}
+
 async function handleAcmeIssuanceInbound(params: {
   cell: ReturnType<DaemonCellRegistry['getCell']>
   db: Db
@@ -489,18 +526,13 @@ async function handleAcmeIssuanceInbound(params: {
 async function handleInstanceAcmeIssuanceInbound(params: {
   cell: ReturnType<DaemonCellRegistry['getCell']>
   db: Db
+  serverId: string
   connectionId: string | undefined
-  message: Extract<DaemonMessage, { type: 'instance-acme-issuance-event' }>
+  message: InstanceAcmeIssuanceMessage
 }): Promise<void> {
-  const { cell, db, connectionId, message } = params
+  const { cell, db, serverId, connectionId, message } = params
   await cell.recordInbound({ connectionId, at: message.at })
-  await recordInstanceAcmeIssuance(db, {
-    hostname: message.hostname,
-    ok: message.ok,
-    at: message.at,
-    ...(message.errorMessage ? { errorMessage: message.errorMessage } : {}),
-    ...(message.notAfter ? { notAfter: message.notAfter } : {}),
-  })
+  await recordInstanceAcmeIssuanceFromServer(db, serverId, message)
 }
 
 async function handleDaemonTopologyReportInbound(params: {
@@ -698,6 +730,15 @@ async function dispatchDaemonInboundByType(params: DaemonInboundDispatch): Promi
         reporterServerId: serverId,
       })
       return
+    case 'fabric-peers-report':
+      await handleDaemonFabricPeersReportInbound({
+        cell,
+        db,
+        connectionId,
+        message,
+        reporterServerId: serverId,
+      })
+      return
     case 'topology-report':
       await handleDaemonTopologyReportInbound({
         cell,
@@ -717,10 +758,17 @@ async function dispatchDaemonInboundByType(params: DaemonInboundDispatch): Promi
         dataEncryptionSecrets: params.dataEncryptionSecrets,
       })
       return
+    case 'acme-issue-event':
+    case 'acme-proof-forward-ready':
+    case 'acme-proof-forward-failed':
+      await cell.recordInbound({ connectionId, at: message.at })
+      await handleHttpIssuanceInbound(db, serverId, message)
+      return
     case 'instance-acme-issuance-event':
       await handleInstanceAcmeIssuanceInbound({
         cell,
         db,
+        serverId,
         connectionId,
         message,
       })
@@ -863,22 +911,38 @@ export function registerDaemonWebSocket<E extends Env>(
       return c.json({ ok: false, error: 'Daemon cell registry unavailable' }, 503)
     }
 
-    return upgradeWebSocket((c) => {
-      // CF-Connecting-IP is honoured only when the immediate peer is a trusted
-      // local proxy, so a Cloudflare Tunnel in front of the instance reports
-      // the daemon's real address while a daemon dialling Caddy directly
-      // cannot forge one. See `peer-address.ts`.
-      const peer = resolvePeerAddress(
-        {
-          realIp: c.req.header('x-real-ip'),
-          forwardedFor: c.req.header('x-forwarded-for'),
-          cfConnectingIp: c.req.header('cf-connecting-ip'),
-        },
-        {
-          runtime: 'deno',
-          trustedProxyCidrs: options.trustedProxyCidrs ?? trustedProxyCidrs(),
-        }
-      )
+    // CF-Connecting-IP is honoured only when the immediate peer is a trusted
+    // local proxy, so a Cloudflare Tunnel in front of the instance reports
+    // the daemon's real address while a daemon dialling Caddy directly
+    // cannot forge one. See `peer-address.ts`.
+    const peer = resolvePeerAddress(
+      {
+        realIp: c.req.header('x-real-ip'),
+        forwardedFor: c.req.header('x-forwarded-for'),
+        cfConnectingIp: c.req.header('cf-connecting-ip'),
+      },
+      {
+        runtime: 'deno',
+        trustedProxyCidrs: options.trustedProxyCidrs ?? trustedProxyCidrs(),
+      }
+    )
+
+    // A valid JWT is not enough to open a socket: it outlives a revoke by up
+    // to its full lifetime. Without this, a revoked host reconnected with its
+    // cached token, and the open handler re-created its lease, marked it
+    // online and pushed its capability plan before the first inbound frame
+    // was checked. Hosted refuses at the same point (`workers-ws.ts`).
+    //
+    // One case passes through: a co-located daemon whose server row is gone.
+    // The open handler closes it with 4401 `server row missing`, which is the
+    // signal that makes it enroll again.
+    const daemonState = await getServerDaemonStateByServerId(db, payload.sub)
+    const colocatedRowMissing = daemonState === null && peer?.address === undefined
+    if (!colocatedRowMissing && !isCurrentActiveDaemonKey(daemonState, payload.kid)) {
+      return c.json({ ok: false, error: 'forbidden' }, 403)
+    }
+
+    return upgradeWebSocket(() => {
       const remoteAddress = peer?.address
       const identityAddress = remoteAddress ?? DIRECT_ATTACH_SENTINEL
       const connectedAt = new Date().toISOString()
@@ -951,6 +1015,12 @@ export function registerDaemonWebSocket<E extends Env>(
           return
         }
         const message = validated.message
+        for (const note of validated.notes ?? []) {
+          logWarn(
+            'daemon-cell',
+            `inbound-note serverId=${payload.sub} conn=${connectionId} ${note}`
+          )
+        }
 
         if (!(await keyStillActive(ws))) return
 
@@ -975,6 +1045,24 @@ export function registerDaemonWebSocket<E extends Env>(
 
       return {
         async onOpen(_event, ws) {
+          // Before attaching, so a co-located daemon whose row is gone (the one
+          // case the upgrade lets through without a current key) never takes a
+          // lease, joins the online set or reclaims queued work.
+          if (identityAddress === DIRECT_ATTACH_SENTINEL) {
+            const daemonRow = colocatedRowMissing
+              ? null
+              : await getServerDaemonStateByServerId(db, payload.sub)
+            if (!daemonRow) {
+              compatLogWarn(
+                'ws',
+                `colocated daemon ${payload.sub} has no postgres row; forcing re-enroll`
+              )
+              pumpControl.abort = true
+              ws.close(4401, 'server row missing')
+              return
+            }
+          }
+
           const cell = registry.getCell(payload.sub)
           try {
             const attached = await cell.attachDaemonSocket({
@@ -988,19 +1076,6 @@ export function registerDaemonWebSocket<E extends Env>(
             daemonCellLog('WARN', payload.sub, undefined, `daemon attach failed: ${String(err)}`)
             ws.close(1013, 'attach failed')
             return
-          }
-
-          if (identityAddress === DIRECT_ATTACH_SENTINEL) {
-            const daemonRow = await getServerDaemonStateByServerId(db, payload.sub)
-            if (!daemonRow) {
-              compatLogWarn(
-                'ws',
-                `colocated daemon ${payload.sub} has no postgres row; forcing re-enroll`
-              )
-              pumpControl.abort = true
-              ws.close(4401, 'server row missing')
-              return
-            }
           }
 
           const geo = resolveSelfHostedGeo(remoteAddress)

@@ -18,6 +18,7 @@ import {
   classifyTlsInsertConflict,
   createFailure,
   isCreateTlsFailure,
+  plainAcmeNote,
   isOrganizationCaExistsCode,
   isTlsUuid,
   materialFromOrganizationCa,
@@ -345,4 +346,101 @@ test('buildCreateTlsMaterial dispatches by source', async () => {
     'org-1'
   )
   assertEquals(isCreateTlsFailure(selfSigned), false)
+})
+
+test('toPublicTlsRow sends null dates for a row with no certificate yet and keeps real dates', () => {
+  const base = {
+    id: '11111111-1111-4111-8111-111111111111',
+    name: null,
+    organizationId: '22222222-2222-4222-8222-222222222222',
+    fingerprintSha256: null,
+    options: null,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-02T00:00:00.000Z',
+    metadata: {
+      dnsNames: ['app.example.com'],
+      hasWildcard: false,
+      notBefore: new Date(0).toISOString(),
+      subject: '',
+      issuer: '',
+    },
+  }
+  const pending = toPublicTlsRow({
+    ...base,
+    source: 'upload',
+    status: 'pending',
+    notAfter: new Date(0).toISOString(),
+    certificatePem: null,
+  })
+  assertEquals(pending?.metadata.notAfter, null)
+  assertEquals(pending?.metadata.notBefore, null)
+  const issued = toPublicTlsRow({
+    ...base,
+    source: 'upload',
+    status: 'ready',
+    notAfter: '2099-01-01T00:00:00.000Z',
+    certificatePem: '-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n',
+    metadata: { ...base.metadata, notBefore: '2026-01-01T00:00:00.000Z' },
+  })
+  assertEquals(issued?.metadata.notAfter, '2099-01-01T00:00:00.000Z')
+  assertEquals(issued?.metadata.notBefore, '2026-01-01T00:00:00.000Z')
+})
+
+test('toPublicTlsRow never carries the private state of a server-ordered certificate', () => {
+  const shown = toPublicTlsRow({
+    id: '11111111-1111-4111-8111-111111111111',
+    name: 'Leaf',
+    source: 'lets_encrypt',
+    organizationId: '22222222-2222-4222-8222-222222222222',
+    status: 'automatic',
+    notAfter: '2099-01-01T00:00:00.000Z',
+    fingerprintSha256: 'a'.repeat(64),
+    metadata: {
+      dnsNames: ['app.example.com'],
+      hasWildcard: false,
+      notBefore: '2026-01-01T00:00:00.000Z',
+      subject: 'CN=app.example.com',
+      issuer: 'CN=app.example.com',
+      acme: { managedBy: 'server', challengeType: 'http-01' },
+      httpCert: {
+        issuingServerId: 'server-secret-id',
+        requestId: 'req_secret',
+        startedAt: '2026-01-01T00:00:00.000Z',
+        startByAt: '2026-01-01T01:00:00.000Z',
+      },
+    },
+    options: {},
+    certificatePem: null,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-02T00:00:00.000Z',
+  })
+  const text = JSON.stringify(shown)
+  assertEquals(text.includes('httpCert'), false)
+  assertEquals(text.includes('req_secret'), false)
+  assertEquals(text.includes('server-secret-id'), false)
+  assertEquals(shown?.metadata.acme?.managedBy, 'server')
+})
+
+test('an issuance note reads in plain words and is dropped once a certificate was issued after it', () => {
+  const raw = 'The operation was aborted due to timeout'
+  const failing = plainAcmeNote({
+    acme: { lastError: raw, lastFailedAt: '2026-10-30T10:00:00.000Z' },
+  })
+  assertEquals(failing.acme?.lastError?.startsWith('This name did not answer in time'), true)
+  const settled = plainAcmeNote({
+    acme: {
+      lastError: raw,
+      lastFailedAt: '2026-10-30T10:00:00.000Z',
+      lastIssuedAt: '2026-10-30T11:00:00.000Z',
+    },
+  })
+  assertEquals(settled.acme?.lastError, undefined)
+  const renewalFailed = plainAcmeNote({
+    acme: {
+      lastError: 'DNS problem: NXDOMAIN',
+      lastFailedAt: '2026-10-30T12:00:00.000Z',
+      lastIssuedAt: '2026-10-30T11:00:00.000Z',
+    },
+  })
+  assertEquals(renewalFailed.acme?.lastError, 'DNS problem: NXDOMAIN')
 })

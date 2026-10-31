@@ -4,6 +4,7 @@ import type { DnsLookup } from './hosting-dns-check.ts'
 import {
   type LetsEncryptHostingRecord,
   type LetsEncryptStore,
+  nextLetsEncryptCheckAt,
   requestLetsEncrypt,
   retryPendingLetsEncrypt,
 } from './use-letsencrypt.ts'
@@ -14,8 +15,13 @@ const NOW = new Date('2026-10-04T12:00:00.000Z')
 const SERVER_IP = '203.0.113.7'
 
 type Saved = Parameters<LetsEncryptStore['saveHosting']>
-function fakeStore(existing: string | null = null, otherWeb: string[] = []) {
+function fakeStore(
+  existing: string | null = null,
+  otherWeb: string[] = [],
+  pinnedNow: string | null = null
+) {
   const saved: Saved[] = []
+  const released: string[][] = []
   const created: string[][] = []
   const locked: string[] = []
   const store: LetsEncryptStore = {
@@ -30,12 +36,17 @@ function fakeStore(existing: string | null = null, otherWeb: string[] = []) {
       created.push([...names])
       return Promise.resolve({ id: 'tls-new', created: true })
     },
+    pinnedCertificateId: () => Promise.resolve(pinnedNow),
+    releaseCertificates: (ids) => {
+      released.push([...ids])
+      return Promise.resolve()
+    },
     saveHosting: (id, patch) => {
       saved.push([id, patch])
       return Promise.resolve()
     },
   }
-  return { store, saved, created, locked }
+  return { store, saved, created, locked, released }
 }
 
 const pointing: DnsLookup = () => Promise.resolve([SERVER_IP])
@@ -108,6 +119,40 @@ test('DNS ready: creates the certificate row, pins it, clears any waiting reques
   assertEquals(patch, { tlsId: 'tls-new', metadata: { keep: 1 }, pendingAt: null })
   // Found and pinned under one lock, so no cleanup can remove the row in between.
   assertEquals(locked, ['h1'])
+})
+
+test('moving to the certificate for the new names releases the one for the old names', async () => {
+  const { store, released } = fakeStore(null, [], 'tls-old')
+  const out = await requestLetsEncrypt({
+    store,
+    lookup: pointing,
+    now: NOW,
+    hosting: record({ tlsId: 'tls-old' }),
+    acmeEnabled: true,
+  })
+  assertEquals(out.ok && out.outcome === 'pinned' && out.tlsId, 'tls-new')
+  assertEquals(released, [['tls-old']])
+})
+
+test('nothing is released when the hosting keeps its certificate or had none', async () => {
+  const same = fakeStore('tls-old', [], 'tls-old')
+  await requestLetsEncrypt({
+    store: same.store,
+    lookup: pointing,
+    now: NOW,
+    hosting: record({ tlsId: 'tls-old' }),
+    acmeEnabled: true,
+  })
+  assertEquals(same.released, [])
+  const none = fakeStore()
+  await requestLetsEncrypt({
+    store: none.store,
+    lookup: pointing,
+    now: NOW,
+    hosting: record(),
+    acmeEnabled: true,
+  })
+  assertEquals(none.released, [])
 })
 
 test('clicking again reuses the existing certificate row', async () => {
@@ -333,4 +378,51 @@ test('a www name that does not point here yet keeps the request waiting and is n
     dns?.hostnames.map((h) => h.hostname),
     ['shop.example.com', 'www.shop.example.com']
   )
+})
+
+test('a waiting request is checked again after a wait that doubles up to an hour', async () => {
+  assertEquals(nextLetsEncryptCheckAt(NOW, 1), new Date(NOW.getTime() + 5 * 60_000).toISOString())
+  assertEquals(nextLetsEncryptCheckAt(NOW, 3), new Date(NOW.getTime() + 20 * 60_000).toISOString())
+  assertEquals(nextLetsEncryptCheckAt(NOW, 9), new Date(NOW.getTime() + 60 * 60_000).toISOString())
+  const { store, saved } = fakeStore()
+  const out = await requestLetsEncrypt({
+    store,
+    lookup: nowhere,
+    now: NOW,
+    hosting: record(),
+    acmeEnabled: true,
+  })
+  // A button press checks at once but does not count toward the growing wait.
+  assertEquals(out.ok && out.outcome === 'waiting' && out.dns.checks, 0)
+  const again = await requestLetsEncrypt({
+    store,
+    lookup: nowhere,
+    now: NOW,
+    scheduled: true,
+    hosting: record({ metadata: saved[0]![1].metadata, pendingAt: saved[0]![1].pendingAt }),
+    acmeEnabled: true,
+  })
+  assertEquals(again.ok && again.outcome === 'waiting' && again.dns.checks, 1)
+  assertEquals(
+    again.ok && again.outcome === 'waiting' && again.dns.nextCheckAt,
+    nextLetsEncryptCheckAt(NOW, 1)
+  )
+})
+
+test('port 80 closed: nothing is pinned, and the request waits with the reason', async () => {
+  const { store, saved } = fakeStore()
+  const out = await requestLetsEncrypt({
+    store,
+    lookup: pointing,
+    probes: {
+      port80: () => Promise.resolve({ state: 'closed' as const, error: 'Connection refused' }),
+    },
+    now: NOW,
+    hosting: record(),
+    acmeEnabled: true,
+  })
+  assertEquals(out.ok && out.outcome, 'waiting')
+  assertEquals(saved[0]![1].tlsId, undefined)
+  const entry = out.ok && out.outcome === 'waiting' ? out.dns.hostnames[0] : undefined
+  assertEquals(entry?.port80, 'closed')
 })

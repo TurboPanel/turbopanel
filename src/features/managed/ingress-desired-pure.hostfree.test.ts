@@ -185,6 +185,8 @@ test('login helpers', () => {
   assertEquals(principalDefaultDatabase(['', 'app']), 'app')
   assertEquals(buildIngressUserRole('root'), 'root')
   assertEquals(buildIngressUserRole('user'), 'user')
+  // The backup login is an ordinary front-door login (a tool login, so primary only).
+  assertEquals(buildIngressUserRole('backup'), 'user')
   assertEquals(buildIngressUserRole('replication'), 'user')
 })
 

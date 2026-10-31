@@ -295,6 +295,9 @@ async function enqueueTeardownStop(
       ...(retirePrincipals.length > 0
         ? { retirePrincipals: retirePrincipals.map((username) => ({ username })) }
         : {}),
+      // The environment is gone, so its compose folder goes too, with whatever a
+      // relative bind wrote there. A Destroy or a drained server never sets this.
+      removeDeploymentDir: true,
     },
     expiresAt: new Date(Date.now() + 120_000).toISOString(),
   })

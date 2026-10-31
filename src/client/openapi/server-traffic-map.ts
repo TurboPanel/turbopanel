@@ -80,6 +80,16 @@ export const serverTrafficMapSchemas = {
                 description:
                   'True when this network was used only because no network that is up could carry the traffic.',
               },
+              untrustedPublic: {
+                type: 'boolean',
+                description:
+                  'Present and true when the servers share only an untrusted network and the traffic fell to the public address (TLS only) because TurboFabric could not carry it.',
+              },
+              tunnelDown: {
+                type: 'boolean',
+                description:
+                  'Present and true when the TurboFabric tunnel has no recent handshake; the address is still the tunnel address.',
+              },
             },
           },
           { type: 'null' },
@@ -88,7 +98,7 @@ export const serverTrafficMapSchemas = {
       error: {
         type: ['string', 'null'],
         description:
-          'Set when no path exists: `private_path_unavailable`, `private_family_mismatch`, `failover_requires_trusted_datacenter`, `datacenter_ip_required`.',
+          'Set when no path exists: `private_path_unavailable`, `private_family_mismatch`, `untrusted_network_needs_fabric`, `datacenter_ip_required`.',
       },
       onChosenNetwork: {
         type: 'boolean',

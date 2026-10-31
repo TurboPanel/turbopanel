@@ -158,6 +158,9 @@ const DAEMON_COMMAND_TYPES = [
   'server.backups.reconcile',
   'server.backups.test-target',
   'server.folders.remove',
+  'server.tunnel.routes',
+  'server.tunnel.connectors',
+  'server.tunnel.status',
   'environment.deploy',
   'environment.lifecycle',
   'environment.stop',
@@ -2904,6 +2907,17 @@ test('parseFabricReconcileResult accepts skipped, reconciled, and teardown shape
   })
 })
 
+test('parseFabricReconcileResult carries warnings and refuses malformed ones', () => {
+  const warning = 'LAN route 10.194.0.0/16 via 10.10.3.86 not installed: eth0 already routes it'
+  assertEquals(
+    parseFabricReconcileResult({ summary: 'TurboFabric reconciled', warnings: [warning] }).warnings,
+    [warning]
+  )
+  for (const warnings of ['one', [''], [7], Array.from({ length: 65 }, () => 'x')]) {
+    assertThrows(() => parseFabricReconcileResult({ summary: 'TurboFabric reconciled', warnings }))
+  }
+})
+
 test('parseFabricReconcileResult carries the peer interface and refuses a bad name', () => {
   const peer = (iface: unknown) => ({
     summary: 'TurboFabric reconciled',
@@ -4011,6 +4025,24 @@ test('parseEnvironmentStopPayload round-trips siteReleases and rejects unsafe se
   )
 })
 
+test('parseEnvironmentStopPayload keeps removeDeploymentDir only when it is true', () => {
+  const base = {
+    environmentId: 'env-1',
+    projectId: 'proj-1',
+    projectName: 'tp-demo',
+  }
+  assertEquals(parseEnvironmentStopPayload({ ...base, removeDeploymentDir: true }), {
+    ...base,
+    removeDeploymentDir: true,
+  })
+  for (const removeDeploymentDir of [false, 'true', 1, undefined]) {
+    assertEquals(
+      'removeDeploymentDir' in parseEnvironmentStopPayload({ ...base, removeDeploymentDir }),
+      false
+    )
+  }
+})
+
 test('parseEnvironmentStopPayload round-trips retirePrincipals and rejects unsafe names', () => {
   const base = {
     environmentId: 'env-1',
@@ -4783,8 +4815,8 @@ test('parseEnvironmentDeployResult keeps well-formed releases and drops junk row
           releaseId: 'rel-1',
           commitSha: 'abc123',
           imageTag: 'web:abc123',
-          railpackFrontendVersion: '0.1.0',
-          railpackPlanVersion: '0.2.0',
+          builderFrontendVersion: '0.1.0',
+          builderPlanVersion: '0.2.0',
         },
         { composeServiceName: 'incomplete' },
         'skip-me',
@@ -4799,11 +4831,38 @@ test('parseEnvironmentDeployResult keeps well-formed releases and drops junk row
           releaseId: 'rel-1',
           commitSha: 'abc123',
           imageTag: 'web:abc123',
+          builderFrontendVersion: '0.1.0',
+          builderPlanVersion: '0.2.0',
+        },
+      ],
+    }
+  )
+  // A daemon that has not moved yet reports the old field names; they come out
+  // under the new ones.
+  assertEquals(
+    parseEnvironmentDeployResult({
+      projectName: 'tp-demo',
+      releases: [
+        {
+          composeServiceName: 'web',
+          serviceId: 'svc-web',
+          releaseId: 'rel-1',
+          commitSha: 'abc123',
           railpackFrontendVersion: '0.1.0',
           railpackPlanVersion: '0.2.0',
         },
       ],
-    }
+    })?.releases,
+    [
+      {
+        composeServiceName: 'web',
+        serviceId: 'svc-web',
+        releaseId: 'rel-1',
+        commitSha: 'abc123',
+        builderFrontendVersion: '0.1.0',
+        builderPlanVersion: '0.2.0',
+      },
+    ]
   )
   assertEquals(
     parseEnvironmentDeployResult({
@@ -4958,6 +5017,28 @@ test('parseManagedApplyPayload reads an optional credential grantMode', () => {
       }),
     Error,
     'Invalid managed.apply credentials grantMode'
+  )
+})
+
+test('parseManagedApplyPayload reads an optional backup credential kind', () => {
+  const base = VALID_MANAGED_APPLY.credentials[0]
+  assertEquals(
+    parseManagedApplyPayload({ ...VALID_MANAGED_APPLY, credentials: [base] }).credentials[0]?.kind,
+    undefined
+  )
+  const parsed = parseManagedApplyPayload({
+    ...VALID_MANAGED_APPLY,
+    credentials: [{ ...base, kind: 'backup' }],
+  })
+  assertEquals(parsed.credentials[0]?.kind, 'backup')
+  assertThrows(
+    () =>
+      parseManagedApplyPayload({
+        ...VALID_MANAGED_APPLY,
+        credentials: [{ ...base, kind: 'admin' }],
+      }),
+    Error,
+    'Invalid managed.apply credentials kind'
   )
 })
 
@@ -6691,6 +6772,14 @@ test('parseEnvironmentDeployPayload covers sourceMaterial cloneUrl, railpack, an
     env: { NODE_ENV: 'production' },
   })
 
+  // The new value parses too; the panel does not send it yet, but it must not
+  // be refused once the contract phase flips the send.
+  const image = parseEnvironmentDeployPayload({
+    ...NATIVE_APP_BASE,
+    sourceMaterial: [{ ...GITLAB_SOURCE_ENTRY, build: { kind: 'image' } }],
+  })
+  assertEquals(image.sourceMaterial?.[0]?.build, { kind: 'image' })
+
   const staticBuild = parseEnvironmentDeployPayload({
     ...NATIVE_APP_BASE,
     sourceMaterial: [
@@ -7809,4 +7898,51 @@ test('a wal position of 0/0 is rejected, any other well formed position is kept'
   assertEquals(parseWalPosition('00000000/00000000', 1), undefined)
   assertEquals(parseWalPosition('0/1', 1), { lsn: '0/1', timeline: 1 })
   assertEquals(parseWalPosition('1/0', 2), { lsn: '1/0', timeline: 2 })
+})
+
+test('parseCommandPayload and parseCommandResult dispatch server.tunnel.status', () => {
+  assertEquals(parseCommandPayload('server.tunnel.status' as CommandType, {}), {})
+  const result = { pinnedVersion: '2026.5.2', connectors: [] }
+  assertEquals(parseCommandResult('server.tunnel.status' as CommandType, result), result)
+})
+
+test('parseFabricReconcilePayload keeps tunnel and lanRoutes, address optional only with no tunnel', () => {
+  const tunnelless = parseFabricReconcilePayload({
+    enabled: true,
+    tunnel: false,
+    prefix: '10.192.0.0/16',
+    peers: [],
+    lanRoutes: [{ cidr: ' 10.193.0.0/16 ', via: '10.0.0.2' }],
+  })
+  assertEquals(tunnelless, {
+    enabled: true,
+    tunnel: false,
+    prefix: '10.192.0.0/16',
+    peers: [],
+    lanRoutes: [{ cidr: '10.193.0.0/16', via: '10.0.0.2' }],
+  })
+  const base = { enabled: true, prefix: '10.192.0.0/16', peers: [] }
+  const refused: Array<[Record<string, unknown>, string]> = [
+    [base, 'Invalid fabric address'],
+    [{ ...base, tunnel: true }, 'Invalid fabric address'],
+    [{ ...base, tunnel: 'no' }, 'Invalid fabric tunnel'],
+    [{ ...base, tunnel: false, lanRoutes: {} }, 'Invalid fabric lanRoutes'],
+    [{ ...base, tunnel: false, lanRoutes: [null] }, 'Invalid fabric lanRoutes entry'],
+    [
+      { ...base, tunnel: false, lanRoutes: [{ cidr: '10.1.0.0', via: '10.0.0.1' }] },
+      'lanRoutes cidr',
+    ],
+    [{ ...base, tunnel: false, lanRoutes: [{ cidr: '10.1.0.0/24', via: 'x' }] }, 'lanRoutes via'],
+    [
+      {
+        ...base,
+        tunnel: false,
+        peers: [{ publicKey: `${'A'.repeat(43)}=`, allowedIPs: ['10.250.0.2/32'] }],
+      },
+      'a payload with no tunnel',
+    ],
+  ]
+  for (const [value, message] of refused) {
+    assertThrows(() => parseFabricReconcilePayload(value), TypeError, message)
+  }
 })

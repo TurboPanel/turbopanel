@@ -1,0 +1,62 @@
+import { assertEquals, assertThrows } from '@std/assert'
+import { parseTunnelStatusPayload, parseTunnelStatusResult } from './tunnel-status.ts'
+
+/**
+ * Jest/Mocha-shaped alias for {@link Deno.test}.
+ *
+ * Sonar typescript:S2187 only recognizes `test()` / `it()` / `describe()` and
+ * reports Deno suites as empty; keep this alias so analysis sees real tests.
+ */
+const test = Deno.test.bind(Deno)
+
+const ID = '0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d'
+const GOOD: Record<string, unknown> = {
+  pinnedVersion: '2026.5.2',
+  connectors: [
+    { tunnelId: ID, status: 'connected', version: '2026.5.2', slot: 'a' },
+    { tunnelId: 'instance', status: 'stopped', version: '2026.5.0', slot: 'b' },
+  ],
+}
+
+test('server.tunnel.status takes no input', () => {
+  assertEquals(parseTunnelStatusPayload({}), {})
+  assertThrows(() => parseTunnelStatusPayload({ x: 1 }))
+  assertThrows(() => parseTunnelStatusPayload(null))
+  assertThrows(() => parseTunnelStatusPayload([]))
+})
+
+test('server.tunnel.status parses a result, an empty one and how the last update ended', () => {
+  assertEquals(parseTunnelStatusResult(GOOD) as unknown, GOOD)
+  assertEquals(parseTunnelStatusResult({ pinnedVersion: '2026.5.2', connectors: [] }), {
+    pinnedVersion: '2026.5.2',
+    connectors: [],
+  })
+  const last = { outcome: 'rolled-back', at: '2026-10-28T12:00:00.000Z', reason: 'did not connect' }
+  const withLast = {
+    ...GOOD,
+    connectors: [{ ...(GOOD.connectors as Record<string, unknown>[])[0], lastUpdate: last }],
+  }
+  assertEquals(parseTunnelStatusResult(withLast) as unknown, withLast)
+})
+
+test('server.tunnel.status refuses a malformed result', () => {
+  const bad = (patch: Record<string, unknown>) =>
+    assertThrows(() => parseTunnelStatusResult({ ...GOOD, ...patch }))
+  bad({ pinnedVersion: 'latest' })
+  bad({ pinnedVersion: '1'.repeat(40) })
+  bad({ connectors: 'none' })
+  bad({ connectors: Array.from({ length: 601 }, () => (GOOD.connectors as unknown[])[0]) })
+  const one = (patch: Record<string, unknown>) =>
+    bad({ connectors: [{ ...(GOOD.connectors as Record<string, unknown>[])[0], ...patch }] })
+  one({ tunnelId: '../x' })
+  one({ tunnelId: ID.toUpperCase() })
+  one({ status: 'paused' })
+  one({ version: 'v1' })
+  one({ slot: 'c' })
+  one({ slot: undefined })
+  one({ lastUpdate: { outcome: 'paused', at: '2026-10-28T12:00:00Z' } })
+  one({ lastUpdate: { outcome: 'updated', at: 'yesterday' } })
+  one({
+    lastUpdate: { outcome: 'rolled-back', at: '2026-10-28T12:00:00Z', reason: 'x'.repeat(301) },
+  })
+})

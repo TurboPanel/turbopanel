@@ -89,6 +89,31 @@ export const organizationSchemas = {
       temperatureUnit: { type: 'string', enum: ['celsius', 'fahrenheit'] },
     },
   },
+  OrganizationTlsSettingsUpdate: {
+    type: 'object',
+    description: 'At least one key. A key left out keeps its stored value.',
+    minProperties: 1,
+    properties: {
+      acmeEnabled: { type: 'boolean' },
+      acmeContactEmail: {
+        type: ['string', 'null'],
+        maxLength: 254,
+        description:
+          "The one address kept as this organization's Let's Encrypt account contact (central certificate ordering will use it; nothing reads it yet). null or an empty string clears it.",
+      },
+    },
+  },
+  OrganizationTlsSettings: {
+    type: 'object',
+    required: ['acmeEnabled', 'acmeContactEmail'],
+    properties: {
+      acmeEnabled: { type: 'boolean' },
+      acmeContactEmail: {
+        type: ['string', 'null'],
+        description: 'Certificate contact address; null when none is set.',
+      },
+    },
+  },
   OrganizationDeployTimeoutUpdate: {
     type: 'object',
     required: ['deployTimeoutMinutes'],
@@ -207,6 +232,30 @@ export const organizationSchemas = {
         description:
           'Primary environment name, or null to reset to the platform default (production). It is a folder name on the servers, so it follows the environment name rule: at most 32 characters, lowercase letters, digits, hyphens and underscores, not a reserved word. **400** otherwise.',
       },
+    },
+  },
+  OrganizationProjectSettings: {
+    type: 'object',
+    required: ['openEnvironmentSectionByDefault', 'openWorkspaceSectionByDefault'],
+    properties: {
+      openEnvironmentSectionByDefault: {
+        type: 'boolean',
+        description:
+          'Whether the new-project form opens its Environment section (the primary environment name) without being asked. Unset is off.',
+      },
+      openWorkspaceSectionByDefault: {
+        type: 'boolean',
+        description:
+          'Whether the new-project form opens its Workspace section without being asked. Unset is off.',
+      },
+    },
+  },
+  OrganizationProjectSettingsUpdate: {
+    type: 'object',
+    description: 'Send one switch or both; a switch left out keeps its stored value.',
+    properties: {
+      openEnvironmentSectionByDefault: { type: 'boolean' },
+      openWorkspaceSectionByDefault: { type: 'boolean' },
     },
   },
   OrganizationServerCapacity: {
@@ -354,7 +403,58 @@ export const organizationSchemas = {
       enabled: {
         type: 'boolean',
         description:
-          'Whether TurboFabric is on for this organization. Absence of a fabric row is off. Not required for single-engine Docker standalone.',
+          'Whether TurboFabric is carrying traffic for this organization. False when there is no fabric row (off) and while it is paused. Not required for single-engine Docker standalone.',
+      },
+      paused: {
+        type: 'boolean',
+        description:
+          'True when TurboFabric was turned off and kept: every tunnel is down, but relays, keys and container networks stay so turning it back on is instant. `fabric` and `relays` are still returned.',
+      },
+      servers: {
+        type: 'array',
+        description:
+          "Every org server's TurboFabric switch and role, whether or not the fabric exists.",
+        items: { $ref: '#/components/schemas/OrganizationFabricServer' },
+      },
+      pairs: {
+        type: 'array',
+        description:
+          'How each pair of org servers talks, listed once per pair. `lan`: they share a trusted datacenter network and both daemons route over it, so there is no tunnel (cross-server container networks ride the LAN, with or without TurboFabric). `fabric`: a TurboFabric tunnel carries it. `fabric_over_untrusted_lan`: the tunnel runs over a shared network marked untrusted, encrypted. `none`: no private path. `reason` is one plain sentence for the page.',
+        items: {
+          type: 'object',
+          required: ['fromServerId', 'toServerId', 'path', 'reason'],
+          properties: {
+            fromServerId: { type: 'string', format: 'uuid' },
+            toServerId: { type: 'string', format: 'uuid' },
+            path: { type: 'string', enum: ['lan', 'fabric', 'fabric_over_untrusted_lan', 'none'] },
+            reason: { type: 'string' },
+            tunnel: {
+              type: 'object',
+              description:
+                "For a pair a tunnel carries: what each end's own latest peer report says about the other end. Present only when at least one end has reported. The page judges each reading's `lastHandshakeAt` against its `observedAt` (a handshake within 195 s of the reading is healthy, a reading older than 7 minutes says nothing), so a stored path that still reads unreachable does not hide a tunnel that is up.",
+              required: ['readings'],
+              properties: {
+                readings: {
+                  type: 'array',
+                  items: {
+                    type: 'object',
+                    required: ['reporterServerId', 'observedAt'],
+                    properties: {
+                      reporterServerId: { type: 'string', format: 'uuid' },
+                      observedAt: { type: 'string', format: 'date-time' },
+                      lastHandshakeAt: {
+                        type: 'string',
+                        format: 'date-time',
+                        description:
+                          "The other end's last handshake in that reading; absent when it never handshook.",
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
       },
       fabric: {
         type: 'object',
@@ -382,6 +482,36 @@ export const organizationSchemas = {
       },
     },
   },
+  OrganizationFabricServer: {
+    type: 'object',
+    required: ['serverId', 'name', 'enabled', 'member', 'role', 'roleSource', 'automaticRole'],
+    properties: {
+      serverId: { type: 'string', format: 'uuid' },
+      name: { type: 'string' },
+      enabled: {
+        type: 'boolean',
+        description:
+          'The server switch (default true for new servers). False keeps it out of the mesh: no `tp0`, in no peer list, no fabric address.',
+      },
+      member: {
+        type: 'boolean',
+        description: 'Holds a relay (a `tp0` address) in the fabric right now.',
+      },
+      role: {
+        type: 'string',
+        enum: ['gateway', 'client'],
+        description:
+          'gateway accepts connections, client only dials out. Stored and shown; routing does not use it yet.',
+      },
+      roleSource: { type: 'string', enum: ['automatic', 'operator'] },
+      automaticRole: {
+        type: 'string',
+        enum: ['gateway', 'client'],
+        description:
+          'What automatic picks today: gateway when the server has its own public address (an endpoint override does not count).',
+      },
+    },
+  },
   OrganizationFabricRelay: {
     type: 'object',
     required: [
@@ -403,6 +533,7 @@ export const organizationSchemas = {
       'preferredGatewayIds',
       'gatewayEligible',
       'paths',
+      'reconcile',
     ],
     properties: {
       serverId: { type: 'string', format: 'uuid' },
@@ -447,6 +578,12 @@ export const organizationSchemas = {
       observed: {
         type: ['object', 'null'],
         properties: {
+          at: {
+            type: 'string',
+            format: 'date-time',
+            description:
+              'When the server took this reading. Judge the handshake against it, not against now: a steady mesh is read every few minutes.',
+          },
           lastHandshakeAt: { type: 'string', format: 'date-time' },
           transferRx: { type: 'integer', minimum: 0 },
           transferTx: { type: 'integer', minimum: 0 },
@@ -498,6 +635,20 @@ export const organizationSchemas = {
           },
         },
       },
+      reconcile: {
+        type: ['object', 'null'],
+        description:
+          "How the last server.fabric.reconcile sent to this server ended. `pending` until the server answers, then `done` (with any `warnings`: what an apply that worked left out, such as a route another interface holds or container networks that wait for Docker) or `failed` (with the server's own `error`). A pause only counts as down once its server is `done`. null before the first one is recorded.",
+        required: ['commandId', 'action', 'state', 'at'],
+        properties: {
+          commandId: { type: 'string', format: 'uuid' },
+          action: { type: 'string', enum: ['apply', 'pause', 'remove'] },
+          state: { type: 'string', enum: ['pending', 'done', 'failed'] },
+          at: { type: 'string', format: 'date-time' },
+          error: { type: 'string' },
+          warnings: { type: 'array', items: { type: 'string' } },
+        },
+      },
     },
   },
   OrganizationFabricRelayUpdate: {
@@ -511,7 +662,11 @@ export const organizationSchemas = {
           "empty list = derive from the relay's datacenter IPv4 subnets. Each range must be private (RFC 1918, 100.64.0.0/10 or fc00::/7) and no shorter than /8 (IPv4) or /48 (IPv6): default routes and public ranges are 400. A range that overlaps the fabric range, the container pool, a server's fabric container range or a range another gateway advertises (the very same range on two gateways is fine; partly overlapping or nested ranges are not) is 400 gateway_range_overlaps_* with { message, cidr, conflictsWith, otherServerId? }. The daemon refuses a host's whole peer list over one such range, so the same rule also covers the ranges a gateway falls back to from its datacenter subnets when the list is empty.",
       },
       keepalive: { type: ['integer', 'null'], minimum: 1, maximum: 65535 },
-      endpointAddress: { type: ['string', 'null'] },
+      endpointAddress: {
+        type: ['string', 'null'],
+        description:
+          'An IP address only, never with a port: other servers connect to it on the fabric listen port. null clears the pin.',
+      },
       presharedKey: {
         type: ['string', 'null'],
         description: 'Write-only WireGuard PSK. Never echoed on GET.',
@@ -952,6 +1107,115 @@ export const organizationPaths: Record<string, unknown> = {
       },
     },
   },
+  '/api/client/v1/organizations/{id}/tls-settings': {
+    get: {
+      tags: ['Organizations'],
+      summary: 'Get organization certificate settings',
+      description:
+        'Organization managers only, for the contact address too. The contact address is stored with the organization; nothing reads it yet.',
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        {
+          name: 'id',
+          in: 'path',
+          required: true,
+          schema: { type: 'string', format: 'uuid' },
+        },
+      ],
+      responses: {
+        '200': {
+          description: "Let's Encrypt gate and certificate contact address",
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/OrganizationTlsSettings' },
+            },
+          },
+        },
+        '403': {
+          description: 'Forbidden',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '404': {
+          description: 'Organization not found',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+      },
+    },
+    put: {
+      tags: ['Organizations'],
+      summary: 'Update organization certificate settings',
+      description:
+        'Organization managers only. Changing the contact address is audited as organization.acme_contact.set (with the previous value); saving an unchanged address writes no audit row.',
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        {
+          name: 'id',
+          in: 'path',
+          required: true,
+          schema: { type: 'string', format: 'uuid' },
+        },
+      ],
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: { $ref: '#/components/schemas/OrganizationTlsSettingsUpdate' },
+          },
+        },
+      },
+      responses: {
+        '200': {
+          description: 'Updated settings',
+          content: {
+            'application/json': {
+              schema: {
+                allOf: [
+                  { $ref: '#/components/schemas/OrganizationTlsSettings' },
+                  {
+                    type: 'object',
+                    required: ['ok'],
+                    properties: { ok: { type: 'boolean', const: true } },
+                  },
+                ],
+              },
+            },
+          },
+        },
+        '400': {
+          description: 'Invalid acmeEnabled, acmeContactEmail or body',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '404': {
+          description: 'Organization not found',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '403': {
+          description: 'Forbidden',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+      },
+    },
+  },
   '/api/client/v1/organizations/{id}/deploy-timeout': {
     get: {
       tags: ['Organizations'],
@@ -1242,6 +1506,117 @@ export const organizationPaths: Record<string, unknown> = {
         },
         '400': {
           description: 'Invalid defaultEnvironmentName or body',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '403': {
+          description: 'Forbidden',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '404': {
+          description: 'Organization not found',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+      },
+    },
+  },
+  '/api/client/v1/organizations/{id}/project-settings': {
+    get: {
+      tags: ['Organizations'],
+      summary: 'Get organization project settings',
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        {
+          name: 'id',
+          in: 'path',
+          required: true,
+          schema: { type: 'string', format: 'uuid' },
+        },
+      ],
+      responses: {
+        '200': {
+          description: 'Org project settings',
+          content: {
+            'application/json': {
+              schema: {
+                $ref: '#/components/schemas/OrganizationProjectSettings',
+              },
+            },
+          },
+        },
+        '403': {
+          description: 'Forbidden',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '404': {
+          description: 'Organization not found',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+      },
+    },
+    put: {
+      tags: ['Organizations'],
+      summary: 'Update organization project settings',
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        {
+          name: 'id',
+          in: 'path',
+          required: true,
+          schema: { type: 'string', format: 'uuid' },
+        },
+      ],
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: {
+              $ref: '#/components/schemas/OrganizationProjectSettingsUpdate',
+            },
+          },
+        },
+      },
+      responses: {
+        '200': {
+          description: 'Updated org project settings',
+          content: {
+            'application/json': {
+              schema: {
+                allOf: [
+                  {
+                    $ref: '#/components/schemas/OrganizationProjectSettings',
+                  },
+                  {
+                    type: 'object',
+                    required: ['ok'],
+                    properties: { ok: { type: 'boolean', const: true } },
+                  },
+                ],
+              },
+            },
+          },
+        },
+        '400': {
+          description: 'Invalid switch value, no switch sent, or body',
           content: {
             'application/json': {
               schema: { $ref: '#/components/schemas/ErrorResponse' },
@@ -1935,7 +2310,7 @@ export const organizationPaths: Record<string, unknown> = {
       tags: ['Organizations'],
       summary: 'Enable or disable TurboFabric',
       description:
-        "Manage-gated. `{ enabled: true }` creates the org fabric (if missing) and change-driven `server.fabric.reconcile` on enrolled servers. `{ enabled: false }` enqueues teardown (`tp0`, routed bridges, `TP-FORWARD`, keys, state) then deletes the fabric row and reclaims `network(kind='compose')` / `segment` rows. Does not auto-enable on install, enroll, or first deploy. Returns 409 `fabric_cidr_unavailable` / `fabric_address_pool_exhausted` when the default host CIDR cannot be allocated. Optional `allowRelay` and `containerPool` update `fabric.options`; `containerPool` (IPv4, prefix <= /16 so a relay /16 fits) runs the CIDR collision authority with the current pool excluded (409 `cidr_overlaps_*` / `subnet_overlaps`) and is refused with 409 `fabric_container_pool_in_use` when an allocated relay prefix would fall outside it. Changing the pool does **not** renumber existing relay prefixes — only future allocations are carved from the new pool. The policy is written before any relay is allocated, in one transaction with the fabric row: a first-time enable carves every relay prefix from the requested pool, and a pool too small for the org's servers (409 `fabric_prefix_pool_exhausted`) or one the auto-picked host range lands in (409 `cidr_overlaps_fabric`) leaves TurboFabric disabled.",
+        "Manage-gated. `{ enabled: true }` creates the org fabric (if missing) and change-driven `server.fabric.reconcile` on enrolled servers. `{ enabled: false }` pauses: every server takes `tp0` down and keeps its key, routed bridges and forwarding rules (`server.fabric.reconcile` `{ enabled: false, retainKeys: true }`), and the fabric row, relays and container networks are kept, so `{ enabled: true }` turns it back on instantly. A pause is refused with 409 `fabric_pause_needs_daemon_update` (with `message` and `serverIds`) while any member's daemon does not list `fabric-retain-keys-v1`. DELETE removes TurboFabric completely. Does not auto-enable on install, enroll, or first deploy. Returns 409 `fabric_cidr_unavailable` / `fabric_address_pool_exhausted` when the default host CIDR cannot be allocated. Optional `allowRelay` and `containerPool` update `fabric.options`; `containerPool` (IPv4, prefix <= /16 so a relay /16 fits) runs the CIDR collision authority with the current pool excluded (409 `cidr_overlaps_*` / `subnet_overlaps`) and is refused with 409 `fabric_container_pool_in_use` when an allocated relay prefix would fall outside it. Changing the pool does **not** renumber existing relay prefixes — only future allocations are carved from the new pool. The policy is written before any relay is allocated, in one transaction with the fabric row: a first-time enable carves every relay prefix from the requested pool, and a pool too small for the org's servers (409 `fabric_prefix_pool_exhausted`) or one the auto-picked host range lands in (409 `cidr_overlaps_fabric`) leaves TurboFabric disabled.",
       security: [{ cookieAuth: [] }],
       parameters: [
         {
@@ -1988,7 +2363,44 @@ export const organizationPaths: Record<string, unknown> = {
         },
         '503': {
           description:
-            '`fabric_teardown_not_queued` (with `message` and `serverIds`): `enabled: false` could not queue the teardown for every server; the servers listed did not get it. TurboFabric stays on (its settings and relays are kept); servers whose teardown was queued drop their tunnel and are re-applied by the next reconcile. Retry.',
+            '`fabric_teardown_not_queued` (with `message` and `serverIds`): `enabled: false` could not queue the pause for every server; the servers listed did not get it. TurboFabric stays on; servers that were reached drop their tunnel (keeping their key) and are re-applied by the next reconcile. Retry.',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+      },
+    },
+    delete: {
+      tags: ['Organizations'],
+      summary: 'Remove TurboFabric completely',
+      description:
+        "Manage-gated. Tears TurboFabric down on every member (`server.fabric.reconcile` `{ enabled: false }`: `tp0`, routed bridges, `TP-FORWARD`, keys, state), then deletes the fabric row and its relays and reclaims the `network(kind='compose')` / `subnet` rows of networks that need a tunnel. A container network whose servers all share a trusted datacenter network (each pair a trusted LAN pair) is kept, and those servers are sent the payload with no tunnel again (`tunnel: false`, LAN routes), since the teardown removed their LAN routes. Works whether TurboFabric is on or paused; a never-enabled org is a no-op. Servers switched out of the mesh are torn down too (they kept their key). 503 `fabric_teardown_not_queued` (with `message` and `serverIds`) keeps the fabric row, relays and container networks when a teardown could not be queued; servers that were already reached have dropped their tunnel and key and get a new key on the next apply. Returns the cleared settings.",
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+      ],
+      responses: {
+        '200': {
+          description: 'Removed',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/OrganizationFabric' },
+            },
+          },
+        },
+        '403': {
+          description: 'Forbidden',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '503': {
+          description:
+            'A teardown could not be queued; the fabric row, relays and container networks stay, but servers already reached have dropped their tunnel and key',
           content: {
             'application/json': {
               schema: { $ref: '#/components/schemas/ErrorResponse' },
@@ -2083,12 +2495,85 @@ export const organizationPaths: Record<string, unknown> = {
       },
     },
   },
+  '/api/client/v1/organizations/{id}/fabric/servers/{serverId}': {
+    patch: {
+      tags: ['Organizations'],
+      summary: "Set one server's TurboFabric switch and role",
+      description:
+        "Manage-gated. `{ enabled?, role? }`; `role` is `gateway`, `client` or null (automatic: gateway when the server has its own public address; an endpoint override does not count). `enabled: false` takes the server's `tp0` down (keeping its key when its daemon can) and re-plans the mesh so no peer lists it, no ladder hands out its fabric address and its WireGuard port closes; its relay row stays, so its address, endpoint pin, preshared key and LAN sharing come back when it is switched on. Refused with 409 `fabric_server_in_use` (plain `message`, `dependents[]`) while a cross-server container network that reaches it through a tunnel (one whose other servers all share a trusted LAN with it does not count), a managed database replicating over TurboFabric, an app-to-database connection that resolves to its fabric address, or a datacenter LAN only it shares depends on it, and 503 `fabric_teardown_not_queued` when its teardown could not be queued. `enabled: true` lets it join on the next reconcile (immediately when TurboFabric is on). Returns `{ ok, server }`.",
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+        {
+          name: 'serverId',
+          in: 'path',
+          required: true,
+          schema: { type: 'string', format: 'uuid' },
+        },
+      ],
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              properties: {
+                enabled: { type: 'boolean' },
+                role: { type: 'string', enum: ['gateway', 'client'], nullable: true },
+              },
+            },
+          },
+        },
+      },
+      responses: {
+        '200': {
+          description: 'Saved',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['ok'],
+                properties: {
+                  ok: { type: 'boolean' },
+                  server: { $ref: '#/components/schemas/OrganizationFabricServer' },
+                },
+              },
+            },
+          },
+        },
+        '403': {
+          description: 'Forbidden',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '404': {
+          description: 'No such server in this organization',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '409': {
+          description: 'Something reaches this server over TurboFabric',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+      },
+    },
+  },
   '/api/client/v1/organizations/{id}/fabric/apply': {
     post: {
       tags: ['Organizations'],
       summary: 'Apply TurboFabric membership',
       description:
-        'Manage-gated. Force-reconciles `server.fabric.reconcile` on every org relay. Returns per-server `results[]` (`queued` / `failed` / `skipped`, optional `unreachablePeers` / `gatewayRoutedPeers` / `natCandidates` / `degradedPeers`). 409 when TurboFabric is off.',
+        'Manage-gated. Force-reconciles `server.fabric.reconcile` on every org relay whose server is switched on. Returns per-server `results[]` (`queued` / `failed` / `skipped`, optional `unreachablePeers` / `gatewayRoutedPeers` / `natCandidates` / `degradedPeers`). 409 when TurboFabric is off, and 409 `fabric_paused` (with a plain `message`) while it is paused.',
       security: [{ cookieAuth: [] }],
       parameters: [
         {

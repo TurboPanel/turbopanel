@@ -1,5 +1,6 @@
 /** TLS certificate source discriminator — stored in `tls.source`. */
-export type TlsSource = 'upload' | 'lets_encrypt' | 'self_signed' | 'organization_ca'
+export type TlsSource =
+  'upload' | 'lets_encrypt' | 'self_signed' | 'organization_ca' | 'provider_origin'
 
 /** Lifecycle status — dedicated `tls.status` column (also in API metadata DTO). */
 export type TlsStatus = 'ready' | 'pending' | 'expired' | 'failed' | 'revoked' | 'automatic'
@@ -13,8 +14,31 @@ export type TlsAcmeMetadata = {
   lastIssuedAt?: string
   /** Expiry of the certificate Caddy is serving, as the daemon's probe read it (ISO 8601). */
   notAfter?: string
-  /** Present on `lets_encrypt` rows Caddy issues and renews on the host. */
-  managedBy?: 'caddy'
+  /** When a server last reported on this certificate, good or bad (ISO 8601). */
+  lastReportedAt?: string
+  /** When a server last reported a failure (ISO 8601); kept after a recovery. */
+  lastFailedAt?: string
+  /**
+   * `caddy` on `lets_encrypt` rows Caddy issues and renews on the host; `panel`
+   * on a library certificate this panel ordered itself through a DNS challenge;
+   * `server` on a certificate one serving server's daemon ordered over the HTTP
+   * proof at the panel's request (`acme-issue-request`).
+   */
+  managedBy?: 'caddy' | 'panel' | 'server'
+  /** DNS-challenge certificates: where the order stands (queued, presented, validating, finalizing, issued, backoff, failed). */
+  stage?: string
+  /** DNS-challenge certificates: the authority's test directory, whose certificates no browser trusts. */
+  staging?: boolean
+  /** DNS-challenge certificates: failed orders since the last good certificate. */
+  attempts?: number
+  /** DNS-challenge certificates: no new attempt before this time (ISO 8601). */
+  nextAttemptAt?: string
+  /** DNS-challenge certificates: when renewal starts (ISO 8601). */
+  renewAt?: string
+  /** DNS-challenge certificates: something that will stop the next renewal, in plain words. */
+  warning?: string
+  /** Server-placed certificates: one plain line per serving server about its part in the order. */
+  serverStatus?: Array<{ serverId: string; text: string }>
   /** DNS names the stored certificate covers (set when the pair is stored). */
   storedNames?: string[]
   /** The server whose Caddy issued the stored certificate (its daemon sent the pair). */
@@ -75,13 +99,16 @@ export type TlsCandidate = {
   source?: TlsSource
 }
 
+/** Why a pinned library certificate cannot serve a hosting. */
+export type TlsPinError = 'pin_not_found' | 'pin_mismatch' | 'pin_not_ready' | 'pin_staging'
+
 export type ResolveTlsResult =
-  | { ok: true; tlsId: string | null; reason: 'pin' | 'internal' }
-  | { ok: false; error: 'pin_not_found' | 'pin_mismatch' | 'pin_not_ready' }
+  { ok: true; tlsId: string | null; reason: 'pin' | 'internal' } | { ok: false; error: TlsPinError }
 
 export const TLS_SOURCES: readonly TlsSource[] = [
   'upload',
   'lets_encrypt',
   'self_signed',
   'organization_ca',
+  'provider_origin',
 ] as const

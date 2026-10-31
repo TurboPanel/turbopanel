@@ -91,7 +91,7 @@ const PG_OPTS_DENO = {
  * per-request creation is free — but **always** `endDbConnection` /
  * `closeWorkersRequestDb` when the invocation finishes so postgres.js pools
  * do not stack to the 128 MB isolate memory limit.
- * See `AGENTS.md` → Workers Hyperdrive (HARD RULE) and
+ * See `src/platform/workers/AGENTS.md` → Workers Hyperdrive (HARD RULE) and
  * https://developers.cloudflare.com/hyperdrive/observability/troubleshooting/
  */
 export function createWorkersDb(hyperdrive: HyperdriveBinding, options: WorkersDbOptions = {}): Db {

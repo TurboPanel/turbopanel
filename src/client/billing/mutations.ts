@@ -21,6 +21,7 @@
  * Workers-bundleable: nothing at module load.
  */
 
+import type { DaemonCellRegistry } from '../../contracts/cell.ts'
 import type { Db } from '../../db/connection.ts'
 import type { StripeClient } from '../../features/billing/client.ts'
 import { StripeApiError } from '../../features/billing/errors.ts'
@@ -76,6 +77,8 @@ import {
 export type BillingMutationDeps = Readonly<{
   db: Db
   client: StripeClient
+  /** Closes the socket of a server whose key the projection revokes. */
+  daemonCellRegistry?: DaemonCellRegistry
   gateway?: BillingGateway
   loadView?: (db: Db, organizationId: string, nowMs: number) => Promise<BillingOrgView>
   beginMutation?: (
@@ -232,7 +235,12 @@ async function syncAfterMutation(
 ): Promise<void> {
   const { nowMs } = resolveDeps(deps)
   await projectSubscriptionById(
-    { db: deps.db, client: deps.client, now: new Date(nowMs()).toISOString() },
+    {
+      db: deps.db,
+      client: deps.client,
+      now: new Date(nowMs()).toISOString(),
+      ...(deps.daemonCellRegistry ? { daemonCellRegistry: deps.daemonCellRegistry } : {}),
+    },
     providerSubscriptionId,
     { lock }
   )

@@ -63,6 +63,9 @@ pnpm run check:workers-bundle
 echo "==> Check vocabulary"
 pnpm run check:vocabulary
 
+echo "==> Check contributor guide references"
+pnpm run check:guide-references
+
 echo "==> Check migration freeze (manifest + additions only vs origin/trunk)"
 pnpm run check:migration-freeze
 pnpm run check:migration-additions

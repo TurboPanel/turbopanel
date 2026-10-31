@@ -193,6 +193,7 @@ export const DAEMON_WIRE_FEATURES = [
   'managed-database-owner-v1',
   'managed-database-convert-v1',
   'tls-capture-v1',
+  'acme-issue-v1',
   'command-recovery-v1',
   'managed-switchover-final-position-v1',
   'host-capacity-v1',
@@ -200,6 +201,13 @@ export const DAEMON_WIRE_FEATURES = [
   'backup-s3-copy-v1',
   'deploy-hostings-only-v1',
   'custom-node-app-mode-v1',
+  'tunnel-forwarding-v1',
+  'tunnel-connector-v1',
+  'tunnel-status-v1',
+  'managed-backup-login-v1',
+  'fabric-retain-keys-v1',
+  'fabric-peer-report-v1',
+  'fabric-lan-routes-v1',
 ] as const
 
 export type DaemonWireFeature = (typeof DAEMON_WIRE_FEATURES)[number]
@@ -220,6 +228,14 @@ export const DEPLOY_HOSTINGS_ONLY_FEATURE: DaemonWireFeature = 'deploy-hostings-
  * environment deploy at parse time, so the control plane refuses first.
  */
 export const CUSTOM_NODE_APP_MODE_FEATURE: DaemonWireFeature = 'custom-node-app-mode-v1'
+
+/** The daemon applies `server.tunnel.routes` and `hostings[].tunnel`. */
+export const TUNNEL_FORWARDING_FEATURE: DaemonWireFeature = 'tunnel-forwarding-v1'
+
+/** The daemon applies `server.tunnel.connectors` (installs and removes tunnel connectors). */
+export const TUNNEL_CONNECTOR_FEATURE: DaemonWireFeature = 'tunnel-connector-v1'
+/** The daemon answers `server.tunnel.status` with each connector's state and version. */
+export const TUNNEL_STATUS_FEATURE: DaemonWireFeature = 'tunnel-status-v1'
 
 /**
  * The daemon opens `tpdaemon` envelopes on `public-urls-update`
@@ -242,6 +258,15 @@ export const SEALED_INSTANCE_SECRETS_FEATURE: DaemonWireFeature = 'sealed-instan
 export const BACKUP_S3_COPY_FEATURE: DaemonWireFeature = 'backup-s3-copy-v1'
 
 export const TLS_CAPTURE_FEATURE: DaemonWireFeature = 'tls-capture-v1'
+
+/**
+ * The daemon places the certificate order for a name set when the control plane
+ * asks (`acme-issue-request`), and passes the HTTP proof path on for another
+ * server (`acme-proof-forward`). The control plane sends these messages only to
+ * a daemon that lists the feature. No message ever carries the certificate or
+ * its key; the finished pair goes through `POST /api/daemon/v1/tls/issued`.
+ */
+export const ACME_ISSUE_FEATURE: DaemonWireFeature = 'acme-issue-v1'
 
 /**
  * The daemon keeps each command's final result on the host until this control
@@ -397,6 +422,34 @@ export const MANAGED_INGRESS_IPV6_FEATURE: DaemonWireFeature = 'managed-ingress-
 export const MANAGED_LOGIN_LIMITS_FEATURE: DaemonWireFeature = 'managed-login-limits-v1'
 
 /**
+ * The daemon understands `server.fabric.reconcile` `{ enabled: false,
+ * retainKeys: true }`: it takes `tp0` down and keeps its key, routed bridges
+ * and forwarding rules, so turning TurboFabric back on is instant. Without it
+ * the control plane refuses to pause (an older daemon would read the message
+ * as a full tear down and drop its key); removing TurboFabric still works.
+ */
+export const FABRIC_RETAIN_KEYS_FEATURE: DaemonWireFeature = 'fabric-retain-keys-v1'
+
+/**
+ * The daemon pushes `fabric-peers-report` (every `tp0` peer's handshake reading
+ * from its 60 s refresh) when a peer's health class changes, and at most every
+ * 5 minutes otherwise. The control plane stamps it into
+ * `relay.metadata.observed` (at most once per 60 s per server), so tunnel
+ * health never goes stale between reconciles. Listing it is what lets a daemon
+ * send the frame; an older daemon simply never does.
+ */
+export const FABRIC_PEER_REPORT_FEATURE: DaemonWireFeature = 'fabric-peer-report-v1'
+
+/**
+ * The daemon understands `tunnel: false` and `lanRoutes` on
+ * `server.fabric.reconcile`: with no tunnel it keeps `tp0` down (and its key),
+ * and it routes each listed container range via that server's LAN address.
+ * Two servers that share a trusted datacenter network skip the tunnel only
+ * when both daemons list it; otherwise the pair keeps its tunnel over the LAN.
+ */
+export const FABRIC_LAN_ROUTES_FEATURE: DaemonWireFeature = 'fabric-lan-routes-v1'
+
+/**
  * The daemon answers `managed-permissions-request` with
  * `managed-permissions-result` (a login's current grants, read only). Without
  * it the control plane never sends the message and answers 409
@@ -441,6 +494,15 @@ export const MANAGED_DATABASE_OWNER_FEATURE: DaemonWireFeature = 'managed-databa
  * `managed_database_convert_needs_daemon_update`.
  */
 export const MANAGED_DATABASE_CONVERT_FEATURE: DaemonWireFeature = 'managed-database-convert-v1'
+
+/**
+ * The daemon honours `credentials[].kind: 'backup'` on `managed.apply`: it
+ * gives that login the read-only rights a full logical dump needs on every
+ * database (per engine), instead of an ordinary login's rights. Without it the
+ * control plane refuses to add a backup login with 409
+ * `managed_backup_login_needs_daemon_update`.
+ */
+export const MANAGED_BACKUP_LOGIN_FEATURE: DaemonWireFeature = 'managed-backup-login-v1'
 
 /**
  * The daemon answers `server-network-check-request` with

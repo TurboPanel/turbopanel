@@ -36,6 +36,9 @@ import { resolveComposeLayerChain, isComposeChainError } from '../compose/layer-
 import { mergeComposeLayers } from '../compose/layers.ts'
 import { parseDatacenterOptions } from '../datacenters/datacenter-options.ts'
 import { parseFabricOptions } from '../fabric/cidr.ts'
+import { serverPayloadNeedsTunnel } from '../fabric/fabric-records.ts'
+import { loadLanPairInputs } from '../fabric/lan-pairs.ts'
+import { relayCarriesTraffic } from '../fabric/relay-filters.ts'
 import { resolveHostingBind } from '../hostings/hosting-options.ts'
 import { MANAGED_HA_HTTP_PORT, MANAGED_HA_RAFT_PORT } from '../managed/ha-ports.ts'
 import { serverHostsManagedHa } from '../managed/ha-policy.ts'
@@ -59,14 +62,21 @@ import type {
   FirewallDeriveInput,
   FirewallSourceSets,
 } from './derive.ts'
+import { loadTunnelPeerExposures } from '../tunnels/peer-exposure.ts'
 import { type FirewallOrgPolicy, parseFirewallOrgPolicy } from './policy.ts'
 
 import type { FirewallModeValue } from './vocabulary.ts'
 
-/** The control plane's entrypoint on its own host (Caddy, HTTPS). */
+/**
+ * The self-hosted control plane's only entrypoint on its own host (Caddy,
+ * HTTPS). Ports 80 and 443 belong to hosting, never to the panel.
+ */
 export const CONTROL_PLANE_PORT = 8443
 
-/** Port 80 is opened for Let's Encrypt HTTP-01 issuance and renewal only. */
+/**
+ * Hosting's port 80, opened for the panel's Let's Encrypt HTTP-01 issuance and
+ * renewal: hosting owns the port and hands only the challenge to the panel.
+ */
 export const ACME_HTTP_PORT = 80
 
 export type LoadedFirewallFacts = {
@@ -148,11 +158,38 @@ export async function isCoLocatedServer(db: Db, serverId: string): Promise<boole
   return [...rows][0]?.pinned === true
 }
 
-/** 8443 always; plus 80 while any instance hostname uses Let's Encrypt (HTTP-01 needs it). */
-async function loadControlPlanePorts(db: Db): Promise<number[]> {
+/** True while any panel hostname takes its certificate from Let's Encrypt. */
+async function panelUsesLetsEncrypt(db: Db): Promise<boolean> {
   const rows = await db.select({ source: instanceHostname.source }).from(instanceHostname)
-  const usesAcme = rows.some((row) => row.source === 'lets-encrypt')
-  return usesAcme ? [CONTROL_PLANE_PORT, ACME_HTTP_PORT] : [CONTROL_PLANE_PORT]
+  return rows.some((row) => row.source === 'lets-encrypt')
+}
+
+/**
+ * Hosting's port 80 on the panel's own host while a panel hostname uses Let's
+ * Encrypt: HTTP-01 reaches hosting there, which passes only the challenge to
+ * the panel. It is a hosting rule, not a control-plane port, and is skipped
+ * when hosting already opens 80 to everyone.
+ */
+export function panelAcmeExposures(
+  coLocated: boolean,
+  usesLetsEncrypt: boolean,
+  hosting: readonly DerivedExposure[]
+): DerivedExposure[] {
+  if (!coLocated || !usesLetsEncrypt) return []
+  const open = hosting.some(
+    (e) => e.proto === 'tcp' && e.ports === String(ACME_HTTP_PORT) && e.reach === 'public'
+  )
+  if (open) return []
+  return [
+    {
+      source: 'hosting',
+      scope: 'host',
+      proto: 'tcp',
+      ports: String(ACME_HTTP_PORT),
+      reach: 'public',
+      comment: 'Hosting HTTP (panel certificate)',
+    },
+  ]
 }
 
 function hostingReach(bind: string): ExposureReach | null {
@@ -239,15 +276,29 @@ async function loadManagedExposures(db: Db, serverId: string): Promise<DerivedEx
   }))
 }
 
-/** TurboFabric: a relay on this server listens for WireGuard peers (any address: peers sit behind NAT). */
-async function loadFabricExposures(db: Db, serverId: string): Promise<DerivedExposure[]> {
+/**
+ * TurboFabric: a relay on this server listens for WireGuard peers (any
+ * address: peers sit behind NAT). Closed while TurboFabric is paused, this
+ * server is switched out of it, or its payload has no tunnel (every other
+ * member is a trusted LAN pair), read from the same answer the payload
+ * builder uses.
+ */
+export async function loadFabricExposures(db: Db, serverId: string): Promise<DerivedExposure[]> {
   const [row] = await db
-    .select({ options: fabric.options })
+    .select({ fabricId: relay.fabricId, options: fabric.options })
     .from(relay)
     .innerJoin(fabric, eq(fabric.id, relay.fabricId))
-    .where(eq(relay.serverId, serverId))
+    .where(and(eq(relay.serverId, serverId), relayCarriesTraffic()))
     .limit(1)
   if (!row) return []
+  const members = await db
+    .select({ serverId: relay.serverId })
+    .from(relay)
+    .innerJoin(fabric, eq(fabric.id, relay.fabricId))
+    .where(and(eq(relay.fabricId, row.fabricId), relayCarriesTraffic()))
+  const memberIds = members.map((member) => member.serverId)
+  const inputs = await loadLanPairInputs(db, [serverId, ...memberIds])
+  if (!serverPayloadNeedsTunnel(serverId, memberIds, inputs)) return []
   return [
     {
       source: 'fabric',
@@ -526,18 +577,18 @@ export async function loadFirewallFacts(
   if (!base) return null
   const notes: string[] = []
   const datacenterIds = await loadDatacenterIds(db, serverId)
-  const [coLocated, controlPlaneTcpPorts, sshPort, policy, mode, edicts, sources] =
-    await Promise.all([
-      isCoLocatedServer(db, serverId),
-      loadControlPlanePorts(db),
-      loadSshPortHint(db, base, datacenterIds),
-      loadOrganizationPolicy(db, base.organizationId),
-      loadServerMode(db, serverId),
-      loadEdictFacts(db, base.organizationId, serverId),
-      loadSourceSets(db, serverId, base.organizationId, datacenterIds),
-    ])
-  const [hosting, managed, cluster, fabricExposure, ha, compose] = await Promise.all([
+  const [coLocated, usesLetsEncrypt, sshPort, policy, mode, edicts, sources] = await Promise.all([
+    isCoLocatedServer(db, serverId),
+    panelUsesLetsEncrypt(db),
+    loadSshPortHint(db, base, datacenterIds),
+    loadOrganizationPolicy(db, base.organizationId),
+    loadServerMode(db, serverId),
+    loadEdictFacts(db, base.organizationId, serverId),
+    loadSourceSets(db, serverId, base.organizationId, datacenterIds),
+  ])
+  const [hosting, tunnelPeers, managed, cluster, fabricExposure, ha, compose] = await Promise.all([
     loadHostingExposures(db, serverId),
+    loadTunnelPeerExposures(db, base.organizationId, serverId),
     loadManagedExposures(db, serverId),
     loadClusterPeerExposures(db, serverId, notes),
     loadFabricExposures(db, serverId),
@@ -552,8 +603,17 @@ export async function loadFirewallFacts(
       policy,
       sshPortHint: sshPort,
       coLocated,
-      controlPlaneTcpPorts,
-      exposures: [...hosting, ...managed, ...cluster, ...fabricExposure, ...ha, ...compose],
+      controlPlaneTcpPorts: [CONTROL_PLANE_PORT],
+      exposures: [
+        ...hosting,
+        ...panelAcmeExposures(coLocated, usesLetsEncrypt, hosting),
+        ...tunnelPeers,
+        ...managed,
+        ...cluster,
+        ...fabricExposure,
+        ...ha,
+        ...compose,
+      ],
       edicts,
       sources,
     },

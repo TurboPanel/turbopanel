@@ -105,6 +105,14 @@ export function orgOptionsGetRoute(
   }
 }
 
+type AuditEntry = { action: AuditAction; context: Record<string, unknown> }
+
+function auditEntries(entries: AuditEntry | readonly AuditEntry[] | null): readonly AuditEntry[] {
+  if (entries === null) return []
+  if ('action' in entries) return [entries]
+  return entries
+}
+
 type ParsedPatch<P> = { ok: true; patch: P } | OrganizationRouteValidationError
 
 /**
@@ -116,7 +124,11 @@ export function orgOptionsPatchRoute<P extends Record<string, unknown>>(
     gate: OrgSettingsGate
     parse: (body: Record<string, unknown>) => ParsedPatch<P>
     respond: (options: OrganizationOptions) => object
-    audit?: (patch: P) => { action: AuditAction; context: Record<string, unknown> }
+    /**
+     * The audit rows to write for this change: one entry, several, or null for
+     * none (nothing changed). `previous` is the options before the write.
+     */
+    audit?: (patch: P, previous: OrganizationOptions) => AuditEntry | readonly AuditEntry[] | null
     /** Runs after the options are written (before the audit row). */
     afterWrite?: (db: Db, organizationId: string, patch: P) => Promise<void>
   }>
@@ -131,7 +143,8 @@ export function orgOptionsPatchRoute<P extends Record<string, unknown>>(
     const parsed = params.parse(body)
     if (!parsed.ok) return c.json({ error: parsed.error }, parsed.status)
 
-    if (!(await loadOrgOptionsRow(scope.db, scope.id))) {
+    const before = await loadOrgOptionsRow(scope.db, scope.id)
+    if (!before) {
       return c.json({ error: 'Not found' }, 404)
     }
     // The write and its follow-up commit together: a failed follow-up (such
@@ -144,8 +157,12 @@ export function orgOptionsPatchRoute<P extends Record<string, unknown>>(
     })
 
     if (params.audit) {
-      const { action, context } = params.audit(parsed.patch)
-      await recordOrgSettingAudit(c, scope, action, context)
+      const entries = params.audit(parsed.patch, parseOrganizationOptions(before.options))
+      await Promise.all(
+        auditEntries(entries).map(({ action, context }) =>
+          recordOrgSettingAudit(c, scope, action, context)
+        )
+      )
     }
     return c.json(params.respond(options))
   }

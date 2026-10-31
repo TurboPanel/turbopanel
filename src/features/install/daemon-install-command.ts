@@ -1,3 +1,4 @@
+import { isInstallCaFingerprint } from './install-ca-pin.ts'
 import { formatInstanceDlBase } from './install-tls.ts'
 
 export function encodeLicenseArg(licenseId: string, licenseToken: string): string {
@@ -6,7 +7,12 @@ export function encodeLicenseArg(licenseId: string, licenseToken: string): strin
   return btoa(combined).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '')
 }
 
-/** CDN bootstrap host shown in production install commands (HTTP→HTTPS via CF). */
+/**
+ * CDN bootstrap host in production install commands. Always emitted as
+ * `https://` (see {@link installScriptUrl}): a bare host makes curl ask over
+ * plain HTTP first, and whoever answers that request picks the script that
+ * runs as root.
+ */
 export const CDN_INSTALL_HOST = 'turbopanel.sh'
 
 /**
@@ -42,27 +48,61 @@ export function installScriptHostForChannel(channel: string | undefined): string
   }
 }
 
+/** The HTTPS URL curl fetches an installer host's script from. */
+export function installScriptUrl(host: string): string {
+  return `https://${host}`
+}
+
+/** HTTPS installer URL for an update channel (see {@link installScriptHostForChannel}). */
+export function installScriptUrlForChannel(channel: string | undefined): string {
+  return installScriptUrl(installScriptHostForChannel(channel))
+}
+
+/** True when `curlUrl` is a public installer host, which always verifies TLS. */
+function isInstallerHostUrl(curlUrl: string): boolean {
+  try {
+    return INSTALL_HOSTS.has(new URL(curlUrl).hostname)
+  } catch {
+    return false
+  }
+}
+
 /**
- * Curl target for the installer script: bare `turbopanel.sh` on the CDN, otherwise
- * the validated origin with `/run.sh` appended (dev overlay only).
+ * Curl target for the installer script: `https://turbopanel.sh` (or its
+ * staging/testing host) on the CDN, otherwise the validated origin with
+ * `/run.sh` appended (dev overlay only).
  */
 export function formatInstallScriptCurlUrl(origin: string): string {
   const trimmed = origin.replace(/\/$/, '')
-  // Bare CDN host must stay bare — `new URL('turbopanel.sh')` throws and the
-  // catch path would otherwise append `/run.sh` (invalid CDN contract).
+  // A bare installer host has no scheme — `new URL('turbopanel.sh')` throws
+  // and the catch path would otherwise append `/run.sh` (invalid CDN contract).
   if (INSTALL_HOSTS.has(trimmed)) {
-    return trimmed
+    return installScriptUrl(trimmed)
   }
   try {
     const url = new URL(trimmed)
     if (INSTALL_HOSTS.has(url.hostname) && !url.port) {
-      return url.hostname
+      return installScriptUrl(url.hostname)
     }
     return `${trimmed}/run.sh`
   } catch {
     // fall through
   }
   return `${trimmed}/run.sh`
+}
+
+/**
+ * Comma-joined expected CA fingerprints, or null when there are none. Values
+ * are emitted unquoted, so anything but 64 lowercase hex digits is refused.
+ */
+function caFingerprintEnvValue(fingerprints: readonly string[] | undefined): string | null {
+  if (!fingerprints || fingerprints.length === 0) return null
+  for (const value of fingerprints) {
+    if (!isInstallCaFingerprint(value)) {
+      throw new TypeError('install CA fingerprint must be 64 lowercase hex digits')
+    }
+  }
+  return fingerprints.join(',')
 }
 
 /**
@@ -74,6 +114,7 @@ function buildInstallPipeline(opts: {
   licenseArg: string
   host?: string
   insecureTls?: boolean
+  caFingerprints?: readonly string[]
   curlInsecure?: boolean
   dlBase?: string
   updateChannel?: string
@@ -81,7 +122,15 @@ function buildInstallPipeline(opts: {
   const curl = opts.curlInsecure ? 'curl -fsSLk' : 'curl -fsSL'
   const envParts = [`TURBOPANEL_LICENSE=${opts.licenseArg}`]
   if (opts.host) envParts.push(`TURBOPANEL_HOST=${opts.host}`)
-  if (opts.insecureTls) envParts.push('TURBOPANEL_INSECURE_TLS=1')
+  if (opts.insecureTls) {
+    // Never an insecure-TLS command without the CA it may keep: the installer
+    // would trust whatever answered.
+    const pin = caFingerprintEnvValue(opts.caFingerprints)
+    if (!pin) {
+      throw new TypeError('an insecure-TLS install command needs at least one CA fingerprint')
+    }
+    envParts.push('TURBOPANEL_INSECURE_TLS=1', `TURBOPANEL_INSTANCE_CA_FINGERPRINT=${pin}`)
+  }
   if (opts.dlBase) {
     // A dev overlay serves unsigned builds. run.sh skips signature checks only
     // when it is told twice (overlay + opt-in), so a stray TURBOPANEL_DL_BASE
@@ -112,6 +161,13 @@ export function buildLicenseInstallCommand(opts: {
    */
   insecureTls?: boolean
   /**
+   * SHA-256 fingerprints of every CA the installer may fetch over that
+   * insecure bootstrap (`TURBOPANEL_INSTANCE_CA_FINGERPRINT`). Emitted only
+   * with `insecureTls` on the Deno runtime; the installer refuses a fetched
+   * CA outside this list.
+   */
+  caFingerprints?: readonly string[]
+  /**
    * Dev overlay only: fetch the installer from the instance host `/run.sh`
    * (served by the dev Caddyfile). Production / self-hosted Deno installs must
    * leave this unset so the command curls `CDN_INSTALL_HOST` and passes
@@ -132,6 +188,7 @@ export function buildLicenseInstallCommand(opts: {
     licenseId,
     licenseToken,
     insecureTls: insecureTlsOpt = false,
+    caFingerprints,
     useInstanceRunScript = false,
     dlBase,
     updateChannel,
@@ -146,20 +203,23 @@ export function buildLicenseInstallCommand(opts: {
   if (runtime === 'deno') {
     const curlUrl = useInstanceRunScript
       ? formatInstallScriptCurlUrl(scriptBase)
-      : installScriptHostForChannel(updateChannel)
+      : installScriptUrlForChannel(updateChannel)
     return buildInstallPipeline({
       curlUrl,
       licenseArg,
       host,
       insecureTls,
-      curlInsecure: insecureTls,
+      caFingerprints,
+      // Only the instance's own origin (dev overlay `/run.sh`) may need -k.
+      // A public installer host always presents a trusted certificate.
+      curlInsecure: insecureTls && !isInstallerHostUrl(curlUrl),
       dlBase: overlayDlBase,
       updateChannel,
     })
   }
 
   return buildInstallPipeline({
-    curlUrl: installScriptHostForChannel(updateChannel),
+    curlUrl: installScriptUrlForChannel(updateChannel),
     licenseArg,
     host,
     updateChannel,

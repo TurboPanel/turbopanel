@@ -330,6 +330,8 @@ async function initWorkerApp(env: CloudflareBindings) {
   registerStripeWebhookRoutes(cachedApp, {
     runtime: 'workers',
     rateLimiter: resolveWorkersStripeWebhookRateLimiter(env),
+    taskDaemonCellRegistry: (c, db) =>
+      createDurableObjectDaemonCellRegistry(c.env as CloudflareBindings, db),
   })
   registerAdminRoutes(cachedApp, {
     secrets: cachedSessionSecrets!,

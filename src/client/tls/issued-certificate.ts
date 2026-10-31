@@ -29,6 +29,15 @@ import { normalizePrivateKeyPem, PemError, splitCertificateChain } from '../../l
 import { privateKeyMatchesCertificate, TlsKeyError } from '../../lib/tls/keys.ts'
 import { CertificateParseError, parseCertificatePem } from '../../lib/tls/parse.ts'
 import type { ParsedCertificate, TlsAcmeMetadata } from '../../lib/tls/types.ts'
+import { jitteredFallbackRenewAt } from '../../features/tls/dns-certificates/timing.ts'
+import { publicMarker } from '../../features/tls/http-issuance/progress.ts'
+import {
+  afterCapture,
+  type CaptureOptions,
+  canAcceptCapture,
+  readHttpIssuanceState,
+  withHttpIssuanceState,
+} from '../../features/tls/http-issuance/state.ts'
 import { assertTpSecretPrivateKey } from './routes-helpers.ts'
 
 /** A chain longer than this is not an ordinary leaf plus intermediates. */
@@ -42,6 +51,13 @@ export type IssuedCertificateInput = {
   hostname: string
   certificatePem: string
   privateKeyPem: string
+  /**
+   * The open order this pair answers (`acme-issue-request`). Absent: the pair
+   * is a server's own order, accepted only from a server that holds a pin.
+   * Present: accepted only from the server that was asked, for a row holding
+   * that open request.
+   */
+  requestId?: string
 }
 
 export type IssuedCertificateRefusal =
@@ -55,6 +71,7 @@ export type IssuedCertificateRefusal =
   | 'server_not_in_organization'
   | 'acme_disabled'
   | 'no_matching_certificate'
+  | 'request_not_open'
 
 export type IssuedCertificateResult =
   | { ok: true; stored: boolean; tlsIds: string[] }
@@ -76,6 +93,7 @@ const REFUSAL_STATUS: Record<IssuedCertificateRefusal, 400 | 403 | 404 | 409> = 
   server_not_in_organization: 403,
   acme_disabled: 409,
   no_matching_certificate: 404,
+  request_not_open: 404,
 }
 
 /** Plain words for each refusal, never carrying any part of the pair. */
@@ -94,6 +112,8 @@ export const REFUSAL_MESSAGE: Record<IssuedCertificateRefusal, string> = {
   acme_disabled: "Let's Encrypt is turned off for the organization.",
   no_matching_certificate:
     "No managed Let's Encrypt certificate for this hostname is pinned by a site on the sending server.",
+  request_not_open:
+    'No open certificate request with this id was made to the sending server for this hostname.',
 }
 
 function refuse(error: IssuedCertificateRefusal): IssuedCertificateResult {
@@ -297,6 +317,99 @@ export async function storeIssuedCertificate(
   return { ok: true, stored: outcome.stored.length > 0, tlsIds: outcome.stored.map((r) => r.id) }
 }
 
+/** Whether the row holds the open request this pair answers, asked of the reporting server. */
+function requestIsOpenFor(metadata: unknown, input: IssuedCertificateInput, now: Date): boolean {
+  return (
+    canAcceptCapture(readHttpIssuanceState(metadata), {
+      serverId: input.serverId,
+      requestId: input.requestId ?? '',
+      now,
+    }).ok === true
+  )
+}
+
+/**
+ * A daemon may only supply the certificate of a hosting placed on its own
+ * server; a pin on any other server's hosting is none of its business.
+ */
+async function rowsPinnedOnServer<T extends { id: string }>(
+  tx: Db,
+  candidates: T[],
+  serverId: string
+): Promise<T[]> {
+  const pinned = await tx
+    .select({ tlsId: hosting.tlsId })
+    .from(hosting)
+    .innerJoin(service, eq(service.id, hosting.serviceId))
+    .innerJoin(environment, eq(environment.id, service.environmentId))
+    .where(
+      and(
+        eq(environment.serverId, serverId),
+        inArray(
+          hosting.tlsId,
+          candidates.map((row) => row.id)
+        )
+      )
+    )
+  const pinnedIds = new Set(pinned.map((row) => row.tlsId))
+  return candidates.filter((row) => pinnedIds.has(row.id))
+}
+
+/**
+ * The row's metadata after a pair arrived for its open request: the request
+ * notes the pair (and closes if the issuing server already said `issued`), and
+ * the public marker follows.
+ */
+function withCapturedRequest(
+  metadata: ManagedRowMetadata,
+  now: Date,
+  options: CaptureOptions
+): Record<string, unknown> {
+  const state = readHttpIssuanceState(metadata)
+  if (!state) return metadata
+  const after = afterCapture(state, now, { ...options, expected: metadata.dnsNames })
+  return {
+    ...withHttpIssuanceState(metadata, after),
+    acme: publicMarker(metadata.acme, after),
+  }
+}
+
+/** The names of the row that this pair's certificate covers. */
+function coveredBy(parsed: ParsedCertificate, metadata: ManagedRowMetadata): string[] {
+  return metadata.dnsNames.filter((name) => coversHostname(parsed.dnsNames, name))
+}
+
+/**
+ * A pair for an open request that does not replace what the row holds (the same
+ * certificate sent again for another name, or one that is not newer): nothing is
+ * stored, but the request notes that these names are served, so it can close.
+ * Repeating the same call is therefore harmless.
+ */
+async function noteCaptureOnly(
+  tx: Db,
+  row: { id: string; metadata: unknown; notAfter: string | null },
+  input: IssuedCertificateInput,
+  parsed: ParsedCertificate,
+  now: Date
+): Promise<void> {
+  if (!input.requestId) return
+  const metadata = row.metadata as ManagedRowMetadata
+  // The renewal time follows the pair the row keeps, not the one just refused.
+  const storedNotBefore = (metadata as { notBefore?: unknown }).notBefore
+  const keptNotBefore =
+    typeof storedNotBefore === 'string' ? Date.parse(storedNotBefore) : Number.NaN
+  const keptNotAfter = row.notAfter === null ? Number.NaN : Date.parse(row.notAfter)
+  const renewAt =
+    Number.isNaN(keptNotBefore) || Number.isNaN(keptNotAfter)
+      ? null
+      : jitteredFallbackRenewAt(new Date(keptNotBefore), new Date(keptNotAfter))
+  const next = withCapturedRequest(metadata, now, { covered: coveredBy(parsed, metadata), renewAt })
+  await tx
+    .update(tls)
+    .set({ metadata: next, updatedAt: now.toISOString() })
+    .where(eq(tls.id, row.id))
+}
+
 async function writePair(
   tx: Db,
   params: {
@@ -331,33 +444,24 @@ async function writePair(
   )
   if (candidates.length === 0) return { refusal: 'no_matching_certificate' }
 
-  // A daemon may only supply the certificate of a hosting placed on its own
-  // server; a pin on any other server's hosting is none of its business.
-  const pinned = await tx
-    .select({ tlsId: hosting.tlsId })
-    .from(hosting)
-    .innerJoin(service, eq(service.id, hosting.serviceId))
-    .innerJoin(environment, eq(environment.id, service.environmentId))
-    .where(
-      and(
-        eq(environment.serverId, input.serverId),
-        inArray(
-          hosting.tlsId,
-          candidates.map((row) => row.id)
-        )
-      )
-    )
-  const pinnedIds = new Set(pinned.map((row) => row.tlsId))
-  const rows = candidates.filter((row) => pinnedIds.has(row.id))
-  if (rows.length === 0) return { refusal: 'no_matching_certificate' }
+  const rows = input.requestId
+    ? candidates.filter((row) => requestIsOpenFor(row.metadata, input, now))
+    : await rowsPinnedOnServer(tx, candidates, input.serverId)
+  if (rows.length === 0) {
+    return { refusal: input.requestId ? 'request_not_open' : 'no_matching_certificate' }
+  }
 
   const stored: StoredRow[] = []
   await forEachSequential(rows, async (row) => {
     const metadata = row.metadata as ManagedRowMetadata
     const hasStoredPair = row.hasKey === true
-    if (hasStoredPair && row.fingerprintSha256 === parsed.fingerprintSha256) return
+    if (hasStoredPair && row.fingerprintSha256 === parsed.fingerprintSha256) {
+      await noteCaptureOnly(tx, row, input, parsed, now)
+      return
+    }
     const storedNames = hasStoredPair ? metadata.acme?.storedNames : undefined
     if (!replaces({ names: storedNames, notAfter: row.notAfter }, hasStoredPair, parsed, now)) {
+      await noteCaptureOnly(tx, row, input, parsed, now)
       return
     }
 
@@ -384,6 +488,19 @@ async function writePair(
       issuedByServerId: input.serverId,
     }
     delete acme.lastError
+    // A pair has arrived, so a row that was waiting for one is no longer waiting.
+    if (acme.stage === 'waiting') {
+      delete acme.stage
+      delete acme.warning
+    }
+    const nextMetadata = {
+      ...metadata,
+      hasWildcard: parsed.hasWildcard,
+      notBefore: parsed.notBefore.toISOString(),
+      subject: parsed.subject,
+      issuer: parsed.issuer,
+      acme,
+    }
     await tx
       .update(tls)
       .set({
@@ -392,14 +509,12 @@ async function writePair(
         notAfter: parsed.notAfter.toISOString(),
         fingerprintSha256: duplicate ? null : parsed.fingerprintSha256,
         issuedByServerId: input.serverId,
-        metadata: {
-          ...metadata,
-          hasWildcard: parsed.hasWildcard,
-          notBefore: parsed.notBefore.toISOString(),
-          subject: parsed.subject,
-          issuer: parsed.issuer,
-          acme,
-        },
+        metadata: input.requestId
+          ? withCapturedRequest(nextMetadata, now, {
+              covered: coveredBy(parsed, nextMetadata),
+              renewAt: jitteredFallbackRenewAt(parsed.notBefore, parsed.notAfter),
+            })
+          : nextMetadata,
         updatedAt: now.toISOString(),
       })
       .where(and(eq(tls.id, row.id), eq(tls.organizationId, organizationId)))

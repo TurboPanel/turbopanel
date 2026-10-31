@@ -352,7 +352,7 @@ export const principalPaths = {
         },
         400: {
           description:
-            "invalid_service_ids | username_too_long | invalid_name_scheme | Invalid request. username_reserved: the typed name is already a host system user or group (examples: ftp, git), so it cannot be a site owner's Linux user.",
+            "invalid_service_ids | username_too_long | invalid_name_scheme | Invalid request. username_reserved: the typed name is already a host system user or group (examples: ftp, git), or starts with tp (kept for TurboPanel's own accounts) or systemd-, or ends in -grp, so it cannot be a site owner's Linux user.",
         },
         409: { description: 'username_in_use | principal_scheme_locked' },
       },

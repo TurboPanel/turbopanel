@@ -36,6 +36,7 @@ import { type Db, getDaemonCellRegistry, getDb } from '../../db/connection.ts'
 import type { DaemonCellRegistry } from '../../contracts/cell.ts'
 import { isDeveloperSurfaceEnabled } from '../../app/dev-mode.ts'
 import { buildLicenseInstallCommand } from '../../features/install/daemon-install-command.ts'
+import { INSTALL_CA_PIN_UNAVAILABLE } from '../../features/install/install-ca-pin.ts'
 import { resolveInstallOriginTls } from '../../features/install/install-trust.ts'
 import { syncSelfHostedGrant } from '../../features/tiers/self-hosted-grant-records.ts'
 import { lockOrganizationRow } from '../../features/tiers/assignment-records.ts'
@@ -57,6 +58,7 @@ import {
 } from '../../features/licenses/enroll-attempt.ts'
 import { resolveInstanceUpdateChannel } from '../../contracts/update-channel.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
+import { purgeDaemonCellBestEffort } from '../../features/servers/daemon-cell-purge.ts'
 import {
   installBaseUrlValidationError,
   isInvalidInstallBaseUrl,
@@ -83,16 +85,9 @@ async function purgeInvalidatedDaemonCells(
   serverIds: string[]
 ): Promise<void> {
   if (!registry) return
-  await forEachSequential(serverIds, async (serverId) => {
-    try {
-      await registry.getCell(serverId).purge()
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
-      console.error(
-        `Failed to purge daemon cell after license invalidate for server ${serverId}: ${message}`
-      )
-    }
-  })
+  await forEachSequential(serverIds, (serverId) =>
+    purgeDaemonCellBestEffort(registry, serverId, 'after license invalidate')
+  )
 }
 
 type LicenseOwnerContext = Readonly<{ db: Db; organizationId: string }>
@@ -328,8 +323,21 @@ export function registerLicenseRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       // self-hosted :8443 listener, including a private IP or .lan alias,
       // needs -k when the leaf covers it, and is refused when it does not.
       const env = (c.get('platformEnv') as Record<string, string | undefined> | undefined) ?? {}
-      const prepared = await resolveInstallOriginTls(db, instanceUrl, env, opts.runtime === 'deno')
+      const prepared = await resolveInstallOriginTls(
+        db,
+        instanceUrl,
+        env,
+        opts.runtime === 'deno',
+        {
+          readPlatformCaPem: opts.readPlatformCaPem,
+        }
+      )
       if (!prepared.ok) return c.json({ error: prepared.error }, 400)
+      // A self-hosted command that bootstraps insecure TLS must say which CA
+      // the server may keep; without it an on-path attacker picks one.
+      if (opts.runtime === 'deno' && prepared.insecureTls && prepared.caFingerprints.length === 0) {
+        return c.json({ error: INSTALL_CA_PIN_UNAVAILABLE }, 400)
+      }
 
       // The instance does not build daemon release artifacts. In self-hosted dev
       // the operator builds them via Developer → Rebuild daemon and upgrade
@@ -355,6 +363,7 @@ export function registerLicenseRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         licenseId,
         licenseToken,
         insecureTls,
+        caFingerprints: prepared.caFingerprints,
         useInstanceRunScript: Boolean(devSurface),
         updateChannel: resolveInstanceUpdateChannel(c.get('platformEnv')),
       })
