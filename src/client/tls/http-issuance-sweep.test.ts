@@ -199,6 +199,9 @@ test('the sweep picks up exactly the rows with work to do', async () => {
       ownCaptured: await make('owncaptured', { key: true }),
       unpinned: await make('unpinned', { pinned: false }),
       wildcard: await make('wildcard', { names: ['*.example.com'] }),
+      twoNames: await make('twonames', {
+        names: ['twonames.example.com', 'www.twonames.example.com'],
+      }),
     }
     const picked = (await selectHttpIssuanceCandidates(db, NOW, 100))
       .map((r) => r.id)

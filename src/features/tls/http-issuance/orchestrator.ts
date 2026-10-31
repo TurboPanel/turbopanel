@@ -250,9 +250,15 @@ function orderEnvelope(
   })
 }
 
-/** Whether a row may be ordered centrally at all: plain names only (a wildcard needs the DNS proof). */
+/**
+ * Whether a row may be ordered centrally at all: exactly one plain name. A
+ * wildcard needs the DNS proof, and a row with several names (apex and www)
+ * would get one certificate per name from the daemon, which the panel cannot
+ * yet store or send as one pin; such a row stays with each server's own web
+ * server and is never touched here.
+ */
 export function isHttpOrderable(names: readonly string[]): boolean {
-  return names.length > 0 && names.every((n) => !n.includes('*'))
+  return names.length === 1 && !names[0].includes('*')
 }
 
 export type StartOutcome =

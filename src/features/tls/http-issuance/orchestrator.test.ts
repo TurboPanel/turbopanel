@@ -921,3 +921,29 @@ test('a row that is not due or is waiting out a back-off costs no lookups', asyn
     await f.cleanup()
   }
 })
+
+test('a row with several names (apex and www) is left entirely alone', async () => {
+  if (!dbUrl) return skipWithoutDatabase('http issuance tests')
+  const f = await setup({ servers: 2 })
+  try {
+    const row = await readRow(f)
+    await f.db
+      .update(tls)
+      .set({ metadata: { ...(row.metadata as object), dnsNames: [HOST, `www.${HOST}`] } })
+      .where(eq(tls.id, f.tlsId))
+    const before = (await readRow(f)).metadata
+    let lookups = 0
+    const deps = f.deps({
+      dnsLookup: () => {
+        lookups += 1
+        return Promise.resolve([])
+      },
+    })
+    assertEquals(await startHttpIssuance(deps, f.tlsId, always), 'not_eligible')
+    assertEquals(lookups, 0)
+    assertEquals(f.sent.length, 0)
+    assertEquals((await readRow(f)).metadata, before)
+  } finally {
+    await f.cleanup()
+  }
+})

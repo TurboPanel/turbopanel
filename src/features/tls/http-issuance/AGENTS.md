@@ -67,3 +67,8 @@ time) or by a per-minute hash when it has no request yet, and at most three new
 orders begin per tick so a first run after a rollout is gradual. The cheap
 answers (nothing due, a wait or cap in force, no contact address) come before any
 DNS or per-server lookup.
+
+Only a row with exactly one plain name is ordered here. A row with several names
+(apex and www) would get one certificate per name from the daemon, and a row holds
+one pair, so it is left entirely alone (never selected, no lookups, no marker) and
+stays with each server's own web server until per-name pairs exist.

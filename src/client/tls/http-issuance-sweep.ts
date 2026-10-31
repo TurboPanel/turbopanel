@@ -113,8 +113,9 @@ export function selectHttpIssuanceCandidates(db: Db, now: Date, limit: number) {
       and(
         eq(tls.source, 'lets_encrypt'),
         eq(tls.status, 'automatic'),
-        // Only a row that a site pins, and never a wildcard (that is the connected DNS host's).
+        // Only a row that a site pins, with exactly one name, and never a wildcard (that is the connected DNS host's).
         sql`exists (select 1 from ${hosting} where ${hosting.tlsId} = ${tls.id})`,
+        sql`jsonb_array_length(coalesce(${tls.metadata} -> 'dnsNames', '[]'::jsonb)) = 1`,
         sql`not exists (
           select 1 from jsonb_array_elements_text(coalesce(${tls.metadata} -> 'dnsNames', '[]'::jsonb)) as n
           where n like '*%'
