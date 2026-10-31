@@ -61,15 +61,11 @@ function untrustedNeedsFabricError(): BindingReachError {
   }
 }
 
-async function remoteConsumersReachMember(
+async function untrustedPairError(
   db: Db,
   member: ManagedMemberRow,
-  members: readonly ManagedMemberRow[],
-  remoteConsumers: readonly string[],
-  consumerServerIds: readonly string[]
+  remoteConsumers: readonly string[]
 ): Promise<BindingReachError | null> {
-  // The untrusted-network rule wins over a generic missing path, whether or
-  // not the database publishes a listener.
   for (const fromServerId of remoteConsumers) {
     const pair = await resolvePrivateEndpoint(db, {
       fromServerId,
@@ -80,6 +76,20 @@ async function remoteConsumersReachMember(
       return untrustedNeedsFabricError()
     }
   }
+  return null
+}
+
+async function remoteConsumersReachMember(
+  db: Db,
+  member: ManagedMemberRow,
+  members: readonly ManagedMemberRow[],
+  remoteConsumers: readonly string[],
+  consumerServerIds: readonly string[]
+): Promise<BindingReachError | null> {
+  // The untrusted-network rule wins over a generic missing path, whether or
+  // not the database publishes a listener.
+  const untrusted = await untrustedPairError(db, member, remoteConsumers)
+  if (untrusted) return untrusted
 
   const publishedBind = await resolveMemberPrivateBindAddress(
     db,
