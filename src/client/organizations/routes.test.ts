@@ -8,9 +8,11 @@ import { createDenoDb } from '../../db/connection.ts'
 import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from '../authn/crypto.ts'
 import { createSession } from '../authn/session-store.ts'
 import { deriveSecretsConfig, parseSecretsEnv } from '../../lib/secrets/secrets.ts'
-import { fabric, grant, network, organization, user } from '../../db/schema.ts'
+import { audit, fabric, grant, network, organization, user } from '../../db/schema.ts'
 import { registerOrganizationRoutes } from './routes.ts'
 import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
+import { organizationAcmeContactEmail } from '../../features/organizations/acme-contact-email.ts'
+import { parseOrganizationOptions } from '../../features/organizations/organization-options.ts'
 
 const dbUrl = getDatabaseUrl()
 
@@ -578,6 +580,107 @@ test('PUT /organizations/:id/docker-networking forbids non-managers', async () =
         body: JSON.stringify({ addressPools: [] }),
       })
       assertEquals(res.status, 403)
+    },
+    { withManageGrant: false }
+  )
+})
+
+test('PUT /organizations/:id/tls-settings stores the contact email, keeps other options, and clears it', async () => {
+  await withOrgFixtures(async ({ db, app, secrets, userId, organizationId }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const url = `/organizations/${organizationId}/tls-settings`
+    const headers = { Cookie: cookie, 'Content-Type': 'application/json' }
+    await db
+      .update(organization)
+      .set({ options: { acmeEnabled: true, defaultEnvironmentName: 'staging' } })
+      .where(eq(organization.id, organizationId))
+
+    const put = await app.request(url, {
+      method: 'PUT',
+      headers,
+      body: JSON.stringify({ acmeContactEmail: 'Ops@Example.COM' }),
+    })
+    assertEquals(put.status, 200)
+    assertEquals(await put.json(), {
+      ok: true,
+      acmeEnabled: true,
+      acmeContactEmail: 'Ops@example.com',
+    })
+    const [row] = await db
+      .select({ options: organization.options })
+      .from(organization)
+      .where(eq(organization.id, organizationId))
+    assertEquals(parseOrganizationOptions(row!.options).defaultEnvironmentName, 'staging')
+    assertEquals(await organizationAcmeContactEmail(db, organizationId), 'Ops@example.com')
+
+    // Saving the same address again changes nothing, so it writes no audit row.
+    const again = await app.request(url, {
+      method: 'PUT',
+      headers,
+      body: JSON.stringify({ acmeContactEmail: 'Ops@example.com' }),
+    })
+    assertEquals(again.status, 200)
+    const auditRows = await db
+      .select({ context: audit.context })
+      .from(audit)
+      .where(
+        and(
+          eq(audit.organizationId, organizationId),
+          eq(audit.action, 'organization.acme_contact.set')
+        )
+      )
+    assertEquals(auditRows.length, 1)
+    assertEquals(auditRows[0]!.context, { acmeContactEmail: 'Ops@example.com', previous: null })
+
+    const cleared = await app.request(url, {
+      method: 'PUT',
+      headers,
+      body: JSON.stringify({ acmeContactEmail: null }),
+    })
+    assertEquals(cleared.status, 200)
+    assertEquals(await cleared.json(), { ok: true, acmeEnabled: true, acmeContactEmail: null })
+    assertEquals(await organizationAcmeContactEmail(db, organizationId), null)
+    const [after] = await db
+      .select({ options: organization.options })
+      .from(organization)
+      .where(eq(organization.id, organizationId))
+    assertEquals(
+      Object.hasOwn((after!.options ?? {}) as Record<string, unknown>, 'acmeContactEmail'),
+      false
+    )
+  })
+})
+
+test('PUT /organizations/:id/tls-settings refuses a mailto header trick and an empty body', async () => {
+  await withOrgFixtures(async ({ db, app, secrets, userId, organizationId }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const url = `/organizations/${organizationId}/tls-settings`
+    const headers = { Cookie: cookie, 'Content-Type': 'application/json' }
+    const bad = await app.request(url, {
+      method: 'PUT',
+      headers,
+      body: JSON.stringify({ acmeContactEmail: 'a?subject=x@example.org' }),
+    })
+    assertEquals(bad.status, 400)
+    const empty = await app.request(url, { method: 'PUT', headers, body: '{}' })
+    assertEquals(empty.status, 400)
+    assertEquals(await empty.json(), { error: 'Send acmeEnabled or acmeContactEmail' })
+  })
+})
+
+test('GET and PUT /organizations/:id/tls-settings forbid non-managers', async () => {
+  await withOrgFixtures(
+    async ({ db, app, secrets, userId, organizationId }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const url = `/organizations/${organizationId}/tls-settings`
+      const put = await app.request(url, {
+        method: 'PUT',
+        headers: { Cookie: cookie, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ acmeContactEmail: 'ops@example.com' }),
+      })
+      assertEquals(put.status, 403)
+      const get = await app.request(url, { headers: { Cookie: cookie } })
+      assertEquals(get.status, 403)
     },
     { withManageGrant: false }
   )

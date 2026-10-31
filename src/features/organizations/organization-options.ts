@@ -161,6 +161,13 @@ export type OrganizationOptions = {
    */
   acmeEnabled?: boolean
   /**
+   * The one address kept for this organization's Let's Encrypt account contact
+   * (central certificate ordering will use it; nothing reads it yet). Unset means none.
+   * Never taken from a member's account: an organization can have several
+   * owners and a person's address is not sent to a third party unasked.
+   */
+  acmeContactEmail?: string
+  /**
    * Step-up re-authentication for permanent actions (delete a project, remove
    * a member, revoke a key, ...). When on, those routes refuse with
    * `reauth_required` until the signed-in person has just proved who they are
@@ -410,6 +417,8 @@ export function parseOrganizationOptions(value: unknown): OrganizationOptions {
   if (typeof value.acmeEnabled === 'boolean') {
     options.acmeEnabled = value.acmeEnabled
   }
+  const acmeContactEmail = normalizeAcmeContactEmail(value.acmeContactEmail)
+  if (acmeContactEmail) options.acmeContactEmail = acmeContactEmail
   assignRequireReauth(options, value)
   assignComposeOptIns(options, value)
   if (typeof value.deployHooksEnabled === 'boolean') {
@@ -495,6 +504,51 @@ export const NEW_ORGANIZATION_OPTIONS: Readonly<OrganizationOptions> = Object.fr
 /** Effective Let's Encrypt gate: off unless the key is set (new organizations set it on). */
 export function resolveAcmeEnabled(options: OrganizationOptions): boolean {
   return options.acmeEnabled ?? false
+}
+
+/** Longest address the authority accepts as a contact (the mailbox limit). */
+export const ACME_CONTACT_EMAIL_MAX_LENGTH = 254
+const LOCAL_PART_CHARS = /^[A-Za-z0-9_+-]+$/
+const LABEL_CHARS = /^[a-z0-9-]+$/
+
+/**
+ * One public mailbox for the authority's contact field, lowercased, or `null`.
+ * Stricter than a general address check: a conservative ASCII local part, no
+ * display name or control characters, and a dotted domain that is not an address literal (the
+ * authority refuses contacts on names that cannot receive mail).
+ */
+export function normalizeAcmeContactEmail(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const trimmed = value.trim()
+  if (trimmed.length === 0 || trimmed.length > ACME_CONTACT_EMAIL_MAX_LENGTH) return null
+  const at = trimmed.indexOf('@')
+  if (at <= 0 || at !== trimmed.lastIndexOf('@')) return null
+  const local = trimmed.slice(0, at)
+  const domain = trimmed.slice(at + 1).toLowerCase()
+  // The address becomes a mailto: contact, so the local part is limited to
+  // letters, digits and . _ - + (no ? & # % that would add header fields or a
+  // percent-encoded line break). Dots only between non-empty parts.
+  if (local.length > 64) return null
+  if (!local.split('.').every((part) => part.length > 0 && LOCAL_PART_CHARS.test(part))) return null
+  const labels = domain.split('.')
+  if (labels.length < 2 || labels.some((label) => label.length === 0 || label.length > 63)) {
+    return null
+  }
+  if (
+    !labels.every(
+      (label) => LABEL_CHARS.test(label) && !label.startsWith('-') && !label.endsWith('-')
+    )
+  ) {
+    return null
+  }
+  // A numeric last label is an IP address, not a public mail domain.
+  if (/^\d+$/.test(labels.at(-1) ?? '')) return null
+  return `${local}@${domain}`
+}
+
+/** Effective contact address for Let's Encrypt orders, or null when none is set. */
+export function resolveAcmeContactEmail(options: OrganizationOptions): string | null {
+  return options.acmeContactEmail ?? null
 }
 
 /** Effective step-up gate for permanent actions: off unless an owner turned it on. */
