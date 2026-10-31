@@ -18,6 +18,7 @@ import {
   classifyTlsInsertConflict,
   createFailure,
   isCreateTlsFailure,
+  plainAcmeNote,
   isOrganizationCaExistsCode,
   isTlsUuid,
   materialFromOrganizationCa,
@@ -418,4 +419,28 @@ test('toPublicTlsRow never carries the private state of a server-ordered certifi
   assertEquals(text.includes('req_secret'), false)
   assertEquals(text.includes('server-secret-id'), false)
   assertEquals(shown?.metadata.acme?.managedBy, 'server')
+})
+
+test('an issuance note reads in plain words and is dropped once a certificate was issued after it', () => {
+  const raw = 'The operation was aborted due to timeout'
+  const failing = plainAcmeNote({
+    acme: { lastError: raw, lastFailedAt: '2026-10-30T10:00:00.000Z' },
+  })
+  assertEquals(failing.acme?.lastError?.startsWith('This name did not answer in time'), true)
+  const settled = plainAcmeNote({
+    acme: {
+      lastError: raw,
+      lastFailedAt: '2026-10-30T10:00:00.000Z',
+      lastIssuedAt: '2026-10-30T11:00:00.000Z',
+    },
+  })
+  assertEquals(settled.acme?.lastError, undefined)
+  const renewalFailed = plainAcmeNote({
+    acme: {
+      lastError: 'DNS problem: NXDOMAIN',
+      lastFailedAt: '2026-10-30T12:00:00.000Z',
+      lastIssuedAt: '2026-10-30T11:00:00.000Z',
+    },
+  })
+  assertEquals(renewalFailed.acme?.lastError, 'DNS problem: NXDOMAIN')
 })
