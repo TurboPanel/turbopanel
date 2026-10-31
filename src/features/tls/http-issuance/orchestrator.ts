@@ -45,6 +45,7 @@ import {
   waitingMarker,
 } from './progress.ts'
 import {
+  closedAsIssued,
   type ForwardResult,
   type HttpIssuanceState,
   newHttpIssuanceState,
@@ -512,8 +513,13 @@ async function advanceInTransaction(
   const row = await lockRow(tx, params.tlsId)
   const state = row ? readHttpIssuanceState(row.metadata) : null
   if (!row || state?.endedAt !== null) return { outcome: 'not_due', send: [] }
-  const action = decideOpen(state, now)
+  const action = decideOpen(state, now, row.names)
   if (action.kind === 'wait') return { outcome: 'not_due', send: [] }
+  if (action.kind === 'close') {
+    const closed = closedAsIssued(state, now.toISOString())
+    await writeState(tx, row, closed, now)
+    return { outcome: 'not_due', send: [] }
+  }
   if (action.kind === 'fail') {
     const failed = failedState(state, now, action.reason, action.blameIssuer)
     await writeState(tx, row, failed, now)

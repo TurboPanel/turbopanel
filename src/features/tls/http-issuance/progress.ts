@@ -24,6 +24,8 @@ export const READY_WAIT_MS = 2 * MINUTE
 export const START_SILENCE_MS = 3 * MINUTE
 /** After `started`, how long the issuing server may stay quiet before the order is given up. */
 export const ORDER_SILENCE_MS = 10 * MINUTE
+/** How long after the last pair is stored the panel waits for `issued` before closing without it. */
+export const CAPTURED_WITHOUT_EVENT_MS = MINUTE
 /** After `issued`, how long the pair may take to arrive. */
 export const PAIR_WAIT_MS = 5 * MINUTE
 /** The whole request, including forwards, lives this long. */
@@ -34,6 +36,8 @@ export type OpenAction =
   /** Send `acme-issue-request`; `skip` are helpers that never answered. */
   | { kind: 'order'; skip: string[] }
   | { kind: 'fail'; reason: string; blameIssuer: boolean }
+  /** Every name has its pair but the issued event never came: close as issued. */
+  | { kind: 'close' }
 
 const since = (iso: string | null, now: Date): number =>
   iso === null || Number.isNaN(Date.parse(iso)) ? 0 : now.getTime() - Date.parse(iso)
@@ -77,8 +81,24 @@ function orderingAction(state: HttpIssuanceState, now: Date): OpenAction {
 }
 
 /** The next step for a request that is still open. */
-export function decideOpen(state: HttpIssuanceState, now: Date): OpenAction {
+export function decideOpen(
+  state: HttpIssuanceState,
+  now: Date,
+  expectedNames: readonly string[] = []
+): OpenAction {
   if (state.endedAt !== null) return { kind: 'wait' }
+  // The pairs are stored for every name but the `issued` event was lost (a blip in
+  // the daemon's link): the certificate is in, so close as issued instead of failing
+  // a good order. A short wait leaves room for the event that normally follows.
+  if (
+    state.capturedAt !== null &&
+    state.issuedEventAt === null &&
+    expectedNames.length > 0 &&
+    allNamesCovered(state, expectedNames) &&
+    since(state.capturedAt, now) >= CAPTURED_WITHOUT_EVENT_MS
+  ) {
+    return { kind: 'close' }
+  }
   if (now.getTime() >= Date.parse(state.startByAt)) {
     return { kind: 'fail', reason: 'The order did not finish in time.', blameIssuer: true }
   }

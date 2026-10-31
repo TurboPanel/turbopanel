@@ -239,3 +239,21 @@ test('the issued event does not close a two-name request until both names have a
   const covered = { ...base, coveredNames: names }
   assertEquals(nextStateForEvent(covered, event, at(1000), names).phase, 'issued')
 })
+
+test('a stored pair with a lost issued event closes the request after a minute', () => {
+  const names = ['a.example.com']
+  const state = open({
+    phase: 'ordering',
+    forwards: [],
+    orderSentAt: T0.toISOString(),
+    capturedAt: T0.toISOString(),
+    coveredNames: names,
+  })
+  assertEquals(decideOpen(state, at(30_000), names), { kind: 'wait' })
+  assertEquals(decideOpen(state, at(60_000), names), { kind: 'close' })
+  // Not every name stored, or no names known: no early close.
+  assertEquals(decideOpen(state, at(60_000), [...names, 'www.a.example.com']).kind, 'wait')
+  assertEquals(decideOpen(state, at(60_000)).kind, 'wait')
+  // Still true near the end of the request, before the time limit fails it.
+  assertEquals(decideOpen(state, at(29 * 60_000), names), { kind: 'close' })
+})
