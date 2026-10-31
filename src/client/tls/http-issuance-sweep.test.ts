@@ -25,7 +25,7 @@ import {
   withHttpIssuanceState,
 } from '../../features/tls/http-issuance/state.ts'
 import {
-  httpIssuanceContact,
+  httpIssuanceStaging,
   markChecked as markCheckedForTest,
   selectHttpIssuanceCandidates,
 } from './http-issuance-sweep.ts'
@@ -246,13 +246,8 @@ test('the sweep picks up exactly the rows with work to do', async () => {
   }
 })
 
-test('the contact address and directory come from the platform environment', () => {
-  assertEquals(httpIssuanceContact({}), { contactEmail: '', staging: false })
-  assertEquals(
-    httpIssuanceContact({
-      TURBOPANEL_ACME_CONTACT_EMAIL: ' ops@example.com ',
-      TURBOPANEL_ACME_STAGING: 'TRUE',
-    }),
-    { contactEmail: 'ops@example.com', staging: true }
-  )
+test('the test directory is a platform setting', () => {
+  assertEquals(httpIssuanceStaging({}), false)
+  assertEquals(httpIssuanceStaging({ TURBOPANEL_ACME_STAGING: ' TRUE ' }), true)
+  assertEquals(httpIssuanceStaging({ TURBOPANEL_ACME_STAGING: 'no' }), false)
 })

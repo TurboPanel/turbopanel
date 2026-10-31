@@ -64,8 +64,10 @@ export type HttpIssuanceDeps = {
   dnsLookup: DnsLookup
   isOnline: (serverId: string) => Promise<boolean>
   daemonFeatures: (serverId: string) => Promise<readonly string[]>
-  /** The authority contact and directory; an empty address means orders cannot start yet. */
-  contact: () => Promise<{ contactEmail: string; staging: boolean }>
+  /** The organization's certificate contact address, or null when it has none (orders cannot start). */
+  contactEmail: (organizationId: string) => Promise<string | null>
+  /** Order from the authority's test directory (a platform setting). */
+  staging: boolean
   newRequestId?: () => string
 }
 
@@ -380,11 +382,11 @@ async function startInTransaction(
     now: Date
     tlsId: string
     choice: Choice
-    contact: { contactEmail: string; staging: boolean }
+    contactEmail: string
     due: (facts: { hasPair: boolean; metadata: Record<string, unknown> }) => boolean
   }
 ): Promise<StepResult> {
-  const { deps, now, choice, contact } = params
+  const { deps, now, choice, contactEmail } = params
   const row = await lockRow(tx, params.tlsId)
   if (!row) return { outcome: 'not_eligible', send: [] }
   if (!(await acmeEnabledFor(tx, row.organizationId))) return { outcome: 'not_eligible', send: [] }
@@ -398,15 +400,11 @@ async function startInTransaction(
     now
   )
   if (!verdict.ok) return { outcome: 'backoff', send: [] }
-  if (contact.contactEmail.trim() === '') {
-    await writeWaiting(tx, row, waitingText('no_contact'), now)
-    return { outcome: 'waiting', send: [] }
-  }
   if (!choice.ok) {
     await writeWaiting(tx, row, waitingText(choice.reason), now)
     return { outcome: 'waiting', send: [] }
   }
-  const fresh = freshState({ deps, now, choice, previous, staging: contact.staging })
+  const fresh = freshState({ deps, now, choice, previous, staging: deps.staging })
   const direct = choice.helpers.length === 0
   const state: HttpIssuanceState = direct
     ? { ...fresh, phase: 'ordering', orderSentAt: fresh.startedAt }
@@ -414,7 +412,7 @@ async function startInTransaction(
   await writeState(tx, row, state, now)
   return {
     outcome: direct ? 'ordering' : 'started',
-    send: openingMessages(now, row, state, choice, contact.contactEmail),
+    send: openingMessages(now, row, state, choice, contactEmail),
     state,
   }
 }
@@ -435,6 +433,7 @@ export async function startHttpIssuance(
       metadata: tls.metadata,
       source: tls.source,
       status: tls.status,
+      organizationId: tls.organizationId,
       hasKey: sql<boolean>`${tls.privateKeyPem} is not null`,
     })
     .from(tls)
@@ -454,16 +453,44 @@ export async function startHttpIssuance(
     nextAttemptAt: previous?.nextAttemptAt ?? null,
   }
   if (!mayStartAttempt(attempts, now).ok) return 'backoff'
-  const contact = await deps.contact()
-  if (contact.contactEmail.trim() === '') return 'waiting'
+  const contactEmail = await deps.contactEmail(peek.organizationId)
+  if (contactEmail === null || contactEmail.trim() === '') {
+    return await waitForContact(deps, peek.organizationId, tlsId, now)
+  }
   const { choice, servers } = await gather(deps, { id: tlsId, names }, previous)
   // Every serving server on an older daemon keeps ordering for itself; the row is left alone.
   if (!servers.some((s) => s.hasFeature)) return 'not_eligible'
   const result = await deps.db.transaction((tx) =>
-    startInTransaction(tx as unknown as Db, { deps, now, tlsId, choice, contact, due })
+    startInTransaction(tx as unknown as Db, { deps, now, tlsId, choice, contactEmail, due })
   )
   await deliverOrFail(deps, tlsId, result)
   return result.outcome
+}
+
+/**
+ * No contact address for the organization. Only database reads: when a serving
+ * server's daemon lists the feature the row says it is waiting for an address (an
+ * unchanged marker is not rewritten); otherwise it is not ours and is left alone.
+ * Never looks at DNS.
+ */
+async function waitForContact(
+  deps: HttpIssuanceDeps,
+  organizationId: string,
+  tlsId: string,
+  now: Date
+): Promise<StartOutcome> {
+  const serving = await loadServingServers(deps.db, tlsId)
+  const lists = await Promise.all(
+    serving.map(async (s) => (await deps.daemonFeatures(s.serverId)).includes(ACME_ISSUE_FEATURE))
+  )
+  if (!lists.some(Boolean)) return 'not_eligible'
+  await deps.db.transaction(async (tx0) => {
+    const tx = tx0 as unknown as Db
+    const row = await lockRow(tx, tlsId)
+    if (row?.organizationId !== organizationId) return
+    await writeWaiting(tx, row, waitingText('no_contact'), now)
+  })
+  return 'waiting'
 }
 
 /** Send what a step produced; a send that fails closes the request as failed so it is tried again later. */
@@ -534,7 +561,7 @@ export async function failOpenRequest(
 
 async function advanceInTransaction(
   tx: Db,
-  params: { deps: HttpIssuanceDeps; now: Date; tlsId: string; contactEmail: string }
+  params: { deps: HttpIssuanceDeps; now: Date; tlsId: string; contactEmail: string | null }
 ): Promise<StepResult> {
   const { now } = params
   const row = await lockRow(tx, params.tlsId)
@@ -544,6 +571,13 @@ async function advanceInTransaction(
   if (action.kind === 'wait') return { outcome: 'not_due', send: [] }
   if (action.kind === 'fail') {
     const failed = failedState(state, now, action.reason, action.blameIssuer)
+    const ended = { ...failed, endsSentAt: now.toISOString() }
+    await writeState(tx, row, ended, now)
+    return { outcome: 'backoff', send: endMessages(now, ended), state: ended, required: false }
+  }
+  if (params.contactEmail === null || params.contactEmail.trim() === '') {
+    // The address was taken away while helpers were getting ready: give the attempt up, try again later.
+    const failed = failedState(state, now, 'The contact email address was removed.', false)
     const ended = { ...failed, endsSentAt: now.toISOString() }
     await writeState(tx, row, ended, now)
     return { outcome: 'backoff', send: endMessages(now, ended), state: ended, required: false }
@@ -607,13 +641,13 @@ export async function advanceHttpIssuance(
 ): Promise<StartOutcome> {
   const now = clock(deps)
   const [peek] = await deps.db
-    .select({ metadata: tls.metadata })
+    .select({ metadata: tls.metadata, organizationId: tls.organizationId })
     .from(tls)
     .where(eq(tls.id, tlsId))
     .limit(1)
   const state = peek ? readHttpIssuanceState(peek.metadata) : null
-  if (state?.endedAt !== null) return 'not_due'
-  const { contactEmail } = await deps.contact()
+  if (!peek || state?.endedAt !== null) return 'not_due'
+  const contactEmail = await deps.contactEmail(peek.organizationId)
   const result = await deps.db.transaction((tx) =>
     advanceInTransaction(tx as unknown as Db, { deps, now, tlsId, contactEmail })
   )

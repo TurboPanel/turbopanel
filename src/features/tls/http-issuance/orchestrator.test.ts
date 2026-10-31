@@ -161,7 +161,8 @@ async function setup(
       Promise.resolve(
         (options.noFeature ?? []).some((i) => servers[i]!.id === id) ? [] : ['acme-issue-v1']
       ),
-    contact: () => Promise.resolve({ contactEmail: 'ops@example.com', staging: true }),
+    contactEmail: () => Promise.resolve('ops@example.com'),
+    staging: true,
     newRequestId: () => 'req_test_1',
     now: () => T0,
     ...over,
@@ -880,14 +881,13 @@ test('after the issuing server reports a failure the helpers are told to stop, o
   }
 })
 
-test('with no contact address nothing is looked up, sent or written', async () => {
+test('with no contact address nothing is sent or looked up, and the row says it is waiting', async () => {
   if (!dbUrl) return skipWithoutDatabase('http issuance tests')
   const f = await setup({ servers: 2 })
   try {
     let lookups = 0
-    const before = (await readRow(f)).metadata
     const deps = f.deps({
-      contact: () => Promise.resolve({ contactEmail: ' ', staging: false }),
+      contactEmail: () => Promise.resolve(null),
       dnsLookup: () => {
         lookups += 1
         return Promise.resolve([])
@@ -896,7 +896,45 @@ test('with no contact address nothing is looked up, sent or written', async () =
     assertEquals(await startHttpIssuance(deps, f.tlsId, always), 'waiting')
     assertEquals(lookups, 0)
     assertEquals(f.sent.length, 0)
+    const row = await readRow(f)
+    assertEquals(readHttpIssuanceState(row.metadata), null)
+    const acme = (row.metadata as { acme: { stage: string; warning: string } }).acme
+    assertEquals(acme.stage, 'waiting')
+    assertEquals(
+      acme.warning,
+      'Waiting for a contact email address for certificates to be set for this organization.'
+    )
+    // The same words again are not written a second time.
+    const written = (await readRow(f)).updatedAt
+    assertEquals(await startHttpIssuance(deps, f.tlsId, always), 'waiting')
+    assertEquals((await readRow(f)).updatedAt, written)
+  } finally {
+    await f.cleanup()
+  }
+})
+
+test('with no contact address a row served only by older daemons is left untouched', async () => {
+  if (!dbUrl) return skipWithoutDatabase('http issuance tests')
+  const f = await setup({ servers: 2, noFeature: [0, 1] })
+  try {
+    const before = (await readRow(f)).metadata
+    const deps = f.deps({ contactEmail: () => Promise.resolve('  ') })
+    assertEquals(await startHttpIssuance(deps, f.tlsId, always), 'not_eligible')
     assertEquals((await readRow(f)).metadata, before)
+  } finally {
+    await f.cleanup()
+  }
+})
+
+test('an organization with a contact address orders, and the address travels in the request', async () => {
+  if (!dbUrl) return skipWithoutDatabase('http issuance tests')
+  const f = await setup({ servers: 1 })
+  try {
+    const deps = f.deps({ contactEmail: () => Promise.resolve('certs@example.org') })
+    assertEquals(await startHttpIssuance(deps, f.tlsId, always), 'ordering')
+    const order = f.sent[0]!.envelope
+    assert(order.kind === 'acme-issue-request')
+    assertEquals(order.contactEmail, 'certs@example.org')
   } finally {
     await f.cleanup()
   }

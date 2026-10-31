@@ -14,6 +14,7 @@ import { hosting, tls } from '../../db/schema.ts'
 import { isServerConnected } from '../../daemon/cell/server-status.ts'
 import type { CommandQueue } from '../../features/commands/queue.ts'
 import { runtimeDnsLookup } from '../../features/hostings/hosting-dns-check.ts'
+import { organizationAcmeContactEmail } from '../../features/organizations/acme-contact-email.ts'
 import { getServerDaemonStateByServerId } from '../../features/servers/server-identity-db.ts'
 import {
   advanceHttpIssuance,
@@ -53,20 +54,9 @@ export type HttpIssuanceSweepResult = {
   delivered: number
 }
 
-/**
- * The authority contact and directory for server-placed orders, from the
- * platform's environment. Kept apart from the control plane's own certificate
- * settings on purpose (the two must not reference each other). With no contact
- * address set, no order starts and the row says so.
- */
-export function httpIssuanceContact(env: Record<string, string | undefined>): {
-  contactEmail: string
-  staging: boolean
-} {
-  return {
-    contactEmail: (env.TURBOPANEL_ACME_CONTACT_EMAIL ?? '').trim(),
-    staging: (env.TURBOPANEL_ACME_STAGING ?? '').trim().toLowerCase() === 'true',
-  }
+/** Order from the authority's test directory when the platform says so (`TURBOPANEL_ACME_STAGING=true`). */
+export function httpIssuanceStaging(env: Record<string, string | undefined>): boolean {
+  return (env.TURBOPANEL_ACME_STAGING ?? '').trim().toLowerCase() === 'true'
 }
 
 /** The orchestrator's seams, wired to the real cells, presence and settings. */
@@ -83,7 +73,8 @@ export function buildHttpIssuanceDeps(db: Db, wiring: HttpIssuanceSweepWiring): 
     isOnline: (serverId) => isServerConnected(db, wiring.registry, serverId),
     daemonFeatures: async (serverId) =>
       (await getServerDaemonStateByServerId(db, serverId))?.projection?.features ?? [],
-    contact: () => Promise.resolve(httpIssuanceContact(wiring.env)),
+    contactEmail: (organizationId) => organizationAcmeContactEmail(db, organizationId),
+    staging: httpIssuanceStaging(wiring.env),
   }
 }
 

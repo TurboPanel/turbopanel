@@ -54,11 +54,14 @@ is never picked.
   order runs, and the old pair keeps serving until the new one is installed.
   No route yet: the screen change adds it.
 
-Contact address and directory come from the platform environment
-(`TURBOPANEL_ACME_CONTACT_EMAIL`, and `TURBOPANEL_ACME_STAGING=true` for the
-authority's test directory), not from the control plane's own certificate
-settings: the two must not reference each other (`check-instance-acme-boundary`).
-With no contact address, no order starts and the row says it is waiting.
+The contact address is the organization's own (`organization.options.acmeContactEmail`,
+read by `organizationAcmeContactEmail`, set by org managers). It travels in each
+`acme-issue-request`; the daemon holds one authority account per issuing server per
+contact address, and the panel holds no account for this flow. With no address no
+order is sent and nothing is looked up; the row says it is waiting for an address
+only when a serving server's daemon lists the feature (an unchanged marker is not
+rewritten), otherwise it is left alone. The test directory is a platform setting
+(`TURBOPANEL_ACME_STAGING=true`).
 
 Sweep selection is plain SQL and writes nothing to rows the flow does not own:
 only pinned rows without a wildcard name are looked at, a row is ordered by when
