@@ -70,6 +70,7 @@ jobs:
         if: steps.compare.outputs.result == 'newer'
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           [ -s "$RUNNER_TEMP/report.md" ] || { echo "::error::The report is empty."; exit 1; }
           title="Tunnel connector update available"
