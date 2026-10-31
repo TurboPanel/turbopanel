@@ -660,8 +660,9 @@ sourceServerId? }`
   public on such a pair carry `untrustedPublic: true`. New placements refuse
   `untrustedPublic` and `tunnelDown` with the same 422:
   a replica create checks both directions of the pair (the primary-to-replica
-  direction turns `tunnelDown` when the replica's daemon is offline, so the
-  offline check runs first and says offline), and a class change to failover
+  direction turns `tunnelDown` when the replica's daemon is offline, so an
+  offline replica on an untrusted-only pair reads as this refusal before the
+  offline check runs), and a class change to failover
   checks only the replica-to-primary direction. A new binding whose app host
   would dial the database over that public address is refused too
   (`binding_endpoint_unavailable` with the TurboFabric message; the console
