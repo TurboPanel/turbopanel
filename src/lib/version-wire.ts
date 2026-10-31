@@ -208,6 +208,7 @@ export const DAEMON_WIRE_FEATURES = [
   'fabric-retain-keys-v1',
   'fabric-peer-report-v1',
   'fabric-lan-routes-v1',
+  'repo-key-report-v1',
 ] as const
 
 export type DaemonWireFeature = (typeof DAEMON_WIRE_FEATURES)[number]
@@ -448,6 +449,14 @@ export const FABRIC_PEER_REPORT_FEATURE: DaemonWireFeature = 'fabric-peer-report
  * when both daemons list it; otherwise the pair keeps its tunnel over the LAN.
  */
 export const FABRIC_LAN_ROUTES_FEATURE: DaemonWireFeature = 'fabric-lan-routes-v1'
+
+/**
+ * The daemon reports `repo-key-changed` when a package source's signing key
+ * is not one it expects, and this control plane tells the organization's
+ * managers. Listing it is what lets a daemon send the frame; an older daemon
+ * never does.
+ */
+export const REPO_KEY_REPORT_FEATURE: DaemonWireFeature = 'repo-key-report-v1'
 
 /**
  * The daemon answers `managed-permissions-request` with
