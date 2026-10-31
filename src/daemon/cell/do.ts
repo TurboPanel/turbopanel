@@ -36,6 +36,10 @@ import {
 import { createDurableObjectDaemonCellRegistry } from './do-registry.ts'
 import { createFreshStandbyProbe } from '../../client/managed/health-probe.ts'
 import { handleAcmeIssuanceEvent } from '../../client/tls/acme-issuance-event.ts'
+import {
+  handleHttpIssuanceInbound,
+  isHttpIssuanceMessage,
+} from '../../features/tls/http-issuance/events.ts'
 import { handleManagedHealthReport } from '../../features/managed/health-report.ts'
 import {
   FabricPeerReportThrottle,
@@ -1975,6 +1979,13 @@ export class DaemonCellObject {
           peers: parsed.peers,
           observedAt: parsed.observedAt,
         })
+      })
+      return true
+    }
+    if (isHttpIssuanceMessage(parsed)) {
+      await this.#recordInboundRepairingPresence(attachment, parsed.at)
+      await this.#withProjectionDb(parsed.type, attachment.serverId, async (db) => {
+        await handleHttpIssuanceInbound(db, attachment.serverId, parsed)
       })
       return true
     }

@@ -12,11 +12,9 @@ import {
   hosting,
   ip,
   organization,
-  server,
   service,
   tls,
 } from '../../db/schema.ts'
-import { reportedIpsFromServerMetadata } from '../../contracts/server-addresses.ts'
 import { readHostingComposeOwner } from '../../features/hostings/hosting-compose-owner.ts'
 import {
   type HostingCertificate,
@@ -32,8 +30,7 @@ import {
   resolveHostingProtocol,
 } from '../../features/hostings/hosting-options.ts'
 import type { LetsEncryptStore } from '../../features/hostings/use-letsencrypt.ts'
-import { loadClientAddressEntries } from '../../features/net/client-addresses.ts'
-import { servingPublicAddresses } from '../../features/net/client-addresses-pure.ts'
+import { loadServerPublicAddresses } from '../../features/net/client-addresses.ts'
 import {
   parseOrganizationOptions,
   resolveAcmeEnabled,
@@ -100,27 +97,6 @@ async function loadExpectedAddresses(db: Db, hostingId: string): Promise<string[
   if (serverIds.length === 0) return []
   const perServer = await Promise.all(serverIds.map((id) => loadServerPublicAddresses(db, id)))
   return [...new Set(perServer.flat())]
-}
-
-/**
- * The public addresses one serving server is known by: managed `ip` rows, its
- * public-side address overrides and the public addresses its daemon reports.
- * A server without managed addresses is still checked against what it reports.
- */
-async function loadServerPublicAddresses(db: Db, serverId: string): Promise<string[]> {
-  const [ipRows, serverRows, saved] = await Promise.all([
-    db
-      .select({ address: ip.address })
-      .from(ip)
-      .where(and(eq(ip.serverId, serverId), eq(ip.scope, 'public'))),
-    db.select({ metadata: server.metadata }).from(server).where(eq(server.id, serverId)).limit(1),
-    loadClientAddressEntries(db, serverId),
-  ])
-  return servingPublicAddresses({
-    publicIps: ipRows.flatMap((row) => inetAddressToString(row.address) ?? []),
-    saved,
-    reportedIps: reportedIpsFromServerMetadata(serverRows[0]?.metadata) ?? [],
-  })
 }
 
 /** Hostnames of the other web hostings that deploy together with this one (same environment). */

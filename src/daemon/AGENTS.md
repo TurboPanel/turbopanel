@@ -98,5 +98,19 @@ plane). Their shapes and validators are in `src/contracts/cell-protocol.ts`.
 - A pair with a `requestId` is accepted only from the server the request was made
   to, while the request is open (`src/features/tls/http-issuance/state.ts`). A pair
   without one follows the older rule: only a server that holds a pin may report.
-- The inbound messages are not in `DAEMON_INBOUND_ALLOWED` yet; the scheduler that
-  sends and handles them adds them.
+- The three daemon-to-control-plane messages are in `DAEMON_INBOUND_ALLOWED` and
+  handled on both runtimes (`src/features/tls/http-issuance/events.ts`: the Deno
+  socket handler and the Durable Object, no timers). A message only changes the
+  stored request; the scheduler's sweep sends whatever comes next. Each is matched
+  to its row by request id inside the reporting server's organization, and only
+  the server the request names may answer for it.
+- The control plane sends the three outbound messages as cell outbox envelopes
+  (`acme-issue-request`, `acme-proof-forward`, `acme-proof-forward-end` kinds in
+  `DaemonOutboundEnvelope`, mapped by `outboundEnvelopeToWireMessage`). The cell's
+  own correlation id is separate from the order's `requestId`; the replies are
+  fire and forget.
+- What the daemon must do: post the pair with `POST /api/daemon/v1/tls/issued`
+  first and send `issued` after (either order is tolerated, but a request closes
+  only when both have arrived); send `failed` with a plain reason (an authority
+  rate-limit answer should keep the words `rateLimited`, so the panel waits an
+  hour); answer every `acme-proof-forward` with `-ready` or `-failed`.

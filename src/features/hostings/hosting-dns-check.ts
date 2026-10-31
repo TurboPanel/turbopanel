@@ -28,7 +28,7 @@ export function runtimeDnsLookup(): DnsLookup {
 }
 
 /** A or AAAA failures ("no such name", timeout) count as "no records of that type". */
-async function addressesOf(lookup: DnsLookup, name: string): Promise<string[]> {
+export async function resolveNameAddresses(lookup: DnsLookup, name: string): Promise<string[]> {
   const settled = await Promise.allSettled([lookup(name, 'A'), lookup(name, 'AAAA')])
   const found: string[] = []
   for (const result of settled) {
@@ -108,7 +108,7 @@ async function checkOneName(
   lookup: DnsLookup,
   probes: CertificatePrecheckProbes
 ): Promise<HostingDnsHostname> {
-  const addresses = await addressesOf(lookup, hostname)
+  const addresses = await resolveNameAddresses(lookup, hostname)
   const wrong = expected.size === 0 ? [] : addresses.filter((a) => !expected.has(a))
   const blocking = blockingAddressProblem(hostname, addresses)
   // A non-public answer never reaches the warn-only rule: it always blocks.

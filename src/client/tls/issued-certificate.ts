@@ -29,7 +29,13 @@ import { normalizePrivateKeyPem, PemError, splitCertificateChain } from '../../l
 import { privateKeyMatchesCertificate, TlsKeyError } from '../../lib/tls/keys.ts'
 import { CertificateParseError, parseCertificatePem } from '../../lib/tls/parse.ts'
 import type { ParsedCertificate, TlsAcmeMetadata } from '../../lib/tls/types.ts'
-import { canAcceptCapture, readHttpIssuanceState } from '../../features/tls/http-issuance/state.ts'
+import { publicMarker } from '../../features/tls/http-issuance/progress.ts'
+import {
+  afterCapture,
+  canAcceptCapture,
+  readHttpIssuanceState,
+  withHttpIssuanceState,
+} from '../../features/tls/http-issuance/state.ts'
 import { assertTpSecretPrivateKey } from './routes-helpers.ts'
 
 /** A chain longer than this is not an ordinary leaf plus intermediates. */
@@ -347,6 +353,52 @@ async function rowsPinnedOnServer<T extends { id: string }>(
   return candidates.filter((row) => pinnedIds.has(row.id))
 }
 
+/**
+ * The row's metadata after a pair arrived for its open request: the request
+ * notes the pair (and closes if the issuing server already said `issued`), and
+ * the public marker follows.
+ */
+function withCapturedRequest(
+  metadata: ManagedRowMetadata,
+  now: Date,
+  covered: readonly string[]
+): Record<string, unknown> {
+  const state = readHttpIssuanceState(metadata)
+  if (!state) return metadata
+  const after = afterCapture(state, now, covered, metadata.dnsNames)
+  return {
+    ...withHttpIssuanceState(metadata, after),
+    acme: publicMarker(metadata.acme, after),
+  }
+}
+
+/** The names of the row that this pair's certificate covers. */
+function coveredBy(parsed: ParsedCertificate, metadata: ManagedRowMetadata): string[] {
+  return metadata.dnsNames.filter((name) => coversHostname(parsed.dnsNames, name))
+}
+
+/**
+ * A pair for an open request that does not replace what the row holds (the same
+ * certificate sent again for another name, or one that is not newer): nothing is
+ * stored, but the request notes that these names are served, so it can close.
+ * Repeating the same call is therefore harmless.
+ */
+async function noteCaptureOnly(
+  tx: Db,
+  row: { id: string; metadata: unknown },
+  input: IssuedCertificateInput,
+  parsed: ParsedCertificate,
+  now: Date
+): Promise<void> {
+  if (!input.requestId) return
+  const metadata = row.metadata as ManagedRowMetadata
+  const next = withCapturedRequest(metadata, now, coveredBy(parsed, metadata))
+  await tx
+    .update(tls)
+    .set({ metadata: next, updatedAt: now.toISOString() })
+    .where(eq(tls.id, row.id))
+}
+
 async function writePair(
   tx: Db,
   params: {
@@ -392,9 +444,13 @@ async function writePair(
   await forEachSequential(rows, async (row) => {
     const metadata = row.metadata as ManagedRowMetadata
     const hasStoredPair = row.hasKey === true
-    if (hasStoredPair && row.fingerprintSha256 === parsed.fingerprintSha256) return
+    if (hasStoredPair && row.fingerprintSha256 === parsed.fingerprintSha256) {
+      await noteCaptureOnly(tx, row, input, parsed, now)
+      return
+    }
     const storedNames = hasStoredPair ? metadata.acme?.storedNames : undefined
     if (!replaces({ names: storedNames, notAfter: row.notAfter }, hasStoredPair, parsed, now)) {
+      await noteCaptureOnly(tx, row, input, parsed, now)
       return
     }
 
@@ -421,6 +477,19 @@ async function writePair(
       issuedByServerId: input.serverId,
     }
     delete acme.lastError
+    // A pair has arrived, so a row that was waiting for one is no longer waiting.
+    if (acme.stage === 'waiting') {
+      delete acme.stage
+      delete acme.warning
+    }
+    const nextMetadata = {
+      ...metadata,
+      hasWildcard: parsed.hasWildcard,
+      notBefore: parsed.notBefore.toISOString(),
+      subject: parsed.subject,
+      issuer: parsed.issuer,
+      acme,
+    }
     await tx
       .update(tls)
       .set({
@@ -429,14 +498,9 @@ async function writePair(
         notAfter: parsed.notAfter.toISOString(),
         fingerprintSha256: duplicate ? null : parsed.fingerprintSha256,
         issuedByServerId: input.serverId,
-        metadata: {
-          ...metadata,
-          hasWildcard: parsed.hasWildcard,
-          notBefore: parsed.notBefore.toISOString(),
-          subject: parsed.subject,
-          issuer: parsed.issuer,
-          acme,
-        },
+        metadata: input.requestId
+          ? withCapturedRequest(nextMetadata, now, coveredBy(parsed, nextMetadata))
+          : nextMetadata,
         updatedAt: now.toISOString(),
       })
       .where(and(eq(tls.id, row.id), eq(tls.organizationId, organizationId)))

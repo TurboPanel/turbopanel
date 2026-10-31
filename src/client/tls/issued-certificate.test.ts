@@ -27,7 +27,13 @@ import { deriveEncryptionSecretsConfig, parseSecretsEnv } from '../../lib/secret
 import { issueLeafCertificate, mintOrganizationCa } from '../../lib/tls/self-signed.ts'
 import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
 import { REFUSAL_MESSAGE, replaces, storeIssuedCertificate } from './issued-certificate.ts'
-import { withHttpIssuanceState } from '../../features/tls/http-issuance/state.ts'
+import { handleIssueEvent } from '../../features/tls/http-issuance/events.ts'
+import {
+  type HttpIssuanceState,
+  newHttpIssuanceState,
+  readHttpIssuanceState,
+  withHttpIssuanceState,
+} from '../../features/tls/http-issuance/state.ts'
 import {
   type CaddyKeyKind,
   makeCaddyPair,
@@ -44,6 +50,9 @@ const dbUrl = getDatabaseUrl()
 const test = Deno.test.bind(Deno)
 
 const HOST = 'shop.example.com'
+
+/** One pool for the file: a pool per fixture runs the server out of clients. */
+let sharedDb: Db | undefined
 
 type Fixture = {
   db: Db
@@ -74,7 +83,8 @@ async function setup(
     rowNames?: string[]
   } = {}
 ): Promise<Fixture> {
-  const db = createDenoDb()
+  sharedDb ??= createDenoDb()
+  const db = sharedDb
   const deps = await makeDeps()
   const now = new Date().toISOString()
   const [org] = await db
@@ -629,22 +639,28 @@ const REQUEST_ID = 'req_open_1'
 async function openRequest(
   f: Fixture,
   issuingServerId: string,
-  overrides: { endedAt?: string | null; startByAt?: string } = {}
+  overrides: {
+    endedAt?: string | null
+    startByAt?: string
+    state?: Partial<HttpIssuanceState>
+  } = {}
 ) {
   const row = await readRow(f)
   await f.db
     .update(tls)
     .set({
-      metadata: withHttpIssuanceState(row.metadata, {
-        issuingServerId,
-        requestId: REQUEST_ID,
-        startedAt: new Date().toISOString(),
-        startByAt: overrides.startByAt ?? new Date(Date.now() + 3_600_000).toISOString(),
-        endedAt: overrides.endedAt ?? null,
-        forwards: [],
-        attemptTimes: [],
-        nextAttemptAt: null,
-      }),
+      metadata: withHttpIssuanceState(
+        row.metadata,
+        newHttpIssuanceState({
+          issuingServerId,
+          requestId: REQUEST_ID,
+          startedAt: new Date().toISOString(),
+          startByAt: overrides.startByAt ?? new Date(Date.now() + 3_600_000).toISOString(),
+          endedAt: overrides.endedAt ?? null,
+          attemptTimes: [],
+          ...overrides.state,
+        })
+      ),
     })
     .where(eq(tls.id, f.tlsId))
 }
@@ -734,6 +750,188 @@ test('a pair for a different hostname than the request is still refused by the n
     assertEquals(result.ok, false)
     if (!result.ok) assertEquals(result.error, 'certificate_not_for_hostname')
     assertEquals((await readRow(f)).privateKeyPem, null)
+  } finally {
+    await f.cleanup()
+  }
+})
+
+test('a pair for an open request notes the capture, and the issued event then closes it', async () => {
+  if (!dbUrl) return skipWithoutDatabase('issued certificate storage tests')
+  const f = await setup()
+  try {
+    await openRequest(f, f.serverId)
+    const pair = await issuedPair([HOST])
+    await storeIssuedCertificate(f.db, withRequest(pair, f.serverId), f.deps)
+    const stored = readHttpIssuanceState((await readRow(f)).metadata)
+    assertEquals(typeof stored?.capturedAt, 'string')
+    assertEquals(stored?.endedAt, null)
+  } finally {
+    await f.cleanup()
+  }
+})
+
+test('a pair arriving after the issued event closes the request as issued', async () => {
+  if (!dbUrl) return skipWithoutDatabase('issued certificate storage tests')
+  const f = await setup()
+  try {
+    await openRequest(f, f.serverId, { state: { issuedEventAt: new Date().toISOString() } })
+    const pair = await issuedPair([HOST])
+    await storeIssuedCertificate(f.db, withRequest(pair, f.serverId), f.deps)
+    const row = await readRow(f)
+    const stored = readHttpIssuanceState(row.metadata)
+    assertEquals(stored?.phase, 'issued')
+    assertEquals(typeof stored?.endedAt, 'string')
+    const acme = (row.metadata as { acme: { stage: string; managedBy: string } }).acme
+    assertEquals(acme.stage, 'issued')
+    assertEquals(acme.managedBy, 'server')
+    // A second send of the same pair is harmless and changes nothing.
+    const again = await storeIssuedCertificate(f.db, withRequest(pair, f.serverId), f.deps)
+    assertEquals(again.ok, true)
+    assertEquals(readHttpIssuanceState((await readRow(f)).metadata)?.endedAt, stored?.endedAt)
+  } finally {
+    await f.cleanup()
+  }
+})
+
+const WWW = 'www.shop.example.com'
+
+function pairFor(pair: Awaited<ReturnType<typeof issuedPair>>, serverId: string, hostname: string) {
+  return { ...withRequest(pair, serverId), hostname }
+}
+
+async function readState(f: Fixture) {
+  return readHttpIssuanceState((await readRow(f)).metadata)
+}
+
+test('a two-name order closes when both names have a pair, pairs before the issued event', async () => {
+  if (!dbUrl) return skipWithoutDatabase('issued certificate storage tests')
+  const f = await setup({ rowNames: [HOST, WWW] })
+  try {
+    await openRequest(f, f.serverId, { state: { phase: 'ordering' } })
+    const first = await issuedPair([HOST])
+    const second = await issuedPair([WWW])
+    assertEquals(
+      (await storeIssuedCertificate(f.db, pairFor(first, f.serverId, HOST), f.deps)).ok,
+      true
+    )
+    assertEquals(
+      (await storeIssuedCertificate(f.db, pairFor(second, f.serverId, WWW), f.deps)).ok,
+      true
+    )
+    assertEquals((await readState(f))?.endedAt, null)
+    await handleIssueEvent(f.db, { serverId: f.serverId, requestId: REQUEST_ID, stage: 'issued' })
+    const state = await readState(f)
+    assertEquals(state?.phase, 'issued')
+    assertEquals(typeof state?.endedAt, 'string')
+    assertEquals(state?.coveredNames.sort(), [HOST, WWW].sort())
+  } finally {
+    await f.cleanup()
+  }
+})
+
+test('a two-name order stays open after issued until the second name has its pair', async () => {
+  if (!dbUrl) return skipWithoutDatabase('issued certificate storage tests')
+  const f = await setup({ rowNames: [HOST, WWW] })
+  try {
+    await openRequest(f, f.serverId, { state: { phase: 'ordering' } })
+    const first = await issuedPair([HOST])
+    const second = await issuedPair([WWW])
+    await storeIssuedCertificate(f.db, pairFor(first, f.serverId, HOST), f.deps)
+    await handleIssueEvent(f.db, { serverId: f.serverId, requestId: REQUEST_ID, stage: 'issued' })
+    assertEquals((await readState(f))?.endedAt, null)
+    const result = await storeIssuedCertificate(f.db, pairFor(second, f.serverId, WWW), f.deps)
+    assertEquals(result.ok, true)
+    assertEquals((await readState(f))?.phase, 'issued')
+  } finally {
+    await f.cleanup()
+  }
+})
+
+test('one certificate for both names: the second name is accepted after the close, and repeats are harmless', async () => {
+  if (!dbUrl) return skipWithoutDatabase('issued certificate storage tests')
+  const f = await setup({ rowNames: [HOST, WWW] })
+  try {
+    await openRequest(f, f.serverId, { state: { phase: 'ordering' } })
+    const pair = await issuedPair([HOST, WWW])
+    await storeIssuedCertificate(f.db, pairFor(pair, f.serverId, HOST), f.deps)
+    await handleIssueEvent(f.db, { serverId: f.serverId, requestId: REQUEST_ID, stage: 'issued' })
+    const closedAt = (await readState(f))?.endedAt
+    assertEquals(typeof closedAt, 'string')
+    for (const name of [WWW, HOST, WWW]) {
+      const result = await storeIssuedCertificate(f.db, pairFor(pair, f.serverId, name), f.deps)
+      assertEquals(result.ok, true, name)
+    }
+    assertEquals((await readState(f))?.endedAt, closedAt)
+    // Another server still cannot use the closed request.
+    const other = await storeIssuedCertificate(f.db, pairFor(pair, f.otherServerId, WWW), f.deps)
+    assertEquals(other.ok, false)
+  } finally {
+    await f.cleanup()
+  }
+})
+
+test('a pair that is not newer than the stored one still counts toward the request', async () => {
+  if (!dbUrl) return skipWithoutDatabase('issued certificate storage tests')
+  const f = await setup()
+  try {
+    const newer = await issuedPair([HOST], 90)
+    await storeIssuedCertificate(
+      f.db,
+      {
+        serverId: f.serverId,
+        hostname: HOST,
+        certificatePem: newer.certificatePem,
+        privateKeyPem: newer.privateKeyPem,
+      },
+      f.deps
+    )
+    await openRequest(f, f.serverId, {
+      state: { phase: 'ordering', issuedEventAt: new Date().toISOString() },
+    })
+    const older = await issuedPair([HOST], 30)
+    const result = await storeIssuedCertificate(f.db, withRequest(older, f.serverId), f.deps)
+    assertEquals(result.ok, true)
+    const state = await readState(f)
+    assertEquals(state?.phase, 'issued')
+    assertEquals((await readRow(f)).certificatePem, newer.certificatePem)
+  } finally {
+    await f.cleanup()
+  }
+})
+
+test('a pair a server captured by itself clears a waiting marker', async () => {
+  if (!dbUrl) return skipWithoutDatabase('issued certificate storage tests')
+  const f = await setup()
+  try {
+    const row = await readRow(f)
+    await f.db
+      .update(tls)
+      .set({
+        metadata: {
+          ...(row.metadata as object),
+          acme: {
+            managedBy: 'caddy',
+            stage: 'waiting',
+            warning: 'Waiting for a contact email address.',
+          },
+        },
+      })
+      .where(eq(tls.id, f.tlsId))
+    const pair = await issuedPair([HOST])
+    const result = await storeIssuedCertificate(
+      f.db,
+      {
+        serverId: f.serverId,
+        hostname: HOST,
+        certificatePem: pair.certificatePem,
+        privateKeyPem: pair.privateKeyPem,
+      },
+      f.deps
+    )
+    assertEquals(result.ok, true)
+    const acme = ((await readRow(f)).metadata as { acme: Record<string, unknown> }).acme
+    assertEquals(acme.stage, undefined)
+    assertEquals(acme.warning, undefined)
   } finally {
     await f.cleanup()
   }
