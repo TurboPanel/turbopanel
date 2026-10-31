@@ -335,11 +335,28 @@ test('the deploy time limit is 30 minutes unless the organization set a whole nu
 test('normalizeAcmeContactEmail accepts one public mailbox and lowercases the domain', () => {
   assertEquals(normalizeAcmeContactEmail(' Ops@Example.COM '), 'Ops@example.com')
   assertEquals(normalizeAcmeContactEmail('a+b@mail.example.co'), 'a+b@mail.example.co')
+  assertEquals(
+    normalizeAcmeContactEmail('first.last_x-y+z@example.org'),
+    'first.last_x-y+z@example.org'
+  )
 })
 
 test('normalizeAcmeContactEmail rejects lists, header breaks, display names and non-public domains', () => {
   const bad = [
     '',
+    'a?subject=x@example.org',
+    'a%0d@example.org',
+    'a%0a@example.org',
+    'a#b@example.org',
+    'a&b@example.org',
+    'a=b@example.org',
+    "a'b@example.org",
+    'a/b@example.org',
+    '.a@example.org',
+    'a.@example.org',
+    'a..b@example.org',
+    'a@@example.org',
+    'a@b@example.org',
     'a@b.cd, e@f.gh',
     'a@b.cd;e@f.gh',
     'a@b.cd\r\nBcc: x@y.zz',

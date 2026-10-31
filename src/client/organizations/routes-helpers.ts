@@ -395,7 +395,7 @@ export function parseTlsSettingsPatch(
     }
   }
   if (Object.keys(patch).length === 0) {
-    return { ok: false, error: 'Invalid acmeEnabled', status: 400 }
+    return { ok: false, error: 'Send acmeEnabled or acmeContactEmail', status: 400 }
   }
   return { ok: true, patch }
 }

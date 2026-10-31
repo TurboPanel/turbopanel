@@ -30,8 +30,10 @@ import {
 } from './settings-route.ts'
 import {
   parseOrganizationOptions,
+  resolveAcmeContactEmail,
   resolveRandomizedPrincipalUsernames,
 } from '../../features/organizations/organization-options.ts'
+import type { AuditAction } from '../../features/audit/audit-records.ts'
 import { loadOrgServerCapacity } from '../../features/servers/server-capacity.ts'
 import { listTimezones } from '../../lib/timezones.ts'
 import { assertCidrAvailable } from '../../features/net/cidr-collisions.ts'
@@ -260,22 +262,30 @@ export function registerOrganizationRoutes(router: Hono<AppEnv>, opts: AuthRoute
         if (patch.acmeEnabled === false) {
           await eraseStoredPairs(db, organizationId)
         }
+        // A merge cannot remove a key, so a cleared contact is removed outright.
+        if (patch.acmeContactEmail === null) {
+          await writeOrgOptions(db, organizationId, removeOrgOptionSql('acmeContactEmail'))
+        }
       },
-      audit: (patch) =>
-        patch.acmeEnabled === undefined
-          ? {
+      audit: (patch, previous) => {
+        const entries: { action: AuditAction; context: Record<string, unknown> }[] = []
+        if (patch.acmeEnabled !== undefined) {
+          entries.push({
+            action: 'organization.acme.set',
+            context: { acmeEnabled: patch.acmeEnabled },
+          })
+        }
+        if (patch.acmeContactEmail !== undefined) {
+          const was = resolveAcmeContactEmail(previous)
+          if (patch.acmeContactEmail !== was) {
+            entries.push({
               action: 'organization.acme_contact.set',
-              context: { acmeContactEmail: patch.acmeContactEmail ?? null },
-            }
-          : {
-              action: 'organization.acme.set',
-              context: {
-                acmeEnabled: patch.acmeEnabled,
-                ...('acmeContactEmail' in patch
-                  ? { acmeContactEmail: patch.acmeContactEmail ?? null }
-                  : {}),
-              },
-            },
+              context: { acmeContactEmail: patch.acmeContactEmail, previous: was },
+            })
+          }
+        }
+        return entries
+      },
     })
   )
 

@@ -30,7 +30,6 @@ import {
   type OrganizationDockerNetworking,
   parseOrganizationDockerNetworking,
 } from '../deploy/docker-address-pools.ts'
-import { parseSingleEmailAddress } from '../email/validate-address.ts'
 import { parsePhpModes, type PhpMode } from '../hostings/php-mode.ts'
 import {
   DEFAULT_DIRECTORY_NAME_MODE,
@@ -509,30 +508,42 @@ export function resolveAcmeEnabled(options: OrganizationOptions): boolean {
 
 /** Longest address the authority accepts as a contact (the mailbox limit). */
 export const ACME_CONTACT_EMAIL_MAX_LENGTH = 254
+const LOCAL_PART_CHARS = /^[A-Za-z0-9_+-]+$/
+const LABEL_CHARS = /^[a-z0-9-]+$/
 
 /**
  * One public mailbox for the authority's contact field, lowercased, or `null`.
- * Stricter than a general address check: ASCII only, no display name, no
- * control characters, and a dotted domain that is not an address literal (the
+ * Stricter than a general address check: a conservative ASCII local part, no
+ * display name or control characters, and a dotted domain that is not an address literal (the
  * authority refuses contacts on names that cannot receive mail).
  */
 export function normalizeAcmeContactEmail(value: unknown): string | null {
   if (typeof value !== 'string') return null
   const trimmed = value.trim()
   if (trimmed.length === 0 || trimmed.length > ACME_CONTACT_EMAIL_MAX_LENGTH) return null
-  if (!/^[\x21-\x7e]+$/.test(trimmed)) return null
-  const address = parseSingleEmailAddress(trimmed)
-  if (address !== trimmed) return null
-  const at = address.indexOf('@')
-  const domain = address.slice(at + 1).toLowerCase()
+  const at = trimmed.indexOf('@')
+  if (at <= 0 || at !== trimmed.lastIndexOf('@')) return null
+  const local = trimmed.slice(0, at)
+  const domain = trimmed.slice(at + 1).toLowerCase()
+  // The address becomes a mailto: contact, so the local part is limited to
+  // letters, digits and . _ - + (no ? & # % that would add header fields or a
+  // percent-encoded line break). Dots only between non-empty parts.
+  if (local.length > 64) return null
+  if (!local.split('.').every((part) => part.length > 0 && LOCAL_PART_CHARS.test(part))) return null
   const labels = domain.split('.')
   if (labels.length < 2 || labels.some((label) => label.length === 0 || label.length > 63)) {
     return null
   }
-  if (!labels.every((label) => /^[a-z0-9-]+$/.test(label) && !/^-|-$/.test(label))) return null
+  if (
+    !labels.every(
+      (label) => LABEL_CHARS.test(label) && !label.startsWith('-') && !label.endsWith('-')
+    )
+  ) {
+    return null
+  }
   // A numeric last label is an IP address, not a public mail domain.
   if (/^\d+$/.test(labels.at(-1) ?? '')) return null
-  return `${address.slice(0, at)}@${domain}`
+  return `${local}@${domain}`
 }
 
 /** Effective contact address for Let's Encrypt orders, or null when none is set. */

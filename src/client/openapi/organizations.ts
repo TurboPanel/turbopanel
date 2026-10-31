@@ -92,6 +92,7 @@ export const organizationSchemas = {
   OrganizationTlsSettingsUpdate: {
     type: 'object',
     description: 'At least one key. A key left out keeps its stored value.',
+    minProperties: 1,
     properties: {
       acmeEnabled: { type: 'boolean' },
       acmeContactEmail: {
@@ -109,8 +110,7 @@ export const organizationSchemas = {
       acmeEnabled: { type: 'boolean' },
       acmeContactEmail: {
         type: ['string', 'null'],
-        description:
-          'Certificate contact address; null when none is set (no shared order starts until one is added).',
+        description: 'Certificate contact address; null when none is set.',
       },
     },
   },
@@ -1080,6 +1080,8 @@ export const organizationPaths: Record<string, unknown> = {
     get: {
       tags: ['Organizations'],
       summary: 'Get organization certificate settings',
+      description:
+        'Organization managers only, for the contact address too. The contact address is stored with the organization and is not yet read by certificate ordering.',
       security: [{ cookieAuth: [] }],
       parameters: [
         {
@@ -1120,7 +1122,7 @@ export const organizationPaths: Record<string, unknown> = {
       tags: ['Organizations'],
       summary: 'Update organization certificate settings',
       description:
-        'Organization managers only. Changing the contact address is audited as organization.acme_contact.set.',
+        'Organization managers only. Changing the contact address is audited as organization.acme_contact.set (with the previous value); saving an unchanged address writes no audit row.',
       security: [{ cookieAuth: [] }],
       parameters: [
         {
@@ -1158,6 +1160,14 @@ export const organizationPaths: Record<string, unknown> = {
         },
         '400': {
           description: 'Invalid acmeEnabled, acmeContactEmail or body',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '404': {
+          description: 'Organization not found',
           content: {
             'application/json': {
               schema: { $ref: '#/components/schemas/ErrorResponse' },
