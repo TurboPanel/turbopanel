@@ -162,7 +162,7 @@ export type OrganizationOptions = {
   acmeEnabled?: boolean
   /**
    * The one address that goes on this organization's Let's Encrypt orders
-   * (expiry warnings and account notices). Unset means no shared order starts.
+   * (the account contact for important notices). Unset means no shared order starts.
    * Never taken from a member's account: an organization can have several
    * owners and a person's address is not sent to a third party unasked.
    */
