@@ -77,6 +77,7 @@ import { runBadgeRecheckSweepTick } from '../../features/tunnels/badge-recheck.t
 import { runTunnelRemovalSweepTick } from '../../features/tunnels/removal.ts'
 import { runDnsCertificateSweepTick } from '../../features/tls/dns-certificates/sweep.ts'
 import { buildDnsCertContext } from '../../client/tls/dns-certificate-context.ts'
+import { runHttpIssuanceSweepTick } from '../../client/tls/http-issuance-sweep.ts'
 import { runTunnelStatusPollTick } from '../../features/tunnels/status-poll.ts'
 import { peerLeafDelivery, runTunnelRoutesSweepTick } from '../../features/tunnels/sync.ts'
 import { runHostingLetsEncryptSweepTick } from '../../client/hostings/letsencrypt-sweep.ts'
@@ -1139,6 +1140,7 @@ async function runQueuedCronSweeps(
   tlsRenewal: CronTlsRenewal | null | undefined,
   firewallApplyGate: FirewallApplyGate,
   registry: DaemonCellRegistry,
+  env: CloudflareBindings,
   signal?: AbortSignal
 ): Promise<void> {
   try {
@@ -1226,6 +1228,16 @@ async function runQueuedCronSweeps(
             push: { commandQueue, secretsConfig: tlsRenewal.secretsConfig },
           })
         )
+      )
+      // Certificates a serving server orders at the panel's request: moves each open
+      // request on, hands a finished pair to the sites, starts first orders and renewals.
+      await runIsolatedSweep(signal, 'http-certificate-sweep-failed', () =>
+        runHttpIssuanceSweepTick(db, {
+          registry,
+          push: { commandQueue, secretsConfig: tlsRenewal.secretsConfig },
+          secrets: tlsRenewal.dataEncryptionSecrets,
+          env: env as unknown as Record<string, string | undefined>,
+        })
       )
       // API Tokens of provider accounts: a daily look at what each still reaches, so a
       // rolled or removed token is found before a write fails.
@@ -1694,6 +1706,7 @@ async function runOptionalCronPhases(
       tlsRenewal,
       opts.firewallApplyGate,
       createDurableObjectDaemonCellRegistry(env, db),
+      env,
       signal
     )
   )

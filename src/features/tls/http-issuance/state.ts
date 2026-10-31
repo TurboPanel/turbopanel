@@ -81,8 +81,21 @@ export type HttpIssuanceState = {
   avoidServerId: string | null
   /** When the sealed pair was queued to the serving servers; null until then. */
   deliveredAt: string | null
+  /** When the helpers were told to stop passing the proof path on; null until then. */
+  endsSentAt: string | null
   /** The serving servers and their parts, for the per-server status lines. */
   roster: RosterEntry[]
+  /**
+   * The stored pair came from this flow (a pair reported for an open request).
+   * Only then is the pair sent to the servers as a pinned certificate and
+   * renewed by the panel; a pair a server's own web server captured stays with
+   * that server's own renewal.
+   */
+  centralPair: boolean
+  /** When this flow finished an order, newest last, kept a week: the count for Replace Key. */
+  issueTimes: string[]
+  /** When the panel orders this pair again (about two thirds into its life), set when the pair is stored. */
+  renewAt: string | null
 }
 
 const FORWARD_OUTCOMES: ReadonlySet<string> = new Set(['pending', 'ready', 'failed', 'skipped'])
@@ -173,7 +186,11 @@ export function newHttpIssuanceState(
     consecutiveFailures: 0,
     avoidServerId: null,
     deliveredAt: null,
+    endsSentAt: null,
     roster: [],
+    centralPair: false,
+    issueTimes: [],
+    renewAt: null,
     ...base,
   }
 }
@@ -218,7 +235,13 @@ export function readHttpIssuanceState(metadata: unknown): HttpIssuanceState | nu
         : 0,
     avoidServerId: text(r.avoidServerId),
     deliveredAt: text(r.deliveredAt),
+    endsSentAt: text(r.endsSentAt),
     roster: readRoster(r.roster),
+    centralPair: r.centralPair === true,
+    issueTimes: Array.isArray(r.issueTimes)
+      ? r.issueTimes.filter((t): t is string => typeof t === 'string' && t.length > 0)
+      : [],
+    renewAt: text(r.renewAt),
   }
 }
 
@@ -239,10 +262,10 @@ export function withHttpIssuanceState(
 export function afterCapture(
   state: HttpIssuanceState,
   now: Date,
-  covered: readonly string[] = [],
-  expected: readonly string[] = []
+  options: CaptureOptions = {}
 ): HttpIssuanceState {
   const at = now.toISOString()
+  const covered = options.covered ?? []
   // A late pair for another name, inside the grace window after the close.
   if (state.endedAt !== null) {
     return { ...state, coveredNames: [...new Set([...state.coveredNames, ...covered])] }
@@ -250,11 +273,23 @@ export function afterCapture(
   const next = {
     ...state,
     capturedAt: at,
+    centralPair: true,
+    renewAt: options.renewAt ? options.renewAt.toISOString() : state.renewAt,
     coveredNames: [...new Set([...state.coveredNames, ...covered])],
   }
-  return next.issuedEventAt !== null && allNamesCovered(next, expected)
+  return next.issuedEventAt !== null && allNamesCovered(next, options.expected ?? [])
     ? closedAsIssued(next, at)
     : next
+}
+
+/** What a stored pair tells the request. */
+export type CaptureOptions = {
+  /** The request's names that the pair's certificate covers. */
+  covered?: readonly string[]
+  /** All the names the request is for. */
+  expected?: readonly string[]
+  /** When the panel orders again (about two thirds into the stored certificate's life). */
+  renewAt?: Date | null
 }
 
 /** Every name the request was for has a stored pair (a request for no names has nothing to wait for). */
@@ -262,12 +297,18 @@ export function allNamesCovered(state: HttpIssuanceState, expected: readonly str
   return expected.every((name) => state.coveredNames.includes(name))
 }
 
+/** The most issue times kept; the authority allows 5 for one name set in a week. */
+const ISSUE_TIMES_KEPT = 10
+
 /** The request closed with a stored pair: nothing left to wait for, failures forgotten. */
 export function closedAsIssued(state: HttpIssuanceState, at: string): HttpIssuanceState {
   return {
     ...state,
     phase: 'issued',
     endedAt: at,
+    centralPair: true,
+    issueTimes: [...state.issueTimes, at].slice(-ISSUE_TIMES_KEPT),
+    deliveredAt: null,
     lastError: null,
     consecutiveFailures: 0,
     nextAttemptAt: null,

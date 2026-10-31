@@ -25,3 +25,69 @@ The wire side is in `src/daemon/AGENTS.md`.
 - `events.ts`: the three daemon messages. A request closes only when both the
   pair (the capture call) and the `issued` event have arrived, in either order.
 - Status wording never says the key was exposed (`status-text.ts`).
+
+## The sweep, delivery and renewal
+
+`src/client/tls/http-issuance-sweep.ts` runs each minute inside the Workers cron
+and the Deno interval (a bounded batch, oldest first, 20 seconds at most). It
+picks rows with work to do in SQL from the private state: no certificate yet, an
+open request, a finished pair not handed out or due for renewal, a failed attempt
+whose wait is over. A row a server's own web server captured (a pair, no request)
+is never picked.
+
+- Delivery: when a request closes as issued, the sweep queues the certificate
+  apply for every site pinned to the row (the pair goes out sealed per server)
+  and tells the helpers to stop. Marked delivered once tried; a site the apply
+  cannot reach gets the pair on its next deploy.
+- Pin switch (`deploy-prepare.ts`): an automatic pin goes out as a pinned
+  certificate with its pair, and no `tlsMode: 'acme'`, only when the pair came
+  from this flow (`centralPair`, set by the capture of an open request) and the
+  target daemon lists the feature and the stored certificate covers every name of the
+  row (a daemon reports one certificate per name, and a row holds one pair, so a
+  two-name row stays on the server's own web server until one certificate covers
+  both). A pair a server captured itself keeps the
+  server's own web server ordering and renewing.
+- Renewal starts at the stored renewal time (about two thirds in, with a random
+  head start), preferring the server that issued last time.
+- Replace Key (`replaceKey`): a new order for the same names, which always makes
+  a new key. At most once a day and five a week for one name set, never while an
+  order runs, and the old pair keeps serving until the new one is installed.
+  No route yet: the screen change adds it.
+
+The contact address is the organization's own (`organization.options.acmeContactEmail`,
+read by `organizationAcmeContactEmail`, set by org managers). It travels in each
+`acme-issue-request`; the daemon holds one authority account per issuing server per
+contact address, and the panel holds no account for this flow. With no address no
+order is sent and nothing is looked up; the row says it is waiting for an address
+only when a serving server's daemon lists the feature (an unchanged marker is not
+rewritten), otherwise it is left alone. The test directory is a platform setting
+(`TURBOPANEL_ACME_STAGING=true`).
+
+Sweep selection is plain SQL and writes nothing to rows the flow does not own:
+only pinned rows without a wildcard name are looked at, a row is ordered by when
+it was last looked at (written inside its own request, never to the row's own
+time) or by a per-minute hash when it has no request yet, and at most three new
+orders begin per tick so a first run after a rollout is gradual. The cheap
+answers (nothing due, a wait or cap in force, no contact address) come before any
+DNS or per-server lookup.
+
+Only a row with exactly one plain name is ordered here. A row with several names
+(apex and www) would get one certificate per name from the daemon, and a row holds
+one pair, so it is left entirely alone (never selected, no lookups, no marker) and
+stays with each server's own web server until per-name pairs exist.
+
+One order at a time per issuing server: the daemon runs one issuer window at a time, so
+a second order would wait behind the first and could pass the panel's silence limit.
+The start takes an advisory lock on the server and refuses (`busy`) while any row has
+an open request asked of it.
+
+Platform switches, both environment settings read by the sweep:
+`TURBOPANEL_SHARED_CERTIFICATES=off` turns the whole flow off (default on), and
+`TURBOPANEL_ACME_STAGING=true` orders from the authority's test directory. While the
+first is off the sweep does nothing, and the sweep is the only timer-driven thing that
+ends a request: open requests are not timed out and keep holding their issuing server,
+helper notices do not go out, and pairs a daemon sends are still stored. A daemon
+message is not switched off either, so an `issued` or `failed` event can still end a
+request (an `issued` event closes it when the pair is already stored for every name). A row's own web server is unaffected. When the switch goes back on,
+the close rule runs before the start-by check: a request with a stored pair for every
+name closes as issued, and the rest fail and back off.

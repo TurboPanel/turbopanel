@@ -61,7 +61,8 @@ export function serverStatusLines(state: HttpIssuanceState): ServerStatusLine[] 
 /** What the Certificate panel says when no server can take the order yet. */
 export function waitingText(reason: 'no_servers' | 'none_in_dns' | 'no_contact'): string {
   if (reason === 'no_servers') return 'Waiting for a server to serve this name.'
-  if (reason === 'no_contact')
-    return "Waiting for a contact email address in the Let's Encrypt settings."
+  if (reason === 'no_contact') {
+    return 'Waiting for a contact email address for certificates to be set for this organization.'
+  }
   return 'Waiting for a server that DNS points at to come online.'
 }

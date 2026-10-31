@@ -41,8 +41,12 @@ function state(overrides: Partial<HttpIssuanceState> = {}): HttpIssuanceState {
     consecutiveFailures: 0,
     avoidServerId: null,
     deliveredAt: null,
+    endsSentAt: null,
     roster: [],
     helperAddresses: [],
+    centralPair: false,
+    issueTimes: [],
+    renewAt: null,
     ...overrides,
   }
 }
@@ -150,17 +154,25 @@ test('an old state without the newer fields still reads', () => {
   assertEquals(read?.consecutiveFailures, 0)
 })
 
+test("closing as issued marks the pair as the flow's own and notes the time", () => {
+  const closed = afterCapture(state({ issuedEventAt: '2026-11-01T11:59:00.000Z' }), NOW)
+  assertEquals(closed.centralPair, true)
+  assertEquals(closed.issueTimes, [NOW.toISOString()])
+  assertEquals(closed.deliveredAt, null)
+  assertEquals(afterCapture(state(), NOW).centralPair, true)
+})
+
 test('a request for two names closes only when both are covered and issued has arrived', () => {
   const names = ['a.example.com', 'www.a.example.com']
   const issued = state({ issuedEventAt: '2026-11-01T11:59:00.000Z' })
-  const one = afterCapture(issued, NOW, ['a.example.com'], names)
+  const one = afterCapture(issued, NOW, { covered: ['a.example.com'], expected: names })
   assertEquals(one.endedAt, null)
-  const both = afterCapture(one, NOW, ['www.a.example.com'], names)
+  const both = afterCapture(one, NOW, { covered: ['www.a.example.com'], expected: names })
   assertEquals(both.phase, 'issued')
-  const together = afterCapture(issued, NOW, names, names)
+  const together = afterCapture(issued, NOW, { covered: names, expected: names })
   assertEquals(together.phase, 'issued')
   // Pairs first, event later: the event closes it (see progress tests).
-  assertEquals(afterCapture(state(), NOW, names, names).endedAt, null)
+  assertEquals(afterCapture(state(), NOW, { covered: names, expected: names }).endedAt, null)
 })
 
 test('a late pair for another name is accepted briefly after the close, from the asked server only', () => {
@@ -182,5 +194,5 @@ test('a late pair for another name is accepted briefly after the close, from the
       reason: 'closed',
     }
   )
-  assertEquals(afterCapture(closed, NOW, ['x.example.com']).endedAt, closed.endedAt)
+  assertEquals(afterCapture(closed, NOW, { covered: ['x.example.com'] }).endedAt, closed.endedAt)
 })

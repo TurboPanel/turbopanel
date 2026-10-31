@@ -29,9 +29,11 @@ import { normalizePrivateKeyPem, PemError, splitCertificateChain } from '../../l
 import { privateKeyMatchesCertificate, TlsKeyError } from '../../lib/tls/keys.ts'
 import { CertificateParseError, parseCertificatePem } from '../../lib/tls/parse.ts'
 import type { ParsedCertificate, TlsAcmeMetadata } from '../../lib/tls/types.ts'
+import { jitteredFallbackRenewAt } from '../../features/tls/dns-certificates/timing.ts'
 import { publicMarker } from '../../features/tls/http-issuance/progress.ts'
 import {
   afterCapture,
+  type CaptureOptions,
   canAcceptCapture,
   readHttpIssuanceState,
   withHttpIssuanceState,
@@ -361,11 +363,11 @@ async function rowsPinnedOnServer<T extends { id: string }>(
 function withCapturedRequest(
   metadata: ManagedRowMetadata,
   now: Date,
-  covered: readonly string[]
+  options: CaptureOptions
 ): Record<string, unknown> {
   const state = readHttpIssuanceState(metadata)
   if (!state) return metadata
-  const after = afterCapture(state, now, covered, metadata.dnsNames)
+  const after = afterCapture(state, now, { ...options, expected: metadata.dnsNames })
   return {
     ...withHttpIssuanceState(metadata, after),
     acme: publicMarker(metadata.acme, after),
@@ -385,14 +387,23 @@ function coveredBy(parsed: ParsedCertificate, metadata: ManagedRowMetadata): str
  */
 async function noteCaptureOnly(
   tx: Db,
-  row: { id: string; metadata: unknown },
+  row: { id: string; metadata: unknown; notAfter: string | null },
   input: IssuedCertificateInput,
   parsed: ParsedCertificate,
   now: Date
 ): Promise<void> {
   if (!input.requestId) return
   const metadata = row.metadata as ManagedRowMetadata
-  const next = withCapturedRequest(metadata, now, coveredBy(parsed, metadata))
+  // The renewal time follows the pair the row keeps, not the one just refused.
+  const storedNotBefore = (metadata as { notBefore?: unknown }).notBefore
+  const keptNotBefore =
+    typeof storedNotBefore === 'string' ? Date.parse(storedNotBefore) : Number.NaN
+  const keptNotAfter = row.notAfter === null ? Number.NaN : Date.parse(row.notAfter)
+  const renewAt =
+    Number.isNaN(keptNotBefore) || Number.isNaN(keptNotAfter)
+      ? null
+      : jitteredFallbackRenewAt(new Date(keptNotBefore), new Date(keptNotAfter))
+  const next = withCapturedRequest(metadata, now, { covered: coveredBy(parsed, metadata), renewAt })
   await tx
     .update(tls)
     .set({ metadata: next, updatedAt: now.toISOString() })
@@ -499,7 +510,10 @@ async function writePair(
         fingerprintSha256: duplicate ? null : parsed.fingerprintSha256,
         issuedByServerId: input.serverId,
         metadata: input.requestId
-          ? withCapturedRequest(nextMetadata, now, coveredBy(parsed, nextMetadata))
+          ? withCapturedRequest(nextMetadata, now, {
+              covered: coveredBy(parsed, nextMetadata),
+              renewAt: jitteredFallbackRenewAt(parsed.notBefore, parsed.notAfter),
+            })
           : nextMetadata,
         updatedAt: now.toISOString(),
       })

@@ -17,6 +17,7 @@ import {
 import { serverStatusLines } from './status-text.ts'
 
 const MINUTE = 60_000
+const DAY = 24 * 60 * MINUTE
 
 /** How long the helpers get to answer before the order starts without them. */
 export const READY_WAIT_MS = 2 * MINUTE
@@ -230,4 +231,61 @@ export function applyForwardReports(
     }
   })
   return { ...state, forwards }
+}
+
+/**
+ * Whether the pair this flow ordered should be ordered again: the stored
+ * renewal time (about two thirds into its life) has come. A pair the flow did
+ * not order is never renewed here, and a flow pair with no readable renewal
+ * time is renewed rather than left to expire.
+ */
+export function renewalDue(state: HttpIssuanceState | null, now: Date): boolean {
+  if (state?.centralPair !== true) return false
+  const at = state.renewAt === null ? Number.NaN : Date.parse(state.renewAt)
+  return Number.isNaN(at) || now.getTime() >= at
+}
+
+/** Why Replace Key is refused now, or null when it may start. */
+export type ReplaceKeyRefusal = 'too_soon' | 'weekly_limit' | 'no_certificate' | 'in_progress'
+
+/** The authority's limit for one exact name set. */
+export const ISSUES_PER_WEEK = 5
+
+export type ReplaceKeyVerdict =
+  | { ok: true; leftThisWeek: number }
+  | { ok: false; reason: ReplaceKeyRefusal; leftThisWeek: number; notBefore?: Date }
+
+/**
+ * Replace Key starts a fresh order for the same names with a new key. It is a
+ * new issue for the authority, so it counts against the 5 a week for one exact
+ * name set, and it is offered at most once a day. `hasPair` is whether the row
+ * holds a certificate to replace.
+ */
+export function mayReplaceKey(
+  state: HttpIssuanceState | null,
+  hasPair: boolean,
+  now: Date
+): ReplaceKeyVerdict {
+  const t = now.getTime()
+  const times = (state?.issueTimes ?? [])
+    .map((x) => Date.parse(x))
+    .filter((x) => !Number.isNaN(x))
+    .sort((a, b) => a - b)
+  const week = times.filter((x) => x > t - 7 * DAY)
+  const left = Math.max(0, ISSUES_PER_WEEK - week.length)
+  if (!hasPair) return { ok: false, reason: 'no_certificate', leftThisWeek: left }
+  if (state?.endedAt === null) return { ok: false, reason: 'in_progress', leftThisWeek: left }
+  const last = times.at(-1)
+  if (last !== undefined && last > t - DAY) {
+    return { ok: false, reason: 'too_soon', leftThisWeek: left, notBefore: new Date(last + DAY) }
+  }
+  if (left === 0) {
+    return {
+      ok: false,
+      reason: 'weekly_limit',
+      leftThisWeek: 0,
+      notBefore: new Date(week[0] + 7 * DAY),
+    }
+  }
+  return { ok: true, leftThisWeek: left }
 }
