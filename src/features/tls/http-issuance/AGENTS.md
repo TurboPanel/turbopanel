@@ -81,7 +81,12 @@ a second order would wait behind the first and could pass the panel's silence li
 The start takes an advisory lock on the server and refuses (`busy`) while any row has
 an open request asked of it.
 
-Platform switches, both environment settings read by the sweep: `TURBOPANEL_SHARED_CERTIFICATES=off`
-turns the whole flow off (default on: the sweep does nothing, open requests time out,
-nothing new starts; a row's own web server is unaffected), and `TURBOPANEL_ACME_STAGING=true`
-orders from the authority's test directory.
+Platform switches, both environment settings read by the sweep:
+`TURBOPANEL_SHARED_CERTIFICATES=off` turns the whole flow off (default on), and
+`TURBOPANEL_ACME_STAGING=true` orders from the authority's test directory. While the
+first is off the sweep does nothing, and the sweep is the only thing that ends a
+request: open requests stay frozen and keep holding their issuing server, helper
+notices do not go out, and pairs a daemon sends are still stored (that path is not
+switched off). A row's own web server is unaffected. When the switch goes back on,
+the close rule runs before the start-by check: a request with a stored pair for every
+name closes as issued, and the rest fail and back off.

@@ -383,6 +383,9 @@ function openingMessages(
   }))
 }
 
+/** First key of the two-key advisory lock taken per issuing server, so it cannot collide with other features' locks. */
+const ISSUER_LOCK_NAMESPACE = 0x68747470 // 'http'
+
 /** Whether some row already has an open request asked of this server. */
 async function issuerHasOpenOrder(tx: Db, serverId: string): Promise<boolean> {
   const rows = await tx
@@ -429,7 +432,9 @@ async function startInTransaction(
   }
   // One order at a time per issuing server: the daemon runs one window at a time, so a
   // second order would only wait behind the first and could pass the silence limit.
-  await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${choice.issuer.serverId}))`)
+  await tx.execute(
+    sql`select pg_advisory_xact_lock(${ISSUER_LOCK_NAMESPACE}, hashtext(${choice.issuer.serverId}))`
+  )
   if (await issuerHasOpenOrder(tx, choice.issuer.serverId)) return { outcome: 'busy', send: [] }
   const fresh = freshState({ deps, now, choice, previous, staging: deps.staging })
   const direct = choice.helpers.length === 0
