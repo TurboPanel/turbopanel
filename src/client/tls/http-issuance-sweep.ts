@@ -56,7 +56,9 @@ export type HttpIssuanceSweepResult = {
 
 /**
  * The platform switch for the whole flow: `TURBOPANEL_SHARED_CERTIFICATES=off` makes the
- * sweep do nothing (open requests are left to time out, nothing new starts). On by default.
+ * sweep do nothing: nothing new starts, open requests stay as they are and keep holding
+ * their issuing server, and helper notices do not go out. Daemon messages are still handled.
+ * On by default.
  */
 export function httpIssuanceEnabled(env: Record<string, string | undefined>): boolean {
   return (env.TURBOPANEL_SHARED_CERTIFICATES ?? '').trim().toLowerCase() !== 'off'

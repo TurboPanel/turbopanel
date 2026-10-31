@@ -84,9 +84,10 @@ an open request asked of it.
 Platform switches, both environment settings read by the sweep:
 `TURBOPANEL_SHARED_CERTIFICATES=off` turns the whole flow off (default on), and
 `TURBOPANEL_ACME_STAGING=true` orders from the authority's test directory. While the
-first is off the sweep does nothing, and the sweep is the only thing that ends a
-request: open requests stay frozen and keep holding their issuing server, helper
-notices do not go out, and pairs a daemon sends are still stored (that path is not
-switched off). A row's own web server is unaffected. When the switch goes back on,
+first is off the sweep does nothing, and the sweep is the only timer-driven thing that
+ends a request: open requests are not timed out and keep holding their issuing server,
+helper notices do not go out, and pairs a daemon sends are still stored. A daemon
+message is not switched off either, so an `issued` or `failed` event can still end a
+request (an `issued` event closes it when the pair is already stored for every name). A row's own web server is unaffected. When the switch goes back on,
 the close rule runs before the start-by check: a request with a stored pair for every
 name closes as issued, and the rest fail and back off.
