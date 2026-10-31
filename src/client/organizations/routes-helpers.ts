@@ -3,6 +3,8 @@ import {
   parseMaxServersInput,
   parseDeployTimeoutMinutes,
   parseTemperatureUnitInput,
+  normalizeAcmeContactEmail,
+  resolveAcmeContactEmail,
   resolveAcmeEnabled,
   resolveComposeDefaultResourceLimits,
   resolveComposeGatedFieldsEnabled,
@@ -60,8 +62,10 @@ export type TemperatureUnitPatch = {
   temperatureUnit: TemperatureUnit
 }
 
+/** Either key, or both; a key left out keeps its stored value. `null` clears the contact. */
 export type TlsSettingsPatch = {
-  acmeEnabled: boolean
+  acmeEnabled?: boolean
+  acmeContactEmail?: string | null
 }
 
 export type ComposeGatedFieldsPatch = {
@@ -374,10 +378,26 @@ export function deployTimeoutPutResponse(minutes: number | null) {
 export function parseTlsSettingsPatch(
   body: Record<string, unknown>
 ): { ok: true; patch: TlsSettingsPatch } | OrganizationRouteValidationError {
-  if (typeof body.acmeEnabled !== 'boolean') {
-    return { ok: false, error: 'Invalid acmeEnabled', status: 400 }
+  const patch: TlsSettingsPatch = {}
+  if ('acmeEnabled' in body) {
+    if (typeof body.acmeEnabled !== 'boolean') {
+      return { ok: false, error: 'Invalid acmeEnabled', status: 400 }
+    }
+    patch.acmeEnabled = body.acmeEnabled
   }
-  return { ok: true, patch: { acmeEnabled: body.acmeEnabled } }
+  if ('acmeContactEmail' in body) {
+    if (body.acmeContactEmail === null || body.acmeContactEmail === '') {
+      patch.acmeContactEmail = null
+    } else {
+      const email = normalizeAcmeContactEmail(body.acmeContactEmail)
+      if (email === null) return { ok: false, error: 'Invalid acmeContactEmail', status: 400 }
+      patch.acmeContactEmail = email
+    }
+  }
+  if (Object.keys(patch).length === 0) {
+    return { ok: false, error: 'Send acmeEnabled or acmeContactEmail', status: 400 }
+  }
+  return { ok: true, patch }
 }
 
 export function parseComposeGatedFieldsPatch(
@@ -677,13 +697,20 @@ export function temperatureUnitPutResponse(options: { temperatureUnit?: Temperat
   }
 }
 
-export function tlsSettingsGetResponse(options: { acmeEnabled?: boolean }) {
+export function tlsSettingsGetResponse(options: {
+  acmeEnabled?: boolean
+  acmeContactEmail?: string
+}) {
   return {
     acmeEnabled: resolveAcmeEnabled(options),
+    acmeContactEmail: resolveAcmeContactEmail(options),
   }
 }
 
-export function tlsSettingsPutResponse(options: { acmeEnabled?: boolean }) {
+export function tlsSettingsPutResponse(options: {
+  acmeEnabled?: boolean
+  acmeContactEmail?: string
+}) {
   return {
     ok: true as const,
     ...tlsSettingsGetResponse(options),

@@ -89,6 +89,31 @@ export const organizationSchemas = {
       temperatureUnit: { type: 'string', enum: ['celsius', 'fahrenheit'] },
     },
   },
+  OrganizationTlsSettingsUpdate: {
+    type: 'object',
+    description: 'At least one key. A key left out keeps its stored value.',
+    minProperties: 1,
+    properties: {
+      acmeEnabled: { type: 'boolean' },
+      acmeContactEmail: {
+        type: ['string', 'null'],
+        maxLength: 254,
+        description:
+          "The one address kept as this organization's Let's Encrypt account contact (central certificate ordering will use it; nothing reads it yet). null or an empty string clears it.",
+      },
+    },
+  },
+  OrganizationTlsSettings: {
+    type: 'object',
+    required: ['acmeEnabled', 'acmeContactEmail'],
+    properties: {
+      acmeEnabled: { type: 'boolean' },
+      acmeContactEmail: {
+        type: ['string', 'null'],
+        description: 'Certificate contact address; null when none is set.',
+      },
+    },
+  },
   OrganizationDeployTimeoutUpdate: {
     type: 'object',
     required: ['deployTimeoutMinutes'],
@@ -1040,6 +1065,115 @@ export const organizationPaths: Record<string, unknown> = {
         },
         '400': {
           description: 'Invalid temperatureUnit or body',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '403': {
+          description: 'Forbidden',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+      },
+    },
+  },
+  '/api/client/v1/organizations/{id}/tls-settings': {
+    get: {
+      tags: ['Organizations'],
+      summary: 'Get organization certificate settings',
+      description:
+        'Organization managers only, for the contact address too. The contact address is stored with the organization; nothing reads it yet.',
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        {
+          name: 'id',
+          in: 'path',
+          required: true,
+          schema: { type: 'string', format: 'uuid' },
+        },
+      ],
+      responses: {
+        '200': {
+          description: "Let's Encrypt gate and certificate contact address",
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/OrganizationTlsSettings' },
+            },
+          },
+        },
+        '403': {
+          description: 'Forbidden',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '404': {
+          description: 'Organization not found',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+      },
+    },
+    put: {
+      tags: ['Organizations'],
+      summary: 'Update organization certificate settings',
+      description:
+        'Organization managers only. Changing the contact address is audited as organization.acme_contact.set (with the previous value); saving an unchanged address writes no audit row.',
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        {
+          name: 'id',
+          in: 'path',
+          required: true,
+          schema: { type: 'string', format: 'uuid' },
+        },
+      ],
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: { $ref: '#/components/schemas/OrganizationTlsSettingsUpdate' },
+          },
+        },
+      },
+      responses: {
+        '200': {
+          description: 'Updated settings',
+          content: {
+            'application/json': {
+              schema: {
+                allOf: [
+                  { $ref: '#/components/schemas/OrganizationTlsSettings' },
+                  {
+                    type: 'object',
+                    required: ['ok'],
+                    properties: { ok: { type: 'boolean', const: true } },
+                  },
+                ],
+              },
+            },
+          },
+        },
+        '400': {
+          description: 'Invalid acmeEnabled, acmeContactEmail or body',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '404': {
+          description: 'Organization not found',
           content: {
             'application/json': {
               schema: { $ref: '#/components/schemas/ErrorResponse' },
