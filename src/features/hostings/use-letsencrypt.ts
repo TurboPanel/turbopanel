@@ -63,6 +63,13 @@ export type LetsEncryptStore = {
     organizationId: string,
     names: readonly string[]
   ): Promise<{ id: string; created: boolean }>
+  /** The certificate row the hosting pins right now (read under the lock). */
+  pinnedCertificateId(hostingId: string): Promise<string | null>
+  /**
+   * Remove these managed certificate rows when no site pins them any more.
+   * Rows a person added, and rows another site still pins, stay.
+   */
+  releaseCertificates(ids: readonly string[]): Promise<void>
   saveHosting(
     hostingId: string,
     patch: {
@@ -134,6 +141,7 @@ async function pinCertificate(
   return await params.store.withCertificateLock(hosting, async (store) => {
     const { id: tlsId, created } = await store.managedCertificateFor(hosting.organizationId, names)
     const changed = hosting.tlsId !== tlsId
+    const previousId = changed ? await store.pinnedCertificateId(hosting.id) : null
     // A repeat click on a hosting already pinned to this row writes nothing, so
     // it neither looks like a new change nor sends the certificate out again.
     if (changed || readPendingLetsEncrypt(hosting) !== null) {
@@ -142,6 +150,9 @@ async function pinCertificate(
         ...pendingLetsEncryptPatch(hosting.metadata, null),
       })
     }
+    // The row this hosting used to pin (for its old names) is not needed any
+    // more unless another site pins it.
+    if (previousId !== null && previousId !== tlsId) await store.releaseCertificates([previousId])
     return { ok: true as const, outcome: 'pinned' as const, tlsId, dns, created, changed }
   })
 }

@@ -49,3 +49,25 @@ test("the authority's own reason is kept", () => {
   const reason = 'DNS problem: NXDOMAIN looking up A for a.example.com'
   assertEquals(plainCertificateFailure(reason, 'a.example.com'), reason)
 })
+
+test("a server's own check that was aborted by its time limit reads as one plain sentence", () => {
+  const text = plainCertificateFailure(
+    'The operation was aborted due to timeout',
+    'tptest-cs12.munch.ws'
+  )
+  assertEquals(
+    text,
+    'tptest-cs12.munch.ws did not answer in time, so the server could not check its certificate. The server tries again by itself.'
+  )
+  assertEquals(
+    plainCertificateFailure('The operation was aborted due to timeout').startsWith(
+      'This name did not answer in time'
+    ),
+    true
+  )
+})
+
+test("the authority's own timeout reason is kept as it is", () => {
+  const reason = 'Timeout during connect (likely firewall problem)'
+  assertEquals(plainCertificateFailure(reason, 'a.example.com'), reason)
+})

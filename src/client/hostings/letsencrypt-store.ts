@@ -42,6 +42,7 @@ import { materialFromLetsEncrypt, isCreateTlsFailure } from '../tls/routes-helpe
 import {
   LETS_ENCRYPT_CREATED_FOR_SITES,
   lockOrganizationLetsEncrypt,
+  removeUnusedSiteCertificates,
 } from '../../features/tls/unused-letsencrypt.ts'
 
 export async function loadAcmeEnabled(db: Db, organizationId: string): Promise<boolean> {
@@ -237,6 +238,21 @@ export function createLetsEncryptStore(db: Db): LetsEncryptStore {
 
     managedCertificateFor: (organizationId, names) =>
       managedCertificateFor(db, organizationId, names),
+
+    async pinnedCertificateId(hostingId) {
+      const [row] = await db
+        .select({ tlsId: hosting.tlsId })
+        .from(hosting)
+        .where(eq(hosting.id, hostingId))
+        .limit(1)
+      return row?.tlsId ?? null
+    },
+
+    async releaseCertificates(ids) {
+      await removeUnusedSiteCertificates(db, ids, {
+        reason: 'its site now uses another certificate',
+      })
+    },
 
     async saveHosting(hostingId, patch) {
       await db

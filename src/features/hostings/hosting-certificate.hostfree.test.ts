@@ -290,3 +290,28 @@ test('last tried and next try: the DNS check times while waiting, the reported f
   assertEquals(failing.state, 'renewal_failed')
   assertEquals([failing.lastTriedAt, failing.nextTryAt], [iso(-2), null])
 })
+
+test('a failure note older than the last issue no longer makes the certificate failing', () => {
+  const settled = deriveHostingCertificate(
+    input({
+      pinned: managed({
+        lastError: 'boom',
+        lastFailedAt: iso(-3),
+        lastIssuedAt: iso(-2),
+        notAfter: iso(60),
+      }),
+    })
+  )
+  assertEquals(settled.state, 'secure')
+  const renewalFailed = deriveHostingCertificate(
+    input({
+      pinned: managed({
+        lastError: 'boom',
+        lastFailedAt: iso(-1),
+        lastIssuedAt: iso(-2),
+        notAfter: iso(60),
+      }),
+    })
+  )
+  assertEquals(renewalFailed.state, 'renewal_failed')
+})

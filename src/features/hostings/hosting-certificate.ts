@@ -136,12 +136,20 @@ function readAcme(metadata: unknown): {
     typeof acme.lastError === 'string' && acme.lastError.length > 0
       ? plainCertificateFailure(acme.lastError)
       : null
+  const lastIssuedAt = readIso(acme.lastIssuedAt)
+  const lastFailedAt = readIso(acme.lastFailedAt)
+  // A certificate issued after the last recorded failure settles it, even if
+  // the failure note was never cleared.
+  const settled =
+    lastIssuedAt !== null &&
+    lastFailedAt !== null &&
+    Date.parse(lastIssuedAt) > Date.parse(lastFailedAt)
   return {
-    lastError,
-    lastIssuedAt: readIso(acme.lastIssuedAt),
+    lastError: settled ? null : lastError,
+    lastIssuedAt,
     notAfter: readIso(acme.notAfter),
     lastReportedAt: readIso(acme.lastReportedAt),
-    lastFailedAt: readIso(acme.lastFailedAt),
+    lastFailedAt,
   }
 }
 
