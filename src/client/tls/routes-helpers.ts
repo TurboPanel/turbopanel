@@ -1,3 +1,4 @@
+import { plainCertificateFailure } from '../../features/hostings/acme-failure-text.ts'
 import { isLoopbackOrPrivateHostname } from '../../features/install/install-tls.ts'
 import {
   encryptSecret,
@@ -86,6 +87,25 @@ export function publicTlsMetadata(
   }
 }
 
+/**
+ * The issuance note a row shows: the server's own failed check in plain words
+ * (rows stored before that mapping still hold the raw text), and none once a
+ * certificate was issued after the last recorded failure.
+ */
+export function plainAcmeNote<T extends { acme?: { lastError?: string } }>(metadata: T): T {
+  const acme = metadata.acme as
+    { lastError?: string; lastIssuedAt?: string; lastFailedAt?: string } | undefined
+  if (acme?.lastError === undefined) return metadata
+  const issued = Date.parse(acme.lastIssuedAt ?? '')
+  const failed = Date.parse(acme.lastFailedAt ?? '')
+  const settled = !Number.isNaN(issued) && !Number.isNaN(failed) && issued > failed
+  const { lastError, ...rest } = acme
+  return {
+    ...metadata,
+    acme: settled ? rest : { ...rest, lastError: plainCertificateFailure(lastError) },
+  }
+}
+
 export function toPublicTlsRow(
   row: TlsRowForPublic,
   extras?: { trustBundlePem?: string }
@@ -104,7 +124,9 @@ export function toPublicTlsRow(
     name: row.name,
     source: row.source,
     organizationId: row.organizationId,
-    metadata: publicTlsMetadata(refreshTlsStatus(metadata), row.certificatePem !== null),
+    metadata: plainAcmeNote(
+      publicTlsMetadata(refreshTlsStatus(metadata), row.certificatePem !== null)
+    ),
     options: parseTlsOptions(row.options),
     certificatePem: row.certificatePem,
     caGeneration: row.caGeneration ?? null,
