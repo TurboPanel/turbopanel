@@ -158,9 +158,11 @@ export function orgOptionsPatchRoute<P extends Record<string, unknown>>(
 
     if (params.audit) {
       const entries = params.audit(parsed.patch, parseOrganizationOptions(before.options))
-      for (const { action, context } of auditEntries(entries)) {
-        await recordOrgSettingAudit(c, scope, action, context)
-      }
+      await Promise.all(
+        auditEntries(entries).map(({ action, context }) =>
+          recordOrgSettingAudit(c, scope, action, context)
+        )
+      )
     }
     return c.json(params.respond(options))
   }
