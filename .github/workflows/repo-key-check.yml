@@ -1,0 +1,102 @@
+# repo-key-check: weekly, compare the package-repository signing keys shipped
+# with the daemon against what the vendors publish now, and file or update ONE
+# issue here when they differ or a key expires soon. It changes no key and
+# touches no server: hosts never block on a rotated key (they fetch the live
+# key and fall back to the shipped copy), so this only tells the owner to
+# refresh the copy in the next release. A download that fails is retried and
+# does not open an issue.
+# The script comes from the daemon repository's trunk (public, no token). Issues
+# are enabled only on this repository, which is why the check runs here.
+name: Repository Key Check
+
+on:
+  schedule:
+    - cron: '41 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: repo-key-check
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: check
+    if: github.repository == 'TurboPanel/turbopanel'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out the daemon
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: TurboPanel/turbopaneld
+          ref: trunk
+          path: daemon
+          persist-credentials: false
+
+      - name: Check out the pin reader
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: panel
+          sparse-checkout: scripts
+          persist-credentials: false
+
+      - name: Read Deno pin
+        id: deno-pin
+        run: echo "version=$(sh panel/scripts/ci-runtime-pins.sh daemon deno)" >> "$GITHUB_OUTPUT"
+
+      - name: Install Deno
+        uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
+        with:
+          deno-version: ${{ steps.deno-pin.outputs.version }}
+
+      - name: Compare with the vendors' keys
+        id: compare
+        working-directory: daemon
+        run: |
+          # Exit 0: same keys. 1: the keys differ. 3: a key expires soon. In
+          # both of those the script wrote the report. 2: only downloads failed,
+          # so retry. A script that predates these codes, or one that crashed,
+          # exits 1 without a report: that fails the run and files nothing.
+          report="$RUNNER_TEMP/report.md"
+          rm -f "$report"
+          for attempt in 1 2 3; do
+            code=0
+            deno run --allow-read --allow-net --allow-write="$RUNNER_TEMP" scripts/check-repo-keys.ts "$report" || code=$?
+            [ "$code" -ne 2 ] && break
+            echo "Download failed (attempt $attempt of 3)"
+            [ "$attempt" -lt 3 ] && sleep 30
+          done
+          case "$code" in
+            0) echo "action=none" >> "$GITHUB_OUTPUT" ;;
+            1|3)
+              if [ ! -s "$report" ]; then
+                echo "::error::The key check exited $code without a report (a crash, or an older script); no issue filed."
+                exit 1
+              fi
+              if [ "$code" -eq 1 ]; then
+                echo "title=Repository signing key changed" >> "$GITHUB_OUTPUT"
+              else
+                echo "title=Repository signing key expires soon" >> "$GITHUB_OUTPUT"
+              fi
+              echo "action=issue" >> "$GITHUB_OUTPUT"
+              ;;
+            2) echo "::error::The vendors' key downloads kept failing; no issue filed."; exit 1 ;;
+            *) echo "::error::The key check crashed (exit $code); no issue filed."; exit 1 ;;
+          esac
+
+      - name: File or update the issue
+        if: steps.compare.outputs.action == 'issue'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TITLE: ${{ steps.compare.outputs.title }}
+        run: |
+          number="$(gh issue list --state open --search "\"$TITLE\" in:title" --json number,title --jq "map(select(.title == \"$TITLE\"))[0].number // empty")"
+          if [ -n "$number" ]; then
+            gh issue edit "$number" --body-file "$RUNNER_TEMP/report.md"
+          else
+            gh issue create --title "$TITLE" --body-file "$RUNNER_TEMP/report.md"
+          fi

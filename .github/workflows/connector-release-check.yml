@@ -1,0 +1,81 @@
+# connector-release-check: every six hours, look for a tunnel connector release
+# newer than the version the daemon pins and file or update ONE issue here with
+# the new version and its checksums. It changes no pin and touches no server: a
+# new connector reaches servers only with a daemon release the owner cuts.
+# The script comes from the daemon repository's trunk (public, no token). Issues
+# are enabled only on this repository, which is why the check runs here.
+name: Tunnel Connector Release Check
+
+on:
+  schedule:
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: connector-release-check
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: check
+    if: github.repository == 'TurboPanel/turbopanel'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out the daemon
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: TurboPanel/turbopaneld
+          ref: trunk
+          path: daemon
+          persist-credentials: false
+
+      - name: Check out the pin reader
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: panel
+          sparse-checkout: scripts
+          persist-credentials: false
+
+      - name: Read Deno pin
+        id: deno-pin
+        run: echo "version=$(sh panel/scripts/ci-runtime-pins.sh daemon deno)" >> "$GITHUB_OUTPUT"
+
+      - name: Install Deno
+        uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
+        with:
+          deno-version: ${{ steps.deno-pin.outputs.version }}
+
+      - name: Compare with the pinned connector
+        id: compare
+        working-directory: daemon
+        run: |
+          # The script prints "current" or "newer" (and then wrote the report).
+          # Anything else is a crash or a changed script: fail, file nothing.
+          result="$(deno run --allow-net=api.github.com --allow-read --allow-write="$RUNNER_TEMP" scripts/check-connector-release.ts "$RUNNER_TEMP/report.md")" || {
+            echo "::error::The connector release check script failed; no issue filed."
+            exit 1
+          }
+          case "$result" in
+            current|newer) ;;
+            *) echo "::error::Unexpected output from the connector release check: $result"; exit 1 ;;
+          esac
+          echo "result=$result" >> "$GITHUB_OUTPUT"
+
+      - name: File or update the issue
+        if: steps.compare.outputs.result == 'newer'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [ -s "$RUNNER_TEMP/report.md" ] || { echo "::error::The report is empty."; exit 1; }
+          title="Tunnel connector update available"
+          number="$(gh issue list --state open --search "\"$title\" in:title" --json number,title --jq "map(select(.title == \"$title\"))[0].number // empty")"
+          if [ -n "$number" ]; then
+            gh issue edit "$number" --body-file "$RUNNER_TEMP/report.md"
+          else
+            gh issue create --title "$title" --body-file "$RUNNER_TEMP/report.md"
+          fi
