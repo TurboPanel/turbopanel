@@ -422,7 +422,7 @@ test('events move the request: issued before the pair waits, issued after the pa
       .set({
         metadata: {
           ...((await readRow(f)).metadata as object),
-          httpCert: { ...state, capturedAt: at(1500).toISOString() },
+          httpCert: { ...state, capturedAt: at(1500).toISOString(), coveredNames: [HOST] },
         },
       })
       .where(eq(tls.id, f.tlsId))
