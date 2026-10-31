@@ -75,3 +75,13 @@ Only a row with exactly one plain name is ordered here. A row with several names
 (apex and www) would get one certificate per name from the daemon, and a row holds
 one pair, so it is left entirely alone (never selected, no lookups, no marker) and
 stays with each server's own web server until per-name pairs exist.
+
+One order at a time per issuing server: the daemon runs one issuer window at a time, so
+a second order would wait behind the first and could pass the panel's silence limit.
+The start takes an advisory lock on the server and refuses (`busy`) while any row has
+an open request asked of it.
+
+Platform switches, both environment settings read by the sweep: `TURBOPANEL_SHARED_CERTIFICATES=off`
+turns the whole flow off (default on: the sweep does nothing, open requests time out,
+nothing new starts; a row's own web server is unaffected), and `TURBOPANEL_ACME_STAGING=true`
+orders from the authority's test directory.

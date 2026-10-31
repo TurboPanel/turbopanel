@@ -26,7 +26,7 @@ import {
 } from '../../features/tls/http-issuance/state.ts'
 import {
   httpIssuanceStaging,
-  markChecked as markCheckedForTest,
+  httpIssuanceEnabled,
   selectHttpIssuanceCandidates,
 } from './http-issuance-sweep.ts'
 
@@ -40,12 +40,16 @@ const dbUrl = getDatabaseUrl()
  */
 const test = Deno.test.bind(Deno)
 
+/** One pool for the file: a pool per test runs the server out of clients. */
+let sharedDb: ReturnType<typeof createDenoDb> | undefined
+
 const NOW = new Date('2026-11-01T12:00:00.000Z')
 const iso = (ms: number) => new Date(NOW.getTime() + ms).toISOString()
 
-test('the sweep picks up exactly the rows with work to do', async () => {
-  if (!dbUrl) return skipWithoutDatabase('http issuance sweep tests')
-  const db = createDenoDb()
+/** Rows pinned by one site in a throwaway organization, made with `make`. */
+async function sweepWorld() {
+  sharedDb ??= createDenoDb()
+  const db = sharedDb
   const stamp = new Date().toISOString()
   const [org] = await db
     .insert(organization)
@@ -124,6 +128,25 @@ test('the sweep picks up exactly the rows with work to do', async () => {
     }
     return row!.id
   }
+  return {
+    db,
+    make,
+    async cleanup() {
+      await db.delete(hosting).where(eq(hosting.serviceId, svc!.id))
+      await db.delete(tls).where(eq(tls.organizationId, organizationId))
+      await db.delete(service).where(eq(service.id, svc!.id))
+      await db.delete(environment).where(eq(environment.id, env!.id))
+      await db.delete(project).where(eq(project.id, proj!.id))
+      await db.delete(workspace).where(eq(workspace.id, ws!.id))
+      await db.delete(organization).where(eq(organization.id, organizationId))
+    },
+  }
+}
+
+test('the sweep picks up exactly the rows with work to do', async () => {
+  if (!dbUrl) return skipWithoutDatabase('http issuance sweep tests')
+  const w = await sweepWorld()
+  const { db, make } = w
   const issued = { phase: 'issued' as const, endedAt: iso(-1000), endsSentAt: iso(-900) }
   try {
     const ids = {
@@ -220,29 +243,8 @@ test('the sweep picks up exactly the rows with work to do', async () => {
         ids.endsPending,
       ].sort()
     )
-    // Looking at a row notes it inside its request, leaves its own time alone and sends it to the back.
-    const before = (await db.select().from(tls).where(eq(tls.id, ids.retryDue)))[0]!
-    await markCheckedForTest(db, ids.retryDue, NOW)
-    const after = (await db.select().from(tls).where(eq(tls.id, ids.retryDue)))[0]!
-    assertEquals(after.updatedAt, before.updatedAt)
-    assertEquals(
-      (after.metadata as { httpCert: { checkedAt: string } }).httpCert.checkedAt,
-      NOW.toISOString()
-    )
-    const order = (await selectHttpIssuanceCandidates(db, NOW, 100)).map((r) => r.id)
-    assertEquals(order.indexOf(ids.retryDue) > order.indexOf(ids.fresh), true)
-    // A row with no request is never written to by being looked at.
-    await markCheckedForTest(db, ids.fresh, NOW)
-    const fresh = (await db.select().from(tls).where(eq(tls.id, ids.fresh)))[0]!
-    assertEquals('httpCert' in (fresh.metadata as object), false)
   } finally {
-    await db.delete(hosting).where(eq(hosting.serviceId, svc!.id))
-    await db.delete(tls).where(eq(tls.organizationId, organizationId))
-    await db.delete(service).where(eq(service.id, svc!.id))
-    await db.delete(environment).where(eq(environment.id, env!.id))
-    await db.delete(project).where(eq(project.id, proj!.id))
-    await db.delete(workspace).where(eq(workspace.id, ws!.id))
-    await db.delete(organization).where(eq(organization.id, organizationId))
+    await w.cleanup()
   }
 })
 
@@ -250,4 +252,43 @@ test('the test directory is a platform setting', () => {
   assertEquals(httpIssuanceStaging({}), false)
   assertEquals(httpIssuanceStaging({ TURBOPANEL_ACME_STAGING: ' TRUE ' }), true)
   assertEquals(httpIssuanceStaging({ TURBOPANEL_ACME_STAGING: 'no' }), false)
+})
+
+test('open requests and finished pairs are always inside the batch, however many rows are waiting', async () => {
+  if (!dbUrl) return skipWithoutDatabase('http issuance sweep tests')
+  const w = await sweepWorld()
+  try {
+    for (let i = 0; i < 40; i += 1) await w.make(`wait${i}`, {})
+    const open = await w.make('openone', { state: {} })
+    const undelivered = await w.make('undeliveredone', {
+      key: true,
+      state: {
+        phase: 'issued',
+        endedAt: iso(-1000),
+        endsSentAt: iso(-900),
+        deliveredAt: null,
+        centralPair: true,
+        renewAt: iso(86_400_000),
+      },
+    })
+    const seen = new Set<string>()
+    for (let minute = 0; minute < 6; minute += 1) {
+      const at = new Date(NOW.getTime() + minute * 60_000)
+      const batch = (await selectHttpIssuanceCandidates(w.db, at, 25)).map((r) => r.id)
+      assertEquals(batch.length, 25)
+      assertEquals(batch.includes(open), true)
+      assertEquals(batch.includes(undelivered), true)
+      for (const id of batch) seen.add(id)
+    }
+    // The waiting rows take turns: over six minutes most of them are looked at.
+    assertEquals(seen.size > 30, true)
+  } finally {
+    await w.cleanup()
+  }
+})
+
+test('the whole flow can be switched off for the platform', () => {
+  assertEquals(httpIssuanceEnabled({}), true)
+  assertEquals(httpIssuanceEnabled({ TURBOPANEL_SHARED_CERTIFICATES: 'on' }), true)
+  assertEquals(httpIssuanceEnabled({ TURBOPANEL_SHARED_CERTIFICATES: ' OFF ' }), false)
 })

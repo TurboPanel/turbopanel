@@ -54,6 +54,14 @@ export type HttpIssuanceSweepResult = {
   delivered: number
 }
 
+/**
+ * The platform switch for the whole flow: `TURBOPANEL_SHARED_CERTIFICATES=off` makes the
+ * sweep do nothing (open requests are left to time out, nothing new starts). On by default.
+ */
+export function httpIssuanceEnabled(env: Record<string, string | undefined>): boolean {
+  return (env.TURBOPANEL_SHARED_CERTIFICATES ?? '').trim().toLowerCase() !== 'off'
+}
+
 /** Order from the authority's test directory when the platform says so (`TURBOPANEL_ACME_STAGING=true`). */
 export function httpIssuanceStaging(env: Record<string, string | undefined>): boolean {
   return (env.TURBOPANEL_ACME_STAGING ?? '').trim().toLowerCase() === 'true'
@@ -90,9 +98,16 @@ export function selectHttpIssuanceCandidates(db: Db, now: Date, limit: number) {
   const h = sql`${tls.metadata} -> 'httpCert'`
   const central = sql`${h} ->> 'centralPair' = 'true'`
   const renewDue = sql`(${central} and coalesce(${h} ->> 'renewAt', '') <= ${at})`
-  // A fair order without writing to rows the flow has not started on: rows with a
-  // request go by the time they were last looked at; the rest by a per-minute hash.
+  // Work already begun comes first, so an open request is advanced and a finished pair
+  // delivered every minute however many rows are waiting. The rest rotate by a hash that
+  // changes each minute: every waiting row gets its turn and nothing is written to them.
   const minute = Math.floor(now.getTime() / 60_000)
+  const begun = sql`(${h} is not null and (
+    ${h} ->> 'endedAt' is null
+    or (${h} ->> 'phase' = 'issued' and ${h} ->> 'deliveredAt' is null)
+    or (${h} ->> 'endedAt' is not null and ${h} ->> 'endsSentAt' is null
+        and jsonb_array_length(coalesce(${h} -> 'forwards', '[]'::jsonb)) > 0)
+  ))`
   return db
     .select({
       id: tls.id,
@@ -123,30 +138,10 @@ export function selectHttpIssuanceCandidates(db: Db, now: Date, limit: number) {
       )
     )
     .orderBy(
-      sql`coalesce(${h} ->> 'checkedAt', '')`,
+      sql`case when ${begun} then 0 else 1 end`,
       sql`md5(${tls.id}::text || ${String(minute)})`
     )
     .limit(limit)
-}
-
-/**
- * Note that a row with a request on record was looked at and nothing came of it,
- * so it drops behind the rows not yet looked at. Written inside `httpCert`, with
- * the row's own time left alone.
- */
-export async function markChecked(db: Db, row: { id: string } | string, now: Date): Promise<void> {
-  await db
-    .update(tls)
-    .set({
-      metadata: sql`jsonb_set(${tls.metadata}, '{httpCert,checkedAt}', to_jsonb(${now.toISOString()}::text))`,
-      updatedAt: sql`${tls.updatedAt}`,
-    })
-    .where(
-      and(
-        eq(tls.id, typeof row === 'string' ? row : row.id),
-        sql`${tls.metadata} -> 'httpCert' is not null`
-      )
-    )
 }
 
 type Candidate = Awaited<ReturnType<typeof selectHttpIssuanceCandidates>>[number]
@@ -183,7 +178,6 @@ async function stepRow(
     facts.hasPair ? renewalDue(state, now) : true
   )
   if (outcome === 'started' || outcome === 'ordering') out.started += 1
-  else await markChecked(deps.db, row, now)
 }
 
 export async function runHttpIssuanceSweepTick(
@@ -191,6 +185,7 @@ export async function runHttpIssuanceSweepTick(
   wiring: HttpIssuanceSweepWiring,
   options: { batch?: number; budgetMs?: number } = {}
 ): Promise<HttpIssuanceSweepResult> {
+  if (!httpIssuanceEnabled(wiring.env)) return { scanned: 0, advanced: 0, started: 0, delivered: 0 }
   const startedAt = Date.now()
   const now = (wiring.now ?? (() => new Date()))()
   const deps = buildHttpIssuanceDeps(db, wiring)

@@ -265,7 +265,14 @@ export function isHttpOrderable(names: readonly string[]): boolean {
 }
 
 export type StartOutcome =
-  'started' | 'ordering' | 'waiting' | 'backoff' | 'not_due' | 'not_eligible'
+  | 'started'
+  | 'ordering'
+  | 'waiting'
+  | 'backoff'
+  /** The chosen issuing server already has an order open; this one waits its turn. */
+  | 'busy'
+  | 'not_due'
+  | 'not_eligible'
 
 async function gather(
   deps: HttpIssuanceDeps,
@@ -376,6 +383,21 @@ function openingMessages(
   }))
 }
 
+/** Whether some row already has an open request asked of this server. */
+async function issuerHasOpenOrder(tx: Db, serverId: string): Promise<boolean> {
+  const rows = await tx
+    .select({ id: tls.id })
+    .from(tls)
+    .where(
+      and(
+        sql`${tls.metadata} -> 'httpCert' ->> 'issuingServerId' = ${serverId}`,
+        sql`${tls.metadata} -> 'httpCert' ->> 'endedAt' is null`
+      )
+    )
+    .limit(1)
+  return rows.length > 0
+}
+
 async function startInTransaction(
   tx: Db,
   params: {
@@ -405,6 +427,10 @@ async function startInTransaction(
     await writeWaiting(tx, row, waitingText(choice.reason), now)
     return { outcome: 'waiting', send: [] }
   }
+  // One order at a time per issuing server: the daemon runs one window at a time, so a
+  // second order would only wait behind the first and could pass the silence limit.
+  await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${choice.issuer.serverId}))`)
+  if (await issuerHasOpenOrder(tx, choice.issuer.serverId)) return { outcome: 'busy', send: [] }
   const fresh = freshState({ deps, now, choice, previous, staging: deps.staging })
   const direct = choice.helpers.length === 0
   const state: HttpIssuanceState = direct
@@ -672,7 +698,12 @@ async function claimDelivery(
   deps: HttpIssuanceDeps,
   tlsId: string,
   now: Date
-): Promise<{ organizationId: string; ends: Outgoing; requestId: string } | null> {
+): Promise<{
+  organizationId: string
+  ends: Outgoing
+  requestId: string
+  endsClaimed: boolean
+} | null> {
   return await deps.db.transaction(async (tx0) => {
     const tx = tx0 as unknown as Db
     const row = await lockRow(tx, tlsId)
@@ -689,19 +720,30 @@ async function claimDelivery(
       organizationId: row.organizationId,
       requestId: state.requestId,
       ends: state.endsSentAt === null ? endMessages(now, state) : [],
+      endsClaimed: state.endsSentAt === null,
     }
   })
 }
 
 /** Undo a claim whose push threw, so the next sweep tries again. */
-async function releaseDelivery(deps: HttpIssuanceDeps, tlsId: string, requestId: string) {
+async function releaseDelivery(
+  deps: HttpIssuanceDeps,
+  tlsId: string,
+  requestId: string,
+  endsClaimed: boolean
+) {
   const now = clock(deps)
   await deps.db.transaction(async (tx0) => {
     const tx = tx0 as unknown as Db
     const row = await lockRow(tx, tlsId)
     const state = row ? readHttpIssuanceState(row.metadata) : null
     if (!row || state?.requestId !== requestId) return
-    await writeState(tx, row, { ...state, deliveredAt: null }, now)
+    await writeState(
+      tx,
+      row,
+      { ...state, deliveredAt: null, ...(endsClaimed ? { endsSentAt: null } : {}) },
+      now
+    )
   })
 }
 
@@ -732,7 +774,7 @@ export async function deliverIssuedPair(
   try {
     await push(tlsId, claim.organizationId)
   } catch (err) {
-    await releaseDelivery(deps, tlsId, claim.requestId)
+    await releaseDelivery(deps, tlsId, claim.requestId, claim.endsClaimed)
     throw err
   }
   await sendAll(deps, claim.ends)

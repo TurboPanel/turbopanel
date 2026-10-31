@@ -848,7 +848,9 @@ test('a push that throws releases the delivery so the next sweep tries again', a
       threw = true
     }
     assertEquals(threw, true)
-    assertEquals(readHttpIssuanceState((await readRow(f)).metadata)!.deliveredAt, null)
+    const released = readHttpIssuanceState((await readRow(f)).metadata)!
+    assertEquals(released.deliveredAt, null)
+    assertEquals(released.endsSentAt, null)
     assertEquals(await deliverIssuedPair(f.deps(), f.tlsId, () => Promise.resolve()), 'delivered')
   } finally {
     await f.cleanup()
@@ -1008,6 +1010,59 @@ test('a request whose pair is stored but whose issued event was lost closes as i
     const closed = readHttpIssuanceState((await readRow(f)).metadata)!
     assertEquals(closed.phase, 'issued')
     assertEquals(closed.endedAt, at(70_000).toISOString())
+  } finally {
+    await f.cleanup()
+  }
+})
+
+test('an issuing server takes one order at a time; the next waits its turn', async () => {
+  if (!dbUrl) return skipWithoutDatabase('http issuance tests')
+  const f = await setup({ servers: 1 })
+  try {
+    // Another row in the organization already has an order open with this server.
+    const [other] = await f.db
+      .insert(tls)
+      .values({
+        organizationId: f.organizationId,
+        name: 'Other',
+        source: 'lets_encrypt',
+        status: 'automatic',
+        metadata: {
+          dnsNames: ['other.example.com'],
+          httpCert: newHttpIssuanceState({
+            issuingServerId: f.servers[0]!.id,
+            requestId: 'req_other',
+            startedAt: T0.toISOString(),
+            startByAt: at(1_800_000).toISOString(),
+          }),
+        },
+        options: {},
+      })
+      .returning({ id: tls.id })
+    assertEquals(await startHttpIssuance(f.deps(), f.tlsId, always), 'busy')
+    assertEquals(f.sent.length, 0)
+    assertEquals(readHttpIssuanceState((await readRow(f)).metadata), null)
+    // Once that order is over, this one starts.
+    await f.db
+      .update(tls)
+      .set({
+        metadata: {
+          dnsNames: ['other.example.com'],
+          httpCert: newHttpIssuanceState({
+            issuingServerId: f.servers[0]!.id,
+            requestId: 'req_other',
+            startedAt: T0.toISOString(),
+            startByAt: at(1_800_000).toISOString(),
+            endedAt: at(1000).toISOString(),
+            phase: 'issued',
+          }),
+        },
+      })
+      .where(eq(tls.id, other!.id))
+    assertEquals(
+      await startHttpIssuance(f.deps({ now: () => at(2000) }), f.tlsId, always),
+      'ordering'
+    )
   } finally {
     await f.cleanup()
   }
