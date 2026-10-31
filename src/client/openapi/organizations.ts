@@ -428,6 +428,31 @@ export const organizationSchemas = {
             toServerId: { type: 'string', format: 'uuid' },
             path: { type: 'string', enum: ['lan', 'fabric', 'fabric_over_untrusted_lan', 'none'] },
             reason: { type: 'string' },
+            tunnel: {
+              type: 'object',
+              description:
+                "For a pair a tunnel carries: what each end's own latest peer report says about the other end. Present only when at least one end has reported. The page judges each reading's `lastHandshakeAt` against its `observedAt` (a handshake within 195 s of the reading is healthy, a reading older than 7 minutes says nothing), so a stored path that still reads unreachable does not hide a tunnel that is up.",
+              required: ['readings'],
+              properties: {
+                readings: {
+                  type: 'array',
+                  items: {
+                    type: 'object',
+                    required: ['reporterServerId', 'observedAt'],
+                    properties: {
+                      reporterServerId: { type: 'string', format: 'uuid' },
+                      observedAt: { type: 'string', format: 'date-time' },
+                      lastHandshakeAt: {
+                        type: 'string',
+                        format: 'date-time',
+                        description:
+                          "The other end's last handshake in that reading; absent when it never handshook.",
+                      },
+                    },
+                  },
+                },
+              },
+            },
           },
         },
       },

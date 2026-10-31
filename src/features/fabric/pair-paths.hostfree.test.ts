@@ -64,3 +64,66 @@ test('two NAT-only servers with no gateway have no path', () => {
   const ctx = context([relayRow(1, null), relayRow(2, null)])
   assertEquals(describeFabricPair(ctx, 'srv-1', 'srv-2').path, 'none')
 })
+
+function reported(
+  row: RelayRecord,
+  peer: RelayRecord,
+  at: string,
+  handshake?: string
+): RelayRecord {
+  return {
+    ...row,
+    metadata: {
+      observed: {
+        at,
+        peers: [
+          { publicKey: peer.publicKey!, ...(handshake ? { lastHandshakeAt: handshake } : {}) },
+        ],
+      },
+    },
+  }
+}
+
+test("a tunnel pair carries each end's own reading about the other end", () => {
+  const pub = relayRow(1, '203.0.113.10')
+  const nat = relayRow(2, null)
+  const ctx = context([
+    reported(pub, nat, '2026-10-31T10:00:00.000Z'),
+    reported(nat, pub, '2026-10-31T10:00:05.000Z', '2026-10-31T09:59:30.000Z'),
+  ])
+  assertEquals(describeFabricPair(ctx, 'srv-1', 'srv-2').tunnel, {
+    readings: [
+      { reporterServerId: 'srv-1', observedAt: '2026-10-31T10:00:00.000Z' },
+      {
+        reporterServerId: 'srv-2',
+        observedAt: '2026-10-31T10:00:05.000Z',
+        lastHandshakeAt: '2026-10-31T09:59:30.000Z',
+      },
+    ],
+  })
+})
+
+test('a pair with no report from either end has no tunnel field', () => {
+  const ctx = context([relayRow(1, '203.0.113.10'), relayRow(2, null)])
+  assertEquals('tunnel' in describeFabricPair(ctx, 'srv-1', 'srv-2'), false)
+})
+
+test('a pair with no tunnel (paused mesh) carries no readings even when reports are stored', () => {
+  const pub = relayRow(1, '203.0.113.10')
+  const nat = relayRow(2, null)
+  const ctx = {
+    ...context([reported(pub, nat, '2026-10-31T10:00:00.000Z', '2026-10-31T09:59:50.000Z'), nat]),
+    fabric: { ...FABRIC, enabled: false },
+  }
+  const row = describeFabricPair(ctx, 'srv-1', 'srv-2')
+  assertEquals(row.path, 'none')
+  assertEquals('tunnel' in row, false)
+})
+
+test('a reporter that does not list the other end as a peer gives no reading', () => {
+  const a = relayRow(1, '203.0.113.10')
+  const b = relayRow(2, null)
+  const c = relayRow(3, null)
+  const ctx = context([reported(a, c, '2026-10-31T10:00:00.000Z'), b])
+  assertEquals('tunnel' in describeFabricPair(ctx, 'srv-1', 'srv-2'), false)
+})
