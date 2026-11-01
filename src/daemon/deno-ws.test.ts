@@ -699,40 +699,56 @@ it('WS lifecycle attaches, handles hello, and detaches through cell backend', as
   assertEquals(tracking.getSnapshot().connected, false)
 })
 
-it('WS upgrade accepts HTTP 101 with valid JWT after daemon key is revoked', async () => {
+async function requestDaemonUpgrade(
+  serverId: string,
+  db: Db,
+  extraHeaders: Record<string, string> = {}
+): Promise<{ status: number; attachCalls: number }> {
   const app = new Hono()
   const secrets = await createDaemonJwtSecrets()
+  const tracking = createTrackingDaemonCell(serverId)
   registerTestDaemonWebSocket(app, secrets, {
-    db: createMockDb(),
+    db,
+    registry: createTrackingRegistry(tracking.cell),
   })
 
-  const issued = await issueDaemonJwt({ sub: 'srv-test', kid: 'key-test' }, secrets)
+  const issued = await issueDaemonJwt({ sub: serverId, kid: 'key-test' }, secrets)
   const response = await app.request(DAEMON_WS_PATH, {
     method: 'GET',
     headers: {
       Authorization: `Bearer ${issued.token}`,
       ...WS_UPGRADE_HEADERS,
+      ...extraHeaders,
     },
   })
-  assertEquals(response.status, 101)
+  return { status: response.status, attachCalls: tracking.calls.attach }
+}
+
+it('WS upgrade refuses HTTP 403 with a valid JWT after the daemon key is revoked', async () => {
+  const serverId = 'srv-upgrade-revoked'
+  const { db } = createProjectionTrackingDb(serverId, {
+    key: { ...baseDaemonKey, revokedAt: '2020-01-02T00:00:00.000Z' },
+  })
+  const result = await requestDaemonUpgrade(serverId, db)
+  assertEquals(result.status, 403)
+  assertEquals(result.attachCalls, 0)
 })
 
-it('WS upgrade accepts HTTP 101 with valid JWT after daemon key is replaced', async () => {
-  const app = new Hono()
-  const secrets = await createDaemonJwtSecrets()
-  registerTestDaemonWebSocket(app, secrets, {
-    db: createMockDb(),
-  })
+it('WS upgrade refuses HTTP 403 with a valid JWT after the daemon key is replaced', async () => {
+  const result = await requestDaemonUpgrade('srv-upgrade-replaced', createMockDb('key-new'))
+  assertEquals(result.status, 403)
+  assertEquals(result.attachCalls, 0)
+})
 
-  const issued = await issueDaemonJwt({ sub: 'srv-test', kid: 'key-test' }, secrets)
-  const response = await app.request(DAEMON_WS_PATH, {
-    method: 'GET',
-    headers: {
-      Authorization: `Bearer ${issued.token}`,
-      ...WS_UPGRADE_HEADERS,
-    },
+it('WS upgrade refuses HTTP 403 for a remote daemon whose server row is gone', async () => {
+  const emptyDb = {
+    select: () => createSelectChain(() => []),
+  } as unknown as Db
+  const result = await requestDaemonUpgrade('srv-upgrade-row-gone', emptyDb, {
+    'X-Real-IP': '203.0.113.60',
   })
-  assertEquals(response.status, 101)
+  assertEquals(result.status, 403)
+  assertEquals(result.attachCalls, 0)
 })
 
 async function openTestWebSocket(
@@ -1387,58 +1403,6 @@ it('WS upgrade returns 503 when daemon cell registry is unavailable', async () =
   )
 })
 
-it('revoked daemon key closes the socket on the next inbound ping', async () => {
-  const secrets = await createDaemonJwtSecrets()
-  const serverId = 'srv-key-revoked-ping'
-  const revokedKey = {
-    ...baseDaemonKey,
-    revokedAt: '2020-01-02T00:00:00.000Z',
-  }
-  const { db } = createProjectionTrackingDb(
-    serverId,
-    {
-      key: revokedKey,
-    },
-    {
-      connected: true,
-      statusChangedAt: '2020-01-01T00:00:00.000Z',
-    }
-  )
-  const tracking = createTrackingDaemonCell(serverId)
-  const app = new Hono()
-  registerTestDaemonWebSocket(app, secrets, {
-    db,
-    registry: createTrackingRegistry(tracking.cell),
-  })
-
-  const issued = await issueDaemonJwt({ sub: serverId, kid: 'key-test' }, secrets)
-  const response = await app.request(DAEMON_WS_PATH, {
-    method: 'GET',
-    headers: {
-      Authorization: `Bearer ${issued.token}`,
-      ...WS_UPGRADE_HEADERS,
-    },
-  })
-  const ws = upgradedWebSocket(response)
-  if (response.status !== 101 || !ws) {
-    console.warn('Skipping revoked-key ping test: response.webSocket unavailable')
-    return
-  }
-
-  ws.accept()
-  await new Promise((resolve) => setTimeout(resolve, 50))
-
-  const closed = new Promise<{ code: number; reason: string }>((resolve) => {
-    ws.addEventListener('close', (event) => {
-      resolve({ code: event.code, reason: event.reason })
-    })
-  })
-  ws.send(DAEMON_CELL_PING)
-  const closeEvent = await closed
-  assertEquals(closeEvent.code, 1008)
-  assertEquals(closeEvent.reason, 'key_revoked')
-})
-
 it('cell ping re-projects online when Redis snapshot is disconnected', async () => {
   const secrets = await createDaemonJwtSecrets()
   const serverId = 'srv-ping-redis-offline'
@@ -1660,6 +1624,7 @@ async function withLiveDaemonServer(
     developerSurface?: boolean
     sessionSecrets?: DerivedSecretsConfig
     setDbOnContext?: Db
+    heartbeatSeconds?: () => number
   },
   fn: (ctx: { port: number; origin: string }) => Promise<void>
 ): Promise<void> {
@@ -1681,6 +1646,7 @@ async function withLiveDaemonServer(
     connectLimiter: options.connectLimiter,
     developerSurface: options.developerSurface,
     sessionSecrets: options.sessionSecrets,
+    heartbeatSeconds: options.heartbeatSeconds,
   })
 
   const ac = new AbortController()
@@ -1901,6 +1867,32 @@ test('live WS attaches, pumps outbox, handles hello/ping, and detaches', async (
   )
 })
 
+test('live WS attach version frame carries the advised heartbeat', async () => {
+  const secrets = await createDaemonJwtSecrets()
+  const serverId = 'srv-live-heartbeat'
+  const tracking = createTrackingDaemonCell(serverId)
+  await withLiveDaemonServer(
+    {
+      secrets,
+      db: createMockDb(),
+      registry: createTrackingRegistry(tracking.cell),
+      heartbeatSeconds: () => 25,
+    },
+    async ({ port }) => {
+      const issued = await issueDaemonJwt({ sub: serverId, kid: 'key-test' }, secrets)
+      const ws = createDenoWebSocket(`ws://127.0.0.1:${port}${DAEMON_WS_PATH}`, {
+        headers: { Authorization: `Bearer ${issued.token}`, 'X-Real-IP': LIVE_REMOTE_IP },
+      })
+      const first = waitForWsMessage(ws)
+      await waitForWsOpen(ws)
+      const frame = JSON.parse(await first) as { type?: string; heartbeatSeconds?: number }
+      ws.close(1000, 'done')
+      assertEquals(frame.type, 'version')
+      assertEquals(frame.heartbeatSeconds, 25)
+    }
+  )
+})
+
 test('live WS queues messages until attach completes then drains them', async () => {
   const secrets = await createDaemonJwtSecrets()
   const serverId = 'srv-live-pending'
@@ -2067,14 +2059,13 @@ test('live WS rejects oversized frames and revoked keys', async () => {
     }
   )
 
-  const revoked = {
-    ...baseDaemonKey,
-    revokedAt: '2020-01-02T00:00:00.000Z',
-  }
+  // The upgrade refuses a key that is already revoked, so this one is revoked
+  // after the socket opens: the next inbound frame must still close it.
+  const liveKey: ServerDaemonState['key'] = { ...baseDaemonKey }
   const { db } = createProjectionTrackingDb(
     serverId + '-rev',
     {
-      key: revoked,
+      key: liveKey,
     },
     {
       connected: true,
@@ -2102,10 +2093,45 @@ test('live WS rejects oversized frames and revoked keys', async () => {
         remoteIp: LIVE_REMOTE_IP,
       })
       const closed = waitForWsClose(ws)
+      liveKey.revokedAt = '2020-01-02T00:00:00.000Z'
       ws.send(DAEMON_CELL_PING)
       const closeEvent = await closed
       assertEquals(closeEvent.code, 1008)
       assertEquals(closeEvent.reason, 'key_revoked')
+    }
+  )
+})
+
+test('live WS upgrade refuses a revoked key before attaching', async () => {
+  const secrets = await createDaemonJwtSecrets()
+  const serverId = 'srv-live-revoked-upgrade'
+  const { db } = createProjectionTrackingDb(serverId, {
+    key: { ...baseDaemonKey, revokedAt: '2020-01-02T00:00:00.000Z' },
+  })
+  const tracking = createTrackingDaemonCell(serverId)
+
+  await withLiveDaemonServer(
+    {
+      secrets,
+      db,
+      registry: createTrackingRegistry(tracking.cell),
+    },
+    async ({ port }) => {
+      const issued = await issueDaemonJwt({ sub: serverId, kid: 'key-test' }, secrets)
+      const ws = createDenoWebSocket(`ws://127.0.0.1:${port}${DAEMON_WS_PATH}`, {
+        headers: {
+          Authorization: `Bearer ${issued.token}`,
+          'X-Real-IP': LIVE_REMOTE_IP,
+        },
+      })
+      const closed = waitForWsClose(ws)
+      let opened = true
+      await waitForWsOpen(ws).catch(() => {
+        opened = false
+      })
+      await closed
+      assertEquals(opened, false)
+      assertEquals(tracking.calls.attach, 0)
     }
   )
 })
@@ -2168,6 +2194,11 @@ test('live WS colocated path closes when postgres row is missing', async () => {
       const closeEvent = await closed
       assertEquals(closeEvent.code, 4401)
       assertEquals(closeEvent.reason, 'server row missing')
+      // Closed before attach: no lease, no online mark, nothing queued or read.
+      assertEquals(tracking.calls.attach, 0)
+      assertEquals(tracking.calls.readOutboxBatch, 0)
+      assertEquals(tracking.enqueued.length, 0)
+      assertEquals(tracking.getSnapshot().connected, false)
     }
   )
 })

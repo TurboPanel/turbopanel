@@ -68,11 +68,16 @@ import {
   runLeafRenewalSweepTick,
 } from '../../client/tls/leaf-renewal-sweep.ts'
 import { runHostingLetsEncryptSweepTick } from '../../client/hostings/letsencrypt-sweep.ts'
+import { buildDnsCertContext } from '../../client/tls/dns-certificate-context.ts'
+import { runHttpIssuanceSweepTick } from '../../client/tls/http-issuance-sweep.ts'
+import { runDnsCertificateSweepTick } from '../../features/tls/dns-certificates/sweep.ts'
 import {
   assertPasswordHasherAvailable,
   configureArgon2idWorkFactor,
 } from '../../lib/secrets/password.ts'
 import { registerAdminRoutes } from '../../admin/routes.ts'
+import { registerIngressAdminRoutes } from './ingress/admin-routes.ts'
+import { hostnameModes } from './ingress/planner.ts'
 import { registerInstallRoutes } from '../../install/routes.ts'
 import { registerDaemonApiRoutes } from '../../daemon/api-routes.ts'
 import {
@@ -80,7 +85,11 @@ import {
   resolvePublicInstanceTls,
 } from '../../features/install/install-tls.ts'
 import { listInstanceHostnames } from '../../features/install/instance-hostnames.ts'
+import { ensurePanelIdentityDetailed } from '../../lib/panel-identity/identity.ts'
+import { recordAudit } from '../../features/audit/audit-records.ts'
+import { orderedPublicOrigins } from '../../lib/panel-identity/urls.ts'
 import { registerDaemonWebSocket } from '../../daemon/deno-ws.ts'
+import { createHeartbeatReader } from './heartbeat-reader.ts'
 import {
   parseMetricsRetentionDays,
   parsePositiveIntEnv,
@@ -171,6 +180,9 @@ import {
   recoveryIdFromCommandMetadata,
   sweepStalledFencing,
 } from '../../features/managed/ha-recovery.ts'
+
+/** How often the advised heartbeat is re-read from the hostname rows. */
+const HEARTBEAT_REFRESH_MS = 5 * 60 * 1000
 
 export type DenoDeveloperSurfaceContext = {
   routes: Hono<AppEnv>
@@ -444,6 +456,24 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     secretsConfig,
     'data-encryption'
   )
+  // The panel identity key: random, stored sealed under the data-encryption key,
+  // never derived from TURBOPANEL_SECRET. Generated once on the first start.
+  const ensured = await ensurePanelIdentityDetailed(db, dataEncryptionSecrets)
+  // Replaced when an administrator sets or clears the next key, so the served
+  // document follows without a restart.
+  let panelIdentity = ensured.identity
+  if (ensured.created) {
+    await recordAudit(db, {
+      organizationId: null,
+      action: 'panel.identity.generated',
+      targetType: 'instance',
+      context: { fingerprint: panelIdentity.current.kid, keyset: panelIdentity.keyset },
+    })
+  }
+  logInfo(
+    'identity',
+    `Control plane identity ${panelIdentity.current.kid} (keyset ${panelIdentity.keyset})`
+  )
   // Derived after data-encryption secrets so DB-backed email secrets can be decrypted.
   const emailSettings = await resolveEmailSettings(db, runtimeEnv, dataEncryptionSecrets)
   const daemonCellRegistry = createRedisDaemonCellRegistry({ db })
@@ -489,26 +519,32 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
   const githubWebhookRate = resolveGithubWebhookRateLimit()
   const gitlabWebhookRate = resolveGitlabWebhookRateLimit()
   const inboundLimits = resolveDaemonWsInboundLimits()
+  // Daemon limiters fall back to a process-local bucket when Redis errors:
+  // fail-open made enroll, session and connect unlimited during an outage,
+  // and fail-closed would lock enrolled daemons out over a broker blip.
   const daemonConnectLimiter = createRedisRateLimiter({
     client: daemonCellRegistry.client,
     limit: connectRate.limit,
     periodSeconds: connectRate.periodSeconds,
+    onError: 'local',
   })
   const daemonRestLimiter = createRedisRateLimiter({
     client: daemonCellRegistry.client,
     limit: restRate.limit,
     periodSeconds: restRate.periodSeconds,
+    onError: 'local',
   })
   const daemonMetricsLimiter = createRedisRateLimiter({
     client: daemonCellRegistry.client,
     limit: metricsRate.limit,
     periodSeconds: metricsRate.periodSeconds,
+    onError: 'local',
   })
   // Inbound GitHub webhooks: keyed per peer address, not per server, because the
   // caller has no identity until its HMAC has been checked (see
   // `githubWebhookRateLimitKey`). Redis eval failures fall through to a
   // process-local token bucket so a broker hiccup still throttles per peer
-  // instead of making ingress unlimited (daemon connect/REST stay fail-open).
+  // instead of making ingress unlimited (the daemon limiters above do the same).
   const githubWebhookLimiter = createRedisRateLimiter({
     client: daemonCellRegistry.client,
     limit: githubWebhookRate.limit,
@@ -573,6 +609,9 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     dataEncryptionSecrets,
   })
 
+  // One reader for the CA route and the install command, so the fingerprints
+  // in a command always describe the document the installer downloads.
+  const readPlatformCaPem = () => Deno.readTextFile(resolveInstanceTlsCaServePath())
   const app = createApp({
     db,
     emailQueue,
@@ -602,6 +641,8 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     // Must be registered inside createApp() *before* GET /api/health, or the
     // health handler never sees TURBOPANEL_REVISION from systemd.
     getPlatformEnv: () => Deno.env.toObject(),
+    readPlatformCaPem,
+    panelIdentity: () => Promise.resolve(panelIdentity),
   })
   // Daemon + developer registrars are generic over the env, so the app's own
   // `AppEnv` typing carries through — no cast.
@@ -625,7 +666,9 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     tlsPublic: resolvePublicInstanceTls(Deno.env.toObject()),
     platformCaLeafPresented: async (hostname: string) =>
       hostnamePresentsPlatformCaLeaf(hostname, await listInstanceHostnames(db)),
-    readPlatformCaPem: () => Deno.readTextFile(resolveInstanceTlsCaServePath()),
+    readPlatformCaPem,
+    panelIdentity: () => Promise.resolve(panelIdentity),
+    identityUrls: async (requestDb) => orderedPublicOrigins(await listInstanceHostnames(requestDb)),
   })
   // Unversioned, session-free surface: mounted on the top-level app next to the
   // daemon API rather than under CLIENT_API_PREFIX, and authenticating itself.
@@ -635,8 +678,26 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     github: githubWebhookLimiter,
     gitlab: gitlabWebhookLimiter,
   })
+  // Behind-edge hostnames advertise 25 s, all others 60 s. The modes are read
+  // from the hostname rows once now and again every five minutes (hostnames
+  // change rarely, and a stale value only delays the shorter ping); the attach
+  // path only reads the cached value. A fresh client per read, like the other
+  // Deno timers.
+  const loadHostnameModes = async (): Promise<string[]> => {
+    const tickDb = createDenoDb()
+    try {
+      return hostnameModes(await listInstanceHostnames(tickDb))
+    } finally {
+      await endDbConnection(tickDb)
+    }
+  }
+  const heartbeatReader = createHeartbeatReader(loadHostnameModes, (err) =>
+    logWarn('daemon-cell', `advised heartbeat refresh error: ${String(err)}`)
+  )
+  void heartbeatReader.refresh()
   registerDaemonWebSocket(routes, {
     developerSurface,
+    heartbeatSeconds: heartbeatReader.read,
     db,
     secrets: daemonJwtKeyring,
     sessionSecrets,
@@ -654,6 +715,12 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     getEnv: () => Deno.env.toObject(),
     readPlatformCaBundle: () => Deno.readTextFile(resolveInstanceTlsCaServePath()),
     collectInstanceIps: () => collectServerIps(readDefaultRouteInterfaces()),
+    registerPlatformAdminRoutes: registerIngressAdminRoutes,
+    panelIdentity: () => Promise.resolve(panelIdentity),
+    identityUrls: async (requestDb) => orderedPublicOrigins(await listInstanceHostnames(requestDb)),
+    onIdentityNextChanged: (fingerprint) => {
+      panelIdentity = { ...panelIdentity, next: fingerprint ? { kid: fingerprint } : null }
+    },
     ...resolveMailDeadLetters(emailQueue),
   })
   const socketPath = resolveInstanceSocket()
@@ -866,11 +933,12 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     },
   })
   const maintenanceTimer = setInterval(() => maintenance.tick(), DAEMON_CELL_MAINTAIN_MS)
+  const heartbeatTimer = setInterval(() => void heartbeatReader.refresh(), HEARTBEAT_REFRESH_MS)
 
   // First Deno-side scheduled surface besides cell maintain: Organization CA
   // leaf renewal. Fresh createDenoDb() per tick, always endDbConnection in
   // finally — do not reuse the process-long `db` (same discipline as Workers
-  // Hyperdrive). Overlap-guarded; cadence is minutes, not the 60s cell tick.
+  // Hyperdrive). Overlap-guarded; one minute, like the hosted cron.
   let leafRenewalInFlight = false
   const leafRenewalTimer = setInterval(() => {
     if (leafRenewalInFlight) return
@@ -891,6 +959,20 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
         await runHostingLetsEncryptSweepTick(tickDb, {
           apply: { commandQueue, secretsConfig, dataEncryptionSecrets },
         })
+        // DNS-validated certificates: the next step of each order, upkeep, renewals.
+        await runDnsCertificateSweepTick(
+          buildDnsCertContext(tickDb, {
+            secrets: dataEncryptionSecrets,
+            push: { commandQueue, secretsConfig },
+          })
+        )
+        // Certificates a serving server orders at the panel's request.
+        await runHttpIssuanceSweepTick(tickDb, {
+          registry: daemonCellRegistry,
+          push: { commandQueue, secretsConfig },
+          secrets: dataEncryptionSecrets,
+          env: runtimeEnv,
+        })
       } catch (err) {
         logWarn('tls-leaf-renewal', `sweep error: ${String(err)}`)
       } finally {
@@ -901,7 +983,7 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
   }, LEAF_RENEWAL_SWEEP_INTERVAL_MS)
 
   const shutdown = createInstanceShutdown({
-    timers: [maintenanceTimer, leafRenewalTimer],
+    timers: [maintenanceTimer, leafRenewalTimer, heartbeatTimer],
     closers: [
       { label: 'email queue', close: () => emailQueue.close?.() },
       { label: 'command queue', close: () => commandQueue.close?.() },

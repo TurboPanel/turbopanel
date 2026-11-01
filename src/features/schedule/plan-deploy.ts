@@ -37,6 +37,8 @@ import { interpretServiceSchedule } from './interpret.ts'
 import { reconcileServicesFromCompose } from '../deploy/reconcile-services.ts'
 import { registerComposeVolumes } from '../deploy/register-compose-volumes.ts'
 import { registerComposeMounts } from '../deploy/register-compose-mounts.ts'
+import { loadPairRules } from '../fabric/pair-rules.ts'
+import { readOverlayDeclaredNetworkKeys } from '../fabric/spanning.ts'
 import {
   planEnvironmentSchedule,
   type FleetServer,
@@ -267,6 +269,9 @@ async function loadFleet(
     .select({
       id: server.id,
       connected: server.isConnected,
+      name: server.name,
+      hostname: server.hostname,
+      fabricEnabled: server.isFabricEnabled,
     })
     .from(server)
     .where(eq(server.organizationId, organizationId))
@@ -284,6 +289,8 @@ async function loadFleet(
       id: row.id,
       connected: row.connected,
       labels,
+      name: row.name ?? row.hostname ?? row.id,
+      fabricEnabled: row.fabricEnabled,
     }
   })
 }
@@ -418,7 +425,7 @@ export async function planEnvironmentDeploy(
   }
 
   const [fabricRow] = await db
-    .select({ id: fabric.id })
+    .select({ id: fabric.id, isEnabled: fabric.isEnabled })
     .from(fabric)
     .where(eq(fabric.organizationId, params.organizationId))
     .limit(1)
@@ -441,11 +448,20 @@ export async function planEnvironmentDeploy(
     })
   }
   const storagePins = await loadStoragePins(db, params.environmentId)
+  // Pure pair rules for the planner: a network whose servers all share a
+  // trusted LAN needs no TurboFabric. Read only when something could span.
+  const pairRules =
+    fleet.length > 1 && readOverlayDeclaredNetworkKeys(merged).size > 0
+      ? await loadPairRules(db, {
+          organizationId: params.organizationId,
+          serverIds: fleet.map((row) => row.id),
+        })
+      : null
 
   const plan = planEnvironmentSchedule({
     pinServerId,
     defaultServerId,
-    fabricEnabled: Boolean(fabricRow),
+    fabricEnabled: fabricRow !== undefined && fabricRow.isEnabled !== false,
     servers: fleet,
     services: planned,
     // `turbofabric_required` is decided from authored `driver: overlay` intent,
@@ -457,6 +473,7 @@ export async function planEnvironmentDeploy(
       serverId: task.serverId,
     })),
     storagePins,
+    ...pairRules,
   })
 
   return {
@@ -466,7 +483,7 @@ export async function planEnvironmentDeploy(
     remoteBuildSourcesApproved: composeRemoteBuildSourcesEnabled,
     pinServerId,
     defaultServerId,
-    fabricEnabled: Boolean(fabricRow),
+    fabricEnabled: fabricRow !== undefined && fabricRow.isEnabled !== false,
     fabricId: fabricRow?.id ?? null,
     merged,
     serviceRows,

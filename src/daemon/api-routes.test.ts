@@ -27,11 +27,13 @@ import {
   license,
   organization,
   payer,
+  peak,
   project,
   server,
   service,
   subscription,
   subscriptionItem,
+  ticket,
   tier,
   workspace,
 } from '../db/schema.ts'
@@ -69,6 +71,7 @@ import {
   SERVER_KEY_REVOKED_ERROR,
   type ServerDaemonStateWithMetadata,
 } from '../features/servers/server-identity-db.ts'
+import { mintTicket } from '../features/licenses/tickets.ts'
 import { setRevokeBoundDaemonKey } from '../features/licenses/revoke-bound-daemon-key.ts'
 import {
   buildAuthPayload,
@@ -89,6 +92,7 @@ import {
   resetDenoMetricsChartCacheForTests,
 } from './metrics/query/cache.ts'
 import { markServerLiveSessionActive, readLiveSample } from './metrics/query/live-session.ts'
+import { resetOverPlanMemoForTests, setOverPlanClockForTests } from './metrics/over-plan-flag.ts'
 
 const dbUrl = getDatabaseUrl()
 const encoder = new TextEncoder()
@@ -1065,34 +1069,37 @@ test('POST /enroll rejects request without licenseToken', async () => {
 })
 
 test('POST /enroll rejects invalid signature', async () => {
-  await withEnrollFixture(async ({ app, licenseId, licenseToken, machineKey, hostname }) => {
-    const challengeResponse = await app.request('/api/daemon/v1/auth/challenge', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({}),
-    })
-    assertEquals(challengeResponse.status, 200)
-    const challenge = (await challengeResponse.json()) as {
-      challengeId: string
-      nonce: string
-    }
-    const key = await generateKeyMaterial()
+  await withEnrollFixture(
+    async ({ app, licenseId, licenseToken, machineKey, hostname }) => {
+      const challengeResponse = await app.request('/api/daemon/v1/auth/challenge', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      })
+      assertEquals(challengeResponse.status, 200)
+      const challenge = (await challengeResponse.json()) as {
+        challengeId: string
+        nonce: string
+      }
+      const key = await generateKeyMaterial()
 
-    const response = await app.request('/api/daemon/v1/enroll', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        licenseId,
-        licenseToken,
-        machineKey,
-        hostname,
-        publicJwk: key.publicJwk,
-        challengeId: challenge.challengeId,
-        signature: 'invalid-signature',
-      }),
-    })
-    assertEquals(response.status, 403)
-  })
+      const response = await app.request('/api/daemon/v1/enroll', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          licenseId,
+          licenseToken,
+          machineKey,
+          hostname,
+          publicJwk: key.publicJwk,
+          challengeId: challenge.challengeId,
+          signature: 'invalid-signature',
+        }),
+      })
+      assertEquals(response.status, 403)
+    },
+    { enroll: false }
+  )
 })
 
 test('POST /enroll stores public key only after proof-of-possession', async () => {
@@ -1106,6 +1113,69 @@ test('POST /enroll stores public key only after proof-of-possession', async () =
   })
 })
 
+test('POST /enroll stores only the public members of the submitted key', async () => {
+  await withEnrollFixture(
+    async ({ db, app, licenseId, licenseToken, machineKey, hostname }) => {
+      const key = await generateKeyMaterial()
+      const padded: KeyMaterial = {
+        ...key,
+        publicJwk: { ...key.publicJwk, alg: 'EdDSA', note: 'not part of the key' } as JsonWebKey,
+      }
+      const response = await postEnroll(app, {
+        licenseId,
+        licenseToken,
+        machineKey,
+        hostname,
+        key: padded,
+      })
+      assertEquals(response.status, 200)
+      const { serverId } = (await response.json()) as { serverId: string }
+      const daemonState = await readDaemonState(db, serverId)
+      assertEquals(daemonState?.key.publicJwk, {
+        kty: key.publicJwk.kty,
+        crv: key.publicJwk.crv,
+        x: key.publicJwk.x,
+      })
+    },
+    { enroll: false }
+  )
+})
+
+test('POST /enroll charges the per-license bucket before checking the license token', async () => {
+  await withEnrollFixture(
+    async ({ db, licenseId, machineKey, hostname }) => {
+      const limitedKey = `daemon:rest:enroll:${licenseId}`
+      const charged: string[] = []
+      const app = new Hono<AppEnv>()
+      app.use('*', (c, next) => {
+        c.set('db', db)
+        return next()
+      })
+      registerDaemonApiRoutes(app, {
+        secrets: await createTestSecrets(),
+        challengeSigningSecrets: await createTestChallengeSecrets(),
+        secretsConfig: createTestSecretsConfig(),
+        restLimiter: {
+          limit: ({ key }) => {
+            charged.push(key)
+            return Promise.resolve({ success: key !== limitedKey })
+          },
+        },
+      })
+      const response = await postEnroll(app, {
+        licenseId,
+        licenseToken: 'wrong-token',
+        machineKey,
+        hostname,
+        key: await generateKeyMaterial(),
+      })
+      assertEquals(response.status, 429)
+      assertEquals(charged.includes(limitedKey), true)
+    },
+    { enroll: false }
+  )
+})
+
 test('POST /enroll returns serverId and server.daemon.key.id', async () => {
   await withEnrollFixture(async ({ enrollBody, db }) => {
     assertExists(enrollBody.serverId)
@@ -1115,64 +1185,56 @@ test('POST /enroll returns serverId and server.daemon.key.id', async () => {
   })
 })
 
-test('POST /enroll re-enrollment replaces daemon key on server row', async () => {
+test('POST /enroll refuses a bound license outright: its token was erased at the bind', async () => {
   await withEnrollFixture(
     async ({ db, app, licenseId, licenseToken, serverId, keyId, key, machineKey, hostname }) => {
-      const challengeResponse = await app.request('/api/daemon/v1/auth/challenge', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({}),
-      })
-      assertEquals(challengeResponse.status, 200)
-      const challenge = (await challengeResponse.json()) as {
-        challengeId: string
-        nonce: string
-      }
       const newKey = await generateKeyMaterial()
-      const payload = buildEnrollmentPayload({
-        challengeId: challenge.challengeId,
-        nonce: challenge.nonce,
+      const enrollResponse = await postEnroll(app, {
         licenseId,
+        licenseToken,
+        serverId,
         machineKey,
         hostname,
-        publicKeyFingerprint: newKey.fingerprint,
+        key: newKey,
       })
-      const signature = await signPayload(newKey.privateKey, payload)
+      assertEquals(enrollResponse.status, 401)
+      const body = (await enrollResponse.json()) as { error?: string }
+      assertEquals(body.error, 'Invalid license')
+      const [bound] = await db.select().from(license).where(eq(license.id, licenseId))
+      assertEquals(bound?.token, null)
 
-      const enrollResponse = await app.request('/api/daemon/v1/enroll', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          licenseId,
-          licenseToken,
-          serverId,
-          machineKey,
-          hostname,
-          publicJwk: newKey.publicJwk,
-          challengeId: challenge.challengeId,
-          signature,
-        }),
+      // First registered key wins: nothing about the stored key changed.
+      const daemonState = await readDaemonState(db, serverId)
+      assertExists(daemonState)
+      assertEquals(daemonState.key.id, keyId)
+      assertEquals(daemonState.key.fingerprint, key.fingerprint)
+    }
+  )
+})
+
+test('POST /enroll does not take the same key again once the license token is erased', async () => {
+  await withEnrollFixture(
+    async ({ db, app, licenseId, licenseToken, serverId, key, machineKey, hostname }) => {
+      const enrollResponse = await postEnroll(app, {
+        licenseId,
+        licenseToken,
+        serverId,
+        machineKey,
+        hostname,
+        key,
       })
-      assertEquals(enrollResponse.status, 200)
-      const body = (await enrollResponse.json()) as {
-        serverId: string
-        keyId: string
-      }
-      assertEquals(body.serverId, serverId)
-      assertEquals(body.keyId !== keyId, true)
+      assertEquals(enrollResponse.status, 401)
 
       const daemonState = await readDaemonState(db, serverId)
       assertExists(daemonState)
-      assertEquals(daemonState.key.id, body.keyId)
-      assertEquals(daemonState.key.fingerprint, newKey.fingerprint)
-      assertEquals(daemonState.key.fingerprint !== key.fingerprint, true)
+      assertEquals(daemonState.key.fingerprint, key.fingerprint)
     }
   )
 })
 
 test('POST /enroll rejects a second host once the license is latched', async () => {
   await withEnrollFixture(
-    async ({ app, licenseId, licenseToken, serverId, machineKey, hostname }) => {
+    async ({ app, licenseId, licenseToken, serverId, key, machineKey, hostname }) => {
       const challengeResponse = await app.request('/api/daemon/v1/auth/challenge', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1208,48 +1270,21 @@ test('POST /enroll rejects a second host once the license is latched', async () 
           signature,
         }),
       })
-      assertEquals(enrollResponse.status, 400)
+      assertEquals(enrollResponse.status, 401)
       const body = (await enrollResponse.json()) as { error?: string }
-      assertEquals(body.error, 'License already consumed or invalid')
+      assertEquals(body.error, 'Invalid license')
 
-      // Same license + persisted serverId still re-enrolls the latched server.
-      const reChallengeResponse = await app.request('/api/daemon/v1/auth/challenge', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({}),
-      })
-      assertEquals(reChallengeResponse.status, 200)
-      const reChallenge = (await reChallengeResponse.json()) as {
-        challengeId: string
-        nonce: string
-      }
-      const reKey = await generateKeyMaterial()
-      const rePayload = buildEnrollmentPayload({
-        challengeId: reChallenge.challengeId,
-        nonce: reChallenge.nonce,
+      // The latched server cannot use the erased token either: a lost key
+      // needs an owner-issued re-enroll ticket.
+      const reEnroll = await postEnroll(app, {
         licenseId,
+        licenseToken,
+        serverId,
         machineKey,
         hostname,
-        publicKeyFingerprint: reKey.fingerprint,
+        key,
       })
-      const reSignature = await signPayload(reKey.privateKey, rePayload)
-      const reEnroll = await app.request('/api/daemon/v1/enroll', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          licenseId,
-          licenseToken,
-          serverId,
-          machineKey,
-          hostname,
-          publicJwk: reKey.publicJwk,
-          challengeId: reChallenge.challengeId,
-          signature: reSignature,
-        }),
-      })
-      assertEquals(reEnroll.status, 200)
-      const reBody = (await reEnroll.json()) as { serverId: string }
-      assertEquals(reBody.serverId, serverId)
+      assertEquals(reEnroll.status, 401)
     }
   )
 })
@@ -1376,12 +1411,12 @@ test('POST /enroll refuses a revoked server: the license token on disk cannot un
           signature,
         }),
       })
-      assertEquals(enrollResponse.status, 403)
-      // Byte-identical to the daemon's permanent-enrollment list, so the
-      // refused host stops rather than looping on enroll.
+      // The token was erased at the bind, so the licence on disk enrols
+      // nothing at all (and the revoked-key 403 stays behind it).
+      assertEquals(enrollResponse.status, 401)
       assertEquals(await enrollResponse.json(), {
         ok: false,
-        error: SERVER_KEY_REVOKED_ERROR,
+        error: 'Invalid license',
       })
 
       // Nothing about the key changed: same id, still revoked.
@@ -1399,6 +1434,150 @@ test('POST /enroll refuses a revoked server: the license token on disk cannot un
       assertEquals(authChallengeResponse.status, 400)
     }
   )
+})
+
+test('POST /enroll takes a join ticket in the licence slot, binds the key and erases its token', async () => {
+  await withEnrollFixture(
+    async ({ db, app, organizationId, licenseId, machineKey, hostname, key }) => {
+      const joinTicket = await mintTicket(db, { organizationId, licenseId })
+      const response = await postEnroll(app, {
+        licenseId: joinTicket.id,
+        licenseToken: joinTicket.plaintext,
+        machineKey,
+        hostname,
+        key,
+      })
+      assertEquals(response.status, 200)
+      const body = (await response.json()) as { serverId: string }
+
+      const [bound] = await db.select().from(license).where(eq(license.id, licenseId))
+      assertEquals(bound?.serverId, body.serverId)
+      assertEquals(bound?.token, null)
+
+      // Single use: the same ticket from another host enrolls nothing.
+      const again = await postEnroll(app, {
+        licenseId: joinTicket.id,
+        licenseToken: joinTicket.plaintext,
+        machineKey: randomMachineKey(),
+        hostname: `other-${hostname}`,
+        key: await generateKeyMaterial(),
+      })
+      assertEquals(again.status, 401)
+    },
+    { enroll: false }
+  )
+})
+
+test('POST /enroll refuses a join ticket with the wrong secret and leaves it usable', async () => {
+  await withEnrollFixture(
+    async ({ db, app, organizationId, licenseId, machineKey, hostname, key }) => {
+      const joinTicket = await mintTicket(db, { organizationId, licenseId })
+      const wrong = await postEnroll(app, {
+        licenseId: joinTicket.id,
+        licenseToken: 'not-the-secret',
+        machineKey,
+        hostname,
+        key,
+      })
+      assertEquals(wrong.status, 401)
+      const right = await postEnroll(app, {
+        licenseId: joinTicket.id,
+        licenseToken: joinTicket.plaintext,
+        machineKey,
+        hostname,
+        key,
+      })
+      assertEquals(right.status, 200)
+    },
+    { enroll: false }
+  )
+})
+
+test('POST /enroll keeps a revoked key revoked even with a valid re-enroll ticket', async () => {
+  await withEnrollFixture(async ({ db, app, organizationId, serverId, machineKey, hostname }) => {
+    await revokeDaemonKey(db, serverId)
+    const reenroll = await mintTicket(db, { organizationId, serverId })
+    const response = await postEnroll(app, {
+      licenseId: reenroll.id,
+      licenseToken: reenroll.plaintext,
+      serverId,
+      machineKey,
+      hostname,
+      key: await generateKeyMaterial(),
+    })
+    assertEquals(response.status, 403)
+    assertEquals(await response.json(), { ok: false, error: SERVER_KEY_REVOKED_ERROR })
+    // Refused before the ticket was spent.
+    const [row] = await db
+      .select({ usedAt: ticket.usedAt })
+      .from(ticket)
+      .where(eq(ticket.id, reenroll.id))
+    assertEquals(row?.usedAt, null)
+  })
+})
+
+test('POST /enroll asks for the server id when a re-enroll ticket comes without one', async () => {
+  await withEnrollFixture(async ({ db, app, organizationId, serverId, machineKey, hostname }) => {
+    const reenroll = await mintTicket(db, { organizationId, serverId })
+    const response = await postEnroll(app, {
+      licenseId: reenroll.id,
+      licenseToken: reenroll.plaintext,
+      machineKey,
+      hostname,
+      key: await generateKeyMaterial(),
+    })
+    assertEquals(response.status, 400)
+    assertEquals(
+      ((await response.json()) as { error: string }).error,
+      'This ticket is for re-enrolling a specific server; include its server id'
+    )
+    // Refused before the ticket was spent.
+    const [row] = await db
+      .select({ usedAt: ticket.usedAt })
+      .from(ticket)
+      .where(eq(ticket.id, reenroll.id))
+    assertEquals(row?.usedAt, null)
+  })
+})
+
+test('POST /enroll replaces a lost key with an owner-issued re-enroll ticket, once, for that server only', async () => {
+  await withEnrollFixture(async ({ db, app, organizationId, serverId, machineKey, hostname }) => {
+    const reenroll = await mintTicket(db, { organizationId, serverId })
+    const newKey = await generateKeyMaterial()
+
+    // Bound to this server: presented naming another, it is refused and stays unspent.
+    const otherServer = await postEnroll(app, {
+      licenseId: reenroll.id,
+      licenseToken: reenroll.plaintext,
+      serverId: crypto.randomUUID(),
+      machineKey,
+      hostname,
+      key: newKey,
+    })
+    assertEquals(otherServer.status, 403)
+
+    const replaced = await postEnroll(app, {
+      licenseId: reenroll.id,
+      licenseToken: reenroll.plaintext,
+      serverId,
+      machineKey,
+      hostname,
+      key: newKey,
+    })
+    assertEquals(replaced.status, 200)
+    const state = await readDaemonState(db, serverId)
+    assertEquals(state?.key.fingerprint, newKey.fingerprint)
+
+    const spent = await postEnroll(app, {
+      licenseId: reenroll.id,
+      licenseToken: reenroll.plaintext,
+      serverId,
+      machineKey,
+      hostname,
+      key: await generateKeyMaterial(),
+    })
+    assertEquals(spent.status, 401)
+  })
 })
 
 test('POST /auth/session rejects malformed JSON', async () => {
@@ -1525,6 +1704,59 @@ test('POST /auth/session rejects invalid signature', async () => {
   })
 })
 
+test('POST /auth/session checks the signature before the license', async () => {
+  await withEnrollFixture(
+    async ({ db, app, organizationId, licenseId, serverId, keyId, machineKey, hostname }) => {
+      await revokeLicense(db, licenseId, organizationId)
+      const challenge = await issueAuthChallenge(app, serverId, keyId)
+      const response = await app.request('/api/daemon/v1/auth/session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          serverId,
+          keyId,
+          challengeId: challenge.challengeId,
+          signature: 'invalid-signature',
+          machineKey,
+          hostname,
+          at: new Date().toISOString(),
+        }),
+      })
+      assertEquals(response.status, 403)
+      assertEquals(((await response.json()) as { error: string }).error, 'Invalid signature')
+    }
+  )
+})
+
+test('a self-hosted session with a bad signature writes no tier', async () => {
+  await withEnrollFixture(
+    async (fixture) => {
+      await assignTier(fixture.db, fixture.serverId, null)
+      const challenge = await issueAuthChallenge(fixture.app, fixture.serverId, fixture.keyId)
+      const refused = await fixture.app.request('/api/daemon/v1/auth/session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          serverId: fixture.serverId,
+          keyId: fixture.keyId,
+          challengeId: challenge.challengeId,
+          signature: 'invalid-signature',
+          machineKey: fixture.machineKey,
+          hostname: fixture.hostname,
+          at: new Date().toISOString(),
+        }),
+      })
+      assertEquals(refused.status, 403)
+      assertEquals(await readAssignedTierId(fixture.db, fixture.serverId), null)
+
+      const session = await postAuthSession(fixture.app, fixture)
+      assertEquals(session.status, 200)
+      assertEquals((await readAssignedTierId(fixture.db, fixture.serverId)) !== null, true)
+    },
+    { runtime: 'deno', tierRank: null }
+  )
+})
+
 test('POST /auth/session returns a 15-minute JWT', async () => {
   await withEnrollFixture(async ({ db, serverId, keyId, key, machineKey, hostname }) => {
     const tracking = createSnapshotTrackingCell(serverId)
@@ -1602,7 +1834,18 @@ test('re-enroll with recorded hardware past its tier succeeds and keeps the tier
     await mergeServerResources(fixture.db, fixture.serverId, hostResourcesPayload(8, 16))
     // A free bigger seat exists; re-enrolling must not take it.
     await purchaseTier(fixture.db, fixture, 5, 1)
-    const response = await postEnroll(fixture.app, fixture)
+    // The bound key's token is erased, so the re-enrol runs on an owner-issued ticket.
+    // The ticket path skips licence binding; this guards the key swap leaving the assigned tier alone.
+    const reenroll = await mintTicket(fixture.db, {
+      organizationId: fixture.organizationId,
+      serverId: fixture.serverId,
+    })
+    const response = await postEnroll(fixture.app, {
+      ...fixture,
+      licenseId: reenroll.id,
+      licenseToken: reenroll.plaintext,
+      serverId: fixture.serverId,
+    })
     assertEquals(response.status, 200)
     const body = (await response.json()) as { serverId: string }
     assertEquals(body.serverId, fixture.serverId)
@@ -3420,68 +3663,108 @@ test('POST /metrics: a declared machine_class=physical retains sensors with no t
   })
 })
 
-test('POST /metrics keeps the sample and flags the server when its RAM or physical cores are past the licensed box size', async () => {
-  await withEnrollFixture(async ({ db, serverId, keyId }) => {
-    const { app, writes } = await createMetricsTestAppWithDb(db)
-    const daemonToken = await issueDaemonToken(serverId, keyId)
-    const post = (at: string) =>
-      app.request('/api/daemon/v1/metrics', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${daemonToken}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(
-          buildValidMetricsFrame({
-            // The sample's own sizes are never the plan's unit: only the host report counts.
-            extended: { sizes: { memoryTotalBytes: 1024, logicalCores: 128 } },
-            metadata: { sampledAt: at },
-          })
-        ),
-      })
-    const metadataOf = async () =>
-      ((await db.select({ m: server.metadata }).from(server).where(eq(server.id, serverId)))[0]!
-        .m ?? {}) as Record<string, unknown>
-    const GIB = 1024 ** 3
-    const setHostReport = (gib: number, ...perSocket: number[]) =>
-      db
-        .update(server)
-        .set({
-          metadata: sql`COALESCE(${server.metadata}, '{}'::jsonb) || ${JSON.stringify({
-            resources: {
-              cpus: perSocket.map((total) => ({ cores: { total } })),
-              memory: { totalBytes: gib * GIB },
-            },
-          })}::jsonb`,
+test('POST /metrics keeps the sample and flags the server while its highest RAM or physical cores of the last 7 days are past the licensed box size', async () => {
+  // The hour buckets follow a pinned clock (mid-hour), so an hour boundary
+  // between posts cannot split the readings over two rows.
+  const HOUR = 3_600_000
+  const pinned = Math.floor(Date.now() / HOUR) * HOUR + HOUR / 2
+  setOverPlanClockForTests(() => pinned)
+  try {
+    await withEnrollFixture(async ({ db, serverId, keyId }) => {
+      const { app, writes } = await createMetricsTestAppWithDb(db)
+      const daemonToken = await issueDaemonToken(serverId, keyId)
+      const post = (at: string) =>
+        app.request('/api/daemon/v1/metrics', {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${daemonToken}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(
+            buildValidMetricsFrame({
+              // Logical CPUs are never the plan's unit: only the host report's physical cores count.
+              extended: { sizes: { memoryTotalBytes: 1024, logicalCores: 128 } },
+              metadata: { sampledAt: at },
+            })
+          ),
         })
-        .where(eq(server.id, serverId))
-    const settle = () => new Promise((resolve) => setTimeout(resolve, 200))
+      const metadataOf = async () =>
+        ((await db.select({ m: server.metadata }).from(server).where(eq(server.id, serverId)))[0]!
+          .m ?? {}) as Record<string, unknown>
+      const peakRows = () =>
+        db
+          .select({ memoryBytes: peak.memoryBytes, cores: peak.cores, updatedAt: peak.updatedAt })
+          .from(peak)
+          .where(eq(peak.serverId, serverId))
+      const GIB = 1024 ** 3
+      const setHostReport = (gib: number, ...perSocket: number[]) =>
+        db
+          .update(server)
+          .set({
+            metadata: sql`COALESCE(${server.metadata}, '{}'::jsonb) || ${JSON.stringify({
+              resources: {
+                cpus: perSocket.map((total) => ({ cores: { total } })),
+                memory: { totalBytes: gib * GIB },
+              },
+            })}::jsonb`,
+          })
+          .where(eq(server.id, serverId))
+      const settle = () => new Promise((resolve) => setTimeout(resolve, 200))
 
-    // The fixture's tier is S1 (16 GiB, 4 physical cores). 128 logical CPUs on
-    // the sample change nothing: only the host report's RAM and physical cores count.
-    await setHostReport(8, 2, 2)
-    const fits = await post(new Date().toISOString())
-    assertEquals(fits.status, 202)
-    await settle()
-    assertEquals('overPlan' in (await metadataOf()), false)
+      // The fixture's tier is S1 (16 GiB, 4 physical cores). 128 logical CPUs on
+      // the sample change nothing.
+      await setHostReport(8, 2, 2)
+      const fits = await post(new Date().toISOString())
+      assertEquals(fits.status, 202)
+      await settle()
+      assertEquals('overPlan' in (await metadataOf()), false)
+      const [first] = await peakRows()
+      assertEquals([first!.memoryBytes, first!.cores], [8 * GIB, 4])
 
-    // 64 GiB of RAM and 6 physical cores (3 + 3) are both past S1.
-    await setHostReport(64, 3, 3)
-    const over = await post(new Date(Date.now() + 1000).toISOString())
-    assertEquals(over.status, 202)
-    assertEquals(writes.length, 2, 'the sample is stored')
-    await settle()
-    const stamp = (await metadataOf()).overPlan as Record<string, unknown>
-    assertEquals([stamp.memory, stamp.cpu], [true, true])
+      // 64 GiB of RAM and 6 physical cores (3 + 3) are both past S1.
+      await setHostReport(64, 3, 3)
+      const over = await post(new Date(Date.now() + 1000).toISOString())
+      assertEquals(over.status, 202)
+      assertEquals(writes.length, 2, 'the sample is stored')
+      await settle()
+      const stamp = (await metadataOf()).overPlan as Record<string, unknown>
+      assertEquals([stamp.memory, stamp.cpu], [true, true])
+      assertEquals(stamp.since, stamp.at)
+      const raised = await peakRows()
+      assertEquals(raised.length, 1, 'one row per server per hour')
+      assertEquals([raised[0]!.memoryBytes, raised[0]!.cores], [64 * GIB, 6])
+      assertEquals(
+        Date.parse(raised[0]!.updatedAt) > Date.parse(first!.updatedAt),
+        true,
+        'the upsert moves updated_at'
+      )
 
-    // Back inside the box: the flag clears and the sample is still stored.
-    await setHostReport(8, 2, 2)
-    const back = await post(new Date(Date.now() + 2000).toISOString())
-    assertEquals(back.status, 202)
-    assertEquals(writes.length, 3)
-    await settle()
-    assertEquals('overPlan' in (await metadataOf()), false)
-  })
+      // Back inside the box: the highest reading of the window still counts, so
+      // the flag stays and the sample is still stored.
+      // The memo is dropped first, so the window read decides, not the memo.
+      await setHostReport(8, 2, 2)
+      resetOverPlanMemoForTests()
+      const back = await post(new Date(Date.now() + 2000).toISOString())
+      assertEquals(back.status, 202)
+      assertEquals(writes.length, 3)
+      await settle()
+      assertEquals(((await metadataOf()).overPlan as Record<string, unknown>).memory, true)
+
+      // Once the over reading is older than the 7-day window, the flag clears.
+      await db
+        .update(peak)
+        .set({ bucket: new Date(pinned - 8 * 24 * HOUR).toISOString() })
+        .where(eq(peak.serverId, serverId))
+      resetOverPlanMemoForTests()
+      const later = await post(new Date(Date.now() + 3000).toISOString())
+      assertEquals(later.status, 202)
+      await settle()
+      assertEquals('overPlan' in (await metadataOf()), false)
+    })
+  } finally {
+    resetOverPlanMemoForTests()
+    setOverPlanClockForTests(null)
+  }
 })
 
 test('POST /metrics does not cut hardwareSignals when the org overrides physicalHardwareSignalSlots to 0', async () => {

@@ -30,6 +30,7 @@ import {
   resolveHostingProtocol,
 } from '../../features/hostings/hosting-options.ts'
 import type { LetsEncryptStore } from '../../features/hostings/use-letsencrypt.ts'
+import { loadServerPublicAddresses } from '../../features/net/client-addresses.ts'
 import {
   parseOrganizationOptions,
   resolveAcmeEnabled,
@@ -41,6 +42,7 @@ import { materialFromLetsEncrypt, isCreateTlsFailure } from '../tls/routes-helpe
 import {
   LETS_ENCRYPT_CREATED_FOR_SITES,
   lockOrganizationLetsEncrypt,
+  removeUnusedSiteCertificates,
 } from '../../features/tls/unused-letsencrypt.ts'
 
 export async function loadAcmeEnabled(db: Db, organizationId: string): Promise<boolean> {
@@ -63,6 +65,23 @@ async function loadServerIdOfHosting(db: Db, hostingId: string): Promise<string 
   return row?.serverId ?? null
 }
 
+/**
+ * Every server that serves this hosting: the environment's own server and each
+ * server the environment has a deployment on (a deployment row is one per
+ * environment and server). Round-robin DNS across them is fine; an answer that
+ * is none of them is not.
+ */
+async function loadServingServerIds(db: Db, hostingId: string): Promise<string[]> {
+  const own = await loadServerIdOfHosting(db, hostingId)
+  const deployed = await db
+    .select({ serverId: deployment.serverId })
+    .from(hosting)
+    .innerJoin(service, eq(service.id, hosting.serviceId))
+    .innerJoin(deployment, eq(deployment.environmentId, service.environmentId))
+    .where(and(eq(hosting.id, hostingId), ne(deployment.status, 'draining')))
+  return [...new Set([...(own === null ? [] : [own]), ...deployed.map((row) => row.serverId)])]
+}
+
 async function loadExpectedAddresses(db: Db, hostingId: string): Promise<string[]> {
   const [pinRow] = await db
     .select({ address: ip.address })
@@ -74,16 +93,10 @@ async function loadExpectedAddresses(db: Db, hostingId: string): Promise<string[
     const pinned = inetAddressToString(pinRow.address)
     return pinned === undefined ? [] : [pinned]
   }
-  const serverId = await loadServerIdOfHosting(db, hostingId)
-  if (serverId === null) return []
-  const rows = await db
-    .select({ address: ip.address })
-    .from(ip)
-    .where(and(eq(ip.serverId, serverId), eq(ip.scope, 'public')))
-  return rows.flatMap((row) => {
-    const address = inetAddressToString(row.address)
-    return address === undefined ? [] : [address]
-  })
+  const serverIds = await loadServingServerIds(db, hostingId)
+  if (serverIds.length === 0) return []
+  const perServer = await Promise.all(serverIds.map((id) => loadServerPublicAddresses(db, id)))
+  return [...new Set(perServer.flat())]
 }
 
 /** Hostnames of the other web hostings that deploy together with this one (same environment). */
@@ -117,7 +130,7 @@ function sameNames(left: readonly string[], right: readonly string[]): boolean {
  * same one: one certificate per hostname per organization, so the row with
  * exactly these names wins, else any row that already covers all of them.
  */
-async function findManagedCertificate(
+export async function findManagedCertificate(
   db: Db,
   organizationId: string,
   names: readonly string[]
@@ -226,6 +239,21 @@ export function createLetsEncryptStore(db: Db): LetsEncryptStore {
     managedCertificateFor: (organizationId, names) =>
       managedCertificateFor(db, organizationId, names),
 
+    async pinnedCertificateId(hostingId) {
+      const [row] = await db
+        .select({ tlsId: hosting.tlsId })
+        .from(hosting)
+        .where(eq(hosting.id, hostingId))
+        .limit(1)
+      return row?.tlsId ?? null
+    },
+
+    async releaseCertificates(ids) {
+      await removeUnusedSiteCertificates(db, ids, {
+        reason: 'its site now uses another certificate',
+      })
+    },
+
     async saveHosting(hostingId, patch) {
       await db
         .update(hosting)
@@ -265,8 +293,8 @@ export type HostingCertificateRow = {
 async function loadNeedsDeploy(
   db: Db,
   rows: readonly HostingCertificateRow[]
-): Promise<Set<string>> {
-  if (rows.length === 0) return new Set()
+): Promise<{ stale: Set<string>; deployedAt: Map<string, string> }> {
+  if (rows.length === 0) return { stale: new Set(), deployedAt: new Map() }
   const ids = rows.map((row) => row.id)
   const finished = await db
     .select({
@@ -287,13 +315,19 @@ async function loadNeedsDeploy(
   const since = (at: string | null | undefined, changedAt: string) =>
     at !== null && at !== undefined && Date.parse(at) >= Date.parse(changedAt)
   const stale = new Set<string>()
+  const deployedAt = new Map<string, string>()
   for (const row of rows) {
     const found = byHosting.get(row.id)
+    // Only a deploy that carried the current pin counts: while a later apply
+    // is still running, the older deploy says nothing about this certificate.
+    if (found?.finishedAt && since(found.finishedAt, row.updatedAt)) {
+      deployedAt.set(row.id, found.finishedAt)
+    }
     if (!since(found?.finishedAt, row.updatedAt) && !since(found?.runningSince, row.updatedAt)) {
       stale.add(row.id)
     }
   }
-  return stale
+  return { stale, deployedAt }
 }
 
 /**
@@ -327,7 +361,7 @@ export async function loadHostingCertificates(
     const pinned = row.tlsId === null ? undefined : pinnedById.get(row.tlsId)
     return pinned?.source === 'lets_encrypt'
   })
-  const needsDeploy = await loadNeedsDeploy(db, firstCertificate)
+  const deploys = await loadNeedsDeploy(db, firstCertificate)
 
   const out = new Map<string, HostingCertificate>()
   for (const row of rows) {
@@ -350,7 +384,8 @@ export async function loadHostingCertificates(
         pending: readPendingLetsEncrypt(row),
         www: readHostingWwwMode(row.options),
         letsEncryptAvailable: available,
-        needsDeploy: needsDeploy.has(row.id),
+        needsDeploy: deploys.stale.has(row.id),
+        deployedAt: deploys.deployedAt.get(row.id) ?? null,
         now,
       })
     )

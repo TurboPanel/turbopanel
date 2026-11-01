@@ -8,7 +8,10 @@ import { loadDeployRunCapMs } from './deploy-wait-settings.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
 import { createDenoDb, type Db, endDbConnection } from '../../db/connection.ts'
 import type { DaemonCell, DaemonCellRegistry, PendingRequestRecord } from '../../contracts/cell.ts'
-import { attachDaemonStateToServer } from '../servers/server-identity-db.ts'
+import {
+  attachDaemonStateToServer,
+  getServerDaemonStateByServerId,
+} from '../servers/server-identity-db.ts'
 import {
   type DerivedSecretsConfig,
   deriveEncryptionSecretsConfig,
@@ -138,13 +141,17 @@ async function attachConnectedDaemonStatus(
   db: ReturnType<typeof createDenoDb>,
   serverId: string
 ): Promise<void> {
-  await attachDaemonStateToServer(db, serverId, {
-    publicJwk: { kty: 'OKP', crv: 'Ed25519', x: 'abc' },
-    // `key.fingerprint` is globally unique now (schema-child-tables,
-    // Road-to-0.1.x) — a fixed fingerprint would collide across the
-    // multiple servers some fixtures attach in one test.
-    fingerprint: `fp-test-${crypto.randomUUID()}`,
-  })
+  // First registered key wins: a server that already holds a key keeps it,
+  // so a second call only refreshes the status columns below.
+  if (!(await getServerDaemonStateByServerId(db, serverId))) {
+    await attachDaemonStateToServer(db, serverId, {
+      publicJwk: { kty: 'OKP', crv: 'Ed25519', x: 'abc' },
+      // `key.fingerprint` is globally unique now (schema-child-tables,
+      // Road-to-0.1.x) — a fixed fingerprint would collide across the
+      // multiple servers some fixtures attach in one test.
+      fingerprint: `fp-test-${crypto.randomUUID()}`,
+    })
+  }
   const now = new Date().toISOString()
   // Fleet status lives on dedicated `server` columns now — never on
   // `server.daemon` jsonb (see `mapServerDaemonStatusFromColumns`).
@@ -854,6 +861,51 @@ test('processCommandEnvelope stamps appliedPayloadHash when fabric reconcile is 
       const stamped = relays.find((row) => row.serverId === serverId)
       assertEquals(stamped?.publicKey, FABRIC_WG_PUBKEY)
       assertEquals(stamped?.metadata.appliedPayloadHash, SKIPPED_FABRIC_DESIRED_HASH)
+    } finally {
+      await db.delete(fabric).where(eq(fabric.organizationId, organizationId))
+    }
+  })
+})
+
+test('processCommandEnvelope stamps appliedPayloadHash for a payload with no tunnel and no key', async () => {
+  await withConsumerFixtures(async ({ db, organizationId, serverId }) => {
+    await attachConnectedDaemonStatus(db, serverId)
+    const fabricRow = await enableOrganizationFabric(db, organizationId)
+    try {
+      const record = await createCommandRecord(db, {
+        serverId,
+        ...TEST_COMMAND_ACTOR,
+        type: 'server.fabric.reconcile',
+        payload: {
+          enabled: true,
+          fabricId: fabricRow.id,
+          tunnel: false,
+          prefix: '10.192.0.0/16',
+          peers: [],
+          lanRoutes: [],
+        },
+        metadata: { desiredHash: 'tunnelless-desired-hash' },
+      })
+
+      const registry = createDispatchMockRegistry(serverId, {
+        waitForRequestResult: {
+          serverId,
+          requestId: record.id,
+          requestKind: 'command-dispatch',
+          status: 'done',
+          createdAt: record.createdAt,
+          expiresAt: record.createdAt,
+          finishedAt: new Date().toISOString(),
+          result: { summary: 'TurboFabric reconciled without a tunnel' },
+        },
+      })
+
+      await processCommandEnvelope(db, registry, buildEnvelope(record, serverId))
+
+      const relays = await listFabricRelays(db, fabricRow.id)
+      const stamped = relays.find((row) => row.serverId === serverId)
+      assertEquals(stamped?.publicKey, null)
+      assertEquals(stamped?.metadata.appliedPayloadHash, 'tunnelless-desired-hash')
     } finally {
       await db.delete(fabric).where(eq(fabric.organizationId, organizationId))
     }

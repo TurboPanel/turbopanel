@@ -7,7 +7,7 @@ export const hostingSchemas = {
     type: 'object',
     required: ['ready', 'checkedAt', 'hostnames', 'expectedAddresses'],
     description:
-      'Live DNS check of the names the certificate must cover. `ready` is true when every name resolves to the server (or to anything, when the server address is unknown).',
+      "Live pre-check of the names the certificate must cover. `ready` is true when, for every name, every A and AAAA answer is a serving server's public address (when the panel knows none, the name is held with a problem saying so), port 80 answers from the internet and CAA allows Let's Encrypt.",
     properties: {
       ready: { type: 'boolean' },
       checkedAt: { type: 'string', format: 'date-time' },
@@ -18,12 +18,48 @@ export const hostingSchemas = {
           required: ['hostname', 'resolves', 'addresses'],
           properties: {
             hostname: { type: 'string' },
-            resolves: { type: 'boolean' },
+            resolves: {
+              type: 'boolean',
+              description: "Has an address, and every address is a serving server's.",
+            },
             addresses: { type: 'array', items: { type: 'string' } },
+            wrongAddresses: {
+              type: 'array',
+              items: { type: 'string' },
+              description: "Answers that are not a serving server's address.",
+            },
+            port80: {
+              type: 'string',
+              enum: ['open', 'closed'],
+              description:
+                'Port 80 from the panel: `open` when anything accepts a connection there (any listener counts; no check file is fetched), `closed` only for a clear refusal. Absent when not checked or when the panel cannot tell (a timeout, no route from its own network), which never blocks.',
+            },
+            caa: {
+              type: 'string',
+              enum: ['allowed', 'blocked'],
+              description: "Whether CAA lets Let's Encrypt issue; absent when unknown.",
+            },
+            problem: { type: 'string', description: 'What stops this name, in plain words.' },
+            warning: {
+              type: 'string',
+              description:
+                'Worth fixing but not blocking: a wrong answer beside a right one of the same address family.',
+            },
           },
         },
       },
-      expectedAddresses: { type: 'array', items: { type: 'string' } },
+      expectedAddresses: {
+        type: 'array',
+        items: { type: 'string' },
+        description:
+          "The serving servers' public addresses the answers were compared with: managed addresses, address overrides of the server's public side and the public addresses its daemon reports. Empty when the panel knows none.",
+      },
+      nextCheckAt: {
+        type: 'string',
+        format: 'date-time',
+        description: 'When a waiting request is checked again; the wait grows after each miss.',
+      },
+      checks: { type: 'integer', description: 'Checks this waiting request has had.' },
     },
   },
   HostingCertificate: {
@@ -85,6 +121,24 @@ export const hostingSchemas = {
         type: 'boolean',
         description:
           'The certificate is pinned but no deploy has picked it up: none has finished since and none queued since is running.',
+      },
+      serverProgress: {
+        type: ['string', 'null'],
+        enum: ['waiting_for_deploy', 'working', 'not_reported', null],
+        description:
+          'While `issuing`: no deploy has carried the certificate yet, the server has it (or the deploy just finished), or the deploy finished a while ago and no server has reported on it. Null otherwise.',
+      },
+      lastTriedAt: {
+        ...nullableString,
+        format: 'date-time',
+        description:
+          'The last DNS check while waiting for DNS, or when a server last reported a failure.',
+      },
+      nextTryAt: {
+        ...nullableString,
+        format: 'date-time',
+        description:
+          'When the panel checks a waiting request again. Null when failing: the server retries on its own, waiting longer each time.',
       },
     },
   },
@@ -282,8 +336,45 @@ export const hostingSchemas = {
         oneOf: [{ $ref: '#/components/schemas/HostingCertificate' }, { type: 'null' }],
         description: 'Derived certificate state; present on GET responses.',
       },
+      tunnels: {
+        type: 'array',
+        items: { $ref: '#/components/schemas/HostingTunnelPath' },
+        description:
+          'The names of this hosting a tunnel carries, one entry per name; empty when none. Present on GET responses; absent from older panels.',
+      },
       createdAt: { type: 'string', format: 'date-time' },
       updatedAt: { type: 'string', format: 'date-time' },
+    },
+  },
+  HostingTunnelPath: {
+    type: 'object',
+    description:
+      'One hostname visitors reach through a tunnel: the tunnel ends TLS at its edge with a trusted certificate, then reaches the site on its server over HTTPS.',
+    required: [
+      'hostname',
+      'tunnelId',
+      'tunnelName',
+      'provider',
+      'tunnelOnly',
+      'originVerified',
+      'status',
+    ],
+    properties: {
+      hostname: { type: 'string' },
+      tunnelId: { type: 'string', format: 'uuid' },
+      tunnelName: { type: 'string' },
+      provider: { type: 'string', description: 'The tunnel provider, for example `cloudflare`.' },
+      tunnelOnly: {
+        type: 'boolean',
+        description:
+          'True: only the tunnel reaches this name (the server answers it for the tunnel and its peer servers only). False: the name is also served directly.',
+      },
+      originVerified: {
+        type: 'boolean',
+        description:
+          "True: the tunnel checks the server's certificate (the verified connection is in effect). False: the tunnel accepts the server's own certificate without checking it, on purpose.",
+      },
+      status: { type: 'string', enum: ['pending', 'live', 'attention'] },
     },
   },
   HostingsResponse: {

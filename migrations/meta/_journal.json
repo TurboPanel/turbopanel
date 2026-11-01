@@ -36,6 +36,76 @@
       "when": 1793122151433,
       "tag": "0004_command_activity_index",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1793200722647,
+      "tag": "0005_tunnel_tables",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1793203555856,
+      "tag": "0006_peer_leaf_kind",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1793209739351,
+      "tag": "0007_tunnel_origin_certificate",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1793248402724,
+      "tag": "0008_acme_account_secret",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1793330850701,
+      "tag": "0009_fabric_membership_role_kind",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1793351069170,
+      "tag": "0010_server_container_prefix",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1793475009745,
+      "tag": "0011_repo_key_changed_notifications",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1793564642214,
+      "tag": "0012_origin_ingress_modes",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1793566994619,
+      "tag": "0013_enroll_tickets_and_token_erase",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1793570133908,
+      "tag": "0014_notification_events_panel_trust",
+      "breakpoints": true
     }
   ]
 }

@@ -12,6 +12,7 @@ import {
 import { COMPOSE_YAML_OPTIONS } from './tags.ts'
 import {
   type ComposeServiceKind,
+  isImageBuildKind,
   SUPPORTED_DENO_SERIES,
   SUPPORTED_NODE_SERIES,
   TURBOPANEL_SERVICE_EXTENSION_KEY,
@@ -350,20 +351,21 @@ function serviceIsNativeApp(valueNode: YAMLMap): boolean {
 }
 
 /**
- * True when `x-turbopanel.source.buildKind` is `railpack`.
+ * True when `x-turbopanel.source.buildKind` is `image` (or the old spelling of
+ * it, still accepted until the contract phase of the rename).
  *
  * Deliberately a sibling of {@link serviceIsHostNative} rather than another
- * entry in {@link HOST_NATIVE_SERVICE_KINDS}: a Railpack service *is* a Docker
- * service — it just gets its `image` minted by the daemon at deploy time from
- * the built OCI image, so there is nothing for the author to type here.
+ * entry in {@link HOST_NATIVE_SERVICE_KINDS}: an image-built service *is* a
+ * Docker service — it just gets its `image` minted by the daemon at deploy time
+ * from the built OCI image, so there is nothing for the author to type here.
  */
-function serviceIsRailpackBuilt(valueNode: YAMLMap): boolean {
+function serviceIsImageBuilt(valueNode: YAMLMap): boolean {
   const extension = serviceExtensionMap(valueNode)
   if (!extension) return false
   const sourceNode = mapEntryValue(extension, 'source')
   if (!isMap(sourceNode)) return false
   const buildKind = scalarString(mapEntryValue(sourceNode as YAMLMap, 'buildKind'))
-  return buildKind?.trim() === 'railpack'
+  return isImageBuildKind(buildKind?.trim())
 }
 
 /**
@@ -1597,8 +1599,8 @@ function lintService(params: {
   lintServiceResourceLimits(name, valueNode, keyLine, issues)
 
   const hostNative = serviceIsHostNative(valueNode)
-  const railpackBuilt = serviceIsRailpackBuilt(valueNode)
-  if (!hostNative && !railpackBuilt && !hasImage && !hasBuild) {
+  const imageBuilt = serviceIsImageBuilt(valueNode)
+  if (!hostNative && !imageBuilt && !hasImage && !hasBuild) {
     issues.push({
       level: 'error',
       message: `Service "${name}" must define "image" or "build"`,

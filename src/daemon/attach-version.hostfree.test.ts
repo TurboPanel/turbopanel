@@ -1,7 +1,7 @@
-import { assertEquals } from "@std/assert";
-import { INSTANCE_VERSION } from "../app/version.ts";
-import { DAEMON_WIRE_FEATURES } from "../lib/version-wire.ts";
-import { instanceAttachVersionFrame } from "./attach-version.ts";
+import { assertEquals } from '@std/assert'
+import { INSTANCE_VERSION } from '../app/version.ts'
+import { DAEMON_WIRE_FEATURES } from '../lib/version-wire.ts'
+import { instanceAttachVersionFrame } from './attach-version.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -9,24 +9,32 @@ import { instanceAttachVersionFrame } from "./attach-version.ts";
  * Sonar typescript:S2187 only recognizes `test()` / `it()` / `describe()` and
  * reports Deno suites as empty; keep this alias so analysis sees real tests.
  */
-const test = Deno.test.bind(Deno);
+const test = Deno.test.bind(Deno)
 
-test("attach version frame carries INSTANCE_VERSION and the revision commit", () => {
-  const frame = instanceAttachVersionFrame("2026-09-22T00:00:00.000Z", {
-    TURBOPANEL_REVISION: "abc1234",
-  });
-  assertEquals(frame.type, "version");
-  assertEquals(frame.at, "2026-09-22T00:00:00.000Z");
-  assertEquals(frame.commit, "abc1234");
-  assertEquals(frame.branch, "unknown");
-  assertEquals(frame.instanceVersion, INSTANCE_VERSION);
-  assertEquals(frame.features, [...DAEMON_WIRE_FEATURES]);
-});
+test('attach version frame carries INSTANCE_VERSION and the revision commit', () => {
+  const frame = instanceAttachVersionFrame('2026-09-22T00:00:00.000Z', {
+    TURBOPANEL_REVISION: 'abc1234',
+  })
+  assertEquals(frame.type, 'version')
+  assertEquals(frame.at, '2026-09-22T00:00:00.000Z')
+  assertEquals(frame.commit, 'abc1234')
+  assertEquals(frame.branch, 'unknown')
+  assertEquals(frame.instanceVersion, INSTANCE_VERSION)
+  assertEquals(frame.features, [...DAEMON_WIRE_FEATURES])
+})
 
-test("attach version frame omits a non-string revision", () => {
-  const frame = instanceAttachVersionFrame("2026-09-22T00:00:00.000Z", {
+test('attach version frame omits a non-string revision', () => {
+  const frame = instanceAttachVersionFrame('2026-09-22T00:00:00.000Z', {
     TURBOPANEL_REVISION: 12,
-  });
-  assertEquals(frame.commit, "unknown");
-  assertEquals(frame.instanceVersion, INSTANCE_VERSION);
-});
+  })
+  assertEquals(frame.commit, 'unknown')
+  assertEquals(frame.instanceVersion, INSTANCE_VERSION)
+})
+
+test('attach version frame carries heartbeatSeconds only when given', () => {
+  const at = '2026-09-22T00:00:00.000Z'
+  const withBeat = instanceAttachVersionFrame(at, {}, { heartbeatSeconds: 25 })
+  assertEquals(withBeat.heartbeatSeconds, 25)
+  const without = instanceAttachVersionFrame(at, {})
+  assertEquals('heartbeatSeconds' in without, false)
+})

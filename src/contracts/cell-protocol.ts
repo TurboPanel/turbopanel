@@ -10,7 +10,9 @@ import type {
 import type { MetricsCapabilityPlan } from './capability-plan.ts'
 import type { ServiceRunState } from './service-run-state.ts'
 import type { ManagedPermissionsObserved } from '../features/managed/privileges/observed.ts'
+import type { FabricPeerHealth, FabricReconcileObservedPeer } from './commands/schemas.ts'
 import { isValidWireguardEndpoint, isValidWireguardPublicKey } from '../features/fabric/wg.ts'
+import { DAEMON_WIRE_FEATURES } from '../lib/version-wire.ts'
 
 export type DaemonBuildInfo = {
   commit: string
@@ -91,6 +93,11 @@ export type CellAttachVersionMessage = {
    * none (`instanceSupports` stays closed).
    */
   features?: string[]
+  /**
+   * Advised idle-ping cadence in seconds; daemons clamp it to [15, 120].
+   * Pinned daemons take the interval from the signed hello instead.
+   */
+  heartbeatSeconds?: number
 }
 
 /** Control-plane → daemon self-update. Optional pin fields are expand-only. */
@@ -541,6 +548,68 @@ export type ManagedHealthReportMember = {
   replication?: NonNullable<ManagedHealthObservedMember['replication']>
 }
 
+/**
+ * Control plane → daemon (feature `acme-issue-v1`): place the certificate order
+ * for `names` from this server's own addresses over the HTTP proof. The finished
+ * pair is reported through `POST /api/daemon/v1/tls/issued` with `requestId`;
+ * no message ever carries the pair. Twin of the daemon's `AcmeIssueRequestMessage`.
+ */
+export type AcmeIssueRequestMessage = {
+  type: 'acme-issue-request'
+  requestId: string
+  tlsId: string
+  names: string[]
+  directory: 'production' | 'staging'
+  contactEmail: string
+  /** The request is open until this time (ISO 8601). */
+  startByIso: string
+  /** Other servers that pass the proof path on; the issuer checks each before asking the authority. */
+  helpers: AcmeProofHelper[]
+  at: string
+}
+
+export type AcmeProofHelper = { serverId: string; address: string }
+
+/** Control plane → daemon: pass `/.well-known/acme-challenge/*` for `names` to `targetAddress` until `expiresAtIso`. */
+export type AcmeProofForwardMessage = {
+  type: 'acme-proof-forward'
+  requestId: string
+  names: string[]
+  targetAddress: string
+  expiresAtIso: string
+  at: string
+}
+
+/** Control plane → daemon: stop passing the proof path on for this request. */
+export type AcmeProofForwardEndMessage = {
+  type: 'acme-proof-forward-end'
+  requestId: string
+  at: string
+}
+
+/**
+ * Daemon → control plane: how the order is going. Never carries the certificate
+ * or its key (the validator refuses those field names).
+ */
+export type AcmeIssueEventMessage = {
+  type: 'acme-issue-event'
+  requestId: string
+  stage: 'started' | 'issued' | 'failed'
+  /** A plain reason when `stage` is `failed`. */
+  reason?: string
+  /** Leaf expiry (ISO 8601) when `stage` is `issued`. */
+  notAfterIso?: string
+  at: string
+}
+
+/** Daemon → control plane: the proof path is passed on (`acme-proof-forward-ready`) or could not be (`-failed`). */
+export type AcmeProofForwardReportMessage = {
+  type: 'acme-proof-forward-ready' | 'acme-proof-forward-failed'
+  requestId: string
+  reason?: string
+  at: string
+}
+
 export type DaemonMessage =
   | {
       type: 'hello'
@@ -656,6 +725,11 @@ export type DaemonMessage =
   | ManagedPermissionsResultMessage
   | ServerNetworkCheckRequestMessage
   | ServerNetworkCheckResultMessage
+  | AcmeIssueRequestMessage
+  | AcmeProofForwardMessage
+  | AcmeProofForwardEndMessage
+  | AcmeIssueEventMessage
+  | AcmeProofForwardReportMessage
   | {
       /**
        * Daemon-initiated, fire-and-forget: every managed replica the host runs,
@@ -665,6 +739,33 @@ export type DaemonMessage =
        */
       type: 'managed-health-report'
       members: ManagedHealthReportMember[]
+      at: string
+    }
+  | {
+      /**
+       * Daemon-initiated, fire-and-forget: every `tp0` peer as read by the
+       * daemon's 60 s refresh, sent when a peer's health class changed and at
+       * most every 5 minutes otherwise (feature `fabric-peer-report-v1`).
+       * `observedAt` is when the dump was read (daemon clock).
+       */
+      type: 'fabric-peers-report'
+      peers: FabricReconcileObservedPeer[]
+      observedAt: string
+      at: string
+    }
+  | {
+      /**
+       * Daemon-initiated, fire-and-forget (feature `repo-key-report-v1`): the
+       * package source named `keyName` publishes a signing key whose
+       * fingerprint (`got`, hex) is not in the daemon's `expected` list. The
+       * install went on (package signatures are still checked); the control
+       * plane tells the organization's managers. The daemon sends it once per
+       * key name and fingerprint.
+       */
+      type: 'repo-key-changed'
+      keyName: string
+      expected: string[]
+      got: string
       at: string
     }
   | {
@@ -1032,9 +1133,14 @@ export const DAEMON_INBOUND_ALLOWED = new Set([
   'repo-default-branch-result',
   'managed-ha-event',
   'managed-health-report',
+  'fabric-peers-report',
+  'repo-key-changed',
   'topology-report',
   'acme-issuance-event',
   'instance-acme-issuance-event',
+  'acme-issue-event',
+  'acme-proof-forward-ready',
+  'acme-proof-forward-failed',
   'backup-run-report',
   'backup-copy-report',
   'fabric-paths-result',
@@ -1055,8 +1161,15 @@ export const MAX_DAEMON_WS_FRAME_BYTES = 256 * 1024
 /** Max characters for correlation / delivery identifiers (`id`, `requestId`). */
 export const MAX_DAEMON_WS_ID_CHARS = 128
 
-/** Max advertised feature names on `hello` / the attach `version` frame. */
-export const MAX_DAEMON_WS_FEATURES = 32
+/**
+ * How many advertised feature names a `hello` is scanned for. This is a parse
+ * bound, not a limit on what a daemon may advertise: names this control plane
+ * does not know are ignored, never a reason to close the socket (a newer daemon
+ * must stay connected to an older control plane). Far above the daemon's
+ * `DAEMON_WIRE_FEATURES`; a test in `protocol.test.ts` fails once that list
+ * passes three quarters of it.
+ */
+export const MAX_DAEMON_WS_FEATURES = 4096
 
 /** Max characters for one advertised feature name. */
 export const MAX_DAEMON_WS_FEATURE_CHARS = 64
@@ -1245,21 +1358,91 @@ function validateOptionalIsoTimestamp(value: unknown, field: string): string | n
   return null
 }
 
+/**
+ * A `hello` only has to carry an array (or nothing). Which names it holds is
+ * not a reason to refuse it: {@link filterHelloFeatures} keeps the names this
+ * control plane knows and ignores the rest.
+ */
 function validateHelloFeatures(value: unknown): string | null {
   if (value === undefined) return null
-  if (!Array.isArray(value)) return 'invalid features'
-  if (value.length > MAX_DAEMON_WS_FEATURES) {
-    return 'features exceed max entries'
+  return Array.isArray(value) ? null : 'invalid features'
+}
+
+const KNOWN_DAEMON_FEATURES: ReadonlySet<string> = new Set<string>(DAEMON_WIRE_FEATURES)
+
+/** Result of {@link filterHelloFeatures}: the names kept and a bounded note about the rest. */
+export type FilteredHelloFeatures = { features: string[]; note: string | null }
+
+type FeatureVerdict = 'keep' | 'unknown' | 'malformed' | 'duplicate'
+
+function featureVerdict(
+  entry: unknown,
+  known: ReadonlySet<string>,
+  seen: Set<string>
+): FeatureVerdict {
+  if (
+    typeof entry !== 'string' ||
+    entry.length === 0 ||
+    entry.length > MAX_DAEMON_WS_FEATURE_CHARS
+  ) {
+    return 'malformed'
   }
-  for (const entry of value) {
-    if (typeof entry !== 'string' || entry.length === 0) {
-      return 'invalid features'
+  if (!known.has(entry)) return 'unknown'
+  if (seen.has(entry)) return 'duplicate'
+  seen.add(entry)
+  return 'keep'
+}
+
+/** A short, printable stand-in for an ignored entry, safe to put in a log line. */
+function featureSample(entry: unknown): string {
+  if (typeof entry !== 'string') return typeof entry
+  return entry.slice(0, 24).replace(/[^ -~]/g, '?')
+}
+
+/**
+ * Keep only the advertised feature names this control plane knows (its own
+ * `DAEMON_WIRE_FEATURES`), in the daemon's order and without duplicates. Names
+ * it does not know are ignored: it never gates on them, and a newer daemon
+ * must not be refused for advertising more than an older control plane
+ * expects. Malformed entries are dropped the same way. The stored list can
+ * therefore never exceed the control plane's own list, and a capable daemon
+ * never looks incapable, because every name the control plane gates on is
+ * kept. At most {@link MAX_DAEMON_WS_FEATURES} entries are scanned.
+ *
+ * `note` is one bounded line (counts, and at most three short samples) when
+ * anything was ignored, else `null`.
+ */
+export function filterHelloFeatures(
+  entries: readonly unknown[],
+  known: ReadonlySet<string> = KNOWN_DAEMON_FEATURES
+): FilteredHelloFeatures {
+  const features: string[] = []
+  const seen = new Set<string>()
+  const counts = { unknown: 0, malformed: 0, duplicate: 0 }
+  const samples: string[] = []
+  const scanned = Math.min(entries.length, MAX_DAEMON_WS_FEATURES)
+  for (let index = 0; index < scanned; index++) {
+    const entry = entries[index]
+    const verdict = featureVerdict(entry, known, seen)
+    if (verdict === 'keep') {
+      features.push(entry as string)
+      continue
     }
-    if (entry.length > MAX_DAEMON_WS_FEATURE_CHARS) {
-      return 'features exceed max length'
-    }
+    counts[verdict] += 1
+    if (samples.length < 3) samples.push(featureSample(entry))
   }
-  return null
+  const unscanned = entries.length - scanned
+  const ignored = counts.unknown + counts.malformed + counts.duplicate + unscanned
+  if (ignored === 0) return { features, note: null }
+  const detail =
+    `unknown=${counts.unknown} malformed=${counts.malformed} ` +
+    `duplicate=${counts.duplicate} unscanned=${unscanned}`
+  return {
+    features,
+    note:
+      `hello features: received=${entries.length} kept=${features.length} ` +
+      `ignored=${ignored} (${detail}) sample=[${samples.join(', ')}]`,
+  }
 }
 
 function validateHelloFields(record: Record<string, unknown>): string | null {
@@ -1267,6 +1450,17 @@ function validateHelloFields(record: Record<string, unknown>): string | null {
   const presence = validatePresenceFields(record)
   if (presence) return presence
   return validateHelloFeatures(record.features)
+}
+
+/**
+ * Prefix of a validation reason that means "a well-formed field holds a value
+ * this control plane does not know" (a newer daemon's enum value). The frame is
+ * ignored, the socket stays up. Every other reason is a rejection.
+ */
+const UNKNOWN_VALUE_PREFIX = 'unknown value: '
+
+function unknownValue(field: string): string {
+  return `${UNKNOWN_VALUE_PREFIX}${field}`
 }
 
 const UPDATE_PROGRESS_UNIT_SET = new Set<string>(UPDATE_PROGRESS_UNITS)
@@ -1288,12 +1482,10 @@ function validateUpdateProgressFields(record: Record<string, unknown>): string |
   if (record.upgradeId !== undefined && !isBoundedId(record.upgradeId)) {
     return 'invalid upgradeId'
   }
-  if (typeof record.unit !== 'string' || !UPDATE_PROGRESS_UNIT_SET.has(record.unit)) {
-    return 'invalid unit'
-  }
-  if (typeof record.stage !== 'string' || !UPDATE_PROGRESS_STAGE_SET.has(record.stage)) {
-    return 'invalid stage'
-  }
+  if (typeof record.unit !== 'string') return 'invalid unit'
+  if (!UPDATE_PROGRESS_UNIT_SET.has(record.unit)) return unknownValue('unit')
+  if (typeof record.stage !== 'string') return 'invalid stage'
+  if (!UPDATE_PROGRESS_STAGE_SET.has(record.stage)) return unknownValue('stage')
   if (!isIsoTimestamp(record.at)) return 'invalid at timestamp'
   return (
     validateOptionalBoundedString(record.detail, 'detail', MAX_DAEMON_WS_ERROR_CHARS) ??
@@ -1324,8 +1516,9 @@ function validateBoundedString(value: unknown, field: string, maxChars: number):
 
 function validateCommandProgressStep(value: unknown, index: number): string | null {
   if (!isRecord(value)) return `invalid step ${index}`
-  if (typeof value.state !== 'string' || !COMMAND_PROGRESS_STEP_STATE_SET.has(value.state)) {
-    return `invalid step ${index} state`
+  if (typeof value.state !== 'string') return `invalid step ${index} state`
+  if (!COMMAND_PROGRESS_STEP_STATE_SET.has(value.state)) {
+    return unknownValue(`step ${index} state`)
   }
   return (
     validateBoundedString(value.id, `step ${index} id`, MAX_DAEMON_WS_PROGRESS_STEP_ID_CHARS) ??
@@ -1559,6 +1752,156 @@ function validateAcmeIssuanceEventFields(record: Record<string, unknown>): strin
   return validateOptionalError(record.errorMessage)
 }
 
+/** Most names one certificate order carries (matches the authority's own cap of 100; we send far fewer). */
+export const MAX_ACME_ISSUE_NAMES = 100
+/** Most helper servers one order lists. */
+export const MAX_ACME_ISSUE_HELPERS = 64
+
+/** A plain lower-case DNS name: no wildcard, no upper case, no trailing dot. */
+const ACME_NAME_RE =
+  /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/
+/** One IPv4 address in dotted form, each part 0 to 255 with no leading zeros. */
+const ACME_IPV4_RE =
+  /^(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)$/
+const ACME_IPV6_GROUP_RE = /^[0-9a-f]{1,4}$/
+
+/** A lower-case IPv6 literal: at most one `::`, groups of 1 to 4 hex digits, and an optional IPv4 tail. */
+function isAcmeIpv6(value: string): boolean {
+  if (value.length > 45 || !value.includes(':') || value.includes(':::')) return false
+  const parts = value.split('::')
+  if (parts.length > 2) return false
+  const groups = parts.flatMap((part) => (part === '' ? [] : part.split(':')))
+  const last = groups.at(-1)
+  const tail = last?.includes('.') === true
+  if (tail && !ACME_IPV4_RE.test(last)) return false
+  const hex = tail ? groups.slice(0, -1) : groups
+  if (!hex.every((g) => ACME_IPV6_GROUP_RE.test(g))) return false
+  const width = hex.length + (tail ? 2 : 0)
+  return parts.length === 2 ? width < 8 : width === 8
+}
+
+function isAcmeAddress(value: string): boolean {
+  return ACME_IPV4_RE.test(value) || isAcmeIpv6(value)
+}
+const ACME_REQUEST_ID_RE = /^[A-Za-z0-9_-]{1,64}$/
+/** Field names that would carry certificate material; refused on every acme-issue message. */
+const ACME_FORBIDDEN_KEYS = [
+  'certificatePem',
+  'privateKeyPem',
+  'privateKey',
+  'certificate',
+  'key',
+  'pem',
+]
+
+function validateAcmeRequestId(value: unknown): string | null {
+  return typeof value === 'string' && ACME_REQUEST_ID_RE.test(value) ? null : 'invalid requestId'
+}
+
+function validateAcmeNames(value: unknown): string | null {
+  if (!Array.isArray(value) || value.length === 0 || value.length > MAX_ACME_ISSUE_NAMES) {
+    return 'invalid names'
+  }
+  const ok = value.every((n) => typeof n === 'string' && n.length <= 253 && ACME_NAME_RE.test(n))
+  return ok ? null : 'invalid names'
+}
+
+function validateAcmeAddress(value: unknown): boolean {
+  return typeof value === 'string' && isAcmeAddress(value)
+}
+
+function validateAcmeHelpers(value: unknown): string | null {
+  if (!Array.isArray(value) || value.length > MAX_ACME_ISSUE_HELPERS) return 'invalid helpers'
+  for (const item of value) {
+    const helper = item as { serverId?: unknown; address?: unknown } | null
+    if (typeof helper !== 'object' || helper === null || !isBoundedId(helper.serverId)) {
+      return 'invalid helpers'
+    }
+    if (!validateAcmeAddress(helper.address)) return 'invalid helpers'
+    if (acmeForbiddenKey(helper as Record<string, unknown>) !== null) return 'invalid helpers'
+  }
+  return null
+}
+
+/** Unknown optional fields are ignored (expand-only), but never one that could carry the pair. */
+function acmeForbiddenKey(record: Record<string, unknown>): string | null {
+  return ACME_FORBIDDEN_KEYS.some((k) => k in record) ? 'must not carry certificate material' : null
+}
+
+function firstProblem(...problems: Array<string | null>): string | null {
+  return problems.find((p) => p !== null) ?? null
+}
+
+/** Shape check for `acme-issue-request` (control plane to daemon; the sender and the daemon both use it). */
+export function validateAcmeIssueRequestFields(record: Record<string, unknown>): string | null {
+  return firstProblem(
+    validateAcmeRequestId(record.requestId),
+    isBoundedId(record.tlsId) ? null : 'invalid tlsId',
+    validateAcmeNames(record.names),
+    record.directory === 'production' || record.directory === 'staging'
+      ? null
+      : 'invalid directory',
+    typeof record.contactEmail === 'string' &&
+      record.contactEmail.length > 0 &&
+      record.contactEmail.length <= 254
+      ? null
+      : 'invalid contactEmail',
+    isIsoTimestamp(record.startByIso) ? null : 'invalid startByIso',
+    validateAcmeHelpers(record.helpers),
+    isIsoTimestamp(record.at) ? null : 'invalid at timestamp',
+    acmeForbiddenKey(record)
+  )
+}
+
+/** Shape check for `acme-proof-forward`. */
+export function validateAcmeProofForwardFields(record: Record<string, unknown>): string | null {
+  return firstProblem(
+    validateAcmeRequestId(record.requestId),
+    validateAcmeNames(record.names),
+    validateAcmeAddress(record.targetAddress) ? null : 'invalid targetAddress',
+    isIsoTimestamp(record.expiresAtIso) ? null : 'invalid expiresAtIso',
+    isIsoTimestamp(record.at) ? null : 'invalid at timestamp',
+    acmeForbiddenKey(record)
+  )
+}
+
+/** Shape check for `acme-proof-forward-end`. */
+export function validateAcmeProofForwardEndFields(record: Record<string, unknown>): string | null {
+  return firstProblem(
+    validateAcmeRequestId(record.requestId),
+    isIsoTimestamp(record.at) ? null : 'invalid at timestamp',
+    acmeForbiddenKey(record)
+  )
+}
+
+/** Shape check for `acme-issue-event` (daemon to control plane). Never accepts a pair. */
+export function validateAcmeIssueEventFields(record: Record<string, unknown>): string | null {
+  return firstProblem(
+    validateAcmeRequestId(record.requestId),
+    record.stage === 'started' || record.stage === 'issued' || record.stage === 'failed'
+      ? null
+      : 'invalid stage',
+    record.notAfterIso === undefined || isIsoTimestamp(record.notAfterIso)
+      ? null
+      : 'invalid notAfterIso',
+    validateOptionalError(record.reason),
+    isIsoTimestamp(record.at) ? null : 'invalid at timestamp',
+    acmeForbiddenKey(record)
+  )
+}
+
+/** Shape check for `acme-proof-forward-ready` and `acme-proof-forward-failed`. */
+export function validateAcmeProofForwardReportFields(
+  record: Record<string, unknown>
+): string | null {
+  return firstProblem(
+    validateAcmeRequestId(record.requestId),
+    validateOptionalError(record.reason),
+    isIsoTimestamp(record.at) ? null : 'invalid at timestamp',
+    acmeForbiddenKey(record)
+  )
+}
+
 /** A backup policy id: lower-case, because the host also uses it as a systemd unit name. */
 const BACKUP_POLICY_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 /** Daemon-minted run and artifact ids (`run_<hex>`, `bk_<hex>`); both become filenames. */
@@ -1596,9 +1939,8 @@ function validateBackupRunReportRun(record: Record<string, unknown>): string | n
   if (!isBackupRunToken(record.runId)) return 'invalid runId'
   if (!isIsoTimestamp(record.startedAt)) return 'invalid startedAt'
   if (!isIsoTimestamp(record.finishedAt)) return 'invalid finishedAt'
-  if (typeof record.status !== 'string' || !BACKUP_RUN_STATUSES.has(record.status)) {
-    return 'invalid status'
-  }
+  if (typeof record.status !== 'string') return 'invalid status'
+  if (!BACKUP_RUN_STATUSES.has(record.status)) return unknownValue('status')
   return (
     validateOptionalIsoTimestamp(record.nextRunAt, 'nextRunAt') ??
     validateOptionalError(record.error)
@@ -1672,9 +2014,8 @@ function validateBackupCopyReportFields(record: Record<string, unknown>): string
   ) {
     return 'invalid policyId'
   }
-  if (typeof record.state !== 'string' || !BACKUP_COPY_STATES.has(record.state)) {
-    return 'invalid state'
-  }
+  if (typeof record.state !== 'string') return 'invalid state'
+  if (!BACKUP_COPY_STATES.has(record.state)) return unknownValue('state')
   if (!isIsoTimestamp(record.finishedAt)) return 'invalid finishedAt'
   return validateBackupCopyReportOutcome(record)
 }
@@ -1886,6 +2227,104 @@ function validateManagedHealthReportFields(record: Record<string, unknown>): str
   return null
 }
 
+/** Max peers on one `fabric-peers-report` (daemon twin `FABRIC_PEER_REPORT_MAX_PEERS`). */
+export const MAX_DAEMON_WS_FABRIC_PEER_REPORT_PEERS = 256
+
+const FABRIC_PEER_HEALTH_VALUES: ReadonlySet<string> = new Set<FabricPeerHealth>([
+  'healthy',
+  'stale',
+  'never',
+])
+
+/** Linux interface name: at most 15 bytes, no slash or whitespace. */
+const FABRIC_PEER_INTERFACE_RE = /^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,14}$/
+
+function validateOptionalCounter(value: unknown, field: string): string | null {
+  if (value === undefined) return null
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0
+    ? null
+    : `invalid ${field}`
+}
+
+function validateFabricPeerHealthValue(value: unknown): string | null {
+  if (value === undefined) return null
+  if (!isBoundedHealthString(value)) return 'invalid peer.health'
+  // A health class this control plane does not know yet: ignore the frame.
+  return FABRIC_PEER_HEALTH_VALUES.has(value) ? null : unknownValue('peer.health')
+}
+
+function validateFabricPeerLink(value: Record<string, unknown>): string | null {
+  if (
+    value.endpoint !== undefined &&
+    (typeof value.endpoint !== 'string' || !isValidWireguardEndpoint(value.endpoint))
+  ) {
+    return 'invalid peer.endpoint'
+  }
+  if (
+    value.interface !== undefined &&
+    (typeof value.interface !== 'string' || !FABRIC_PEER_INTERFACE_RE.test(value.interface))
+  ) {
+    return 'invalid peer.interface'
+  }
+  return null
+}
+
+function validateFabricReportPeer(value: unknown): string | null {
+  if (!isRecord(value)) return 'invalid peer'
+  if (typeof value.publicKey !== 'string' || !isValidWireguardPublicKey(value.publicKey)) {
+    return 'invalid peer.publicKey'
+  }
+  if (value.lastHandshakeAt !== undefined && !isIsoTimestamp(value.lastHandshakeAt)) {
+    return 'invalid peer.lastHandshakeAt'
+  }
+  return (
+    validateOptionalCounter(value.transferRx, 'peer.transferRx') ??
+    validateOptionalCounter(value.transferTx, 'peer.transferTx') ??
+    validateFabricPeerLink(value) ??
+    validateFabricPeerHealthValue(value.health)
+  )
+}
+
+/** A package source's short name, such as `docker` or `php`. */
+const REPO_KEY_NAME_RE = /^[a-z0-9][a-z0-9._-]{0,31}$/
+/** A full OpenPGP fingerprint in hex (v4: 40 digits, v5/v6: 64). */
+const REPO_KEY_FINGERPRINT_RE = /^(?:[0-9A-Fa-f]{40}|[0-9A-Fa-f]{64})$/
+/** Most expected fingerprints one `repo-key-changed` frame lists. */
+export const MAX_DAEMON_WS_REPO_KEY_EXPECTED = 16
+
+function validateRepoKeyChangedFields(record: Record<string, unknown>): string | null {
+  if (!isIsoTimestamp(record.at)) return 'invalid at timestamp'
+  if (typeof record.keyName !== 'string' || !REPO_KEY_NAME_RE.test(record.keyName)) {
+    return 'invalid keyName'
+  }
+  if (typeof record.got !== 'string' || !REPO_KEY_FINGERPRINT_RE.test(record.got)) {
+    return 'invalid got'
+  }
+  if (
+    !Array.isArray(record.expected) ||
+    record.expected.length === 0 ||
+    record.expected.length > MAX_DAEMON_WS_REPO_KEY_EXPECTED ||
+    !record.expected.every((item) => typeof item === 'string' && REPO_KEY_FINGERPRINT_RE.test(item))
+  ) {
+    return 'invalid expected'
+  }
+  return null
+}
+
+function validateFabricPeersReportFields(record: Record<string, unknown>): string | null {
+  if (!isIsoTimestamp(record.at)) return 'invalid at timestamp'
+  if (!isIsoTimestamp(record.observedAt)) return 'invalid observedAt timestamp'
+  if (!Array.isArray(record.peers)) return 'invalid peers'
+  if (record.peers.length > MAX_DAEMON_WS_FABRIC_PEER_REPORT_PEERS) {
+    return 'peers exceed max entries'
+  }
+  for (const entry of record.peers) {
+    const issue = validateFabricReportPeer(entry)
+    if (issue) return issue
+  }
+  return null
+}
+
 function validateManagedHealthResultFields(record: Record<string, unknown>): string | null {
   const base = validateOkResultFields(record)
   if (base) return base
@@ -1953,13 +2392,11 @@ export type DeployCancelOutcome = (typeof DEPLOY_CANCEL_OUTCOMES)[number]
 function validateDeployCancelResultFields(record: Record<string, unknown>): string | null {
   const base = validateOkResultFields(record)
   if (base) return base
-  if (
-    record.outcome !== undefined &&
-    !(DEPLOY_CANCEL_OUTCOMES as readonly unknown[]).includes(record.outcome)
-  ) {
-    return 'invalid outcome'
-  }
-  return null
+  if (record.outcome === undefined) return null
+  if (typeof record.outcome !== 'string') return 'invalid outcome'
+  return (DEPLOY_CANCEL_OUTCOMES as readonly unknown[]).includes(record.outcome)
+    ? null
+    : unknownValue('outcome')
 }
 
 function validateOkResultFields(record: Record<string, unknown>): string | null {
@@ -2027,11 +2464,14 @@ function validateCommandOutcomeFields(record: Record<string, unknown>): string |
 /**
  * Result of {@link validateDaemonInboundFrame}.
  *
- * `ignored` is a well-formed object whose `type` this control plane does not
- * know. The socket stays up. Every other failure still closes with 1008.
+ * `ignored` is a well-formed object whose `type`, or an enum value in a known
+ * type, this control plane does not know: a newer daemon must not be refused
+ * for something optional. The socket stays up. Every other failure still closes
+ * with 1008. `notes` are bounded one-line warnings for the caller to log (the
+ * `hello` feature filter fills it).
  */
 export type DaemonInboundFrameResult =
-  | { ok: true; message: DaemonMessage }
+  | { ok: true; message: DaemonMessage; notes?: readonly string[] }
   | { ok: false; ignored: true; reason: string }
   | { ok: false; ignored: false; reason: string }
 
@@ -2073,7 +2513,17 @@ export function validateDaemonInboundFrame(raw: string): DaemonInboundFrameResul
   }
 
   const typeIssue = validateInboundMessageFields(parsed)
-  if (typeIssue) return rejectedInboundFrame(typeIssue)
+  if (typeIssue) {
+    return typeIssue.startsWith(UNKNOWN_VALUE_PREFIX)
+      ? ignoredInboundFrame(typeIssue)
+      : rejectedInboundFrame(typeIssue)
+  }
+
+  if (parsed.type === 'hello' && Array.isArray(parsed.features)) {
+    const { features, note } = filterHelloFeatures(parsed.features)
+    const message = { ...parsed, features } as DaemonMessage
+    return note ? { ok: true, message, notes: [note] } : { ok: true, message }
+  }
 
   return { ok: true, message: parsed as DaemonMessage }
 }
@@ -2103,11 +2553,20 @@ function validateInboundMessageFields(record: Record<string, unknown>): string |
       return validateManagedHaEventFields(record)
     case 'managed-health-report':
       return validateManagedHealthReportFields(record)
+    case 'fabric-peers-report':
+      return validateFabricPeersReportFields(record)
+    case 'repo-key-changed':
+      return validateRepoKeyChangedFields(record)
     case 'topology-report':
       return validateTopologyReportFields(record)
     case 'acme-issuance-event':
     case 'instance-acme-issuance-event':
       return validateAcmeIssuanceEventFields(record)
+    case 'acme-issue-event':
+      return validateAcmeIssueEventFields(record)
+    case 'acme-proof-forward-ready':
+    case 'acme-proof-forward-failed':
+      return validateAcmeProofForwardReportFields(record)
     case 'backup-run-report':
       return validateBackupRunReportFields(record)
     case 'backup-copy-report':
@@ -2400,6 +2859,25 @@ export type DaemonOutboundEnvelope =
       upgradeId?: string
       targetCommit?: string
     })
+  | (OutboundEnvelopeBase & {
+      kind: 'acme-issue-request'
+      /** The order's id (wire `requestId`); `requestId` above is the cell's own correlation key. */
+      acmeRequestId: string
+      tlsId: string
+      names: string[]
+      directory: 'production' | 'staging'
+      contactEmail: string
+      startByIso: string
+      helpers: AcmeProofHelper[]
+    })
+  | (OutboundEnvelopeBase & {
+      kind: 'acme-proof-forward'
+      acmeRequestId: string
+      names: string[]
+      targetAddress: string
+      expiresAtIso: string
+    })
+  | (OutboundEnvelopeBase & { kind: 'acme-proof-forward-end'; acmeRequestId: string })
   | (OutboundEnvelopeBase & { kind: 'echo'; payload: unknown })
   | (OutboundEnvelopeBase & {
       kind: 'command-dispatch'
@@ -2606,9 +3084,14 @@ export function wireMessageToInboundEnvelope(msg: DaemonMessage): DaemonInboundE
     case 'heartbeat':
     case 'managed-ha-event':
     case 'managed-health-report':
+    case 'fabric-peers-report':
+    case 'repo-key-changed':
     case 'topology-report':
     case 'acme-issuance-event':
     case 'instance-acme-issuance-event':
+    case 'acme-issue-event':
+    case 'acme-proof-forward-ready':
+    case 'acme-proof-forward-failed':
     case 'update-progress':
     case 'command-progress':
       // Fire-and-forget (or session setup). Not a correlated request.
@@ -2916,6 +3399,29 @@ export function outboundEnvelopeToWireMessage(env: DaemonOutboundEnvelope): Daem
         targets: env.targets,
         at: env.at,
       }
+    case 'acme-issue-request':
+      return {
+        type: 'acme-issue-request',
+        requestId: env.acmeRequestId,
+        tlsId: env.tlsId,
+        names: env.names,
+        directory: env.directory,
+        contactEmail: env.contactEmail,
+        startByIso: env.startByIso,
+        helpers: env.helpers,
+        at: env.at,
+      }
+    case 'acme-proof-forward':
+      return {
+        type: 'acme-proof-forward',
+        requestId: env.acmeRequestId,
+        names: env.names,
+        targetAddress: env.targetAddress,
+        expiresAtIso: env.expiresAtIso,
+        at: env.at,
+      }
+    case 'acme-proof-forward-end':
+      return { type: 'acme-proof-forward-end', requestId: env.acmeRequestId, at: env.at }
     case 'container-logs-request':
       return {
         type: 'container-logs-request',

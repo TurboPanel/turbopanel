@@ -577,6 +577,26 @@ function privateEndpointSelect(memberships: MembershipPinRow[], opts?: PrivateEn
       }
     }
 
+    // Daemon features ({ id, daemon }) and connection state ({ id, connected }):
+    // no daemon routes over a LAN, every server is connected.
+    if (
+      keys.length === 2 &&
+      keySet.has('id') &&
+      (keySet.has('daemon') || keySet.has('connected'))
+    ) {
+      const ids = [...new Set((opts?.relays ?? []).map((row) => row.serverId))]
+      const rows = keySet.has('daemon') ? [] : ids.map((id) => ({ id, connected: true }))
+      return {
+        from() {
+          return {
+            where() {
+              return thenableRows(rows)
+            },
+          }
+        },
+      }
+    }
+
     throw new TypeError(`unexpected private-endpoint select keys: ${keys.join(',')}`)
   }
 }
@@ -795,7 +815,7 @@ test('resolveMemberTransports walks shared datacenters in priority order', async
   assertEquals(peers[0]?.address, '10.1.0.2')
 })
 
-test('resolveMemberTransports surfaces failover_requires_trusted_datacenter for an untrusted-only failover pair', async () => {
+test('resolveMemberTransports surfaces untrusted_network_needs_fabric for an untrusted-only failover pair', async () => {
   const primary = member({
     id: 'p',
     serverId: 's1',
@@ -821,7 +841,7 @@ test('resolveMemberTransports surfaces failover_requires_trusted_datacenter for 
     }
   )
   assertEquals(await resolveMemberTransports(db, [primary, failover], 'failover-replication'), {
-    kind: 'failover_requires_trusted_datacenter',
+    kind: 'untrusted_network_needs_fabric',
     fromServerId: 's1',
     toServerId: 's2',
     datacenterId: 'dc-shared',

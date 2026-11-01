@@ -8,7 +8,11 @@ import {
   NOTIFICATION_EVENTS,
   NOTIFICATION_RULE_EVENTS,
 } from './events.ts'
-import { emitCertificateRenewalFailed, plainAcmeReason } from './certificate-alerts.ts'
+import {
+  emitCertificateRenewalFailed,
+  emitCertificateRequestDropped,
+  plainAcmeReason,
+} from './certificate-alerts.ts'
 import type { Db } from '../../db/connection.ts'
 import type { emitNotification } from './emit.ts'
 
@@ -80,4 +84,40 @@ test('the emitter sends one organization alert with the plain reason', async () 
   assertEquals(input.context?.hostname, 'shop.acme.com')
   assertMatch(String(input.context?.reason), /does not point/)
   assertEquals(input.context?.detail, 'dns error')
+})
+
+test('a renewal alert is marked as one; a first failure says it could not get a certificate', async () => {
+  const { calls, emit } = recordingEmit()
+  await emitCertificateRenewalFailed(NO_DB, undefined, FAILURE, { emit })
+  await emitCertificateRenewalFailed(
+    NO_DB,
+    undefined,
+    { ...FAILURE, firstIssuance: true },
+    { emit }
+  )
+  assertEquals(calls[0]![2].context?.kind, 'renewal')
+  assertEquals(calls[1]![2].context?.kind, 'issuance')
+  const { title } = describeEvent('certificate.renewal_failed', {
+    kind: 'issuance',
+    hostname: 'shop.acme.com',
+  })
+  assertEquals(title, "Couldn't get a certificate for shop.acme.com")
+})
+
+test('a dropped waiting request sends one alert that says what to do', async () => {
+  const { calls, emit } = recordingEmit()
+  await emitCertificateRequestDropped(
+    NO_DB,
+    undefined,
+    { organizationId: 'org-1', hostname: 'shop.acme.com' },
+    { emit }
+  )
+  assertEquals(calls.length, 1)
+  const input = calls[0]![2]
+  assertEquals(input.event, 'certificate.renewal_failed')
+  assertEquals(input.context?.kind, 'request_dropped')
+  const { title, body } = describeEvent('certificate.renewal_failed', input.context ?? {})
+  assertEquals(title, 'Stopped waiting for DNS for shop.acme.com')
+  assertMatch(body ?? '', /within 7 days/)
+  assertMatch(body ?? '', /Use Let's Encrypt again/)
 })

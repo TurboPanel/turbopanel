@@ -22,6 +22,19 @@ import {
   type TlsSource,
 } from '../../lib/tls/index.ts'
 import { organization, tls } from '../../db/schema.ts'
+import { recordAudit } from '../../features/audit/audit-records.ts'
+import { TunnelProviderError } from '../../features/tunnels/errors.ts'
+import {
+  OriginCertificateRefusal,
+  readProviderOrigin,
+  revokeOriginCertificate,
+} from '../../features/tunnels/origin-certificate.ts'
+import {
+  createTunnelAdapterRegistry,
+  type TunnelAdapterRegistry,
+} from '../../features/tunnels/registry.ts'
+import type { TunnelProvider } from '../../features/tunnels/vocabulary.ts'
+import { providerFailure } from '../organizations/carrier-routes.ts'
 import {
   assertCanCreateOr403,
   assertCanReadOr403,
@@ -69,7 +82,6 @@ import {
   type CaRotationJournalRow,
 } from './changeover-lease.ts'
 import { countLeafHealthForOrganization } from './leaf-renewal-sweep.ts'
-import { recordAudit } from '../../features/audit/audit-records.ts'
 import { retireAwaitingRotation } from './rotation-retire.ts'
 import { caRetireByIso } from '../../features/tls/leaf-vocabulary.ts'
 import {
@@ -565,6 +577,9 @@ export function buildTlsRowPatch(
   }
 
   if (shouldRevokeTlsFromBody(body)) {
+    if (existing.source === 'provider_origin') {
+      return { ok: false, error: 'provider_origin_managed', status: 409 }
+    }
     if (existing.source === 'organization_ca') {
       return {
         ok: false,
@@ -601,11 +616,63 @@ export function buildTlsRowPatch(
   return { ok: true, patch }
 }
 
-export function registerTlsRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
+/**
+ * Deleting a certificate a tunnel provider issued: revoked at the provider
+ * through the shared token selector, then the row goes. Refused while a site
+ * pins it. A row without a provider link was not issued here and is never
+ * touched.
+ */
+async function deleteProviderOriginCertificate(
+  c: Context<AppEnv>,
+  target: { db: Db; organizationId: string; row: typeof tls.$inferSelect },
+  registry: TunnelAdapterRegistry
+): Promise<Response> {
+  const { db, organizationId, row } = target
+  const link = readProviderOrigin(row.metadata)
+  if (!link) return c.json({ error: 'provider_origin_managed' }, 409)
+  const secrets = c.get('dataEncryptionSecrets')
+  if (!secrets) return c.json({ error: 'secrets_unavailable' }, 503)
+  try {
+    const { revokedWithBadgeId } = await revokeOriginCertificate({
+      db,
+      secrets,
+      adapter: registry(link.provider as TunnelProvider),
+      row,
+    })
+    const session = c.get('session')
+    await recordAudit(db, {
+      organizationId,
+      actorUserId: session?.userId ?? null,
+      actorEmail: session?.email ?? null,
+      action: 'origin_certificate.revoke',
+      targetType: 'tls',
+      targetId: row.id,
+      context: { carrierId: link.carrierId, zone: link.zoneName, revokedWithBadgeId },
+    })
+    return c.json({ ok: true as const })
+  } catch (err) {
+    if (err instanceof OriginCertificateRefusal) {
+      const message =
+        err.error === 'tls_in_use'
+          ? 'A site still uses this certificate. Choose another certificate for that site first, then delete this one.'
+          : err.message
+      return c.json({ error: err.error, message }, err.error === 'secrets_unavailable' ? 503 : 409)
+    }
+    if (err instanceof TunnelProviderError) return providerFailure(c, err)
+    throw err
+  }
+}
+
+export function registerTlsRoutes(
+  router: Hono<AppEnv>,
+  opts: AuthRouteOpts,
+  fetchImpl?: typeof fetch
+) {
   if (!opts.secrets) {
     throw new TypeError('session secrets are required for tls routes')
   }
   const secrets = opts.secrets
+  const registry = createTunnelAdapterRegistry(fetchImpl)
 
   router.use('/tls', createSessionMiddleware(secrets))
   router.use('/tls/*', createSessionMiddleware(secrets))
@@ -950,6 +1017,29 @@ export function registerTlsRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
 
     const denied = await assertCanOr403(c, 'organization:manage', 'tls', id)
     if (denied) return denied
+
+    // A certificate a tunnel provider issued is revoked there first (see features/tunnels).
+    const [existing] = await db.select().from(tls).where(eq(tls.id, id))
+    if (existing?.source === 'provider_origin') {
+      return await deleteProviderOriginCertificate(
+        c,
+        { db, organizationId, row: existing },
+        registry
+      )
+    }
+    // The Organization CA is replaced with Rotate and retired with POST /tls/ca/retire.
+    // Deleting it would let the next managed apply mint a new CA silently, breaking
+    // clients pinned to the old one and orphaning the server certificates it signed.
+    if (existing?.source === 'organization_ca') {
+      return c.json(
+        {
+          error: 'tls_organization_ca',
+          message:
+            "The Organization CA can't be deleted. Use Rotate on the Organization CA panel to replace it.",
+        },
+        409
+      )
+    }
 
     const result = await runHierarchyDelete(db, async (tx) => {
       await tx.delete(tls).where(eq(tls.id, id))

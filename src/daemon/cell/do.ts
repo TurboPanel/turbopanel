@@ -7,6 +7,7 @@ import {
   type DerivedSecretsConfig,
 } from '../../lib/secrets/secrets.ts'
 import { emitCertificateRenewalFailed } from '../../features/notifications/certificate-alerts.ts'
+import { handleRepoKeyChanged } from '../../features/notifications/repo-key-alerts.ts'
 import {
   createWorkersDb,
   type Db,
@@ -36,7 +37,16 @@ import {
 import { createDurableObjectDaemonCellRegistry } from './do-registry.ts'
 import { createFreshStandbyProbe } from '../../client/managed/health-probe.ts'
 import { handleAcmeIssuanceEvent } from '../../client/tls/acme-issuance-event.ts'
+import {
+  handleHttpIssuanceInbound,
+  isHttpIssuanceMessage,
+} from '../../features/tls/http-issuance/events.ts'
 import { handleManagedHealthReport } from '../../features/managed/health-report.ts'
+import {
+  FabricPeerReportThrottle,
+  handleFabricPeersReport,
+  takeFabricPeersReport,
+} from '../../features/fabric/peer-report.ts'
 import {
   backupRunReportResultMessage,
   createBackupRunReportStore,
@@ -47,7 +57,7 @@ import {
   createBackupCopyReportStore,
   handleBackupCopyReport,
 } from '../../features/backups/copy-report.ts'
-import { recordInstanceAcmeIssuance } from '../../features/install/instance-hostnames.ts'
+import { recordInstanceAcmeIssuanceFromServer } from '../instance-acme-inbound.ts'
 import { recordCommandProgress } from '../../features/commands/command-progress.ts'
 import {
   ackForReportedOutcome,
@@ -63,6 +73,7 @@ import { recordTopologyGeneration } from '../../features/servers/server-topology
 import { touchServerMetadata } from '../../features/servers/server-registry.ts'
 import { parseServiceRunStates, type ServiceRunState } from '../../contracts/service-run-state.ts'
 import { instanceAttachVersionFrame } from '../attach-version.ts'
+import { HEARTBEAT_SECONDS_DEFAULT } from '../../features/install/heartbeat-policy.ts'
 import { verifyDaemonJwt } from '../authn/daemon-jwt.ts'
 import { getServerDaemonStateByServerId } from '../../features/servers/server-identity-db.ts'
 import { inboundHeartbeatProjectionDue } from './postgres-projection.ts'
@@ -427,6 +438,8 @@ export class DaemonCellObject {
   readonly #sweptOffline = new Set<string>()
   #runtimeConnected = false
   #lastProjectedAtMs: number | null = null
+  /** `fabric-peers-report` stamps at most once per 60 s (in memory, no SQLite). */
+  readonly #fabricPeerReportThrottle = new FabricPeerReportThrottle()
   #lastKnownDaemonBuild: DaemonBuildInfo | undefined
   #lastRemoteAddress: string | undefined
   #lastConnectedAt: string | undefined
@@ -1649,7 +1662,13 @@ export class DaemonCellObject {
     )
 
     try {
-      server.send(JSON.stringify(instanceAttachVersionFrame(connectedAt, this.#env)))
+      server.send(
+        JSON.stringify(
+          instanceAttachVersionFrame(connectedAt, this.#env, {
+            heartbeatSeconds: HEARTBEAT_SECONDS_DEFAULT,
+          })
+        )
+      )
     } catch (err) {
       console.error(
         `daemon-cell event=attach-version-failed serverId=${serverId} error=${
@@ -1935,7 +1954,8 @@ export class DaemonCellObject {
 
   /**
    * Fire-and-forget daemon reports that only write a projection
-   * (`managed-health-report`, `topology-report`). Returns true when handled.
+   * (`managed-health-report`, `fabric-peers-report`, `repo-key-changed`, `topology-report`).
+   * Returns true when handled.
    */
   async #handleReportInbound(
     attachment: { connectionId: string; serverId: string },
@@ -1948,6 +1968,44 @@ export class DaemonCellObject {
           reporterServerId: attachment.serverId,
           members: parsed.members,
         })
+      })
+      return true
+    }
+    if (parsed.type === 'fabric-peers-report') {
+      await this.#recordInboundRepairingPresence(attachment, parsed.at)
+      // In-memory gate first: a same-class frame inside 60 s opens no database client.
+      const take = takeFabricPeersReport(
+        this.#fabricPeerReportThrottle,
+        attachment.serverId,
+        parsed,
+        Date.now()
+      )
+      if (!take) return true
+      await this.#withProjectionDb('fabric-peers-report', attachment.serverId, async (db) => {
+        await handleFabricPeersReport(db, {
+          reporterServerId: attachment.serverId,
+          peers: parsed.peers,
+          observedAt: parsed.observedAt,
+        })
+      })
+      return true
+    }
+    if (parsed.type === 'repo-key-changed') {
+      await this.#recordInboundRepairingPresence(attachment, parsed.at)
+      await this.#withProjectionDb('repo-key-changed', attachment.serverId, async (db) => {
+        await handleRepoKeyChanged(
+          db,
+          await this.#dataEncryptionSecrets(),
+          attachment.serverId,
+          parsed
+        )
+      })
+      return true
+    }
+    if (isHttpIssuanceMessage(parsed)) {
+      await this.#recordInboundRepairingPresence(attachment, parsed.at)
+      await this.#withProjectionDb(parsed.type, attachment.serverId, async (db) => {
+        await handleHttpIssuanceInbound(db, attachment.serverId, parsed)
       })
       return true
     }
@@ -1964,6 +2022,18 @@ export class DaemonCellObject {
       return true
     }
     return false
+  }
+
+  /** One bounded warning line per note the frame validator produced (see `filterHelloFeatures`). */
+  #warnInboundNotes(
+    attachment: { connectionId: string; serverId: string },
+    notes: readonly string[] | undefined
+  ): void {
+    for (const note of notes ?? []) {
+      console.warn(
+        `daemon-cell event=inbound-note serverId=${attachment.serverId} conn=${attachment.connectionId} ${note}`
+      )
+    }
   }
 
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
@@ -1999,6 +2069,7 @@ export class DaemonCellObject {
       return
     }
     const parsed = validated.message
+    this.#warnInboundNotes(attachment, validated.notes)
 
     this.#trace('inbound', {
       serverId: attachment.serverId,
@@ -2063,13 +2134,7 @@ export class DaemonCellObject {
           'instance-acme-issuance-event',
           attachment.serverId,
           async (db) => {
-            await recordInstanceAcmeIssuance(db, {
-              hostname: parsed.hostname,
-              ok: parsed.ok,
-              at: parsed.at,
-              ...(parsed.errorMessage ? { errorMessage: parsed.errorMessage } : {}),
-              ...(parsed.notAfter ? { notAfter: parsed.notAfter } : {}),
-            })
+            await recordInstanceAcmeIssuanceFromServer(db, attachment.serverId, parsed)
           }
         )
         return

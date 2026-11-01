@@ -741,7 +741,7 @@ test('lintComposeYaml does not treat a non-mapping x-turbopanel as host-native',
   )
 })
 
-test('lintComposeYaml railpack source is not host-native when source is a scalar', () => {
+test('lintComposeYaml an unparsed source is not host-native when source is a scalar', () => {
   const issues = lintComposeYaml(`services:
   app:
     x-turbopanel:
@@ -753,7 +753,21 @@ test('lintComposeYaml railpack source is not host-native when source is a scalar
   )
 })
 
-test('lintComposeYaml skips image requirement for a railpack-built source', () => {
+test('lintComposeYaml skips image requirement for an image-built source', () => {
+  const issues = lintComposeYaml(`services:
+  app:
+    x-turbopanel:
+      source:
+        sourceId: ${SOURCE_ID}
+        buildKind: image
+`)
+  assertEquals(
+    issues.some((issue) => issue.path === 'services.app' && issue.message.includes('image')),
+    false
+  )
+})
+
+test('lintComposeYaml skips image requirement for a source with the old build kind value', () => {
   const issues = lintComposeYaml(`services:
   app:
     x-turbopanel:
@@ -767,7 +781,7 @@ test('lintComposeYaml skips image requirement for a railpack-built source', () =
   )
 })
 
-test('lintComposeYaml trims whitespace around railpack buildKind', () => {
+test('lintComposeYaml trims whitespace around the old buildKind value', () => {
   const issues = lintComposeYaml(`services:
   app:
     x-turbopanel:

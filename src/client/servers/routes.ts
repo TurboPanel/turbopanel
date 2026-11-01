@@ -1,6 +1,8 @@
 import { and, eq, inArray, sql } from 'drizzle-orm'
+import { resolvePinnedBy } from '../../lib/panel-identity/pinned-by.ts'
 import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
+import { nudgeTunnelRoutesAfterResponse } from '../organizations/tunnel-nudge.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { requireStepUpIfConfigured } from '../authn/step-up.ts'
@@ -34,6 +36,7 @@ import {
   repairStaleProjectedUpdate,
 } from '../../daemon/cell/control-plane-monitor.ts'
 import type { DaemonCellRegistry } from '../../contracts/cell.ts'
+import { purgeDaemonCellBestEffort } from '../../features/servers/daemon-cell-purge.ts'
 import type { UpdateProjection } from '../../features/servers/daemon-state.ts'
 import {
   clearServerDaemonState,
@@ -105,6 +108,7 @@ import { registerServerCommandRoutes } from './commands-routes.ts'
 import { registerServerMetricsRoutes } from './metrics-routes.ts'
 import { registerServerTrafficMapRoutes } from './traffic-map-routes.ts'
 import { registerServerAddressRoutes } from './address-routes.ts'
+import { registerServerReenrollTicketRoutes } from './reenroll-ticket-routes.ts'
 import { registerServerLabelRoutes } from './labels-routes.ts'
 import { registerServerServicesRoutes } from './services-routes.ts'
 import {
@@ -297,14 +301,8 @@ async function purgeServerDaemonCell(
   registry: DaemonCellRegistry,
   serverId: string
 ): Promise<DaemonCellPurgeFailure | null> {
-  try {
-    await registry.getCell(serverId).purge()
-    return null
-  } catch (err) {
-    const message = errorMessageFromUnknown(err)
-    console.error(`Failed to purge daemon cell for server ${serverId}: ${message}`)
-    return 'purge_failed'
-  }
+  const purged = await purgeDaemonCellBestEffort(registry, serverId, 'after key revoke')
+  return purged ? null : 'purge_failed'
 }
 
 async function loadDatacenterOptionsMap(
@@ -787,6 +785,7 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
           ...timezoneFields,
           ...hostDefaultsFields,
           licenseId: row.licenseId ?? null,
+          trustPinnedBy: resolvePinnedBy(row),
           tierPlacement: placementByServer.get(row.id) ?? null,
           layoutPaths: layoutPathsByServer.get(row.id) ?? null,
         }
@@ -1210,6 +1209,7 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
         datacenterDefaultTimezone: dcOptions?.defaultServerTimezone ?? null,
         datacenterEnforceServerTimezone: dcOptions?.enforceServerTimezone ?? false,
         licenseId: display.row.licenseId ?? null,
+        trustPinnedBy: resolvePinnedBy(display.row),
         tierPlacement,
         layoutPaths: layoutPathsByServer.get(id) ?? null,
         labels: labelRows.map((row) => ({ key: row.key, value: row.value })),
@@ -1274,6 +1274,7 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
       })
     }
 
+    nudgeTunnelRoutesAfterResponse(c, organizationId)
     return c.json({ ok: true as const })
   })
 
@@ -1435,6 +1436,7 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     }
 
     await reconcileFabricAfterServerDelete(c, db, organizationId, session.userId)
+    nudgeTunnelRoutesAfterResponse(c, organizationId)
 
     await clearServerDaemonState(db, id)
 
@@ -1478,4 +1480,5 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
   registerServerServicesRoutes(router, opts)
   registerServerPrincipalRemovalRoutes(router, opts)
   registerServerLicenseTierRoutes(router, opts)
+  registerServerReenrollTicketRoutes(router, opts)
 }

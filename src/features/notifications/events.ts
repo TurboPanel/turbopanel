@@ -160,19 +160,34 @@ export const NOTIFICATION_EVENT_DEFINITIONS = {
       )} from ${name(ctx, 'subjectKind', 'a subject')} ${name(ctx, 'subjectId', '')}`.trimEnd() +
       '.',
   },
+  // One stored code for three alerts; `ctx.kind` (`issuance`, `renewal`,
+  // `request_dropped`) picks the words. Rows from before `kind` read as renewal.
   'certificate.renewal_failed': {
-    label: 'A certificate failed to renew',
+    label: 'A certificate could not be issued or renewed',
     severity: 'warning',
     scope: 'organization',
     audience: 'members',
     urgent: true,
-    title: (ctx) => `Certificate renewal failed for ${name(ctx, 'hostname', 'a domain')}`,
-    body: (ctx) =>
-      `${name(
+    title: (ctx) => {
+      const domain = name(ctx, 'hostname', 'a domain')
+      if (ctx.kind === 'issuance') return `Couldn't get a certificate for ${domain}`
+      if (ctx.kind === 'request_dropped') return `Stopped waiting for DNS for ${domain}`
+      return `Certificate renewal failed for ${domain}`
+    },
+    body: (ctx) => {
+      if (ctx.kind === 'request_dropped') {
+        return `${name(
+          ctx,
+          'reason',
+          'The certificate request waited too long for DNS and was dropped.'
+        )} Point the domain at the server, then press Use Let's Encrypt again.`
+      }
+      return `${name(
         ctx,
         'reason',
         "Let's Encrypt could not issue or renew the certificate."
-      )} Visitors may see a browser warning until it is fixed; check the domain's DNS, then try again.`,
+      )} Visitors may see a browser warning until it is fixed; check the domain's DNS, then try again.`
+    },
   },
   'folder.orphans_found': {
     label: 'A folder was left behind on a server',
@@ -194,6 +209,92 @@ export const NOTIFICATION_EVENT_DEFINITIONS = {
       'Its files are still on the server and its name stays reserved. ' +
       'Open Folders that need attention in the organization settings to remove it, ' +
       'or put the service back to use it again.',
+  },
+  'server.repo_key_changed': {
+    label: "A software source's signing key changed",
+    severity: 'warning',
+    scope: 'organization',
+    audience: 'managers',
+    // A signing key is what vouches for the software installed on a server.
+    urgent: true,
+    title: (ctx) =>
+      `The ${name(ctx, 'keyName', 'software source')} signing key changed on ${name(
+        ctx,
+        'serverName',
+        'a server'
+      )}`,
+    body: (ctx) =>
+      `The ${name(ctx, 'keyName', 'software source')} package source now publishes a different signing key than TurboPanel expects (expected ${name(
+        ctx,
+        'expected',
+        'unknown'
+      )}, got ${name(ctx, 'got', 'unknown')}). ` +
+      'The server went on using it, and every package is still checked against that key. ' +
+      'This is usually the publisher rotating its key; if you did not expect that, check the source before the next install.',
+  },
+  'server.enrolled': {
+    label: 'A new server joined',
+    severity: 'info',
+    scope: 'organization',
+    audience: 'managers',
+    urgent: false,
+    title: (ctx) => `${name(ctx, 'serverName', 'A new server')} joined the organization`,
+    body: (ctx) =>
+      `A server enrolled with a one-time install key (daemon key ${name(
+        ctx,
+        'daemonKey',
+        'unknown'
+      )}). ` +
+      'Servers are accepted automatically; if you did not install one, remove it from the server list.',
+  },
+  'server.key_replaced': {
+    label: "A server's daemon key was replaced",
+    severity: 'warning',
+    scope: 'organization',
+    audience: 'managers',
+    urgent: true,
+    title: (ctx) => `The daemon key on ${name(ctx, 'serverName', 'a server')} was replaced`,
+    body: (ctx) =>
+      `A re-enroll token issued for ${name(ctx, 'serverName', 'this server')} was used. ` +
+      `The old key ${name(ctx, 'oldKey', 'unknown')} was replaced by ${name(
+        ctx,
+        'newKey',
+        'unknown'
+      )}. ` +
+      'If you did not issue that token, revoke the server key and check the host.',
+  },
+  'panel.identity_next_changed': {
+    label: "The control plane's next key changed",
+    severity: 'warning',
+    scope: 'instance',
+    audience: 'managers',
+    // The next key is what servers accept after a rotation: always urgent.
+    urgent: true,
+    title: (ctx) =>
+      ctx.cleared === true
+        ? 'The control plane next key was cleared'
+        : 'The control plane next key was changed',
+    body: (ctx) =>
+      `${name(ctx, 'actorEmail', 'An administrator')} ${
+        ctx.cleared === true ? 'cleared' : 'set'
+      } the next key${
+        typeof ctx.fingerprint === 'string' ? ` (${ctx.fingerprint})` : ''
+      }. Servers accept the next key after a rotation; if you did not expect this, check Control Plane Identity in Admin.`,
+  },
+  'panel.pin_mismatch': {
+    label: 'A server reported a different control plane key',
+    severity: 'critical',
+    scope: 'organization',
+    audience: 'managers',
+    urgent: true,
+    title: (ctx) =>
+      `Server ${name(ctx, 'serverName', 'unknown')} reported a different control plane key`,
+    body: (ctx) =>
+      `The server holds ${name(ctx, 'reported', 'a key')} but this control plane signs with ${name(
+        ctx,
+        'expected',
+        'another key'
+      )}. Either the server was pointed at another control plane or something is impersonating this one; reinstall the server with a fresh command if you did not expect this.`,
   },
 } as const satisfies Record<string, EventDefinition>
 

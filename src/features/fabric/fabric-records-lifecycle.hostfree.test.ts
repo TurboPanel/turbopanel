@@ -55,6 +55,7 @@ function thenableRows<T>(rows: T[]) {
   return {
     limit: (n?: number) => Promise.resolve(typeof n === 'number' ? rows.slice(0, n) : rows),
     orderBy: () => thenableRows(rows),
+    for: () => thenableRows(rows),
     returning: () => promise,
     then: promise.then.bind(promise),
     catch: promise.catch.bind(promise),
@@ -141,7 +142,7 @@ function filterRows<T extends Record<string, unknown>>(rows: T[], condition: unk
   return rows.filter((row) => matchesWhere(row, condition))
 }
 
-type ServerRow = { id: string; organizationId: string }
+type ServerRow = { id: string; organizationId: string; containerPrefix?: string | null }
 type FabricRow = {
   id: string
   organizationId: string
@@ -348,6 +349,10 @@ function createLifecycleDb(
             return thenableRows(rows)
           },
         }),
+        // Container ranges held by relays of the org's fabric.
+        innerJoin: () => ({
+          where: () => thenableRows(relays.map((row) => ({ prefix: row.prefix }))),
+        }),
       }),
     }),
     insert: (table: unknown) => ({
@@ -497,6 +502,10 @@ function createLifecycleDb(
             }
             return thenableRows([])
           }
+          if (table === server) {
+            for (const row of filterRows(servers, condition)) Object.assign(row, patch)
+            return thenableRows([])
+          }
           if (table === fabric) {
             const matches = fabrics.filter((row) => matchesWhere(row, condition))
             for (const row of matches) {
@@ -542,6 +551,7 @@ function createLifecycleDb(
      */
     transaction: async <T>(fn: (tx: Db) => Promise<T>): Promise<T> => {
       const snapshot = {
+        servers: servers.map((row) => ({ ...row })),
         fabrics: fabrics.map((row) => ({ ...row })),
         relays: relays.map((row) => ({ ...row })),
         networks: networks.map((row) => ({ ...row })),
@@ -550,6 +560,7 @@ function createLifecycleDb(
       try {
         return await fn(db as unknown as Db)
       } catch (err) {
+        servers.splice(0, servers.length, ...snapshot.servers)
         fabrics.splice(0, fabrics.length, ...snapshot.fabrics)
         relays.splice(0, relays.length, ...snapshot.relays)
         networks.splice(0, networks.length, ...snapshot.networks)

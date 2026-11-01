@@ -17,6 +17,10 @@
  * server's daemon key (`POST /servers/:id/daemon-key/revoke`); there are no
  * other API keys yet.
  *
+ * A re-enroll ticket hands out the power to replace a server's key, and a burn
+ * reissues an install ticket, so both are gated like revoking a key (owner
+ * decision), even though they create something.
+ *
  * Keys are `<subject>.<verb>` and match the audit action where one exists.
  */
 export const STEP_UP_ACTIONS = {
@@ -25,6 +29,8 @@ export const STEP_UP_ACTIONS = {
   'server.delete': 'Delete a server',
   'server.daemon_key.revoke': "Revoke a server's key",
   'license.revoke': 'Revoke a license key',
+  'license.key.burn': "Burn a license key's token and issue a new install ticket",
+  'server.reenroll_ticket.issue': 'Issue a re-enroll ticket for a server',
   'managed.delete': 'Delete a managed database',
   'managed.database.delete': 'Delete a database inside a managed database',
   'binding.delete': 'Remove the link between an app and a managed database',
@@ -48,4 +54,14 @@ export const STEP_UP_ACTIONS = {
   'organization.reauth_settings.update': 'Change the re-authentication setting',
 } as const
 
-export type StepUpAction = keyof typeof STEP_UP_ACTIONS
+/**
+ * Instance-wide actions (no organization, so no per-organization switch). They
+ * go through `requireInstanceStepUp`, which is always on, from the admin
+ * routes under `src/admin/` and `src/platform/deno/ingress/`.
+ */
+export const INSTANCE_STEP_UP_ACTIONS = {
+  'panel.identity_next.set': "Change the control plane's next key",
+  'instance.tunnel_token.set': 'Change the tunnel token',
+} as const
+
+export type StepUpAction = keyof typeof STEP_UP_ACTIONS | keyof typeof INSTANCE_STEP_UP_ACTIONS

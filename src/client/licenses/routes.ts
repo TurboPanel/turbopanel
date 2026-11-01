@@ -1,4 +1,5 @@
 import type { Context, Hono } from 'hono'
+import type { PanelIdentity } from '../../lib/panel-identity/identity.ts'
 import type { AppEnv } from '../../app/app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import {
@@ -8,12 +9,15 @@ import {
   resolveProtectedColocatedLicenseIds,
 } from '../authn/install-state.ts'
 import {
+  burnUnboundLicenseToken,
   createLicense,
   inspectLicenseAttachment,
   invalidateLicense,
   listLicenses,
   listServersBoundToLicenses,
 } from '../../features/licenses/license.ts'
+import { cancelLicenseTickets, mintTicket } from '../../features/licenses/tickets.ts'
+import { recordAudit } from '../../features/audit/audit-records.ts'
 import { isCustomerBillingOperational } from '../../features/billing/config.ts'
 import {
   type BillingQuantityLock,
@@ -35,7 +39,11 @@ import { compatLogInfo } from '../../lib/log-compat.ts'
 import { type Db, getDaemonCellRegistry, getDb } from '../../db/connection.ts'
 import type { DaemonCellRegistry } from '../../contracts/cell.ts'
 import { isDeveloperSurfaceEnabled } from '../../app/dev-mode.ts'
-import { buildLicenseInstallCommand } from '../../features/install/daemon-install-command.ts'
+import {
+  buildLicenseInstallCommand,
+  encodeLicenseArg,
+} from '../../features/install/daemon-install-command.ts'
+import { INSTALL_CA_PIN_UNAVAILABLE } from '../../features/install/install-ca-pin.ts'
 import { resolveInstallOriginTls } from '../../features/install/install-trust.ts'
 import { syncSelfHostedGrant } from '../../features/tiers/self-hosted-grant-records.ts'
 import { lockOrganizationRow } from '../../features/tiers/assignment-records.ts'
@@ -43,7 +51,7 @@ import { getTierById } from '../../features/tiers/tier-records.ts'
 import { unusedKeyExpiresAt } from '../../features/licenses/key-expiry.ts'
 import {
   parseInstallBaseUrl,
-  resolvePublicBaseUrl,
+  resolveInstallBaseUrl,
 } from '../../features/install/resolve-public-base-url.ts'
 import {
   canReserveServerSeat,
@@ -57,6 +65,7 @@ import {
 } from '../../features/licenses/enroll-attempt.ts'
 import { resolveInstanceUpdateChannel } from '../../contracts/update-channel.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
+import { purgeDaemonCellBestEffort } from '../../features/servers/daemon-cell-purge.ts'
 import {
   installBaseUrlValidationError,
   isInvalidInstallBaseUrl,
@@ -83,16 +92,9 @@ async function purgeInvalidatedDaemonCells(
   serverIds: string[]
 ): Promise<void> {
   if (!registry) return
-  await forEachSequential(serverIds, async (serverId) => {
-    try {
-      await registry.getCell(serverId).purge()
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
-      console.error(
-        `Failed to purge daemon cell after license invalidate for server ${serverId}: ${message}`
-      )
-    }
-  })
+  await forEachSequential(serverIds, (serverId) =>
+    purgeDaemonCellBestEffort(registry, serverId, 'after license invalidate')
+  )
 }
 
 type LicenseOwnerContext = Readonly<{ db: Db; organizationId: string }>
@@ -166,7 +168,10 @@ async function rejectIfNoLicenseAvailable(
       )
 }
 
-type MintedKey = Readonly<{ licenseId: string; licenseToken: string }>
+type MintedKey = Readonly<{
+  licenseId: string
+  joinTicket: Awaited<ReturnType<typeof mintTicket>>
+}>
 
 /**
  * Mint the registration key. Hosted, with the tier a manager chose in Add
@@ -179,12 +184,35 @@ type MintedKey = Readonly<{ licenseId: string; licenseToken: string }>
 async function mintRegistrationKey(
   c: Context<AppEnv>,
   db: Db,
-  input: Readonly<{ organizationId: string; name?: string; tierId?: string; hosted: boolean }>
+  input: Readonly<{
+    organizationId: string
+    name?: string
+    tierId?: string
+    hosted: boolean
+    userId: string | null
+  }>
 ): Promise<MintedKey | Response> {
   const { organizationId, name, tierId } = input
   // Every key minted here stops working if no server enrolls with it in time.
   const expiresAt = unusedKeyExpiresAt(Date.now())
-  if (!input.hosted || !tierId) return await createLicense(db, { organizationId, name, expiresAt })
+  // The key and its join ticket are written together or not at all.
+  const mintKey = async (tx: Db, extra: { tierId?: string }): Promise<MintedKey> => {
+    const { licenseId } = await createLicense(tx, {
+      organizationId,
+      name,
+      expiresAt,
+      tokenless: true,
+      ...extra,
+    })
+    const joinTicket = await mintTicket(tx, {
+      organizationId,
+      licenseId,
+      serverName: name ?? null,
+      userId: input.userId,
+    })
+    return { licenseId, joinTicket }
+  }
+  if (!input.hosted || !tierId) return await db.transaction((tx) => mintKey(tx, {}))
   const chosen = await getTierById(db, tierId)
   if (!chosen?.isActive) {
     return c.json({ error: 'Unknown license tier', code: 'tier_not_found' }, 400)
@@ -204,7 +232,7 @@ async function mintRegistrationKey(
         409
       )
     }
-    return await createLicense(tx, { organizationId, name, tierId, expiresAt })
+    return await mintKey(tx, { tierId })
   })
 }
 
@@ -217,6 +245,20 @@ async function releaseMintLease(db: Db, lease: BillingQuantityLock | null): Prom
   }
 }
 
+/**
+ * Public values the install dialog shows beside the command, so the person
+ * installing can compare them out of band. Empty when the control plane has no
+ * identity key.
+ */
+function installKeyFields(identity: PanelIdentity | null, installUrl: string) {
+  if (!identity) return {}
+  return {
+    panelFingerprint: identity.current.kid,
+    nextFingerprint: identity.next?.kid ?? null,
+    installUrl,
+  }
+}
+
 export function registerLicenseRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
   if (!opts.secrets) {
     throw new TypeError('session secrets are required for license routes')
@@ -225,6 +267,7 @@ export function registerLicenseRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
   router.use('/licenses', createSessionMiddleware(secrets))
   router.use('/licenses/:id', createSessionMiddleware(secrets))
+  router.use('/licenses/:id/ticket', createSessionMiddleware(secrets))
 
   router.get('/licenses', async (c) => {
     const ctx = await requireLicenseOwnerContext(c)
@@ -317,7 +360,7 @@ export function registerLicenseRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       const unavailable = await rejectIfNoLicenseAvailable(c, db, organizationId, hosted)
       if (unavailable) return unavailable
 
-      const instanceUrl = parsedInstallBaseUrl ?? (await resolvePublicBaseUrl(c, opts))
+      const instanceUrl = parsedInstallBaseUrl ?? (await resolveInstallBaseUrl(c, opts))
       // Insecure TLS follows the dialed hostname and is bootstrap-only.
       // Let's Encrypt uses the system store. An uploaded leaf uses it only
       // when that certificate chains to a public root. A Let's Encrypt
@@ -328,15 +371,37 @@ export function registerLicenseRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       // self-hosted :8443 listener, including a private IP or .lan alias,
       // needs -k when the leaf covers it, and is refused when it does not.
       const env = (c.get('platformEnv') as Record<string, string | undefined> | undefined) ?? {}
-      const prepared = await resolveInstallOriginTls(db, instanceUrl, env, opts.runtime === 'deno')
+      const prepared = await resolveInstallOriginTls(
+        db,
+        instanceUrl,
+        env,
+        opts.runtime === 'deno',
+        {
+          readPlatformCaPem: opts.readPlatformCaPem,
+        }
+      )
       if (!prepared.ok) return c.json({ error: prepared.error }, 400)
+      // A self-hosted command that bootstraps insecure TLS must say which CA
+      // the server may keep; without it an on-path attacker picks one.
+      if (opts.runtime === 'deno' && prepared.insecureTls && prepared.caFingerprints.length === 0) {
+        return c.json({ error: INSTALL_CA_PIN_UNAVAILABLE }, 400)
+      }
 
       // The instance does not build daemon release artifacts. In self-hosted dev
       // the operator builds them via Developer → Rebuild daemon and upgrade
       // (`deno task release:dev`); Caddy serves `dist/` at `/downloads/daemon`.
-      const minted = await mintRegistrationKey(c, db, { organizationId, name, tierId, hosted })
+      // The key itself is minted with no token: what the install command
+      // carries is a one-hour, single-use join ticket in the same slots, so
+      // the key's own secret never exists, travels or sits in a history.
+      const minted = await mintRegistrationKey(c, db, {
+        organizationId,
+        name,
+        tierId,
+        hosted,
+        userId: c.get('session')?.userId ?? null,
+      })
       if (minted instanceof Response) return minted
-      const { licenseId, licenseToken } = minted
+      const { licenseId, joinTicket } = minted
 
       // Self-hosted entitles what it mints: one granted `SX` unit per active
       // license (`src/features/tiers/self-hosted-grant.ts`), so this key is
@@ -352,22 +417,74 @@ export function registerLicenseRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       const installCommand = buildLicenseInstallCommand({
         runtime: opts.runtime,
         instanceUrl,
-        licenseId,
-        licenseToken,
+        licenseId: joinTicket.id,
+        licenseToken: joinTicket.plaintext,
         insecureTls,
+        caFingerprints: prepared.caFingerprints,
         useInstanceRunScript: Boolean(devSurface),
         updateChannel: resolveInstanceUpdateChannel(c.get('platformEnv')),
       })
 
       compatLogInfo(
         'auth',
-        'license created; licenseToken is shown once and not stored in plaintext'
+        'license created; the join ticket is shown once and not stored in plaintext'
       )
 
-      return c.json({ licenseId, licenseToken, installCommand })
+      const identity = opts.panelIdentity ? await opts.panelIdentity() : null
+      // `licenseToken` is the one-hour join secret (the pair the install
+      // command carries is `joinId` + `licenseToken`); the key has no token.
+      return c.json({
+        licenseId,
+        licenseToken: joinTicket.plaintext,
+        joinId: joinTicket.id,
+        joinExpiresAt: joinTicket.expiresAt,
+        installCommand,
+        ...installKeyFields(identity, instanceUrl),
+      })
     } finally {
       await releaseMintLease(db, mint.lease)
     }
+  })
+
+  // Owner action for a key whose token may have crossed an edge: burn the old
+  // token and issue a fresh one-hour join ticket for the same unbound key.
+  router.post('/licenses/:id/ticket', async (c) => {
+    const ctx = await requireLicenseOwnerContext(c)
+    if (ctx instanceof Response) return ctx
+    const { db, organizationId } = ctx
+    const id = c.req.param('id')
+
+    const stepUp = await requireStepUpIfConfigured(c, organizationId, 'license.key.burn')
+    if (stepUp) return stepUp
+
+    const session = c.get('session')
+    // One transaction: the old tickets are cancelled and the new one issued
+    // together, so no earlier join secret outlives a burn.
+    const joinTicket = await db.transaction(async (tx) => {
+      if (!(await burnUnboundLicenseToken(tx, id, organizationId))) return null
+      await cancelLicenseTickets(tx, id)
+      return await mintTicket(tx, {
+        organizationId,
+        licenseId: id,
+        userId: session?.userId ?? null,
+      })
+    })
+    if (!joinTicket) return c.json({ error: 'Not found' }, 404)
+    await recordAudit(db, {
+      organizationId,
+      actorUserId: session?.userId ?? null,
+      actorEmail: session?.email ?? null,
+      action: 'license.key.burn',
+      targetType: 'license',
+      targetId: id,
+    })
+    return c.json({
+      licenseId: id,
+      joinId: joinTicket.id,
+      joinExpiresAt: joinTicket.expiresAt,
+      licenseToken: joinTicket.plaintext,
+      licenseArg: encodeLicenseArg(joinTicket.id, joinTicket.plaintext),
+    })
   })
 
   router.delete('/licenses/:id', async (c) => {

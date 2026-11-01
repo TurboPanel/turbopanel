@@ -382,7 +382,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'Server that consumed this key, set once on first successful enroll (partial unique index: one license per server); null while unconsumed, SET NULL on delete.',
       name: 'Optional operator display name; `this server` is reserved for the colocated control-plane license minted at install and refused by `POST /licenses`.',
       token:
-        'Argon2id PHC hash of the registration key (same format as `account.password`); the plaintext is returned once at mint and cannot be recovered from this row.',
+        'Argon2id PHC hash of the registration key; NULL once the key binds to a server and for a key minted behind a ticket, and a NULL token verifies nothing.',
       revoked_at:
         'Soft-delete timestamp set by a revoke or by an ended subscription revoking every license; non-null means inactive, and the row keeps `server_id` for audit.',
       tier_id:
@@ -442,6 +442,25 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'Always null since the TurboPanel grace clock was removed: provider retries now end a past-due subscription. Kept by the schema freeze, never read.',
       past_due_since:
         'First moment the provider reported `past_due` or `unpaid`; latched while delinquent, cleared by any other status so a later lapse is measured afresh.',
+    },
+  },
+  ticket: {
+    group: 'billing',
+    summary:
+      'One-hour, single-use enrolment ticket: a join ticket (license_id set) stands in for a key at install, a re-enroll ticket (server_id set) re-keys one server.',
+    columns: {
+      license_id:
+        'Registration key a join ticket binds when its server enrolls; null for a re-enroll ticket, CASCADE on delete.',
+      server_id:
+        'The one server a re-enroll ticket is bound to; null for a join ticket. Presented for any other server it is refused.',
+      server_name: 'Display name chosen in Add Server for a join ticket; informational.',
+      token:
+        'Argon2id PHC hash of the ticket secret; the plaintext is returned once at mint and cannot be recovered from this row.',
+      expires_at: 'Mint time plus one hour; past it the ticket is refused.',
+      used_at:
+        'Set atomically when the ticket is spent (or when an owner revokes it); a non-null value means it can never be used again.',
+      used_by_server_id: 'Server the spent ticket produced or re-keyed, SET NULL on delete.',
+      created_by_user_id: 'User who issued the ticket, SET NULL on delete.',
     },
   },
   tier: {
@@ -560,6 +579,35 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         "Last Let's Encrypt error for this name; NULL when the last attempt succeeded or none has run.",
       not_after:
         "Leaf expiry for this name when known; NULL for `platform-ca` and for Let's Encrypt before a leaf exists.",
+      mode: 'How visitors reach this name: `direct`, `lan-only`, `cloudflare-tunnel`, `cloudflare-proxy`, `bunny-proxy`, `private-overlay` or `passthrough`.',
+      public_port:
+        'Port visitors use for this name (1 to 65535); the control plane itself always listens on 8443.',
+      is_primary:
+        'True for the one name used for links, sign-in callbacks and the default install URL; a partial unique index allows at most one row.',
+      is_daemon_dial:
+        'Whether install commands and the daemon URL list may name this hostname; false keeps it for people only.',
+      ingress_state:
+        'Provider state for this name, such as tunnel id, DNS record id and last status; the shape depends on `mode` and the provider writes it.',
+    },
+  },
+  ingress: {
+    group: 'platform',
+    summary:
+      "One install-level provider account for the control plane's own names, used by edge modes for tunnels, DNS and certificates.",
+    columns: {
+      provider: 'Provider of this account: `cloudflare` or `bunny`.',
+      label: 'Operator-chosen name shown in the admin screens.',
+      account_id:
+        'Provider account id (for example the Cloudflare account); NULL when the provider has none.',
+      zone_ids:
+        'JSON array of provider zone ids this account may change, written by the superadmin who adds it.',
+      token_envelope:
+        'Provider API token sealed as a `tpsecret` envelope; held inline because `secret` requires an organization, and never returned by the admin API.',
+      scopes:
+        'Last preflight result written by the panel: whether the token can manage tunnels and DNS, and when it was checked.',
+      last_verified_at: 'When the panel last confirmed the token works; NULL until a check runs.',
+      last_error: 'Last provider error for this account; NULL when the last check succeeded.',
+      created_by_user_id: 'Superadmin who added this account; NULL after that user is deleted.',
     },
   },
   // ── networking ────────────────────────────────────────────────────────
@@ -586,13 +634,15 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
   fabric: {
     group: 'networking',
     summary:
-      'Org TurboFabric WireGuard mesh (host interface `tp0`), at most one row per organization; absence means TurboFabric is off and private keys are never stored.',
+      'Org TurboFabric WireGuard mesh (`tp0`), at most one row per organization; absent means off, `is_enabled = false` means paused; never holds private keys.',
     columns: {
       metadata: 'Free-form jsonb; no control-plane code path writes or reads it today.',
       options:
         'Mesh policy jsonb: `containerPool` (relay prefix pool, default `10.192.0.0/12`), `listenPort` (default 51821), `mtu` (1280..9000, default 1420), `allowRelay`.',
       cidr: 'Host `tp0` address range that relay `address` values are carved from, auto-picked at enable to avoid every occupied org range (default `10.250.0.0/16`).',
       name: 'Optional display name (1..255 chars of letters, digits, space, dot, underscore, dash); no control-plane code path writes it today.',
+      is_enabled:
+        'False while the mesh is paused: every tunnel is down but relays, keys and container networks are kept so turning it back on is instant.',
     },
   },
   address: {
@@ -695,6 +745,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         "Operator-configured LAN CIDRs a `gateway` relay advertises to remote peers (native cidr[], host bits cleared); must be empty when `role = 'member'`.",
       preshared_key:
         'Sealed `tpsecret` envelope of the operator-set WireGuard preshared key; write-only, never returned by the API, resealed for the daemon at reconcile.',
+      kind: "Peer kind, `server` (an org server, the only kind built) or `external` (reserved for a person's device; nothing writes it yet).",
     },
   },
   subnet: {
@@ -1346,10 +1397,92 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       principal_id:
         'Optional association with a principal (SET NULL on delete so a principal delete never fails on an org secret); no current writer sets it.',
       provider:
-        '`s3`, `s3_compatible`, `nfs`, `cifs`, `sftp`, `ftp`, `webdav` (reserved storage providers) or `git_deploy_key` (the only one written today).',
+        '`s3`, `s3_compatible`, `nfs`, `cifs`, `sftp`, `ftp`, `webdav` (reserved), `git_deploy_key`, `carrier_badge` or `tunnel_run` (tunnel tokens).',
       name: 'Operator label for the secret; not an identifier and not unique.',
       secret_envelope:
         '`tpsecret` envelope of provider-specific JSON; for `git_deploy_key` the sealed plaintext is the OpenSSH private key verbatim, resealed unopened for the daemon.',
+    },
+  },
+  badge: {
+    group: 'networking',
+    summary:
+      'One API token on a carrier; the token itself is sealed in the `secret` row it points to and this row keeps the label, last four characters and what it can do.',
+    columns: {
+      secret_id:
+        'The sealed token in `secret`, one badge per secret; a secret under a badge cannot be deleted alone (checked at commit), so a badge is removed with it.',
+      metadata:
+        'Non-secret descriptors written by the panel; no keys are read by the platform today.',
+      options:
+        'Written by each check: `kind` (`account` or `user`, who owns the token), `tokenId` (the provider own token id, to catch the same token added twice) and extras.',
+      expires_at: 'When the provider says the token stops working; NULL when it reports none.',
+      label: 'Operator label for the token, shown beside its last four characters.',
+      capabilities:
+        'Last check result written by the panel: `tunnels` (boolean, account-wide) and `dns` and `certificates` (lists of zone id and name the token reaches).',
+      last_four:
+        'Last 4 characters of the token, the only part of it ever shown; never enough to use the token.',
+      last_checked_at: 'When the panel last checked the token with the provider; NULL until then.',
+      status:
+        '`active` while the last check succeeded, `attention` once a check was refused or failed.',
+    },
+  },
+  carrier: {
+    group: 'networking',
+    summary:
+      'A provider account an organization connected for tunnels; its API tokens are `badge` rows and nothing secret is stored here.',
+    columns: {
+      metadata:
+        'Non-secret descriptors written by the panel; no keys are read by the platform today.',
+      options:
+        'Provider-specific non-secret details from the provider (for example the account name); no keys are read by the platform today.',
+      provider: 'Tunnel provider, `cloudflare` for now; widened by a forward migration.',
+      name: 'Operator label for the account; unique only together with the provider and account id.',
+      external_account_id:
+        'The provider own account id; NULL for a provider with no account concept (rows with NULL never collide).',
+      status: '`active` while a token on it works, `attention` when none does.',
+    },
+  },
+  doorway: {
+    group: 'networking',
+    summary:
+      'One hostname a tunnel carries to a site, with the provider route and DNS record ids; unique per routing organization, like `hostname`.',
+    columns: {
+      metadata:
+        'Non-secret descriptors written by the panel; no keys are read by the platform today.',
+      options: 'Provider-specific route details; no keys are read by the platform today.',
+      routing_organization_id:
+        'Organization whose servers answer for this name, named as on `hostname`; half of the unique key with the name.',
+      hostname:
+        'Lower-case DNS name (1 to 253 characters) the tunnel carries; unique per routing organization.',
+      kind: 'Kind of traffic carried, `http` for now; ssh, rdp, vnc and tcp are added by a forward migration.',
+      hosting_id:
+        'The site this name serves; SET NULL when the site is deleted, leaving the doorway unattached.',
+      external_route_id: 'The provider id of the route for this name; NULL until published.',
+      external_dns_record_id:
+        'The provider id of the DNS record the panel created for this name; NULL until created.',
+      is_local_only:
+        'True (the default) when the web server answers this name only for the local connector and datacenter peers.',
+      status:
+        '`pending` until route and DNS name exist, `live`, `attention` after a provider error, `removing` while being taken down.',
+    },
+  },
+  portal: {
+    group: 'networking',
+    summary:
+      'A server part in a tunnel: it runs a connector (`run`) or is left out (`skip`), with the connector state the server last reported.',
+    columns: {
+      wanted:
+        '`run` when the server carries a connector, `skip` when an `all` tunnel leaves it out; `chosen` is the `run` rows.',
+      metadata:
+        'Non-secret descriptors written by the panel; no keys are read by the platform today.',
+      options:
+        'Per-server details such as a local endpoint; no keys are read by the platform today.',
+      reported:
+        'What the server last reported: `unknown` (default), `connected`, `down` or `error`.',
+      last_seen_at: 'When the server last reported on the connector; NULL until the first report.',
+      last_error: 'Plain-words error from the last failed report; NULL when none.',
+      connector_version:
+        'Version of the connector program the daemon reports running here; NULL until the first report.',
+      version_checked_at: 'When the daemon last reported the connector version; NULL until then.',
     },
   },
   storage: {
@@ -1552,6 +1685,12 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
     columns: {
       preferred_datacenter_id:
         'The datacenter whose network this server prefers when it belongs to several; NULL means no preference; set null when the datacenter is deleted.',
+      is_fabric_enabled:
+        'TurboFabric membership switch, default true; false keeps the server out of the mesh (no relay, no `tp0`, no peer entry, no fabric address).',
+      fabric_role:
+        'Operator TurboFabric role, `gateway` (accepts connections) or `client` (only dials out); NULL means automatic, gateway when a public address is known.',
+      container_prefix:
+        'Container range of this server (a /16 from the org container pool), set when first needed; cross-server network subnets come from it, NULL until then.',
       metadata:
         'Daemon-projected host facts jsonb: `resources`, `geo`, `docker`, `runtimes`, `cell` plus the operator `hardwareProfile`; hostname, OS and NTP have own columns.',
       options:
@@ -1878,6 +2017,27 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       event: 'One catalogue event code, or `*` for every event; unique per channel.',
       min_severity:
         "Severity floor `info` (default), `warning` or `critical`; delivered only when the event's severity ranks at or above it.",
+    },
+  },
+  tunnel: {
+    group: 'networking',
+    summary:
+      'A tunnel an organization created: a named path from a provider edge to connectors on its servers; the sealed run token is a `secret` row.',
+    columns: {
+      metadata:
+        'Non-secret descriptors written by the panel; no keys are read by the platform today.',
+      options: 'Provider-specific tunnel settings; no keys are read by the platform today.',
+      routing_organization_id:
+        'Organization whose servers and sites the tunnel carries; equal to `organization_id` for now, enforced in code only.',
+      provider: 'Tunnel provider, `cloudflare` for now; widened by a forward migration.',
+      name: 'Operator name, unique per organization.',
+      external_id: 'The provider own tunnel id; NULL until the provider created it.',
+      placement:
+        '`one` (exactly one `run` portal), `chosen` (the `run` portals) or `all` (every server of the datacenter except the `skip` portals; needs `datacenter_id`).',
+      secret_id:
+        'The sealed run token in `secret`; SET NULL if that row goes, NULL for a provider that needs none.',
+      status:
+        '`pending` until created, `active`, `attention` after a provider error, `removing` while being taken down.',
     },
   },
   upgrade: {

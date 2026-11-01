@@ -1,10 +1,11 @@
-import { eq, isNull, sql } from 'drizzle-orm'
+import { and, eq, isNull, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import type { ServerMetadata } from './server-metadata.ts'
 import { normalizeMachineKey } from '../../lib/machine-key.ts'
 import { key, server } from '../../db/schema.ts'
 import {
   buildDefaultDaemonStatus,
+  isDaemonKeyActive,
   mapServerDaemonStatusFromColumns,
   parseServerDaemonKeyRow,
   parseServerDaemonState,
@@ -85,6 +86,18 @@ export async function getServerDaemonStateByServerId(
   }
 }
 
+/**
+ * True when `keyId` (a daemon JWT's `kid`) is still the server's current,
+ * unrevoked daemon key. A valid token says nothing about either: it outlives
+ * a revoke by up to its full lifetime, so every socket check asks this.
+ */
+export function isCurrentActiveDaemonKey(
+  daemonState: Pick<ServerDaemonState, 'key'> | null,
+  keyId: string
+): boolean {
+  return daemonState?.key.id === keyId && isDaemonKeyActive(daemonState.key)
+}
+
 export async function getServerDaemonStateByFingerprint(
   db: Db,
   fingerprint: string
@@ -140,6 +153,21 @@ export class DaemonKeyRevokedError extends Error {
   }
 }
 
+/**
+ * Thrown by {@link attachDaemonStateToServer} when the server already has a
+ * live key and the request carries a different one. First registered key
+ * wins: a key is never replaced through enrollment, because enrollment is
+ * proven by the license (and the new key's own signature), not by the key
+ * being replaced. A change of key needs a proof from the current key, or an
+ * administrator removing the server's key first.
+ */
+export class DaemonKeyAlreadyRegisteredError extends Error {
+  constructor(readonly serverId: string) {
+    super(`daemon key is already registered for server: ${serverId}`)
+    this.name = 'DaemonKeyAlreadyRegisteredError'
+  }
+}
+
 export async function attachDaemonStateToServer(
   db: Db,
   serverId: string,
@@ -149,6 +177,12 @@ export async function attachDaemonStateToServer(
     algorithm?: 'Ed25519'
     hostname?: string | null
     machineKey?: string | null
+    /**
+     * An owner-issued re-enroll ticket was spent for this server: a live key
+     * may be replaced by a different one. Never set from the licence path.
+     * A revoked key stays refused either way.
+     */
+    replaceLiveKey?: boolean
   }
 ): Promise<{ keyId: string }> {
   const now = nowTs()
@@ -171,9 +205,13 @@ export async function attachDaemonStateToServer(
       .onConflictDoUpdate({
         target: key.serverId,
         // Revocation is sticky at the row: a revoked key is never replaced
-        // by re-enrollment, however the caller got here. Empty `returning`
-        // below is that refusal, not a missing row.
-        setWhere: isNull(key.revokedAt),
+        // by re-enrollment, however the caller got here. First registered
+        // key wins as well: an existing live key only matches the same
+        // fingerprint (a no-op refresh). Empty `returning` below is one of
+        // those two refusals, not a missing row; the read after it says which.
+        setWhere: params.replaceLiveKey
+          ? isNull(key.revokedAt)
+          : and(isNull(key.revokedAt), eq(key.fingerprint, params.fingerprint)),
         set: {
           // Re-enrollment mints a new id too — it's a new key, not an edit
           // of the old row; `id` is the PK, so ON CONFLICT leaves it alone
@@ -191,6 +229,12 @@ export async function attachDaemonStateToServer(
       .returning({ id: key.id })
 
     if (!keyRow) {
+      const [held] = await tx
+        .select({ revokedAt: key.revokedAt })
+        .from(key)
+        .where(eq(key.serverId, serverId))
+        .limit(1)
+      if (held && !held.revokedAt) throw new DaemonKeyAlreadyRegisteredError(serverId)
       throw new DaemonKeyRevokedError(serverId)
     }
 

@@ -11,10 +11,11 @@ import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.su
 import { assertEquals, assertExists } from '@std/assert'
 import { eq } from 'drizzle-orm'
 import { getDatabaseUrl } from '../../db/url.ts'
-import { createDenoDb, endDbConnection } from '../../db/connection.ts'
+import { createDenoDb, endDbConnection, type Db } from '../../db/connection.ts'
 import { organization, server } from '../../db/schema.ts'
 import {
   attachDaemonStateToServer,
+  DaemonKeyAlreadyRegisteredError,
   DaemonKeyRevokedError,
   getServerDaemonStateByServerId,
   revokeDaemonKey,
@@ -104,6 +105,19 @@ test('revokeDaemonKey then a heartbeat projection: revokedAt stays set — the r
   })
 })
 
+/** Straight to the upsert, past the enroll route's pre-check; returns what it threw. */
+async function attachWithFreshKey(db: Db, serverId: string): Promise<unknown> {
+  try {
+    await attachDaemonStateToServer(db, serverId, {
+      publicJwk: { kty: 'OKP', crv: 'Ed25519', x: 'attacker-fresh-key' },
+      fingerprint: `fp-attacker-${crypto.randomUUID().slice(0, 8)}`,
+    })
+  } catch (err) {
+    return err
+  }
+  return null
+}
+
 test('attachDaemonStateToServer refuses to replace a revoked key at the row — the atomic half of sticky revocation', async () => {
   await withEnrolledServer(async ({ db, serverId }) => {
     await revokeDaemonKey(db, serverId)
@@ -113,15 +127,7 @@ test('attachDaemonStateToServer refuses to replace a revoked key at the row — 
 
     // Straight to the upsert, past the enroll route's pre-check — the shape
     // of a revoke that commits between an enroll's read and its write.
-    let thrown: unknown = null
-    try {
-      await attachDaemonStateToServer(db, serverId, {
-        publicJwk: { kty: 'OKP', crv: 'Ed25519', x: 'attacker-fresh-key' },
-        fingerprint: `fp-attacker-${crypto.randomUUID().slice(0, 8)}`,
-      })
-    } catch (err) {
-      thrown = err
-    }
+    const thrown = await attachWithFreshKey(db, serverId)
     assertEquals(thrown instanceof DaemonKeyRevokedError, true)
 
     // Nothing moved: same key id, same fingerprint, still revoked, and the
@@ -131,5 +137,22 @@ test('attachDaemonStateToServer refuses to replace a revoked key at the row — 
     assertEquals(after.key.id, revoked.key.id)
     assertEquals(after.key.fingerprint, revoked.key.fingerprint)
     assertEquals(after.key.revokedAt, revoked.key.revokedAt)
+  })
+})
+
+test('attachDaemonStateToServer refuses a different live key at the row — first registered key wins', async () => {
+  await withEnrolledServer(async ({ db, serverId }) => {
+    const before = await getServerDaemonStateByServerId(db, serverId)
+    assertExists(before)
+    assertEquals(before.key.revokedAt ?? null, null)
+
+    const thrown = await attachWithFreshKey(db, serverId)
+    assertEquals(thrown instanceof DaemonKeyAlreadyRegisteredError, true)
+
+    const after = await getServerDaemonStateByServerId(db, serverId)
+    assertExists(after)
+    assertEquals(after.key.id, before.key.id)
+    assertEquals(after.key.fingerprint, before.key.fingerprint)
+    assertEquals(after.key.revokedAt, before.key.revokedAt)
   })
 })

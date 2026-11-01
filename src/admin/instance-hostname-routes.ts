@@ -18,10 +18,18 @@ import {
   storeUploadedCertificate,
 } from '../features/install/instance-certificates.ts'
 import {
+  type InstanceHostnameRecord,
   listInstanceHostnames,
   replaceInstanceHostnames,
   validateHostnameSource,
 } from '../features/install/instance-hostnames.ts'
+import {
+  describePrimaryChange,
+  type PrimaryChange,
+  primaryHostname,
+  publicOriginForHostname,
+} from '../features/install/public-origins.ts'
+import { recordAudit } from '../features/audit/audit-records.ts'
 import { publicHttpsOrigin } from '../features/install/public-urls.ts'
 import {
   parseCertificateHostnamesBody,
@@ -56,6 +64,48 @@ const PLATFORM_MANAGED_TLS_ERROR = 'certificates and hostnames are platform-mana
 function failureStatus(error: string): 404 | 422 {
   if (error === 'Certificate not found') return 404
   return 422
+}
+
+function primaryOrigin(rows: readonly InstanceHostnameRecord[]): string | null {
+  const primary = primaryHostname(rows)
+  return primary ? publicOriginForHostname(primary) : null
+}
+
+/**
+ * Links, OAuth callbacks and Git webhook URLs follow the primary hostname, so a
+ * change of its public address means addresses registered elsewhere (an OAuth
+ * app, a Git provider webhook) must be updated. Passkeys are bound to the
+ * primary host (the WebAuthn RP ID), so a different host also stops every
+ * registered passkey. Empty when unchanged.
+ */
+function primaryChangeWarning(change: PrimaryChange | null) {
+  if (!change) return {}
+  return {
+    warnings: [change.code],
+    previousPrimaryOrigin: change.previousPrimaryOrigin,
+    primaryOrigin: change.primaryOrigin,
+  }
+}
+
+/** A moved primary goes to the activity log (instance-wide: no organization). */
+async function auditPrimaryChange(
+  c: Context<AppEnv>,
+  db: Db,
+  change: PrimaryChange
+): Promise<void> {
+  const session = c.get('session')
+  await recordAudit(db, {
+    organizationId: null,
+    actorUserId: session?.userId ?? null,
+    actorEmail: session?.email ?? null,
+    action: 'instance.primary_hostname_changed',
+    targetType: 'instance_hostnames',
+    context: {
+      code: change.code,
+      previousPrimaryOrigin: change.previousPrimaryOrigin,
+      primaryOrigin: change.primaryOrigin,
+    },
+  })
 }
 
 /** The shared 422 for every write these routes refuse on Workers, or `null` to proceed. */
@@ -147,9 +197,12 @@ export function registerInstanceHostnameAdminRoutes(
         422
       )
     }
+    const previousPrimary = primaryOrigin(await listInstanceHostnames(db))
     const replaced = await replaceInstanceHostnames(db, parsed.hostnames)
     if (!replaced.ok) return c.json(replaced, 422)
-    return c.json({ ok: true, hostnames: replaced.hostnames })
+    const change = describePrimaryChange(previousPrimary, primaryOrigin(replaced.hostnames))
+    if (change) await auditPrimaryChange(c, db, change)
+    return c.json({ ok: true, hostnames: replaced.hostnames, ...primaryChangeWarning(change) })
   })
 
   admin.get('/instance/certificates', async (c) => {

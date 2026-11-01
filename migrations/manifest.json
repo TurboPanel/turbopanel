@@ -32,6 +32,66 @@
       "tag": "0004_command_activity_index",
       "when": 1793122151433,
       "sha256": "2d7c61e0818839f09eece916246fdcf953c145c5380853bc77e68a1c0713d7c9"
+    },
+    {
+      "idx": 5,
+      "tag": "0005_tunnel_tables",
+      "when": 1793200722647,
+      "sha256": "a2e72b08f3e8b752dbff56a94d8dc311373215a12f9790d06bc76de30c1e6e5a"
+    },
+    {
+      "idx": 6,
+      "tag": "0006_peer_leaf_kind",
+      "when": 1793203555856,
+      "sha256": "163e17005143cd88deb53105f19f7ba8d5d790f5cdf74d85ea296101d6405772"
+    },
+    {
+      "idx": 7,
+      "tag": "0007_tunnel_origin_certificate",
+      "when": 1793209739351,
+      "sha256": "93e3315bf836df851833cb1923112e547a1ca716e983568199067bffd43cb243"
+    },
+    {
+      "idx": 8,
+      "tag": "0008_acme_account_secret",
+      "when": 1793248402724,
+      "sha256": "5e82a4dbc0cb18e8e9463abdbb1960f1dad2cd897b7421f83d9904246e599a3e"
+    },
+    {
+      "idx": 9,
+      "tag": "0009_fabric_membership_role_kind",
+      "when": 1793330850701,
+      "sha256": "0eadede25ecc86906397b9a85b933bcb8d89fe28077f24486c4f3b421383ab44"
+    },
+    {
+      "idx": 10,
+      "tag": "0010_server_container_prefix",
+      "when": 1793351069170,
+      "sha256": "32a1eca2fcd410d5fa45f8c400da18de84168b653ae75780a93cfa4967bf3a24"
+    },
+    {
+      "idx": 11,
+      "tag": "0011_repo_key_changed_notifications",
+      "when": 1793475009745,
+      "sha256": "8fc52f5747a6724d8dcee31fc2c3b95dc9e4f75e70fd05dfcc02363c2af08809"
+    },
+    {
+      "idx": 12,
+      "tag": "0012_origin_ingress_modes",
+      "when": 1793564642214,
+      "sha256": "1b90f1fdddfe063a61b76f07dd63bf9d3bd346541cd0fe5dbe66c04236e77883"
+    },
+    {
+      "idx": 13,
+      "tag": "0013_enroll_tickets_and_token_erase",
+      "when": 1793566994619,
+      "sha256": "b79db5e5ddd911f4aa8a09384ee3e4e5de1f462602465e543efef29791bf2379"
+    },
+    {
+      "idx": 14,
+      "tag": "0014_notification_events_panel_trust",
+      "when": 1793570133908,
+      "sha256": "03a124ecd87ed38c1e4e5f2dbe8bff8c8d6e8663b14277a91ea8c26bbf8ff4b2"
     }
   ]
 }

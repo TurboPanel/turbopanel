@@ -3,6 +3,11 @@
  */
 
 import { and, asc, eq, inArray } from 'drizzle-orm'
+import { relayServerSwitchedOn } from './relay-filters.ts'
+import { FabricAllocationError, type FabricAllocationErrorKind } from './allocation-error.ts'
+import { ensureServerContainerPrefix, loadServerContainerPrefixes } from './container-prefix.ts'
+import { loadLanRouteServerIds } from './lan-pairs.ts'
+import type { FabricReconcileOutcome } from './reconcile-outcome.ts'
 import type { Db } from '../../db/connection.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
 import { nowIso } from '../commands/ids.ts'
@@ -19,12 +24,10 @@ import {
   hostRoute32,
   isRelayAddressUniqueViolation,
   isRelayPrefixUniqueViolation,
-  nextFreeSubnet,
   nextFreeSubnetCidr,
   nthSubnet,
   parseFabricOptions,
   pickDefaultFabricHostCidr,
-  RELAY_PREFIX_LENGTH,
 } from './cidr.ts'
 import { managedNetworkName } from '../../lib/naming.ts'
 import {
@@ -35,6 +38,7 @@ import {
 import type { ComposeDocument } from '../compose/types.ts'
 import type {
   FabricReconcileCommandPayload,
+  FabricReconcileLanRoute,
   FabricReconcileObservedPeer,
 } from '../../contracts/commands/schemas.ts'
 import { sha256HexUtf8 } from '../compose/desired-hash.ts'
@@ -55,9 +59,12 @@ import {
   loadDatacenterMembershipsForServers,
 } from '../net/datacenter-membership.ts'
 import {
+  type LanPairInputs,
   partitionSharedDatacenters,
   pinAddressForDatacenter,
+  serversShareTrustedLan,
   splitTrustedByLink,
+  trustedLanIpv4,
 } from '../net/private-endpoint.ts'
 import { loadCidrAllocationExclusions } from '../net/cidr-collisions.ts'
 import { checkAdvertisedRangeShape } from './advertised-ranges.ts'
@@ -67,6 +74,7 @@ import {
   withoutUnsafeRanges,
 } from './gateway-ranges.ts'
 import { WIREGUARD_PERSISTENT_KEEPALIVE } from './wg.ts'
+import { fabricPeerHealthClasses } from './peer-health.ts'
 import {
   type FabricPolicy,
   mergeRelayPolicyOptions,
@@ -79,6 +87,13 @@ export type FabricRecord = {
   organizationId: string
   cidr: string
   options: unknown
+  /** False while paused (tunnels down, rows and keys kept); absent reads as on. */
+  enabled?: boolean
+}
+
+/** A paused fabric keeps its rows but carries no traffic. */
+export function isFabricPaused(record: Pick<FabricRecord, 'enabled'>): boolean {
+  return record.enabled === false
 }
 
 export type RelayRole = 'gateway' | 'member'
@@ -92,6 +107,8 @@ export type RelayMetadata = {
     at: string
     peers: RelayObservedPeer[]
   }
+  /** How the last reconcile sent to this server ended (`reconcile-outcome.ts`). */
+  reconcile?: FabricReconcileOutcome
   /** Diagnostics-only path summary; never hashed into desired reconcile state. */
   paths?: {
     at: string
@@ -102,6 +119,8 @@ export type RelayMetadata = {
 export type FabricPathSummaryEntry = {
   peerServerId: string
   selected: RelayPathKind
+  /** `untrusted_lan` when the tunnel runs over an untrusted shared network (encrypted over the LAN). */
+  network?: 'untrusted_lan'
   endpoint?: string
   viaServerId?: string
   lastHandshakeAt?: string
@@ -125,29 +144,24 @@ export type RelayRecord = {
   preferredGatewayIds: string[]
 }
 
-export type FabricAllocationErrorKind =
-  | 'fabric_address_pool_exhausted'
-  | 'fabric_prefix_pool_exhausted'
-  /** Compose-bridge subnet pool (table `subnet`); error code kept as-is. */
-  | 'fabric_segment_pool_exhausted'
-  | 'relay_missing'
-  | 'relay_endpoint_unavailable'
+export { FabricAllocationError, type FabricAllocationErrorKind } from './allocation-error.ts'
+export { requireRelayPrefix } from './container-prefix.ts'
 
-const ALLOCATION_MESSAGES: Record<FabricAllocationErrorKind, string> = {
-  fabric_address_pool_exhausted: 'TurboFabric address pool exhausted',
-  fabric_prefix_pool_exhausted: 'TurboFabric prefix address pool exhausted',
-  fabric_segment_pool_exhausted: 'TurboFabric segment address pool exhausted',
-  relay_missing: 'TurboFabric relay missing',
-  relay_endpoint_unavailable: 'TurboFabric relay endpoint unavailable',
-}
+/**
+ * A cross-server network (for example a managed database attached by a
+ * spanning network) needs a server whose TurboFabric switch is off. Carries a
+ * plain sentence naming the server.
+ */
+export class FabricServerSwitchedOffError extends FabricAllocationError {
+  readonly serverName: string
 
-export class FabricAllocationError extends Error {
-  readonly kind: FabricAllocationErrorKind
-
-  constructor(kind: FabricAllocationErrorKind, message = ALLOCATION_MESSAGES[kind]) {
-    super(message)
-    this.name = 'FabricAllocationError'
-    this.kind = kind
+  constructor(serverName: string) {
+    super(
+      'relay_missing',
+      `TurboFabric is switched off for ${serverName}. Switch it on for that server, or keep this network on one server.`
+    )
+    this.name = 'FabricServerSwitchedOffError'
+    this.serverName = serverName
   }
 }
 
@@ -187,6 +201,8 @@ export type RelayPathCandidate = {
   kind: RelayPathKind
   address?: string
   datacenterId?: string
+  /** A `direct_lan` on an untrusted shared network: the tunnel runs over it, encrypted. */
+  untrusted?: true
   viaServerId?: string
   viaRelayId?: string
 }
@@ -196,6 +212,8 @@ export type RelayPathSelected = {
   /** Present for emitted direct kinds (`direct_lan` / `direct_public` / `direct_nat`). */
   endpoint?: string
   datacenterId?: string
+  /** The selected `direct_lan` is an untrusted shared network. */
+  untrusted?: true
   viaServerId?: string
   viaRelayId?: string
 }
@@ -216,7 +234,8 @@ export type RelayPathPlan = {
 export type RelayPeerMaterial = {
   publicKey: string
   allowedIPs: string[]
-  endpoint: string
+  /** Absent for a dial-in peer: WireGuard learns it from the peer's handshake. */
+  endpoint?: string
   keepalive: number | null
   sealedPresharedKey: string | null
   presharedKey: string | null
@@ -238,6 +257,35 @@ export type EndpointAddressCaches = {
   natEndpointByPair: Map<string, string>
   /** Runtime-only demoted kinds so the planner falls through. */
   failedPathKindsByPair: Map<string, Set<RelayPathKind>>
+  /**
+   * Servers whose daemon lists `fabric-lan-routes-v1`. Two of them sharing a
+   * trusted datacenter network have no tunnel between them. Absent means none
+   * (every pair keeps its tunnel, as before).
+   */
+  lanRouteServerIds?: ReadonlySet<string>
+}
+
+/** The pair-rule inputs held by the planning caches. */
+export function lanPairInputs(
+  caches: Pick<
+    EndpointAddressCaches,
+    'datacenterMembershipsByServer' | 'policyByDatacenter' | 'lanRouteServerIds'
+  >
+): LanPairInputs {
+  return {
+    membershipsByServer: caches.datacenterMembershipsByServer,
+    policiesByDatacenter: caches.policyByDatacenter,
+    lanRouteServerIds: caches.lanRouteServerIds ?? new Set(),
+  }
+}
+
+/** The pair shares a trusted LAN and both daemons route over it: no tunnel between them. */
+export function pairSharesTrustedLan(
+  fromServerId: string,
+  toServerId: string,
+  caches: Parameters<typeof lanPairInputs>[0]
+): boolean {
+  return serversShareTrustedLan(fromServerId, toServerId, lanPairInputs(caches))
 }
 
 /** Pair cache key: `${fromServerId}>${toServerId}`. */
@@ -289,17 +337,20 @@ function occupiedCidrs(db: Db, organizationId: string): Promise<string[]> {
   return loadCidrAllocationExclusions(db, organizationId)
 }
 
+const FABRIC_RECORD_SELECT = {
+  id: fabric.id,
+  organizationId: fabric.organizationId,
+  cidr: fabric.cidr,
+  options: fabric.options,
+  isEnabled: fabric.isEnabled,
+}
+
 export async function getOrganizationFabric(
   db: Db,
   organizationId: string
 ): Promise<FabricRecord | null> {
   const [row] = await db
-    .select({
-      id: fabric.id,
-      organizationId: fabric.organizationId,
-      cidr: fabric.cidr,
-      options: fabric.options,
-    })
+    .select(FABRIC_RECORD_SELECT)
     .from(fabric)
     .where(eq(fabric.organizationId, organizationId))
     .limit(1)
@@ -309,12 +360,7 @@ export async function getOrganizationFabric(
 
 export async function getFabricById(db: Db, fabricId: string): Promise<FabricRecord | null> {
   const [row] = await db
-    .select({
-      id: fabric.id,
-      organizationId: fabric.organizationId,
-      cidr: fabric.cidr,
-      options: fabric.options,
-    })
+    .select(FABRIC_RECORD_SELECT)
     .from(fabric)
     .where(eq(fabric.id, fabricId))
     .limit(1)
@@ -327,12 +373,14 @@ function serializeFabric(row: {
   organizationId: string
   cidr: unknown
   options: unknown
+  isEnabled?: boolean
 }): FabricRecord {
   return {
     id: row.id,
     organizationId: row.organizationId,
     cidr: typeof row.cidr === 'string' ? row.cidr : String(row.cidr),
     options: row.options,
+    enabled: row.isEnabled !== false,
   }
 }
 
@@ -404,8 +452,23 @@ const RELAY_SELECT = {
   options: relay.options,
 }
 
-export async function listFabricRelays(db: Db, fabricId: string): Promise<RelayRecord[]> {
-  const rows = await db.select(RELAY_SELECT).from(relay).where(eq(relay.fabricId, fabricId))
+export { relayServerSwitchedOn }
+
+/**
+ * The fabric's relays. By default only servers with TurboFabric switched on;
+ * `includeSwitchedOff` also returns the kept rows of servers switched off
+ * (for removal, allocation checks and editing their settings).
+ */
+export async function listFabricRelays(
+  db: Db,
+  fabricId: string,
+  opts: { includeSwitchedOff?: boolean } = {}
+): Promise<RelayRecord[]> {
+  const scope = eq(relay.fabricId, fabricId)
+  const rows = await db
+    .select(RELAY_SELECT)
+    .from(relay)
+    .where(opts.includeSwitchedOff ? scope : and(scope, relayServerSwitchedOn()))
 
   return rows.map((row) => serializeRelay(row))
 }
@@ -456,25 +519,6 @@ export function requireRelayHostAddress(cidrValue: string, occupied: readonly st
 }
 
 /**
- * Lowest free relay `/16` in the container pool. `occupied` is the exact set
- * of prefixes other relays already hold; `exclusions` are org ranges the
- * prefix must not overlap (reserved rows, site subnets — see
- * `loadCidrAllocationExclusions`). Exhaustion, including exhaustion caused
- * purely by exclusions, still raises `fabric_prefix_pool_exhausted`.
- */
-export function requireRelayPrefix(
-  containerPool: string,
-  occupied: readonly string[],
-  exclusions: readonly string[] = []
-): string {
-  const prefix = nextFreeSubnet(containerPool, RELAY_PREFIX_LENGTH, occupied, exclusions)
-  if (!prefix) {
-    throw new FabricAllocationError('fabric_prefix_pool_exhausted')
-  }
-  return prefix
-}
-
-/**
  * Lowest free `/24` segment inside a relay prefix. `takenCidrs` are the
  * server's existing segments; `exclusions` are org ranges the segment must
  * not overlap. Exhaustion still raises `fabric_segment_pool_exhausted`.
@@ -501,30 +545,25 @@ async function occupiedRelayAddresses(db: Db, fabricId: string): Promise<string[
   )
 }
 
-async function occupiedRelayPrefixes(db: Db, fabricId: string): Promise<string[]> {
-  const rows = await db
-    .select({ prefix: relay.prefix })
-    .from(relay)
-    .where(eq(relay.fabricId, fabricId))
-  return rows.map((row) => (typeof row.prefix === 'string' ? row.prefix : String(row.prefix)))
-}
-
 async function insertRelayOnce(
   tx: Db,
   params: {
     fabric: FabricRecord
+    organizationId: string
     serverId: string
-    containerPool: string
     /** Org ranges the relay prefix must not overlap (reserved / site / docker). */
     exclusions: readonly string[]
   }
 ): Promise<void> {
-  const [addresses, prefixes] = await Promise.all([
-    occupiedRelayAddresses(tx, params.fabric.id),
-    occupiedRelayPrefixes(tx, params.fabric.id),
-  ])
+  const addresses = await occupiedRelayAddresses(tx, params.fabric.id)
   const address = requireRelayHostAddress(params.fabric.cidr, addresses)
-  const prefix = requireRelayPrefix(params.containerPool, prefixes, params.exclusions)
+  // The relay mirrors the server's own container range (allocated here on
+  // first need), so a range a LAN-only network already uses is kept.
+  const prefix = await ensureServerContainerPrefix(tx, {
+    organizationId: params.organizationId,
+    serverId: params.serverId,
+    exclusions: params.exclusions,
+  })
   await tx.insert(relay).values({
     fabricId: params.fabric.id,
     serverId: params.serverId,
@@ -541,8 +580,8 @@ async function insertRelayWithRetry(
   db: Db,
   params: {
     fabric: FabricRecord
+    organizationId: string
     serverId: string
-    containerPool: string
     exclusions: readonly string[]
   }
 ): Promise<void> {
@@ -595,8 +634,9 @@ async function loadRelayAllocationExclusions(
 }
 
 /**
- * Give every org server a relay. By default a full pool throws (enable rolls
- * back). When `unallocated` is passed, a pool-full server is reported there
+ * Give every org server that has TurboFabric switched on a relay (a server
+ * switched off keeps the relay it had and gets no new one) and return the
+ * switched-on relays. By default a full pool throws (enable rolls back). When `unallocated` is passed, a pool-full server is reported there
  * instead and the others carry on, so one extra server never blocks the rest
  * of the fabric from reconciling.
  */
@@ -608,13 +648,14 @@ export async function ensureFabricRelays(
     unallocated?: UnallocatedFabricServer[]
   }
 ): Promise<RelayRecord[]> {
-  const options = parseFabricOptions(params.fabric.options)
-  const orgServers = await db
-    .select({ id: server.id })
-    .from(server)
-    .where(eq(server.organizationId, params.organizationId))
+  const orgServers = (
+    await db
+      .select({ id: server.id, isFabricEnabled: server.isFabricEnabled })
+      .from(server)
+      .where(eq(server.organizationId, params.organizationId))
+  ).filter((row) => row.isFabricEnabled !== false)
 
-  const existing = await listFabricRelays(db, params.fabric.id)
+  const existing = await listFabricRelays(db, params.fabric.id, { includeSwitchedOff: true })
   const have = new Set(existing.map((row) => row.serverId))
 
   let exclusions: readonly string[] | null = null
@@ -625,8 +666,8 @@ export async function ensureFabricRelays(
     try {
       await insertRelayWithRetry(db, {
         fabric: params.fabric,
+        organizationId: params.organizationId,
         serverId: row.id,
-        containerPool: options.containerPool,
         exclusions,
       })
     } catch (err) {
@@ -665,6 +706,7 @@ export async function enableOrganizationFabric(
   if (existing) {
     return db.transaction(async (tx) => {
       let record = existing
+      if (isFabricPaused(existing)) record = await setFabricEnabled(tx, existing, true)
       if (hasFabricEnablePolicy(policy)) {
         record =
           (await updateFabricPolicy(tx, {
@@ -693,29 +735,48 @@ export async function enableOrganizationFabric(
   }
 
   return db.transaction(async (tx) => {
-    const [row] = await tx.insert(fabric).values({ organizationId, cidr, options }).returning({
-      id: fabric.id,
-      organizationId: fabric.organizationId,
-      cidr: fabric.cidr,
-      options: fabric.options,
-    })
+    const [row] = await tx
+      .insert(fabric)
+      .values({ organizationId, cidr, options })
+      .returning(FABRIC_RECORD_SELECT)
     if (!row) throw new Error('TurboFabric insert failed')
 
-    const record: FabricRecord = {
-      id: row.id,
-      organizationId: row.organizationId,
-      cidr: typeof row.cidr === 'string' ? row.cidr : String(row.cidr),
-      options: row.options,
-    }
+    const record = serializeFabric(row)
     await ensureFabricRelays(tx, { fabric: record, organizationId })
     return record
   })
 }
 
+export async function setFabricEnabled(
+  db: Db,
+  record: FabricRecord,
+  enabled: boolean
+): Promise<FabricRecord> {
+  await db
+    .update(fabric)
+    .set({ isEnabled: enabled, updatedAt: nowIso() })
+    .where(eq(fabric.id, record.id))
+  return { ...record, enabled }
+}
+
+/**
+ * Pause the fabric: keep the row, every relay (address, prefix, public key)
+ * and every container network, so turning it back on is instant. What each
+ * server last applied is forgotten, so the resume sends every server its full
+ * config again.
+ */
+export async function pauseOrganizationFabric(db: Db, record: FabricRecord): Promise<FabricRecord> {
+  const relays = await listFabricRelays(db, record.id, { includeSwitchedOff: true })
+  await forEachSequential(relays, async (row) => {
+    await clearRelayAppliedPayloadHash(db, { serverId: row.serverId, fabricId: record.id })
+  })
+  return setFabricEnabled(db, record, false)
+}
+
 export async function disableOrganizationFabric(db: Db, organizationId: string): Promise<string[]> {
   const existing = await getOrganizationFabric(db, organizationId)
   if (!existing) return []
-  const relays = await listFabricRelays(db, existing.id)
+  const relays = await listFabricRelays(db, existing.id, { includeSwitchedOff: true })
   const serverIds = relays.map((row) => row.serverId)
   await db.delete(fabric).where(eq(fabric.id, existing.id))
   return serverIds
@@ -768,6 +829,60 @@ export async function stampRelayPathSummary(
     .update(relay)
     .set({ metadata, updatedAt: nowIso() })
     .where(and(eq(relay.fabricId, params.fabricId), eq(relay.serverId, params.serverId)))
+}
+
+/**
+ * Merged metadata carrying a fresh `observed` reading, or null when the row
+ * already holds one at least as new, or one stamped less than `minIntervalMs`
+ * before `nowMs` that gives every peer the same health class. A change of
+ * class is always written, however recent the stored reading (a reconcile
+ * stamp must not hide a tunnel that just went down). Never touches
+ * `appliedPayloadHash` / `appliedAt`.
+ */
+export function planRelayObservedStamp(
+  existing: unknown,
+  observed: NonNullable<RelayMetadata['observed']>,
+  options: { nowMs: number; minIntervalMs: number }
+): RelayMetadata | null {
+  const current = serializeRelayMetadata(existing).observed
+  const currentMs = current ? Date.parse(current.at) : Number.NaN
+  if (Number.isFinite(currentMs)) {
+    if (currentMs >= Date.parse(observed.at)) return null
+    const recent = options.nowMs - currentMs < options.minIntervalMs
+    if (recent && fabricPeerHealthClasses(current) === fabricPeerHealthClasses(observed)) {
+      return null
+    }
+  }
+  return mergeRelayMetadata(existing, { observed })
+}
+
+/**
+ * Stamp a daemon's pushed peer reading (`fabric-peers-report`) into
+ * `relay.metadata.observed` on every relay of the reporting server. The
+ * server comes from the authenticated socket, never from the frame. Returns
+ * how many rows were written.
+ */
+export async function stampRelayObservedPeers(
+  db: Db,
+  params: {
+    serverId: string
+    observed: NonNullable<RelayMetadata['observed']>
+    nowMs: number
+    minIntervalMs: number
+  }
+): Promise<number> {
+  const rows = await db
+    .select({ id: relay.id, metadata: relay.metadata })
+    .from(relay)
+    .where(eq(relay.serverId, params.serverId))
+  let stamped = 0
+  await forEachSequential(rows, async (row) => {
+    const metadata = planRelayObservedStamp(row.metadata, params.observed, params)
+    if (!metadata) return
+    await db.update(relay).set({ metadata, updatedAt: nowIso() }).where(eq(relay.id, row.id))
+    stamped++
+  })
+  return stamped
 }
 
 export async function stampRelayReconcileSuccess(
@@ -898,13 +1013,6 @@ export async function updateFabricRelay(
   return serializeRelay(row)
 }
 
-const FABRIC_RECORD_SELECT = {
-  id: fabric.id,
-  organizationId: fabric.organizationId,
-  cidr: fabric.cidr,
-  options: fabric.options,
-}
-
 /**
  * Write the operator-settable fabric policy keys into `fabric.options`.
  * `containerPool` only changes what future relay prefixes are carved from —
@@ -952,7 +1060,8 @@ export type EnvironmentComposeNetwork = {
   segments: EnvironmentComposeNetworkSubnet[]
 }
 
-async function deleteComposeNetworkIds(db: Db, ids: readonly string[]): Promise<void> {
+/** Delete these compose networks and their subnets. */
+export async function deleteComposeNetworkIds(db: Db, ids: readonly string[]): Promise<void> {
   if (ids.length === 0) return
   await db.delete(subnet).where(inArray(subnet.networkId, [...ids]))
   await db.delete(network).where(inArray(network.id, [...ids]))
@@ -1179,12 +1288,31 @@ export function resolveRelayGlobalEndpointAddress(
   return publicIpv4FromIps(caches.reportedByServer.get(row.serverId)) ?? null
 }
 
+function firstPinCandidate(
+  datacenterIds: readonly string[],
+  fromPins: readonly DatacenterMembershipRow[],
+  toPins: readonly DatacenterMembershipRow[],
+  caches: EndpointAddressCaches
+): RelayPathCandidate | null {
+  for (const datacenterId of datacenterIds) {
+    const policy = caches.policyByDatacenter.get(datacenterId) ?? defaultDatacenterPolicyRow()
+    const address = pinAddressForDatacenter(
+      fromPins,
+      toPins,
+      datacenterId,
+      policy.addressPreference
+    )
+    if (address) return { kind: 'direct_lan', address, datacenterId }
+  }
+  return null
+}
+
 /**
  * First family-compatible pin in a **trusted** shared datacenter, walked in
  * `(priority asc, id asc)` order — the same partition the managed ladder
- * uses (`partitionSharedDatacenters`). A `direct_lan` candidate is never
- * produced on an untrusted segment; otherwise WireGuard would pick a LAN
- * endpoint the managed ladder just refused.
+ * uses (`partitionSharedDatacenters`). Untrusted networks are handled by
+ * {@link untrustedLanCandidate}: the tunnel may run over them, but the managed
+ * ladder never sends plain traffic across them.
  */
 function lanPathCandidate(
   selfServerId: string,
@@ -1196,17 +1324,41 @@ function lanPathCandidate(
   const toPins = caches.datacenterMembershipsByServer.get(otherServerId) ?? []
   const { trusted } = partitionSharedDatacenters(fromPins, toPins, caches.policyByDatacenter)
   const byLink = splitTrustedByLink(trusted, fromPins, toPins)
-  for (const datacenterId of linkState === 'up' ? byLink.available : byLink.down) {
-    const policy = caches.policyByDatacenter.get(datacenterId) ?? defaultDatacenterPolicyRow()
-    const address = pinAddressForDatacenter(
-      fromPins,
-      toPins,
-      datacenterId,
-      policy.addressPreference
-    )
-    if (address) return { kind: 'direct_lan', address, datacenterId }
-  }
-  return null
+  return firstPinCandidate(
+    linkState === 'up' ? byLink.available : byLink.down,
+    fromPins,
+    toPins,
+    caches
+  )
+}
+
+/**
+ * When a pair shares only **untrusted** datacenter networks, the tunnel runs
+ * over that LAN (encrypted) instead of the internet: the first pin there,
+ * networks that are up first, becomes a `direct_lan` candidate marked
+ * `untrusted`. A pair with any trusted shared network never gets one.
+ */
+export function untrustedLanCandidate(
+  selfServerId: string,
+  otherServerId: string,
+  caches: EndpointAddressCaches
+): RelayPathCandidate | null {
+  const fromPins = caches.datacenterMembershipsByServer.get(selfServerId) ?? []
+  const toPins = caches.datacenterMembershipsByServer.get(otherServerId) ?? []
+  const { trusted, untrusted } = partitionSharedDatacenters(
+    fromPins,
+    toPins,
+    caches.policyByDatacenter
+  )
+  if (trusted.length > 0 || untrusted.length === 0) return null
+  const byLink = splitTrustedByLink(untrusted, fromPins, toPins)
+  const candidate = firstPinCandidate(
+    [...byLink.available, ...byLink.down],
+    fromPins,
+    toPins,
+    caches
+  )
+  return candidate ? { ...candidate, untrusted: true } : null
 }
 
 function reportedPublicIpv4(ips: ServerReportedIp[] | undefined): string | undefined {
@@ -1246,26 +1398,28 @@ function failedKindsForPair(
 }
 
 /**
- * Direct LAN then public then NAT candidates for an arbitrary `(from → to)`
- * pair. A LAN whose NIC link is reported down is not tried first: it is
- * appended last, so the tunnel only uses it when no other direct path exists.
+ * Direct LAN (a trusted one, else an untrusted one the tunnel runs over) then
+ * public then NAT candidates for an arbitrary `(from → to)` pair. A trusted
+ * LAN whose NIC link is reported down is not tried first: it is appended
+ * last, so the tunnel only uses it when no other direct path exists. A pair
+ * that shares a trusted LAN with both daemons routing over it has no tunnel
+ * at all, so it has no candidate ({@link pairSharesTrustedLan}).
  */
 export function directCandidates(
   selfServerId: string,
   other: Pick<RelayRecord, 'serverId' | 'endpointAddress'>,
   caches: EndpointAddressCaches
 ): RelayPathCandidate[] {
+  if (pairSharesTrustedLan(selfServerId, other.serverId, caches)) return []
   const failed = failedKindsForPair(selfServerId, other.serverId, caches)
-  const candidates: RelayPathCandidate[] = []
-  const lan = lanPathCandidate(selfServerId, other.serverId, caches)
-  if (lan && !failed?.has('direct_lan')) candidates.push(lan)
-  const pub = publicPathCandidate(other, caches)
-  if (pub && !failed?.has('direct_public')) candidates.push(pub)
-  const nat = natPathCandidate(selfServerId, other, caches)
-  if (nat && !failed?.has('direct_nat')) candidates.push(nat)
-  const deadLan = lanPathCandidate(selfServerId, other.serverId, caches, 'down')
-  if (deadLan && !failed?.has('direct_lan')) candidates.push(deadLan)
-  return candidates
+  const ranked = [
+    lanPathCandidate(selfServerId, other.serverId, caches) ??
+      untrustedLanCandidate(selfServerId, other.serverId, caches),
+    publicPathCandidate(other, caches),
+    natPathCandidate(selfServerId, other, caches),
+    lanPathCandidate(selfServerId, other.serverId, caches, 'down'),
+  ]
+  return ranked.filter((row): row is RelayPathCandidate => row !== null && !failed?.has(row.kind))
 }
 
 function selectedFromCandidate(candidate: RelayPathCandidate): RelayPathSelected {
@@ -1279,6 +1433,7 @@ function selectedFromCandidate(candidate: RelayPathCandidate): RelayPathSelected
       kind: candidate.kind,
       endpoint: candidate.address,
       ...(candidate.datacenterId ? { datacenterId: candidate.datacenterId } : {}),
+      ...(candidate.untrusted ? { untrusted: true } : {}),
     }
   }
   if (candidate.kind === 'gateway') {
@@ -1352,10 +1507,10 @@ function gatewayCandidateRelays(
 // `gatewayLocalityAllowed` / `gatewayRankTier`) deliberately ignores
 // `policyByDatacenter`: these rank *which* gateway to route through, using
 // co-location as a proximity hint. The hop itself is still chosen by
-// `directCandidates`, whose LAN rung is trust-filtered — so an untrusted
-// shared datacenter can make a gateway *look* nearby without ever yielding a
-// `direct_lan` endpoint on that segment. Do not "fix" this by trust-filtering
-// locality.
+// `directCandidates`, which decides how the tunnel to the gateway runs (a
+// trusted LAN, an untrusted LAN only when nothing trusted is shared, or no
+// tunnel at all for a trusted LAN pair whose daemons route over it, which
+// rules that gateway out). Do not "fix" this by trust-filtering locality.
 function datacenterIdSet(serverId: string, caches: EndpointAddressCaches): Set<string> {
   const ids = new Set<string>()
   for (const pin of caches.datacenterMembershipsByServer.get(serverId) ?? []) {
@@ -1587,6 +1742,24 @@ function appendUniqueCidrs(target: string[], values: readonly string[]): void {
   }
 }
 
+function peerEndpoint(
+  selected: RelayPathSelected & {
+    kind: 'direct_lan' | 'direct_public' | 'direct_nat'
+    endpoint: string
+  },
+  listenPort: number
+): string {
+  return selected.kind === 'direct_nat'
+    ? selected.endpoint
+    : joinHostPort(selected.endpoint, listenPort)
+}
+
+/** A dial-in peer (no direct path from here) is a NAT path the other end opens. */
+function peerPathKind(carriesTransit: boolean, directKind: RelayPathKind | null): RelayPathKind {
+  if (carriesTransit) return 'gateway'
+  return directKind ?? 'direct_nat'
+}
+
 export async function buildPeerMaterial(params: {
   self: Pick<RelayRecord, 'serverId'>
   other: RelayRecord
@@ -1597,8 +1770,12 @@ export async function buildPeerMaterial(params: {
   extraAllowedIPs?: readonly string[]
   resealPresharedKey?: (sealed: string) => Promise<string | null>
   advertisedCidrs?: readonly string[]
+  /** The other server dials this one: no endpoint, learned on its handshake. */
+  dialIn?: boolean
 }): Promise<RelayPeerMaterial | null> {
-  if (!isEmittedDirectPath(params.plan.selected)) return null
+  const selected = params.plan.selected
+  const direct = isEmittedDirectPath(selected)
+  if (!direct && params.dialIn !== true) return null
 
   const host32 = hostRoute32(params.other.address)
   const allowedIPs: string[] = []
@@ -1627,18 +1804,14 @@ export async function buildPeerMaterial(params: {
   // Every direct pair keeps the tunnel (and its NAT mapping) alive; WireGuard
   // only re-handshakes while data flows, so an idle LAN pair needs it too.
   const keepalive = params.other.keepalive ?? WIREGUARD_PERSISTENT_KEEPALIVE
-  const endpoint =
-    params.plan.selected.kind === 'direct_nat'
-      ? params.plan.selected.endpoint
-      : joinHostPort(params.plan.selected.endpoint, params.listenPort)
   const material: RelayPeerMaterial = {
     publicKey: params.other.publicKey ?? '',
     allowedIPs,
-    endpoint,
+    ...(direct ? { endpoint: peerEndpoint(selected, params.listenPort) } : {}),
     keepalive,
     sealedPresharedKey: params.sealedPresharedKey,
     presharedKey,
-    pathKind: carriesTransit ? 'gateway' : params.plan.selected.kind,
+    pathKind: peerPathKind(carriesTransit, direct ? selected.kind : null),
   }
   if (carriesTransit) material.viaServerId = params.other.serverId
   return material
@@ -1720,6 +1893,12 @@ export type FabricReconcileSnapshot = {
   segmentsByServer: Map<string, FabricSegmentMaterial[]>
   derivedAdvertisedCidrsByRelayId: Map<string, string[]>
   policy: FabricPolicy
+  /**
+   * Container range of every org server that has one (switched-off servers
+   * included): the targets of `lanRoutes` for trusted LAN pairs. Absent
+   * means no LAN routes.
+   */
+  containerPrefixByServer?: Map<string, string>
 }
 
 type EnabledFabricReconcilePayload = Extract<FabricReconcileCommandPayload, { enabled: true }>
@@ -1747,21 +1926,29 @@ export async function loadFabricReconcileSnapshot(
   db: Db,
   fabric: FabricRecord
 ): Promise<FabricReconcileSnapshot> {
-  const relays = await listFabricRelays(db, fabric.id)
+  const [relays, containerPrefixByServer] = await Promise.all([
+    listFabricRelays(db, fabric.id),
+    loadServerContainerPrefixes(db, fabric.organizationId),
+  ])
   const serverIds = relays.map((row) => row.serverId)
   const relayIds = relays.map((row) => row.id)
+  // LAN partners may be switched out of the mesh, so pins and daemon features
+  // are read for every server that holds a container range too.
+  const pairServerIds = [...new Set([...serverIds, ...containerPrefixByServer.keys()])]
   const [
     { caches: endpointCaches },
     sealedRows,
     segmentsByServer,
     subnetsByServer,
     datacenterMembershipsByServer,
+    lanRouteServerIds,
   ] = await Promise.all([
     loadEndpointCaches(db, serverIds),
     loadRelayPresharedKeyRows(db, relayIds),
     listSubnetsForServers(db, serverIds),
     loadDatacenterSubnetsForServers(db, serverIds),
-    loadDatacenterMembershipsForServers(db, serverIds),
+    loadDatacenterMembershipsForServers(db, pairServerIds),
+    loadLanRouteServerIds(db, pairServerIds),
   ])
   const publicKeyed = publicKeyedRelays(relays)
   const datacenterIds = new Set<string>()
@@ -1777,10 +1964,12 @@ export async function loadFabricReconcileSnapshot(
     ...endpointCaches,
     datacenterMembershipsByServer,
     policyByDatacenter,
+    lanRouteServerIds,
   }
   return {
     fabric,
     relays,
+    containerPrefixByServer,
     caches,
     sealedPresharedKeyByRelayId,
     segmentsByServer,
@@ -1806,16 +1995,17 @@ function reconcilePeerViews(material: RelayPeerMaterial): {
   peer: FabricReconcilePeer
   hashPeer: Record<string, unknown>
 } {
+  const endpointField = material.endpoint === undefined ? {} : { endpoint: material.endpoint }
   const peer: FabricReconcilePeer = {
     publicKey: material.publicKey,
     allowedIPs: material.allowedIPs,
-    endpoint: material.endpoint,
+    ...endpointField,
   }
   const hashPeer: Record<string, unknown> = {
     publicKey: material.publicKey,
     allowedIPs: material.allowedIPs,
-    endpoint: material.endpoint,
-    pathKind: material.pathKind,
+    ...endpointField,
+    pathKind: material.endpoint === undefined ? 'dial_in' : material.pathKind,
   }
   if (
     material.pathKind === 'direct_lan' ||
@@ -1882,6 +2072,8 @@ async function emitPeerStanza(
   extraAllowedIPs: readonly string[],
   params: {
     resealPresharedKey?: (sealed: string) => Promise<string | null>
+    /** The other server dials this one: its stanza has no endpoint. */
+    dialIn?: boolean
   },
   listenPort: number
 ): Promise<{ peer: FabricReconcilePeer; hashPeer: Record<string, unknown> } | null> {
@@ -1901,9 +2093,114 @@ async function emitPeerStanza(
     advertisedCidrs:
       snapshot.derivedAdvertisedCidrsByRelayId.get(other.id) ?? other.advertisedCidrs,
     ...(params.resealPresharedKey ? { resealPresharedKey: params.resealPresharedKey } : {}),
+    ...(params.dialIn ? { dialIn: true } : {}),
   })
   if (!material) return null
   return reconcilePeerViews(material)
+}
+
+/**
+ * `caller` can open the tunnel to `target` itself: it has a public path to it
+ * (its public address or operator pin). A server behind NAT that nothing can
+ * dial still joins this way: it dials out with keepalive, and the other side has no
+ * endpoint for it until its handshake arrives.
+ */
+export function peerCanDialIn(
+  target: Pick<RelayRecord, 'serverId' | 'endpointAddress'>,
+  caller: Pick<RelayRecord, 'serverId'>,
+  caches: EndpointAddressCaches
+): boolean {
+  return directCandidates(caller.serverId, target, caches).some(
+    (row) => row.kind === 'direct_public'
+  )
+}
+
+/**
+ * Peers that would all be dialled at one endpoint (servers behind one NAT
+ * pinned to the same address) cannot all be right: WireGuard would send every
+ * one of them to the same place until their keepalives move it. Those that
+ * can dial in lose the endpoint and are learned from their own handshake.
+ */
+function dropSharedEndpoints(
+  emitted: readonly EmittedPeer[],
+  canDialIn: (other: RelayRecord) => boolean
+): void {
+  const counts = new Map<string, number>()
+  for (const row of emitted) {
+    if (row.peer.endpoint) counts.set(row.peer.endpoint, (counts.get(row.peer.endpoint) ?? 0) + 1)
+  }
+  for (const row of emitted) {
+    const endpoint = row.peer.endpoint
+    if (!endpoint || (counts.get(endpoint) ?? 0) < 2 || !canDialIn(row.other)) continue
+    delete row.peer.endpoint
+    delete row.hashPeer.endpoint
+    row.hashPeer.pathKind = 'dial_in'
+  }
+}
+
+type EmittedPeer = {
+  other: RelayRecord
+  peer: FabricReconcilePeer
+  hashPeer: Record<string, unknown>
+}
+
+type PeerClassification = {
+  emitIds: Set<string>
+  dialInIds: Set<string>
+  plansByRelayId: Map<string, RelayPathPlan>
+  extraByNextHopId: Map<string, string[]>
+  unreachablePeers: Array<{ serverId: string }>
+  gatewayRoutedPeers: GatewayRoutedPeer[]
+}
+
+/** Route one gateway-routed destination through its next hop's stanza. */
+function addGatewayRoute(
+  out: PeerClassification,
+  other: RelayRecord,
+  viaRelayId: string,
+  viaServerId: string
+): void {
+  const extra = out.extraByNextHopId.get(viaRelayId) ?? []
+  appendUniqueCidrs(extra, destinationOwnedCidrs(other))
+  out.extraByNextHopId.set(viaRelayId, extra)
+  out.emitIds.add(viaRelayId)
+  out.gatewayRoutedPeers.push({ serverId: other.serverId, viaServerId })
+}
+
+/**
+ * How `self` reaches each peer: a direct stanza, through a gateway's stanza,
+ * a dial-in stanza (the peer dials us), or not at all.
+ */
+function classifyPeerRelays(
+  snapshot: FabricReconcileSnapshot,
+  self: RelayRecord,
+  peerRelays: readonly RelayRecord[],
+  gateways: readonly RelayRecord[]
+): PeerClassification {
+  const out: PeerClassification = {
+    emitIds: new Set(),
+    dialInIds: new Set(),
+    plansByRelayId: new Map(),
+    extraByNextHopId: new Map(),
+    unreachablePeers: [],
+    gatewayRoutedPeers: [],
+  }
+  for (const other of peerRelays) {
+    const plan = planPathToOther(snapshot, self, other, gateways)
+    out.plansByRelayId.set(other.id, plan)
+    const { selected } = plan
+    if (isEmittedDirectPath(selected)) {
+      out.emitIds.add(other.id)
+    } else if (selected.kind === 'gateway' && selected.viaRelayId && selected.viaServerId) {
+      addGatewayRoute(out, other, selected.viaRelayId, selected.viaServerId)
+    } else if (peerCanDialIn(self, other, snapshot.caches)) {
+      out.emitIds.add(other.id)
+      out.dialInIds.add(other.id)
+    } else {
+      out.unreachablePeers.push({ serverId: other.serverId })
+    }
+  }
+  return out
 }
 
 async function buildReconcilePeerLists(
@@ -1915,53 +2212,46 @@ async function buildReconcilePeerLists(
   },
   listenPort: number
 ): Promise<PeerListBuild> {
-  const peers: FabricReconcilePeer[] = []
-  const hashPeers: unknown[] = []
-  const unreachablePeers: Array<{ serverId: string }> = []
-  const gatewayRoutedPeers: GatewayRoutedPeer[] = []
+  // A trusted LAN pair has no tunnel: it is neither a peer nor unreachable.
   const peerRelays = snapshot.relays.filter(
-    (row) => row.serverId !== params.serverId && row.publicKey
+    (row) =>
+      row.serverId !== params.serverId &&
+      row.publicKey &&
+      !pairSharesTrustedLan(params.serverId, row.serverId, snapshot.caches)
   )
   const gateways = snapshot.relays.filter((row) => row.role === 'gateway' && Boolean(row.publicKey))
-  const extraByNextHopId = new Map<string, string[]>()
-  const emitIds = new Set<string>()
-  const plansByRelayId = new Map<string, RelayPathPlan>()
+  const classified = classifyPeerRelays(snapshot, self, peerRelays, gateways)
+  const { unreachablePeers, gatewayRoutedPeers } = classified
 
-  for (const other of peerRelays) {
-    const plan = planPathToOther(snapshot, self, other, gateways)
-    plansByRelayId.set(other.id, plan)
-    if (isEmittedDirectPath(plan.selected)) {
-      emitIds.add(other.id)
-      continue
-    }
-    if (plan.selected.kind === 'gateway' && plan.selected.viaRelayId && plan.selected.viaServerId) {
-      const extra = extraByNextHopId.get(plan.selected.viaRelayId) ?? []
-      appendUniqueCidrs(extra, destinationOwnedCidrs(other))
-      extraByNextHopId.set(plan.selected.viaRelayId, extra)
-      emitIds.add(plan.selected.viaRelayId)
-      gatewayRoutedPeers.push({
-        serverId: other.serverId,
-        viaServerId: plan.selected.viaServerId,
-      })
-      continue
-    }
-    unreachablePeers.push({ serverId: other.serverId })
-  }
-
+  const emitted: EmittedPeer[] = []
   await forEachSequential(peerRelays, async (other) => {
-    if (!emitIds.has(other.id)) return
-    const plan = plansByRelayId.get(other.id) ?? planPathToOther(snapshot, self, other, gateways)
-    const extra = extraByNextHopId.get(other.id) ?? []
+    if (!classified.emitIds.has(other.id)) return
+    const plan =
+      classified.plansByRelayId.get(other.id) ?? planPathToOther(snapshot, self, other, gateways)
+    const extra = classified.extraByNextHopId.get(other.id) ?? []
     extra.sort((a, b) => a.localeCompare(b))
-    const views = await emitPeerStanza(snapshot, self, other, plan, extra, params, listenPort)
+    const views = await emitPeerStanza(
+      snapshot,
+      self,
+      other,
+      plan,
+      extra,
+      { ...params, dialIn: classified.dialInIds.has(other.id) },
+      listenPort
+    )
     if (!views) {
       unreachablePeers.push({ serverId: other.serverId })
       return
     }
-    peers.push(views.peer)
-    hashPeers.push(views.hashPeer)
+    emitted.push({ other, ...views })
   })
-  return { peers, hashPeers, unreachablePeers, gatewayRoutedPeers }
+  dropSharedEndpoints(emitted, (other) => peerCanDialIn(self, other, snapshot.caches))
+  return {
+    peers: emitted.map((row) => row.peer),
+    hashPeers: emitted.map((row) => row.hashPeer),
+    unreachablePeers,
+    gatewayRoutedPeers,
+  }
 }
 
 type FabricReconcileBuild = {
@@ -1969,6 +2259,71 @@ type FabricReconcileBuild = {
   desiredHash: string
   unreachablePeers: Array<{ serverId: string }>
   gatewayRoutedPeers: GatewayRoutedPeer[]
+  /** False when the payload asks for no tunnel (`tunnel: false`). */
+  tunnel: boolean
+}
+
+/**
+ * `lanRoutes` for `selfServerId`: every other server it shares a trusted LAN
+ * with (both daemons routing over it) and that has a container range, routed
+ * via that server's IPv4 address on the shared network. Sorted by range so
+ * the desired hash is stable.
+ */
+export function buildLanRoutes(
+  selfServerId: string,
+  containerPrefixByServer: ReadonlyMap<string, string>,
+  inputs: LanPairInputs
+): FabricReconcileLanRoute[] {
+  const routes: FabricReconcileLanRoute[] = []
+  for (const [serverId, cidr] of containerPrefixByServer) {
+    if (!serversShareTrustedLan(selfServerId, serverId, inputs)) continue
+    const via = trustedLanIpv4(selfServerId, serverId, inputs)
+    if (via) routes.push({ cidr, via: via.address })
+  }
+  return routes.sort((a, b) => a.cidr.localeCompare(b.cidr))
+}
+
+/**
+ * Whether `selfServerId`'s payload brings `tp0` up: always for a daemon that
+ * does not list `fabric-lan-routes-v1` (it gets no `tunnel` field and keeps
+ * the tunnel on), otherwise when some other switched-on member is not a
+ * trusted LAN pair (it is reached through a tunnel). Read from membership,
+ * not from the peer list, so a first enable (no keys anywhere yet) still
+ * brings the tunnel up and reports a key. The payload builder and the
+ * firewall (WireGuard port) both read this one answer.
+ */
+export function serverPayloadNeedsTunnel(
+  selfServerId: string,
+  memberServerIds: Iterable<string>,
+  inputs: LanPairInputs
+): boolean {
+  if (!inputs.lanRouteServerIds.has(selfServerId)) return true
+  for (const serverId of memberServerIds) {
+    if (serverId !== selfServerId && !serversShareTrustedLan(selfServerId, serverId, inputs)) {
+      return true
+    }
+  }
+  return false
+}
+
+/**
+ * The `tunnel` / `lanRoutes` fields, sent only to a daemon that lists
+ * `fabric-lan-routes-v1` (an older one keeps today's payload).
+ */
+function lanRouteFields(
+  snapshot: FabricReconcileSnapshot,
+  selfServerId: string
+): { tunnel?: boolean; lanRoutes?: FabricReconcileLanRoute[] } {
+  if (!snapshot.caches.lanRouteServerIds?.has(selfServerId)) return {}
+  const inputs = lanPairInputs(snapshot.caches)
+  return {
+    tunnel: serverPayloadNeedsTunnel(
+      selfServerId,
+      snapshot.relays.map((row) => row.serverId),
+      inputs
+    ),
+    lanRoutes: buildLanRoutes(selfServerId, snapshot.containerPrefixByServer ?? new Map(), inputs),
+  }
 }
 
 export async function buildFabricReconcilePayloadFromSnapshot(
@@ -1995,6 +2350,7 @@ export async function buildFabricReconcilePayloadFromSnapshot(
   )
   const networks = snapshot.segmentsByServer.get(params.serverId) ?? []
   const gatewayFlag = self.role === 'gateway' ? { gateway: true as const } : {}
+  const lanFields = lanRouteFields(snapshot, params.serverId)
   const shared = {
     enabled: true as const,
     fabricId: snapshot.fabric.id,
@@ -2004,13 +2360,20 @@ export async function buildFabricReconcilePayloadFromSnapshot(
     prefix: self.prefix,
     ...optionalNetworksField(networks),
     ...gatewayFlag,
+    ...lanFields,
   }
   const payload: EnabledFabricReconcilePayload = { ...shared, peers }
   const desiredHash = await hashFabricReconcileDesired({
     ...shared,
     peers: hashPeers,
   })
-  return { payload, desiredHash, unreachablePeers, gatewayRoutedPeers }
+  return {
+    payload,
+    desiredHash,
+    unreachablePeers,
+    gatewayRoutedPeers,
+    tunnel: lanFields.tunnel !== false,
+  }
 }
 
 export async function buildFabricReconcilePayload(
@@ -2186,12 +2549,21 @@ export async function ensureNetworkSubnet(
     })
 }
 
+/**
+ * Create the `network` / `subnet` rows for every network that spans servers.
+ * Each server's subnet is carved from its own container range
+ * (`server.container_prefix`, allocated on first need), so no relay is
+ * needed: the planner already refused what cannot be carried (a pair outside
+ * a shared trusted LAN without TurboFabric). With TurboFabric on, relays are
+ * still ensured so switched-on servers keep their membership.
+ */
 export async function materializeSpanningNetworks(
   db: Db,
   params: {
     organizationId: string
     environmentId: string
-    fabric: FabricRecord
+    /** The org fabric when it carries traffic (absent or paused: null). */
+    fabric: FabricRecord | null
     document: ComposeDocument
     slots: ReadonlyArray<{ serviceId: string; serverId: string }>
     serviceRows: ReadonlyArray<{ id: string; composeServiceName: string }>
@@ -2208,12 +2580,12 @@ export async function materializeSpanningNetworks(
   const spanning = new Map<string, string>()
   if (keys.length === 0) return spanning
 
-  await ensureFabricRelays(db, {
-    fabric: params.fabric,
-    organizationId: params.organizationId,
-  })
-  const relays = await listFabricRelays(db, params.fabric.id)
-  const relayByServer = new Map(relays.map((row) => [row.serverId, row]))
+  if (params.fabric && !isFabricPaused(params.fabric)) {
+    await ensureFabricRelays(db, {
+      fabric: params.fabric,
+      organizationId: params.organizationId,
+    })
+  }
   const exclusions = await loadCidrAllocationExclusions(db, params.organizationId)
 
   await forEachSequential(keys, async (composeKey) => {
@@ -2232,10 +2604,6 @@ export async function materializeSpanningNetworks(
       attachments
     )
     await forEachSequential(serverIds, async (serverId) => {
-      const relayRow = relayByServer.get(serverId)
-      if (!relayRow) {
-        throw new FabricAllocationError('relay_missing')
-      }
       const [have] = await db
         .select({ id: subnet.id })
         .from(subnet)
@@ -2249,7 +2617,11 @@ export async function materializeSpanningNetworks(
       const taken = existing.map((row) =>
         typeof row.cidr === 'string' ? row.cidr : String(row.cidr)
       )
-      const cidrValue = requireSubnetCidr(relayRow.prefix, taken, exclusions)
+      const prefix = await ensureServerContainerPrefix(db, {
+        organizationId: params.organizationId,
+        serverId,
+      })
+      const cidrValue = requireSubnetCidr(prefix, taken, exclusions)
       await ensureNetworkSubnet(db, {
         networkId: networkRow.id,
         serverId,

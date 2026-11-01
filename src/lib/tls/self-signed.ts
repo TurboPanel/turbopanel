@@ -755,6 +755,49 @@ export async function mintSelfSignedCertificate(
   return { certificatePem, privateKeyPem, parsed }
 }
 
+/** 1.2.840.113549.1.9.14 extensionRequest (PKCS#9) */
+const OID_EXTENSION_REQUEST = Uint8Array.of(0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x09, 0x0e)
+
+export type CertificateRequestMaterial = {
+  /** PKCS#10 request, PEM `CERTIFICATE REQUEST`, signed by the new key. */
+  csrPem: string
+  /** PKCS#8 private key, PEM `PRIVATE KEY`. */
+  privateKeyPem: string
+}
+
+/**
+ * Make a fresh ECDSA P-256 key and a PKCS#10 certificate request that lists
+ * `dnsNames` as subject alternative names (CN is the first name). A provider
+ * that issues the certificate signs only the public key, so the private key
+ * never leaves this process.
+ */
+export async function mintCertificateRequest(
+  dnsNames: readonly string[]
+): Promise<CertificateRequestMaterial> {
+  const names = dnsNames.map((n) => n.trim().toLowerCase()).filter((n) => n.length > 0)
+  if (names.length === 0) {
+    throw new TypeError('at least one DNS name is required')
+  }
+  const keyPair = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, [
+    'sign',
+    'verify',
+  ])
+  const { spki, pkcs8 } = await exportKeyPair(keyPair)
+  const extensions = seq(buildSanExtension({ dnsNames: names }))
+  const attributes = context(0, seq(concat(oid(OID_EXTENSION_REQUEST), set(extensions))))
+  const info = seq(concat(integer(Uint8Array.of(0x00)), seq(rdnCn(names[0]!)), spki, attributes))
+  const raw = new Uint8Array(
+    await crypto.subtle.sign(ECDSA_P256_SHA256.signParams, keyPair.privateKey, asBufferSource(info))
+  )
+  const request = seq(
+    concat(info, ECDSA_P256_SHA256.algorithmIdentifier, signBitString(ecdsaRawToDer(raw)))
+  )
+  return {
+    csrPem: encodePemBlock('CERTIFICATE REQUEST', request),
+    privateKeyPem: encodePemBlock('PRIVATE KEY', pkcs8),
+  }
+}
+
 /** Organization CA lifetime in calendar years when `validDays` is not given. */
 export const ORGANIZATION_CA_VALID_YEARS = 15
 

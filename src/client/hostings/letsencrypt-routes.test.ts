@@ -1,6 +1,6 @@
 import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { assertEquals } from '@std/assert'
-import { eq, inArray } from 'drizzle-orm'
+import { desc, eq, inArray } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
@@ -14,11 +14,14 @@ import {
   environment,
   grant,
   hosting,
+  ip,
   organization,
   project,
   server,
   service,
   tls,
+  tunnel,
+  doorway,
   user,
   workspace,
 } from '../../db/schema.ts'
@@ -27,11 +30,13 @@ import type { DeployRequestAuth } from '../environments/deploy-routes.ts'
 import type { HostingApplyDeps } from './letsencrypt-apply.ts'
 import { DEPLOY_HOSTINGS_ONLY_FEATURE } from '../../lib/version-wire.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
+import type { DnsLookup } from '../../features/hostings/hosting-dns-check.ts'
 import { registerHostingRoutes } from './routes.ts'
 import { registerHostingLetsEncryptRoutes } from './letsencrypt-routes.ts'
 import {
   HOSTING_LETS_ENCRYPT_SWEEP_BATCH,
   runHostingLetsEncryptSweepTick,
+  forEachBounded,
 } from './letsencrypt-sweep.ts'
 import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
 
@@ -49,7 +54,7 @@ type Fixture = {
   hostingId: string
   environmentId: string
   cookie: string
-  setLookup: (lookup: () => Promise<string[]>) => void
+  setLookup: (lookup: DnsLookup) => void
   call: (method: string, path: string, body?: unknown) => Promise<Response>
   cleanup: () => Promise<void>
 }
@@ -59,13 +64,15 @@ async function setup(options: {
   hostingOptions: Record<string, unknown>
   hostingMetadata?: Record<string, unknown>
   applyDeps?: HostingApplyDeps
+  /** Pin the site to a known public address (what `pointing` answers); default true. */
+  pinAddress?: boolean
 }): Promise<Fixture> {
   const db = createDenoDb()
   const secrets = await deriveSecretsConfig(
     parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`, 'deno'),
     'session-signing'
   )
-  let lookup: () => Promise<string[]> = pointing
+  let lookup: DnsLookup = pointing
   const app = new Hono<AppEnv>()
   app.use('*', (c, next) => {
     c.set('db', db)
@@ -74,7 +81,7 @@ async function setup(options: {
   const routeOpts = { secrets, runtime: 'deno' as const, signupEnvOverride: undefined }
   const applyDeps = options.applyDeps
   registerHostingLetsEncryptRoutes(app, routeOpts, {
-    lookup: () => lookup(),
+    lookup: (name, recordType) => lookup(name, recordType),
     ...(applyDeps ? { applyDeps: () => applyDeps } : {}),
   })
   registerHostingRoutes(app, routeOpts)
@@ -119,10 +126,25 @@ async function setup(options: {
       updatedAt: now,
     })
     .returning({ id: service.id })
+  // The pre-check holds a name while no public address is known for the site,
+  // so the site is pinned to the address `pointing` answers with.
+  const [siteIp] =
+    options.pinAddress === false
+      ? []
+      : await db
+          .insert(ip)
+          .values({
+            organizationId,
+            address: '203.0.113.7',
+            allocation: 'dedicated',
+            scope: 'public',
+          })
+          .returning({ id: ip.id })
   const [host] = await db
     .insert(hosting)
     .values({
       serviceId: svc!.id,
+      ipId: siteIp?.id ?? null,
       name: 'Site',
       options: options.hostingOptions,
       metadata: options.hostingMetadata ?? null,
@@ -153,6 +175,7 @@ async function setup(options: {
     async cleanup() {
       await db.delete(audit).where(eq(audit.organizationId, organizationId))
       await db.delete(hosting).where(eq(hosting.id, host!.id))
+      await db.delete(ip).where(eq(ip.organizationId, organizationId))
       await db.delete(tls).where(eq(tls.organizationId, organizationId))
       await db.delete(service).where(eq(service.id, svc!.id))
       await db.delete(environment).where(eq(environment.id, env!.id))
@@ -221,6 +244,9 @@ test('PUT use-letsencrypt: refuses a local bind and hostings owned by compose', 
   }
 })
 
+/** A clock this many hours ahead, past a waiting request's next check. */
+const hoursLater = (hours: number) => () => new Date(Date.now() + hours * 3_600_000)
+
 test('PUT use-letsencrypt: waits for DNS, then the sweep pins it once the name resolves', async () => {
   if (!dbUrl) return skipWithoutDatabase("hosting Let's Encrypt route tests")
   const f = await setup({
@@ -255,11 +281,21 @@ test('PUT use-letsencrypt: waits for DNS, then the sweep pins it once the name r
       2
     )
 
+    // Not due yet: a request is checked again only after its wait.
+    const early = await runHostingLetsEncryptSweepTick(f.db, { lookup: pointing })
+    assertEquals(early.scanned, 0)
+
     // DNS still not ready: the sweep keeps the request.
-    const still = await runHostingLetsEncryptSweepTick(f.db, { lookup: nowhere })
+    const still = await runHostingLetsEncryptSweepTick(f.db, {
+      lookup: nowhere,
+      now: hoursLater(1),
+    })
     assertEquals(still.pinned, 0)
 
-    const sweep = await runHostingLetsEncryptSweepTick(f.db, { lookup: pointing })
+    const sweep = await runHostingLetsEncryptSweepTick(f.db, {
+      lookup: pointing,
+      now: hoursLater(2),
+    })
     assertEquals(sweep.pinned, 1)
     const [pinned] = await f.db
       .select({ tlsId: hosting.tlsId, options: hosting.options })
@@ -276,6 +312,40 @@ test('PUT use-letsencrypt: waits for DNS, then the sweep pins it once the name r
     assertEquals(body.hosting.certificate.needsDeploy, true)
     assertEquals(body.hosting.certificate.www, 'www-to-root')
   } finally {
+    await f.cleanup()
+  }
+})
+
+test('dns-check: a server with no managed address is checked against the addresses its daemon reports', async () => {
+  if (!dbUrl) return skipWithoutDatabase("hosting Let's Encrypt route tests")
+  const f = await setup({ acmeEnabled: true, hostingOptions: PUBLIC_SITE, pinAddress: false })
+  const removeServer = await deployedOn(f, true, {
+    resources: {
+      ips: [
+        { address: '203.0.113.7', version: 4, scope: 'public', interface: 'enp1s0' },
+        { address: '2001:db8::7', version: 6, scope: 'public', interface: 'enp1s0' },
+        { address: '10.0.0.7', version: 4, scope: 'private', interface: 'enp6s0' },
+      ],
+    },
+  })
+  try {
+    f.setLookup((_name, recordType) =>
+      Promise.resolve(recordType === 'A' ? ['203.0.113.7'] : ['2001:db8::99'])
+    )
+    const check = await f.call('GET', `/hostings/${f.hostingId}/dns-check`)
+    assertEquals(check.status, 200)
+    const { dns } = (await check.json()) as {
+      dns: {
+        ready: boolean
+        expectedAddresses: string[]
+        hostnames: { wrongAddresses?: string[] }[]
+      }
+    }
+    assertEquals(dns.ready, false)
+    assertEquals(dns.expectedAddresses.toSorted(), ['2001:db8::7', '203.0.113.7'])
+    assertEquals(dns.hostnames[0]?.wrongAddresses, ['2001:db8::99'])
+  } finally {
+    await removeServer()
     await f.cleanup()
   }
 })
@@ -525,7 +595,11 @@ function fakeDeploy(db: Db, calls: DeployCall[]): NonNullable<HostingApplyDeps['
 }
 
 /** A server that finished a deploy of the fixture's environment just now (after every edit). */
-async function deployedOn(f: Fixture, connected: boolean): Promise<() => Promise<void>> {
+async function deployedOn(
+  f: Fixture,
+  connected: boolean,
+  metadata?: Record<string, unknown>
+): Promise<() => Promise<void>> {
   const now = new Date().toISOString()
   const [srv] = await f.db
     .insert(server)
@@ -533,6 +607,7 @@ async function deployedOn(f: Fixture, connected: boolean): Promise<() => Promise
       organizationId: f.organizationId,
       name: `le-${crypto.randomUUID().slice(0, 8)}`,
       isConnected: connected,
+      ...(metadata ? { metadata } : {}),
       createdAt: now,
       updatedAt: now,
     })
@@ -647,6 +722,7 @@ test('sweep: a certificate pinned once DNS resolves queues the hostings-only app
 
     const sweep = await runHostingLetsEncryptSweepTick(f.db, {
       lookup: pointing,
+      now: hoursLater(1),
       apply: {
         commandQueue: LIVE_QUEUE,
         secretsConfig: null,
@@ -796,6 +872,108 @@ test('sweep: with more waiting hostings than one batch, every one is checked ove
   }
 })
 
+test('sweep: a request still waiting after 7 days is dropped and recorded in the audit log', async () => {
+  if (!dbUrl) return skipWithoutDatabase("hosting Let's Encrypt route tests")
+  const f = await setup({ acmeEnabled: true, hostingOptions: PUBLIC_SITE })
+  try {
+    const eightDaysAgo = new Date(Date.now() - 8 * 86_400_000).toISOString()
+    await f.db.update(hosting).set({ pendingAt: eightDaysAgo }).where(eq(hosting.id, f.hostingId))
+    const sweep = await runHostingLetsEncryptSweepTick(f.db, { lookup: nowhere })
+    assertEquals(sweep.dropped, 1)
+    const [row] = await f.db
+      .select({ pendingAt: hosting.pendingAt })
+      .from(hosting)
+      .where(eq(hosting.id, f.hostingId))
+    assertEquals(row?.pendingAt, null)
+    const [dropped] = await f.db
+      .select({ action: audit.action, context: audit.context })
+      .from(audit)
+      .where(eq(audit.targetId, f.hostingId))
+      .orderBy(desc(audit.createdAt))
+      .limit(1)
+    assertEquals(dropped?.action, 'hosting.letsencrypt.dropped')
+    assertEquals((dropped?.context as { reason?: string } | null)?.reason, 'dns_not_ready')
+  } finally {
+    await f.cleanup()
+  }
+})
+
+test('certificate block: an apply still running is "working", never "not on the server yet"', async () => {
+  if (!dbUrl) return skipWithoutDatabase("hosting Let's Encrypt route tests")
+  const f = await setup({ acmeEnabled: true, hostingOptions: PUBLIC_SITE })
+  const undeployOld = await deployedOn(f, true)
+  const undeployRunning = await deployedOn(f, true)
+  try {
+    const tlsId = await insertCertificate(f, { source: 'lets_encrypt', status: 'automatic' })
+    await f.db.update(hosting).set({ tlsId }).where(eq(hosting.id, f.hostingId))
+    const rows = await f.db
+      .select({ serverId: deployment.serverId })
+      .from(deployment)
+      .where(eq(deployment.environmentId, f.environmentId))
+    const twoDaysAgo = new Date(Date.now() - 2 * 86_400_000).toISOString()
+    await f.db
+      .update(deployment)
+      .set({ finishedAt: twoDaysAgo })
+      .where(eq(deployment.serverId, rows[0]!.serverId))
+    await f.db
+      .update(deployment)
+      .set({ status: 'applying', updatedAt: new Date(Date.now() + 1000).toISOString() })
+      .where(eq(deployment.serverId, rows[1]!.serverId))
+    const certificate = (await readCertificate(f)) as {
+      needsDeploy: boolean
+      serverProgress?: string
+    }
+    assertEquals(certificate.needsDeploy, false)
+    assertEquals(certificate.serverProgress, 'working')
+  } finally {
+    await undeployRunning()
+    await undeployOld()
+    await f.cleanup()
+  }
+})
+
+test('sweep: a tick that has ended starts no row', async () => {
+  if (!dbUrl) return skipWithoutDatabase("hosting Let's Encrypt route tests")
+  const f = await setup({ acmeEnabled: true, hostingOptions: PUBLIC_SITE })
+  try {
+    await f.db
+      .update(hosting)
+      .set({ pendingAt: new Date().toISOString() })
+      .where(eq(hosting.id, f.hostingId))
+    let lookups = 0
+    const counting: typeof pointing = (...args) => {
+      lookups += 1
+      return pointing(...args)
+    }
+    const ended = new AbortController()
+    ended.abort()
+    const none = await runHostingLetsEncryptSweepTick(f.db, {
+      lookup: counting,
+      signal: ended.signal,
+    })
+    assertEquals([none.pinned, lookups], [0, 0])
+  } finally {
+    await f.cleanup()
+  }
+})
+
+test('sweep rows: at most the limit run at once, and none starts after the deadline', async () => {
+  const stop = new AbortController()
+  let running = 0
+  let most = 0
+  const started: number[] = []
+  await forEachBounded([1, 2, 3, 4, 5, 6], 2, stop.signal, async (item) => {
+    started.push(item)
+    running += 1
+    most = Math.max(most, running)
+    await Promise.resolve()
+    if (item === 3) stop.abort()
+    running -= 1
+  })
+  assertEquals(most, 2)
+  assertEquals(started, [1, 2, 3, 4])
+})
+
 async function insertCertificate(
   f: Fixture,
   values: { source: 'lets_encrypt' | 'upload'; status: 'automatic' | 'ready' }
@@ -924,6 +1102,161 @@ test('PATCH /hostings: someone who may not edit the hosting gets the route refus
     })
     assertEquals(res.status, 401)
     assertEquals(calls.length, 0)
+  } finally {
+    await f.cleanup()
+  }
+})
+
+test('GET hostings: a name a tunnel carries is listed under tunnels, a site with none has an empty list', async () => {
+  if (!dbUrl) return skipWithoutDatabase("hosting Let's Encrypt route tests")
+  const f = await setup({
+    acmeEnabled: true,
+    hostingOptions: { hostnames: ['shop.example.com', 'www.shop.example.com'] },
+  })
+  try {
+    const before = await f.call('GET', `/hostings/${f.hostingId}`)
+    assertEquals(((await before.json()) as { hosting: { tunnels: unknown[] } }).hosting.tunnels, [])
+    const [t] = await f.db
+      .insert(tunnel)
+      .values({
+        organizationId: f.organizationId,
+        routingOrganizationId: f.organizationId,
+        provider: 'cloudflare',
+        name: 'Edge',
+        placement: 'chosen',
+      })
+      .returning({ id: tunnel.id })
+    // One linked tunnel-only name, one not linked yet that is also public.
+    await f.db.insert(doorway).values([
+      {
+        routingOrganizationId: f.organizationId,
+        tunnelId: t!.id,
+        hostname: 'shop.example.com',
+        hostingId: f.hostingId,
+        status: 'live',
+      },
+      {
+        routingOrganizationId: f.organizationId,
+        tunnelId: t!.id,
+        hostname: 'www.shop.example.com',
+        isLocalOnly: false,
+        status: 'pending',
+      },
+    ])
+    try {
+      const expected = [
+        {
+          hostname: 'shop.example.com',
+          tunnelId: t!.id,
+          tunnelName: 'Edge',
+          provider: 'cloudflare',
+          tunnelOnly: true,
+          originVerified: false,
+          status: 'live',
+        },
+        {
+          hostname: 'www.shop.example.com',
+          tunnelId: t!.id,
+          tunnelName: 'Edge',
+          provider: 'cloudflare',
+          tunnelOnly: false,
+          originVerified: false,
+          status: 'pending',
+        },
+      ]
+      const one = await f.call('GET', `/hostings/${f.hostingId}`)
+      assertEquals(
+        ((await one.json()) as { hosting: { tunnels: unknown } }).hosting.tunnels,
+        expected
+      )
+      const list = await f.call('GET', '/hostings')
+      const rows = ((await list.json()) as { hostings: { id: string; tunnels: unknown }[] })
+        .hostings
+      assertEquals(rows.find((row) => row.id === f.hostingId)?.tunnels, expected)
+    } finally {
+      await f.db.delete(doorway).where(eq(doorway.tunnelId, t!.id))
+      await f.db.delete(tunnel).where(eq(tunnel.id, t!.id))
+    }
+  } finally {
+    await f.cleanup()
+  }
+})
+
+test('PUT use-letsencrypt: a site whose only name is a locked tunnel name gets no row, and an old row and waiting request go', async () => {
+  if (!dbUrl) return skipWithoutDatabase("hosting Let's Encrypt route tests")
+  const f = await setup({ acmeEnabled: true, hostingOptions: PUBLIC_SITE })
+  try {
+    const [t] = await f.db
+      .insert(tunnel)
+      .values({
+        organizationId: f.organizationId,
+        routingOrganizationId: f.organizationId,
+        provider: 'cloudflare',
+        name: 'T',
+        placement: 'chosen',
+      })
+      .returning({ id: tunnel.id })
+    await f.db.insert(doorway).values({
+      routingOrganizationId: f.organizationId,
+      tunnelId: t!.id,
+      hostname: 'shop.example.com',
+      hostingId: f.hostingId,
+      status: 'live',
+    })
+    try {
+      const res = await f.call('PUT', `/hostings/${f.hostingId}/use-letsencrypt`, {})
+      assertEquals(res.status, 200)
+      const body = (await res.json()) as { tunnelOnly?: boolean; needsDeploy: boolean }
+      assertEquals(body.tunnelOnly, true)
+      assertEquals(body.needsDeploy, false)
+      const none = await f.db
+        .select({ id: tls.id })
+        .from(tls)
+        .where(eq(tls.organizationId, f.organizationId))
+      assertEquals(none.length, 0)
+
+      // A name that becomes tunnel-only later: the row and the waiting request are released.
+      await f.db.delete(doorway).where(eq(doorway.tunnelId, t!.id))
+      const pinned = await f.call('PUT', `/hostings/${f.hostingId}/use-letsencrypt`, {})
+      assertEquals(pinned.status, 200)
+      assertEquals(
+        (
+          await f.db
+            .select({ id: tls.id })
+            .from(tls)
+            .where(eq(tls.organizationId, f.organizationId))
+        ).length,
+        1
+      )
+      await f.db.insert(doorway).values({
+        routingOrganizationId: f.organizationId,
+        tunnelId: t!.id,
+        hostname: 'shop.example.com',
+        hostingId: f.hostingId,
+        status: 'live',
+      })
+      await f.db
+        .update(hosting)
+        .set({ pendingAt: new Date().toISOString() })
+        .where(eq(hosting.id, f.hostingId))
+      const sweep = await runHostingLetsEncryptSweepTick(f.db, { lookup: pointing })
+      assertEquals(sweep.pinned, 0)
+      assertEquals(sweep.dropped, 1)
+      const again = await f.call('PUT', `/hostings/${f.hostingId}/use-letsencrypt`, {})
+      assertEquals(((await again.json()) as { tunnelOnly?: boolean }).tunnelOnly, true)
+      assertEquals(
+        (
+          await f.db
+            .select({ id: tls.id })
+            .from(tls)
+            .where(eq(tls.organizationId, f.organizationId))
+        ).length,
+        0
+      )
+    } finally {
+      await f.db.delete(doorway).where(eq(doorway.tunnelId, t!.id))
+      await f.db.delete(tunnel).where(eq(tunnel.id, t!.id))
+    }
   } finally {
     await f.cleanup()
   }

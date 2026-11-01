@@ -6,7 +6,7 @@
  * `principal.password`, `storage.content_envelope`, `secret.secret_envelope`,
  * `forge.envelopes` (private key / client secret / webhook secret),
  * `connection.oauth_envelope` (GitLab access/refresh token pair), `totp.secret`,
- * `monitor.secret_envelope`, `relay.preshared_key`, `destination.secret_key_sealed`, the `ALERT_WEBHOOK_URL`
+ * `monitor.secret_envelope`, `relay.preshared_key`, `destination.secret_key_sealed`, `ingress.token_envelope`, the `ALERT_WEBHOOK_URL`
  * setting, `SYSTEM_AUTH_PROVIDERS` secret keys, and email secret keys in the
  * `SYSTEM_EMAIL` setting row onto the current data-encryption key version.
  *
@@ -45,9 +45,11 @@ import {
 } from '../lib/secrets/data-encryption.ts'
 import type { DerivedSecretsConfig } from '../lib/secrets/secrets.ts'
 import type { Db } from '../db/connection.ts'
+import { PANEL_IDENTITY_SETTING_KEY } from '../lib/panel-identity/identity.ts'
 import {
   forge,
   gitConnection,
+  ingressAccount,
   instanceUploadedCertificate,
   lease,
   login,
@@ -100,9 +102,11 @@ export const REENCRYPT_STAGES = [
   'monitors',
   'relays',
   'destinations',
+  'ingress',
   'authproviders',
   'email',
   'alertwebhook',
+  'identity',
 ] as const
 
 /**
@@ -126,9 +130,11 @@ export const REENCRYPT_COVERED_PLACES = [
   'monitor.secret_envelope',
   'relay.preshared_key',
   'destination.secret_key_sealed',
+  'ingress.token_envelope',
   `setting:${SYSTEM_AUTH_PROVIDERS_DB_KEY}`,
   `setting:${SYSTEM_EMAIL_DB_KEY}`,
   `setting:${ALERT_WEBHOOK_URL_KEY}`,
+  `setting:${PANEL_IDENTITY_SETTING_KEY}`,
 ] as const
 
 export type ReencryptStage = (typeof REENCRYPT_STAGES)[number]
@@ -1099,6 +1105,27 @@ async function sweepMonitorSecretsBatch(
   return { pageSize: rows.length, lastId: rows.at(-1)?.id }
 }
 
+type SealedRow = { id: string; value: string }
+
+/** Reseal each row's single envelope with a compare-and-swap `update` that reports whether it won. */
+async function resealRows(
+  summary: ReencryptSweepSummary,
+  secrets: DerivedSecretsConfig,
+  rows: readonly SealedRow[],
+  update: (id: string, original: string, resealed: string) => Promise<boolean>
+): Promise<StageBatchResult> {
+  await forEachSequential(rows, async (row) => {
+    await processBlob(
+      summary,
+      secrets,
+      row.value,
+      (resealed) => update(row.id, row.value, resealed),
+      { allowDaemonBound: false }
+    )
+  })
+  return { pageSize: rows.length, lastId: rows.at(-1)?.id }
+}
+
 /** `destination.secret_key_sealed`: the sealed secret access key of a backup copy destination (NOT NULL). */
 async function sweepDestinationSecretsBatch(
   db: Db,
@@ -1114,25 +1141,39 @@ async function sweepDestinationSecretsBatch(
     .orderBy(asc(backupTarget.id))
     .limit(limit)
 
-  await forEachSequential(rows, async (row) => {
-    const original = row.value
-    await processBlob(
-      summary,
-      secrets,
-      original,
-      async (resealed) => {
-        const updated = await db
-          .update(backupTarget)
-          .set({ secretKeySealed: resealed })
-          .where(and(eq(backupTarget.id, row.id), eq(backupTarget.secretKeySealed, original)))
-          .returning({ id: backupTarget.id })
-        return updated.length > 0
-      },
-      { allowDaemonBound: false }
-    )
+  return resealRows(summary, secrets, rows, async (id, original, resealed) => {
+    const updated = await db
+      .update(backupTarget)
+      .set({ secretKeySealed: resealed })
+      .where(and(eq(backupTarget.id, id), eq(backupTarget.secretKeySealed, original)))
+      .returning({ id: backupTarget.id })
+    return updated.length > 0
   })
+}
 
-  return { pageSize: rows.length, lastId: rows.at(-1)?.id }
+/** `ingress.token_envelope`: the sealed provider API token of an install-level ingress account (NOT NULL). */
+async function sweepIngressTokensBatch(
+  db: Db,
+  secrets: DerivedSecretsConfig,
+  summary: ReencryptSweepSummary,
+  afterId: string | undefined,
+  limit: number
+): Promise<StageBatchResult> {
+  const rows = await db
+    .select({ id: ingressAccount.id, value: ingressAccount.tokenEnvelope })
+    .from(ingressAccount)
+    .where(afterId === undefined ? undefined : gt(ingressAccount.id, afterId))
+    .orderBy(asc(ingressAccount.id))
+    .limit(limit)
+
+  return resealRows(summary, secrets, rows, async (id, original, resealed) => {
+    const updated = await db
+      .update(ingressAccount)
+      .set({ tokenEnvelope: resealed })
+      .where(and(eq(ingressAccount.id, id), eq(ingressAccount.tokenEnvelope, original)))
+      .returning({ id: ingressAccount.id })
+    return updated.length > 0
+  })
 }
 
 /** `relay.preshared_key`: nullable sealed WireGuard preshared key. */
@@ -1207,7 +1248,40 @@ async function sweepAlertWebhookSetting(
   )
 }
 
-type TableStage = Exclude<ReencryptStage, 'authproviders' | 'email' | 'alertwebhook'>
+/** The panel identity row: the `sealed` member of the `PANEL_IDENTITY_KEYS` setting holds the key seeds. */
+async function sweepIdentitySetting(
+  db: Db,
+  secrets: DerivedSecretsConfig,
+  summary: ReencryptSweepSummary
+): Promise<void> {
+  const rows = await db
+    .select({ value: setting.value })
+    .from(setting)
+    .where(eq(setting.key, PANEL_IDENTITY_SETTING_KEY))
+    .limit(1)
+
+  const original = rows[0]?.value
+  if (typeof original !== 'object' || original === null || Array.isArray(original)) return
+  const sealed = (original as Record<string, unknown>).sealed
+  if (typeof sealed !== 'string' || sealed === '') return
+
+  await processBlob(
+    summary,
+    secrets,
+    sealed,
+    async (resealed) => {
+      const updated = await db
+        .update(setting)
+        .set({ value: { ...original, sealed: resealed }, updatedAt: nowIso() })
+        .where(and(eq(setting.key, PANEL_IDENTITY_SETTING_KEY), eq(setting.value, original)))
+        .returning({ key: setting.key })
+      return updated.length > 0
+    },
+    { allowDaemonBound: false }
+  )
+}
+
+type TableStage = Exclude<ReencryptStage, 'authproviders' | 'email' | 'alertwebhook' | 'identity'>
 
 async function runTableStageBatch(
   db: Db,
@@ -1264,6 +1338,8 @@ async function runTableStageBatch(
       return sweepRelayPresharedKeysBatch(db, dataEncryptionSecrets, summary, afterId, remaining)
     case 'destinations':
       return sweepDestinationSecretsBatch(db, dataEncryptionSecrets, summary, afterId, remaining)
+    case 'ingress':
+      return sweepIngressTokensBatch(db, dataEncryptionSecrets, summary, afterId, remaining)
   }
 }
 
@@ -1338,6 +1414,12 @@ export async function reencryptAtRestSecrets(
 
     if (cursor.stage === 'alertwebhook') {
       await sweepAlertWebhookSetting(db, dataEncryptionSecrets, summary)
+      cursor = { stage: 'identity' }
+      continue
+    }
+
+    if (cursor.stage === 'identity') {
+      await sweepIdentitySetting(db, dataEncryptionSecrets, summary)
       return { ...summary, completed: true, cursor: null }
     }
 

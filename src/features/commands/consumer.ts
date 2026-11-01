@@ -42,6 +42,7 @@ import {
   failTimedOutDeploy,
   haltRollout,
 } from '../deploy/rollout.ts'
+import { nudgeTunnelRoutesForEnvironment, tunnelSyncDepsFrom } from '../tunnels/nudge.ts'
 import {
   deploymentDurationMs,
   type DeploymentOutcome,
@@ -54,6 +55,7 @@ import {
   stampRelayPublicKey,
   stampRelayReconcileSuccess,
 } from '../fabric/fabric-records.ts'
+import { fabricReconcileAction, stampFabricReconcileFinished } from '../fabric/reconcile-outcome.ts'
 import { reconcileFabricMembership } from '../fabric/enqueue.ts'
 import {
   command,
@@ -262,6 +264,12 @@ const COMMAND_TIMEOUT_MS: Record<CommandType, number> = {
   'server.backups.test-target': 120_000,
   // One `rm -rf` through the root helper per folder, up to 100 folders; a big volume takes minutes.
   'server.folders.remove': 600_000,
+  // Writes one site file, validates it with the web server and reloads once.
+  'server.tunnel.routes': 120_000,
+  // Installs or removes a few services; a first install may fetch the connector program.
+  'server.tunnel.connectors': 300_000,
+  // Reads the connectors' records and asks each one if it is connected; never waits for an update.
+  'server.tunnel.status': 30_000,
   // The run cap: counted from when the server starts the deploy, not from when it was sent.
   'environment.deploy': DEPLOY_RUN_CAP_MS,
   'environment.lifecycle': 120_000,
@@ -308,6 +316,9 @@ export function commandTimeoutMs(type: string): number {
     type === 'server.backups.reconcile' ||
     type === 'server.backups.test-target' ||
     type === 'server.folders.remove' ||
+    type === 'server.tunnel.routes' ||
+    type === 'server.tunnel.connectors' ||
+    type === 'server.tunnel.status' ||
     type === 'environment.deploy' ||
     type === 'environment.lifecycle' ||
     type === 'environment.stop' ||
@@ -826,7 +837,7 @@ async function settleUnansweredCommand(
     'timed_out',
     deps
   )
-  await applyFabricFailedSideEffect(db, record, envelope)
+  await applyFabricFailedSideEffect(db, record, envelope, timeoutMessage ?? 'Command timed out')
 }
 
 /**
@@ -1087,6 +1098,14 @@ async function applyEnabledFabricReconcileSideEffect(
   const payload = parseFabricReconcilePayload(record.payload)
   if (!payload.enabled) return
   const fabricResult = parseFabricReconcileResult(result)
+  if (payload.tunnel === false) {
+    // No tunnel, so no key comes back: the applied hash alone is the proof.
+    // Without a fabric row there is no relay to record it on.
+    if (payload.fabricId) {
+      await stampFabricSuccessFromResult(db, record, envelope, payload.fabricId, fabricResult)
+    }
+    return
+  }
   // Stamp-match skips (`skipped: true`) still carry a valid publicKey — stamp
   // the desired hash so membership convergence does not re-enqueue forever.
   if (!fabricResult.publicKey) return
@@ -1113,6 +1132,7 @@ async function applyFabricSideEffect(
 ): Promise<void> {
   if (record.type !== 'server.fabric.reconcile') return
   try {
+    await stampFabricOutcomeFromResult(db, record, envelope, result)
     await applyEnabledFabricReconcileSideEffect(db, record, envelope, result, deps)
   } catch (err) {
     compatLogWarn(
@@ -1122,14 +1142,45 @@ async function applyFabricSideEffect(
   }
 }
 
+/** Record that the server answered, with the warnings an apply came back with. */
+async function stampFabricOutcomeFromResult(
+  db: Db,
+  record: DispatchableCommandRecord,
+  envelope: CommandEnvelope,
+  result: unknown
+): Promise<void> {
+  const payload = parseFabricReconcilePayload(record.payload)
+  let warnings: string[] | undefined
+  try {
+    warnings = parseFabricReconcileResult(result).warnings
+  } catch {
+    warnings = undefined
+  }
+  await stampFabricReconcileFinished(db, {
+    serverId: envelope.serverId,
+    commandId: record.id,
+    action: fabricReconcileAction(payload),
+    ok: true,
+    ...(warnings ? { warnings } : {}),
+  })
+}
+
 async function applyFabricFailedSideEffect(
   db: Db,
   record: DispatchableCommandRecord,
-  envelope: CommandEnvelope
+  envelope: CommandEnvelope,
+  error: string
 ): Promise<void> {
   if (record.type !== 'server.fabric.reconcile') return
   try {
     const payload = parseFabricReconcilePayload(record.payload)
+    await stampFabricReconcileFinished(db, {
+      serverId: envelope.serverId,
+      commandId: record.id,
+      action: fabricReconcileAction(payload),
+      ok: false,
+      error,
+    })
     await clearRelayAppliedPayloadHash(db, {
       serverId: envelope.serverId,
       ...(payload.enabled && payload.fabricId ? { fabricId: payload.fabricId } : {}),
@@ -1278,6 +1329,7 @@ async function applyEnvironmentDeploySideEffect(
   deps?: CommandConsumerDeps
 ): Promise<void> {
   if (record.type !== 'environment.deploy') return
+  let landedEnvironmentId: string | null = null
   try {
     const payload = parseEnvironmentDeployPayload(record.payload)
     // Only the newest deploy of the environment decides which folders are still in use. A
@@ -1303,6 +1355,7 @@ async function applyEnvironmentDeploySideEffect(
         await advanceRolloutSafely(db, deps, payload.environmentId, payload.generation)
       }
       current = marked !== null
+      if (current) landedEnvironmentId = payload.environmentId
     }
     // A hostings-only run changed the web server config and nothing else: no
     // folders, accounts, sites or containers to record.
@@ -1354,6 +1407,21 @@ async function applyEnvironmentDeploySideEffect(
       'command-consumer',
       `container reconcile failed for command ${record.id}: ${message}`
     )
+  } finally {
+    // The very last step, so the deploy bookkeeping above never waits for it: a
+    // site now runs here (or no longer does), and servers forwarding to it need the new table.
+    if (landedEnvironmentId !== null) {
+      const secrets = consumerFabricSecretFields(deps)
+      await nudgeTunnelRoutesForEnvironment(
+        db,
+        tunnelSyncDepsFrom({
+          commandQueue: deps?.commandQueue,
+          secretsConfig: secrets.secretsConfig,
+          dataEncryptionSecrets: secrets.dataEncryptionSecrets,
+        }),
+        landedEnvironmentId
+      )
+    }
   }
 }
 
@@ -2953,11 +3021,15 @@ async function recordLeafRenewalFailure(
   }
 }
 
-async function applyPendingTlsLeafSideEffect(
+export async function applyPendingTlsLeafSideEffect(
   db: Db,
   record: DispatchableCommandRecord
 ): Promise<void> {
-  if (record.type !== 'managed.apply' && record.type !== 'managed.ingress.reconcile') {
+  if (
+    record.type !== 'managed.apply' &&
+    record.type !== 'managed.ingress.reconcile' &&
+    record.type !== 'server.tunnel.routes'
+  ) {
     return
   }
   try {
@@ -3502,7 +3574,7 @@ async function handlePendingFailed(
   })
   await applyManagedFailedSideEffect(db, record, deps, error)
   await applyEnvironmentDeployFailedSideEffect(db, record, envelope, error, 'failed', deps)
-  await applyFabricFailedSideEffect(db, record, envelope)
+  await applyFabricFailedSideEffect(db, record, envelope, error)
   await applyFirewallFailedSideEffect(db, record, envelope, error)
   await applyPrincipalIdRefusedSideEffect(db, record, error)
 }
@@ -3539,7 +3611,7 @@ async function handlePendingExpired(
     'timed_out',
     deps
   )
-  await applyFabricFailedSideEffect(db, record, envelope)
+  await applyFabricFailedSideEffect(db, record, envelope, pending.error ?? 'Command timed out')
   await applyFirewallFailedSideEffect(db, record, envelope, pending.error ?? 'Command timed out')
 }
 
@@ -3698,7 +3770,7 @@ export async function processCommandEnvelope(
     // A deploy that never reached its server fails its row and halts the
     // rollout, or later batches would wait on an `applying` row forever.
     await applyEnvironmentDeployFailedSideEffect(db, record, envelope, notReady, 'failed', deps)
-    await applyFabricFailedSideEffect(db, record, envelope)
+    await applyFabricFailedSideEffect(db, record, envelope, notReady)
     await settleIngressRecoveryOfCommand(db, record)
     return
   }

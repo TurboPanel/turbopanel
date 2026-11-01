@@ -1,6 +1,6 @@
 {
   "name": "turbopanel",
-  "version": "0.1.21",
+  "version": "0.1.22",
   "license": "AGPL-3.0-only",
   "type": "module",
   "scripts": {
@@ -13,6 +13,7 @@
     "deploy:live": "CLOUDFLARE_ENV=live node scripts/deploy-workers.mjs",
     "deploy:workers": "pnpm run deploy",
     "cf-typegen": "wrangler types --env-interface CloudflareBindings",
+    "identity:set": "node scripts/set-identity-key.mjs",
     "generate:secret": "node scripts/generate-secret.mjs",
     "generate": "drizzle-kit generate --config drizzle.config.mjs",
     "migrate": "node scripts/check-postgres-compat.mjs && node scripts/migrate-locked.mjs",
@@ -25,6 +26,7 @@
     "check:workers-types": "tsc -p tsconfig.workers.json",
     "fmt:check:changed": "sh scripts/check-format-changed.sh",
     "check:vocabulary": "node scripts/check-vocabulary.mjs",
+    "check:guide-references": "node scripts/check-guide-references.mjs",
     "check:test-inventory": "node scripts/check-test-inventory.mjs",
     "notices:generate": "deno task notices:generate",
     "notices:check": "deno task notices:check",
@@ -44,7 +46,7 @@
     "check:metrics-boundaries": "node scripts/check-metrics-boundaries.mjs",
     "check:metrics-parity": "deno test --allow-read src/daemon/metrics/field-registry.test.ts",
     "check:query-cache-boundaries": "node scripts/check-query-cache-boundaries.mjs",
-    "test:hook": "deno task check:types && pnpm run check:do-hibernation && pnpm run check:workers-bundle && pnpm run check:vocabulary && pnpm run check:test-inventory && pnpm run notices:check && pnpm run check:ca-boundary && pnpm run check:instance-acme-boundary && pnpm run check:import-boundaries && pnpm run check:metrics-boundaries && pnpm run check:query-cache-boundaries && pnpm run check:contract-drift && pnpm test:do && deno task test:authn && deno task test:permissions && deno task test:authz && deno task test:paths && deno task test:compose && deno task test:managed && deno task test:admin"
+    "test:hook": "deno task check:types && pnpm run check:do-hibernation && pnpm run check:workers-bundle && pnpm run check:vocabulary && pnpm run check:guide-references && pnpm run check:test-inventory && pnpm run notices:check && pnpm run check:ca-boundary && pnpm run check:instance-acme-boundary && pnpm run check:import-boundaries && pnpm run check:metrics-boundaries && pnpm run check:query-cache-boundaries && pnpm run check:contract-drift && pnpm test:do && deno task test:authn && deno task test:permissions && deno task test:authz && deno task test:paths && deno task test:compose && deno task test:managed && deno task test:admin"
   },
   "dependencies": {
     "@duckdb/node-api": "1.5.5-r.4",

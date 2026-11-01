@@ -14,15 +14,24 @@ import type { CommandEnvelope } from '../commands/envelope.ts'
 import type { CommandQueue } from '../commands/queue.ts'
 import { createCommandRecord, transitionCommand } from '../commands/command-records.ts'
 import {
+  fabricReconcileAction,
+  stampFabricReconcileFinished,
+  stampFabricReconcilePending,
+} from './reconcile-outcome.ts'
+import {
   buildFabricReconcilePayloadFromSnapshot,
   ensureFabricRelays,
   type UnallocatedFabricServer,
   FabricAllocationError,
   type FabricReconcileSnapshot,
   type FabricRecord,
+  getFabricById,
   getOrganizationFabric,
+  isFabricPaused,
   loadFabricReconcileSnapshot,
+  pairSharesTrustedLan,
   type RelayRecord,
+  untrustedLanCandidate,
 } from './fabric-records.ts'
 import type { FabricReconcileCommandPayload } from '../../contracts/commands/schemas.ts'
 import {
@@ -206,6 +215,7 @@ async function buildEnabledReconcilePayloadFromSnapshot(params: {
       ok: true
       payload: FabricReconcileCommandPayload
       desiredHash: string
+      tunnel: boolean
       unreachablePeers: Array<{ serverId: string }>
       gatewayRoutedPeers: Array<{ serverId: string; viaServerId: string }>
     }
@@ -225,6 +235,7 @@ async function buildEnabledReconcilePayloadFromSnapshot(params: {
       ok: true,
       payload: built.payload,
       desiredHash: built.desiredHash,
+      tunnel: built.tunnel,
       unreachablePeers: built.unreachablePeers,
       gatewayRoutedPeers: built.gatewayRoutedPeers,
     }
@@ -248,15 +259,23 @@ function enqueueResultFromBuildFailure(
   return result
 }
 
+/**
+ * Every participating relay applied its desired payload. A relay needs a
+ * public key too, except when its desired payload asks for no tunnel
+ * (`tunnel: false` in `tunnelByServer`): such a daemon never reports a key.
+ */
 export function isFabricMembershipConverged(params: {
   participatingServerIds: readonly string[]
   relays: readonly RelayRecord[]
   desiredHashByServer: ReadonlyMap<string, string>
+  tunnelByServer?: ReadonlyMap<string, boolean>
 }): boolean {
   const byServer = new Map(params.relays.map((row) => [row.serverId, row]))
   for (const serverId of params.participatingServerIds) {
     const relay = byServer.get(serverId)
-    if (!relay?.publicKey) return false
+    if (!relay) return false
+    const keyNeeded = params.tunnelByServer?.get(serverId) !== false
+    if (keyNeeded && !relay.publicKey) return false
     const desired = params.desiredHashByServer.get(serverId)
     if (!desired) return false
     if (relay.metadata.appliedPayloadHash !== desired) return false
@@ -343,8 +362,12 @@ async function desiredHashesForServers(params: {
   snapshot: FabricReconcileSnapshot
   serverIds: readonly string[]
   secrets: FabricSecretDeps
-}): Promise<Map<string, string>> {
+}): Promise<{
+  desiredHashByServer: Map<string, string>
+  tunnelByServer: Map<string, boolean>
+}> {
   const desiredHashByServer = new Map<string, string>()
+  const tunnelByServer = new Map<string, boolean>()
   await forEachSequential(params.serverIds, async (serverId) => {
     const built = await buildEnabledReconcilePayloadFromSnapshot({
       db: params.db,
@@ -352,9 +375,21 @@ async function desiredHashesForServers(params: {
       serverId,
       secrets: params.secrets,
     })
-    if (built.ok) desiredHashByServer.set(serverId, built.desiredHash)
+    if (!built.ok) return
+    desiredHashByServer.set(serverId, built.desiredHash)
+    tunnelByServer.set(serverId, built.tunnel)
   })
-  return desiredHashByServer
+  return { desiredHashByServer, tunnelByServer }
+}
+
+/** Shown when TurboFabric is turned off or removed while a deploy waits for it. */
+export const FABRIC_TURNED_OFF_MESSAGE =
+  'TurboFabric was turned off while this deploy waited for it. Turn it back on, then deploy again.'
+
+/** The fabric still exists and is not paused (read fresh from the database). */
+async function fabricCarriesTraffic(db: Db, fabricId: string): Promise<boolean> {
+  const current = await getFabricById(db, fabricId)
+  return current !== null && !isFabricPaused(current)
 }
 
 async function participatingConvergenceAttempt(params: {
@@ -371,6 +406,11 @@ async function participatingConvergenceAttempt(params: {
   now: () => number
   startedAt: number
 }): Promise<FabricGateOutcome | 'retry'> {
+  // Re-read on every attempt: a pause (or removal) while the deploy waits must
+  // stop it here, never send a tunnel back up.
+  if (!(await fabricCarriesTraffic(params.db, params.fabric.id))) {
+    return { kind: 'turned_off', message: FABRIC_TURNED_OFF_MESSAGE }
+  }
   const remainingMs = Math.max(0, params.timeoutMs - (params.now() - params.startedAt))
   const results = await enqueueFabricReconcileForServers({
     db: params.db,
@@ -398,7 +438,7 @@ async function participatingConvergenceAttempt(params: {
   if (queuedOutcome) return queuedOutcome
 
   const snapshot = await loadFabricReconcileSnapshot(params.db, params.fabric)
-  const desiredHashByServer = await desiredHashesForServers({
+  const desired = await desiredHashesForServers({
     db: params.db,
     snapshot,
     serverIds: params.serverIds,
@@ -408,7 +448,7 @@ async function participatingConvergenceAttempt(params: {
     isFabricMembershipConverged({
       participatingServerIds: params.serverIds,
       relays: snapshot.relays,
-      desiredHashByServer,
+      ...desired,
     })
   ) {
     return { kind: 'ready' }
@@ -468,7 +508,8 @@ export async function awaitParticipatingFabricConvergence(params: {
   }
 }
 
-async function enqueueOne(params: {
+/** Create one `server.fabric.reconcile` command and put it on the queue. */
+export async function enqueueFabricReconcileCommand(params: {
   db: Db
   commandQueue: CommandQueue
   actorType: string
@@ -501,12 +542,24 @@ async function enqueueOne(params: {
       attempt: 1,
       queuedAt: record.queuedAt ?? record.createdAt,
     }
+    await stampFabricReconcilePending(params.db, {
+      serverId: params.serverId,
+      commandId: record.id,
+      action: fabricReconcileAction(params.payload),
+    })
     try {
       await params.commandQueue.enqueue(envelope)
     } catch {
       await transitionCommand(params.db, record.id, {
         status: 'failed',
         error: 'Command queue unavailable',
+      })
+      await stampFabricReconcileFinished(params.db, {
+        serverId: params.serverId,
+        commandId: record.id,
+        action: fabricReconcileAction(params.payload),
+        ok: false,
+        error: 'The command queue was unavailable, so the server was never asked.',
       })
       return {
         serverId: params.serverId,
@@ -559,6 +612,8 @@ async function enqueueFabricReconcileForServer(params: {
   expiresAt: string
   secrets: FabricSecretDeps
   enabled: boolean
+  /** With `enabled: false`: pause (keep the key) instead of a full tear down. */
+  retainKeys?: boolean
   fabric: FabricRecord | null
   snapshot: FabricReconcileSnapshot | null
   serverId: string
@@ -566,13 +621,13 @@ async function enqueueFabricReconcileForServer(params: {
   appliedHashByServer: ReadonlyMap<string, string | undefined>
 }): Promise<FabricEnqueueResult> {
   if (!params.enabled) {
-    return enqueueOne({
+    return enqueueFabricReconcileCommand({
       db: params.db,
       commandQueue: params.commandQueue,
       actorType: params.actorType,
       actorId: params.actorId,
       serverId: params.serverId,
-      payload: { enabled: false },
+      payload: params.retainKeys ? { enabled: false, retainKeys: true } : { enabled: false },
       expiresAt: params.expiresAt,
     })
   }
@@ -598,7 +653,7 @@ async function enqueueFabricReconcileForServer(params: {
       ...enqueueFieldsFromPeerLists(built.unreachablePeers, built.gatewayRoutedPeers),
     }
   }
-  return enqueueOne({
+  return enqueueFabricReconcileCommand({
     db: params.db,
     commandQueue: params.commandQueue,
     actorType: params.actorType,
@@ -619,10 +674,20 @@ export async function enqueueFabricReconcileForServers(params: {
   fabric: FabricRecord | null
   serverIds: readonly string[]
   enabled: boolean
+  /** With `enabled: false`: pause (keep the key) instead of a full tear down. */
+  retainKeys?: boolean
   skipConverged?: boolean
   secretsConfig?: SecretsConfig
   dataEncryptionSecrets?: DerivedSecretsConfig
 }): Promise<FabricEnqueueResult[]> {
+  // Never send enabled:true for a fabric that is paused or gone by now.
+  if (
+    params.enabled &&
+    params.fabric &&
+    !(await fabricCarriesTraffic(params.db, params.fabric.id))
+  ) {
+    return params.serverIds.map((serverId) => ({ serverId, status: 'skipped' }))
+  }
   const expiresAt = new Date(Date.now() + 300_000).toISOString()
   const secrets = fabricSecretEnqueueFields(params)
   const snapshot = await loadEnabledFabricSnapshot(params.db, params.enabled, params.fabric)
@@ -636,6 +701,7 @@ export async function enqueueFabricReconcileForServers(params: {
       expiresAt,
       secrets,
       enabled: params.enabled,
+      ...(params.retainKeys ? { retainKeys: true } : {}),
       fabric: params.fabric,
       snapshot,
       serverId,
@@ -643,6 +709,23 @@ export async function enqueueFabricReconcileForServers(params: {
       appliedHashByServer,
     })
   )
+}
+
+/**
+ * How the rendezvous round treats one pair: a trusted LAN pair has no tunnel
+ * (left out of the path summary), and a tunnel over an untrusted shared
+ * network is tagged so the summary can say it runs over the LAN.
+ */
+function rendezvousPairPath(
+  snapshot: FabricReconcileSnapshot,
+  selfServerId: string,
+  otherServerId: string
+): { skip: boolean; untrustedLanAddress?: string } {
+  if (pairSharesTrustedLan(selfServerId, otherServerId, snapshot.caches)) return { skip: true }
+  const untrusted = untrustedLanCandidate(selfServerId, otherServerId, snapshot.caches)
+  return untrusted?.address
+    ? { skip: false, untrustedLanAddress: untrusted.address }
+    : { skip: false }
 }
 
 export async function reconcileFabricMembership(params: {
@@ -657,7 +740,8 @@ export async function reconcileFabricMembership(params: {
   registry?: DaemonCellRegistry
 }): Promise<FabricEnqueueResult[]> {
   const fabric = await getOrganizationFabric(params.db, params.organizationId)
-  if (!fabric) return []
+  // A paused fabric sends nothing: its servers keep the tunnel down until resume.
+  if (!fabric || isFabricPaused(fabric)) return []
 
   const unallocated: UnallocatedFabricServer[] = []
   await ensureFabricRelays(params.db, {
@@ -675,6 +759,8 @@ export async function reconcileFabricMembership(params: {
       relays: snapshot.relays,
       pathStates: hydrateFabricPathStates(fabric.id, snapshot.relays),
       orgAllowRelay: snapshot.policy.allowRelay,
+      pairPath: (selfServerId, otherServerId) =>
+        rendezvousPairPath(snapshot, selfServerId, otherServerId),
     })
     if (rendezvousRound) {
       snapshot.caches.natEndpointByPair = rendezvousRound.natEndpointByPair
@@ -713,7 +799,7 @@ export async function reconcileFabricMembership(params: {
       return
     }
     results.push({
-      ...(await enqueueOne({
+      ...(await enqueueFabricReconcileCommand({
         db: params.db,
         commandQueue: params.commandQueue,
         actorType: params.actorType,

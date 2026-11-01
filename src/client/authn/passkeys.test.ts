@@ -505,8 +505,14 @@ test('Postgres concurrent passkey assertions of the same incrementing login cons
       credential,
       webauthnChallengeSecrets,
       expectedRpId: rpId,
-      expectedOrigin: origin,
+      expectedOrigins: ['https://other.example.test', origin],
     }
+
+    const wrongOrigin = await verifyPasskeyLogin(db, {
+      ...params,
+      expectedOrigins: ['https://other.example.test'],
+    })
+    assertEquals(wrongOrigin.status, 'invalid')
 
     const [first, second] = await Promise.all([
       verifyPasskeyLogin(db, params),

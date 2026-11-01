@@ -19,6 +19,7 @@ import {
   gatewayRolePatchErrorResponse,
   observedForRelay,
   parseFabricPutBody,
+  parseFabricServerPatchBody,
   parseRelayPatchBody,
   preferredGatewayIdsErrorResponse,
   preferredGatewayInvalidErrorResponse,
@@ -138,7 +139,12 @@ test('parseRelayPatchBody rejects non-objects and oversized advertisedCidrs', ()
 })
 
 test('fabricSettingsResponse omits fabric when TurboFabric is off', () => {
-  assertEquals(fabricSettingsResponse(null), { enabled: false, relays: [] })
+  assertEquals(fabricSettingsResponse(null), {
+    enabled: false,
+    paused: false,
+    relays: [],
+    servers: [],
+  })
   assertEquals(
     fabricSettingsResponse({
       id: 'fab-1',
@@ -148,6 +154,8 @@ test('fabricSettingsResponse omits fabric when TurboFabric is off', () => {
     }),
     {
       enabled: true,
+      paused: false,
+      servers: [],
       fabric: {
         id: 'fab-1',
         cidr: '10.250.0.0/16',
@@ -158,6 +166,35 @@ test('fabricSettingsResponse omits fabric when TurboFabric is off', () => {
       relays: [],
     }
   )
+})
+
+test('fabricSettingsResponse reports a paused fabric as off but keeps its settings', () => {
+  const paused = fabricSettingsResponse({
+    id: 'fab-1',
+    organizationId: 'org-1',
+    cidr: '10.250.0.0/16',
+    options: null,
+    enabled: false,
+  })
+  assertEquals(paused.enabled, false)
+  assertEquals(paused.paused, true)
+  assertEquals(paused.fabric?.id, 'fab-1')
+})
+
+test('parseFabricServerPatchBody accepts the switch and a role, null role = automatic', () => {
+  assertEquals(parseFabricServerPatchBody({ enabled: false }), {
+    ok: true,
+    patch: { enabled: false },
+  })
+  assertEquals(parseFabricServerPatchBody({ role: 'client' }), {
+    ok: true,
+    patch: { role: 'client' },
+  })
+  assertEquals(parseFabricServerPatchBody({ role: null }), { ok: true, patch: { role: null } })
+  assertEquals(parseFabricServerPatchBody({ role: 'member' }).ok, false)
+  assertEquals(parseFabricServerPatchBody({ enabled: 'no' }).ok, false)
+  assertEquals(parseFabricServerPatchBody({}).ok, false)
+  assertEquals(parseFabricServerPatchBody(null).ok, false)
 })
 
 test('parseFabricPutBody accepts an IPv4 containerPool wide enough for a relay /16', () => {
@@ -201,6 +238,7 @@ test('fabricSettingsResponse includes relay rows without presharedKey', () => {
       preferredGatewayIds: [],
       gatewayEligible: false,
       paths: [],
+      reconcile: null,
     },
     {
       serverId: 'srv-2',
@@ -221,6 +259,7 @@ test('fabricSettingsResponse includes relay rows without presharedKey', () => {
       preferredGatewayIds: [],
       gatewayEligible: false,
       paths: [],
+      reconcile: null,
     },
   ]
   const body = fabricSettingsResponse(
@@ -568,6 +607,7 @@ test('observedForRelay picks the newest peer observation by public key', () => {
     }),
   ]
   assertEquals(observedForRelay(relays, WG_KEY), {
+    at: '2020-01-02T00:00:00.000Z',
     lastHandshakeAt: '2020-01-02T00:01:00.000Z',
     transferTx: 99,
   })

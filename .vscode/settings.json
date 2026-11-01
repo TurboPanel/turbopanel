@@ -1,5 +1,5 @@
 {
-  // Standalone-only: ignored while Connected Mode is bound (see AGENTS.md).
+  // Standalone-only: ignored while Connected Mode is bound (see scripts/AGENTS.md).
   // Migrations must also be excluded in SonarCloud Analysis Scope.
   // Workers Vitest files import the virtual `cloudflare:test` module; Deno
   // treats `cloudflare:` as a remote URL scheme (`no-cache`). Vite `?raw`

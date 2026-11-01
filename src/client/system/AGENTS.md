@@ -24,7 +24,7 @@ represented as `container` rows.
 `project.metadata.component` maps to project display names (`src/features/system/hierarchy.ts` — single source of truth): `hosting-ingress` → HTTP/HTTPS Ingress, `managed-ingress` → Database Ingress, `managed-ha` → Database High-Availability, `turbopanel` → Self Hosted TurboPanel Instance.
 
 The databases/brokers above are provisioned into the `turbopanel-system`
-Compose project (see daemon `src/deploy/AGENTS.md` → **Shared HTTP ingress
+Compose project (see daemon `../turbopaneld/src/deploy/AGENTS.md` → **Shared HTTP ingress
 identity**) so their container identity/status is inspectable through the same
 `container` table and client `GET /api/client/v1/containers` surface as tenant
 deploys — with `role: 'turbopanel'` and `service.composeServiceName` in

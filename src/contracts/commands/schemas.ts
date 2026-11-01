@@ -59,6 +59,26 @@ import {
   isValidWireguardPublicKey,
 } from '../../features/fabric/wg.ts'
 import { ENVELOPE_PREFIX_DAEMON } from '../../lib/secrets/data-encryption.ts'
+import {
+  type EnvironmentDeployHostingTunnel,
+  parseDeployHostingTunnel,
+  parseTunnelRoutesPayload,
+  parseTunnelRoutesResult,
+  type TunnelRoutesCommandPayload,
+  type TunnelRoutesCommandResult,
+} from './tunnel-routes.ts'
+import {
+  parseTunnelConnectorsPayload,
+  parseTunnelConnectorsResult,
+  type TunnelConnectorsCommandPayload,
+  type TunnelConnectorsCommandResult,
+} from './tunnel-connectors.ts'
+import {
+  parseTunnelStatusPayload,
+  parseTunnelStatusResult,
+  type TunnelStatusCommandPayload,
+  type TunnelStatusCommandResult,
+} from './tunnel-status.ts'
 import type { CommandType } from '../../features/commands/types.ts'
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -352,8 +372,8 @@ export type FirewallCommandPolicy = {
  *
  * `rules` is the **complete** desired set for one server, the way
  * `server.principals.reconcile` carries every account. `controlPlane.tcpPorts`
- * names the co-located control plane's entrypoint (8443, or 80 + 443 under
- * `lets_encrypt`); the daemon treats those as invariants and refuses a
+ * names the co-located control plane's entrypoint (always 8443; 80 and 443
+ * belong to hosting); the daemon treats those as invariants and refuses a
  * default-drop apply on a co-located host that names none. `sshPorts` is the
  * panel's belief; the daemon unions it with `sshd -T`.
  */
@@ -1476,22 +1496,44 @@ export type FabricReconcileNetworkMaterial = {
 }
 
 /**
+ * Must stay in sync with the daemon `server.fabric.reconcile` shape. A
+ * container range of a server on a shared trusted LAN, routed via that
+ * server's LAN address (`fabric-lan-routes-v1`). The daemon installs IPv4
+ * routes only and picks the NIC whose connected subnet holds `via`.
+ */
+export type FabricReconcileLanRoute = {
+  cidr: string
+  via: string
+}
+
+/**
  * Must stay in sync with the daemon `server.fabric.reconcile` shape.
  * `{ enabled: false }` is a **tear down** (`tp0`, routed bridges, `TP-FORWARD`,
- * keys, state) — not a no-op.
+ * LAN routes, keys, state) — not a no-op. `{ enabled: false, retainKeys: true }`
+ * is a pause: `tp0` goes down, the key, bridges, LAN routes and forwarding
+ * rules stay, so the next enable is instant. It is sent only to a daemon that
+ * lists `fabric-retain-keys-v1`.
+ *
+ * `tunnel: false` (absent means true) and `lanRoutes` are sent only to a
+ * daemon that lists `fabric-lan-routes-v1`. With no tunnel there is no `tp0`
+ * (an existing key is kept), `address` may be absent and `peers` must be
+ * empty; `networks`, `lanRoutes` and forwarding are still applied.
  */
 export type FabricReconcileCommandPayload =
-  | { enabled: false }
+  | { enabled: false; retainKeys?: boolean }
   | {
       enabled: true
       fabricId?: string
       listenPort?: number
       mtu?: number
-      address: string
+      /** Absent only when `tunnel` is false. */
+      address?: string
       prefix: string
       peers: FabricReconcilePeerMaterial[]
       networks?: FabricReconcileNetworkMaterial[]
       gateway?: boolean
+      tunnel?: boolean
+      lanRoutes?: FabricReconcileLanRoute[]
     }
 
 export type FabricPeerHealth = 'healthy' | 'stale' | 'never'
@@ -1522,6 +1564,13 @@ export type FabricReconcileCommandResult = {
   publicKey?: string
   skipped?: boolean
   peers?: FabricReconcileObservedPeer[]
+  /**
+   * Plain sentences about what an apply that worked had to leave out (a LAN
+   * or `tp0` route another interface already holds, container bridges that
+   * wait for Docker). Absent when nothing was left out. Older daemons never
+   * send it.
+   */
+  warnings?: string[]
 }
 
 /** Linux interface name: at most 15 bytes, no slash or whitespace (daemon twin). */
@@ -1651,13 +1700,46 @@ function parseFabricNetworkEntry(value: unknown): FabricReconcileNetworkMaterial
   return network
 }
 
+function parseFabricLanRouteEntry(value: unknown): FabricReconcileLanRoute {
+  if (!isRecord(value)) {
+    throw new TypeError('Invalid fabric lanRoutes entry')
+  }
+  const { cidr, via } = value
+  if (!isString(cidr) || !isValidWireguardAllowedIp(cidr.trim())) {
+    throw new TypeError('Invalid fabric lanRoutes cidr')
+  }
+  if (!isString(via) || !isValidIpAddress(via.trim())) {
+    throw new TypeError('Invalid fabric lanRoutes via')
+  }
+  return { cidr: cidr.trim(), via: via.trim() }
+}
+
+function parseFabricTunnelFlag(value: unknown): boolean | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== 'boolean') throw new TypeError('Invalid fabric tunnel')
+  return value
+}
+
+/** `address` is required unless the payload asks for no tunnel. */
+function parseFabricAddress(value: unknown, tunnel: boolean | undefined): string | undefined {
+  if (value === undefined && tunnel === false) return undefined
+  if (!isString(value) || !isValidWireguardAllowedIp(value)) {
+    throw new TypeError('Invalid fabric address')
+  }
+  return value.trim()
+}
+
+function parseFabricLanRoutes(value: unknown): FabricReconcileLanRoute[] | undefined {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value)) throw new TypeError('Invalid fabric lanRoutes')
+  return value.map(parseFabricLanRouteEntry)
+}
+
 function parseEnabledFabricPayload(
   value: Record<string, unknown>
 ): Extract<FabricReconcileCommandPayload, { enabled: true }> {
-  const address = value.address
-  if (!isString(address) || !isValidWireguardAllowedIp(address)) {
-    throw new TypeError('Invalid fabric address')
-  }
+  const tunnel = parseFabricTunnelFlag(value.tunnel)
+  const address = parseFabricAddress(value.address, tunnel)
   const prefix = value.prefix
   if (!isString(prefix) || !isValidWireguardAllowedIp(prefix)) {
     throw new TypeError('Invalid fabric prefix')
@@ -1665,15 +1747,30 @@ function parseEnabledFabricPayload(
   if (!Array.isArray(value.peers)) {
     throw new TypeError('Invalid fabric peers')
   }
+  if (tunnel === false && value.peers.length > 0) {
+    throw new TypeError('Invalid fabric peers: a payload with no tunnel')
+  }
   const payload: Extract<FabricReconcileCommandPayload, { enabled: true }> = {
     enabled: true,
-    address: address.trim(),
+    ...(address === undefined ? {} : { address }),
     prefix: prefix.trim(),
     peers: value.peers.map(parseFabricPeerEntry),
   }
+  if (tunnel !== undefined) payload.tunnel = tunnel
+  const lanRoutes = parseFabricLanRoutes(value.lanRoutes)
+  if (lanRoutes) payload.lanRoutes = lanRoutes
   if (value.fabricId !== undefined) {
     payload.fabricId = parseFabricUuid(value.fabricId, 'fabricId')
   }
+  applyOptionalFabricFields(payload, value)
+  return payload
+}
+
+/** The optional tunnel settings of an enabled payload, each checked when present. */
+function applyOptionalFabricFields(
+  payload: Extract<FabricReconcileCommandPayload, { enabled: true }>,
+  value: Record<string, unknown>
+): void {
   if (value.listenPort !== undefined) {
     if (!isValidWireguardListenPort(value.listenPort)) {
       throw new TypeError('Invalid fabric listenPort')
@@ -1695,7 +1792,6 @@ function parseEnabledFabricPayload(
     }
     payload.gateway = value.gateway
   }
-  return payload
 }
 
 export function parseFabricReconcilePayload(value: unknown): FabricReconcileCommandPayload {
@@ -1706,7 +1802,10 @@ export function parseFabricReconcilePayload(value: unknown): FabricReconcileComm
     throw new TypeError('Invalid fabric enabled')
   }
   if (!value.enabled) {
-    return { enabled: false }
+    if (value.retainKeys !== undefined && typeof value.retainKeys !== 'boolean') {
+      throw new TypeError('Invalid fabric retainKeys')
+    }
+    return value.retainKeys === true ? { enabled: false, retainKeys: true } : { enabled: false }
   }
   return parseEnabledFabricPayload(value)
 }
@@ -1738,7 +1837,25 @@ export function parseFabricReconcileResult(value: unknown): FabricReconcileComma
     }
     result.peers = value.peers.map(parseFabricObservedPeer)
   }
+  if (value.warnings !== undefined) {
+    result.warnings = parseFabricResultWarnings(value.warnings)
+  }
   return result
+}
+
+const FABRIC_RESULT_WARNINGS_MAX = 64
+const FABRIC_RESULT_WARNING_MAX_LENGTH = 500
+
+function parseFabricResultWarnings(value: unknown): string[] {
+  if (!Array.isArray(value) || value.length > FABRIC_RESULT_WARNINGS_MAX) {
+    throw new TypeError('Invalid fabric reconcile result warnings')
+  }
+  return value.map((entry) => {
+    if (!isString(entry) || entry.length === 0 || entry.length > FABRIC_RESULT_WARNING_MAX_LENGTH) {
+      throw new TypeError('Invalid fabric reconcile result warning')
+    }
+    return entry
+  })
 }
 
 function parseNonNegativeInteger(value: unknown, field: string): number {
@@ -2094,6 +2211,13 @@ export type EnvironmentDeploySite = {
 }
 
 /**
+ * The build kind the panel puts on the wire for an image-built source during
+ * the expand phase of the rename. An older daemon only accepts this value, so
+ * the new `image` value stays inside the panel until the contract phase.
+ */
+export const IMAGE_BUILD_WIRE_KIND = 'railpack' as const
+
+/**
  * How the daemon turns a Git checkout into a runnable release.
  *
  * `env` is a **non-secret** build-time map only — build secrets keep riding
@@ -2101,19 +2225,24 @@ export type EnvironmentDeploySite = {
  * never land in a release manifest.
  *
  * `kind: 'native'` is the checkout → build → promote directory release.
- * `kind: 'railpack'` swaps the build step for Railpack + BuildKit, which emits
- * an OCI image the daemon tags and feeds back into runtime compose as
- * `services.<name>.image` — there is no promoted tree and no `current` symlink
- * for it, so `outputDirectory` is meaningless and is **ignored** (never
- * rejected: a stale value left behind by a mode switch must not fail parsing).
- * `installCommand` / `buildCommand` / `env` stay optional hints Railpack's
- * zero-config detection may or may not honor.
+ * `kind: 'image'` swaps the build step for an auto-detected container image
+ * build, which emits an OCI image the daemon tags and feeds back into runtime
+ * compose as `services.<name>.image` — there is no promoted tree and no
+ * `current` symlink for it, so `outputDirectory` is meaningless and is
+ * **ignored** (never rejected: a stale value left behind by a mode switch must
+ * not fail parsing). `installCommand` / `buildCommand` / `env` stay optional
+ * hints the zero-config detection may or may not honor.
  *
- * `kind: 'static'` is reserved for the site release phase; only
- * `native` and `railpack` are produced today.
+ * `kind: 'static'` is reserved for the site release phase; only `native` and
+ * the image kind are produced today.
+ *
+ * Expand phase of the rename: the panel accepts both the new `image` value and
+ * the old value everywhere it reads one, but keeps SENDING the old value on the
+ * wire (`IMAGE_BUILD_WIRE_KIND`) because an older daemon rejects `image` at its
+ * set check. The contract phase flips the send once every daemon accepts both.
  */
 export type EnvironmentDeploySourceBuild = {
-  kind: 'native' | 'static' | 'railpack'
+  kind: 'native' | 'static' | 'image' | 'railpack'
   /**
    * Package manager for a `kind: 'native'` node-app install. Omitted means
    * the daemon auto-detects from the lockfile at build time. An explicit
@@ -2710,6 +2839,12 @@ export type EnvironmentDeployHosting = {
    */
   bindAddress?: string
   /**
+   * Tunnel names of this hosting and who may reach them. When present the
+   * server answers those names only to local connectors and the listed peer
+   * addresses, and also listens on `extraBind`. Absent = no tunnel names.
+   */
+  tunnel?: EnvironmentDeployHostingTunnel
+  /**
    * `http` (default/omitted) routes `hostnames` through Traefik + hosting Caddy.
    * `tcp` / `udp` publish `ports[]` straight through Traefik — no hostname/TLS
    * routing.
@@ -2749,10 +2884,12 @@ export type EnvironmentDeployContainer = {
  * result.
  *
  * Lets the release-history / rollback surface name a release without a second
- * round trip to the host. A **Railpack** release has no promoted directory and
+ * round trip to the host. An image-built release has no promoted directory and
  * no commit-backed tree to point at, so its identity there is the image tag
- * plus the pinned tools that produced it (`railpackFrontendVersion` /
- * `railpackPlanVersion`); a native release omits all three.
+ * plus the pinned tools that produced it (`builderFrontendVersion` /
+ * `builderPlanVersion`); a native release omits all three. The parser also
+ * accepts the older field names from a daemon that has not moved yet and
+ * reports them under the new names.
  */
 export type EnvironmentDeployResultRelease = {
   composeServiceName: string
@@ -2760,8 +2897,8 @@ export type EnvironmentDeployResultRelease = {
   releaseId: string
   commitSha: string
   imageTag?: string
-  railpackFrontendVersion?: string
-  railpackPlanVersion?: string
+  builderFrontendVersion?: string
+  builderPlanVersion?: string
 }
 
 /**
@@ -2994,6 +3131,18 @@ function applyOptionalDeployHostingFields(
   if (proxy) hosting.proxy = proxy
   const bindAddress = parseDeployHostingBindAddress(entry.bindAddress)
   if (bindAddress) hosting.bindAddress = bindAddress
+  const tunnel = parseDeployHostingTunnel(entry.tunnel, hosting.hostnames)
+  if (tunnel) hosting.tunnel = tunnel
+  if (
+    tunnel &&
+    hosting.tlsMode === 'acme' &&
+    tunnel.hostnames.some((name) => !tunnel.openHostnames?.includes(name))
+  ) {
+    // A name that only arrives through a tunnel must never ask for a public certificate.
+    throw new TypeError(
+      'Invalid environment.deploy tunnel: tlsMode acme needs every tunnel name open'
+    )
+  }
   const protocol = parseDeployHostingProtocol(entry.protocol)
   if (protocol) hosting.protocol = protocol
   const ports = parseDeployHostingPorts(entry.ports)
@@ -3665,6 +3814,7 @@ const SOURCE_PROVIDERS = new Set<EnvironmentDeploySource['provider']>(['github',
 const SOURCE_BUILD_KINDS = new Set<EnvironmentDeploySourceBuild['kind']>([
   'native',
   'static',
+  'image',
   'railpack',
 ])
 
@@ -4740,6 +4890,11 @@ function parseDeployResultSites(value: unknown): EnvironmentDeployResultSite[] |
   return out.length > 0 ? out : undefined
 }
 
+/** First argument that is a string (the new field name wins over the old one). */
+function firstString(...values: unknown[]): string | undefined {
+  return values.find(isString)
+}
+
 /** Cap mirrors {@link MAX_ENVIRONMENT_DEPLOY_CONTAINERS} — same blast radius. */
 const MAX_ENVIRONMENT_DEPLOY_RESULT_RELEASES = 100
 
@@ -4761,18 +4916,19 @@ function parseDeployResultReleases(value: unknown): EnvironmentDeployResultRelea
     ) {
       continue
     }
+    const builderFrontendVersion = firstString(
+      entry.builderFrontendVersion,
+      entry.railpackFrontendVersion
+    )
+    const builderPlanVersion = firstString(entry.builderPlanVersion, entry.railpackPlanVersion)
     out.push({
       composeServiceName: entry.composeServiceName,
       serviceId: entry.serviceId,
       releaseId: entry.releaseId,
       commitSha: entry.commitSha,
       ...(isString(entry.imageTag) ? { imageTag: entry.imageTag } : {}),
-      ...(isString(entry.railpackFrontendVersion)
-        ? { railpackFrontendVersion: entry.railpackFrontendVersion }
-        : {}),
-      ...(isString(entry.railpackPlanVersion)
-        ? { railpackPlanVersion: entry.railpackPlanVersion }
-        : {}),
+      ...(builderFrontendVersion === undefined ? {} : { builderFrontendVersion }),
+      ...(builderPlanVersion === undefined ? {} : { builderPlanVersion }),
     })
   }
   return out.length > 0 ? out : undefined
@@ -4817,6 +4973,15 @@ export type EnvironmentStopCommandPayload = {
    * Only a delete teardown sets it, on the last stop it sends to a server.
    */
   retirePrincipals?: Array<{ username: string }>
+  /**
+   * Remove the environment's compose folder
+   * (`<stateDir>/deployments/<projectId>/<environmentId>`), including anything a
+   * relative bind such as `./data` wrote there. Only an environment or project
+   * delete sets it. Without it the daemon removes only its own compose files and
+   * keeps everything a service wrote, so a Destroy or a server leaving the
+   * environment never loses that data.
+   */
+  removeDeploymentDir?: true
 }
 
 export type EnvironmentStopCommandResult = {
@@ -4993,6 +5158,7 @@ export function parseEnvironmentStopPayload(value: unknown): EnvironmentStopComm
     ...(siteReleases !== undefined ? { siteReleases } : {}),
     ...(releaseCleanup !== undefined ? { releaseCleanup } : {}),
     ...(retirePrincipals !== undefined ? { retirePrincipals } : {}),
+    ...(value.removeDeploymentDir === true ? { removeDeploymentDir: true as const } : {}),
   }
 }
 
@@ -5401,6 +5567,14 @@ export type ManagedApplyCredential = {
    * behaviour); only sent for `recipe` or `self`.
    */
   grantMode?: 'preset' | 'recipe' | 'self'
+  /**
+   * `backup`: the cluster's backup login. `role` stays `user` so an older
+   * daemon still reads the entry (it drops this field and makes a login with
+   * no rights); a daemon with `managed-backup-login-v1` gives it the read-only
+   * rights a full dump needs on every listed database. Absent for every other
+   * login.
+   */
+  kind?: 'backup'
   /** Daemon-recipient sealed password (`tpdaemon.…`). */
   password: string
 }
@@ -6601,6 +6775,12 @@ function parseManagedApplyCredentialEntry(entry: unknown): ManagedApplyCredentia
       throw new Error('Invalid managed.apply credentials grantMode')
     }
     credential.grantMode = entry.grantMode
+  }
+  if (entry.kind !== undefined) {
+    if (entry.kind !== 'backup') {
+      throw new Error('Invalid managed.apply credentials kind')
+    }
+    credential.kind = entry.kind
   }
   return credential
 }
@@ -8863,6 +9043,9 @@ export function parseCommandPayload(
   | BackupsReconcileCommandPayload
   | BackupTargetTestCommandPayload
   | FoldersRemoveCommandPayload
+  | TunnelRoutesCommandPayload
+  | TunnelConnectorsCommandPayload
+  | TunnelStatusCommandPayload
   | EnvironmentDeployCommandPayload
   | EnvironmentLifecycleCommandPayload
   | EnvironmentStopCommandPayload
@@ -8878,6 +9061,8 @@ export function parseCommandPayload(
   | StorageBackupCommandPayload
   | StorageRestoreCommandPayload
   | SystemReconcileCommandPayload {
+  // Held outside the switch, which is at its size limit.
+  if (type === 'server.tunnel.status') return parseTunnelStatusPayload(value)
   switch (type) {
     case 'daemon.ping':
       return parsePingPayload(value)
@@ -8905,6 +9090,10 @@ export function parseCommandPayload(
       return parseBackupTargetTestPayload(value)
     case 'server.folders.remove':
       return parseFoldersRemovePayload(value)
+    case 'server.tunnel.routes':
+      return parseTunnelRoutesPayload(value)
+    case 'server.tunnel.connectors':
+      return parseTunnelConnectorsPayload(value)
     case 'environment.deploy':
       return parseEnvironmentDeployPayload(value)
     case 'environment.lifecycle':
@@ -8955,6 +9144,9 @@ export function parseCommandResult(
   | BackupsReconcileCommandResult
   | BackupTargetTestCommandResult
   | FoldersRemoveCommandResult
+  | TunnelRoutesCommandResult
+  | TunnelConnectorsCommandResult
+  | TunnelStatusCommandResult
   | EnvironmentDeployCommandResult
   | EnvironmentLifecycleCommandResult
   | EnvironmentStopCommandResult
@@ -8970,6 +9162,7 @@ export function parseCommandResult(
   | StorageBackupCommandResult
   | StorageRestoreCommandResult
   | SystemReconcileCommandResult {
+  if (type === 'server.tunnel.status') return parseTunnelStatusResult(value)
   switch (type) {
     case 'daemon.ping':
       return parsePingResult(value)
@@ -8997,6 +9190,10 @@ export function parseCommandResult(
       return parseBackupTargetTestResult(value)
     case 'server.folders.remove':
       return parseFoldersRemoveResult(value)
+    case 'server.tunnel.routes':
+      return parseTunnelRoutesResult(value)
+    case 'server.tunnel.connectors':
+      return parseTunnelConnectorsResult(value)
     case 'environment.deploy':
       return parseEnvironmentDeployResult(value)
     case 'environment.lifecycle':

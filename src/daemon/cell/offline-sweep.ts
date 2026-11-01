@@ -3,7 +3,7 @@
  * that closes the "hard poweroff never shows offline" gap: a daemon that
  * disappears without a clean WebSocket close (power loss, network partition,
  * kernel panic) leaves no `webSocketClose`/`webSocketError` event, so nothing
- * ever tells Postgres the server went away (see AGENTS.md → Daemon Cell →
+ * ever tells Postgres the server went away (see src/daemon/cell/AGENTS.md →
  * "Presence model" disconnect-first trade-off).
  *
  * Design ("Option B"):
@@ -34,7 +34,7 @@
  *
  * This intentionally does NOT reintroduce a per-DO recurring alarm — every
  * `setAlarm()` reschedule is a billed SQLite row write (see do.ts "Alarm /
- * hibernation" + AGENTS.md Daemon Cell billing model). Centralizing the
+ * hibernation" + src/daemon/cell/AGENTS.md billing model). Centralizing the
  * "when to check" clock into one Cron Trigger avoids that cost entirely and
  * scales with the number of *connected* servers, not the number of ticks.
  *
@@ -72,6 +72,14 @@ import { runPrincipalRemovalSweep } from '../../client/principals/removal-sweep.
 import type { FirewallApplyGate } from '../../features/firewall/enforcement.ts'
 import { runFirewallPreviewSweep } from '../../features/firewall/preview.ts'
 import { runLeafRenewalSweepTick } from '../../client/tls/leaf-renewal-sweep.ts'
+import { runTunnelConnectorsSweepTick } from '../../features/tunnels/connector-sync.ts'
+import { runBadgeRecheckSweepTick } from '../../features/tunnels/badge-recheck.ts'
+import { runTunnelRemovalSweepTick } from '../../features/tunnels/removal.ts'
+import { runDnsCertificateSweepTick } from '../../features/tls/dns-certificates/sweep.ts'
+import { buildDnsCertContext } from '../../client/tls/dns-certificate-context.ts'
+import { runHttpIssuanceSweepTick } from '../../client/tls/http-issuance-sweep.ts'
+import { runTunnelStatusPollTick } from '../../features/tunnels/status-poll.ts'
+import { peerLeafDelivery, runTunnelRoutesSweepTick } from '../../features/tunnels/sync.ts'
 import { runHostingLetsEncryptSweepTick } from '../../client/hostings/letsencrypt-sweep.ts'
 import { type AlertSender, NOOP_ALERT_SENDER } from '../../features/alerts/alert-sender.ts'
 import { cachedForEnv } from './notification-email-cache.ts'
@@ -1132,6 +1140,7 @@ async function runQueuedCronSweeps(
   tlsRenewal: CronTlsRenewal | null | undefined,
   firewallApplyGate: FirewallApplyGate,
   registry: DaemonCellRegistry,
+  env: CloudflareBindings,
   signal?: AbortSignal
 ): Promise<void> {
   try {
@@ -1173,9 +1182,9 @@ async function runQueuedCronSweeps(
     // Let's Encrypt requests waiting for DNS. With the secrets bundle a newly
     // pinned certificate goes out at once; without it the panel asks for a redeploy.
     await runIsolatedSweep(signal, 'hosting-letsencrypt-sweep-failed', () =>
-      runHostingLetsEncryptSweepTick(
-        db,
-        tlsRenewal
+      runHostingLetsEncryptSweepTick(db, {
+        ...(signal ? { signal } : {}),
+        ...(tlsRenewal
           ? {
               apply: {
                 commandQueue,
@@ -1183,14 +1192,61 @@ async function runQueuedCronSweeps(
                 dataEncryptionSecrets: tlsRenewal.dataEncryptionSecrets,
               },
             }
-          : {}
-      )
+          : {}),
+      })
     )
     if (tlsRenewal) {
       // Resumes from the durable LEAF_RENEWAL_SWEEP_LOCK cursor (advanced per
       // bounded batch; reset when the sweep completes or the cursor is invalid).
       await runIsolatedSweep(signal, 'leaf-renewal-sweep-failed', () =>
-        runLeafRenewalSweepTick(db, commandQueue, tlsRenewal)
+        runLeafRenewalSweepTick(db, commandQueue, {
+          ...tlsRenewal,
+          deliverPeerLeaf: peerLeafDelivery(commandQueue, tlsRenewal),
+        })
+      )
+      // Tunnel forwarding tables: a changed table, or one a server missed while
+      // offline, goes out again. An unchanged table is a no-op on the daemon.
+      await runIsolatedSweep(signal, 'tunnel-routes-sweep-failed', () =>
+        runTunnelRoutesSweepTick(db, { commandQueue, ...tlsRenewal })
+      )
+      // Tunnel connectors: each carrying server is told to run its tunnels, and
+      // to drop the ones that moved away. A resend leaves a running connector alone.
+      await runIsolatedSweep(signal, 'tunnel-connectors-sweep-failed', () =>
+        runTunnelConnectorsSweepTick(db, { commandQueue, ...tlsRenewal })
+      )
+      // Tunnels being removed: once their connectors have stopped the provider
+      // lets go of them; tried again after a growing wait until it does.
+      await runIsolatedSweep(signal, 'tunnel-removal-sweep-failed', () =>
+        runTunnelRemovalSweepTick(db, { secrets: tlsRenewal.dataEncryptionSecrets })
+      )
+      // DNS-validated certificates: each order moves one step, leftovers are tidied,
+      // and a certificate near its renewal time is ordered again.
+      await runIsolatedSweep(signal, 'dns-certificate-sweep-failed', () =>
+        runDnsCertificateSweepTick(
+          buildDnsCertContext(db, {
+            secrets: tlsRenewal.dataEncryptionSecrets,
+            push: { commandQueue, secretsConfig: tlsRenewal.secretsConfig },
+          })
+        )
+      )
+      // Certificates a serving server orders at the panel's request: moves each open
+      // request on, hands a finished pair to the sites, starts first orders and renewals.
+      await runIsolatedSweep(signal, 'http-certificate-sweep-failed', () =>
+        runHttpIssuanceSweepTick(db, {
+          registry,
+          push: { commandQueue, secretsConfig: tlsRenewal.secretsConfig },
+          secrets: tlsRenewal.dataEncryptionSecrets,
+          env: env as unknown as Record<string, string | undefined>,
+        })
+      )
+      // API Tokens of provider accounts: a daily look at what each still reaches, so a
+      // rolled or removed token is found before a write fails.
+      await runIsolatedSweep(signal, 'tunnel-token-recheck-failed', () =>
+        runBadgeRecheckSweepTick(db, { secrets: tlsRenewal.dataEncryptionSecrets })
+      )
+      // Connector versions per server: record the last answer, ask again when due.
+      await runIsolatedSweep(signal, 'tunnel-status-poll-failed', () =>
+        runTunnelStatusPollTick(db, commandQueue)
       )
       // Orphaned ProxySQL frontends: teardown needs a full
       // `managed.ingress.reconcile`, so it can only run when the cron has the
@@ -1471,7 +1527,11 @@ async function runBillingOptionalPhases(
       phasesSkipped,
       async () => {
         const client = createStripeClient(billingConfig)
-        await runPendingStripeProjections({ db, client })
+        await runPendingStripeProjections({
+          db,
+          client,
+          daemonCellRegistry: createDurableObjectDaemonCellRegistry(env, db),
+        })
       }
     ))
   ) {
@@ -1646,6 +1706,7 @@ async function runOptionalCronPhases(
       tlsRenewal,
       opts.firewallApplyGate,
       createDurableObjectDaemonCellRegistry(env, db),
+      env,
       signal
     )
   )

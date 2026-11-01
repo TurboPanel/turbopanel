@@ -7,7 +7,11 @@ import { inArray } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { datacenter, server } from '../../db/schema.ts'
 import { reportedIpsFromServerMetadata } from '../../contracts/server-addresses.ts'
-import { getOrganizationFabric, listFabricRelays } from '../fabric/fabric-records.ts'
+import {
+  getOrganizationFabric,
+  isFabricPaused,
+  listFabricRelays,
+} from '../fabric/fabric-records.ts'
 import {
   loadDatacenterMembershipsForServers,
   sharedDatacenterIds,
@@ -56,7 +60,8 @@ async function loadDatacenterNames(db: Db, datacenterIds: string[]): Promise<Map
 
 async function loadFabricRelays(db: Db, organizationId: string): Promise<TrafficMapRelay[]> {
   const fabricRecord = await getOrganizationFabric(db, organizationId)
-  if (!fabricRecord) return []
+  // A paused fabric carries no traffic, so it is not drawn as a path.
+  if (!fabricRecord || isFabricPaused(fabricRecord)) return []
   return await listFabricRelays(db, fabricRecord.id)
 }
 

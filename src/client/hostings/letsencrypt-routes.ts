@@ -36,6 +36,13 @@ import {
   resolveHostingBind,
   resolveHostingProtocol,
 } from '../../features/hostings/hosting-options.ts'
+import {
+  type CaaLookup,
+  type Port80Probe,
+  precheckProbes,
+} from '../../features/hostings/certificate-precheck.ts'
+import { settleTunnelOnlyHosting } from '../../features/tunnels/tunnel-only-certificate.ts'
+import { loadHostingTunnelPaths } from '../../features/tunnels/hosting-tunnel-paths.ts'
 import { requestLetsEncrypt } from '../../features/hostings/use-letsencrypt.ts'
 import { getCommandQueue } from '../../features/commands/queue.ts'
 import { assertNotSystemOwnedOr403, getOrgId, parseJsonBody } from '../shared.ts'
@@ -58,6 +65,9 @@ import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 
 export type HostingLetsEncryptDeps = {
   lookup?: DnsLookup
+  /** CAA and port-80 probes; when `lookup` is injected only the probes passed here run. */
+  caaLookup?: CaaLookup
+  port80?: Port80Probe
   now?: () => Date
   /** Where the hostings-only apply is queued; defaults to the request's queue and registry. */
   applyDeps?: (c: Context<AppEnv>) => HostingApplyDeps
@@ -85,9 +95,10 @@ function isHostingReadRow(value: unknown): value is HostingReadRow {
 }
 
 /**
- * Adds the derived `certificate` block to what `GET /hostings` and
- * `GET /hostings/:id` return, so both reads say the same thing. Registered
- * before the hosting routes: it lets them answer, then enriches the answer.
+ * Adds the derived `certificate` block and the `tunnels` paths to what
+ * `GET /hostings` and `GET /hostings/:id` return, so both reads say the same
+ * thing. Registered before the hosting routes: it lets them answer, then
+ * enriches the answer.
  */
 function enrichHostingReads(now: () => Date): MiddlewareHandler<AppEnv> {
   return async (c, next) => {
@@ -115,15 +126,20 @@ function enrichHostingReads(now: () => Date): MiddlewareHandler<AppEnv> {
               )
             )
     const pendingById = new Map(pendingRows.map((row) => [row.id, row.pendingAt]))
-    const certificates = await loadHostingCertificates(
-      db,
-      orgResult,
-      rows.map((row) => ({ ...row, pendingAt: pendingById.get(row.id) ?? null })),
-      now()
-    )
+    const at = now()
+    const [certificates, tunnelPaths] = await Promise.all([
+      loadHostingCertificates(
+        db,
+        orgResult,
+        rows.map((row) => ({ ...row, pendingAt: pendingById.get(row.id) ?? null })),
+        at
+      ),
+      loadHostingTunnelPaths(db, orgResult, rows, at),
+    ])
     const withCertificate = (row: HostingReadRow) => ({
       ...row,
       certificate: certificates.get(row.id) ?? null,
+      tunnels: tunnelPaths.get(row.id) ?? [],
     })
     const enriched = Array.isArray(list)
       ? { ...body, hostings: list.filter(isHostingReadRow).map(withCertificate) }
@@ -252,6 +268,50 @@ async function withLibraryPickApply(
   }
 }
 
+/** The hosting as the page shows it after a Let's Encrypt request, with its derived certificate. */
+async function loadFreshHosting(db: Db, organizationId: string, id: string, at: Date) {
+  const [fresh] = await db
+    .select({
+      id: hosting.id,
+      name: hosting.name,
+      serviceId: hosting.serviceId,
+      tlsId: hosting.tlsId,
+      options: hosting.options,
+      metadata: hosting.metadata,
+      pendingAt: hosting.pendingAt,
+      updatedAt: hosting.updatedAt,
+    })
+    .from(hosting)
+    .where(eq(hosting.id, id))
+    .limit(1)
+  if (!fresh) return null
+  const certificate = (await loadHostingCertificates(db, organizationId, [fresh], at)).get(id)
+  return { fresh, certificate }
+}
+
+/**
+ * The answer for a site whose names only a tunnel serves, or null when a
+ * public certificate may still be wanted. Any row made for the site is
+ * released first; the body says why with `tunnelOnly`.
+ */
+async function answerTunnelOnly(
+  c: Context<AppEnv>,
+  db: Db,
+  organizationId: string,
+  id: string,
+  at: Date
+): Promise<Response | null> {
+  if (!(await settleTunnelOnlyHosting(db, { organizationId, hostingId: id }))) return null
+  const settled = await loadFreshHosting(db, organizationId, id, at)
+  if (!settled) return c.json({ error: 'Not found' }, 404)
+  return c.json({
+    hosting: settled.fresh,
+    certificate: settled.certificate ?? null,
+    needsDeploy: false,
+    tunnelOnly: true,
+  })
+}
+
 export function registerHostingLetsEncryptRoutes(
   router: Hono<AppEnv>,
   opts: AuthRouteOpts,
@@ -262,6 +322,7 @@ export function registerHostingLetsEncryptRoutes(
   }
   const secrets = opts.secrets
   const lookup = deps.lookup ?? runtimeDnsLookup()
+  const probes = precheckProbes(deps)
   const now = deps.now ?? (() => new Date())
   const applyDeps = deps.applyDeps ?? requestApplyDeps
 
@@ -303,10 +364,15 @@ export function registerHostingLetsEncryptRoutes(
       .limit(1)
     if (!row) return c.json({ error: 'Not found' }, 404)
 
+    // Names that only a tunnel serves need no public certificate: no row, no order.
+    const tunnelOnly = await answerTunnelOnly(c, db, organizationId, id, now())
+    if (tunnelOnly) return tunnelOnly
+
     const www = readHostingWwwMode(row.options)
     const result = await requestLetsEncrypt({
       store: createLetsEncryptStore(db),
       lookup,
+      probes,
       now: now(),
       hosting: { ...row, organizationId },
       acmeEnabled: await loadAcmeEnabled(db, organizationId),
@@ -344,22 +410,9 @@ export function registerHostingLetsEncryptRoutes(
       context: requestAuditContext(result.outcome, www, applyOutcome),
     })
 
-    const [fresh] = await db
-      .select({
-        id: hosting.id,
-        name: hosting.name,
-        serviceId: hosting.serviceId,
-        tlsId: hosting.tlsId,
-        options: hosting.options,
-        metadata: hosting.metadata,
-        pendingAt: hosting.pendingAt,
-        updatedAt: hosting.updatedAt,
-      })
-      .from(hosting)
-      .where(eq(hosting.id, id))
-      .limit(1)
-    if (!fresh) return c.json({ error: 'Not found' }, 404)
-    const certificate = (await loadHostingCertificates(db, organizationId, [fresh], now())).get(id)
+    const loaded = await loadFreshHosting(db, organizationId, id, now())
+    if (!loaded) return c.json({ error: 'Not found' }, 404)
+    const { fresh, certificate } = loaded
     return c.json({
       hosting: fresh,
       certificate: certificate ? { ...certificate, dns: result.dns } : null,
@@ -415,6 +468,7 @@ export function registerHostingLetsEncryptRoutes(
       expectedAddresses: await store.expectedAddresses({ ...row, organizationId }),
       lookup,
       now: now(),
+      probes,
     })
     return c.json({ dns })
   })

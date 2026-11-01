@@ -1,4 +1,5 @@
 import { eq } from 'drizzle-orm'
+import type { PanelIdentity } from '../../lib/panel-identity/identity.ts'
 import { getCookie } from 'hono/cookie'
 import { type Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
@@ -99,6 +100,13 @@ export type AuthRouteOpts = {
   signupEnvOverride: SignupEnvOverride | undefined
   emailFrom?: string
   baseUrl?: string
+  /**
+   * Reads the Platform CA bundle `GET /api/daemon/v1/instance/ca` serves, so
+   * a self-hosted install command can carry its fingerprints. Deno only.
+   */
+  readPlatformCaPem?: () => Promise<string>
+  /** Control plane identity; the license mint response carries its fingerprints. */
+  panelIdentity?: () => Promise<PanelIdentity | null>
 }
 
 export type SessionResponse = {

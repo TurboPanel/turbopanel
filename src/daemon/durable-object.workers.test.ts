@@ -151,9 +151,15 @@ async function waitForWebSocketMessageAfterAttachVersion(
 /** Consume the attach version frame that the cell sends before outbox traffic. */
 async function drainAttachVersionFrame(ws: WebSocket, timeoutMs = 5000): Promise<void> {
   const raw = await waitForWebSocketMessage(ws, timeoutMs)
-  const parsed = JSON.parse(raw) as { type?: string; instanceVersion?: string }
+  const parsed = JSON.parse(raw) as {
+    type?: string
+    instanceVersion?: string
+    heartbeatSeconds?: number
+  }
   expect(parsed.type).toBe('version')
   expect(typeof parsed.instanceVersion).toBe('string')
+  // High Availability keeps the 60-second ping.
+  expect(parsed.heartbeatSeconds).toBe(60)
 }
 
 async function waitFor(
@@ -1688,6 +1694,57 @@ describe.sequential('DaemonCellObject', () => {
       expect(snapshot.lastSeenAt).toBeTruthy()
       expect(snapshot.daemonBuild?.commit).toBe('abc')
       expect(snapshot.daemonBuild?.buildId).toBe('1')
+    })
+
+    ws.close(1000, 'test done')
+  })
+
+  it('a hello advertising many names this control plane does not know stays connected', async () => {
+    const serverId = 'test-srv-hello-newer-features'
+    const { db, updateCalls } = createProjectionRecordingDb({ connected: false })
+    setDaemonCellProjectionDbFactoryForTests(() => db)
+
+    const stub = env.DAEMON_CELL.getByName(serverId)
+    const { ws } = await openDaemonWebSocket(stub, serverId)
+    let closedWith: number | null = null
+    ws.addEventListener('close', (event) => {
+      closedWith = event.code
+    })
+
+    await waitFor(() => {
+      expect(updateCalls.length).toBeGreaterThan(0)
+    })
+
+    ws.send(
+      JSON.stringify({
+        type: 'hello',
+        at: new Date().toISOString(),
+        daemonBuild: { commit: 'abc', buildId: '1' },
+        features: [
+          ...Array.from({ length: 500 }, (_, index) => `newer-feature-${index}-v1`),
+          7,
+          'managed-upgrade-v1',
+        ],
+        someFutureField: { nested: true },
+      })
+    )
+
+    await waitFor(async () => {
+      const snapshotResponse = await cellRpc(stub, serverId, '/rpc/snapshot', { method: 'GET' })
+      const snapshot = (await snapshotResponse.json()) as {
+        lastSeenAt?: string
+        daemonBuild?: { commit: string }
+      }
+      expect(snapshot.daemonBuild?.commit).toBe('abc')
+    })
+    expect(closedWith).toBeNull()
+    // Only the one name this control plane knows is stored; the 500 newer names and the
+    // malformed entry are dropped.
+    await waitFor(() => {
+      const stored = updateCalls
+        .map((call) => (call.daemon as ServerDaemonJsonb | undefined)?.projection?.features)
+        .find((features) => features !== undefined)
+      expect(stored).toEqual(['managed-upgrade-v1'])
     })
 
     ws.close(1000, 'test done')

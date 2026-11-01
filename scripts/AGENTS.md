@@ -1,6 +1,6 @@
 # CI analysis & coverage (`scripts/`, SonarQube) — AGENTS.md
 
-Moved from the root `AGENTS.md` (**Documentation discipline → SonarQube**).
+Moved from the root `AGENTS.md` (formerly **Documentation discipline → SonarQube**).
 Covers the SonarCloud CI job, the Vitest+Deno LCOV merge in
 `test-coverage.sh`, and the analysis-scope rules.
 
@@ -11,11 +11,11 @@ or `scripts/` (`test-coverage.sh` walks those trees and ignores
 Workers suffixes). Workers/DO suites are `*.workers.test.ts` /
 `*.workers-e2e.test.ts` / `*.entry.test.ts` (`vitest.config.ts` `test.include`
 suffix globs). Redis (etc.) suites go in `SERVICE_DEPENDENT` in
-`check-test-inventory.mjs` with a reason. Full checklist: root `AGENTS.md` →
+`check-test-inventory.mjs` with a reason. Full checklist: `src/AGENTS.md` →
 **Adding tests (inventory)**.
 The guard is wired into `pnpm test:hook`, **`pnpm verify:ci`**
 (`scripts/verify-ci.sh` — the local serial mirror of `build.yml` minus Sonar), and
-CI `build.yml`. Fleet-wide from the host `dev` checkout: `./scripts/ci-verify.sh`.
+CI `build.yml`. Fleet-wide from the host `dev` checkout: `../dev/scripts/ci-verify.sh`.
 
 CI does not run that script as one job. `build.yml` sets `TEST_PHASE` /
 `DENO_SHARD` so Vitest, the host-free Deno shard, and three Postgres Deno
@@ -37,6 +37,7 @@ imports):
 | Script | Purpose |
 | --- | --- |
 | `generate-test-lists.mjs` | Rebuild suffix-glob inventories (`test-coverage.sh` + `vitest.config.ts`) |
+| `set-identity-key.mjs` | `pnpm identity:set --env <env>`: generate the panel identity key in memory, pipe it to `wrangler secret put`, wait for the signed identity route, print the fingerprint (reuses `generate-identity-key.mjs`; tests inject wrangler, fetch and the clock) |
 | `check-import-boundaries.mjs` | Kernel / feature / platform import graph (`pnpm check:import-boundaries`) |
 
 - Analysis runs in GitHub Actions (`.github/workflows/build.yml` **SonarQube**
@@ -137,3 +138,77 @@ imports):
   Update binding / reconnect) or IDE will still raise `plsql:*` on drizzle-kit
   SQL.
 
+### SonarQube (CI-based analysis)
+
+`build.yml` ends in a `ci-ok` job that `needs:` every pull_request job (checks,
+typecheck, vitest, deno-hostfree, deno-db, sonarqube, contract-twin) and fails unless all of them succeeded. It is the
+one context the branch rulesets will require; a new PR-time job must be added
+to its `needs:` or it never gates a merge. A red X must mean "this change is
+broken", so: on a pull request a cancelled need still fails `ci-ok`; on a trunk
+push (or manual run) a cancelled need skips `ci-ok` instead of failing it.
+Trunk pushes are never cancelled by a newer merge: `build.yml` queues them
+(workflow-level `queue: max`, `cancel-in-progress` only on pull requests) so
+every merged commit is tested and gets a canary; `canary.yml` queues the same
+way and never cancels. The `SonarQube` job needs only the coverage shards (vitest,
+deno-hostfree, deno-db) and is skipped, not failed, when one of them did not
+succeed — that failure is already red on its own job. Its quality gate blocks
+pull requests only, and only pull requests are scanned in Build. On a trunk
+push the job just merges and uploads the LCOV; `sonar-trunk.yml` (**Sonar
+Trunk Analysis**, `workflow_run` on Build) uploads the trunk analysis from it
+after Build completes, beside the canary rather than in front of it (a full
+analysis takes ~12 minutes, ~10 of them in the JS/TS security engine).
+
+The pre-commit hook (`.githooks/pre-commit`) runs the secret scan and then
+`prettier --check` on the staged `.ts`/`.tsx`/`.mjs` files under `src/` and
+`scripts/` — the same whole-file check CI's format step runs.
+`TURBOPANEL_SKIP_HOOK_TESTS=1` does not skip it; `TURBOPANEL_SKIP_HOOK_FORMAT=1`
+does (for a change whose whole-file reflow goes in its own commit). Without a
+`node_modules` tree it skips with a message.
+
+CI analysis config, the Vitest+Deno LCOV coverage merge, analysis-scope /
+exclusion rules, and the coverage-attribution traps moved to
+[`scripts/AGENTS.md`](./AGENTS.md). Read it before touching
+`scripts/test-coverage.sh`, `sonar-project.properties`, the SonarQube CI job, or
+when SonarCloud shows suspicious 0% coverage. Style rules Sonar enforces on
+everyday code live in `src/AGENTS.md` (**TypeScript style**).
+
+
+`scripts/scan-secrets.sh`, `scripts/scan-secrets.patterns` and `scripts/scan-secrets.selftest.sh` are byte-identical in turbopanel, turbopaneld, ui, website and dev: change all five together (each repo keeps a copy because the pre-commit hook runs it locally). The rules in the patterns file cover private key blocks, vendor tokens, JWTs, connection URLs with credentials, secret-looking assignments and forbidden file names (dotenv files, `*.pem`, `*.key`, daemon identity files, …); the scanner reports the rule id and location, never the matching text. `--all` scans the tree; `--range BASE..HEAD` scans every line the PR's commits added, so a secret added and removed inside a PR is still caught (CI runs it on PRs into trunk). Allowlist entries in `.secretscan-allowlist` are `path:full line text` (or `@path exact/file` for a forbidden file name), each needs a `# reason:` comment above it, and wildcards are rejected. The self-test builds its fixtures at run time from fragments; dev's `src/lib/scan-secrets.test.ts` runs it and, with the siblings checked out in dev CI, fails if any copy drifts.
+
+#### `scripts/test-coverage.sh` is all-or-nothing without a local Postgres
+
+The script runs under `set -eu`: if the Vitest workers-pool step fails to
+even *start* (no `CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE`
+configured — `@cloudflare/vitest-pool-workers` refuses to boot the pool at
+all, not just skip the tests that need it), the **Deno suites never run
+either** — `pnpm test:coverage` exits non-zero having run nothing. Read
+"test:coverage failed" literally: it does not mean the tests failed, it means
+they never started. To get real Deno-suite results in an environment without
+a configured Hyperdrive target, run the `deno task test:*` buckets directly
+(see the `"tasks"` key in `deno.json`) instead of the combined script.
+
+To actually run the Workers-pool suite (`pnpm test:do`, or the Vitest half of
+`test:coverage`) with real Postgres instead of skipping it: point both
+`CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE` and
+`..._HYPERDRIVE_CACHED` at a real, migrated Postgres connection string (`pnpm
+migrate` against it first). Verified 2026-09-16 against a throwaway database —
+all 18 Workers-pool files/337 tests passed, including a real (non-mocked)
+`Db` end-to-end proof of the daemon → control-plane WebSocket dispatch path
+in `src/daemon/acme-issuance-event.workers-e2e.test.ts`. Use a **dedicated
+throwaway database**, not a shared one — several tests insert real rows and
+none of them clean up after themselves (by design: they're meant to run
+against throwaway testing databases. Only throwaway testing hosts are
+disposable; the panel database is never reset (forward-only migrations).
+
+## Contributor Guide Reference Check
+
+`pnpm check:guide-references` (`check-guide-references.mjs`) fails when any
+`AGENTS.md` or `docs/*.md` points at an in-repo file that does not exist, so
+a guide split or move cannot leave stale pointers. It reads markdown links
+(resolved from the guide) and backticked paths that start with `./` or `../` or
+are repo-root `.md` paths (resolved from the guide or the repo root). Only
+existence is checked, not headings. Paths into a sibling checkout
+(`../turbopaneld/...`, `../dev/...`) are skipped when that checkout is absent,
+as in CI, and checked when it is present. A path that is not a repo file (a
+command run elsewhere, a generated file) goes in `ALLOWLIST` in the script
+with a reason. Wired into `pnpm test:hook`, `pnpm verify:ci` and `build.yml`.

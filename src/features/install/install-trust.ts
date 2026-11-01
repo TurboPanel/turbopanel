@@ -14,6 +14,7 @@ import { forEachSequential } from '../../lib/sequential.ts'
 import { coversHostname } from '../../lib/tls/match.ts'
 import { parseCertificatePem } from '../../lib/tls/parse.ts'
 import { verifyCertificateSignature } from '../../lib/tls/self-signed.ts'
+import { installCaFingerprints } from './install-ca-pin.ts'
 import {
   hostLabel,
   type InstallHostnameTrust,
@@ -326,21 +327,46 @@ async function rememberPrivateTrust(
   return pem
 }
 
-async function privateUploadTrustError(
+/**
+ * The private issuer the installer will fetch for a private upload, or the
+ * reason that upload cannot be installed. Null `pem` when the dialed name is
+ * not a private upload.
+ */
+async function privateUploadTrust(
   db: Db,
   instanceUrl: string,
   source: ReturnType<typeof certificateSourceForInstallOrigin>,
   publicUploaded: boolean | undefined
-): Promise<string | null> {
-  if (source !== 'uploaded' || publicUploaded === true) return null
+): Promise<{ error: string } | { pem: string | null }> {
+  if (source !== 'uploaded' || publicUploaded === true) return { pem: null }
   const host = hostLabel(instanceUrl) ?? instanceUrl.trim()
   // Workers has no private control-plane leaf to pin. Serving an issuer
   // the edge certificate was not signed by would look installed and then
   // fail closed in the installer.
-  if (typeof Deno === 'undefined') return privateUploadedTrustUnavailable(host)
+  if (typeof Deno === 'undefined') return { error: privateUploadedTrustUnavailable(host) }
   const pem = await readPrivateUploadedTrustPem(db, host)
-  if (!pem) return privateUploadedTrustUnavailable(host)
-  return null
+  if (!pem) return { error: privateUploadedTrustUnavailable(host) }
+  return { pem }
+}
+
+async function readPlatformCaQuietly(
+  read: (() => Promise<string>) | undefined
+): Promise<string | null> {
+  if (!read) return null
+  try {
+    return await read()
+  } catch {
+    return null
+  }
+}
+
+export type InstallOriginTlsReaders = {
+  /**
+   * Reads the document `GET /api/daemon/v1/instance/ca` serves (the Platform
+   * CA bundle). Injected by the Deno composition root; Workers leaves it
+   * unset.
+   */
+  readPlatformCaPem?: () => Promise<string>
 }
 
 /**
@@ -350,13 +376,21 @@ async function privateUploadTrustError(
  * private upload is refused unless its PEM contains an issuer that signed
  * the leaf and the leaf covers the dialed name — bootstrap `-k` is not
  * stored as runtime trust.
+ *
+ * When the command bootstraps insecure TLS, `caFingerprints` lists every
+ * certificate the installer may fetch over that leg: the Platform CA bundle
+ * (served for an uploaded name too unless `TURBOPANEL_TLS_PUBLIC` hides it)
+ * and the private issuer. The installer refuses anything outside that list.
  */
 export async function resolveInstallOriginTls(
   db: Db,
   instanceUrl: string,
   env: Record<string, string | undefined>,
-  selfHostedListener: boolean
-): Promise<{ ok: true; insecureTls: boolean } | { ok: false; error: string }> {
+  selfHostedListener: boolean,
+  readers: InstallOriginTlsReaders = {}
+): Promise<
+  { ok: true; insecureTls: boolean; caFingerprints: string[] } | { ok: false; error: string }
+> {
   const hostnames = await listInstanceHostnames(db)
   const trust = await publicTrustByCertificate(db, uploadedCertIds(hostnames))
   const trusted = hostnames.map((row) => toTrustRow(row, trust))
@@ -373,10 +407,13 @@ export async function resolveInstallOriginTls(
     origin: instanceUrl,
     selfHostedListener,
   })
-  const withheld = await privateUploadTrustError(db, instanceUrl, source, options.publicUploaded)
-  if (withheld) return { ok: false, error: withheld }
-  return {
-    ok: true,
-    insecureTls: installOriginNeedsInsecureTls(instanceUrl, options),
-  }
+  const upload = await privateUploadTrust(db, instanceUrl, source, options.publicUploaded)
+  if ('error' in upload) return { ok: false, error: upload.error }
+  const insecureTls = installOriginNeedsInsecureTls(instanceUrl, options)
+  if (!insecureTls) return { ok: true, insecureTls, caFingerprints: [] }
+  const caFingerprints = await installCaFingerprints([
+    await readPlatformCaQuietly(readers.readPlatformCaPem),
+    upload.pem,
+  ])
+  return { ok: true, insecureTls, caFingerprints }
 }

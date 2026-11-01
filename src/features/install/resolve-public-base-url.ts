@@ -1,6 +1,7 @@
 import type { Context } from 'hono'
+import { listInstanceHostnames } from './instance-hostnames.ts'
+import { installUrlsFor, primaryHostname, publicOriginForHostname } from './public-origins.ts'
 import {
-  getPublicUrls,
   PANEL_HTTPS_PORT,
   publicHttpsOrigin,
   publicUrlEntryToInstallOrigin,
@@ -29,18 +30,12 @@ export function parseInstallBaseUrl(value: string | undefined): string | null {
   return validatedPublicHttpsOrigin(value)
 }
 
-/** First non-empty entry → install origin, or null when missing/unusable. */
-function originFromFirstPublicUrlEntry(entries: readonly string[]): string | null {
-  const first = entries[0]?.trim()
-  if (!first) return null
-  return validatedPublicHttpsOrigin(first)
-}
-
 async function resolveStoredPublicUrlOrigin(c: Context): Promise<string | null> {
   const db = getDb(c)
   if (db) {
-    const parsed = originFromFirstPublicUrlEntry(await getPublicUrls(db))
-    if (parsed) return parsed
+    const primary = primaryHostname(await listInstanceHostnames(db))
+    const stored = primary ? publicOriginForHostname(primary) : null
+    if (stored) return stored
   }
 
   if (typeof Deno === 'undefined') return null
@@ -48,7 +43,10 @@ async function resolveStoredPublicUrlOrigin(c: Context): Promise<string | null> 
   const publicUrls = Deno.env.get('TURBOPANEL_PUBLIC_URLS')?.trim()
   if (!publicUrls) return null
 
-  return originFromFirstPublicUrlEntry(publicUrls.split(','))
+  // The installer writes the self-hosted panel's own names here, so each one
+  // dials the panel's listener on 8443 even when written as `https://host`.
+  const first = publicUrls.split(',')[0]?.trim()
+  return first ? publicUrlEntryToInstallOrigin(first) : null
 }
 
 /**
@@ -91,6 +89,20 @@ export async function resolvePublicBaseUrl(
 
   const host = discoverHostIpv4() || 'localhost'
   return `https://${host}:${PANEL_HTTPS_PORT}`
+}
+
+/**
+ * Base URL for a new server's install command: the primary hostname when
+ * servers dial it, else the first other dialable hostname, else the usual
+ * public base URL.
+ */
+export async function resolveInstallBaseUrl(
+  c: Context,
+  opts?: { baseUrl?: string; allowRequestHost?: boolean }
+): Promise<string> {
+  const db = getDb(c)
+  const dialable = db ? installUrlsFor(await listInstanceHostnames(db))[0] : undefined
+  return dialable ?? (await resolvePublicBaseUrl(c, opts))
 }
 
 /** The origin the request itself names: forwarded host first, then the request URL. */

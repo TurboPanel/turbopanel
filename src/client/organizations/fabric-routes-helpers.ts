@@ -1,4 +1,8 @@
 import type { Db } from '../../db/connection.ts'
+import {
+  type FabricReconcileOutcome,
+  readFabricReconcileOutcome,
+} from '../../features/fabric/reconcile-outcome.ts'
 import type { CommandQueue } from '../../features/commands/queue.ts'
 import {
   type FabricEnqueueResult,
@@ -11,6 +15,7 @@ import {
   type FabricPathSummaryEntry,
   type FabricRecord,
   type FabricSegmentMaterial,
+  isFabricPaused,
   type RelayRecord,
   type RelayRole,
   resolveRelayGlobalEndpointAddress,
@@ -42,6 +47,11 @@ import {
 } from '../../features/net/datacenter-networks.ts'
 import { alignedNetworkCidr, isValidIpAddress } from '../../lib/ip-address.ts'
 import { isValidWireguardPublicKey } from '../../features/fabric/wg.ts'
+import type { FabricServerMembership } from '../../features/fabric/membership.ts'
+import {
+  type FabricServerRole,
+  isFabricServerRole,
+} from '../../features/fabric/membership-vocabulary.ts'
 
 export type FabricMembershipSecrets = Pick<
   Parameters<typeof reconcileFabricMembership>[0],
@@ -51,6 +61,7 @@ export type FabricMembershipSecrets = Pick<
 export type RelayPatchReconcileFn = typeof reconcileFabricMembership
 
 export type { RelayMetadata } from '../../features/fabric/fabric-records.ts'
+import type { FabricPairApiRow } from '../../features/fabric/pair-paths.ts'
 
 const ADVERTISED_CIDRS_MAX = 32
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -59,6 +70,34 @@ type FieldResult<T> = { ok: true; value: T } | { ok: false; error: string }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+export type FabricServerPatch = {
+  enabled?: boolean
+  /** `null` = automatic. */
+  role?: FabricServerRole | null
+}
+
+/** `PATCH /organizations/:id/fabric/servers/:serverId` body: `{ enabled?, role? }`. */
+export function parseFabricServerPatchBody(
+  body: unknown
+): { ok: true; patch: FabricServerPatch } | { ok: false; error: string } {
+  if (!isPlainObject(body)) return { ok: false, error: 'Invalid request' }
+  const patch: FabricServerPatch = {}
+  if (body.enabled !== undefined) {
+    if (typeof body.enabled !== 'boolean') return { ok: false, error: 'Invalid enabled' }
+    patch.enabled = body.enabled
+  }
+  if (body.role !== undefined) {
+    if (body.role !== null && !isFabricServerRole(body.role)) {
+      return { ok: false, error: 'Invalid role' }
+    }
+    patch.role = body.role
+  }
+  if (patch.enabled === undefined && patch.role === undefined) {
+    return { ok: false, error: 'Nothing to change' }
+  }
+  return { ok: true, patch }
 }
 
 export type FabricPutBody = {
@@ -163,7 +202,11 @@ function parseKeepaliveField(value: unknown): FieldResult<number | null> {
 function parseEndpointAddressField(value: unknown): FieldResult<string | null> {
   if (value === null) return { ok: true, value: null }
   if (typeof value !== 'string' || !isValidIpAddress(value)) {
-    return { ok: false, error: 'Invalid endpointAddress' }
+    return {
+      ok: false,
+      error:
+        'Invalid endpointAddress: enter an IP address only, without a port. Other servers connect to it on the fabric port.',
+    }
   }
   return { ok: true, value }
 }
@@ -513,6 +556,8 @@ export async function enqueueRelayPatchReconcile(params: {
 }
 
 export type FabricRelayObserved = {
+  /** When the daemon took this reading; a handshake is judged against it, not against now. */
+  at?: string
   lastHandshakeAt?: string
   transferRx?: number
   transferTx?: number
@@ -538,6 +583,12 @@ export type FabricRelayApiRow = {
   gatewayEligible: boolean
   /** Diagnostics-only per-peer path summary. */
   paths: FabricPathSummaryEntry[]
+  /**
+   * How the last reconcile sent to this server ended: `pending` until it
+   * answers, then `done` (with any `warnings`) or `failed` (with `error`).
+   * `null` before the first one is recorded.
+   */
+  reconcile: FabricReconcileOutcome | null
 }
 
 export function observedForRelay(
@@ -555,6 +606,7 @@ export function observedForRelay(
     if (latestAt && observed.at <= latestAt) continue
     latestAt = observed.at
     match = {
+      at: observed.at,
       ...(peer.lastHandshakeAt ? { lastHandshakeAt: peer.lastHandshakeAt } : {}),
       ...(peer.transferRx !== undefined ? { transferRx: peer.transferRx } : {}),
       ...(peer.transferTx !== undefined ? { transferTx: peer.transferTx } : {}),
@@ -611,14 +663,26 @@ export function toFabricRelayApiRow(params: {
     preferredGatewayIds: params.relay.preferredGatewayIds,
     gatewayEligible: params.relay.role === 'gateway',
     paths: params.relay.metadata.paths?.entries ?? [],
+    reconcile: readFabricReconcileOutcome(params.relay.metadata),
   }
 }
 
+/**
+ * `enabled` is true only while the mesh carries traffic; a paused fabric
+ * answers `enabled: false, paused: true` and still returns its settings and
+ * relays (kept for an instant resume). `servers` lists every org server's
+ * membership switch and role, whether or not the fabric exists.
+ */
 export function fabricSettingsResponse(
   record: FabricRecord | null,
-  relays: FabricRelayApiRow[] = []
+  relays: FabricRelayApiRow[] = [],
+  servers: FabricServerMembership[] = [],
+  pairs?: FabricPairApiRow[]
 ): {
   enabled: boolean
+  paused: boolean
+  /** How each pair of servers talks (LAN, TurboFabric, over an untrusted LAN, or no path). */
+  pairs?: FabricPairApiRow[]
   fabric?: {
     id: string
     cidr: string
@@ -627,11 +691,17 @@ export function fabricSettingsResponse(
     containerPool: string
   }
   relays: FabricRelayApiRow[]
+  servers: FabricServerMembership[]
 } {
-  if (!record) return { enabled: false, relays: [] }
+  const pairsField = pairs && pairs.length > 0 ? { pairs } : {}
+  if (!record) return { enabled: false, paused: false, relays: [], servers, ...pairsField }
   const options = parseFabricOptions(record.options)
+  const paused = isFabricPaused(record)
   return {
-    enabled: true,
+    enabled: !paused,
+    paused,
+    servers,
+    ...pairsField,
     fabric: {
       id: record.id,
       cidr: record.cidr,
