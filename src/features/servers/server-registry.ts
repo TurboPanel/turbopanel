@@ -347,6 +347,12 @@ async function updateServerKeepingMachineKey(
   }
 }
 
+/** The pin kind the daemon reported when it differs from the stored one, else null. */
+function changedTrustPinnedBy(identity: ServerHelloIdentity, stored: string | null) {
+  const reported = identity.panelPin?.pinnedBy
+  return isServerTrustPinnedBy(reported) && reported !== stored ? reported : null
+}
+
 export async function touchServerMetadata(
   db: Db,
   serverId: string,
@@ -401,9 +407,8 @@ export async function touchServerMetadata(
   const metadataChanged = mergeServerMetadataIdentity(base, identity) !== null
   const hostnameChanged = Boolean(columns.hostname && columns.hostname !== row.hostname)
   const machineKeyChanged = Boolean(columns.machineKey && columns.machineKey !== row.machineKey)
-  const reportedPin = identity.panelPin?.pinnedBy
-  const trustPinnedByChanged =
-    isServerTrustPinnedBy(reportedPin) && reportedPin !== row.trustPinnedBy
+  const reportedPin = changedTrustPinnedBy(identity, row.trustPinnedBy)
+  const trustPinnedByChanged = reportedPin !== null
   const incomingFeatures = identity.features
   const currentProjection = parseServerDaemonState(row.daemon)?.projection
   const featuresChanged =

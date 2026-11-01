@@ -214,6 +214,38 @@ async function releaseMintLease(db: Db, lease: BillingQuantityLock | null): Prom
   }
 }
 
+/**
+ * The Add Server command for a fresh key: the signed single-value form once
+ * the switch is on and this panel has an identity key, else the older
+ * variables.
+ */
+async function issueInstallCommand(
+  c: Context<AppEnv>,
+  db: Db,
+  opts: AuthRouteOpts,
+  input: Omit<Parameters<typeof buildLicenseInstallCommand>[0], 'token' | 'updateChannel'> & {
+    env: Record<string, string | undefined>
+  }
+) {
+  const { env, ...commandInput } = input
+  const identity = opts.panelIdentity ? await opts.panelIdentity() : null
+  const installToken = await buildInstallTokenFor({
+    env,
+    identity,
+    licenseId: input.licenseId,
+    licenseToken: input.licenseToken,
+    installUrl: input.instanceUrl,
+    hostnames: () => listInstanceHostnames(db),
+    caFingerprints: input.insecureTls ? input.caFingerprints : undefined,
+  })
+  const installCommand = buildLicenseInstallCommand({
+    ...commandInput,
+    updateChannel: resolveInstanceUpdateChannel(c.get('platformEnv')),
+    token: installToken?.token,
+  })
+  return { installCommand, installToken }
+}
+
 export function registerLicenseRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
   if (!opts.secrets) {
     throw new TypeError('session secrets are required for license routes')
@@ -359,19 +391,7 @@ export function registerLicenseRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       const insecureTls = prepared.insecureTls
       // Instance-host `/run.sh` is served only by the dev overlay Caddyfile.
       // Production / self-hosted Deno installs curl the CDN and pass TURBOPANEL_HOST.
-      // The signed single-value form, once the switch is on and this panel
-      // has an identity key; otherwise the older variables.
-      const identity = opts.panelIdentity ? await opts.panelIdentity() : null
-      const installToken = await buildInstallTokenFor({
-        env,
-        identity,
-        licenseId,
-        licenseToken,
-        installUrl: instanceUrl,
-        hostnames: () => listInstanceHostnames(db),
-        caFingerprints: insecureTls ? prepared.caFingerprints : undefined,
-      })
-      const installCommand = buildLicenseInstallCommand({
+      const { installCommand, installToken } = await issueInstallCommand(c, db, opts, {
         runtime: opts.runtime,
         instanceUrl,
         licenseId,
@@ -379,8 +399,7 @@ export function registerLicenseRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         insecureTls,
         caFingerprints: prepared.caFingerprints,
         useInstanceRunScript: Boolean(devSurface),
-        updateChannel: resolveInstanceUpdateChannel(c.get('platformEnv')),
-        token: installToken?.token,
+        env,
       })
 
       compatLogInfo(
