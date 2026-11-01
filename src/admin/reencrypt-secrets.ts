@@ -45,6 +45,7 @@ import {
 } from '../lib/secrets/data-encryption.ts'
 import type { DerivedSecretsConfig } from '../lib/secrets/secrets.ts'
 import type { Db } from '../db/connection.ts'
+import { PANEL_IDENTITY_SETTING_KEY } from '../lib/panel-identity/identity.ts'
 import {
   forge,
   gitConnection,
@@ -103,6 +104,7 @@ export const REENCRYPT_STAGES = [
   'authproviders',
   'email',
   'alertwebhook',
+  'identity',
 ] as const
 
 /**
@@ -129,6 +131,7 @@ export const REENCRYPT_COVERED_PLACES = [
   `setting:${SYSTEM_AUTH_PROVIDERS_DB_KEY}`,
   `setting:${SYSTEM_EMAIL_DB_KEY}`,
   `setting:${ALERT_WEBHOOK_URL_KEY}`,
+  `setting:${PANEL_IDENTITY_SETTING_KEY}`,
 ] as const
 
 export type ReencryptStage = (typeof REENCRYPT_STAGES)[number]
@@ -1207,7 +1210,40 @@ async function sweepAlertWebhookSetting(
   )
 }
 
-type TableStage = Exclude<ReencryptStage, 'authproviders' | 'email' | 'alertwebhook'>
+/** The panel identity row: the `sealed` member of the `PANEL_IDENTITY_KEYS` setting holds the key seeds. */
+async function sweepIdentitySetting(
+  db: Db,
+  secrets: DerivedSecretsConfig,
+  summary: ReencryptSweepSummary
+): Promise<void> {
+  const rows = await db
+    .select({ value: setting.value })
+    .from(setting)
+    .where(eq(setting.key, PANEL_IDENTITY_SETTING_KEY))
+    .limit(1)
+
+  const original = rows[0]?.value
+  if (typeof original !== 'object' || original === null || Array.isArray(original)) return
+  const sealed = (original as Record<string, unknown>).sealed
+  if (typeof sealed !== 'string' || sealed === '') return
+
+  await processBlob(
+    summary,
+    secrets,
+    sealed,
+    async (resealed) => {
+      const updated = await db
+        .update(setting)
+        .set({ value: { ...original, sealed: resealed }, updatedAt: nowIso() })
+        .where(and(eq(setting.key, PANEL_IDENTITY_SETTING_KEY), eq(setting.value, original)))
+        .returning({ key: setting.key })
+      return updated.length > 0
+    },
+    { allowDaemonBound: false }
+  )
+}
+
+type TableStage = Exclude<ReencryptStage, 'authproviders' | 'email' | 'alertwebhook' | 'identity'>
 
 async function runTableStageBatch(
   db: Db,
@@ -1338,6 +1374,12 @@ export async function reencryptAtRestSecrets(
 
     if (cursor.stage === 'alertwebhook') {
       await sweepAlertWebhookSetting(db, dataEncryptionSecrets, summary)
+      cursor = { stage: 'identity' }
+      continue
+    }
+
+    if (cursor.stage === 'identity') {
+      await sweepIdentitySetting(db, dataEncryptionSecrets, summary)
       return { ...summary, completed: true, cursor: null }
     }
 

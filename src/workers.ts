@@ -17,6 +17,12 @@ import { registerAdminRoutes } from './admin/routes.ts'
 import { registerAdminTierRoutes } from './admin/tier-routes.ts'
 import { getWorkersAdminOpenApiSpec } from './admin/openapi/workers.ts'
 import { registerDaemonApiRoutes } from './daemon/api-routes.ts'
+import { listInstanceHostnames } from './features/install/instance-hostnames.ts'
+import {
+  resolvePanelIdentityFromBinding,
+  type PanelIdentity,
+} from './lib/panel-identity/identity.ts'
+import { orderedPublicOrigins } from './lib/panel-identity/urls.ts'
 import { revokeDaemonKey } from './features/servers/server-identity-db.ts'
 import { registerWebhookRoutes } from './webhook/routes.ts'
 import { registerStripeWebhookRoutes } from './webhook/billing/stripe.ts'
@@ -110,6 +116,7 @@ let cachedWebauthnChallengeSecrets: DerivedSecretsConfig | null = null
 let cachedDaemonJwtKeyring: DaemonJwtKeyring | null = null
 let cachedChallengeSigningSecrets: DerivedSecretsConfig | null = null
 let cachedDataEncryptionSecrets: DerivedSecretsConfig | null = null
+let cachedPanelIdentity: PanelIdentity | null = null
 let cachedSecretsConfig: SecretsConfig | null = null
 let cachedCommandQueue: CommandQueue | null = null
 let cachedServerMetricsStore: ServerMetricsStore | null = null
@@ -135,6 +142,7 @@ export function resetWorkerAppCachesForTests(): void {
   cachedDaemonJwtKeyring = null
   cachedChallengeSigningSecrets = null
   cachedDataEncryptionSecrets = null
+  cachedPanelIdentity = null
   cachedSecretsConfig = null
   cachedCommandQueue = null
   cachedServerMetricsStore = null
@@ -247,6 +255,8 @@ async function initWorkerApp(env: CloudflareBindings) {
     secretsConfig,
     'data-encryption'
   )
+  // Missing binding = feature off (the panel runs); a malformed one fails init.
+  cachedPanelIdentity = await resolvePanelIdentityFromBinding(env.TURBOPANEL_IDENTITY_KEYS)
   cachedCommandQueue = env.TURBOPANEL_COMMAND_QUEUE
     ? createWorkersCommandQueue(env.TURBOPANEL_COMMAND_QUEUE)
     : createNoopCommandQueue()
@@ -314,6 +324,8 @@ async function initWorkerApp(env: CloudflareBindings) {
     restLimiter: rateLimiters.rest,
     metricsLimiter: rateLimiters.metrics,
     runtime: 'workers',
+    panelIdentity: () => Promise.resolve(cachedPanelIdentity),
+    identityUrls: async (requestDb) => orderedPublicOrigins(await listInstanceHostnames(requestDb)),
   })
   registerWorkersDaemonWebSocket(daemonRoutes, {
     secrets: cachedDaemonJwtKeyring ?? undefined,

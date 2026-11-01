@@ -28,6 +28,9 @@ import type { Db } from '../db/connection.ts'
 import { describeError } from '../lib/describe-error.ts'
 import { storeIssuedCertificate } from '../client/tls/issued-certificate.ts'
 import { logWarn } from '../lib/logger.ts'
+import { createIdentityDocumentCache } from '../lib/panel-identity/document-cache.ts'
+import { IDENTITY_SIGNATURE_HEADER } from '../lib/panel-identity/document.ts'
+import type { PanelIdentity } from '../lib/panel-identity/identity.ts'
 import {
   getDaemonCellRegistry,
   getDb,
@@ -1072,11 +1075,20 @@ export function registerDaemonApiRoutes<E extends Env>(
      * `platform/deno/server-paths.ts`.
      */
     readPlatformCaPem?: () => Promise<string>
+    /**
+     * The panel identity (Ed25519 current, next fingerprint, X25519 seal).
+     * Omitted or resolving to null means the feature is off and
+     * GET /instance/identity answers 404.
+     */
+    panelIdentity?: () => Promise<PanelIdentity | null>
+    /** The panel's public origins for the identity document, from the request's database client. */
+    identityUrls?: (db: Db) => Promise<string[]>
   } = {}
 ) {
   const daemon = new Hono<DaemonApiEnv>()
   const { secrets, challengeSigningSecrets, secretsConfig } = options
   const runtime = options.runtime ?? 'workers'
+  const identityDocumentCache = createIdentityDocumentCache()
   const tlsPublic = options.tlsPublic ?? false
   const deployment = metricsDeploymentKindForRuntime(runtime)
   const metricsChartCache = createMetricsChartCache(runtime)
@@ -1300,6 +1312,23 @@ export function registerDaemonApiRoutes<E extends Env>(
     } catch (err) {
       return platformCaReadFailure(c, err)
     }
+  })
+
+  // Public, no auth: the signed panel identity document. The signature is in
+  // the X-TurboPanel-Signature header, over the exact body bytes.
+  daemon.get('/instance/identity', async (c) => {
+    const identity = options.panelIdentity ? await options.panelIdentity() : null
+    if (!identity) {
+      return c.json({ error: 'panel identity not configured' }, 404)
+    }
+    const db = getDb(c)
+    const urls = db && options.identityUrls ? await options.identityUrls(db) : []
+    const signed = await identityDocumentCache.get(identity, urls)
+    return c.body(signed.body, 200, {
+      'content-type': 'application/json',
+      'Cache-Control': 'public, max-age=3600',
+      [IDENTITY_SIGNATURE_HEADER]: signed.signature,
+    })
   })
 
   // Private uploaded issuer for the dialed hostname. Distinct from the

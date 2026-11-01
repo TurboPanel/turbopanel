@@ -407,6 +407,7 @@ export function getAdminOpenApiSpec(
                 'authproviders',
                 'email',
                 'alertwebhook',
+                'identity',
               ],
             },
             afterId: {

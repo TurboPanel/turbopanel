@@ -114,3 +114,28 @@
   `BUILD_INFO.commit` in the throwaway build checkout — so the owner's own
   deploy command (`pnpm migrate && pnpm wrangler deploy`) reports the commit
   without `deploy:testing`. `TURBOPANEL_REVISION` still wins when set.
+
+## Panel identity key (owner step, per environment)
+
+The panel signs its identity document and, later, its messages to daemons with
+an Ed25519 key. Workers take the key from the secret binding
+`TURBOPANEL_IDENTITY_KEYS`. It is never derived from `TURBOPANEL_SECRET`, and
+`testing`, `staging` and `live` each get their own key. With no binding the
+feature is off: the panel runs and `GET /api/daemon/v1/instance/identity`
+answers 404. A malformed binding stops the worker at start, so a typo is
+loud.
+
+Run once per environment on a trusted machine, never against a server:
+
+```sh
+node scripts/generate-identity-key.mjs > identity-keys.json   # fingerprints print on stderr
+pnpm wrangler secret put TURBOPANEL_IDENTITY_KEYS --env testing < identity-keys.json
+rm identity-keys.json
+```
+
+Record the current fingerprint (43 characters, public) in the Master Sheet,
+not in git. The offline `next` key: run
+`node scripts/generate-identity-key.mjs --next-only`, keep the printed seed
+offline, and re-run the first command with `--next <fingerprint>` to publish
+only its fingerprint. Self-hosted panels generate their key on first start and
+store it sealed under the data-encryption key (setting `PANEL_IDENTITY_KEYS`).
