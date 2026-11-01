@@ -1,7 +1,10 @@
 import { assert, assertEquals, assertRejects, assertThrows } from '@std/assert'
 import { base64urlDecode } from '../../lib/encoding/base64url.ts'
-import { resolvePanelIdentityFromBinding } from '../../lib/panel-identity/identity.ts'
-import { signWithCurrent } from '../../lib/panel-identity/identity.ts'
+import {
+  resolvePanelIdentityFromBinding,
+  signWithCurrent,
+  type PanelIdentity,
+} from '../../lib/panel-identity/identity.ts'
 import {
   fixtureBindingJson,
   FIXTURE_NEXT_FINGERPRINT,
@@ -18,6 +21,12 @@ import { buildInstallTokenFor, isInstallTokenV2Enabled } from './install-token-c
 const test = Deno.test.bind(Deno)
 
 const decoder = new TextDecoder()
+
+async function fixtureIdentity(json?: string): Promise<PanelIdentity> {
+  const identity = await resolvePanelIdentityFromBinding(json ?? (await fixtureBindingJson()))
+  if (!identity) throw new TypeError('fixture identity did not resolve')
+  return identity
+}
 const FINGERPRINT = 'a'.repeat(43)
 
 const FIELDS: InstallTokenFields = {
@@ -62,7 +71,7 @@ test('a URL with a path, a scheme other than https or no URL at all is refused',
 })
 
 test('the token signature verifies with the panel key over the payload text', async () => {
-  const identity = (await resolvePanelIdentityFromBinding(await fixtureBindingJson()))!
+  const identity = await fixtureIdentity()
   const token = await encodeInstallToken(FIELDS, (bytes) => signWithCurrent(identity, bytes))
   const [payload, sig] = token.split('.')
   const key = await crypto.subtle.importKey(
@@ -123,9 +132,9 @@ test('the switch reads 1 or true only', () => {
 })
 
 test('the token for a command puts the install URL first and carries both fingerprints', async () => {
-  const identity = (await resolvePanelIdentityFromBinding(
+  const identity = await fixtureIdentity(
     await fixtureBindingJson({ next: { kid: FIXTURE_NEXT_FINGERPRINT } })
-  ))!
+  )
   const hostnames = [{ host: 'one.example.test' }, { host: 'two.example.test:8443' }]
   const result = await buildInstallTokenFor({
     env: { TURBOPANEL_INSTALL_TOKEN_V2: '1' },
@@ -144,7 +153,7 @@ test('the token for a command puts the install URL first and carries both finger
 })
 
 test('no token without the switch, an identity key or a bare https install URL', async () => {
-  const identity = (await resolvePanelIdentityFromBinding(await fixtureBindingJson()))!
+  const identity = await fixtureIdentity()
   const base = {
     env: { TURBOPANEL_INSTALL_TOKEN_V2: '1' },
     identity,

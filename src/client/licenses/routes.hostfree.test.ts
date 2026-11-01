@@ -308,12 +308,13 @@ async function buildApp(fx: Fixture = {}) {
       return next()
     })
   }
+  const panelIdentity = fx.panelIdentity
   registerLicenseRoutes(app, {
     secrets,
     runtime: fx.runtime ?? 'workers',
     signupEnvOverride: undefined,
     ...(fx.omitBaseUrl ? {} : { baseUrl: 'https://panel.example.com' }),
-    ...(fx.panelIdentity ? { panelIdentity: () => Promise.resolve(fx.panelIdentity!) } : {}),
+    ...(panelIdentity ? { panelIdentity: () => Promise.resolve(panelIdentity) } : {}),
   })
   const cookie = `${HTTP_SESSION_COOKIE_NAME}=${await buildSignedCookie(token, secrets)}`
   const headers = {
@@ -1041,10 +1042,16 @@ test('a self-hosted panel puts the Platform CA fingerprint in the install comman
   assertEquals(body.installCommand.startsWith('curl -fsSL https://turbopanel.sh | '), true)
 })
 
+async function fixtureIdentity(): Promise<PanelIdentity> {
+  const identity = await resolvePanelIdentityFromBinding(await fixtureBindingJson())
+  if (!identity) throw new TypeError('fixture identity did not resolve')
+  return identity
+}
+
 const TOKEN_ENV = { TURBOPANEL_INSTALL_TOKEN_V2: '1' }
 
 test('POST /licenses hands out the signed TOKEN command once the switch is on', async () => {
-  const panelIdentity = (await resolvePanelIdentityFromBinding(await fixtureBindingJson()))!
+  const panelIdentity = await fixtureIdentity()
   const { app, headers } = await buildApp({
     config: null,
     seats: null,
@@ -1065,7 +1072,7 @@ test('POST /licenses hands out the signed TOKEN command once the switch is on', 
 })
 
 test('POST /licenses keeps the older command while the switch is off or there is no identity key', async () => {
-  const panelIdentity = (await resolvePanelIdentityFromBinding(await fixtureBindingJson()))!
+  const panelIdentity = await fixtureIdentity()
   for (const fx of [{ panelIdentity }, { platformEnv: TOKEN_ENV }]) {
     const { app, headers } = await buildApp({ config: null, seats: null, ...fx })
     const res = await mint(app, headers, { name: 'edge-legacy' })
