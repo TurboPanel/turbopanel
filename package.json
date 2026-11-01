@@ -13,6 +13,7 @@
     "deploy:live": "CLOUDFLARE_ENV=live node scripts/deploy-workers.mjs",
     "deploy:workers": "pnpm run deploy",
     "cf-typegen": "wrangler types --env-interface CloudflareBindings",
+    "identity:set": "node scripts/set-identity-key.mjs",
     "generate:secret": "node scripts/generate-secret.mjs",
     "generate": "drizzle-kit generate --config drizzle.config.mjs",
     "migrate": "node scripts/check-postgres-compat.mjs && node scripts/migrate-locked.mjs",

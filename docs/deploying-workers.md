@@ -117,25 +117,33 @@
 
 ## Control plane identity key (owner step, per environment)
 
-The panel signs its identity document and, later, its messages to daemons with
-an Ed25519 key. Workers take the key from the secret binding
-`TURBOPANEL_IDENTITY_KEYS`. It is never derived from `TURBOPANEL_SECRET`, and
-`testing`, `staging` and `live` each get their own key. With no binding the
-feature is off: the panel runs and `GET /api/daemon/v1/instance/identity`
-answers 404. A malformed binding stops the worker at start, so a typo is
-loud.
+The identity key lets a control plane prove to its servers that messages really
+come from it; each environment (`testing`, `staging`, `live`) has its own.
 
-Run once per environment on a trusted machine, never against a server:
+Run this once per environment, on your own machine, never on a server:
 
 ```sh
-node scripts/generate-identity-key.mjs > identity-keys.json   # fingerprints print on stderr
-pnpm wrangler secret put TURBOPANEL_IDENTITY_KEYS --env testing < identity-keys.json
-rm identity-keys.json
+pnpm identity:set --env testing
 ```
 
-Record the current fingerprint (43 characters, public) where the owner keeps
-deploy records, not in git. The offline `next` key: run
-`node scripts/generate-identity-key.mjs --next-only`, keep the printed seed
-offline, and re-run the first command with `--next <fingerprint>` to publish
-only its fingerprint. Self-hosted panels generate their key on first start and
-store it sealed under the data-encryption key (setting `PANEL_IDENTITY_KEYS`).
+You will see three lines: the key is being set, the script is waiting for the
+control plane to start using it (up to two minutes), and then one last line:
+
+```text
+Testing control plane identity key set. Fingerprint (a public code, safe to share): <fingerprint>
+```
+
+The fingerprint is a public code computed from the key. Keep it with your deploy
+records, not in git. The key itself is never shown and never saved to a file.
+
+The environment must already be deployed and answering at its address; if it is
+not, the command stops and changes nothing.
+
+If the environment already has a key, the command stops and changes nothing. To
+replace it anyway, add `--replace`; every server will then need to re-learn the
+key.
+
+If you see `Sign in to Cloudflare first: ./node_modules/.bin/wrangler login`,
+run that command, sign in in the browser, then run the same command again.
+
+Self-hosted control planes make their own key on first start.
