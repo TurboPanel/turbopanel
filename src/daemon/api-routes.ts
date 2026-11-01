@@ -114,6 +114,13 @@ import {
 } from '../features/servers/server-registry.ts'
 import { getCommandQueue } from '../features/commands/queue.ts'
 
+/**
+ * First registered key wins: a server that already has a live key refuses a
+ * different one at enroll. The daemon treats this answer as "wait for an
+ * administrator", never as a reason to retry with yet another key.
+ */
+const SERVER_KEY_ALREADY_REGISTERED_ERROR = 'Server key already registered'
+
 const MACHINE_KEY_IN_USE_RESULT = {
   ok: false,
   status: 409,
@@ -136,6 +143,7 @@ import { issueDaemonJwt, verifyDaemonJwt } from './authn/daemon-jwt.ts'
 import type { ServerDaemonStateWithMetadata } from '../features/servers/server-identity-db.ts'
 import {
   attachDaemonStateToServer,
+  DaemonKeyAlreadyRegisteredError,
   DaemonKeyRevokedError,
   getServerDaemonStateByFingerprint,
   getServerDaemonStateByServerId,
@@ -465,6 +473,12 @@ async function finalizeDaemonEnrollment(
     if (known && !isDaemonKeyActive(known.key)) {
       return { ok: false, status: 403, error: SERVER_KEY_REVOKED_ERROR }
     }
+    // Same early refusal for a live key that differs from the request, before
+    // anything below writes. Only when the caller names this server: a host
+    // without the hint still gets the license-consumed answer further down. The upsert's `setWhere` is the atomic backstop.
+    if (known && serverIdBody?.trim() === knownServerId && known.key.fingerprint !== fingerprint) {
+      return { ok: false, status: 409, error: SERVER_KEY_ALREADY_REGISTERED_ERROR }
+    }
   }
 
   const resolved = await resolveServerIdOrConflict(db, identity, fabricDeps, verifiedLicense)
@@ -481,6 +495,9 @@ async function finalizeDaemonEnrollment(
   const current = await getServerDaemonStateByServerId(db, serverId)
   if (current && !isDaemonKeyActive(current.key)) {
     return { ok: false, status: 403, error: SERVER_KEY_REVOKED_ERROR }
+  }
+  if (current && current.key.fingerprint !== fingerprint) {
+    return { ok: false, status: 409, error: SERVER_KEY_ALREADY_REGISTERED_ERROR }
   }
 
   const existing = await getServerDaemonStateByFingerprint(db, fingerprint)
@@ -505,6 +522,9 @@ async function finalizeDaemonEnrollment(
 function enrollAttachFailure(err: unknown) {
   if (err instanceof DaemonKeyRevokedError) {
     return { ok: false, status: 403, error: SERVER_KEY_REVOKED_ERROR } as const
+  }
+  if (err instanceof DaemonKeyAlreadyRegisteredError) {
+    return { ok: false, status: 409, error: SERVER_KEY_ALREADY_REGISTERED_ERROR } as const
   }
   if (isMachineKeyInUse(err)) return MACHINE_KEY_IN_USE_RESULT
   const message = err instanceof Error ? err.message : String(err)

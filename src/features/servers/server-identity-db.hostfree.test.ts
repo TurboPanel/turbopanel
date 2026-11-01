@@ -15,6 +15,8 @@ import type { ServerDaemonKey } from './daemon-state.ts'
 import {
   attachDaemonStateToServer,
   clearServerDaemonState,
+  DaemonKeyAlreadyRegisteredError,
+  DaemonKeyRevokedError,
   getServerDaemonStateByFingerprint,
   getServerDaemonStateByServerId,
   revokeDaemonKey,
@@ -228,19 +230,16 @@ test('attachDaemonStateToServer inserts the key row and writes default status co
   assertClearedProjectionColumns(fake.getUpdates())
 })
 
-test('attachDaemonStateToServer mints a new key id and clears revocation on re-enroll', async () => {
-  const fake = createIdentityFakeDb({
-    ...activeKey,
-    revokedAt: '2020-06-01T00:00:00.000Z',
-  })
+test('attachDaemonStateToServer mints a new key id when the same key is presented again', async () => {
+  const fake = createIdentityFakeDb(activeKey)
   const originalId = fake.getKey()?.id
   const result = await attachDaemonStateToServer(fake.db, SERVER_ID, {
-    publicJwk: { kty: 'OKP', crv: 'Ed25519', x: 'new' },
-    fingerprint: 'fp-replaced',
+    publicJwk: activeKey.publicJwk,
+    fingerprint: activeKey.fingerprint,
   })
-  // A re-enroll is a new key, not an edit of the old row.
+  // A repeat enroll is a new key row id, not an edit of the old row.
   assertEquals(result.keyId !== originalId, true)
-  assertEquals(fake.getKey()?.fingerprint, 'fp-replaced')
+  assertEquals(fake.getKey()?.fingerprint, activeKey.fingerprint)
   assertEquals(fake.getKey()?.revokedAt, null)
 })
 
@@ -270,6 +269,43 @@ test('attachDaemonStateToServer throws when the server row is missing', async ()
       }),
     Error,
     'server row missing for enroll attach'
+  )
+})
+
+/** The upsert's `setWhere` refused (empty `returning`); `held` is what a read of the key row finds. */
+function refusedUpsertDb(held: { revokedAt: string | null } | undefined): Db {
+  const db = {
+    insert: () => ({
+      values: () => ({
+        onConflictDoUpdate: () => ({ returning: () => Promise.resolve([]) }),
+      }),
+    }),
+    select: () => ({ from: () => ({ where: () => limitResult(held ? [held] : []) }) }),
+    transaction: (fn: (tx: Db) => Promise<unknown>) => fn(db as unknown as Db),
+  } as unknown as Db
+  return db
+}
+
+test('attachDaemonStateToServer refuses a different key while the existing key is live', async () => {
+  await assertRejects(
+    () =>
+      attachDaemonStateToServer(refusedUpsertDb({ revokedAt: null }), SERVER_ID, {
+        publicJwk: { kty: 'OKP', crv: 'Ed25519', x: 'other' },
+        fingerprint: 'fp-other',
+      }),
+    DaemonKeyAlreadyRegisteredError
+  )
+})
+
+test('attachDaemonStateToServer keeps reporting a revoked key as revoked', async () => {
+  await assertRejects(
+    () =>
+      attachDaemonStateToServer(
+        refusedUpsertDb({ revokedAt: '2020-06-01T00:00:00.000Z' }),
+        SERVER_ID,
+        { publicJwk: { kty: 'OKP', crv: 'Ed25519', x: 'other' }, fingerprint: 'fp-other' }
+      ),
+    DaemonKeyRevokedError
   )
 })
 
