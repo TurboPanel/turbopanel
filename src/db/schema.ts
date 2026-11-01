@@ -6336,6 +6336,59 @@ export const instanceUploadedCertificate = pgTable('certificate', {
   }).notNull(),
 })
 /**
+ * Install-level provider account for the panel's own hostnames (tunnel, DNS,
+ * certificates). Not an organization carrier: `token_envelope` is a sealed
+ * `tpsecret` held inline because `secret` requires an organization.
+ */
+export const ingressAccount = pgTable(
+  'ingress',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .$onUpdate(() => sql`now()`)
+      .notNull(),
+    /** `cloudflare` | `bunny` */
+    provider: text().notNull(),
+    label: text().notNull(),
+    accountId: text('account_id'),
+    zoneIds: jsonb('zone_ids')
+      .default(sql`'[]'::jsonb`)
+      .notNull(),
+    tokenEnvelope: text('token_envelope').notNull(),
+    scopes: jsonb(),
+    lastVerifiedAt: timestamp('last_verified_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }),
+    lastError: text('last_error'),
+    createdByUserId: uuid('created_by_user_id'),
+  },
+  (table) => [
+    check('ingress_provider_check', sql`provider IN ('cloudflare', 'bunny')`),
+    foreignKey({
+      columns: [table.createdByUserId],
+      foreignColumns: [user.id],
+      name: 'ingress_created_by_user_id_user_id_fk',
+    }).onDelete('set null'),
+  ]
+)
+/**
  * One public name for this control plane. Replaces the flat
  * `TURBOPANEL_PUBLIC_URLS` setting as the source of truth; that setting stays
  * as a compatibility projection. Certificate source and Let's Encrypt attempt
@@ -6379,6 +6432,15 @@ export const instanceHostname = pgTable(
       withTimezone: true,
       mode: 'string',
     }),
+    /** Connection mode: one of `INGRESS_MODES`. `direct` is the original behaviour. */
+    mode: text().default('direct').notNull(),
+    /** Port visitors use for this name; the origin itself always listens on 8443. */
+    publicPort: integer('public_port').default(8443).notNull(),
+    isPrimary: boolean('is_primary').default(false).notNull(),
+    isDaemonDial: boolean('is_daemon_dial').default(true).notNull(),
+    /** Provider account an edge mode uses; NULL for `direct` and `lan-only`. */
+    ingressId: uuid('ingress_id'),
+    ingressState: jsonb('ingress_state'),
   },
   (table) => [
     unique('origin_host_unique').on(table.host),
@@ -6391,6 +6453,20 @@ export const instanceHostname = pgTable(
       foreignColumns: [instanceUploadedCertificate.id],
       name: 'origin_uploaded_cert_id_certificate_id_fk',
     }).onDelete('set null'),
+    index('idx_origin_ingress_id').using('btree', table.ingressId.asc().nullsLast().op('uuid_ops')),
+    foreignKey({
+      columns: [table.ingressId],
+      foreignColumns: [ingressAccount.id],
+      name: 'origin_ingress_id_ingress_id_fk',
+    }).onDelete('set null'),
+    check(
+      'origin_mode_check',
+      sql`mode IN ('direct', 'lan-only', 'cloudflare-tunnel', 'cloudflare-proxy', 'bunny-proxy', 'private-overlay', 'passthrough')`
+    ),
+    check('origin_public_port_check', sql`public_port BETWEEN 1 AND 65535`),
+    uniqueIndex('uniq_origin_primary')
+      .on(table.isPrimary)
+      .where(sql`is_primary`),
     check('origin_source_check', sql`source IN ('platform-ca', 'uploaded', 'lets-encrypt')`),
     check(
       'origin_uploaded_cert_check',

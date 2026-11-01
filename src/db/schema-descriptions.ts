@@ -560,6 +560,35 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         "Last Let's Encrypt error for this name; NULL when the last attempt succeeded or none has run.",
       not_after:
         "Leaf expiry for this name when known; NULL for `platform-ca` and for Let's Encrypt before a leaf exists.",
+      mode: 'How visitors reach this name: `direct`, `lan-only`, `cloudflare-tunnel`, `cloudflare-proxy`, `bunny-proxy`, `private-overlay` or `passthrough`.',
+      public_port:
+        'Port visitors use for this name (1 to 65535); the control plane itself always listens on 8443.',
+      is_primary:
+        'True for the one name used for links, sign-in callbacks and the default install URL; a partial unique index allows at most one row.',
+      is_daemon_dial:
+        'Whether install commands and the daemon URL list may name this hostname; false keeps it for people only.',
+      ingress_state:
+        'Provider state for this name, such as tunnel id, DNS record id and last status; the shape depends on `mode` and the provider writes it.',
+    },
+  },
+  ingress: {
+    group: 'platform',
+    summary:
+      "One install-level provider account for the control plane's own names, used by edge modes for tunnels, DNS and certificates.",
+    columns: {
+      provider: 'Provider of this account: `cloudflare` or `bunny`.',
+      label: 'Operator-chosen name shown in the admin screens.',
+      account_id:
+        'Provider account id (for example the Cloudflare account); NULL when the provider has none.',
+      zone_ids:
+        'JSON array of provider zone ids this account may change, written by the superadmin who adds it.',
+      token_envelope:
+        'Provider API token sealed as a `tpsecret` envelope; held inline because `secret` requires an organization, and never returned by the admin API.',
+      scopes:
+        'Last preflight result written by the panel: whether the token can manage tunnels and DNS, and when it was checked.',
+      last_verified_at: 'When the panel last confirmed the token works; NULL until a check runs.',
+      last_error: 'Last provider error for this account; NULL when the last check succeeded.',
+      created_by_user_id: 'Superadmin who added this account; NULL after that user is deleted.',
     },
   },
   // ── networking ────────────────────────────────────────────────────────

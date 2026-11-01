@@ -64,6 +64,8 @@ const APPROVED_TABLE_NAMES = new Set<string>([
   'forge',
   'hosting',
   'hostname',
+  // Install-level provider account (tunnel, DNS, certificates) for the control plane's own names.
+  'ingress',
   'invitation',
   'ip',
   'key',
