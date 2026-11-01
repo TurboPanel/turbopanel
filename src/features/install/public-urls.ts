@@ -38,7 +38,7 @@ function isHttpsOriginUrl(url: URL): boolean {
  * Bracket an IPv6 literal once. `URL.hostname` already includes brackets, so
  * those are stripped before a new pair is added.
  */
-function formatHostForUrl(host: string, port?: string): string {
+export function formatHostForUrl(host: string, port?: string): string {
   const bare = stripIpv6Brackets(host)
   const hostPart = bare.includes(':') ? `[${bare}]` : bare
   return port ? `${hostPart}:${port}` : hostPart

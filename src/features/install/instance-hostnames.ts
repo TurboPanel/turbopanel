@@ -21,7 +21,12 @@ import {
 } from '../../db/schema.ts'
 import { normalizeHostForCompare } from '../../lib/hostname-compare.ts'
 import { coversHostname } from '../../lib/tls/match.ts'
-import { DEFAULT_PUBLIC_PORT, isIngressMode, type IngressMode } from './ingress-modes.ts'
+import {
+  DEFAULT_PUBLIC_PORT,
+  isIngressMode,
+  isPublicPort,
+  type IngressMode,
+} from './ingress-modes.ts'
 import { redactUrlSecrets } from '../upgrades/redact-url-secrets.ts'
 import { isLoopbackOrPrivateHostname } from './install-tls.ts'
 import {
@@ -71,6 +76,10 @@ export type InstanceHostnameEntry = {
   host: string
   source: InstanceHostnameSource
   uploadedCertId: string | null
+  /** Port visitors use; left out, the stored value (or 8443) stays. */
+  publicPort?: number
+  /** True makes this the primary and demotes the rest; left out, the stored value stays. */
+  isPrimary?: boolean
 }
 
 /** How visitors reach a name; every existing row reads back the defaults. */
@@ -659,12 +668,21 @@ function carryAcme(
 }
 
 /** A name kept across a rewrite keeps how visitors reach it. */
-function carryIngress(previous: StoredHostname | undefined): IngressFields {
-  if (!previous) return DEFAULT_INGRESS_FIELDS
+function carryIngress(
+  previous: StoredHostname | undefined,
+  entry: InstanceHostnameEntry
+): IngressFields {
+  if (!previous) {
+    return {
+      ...DEFAULT_INGRESS_FIELDS,
+      publicPort: entry.publicPort ?? DEFAULT_INGRESS_FIELDS.publicPort,
+      isPrimary: entry.isPrimary ?? DEFAULT_INGRESS_FIELDS.isPrimary,
+    }
+  }
   return {
     mode: previous.mode,
-    publicPort: previous.publicPort,
-    isPrimary: previous.isPrimary,
+    publicPort: entry.publicPort ?? previous.publicPort,
+    isPrimary: entry.isPrimary ?? previous.isPrimary,
     isDaemonDial: previous.isDaemonDial,
     ingressId: previous.ingressId,
     ingressState: previous.ingressState,
@@ -689,7 +707,7 @@ function rowFromEntry(
     acmeLastError: acme.acmeLastError,
     notAfter: uploaded ? notAfter : acme.notAfter,
     acmeState: acme.acmeState,
-    ...carryIngress(previous),
+    ...carryIngress(previous, entry),
     createdAt: previous?.createdAt ?? stamp,
     updatedAt: stamp,
   }
@@ -773,6 +791,8 @@ function takeUniqueHostname(
     host: hostResult.host,
     source: entry.source,
     uploadedCertId: entry.uploadedCertId,
+    publicPort: entry.publicPort,
+    isPrimary: entry.isPrimary,
   }
   const key = canonicalHostKey(normalized.host)
   const existing = byHost.get(key)
@@ -809,6 +829,41 @@ function previousHostname(
   return current.find((row) => canonicalHostKey(row.host) === key)
 }
 
+/** Port and primary choices that cannot be stored; null when they are fine. */
+function ingressChoiceFailure(
+  entries: readonly InstanceHostnameEntry[]
+): InstanceHostnameFailure | null {
+  const badPort = entries.filter(
+    (entry) => entry.publicPort !== undefined && !isPublicPort(entry.publicPort)
+  )
+  if (badPort.length > 0) {
+    return {
+      ok: false,
+      error: 'Public port must be a whole number from 1 to 65535',
+      invalid: badPort.map((entry) => entry.host),
+    }
+  }
+  const primaries = entries.filter((entry) => entry.isPrimary)
+  if (primaries.length > 1) {
+    return {
+      ok: false,
+      error: 'Only one hostname can be the primary',
+      invalid: primaries.map((entry) => entry.host),
+    }
+  }
+  return null
+}
+
+/** The one entry that asks to be primary takes the flag from every other row. */
+function applyPrimaryChoice(
+  rows: StoredHostname[],
+  entries: readonly InstanceHostnameEntry[]
+): StoredHostname[] {
+  const chosen = entries.findIndex((entry) => entry.isPrimary)
+  if (chosen < 0) return rows
+  return rows.map((row, index) => ({ ...row, isPrimary: index === chosen }))
+}
+
 async function buildReplacementRows(
   db: Db,
   entries: InstanceHostnameEntry[],
@@ -816,6 +871,8 @@ async function buildReplacementRows(
 ): Promise<{ ok: true; rows: StoredHostname[] } | InstanceHostnameFailure> {
   const unique = uniqueHostnames(entries)
   if (!unique.ok) return unique
+  const badChoice = ingressChoiceFailure(unique.entries)
+  if (badChoice) return badChoice
 
   const failures: InstanceHostnameFailure[] = []
   const certs = await loadUploadedCertificates(db)
@@ -834,7 +891,7 @@ async function buildReplacementRows(
     rows.push(rowFromEntry(entry, previous, index, notAfter))
   }
   if (failures.length > 0) return combineFailures(failures)
-  return { ok: true, rows }
+  return { ok: true, rows: applyPrimaryChoice(rows, unique.entries) }
 }
 
 export async function replaceInstanceHostnames(

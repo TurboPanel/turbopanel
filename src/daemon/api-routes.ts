@@ -595,6 +595,12 @@ const TICKET_FOR_OTHER_SERVER_RESULT = {
   error: 'Ticket is for another server',
 } as const
 
+const TICKET_NEEDS_SERVER_ID_RESULT = {
+  ok: false,
+  status: 400,
+  error: 'This ticket is for re-enrolling a specific server; include its server id',
+} as const
+
 const INVALID_LICENSE_RESULT = { ok: false, status: 401, error: 'Invalid license' } as const
 
 /**
@@ -609,17 +615,21 @@ async function enrollWithKey(
   params: EnrollParams
 ): Promise<EnrollOutcome> {
   const joinTicket = credential.kind === 'join' ? credential.ticket : null
-  if (joinTicket && !(await consumeTicket(db, joinTicket.id))) return INVALID_LICENSE_RESULT
+  const consumedAt = joinTicket ? await consumeTicket(db, joinTicket.id) : null
+  if (joinTicket && !consumedAt) return INVALID_LICENSE_RESULT
+  const release = async () => {
+    if (joinTicket && consumedAt) await releaseTicket(db, joinTicket.id, consumedAt).catch(() => {})
+  }
   try {
     const enrolled = await bindKeyToEnrollment(db, credential, params, joinTicket !== null)
-    if (!enrolled.ok && joinTicket) await releaseTicket(db, joinTicket.id).catch(() => {})
+    if (!enrolled.ok) await release()
     if (enrolled.ok && joinTicket) {
       await recordTicketServer(db, joinTicket.id, enrolled.serverId).catch(() => {})
     }
     return enrolled
   } catch (err) {
     // A failure that wrote nothing must not spend the one-hour ticket.
-    if (joinTicket) await releaseTicket(db, joinTicket.id).catch(() => {})
+    await release()
     throw err
   }
 }
@@ -673,6 +683,14 @@ async function announceNewServer(db: Db, params: EnrollParams, serverId: string)
   })
 }
 
+/** Why a re-enroll ticket cannot be used for the server the request names, or null. */
+function reenrollTargetRefusal(ticket: TicketRow, serverIdBody: string | undefined) {
+  if (!ticket.serverId) return TICKET_FOR_OTHER_SERVER_RESULT
+  const named = serverIdBody?.trim()
+  if (!named) return TICKET_NEEDS_SERVER_ID_RESULT
+  return named === ticket.serverId ? null : TICKET_FOR_OTHER_SERVER_RESULT
+}
+
 /**
  * Replace one server's daemon key with an owner-issued re-enroll ticket. The
  * ticket is bound to that server: presented for any other it is refused. A
@@ -683,10 +701,9 @@ async function enrollWithReenrollTicket(
   ticket: TicketRow,
   params: EnrollParams
 ): Promise<EnrollOutcome> {
-  const serverId = ticket.serverId
-  if (!serverId || params.serverIdBody?.trim() !== serverId) {
-    return TICKET_FOR_OTHER_SERVER_RESULT
-  }
+  const refusal = reenrollTargetRefusal(ticket, params.serverIdBody)
+  if (refusal) return refusal
+  const serverId = ticket.serverId as string
   const target = await loadServerForAnnouncement(db, serverId)
   if (target?.organizationId !== ticket.organizationId) {
     return TICKET_FOR_OTHER_SERVER_RESULT
@@ -699,7 +716,8 @@ async function enrollWithReenrollTicket(
   if (other && other.serverId !== serverId) {
     return { ok: false, status: 409, error: 'Fingerprint already exists' }
   }
-  if (!(await consumeTicket(db, ticket.id))) return INVALID_LICENSE_RESULT
+  const consumedAt = await consumeTicket(db, ticket.id)
+  if (!consumedAt) return INVALID_LICENSE_RESULT
 
   try {
     const result = await attachDaemonStateToServer(db, serverId, {
@@ -719,7 +737,7 @@ async function enrollWithReenrollTicket(
     })
     return { ok: true, serverId, keyId: result.keyId }
   } catch (err) {
-    await releaseTicket(db, ticket.id).catch(() => {})
+    await releaseTicket(db, ticket.id, consumedAt).catch(() => {})
     return enrollAttachFailure(err)
   }
 }

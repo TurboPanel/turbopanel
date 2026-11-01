@@ -16,7 +16,7 @@ import {
   listLicenses,
   listServersBoundToLicenses,
 } from '../../features/licenses/license.ts'
-import { mintTicket } from '../../features/licenses/tickets.ts'
+import { cancelLicenseTickets, mintTicket } from '../../features/licenses/tickets.ts'
 import { recordAudit } from '../../features/audit/audit-records.ts'
 import { isCustomerBillingOperational } from '../../features/billing/config.ts'
 import {
@@ -51,7 +51,7 @@ import { getTierById } from '../../features/tiers/tier-records.ts'
 import { unusedKeyExpiresAt } from '../../features/licenses/key-expiry.ts'
 import {
   parseInstallBaseUrl,
-  resolvePublicBaseUrl,
+  resolveInstallBaseUrl,
 } from '../../features/install/resolve-public-base-url.ts'
 import {
   canReserveServerSeat,
@@ -168,7 +168,10 @@ async function rejectIfNoLicenseAvailable(
       )
 }
 
-type MintedKey = Readonly<{ licenseId: string; licenseToken: string }>
+type MintedKey = Readonly<{
+  licenseId: string
+  joinTicket: Awaited<ReturnType<typeof mintTicket>>
+}>
 
 /**
  * Mint the registration key. Hosted, with the tier a manager chose in Add
@@ -181,13 +184,35 @@ type MintedKey = Readonly<{ licenseId: string; licenseToken: string }>
 async function mintRegistrationKey(
   c: Context<AppEnv>,
   db: Db,
-  input: Readonly<{ organizationId: string; name?: string; tierId?: string; hosted: boolean }>
+  input: Readonly<{
+    organizationId: string
+    name?: string
+    tierId?: string
+    hosted: boolean
+    userId: string | null
+  }>
 ): Promise<MintedKey | Response> {
   const { organizationId, name, tierId } = input
   // Every key minted here stops working if no server enrolls with it in time.
   const expiresAt = unusedKeyExpiresAt(Date.now())
-  if (!input.hosted || !tierId)
-    return await createLicense(db, { organizationId, name, expiresAt, tokenless: true })
+  // The key and its join ticket are written together or not at all.
+  const mintKey = async (tx: Db, extra: { tierId?: string }): Promise<MintedKey> => {
+    const { licenseId } = await createLicense(tx, {
+      organizationId,
+      name,
+      expiresAt,
+      tokenless: true,
+      ...extra,
+    })
+    const joinTicket = await mintTicket(tx, {
+      organizationId,
+      licenseId,
+      serverName: name ?? null,
+      userId: input.userId,
+    })
+    return { licenseId, joinTicket }
+  }
+  if (!input.hosted || !tierId) return await db.transaction((tx) => mintKey(tx, {}))
   const chosen = await getTierById(db, tierId)
   if (!chosen?.isActive) {
     return c.json({ error: 'Unknown license tier', code: 'tier_not_found' }, 400)
@@ -207,7 +232,7 @@ async function mintRegistrationKey(
         409
       )
     }
-    return await createLicense(tx, { organizationId, name, tierId, expiresAt, tokenless: true })
+    return await mintKey(tx, { tierId })
   })
 }
 
@@ -335,7 +360,7 @@ export function registerLicenseRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       const unavailable = await rejectIfNoLicenseAvailable(c, db, organizationId, hosted)
       if (unavailable) return unavailable
 
-      const instanceUrl = parsedInstallBaseUrl ?? (await resolvePublicBaseUrl(c, opts))
+      const instanceUrl = parsedInstallBaseUrl ?? (await resolveInstallBaseUrl(c, opts))
       // Insecure TLS follows the dialed hostname and is bootstrap-only.
       // Let's Encrypt uses the system store. An uploaded leaf uses it only
       // when that certificate chains to a public root. A Let's Encrypt
@@ -365,18 +390,18 @@ export function registerLicenseRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       // The instance does not build daemon release artifacts. In self-hosted dev
       // the operator builds them via Developer → Rebuild daemon and upgrade
       // (`deno task release:dev`); Caddy serves `dist/` at `/downloads/daemon`.
-      const minted = await mintRegistrationKey(c, db, { organizationId, name, tierId, hosted })
-      if (minted instanceof Response) return minted
       // The key itself is minted with no token: what the install command
       // carries is a one-hour, single-use join ticket in the same slots, so
       // the key's own secret never exists, travels or sits in a history.
-      const { licenseId } = minted
-      const joinTicket = await mintTicket(db, {
+      const minted = await mintRegistrationKey(c, db, {
         organizationId,
-        licenseId,
-        serverName: name ?? null,
+        name,
+        tierId,
+        hosted,
         userId: c.get('session')?.userId ?? null,
       })
+      if (minted instanceof Response) return minted
+      const { licenseId, joinTicket } = minted
 
       // Self-hosted entitles what it mints: one granted `SX` unit per active
       // license (`src/features/tiers/self-hosted-grant.ts`), so this key is
@@ -432,15 +457,19 @@ export function registerLicenseRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const stepUp = await requireStepUpIfConfigured(c, organizationId, 'license.key.burn')
     if (stepUp) return stepUp
 
-    const burned = await burnUnboundLicenseToken(db, id, organizationId)
-    if (!burned) return c.json({ error: 'Not found' }, 404)
-
     const session = c.get('session')
-    const joinTicket = await mintTicket(db, {
-      organizationId,
-      licenseId: id,
-      userId: session?.userId ?? null,
+    // One transaction: the old tickets are cancelled and the new one issued
+    // together, so no earlier join secret outlives a burn.
+    const joinTicket = await db.transaction(async (tx) => {
+      if (!(await burnUnboundLicenseToken(tx, id, organizationId))) return null
+      await cancelLicenseTickets(tx, id)
+      return await mintTicket(tx, {
+        organizationId,
+        licenseId: id,
+        userId: session?.userId ?? null,
+      })
     })
+    if (!joinTicket) return c.json({ error: 'Not found' }, 404)
     await recordAudit(db, {
       organizationId,
       actorUserId: session?.userId ?? null,
