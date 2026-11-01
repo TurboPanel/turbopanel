@@ -55,15 +55,22 @@ export async function sealToRecipient(
   }
 }
 
-/** Open an envelope with the recipient's raw 32-byte X25519 private key. Throws on any mismatch. */
+/**
+ * Open an envelope with the recipient's private key: raw 32 bytes, or a native
+ * X25519 `CryptoKey` (the panel's own sealing key stays non-extractable).
+ * Throws on any mismatch.
+ */
 export async function openFromSender(
-  recipientPrivRaw: Uint8Array,
+  recipientPriv: Uint8Array | CryptoKey,
   aad: string,
   envelope: HpkeEnvelope
 ): Promise<Uint8Array> {
-  const recipientKey = await suite().kem.deserializePrivateKey(
-    exactBytes(recipientPrivRaw, 'recipient private key') as BufferSource
-  )
+  const recipientKey =
+    recipientPriv instanceof Uint8Array
+      ? await suite().kem.deserializePrivateKey(
+          exactBytes(recipientPriv, 'recipient private key') as BufferSource
+        )
+      : recipientPriv
   const opened = await suite().open(
     { recipientKey, enc: base64urlDecode(envelope.enc) as BufferSource },
     base64urlDecode(envelope.ct) as BufferSource,

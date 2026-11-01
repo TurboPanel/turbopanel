@@ -6,12 +6,19 @@ import {
   HPKE_TEST_VECTOR,
   hpkeTestRecipient,
 } from '../../test-fixtures/hpke-vector.ts'
+import { importX25519Sealer } from './keys.ts'
 import { isHpkeEnvelope, openFromSender, sealToRecipient } from './hpke.ts'
 
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
 
 describe('HPKE sealing helper under the Workers runtime', () => {
+  it('opens with a native non-extractable X25519 key, as the identity holds it', async () => {
+    const key = await importX25519Sealer(HPKE_TEST_RECIPIENT_SEED)
+    const envelope = await sealToRecipient(key.publicRaw, key.kid, 'panel', encoder.encode('k'))
+    expect(decoder.decode(await openFromSender(key.privateKey, 'panel', envelope))).toBe('k')
+  })
+
   it('round-trips and opens the checked-in vector', async () => {
     const recipient = await hpkeTestRecipient()
     const envelope = await sealToRecipient(

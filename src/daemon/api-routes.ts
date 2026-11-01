@@ -28,6 +28,7 @@ import type { Db } from '../db/connection.ts'
 import { describeError } from '../lib/describe-error.ts'
 import { storeIssuedCertificate } from '../client/tls/issued-certificate.ts'
 import { logWarn } from '../lib/logger.ts'
+import { resolveIssuedPrivateKey } from './issued-private-key.ts'
 import { buildSecretsDecryptAnswer, databaseDecryptAnswerSource } from './secrets-decrypt-answer.ts'
 import { registerDaemonSealingKey } from './sealing-key-registration.ts'
 import { setDaemonSealingKey } from '../features/servers/daemon-sealing-key.ts'
@@ -239,7 +240,7 @@ export const MAX_SECRETS_DECRYPT_BODY_BYTES = 2 * 1024 * 1024
  * (32 KiB chain + 8 KiB key at most) with JSON quoting overhead, and an
  * optional short `requestId`.
  */
-export const MAX_TLS_ISSUED_BODY_BYTES = 64 * 1024
+export const MAX_TLS_ISSUED_BODY_BYTES = 96 * 1024
 
 /** The optional `requestId` of `POST /tls/issued`: 1 to 64 characters of letters, digits, `_` and `-`. */
 function isTlsIssuedRequestId(value: unknown): value is string {
@@ -2201,6 +2202,7 @@ export function registerDaemonApiRoutes<E extends Env>(
         hostname?: unknown
         certificatePem?: unknown
         privateKeyPem?: unknown
+        privateKeyEnvelope?: unknown
         requestId?: unknown
       }
       try {
@@ -2208,18 +2210,15 @@ export function registerDaemonApiRoutes<E extends Env>(
       } catch {
         return c.json({ ok: false, error: 'invalid json' }, 400)
       }
-      if (
-        typeof body.hostname !== 'string' ||
-        typeof body.certificatePem !== 'string' ||
-        typeof body.privateKeyPem !== 'string'
-      ) {
-        return c.json(
-          {
-            ok: false,
-            error: 'hostname, certificatePem and privateKeyPem are required',
-          },
-          400
-        )
+      if (typeof body.hostname !== 'string' || typeof body.certificatePem !== 'string') {
+        return c.json({ ok: false, error: 'hostname and certificatePem are required' }, 400)
+      }
+      const issuedKey = await resolveIssuedPrivateKey(
+        body,
+        options.panelIdentity ? await options.panelIdentity() : null
+      )
+      if (!issuedKey.ok) {
+        return c.json({ ok: false, error: issuedKey.error }, issuedKey.status)
       }
       if (body.requestId !== undefined && !isTlsIssuedRequestId(body.requestId)) {
         return c.json({ ok: false, error: 'requestId is not valid' }, 400)
@@ -2235,7 +2234,7 @@ export function registerDaemonApiRoutes<E extends Env>(
           serverId: c.get('daemonServerId'),
           hostname: body.hostname,
           certificatePem: body.certificatePem,
-          privateKeyPem: body.privateKeyPem,
+          privateKeyPem: issuedKey.privateKeyPem,
           ...(body.requestId === undefined ? {} : { requestId: body.requestId }),
         },
         { dataEncryptionSecrets }
