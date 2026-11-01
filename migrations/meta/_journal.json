@@ -99,6 +99,13 @@
       "when": 1793566994619,
       "tag": "0013_enroll_tickets_and_token_erase",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1793570133908,
+      "tag": "0014_notification_events_panel_trust",
+      "breakpoints": true
     }
   ]
 }
