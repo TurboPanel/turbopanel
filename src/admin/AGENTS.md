@@ -18,7 +18,13 @@
   Workers 422, a channel other than canary/rc/release 422, no connected daemon
   503) and `POST /instance/updates/daemon` enqueues the existing `update` cell
   message for the co-located host (the per-server update route refuses that
-  host); `GET /instance/platform-ca` and
+  host); `GET /instance/identity` is the Panel Identity read (public fingerprints of the control
+  plane's current, next and sealing keys, the install address, and each server's pinned-by state,
+  `none` until the server pin column exists); `PUT /instance/identity/next` sets or clears the next
+  fingerprint (superadmin, self-hosted only, always behind `requireInstanceStepUp`, audited as
+  `panel.identity_next.set|clear`, mails superadmins through `recordKeyEvent`); the self-hosted
+  tunnel-token write sits behind the same step-up and is audited as `instance.tunnel_token.set`;
+  `GET /instance/platform-ca` and
   `POST /instance/platform-ca/trust-reconcile` are Deno-only Platform CA read
   and the existing `server.tls.trust.reconcile` fan-out; `GET /instance/trusted-proxies`
   is the read-only effective `TURBOPANEL_TRUSTED_PROXY_CIDRS` list; `POST /instance/tunnel-token`

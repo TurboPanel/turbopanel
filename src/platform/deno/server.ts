@@ -77,6 +77,7 @@ import {
 } from '../../lib/secrets/password.ts'
 import { registerAdminRoutes } from '../../admin/routes.ts'
 import { registerIngressAdminRoutes } from './ingress/admin-routes.ts'
+import { hostnameModes } from './ingress/planner.ts'
 import { registerInstallRoutes } from '../../install/routes.ts'
 import { registerDaemonApiRoutes } from '../../daemon/api-routes.ts'
 import {
@@ -84,7 +85,8 @@ import {
   resolvePublicInstanceTls,
 } from '../../features/install/install-tls.ts'
 import { listInstanceHostnames } from '../../features/install/instance-hostnames.ts'
-import { ensurePanelIdentity } from '../../lib/panel-identity/identity.ts'
+import { ensurePanelIdentityDetailed } from '../../lib/panel-identity/identity.ts'
+import { recordAudit } from '../../features/audit/audit-records.ts'
 import { orderedPublicOrigins } from '../../lib/panel-identity/urls.ts'
 import { registerDaemonWebSocket } from '../../daemon/deno-ws.ts'
 import { createHeartbeatReader } from './heartbeat-reader.ts'
@@ -178,6 +180,9 @@ import {
   recoveryIdFromCommandMetadata,
   sweepStalledFencing,
 } from '../../features/managed/ha-recovery.ts'
+
+/** How often the advised heartbeat is re-read from the hostname rows. */
+const HEARTBEAT_REFRESH_MS = 5 * 60 * 1000
 
 export type DenoDeveloperSurfaceContext = {
   routes: Hono<AppEnv>
@@ -453,7 +458,18 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
   )
   // The panel identity key: random, stored sealed under the data-encryption key,
   // never derived from TURBOPANEL_SECRET. Generated once on the first start.
-  const panelIdentity = await ensurePanelIdentity(db, dataEncryptionSecrets)
+  const ensured = await ensurePanelIdentityDetailed(db, dataEncryptionSecrets)
+  // Replaced when an administrator sets or clears the next key, so the served
+  // document follows without a restart.
+  let panelIdentity = ensured.identity
+  if (ensured.created) {
+    await recordAudit(db, {
+      organizationId: null,
+      action: 'panel.identity.generated',
+      targetType: 'instance',
+      context: { fingerprint: panelIdentity.current.kid, keyset: panelIdentity.keyset },
+    })
+  }
   logInfo(
     'identity',
     `Panel identity ${panelIdentity.current.kid} (keyset ${panelIdentity.keyset})`
@@ -626,6 +642,7 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     // health handler never sees TURBOPANEL_REVISION from systemd.
     getPlatformEnv: () => Deno.env.toObject(),
     readPlatformCaPem,
+    panelIdentity: () => Promise.resolve(panelIdentity),
   })
   // Daemon + developer registrars are generic over the env, so the app's own
   // `AppEnv` typing carries through — no cast.
@@ -661,12 +678,21 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     github: githubWebhookLimiter,
     gitlab: gitlabWebhookLimiter,
   })
-  // Panel hostnames carry no ingress mode yet, so this stays at the default
-  // 60 s. When the mode column exists, only `loadModes` changes and a
-  // one-minute refresh is armed then (no idle polling until it has work).
-  const heartbeatReader = createHeartbeatReader(
-    () => Promise.resolve([]),
-    (err) => logWarn('daemon-cell', `advised heartbeat refresh error: ${String(err)}`)
+  // Behind-edge hostnames advertise 25 s, all others 60 s. The modes are read
+  // from the hostname rows once now and again every five minutes (hostnames
+  // change rarely, and a stale value only delays the shorter ping); the attach
+  // path only reads the cached value. A fresh client per read, like the other
+  // Deno timers.
+  const loadHostnameModes = async (): Promise<string[]> => {
+    const tickDb = createDenoDb()
+    try {
+      return hostnameModes(await listInstanceHostnames(tickDb))
+    } finally {
+      await endDbConnection(tickDb)
+    }
+  }
+  const heartbeatReader = createHeartbeatReader(loadHostnameModes, (err) =>
+    logWarn('daemon-cell', `advised heartbeat refresh error: ${String(err)}`)
   )
   void heartbeatReader.refresh()
   registerDaemonWebSocket(routes, {
@@ -690,6 +716,11 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     readPlatformCaBundle: () => Deno.readTextFile(resolveInstanceTlsCaServePath()),
     collectInstanceIps: () => collectServerIps(readDefaultRouteInterfaces()),
     registerPlatformAdminRoutes: registerIngressAdminRoutes,
+    panelIdentity: () => Promise.resolve(panelIdentity),
+    identityUrls: async (requestDb) => orderedPublicOrigins(await listInstanceHostnames(requestDb)),
+    onIdentityNextChanged: (fingerprint) => {
+      panelIdentity = { ...panelIdentity, next: fingerprint ? { kid: fingerprint } : null }
+    },
     ...resolveMailDeadLetters(emailQueue),
   })
   const socketPath = resolveInstanceSocket()
@@ -902,6 +933,7 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     },
   })
   const maintenanceTimer = setInterval(() => maintenance.tick(), DAEMON_CELL_MAINTAIN_MS)
+  const heartbeatTimer = setInterval(() => void heartbeatReader.refresh(), HEARTBEAT_REFRESH_MS)
 
   // First Deno-side scheduled surface besides cell maintain: Organization CA
   // leaf renewal. Fresh createDenoDb() per tick, always endDbConnection in
@@ -951,7 +983,7 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
   }, LEAF_RENEWAL_SWEEP_INTERVAL_MS)
 
   const shutdown = createInstanceShutdown({
-    timers: [maintenanceTimer, leafRenewalTimer],
+    timers: [maintenanceTimer, leafRenewalTimer, heartbeatTimer],
     closers: [
       { label: 'email queue', close: () => emailQueue.close?.() },
       { label: 'command queue', close: () => commandQueue.close?.() },

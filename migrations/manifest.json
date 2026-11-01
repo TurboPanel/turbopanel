@@ -86,6 +86,12 @@
       "tag": "0013_enroll_tickets_and_token_erase",
       "when": 1793566994619,
       "sha256": "b79db5e5ddd911f4aa8a09384ee3e4e5de1f462602465e543efef29791bf2379"
+    },
+    {
+      "idx": 14,
+      "tag": "0014_notification_events_panel_trust",
+      "when": 1793570133908,
+      "sha256": "03a124ecd87ed38c1e4e5f2dbe8bff8c8d6e8663b14277a91ea8c26bbf8ff4b2"
     }
   ]
 }
