@@ -280,7 +280,11 @@ under `/run/turbopanel/deployments/<projectId>/<environmentId>/secrets/` (mode
 last-applied plan is also stored on `deployment.options.secretPlan` for boot
 rehydrate (`POST /api/daemon/v1/deployments/secrets/rehydrate`). Optional
 payload fields `generation`, `desiredHash`, `replicaCounts`, and `serverId`
-identify the per-host snapshot.
+identify the per-host snapshot. The rehydrate response also carries `gone[]`
+(`{ projectId, environmentId }`): requested deployments whose environment row no
+longer exists (a deleted project or environment). It is expand-only; a daemon
+that ignores it behaves as before. A missing deployment row or a generation
+mismatch is never reported as gone.
 
 **`command.context.releases[]`:** the Git-backed releases one
 `environment.deploy` attempt published, written onto the permanent row at
