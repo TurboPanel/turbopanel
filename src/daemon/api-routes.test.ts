@@ -1069,34 +1069,37 @@ test('POST /enroll rejects request without licenseToken', async () => {
 })
 
 test('POST /enroll rejects invalid signature', async () => {
-  await withEnrollFixture(async ({ app, licenseId, licenseToken, machineKey, hostname }) => {
-    const challengeResponse = await app.request('/api/daemon/v1/auth/challenge', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({}),
-    })
-    assertEquals(challengeResponse.status, 200)
-    const challenge = (await challengeResponse.json()) as {
-      challengeId: string
-      nonce: string
-    }
-    const key = await generateKeyMaterial()
+  await withEnrollFixture(
+    async ({ app, licenseId, licenseToken, machineKey, hostname }) => {
+      const challengeResponse = await app.request('/api/daemon/v1/auth/challenge', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      })
+      assertEquals(challengeResponse.status, 200)
+      const challenge = (await challengeResponse.json()) as {
+        challengeId: string
+        nonce: string
+      }
+      const key = await generateKeyMaterial()
 
-    const response = await app.request('/api/daemon/v1/enroll', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        licenseId,
-        licenseToken,
-        machineKey,
-        hostname,
-        publicJwk: key.publicJwk,
-        challengeId: challenge.challengeId,
-        signature: 'invalid-signature',
-      }),
-    })
-    assertEquals(response.status, 403)
-  })
+      const response = await app.request('/api/daemon/v1/enroll', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          licenseId,
+          licenseToken,
+          machineKey,
+          hostname,
+          publicJwk: key.publicJwk,
+          challengeId: challenge.challengeId,
+          signature: 'invalid-signature',
+        }),
+      })
+      assertEquals(response.status, 403)
+    },
+    { enroll: false }
+  )
 })
 
 test('POST /enroll stores public key only after proof-of-possession', async () => {
@@ -1807,7 +1810,18 @@ test('re-enroll with recorded hardware past its tier succeeds and keeps the tier
     await mergeServerResources(fixture.db, fixture.serverId, hostResourcesPayload(8, 16))
     // A free bigger seat exists; re-enrolling must not take it.
     await purchaseTier(fixture.db, fixture, 5, 1)
-    const response = await postEnroll(fixture.app, fixture)
+    // The bound key's token is erased, so the re-enrol runs on an owner-issued ticket.
+    // The ticket path skips licence binding; this guards the key swap leaving the assigned tier alone.
+    const reenroll = await mintTicket(fixture.db, {
+      organizationId: fixture.organizationId,
+      serverId: fixture.serverId,
+    })
+    const response = await postEnroll(fixture.app, {
+      ...fixture,
+      licenseId: reenroll.id,
+      licenseToken: reenroll.plaintext,
+      serverId: fixture.serverId,
+    })
     assertEquals(response.status, 200)
     const body = (await response.json()) as { serverId: string }
     assertEquals(body.serverId, fixture.serverId)
