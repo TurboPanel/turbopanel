@@ -89,3 +89,12 @@ test('tunnel-token answers 503 when no co-located daemon is connected', async ()
     error: 'no co-located daemon connected to run the tunnel',
   })
 })
+
+test('trusted-proxies refresh refuses an organization admin with a clean 403', async () => {
+  const { app, cookie } = await buildApp('admin')
+  const res = await app.request(`${ADMIN_API_PREFIX}/instance/ingress/trusted-proxies/refresh`, {
+    method: 'POST',
+    headers: { Cookie: cookie },
+  })
+  assertEquals(res.status, 403)
+})

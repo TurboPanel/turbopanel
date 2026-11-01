@@ -20,8 +20,9 @@ High Availability (Workers) must not contain any of it.
   reference an organization ACME opt-in.
 - **Prefix.** Every route sits under `/api/admin/v1`, so no Caddy or
   `wrangler.jsonc` `routes` change is needed.
-- Today it holds `POST /instance/tunnel-token`, and the Workers OpenAPI spec
-  leaves that path out.
+- Today it holds `POST /instance/tunnel-token` (the Workers OpenAPI spec leaves
+  that path out), `GET /instance/ingress/trusted-proxies` and
+  `POST /instance/ingress/trusted-proxies/refresh`.
 - **Provider interface.** `provider.ts` defines `preflight`, `apply`, `status`
   and `remove`; `capabilities.ts` holds the capability table (one record per
   mode, pinned cell by cell by `capabilities.hostfree.test.ts`); `planner.ts`
@@ -35,3 +36,8 @@ High Availability (Workers) must not contain any of it.
 - **Not switched on.** No route calls the registry yet, and the edge go-live
   gate (refuse to apply an edge mode while the fleet is unpinned) lands with
   the first edge provider, after the pin columns exist.
+- **Edge ranges.** `edge-ranges.ts` fetches the Cloudflare list (etag, daily) and
+  the Bunny lists for the proxy modes in use and keeps them in the `EDGE_TRUST`
+  setting (`src/features/install/edge-trust.ts`, Workers-safe). The apply body
+  carries `edgeTrust` only to a daemon advertising `instance-edge-trust-v1`;
+  Caddy picks the visitor address from them, so `resolvePeerAddress` is unchanged.

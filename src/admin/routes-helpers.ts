@@ -6,6 +6,7 @@ import {
   generateDeliveryId,
   generateRequestId,
   type InstanceAcmeWireSettings,
+  type InstanceEdgeTrustWire,
   type InstanceHostnameWireEntry,
 } from '../contracts/cell-protocol.ts'
 import { cellTrace } from '../lib/logger.ts'
@@ -37,6 +38,7 @@ export type PublicUrlsApplyPayload = {
   urls: string[]
   hostnames?: InstanceHostnameWireEntry[]
   instanceAcme?: InstanceAcmeWireSettings
+  edgeTrust?: InstanceEdgeTrustWire
 }
 
 function normalizePublicUrlsApply(
@@ -60,6 +62,7 @@ function tracePublicUrlsPayload(payload: PublicUrlsApplyPayload): Record<string,
         }
       : {}),
     ...(payload.instanceAcme ? { instanceAcme: payload.instanceAcme } : {}),
+    ...(payload.edgeTrust ? { edgeTrust: { hash: payload.edgeTrust.hash } } : {}),
   }
 }
 
@@ -486,6 +489,7 @@ export async function waitForPublicUrlsApply(
     urls: payload.urls,
     ...(payload.hostnames ? { hostnames: payload.hostnames } : {}),
     ...(payload.instanceAcme ? { instanceAcme: payload.instanceAcme } : {}),
+    ...(payload.edgeTrust ? { edgeTrust: payload.edgeTrust } : {}),
   }
   cellTrace('request-enqueued', {
     requestId,

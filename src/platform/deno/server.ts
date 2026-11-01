@@ -21,6 +21,8 @@ import {
   assertValidUpdateChannelEnv,
   resolveInstanceUpdateChannel,
 } from '../../contracts/update-channel.ts'
+import { applyStoredPublicUrls } from '../../admin/public-urls-apply-run.ts'
+import { refreshEdgeRanges, runEdgeTrustTick } from './ingress/edge-ranges.ts'
 import { createRedisDaemonCellRegistry } from '../../daemon/cell/redis/registry.ts'
 import { sweepStalePresence } from '../../daemon/cell/control-plane-monitor.ts'
 import { createDenoMaintenanceScheduler } from '../../daemon/cell/deno-maintenance.ts'
@@ -349,6 +351,8 @@ function resolveCommandAmqpUrl(): string | null {
 /** Isolate one cleanup phase so a failure cannot abort the rest of the tick. */
 const COMMAND_PRUNE_INTERVAL_MS = 15 * 60_000
 let lastCommandPruneMs = 0
+let lastEdgeTrustTickMs = 0
+const EDGE_TRUST_TICK_INTERVAL_MS = 5 * 60_000
 
 async function runCleanupPhase(label: string, fn: () => Promise<unknown>): Promise<void> {
   try {
@@ -721,6 +725,7 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     onIdentityNextChanged: (fingerprint) => {
       panelIdentity = { ...panelIdentity, next: fingerprint ? { kid: fingerprint } : null }
     },
+    refreshEdgeRanges: (routeDb) => refreshEdgeRanges(routeDb),
     ...resolveMailDeadLetters(emailQueue),
   })
   const socketPath = resolveInstanceSocket()
@@ -909,6 +914,22 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
         await runCleanupPhase('command history prune', () => pruneCommandHistory(db))
         await runCleanupPhase('audit history prune', async () =>
           pruneAuditHistory(db, { months: await getAuditRetentionMonths(db) })
+        )
+      }
+      // Edge address ranges for proxy modes: the fetch itself runs at most once
+      // a day inside the tick; the daemon hears only about a changed set.
+      if (Date.now() - lastEdgeTrustTickMs >= EDGE_TRUST_TICK_INTERVAL_MS) {
+        lastEdgeTrustTickMs = Date.now()
+        await runCleanupPhase('edge trust refresh', () =>
+          runEdgeTrustTick(db, () =>
+            applyStoredPublicUrls({
+              db,
+              registry: daemonCellRegistry,
+              secretsConfig,
+              dataEncryptionSecrets,
+              env: Deno.env.toObject(),
+            })
+          )
         )
       }
       await runCleanupPhase('upgrade tick', async () => {
