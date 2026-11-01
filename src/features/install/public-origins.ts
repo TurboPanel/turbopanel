@@ -69,3 +69,25 @@ export function publicOriginsForRpId(rows: readonly PublicOriginRow[], rpId: str
   }
   return uniqueOrigins(origins)
 }
+
+export type PrimaryChange = {
+  /** `primary-host-changed` also moves the passkey RP ID; `primary-origin-changed` is the port only. */
+  code: 'primary-host-changed' | 'primary-origin-changed'
+  previousPrimaryOrigin: string
+  primaryOrigin: string | null
+}
+
+/** How the primary's public address moved, or null when it did not. */
+export function describePrimaryChange(
+  previous: string | null,
+  next: string | null
+): PrimaryChange | null {
+  if (previous === null || previous === next) return null
+  const sameHost =
+    next !== null && hostFromPublicUrlEntry(previous) === hostFromPublicUrlEntry(next)
+  return {
+    code: sameHost ? 'primary-origin-changed' : 'primary-host-changed',
+    previousPrimaryOrigin: previous,
+    primaryOrigin: next,
+  }
+}

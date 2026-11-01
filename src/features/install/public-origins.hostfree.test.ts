@@ -1,5 +1,6 @@
 import { assertEquals } from '@std/assert'
 import {
+  describePrimaryChange,
   installUrlsFor,
   orderedPublicOrigins,
   primaryHostname,
@@ -77,4 +78,17 @@ test('passkey origins cover the public origin and the 8443 listener of the RP ho
     'https://other.example.test:8443',
   ])
   assertEquals(publicOriginsForRpId(rows, 'evil.example.test'), [])
+})
+
+test('a primary that keeps its host and changes port is not a passkey change', () => {
+  assertEquals(
+    describePrimaryChange('https://a.example.test:8443', 'https://a.example.test')?.code,
+    'primary-origin-changed'
+  )
+  assertEquals(
+    describePrimaryChange('https://a.example.test', 'https://b.example.test')?.code,
+    'primary-host-changed'
+  )
+  assertEquals(describePrimaryChange('https://a.example.test', 'https://a.example.test'), null)
+  assertEquals(describePrimaryChange(null, 'https://a.example.test'), null)
 })

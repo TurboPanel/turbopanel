@@ -84,4 +84,5 @@ identity document and default install commands use it; never use
 PUT hostnames route accepts `publicPort` and `isPrimary` per entry (one
 primary; omitted keeps the stored value) and warns when the primary's address
 changes, because OAuth callbacks and Git webhooks registered with the old
-address must be updated.
+address must be updated; a different host also stops registered passkeys
+(`primary-host-changed`), and either change is audited.
