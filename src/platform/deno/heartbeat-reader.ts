@@ -16,7 +16,7 @@ export type HeartbeatReader = {
  */
 export function createHeartbeatReader(
   loadModes: () => Promise<readonly string[]>,
-  onError: (err: unknown) => void = () => {}
+  onError: (err: unknown) => void
 ): HeartbeatReader {
   let seconds = HEARTBEAT_SECONDS_DEFAULT
   return {
