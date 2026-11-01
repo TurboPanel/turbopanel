@@ -1,9 +1,9 @@
 import type { Hono, MiddlewareHandler } from 'hono'
 import type { AppEnv } from '../../../app/app.ts'
 import { requireInstanceStepUp } from '../../../client/authn/step-up.ts'
-import { loadEdgeTrustState, providersForModes } from '../../../features/install/edge-trust.ts'
+import { loadEdgeTrustState } from '../../../features/install/edge-trust.ts'
 import { listInstanceHostnames } from '../../../features/install/instance-hostnames.ts'
-import { refreshEdgeRanges } from './edge-ranges.ts'
+import { describeEdgeTrust, refreshEdgeRanges } from './edge-ranges.ts'
 import { handleTunnelTokenRequest } from '../../../developer/tunnel-token-handler.ts'
 import { recordAudit } from '../../../features/audit/audit-records.ts'
 import { getDb } from '../../../db/connection.ts'
@@ -48,17 +48,6 @@ export function registerIngressAdminRoutes(admin: Hono<AppEnv>, deps: IngressAdm
 }
 
 async function edgeTrustSummary(db: NonNullable<ReturnType<typeof getDb>>) {
-  const state = await loadEdgeTrustState(db)
   const modes = (await listInstanceHostnames(db)).map((row) => row.mode)
-  const describe = (set: typeof state.cloudflare) =>
-    set ? { count: set.v4.length + set.v6.length, etag: set.etag, fetchedAt: set.fetchedAt } : null
-  return {
-    ok: true,
-    enabledProviders: providersForModes(modes),
-    cloudflare: describe(state.cloudflare),
-    bunny: describe(state.bunny),
-    appliedHash: state.appliedHash ?? null,
-    appliedAt: state.appliedAt ?? null,
-    lastError: state.lastError ?? null,
-  }
+  return describeEdgeTrust(await loadEdgeTrustState(db), modes)
 }

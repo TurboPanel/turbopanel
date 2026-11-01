@@ -161,3 +161,18 @@ export async function runEdgeTrustTick(
   const applied = fresh.appliedHash ?? (await emptyEdgeTrustHash())
   if (wanted !== applied) await apply()
 }
+
+/** The read model the admin route returns: counts and times, never the lists. */
+export function describeEdgeTrust(state: EdgeTrustState, modes: readonly string[]) {
+  const describe = (set: EdgeRangeSet | undefined) =>
+    set ? { count: set.v4.length + set.v6.length, etag: set.etag, fetchedAt: set.fetchedAt } : null
+  return {
+    ok: true,
+    enabledProviders: providersForModes(modes),
+    cloudflare: describe(state.cloudflare),
+    bunny: describe(state.bunny),
+    appliedHash: state.appliedHash ?? null,
+    appliedAt: state.appliedAt ?? null,
+    lastError: state.lastError ?? null,
+  }
+}

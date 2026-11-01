@@ -1,5 +1,6 @@
 import { assertEquals, assertRejects } from '@std/assert'
 import {
+  describeEdgeTrust,
   edgeRefreshDue,
   fetchBunnyRanges,
   fetchCloudflareRanges,
@@ -108,4 +109,20 @@ test('the refresh is due daily, when forced, or when a needed list is missing', 
   assertEquals(edgeRefreshDue(fresh, ['cloudflare-proxy'], hourLater, true), true)
   assertEquals(edgeRefreshDue(fresh, ['cloudflare-proxy'], dayLater), true)
   assertEquals(edgeRefreshDue(fresh, ['cloudflare-proxy', 'bunny-proxy'], hourLater), true)
+})
+
+test('the summary shows counts and times and the providers in use, not the lists', () => {
+  const state = {
+    cloudflare: { v4: ['198.51.100.0/24'], v6: ['2001:db8::/32'], etag: 'e', fetchedAt: 'f' },
+    appliedHash: 'h',
+  }
+  assertEquals(describeEdgeTrust(state, ['cloudflare-proxy', 'direct']), {
+    ok: true,
+    enabledProviders: ['cloudflare'],
+    cloudflare: { count: 2, etag: 'e', fetchedAt: 'f' },
+    bunny: null,
+    appliedHash: 'h',
+    appliedAt: null,
+    lastError: null,
+  })
 })
