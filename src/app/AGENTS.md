@@ -143,7 +143,13 @@ bounded readers and limiters).
   `src/developer/system-routes.ts`, `src/developer/dev-sync.ts`,
   `src/developer/tunnel-routes.ts`, and the version route are registered in
   `src/deno-dev.ts`. `src/admin/routes.ts` is mounted on both Deno and Workers
-  (admin/superadmin session required). Workers-safe developer REST lives in
+  (admin/superadmin session required). Self-hosted-only admin routes live under
+  `src/platform/deno/ingress/` and are mounted through
+  `registerAdminRoutes({ registerPlatformAdminRoutes })` from
+  `src/platform/deno/server.ts` only; `check:import-boundaries` refuses any other
+  importer, and `src/admin/platform-admin-routes.hostfree.test.ts` plus
+  `src/workers.entry.test.ts` prove the Workers router has none of them.
+  Workers-safe developer REST lives in
   `src/developer/routes-core.ts` (`workers.ts`); full Deno developer surface in
   `src/developer/routes.ts`. Client bindings (`src/client/bindings/`) expose
   `GET|POST|PATCH|DELETE /api/client/v1/bindings` — managed DB principal →
