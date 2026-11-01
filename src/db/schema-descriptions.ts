@@ -382,7 +382,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'Server that consumed this key, set once on first successful enroll (partial unique index: one license per server); null while unconsumed, SET NULL on delete.',
       name: 'Optional operator display name; `this server` is reserved for the colocated control-plane license minted at install and refused by `POST /licenses`.',
       token:
-        'Argon2id PHC hash of the registration key (same format as `account.password`); the plaintext is returned once at mint and cannot be recovered from this row.',
+        'Argon2id PHC hash of the registration key; NULL once the key binds to a server and for a key minted behind a ticket, and a NULL token verifies nothing.',
       revoked_at:
         'Soft-delete timestamp set by a revoke or by an ended subscription revoking every license; non-null means inactive, and the row keeps `server_id` for audit.',
       tier_id:
@@ -442,6 +442,25 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'Always null since the TurboPanel grace clock was removed: provider retries now end a past-due subscription. Kept by the schema freeze, never read.',
       past_due_since:
         'First moment the provider reported `past_due` or `unpaid`; latched while delinquent, cleared by any other status so a later lapse is measured afresh.',
+    },
+  },
+  ticket: {
+    group: 'billing',
+    summary:
+      'One-hour, single-use enrolment ticket: a join ticket (license_id set) stands in for a key at install, a re-enroll ticket (server_id set) re-keys one server.',
+    columns: {
+      license_id:
+        'Registration key a join ticket binds when its server enrolls; null for a re-enroll ticket, CASCADE on delete.',
+      server_id:
+        'The one server a re-enroll ticket is bound to; null for a join ticket. Presented for any other server it is refused.',
+      server_name: 'Display name chosen in Add Server for a join ticket; informational.',
+      token:
+        'Argon2id PHC hash of the ticket secret; the plaintext is returned once at mint and cannot be recovered from this row.',
+      expires_at: 'Mint time plus one hour; past it the ticket is refused.',
+      used_at:
+        'Set atomically when the ticket is spent (or when an owner revokes it); a non-null value means it can never be used again.',
+      used_by_server_id: 'Server the spent ticket produced or re-keyed, SET NULL on delete.',
+      created_by_user_id: 'User who issued the ticket, SET NULL on delete.',
     },
   },
   tier: {

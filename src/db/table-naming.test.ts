@@ -120,6 +120,7 @@ const APPROVED_TABLE_NAMES = new Set<string>([
   'team',
   'teammate',
   'tenancy',
+  'ticket',
   'tier',
   'tls',
   'totp',

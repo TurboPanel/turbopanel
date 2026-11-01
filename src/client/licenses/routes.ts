@@ -8,12 +8,15 @@ import {
   resolveProtectedColocatedLicenseIds,
 } from '../authn/install-state.ts'
 import {
+  burnUnboundLicenseToken,
   createLicense,
   inspectLicenseAttachment,
   invalidateLicense,
   listLicenses,
   listServersBoundToLicenses,
 } from '../../features/licenses/license.ts'
+import { mintTicket } from '../../features/licenses/tickets.ts'
+import { recordAudit } from '../../features/audit/audit-records.ts'
 import { isCustomerBillingOperational } from '../../features/billing/config.ts'
 import {
   type BillingQuantityLock,
@@ -35,7 +38,10 @@ import { compatLogInfo } from '../../lib/log-compat.ts'
 import { type Db, getDaemonCellRegistry, getDb } from '../../db/connection.ts'
 import type { DaemonCellRegistry } from '../../contracts/cell.ts'
 import { isDeveloperSurfaceEnabled } from '../../app/dev-mode.ts'
-import { buildLicenseInstallCommand } from '../../features/install/daemon-install-command.ts'
+import {
+  buildLicenseInstallCommand,
+  encodeLicenseArg,
+} from '../../features/install/daemon-install-command.ts'
 import { INSTALL_CA_PIN_UNAVAILABLE } from '../../features/install/install-ca-pin.ts'
 import { resolveInstallOriginTls } from '../../features/install/install-trust.ts'
 import { syncSelfHostedGrant } from '../../features/tiers/self-hosted-grant-records.ts'
@@ -179,7 +185,8 @@ async function mintRegistrationKey(
   const { organizationId, name, tierId } = input
   // Every key minted here stops working if no server enrolls with it in time.
   const expiresAt = unusedKeyExpiresAt(Date.now())
-  if (!input.hosted || !tierId) return await createLicense(db, { organizationId, name, expiresAt })
+  if (!input.hosted || !tierId)
+    return await createLicense(db, { organizationId, name, expiresAt, tokenless: true })
   const chosen = await getTierById(db, tierId)
   if (!chosen?.isActive) {
     return c.json({ error: 'Unknown license tier', code: 'tier_not_found' }, 400)
@@ -199,7 +206,7 @@ async function mintRegistrationKey(
         409
       )
     }
-    return await createLicense(tx, { organizationId, name, tierId, expiresAt })
+    return await createLicense(tx, { organizationId, name, tierId, expiresAt, tokenless: true })
   })
 }
 
@@ -220,6 +227,7 @@ export function registerLicenseRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
   router.use('/licenses', createSessionMiddleware(secrets))
   router.use('/licenses/:id', createSessionMiddleware(secrets))
+  router.use('/licenses/:id/ticket', createSessionMiddleware(secrets))
 
   router.get('/licenses', async (c) => {
     const ctx = await requireLicenseOwnerContext(c)
@@ -344,7 +352,16 @@ export function registerLicenseRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       // (`deno task release:dev`); Caddy serves `dist/` at `/downloads/daemon`.
       const minted = await mintRegistrationKey(c, db, { organizationId, name, tierId, hosted })
       if (minted instanceof Response) return minted
-      const { licenseId, licenseToken } = minted
+      // The key itself is minted with no token: what the install command
+      // carries is a one-hour, single-use join ticket in the same slots, so
+      // the key's own secret never exists, travels or sits in a history.
+      const { licenseId } = minted
+      const joinTicket = await mintTicket(db, {
+        organizationId,
+        licenseId,
+        serverName: name ?? null,
+        userId: c.get('session')?.userId ?? null,
+      })
 
       // Self-hosted entitles what it mints: one granted `SX` unit per active
       // license (`src/features/tiers/self-hosted-grant.ts`), so this key is
@@ -360,8 +377,8 @@ export function registerLicenseRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       const installCommand = buildLicenseInstallCommand({
         runtime: opts.runtime,
         instanceUrl,
-        licenseId,
-        licenseToken,
+        licenseId: joinTicket.id,
+        licenseToken: joinTicket.plaintext,
         insecureTls,
         caFingerprints: prepared.caFingerprints,
         useInstanceRunScript: Boolean(devSurface),
@@ -370,13 +387,58 @@ export function registerLicenseRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
       compatLogInfo(
         'auth',
-        'license created; licenseToken is shown once and not stored in plaintext'
+        'license created; the join ticket is shown once and not stored in plaintext'
       )
 
-      return c.json({ licenseId, licenseToken, installCommand })
+      // `licenseToken` is the one-hour join secret (the pair the install
+      // command carries is `joinId` + `licenseToken`); the key has no token.
+      return c.json({
+        licenseId,
+        licenseToken: joinTicket.plaintext,
+        joinId: joinTicket.id,
+        joinExpiresAt: joinTicket.expiresAt,
+        installCommand,
+      })
     } finally {
       await releaseMintLease(db, mint.lease)
     }
+  })
+
+  // Owner action for a key whose token may have crossed an edge: burn the old
+  // token and issue a fresh one-hour join ticket for the same unbound key.
+  router.post('/licenses/:id/ticket', async (c) => {
+    const ctx = await requireLicenseOwnerContext(c)
+    if (ctx instanceof Response) return ctx
+    const { db, organizationId } = ctx
+    const id = c.req.param('id')
+
+    const stepUp = await requireStepUpIfConfigured(c, organizationId, 'license.key.burn')
+    if (stepUp) return stepUp
+
+    const burned = await burnUnboundLicenseToken(db, id, organizationId)
+    if (!burned) return c.json({ error: 'Not found' }, 404)
+
+    const session = c.get('session')
+    const joinTicket = await mintTicket(db, {
+      organizationId,
+      licenseId: id,
+      userId: session?.userId ?? null,
+    })
+    await recordAudit(db, {
+      organizationId,
+      actorUserId: session?.userId ?? null,
+      actorEmail: session?.email ?? null,
+      action: 'license.key.burn',
+      targetType: 'license',
+      targetId: id,
+    })
+    return c.json({
+      licenseId: id,
+      joinId: joinTicket.id,
+      joinExpiresAt: joinTicket.expiresAt,
+      licenseToken: joinTicket.plaintext,
+      licenseArg: encodeLicenseArg(joinTicket.id, joinTicket.plaintext),
+    })
   })
 
   router.delete('/licenses/:id', async (c) => {

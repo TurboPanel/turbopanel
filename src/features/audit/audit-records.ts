@@ -102,6 +102,11 @@ export const AUDIT_ACTIONS = [
   'fabric.resume',
   'fabric.remove',
   'server.fabric.set',
+  'server.enroll',
+  'server.key_replace',
+  'server.reenroll_ticket.issue',
+  'server.reenroll_ticket.revoke',
+  'license.key.burn',
 ] as const
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[number]

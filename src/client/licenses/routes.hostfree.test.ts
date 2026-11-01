@@ -49,6 +49,7 @@ import {
   setting,
   subscription,
   subscriptionItem,
+  ticket,
   tier,
 } from '../../db/schema.ts'
 import { createMemoryDb, type MemoryDb } from '../../test-fixtures/memory-db.ts'
@@ -64,6 +65,7 @@ import { COLOCATED_SERVER_DISPLAY_NAME } from '../authn/install-state.ts'
 import { deriveSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 import { registerLicenseRoutes } from './routes.ts'
+import { registerServerReenrollTicketRoutes } from '../servers/reenroll-ticket-routes.ts'
 import { tierSeatExhaustionMessage } from './routes-helpers.ts'
 import { LICENSE_KEY_UNUSED_TTL_DAYS } from '../../features/licenses/key-expiry.ts'
 import { recordLicenseEnrollAttempt } from '../../features/licenses/enroll-attempt.ts'
@@ -120,6 +122,8 @@ type Fixture = {
   platformEnv?: Record<string, string | undefined>
   omitBaseUrl?: boolean
   runtime?: 'deno' | 'workers'
+  /** The organization requires step-up and the session is older than its window. */
+  stepUp?: boolean
 }
 
 function noopRegistry(): DaemonCellRegistry {
@@ -182,6 +186,7 @@ async function buildApp(fx: Fixture = {}) {
     userId,
     email,
     role,
+    ...(fx.stepUp ? { createdAt: '2020-01-01T00:00:00.000Z' } : {}),
   })
   seedMockUser(state, {
     id: userId,
@@ -280,8 +285,20 @@ async function buildApp(fx: Fixture = {}) {
         })),
       ],
       [lease, []],
+      [ticket, []],
       [allowance, []],
-      [organization, [{ id: ORG, name: 'License Org', createdAt: NOW, updatedAt: NOW }]],
+      [
+        organization,
+        [
+          {
+            id: ORG,
+            name: 'License Org',
+            ...(fx.stepUp ? { options: { requireReauthForDestructive: true } } : {}),
+            createdAt: NOW,
+            updatedAt: NOW,
+          },
+        ],
+      ],
     ],
     { fallback: authDb }
   )
@@ -307,6 +324,11 @@ async function buildApp(fx: Fixture = {}) {
     runtime: fx.runtime ?? 'workers',
     signupEnvOverride: undefined,
     ...(fx.omitBaseUrl ? {} : { baseUrl: 'https://panel.example.com' }),
+  })
+  registerServerReenrollTicketRoutes(app, {
+    secrets,
+    runtime: fx.runtime ?? 'workers',
+    signupEnvOverride: undefined,
   })
   const cookie = `${HTTP_SESSION_COOKIE_NAME}=${await buildSignedCookie(token, secrets)}`
   const headers = {
@@ -489,6 +511,15 @@ test('T9 · a purchase with room mints a key with no tier, once, and the lease i
   assertEquals(minted?.organizationId, ORG)
   assertEquals(minted?.tierId ?? null, null)
   assertEquals(lockRow(db), null)
+
+  // The key has no token of its own: what the command carries is a one-hour
+  // join ticket bound to it, so the key's secret never exists or travels.
+  assertEquals(minted?.token ?? null, null)
+  const issued = db.rows(ticket)
+  assertEquals(issued.length, 1)
+  assertEquals(issued[0]?.licenseId, body.licenseId)
+  assertEquals(issued[0]?.serverId ?? null, null)
+  assertEquals(Date.parse(String(issued[0]?.expiresAt)) > Date.now(), true)
 
   // Both purchased licenses are now held: the next mint is refused.
   const again = await mint(app, headers)
@@ -732,6 +763,78 @@ test('T9 · with billing off the key is minted with nothing purchased: no lease 
   const body = (await res.json()) as { licenseId: string }
   assertEquals(db.rows(license).find((row) => row.id === body.licenseId)?.name, 'lab')
   assertEquals(db.rows(setting), [])
+})
+
+test('POST /licenses/:id/ticket burns an unbound key and issues a one-hour ticket; a bound key is 404', async () => {
+  const { app, headers, db } = await buildApp({
+    servers: [{ id: SERVER, name: 'edge-1' }],
+    licenses: [{ id: L_ACTIVE }, { id: L_BOUND, serverId: SERVER }],
+  })
+  const res = await app.request(`/licenses/${L_ACTIVE}/ticket`, { method: 'POST', headers })
+  assertEquals(res.status, 200)
+  const body = (await res.json()) as { joinId: string; licenseToken: string; licenseArg: string }
+  assertExists(body.licenseToken)
+  assertExists(body.licenseArg)
+  assertEquals(db.rows(license).find((row) => row.id === L_ACTIVE)?.token ?? null, null)
+  const issued = db.rows(ticket).find((row) => row.id === body.joinId)
+  assertEquals(issued?.licenseId, L_ACTIVE)
+  assertEquals(issued?.serverId ?? null, null)
+
+  const bound = await app.request(`/licenses/${L_BOUND}/ticket`, { method: 'POST', headers })
+  assertEquals(bound.status, 404)
+  assertEquals(db.rows(license).find((row) => row.id === L_BOUND)?.token, 'hashed')
+})
+
+test('issuing a re-enroll ticket and burning a key need step-up when the organization requires it', async () => {
+  const { app, headers, db } = await buildApp({
+    stepUp: true,
+    servers: [{ id: SERVER, name: 'edge-1' }],
+    licenses: [{ id: L_ACTIVE }],
+  })
+  const reenroll = await app.request(`/servers/${SERVER}/reenroll-ticket`, {
+    method: 'POST',
+    headers,
+  })
+  assertEquals(reenroll.status, 403)
+  const reBody = (await reenroll.json()) as { code: string; action: string }
+  assertEquals([reBody.code, reBody.action], ['reauth_required', 'server.reenroll_ticket.issue'])
+
+  const burn = await app.request(`/licenses/${L_ACTIVE}/ticket`, { method: 'POST', headers })
+  assertEquals(burn.status, 403)
+  assertEquals(((await burn.json()) as { action: string }).action, 'license.key.burn')
+
+  // Refused before anything changed.
+  assertEquals(db.rows(ticket).length, 0)
+  assertEquals(db.rows(license).find((row) => row.id === L_ACTIVE)?.token, 'hashed')
+})
+
+test('re-enroll tickets: an owner issues one per server, a new one retires the old, DELETE revokes', async () => {
+  const { app, headers, db } = await buildApp({ servers: [{ id: SERVER, name: 'edge-1' }] })
+  const url = `/servers/${SERVER}/reenroll-ticket`
+  const first = await app.request(url, { method: 'POST', headers })
+  assertEquals(first.status, 200)
+  const one = (await first.json()) as { ticketId: string; licenseArg: string }
+  assertExists(one.licenseArg)
+  assertEquals(db.rows(ticket).find((row) => row.id === one.ticketId)?.serverId, SERVER)
+
+  const second = await app.request(url, { method: 'POST', headers })
+  const two = (await second.json()) as { ticketId: string }
+  assertEquals(
+    db.rows(ticket).find((row) => row.id === one.ticketId)?.usedAt === null,
+    false,
+    'the first ticket is retired'
+  )
+  assertEquals(db.rows(ticket).find((row) => row.id === two.ticketId)?.usedAt ?? null, null)
+
+  const revoked = await app.request(url, { method: 'DELETE', headers })
+  assertEquals(revoked.status, 200)
+  assertEquals(((await revoked.json()) as { revoked: number }).revoked, 1)
+
+  const unknown = await app.request(`/servers/${L_ACTIVE}/reenroll-ticket`, {
+    method: 'POST',
+    headers,
+  })
+  assertEquals(unknown.status, 404)
 })
 
 test('DELETE /licenses/:id revokes an unbound license without touching the provider or the lease', async () => {

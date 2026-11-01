@@ -80,6 +80,12 @@
       "tag": "0012_origin_ingress_modes",
       "when": 1793564642214,
       "sha256": "1b90f1fdddfe063a61b76f07dd63bf9d3bd346541cd0fe5dbe66c04236e77883"
+    },
+    {
+      "idx": 13,
+      "tag": "0013_enroll_tickets_and_token_erase",
+      "when": 1793566994619,
+      "sha256": "b79db5e5ddd911f4aa8a09384ee3e4e5de1f462602465e543efef29791bf2379"
     }
   ]
 }

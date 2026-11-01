@@ -2,16 +2,14 @@ import type { Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
-import { assertOrgOwnerOr403 } from '../authz/index.ts'
 import { recordAuditAndNotify } from '../../features/notifications/audit-bridge.ts'
 import {
   loadOrganizationTierSpare,
   setServerPreferredTier,
 } from '../../features/tiers/server-preferred-tier.ts'
 import { withTierPlacementExtras } from '../../features/tiers/tier-enforcement.ts'
-import { verifyServerInOrg } from '../environments/deploy-prepare.ts'
-import { getDb } from '../../db/connection.ts'
-import { getOrgId, parseJsonBody } from '../shared.ts'
+import { requireServerOwnerContext } from './owner-context.ts'
+import { parseJsonBody } from '../shared.ts'
 
 type ParsedTierIdBody = Readonly<{ ok: true; tierId: string | null }> | Readonly<{ ok: false }>
 
@@ -30,23 +28,9 @@ export function registerServerLicenseTierRoutes(router: Hono<AppEnv>, opts: Auth
   router.use('/servers/:id/license-tier', createSessionMiddleware(opts.secrets))
 
   router.put('/servers/:id/license-tier', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const session = c.get('session')
-    if (!session) return c.json({ error: 'Unauthorized' }, 401)
-
-    const orgResult = await getOrgId(c, session.userId)
-    if (orgResult instanceof Response) return orgResult
-    const organizationId = orgResult
-
-    const serverId = c.req.param('id')
-    const denied = await assertOrgOwnerOr403(c, 'organization', organizationId)
-    if (denied) return denied
-
-    if (!(await verifyServerInOrg(db, serverId, organizationId))) {
-      return c.json({ error: 'Not found' }, 404)
-    }
+    const ctx = await requireServerOwnerContext(c)
+    if (ctx instanceof Response) return ctx
+    const { db, session, organizationId, serverId } = ctx
 
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
