@@ -75,6 +75,10 @@ export const INSTANCE_ACCESS_PATHS = {
       },
     },
   },
+}
+
+/** Self-hosted only: the Workers spec leaves it out, as the route is not mounted there. */
+export const INSTANCE_TUNNEL_TOKEN_PATH = {
   [`${ADMIN_API_PREFIX}/instance/tunnel-token`]: {
     post: {
       tags: ['Instance'],

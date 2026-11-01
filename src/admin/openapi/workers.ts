@@ -25,10 +25,11 @@ type AdminSpec = {
 
 export function getWorkersAdminOpenApiSpec(
   serverUrl: string,
-  opts?: { devSurface?: boolean; runtime?: 'deno' | 'workers' },
+  opts?: { devSurface?: boolean; runtime?: 'deno' | 'workers' }
 ): object {
   const spec = getAdminOpenApiSpec(serverUrl, {
     ...(opts?.devSurface === undefined ? {} : { devSurface: opts.devSurface }),
+    runtime: 'workers',
   }) as AdminSpec
   if (!spec.tags.some((tag) => tag.name === 'Tiers')) {
     spec.tags.push(TIERS_TAG)

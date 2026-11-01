@@ -77,6 +77,7 @@ import {
 } from '../../lib/secrets/password.ts'
 import { registerAdminRoutes } from '../../admin/routes.ts'
 import { registerIngressAdminRoutes } from './ingress/admin-routes.ts'
+import { hostnameModes } from './ingress/planner.ts'
 import { registerInstallRoutes } from '../../install/routes.ts'
 import { registerDaemonApiRoutes } from '../../daemon/api-routes.ts'
 import {
@@ -178,6 +179,9 @@ import {
   recoveryIdFromCommandMetadata,
   sweepStalledFencing,
 } from '../../features/managed/ha-recovery.ts'
+
+/** How often the advised heartbeat is re-read from the hostname rows. */
+const HEARTBEAT_REFRESH_MS = 5 * 60 * 1000
 
 export type DenoDeveloperSurfaceContext = {
   routes: Hono<AppEnv>
@@ -661,12 +665,21 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     github: githubWebhookLimiter,
     gitlab: gitlabWebhookLimiter,
   })
-  // Panel hostnames carry no ingress mode yet, so this stays at the default
-  // 60 s. When the mode column exists, only `loadModes` changes and a
-  // one-minute refresh is armed then (no idle polling until it has work).
-  const heartbeatReader = createHeartbeatReader(
-    () => Promise.resolve([]),
-    (err) => logWarn('daemon-cell', `advised heartbeat refresh error: ${String(err)}`)
+  // Behind-edge hostnames advertise 25 s, all others 60 s. The modes are read
+  // from the hostname rows once now and again every five minutes (hostnames
+  // change rarely, and a stale value only delays the shorter ping); the attach
+  // path only reads the cached value. A fresh client per read, like the other
+  // Deno timers.
+  const loadHostnameModes = async (): Promise<string[]> => {
+    const tickDb = createDenoDb()
+    try {
+      return hostnameModes(await listInstanceHostnames(tickDb))
+    } finally {
+      await endDbConnection(tickDb)
+    }
+  }
+  const heartbeatReader = createHeartbeatReader(loadHostnameModes, (err) =>
+    logWarn('daemon-cell', `advised heartbeat refresh error: ${String(err)}`)
   )
   void heartbeatReader.refresh()
   registerDaemonWebSocket(routes, {
@@ -902,6 +915,7 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     },
   })
   const maintenanceTimer = setInterval(() => maintenance.tick(), DAEMON_CELL_MAINTAIN_MS)
+  const heartbeatTimer = setInterval(() => void heartbeatReader.refresh(), HEARTBEAT_REFRESH_MS)
 
   // First Deno-side scheduled surface besides cell maintain: Organization CA
   // leaf renewal. Fresh createDenoDb() per tick, always endDbConnection in
@@ -951,7 +965,7 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
   }, LEAF_RENEWAL_SWEEP_INTERVAL_MS)
 
   const shutdown = createInstanceShutdown({
-    timers: [maintenanceTimer, leafRenewalTimer],
+    timers: [maintenanceTimer, leafRenewalTimer, heartbeatTimer],
     closers: [
       { label: 'email queue', close: () => emailQueue.close?.() },
       { label: 'command queue', close: () => commandQueue.close?.() },

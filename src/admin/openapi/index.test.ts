@@ -74,6 +74,10 @@ test("getAdminOpenApiSpec documents the tier catalogue on Workers only", () => {
   }) as Spec;
   assertEquals(sharedWorkers.tags.some((tag) => tag.name === "Tiers"), false);
   assertEquals(
+    `${ADMIN_API_PREFIX}/instance/tunnel-token` in sharedWorkers.paths,
+    false,
+  );
+  assertEquals(
     Object.keys(sharedWorkers.paths).some((path) =>
       path.startsWith(`${ADMIN_API_PREFIX}/tiers`)
     ),
