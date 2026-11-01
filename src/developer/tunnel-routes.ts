@@ -2,10 +2,9 @@ import type { Context, Env, Hono } from 'hono'
 import { createDeveloperAccessMiddleware } from '../client/authn/middleware.ts'
 import type { DerivedSecretsConfig } from '../lib/secrets/secrets.ts'
 import { DEVELOPER_API_PREFIX } from '../app/surfaces.ts'
-import { parseTunnelTokenBody } from './tunnel-token.ts'
 import { handleTunnelTokenRequest } from './tunnel-token-handler.ts'
 
-export { parseTunnelTokenBody }
+export { parseTunnelTokenBody } from './tunnel-token.ts'
 
 /**
  * Set the self-hosted instance's Cloudflare tunnel token. The token is pushed
