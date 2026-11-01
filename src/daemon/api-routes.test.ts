@@ -1180,64 +1180,56 @@ test('POST /enroll returns serverId and server.daemon.key.id', async () => {
   })
 })
 
-test('POST /enroll re-enrollment replaces daemon key on server row', async () => {
+test('POST /enroll refuses a different key for a server that already has one', async () => {
   await withEnrollFixture(
     async ({ db, app, licenseId, licenseToken, serverId, keyId, key, machineKey, hostname }) => {
-      const challengeResponse = await app.request('/api/daemon/v1/auth/challenge', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({}),
-      })
-      assertEquals(challengeResponse.status, 200)
-      const challenge = (await challengeResponse.json()) as {
-        challengeId: string
-        nonce: string
-      }
       const newKey = await generateKeyMaterial()
-      const payload = buildEnrollmentPayload({
-        challengeId: challenge.challengeId,
-        nonce: challenge.nonce,
+      const enrollResponse = await postEnroll(app, {
         licenseId,
+        licenseToken,
+        serverId,
         machineKey,
         hostname,
-        publicKeyFingerprint: newKey.fingerprint,
+        key: newKey,
       })
-      const signature = await signPayload(newKey.privateKey, payload)
+      assertEquals(enrollResponse.status, 409)
+      const body = (await enrollResponse.json()) as { error?: string }
+      assertEquals(body.error, 'Server key already registered')
 
-      const enrollResponse = await app.request('/api/daemon/v1/enroll', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          licenseId,
-          licenseToken,
-          serverId,
-          machineKey,
-          hostname,
-          publicJwk: newKey.publicJwk,
-          challengeId: challenge.challengeId,
-          signature,
-        }),
+      // First registered key wins: nothing about the stored key changed.
+      const daemonState = await readDaemonState(db, serverId)
+      assertExists(daemonState)
+      assertEquals(daemonState.key.id, keyId)
+      assertEquals(daemonState.key.fingerprint, key.fingerprint)
+    }
+  )
+})
+
+test('POST /enroll accepts the same key again and keeps the key row', async () => {
+  await withEnrollFixture(
+    async ({ db, app, licenseId, licenseToken, serverId, key, machineKey, hostname }) => {
+      const enrollResponse = await postEnroll(app, {
+        licenseId,
+        licenseToken,
+        serverId,
+        machineKey,
+        hostname,
+        key,
       })
       assertEquals(enrollResponse.status, 200)
-      const body = (await enrollResponse.json()) as {
-        serverId: string
-        keyId: string
-      }
+      const body = (await enrollResponse.json()) as { serverId: string }
       assertEquals(body.serverId, serverId)
-      assertEquals(body.keyId !== keyId, true)
 
       const daemonState = await readDaemonState(db, serverId)
       assertExists(daemonState)
-      assertEquals(daemonState.key.id, body.keyId)
-      assertEquals(daemonState.key.fingerprint, newKey.fingerprint)
-      assertEquals(daemonState.key.fingerprint !== key.fingerprint, true)
+      assertEquals(daemonState.key.fingerprint, key.fingerprint)
     }
   )
 })
 
 test('POST /enroll rejects a second host once the license is latched', async () => {
   await withEnrollFixture(
-    async ({ app, licenseId, licenseToken, serverId, machineKey, hostname }) => {
+    async ({ app, licenseId, licenseToken, serverId, key, machineKey, hostname }) => {
       const challengeResponse = await app.request('/api/daemon/v1/auth/challenge', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1277,40 +1269,15 @@ test('POST /enroll rejects a second host once the license is latched', async () 
       const body = (await enrollResponse.json()) as { error?: string }
       assertEquals(body.error, 'License already consumed or invalid')
 
-      // Same license + persisted serverId still re-enrolls the latched server.
-      const reChallengeResponse = await app.request('/api/daemon/v1/auth/challenge', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({}),
-      })
-      assertEquals(reChallengeResponse.status, 200)
-      const reChallenge = (await reChallengeResponse.json()) as {
-        challengeId: string
-        nonce: string
-      }
-      const reKey = await generateKeyMaterial()
-      const rePayload = buildEnrollmentPayload({
-        challengeId: reChallenge.challengeId,
-        nonce: reChallenge.nonce,
+      // Same license + persisted serverId + the registered key still enrolls
+      // the latched server; a different key does not (see the test above).
+      const reEnroll = await postEnroll(app, {
         licenseId,
+        licenseToken,
+        serverId,
         machineKey,
         hostname,
-        publicKeyFingerprint: reKey.fingerprint,
-      })
-      const reSignature = await signPayload(reKey.privateKey, rePayload)
-      const reEnroll = await app.request('/api/daemon/v1/enroll', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          licenseId,
-          licenseToken,
-          serverId,
-          machineKey,
-          hostname,
-          publicJwk: reKey.publicJwk,
-          challengeId: reChallenge.challengeId,
-          signature: reSignature,
-        }),
+        key,
       })
       assertEquals(reEnroll.status, 200)
       const reBody = (await reEnroll.json()) as { serverId: string }

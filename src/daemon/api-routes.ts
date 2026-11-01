@@ -114,6 +114,13 @@ import {
 } from '../features/servers/server-registry.ts'
 import { getCommandQueue } from '../features/commands/queue.ts'
 
+/**
+ * First registered key wins: a server that already has a live key refuses a
+ * different one at enroll. The daemon treats this answer as "wait for an
+ * administrator", never as a reason to retry with yet another key.
+ */
+const SERVER_KEY_ALREADY_REGISTERED_ERROR = 'Server key already registered'
+
 const MACHINE_KEY_IN_USE_RESULT = {
   ok: false,
   status: 409,
@@ -136,6 +143,7 @@ import { issueDaemonJwt, verifyDaemonJwt } from './authn/daemon-jwt.ts'
 import type { ServerDaemonStateWithMetadata } from '../features/servers/server-identity-db.ts'
 import {
   attachDaemonStateToServer,
+  DaemonKeyAlreadyRegisteredError,
   DaemonKeyRevokedError,
   getServerDaemonStateByFingerprint,
   getServerDaemonStateByServerId,
@@ -408,6 +416,60 @@ async function resolveServerIdOrConflict(
   }
 }
 
+type EnrollKeyRefusal = {
+  ok: false
+  status: 403 | 409
+  error: string
+}
+
+/** Revoked key: 403. A live key that differs from the request: 409 (first registered key wins). */
+function keyRefusal(
+  state: Awaited<ReturnType<typeof getServerDaemonStateByServerId>>,
+  fingerprint: string
+): EnrollKeyRefusal | null {
+  if (!state) return null
+  if (!isDaemonKeyActive(state.key)) {
+    return { ok: false, status: 403, error: SERVER_KEY_REVOKED_ERROR }
+  }
+  if (state.key.fingerprint !== fingerprint) {
+    return { ok: false, status: 409, error: SERVER_KEY_ALREADY_REGISTERED_ERROR }
+  }
+  return null
+}
+
+/**
+ * Revocation is sticky, and the refusal comes *before* anything is written.
+ * `resolveServerId` is not a lookup — it touches metadata, binds licences
+ * and reconciles fabric membership on the way to an id — so checking after
+ * it let a revoked host holding its licence and server id rewrite its own
+ * `hostname`, `machineKey` and OS metadata on every attempt it got a 403
+ * for. The read-only resolution answers the same question without writing.
+ *
+ * Three layers, cheapest first: this one; the post-resolve check, for a row
+ * that only exists once the licence path has run; and the upsert's
+ * `setWhere` inside `attachDaemonStateToServer`, which is the atomic one,
+ * for a revoke or a key that commits between a read and the write. Recovery
+ * is `DELETE /servers/:id` (which clears daemon state and retires the bound
+ * license), then enrolling the rebuilt host fresh.
+ *
+ * A live key that differs from the request is refused here only when the
+ * caller names this server: a host without the hint still gets the
+ * license-consumed answer further down.
+ */
+async function earlyKeyRefusal(
+  db: Db,
+  identity: Parameters<typeof findServerIdForIdentity>[1],
+  fingerprint: string
+): Promise<EnrollKeyRefusal | null> {
+  const knownServerId = await findServerIdForIdentity(db, identity)
+  if (!knownServerId) return null
+  const known = await getServerDaemonStateByServerId(db, knownServerId)
+  if (!known) return null
+  // A live key only counts against a caller that names this server.
+  if (isDaemonKeyActive(known.key) && identity.serverId?.trim() !== knownServerId) return null
+  return keyRefusal(known, fingerprint)
+}
+
 async function finalizeDaemonEnrollment(
   db: Db,
   params: {
@@ -459,13 +521,8 @@ async function finalizeDaemonEnrollment(
   // for a revoke that commits between a read and the write. Recovery is
   // `DELETE /servers/:id` (which clears daemon state and retires the bound
   // license), then enrolling the rebuilt host fresh.
-  const knownServerId = await findServerIdForIdentity(db, identity)
-  if (knownServerId) {
-    const known = await getServerDaemonStateByServerId(db, knownServerId)
-    if (known && !isDaemonKeyActive(known.key)) {
-      return { ok: false, status: 403, error: SERVER_KEY_REVOKED_ERROR }
-    }
-  }
+  const early = await earlyKeyRefusal(db, identity, fingerprint)
+  if (early) return early
 
   const resolved = await resolveServerIdOrConflict(db, identity, fabricDeps, verifiedLicense)
   if ('conflict' in resolved) return MACHINE_KEY_IN_USE_RESULT
@@ -478,10 +535,8 @@ async function finalizeDaemonEnrollment(
     }
   }
 
-  const current = await getServerDaemonStateByServerId(db, serverId)
-  if (current && !isDaemonKeyActive(current.key)) {
-    return { ok: false, status: 403, error: SERVER_KEY_REVOKED_ERROR }
-  }
+  const refusal = keyRefusal(await getServerDaemonStateByServerId(db, serverId), fingerprint)
+  if (refusal) return refusal
 
   const existing = await getServerDaemonStateByFingerprint(db, fingerprint)
   if (existing && existing.serverId !== serverId) {
@@ -505,6 +560,9 @@ async function finalizeDaemonEnrollment(
 function enrollAttachFailure(err: unknown) {
   if (err instanceof DaemonKeyRevokedError) {
     return { ok: false, status: 403, error: SERVER_KEY_REVOKED_ERROR } as const
+  }
+  if (err instanceof DaemonKeyAlreadyRegisteredError) {
+    return { ok: false, status: 409, error: SERVER_KEY_ALREADY_REGISTERED_ERROR } as const
   }
   if (isMachineKeyInUse(err)) return MACHINE_KEY_IN_USE_RESULT
   const message = err instanceof Error ? err.message : String(err)

@@ -40,7 +40,7 @@ Credential-account passwords use **Argon2id** via `@noble/hashes` (`src/lib/secr
 - Co-located socket daemons use the same auth model; there is no unauthenticated bypass.
 - `DAEMON_INBOUND_ALLOWED` in `src/contracts/cell-protocol.ts` is a static set of accepted post-auth message types — not an authz system.
 - Daemon identity is stored on the `server` row as typed jsonb `server.daemon` (`key` only). Hot-path timestamps live in `server.daemon_key_last_used_at` and `server.last_seen_at`. No `serverkey` or `daemonsession` tables.
-- Re-enrollment of an already-latched license requires the daemon's persisted `serverId` and replaces `server.daemon` entirely; old daemon keys are not kept for MVP. A different host cannot reuse a consumed license — mint a new key via Add Server.
+- First registered key wins. Re-enrollment of an already-latched license requires the daemon's persisted `serverId`, and while the server holds a live (not revoked) key a different key is refused with `409 Server key already registered`; presenting the same key again is accepted. Possession of the license token and `serverId` is not proof of the current key. Changing a live key needs a proof from the current key or an owner-issued re-enroll token (not built yet); today the owner recovery is removing the server's key (delete the server and enroll a fresh license). The license row's token hash column stays `notNull`, so erasing the hash after binding needs a migration and waits for that follow-up. A different host cannot reuse a consumed license — mint a new key via Add Server.
 - JWT payload: `sub` (serverId), `kid` (`server.daemon.key.id`), `jti` (random uuid, logging only), `iss`, `aud`, `typ`, `iat`, `exp`. No `sid`. Daemon JWTs are **EdDSA (Ed25519)** signed; header carries `alg: "EdDSA"`, `typ: "JWT"`, and a string `kid` (SHA-256 fingerprint of the public JWK). Verification selects the public key by `kid`.
 - Revoking daemon auth: set `server.daemon.key.revokedAt`. Existing JWTs remain valid until their 15-minute expiry. New JWT issuance fails.
 
@@ -53,7 +53,7 @@ Do-not-retry-soon mapping for enroll/session responses (daemon intent):
 | `400 License is inactive`                                  | permanent → daemon parks                                            |
 | `400 Server key is inactive`                               | permanent → daemon parks                                            |
 | `403 Invalid signature` / `409 Fingerprint already exists` | permanent → daemon parks                                            |
-| `404 Server key not found` / `400 Server key mismatch`     | stale-identity → recoverable re-enroll (keeps persisted `serverId`) |
+| `404 Server key not found` / `400 Server key mismatch` / `409 Server key already registered` | stale-identity → daemon keeps its key files, parks and waits for an administrator |
 | `429` / `5xx` / `400 Invalid or expired challenge`         | transient → normal full-jitter reconnect                            |
 
 The daemon-side parked state (not `DAEMON_REST_RATE_LIMITER`) is the primary protection against enroll/challenge storms after a control-plane identity loss (e.g. DB wipe); `DAEMON_REST_RATE_LIMITER` remains a backstop that must behave even when limits fail open. Canonical daemon backoff/unpark behavior: **`../turbopaneld/src/instance/AGENTS.md`** (Instance client → parked state) — do not duplicate it here.

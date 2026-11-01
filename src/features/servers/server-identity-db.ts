@@ -1,4 +1,4 @@
-import { eq, isNull, sql } from 'drizzle-orm'
+import { and, eq, isNull, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import type { ServerMetadata } from './server-metadata.ts'
 import { normalizeMachineKey } from '../../lib/machine-key.ts'
@@ -153,6 +153,21 @@ export class DaemonKeyRevokedError extends Error {
   }
 }
 
+/**
+ * Thrown by {@link attachDaemonStateToServer} when the server already has a
+ * live key and the request carries a different one. First registered key
+ * wins: a key is never replaced through enrollment, because enrollment is
+ * proven by the license (and the new key's own signature), not by the key
+ * being replaced. A change of key needs a proof from the current key, or an
+ * administrator removing the server's key first.
+ */
+export class DaemonKeyAlreadyRegisteredError extends Error {
+  constructor(readonly serverId: string) {
+    super(`daemon key is already registered for server: ${serverId}`)
+    this.name = 'DaemonKeyAlreadyRegisteredError'
+  }
+}
+
 export async function attachDaemonStateToServer(
   db: Db,
   serverId: string,
@@ -184,9 +199,11 @@ export async function attachDaemonStateToServer(
       .onConflictDoUpdate({
         target: key.serverId,
         // Revocation is sticky at the row: a revoked key is never replaced
-        // by re-enrollment, however the caller got here. Empty `returning`
-        // below is that refusal, not a missing row.
-        setWhere: isNull(key.revokedAt),
+        // by re-enrollment, however the caller got here. First registered
+        // key wins as well: an existing live key only matches the same
+        // fingerprint (a no-op refresh). Empty `returning` below is one of
+        // those two refusals, not a missing row; the read after it says which.
+        setWhere: and(isNull(key.revokedAt), eq(key.fingerprint, params.fingerprint)),
         set: {
           // Re-enrollment mints a new id too — it's a new key, not an edit
           // of the old row; `id` is the PK, so ON CONFLICT leaves it alone
@@ -204,6 +221,12 @@ export async function attachDaemonStateToServer(
       .returning({ id: key.id })
 
     if (!keyRow) {
+      const [held] = await tx
+        .select({ revokedAt: key.revokedAt })
+        .from(key)
+        .where(eq(key.serverId, serverId))
+        .limit(1)
+      if (held && !held.revokedAt) throw new DaemonKeyAlreadyRegisteredError(serverId)
       throw new DaemonKeyRevokedError(serverId)
     }
 
