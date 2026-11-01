@@ -3318,6 +3318,13 @@ async function resolveManagedNetworkHostName(
   return network.hostName
 }
 
+/** A prepare step answered with a refusal (a `Response` or a `DeployPrepareError`) instead of its value. */
+function isPrepareStop<T>(value: T): value is Extract<T, Response | DeployPrepareError> {
+  return (
+    value instanceof Response || (typeof value === 'object' && value !== null && 'kind' in value)
+  )
+}
+
 /**
  * Everything that depends on which runtime each local native app runs: the
  * Deno feature gate, the custom application mode gate and the repository's
@@ -3661,7 +3668,7 @@ export async function prepareDeployCompose(
     application,
     principalResolution,
   })
-  if ('kind' in pipelineResolved || pipelineResolved instanceof Response) {
+  if (isPrepareStop(pipelineResolved)) {
     return pipelineResolved
   }
   const { pipeline, resolved } = pipelineResolved
@@ -3793,7 +3800,7 @@ export async function prepareDeployCompose(
     tasksByComposeName,
     localServiceNames: pipeline.localServiceNames,
   })
-  if ('kind' in nativeLanes || nativeLanes instanceof Response) {
+  if (isPrepareStop(nativeLanes)) {
     return nativeLanes
   }
   const { nativeVariables, localSourceMaterial, nodeVersions } = nativeLanes
@@ -3855,8 +3862,7 @@ export async function prepareDeployCompose(
     expansion: expansionToRecord(expansion),
     storageMaterial,
   })
-  if (edge instanceof Response) return edge
-  if ('kind' in edge) return edge
+  if (isPrepareStop(edge)) return edge
 
   const sourceMaterial = withBuildEnv(localSourceMaterial, withVariables.buildAssignments)
   if (!Array.isArray(sourceMaterial)) return toApplyVariablesPrepareError(sourceMaterial)
