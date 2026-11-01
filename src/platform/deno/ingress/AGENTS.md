@@ -20,4 +20,18 @@ High Availability (Workers) must not contain any of it.
   reference an organization ACME opt-in.
 - **Prefix.** Every route sits under `/api/admin/v1`, so no Caddy or
   `wrangler.jsonc` `routes` change is needed.
-- Today it holds `POST /instance/tunnel-token`.
+- Today it holds `POST /instance/tunnel-token`, and the Workers OpenAPI spec
+  leaves that path out.
+- **Provider interface.** `provider.ts` defines `preflight`, `apply`, `status`
+  and `remove`; `capabilities.ts` holds the capability table (one record per
+  mode, pinned cell by cell by `capabilities.hostfree.test.ts`); `planner.ts`
+  checks a hostname against its mode; `registry.ts` maps a mode to a provider.
+  Only `direct` and `lan-only` are implemented, the other modes answer "not
+  available yet". `apply` stores nothing; callers keep the returned state.
+- **Edge set.** `isEdge` in the table must equal `EDGE_MODES` in
+  `src/features/install/heartbeat-policy.ts` (that file cannot import this
+  directory, so the test lives here). The Deno heartbeat reader is fed the
+  hostname modes from `server.ts` every five minutes.
+- **Not switched on.** No route calls the registry yet, and the edge go-live
+  gate (refuse to apply an edge mode while the fleet is unpinned) lands with
+  the first edge provider, after the pin columns exist.
