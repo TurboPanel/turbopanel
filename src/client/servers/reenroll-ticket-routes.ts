@@ -4,6 +4,7 @@ import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { recordAudit } from '../../features/audit/audit-records.ts'
 import { encodeLicenseArg } from '../../features/install/daemon-install-command.ts'
+import { requireStepUpIfConfigured } from '../authn/step-up.ts'
 import { requireServerOwnerContext } from './owner-context.ts'
 import { mintTicket, revokeServerTickets } from '../../features/licenses/tickets.ts'
 
@@ -23,6 +24,13 @@ export function registerServerReenrollTicketRoutes(router: Hono<AppEnv>, opts: A
     const ctx = await requireServerOwnerContext(c)
     if (ctx instanceof Response) return ctx
     const { db, session, organizationId, serverId } = ctx
+
+    const stepUp = await requireStepUpIfConfigured(
+      c,
+      organizationId,
+      'server.reenroll_ticket.issue'
+    )
+    if (stepUp) return stepUp
 
     // One live ticket per server: issuing a new one retires the old.
     await revokeServerTickets(db, serverId)

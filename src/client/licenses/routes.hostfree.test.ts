@@ -122,6 +122,8 @@ type Fixture = {
   platformEnv?: Record<string, string | undefined>
   omitBaseUrl?: boolean
   runtime?: 'deno' | 'workers'
+  /** The organization requires step-up and the session is older than its window. */
+  stepUp?: boolean
 }
 
 function noopRegistry(): DaemonCellRegistry {
@@ -184,6 +186,7 @@ async function buildApp(fx: Fixture = {}) {
     userId,
     email,
     role,
+    ...(fx.stepUp ? { createdAt: '2020-01-01T00:00:00.000Z' } : {}),
   })
   seedMockUser(state, {
     id: userId,
@@ -284,7 +287,18 @@ async function buildApp(fx: Fixture = {}) {
       [lease, []],
       [ticket, []],
       [allowance, []],
-      [organization, [{ id: ORG, name: 'License Org', createdAt: NOW, updatedAt: NOW }]],
+      [
+        organization,
+        [
+          {
+            id: ORG,
+            name: 'License Org',
+            ...(fx.stepUp ? { options: { requireReauthForDestructive: true } } : {}),
+            createdAt: NOW,
+            updatedAt: NOW,
+          },
+        ],
+      ],
     ],
     { fallback: authDb }
   )
@@ -769,6 +783,29 @@ test('POST /licenses/:id/ticket burns an unbound key and issues a one-hour ticke
   const bound = await app.request(`/licenses/${L_BOUND}/ticket`, { method: 'POST', headers })
   assertEquals(bound.status, 404)
   assertEquals(db.rows(license).find((row) => row.id === L_BOUND)?.token, 'hashed')
+})
+
+test('issuing a re-enroll ticket and burning a key need step-up when the organization requires it', async () => {
+  const { app, headers, db } = await buildApp({
+    stepUp: true,
+    servers: [{ id: SERVER, name: 'edge-1' }],
+    licenses: [{ id: L_ACTIVE }],
+  })
+  const reenroll = await app.request(`/servers/${SERVER}/reenroll-ticket`, {
+    method: 'POST',
+    headers,
+  })
+  assertEquals(reenroll.status, 403)
+  const reBody = (await reenroll.json()) as { code: string; action: string }
+  assertEquals([reBody.code, reBody.action], ['reauth_required', 'server.reenroll_ticket.issue'])
+
+  const burn = await app.request(`/licenses/${L_ACTIVE}/ticket`, { method: 'POST', headers })
+  assertEquals(burn.status, 403)
+  assertEquals(((await burn.json()) as { action: string }).action, 'license.key.burn')
+
+  // Refused before anything changed.
+  assertEquals(db.rows(ticket).length, 0)
+  assertEquals(db.rows(license).find((row) => row.id === L_ACTIVE)?.token, 'hashed')
 })
 
 test('re-enroll tickets: an owner issues one per server, a new one retires the old, DELETE revokes', async () => {

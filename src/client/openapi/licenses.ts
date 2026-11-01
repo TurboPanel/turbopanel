@@ -466,7 +466,7 @@ export function buildLicensePaths(_installCommandDescription: string): Record<st
         tags: ['Licenses'],
         summary: 'Burn an unbound key and issue a fresh join ticket',
         description:
-          'Owner action for a key whose token may have crossed an edge: burns its old token and issues a one-hour, single-use join ticket for the same unbound key.',
+          'Owner action, behind step-up re-authentication when the organization requires it (403 `reauth_required`). For a key whose token may have crossed an edge: burns its old token and issues a one-hour, single-use join ticket for the same unbound key.',
         security: [{ cookieAuth: [] }],
         parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
         responses: {
@@ -476,6 +476,7 @@ export function buildLicensePaths(_installCommandDescription: string): Record<st
               'application/json': { schema: { $ref: '#/components/schemas/TicketResponse' } },
             },
           },
+          '403': { description: 'Step-up re-authentication required (`reauth_required`)' },
           '404': { description: 'Key not found, already bound or revoked' },
         },
       },
@@ -485,7 +486,7 @@ export function buildLicensePaths(_installCommandDescription: string): Record<st
         tags: ['Licenses'],
         summary: 'Issue a re-enroll ticket for one server',
         description:
-          'Owner only. A one-hour, single-use ticket bound to this server that lets it replace a lost daemon key once. Issuing a new one retires any unused ticket.',
+          'Owner only, behind step-up re-authentication when the organization requires it (403 `reauth_required`). A one-hour, single-use ticket bound to this server that lets it replace a lost daemon key once. Issuing a new one retires any unused ticket.',
         security: [{ cookieAuth: [] }],
         parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
         responses: {
@@ -495,6 +496,7 @@ export function buildLicensePaths(_installCommandDescription: string): Record<st
               'application/json': { schema: { $ref: '#/components/schemas/TicketResponse' } },
             },
           },
+          '403': { description: 'Step-up re-authentication required (`reauth_required`)' },
           '404': { description: 'Server not found' },
         },
       },

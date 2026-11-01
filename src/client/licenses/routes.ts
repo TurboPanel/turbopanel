@@ -410,6 +410,9 @@ export function registerLicenseRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const { db, organizationId } = ctx
     const id = c.req.param('id')
 
+    const stepUp = await requireStepUpIfConfigured(c, organizationId, 'license.key.burn')
+    if (stepUp) return stepUp
+
     const burned = await burnUnboundLicenseToken(db, id, organizationId)
     if (!burned) return c.json({ error: 'Not found' }, 404)
 
