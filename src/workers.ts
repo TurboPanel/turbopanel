@@ -309,6 +309,7 @@ async function initWorkerApp(env: CloudflareBindings) {
     secretsConfig: cachedSecretsConfig ?? undefined,
     registerBilling: registerBillingRoutes,
     getClientOpenApiSpec: getWorkersClientOpenApiSpec,
+    panelIdentity: () => Promise.resolve(cachedPanelIdentity),
   })
   warnIfDaemonRateLimitersMissing(env)
   warnIfClientAuthRateLimiterMissing(env)
@@ -356,6 +357,8 @@ async function initWorkerApp(env: CloudflareBindings) {
     devSurface: isWorkersDevSurface(env),
     registerTiers: (admin) => registerAdminTierRoutes(admin, { secrets: cachedSessionSecrets! }),
     getOpenApiSpec: getWorkersAdminOpenApiSpec,
+    panelIdentity: () => Promise.resolve(cachedPanelIdentity),
+    identityUrls: async (requestDb) => orderedPublicOrigins(await listInstanceHostnames(requestDb)),
   })
   cachedDaemonCellRegistryFactory = (env, db) => createDurableObjectDaemonCellRegistry(env, db)
 }

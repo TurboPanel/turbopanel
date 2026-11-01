@@ -263,6 +263,39 @@ export const NOTIFICATION_EVENT_DEFINITIONS = {
       )}. ` +
       'If you did not issue that token, revoke the server key and check the host.',
   },
+  'panel.identity_next_changed': {
+    label: "The control plane's next key changed",
+    severity: 'warning',
+    scope: 'instance',
+    audience: 'managers',
+    // The next key is what servers accept after a rotation: always urgent.
+    urgent: true,
+    title: (ctx) =>
+      ctx.cleared === true
+        ? 'The control plane next key was cleared'
+        : 'The control plane next key was changed',
+    body: (ctx) =>
+      `${name(ctx, 'actorEmail', 'An administrator')} ${
+        ctx.cleared === true ? 'cleared' : 'set'
+      } the next key${
+        typeof ctx.fingerprint === 'string' ? ` (${ctx.fingerprint})` : ''
+      }. Servers accept the next key after a rotation; if you did not expect this, check Panel Identity in Admin.`,
+  },
+  'panel.pin_mismatch': {
+    label: 'A server reported a different control plane key',
+    severity: 'critical',
+    scope: 'organization',
+    audience: 'managers',
+    urgent: true,
+    title: (ctx) =>
+      `Server ${name(ctx, 'serverName', 'unknown')} reported a different control plane key`,
+    body: (ctx) =>
+      `The server holds ${name(ctx, 'reported', 'a key')} but this control plane signs with ${name(
+        ctx,
+        'expected',
+        'another key'
+      )}. Either the server was pointed at another control plane or something is impersonating this one; reinstall the server with a fresh command if you did not expect this.`,
+  },
 } as const satisfies Record<string, EventDefinition>
 
 export type NotificationEvent = keyof typeof NOTIFICATION_EVENT_DEFINITIONS

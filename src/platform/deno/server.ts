@@ -84,7 +84,8 @@ import {
   resolvePublicInstanceTls,
 } from '../../features/install/install-tls.ts'
 import { listInstanceHostnames } from '../../features/install/instance-hostnames.ts'
-import { ensurePanelIdentity } from '../../lib/panel-identity/identity.ts'
+import { ensurePanelIdentityDetailed } from '../../lib/panel-identity/identity.ts'
+import { recordAudit } from '../../features/audit/audit-records.ts'
 import { orderedPublicOrigins } from '../../lib/panel-identity/urls.ts'
 import { registerDaemonWebSocket } from '../../daemon/deno-ws.ts'
 import { createHeartbeatReader } from './heartbeat-reader.ts'
@@ -453,7 +454,18 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
   )
   // The panel identity key: random, stored sealed under the data-encryption key,
   // never derived from TURBOPANEL_SECRET. Generated once on the first start.
-  const panelIdentity = await ensurePanelIdentity(db, dataEncryptionSecrets)
+  const ensured = await ensurePanelIdentityDetailed(db, dataEncryptionSecrets)
+  // Replaced when an administrator sets or clears the next key, so the served
+  // document follows without a restart.
+  let panelIdentity = ensured.identity
+  if (ensured.created) {
+    await recordAudit(db, {
+      organizationId: null,
+      action: 'panel.identity.generated',
+      targetType: 'instance',
+      context: { fingerprint: panelIdentity.current.kid, keyset: panelIdentity.keyset },
+    })
+  }
   logInfo(
     'identity',
     `Panel identity ${panelIdentity.current.kid} (keyset ${panelIdentity.keyset})`
@@ -626,6 +638,7 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     // health handler never sees TURBOPANEL_REVISION from systemd.
     getPlatformEnv: () => Deno.env.toObject(),
     readPlatformCaPem,
+    panelIdentity: () => Promise.resolve(panelIdentity),
   })
   // Daemon + developer registrars are generic over the env, so the app's own
   // `AppEnv` typing carries through — no cast.
@@ -690,6 +703,11 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     readPlatformCaBundle: () => Deno.readTextFile(resolveInstanceTlsCaServePath()),
     collectInstanceIps: () => collectServerIps(readDefaultRouteInterfaces()),
     registerPlatformAdminRoutes: registerIngressAdminRoutes,
+    panelIdentity: () => Promise.resolve(panelIdentity),
+    identityUrls: async (requestDb) => orderedPublicOrigins(await listInstanceHostnames(requestDb)),
+    onIdentityNextChanged: (fingerprint) => {
+      panelIdentity = { ...panelIdentity, next: fingerprint ? { kid: fingerprint } : null }
+    },
     ...resolveMailDeadLetters(emailQueue),
   })
   const socketPath = resolveInstanceSocket()

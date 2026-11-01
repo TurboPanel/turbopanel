@@ -1,6 +1,9 @@
 import type { Hono, MiddlewareHandler } from 'hono'
 import type { AppEnv } from '../../../app/app.ts'
+import { requireInstanceStepUp } from '../../../client/authn/step-up.ts'
 import { handleTunnelTokenRequest } from '../../../developer/tunnel-token-handler.ts'
+import { recordAudit } from '../../../features/audit/audit-records.ts'
+import { getDb } from '../../../db/connection.ts'
 
 export type IngressAdminDeps = { rootOnly: MiddlewareHandler<AppEnv> }
 
@@ -10,5 +13,21 @@ export type IngressAdminDeps = { rootOnly: MiddlewareHandler<AppEnv> }
  * session middleware still applies and High Availability has no such route.
  */
 export function registerIngressAdminRoutes(admin: Hono<AppEnv>, deps: IngressAdminDeps): void {
-  admin.post('/instance/tunnel-token', deps.rootOnly, (c) => handleTunnelTokenRequest(c))
+  admin.post('/instance/tunnel-token', deps.rootOnly, async (c) => {
+    const stepUp = await requireInstanceStepUp(c, 'instance.tunnel_token.set')
+    if (stepUp) return stepUp
+    const response = await handleTunnelTokenRequest(c)
+    if (response.ok) {
+      const session = c.get('session')
+      // The token itself is never recorded.
+      await recordAudit(getDb(c), {
+        organizationId: null,
+        actorUserId: session?.userId ?? null,
+        actorEmail: session?.email ?? null,
+        action: 'instance.tunnel_token.set',
+        targetType: 'instance',
+      })
+    }
+    return response
+  })
 }

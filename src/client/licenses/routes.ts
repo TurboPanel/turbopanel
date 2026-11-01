@@ -390,6 +390,7 @@ export function registerLicenseRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         'license created; the join ticket is shown once and not stored in plaintext'
       )
 
+      const identity = opts.panelIdentity ? await opts.panelIdentity() : null
       // `licenseToken` is the one-hour join secret (the pair the install
       // command carries is `joinId` + `licenseToken`); the key has no token.
       return c.json({
@@ -398,6 +399,16 @@ export function registerLicenseRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         joinId: joinTicket.id,
         joinExpiresAt: joinTicket.expiresAt,
         installCommand,
+        // Public values the install dialog shows beside the command, so the
+        // person installing can compare them out of band. Omitted when the
+        // control plane has no identity key.
+        ...(identity
+          ? {
+              panelFingerprint: identity.current.kid,
+              nextFingerprint: identity.next?.kid ?? null,
+              installUrl: instanceUrl,
+            }
+          : {}),
       })
     } finally {
       await releaseMintLease(db, mint.lease)

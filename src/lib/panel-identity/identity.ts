@@ -236,8 +236,16 @@ export async function ensurePanelIdentity(
   db: Db,
   dataEncryption: DerivedSecretsConfig
 ): Promise<PanelIdentity> {
+  return (await ensurePanelIdentityDetailed(db, dataEncryption)).identity
+}
+
+/** Same as {@link ensurePanelIdentity}, and says whether this call generated the key (for the audit row). */
+export async function ensurePanelIdentityDetailed(
+  db: Db,
+  dataEncryption: DerivedSecretsConfig
+): Promise<{ identity: PanelIdentity; created: boolean }> {
   const existing = await resolvePanelIdentityFromDb(db, dataEncryption)
-  if (existing) return existing
+  if (existing) return { identity: existing, created: false }
   const created = await createStoredValue(dataEncryption)
   await db
     .insert(setting)
@@ -247,7 +255,7 @@ export async function ensurePanelIdentity(
   if (!winner) {
     throw new Error('panel identity could not be stored')
   }
-  return winner
+  return { identity: winner, created: winner.current.kid === created.identity.current.kid }
 }
 
 /** Store (or clear with `null`) the `next` fingerprint. Only the fingerprint is stored. */
