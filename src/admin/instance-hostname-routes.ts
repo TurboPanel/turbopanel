@@ -18,10 +18,12 @@ import {
   storeUploadedCertificate,
 } from '../features/install/instance-certificates.ts'
 import {
+  type InstanceHostnameRecord,
   listInstanceHostnames,
   replaceInstanceHostnames,
   validateHostnameSource,
 } from '../features/install/instance-hostnames.ts'
+import { primaryHostname, publicOriginForHostname } from '../features/install/public-origins.ts'
 import { publicHttpsOrigin } from '../features/install/public-urls.ts'
 import {
   parseCertificateHostnamesBody,
@@ -56,6 +58,25 @@ const PLATFORM_MANAGED_TLS_ERROR = 'certificates and hostnames are platform-mana
 function failureStatus(error: string): 404 | 422 {
   if (error === 'Certificate not found') return 404
   return 422
+}
+
+function primaryOrigin(rows: readonly InstanceHostnameRecord[]): string | null {
+  const primary = primaryHostname(rows)
+  return primary ? publicOriginForHostname(primary) : null
+}
+
+/**
+ * Links, OAuth callbacks and Git webhook URLs follow the primary hostname, so
+ * a change of its public address means addresses registered elsewhere (an
+ * OAuth app, a Git provider webhook) must be updated. Empty when unchanged.
+ */
+function primaryChangeWarning(previous: string | null, next: string | null) {
+  if (previous === null || previous === next) return {}
+  return {
+    warnings: ['primary-origin-changed'],
+    previousPrimaryOrigin: previous,
+    primaryOrigin: next,
+  }
 }
 
 /** The shared 422 for every write these routes refuse on Workers, or `null` to proceed. */
@@ -147,9 +168,14 @@ export function registerInstanceHostnameAdminRoutes(
         422
       )
     }
+    const previousPrimary = primaryOrigin(await listInstanceHostnames(db))
     const replaced = await replaceInstanceHostnames(db, parsed.hostnames)
     if (!replaced.ok) return c.json(replaced, 422)
-    return c.json({ ok: true, hostnames: replaced.hostnames })
+    return c.json({
+      ok: true,
+      hostnames: replaced.hostnames,
+      ...primaryChangeWarning(previousPrimary, primaryOrigin(replaced.hostnames)),
+    })
   })
 
   admin.get('/instance/certificates', async (c) => {

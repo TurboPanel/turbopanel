@@ -363,3 +363,11 @@ and `password-reset.ts` (token store). The email-code reset
   never request text, so a link can never carry a token off-site (Sonar S5146).
 - Tests run against Postgres (`password-reset-http.test.ts`): the in-memory
   auth doubles ignore query predicates, so they cannot prove token matching.
+
+## Passkey origins
+
+The RP ID is the bare host of the primary public URL. The expected origins are
+every public origin of that host (its public port and the panel's `:8443`
+listener), so a passkey works on both once a name is also published on 443. A
+different hostname is a different RP ID: passkeys made on one name do not work
+on another.

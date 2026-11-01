@@ -72,3 +72,16 @@ records that error on the hostname. The detail phrase is
 is stored on the hostname. A failure does not clear `notAfter`. Changing
 the source away from Let's Encrypt does. That message is not the tenant
 `acme-issuance-event` stream.
+
+## Public origins versus the dial
+
+A stored hostname is the panel's dial (`:8443`, Caddy and certificate SANs).
+What people type is the row's `public_port`: `public-origins.ts` builds that
+origin (443 shows no port) and picks the primary row (`is_primary`, else the
+oldest). Mail links, invitations, OAuth and webhook URLs, passkey origins, the
+identity document and default install commands use it; never use
+`publicUrlEntryToInstallOrigin` for anything a person or provider opens. The
+PUT hostnames route accepts `publicPort` and `isPrimary` per entry (one
+primary; omitted keeps the stored value) and warns when the primary's address
+changes, because OAuth callbacks and Git webhooks registered with the old
+address must be updated.
