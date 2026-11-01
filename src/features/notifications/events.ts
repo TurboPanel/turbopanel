@@ -279,7 +279,7 @@ export const NOTIFICATION_EVENT_DEFINITIONS = {
         ctx.cleared === true ? 'cleared' : 'set'
       } the next key${
         typeof ctx.fingerprint === 'string' ? ` (${ctx.fingerprint})` : ''
-      }. Servers accept the next key after a rotation; if you did not expect this, check Panel Identity in Admin.`,
+      }. Servers accept the next key after a rotation; if you did not expect this, check Control Plane Identity in Admin.`,
   },
   'panel.pin_mismatch': {
     label: 'A server reported a different control plane key',
