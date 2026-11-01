@@ -704,6 +704,13 @@ export const server = pgTable(
      */
     fabricRole: text('fabric_role'),
     /**
+     * How the daemon pinned the panel key at install, as it reported it:
+     * `install` (a signed install command), `upgrade` (learned later) or
+     * `unsafe` (installed with the skip flag, nothing pinned). NULL until the
+     * daemon reports it, which an older daemon never does.
+     */
+    trustPinnedBy: text('trust_pinned_by'),
+    /**
      * The server's container range (a /16 from the org container pool), set
      * the first time a cross-server container network or TurboFabric needs
      * it. Subnets of cross-server networks are carved from it, and a relay's
@@ -812,6 +819,10 @@ export const server = pgTable(
     check(
       'server_fabric_role_check',
       sql`fabric_role IS NULL OR fabric_role IN ('gateway', 'client')`
+    ),
+    check(
+      'server_trust_pinned_by_check',
+      sql`trust_pinned_by IS NULL OR trust_pinned_by IN ('install', 'upgrade', 'unsafe')`
     ),
   ]
 )

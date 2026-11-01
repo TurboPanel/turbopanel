@@ -391,6 +391,7 @@ async function handleDaemonPresenceInbound(params: {
       releaseLinkScan: message.releaseLinkScan,
       services,
       features: message.features ?? [],
+      ...(message.panelPin ? { panelPin: message.panelPin } : {}),
     })
   } else if (
     message.timeSync ||

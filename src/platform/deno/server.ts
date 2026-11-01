@@ -626,6 +626,7 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     // health handler never sees TURBOPANEL_REVISION from systemd.
     getPlatformEnv: () => Deno.env.toObject(),
     readPlatformCaPem,
+    panelIdentity: () => Promise.resolve(panelIdentity),
   })
   // Daemon + developer registrars are generic over the env, so the app's own
   // `AppEnv` typing carries through — no cast.

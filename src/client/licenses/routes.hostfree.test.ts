@@ -64,6 +64,11 @@ import { COLOCATED_SERVER_DISPLAY_NAME } from '../authn/install-state.ts'
 import { deriveSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 import { registerLicenseRoutes } from './routes.ts'
+import {
+  resolvePanelIdentityFromBinding,
+  type PanelIdentity,
+} from '../../lib/panel-identity/identity.ts'
+import { fixtureBindingJson } from '../../test-fixtures/panel-identity-fixture.ts'
 import { tierSeatExhaustionMessage } from './routes-helpers.ts'
 import { LICENSE_KEY_UNUSED_TTL_DAYS } from '../../features/licenses/key-expiry.ts'
 import { recordLicenseEnrollAttempt } from '../../features/licenses/enroll-attempt.ts'
@@ -120,6 +125,7 @@ type Fixture = {
   platformEnv?: Record<string, string | undefined>
   omitBaseUrl?: boolean
   runtime?: 'deno' | 'workers'
+  panelIdentity?: PanelIdentity
 }
 
 function noopRegistry(): DaemonCellRegistry {
@@ -307,6 +313,7 @@ async function buildApp(fx: Fixture = {}) {
     runtime: fx.runtime ?? 'workers',
     signupEnvOverride: undefined,
     ...(fx.omitBaseUrl ? {} : { baseUrl: 'https://panel.example.com' }),
+    ...(fx.panelIdentity ? { panelIdentity: () => Promise.resolve(fx.panelIdentity!) } : {}),
   })
   const cookie = `${HTTP_SESSION_COOKIE_NAME}=${await buildSignedCookie(token, secrets)}`
   const headers = {
@@ -1032,4 +1039,40 @@ test('a self-hosted panel puts the Platform CA fingerprint in the install comman
     body.installCommand
   )
   assertEquals(body.installCommand.startsWith('curl -fsSL https://turbopanel.sh | '), true)
+})
+
+const TOKEN_ENV = { TURBOPANEL_INSTALL_TOKEN_V2: '1' }
+
+test('POST /licenses hands out the signed TOKEN command once the switch is on', async () => {
+  const panelIdentity = (await resolvePanelIdentityFromBinding(await fixtureBindingJson()))!
+  const { app, headers } = await buildApp({
+    config: null,
+    seats: null,
+    platformEnv: TOKEN_ENV,
+    panelIdentity,
+  })
+  const res = await mint(app, headers, { name: 'edge-token' })
+  assertEquals(res.status, 200)
+  const body = (await res.json()) as {
+    installCommand: string
+    panelFingerprint: string | null
+    nextFingerprint: string | null
+  }
+  assertEquals(body.panelFingerprint, panelIdentity.current.kid)
+  assertEquals(body.installCommand.includes('| TOKEN='), true)
+  assertEquals(body.installCommand.includes('TURBOPANEL_LICENSE'), false)
+  assertEquals(body.installCommand.includes('TURBOPANEL_HOST'), false)
+})
+
+test('POST /licenses keeps the older command while the switch is off or there is no identity key', async () => {
+  const panelIdentity = (await resolvePanelIdentityFromBinding(await fixtureBindingJson()))!
+  for (const fx of [{ panelIdentity }, { platformEnv: TOKEN_ENV }]) {
+    const { app, headers } = await buildApp({ config: null, seats: null, ...fx })
+    const res = await mint(app, headers, { name: 'edge-legacy' })
+    assertEquals(res.status, 200)
+    const body = (await res.json()) as { installCommand: string; panelFingerprint: unknown }
+    assertEquals(body.installCommand.includes('TURBOPANEL_LICENSE='), true)
+    assertEquals(body.installCommand.includes(' TOKEN='), false)
+    assertEquals(body.panelFingerprint, null)
+  }
 })

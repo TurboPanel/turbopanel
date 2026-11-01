@@ -36,6 +36,8 @@ import { type Db, getDaemonCellRegistry, getDb } from '../../db/connection.ts'
 import type { DaemonCellRegistry } from '../../contracts/cell.ts'
 import { isDeveloperSurfaceEnabled } from '../../app/dev-mode.ts'
 import { buildLicenseInstallCommand } from '../../features/install/daemon-install-command.ts'
+import { buildInstallTokenFor } from '../../features/install/install-token-command.ts'
+import { listInstanceHostnames } from '../../features/install/instance-hostnames.ts'
 import { INSTALL_CA_PIN_UNAVAILABLE } from '../../features/install/install-ca-pin.ts'
 import { resolveInstallOriginTls } from '../../features/install/install-trust.ts'
 import { syncSelfHostedGrant } from '../../features/tiers/self-hosted-grant-records.ts'
@@ -357,6 +359,18 @@ export function registerLicenseRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       const insecureTls = prepared.insecureTls
       // Instance-host `/run.sh` is served only by the dev overlay Caddyfile.
       // Production / self-hosted Deno installs curl the CDN and pass TURBOPANEL_HOST.
+      // The signed single-value form, once the switch is on and this panel
+      // has an identity key; otherwise the older variables.
+      const identity = opts.panelIdentity ? await opts.panelIdentity() : null
+      const installToken = await buildInstallTokenFor({
+        env,
+        identity,
+        licenseId,
+        licenseToken,
+        installUrl: instanceUrl,
+        hostnames: () => listInstanceHostnames(db),
+        caFingerprints: insecureTls ? prepared.caFingerprints : undefined,
+      })
       const installCommand = buildLicenseInstallCommand({
         runtime: opts.runtime,
         instanceUrl,
@@ -366,6 +380,7 @@ export function registerLicenseRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         caFingerprints: prepared.caFingerprints,
         useInstanceRunScript: Boolean(devSurface),
         updateChannel: resolveInstanceUpdateChannel(c.get('platformEnv')),
+        token: installToken?.token,
       })
 
       compatLogInfo(
@@ -373,7 +388,13 @@ export function registerLicenseRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         'license created; licenseToken is shown once and not stored in plaintext'
       )
 
-      return c.json({ licenseId, licenseToken, installCommand })
+      return c.json({
+        licenseId,
+        licenseToken,
+        installCommand,
+        panelFingerprint: installToken?.panelFingerprint ?? null,
+        nextFingerprint: installToken?.nextFingerprint ?? null,
+      })
     } finally {
       await releaseMintLease(db, mint.lease)
     }

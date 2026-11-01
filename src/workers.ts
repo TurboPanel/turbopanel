@@ -309,6 +309,7 @@ async function initWorkerApp(env: CloudflareBindings) {
     secretsConfig: cachedSecretsConfig ?? undefined,
     registerBilling: registerBillingRoutes,
     getClientOpenApiSpec: getWorkersClientOpenApiSpec,
+    panelIdentity: () => Promise.resolve(cachedPanelIdentity),
   })
   warnIfDaemonRateLimitersMissing(env)
   warnIfClientAuthRateLimiterMissing(env)

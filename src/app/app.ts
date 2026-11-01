@@ -1,4 +1,5 @@
 import { Hono } from 'hono'
+import type { PanelIdentity } from '../lib/panel-identity/identity.ts'
 import { registerSecurityHeaders } from './security-headers.ts'
 import { registerInvalidIdErrorHandler } from './invalid-id-error.ts'
 import type { SessionData } from '../client/authn/session-store.ts'
@@ -142,6 +143,7 @@ export function createApp({
   registerBilling,
   getClientOpenApiSpec,
   readPlatformCaPem,
+  panelIdentity,
 }: {
   db?: Db
   emailQueue?: EmailQueue
@@ -196,6 +198,8 @@ export function createApp({
   getClientOpenApiSpec?: NonNullable<ClientRouteOpts['getOpenApiSpec']>
   /** Platform CA bundle reader for self-hosted install commands (Deno only). */
   readPlatformCaPem?: () => Promise<string>
+  /** The panel identity key; signs v2 install commands (see `AuthRouteOpts`). */
+  panelIdentity?: () => Promise<PanelIdentity | null>
 }): Hono<AppEnv> {
   const app = new Hono<AppEnv>()
   // First, so every response carries them — including ones a later
@@ -279,6 +283,7 @@ export function createApp({
       ...(registerBilling ? { registerBilling } : {}),
       ...(getClientOpenApiSpec ? { getOpenApiSpec: getClientOpenApiSpec } : {}),
       ...(readPlatformCaPem ? { readPlatformCaPem } : {}),
+      ...(panelIdentity ? { panelIdentity } : {}),
     })
   }
   return app
