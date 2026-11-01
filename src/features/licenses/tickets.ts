@@ -14,7 +14,7 @@
  *
  * Workers-bundleable: nothing at module load.
  */
-import { and, eq, gt, isNull } from 'drizzle-orm'
+import { and, eq, gt, isNull, type SQL } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { ticket } from '../../db/schema.ts'
 import { generatePassword } from '../../lib/secrets/generate-secret.ts'
@@ -135,22 +135,58 @@ export async function recordTicketServer(db: Db, id: string, serverId: string): 
   await db.update(ticket).set({ usedByServerId: serverId }).where(eq(ticket.id, id))
 }
 
-/** Revoke every unused re-enroll ticket for a server. Returns how many were revoked. */
-export async function revokeServerTickets(db: Db, serverId: string): Promise<number> {
-  const rows = await db
-    .update(ticket)
-    .set({ usedAt: new Date().toISOString() })
-    .where(and(eq(ticket.serverId, serverId), isNull(ticket.usedAt)))
-    .returning({ id: ticket.id })
-  return rows.length
+/** How often a stamp retries when a ticket changes under it. */
+const STAMP_ATTEMPTS = 3
+
+/**
+ * Stamp every ticket matching `scope` that is not yet bound to a server: the
+ * unused ones, and the ones a consume has spent but whose enrolment has not
+ * recorded a server. The stamp is a value no consume could have written (the
+ * later of the old `used_at` plus a millisecond and now), so a release that
+ * compares against the consume's value finds it changed and leaves the ticket
+ * spent. Bound tickets (a server recorded) are finished and left alone.
+ */
+async function stampTickets(db: Db, scope: SQL): Promise<number> {
+  let live = 0
+  for (let attempt = 0; attempt < STAMP_ATTEMPTS; attempt++) {
+    const rows = await db
+      .select({ id: ticket.id, usedAt: ticket.usedAt, usedByServerId: ticket.usedByServerId })
+      .from(ticket)
+      .where(scope)
+    let raced = false
+    // A ticket with a server recorded is finished; every other one is stamped.
+    for (const row of rows.filter((entry) => entry.usedByServerId === null)) {
+      if (await stampOne(db, row)) {
+        if (row.usedAt === null) live++
+      } else {
+        raced = true
+      }
+    }
+    if (!raced) return live
+  }
+  // A ticket may still be live: the caller must not go on as if it were cancelled.
+  throw new Error('ticket stamp did not settle')
 }
 
-/** Cancel every unused join ticket of a key (a burn replaces them). Returns how many. */
-export async function cancelLicenseTickets(db: Db, licenseId: string): Promise<number> {
-  const rows = await db
+/** Stamp one ticket if it is still as read. False when it changed under us. */
+async function stampOne(db: Db, row: { id: string; usedAt: string | null }): Promise<boolean> {
+  const was = row.usedAt === null ? 0 : Date.parse(row.usedAt)
+  const next = new Date(Math.max(Date.now(), was + 1)).toISOString()
+  const unchanged = row.usedAt === null ? isNull(ticket.usedAt) : eq(ticket.usedAt, row.usedAt)
+  const done = await db
     .update(ticket)
-    .set({ usedAt: new Date().toISOString() })
-    .where(and(eq(ticket.licenseId, licenseId), isNull(ticket.usedAt)))
+    .set({ usedAt: next })
+    .where(and(eq(ticket.id, row.id), unchanged))
     .returning({ id: ticket.id })
-  return rows.length
+  return done.length > 0
+}
+
+/** Revoke every re-enroll ticket of a server that has not produced a key yet. Returns how many were still unused. */
+export function revokeServerTickets(db: Db, serverId: string): Promise<number> {
+  return stampTickets(db, eq(ticket.serverId, serverId))
+}
+
+/** Cancel every join ticket of a key that has not produced a server yet (a burn replaces them). */
+export function cancelLicenseTickets(db: Db, licenseId: string): Promise<number> {
+  return stampTickets(db, eq(ticket.licenseId, licenseId))
 }

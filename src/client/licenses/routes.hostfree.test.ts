@@ -13,7 +13,6 @@
  * operator deletes the server first.
  */
 
-import { eq } from 'drizzle-orm'
 import { assertEquals, assertExists, assertThrows } from '@std/assert'
 import { Hono } from 'hono'
 import type { Context } from 'hono'
@@ -67,10 +66,13 @@ import { deriveSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 import { registerLicenseRoutes } from './routes.ts'
 import {
+  cancelLicenseTickets,
   checkTicket,
   consumeTicket,
   mintTicket,
+  recordTicketServer,
   releaseTicket,
+  revokeServerTickets,
 } from '../../features/licenses/tickets.ts'
 import { registerServerReenrollTicketRoutes } from '../servers/reenroll-ticket-routes.ts'
 import { tierSeatExhaustionMessage } from './routes-helpers.ts'
@@ -833,22 +835,40 @@ test('a burn cancels the join tickets issued before it', async () => {
   assertEquals((await checkTicket(db, second.joinId, second.licenseToken)).ok, true)
 })
 
-test('releaseTicket only undoes the use it was given: a revoke made since stays in force', async () => {
-  const { db } = await buildApp()
-  const issued = await mintTicket(db, { organizationId: ORG, licenseId: L_ACTIVE })
-  const consumedAt = await consumeTicket(db, issued.id, Date.parse(NOW))
-  assertEquals(consumedAt, NOW)
+test('a burn or revoke that lands while a ticket is being spent keeps it spent when the enrolment fails', async () => {
+  const { db } = await buildApp({ servers: [{ id: SERVER, name: 'edge-1' }] })
+  const read = (id: string) => db.rows(ticket).find((row) => row.id === id)?.usedAt ?? null
 
-  // Someone revokes (or reissues) after the consume: a later used_at value.
-  const revokedAt = '2026-09-07T12:00:05.000Z'
-  await db.update(ticket).set({ usedAt: revokedAt }).where(eq(ticket.id, issued.id))
-  await releaseTicket(db, issued.id, NOW)
-  assertEquals(db.rows(ticket).find((row) => row.id === issued.id)?.usedAt, revokedAt)
+  // Join ticket: consumed, then the real burn-time cancel, then the failed enrolment's release.
+  const join = await mintTicket(db, { organizationId: ORG, licenseId: L_ACTIVE })
+  const joinSpent = await consumeTicket(db, join.id)
+  assertExists(joinSpent)
+  await cancelLicenseTickets(db, L_ACTIVE)
+  await releaseTicket(db, join.id, joinSpent)
+  assertEquals(read(join.id) === null, false)
+  assertEquals((await checkTicket(db, join.id, join.plaintext)).ok, false)
 
-  // With nothing in between, the release puts the ticket back.
-  await db.update(ticket).set({ usedAt: consumedAt }).where(eq(ticket.id, issued.id))
-  await releaseTicket(db, issued.id, NOW)
-  assertEquals(db.rows(ticket).find((row) => row.id === issued.id)?.usedAt ?? null, null)
+  // Re-enroll ticket: the same sequence with the real revoke.
+  const reenroll = await mintTicket(db, { organizationId: ORG, serverId: SERVER })
+  const reenrollSpent = await consumeTicket(db, reenroll.id)
+  assertExists(reenrollSpent)
+  await revokeServerTickets(db, SERVER)
+  await releaseTicket(db, reenroll.id, reenrollSpent)
+  assertEquals((await checkTicket(db, reenroll.id, reenroll.plaintext)).ok, false)
+
+  // With nothing in between, the release still puts a spent ticket back.
+  const plain = await mintTicket(db, { organizationId: ORG, licenseId: L_ACTIVE })
+  const plainSpent = await consumeTicket(db, plain.id)
+  assertExists(plainSpent)
+  await releaseTicket(db, plain.id, plainSpent)
+  assertEquals(read(plain.id), null)
+
+  // A ticket that produced a server is finished: a cancel leaves it alone.
+  const bound = await mintTicket(db, { organizationId: ORG, licenseId: L_ACTIVE })
+  const boundSpent = await consumeTicket(db, bound.id)
+  await recordTicketServer(db, bound.id, SERVER)
+  await cancelLicenseTickets(db, L_ACTIVE)
+  assertEquals(read(bound.id), boundSpent)
 })
 
 test('re-enroll tickets: an owner issues one per server, a new one retires the old, DELETE revokes', async () => {
@@ -871,6 +891,7 @@ test('re-enroll tickets: an owner issues one per server, a new one retires the o
 
   const revoked = await app.request(url, { method: 'DELETE', headers })
   assertEquals(revoked.status, 200)
+  // Counts live tickets only: the one the reissue already retired is not counted again.
   assertEquals(((await revoked.json()) as { revoked: number }).revoked, 1)
 
   const unknown = await app.request(`/servers/${L_ACTIVE}/reenroll-ticket`, {
