@@ -5,7 +5,11 @@
  */
 import type { Db } from '../../../db/connection.ts'
 import { logWarn } from '../../../lib/logger.ts'
+import { forEachSequential } from '../../../lib/sequential.ts'
+import type { CommandQueue } from '../../../features/commands/queue.ts'
+import { isNoopCommandQueue } from '../../../features/commands/noop-command-queue.ts'
 import { listIngressAccounts } from './accounts.ts'
+import { refreshInstanceConnector } from './cloudflare/instance-tunnel.ts'
 import { accountsDueForRecheck, recheckIngressAccount } from './cloudflare/account.ts'
 import { buildDns01Deps, type Dns01RuntimeDeps } from './dns01/runtime.ts'
 import { anyDns01Hostname, runDns01Tick } from './dns01/tick.ts'
@@ -14,7 +18,11 @@ import { networkFetch, refreshEdgeStatuses, type IngressServiceDeps } from './se
 /** Edge status is read every few minutes, not every tick, to stay well inside provider limits. */
 export const EDGE_STATUS_EVERY_MS = 5 * 60_000
 
-export type IngressTickDeps = IngressServiceDeps & Pick<Dns01RuntimeDeps, 'email'>
+export type IngressTickDeps = IngressServiceDeps &
+  Pick<Dns01RuntimeDeps, 'email'> & {
+    /** Asks the co-located daemon for its tunnel connector status. */
+    commandQueue?: CommandQueue
+  }
 
 async function guarded(part: string, run: () => Promise<void>): Promise<void> {
   try {
@@ -26,13 +34,14 @@ async function guarded(part: string, run: () => Promise<void>): Promise<void> {
 
 async function recheckAccounts(db: Db, deps: IngressTickDeps): Promise<void> {
   const now = deps.now?.() ?? new Date()
-  for (const account of accountsDueForRecheck(await listIngressAccounts(db), now)) {
-    await recheckIngressAccount(db, account.id, {
+  const due = accountsDueForRecheck(await listIngressAccounts(db), now)
+  await forEachSequential(due, (account) =>
+    recheckIngressAccount(db, account.id, {
       dataEncryption: deps.dataEncryption,
       fetch: deps.fetch ?? networkFetch,
       now: () => now,
     })
-  }
+  )
 }
 
 export function createIngressTick(deps: IngressTickDeps): (db: Db) => Promise<void> {
@@ -47,6 +56,12 @@ export function createIngressTick(deps: IngressTickDeps): (db: Db) => Promise<vo
     lastStatusAt = now
     await guarded('edge status refresh', () => refreshEdgeStatuses(db, deps))
     await guarded('provider token recheck', () => recheckAccounts(db, deps))
+    const queue = deps.commandQueue
+    if (queue && !isNoopCommandQueue(queue)) {
+      await guarded('tunnel connector status', () =>
+        refreshInstanceConnector(db, deps.registry, queue)
+      )
+    }
   }
 }
 

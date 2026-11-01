@@ -66,7 +66,7 @@ function retryAfterFrom(detail: string): Date | null {
 }
 
 function topOfNextHour(now: Date): Date {
-  const next = new Date(now.getTime())
+  const next = new Date(now)
   next.setUTCMinutes(0, 0, 0)
   return new Date(next.getTime() + HOUR_MS)
 }

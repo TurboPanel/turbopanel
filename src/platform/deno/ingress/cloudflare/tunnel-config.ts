@@ -26,6 +26,12 @@ export type TunnelState = {
   dnsRecordId: string
   /** True when this control plane created the DNS record, so remove deletes it. */
   createdRecord: boolean
+  /**
+   * True when the tunnel existed before (made in the Cloudflare dashboard, or
+   * found through the name's CNAME): its other rules are kept, and removing
+   * the last name never deletes it or stops its connector.
+   */
+  adopted: boolean
   tokenPushedAt: string
 }
 
@@ -48,15 +54,29 @@ export function dnsName(host: string): string | null {
  * Platform CA (`caPool` is a later step); `originServerName` still makes the
  * listener pick the right certificate.
  */
-export function buildPanelIngress(names: readonly string[]): CloudflareIngressRule[] {
-  const unique = [...new Set(names.map((name) => name.toLowerCase()))].sort()
+export function buildPanelIngress(
+  names: readonly string[],
+  existing: readonly CloudflareIngressRule[] = [],
+  dropped: readonly string[] = []
+): CloudflareIngressRule[] {
+  const unique = [...new Set(names.map((name) => name.toLowerCase()))].sort((a, b) =>
+    a.localeCompare(b)
+  )
+  const ours = new Set([...unique, ...dropped.map((name) => name.toLowerCase())])
+  // Rules someone else put on an adopted tunnel stay, in their order, ahead of ours.
+  const kept = existing.filter((rule) => rule.hostname && !ours.has(rule.hostname.toLowerCase()))
   const rules: CloudflareIngressRule[] = unique.map((hostname) => ({
     hostname,
     service: PANEL_ORIGIN_DIAL,
     originRequest: { originServerName: hostname, httpHostHeader: hostname, noTLSVerify: true },
   }))
-  rules.push({ service: 'http_status:404' })
-  return rules
+  return [...kept, ...rules, { service: 'http_status:404' }]
+}
+
+/** The tunnel id a `<id>.cfargotunnel.com` CNAME points at, or null. */
+export function tunnelIdFromTarget(content: string | undefined): string | null {
+  const match = /^([0-9a-f-]{36})\.cfargotunnel\.com\.?$/i.exec(content ?? '')
+  return match ? match[1]!.toLowerCase() : null
 }
 
 export function readTunnelState(value: unknown): TunnelState | null {
@@ -70,6 +90,7 @@ export function readTunnelState(value: unknown): TunnelState | null {
     zoneId: typeof raw.zoneId === 'string' ? raw.zoneId : '',
     dnsRecordId: typeof raw.dnsRecordId === 'string' ? raw.dnsRecordId : '',
     createdRecord: raw.createdRecord === true,
+    adopted: raw.adopted === true,
     tokenPushedAt: typeof raw.tokenPushedAt === 'string' ? raw.tokenPushedAt : '',
   }
 }

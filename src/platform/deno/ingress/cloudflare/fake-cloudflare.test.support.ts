@@ -141,6 +141,11 @@ export function createFakeCloudflare(options: FakeCloudflareOptions): FakeCloudf
     ],
     [
       'GET',
+      /^\/accounts\/[^/]+\/cfd_tunnel\/([^/]+)\/configurations$/,
+      (m) => envelope(state.configurations.get(m[1]!) ?? { config: { ingress: [] } }),
+    ],
+    [
+      'GET',
       /^\/accounts\/[^/]+\/cfd_tunnel\/([^/?]+)$/,
       (m) => envelope(state.tunnels.find((t) => t.id === m[1])),
     ],
@@ -155,16 +160,16 @@ export function createFakeCloudflare(options: FakeCloudflareOptions): FakeCloudf
   ]
 
   const respond = (input: RequestInfo | URL, init?: RequestInit): Response => {
-    const url = new URL(String(input))
+    const url = new URL(input instanceof Request ? input.url : input)
     const path = url.pathname.replace('/client/v4', '') + url.search
     const method = init?.method ?? 'GET'
     state.log.push(`${method} ${path}`)
     const auth = new Headers(init?.headers).get('authorization')
     if (auth !== `Bearer ${options.token}`) return envelope(null, 401)
     if (options.forbidden?.some((pattern) => pattern.test(path))) return envelope(null, 403)
-    const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {}
+    const body = init?.body ? (JSON.parse(init.body as string) as Record<string, unknown>) : {}
     for (const [verb, pattern, handler] of routes) {
-      const match = verb === method ? path.match(pattern) : null
+      const match = verb === method ? pattern.exec(path) : null
       if (match) return handler(match, body)
     }
     return envelope(null, 404)

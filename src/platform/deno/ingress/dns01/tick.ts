@@ -7,6 +7,7 @@
 import { eq } from 'drizzle-orm'
 import type { Db } from '../../../../db/connection.ts'
 import { instanceHostname } from '../../../../db/schema.ts'
+import { forEachSequential } from '../../../../lib/sequential.ts'
 import { alertOnExpiry } from './alerts.ts'
 import {
   advanceOrder,
@@ -61,14 +62,14 @@ export async function runDns01Tick(deps: Dns01Deps): Promise<void> {
     .from(instanceHostname)
     .where(eq(instanceHostname.source, 'dns-01'))
   let worked = 0
-  for (const { id } of ids) {
+  await forEachSequential(ids, async ({ id }) => {
     const row = await loadDns01Row(deps.db, id)
     if (row && worked < DNS01_ROWS_PER_TICK && needsWork(row, deps.now())) {
       worked++
       await step(deps, row)
     }
     await watchExpiry(deps, id)
-  }
+  })
 }
 
 /** Whether any hostname uses DNS-01, so the tick can skip building its dependencies. */

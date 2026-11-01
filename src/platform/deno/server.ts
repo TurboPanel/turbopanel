@@ -1006,6 +1006,7 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
       registry: daemonCellRegistry,
       env: runtimeEnv,
       selfKid: () => panelIdentity.current.kid,
+      commandQueue,
       email: {
         queue: emailQueue,
         from: emailSettings.from,

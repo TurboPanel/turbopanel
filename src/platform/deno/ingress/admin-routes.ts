@@ -7,6 +7,7 @@ import { getDb } from '../../../db/connection.ts'
 import { registerIngressAccountRoutes } from './account-routes.ts'
 import { registerDns01Routes } from './dns01/routes.ts'
 import { registerHostnameIngressRoutes } from './hostname-routes.ts'
+import { registerInstanceTunnelRoutes } from './tunnel-routes.ts'
 import type { IngressAdminDeps } from './route-context.ts'
 
 export type { IngressAdminDeps } from './route-context.ts'
@@ -37,4 +38,5 @@ export function registerIngressAdminRoutes(admin: Hono<AppEnv>, deps: IngressAdm
   registerIngressAccountRoutes(admin, deps)
   registerHostnameIngressRoutes(admin, deps)
   registerDns01Routes(admin, deps)
+  registerInstanceTunnelRoutes(admin, deps)
 }

@@ -257,7 +257,7 @@ export function validateHostnameSource(
   return { ok: true }
 }
 
-const IP_LITERAL = /^(?:\d{1,3}(?:\.\d{1,3}){3}|[0-9a-f:]*:[0-9a-f:]*)$/i
+const IPV4_LITERAL = /^\d{1,3}(?:\.\d{1,3}){3}$/
 
 /**
  * DNS-01 orders one exact public DNS name: a private name works (the record
@@ -265,7 +265,8 @@ const IP_LITERAL = /^(?:\d{1,3}(?:\.\d{1,3}){3}|[0-9a-f:]*:[0-9a-f:]*)$/i
  */
 function validateDns01Host(host: string, hostname: string): { ok: true } | InstanceHostnameFailure {
   const lower = hostname.toLowerCase()
-  if (IP_LITERAL.test(lower) || lower === 'localhost' || !lower.includes('.')) {
+  const literal = IPV4_LITERAL.test(lower) || lower.includes(':')
+  if (literal || lower === 'localhost' || !lower.includes('.')) {
     return { ok: false, error: 'DNS-01 needs a public DNS name', invalid: [host] }
   }
   if (lower.startsWith('*.')) {

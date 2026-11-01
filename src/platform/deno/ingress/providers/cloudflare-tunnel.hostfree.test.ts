@@ -242,3 +242,58 @@ test('remove of one of two names keeps the tunnel with the other name', async ()
     ['admin.example.com', undefined]
   )
 })
+
+test('a dashboard-made tunnel behind the name is adopted, its other rules kept, and never deleted', async () => {
+  const h = harness()
+  const id = '6f0c3c1e-1111-4222-8333-944455556666'
+  h.cf.tunnels.push({
+    id,
+    name: 'made-in-dashboard',
+    status: 'healthy',
+    connections: [{}, {}, {}, {}],
+  })
+  h.cf.configurations.set(id, {
+    config: {
+      ingress: [
+        { hostname: 'panel.example.com', service: 'https://localhost:8443' },
+        { hostname: 'other.example.com', service: 'http://localhost:3000' },
+        { service: 'http_status:404' },
+      ],
+    },
+  })
+  h.cf.records.set('zone-1', [
+    {
+      id: 'rec-cname',
+      type: 'CNAME',
+      name: 'panel.example.com',
+      content: `${id}.cfargotunnel.com`,
+    },
+  ])
+  const result = await applyHostname(h.ctx(hostname('h1', 'panel.example.com')))
+  assert(result.ok)
+  assertEquals(result.state.tunnelId, id)
+  assertEquals(result.state.adopted, true)
+  assertEquals(result.state.createdRecord, false)
+  assertEquals(h.cf.tunnels.length, 1)
+  const config = h.cf.configurations.get(id) as {
+    config: { ingress: { hostname?: string; service: string }[] }
+  }
+  assertEquals(
+    config.config.ingress.map((rule) => [rule.hostname, rule.service]),
+    [
+      ['other.example.com', 'http://localhost:3000'],
+      ['panel.example.com', 'https://127.0.0.1:8443'],
+      [undefined, 'http_status:404'],
+    ]
+  )
+
+  await cloudflareTunnelProvider.remove(h.ctx(hostname('h1', 'panel.example.com', result.state)))
+  assertEquals(h.cf.tunnels.length, 1)
+  assertEquals(h.cf.records.get('zone-1')?.length, 1)
+  assertEquals(h.pushed.includes(''), false)
+  const after = h.cf.configurations.get(id) as { config: { ingress: { hostname?: string }[] } }
+  assertEquals(
+    after.config.ingress.map((rule) => rule.hostname),
+    ['other.example.com', undefined]
+  )
+})

@@ -6,6 +6,7 @@ import {
   preflightCloudflareToken,
 } from './account.ts'
 import { createFakeCloudflare } from './fake-cloudflare.test.support.ts'
+import { readEdgeTunnel } from './instance-tunnel.ts'
 
 const test = Deno.test.bind(Deno)
 
@@ -106,4 +107,56 @@ test('accounts older than a day are due for a recheck', () => {
     accountsDueForRecheck([fresh, stale, never], NOW).map((item) => item.id),
     ['b', 'c']
   )
+})
+
+test('the edge view finds a dashboard tunnel through the CNAME and lists its locations and names', async () => {
+  const id = '6f0c3c1e-1111-4222-8333-944455556666'
+  const cf = createFakeCloudflare({ token: TOKEN })
+  cf.tunnels.push({
+    id,
+    name: 'made-in-dashboard',
+    status: 'healthy',
+    connections: [{ colo_name: 'nrt01' }, { colo_name: 'kix01' }, { colo_name: 'nrt01' }],
+  })
+  cf.configurations.set(id, {
+    config: {
+      ingress: [{ hostname: 'canary.example.com', service: 'x' }, { service: 'http_status:404' }],
+    },
+  })
+  cf.records.set('zone-1', [
+    { id: 'r', type: 'CNAME', name: 'canary.example.com', content: `${id}.cfargotunnel.com` },
+  ])
+  const account = {
+    id: 'a',
+    provider: 'cloudflare' as const,
+    label: 'x',
+    accountId: 'acct-1',
+    zoneIds: ['zone-1'],
+    scopes: {
+      tunnels: true,
+      dns: true,
+      checkedAt: '',
+      zones: [{ id: 'zone-1', name: 'example.com' }],
+      expiresOn: null,
+    },
+    lastVerifiedAt: null,
+    lastError: null,
+    createdAt: '',
+  }
+  const hostname = {
+    id: 'h',
+    host: 'https://canary.example.com:8443',
+    providerState: null,
+  } as unknown as Parameters<typeof readEdgeTunnel>[0]['hostnames'][number]
+  const read = await readEdgeTunnel({
+    account,
+    token: TOKEN,
+    fetch: cf.fetch,
+    hostnames: [hostname],
+    now: NOW,
+  })
+  assertEquals(read.edge?.tunnelId, id)
+  assertEquals(read.edge?.connections, 3)
+  assertEquals(read.edge?.locations, ['kix01', 'nrt01'])
+  assertEquals(read.edge?.hostnames, ['canary.example.com'])
 })

@@ -273,6 +273,15 @@ export class CloudflareClient {
     )
   }
 
+  /** The tunnel's ingress rules as Cloudflare holds them (remotely managed tunnels). */
+  async getConfiguration(accountId: string, tunnelId: string): Promise<CloudflareIngressRule[]> {
+    const result = await this.#call<{ config?: { ingress?: CloudflareIngressRule[] } } | null>(
+      'GET',
+      `/accounts/${encodeURIComponent(accountId)}/cfd_tunnel/${encodeURIComponent(tunnelId)}/configurations`
+    )
+    return Array.isArray(result?.config?.ingress) ? result.config.ingress : []
+  }
+
   async deleteTunnel(accountId: string, tunnelId: string): Promise<void> {
     await this.#call(
       'DELETE',

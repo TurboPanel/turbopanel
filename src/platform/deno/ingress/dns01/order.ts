@@ -12,6 +12,7 @@ import type { ResolvedInstanceAcmeSettings } from '../../../../features/install/
 import type { DnsChallengeProvider } from '../../../../features/tls/dns-certificates/dns-provider.ts'
 import { AcmeError, type AcmeAuthorization, type AcmeClient } from '../../../../lib/acme/client.ts'
 import { buildCertificateRequest, generateCertificateKey } from '../../../../lib/acme/csr.ts'
+import { forEachSequential } from '../../../../lib/sequential.ts'
 import { encryptSecret } from '../../../../lib/secrets/data-encryption.ts'
 import type { DerivedSecretsConfig } from '../../../../lib/secrets/secrets.ts'
 import { parseCertificatePem } from '../../../../lib/tls/index.ts'
@@ -290,10 +291,12 @@ async function finalizeOrder(deps: Dns01Deps, acme: AcmeClient, order: Dns01Orde
   })
   let current = { ...(await acme.finalize(order.finalizeUrl, csr)), url: order.url }
   const sleep = deps.sleep ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)))
-  for (let poll = 0; current.status === 'processing' && poll < FINALIZE_POLLS; poll++) {
+  const polls = Array.from({ length: FINALIZE_POLLS }, (_, poll) => poll)
+  await forEachSequential(polls, async () => {
+    if (current.status !== 'processing') return
     await sleep(FINALIZE_POLL_MS)
     current = await acme.getOrder(order.url)
-  }
+  })
   if (current.status !== 'valid' || !current.certificate) {
     throw new AcmeError(
       'server',

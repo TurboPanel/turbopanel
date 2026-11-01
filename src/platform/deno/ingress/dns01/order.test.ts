@@ -19,6 +19,7 @@ import type { NotificationContext } from '../../../../features/notifications/eve
 import { skipWithoutDatabase } from '../../../../test-fixtures/require-service.test.support.ts'
 import { parseTestSecretsConfig } from '../../../../test-fixtures/secrets.ts'
 import { advanceOrder, type Dns01Deps, loadDns01Row, startOrder } from './order.ts'
+import { runDns01Tick } from './tick.ts'
 
 const test = Deno.test.bind(Deno)
 const dbUrl = Deno.env.get('TURBOPANEL_DATABASE_URL')
@@ -196,6 +197,27 @@ test('an order is refused while the authority limit pauses the name', async () =
     const result = await startOrder(w.deps, paused)
     assert('ok' in result)
     assert(result.error.includes('2026-11-02'))
+  } finally {
+    await cleanup(db, w.hostnameId)
+    await endDbConnection(db)
+  }
+})
+
+test('the tick drives a new dns-01 name to issued and pushes the fallback once at expiry', async () => {
+  if (!dbUrl) return skipWithoutDatabase('DNS-01 order tests')
+  const db = createDenoDb()
+  const w = await world(db, `panel-${crypto.randomUUID().slice(0, 8)}.example.com`)
+  try {
+    for (let i = 0; i < 3; i++) await runDns01Tick(w.deps)
+    const issued = (await loadDns01Row(db, w.hostnameId))!
+    assertEquals(issued.state.stage, 'issued')
+    assertEquals(w.pushes.length, 1)
+
+    const later = new Date(Date.parse(issued.notAfter!) + 60_000)
+    const expired = { ...w.deps, now: () => later }
+    await runDns01Tick(expired)
+    await runDns01Tick(expired)
+    assertEquals((await loadDns01Row(db, w.hostnameId))!.state.expiryApplied, true)
   } finally {
     await cleanup(db, w.hostnameId)
     await endDbConnection(db)

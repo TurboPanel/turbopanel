@@ -12,6 +12,7 @@ import {
   type CloudflareZone,
 } from '../../../../features/tunnels/cloudflare-client.ts'
 import { clip, scrubSecrets } from '../../../../features/tunnels/scrub.ts'
+import { firstSequential } from '../../../../lib/sequential.ts'
 import { encryptSecret } from '../../../../lib/secrets/data-encryption.ts'
 import type { DerivedSecretsConfig } from '../../../../lib/secrets/secrets.ts'
 import type { AccountScopes, IngressAccountRecord, ProviderZone } from '../accounts.ts'
@@ -68,27 +69,24 @@ async function tryVerify(
 async function verifyToken(api: CloudflareClient, token: string): Promise<Verified | null> {
   const accounts = await api.listAccounts().catch(() => [])
   const accountIds = accounts.map((account) => account.id)
-  if (!token.startsWith('cfat_')) {
-    const expiresOn = await tryVerify(() => api.verifyUserToken())
-    if (expiresOn !== undefined) return { expiresOn, accountIds }
-  }
-  for (const accountId of accountIds) {
-    const expiresOn = await tryVerify(() => api.verifyAccountToken(accountId))
-    if (expiresOn !== undefined) return { expiresOn, accountIds }
-  }
-  return null
+  const userFirst = token.startsWith('cfat_') ? [] : [() => api.verifyUserToken()]
+  const calls = [...userFirst, ...accountIds.map((id) => () => api.verifyAccountToken(id))]
+  const found = await firstSequential(calls, async (call) => {
+    const expiresOn = await tryVerify(call)
+    return expiresOn === undefined ? undefined : { expiresOn }
+  })
+  return found ? { expiresOn: found.expiresOn, accountIds } : null
 }
 
 async function firstTunnelAccount(api: CloudflareClient, ids: string[]): Promise<string | null> {
-  for (const id of ids) {
-    try {
-      await api.probeTunnels(id)
-      return id
-    } catch {
-      // Not this account: the token may cover several.
-    }
-  }
-  return null
+  // The token may cover several accounts: the first that lists tunnels wins.
+  const found = await firstSequential(ids, (id) =>
+    api.probeTunnels(id).then(
+      () => id,
+      () => undefined
+    )
+  )
+  return found ?? null
 }
 
 async function writableZones(

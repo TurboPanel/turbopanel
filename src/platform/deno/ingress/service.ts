@@ -16,6 +16,7 @@ import {
   type InstanceHostnameRecord,
 } from '../../../features/install/instance-hostnames.ts'
 import { base64urlEncode } from '../../../lib/encoding/base64url.ts'
+import { forEachSequential } from '../../../lib/sequential.ts'
 import { verifyIdentityResponse } from '../../../lib/panel-identity/document.ts'
 import type { DerivedSecretsConfig, SecretsConfig } from '../../../lib/secrets/secrets.ts'
 import { findIngressAccount, openAccountToken } from './accounts.ts'
@@ -47,6 +48,9 @@ export type IngressServiceDeps = {
   selfKid: () => string | null
   fetch?: typeof fetch
   now?: () => Date
+  /** Test seams; the real ones talk to the co-located daemon. */
+  colocatedDaemonConnected?: IngressDeps['colocatedDaemonConnected']
+  pushRunToken?: IngressDeps['pushRunToken']
 }
 
 type StoredIngress = {
@@ -82,7 +86,7 @@ async function writeStoredIngress(db: Db, id: string, stored: StoredIngress | nu
   await db.update(instanceHostname).set({ ingressState: stored }).where(eq(instanceHostname.id, id))
 }
 
-async function loadHostnamesWithState(db: Db): Promise<HostnameWithState[]> {
+export async function loadHostnamesWithState(db: Db): Promise<HostnameWithState[]> {
   const records = await listInstanceHostnames(db)
   const states = await db
     .select({ id: instanceHostname.id, ingressState: instanceHostname.ingressState })
@@ -140,14 +144,17 @@ export async function buildIngressContext(
     db,
     now: deps.now ?? (() => new Date()),
     fetch: deps.fetch ?? networkFetch,
-    colocatedDaemonConnected: () => colocatedConnected(db, deps.registry),
-    pushRunToken: (token) =>
-      dispatchInstanceTunnelToken({
-        db,
-        registry: deps.registry,
-        token,
-        secretsConfig: deps.secretsConfig,
-      }),
+    colocatedDaemonConnected:
+      deps.colocatedDaemonConnected ?? (() => colocatedConnected(db, deps.registry)),
+    pushRunToken:
+      deps.pushRunToken ??
+      ((token) =>
+        dispatchInstanceTunnelToken({
+          db,
+          registry: deps.registry,
+          token,
+          secretsConfig: deps.secretsConfig,
+        })),
     gate: await readEdgeGate(db, deps.env),
     account: hostname.ingressId ? await findIngressAccount(db, hostname.ingressId) : null,
     openToken: (account) => openAccountToken(db, deps.dataEncryption, account),
@@ -232,11 +239,8 @@ export async function removeIngress(
 /** Status refresh for the tick: every edge-mode name that has been applied. */
 export async function refreshEdgeStatuses(db: Db, deps: IngressServiceDeps): Promise<void> {
   const rows = await loadHostnamesWithState(db)
-  for (const row of rows) {
-    if (row.providerState && capabilitiesFor(row.mode).isEdge) {
-      await ingressStatus(db, row.id, deps)
-    }
-  }
+  const applied = rows.filter((row) => row.providerState && capabilitiesFor(row.mode).isEdge)
+  await forEachSequential(applied, (row) => ingressStatus(db, row.id, deps))
 }
 
 export type HostnameIngressInput = { mode?: unknown; ingressId?: unknown; publicPort?: unknown }

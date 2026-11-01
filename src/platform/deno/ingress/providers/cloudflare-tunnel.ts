@@ -14,6 +14,7 @@ import {
   dnsName,
   readTunnelState,
   tunnelName,
+  tunnelIdFromTarget,
   tunnelPhase,
   tunnelTarget,
   type TunnelState,
@@ -58,7 +59,7 @@ function portCheck(port: number): PreflightCheck {
 
 function accountChecks(ctx: IngressContext, name: string | null): PreflightCheck[] {
   const account = ctx.deps?.account ?? null
-  if (!account || account.provider !== 'cloudflare') {
+  if (account?.provider !== 'cloudflare') {
     return [check('account', false, 'Choose a connected Cloudflare account for this hostname.')]
   }
   const scopes = account.scopes
@@ -123,22 +124,44 @@ async function prepare(ctx: IngressContext): Promise<Ready | ApplyResult> {
 }
 
 /** The account's tunnel: the one another hostname already uses, else one with our name, else a new one. */
+type FoundTunnel = { id: string; name: string; adopted: boolean }
+
+/** A tunnel the name's CNAME already points at, when it belongs to this account. */
+async function tunnelBehindName(api: CloudflareClient, ready: Ready): Promise<FoundTunnel | null> {
+  const records = await api.listDnsRecords(ready.zoneId, ready.name)
+  const id = records.map((record) => tunnelIdFromTarget(record.content)).find(Boolean)
+  if (!id) return null
+  try {
+    const tunnel = await api.getTunnel(ready.accountId, id)
+    return { id: tunnel.id, name: tunnel.name, adopted: true }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * The account's tunnel, in this order: the one this or another hostname
+ * already uses, the one the name's CNAME points at (made in the Cloudflare
+ * dashboard: adopted, never deleted), one with our name, else a new one.
+ */
 async function ensureTunnel(
   api: CloudflareClient,
   ready: Ready,
   ctx: IngressContext
-): Promise<string> {
+): Promise<FoundTunnel> {
   const shared = appliedTunnelRows(
     ready.deps.hostnames,
     ctx.hostname.ingressId ?? '',
     ctx.hostname.id
   )
-  const known = readTunnelState(ownState(ctx))?.tunnelId ?? shared[0]?.state.tunnelId
-  if (known) return known
+  const known = readTunnelState(ownState(ctx)) ?? shared[0]?.state
+  if (known) return { id: known.tunnelId, name: known.tunnelName, adopted: known.adopted }
+  const behind = await tunnelBehindName(api, ready)
+  if (behind) return behind
   const name = tunnelName(ready.deps.instanceId)
   const [existing] = await api.listTunnels(ready.accountId, name)
-  if (existing) return existing.id
-  return (await api.createTunnel(ready.accountId, name)).id
+  if (existing) return { id: existing.id, name, adopted: false }
+  return { id: (await api.createTunnel(ready.accountId, name)).id, name, adopted: false }
 }
 
 function ownState(ctx: IngressContext): unknown {
@@ -192,24 +215,23 @@ async function applyWith(
   ready: Ready,
   ctx: IngressContext
 ): Promise<ApplyResult> {
-  const tunnelId = await ensureTunnel(api, ready, ctx)
-  await api.putConfiguration(
-    ready.accountId,
-    tunnelId,
-    buildPanelIngress(namesOnTunnel(ctx, ready.name))
-  )
-  const dns = await ensureDns(api, ready, tunnelId, ctx.replaceExisting === true)
+  const tunnel = await ensureTunnel(api, ready, ctx)
+  const existing = await api.getConfiguration(ready.accountId, tunnel.id)
+  const ingress = buildPanelIngress(namesOnTunnel(ctx, ready.name), existing)
+  await api.putConfiguration(ready.accountId, tunnel.id, ingress)
+  const dns = await ensureDns(api, ready, tunnel.id, ctx.replaceExisting === true)
   if ('ok' in dns) return dns
-  const runToken = await api.getTunnelToken(ready.accountId, tunnelId)
+  const runToken = await api.getTunnelToken(ready.accountId, tunnel.id)
   const pushFailed = await pushRunToken(ready.deps, runToken)
   if (pushFailed) return pushFailed
   const state: TunnelState = {
-    tunnelId,
-    tunnelName: tunnelName(ready.deps.instanceId),
+    tunnelId: tunnel.id,
+    tunnelName: tunnel.name,
     accountId: ready.accountId,
     zoneId: ready.zoneId,
     dnsRecordId: dns.id,
     createdRecord: dns.created,
+    adopted: tunnel.adopted,
     tokenPushedAt: ready.deps.now().toISOString(),
   }
   return { ok: true, state }
@@ -299,8 +321,12 @@ async function removeWith(
     await ignoreGone(() => api.deleteDnsRecord(state.zoneId, state.dnsRecordId))
   }
   const remaining = namesOnTunnel(ctx, null)
-  if (remaining.length > 0) {
-    await api.putConfiguration(state.accountId, state.tunnelId, buildPanelIngress(remaining))
+  if (remaining.length > 0 || state.adopted) {
+    // An adopted tunnel keeps running with its other rules; only our name goes.
+    const existing = await api.getConfiguration(state.accountId, state.tunnelId)
+    const dropped = [dnsName(ctx.hostname.host) ?? '']
+    const ingress = buildPanelIngress(remaining, existing, dropped)
+    await api.putConfiguration(state.accountId, state.tunnelId, ingress)
     return
   }
   // Last name on the tunnel: stop the connector first, then the tunnel can go.

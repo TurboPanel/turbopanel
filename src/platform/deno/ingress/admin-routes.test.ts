@@ -111,6 +111,7 @@ test('every ingress change is refused to an organization admin', async () => {
     ['POST', '/instance/ingress/hostnames/x/remove'],
     ['POST', '/instance/acme-dns/hostnames/x/order'],
     ['POST', '/instance/acme-dns/hostnames/x/retry'],
+    ['POST', '/instance/ingress/tunnel/refresh'],
   ]
   for (const [method, path] of writes) {
     const res = await call(app, cookie, method, path, {})
@@ -140,6 +141,7 @@ test('ingress reads answer 503 until data encryption is ready, never 500', async
     '/instance/ingress/accounts',
     '/instance/ingress/hostnames/x/status',
     '/instance/acme-dns/hostnames/x',
+    '/instance/ingress/tunnel',
   ]) {
     const res = await call(app, cookie, 'GET', path)
     assertEquals(res.status, 503, path)
