@@ -11,10 +11,10 @@ import {
  * whose installer reads `TOKEN` is live on the release channel (expand only):
  * an older installer would ignore the variable and the command would fail.
  */
-export const INSTALL_TOKEN_V2_ENV = 'TURBOPANEL_INSTALL_TOKEN_V2'
+export const INSTALL_V2_SWITCH_ENV = 'TURBOPANEL_INSTALL_TOKEN_V2'
 
 export function isInstallTokenV2Enabled(env: Record<string, string | undefined> | undefined) {
-  const value = env?.[INSTALL_TOKEN_V2_ENV]?.trim().toLowerCase()
+  const value = env?.[INSTALL_V2_SWITCH_ENV]?.trim().toLowerCase()
   return value === '1' || value === 'true'
 }
 
