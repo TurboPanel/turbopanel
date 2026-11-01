@@ -50,6 +50,8 @@
   },
   "dependencies": {
     "@duckdb/node-api": "1.5.5-r.4",
+    "@hpke/chacha20poly1305": "^1.8.0",
+    "@hpke/core": "^1.9.0",
     "@noble/hashes": "1.8.0",
     "amqplib": "^2.0.1",
     "drizzle-orm": "^0.45.2",

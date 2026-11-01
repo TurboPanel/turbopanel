@@ -25,3 +25,12 @@ sealing key, and the signed identity document served at
   exists. The admin read and the client server read model both call it.
 - **Changing `next`** (`setPanelIdentityNext`) must be followed by swapping the in-memory identity
   (`onIdentityNextChanged` in `server.ts`); the document cache re-signs when the next fingerprint changes.
+- **Sealed secrets (`hpke.ts`).** HPKE (RFC 9180) base mode, DHKEM(X25519, HKDF-SHA256),
+  ChaCha20-Poly1305, via `@hpke/core` + `@hpke/chacha20poly1305` (pure JS, no I/O at load, builds
+  the suite on first use). Envelope `{v:1, kid, enc, ct}`; `aad` is the recipient server id.
+  `/secrets/decrypt` seals its answer to the daemon's registered sealing key
+  (`src/daemon/secrets-decrypt-answer.ts`) when the daemon lists `daemon-sealed-secrets-v1`; every
+  other daemon still gets `plaintexts`, and `server.plaintext_secrets_at` records that (read by the
+  edge go-live gate). The fixed vector in `src/test-fixtures/hpke-vector.ts` is the same one the
+  daemon repo opens; change both together.
+- **Keys sent up.** `POST /tls/issued` takes exactly one of `privateKeyPem` (older daemons) or `privateKeyEnvelope`, sealed to the identity's `seal` key with the `current` key id as aad (`src/daemon/issued-private-key.ts`). `openFromSender` accepts the identity's native non-extractable X25519 key, so no seed is kept in memory. An envelope with no identity loaded answers 503; a body or envelope is never echoed or logged.

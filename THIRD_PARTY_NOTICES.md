@@ -5,8 +5,8 @@ This file is generated from the resolved dependency graph. Do not edit it by han
 Third-party components remain under their own copyright and license terms and are not relicensed by TurboPanel Control Plane's repository license (AGPL-3.0-only).
 
 <!-- lockfiles
-deno.lock sha256:db7700ec855cd8560d61b13fa462c70c192a1c83abd316c4fc57e08a18e53d47
-pnpm-lock.yaml sha256:72b5543a438ed2b16df69fe14facc16eeab5c33a37a44a27c62afabbd3d5cd43
+deno.lock sha256:38f4600f955413ef9ce8429b1f8f3e21c68553d9adf88c5b542e81ab796b74de
+pnpm-lock.yaml sha256:f882efea125e089f758e2f31348ded8cb160381b35a41063a89f434ba08af974
 -->
 
 ## Production dependencies
@@ -20,6 +20,24 @@ pnpm-lock.yaml sha256:72b5543a438ed2b16df69fe14facc16eeab5c33a37a44a27c62afabbd3
 
 - License: MIT
 - Homepage: https://github.com/duckdb/duckdb-node-neo#readme
+
+### @hpke/chacha20poly1305@1.8.0
+
+- License: MIT
+- Copyright: Ajitomi Daisuke
+- Homepage: https://github.com/dajiaji/hpke-js/tree/main/packages/chacha20poly1305#readme
+
+### @hpke/common@1.10.1
+
+- License: MIT
+- Copyright: Ajitomi Daisuke
+- Homepage: https://github.com/dajiaji/hpke-js/tree/main/common#readme
+
+### @hpke/core@1.9.0
+
+- License: MIT
+- Copyright: Ajitomi Daisuke
+- Homepage: https://github.com/dajiaji/hpke-js/tree/main/core#readme
 
 ### @ioredis/commands@1.10.0
 

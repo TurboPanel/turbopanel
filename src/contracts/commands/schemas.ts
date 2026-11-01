@@ -2029,6 +2029,12 @@ export type EnvironmentDeployPrincipalMaterial = {
    * `lib/sha512-crypt.ts`.
    */
   passwordHash?: string
+  /**
+   * The same hash as a `tpdaemon` envelope, sent instead of `passwordHash` to a
+   * daemon that lists `daemon-sealed-secrets-v1`. The daemon opens it through
+   * `/secrets/decrypt`, which answers sealed to its own key. Never both fields.
+   */
+  passwordHashEnvelope?: string
 }
 
 /**
@@ -3468,6 +3474,16 @@ function parseDeployPrincipalMaterialEntry(entry: unknown): EnvironmentDeployPri
       throw new Error('Invalid environment.deploy payload')
     }
     material.passwordHash = entry.passwordHash
+  }
+  if (entry.passwordHashEnvelope !== undefined) {
+    if (
+      entry.passwordHash !== undefined ||
+      !isString(entry.passwordHashEnvelope) ||
+      !entry.passwordHashEnvelope.startsWith(ENVELOPE_PREFIX_DAEMON)
+    ) {
+      throw new Error('Invalid environment.deploy payload')
+    }
+    material.passwordHashEnvelope = entry.passwordHashEnvelope
   }
   return material
 }

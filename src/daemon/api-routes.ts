@@ -28,6 +28,10 @@ import type { Db } from '../db/connection.ts'
 import { describeError } from '../lib/describe-error.ts'
 import { storeIssuedCertificate } from '../client/tls/issued-certificate.ts'
 import { logWarn } from '../lib/logger.ts'
+import { resolveIssuedPrivateKey } from './issued-private-key.ts'
+import { buildSecretsDecryptAnswer, databaseDecryptAnswerSource } from './secrets-decrypt-answer.ts'
+import { registerDaemonSealingKey } from './sealing-key-registration.ts'
+import { setDaemonSealingKey } from '../features/servers/daemon-sealing-key.ts'
 import { createIdentityDocumentCache } from '../lib/panel-identity/document-cache.ts'
 import { IDENTITY_SIGNATURE_HEADER } from '../lib/panel-identity/document.ts'
 import type { PanelIdentity } from '../lib/panel-identity/identity.ts'
@@ -212,6 +216,9 @@ async function readRequestBodyWithLimit(
   return { ok: true, text: new TextDecoder().decode(bodyRead.bytes) }
 }
 
+/** A sealing-key registration is three short strings. */
+const MAX_SEALING_KEY_BODY_BYTES = 1024
+
 /** Maximum number of ciphertexts accepted per `/secrets/decrypt` request. */
 export const MAX_SECRETS_DECRYPT_BATCH = 100
 
@@ -233,7 +240,7 @@ export const MAX_SECRETS_DECRYPT_BODY_BYTES = 2 * 1024 * 1024
  * (32 KiB chain + 8 KiB key at most) with JSON quoting overhead, and an
  * optional short `requestId`.
  */
-export const MAX_TLS_ISSUED_BODY_BYTES = 64 * 1024
+export const MAX_TLS_ISSUED_BODY_BYTES = 96 * 1024
 
 /** The optional `requestId` of `POST /tls/issued`: 1 to 64 characters of letters, digits, `_` and `-`. */
 function isTlsIssuedRequestId(value: unknown): value is string {
@@ -2126,7 +2133,52 @@ export function registerDaemonApiRoutes<E extends Env>(
         decryptDaemonCiphertext(secretsConfig, recipient, ciphertext)
       )
 
-      return c.json({ plaintexts }, 200)
+      // Sealed to the daemon's registered sealing key when it lists
+      // `daemon-sealed-secrets-v1`; plaintext only for older daemons.
+      const db = getDb(c)
+      return c.json(
+        await buildSecretsDecryptAnswer(
+          db && databaseDecryptAnswerSource(db),
+          daemonServerId,
+          plaintexts
+        ),
+        200
+      )
+    }
+  )
+
+  /**
+   * The daemon registers its X25519 sealing key. `sig` is the daemon's Ed25519
+   * signature over `"tp-sealing-key\n" + pub`, checked against the key on file;
+   * only the key id is ever logged.
+   */
+  daemon.post(
+    '/servers/self/sealing-key',
+    requireDaemonJwt,
+    enforceJwtRestLimit('sealing-key'),
+    requireActiveDaemonKey,
+    async (c) => {
+      const db = getDb(c)
+      if (!db) return c.json({ ok: false, error: 'storage unavailable' }, 503)
+      const bodyRead = await readBoundedJsonBody(c, MAX_SEALING_KEY_BODY_BYTES)
+      if (!bodyRead.ok) return bodyRead.response
+      let parsedBody: unknown
+      try {
+        parsedBody = JSON.parse(bodyRead.text)
+      } catch {
+        return c.json({ ok: false, error: 'invalid json' }, 400)
+      }
+      const serverId = c.get('daemonServerId')
+      const result = await registerDaemonSealingKey(
+        {
+          loadDaemonPublicJwk: async (id) =>
+            (await getServerDaemonStateByServerId(db, id))?.key.publicJwk ?? null,
+          save: (id, key) => setDaemonSealingKey(db, id, key),
+        },
+        serverId,
+        parsedBody
+      )
+      return c.json(result.body, result.status)
     }
   )
 
@@ -2150,6 +2202,7 @@ export function registerDaemonApiRoutes<E extends Env>(
         hostname?: unknown
         certificatePem?: unknown
         privateKeyPem?: unknown
+        privateKeyEnvelope?: unknown
         requestId?: unknown
       }
       try {
@@ -2157,18 +2210,15 @@ export function registerDaemonApiRoutes<E extends Env>(
       } catch {
         return c.json({ ok: false, error: 'invalid json' }, 400)
       }
-      if (
-        typeof body.hostname !== 'string' ||
-        typeof body.certificatePem !== 'string' ||
-        typeof body.privateKeyPem !== 'string'
-      ) {
-        return c.json(
-          {
-            ok: false,
-            error: 'hostname, certificatePem and privateKeyPem are required',
-          },
-          400
-        )
+      if (typeof body.hostname !== 'string' || typeof body.certificatePem !== 'string') {
+        return c.json({ ok: false, error: 'hostname and certificatePem are required' }, 400)
+      }
+      const issuedKey = await resolveIssuedPrivateKey(
+        body,
+        options.panelIdentity ? await options.panelIdentity() : null
+      )
+      if (!issuedKey.ok) {
+        return c.json({ ok: false, error: issuedKey.error }, issuedKey.status)
       }
       if (body.requestId !== undefined && !isTlsIssuedRequestId(body.requestId)) {
         return c.json({ ok: false, error: 'requestId is not valid' }, 400)
@@ -2184,7 +2234,7 @@ export function registerDaemonApiRoutes<E extends Env>(
           serverId: c.get('daemonServerId'),
           hostname: body.hostname,
           certificatePem: body.certificatePem,
-          privateKeyPem: body.privateKeyPem,
+          privateKeyPem: issuedKey.privateKeyPem,
           ...(body.requestId === undefined ? {} : { requestId: body.requestId }),
         },
         { dataEncryptionSecrets }

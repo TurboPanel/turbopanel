@@ -1,4 +1,5 @@
 import { assertEquals, assertThrows } from '@std/assert'
+import { ENVELOPE_PREFIX_DAEMON } from '../../lib/secrets/data-encryption.ts'
 import { encodeCommandEnvelope, parseCommandEnvelope } from '../../features/commands/envelope.ts'
 import {
   type FirewallReconcileCommandPayload,
@@ -2349,6 +2350,38 @@ test('parseCommandPayload round-trips a principal password hash and rejects junk
         ],
       })
     )
+  }
+})
+
+test('parseCommandPayload accepts a sealed password hash envelope, never beside the plain hash', () => {
+  const base = {
+    environmentId: 'env-1',
+    projectId: 'proj-1',
+    organizationId: 'org-1',
+    projectName: 'tp-demo',
+    composeFiles: [
+      { filename: 'compose.yaml', role: 'runtime' as const, content: 'services: {}\\n' },
+    ],
+    hostings: [],
+  }
+  const principal = { principalId: '00000000-0000-4000-8000-000000000001', username: 'appuser' }
+  const envelope = `${ENVELOPE_PREFIX_DAEMON}v1.srv.key.payload`
+  const parse = (entry: Record<string, unknown>) =>
+    parseCommandPayload('environment.deploy' as CommandType, {
+      ...base,
+      principalMaterial: [{ ...principal, ...entry }],
+    }) as { principalMaterial: { passwordHash?: string; passwordHashEnvelope?: string }[] }
+
+  assertEquals(parse({ passwordHashEnvelope: envelope }).principalMaterial[0], {
+    ...principal,
+    passwordHashEnvelope: envelope,
+  })
+  for (const bad of [
+    { passwordHashEnvelope: 'plain-text' },
+    { passwordHashEnvelope: 7 },
+    { passwordHashEnvelope: envelope, passwordHash: `$6$saltstring$${'a'.repeat(86)}` },
+  ]) {
+    assertThrows(() => parse(bad))
   }
 })
 
