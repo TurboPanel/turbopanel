@@ -24,7 +24,7 @@
   is the read-only effective `TURBOPANEL_TRUSTED_PROXY_CIDRS` list; `POST /instance/tunnel-token`
   is self-hosted only (mounted from `src/platform/deno/ingress/` through the
   `registerPlatformAdminRoutes` hook, absent on Workers) and shares
-  `dispatchInstanceTunnelToken` with the developer route (write-only; empty
+  `handleTunnelTokenRequest` (`src/developer/tunnel-token-handler.ts`) with the developer route (write-only; empty
   token tears the tunnel down); `GET/PUT /settings/signup` toggles public sign-up via
   `IS_SIGNUP_ENABLED`; `GET/PUT /settings/email` and
   `GET/PUT /settings/auth-providers` (GitHub/Google OAuth client id/secret;
