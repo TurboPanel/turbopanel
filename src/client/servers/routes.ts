@@ -1,4 +1,5 @@
 import { and, eq, inArray, sql } from 'drizzle-orm'
+import { resolvePinnedBy } from '../../lib/panel-identity/pinned-by.ts'
 import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import { nudgeTunnelRoutesAfterResponse } from '../organizations/tunnel-nudge.ts'
@@ -784,6 +785,7 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
           ...timezoneFields,
           ...hostDefaultsFields,
           licenseId: row.licenseId ?? null,
+          trustPinnedBy: resolvePinnedBy(row),
           tierPlacement: placementByServer.get(row.id) ?? null,
           layoutPaths: layoutPathsByServer.get(row.id) ?? null,
         }
@@ -1207,6 +1209,7 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
         datacenterDefaultTimezone: dcOptions?.defaultServerTimezone ?? null,
         datacenterEnforceServerTimezone: dcOptions?.enforceServerTimezone ?? false,
         licenseId: display.row.licenseId ?? null,
+        trustPinnedBy: resolvePinnedBy(display.row),
         tierPlacement,
         layoutPaths: layoutPathsByServer.get(id) ?? null,
         labels: labelRows.map((row) => ({ key: row.key, value: row.value })),

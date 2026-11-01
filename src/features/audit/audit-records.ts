@@ -107,6 +107,16 @@ export const AUDIT_ACTIONS = [
   'server.reenroll_ticket.issue',
   'server.reenroll_ticket.revoke',
   'license.key.burn',
+  'panel.identity.generated',
+  'panel.identity_next.set',
+  'panel.identity_next.clear',
+  // Written by key rotation and emergency revoke (they land with those
+  // changes); named here so the vocabulary is complete.
+  'panel.identity.rotated',
+  'panel.identity.revoked',
+  'server.panel_pin.reissued',
+  'server.panel_pin.mismatch',
+  'instance.tunnel_token.set',
 ] as const
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[number]

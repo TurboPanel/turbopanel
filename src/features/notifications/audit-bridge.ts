@@ -17,7 +17,7 @@ import { type AuditAction, type AuditEntry, recordAudit } from '../audit/audit-r
 import { emitNotification } from './emit.ts'
 import { getEmailQueue } from '../email/types.ts'
 import { resolvePublicBaseUrl } from '../install/resolve-public-base-url.ts'
-import type { NotificationContext, NotificationEvent } from './events.ts'
+import { eventScope, type NotificationContext, type NotificationEvent } from './events.ts'
 
 export const AUDIT_EVENTS: Partial<Record<AuditAction, NotificationEvent>> = {
   'server.daemon_key.revoke': 'server.daemon_key_revoked',
@@ -25,10 +25,13 @@ export const AUDIT_EVENTS: Partial<Record<AuditAction, NotificationEvent>> = {
   'grant.create': 'access.grant_created',
   'grant.delete': 'access.grant_revoked',
   'member.remove': 'access.grant_revoked',
+  'panel.identity_next.set': 'panel.identity_next_changed',
+  'panel.identity_next.clear': 'panel.identity_next_changed',
+  'server.panel_pin.mismatch': 'panel.pin_mismatch',
 }
 
 /** The non-secret facts an event renders from: the audit context plus who acted. */
-function contextFor(entry: AuditEntry, extra: NotificationContext): NotificationContext {
+export function contextFor(entry: AuditEntry, extra: NotificationContext): NotificationContext {
   const context: NotificationContext = {}
   for (const [key, value] of Object.entries(entry.context ?? {})) {
     if (
@@ -44,7 +47,7 @@ function contextFor(entry: AuditEntry, extra: NotificationContext): Notification
   return { ...context, ...extra }
 }
 
-type AuditNotifyEnv = {
+export type AuditNotifyEnv = {
   Variables: {
     db?: Db
     emailQueue?: EmailQueue
@@ -61,7 +64,8 @@ export async function recordAuditAndNotify(
   const db = c.get('db')
   await recordAudit(db, entry)
   const event = AUDIT_EVENTS[entry.action]
-  if (!event || !db || !entry.organizationId) return
+  if (!event || !db) return
+  if (eventScope(event) === 'organization' && !entry.organizationId) return
   const queue = getEmailQueue(c)
   const email = queue
     ? {

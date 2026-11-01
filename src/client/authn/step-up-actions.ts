@@ -54,4 +54,14 @@ export const STEP_UP_ACTIONS = {
   'organization.reauth_settings.update': 'Change the re-authentication setting',
 } as const
 
-export type StepUpAction = keyof typeof STEP_UP_ACTIONS
+/**
+ * Instance-wide actions (no organization, so no per-organization switch). They
+ * go through `requireInstanceStepUp`, which is always on, from the admin
+ * routes under `src/admin/` and `src/platform/deno/ingress/`.
+ */
+export const INSTANCE_STEP_UP_ACTIONS = {
+  'panel.identity_next.set': "Change the control plane's next key",
+  'instance.tunnel_token.set': 'Change the tunnel token',
+} as const
+
+export type StepUpAction = keyof typeof STEP_UP_ACTIONS | keyof typeof INSTANCE_STEP_UP_ACTIONS

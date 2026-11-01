@@ -20,3 +20,8 @@ sealing key, and the signed identity document served at
   writes the key order by hand; do not add a canonicaliser. The route returns the cached exact bytes.
 - **Workers:** the identity (imported keys) may live at isolate scope; the database client never
   does. Nothing here runs crypto at module load.
+- **Pinned-by.** `pinned-by.ts` `resolvePinnedBy` is the one place that reads a server's pin state
+  (`install | upgrade | unsafe | none`); it returns `none` until the server `trust_pinned_by` column
+  exists. The admin read and the client server read model both call it.
+- **Changing `next`** (`setPanelIdentityNext`) must be followed by swapping the in-memory identity
+  (`onIdentityNextChanged` in `server.ts`); the document cache re-signs when the next fingerprint changes.
