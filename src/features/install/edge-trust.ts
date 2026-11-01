@@ -56,9 +56,11 @@ export function providersForModes(modes: Iterable<string>): IngressProviderId[] 
   return (['cloudflare', 'bunny'] as const).filter((provider) => wanted.has(provider))
 }
 
+const byText = (a: string, b: string): number => a.localeCompare(b)
+
 function rangeList(set: EdgeRangeSet | undefined): string[] {
   if (!set) return []
-  return [...new Set([...set.v4, ...set.v6].filter(isValidCidr))].sort()
+  return [...new Set([...set.v4, ...set.v6].filter(isValidCidr))].sort(byText)
 }
 
 async function sha256Hex(text: string): Promise<string> {
@@ -74,7 +76,7 @@ export async function edgeTrustForModes(
   const providers = providersForModes(modes)
   const cloudflare = providers.includes('cloudflare') ? rangeList(state.cloudflare) : []
   const bunny = providers.includes('bunny') ? rangeList(state.bunny) : []
-  const cidrs = [...new Set([...cloudflare, ...bunny])].sort()
+  const cidrs = [...new Set([...cloudflare, ...bunny])].sort(byText)
   const hash = await sha256Hex(JSON.stringify([cloudflare, bunny]))
   return { cidrs, hash, cloudflare, bunny }
 }
@@ -105,7 +107,7 @@ export async function saveEdgeTrustState(db: Db, state: EdgeTrustState): Promise
   await upsertSettingValue(
     db,
     EDGE_TRUST_SETTING_KEY,
-    JSON.parse(JSON.stringify(state)) as Record<string, never>
+    structuredClone(state) as Record<string, never>
   )
 }
 

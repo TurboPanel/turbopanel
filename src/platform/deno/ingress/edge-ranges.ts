@@ -92,35 +92,55 @@ async function fetchProvider(
 export type EdgeRefreshDeps = { fetch?: FetchFn; now?: () => Date }
 
 /**
- * Fetch the lists the enabled modes need. A failed fetch keeps the previous
- * list and is recorded; the set never shrinks because of an error.
+ * Fetch the lists the enabled modes need into a copy of `state`. A failed
+ * fetch keeps the previous list and is recorded; the set never shrinks
+ * because of an error.
  */
-export async function refreshEdgeRanges(db: Db, deps: EdgeRefreshDeps = {}): Promise<void> {
-  const fetchFn = deps.fetch ?? fetch
-  const now = (deps.now ?? (() => new Date()))()
-  const modes = (await listInstanceHostnames(db)).map((row) => row.mode)
-  const providers = providersForModes(modes)
-  const state = await loadEdgeTrustState(db)
-  state.lastCheckedAt = now.toISOString()
-  delete state.lastError
-  for (const provider of providers) {
-    try {
-      const next = await fetchProvider(provider, state, fetchFn, now)
-      if (next === 'unchanged') {
-        const kept = state[provider]
-        if (kept) state[provider] = { ...kept, fetchedAt: now.toISOString() }
-      } else {
-        state[provider] = next
+export async function refreshedEdgeState(
+  state: EdgeTrustState,
+  modes: readonly string[],
+  fetchFn: FetchFn,
+  now: Date
+): Promise<EdgeTrustState> {
+  const next: EdgeTrustState = { ...state, lastCheckedAt: now.toISOString() }
+  delete next.lastError
+  const results = await Promise.all(
+    providersForModes(modes).map(async (provider) => {
+      try {
+        return { provider, set: await fetchProvider(provider, next, fetchFn, now) }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        return { provider, error: { provider, message, at: now.toISOString() } }
       }
-    } catch (err) {
-      state.lastError = {
-        provider,
-        message: err instanceof Error ? err.message : String(err),
-        at: now.toISOString(),
-      }
+    })
+  )
+  for (const result of results) {
+    if ('error' in result) next.lastError = result.error
+    else if (result.set !== 'unchanged') next[result.provider] = result.set
+    else if (next[result.provider]) {
+      next[result.provider] = { ...next[result.provider]!, fetchedAt: now.toISOString() }
     }
   }
-  await saveEdgeTrustState(db, state)
+  return next
+}
+
+export async function refreshEdgeRanges(db: Db, deps: EdgeRefreshDeps = {}): Promise<void> {
+  const now = (deps.now ?? (() => new Date()))()
+  const modes = (await listInstanceHostnames(db)).map((row) => row.mode)
+  const state = await loadEdgeTrustState(db)
+  await saveEdgeTrustState(db, await refreshedEdgeState(state, modes, deps.fetch ?? fetch, now))
+}
+
+/** Whether the daily refresh is due, or a needed provider has no list yet. */
+export function edgeRefreshDue(
+  state: EdgeTrustState,
+  modes: readonly string[],
+  now: Date,
+  force = false
+): boolean {
+  const last = state.lastCheckedAt ? Date.parse(state.lastCheckedAt) : 0
+  const missing = providersForModes(modes).some((provider) => !state[provider])
+  return force || missing || now.getTime() - last >= REFRESH_INTERVAL_MS
 }
 
 /**
@@ -134,12 +154,8 @@ export async function runEdgeTrustTick(
 ): Promise<void> {
   const now = (deps.now ?? (() => new Date()))()
   const state = await loadEdgeTrustState(db)
-  const last = state.lastCheckedAt ? Date.parse(state.lastCheckedAt) : 0
   const modes = (await listInstanceHostnames(db)).map((row) => row.mode)
-  const missing = providersForModes(modes).some((provider) => !state[provider])
-  if (deps.force || missing || now.getTime() - last >= REFRESH_INTERVAL_MS) {
-    await refreshEdgeRanges(db, deps)
-  }
+  if (edgeRefreshDue(state, modes, now, deps.force)) await refreshEdgeRanges(db, deps)
   const fresh = await loadEdgeTrustState(db)
   const wanted = (await edgeTrustForModes(fresh, modes)).hash
   const applied = fresh.appliedHash ?? (await emptyEdgeTrustHash())
