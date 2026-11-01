@@ -18,6 +18,7 @@ import { and, eq, gt, isNull, type SQL } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { ticket } from '../../db/schema.ts'
 import { generatePassword } from '../../lib/secrets/generate-secret.ts'
+import { mapSequential } from '../../lib/sequential.ts'
 import { hashPassword, verifyPassword } from '../../lib/secrets/password.ts'
 
 /** How long a ticket stays usable. */
@@ -146,26 +147,20 @@ const STAMP_ATTEMPTS = 3
  * compares against the consume's value finds it changed and leaves the ticket
  * spent. Bound tickets (a server recorded) are finished and left alone.
  */
-async function stampTickets(db: Db, scope: SQL): Promise<number> {
-  let live = 0
-  for (let attempt = 0; attempt < STAMP_ATTEMPTS; attempt++) {
-    const rows = await db
-      .select({ id: ticket.id, usedAt: ticket.usedAt, usedByServerId: ticket.usedByServerId })
-      .from(ticket)
-      .where(scope)
-    let raced = false
-    // A ticket with a server recorded is finished; every other one is stamped.
-    for (const row of rows.filter((entry) => entry.usedByServerId === null)) {
-      if (await stampOne(db, row)) {
-        if (row.usedAt === null) live++
-      } else {
-        raced = true
-      }
-    }
-    if (!raced) return live
-  }
-  // A ticket may still be live: the caller must not go on as if it were cancelled.
-  throw new Error('ticket stamp did not settle')
+async function stampTickets(db: Db, scope: SQL, attemptsLeft = STAMP_ATTEMPTS): Promise<number> {
+  // A ticket may still be live if this gives up: the caller must not go on as if it were cancelled.
+  if (attemptsLeft <= 0) throw new Error('ticket stamp did not settle')
+  const rows = await db
+    .select({ id: ticket.id, usedAt: ticket.usedAt, usedByServerId: ticket.usedByServerId })
+    .from(ticket)
+    .where(scope)
+  // A ticket with a server recorded is finished; every other one is stamped.
+  const pending = rows.filter((entry) => entry.usedByServerId === null)
+  const stamped = await mapSequential(pending, (row) => stampOne(db, row))
+  const live = pending.filter((row, index) => stamped[index] && row.usedAt === null).length
+  if (stamped.every(Boolean)) return live
+  // Something changed under us: read again, so the retry stamps what is left.
+  return live + (await stampTickets(db, scope, attemptsLeft - 1))
 }
 
 /** Stamp one ticket if it is still as read. False when it changed under us. */
