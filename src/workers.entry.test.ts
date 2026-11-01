@@ -8,13 +8,19 @@
 import { env } from 'cloudflare:test'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Db } from './db/connection.ts'
-import { CLIENT_API_PREFIX, GITHUB_WEBHOOK_PATH, HEALTH_PATH } from './app/surfaces.ts'
+import {
+  ADMIN_API_PREFIX,
+  CLIENT_API_PREFIX,
+  GITHUB_WEBHOOK_PATH,
+  HEALTH_PATH,
+} from './app/surfaces.ts'
 import {
   resetWorkersBindingWarningsForTests,
   setWorkersDbFactoryForTests,
 } from './platform/workers/workers-bindings.ts'
 import workers, {
   getLazyEmailQueueResolveCallsForTests,
+  getWorkerAppRoutePathsForTests,
   resetWorkerAppCachesForTests,
 } from './workers.ts'
 import { takeLastOfflineSweepScheduledTimeForTests } from './daemon/cell/offline-sweep.ts'
@@ -27,6 +33,9 @@ function mockDb(label: string): Db {
     },
   } as unknown as Db
 }
+
+/** Same predicate as `src/admin/platform-admin-routes.hostfree.test.ts`. */
+const SELF_HOSTED_ONLY_ROUTE = /\/instance\/(tunnel-token|ingress|acme-dns)/
 
 function fakeExecutionContext(): ExecutionContext & {
   waitUntilPromises: Promise<unknown>[]
@@ -119,6 +128,20 @@ describe('workers.ts entry handlers', () => {
     expect(body.ok).toBe(true)
     expect(ctx.waitUntilPromises.length).toBeGreaterThanOrEqual(1)
     await Promise.all(ctx.waitUntilPromises)
+  }, 30_000)
+
+  it('built Workers app has no self-hosted ingress or tunnel-token routes', async () => {
+    const ctx = fakeExecutionContext()
+    await workers.fetch(
+      new Request(`https://panel.example.com${HEALTH_PATH}`),
+      workersTestEnv(),
+      ctx
+    )
+    await Promise.all(ctx.waitUntilPromises)
+    const paths = getWorkerAppRoutePathsForTests()
+    // Positive control: the admin router is mounted, so an empty table cannot pass.
+    expect(paths).toContain(`${ADMIN_API_PREFIX}/instance/daemon`)
+    expect(paths.filter((path) => SELF_HOSTED_ONLY_ROUTE.test(path))).toEqual([])
   }, 30_000)
 
   it('fetch applies signup force and dev-surface env branches', async () => {

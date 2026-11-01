@@ -157,6 +157,11 @@ export function resetLazyEmailQueueResolveCallsForTests(): void {
   lazyEmailQueueResolveCallsForTests = 0
 }
 
+/** @internal Test seam: every route path registered on the cached Worker app. */
+export function getWorkerAppRoutePathsForTests(): readonly string[] {
+  return cachedApp?.routes.map((route) => route.path) ?? []
+}
+
 export function getLazyEmailQueueResolveCallsForTests(): number {
   return lazyEmailQueueResolveCallsForTests
 }

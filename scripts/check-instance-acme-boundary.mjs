@@ -60,6 +60,7 @@ function scansFor(root) {
         path.join(root, 'src/admin/public-urls-apply-payload.ts'),
         path.join(root, 'src/admin/openapi/instance-hostnames.ts'),
         path.join(root, 'src/admin/openapi/instance-access.ts'),
+        path.join(root, 'src/platform/deno/ingress'),
       ],
       tokens: INSTANCE_TOKENS,
       why: 'Instance ACME code must not reference an organization ACME opt-in',

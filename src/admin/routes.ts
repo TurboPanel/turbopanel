@@ -1,4 +1,4 @@
-import { type Context, Hono } from 'hono'
+import { type Context, Hono, type MiddlewareHandler } from 'hono'
 import type { AppEnv } from '../app/app.ts'
 import {
   createAdminAccessMiddleware,
@@ -171,6 +171,16 @@ export function registerAdminRoutes(
      * never statically imports the Stripe tier catalogue.
      */
     registerTiers?: (admin: Hono<AppEnv>) => void
+    /**
+     * Self-hosted only. `src/platform/deno/server.ts` passes the ingress
+     * registrar (`src/platform/deno/ingress/admin-routes.ts`); Workers omits
+     * it, so this registrar never imports `platform/deno`. Routes mount under
+     * the admin prefix behind the admin session middleware.
+     */
+    registerPlatformAdminRoutes?: (
+      admin: Hono<AppEnv>,
+      deps: { rootOnly: MiddlewareHandler<AppEnv> }
+    ) => void
     getOpenApiSpec?: (
       serverUrl: string,
       opts?: { devSurface?: boolean; runtime?: 'deno' | 'workers' }
@@ -316,6 +326,10 @@ export function registerAdminRoutes(
     runtime: opts.runtime,
     ...(opts.getEnv ? { getEnv: opts.getEnv } : {}),
     ...(opts.readPlatformCaBundle ? { readPlatformCaBundle: opts.readPlatformCaBundle } : {}),
+  })
+
+  opts.registerPlatformAdminRoutes?.(admin, {
+    rootOnly: createRootOnlyMiddleware(opts.secrets),
   })
 
   registerInstanceUpdatesAdminRoutes(admin, {

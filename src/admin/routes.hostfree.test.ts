@@ -1070,13 +1070,6 @@ test('instance access reads are runtime-scoped and capability-shaped', async () 
   assertEquals(unknownBody.capabilities['instance-cert-sources-per-hostname'], false)
 
   const { app, cookie } = await buildApp()
-  const tunnel = await app.request(`${ADMIN_API_PREFIX}/instance/tunnel-token`, {
-    method: 'POST',
-    headers: { Cookie: cookie, 'content-type': 'application/json' },
-    body: JSON.stringify({ token: '' }),
-  })
-  assertEquals(tunnel.status, 503)
-
   const missingCa = await app.request(`${ADMIN_API_PREFIX}/instance/platform-ca`, {
     headers: { Cookie: cookie },
   })
@@ -1391,7 +1384,6 @@ const SUPERADMIN_ONLY_SETTINGS_ROUTES: ReadonlyArray<
   { method: 'PUT', path: '/settings/email', body: { FROM: 'ops@example.com' } },
   { method: 'PUT', path: '/instance/public-urls', body: { urls: ['https://panel.example.com'] } },
   { method: 'POST', path: '/instance/public-urls/apply', body: {} },
-  { method: 'POST', path: '/instance/tunnel-token', body: { token: 'x' } },
   { method: 'PUT', path: '/instance/hostnames', body: { hostnames: [] } },
   { method: 'PUT', path: '/instance/acme', body: {} },
   { method: 'POST', path: '/instance/certificates', body: {} },
@@ -1450,12 +1442,6 @@ test('installation-wide settings writes are allowed for superadmin', async () =>
     body: JSON.stringify({ urls: ['https://panel.example.com'] }),
   })
   assertEquals(urls.status, 200)
-  const tunnel = await app.request(`${ADMIN_API_PREFIX}/instance/tunnel-token`, {
-    method: 'POST',
-    headers: { Cookie: cookie, 'content-type': 'application/json' },
-    body: JSON.stringify({ token: '' }),
-  })
-  assertEquals(tunnel.status, 503)
 })
 
 test('other org-admin routes stay open to admin role', async () => {

@@ -11,6 +11,10 @@
  *     `app/`, `cli/`).
  *   - `src/platform/deno/**` is unreachable from `src/workers.ts`.
  *   - `src/platform/workers/**` is unreachable from `src/deno.ts`.
+ *   - `src/platform/deno/ingress/**` (self-hosted-only ingress) is imported
+ *     only from `src/platform/deno/**`, `src/deno.ts` and `src/deno-dev.ts`,
+ *     never from a surface, a feature, lib or the daemon cell. Test files
+ *     are covered too.
  *
  * Usage:
  *   node scripts/check-import-boundaries.mjs
@@ -246,6 +250,23 @@ function lintPlatformReachability(failures) {
   }
 }
 
+const INGRESS_DIR = 'src/platform/deno/ingress'
+const INGRESS_IMPORTER_ALLOW = ['src/platform/deno', 'src/deno.ts', 'src/deno-dev.ts']
+
+function lintIngressIsolation(srcFiles, failures) {
+  if (!existsDir(INGRESS_DIR)) return
+  for (const rel of srcFiles) {
+    if (INGRESS_IMPORTER_ALLOW.some((allowed) => under(rel, allowed))) continue
+    for (const spec of importsOf(rel)) {
+      if (!spec.startsWith('.')) continue
+      const target = resolveSpecifier(rel, spec)
+      if (under(target, INGRESS_DIR)) {
+        failures.add(`${rel} imports self-hosted ingress module ${target}`)
+      }
+    }
+  }
+}
+
 function main() {
   const failures = new Set()
   const srcFiles = walkTs(SRC).map(posixRel)
@@ -262,6 +283,7 @@ function main() {
   if (libKernelRuleOn) lintLibKernel(srcFiles, failures)
   if (featuresSurfaceRuleOn) lintFeatureSurfaces(srcFiles, failures)
   lintPlatformReachability(failures)
+  lintIngressIsolation(srcFiles, failures)
 
   if (failures.size > 0) {
     console.error('Import boundary check failed:\n')

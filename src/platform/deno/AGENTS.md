@@ -33,3 +33,8 @@ in `src/deno-compile-permissions.test.ts` and gated by `deno task duckdb:smoke`:
   prove DB create → restart durability → Parquet round trip against the exact
   binary that ships. **Run it inside the Vagrant guest on both linux-x64 and
   linux-arm64** (`../dev/AGENTS.md` → Testing), never on the host.
+
+## Self-hosted ingress (`ingress/`)
+
+Code that only the self-hosted build may carry lives in `ingress/`; its rules
+are in [`ingress/AGENTS.md`](./ingress/AGENTS.md).
