@@ -1,4 +1,5 @@
 import type { Context, Hono } from 'hono'
+import type { PanelIdentity } from '../../lib/panel-identity/identity.ts'
 import type { AppEnv } from '../../app/app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import {
@@ -219,6 +220,20 @@ async function releaseMintLease(db: Db, lease: BillingQuantityLock | null): Prom
   }
 }
 
+/**
+ * Public values the install dialog shows beside the command, so the person
+ * installing can compare them out of band. Empty when the control plane has no
+ * identity key.
+ */
+function installKeyFields(identity: PanelIdentity | null, installUrl: string) {
+  if (!identity) return {}
+  return {
+    panelFingerprint: identity.current.kid,
+    nextFingerprint: identity.next?.kid ?? null,
+    installUrl,
+  }
+}
+
 export function registerLicenseRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
   if (!opts.secrets) {
     throw new TypeError('session secrets are required for license routes')
@@ -399,16 +414,7 @@ export function registerLicenseRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         joinId: joinTicket.id,
         joinExpiresAt: joinTicket.expiresAt,
         installCommand,
-        // Public values the install dialog shows beside the command, so the
-        // person installing can compare them out of band. Omitted when the
-        // control plane has no identity key.
-        ...(identity
-          ? {
-              panelFingerprint: identity.current.kid,
-              nextFingerprint: identity.next?.kid ?? null,
-              installUrl: instanceUrl,
-            }
-          : {}),
+        ...installKeyFields(identity, instanceUrl),
       })
     } finally {
       await releaseMintLease(db, mint.lease)

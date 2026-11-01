@@ -41,21 +41,23 @@ async function mailSuperadmins(
     const details = Object.entries(context)
       .filter(([, value]) => value !== undefined && value !== null)
       .map(([key, value]) => `${key}=${value}`)
-    for (const row of rows) {
-      await queue.enqueue({
-        type: 'notification',
-        to: row.email,
-        from,
-        event,
-        severity: eventSeverity(event),
-        title,
-        body,
-        details,
-        organizationName: null,
-        consoleUrl: null,
-        at,
-      })
-    }
+    await Promise.all(
+      rows.map((row) =>
+        queue.enqueue({
+          type: 'notification',
+          to: row.email,
+          from,
+          event,
+          severity: eventSeverity(event),
+          title,
+          body,
+          details,
+          organizationName: null,
+          consoleUrl: null,
+          at,
+        })
+      )
+    )
   } catch (error) {
     logWarn(
       'notifications',
