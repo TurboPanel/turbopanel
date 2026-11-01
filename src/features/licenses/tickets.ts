@@ -99,24 +99,35 @@ export async function checkTicket(
   return { ok: true, ticket: fields }
 }
 
-/** Atomically mark a ticket used. False when someone else used it first or it has expired. */
+/**
+ * Atomically mark a ticket used. Returns the `used_at` value it wrote (the
+ * token {@link releaseTicket} needs), or null when someone else used it first
+ * or it has expired.
+ */
 export async function consumeTicket(
   db: Db,
   id: string,
   nowMs: number = Date.now()
-): Promise<boolean> {
+): Promise<string | null> {
   const now = new Date(nowMs).toISOString()
   const rows = await db
     .update(ticket)
     .set({ usedAt: now })
     .where(and(eq(ticket.id, id), isNull(ticket.usedAt), gt(ticket.expiresAt, now)))
     .returning({ id: ticket.id })
-  return rows.length > 0
+  return rows.length > 0 ? now : null
 }
 
-/** Put a consumed ticket back when the enrolment it was spent on wrote nothing. */
-export async function releaseTicket(db: Db, id: string): Promise<void> {
-  await db.update(ticket).set({ usedAt: null, usedByServerId: null }).where(eq(ticket.id, id))
+/**
+ * Put a consumed ticket back when the enrolment it was spent on wrote nothing.
+ * Compare-and-swap on `used_at`: only the value {@link consumeTicket} wrote is
+ * undone, so a revoke or reissue that touched the ticket since stays in force.
+ */
+export async function releaseTicket(db: Db, id: string, consumedAt: string): Promise<void> {
+  await db
+    .update(ticket)
+    .set({ usedAt: null, usedByServerId: null })
+    .where(and(eq(ticket.id, id), eq(ticket.usedAt, consumedAt)))
 }
 
 /** Record which server a consumed ticket produced. */
@@ -130,6 +141,16 @@ export async function revokeServerTickets(db: Db, serverId: string): Promise<num
     .update(ticket)
     .set({ usedAt: new Date().toISOString() })
     .where(and(eq(ticket.serverId, serverId), isNull(ticket.usedAt)))
+    .returning({ id: ticket.id })
+  return rows.length
+}
+
+/** Cancel every unused join ticket of a key (a burn replaces them). Returns how many. */
+export async function cancelLicenseTickets(db: Db, licenseId: string): Promise<number> {
+  const rows = await db
+    .update(ticket)
+    .set({ usedAt: new Date().toISOString() })
+    .where(and(eq(ticket.licenseId, licenseId), isNull(ticket.usedAt)))
     .returning({ id: ticket.id })
   return rows.length
 }

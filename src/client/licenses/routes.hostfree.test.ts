@@ -13,6 +13,7 @@
  * operator deletes the server first.
  */
 
+import { eq } from 'drizzle-orm'
 import { assertEquals, assertExists, assertThrows } from '@std/assert'
 import { Hono } from 'hono'
 import type { Context } from 'hono'
@@ -65,6 +66,12 @@ import { COLOCATED_SERVER_DISPLAY_NAME } from '../authn/install-state.ts'
 import { deriveSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 import { registerLicenseRoutes } from './routes.ts'
+import {
+  checkTicket,
+  consumeTicket,
+  mintTicket,
+  releaseTicket,
+} from '../../features/licenses/tickets.ts'
 import { registerServerReenrollTicketRoutes } from '../servers/reenroll-ticket-routes.ts'
 import { tierSeatExhaustionMessage } from './routes-helpers.ts'
 import { LICENSE_KEY_UNUSED_TTL_DAYS } from '../../features/licenses/key-expiry.ts'
@@ -806,6 +813,42 @@ test('issuing a re-enroll ticket and burning a key need step-up when the organiz
   // Refused before anything changed.
   assertEquals(db.rows(ticket).length, 0)
   assertEquals(db.rows(license).find((row) => row.id === L_ACTIVE)?.token, 'hashed')
+})
+
+test('a burn cancels the join tickets issued before it', async () => {
+  const { app, headers, db } = await buildApp({ seats: [{ tierId: S3, quantity: 2 }] })
+  const minted = await mint(app, headers, { name: 'edge-1' })
+  assertEquals(minted.status, 200)
+  const first = (await minted.json()) as { licenseId: string; joinId: string; licenseToken: string }
+  assertEquals((await checkTicket(db, first.joinId, first.licenseToken)).ok, true)
+
+  const burn = await app.request(`/licenses/${first.licenseId}/ticket`, { method: 'POST', headers })
+  assertEquals(burn.status, 200)
+  const second = (await burn.json()) as { joinId: string; licenseToken: string }
+
+  assertEquals(await checkTicket(db, first.joinId, first.licenseToken), {
+    ok: false,
+    reason: 'used',
+  })
+  assertEquals((await checkTicket(db, second.joinId, second.licenseToken)).ok, true)
+})
+
+test('releaseTicket only undoes the use it was given: a revoke made since stays in force', async () => {
+  const { db } = await buildApp()
+  const issued = await mintTicket(db, { organizationId: ORG, licenseId: L_ACTIVE })
+  const consumedAt = await consumeTicket(db, issued.id, Date.parse(NOW))
+  assertEquals(consumedAt, NOW)
+
+  // Someone revokes (or reissues) after the consume: a later used_at value.
+  const revokedAt = '2026-09-07T12:00:05.000Z'
+  await db.update(ticket).set({ usedAt: revokedAt }).where(eq(ticket.id, issued.id))
+  await releaseTicket(db, issued.id, NOW)
+  assertEquals(db.rows(ticket).find((row) => row.id === issued.id)?.usedAt, revokedAt)
+
+  // With nothing in between, the release puts the ticket back.
+  await db.update(ticket).set({ usedAt: consumedAt }).where(eq(ticket.id, issued.id))
+  await releaseTicket(db, issued.id, NOW)
+  assertEquals(db.rows(ticket).find((row) => row.id === issued.id)?.usedAt ?? null, null)
 })
 
 test('re-enroll tickets: an owner issues one per server, a new one retires the old, DELETE revokes', async () => {

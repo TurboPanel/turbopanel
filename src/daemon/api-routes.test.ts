@@ -1516,6 +1516,30 @@ test('POST /enroll keeps a revoked key revoked even with a valid re-enroll ticke
   })
 })
 
+test('POST /enroll asks for the server id when a re-enroll ticket comes without one', async () => {
+  await withEnrollFixture(async ({ db, app, organizationId, serverId, machineKey, hostname }) => {
+    const reenroll = await mintTicket(db, { organizationId, serverId })
+    const response = await postEnroll(app, {
+      licenseId: reenroll.id,
+      licenseToken: reenroll.plaintext,
+      machineKey,
+      hostname,
+      key: await generateKeyMaterial(),
+    })
+    assertEquals(response.status, 400)
+    assertEquals(
+      ((await response.json()) as { error: string }).error,
+      'This ticket is for re-enrolling a specific server; include its server id'
+    )
+    // Refused before the ticket was spent.
+    const [row] = await db
+      .select({ usedAt: ticket.usedAt })
+      .from(ticket)
+      .where(eq(ticket.id, reenroll.id))
+    assertEquals(row?.usedAt, null)
+  })
+})
+
 test('POST /enroll replaces a lost key with an owner-issued re-enroll ticket, once, for that server only', async () => {
   await withEnrollFixture(async ({ db, app, organizationId, serverId, machineKey, hostname }) => {
     const reenroll = await mintTicket(db, { organizationId, serverId })
