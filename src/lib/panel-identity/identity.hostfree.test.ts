@@ -51,3 +51,12 @@ test('a malformed binding throws an error naming the binding', async () => {
     assert(!err.message.includes('priv":'), 'error must not echo the value')
   }
 })
+
+test('a non-JSON binding that starts like a seed does not echo any of it', async () => {
+  const seedLike = 'AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-AbCdEfGhIjKlMnOp'
+  const err = await assertRejects(() => resolvePanelIdentityFromBinding(seedLike), Error)
+  assertEquals(err.message, 'TURBOPANEL_IDENTITY_KEYS is malformed: not valid JSON')
+  for (let i = 0; i + 4 <= 16; i += 1) {
+    assert(!err.message.includes(seedLike.slice(i, i + 4)))
+  }
+})

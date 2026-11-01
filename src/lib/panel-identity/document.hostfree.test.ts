@@ -77,8 +77,10 @@ test('a lifetime over 30 days is refused', async () => {
   doc.expires = new Date(NOW.getTime() + IDENTITY_DOCUMENT_TTL_MS + 1000).toISOString()
   const body = serializeIdentityDocument(doc)
   const { signature } = await signIdentityDocument(identity, URLS, NOW)
-  const result = await verifyIdentityResponse(body, signature)
-  assertEquals(result.ok, false)
+  assertEquals(await verifyIdentityResponse(body, signature), {
+    ok: false,
+    reason: 'lifetime is longer than 30 days',
+  })
 })
 
 test('the cache re-signs after a week, when the urls change, and not otherwise', async () => {

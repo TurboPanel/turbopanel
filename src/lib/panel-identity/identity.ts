@@ -63,8 +63,17 @@ function parseNext(value: unknown): { kid: string } | null {
   return { kid: value.kid }
 }
 
+/** JSON.parse with a fixed message: the engine's own message echoes the first characters of the input, which may be key material. */
+function parseJsonFixedError(raw: string): unknown {
+  try {
+    return JSON.parse(raw)
+  } catch {
+    throw new TypeError('not valid JSON')
+  }
+}
+
 function parseBindingJson(raw: string): IdentityBindingJson {
-  const parsed: unknown = JSON.parse(raw)
+  const parsed = parseJsonFixedError(raw)
   if (!isRecord(parsed)) {
     throw new TypeError('must be a JSON object')
   }
@@ -160,7 +169,7 @@ async function openStored(
   stored: StoredIdentityValue,
   secrets: DerivedSecretsConfig
 ): Promise<PanelIdentity> {
-  const seeds: unknown = JSON.parse(await decryptSecret(secrets, stored.sealed))
+  const seeds = parseJsonFixedError(await decryptSecret(secrets, stored.sealed))
   if (!isRecord(seeds)) {
     throw new TypeError(`${PANEL_IDENTITY_SETTING_KEY} seeds are malformed`)
   }

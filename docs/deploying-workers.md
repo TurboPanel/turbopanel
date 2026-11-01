@@ -133,8 +133,8 @@ pnpm wrangler secret put TURBOPANEL_IDENTITY_KEYS --env testing < identity-keys.
 rm identity-keys.json
 ```
 
-Record the current fingerprint (43 characters, public) in the Master Sheet,
-not in git. The offline `next` key: run
+Record the current fingerprint (43 characters, public) where the owner keeps
+deploy records, not in git. The offline `next` key: run
 `node scripts/generate-identity-key.mjs --next-only`, keep the printed seed
 offline, and re-run the first command with `--next <fingerprint>` to publish
 only its fingerprint. Self-hosted panels generate their key on first start and
