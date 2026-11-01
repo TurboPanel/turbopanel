@@ -105,11 +105,29 @@ export function buildLicenseSchemas(installCommandDescription: string) {
         licenseId: { type: 'string' },
         licenseToken: {
           type: 'string',
-          description: 'Shown once at creation; not stored in plaintext.',
+          description:
+            'The one-hour join secret the install command carries (the key itself has no token); shown once, stored hashed.',
         },
+        joinId: { type: 'string', format: 'uuid', description: 'Id of the join ticket.' },
+        joinExpiresAt: { type: 'string', format: 'date-time' },
         installCommand: {
           type: 'string',
           description: installCommandDescription,
+        },
+      },
+    },
+    TicketResponse: {
+      type: 'object',
+      required: ['licenseToken', 'licenseArg'],
+      properties: {
+        licenseToken: {
+          type: 'string',
+          description: 'One-hour, single-use secret; shown once, stored hashed.',
+        },
+        licenseArg: {
+          type: 'string',
+          description:
+            'The value the installer takes as TURBOPANEL_LICENSE (id and secret, base64url).',
         },
       },
     },
@@ -440,6 +458,54 @@ export function buildLicensePaths(_installCommandDescription: string): Record<st
               },
             },
           },
+        },
+      },
+    },
+    '/api/client/v1/licenses/{id}/ticket': {
+      post: {
+        tags: ['Licenses'],
+        summary: 'Burn an unbound key and issue a fresh join ticket',
+        description:
+          'Owner action for a key whose token may have crossed an edge: burns its old token and issues a one-hour, single-use join ticket for the same unbound key.',
+        security: [{ cookieAuth: [] }],
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: {
+          '200': {
+            description: 'Fresh ticket',
+            content: {
+              'application/json': { schema: { $ref: '#/components/schemas/TicketResponse' } },
+            },
+          },
+          '404': { description: 'Key not found, already bound or revoked' },
+        },
+      },
+    },
+    '/api/client/v1/servers/{id}/reenroll-ticket': {
+      post: {
+        tags: ['Licenses'],
+        summary: 'Issue a re-enroll ticket for one server',
+        description:
+          'Owner only. A one-hour, single-use ticket bound to this server that lets it replace a lost daemon key once. Issuing a new one retires any unused ticket.',
+        security: [{ cookieAuth: [] }],
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: {
+          '200': {
+            description: 'Ticket issued',
+            content: {
+              'application/json': { schema: { $ref: '#/components/schemas/TicketResponse' } },
+            },
+          },
+          '404': { description: 'Server not found' },
+        },
+      },
+      delete: {
+        tags: ['Licenses'],
+        summary: 'Revoke unused re-enroll tickets for a server',
+        security: [{ cookieAuth: [] }],
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: {
+          '200': { description: 'Unused tickets revoked' },
+          '404': { description: 'Server not found' },
         },
       },
     },

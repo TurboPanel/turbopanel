@@ -605,10 +605,30 @@ async function enrollWithKey(
   credential: Exclude<EnrollCredential, { kind: 'reenroll' }>,
   params: EnrollParams
 ): Promise<EnrollOutcome> {
-  const { licenseId, verified } = credential
   const joinTicket = credential.kind === 'join' ? credential.ticket : null
   if (joinTicket && !(await consumeTicket(db, joinTicket.id))) return INVALID_LICENSE_RESULT
+  try {
+    const enrolled = await bindKeyToEnrollment(db, credential, params, joinTicket !== null)
+    if (!enrolled.ok && joinTicket) await releaseTicket(db, joinTicket.id).catch(() => {})
+    if (enrolled.ok && joinTicket) {
+      await recordTicketServer(db, joinTicket.id, enrolled.serverId).catch(() => {})
+    }
+    return enrolled
+  } catch (err) {
+    // A failure that wrote nothing must not spend the one-hour ticket.
+    if (joinTicket) await releaseTicket(db, joinTicket.id).catch(() => {})
+    throw err
+  }
+}
 
+/** The key side of an enrolment once any ticket is spent: record, gate, bind, erase, announce. */
+async function bindKeyToEnrollment(
+  db: Db,
+  credential: Exclude<EnrollCredential, { kind: 'reenroll' }>,
+  params: EnrollParams,
+  viaTicket: boolean
+): Promise<EnrollOutcome> {
+  const { licenseId, verified } = credential
   // The key's token and the daemon's signature both check out: its server
   // is being provisioned. Recorded before the tier gate, so a refused
   // enrol still reads as "provisioning" rather than as an unused key whose
@@ -620,20 +640,16 @@ async function enrollWithKey(
     await syncSelfHostedGrantForLicense(db, licenseId)
   }
 
-  const wasUnbound = joinTicket !== null || (await isLicenseUnbound(db, licenseId))
+  const wasUnbound = viaTicket || (await isLicenseUnbound(db, licenseId))
   const enrolled = await finalizeDaemonEnrollment(db, {
     ...params,
     licenseId,
     verifiedLicense: verified,
   })
-  if (!enrolled.ok) {
-    if (joinTicket) await releaseTicket(db, joinTicket.id).catch(() => {})
-    return enrolled
-  }
+  if (!enrolled.ok) return enrolled
   // Bound now: `license.server_id` carries it from here.
   await clearLicenseEnrollAttempt(db, licenseId).catch(() => {})
   await eraseLicenseToken(db, licenseId).catch(() => {})
-  if (joinTicket) await recordTicketServer(db, joinTicket.id, enrolled.serverId).catch(() => {})
   if (wasUnbound) await announceNewServer(db, params, enrolled.serverId)
   return enrolled
 }
