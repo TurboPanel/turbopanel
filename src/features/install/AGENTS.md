@@ -2,6 +2,15 @@
 
 ### Instance hostnames and instance ACME
 
+**DNS-01 source (self-hosted).** `dns-01` is a fourth `origin.source`: the
+control plane orders the certificate itself (`src/platform/deno/ingress/dns01/`)
+and points `uploaded_cert_id` at the issued `certificate` row (`kind='dns-01'`).
+A rewrite of the hostname list keeps that pair and `acme_state`; a request body
+never sets them. `effectiveCertificateSource` maps the row to `uploaded` while
+the pair is live and to `platform-ca` before the first one and after expiry;
+the apply payload, install trust and the `/instance/ca` decision all use it,
+so the daemon needs no new wire value.
+
 The control plane's own names live on `origin` (export `instanceHostname`),
 not in an organization's `tls` rows. Each row stores the normalized public URL
 entry plus a certificate source: `platform-ca` (the Platform CA leaf Ansible

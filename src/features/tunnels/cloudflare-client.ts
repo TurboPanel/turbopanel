@@ -28,7 +28,20 @@ export type CloudflareIngressRule = {
   originRequest?: Record<string, unknown>
 }
 export type CloudflareTokenVerify = { id?: string; status?: string; expires_on?: string }
-export type CloudflareDnsRecord = { id: string; name?: string }
+export type CloudflareDnsRecord = {
+  id: string
+  name?: string
+  type?: string
+  content?: string
+  proxied?: boolean
+}
+export type CloudflareTunnelStatus = 'inactive' | 'degraded' | 'healthy' | 'down'
+export type CloudflareTunnelDetail = {
+  id: string
+  name: string
+  status?: CloudflareTunnelStatus
+  connections?: { colo_name?: string; opened_at?: string }[]
+}
 export type CloudflareOriginCertificate = {
   id: string
   certificate?: string
@@ -244,6 +257,22 @@ export class CloudflareClient {
     )
   }
 
+  /** Tunnels of the account that are not deleted, optionally only those with this exact name. */
+  listTunnels(accountId: string, name?: string): Promise<CloudflareTunnelDetail[]> {
+    const byName = name ? `&name=${encodeURIComponent(name)}` : ''
+    return this.#list<CloudflareTunnelDetail>(
+      `/accounts/${encodeURIComponent(accountId)}/cfd_tunnel?is_deleted=false${byName}`
+    )
+  }
+
+  /** One tunnel with its health (`status`) and live connector connections. */
+  getTunnel(accountId: string, tunnelId: string): Promise<CloudflareTunnelDetail> {
+    return this.#call(
+      'GET',
+      `/accounts/${encodeURIComponent(accountId)}/cfd_tunnel/${encodeURIComponent(tunnelId)}`
+    )
+  }
+
   async deleteTunnel(accountId: string, tunnelId: string): Promise<void> {
     await this.#call(
       'DELETE',
@@ -262,6 +291,26 @@ export class CloudflareClient {
       proxied: true,
       ttl: 1,
     })
+  }
+
+  /** Every record of the zone with this exact name, of any type. */
+  listDnsRecords(zoneId: string, name: string): Promise<CloudflareDnsRecord[]> {
+    return this.#list<CloudflareDnsRecord>(
+      `/zones/${encodeURIComponent(zoneId)}/dns_records?name=${encodeURIComponent(name)}`
+    )
+  }
+
+  /** Replace one record with a proxied CNAME, for taking over a name the operator agreed to replace. */
+  putDnsRecord(
+    zoneId: string,
+    recordId: string,
+    record: { name: string; content: string }
+  ): Promise<CloudflareDnsRecord> {
+    return this.#call(
+      'PUT',
+      `/zones/${encodeURIComponent(zoneId)}/dns_records/${encodeURIComponent(recordId)}`,
+      { type: 'CNAME', name: record.name, content: record.content, proxied: true, ttl: 1 }
+    )
   }
 
   async deleteDnsRecord(zoneId: string, recordId: string): Promise<void> {

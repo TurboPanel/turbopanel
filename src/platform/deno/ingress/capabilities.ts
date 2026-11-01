@@ -21,7 +21,7 @@ export const INGRESS_CAPABILITIES: Readonly<Record<IngressMode, IngressCapabilit
     heartbeatSeconds: 60,
     idleLimitSeconds: null,
     ...NO_ACCOUNT,
-    allowedCertificateSources: ['platform-ca', 'uploaded', 'lets-encrypt'],
+    allowedCertificateSources: ['platform-ca', 'uploaded', 'lets-encrypt', 'dns-01'],
     isEdge: false,
   },
   'lan-only': {
@@ -35,12 +35,12 @@ export const INGRESS_CAPABILITIES: Readonly<Record<IngressMode, IngressCapabilit
     heartbeatSeconds: 60,
     idleLimitSeconds: null,
     ...NO_ACCOUNT,
-    allowedCertificateSources: ['platform-ca', 'uploaded'],
+    allowedCertificateSources: ['platform-ca', 'uploaded', 'dns-01'],
     isEdge: false,
   },
   'cloudflare-tunnel': {
     mode: 'cloudflare-tunnel',
-    implemented: false,
+    implemented: true,
     originMustBePublic: false,
     visitorCertificateIssuer: 'edge',
     originCertificate: 'optional',
@@ -50,7 +50,7 @@ export const INGRESS_CAPABILITIES: Readonly<Record<IngressMode, IngressCapabilit
     idleLimitSeconds: 100,
     apiDriven: 'token',
     provider: 'cloudflare',
-    allowedCertificateSources: ['platform-ca', 'uploaded'],
+    allowedCertificateSources: ['platform-ca', 'uploaded', 'dns-01'],
     isEdge: true,
   },
   'cloudflare-proxy': {
@@ -65,7 +65,7 @@ export const INGRESS_CAPABILITIES: Readonly<Record<IngressMode, IngressCapabilit
     idleLimitSeconds: 100,
     apiDriven: 'token',
     provider: 'cloudflare',
-    allowedCertificateSources: ['uploaded'],
+    allowedCertificateSources: ['uploaded', 'dns-01'],
     isEdge: true,
   },
   'bunny-proxy': {
@@ -80,7 +80,7 @@ export const INGRESS_CAPABILITIES: Readonly<Record<IngressMode, IngressCapabilit
     idleLimitSeconds: null,
     apiDriven: 'account-key',
     provider: 'bunny',
-    allowedCertificateSources: ['uploaded'],
+    allowedCertificateSources: ['uploaded', 'dns-01'],
     isEdge: true,
   },
   'private-overlay': {
@@ -94,7 +94,7 @@ export const INGRESS_CAPABILITIES: Readonly<Record<IngressMode, IngressCapabilit
     heartbeatSeconds: 60,
     idleLimitSeconds: null,
     ...NO_ACCOUNT,
-    allowedCertificateSources: ['platform-ca', 'uploaded'],
+    allowedCertificateSources: ['platform-ca', 'uploaded', 'dns-01'],
     isEdge: false,
   },
   passthrough: {
@@ -108,7 +108,7 @@ export const INGRESS_CAPABILITIES: Readonly<Record<IngressMode, IngressCapabilit
     heartbeatSeconds: 25,
     idleLimitSeconds: null,
     ...NO_ACCOUNT,
-    allowedCertificateSources: ['uploaded'],
+    allowedCertificateSources: ['uploaded', 'dns-01'],
     isEdge: true,
   },
 }

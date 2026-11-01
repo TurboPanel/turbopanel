@@ -6390,28 +6390,34 @@ export const setting = pgTable(
  * `key_pem` is a sealed `tpsecret` envelope. This is instance TLS material,
  * never an organization `tls` row.
  */
-export const instanceUploadedCertificate = pgTable('certificate', {
-  id: uuid()
-    .default(sql`uuidv7()`)
-    .primaryKey()
-    .notNull(),
-  createdAt: timestamp('created_at', {
-    precision: 3,
-    withTimezone: true,
-    mode: 'string',
-  })
-    .defaultNow()
-    .notNull(),
-  label: text().notNull(),
-  certPem: text('cert_pem').notNull(),
-  keyPem: text('key_pem').notNull(),
-  dnsNames: jsonb('dns_names').notNull(),
-  notAfter: timestamp('not_after', {
-    precision: 3,
-    withTimezone: true,
-    mode: 'string',
-  }).notNull(),
-})
+export const instanceUploadedCertificate = pgTable(
+  'certificate',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .notNull(),
+    label: text().notNull(),
+    certPem: text('cert_pem').notNull(),
+    keyPem: text('key_pem').notNull(),
+    dnsNames: jsonb('dns_names').notNull(),
+    notAfter: timestamp('not_after', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }).notNull(),
+    /** `uploaded` (an operator's pair) or `dns-01` (issued by the control plane for its own name). */
+    kind: text().default('uploaded').notNull(),
+  },
+  () => [check('certificate_kind_check', sql`kind IN ('uploaded', 'dns-01')`)]
+)
 /**
  * Install-level provider account for the panel's own hostnames (tunnel, DNS,
  * certificates). Not an organization carrier: `token_envelope` is a sealed
@@ -6495,7 +6501,7 @@ export const instanceHostname = pgTable(
       .notNull(),
     /** Normalized public URL entry (`parsePublicUrlEntries` form). */
     host: text().notNull(),
-    /** `platform-ca` | `uploaded` | `lets-encrypt` */
+    /** `platform-ca` | `uploaded` | `lets-encrypt` | `dns-01` */
     source: text().notNull(),
     uploadedCertId: uuid('uploaded_cert_id'),
     acmeLastAttemptAt: timestamp('acme_last_attempt_at', {
@@ -6518,6 +6524,8 @@ export const instanceHostname = pgTable(
     /** Provider account an edge mode uses; NULL for `direct` and `lan-only`. */
     ingressId: uuid('ingress_id'),
     ingressState: jsonb('ingress_state'),
+    /** DNS-01 order and renewal progress for a `dns-01` name; holds no key or token. */
+    acmeState: jsonb('acme_state'),
   },
   (table) => [
     unique('origin_host_unique').on(table.host),
@@ -6544,7 +6552,10 @@ export const instanceHostname = pgTable(
     uniqueIndex('uniq_origin_primary')
       .on(table.isPrimary)
       .where(sql`is_primary`),
-    check('origin_source_check', sql`source IN ('platform-ca', 'uploaded', 'lets-encrypt')`),
+    check(
+      'origin_source_check',
+      sql`source IN ('platform-ca', 'uploaded', 'lets-encrypt', 'dns-01')`
+    ),
     check(
       'origin_uploaded_cert_check',
       sql`(source <> 'uploaded') OR (uploaded_cert_id IS NOT NULL)`
@@ -6973,7 +6984,7 @@ export const notificationRule = pgTable(
   (table) => [
     check(
       'rule_event_check',
-      sql`event IN ('*', 'server.offline', 'fleet.mass_disconnect', 'server.deleted', 'server.daemon_key_revoked', 'access.grant_created', 'access.grant_revoked', 'certificate.renewal_failed', 'folder.orphans_found', 'server.repo_key_changed', 'server.enrolled', 'server.key_replaced', 'panel.identity_next_changed', 'panel.pin_mismatch')`
+      sql`event IN ('*', 'server.offline', 'fleet.mass_disconnect', 'server.deleted', 'server.daemon_key_revoked', 'access.grant_created', 'access.grant_revoked', 'certificate.renewal_failed', 'folder.orphans_found', 'server.repo_key_changed', 'server.enrolled', 'server.key_replaced', 'panel.identity_next_changed', 'panel.pin_mismatch', 'certificate.expiring')`
     ),
     check('rule_min_severity_check', sql`min_severity IN ('info', 'warning', 'critical')`),
     uniqueIndex('uniq_rule_channel_event').on(table.channelId, table.event),
@@ -7028,7 +7039,7 @@ export const notification = pgTable(
   (table) => [
     check(
       'notification_event_check',
-      sql`event IN ('server.offline', 'fleet.mass_disconnect', 'server.deleted', 'server.daemon_key_revoked', 'access.grant_created', 'access.grant_revoked', 'certificate.renewal_failed', 'folder.orphans_found', 'server.repo_key_changed', 'server.enrolled', 'server.key_replaced', 'panel.identity_next_changed', 'panel.pin_mismatch')`
+      sql`event IN ('server.offline', 'fleet.mass_disconnect', 'server.deleted', 'server.daemon_key_revoked', 'access.grant_created', 'access.grant_revoked', 'certificate.renewal_failed', 'folder.orphans_found', 'server.repo_key_changed', 'server.enrolled', 'server.key_replaced', 'panel.identity_next_changed', 'panel.pin_mismatch', 'certificate.expiring')`
     ),
     check('notification_severity_check', sql`severity IN ('info', 'warning', 'critical')`),
     index('idx_notification_user_created').on(table.userId, table.createdAt.desc()),
@@ -7100,7 +7111,7 @@ export const notificationDelivery = pgTable(
   (table) => [
     check(
       'attempt_event_check',
-      sql`event IN ('server.offline', 'fleet.mass_disconnect', 'server.deleted', 'server.daemon_key_revoked', 'access.grant_created', 'access.grant_revoked', 'certificate.renewal_failed', 'folder.orphans_found', 'server.repo_key_changed', 'server.enrolled', 'server.key_replaced', 'panel.identity_next_changed', 'panel.pin_mismatch')`
+      sql`event IN ('server.offline', 'fleet.mass_disconnect', 'server.deleted', 'server.daemon_key_revoked', 'access.grant_created', 'access.grant_revoked', 'certificate.renewal_failed', 'folder.orphans_found', 'server.repo_key_changed', 'server.enrolled', 'server.key_replaced', 'panel.identity_next_changed', 'panel.pin_mismatch', 'certificate.expiring')`
     ),
     check('attempt_severity_check', sql`severity IN ('info', 'warning', 'critical')`),
     check(

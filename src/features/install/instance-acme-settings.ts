@@ -30,6 +30,14 @@ export const LETS_ENCRYPT_DIRECTORY_URL = 'https://acme-v02.api.letsencrypt.org/
 export const LETS_ENCRYPT_STAGING_DIRECTORY_URL =
   'https://acme-staging-v02.api.letsencrypt.org/directory'
 
+/**
+ * `setting` key of the control plane's own ACME account for DNS-01 orders
+ * (self-hosted): `{ v: 1, directory, kid, sealed }`, the account key PEM
+ * sealed as a `tpsecret` in `sealed`. One directory at a time; a change of
+ * directory makes a new account. Swept by the re-encrypt stage `identity`.
+ */
+export const INSTANCE_ACME_ACCOUNT_SETTING_KEY = 'INSTANCE_ACME_ACCOUNT'
+
 /** Human refusal when `TOS_ACCEPTED` is not true. The daemon repeats the sentence. */
 export const INSTANCE_ACME_TOS_NOT_ACCEPTED_MESSAGE = "Let's Encrypt terms have not been accepted"
 

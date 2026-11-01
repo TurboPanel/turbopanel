@@ -14,6 +14,7 @@ import {
   backupTarget,
   forge,
   gitConnection,
+  ingressAccount,
   instanceUploadedCertificate,
   monitor,
   organization,
@@ -28,6 +29,7 @@ import {
 import { SYSTEM_AUTH_PROVIDERS_DB_KEY } from '../features/settings/auth-provider-settings.ts'
 import { ALERT_WEBHOOK_URL_KEY } from '../features/alerts/alert-webhook-settings.ts'
 import { SYSTEM_EMAIL_DB_KEY } from '../features/settings/email-settings.ts'
+import { INSTANCE_ACME_ACCOUNT_SETTING_KEY } from '../features/install/instance-acme-settings.ts'
 import { TEST_ONLY_TURBOPANEL_SECRET } from '../test-fixtures/secrets.ts'
 import {
   endReencryptSweep,
@@ -261,7 +263,8 @@ async function installIsolatedFixtureSchema(tx: Db, schemaName: string): Promise
       cert_pem text NOT NULL,
       key_pem text NOT NULL,
       dns_names jsonb NOT NULL,
-      not_after timestamptz(3) NOT NULL
+      not_after timestamptz(3) NOT NULL,
+      kind text DEFAULT 'uploaded' NOT NULL
     )
   `)
   )
@@ -269,6 +272,7 @@ async function installIsolatedFixtureSchema(tx: Db, schemaName: string): Promise
   await tx.execute(sql.raw('CREATE TABLE monitor (LIKE public.monitor INCLUDING DEFAULTS)'))
   await tx.execute(sql.raw('CREATE TABLE relay (LIKE public.relay INCLUDING DEFAULTS)'))
   await tx.execute(sql.raw('CREATE TABLE destination (LIKE public.destination INCLUDING DEFAULTS)'))
+  await tx.execute(sql.raw('CREATE TABLE ingress (LIKE public.ingress INCLUDING DEFAULTS)'))
 }
 
 async function withIsolatedFixture(
@@ -1034,6 +1038,44 @@ test('reencryptAtRestSecrets reseals uploaded control-plane certificate keys', a
     // Plaintext and a daemon-bound envelope are not valid at rest: left as-is (counted failed).
     assertEquals(await keyOf(plainId), 'plaintext-key-never-migrated')
     assertEquals(await keyOf(daemonId), daemonBound)
+  })
+})
+
+test('reencryptAtRestSecrets reseals ingress.token_envelope and the INSTANCE_ACME_ACCOUNT setting', async () => {
+  const v1 = await createV1OnlySecrets()
+  const rotated = await createRotatedSecrets()
+  const providerValue = 'provider-value-sealed-under-v1'
+  const accountKey = 'acme-account-key-sealed-under-v1'
+  const tokenEnvelope = await encryptSecret(v1, providerValue)
+  const accountEnvelope = await encryptSecret(v1, accountKey)
+
+  await withIsolatedFixture('reencrypt_ingress', async (scoped) => {
+    const [account] = await scoped
+      .insert(ingressAccount)
+      .values({ provider: 'cloudflare', label: 'fixture', tokenEnvelope })
+      .returning({ id: ingressAccount.id })
+    await scoped.insert(setting).values({
+      key: INSTANCE_ACME_ACCOUNT_SETTING_KEY,
+      value: { v: 1, directory: 'https://ca.test/directory', kid: null, sealed: accountEnvelope },
+    })
+
+    await reencryptAtRestSecretsToCompletion(scoped, rotated)
+
+    const [row] = await scoped
+      .select({ envelope: ingressAccount.tokenEnvelope })
+      .from(ingressAccount)
+      .where(eq(ingressAccount.id, account!.id))
+    assertEquals(parseSecretEnvelope(row!.envelope)?.keyVersion, 2)
+    assertEquals(await decryptSecret(rotated, row!.envelope), providerValue)
+
+    const [stored] = await scoped
+      .select({ value: setting.value })
+      .from(setting)
+      .where(eq(setting.key, INSTANCE_ACME_ACCOUNT_SETTING_KEY))
+    const sealed = (stored!.value as { sealed: string; directory: string }).sealed
+    assertEquals(parseSecretEnvelope(sealed)?.keyVersion, 2)
+    assertEquals(await decryptSecret(rotated, sealed), accountKey)
+    assertEquals((stored!.value as { directory: string }).directory, 'https://ca.test/directory')
   })
 })
 

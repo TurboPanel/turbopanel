@@ -89,3 +89,60 @@ test('tunnel-token answers 503 when no co-located daemon is connected', async ()
     error: 'no co-located daemon connected to run the tunnel',
   })
 })
+
+function call(app: Hono<AppEnv>, cookie: string, method: string, path: string, body?: unknown) {
+  return app.request(`${ADMIN_API_PREFIX}${path}`, {
+    method,
+    headers: { Cookie: cookie, 'content-type': 'application/json' },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  })
+}
+
+test('every ingress change is refused to an organization admin', async () => {
+  const { app, cookie } = await buildApp('admin')
+  const writes: [string, string][] = [
+    ['POST', '/instance/ingress/accounts'],
+    ['DELETE', '/instance/ingress/accounts/x'],
+    ['POST', '/instance/ingress/accounts/x/recheck'],
+    ['PUT', '/instance/ingress/gate'],
+    ['PATCH', '/instance/ingress/hostnames/x'],
+    ['POST', '/instance/ingress/hostnames/x/preflight'],
+    ['POST', '/instance/ingress/hostnames/x/apply'],
+    ['POST', '/instance/ingress/hostnames/x/remove'],
+    ['POST', '/instance/acme-dns/hostnames/x/order'],
+    ['POST', '/instance/acme-dns/hostnames/x/retry'],
+  ]
+  for (const [method, path] of writes) {
+    const res = await call(app, cookie, method, path, {})
+    assertEquals(res.status, 403, `${method} ${path}`)
+    await res.body?.cancel()
+  }
+})
+
+test('account and gate writes check the body before anything else', async () => {
+  const { app, cookie } = await buildApp('superadmin')
+  const account = await call(app, cookie, 'POST', '/instance/ingress/accounts', { label: 'x' })
+  assertEquals(account.status, 400)
+  const bunny = await call(app, cookie, 'POST', '/instance/ingress/accounts', {
+    provider: 'bunny',
+    label: 'x',
+    token: 'y',
+  })
+  assertEquals(bunny.status, 400)
+  const gate = await call(app, cookie, 'PUT', '/instance/ingress/gate', { confirmed: 'yes' })
+  assertEquals(gate.status, 400)
+})
+
+test('ingress reads answer 503 until data encryption is ready, never 500', async () => {
+  const { app, cookie } = await buildApp('superadmin')
+  for (const path of [
+    '/instance/ingress/capabilities',
+    '/instance/ingress/accounts',
+    '/instance/ingress/hostnames/x/status',
+    '/instance/acme-dns/hostnames/x',
+  ]) {
+    const res = await call(app, cookie, 'GET', path)
+    assertEquals(res.status, 503, path)
+    await res.body?.cancel()
+  }
+})

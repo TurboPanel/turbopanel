@@ -296,6 +296,25 @@ export const NOTIFICATION_EVENT_DEFINITIONS = {
         'another key'
       )}. Either the server was pointed at another control plane or something is impersonating this one; reinstall the server with a fresh command if you did not expect this.`,
   },
+  'certificate.expiring': {
+    label: 'A control plane certificate could not be renewed',
+    severity: 'warning',
+    scope: 'instance',
+    audience: 'managers',
+    // An expiring control plane certificate can cut every server off: always urgent.
+    urgent: true,
+    title: (ctx) => {
+      const host = name(ctx, 'hostname', 'a control plane address')
+      if (ctx.kind === 'countdown' && typeof ctx.daysLeft === 'number') {
+        return `Control plane certificate for ${host} expires in ${ctx.daysLeft} ${ctx.daysLeft === 1 ? 'day' : 'days'}`
+      }
+      return `Control plane certificate for ${host} could not be renewed`
+    },
+    body: (ctx) =>
+      `${name(ctx, 'detail', 'The certificate authority did not issue a new certificate.')} ` +
+      'The current certificate keeps serving until it expires; after that, servers fall back to the Platform CA certificate. ' +
+      'See Certificates under Access in Admin.',
+  },
 } as const satisfies Record<string, EventDefinition>
 
 export type NotificationEvent = keyof typeof NOTIFICATION_EVENT_DEFINITIONS

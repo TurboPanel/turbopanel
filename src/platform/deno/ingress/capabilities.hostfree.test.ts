@@ -20,7 +20,7 @@ const EXPECTED: Record<string, unknown[]> = {
     null,
     'none',
     null,
-    ['platform-ca', 'uploaded', 'lets-encrypt'],
+    ['platform-ca', 'uploaded', 'lets-encrypt', 'dns-01'],
     false,
   ],
   'lan-only': [
@@ -34,11 +34,11 @@ const EXPECTED: Record<string, unknown[]> = {
     null,
     'none',
     null,
-    ['platform-ca', 'uploaded'],
+    ['platform-ca', 'uploaded', 'dns-01'],
     false,
   ],
   'cloudflare-tunnel': [
-    false,
+    true,
     false,
     'edge',
     'optional',
@@ -48,7 +48,7 @@ const EXPECTED: Record<string, unknown[]> = {
     100,
     'token',
     'cloudflare',
-    ['platform-ca', 'uploaded'],
+    ['platform-ca', 'uploaded', 'dns-01'],
     true,
   ],
   'cloudflare-proxy': [
@@ -62,7 +62,7 @@ const EXPECTED: Record<string, unknown[]> = {
     100,
     'token',
     'cloudflare',
-    ['uploaded'],
+    ['uploaded', 'dns-01'],
     true,
   ],
   'bunny-proxy': [
@@ -76,7 +76,7 @@ const EXPECTED: Record<string, unknown[]> = {
     null,
     'account-key',
     'bunny',
-    ['uploaded'],
+    ['uploaded', 'dns-01'],
     true,
   ],
   'private-overlay': [
@@ -90,7 +90,7 @@ const EXPECTED: Record<string, unknown[]> = {
     null,
     'none',
     null,
-    ['platform-ca', 'uploaded'],
+    ['platform-ca', 'uploaded', 'dns-01'],
     false,
   ],
   passthrough: [
@@ -104,7 +104,7 @@ const EXPECTED: Record<string, unknown[]> = {
     null,
     'none',
     null,
-    ['uploaded'],
+    ['uploaded', 'dns-01'],
     true,
   ],
 }
@@ -136,9 +136,9 @@ test('every mode has a record whose cells match the table', () => {
   assertEquals(listIngressCapabilities().length, INGRESS_MODES.length)
 })
 
-test('only direct and lan-only are implemented', () => {
+test('direct, lan-only and cloudflare-tunnel are implemented', () => {
   const implemented = INGRESS_MODES.filter((mode) => INGRESS_CAPABILITIES[mode].implemented)
-  assertEquals(implemented, ['direct', 'lan-only'])
+  assertEquals(implemented, ['direct', 'lan-only', 'cloudflare-tunnel'])
 })
 
 test('edge modes advertise the short heartbeat, the others the default', () => {
