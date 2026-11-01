@@ -20,10 +20,9 @@ export function createIdentityDocumentCache(now: () => Date = () => new Date()) 
       const urlsKey = JSON.stringify(urls)
       const at = now()
       const stale =
-        !entry ||
-        entry.kid !== identity.current.kid ||
-        entry.keyset !== identity.keyset ||
-        entry.urlsKey !== urlsKey ||
+        entry?.kid !== identity.current.kid ||
+        entry?.keyset !== identity.keyset ||
+        entry?.urlsKey !== urlsKey ||
         at.getTime() - Date.parse(entry.response.issued) > IDENTITY_DOCUMENT_RESIGN_AFTER_MS
       if (stale) {
         entry = {

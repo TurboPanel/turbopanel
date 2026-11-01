@@ -96,7 +96,7 @@ function assertKids(identity: PanelIdentity, binding: IdentityBindingJson): void
   if (identity.seal.kid !== binding.seal.kid) {
     throw new TypeError('seal.kid does not match the fingerprint of seal.priv')
   }
-  if (binding.next && binding.next.kid === identity.current.kid) {
+  if (binding.next?.kid === identity.current.kid) {
     throw new TypeError('next.kid must differ from current.kid')
   }
 }

@@ -152,7 +152,12 @@ export async function verifyIdentityResponse(
   if (headerKid !== current.kid) return fail('signature header names a different key')
   const issued = Date.parse(doc.issued)
   const expires = Date.parse(doc.expires)
-  if (!(expires > issued) || expires - issued > IDENTITY_DOCUMENT_TTL_MS) {
+  if (
+    Number.isNaN(issued) ||
+    Number.isNaN(expires) ||
+    expires <= issued ||
+    expires - issued > IDENTITY_DOCUMENT_TTL_MS
+  ) {
     return fail('lifetime is longer than 30 days')
   }
   const valid = await verifySignature(pub, sig, httpSigningBytes(IDENTITY_DOCUMENT_PATH, body))
