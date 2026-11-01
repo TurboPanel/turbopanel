@@ -1624,6 +1624,7 @@ async function withLiveDaemonServer(
     developerSurface?: boolean
     sessionSecrets?: DerivedSecretsConfig
     setDbOnContext?: Db
+    heartbeatSeconds?: () => number
   },
   fn: (ctx: { port: number; origin: string }) => Promise<void>
 ): Promise<void> {
@@ -1645,6 +1646,7 @@ async function withLiveDaemonServer(
     connectLimiter: options.connectLimiter,
     developerSurface: options.developerSurface,
     sessionSecrets: options.sessionSecrets,
+    heartbeatSeconds: options.heartbeatSeconds,
   })
 
   const ac = new AbortController()
@@ -1861,6 +1863,32 @@ test('live WS attaches, pumps outbox, handles hello/ping, and detaches', async (
       await closed
       await new Promise((resolve) => setTimeout(resolve, 40))
       assertEquals(tracking.calls.detach, 1)
+    }
+  )
+})
+
+test('live WS attach version frame carries the advised heartbeat', async () => {
+  const secrets = await createDaemonJwtSecrets()
+  const serverId = 'srv-live-heartbeat'
+  const tracking = createTrackingDaemonCell(serverId)
+  await withLiveDaemonServer(
+    {
+      secrets,
+      db: createMockDb(),
+      registry: createTrackingRegistry(tracking.cell),
+      heartbeatSeconds: () => 25,
+    },
+    async ({ port }) => {
+      const issued = await issueDaemonJwt({ sub: serverId, kid: 'key-test' }, secrets)
+      const ws = createDenoWebSocket(`ws://127.0.0.1:${port}${DAEMON_WS_PATH}`, {
+        headers: { Authorization: `Bearer ${issued.token}`, 'X-Real-IP': LIVE_REMOTE_IP },
+      })
+      const first = waitForWsMessage(ws)
+      await waitForWsOpen(ws)
+      const frame = JSON.parse(await first) as { type?: string; heartbeatSeconds?: number }
+      ws.close(1000, 'done')
+      assertEquals(frame.type, 'version')
+      assertEquals(frame.heartbeatSeconds, 25)
     }
   )
 })

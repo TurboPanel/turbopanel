@@ -73,6 +73,7 @@ import { recordTopologyGeneration } from '../../features/servers/server-topology
 import { touchServerMetadata } from '../../features/servers/server-registry.ts'
 import { parseServiceRunStates, type ServiceRunState } from '../../contracts/service-run-state.ts'
 import { instanceAttachVersionFrame } from '../attach-version.ts'
+import { HEARTBEAT_SECONDS_DEFAULT } from '../../features/install/heartbeat-policy.ts'
 import { verifyDaemonJwt } from '../authn/daemon-jwt.ts'
 import { getServerDaemonStateByServerId } from '../../features/servers/server-identity-db.ts'
 import { inboundHeartbeatProjectionDue } from './postgres-projection.ts'
@@ -1661,7 +1662,13 @@ export class DaemonCellObject {
     )
 
     try {
-      server.send(JSON.stringify(instanceAttachVersionFrame(connectedAt, this.#env)))
+      server.send(
+        JSON.stringify(
+          instanceAttachVersionFrame(connectedAt, this.#env, {
+            heartbeatSeconds: HEARTBEAT_SECONDS_DEFAULT,
+          })
+        )
+      )
     } catch (err) {
       console.error(
         `daemon-cell event=attach-version-failed serverId=${serverId} error=${

@@ -93,6 +93,11 @@ export type CellAttachVersionMessage = {
    * none (`instanceSupports` stays closed).
    */
   features?: string[]
+  /**
+   * Advised idle-ping cadence in seconds; daemons clamp it to [15, 120].
+   * Pinned daemons take the interval from the signed hello instead.
+   */
+  heartbeatSeconds?: number
 }
 
 /** Control-plane → daemon self-update. Optional pin fields are expand-only. */
