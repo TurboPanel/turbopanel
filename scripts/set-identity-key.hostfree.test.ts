@@ -68,7 +68,11 @@ function fakeWorld(
       return { status: 0, stdout: '', stderr: '' }
     },
     fetch: (_url: string) =>
-      live ? serve(live) : Promise.resolve(new Response('nope', { status: 404 })),
+      live
+        ? serve(live)
+        : Promise.resolve(
+            new Response('{"error":"panel identity not configured"}', { status: 404 })
+          ),
     sleep: (ms: number) => {
       clock += ms
       return Promise.resolve()
@@ -99,7 +103,7 @@ test('sets the key and prints one fingerprint line', async () => {
   ])
   assertEquals(
     world.output.at(-1),
-    `Testing panel identity key set. Fingerprint (a public code, safe to share): ${binding.current.kid}`
+    `Testing control plane identity key set. Fingerprint (a public code, safe to share): ${binding.current.kid}`
   )
   assert(!('next' in binding))
 })
@@ -116,7 +120,7 @@ test('a panel that answers with an error is never overwritten', async () => {
   world.deps.fetch = () => Promise.resolve(new Response('down', { status: 503 }))
   assertEquals(await setIdentityKey(['--env', 'testing'], world.deps), 1)
   assertEquals(world.runs.filter((r) => r.args[0] === 'secret').length, 0)
-  assertStringIncludes(world.output.at(-1)!, 'Could not tell')
+  assertStringIncludes(world.output.at(-1)!, 'Unexpected answer')
 })
 
 test('--replace warns and waits for the new fingerprint, not the old one', async () => {
@@ -134,10 +138,43 @@ test('not signed in prints the sign-in line and exits non-zero', async () => {
   assertEquals(world.runs.length, 1)
 })
 
-test('gives up after two minutes when the panel never switches', async () => {
+test('a timeout after a successful put still prints the fingerprint, with a caveat', async () => {
   const world = fakeWorld({ applies: false })
+  assertEquals(await setIdentityKey(['--env', 'testing'], world.deps), 0)
+  const binding: Binding = JSON.parse(world.runs[1].input)
+  assertStringIncludes(world.output.at(-2)!, 'has not picked it up yet')
+  assertStringIncludes(world.output.at(-1)!, binding.current.kid)
+})
+
+async function refusesWith(respond: () => Response, extra: string[] = []) {
+  const world = fakeWorld()
+  world.deps.fetch = () => Promise.resolve(respond())
+  assertEquals(await setIdentityKey(['--env', 'live', ...extra], world.deps), 1)
+  assertEquals(world.runs.filter((r) => r.args[0] === 'secret').length, 0)
+  assertStringIncludes(world.output.at(-1)!, 'Unexpected answer')
+}
+
+test('a stray 404 with another body never counts as no key, even with --replace', async () => {
+  await refusesWith(() => new Response('<html>not found</html>', { status: 404 }))
+  await refusesWith(() => new Response('{"error":"nope"}', { status: 404 }), ['--replace'])
+})
+
+test('an unsigned or app-shell 200 is an unexpected answer', async () => {
+  await refusesWith(() => new Response('<html>app</html>', { status: 200 }))
+  await refusesWith(() => new Response('{"keys":[]}', { status: 200 }), ['--replace'])
+})
+
+test('--url is no longer an option', async () => {
+  const world = fakeWorld()
+  assertEquals(await setIdentityKey(['--env', 'live', '--url', 'https://x.test'], world.deps), 1)
+  assertEquals(world.runs.length, 0)
+})
+
+test('a whoami network failure says so instead of asking to sign in', async () => {
+  const world = fakeWorld()
+  world.deps.run = () => ({ status: 1, stdout: '', stderr: 'TypeError: fetch failed' })
   assertEquals(await setIdentityKey(['--env', 'testing'], world.deps), 1)
-  assertStringIncludes(world.output.at(-1)!, 'within 2 minutes')
+  assertStringIncludes(world.output.at(-1)!, 'Could not reach Cloudflare')
 })
 
 test('no secret material is ever printed, on any path', async () => {

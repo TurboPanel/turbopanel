@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
- * Set a panel's identity key on Cloudflare Workers with one command:
+ * Set a control plane's identity key on Cloudflare Workers with one command:
  *
- *   pnpm identity:set --env <testing|staging|live> [--replace] [--url <https://host>]
+ *   pnpm identity:set --env <testing|staging|live> [--replace]
  *
  * The key is generated in memory and piped to `wrangler secret put
  * TURBOPANEL_IDENTITY_KEYS` over stdin; it is never written to disk or printed.
@@ -65,35 +65,40 @@ export async function verifiedFingerprint(body, header) {
   }
 }
 
+const NOT_CONFIGURED_ERROR = 'panel identity not configured'
+const NETWORK_ERROR = /fetch failed|ENOTFOUND|ECONN|ETIMEDOUT|EAI_AGAIN|network/i
+
+/**
+ * Read the identity route. `unset` is true only for the route's own "not configured" 404 body;
+ * `kid` is set only for a 200 whose signature verifies. Anything else is "unexpected".
+ */
 async function readIdentity(deps, url) {
   const response = await deps.fetch(url, { cache: 'no-store', signal: AbortSignal.timeout(10_000) })
-  if (response.status !== 200) return { status: response.status }
   const body = await response.text()
+  if (response.status === 404) {
+    let parsed
+    try {
+      parsed = JSON.parse(body)
+    } catch {
+      parsed = null
+    }
+    return { status: 404, unset: parsed?.error === NOT_CONFIGURED_ERROR }
+  }
+  if (response.status !== 200) return { status: response.status }
   const kid = await verifiedFingerprint(body, response.headers.get(SIGNATURE_HEADER))
   return { status: 200, kid }
 }
 
 function parseArgs(argv) {
-  const opts = { env: undefined, url: undefined, replace: false }
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === '--replace') opts.replace = true
-    else if (argv[i] === '--env') opts.env = argv[++i]
-    else if (argv[i] === '--url') opts.url = argv[++i]
-    else throw new Stop(`Unknown option ${argv[i]}.`)
-  }
+  const at = argv.indexOf('--env')
+  const opts = { env: at === -1 ? undefined : argv[at + 1], replace: argv.includes('--replace') }
+  const known = new Set(['--replace', '--env', opts.env])
+  const stray = argv.find((arg) => !known.has(arg))
+  if (stray !== undefined) throw new Stop(`Unknown option ${stray}.`)
   if (!ENVS.includes(opts.env)) {
     throw new Stop('Usage: pnpm identity:set --env <testing|staging|live> [--replace]')
   }
   return opts
-}
-
-function identityUrl(opts, host) {
-  const base = opts.url ?? `https://${host()}`
-  try {
-    return new URL(IDENTITY_PATH, base).href
-  } catch {
-    throw new Stop('--url must be a full web address such as https://testing.turbopanel.dev')
-  }
 }
 
 async function pollForKey(deps, url, fingerprint) {
@@ -102,38 +107,47 @@ async function pollForKey(deps, url, fingerprint) {
     await deps.sleep(POLL_STEP_MS)
     try {
       const seen = await readIdentity(deps, url)
-      if (seen.status === 200 && seen.kid === fingerprint) return
+      if (seen.kid === fingerprint) return true
     } catch {
-      // The panel may be restarting; keep waiting.
+      // The control plane may be restarting; keep waiting.
     }
   }
-  throw new Stop(
-    'The panel did not start using the new key within 2 minutes. Run the same command again with --replace.'
-  )
+  return false
 }
 
-/** Stop unless the env is known to have no key (404), or `--replace` says to go ahead. */
+/** Proceed only for a signed key we can see (with --replace) or the route's own "not configured" 404. */
 async function checkExisting(deps, opts, url, label) {
-  let status
+  let seen
   try {
-    status = (await readIdentity(deps, url)).status
+    seen = await readIdentity(deps, url)
   } catch {
-    status = 'no answer'
+    seen = {}
   }
-  if (status === 404) return
-  if (status === 200 && opts.replace) {
+  if (seen.unset) return
+  if (seen.kid && opts.replace) {
     deps.out('Replacing the key: every server will need to re-learn it.')
     return
   }
-  if (status === 200) {
+  if (seen.kid) {
     throw new Stop(
-      `${label} already has a panel identity key. Nothing was changed. To replace it, run again with --replace.`
+      `${label} already has a control plane identity key. Nothing was changed. To replace it, run again with --replace.`
     )
   }
-  if (opts.replace) return
   throw new Stop(
-    `Could not tell whether ${label} already has a key (the panel answered: ${status}). Nothing was changed.`
+    `Unexpected answer from ${new URL(url).host} (the control plane answered: ${seen.status ?? 'nothing'}), so it is not clear whether ${label} has a key. Nothing was changed.`
   )
+}
+
+function checkSignedIn(deps) {
+  const who = deps.run(['whoami'], '')
+  const text = `${who.stdout}${who.stderr}`
+  if (/not authenticated/i.test(text)) throw new Stop(SIGN_IN)
+  if (who.status !== 0 && NETWORK_ERROR.test(text)) {
+    throw new Stop(
+      'Could not reach Cloudflare to check your sign-in. Check your connection and try again.'
+    )
+  }
+  if (who.status !== 0) throw new Stop(SIGN_IN)
 }
 
 /**
@@ -144,11 +158,8 @@ export async function setIdentityKey(argv, deps) {
   try {
     const opts = parseArgs(argv)
     const label = opts.env[0].toUpperCase() + opts.env.slice(1)
-    const who = deps.run(['whoami'], '')
-    if (who.status !== 0 || /not authenticated/i.test(`${who.stdout}${who.stderr}`)) {
-      throw new Stop(SIGN_IN)
-    }
-    const url = identityUrl(opts, () => deps.host(opts.env))
+    checkSignedIn(deps)
+    const url = new URL(IDENTITY_PATH, `https://${deps.host(opts.env)}`).href
     await checkExisting(deps, opts, url, label)
     const binding = await buildBinding()
     deps.out(`Setting the ${opts.env} key on Cloudflare...`)
@@ -156,10 +167,14 @@ export async function setIdentityKey(argv, deps) {
     if (put.status !== 0) {
       throw new Stop('Cloudflare did not accept the key. Nothing was changed. Try again.')
     }
-    deps.out('Waiting for the panel to start using it...')
-    await pollForKey(deps, url, binding.current.kid)
+    deps.out('Waiting for the control plane to start using it...')
+    if (!(await pollForKey(deps, url, binding.current.kid))) {
+      deps.out(
+        'The key was stored; the control plane has not picked it up yet. Check again in a minute.'
+      )
+    }
     deps.out(
-      `${label} panel identity key set. Fingerprint (a public code, safe to share): ${binding.current.kid}`
+      `${label} control plane identity key set. Fingerprint (a public code, safe to share): ${binding.current.kid}`
     )
     return 0
   } catch (err) {

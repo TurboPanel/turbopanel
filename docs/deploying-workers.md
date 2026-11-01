@@ -115,10 +115,10 @@
   deploy command (`pnpm migrate && pnpm wrangler deploy`) reports the commit
   without `deploy:testing`. `TURBOPANEL_REVISION` still wins when set.
 
-## Panel identity key (owner step, per environment)
+## Control plane identity key (owner step, per environment)
 
-The identity key lets a panel prove to its servers that messages really come
-from it; each environment (`testing`, `staging`, `live`) has its own.
+The identity key lets a control plane prove to its servers that messages really
+come from it; each environment (`testing`, `staging`, `live`) has its own.
 
 Run this once per environment, on your own machine, never on a server:
 
@@ -127,14 +127,17 @@ pnpm identity:set --env testing
 ```
 
 You will see three lines: the key is being set, the script is waiting for the
-panel to start using it (up to two minutes), and then one last line:
+control plane to start using it (up to two minutes), and then one last line:
 
-```
-Testing panel identity key set. Fingerprint (a public code, safe to share): <fingerprint>
+```text
+Testing control plane identity key set. Fingerprint (a public code, safe to share): <fingerprint>
 ```
 
 The fingerprint is a public code computed from the key. Keep it with your deploy
 records, not in git. The key itself is never shown and never saved to a file.
+
+The environment must already be deployed and answering at its address; if it is
+not, the command stops and changes nothing.
 
 If the environment already has a key, the command stops and changes nothing. To
 replace it anyway, add `--replace`; every server will then need to re-learn the
@@ -143,4 +146,4 @@ key.
 If you see `Sign in to Cloudflare first: ./node_modules/.bin/wrangler login`,
 run that command, sign in in the browser, then run the same command again.
 
-Self-hosted panels make their own key on first start.
+Self-hosted control planes make their own key on first start.
