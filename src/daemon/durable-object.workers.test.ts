@@ -151,9 +151,15 @@ async function waitForWebSocketMessageAfterAttachVersion(
 /** Consume the attach version frame that the cell sends before outbox traffic. */
 async function drainAttachVersionFrame(ws: WebSocket, timeoutMs = 5000): Promise<void> {
   const raw = await waitForWebSocketMessage(ws, timeoutMs)
-  const parsed = JSON.parse(raw) as { type?: string; instanceVersion?: string }
+  const parsed = JSON.parse(raw) as {
+    type?: string
+    instanceVersion?: string
+    heartbeatSeconds?: number
+  }
   expect(parsed.type).toBe('version')
   expect(typeof parsed.instanceVersion).toBe('string')
+  // High Availability keeps the 60-second ping.
+  expect(parsed.heartbeatSeconds).toBe(60)
 }
 
 async function waitFor(

@@ -114,3 +114,13 @@ plane). Their shapes and validators are in `src/contracts/cell-protocol.ts`.
   only when both have arrived); send `failed` with a plain reason (an authority
   rate-limit answer should keep the words `rateLimited`, so the panel waits an
   hour); answer every `acme-proof-forward` with `-ready` or `-failed`.
+
+## Advised heartbeat
+
+The attach `version` frame carries an optional `heartbeatSeconds` (the idle-ping
+cadence). It is unsigned advice: daemons clamp it to 15-120 s and pinned
+daemons take the interval from the signed hello instead. High Availability
+always sends 60; the Deno control plane sends 25 when a panel hostname sits
+behind an edge (`src/features/install/heartbeat-policy.ts`), read from a cached
+value so the attach path makes no database call. No feature gate and no floor
+change: older daemons ignore the field.

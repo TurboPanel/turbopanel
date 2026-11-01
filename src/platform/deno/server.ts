@@ -84,6 +84,7 @@ import {
 } from '../../features/install/install-tls.ts'
 import { listInstanceHostnames } from '../../features/install/instance-hostnames.ts'
 import { registerDaemonWebSocket } from '../../daemon/deno-ws.ts'
+import { createHeartbeatReader } from './heartbeat-reader.ts'
 import {
   parseMetricsRetentionDays,
   parsePositiveIntEnv,
@@ -648,8 +649,17 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     github: githubWebhookLimiter,
     gitlab: gitlabWebhookLimiter,
   })
+  // Panel hostnames carry no ingress mode yet, so this stays at the default
+  // 60 s. When the mode column exists, only `loadModes` changes and a
+  // one-minute refresh is armed then (no idle polling until it has work).
+  const heartbeatReader = createHeartbeatReader(
+    () => Promise.resolve([]),
+    (err) => logWarn('daemon-cell', `advised heartbeat refresh error: ${String(err)}`)
+  )
+  void heartbeatReader.refresh()
   registerDaemonWebSocket(routes, {
     developerSurface,
+    heartbeatSeconds: heartbeatReader.read,
     db,
     secrets: daemonJwtKeyring,
     sessionSecrets,

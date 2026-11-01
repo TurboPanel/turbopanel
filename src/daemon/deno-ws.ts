@@ -24,6 +24,7 @@ import {
   wireMessageToInboundEnvelope,
 } from '../contracts/cell-protocol.ts'
 import { instanceAttachVersionFrame } from './attach-version.ts'
+import { HEARTBEAT_SECONDS_DEFAULT } from '../features/install/heartbeat-policy.ts'
 import type { DaemonJwtKeyring } from './authn/daemon-jwt-keyring.ts'
 import { tryAssignColocatedDaemonToInstalledOrganization } from '../client/authn/install-state.ts'
 import { emitCertificateRenewalFailed } from '../features/notifications/certificate-alerts.ts'
@@ -876,6 +877,11 @@ export type DaemonWebSocketOptions = {
    * host); see `peer-address.ts`.
    */
   trustedProxyCidrs?: readonly string[]
+  /**
+   * Cached advised heartbeat in seconds for the attach `version` frame. Must
+   * not touch the database: the attach path calls it once per connection.
+   */
+  heartbeatSeconds?: () => number
 }
 
 /**
@@ -1130,7 +1136,13 @@ export function registerDaemonWebSocket<E extends Env>(
           daemonCellLog('INFO', payload.sub, connectionId, `daemon connected${connectedFromSuffix}`)
 
           try {
-            ws.send(JSON.stringify(instanceAttachVersionFrame(connectedAt, Deno.env.toObject())))
+            ws.send(
+              JSON.stringify(
+                instanceAttachVersionFrame(connectedAt, Deno.env.toObject(), {
+                  heartbeatSeconds: options.heartbeatSeconds?.() ?? HEARTBEAT_SECONDS_DEFAULT,
+                })
+              )
+            )
           } catch (err) {
             daemonCellLog(
               'WARN',
