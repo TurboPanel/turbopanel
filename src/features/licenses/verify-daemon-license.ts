@@ -1,28 +1,28 @@
-import type { Db } from "../../db/connection.ts";
-import {
-  lookupActiveLicense,
-  verifyLicenseToken,
-} from "./license.ts";
+import type { Db } from '../../db/connection.ts'
+import { lookupActiveLicense, verifyLicenseToken } from './license.ts'
 
 export type VerifiedDaemonLicense = {
-  organizationId: string;
-};
+  organizationId: string
+}
 
 /** Verify a daemon hello licenseId + licenseToken pair against the license table. */
 export async function verifyDaemonLicense(
   db: Db,
   licenseId?: string | null,
-  licenseToken?: string | null,
+  licenseToken?: string | null
 ): Promise<VerifiedDaemonLicense | null> {
-  const id = typeof licenseId === "string" ? licenseId.trim() : "";
-  const token = typeof licenseToken === "string" ? licenseToken.trim() : "";
-  if (!id || !token) return null;
+  const id = typeof licenseId === 'string' ? licenseId.trim() : ''
+  const token = typeof licenseToken === 'string' ? licenseToken.trim() : ''
+  if (!id || !token) return null
 
-  const activeLicense = await lookupActiveLicense(db, id);
-  if (!activeLicense) return null;
+  const activeLicense = await lookupActiveLicense(db, id)
+  if (!activeLicense) return null
 
-  const tokenValid = await verifyLicenseToken(token, activeLicense.token);
-  if (!tokenValid) return null;
+  // An erased token (bound key, or one minted behind a ticket) verifies nothing.
+  if (activeLicense.token === null) return null
 
-  return { organizationId: activeLicense.organizationId };
+  const tokenValid = await verifyLicenseToken(token, activeLicense.token)
+  if (!tokenValid) return null
+
+  return { organizationId: activeLicense.organizationId }
 }

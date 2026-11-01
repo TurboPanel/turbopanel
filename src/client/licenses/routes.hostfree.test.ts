@@ -49,6 +49,7 @@ import {
   setting,
   subscription,
   subscriptionItem,
+  ticket,
   tier,
 } from '../../db/schema.ts'
 import { createMemoryDb, type MemoryDb } from '../../test-fixtures/memory-db.ts'
@@ -280,6 +281,7 @@ async function buildApp(fx: Fixture = {}) {
         })),
       ],
       [lease, []],
+      [ticket, []],
       [allowance, []],
       [organization, [{ id: ORG, name: 'License Org', createdAt: NOW, updatedAt: NOW }]],
     ],
@@ -489,6 +491,15 @@ test('T9 · a purchase with room mints a key with no tier, once, and the lease i
   assertEquals(minted?.organizationId, ORG)
   assertEquals(minted?.tierId ?? null, null)
   assertEquals(lockRow(db), null)
+
+  // The key has no token of its own: what the command carries is a one-hour
+  // join ticket bound to it, so the key's secret never exists or travels.
+  assertEquals(minted?.token ?? null, null)
+  const issued = db.rows(ticket)
+  assertEquals(issued.length, 1)
+  assertEquals(issued[0]?.licenseId, body.licenseId)
+  assertEquals(issued[0]?.serverId ?? null, null)
+  assertEquals(Date.parse(String(issued[0]?.expiresAt)) > Date.now(), true)
 
   // Both purchased licenses are now held: the next mint is refused.
   const again = await mint(app, headers)

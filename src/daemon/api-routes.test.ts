@@ -33,6 +33,7 @@ import {
   service,
   subscription,
   subscriptionItem,
+  ticket,
   tier,
   workspace,
 } from '../db/schema.ts'
@@ -70,6 +71,7 @@ import {
   SERVER_KEY_REVOKED_ERROR,
   type ServerDaemonStateWithMetadata,
 } from '../features/servers/server-identity-db.ts'
+import { mintTicket } from '../features/licenses/tickets.ts'
 import { setRevokeBoundDaemonKey } from '../features/licenses/revoke-bound-daemon-key.ts'
 import {
   buildAuthPayload,
@@ -1180,7 +1182,7 @@ test('POST /enroll returns serverId and server.daemon.key.id', async () => {
   })
 })
 
-test('POST /enroll refuses a different key for a server that already has one', async () => {
+test('POST /enroll refuses a bound license outright: its token was erased at the bind', async () => {
   await withEnrollFixture(
     async ({ db, app, licenseId, licenseToken, serverId, keyId, key, machineKey, hostname }) => {
       const newKey = await generateKeyMaterial()
@@ -1192,9 +1194,11 @@ test('POST /enroll refuses a different key for a server that already has one', a
         hostname,
         key: newKey,
       })
-      assertEquals(enrollResponse.status, 409)
+      assertEquals(enrollResponse.status, 401)
       const body = (await enrollResponse.json()) as { error?: string }
-      assertEquals(body.error, 'Server key already registered')
+      assertEquals(body.error, 'Invalid license')
+      const [bound] = await db.select().from(license).where(eq(license.id, licenseId))
+      assertEquals(bound?.token, null)
 
       // First registered key wins: nothing about the stored key changed.
       const daemonState = await readDaemonState(db, serverId)
@@ -1205,7 +1209,7 @@ test('POST /enroll refuses a different key for a server that already has one', a
   )
 })
 
-test('POST /enroll accepts the same key again and keeps the key row', async () => {
+test('POST /enroll does not take the same key again once the license token is erased', async () => {
   await withEnrollFixture(
     async ({ db, app, licenseId, licenseToken, serverId, key, machineKey, hostname }) => {
       const enrollResponse = await postEnroll(app, {
@@ -1216,9 +1220,7 @@ test('POST /enroll accepts the same key again and keeps the key row', async () =
         hostname,
         key,
       })
-      assertEquals(enrollResponse.status, 200)
-      const body = (await enrollResponse.json()) as { serverId: string }
-      assertEquals(body.serverId, serverId)
+      assertEquals(enrollResponse.status, 401)
 
       const daemonState = await readDaemonState(db, serverId)
       assertExists(daemonState)
@@ -1265,12 +1267,12 @@ test('POST /enroll rejects a second host once the license is latched', async () 
           signature,
         }),
       })
-      assertEquals(enrollResponse.status, 400)
+      assertEquals(enrollResponse.status, 401)
       const body = (await enrollResponse.json()) as { error?: string }
-      assertEquals(body.error, 'License already consumed or invalid')
+      assertEquals(body.error, 'Invalid license')
 
-      // Same license + persisted serverId + the registered key still enrolls
-      // the latched server; a different key does not (see the test above).
+      // The latched server cannot use the erased token either: a lost key
+      // needs an owner-issued re-enroll ticket.
       const reEnroll = await postEnroll(app, {
         licenseId,
         licenseToken,
@@ -1279,9 +1281,7 @@ test('POST /enroll rejects a second host once the license is latched', async () 
         hostname,
         key,
       })
-      assertEquals(reEnroll.status, 200)
-      const reBody = (await reEnroll.json()) as { serverId: string }
-      assertEquals(reBody.serverId, serverId)
+      assertEquals(reEnroll.status, 401)
     }
   )
 })
@@ -1408,12 +1408,12 @@ test('POST /enroll refuses a revoked server: the license token on disk cannot un
           signature,
         }),
       })
-      assertEquals(enrollResponse.status, 403)
-      // Byte-identical to the daemon's permanent-enrollment list, so the
-      // refused host stops rather than looping on enroll.
+      // The token was erased at the bind, so the licence on disk enrols
+      // nothing at all (and the revoked-key 403 stays behind it).
+      assertEquals(enrollResponse.status, 401)
       assertEquals(await enrollResponse.json(), {
         ok: false,
-        error: SERVER_KEY_REVOKED_ERROR,
+        error: 'Invalid license',
       })
 
       // Nothing about the key changed: same id, still revoked.
@@ -1431,6 +1431,126 @@ test('POST /enroll refuses a revoked server: the license token on disk cannot un
       assertEquals(authChallengeResponse.status, 400)
     }
   )
+})
+
+test('POST /enroll takes a join ticket in the licence slot, binds the key and erases its token', async () => {
+  await withEnrollFixture(
+    async ({ db, app, organizationId, licenseId, machineKey, hostname, key }) => {
+      const joinTicket = await mintTicket(db, { organizationId, licenseId })
+      const response = await postEnroll(app, {
+        licenseId: joinTicket.id,
+        licenseToken: joinTicket.plaintext,
+        machineKey,
+        hostname,
+        key,
+      })
+      assertEquals(response.status, 200)
+      const body = (await response.json()) as { serverId: string }
+
+      const [bound] = await db.select().from(license).where(eq(license.id, licenseId))
+      assertEquals(bound?.serverId, body.serverId)
+      assertEquals(bound?.token, null)
+
+      // Single use: the same ticket from another host enrolls nothing.
+      const again = await postEnroll(app, {
+        licenseId: joinTicket.id,
+        licenseToken: joinTicket.plaintext,
+        machineKey: randomMachineKey(),
+        hostname: `other-${hostname}`,
+        key: await generateKeyMaterial(),
+      })
+      assertEquals(again.status, 401)
+    },
+    { enroll: false }
+  )
+})
+
+test('POST /enroll refuses a join ticket with the wrong secret and leaves it usable', async () => {
+  await withEnrollFixture(
+    async ({ db, app, organizationId, licenseId, machineKey, hostname, key }) => {
+      const joinTicket = await mintTicket(db, { organizationId, licenseId })
+      const wrong = await postEnroll(app, {
+        licenseId: joinTicket.id,
+        licenseToken: 'not-the-secret',
+        machineKey,
+        hostname,
+        key,
+      })
+      assertEquals(wrong.status, 401)
+      const right = await postEnroll(app, {
+        licenseId: joinTicket.id,
+        licenseToken: joinTicket.plaintext,
+        machineKey,
+        hostname,
+        key,
+      })
+      assertEquals(right.status, 200)
+    },
+    { enroll: false }
+  )
+})
+
+test('POST /enroll keeps a revoked key revoked even with a valid re-enroll ticket', async () => {
+  await withEnrollFixture(async ({ db, app, organizationId, serverId, machineKey, hostname }) => {
+    await revokeDaemonKey(db, serverId)
+    const reenroll = await mintTicket(db, { organizationId, serverId })
+    const response = await postEnroll(app, {
+      licenseId: reenroll.id,
+      licenseToken: reenroll.plaintext,
+      serverId,
+      machineKey,
+      hostname,
+      key: await generateKeyMaterial(),
+    })
+    assertEquals(response.status, 403)
+    assertEquals(await response.json(), { ok: false, error: SERVER_KEY_REVOKED_ERROR })
+    // Refused before the ticket was spent.
+    const [row] = await db
+      .select({ usedAt: ticket.usedAt })
+      .from(ticket)
+      .where(eq(ticket.id, reenroll.id))
+    assertEquals(row?.usedAt, null)
+  })
+})
+
+test('POST /enroll replaces a lost key with an owner-issued re-enroll ticket, once, for that server only', async () => {
+  await withEnrollFixture(async ({ db, app, organizationId, serverId, machineKey, hostname }) => {
+    const reenroll = await mintTicket(db, { organizationId, serverId })
+    const newKey = await generateKeyMaterial()
+
+    // Bound to this server: presented naming another, it is refused and stays unspent.
+    const otherServer = await postEnroll(app, {
+      licenseId: reenroll.id,
+      licenseToken: reenroll.plaintext,
+      serverId: crypto.randomUUID(),
+      machineKey,
+      hostname,
+      key: newKey,
+    })
+    assertEquals(otherServer.status, 403)
+
+    const replaced = await postEnroll(app, {
+      licenseId: reenroll.id,
+      licenseToken: reenroll.plaintext,
+      serverId,
+      machineKey,
+      hostname,
+      key: newKey,
+    })
+    assertEquals(replaced.status, 200)
+    const state = await readDaemonState(db, serverId)
+    assertEquals(state?.key.fingerprint, newKey.fingerprint)
+
+    const spent = await postEnroll(app, {
+      licenseId: reenroll.id,
+      licenseToken: reenroll.plaintext,
+      serverId,
+      machineKey,
+      hostname,
+      key: await generateKeyMaterial(),
+    })
+    assertEquals(spent.status, 401)
+  })
 })
 
 test('POST /auth/session rejects malformed JSON', async () => {

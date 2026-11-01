@@ -232,6 +232,37 @@ export const NOTIFICATION_EVENT_DEFINITIONS = {
       'The server went on using it, and every package is still checked against that key. ' +
       'This is usually the publisher rotating its key; if you did not expect that, check the source before the next install.',
   },
+  'server.enrolled': {
+    label: 'A new server joined',
+    severity: 'info',
+    scope: 'organization',
+    audience: 'managers',
+    urgent: false,
+    title: (ctx) => `${name(ctx, 'serverName', 'A new server')} joined the organization`,
+    body: (ctx) =>
+      `A server enrolled with a one-time install key (daemon key ${name(
+        ctx,
+        'daemonKey',
+        'unknown'
+      )}). ` +
+      'Servers are accepted automatically; if you did not install one, remove it from the server list.',
+  },
+  'server.key_replaced': {
+    label: "A server's daemon key was replaced",
+    severity: 'warning',
+    scope: 'organization',
+    audience: 'managers',
+    urgent: true,
+    title: (ctx) => `The daemon key on ${name(ctx, 'serverName', 'a server')} was replaced`,
+    body: (ctx) =>
+      `A re-enroll token issued for ${name(ctx, 'serverName', 'this server')} was used. ` +
+      `The old key ${name(ctx, 'oldKey', 'unknown')} was replaced by ${name(
+        ctx,
+        'newKey',
+        'unknown'
+      )}. ` +
+      'If you did not issue that token, revoke the server key and check the host.',
+  },
 } as const satisfies Record<string, EventDefinition>
 
 export type NotificationEvent = keyof typeof NOTIFICATION_EVENT_DEFINITIONS

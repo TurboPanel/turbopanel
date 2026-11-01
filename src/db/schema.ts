@@ -912,8 +912,12 @@ export const license = pgTable(
     /** Set on first successful enroll — one-shot seat latch. */
     serverId: uuid('server_id'),
     name: text(),
-    /** Argon2id PHC hashed token — same format as account.password */
-    token: text().notNull(),
+    /**
+     * Argon2id PHC hashed token — same format as account.password. Null once
+     * the key is bound to a server (the hash is erased at the bind) and for a
+     * key minted behind a one-hour `ticket`: a null token verifies nothing.
+     */
+    token: text(),
     /** Soft-delete */
     revokedAt: timestamp('revoked_at', {
       precision: 3,
@@ -955,6 +959,79 @@ export const license = pgTable(
       columns: [table.tierId],
       foreignColumns: [tier.id],
       name: 'license_tier_id_tier_id_fk',
+    }).onDelete('set null'),
+  ]
+)
+/**
+ * One-hour, single-use enrolment ticket. Two kinds, told apart by `server_id`:
+ * a join ticket (`license_id` set, `server_id` null) carries a new install in
+ * the licence slot of the install value so the licence token itself never
+ * travels; a re-enroll ticket (`server_id` set) lets one named server replace
+ * its daemon key once. The token is an Argon2id hash, like a registration key's.
+ */
+export const ticket = pgTable(
+  'ticket',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .notNull(),
+    organizationId: uuid('organization_id').notNull(),
+    /** The registration key a join ticket binds; null for a re-enroll ticket. */
+    licenseId: uuid('license_id'),
+    /** The one server a re-enroll ticket is bound to; null for a join ticket. */
+    serverId: uuid('server_id'),
+    serverName: text('server_name'),
+    /** Argon2id PHC hash of the secret. */
+    token: text().notNull(),
+    expiresAt: timestamp('expires_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }).notNull(),
+    usedAt: timestamp('used_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }),
+    usedByServerId: uuid('used_by_server_id'),
+    createdByUserId: uuid('created_by_user_id'),
+  },
+  (table) => [
+    index('idx_ticket_organization_id').on(table.organizationId),
+    index('idx_ticket_license_id').on(table.licenseId),
+    index('idx_ticket_server_id').on(table.serverId),
+    foreignKey({
+      columns: [table.organizationId],
+      foreignColumns: [organization.id],
+      name: 'ticket_organization_id_organization_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.licenseId],
+      foreignColumns: [license.id],
+      name: 'ticket_license_id_license_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.serverId],
+      foreignColumns: [server.id],
+      name: 'ticket_server_id_server_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.usedByServerId],
+      foreignColumns: [server.id],
+      name: 'ticket_used_by_server_id_server_id_fk',
+    }).onDelete('set null'),
+    foreignKey({
+      columns: [table.createdByUserId],
+      foreignColumns: [user.id],
+      name: 'ticket_created_by_user_id_user_id_fk',
     }).onDelete('set null'),
   ]
 )
@@ -6896,7 +6973,7 @@ export const notificationRule = pgTable(
   (table) => [
     check(
       'rule_event_check',
-      sql`event IN ('*', 'server.offline', 'fleet.mass_disconnect', 'server.deleted', 'server.daemon_key_revoked', 'access.grant_created', 'access.grant_revoked', 'certificate.renewal_failed', 'folder.orphans_found', 'server.repo_key_changed')`
+      sql`event IN ('*', 'server.offline', 'fleet.mass_disconnect', 'server.deleted', 'server.daemon_key_revoked', 'access.grant_created', 'access.grant_revoked', 'certificate.renewal_failed', 'folder.orphans_found', 'server.repo_key_changed', 'server.enrolled', 'server.key_replaced')`
     ),
     check('rule_min_severity_check', sql`min_severity IN ('info', 'warning', 'critical')`),
     uniqueIndex('uniq_rule_channel_event').on(table.channelId, table.event),
@@ -6951,7 +7028,7 @@ export const notification = pgTable(
   (table) => [
     check(
       'notification_event_check',
-      sql`event IN ('server.offline', 'fleet.mass_disconnect', 'server.deleted', 'server.daemon_key_revoked', 'access.grant_created', 'access.grant_revoked', 'certificate.renewal_failed', 'folder.orphans_found', 'server.repo_key_changed')`
+      sql`event IN ('server.offline', 'fleet.mass_disconnect', 'server.deleted', 'server.daemon_key_revoked', 'access.grant_created', 'access.grant_revoked', 'certificate.renewal_failed', 'folder.orphans_found', 'server.repo_key_changed', 'server.enrolled', 'server.key_replaced')`
     ),
     check('notification_severity_check', sql`severity IN ('info', 'warning', 'critical')`),
     index('idx_notification_user_created').on(table.userId, table.createdAt.desc()),
@@ -7023,7 +7100,7 @@ export const notificationDelivery = pgTable(
   (table) => [
     check(
       'attempt_event_check',
-      sql`event IN ('server.offline', 'fleet.mass_disconnect', 'server.deleted', 'server.daemon_key_revoked', 'access.grant_created', 'access.grant_revoked', 'certificate.renewal_failed', 'folder.orphans_found', 'server.repo_key_changed')`
+      sql`event IN ('server.offline', 'fleet.mass_disconnect', 'server.deleted', 'server.daemon_key_revoked', 'access.grant_created', 'access.grant_revoked', 'certificate.renewal_failed', 'folder.orphans_found', 'server.repo_key_changed', 'server.enrolled', 'server.key_replaced')`
     ),
     check('attempt_severity_check', sql`severity IN ('info', 'warning', 'critical')`),
     check(
