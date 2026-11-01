@@ -472,7 +472,7 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
   }
   logInfo(
     'identity',
-    `Panel identity ${panelIdentity.current.kid} (keyset ${panelIdentity.keyset})`
+    `Control plane identity ${panelIdentity.current.kid} (keyset ${panelIdentity.keyset})`
   )
   // Derived after data-encryption secrets so DB-backed email secrets can be decrypted.
   const emailSettings = await resolveEmailSettings(db, runtimeEnv, dataEncryptionSecrets)

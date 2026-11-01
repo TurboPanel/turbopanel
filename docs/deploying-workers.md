@@ -115,7 +115,7 @@
   deploy command (`pnpm migrate && pnpm wrangler deploy`) reports the commit
   without `deploy:testing`. `TURBOPANEL_REVISION` still wins when set.
 
-## Panel identity key (owner step, per environment)
+## Control plane identity key (owner step, per environment)
 
 The panel signs its identity document and, later, its messages to daemons with
 an Ed25519 key. Workers take the key from the secret binding
