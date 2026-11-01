@@ -646,11 +646,12 @@ async function bindKeyToEnrollment(
     licenseId,
     verifiedLicense: verified,
   })
-  if (!enrolled.ok) return enrolled
-  // Bound now: `license.server_id` carries it from here.
-  await clearLicenseEnrollAttempt(db, licenseId).catch(() => {})
-  await eraseLicenseToken(db, licenseId).catch(() => {})
-  if (wasUnbound) await announceNewServer(db, params, enrolled.serverId)
+  if (enrolled.ok) {
+    // Bound now: `license.server_id` carries it from here.
+    await clearLicenseEnrollAttempt(db, licenseId).catch(() => {})
+    await eraseLicenseToken(db, licenseId).catch(() => {})
+    if (wasUnbound) await announceNewServer(db, params, enrolled.serverId)
+  }
   return enrolled
 }
 

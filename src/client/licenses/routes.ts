@@ -16,7 +16,6 @@ import {
   listServersBoundToLicenses,
 } from '../../features/licenses/license.ts'
 import { mintTicket } from '../../features/licenses/tickets.ts'
-import { encodeLicenseArg } from '../../features/install/daemon-install-command.ts'
 import { recordAudit } from '../../features/audit/audit-records.ts'
 import { isCustomerBillingOperational } from '../../features/billing/config.ts'
 import {
@@ -39,7 +38,10 @@ import { compatLogInfo } from '../../lib/log-compat.ts'
 import { type Db, getDaemonCellRegistry, getDb } from '../../db/connection.ts'
 import type { DaemonCellRegistry } from '../../contracts/cell.ts'
 import { isDeveloperSurfaceEnabled } from '../../app/dev-mode.ts'
-import { buildLicenseInstallCommand } from '../../features/install/daemon-install-command.ts'
+import {
+  buildLicenseInstallCommand,
+  encodeLicenseArg,
+} from '../../features/install/daemon-install-command.ts'
 import { INSTALL_CA_PIN_UNAVAILABLE } from '../../features/install/install-ca-pin.ts'
 import { resolveInstallOriginTls } from '../../features/install/install-trust.ts'
 import { syncSelfHostedGrant } from '../../features/tiers/self-hosted-grant-records.ts'

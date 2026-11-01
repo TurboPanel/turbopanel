@@ -24,8 +24,8 @@ export type EnrollCredential =
 async function joinTargetLicense(db: Db, ticket: TicketRow): Promise<VerifiedDaemonLicense | null> {
   if (!ticket.licenseId) return null
   const target = await lookupActiveLicense(db, ticket.licenseId)
-  if (!target || target.serverId !== null) return null
-  if (target.organizationId !== ticket.organizationId) return null
+  // A missing key gives `undefined`, which is not `null`, so it is refused here.
+  if (target?.serverId !== null || target.organizationId !== ticket.organizationId) return null
   return { organizationId: target.organizationId }
 }
 
