@@ -209,6 +209,7 @@ export const DAEMON_WIRE_FEATURES = [
   'fabric-peer-report-v1',
   'fabric-lan-routes-v1',
   'repo-key-report-v1',
+  'install-token-v2',
 ] as const
 
 export type DaemonWireFeature = (typeof DAEMON_WIRE_FEATURES)[number]
@@ -457,6 +458,13 @@ export const FABRIC_LAN_ROUTES_FEATURE: DaemonWireFeature = 'fabric-lan-routes-v
  * never does.
  */
 export const REPO_KEY_REPORT_FEATURE: DaemonWireFeature = 'repo-key-report-v1'
+
+/**
+ * The daemon installer reads one signed `TOKEN` (and pins the panel key). The
+ * Add Server command only uses that form once the switch in
+ * `features/install/install-token-command.ts` is on.
+ */
+export const INSTALL_TOKEN_V2_FEATURE: DaemonWireFeature = 'install-token-v2'
 
 /**
  * The daemon answers `managed-permissions-request` with

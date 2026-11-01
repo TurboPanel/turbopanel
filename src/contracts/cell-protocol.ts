@@ -652,6 +652,12 @@ export type DaemonMessage =
       releaseLinkScan?: ServerReleaseLinkScanMetadata
       /** Commands in flight and results awaiting an ack (feature `command-recovery-v1`). */
       commands?: CommandRecoveryReport
+      /**
+       * How this server pinned the panel key (the pin file the installer
+       * wrote). Hello only; omitted by a daemon without a pin file.
+       * Persisted to `server.trust_pinned_by`.
+       */
+      panelPin?: { pinnedBy: 'install' | 'upgrade' | 'unsafe'; current: string; keyset: number }
     }
   | {
       type: 'heartbeat'

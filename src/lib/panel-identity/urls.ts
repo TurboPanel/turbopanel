@@ -16,3 +16,15 @@ export function orderedPublicOrigins(rows: ReadonlyArray<{ host: string }>): str
   }
   return origins
 }
+
+/**
+ * The URL list for an install command: the admin's chosen install URL first,
+ * then the other public origins in their stored order, no repeats.
+ */
+export function installUrlsFor(
+  rows: ReadonlyArray<{ host: string }>,
+  installUrl: string
+): string[] {
+  const first = installUrl.replace(/\/$/, '')
+  return [first, ...orderedPublicOrigins(rows).filter((origin) => origin !== first)]
+}

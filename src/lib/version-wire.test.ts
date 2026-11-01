@@ -8,6 +8,7 @@ import {
   TUNNEL_STATUS_FEATURE,
   MANAGED_BACKUP_LOGIN_FEATURE,
   FABRIC_LAN_ROUTES_FEATURE,
+  INSTALL_TOKEN_V2_FEATURE,
   REPO_KEY_REPORT_FEATURE,
   FABRIC_PEER_REPORT_FEATURE,
   FABRIC_RETAIN_KEYS_FEATURE,
@@ -385,8 +386,14 @@ test('fabric-lan-routes-v1 is advertised and raised no floor', () => {
   assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.0')
 })
 
-test('repo-key-report-v1 is advertised last and raised no floor', () => {
+test('repo-key-report-v1 is advertised and raised no floor', () => {
   assertEquals(REPO_KEY_REPORT_FEATURE, 'repo-key-report-v1')
-  assertEquals(DAEMON_WIRE_FEATURES.at(-1), REPO_KEY_REPORT_FEATURE)
+  assertEquals(DAEMON_WIRE_FEATURES.includes(REPO_KEY_REPORT_FEATURE), true)
+  assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.0')
+})
+
+test('install-token-v2 is advertised last and raised no floor', () => {
+  assertEquals(INSTALL_TOKEN_V2_FEATURE, 'install-token-v2')
+  assertEquals(DAEMON_WIRE_FEATURES.at(-1), INSTALL_TOKEN_V2_FEATURE)
   assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.0')
 })

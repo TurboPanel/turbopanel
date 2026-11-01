@@ -52,6 +52,7 @@ import {
 import {
   SERVER_DAEMON_UPDATE_STATUSES,
   SERVER_OFFLINE_REASONS,
+  SERVER_TRUST_PINNED_BY,
 } from '../features/servers/daemon-state.ts'
 import {
   FIREWALL_MODES,
@@ -171,6 +172,7 @@ const CASES: Array<[constraint: string, values: readonly string[]]> = [
   ['server_os_architecture_check', SERVER_OS_ARCHITECTURES],
   ['server_offline_reason_check', SERVER_OFFLINE_REASONS],
   ['server_fabric_role_check', FABRIC_SERVER_ROLES],
+  ['server_trust_pinned_by_check', SERVER_TRUST_PINNED_BY],
   ['relay_kind_check', FABRIC_PEER_KINDS],
   ['server_daemon_update_status_check', SERVER_DAEMON_UPDATE_STATUSES],
   ['login_grant_mode_check', LOGIN_GRANT_MODES],

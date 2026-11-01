@@ -72,3 +72,24 @@ records that error on the hostname. The detail phrase is
 is stored on the hostname. A failure does not clear `notAfter`. Changing
 the source away from Let's Encrypt does. That message is not the tenant
 `acme-issuance-event` stream.
+
+## Install TOKEN (v2)
+
+`install-token-command.ts` builds the single-value install command
+(`curl -fsSL https://turbopanel.sh | TOKEN=<payload>.<sig> sh`). The payload is
+base64url of `v2:` and six base64url fields joined by `:` (license id, license
+secret, comma-joined panel URLs with the admin's install URL first, panel key
+fingerprint, next key fingerprint, CA fingerprints), signed by the panel
+identity key over the payload text (`encodeInstallToken`). Rules:
+
+- **Expand only.** The command is emitted only when `TURBOPANEL_INSTALL_TOKEN_V2`
+  is `1`/`true` and the panel has an identity key; otherwise the older
+  `TURBOPANEL_LICENSE` form is unchanged. Turn the switch on only after the
+  daemon release whose `run.sh` reads `TOKEN` (wire feature `install-token-v2`)
+  is on the release channel the installer hosts serve.
+- Every URL is a bare `https://host[:port]` origin; the encoder throws otherwise
+  and the route falls back to the older form for an install URL that is not one.
+- The `licenseToken` slot is opaque, so a one-hour join ticket can ride in it
+  (the panel tells the two apart by lookup).
+- `server.trust_pinned_by` records how the daemon pinned the key (hello
+  `panelPin`); `unsafe` means it was installed with the skip flag.

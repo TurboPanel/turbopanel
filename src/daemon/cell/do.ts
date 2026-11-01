@@ -1202,6 +1202,7 @@ export class DaemonCellObject {
       releaseLinkScan?: ServerReleaseLinkScanMetadata
       services?: ServiceRunState[]
       features?: string[]
+      panelPin?: { pinnedBy: string }
     },
     geo?: ServerGeo,
     runtimeWasOffline?: boolean
@@ -1216,7 +1217,8 @@ export class DaemonCellObject {
         hostIdentity?.docker ||
         hostIdentity?.releaseLinkScan ||
         hostIdentity?.services ||
-        hostIdentity?.features
+        hostIdentity?.features ||
+        hostIdentity?.panelPin
       ) {
         await touchServerMetadata(db, serverId, {
           hostname: hostIdentity.hostname,
@@ -1228,6 +1230,7 @@ export class DaemonCellObject {
           releaseLinkScan: hostIdentity.releaseLinkScan,
           services: hostIdentity.services,
           ...(hostIdentity.features !== undefined ? { features: hostIdentity.features } : {}),
+          ...(hostIdentity.panelPin ? { panelPin: hostIdentity.panelPin } : {}),
         })
       }
       await onDaemonInbound(db, serverId, this.#projectionCell(serverId), {
@@ -1777,6 +1780,7 @@ export class DaemonCellObject {
       services?: unknown
       features?: string[]
       commands?: CommandRecoveryReport
+      panelPin?: { pinnedBy: string }
     }
   ): Promise<void> {
     this.#bumpDiag('heartbeatCount')
@@ -1813,6 +1817,7 @@ export class DaemonCellObject {
           releaseLinkScan?: ServerReleaseLinkScanMetadata
           services?: ServiceRunState[]
           features?: string[]
+          panelPin?: { pinnedBy: string }
         }
       | undefined
     if (parsed.type === 'hello') {
@@ -1821,6 +1826,7 @@ export class DaemonCellObject {
         machineKey: parsed.machineKey,
         os: parsed.os,
         features: parsed.features ?? [],
+        ...(parsed.panelPin ? { panelPin: parsed.panelPin } : {}),
         ...presenceFacts,
       }
     } else if (hasPresenceFacts) {
@@ -1835,7 +1841,8 @@ export class DaemonCellObject {
       hostIdentity?.docker ||
       hostIdentity?.releaseLinkScan ||
       hostIdentity?.services ||
-      hostIdentity?.features
+      hostIdentity?.features ||
+      hostIdentity?.panelPin
     )
     const attachGeo = parseServerGeo(attachment.geo) ?? undefined
     // Heartbeats: daemon-build change, presence facts, or offline repair only —
