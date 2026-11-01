@@ -91,6 +91,8 @@ interface CloudflareBindings {
   STRIPE_WEBHOOK_RATE_LIMITER?: RateLimit
   TURBOPANEL_SECRET?: string
   TURBOPANEL_SECRETS?: string
+  /** Panel identity key JSON (secret binding). Unset = identity feature off. Never derived from TURBOPANEL_SECRET. */
+  TURBOPANEL_IDENTITY_KEYS?: string
   TURBOPANEL_DATABASE_URL?: string
   TURBOPANEL_UI_CORS_ORIGINS?: string
   TURBOPANEL_IS_SIGNUP_ENABLED?: string | number

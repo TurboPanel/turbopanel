@@ -84,6 +84,8 @@ import {
   resolvePublicInstanceTls,
 } from '../../features/install/install-tls.ts'
 import { listInstanceHostnames } from '../../features/install/instance-hostnames.ts'
+import { ensurePanelIdentity } from '../../lib/panel-identity/identity.ts'
+import { orderedPublicOrigins } from '../../lib/panel-identity/urls.ts'
 import { registerDaemonWebSocket } from '../../daemon/deno-ws.ts'
 import { createHeartbeatReader } from './heartbeat-reader.ts'
 import {
@@ -449,6 +451,13 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     secretsConfig,
     'data-encryption'
   )
+  // The panel identity key: random, stored sealed under the data-encryption key,
+  // never derived from TURBOPANEL_SECRET. Generated once on the first start.
+  const panelIdentity = await ensurePanelIdentity(db, dataEncryptionSecrets)
+  logInfo(
+    'identity',
+    `Panel identity ${panelIdentity.current.kid} (keyset ${panelIdentity.keyset})`
+  )
   // Derived after data-encryption secrets so DB-backed email secrets can be decrypted.
   const emailSettings = await resolveEmailSettings(db, runtimeEnv, dataEncryptionSecrets)
   const daemonCellRegistry = createRedisDaemonCellRegistry({ db })
@@ -641,6 +650,8 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     platformCaLeafPresented: async (hostname: string) =>
       hostnamePresentsPlatformCaLeaf(hostname, await listInstanceHostnames(db)),
     readPlatformCaPem,
+    panelIdentity: () => Promise.resolve(panelIdentity),
+    identityUrls: async (requestDb) => orderedPublicOrigins(await listInstanceHostnames(requestDb)),
   })
   // Unversioned, session-free surface: mounted on the top-level app next to the
   // daemon API rather than under CLIENT_API_PREFIX, and authenticating itself.
