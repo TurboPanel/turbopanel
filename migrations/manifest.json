@@ -92,6 +92,12 @@
       "tag": "0014_notification_events_panel_trust",
       "when": 1793570133908,
       "sha256": "03a124ecd87ed38c1e4e5f2dbe8bff8c8d6e8663b14277a91ea8c26bbf8ff4b2"
+    },
+    {
+      "idx": 15,
+      "tag": "0015_server_sealing_key",
+      "when": 1793572294931,
+      "sha256": "fe7d97a732eb7ca400b584381f8cdc1b2a6d7e6e695f0fe74facd5944db87992"
     }
   ]
 }

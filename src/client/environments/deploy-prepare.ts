@@ -28,6 +28,7 @@ import {
 } from '../../features/compose/compile-runtime.ts'
 import { sha256HexUtf8 } from '../../features/compose/desired-hash.ts'
 import { deployInputsDigest } from './deploy-inputs-digest.ts'
+import { sealPrincipalPasswordHashes } from './deploy-principal-password-seal.ts'
 import {
   parseOrganizationOptions,
   resolveAcmeEnabled,
@@ -140,7 +141,11 @@ import {
   deliveryByServiceId,
   hostRunDeliveryByComposeName,
 } from '../../features/bindings/host-run.ts'
-import { ACME_ISSUE_FEATURE, PHP_SITE_MODES_FEATURE } from '../../lib/version-wire.ts'
+import {
+  ACME_ISSUE_FEATURE,
+  DAEMON_SEALED_SECRETS_FEATURE,
+  PHP_SITE_MODES_FEATURE,
+} from '../../lib/version-wire.ts'
 import { readHttpIssuanceState } from '../../features/tls/http-issuance/state.ts'
 import {
   isComposeChainError,
@@ -922,6 +927,32 @@ async function resolveDaemonSealContext(
     dataEncryptionSecrets,
     recipient: { serverId, keyId: daemonState.key.id },
   }
+}
+
+/**
+ * The deploy's Hosting Accounts with their password hashes sealed for the
+ * daemon, or the material unchanged when no account has a hash, the deploy is a
+ * preview, or the daemon does not list `daemon-sealed-secrets-v1`.
+ */
+async function sealPrincipalMaterialForDaemon(
+  c: Context<AppEnv>,
+  db: Db,
+  mode: DeployPrepareMode,
+  serverId: string,
+  material: EnvironmentDeployPrincipalMaterial[]
+): Promise<EnvironmentDeployPrincipalMaterial[] | Response> {
+  if (mode === 'preview' || material.every((entry) => entry.passwordHash === undefined)) {
+    return material
+  }
+  const daemonState = await getServerDaemonStateByServerId(db, serverId)
+  if (!(daemonState?.projection?.features ?? []).includes(DAEMON_SEALED_SECRETS_FEATURE)) {
+    return material
+  }
+  const sealing = await resolveDaemonSealContext(c, db, serverId)
+  if (sealing instanceof Response) return sealing
+  return await sealPrincipalPasswordHashes(material, (plaintext) =>
+    encryptSecretForDaemon(sealing.secretsConfig, sealing.recipient, plaintext)
+  )
 }
 
 async function sealVariableMaterialForDaemon(
@@ -2856,6 +2887,11 @@ async function toPreparedDeployResult(
     variableMaterial: EnvironmentDeployVariableMaterial[]
     storageMaterial: EnvironmentDeployStorageMaterial[]
     principalMaterial: EnvironmentDeployPrincipalMaterial[]
+    /**
+     * The accounts before their password hashes are sealed (a sealed envelope
+     * carries a fresh nonce on every send). The hash compares these.
+     */
+    hashPrincipalMaterial?: EnvironmentDeployPrincipalMaterial[]
     sites: EnvironmentDeploySite[]
     nativeAppServices: PreparedNativeAppService[]
     nativeAppVariables?: NativeAppVariablesView[]
@@ -2901,7 +2937,10 @@ async function toPreparedDeployResult(
       parts.composeYaml,
       parts.sourceMaterial,
       parts.nativeAppServices,
-      deployHashInputs(parts)
+      deployHashInputs({
+        ...parts,
+        principalMaterial: parts.hashPrincipalMaterial ?? parts.principalMaterial,
+      })
     ),
     replicaCounts: parts.replicaCounts,
     hooks: parts.hooks,
@@ -3822,6 +3861,15 @@ export async function prepareDeployCompose(
   const sourceMaterial = withBuildEnv(localSourceMaterial, withVariables.buildAssignments)
   if (!Array.isArray(sourceMaterial)) return toApplyVariablesPrepareError(sourceMaterial)
 
+  const sealedPrincipalMaterial = await sealPrincipalMaterialForDaemon(
+    c,
+    db,
+    mode,
+    params.serverId,
+    principalMaterial
+  )
+  if (sealedPrincipalMaterial instanceof Response) return sealedPrincipalMaterial
+
   return await toPreparedDeployResult(mode, {
     serverId: resolved.serverId,
     ...(mode === 'preview'
@@ -3837,7 +3885,8 @@ export async function prepareDeployCompose(
     hooks,
     variableMaterial,
     storageMaterial,
-    principalMaterial,
+    principalMaterial: sealedPrincipalMaterial,
+    hashPrincipalMaterial: principalMaterial,
     sites: localSiteBound,
     nativeAppServices: nodeVersions.apps,
     nativeAppVariables: nativeAppVariableViews(nodeVersions.apps, nativeVariables),

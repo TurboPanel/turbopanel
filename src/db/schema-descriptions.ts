@@ -1687,6 +1687,14 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'The datacenter whose network this server prefers when it belongs to several; NULL means no preference; set null when the datacenter is deleted.',
       is_fabric_enabled:
         'TurboFabric membership switch, default true; false keeps the server out of the mesh (no relay, no `tp0`, no peer entry, no fabric address).',
+      sealing_key_kid:
+        'Fingerprint of the daemon X25519 sealing key, set when it registers; decrypt answers are sealed to that key for daemons listing `daemon-sealed-secrets-v1`.',
+      sealing_key_pub:
+        'Base64url raw public half of the daemon sealing key, stored only after its signature verified against the daemon key; NULL until registered.',
+      sealing_key_reported_at:
+        'When the daemon last registered its sealing key; NULL until it does.',
+      plaintext_secrets_at:
+        'Last time the secrets decrypt route answered this server in plaintext, written at most hourly; the edge go-live gate reads it.',
       fabric_role:
         'Operator TurboFabric role, `gateway` (accepts connections) or `client` (only dials out); NULL means automatic, gateway when a public address is known.',
       container_prefix:

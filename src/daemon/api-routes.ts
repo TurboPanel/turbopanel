@@ -28,6 +28,9 @@ import type { Db } from '../db/connection.ts'
 import { describeError } from '../lib/describe-error.ts'
 import { storeIssuedCertificate } from '../client/tls/issued-certificate.ts'
 import { logWarn } from '../lib/logger.ts'
+import { buildSecretsDecryptAnswer, databaseDecryptAnswerSource } from './secrets-decrypt-answer.ts'
+import { registerDaemonSealingKey } from './sealing-key-registration.ts'
+import { setDaemonSealingKey } from '../features/servers/daemon-sealing-key.ts'
 import { createIdentityDocumentCache } from '../lib/panel-identity/document-cache.ts'
 import { IDENTITY_SIGNATURE_HEADER } from '../lib/panel-identity/document.ts'
 import type { PanelIdentity } from '../lib/panel-identity/identity.ts'
@@ -211,6 +214,9 @@ async function readRequestBodyWithLimit(
   if (!bodyRead.ok) return { ok: false }
   return { ok: true, text: new TextDecoder().decode(bodyRead.bytes) }
 }
+
+/** A sealing-key registration is three short strings. */
+const MAX_SEALING_KEY_BODY_BYTES = 1024
 
 /** Maximum number of ciphertexts accepted per `/secrets/decrypt` request. */
 export const MAX_SECRETS_DECRYPT_BATCH = 100
@@ -2126,7 +2132,52 @@ export function registerDaemonApiRoutes<E extends Env>(
         decryptDaemonCiphertext(secretsConfig, recipient, ciphertext)
       )
 
-      return c.json({ plaintexts }, 200)
+      // Sealed to the daemon's registered sealing key when it lists
+      // `daemon-sealed-secrets-v1`; plaintext only for older daemons.
+      const db = getDb(c)
+      return c.json(
+        await buildSecretsDecryptAnswer(
+          db && databaseDecryptAnswerSource(db),
+          daemonServerId,
+          plaintexts
+        ),
+        200
+      )
+    }
+  )
+
+  /**
+   * The daemon registers its X25519 sealing key. `sig` is the daemon's Ed25519
+   * signature over `"tp-sealing-key\n" + pub`, checked against the key on file;
+   * only the key id is ever logged.
+   */
+  daemon.post(
+    '/servers/self/sealing-key',
+    requireDaemonJwt,
+    enforceJwtRestLimit('sealing-key'),
+    requireActiveDaemonKey,
+    async (c) => {
+      const db = getDb(c)
+      if (!db) return c.json({ ok: false, error: 'storage unavailable' }, 503)
+      const bodyRead = await readBoundedJsonBody(c, MAX_SEALING_KEY_BODY_BYTES)
+      if (!bodyRead.ok) return bodyRead.response
+      let parsedBody: unknown
+      try {
+        parsedBody = JSON.parse(bodyRead.text)
+      } catch {
+        return c.json({ ok: false, error: 'invalid json' }, 400)
+      }
+      const serverId = c.get('daemonServerId')
+      const result = await registerDaemonSealingKey(
+        {
+          loadDaemonPublicJwk: async (id) =>
+            (await getServerDaemonStateByServerId(db, id))?.key.publicJwk ?? null,
+          save: (id, key) => setDaemonSealingKey(db, id, key),
+        },
+        serverId,
+        parsedBody
+      )
+      return c.json(result.body, result.status)
     }
   )
 

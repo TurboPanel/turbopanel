@@ -55,7 +55,8 @@ export const authSchemas = {
   },
   DaemonSecretsDecryptResponse: {
     type: "object",
-    required: ["plaintexts"],
+    description:
+      "Exactly one of plaintexts or sealed. sealed is returned to a daemon that lists daemon-sealed-secrets-v1 and has registered a sealing key; plaintexts is the answer to every other daemon.",
     properties: {
       plaintexts: {
         type: "array",
@@ -64,6 +65,49 @@ export const authSchemas = {
         },
         description:
           "Order-preserving plaintexts; null when an entry fails to decrypt",
+      },
+      sealed: {
+        type: "array",
+        items: {
+          oneOf: [
+            { $ref: "#/components/schemas/DaemonSealedEnvelope" },
+            { type: "null" },
+          ],
+        },
+        description:
+          "Order-preserving HPKE envelopes sealed to the daemon's sealing key (aad is the server id); null when an entry fails to decrypt",
+      },
+    },
+  },
+  DaemonSealedEnvelope: {
+    type: "object",
+    required: ["v", "kid", "enc", "ct"],
+    properties: {
+      v: { type: "integer", enum: [1] },
+      kid: {
+        type: "string",
+        description: "Fingerprint of the daemon's X25519 sealing key",
+      },
+      enc: { type: "string", description: "base64url encapsulated key" },
+      ct: { type: "string", description: "base64url ciphertext" },
+    },
+  },
+  DaemonSealingKeyRequest: {
+    type: "object",
+    required: ["kid", "pub", "sig"],
+    properties: {
+      kid: {
+        type: "string",
+        description: "Fingerprint of pub (43 characters)",
+      },
+      pub: {
+        type: "string",
+        description: "base64url raw 32-byte X25519 public key",
+      },
+      sig: {
+        type: "string",
+        description:
+          'base64url Ed25519 signature over "tp-sealing-key\n" + pub by the daemon key',
       },
     },
   },
@@ -219,6 +263,29 @@ export const authPaths: Record<string, unknown> = {
             },
           },
         },
+      },
+    },
+  },
+  "/api/daemon/v1/servers/self/sealing-key": {
+    post: {
+      tags: ["Daemon"],
+      summary: "Register the daemon's X25519 sealing key",
+      description:
+        "Stores the public half of the daemon's sealing key after checking the Ed25519 signature against the key on file. Decrypt answers are then sealed to it when the daemon lists daemon-sealed-secrets-v1.",
+      security: [{ bearerAuth: [] }],
+      requestBody: {
+        required: true,
+        content: {
+          "application/json": {
+            schema: {
+              $ref: "#/components/schemas/DaemonSealingKeyRequest",
+            },
+          },
+        },
+      },
+      responses: {
+        "200": { description: "Registered" },
+        "400": { description: "Malformed body or signature does not verify" },
       },
     },
   },

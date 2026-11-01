@@ -19,6 +19,7 @@ export type DaemonRestRateLimitRoute =
   | 'commands-lease'
   | 'secrets-decrypt'
   | 'tls-issued'
+  | 'sealing-key'
   | 'secrets-rehydrate'
   | 'host-docker-networking'
   | 'ping'
