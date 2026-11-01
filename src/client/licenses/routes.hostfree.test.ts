@@ -65,6 +65,15 @@ import { COLOCATED_SERVER_DISPLAY_NAME } from '../authn/install-state.ts'
 import { deriveSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 import { registerLicenseRoutes } from './routes.ts'
+import {
+  cancelLicenseTickets,
+  checkTicket,
+  consumeTicket,
+  mintTicket,
+  recordTicketServer,
+  releaseTicket,
+  revokeServerTickets,
+} from '../../features/licenses/tickets.ts'
 import { registerServerReenrollTicketRoutes } from '../servers/reenroll-ticket-routes.ts'
 import { tierSeatExhaustionMessage } from './routes-helpers.ts'
 import { LICENSE_KEY_UNUSED_TTL_DAYS } from '../../features/licenses/key-expiry.ts'
@@ -808,6 +817,60 @@ test('issuing a re-enroll ticket and burning a key need step-up when the organiz
   assertEquals(db.rows(license).find((row) => row.id === L_ACTIVE)?.token, 'hashed')
 })
 
+test('a burn cancels the join tickets issued before it', async () => {
+  const { app, headers, db } = await buildApp({ seats: [{ tierId: S3, quantity: 2 }] })
+  const minted = await mint(app, headers, { name: 'edge-1' })
+  assertEquals(minted.status, 200)
+  const first = (await minted.json()) as { licenseId: string; joinId: string; licenseToken: string }
+  assertEquals((await checkTicket(db, first.joinId, first.licenseToken)).ok, true)
+
+  const burn = await app.request(`/licenses/${first.licenseId}/ticket`, { method: 'POST', headers })
+  assertEquals(burn.status, 200)
+  const second = (await burn.json()) as { joinId: string; licenseToken: string }
+
+  assertEquals(await checkTicket(db, first.joinId, first.licenseToken), {
+    ok: false,
+    reason: 'used',
+  })
+  assertEquals((await checkTicket(db, second.joinId, second.licenseToken)).ok, true)
+})
+
+test('a burn or revoke that lands while a ticket is being spent keeps it spent when the enrolment fails', async () => {
+  const { db } = await buildApp({ servers: [{ id: SERVER, name: 'edge-1' }] })
+  const read = (id: string) => db.rows(ticket).find((row) => row.id === id)?.usedAt ?? null
+
+  // Join ticket: consumed, then the real burn-time cancel, then the failed enrolment's release.
+  const join = await mintTicket(db, { organizationId: ORG, licenseId: L_ACTIVE })
+  const joinSpent = await consumeTicket(db, join.id)
+  assertExists(joinSpent)
+  await cancelLicenseTickets(db, L_ACTIVE)
+  await releaseTicket(db, join.id, joinSpent)
+  assertEquals(read(join.id) === null, false)
+  assertEquals((await checkTicket(db, join.id, join.plaintext)).ok, false)
+
+  // Re-enroll ticket: the same sequence with the real revoke.
+  const reenroll = await mintTicket(db, { organizationId: ORG, serverId: SERVER })
+  const reenrollSpent = await consumeTicket(db, reenroll.id)
+  assertExists(reenrollSpent)
+  await revokeServerTickets(db, SERVER)
+  await releaseTicket(db, reenroll.id, reenrollSpent)
+  assertEquals((await checkTicket(db, reenroll.id, reenroll.plaintext)).ok, false)
+
+  // With nothing in between, the release still puts a spent ticket back.
+  const plain = await mintTicket(db, { organizationId: ORG, licenseId: L_ACTIVE })
+  const plainSpent = await consumeTicket(db, plain.id)
+  assertExists(plainSpent)
+  await releaseTicket(db, plain.id, plainSpent)
+  assertEquals(read(plain.id), null)
+
+  // A ticket that produced a server is finished: a cancel leaves it alone.
+  const bound = await mintTicket(db, { organizationId: ORG, licenseId: L_ACTIVE })
+  const boundSpent = await consumeTicket(db, bound.id)
+  await recordTicketServer(db, bound.id, SERVER)
+  await cancelLicenseTickets(db, L_ACTIVE)
+  assertEquals(read(bound.id), boundSpent)
+})
+
 test('re-enroll tickets: an owner issues one per server, a new one retires the old, DELETE revokes', async () => {
   const { app, headers, db } = await buildApp({ servers: [{ id: SERVER, name: 'edge-1' }] })
   const url = `/servers/${SERVER}/reenroll-ticket`
@@ -828,6 +891,7 @@ test('re-enroll tickets: an owner issues one per server, a new one retires the o
 
   const revoked = await app.request(url, { method: 'DELETE', headers })
   assertEquals(revoked.status, 200)
+  // Counts live tickets only: the one the reissue already retired is not counted again.
   assertEquals(((await revoked.json()) as { revoked: number }).revoked, 1)
 
   const unknown = await app.request(`/servers/${L_ACTIVE}/reenroll-ticket`, {

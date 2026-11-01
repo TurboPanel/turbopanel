@@ -93,9 +93,12 @@ test('checkTicket answers bad for an unknown id, a non-UUID id and an empty secr
   })
 })
 
-test('consumeTicket is true only when the conditional update touched a row', async () => {
-  assertEquals(await consumeTicket(fakeDb([], [{ id: TICKET_ID }]), TICKET_ID, NOW), true)
-  assertEquals(await consumeTicket(fakeDb([], []), TICKET_ID, NOW), false)
+test('consumeTicket returns the used_at it wrote only when the conditional update touched a row', async () => {
+  assertEquals(
+    await consumeTicket(fakeDb([], [{ id: TICKET_ID }]), TICKET_ID, NOW),
+    new Date(NOW).toISOString()
+  )
+  assertEquals(await consumeTicket(fakeDb([], []), TICKET_ID, NOW), null)
 })
 
 test('resolveEnrollCredential tells a join ticket from a licence by lookup', async () => {
