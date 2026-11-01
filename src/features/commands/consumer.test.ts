@@ -8,7 +8,10 @@ import { loadDeployRunCapMs } from './deploy-wait-settings.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
 import { createDenoDb, type Db, endDbConnection } from '../../db/connection.ts'
 import type { DaemonCell, DaemonCellRegistry, PendingRequestRecord } from '../../contracts/cell.ts'
-import { attachDaemonStateToServer } from '../servers/server-identity-db.ts'
+import {
+  attachDaemonStateToServer,
+  getServerDaemonStateByServerId,
+} from '../servers/server-identity-db.ts'
 import {
   type DerivedSecretsConfig,
   deriveEncryptionSecretsConfig,
@@ -138,13 +141,17 @@ async function attachConnectedDaemonStatus(
   db: ReturnType<typeof createDenoDb>,
   serverId: string
 ): Promise<void> {
-  await attachDaemonStateToServer(db, serverId, {
-    publicJwk: { kty: 'OKP', crv: 'Ed25519', x: 'abc' },
-    // `key.fingerprint` is globally unique now (schema-child-tables,
-    // Road-to-0.1.x) — a fixed fingerprint would collide across the
-    // multiple servers some fixtures attach in one test.
-    fingerprint: `fp-test-${crypto.randomUUID()}`,
-  })
+  // First registered key wins: a server that already holds a key keeps it,
+  // so a second call only refreshes the status columns below.
+  if (!(await getServerDaemonStateByServerId(db, serverId))) {
+    await attachDaemonStateToServer(db, serverId, {
+      publicJwk: { kty: 'OKP', crv: 'Ed25519', x: 'abc' },
+      // `key.fingerprint` is globally unique now (schema-child-tables,
+      // Road-to-0.1.x) — a fixed fingerprint would collide across the
+      // multiple servers some fixtures attach in one test.
+      fingerprint: `fp-test-${crypto.randomUUID()}`,
+    })
+  }
   const now = new Date().toISOString()
   // Fleet status lives on dedicated `server` columns now — never on
   // `server.daemon` jsonb (see `mapServerDaemonStatusFromColumns`).
