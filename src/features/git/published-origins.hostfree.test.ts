@@ -168,3 +168,12 @@ test('matchPublishedOrigin accepts either spelling of a published origin and not
   assertEquals(matchPublishedOrigin(origins, 'http://panel.example.com'), null)
   assertEquals(matchPublishedOrigin([], 'https://panel.example.com'), null)
 })
+
+test('matchPublishedOrigin maps an old :8443 webhook address to the same host published on 443', () => {
+  const origins = ['https://panel.example.com']
+  assertEquals(
+    matchPublishedOrigin(origins, 'https://panel.example.com:8443'),
+    'https://panel.example.com'
+  )
+  assertEquals(matchPublishedOrigin(origins, 'https://other.example.com:8443'), null)
+})

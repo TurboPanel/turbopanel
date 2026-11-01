@@ -51,7 +51,7 @@ import { getTierById } from '../../features/tiers/tier-records.ts'
 import { unusedKeyExpiresAt } from '../../features/licenses/key-expiry.ts'
 import {
   parseInstallBaseUrl,
-  resolvePublicBaseUrl,
+  resolveInstallBaseUrl,
 } from '../../features/install/resolve-public-base-url.ts'
 import {
   canReserveServerSeat,
@@ -335,7 +335,7 @@ export function registerLicenseRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       const unavailable = await rejectIfNoLicenseAvailable(c, db, organizationId, hosted)
       if (unavailable) return unavailable
 
-      const instanceUrl = parsedInstallBaseUrl ?? (await resolvePublicBaseUrl(c, opts))
+      const instanceUrl = parsedInstallBaseUrl ?? (await resolveInstallBaseUrl(c, opts))
       // Insecure TLS follows the dialed hostname and is bootstrap-only.
       // Let's Encrypt uses the system store. An uploaded leaf uses it only
       // when that certificate chains to a public root. A Let's Encrypt
