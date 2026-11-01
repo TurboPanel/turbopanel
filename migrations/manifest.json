@@ -74,6 +74,12 @@
       "tag": "0011_repo_key_changed_notifications",
       "when": 1793475009745,
       "sha256": "8fc52f5747a6724d8dcee31fc2c3b95dc9e4f75e70fd05dfcc02363c2af08809"
+    },
+    {
+      "idx": 12,
+      "tag": "0012_origin_ingress_modes",
+      "when": 1793564642214,
+      "sha256": "1b90f1fdddfe063a61b76f07dd63bf9d3bd346541cd0fe5dbe66c04236e77883"
     }
   ]
 }

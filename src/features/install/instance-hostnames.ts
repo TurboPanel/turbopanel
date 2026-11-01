@@ -21,6 +21,7 @@ import {
 } from '../../db/schema.ts'
 import { normalizeHostForCompare } from '../../lib/hostname-compare.ts'
 import { coversHostname } from '../../lib/tls/match.ts'
+import { DEFAULT_PUBLIC_PORT, isIngressMode, type IngressMode } from './ingress-modes.ts'
 import { redactUrlSecrets } from '../upgrades/redact-url-secrets.ts'
 import { isLoopbackOrPrivateHostname } from './install-tls.ts'
 import {
@@ -45,6 +46,11 @@ export type InstanceHostnameRecord = {
   notAfter: string | null
   acmeLastAttemptAt: string | null
   acmeLastError: string | null
+  mode: IngressMode
+  publicPort: number
+  isPrimary: boolean
+  isDaemonDial: boolean
+  ingressId: string | null
 }
 
 export type InstanceHostnameFailure = {
@@ -59,7 +65,26 @@ export type InstanceHostnameEntry = {
   uploadedCertId: string | null
 }
 
-type StoredHostname = {
+/** How visitors reach a name; every existing row reads back the defaults. */
+type IngressFields = {
+  mode: IngressMode
+  publicPort: number
+  isPrimary: boolean
+  isDaemonDial: boolean
+  ingressId: string | null
+  ingressState: unknown
+}
+
+const DEFAULT_INGRESS_FIELDS: IngressFields = {
+  mode: 'direct',
+  publicPort: DEFAULT_PUBLIC_PORT,
+  isPrimary: false,
+  isDaemonDial: true,
+  ingressId: null,
+  ingressState: null,
+}
+
+type StoredHostname = IngressFields & {
   id: string
   host: string
   source: InstanceHostnameSource
@@ -71,7 +96,8 @@ type StoredHostname = {
   updatedAt: string
 }
 
-type HostnameRow = {
+type HostnameRow = Omit<IngressFields, 'mode'> & {
+  mode: string
   id: string
   host: string
   source: string
@@ -111,6 +137,12 @@ function mapStored(row: HostnameRow): StoredHostname {
     acmeLastAttemptAt: row.acmeLastAttemptAt,
     acmeLastError: row.acmeLastError,
     notAfter: row.notAfter,
+    mode: isIngressMode(row.mode) ? row.mode : DEFAULT_INGRESS_FIELDS.mode,
+    publicPort: row.publicPort,
+    isPrimary: row.isPrimary,
+    isDaemonDial: row.isDaemonDial,
+    ingressId: row.ingressId,
+    ingressState: row.ingressState,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   }
@@ -145,6 +177,11 @@ function toRecord(row: StoredHostname): InstanceHostnameRecord {
     notAfter: row.notAfter,
     acmeLastAttemptAt: row.acmeLastAttemptAt,
     acmeLastError: row.acmeLastError,
+    mode: row.mode,
+    publicPort: row.publicPort,
+    isPrimary: row.isPrimary,
+    isDaemonDial: row.isDaemonDial,
+    ingressId: row.ingressId,
   }
 }
 
@@ -249,6 +286,7 @@ function newPlatformCaRow(host: string, index: number): StoredHostname {
     acmeLastAttemptAt: null,
     acmeLastError: null,
     notAfter: null,
+    ...DEFAULT_INGRESS_FIELDS,
     createdAt: stamp,
     updatedAt: stamp,
   }
@@ -552,6 +590,19 @@ function carryAcme(
   }
 }
 
+/** A name kept across a rewrite keeps how visitors reach it. */
+function carryIngress(previous: StoredHostname | undefined): IngressFields {
+  if (!previous) return DEFAULT_INGRESS_FIELDS
+  return {
+    mode: previous.mode,
+    publicPort: previous.publicPort,
+    isPrimary: previous.isPrimary,
+    isDaemonDial: previous.isDaemonDial,
+    ingressId: previous.ingressId,
+    ingressState: previous.ingressState,
+  }
+}
+
 function rowFromEntry(
   entry: InstanceHostnameEntry,
   previous: StoredHostname | undefined,
@@ -569,6 +620,7 @@ function rowFromEntry(
     acmeLastAttemptAt: acme.acmeLastAttemptAt,
     acmeLastError: acme.acmeLastError,
     notAfter: expiry,
+    ...carryIngress(previous),
     createdAt: previous?.createdAt ?? stamp,
     updatedAt: stamp,
   }

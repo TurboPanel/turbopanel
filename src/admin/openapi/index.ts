@@ -404,6 +404,7 @@ export function getAdminOpenApiSpec(
                 'monitors',
                 'relays',
                 'destinations',
+                'ingress',
                 'authproviders',
                 'email',
                 'alertwebhook',
