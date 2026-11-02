@@ -6,18 +6,6 @@ import {
   isInstallTokenOrigin,
 } from './daemon-install-command.ts'
 
-/**
- * Environment switch for the v2 install `TOKEN`. Off until the daemon release
- * whose installer reads `TOKEN` is live on the release channel (expand only):
- * an older installer would ignore the variable and the command would fail.
- */
-export const INSTALL_TOKEN_V2_ENV = 'TURBOPANEL_INSTALL_TOKEN_V2'
-
-export function isInstallTokenV2Enabled(env: Record<string, string | undefined> | undefined) {
-  const value = env?.[INSTALL_TOKEN_V2_ENV]?.trim().toLowerCase()
-  return value === '1' || value === 'true'
-}
-
 export type InstallTokenResult = {
   token: string
   panelFingerprint: string
@@ -25,12 +13,13 @@ export type InstallTokenResult = {
 }
 
 /**
- * The signed `TOKEN` for an Add Server command, or null when the command
- * stays in the older form: switch off, no identity key configured, or an
- * install URL that is not a bare https origin.
+ * The signed `TOKEN` for an Add Server command. Every command carries one
+ * except when this control plane cannot sign it: no identity key (High
+ * Availability before `TURBOPANEL_IDENTITY_KEYS` is set; self-hosted always
+ * has one) or an install URL that is not a bare https origin. Then it returns
+ * null and the command keeps the older variables.
  */
 export async function buildInstallTokenFor(opts: {
-  env: Record<string, string | undefined> | undefined
   identity: PanelIdentity | null
   licenseId: string
   licenseToken: string
@@ -42,7 +31,8 @@ export async function buildInstallTokenFor(opts: {
   caFingerprints?: readonly string[]
 }): Promise<InstallTokenResult | null> {
   const { identity } = opts
-  if (!isInstallTokenV2Enabled(opts.env) || !identity) return null
+  // The only fallback: without an identity key there is nothing to sign with.
+  if (!identity) return null
   const installUrl = opts.installUrl.replace(/\/$/, '')
   if (!isInstallTokenOrigin(installUrl)) return null
   // URL 0 is the origin the admin chose (the installer fetches the identity

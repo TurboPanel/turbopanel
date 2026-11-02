@@ -140,13 +140,25 @@ function emptyDb(): Db {
   return chain as Db
 }
 
-test('the scheduled pass sends nothing when no edge mode is in use', async () => {
+test('the scheduled pass fetches nothing without an edge mode and leaves the send to apply', async () => {
   let applied = 0
-  await runEdgeTrustTick(emptyDb(), () => {
-    applied += 1
-    return Promise.resolve()
-  })
-  assertEquals(applied, 0)
+  let fetched = 0
+  await runEdgeTrustTick(
+    emptyDb(),
+    () => {
+      applied += 1
+      return Promise.resolve()
+    },
+    {
+      now: () => NOW,
+      fetch: (() => {
+        fetched += 1
+        return Promise.reject(new Error('no fetch expected'))
+      }) as typeof fetch,
+    }
+  )
+  assertEquals(fetched, 0)
+  assertEquals(applied, 1)
 })
 
 function cloudflareAnswering(ipv4: string[], ipv6: string[] = []): typeof fetch {

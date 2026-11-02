@@ -41,6 +41,7 @@ import {
   getExecutionLogStore,
   getMetricsGate,
   getServerMetricsStore,
+  isConnectionClosedError,
 } from '../db/connection.ts'
 import { contentLengthExceeds, readBodyWithByteLimit } from '../lib/http/bounded-body.ts'
 import {
@@ -1570,7 +1571,18 @@ export function registerDaemonApiRoutes<E extends Env>(
       return c.json({ error: 'panel identity not configured' }, 404)
     }
     const db = getDb(c)
-    const urls = db && options.identityUrls ? await options.identityUrls(db) : []
+    let urls: string[] = []
+    try {
+      urls = db && options.identityUrls ? await options.identityUrls(db) : []
+    } catch (err) {
+      // A connection dropped mid-flight is replayed once by the Workers entry.
+      if (isConnectionClosedError(err)) throw err
+      // The URL list comes from the database: an unreachable database is a 503
+      // that says so, not an opaque 500 that reads as a broken identity key.
+      // The driver's message goes to the log only (it names the host and role).
+      logWarn('daemon-api', `identity: database unavailable: ${describeError(err)}`)
+      return c.json({ error: 'database unavailable' }, 503)
+    }
     const signed = await identityDocumentCache.get(identity, urls)
     return c.body(signed.body, 200, {
       'content-type': 'application/json',
