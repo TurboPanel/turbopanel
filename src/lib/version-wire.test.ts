@@ -14,6 +14,7 @@ import {
   PANEL_IDENTITY_FEATURE,
   PANEL_SIGNED_FRAMES_FEATURE,
   SIGNIN_V2_FEATURE,
+  TUNNEL_STATUS_FACTS_FEATURE,
   REPO_KEY_REPORT_FEATURE,
   FABRIC_PEER_REPORT_FEATURE,
   FABRIC_RETAIN_KEYS_FEATURE,
@@ -431,5 +432,11 @@ test('the signed session features are advertised and raised no floor', () => {
   for (const feature of [PANEL_IDENTITY_FEATURE, PANEL_SIGNED_FRAMES_FEATURE, SIGNIN_V2_FEATURE]) {
     assertEquals(DAEMON_WIRE_FEATURES.includes(feature), true)
   }
+  assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.0')
+})
+
+test('tunnel-status-facts-v1 is advertised and raised no floor', () => {
+  assertEquals(TUNNEL_STATUS_FACTS_FEATURE, 'tunnel-status-facts-v1')
+  assertEquals(DAEMON_WIRE_FEATURES.includes(TUNNEL_STATUS_FACTS_FEATURE), true)
   assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.0')
 })

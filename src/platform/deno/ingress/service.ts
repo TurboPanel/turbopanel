@@ -26,6 +26,7 @@ import { forEachSequential } from '../../../lib/sequential.ts'
 import { verifyIdentityResponse } from '../../../lib/panel-identity/document.ts'
 import type { DerivedSecretsConfig, SecretsConfig } from '../../../lib/secrets/secrets.ts'
 import { findIngressAccount, openAccountToken } from './accounts.ts'
+import { readInstanceConnector } from './cloudflare/instance-tunnel.ts'
 import { capabilitiesFor } from './capabilities.ts'
 import { type EdgeGate, type EdgeGateWaitingServer, readEdgeGate } from './gate.ts'
 import type {
@@ -144,6 +145,19 @@ async function colocatedConnected(db: Db, registry: DaemonCellRegistry): Promise
   return (await registry.getSnapshots([serverId])).get(serverId)?.connected === true
 }
 
+/** Names the co-located connector routes; null when unknown (including an unreadable answer). */
+async function readConnectorHostnames(
+  db: Db,
+  registry: DaemonCellRegistry
+): Promise<string[] | null> {
+  try {
+    return (await readInstanceConnector(db, registry)).connector?.hostnames ?? null
+  } catch {
+    // A stored daemon answer that does not parse says nothing about routes.
+    return null
+  }
+}
+
 /** The provider context for one hostname, or null when the row does not exist. */
 export async function buildIngressContext(
   db: Db,
@@ -169,6 +183,7 @@ export async function buildIngressContext(
           secretsConfig: deps.secretsConfig,
         })),
     gate: edgeGateReader(db, deps),
+    connectorHostnames: () => readConnectorHostnames(db, deps.registry),
     account: hostname.ingressId ? await findIngressAccount(db, hostname.ingressId) : null,
     openToken: (account) => openAccountToken(db, deps.dataEncryption, account),
     hostnames,
