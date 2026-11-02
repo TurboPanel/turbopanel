@@ -137,6 +137,19 @@ async function colocatedConnected(db: Db, registry: DaemonCellRegistry): Promise
   return (await registry.getSnapshots([serverId])).get(serverId)?.connected === true
 }
 
+/** Names the co-located connector routes; null when unknown (including an unreadable answer). */
+async function readConnectorHostnames(
+  db: Db,
+  registry: DaemonCellRegistry
+): Promise<string[] | null> {
+  try {
+    return (await readInstanceConnector(db, registry)).connector?.hostnames ?? null
+  } catch {
+    // A stored daemon answer that does not parse says nothing about routes.
+    return null
+  }
+}
+
 /** The provider context for one hostname, or null when the row does not exist. */
 export async function buildIngressContext(
   db: Db,
@@ -162,8 +175,7 @@ export async function buildIngressContext(
           secretsConfig: deps.secretsConfig,
         })),
     gate: await readEdgeGate(db, deps.env),
-    connectorHostnames: async () =>
-      (await readInstanceConnector(db, deps.registry)).connector?.hostnames ?? null,
+    connectorHostnames: () => readConnectorHostnames(db, deps.registry),
     account: hostname.ingressId ? await findIngressAccount(db, hostname.ingressId) : null,
     openToken: (account) => openAccountToken(db, deps.dataEncryption, account),
     hostnames,
