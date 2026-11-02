@@ -124,3 +124,17 @@ always sends 60; the Deno control plane sends 25 when a panel hostname sits
 behind an edge (`src/features/install/heartbeat-policy.ts`), read from a cached
 value so the attach path makes no database call. No feature gate and no floor
 change: older daemons ignore the field.
+
+## Sealed secrets (`daemon-sealed-secrets-v1`)
+
+A daemon with this feature generates an X25519 sealing key and registers it with
+`POST /api/daemon/v1/servers/self/sealing-key` `{kid, pub, sig}`; `sig` is its
+Ed25519 signature over `"tp-sealing-key\n" + pub`, checked against the key on file
+(`sealing-key-registration.ts`). `POST /secrets/decrypt` then answers `{ sealed:
+[envelope | null, ...] }` (same order as the request, `aad` = server id) and
+omits `plaintexts`; a daemon without the feature, or without a registered key,
+still gets `plaintexts`, and `server.plaintext_secrets_at` is stamped (at most
+hourly) so the edge go-live gate can read that nothing is still answered in
+plaintext. The answer is never both fields. Only the key id may be logged. The
+Hosting Account password hash rides as `passwordHashEnvelope` (a `tpdaemon`
+envelope) to such a daemon on environment deploys. The `MIN_SUPPORTED_*` floors are untouched.

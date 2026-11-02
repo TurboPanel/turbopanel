@@ -18,7 +18,10 @@ import {
   NOTIFICATION_DELIVERY_STATUSES,
 } from '../features/notifications/records.ts'
 import { INGRESS_MODES, INGRESS_PROVIDERS } from '../features/install/ingress-modes.ts'
-import { INSTANCE_HOSTNAME_SOURCES } from '../features/install/instance-hostnames.ts'
+import {
+  CERTIFICATE_KINDS,
+  INSTANCE_HOSTNAME_SOURCES,
+} from '../features/install/instance-hostnames.ts'
 import {
   UPGRADE_PHASES,
   UPGRADE_SOURCES,
@@ -149,6 +152,7 @@ const CASES: Array<[constraint: string, values: readonly string[]]> = [
   ['attempt_status_check', NOTIFICATION_DELIVERY_STATUSES],
   ['origin_source_check', INSTANCE_HOSTNAME_SOURCES],
   ['origin_mode_check', INGRESS_MODES],
+  ['certificate_kind_check', CERTIFICATE_KINDS],
   ['ingress_provider_check', INGRESS_PROVIDERS],
   ['upgrade_source_check', UPGRADE_SOURCES],
   ['upgrade_status_check', UPGRADE_STATUSES],

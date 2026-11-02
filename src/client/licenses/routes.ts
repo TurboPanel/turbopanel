@@ -38,21 +38,13 @@ import { assertOrgOwnerOr403 } from '../authz/index.ts'
 import { compatLogInfo } from '../../lib/log-compat.ts'
 import { type Db, getDaemonCellRegistry, getDb } from '../../db/connection.ts'
 import type { DaemonCellRegistry } from '../../contracts/cell.ts'
-import { isDeveloperSurfaceEnabled } from '../../app/dev-mode.ts'
-import {
-  buildLicenseInstallCommand,
-  encodeLicenseArg,
-} from '../../features/install/daemon-install-command.ts'
-import { INSTALL_CA_PIN_UNAVAILABLE } from '../../features/install/install-ca-pin.ts'
-import { resolveInstallOriginTls } from '../../features/install/install-trust.ts'
+import { encodeLicenseArg } from '../../features/install/daemon-install-command.ts'
+import { buildTicketInstallCommand, resolveInstallOrigin } from './install-origin.ts'
 import { syncSelfHostedGrant } from '../../features/tiers/self-hosted-grant-records.ts'
 import { lockOrganizationRow } from '../../features/tiers/assignment-records.ts'
 import { getTierById } from '../../features/tiers/tier-records.ts'
 import { unusedKeyExpiresAt } from '../../features/licenses/key-expiry.ts'
-import {
-  parseInstallBaseUrl,
-  resolveInstallBaseUrl,
-} from '../../features/install/resolve-public-base-url.ts'
+import { parseInstallBaseUrl } from '../../features/install/resolve-public-base-url.ts'
 import {
   canReserveServerSeat,
   loadOrgServerCapacity,
@@ -63,7 +55,6 @@ import {
   clearLicenseEnrollAttempt,
   listProvisioningLicenses,
 } from '../../features/licenses/enroll-attempt.ts'
-import { resolveInstanceUpdateChannel } from '../../contracts/update-channel.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
 import { purgeDaemonCellBestEffort } from '../../features/servers/daemon-cell-purge.ts'
 import {
@@ -330,7 +321,6 @@ export function registerLicenseRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       )
     }
 
-    const devSurface = opts.runtime === 'deno' && isDeveloperSurfaceEnabled()
     const parsedInstallBaseUrl = parseInstallBaseUrl(installBaseUrl)
     if (isInvalidInstallBaseUrl(installBaseUrl, parsedInstallBaseUrl)) {
       return c.json(
@@ -360,32 +350,9 @@ export function registerLicenseRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       const unavailable = await rejectIfNoLicenseAvailable(c, db, organizationId, hosted)
       if (unavailable) return unavailable
 
-      const instanceUrl = parsedInstallBaseUrl ?? (await resolveInstallBaseUrl(c, opts))
-      // Insecure TLS follows the dialed hostname and is bootstrap-only.
-      // Let's Encrypt uses the system store. An uploaded leaf uses it only
-      // when that certificate chains to a public root. A Let's Encrypt
-      // sibling does not make a private upload public. A private upload is
-      // refused unless the stored PEM contains the issuer that signed the
-      // leaf; the installer then keeps that issuer, not curl -k. A Platform
-      // CA name needs curl -k. Every Platform CA catch-all name on the
-      // self-hosted :8443 listener, including a private IP or .lan alias,
-      // needs -k when the leaf covers it, and is refused when it does not.
-      const env = (c.get('platformEnv') as Record<string, string | undefined> | undefined) ?? {}
-      const prepared = await resolveInstallOriginTls(
-        db,
-        instanceUrl,
-        env,
-        opts.runtime === 'deno',
-        {
-          readPlatformCaPem: opts.readPlatformCaPem,
-        }
-      )
-      if (!prepared.ok) return c.json({ error: prepared.error }, 400)
-      // A self-hosted command that bootstraps insecure TLS must say which CA
-      // the server may keep; without it an on-path attacker picks one.
-      if (opts.runtime === 'deno' && prepared.insecureTls && prepared.caFingerprints.length === 0) {
-        return c.json({ error: INSTALL_CA_PIN_UNAVAILABLE }, 400)
-      }
+      const resolved = await resolveInstallOrigin(c, db, opts, parsedInstallBaseUrl)
+      if (!resolved.ok) return c.json({ error: resolved.error }, 400)
+      const origin = resolved.origin
 
       // The instance does not build daemon release artifacts. In self-hosted dev
       // the operator builds them via Developer → Rebuild daemon and upgrade
@@ -411,19 +378,7 @@ export function registerLicenseRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       if (opts.runtime === 'deno') {
         await syncSelfHostedGrant(db, organizationId, { allowGrow: true })
       }
-      const insecureTls = prepared.insecureTls
-      // Instance-host `/run.sh` is served only by the dev overlay Caddyfile.
-      // Production / self-hosted Deno installs curl the CDN and pass TURBOPANEL_HOST.
-      const installCommand = buildLicenseInstallCommand({
-        runtime: opts.runtime,
-        instanceUrl,
-        licenseId: joinTicket.id,
-        licenseToken: joinTicket.plaintext,
-        insecureTls,
-        caFingerprints: prepared.caFingerprints,
-        useInstanceRunScript: Boolean(devSurface),
-        updateChannel: resolveInstanceUpdateChannel(c.get('platformEnv')),
-      })
+      const installCommand = buildTicketInstallCommand(c, opts, origin, joinTicket)
 
       compatLogInfo(
         'auth',
@@ -439,7 +394,7 @@ export function registerLicenseRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         joinId: joinTicket.id,
         joinExpiresAt: joinTicket.expiresAt,
         installCommand,
-        ...installKeyFields(identity, instanceUrl),
+        ...installKeyFields(identity, origin.instanceUrl),
       })
     } finally {
       await releaseMintLease(db, mint.lease)
@@ -456,6 +411,10 @@ export function registerLicenseRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     const stepUp = await requireStepUpIfConfigured(c, organizationId, 'license.key.burn')
     if (stepUp) return stepUp
+
+    // Resolve the install origin first so a refusal burns nothing.
+    const resolved = await resolveInstallOrigin(c, db, opts, null)
+    if (!resolved.ok) return c.json({ error: resolved.error }, 400)
 
     const session = c.get('session')
     // One transaction: the old tickets are cancelled and the new one issued
@@ -484,6 +443,7 @@ export function registerLicenseRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       joinExpiresAt: joinTicket.expiresAt,
       licenseToken: joinTicket.plaintext,
       licenseArg: encodeLicenseArg(joinTicket.id, joinTicket.plaintext),
+      installCommand: buildTicketInstallCommand(c, opts, resolved.origin, joinTicket),
     })
   })
 

@@ -562,6 +562,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       dns_names:
         'JSON array of DNS names and IP addresses parsed from the leaf, used to test which hostnames the pair covers.',
       not_after: 'Leaf expiry copied from the parsed certificate when the pair is stored.',
+      kind: '`uploaded` for an operator upload, `dns-01` for a pair the control plane issued itself over DNS-01; issued pairs are never listed as uploads.',
     },
   },
   origin: {
@@ -570,9 +571,10 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       "One control-plane public name operators publish, with its certificate source and any Let's Encrypt attempt state.",
     columns: {
       host: 'Normalized public URL entry (origin, host, or host:port) in the form public URL parsing already stores.',
-      source: 'Certificate source for this name: `platform-ca`, `uploaded`, or `lets-encrypt`.',
+      source:
+        'Certificate source for this name: `platform-ca`, `uploaded`, `lets-encrypt`, or `dns-01`.',
       uploaded_cert_id:
-        'Uploaded pair (`certificate.id`) this name serves; required when `source` is `uploaded`, otherwise NULL.',
+        'Pair (`certificate.id`) this name serves: the upload when `source` is `uploaded` (required), or the issued pair when `source` is `dns-01`; otherwise NULL.',
       acme_last_attempt_at:
         "When this instance last tried Let's Encrypt for this name; NULL until an attempt runs.",
       acme_last_error:
@@ -588,6 +590,8 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'Whether install commands and the daemon URL list may name this hostname; false keeps it for people only.',
       ingress_state:
         'Provider state for this name, such as tunnel id, DNS record id and last status; the shape depends on `mode` and the provider writes it.',
+      acme_state:
+        'DNS-01 order and renewal progress for a `dns-01` name (stage, attempts, retry and renewal times, alerts sent); holds no key or token, NULL otherwise.',
     },
   },
   ingress: {
@@ -1687,6 +1691,14 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'The datacenter whose network this server prefers when it belongs to several; NULL means no preference; set null when the datacenter is deleted.',
       is_fabric_enabled:
         'TurboFabric membership switch, default true; false keeps the server out of the mesh (no relay, no `tp0`, no peer entry, no fabric address).',
+      sealing_key_kid:
+        'Fingerprint of the daemon X25519 sealing key, set when it registers; decrypt answers are sealed to that key for daemons listing `daemon-sealed-secrets-v1`.',
+      sealing_key_pub:
+        'Base64url raw public half of the daemon sealing key, stored only after its signature verified against the daemon key; NULL until registered.',
+      sealing_key_reported_at:
+        'When the daemon last registered its sealing key; NULL until it does.',
+      plaintext_secrets_at:
+        'Last time the secrets decrypt route answered this server in plaintext, written at most hourly; the edge go-live gate reads it.',
       fabric_role:
         'Operator TurboFabric role, `gateway` (accepts connections) or `client` (only dials out); NULL means automatic, gateway when a public address is known.',
       container_prefix:

@@ -23,7 +23,10 @@ import {
   INSTANCE_ACME_TOS_NOT_ACCEPTED_MESSAGE,
   resolveInstanceAcmeSettings,
 } from '../features/install/instance-acme-settings.ts'
-import { listInstanceHostnames } from '../features/install/instance-hostnames.ts'
+import {
+  effectiveCertificateSource,
+  listInstanceHostnames,
+} from '../features/install/instance-hostnames.ts'
 import { decryptSecret, resealSecretForDaemon } from '../lib/secrets/data-encryption.ts'
 import type { DerivedSecretsConfig } from '../lib/secrets/secrets.ts'
 import {
@@ -31,6 +34,7 @@ import {
   resolveDaemonCapabilities,
 } from '../lib/version-wire.ts'
 import type { InstanceSecretSealing } from '../features/install/instance-secret-sealing.ts'
+import { getServerDaemonStateByServerId } from '../features/servers/server-identity-db.ts'
 
 export class PublicUrlsApplyPayloadError extends Error {
   /** Set for refusals a client acts on; absent for server-side faults. */
@@ -43,6 +47,23 @@ export class PublicUrlsApplyPayloadError extends Error {
   }
 }
 
+/** Optional inputs to {@link resolvePublicUrlsApplyPayload}. */
+export type PublicUrlsApplyPayloadOptions = {
+  /** Wire features the co-located daemon advertises (gates `publicPort`). */
+  daemonFeatures?: readonly string[]
+  /** Clock for the DNS-01 certificate source; defaults to now. */
+  now?: number
+}
+
+/** Wire features the co-located daemon last advertised, or none. */
+export async function colocatedDaemonFeatures(
+  db: Db,
+  serverId: string
+): Promise<readonly string[]> {
+  const state = await getServerDaemonStateByServerId(db, serverId)
+  return state?.projection?.features ?? []
+}
+
 export async function resolvePublicUrlsApplyPayload(
   db: Db,
   urls: string[],
@@ -50,13 +71,19 @@ export async function resolvePublicUrlsApplyPayload(
   secrets: DerivedSecretsConfig | undefined,
   env: Record<string, string | undefined>,
   sealing: InstanceSecretSealing | null = null,
-  daemonFeatures: readonly string[] = []
+  options: PublicUrlsApplyPayloadOptions = {}
 ): Promise<PublicUrlsApplyPayload> {
+  const { daemonFeatures = [], now = Date.now() } = options
   const capable =
     resolveDaemonCapabilities(daemonVersion)['instance-cert-sources-per-hostname'] === true
   if (!capable) return { urls }
 
-  const rows = await listInstanceHostnames(db)
+  // A DNS-01 name travels as `uploaded` with its issued pair, or as
+  // `platform-ca` before its first certificate and after it expires.
+  const rows = (await listInstanceHostnames(db)).map((row) => ({
+    ...row,
+    source: effectiveCertificateSource(row, now),
+  }))
   const uploadedIds = [
     ...new Set(
       rows

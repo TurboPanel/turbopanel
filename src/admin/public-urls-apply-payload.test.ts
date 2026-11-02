@@ -190,16 +190,16 @@ test('each hostname carries its public port only for a daemon that lists the fea
     const host = `public-port-${crypto.randomUUID()}.example.test`
     await tx.insert(instanceHostname).values({ host, source: 'platform-ca', publicPort: 443 })
 
-    const legacy = await resolvePublicUrlsApplyPayload(tx, [host], '0.1.1', undefined, {}, null, [
-      SEALED_INSTANCE_SECRETS_FEATURE,
-    ])
+    const legacy = await resolvePublicUrlsApplyPayload(tx, [host], '0.1.1', undefined, {}, null, {
+      daemonFeatures: [SEALED_INSTANCE_SECRETS_FEATURE],
+    })
     const legacyEntry = legacy.hostnames?.find((candidate) => candidate.host === host)
     assertEquals(legacyEntry?.source, 'platform-ca')
     assertEquals('publicPort' in (legacyEntry ?? {}), false)
 
-    const capable = await resolvePublicUrlsApplyPayload(tx, [host], '0.1.1', undefined, {}, null, [
-      INSTANCE_HOSTNAME_PUBLIC_PORT_FEATURE,
-    ])
+    const capable = await resolvePublicUrlsApplyPayload(tx, [host], '0.1.1', undefined, {}, null, {
+      daemonFeatures: [INSTANCE_HOSTNAME_PUBLIC_PORT_FEATURE],
+    })
     const entry = capable.hostnames?.find((candidate) => candidate.host === host)
     assertEquals(entry?.publicPort, 443)
   })

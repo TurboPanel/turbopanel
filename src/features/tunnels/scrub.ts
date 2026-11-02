@@ -6,6 +6,8 @@
 const REDACTED = '[redacted]'
 /** A bearer header value, however it was echoed. */
 const BEARER = /\bBearer\s+[a-z0-9._~+/=-]+/gi
+/** A prefixed Cloudflare API token (user `cfut_`, account `cfat_`), even a short one. */
+const CLOUDFLARE_TOKEN = /\bcf[ua]t_[A-Za-z0-9_-]+/g
 /** A long unbroken run of token characters: API tokens, run tokens and base64 blobs. */
 const TOKEN_LIKE = /[A-Za-z0-9_+/=-]{32,}/g
 
@@ -15,7 +17,10 @@ export function scrubSecrets(text: string, secrets: readonly string[] = []): str
   for (const value of secrets) {
     if (value.length >= 4) out = out.split(value).join(REDACTED)
   }
-  return out.replace(BEARER, `Bearer ${REDACTED}`).replace(TOKEN_LIKE, REDACTED)
+  return out
+    .replace(BEARER, `Bearer ${REDACTED}`)
+    .replace(CLOUDFLARE_TOKEN, REDACTED)
+    .replace(TOKEN_LIKE, REDACTED)
 }
 
 /**

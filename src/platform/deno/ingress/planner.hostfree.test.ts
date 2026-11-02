@@ -50,10 +50,15 @@ test("direct refuses Let's Encrypt for a private name, lan-only refuses it for a
 })
 
 test('modes that are not implemented refuse apply', async () => {
-  const result = await applyHostname(ctx({ mode: 'cloudflare-tunnel' }))
+  const result = await applyHostname(ctx({ mode: 'cloudflare-proxy' }))
   assertEquals(result.ok, false)
   assertEquals(result.ok ? '' : result.cause, 'not-available')
   assertEquals((await preflightHostname(ctx({ mode: 'passthrough' }))).ok, false)
+})
+
+test('an edge mode is refused while the go-live gate is shut', async () => {
+  const result = await applyHostname(ctx({ mode: 'cloudflare-tunnel' }))
+  assertEquals(result.ok ? '' : result.cause, 'gate-closed')
 })
 
 test('direct and lan-only apply with no stored state', async () => {
