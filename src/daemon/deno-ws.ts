@@ -1002,6 +1002,9 @@ export function registerDaemonWebSocket<E extends Env>(
       // Nothing goes to the daemon until its first frame says which session
       // it runs (`signed-session-gate.ts`).
       let phase: DaemonSessionPhase = 'await-first-frame'
+      // Set by the first frame; a frame that arrives while it is still being
+      // answered waits for it instead of opening a second session.
+      let sessionOpening: Promise<boolean> | undefined
       let sender: DaemonSessionSender | undefined
       const senderFor = (ws: WSContext<WebSocket>): DaemonSessionSender => {
         sender ??= createDaemonSessionSender({
@@ -1121,7 +1124,15 @@ export function registerDaemonWebSocket<E extends Env>(
         raw: string,
         ws: WSContext<WebSocket>
       ): Promise<void> => {
-        if (phase === 'await-first-frame' && !(await openSession(raw, ws))) return
+        if (phase === 'await-first-frame') {
+          if (sessionOpening) {
+            await sessionOpening
+            if (phase === 'await-first-frame') return
+          } else {
+            sessionOpening = openSession(raw, ws)
+            if (!(await sessionOpening)) return
+          }
+        }
         if (raw === DAEMON_CELL_PING) {
           await handlePingFrame(ws)
           return

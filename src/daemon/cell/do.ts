@@ -475,6 +475,8 @@ export class DaemonCellObject {
   #panelIdentityPromise: Promise<PanelIdentity | null> | null = null
   /** Per-socket send order (in memory: nothing is in flight across hibernation). */
   readonly #sendChains = new WeakMap<WebSocket, Promise<void>>()
+  /** The first frame's answer while it is in flight, so a second frame cannot open a second session. */
+  readonly #openingSessions = new WeakMap<WebSocket, Promise<boolean>>()
   readonly #diag: CellDiagnostics = createInitialCellDiagnostics()
   readonly #debugStorage: boolean
   #serverId: string | null = null
@@ -1733,6 +1735,23 @@ export class DaemonCellObject {
     return this.#panelIdentityPromise
   }
 
+  /** True when `raw` is then handled as usual; later frames wait for the first one's answer. */
+  async #firstFrameGate(
+    ws: WebSocket,
+    attachment: SocketSessionAttachment,
+    raw: string
+  ): Promise<boolean> {
+    const opening = this.#openingSessions.get(ws)
+    if (opening) {
+      await opening
+      const after = ws.deserializeAttachment() as SocketSessionAttachment | null
+      return after?.phase === 'legacy' || after?.phase === 'signed'
+    }
+    const first = this.#openSession(ws, attachment, raw)
+    this.#openingSessions.set(ws, first)
+    return await first
+  }
+
   /**
    * The daemon's first frame picks the session. True when the frame is then
    * handled as usual (an unsigned session's first frame).
@@ -2209,7 +2228,7 @@ export class DaemonCellObject {
     const raw = typeof message === 'string' ? message : new TextDecoder().decode(message)
 
     const session = attachment as SocketSessionAttachment
-    if (session.phase === 'await-first-frame' && !(await this.#openSession(ws, session, raw))) {
+    if (session.phase === 'await-first-frame' && !(await this.#firstFrameGate(ws, session, raw))) {
       return
     }
 
