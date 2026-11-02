@@ -78,6 +78,7 @@ import type { ServersListRow } from '../../query-cache/read-models/servers-list.
 import type { ServerDetailRow } from '../../query-cache/read-models/server-detail.ts'
 
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
+import { confirmedPath } from '../../test-fixtures/confirm-name.test.support.ts'
 
 const SERVER_STATUS_RECORD_KEYS: (keyof ServerStatusRecord)[] = [
   'serverId',
@@ -563,7 +564,7 @@ async function deleteServerAsUser(
   serverId: string
 ): Promise<Response> {
   const cookie = await sessionCookie(db, secrets, userId)
-  return await app.request(`/servers/${serverId}`, {
+  return await app.request(await confirmedPath(db, 'server', serverId, `/servers/${serverId}`), {
     method: 'DELETE',
     headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
   })
@@ -710,13 +711,16 @@ test('DELETE /servers/:id deletes the server relay and its segments', async () =
       })
 
       const cookie = await sessionCookie(db, secrets, userId)
-      const res = await app.request(`/servers/${serverId}`, {
-        method: 'DELETE',
-        headers: {
-          Cookie: cookie,
-          [ORG_ID_HEADER]: organizationId,
-        },
-      })
+      const res = await app.request(
+        await confirmedPath(db, 'server', serverId, `/servers/${serverId}`),
+        {
+          method: 'DELETE',
+          headers: {
+            Cookie: cookie,
+            [ORG_ID_HEADER]: organizationId,
+          },
+        }
+      )
 
       assertEquals(res.status, 200)
       const remainingRelays = await db
@@ -814,13 +818,16 @@ test('DELETE /servers/:id with forgetResources clears relay and subnet rows and 
       ])
 
       const cookie = await sessionCookie(db, secrets, userId)
-      const res = await app.request(`/servers/${serverId}?forgetResources=true`, {
-        method: 'DELETE',
-        headers: {
-          Cookie: cookie,
-          [ORG_ID_HEADER]: organizationId,
-        },
-      })
+      const res = await app.request(
+        await confirmedPath(db, 'server', serverId, `/servers/${serverId}?forgetResources=true`),
+        {
+          method: 'DELETE',
+          headers: {
+            Cookie: cookie,
+            [ORG_ID_HEADER]: organizationId,
+          },
+        }
+      )
 
       assertEquals(res.status, 200)
       assertEquals(registry.purgedIds, [serverId])
@@ -860,13 +867,16 @@ test('DELETE /servers/:id deletes the row and purges the daemon cell', async () 
   await withServerDeleteFixtures(
     async ({ db, app, secrets, userId, organizationId, serverId, registry }) => {
       const cookie = await sessionCookie(db, secrets, userId)
-      const res = await app.request(`/servers/${serverId}`, {
-        method: 'DELETE',
-        headers: {
-          Cookie: cookie,
-          [ORG_ID_HEADER]: organizationId,
-        },
-      })
+      const res = await app.request(
+        await confirmedPath(db, 'server', serverId, `/servers/${serverId}`),
+        {
+          method: 'DELETE',
+          headers: {
+            Cookie: cookie,
+            [ORG_ID_HEADER]: organizationId,
+          },
+        }
+      )
 
       assertEquals(res.status, 200)
       const body = await res.json()
@@ -882,18 +892,66 @@ test('DELETE /servers/:id deletes the row and purges the daemon cell', async () 
   )
 })
 
+test('DELETE /servers/:id needs the exact server name, else its hostname, and changes nothing without it', async () => {
+  await withServerDeleteFixtures(
+    async ({ db, app, secrets, userId, organizationId, serverId, registry }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const hostnameValue = `edge-${crypto.randomUUID()}.example.test`
+      await db
+        .update(server)
+        .set({ name: 'Edge One', hostname: hostnameValue })
+        .where(eq(server.id, serverId))
+      const send = (query: string) =>
+        app.request(`/servers/${serverId}${query}`, {
+          method: 'DELETE',
+          headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
+        })
+      const remaining = async () =>
+        (await db.select({ id: server.id }).from(server).where(eq(server.id, serverId))).length
+
+      for (const query of [
+        '',
+        '?confirmName=',
+        '?confirmName=edge%20one',
+        '?confirmName=Edge%20One%20',
+        `?confirmName=${hostnameValue}`,
+      ]) {
+        const refused = await send(query)
+        assertEquals(refused.status, 400, query)
+        assertEquals(await refused.json(), {
+          error: 'confirm_name_required',
+          message: 'Type the server name to delete this server.',
+        })
+        assertEquals(await remaining(), 1)
+      }
+      assertEquals(registry.purgedIds, [])
+
+      // A server without a name goes by its hostname.
+      await db.update(server).set({ name: null }).where(eq(server.id, serverId))
+      assertEquals((await send('?confirmName=Edge%20One')).status, 400)
+      const removed = await send(`?confirmName=${hostnameValue}`)
+      assertEquals(removed.status, 200)
+      assertEquals(await remaining(), 0)
+      assertEquals(registry.purgedIds, [serverId])
+    }
+  )
+})
+
 test('DELETE /servers/:id returns 404 for a missing server', async () => {
   await withServerDeleteFixtures(async ({ db, app, secrets, userId, organizationId, serverId }) => {
     await db.delete(server).where(eq(server.id, serverId))
 
     const cookie = await sessionCookie(db, secrets, userId)
-    const res = await app.request(`/servers/${serverId}`, {
-      method: 'DELETE',
-      headers: {
-        Cookie: cookie,
-        [ORG_ID_HEADER]: organizationId,
-      },
-    })
+    const res = await app.request(
+      await confirmedPath(db, 'server', serverId, `/servers/${serverId}`),
+      {
+        method: 'DELETE',
+        headers: {
+          Cookie: cookie,
+          [ORG_ID_HEADER]: organizationId,
+        },
+      }
+    )
 
     assertEquals(res.status, 404)
   })
@@ -910,13 +968,16 @@ test('DELETE /servers/:id returns 403 for the co-located control plane server', 
 
       try {
         const cookie = await sessionCookie(db, secrets, userId)
-        const res = await app.request(`/servers/${serverId}`, {
-          method: 'DELETE',
-          headers: {
-            Cookie: cookie,
-            [ORG_ID_HEADER]: organizationId,
-          },
-        })
+        const res = await app.request(
+          await confirmedPath(db, 'server', serverId, `/servers/${serverId}`),
+          {
+            method: 'DELETE',
+            headers: {
+              Cookie: cookie,
+              [ORG_ID_HEADER]: organizationId,
+            },
+          }
+        )
 
         assertEquals(res.status, 403)
         const body = await readJson<ErrorJson>(res)
@@ -1191,13 +1252,16 @@ test('DELETE /servers/:id returns 403 via durable self-host pin when probes miss
 
       try {
         const cookie = await sessionCookie(db, secrets, userId)
-        const res = await app.request(`/servers/${serverId}`, {
-          method: 'DELETE',
-          headers: {
-            Cookie: cookie,
-            [ORG_ID_HEADER]: organizationId,
-          },
-        })
+        const res = await app.request(
+          await confirmedPath(db, 'server', serverId, `/servers/${serverId}`),
+          {
+            method: 'DELETE',
+            headers: {
+              Cookie: cookie,
+              [ORG_ID_HEADER]: organizationId,
+            },
+          }
+        )
 
         assertEquals(res.status, 403)
         const body = await readJson<ErrorJson>(res)
@@ -1226,13 +1290,16 @@ test('DELETE /servers/:id returns 403 via reserved colocated license when pin an
 
       try {
         const cookie = await sessionCookie(db, secrets, userId)
-        const res = await app.request(`/servers/${serverId}`, {
-          method: 'DELETE',
-          headers: {
-            Cookie: cookie,
-            [ORG_ID_HEADER]: organizationId,
-          },
-        })
+        const res = await app.request(
+          await confirmedPath(db, 'server', serverId, `/servers/${serverId}`),
+          {
+            method: 'DELETE',
+            headers: {
+              Cookie: cookie,
+              [ORG_ID_HEADER]: organizationId,
+            },
+          }
+        )
 
         assertEquals(res.status, 403)
         const body = await readJson<ErrorJson>(res)
@@ -1307,13 +1374,16 @@ test('DELETE /servers/:id returns 403 not 503 for self-host-pinned server withou
 
   try {
     const cookie = await sessionCookie(db, secrets, userId)
-    const res = await app.request(`/servers/${serverId}`, {
-      method: 'DELETE',
-      headers: {
-        Cookie: cookie,
-        [ORG_ID_HEADER]: organizationId,
-      },
-    })
+    const res = await app.request(
+      await confirmedPath(db, 'server', serverId, `/servers/${serverId}`),
+      {
+        method: 'DELETE',
+        headers: {
+          Cookie: cookie,
+          [ORG_ID_HEADER]: organizationId,
+        },
+      }
+    )
 
     assertEquals(res.status, 403)
     const body = await readJson<ErrorJson>(res)
@@ -1441,13 +1511,16 @@ test('DELETE /servers/:id returns 409 when networks block deletion', async () =>
 
       try {
         const cookie = await sessionCookie(db, secrets, userId)
-        const res = await app.request(`/servers/${serverId}`, {
-          method: 'DELETE',
-          headers: {
-            Cookie: cookie,
-            [ORG_ID_HEADER]: organizationId,
-          },
-        })
+        const res = await app.request(
+          await confirmedPath(db, 'server', serverId, `/servers/${serverId}`),
+          {
+            method: 'DELETE',
+            headers: {
+              Cookie: cookie,
+              [ORG_ID_HEADER]: organizationId,
+            },
+          }
+        )
 
         assertEquals(res.status, 409)
         const body = await readJson<ErrorJson>(res)
@@ -1556,10 +1629,13 @@ test('DELETE /servers/:id with forgetResources is refused when a live snapshot i
       })
       try {
         const cookie = await sessionCookie(db, secrets, userId)
-        const res = await app.request(`/servers/${serverId}?forgetResources=true`, {
-          method: 'DELETE',
-          headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
-        })
+        const res = await app.request(
+          await confirmedPath(db, 'server', serverId, `/servers/${serverId}?forgetResources=true`),
+          {
+            method: 'DELETE',
+            headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
+          }
+        )
         assertEquals(res.status, 409)
         const body = await readJson<ErrorJson>(res)
         assertEquals(body.code, SERVER_ONLINE_CODE)
@@ -1585,10 +1661,13 @@ test('DELETE /servers/:id with forgetResources is refused while the server is co
       await db.update(server).set({ isConnected: true }).where(eq(server.id, serverId))
       try {
         const cookie = await sessionCookie(db, secrets, userId)
-        const res = await app.request(`/servers/${serverId}?forgetResources=true`, {
-          method: 'DELETE',
-          headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
-        })
+        const res = await app.request(
+          await confirmedPath(db, 'server', serverId, `/servers/${serverId}?forgetResources=true`),
+          {
+            method: 'DELETE',
+            headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
+          }
+        )
         assertEquals(res.status, 409)
         const body = await readJson<ErrorJson>(res)
         assertEquals(body.error, SERVER_ONLINE_ERROR)
@@ -1612,10 +1691,13 @@ test('DELETE /servers/:id with forgetResources is refused for the co-located hos
       })
       try {
         const cookie = await sessionCookie(db, secrets, userId)
-        const res = await app.request(`/servers/${serverId}?forgetResources=true`, {
-          method: 'DELETE',
-          headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
-        })
+        const res = await app.request(
+          await confirmedPath(db, 'server', serverId, `/servers/${serverId}?forgetResources=true`),
+          {
+            method: 'DELETE',
+            headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
+          }
+        )
         assertEquals(res.status, 403)
         const body = await readJson<ErrorJson>(res)
         assertEquals(body.error, colocatedServerDeleteBlockedReason())
@@ -1632,15 +1714,18 @@ test('DELETE /servers/:id with forgetResources removes leftover rows and audits 
     async ({ db, app, secrets, userId, organizationId, serverId, registry }) => {
       const leftovers = await insertUserWorkspaceLeftovers(db, { organizationId, serverId })
       const cookie = await sessionCookie(db, secrets, userId)
-      const res = await app.request(`/servers/${serverId}`, {
-        method: 'DELETE',
-        headers: {
-          Cookie: cookie,
-          [ORG_ID_HEADER]: organizationId,
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({ forgetResources: true }),
-      })
+      const res = await app.request(
+        await confirmedPath(db, 'server', serverId, `/servers/${serverId}`),
+        {
+          method: 'DELETE',
+          headers: {
+            Cookie: cookie,
+            [ORG_ID_HEADER]: organizationId,
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({ forgetResources: true }),
+        }
+      )
       assertEquals(res.status, 200)
       assertEquals(registry.purgedIds, [serverId])
 
@@ -1705,10 +1790,13 @@ test('DELETE /servers/:id with forgetResources is refused if is_connected flips 
       }) as typeof db.transaction
       try {
         const cookie = await sessionCookie(db, secrets, userId)
-        const res = await app.request(`/servers/${serverId}?forgetResources=true`, {
-          method: 'DELETE',
-          headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
-        })
+        const res = await app.request(
+          await confirmedPath(db, 'server', serverId, `/servers/${serverId}?forgetResources=true`),
+          {
+            method: 'DELETE',
+            headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
+          }
+        )
         assertEquals(res.status, 409)
         const body = await readJson<ErrorJson>(res)
         assertEquals(body.code, SERVER_ONLINE_CODE)
@@ -1751,10 +1839,13 @@ test('DELETE /servers/:id with forgetResources forgets an app environment and it
         .set({ status: 'running' })
         .where(eq(container.id, leftovers.containerId))
       const cookie = await sessionCookie(db, secrets, userId)
-      const res = await app.request(`/servers/${serverId}?forgetResources=true`, {
-        method: 'DELETE',
-        headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
-      })
+      const res = await app.request(
+        await confirmedPath(db, 'server', serverId, `/servers/${serverId}?forgetResources=true`),
+        {
+          method: 'DELETE',
+          headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
+        }
+      )
       assertEquals(res.status, 200)
       assertEquals(registry.purgedIds, [serverId])
 
@@ -1873,10 +1964,13 @@ test('DELETE /servers/:id with forgetResources clears deployment slot and storag
       })
 
       const cookie = await sessionCookie(db, secrets, userId)
-      const res = await app.request(`/servers/${serverId}?forgetResources=true`, {
-        method: 'DELETE',
-        headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
-      })
+      const res = await app.request(
+        await confirmedPath(db, 'server', serverId, `/servers/${serverId}?forgetResources=true`),
+        {
+          method: 'DELETE',
+          headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
+        }
+      )
       assertEquals(res.status, 200)
       assertEquals(registry.purgedIds, [serverId])
 
@@ -1940,10 +2034,13 @@ test('DELETE /servers/:id with forgetResources is refused when the environment s
         .where(eq(container.id, leftovers.containerId))
       try {
         const cookie = await sessionCookie(db, secrets, userId)
-        const res = await app.request(`/servers/${serverId}?forgetResources=true`, {
-          method: 'DELETE',
-          headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
-        })
+        const res = await app.request(
+          await confirmedPath(db, 'server', serverId, `/servers/${serverId}?forgetResources=true`),
+          {
+            method: 'DELETE',
+            headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
+          }
+        )
         assertEquals(res.status, 409)
         const body = await readJson<ErrorJson>(res)
         assertEquals(body.code, SERVER_HAS_BLOCKERS_CODE)
@@ -1997,10 +2094,13 @@ test('DELETE /servers/:id with forgetResources is refused when the environment s
         .returning({ id: slot.id })
       try {
         const cookie = await sessionCookie(db, secrets, userId)
-        const res = await app.request(`/servers/${serverId}?forgetResources=true`, {
-          method: 'DELETE',
-          headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
-        })
+        const res = await app.request(
+          await confirmedPath(db, 'server', serverId, `/servers/${serverId}?forgetResources=true`),
+          {
+            method: 'DELETE',
+            headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
+          }
+        )
         assertEquals(res.status, 409)
         const body = await readJson<ErrorJson>(res)
         assertEquals(body.blockedEnvironments?.[0]?.reason, 'present_elsewhere')
@@ -2057,10 +2157,13 @@ test('DELETE /servers/:id with forgetResources is refused when the environment s
         .returning({ id: storageCopy.id })
       try {
         const cookie = await sessionCookie(db, secrets, userId)
-        const res = await app.request(`/servers/${serverId}?forgetResources=true`, {
-          method: 'DELETE',
-          headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
-        })
+        const res = await app.request(
+          await confirmedPath(db, 'server', serverId, `/servers/${serverId}?forgetResources=true`),
+          {
+            method: 'DELETE',
+            headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
+          }
+        )
         assertEquals(res.status, 409)
         const body = await readJson<ErrorJson>(res)
         assertEquals(body.code, SERVER_HAS_BLOCKERS_CODE)
@@ -2106,10 +2209,13 @@ test('DELETE /servers/:id with forgetResources is refused when the environment s
         .returning({ id: deployment.id })
       try {
         const cookie = await sessionCookie(db, secrets, userId)
-        const res = await app.request(`/servers/${serverId}?forgetResources=true`, {
-          method: 'DELETE',
-          headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
-        })
+        const res = await app.request(
+          await confirmedPath(db, 'server', serverId, `/servers/${serverId}?forgetResources=true`),
+          {
+            method: 'DELETE',
+            headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
+          }
+        )
         assertEquals(res.status, 409)
         const body = await readJson<ErrorJson>(res)
         assertEquals(body.blockedEnvironments?.[0]?.serverNames, ['Worker 2'])
@@ -2155,10 +2261,13 @@ test('DELETE /servers/:id with forgetResources is refused when the only database
       })
       try {
         const cookie = await sessionCookie(db, secrets, userId)
-        const res = await app.request(`/servers/${serverId}?forgetResources=true`, {
-          method: 'DELETE',
-          headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
-        })
+        const res = await app.request(
+          await confirmedPath(db, 'server', serverId, `/servers/${serverId}?forgetResources=true`),
+          {
+            method: 'DELETE',
+            headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
+          }
+        )
         assertEquals(res.status, 409)
         const body = await readJson<ErrorJson>(res)
         assertEquals(body.code, SERVER_HAS_BLOCKERS_CODE)
@@ -2229,10 +2338,13 @@ test('DELETE /servers/:id with forgetResources forgets a replica member when the
         })
         .returning({ id: replica.id })
       const cookie = await sessionCookie(db, secrets, userId)
-      const res = await app.request(`/servers/${serverId}?forgetResources=true`, {
-        method: 'DELETE',
-        headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
-      })
+      const res = await app.request(
+        await confirmedPath(db, 'server', serverId, `/servers/${serverId}?forgetResources=true`),
+        {
+          method: 'DELETE',
+          headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
+        }
+      )
       assertEquals(res.status, 200)
       assertEquals(registry.purgedIds, [serverId])
       assertEquals(
@@ -2310,10 +2422,13 @@ test('DELETE /servers/:id with forgetResources is refused when the primary is he
       })
       try {
         const cookie = await sessionCookie(db, secrets, userId)
-        const res = await app.request(`/servers/${serverId}?forgetResources=true`, {
-          method: 'DELETE',
-          headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
-        })
+        const res = await app.request(
+          await confirmedPath(db, 'server', serverId, `/servers/${serverId}?forgetResources=true`),
+          {
+            method: 'DELETE',
+            headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
+          }
+        )
         assertEquals(res.status, 409)
         const body = await readJson<ErrorJson>(res)
         assertEquals(body.code, SERVER_HAS_BLOCKERS_CODE)
@@ -2343,10 +2458,13 @@ test('DELETE /servers/:id without forgetResources still returns 409 when leftove
       const leftovers = await insertUserWorkspaceLeftovers(db, { organizationId, serverId })
       try {
         const cookie = await sessionCookie(db, secrets, userId)
-        const res = await app.request(`/servers/${serverId}`, {
-          method: 'DELETE',
-          headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
-        })
+        const res = await app.request(
+          await confirmedPath(db, 'server', serverId, `/servers/${serverId}`),
+          {
+            method: 'DELETE',
+            headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
+          }
+        )
         assertEquals(res.status, 409)
         const body = await readJson<ErrorJson>(res)
         assertEquals(body.code, SERVER_HAS_BLOCKERS_CODE)
@@ -2374,10 +2492,13 @@ test('DELETE /servers/:id names the app environments behind the 409 blockers', a
         .where(eq(environment.id, leftovers.environmentId))
       try {
         const cookie = await sessionCookie(db, secrets, userId)
-        const res = await app.request(`/servers/${serverId}`, {
-          method: 'DELETE',
-          headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
-        })
+        const res = await app.request(
+          await confirmedPath(db, 'server', serverId, `/servers/${serverId}`),
+          {
+            method: 'DELETE',
+            headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
+          }
+        )
         assertEquals(res.status, 409)
         const body = await readJson<ErrorJson>(res)
         assertEquals(body.code, SERVER_HAS_BLOCKERS_CODE)
@@ -2480,13 +2601,16 @@ test('DELETE /servers/:id succeeds with stopped system ingress inventory', async
         .where(eq(container.id, hierarchy.containerRowId))
 
       const cookie = await sessionCookie(db, secrets, userId)
-      const res = await app.request(`/servers/${serverId}`, {
-        method: 'DELETE',
-        headers: {
-          Cookie: cookie,
-          [ORG_ID_HEADER]: organizationId,
-        },
-      })
+      const res = await app.request(
+        await confirmedPath(db, 'server', serverId, `/servers/${serverId}`),
+        {
+          method: 'DELETE',
+          headers: {
+            Cookie: cookie,
+            [ORG_ID_HEADER]: organizationId,
+          },
+        }
+      )
 
       assertEquals(res.status, 200)
       const body = await res.json()
@@ -2537,10 +2661,13 @@ test('DELETE /servers/:id succeeds with a never-started pending system ingress c
         .where(eq(container.id, hierarchy.containerRowId))
 
       const cookie = await sessionCookie(db, secrets, userId)
-      const res = await app.request(`/servers/${serverId}`, {
-        method: 'DELETE',
-        headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
-      })
+      const res = await app.request(
+        await confirmedPath(db, 'server', serverId, `/servers/${serverId}`),
+        {
+          method: 'DELETE',
+          headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
+        }
+      )
 
       assertEquals(res.status, 200)
       assertEquals(registry.purgedIds, [serverId])
@@ -2565,13 +2692,16 @@ test('DELETE /servers/:id invalidates the bound license', async () => {
       .where(eq(license.id, licenseId))
 
     const cookie = await sessionCookie(db, secrets, userId)
-    const res = await app.request(`/servers/${serverId}`, {
-      method: 'DELETE',
-      headers: {
-        Cookie: cookie,
-        [ORG_ID_HEADER]: organizationId,
-      },
-    })
+    const res = await app.request(
+      await confirmedPath(db, 'server', serverId, `/servers/${serverId}`),
+      {
+        method: 'DELETE',
+        headers: {
+          Cookie: cookie,
+          [ORG_ID_HEADER]: organizationId,
+        },
+      }
+    )
 
     assertEquals(res.status, 200)
 
@@ -2649,13 +2779,16 @@ test('DELETE /servers/:id invalidates the bound license on Workers runtime', asy
       .where(eq(license.id, licenseId))
 
     const cookie = await sessionCookie(db, secrets, userId)
-    const res = await app.request(`/servers/${serverId}`, {
-      method: 'DELETE',
-      headers: {
-        Cookie: cookie,
-        [ORG_ID_HEADER]: organizationId,
-      },
-    })
+    const res = await app.request(
+      await confirmedPath(db, 'server', serverId, `/servers/${serverId}`),
+      {
+        method: 'DELETE',
+        headers: {
+          Cookie: cookie,
+          [ORG_ID_HEADER]: organizationId,
+        },
+      }
+    )
 
     assertEquals(res.status, 200)
 
@@ -2697,13 +2830,16 @@ test('DELETE /servers/:id returns 409 when stale system containers block deletio
 
       try {
         const cookie = await sessionCookie(db, secrets, userId)
-        const res = await app.request(`/servers/${serverId}`, {
-          method: 'DELETE',
-          headers: {
-            Cookie: cookie,
-            [ORG_ID_HEADER]: organizationId,
-          },
-        })
+        const res = await app.request(
+          await confirmedPath(db, 'server', serverId, `/servers/${serverId}`),
+          {
+            method: 'DELETE',
+            headers: {
+              Cookie: cookie,
+              [ORG_ID_HEADER]: organizationId,
+            },
+          }
+        )
 
         assertEquals(res.status, 409)
         const body = await readJson<{
@@ -2829,10 +2965,13 @@ test('DELETE /servers/:id with forgetResources removes stale running system cont
 
       try {
         const cookie = await sessionCookie(db, secrets, userId)
-        const res = await app.request(`/servers/${serverId}?forgetResources=true`, {
-          method: 'DELETE',
-          headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
-        })
+        const res = await app.request(
+          await confirmedPath(db, 'server', serverId, `/servers/${serverId}?forgetResources=true`),
+          {
+            method: 'DELETE',
+            headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
+          }
+        )
 
         assertEquals(res.status, 200)
         assertEquals(registry.purgedIds, [serverId])
@@ -2843,10 +2982,18 @@ test('DELETE /servers/:id with forgetResources removes stale running system cont
           .where(eq(container.id, otherHierarchy.containerRowId))
         assertEquals(otherContainers.length, 1)
 
-        const cleanupOther = await app.request(`/servers/${otherServerId}?forgetResources=true`, {
-          method: 'DELETE',
-          headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
-        })
+        const cleanupOther = await app.request(
+          await confirmedPath(
+            db,
+            'server',
+            otherServerId,
+            `/servers/${otherServerId}?forgetResources=true`
+          ),
+          {
+            method: 'DELETE',
+            headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
+          }
+        )
         assertEquals(cleanupOther.status, 200)
       } finally {
         await cleanupOrgSystemSubtree(db, organizationId)
@@ -2934,13 +3081,16 @@ test('DELETE /servers/:id returns 503 when daemon cell registry is unavailable',
 
   try {
     const cookie = await sessionCookie(db, secrets, userId)
-    const res = await app.request(`/servers/${serverId}`, {
-      method: 'DELETE',
-      headers: {
-        Cookie: cookie,
-        [ORG_ID_HEADER]: organizationId,
-      },
-    })
+    const res = await app.request(
+      await confirmedPath(db, 'server', serverId, `/servers/${serverId}`),
+      {
+        method: 'DELETE',
+        headers: {
+          Cookie: cookie,
+          [ORG_ID_HEADER]: organizationId,
+        },
+      }
+    )
 
     assertEquals(res.status, 503)
     const body = await readJson<ErrorJson>(res)
@@ -3004,13 +3154,16 @@ test('DELETE /servers/:id returns 500 when purge fails after row delete', async 
 
   try {
     const cookie = await sessionCookie(db, secrets, userId)
-    const res = await app.request(`/servers/${serverId}`, {
-      method: 'DELETE',
-      headers: {
-        Cookie: cookie,
-        [ORG_ID_HEADER]: organizationId,
-      },
-    })
+    const res = await app.request(
+      await confirmedPath(db, 'server', serverId, `/servers/${serverId}`),
+      {
+        method: 'DELETE',
+        headers: {
+          Cookie: cookie,
+          [ORG_ID_HEADER]: organizationId,
+        },
+      }
+    )
 
     assertEquals(res.status, 500)
     const body = await readJson<{
@@ -4064,13 +4217,16 @@ test('DELETE /servers/:id succeeds after enable → disable → reconcile lifecy
         .where(eq(container.id, containerRow.id))
 
       // Running ingress blocks delete.
-      const blockedRes = await app.request(`/servers/${serverId}`, {
-        method: 'DELETE',
-        headers: {
-          Cookie: cookie,
-          [ORG_ID_HEADER]: organizationId,
-        },
-      })
+      const blockedRes = await app.request(
+        await confirmedPath(db, 'server', serverId, `/servers/${serverId}`),
+        {
+          method: 'DELETE',
+          headers: {
+            Cookie: cookie,
+            [ORG_ID_HEADER]: organizationId,
+          },
+        }
+      )
       assertEquals(blockedRes.status, 409)
 
       envelopes.length = 0
@@ -4111,13 +4267,16 @@ test('DELETE /servers/:id succeeds after enable → disable → reconcile lifecy
         .where(eq(container.id, containerRow.id))
 
       // 4. Delete succeeds once ingress is idle.
-      const deleteRes = await app.request(`/servers/${serverId}`, {
-        method: 'DELETE',
-        headers: {
-          Cookie: cookie,
-          [ORG_ID_HEADER]: organizationId,
-        },
-      })
+      const deleteRes = await app.request(
+        await confirmedPath(db, 'server', serverId, `/servers/${serverId}`),
+        {
+          method: 'DELETE',
+          headers: {
+            Cookie: cookie,
+            [ORG_ID_HEADER]: organizationId,
+          },
+        }
+      )
       assertEquals(deleteRes.status, 200)
       const body = await deleteRes.json()
       assertEquals(body, { ok: true, serverId })
@@ -4436,10 +4595,13 @@ test('DELETE /servers/:id with forgetResources deletes the server when a fleet u
       })
 
       const cookie = await sessionCookie(db, secrets, userId)
-      const res = await app.request(`/servers/${serverId}?forgetResources=true`, {
-        method: 'DELETE',
-        headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
-      })
+      const res = await app.request(
+        await confirmedPath(db, 'server', serverId, `/servers/${serverId}?forgetResources=true`),
+        {
+          method: 'DELETE',
+          headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
+        }
+      )
       assertEquals(res.status, 200)
       assertEquals(registry.purgedIds, [serverId])
     }
@@ -4461,10 +4623,13 @@ test('DELETE /servers/:id with forgetResources tears down every system environme
         .where(inArray(container.id, [hosting.containerRowId, managedIngress.containerRowId]))
 
       const cookie = await sessionCookie(db, secrets, userId)
-      const res = await app.request(`/servers/${serverId}?forgetResources=true`, {
-        method: 'DELETE',
-        headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
-      })
+      const res = await app.request(
+        await confirmedPath(db, 'server', serverId, `/servers/${serverId}?forgetResources=true`),
+        {
+          method: 'DELETE',
+          headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
+        }
+      )
       assertEquals(res.status, 200)
       assertEquals(registry.purgedIds, [serverId])
 
@@ -4477,10 +4642,13 @@ test('DELETE /servers/:id with forgetResources tears down every system environme
 test("DELETE /servers/:id raises server.deleted once, with the server's name, to the managers' bell", async () => {
   await withServerDeleteFixtures(async ({ db, app, secrets, userId, organizationId, serverId }) => {
     const cookie = await sessionCookie(db, secrets, userId)
-    const res = await app.request(`/servers/${serverId}`, {
-      method: 'DELETE',
-      headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
-    })
+    const res = await app.request(
+      await confirmedPath(db, 'server', serverId, `/servers/${serverId}`),
+      {
+        method: 'DELETE',
+        headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
+      }
+    )
     assertEquals(res.status, 200)
 
     const inbox = await listNotificationsForUser(db, userId)
@@ -4619,15 +4787,18 @@ test('DELETE /servers/:id refuses an outright principal delete while a service s
   await withServerDeleteFixtures(async ({ db, app, secrets, userId, organizationId, serverId }) => {
     await withPlacedPrincipals(db, organizationId, serverId, async ({ busyId }) => {
       const cookie = await sessionCookie(db, secrets, userId)
-      const res = await app.request(`/servers/${serverId}`, {
-        method: 'DELETE',
-        headers: {
-          Cookie: cookie,
-          [ORG_ID_HEADER]: organizationId,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ principals: [{ principalId: busyId, action: 'delete' }] }),
-      })
+      const res = await app.request(
+        await confirmedPath(db, 'server', serverId, `/servers/${serverId}`),
+        {
+          method: 'DELETE',
+          headers: {
+            Cookie: cookie,
+            [ORG_ID_HEADER]: organizationId,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ principals: [{ principalId: busyId, action: 'delete' }] }),
+        }
+      )
       assertEquals(res.status, 409)
       const body = (await res.json()) as {
         code: string
@@ -4662,15 +4833,18 @@ test('DELETE /servers/:id keeps principals by default and deletes a free one on 
   await withServerDeleteFixtures(async ({ db, app, secrets, userId, organizationId, serverId }) => {
     await withPlacedPrincipals(db, organizationId, serverId, async ({ freeId, busyId }) => {
       const cookie = await sessionCookie(db, secrets, userId)
-      const res = await app.request(`/servers/${serverId}`, {
-        method: 'DELETE',
-        headers: {
-          Cookie: cookie,
-          [ORG_ID_HEADER]: organizationId,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ principals: [{ principalId: freeId, action: 'delete' }] }),
-      })
+      const res = await app.request(
+        await confirmedPath(db, 'server', serverId, `/servers/${serverId}`),
+        {
+          method: 'DELETE',
+          headers: {
+            Cookie: cookie,
+            [ORG_ID_HEADER]: organizationId,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ principals: [{ principalId: freeId, action: 'delete' }] }),
+        }
+      )
       assertEquals(res.status, 200)
       const principals = await db
         .select({ id: principal.id })
@@ -4693,8 +4867,8 @@ test('DELETE /servers/:id answers 400 for a malformed principals list or a princ
   await withServerDeleteFixtures(async ({ db, app, secrets, userId, organizationId, serverId }) => {
     await withPlacedPrincipals(db, organizationId, serverId, async () => {
       const cookie = await sessionCookie(db, secrets, userId)
-      const send = (body: unknown) =>
-        app.request(`/servers/${serverId}`, {
+      const send = async (body: unknown) =>
+        app.request(await confirmedPath(db, 'server', serverId, `/servers/${serverId}`), {
           method: 'DELETE',
           headers: {
             Cookie: cookie,
@@ -4767,15 +4941,18 @@ test('DELETE /servers/:id refuses an outright delete while the principal has a d
         const entry = planBody.principals.find((row) => row.principalId === freeId)
         assertEquals([entry?.canDeleteOutright, entry?.usedBy.logins], [false, 1])
 
-        const res = await app.request(`/servers/${serverId}`, {
-          method: 'DELETE',
-          headers: {
-            Cookie: cookie,
-            [ORG_ID_HEADER]: organizationId,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ principals: [{ principalId: freeId, action: 'delete' }] }),
-        })
+        const res = await app.request(
+          await confirmedPath(db, 'server', serverId, `/servers/${serverId}`),
+          {
+            method: 'DELETE',
+            headers: {
+              Cookie: cookie,
+              [ORG_ID_HEADER]: organizationId,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ principals: [{ principalId: freeId, action: 'delete' }] }),
+          }
+        )
         assertEquals(res.status, 409)
         assertEquals(((await res.json()) as { code: string }).code, PRINCIPAL_DELETE_REFUSED_CODE)
       } finally {

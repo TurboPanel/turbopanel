@@ -4,6 +4,7 @@ import type { AppEnv } from '../../app/app.ts'
 import { nudgeTunnelRoutesAfterResponse } from '../organizations/tunnel-nudge.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { requireStepUpIfConfigured } from '../authn/step-up.ts'
+import { confirmationName, refuseUnlessNameConfirmed } from '../confirm-name.ts'
 import { encryptSecret } from '../../lib/secrets/data-encryption.ts'
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
@@ -1126,6 +1127,14 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     const stepUp = await requireStepUpIfConfigured(c, organizationId, 'project.delete')
     if (stepUp) return stepUp
+
+    const [named] = await db
+      .select({ name: project.name })
+      .from(project)
+      .where(eq(project.id, id))
+      .limit(1)
+    const needsName = refuseUnlessNameConfirmed(c, 'project', confirmationName(named?.name, id))
+    if (needsName) return needsName
 
     // The plan is read while the service / hosting / segment rows still exist:
     // the stops are built from them. A reason the delete cannot run (a managed

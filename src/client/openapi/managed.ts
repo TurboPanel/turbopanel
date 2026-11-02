@@ -1,3 +1,5 @@
+import { withConfirmNameOnDelete } from './shared.ts'
+
 const ALLOWED_SOURCES_SCHEMA = {
   type: 'array',
   items: { type: 'string' },
@@ -1804,7 +1806,7 @@ export const managedSchemas = {
   },
 }
 
-export const managedPaths = {
+const managedBasePaths = {
   '/api/client/v1/servers/{id}/managed-external-access': {
     get: {
       tags: ['Managed services'],
@@ -3152,3 +3154,15 @@ export const managedPaths = {
     },
   },
 }
+
+export const managedPaths = withConfirmNameOnDelete(
+  withConfirmNameOnDelete(
+    managedBasePaths,
+    '/api/client/v1/environments/{id}/managed/databases/{name}',
+    'database',
+    'the database name in the path'
+  ),
+  '/api/client/v1/environments/{id}/managed',
+  'managed database',
+  "the name of its project, else the project's id"
+)

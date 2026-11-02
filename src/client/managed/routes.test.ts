@@ -77,6 +77,7 @@ import {
 } from '../../features/backups/run-report.ts'
 import type { BackupRunReportMessage } from '../../contracts/cell-protocol.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
+import { confirmedPath } from '../../test-fixtures/confirm-name.test.support.ts'
 import { removeLoginsDroppedByApply } from '../../features/managed/logins.ts'
 import {
   releaseManagedLifecycleLease,
@@ -1413,10 +1414,13 @@ test('a start, stop or destroy is refused while another lifecycle command for th
     // Bad input is answered as such, busy or not.
     const bad = await lifecycle('explode')
     assertEquals(bad.status, 400)
-    const destroy = await app.request(`/environments/${environmentId}/managed`, {
-      method: 'DELETE',
-      headers,
-    })
+    const destroy = await app.request(
+      await confirmedPath(db, 'managed', environmentId, `/environments/${environmentId}/managed`),
+      {
+        method: 'DELETE',
+        headers,
+      }
+    )
     assertEquals(destroy.status, 409)
     assertEquals(await destroy.json(), LIFECYCLE_BUSY_BODY)
     assertEquals(commandQueue.envelopes.length, queued)
@@ -1447,10 +1451,18 @@ test('two lifecycle requests that arrive together queue one command, and a force
     assertEquals(commandQueue.envelopes.length, before + 1)
 
     // The escape hatch for a database stuck behind a command: not refused.
-    const forced = await app.request(`/environments/${environmentId}/managed?force=true`, {
-      method: 'DELETE',
-      headers,
-    })
+    const forced = await app.request(
+      await confirmedPath(
+        ctx.db,
+        'managed',
+        environmentId,
+        `/environments/${environmentId}/managed?force=true`
+      ),
+      {
+        method: 'DELETE',
+        headers,
+      }
+    )
     assertEquals(forced.status === 409, false)
   })
 })
@@ -2181,10 +2193,18 @@ test('DELETE /environments/:id/managed targets managed.server_id when environmen
 
       await withDriftedPlacement(db, environmentId, organizationId, serverId, async () => {
         const beforeCount = commandQueue.envelopes.length
-        const destroy = await app.request(`/environments/${environmentId}/managed`, {
-          method: 'DELETE',
-          headers,
-        })
+        const destroy = await app.request(
+          await confirmedPath(
+            db,
+            'managed',
+            environmentId,
+            `/environments/${environmentId}/managed`
+          ),
+          {
+            method: 'DELETE',
+            headers,
+          }
+        )
         assertEquals(destroy.status, 200)
         const destroyBody = (await destroy.json()) as {
           deleted: boolean
@@ -2223,10 +2243,13 @@ test('DELETE /environments/:id/managed marks the enqueued destroy payload delete
       // consumer deletes the row only after the daemon reports success.
       await db.update(managed).set({ status: 'ready' }).where(eq(managed.id, created.managed.id))
 
-      const destroy = await app.request(`/environments/${environmentId}/managed`, {
-        method: 'DELETE',
-        headers,
-      })
+      const destroy = await app.request(
+        await confirmedPath(db, 'managed', environmentId, `/environments/${environmentId}/managed`),
+        {
+          method: 'DELETE',
+          headers,
+        }
+      )
       assertEquals(destroy.status, 200)
       const destroyBody = (await destroy.json()) as { deleted: boolean }
       // Deletion is not immediate — it happens after the daemon confirms
@@ -2453,7 +2476,7 @@ test('POST root-password includes redeployRequired when bindings exist; DELETE u
           isEmitEngineDefaults: false,
         })
         const deleteDb = await app.request(
-          `/environments/${environmentId}/managed/databases/app_extra`,
+          `/environments/${environmentId}/managed/databases/app_extra?confirmName=app_extra`,
           { method: 'DELETE', headers }
         )
         assertEquals(deleteDb.status, 409)
@@ -2699,7 +2722,7 @@ test('managed database create/delete target managed.server_id when environment p
         await db.update(managed).set({ status: 'ready' }).where(eq(managed.id, created.managed.id))
 
         const deleteDb = await app.request(
-          `/environments/${environmentId}/managed/databases/${encodeURIComponent('drift_db')}`,
+          `/environments/${environmentId}/managed/databases/${encodeURIComponent('drift_db')}?confirmName=drift_db`,
           { method: 'DELETE', headers }
         )
         assertEquals(deleteDb.status, 200)
@@ -2850,10 +2873,13 @@ test('DELETE hard-deletes unplaced managed without enqueueing destroy', async ()
         .where(eq(managed.id, created.managed.id))
 
       const beforeCount = commandQueue.envelopes.length
-      const destroy = await app.request(`/environments/${environmentId}/managed`, {
-        method: 'DELETE',
-        headers,
-      })
+      const destroy = await app.request(
+        await confirmedPath(db, 'managed', environmentId, `/environments/${environmentId}/managed`),
+        {
+          method: 'DELETE',
+          headers,
+        }
+      )
       assertEquals(destroy.status, 200)
       assertEquals(await destroy.json(), { ok: true, deleted: true })
       assertEquals(commandQueue.envelopes.length, beforeCount)
@@ -2863,6 +2889,68 @@ test('DELETE hard-deletes unplaced managed without enqueueing destroy', async ()
         .from(managed)
         .where(eq(managed.environmentId, environmentId))
       assertEquals(rows.length, 0)
+    }
+  )
+})
+
+test('DELETE of a managed database needs the exact name of its project, not the environment name', async () => {
+  await withManagedFixtures(
+    {},
+    async ({ db, app, secrets, userId, organizationId, environmentId }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const headers = {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      }
+      const create = await app.request(`/environments/${environmentId}/managed`, {
+        method: 'POST',
+        headers,
+        body: '{}',
+      })
+      assertEquals(create.status, 200)
+      const created = (await create.json()) as { managed: { id: string } }
+      await db
+        .update(managed)
+        .set({ serverId: null, status: 'ready' })
+        .where(eq(managed.id, created.managed.id))
+      const [env] = await db
+        .select({ name: environment.name, projectId: environment.projectId })
+        .from(environment)
+        .where(eq(environment.id, environmentId))
+      await db.update(project).set({ name: 'Orders Db' }).where(eq(project.id, env!.projectId))
+      const remaining = async () =>
+        (
+          await db
+            .select({ id: managed.id })
+            .from(managed)
+            .where(eq(managed.id, created.managed.id))
+        ).length
+      const send = (query: string) =>
+        app.request(`/environments/${environmentId}/managed${query}`, {
+          method: 'DELETE',
+          headers,
+        })
+
+      for (const query of [
+        '',
+        '?confirmName=',
+        '?confirmName=orders%20db',
+        `?confirmName=${encodeURIComponent(env!.name ?? '')}`,
+        '?force=true',
+      ]) {
+        const refused = await send(query)
+        assertEquals(refused.status, 400, query)
+        assertEquals(await refused.json(), {
+          error: 'confirm_name_required',
+          message: 'Type the managed database name to delete this managed database.',
+        })
+        assertEquals(await remaining(), 1)
+      }
+
+      const removed = await send('?confirmName=Orders%20Db')
+      assertEquals(removed.status, 200)
+      assertEquals(await remaining(), 0)
     }
   )
 })
@@ -2888,10 +2976,13 @@ test('DELETE stopped placed managed enqueues destroy instead of hard-delete', as
       await db.update(managed).set({ status: 'stopped' }).where(eq(managed.id, created.managed.id))
 
       const beforeCount = commandQueue.envelopes.length
-      const destroy = await app.request(`/environments/${environmentId}/managed`, {
-        method: 'DELETE',
-        headers,
-      })
+      const destroy = await app.request(
+        await confirmedPath(db, 'managed', environmentId, `/environments/${environmentId}/managed`),
+        {
+          method: 'DELETE',
+          headers,
+        }
+      )
       assertEquals(destroy.status, 200)
       const destroyBody = (await destroy.json()) as { deleted: boolean }
       assertEquals(destroyBody.deleted, false)
@@ -3516,7 +3607,7 @@ test('POST user rejects invalid username and DELETE database protects initial da
       assertEquals((await badUser.json()).error, 'reserved_username')
 
       const dropInitial = await app.request(
-        `/environments/${environmentId}/managed/databases/${encodeURIComponent('defaultdb')}`,
+        `/environments/${environmentId}/managed/databases/${encodeURIComponent('defaultdb')}?confirmName=defaultdb`,
         { method: 'DELETE', headers }
       )
       assertEquals(dropInitial.status, 409)

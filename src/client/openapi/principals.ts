@@ -1,3 +1,5 @@
+import { withConfirmName, withConfirmNameOnDelete } from './shared.ts'
+
 export const principalSchemas = {
   PrincipalReconcileOutcome: {
     type: 'object',
@@ -264,7 +266,7 @@ export const principalSchemas = {
   },
 }
 
-export const principalPaths = {
+const principalBasePaths = {
   '/api/client/v1/projects/{projectId}/principals': {
     get: {
       tags: ['Principals'],
@@ -386,6 +388,26 @@ export const principalPaths = {
         400: { description: 'invalid_service_ids' },
       },
     },
+    delete: withConfirmName(
+      {
+        tags: ['Principals'],
+        summary: 'Delete a Hosting Account',
+        description:
+          'Org owner or manager. Refused with 409 `principal_in_use` (and `usedBy`) while a service, binding, storage entry, secret or database login still uses it; otherwise the Linux account is retired on every server it reached.',
+        parameters: [
+          { name: 'projectId', in: 'path', required: true, schema: { type: 'string' } },
+          { name: 'id', in: 'path', required: true, schema: { type: 'string' } },
+        ],
+        responses: {
+          200: { description: 'Deleted' },
+          403: { description: 'Not allowed to manage the project' },
+          404: { description: 'Project or Hosting Account not found' },
+          409: { description: 'principal_in_use' },
+        },
+      },
+      'Hosting Account',
+      'its username'
+    ),
   },
   '/api/client/v1/organizations/{id}/principals': {
     get: {
@@ -729,3 +751,10 @@ export const principalPaths = {
     },
   },
 }
+
+export const principalPaths = withConfirmNameOnDelete(
+  principalBasePaths,
+  '/api/client/v1/organizations/{id}/principals/{principalId}',
+  'Hosting Account',
+  'its username'
+)
