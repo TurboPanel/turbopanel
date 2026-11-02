@@ -146,6 +146,30 @@ export function servingPublicAddresses(facts: {
 }
 
 /**
+ * The addresses a site pinned to one of its server's addresses is reached on.
+ * A public pin is reached on itself only. A private pin is a LAN address behind
+ * a router that forwards ports to it, so the public-side addresses saved for
+ * the serving servers also count: that is where the site's DNS names point.
+ */
+export function pinnedSiteAddresses(
+  pinned: string,
+  saved: readonly ClientAddressEntry[]
+): string[] {
+  const own = canonicalIpAddress(pinned)
+  if (own === null) return []
+  if (ipAddressScope(own) !== 'private') return [own]
+  const found = new Set<string>([own])
+  for (const entry of saved) {
+    if (entry.scope !== 'public') continue
+    for (const raw of [entry.addressV4, entry.addressV6]) {
+      const address = raw === null ? null : canonicalIpAddress(raw)
+      if (address !== null && ipAddressScope(address) === 'public') found.add(address)
+    }
+  }
+  return [...found]
+}
+
+/**
  * Public interface addresses the daemon reported, by the control plane's
  * classification: CGNAT, link-local, private and mesh addresses are dropped,
  * and the default-route interface wins.
