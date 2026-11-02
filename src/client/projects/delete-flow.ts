@@ -114,7 +114,6 @@ function capped<T>(rows: readonly T[]): { items: T[]; total: number } {
   return { items: rows.slice(0, DELETE_AUDIT_LIST_CAP), total: rows.length }
 }
 
-/** What a delete removes that is worth keeping in the trail, read before it runs. */
 /** The error code of a delete refused for a missing or wrong confirmation name. */
 export const CONFIRM_NAME_REQUIRED_ERROR = 'confirm_name_required'
 
@@ -140,6 +139,7 @@ export function refuseWithoutConfirmName(
   )
 }
 
+/** What a delete removes that is worth keeping in the trail, read before it runs. */
 export type DeleteAuditSnapshot = {
   /** Project name (project delete only). */
   projectName?: string | null
