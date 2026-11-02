@@ -3,6 +3,7 @@ import { Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import type { Db } from '../../db/connection.ts'
 import { instanceHostname } from '../../db/schema.ts'
+import { setSelfHostedAddress } from './ingress-modes.ts'
 import {
   parseInstallBaseUrl,
   resolveInstallBaseUrl,
@@ -277,4 +278,35 @@ test('the install base skips a primary that servers do not dial', async () => {
     await resolveWith([OLD_ROW, { ...PRIMARY_ROW, isDaemonDial: false }], true),
     'https://old.example.test:8443'
   )
+})
+
+test('self-hosted: a forwarded host or base URL on 443 resolves to the :8443 address', async () => {
+  const previousBase = Deno.env.get('TURBOPANEL_BASE_URL')
+  const previousPublic = Deno.env.get('TURBOPANEL_PUBLIC_URLS')
+  Deno.env.delete('TURBOPANEL_BASE_URL')
+  Deno.env.delete('TURBOPANEL_PUBLIC_URLS')
+  setSelfHostedAddress(true)
+  try {
+    const app = new Hono<AppEnv>()
+    app.get('/forwarded', async (c) => {
+      c.set('platformEnv', {})
+      return c.text(await resolvePublicBaseUrl(c))
+    })
+    app.get('/configured', async (c) => {
+      c.set('platformEnv', {})
+      return c.text(await resolvePublicBaseUrl(c, { baseUrl: 'https://panel.example.com:443' }))
+    })
+    const forwarded = await app.request('https://panel.example.test/forwarded', {
+      headers: { 'x-forwarded-host': 'panel.example.test' },
+    })
+    assertEquals(await forwarded.text(), 'https://panel.example.test:8443')
+    const configured = await app.request('https://panel.example.test/configured')
+    assertEquals(await configured.text(), 'https://panel.example.com:8443')
+  } finally {
+    setSelfHostedAddress(false)
+    if (previousBase === undefined) Deno.env.delete('TURBOPANEL_BASE_URL')
+    else Deno.env.set('TURBOPANEL_BASE_URL', previousBase)
+    if (previousPublic === undefined) Deno.env.delete('TURBOPANEL_PUBLIC_URLS')
+    else Deno.env.set('TURBOPANEL_PUBLIC_URLS', previousPublic)
+  }
 })
