@@ -7,7 +7,9 @@
  * `keyEnvelope` when `sealing` is set (the daemon advertises
  * `sealed-instance-secrets-v1`), otherwise the legacy plaintext `keyPem`.
  * A daemon that lists `instance-hostname-public-port-v1` in `daemonFeatures`
- * also receives each hostname's `publicPort`.
+ * also receives `publicPort`, but only on `cloudflare-tunnel` hostnames: the
+ * daemon redirects other ports to it, and on a direct, proxied or uploaded
+ * name ports 80 and 443 belong to hosting and may serve a different site.
  */
 
 import { inArray } from 'drizzle-orm'
@@ -97,7 +99,7 @@ export async function resolvePublicUrlsApplyPayload(
     const entry: InstanceHostnameWireEntry = {
       host: row.host,
       source: row.source,
-      ...(sendPublicPort ? { publicPort: row.publicPort } : {}),
+      ...(sendPublicPort && row.mode === 'cloudflare-tunnel' ? { publicPort: row.publicPort } : {}),
     }
     if (row.source !== 'uploaded' || !row.uploadedCertId) return entry
     const pair = decrypted.get(row.uploadedCertId)

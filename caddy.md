@@ -169,6 +169,12 @@ control-plane Caddy (`<state>/caddy/.local/share`), hosting Caddy
 - Entrypoint: `https://<host>:8443` for every hostname. The certificate
   follows the name. The listener binds all interfaces; use `localhost` or
   the machine's LAN IP.
+- Only a hostname in the Cloudflare Tunnel connection mode gets a 308 from
+  any other port to `:8443` (the tunnel edge may answer on 443 as well). The
+  control plane sends `publicPort` for those names only, and the daemon
+  renders the redirect only for an entry that carries it. A direct, proxied,
+  Let's Encrypt or uploaded name never redirects: ports 80 and 443 on that
+  host belong to hosting and may serve a different site.
 - Self-hosted TLS uses a **Platform CA** stored in the durable state tree
   (`/var/lib/turbopanel/tls/ca.crt` + `ca.key`, plus `ca-bundle.pem` for
   current+retired overlap). The `:8443` leaf stays under the instance `certs/`
