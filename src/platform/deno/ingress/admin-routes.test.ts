@@ -90,6 +90,32 @@ test('tunnel-token answers 503 when no co-located daemon is connected', async ()
   })
 })
 
+test('trusted-proxies read and refresh refuse a platform admin with a clean 403', async () => {
+  const { app, cookie } = await buildApp('admin')
+  for (const [method, path] of [
+    ['GET', 'trusted-proxies'],
+    ['POST', 'trusted-proxies/refresh'],
+  ] as const) {
+    const res = await app.request(`${ADMIN_API_PREFIX}/instance/ingress/${path}`, {
+      method,
+      headers: { Cookie: cookie },
+    })
+    assertEquals(res.status, 403)
+    assertEquals(await res.json(), { ok: false, error: 'Forbidden' })
+  }
+})
+
+test('trusted-proxies read answers a superadmin with the summary', async () => {
+  const { app, cookie } = await buildApp('superadmin')
+  const res = await app.request(`${ADMIN_API_PREFIX}/instance/ingress/trusted-proxies`, {
+    headers: { Cookie: cookie },
+  })
+  assertEquals(res.status, 200)
+  const body = await res.json()
+  assertEquals(body.ok, true)
+  assertEquals(body.enabledProviders, [])
+})
+
 function call(app: Hono<AppEnv>, cookie: string, method: string, path: string, body?: unknown) {
   return app.request(`${ADMIN_API_PREFIX}${path}`, {
     method,
