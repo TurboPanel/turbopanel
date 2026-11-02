@@ -802,6 +802,31 @@ test('POST /licenses/:id/ticket burns an unbound key and issues a one-hour ticke
   assertEquals(db.rows(license).find((row) => row.id === L_BOUND)?.token, 'hashed')
 })
 
+test('POST /licenses/:id/ticket returns an install command carrying the new key', async () => {
+  const { app, headers } = await buildApp({ licenses: [{ id: L_ACTIVE }] })
+  const res = await app.request(`/licenses/${L_ACTIVE}/ticket`, { method: 'POST', headers })
+  assertEquals(res.status, 200)
+  const body = (await res.json()) as { licenseArg: string; installCommand: string }
+  assertEquals(body.installCommand.includes(`TURBOPANEL_LICENSE=${body.licenseArg}`), true)
+  assertEquals(body.installCommand.includes('https://panel.example.com'), true)
+})
+
+test('POST /licenses/:id/ticket with a refused install origin keeps the old key and ticket live and mints nothing', async () => {
+  const { app, headers, db } = await buildApp({
+    runtime: 'deno',
+    omitBaseUrl: true,
+    platformEnv: { TURBOPANEL_BASE_URL: 'https://10.0.0.5' },
+    licenses: [{ id: L_ACTIVE }],
+  })
+  const live = await mintTicket(db, { organizationId: ORG, licenseId: L_ACTIVE })
+  const res = await app.request(`/licenses/${L_ACTIVE}/ticket`, { method: 'POST', headers })
+  assertEquals(res.status, 400)
+  assertEquals(((await res.json()) as { error: string }).error, INSTALL_CA_PIN_UNAVAILABLE)
+  assertEquals(db.rows(license).find((row) => row.id === L_ACTIVE)?.token, 'hashed')
+  assertEquals(db.rows(ticket).length, 1)
+  assertEquals(db.rows(ticket).find((row) => row.id === live.id)?.usedAt ?? null, null)
+})
+
 test('issuing a re-enroll ticket and burning a key need step-up when the organization requires it', async () => {
   const { app, headers, db } = await buildApp({
     stepUp: true,

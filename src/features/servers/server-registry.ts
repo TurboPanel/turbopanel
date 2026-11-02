@@ -347,10 +347,13 @@ async function updateServerKeepingMachineKey(
   }
 }
 
-/** The pin kind the daemon reported when it differs from the stored one, else null. */
-function changedTrustPinnedBy(identity: ServerHelloIdentity, stored: string | null) {
+/** Column patch for the pin kind the daemon reported when it differs from the stored one, else null. */
+function trustPinnedByPatch(
+  identity: ServerHelloIdentity,
+  stored: string | null
+): { trustPinnedBy: string } | null {
   const reported = identity.panelPin?.pinnedBy
-  return isServerTrustPinnedBy(reported) && reported !== stored ? reported : null
+  return isServerTrustPinnedBy(reported) && reported !== stored ? { trustPinnedBy: reported } : null
 }
 
 export async function touchServerMetadata(
@@ -407,8 +410,7 @@ export async function touchServerMetadata(
   const metadataChanged = mergeServerMetadataIdentity(base, identity) !== null
   const hostnameChanged = Boolean(columns.hostname && columns.hostname !== row.hostname)
   const machineKeyChanged = Boolean(columns.machineKey && columns.machineKey !== row.machineKey)
-  const reportedPin = changedTrustPinnedBy(identity, row.trustPinnedBy)
-  const trustPinnedByChanged = reportedPin !== null
+  const pinPatch = trustPinnedByPatch(identity, row.trustPinnedBy)
   const incomingFeatures = identity.features
   const currentProjection = parseServerDaemonState(row.daemon)?.projection
   const featuresChanged =
@@ -420,7 +422,7 @@ export async function touchServerMetadata(
     !osPatch &&
     !timePatch &&
     !featuresChanged &&
-    !trustPinnedByChanged
+    !pinPatch
   ) {
     return
   }
@@ -431,7 +433,7 @@ export async function touchServerMetadata(
   if (machineKeyChanged) update.machineKey = columns.machineKey
   if (osPatch) Object.assign(update, osPatch)
   if (timePatch) Object.assign(update, timePatch)
-  if (trustPinnedByChanged) update.trustPinnedBy = reportedPin
+  Object.assign(update, pinPatch)
   if (Object.keys(delta).length > 0) {
     update.metadata = sql`COALESCE(${server.metadata}, '{}'::jsonb) || ${JSON.stringify(
       delta

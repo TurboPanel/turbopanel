@@ -35,7 +35,7 @@ import {
   fetchFleetAddressesRoute,
   fetchServerAddressesRoute,
 } from '../daemon/cell/daemon-addresses-routes.ts'
-import { getDaemonCellRegistry, getDb } from '../db/connection.ts'
+import { getDaemonCellRegistry, getDb, type Db } from '../db/connection.ts'
 import { getCommandQueue } from '../features/commands/queue.ts'
 import { emptyServerIps, type ServerReportedIp } from '../contracts/server-addresses.ts'
 import { buildAdminScalarHtml } from '../app/scalar-html.ts'
@@ -84,8 +84,7 @@ import {
   recordInstanceAcmeApplyTimeout,
   recordInstanceAcmePreflightFailure,
 } from '../features/install/instance-hostnames.ts'
-import { resolvePublicUrlsApplyPayload } from './public-urls-apply-payload.ts'
-import { resolveInstanceSecretSealing } from '../features/install/instance-secret-sealing.ts'
+import { buildPublicUrlsPayload, recordEdgeTrustApplied } from './public-urls-apply-run.ts'
 import {
   parseCellPurgeBatchBody,
   parseEmailSettingsUpdates,
@@ -97,6 +96,7 @@ import {
   publicUrlsApplyErrorResponse,
   PUBLIC_URLS_APPLY_TIMEOUT_MESSAGE,
   type PublicUrlsApplyErrorResponse,
+  type PublicUrlsApplyPayload,
   publicUrlsApplyWaitToResponse,
   resolvePerServerLimit,
   resolvePlatformEnv,
@@ -116,8 +116,7 @@ import {
 } from '../features/settings/server-metrics-settings.ts'
 
 type PublicUrlsApplyPayloadOutcome =
-  | { ok: true; payload: Awaited<ReturnType<typeof resolvePublicUrlsApplyPayload>> }
-  | ({ ok: false } & PublicUrlsApplyErrorResponse)
+  { ok: true; payload: PublicUrlsApplyPayload } | ({ ok: false } & PublicUrlsApplyErrorResponse)
 
 /** Seal secrets for the daemon and build the apply body, mapping known refusals to HTTP. */
 async function buildPublicUrlsApplyPayload(
@@ -129,15 +128,15 @@ async function buildPublicUrlsApplyPayload(
   daemonVersion: string | undefined
 ): Promise<PublicUrlsApplyPayloadOutcome> {
   try {
-    const sealing = await resolveInstanceSecretSealing(db, serverId, c.get('secretsConfig'))
-    const payload = await resolvePublicUrlsApplyPayload(
+    const payload = await buildPublicUrlsPayload({
       db,
+      serverId,
       urls,
       daemonVersion,
-      c.get('dataEncryptionSecrets'),
-      resolvePlatformEnv(c, opts),
-      sealing
-    )
+      secretsConfig: c.get('secretsConfig'),
+      dataEncryptionSecrets: c.get('dataEncryptionSecrets'),
+      env: resolvePlatformEnv(c, opts),
+    })
     return { ok: true, payload }
   } catch (err) {
     const refusal = publicUrlsApplyErrorResponse(err)
@@ -193,6 +192,11 @@ export function registerAdminRoutes(
      * on-disk platform CA — so this registrar never imports `platform/deno`.
      */
     readPlatformCaBundle?: () => Promise<string>
+    /**
+     * Deno composition root injects the edge address range fetch so an apply
+     * sees ranges for a mode that was just switched on. Workers omits it.
+     */
+    refreshEdgeRanges?: (db: Db) => Promise<void>
     /**
      * Deno composition root injects host-interface collection. Workers omits
      * it so this registrar never imports `platform/deno/server-addresses-deno`.
@@ -694,6 +698,7 @@ export function registerAdminRoutes(
       return c.json({ ok: false, error: 'co-located daemon disconnected' }, 503)
     }
 
+    await opts.refreshEdgeRanges?.(db).catch(() => undefined)
     const applied = await buildPublicUrlsApplyPayload(
       c,
       opts,
@@ -714,6 +719,7 @@ export function registerAdminRoutes(
     }
     const response = publicUrlsApplyWaitToResponse(result)
     if (response.status === 200) {
+      await recordEdgeTrustApplied(db, applied.payload)
       await reconcilePlatformCaTrustAfterApply(c, db, opts.readPlatformCaBundle)
     }
     return c.json(response.body, response.status)
