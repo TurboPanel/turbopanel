@@ -66,7 +66,6 @@ export const INSTANCE_STEP_UP_ACTIONS = {
   'instance.tunnel_token.set': 'Change the tunnel token',
   'instance.ingress_account.added': 'Connect a Cloudflare account',
   'instance.ingress_account.removed': 'Remove a Cloudflare account',
-  'instance.edge_gate.set': 'Switch edge connection modes on or off',
 } as const
 
 export type StepUpAction = keyof typeof STEP_UP_ACTIONS | keyof typeof INSTANCE_STEP_UP_ACTIONS

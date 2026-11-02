@@ -6,7 +6,7 @@ Third-party components remain under their own copyright and license terms and ar
 
 <!-- lockfiles
 deno.lock sha256:38f4600f955413ef9ce8429b1f8f3e21c68553d9adf88c5b542e81ab796b74de
-pnpm-lock.yaml sha256:f882efea125e089f758e2f31348ded8cb160381b35a41063a89f434ba08af974
+pnpm-lock.yaml sha256:48be0268435ac939c3b08973423b7ad70cf5246f86855dd9f099618459d39047
 -->
 
 ## Production dependencies
@@ -884,7 +884,7 @@ These packages are used for development, test, or build tooling and are not bund
 - Copyright: Andrey Sitnik
 - Homepage: https://github.com/browserslist/update-db#readme
 
-### vite@6.4.4
+### vite@6.4.5
 
 - License: MIT
 - Copyright: Evan You

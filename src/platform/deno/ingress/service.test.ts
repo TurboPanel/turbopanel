@@ -14,11 +14,24 @@ import {
   SELF_HOSTED_PUBLIC_PORT_ERROR,
   setSelfHostedAddress,
 } from '../../../features/install/ingress-modes.ts'
+import type { EdgeGate } from './gate.ts'
 import { applyIngress, readStoredIngress, setHostnameIngress } from './service.ts'
 
 const test = Deno.test.bind(Deno)
 const dbUrl = Deno.env.get('TURBOPANEL_DATABASE_URL')
 const TOKEN = 'cfut_serviceFixtureToken0123456789abcdef'
+
+const OPEN: EdgeGate = { open: true, waiting: [], remoteServers: 0, forcedClosed: false }
+const SHUT: EdgeGate = {
+  open: false,
+  reason:
+    "1 server still needs to re-learn this control plane's key before an edge mode can be used: kappa.",
+  waiting: [{ id: 'srv-1', name: 'kappa', organizationId: 'org-1', pinnedBy: null }],
+  remoteServers: 1,
+  forcedClosed: false,
+}
+const openGate = () => Promise.resolve(OPEN)
+const shutGate = () => Promise.resolve(SHUT)
 
 const NO_DAEMON = {
   getSnapshots: () => Promise.resolve(new Map()),
@@ -60,18 +73,27 @@ test('an account is stored sealed, used by a tunnel hostname, and cannot be remo
       env: {},
       selfKid: () => null,
       fetch: cf.fetch,
+      edgeGate: shutGate,
     }
     // A listener mode sets nothing up, so changing the mode afterwards needs no disconnect.
     assertEquals((await applyIngress(db, hostnameId, service))?.ok, true)
-    const wrong = await setHostnameIngress(db, hostnameId, { mode: 'direct', ingressId: accountId })
+    const wrong = await setHostnameIngress(
+      db,
+      hostnameId,
+      { mode: 'direct', ingressId: accountId },
+      openGate
+    )
     assertEquals(wrong.ok ? 0 : wrong.status, 422)
     // Self-hosted: the address is always :8443, so any other port is a plain 400.
     setSelfHostedAddress(true)
     try {
-      const refused = await setHostnameIngress(db, hostnameId, { publicPort: 443 })
+      const refused = await setHostnameIngress(db, hostnameId, { publicPort: 443 }, openGate)
       assertEquals(refused.ok ? 0 : refused.status, 400)
       assertEquals(refused.ok ? '' : refused.error, SELF_HOSTED_PUBLIC_PORT_ERROR)
-      assertEquals((await setHostnameIngress(db, hostnameId, { publicPort: 8443 })).ok, true)
+      assertEquals(
+        (await setHostnameIngress(db, hostnameId, { publicPort: 8443 }, openGate)).ok,
+        true
+      )
       // A row stored on 443 by an older save reads back as 8443.
       await db
         .update(instanceHostname)
@@ -83,22 +105,42 @@ test('an account is stored sealed, used by a tunnel hostname, and cannot be remo
       setSelfHostedAddress(false)
     }
     // High Availability keeps the stored port.
-    assertEquals((await setHostnameIngress(db, hostnameId, { publicPort: 443 })).ok, true)
+    assertEquals((await setHostnameIngress(db, hostnameId, { publicPort: 443 }, openGate)).ok, true)
     assertEquals(
       (await listInstanceHostnames(db)).find((item) => item.id === hostnameId)?.publicPort,
       443
     )
-    assertEquals((await setHostnameIngress(db, hostnameId, { publicPort: 8443 })).ok, true)
-    const set = await setHostnameIngress(db, hostnameId, {
-      mode: 'cloudflare-tunnel',
-      ingressId: accountId,
-    })
+    assertEquals(
+      (await setHostnameIngress(db, hostnameId, { publicPort: 8443 }, openGate)).ok,
+      true
+    )
+    // A remote server that has not pinned this control plane's key: the switch is a 409 naming it.
+    const held = await setHostnameIngress(
+      db,
+      hostnameId,
+      { mode: 'cloudflare-tunnel', ingressId: accountId },
+      shutGate
+    )
+    assertEquals(held.ok ? 0 : held.status, 409)
+    assertEquals(held.ok ? '' : held.error, SHUT.reason)
+    assertEquals(held.ok ? [] : held.waiting?.map((item) => item.name), ['kappa'])
+    const set = await setHostnameIngress(
+      db,
+      hostnameId,
+      { mode: 'cloudflare-tunnel', ingressId: accountId },
+      openGate
+    )
     assert(set.ok)
+    // Changing only the account on an edge row does not read the gate again.
+    assertEquals(
+      (await setHostnameIngress(db, hostnameId, { ingressId: accountId }, shutGate)).ok,
+      true
+    )
 
     const inUse = await removeIngressAccount(db, accountId)
     assertEquals(inUse.ok ? [] : inUse.hostnames, [host])
 
-    // The gate is shut on a fresh install: apply is refused and nothing is stored but the refusal.
+    // The gate shut again before Connect: apply is refused and nothing is stored but the refusal.
     const applied = await applyIngress(db, hostnameId, service)
     assertEquals(applied?.ok ? '' : applied?.cause, 'gate-closed')
     const [after] = await db

@@ -1,4 +1,5 @@
 import { eq } from 'drizzle-orm'
+import { confirmationName, refuseUnlessNameConfirmed } from '../confirm-name.ts'
 import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import { nudgeTunnelRoutesAfterResponse } from '../organizations/tunnel-nudge.ts'
@@ -43,7 +44,6 @@ import {
   environmentDeleteAuditEntry,
   planEnvironmentDelete,
   refuseOnPlanBlockers,
-  refuseWithoutConfirmName,
   snapshotDeleteForAudit,
   startDeleteCleanup,
 } from '../projects/delete-flow.ts'
@@ -687,6 +687,14 @@ export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteO
     const stepUp = await requireStepUpIfConfigured(c, organizationId, 'environment.delete')
     if (stepUp) return stepUp
 
+    const [named] = await db
+      .select({ name: environment.name })
+      .from(environment)
+      .where(eq(environment.id, id))
+      .limit(1)
+    const needsName = refuseUnlessNameConfirmed(c, 'environment', confirmationName(named?.name, id))
+    if (needsName) return needsName
+
     // The plan is read while the rows the stop is built from still exist. A
     // reason the delete cannot run refuses here, before anything is stopped.
     const { plan, teardownPlans } = await planEnvironmentDelete(db, id)
@@ -694,8 +702,6 @@ export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteO
     if (refused) return refused
     // Read now: the name and hostnames are gone once the rows are.
     const snapshot = await snapshotDeleteForAudit(db, plan)
-    const needsName = refuseWithoutConfirmName(c, snapshot, c.req.query('confirmName'))
-    if (needsName) return needsName
 
     // A running stack is stopped before the rows go (the stop retires no
     // account: the environment still names them until it is deleted). The

@@ -16,11 +16,12 @@
  * the session cannot reach is a 404, one without owner/manager rights a 403.
  * The path id alone drives the check, never the active-organization header.
  */
-import { eq } from 'drizzle-orm'
+import { and, eq } from 'drizzle-orm'
 import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import { type Db, getDb } from '../../db/connection.ts'
-import { server } from '../../db/schema.ts'
+import { principal, server } from '../../db/schema.ts'
+import { refuseUnlessNameConfirmed } from '../confirm-name.ts'
 import {
   listOrganizationPrincipals,
   listServerPrincipals,
@@ -85,6 +86,15 @@ export function registerOrganizationPrincipalRoutes(router: Hono<AppEnv>, opts: 
     const { db, session, organizationId } = scope
     const principalId = c.req.param('principalId')
     if (!isUuid(principalId)) return c.json({ error: 'Not found' }, 404)
+
+    const [named] = await db
+      .select({ username: principal.username })
+      .from(principal)
+      .where(and(eq(principal.id, principalId), eq(principal.organizationId, organizationId)))
+      .limit(1)
+    if (!named) return c.json({ error: 'Not found' }, 404)
+    const needsName = refuseUnlessNameConfirmed(c, 'Hosting Account', named.username)
+    if (needsName) return needsName
 
     const outcome = await db.transaction((tx) =>
       deleteUnusedPrincipal(tx, { principalId, organizationId })

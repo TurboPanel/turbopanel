@@ -3,6 +3,7 @@ import {
   buildResourceCrudPaths,
   clientErrorJson,
   resourceErrorResponses,
+  withConfirmName,
 } from './shared.ts'
 
 /**
@@ -19,17 +20,15 @@ test('resourceErrorResponses includes the requested status family', () => {
     forbidden: true,
     notFound: true,
   })
-  assertEquals(Object.keys(all).sort((a, b) => a.localeCompare(b)), [
-    '400',
-    '401',
-    '403',
-    '404',
-    '503',
-  ])
   assertEquals(
-    (all['400'] as { content: { 'application/json': { schema: unknown } } })
-      .content['application/json'].schema,
-    clientErrorJson,
+    Object.keys(all).sort((a, b) => a.localeCompare(b)),
+    ['400', '401', '403', '404', '503']
+  )
+  assertEquals(
+    (all['400'] as { content: { 'application/json': { schema: unknown } } }).content[
+      'application/json'
+    ].schema,
+    clientErrorJson
   )
 
   const noForbidden = resourceErrorResponses({ forbidden: false })
@@ -68,6 +67,39 @@ test('buildResourceCrudPaths titles the tag from the plural when omitted', () =>
   }
   assertEquals(
     item.patch.requestBody.content['application/json'].schema.$ref,
-    '#/components/schemas/UpdateEntityRequest',
+    '#/components/schemas/UpdateEntityRequest'
   )
+})
+
+test('withConfirmName adds a required confirmName and keeps an existing 400 in its description', () => {
+  const wrapped = withConfirmName(
+    {
+      parameters: [{ name: 'id', in: 'path' }],
+      responses: { '400': { description: 'invalid_principals' }, '200': { description: 'ok' } },
+    },
+    'server',
+    'its name'
+  )
+  assertEquals(wrapped.parameters, [
+    { name: 'id', in: 'path' },
+    {
+      name: 'confirmName',
+      in: 'query',
+      required: true,
+      schema: { type: 'string' },
+      description: "The server's exact name (its name). Case and spaces count.",
+    },
+  ])
+  const refusal = wrapped.responses['400'] as { description: string }
+  assertEquals(
+    refusal.description.startsWith('invalid_principals; or `confirm_name_required`'),
+    true
+  )
+  assertEquals(refusal.description.includes('"Type the server name to delete this server."'), true)
+  assertExists(wrapped.responses['200'])
+
+  const empty: { responses: Record<string, unknown> } = { responses: {} }
+  const fresh = withConfirmName(empty, 'project', 'its name')
+  const fresh400 = fresh.responses['400'] as { description: string }
+  assertEquals(fresh400.description.startsWith('`confirm_name_required`'), true)
 })

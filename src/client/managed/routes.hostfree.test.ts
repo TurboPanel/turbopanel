@@ -1746,7 +1746,7 @@ test('DELETE hard-deletes an unplaced cluster', async () => {
   const { app, cookie } = await buildApp({
     db: fakeDb({ managedRows: [managedRow({ serverId: null })] }),
   })
-  const res = await app.request(envPath(), {
+  const res = await app.request(envPath('?confirmName=Production'), {
     method: 'DELETE',
     headers: authHeaders(cookie),
   })
@@ -1765,7 +1765,7 @@ test('DELETE / lifecycle / members reject a busy cluster', async () => {
     'content-type': 'application/json',
   }
   for (const [method, path] of [
-    ['DELETE', envPath()],
+    ['DELETE', envPath('?confirmName=Production')],
     ['POST', envPath('/members')],
     ['PATCH', envPath(`/members/${MEMBER_ID}`)],
     ['DELETE', envPath(`/members/${MEMBER_ID}`)],
@@ -2021,7 +2021,7 @@ test('DELETE database refuses the initial database and unknown names', async () 
     db: fakeDb({ managedRows: [managedRow()] }),
   })
   await expectJson(
-    await app.request(envPath('/databases/defaultdb'), {
+    await app.request(envPath('/databases/defaultdb?confirmName=defaultdb'), {
       method: 'DELETE',
       headers: authHeaders(cookie),
     }),
@@ -2029,7 +2029,7 @@ test('DELETE database refuses the initial database and unknown names', async () 
     { error: 'cannot_drop_initial_database' }
   )
   await expectJson(
-    await app.request(envPath('/databases/missing'), {
+    await app.request(envPath('/databases/missing?confirmName=missing'), {
       method: 'DELETE',
       headers: authHeaders(cookie),
     }),
@@ -2069,7 +2069,7 @@ test('DELETE database returns 409 listing the SQL users that still have access',
       ],
     }),
   })
-  const res = await app.request(envPath('/databases/appdb'), {
+  const res = await app.request(envPath('/databases/appdb?confirmName=appdb'), {
     method: 'DELETE',
     headers: authHeaders(cookie),
   })
@@ -2103,7 +2103,45 @@ test('DELETE database reports bindings before users', async () => {
       ],
     }),
   })
-  const res = await app.request(envPath('/databases/appdb'), {
+  const res = await app.request(envPath('/databases/appdb?confirmName=appdb'), {
+    method: 'DELETE',
+    headers: authHeaders(cookie),
+  })
+  assertEquals(res.status, 409)
+  assertEquals((await jsonOf(res)).error, 'managed_database_has_bindings')
+})
+
+test('DELETE database needs its exact name before anything else is checked or changed', async () => {
+  const { db, writes } = writeCountingDb({
+    managedRows: [managedRow()],
+    bindingRows: [
+      {
+        id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+        serviceId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+        name: 'web',
+        environmentId: ENV_ID,
+        projectId: PROJECT_ID,
+        keyPrefix: 'DATABASE',
+      },
+    ],
+  })
+  const { app, cookie } = await buildApp({ db })
+  for (const query of ['', '?confirmName=', '?confirmName=AppDb', '?confirmName=defaultdb']) {
+    await expectJson(
+      await app.request(envPath(`/databases/appdb${query}`), {
+        method: 'DELETE',
+        headers: authHeaders(cookie),
+      }),
+      400,
+      {
+        error: 'confirm_name_required',
+        message: 'Type the database name to delete this database.',
+      }
+    )
+  }
+  assertEquals(writes(), 0)
+  // The typed name lets the delete go on to its own checks.
+  const res = await app.request(envPath('/databases/appdb?confirmName=appdb'), {
     method: 'DELETE',
     headers: authHeaders(cookie),
   })
@@ -2746,7 +2784,7 @@ test('DELETE of a placed cluster returns 503 without dispatch infrastructure', a
     db: fakeDb({ managedRows: [managedRow()] }),
   })
   await expectJson(
-    await app.request(envPath(), {
+    await app.request(envPath('?confirmName=Production'), {
       method: 'DELETE',
       headers: authHeaders(cookie),
     }),
@@ -2762,7 +2800,7 @@ test('DELETE hard-deletes pending containers for environment services', async ()
       serviceRows: [{ id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd' }],
     }),
   })
-  const res = await app.request(envPath(), {
+  const res = await app.request(envPath('?confirmName=Production'), {
     method: 'DELETE',
     headers: authHeaders(cookie),
   })
@@ -2977,7 +3015,7 @@ test('POST lifecycle / DELETE placed / backups enqueue when the host is online',
     { status: 'queued' }
   )
   await expectQueued(
-    await app.request(envPath(), {
+    await app.request(envPath('?confirmName=Production'), {
       method: 'DELETE',
       headers: authHeaders(cookie),
     }),
@@ -3026,7 +3064,7 @@ test('DELETE cluster refuses with the bound services listed, and queues nothing'
     registry: stubRegistry(),
     commandQueue: countingQueue(enqueued),
   })
-  const res = await app.request(envPath(), {
+  const res = await app.request(envPath('?confirmName=Production'), {
     method: 'DELETE',
     headers: authHeaders(cookie),
   })
@@ -3056,7 +3094,7 @@ test('DELETE cluster with ?detach=true queues the destroy and leaves the binding
     registry: stubRegistry(),
     commandQueue: countingQueue(enqueued),
   })
-  const res = await app.request(envPath('?detach=true'), {
+  const res = await app.request(envPath('?detach=true&confirmName=Production'), {
     method: 'DELETE',
     headers: authHeaders(cookie),
   })
@@ -3090,7 +3128,7 @@ test('DELETE cluster with ?detach=true whose destroy cannot be queued answers 50
     registry: stubRegistry(),
     commandQueue: failingQueue(),
   })
-  const res = await app.request(envPath('?detach=true'), {
+  const res = await app.request(envPath('?detach=true&confirmName=Production'), {
     method: 'DELETE',
     headers: authHeaders(cookie),
   })
@@ -3129,13 +3167,13 @@ test('DELETE cluster with ?detach=true needs the same rights as the destroy: man
     commandQueue: countingQueue(enqueued),
   })
   executeCalls = 0
-  const detach = await app.request(envPath('?detach=true'), {
+  const detach = await app.request(envPath('?detach=true&confirmName=Production'), {
     method: 'DELETE',
     headers: authHeaders(cookie),
   })
   assertEquals(detach.status, 403)
   executeCalls = 0
-  const forced = await app.request(envPath('?force=true&detach=true'), {
+  const forced = await app.request(envPath('?force=true&detach=true&confirmName=Production'), {
     method: 'DELETE',
     headers: authHeaders(cookie),
   })
@@ -3159,13 +3197,13 @@ test('DELETE cluster with ?force=true&detach=true removes the bindings before th
     registry: stubRegistry(),
     commandQueue: countingQueue([]),
   })
-  const refused = await app.request(envPath('?force=true'), {
+  const refused = await app.request(envPath('?force=true&confirmName=Production'), {
     method: 'DELETE',
     headers: authHeaders(cookie),
   })
   assertEquals(refused.status, 409)
   assertEquals(deletedTables.length, 0)
-  const res = await app.request(envPath('?force=true&detach=true'), {
+  const res = await app.request(envPath('?force=true&detach=true&confirmName=Production'), {
     method: 'DELETE',
     headers: authHeaders(cookie),
   })
@@ -3201,7 +3239,7 @@ test('DELETE ?force=true reports hostCleanup with an offline member', async () =
     registry: stubRegistry(),
     commandQueue: partiallyFailingMemberQueue(failed, REPLICA_SERVER_ID),
   })
-  const res = await app.request(envPath('?force=true'), {
+  const res = await app.request(envPath('?force=true&confirmName=Production'), {
     method: 'DELETE',
     headers: authHeaders(cookie),
   })
@@ -3221,7 +3259,7 @@ test('DELETE cluster with no bindings is unchanged and reports no detached list'
     registry: stubRegistry(),
     commandQueue: recordingQueue(),
   })
-  const res = await app.request(envPath(), {
+  const res = await app.request(envPath('?confirmName=Production'), {
     method: 'DELETE',
     headers: authHeaders(cookie),
   })
@@ -3759,7 +3797,7 @@ test('DELETE database past apply-ready maps a later prepare error', async () => 
     registry: stubRegistry(),
     commandQueue: recordingQueue(),
   })
-  const res = await app.request(envPath('/databases/appdb'), {
+  const res = await app.request(envPath('/databases/appdb?confirmName=appdb'), {
     method: 'DELETE',
     headers: authHeaders(cookie),
   })
