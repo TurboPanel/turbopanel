@@ -16,6 +16,7 @@ import {
   audit,
   grant,
   hosting,
+  hostname,
   organization,
   project,
   repository,
@@ -593,6 +594,48 @@ function addContainer(ctx: EnvironmentTestContext, serviceId: string, status: st
     composeServiceName: 'web',
   })
 }
+
+test('an environment that serves a public hostname is deleted only with its exact name', async () => {
+  await withEnvironmentFixtures(async (ctx) => {
+    const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
+    const { id, serviceId } = await createEnvironmentWithWeb(ctx, cookie, 'shop')
+    const [existing] = await ctx.db
+      .select({ id: hosting.id })
+      .from(hosting)
+      .where(eq(hosting.serviceId, serviceId))
+    const hostingId =
+      existing?.id ??
+      (await ctx.db.insert(hosting).values({ serviceId }).returning({ id: hosting.id }))[0]!.id
+    await ctx.db.insert(hostname).values({
+      hostingId,
+      routingOrganizationId: ctx.organizationId,
+      hostname: `shop-${crypto.randomUUID()}.example.test`,
+    })
+    const send = (query: string) =>
+      Promise.resolve(
+        ctx.app.request(`/environments/${id}${query}`, {
+          method: 'DELETE',
+          headers: { Cookie: cookie, [ORG_ID_HEADER]: ctx.organizationId },
+        })
+      )
+
+    for (const query of ['', '?confirmName=', '?confirmName=Shop', '?confirmName=other']) {
+      const refused = await send(query)
+      assertEquals(refused.status, 400, query)
+      const body = (await refused.json()) as { error: string; message: string }
+      assertEquals(body.error, 'confirm_name_required')
+      assertEquals(
+        body.message,
+        'Type the environment name to delete an environment that serves a public hostname.'
+      )
+      assertEquals((await environmentRow(ctx, id))?.name, 'shop')
+    }
+
+    const removed = await send('?confirmName=shop')
+    assertEquals(removed.status, 200)
+    assertEquals(await environmentRow(ctx, id), undefined)
+  })
+})
 
 test('a running environment whose stop cannot be sent is refused with environment_running and nothing is removed', async () => {
   await withEnvironmentFixtures(async (ctx) => {

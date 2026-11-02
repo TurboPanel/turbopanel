@@ -43,6 +43,7 @@ import {
   environmentDeleteAuditEntry,
   planEnvironmentDelete,
   refuseOnPlanBlockers,
+  refuseWithoutConfirmName,
   snapshotDeleteForAudit,
   startDeleteCleanup,
 } from '../projects/delete-flow.ts'
@@ -693,6 +694,8 @@ export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteO
     if (refused) return refused
     // Read now: the name and hostnames are gone once the rows are.
     const snapshot = await snapshotDeleteForAudit(db, plan)
+    const needsName = refuseWithoutConfirmName(c, snapshot, c.req.query('confirmName'))
+    if (needsName) return needsName
 
     // A running stack is stopped before the rows go (the stop retires no
     // account: the environment still names them until it is deleted). The
