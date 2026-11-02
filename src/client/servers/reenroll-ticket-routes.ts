@@ -4,7 +4,7 @@ import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { recordAudit } from '../../features/audit/audit-records.ts'
 import { encodeLicenseArg } from '../../features/install/daemon-install-command.ts'
-import { requireStepUpIfConfigured } from '../authn/step-up.ts'
+import { requireInstanceStepUp } from '../authn/step-up.ts'
 import { buildTicketInstallCommand, resolveInstallOrigin } from '../licenses/install-origin.ts'
 import { requireServerOwnerContext } from './owner-context.ts'
 import { mintTicket, revokeServerTickets } from '../../features/licenses/tickets.ts'
@@ -26,11 +26,9 @@ export function registerServerReenrollTicketRoutes(router: Hono<AppEnv>, opts: A
     if (ctx instanceof Response) return ctx
     const { db, session, organizationId, serverId } = ctx
 
-    const stepUp = await requireStepUpIfConfigured(
-      c,
-      organizationId,
-      'server.reenroll_ticket.issue'
-    )
+    // Always on: a re-enroll ticket lets a host replace the server's key, so the
+    // organization's opt-in switch (default off) must not skip the proof.
+    const stepUp = await requireInstanceStepUp(c, 'server.reenroll_ticket.issue')
     if (stepUp) return stepUp
 
     // Resolve the install origin first so a refusal retires nothing.

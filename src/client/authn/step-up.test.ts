@@ -236,7 +236,7 @@ test('every registered action is called by a route', async () => {
   const all = sources.join('\n')
   for (const action of Object.keys(STEP_UP_ACTIONS)) {
     const wired = new RegExp(
-      String.raw`(?:requireStepUpIfConfigured|authorizeManagedBackupMutation|loadManagedRowScope|tlsCaGate)\([^)]*?['"]${action.replaceAll('.', String.raw`\.`)}['"]`
+      String.raw`(?:requireStepUpIfConfigured|requireInstanceStepUp|authorizeManagedBackupMutation|loadManagedRowScope|tlsCaGate)\([^)]*?['"]${action.replaceAll('.', String.raw`\.`)}['"]`
     )
     assertEquals(wired.test(all), true, `no route calls the gate for ${action}`)
   }
