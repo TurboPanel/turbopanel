@@ -91,11 +91,12 @@ secret, comma-joined panel URLs with the admin's install URL first, panel key
 fingerprint, next key fingerprint, CA fingerprints), signed by the panel
 identity key over the payload text (`encodeInstallToken`). Rules:
 
-- **Expand only.** The command is emitted only when `TURBOPANEL_INSTALL_TOKEN_V2`
-  is `1`/`true` and the panel has an identity key; otherwise the older
-  `TURBOPANEL_LICENSE` form is unchanged. Turn the switch on only after the
-  daemon release whose `run.sh` reads `TOKEN` (wire feature `install-token-v2`)
-  is on the release channel the installer hosts serve.
+- **Always on, one fallback.** Every command that carries a join ticket uses
+  `TOKEN`. The only exception is a control plane with no identity key (High
+  Availability before `TURBOPANEL_IDENTITY_KEYS` is set; self-hosted always has
+  one): it cannot sign, so the command keeps the older `TURBOPANEL_LICENSE`
+  form. There is no switch. The daemon installer still accepts the older form
+  until the floor bump.
 - Every URL is a bare `https://host[:port]` origin; the encoder throws otherwise
   and the route falls back to the older form for an install URL that is not one.
 - The `licenseToken` slot is opaque, so a one-hour join ticket can ride in it
