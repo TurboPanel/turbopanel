@@ -147,7 +147,8 @@ async function reauthRequiredResponse(
 
 /**
  * The same gate for an instance-wide action, which belongs to no organization
- * and so has no per-organization switch: it is always on. Returns `null` when
+ * and so has no per-organization switch, or for an organization action that must
+ * be gated whatever the switch says (the four key-changing ones): it is always on. Returns `null` when
  * the session re-authenticated (or signed in) inside the window.
  */
 export async function requireInstanceStepUp(
