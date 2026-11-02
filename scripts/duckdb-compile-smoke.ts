@@ -41,11 +41,7 @@ import { locateBuiltLibduckdbDir } from './duckdb-native-lib.ts'
 
 const repoRoot = new URL('..', import.meta.url).pathname
 
-async function run(
-  cmd: string,
-  args: string[],
-  env: Record<string, string> = {},
-): Promise<string> {
+async function run(cmd: string, args: string[], env: Record<string, string> = {}): Promise<string> {
   const output = await new Deno.Command(cmd, {
     args,
     env,
@@ -72,7 +68,7 @@ try {
     `cannot create ${workDir} — the compiled binary's permissions are baked to ` +
       `${DEFAULT_METRICS_DIR}, so this gate needs a converged Vagrant guest ` +
       `(dev user in the turbopanel group). See dev/AGENTS.md → Testing.`,
-    { cause: err },
+    { cause: err }
   )
 }
 
@@ -101,9 +97,7 @@ try {
     }
     console.log(stdout.trimEnd())
   }
-  console.log(
-    'duckdb:smoke PASS (real compiled artifact → restart durability → parquet)',
-  )
+  console.log('duckdb:smoke PASS (real compiled artifact → restart durability → parquet)')
 } finally {
   await Deno.remove(workDir, { recursive: true })
 }
