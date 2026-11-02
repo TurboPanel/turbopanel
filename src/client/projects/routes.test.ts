@@ -1051,6 +1051,44 @@ test('POST /projects rejects duplicate display names case-insensitively within t
   })
 })
 
+test('DELETE /projects/:id needs the exact project name and changes nothing without it', async () => {
+  await withProjectFixtures(async ({ db, app, secrets, userId, organizationId, workspaceId }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const headers = { Cookie: cookie, [ORG_ID_HEADER]: organizationId }
+    const created = await app.request('/projects', {
+      method: 'POST',
+      headers: { ...headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'empty', workspaceId, name: 'Shop Front' }),
+    })
+    assertEquals(created.status, 200)
+    const projectId = ((await created.json()) as { id: string }).id
+    const send = (query: string) =>
+      app.request(`/projects/${projectId}${query}`, { method: 'DELETE', headers })
+    const remaining = async () =>
+      (await db.select({ id: project.id }).from(project).where(eq(project.id, projectId))).length
+
+    for (const query of [
+      '',
+      '?confirmName=',
+      '?confirmName=shop%20front',
+      '?confirmName=Shop%20Front%20',
+      `?confirmName=${projectId}`,
+    ]) {
+      const refused = await send(query)
+      assertEquals(refused.status, 400, query)
+      assertEquals(await refused.json(), {
+        error: 'confirm_name_required',
+        message: 'Type the project name to delete this project.',
+      })
+      assertEquals(await remaining(), 1)
+    }
+
+    const removed = await send('?confirmName=Shop%20Front')
+    assertEquals(removed.status, 200)
+    assertEquals(await remaining(), 0)
+  })
+})
+
 test('PATCH /projects/:id rejects renaming onto another project name in the org', async () => {
   await withProjectFixtures(async ({ db, app, secrets, userId, organizationId, workspaceId }) => {
     const cookie = await sessionCookie(db, secrets, userId)
