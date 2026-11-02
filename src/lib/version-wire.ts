@@ -214,6 +214,7 @@ export const DAEMON_WIRE_FEATURES = [
   'instance-hostname-public-port-v1',
   'daemon-sealed-principal-reconcile-v1',
   'install-token-v2',
+  'tunnel-status-facts-v1',
 ] as const
 
 export type DaemonWireFeature = (typeof DAEMON_WIRE_FEATURES)[number]
@@ -242,6 +243,12 @@ export const TUNNEL_FORWARDING_FEATURE: DaemonWireFeature = 'tunnel-forwarding-v
 export const TUNNEL_CONNECTOR_FEATURE: DaemonWireFeature = 'tunnel-connector-v1'
 /** The daemon answers `server.tunnel.status` with each connector's state and version. */
 export const TUNNEL_STATUS_FEATURE: DaemonWireFeature = 'tunnel-status-v1'
+/**
+ * Each `server.tunnel.status` connector may carry `edgeConnections` (the
+ * connector's `/ready`) and `hostnames` (its `/config`). Both stay optional,
+ * so the control plane reads them when present and needs no gate to send.
+ */
+export const TUNNEL_STATUS_FACTS_FEATURE: DaemonWireFeature = 'tunnel-status-facts-v1'
 
 /**
  * The daemon opens `tpdaemon` envelopes on `public-urls-update`
