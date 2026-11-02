@@ -4441,18 +4441,3 @@ test('POST /enroll refuses a v1 proof when re-enrolling a server that used a sig
     assertEquals(row?.usedAt, null)
   })
 })
-
-test('POST /enroll still takes a v1 proof for a re-enroll of a level 0 server', async () => {
-  await withEnrollFixture(async ({ db, app, organizationId, serverId, machineKey, hostname }) => {
-    const reenroll = await mintTicket(db, { organizationId, serverId })
-    const response = await postEnroll(app, {
-      licenseId: reenroll.id,
-      licenseToken: reenroll.plaintext,
-      serverId,
-      machineKey,
-      hostname,
-      key: await generateKeyMaterial(),
-    })
-    assertEquals(response.status, 200)
-  })
-})

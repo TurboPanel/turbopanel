@@ -1339,9 +1339,20 @@ async function refuseUnverifiedProof(
   return null
 }
 
-/** `server.trust_level` of one server; 0 for an unknown id or none. */
-async function readServerTrustLevel(db: Db, serverId: string | null): Promise<number> {
-  if (!serverId) return 0
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/**
+ * `server.trust_level` of the server this enroll lands on: the one a re-enroll
+ * ticket names, else the id the daemon says it already has. A brand-new server
+ * (no id, or an unknown one) is level 0. A named id can only tighten the check.
+ */
+async function readEnrollTrustLevel(
+  db: Db,
+  credential: EnrollCredential,
+  serverIdBody: string | undefined
+): Promise<number> {
+  const serverId = credential.kind === 'reenroll' ? credential.ticket.serverId : serverIdBody
+  if (!serverId || !UUID_PATTERN.test(serverId)) return 0
   const [row] = await db
     .select({ trustLevel: server.trustLevel })
     .from(server)
@@ -1859,10 +1870,7 @@ export function registerDaemonApiRoutes<E extends Env>(
     // session must send a v2 proof (403 Signed proof required otherwise).
     const enrollProofResult = await refuseUnacceptableProof(body, {
       identity: options.panelIdentity,
-      trustLevel:
-        credential.kind === 'reenroll'
-          ? await readServerTrustLevel(db, credential.ticket.serverId)
-          : 0,
+      trustLevel: await readEnrollTrustLevel(db, credential, serverIdBody),
     })
     if ('refusal' in enrollProofResult) {
       return c.json(
