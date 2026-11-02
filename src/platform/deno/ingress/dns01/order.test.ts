@@ -197,6 +197,12 @@ test('an order is refused while the authority limit pauses the name', async () =
     const result = await startOrder(w.deps, paused)
     assert('ok' in result)
     assert(result.error.includes('2026-11-02'))
+    const recent = [10, 20, 30, 40].map((min) =>
+      new Date(NOW.getTime() - min * 60_000).toISOString()
+    )
+    const busy = await startOrder(w.deps, { ...row, state: { ...row.state, attemptTimes: recent } })
+    assert('ok' in busy)
+    assert(busy.error.includes('last hour'))
   } finally {
     await cleanup(db, w.hostnameId)
     await endDbConnection(db)

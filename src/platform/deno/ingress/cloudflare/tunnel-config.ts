@@ -63,14 +63,18 @@ export function buildPanelIngress(
     a.localeCompare(b)
   )
   const ours = new Set([...unique, ...dropped.map((name) => name.toLowerCase())])
-  // Rules someone else put on an adopted tunnel stay, in their order, ahead of ours.
-  const kept = existing.filter((rule) => rule.hostname && !ours.has(rule.hostname.toLowerCase()))
+  // Rules someone else put on an adopted tunnel stay, in their order, ahead of
+  // ours; its own catch-all (whatever it serves) stays last.
+  const kept = existing.filter((rule) => !rule.hostname || !ours.has(rule.hostname.toLowerCase()))
+  const last = kept.at(-1)
+  const catchAll = last && !last.hostname ? last : { service: 'http_status:404' }
+  const before = last && !last.hostname ? kept.slice(0, -1) : kept
   const rules: CloudflareIngressRule[] = unique.map((hostname) => ({
     hostname,
     service: PANEL_ORIGIN_DIAL,
     originRequest: { originServerName: hostname, httpHostHeader: hostname, noTLSVerify: true },
   }))
-  return [...kept, ...rules, { service: 'http_status:404' }]
+  return [...before, ...rules, catchAll]
 }
 
 /** The tunnel id a `<id>.cfargotunnel.com` CNAME points at, or null. */

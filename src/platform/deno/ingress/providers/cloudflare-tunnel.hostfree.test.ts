@@ -297,3 +297,42 @@ test('a dashboard-made tunnel behind the name is adopted, its other rules kept, 
     ['other.example.com', undefined]
   )
 })
+
+test('an adopted tunnel keeps its own catch-all and its other configuration members', async () => {
+  const h = harness()
+  const id = '6f0c3c1e-1111-4222-8333-944455557777'
+  h.cf.tunnels.push({ id, name: 'made-in-dashboard', status: 'healthy', connections: [] })
+  h.cf.configurations.set(id, {
+    config: {
+      'warp-routing': { enabled: true },
+      ingress: [{ service: 'http://localhost:9000' }],
+    },
+  })
+  h.cf.records.set('zone-1', [
+    {
+      id: 'rec-cname',
+      type: 'CNAME',
+      name: 'panel.example.com',
+      content: `${id}.cfargotunnel.com`,
+    },
+  ])
+  const result = await applyHostname(h.ctx(hostname('h1', 'panel.example.com')))
+  assert(result.ok)
+  const config = h.cf.configurations.get(id) as {
+    config: { 'warp-routing'?: unknown; ingress: { hostname?: string; service: string }[] }
+  }
+  assertEquals(config.config['warp-routing'], { enabled: true })
+  assertEquals(
+    config.config.ingress.map((rule) => [rule.hostname, rule.service]),
+    [
+      ['panel.example.com', 'https://127.0.0.1:8443'],
+      [undefined, 'http://localhost:9000'],
+    ]
+  )
+  await cloudflareTunnelProvider.remove(h.ctx(hostname('h1', 'panel.example.com', result.state)))
+  const after = h.cf.configurations.get(id) as { config: { ingress: { service: string }[] } }
+  assertEquals(
+    after.config.ingress.map((rule) => rule.service),
+    ['http://localhost:9000']
+  )
+})

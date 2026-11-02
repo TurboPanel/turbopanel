@@ -27,6 +27,8 @@ export type CloudflareIngressRule = {
   service: string
   originRequest?: Record<string, unknown>
 }
+/** A remotely managed tunnel's configuration: the ingress list plus any other members (defaults, routing). */
+export type CloudflareTunnelConfig = { ingress: CloudflareIngressRule[]; [member: string]: unknown }
 export type CloudflareTokenVerify = { id?: string; status?: string; expires_on?: string }
 export type CloudflareDnsRecord = {
   id: string
@@ -248,12 +250,14 @@ export class CloudflareClient {
   async putConfiguration(
     accountId: string,
     tunnelId: string,
-    ingress: readonly CloudflareIngressRule[]
+    ingress: readonly CloudflareIngressRule[],
+    /** Other configuration members to keep (an adopted tunnel's defaults and routing). */
+    rest: Record<string, unknown> = {}
   ): Promise<void> {
     await this.#call(
       'PUT',
       `/accounts/${encodeURIComponent(accountId)}/cfd_tunnel/${encodeURIComponent(tunnelId)}/configurations`,
-      { config: { ingress } }
+      { config: { ...rest, ingress } }
     )
   }
 
@@ -274,12 +278,13 @@ export class CloudflareClient {
   }
 
   /** The tunnel's ingress rules as Cloudflare holds them (remotely managed tunnels). */
-  async getConfiguration(accountId: string, tunnelId: string): Promise<CloudflareIngressRule[]> {
-    const result = await this.#call<{ config?: { ingress?: CloudflareIngressRule[] } } | null>(
+  async getConfiguration(accountId: string, tunnelId: string): Promise<CloudflareTunnelConfig> {
+    const result = await this.#call<{ config?: Partial<CloudflareTunnelConfig> | null } | null>(
       'GET',
       `/accounts/${encodeURIComponent(accountId)}/cfd_tunnel/${encodeURIComponent(tunnelId)}/configurations`
     )
-    return Array.isArray(result?.config?.ingress) ? result.config.ingress : []
+    const config = result?.config ?? {}
+    return { ...config, ingress: Array.isArray(config.ingress) ? config.ingress : [] }
   }
 
   async deleteTunnel(accountId: string, tunnelId: string): Promise<void> {

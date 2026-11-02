@@ -216,9 +216,9 @@ async function applyWith(
   ctx: IngressContext
 ): Promise<ApplyResult> {
   const tunnel = await ensureTunnel(api, ready, ctx)
-  const existing = await api.getConfiguration(ready.accountId, tunnel.id)
+  const { ingress: existing, ...rest } = await api.getConfiguration(ready.accountId, tunnel.id)
   const ingress = buildPanelIngress(namesOnTunnel(ctx, ready.name), existing)
-  await api.putConfiguration(ready.accountId, tunnel.id, ingress)
+  await api.putConfiguration(ready.accountId, tunnel.id, ingress, rest)
   const dns = await ensureDns(api, ready, tunnel.id, ctx.replaceExisting === true)
   if ('ok' in dns) return dns
   const runToken = await api.getTunnelToken(ready.accountId, tunnel.id)
@@ -323,10 +323,13 @@ async function removeWith(
   const remaining = namesOnTunnel(ctx, null)
   if (remaining.length > 0 || state.adopted) {
     // An adopted tunnel keeps running with its other rules; only our name goes.
-    const existing = await api.getConfiguration(state.accountId, state.tunnelId)
+    const { ingress: existing, ...rest } = await api.getConfiguration(
+      state.accountId,
+      state.tunnelId
+    )
     const dropped = [dnsName(ctx.hostname.host) ?? '']
     const ingress = buildPanelIngress(remaining, existing, dropped)
-    await api.putConfiguration(state.accountId, state.tunnelId, ingress)
+    await api.putConfiguration(state.accountId, state.tunnelId, ingress, rest)
     return
   }
   // Last name on the tunnel: stop the connector first, then the tunnel can go.

@@ -50,8 +50,12 @@ async function watchExpiry(deps: Dns01Deps, id: string): Promise<void> {
   const now = deps.now()
   let state = await alertOnExpiry(row.state, row.name, notAfter, now, deps.notify)
   if (notAfter.getTime() <= now.getTime() && !state.expiryApplied) {
-    await deps.applyToDaemon().catch(() => undefined)
-    state = { ...state, expiryApplied: true }
+    // Only a push the daemon took counts; a failed one is tried again next tick.
+    const pushed = await deps.applyToDaemon().then(
+      () => true,
+      () => false
+    )
+    state = { ...state, expiryApplied: pushed }
   }
   if (state !== row.state) await saveDns01State(deps.db, row.id, state)
 }

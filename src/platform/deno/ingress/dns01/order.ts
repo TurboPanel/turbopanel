@@ -20,7 +20,13 @@ import { type IngressAccountRecord, listIngressAccounts, zoneForName } from '../
 import { dnsName } from '../cloudflare/tunnel-config.ts'
 import { dns01Directory, forgetInstanceAcmeAccount, instanceAcmeClient } from './account.ts'
 import { alertOnFailure, type Notify } from './alerts.ts'
-import { DNS01_MAX_ATTEMPTS, mapAcmeFailure, nextAttemptAt, startsInLastHour } from './backoff.ts'
+import {
+  DNS01_MAX_ATTEMPTS,
+  DNS01_MAX_STARTS_PER_HOUR,
+  mapAcmeFailure,
+  nextAttemptAt,
+  startsInLastHour,
+} from './backoff.ts'
 import { type DnsLookup, preflightDns01, txtVisibleOnAll } from './preflight.ts'
 import { planRenewal } from './renewal.ts'
 import {
@@ -226,19 +232,32 @@ async function startWith(
 
 export type StartRefusal = { ok: false; error: string }
 
-/** Start an order now. Refused while the authority's limit pauses the name. */
+/** Why a start must wait now, or null: the authority's pause, or the hourly start budget. */
+function startRefusal(state: Dns01State, now: Date): StartRefusal | null {
+  const stop = Date.parse(state.stopUntil ?? '')
+  if (!Number.isNaN(stop) && stop > now.getTime()) {
+    return {
+      ok: false,
+      error: `Retry is paused until ${state.stopUntil} by the certificate authority's limit.`,
+    }
+  }
+  const recent = startsInLastHour(state.attemptTimes, now)
+  if (recent.length < DNS01_MAX_STARTS_PER_HOUR) return null
+  const free = nextAttemptAt(now, 0, () => 0, recent).toISOString()
+  return {
+    ok: false,
+    error: `Too many orders for this name in the last hour. Retry after ${free}.`,
+  }
+}
+
+/** Start an order now. Refused while the authority's limit or the hourly budget pauses the name. */
 export async function startOrder(
   deps: Dns01Deps,
   row: Dns01Row
 ): Promise<Dns01State | StartRefusal> {
   const now = deps.now()
-  const stop = Date.parse(row.state.stopUntil ?? '')
-  if (!Number.isNaN(stop) && stop > now.getTime()) {
-    return {
-      ok: false,
-      error: `Retry is paused until ${row.state.stopUntil} by the certificate authority's limit.`,
-    }
-  }
+  const refusal = startRefusal(row.state, now)
+  if (refusal) return refusal
   const attemptTimes = [...startsInLastHour(row.state.attemptTimes, now), now.toISOString()]
   const started: Dns01Row = {
     ...row,

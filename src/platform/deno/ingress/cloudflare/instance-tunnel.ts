@@ -135,7 +135,7 @@ export async function readEdgeTunnel(input: {
   if (!tunnelId)
     return { edge: null, note: 'No hostname of this control plane points at a tunnel yet.' }
   const detail = await api.getTunnel(account.accountId, tunnelId)
-  const rules = await api.getConfiguration(account.accountId, tunnelId)
+  const { ingress: rules } = await api.getConfiguration(account.accountId, tunnelId)
   const connections = detail.connections ?? []
   return {
     edge: {
