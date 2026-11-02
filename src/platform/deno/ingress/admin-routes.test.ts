@@ -130,7 +130,6 @@ test('every ingress change is refused to an organization admin', async () => {
     ['POST', '/instance/ingress/accounts'],
     ['DELETE', '/instance/ingress/accounts/x'],
     ['POST', '/instance/ingress/accounts/x/recheck'],
-    ['PUT', '/instance/ingress/gate'],
     ['PATCH', '/instance/ingress/hostnames/x'],
     ['POST', '/instance/ingress/hostnames/x/preflight'],
     ['POST', '/instance/ingress/hostnames/x/apply'],
@@ -146,7 +145,7 @@ test('every ingress change is refused to an organization admin', async () => {
   }
 })
 
-test('account and gate writes check the body before anything else', async () => {
+test('account writes check the body before anything else', async () => {
   const { app, cookie } = await buildApp('superadmin')
   const account = await call(app, cookie, 'POST', '/instance/ingress/accounts', { label: 'x' })
   assertEquals(account.status, 400)
@@ -156,8 +155,13 @@ test('account and gate writes check the body before anything else', async () => 
     token: 'y',
   })
   assertEquals(bunny.status, 400)
-  const gate = await call(app, cookie, 'PUT', '/instance/ingress/gate', { confirmed: 'yes' })
-  assertEquals(gate.status, 400)
+})
+
+test('the edge gate has no confirm route any more', async () => {
+  const { app, cookie } = await buildApp('superadmin')
+  const gate = await call(app, cookie, 'PUT', '/instance/ingress/gate', { confirmed: true })
+  assertEquals(gate.status, 404)
+  await gate.body?.cancel()
 })
 
 test('ingress reads answer 503 until data encryption is ready, never 500', async () => {

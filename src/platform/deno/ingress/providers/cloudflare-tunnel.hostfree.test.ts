@@ -83,12 +83,13 @@ function harness(options: { gateOpen?: boolean; selfCheck?: boolean } = {}): Har
         db: {} as Db,
         now: () => NOW,
         fetch: edgeFetch,
-        gate: {
-          open: options.gateOpen ?? true,
-          confirmedAt: null,
-          confirmedBy: null,
-          forcedClosed: false,
-        },
+        gate: () =>
+          Promise.resolve({
+            open: options.gateOpen ?? true,
+            waiting: [],
+            remoteServers: 0,
+            forcedClosed: false,
+          }),
         colocatedDaemonConnected: () => Promise.resolve(true),
         pushRunToken: (token) => {
           pushed.push(token)

@@ -11,6 +11,7 @@ import type { Db } from '../../../db/connection.ts'
 import { instanceHostname, setting } from '../../../db/schema.ts'
 import { dispatchInstanceTunnelToken } from '../../../developer/tunnel-token.ts'
 import {
+  type IngressMode,
   isAllowedPublicPort,
   isIngressMode,
   isPublicPort,
@@ -27,7 +28,7 @@ import type { DerivedSecretsConfig, SecretsConfig } from '../../../lib/secrets/s
 import { findIngressAccount, openAccountToken } from './accounts.ts'
 import { readInstanceConnector } from './cloudflare/instance-tunnel.ts'
 import { capabilitiesFor } from './capabilities.ts'
-import { readEdgeGate } from './gate.ts'
+import { type EdgeGate, type EdgeGateWaitingServer, readEdgeGate } from './gate.ts'
 import type {
   ApplyResult,
   HostnameWithState,
@@ -57,6 +58,13 @@ export type IngressServiceDeps = {
   /** Test seams; the real ones talk to the co-located daemon. */
   colocatedDaemonConnected?: IngressDeps['colocatedDaemonConnected']
   pushRunToken?: IngressDeps['pushRunToken']
+  /** Test seam for the edge gate; the real one reads every server row. */
+  edgeGate?: () => Promise<EdgeGate>
+}
+
+/** The edge gate for these deps: the seam when a test sets one, else the server rows. */
+export function edgeGateReader(db: Db, deps: IngressServiceDeps): () => Promise<EdgeGate> {
+  return deps.edgeGate ?? (() => readEdgeGate(db, deps.env))
 }
 
 type StoredIngress = {
@@ -174,7 +182,7 @@ export async function buildIngressContext(
           token,
           secretsConfig: deps.secretsConfig,
         })),
-    gate: await readEdgeGate(db, deps.env),
+    gate: edgeGateReader(db, deps),
     connectorHostnames: () => readConnectorHostnames(db, deps.registry),
     account: hostname.ingressId ? await findIngressAccount(db, hostname.ingressId) : null,
     openToken: (account) => openAccountToken(db, deps.dataEncryption, account),
@@ -266,7 +274,15 @@ export async function refreshEdgeStatuses(db: Db, deps: IngressServiceDeps): Pro
 export type HostnameIngressInput = { mode?: unknown; ingressId?: unknown; publicPort?: unknown }
 export type HostnameIngressUpdate =
   | { ok: true; hostname: InstanceHostnameRecord }
-  | { ok: false; status: 400 | 404 | 409 | 422; error: string }
+  | {
+      ok: false
+      status: 400 | 404 | 409 | 422
+      error: string
+      /** On a 409 from the edge gate: the servers that hold it shut. */
+      waiting?: EdgeGateWaitingServer[]
+    }
+
+const EDGE_GATE_SHUT = 'Edge connection modes are not available yet.'
 
 function invalid(error: string): HostnameIngressUpdate {
   return { ok: false, status: 422, error }
@@ -282,6 +298,18 @@ async function accountProblem(db: Db, mode: string, ingressId: unknown): Promise
   return account.provider === provider ? null : `This connection mode needs a ${provider} account.`
 }
 
+/** The 409 for switching a name onto an edge mode while the edge gate is shut, else null. */
+async function edgeGateRefusal(
+  mode: IngressMode,
+  currentMode: string,
+  readGate: () => Promise<EdgeGate>
+): Promise<HostnameIngressUpdate | null> {
+  if (mode === currentMode || !capabilitiesFor(mode).isEdge) return null
+  const gate = await readGate()
+  if (gate.open) return null
+  return { ok: false, status: 409, error: gate.reason ?? EDGE_GATE_SHUT, waiting: gate.waiting }
+}
+
 /**
  * Change how visitors reach one name. A name whose provider setup is still
  * in place must be disconnected before its mode or account changes, so a
@@ -290,7 +318,8 @@ async function accountProblem(db: Db, mode: string, ingressId: unknown): Promise
 export async function setHostnameIngress(
   db: Db,
   hostnameId: string,
-  input: HostnameIngressInput
+  input: HostnameIngressInput,
+  readGate: () => Promise<EdgeGate>
 ): Promise<HostnameIngressUpdate> {
   const current = (await listInstanceHostnames(db)).find((row) => row.id === hostnameId)
   if (!current) return { ok: false, status: 404, error: 'Hostname not found' }
@@ -316,6 +345,8 @@ export async function setHostnameIngress(
   }
   const problem = await accountProblem(db, mode, ingressId)
   if (problem) return invalid(problem)
+  const held = await edgeGateRefusal(mode, current.mode, readGate)
+  if (held) return held
   const publicPort = (input.publicPort as number | undefined) ?? current.publicPort
   const nextIngressId = capabilitiesFor(mode).provider
     ? ((ingressId as string | null) ?? null)

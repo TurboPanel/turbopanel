@@ -65,7 +65,8 @@ export type IngressDeps = {
   db: Db
   now: () => Date
   fetch: typeof fetch
-  gate: EdgeGate
+  /** The edge gate, read only when an edge mode is switched on (it scans every server). */
+  gate: () => Promise<EdgeGate>
   /**
    * Names the connector on the control plane host routes, as it reports them
    * (also for a pasted run token); null when it has not said. Read lazily.

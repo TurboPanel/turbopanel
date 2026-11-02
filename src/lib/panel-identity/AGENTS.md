@@ -24,8 +24,11 @@ sealing key, and the signed identity document served at
 - **Workers:** the identity (imported keys) may live at isolate scope; the database client never
   does. Nothing here runs crypto at module load.
 - **Pinned-by.** `pinned-by.ts` `resolvePinnedBy` is the one place that reads a server's pin state
-  (`install | upgrade | unsafe | none`); it returns `none` until the server `trust_pinned_by` column
-  exists. The admin read and the client server read model both call it.
+  (`install | upgrade | unsafe | none`) from the `trust_pinned_by` column (`trustPinnedBy`); a row
+  read without that column reads `none`. The admin identity read selects it; the client server read
+  models (`src/query-cache/read-models/`) do not select it yet, so the server badge still reads
+  `none` there. The self-hosted edge gate (`src/platform/deno/ingress/gate.ts`) reads the column
+  directly.
 - **Changing `next`** (`setPanelIdentityNext`) must be followed by swapping the in-memory identity
   (`onIdentityNextChanged` in `server.ts`); the document cache re-signs when the next fingerprint changes.
 - **Sealed secrets (`hpke.ts`).** HPKE (RFC 9180) base mode, DHKEM(X25519, HKDF-SHA256),

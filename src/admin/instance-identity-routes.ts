@@ -24,9 +24,17 @@ async function readIdentity(
   const servers = db
     ? (
         await db
-          .select({ id: server.id, name: server.name, organizationId: server.organizationId })
+          .select({
+            id: server.id,
+            name: server.name,
+            organizationId: server.organizationId,
+            trustPinnedBy: server.trustPinnedBy,
+          })
           .from(server)
-      ).map((row) => ({ ...row, pinnedBy: resolvePinnedBy(row) }))
+      ).map(({ trustPinnedBy, ...row }) => ({
+        ...row,
+        pinnedBy: resolvePinnedBy({ trustPinnedBy }),
+      }))
     : []
   return {
     ok: true as const,
