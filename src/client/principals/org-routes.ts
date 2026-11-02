@@ -114,6 +114,7 @@ export function registerOrganizationPrincipalRoutes(router: Hono<AppEnv>, opts: 
     const reconciled = await retireDeletedPrincipal(
       db,
       getCommandQueue(c),
+      c.get('secretsConfig'),
       { actorType: 'user', actorId: session.userId },
       { serverIds: outcome.serverIds, appliedUsername: outcome.appliedUsername }
     )

@@ -400,6 +400,7 @@ export function registerProjectPrincipalRoutes(router: Hono<AppEnv>, opts: AuthR
         ? await reconcilePrincipalAccess(
             db,
             getCommandQueue(c),
+            c.get('secretsConfig'),
             {
               actorType: 'user',
               actorId: session.userId,
@@ -465,6 +466,7 @@ export function registerProjectPrincipalRoutes(router: Hono<AppEnv>, opts: AuthR
     const reconciled = await retireDeletedPrincipal(
       db,
       getCommandQueue(c),
+      c.get('secretsConfig'),
       { actorType: 'user', actorId: session.userId },
       { serverIds, appliedUsername: row.appliedUsername }
     )
@@ -524,6 +526,7 @@ export function registerProjectPrincipalRoutes(router: Hono<AppEnv>, opts: AuthR
     const reconciled = await reconcilePrincipalAccess(
       ctx.db,
       getCommandQueue(c),
+      c.get('secretsConfig'),
       { actorType: 'user', actorId: ctx.userId },
       ctx.principalId
     )
@@ -543,6 +546,7 @@ export function registerProjectPrincipalRoutes(router: Hono<AppEnv>, opts: AuthR
     const reconciled = await reconcilePrincipalAccess(
       ctx.db,
       getCommandQueue(c),
+      c.get('secretsConfig'),
       { actorType: 'user', actorId: ctx.userId },
       ctx.principalId
     )
@@ -580,6 +584,7 @@ export function registerProjectPrincipalRoutes(router: Hono<AppEnv>, opts: AuthR
     const reconciled = await reconcilePrincipalAccess(
       ctx.db,
       getCommandQueue(c),
+      c.get('secretsConfig'),
       { actorType: 'user', actorId: ctx.userId },
       ctx.principalId
     )
@@ -602,6 +607,7 @@ export function registerProjectPrincipalRoutes(router: Hono<AppEnv>, opts: AuthR
     const reconciled = await reconcilePrincipalAccess(
       ctx.db,
       getCommandQueue(c),
+      c.get('secretsConfig'),
       { actorType: 'user', actorId: ctx.userId },
       ctx.principalId
     )

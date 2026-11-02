@@ -8,6 +8,7 @@ import {
   TUNNEL_STATUS_FEATURE,
   MANAGED_BACKUP_LOGIN_FEATURE,
   FABRIC_LAN_ROUTES_FEATURE,
+  DAEMON_SEALED_PRINCIPAL_RECONCILE_FEATURE,
   DAEMON_SEALED_SECRETS_FEATURE,
   REPO_KEY_REPORT_FEATURE,
   FABRIC_PEER_REPORT_FEATURE,
@@ -404,8 +405,14 @@ test('instance-edge-trust-v1 is advertised and raised no floor', () => {
   assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.0')
 })
 
-test('instance-hostname-public-port-v1 is advertised last and raised no floor', () => {
+test('instance-hostname-public-port-v1 is advertised and raised no floor', () => {
   assertEquals(INSTANCE_HOSTNAME_PUBLIC_PORT_FEATURE, 'instance-hostname-public-port-v1')
-  assertEquals(DAEMON_WIRE_FEATURES.at(-1), INSTANCE_HOSTNAME_PUBLIC_PORT_FEATURE)
+  assertEquals(DAEMON_WIRE_FEATURES.includes(INSTANCE_HOSTNAME_PUBLIC_PORT_FEATURE), true)
+  assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.0')
+})
+
+test('daemon-sealed-principal-reconcile-v1 is advertised last and raised no floor', () => {
+  assertEquals(DAEMON_SEALED_PRINCIPAL_RECONCILE_FEATURE, 'daemon-sealed-principal-reconcile-v1')
+  assertEquals(DAEMON_WIRE_FEATURES.at(-1), DAEMON_SEALED_PRINCIPAL_RECONCILE_FEATURE)
   assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.0')
 })

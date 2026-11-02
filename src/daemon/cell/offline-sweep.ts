@@ -1166,12 +1166,12 @@ async function runQueuedCronSweeps(
     )
     // Hosting Accounts of deleted projects whose folders are gone.
     await runIsolatedSweep(signal, 'principal-removal-sweep-failed', () =>
-      runPrincipalRemovalSweep(db, commandQueue)
+      runPrincipalRemovalSweep(db, commandQueue, tlsRenewal?.secretsConfig)
     )
     // A fresh folder listing from servers that have folders, every few hours, so
     // a folder removed or added by hand is noticed.
     await runIsolatedSweep(signal, 'folder-reconcile-sweep-failed', () =>
-      runFolderReconcileSweep(db, commandQueue)
+      runFolderReconcileSweep(db, commandQueue, tlsRenewal?.secretsConfig)
     )
     // Firewall previews after a reconnect. The gate is the deploy-time apply
     // key: without it an opted-in host that applied would be sent a teardown on

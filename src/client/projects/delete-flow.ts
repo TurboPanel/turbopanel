@@ -92,7 +92,7 @@ export async function startDeleteCleanup(
   if (!cleanup.principals) return { folderServerIds: cleanup.folderServerIds }
   const removedNow = new Set<string>()
   await forEachSequential(cleanup.principals.removed, async (row) => {
-    const { removed } = await removeRequestedPrincipals(db, queue, [row.id])
+    const { removed } = await removeRequestedPrincipals(db, queue, c.get('secretsConfig'), [row.id])
     if (removed > 0) removedNow.add(row.id)
   })
   return {

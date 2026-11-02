@@ -29,6 +29,7 @@ import type { Db } from '../../db/connection.ts'
 import { command, folder, principal, principalPlacement, server } from '../../db/schema.ts'
 import { isNoopCommandQueue } from '../../features/commands/noop-command-queue.ts'
 import type { CommandQueue } from '../../features/commands/queue.ts'
+import type { SecretsConfig } from '../../lib/secrets/secrets.ts'
 import { TERMINAL_COMMAND_STATUSES } from '../../features/commands/types.ts'
 import {
   countPrincipalReferences,
@@ -208,6 +209,7 @@ async function removalStep(tx: Db, principalId: string): Promise<RemovalStep> {
 export async function removeRequestedPrincipal(
   db: Db,
   queue: CommandQueue | undefined,
+  secretsConfig: SecretsConfig | undefined,
   principalId: string
 ): Promise<PrincipalRemovalResult> {
   const step = await db.transaction((tx) => removalStep(tx, principalId))
@@ -221,6 +223,7 @@ export async function removeRequestedPrincipal(
   const outcome = await enqueuePrincipalsReconcile(
     db,
     queue,
+    secretsConfig,
     // No person behind the sweep: the principal is its own actor.
     { actorType: 'system', actorId: principalId },
     step.serverIds,
@@ -239,12 +242,14 @@ export async function removeRequestedPrincipal(
 export async function removeRequestedPrincipals(
   db: Db,
   queue: CommandQueue | undefined,
+  secretsConfig: SecretsConfig | undefined,
   principalIds: readonly string[]
 ): Promise<{ removed: number }> {
   let removed = 0
   await forEachSequential(principalIds, async (principalId) => {
     try {
-      if ((await removeRequestedPrincipal(db, queue, principalId)) === 'removed') removed += 1
+      if ((await removeRequestedPrincipal(db, queue, secretsConfig, principalId)) === 'removed')
+        removed += 1
     } catch (err) {
       compatLogWarn('principals', `removal of principal ${principalId} failed: ${String(err)}`)
     }
@@ -263,6 +268,7 @@ export async function removeRequestedPrincipals(
 export async function runPrincipalRemovalSweep(
   db: Db,
   queue: CommandQueue,
+  secretsConfig: SecretsConfig | undefined,
   params: Readonly<{ budget?: number }> = {}
 ): Promise<{ removed: number }> {
   if (isNoopCommandQueue(queue)) return { removed: 0 }
@@ -314,6 +320,7 @@ export async function runPrincipalRemovalSweep(
   return await removeRequestedPrincipals(
     db,
     queue,
+    secretsConfig,
     rows.map((row) => row.id)
   )
 }

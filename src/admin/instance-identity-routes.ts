@@ -5,6 +5,7 @@ import { requireInstanceStepUp } from '../client/authn/step-up.ts'
 import { getDb, type Db } from '../db/connection.ts'
 import { server } from '../db/schema.ts'
 import { recordKeyEvent } from '../features/notifications/key-event.ts'
+import { listSealedSecretsState } from '../features/servers/daemon-sealing-key.ts'
 import { isPanelFingerprint } from '../lib/panel-identity/fingerprint.ts'
 import { type PanelIdentity, setPanelIdentityNext } from '../lib/panel-identity/identity.ts'
 import { resolvePinnedBy } from '../lib/panel-identity/pinned-by.ts'
@@ -53,6 +54,8 @@ function parseNextBody(body: unknown): { ok: true; fingerprint: string | null } 
  * `GET /instance/identity`: the control plane's current and next fingerprints
  * and each server's pinned-by state. `PUT /instance/identity/next`: set or
  * clear the next fingerprint (superadmin, self-hosted only, step-up).
+ * `GET /instance/identity/sealed-secrets`: per server, whether secrets still
+ * reach it in plaintext (superadmin; read by the edge go-live gate).
  */
 export function registerInstanceIdentityAdminRoutes(
   admin: Hono<AppEnv>,
@@ -69,6 +72,21 @@ export function registerInstanceIdentityAdminRoutes(
     const identity = opts.panelIdentity ? await opts.panelIdentity() : null
     return c.json(await readIdentity(getDb(c), identity, opts.identityUrls))
   })
+
+  admin.get(
+    '/instance/identity/sealed-secrets',
+    createRootOnlyMiddleware(opts.secrets),
+    async (c) => {
+      const db = getDb(c)
+      if (!db) return c.json({ ok: false, error: 'Database unavailable' }, 503)
+      const servers = await listSealedSecretsState(db)
+      return c.json({
+        ok: true,
+        receivingPlaintext: servers.filter((entry) => entry.receivesPlaintext).length,
+        servers,
+      })
+    }
+  )
 
   admin.put('/instance/identity/next', createRootOnlyMiddleware(opts.secrets), async (c) => {
     if (opts.runtime === 'workers') {

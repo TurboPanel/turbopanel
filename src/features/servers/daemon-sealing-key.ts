@@ -11,6 +11,9 @@ import { server } from '../../db/schema.ts'
 import { mapSequential } from '../../lib/sequential.ts'
 import { base64urlDecode } from '../../lib/encoding/base64url.ts'
 import { sealToRecipient, type HpkeEnvelope } from '../../lib/panel-identity/hpke.ts'
+import { DAEMON_SEALED_SECRETS_FEATURE } from '../../lib/version-wire.ts'
+import { daemonFeatureAddedColumnPatch } from './daemon-jsonb-write.ts'
+import { parseServerDaemonState } from './daemon-state.ts'
 
 export type DaemonSealingKey = { kid: string; pub: string }
 
@@ -29,6 +32,14 @@ export async function getDaemonSealingKey(
   return row?.kid && row.pub ? { kid: row.kid, pub: row.pub } : null
 }
 
+/**
+ * Store the key and add `daemon-sealed-secrets-v1` to the stored hello
+ * features when it is missing: only a daemon with the feature registers, and
+ * one that connected before this control plane knew the feature had it
+ * dropped from its hello. Without this the decrypt route would keep answering
+ * it in plaintext until the socket reconnected. The next hello replaces the
+ * list as usual (a daemon rolled back to a build without the feature loses it).
+ */
 export async function setDaemonSealingKey(
   db: Db,
   serverId: string,
@@ -40,6 +51,7 @@ export async function setDaemonSealingKey(
       sealingKeyKid: key.kid,
       sealingKeyPub: key.pub,
       sealingKeyReportedAt: key.reportedAt,
+      daemon: daemonFeatureAddedColumnPatch(DAEMON_SEALED_SECRETS_FEATURE),
     })
     .where(eq(server.id, serverId))
 }
@@ -90,4 +102,70 @@ export async function countServersWithPlaintextSecretsSince(
     .from(server)
     .where(and(isNotNull(server.plaintextSecretsAt), gte(server.plaintextSecretsAt, sinceIso)))
   return row?.n ?? 0
+}
+
+/** One server's row in the sealed-secrets report. Public values only. */
+export type SealedSecretsServerState = {
+  id: string
+  name: string | null
+  organizationId: string | null
+  isConnected: boolean
+  /** The stored hello features list `daemon-sealed-secrets-v1`. */
+  advertisesSealedSecrets: boolean
+  /** Key id and registration time; the public key itself is not repeated here. */
+  sealingKey: { kid: string; reportedAt: string | null } | null
+  /** Last plaintext decrypt answer (stamped at most hourly), or null. */
+  plaintextSecretsAt: string | null
+  /** True while the decrypt route would answer this server in plaintext. */
+  receivesPlaintext: boolean
+}
+
+type SealedSecretsRow = {
+  id: string
+  name: string | null
+  organizationId: string | null
+  isConnected: boolean
+  daemon: unknown
+  sealingKeyKid: string | null
+  sealingKeyPub: string | null
+  sealingKeyReportedAt: string | null
+  plaintextSecretsAt: string | null
+}
+
+/** The same rule as the decrypt route: feature advertised and a key on file. */
+export function sealedSecretsServerState(row: SealedSecretsRow): SealedSecretsServerState {
+  const features = parseServerDaemonState(row.daemon)?.projection?.features ?? []
+  const advertisesSealedSecrets = features.includes(DAEMON_SEALED_SECRETS_FEATURE)
+  const sealingKey =
+    row.sealingKeyKid && row.sealingKeyPub
+      ? { kid: row.sealingKeyKid, reportedAt: row.sealingKeyReportedAt }
+      : null
+  return {
+    id: row.id,
+    name: row.name,
+    organizationId: row.organizationId,
+    isConnected: row.isConnected,
+    advertisesSealedSecrets,
+    sealingKey,
+    plaintextSecretsAt: row.plaintextSecretsAt,
+    receivesPlaintext: !(advertisesSealedSecrets && sealingKey !== null),
+  }
+}
+
+/** Every server's sealed-secrets state, for the edge go-live gate. */
+export async function listSealedSecretsState(db: Db): Promise<SealedSecretsServerState[]> {
+  const rows = await db
+    .select({
+      id: server.id,
+      name: server.name,
+      organizationId: server.organizationId,
+      isConnected: server.isConnected,
+      daemon: server.daemon,
+      sealingKeyKid: server.sealingKeyKid,
+      sealingKeyPub: server.sealingKeyPub,
+      sealingKeyReportedAt: server.sealingKeyReportedAt,
+      plaintextSecretsAt: server.plaintextSecretsAt,
+    })
+    .from(server)
+  return rows.map(sealedSecretsServerState)
 }

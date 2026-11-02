@@ -212,6 +212,7 @@ export const DAEMON_WIRE_FEATURES = [
   'daemon-sealed-secrets-v1',
   'instance-edge-trust-v1',
   'instance-hostname-public-port-v1',
+  'daemon-sealed-principal-reconcile-v1',
 ] as const
 
 export type DaemonWireFeature = (typeof DAEMON_WIRE_FEATURES)[number]
@@ -468,6 +469,15 @@ export const FABRIC_LAN_ROUTES_FEATURE: DaemonWireFeature = 'fabric-lan-routes-v
  * daemons keep the plaintext answer until the floor bump.
  */
 export const DAEMON_SEALED_SECRETS_FEATURE: DaemonWireFeature = 'daemon-sealed-secrets-v1'
+
+/**
+ * The daemon opens `passwordHashEnvelope` on `server.principals.reconcile` too
+ * (through `/secrets/decrypt`). Daemons that only list
+ * `daemon-sealed-secrets-v1` refuse an envelope there, so they keep the plain
+ * `passwordHash` on that command.
+ */
+export const DAEMON_SEALED_PRINCIPAL_RECONCILE_FEATURE: DaemonWireFeature =
+  'daemon-sealed-principal-reconcile-v1'
 
 /**
  * The daemon reports `repo-key-changed` when a package source's signing key
