@@ -1,10 +1,12 @@
 import { assertEquals, assertRejects } from '@std/assert'
+import type { Db } from '../../../db/connection.ts'
 import {
   describeEdgeTrust,
   edgeRefreshDue,
   fetchBunnyRanges,
   fetchCloudflareRanges,
   refreshedEdgeState,
+  runEdgeTrustTick,
 } from './edge-ranges.ts'
 
 const test = Deno.test.bind(Deno)
@@ -125,4 +127,23 @@ test('the summary shows counts and times and the providers in use, not the lists
     appliedAt: null,
     lastError: null,
   })
+})
+
+/** A query builder where every step returns itself and awaiting it gives no rows. */
+function emptyDb(): Db {
+  const chain: object = new Proxy(() => chain, {
+    get: (_target, key) =>
+      key === 'then' ? (resolve: (rows: unknown[]) => void) => resolve([]) : chain,
+    apply: () => chain,
+  })
+  return chain as Db
+}
+
+test('the scheduled pass sends nothing when no edge mode is in use', async () => {
+  let applied = 0
+  await runEdgeTrustTick(emptyDb(), () => {
+    applied += 1
+    return Promise.resolve()
+  })
+  assertEquals(applied, 0)
 })
