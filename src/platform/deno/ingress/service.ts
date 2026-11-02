@@ -10,7 +10,12 @@ import type { DaemonCellRegistry } from '../../../contracts/cell.ts'
 import type { Db } from '../../../db/connection.ts'
 import { instanceHostname, setting } from '../../../db/schema.ts'
 import { dispatchInstanceTunnelToken } from '../../../developer/tunnel-token.ts'
-import { isIngressMode, isPublicPort } from '../../../features/install/ingress-modes.ts'
+import {
+  isAllowedPublicPort,
+  isIngressMode,
+  isPublicPort,
+  SELF_HOSTED_PUBLIC_PORT_ERROR,
+} from '../../../features/install/ingress-modes.ts'
 import {
   listInstanceHostnames,
   type InstanceHostnameRecord,
@@ -246,7 +251,7 @@ export async function refreshEdgeStatuses(db: Db, deps: IngressServiceDeps): Pro
 export type HostnameIngressInput = { mode?: unknown; ingressId?: unknown; publicPort?: unknown }
 export type HostnameIngressUpdate =
   | { ok: true; hostname: InstanceHostnameRecord }
-  | { ok: false; status: 404 | 409 | 422; error: string }
+  | { ok: false; status: 400 | 404 | 409 | 422; error: string }
 
 function invalid(error: string): HostnameIngressUpdate {
   return { ok: false, status: 422, error }
@@ -278,6 +283,9 @@ export async function setHostnameIngress(
   if (!isIngressMode(mode)) return invalid('mode must be a known connection mode')
   if (input.publicPort !== undefined && !isPublicPort(input.publicPort)) {
     return invalid('publicPort must be a whole number from 1 to 65535')
+  }
+  if (input.publicPort !== undefined && !isAllowedPublicPort(input.publicPort)) {
+    return { ok: false, status: 400, error: SELF_HOSTED_PUBLIC_PORT_ERROR }
   }
   // A mode without a provider drops the account unless the caller names one.
   const keptAccount = capabilitiesFor(mode).provider ? current.ingressId : null

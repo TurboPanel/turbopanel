@@ -9,6 +9,11 @@ import { skipWithoutDatabase } from '../../../test-fixtures/require-service.test
 import { parseTestSecretsConfig } from '../../../test-fixtures/secrets.ts'
 import { removeIngressAccount, saveIngressAccount } from './cloudflare/account.ts'
 import { createFakeCloudflare } from './cloudflare/fake-cloudflare.test.support.ts'
+import { listInstanceHostnames } from '../../../features/install/instance-hostnames.ts'
+import {
+  SELF_HOSTED_PUBLIC_PORT_ERROR,
+  setSelfHostedAddress,
+} from '../../../features/install/ingress-modes.ts'
 import { applyIngress, readStoredIngress, setHostnameIngress } from './service.ts'
 
 const test = Deno.test.bind(Deno)
@@ -60,6 +65,30 @@ test('an account is stored sealed, used by a tunnel hostname, and cannot be remo
     assertEquals((await applyIngress(db, hostnameId, service))?.ok, true)
     const wrong = await setHostnameIngress(db, hostnameId, { mode: 'direct', ingressId: accountId })
     assertEquals(wrong.ok ? 0 : wrong.status, 422)
+    // Self-hosted: the address is always :8443, so any other port is a plain 400.
+    setSelfHostedAddress(true)
+    try {
+      const refused = await setHostnameIngress(db, hostnameId, { publicPort: 443 })
+      assertEquals(refused.ok ? 0 : refused.status, 400)
+      assertEquals(refused.ok ? '' : refused.error, SELF_HOSTED_PUBLIC_PORT_ERROR)
+      assertEquals((await setHostnameIngress(db, hostnameId, { publicPort: 8443 })).ok, true)
+      // A row stored on 443 by an older save reads back as 8443.
+      await db
+        .update(instanceHostname)
+        .set({ publicPort: 443 })
+        .where(eq(instanceHostname.id, hostnameId))
+      const stored = (await listInstanceHostnames(db)).find((item) => item.id === hostnameId)
+      assertEquals(stored?.publicPort, 8443)
+    } finally {
+      setSelfHostedAddress(false)
+    }
+    // High Availability keeps the stored port.
+    assertEquals((await setHostnameIngress(db, hostnameId, { publicPort: 443 })).ok, true)
+    assertEquals(
+      (await listInstanceHostnames(db)).find((item) => item.id === hostnameId)?.publicPort,
+      443
+    )
+    assertEquals((await setHostnameIngress(db, hostnameId, { publicPort: 8443 })).ok, true)
     const set = await setHostnameIngress(db, hostnameId, {
       mode: 'cloudflare-tunnel',
       ingressId: accountId,

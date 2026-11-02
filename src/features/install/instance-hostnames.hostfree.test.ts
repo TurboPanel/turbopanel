@@ -11,6 +11,7 @@ import {
   getInstanceHostnamesLegacyShim,
   INSTANCE_ACME_HTTP01_ISSUER_UNREACHABLE,
   instanceAcmeHttp01PreflightFailure,
+  listInstanceHostnames,
   migrateLegacyPublicUrls,
   recordInstanceAcmeIssuance,
   replaceInstanceHostnames,
@@ -18,6 +19,7 @@ import {
   upsertInstanceHostname,
   validateHostnameSource,
 } from './instance-hostnames.ts'
+import { SELF_HOSTED_PUBLIC_PORT_ERROR, setSelfHostedAddress } from './ingress-modes.ts'
 import { getPublicUrls, PUBLIC_URLS_SETTING_KEY, setPublicUrls } from './public-urls.ts'
 
 /**
@@ -557,5 +559,30 @@ test('replaceInstanceHostnames refuses a public port outside 1 to 65535', async 
       { host: 'a.example.com', ...platformCa, publicPort },
     ])
     assertEquals(refused.ok, false, String(publicPort))
+  }
+})
+
+test('self-hosted: replaceInstanceHostnames refuses any port but 8443, and a stored 443 reads as 8443', async () => {
+  const { db } = createMemoryDb()
+  // Saved on High Availability rules first, as an older save would have.
+  const saved = await replaceInstanceHostnames(db, [
+    { host: 'a.example.com', ...platformCa, publicPort: 443 },
+  ])
+  assertEquals(saved.ok && saved.hostnames[0]?.publicPort, 443)
+  setSelfHostedAddress(true)
+  try {
+    assertEquals((await listInstanceHostnames(db))[0]?.publicPort, 8443)
+    for (const publicPort of [443, 80, 9443]) {
+      const refused = await replaceInstanceHostnames(db, [
+        { host: 'a.example.com', ...platformCa, publicPort },
+      ])
+      assertEquals(refused.ok ? '' : refused.error, SELF_HOSTED_PUBLIC_PORT_ERROR)
+    }
+    const kept = await replaceInstanceHostnames(db, [
+      { host: 'a.example.com', ...platformCa, publicPort: 8443 },
+    ])
+    assertEquals(kept.ok && kept.hostnames[0]?.publicPort, 8443)
+  } finally {
+    setSelfHostedAddress(false)
   }
 })

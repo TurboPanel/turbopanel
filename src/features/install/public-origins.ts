@@ -3,12 +3,13 @@
  *
  * A stored hostname is the dial the panel listens on (`:8443`). What visitors
  * type is the row's public port: 443 when an edge or tunnel answers there,
- * 8443 otherwise. Links, passkey origins, webhook URLs and install commands
+ * 8443 otherwise. A self-hosted control plane ignores the row and always uses
+ * 8443 (see `fixedPublicPort`). Links, passkey origins, webhook URLs and install commands
  * use the public origin; Caddy and certificates keep the dial. Rows arrive in
  * creation order, so "oldest" is the first row. Pure: no I/O, safe on Workers.
  */
 
-import { DEFAULT_PUBLIC_PORT, isPublicPort } from './ingress-modes.ts'
+import { DEFAULT_PUBLIC_PORT, fixedPublicPort, isPublicPort } from './ingress-modes.ts'
 import {
   formatHostForUrl,
   hostFromPublicUrlEntry,
@@ -26,7 +27,8 @@ export type PublicOriginRow = {
 export function publicOriginForHostname(row: PublicOriginRow): string | null {
   const bare = hostFromPublicUrlEntry(row.host)
   if (!bare) return null
-  const port = isPublicPort(row.publicPort) ? row.publicPort : DEFAULT_PUBLIC_PORT
+  const port =
+    fixedPublicPort() ?? (isPublicPort(row.publicPort) ? row.publicPort : DEFAULT_PUBLIC_PORT)
   return `https://${formatHostForUrl(bare, port === 443 ? undefined : String(port))}`
 }
 

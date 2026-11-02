@@ -1,4 +1,5 @@
 import type { Context } from 'hono'
+import { fixedPublicPort } from './ingress-modes.ts'
 import { listInstanceHostnames } from './instance-hostnames.ts'
 import { installUrlsFor, primaryHostname, publicOriginForHostname } from './public-origins.ts'
 import {
@@ -17,7 +18,9 @@ import { discoverHostIpv4 } from '../../platform/ports/host-ipv4-discovery.ts'
 function validatedPublicHttpsOrigin(candidate: string | undefined): string | null {
   const trimmed = candidate?.trim()
   if (!trimmed) return null
-  if (trimmed.includes('://')) return publicHttpsOrigin(trimmed)
+  // Self-hosted: the address is always the 8443 listener, even for a forwarded
+  // host or base URL that a tunnel answers on 443.
+  if (trimmed.includes('://') && fixedPublicPort() === null) return publicHttpsOrigin(trimmed)
   return publicUrlEntryToInstallOrigin(trimmed)
 }
 
