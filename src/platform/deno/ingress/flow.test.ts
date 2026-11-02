@@ -2,14 +2,14 @@ import { assert, assertEquals } from '@std/assert'
 import { eq } from 'drizzle-orm'
 import type { DaemonCellRegistry } from '../../../contracts/cell.ts'
 import { createDenoDb, endDbConnection } from '../../../db/connection.ts'
-import { ingressAccount, instanceHostname, setting } from '../../../db/schema.ts'
+import { ingressAccount, instanceHostname } from '../../../db/schema.ts'
 import { deriveEncryptionSecretsConfig } from '../../../lib/secrets/secrets.ts'
 import { skipWithoutDatabase } from '../../../test-fixtures/require-service.test.support.ts'
 import { parseTestSecretsConfig } from '../../../test-fixtures/secrets.ts'
 import { recheckIngressAccount, saveIngressAccount } from './cloudflare/account.ts'
 import { createFakeCloudflare } from './cloudflare/fake-cloudflare.test.support.ts'
 import { readInstanceConnector } from './cloudflare/instance-tunnel.ts'
-import { EDGE_GATE_SETTING_KEY, readEdgeGate, writeEdgeGate } from './gate.ts'
+import type { EdgeGate } from './gate.ts'
 import {
   applyIngress,
   ingressStatus,
@@ -24,6 +24,9 @@ import { createIngressTick } from './tick.ts'
 const test = Deno.test.bind(Deno)
 const dbUrl = Deno.env.get('TURBOPANEL_DATABASE_URL')
 const TOKEN = 'cfut_flowFixtureToken0123456789abcdef'
+
+const OPEN: EdgeGate = { open: true, waiting: [], remoteServers: 0, forcedClosed: false }
+const openGate = () => Promise.resolve(OPEN)
 
 const NO_DAEMON = {
   getSnapshots: () => Promise.resolve(new Map()),
@@ -52,14 +55,11 @@ test('a tunnel hostname is applied, reports health, refreshes and is removed', a
       pushed.push(token)
       return Promise.resolve({ ok: true as const })
     },
+    edgeGate: openGate,
   }
   let accountId = ''
   let hostnameId = ''
   try {
-    await writeEdgeGate(db, true, 'root@example.com')
-    assertEquals((await readEdgeGate(db, {})).open, true)
-    assertEquals((await readEdgeGate(db, { TURBOPANEL_EDGE_GATE: 'closed' })).open, false)
-
     const saved = await saveIngressAccount(
       db,
       { label: 'Flow fixture', token: TOKEN, createdByUserId: null },
@@ -79,10 +79,12 @@ test('a tunnel hostname is applied, reports health, refreshes and is removed', a
     hostnameId = row!.id
     assert(
       (
-        await setHostnameIngress(db, hostnameId, {
-          mode: 'cloudflare-tunnel',
-          ingressId: accountId,
-        })
+        await setHostnameIngress(
+          db,
+          hostnameId,
+          { mode: 'cloudflare-tunnel', ingressId: accountId },
+          openGate
+        )
       ).ok
     )
     assertEquals((await preflightIngress(db, hostnameId, service))?.ok, true)
@@ -90,7 +92,7 @@ test('a tunnel hostname is applied, reports health, refreshes and is removed', a
     const applied = await applyIngress(db, hostnameId, service)
     assertEquals(applied?.ok, true)
     assertEquals(pushed.length, 1)
-    const busy = await setHostnameIngress(db, hostnameId, { mode: 'direct' })
+    const busy = await setHostnameIngress(db, hostnameId, { mode: 'direct' }, openGate)
     assertEquals(busy.ok ? 0 : busy.status, 409)
 
     cf.tunnels[0]!.status = 'healthy'
@@ -114,7 +116,6 @@ test('a tunnel hostname is applied, reports health, refreshes and is removed', a
   } finally {
     if (hostnameId) await db.delete(instanceHostname).where(eq(instanceHostname.id, hostnameId))
     if (accountId) await db.delete(ingressAccount).where(eq(ingressAccount.id, accountId))
-    await db.delete(setting).where(eq(setting.key, EDGE_GATE_SETTING_KEY))
     await endDbConnection(db)
   }
 })

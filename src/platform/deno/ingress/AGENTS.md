@@ -23,11 +23,11 @@ High Availability (Workers) must not contain any of it.
 - **Routes.** `admin-routes.ts` keeps `POST /instance/tunnel-token` (left out of
   the Workers OpenAPI spec) and calls three registrars: `account-routes.ts`
   (`/instance/ingress/accounts`), `hostname-routes.ts`
-  (`/instance/ingress/capabilities`, `/instance/ingress/gate`,
+  (`/instance/ingress/capabilities`, which carries the edge gate,
   `/instance/ingress/hostnames/:id` PATCH plus `preflight`, `apply`, `status`,
   `remove`) and `dns01/routes.ts` (`/instance/acme-dns/hostnames/:id`, `order`,
   `retry`). Reads are admin; every change is `rootOnly`; adding or removing an
-  account and the gate also need step-up. Deps come from the Hono context
+  account also needs step-up. Deps come from the Hono context
   (`route-context.ts`); `server.ts` adds `selfKid` and `getEnv`.
   `admin-routes.ts` also keeps `GET /instance/ingress/trusted-proxies` and
   `POST /instance/ingress/trusted-proxies/refresh` (both `rootOnly`).
@@ -47,12 +47,20 @@ High Availability (Workers) must not contain any of it.
   `src/features/install/heartbeat-policy.ts` (that file cannot import this
   directory, so the test lives here). The Deno heartbeat reader is fed the
   hostname modes from `server.ts` every five minutes.
-- **Edge go-live gate** (`gate.ts`). `registry.applyHostname` refuses every
-  `isEdge` mode (`gate-closed`) until a superadmin writes the
-  `EDGE_GATE_CONFIRMED` setting (`PUT /instance/ingress/gate`).
-  `TURBOPANEL_EDGE_GATE=closed` keeps it shut whatever the setting says; no
-  value opens it. The gate blocks switching an edge mode on, not building or
-  trying it on a throwaway install.
+- **Edge gate** (`gate.ts`), decided by the control plane alone. An `isEdge`
+  mode is allowed only when every remote server has this control plane's key
+  pinned (`server.trust_pinned_by` is `install` or `upgrade`; NULL and
+  `unsafe` hold it shut). The co-located server (`resolveColocatedServerIdSet`
+  with the self-host pin) never counts, and no remote server means ready. The
+  connection-mode PATCH answers 409 with the reason and `waiting` (the servers
+  holding it shut) when a row is switched to an edge mode while shut, and
+  `registry.applyHostname` refuses (`gate-closed`) as a second line. The gate
+  is read lazily (`IngressDeps.gate()`), only on those two paths and on
+  `GET /instance/ingress/capabilities`, because it scans every server row.
+  `TURBOPANEL_EDGE_GATE=closed` keeps it shut whatever the servers say; no
+  value opens it. There is no confirm step: an older `EDGE_GATE_CONFIRMED`
+  setting row is never read, and the audit action `instance.edge_gate.set`
+  stays only for old audit rows.
 - **Provider account.** `cloudflare/account.ts` checks a pasted token (verify,
   then one read per scope: tunnels, DNS per zone; Cloudflare cannot list a
   token's permissions), refuses a token that expires within 30 days, and seals
