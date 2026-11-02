@@ -1777,18 +1777,20 @@ export class DaemonCellObject {
       this.#startSession(ws, attachment)
       return true
     }
-    // The session (next seq 1) is on the attachment before anything is sent.
-    ws.serializeAttachment({ ...attachment, phase: 'signed', session: decision.session })
     const urls =
       (await this.#withProjectionDbResult('hello-urls', attachment.serverId, async (db) =>
         orderedPublicOrigins(await listInstanceHostnames(db))
       )) ?? []
-    ws.send(
-      await buildSignedHello(decision.identity, decision.nonce, decision.session, {
-        heartbeatSeconds: HEARTBEAT_SECONDS_DEFAULT,
-        urls,
-      })
-    )
+    const hello = await buildSignedHello(decision.identity, decision.nonce, decision.session, {
+      heartbeatSeconds: HEARTBEAT_SECONDS_DEFAULT,
+      urls,
+    })
+    // Nothing may be awaited between marking the socket signed and sending the
+    // hello: from the mark on, a pump (the outbox alarm, an enqueue) may send an
+    // enveloped frame to this socket, and none may reach the daemon before the
+    // hello. The session (next seq 1) is on the attachment before any such frame.
+    ws.serializeAttachment({ ...attachment, phase: 'signed', session: decision.session })
+    ws.send(hello)
     this.#startSession(ws, attachment)
     return false
   }
