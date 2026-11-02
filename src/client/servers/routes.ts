@@ -5,7 +5,7 @@ import type { AppEnv } from '../../app/app.ts'
 import { nudgeTunnelRoutesAfterResponse } from '../organizations/tunnel-nudge.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
-import { requireStepUpIfConfigured } from '../authn/step-up.ts'
+import { requireInstanceStepUp, requireStepUpIfConfigured } from '../authn/step-up.ts'
 import { isAdminRole } from '../authn/session-store.ts'
 import { listVisible } from '../authz/index.ts'
 import { assertCanManageOr403, assertCanReadOr403, getOrgId, parseJsonBody } from '../shared.ts'
@@ -1307,7 +1307,7 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     const denied = await assertCanManageOr403(c, 'server', id)
     if (denied) return denied
 
-    const stepUp = await requireStepUpIfConfigured(c, organizationId, 'server.daemon_key.revoke')
+    const stepUp = await requireInstanceStepUp(c, 'server.daemon_key.revoke')
     if (stepUp) return stepUp
 
     const registry = getDaemonCellRegistry(c)

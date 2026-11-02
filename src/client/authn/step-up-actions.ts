@@ -19,7 +19,8 @@
  *
  * A re-enroll ticket hands out the power to replace a server's key, and a burn
  * reissues an install ticket, so both are gated like revoking a key (owner
- * decision), even though they create something. The re-enroll ticket is
+ * decision), even though they create something. The four key-changing
+ * actions (re-enroll ticket, key burn, license revoke, server key revoke) are
  * gated whatever the organization switch says (`requireInstanceStepUp`).
  *
  * Keys are `<subject>.<verb>` and match the audit action where one exists.

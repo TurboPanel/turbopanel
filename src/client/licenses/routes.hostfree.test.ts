@@ -881,6 +881,30 @@ test('issuing a re-enroll ticket needs step-up even when the organization switch
   assertEquals(revoked.status, 200)
 })
 
+test('burning a key and revoking a license need step-up even when the organization switch is off', async () => {
+  const { app, headers, db, sessionId } = await buildApp({
+    oldSession: true,
+    licenses: [{ id: L_ACTIVE }],
+  })
+  const burn = () => app.request(`/licenses/${L_ACTIVE}/ticket`, { method: 'POST', headers })
+  const remove = () => revoke(app, headers, L_ACTIVE)
+  for (const [call, action] of [
+    [burn, 'license.key.burn'],
+    [remove, 'license.revoke'],
+  ] as const) {
+    const res = await call()
+    assertEquals(res.status, 403)
+    const body = (await res.json()) as { code: string; action: string }
+    assertEquals([body.code, body.action], ['reauth_required', action])
+  }
+  assertEquals(db.rows(license).find((row) => row.id === L_ACTIVE)?.token, 'hashed')
+  assertEquals(db.rows(license).find((row) => row.id === L_ACTIVE)?.revokedAt ?? null, null)
+
+  await stampStepUp(db, sessionId, 'password')
+  assertEquals((await burn()).status, 200)
+  assertEquals((await remove()).status, 200)
+})
+
 test('a burn cancels the join tickets issued before it', async () => {
   const { app, headers, db } = await buildApp({ seats: [{ tierId: S3, quantity: 2 }] })
   const minted = await mint(app, headers, { name: 'edge-1' })

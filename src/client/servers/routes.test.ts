@@ -8,6 +8,7 @@ import { createDenoDb, endDbConnection } from '../../db/connection.ts'
 import type { DaemonCell, DaemonCellRegistry, DaemonCellSnapshot } from '../../contracts/cell.ts'
 import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from '../authn/crypto.ts'
 import { createSession } from '../authn/session-store.ts'
+import { STEP_UP_WINDOW_MS, stampStepUp } from '../authn/step-up.ts'
 import { deriveSecretsConfig } from '../../lib/secrets/secrets.ts'
 import {
   command,
@@ -31,6 +32,7 @@ import {
   deployment,
   server,
   service,
+  session,
   tenancy,
   slot,
   storage,
@@ -971,6 +973,38 @@ test('POST /servers/:id/daemon-key/revoke revokes the key, purges the cell, and 
       assertEquals(again.revokedAt, body.revokedAt)
       assertEquals(again.purged, true)
       assertEquals(registry.purgedIds, [serverId, serverId])
+    }
+  )
+})
+
+test('POST /servers/:id/daemon-key/revoke needs step-up even when the organization switch is off', async () => {
+  await withServerDeleteFixtures(
+    async ({ db, app, secrets, userId, organizationId, serverId, registry }) => {
+      await enrollFixtureServer(db, serverId)
+      const { token } = await createSession(db, userId, {})
+      const old = new Date(Date.now() - 2 * STEP_UP_WINDOW_MS).toISOString()
+      const [row] = await db
+        .update(session)
+        .set({ createdAt: old })
+        .where(eq(session.token, token))
+        .returning({ id: session.id })
+      const cookie = `${HTTP_SESSION_COOKIE_NAME}=${await buildSignedCookie(token, secrets)}`
+      const headers = { Cookie: cookie, [ORG_ID_HEADER]: organizationId }
+      const url = `/servers/${serverId}/daemon-key/revoke`
+
+      const refused = await app.request(url, { method: 'POST', headers })
+      assertEquals(refused.status, 403)
+      const body = await readJson<{ code: string; action: string }>(refused)
+      assertEquals([body.code, body.action], ['reauth_required', 'server.daemon_key.revoke'])
+      assertEquals(
+        (await getServerDaemonStateByServerId(db, serverId))?.key.revokedAt ?? null,
+        null
+      )
+      assertEquals(registry.purgedIds.length, 0)
+
+      await stampStepUp(db, row!.id, 'password')
+      const proved = await app.request(url, { method: 'POST', headers })
+      assertEquals(proved.status, 200)
     }
   )
 })
