@@ -12,7 +12,10 @@ import { resolveInstanceSecretSealing } from '../features/install/instance-secre
 import { listInstanceHostnames } from '../features/install/instance-hostnames.ts'
 import { getPublicUrls } from '../features/install/public-urls.ts'
 import { markEdgeTrustApplied, resolveEdgeTrustForServer } from '../features/install/edge-trust.ts'
-import { resolvePublicUrlsApplyPayload } from './public-urls-apply-payload.ts'
+import {
+  colocatedDaemonFeatures,
+  resolvePublicUrlsApplyPayload,
+} from './public-urls-apply-payload.ts'
 import { waitForPublicUrlsApply, type PublicUrlsApplyPayload } from './routes-helpers.ts'
 
 export type PublicUrlsPayloadDeps = {
@@ -36,7 +39,8 @@ export async function buildPublicUrlsPayload(
     deps.daemonVersion,
     deps.dataEncryptionSecrets,
     deps.env,
-    sealing
+    sealing,
+    { daemonFeatures: await colocatedDaemonFeatures(deps.db, deps.serverId) }
   )
   const modes = (await listInstanceHostnames(deps.db)).map((row) => row.mode)
   const edgeTrust = await resolveEdgeTrustForServer(deps.db, deps.serverId, modes)
