@@ -152,8 +152,9 @@ describe('build.yml fan-in', () => {
   })
 
   it('pairs sibling checkouts with trunk, never staging or live', () => {
-    const guard = 'staging:* | live:* | *:staging | *:live) REF=trunk ;;'
-    assertEquals(workflow.split(guard).length - 1, 1)
+    // The staging/live guard lives in the resolver; its own suite pins it.
+    const resolver = 'node turbopanel/scripts/resolve-sibling-ref.mjs)"'
+    assertEquals(workflow.split(resolver).length - 1, 1)
     assertEquals(workflow.includes('REF="${{'), false)
   })
 
