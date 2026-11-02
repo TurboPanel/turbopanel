@@ -6,6 +6,8 @@
  * for `uploaded`, the certificate plus its key: sealed to the daemon as
  * `keyEnvelope` when `sealing` is set (the daemon advertises
  * `sealed-instance-secrets-v1`), otherwise the legacy plaintext `keyPem`.
+ * A daemon that lists `instance-hostname-public-port-v1` in `daemonFeatures`
+ * also receives each hostname's `publicPort`.
  */
 
 import { inArray } from 'drizzle-orm'
@@ -24,7 +26,10 @@ import {
 import { listInstanceHostnames } from '../features/install/instance-hostnames.ts'
 import { decryptSecret, resealSecretForDaemon } from '../lib/secrets/data-encryption.ts'
 import type { DerivedSecretsConfig } from '../lib/secrets/secrets.ts'
-import { resolveDaemonCapabilities } from '../lib/version-wire.ts'
+import {
+  INSTANCE_HOSTNAME_PUBLIC_PORT_FEATURE,
+  resolveDaemonCapabilities,
+} from '../lib/version-wire.ts'
 import type { InstanceSecretSealing } from '../features/install/instance-secret-sealing.ts'
 
 export class PublicUrlsApplyPayloadError extends Error {
@@ -44,7 +49,8 @@ export async function resolvePublicUrlsApplyPayload(
   daemonVersion: string | undefined,
   secrets: DerivedSecretsConfig | undefined,
   env: Record<string, string | undefined>,
-  sealing: InstanceSecretSealing | null = null
+  sealing: InstanceSecretSealing | null = null,
+  daemonFeatures: readonly string[] = []
 ): Promise<PublicUrlsApplyPayload> {
   const capable =
     resolveDaemonCapabilities(daemonVersion)['instance-cert-sources-per-hostname'] === true
@@ -59,10 +65,12 @@ export async function resolvePublicUrlsApplyPayload(
     ),
   ]
   const decrypted = await loadUploadedPairs(db, uploadedIds, secrets, sealing)
+  const sendPublicPort = daemonFeatures.includes(INSTANCE_HOSTNAME_PUBLIC_PORT_FEATURE)
   const hostnames: InstanceHostnameWireEntry[] = rows.map((row) => {
     const entry: InstanceHostnameWireEntry = {
       host: row.host,
       source: row.source,
+      ...(sendPublicPort ? { publicPort: row.publicPort } : {}),
     }
     if (row.source !== 'uploaded' || !row.uploadedCertId) return entry
     const pair = decrypted.get(row.uploadedCertId)

@@ -9,7 +9,10 @@ import {
 } from '../features/install/instance-secret-sealing.ts'
 import { decryptSecretForDaemon, encryptSecret } from '../lib/secrets/data-encryption.ts'
 import { deriveEncryptionSecretsConfig } from '../lib/secrets/secrets.ts'
-import { SEALED_INSTANCE_SECRETS_FEATURE } from '../lib/version-wire.ts'
+import {
+  INSTANCE_HOSTNAME_PUBLIC_PORT_FEATURE,
+  SEALED_INSTANCE_SECRETS_FEATURE,
+} from '../lib/version-wire.ts'
 import { recordingRedisRegistry } from '../test-fixtures/recording-redis-registry.ts'
 import { parseTestSecretsConfig } from '../test-fixtures/secrets.ts'
 import { resolvePublicUrlsApplyPayload } from './public-urls-apply-payload.ts'
@@ -179,5 +182,25 @@ test('a daemon without the feature still receives the legacy plaintext key', asy
     const entry = payload.hostnames?.find((candidate) => candidate.host === host)
     assertEquals(entry?.keyPem, UPLOADED_KEY)
     assertEquals(entry?.keyEnvelope, undefined)
+  })
+})
+
+test('each hostname carries its public port only for a daemon that lists the feature', async () => {
+  await withRollback(async (tx) => {
+    const host = `public-port-${crypto.randomUUID()}.example.test`
+    await tx.insert(instanceHostname).values({ host, source: 'platform-ca', publicPort: 443 })
+
+    const legacy = await resolvePublicUrlsApplyPayload(tx, [host], '0.1.1', undefined, {}, null, [
+      SEALED_INSTANCE_SECRETS_FEATURE,
+    ])
+    const legacyEntry = legacy.hostnames?.find((candidate) => candidate.host === host)
+    assertEquals(legacyEntry?.source, 'platform-ca')
+    assertEquals('publicPort' in (legacyEntry ?? {}), false)
+
+    const capable = await resolvePublicUrlsApplyPayload(tx, [host], '0.1.1', undefined, {}, null, [
+      INSTANCE_HOSTNAME_PUBLIC_PORT_FEATURE,
+    ])
+    const entry = capable.hostnames?.find((candidate) => candidate.host === host)
+    assertEquals(entry?.publicPort, 443)
   })
 })

@@ -86,6 +86,7 @@ import {
 } from '../features/install/instance-hostnames.ts'
 import { resolvePublicUrlsApplyPayload } from './public-urls-apply-payload.ts'
 import { resolveInstanceSecretSealing } from '../features/install/instance-secret-sealing.ts'
+import { getServerDaemonStateByServerId } from '../features/servers/server-identity-db.ts'
 import {
   parseCellPurgeBatchBody,
   parseEmailSettingsUpdates,
@@ -130,13 +131,15 @@ async function buildPublicUrlsApplyPayload(
 ): Promise<PublicUrlsApplyPayloadOutcome> {
   try {
     const sealing = await resolveInstanceSecretSealing(db, serverId, c.get('secretsConfig'))
+    const daemonState = await getServerDaemonStateByServerId(db, serverId)
     const payload = await resolvePublicUrlsApplyPayload(
       db,
       urls,
       daemonVersion,
       c.get('dataEncryptionSecrets'),
       resolvePlatformEnv(c, opts),
-      sealing
+      sealing,
+      daemonState?.projection?.features ?? []
     )
     return { ok: true, payload }
   } catch (err) {

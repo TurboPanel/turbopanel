@@ -209,6 +209,7 @@ export const DAEMON_WIRE_FEATURES = [
   'fabric-peer-report-v1',
   'fabric-lan-routes-v1',
   'repo-key-report-v1',
+  'instance-hostname-public-port-v1',
 ] as const
 
 export type DaemonWireFeature = (typeof DAEMON_WIRE_FEATURES)[number]
@@ -244,6 +245,15 @@ export const TUNNEL_STATUS_FEATURE: DaemonWireFeature = 'tunnel-status-v1'
  * control plane still sends the legacy plaintext fields.
  */
 export const SEALED_INSTANCE_SECRETS_FEATURE: DaemonWireFeature = 'sealed-instance-secrets-v1'
+
+/**
+ * The daemon reads `publicPort` on each `public-urls-update` hostname (the
+ * port visitors use, which an edge in front of the control plane can make
+ * different from the origin's 8443) and sends a request on any other port to
+ * it. The control plane sends `publicPort` only to a daemon that lists this.
+ */
+export const INSTANCE_HOSTNAME_PUBLIC_PORT_FEATURE: DaemonWireFeature =
+  'instance-hostname-public-port-v1'
 
 /**
  * The daemon sends the certificate and key Caddy issued for a hostname to
