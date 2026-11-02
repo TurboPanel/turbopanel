@@ -11,6 +11,7 @@ import {
   send,
   withFolderFixtures as withFixtures,
 } from '../test-fixtures/folder-world.test.support.ts'
+import { confirmedPath } from '../test-fixtures/confirm-name.test.support.ts'
 
 const test = Deno.test.bind(Deno)
 
@@ -50,7 +51,11 @@ test('deleting an environment records who, its name and its hostnames', async ()
         .returning({ id: environment.id })
       await addSite(ctx, extra!.id, 'web', 'staging.audit-env.example.test')
 
-      const gone = await send(ctx, 'DELETE', `/environments/${extra!.id}?confirmName=staging`)
+      const gone = await send(
+        ctx,
+        'DELETE',
+        await confirmedPath(ctx.db, 'environment', extra!.id, `/environments/${extra!.id}`)
+      )
       assertEquals(gone.status, 200)
 
       const rows = await entries(ctx, 'environment.delete')
@@ -78,7 +83,11 @@ test('deleting a project writes one entry that lists its environments and hostna
       await addSite(ctx, home.envId, 'web', 'www.audit-project.example.test')
       await addSite(ctx, extra!.id, 'web', 'staging.audit-project.example.test')
 
-      const gone = await send(ctx, 'DELETE', `/projects/${home.projectId}`)
+      const gone = await send(
+        ctx,
+        'DELETE',
+        await confirmedPath(ctx.db, 'project', home.projectId, `/projects/${home.projectId}`)
+      )
       assertEquals(gone.status, 200)
 
       const rows = await entries(ctx, 'project.delete')
@@ -131,8 +140,26 @@ test('a refused delete writes no entry', async () => {
       })
       assertEquals(added.status, 200)
 
-      assertEquals((await send(ctx, 'DELETE', `/projects/${home.projectId}`)).status, 409)
-      assertEquals((await send(ctx, 'DELETE', `/environments/${home.envId}`)).status, 409)
+      assertEquals(
+        (
+          await send(
+            ctx,
+            'DELETE',
+            await confirmedPath(ctx.db, 'project', home.projectId, `/projects/${home.projectId}`)
+          )
+        ).status,
+        409
+      )
+      assertEquals(
+        (
+          await send(
+            ctx,
+            'DELETE',
+            await confirmedPath(ctx.db, 'environment', home.envId, `/environments/${home.envId}`)
+          )
+        ).status,
+        409
+      )
       assertEquals((await entries(ctx, 'project.delete')).length, 0)
       assertEquals((await entries(ctx, 'environment.delete')).length, 0)
     } finally {

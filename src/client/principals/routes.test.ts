@@ -36,6 +36,7 @@ import {
   registerServerLimitsRoutes,
 } from './routes.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
+import { confirmedPath } from '../../test-fixtures/confirm-name.test.support.ts'
 
 const dbUrl = getDatabaseUrl()
 
@@ -779,6 +780,43 @@ test('PATCH /projects/:projectId/principals/:id rejects invalid serviceIds', asy
   })
 })
 
+test('DELETE /projects/:projectId/principals/:id needs the exact Hosting Account name', async () => {
+  await withPrincipalFixtures(async ({ db, app, secrets, userId, organizationId, projectId }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const headers = { Cookie: cookie, [ORG_ID_HEADER]: organizationId }
+    const create = await app.request(`/projects/${projectId}/principals`, {
+      method: 'POST',
+      headers: { ...headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'typedname' }),
+    })
+    assertEquals(create.status, 200)
+    const created = (await create.json()) as { id: string }
+    const send = (query: string) =>
+      app.request(`/projects/${projectId}/principals/${created.id}${query}`, {
+        method: 'DELETE',
+        headers,
+      })
+    const remaining = async () =>
+      (await db.select({ id: principal.id }).from(principal).where(eq(principal.id, created.id)))
+        .length
+
+    for (const query of ['', '?confirmName=', '?confirmName=TypedName', '?confirmName=other']) {
+      const refused = await send(query)
+      assertEquals(refused.status, 400, query)
+      assertEquals(await refused.json(), {
+        error: 'confirm_name_required',
+        message: 'Type the Hosting Account name to delete this Hosting Account.',
+      })
+      assertEquals(await remaining(), 1)
+    }
+
+    const removed = await send('?confirmName=typedname')
+    assertEquals(removed.status, 200)
+    assertEquals(await remaining(), 0)
+    await db.delete(audit).where(eq(audit.targetId, created.id))
+  })
+})
+
 test('DELETE /projects/:projectId/principals/:id removes principal', async () => {
   await withPrincipalFixtures(
     async ({ db, app, secrets, userId, organizationId, projectId, serverId }) => {
@@ -796,10 +834,18 @@ test('DELETE /projects/:projectId/principals/:id removes principal', async () =>
       })
       const created = (await create.json()) as { id: string }
 
-      const del = await app.request(`/projects/${projectId}/principals/${created.id}`, {
-        method: 'DELETE',
-        headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
-      })
+      const del = await app.request(
+        await confirmedPath(
+          db,
+          'principal',
+          created.id,
+          `/projects/${projectId}/principals/${created.id}`
+        ),
+        {
+          method: 'DELETE',
+          headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
+        }
+      )
       assertEquals(del.status, 200)
       // The test app has no command queue, so the one server the project's
       // environment is pinned to is reported as not reached rather than queued.
@@ -847,10 +893,18 @@ test('DELETE /projects/:projectId/principals/:id refuses while a service still r
       assertEquals(create.status, 200)
       const created = (await create.json()) as { id: string }
 
-      const del = await app.request(`/projects/${projectId}/principals/${created.id}`, {
-        method: 'DELETE',
-        headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
-      })
+      const del = await app.request(
+        await confirmedPath(
+          db,
+          'principal',
+          created.id,
+          `/projects/${projectId}/principals/${created.id}`
+        ),
+        {
+          method: 'DELETE',
+          headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
+        }
+      )
       assertEquals(del.status, 409)
       assertEquals(await del.json(), {
         error: 'principal_in_use',
@@ -896,10 +950,18 @@ test('DELETE /projects/:projectId/principals/:id returns 404 when principal belo
     })
     const created = (await create.json()) as { id: string }
 
-    const del = await app.request(`/projects/${otherProject!.id}/principals/${created.id}`, {
-      method: 'DELETE',
-      headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
-    })
+    const del = await app.request(
+      await confirmedPath(
+        db,
+        'principal',
+        created.id,
+        `/projects/${otherProject!.id}/principals/${created.id}`
+      ),
+      {
+        method: 'DELETE',
+        headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
+      }
+    )
     assertEquals(del.status, 404)
 
     await db.delete(principal).where(eq(principal.id, created.id))
@@ -1483,10 +1545,18 @@ test('DELETE /projects/:projectId/principals/:id refuses while a database login 
         appliedUsername: 'dblogin',
       })
 
-      const del = await app.request(`/projects/${projectId}/principals/${created.id}`, {
-        method: 'DELETE',
-        headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
-      })
+      const del = await app.request(
+        await confirmedPath(
+          db,
+          'principal',
+          created.id,
+          `/projects/${projectId}/principals/${created.id}`
+        ),
+        {
+          method: 'DELETE',
+          headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
+        }
+      )
       assertEquals(del.status, 409)
       assertEquals(await del.json(), {
         error: 'principal_in_use',
@@ -1535,13 +1605,21 @@ test('DELETE /projects/:projectId/principals/:id answers 403 to a member without
       .returning({ id: team.id })
     await db.insert(teammate).values({ teamId: crew!.id, userId: member!.id })
     try {
-      const del = await app.request(`/projects/${projectId}/principals/${created.id}`, {
-        method: 'DELETE',
-        headers: {
-          Cookie: await sessionCookie(db, secrets, member!.id),
-          [ORG_ID_HEADER]: organizationId,
-        },
-      })
+      const del = await app.request(
+        await confirmedPath(
+          db,
+          'principal',
+          created.id,
+          `/projects/${projectId}/principals/${created.id}`
+        ),
+        {
+          method: 'DELETE',
+          headers: {
+            Cookie: await sessionCookie(db, secrets, member!.id),
+            [ORG_ID_HEADER]: organizationId,
+          },
+        }
+      )
       assertEquals(del.status, 403)
       assertEquals(
         (await db.select({ id: principal.id }).from(principal).where(eq(principal.id, created.id)))

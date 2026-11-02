@@ -3,6 +3,7 @@ import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
+import { refuseUnlessNameConfirmed } from '../confirm-name.ts'
 import { assertCanOr403 } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import { type Db, getDb } from '../../db/connection.ts'
@@ -435,6 +436,9 @@ export function registerProjectPrincipalRoutes(router: Hono<AppEnv>, opts: AuthR
 
     const immutable = await assertNotSystemOwnedOr403(c, 'project', projectId)
     if (immutable) return immutable
+
+    const needsName = refuseUnlessNameConfirmed(c, 'Hosting Account', row.username)
+    if (needsName) return needsName
 
     // Removal is an explicit action and never silent: refused while a
     // service, binding, storage entry, secret or database login still names

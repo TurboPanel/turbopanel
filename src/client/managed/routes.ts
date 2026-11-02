@@ -3,6 +3,7 @@ import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
+import { confirmationName, refuseUnlessNameConfirmed } from '../confirm-name.ts'
 import { recordAudit } from '../../features/audit/audit-records.ts'
 import { isUniqueViolationOn } from '../../db/unique-violation.ts'
 import { requireStepUpIfConfigured } from '../authn/step-up.ts'
@@ -2679,6 +2680,20 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const stepUp = await requireStepUpIfConfigured(c, auth.organizationId, 'managed.delete')
     if (stepUp) return stepUp
 
+    // A managed database is shown, and confirmed, by the name of its project.
+    const [named] = await db
+      .select({ name: project.name, projectId: project.id })
+      .from(environment)
+      .innerJoin(project, eq(project.id, environment.projectId))
+      .where(eq(environment.id, environmentId))
+      .limit(1)
+    const needsName = refuseUnlessNameConfirmed(
+      c,
+      'managed database',
+      confirmationName(named?.name, named?.projectId, environmentId)
+    )
+    if (needsName) return needsName
+
     const busy = await assertManagedIdle(c, db, row)
     if (busy) return busy
 
@@ -3426,6 +3441,8 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     if (deleteError) {
       return c.json({ error: deleteError.error }, deleteError.status)
     }
+    const needsName = refuseUnlessNameConfirmed(c, 'database', databaseName)
+    if (needsName) return needsName
 
     const ownerEntry = options.databaseOwners?.[databaseName]
     const inUse = await refuseDatabaseDropWhenInUse(
