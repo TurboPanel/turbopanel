@@ -6,6 +6,8 @@
  * for `uploaded`, the certificate plus its key: sealed to the daemon as
  * `keyEnvelope` when `sealing` is set (the daemon advertises
  * `sealed-instance-secrets-v1`), otherwise the legacy plaintext `keyPem`.
+ * A daemon that lists `instance-hostname-public-port-v1` in `daemonFeatures`
+ * also receives each hostname's `publicPort`.
  */
 
 import { inArray } from 'drizzle-orm'
@@ -27,8 +29,12 @@ import {
 } from '../features/install/instance-hostnames.ts'
 import { decryptSecret, resealSecretForDaemon } from '../lib/secrets/data-encryption.ts'
 import type { DerivedSecretsConfig } from '../lib/secrets/secrets.ts'
-import { resolveDaemonCapabilities } from '../lib/version-wire.ts'
+import {
+  INSTANCE_HOSTNAME_PUBLIC_PORT_FEATURE,
+  resolveDaemonCapabilities,
+} from '../lib/version-wire.ts'
 import type { InstanceSecretSealing } from '../features/install/instance-secret-sealing.ts'
+import { getServerDaemonStateByServerId } from '../features/servers/server-identity-db.ts'
 
 export class PublicUrlsApplyPayloadError extends Error {
   /** Set for refusals a client acts on; absent for server-side faults. */
@@ -41,6 +47,23 @@ export class PublicUrlsApplyPayloadError extends Error {
   }
 }
 
+/** Optional inputs to {@link resolvePublicUrlsApplyPayload}. */
+export type PublicUrlsApplyPayloadOptions = {
+  /** Wire features the co-located daemon advertises (gates `publicPort`). */
+  daemonFeatures?: readonly string[]
+  /** Clock for the DNS-01 certificate source; defaults to now. */
+  now?: number
+}
+
+/** Wire features the co-located daemon last advertised, or none. */
+export async function colocatedDaemonFeatures(
+  db: Db,
+  serverId: string
+): Promise<readonly string[]> {
+  const state = await getServerDaemonStateByServerId(db, serverId)
+  return state?.projection?.features ?? []
+}
+
 export async function resolvePublicUrlsApplyPayload(
   db: Db,
   urls: string[],
@@ -48,8 +71,9 @@ export async function resolvePublicUrlsApplyPayload(
   secrets: DerivedSecretsConfig | undefined,
   env: Record<string, string | undefined>,
   sealing: InstanceSecretSealing | null = null,
-  now = Date.now()
+  options: PublicUrlsApplyPayloadOptions = {}
 ): Promise<PublicUrlsApplyPayload> {
+  const { daemonFeatures = [], now = Date.now() } = options
   const capable =
     resolveDaemonCapabilities(daemonVersion)['instance-cert-sources-per-hostname'] === true
   if (!capable) return { urls }
@@ -68,10 +92,12 @@ export async function resolvePublicUrlsApplyPayload(
     ),
   ]
   const decrypted = await loadUploadedPairs(db, uploadedIds, secrets, sealing)
+  const sendPublicPort = daemonFeatures.includes(INSTANCE_HOSTNAME_PUBLIC_PORT_FEATURE)
   const hostnames: InstanceHostnameWireEntry[] = rows.map((row) => {
     const entry: InstanceHostnameWireEntry = {
       host: row.host,
       source: row.source,
+      ...(sendPublicPort ? { publicPort: row.publicPort } : {}),
     }
     if (row.source !== 'uploaded' || !row.uploadedCertId) return entry
     const pair = decrypted.get(row.uploadedCertId)
