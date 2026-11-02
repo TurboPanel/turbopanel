@@ -1,5 +1,5 @@
 import { PROJECT_ICONS } from '../../features/projects/vocabulary.ts'
-import { buildResourceCrudPaths } from './shared.ts'
+import { buildResourceCrudPaths, withConfirmName } from './shared.ts'
 import { deleteOperation, deletePreviewPath, withDeleteOperation } from './delete-plan.ts'
 
 export const projectSchemas = {
@@ -206,10 +206,14 @@ export const projectPaths = {
   '/api/client/v1/projects/{id}': withDeleteOperation(
     projectCrudPaths,
     '/api/client/v1/projects/{id}',
-    deleteOperation(
-      'Projects',
+    withConfirmName(
+      deleteOperation(
+        'Projects',
+        'project',
+        "Stops every environment's services on their servers, then removes the project's rows in one step: environments, services, hostings (compose-declared ones too), volumes set to be deleted with it. Each folder on a server becomes `removing` and the server is asked to remove it (asked again until it confirms); a volume set to keep its data keeps its folder. The project's Hosting Accounts that nothing else uses are removed (Linux user and home) once their folders are gone and each server has confirmed the account removed; the others are kept and listed. Refused, with nothing changed, while a managed database remains, a deploy is running, a shared service or volume is used by another project, or a server the delete has to reach is offline. Refused with 400 `confirm_name_required` unless `confirmName` is exactly its name."
+      ),
       'project',
-      "Stops every environment's services on their servers, then removes the project's rows in one step: environments, services, hostings (compose-declared ones too), volumes set to be deleted with it. Each folder on a server becomes `removing` and the server is asked to remove it (asked again until it confirms); a volume set to keep its data keeps its folder. The project's Hosting Accounts that nothing else uses are removed (Linux user and home) once their folders are gone and each server has confirmed the account removed; the others are kept and listed. Refused, with nothing changed, while a managed database remains, a deploy is running, a shared service or volume is used by another project, or a server the delete has to reach is offline."
+      'its name, else its id'
     )
   ),
   '/api/client/v1/projects/{id}/delete-preview': deletePreviewPath(

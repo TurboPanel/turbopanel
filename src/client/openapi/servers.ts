@@ -1,3 +1,4 @@
+import { withConfirmNameOnDelete } from './shared.ts'
 import {
   SERVER_DELETE_BLOCKER_KIND_VALUES,
   SERVER_SERVICES_REMOVAL_KIND_VALUES,
@@ -1614,7 +1615,7 @@ export const serverSchemas = {
   },
 }
 
-export const serverPaths: Record<string, unknown> = {
+const serverBasePaths: Record<string, unknown> = {
   '/api/client/v1/servers': {
     get: {
       tags: ['Servers'],
@@ -2806,3 +2807,10 @@ export const serverPaths: Record<string, unknown> = {
     },
   },
 }
+
+export const serverPaths = withConfirmNameOnDelete(
+  serverBasePaths,
+  '/api/client/v1/servers/{id}',
+  'server',
+  'its name, else its hostname, else its id'
+)

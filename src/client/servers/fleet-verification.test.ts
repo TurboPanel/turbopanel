@@ -26,6 +26,7 @@ import { mapSequential } from '../../lib/sequential.ts'
 import { deriveSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import { seedTierSeats } from '../../test-fixtures/tier-seats.test.support.ts'
+import { confirmedPath } from '../../test-fixtures/confirm-name.test.support.ts'
 import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from '../authn/crypto.ts'
 import { createSession } from '../authn/session-store.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
@@ -188,7 +189,11 @@ test('deleting a server fires server.deleted to the managers, frees its license 
       .set({ serverId: ctx.serverId, updatedAt: new Date().toISOString() })
       .where(eq(license.id, licenseId))
 
-    const res = await request(ctx, 'DELETE', `/servers/${ctx.serverId}`)
+    const res = await request(
+      ctx,
+      'DELETE',
+      await confirmedPath(ctx.db, 'server', ctx.serverId, `/servers/${ctx.serverId}`)
+    )
     assertEquals(res.status, 200)
 
     const inbox = await ctx.db
@@ -239,7 +244,11 @@ test('deleting a server retires its key in the same step: a daemon still running
       seen.push({ revoked: Boolean(row?.revokedAt), reEnrolled })
     }
 
-    const res = await request(ctx, 'DELETE', `/servers/${ctx.serverId}`)
+    const res = await request(
+      ctx,
+      'DELETE',
+      await confirmedPath(ctx.db, 'server', ctx.serverId, `/servers/${ctx.serverId}`)
+    )
     assertEquals(res.status, 200)
     assertEquals(seen, [{ revoked: true, reEnrolled: null }])
   })
@@ -281,7 +290,11 @@ test('a connected server enrolled with a key that names no tier deletes and its 
   await withFleetFixtures(async (ctx) => {
     const { serverId, licenseId } = await enrollConnectedServer(ctx)
 
-    const res = await request(ctx, 'DELETE', `/servers/${serverId}`)
+    const res = await request(
+      ctx,
+      'DELETE',
+      await confirmedPath(ctx.db, 'server', serverId, `/servers/${serverId}`)
+    )
     assertEquals(res.status, 200)
     assertEquals(await serverExists(ctx, serverId), false)
     assertEquals(await licenseRevoked(ctx, licenseId), true)
@@ -300,7 +313,11 @@ test('a connected server holding its Add Server tier seat deletes and the seat i
         .where(eq(server.id, first.serverId))
       assertEquals(held?.assigned, seats.tierId)
 
-      const res = await request(ctx, 'DELETE', `/servers/${first.serverId}`)
+      const res = await request(
+        ctx,
+        'DELETE',
+        await confirmedPath(ctx.db, 'server', first.serverId, `/servers/${first.serverId}`)
+      )
       assertEquals(res.status, 200)
       assertEquals(await licenseRevoked(ctx, first.licenseId), true)
       assertEquals((await countReservedLicenseTiers(ctx.db, ctx.organizationId)).size, 0)
@@ -332,7 +349,11 @@ test('a connected server that still hosts an app answers which app to remove and
       .returning({ id: project.id })
     await ctx.db.insert(environment).values({ name: 'production', projectId: app!.id, serverId })
 
-    const res = await request(ctx, 'DELETE', `/servers/${serverId}`)
+    const res = await request(
+      ctx,
+      'DELETE',
+      await confirmedPath(ctx.db, 'server', serverId, `/servers/${serverId}`)
+    )
     assertEquals(res.status, 409)
     const body = (await res.json()) as {
       code: string

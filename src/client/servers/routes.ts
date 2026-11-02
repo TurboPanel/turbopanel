@@ -1,4 +1,5 @@
 import { and, eq, inArray, sql } from 'drizzle-orm'
+import { confirmationName, refuseUnlessNameConfirmed } from '../confirm-name.ts'
 import { resolvePinnedBy } from '../../lib/panel-identity/pinned-by.ts'
 import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
@@ -1379,6 +1380,13 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
 
     const stepUp = await requireStepUpIfConfigured(c, organizationId, 'server.delete')
     if (stepUp) return stepUp
+
+    const needsName = refuseUnlessNameConfirmed(
+      c,
+      'server',
+      confirmationName(row.name, row.hostname, row.id)
+    )
+    if (needsName) return needsName
 
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body

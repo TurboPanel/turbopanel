@@ -32,6 +32,7 @@ import { registerServerRoutes } from '../servers/routes.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
+import { confirmedPath } from '../../test-fixtures/confirm-name.test.support.ts'
 
 const dbUrl = getDatabaseUrl()
 
@@ -735,13 +736,16 @@ test('DELETE /licenses/:id returns 409 while a server is attached', async () => 
         assertEquals(attachedBody.server?.id, serverId)
         assertEquals(attachedBody.server?.name, 'Bound host')
 
-        const deletedServer = await app.request(`/servers/${serverId}`, {
-          method: 'DELETE',
-          headers: {
-            Cookie: cookie,
-            [ORG_ID_HEADER]: organizationId,
-          },
-        })
+        const deletedServer = await app.request(
+          await confirmedPath(db, 'server', serverId, `/servers/${serverId}`),
+          {
+            method: 'DELETE',
+            headers: {
+              Cookie: cookie,
+              [ORG_ID_HEADER]: organizationId,
+            },
+          }
+        )
         assertEquals(deletedServer.status, 200)
 
         const after = await app.request(`/licenses/${licenseId}`, {
