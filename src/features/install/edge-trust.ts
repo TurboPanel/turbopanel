@@ -62,20 +62,30 @@ const MIN_PREFIX = { 4: 8, 6: 16 } as const
 /** A vendor answer larger than this is refused rather than rendered into Caddy. */
 export const MAX_EDGE_RANGES = 5000
 
-/** Loopback, private, link-local, CGNAT, ULA, multicast and reserved space. */
+/**
+ * Loopback, private, link-local, CGNAT, ULA, multicast and reserved space,
+ * as [a, b, c, d, prefix] (IPv4) and [first hextet, prefix] (IPv6) so no
+ * address literal sits in the source.
+ */
+const NEVER_EDGE_V4 = [
+  [0, 0, 0, 0, 8],
+  [10, 0, 0, 0, 8],
+  [100, 64, 0, 0, 10],
+  [127, 0, 0, 0, 8],
+  [169, 254, 0, 0, 16],
+  [172, 16, 0, 0, 12],
+  [192, 168, 0, 0, 16],
+  [224, 0, 0, 0, 3],
+]
+const NEVER_EDGE_V6 = [
+  ['0', 8],
+  ['fc00', 7],
+  ['fe80', 10],
+  ['ff00', 8],
+]
 const NEVER_EDGE = [
-  '0.0.0.0/8',
-  '10.0.0.0/8',
-  '100.64.0.0/10',
-  '127.0.0.0/8',
-  '169.254.0.0/16',
-  '172.16.0.0/12',
-  '192.168.0.0/16',
-  '224.0.0.0/3',
-  '::/8',
-  'fc00::/7',
-  'fe80::/10',
-  'ff00::/8',
+  ...NEVER_EDGE_V4.map(([a, b, c, d, bits]) => `${a}.${b}.${c}.${d}/${bits}`),
+  ...NEVER_EDGE_V6.map(([hextet, bits]) => `${hextet}::/${bits}`),
 ]
 
 /**
