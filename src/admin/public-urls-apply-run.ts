@@ -61,15 +61,17 @@ export async function applyStoredPublicUrls(
   if (!serverId) throw new Error('no co-located daemon connected')
   const snapshot = (await deps.registry.getSnapshots([serverId])).get(serverId)
   if (!snapshot?.connected) throw new Error('co-located daemon disconnected')
+  // A daemon that does not advertise the feature has nothing to render: skip
+  // the payload (and any key resealing) and leave `appliedHash` unset so the
+  // first tick after it upgrades does the apply.
+  const modes = (await listInstanceHostnames(deps.db)).map((row) => row.mode)
+  if (!(await resolveEdgeTrustForServer(deps.db, serverId, modes))) return
   const payload = await buildPublicUrlsPayload({
     ...deps,
     serverId,
     urls: await getPublicUrls(deps.db),
     daemonVersion: snapshot.daemonBuild?.version,
   })
-  // A daemon that does not advertise the feature has nothing to render: leave
-  // `appliedHash` unset so the first tick after it upgrades does the apply,
-  // and never run a full certificate apply every tick in the meantime.
   if (!payload.edgeTrust) return
   const result = await waitForPublicUrlsApply(deps.registry, serverId, payload)
   if (result.kind !== 'done') {
