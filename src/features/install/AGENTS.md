@@ -115,16 +115,18 @@ PUT hostnames route accepts `publicPort` and `isPrimary` per entry (one
 primary; omitted keeps the stored value) and warns when the primary's address
 changes, because OAuth callbacks and Git webhooks registered with the old
 address must be updated; a different host also stops registered passkeys
-(`primary-host-changed`), and either change is audited. Apply sends each
-row's `publicPort` on `public-urls-update` to a co-located daemon that
-advertises `instance-hostname-public-port-v1`; its Caddy then sends a request
-for that hostname on any other port (an edge answering both 443 and 8443) to
-the public port with a 308. A self-hosted control plane does not wait for a
+(`primary-host-changed`), and either change is audited. Apply sends
+`publicPort` on `public-urls-update`, only for `cloudflare-tunnel` rows, to a
+co-located daemon that advertises `instance-hostname-public-port-v1`; its
+Caddy then sends a request for that hostname on any other port (a tunnel edge
+answering both 443 and 8443) to the public port with a 308. Every other mode
+omits it and never redirects: on a direct, proxied, Let's Encrypt or uploaded
+name ports 80 and 443 belong to hosting and may serve a different site. A self-hosted control plane does not wait for a
 Save: every 5 minutes its maintenance tick builds the body
 (`applyStoredPublicUrls` in `src/admin/public-urls-apply-run.ts`) and sends it
 when its fingerprint differs from `appliedPayloadHash` in the `EDGE_TRUST`
-setting, so a field a newer build adds reaches the daemon once after an
-upgrade. Key material is left out of the fingerprint (a sealed key is new on
+setting, so a field a newer build adds, or a connection-mode change, reaches
+the daemon once. Key material is left out of the fingerprint (a sealed key is new on
 every build), and a successful Save records the same fingerprint.
 
 On a self-hosted control plane (the Deno server calls `setSelfHostedAddress`

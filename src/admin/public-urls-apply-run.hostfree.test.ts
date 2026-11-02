@@ -49,14 +49,14 @@ const HOST = 'panel.example.test'
 const URLS = [`https://${HOST}:8443`]
 const EDGE = { cidrs: [], hash: 'edge', cloudflare: [], bunny: [] }
 
-/** The body a build before the public port sent to the daemon. */
+/** The body sent before the public port existed, or while the name was direct. */
 const OLD_BODY: PublicUrlsApplyPayload = {
   urls: URLS,
   hostnames: [{ host: HOST, source: 'platform-ca' }],
   edgeTrust: EDGE,
 }
 
-/** The same stored hostname, for a daemon that advertises the public port. */
+/** The same name in tunnel mode, for a daemon that advertises the public port. */
 const NEW_BODY: PublicUrlsApplyPayload = {
   urls: URLS,
   hostnames: [{ host: HOST, source: 'platform-ca', publicPort: 8443 }],

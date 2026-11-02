@@ -138,16 +138,21 @@ export async function applyStoredPublicUrls(
   const serverId = await resolveColocatedServerId(deps.db, deps.registry)
   if (!serverId) throw new Error('no co-located daemon connected')
   const snapshot = (await deps.registry.getSnapshots([serverId])).get(serverId)
-  if (!snapshot?.connected) throw new Error('co-located daemon disconnected')
+  // The tick runs every few minutes: a daemon that is down gets the body on
+  // the first pass after it reconnects.
+  if (!snapshot?.connected) return
   // An older daemon has nothing new to render: skip the payload (and any key
   // resealing) and leave the stored hash alone so the first tick after it
   // upgrades does the apply.
   const features = await colocatedDaemonFeatures(deps.db, serverId)
   if (!REAPPLY_FEATURES.some((feature) => features.includes(feature))) return
+  // Nothing is published before install finishes; never send an empty list.
+  const urls = await getPublicUrls(deps.db)
+  if (urls.length === 0) return
   const payload = await buildPublicUrlsPayload({
     ...deps,
     serverId,
-    urls: await getPublicUrls(deps.db),
+    urls,
     daemonVersion: snapshot.daemonBuild?.version,
   })
   await applyPublicUrlsIfChanged(deps.db, payload, (body) =>
