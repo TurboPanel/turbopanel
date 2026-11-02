@@ -5,6 +5,7 @@ import { createSessionMiddleware } from '../authn/middleware.ts'
 import { recordAudit } from '../../features/audit/audit-records.ts'
 import { encodeLicenseArg } from '../../features/install/daemon-install-command.ts'
 import { requireStepUpIfConfigured } from '../authn/step-up.ts'
+import { buildTicketInstallCommand, resolveInstallOrigin } from '../licenses/install-origin.ts'
 import { requireServerOwnerContext } from './owner-context.ts'
 import { mintTicket, revokeServerTickets } from '../../features/licenses/tickets.ts'
 
@@ -32,6 +33,10 @@ export function registerServerReenrollTicketRoutes(router: Hono<AppEnv>, opts: A
     )
     if (stepUp) return stepUp
 
+    // Resolve the install origin first so a refusal retires nothing.
+    const resolved = await resolveInstallOrigin(c, db, opts, null)
+    if (!resolved.ok) return c.json({ error: resolved.error }, 400)
+
     // One live ticket per server: issuing a new one retires the old.
     await revokeServerTickets(db, serverId)
     const issued = await mintTicket(db, { organizationId, serverId, userId: session.userId })
@@ -49,6 +54,7 @@ export function registerServerReenrollTicketRoutes(router: Hono<AppEnv>, opts: A
       expiresAt: issued.expiresAt,
       licenseToken: issued.plaintext,
       licenseArg: encodeLicenseArg(issued.id, issued.plaintext),
+      installCommand: buildTicketInstallCommand(c, opts, resolved.origin, issued),
     })
   })
 
