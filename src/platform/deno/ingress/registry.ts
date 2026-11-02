@@ -35,10 +35,13 @@ export async function applyHostname(ctx: IngressContext): Promise<ApplyResult> {
   if (!provider) {
     return { ok: false, cause: 'not-available', detail: NOT_AVAILABLE }
   }
-  // Edge modes are switched on only once the go-live gate is open (gate.ts).
-  if (provider.capabilities.isEdge && ctx.deps?.gate.open !== true) {
-    const detail = ctx.deps?.gate.reason ?? 'Edge connection modes are not switched on yet.'
-    return { ok: false, cause: 'gate-closed', detail }
+  // Edge modes are switched on only once every remote server pins this control plane (gate.ts).
+  if (provider.capabilities.isEdge) {
+    const gate = ctx.deps ? await ctx.deps.gate() : null
+    if (gate?.open !== true) {
+      const detail = gate?.reason ?? 'Edge connection modes are not switched on yet.'
+      return { ok: false, cause: 'gate-closed', detail }
+    }
   }
   const preflight = await provider.preflight(ctx)
   if (!preflight.ok) {

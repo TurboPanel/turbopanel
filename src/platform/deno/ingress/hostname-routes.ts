@@ -1,16 +1,15 @@
 /**
- * Connection modes per hostname and the edge go-live gate, under
+ * Connection modes per hostname and the edge gate (read-only), under
  * `/api/admin/v1/instance/ingress/*`. Reads are open to admins; every change
  * is superadmin-only.
  */
 import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../../app/app.ts'
-import { requireInstanceStepUp } from '../../../client/authn/step-up.ts'
 import { listIngressCapabilities } from './capabilities.ts'
-import { readEdgeGate, writeEdgeGate } from './gate.ts'
 import { auditInstance, type IngressAdminDeps, notFound, routeServices } from './route-context.ts'
 import {
   applyIngress,
+  edgeGateReader,
   ingressStatus,
   preflightIngress,
   removeIngress,
@@ -27,22 +26,8 @@ function registerGateRoutes(admin: Hono<AppEnv>, deps: IngressAdminDeps): void {
   admin.get('/instance/ingress/capabilities', async (c) => {
     const ready = routeServices(c, deps)
     if (ready instanceof Response) return ready
-    const gate = await readEdgeGate(ready.db, ready.service.env)
+    const gate = await edgeGateReader(ready.db, ready.service)()
     return c.json({ ok: true, modes: listIngressCapabilities(), gate })
-  })
-
-  admin.put('/instance/ingress/gate', deps.rootOnly, async (c) => {
-    const body = await readBody(c)
-    if (typeof body.confirmed !== 'boolean') {
-      return c.json({ ok: false, error: 'confirmed must be true or false' }, 400)
-    }
-    const stepUp = await requireInstanceStepUp(c, 'instance.edge_gate.set')
-    if (stepUp) return stepUp
-    const ready = routeServices(c, deps)
-    if (ready instanceof Response) return ready
-    await writeEdgeGate(ready.db, body.confirmed, c.get('session')?.email ?? null)
-    await auditInstance(c, ready.db, 'instance.edge_gate.set', null, { confirmed: body.confirmed })
-    return c.json({ ok: true, gate: await readEdgeGate(ready.db, ready.service.env) })
   })
 }
 
@@ -51,8 +36,16 @@ function registerHostnameWriteRoutes(admin: Hono<AppEnv>, deps: IngressAdminDeps
     const ready = routeServices(c, deps)
     if (ready instanceof Response) return ready
     const input = (await readBody(c)) as HostnameIngressInput
-    const updated = await setHostnameIngress(ready.db, c.req.param('id'), input)
-    if (!updated.ok) return c.json({ ok: false, error: updated.error }, updated.status)
+    const updated = await setHostnameIngress(
+      ready.db,
+      c.req.param('id'),
+      input,
+      edgeGateReader(ready.db, ready.service)
+    )
+    if (!updated.ok) {
+      const { ok: _ok, status, ...body } = updated
+      return c.json({ ok: false, ...body }, status)
+    }
     await auditInstance(c, ready.db, 'instance.hostname_ingress.changed', updated.hostname.id, {
       host: updated.hostname.host,
       mode: updated.hostname.mode,

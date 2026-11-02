@@ -65,7 +65,8 @@ export type IngressDeps = {
   db: Db
   now: () => Date
   fetch: typeof fetch
-  gate: EdgeGate
+  /** The edge gate, read only when an edge mode is switched on (it scans every server). */
+  gate: () => Promise<EdgeGate>
   /** Whether the daemon on the control plane host is connected (it runs the connector). */
   colocatedDaemonConnected: () => Promise<boolean>
   /** Hand a tunnel run token to the co-located daemon only; '' stops the connector. */
