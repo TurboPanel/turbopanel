@@ -9,7 +9,7 @@
  * linux-arm64) per dev/AGENTS.md → Testing — never on the host. One-shot:
  *
  *   vagrant ssh -c 'export PATH="/opt/turbopanel/vendor/deno/current:$PATH"; \
- *     cd ~/turbopanel && deno task duckdb:smoke'
+ *     cd ~/turbopanel/turbopanel && deno task duckdb:smoke'
  *
  * What it does:
  *   1. `deno task compile` — the exact production build/permission shape
