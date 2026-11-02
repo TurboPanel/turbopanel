@@ -941,7 +941,8 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
         )
       }
       // Edge address ranges for proxy modes: the fetch itself runs at most once
-      // a day inside the tick; the daemon hears only about a changed set.
+      // a day inside the tick. The daemon hears only about a changed body
+      // (new ranges, or a field a newer build sends, like the public port).
       if (Date.now() - lastEdgeTrustTickMs >= EDGE_TRUST_TICK_INTERVAL_MS) {
         lastEdgeTrustTickMs = Date.now()
         await runCleanupPhase('edge trust refresh', () =>

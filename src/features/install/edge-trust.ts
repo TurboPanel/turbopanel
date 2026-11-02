@@ -42,6 +42,12 @@ export type EdgeTrustState = {
   bunny?: EdgeRangeSet
   appliedHash?: string
   appliedAt?: string
+  /**
+   * Fingerprint of the whole `public-urls-update` body the co-located daemon
+   * last applied (see `publicUrlsPayloadFingerprint`), so a body that changed
+   * for any reason, such as a new wire field after an upgrade, is sent once.
+   */
+  appliedPayloadHash?: string
   lastError?: EdgeTrustError
   lastCheckedAt?: string
 }
@@ -106,7 +112,7 @@ function rangeList(set: EdgeRangeSet | undefined): string[] {
   return [...new Set([...set.v4, ...set.v6].filter(isSafeEdgeRange))].sort(byText)
 }
 
-async function sha256Hex(text: string): Promise<string> {
+export async function sha256Hex(text: string): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text))
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('')
 }
@@ -139,6 +145,7 @@ export async function loadEdgeTrustState(db: Db): Promise<EdgeTrustState> {
   if (isRangeSet(raw.bunny)) state.bunny = raw.bunny
   if (typeof raw.appliedHash === 'string') state.appliedHash = raw.appliedHash
   if (typeof raw.appliedAt === 'string') state.appliedAt = raw.appliedAt
+  if (typeof raw.appliedPayloadHash === 'string') state.appliedPayloadHash = raw.appliedPayloadHash
   if (typeof raw.lastCheckedAt === 'string') state.lastCheckedAt = raw.lastCheckedAt
   if (raw.lastError && typeof raw.lastError === 'object') {
     state.lastError = raw.lastError as EdgeTrustError
@@ -159,10 +166,22 @@ export async function emptyEdgeTrustHash(): Promise<string> {
   return (await edgeTrustForModes({}, [])).hash
 }
 
-/** Remember which set the daemon last rendered, so an unchanged set is never sent twice. */
-export async function markEdgeTrustApplied(db: Db, hash: string, now: Date): Promise<void> {
+/**
+ * Remember which body (and edge set, when it carried one) the daemon last
+ * rendered, so an unchanged body is never sent twice.
+ */
+export async function markPublicUrlsApplied(
+  db: Db,
+  applied: { payloadHash: string; edgeTrustHash?: string },
+  now: Date
+): Promise<void> {
   const state = await loadEdgeTrustState(db)
-  await saveEdgeTrustState(db, { ...state, appliedHash: hash, appliedAt: now.toISOString() })
+  const next: EdgeTrustState = { ...state, appliedPayloadHash: applied.payloadHash }
+  if (applied.edgeTrustHash !== undefined) {
+    next.appliedHash = applied.edgeTrustHash
+    next.appliedAt = now.toISOString()
+  }
+  await saveEdgeTrustState(db, next)
 }
 
 /**

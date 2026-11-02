@@ -15,7 +15,7 @@ import {
   encodeInstallTokenPayload,
   type InstallTokenFields,
 } from './daemon-install-command.ts'
-import { buildInstallTokenFor, isInstallTokenV2Enabled } from './install-token-command.ts'
+import { buildInstallTokenFor } from './install-token-command.ts'
 
 /** Alias so Sonar sees real tests (see src/AGENTS.md). */
 const test = Deno.test.bind(Deno)
@@ -123,14 +123,6 @@ test('the older command is unchanged when no token is given', () => {
   assertEquals(command.includes('TURBOPANEL_HOST=https://panel.example.test'), true)
 })
 
-test('the switch reads 1 or true only', () => {
-  assertEquals(isInstallTokenV2Enabled({ TURBOPANEL_INSTALL_TOKEN_V2: '1' }), true)
-  assertEquals(isInstallTokenV2Enabled({ TURBOPANEL_INSTALL_TOKEN_V2: 'TRUE' }), true)
-  assertEquals(isInstallTokenV2Enabled({ TURBOPANEL_INSTALL_TOKEN_V2: '0' }), false)
-  assertEquals(isInstallTokenV2Enabled({}), false)
-  assertEquals(isInstallTokenV2Enabled(undefined), false)
-})
-
 test('the token for a command puts the install URL first and carries both fingerprints', async () => {
   const identity = await fixtureIdentity(
     await fixtureBindingJson({ next: { kid: FIXTURE_NEXT_FINGERPRINT } })
@@ -140,7 +132,6 @@ test('the token for a command puts the install URL first and carries both finger
     { host: 'two.example.test', publicPort: 8443 },
   ]
   const result = await buildInstallTokenFor({
-    env: { TURBOPANEL_INSTALL_TOKEN_V2: '1' },
     identity,
     licenseId: 'l',
     licenseToken: 't',
@@ -155,17 +146,27 @@ test('the token for a command puts the install URL first and carries both finger
   assertEquals(fields[4], FIXTURE_NEXT_FINGERPRINT)
 })
 
-test('no token without the switch, an identity key or a bare https install URL', async () => {
+test('a control plane with an identity key always gets a token, with no switch to set', async () => {
+  const result = await buildInstallTokenFor({
+    identity: await fixtureIdentity(),
+    licenseId: 'l',
+    licenseToken: 't',
+    installUrl: 'https://p.example.test',
+    hostnames: () => Promise.resolve([]),
+  })
+  assert(result)
+  assert(result.token.includes('.'))
+})
+
+test('no token without an identity key or a bare https install URL', async () => {
   const identity = await fixtureIdentity()
   const base = {
-    env: { TURBOPANEL_INSTALL_TOKEN_V2: '1' },
     identity,
     licenseId: 'l',
     licenseToken: 't',
     installUrl: 'https://p.example.test',
     hostnames: () => Promise.resolve([]),
   }
-  assertEquals(await buildInstallTokenFor({ ...base, env: {} }), null)
   assertEquals(await buildInstallTokenFor({ ...base, identity: null }), null)
   assertEquals(await buildInstallTokenFor({ ...base, installUrl: 'http://203.0.113.10' }), null)
   assertEquals(

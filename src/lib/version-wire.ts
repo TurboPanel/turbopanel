@@ -493,8 +493,8 @@ export const REPO_KEY_REPORT_FEATURE: DaemonWireFeature = 'repo-key-report-v1'
 
 /**
  * The daemon installer reads one signed `TOKEN` (and pins the panel key). The
- * Add Server command only uses that form once the switch in
- * `features/install/install-token-command.ts` is on.
+ * Add Server command uses that form whenever the control plane has an
+ * identity key (`features/install/install-token-command.ts`).
  */
 export const INSTALL_TOKEN_V2_FEATURE: DaemonWireFeature = 'install-token-v2'
 

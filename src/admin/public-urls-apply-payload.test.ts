@@ -186,31 +186,39 @@ test('a daemon without the feature still receives the legacy plaintext key', asy
   })
 })
 
-test('each hostname carries its public port only for a daemon that lists the feature', async () => {
+test('only tunnel hostnames carry the public port, and only for a daemon that lists the feature', async () => {
   await withRollback(async (tx) => {
-    const host = `public-port-${crypto.randomUUID()}.example.test`
-    await tx.insert(instanceHostname).values({ host, source: 'platform-ca', publicPort: 443 })
+    const id = crypto.randomUUID()
+    const direct = `direct-${id}.example.test`
+    const tunnel = `tunnel-${id}.example.test`
+    await tx.insert(instanceHostname).values([
+      { host: direct, source: 'platform-ca', publicPort: 8443 },
+      { host: tunnel, source: 'platform-ca', publicPort: 443, mode: 'cloudflare-tunnel' },
+    ])
+    const build = (features: string[]) =>
+      resolvePublicUrlsApplyPayload(tx, [direct, tunnel], '0.1.1', undefined, {}, null, {
+        daemonFeatures: features,
+      })
+    const entryFor = (
+      payload: Awaited<ReturnType<typeof build>>,
+      host: string
+    ): Record<string, unknown> => payload.hostnames?.find((entry) => entry.host === host) ?? {}
 
-    const legacy = await resolvePublicUrlsApplyPayload(tx, [host], '0.1.1', undefined, {}, null, {
-      daemonFeatures: [SEALED_INSTANCE_SECRETS_FEATURE],
-    })
-    const legacyEntry = legacy.hostnames?.find((candidate) => candidate.host === host)
-    assertEquals(legacyEntry?.source, 'platform-ca')
-    assertEquals('publicPort' in (legacyEntry ?? {}), false)
+    const legacy = await build([SEALED_INSTANCE_SECRETS_FEATURE])
+    assertEquals(entryFor(legacy, tunnel).source, 'platform-ca')
+    assertEquals('publicPort' in entryFor(legacy, tunnel), false)
 
-    const capable = await resolvePublicUrlsApplyPayload(tx, [host], '0.1.1', undefined, {}, null, {
-      daemonFeatures: [INSTANCE_HOSTNAME_PUBLIC_PORT_FEATURE],
-    })
-    const entry = capable.hostnames?.find((candidate) => candidate.host === host)
-    assertEquals(entry?.publicPort, 443)
+    const capable = await build([INSTANCE_HOSTNAME_PUBLIC_PORT_FEATURE])
+    assertEquals(entryFor(capable, tunnel).publicPort, 443)
+    // A direct name never redirects: ports 80 and 443 there belong to hosting.
+    assertEquals('publicPort' in entryFor(capable, direct), false)
 
     // Self-hosted, the daemon is always sent 8443 whatever the row stored.
     setSelfHostedAddress(true)
     try {
-      const fixed = await resolvePublicUrlsApplyPayload(tx, [host], '0.1.1', undefined, {}, null, {
-        daemonFeatures: [INSTANCE_HOSTNAME_PUBLIC_PORT_FEATURE],
-      })
-      assertEquals(fixed.hostnames?.find((candidate) => candidate.host === host)?.publicPort, 8443)
+      const fixed = await build([INSTANCE_HOSTNAME_PUBLIC_PORT_FEATURE])
+      assertEquals(entryFor(fixed, tunnel).publicPort, 8443)
+      assertEquals('publicPort' in entryFor(fixed, direct), false)
     } finally {
       setSelfHostedAddress(false)
     }
