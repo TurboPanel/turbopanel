@@ -30,7 +30,11 @@ import {
   resolveHostingProtocol,
 } from '../../features/hostings/hosting-options.ts'
 import type { LetsEncryptStore } from '../../features/hostings/use-letsencrypt.ts'
-import { loadServerPublicAddresses } from '../../features/net/client-addresses.ts'
+import {
+  loadClientAddressEntries,
+  loadServerPublicAddresses,
+} from '../../features/net/client-addresses.ts'
+import { pinnedSiteAddresses } from '../../features/net/client-addresses-pure.ts'
 import {
   parseOrganizationOptions,
   resolveAcmeEnabled,
@@ -84,14 +88,17 @@ async function loadServingServerIds(db: Db, hostingId: string): Promise<string[]
 
 async function loadExpectedAddresses(db: Db, hostingId: string): Promise<string[]> {
   const [pinRow] = await db
-    .select({ address: ip.address })
+    .select({ address: ip.address, serverId: ip.serverId })
     .from(hosting)
     .innerJoin(ip, eq(ip.id, hosting.ipId))
     .where(eq(hosting.id, hostingId))
     .limit(1)
   if (pinRow) {
     const pinned = inetAddressToString(pinRow.address)
-    return pinned === undefined ? [] : [pinned]
+    if (pinned === undefined) return []
+    const saved =
+      pinRow.serverId === null ? [] : await loadClientAddressEntries(db, pinRow.serverId)
+    return pinnedSiteAddresses(pinned, saved)
   }
   const serverIds = await loadServingServerIds(db, hostingId)
   if (serverIds.length === 0) return []

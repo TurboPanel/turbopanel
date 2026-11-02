@@ -13,6 +13,7 @@ import {
   mainDatabaseListeners,
   parseClientAddressesBody,
   parseClientAddressOptions,
+  pinnedSiteAddresses,
   resolveClientAddresses,
   servingPublicAddresses,
 } from './client-addresses-pure.ts'
@@ -415,4 +416,24 @@ test('serving public addresses: managed rows, public overrides and every reporte
     ['203.0.113.7', '45.32.200.170', '203.0.113.50', '2001:db8::10', '2001:db8::11']
   )
   assertEquals(servingPublicAddresses({ publicIps: [], saved: [], reportedIps: [] }), [])
+})
+
+test('pinnedSiteAddresses: a LAN pin behind a router is also reached on the saved public address', () => {
+  const saved = [
+    entry({ addressV4: '203.0.113.10', addressV6: '2001:db8::10' }),
+    entry({ scope: 'datacenter', datacenterId: DC_A, addressV4: '198.51.100.20' }),
+  ]
+  assertEquals(pinnedSiteAddresses('192.168.1.50', saved), [
+    '192.168.1.50',
+    '203.0.113.10',
+    '2001:db8::10',
+  ])
+  assertEquals(pinnedSiteAddresses('192.168.1.50', []), ['192.168.1.50'])
+})
+
+test('pinnedSiteAddresses: a public pin stays the only address, and junk gives none', () => {
+  const saved = [entry({ addressV4: '203.0.113.10' })]
+  assertEquals(pinnedSiteAddresses('45.32.200.170', saved), ['45.32.200.170'])
+  assertEquals(pinnedSiteAddresses('not an address', saved), [])
+  assertEquals(pinnedSiteAddresses('10.0.0.5', [entry({ addressV4: '10.0.0.9' })]), ['10.0.0.5'])
 })
