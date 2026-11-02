@@ -1307,6 +1307,61 @@ function spendChallenge(db: Db, challenge: { nonce: string; at: string }): Promi
   )
 }
 
+type ProofRefusal = { status: 400 | 403; error: string }
+
+/** Read the proof version from the body and check it against this control plane's key. */
+async function refuseUnacceptableProof(
+  body: Record<string, unknown>,
+  ctx: { identity: (() => Promise<PanelIdentity | null>) | undefined; trustLevel: number }
+): Promise<{ refusal: ProofRefusal } | { proof: ProofVersion }> {
+  const parsed = parseProofVersion(body)
+  if (!parsed.ok) return { refusal: parsed }
+  const checked = checkProofVersion(parsed.value, {
+    identity: ctx.identity ? await ctx.identity() : null,
+    trustLevel: ctx.trustLevel,
+    nowMs: Date.now(),
+  })
+  return checked.ok ? { proof: parsed.value } : { refusal: checked }
+}
+
+/** The signature must verify, and only then is the challenge spent (a replay is refused). */
+async function refuseUnverifiedProof(
+  db: Db,
+  proof: { publicJwk: JsonWebKey; payload: string; signature: string },
+  challenge: { nonce: string; at: string }
+): Promise<ProofRefusal | null> {
+  if (!(await verifyDaemonSignature(proof.publicJwk, proof.payload, proof.signature))) {
+    return { status: 403, error: 'Invalid signature' }
+  }
+  if (!(await spendChallenge(db, challenge))) {
+    return { status: 400, error: 'Invalid or expired challenge' }
+  }
+  return null
+}
+
+/** Bind the key for a verified enroll and answer; a replaced key purges the old cell. */
+async function completeEnroll(
+  c: Context<DaemonApiEnv>,
+  db: Db,
+  credential: EnrollCredential,
+  deployment: MetricsDeploymentKind,
+  params: EnrollParams
+): Promise<Response> {
+  const enrolled =
+    credential.kind === 'reenroll'
+      ? await enrollWithReenrollTicket(db, credential.ticket, params)
+      : await enrollWithKey(db, credential, params)
+  if (!enrolled.ok) {
+    return c.json(enrollFailureBody(enrolled), enrolled.status)
+  }
+  const registry = getDaemonCellRegistry(c)
+  if (credential.kind === 'reenroll' && registry) {
+    await purgeDaemonCellBestEffort(registry, enrolled.serverId, 'after daemon key replaced')
+  }
+  void primeCapabilityPlanAfterEnroll(db, registry, enrolled.serverId, deployment)
+  return c.json({ serverId: enrolled.serverId, keyId: enrolled.keyId }, 200)
+}
+
 function enrollProofPayload(
   proof: ProofVersion,
   fields: Parameters<typeof buildEnrollmentPayload>[0]
@@ -1750,10 +1805,6 @@ export function registerDaemonApiRoutes<E extends Env>(
     if (!parsedFields.ok) {
       return c.json({ ok: false, error: parsedFields.error }, parsedFields.status)
     }
-    const enrollProof = parseProofVersion(body)
-    if (!enrollProof.ok) {
-      return c.json({ ok: false, error: enrollProof.error }, enrollProof.status)
-    }
     const {
       licenseId,
       licenseToken,
@@ -1779,14 +1830,17 @@ export function registerDaemonApiRoutes<E extends Env>(
       return c.json({ ok: false, error: 'Invalid or expired challenge' }, 400)
     }
     // A new server has used no signed session yet, so v1 stays accepted here.
-    const enrollProofCheck = checkProofVersion(enrollProof.value, {
-      identity: options.panelIdentity ? await options.panelIdentity() : null,
+    const enrollProofResult = await refuseUnacceptableProof(body, {
+      identity: options.panelIdentity,
       trustLevel: 0,
-      nowMs: Date.now(),
     })
-    if (!enrollProofCheck.ok) {
-      return c.json({ ok: false, error: enrollProofCheck.error }, enrollProofCheck.status)
+    if ('refusal' in enrollProofResult) {
+      return c.json(
+        { ok: false, error: enrollProofResult.refusal.error },
+        enrollProofResult.refusal.status
+      )
     }
+    const enrollProof = enrollProofResult.proof
 
     // The per-license bucket is charged before the token check: verifying it
     // is an Argon2 hash, so charging after let a wrong token buy one hash per
@@ -1802,7 +1856,7 @@ export function registerDaemonApiRoutes<E extends Env>(
     }
 
     const fingerprint = await computePublicKeyFingerprint(publicJwk)
-    const payload = enrollProofPayload(enrollProof.value, {
+    const payload = enrollProofPayload(enrollProof, {
       challengeId,
       nonce: challenge.nonce,
       licenseId,
@@ -1810,16 +1864,11 @@ export function registerDaemonApiRoutes<E extends Env>(
       hostname,
       publicKeyFingerprint: fingerprint,
     })
-    const verified = await verifyDaemonSignature(publicJwk, payload, signature)
-    if (!verified) {
-      return c.json({ ok: false, error: 'Invalid signature' }, 403)
-    }
-    if (!(await spendChallenge(db, challenge))) {
-      return c.json({ ok: false, error: 'Invalid or expired challenge' }, 400)
-    }
+    const unverified = await refuseUnverifiedProof(db, { publicJwk, payload, signature }, challenge)
+    if (unverified) return c.json({ ok: false, error: unverified.error }, unverified.status)
 
     const fabricDeps = enrollFabricDepsFromContext(c)
-    const enrollParams = {
+    return await completeEnroll(c, db, credential, deployment, {
       serverIdBody,
       machineKey,
       hostname,
@@ -1829,22 +1878,7 @@ export function registerDaemonApiRoutes<E extends Env>(
       deployment,
       secrets: c.get('dataEncryptionSecrets'),
       ...(fabricDeps ? { fabricDeps } : {}),
-    }
-    const enrolled =
-      credential.kind === 'reenroll'
-        ? await enrollWithReenrollTicket(db, credential.ticket, enrollParams)
-        : await enrollWithKey(db, credential, enrollParams)
-    if (!enrolled.ok) {
-      return c.json(enrollFailureBody(enrolled), enrolled.status)
-    }
-    const registry = getDaemonCellRegistry(c)
-    if (credential.kind === 'reenroll' && registry) {
-      await purgeDaemonCellBestEffort(registry, enrolled.serverId, 'after daemon key replaced')
-    }
-
-    void primeCapabilityPlanAfterEnroll(db, getDaemonCellRegistry(c), enrolled.serverId, deployment)
-
-    return c.json({ serverId: enrolled.serverId, keyId: enrolled.keyId }, 200)
+    })
   })
 
   daemon.post('/auth/session', async (c) => {
@@ -1868,10 +1902,6 @@ export function registerDaemonApiRoutes<E extends Env>(
     const parsedFields = parseAuthSessionFields(body)
     if (!parsedFields.ok) {
       return c.json({ ok: false, error: parsedFields.error }, parsedFields.status)
-    }
-    const sessionProof = parseProofVersion(body)
-    if (!sessionProof.ok) {
-      return c.json({ ok: false, error: sessionProof.error }, sessionProof.status)
     }
     const { serverId, keyId, challengeId, signature, hostname, machineKey } = parsedFields.value
 
@@ -1897,16 +1927,18 @@ export function registerDaemonApiRoutes<E extends Env>(
     if (!challenge) {
       return c.json({ ok: false, error: 'Invalid or expired challenge' }, 400)
     }
-    const sessionProofCheck = checkProofVersion(sessionProof.value, {
-      identity: options.panelIdentity ? await options.panelIdentity() : null,
+    const sessionProofResult = await refuseUnacceptableProof(body, {
+      identity: options.panelIdentity,
       trustLevel: keyState.daemonState.trustLevel ?? 0,
-      nowMs: Date.now(),
     })
-    if (!sessionProofCheck.ok) {
-      return c.json({ ok: false, error: sessionProofCheck.error }, sessionProofCheck.status)
+    if ('refusal' in sessionProofResult) {
+      return c.json(
+        { ok: false, error: sessionProofResult.refusal.error },
+        sessionProofResult.refusal.status
+      )
     }
 
-    const payload = authProofPayload(sessionProof.value, {
+    const payload = authProofPayload(sessionProofResult.proof, {
       challengeId,
       nonce: challenge.nonce,
       serverId,
@@ -1914,17 +1946,12 @@ export function registerDaemonApiRoutes<E extends Env>(
       machineKey: machineKey ?? '',
       hostname,
     })
-    const verified = await verifyDaemonSignature(
-      keyState.daemonState.key.publicJwk,
-      payload,
-      signature
+    const unverified = await refuseUnverifiedProof(
+      db,
+      { publicJwk: keyState.daemonState.key.publicJwk, payload, signature },
+      challenge
     )
-    if (!verified) {
-      return c.json({ ok: false, error: 'Invalid signature' }, 403)
-    }
-    if (!(await spendChallenge(db, challenge))) {
-      return c.json({ ok: false, error: 'Invalid or expired challenge' }, 400)
-    }
+    if (unverified) return c.json({ ok: false, error: unverified.error }, unverified.status)
 
     const serverSessionLimited = await enforceDaemonRestLimit(
       c,

@@ -45,12 +45,10 @@ export async function closeSocketsWithStaleKeys(
   registry: DaemonCellRegistry
 ): Promise<number> {
   const serverIds = await listConnectedServersWithStaleKey(db)
-  let closed = 0
-  for (const serverId of serverIds) {
+  const drops = serverIds.flatMap((serverId) => {
     const cell = registry.getCell(serverId)
-    if (!cell.dropDaemonConnection) continue
-    await cell.dropDaemonConnection('stale-key')
-    closed += 1
-  }
-  return closed
+    return cell.dropDaemonConnection ? [cell.dropDaemonConnection('stale-key')] : []
+  })
+  await Promise.all(drops)
+  return drops.length
 }

@@ -2213,6 +2213,20 @@ export class DaemonCellObject {
     }
   }
 
+  /** An unknown frame type is ignored; anything else malformed closes the socket. */
+  #refuseInboundFrame(
+    ws: WebSocket,
+    attachment: { connectionId: string; serverId: string },
+    failure: { reason: string; ignored?: boolean }
+  ): void {
+    this.#trace(failure.ignored ? 'inbound-ignored-unknown-type' : 'inbound-rejected', {
+      serverId: attachment.serverId,
+      conn: attachment.connectionId,
+      reason: failure.reason,
+    })
+    if (!failure.ignored) ws.close(DAEMON_WS_POLICY_VIOLATION_CLOSE, 'policy_violation')
+  }
+
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
     const attachment = ws.deserializeAttachment() as {
       connectionId: string
@@ -2234,20 +2248,7 @@ export class DaemonCellObject {
 
     const validated = validateDaemonInboundFrame(raw)
     if (!validated.ok) {
-      if (validated.ignored) {
-        this.#trace('inbound-ignored-unknown-type', {
-          serverId: attachment.serverId,
-          conn: attachment.connectionId,
-          reason: validated.reason,
-        })
-        return
-      }
-      this.#trace('inbound-rejected', {
-        serverId: attachment.serverId,
-        conn: attachment.connectionId,
-        reason: validated.reason,
-      })
-      ws.close(DAEMON_WS_POLICY_VIOLATION_CLOSE, 'policy_violation')
+      this.#refuseInboundFrame(ws, attachment, validated)
       return
     }
     const parsed = validated.message

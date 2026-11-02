@@ -1017,6 +1017,13 @@ export function registerDaemonWebSocket<E extends Env>(
         return sender
       }
 
+      /** An answer to a frame the daemon sent; a failed signed send already closed the socket. */
+      const replyToDaemon = (ws: WSContext<WebSocket>, answer: { type: string }): void => {
+        senderFor(ws)
+          .send(answer)
+          .catch(() => undefined)
+      }
+
       const startSession = (ws: WSContext<WebSocket>): void => {
         const send = senderFor(ws)
         send
@@ -1168,11 +1175,7 @@ export function registerDaemonWebSocket<E extends Env>(
           registry,
           message,
           dataEncryptionSecrets: options.dataEncryptionSecrets,
-          reply: (answer) => {
-            senderFor(ws)
-              .send(answer)
-              .catch(() => undefined)
-          },
+          reply: (answer) => replyToDaemon(ws, answer),
         })
       }
 
