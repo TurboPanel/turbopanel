@@ -4,7 +4,10 @@
  * certificate, or the Platform CA fallback at expiry, reaches Caddy without
  * a click.
  */
-import { resolvePublicUrlsApplyPayload } from '../../../../admin/public-urls-apply-payload.ts'
+import {
+  colocatedDaemonFeatures,
+  resolvePublicUrlsApplyPayload,
+} from '../../../../admin/public-urls-apply-payload.ts'
 import {
   resolvePublicUrlsForApply,
   waitForPublicUrlsApply,
@@ -39,7 +42,8 @@ export async function pushHostnamesToDaemon(db: Db, deps: DaemonApplyDeps): Prom
     snapshot.daemonBuild?.version,
     deps.dataEncryption,
     deps.env,
-    sealing
+    sealing,
+    { daemonFeatures: await colocatedDaemonFeatures(db, serverId) }
   )
   const result = await waitForPublicUrlsApply(deps.registry, serverId, payload)
   if (result.kind === 'timeout') throw new Error('the daemon did not answer in time')

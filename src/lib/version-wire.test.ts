@@ -45,6 +45,7 @@ import {
   TLS_CAPTURE_FEATURE,
   ACME_ISSUE_FEATURE,
   COMMAND_RECOVERY_FEATURE,
+  INSTANCE_HOSTNAME_PUBLIC_PORT_FEATURE,
 } from './version-wire.ts'
 import { INSTANCE_VERSION } from '../app/version.ts'
 
@@ -399,12 +400,19 @@ test('daemon-sealed-secrets-v1 is advertised and raised no floor', () => {
   assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.0')
 })
 
+test('instance-edge-trust-v1 is advertised and raised no floor', () => {
+  assertEquals(DAEMON_WIRE_FEATURES.includes('instance-edge-trust-v1'), true)
+  assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.0')
+})
+
+test('instance-hostname-public-port-v1 is advertised and raised no floor', () => {
+  assertEquals(INSTANCE_HOSTNAME_PUBLIC_PORT_FEATURE, 'instance-hostname-public-port-v1')
+  assertEquals(DAEMON_WIRE_FEATURES.includes(INSTANCE_HOSTNAME_PUBLIC_PORT_FEATURE), true)
+  assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.0')
+})
+
 test('daemon-sealed-principal-reconcile-v1 is advertised last and raised no floor', () => {
   assertEquals(DAEMON_SEALED_PRINCIPAL_RECONCILE_FEATURE, 'daemon-sealed-principal-reconcile-v1')
   assertEquals(DAEMON_WIRE_FEATURES.at(-1), DAEMON_SEALED_PRINCIPAL_RECONCILE_FEATURE)
-  assertEquals(
-    DAEMON_WIRE_FEATURES.indexOf(DAEMON_SEALED_SECRETS_FEATURE),
-    DAEMON_WIRE_FEATURES.length - 2
-  )
   assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.0')
 })
