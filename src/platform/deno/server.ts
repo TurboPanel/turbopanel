@@ -77,6 +77,7 @@ import {
 } from '../../lib/secrets/password.ts'
 import { registerAdminRoutes } from '../../admin/routes.ts'
 import { registerIngressAdminRoutes } from './ingress/admin-routes.ts'
+import { startIngressTimer } from './ingress/tick.ts'
 import { hostnameModes } from './ingress/planner.ts'
 import { registerInstallRoutes } from '../../install/routes.ts'
 import { registerDaemonApiRoutes } from '../../daemon/api-routes.ts'
@@ -84,7 +85,10 @@ import {
   hostnamePresentsPlatformCaLeaf,
   resolvePublicInstanceTls,
 } from '../../features/install/install-tls.ts'
-import { listInstanceHostnames } from '../../features/install/instance-hostnames.ts'
+import {
+  effectiveCertificateSource,
+  listInstanceHostnames,
+} from '../../features/install/instance-hostnames.ts'
 import { ensurePanelIdentityDetailed } from '../../lib/panel-identity/identity.ts'
 import { recordAudit } from '../../features/audit/audit-records.ts'
 import { orderedPublicOrigins } from '../../lib/panel-identity/urls.ts'
@@ -665,7 +669,13 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     runtime: 'deno',
     tlsPublic: resolvePublicInstanceTls(Deno.env.toObject()),
     platformCaLeafPresented: async (hostname: string) =>
-      hostnamePresentsPlatformCaLeaf(hostname, await listInstanceHostnames(db)),
+      hostnamePresentsPlatformCaLeaf(
+        hostname,
+        (await listInstanceHostnames(db)).map((row) => ({
+          host: row.host,
+          source: effectiveCertificateSource(row),
+        }))
+      ),
     readPlatformCaPem,
     panelIdentity: () => Promise.resolve(panelIdentity),
     identityUrls: async (requestDb) => orderedPublicOrigins(await listInstanceHostnames(requestDb)),
@@ -715,7 +725,12 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     getEnv: () => Deno.env.toObject(),
     readPlatformCaBundle: () => Deno.readTextFile(resolveInstanceTlsCaServePath()),
     collectInstanceIps: () => collectServerIps(readDefaultRouteInterfaces()),
-    registerPlatformAdminRoutes: registerIngressAdminRoutes,
+    registerPlatformAdminRoutes: (admin, deps) =>
+      registerIngressAdminRoutes(admin, {
+        ...deps,
+        selfKid: () => panelIdentity.current.kid,
+        getEnv: () => Deno.env.toObject(),
+      }),
     panelIdentity: () => Promise.resolve(panelIdentity),
     identityUrls: async (requestDb) => orderedPublicOrigins(await listInstanceHostnames(requestDb)),
     onIdentityNextChanged: (fingerprint) => {
@@ -982,8 +997,27 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     })()
   }, LEAF_RENEWAL_SWEEP_INTERVAL_MS)
 
+  // Self-hosted ingress: DNS-01 orders for the control plane's own names,
+  // edge tunnel health and the daily provider token recheck.
+  const ingressTimer = startIngressTimer(
+    {
+      dataEncryption: dataEncryptionSecrets,
+      secretsConfig,
+      registry: daemonCellRegistry,
+      env: runtimeEnv,
+      selfKid: () => panelIdentity.current.kid,
+      commandQueue,
+      email: {
+        queue: emailQueue,
+        from: emailSettings.from,
+        consoleBaseUrl: Deno.env.get('TURBOPANEL_BASE_URL') ?? null,
+      },
+    },
+    { open: createDenoDb, close: endDbConnection }
+  )
+
   const shutdown = createInstanceShutdown({
-    timers: [maintenanceTimer, leafRenewalTimer, heartbeatTimer],
+    timers: [maintenanceTimer, leafRenewalTimer, heartbeatTimer, ingressTimer],
     closers: [
       { label: 'email queue', close: () => emailQueue.close?.() },
       { label: 'command queue', close: () => commandQueue.close?.() },

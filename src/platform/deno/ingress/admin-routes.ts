@@ -1,11 +1,16 @@
-import type { Hono, MiddlewareHandler } from 'hono'
+import type { Hono } from 'hono'
 import type { AppEnv } from '../../../app/app.ts'
 import { requireInstanceStepUp } from '../../../client/authn/step-up.ts'
 import { handleTunnelTokenRequest } from '../../../developer/tunnel-token-handler.ts'
 import { recordAudit } from '../../../features/audit/audit-records.ts'
 import { getDb } from '../../../db/connection.ts'
+import { registerIngressAccountRoutes } from './account-routes.ts'
+import { registerDns01Routes } from './dns01/routes.ts'
+import { registerHostnameIngressRoutes } from './hostname-routes.ts'
+import { registerInstanceTunnelRoutes } from './tunnel-routes.ts'
+import type { IngressAdminDeps } from './route-context.ts'
 
-export type IngressAdminDeps = { rootOnly: MiddlewareHandler<AppEnv> }
+export type { IngressAdminDeps } from './route-context.ts'
 
 /**
  * Self-hosted-only admin routes. Mounted only by `src/platform/deno/server.ts`
@@ -30,4 +35,8 @@ export function registerIngressAdminRoutes(admin: Hono<AppEnv>, deps: IngressAdm
     }
     return response
   })
+  registerIngressAccountRoutes(admin, deps)
+  registerHostnameIngressRoutes(admin, deps)
+  registerDns01Routes(admin, deps)
+  registerInstanceTunnelRoutes(admin, deps)
 }
