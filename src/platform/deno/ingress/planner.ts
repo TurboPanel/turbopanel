@@ -7,7 +7,8 @@ import type { PreflightCheck, PreflightResult } from './provider.ts'
 
 export type HostnameFacts = Pick<InstanceHostnameRecord, 'host' | 'mode' | 'source' | 'publicPort'>
 
-function check(id: string, ok: boolean, detail: string): PreflightCheck {
+/** One preflight line; `detail` is the plain sentence the screens show. */
+export function check(id: string, ok: boolean, detail: string): PreflightCheck {
   return { id, ok, detail }
 }
 
@@ -49,7 +50,7 @@ function portMatches(hostname: HostnameFacts): PreflightCheck {
   return check(
     'public-port',
     ok,
-    ok ? `The name is published on port ${expected}.` : `This name is served on port ${expected}.`
+    ok ? `The name is published on port ${expected}.` : `This mode needs port ${expected}.`
   )
 }
 

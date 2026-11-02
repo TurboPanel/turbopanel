@@ -46,6 +46,7 @@ import {
 import type { DerivedSecretsConfig } from '../lib/secrets/secrets.ts'
 import type { Db } from '../db/connection.ts'
 import { PANEL_IDENTITY_SETTING_KEY } from '../lib/panel-identity/identity.ts'
+import { INSTANCE_ACME_ACCOUNT_SETTING_KEY } from '../features/install/instance-acme-settings.ts'
 import {
   forge,
   gitConnection,
@@ -135,6 +136,7 @@ export const REENCRYPT_COVERED_PLACES = [
   `setting:${SYSTEM_EMAIL_DB_KEY}`,
   `setting:${ALERT_WEBHOOK_URL_KEY}`,
   `setting:${PANEL_IDENTITY_SETTING_KEY}`,
+  `setting:${INSTANCE_ACME_ACCOUNT_SETTING_KEY}`,
 ] as const
 
 export type ReencryptStage = (typeof REENCRYPT_STAGES)[number]
@@ -1248,16 +1250,21 @@ async function sweepAlertWebhookSetting(
   )
 }
 
-/** The panel identity row: the `sealed` member of the `PANEL_IDENTITY_KEYS` setting holds the key seeds. */
-async function sweepIdentitySetting(
+/**
+ * A setting whose `sealed` member holds a `tpsecret`: the panel identity row
+ * (`PANEL_IDENTITY_KEYS`, the key seeds) and the control plane's own ACME
+ * account (`INSTANCE_ACME_ACCOUNT`, the account key).
+ */
+async function sweepSealedMemberSetting(
   db: Db,
   secrets: DerivedSecretsConfig,
-  summary: ReencryptSweepSummary
+  summary: ReencryptSweepSummary,
+  key: string
 ): Promise<void> {
   const rows = await db
     .select({ value: setting.value })
     .from(setting)
-    .where(eq(setting.key, PANEL_IDENTITY_SETTING_KEY))
+    .where(eq(setting.key, key))
     .limit(1)
 
   const original = rows[0]?.value
@@ -1273,7 +1280,7 @@ async function sweepIdentitySetting(
       const updated = await db
         .update(setting)
         .set({ value: { ...original, sealed: resealed }, updatedAt: nowIso() })
-        .where(and(eq(setting.key, PANEL_IDENTITY_SETTING_KEY), eq(setting.value, original)))
+        .where(and(eq(setting.key, key), eq(setting.value, original)))
         .returning({ key: setting.key })
       return updated.length > 0
     },
@@ -1419,7 +1426,13 @@ export async function reencryptAtRestSecrets(
     }
 
     if (cursor.stage === 'identity') {
-      await sweepIdentitySetting(db, dataEncryptionSecrets, summary)
+      await sweepSealedMemberSetting(db, dataEncryptionSecrets, summary, PANEL_IDENTITY_SETTING_KEY)
+      await sweepSealedMemberSetting(
+        db,
+        dataEncryptionSecrets,
+        summary,
+        INSTANCE_ACME_ACCOUNT_SETTING_KEY
+      )
       return { ...summary, completed: true, cursor: null }
     }
 

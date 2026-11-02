@@ -1,4 +1,7 @@
+import type { Db } from '../../../db/connection.ts'
 import type { IngressMode, IngressProviderId } from '../../../features/install/ingress-modes.ts'
+import type { IngressAccountRecord } from './accounts.ts'
+import type { EdgeGate } from './gate.ts'
 import type {
   InstanceHostnameRecord,
   InstanceHostnameSource,
@@ -39,10 +42,55 @@ export type IngressCapabilities = {
   isEdge: boolean
 }
 
-export type IngressCause = 'not-available' | 'invalid-hostname'
+export type IngressCause =
+  | 'not-available'
+  | 'invalid-hostname'
+  | 'gate-closed'
+  | 'account-missing'
+  | 'token-invalid'
+  | 'scope-missing'
+  | 'zone-not-found'
+  | 'dns-conflict'
+  | 'provider-error'
+  | 'provider-rate-limited'
+  | 'daemon-offline'
+  | 'edge-unreachable'
+
+/**
+ * What an API-driven provider needs besides the hostname. Built per request
+ * or per tick by `service.ts`; listener modes ignore it. The provider token
+ * is reachable only through `openToken` and never stored or returned.
+ */
+export type IngressDeps = {
+  db: Db
+  now: () => Date
+  fetch: typeof fetch
+  gate: EdgeGate
+  /** Whether the daemon on the control plane host is connected (it runs the connector). */
+  colocatedDaemonConnected: () => Promise<boolean>
+  /** Hand a tunnel run token to the co-located daemon only; '' stops the connector. */
+  pushRunToken: (token: string) => Promise<{ ok: true } | { ok: false; error: string }>
+  account: IngressAccountRecord | null
+  openToken: (account: IngressAccountRecord) => Promise<string>
+  /** Every hostname row with its stored provider state: edge modes share one setup per account. */
+  hostnames: readonly HostnameWithState[]
+  /** Stable id of this install, for provider resource names. */
+  instanceId: string
+  /** True when the served identity document is this control plane's own (edge self-check). */
+  isOwnIdentity: (body: string, signatureHeader: string | null) => Promise<boolean>
+}
+
+/** A hostname row plus the provider state `apply` returned last time (`origin.ingress_state.provider`). */
+export type HostnameWithState = InstanceHostnameRecord & {
+  providerState: Record<string, unknown> | null
+}
 
 export type IngressContext = {
   hostname: InstanceHostnameRecord
+  /** Absent for the pure listener checks; required by API-driven providers. */
+  deps?: IngressDeps
+  /** Apply may replace a DNS record that already holds the name (the operator agreed). */
+  replaceExisting?: boolean
 }
 
 /** Plain-words detail, sentence case. */
@@ -50,8 +98,10 @@ export type PreflightCheck = { id: string; ok: boolean; detail: string }
 export type PreflightResult = { ok: boolean; checks: PreflightCheck[] }
 export type ApplyResult =
   { ok: true; state: Record<string, unknown> } | { ok: false; cause: IngressCause; detail: string }
+export type IngressPhase =
+  'not-applied' | 'applying' | 'healthy' | 'degraded' | 'failed' | 'removed'
 export type IngressStatus = {
-  phase: 'not-applied' | 'applying' | 'healthy' | 'degraded' | 'failed' | 'removed'
+  phase: IngressPhase
   cause?: IngressCause
   detail?: string
   facts?: Record<string, string | number | boolean>
