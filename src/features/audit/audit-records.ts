@@ -118,6 +118,14 @@ export const AUDIT_ACTIONS = [
   'server.panel_pin.reissued',
   'server.panel_pin.mismatch',
   'instance.tunnel_token.set',
+  'instance.ingress_account.added',
+  'instance.ingress_account.removed',
+  'instance.ingress_account.rechecked',
+  'instance.edge_gate.set',
+  'instance.hostname_ingress.changed',
+  'instance.hostname_ingress.applied',
+  'instance.hostname_ingress.removed',
+  'instance.dns01.ordered',
 ] as const
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[number]

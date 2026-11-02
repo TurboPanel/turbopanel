@@ -24,6 +24,7 @@ import {
 } from './install-tls.ts'
 import {
   certificateSourceForInstallOrigin,
+  effectiveCertificateSource,
   type InstanceHostnameRecord,
   listInstanceHostnames,
 } from './instance-hostnames.ts'
@@ -42,7 +43,17 @@ function splitCertificatePems(pem: string): string[] {
   return [...pem.matchAll(PEM_BLOCK)].map((match) => match[0])
 }
 
-function uploadedCertIds(rows: readonly InstanceHostnameRecord[]): string[] {
+type ServedHostname = Omit<InstanceHostnameRecord, 'source'> & {
+  source: ReturnType<typeof effectiveCertificateSource>
+}
+
+/** Hostnames with the source the listener serves (a live DNS-01 pair counts as an upload). */
+async function listServedHostnames(db: Db): Promise<ServedHostname[]> {
+  const rows = await listInstanceHostnames(db)
+  return rows.map((row) => ({ ...row, source: effectiveCertificateSource(row) }))
+}
+
+function uploadedCertIds(rows: readonly ServedHostname[]): string[] {
   const ids = new Set<string>()
   for (const row of rows) {
     if (row.source === 'uploaded' && row.uploadedCertId) {
@@ -53,7 +64,7 @@ function uploadedCertIds(rows: readonly InstanceHostnameRecord[]): string[] {
 }
 
 function toTrustRow(
-  row: InstanceHostnameRecord,
+  row: ServedHostname,
   trust: ReadonlyMap<string, boolean>
 ): InstallHostnameTrust {
   const base = { host: row.host, source: row.source }
@@ -280,7 +291,7 @@ export async function readPrivateUploadedTrustPem(
 ): Promise<string | null> {
   const wanted = hostLabel(hostname)
   if (!wanted) return null
-  const hostnames = await listInstanceHostnames(db)
+  const hostnames = await listServedHostnames(db)
   const row = hostnames.find(
     (item) => item.source === 'uploaded' && hostLabel(item.host) === wanted
   )
@@ -391,7 +402,7 @@ export async function resolveInstallOriginTls(
 ): Promise<
   { ok: true; insecureTls: boolean; caFingerprints: string[] } | { ok: false; error: string }
 > {
-  const hostnames = await listInstanceHostnames(db)
+  const hostnames = await listServedHostnames(db)
   const trust = await publicTrustByCertificate(db, uploadedCertIds(hostnames))
   const trusted = hostnames.map((row) => toTrustRow(row, trust))
   const source = certificateSourceForInstallOrigin(instanceUrl, hostnames)
