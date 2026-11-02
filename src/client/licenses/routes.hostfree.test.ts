@@ -47,6 +47,7 @@ import {
   payer,
   server,
   setting,
+  verification,
   subscription,
   subscriptionItem,
   ticket,
@@ -74,6 +75,7 @@ import {
   releaseTicket,
   revokeServerTickets,
 } from '../../features/licenses/tickets.ts'
+import { stampStepUp } from '../authn/step-up.ts'
 import { registerServerReenrollTicketRoutes } from '../servers/reenroll-ticket-routes.ts'
 import {
   resolvePanelIdentityFromBinding,
@@ -139,6 +141,8 @@ type Fixture = {
   panelIdentity?: PanelIdentity
   /** The organization requires step-up and the session is older than its window. */
   stepUp?: boolean
+  /** A session older than the step-up window, with the organization switch left off. */
+  oldSession?: boolean
 }
 
 function noopRegistry(): DaemonCellRegistry {
@@ -196,12 +200,13 @@ async function buildApp(fx: Fixture = {}) {
   const email = `licenses-${crypto.randomUUID()}@example.com`
   const role = fx.role ?? 'superadmin'
   const state = createEmptyMockAuthState()
+  const sessionId = crypto.randomUUID()
   seedMockSession(state, token, {
-    sessionId: crypto.randomUUID(),
+    sessionId,
     userId,
     email,
     role,
-    ...(fx.stepUp ? { createdAt: '2020-01-01T00:00:00.000Z' } : {}),
+    ...(fx.stepUp || fx.oldSession ? { createdAt: '2020-01-01T00:00:00.000Z' } : {}),
   })
   seedMockUser(state, {
     id: userId,
@@ -301,6 +306,7 @@ async function buildApp(fx: Fixture = {}) {
       ],
       [lease, []],
       [ticket, []],
+      [verification, []],
       [allowance, []],
       [
         organization,
@@ -353,7 +359,7 @@ async function buildApp(fx: Fixture = {}) {
     [ORG_ID_HEADER]: ORG,
     'content-type': 'application/json',
   }
-  return { app, headers, db, secrets }
+  return { app, headers, db, secrets, sessionId }
 }
 
 function listLicenses(app: Hono<AppEnv>, headers: Record<string, string>): Promise<Response> {
@@ -848,6 +854,31 @@ test('issuing a re-enroll ticket and burning a key need step-up when the organiz
   // Refused before anything changed.
   assertEquals(db.rows(ticket).length, 0)
   assertEquals(db.rows(license).find((row) => row.id === L_ACTIVE)?.token, 'hashed')
+})
+
+test('issuing a re-enroll ticket needs step-up even when the organization switch is off', async () => {
+  const { app, headers, db, sessionId } = await buildApp({
+    oldSession: true,
+    servers: [{ id: SERVER, name: 'edge-1' }],
+  })
+  const res = await app.request(`/servers/${SERVER}/reenroll-ticket`, { method: 'POST', headers })
+  assertEquals(res.status, 403)
+  const body = (await res.json()) as { code: string; action: string }
+  assertEquals([body.code, body.action], ['reauth_required', 'server.reenroll_ticket.issue'])
+  assertEquals(db.rows(ticket).length, 0)
+  // A proof stamped for this session lets the same request through.
+  await stampStepUp(db, sessionId, 'password')
+  const proved = await app.request(`/servers/${SERVER}/reenroll-ticket`, {
+    method: 'POST',
+    headers,
+  })
+  assertEquals(proved.status, 200)
+  // Revoking an unused ticket only removes power, so it stays ungated.
+  const revoked = await app.request(`/servers/${SERVER}/reenroll-ticket`, {
+    method: 'DELETE',
+    headers,
+  })
+  assertEquals(revoked.status, 200)
 })
 
 test('a burn cancels the join tickets issued before it', async () => {
