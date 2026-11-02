@@ -11,6 +11,7 @@ import type { Db } from '../../../db/connection.ts'
 import { instanceHostname, setting } from '../../../db/schema.ts'
 import { dispatchInstanceTunnelToken } from '../../../developer/tunnel-token.ts'
 import {
+  type IngressMode,
   isAllowedPublicPort,
   isIngressMode,
   isPublicPort,
@@ -282,6 +283,18 @@ async function accountProblem(db: Db, mode: string, ingressId: unknown): Promise
   return account.provider === provider ? null : `This connection mode needs a ${provider} account.`
 }
 
+/** The 409 for switching a name onto an edge mode while the edge gate is shut, else null. */
+async function edgeGateRefusal(
+  mode: IngressMode,
+  currentMode: string,
+  readGate: () => Promise<EdgeGate>
+): Promise<HostnameIngressUpdate | null> {
+  if (mode === currentMode || !capabilitiesFor(mode).isEdge) return null
+  const gate = await readGate()
+  if (gate.open) return null
+  return { ok: false, status: 409, error: gate.reason ?? EDGE_GATE_SHUT, waiting: gate.waiting }
+}
+
 /**
  * Change how visitors reach one name. A name whose provider setup is still
  * in place must be disconnected before its mode or account changes, so a
@@ -317,12 +330,8 @@ export async function setHostnameIngress(
   }
   const problem = await accountProblem(db, mode, ingressId)
   if (problem) return invalid(problem)
-  if (mode !== current.mode && capabilitiesFor(mode).isEdge) {
-    const gate = await readGate()
-    if (!gate.open) {
-      return { ok: false, status: 409, error: gate.reason ?? EDGE_GATE_SHUT, waiting: gate.waiting }
-    }
-  }
+  const held = await edgeGateRefusal(mode, current.mode, readGate)
+  if (held) return held
   const publicPort = (input.publicPort as number | undefined) ?? current.publicPort
   const nextIngressId = capabilitiesFor(mode).provider
     ? ((ingressId as string | null) ?? null)
