@@ -802,11 +802,11 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     })
     // Hosting Accounts of deleted projects, removed once their folders are gone
     // and every server they are on is connected.
-    void runPrincipalRemovalSweep(db, commandQueue).catch((err) => {
+    void runPrincipalRemovalSweep(db, commandQueue, secretsConfig).catch((err) => {
       logWarn('daemon-cell', `principal removal sweep error: ${String(err)}`)
     })
     // A fresh folder listing from servers that have folders, every few hours.
-    void runFolderReconcileSweep(db, commandQueue).catch((err) => {
+    void runFolderReconcileSweep(db, commandQueue, secretsConfig).catch((err) => {
       logWarn('daemon-cell', `folder reconcile sweep error: ${String(err)}`)
     })
     // Firewall previews once after each reconnect. Applies only for a server

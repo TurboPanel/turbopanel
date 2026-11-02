@@ -5,7 +5,11 @@ import { createDenoDb, endDbConnection } from '../../db/connection.ts'
 import { organization, server } from '../../db/schema.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
 import { materializeDaemonJsonbWrite } from '../../test-fixtures/daemon-jsonb-simulator.ts'
-import { daemonFeaturesColumnPatch, daemonProjectionColumnPatch } from './daemon-jsonb-write.ts'
+import {
+  daemonFeatureAddedColumnPatch,
+  daemonFeaturesColumnPatch,
+  daemonProjectionColumnPatch,
+} from './daemon-jsonb-write.ts'
 import type { ServerDaemonJsonb } from './daemon-state.ts'
 
 /**
@@ -184,5 +188,54 @@ test("hello and a projection write keep each other's keys in either order", asyn
       { kind: 'features', features: ['f1'] },
     ],
     expected
+  )
+})
+
+/** The append patch runs only from the sealing-key registration, never in the simulator. */
+async function applyFeatureAdded(
+  label: string,
+  initial: ServerDaemonJsonb | null,
+  feature: string,
+  expected: ServerDaemonJsonb
+): Promise<void> {
+  await withServer(label, initial, async (db, serverId) => {
+    await db
+      .update(server)
+      .set({ daemon: daemonFeatureAddedColumnPatch(feature) })
+      .where(eq(server.id, serverId))
+    assertEquals(await readDaemon(db, serverId), expected)
+  })
+}
+
+test('the feature-added patch appends a missing feature and keeps the rest', async () => {
+  await applyFeatureAdded(
+    'feature-added-append',
+    {
+      key: { id: 'k1' },
+      projection: { daemonBuild: { commit: 'c1' }, features: ['a'] },
+    } as unknown as ServerDaemonJsonb,
+    'b',
+    {
+      key: { id: 'k1' },
+      projection: { daemonBuild: { commit: 'c1' }, features: ['a', 'b'] },
+    } as unknown as ServerDaemonJsonb
+  )
+})
+
+test('the feature-added patch leaves a list that already has the feature alone', async () => {
+  await applyFeatureAdded(
+    'feature-added-present',
+    { projection: { features: ['a', 'b'] } } as ServerDaemonJsonb,
+    'a',
+    { projection: { features: ['a', 'b'] } } as ServerDaemonJsonb
+  )
+})
+
+test('the feature-added patch creates the list when hello never sent one', async () => {
+  await applyFeatureAdded(
+    'feature-added-missing',
+    { key: { id: 'k1' } } as unknown as ServerDaemonJsonb,
+    'b',
+    { key: { id: 'k1' }, projection: { features: ['b'] } } as unknown as ServerDaemonJsonb
   )
 })

@@ -8,6 +8,7 @@ import {
   TUNNEL_STATUS_FEATURE,
   MANAGED_BACKUP_LOGIN_FEATURE,
   FABRIC_LAN_ROUTES_FEATURE,
+  DAEMON_SEALED_PRINCIPAL_RECONCILE_FEATURE,
   DAEMON_SEALED_SECRETS_FEATURE,
   REPO_KEY_REPORT_FEATURE,
   FABRIC_PEER_REPORT_FEATURE,
@@ -392,8 +393,18 @@ test('repo-key-report-v1 is advertised and raised no floor', () => {
   assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.0')
 })
 
-test('daemon-sealed-secrets-v1 is advertised last and raised no floor', () => {
+test('daemon-sealed-secrets-v1 is advertised and raised no floor', () => {
   assertEquals(DAEMON_SEALED_SECRETS_FEATURE, 'daemon-sealed-secrets-v1')
-  assertEquals(DAEMON_WIRE_FEATURES.at(-1), DAEMON_SEALED_SECRETS_FEATURE)
+  assertEquals(DAEMON_WIRE_FEATURES.includes(DAEMON_SEALED_SECRETS_FEATURE), true)
+  assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.0')
+})
+
+test('daemon-sealed-principal-reconcile-v1 is advertised last and raised no floor', () => {
+  assertEquals(DAEMON_SEALED_PRINCIPAL_RECONCILE_FEATURE, 'daemon-sealed-principal-reconcile-v1')
+  assertEquals(DAEMON_WIRE_FEATURES.at(-1), DAEMON_SEALED_PRINCIPAL_RECONCILE_FEATURE)
+  assertEquals(
+    DAEMON_WIRE_FEATURES.indexOf(DAEMON_SEALED_SECRETS_FEATURE),
+    DAEMON_WIRE_FEATURES.length - 2
+  )
   assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.0')
 })

@@ -25,6 +25,27 @@ export const INSTANCE_ACCESS_PATHS = {
       },
     },
   },
+  [`${ADMIN_API_PREFIX}/instance/identity/sealed-secrets`]: {
+    get: {
+      tags: ['Instance'],
+      summary: 'Read which servers still receive secrets in plaintext',
+      description:
+        'Superadmin only. Returns `{ ok, receivingPlaintext, servers }`; each server is ' +
+        '`{ id, name, organizationId, isConnected, advertisesSealedSecrets, sealingKey, ' +
+        'plaintextSecretsAt, receivesPlaintext }`. `sealingKey` is `{ kid, reportedAt }` or ' +
+        'null, `plaintextSecretsAt` is the last plaintext decrypt answer (written at most ' +
+        'hourly) or null, and `receivesPlaintext` is true unless the daemon lists ' +
+        '`daemon-sealed-secrets-v1` and has registered a sealing key. ' +
+        '`receivingPlaintext` counts those servers. The edge go-live gate reads this.',
+      security: [...cookieSecurity],
+      responses: {
+        '200': { description: 'Sealed-secrets state per server' },
+        '401': { description: 'Unauthorized' },
+        '403': { description: 'Forbidden — requires superadmin role' },
+        '503': { description: 'Database unavailable' },
+      },
+    },
+  },
   [`${ADMIN_API_PREFIX}/instance/identity/next`]: {
     put: {
       tags: ['Instance'],
