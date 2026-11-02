@@ -60,3 +60,21 @@ test('server.tunnel.status refuses a malformed result', () => {
     lastUpdate: { outcome: 'rolled-back', at: '2026-10-28T12:00:00Z', reason: 'x'.repeat(301) },
   })
 })
+
+test('server.tunnel.status keeps the connector facts and refuses bad ones', () => {
+  const first = (GOOD.connectors as Record<string, unknown>[])[0]
+  const facts = {
+    ...GOOD,
+    connectors: [{ ...first, edgeConnections: 4, hostnames: ['a.example.com'] }],
+  }
+  assertEquals(parseTunnelStatusResult(facts) as unknown, facts)
+  const bad = (patch: Record<string, unknown>) =>
+    assertThrows(() => parseTunnelStatusResult({ ...GOOD, connectors: [{ ...first, ...patch }] }))
+  bad({ edgeConnections: -1 })
+  bad({ edgeConnections: 1.5 })
+  bad({ edgeConnections: '4' })
+  bad({ hostnames: 'a.example.com' })
+  bad({ hostnames: [''] })
+  bad({ hostnames: ['x'.repeat(254)] })
+  bad({ hostnames: Array.from({ length: 101 }, (_, i) => `n${i}.example.com`) })
+})

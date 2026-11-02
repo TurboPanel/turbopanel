@@ -2,8 +2,9 @@
  * What the control plane's own tunnel is doing, for Admin › Access › Tunnel.
  * Two halves that work apart: the connector on the control plane host (from
  * the daemon's `server.tunnel.status` answer, entry `instance`, also for a
- * pasted run token), and the tunnel at Cloudflare (health, edge locations,
- * routed names), which needs a connected account. Never returns a token.
+ * pasted run token: state, version, live edge connections and the names it
+ * routes), and the tunnel at Cloudflare (health, edge locations, routed
+ * names), which needs a connected account. Never returns a token.
  */
 import { eq } from 'drizzle-orm'
 import { resolveColocatedServerId } from '../../../../client/authn/install-state.ts'
@@ -26,6 +27,10 @@ export type ConnectorView = {
   slot: string
   lastUpdate: { outcome: string; at: string; reason?: string } | null
   checkedAt: string | null
+  /** Live edge connections the connector itself reports; null when its daemon or the connector did not say. */
+  edgeConnections: number | null
+  /** Names the connector routes (its own config, also for a pasted run token); null when not reported. */
+  hostnames: string[] | null
 }
 
 export type EdgeView = {
@@ -88,6 +93,8 @@ export async function readInstanceConnector(
       slot: entry.slot,
       lastUpdate: entry.lastUpdate ?? null,
       checkedAt: answer.finishedAt ?? asked.recordedAt ?? null,
+      edgeConnections: entry.edgeConnections ?? null,
+      hostnames: entry.hostnames ?? null,
     },
     note: null,
   }

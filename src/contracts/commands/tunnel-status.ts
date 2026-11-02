@@ -26,6 +26,10 @@ export type TunnelStatusConnector = {
   slot: 'a' | 'b'
   /** How the last connector update ended; absent before any attempt. */
   lastUpdate?: TunnelStatusLastUpdate
+  /** Live edge connections from the connector's `/ready` (daemon feature `tunnel-status-facts-v1`). */
+  edgeConnections?: number
+  /** Names the connector routes, from its `/config`, at most 100 (daemon feature `tunnel-status-facts-v1`). */
+  hostnames?: string[]
 }
 
 export type TunnelStatusCommandPayload = Record<string, never>
@@ -46,6 +50,8 @@ const STATUS_VALUES = new Set<string>([
 /** The metrics band on a server (20300 to 20899) holds 600 connectors. */
 const MAX_CONNECTORS = 600
 const MAX_REASON_LENGTH = 300
+const MAX_EDGE_CONNECTIONS = 1000
+const MAX_HOSTNAMES = 100
 const VERSION_RE = /^\d+(?:\.\d+){0,4}$/
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 /** A strict ISO-8601 timestamp with a time zone, as `Date.toISOString` writes it. */
@@ -92,6 +98,29 @@ function parseLastUpdate(value: unknown): TunnelStatusLastUpdate {
   }
 }
 
+function parseEdgeConnections(value: unknown): number {
+  if (
+    typeof value !== 'number' ||
+    !Number.isInteger(value) ||
+    value < 0 ||
+    value > MAX_EDGE_CONNECTIONS
+  ) {
+    throw new TypeError('Invalid server.tunnel.status edgeConnections')
+  }
+  return value
+}
+
+function parseHostnames(value: unknown): string[] {
+  if (
+    !Array.isArray(value) ||
+    value.length > MAX_HOSTNAMES ||
+    !value.every((name) => typeof name === 'string' && name.length > 0 && name.length <= 253)
+  ) {
+    throw new TypeError('Invalid server.tunnel.status hostnames')
+  }
+  return [...(value as string[])]
+}
+
 function parseConnector(value: unknown): TunnelStatusConnector {
   if (
     !isRecord(value) ||
@@ -109,6 +138,10 @@ function parseConnector(value: unknown): TunnelStatusConnector {
     version: value.version,
     slot: value.slot,
     ...(value.lastUpdate === undefined ? {} : { lastUpdate: parseLastUpdate(value.lastUpdate) }),
+    ...(value.edgeConnections === undefined
+      ? {}
+      : { edgeConnections: parseEdgeConnections(value.edgeConnections) }),
+    ...(value.hostnames === undefined ? {} : { hostnames: parseHostnames(value.hostnames) }),
   }
 }
 
