@@ -4,7 +4,7 @@
 
 **Development (co-located):** a **single dev user** runs everything — no `tp`,
 `tpctrl`, or `tpcache` service accounts are created. Source repos live under
-`$HOME` (`~/turbopaneld`, `~/turbopanel`, `~/ui`, `~/website`) and are owned by
+`~/turbopanel/` (`~/turbopanel/turbopaneld`, `~/turbopanel/turbopanel`, `~/turbopanel/ui`, `~/turbopanel/website`) and are owned by
 the dev user. Mutable data (`/etc/turbopanel`, `/var/lib/turbopanel`,
 `/var/log/turbopanel`, `/run/turbopanel`) is dev-user-owned. Per-service runtime
 state may still live in gitignored checkout dirs (`instance/.local`,
@@ -137,8 +137,8 @@ config `/etc/turbopanel`, state `/var/lib/turbopanel`, logs
 `TURBOPANEL_RUN_DIR`, `TURBOPANEL_UI_ROOT`, `TURBOPANEL_SOCKET(_DIR)`,
 `TURBOPANEL_TLS_CA`, `TURBOPANEL_TLS_CA_KEY`, `TURBOPANEL_TLS_CA_BUNDLE`).
 Co-located dev uses the same FHS mutable paths by default, all
-**dev-user-owned**; source repos live under `$HOME` (`~/turbopaneld`,
-`~/turbopanel`, `~/ui`, `~/website`). The module has no separate dev-mode branch
+**dev-user-owned**; source repos live under `~/turbopanel/` (`~/turbopanel/turbopaneld`,
+`~/turbopanel/turbopanel`, `~/turbopanel/ui`, `~/turbopanel/website`). The module has no separate dev-mode branch
 — Ansible (`instance-launch`) and manual commands may override individual paths
 via env when needed. `resolveInstanceRuntimeConfigPaths` composes
 `<configDir>/instance/runtime.env` (+ `runtime.dev-vars`). Managed production

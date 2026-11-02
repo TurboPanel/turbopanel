@@ -145,10 +145,10 @@ Run suites **inside the Vagrant guest** from the host `dev` checkout
 `deno task test` on the host:
 
 ```bash
-vagrant ssh -c 'export PATH="/opt/turbopanel/vendor/node/current/bin:/opt/turbopanel/vendor/deno/current:$PATH"; cd ~/turbopanel && pnpm test:do'
+vagrant ssh -c 'export PATH="/opt/turbopanel/vendor/node/current/bin:/opt/turbopanel/vendor/deno/current:$PATH"; cd ~/turbopanel/turbopanel && pnpm test:do'
 # CI-parity (inventory + workers bundle + LCOV merge). Needs TURBOPANEL_DATABASE_URL
 # for migrate + postgres suites — `../dev/scripts/ci-verify.sh` loads it in-guest.
-vagrant ssh -c 'export PATH="/opt/turbopanel/vendor/node/current/bin:/opt/turbopanel/vendor/deno/current:$PATH"; cd ~/turbopanel && pnpm verify:ci'
+vagrant ssh -c 'export PATH="/opt/turbopanel/vendor/node/current/bin:/opt/turbopanel/vendor/deno/current:$PATH"; cd ~/turbopanel/turbopanel && pnpm verify:ci'
 ```
 
 A new `*.test.ts` is not done until `pnpm check:test-inventory` passes (see

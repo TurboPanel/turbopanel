@@ -58,7 +58,7 @@ a zone at this origin and forge a visitor address; authenticated origin pulls
 or an origin firewall that admits only the provider close that gap.
 
 **Co-located development** does not use this file. When `turbopanel_dev_user` is
-set, `turbopanel-caddy.service` loads `~/dev/orchestration/Caddyfile` instead
+set, `turbopanel-caddy.service` loads `~/turbopanel/dev/orchestration/Caddyfile` instead
 (Expo proxy, optional wrangler upstream,
 `/downloads/daemon` + installer at `/run.sh`). See **`../dev/orchestration/AGENTS.md`**
 (Ansible overlay / Caddyfile).
