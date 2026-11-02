@@ -84,7 +84,7 @@ import {
   recordInstanceAcmeApplyTimeout,
   recordInstanceAcmePreflightFailure,
 } from '../features/install/instance-hostnames.ts'
-import { buildPublicUrlsPayload, recordEdgeTrustApplied } from './public-urls-apply-run.ts'
+import { buildPublicUrlsPayload, recordPublicUrlsApplied } from './public-urls-apply-run.ts'
 import {
   parseCellPurgeBatchBody,
   parseEmailSettingsUpdates,
@@ -719,7 +719,7 @@ export function registerAdminRoutes(
     }
     const response = publicUrlsApplyWaitToResponse(result)
     if (response.status === 200) {
-      await recordEdgeTrustApplied(db, applied.payload)
+      await recordPublicUrlsApplied(db, applied.payload)
       await reconcilePlatformCaTrustAfterApply(c, db, opts.readPlatformCaBundle)
     }
     return c.json(response.body, response.status)
