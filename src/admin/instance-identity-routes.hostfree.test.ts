@@ -36,6 +36,7 @@ async function buildApp(opts: {
   runtime?: 'deno' | 'workers'
   createdAt?: string
   configured?: boolean
+  serverRows?: Record<string, unknown>[]
 }) {
   const secrets = await deriveSecretsConfig(parseTestSecretsConfig('deno'), 'session-signing')
   const token = crypto.randomUUID()
@@ -55,7 +56,9 @@ async function buildApp(opts: {
       return (fields?: unknown) => ({
         from: (table: unknown) =>
           table === server
-            ? Promise.resolve([{ id: 'srv-1', name: 'alpha', organizationId: 'org-1' }])
+            ? Promise.resolve(
+                opts.serverRows ?? [{ id: 'srv-1', name: 'alpha', organizationId: 'org-1' }]
+              )
             : target.select(fields as never).from(table as never),
       })
     },
@@ -150,4 +153,66 @@ test('the hosted runtime answers 422: its next key is a binding', async () => {
   const res = await put(app, cookie, { fingerprint: FIXTURE_NEXT_FINGERPRINT })
   assertEquals(res.status, 422)
   assert((await res.json()).error.includes('TURBOPANEL_IDENTITY_KEYS'))
+})
+
+const SEALED_URL = `${IDENTITY_URL}/sealed-secrets`
+const KID = 'K'.repeat(43)
+
+function sealingRow(id: string, overrides: Record<string, unknown>) {
+  return {
+    id,
+    name: id,
+    organizationId: 'org-1',
+    isConnected: true,
+    daemon: { projection: { features: ['daemon-sealed-secrets-v1'] } },
+    sealingKeyKid: KID,
+    sealingKeyPub: 'P'.repeat(43),
+    sealingKeyReportedAt: '2026-11-01T00:00:00.000Z',
+    plaintextSecretsAt: null,
+    ...overrides,
+  }
+}
+
+test('the sealed-secrets read lists which servers still get plaintext', async () => {
+  const { app, cookie } = await buildApp({
+    serverRows: [
+      sealingRow('sealed', {}),
+      sealingRow('legacy', {
+        daemon: { projection: { features: [] } },
+        sealingKeyKid: null,
+        sealingKeyPub: null,
+        sealingKeyReportedAt: null,
+        plaintextSecretsAt: '2026-11-01T01:00:00.000Z',
+      }),
+      sealingRow('no-key', { sealingKeyKid: null, sealingKeyPub: null }),
+    ],
+  })
+  const res = await app.request(SEALED_URL, { headers: { Cookie: cookie } })
+  assertEquals(res.status, 200)
+  const text = await res.text()
+  assert(!text.includes('P'.repeat(43)), 'the public key itself is not repeated')
+  const body = JSON.parse(text)
+  assertEquals(body.receivingPlaintext, 2)
+  assertEquals(body.servers[0], {
+    id: 'sealed',
+    name: 'sealed',
+    organizationId: 'org-1',
+    isConnected: true,
+    advertisesSealedSecrets: true,
+    sealingKey: { kid: KID, reportedAt: '2026-11-01T00:00:00.000Z' },
+    plaintextSecretsAt: null,
+    receivesPlaintext: false,
+  })
+  assertEquals(body.servers[1].advertisesSealedSecrets, false)
+  assertEquals(body.servers[1].sealingKey, null)
+  assertEquals(body.servers[1].plaintextSecretsAt, '2026-11-01T01:00:00.000Z')
+  assertEquals(body.servers[1].receivesPlaintext, true)
+  assertEquals(body.servers[2].advertisesSealedSecrets, true)
+  assertEquals(body.servers[2].receivesPlaintext, true)
+})
+
+test('the sealed-secrets read is refused for a non-superadmin', async () => {
+  const { app, cookie } = await buildApp({ role: 'admin', serverRows: [] })
+  assertEquals((await app.request(SEALED_URL, { headers: { Cookie: cookie } })).status, 403)
+  assertEquals((await app.request(SEALED_URL)).status, 401)
 })

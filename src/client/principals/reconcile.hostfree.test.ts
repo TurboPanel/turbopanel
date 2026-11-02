@@ -12,8 +12,13 @@ import {
   reconcilePrincipalAccess,
   reconcilePrincipalsAccess,
   retireDeletedPrincipal,
+  sealReconcilePasswordHashes,
   serversForPrincipal,
 } from './reconcile.ts'
+import type { ServerDaemonState } from '../../features/servers/daemon-state.ts'
+import { decryptSecretForDaemon } from '../../lib/secrets/data-encryption.ts'
+import { DAEMON_SEALED_PRINCIPAL_RECONCILE_FEATURE } from '../../lib/version-wire.ts'
+import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -204,7 +209,7 @@ test('principalIdsOnServer dedupes accounts materialized on one host', async () 
 })
 
 test('enqueuePrincipalsReconcile marks every server failed when the queue is missing', async () => {
-  const outcome = await enqueuePrincipalsReconcile(reconcileDb({}), undefined, ACTOR, [
+  const outcome = await enqueuePrincipalsReconcile(reconcileDb({}), undefined, undefined, ACTOR, [
     SERVER_A,
     SERVER_B,
   ])
@@ -221,6 +226,7 @@ test('enqueuePrincipalsReconcile queues a full-state command per server', async 
   const outcome = await enqueuePrincipalsReconcile(
     reconcileDb({ joinRows: ON_SERVER_A }),
     queue,
+    undefined,
     ACTOR,
     [SERVER_A]
   )
@@ -234,9 +240,13 @@ test('enqueuePrincipalsReconcile queues a full-state command per server', async 
 test('enqueuePrincipalsReconcile skips a server whose managed set is empty', async () => {
   // An empty set would tell the daemon to remove every key file on the host.
   const queue = recordingQueue()
-  const outcome = await enqueuePrincipalsReconcile(reconcileDb({ joinRows: [] }), queue, ACTOR, [
-    SERVER_A,
-  ])
+  const outcome = await enqueuePrincipalsReconcile(
+    reconcileDb({ joinRows: [] }),
+    queue,
+    undefined,
+    ACTOR,
+    [SERVER_A]
+  )
   assertEquals(outcome, { queuedServerIds: [], failedServerIds: [] })
   assertEquals(queue.envelopes, [])
 })
@@ -246,6 +256,7 @@ test('enqueuePrincipalsReconcile still sends an empty set when there is an accou
   const outcome = await enqueuePrincipalsReconcile(
     reconcileDb({ joinRows: [] }),
     queue,
+    undefined,
     ACTOR,
     [SERVER_A],
     { retirePrincipals: ['gone', 'gone'] }
@@ -258,6 +269,7 @@ test('enqueuePrincipalsReconcile marks failed when enqueue throws', async () => 
   const outcome = await enqueuePrincipalsReconcile(
     reconcileDb({ joinRows: ON_SERVER_A }),
     recordingQueue(true),
+    undefined,
     ACTOR,
     [SERVER_A]
   )
@@ -268,6 +280,7 @@ test('enqueuePrincipalsReconcile marks failed when command insert is empty', asy
   const outcome = await enqueuePrincipalsReconcile(
     reconcileDb({ joinRows: ON_SERVER_A, insertEmpty: true }),
     recordingQueue(),
+    undefined,
     ACTOR,
     [SERVER_A]
   )
@@ -279,6 +292,7 @@ test('retireDeletedPrincipal retires on servers nothing else still places the lo
   const outcome = await retireDeletedPrincipal(
     reconcileDb({ joinRows: ON_SERVER_A }),
     queue,
+    undefined,
     ACTOR,
     { serverIds: [SERVER_A, SERVER_B], appliedUsername: 'gone' }
   )
@@ -294,6 +308,7 @@ test('retireDeletedPrincipal keeps the account where another row still places it
   const outcome = await retireDeletedPrincipal(
     reconcileDb({ joinRows: [], stillPlaced: ['gone'] }),
     queue,
+    undefined,
     ACTOR,
     { serverIds: [SERVER_A], appliedUsername: 'gone' }
   )
@@ -309,6 +324,7 @@ test('reconcilePrincipalAccess resolves hosts then enqueues', async () => {
       joinRows: [{ serverId: SERVER_A, principalId: PRINCIPAL }],
     }),
     queue,
+    undefined,
     ACTOR,
     PRINCIPAL
   )
@@ -317,7 +333,13 @@ test('reconcilePrincipalAccess resolves hosts then enqueues', async () => {
 })
 
 test('reconcilePrincipalsAccess is a no-op for an empty id set', async () => {
-  const outcome = await reconcilePrincipalsAccess(reconcileDb({}), recordingQueue(), ACTOR, [])
+  const outcome = await reconcilePrincipalsAccess(
+    reconcileDb({}),
+    recordingQueue(),
+    undefined,
+    ACTOR,
+    []
+  )
   assertEquals(outcome, { queuedServerIds: [], failedServerIds: [] })
 })
 
@@ -332,9 +354,102 @@ test('reconcilePrincipalsAccess dedupes hosts across principals', async () => {
       ],
     }),
     queue,
+    undefined,
     ACTOR,
     [PRINCIPAL, 'prin-2']
   )
   assertEquals(outcome.queuedServerIds, [SERVER_A, SERVER_B])
   assertEquals(outcome.failedServerIds, [])
+})
+
+const HASH = `$6$saltstring$${'a'.repeat(86)}`
+const ACCOUNTS = [
+  { principalId: 'p-1', username: 'site_one', passwordHash: HASH },
+  { principalId: 'p-2', username: 'site_two' },
+]
+const NO_DB = {} as Db
+
+function daemonState(
+  features: string[],
+  revokedAt: string | null = null
+): () => Promise<Pick<ServerDaemonState, 'key' | 'projection'>> {
+  return () =>
+    Promise.resolve({
+      key: {
+        id: 'key-1',
+        algorithm: 'Ed25519',
+        publicJwk: {},
+        fingerprint: 'fp',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        revokedAt,
+      },
+      projection: { features },
+    })
+}
+
+test('reconcile seals the password hash for a daemon that opens it there', async () => {
+  const secrets = parseTestSecretsConfig('deno')
+  const sealed = await sealReconcilePasswordHashes(
+    NO_DB,
+    secrets,
+    SERVER_A,
+    ACCOUNTS,
+    daemonState(['daemon-sealed-secrets-v1', DAEMON_SEALED_PRINCIPAL_RECONCILE_FEATURE])
+  )
+  assertEquals(sealed[0]?.passwordHash, undefined)
+  const envelope = sealed[0]?.passwordHashEnvelope
+  assertEquals(typeof envelope, 'string')
+  assertEquals(
+    await decryptSecretForDaemon(secrets, { serverId: SERVER_A, keyId: 'key-1' }, envelope!),
+    HASH
+  )
+  assertEquals(sealed[1], ACCOUNTS[1])
+})
+
+test('reconcile keeps the plain hash for a daemon that refuses an envelope there', async () => {
+  const secrets = parseTestSecretsConfig('deno')
+  // Lists sealed secrets (deploys) but not the reconcile feature.
+  const kept = await sealReconcilePasswordHashes(
+    NO_DB,
+    secrets,
+    SERVER_A,
+    ACCOUNTS,
+    daemonState(['daemon-sealed-secrets-v1'])
+  )
+  assertEquals(kept, ACCOUNTS)
+})
+
+test('reconcile keeps the plain hash without a secrets config or an active key', async () => {
+  const feature = [DAEMON_SEALED_PRINCIPAL_RECONCILE_FEATURE]
+  assertEquals(
+    await sealReconcilePasswordHashes(NO_DB, undefined, SERVER_A, ACCOUNTS, daemonState(feature)),
+    ACCOUNTS
+  )
+  assertEquals(
+    await sealReconcilePasswordHashes(
+      NO_DB,
+      parseTestSecretsConfig('deno'),
+      SERVER_A,
+      ACCOUNTS,
+      daemonState(feature, '2026-01-02T00:00:00.000Z')
+    ),
+    ACCOUNTS
+  )
+})
+
+test('reconcile does not read the daemon when no account has a password', async () => {
+  let reads = 0
+  const accounts = [ACCOUNTS[1]!]
+  const out = await sealReconcilePasswordHashes(
+    NO_DB,
+    parseTestSecretsConfig('deno'),
+    SERVER_A,
+    accounts,
+    () => {
+      reads += 1
+      return Promise.resolve(null)
+    }
+  )
+  assertEquals(out, accounts)
+  assertEquals(reads, 0)
 })

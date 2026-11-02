@@ -22,7 +22,9 @@
   plane's current, next and sealing keys, the install address, and each server's pinned-by state,
   `none` until the server pin column exists); `PUT /instance/identity/next` sets or clears the next
   fingerprint (superadmin, self-hosted only, always behind `requireInstanceStepUp`, audited as
-  `panel.identity_next.set|clear`, mails superadmins through `recordKeyEvent`); the self-hosted
+  `panel.identity_next.set|clear`, mails superadmins through `recordKeyEvent`);
+  `GET /instance/identity/sealed-secrets` (superadmin) reports per server whether secrets still
+  reach it in plaintext (feature, sealing key id, `plaintext_secrets_at`); the self-hosted
   tunnel-token write sits behind the same step-up and is audited as `instance.tunnel_token.set`;
   `GET /instance/platform-ca` and
   `POST /instance/platform-ca/trust-reconcile` are Deno-only Platform CA read

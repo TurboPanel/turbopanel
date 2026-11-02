@@ -334,15 +334,56 @@ const environmentCrudPaths = buildResourceCrudPaths({
   },
 })
 
+/** Adds the `confirmName` query parameter and the 400 it can cause to a delete operation. */
+function withConfirmName<T extends { parameters: unknown[]; responses: Record<string, unknown> }>(
+  operation: T
+): T {
+  return {
+    ...operation,
+    parameters: [
+      ...operation.parameters,
+      {
+        name: 'confirmName',
+        in: 'query',
+        required: false,
+        schema: { type: 'string' },
+        description:
+          "The environment's exact name. Required when the environment serves a public hostname.",
+      },
+    ],
+    responses: {
+      ...operation.responses,
+      '400': {
+        description:
+          'The environment serves a public hostname and `confirmName` is missing or is not its name; nothing changed.',
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              required: ['error', 'message'],
+              properties: {
+                error: { type: 'string', enum: ['confirm_name_required'] },
+                message: { type: 'string' },
+              },
+            },
+          },
+        },
+      },
+    },
+  }
+}
+
 export const environmentPaths = {
   ...environmentCrudPaths,
   '/api/client/v1/environments/{id}': withDeleteOperation(
     environmentCrudPaths,
     '/api/client/v1/environments/{id}',
-    deleteOperation(
-      'Environments',
-      'environment',
-      'Stops the environment if it is running, then removes its rows; its folders on the servers become `removing` and are removed by the servers (a volume set to keep its data keeps its folder). The project and its Hosting Accounts stay. Refused, with nothing changed, for the primary environment, while a deploy is running, while a managed database remains, while another environment uses a shared service or volume that would go, or while a server the delete has to reach is offline.'
+    withConfirmName(
+      deleteOperation(
+        'Environments',
+        'environment',
+        'Stops the environment if it is running, then removes its rows; its folders on the servers become `removing` and are removed by the servers (a volume set to keep its data keeps its folder). The project and its Hosting Accounts stay. Refused, with nothing changed, for the primary environment, while a deploy is running, while a managed database remains, while another environment uses a shared service or volume that would go, or while a server the delete has to reach is offline. Also refused with 400 `confirm_name_required` while the environment serves a public hostname and `confirmName` is not exactly its name.'
+      )
     )
   ),
   '/api/client/v1/environments/{id}/delete-preview': deletePreviewPath(

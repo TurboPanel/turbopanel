@@ -20,6 +20,7 @@ import { enqueuePrincipalsReconcile } from '../../client/principals/reconcile.ts
 import { forEachSequential } from '../../lib/sequential.ts'
 import { isNoopCommandQueue } from '../../features/commands/noop-command-queue.ts'
 import type { CommandQueue } from '../../features/commands/queue.ts'
+import type { SecretsConfig } from '../../lib/secrets/secrets.ts'
 
 /** A server is asked no sooner than this after its last principals reconcile. */
 export const FOLDER_RECONCILE_INTERVAL_HOURS = 6
@@ -30,6 +31,7 @@ const FOLDER_RECONCILE_SWEEP_CAP = 25
 export async function runFolderReconcileSweep(
   db: Db,
   queue: CommandQueue,
+  secretsConfig: SecretsConfig | undefined,
   params: Readonly<{ budget?: number }> = {}
 ): Promise<{ enqueued: number }> {
   if (isNoopCommandQueue(queue)) return { enqueued: 0 }
@@ -61,6 +63,7 @@ export async function runFolderReconcileSweep(
     const result = await enqueuePrincipalsReconcile(
       db,
       queue,
+      secretsConfig,
       { actorType: 'system', actorId: row.server_id },
       [row.server_id]
     )

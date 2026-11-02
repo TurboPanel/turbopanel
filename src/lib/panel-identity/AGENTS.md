@@ -31,6 +31,6 @@ sealing key, and the signed identity document served at
   `/secrets/decrypt` seals its answer to the daemon's registered sealing key
   (`src/daemon/secrets-decrypt-answer.ts`) when the daemon lists `daemon-sealed-secrets-v1`; every
   other daemon still gets `plaintexts`, and `server.plaintext_secrets_at` records that (read by the
-  edge go-live gate). The fixed vector in `src/test-fixtures/hpke-vector.ts` is the same one the
+  edge go-live gate through `GET /api/admin/v1/instance/identity/sealed-secrets`). The fixed vector in `src/test-fixtures/hpke-vector.ts` is the same one the
   daemon repo opens; change both together.
 - **Keys sent up.** `POST /tls/issued` takes exactly one of `privateKeyPem` (older daemons) or `privateKeyEnvelope`, sealed to the identity's `seal` key with the `current` key id as aad (`src/daemon/issued-private-key.ts`). `openFromSender` accepts the identity's native non-extractable X25519 key, so no seed is kept in memory. An envelope with no identity loaded answers 503; a body or envelope is never echoed or logged.
