@@ -18,6 +18,9 @@ sealing key, and the signed identity document served at
 - **Signature** is the `X-TurboPanel-Signature: <kid>:<sig>` header over
   `"tp-http\n" + path + "\n" + exact body`, not a field in the body. `serializeIdentityDocument`
   writes the key order by hand; do not add a canonicaliser. The route returns the cached exact bytes.
+  The document's `urls` come from the database, so with an identity loaded the route needs it: an
+  unreachable database answers `503 {"error":"database unavailable"}` (reason in the log only);
+  a connection-closed error is rethrown so the Workers entry replays the GET once.
 - **Workers:** the identity (imported keys) may live at isolate scope; the database client never
   does. Nothing here runs crypto at module load.
 - **Pinned-by.** `pinned-by.ts` `resolvePinnedBy` is the one place that reads a server's pin state
