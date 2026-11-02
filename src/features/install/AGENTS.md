@@ -85,4 +85,8 @@ PUT hostnames route accepts `publicPort` and `isPrimary` per entry (one
 primary; omitted keeps the stored value) and warns when the primary's address
 changes, because OAuth callbacks and Git webhooks registered with the old
 address must be updated; a different host also stops registered passkeys
-(`primary-host-changed`), and either change is audited.
+(`primary-host-changed`), and either change is audited. Apply sends each
+row's `publicPort` on `public-urls-update` to a co-located daemon that
+advertises `instance-hostname-public-port-v1`; its Caddy then sends a request
+for that hostname on any other port (an edge answering both 443 and 8443) to
+the public port with a 308.
