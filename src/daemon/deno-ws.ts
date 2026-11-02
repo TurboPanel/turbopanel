@@ -24,6 +24,16 @@ import {
   wireMessageToInboundEnvelope,
 } from '../contracts/cell-protocol.ts'
 import { instanceAttachVersionFrame } from './attach-version.ts'
+import {
+  createDaemonSessionSender,
+  type DaemonSessionPhase,
+  type DaemonSessionSender,
+  decideFirstFrame,
+  PANEL_IDENTITY_CLOSE_CODE,
+  SIGNED_SEND_FAILED_REASON,
+} from './signed-session-gate.ts'
+import { buildSignedHello } from '../lib/panel-identity/signed-session.ts'
+import type { PanelIdentity } from '../lib/panel-identity/identity.ts'
 import { HEARTBEAT_SECONDS_DEFAULT } from '../features/install/heartbeat-policy.ts'
 import type { DaemonJwtKeyring } from './authn/daemon-jwt-keyring.ts'
 import { tryAssignColocatedDaemonToInstalledOrganization } from '../client/authn/install-state.ts'
@@ -152,7 +162,8 @@ type DaemonOutboxPumpParams = {
   serverId: string
   connectionId: string
   consumer: string
-  ws: WSContext<WebSocket>
+  /** The socket's sender: plain JSON, or a signed envelope once the session is signed. */
+  send: (wire: { type: string }) => Promise<void>
   abortRef: { abort: boolean }
 }
 
@@ -161,7 +172,7 @@ async function sendOutboxBatch(
   params: DaemonOutboxPumpParams,
   batch: DaemonOutboundEnvelope[]
 ): Promise<void> {
-  const { cell, serverId, connectionId, consumer, ws } = params
+  const { cell, serverId, connectionId, consumer, send } = params
   await forEachSequential(batch, async (envelope) => {
     const wireMsg = outboundEnvelopeToWireMessage(envelope)
     await cell.markSent(envelope.deliveryId, connectionId)
@@ -172,7 +183,7 @@ async function sendOutboxBatch(
       requestId: envelope.requestId,
       kind: envelope.kind,
     })
-    ws.send(JSON.stringify(wireMsg))
+    await send(wireMsg)
     await cell.ackOutbox([envelope.deliveryId], consumer)
   })
   if (batch.length > 0) {
@@ -883,6 +894,10 @@ export type DaemonWebSocketOptions = {
    * not touch the database: the attach path calls it once per connection.
    */
   heartbeatSeconds?: () => number
+  /** The identity key; null or absent = no signed sessions (a pinned daemon is refused). */
+  panelIdentity?: () => Promise<PanelIdentity | null>
+  /** The control plane's public origins, sent in the signed hello. */
+  identityUrls?: (db: Db) => Promise<string[]>
 }
 
 /**
@@ -984,6 +999,77 @@ export function registerDaemonWebSocket<E extends Env>(
       let attachReady = false
       const pendingMessages: string[] = []
       const inboundGate = createInboundWindowGate(inboundMessageLimit, inboundMessageWindowMs)
+      // Nothing goes to the daemon until its first frame says which session
+      // it runs (`signed-session-gate.ts`).
+      let phase: DaemonSessionPhase = 'await-first-frame'
+      let sender: DaemonSessionSender | undefined
+      const senderFor = (ws: WSContext<WebSocket>): DaemonSessionSender => {
+        sender ??= createDaemonSessionSender({
+          sendText: (text) => ws.send(text),
+          onSignedSendFailure: () => {
+            pumpControl.abort = true
+            ws.close(1011, SIGNED_SEND_FAILED_REASON)
+          },
+        })
+        return sender
+      }
+
+      const startSession = (ws: WSContext<WebSocket>): void => {
+        const send = senderFor(ws)
+        send
+          .send(
+            instanceAttachVersionFrame(connectedAt, Deno.env.toObject(), {
+              heartbeatSeconds: options.heartbeatSeconds?.() ?? HEARTBEAT_SECONDS_DEFAULT,
+            })
+          )
+          .catch((err) => {
+            daemonCellLog(
+              'WARN',
+              payload.sub,
+              connectionId,
+              `attach version frame failed: ${String(err)}`
+            )
+          })
+        if (!connectionId) return
+        startDaemonOutboxPump({
+          cell: registry.getCell(payload.sub),
+          serverId: payload.sub,
+          connectionId,
+          consumer: `ws:${connectionId}`,
+          send: (wire) => send.send(wire),
+          abortRef: pumpControl,
+        })
+      }
+
+      /** Handles the first frame; true when the frame is then processed as usual. */
+      const openSession = async (raw: string, ws: WSContext<WebSocket>): Promise<boolean> => {
+        const decision = await decideFirstFrame(raw, {
+          trustLevel: daemonState?.trustLevel ?? 0,
+          panelIdentity: options.panelIdentity,
+        })
+        if (decision.kind === 'refused') {
+          daemonCellLog('WARN', payload.sub, connectionId, `session refused: ${decision.reason}`)
+          pumpControl.abort = true
+          ws.close(PANEL_IDENTITY_CLOSE_CODE, decision.reason)
+          return false
+        }
+        if (decision.kind === 'legacy') {
+          phase = 'legacy'
+          startSession(ws)
+          return true
+        }
+        const urls = options.identityUrls ? await options.identityUrls(db).catch(() => []) : []
+        ws.send(
+          await buildSignedHello(decision.identity, decision.nonce, decision.session, {
+            heartbeatSeconds: options.heartbeatSeconds?.() ?? HEARTBEAT_SECONDS_DEFAULT,
+            urls,
+          })
+        )
+        senderFor(ws).enterSigned(decision.identity, decision.session)
+        phase = 'signed'
+        startSession(ws)
+        return false
+      }
 
       const handleInboundMessage = async (raw: string, ws: WSContext<WebSocket>): Promise<void> => {
         // Exception boundary — mirrors DO webSocketMessage (log + swallow) so a
@@ -1035,6 +1121,7 @@ export function registerDaemonWebSocket<E extends Env>(
         raw: string,
         ws: WSContext<WebSocket>
       ): Promise<void> => {
+        if (phase === 'await-first-frame' && !(await openSession(raw, ws))) return
         if (raw === DAEMON_CELL_PING) {
           await handlePingFrame(ws)
           return
@@ -1070,7 +1157,11 @@ export function registerDaemonWebSocket<E extends Env>(
           registry,
           message,
           dataEncryptionSecrets: options.dataEncryptionSecrets,
-          reply: (answer) => ws.send(JSON.stringify(answer)),
+          reply: (answer) => {
+            senderFor(ws)
+              .send(answer)
+              .catch(() => undefined)
+          },
         })
       }
 
@@ -1136,38 +1227,12 @@ export function registerDaemonWebSocket<E extends Env>(
           const connectedFromSuffix = peer ? ` from ${peer.address} (${peer.source})` : ''
           daemonCellLog('INFO', payload.sub, connectionId, `daemon connected${connectedFromSuffix}`)
 
-          try {
-            ws.send(
-              JSON.stringify(
-                instanceAttachVersionFrame(connectedAt, Deno.env.toObject(), {
-                  heartbeatSeconds: options.heartbeatSeconds?.() ?? HEARTBEAT_SECONDS_DEFAULT,
-                })
-              )
-            )
-          } catch (err) {
-            daemonCellLog(
-              'WARN',
-              payload.sub,
-              connectionId,
-              `attach version frame failed: ${String(err)}`
-            )
-          }
-
           if (identityAddress === DIRECT_ATTACH_SENTINEL) {
             assignColocatedDaemonOnConnect(db, registry)
           }
 
-          const consumer = `ws:${connectionId}`
-
-          startDaemonOutboxPump({
-            cell,
-            serverId: payload.sub,
-            connectionId,
-            consumer,
-            ws,
-            abortRef: pumpControl,
-          })
-
+          // The `version` frame and the outbox pump wait for the daemon's
+          // first frame (`openSession`).
           attachReady = true
           await forEachSequential(pendingMessages.splice(0), (raw) => handleInboundMessage(raw, ws))
         },

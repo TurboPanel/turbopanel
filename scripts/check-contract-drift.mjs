@@ -228,6 +228,33 @@ function checkHostname(tp, td) {
   )
 }
 
+/** The signed-session byte rules and the v2 sign-in proof tags must be identical on both sides. */
+function checkPanelIdentityBytes(tp, td) {
+  const envelopeLeft = requireText(
+    readRel(tp, 'src/lib/panel-identity/frame-envelope.ts'),
+    'frame-envelope.ts missing on the instance'
+  )
+  const envelopeRight = requireText(
+    readRel(td, 'src/instance/panel-identity/frame-envelope.ts'),
+    'frame-envelope.ts missing on the daemon'
+  )
+  for (const name of ['HELLO_PREFIX', 'FRAME_PREFIX', 'HTTP_PREFIX', 'SIG_SUFFIX_MARKER']) {
+    requireEqual(
+      extractConst(envelopeLeft, name),
+      extractConst(envelopeRight, name),
+      `${name} drifted`
+    )
+  }
+  const proofLeft = requireText(
+    readRel(tp, 'src/daemon/authn/proof-version.ts'),
+    'proof-version.ts missing on the instance'
+  )
+  const proofRight = requireText(readRel(td, 'src/crypto/keys.ts'), 'keys.ts missing on the daemon')
+  for (const name of ['ENROLL_PROOF_V2_TAG', 'AUTH_PROOF_V2_TAG']) {
+    requireEqual(extractConst(proofLeft, name), extractConst(proofRight, name), `${name} drifted`)
+  }
+}
+
 function checkLayoutVectors(tp, td) {
   const left = requireText(
     readRel(tp, 'src/contracts/layout-vectors.json'),
@@ -1031,10 +1058,11 @@ function main() {
   checkReportedIp(tp, td)
   checkSlotMapping(tp, td)
   checkLayoutVectors(tp, td)
+  checkPanelIdentityBytes(tp, td)
   checkExpandOnly(tp, td)
 
   console.log(
-    'check-contract-drift: metrics, hostname, machine-key, channels, ServerReportedIp, slot-mapping, folder name vectors, expand-only fields agree.'
+    'check-contract-drift: metrics, hostname, machine-key, channels, ServerReportedIp, slot-mapping, folder name vectors, signed-session bytes, expand-only fields agree.'
   )
 }
 

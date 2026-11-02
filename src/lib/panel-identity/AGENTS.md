@@ -34,3 +34,18 @@ sealing key, and the signed identity document served at
   edge go-live gate through `GET /api/admin/v1/instance/identity/sealed-secrets`). The fixed vector in `src/test-fixtures/hpke-vector.ts` is the same one the
   daemon repo opens; change both together.
 - **Keys sent up.** `POST /tls/issued` takes exactly one of `privateKeyPem` (older daemons) or `privateKeyEnvelope`, sealed to the identity's `seal` key with the `current` key id as aad (`src/daemon/issued-private-key.ts`). `openFromSender` accepts the identity's native non-extractable X25519 key, so no seed is kept in memory. An envelope with no identity loaded answers 503; a body or envelope is never echoed or logged.
+- **Signed daemon session.** The control plane sends nothing on `/ws/daemon/v1` until the daemon's
+  first frame (`src/daemon/signed-session-gate.ts`, shared by `deno-ws.ts` and the cell). A
+  `hello-nonce` gets a `hello` signed over `"tp-hello\n" + exact JSON`, then every frame (the
+  `version` frame is `seq` 1) carries `{sessionId, seq, iat, kid}` and a `sig` over
+  `"tp-frame\n" + type + "\n" + exact JSON` (`frame-envelope.ts`, `signed-session.ts`; the sig is the
+  last member, the receiver splits at the last `,"sig":"`). Only the transport pong is unsigned. The
+  cell writes the next `seq` to the socket attachment before each signed send and sends one frame at a
+  time per socket; Deno keeps it in the socket's sender. Any other first frame gets today's unsigned
+  session unless `server.trust_level` is 1 or more (close 4403). Nothing reads the feature list to
+  decide. `trust_level` is raised only by the daemon's own attach proof, which is a later change.
+- **Signed responses.** `signDaemonResponses` (`signed-response.ts`) signs every answer, errors
+  included, on the paths in `SIGNED_DAEMON_RESPONSE_PATHS` (the daemon keeps the same list).
+- **Sign-in v2.** `/enroll` and `/auth/session` take `payloadVersion: 2` proofs that add the key
+  fingerprint (current or next), method, path and `iat` (`src/daemon/authn/proof-version.ts`); v1 is
+  refused only for a server with `trust_level` 1 or more until the version floor moves.

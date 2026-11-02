@@ -73,6 +73,23 @@ import { recordTopologyGeneration } from '../../features/servers/server-topology
 import { touchServerMetadata } from '../../features/servers/server-registry.ts'
 import { parseServiceRunStates, type ServiceRunState } from '../../contracts/service-run-state.ts'
 import { instanceAttachVersionFrame } from '../attach-version.ts'
+import {
+  type DaemonSessionPhase,
+  decideFirstFrame,
+  PANEL_IDENTITY_CLOSE_CODE,
+  SIGNED_SEND_FAILED_REASON,
+} from '../signed-session-gate.ts'
+import {
+  type PanelIdentity,
+  resolvePanelIdentityFromBinding,
+} from '../../lib/panel-identity/identity.ts'
+import {
+  buildSignedHello,
+  envelopeFrame,
+  type SignedSessionState,
+} from '../../lib/panel-identity/signed-session.ts'
+import { orderedPublicOrigins } from '../../lib/panel-identity/urls.ts'
+import { listInstanceHostnames } from '../../features/install/instance-hostnames.ts'
 import { HEARTBEAT_SECONDS_DEFAULT } from '../../features/install/heartbeat-policy.ts'
 import { verifyDaemonJwt } from '../authn/daemon-jwt.ts'
 import { getServerDaemonStateByServerId } from '../../features/servers/server-identity-db.ts'
@@ -200,6 +217,23 @@ const OUTBOX_PUMP_ALARM_MS = 2_000
 const OUTBOX_MAX_RETRIES = 10
 const OUTBOX_RETRY_MAX_MS = 300_000
 const CELL_GEO_HEADER = 'X-Turbopanel-Cell-Geo'
+/** Stamped by `workers-ws.ts` from `server.trust_level`; clients cannot set it. */
+const CELL_TRUST_LEVEL_HEADER = 'X-Turbopanel-Cell-Trust-Level'
+
+/**
+ * Session state kept on a daemon socket's hibernation attachment. `session`
+ * (with the next `seq`) is written there before each signed send, so a wake
+ * from hibernation continues the count. A socket from an older build has no
+ * `phase` and is treated as unsigned.
+ */
+type SocketSessionAttachment = {
+  connectionId: string
+  serverId: string
+  connectedAtMs?: number
+  phase?: DaemonSessionPhase
+  trustLevel?: number
+  session?: SignedSessionState
+}
 /** Schema stamp in `_cell_schema.version` — bump when `#ensureSchema` DDL changes.
  * DO SQLite rejects `PRAGMA user_version` (`SQLITE_AUTH`); `#readSchemaVersion`
  * tries that pragma first and falls back to this table on failure. */
@@ -211,6 +245,7 @@ type DaemonJwtKeyringFactory = () => Promise<DaemonJwtKeyring>
 let projectionDbFactoryForTests: ProjectionDbFactory | null = null
 let daemonJwtKeyringFactoryForTests: DaemonJwtKeyringFactory | null = null
 let forceOutboxSendErrorForTests: Error | null = null
+let panelIdentityBindingForTests: string | null = null
 let forceAlarmErrorForTests: Error | null = null
 /** When set, `#collectStaleDemotions` treats auto-response age as this many ms. */
 let forceAutoResponseAgeMsForTests: number | null = null
@@ -220,6 +255,11 @@ export function setDaemonCellProjectionDbFactoryForTests(
   factory: ProjectionDbFactory | null
 ): void {
   projectionDbFactoryForTests = factory
+}
+
+/** Test-only seam: the `TURBOPANEL_IDENTITY_KEYS` value a cell reads (null = the env binding). */
+export function setDaemonCellPanelIdentityBindingForTests(raw: string | null): void {
+  panelIdentityBindingForTests = raw
 }
 
 /** Test-only seam: override JWT keyring derivation on the WS-upgrade path. */
@@ -432,6 +472,9 @@ export class DaemonCellObject {
   #schemaReady = false
   #daemonJwtKeyring: DaemonJwtKeyring | null = null
   #daemonJwtKeyringPromise: Promise<DaemonJwtKeyring> | null = null
+  #panelIdentityPromise: Promise<PanelIdentity | null> | null = null
+  /** Per-socket send order (in memory: nothing is in flight across hibernation). */
+  readonly #sendChains = new WeakMap<WebSocket, Promise<void>>()
   readonly #diag: CellDiagnostics = createInitialCellDiagnostics()
   readonly #debugStorage: boolean
   #serverId: string | null = null
@@ -1525,7 +1568,12 @@ export class DaemonCellObject {
   }
 
   async #pumpOutboxToDaemonSockets(serverId: string): Promise<void> {
-    const sockets = this.#ctx.getWebSockets()
+    // A socket still waiting for the daemon's first frame takes nothing: the
+    // batch is not even read for it, so no entry sits in flight meanwhile.
+    const sockets = this.#ctx.getWebSockets().filter((ws) => {
+      const attachment = ws.deserializeAttachment() as SocketSessionAttachment | null
+      return attachment?.phase !== 'await-first-frame'
+    })
     if (sockets.length === 0) return
 
     this.#requeueExpiredInflightOutbox()
@@ -1550,10 +1598,7 @@ export class DaemonCellObject {
     ws: WebSocket,
     batch: DaemonOutboundEnvelope[]
   ): Promise<void> {
-    const attachment = ws.deserializeAttachment() as {
-      connectionId: string
-      serverId: string
-    } | null
+    const attachment = ws.deserializeAttachment() as SocketSessionAttachment | null
     if (attachment?.serverId !== serverId) return
 
     await forEachSequential(batch, async (envelope) => {
@@ -1569,7 +1614,7 @@ export class DaemonCellObject {
         if (forceOutboxSendErrorForTests) {
           throw forceOutboxSendErrorForTests
         }
-        ws.send(JSON.stringify(wireMsg))
+        await this.#sendToDaemon(ws, wireMsg)
         this.#markSent(serverId, envelope.deliveryId, attachment.connectionId)
         await this.#ackOutbox(serverId, [envelope.deliveryId])
       } catch {
@@ -1646,6 +1691,8 @@ export class DaemonCellObject {
       connectedAtMs,
       ...(remoteAddress ? { remoteAddress } : {}),
       ...(geo ? { geo } : {}),
+      phase: 'await-first-frame',
+      trustLevel: Number(request.headers.get(CELL_TRUST_LEVEL_HEADER) ?? '0') || 0,
     })
 
     this.#applyDaemonSocketAttach(serverId, connectionId, {
@@ -1664,27 +1711,131 @@ export class DaemonCellObject {
       `daemon-cell event=attach serverId=${serverId} conn=${connectionId} remoteAddress=${remoteAddress}`
     )
 
-    try {
-      server.send(
-        JSON.stringify(
-          instanceAttachVersionFrame(connectedAt, this.#env, {
-            heartbeatSeconds: HEARTBEAT_SECONDS_DEFAULT,
-          })
-        )
-      )
-    } catch (err) {
-      console.error(
-        `daemon-cell event=attach-version-failed serverId=${serverId} error=${
-          err instanceof Error ? err.message : String(err)
-        }`
-      )
-    }
-
+    // The `version` frame and the outbox pump wait for the daemon's first
+    // frame (`#openSession`): a pinned daemon must hear a signed hello first.
     this.#ctx.waitUntil(this.#projectConnected(serverId, connectedAt, geo ?? undefined, keyId))
-    this.#runBoundedBackground('pump-outbox', serverId, this.#pumpOutboxToDaemonSockets(serverId))
     await this.#scheduleNearestAlarm()
 
     return new Response(null, { status: 101, webSocket: client })
+  }
+
+  /** The identity key from the Workers binding, once per isolate; null = feature off. */
+  #getPanelIdentity(): Promise<PanelIdentity | null> {
+    this.#panelIdentityPromise ??= resolvePanelIdentityFromBinding(
+      panelIdentityBindingForTests ?? this.#env.TURBOPANEL_IDENTITY_KEYS
+    ).catch((err: unknown) => {
+      console.error(
+        `daemon-cell event=panel-identity-failed error=${err instanceof Error ? err.message : String(err)}`
+      )
+      this.#panelIdentityPromise = null
+      return null
+    })
+    return this.#panelIdentityPromise
+  }
+
+  /**
+   * The daemon's first frame picks the session. True when the frame is then
+   * handled as usual (an unsigned session's first frame).
+   */
+  async #openSession(
+    ws: WebSocket,
+    attachment: SocketSessionAttachment,
+    raw: string
+  ): Promise<boolean> {
+    const decision = await decideFirstFrame(raw, {
+      trustLevel: attachment.trustLevel ?? 0,
+      panelIdentity: () => this.#getPanelIdentity(),
+    })
+    if (decision.kind === 'refused') {
+      console.warn(
+        `daemon-cell event=session-refused serverId=${attachment.serverId} reason=${decision.reason}`
+      )
+      ws.close(PANEL_IDENTITY_CLOSE_CODE, decision.reason)
+      return false
+    }
+    if (decision.kind === 'legacy') {
+      ws.serializeAttachment({ ...attachment, phase: 'legacy' })
+      this.#startSession(ws, attachment)
+      return true
+    }
+    // The session (next seq 1) is on the attachment before anything is sent.
+    ws.serializeAttachment({ ...attachment, phase: 'signed', session: decision.session })
+    const urls =
+      (await this.#withProjectionDbResult('hello-urls', attachment.serverId, async (db) =>
+        orderedPublicOrigins(await listInstanceHostnames(db))
+      )) ?? []
+    ws.send(
+      await buildSignedHello(decision.identity, decision.nonce, decision.session, {
+        heartbeatSeconds: HEARTBEAT_SECONDS_DEFAULT,
+        urls,
+      })
+    )
+    this.#startSession(ws, attachment)
+    return false
+  }
+
+  /** `version` first, then the outbox, both through {@link #sendToDaemon}. */
+  #startSession(ws: WebSocket, attachment: SocketSessionAttachment): void {
+    const connectedAt = new Date(attachment.connectedAtMs ?? Date.now()).toISOString()
+    this.#sendToDaemon(
+      ws,
+      instanceAttachVersionFrame(connectedAt, this.#env, {
+        heartbeatSeconds: HEARTBEAT_SECONDS_DEFAULT,
+      })
+    ).catch((err: unknown) => {
+      console.error(
+        `daemon-cell event=attach-version-failed serverId=${attachment.serverId} error=${
+          err instanceof Error ? err.message : String(err)
+        }`
+      )
+    })
+    this.#runBoundedBackground(
+      'pump-outbox',
+      attachment.serverId,
+      this.#pumpOutboxToDaemonSockets(attachment.serverId)
+    )
+  }
+
+  /**
+   * Every control plane → daemon frame except the transport pong goes out
+   * here, one at a time per socket. In a signed session the next `seq` is
+   * written to the attachment (no await between read and write) before the
+   * frame is signed and sent; a send that fails after that closes the socket,
+   * because the daemon refuses any frame after a gap.
+   */
+  #sendToDaemon(ws: WebSocket, wire: { type: string }): Promise<void> {
+    const prior = this.#sendChains.get(ws) ?? Promise.resolve()
+    const run = prior.then(() => this.#sendNow(ws, wire))
+    this.#sendChains.set(
+      ws,
+      run.catch(() => undefined)
+    )
+    return run
+  }
+
+  async #sendNow(ws: WebSocket, wire: { type: string }): Promise<void> {
+    const attachment = ws.deserializeAttachment() as SocketSessionAttachment | null
+    const session = attachment?.phase === 'signed' ? attachment.session : undefined
+    if (!attachment || !session) {
+      ws.send(JSON.stringify(wire))
+      return
+    }
+    const seq = session.nextSeq
+    ws.serializeAttachment({ ...attachment, session: { ...session, nextSeq: seq + 1 } })
+    try {
+      const identity = await this.#getPanelIdentity()
+      if (identity?.current.kid !== session.kid) {
+        throw new Error('identity key changed during the session')
+      }
+      ws.send(await envelopeFrame(identity, session, wire, seq))
+    } catch (err) {
+      try {
+        ws.close(1011, SIGNED_SEND_FAILED_REASON)
+      } catch {
+        // Already closing.
+      }
+      throw err
+    }
   }
 
   #parseConnectGeoHeader(request: Request): ServerGeo | null {
@@ -2056,6 +2207,11 @@ export class DaemonCellObject {
     }
 
     const raw = typeof message === 'string' ? message : new TextDecoder().decode(message)
+
+    const session = attachment as SocketSessionAttachment
+    if (session.phase === 'await-first-frame' && !(await this.#openSession(ws, session, raw))) {
+      return
+    }
 
     const validated = validateDaemonInboundFrame(raw)
     if (!validated.ok) {
@@ -2859,7 +3015,7 @@ export class DaemonCellObject {
       const ack = await this.#withProjectionDbResult('command-outcome-ack', serverId, (db) =>
         ackForReportedOutcome(db, { serverId, envelope: inbound, record })
       )
-      if (ack) ws.send(JSON.stringify(ack))
+      if (ack) await this.#sendToDaemon(ws, ack)
     }
   }
 
@@ -2879,7 +3035,7 @@ export class DaemonCellObject {
       })
     )
     if (!outcome || !ws) return
-    ws.send(JSON.stringify(backupRunReportResultMessage(msg.id, outcome, nowIso())))
+    await this.#sendToDaemon(ws, backupRunReportResultMessage(msg.id, outcome, nowIso()))
   }
 
   /** Answer a `backup-copy-report` on its socket; no answer (a null outcome) makes the daemon resend. */
@@ -2894,7 +3050,7 @@ export class DaemonCellObject {
       })
     )
     if (!outcome || !ws) return
-    ws.send(JSON.stringify(backupCopyReportResultMessage(msg.id, outcome, nowIso())))
+    await this.#sendToDaemon(ws, backupCopyReportResultMessage(msg.id, outcome, nowIso()))
   }
 
   #readRequestRow(serverId: string, requestId: string): PendingRequestRecord | null {

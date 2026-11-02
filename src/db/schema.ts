@@ -734,6 +734,13 @@ export const server = pgTable(
      */
     trustPinnedBy: text('trust_pinned_by'),
     /**
+     * High-water mark of the daemon session trust this server has used: 0
+     * unsigned, 1 signed frames, 2 signed frames with a daemon attach proof.
+     * Raised only after the daemon's own proof, never lowered; at 1 or more
+     * the control plane refuses unsigned sessions and v1 sign-in proofs.
+     */
+    trustLevel: smallint('trust_level').default(0).notNull(),
+    /**
      * The server's container range (a /16 from the org container pool), set
      * the first time a cross-server container network or TurboFabric needs
      * it. Subnets of cross-server networks are carved from it, and a relay's
@@ -847,6 +854,7 @@ export const server = pgTable(
       'server_trust_pinned_by_check',
       sql`trust_pinned_by IS NULL OR trust_pinned_by IN ('install', 'upgrade', 'unsafe')`
     ),
+    check('server_trust_level_check', sql`trust_level BETWEEN 0 AND 2`),
   ]
 )
 /**
@@ -6236,6 +6244,28 @@ export const webhookDelivery = pgTable(
     // Stripe event ids (`src/webhook/billing/stripe.ts`).
     check('delivery_provider_check', sql`provider IN ('github', 'gitlab', 'stripe')`),
     unique('uniq_delivery_provider_external').on(table.provider, table.externalDeliveryId),
+  ]
+)
+/**
+ * Daemon challenge ids and request nonces that were already used, kept until
+ * `expiresAt` so a replay inside the validity window is refused. One insert
+ * per use (`src/features/servers/daemon-nonce.ts`); the maintenance sweep
+ * deletes expired rows. Holds no secret.
+ */
+export const nonce = pgTable(
+  'nonce',
+  {
+    value: text().primaryKey().notNull(),
+    kind: text().notNull(),
+    expiresAt: timestamp('expires_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }).notNull(),
+  },
+  (table) => [
+    index('idx_nonce_expires_at').using('btree', table.expiresAt.asc()),
+    check('nonce_kind_check', sql`kind IN ('challenge', 'request')`),
   ]
 )
 export const grant = pgTable(

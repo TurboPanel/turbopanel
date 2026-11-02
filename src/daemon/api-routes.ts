@@ -35,6 +35,7 @@ import { setDaemonSealingKey } from '../features/servers/daemon-sealing-key.ts'
 import { createIdentityDocumentCache } from '../lib/panel-identity/document-cache.ts'
 import { IDENTITY_SIGNATURE_HEADER } from '../lib/panel-identity/document.ts'
 import type { PanelIdentity } from '../lib/panel-identity/identity.ts'
+import { signDaemonResponses } from '../lib/panel-identity/signed-response.ts'
 import {
   getDaemonCellRegistry,
   getDb,
@@ -177,6 +178,14 @@ import {
   computePublicKeyFingerprint,
   verifyDaemonSignature,
 } from './authn/server-key.ts'
+import {
+  buildAuthPayloadV2,
+  buildEnrollmentPayloadV2,
+  checkProofVersion,
+  parseProofVersion,
+  type ProofVersion,
+} from './authn/proof-version.ts'
+import { markChallengeUsed } from '../features/servers/daemon-nonce.ts'
 import type { RateLimiter } from './rate-limit/contracts.ts'
 import { createNoopRateLimiter } from './rate-limit/contracts.ts'
 import {
@@ -1285,6 +1294,40 @@ type DaemonApiEnv = {
 /** `Retry-After` (seconds) sent with a daemon REST 429. */
 const DAEMON_REST_RETRY_AFTER_SECONDS = '5'
 
+/**
+ * Spend a sign-in challenge once its proof verified: a second use of the same
+ * challenge (a replayed request body) answers as an expired challenge.
+ */
+function spendChallenge(db: Db, challenge: { nonce: string; at: string }): Promise<boolean> {
+  return markChallengeUsed(
+    db,
+    challenge.nonce,
+    new Date(Date.parse(challenge.at) + DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS)
+  )
+}
+
+function enrollProofPayload(
+  proof: ProofVersion,
+  fields: Parameters<typeof buildEnrollmentPayload>[0]
+): string {
+  return proof.version === 2
+    ? buildEnrollmentPayloadV2({
+        ...fields,
+        panelFingerprint: proof.panelFingerprint,
+        iat: proof.iat,
+      })
+    : buildEnrollmentPayload(fields)
+}
+
+function authProofPayload(
+  proof: ProofVersion,
+  fields: Parameters<typeof buildAuthPayload>[0]
+): string {
+  return proof.version === 2
+    ? buildAuthPayloadV2({ ...fields, panelFingerprint: proof.panelFingerprint, iat: proof.iat })
+    : buildAuthPayload(fields)
+}
+
 export function registerDaemonApiRoutes<E extends Env>(
   app: Hono<E>,
   options: {
@@ -1337,6 +1380,7 @@ export function registerDaemonApiRoutes<E extends Env>(
   const { secrets, challengeSigningSecrets, secretsConfig } = options
   const runtime = options.runtime ?? 'workers'
   const identityDocumentCache = createIdentityDocumentCache()
+  daemon.use('*', signDaemonResponses(options.panelIdentity))
   const tlsPublic = options.tlsPublic ?? false
   const deployment = metricsDeploymentKindForRuntime(runtime)
   const metricsChartCache = createMetricsChartCache(runtime)
@@ -1694,6 +1738,10 @@ export function registerDaemonApiRoutes<E extends Env>(
     if (!parsedFields.ok) {
       return c.json({ ok: false, error: parsedFields.error }, parsedFields.status)
     }
+    const enrollProof = parseProofVersion(body)
+    if (!enrollProof.ok) {
+      return c.json({ ok: false, error: enrollProof.error }, enrollProof.status)
+    }
     const {
       licenseId,
       licenseToken,
@@ -1718,6 +1766,15 @@ export function registerDaemonApiRoutes<E extends Env>(
     if (!challenge) {
       return c.json({ ok: false, error: 'Invalid or expired challenge' }, 400)
     }
+    // A new server has used no signed session yet, so v1 stays accepted here.
+    const enrollProofCheck = checkProofVersion(enrollProof.value, {
+      identity: options.panelIdentity ? await options.panelIdentity() : null,
+      trustLevel: 0,
+      nowMs: Date.now(),
+    })
+    if (!enrollProofCheck.ok) {
+      return c.json({ ok: false, error: enrollProofCheck.error }, enrollProofCheck.status)
+    }
 
     // The per-license bucket is charged before the token check: verifying it
     // is an Argon2 hash, so charging after let a wrong token buy one hash per
@@ -1733,7 +1790,7 @@ export function registerDaemonApiRoutes<E extends Env>(
     }
 
     const fingerprint = await computePublicKeyFingerprint(publicJwk)
-    const payload = buildEnrollmentPayload({
+    const payload = enrollProofPayload(enrollProof.value, {
       challengeId,
       nonce: challenge.nonce,
       licenseId,
@@ -1744,6 +1801,9 @@ export function registerDaemonApiRoutes<E extends Env>(
     const verified = await verifyDaemonSignature(publicJwk, payload, signature)
     if (!verified) {
       return c.json({ ok: false, error: 'Invalid signature' }, 403)
+    }
+    if (!(await spendChallenge(db, challenge))) {
+      return c.json({ ok: false, error: 'Invalid or expired challenge' }, 400)
     }
 
     const fabricDeps = enrollFabricDepsFromContext(c)
@@ -1797,6 +1857,10 @@ export function registerDaemonApiRoutes<E extends Env>(
     if (!parsedFields.ok) {
       return c.json({ ok: false, error: parsedFields.error }, parsedFields.status)
     }
+    const sessionProof = parseProofVersion(body)
+    if (!sessionProof.ok) {
+      return c.json({ ok: false, error: sessionProof.error }, sessionProof.status)
+    }
     const { serverId, keyId, challengeId, signature, hostname, machineKey } = parsedFields.value
 
     const sessionLimited = await enforceDaemonRestLimit(
@@ -1821,8 +1885,16 @@ export function registerDaemonApiRoutes<E extends Env>(
     if (!challenge) {
       return c.json({ ok: false, error: 'Invalid or expired challenge' }, 400)
     }
+    const sessionProofCheck = checkProofVersion(sessionProof.value, {
+      identity: options.panelIdentity ? await options.panelIdentity() : null,
+      trustLevel: keyState.daemonState.trustLevel ?? 0,
+      nowMs: Date.now(),
+    })
+    if (!sessionProofCheck.ok) {
+      return c.json({ ok: false, error: sessionProofCheck.error }, sessionProofCheck.status)
+    }
 
-    const payload = buildAuthPayload({
+    const payload = authProofPayload(sessionProof.value, {
       challengeId,
       nonce: challenge.nonce,
       serverId,
@@ -1837,6 +1909,9 @@ export function registerDaemonApiRoutes<E extends Env>(
     )
     if (!verified) {
       return c.json({ ok: false, error: 'Invalid signature' }, 403)
+    }
+    if (!(await spendChallenge(db, challenge))) {
+      return c.json({ ok: false, error: 'Invalid or expired challenge' }, 400)
     }
 
     const serverSessionLimited = await enforceDaemonRestLimit(
