@@ -71,6 +71,20 @@ High Availability (Workers) must not contain any of it.
   fetches `/api/daemon/v1/instance/identity` through the edge and checks the
   signature names this control plane's key. Removing the last name stops the
   connector (empty token) and deletes the tunnel.
+- **Connector facts without an account** (`cloudflare/instance-tunnel.ts`,
+  `tunnel-routes.ts`). `GET /instance/ingress/tunnel` fills
+  `connector.edgeConnections` and `connector.hostnames` from the daemon's
+  `server.tunnel.status` (daemon feature `tunnel-status-facts-v1`: the
+  connector's own `/ready` and `/config`), null when an older daemon does not
+  send them. For a tunnel run from a pasted token those are the routes the
+  Cloudflare dashboard pushed, so no account is needed to show them; the
+  account only adds DNS-01 and edge details (locations, edge status).
+- **Pasted run token per hostname.** A `cloudflare-tunnel` row with no account
+  and nothing applied reads its status from the connector
+  (`IngressDeps.connectorHostnames`): `healthy` when the connector routes the
+  name (exact or one-label `*.` wildcard), else `not-applied` with a sentence.
+  Marking such a row needs no account (the PATCH accepts `ingressId: null`);
+  Preflight and Connect still need one.
 - **DNS-01 for the control plane's own names** (`dns01/`). The panel orders on
   the existing ACME client with its own account (`INSTANCE_ACME_ACCOUNT`
   setting, sealed, swept by the re-encrypt `identity` stage; contact, terms and

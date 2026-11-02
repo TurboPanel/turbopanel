@@ -9,7 +9,7 @@ import {
 import { buildPanelIngress, tunnelName, tunnelPhase } from '../cloudflare/tunnel-config.ts'
 import type { HostnameWithState, IngressContext } from '../provider.ts'
 import { applyHostname } from '../registry.ts'
-import { cloudflareTunnelProvider } from './cloudflare-tunnel.ts'
+import { cloudflareTunnelProvider, routesName } from './cloudflare-tunnel.ts'
 
 const test = Deno.test.bind(Deno)
 
@@ -335,4 +335,33 @@ test('an adopted tunnel keeps its own catch-all and its other configuration memb
     after.config.ingress.map((rule) => rule.service),
     ['http://localhost:9000']
   )
+})
+
+test('a name with no account reads its state from the connector (pasted run token)', async () => {
+  const h = harness()
+  const row = { ...hostname('h1', 'panel.example.com'), ingressId: null }
+  const withRoutes = (routed: string[] | null) => {
+    const ctx = h.ctx(row)
+    return {
+      ...ctx,
+      deps: { ...ctx.deps!, account: null, connectorHostnames: () => Promise.resolve(routed) },
+    }
+  }
+  const routed = await cloudflareTunnelProvider.status(withRoutes(['panel.example.com']))
+  assertEquals(routed.phase, 'healthy')
+  assertEquals(routed.facts?.routedByConnector, true)
+  const missing = await cloudflareTunnelProvider.status(withRoutes(['other.example.com']))
+  assertEquals(missing.phase, 'not-applied')
+  assert(missing.detail)
+  assertEquals((await cloudflareTunnelProvider.status(withRoutes(null))).phase, 'not-applied')
+  // Nothing reaches Cloudflare: there is no account to ask.
+  assertEquals(h.cf.log.length, 0)
+})
+
+test('a routed wildcard covers exactly one label', () => {
+  assertEquals(routesName(['*.example.com'], 'panel.example.com'), true)
+  assertEquals(routesName(['*.example.com'], 'a.b.example.com'), false)
+  assertEquals(routesName(['*.example.com'], 'example.com'), false)
+  assertEquals(routesName(['panel.example.com'], 'panel.example.com'), true)
+  assertEquals(routesName([], 'panel.example.com'), false)
 })

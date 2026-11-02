@@ -25,6 +25,7 @@ import { forEachSequential } from '../../../lib/sequential.ts'
 import { verifyIdentityResponse } from '../../../lib/panel-identity/document.ts'
 import type { DerivedSecretsConfig, SecretsConfig } from '../../../lib/secrets/secrets.ts'
 import { findIngressAccount, openAccountToken } from './accounts.ts'
+import { readInstanceConnector } from './cloudflare/instance-tunnel.ts'
 import { capabilitiesFor } from './capabilities.ts'
 import { readEdgeGate } from './gate.ts'
 import type {
@@ -161,6 +162,8 @@ export async function buildIngressContext(
           secretsConfig: deps.secretsConfig,
         })),
     gate: await readEdgeGate(db, deps.env),
+    connectorHostnames: async () =>
+      (await readInstanceConnector(db, deps.registry)).connector?.hostnames ?? null,
     account: hostname.ingressId ? await findIngressAccount(db, hostname.ingressId) : null,
     openToken: (account) => openAccountToken(db, deps.dataEncryption, account),
     hostnames,

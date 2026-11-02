@@ -1,7 +1,8 @@
 /**
  * The control plane's own tunnel status, `/api/admin/v1/instance/ingress/tunnel`:
- * the connector on the control plane host and, with a connected Cloudflare
- * account, the tunnel at the edge. Works for a pasted run token too.
+ * the connector on the control plane host (state, live edge connections and
+ * routed names, no account needed) and, with a connected Cloudflare account,
+ * the tunnel at the edge. Works for a pasted run token too.
  */
 import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../../app/app.ts'
@@ -25,7 +26,8 @@ async function edgeHalf(
   if (!account)
     return {
       edge: null,
-      edgeNote: 'Connect a Cloudflare account to see the tunnel at the edge.',
+      edgeNote:
+        'Connect a Cloudflare account for DNS-01 certificates and edge details such as locations.',
       edgeError: null,
     }
   try {

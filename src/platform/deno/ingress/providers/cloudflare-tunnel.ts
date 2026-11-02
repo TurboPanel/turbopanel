@@ -299,9 +299,40 @@ async function statusWith(
   }
 }
 
+/** Whether a routed name (exact, or a one-label `*.` wildcard) covers `name`. */
+export function routesName(routed: readonly string[], name: string): boolean {
+  return routed.some((item) => {
+    if (item === name) return true
+    if (!item.startsWith('*.')) return false
+    const suffix = item.slice(1)
+    const label = name.endsWith(suffix) ? name.slice(0, -suffix.length) : ''
+    return label.length > 0 && !label.includes('.')
+  })
+}
+
+/**
+ * A name with no account and nothing applied: the tunnel runs from a pasted
+ * run token, so its routes live in the provider dashboard. The connector's own
+ * config says whether it routes this name.
+ */
+async function pastedTokenStatus(ctx: IngressContext, deps: IngressDeps): Promise<IngressStatus> {
+  const name = dnsName(ctx.hostname.host)
+  const routed = deps.connectorHostnames ? await deps.connectorHostnames() : null
+  if (!name || !routed) return { phase: 'not-applied' }
+  if (routesName(routed, name)) {
+    return { phase: 'healthy', facts: { routedByConnector: true } }
+  }
+  return {
+    phase: 'not-applied',
+    detail: 'The tunnel connector does not route this name. Add it to the tunnel in Cloudflare.',
+    facts: { routedByConnector: false },
+  }
+}
+
 async function status(ctx: IngressContext): Promise<IngressStatus> {
   const deps = ctx.deps
   const state = readTunnelState(ownState(ctx))
+  if (deps && !state && !ctx.hostname.ingressId) return await pastedTokenStatus(ctx, deps)
   if (!deps || !state) return { phase: 'not-applied' }
   return await withProvider(
     () => statusWith(ctx, deps, state),

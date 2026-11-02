@@ -66,6 +66,11 @@ export type IngressDeps = {
   now: () => Date
   fetch: typeof fetch
   gate: EdgeGate
+  /**
+   * Names the connector on the control plane host routes, as it reports them
+   * (also for a pasted run token); null when it has not said. Read lazily.
+   */
+  connectorHostnames?: () => Promise<string[] | null>
   /** Whether the daemon on the control plane host is connected (it runs the connector). */
   colocatedDaemonConnected: () => Promise<boolean>
   /** Hand a tunnel run token to the co-located daemon only; '' stops the connector. */
