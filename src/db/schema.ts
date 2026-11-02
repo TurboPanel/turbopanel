@@ -697,6 +697,29 @@ export const server = pgTable(
      */
     isFabricEnabled: boolean('is_fabric_enabled').default(true).notNull(),
     /**
+     * The daemon's X25519 sealing key (public half only), registered by the
+     * daemon and signed by its Ed25519 key. `kid` is the key's fingerprint.
+     * `/secrets/decrypt` seals answers to it when the daemon lists
+     * `daemon-sealed-secrets-v1`.
+     */
+    sealingKeyKid: text('sealing_key_kid'),
+    sealingKeyPub: text('sealing_key_pub'),
+    sealingKeyReportedAt: timestamp('sealing_key_reported_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }),
+    /**
+     * Last time `/secrets/decrypt` answered this server in plaintext (an older
+     * daemon, or a newer one with no registered sealing key). Written at most
+     * hourly; the edge go-live gate reads "any recent value".
+     */
+    plaintextSecretsAt: timestamp('plaintext_secrets_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }),
+    /**
      * Operator-chosen TurboFabric role (`gateway` accepts connections, `client`
      * only dials out). NULL = automatic: gateway when the server has its own
      * public address (an endpoint override does not count), else client. Stored
