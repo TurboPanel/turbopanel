@@ -1,7 +1,10 @@
 /**
  * Context-free pieces of the public-URL apply: the payload (with the edge
  * address ranges) and a whole apply to the co-located daemon, so the admin
- * route and the self-hosted refresh tick send the same body.
+ * route and the self-hosted maintenance tick send the same body. The tick
+ * sends only when the body differs from the one last applied, so a field a
+ * new build adds (such as `publicPort`) reaches the daemon once after an
+ * upgrade without anyone pressing Save.
  */
 
 import type { Db } from '../db/connection.ts'
@@ -11,12 +14,23 @@ import { resolveColocatedServerId } from '../client/authn/install-state.ts'
 import { resolveInstanceSecretSealing } from '../features/install/instance-secret-sealing.ts'
 import { listInstanceHostnames } from '../features/install/instance-hostnames.ts'
 import { getPublicUrls } from '../features/install/public-urls.ts'
-import { markEdgeTrustApplied, resolveEdgeTrustForServer } from '../features/install/edge-trust.ts'
+import {
+  EDGE_TRUST_FEATURE,
+  loadEdgeTrustState,
+  markPublicUrlsApplied,
+  resolveEdgeTrustForServer,
+  sha256Hex,
+} from '../features/install/edge-trust.ts'
+import { INSTANCE_HOSTNAME_PUBLIC_PORT_FEATURE } from '../lib/version-wire.ts'
 import {
   colocatedDaemonFeatures,
   resolvePublicUrlsApplyPayload,
 } from './public-urls-apply-payload.ts'
-import { waitForPublicUrlsApply, type PublicUrlsApplyPayload } from './routes-helpers.ts'
+import {
+  waitForPublicUrlsApply,
+  type PublicUrlsApplyPayload,
+  type PublicUrlsApplyWaitResult,
+} from './routes-helpers.ts'
 
 export type PublicUrlsPayloadDeps = {
   db: Db
@@ -47,15 +61,75 @@ export async function buildPublicUrlsPayload(
   return edgeTrust ? { ...payload, edgeTrust } : payload
 }
 
-/** Record that the daemon rendered this set, once the apply succeeded. */
-export async function recordEdgeTrustApplied(
+/**
+ * Identifies what the daemon renders from a body. Key material is left out:
+ * a sealed key is new on every build, so hashing it would resend forever.
+ */
+export async function publicUrlsPayloadFingerprint(
+  payload: PublicUrlsApplyPayload
+): Promise<string> {
+  const hostnames =
+    payload.hostnames?.map((entry) => [
+      entry.host,
+      entry.source,
+      entry.publicPort ?? null,
+      entry.uploadedCertId ?? null,
+      entry.certPem ?? null,
+    ]) ?? null
+  return sha256Hex(
+    JSON.stringify([
+      payload.urls,
+      hostnames,
+      payload.instanceAcme ?? null,
+      payload.edgeTrust?.hash ?? null,
+    ])
+  )
+}
+
+/** Record that the daemon rendered this body, once the apply succeeded. */
+export async function recordPublicUrlsApplied(
   db: Db,
   payload: PublicUrlsApplyPayload
 ): Promise<void> {
-  if (payload.edgeTrust) await markEdgeTrustApplied(db, payload.edgeTrust.hash, new Date())
+  await markPublicUrlsApplied(
+    db,
+    {
+      payloadHash: await publicUrlsPayloadFingerprint(payload),
+      ...(payload.edgeTrust ? { edgeTrustHash: payload.edgeTrust.hash } : {}),
+    },
+    new Date()
+  )
 }
 
-/** Apply the stored hostnames, with current edge ranges, to the co-located daemon. */
+/**
+ * Send `payload` unless it matches the body the daemon last applied.
+ * Returns whether it was sent.
+ */
+export async function applyPublicUrlsIfChanged(
+  db: Db,
+  payload: PublicUrlsApplyPayload,
+  send: (payload: PublicUrlsApplyPayload) => Promise<PublicUrlsApplyWaitResult>
+): Promise<boolean> {
+  const hash = await publicUrlsPayloadFingerprint(payload)
+  if ((await loadEdgeTrustState(db)).appliedPayloadHash === hash) return false
+  const result = await send(payload)
+  if (result.kind !== 'done') {
+    throw new Error(result.kind === 'timeout' ? 'apply timed out' : result.error)
+  }
+  await recordPublicUrlsApplied(db, payload)
+  return true
+}
+
+/** Wire features whose fields only reach a daemon through a fresh apply. */
+const REAPPLY_FEATURES: readonly string[] = [
+  EDGE_TRUST_FEATURE,
+  INSTANCE_HOSTNAME_PUBLIC_PORT_FEATURE,
+]
+
+/**
+ * Apply the stored hostnames, with current edge ranges, to the co-located
+ * daemon when the body changed since the last apply.
+ */
 export async function applyStoredPublicUrls(
   deps: Omit<PublicUrlsPayloadDeps, 'serverId' | 'urls' | 'daemonVersion'> & {
     registry: DaemonCellRegistry
@@ -64,22 +138,24 @@ export async function applyStoredPublicUrls(
   const serverId = await resolveColocatedServerId(deps.db, deps.registry)
   if (!serverId) throw new Error('no co-located daemon connected')
   const snapshot = (await deps.registry.getSnapshots([serverId])).get(serverId)
-  if (!snapshot?.connected) throw new Error('co-located daemon disconnected')
-  // A daemon that does not advertise the feature has nothing to render: skip
-  // the payload (and any key resealing) and leave `appliedHash` unset so the
-  // first tick after it upgrades does the apply.
-  const modes = (await listInstanceHostnames(deps.db)).map((row) => row.mode)
-  if (!(await resolveEdgeTrustForServer(deps.db, serverId, modes))) return
+  // The tick runs every few minutes: a daemon that is down gets the body on
+  // the first pass after it reconnects.
+  if (!snapshot?.connected) return
+  // An older daemon has nothing new to render: skip the payload (and any key
+  // resealing) and leave the stored hash alone so the first tick after it
+  // upgrades does the apply.
+  const features = await colocatedDaemonFeatures(deps.db, serverId)
+  if (!REAPPLY_FEATURES.some((feature) => features.includes(feature))) return
+  // Nothing is published before install finishes; never send an empty list.
+  const urls = await getPublicUrls(deps.db)
+  if (urls.length === 0) return
   const payload = await buildPublicUrlsPayload({
     ...deps,
     serverId,
-    urls: await getPublicUrls(deps.db),
+    urls,
     daemonVersion: snapshot.daemonBuild?.version,
   })
-  if (!payload.edgeTrust) return
-  const result = await waitForPublicUrlsApply(deps.registry, serverId, payload)
-  if (result.kind !== 'done') {
-    throw new Error(result.kind === 'timeout' ? 'apply timed out' : result.error)
-  }
-  await recordEdgeTrustApplied(deps.db, payload)
+  await applyPublicUrlsIfChanged(deps.db, payload, (body) =>
+    waitForPublicUrlsApply(deps.registry, serverId, body)
+  )
 }

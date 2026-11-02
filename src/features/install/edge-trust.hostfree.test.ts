@@ -5,7 +5,7 @@ import {
   edgeTrustForModes,
   emptyEdgeTrustHash,
   loadEdgeTrustState,
-  markEdgeTrustApplied,
+  markPublicUrlsApplied,
   providersForModes,
   type EdgeTrustState,
 } from './edge-trust.ts'
@@ -91,10 +91,25 @@ test('an absent or non-object setting reads as an empty state', async () => {
 test('marking a set applied keeps the ranges and stamps the hash and time', async () => {
   const rows: Row[] = [{ key: EDGE_TRUST_SETTING_KEY, value: { cloudflare: STATE.cloudflare } }]
   const db = fakeSettingsDb(rows)
-  await markEdgeTrustApplied(db, 'abc', new Date('2026-11-01T00:00:00Z'))
+  await markPublicUrlsApplied(
+    db,
+    { payloadHash: 'body', edgeTrustHash: 'abc' },
+    new Date('2026-11-01T00:00:00Z')
+  )
   const saved = await loadEdgeTrustState(db)
   assertEquals(saved.cloudflare, STATE.cloudflare)
   assertEquals(saved.appliedHash, 'abc')
   assertEquals(saved.appliedAt, '2026-11-01T00:00:00.000Z')
+  assertEquals(saved.appliedPayloadHash, 'body')
   assertEquals((await emptyEdgeTrustHash()).length, 64)
+})
+
+test('a body without an edge set records only its own hash', async () => {
+  const rows: Row[] = [{ key: EDGE_TRUST_SETTING_KEY, value: { appliedHash: 'old' } }]
+  const db = fakeSettingsDb(rows)
+  await markPublicUrlsApplied(db, { payloadHash: 'body' }, new Date('2026-11-01T00:00:00Z'))
+  const saved = await loadEdgeTrustState(db)
+  assertEquals(saved.appliedHash, 'old')
+  assertEquals(saved.appliedAt, undefined)
+  assertEquals(saved.appliedPayloadHash, 'body')
 })
