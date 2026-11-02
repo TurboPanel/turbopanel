@@ -15,6 +15,7 @@ import {
 } from '../lib/version-wire.ts'
 import { recordingRedisRegistry } from '../test-fixtures/recording-redis-registry.ts'
 import { parseTestSecretsConfig } from '../test-fixtures/secrets.ts'
+import { setSelfHostedAddress } from '../features/install/ingress-modes.ts'
 import { resolvePublicUrlsApplyPayload } from './public-urls-apply-payload.ts'
 import { waitForPublicUrlsApply } from './routes-helpers.ts'
 
@@ -202,5 +203,16 @@ test('each hostname carries its public port only for a daemon that lists the fea
     })
     const entry = capable.hostnames?.find((candidate) => candidate.host === host)
     assertEquals(entry?.publicPort, 443)
+
+    // Self-hosted, the daemon is always sent 8443 whatever the row stored.
+    setSelfHostedAddress(true)
+    try {
+      const fixed = await resolvePublicUrlsApplyPayload(tx, [host], '0.1.1', undefined, {}, null, {
+        daemonFeatures: [INSTANCE_HOSTNAME_PUBLIC_PORT_FEATURE],
+      })
+      assertEquals(fixed.hostnames?.find((candidate) => candidate.host === host)?.publicPort, 8443)
+    } finally {
+      setSelfHostedAddress(false)
+    }
   })
 })

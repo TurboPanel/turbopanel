@@ -24,7 +24,10 @@ import { coversHostname } from '../../lib/tls/match.ts'
 import {
   DEFAULT_PUBLIC_PORT,
   isIngressMode,
+  fixedPublicPort,
+  isAllowedPublicPort,
   isPublicPort,
+  SELF_HOSTED_PUBLIC_PORT_ERROR,
   type IngressMode,
 } from './ingress-modes.ts'
 import { redactUrlSecrets } from '../upgrades/redact-url-secrets.ts'
@@ -159,7 +162,8 @@ function mapStored(row: HostnameRow): StoredHostname {
     notAfter: row.notAfter,
     acmeState: row.acmeState ?? null,
     mode: isIngressMode(row.mode) ? row.mode : DEFAULT_INGRESS_FIELDS.mode,
-    publicPort: row.publicPort,
+    // Self-hosted rows read as 8443 whatever an older save stored.
+    publicPort: fixedPublicPort() ?? row.publicPort,
     isPrimary: row.isPrimary,
     isDaemonDial: row.isDaemonDial,
     ingressId: row.ingressId,
@@ -834,6 +838,16 @@ function previousHostname(
 function ingressChoiceFailure(
   entries: readonly InstanceHostnameEntry[]
 ): InstanceHostnameFailure | null {
+  const wrongPort = entries.filter(
+    (entry) => isPublicPort(entry.publicPort) && !isAllowedPublicPort(entry.publicPort)
+  )
+  if (wrongPort.length > 0) {
+    return {
+      ok: false,
+      error: SELF_HOSTED_PUBLIC_PORT_ERROR,
+      invalid: wrongPort.map((entry) => entry.host),
+    }
+  }
   const badPort = entries.filter(
     (entry) => entry.publicPort !== undefined && !isPublicPort(entry.publicPort)
   )

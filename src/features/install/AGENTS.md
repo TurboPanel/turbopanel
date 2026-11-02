@@ -121,6 +121,13 @@ advertises `instance-hostname-public-port-v1`; its Caddy then sends a request
 for that hostname on any other port (an edge answering both 443 and 8443) to
 the public port with a 308.
 
+On a self-hosted control plane (the Deno server calls `setSelfHostedAddress`
+at start-up) the public port is fixed at 8443, even behind a tunnel that also
+answers on 443: rows read as 8443 whatever an older save stored, saves and
+connection-mode changes naming any other port are refused with a 400, and
+every origin above (including forwarded-host and base-URL fallbacks) ends in
+`:8443`. High Availability (Workers) never sets it and keeps the per-name port.
+
 Hostnames in the `cloudflare-proxy` or `bunny-proxy` mode also need the
 provider's published edge ranges so Caddy can read the visitor address.
 `edge-trust.ts` holds the ranges in the `EDGE_TRUST` setting and builds the

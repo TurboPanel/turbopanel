@@ -93,6 +93,7 @@ import {
 } from '../../features/install/instance-hostnames.ts'
 import { ensurePanelIdentityDetailed } from '../../lib/panel-identity/identity.ts'
 import { recordAudit } from '../../features/audit/audit-records.ts'
+import { setSelfHostedAddress } from '../../features/install/ingress-modes.ts'
 import { orderedPublicOrigins } from '../../lib/panel-identity/urls.ts'
 import { registerDaemonWebSocket } from '../../daemon/deno-ws.ts'
 import { createHeartbeatReader } from './heartbeat-reader.ts'
@@ -387,6 +388,8 @@ async function sweepStaleCommandsPhase(db: Db, commandQueue?: CommandQueue): Pro
 }
 
 export async function startDenoServer(options: StartDenoServerOptions = {}): Promise<void> {
+  // Self-hosted: the control plane's address is always :8443.
+  setSelfHostedAddress(true)
   setHostIpv4Discovery(
     () => preferredIpv4FromIps(collectServerIps(readDefaultRouteInterfaces())) ?? null
   )

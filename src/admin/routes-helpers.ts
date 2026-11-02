@@ -10,7 +10,11 @@ import {
   type InstanceHostnameWireEntry,
 } from '../contracts/cell-protocol.ts'
 import { cellTrace } from '../lib/logger.ts'
-import { isPublicPort } from '../features/install/ingress-modes.ts'
+import {
+  isAllowedPublicPort,
+  isPublicPort,
+  SELF_HOSTED_PUBLIC_PORT_ERROR,
+} from '../features/install/ingress-modes.ts'
 import { PublicUrlsApplyPayloadError } from './public-urls-apply-payload.ts'
 import { InstanceSecretSealingError } from '../features/install/instance-secret-sealing.ts'
 import {
@@ -323,6 +327,9 @@ function parseIngressChoices(entry: {
   const { publicPort, isPrimary } = entry
   if (publicPort !== undefined && !isPublicPort(publicPort)) {
     return { ok: false, error: 'publicPort must be a whole number from 1 to 65535' }
+  }
+  if (publicPort !== undefined && !isAllowedPublicPort(publicPort)) {
+    return { ok: false, error: SELF_HOSTED_PUBLIC_PORT_ERROR }
   }
   if (isPrimary !== undefined && typeof isPrimary !== 'boolean') {
     return { ok: false, error: 'isPrimary must be true or false' }
