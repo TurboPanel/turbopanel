@@ -279,9 +279,9 @@ export async function setHostnameIngress(
   if (input.publicPort !== undefined && !isPublicPort(input.publicPort)) {
     return invalid('publicPort must be a whole number from 1 to 65535')
   }
-  const ingressId = input.ingressId === undefined ? current.ingressId : input.ingressId
-  const problem = await accountProblem(db, mode, ingressId)
-  if (problem) return invalid(problem)
+  // A mode without a provider drops the account unless the caller names one.
+  const keptAccount = capabilitiesFor(mode).provider ? current.ingressId : null
+  const ingressId = input.ingressId === undefined ? keptAccount : input.ingressId
   const applied = (await storedFor(db, hostnameId)).provider !== null
   const changes = mode !== current.mode || ingressId !== current.ingressId
   if (applied && changes) {
@@ -291,6 +291,8 @@ export async function setHostnameIngress(
       error: 'Disconnect this hostname before changing its mode or account.',
     }
   }
+  const problem = await accountProblem(db, mode, ingressId)
+  if (problem) return invalid(problem)
   const publicPort = (input.publicPort as number | undefined) ?? current.publicPort
   const nextIngressId = capabilitiesFor(mode).provider
     ? ((ingressId as string | null) ?? null)
