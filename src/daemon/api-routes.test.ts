@@ -4418,3 +4418,41 @@ test('POST /auth/session refuses a v1 proof once the server has used a signed se
     assertEquals(((await refused.json()) as { error: string }).error, 'Signed proof required')
   })
 })
+
+test('POST /enroll refuses a v1 proof when re-enrolling a server that used a signed session', async () => {
+  await withEnrollFixture(async ({ db, app, organizationId, serverId, machineKey, hostname }) => {
+    await db.update(server).set({ trustLevel: 1 }).where(eq(server.id, serverId))
+    const reenroll = await mintTicket(db, { organizationId, serverId })
+    const refused = await postEnroll(app, {
+      licenseId: reenroll.id,
+      licenseToken: reenroll.plaintext,
+      serverId,
+      machineKey,
+      hostname,
+      key: await generateKeyMaterial(),
+    })
+    assertEquals(refused.status, 403)
+    assertEquals(((await refused.json()) as { error: string }).error, 'Signed proof required')
+    // Refused before the ticket was spent.
+    const [row] = await db
+      .select({ usedAt: ticket.usedAt })
+      .from(ticket)
+      .where(eq(ticket.id, reenroll.id))
+    assertEquals(row?.usedAt, null)
+  })
+})
+
+test('POST /enroll still takes a v1 proof for a re-enroll of a level 0 server', async () => {
+  await withEnrollFixture(async ({ db, app, organizationId, serverId, machineKey, hostname }) => {
+    const reenroll = await mintTicket(db, { organizationId, serverId })
+    const response = await postEnroll(app, {
+      licenseId: reenroll.id,
+      licenseToken: reenroll.plaintext,
+      serverId,
+      machineKey,
+      hostname,
+      key: await generateKeyMaterial(),
+    })
+    assertEquals(response.status, 200)
+  })
+})

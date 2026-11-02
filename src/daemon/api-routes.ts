@@ -1339,6 +1339,17 @@ async function refuseUnverifiedProof(
   return null
 }
 
+/** `server.trust_level` of one server; 0 for an unknown id or none. */
+async function readServerTrustLevel(db: Db, serverId: string | null): Promise<number> {
+  if (!serverId) return 0
+  const [row] = await db
+    .select({ trustLevel: server.trustLevel })
+    .from(server)
+    .where(eq(server.id, serverId))
+    .limit(1)
+  return row?.trustLevel ?? 0
+}
+
 /** Bind the key for a verified enroll and answer; a replaced key purges the old cell. */
 async function completeEnroll(
   c: Context<DaemonApiEnv>,
@@ -1829,18 +1840,6 @@ export function registerDaemonApiRoutes<E extends Env>(
     if (!challenge) {
       return c.json({ ok: false, error: 'Invalid or expired challenge' }, 400)
     }
-    // A new server has used no signed session yet, so v1 stays accepted here.
-    const enrollProofResult = await refuseUnacceptableProof(body, {
-      identity: options.panelIdentity,
-      trustLevel: 0,
-    })
-    if ('refusal' in enrollProofResult) {
-      return c.json(
-        { ok: false, error: enrollProofResult.refusal.error },
-        enrollProofResult.refusal.status
-      )
-    }
-    const enrollProof = enrollProofResult.proof
 
     // The per-license bucket is charged before the token check: verifying it
     // is an Argon2 hash, so charging after let a wrong token buy one hash per
@@ -1854,6 +1853,24 @@ export function registerDaemonApiRoutes<E extends Env>(
     if (!credential) {
       return c.json({ ok: false, error: 'Invalid license' }, 401)
     }
+
+    // A new server has used no signed session (level 0), so v1 is accepted for
+    // it. A re-enroll names an existing server, and one that has used a signed
+    // session must send a v2 proof (403 Signed proof required otherwise).
+    const enrollProofResult = await refuseUnacceptableProof(body, {
+      identity: options.panelIdentity,
+      trustLevel:
+        credential.kind === 'reenroll'
+          ? await readServerTrustLevel(db, credential.ticket.serverId)
+          : 0,
+    })
+    if ('refusal' in enrollProofResult) {
+      return c.json(
+        { ok: false, error: enrollProofResult.refusal.error },
+        enrollProofResult.refusal.status
+      )
+    }
+    const enrollProof = enrollProofResult.proof
 
     const fingerprint = await computePublicKeyFingerprint(publicJwk)
     const payload = enrollProofPayload(enrollProof, {

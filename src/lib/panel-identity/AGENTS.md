@@ -54,4 +54,5 @@ sealing key, and the signed identity document served at
   included, on the paths in `SIGNED_DAEMON_RESPONSE_PATHS` (the daemon keeps the same list).
 - **Sign-in v2.** `/enroll` and `/auth/session` take `payloadVersion: 2` proofs that add the key
   fingerprint (current or next), method, path and `iat` (`src/daemon/authn/proof-version.ts`); v1 is
-  refused only for a server with `trust_level` 1 or more until the version floor moves.
+  refused only for a server with `trust_level` 1 or more until the version floor moves. `/enroll` checks the
+  level of the server a re-enroll ticket names (a brand-new server is level 0, so v1 still enrolls it).
