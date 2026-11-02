@@ -209,6 +209,7 @@ export const DAEMON_WIRE_FEATURES = [
   'fabric-peer-report-v1',
   'fabric-lan-routes-v1',
   'repo-key-report-v1',
+  'daemon-sealed-secrets-v1',
 ] as const
 
 export type DaemonWireFeature = (typeof DAEMON_WIRE_FEATURES)[number]
@@ -449,6 +450,13 @@ export const FABRIC_PEER_REPORT_FEATURE: DaemonWireFeature = 'fabric-peer-report
  * when both daemons list it; otherwise the pair keeps its tunnel over the LAN.
  */
 export const FABRIC_LAN_ROUTES_FEATURE: DaemonWireFeature = 'fabric-lan-routes-v1'
+
+/**
+ * The daemon holds an X25519 sealing key and opens `sealed` answers from
+ * `/secrets/decrypt` (and the sealed Hosting Account password hash). Older
+ * daemons keep the plaintext answer until the floor bump.
+ */
+export const DAEMON_SEALED_SECRETS_FEATURE: DaemonWireFeature = 'daemon-sealed-secrets-v1'
 
 /**
  * The daemon reports `repo-key-changed` when a package source's signing key

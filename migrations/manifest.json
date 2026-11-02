@@ -98,6 +98,12 @@
       "tag": "0015_panel_dns01_certificates",
       "when": 1793573588139,
       "sha256": "3dd2e9c335a05510415c2485fd3cf74f576760e9e1076475802f74c75ae5d375"
+    },
+    {
+      "idx": 16,
+      "tag": "0016_server_sealing_key",
+      "when": 1793581941451,
+      "sha256": "fe7d97a732eb7ca400b584381f8cdc1b2a6d7e6e695f0fe74facd5944db87992"
     }
   ]
 }
