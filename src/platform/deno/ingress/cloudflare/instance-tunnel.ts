@@ -143,7 +143,9 @@ export async function readEdgeTunnel(input: {
       tunnelName: detail.name,
       status: detail.status ?? 'inactive',
       connections: connections.length,
-      locations: [...new Set(connections.flatMap((item) => item.colo_name ?? []))].sort(),
+      locations: [...new Set(connections.flatMap((item) => item.colo_name ?? []))].sort((a, b) =>
+        a.localeCompare(b)
+      ),
       hostnames: rules.flatMap((rule) => rule.hostname ?? []),
       checkedAt: input.now.toISOString(),
     },

@@ -19,7 +19,7 @@ import { loadHostnamesWithState, networkFetch } from './service.ts'
 async function edgeHalf(
   ready: RouteServices
 ): Promise<Pick<InstanceTunnelView, 'edge' | 'edgeNote'> & { edgeError: string | null }> {
-  const [account] = (await listIngressAccounts(ready.db)).filter(
+  const account = (await listIngressAccounts(ready.db)).find(
     (item) => item.provider === 'cloudflare'
   )
   if (!account)
