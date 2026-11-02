@@ -1,6 +1,84 @@
+import { base64urlEncode } from '../../lib/encoding/base64url.ts'
 import { isInstallCaFingerprint } from './install-ca-pin.ts'
 import { formatInstanceDlBase } from './install-tls.ts'
 
+const textEncoder = new TextEncoder()
+
+/** The six values a v2 install `TOKEN` carries, in wire order. Any may be empty. */
+export type InstallTokenFields = {
+  /**
+   * The license id, or (join-ticket enrolment) the join ticket id. The next
+   * field is the matching secret; the panel tells the two apart by lookup.
+   */
+  licenseId: string
+  licenseToken: string
+  /** `https://host[:port]` origins; URL 0 is the admin's chosen install URL. */
+  panelUrls: readonly string[]
+  panelFingerprint: string
+  nextFingerprint: string | null
+  /** Comma-joined CA fingerprints, only for a private-certificate panel. */
+  caFingerprint: string | null
+}
+
+const fieldEncoding = (value: string) => base64urlEncode(textEncoder.encode(value))
+
+/** True for `https://host[:port]` with nothing after the authority. */
+export function isInstallTokenOrigin(value: string): boolean {
+  try {
+    const url = new URL(value)
+    return (
+      url.protocol === 'https:' &&
+      url.username === '' &&
+      url.password === '' &&
+      url.pathname === '/' &&
+      url.search === '' &&
+      url.hash === '' &&
+      url.origin === value
+    )
+  } catch {
+    return false
+  }
+}
+
+/**
+ * The text before the dot of a v2 `TOKEN`: base64url of `v2:` and the six
+ * fields (each base64url too, so `:` and `,` in a URL or secret never clash)
+ * joined by `:`. Throws on a URL that is not a bare https origin.
+ */
+export function encodeInstallTokenPayload(fields: InstallTokenFields): string {
+  if (fields.panelUrls.length === 0) {
+    throw new TypeError('an install token needs at least one panel URL')
+  }
+  for (const url of fields.panelUrls) {
+    if (!isInstallTokenOrigin(url)) {
+      throw new TypeError('install token panel URLs must be https origins without a path')
+    }
+  }
+  const parts = [
+    fields.licenseId,
+    fields.licenseToken,
+    fields.panelUrls.join(','),
+    fields.panelFingerprint,
+    fields.nextFingerprint ?? '',
+    fields.caFingerprint ?? '',
+  ].map(fieldEncoding)
+  return base64urlEncode(textEncoder.encode(`v2:${parts.join(':')}`))
+}
+
+/**
+ * The full v2 `TOKEN` value: payload, a dot, and the panel identity key's
+ * signature over the payload text. `sign` is `signWithCurrent` bound to the
+ * panel identity.
+ */
+export async function encodeInstallToken(
+  fields: InstallTokenFields,
+  sign: (bytes: Uint8Array) => Promise<string>
+): Promise<string> {
+  const payload = encodeInstallTokenPayload(fields)
+  return `${payload}.${await sign(textEncoder.encode(payload))}`
+}
+
+/** Legacy `TURBOPANEL_LICENSE` value. Kept until the daemon floor moves past the TOKEN installer. */
 export function encodeLicenseArg(licenseId: string, licenseToken: string): string {
   const combined = `${licenseId}:${licenseToken}`
   // `=` only appears as base64 padding, so stripping all equals is safe.
@@ -95,7 +173,7 @@ export function formatInstallScriptCurlUrl(origin: string): string {
  * Comma-joined expected CA fingerprints, or null when there are none. Values
  * are emitted unquoted, so anything but 64 lowercase hex digits is refused.
  */
-function caFingerprintEnvValue(fingerprints: readonly string[] | undefined): string | null {
+export function caFingerprintEnvValue(fingerprints: readonly string[] | undefined): string | null {
   if (!fingerprints || fingerprints.length === 0) return null
   for (const value of fingerprints) {
     if (!isInstallCaFingerprint(value)) {
@@ -111,6 +189,8 @@ function caFingerprintEnvValue(fingerprints: readonly string[] | undefined): str
  */
 function buildInstallPipeline(opts: {
   curlUrl: string
+  /** A v2 `TOKEN` value; replaces the license, host and CA variables. */
+  token?: string
   licenseArg: string
   host?: string
   insecureTls?: boolean
@@ -120,9 +200,9 @@ function buildInstallPipeline(opts: {
   updateChannel?: string
 }): string {
   const curl = opts.curlInsecure ? 'curl -fsSLk' : 'curl -fsSL'
-  const envParts = [`TURBOPANEL_LICENSE=${opts.licenseArg}`]
-  if (opts.host) envParts.push(`TURBOPANEL_HOST=${opts.host}`)
-  if (opts.insecureTls) {
+  const envParts = opts.token ? [`TOKEN=${opts.token}`] : [`TURBOPANEL_LICENSE=${opts.licenseArg}`]
+  if (opts.host && !opts.token) envParts.push(`TURBOPANEL_HOST=${opts.host}`)
+  if (opts.insecureTls && !opts.token) {
     // Never an insecure-TLS command without the CA it may keep: the installer
     // would trust whatever answered.
     const pin = caFingerprintEnvValue(opts.caFingerprints)
@@ -181,6 +261,13 @@ export function buildLicenseInstallCommand(opts: {
   dlBase?: string
   /** The channel this control plane follows (TURBOPANEL_UPDATE_CHANNEL); enrolled daemons follow it too. */
   updateChannel?: string
+  /**
+   * A v2 install `TOKEN` (see {@link encodeInstallToken}). When set the command
+   * is `TOKEN=<value>` alone: the license, host and CA fingerprints travel
+   * inside it, so `licenseId`, `licenseToken`, `caFingerprints` and the host
+   * are not emitted as variables.
+   */
+  token?: string
 }): string {
   const {
     runtime,
@@ -192,6 +279,7 @@ export function buildLicenseInstallCommand(opts: {
     useInstanceRunScript = false,
     dlBase,
     updateChannel,
+    token,
   } = opts
   const insecureTls = insecureTlsOpt
   const licenseArg = encodeLicenseArg(licenseId, licenseToken)
@@ -206,6 +294,7 @@ export function buildLicenseInstallCommand(opts: {
       : installScriptUrlForChannel(updateChannel)
     return buildInstallPipeline({
       curlUrl,
+      token,
       licenseArg,
       host,
       insecureTls,
@@ -220,6 +309,7 @@ export function buildLicenseInstallCommand(opts: {
 
   return buildInstallPipeline({
     curlUrl: installScriptUrlForChannel(updateChannel),
+    token,
     licenseArg,
     host,
     updateChannel,

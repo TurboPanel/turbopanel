@@ -213,6 +213,7 @@ export const DAEMON_WIRE_FEATURES = [
   'instance-edge-trust-v1',
   'instance-hostname-public-port-v1',
   'daemon-sealed-principal-reconcile-v1',
+  'install-token-v2',
 ] as const
 
 export type DaemonWireFeature = (typeof DAEMON_WIRE_FEATURES)[number]
@@ -486,6 +487,13 @@ export const DAEMON_SEALED_PRINCIPAL_RECONCILE_FEATURE: DaemonWireFeature =
  * never does.
  */
 export const REPO_KEY_REPORT_FEATURE: DaemonWireFeature = 'repo-key-report-v1'
+
+/**
+ * The daemon installer reads one signed `TOKEN` (and pins the panel key). The
+ * Add Server command only uses that form once the switch in
+ * `features/install/install-token-command.ts` is on.
+ */
+export const INSTALL_TOKEN_V2_FEATURE: DaemonWireFeature = 'install-token-v2'
 
 /**
  * The daemon answers `managed-permissions-request` with

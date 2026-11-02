@@ -54,7 +54,7 @@ export function registerServerReenrollTicketRoutes(router: Hono<AppEnv>, opts: A
       expiresAt: issued.expiresAt,
       licenseToken: issued.plaintext,
       licenseArg: encodeLicenseArg(issued.id, issued.plaintext),
-      installCommand: buildTicketInstallCommand(c, opts, resolved.origin, issued),
+      installCommand: await buildTicketInstallCommand(c, db, opts, resolved.origin, issued),
     })
   })
 

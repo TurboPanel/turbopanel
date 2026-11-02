@@ -1701,6 +1701,8 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'Last time the secrets decrypt route answered this server in plaintext, written at most hourly; the edge go-live gate reads it.',
       fabric_role:
         'Operator TurboFabric role, `gateway` (accepts connections) or `client` (only dials out); NULL means automatic, gateway when a public address is known.',
+      trust_pinned_by:
+        'How the daemon pinned the panel key: `install`, `upgrade` or `unsafe` (installed with the skip flag); NULL until the daemon reports it.',
       container_prefix:
         'Container range of this server (a /16 from the org container pool), set when first needed; cross-server network subnets come from it, NULL until then.',
       metadata:

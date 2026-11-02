@@ -104,6 +104,12 @@
       "tag": "0016_server_sealing_key",
       "when": 1793581941451,
       "sha256": "fe7d97a732eb7ca400b584381f8cdc1b2a6d7e6e695f0fe74facd5944db87992"
+    },
+    {
+      "idx": 17,
+      "tag": "0017_server_trust_pinned_by",
+      "when": 1793582541451,
+      "sha256": "928f02d6a3121588e6bc05b9cff7dd163f589290df7ded46c6e43a832402d057"
     }
   ]
 }

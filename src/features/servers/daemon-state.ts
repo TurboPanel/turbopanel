@@ -104,6 +104,13 @@ export const SERVER_DAEMON_UPDATE_STATUSES = [
 ] as const
 /** Pinned to `server_offline_reason_check` by `src/db/enum-checks.test.ts`. */
 export const SERVER_OFFLINE_REASONS = ['disconnect', 'sweep_stale'] as const
+/** How a daemon pinned the panel key. Pinned to `server_trust_pinned_by_check` by `src/db/enum-checks.test.ts`. */
+export const SERVER_TRUST_PINNED_BY = ['install', 'upgrade', 'unsafe'] as const
+export type ServerTrustPinnedBy = (typeof SERVER_TRUST_PINNED_BY)[number]
+
+export function isServerTrustPinnedBy(value: unknown): value is ServerTrustPinnedBy {
+  return typeof value === 'string' && (SERVER_TRUST_PINNED_BY as readonly string[]).includes(value)
+}
 
 const UPDATE_PROJECTION_STATUSES = new Set<UpdateProjection['status']>(
   SERVER_DAEMON_UPDATE_STATUSES

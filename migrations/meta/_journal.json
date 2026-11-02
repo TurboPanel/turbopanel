@@ -120,6 +120,13 @@
       "when": 1793581941451,
       "tag": "0016_server_sealing_key",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1793582541451,
+      "tag": "0017_server_trust_pinned_by",
+      "breakpoints": true
     }
   ]
 }

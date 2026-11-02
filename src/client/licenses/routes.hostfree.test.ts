@@ -75,6 +75,11 @@ import {
   revokeServerTickets,
 } from '../../features/licenses/tickets.ts'
 import { registerServerReenrollTicketRoutes } from '../servers/reenroll-ticket-routes.ts'
+import {
+  resolvePanelIdentityFromBinding,
+  type PanelIdentity,
+} from '../../lib/panel-identity/identity.ts'
+import { fixtureBindingJson } from '../../test-fixtures/panel-identity-fixture.ts'
 import { tierSeatExhaustionMessage } from './routes-helpers.ts'
 import { LICENSE_KEY_UNUSED_TTL_DAYS } from '../../features/licenses/key-expiry.ts'
 import { recordLicenseEnrollAttempt } from '../../features/licenses/enroll-attempt.ts'
@@ -131,6 +136,7 @@ type Fixture = {
   platformEnv?: Record<string, string | undefined>
   omitBaseUrl?: boolean
   runtime?: 'deno' | 'workers'
+  panelIdentity?: PanelIdentity
   /** The organization requires step-up and the session is older than its window. */
   stepUp?: boolean
 }
@@ -328,11 +334,13 @@ async function buildApp(fx: Fixture = {}) {
       return next()
     })
   }
+  const panelIdentity = fx.panelIdentity
   registerLicenseRoutes(app, {
     secrets,
     runtime: fx.runtime ?? 'workers',
     signupEnvOverride: undefined,
     ...(fx.omitBaseUrl ? {} : { baseUrl: 'https://panel.example.com' }),
+    ...(panelIdentity ? { panelIdentity: () => Promise.resolve(panelIdentity) } : {}),
   })
   registerServerReenrollTicketRoutes(app, {
     secrets,
@@ -1229,4 +1237,50 @@ test('a self-hosted panel puts the Platform CA fingerprint in the install comman
     body.installCommand
   )
   assertEquals(body.installCommand.startsWith('curl -fsSL https://turbopanel.sh | '), true)
+})
+
+async function fixtureIdentity(): Promise<PanelIdentity> {
+  const identity = await resolvePanelIdentityFromBinding(await fixtureBindingJson())
+  if (!identity) throw new TypeError('fixture identity did not resolve')
+  return identity
+}
+
+const TOKEN_ENV = { TURBOPANEL_INSTALL_TOKEN_V2: '1' }
+
+test('POST /licenses hands out the signed TOKEN command once the switch is on', async () => {
+  const panelIdentity = await fixtureIdentity()
+  const { app, headers } = await buildApp({
+    config: null,
+    seats: null,
+    platformEnv: TOKEN_ENV,
+    panelIdentity,
+  })
+  const res = await mint(app, headers, { name: 'edge-token' })
+  assertEquals(res.status, 200)
+  const body = (await res.json()) as {
+    installCommand: string
+    panelFingerprint: string | null
+    nextFingerprint: string | null
+  }
+  assertEquals(body.panelFingerprint, panelIdentity.current.kid)
+  assertEquals(body.installCommand.includes('| TOKEN='), true)
+  assertEquals(body.installCommand.includes('TURBOPANEL_LICENSE'), false)
+  assertEquals(body.installCommand.includes('TURBOPANEL_HOST'), false)
+})
+
+test('POST /licenses keeps the older command while the switch is off or there is no identity key', async () => {
+  const panelIdentity = await fixtureIdentity()
+  for (const fx of [{ panelIdentity }, { platformEnv: TOKEN_ENV }]) {
+    const { app, headers } = await buildApp({ config: null, seats: null, ...fx })
+    const res = await mint(app, headers, { name: 'edge-legacy' })
+    assertEquals(res.status, 200)
+    const body = (await res.json()) as { installCommand: string; panelFingerprint?: string }
+    assertEquals(body.installCommand.includes('TURBOPANEL_LICENSE='), true)
+    assertEquals(body.installCommand.includes(' TOKEN='), false)
+    // The fingerprints follow the identity key, not the switch.
+    assertEquals(
+      body.panelFingerprint,
+      'panelIdentity' in fx ? panelIdentity.current.kid : undefined
+    )
+  }
 })

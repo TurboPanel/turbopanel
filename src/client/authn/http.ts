@@ -105,7 +105,11 @@ export type AuthRouteOpts = {
    * a self-hosted install command can carry its fingerprints. Deno only.
    */
   readPlatformCaPem?: () => Promise<string>
-  /** Control plane identity; the license mint response carries its fingerprints. */
+  /**
+   * Control plane identity: the license mint response carries its
+   * fingerprints, and it signs v2 install commands. Absent or resolving null
+   * means the command stays in the older form.
+   */
   panelIdentity?: () => Promise<PanelIdentity | null>
 }
 

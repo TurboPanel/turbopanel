@@ -10,6 +10,7 @@ import {
   FABRIC_LAN_ROUTES_FEATURE,
   DAEMON_SEALED_PRINCIPAL_RECONCILE_FEATURE,
   DAEMON_SEALED_SECRETS_FEATURE,
+  INSTALL_TOKEN_V2_FEATURE,
   REPO_KEY_REPORT_FEATURE,
   FABRIC_PEER_REPORT_FEATURE,
   FABRIC_RETAIN_KEYS_FEATURE,
@@ -411,8 +412,14 @@ test('instance-hostname-public-port-v1 is advertised and raised no floor', () =>
   assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.0')
 })
 
-test('daemon-sealed-principal-reconcile-v1 is advertised last and raised no floor', () => {
+test('daemon-sealed-principal-reconcile-v1 is advertised and raised no floor', () => {
   assertEquals(DAEMON_SEALED_PRINCIPAL_RECONCILE_FEATURE, 'daemon-sealed-principal-reconcile-v1')
-  assertEquals(DAEMON_WIRE_FEATURES.at(-1), DAEMON_SEALED_PRINCIPAL_RECONCILE_FEATURE)
+  assertEquals(DAEMON_WIRE_FEATURES.includes(DAEMON_SEALED_PRINCIPAL_RECONCILE_FEATURE), true)
+  assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.0')
+})
+
+test('install-token-v2 is advertised last and raised no floor', () => {
+  assertEquals(INSTALL_TOKEN_V2_FEATURE, 'install-token-v2')
+  assertEquals(DAEMON_WIRE_FEATURES.at(-1), INSTALL_TOKEN_V2_FEATURE)
   assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.0')
 })

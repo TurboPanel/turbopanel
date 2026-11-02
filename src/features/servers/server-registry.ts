@@ -43,7 +43,7 @@ import {
 } from '../environments/service-run-state.ts'
 import { normalizeMachineKey } from '../../lib/machine-key.ts'
 import { daemonFeaturesColumnPatch } from './daemon-jsonb-write.ts'
-import { featuresMatch, parseServerDaemonState } from './daemon-state.ts'
+import { featuresMatch, isServerTrustPinnedBy, parseServerDaemonState } from './daemon-state.ts'
 import { ensureSystemHierarchy } from '../system/hierarchy.ts'
 import { applyAddServerTierAtEnroll, lockOrganizationRow } from '../tiers/assignment-records.ts'
 import { isUnusedKeyExpired } from '../licenses/key-expiry.ts'
@@ -119,6 +119,8 @@ export type ServerHelloIdentity = {
   services?: ServiceRunState[]
   /** Hello only. `[]` when the daemon omitted `features`. Heartbeat leaves this unset. */
   features?: string[]
+  /** Hello only: how the daemon pinned the panel key. Unset leaves what is stored. */
+  panelPin?: { pinnedBy: string }
 }
 
 function metadataPatch(identity: ServerHelloIdentity): Partial<ServerMetadata> {
@@ -345,6 +347,15 @@ async function updateServerKeepingMachineKey(
   }
 }
 
+/** Column patch for the pin kind the daemon reported when it differs from the stored one, else null. */
+function trustPinnedByPatch(
+  identity: ServerHelloIdentity,
+  stored: string | null
+): { trustPinnedBy: string } | null {
+  const reported = identity.panelPin?.pinnedBy
+  return isServerTrustPinnedBy(reported) && reported !== stored ? { trustPinnedBy: reported } : null
+}
+
 export async function touchServerMetadata(
   db: Db,
   serverId: string,
@@ -367,6 +378,7 @@ export async function touchServerMetadata(
       ntpServers: server.ntpServers,
       ntpLastSyncedAt: server.ntpLastSyncedAt,
       daemon: server.daemon,
+      trustPinnedBy: server.trustPinnedBy,
     })
     .from(server)
     .where(eq(server.id, serverId))
@@ -398,6 +410,7 @@ export async function touchServerMetadata(
   const metadataChanged = mergeServerMetadataIdentity(base, identity) !== null
   const hostnameChanged = Boolean(columns.hostname && columns.hostname !== row.hostname)
   const machineKeyChanged = Boolean(columns.machineKey && columns.machineKey !== row.machineKey)
+  const pinPatch = trustPinnedByPatch(identity, row.trustPinnedBy)
   const incomingFeatures = identity.features
   const currentProjection = parseServerDaemonState(row.daemon)?.projection
   const featuresChanged =
@@ -408,7 +421,8 @@ export async function touchServerMetadata(
     !machineKeyChanged &&
     !osPatch &&
     !timePatch &&
-    !featuresChanged
+    !featuresChanged &&
+    !pinPatch
   ) {
     return
   }
@@ -419,6 +433,7 @@ export async function touchServerMetadata(
   if (machineKeyChanged) update.machineKey = columns.machineKey
   if (osPatch) Object.assign(update, osPatch)
   if (timePatch) Object.assign(update, timePatch)
+  Object.assign(update, pinPatch)
   if (Object.keys(delta).length > 0) {
     update.metadata = sql`COALESCE(${server.metadata}, '{}'::jsonb) || ${JSON.stringify(
       delta

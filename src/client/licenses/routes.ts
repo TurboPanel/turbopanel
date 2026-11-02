@@ -378,7 +378,7 @@ export function registerLicenseRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       if (opts.runtime === 'deno') {
         await syncSelfHostedGrant(db, organizationId, { allowGrow: true })
       }
-      const installCommand = buildTicketInstallCommand(c, opts, origin, joinTicket)
+      const installCommand = await buildTicketInstallCommand(c, db, opts, origin, joinTicket)
 
       compatLogInfo(
         'auth',
@@ -443,7 +443,7 @@ export function registerLicenseRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       joinExpiresAt: joinTicket.expiresAt,
       licenseToken: joinTicket.plaintext,
       licenseArg: encodeLicenseArg(joinTicket.id, joinTicket.plaintext),
-      installCommand: buildTicketInstallCommand(c, opts, resolved.origin, joinTicket),
+      installCommand: await buildTicketInstallCommand(c, db, opts, resolved.origin, joinTicket),
     })
   })
 
