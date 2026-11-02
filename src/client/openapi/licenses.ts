@@ -129,6 +129,19 @@ export function buildLicenseSchemas(installCommandDescription: string) {
           description:
             'The value the installer takes as TURBOPANEL_LICENSE (id and secret, base64url).',
         },
+        installCommand: {
+          type: 'string',
+          description: installCommandDescription,
+        },
+        ticketId: { type: 'string', format: 'uuid', description: 'Re-enroll ticket id.' },
+        expiresAt: { type: 'string', format: 'date-time', description: 'Re-enroll ticket expiry.' },
+        licenseId: { type: 'string', description: 'Key reissue only.' },
+        joinId: { type: 'string', format: 'uuid', description: 'Key reissue only: ticket id.' },
+        joinExpiresAt: {
+          type: 'string',
+          format: 'date-time',
+          description: 'Key reissue only: ticket expiry.',
+        },
       },
     },
     InvalidateOkResponse: {

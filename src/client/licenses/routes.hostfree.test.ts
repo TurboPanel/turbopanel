@@ -876,8 +876,13 @@ test('re-enroll tickets: an owner issues one per server, a new one retires the o
   const url = `/servers/${SERVER}/reenroll-ticket`
   const first = await app.request(url, { method: 'POST', headers })
   assertEquals(first.status, 200)
-  const one = (await first.json()) as { ticketId: string; licenseArg: string }
+  const one = (await first.json()) as {
+    ticketId: string
+    licenseArg: string
+    installCommand: string
+  }
   assertExists(one.licenseArg)
+  assertEquals(one.installCommand.includes(`TURBOPANEL_LICENSE=${one.licenseArg}`), true)
   assertEquals(db.rows(ticket).find((row) => row.id === one.ticketId)?.serverId, SERVER)
 
   const second = await app.request(url, { method: 'POST', headers })
