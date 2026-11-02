@@ -119,7 +119,13 @@ address must be updated; a different host also stops registered passkeys
 row's `publicPort` on `public-urls-update` to a co-located daemon that
 advertises `instance-hostname-public-port-v1`; its Caddy then sends a request
 for that hostname on any other port (an edge answering both 443 and 8443) to
-the public port with a 308.
+the public port with a 308. A self-hosted control plane does not wait for a
+Save: every 5 minutes its maintenance tick builds the body
+(`applyStoredPublicUrls` in `src/admin/public-urls-apply-run.ts`) and sends it
+when its fingerprint differs from `appliedPayloadHash` in the `EDGE_TRUST`
+setting, so a field a newer build adds reaches the daemon once after an
+upgrade. Key material is left out of the fingerprint (a sealed key is new on
+every build), and a successful Save records the same fingerprint.
 
 On a self-hosted control plane (the Deno server calls `setSelfHostedAddress`
 at start-up) the public port is fixed at 8443, even behind a tunnel that also

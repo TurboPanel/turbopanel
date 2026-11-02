@@ -1,9 +1,7 @@
 import type { Db } from '../../../db/connection.ts'
 import {
-  edgeTrustForModes,
   isSafeEdgeRange,
   MAX_EDGE_RANGES,
-  emptyEdgeTrustHash,
   loadEdgeTrustState,
   providersForModes,
   saveEdgeTrustState,
@@ -16,7 +14,7 @@ import type { IngressProviderId } from '../../../features/install/ingress-modes.
 /**
  * Self-hosted only. Fetches the published edge address lists the control
  * plane's Caddy trusts for forwarded visitor addresses, keeps them in the
- * `EDGE_TRUST` setting and tells the co-located daemon when the set changes.
+ * `EDGE_TRUST` setting and has the co-located daemon told when its body changes.
  */
 
 const CLOUDFLARE_IPS_URL = 'https://api.cloudflare.com/client/v4/ips'
@@ -188,8 +186,9 @@ export function edgeRefreshDue(
 }
 
 /**
- * The scheduled pass: refresh at most once a day, then send the daemon the
- * set only when it differs from the one it last rendered.
+ * The scheduled pass: refresh at most once a day, then hand over to `apply`,
+ * which sends the daemon the body only when it differs from the one it last
+ * rendered (`applyStoredPublicUrls`).
  */
 export async function runEdgeTrustTick(
   db: Db,
@@ -200,10 +199,7 @@ export async function runEdgeTrustTick(
   const state = await loadEdgeTrustState(db)
   const modes = (await listInstanceHostnames(db)).map((row) => row.mode)
   if (edgeRefreshDue(state, modes, now, deps.force)) await refreshEdgeRanges(db, deps)
-  const fresh = await loadEdgeTrustState(db)
-  const wanted = (await edgeTrustForModes(fresh, modes)).hash
-  const applied = fresh.appliedHash ?? (await emptyEdgeTrustHash())
-  if (wanted !== applied) await apply()
+  await apply()
 }
 
 /** The read model the admin route returns: counts and times, never the lists. */
