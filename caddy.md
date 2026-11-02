@@ -46,6 +46,17 @@ Each site block also strips `CF-Connecting-IP`, `True-Client-IP`, and
 `X-Forwarded-For` from any peer that is **not** loopback, so only a connector
 running beside Caddy can present them. See **Server addresses** below.
 
+For hostnames behind a Cloudflare proxy or a Bunny pull zone, the daemon also
+adds those providers' published edge ranges (a union over the modes in use,
+refreshed daily by the control plane and sent as `edgeTrust` on
+`public-urls-update`) to `trusted_proxies`, and keeps the forwarding headers
+from peers in those ranges only. Caddy then puts the visitor's address in
+`X-Real-IP`; every other peer is still stripped. The daemon keeps the last set
+in `instance-edge-trust.json` beside `instance-hostnames.json`. Trusting a
+provider's whole published range means any customer of that provider can point
+a zone at this origin and forge a visitor address; authenticated origin pulls
+or an origin firewall that admits only the provider close that gap.
+
 **Co-located development** does not use this file. When `turbopanel_dev_user` is
 set, `turbopanel-caddy.service` loads `~/dev/orchestration/Caddyfile` instead
 (Expo proxy, optional wrangler upstream,

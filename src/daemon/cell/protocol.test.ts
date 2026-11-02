@@ -548,6 +548,28 @@ it('outboundEnvelopeToWireMessage maps outbound kinds', () => {
     }
   )
 
+  const edgeTrust = {
+    cidrs: ['198.51.100.0/24'],
+    hash: 'h1',
+    cloudflare: ['198.51.100.0/24'],
+    bunny: [],
+  }
+  assertEquals(
+    outboundEnvelopeToWireMessage({
+      ...base,
+      kind: 'public-urls-update',
+      urls: ['https://panel.example.com'],
+      edgeTrust,
+    }),
+    {
+      type: 'public-urls-update',
+      id: 'req-1',
+      urls: ['https://panel.example.com'],
+      edgeTrust,
+      at: base.at,
+    }
+  )
+
   assertEquals(
     outboundEnvelopeToWireMessage({
       ...base,

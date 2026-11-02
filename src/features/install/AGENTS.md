@@ -86,3 +86,10 @@ primary; omitted keeps the stored value) and warns when the primary's address
 changes, because OAuth callbacks and Git webhooks registered with the old
 address must be updated; a different host also stops registered passkeys
 (`primary-host-changed`), and either change is audited.
+
+Hostnames in the `cloudflare-proxy` or `bunny-proxy` mode also need the
+provider's published edge ranges so Caddy can read the visitor address.
+`edge-trust.ts` holds the ranges in the `EDGE_TRUST` setting and builds the
+`edgeTrust` field of `public-urls-update` (only for a daemon advertising
+`instance-edge-trust-v1`); the fetches live in
+`src/platform/deno/ingress/edge-ranges.ts`.
