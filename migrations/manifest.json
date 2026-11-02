@@ -110,6 +110,12 @@
       "tag": "0017_server_trust_pinned_by",
       "when": 1793582541451,
       "sha256": "928f02d6a3121588e6bc05b9cff7dd163f589290df7ded46c6e43a832402d057"
+    },
+    {
+      "idx": 18,
+      "tag": "0018_daemon_trust_level_and_nonce",
+      "when": 1793628853962,
+      "sha256": "350649e9973d586e13d891179f208519f84b53bfdd4409e2539f3402ee7f4c1e"
     }
   ]
 }

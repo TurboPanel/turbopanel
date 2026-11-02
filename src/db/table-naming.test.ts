@@ -79,6 +79,7 @@ const APPROVED_TABLE_NAMES = new Set<string>([
   'monitor',
   'mount',
   'network',
+  'nonce',
   'notification',
   'organization',
   'origin',

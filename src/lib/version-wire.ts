@@ -215,6 +215,9 @@ export const DAEMON_WIRE_FEATURES = [
   'daemon-sealed-principal-reconcile-v1',
   'install-token-v2',
   'tunnel-status-facts-v1',
+  'panel-identity-v1',
+  'panel-signed-frames-v1',
+  'signin-v2',
 ] as const
 
 export type DaemonWireFeature = (typeof DAEMON_WIRE_FEATURES)[number]
@@ -501,6 +504,20 @@ export const REPO_KEY_REPORT_FEATURE: DaemonWireFeature = 'repo-key-report-v1'
  * identity key (`features/install/install-token-command.ts`).
  */
 export const INSTALL_TOKEN_V2_FEATURE: DaemonWireFeature = 'install-token-v2'
+
+/**
+ * Informational only: the peer can run a signed session (the daemon sends
+ * `hello-nonce` and the control plane answers with a signed `hello`). Nothing
+ * reads this list to decide enforcement: the daemon's pin file and
+ * `server.trust_level` do, because the list arrives unsigned.
+ */
+export const PANEL_IDENTITY_FEATURE: DaemonWireFeature = 'panel-identity-v1'
+
+/** Informational only: every frame after the hello carries a signed envelope. */
+export const PANEL_SIGNED_FRAMES_FEATURE: DaemonWireFeature = 'panel-signed-frames-v1'
+
+/** Informational only: enroll and session proofs may be v2, naming the control plane's key. */
+export const SIGNIN_V2_FEATURE: DaemonWireFeature = 'signin-v2'
 
 /**
  * The daemon answers `managed-permissions-request` with

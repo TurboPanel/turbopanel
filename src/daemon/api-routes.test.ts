@@ -78,6 +78,12 @@ import {
   buildEnrollmentPayload,
   computePublicKeyFingerprint,
 } from './authn/server-key.ts'
+import { buildAuthPayloadV2 } from './authn/proof-version.ts'
+import {
+  type PanelIdentity,
+  resolvePanelIdentityFromBinding,
+} from '../lib/panel-identity/identity.ts'
+import { fixtureBindingJson } from '../test-fixtures/panel-identity-fixture.ts'
 import {
   type AnalyticsEngineDatasetLike,
   CloudflareAnalyticsEngineServerMetricsStore,
@@ -472,7 +478,8 @@ async function readDaemonState(
 
 async function createTestApp(
   db: ReturnType<typeof createDenoDb>,
-  runtime: 'workers' | 'deno' = 'workers'
+  runtime: 'workers' | 'deno' = 'workers',
+  panelIdentity?: PanelIdentity
 ): Promise<Hono<AppEnv>> {
   setRevokeBoundDaemonKey(revokeDaemonKey)
   const app = new Hono<AppEnv>()
@@ -488,6 +495,7 @@ async function createTestApp(
     challengeSigningSecrets,
     secretsConfig,
     runtime,
+    ...(panelIdentity ? { panelIdentity: () => Promise.resolve(panelIdentity) } : {}),
   })
   return app
 }
@@ -4318,5 +4326,118 @@ test('POST /metrics: events over the hourly budget are cut most severe first, lo
         line.includes(`metrics events over the hourly budget for ${serverId}: kept 1 of 2`)
       )
     )
+  })
+})
+
+// --- Sign-in v2 and single-use challenges ---
+
+async function signedSessionBody(
+  app: Hono<AppEnv>,
+  fixture: Pick<EnrollFixture, 'serverId' | 'keyId' | 'key' | 'machineKey' | 'hostname'>,
+  v2?: { panelFingerprint: string; iat: number }
+): Promise<string> {
+  const challenge = await issueAuthChallenge(app, fixture.serverId, fixture.keyId)
+  const fields = {
+    challengeId: challenge.challengeId,
+    nonce: challenge.nonce,
+    serverId: fixture.serverId,
+    keyId: fixture.keyId,
+    machineKey: fixture.machineKey,
+    hostname: fixture.hostname,
+  }
+  const payload = v2 ? buildAuthPayloadV2({ ...fields, ...v2 }) : buildAuthPayload(fields)
+  return JSON.stringify({
+    serverId: fixture.serverId,
+    keyId: fixture.keyId,
+    challengeId: challenge.challengeId,
+    signature: await signPayload(fixture.key.privateKey, payload),
+    machineKey: fixture.machineKey,
+    hostname: fixture.hostname,
+    ...(v2 ? { payloadVersion: 2, ...v2 } : {}),
+  })
+}
+
+function postSessionBody(app: Hono<AppEnv>, body: string): Promise<Response> {
+  return Promise.resolve(
+    app.request('/api/daemon/v1/auth/session', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+    })
+  )
+}
+
+async function fixtureIdentity(): Promise<PanelIdentity> {
+  const identity = await resolvePanelIdentityFromBinding(await fixtureBindingJson())
+  if (!identity) throw new TypeError('fixture identity missing')
+  return identity
+}
+
+test('POST /auth/session refuses a replayed request body (single-use challenge)', async () => {
+  await withEnrollFixture(async (fixture) => {
+    const body = await signedSessionBody(fixture.app, fixture)
+    assertEquals((await postSessionBody(fixture.app, body)).status, 200)
+    const replay = await postSessionBody(fixture.app, body)
+    assertEquals(replay.status, 400)
+    assertEquals(((await replay.json()) as { error: string }).error, 'Invalid or expired challenge')
+  })
+})
+
+test('POST /auth/session takes a v2 proof naming this key and refuses another key', async () => {
+  await withEnrollFixture(async (fixture) => {
+    const identity = await fixtureIdentity()
+    const app = await createTestApp(fixture.db, 'workers', identity)
+    const iat = Math.floor(Date.now() / 1000)
+    const accepted = await postSessionBody(
+      app,
+      await signedSessionBody(app, fixture, { panelFingerprint: identity.current.kid, iat })
+    )
+    assertEquals(accepted.status, 200)
+    assertEquals(
+      accepted.headers.get('X-TurboPanel-Signature')?.startsWith(`${identity.current.kid}:`),
+      true
+    )
+    const wrongKey = await postSessionBody(
+      app,
+      await signedSessionBody(app, fixture, { panelFingerprint: 'W'.repeat(43), iat })
+    )
+    assertEquals(wrongKey.status, 403)
+    assertEquals(((await wrongKey.json()) as { error: string }).error, 'Panel fingerprint mismatch')
+    assertEquals(wrongKey.headers.has('X-TurboPanel-Signature'), true)
+  })
+})
+
+test('POST /auth/session refuses a v1 proof once the server has used a signed session', async () => {
+  await withEnrollFixture(async (fixture) => {
+    await fixture.db.update(server).set({ trustLevel: 1 }).where(eq(server.id, fixture.serverId))
+    const refused = await postSessionBody(
+      fixture.app,
+      await signedSessionBody(fixture.app, fixture)
+    )
+    assertEquals(refused.status, 403)
+    assertEquals(((await refused.json()) as { error: string }).error, 'Signed proof required')
+  })
+})
+
+test('POST /enroll refuses a v1 proof when re-enrolling a server that used a signed session', async () => {
+  await withEnrollFixture(async ({ db, app, organizationId, serverId, machineKey, hostname }) => {
+    await db.update(server).set({ trustLevel: 1 }).where(eq(server.id, serverId))
+    const reenroll = await mintTicket(db, { organizationId, serverId })
+    const refused = await postEnroll(app, {
+      licenseId: reenroll.id,
+      licenseToken: reenroll.plaintext,
+      serverId,
+      machineKey,
+      hostname,
+      key: await generateKeyMaterial(),
+    })
+    assertEquals(refused.status, 403)
+    assertEquals(((await refused.json()) as { error: string }).error, 'Signed proof required')
+    // Refused before the ticket was spent.
+    const [row] = await db
+      .select({ usedAt: ticket.usedAt })
+      .from(ticket)
+      .where(eq(ticket.id, reenroll.id))
+    assertEquals(row?.usedAt, null)
   })
 })

@@ -35,6 +35,7 @@ import { setDaemonSealingKey } from '../features/servers/daemon-sealing-key.ts'
 import { createIdentityDocumentCache } from '../lib/panel-identity/document-cache.ts'
 import { IDENTITY_SIGNATURE_HEADER } from '../lib/panel-identity/document.ts'
 import type { PanelIdentity } from '../lib/panel-identity/identity.ts'
+import { signDaemonResponses } from '../lib/panel-identity/signed-response.ts'
 import {
   getDaemonCellRegistry,
   getDb,
@@ -178,6 +179,14 @@ import {
   computePublicKeyFingerprint,
   verifyDaemonSignature,
 } from './authn/server-key.ts'
+import {
+  buildAuthPayloadV2,
+  buildEnrollmentPayloadV2,
+  checkProofVersion,
+  parseProofVersion,
+  type ProofVersion,
+} from './authn/proof-version.ts'
+import { markChallengeUsed } from '../features/servers/daemon-nonce.ts'
 import type { RateLimiter } from './rate-limit/contracts.ts'
 import { createNoopRateLimiter } from './rate-limit/contracts.ts'
 import {
@@ -1286,6 +1295,117 @@ type DaemonApiEnv = {
 /** `Retry-After` (seconds) sent with a daemon REST 429. */
 const DAEMON_REST_RETRY_AFTER_SECONDS = '5'
 
+/**
+ * Spend a sign-in challenge once its proof verified: a second use of the same
+ * challenge (a replayed request body) answers as an expired challenge.
+ */
+function spendChallenge(db: Db, challenge: { nonce: string; at: string }): Promise<boolean> {
+  return markChallengeUsed(
+    db,
+    challenge.nonce,
+    new Date(Date.parse(challenge.at) + DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS)
+  )
+}
+
+type ProofRefusal = { status: 400 | 403; error: string }
+
+/** Read the proof version from the body and check it against this control plane's key. */
+async function refuseUnacceptableProof(
+  body: Record<string, unknown>,
+  ctx: { identity: (() => Promise<PanelIdentity | null>) | undefined; trustLevel: number }
+): Promise<{ refusal: ProofRefusal } | { proof: ProofVersion }> {
+  const parsed = parseProofVersion(body)
+  if (!parsed.ok) return { refusal: parsed }
+  const checked = checkProofVersion(parsed.value, {
+    identity: ctx.identity ? await ctx.identity() : null,
+    trustLevel: ctx.trustLevel,
+    nowMs: Date.now(),
+  })
+  return checked.ok ? { proof: parsed.value } : { refusal: checked }
+}
+
+/** The signature must verify, and only then is the challenge spent (a replay is refused). */
+async function refuseUnverifiedProof(
+  db: Db,
+  proof: { publicJwk: JsonWebKey; payload: string; signature: string },
+  challenge: { nonce: string; at: string }
+): Promise<ProofRefusal | null> {
+  if (!(await verifyDaemonSignature(proof.publicJwk, proof.payload, proof.signature))) {
+    return { status: 403, error: 'Invalid signature' }
+  }
+  if (!(await spendChallenge(db, challenge))) {
+    return { status: 400, error: 'Invalid or expired challenge' }
+  }
+  return null
+}
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/**
+ * `server.trust_level` of the server this enroll lands on: the one a re-enroll
+ * ticket names, else the id the daemon says it already has. A brand-new server
+ * (no id, or an unknown one) is level 0. A named id can only tighten the check.
+ */
+async function readEnrollTrustLevel(
+  db: Db,
+  credential: EnrollCredential,
+  serverIdBody: string | undefined
+): Promise<number> {
+  const serverId = credential.kind === 'reenroll' ? credential.ticket.serverId : serverIdBody
+  if (!serverId || !UUID_PATTERN.test(serverId)) return 0
+  const [row] = await db
+    .select({ trustLevel: server.trustLevel })
+    .from(server)
+    .where(eq(server.id, serverId))
+    .limit(1)
+  return row?.trustLevel ?? 0
+}
+
+/** Bind the key for a verified enroll and answer; a replaced key purges the old cell. */
+async function completeEnroll(
+  c: Context<DaemonApiEnv>,
+  db: Db,
+  credential: EnrollCredential,
+  deployment: MetricsDeploymentKind,
+  params: EnrollParams
+): Promise<Response> {
+  const enrolled =
+    credential.kind === 'reenroll'
+      ? await enrollWithReenrollTicket(db, credential.ticket, params)
+      : await enrollWithKey(db, credential, params)
+  if (!enrolled.ok) {
+    return c.json(enrollFailureBody(enrolled), enrolled.status)
+  }
+  const registry = getDaemonCellRegistry(c)
+  if (credential.kind === 'reenroll' && registry) {
+    await purgeDaemonCellBestEffort(registry, enrolled.serverId, 'after daemon key replaced')
+  }
+  void primeCapabilityPlanAfterEnroll(db, registry, enrolled.serverId, deployment)
+  return c.json({ serverId: enrolled.serverId, keyId: enrolled.keyId }, 200)
+}
+
+function enrollProofPayload(
+  proof: ProofVersion,
+  fields: Parameters<typeof buildEnrollmentPayload>[0]
+): string {
+  return proof.version === 2
+    ? buildEnrollmentPayloadV2({
+        ...fields,
+        panelFingerprint: proof.panelFingerprint,
+        iat: proof.iat,
+      })
+    : buildEnrollmentPayload(fields)
+}
+
+function authProofPayload(
+  proof: ProofVersion,
+  fields: Parameters<typeof buildAuthPayload>[0]
+): string {
+  return proof.version === 2
+    ? buildAuthPayloadV2({ ...fields, panelFingerprint: proof.panelFingerprint, iat: proof.iat })
+    : buildAuthPayload(fields)
+}
+
 export function registerDaemonApiRoutes<E extends Env>(
   app: Hono<E>,
   options: {
@@ -1338,6 +1458,7 @@ export function registerDaemonApiRoutes<E extends Env>(
   const { secrets, challengeSigningSecrets, secretsConfig } = options
   const runtime = options.runtime ?? 'workers'
   const identityDocumentCache = createIdentityDocumentCache()
+  daemon.use('*', signDaemonResponses(options.panelIdentity))
   const tlsPublic = options.tlsPublic ?? false
   const deployment = metricsDeploymentKindForRuntime(runtime)
   const metricsChartCache = createMetricsChartCache(runtime)
@@ -1744,8 +1865,23 @@ export function registerDaemonApiRoutes<E extends Env>(
       return c.json({ ok: false, error: 'Invalid license' }, 401)
     }
 
+    // A new server has used no signed session (level 0), so v1 is accepted for
+    // it. A re-enroll names an existing server, and one that has used a signed
+    // session must send a v2 proof (403 Signed proof required otherwise).
+    const enrollProofResult = await refuseUnacceptableProof(body, {
+      identity: options.panelIdentity,
+      trustLevel: await readEnrollTrustLevel(db, credential, serverIdBody),
+    })
+    if ('refusal' in enrollProofResult) {
+      return c.json(
+        { ok: false, error: enrollProofResult.refusal.error },
+        enrollProofResult.refusal.status
+      )
+    }
+    const enrollProof = enrollProofResult.proof
+
     const fingerprint = await computePublicKeyFingerprint(publicJwk)
-    const payload = buildEnrollmentPayload({
+    const payload = enrollProofPayload(enrollProof, {
       challengeId,
       nonce: challenge.nonce,
       licenseId,
@@ -1753,13 +1889,11 @@ export function registerDaemonApiRoutes<E extends Env>(
       hostname,
       publicKeyFingerprint: fingerprint,
     })
-    const verified = await verifyDaemonSignature(publicJwk, payload, signature)
-    if (!verified) {
-      return c.json({ ok: false, error: 'Invalid signature' }, 403)
-    }
+    const unverified = await refuseUnverifiedProof(db, { publicJwk, payload, signature }, challenge)
+    if (unverified) return c.json({ ok: false, error: unverified.error }, unverified.status)
 
     const fabricDeps = enrollFabricDepsFromContext(c)
-    const enrollParams = {
+    return await completeEnroll(c, db, credential, deployment, {
       serverIdBody,
       machineKey,
       hostname,
@@ -1769,22 +1903,7 @@ export function registerDaemonApiRoutes<E extends Env>(
       deployment,
       secrets: c.get('dataEncryptionSecrets'),
       ...(fabricDeps ? { fabricDeps } : {}),
-    }
-    const enrolled =
-      credential.kind === 'reenroll'
-        ? await enrollWithReenrollTicket(db, credential.ticket, enrollParams)
-        : await enrollWithKey(db, credential, enrollParams)
-    if (!enrolled.ok) {
-      return c.json(enrollFailureBody(enrolled), enrolled.status)
-    }
-    const registry = getDaemonCellRegistry(c)
-    if (credential.kind === 'reenroll' && registry) {
-      await purgeDaemonCellBestEffort(registry, enrolled.serverId, 'after daemon key replaced')
-    }
-
-    void primeCapabilityPlanAfterEnroll(db, getDaemonCellRegistry(c), enrolled.serverId, deployment)
-
-    return c.json({ serverId: enrolled.serverId, keyId: enrolled.keyId }, 200)
+    })
   })
 
   daemon.post('/auth/session', async (c) => {
@@ -1833,8 +1952,18 @@ export function registerDaemonApiRoutes<E extends Env>(
     if (!challenge) {
       return c.json({ ok: false, error: 'Invalid or expired challenge' }, 400)
     }
+    const sessionProofResult = await refuseUnacceptableProof(body, {
+      identity: options.panelIdentity,
+      trustLevel: keyState.daemonState.trustLevel ?? 0,
+    })
+    if ('refusal' in sessionProofResult) {
+      return c.json(
+        { ok: false, error: sessionProofResult.refusal.error },
+        sessionProofResult.refusal.status
+      )
+    }
 
-    const payload = buildAuthPayload({
+    const payload = authProofPayload(sessionProofResult.proof, {
       challengeId,
       nonce: challenge.nonce,
       serverId,
@@ -1842,14 +1971,12 @@ export function registerDaemonApiRoutes<E extends Env>(
       machineKey: machineKey ?? '',
       hostname,
     })
-    const verified = await verifyDaemonSignature(
-      keyState.daemonState.key.publicJwk,
-      payload,
-      signature
+    const unverified = await refuseUnverifiedProof(
+      db,
+      { publicJwk: keyState.daemonState.key.publicJwk, payload, signature },
+      challenge
     )
-    if (!verified) {
-      return c.json({ ok: false, error: 'Invalid signature' }, 403)
-    }
+    if (unverified) return c.json({ ok: false, error: unverified.error }, unverified.status)
 
     const serverSessionLimited = await enforceDaemonRestLimit(
       c,

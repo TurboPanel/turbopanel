@@ -80,6 +80,7 @@ import {
   TUNNEL_PROVIDERS,
   TUNNEL_STATUSES,
 } from '../features/tunnels/vocabulary.ts'
+import { NONCE_KINDS } from '../features/servers/daemon-nonce.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -155,6 +156,7 @@ const CASES: Array<[constraint: string, values: readonly string[]]> = [
   ['origin_mode_check', INGRESS_MODES],
   ['certificate_kind_check', CERTIFICATE_KINDS],
   ['ingress_provider_check', INGRESS_PROVIDERS],
+  ['nonce_kind_check', NONCE_KINDS],
   ['upgrade_source_check', UPGRADE_SOURCES],
   ['upgrade_status_check', UPGRADE_STATUSES],
   ['upgrade_phase_check', UPGRADE_PHASES],

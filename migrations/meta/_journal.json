@@ -127,6 +127,13 @@
       "when": 1793582541451,
       "tag": "0017_server_trust_pinned_by",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1793628853962,
+      "tag": "0018_daemon_trust_level_and_nonce",
+      "breakpoints": true
     }
   ]
 }

@@ -1703,6 +1703,8 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'Operator TurboFabric role, `gateway` (accepts connections) or `client` (only dials out); NULL means automatic, gateway when a public address is known.',
       trust_pinned_by:
         'How the daemon pinned the panel key: `install`, `upgrade` or `unsafe` (installed with the skip flag); NULL until the daemon reports it.',
+      trust_level:
+        'Highest daemon session trust this server has used: 0 unsigned, 1 signed frames, 2 signed with a daemon attach proof; raised only, never lowered.',
       container_prefix:
         'Container range of this server (a /16 from the org container pool), set when first needed; cross-server network subnets come from it, NULL until then.',
       metadata:
@@ -1838,6 +1840,16 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'Stripe `data.object.object` (for example `subscription`) kept beside `object_id` for the projection sweep; NULL for git deliveries.',
       projected_at:
         'When the Stripe projection settled (success, skip or permanent error); NULL means pending retry and exempt from pruning, git rows stay NULL.',
+    },
+  },
+  nonce: {
+    group: 'identity',
+    summary:
+      'Daemon challenge ids and request nonces already used, kept until `expires_at` so a replay inside the window is refused; pruned by the sweep.',
+    columns: {
+      value: 'The used value: the nonce of a sign-in challenge or of a signed daemon request.',
+      kind: 'What the value protected: `challenge` (enroll or session sign-in) or `request` (a signed daemon request).',
+      expires_at: 'When the challenge or request stops being valid; the row is deleted after this.',
     },
   },
   forge: {

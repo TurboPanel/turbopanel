@@ -279,6 +279,8 @@ export {
   MASS_DISCONNECT_MIN_SERVERS,
   MASS_DISCONNECT_RATIO,
 } from './mass-disconnect.ts'
+import { pruneExpiredNonces } from '../../features/servers/daemon-nonce.ts'
+import { closeSocketsWithStaleKeys } from './stale-key-sweep.ts'
 
 async function withBoundedConcurrency<T>(
   items: T[],
@@ -981,6 +983,26 @@ export async function sweepExpiredWebhookDeliveriesSafely(db: Db): Promise<void>
 }
 
 /**
+ * Drop used sign-in challenges past their window, then close hosted sockets
+ * whose daemon key was revoked or replaced (one read; a cell is reached only
+ * for a row it returns). Each half is isolated.
+ */
+export async function sweepDaemonTrustSafely(db: Db, registry: DaemonCellRegistry): Promise<void> {
+  try {
+    const pruned = await pruneExpiredNonces(db)
+    if (pruned > 0) sweepTrace('daemon-nonces-swept', { pruned })
+  } catch (err) {
+    sweepTrace('daemon-nonce-sweep-failed', { error: sweepErrorMessage(err) })
+  }
+  try {
+    const closed = await closeSocketsWithStaleKeys(db, registry)
+    if (closed > 0) sweepTrace('stale-key-sockets-closed', { closed })
+  } catch (err) {
+    sweepTrace('stale-key-sweep-failed', { error: sweepErrorMessage(err) })
+  }
+}
+
+/**
  * Prune aged upgrade steps and terminal runs. Rides this cron's already-open
  * db on the 15-minute window and is isolated so a failure never aborts the
  * other sweeps.
@@ -1304,7 +1326,7 @@ export function optionalPhaseNames(
   scheduledTime: number | undefined,
   upgradeTickMinutes: number = UPGRADE_TICK_DEFAULT_MINUTES
 ): string[] {
-  const names = ['command-dispatch', 'webhook-deliveries']
+  const names = ['command-dispatch', 'webhook-deliveries', 'daemon-trust']
   if (shouldRunScheduledPhase(scheduledTime, shouldSweepExecutionLogs)) {
     names.push('execution-logs')
   }
@@ -1588,6 +1610,19 @@ async function runOptionalCronPhases(
       opts.scheduledTime,
       phasesSkipped,
       () => runWithDbTimeout(db, sweepExpiredWebhookDeliveriesSafely, capDbTimeout(deadlineMs))
+    ))
+  ) {
+    return
+  }
+
+  if (
+    !(await runOptionalPhase(deadlineMs, 'daemon-trust', opts.scheduledTime, phasesSkipped, () =>
+      runWithDbTimeout(
+        db,
+        (database) =>
+          sweepDaemonTrustSafely(database, createDurableObjectDaemonCellRegistry(env, database)),
+        capDbTimeout(deadlineMs)
+      )
     ))
   ) {
     return

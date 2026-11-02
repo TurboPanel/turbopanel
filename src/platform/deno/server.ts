@@ -92,6 +92,7 @@ import {
   listInstanceHostnames,
 } from '../../features/install/instance-hostnames.ts'
 import { ensurePanelIdentityDetailed } from '../../lib/panel-identity/identity.ts'
+import { pruneExpiredNonces } from '../../features/servers/daemon-nonce.ts'
 import { recordAudit } from '../../features/audit/audit-records.ts'
 import { setSelfHostedAddress } from '../../features/install/ingress-modes.ts'
 import { orderedPublicOrigins } from '../../lib/panel-identity/urls.ts'
@@ -724,6 +725,8 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     inboundMessageLimit: inboundLimits.limit,
     inboundMessageWindowMs: inboundLimits.windowMs,
     commandQueue,
+    panelIdentity: () => Promise.resolve(panelIdentity),
+    identityUrls: async (requestDb) => orderedPublicOrigins(await listInstanceHostnames(requestDb)),
   })
   registerAdminRoutes(app, {
     secrets: sessionSecrets,
@@ -875,6 +878,9 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
           limit: WEBHOOK_DELIVERY_SWEEP_LIMIT,
         })
       )
+      // Workers parity (offline-sweep cron): drop used sign-in challenges past
+      // their window. Open sockets are re-checked per frame here, not swept.
+      await runCleanupPhase('daemon nonce sweep', () => pruneExpiredNonces(db))
       // Workers parity (offline-sweep cron): tell each organization about the
       // folders that became orphans since the last tick, once per orphan.
       await runCleanupPhase('orphan folder alert sweep', () =>

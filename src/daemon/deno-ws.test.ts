@@ -70,6 +70,17 @@ import {
 import type { RateLimiter } from './rate-limit/contracts.ts'
 import { TEST_ONLY_TURBOPANEL_SECRET } from '../test-fixtures/secrets.ts'
 import { PLATFORM_DEFAULT_METRICS_CAPABILITY_PLAN } from '../contracts/capability-plan.ts'
+import {
+  type PanelIdentity,
+  resolvePanelIdentityFromBinding,
+} from '../lib/panel-identity/identity.ts'
+import { fixtureBindingJson } from '../test-fixtures/panel-identity-fixture.ts'
+import {
+  frameSigningInput,
+  helloSigningInput,
+  splitSignature,
+} from '../lib/panel-identity/frame-envelope.ts'
+import { base64urlDecode } from '../lib/encoding/base64url.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -96,12 +107,13 @@ function createSelectChain<T>(getRows: () => T[]) {
   return { from }
 }
 
-function createMockDb(keyId = 'key-test'): Db {
+function createMockDb(keyId = 'key-test', trustLevel = 0): Db {
   return {
     select: () =>
       createSelectChain(() => [
         {
           ...baseDaemonKey,
+          trustLevel,
           id: keyId,
           revokedAt: null,
           lastUsedAt: null,
@@ -1625,6 +1637,7 @@ async function withLiveDaemonServer(
     sessionSecrets?: DerivedSecretsConfig
     setDbOnContext?: Db
     heartbeatSeconds?: () => number
+    panelIdentity?: () => Promise<PanelIdentity | null>
   },
   fn: (ctx: { port: number; origin: string }) => Promise<void>
 ): Promise<void> {
@@ -1647,6 +1660,8 @@ async function withLiveDaemonServer(
     developerSurface: options.developerSurface,
     sessionSecrets: options.sessionSecrets,
     heartbeatSeconds: options.heartbeatSeconds,
+    panelIdentity: options.panelIdentity,
+    identityUrls: () => Promise.resolve(['https://panel.example.test']),
   })
 
   const ac = new AbortController()
@@ -1685,9 +1700,21 @@ async function openLiveDaemonWs(params: {
   }
   const ws = createDenoWebSocket(`ws://127.0.0.1:${params.port}${DAEMON_WS_PATH}`, { headers })
   await waitForWsOpen(ws)
+  sendLegacyFirstFrame(ws)
   // Allow async onOpen (attach + outbox pump start) to settle.
   await new Promise((resolve) => setTimeout(resolve, 40))
   return ws
+}
+
+/**
+ * An older daemon's first frame: anything but `hello-nonce` starts the
+ * unsigned session (the `version` frame and the outbox pump wait for it). An
+ * unknown type draws no answer, so the next frame a test reads is `version`.
+ */
+const LEGACY_FIRST_FRAME = JSON.stringify({ type: 'test-legacy-first-frame' })
+
+function sendLegacyFirstFrame(ws: WebSocket): void {
+  ws.send(LEGACY_FIRST_FRAME)
 }
 
 function createRecordedPlanDb(serverId: string): Db {
@@ -1780,6 +1807,7 @@ async function openLiveDaemonWsWithFirstMessage(params: {
   const ws = createDenoWebSocket(`ws://127.0.0.1:${params.port}${DAEMON_WS_PATH}`, { headers })
   const firstMessage = waitForWsMessageAfterAttachVersion(ws)
   await waitForWsOpen(ws)
+  sendLegacyFirstFrame(ws)
   await new Promise((resolve) => setTimeout(resolve, 40))
   return { ws, firstMessage }
 }
@@ -1885,6 +1913,7 @@ test('live WS attach version frame carries the advised heartbeat', async () => {
       })
       const first = waitForWsMessage(ws)
       await waitForWsOpen(ws)
+      sendLegacyFirstFrame(ws)
       const frame = JSON.parse(await first) as { type?: string; heartbeatSeconds?: number }
       ws.close(1000, 'done')
       assertEquals(frame.type, 'version')
@@ -2012,7 +2041,8 @@ test('live WS rate-limits after attach and closes with 1008', async () => {
         remoteIp: LIVE_REMOTE_IP,
       })
       const closed = waitForWsClose(ws)
-      for (let i = 0; i < 4; i++) {
+      // The legacy first frame `openLiveDaemonWs` sent is the first of the 3.
+      for (let i = 0; i < 3; i++) {
         ws.send(
           JSON.stringify({
             type: 'heartbeat',
@@ -3619,6 +3649,169 @@ test('live WS backup-run-report gets no answer when the database fails, so the d
       assertEquals(await answer, 'silent')
       ws.close(1000, 'done')
       await waitForWsClose(ws)
+    }
+  )
+})
+
+// --- Signed session (the daemon's first frame is `hello-nonce`) ---
+
+const HELLO_NONCE = 'n'.repeat(43)
+
+async function fixturePanelIdentity(): Promise<PanelIdentity> {
+  const identity = await resolvePanelIdentityFromBinding(await fixtureBindingJson())
+  if (!identity) throw new TypeError('fixture identity missing')
+  return identity
+}
+
+/** The next `count` frames, in arrival order. */
+function collectWsMessages(ws: WebSocket, count: number, timeoutMs = 3000): Promise<string[]> {
+  return new Promise((resolve, reject) => {
+    const seen: string[] = []
+    const timer = setTimeout(
+      () => reject(new TypeError(`timed out after ${seen.length} of ${count} ws messages`)),
+      timeoutMs
+    )
+    const onMessage = (event: MessageEvent) => {
+      seen.push(String(event.data))
+      if (seen.length < count) return
+      clearTimeout(timer)
+      ws.removeEventListener('message', onMessage)
+      resolve(seen)
+    }
+    ws.addEventListener('message', onMessage)
+  })
+}
+
+async function verifiesWith(
+  identity: PanelIdentity,
+  input: Uint8Array,
+  sig: string
+): Promise<boolean> {
+  const key = await crypto.subtle.importKey(
+    'raw',
+    identity.current.publicRaw as BufferSource,
+    { name: 'Ed25519' },
+    false,
+    ['verify']
+  )
+  return await crypto.subtle.verify(
+    'Ed25519',
+    key,
+    base64urlDecode(sig) as BufferSource,
+    input as BufferSource
+  )
+}
+
+async function openSignedSocket(port: number, serverId: string, secrets: DaemonJwtSecretsForTest) {
+  const issued = await issueDaemonJwt({ sub: serverId, kid: 'key-test' }, secrets)
+  const ws = createDenoWebSocket(`ws://127.0.0.1:${port}${DAEMON_WS_PATH}`, {
+    headers: { Authorization: `Bearer ${issued.token}`, 'X-Real-IP': LIVE_REMOTE_IP },
+  })
+  await waitForWsOpen(ws)
+  return ws
+}
+
+type DaemonJwtSecretsForTest = Awaited<ReturnType<typeof createDaemonJwtSecrets>>
+
+test('signed session: nothing is sent before the first frame, then a signed hello and an enveloped version with seq 1', async () => {
+  const secrets = await createDaemonJwtSecrets()
+  const serverId = 'srv-signed-hello'
+  const identity = await fixturePanelIdentity()
+  const { tracking } = outboxCellWithBatch(serverId, [outboxEnvelope('del-signed')])
+  await withLiveDaemonServer(
+    {
+      secrets,
+      db: createMockDb(),
+      registry: createTrackingRegistry(tracking.cell),
+      heartbeatSeconds: () => 30,
+      panelIdentity: () => Promise.resolve(identity),
+    },
+    async ({ port }) => {
+      const ws = await openSignedSocket(port, serverId, secrets)
+      const early: string[] = []
+      ws.addEventListener('message', (event) => early.push(String(event.data)))
+      await new Promise((resolve) => setTimeout(resolve, 60))
+      assertEquals(early, [])
+
+      const frames = collectWsMessages(ws, 3)
+      ws.send(JSON.stringify({ type: 'hello-nonce', nonce: HELLO_NONCE }))
+      const [helloRaw, versionRaw, outboxRaw] = await frames
+      ws.close(1000, 'done')
+      await waitForWsClose(ws)
+
+      const hello = splitSignature(helloRaw!)
+      assertEquals(hello !== null, true)
+      assertEquals(
+        await verifiesWith(identity, helloSigningInput(hello!.unsigned), hello!.sig),
+        true
+      )
+      const helloBody = JSON.parse(hello!.unsigned) as Record<string, unknown>
+      assertEquals(helloBody.type, 'hello')
+      assertEquals(helloBody.nonce, HELLO_NONCE)
+      assertEquals(helloBody.kid, identity.current.kid)
+      assertEquals(helloBody.heartbeatSeconds, 30)
+      assertEquals(helloBody.urls, ['https://panel.example.test'])
+
+      const version = splitSignature(versionRaw!)
+      const versionBody = JSON.parse(version!.unsigned) as Record<string, unknown>
+      assertEquals(versionBody.type, 'version')
+      assertEquals(versionBody.seq, 1)
+      assertEquals(versionBody.sessionId, helloBody.sessionId)
+      assertEquals(
+        await verifiesWith(identity, frameSigningInput('version', version!.unsigned), version!.sig),
+        true
+      )
+
+      const outbox = splitSignature(outboxRaw!)
+      const outboxBody = JSON.parse(outbox!.unsigned) as Record<string, unknown>
+      assertEquals(outboxBody.seq, 2)
+      assertEquals(
+        await verifiesWith(
+          identity,
+          frameSigningInput(String(outboxBody.type), outbox!.unsigned),
+          outbox!.sig
+        ),
+        true
+      )
+    }
+  )
+})
+
+test('signed session: a hello-nonce without an identity key is closed 4403', async () => {
+  const secrets = await createDaemonJwtSecrets()
+  const serverId = 'srv-signed-no-key'
+  const tracking = createTrackingDaemonCell(serverId)
+  await withLiveDaemonServer(
+    { secrets, db: createMockDb(), registry: createTrackingRegistry(tracking.cell) },
+    async ({ port }) => {
+      const ws = await openSignedSocket(port, serverId, secrets)
+      const closed = waitForWsClose(ws)
+      ws.send(JSON.stringify({ type: 'hello-nonce', nonce: HELLO_NONCE }))
+      const event = await closed
+      assertEquals(event.code, 4403)
+      assertEquals(event.reason, 'panel-identity-unavailable')
+    }
+  )
+})
+
+test('signed session: an unsigned first frame from a server that used signed mode is closed 4403', async () => {
+  const secrets = await createDaemonJwtSecrets()
+  const serverId = 'srv-signed-required'
+  const tracking = createTrackingDaemonCell(serverId)
+  await withLiveDaemonServer(
+    {
+      secrets,
+      db: createMockDb('key-test', 1),
+      registry: createTrackingRegistry(tracking.cell),
+      panelIdentity: () => fixturePanelIdentity(),
+    },
+    async ({ port }) => {
+      const ws = await openSignedSocket(port, serverId, secrets)
+      const closed = waitForWsClose(ws)
+      sendLegacyFirstFrame(ws)
+      const event = await closed
+      assertEquals(event.code, 4403)
+      assertEquals(event.reason, 'signed-mode-required')
     }
   )
 })

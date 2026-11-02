@@ -31,6 +31,8 @@ export type ServerDaemonStateWithMetadata = ServerDaemonState & {
   hostname: string | null
   machineKey: string | null
   metadata: ServerMetadata | null
+  /** `server.trust_level` (0 unsigned, 1 signed frames, 2 with attach proof); absent in older fakes means 0. */
+  trustLevel?: number
 }
 
 const STATUS_COLUMNS = {
@@ -64,6 +66,7 @@ export async function getServerDaemonStateByServerId(
       metadata: server.metadata,
       hostname: server.hostname,
       machineKey: server.machineKey,
+      trustLevel: server.trustLevel,
       ...STATUS_COLUMNS,
       ...KEY_COLUMNS,
     })
@@ -83,6 +86,7 @@ export async function getServerDaemonStateByServerId(
     hostname: row.hostname ?? null,
     machineKey: row.machineKey ?? null,
     metadata: (row.metadata ?? null) as ServerMetadata | null,
+    trustLevel: row.trustLevel ?? 0,
   }
 }
 

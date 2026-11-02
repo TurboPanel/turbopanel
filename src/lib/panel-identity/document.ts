@@ -1,5 +1,6 @@
 import { base64urlDecode, base64urlEncode } from '../encoding/base64url.ts'
 import { fingerprintRawPublicKey } from './fingerprint.ts'
+import { httpSigningInput } from './frame-envelope.ts'
 import { signWithCurrent, type PanelIdentity } from './identity.ts'
 
 export const IDENTITY_DOCUMENT_PATH = '/api/daemon/v1/instance/identity'
@@ -23,8 +24,6 @@ export type IdentityDocument = {
   issued: string
   expires: string
 }
-
-const textEncoder = new TextEncoder()
 
 /**
  * The document for `identity`. The panel holds no public key for `next`, only
@@ -76,7 +75,7 @@ export function serializeIdentityDocument(doc: IdentityDocument): string {
 
 /** Bytes signed for a state-driving HTTP response: `"tp-http\n" + path + "\n" + body`. */
 export function httpSigningBytes(path: string, body: string): Uint8Array {
-  return textEncoder.encode(`tp-http\n${path}\n${body}`)
+  return httpSigningInput(path, body)
 }
 
 export type SignedIdentityResponse = { body: string; signature: string; issued: string }

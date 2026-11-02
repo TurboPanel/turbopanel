@@ -2753,6 +2753,31 @@ export function validateDaemonInboundEnvelope(
 export const DAEMON_CELL_PING = '{"type":"ping"}'
 export const DAEMON_CELL_PONG = '{"type":"pong"}'
 
+/** Longest `hello-nonce` frame read; a real one is about 70 bytes. */
+const HELLO_NONCE_MAX_BYTES = 512
+const HELLO_NONCE_PATTERN = /^[A-Za-z0-9_-]{43}$/
+
+/**
+ * A pinned daemon's first frame: `{"type":"hello-nonce","nonce":<32 random
+ * bytes, base64url>}` and nothing else about itself. The control plane must
+ * answer with a signed `hello` echoing the nonce before the daemon sends
+ * anything more. Checked before `validateDaemonInboundFrame`, which does not
+ * know the type. Extra members are ignored. Null for anything else.
+ */
+export function parseHelloNonceFrame(raw: string): { nonce: string } | null {
+  if (raw.length > HELLO_NONCE_MAX_BYTES || !raw.includes('"hello-nonce"')) return null
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return null
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null
+  const frame = parsed as { type?: unknown; nonce?: unknown }
+  if (frame.type !== 'hello-nonce' || typeof frame.nonce !== 'string') return null
+  return HELLO_NONCE_PATTERN.test(frame.nonce) ? { nonce: frame.nonce } : null
+}
+
 /** Per-outbox-entry identity for queue send/ack/resend semantics. */
 export type OutboxDeliveryId = string // NOSONAR typescript:S6564 — semantic alias for delivery queue keys
 
