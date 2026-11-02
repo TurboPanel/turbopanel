@@ -1,6 +1,8 @@
 import type { Db } from '../../../db/connection.ts'
 import {
   edgeTrustForModes,
+  isSafeEdgeRange,
+  MAX_EDGE_RANGES,
   emptyEdgeTrustHash,
   loadEdgeTrustState,
   providersForModes,
@@ -10,7 +12,6 @@ import {
 } from '../../../features/install/edge-trust.ts'
 import { listInstanceHostnames } from '../../../features/install/instance-hostnames.ts'
 import type { IngressProviderId } from '../../../features/install/ingress-modes.ts'
-import { isValidCidr } from '../../../lib/ip-address.ts'
 
 /**
  * Self-hosted only. Fetches the published edge address lists the control
@@ -24,12 +25,51 @@ const REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1000
 
 type FetchFn = typeof fetch
 
-function validCidrs(values: unknown): string[] {
-  if (!Array.isArray(values)) return []
-  return values
-    .filter((v): v is string => typeof v === 'string')
-    .map((v) => v.trim())
-    .filter(isValidCidr)
+const FETCH_TIMEOUT_MS = 10_000
+const MAX_BODY_BYTES = 1024 * 1024
+
+/**
+ * Every entry must be a safe edge range; one bad entry refuses the whole
+ * answer (the caller keeps the last good list) instead of dropping it.
+ */
+function safeCidrs(values: unknown, label: string): string[] {
+  if (values === undefined) return []
+  if (!Array.isArray(values)) throw new Error(`${label} address list was malformed`)
+  const out = values.map((v) => (typeof v === 'string' ? v.trim() : ''))
+  const bad = out.find((v) => !isSafeEdgeRange(v))
+  if (bad !== undefined) throw new Error(`${label} address list had an unusable range`)
+  return out
+}
+
+/** Read a JSON body without trusting its length: stop at the byte ceiling. */
+async function readBoundedJson(response: Response): Promise<unknown> {
+  const declared = Number(response.headers.get('content-length') ?? 0)
+  if (declared > MAX_BODY_BYTES) throw new Error('address list was too large')
+  if (!response.body) throw new Error('address list had no body')
+  const chunks: Uint8Array[] = []
+  let total = 0
+  // Leaving the loop by throwing cancels the stream.
+  for await (const chunk of response.body) {
+    total += chunk.byteLength
+    if (total > MAX_BODY_BYTES) throw new Error('address list was too large')
+    chunks.push(chunk)
+  }
+  const bytes = new Uint8Array(total)
+  let offset = 0
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  return JSON.parse(new TextDecoder().decode(bytes))
+}
+
+/** One bounded GET: timeout, no redirects, capped body. */
+function boundedGet(fetchFn: FetchFn, url: string, headers: Record<string, string>) {
+  return fetchFn(url, {
+    headers,
+    redirect: 'error',
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+  })
 }
 
 /** Cloudflare's list; `'unchanged'` when the stored etag still matches. */
@@ -40,14 +80,16 @@ export async function fetchCloudflareRanges(
 ): Promise<EdgeRangeSet | 'unchanged'> {
   const headers: Record<string, string> = { accept: 'application/json' }
   if (previous?.etag) headers['if-none-match'] = previous.etag
-  const response = await fetchFn(CLOUDFLARE_IPS_URL, { headers })
+  const response = await boundedGet(fetchFn, CLOUDFLARE_IPS_URL, headers)
   if (response.status === 304) return 'unchanged'
   if (!response.ok) throw new Error(`Cloudflare address list answered ${response.status}`)
-  const body = (await response.json()) as {
+  const body = (await readBoundedJson(response)) as {
     result?: { ipv4_cidrs?: unknown; ipv6_cidrs?: unknown; etag?: unknown }
   }
-  const v4 = validCidrs(body.result?.ipv4_cidrs)
-  const v6 = validCidrs(body.result?.ipv6_cidrs)
+  const v4 = safeCidrs(body.result?.ipv4_cidrs, 'Cloudflare')
+  const v6 = safeCidrs(body.result?.ipv6_cidrs, 'Cloudflare')
+  if (v4.length + v6.length > MAX_EDGE_RANGES)
+    throw new Error('Cloudflare address list was too long')
   if (v4.length === 0 && v6.length === 0) throw new Error('Cloudflare address list was empty')
   const etag = body.result?.etag
   return {
@@ -59,12 +101,13 @@ export async function fetchCloudflareRanges(
 }
 
 async function fetchBunnyList(fetchFn: FetchFn, url: string, suffix: string): Promise<string[]> {
-  const response = await fetchFn(url, { headers: { accept: 'application/json' } })
+  const response = await boundedGet(fetchFn, url, { accept: 'application/json' })
   if (!response.ok) throw new Error(`Bunny address list answered ${response.status}`)
-  const body: unknown = await response.json()
-  const addresses = Array.isArray(body) ? body : []
-  return validCidrs(
-    addresses.filter((a): a is string => typeof a === 'string').map((a) => `${a.trim()}${suffix}`)
+  const body = await readBoundedJson(response)
+  if (!Array.isArray(body)) throw new Error('Bunny address list was malformed')
+  return safeCidrs(
+    body.map((a) => (typeof a === 'string' ? `${a.trim()}${suffix}` : '')),
+    'Bunny'
   )
 }
 
@@ -75,6 +118,7 @@ export async function fetchBunnyRanges(fetchFn: FetchFn, now: Date): Promise<Edg
     fetchBunnyList(fetchFn, `${BUNNY_EDGE_URL}/ipv6`, '/128'),
   ])
   if (v4.length === 0 && v6.length === 0) throw new Error('Bunny address list was empty')
+  if (v4.length + v6.length > MAX_EDGE_RANGES) throw new Error('Bunny address list was too long')
   return { v4, v6, fetchedAt: now.toISOString() }
 }
 

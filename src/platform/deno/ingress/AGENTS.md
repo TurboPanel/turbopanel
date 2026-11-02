@@ -41,3 +41,8 @@ High Availability (Workers) must not contain any of it.
   setting (`src/features/install/edge-trust.ts`, Workers-safe). The apply body
   carries `edgeTrust` only to a daemon advertising `instance-edge-trust-v1`;
   Caddy picks the visitor address from them, so `resolvePeerAddress` is unchanged.
+  A vendor answer is refused whole (the last good list stays, the error is
+  recorded) when any entry is wider than /8 (v4) or /16 (v6), overlaps loopback,
+  private, link-local, CGNAT, ULA or multicast space, or the list passes 5000
+  entries. Fetches time out after 10 s, refuse redirects and stop reading at
+  1 MiB, so a slow vendor cannot stall the maintenance tick or an apply.

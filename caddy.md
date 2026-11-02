@@ -52,7 +52,10 @@ refreshed daily by the control plane and sent as `edgeTrust` on
 `public-urls-update`) to `trusted_proxies`, and keeps the forwarding headers
 from peers in those ranges only. Caddy then puts the visitor's address in
 `X-Real-IP`; every other peer is still stripped. The daemon keeps the last set
-in `instance-edge-trust.json` beside `instance-hostnames.json`.
+in `instance-edge-trust.json` beside `instance-hostnames.json`. Trusting a
+provider's whole published range means any customer of that provider can point
+a zone at this origin and forge a visitor address; authenticated origin pulls
+or an origin firewall that admits only the provider close that gap.
 
 **Co-located development** does not use this file. When `turbopanel_dev_user` is
 set, `turbopanel-caddy.service` loads `~/dev/orchestration/Caddyfile` instead

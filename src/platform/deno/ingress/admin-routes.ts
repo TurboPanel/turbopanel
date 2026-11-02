@@ -33,7 +33,7 @@ export function registerIngressAdminRoutes(admin: Hono<AppEnv>, deps: IngressAdm
     }
     return response
   })
-  admin.get('/instance/ingress/trusted-proxies', async (c) => {
+  admin.get('/instance/ingress/trusted-proxies', deps.rootOnly, async (c) => {
     const db = getDb(c)
     if (!db) return c.json({ ok: false, error: 'Database unavailable' }, 503)
     return c.json(await edgeTrustSummary(db))

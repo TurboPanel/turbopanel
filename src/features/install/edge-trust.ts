@@ -9,7 +9,7 @@
  */
 
 import type { Db } from '../../db/connection.ts'
-import { isValidCidr } from '../../lib/ip-address.ts'
+import { cidrsOverlap, parseCidr } from '../../lib/ip-address.ts'
 import { loadSettingValues, upsertSettingValue } from '../settings/resolver.ts'
 import { getServerDaemonStateByServerId } from '../servers/server-identity-db.ts'
 import type { InstanceEdgeTrustWire } from '../../contracts/cell-protocol.ts'
@@ -56,11 +56,44 @@ export function providersForModes(modes: Iterable<string>): IngressProviderId[] 
   return (['cloudflare', 'bunny'] as const).filter((provider) => wanted.has(provider))
 }
 
+/** Shortest prefix a published edge range may have; anything wider is refused. */
+const MIN_PREFIX = { 4: 8, 6: 16 } as const
+
+/** A vendor answer larger than this is refused rather than rendered into Caddy. */
+export const MAX_EDGE_RANGES = 5000
+
+/** Loopback, private, link-local, CGNAT, ULA, multicast and reserved space. */
+const NEVER_EDGE = [
+  '0.0.0.0/8',
+  '10.0.0.0/8',
+  '100.64.0.0/10',
+  '127.0.0.0/8',
+  '169.254.0.0/16',
+  '172.16.0.0/12',
+  '192.168.0.0/16',
+  '224.0.0.0/3',
+  '::/8',
+  'fc00::/7',
+  'fe80::/10',
+  'ff00::/8',
+]
+
+/**
+ * A range Caddy may trust as an edge: a valid CIDR, not wider than the
+ * prefix floor, and clear of every local, private or reserved block. A bad
+ * vendor answer must never make every peer trusted.
+ */
+export function isSafeEdgeRange(value: string): boolean {
+  const parsed = parseCidr(value)
+  if (!parsed || parsed.prefix < MIN_PREFIX[parsed.version]) return false
+  return !NEVER_EDGE.some((blocked) => cidrsOverlap(blocked, value))
+}
+
 const byText = (a: string, b: string): number => a.localeCompare(b)
 
 function rangeList(set: EdgeRangeSet | undefined): string[] {
   if (!set) return []
-  return [...new Set([...set.v4, ...set.v6].filter(isValidCidr))].sort(byText)
+  return [...new Set([...set.v4, ...set.v6].filter(isSafeEdgeRange))].sort(byText)
 }
 
 async function sha256Hex(text: string): Promise<string> {

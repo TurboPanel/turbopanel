@@ -1,4 +1,5 @@
 import { assertEquals, assertRejects } from '@std/assert'
+import { isSafeEdgeRange } from '../../../features/install/edge-trust.ts'
 import type { Db } from '../../../db/connection.ts'
 import {
   describeEdgeTrust,
@@ -31,12 +32,12 @@ test('Cloudflare list is requested with the stored etag and 304 means unchanged'
   assertEquals(sent, 'abc')
 })
 
-test('Cloudflare list keeps valid CIDRs and the etag', async () => {
+test('Cloudflare list keeps the etag and every safe range', async () => {
   const fetchFn = (() =>
     Promise.resolve(
       json({
         result: {
-          ipv4_cidrs: ['198.51.100.0/24', 'junk'],
+          ipv4_cidrs: ['198.51.100.0/24'],
           ipv6_cidrs: ['2001:db8::/32'],
           etag: 'e1',
         },
@@ -61,7 +62,7 @@ test('an empty or failing Cloudflare answer is an error, never an empty list', a
 test('Bunny addresses become host ranges for both families', async () => {
   const fetchFn = ((url: string) =>
     Promise.resolve(
-      json(url.endsWith('/ipv6') ? ['2001:db8::1'] : ['203.0.113.7', 'bad'])
+      json(url.endsWith('/ipv6') ? ['2001:db8::1'] : ['203.0.113.7'])
     )) as typeof fetch
   const result = await fetchBunnyRanges(fetchFn, NOW)
   assertEquals(result.v4, ['203.0.113.7/32'])
@@ -146,4 +147,78 @@ test('the scheduled pass sends nothing when no edge mode is in use', async () =>
     return Promise.resolve()
   })
   assertEquals(applied, 0)
+})
+
+function cloudflareAnswering(ipv4: string[], ipv6: string[] = []): typeof fetch {
+  return (() =>
+    Promise.resolve(json({ result: { ipv4_cidrs: ipv4, ipv6_cidrs: ipv6 } }))) as typeof fetch
+}
+
+test('a vendor answer with a catch-all, private or loopback range is refused whole', async () => {
+  const v4Bad = ['0.0.0.0/0', '10.0.0.0/8', '127.0.0.0/8', '192.168.1.0/24', '100.64.0.0/10']
+  const v6Bad = ['::/0', '::1/128', 'fc00::/7', 'fe80::/10', '2001::/8']
+  await Promise.all([
+    ...v4Bad.map((bad) =>
+      assertRejects(
+        () => fetchCloudflareRanges(cloudflareAnswering(['198.51.100.0/24', bad]), undefined, NOW),
+        Error,
+        'unusable range'
+      )
+    ),
+    ...v6Bad.map((bad) =>
+      assertRejects(() =>
+        fetchCloudflareRanges(cloudflareAnswering(['198.51.100.0/24'], [bad]), undefined, NOW)
+      )
+    ),
+  ])
+})
+
+test('a refused answer keeps the last good list and records the error', async () => {
+  const previous = { v4: ['198.51.100.0/24'], v6: [], fetchedAt: 'old' }
+  const next = await refreshedEdgeState(
+    { cloudflare: previous },
+    ['cloudflare-proxy'],
+    cloudflareAnswering(['0.0.0.0/0']),
+    NOW
+  )
+  assertEquals(next.cloudflare, previous)
+  assertEquals(next.lastError?.provider, 'cloudflare')
+})
+
+test('a Bunny list with a private address or an oversized answer is refused', async () => {
+  const privateList = (() => Promise.resolve(json(['10.1.2.3']))) as typeof fetch
+  await assertRejects(() => fetchBunnyRanges(privateList, NOW), Error, 'unusable range')
+  const huge = (() =>
+    Promise.resolve(
+      new Response('[' + '"1.2.3.4",'.repeat(200_000) + '"1.2.3.5"]')
+    )) as typeof fetch
+  await assertRejects(() => fetchBunnyRanges(huge, NOW), Error, 'too large')
+})
+
+test('every fetch has a timeout and refuses redirects', async () => {
+  const seen: RequestInit[] = []
+  const fetchFn = ((_url: string, init?: RequestInit) => {
+    seen.push(init ?? {})
+    return Promise.resolve(json({ result: { ipv4_cidrs: ['198.51.100.0/24'] } }))
+  }) as typeof fetch
+  await fetchCloudflareRanges(fetchFn, undefined, NOW)
+  assertEquals(seen[0]?.redirect, 'error')
+  assertEquals(seen[0]?.signal instanceof AbortSignal, true)
+})
+
+test('the safe-range rule', () => {
+  for (const ok of ['173.245.48.0/20', '203.0.113.7/32', '2400:cb00::/32', '2001:db8::1/128']) {
+    assertEquals(isSafeEdgeRange(ok), true, ok)
+  }
+  for (const bad of ['0.0.0.0/0', '1.0.0.0/7', '::/0', '2000::/15', '172.20.0.0/16', 'junk', '']) {
+    assertEquals(isSafeEdgeRange(bad), false, bad)
+  }
+})
+
+test('a list past the entry cap is refused even when it is small in bytes', async () => {
+  const many = ((url: string) =>
+    Promise.resolve(
+      json(url.endsWith('/ipv6') ? [] : Array.from({ length: 5001 }, () => '203.0.113.7'))
+    )) as typeof fetch
+  await assertRejects(() => fetchBunnyRanges(many, NOW), Error, 'too long')
 })

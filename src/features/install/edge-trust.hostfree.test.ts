@@ -13,7 +13,11 @@ import {
 const test = Deno.test.bind(Deno)
 
 const STATE: EdgeTrustState = {
-  cloudflare: { v4: ['198.51.100.0/24', 'not-a-cidr'], v6: ['2001:db8::/32'], fetchedAt: 'x' },
+  cloudflare: {
+    v4: ['198.51.100.0/24', 'not-a-cidr', '0.0.0.0/0', '10.0.0.0/8'],
+    v6: ['2001:db8::/32'],
+    fetchedAt: 'x',
+  },
   bunny: { v4: ['203.0.113.7/32'], v6: [], fetchedAt: 'x' },
 }
 
