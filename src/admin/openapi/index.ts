@@ -1,7 +1,7 @@
 import { INSTANCE_VERSION } from '../../app/version.ts'
 import { resolveSessionCookieNameFromUrl } from '../../client/authn/crypto.ts'
 import { ADMIN_API_PREFIX } from '../../app/surfaces.ts'
-import { INSTANCE_ACCESS_PATHS } from './instance-access.ts'
+import { INSTANCE_ACCESS_PATHS, INSTANCE_TUNNEL_TOKEN_PATH } from './instance-access.ts'
 import { INSTANCE_UPDATES_PATHS } from './instance-updates.ts'
 import { MAIL_DEAD_LETTER_PATHS } from './mail-dead-letters.ts'
 import { INSTANCE_HOSTNAME_PATHS } from './instance-hostnames.ts'
@@ -11,7 +11,7 @@ const cookieSecurity = [{ cookieAuth: [] }] as const
 /** Hand-authored OpenAPI 3.1 spec for documented admin REST routes. */
 export function getAdminOpenApiSpec(
   serverUrl: string,
-  _opts?: { devSurface?: boolean; runtime?: 'deno' | 'workers' }
+  opts?: { devSurface?: boolean; runtime?: 'deno' | 'workers' }
 ): object {
   const sessionCookieName = resolveSessionCookieNameFromUrl(serverUrl)
 
@@ -440,6 +440,7 @@ export function getAdminOpenApiSpec(
     paths: {
       ...INSTANCE_HOSTNAME_PATHS,
       ...INSTANCE_ACCESS_PATHS,
+      ...(opts?.runtime === 'workers' ? {} : INSTANCE_TUNNEL_TOKEN_PATH),
       ...INSTANCE_UPDATES_PATHS,
       ...MAIL_DEAD_LETTER_PATHS,
       [`${ADMIN_API_PREFIX}/instance/public-urls`]: {

@@ -9,6 +9,7 @@ import {
   type InstanceHostnameWireEntry,
 } from '../contracts/cell-protocol.ts'
 import { cellTrace } from '../lib/logger.ts'
+import { isPublicPort } from '../features/install/ingress-modes.ts'
 import { PublicUrlsApplyPayloadError } from './public-urls-apply-payload.ts'
 import { InstanceSecretSealingError } from '../features/install/instance-secret-sealing.ts'
 import {
@@ -248,6 +249,8 @@ export type ParsedInstanceHostname = {
   host: string
   source: InstanceHostnameSource
   uploadedCertId: string | null
+  publicPort?: number
+  isPrimary?: boolean
 }
 
 export function parseInstanceHostnamesBody(body: unknown):
@@ -294,14 +297,34 @@ function parseHostnameEntry(entry: unknown):
   ) {
     return { ok: false, error: 'uploadedCertId must be a string or null' }
   }
+  const ingress = parseIngressChoices(entry as { publicPort?: unknown; isPrimary?: unknown })
+  if (!ingress.ok) return ingress
   return {
     ok: true,
     hostname: {
       host,
       source: source as InstanceHostnameSource,
       uploadedCertId: typeof uploadedCertId === 'string' ? uploadedCertId : null,
+      ...ingress.fields,
     },
   }
+}
+
+/** The optional public port and primary flag of one hostname entry. */
+function parseIngressChoices(entry: {
+  publicPort?: unknown
+  isPrimary?: unknown
+}):
+  | { ok: true; fields: { publicPort?: number; isPrimary?: boolean } }
+  | { ok: false; error: string } {
+  const { publicPort, isPrimary } = entry
+  if (publicPort !== undefined && !isPublicPort(publicPort)) {
+    return { ok: false, error: 'publicPort must be a whole number from 1 to 65535' }
+  }
+  if (isPrimary !== undefined && typeof isPrimary !== 'boolean') {
+    return { ok: false, error: 'isPrimary must be true or false' }
+  }
+  return { ok: true, fields: { publicPort, isPrimary } }
 }
 
 export function parseCertificateUploadBody(body: unknown):

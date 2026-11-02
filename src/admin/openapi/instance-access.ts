@@ -8,6 +8,41 @@ const cookieSecurity = [{ cookieAuth: [] }] as const
  * `INSTANCE_HOSTNAME_PATHS`.
  */
 export const INSTANCE_ACCESS_PATHS = {
+  [`${ADMIN_API_PREFIX}/instance/identity`]: {
+    get: {
+      tags: ['Instance'],
+      summary: "Read the control plane's key fingerprints",
+      description:
+        'Returns `{ ok, configured, current, next, seal, urls, installUrl, servers }`. ' +
+        '`current` is `{ fingerprint, keyset }`, `next` and `seal` are `{ fingerprint }` or ' +
+        'null, and `servers` lists each server with `pinnedBy` (`install`, `upgrade`, ' +
+        '`unsafe` or `none`). Public values only; no key material is ever returned.',
+      security: [...cookieSecurity],
+      responses: {
+        '200': { description: 'Fingerprints and pinned-by state' },
+        '401': { description: 'Unauthorized' },
+        '403': { description: 'Forbidden — requires admin or superadmin role' },
+      },
+    },
+  },
+  [`${ADMIN_API_PREFIX}/instance/identity/next`]: {
+    put: {
+      tags: ['Instance'],
+      summary: "Set or clear the control plane's next key fingerprint",
+      description:
+        'Body `{ fingerprint: string | null }` (43-character fingerprint, or null to clear). ' +
+        'Superadmin only, self-hosted only (Workers answers 422: the next key is the ' +
+        '`TURBOPANEL_IDENTITY_KEYS` binding), and behind step-up: a stale session gets 403 ' +
+        '`reauth_required`. Audited; superadmins are emailed.',
+      security: [...cookieSecurity],
+      responses: {
+        '200': { description: '`{ ok: true, next }`' },
+        '401': { description: 'Unauthorized' },
+        '403': { description: 'Forbidden, or `reauth_required`' },
+        '422': { description: 'Malformed fingerprint, or not available on this runtime' },
+      },
+    },
+  },
   [`${ADMIN_API_PREFIX}/instance/daemon`]: {
     get: {
       tags: ['Instance'],
@@ -75,6 +110,10 @@ export const INSTANCE_ACCESS_PATHS = {
       },
     },
   },
+}
+
+/** Self-hosted only: the Workers spec leaves it out, as the route is not mounted there. */
+export const INSTANCE_TUNNEL_TOKEN_PATH = {
   [`${ADMIN_API_PREFIX}/instance/tunnel-token`]: {
     post: {
       tags: ['Instance'],

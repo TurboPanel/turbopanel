@@ -75,6 +75,8 @@ import {
   tryBeginReencryptSweep,
 } from './reencrypt-secrets.ts'
 import { registerInstanceAccessAdminRoutes } from './instance-access-routes.ts'
+import { registerInstanceIdentityAdminRoutes } from './instance-identity-routes.ts'
+import type { PanelIdentity } from '../lib/panel-identity/identity.ts'
 import { registerInstanceUpdatesAdminRoutes } from './instance-updates-routes.ts'
 import { registerInstanceHostnameAdminRoutes } from './instance-hostname-routes.ts'
 import {
@@ -202,6 +204,12 @@ export function registerAdminRoutes(
      * queue), so the routes answer 501 there.
      */
     mailDeadLetters?: MailDeadLetterStore
+    /** The control plane identity for the Panel Identity read; omitted means the feature is off. */
+    panelIdentity?: () => Promise<PanelIdentity | null>
+    /** The public origins the identity document lists (URL 0 is the install address). */
+    identityUrls?: (db: NonNullable<ReturnType<typeof getDb>>) => Promise<string[]>
+    /** Self-hosted: the stored next key changed, so swap the in-memory identity. */
+    onIdentityNextChanged?: (fingerprint: string | null) => void
   }
 ) {
   const admin = new Hono<AppEnv>()
@@ -319,6 +327,14 @@ export function registerAdminRoutes(
     secrets: opts.secrets,
     runtime: opts.runtime,
     ...(opts.getEnv ? { getEnv: opts.getEnv } : {}),
+  })
+
+  registerInstanceIdentityAdminRoutes(admin, {
+    secrets: opts.secrets,
+    runtime: opts.runtime,
+    ...(opts.panelIdentity ? { panelIdentity: opts.panelIdentity } : {}),
+    ...(opts.identityUrls ? { identityUrls: opts.identityUrls } : {}),
+    ...(opts.onIdentityNextChanged ? { onNextChanged: opts.onIdentityNextChanged } : {}),
   })
 
   registerInstanceAccessAdminRoutes(admin, {

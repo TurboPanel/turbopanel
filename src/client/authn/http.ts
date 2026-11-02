@@ -1,4 +1,5 @@
 import { eq } from 'drizzle-orm'
+import type { PanelIdentity } from '../../lib/panel-identity/identity.ts'
 import { getCookie } from 'hono/cookie'
 import { type Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
@@ -64,7 +65,6 @@ import {
 } from './auth-body-limits.ts'
 import { isUniqueViolationOn } from '../../db/unique-violation.ts'
 import { buildCookieHeader, requestTls } from './request-context.ts'
-import type { PanelIdentity } from '../../lib/panel-identity/identity.ts'
 
 export type AuthRouteOpts = {
   secrets?: DerivedSecretsConfig
@@ -106,8 +106,9 @@ export type AuthRouteOpts = {
    */
   readPlatformCaPem?: () => Promise<string>
   /**
-   * The panel identity key, for signing v2 install commands. Absent or
-   * resolving null means the command stays in the older form.
+   * Control plane identity: the license mint response carries its
+   * fingerprints, and it signs v2 install commands. Absent or resolving null
+   * means the command stays in the older form.
    */
   panelIdentity?: () => Promise<PanelIdentity | null>
 }

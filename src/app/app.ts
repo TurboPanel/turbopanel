@@ -198,7 +198,10 @@ export function createApp({
   getClientOpenApiSpec?: NonNullable<ClientRouteOpts['getOpenApiSpec']>
   /** Platform CA bundle reader for self-hosted install commands (Deno only). */
   readPlatformCaPem?: () => Promise<string>
-  /** The panel identity key; signs v2 install commands (see `AuthRouteOpts`). */
+  /**
+   * Control plane identity: signs v2 install commands and gives an install
+   * dialog the fingerprints a command carries.
+   */
   panelIdentity?: () => Promise<PanelIdentity | null>
 }): Hono<AppEnv> {
   const app = new Hono<AppEnv>()

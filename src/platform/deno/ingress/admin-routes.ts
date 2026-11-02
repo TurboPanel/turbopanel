@@ -1,8 +1,16 @@
-import type { Hono, MiddlewareHandler } from 'hono'
+import type { Hono } from 'hono'
 import type { AppEnv } from '../../../app/app.ts'
+import { requireInstanceStepUp } from '../../../client/authn/step-up.ts'
 import { handleTunnelTokenRequest } from '../../../developer/tunnel-token-handler.ts'
+import { recordAudit } from '../../../features/audit/audit-records.ts'
+import { getDb } from '../../../db/connection.ts'
+import { registerIngressAccountRoutes } from './account-routes.ts'
+import { registerDns01Routes } from './dns01/routes.ts'
+import { registerHostnameIngressRoutes } from './hostname-routes.ts'
+import { registerInstanceTunnelRoutes } from './tunnel-routes.ts'
+import type { IngressAdminDeps } from './route-context.ts'
 
-export type IngressAdminDeps = { rootOnly: MiddlewareHandler<AppEnv> }
+export type { IngressAdminDeps } from './route-context.ts'
 
 /**
  * Self-hosted-only admin routes. Mounted only by `src/platform/deno/server.ts`
@@ -10,5 +18,25 @@ export type IngressAdminDeps = { rootOnly: MiddlewareHandler<AppEnv> }
  * session middleware still applies and High Availability has no such route.
  */
 export function registerIngressAdminRoutes(admin: Hono<AppEnv>, deps: IngressAdminDeps): void {
-  admin.post('/instance/tunnel-token', deps.rootOnly, (c) => handleTunnelTokenRequest(c))
+  admin.post('/instance/tunnel-token', deps.rootOnly, async (c) => {
+    const stepUp = await requireInstanceStepUp(c, 'instance.tunnel_token.set')
+    if (stepUp) return stepUp
+    const response = await handleTunnelTokenRequest(c)
+    if (response.ok) {
+      const session = c.get('session')
+      // The token itself is never recorded.
+      await recordAudit(getDb(c), {
+        organizationId: null,
+        actorUserId: session?.userId ?? null,
+        actorEmail: session?.email ?? null,
+        action: 'instance.tunnel_token.set',
+        targetType: 'instance',
+      })
+    }
+    return response
+  })
+  registerIngressAccountRoutes(admin, deps)
+  registerHostnameIngressRoutes(admin, deps)
+  registerDns01Routes(admin, deps)
+  registerInstanceTunnelRoutes(admin, deps)
 }

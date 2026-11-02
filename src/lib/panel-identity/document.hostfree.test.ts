@@ -100,9 +100,9 @@ test('the cache re-signs after a week, when the urls change, and not otherwise',
 test('orderedPublicOrigins keeps order, adds https and drops blanks and duplicates', () => {
   assertEquals(
     orderedPublicOrigins([
-      { host: 'a.example.test' },
-      { host: 'b.example.test:8443' },
-      { host: 'a.example.test.' },
+      { host: 'a.example.test', publicPort: 443 },
+      { host: 'https://b.example.test:8443', publicPort: 8443 },
+      { host: 'a.example.test', publicPort: 443 },
       { host: ' ' },
     ]),
     ['https://a.example.test', 'https://b.example.test:8443']

@@ -1,5 +1,5 @@
 import { signWithCurrent, type PanelIdentity } from '../../lib/panel-identity/identity.ts'
-import { installUrlsFor } from '../../lib/panel-identity/urls.ts'
+import { installUrlsFor, type PublicOriginRow } from './public-origins.ts'
 import {
   caFingerprintEnvValue,
   encodeInstallToken,
@@ -37,7 +37,7 @@ export async function buildInstallTokenFor(opts: {
   /** The origin the admin chose for this command (URL 0). */
   installUrl: string
   /** Read lazily: only a command that will carry a token needs the list. */
-  hostnames: () => Promise<ReadonlyArray<{ host: string }>>
+  hostnames: () => Promise<readonly PublicOriginRow[]>
   /** Self-hosted with a private certificate: the CA fingerprints the installer may keep. */
   caFingerprints?: readonly string[]
 }): Promise<InstallTokenResult | null> {
@@ -45,7 +45,10 @@ export async function buildInstallTokenFor(opts: {
   if (!isInstallTokenV2Enabled(opts.env) || !identity) return null
   const installUrl = opts.installUrl.replace(/\/$/, '')
   if (!isInstallTokenOrigin(installUrl)) return null
-  const panelUrls = installUrlsFor(await opts.hostnames(), installUrl).filter(isInstallTokenOrigin)
+  // URL 0 is the origin the admin chose (the installer fetches the identity
+  // document there); the other origins servers dial follow, primary first.
+  const others = installUrlsFor(await opts.hostnames()).filter((o) => o !== installUrl)
+  const panelUrls = [installUrl, ...others].filter(isInstallTokenOrigin)
   const panelFingerprint = identity.current.kid
   const nextFingerprint = identity.next?.kid ?? null
   const token = await encodeInstallToken(

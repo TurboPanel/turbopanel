@@ -5,7 +5,13 @@ import {
 } from './document.ts'
 import type { PanelIdentity } from './identity.ts'
 
-type Entry = { response: SignedIdentityResponse; kid: string; keyset: number; urlsKey: string }
+type Entry = {
+  response: SignedIdentityResponse
+  kid: string
+  keyset: number
+  nextKid: string | null
+  urlsKey: string
+}
 
 /**
  * Keeps the signed document between requests and re-signs it when it is a
@@ -22,6 +28,7 @@ export function createIdentityDocumentCache(now: () => Date = () => new Date()) 
       const stale =
         entry?.kid !== identity.current.kid ||
         entry?.keyset !== identity.keyset ||
+        entry?.nextKid !== (identity.next?.kid ?? null) ||
         entry?.urlsKey !== urlsKey ||
         at.getTime() - Date.parse(entry.response.issued) > IDENTITY_DOCUMENT_RESIGN_AFTER_MS
       if (stale) {
@@ -29,6 +36,7 @@ export function createIdentityDocumentCache(now: () => Date = () => new Date()) 
           response: await signIdentityDocument(identity, urls, at),
           kid: identity.current.kid,
           keyset: identity.keyset,
+          nextKid: identity.next?.kid ?? null,
           urlsKey,
         }
       }

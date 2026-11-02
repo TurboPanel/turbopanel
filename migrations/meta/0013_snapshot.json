@@ -1,5 +1,5 @@
 {
-  "id": "db32f4d2-fe65-4353-b1f9-0c36dff394ef",
+  "id": "465efb1e-94af-452e-bad5-708a6a1f76ad",
   "prevId": "ad752fc1-f773-402e-97da-bc6928cbae5d",
   "version": "7",
   "dialect": "postgresql",
@@ -6567,7 +6567,7 @@
           "name": "token",
           "type": "text",
           "primaryKey": false,
-          "notNull": true
+          "notNull": false
         },
         "revoked_at": {
           "name": "revoked_at",
@@ -8454,7 +8454,7 @@
       "checkConstraints": {
         "notification_event_check": {
           "name": "notification_event_check",
-          "value": "event IN ('server.offline', 'fleet.mass_disconnect', 'server.deleted', 'server.daemon_key_revoked', 'access.grant_created', 'access.grant_revoked', 'certificate.renewal_failed', 'folder.orphans_found', 'server.repo_key_changed')"
+          "value": "event IN ('server.offline', 'fleet.mass_disconnect', 'server.deleted', 'server.daemon_key_revoked', 'access.grant_created', 'access.grant_revoked', 'certificate.renewal_failed', 'folder.orphans_found', 'server.repo_key_changed', 'server.enrolled', 'server.key_replaced')"
         },
         "notification_severity_check": {
           "name": "notification_severity_check",
@@ -8885,7 +8885,7 @@
       "checkConstraints": {
         "attempt_event_check": {
           "name": "attempt_event_check",
-          "value": "event IN ('server.offline', 'fleet.mass_disconnect', 'server.deleted', 'server.daemon_key_revoked', 'access.grant_created', 'access.grant_revoked', 'certificate.renewal_failed', 'folder.orphans_found', 'server.repo_key_changed')"
+          "value": "event IN ('server.offline', 'fleet.mass_disconnect', 'server.deleted', 'server.daemon_key_revoked', 'access.grant_created', 'access.grant_revoked', 'certificate.renewal_failed', 'folder.orphans_found', 'server.repo_key_changed', 'server.enrolled', 'server.key_replaced')"
         },
         "attempt_severity_check": {
           "name": "attempt_severity_check",
@@ -8980,7 +8980,7 @@
       "checkConstraints": {
         "rule_event_check": {
           "name": "rule_event_check",
-          "value": "event IN ('*', 'server.offline', 'fleet.mass_disconnect', 'server.deleted', 'server.daemon_key_revoked', 'access.grant_created', 'access.grant_revoked', 'certificate.renewal_failed', 'folder.orphans_found', 'server.repo_key_changed')"
+          "value": "event IN ('*', 'server.offline', 'fleet.mass_disconnect', 'server.deleted', 'server.daemon_key_revoked', 'access.grant_created', 'access.grant_revoked', 'certificate.renewal_failed', 'folder.orphans_found', 'server.repo_key_changed', 'server.enrolled', 'server.key_replaced')"
         },
         "rule_min_severity_check": {
           "name": "rule_min_severity_check",
@@ -11865,12 +11865,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "trust_pinned_by": {
-          "name": "trust_pinned_by",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
         "container_prefix": {
           "name": "container_prefix",
           "type": "cidr",
@@ -12129,10 +12123,6 @@
         "server_fabric_role_check": {
           "name": "server_fabric_role_check",
           "value": "fabric_role IS NULL OR fabric_role IN ('gateway', 'client')"
-        },
-        "server_trust_pinned_by_check": {
-          "name": "server_trust_pinned_by_check",
-          "value": "trust_pinned_by IS NULL OR trust_pinned_by IN ('install', 'upgrade', 'unsafe')"
         }
       },
       "isRLSEnabled": false
@@ -14925,6 +14915,199 @@
           ]
         }
       },
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.ticket": {
+      "name": "ticket",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "uuidv7()"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "organization_id": {
+          "name": "organization_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "license_id": {
+          "name": "license_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "server_id": {
+          "name": "server_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "server_name": {
+          "name": "server_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "token": {
+          "name": "token",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "used_at": {
+          "name": "used_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "used_by_server_id": {
+          "name": "used_by_server_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_by_user_id": {
+          "name": "created_by_user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "idx_ticket_organization_id": {
+          "name": "idx_ticket_organization_id",
+          "columns": [
+            {
+              "expression": "organization_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_ticket_license_id": {
+          "name": "idx_ticket_license_id",
+          "columns": [
+            {
+              "expression": "license_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_ticket_server_id": {
+          "name": "idx_ticket_server_id",
+          "columns": [
+            {
+              "expression": "server_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "ticket_organization_id_organization_id_fk": {
+          "name": "ticket_organization_id_organization_id_fk",
+          "tableFrom": "ticket",
+          "tableTo": "organization",
+          "columnsFrom": [
+            "organization_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "ticket_license_id_license_id_fk": {
+          "name": "ticket_license_id_license_id_fk",
+          "tableFrom": "ticket",
+          "tableTo": "license",
+          "columnsFrom": [
+            "license_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "ticket_server_id_server_id_fk": {
+          "name": "ticket_server_id_server_id_fk",
+          "tableFrom": "ticket",
+          "tableTo": "server",
+          "columnsFrom": [
+            "server_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "ticket_used_by_server_id_server_id_fk": {
+          "name": "ticket_used_by_server_id_server_id_fk",
+          "tableFrom": "ticket",
+          "tableTo": "server",
+          "columnsFrom": [
+            "used_by_server_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "ticket_created_by_user_id_user_id_fk": {
+          "name": "ticket_created_by_user_id_user_id_fk",
+          "tableFrom": "ticket",
+          "tableTo": "user",
+          "columnsFrom": [
+            "created_by_user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
       "isRLSEnabled": false

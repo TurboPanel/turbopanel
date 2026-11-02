@@ -697,6 +697,29 @@ export const server = pgTable(
      */
     isFabricEnabled: boolean('is_fabric_enabled').default(true).notNull(),
     /**
+     * The daemon's X25519 sealing key (public half only), registered by the
+     * daemon and signed by its Ed25519 key. `kid` is the key's fingerprint.
+     * `/secrets/decrypt` seals answers to it when the daemon lists
+     * `daemon-sealed-secrets-v1`.
+     */
+    sealingKeyKid: text('sealing_key_kid'),
+    sealingKeyPub: text('sealing_key_pub'),
+    sealingKeyReportedAt: timestamp('sealing_key_reported_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }),
+    /**
+     * Last time `/secrets/decrypt` answered this server in plaintext (an older
+     * daemon, or a newer one with no registered sealing key). Written at most
+     * hourly; the edge go-live gate reads "any recent value".
+     */
+    plaintextSecretsAt: timestamp('plaintext_secrets_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }),
+    /**
      * Operator-chosen TurboFabric role (`gateway` accepts connections, `client`
      * only dials out). NULL = automatic: gateway when the server has its own
      * public address (an endpoint override does not count), else client. Stored
@@ -923,8 +946,12 @@ export const license = pgTable(
     /** Set on first successful enroll — one-shot seat latch. */
     serverId: uuid('server_id'),
     name: text(),
-    /** Argon2id PHC hashed token — same format as account.password */
-    token: text().notNull(),
+    /**
+     * Argon2id PHC hashed token — same format as account.password. Null once
+     * the key is bound to a server (the hash is erased at the bind) and for a
+     * key minted behind a one-hour `ticket`: a null token verifies nothing.
+     */
+    token: text(),
     /** Soft-delete */
     revokedAt: timestamp('revoked_at', {
       precision: 3,
@@ -966,6 +993,79 @@ export const license = pgTable(
       columns: [table.tierId],
       foreignColumns: [tier.id],
       name: 'license_tier_id_tier_id_fk',
+    }).onDelete('set null'),
+  ]
+)
+/**
+ * One-hour, single-use enrolment ticket. Two kinds, told apart by `server_id`:
+ * a join ticket (`license_id` set, `server_id` null) carries a new install in
+ * the licence slot of the install value so the licence token itself never
+ * travels; a re-enroll ticket (`server_id` set) lets one named server replace
+ * its daemon key once. The token is an Argon2id hash, like a registration key's.
+ */
+export const ticket = pgTable(
+  'ticket',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .notNull(),
+    organizationId: uuid('organization_id').notNull(),
+    /** The registration key a join ticket binds; null for a re-enroll ticket. */
+    licenseId: uuid('license_id'),
+    /** The one server a re-enroll ticket is bound to; null for a join ticket. */
+    serverId: uuid('server_id'),
+    serverName: text('server_name'),
+    /** Argon2id PHC hash of the secret. */
+    token: text().notNull(),
+    expiresAt: timestamp('expires_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }).notNull(),
+    usedAt: timestamp('used_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }),
+    usedByServerId: uuid('used_by_server_id'),
+    createdByUserId: uuid('created_by_user_id'),
+  },
+  (table) => [
+    index('idx_ticket_organization_id').on(table.organizationId),
+    index('idx_ticket_license_id').on(table.licenseId),
+    index('idx_ticket_server_id').on(table.serverId),
+    foreignKey({
+      columns: [table.organizationId],
+      foreignColumns: [organization.id],
+      name: 'ticket_organization_id_organization_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.licenseId],
+      foreignColumns: [license.id],
+      name: 'ticket_license_id_license_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.serverId],
+      foreignColumns: [server.id],
+      name: 'ticket_server_id_server_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.usedByServerId],
+      foreignColumns: [server.id],
+      name: 'ticket_used_by_server_id_server_id_fk',
+    }).onDelete('set null'),
+    foreignKey({
+      columns: [table.createdByUserId],
+      foreignColumns: [user.id],
+      name: 'ticket_created_by_user_id_user_id_fk',
     }).onDelete('set null'),
   ]
 )
@@ -6324,28 +6424,34 @@ export const setting = pgTable(
  * `key_pem` is a sealed `tpsecret` envelope. This is instance TLS material,
  * never an organization `tls` row.
  */
-export const instanceUploadedCertificate = pgTable('certificate', {
-  id: uuid()
-    .default(sql`uuidv7()`)
-    .primaryKey()
-    .notNull(),
-  createdAt: timestamp('created_at', {
-    precision: 3,
-    withTimezone: true,
-    mode: 'string',
-  })
-    .defaultNow()
-    .notNull(),
-  label: text().notNull(),
-  certPem: text('cert_pem').notNull(),
-  keyPem: text('key_pem').notNull(),
-  dnsNames: jsonb('dns_names').notNull(),
-  notAfter: timestamp('not_after', {
-    precision: 3,
-    withTimezone: true,
-    mode: 'string',
-  }).notNull(),
-})
+export const instanceUploadedCertificate = pgTable(
+  'certificate',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .notNull(),
+    label: text().notNull(),
+    certPem: text('cert_pem').notNull(),
+    keyPem: text('key_pem').notNull(),
+    dnsNames: jsonb('dns_names').notNull(),
+    notAfter: timestamp('not_after', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }).notNull(),
+    /** `uploaded` (an operator's pair) or `dns-01` (issued by the control plane for its own name). */
+    kind: text().default('uploaded').notNull(),
+  },
+  () => [check('certificate_kind_check', sql`kind IN ('uploaded', 'dns-01')`)]
+)
 /**
  * Install-level provider account for the panel's own hostnames (tunnel, DNS,
  * certificates). Not an organization carrier: `token_envelope` is a sealed
@@ -6429,7 +6535,7 @@ export const instanceHostname = pgTable(
       .notNull(),
     /** Normalized public URL entry (`parsePublicUrlEntries` form). */
     host: text().notNull(),
-    /** `platform-ca` | `uploaded` | `lets-encrypt` */
+    /** `platform-ca` | `uploaded` | `lets-encrypt` | `dns-01` */
     source: text().notNull(),
     uploadedCertId: uuid('uploaded_cert_id'),
     acmeLastAttemptAt: timestamp('acme_last_attempt_at', {
@@ -6452,6 +6558,8 @@ export const instanceHostname = pgTable(
     /** Provider account an edge mode uses; NULL for `direct` and `lan-only`. */
     ingressId: uuid('ingress_id'),
     ingressState: jsonb('ingress_state'),
+    /** DNS-01 order and renewal progress for a `dns-01` name; holds no key or token. */
+    acmeState: jsonb('acme_state'),
   },
   (table) => [
     unique('origin_host_unique').on(table.host),
@@ -6478,7 +6586,10 @@ export const instanceHostname = pgTable(
     uniqueIndex('uniq_origin_primary')
       .on(table.isPrimary)
       .where(sql`is_primary`),
-    check('origin_source_check', sql`source IN ('platform-ca', 'uploaded', 'lets-encrypt')`),
+    check(
+      'origin_source_check',
+      sql`source IN ('platform-ca', 'uploaded', 'lets-encrypt', 'dns-01')`
+    ),
     check(
       'origin_uploaded_cert_check',
       sql`(source <> 'uploaded') OR (uploaded_cert_id IS NOT NULL)`
@@ -6907,7 +7018,7 @@ export const notificationRule = pgTable(
   (table) => [
     check(
       'rule_event_check',
-      sql`event IN ('*', 'server.offline', 'fleet.mass_disconnect', 'server.deleted', 'server.daemon_key_revoked', 'access.grant_created', 'access.grant_revoked', 'certificate.renewal_failed', 'folder.orphans_found', 'server.repo_key_changed')`
+      sql`event IN ('*', 'server.offline', 'fleet.mass_disconnect', 'server.deleted', 'server.daemon_key_revoked', 'access.grant_created', 'access.grant_revoked', 'certificate.renewal_failed', 'folder.orphans_found', 'server.repo_key_changed', 'server.enrolled', 'server.key_replaced', 'panel.identity_next_changed', 'panel.pin_mismatch', 'certificate.expiring')`
     ),
     check('rule_min_severity_check', sql`min_severity IN ('info', 'warning', 'critical')`),
     uniqueIndex('uniq_rule_channel_event').on(table.channelId, table.event),
@@ -6962,7 +7073,7 @@ export const notification = pgTable(
   (table) => [
     check(
       'notification_event_check',
-      sql`event IN ('server.offline', 'fleet.mass_disconnect', 'server.deleted', 'server.daemon_key_revoked', 'access.grant_created', 'access.grant_revoked', 'certificate.renewal_failed', 'folder.orphans_found', 'server.repo_key_changed')`
+      sql`event IN ('server.offline', 'fleet.mass_disconnect', 'server.deleted', 'server.daemon_key_revoked', 'access.grant_created', 'access.grant_revoked', 'certificate.renewal_failed', 'folder.orphans_found', 'server.repo_key_changed', 'server.enrolled', 'server.key_replaced', 'panel.identity_next_changed', 'panel.pin_mismatch', 'certificate.expiring')`
     ),
     check('notification_severity_check', sql`severity IN ('info', 'warning', 'critical')`),
     index('idx_notification_user_created').on(table.userId, table.createdAt.desc()),
@@ -7034,7 +7145,7 @@ export const notificationDelivery = pgTable(
   (table) => [
     check(
       'attempt_event_check',
-      sql`event IN ('server.offline', 'fleet.mass_disconnect', 'server.deleted', 'server.daemon_key_revoked', 'access.grant_created', 'access.grant_revoked', 'certificate.renewal_failed', 'folder.orphans_found', 'server.repo_key_changed')`
+      sql`event IN ('server.offline', 'fleet.mass_disconnect', 'server.deleted', 'server.daemon_key_revoked', 'access.grant_created', 'access.grant_revoked', 'certificate.renewal_failed', 'folder.orphans_found', 'server.repo_key_changed', 'server.enrolled', 'server.key_replaced', 'panel.identity_next_changed', 'panel.pin_mismatch', 'certificate.expiring')`
     ),
     check('attempt_severity_check', sql`severity IN ('info', 'warning', 'critical')`),
     check(

@@ -122,8 +122,16 @@ export async function requireStepUpIfConfigured(
 
   if (!(await isStepUpRequired(db, organizationId))) return null
   if (await hasRecentStepUp(db, session)) return null
+  return reauthRequiredResponse(c, db, session.userId, action)
+}
 
-  const methods = await listStepUpMethods(db, session.userId)
+async function reauthRequiredResponse(
+  c: Context<AppEnv>,
+  db: Db,
+  userId: string,
+  action: StepUpAction
+): Promise<Response> {
+  const methods = await listStepUpMethods(db, userId)
   return c.json(
     {
       ok: false,
@@ -135,6 +143,23 @@ export async function requireStepUpIfConfigured(
     },
     403
   )
+}
+
+/**
+ * The same gate for an instance-wide action, which belongs to no organization
+ * and so has no per-organization switch: it is always on. Returns `null` when
+ * the session re-authenticated (or signed in) inside the window.
+ */
+export async function requireInstanceStepUp(
+  c: Context<AppEnv>,
+  action: StepUpAction
+): Promise<Response | null> {
+  const db = getDb(c)
+  if (!db) return c.json({ error: 'Database unavailable' }, 503)
+  const session = c.get('session')
+  if (!session) return c.json({ error: 'Unauthorized' }, 401)
+  if (await hasRecentStepUp(db, session)) return null
+  return reauthRequiredResponse(c, db, session.userId, action)
 }
 
 /** Same gate under its plain name. */

@@ -25,11 +25,9 @@
  */
 
 import type { Db } from '../../db/connection.ts'
-import {
-  getPublicUrls,
-  publicHttpsOrigin,
-  publicUrlEntryToInstallOrigin,
-} from '../install/public-urls.ts'
+import { listInstanceHostnames } from '../install/instance-hostnames.ts'
+import { orderedPublicOrigins } from '../install/public-origins.ts'
+import { publicHttpsOrigin, publicUrlEntryToInstallOrigin } from '../install/public-urls.ts'
 
 export type PublishedOrigins = {
   /** Normalized origins, no trailing slash, the preferred one first. */
@@ -66,9 +64,7 @@ export async function listPublishedOrigins(
   db: Db,
   platformOrigin: string | null = null
 ): Promise<string[]> {
-  const stored = (await getPublicUrls(db))
-    .map((entry) => publicUrlEntryToInstallOrigin(entry))
-    .filter((origin): origin is string => origin !== null)
+  const stored = orderedPublicOrigins(await listInstanceHostnames(db))
   const all = platformOrigin ? [platformOrigin, ...stored] : stored
   return [...new Set(all.map(stripTrailingSlash))]
 }
@@ -94,12 +90,17 @@ export function preferredPublishedOrigin(origins: readonly string[]): string | n
  *
  * Both normalizations are tried because the two sources normalize
  * differently: a stored self-hosted entry is known by its `:8443` dial, the
- * hosted address by its own port. Only origins already in `origins` can
+ * hosted address by its own port. An old `:8443` spelling also matches the
+ * same host published without a port. Only origins already in `origins` can
  * match, so trying both never admits an address this instance does not
  * publish.
  */
 export function matchPublishedOrigin(origins: readonly string[], chosen: string): string | null {
-  const candidates = [publicUrlEntryToInstallOrigin(chosen), publicHttpsOrigin(chosen)]
+  const dialed = publicUrlEntryToInstallOrigin(chosen)
+  // A webhook registered while the name was published on :8443 still names the
+  // same host once its public port moves to 443.
+  const portless = dialed?.endsWith(':8443') ? dialed.slice(0, -':8443'.length) : null
+  const candidates = [dialed, publicHttpsOrigin(chosen), portless]
   for (const candidate of candidates) {
     if (candidate && origins.includes(stripTrailingSlash(candidate))) {
       return stripTrailingSlash(candidate)

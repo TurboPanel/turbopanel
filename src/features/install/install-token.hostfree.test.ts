@@ -135,7 +135,10 @@ test('the token for a command puts the install URL first and carries both finger
   const identity = await fixtureIdentity(
     await fixtureBindingJson({ next: { kid: FIXTURE_NEXT_FINGERPRINT } })
   )
-  const hostnames = [{ host: 'one.example.test' }, { host: 'two.example.test:8443' }]
+  const hostnames = [
+    { host: 'one.example.test', publicPort: 443 },
+    { host: 'two.example.test', publicPort: 8443 },
+  ]
   const result = await buildInstallTokenFor({
     env: { TURBOPANEL_INSTALL_TOKEN_V2: '1' },
     identity,

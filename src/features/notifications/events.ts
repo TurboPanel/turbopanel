@@ -232,6 +232,89 @@ export const NOTIFICATION_EVENT_DEFINITIONS = {
       'The server went on using it, and every package is still checked against that key. ' +
       'This is usually the publisher rotating its key; if you did not expect that, check the source before the next install.',
   },
+  'server.enrolled': {
+    label: 'A new server joined',
+    severity: 'info',
+    scope: 'organization',
+    audience: 'managers',
+    urgent: false,
+    title: (ctx) => `${name(ctx, 'serverName', 'A new server')} joined the organization`,
+    body: (ctx) =>
+      `A server enrolled with a one-time install key (daemon key ${name(
+        ctx,
+        'daemonKey',
+        'unknown'
+      )}). ` +
+      'Servers are accepted automatically; if you did not install one, remove it from the server list.',
+  },
+  'server.key_replaced': {
+    label: "A server's daemon key was replaced",
+    severity: 'warning',
+    scope: 'organization',
+    audience: 'managers',
+    urgent: true,
+    title: (ctx) => `The daemon key on ${name(ctx, 'serverName', 'a server')} was replaced`,
+    body: (ctx) =>
+      `A re-enroll token issued for ${name(ctx, 'serverName', 'this server')} was used. ` +
+      `The old key ${name(ctx, 'oldKey', 'unknown')} was replaced by ${name(
+        ctx,
+        'newKey',
+        'unknown'
+      )}. ` +
+      'If you did not issue that token, revoke the server key and check the host.',
+  },
+  'panel.identity_next_changed': {
+    label: "The control plane's next key changed",
+    severity: 'warning',
+    scope: 'instance',
+    audience: 'managers',
+    // The next key is what servers accept after a rotation: always urgent.
+    urgent: true,
+    title: (ctx) =>
+      ctx.cleared === true
+        ? 'The control plane next key was cleared'
+        : 'The control plane next key was changed',
+    body: (ctx) =>
+      `${name(ctx, 'actorEmail', 'An administrator')} ${
+        ctx.cleared === true ? 'cleared' : 'set'
+      } the next key${
+        typeof ctx.fingerprint === 'string' ? ` (${ctx.fingerprint})` : ''
+      }. Servers accept the next key after a rotation; if you did not expect this, check Control Plane Identity in Admin.`,
+  },
+  'panel.pin_mismatch': {
+    label: 'A server reported a different control plane key',
+    severity: 'critical',
+    scope: 'organization',
+    audience: 'managers',
+    urgent: true,
+    title: (ctx) =>
+      `Server ${name(ctx, 'serverName', 'unknown')} reported a different control plane key`,
+    body: (ctx) =>
+      `The server holds ${name(ctx, 'reported', 'a key')} but this control plane signs with ${name(
+        ctx,
+        'expected',
+        'another key'
+      )}. Either the server was pointed at another control plane or something is impersonating this one; reinstall the server with a fresh command if you did not expect this.`,
+  },
+  'certificate.expiring': {
+    label: 'A control plane certificate could not be renewed',
+    severity: 'warning',
+    scope: 'instance',
+    audience: 'managers',
+    // An expiring control plane certificate can cut every server off: always urgent.
+    urgent: true,
+    title: (ctx) => {
+      const host = name(ctx, 'hostname', 'a control plane address')
+      if (ctx.kind === 'countdown' && typeof ctx.daysLeft === 'number') {
+        return `Control plane certificate for ${host} expires in ${ctx.daysLeft} ${ctx.daysLeft === 1 ? 'day' : 'days'}`
+      }
+      return `Control plane certificate for ${host} could not be renewed`
+    },
+    body: (ctx) =>
+      `${name(ctx, 'detail', 'The certificate authority did not issue a new certificate.')} ` +
+      'The current certificate keeps serving until it expires; after that, servers fall back to the Platform CA certificate. ' +
+      'See Certificates under Access in Admin.',
+  },
 } as const satisfies Record<string, EventDefinition>
 
 export type NotificationEvent = keyof typeof NOTIFICATION_EVENT_DEFINITIONS

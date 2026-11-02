@@ -177,6 +177,12 @@ export async function attachDaemonStateToServer(
     algorithm?: 'Ed25519'
     hostname?: string | null
     machineKey?: string | null
+    /**
+     * An owner-issued re-enroll ticket was spent for this server: a live key
+     * may be replaced by a different one. Never set from the licence path.
+     * A revoked key stays refused either way.
+     */
+    replaceLiveKey?: boolean
   }
 ): Promise<{ keyId: string }> {
   const now = nowTs()
@@ -203,7 +209,9 @@ export async function attachDaemonStateToServer(
         // key wins as well: an existing live key only matches the same
         // fingerprint (a no-op refresh). Empty `returning` below is one of
         // those two refusals, not a missing row; the read after it says which.
-        setWhere: and(isNull(key.revokedAt), eq(key.fingerprint, params.fingerprint)),
+        setWhere: params.replaceLiveKey
+          ? isNull(key.revokedAt)
+          : and(isNull(key.revokedAt), eq(key.fingerprint, params.fingerprint)),
         set: {
           // Re-enrollment mints a new id too — it's a new key, not an edit
           // of the old row; `id` is the PK, so ON CONFLICT leaves it alone

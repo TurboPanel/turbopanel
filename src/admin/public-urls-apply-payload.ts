@@ -21,7 +21,10 @@ import {
   INSTANCE_ACME_TOS_NOT_ACCEPTED_MESSAGE,
   resolveInstanceAcmeSettings,
 } from '../features/install/instance-acme-settings.ts'
-import { listInstanceHostnames } from '../features/install/instance-hostnames.ts'
+import {
+  effectiveCertificateSource,
+  listInstanceHostnames,
+} from '../features/install/instance-hostnames.ts'
 import { decryptSecret, resealSecretForDaemon } from '../lib/secrets/data-encryption.ts'
 import type { DerivedSecretsConfig } from '../lib/secrets/secrets.ts'
 import { resolveDaemonCapabilities } from '../lib/version-wire.ts'
@@ -44,13 +47,19 @@ export async function resolvePublicUrlsApplyPayload(
   daemonVersion: string | undefined,
   secrets: DerivedSecretsConfig | undefined,
   env: Record<string, string | undefined>,
-  sealing: InstanceSecretSealing | null = null
+  sealing: InstanceSecretSealing | null = null,
+  now = Date.now()
 ): Promise<PublicUrlsApplyPayload> {
   const capable =
     resolveDaemonCapabilities(daemonVersion)['instance-cert-sources-per-hostname'] === true
   if (!capable) return { urls }
 
-  const rows = await listInstanceHostnames(db)
+  // A DNS-01 name travels as `uploaded` with its issued pair, or as
+  // `platform-ca` before its first certificate and after it expires.
+  const rows = (await listInstanceHostnames(db)).map((row) => ({
+    ...row,
+    source: effectiveCertificateSource(row, now),
+  }))
   const uploadedIds = [
     ...new Set(
       rows

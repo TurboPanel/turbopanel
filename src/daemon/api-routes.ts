@@ -10,7 +10,7 @@ import {
   dialedInstallHostname,
   shouldServePlatformCaBundle,
 } from '../features/install/install-tls.ts'
-import { lookupActiveLicense } from '../features/licenses/license.ts'
+import { eraseLicenseToken, lookupActiveLicense } from '../features/licenses/license.ts'
 import {
   clearLicenseEnrollAttempt,
   recordLicenseEnrollAttempt,
@@ -28,6 +28,10 @@ import type { Db } from '../db/connection.ts'
 import { describeError } from '../lib/describe-error.ts'
 import { storeIssuedCertificate } from '../client/tls/issued-certificate.ts'
 import { logWarn } from '../lib/logger.ts'
+import { resolveIssuedPrivateKey } from './issued-private-key.ts'
+import { buildSecretsDecryptAnswer, databaseDecryptAnswerSource } from './secrets-decrypt-answer.ts'
+import { registerDaemonSealingKey } from './sealing-key-registration.ts'
+import { setDaemonSealingKey } from '../features/servers/daemon-sealing-key.ts'
 import { createIdentityDocumentCache } from '../lib/panel-identity/document-cache.ts'
 import { IDENTITY_SIGNATURE_HEADER } from '../lib/panel-identity/document.ts'
 import type { PanelIdentity } from '../lib/panel-identity/identity.ts'
@@ -138,10 +142,23 @@ import {
 import { ExecutionLogGapError, ExecutionLogSealedError } from '../features/execution-logs/types.ts'
 import { sealExecutionLogOnTerminal } from '../features/execution-logs/seal-on-terminal.ts'
 import { isNoopCommandQueue } from '../features/commands/noop-command-queue.ts'
+import type { VerifiedDaemonLicense } from '../features/licenses/verify-daemon-license.ts'
 import {
-  type VerifiedDaemonLicense,
-  verifyDaemonLicense,
-} from '../features/licenses/verify-daemon-license.ts'
+  type EnrollCredential,
+  resolveEnrollCredential,
+} from '../features/licenses/enroll-credential.ts'
+import {
+  announceKeyReplaced,
+  announceServerEnrolled,
+  loadServerForAnnouncement,
+} from '../features/licenses/enroll-announce.ts'
+import {
+  consumeTicket,
+  recordTicketServer,
+  releaseTicket,
+  type TicketRow,
+} from '../features/licenses/tickets.ts'
+import { purgeDaemonCellBestEffort } from '../features/servers/daemon-cell-purge.ts'
 import { issueDaemonJwt, verifyDaemonJwt } from './authn/daemon-jwt.ts'
 import type { ServerDaemonStateWithMetadata } from '../features/servers/server-identity-db.ts'
 import {
@@ -199,6 +216,9 @@ async function readRequestBodyWithLimit(
   return { ok: true, text: new TextDecoder().decode(bodyRead.bytes) }
 }
 
+/** A sealing-key registration is three short strings. */
+const MAX_SEALING_KEY_BODY_BYTES = 1024
+
 /** Maximum number of ciphertexts accepted per `/secrets/decrypt` request. */
 export const MAX_SECRETS_DECRYPT_BATCH = 100
 
@@ -220,7 +240,7 @@ export const MAX_SECRETS_DECRYPT_BODY_BYTES = 2 * 1024 * 1024
  * (32 KiB chain + 8 KiB key at most) with JSON quoting overhead, and an
  * optional short `requestId`.
  */
-export const MAX_TLS_ISSUED_BODY_BYTES = 64 * 1024
+export const MAX_TLS_ISSUED_BODY_BYTES = 96 * 1024
 
 /** The optional `requestId` of `POST /tls/issued`: 1 to 64 characters of letters, digits, `_` and `-`. */
 function isTlsIssuedRequestId(value: unknown): value is string {
@@ -555,6 +575,176 @@ async function finalizeDaemonEnrollment(
     })
     return { ok: true, serverId, keyId: result.keyId }
   } catch (err) {
+    return enrollAttachFailure(err)
+  }
+}
+
+type EnrollOutcome =
+  | { ok: true; serverId: string; keyId: string }
+  | { ok: false; status: 400 | 401 | 403 | 409 | 500; error: string; message?: string }
+
+type EnrollParams = {
+  serverIdBody: string | undefined
+  machineKey: string | undefined
+  hostname: string
+  /** What the daemon sent in the token slot (a licence token or a ticket secret). */
+  licenseToken: string
+  fingerprint: string
+  publicJwk: JsonWebKey
+  deployment: MetricsDeploymentKind
+  secrets: DerivedSecretsConfig | undefined
+  fabricDeps?: FabricMembershipDeps
+}
+
+const TICKET_FOR_OTHER_SERVER_RESULT = {
+  ok: false,
+  status: 403,
+  error: 'Ticket is for another server',
+} as const
+
+const TICKET_NEEDS_SERVER_ID_RESULT = {
+  ok: false,
+  status: 400,
+  error: 'This ticket is for re-enrolling a specific server; include its server id',
+} as const
+
+const INVALID_LICENSE_RESULT = { ok: false, status: 401, error: 'Invalid license' } as const
+
+/**
+ * Enrol with a registration key (legacy form) or a join ticket that stands in
+ * for it. The daemon's signature has already been checked. A ticket is spent
+ * first and put back if nothing was written; once a key binds, its own token
+ * hash is erased, so a copy of it captured anywhere verifies nothing.
+ */
+async function enrollWithKey(
+  db: Db,
+  credential: Exclude<EnrollCredential, { kind: 'reenroll' }>,
+  params: EnrollParams
+): Promise<EnrollOutcome> {
+  const joinTicket = credential.kind === 'join' ? credential.ticket : null
+  const consumedAt = joinTicket ? await consumeTicket(db, joinTicket.id) : null
+  if (joinTicket && !consumedAt) return INVALID_LICENSE_RESULT
+  const release = async () => {
+    if (joinTicket && consumedAt) await releaseTicket(db, joinTicket.id, consumedAt).catch(() => {})
+  }
+  try {
+    const enrolled = await bindKeyToEnrollment(db, credential, params, joinTicket !== null)
+    if (!enrolled.ok) await release()
+    if (enrolled.ok && joinTicket) {
+      await recordTicketServer(db, joinTicket.id, enrolled.serverId).catch(() => {})
+    }
+    return enrolled
+  } catch (err) {
+    // A failure that wrote nothing must not spend the one-hour ticket.
+    await release()
+    throw err
+  }
+}
+
+/** The key side of an enrolment once any ticket is spent: record, gate, bind, erase, announce. */
+async function bindKeyToEnrollment(
+  db: Db,
+  credential: Exclude<EnrollCredential, { kind: 'reenroll' }>,
+  params: EnrollParams,
+  viaTicket: boolean
+): Promise<EnrollOutcome> {
+  const { licenseId, verified } = credential
+  // The key's token and the daemon's signature both check out: its server
+  // is being provisioned. Recorded before the tier gate, so a refused
+  // enrol still reads as "provisioning" rather than as an unused key whose
+  // license is free (`enroll-attempt.ts`). Bookkeeping only: it must never
+  // fail an enrol.
+  await recordLicenseEnrollAttempt(db, licenseId, params.hostname).catch(() => {})
+  // Self-hosted grants itself the coverage first (`self-hosted-grant.ts`).
+  if (params.deployment === 'self-hosted') {
+    await syncSelfHostedGrantForLicense(db, licenseId)
+  }
+
+  const wasUnbound = viaTicket || (await isLicenseUnbound(db, licenseId))
+  const enrolled = await finalizeDaemonEnrollment(db, {
+    ...params,
+    licenseId,
+    verifiedLicense: verified,
+  })
+  if (enrolled.ok) {
+    // Bound now: `license.server_id` carries it from here.
+    await clearLicenseEnrollAttempt(db, licenseId).catch(() => {})
+    await eraseLicenseToken(db, licenseId).catch(() => {})
+    if (wasUnbound) await announceNewServer(db, params, enrolled.serverId)
+  }
+  return enrolled
+}
+
+async function isLicenseUnbound(db: Db, licenseId: string): Promise<boolean> {
+  const active = await lookupActiveLicense(db, licenseId)
+  return active !== null && active.serverId === null
+}
+
+async function announceNewServer(db: Db, params: EnrollParams, serverId: string): Promise<void> {
+  const target = await loadServerForAnnouncement(db, serverId)
+  if (!target) return
+  await announceServerEnrolled(db, params.secrets, {
+    ...target,
+    serverId,
+    fingerprint: params.fingerprint,
+  })
+}
+
+/** Why a re-enroll ticket cannot be used for the server the request names, or null. */
+function reenrollTargetRefusal(ticket: TicketRow, serverIdBody: string | undefined) {
+  if (!ticket.serverId) return TICKET_FOR_OTHER_SERVER_RESULT
+  const named = serverIdBody?.trim()
+  if (!named) return TICKET_NEEDS_SERVER_ID_RESULT
+  return named === ticket.serverId ? null : TICKET_FOR_OTHER_SERVER_RESULT
+}
+
+/**
+ * Replace one server's daemon key with an owner-issued re-enroll ticket. The
+ * ticket is bound to that server: presented for any other it is refused. A
+ * revoked key stays revoked (an owner removes the server instead).
+ */
+async function enrollWithReenrollTicket(
+  db: Db,
+  ticket: TicketRow,
+  params: EnrollParams
+): Promise<EnrollOutcome> {
+  const refusal = reenrollTargetRefusal(ticket, params.serverIdBody)
+  if (refusal) return refusal
+  const serverId = ticket.serverId as string
+  const target = await loadServerForAnnouncement(db, serverId)
+  if (target?.organizationId !== ticket.organizationId) {
+    return TICKET_FOR_OTHER_SERVER_RESULT
+  }
+  const current = await getServerDaemonStateByServerId(db, serverId)
+  if (current && !isDaemonKeyActive(current.key)) {
+    return { ok: false, status: 403, error: SERVER_KEY_REVOKED_ERROR }
+  }
+  const other = await getServerDaemonStateByFingerprint(db, params.fingerprint)
+  if (other && other.serverId !== serverId) {
+    return { ok: false, status: 409, error: 'Fingerprint already exists' }
+  }
+  const consumedAt = await consumeTicket(db, ticket.id)
+  if (!consumedAt) return INVALID_LICENSE_RESULT
+
+  try {
+    const result = await attachDaemonStateToServer(db, serverId, {
+      publicJwk: params.publicJwk,
+      fingerprint: params.fingerprint,
+      hostname: params.hostname,
+      machineKey: params.machineKey,
+      replaceLiveKey: true,
+    })
+    await recordTicketServer(db, ticket.id, serverId).catch(() => {})
+    await announceKeyReplaced(db, params.secrets, {
+      organizationId: ticket.organizationId,
+      serverId,
+      serverName: target.serverName,
+      oldFingerprint: current?.key.fingerprint ?? 'none',
+      newFingerprint: params.fingerprint,
+    })
+    return { ok: true, serverId, keyId: result.keyId }
+  } catch (err) {
+    await releaseTicket(db, ticket.id, consumedAt).catch(() => {})
     return enrollAttachFailure(err)
   }
 }
@@ -1537,8 +1727,8 @@ export function registerDaemonApiRoutes<E extends Env>(
       daemonRestRateLimitKey(licenseId, 'enroll')
     )
     if (licenseLimited) return licenseLimited
-    const verifiedLicense = await verifyDaemonLicense(db, licenseId, licenseToken)
-    if (!verifiedLicense) {
+    const credential = await resolveEnrollCredential(db, licenseId, licenseToken)
+    if (!credential) {
       return c.json({ ok: false, error: 'Invalid license' }, 401)
     }
 
@@ -1556,39 +1746,29 @@ export function registerDaemonApiRoutes<E extends Env>(
       return c.json({ ok: false, error: 'Invalid signature' }, 403)
     }
 
-    // The key's token and the daemon's signature both check out: its server
-    // is being provisioned. Recorded before the tier gate, so a refused
-    // enrol still reads as "provisioning" rather than as an unused key whose
-    // license is free (`enroll-attempt.ts`).
-    // Bookkeeping only: it must never fail an enrol.
-    await recordLicenseEnrollAttempt(db, licenseId, hostname).catch(() => {})
-
-    // No tier gate and no assignment here: a freshly enrolled server holds
-    // no license tier until a manager assigns one, and it connects either
-    // way. Self-hosted grants itself the coverage first
-    // (`self-hosted-grant.ts`) — the row it writes is what still covers this
-    // server after a switch to the hosted runtime.
-    if (deployment === 'self-hosted') {
-      await syncSelfHostedGrantForLicense(db, licenseId)
-    }
-
     const fabricDeps = enrollFabricDepsFromContext(c)
-    const enrolled = await finalizeDaemonEnrollment(db, {
+    const enrollParams = {
       serverIdBody,
       machineKey,
       hostname,
-      licenseId,
       licenseToken,
       fingerprint,
       publicJwk,
-      verifiedLicense,
+      deployment,
+      secrets: c.get('dataEncryptionSecrets'),
       ...(fabricDeps ? { fabricDeps } : {}),
-    })
+    }
+    const enrolled =
+      credential.kind === 'reenroll'
+        ? await enrollWithReenrollTicket(db, credential.ticket, enrollParams)
+        : await enrollWithKey(db, credential, enrollParams)
     if (!enrolled.ok) {
       return c.json(enrollFailureBody(enrolled), enrolled.status)
     }
-    // Bound now: `license.server_id` carries it from here.
-    await clearLicenseEnrollAttempt(db, licenseId).catch(() => {})
+    const registry = getDaemonCellRegistry(c)
+    if (credential.kind === 'reenroll' && registry) {
+      await purgeDaemonCellBestEffort(registry, enrolled.serverId, 'after daemon key replaced')
+    }
 
     void primeCapabilityPlanAfterEnroll(db, getDaemonCellRegistry(c), enrolled.serverId, deployment)
 
@@ -1971,7 +2151,52 @@ export function registerDaemonApiRoutes<E extends Env>(
         decryptDaemonCiphertext(secretsConfig, recipient, ciphertext)
       )
 
-      return c.json({ plaintexts }, 200)
+      // Sealed to the daemon's registered sealing key when it lists
+      // `daemon-sealed-secrets-v1`; plaintext only for older daemons.
+      const db = getDb(c)
+      return c.json(
+        await buildSecretsDecryptAnswer(
+          db && databaseDecryptAnswerSource(db),
+          daemonServerId,
+          plaintexts
+        ),
+        200
+      )
+    }
+  )
+
+  /**
+   * The daemon registers its X25519 sealing key. `sig` is the daemon's Ed25519
+   * signature over `"tp-sealing-key\n" + pub`, checked against the key on file;
+   * only the key id is ever logged.
+   */
+  daemon.post(
+    '/servers/self/sealing-key',
+    requireDaemonJwt,
+    enforceJwtRestLimit('sealing-key'),
+    requireActiveDaemonKey,
+    async (c) => {
+      const db = getDb(c)
+      if (!db) return c.json({ ok: false, error: 'storage unavailable' }, 503)
+      const bodyRead = await readBoundedJsonBody(c, MAX_SEALING_KEY_BODY_BYTES)
+      if (!bodyRead.ok) return bodyRead.response
+      let parsedBody: unknown
+      try {
+        parsedBody = JSON.parse(bodyRead.text)
+      } catch {
+        return c.json({ ok: false, error: 'invalid json' }, 400)
+      }
+      const serverId = c.get('daemonServerId')
+      const result = await registerDaemonSealingKey(
+        {
+          loadDaemonPublicJwk: async (id) =>
+            (await getServerDaemonStateByServerId(db, id))?.key.publicJwk ?? null,
+          save: (id, key) => setDaemonSealingKey(db, id, key),
+        },
+        serverId,
+        parsedBody
+      )
+      return c.json(result.body, result.status)
     }
   )
 
@@ -1995,6 +2220,7 @@ export function registerDaemonApiRoutes<E extends Env>(
         hostname?: unknown
         certificatePem?: unknown
         privateKeyPem?: unknown
+        privateKeyEnvelope?: unknown
         requestId?: unknown
       }
       try {
@@ -2002,18 +2228,15 @@ export function registerDaemonApiRoutes<E extends Env>(
       } catch {
         return c.json({ ok: false, error: 'invalid json' }, 400)
       }
-      if (
-        typeof body.hostname !== 'string' ||
-        typeof body.certificatePem !== 'string' ||
-        typeof body.privateKeyPem !== 'string'
-      ) {
-        return c.json(
-          {
-            ok: false,
-            error: 'hostname, certificatePem and privateKeyPem are required',
-          },
-          400
-        )
+      if (typeof body.hostname !== 'string' || typeof body.certificatePem !== 'string') {
+        return c.json({ ok: false, error: 'hostname and certificatePem are required' }, 400)
+      }
+      const issuedKey = await resolveIssuedPrivateKey(
+        body,
+        options.panelIdentity ? await options.panelIdentity() : null
+      )
+      if (!issuedKey.ok) {
+        return c.json({ ok: false, error: issuedKey.error }, issuedKey.status)
       }
       if (body.requestId !== undefined && !isTlsIssuedRequestId(body.requestId)) {
         return c.json({ ok: false, error: 'requestId is not valid' }, 400)
@@ -2029,7 +2252,7 @@ export function registerDaemonApiRoutes<E extends Env>(
           serverId: c.get('daemonServerId'),
           hostname: body.hostname,
           certificatePem: body.certificatePem,
-          privateKeyPem: body.privateKeyPem,
+          privateKeyPem: issuedKey.privateKeyPem,
           ...(body.requestId === undefined ? {} : { requestId: body.requestId }),
         },
         { dataEncryptionSecrets }

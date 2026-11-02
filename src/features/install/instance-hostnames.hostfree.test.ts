@@ -504,3 +504,58 @@ test('upsertInstanceHostname replaces the canonical row and replace-all still re
   assertEquals(hostnames[0]?.id, id)
   assertEquals(hostnames[0]?.source, 'platform-ca')
 })
+
+const platformCa = { source: 'platform-ca', uploadedCertId: null } as const
+
+test('replaceInstanceHostnames stores the public port and primary, and a later save without them keeps both', async () => {
+  const { db } = createMemoryDb()
+  const saved = await replaceInstanceHostnames(db, [
+    { host: 'a.example.com', ...platformCa, publicPort: 443, isPrimary: true },
+    { host: 'b.example.com', ...platformCa },
+  ])
+  assertEquals(saved.ok, true)
+  const again = await replaceInstanceHostnames(db, [
+    { host: 'a.example.com', ...platformCa },
+    { host: 'b.example.com', ...platformCa },
+  ])
+  if (!again.ok) throw new TypeError('expected the hostnames to save')
+  assertEquals(
+    again.hostnames.map((row) => [row.publicPort, row.isPrimary]),
+    [
+      [443, true],
+      [8443, false],
+    ]
+  )
+})
+
+test('replaceInstanceHostnames moves the primary to the one row that asks and refuses two', async () => {
+  const { db } = createMemoryDb()
+  await replaceInstanceHostnames(db, [
+    { host: 'a.example.com', ...platformCa, isPrimary: true },
+    { host: 'b.example.com', ...platformCa },
+  ])
+  const moved = await replaceInstanceHostnames(db, [
+    { host: 'a.example.com', ...platformCa },
+    { host: 'b.example.com', ...platformCa, isPrimary: true },
+  ])
+  if (!moved.ok) throw new TypeError('expected the hostnames to save')
+  assertEquals(
+    moved.hostnames.map((row) => row.isPrimary),
+    [false, true]
+  )
+  const two = await replaceInstanceHostnames(db, [
+    { host: 'a.example.com', ...platformCa, isPrimary: true },
+    { host: 'b.example.com', ...platformCa, isPrimary: true },
+  ])
+  assertEquals(two.ok, false)
+})
+
+test('replaceInstanceHostnames refuses a public port outside 1 to 65535', async () => {
+  const { db } = createMemoryDb()
+  for (const publicPort of [0, 65536, 8443.5]) {
+    const refused = await replaceInstanceHostnames(db, [
+      { host: 'a.example.com', ...platformCa, publicPort },
+    ])
+    assertEquals(refused.ok, false, String(publicPort))
+  }
+})

@@ -382,7 +382,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'Server that consumed this key, set once on first successful enroll (partial unique index: one license per server); null while unconsumed, SET NULL on delete.',
       name: 'Optional operator display name; `this server` is reserved for the colocated control-plane license minted at install and refused by `POST /licenses`.',
       token:
-        'Argon2id PHC hash of the registration key (same format as `account.password`); the plaintext is returned once at mint and cannot be recovered from this row.',
+        'Argon2id PHC hash of the registration key; NULL once the key binds to a server and for a key minted behind a ticket, and a NULL token verifies nothing.',
       revoked_at:
         'Soft-delete timestamp set by a revoke or by an ended subscription revoking every license; non-null means inactive, and the row keeps `server_id` for audit.',
       tier_id:
@@ -442,6 +442,25 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'Always null since the TurboPanel grace clock was removed: provider retries now end a past-due subscription. Kept by the schema freeze, never read.',
       past_due_since:
         'First moment the provider reported `past_due` or `unpaid`; latched while delinquent, cleared by any other status so a later lapse is measured afresh.',
+    },
+  },
+  ticket: {
+    group: 'billing',
+    summary:
+      'One-hour, single-use enrolment ticket: a join ticket (license_id set) stands in for a key at install, a re-enroll ticket (server_id set) re-keys one server.',
+    columns: {
+      license_id:
+        'Registration key a join ticket binds when its server enrolls; null for a re-enroll ticket, CASCADE on delete.',
+      server_id:
+        'The one server a re-enroll ticket is bound to; null for a join ticket. Presented for any other server it is refused.',
+      server_name: 'Display name chosen in Add Server for a join ticket; informational.',
+      token:
+        'Argon2id PHC hash of the ticket secret; the plaintext is returned once at mint and cannot be recovered from this row.',
+      expires_at: 'Mint time plus one hour; past it the ticket is refused.',
+      used_at:
+        'Set atomically when the ticket is spent (or when an owner revokes it); a non-null value means it can never be used again.',
+      used_by_server_id: 'Server the spent ticket produced or re-keyed, SET NULL on delete.',
+      created_by_user_id: 'User who issued the ticket, SET NULL on delete.',
     },
   },
   tier: {
@@ -543,6 +562,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       dns_names:
         'JSON array of DNS names and IP addresses parsed from the leaf, used to test which hostnames the pair covers.',
       not_after: 'Leaf expiry copied from the parsed certificate when the pair is stored.',
+      kind: '`uploaded` for an operator upload, `dns-01` for a pair the control plane issued itself over DNS-01; issued pairs are never listed as uploads.',
     },
   },
   origin: {
@@ -551,9 +571,10 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       "One control-plane public name operators publish, with its certificate source and any Let's Encrypt attempt state.",
     columns: {
       host: 'Normalized public URL entry (origin, host, or host:port) in the form public URL parsing already stores.',
-      source: 'Certificate source for this name: `platform-ca`, `uploaded`, or `lets-encrypt`.',
+      source:
+        'Certificate source for this name: `platform-ca`, `uploaded`, `lets-encrypt`, or `dns-01`.',
       uploaded_cert_id:
-        'Uploaded pair (`certificate.id`) this name serves; required when `source` is `uploaded`, otherwise NULL.',
+        'Pair (`certificate.id`) this name serves: the upload when `source` is `uploaded` (required), or the issued pair when `source` is `dns-01`; otherwise NULL.',
       acme_last_attempt_at:
         "When this instance last tried Let's Encrypt for this name; NULL until an attempt runs.",
       acme_last_error:
@@ -569,6 +590,8 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'Whether install commands and the daemon URL list may name this hostname; false keeps it for people only.',
       ingress_state:
         'Provider state for this name, such as tunnel id, DNS record id and last status; the shape depends on `mode` and the provider writes it.',
+      acme_state:
+        'DNS-01 order and renewal progress for a `dns-01` name (stage, attempts, retry and renewal times, alerts sent); holds no key or token, NULL otherwise.',
     },
   },
   ingress: {
@@ -1668,6 +1691,14 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'The datacenter whose network this server prefers when it belongs to several; NULL means no preference; set null when the datacenter is deleted.',
       is_fabric_enabled:
         'TurboFabric membership switch, default true; false keeps the server out of the mesh (no relay, no `tp0`, no peer entry, no fabric address).',
+      sealing_key_kid:
+        'Fingerprint of the daemon X25519 sealing key, set when it registers; decrypt answers are sealed to that key for daemons listing `daemon-sealed-secrets-v1`.',
+      sealing_key_pub:
+        'Base64url raw public half of the daemon sealing key, stored only after its signature verified against the daemon key; NULL until registered.',
+      sealing_key_reported_at:
+        'When the daemon last registered its sealing key; NULL until it does.',
+      plaintext_secrets_at:
+        'Last time the secrets decrypt route answered this server in plaintext, written at most hourly; the edge go-live gate reads it.',
       fabric_role:
         'Operator TurboFabric role, `gateway` (accepts connections) or `client` (only dials out); NULL means automatic, gateway when a public address is known.',
       trust_pinned_by:

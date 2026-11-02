@@ -60,6 +60,7 @@ export const AUDIT_ACTIONS = [
   'tls.certificate.key_erase',
   'tls.certificate.delete',
   'mail.dead_letter.replay',
+  'instance.primary_hostname_changed',
   'upgrade.pause',
   'upgrade.resume',
   'binding.create',
@@ -102,6 +103,29 @@ export const AUDIT_ACTIONS = [
   'fabric.resume',
   'fabric.remove',
   'server.fabric.set',
+  'server.enroll',
+  'server.key_replace',
+  'server.reenroll_ticket.issue',
+  'server.reenroll_ticket.revoke',
+  'license.key.burn',
+  'panel.identity.generated',
+  'panel.identity_next.set',
+  'panel.identity_next.clear',
+  // Written by key rotation and emergency revoke (they land with those
+  // changes); named here so the vocabulary is complete.
+  'panel.identity.rotated',
+  'panel.identity.revoked',
+  'server.panel_pin.reissued',
+  'server.panel_pin.mismatch',
+  'instance.tunnel_token.set',
+  'instance.ingress_account.added',
+  'instance.ingress_account.removed',
+  'instance.ingress_account.rechecked',
+  'instance.edge_gate.set',
+  'instance.hostname_ingress.changed',
+  'instance.hostname_ingress.applied',
+  'instance.hostname_ingress.removed',
+  'instance.dns01.ordered',
 ] as const
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[number]

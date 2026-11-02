@@ -44,9 +44,18 @@ export async function verifyLicenseToken(plaintext: string, hashed: string): Pro
  */
 export async function createLicense(
   db: Db,
-  opts: { organizationId: string; name?: string; tierId?: string; expiresAt?: string }
+  opts: {
+    organizationId: string
+    name?: string
+    tierId?: string
+    expiresAt?: string
+    /** Mint the key with no token at all: it can only be used through a ticket (`tickets.ts`). */
+    tokenless?: boolean
+  }
 ): Promise<{ licenseId: string; licenseToken: string }> {
-  const { plaintext, hashed } = await generateLicenseToken()
+  const { plaintext, hashed } = opts.tokenless
+    ? { plaintext: '', hashed: null }
+    : await generateLicenseToken()
   const now = nowTs()
 
   const inserted = await db
@@ -68,6 +77,39 @@ export async function createLicense(
   }
 
   return { licenseId, licenseToken: plaintext }
+}
+
+/**
+ * Erase a key's token hash. Called when the key binds to a server: from then
+ * on the token verifies nothing, so a copy of it captured anywhere is dead.
+ */
+export async function eraseLicenseToken(db: Db, licenseId: string): Promise<void> {
+  await db.update(license).set({ token: null, updatedAt: nowTs() }).where(eq(license.id, licenseId))
+}
+
+/**
+ * Owner action for a key minted before tickets existed whose token may have
+ * crossed an edge: burn the old token and issue a fresh one-hour ticket for
+ * the same key. Only an unbound, unrevoked key can be rotated.
+ */
+export async function burnUnboundLicenseToken(
+  db: Db,
+  licenseId: string,
+  organizationId: string
+): Promise<boolean> {
+  const rows = await db
+    .update(license)
+    .set({ token: null, updatedAt: nowTs() })
+    .where(
+      and(
+        eq(license.id, licenseId),
+        eq(license.organizationId, organizationId),
+        isNull(license.serverId),
+        isNull(license.revokedAt)
+      )
+    )
+    .returning({ id: license.id })
+  return rows.length > 0
 }
 
 export async function revokeLicense(
@@ -277,7 +319,7 @@ export async function listLicenses(db: Db, organizationId: string): Promise<Lice
 export async function lookupActiveLicense(
   db: Db,
   licenseId: string
-): Promise<{ organizationId: string; token: string } | null> {
+): Promise<{ organizationId: string; token: string | null; serverId: string | null } | null> {
   const rows = await db
     .select({
       organizationId: license.organizationId,
@@ -292,5 +334,5 @@ export async function lookupActiveLicense(
   const row = rows[0]
   // An unused key past its expiry cannot enroll; a bound key never expires.
   if (!row || isUnusedKeyExpired(row)) return null
-  return { organizationId: row.organizationId, token: row.token }
+  return { organizationId: row.organizationId, token: row.token, serverId: row.serverId }
 }
