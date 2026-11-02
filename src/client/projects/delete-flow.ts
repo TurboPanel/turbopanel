@@ -114,6 +114,31 @@ function capped<T>(rows: readonly T[]): { items: T[]; total: number } {
   return { items: rows.slice(0, DELETE_AUDIT_LIST_CAP), total: rows.length }
 }
 
+/** The error code of a delete refused for a missing or wrong confirmation name. */
+export const CONFIRM_NAME_REQUIRED_ERROR = 'confirm_name_required'
+
+/**
+ * A 400 when the environment serves a public hostname and the typed name is
+ * not exactly its name, or null when the delete may go on. Runs before
+ * anything is stopped.
+ */
+export function refuseWithoutConfirmName(
+  c: Context<AppEnv>,
+  snapshot: DeleteAuditSnapshot,
+  confirmName: string | undefined
+): Response | null {
+  if (snapshot.hostnames.length === 0) return null
+  const name = snapshot.environments[0]?.name ?? null
+  if (name !== null && confirmName === name) return null
+  return c.json(
+    {
+      error: CONFIRM_NAME_REQUIRED_ERROR,
+      message: 'Type the environment name to delete an environment that serves a public hostname.',
+    },
+    400
+  )
+}
+
 /** What a delete removes that is worth keeping in the trail, read before it runs. */
 export type DeleteAuditSnapshot = {
   /** Project name (project delete only). */
