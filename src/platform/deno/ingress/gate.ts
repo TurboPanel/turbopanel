@@ -95,7 +95,10 @@ export async function readEdgeGate(
           db,
           undefined,
           rows.map((row) => row.id),
-          { includeSelfHostPin: true }
+          // Strong signals only (local socket projection, machine key, self-host pin). The
+          // canonical lookup's guesses (hostname, the single unassigned server) could pick a
+          // remote server and open the gate by mistake, so `orgScoped` skips them.
+          { orgScoped: true, includeSelfHostPin: true }
         )
   const servers = rows.map(({ hostname, ...row }) => ({
     ...row,

@@ -41,3 +41,20 @@ test('the gate lists a remote server that has not pinned, and drops it once it h
     await endDbConnection(db)
   }
 })
+
+test('a single unassigned remote server still holds the gate shut (no guessing it is local)', async () => {
+  if (!dbUrl) return skipWithoutDatabase('edge gate tests')
+  const db = createDenoDb()
+  const name = `gate-lone-${crypto.randomUUID().slice(0, 8)}`
+  let id = ''
+  try {
+    const [row] = await db.insert(server).values({ name }).returning({ id: server.id })
+    id = row!.id
+    const gate = await readEdgeGate(db, {})
+    assertEquals(gate.open, false)
+    assert(gate.waiting.some((item) => item.id === id))
+  } finally {
+    if (id) await db.delete(server).where(inArray(server.id, [id]))
+    await endDbConnection(db)
+  }
+})

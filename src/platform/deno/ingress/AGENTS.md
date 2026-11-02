@@ -51,7 +51,8 @@ High Availability (Workers) must not contain any of it.
   mode is allowed only when every remote server has this control plane's key
   pinned (`server.trust_pinned_by` is `install` or `upgrade`; NULL and
   `unsafe` hold it shut). The co-located server (`resolveColocatedServerIdSet`
-  with the self-host pin) never counts, and no remote server means ready. The
+  with `orgScoped` and the self-host pin: strong signals only, never the
+  hostname or single-unassigned-server guesses) never counts, and no remote server means ready. The
   connection-mode PATCH answers 409 with the reason and `waiting` (the servers
   holding it shut) when a row is switched to an edge mode while shut, and
   `registry.applyHostname` refuses (`gate-closed`) as a second line. The gate
