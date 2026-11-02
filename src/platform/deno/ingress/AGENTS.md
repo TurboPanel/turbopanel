@@ -29,6 +29,8 @@ High Availability (Workers) must not contain any of it.
   `retry`). Reads are admin; every change is `rootOnly`; adding or removing an
   account and the gate also need step-up. Deps come from the Hono context
   (`route-context.ts`); `server.ts` adds `selfKid` and `getEnv`.
+  `admin-routes.ts` also keeps `GET /instance/ingress/trusted-proxies` and
+  `POST /instance/ingress/trusted-proxies/refresh` (both `rootOnly`).
 - **Provider interface.** `provider.ts` defines `preflight`, `apply`, `status`
   and `remove`; `capabilities.ts` holds the capability table (one record per
   mode, pinned cell by cell by `capabilities.hostfree.test.ts`); `planner.ts`
@@ -100,3 +102,13 @@ High Availability (Workers) must not contain any of it.
 - **Tick** (`tick.ts`, started from `server.ts`): every minute with a fresh
   database client and no overlap; DNS-01 steps (5 names per tick), edge status
   and the token recheck every 5 minutes / daily. Each part fails alone.
+- **Edge ranges.** `edge-ranges.ts` fetches the Cloudflare list (etag, daily) and
+  the Bunny lists for the proxy modes in use and keeps them in the `EDGE_TRUST`
+  setting (`src/features/install/edge-trust.ts`, Workers-safe). The apply body
+  carries `edgeTrust` only to a daemon advertising `instance-edge-trust-v1`;
+  Caddy picks the visitor address from them, so `resolvePeerAddress` is unchanged.
+  A vendor answer is refused whole (the last good list stays, the error is
+  recorded) when any entry is wider than /8 (v4) or /16 (v6), overlaps loopback,
+  private, link-local, CGNAT, ULA or multicast space, or the list passes 5000
+  entries. Fetches time out after 10 s, refuse redirects and stop reading at
+  1 MiB, so a slow vendor cannot stall the maintenance tick or an apply.

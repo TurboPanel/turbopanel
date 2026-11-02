@@ -99,3 +99,10 @@ row's `publicPort` on `public-urls-update` to a co-located daemon that
 advertises `instance-hostname-public-port-v1`; its Caddy then sends a request
 for that hostname on any other port (an edge answering both 443 and 8443) to
 the public port with a 308.
+
+Hostnames in the `cloudflare-proxy` or `bunny-proxy` mode also need the
+provider's published edge ranges so Caddy can read the visitor address.
+`edge-trust.ts` holds the ranges in the `EDGE_TRUST` setting and builds the
+`edgeTrust` field of `public-urls-update` (only for a daemon advertising
+`instance-edge-trust-v1`); the fetches live in
+`src/platform/deno/ingress/edge-ranges.ts`.

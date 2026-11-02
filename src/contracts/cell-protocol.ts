@@ -295,6 +295,18 @@ export type InstanceHostnameWireEntry = {
 }
 
 /**
+ * Edge address ranges for the control plane's own Caddy on `public-urls-update`.
+ * `cidrs` is the union of `cloudflare` and `bunny`; `hash` identifies the set.
+ * Twin of `turbopaneld/src/contracts/cell-messages.ts`.
+ */
+export type InstanceEdgeTrustWire = {
+  cidrs: string[]
+  hash: string
+  cloudflare: string[]
+  bunny: string[]
+}
+
+/**
  * Instance → co-located daemon: start (or, with an empty `token`, stop) the
  * Cloudflare tunnel. A daemon that advertises `sealed-instance-secrets-v1`
  * receives a non-empty token only as `tokenEnvelope` (`tpdaemon`); `token`
@@ -1057,6 +1069,8 @@ export type DaemonMessage =
       hostnames?: InstanceHostnameWireEntry[]
       /** Present when any hostname uses `lets-encrypt`. */
       instanceAcme?: InstanceAcmeWireSettings
+      /** Present only for a daemon that advertises `instance-edge-trust-v1`. */
+      edgeTrust?: InstanceEdgeTrustWire
       at: string
     }
   | {
@@ -2826,6 +2840,7 @@ export type DaemonOutboundEnvelope =
       urls: string[]
       hostnames?: InstanceHostnameWireEntry[]
       instanceAcme?: InstanceAcmeWireSettings
+      edgeTrust?: InstanceEdgeTrustWire
     })
   | (OutboundEnvelopeBase & {
       kind: 'metrics-live-start'
@@ -3313,20 +3328,16 @@ function devSyncMessage(env: OutboundEnvelopeOf<'dev-sync'>): DaemonMessage {
  * the flat `urls` list it already understands.
  */
 function publicUrlsUpdateMessage(env: OutboundEnvelopeOf<'public-urls-update'>): DaemonMessage {
-  const message = {
+  return {
     type: 'public-urls-update' as const,
     id: env.requestId,
     urls: env.urls,
+    ...(env.hostnames === undefined ? {} : { hostnames: env.hostnames }),
+    ...(env.hostnames === undefined || env.instanceAcme === undefined
+      ? {}
+      : { instanceAcme: env.instanceAcme }),
+    ...(env.edgeTrust === undefined ? {} : { edgeTrust: env.edgeTrust }),
     at: env.at,
-  }
-  if (env.hostnames === undefined) return message
-  if (env.instanceAcme === undefined) {
-    return { ...message, hostnames: env.hostnames }
-  }
-  return {
-    ...message,
-    hostnames: env.hostnames,
-    instanceAcme: env.instanceAcme,
   }
 }
 
