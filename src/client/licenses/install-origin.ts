@@ -61,8 +61,8 @@ export async function resolveInstallOrigin(
 
 /**
  * The full install command carrying one ticket pair (`joinId` + secret): the
- * signed single-value `TOKEN` form once the switch is on and this control
- * plane has an identity key, else the older variables.
+ * signed single-value `TOKEN` form whenever this control plane has an
+ * identity key to sign it with, else the older variables.
  */
 export async function buildTicketInstallCommand(
   c: Context<AppEnv>,
@@ -76,7 +76,6 @@ export async function buildTicketInstallCommand(
   const devSurface = opts.runtime === 'deno' && isDeveloperSurfaceEnabled()
   const platformEnv = c.get('platformEnv') as Record<string, string | undefined> | undefined
   const installToken = await buildInstallTokenFor({
-    env: platformEnv,
     identity: opts.panelIdentity ? await opts.panelIdentity() : null,
     licenseId: ticket.id,
     licenseToken: ticket.plaintext,

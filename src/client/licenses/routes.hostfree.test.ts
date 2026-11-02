@@ -1300,16 +1300,9 @@ async function fixtureIdentity(): Promise<PanelIdentity> {
   return identity
 }
 
-const TOKEN_ENV = { TURBOPANEL_INSTALL_TOKEN_V2: '1' }
-
-test('POST /licenses hands out the signed TOKEN command once the switch is on', async () => {
+test('POST /licenses hands out the signed TOKEN command when the control plane has an identity key', async () => {
   const panelIdentity = await fixtureIdentity()
-  const { app, headers } = await buildApp({
-    config: null,
-    seats: null,
-    platformEnv: TOKEN_ENV,
-    panelIdentity,
-  })
+  const { app, headers } = await buildApp({ config: null, seats: null, panelIdentity })
   const res = await mint(app, headers, { name: 'edge-token' })
   assertEquals(res.status, 200)
   const body = (await res.json()) as {
@@ -1323,19 +1316,12 @@ test('POST /licenses hands out the signed TOKEN command once the switch is on', 
   assertEquals(body.installCommand.includes('TURBOPANEL_HOST'), false)
 })
 
-test('POST /licenses keeps the older command while the switch is off or there is no identity key', async () => {
-  const panelIdentity = await fixtureIdentity()
-  for (const fx of [{ panelIdentity }, { platformEnv: TOKEN_ENV }]) {
-    const { app, headers } = await buildApp({ config: null, seats: null, ...fx })
-    const res = await mint(app, headers, { name: 'edge-legacy' })
-    assertEquals(res.status, 200)
-    const body = (await res.json()) as { installCommand: string; panelFingerprint?: string }
-    assertEquals(body.installCommand.includes('TURBOPANEL_LICENSE='), true)
-    assertEquals(body.installCommand.includes(' TOKEN='), false)
-    // The fingerprints follow the identity key, not the switch.
-    assertEquals(
-      body.panelFingerprint,
-      'panelIdentity' in fx ? panelIdentity.current.kid : undefined
-    )
-  }
+test('POST /licenses keeps the older command when the control plane has no identity key', async () => {
+  const { app, headers } = await buildApp({ config: null, seats: null })
+  const res = await mint(app, headers, { name: 'edge-legacy' })
+  assertEquals(res.status, 200)
+  const body = (await res.json()) as { installCommand: string; panelFingerprint?: string }
+  assertEquals(body.installCommand.includes('TURBOPANEL_LICENSE='), true)
+  assertEquals(body.installCommand.includes(' TOKEN='), false)
+  assertEquals(body.panelFingerprint, undefined)
 })
