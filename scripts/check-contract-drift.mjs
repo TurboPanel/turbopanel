@@ -235,8 +235,8 @@ function checkPanelIdentityBytes(tp, td) {
     'frame-envelope.ts missing on the instance'
   )
   const envelopeRight = requireText(
-    readRel(td, 'src/instance/panel-identity/frame-envelope.ts'),
-    'frame-envelope.ts missing on the daemon'
+    readRel(td, 'src/instance/panel-identity-frames.ts'),
+    'panel-identity-frames.ts missing on the daemon'
   )
   for (const name of ['HELLO_PREFIX', 'FRAME_PREFIX', 'HTTP_PREFIX', 'SIG_SUFFIX_MARKER']) {
     requireEqual(
