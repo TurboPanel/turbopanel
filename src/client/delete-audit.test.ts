@@ -50,7 +50,7 @@ test('deleting an environment records who, its name and its hostnames', async ()
         .returning({ id: environment.id })
       await addSite(ctx, extra!.id, 'web', 'staging.audit-env.example.test')
 
-      const gone = await send(ctx, 'DELETE', `/environments/${extra!.id}`)
+      const gone = await send(ctx, 'DELETE', `/environments/${extra!.id}?confirmName=staging`)
       assertEquals(gone.status, 200)
 
       const rows = await entries(ctx, 'environment.delete')
