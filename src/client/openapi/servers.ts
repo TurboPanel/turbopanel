@@ -667,6 +667,17 @@ export const serverSchemas = {
         description:
           'Which configured layer supplied hideWebServerNames (null when the default, on, is used).',
       },
+      sendViaHeader: {
+        type: 'boolean',
+        description:
+          'Effective Via header (Via: 1.1 Caddy on site responses): server.options.sendViaHeader, else the organization setting, else off.',
+      },
+      sendViaHeaderSource: {
+        type: ['string', 'null'],
+        enum: ['server', 'organization', 'datacenter', null],
+        description:
+          'Which configured layer supplied sendViaHeader (null when the default, off, is used).',
+      },
       colocatedWithInstance: {
         type: 'boolean',
         description:
@@ -883,11 +894,12 @@ export const serverSchemas = {
       options: {
         type: 'object',
         description:
-          'Merged into server.options. sshPort (1–65535 or null to inherit) and ntp (object or null to inherit) participate in the host-defaults cascade; hideWebServerNames (boolean or null to inherit the organization setting) is a server option too.',
+          'Merged into server.options. sshPort (1–65535 or null to inherit) and ntp (object or null to inherit) participate in the host-defaults cascade; hideWebServerNames and sendViaHeader (boolean or null to inherit the organization setting) are server options too.',
         properties: {
           sshPort: { type: ['integer', 'null'], minimum: 1, maximum: 65535 },
           ntp: { type: ['object', 'null'] },
           hideWebServerNames: { type: ['boolean', 'null'] },
+          sendViaHeader: { type: ['boolean', 'null'] },
           hosting: {
             type: 'object',
             properties: { enabled: { type: 'boolean' } },

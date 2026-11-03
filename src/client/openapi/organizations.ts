@@ -136,7 +136,7 @@ export const organizationSchemas = {
   },
   OrganizationHostDefaults: {
     type: 'object',
-    required: ['sshPort', 'ntp', 'hideWebServerNames', 'defaultFabricEnabled'],
+    required: ['sshPort', 'ntp', 'hideWebServerNames', 'sendViaHeader', 'defaultFabricEnabled'],
     properties: {
       sshPort: {
         type: ['integer', 'null'],
@@ -166,7 +166,12 @@ export const organizationSchemas = {
       hideWebServerNames: {
         type: 'boolean',
         description:
-          'Hide web server names and versions (Server, Via and X-Powered-By headers, error-page footers). On unless set to false. Servers that set their own value keep it; the rest follow this one. Applies to a site on its next deploy.',
+          'Hide web server names and versions (Server and X-Powered-By headers, error-page footers). On unless set to false. Servers that set their own value keep it; the rest follow this one. Applies to a site on its next deploy.',
+      },
+      sendViaHeader: {
+        type: 'boolean',
+        description:
+          'Add Via: 1.1 Caddy to responses from sites on managed servers. Off unless set to true. Servers that set their own value keep it; the rest follow this one. Applies to a site on its next deploy, on a daemon that supports it.',
       },
       defaultFabricEnabled: {
         type: 'boolean',
@@ -205,6 +210,10 @@ export const organizationSchemas = {
       hideWebServerNames: {
         type: ['boolean', 'null'],
         description: 'Boolean, or null to clear (treated as on).',
+      },
+      sendViaHeader: {
+        type: ['boolean', 'null'],
+        description: 'Boolean, or null to clear (treated as off).',
       },
       defaultFabricEnabled: {
         type: ['boolean', 'null'],
@@ -1402,7 +1411,7 @@ export const organizationPaths: Record<string, unknown> = {
           },
         },
         '400': {
-          description: 'Invalid sshPort, ntp, hideWebServerNames, or body',
+          description: 'Invalid sshPort, ntp, hideWebServerNames, sendViaHeader, or body',
           content: {
             'application/json': {
               schema: { $ref: '#/components/schemas/ErrorResponse' },

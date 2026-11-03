@@ -218,6 +218,7 @@ export const DAEMON_WIRE_FEATURES = [
   'panel-identity-v1',
   'panel-signed-frames-v1',
   'signin-v2',
+  'hosting-via-header-v1',
 ] as const
 
 export type DaemonWireFeature = (typeof DAEMON_WIRE_FEATURES)[number]
@@ -581,6 +582,14 @@ export const MANAGED_BACKUP_LOGIN_FEATURE: DaemonWireFeature = 'managed-backup-l
  * control plane never sends the message and the UI hides the check.
  */
 export const SERVER_NETWORK_CHECK_FEATURE: DaemonWireFeature = 'server-network-check-v1'
+
+/**
+ * The daemon honours `sendViaHeader` on `environment.deploy`: true keeps
+ * `Via: 1.1 Caddy` on responses from the server's public hosting web server.
+ * The control plane sends the field only to a daemon that lists this feature;
+ * an older daemon keeps tying Via to `hideWebServerNames`, as before.
+ */
+export const HOSTING_VIA_HEADER_FEATURE: DaemonWireFeature = 'hosting-via-header-v1'
 
 /** Features that need an instance at or above a semver. Empty until one lands. */
 export const INSTANCE_FEATURE_MIN_VERSIONS: Readonly<Record<string, string>> = {}
