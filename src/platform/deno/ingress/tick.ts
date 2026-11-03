@@ -13,7 +13,14 @@ import { refreshInstanceConnector } from './cloudflare/instance-tunnel.ts'
 import { accountsDueForRecheck, recheckIngressAccount } from './cloudflare/account.ts'
 import { buildDns01Deps, type Dns01RuntimeDeps } from './dns01/runtime.ts'
 import { anyDns01Hostname, runDns01Tick } from './dns01/tick.ts'
-import { networkFetch, refreshEdgeStatuses, type IngressServiceDeps } from './service.ts'
+import { originCertVerifiable, readTunnelState } from './cloudflare/tunnel-config.ts'
+import {
+  applyIngress,
+  loadHostnamesWithState,
+  networkFetch,
+  refreshEdgeStatuses,
+  type IngressServiceDeps,
+} from './service.ts'
 
 /** Edge status is read every few minutes, not every tick, to stay well inside provider limits. */
 export const EDGE_STATUS_EVERY_MS = 5 * 60_000
@@ -44,6 +51,26 @@ async function recheckAccounts(db: Db, deps: IngressTickDeps): Promise<void> {
   )
 }
 
+/**
+ * Re-applies a tunnel name whose certificate changed under it: the rule
+ * verifies the origin only while a public pair is live, so an issued,
+ * expired or replaced pair means the stored rule is out of date. One apply
+ * rebuilds the whole shared rule list.
+ */
+export async function reconcileTunnelOriginVerification(
+  db: Db,
+  deps: IngressServiceDeps
+): Promise<void> {
+  const rows = await loadHostnamesWithState(db)
+  const stale = rows.filter((row) => {
+    const state = row.mode === 'cloudflare-tunnel' ? readTunnelState(row.providerState) : null
+    return state !== null && state.originVerified !== originCertVerifiable(row)
+  })
+  await forEachSequential(stale, async (row) => {
+    await applyIngress(db, row.id, deps)
+  })
+}
+
 export function createIngressTick(deps: IngressTickDeps): (db: Db) => Promise<void> {
   let lastStatusAt = 0
   return async (db) => {
@@ -51,6 +78,7 @@ export function createIngressTick(deps: IngressTickDeps): (db: Db) => Promise<vo
       if (!(await anyDns01Hostname(db))) return
       await runDns01Tick(await buildDns01Deps(db, deps))
     })
+    await guarded('tunnel origin verification', () => reconcileTunnelOriginVerification(db, deps))
     const now = (deps.now?.() ?? new Date()).getTime()
     if (now - lastStatusAt < EDGE_STATUS_EVERY_MS) return
     lastStatusAt = now

@@ -73,7 +73,10 @@ High Availability (Workers) must not contain any of it.
   name before one is created. Every tunnel name on the account is rebuilt into
   the ingress list on each apply and remove, all to `https://127.0.0.1:8443`
   with `originServerName`, `httpHostHeader` and `noTLSVerify` on the loopback
-  hop (`caPool` is a later step). The CNAME is proxied; another record on the
+  hop (`caPool` is a later step). `noTLSVerify` drops for a name whose ACME
+  pair (DNS-01 or HTTP-01) is issued and unexpired (`originCertVerifiable`);
+  the ingress tick re-applies a name whose stored `originVerified` no longer
+  matches, so issue, expiry and fallback rebuild the rules. The CNAME is proxied; another record on the
   name is refused unless the operator asks to replace it. The run token goes
   only to the co-located daemon (`dispatchInstanceTunnelToken`); the daemon
   refuses it anywhere else. Healthy = four connections; the status then
