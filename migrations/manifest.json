@@ -122,6 +122,12 @@
       "tag": "0019_tier_provider_nullable",
       "when": 1793717631400,
       "sha256": "21ac53b21fd6e617e9698f94d4f24ca4b4af66d020531f5be510e9c6050ce8ce"
+    },
+    {
+      "idx": 20,
+      "tag": "0020_organization_is_acme_enabled",
+      "when": 1793723662070,
+      "sha256": "d9e32c8818c5b80903ca0010e3e538d5d8822d84ddd688084e3b7fe772de1112"
     }
   ]
 }
