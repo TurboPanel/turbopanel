@@ -23,35 +23,29 @@ export type CurrentAcmeTerms = () => Promise<string | null>
 
 /**
  * A cached reader of the current agreement. `fetchFn` stands in for the
- * network in tests; `now` for the clock. Callers that arrive while a read is
- * running share it.
+ * network in tests; `now` for the clock. Only settled answers are kept: a read
+ * still running belongs to the request that started it (on Workers it may be
+ * cancelled with that request), so it is never shared with other requests.
+ * A cold cache may therefore read the directory more than once at a time.
  */
 export function currentAcmeTermsReader(
   fetchFn?: typeof fetch,
   now: () => number = Date.now
 ): CurrentAcmeTerms {
   let cached: { url: string | null; until: number } | null = null
-  let pending: Promise<string | null> | null = null
-  return () => {
-    if (cached && now() < cached.until) return Promise.resolve(cached.url)
-    pending ??= fetchTermsOfService({
-      directoryUrl: ACME_PRODUCTION_DIRECTORY,
-      fetch: fetchFn,
-      timeoutMs: TERMS_TIMEOUT_MS,
-    })
-      .then(
-        (url) => {
-          cached = { url, until: now() + TERMS_TTL_MS }
-          return url
-        },
-        () => {
-          cached = { url: null, until: now() + TERMS_FAILURE_TTL_MS }
-          return null
-        }
-      )
-      .finally(() => {
-        pending = null
+  return async () => {
+    if (cached && now() < cached.until) return cached.url
+    try {
+      const url = await fetchTermsOfService({
+        directoryUrl: ACME_PRODUCTION_DIRECTORY,
+        fetch: fetchFn,
+        timeoutMs: TERMS_TIMEOUT_MS,
       })
-    return pending
+      cached = { url, until: now() + TERMS_TTL_MS }
+      return url
+    } catch {
+      cached = { url: null, until: now() + TERMS_FAILURE_TTL_MS }
+      return null
+    }
   }
 }

@@ -51,15 +51,16 @@ test('a failed read answers null and is not tried again for a minute', async () 
   assertEquals(await read(), 'https://ca.test/v1.pdf')
 })
 
-test('callers that arrive during a read share it', async () => {
+test('a read still running is not shared, and a settled one is', async () => {
   const ca = directory(() => 'https://ca.test/v1.pdf')
   const read = currentAcmeTermsReader(ca.fetchFn, () => 0)
-  assertEquals(await Promise.all([read(), read(), read()]), [
-    'https://ca.test/v1.pdf',
+  assertEquals(await Promise.all([read(), read()]), [
     'https://ca.test/v1.pdf',
     'https://ca.test/v1.pdf',
   ])
-  assertEquals(ca.calls(), 1)
+  assertEquals(ca.calls(), 2)
+  assertEquals(await read(), 'https://ca.test/v1.pdf')
+  assertEquals(ca.calls(), 2)
 })
 
 test('an upper-case scheme is stored in its normal form', async () => {

@@ -173,14 +173,13 @@ async function loadDirectory(
   if (!body.newNonce || !body.newAccount || !body.newOrder) {
     throw new AcmeError('server', 'The certificate authority sent an incomplete directory')
   }
+  const terms = normalizedHttpsUrl(body.meta?.termsOfService)
   const directory: AcmeDirectory = {
     newNonce: body.newNonce,
     newAccount: body.newAccount,
     newOrder: body.newOrder,
     ...(body.renewalInfo ? { renewalInfo: body.renewalInfo } : {}),
-    ...(normalizedHttpsUrl(body.meta?.termsOfService)
-      ? { termsOfService: normalizedHttpsUrl(body.meta?.termsOfService) as string }
-      : {}),
+    ...(terms ? { termsOfService: terms } : {}),
   }
   session.rememberDirectory(directoryUrl, directory)
   return directory
@@ -427,8 +426,9 @@ export async function fetchRenewalWindow(options: {
  * (`meta.termsOfService` in its directory), as a normalized `https:` link.
  * Reads the directory itself, without the orders' hour-long directory cache,
  * and gives up after `timeoutMs` so a slow authority never holds a screen.
- * Throws {@link AcmeError} when the authority cannot be reached or names no
- * agreement.
+ * Throws {@link AcmeError} when the authority cannot be reached, answers an
+ * error or names no agreement; a body that is not JSON, or one cut off by the
+ * timeout, throws as the runtime reports it.
  */
 export async function fetchTermsOfService(options: {
   directoryUrl: string
