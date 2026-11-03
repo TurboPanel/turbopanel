@@ -137,6 +137,8 @@ type Fixture = {
   afterSession?: 'drop-db' | 'swallow-session'
   platformEnv?: Record<string, string | undefined>
   omitBaseUrl?: boolean
+  /** The explicit base URL handed to the routes; defaults to `https://panel.example.com`. */
+  baseUrl?: string
   runtime?: 'deno' | 'workers'
   panelIdentity?: PanelIdentity
   /** The organization requires step-up and the session is older than its window. */
@@ -333,6 +335,8 @@ async function buildApp(fx: Fixture = {}) {
   } else {
     app.use('*', (c, next) => {
       c.set('db', db)
+      // createApp publishes the runtime for every request; mirror it here.
+      c.set('runtime', fx.runtime ?? 'workers')
       const config = fx.config === undefined ? CONFIG : fx.config
       if (config) c.set('billingConfig', config)
       if (fx.registry) c.set('daemonCellRegistry', fx.registry)
@@ -345,7 +349,7 @@ async function buildApp(fx: Fixture = {}) {
     secrets,
     runtime: fx.runtime ?? 'workers',
     signupEnvOverride: undefined,
-    ...(fx.omitBaseUrl ? {} : { baseUrl: 'https://panel.example.com' }),
+    ...(fx.omitBaseUrl ? {} : { baseUrl: fx.baseUrl ?? 'https://panel.example.com' }),
     ...(panelIdentity ? { panelIdentity: () => Promise.resolve(panelIdentity) } : {}),
   })
   registerServerReenrollTicketRoutes(app, {
@@ -820,8 +824,7 @@ test('POST /licenses/:id/ticket returns an install command carrying the new key'
 test('POST /licenses/:id/ticket with a refused install origin keeps the old key and ticket live and mints nothing', async () => {
   const { app, headers, db } = await buildApp({
     runtime: 'deno',
-    omitBaseUrl: true,
-    platformEnv: { TURBOPANEL_BASE_URL: 'https://10.0.0.5' },
+    baseUrl: 'https://10.0.0.5',
     licenses: [{ id: L_ACTIVE }],
   })
   const live = await mintTicket(db, { organizationId: ORG, licenseId: L_ACTIVE })

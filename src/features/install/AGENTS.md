@@ -1,5 +1,36 @@
 # Instance Hostnames and ACME (`src/features/install/`)
 
+### Where control-plane hostnames come from
+
+One rule per runtime, in `control-plane-origins.ts`; every reader (links and
+`resolvePublicBaseUrl`, install commands, passkey origins, the identity
+document and the daemon hello URLs, published Git origins, install trust, the
+site-name guard) goes through it.
+
+- **High availability (Workers):** only the platform environment,
+  `TURBOPANEL_BASE_URL` then `TURBOPANEL_PUBLIC_URLS`, always port-free (the
+  control plane answers on 443). Nothing can add or change them through the
+  API: `PUT /instance/public-urls` and every hostname, certificate and ACME
+  write answer the same 422 (`refuseWorkersWrite`), and
+  `GET /instance/public-urls` lists the platform origins with
+  `platformManaged`.
+  A stored `origin` row is ignored by code; nobody inspects or cleans HA
+  databases for them.
+- **Self-hosted (Deno):** only the `origin` rows edited under Admin › Access ›
+  Hostnames. The process environment is never a hostname source, so neither
+  `TURBOPANEL_BASE_URL` nor `TURBOPANEL_PUBLIC_URLS` in the unit's env changes
+  a link. With no rows, links use the discovered address
+  (`https://<ip>:8443`) until an admin adds one; the installer seeds nothing.
+  Mail sent outside a request (alerts, digests, retries, certificate notices)
+  resolves the console link at send time (`resolveSelfHostedConsoleBaseUrl`),
+  so a new primary hostname needs no restart.
+- The daemon still writes `TURBOPANEL_PUBLIC_URLS` to
+  `/etc/turbopanel/instance/runtime.env` on apply. That copy is derived from
+  the rows and read only by the `instance-certs` role for certificate SANs.
+- `migrateLegacyPublicUrls` copies the old `TURBOPANEL_PUBLIC_URLS` _setting
+  row_ (database, admin-written) into `origin` once when the table is empty.
+  It never reads the environment.
+
 ### Instance hostnames and instance ACME
 
 **DNS-01 source (self-hosted).** `dns-01` is a fourth `origin.source`: the

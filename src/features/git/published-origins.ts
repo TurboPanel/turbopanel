@@ -11,22 +11,23 @@
  *   produce a URL that looks right and never receives anything. A
  *   `TURBOPANEL_BASE_URL` in the process env is not consulted either — the
  *   operator list is the one place a self-hosted address is published.
- * - **Hosted (Workers):** the platform's own address, `TURBOPANEL_BASE_URL`,
- *   first, then anything in the stored list. Nothing fills that list on the
- *   hosted runtime (its hostnames are platform-managed, see
- *   `admin/instance-hostname-routes.ts`), so without the base URL the hosted
- *   control plane would publish nothing and every GitHub App wizard would be
+ * - **Hosted (Workers):** the platform's own addresses only,
+ *   `TURBOPANEL_BASE_URL` then `TURBOPANEL_PUBLIC_URLS`. Stored hostname rows
+ *   are ignored on this runtime (its hostnames are platform-managed, see
+ *   `features/install/control-plane-origins.ts`), so without the base URL the
+ *   hosted control plane publishes nothing and every GitHub App wizard is
  *   refused with `public_url_not_configured`.
  *
- * The base URL goes through {@link publicHttpsOrigin}, not the self-hosted
- * {@link publicUrlEntryToInstallOrigin}: the hosted origin keeps its own port
- * (usually the implicit 443), where the self-hosted one always dials `:8443`.
- * A blank, `http:` or otherwise unusable value publishes nothing.
+ * The hosted origin is always port-free (the control plane answers on 443
+ * there), where the self-hosted one dials `:8443`. A blank, `http:` or
+ * otherwise unusable value publishes nothing.
  */
 
 import type { Db } from '../../db/connection.ts'
-import { listInstanceHostnames } from '../install/instance-hostnames.ts'
-import { orderedPublicOrigins } from '../install/public-origins.ts'
+import {
+  controlPlaneOrigins,
+  platformControlPlaneOrigin,
+} from '../install/control-plane-origins.ts'
 import { publicHttpsOrigin, publicUrlEntryToInstallOrigin } from '../install/public-urls.ts'
 
 export type PublishedOrigins = {
@@ -47,9 +48,7 @@ export type PublishedOriginsRuntime = {
 /** The hosted runtime's own address, or `null` off Workers or when unusable. */
 export function platformManagedOrigin(input: PublishedOriginsRuntime): string | null {
   if (input.runtime !== 'workers') return null
-  const baseUrl = input.platformEnv?.TURBOPANEL_BASE_URL?.trim()
-  if (!baseUrl) return null
-  return publicHttpsOrigin(baseUrl)
+  return platformControlPlaneOrigin(input.platformEnv)
 }
 
 function stripTrailingSlash(origin: string): string {
@@ -57,16 +56,15 @@ function stripTrailingSlash(origin: string): string {
 }
 
 /**
- * Every published origin: the platform address (when given) ahead of the
- * stored operator list, normalized and de-duplicated.
+ * Every published origin for this runtime, normalized and de-duplicated: the
+ * platform addresses on Workers, the stored list on Deno.
  */
 export async function listPublishedOrigins(
   db: Db,
-  platformOrigin: string | null = null
+  input: PublishedOriginsRuntime = {}
 ): Promise<string[]> {
-  const stored = orderedPublicOrigins(await listInstanceHostnames(db))
-  const all = platformOrigin ? [platformOrigin, ...stored] : stored
-  return [...new Set(all.map(stripTrailingSlash))]
+  const origins = await controlPlaneOrigins(db, input)
+  return [...new Set(origins.map(stripTrailingSlash))]
 }
 
 export async function resolvePublishedOrigins(
@@ -74,7 +72,7 @@ export async function resolvePublishedOrigins(
   input: PublishedOriginsRuntime
 ): Promise<PublishedOrigins> {
   return {
-    origins: await listPublishedOrigins(db, platformManagedOrigin(input)),
+    origins: await listPublishedOrigins(db, input),
     platformManaged: input.runtime === 'workers',
   }
 }

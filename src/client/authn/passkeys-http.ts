@@ -1,7 +1,7 @@
 import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import { getDb } from '../../db/connection.ts'
-import { listInstanceHostnames } from '../../features/install/instance-hostnames.ts'
+import { controlPlaneHostnameRows } from '../../features/install/control-plane-origins.ts'
 import { publicOriginsForRpId } from '../../features/install/public-origins.ts'
 import { resolvePublicBaseUrl } from '../../features/install/resolve-public-base-url.ts'
 import { AUTH_RATE_LIMIT_IDENTITY_MAX_CHARS } from './auth-rate-limit.ts'
@@ -134,7 +134,10 @@ async function resolveWebauthnOrigin(
   // One host can be reachable on several public ports (443 behind an edge and
   // the panel's own 8443); the RP ID is the bare host, so every one is valid.
   const db = getDb(c)
-  const fromRows = db ? publicOriginsForRpId(await listInstanceHostnames(db), rpId) : []
+  // Hosted, stored rows are ignored: the platform origin is the only one.
+  const fromRows = db
+    ? publicOriginsForRpId(await controlPlaneHostnameRows(db, c.get('runtime')), rpId)
+    : []
   return { rpId, origins: fromRows.length > 0 ? fromRows : [publicUrl.origin] }
 }
 

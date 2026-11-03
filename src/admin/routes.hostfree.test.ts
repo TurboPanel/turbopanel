@@ -505,6 +505,33 @@ test('GET/PUT /instance/public-urls handle missing db and validation', async () 
   assertEquals(saved.status, 200)
 })
 
+test('Workers: /instance/public-urls is platform-managed, the PUT is refused', async () => {
+  const { app, cookie } = await buildApp({
+    runtime: 'workers',
+    getEnv: () => ({ TURBOPANEL_BASE_URL: 'https://panel.example.com:443' }),
+  })
+  const get = await app.request(`${ADMIN_API_PREFIX}/instance/public-urls`, {
+    headers: { Cookie: cookie },
+  })
+  assertEquals(get.status, 200)
+  assertEquals(await get.json(), {
+    ok: true,
+    urls: ['https://panel.example.com'],
+    platformManaged: true,
+  })
+
+  const put = await app.request(`${ADMIN_API_PREFIX}/instance/public-urls`, {
+    method: 'PUT',
+    headers: { Cookie: cookie, 'content-type': 'application/json' },
+    body: JSON.stringify({ urls: ['https://admin.example.com'] }),
+  })
+  assertEquals(put.status, 422)
+  assertEquals(await put.json(), {
+    ok: false,
+    error: 'certificates and hostnames are platform-managed on this runtime',
+  })
+})
+
 test('GET/PUT /settings/email cover db/validation/encryption branches', async () => {
   const { app, cookie } = await buildApp()
   const get = await app.request(`${ADMIN_API_PREFIX}/settings/email`, {
