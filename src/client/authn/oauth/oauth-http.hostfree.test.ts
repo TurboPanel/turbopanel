@@ -159,6 +159,8 @@ async function buildApp(opts?: {
     c.set('db', db)
     c.set('secretsConfig', config)
     c.set('platformEnv', opts?.platformEnv ?? GITHUB_ENV)
+    // createApp publishes the runtime for every request; mirror it here.
+    c.set('runtime', opts?.runtime ?? 'deno')
     c.set('authRateLimiter', limiter)
     return next()
   })

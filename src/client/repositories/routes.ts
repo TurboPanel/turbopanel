@@ -46,7 +46,7 @@ import {
 } from '../../features/git/webhook-reachability.ts'
 import {
   listPublishedOrigins,
-  platformManagedOrigin,
+  type PublishedOriginsRuntime,
 } from '../../features/git/published-origins.ts'
 import {
   GITHUB_API_BASE,
@@ -697,7 +697,11 @@ export async function finishGitlabOauthCallback(
     return providerCallbackFail(c, organizationId, 'not_configured', forgeId)
   }
 
-  const redirectUri = await resolveGitlabRedirectUri(db, app.redirectUri, requestPlatformOrigin(c))
+  const redirectUri = await resolveGitlabRedirectUri(
+    db,
+    app.redirectUri,
+    requestPublishedRuntime(c)
+  )
   if (!redirectUri) {
     return providerCallbackFail(c, organizationId, 'not_configured', app.id)
   }
@@ -896,10 +900,10 @@ export async function resolveSourceWebhookInfo(
   db: Db,
   provider: string,
   connectionId: string | null,
-  platformOrigin: string | null = null
+  published: PublishedOriginsRuntime = {}
 ): Promise<SourceWebhookInfo | undefined> {
   if (provider !== 'github' && provider !== 'gitlab') return undefined
-  const origins = await listPublishedOrigins(db, platformOrigin)
+  const origins = await listPublishedOrigins(db, published)
 
   // The app behind this repository decides both halves of the URL: whether the ref
   // belongs in the path (self-hosted only), and which origin the provider was
@@ -949,17 +953,17 @@ export async function resolveSourceWebhookInfo(
 export async function resolveGitlabRedirectUri(
   db: Db,
   configured: string | null,
-  platformOrigin: string | null = null
+  published: PublishedOriginsRuntime = {}
 ): Promise<string | null> {
   if (configured) return configured
-  const [origin] = await listPublishedOrigins(db, platformOrigin)
+  const [origin] = await listPublishedOrigins(db, published)
   if (!origin) return null
   return `${origin}${CLIENT_API_PREFIX}/repositories/gitlab/oauth/callback`
 }
 
-/** The hosted runtime's own address for this request, `null` when self-hosted. */
-function requestPlatformOrigin(c: Context<AppEnv>): string | null {
-  return platformManagedOrigin({ runtime: c.get('runtime'), platformEnv: c.get('platformEnv') })
+/** The runtime and platform environment that decide this request's published origins. */
+function requestPublishedRuntime(c: Context<AppEnv>): PublishedOriginsRuntime {
+  return { runtime: c.get('runtime'), platformEnv: c.get('platformEnv') }
 }
 
 export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
@@ -1197,7 +1201,7 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
     const redirectUri = await resolveGitlabRedirectUri(
       db,
       app.redirectUri,
-      requestPlatformOrigin(c)
+      requestPublishedRuntime(c)
     )
     if (!redirectUri) return c.json({ error: 'gitlab_redirect_uri_unknown' }, 503)
 
@@ -1372,7 +1376,12 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
     return c.json({
       repository: serializeSourceRow(
         row,
-        await resolveSourceWebhookInfo(db, row.provider, row.connectionId, requestPlatformOrigin(c))
+        await resolveSourceWebhookInfo(
+          db,
+          row.provider,
+          row.connectionId,
+          requestPublishedRuntime(c)
+        )
       ),
     })
   })

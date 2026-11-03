@@ -17,12 +17,11 @@ import { registerAdminRoutes } from './admin/routes.ts'
 import { registerAdminTierRoutes } from './admin/tier-routes.ts'
 import { getWorkersAdminOpenApiSpec } from './admin/openapi/workers.ts'
 import { registerDaemonApiRoutes } from './daemon/api-routes.ts'
-import { listInstanceHostnames } from './features/install/instance-hostnames.ts'
+import { platformControlPlaneOrigins } from './features/install/control-plane-origins.ts'
 import {
   resolvePanelIdentityFromBinding,
   type PanelIdentity,
 } from './lib/panel-identity/identity.ts'
-import { orderedPublicOrigins } from './lib/panel-identity/urls.ts'
 import { revokeDaemonKey } from './features/servers/server-identity-db.ts'
 import { registerWebhookRoutes } from './webhook/routes.ts'
 import { registerStripeWebhookRoutes } from './webhook/billing/stripe.ts'
@@ -331,7 +330,7 @@ async function initWorkerApp(env: CloudflareBindings) {
     metricsLimiter: rateLimiters.metrics,
     runtime: 'workers',
     panelIdentity: () => Promise.resolve(cachedPanelIdentity),
-    identityUrls: async (requestDb) => orderedPublicOrigins(await listInstanceHostnames(requestDb)),
+    identityUrls: () => Promise.resolve(platformControlPlaneOrigins(stringBindingEnv(env))),
   })
   registerWorkersDaemonWebSocket(daemonRoutes, {
     secrets: cachedDaemonJwtKeyring ?? undefined,
@@ -358,7 +357,7 @@ async function initWorkerApp(env: CloudflareBindings) {
     registerTiers: (admin) => registerAdminTierRoutes(admin, { secrets: cachedSessionSecrets! }),
     getOpenApiSpec: getWorkersAdminOpenApiSpec,
     panelIdentity: () => Promise.resolve(cachedPanelIdentity),
-    identityUrls: async (requestDb) => orderedPublicOrigins(await listInstanceHostnames(requestDb)),
+    identityUrls: () => Promise.resolve(platformControlPlaneOrigins(stringBindingEnv(env))),
   })
   cachedDaemonCellRegistryFactory = (env, db) => createDurableObjectDaemonCellRegistry(env, db)
 }
