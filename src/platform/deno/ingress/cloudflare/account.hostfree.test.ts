@@ -2,8 +2,11 @@ import { assert, assertEquals } from '@std/assert'
 import { scrubSecrets } from '../../../../features/tunnels/scrub.ts'
 import {
   accountsDueForRecheck,
+  checkCloudflareToken,
   cloudflareTokenShapeProblem,
+  listNames,
   preflightCloudflareToken,
+  recheckedScopes,
 } from './account.ts'
 import { createFakeCloudflare } from './fake-cloudflare.test.support.ts'
 import { readEdgeTunnel } from './instance-tunnel.ts'
@@ -21,21 +24,350 @@ test('a token with both scopes passes and names its account and zones', async ()
   assertEquals(result.zones, [{ id: 'zone-1', name: 'example.com' }])
   assertEquals(
     result.checks.map((item) => item.id),
-    ['token-verify', 'scope-tunnels', 'scope-dns', 'token-expiry']
+    ['token-verify', 'token-policies', 'scope-tunnels', 'scope-dns', 'token-expiry']
   )
 })
 
-test('a token without DNS edit fails the DNS scope check', async () => {
-  const cf = createFakeCloudflare({ token: TOKEN, forbidden: [/dns_records/] })
+const ACCOUNT_KEY = 'com.cloudflare.api.account.acct-1'
+const ZONES = [
+  { id: 'zone-1', name: 'example.com' },
+  { id: 'zone-2', name: 'turbopanel.dev' },
+  { id: 'zone-3', name: 'other.net' },
+]
+
+function policy(
+  effect: 'allow' | 'deny',
+  resources: Record<string, unknown>,
+  names: string[]
+): Record<string, unknown> {
+  return {
+    id: `pol-${effect}-${names.join('-')}`,
+    effect,
+    resources,
+    permission_groups: names.map((name) => ({ id: name, name })),
+  }
+}
+
+function detail(result: { checks: { id: string; ok: boolean; detail: string }[] }, id: string) {
+  return result.checks.find((item) => item.id === id)
+}
+
+test('tunnel edit on the account passes and DNS on two zones lists only those zones', async () => {
+  const cf = createFakeCloudflare({
+    token: TOKEN,
+    zones: ZONES,
+    policies: [
+      policy('allow', { [ACCOUNT_KEY]: '*' }, ['Cloudflare Tunnel Write']),
+      policy(
+        'allow',
+        {
+          'com.cloudflare.api.account.zone.zone-1': '*',
+          'com.cloudflare.api.account.zone.zone-2': '*',
+        },
+        ['DNS Write', 'Zone Read']
+      ),
+    ],
+  })
   const result = await preflightCloudflareToken(TOKEN, cf.fetch, NOW)
-  assertEquals(result.ok, false)
-  assertEquals(result.checks.find((item) => item.id === 'scope-dns')?.ok, false)
+  assertEquals(result.ok, true)
+  assertEquals(
+    detail(result, 'scope-tunnels')?.detail,
+    'Cloudflare Tunnel Edit is granted on the account.'
+  )
+  assertEquals(
+    detail(result, 'scope-dns')?.detail,
+    'The token can edit DNS in example.com and turbopanel.dev. DNS-01 certificates are issued only for names in these zones.'
+  )
+  assertEquals(result.zones, ZONES.slice(0, 2))
 })
 
-test('a token without tunnel edit fails the tunnel scope check', async () => {
-  const cf = createFakeCloudflare({ token: TOKEN, forbidden: [/cfd_tunnel/] })
+test('tunnel edit in a zone-only policy fails with the zone named (account-owned token)', async () => {
+  const cf = createFakeCloudflare({
+    token: 'cfat_fixtureTokenValue0123456789abcdef',
+    owner: 'account',
+    zones: ZONES,
+    policies: [
+      policy('allow', { 'com.cloudflare.api.account.zone.zone-2': '*' }, [
+        'Cloudflare Tunnel Write',
+        'Cloudflare Tunnel Read',
+        'Zone Read',
+        'Zone Write',
+        'DNS Read',
+        'DNS Write',
+      ]),
+    ],
+  })
+  const result = await preflightCloudflareToken(
+    'cfat_fixtureTokenValue0123456789abcdef',
+    cf.fetch,
+    NOW
+  )
+  assertEquals(result.ok, false)
+  assertEquals(detail(result, 'scope-tunnels'), {
+    id: 'scope-tunnels',
+    ok: false,
+    detail:
+      'Cloudflare Tunnel Edit is only granted on the turbopanel.dev zone. Give it to the account instead.',
+  })
+  assertEquals(detail(result, 'scope-dns')?.ok, true)
+  assert(cf.log.includes('GET /accounts/acct-1/tokens/tok-1'))
+})
+
+test('a token that cannot read its own policies fails and names the permission', async () => {
+  const cfat = 'cfat_fixtureTokenValue0123456789abcdef'
+  const cf = createFakeCloudflare({
+    token: cfat,
+    owner: 'account',
+    forbidden: [/\/tokens\/tok-1$/],
+  })
+  const result = await preflightCloudflareToken(cfat, cf.fetch, NOW)
+  assertEquals(result.ok, false)
+  assertEquals(
+    detail(result, 'token-policies')?.detail,
+    'The token cannot read its own permissions. Add Account › Account API Tokens › Read to the token.'
+  )
+  assertEquals(result.zones, [])
+})
+
+test('a user-owned token reads itself at the user endpoint, and names the user permission when it cannot', async () => {
+  const cf = createFakeCloudflare({ token: TOKEN })
   const result = await preflightCloudflareToken(TOKEN, cf.fetch, NOW)
-  assertEquals(result.checks.find((item) => item.id === 'scope-tunnels')?.ok, false)
+  assertEquals(result.ok, true)
+  assert(cf.log.includes('GET /user/tokens/tok-1'))
+  const refused = createFakeCloudflare({ token: TOKEN, forbidden: [/^\/user\/tokens\/tok-1$/] })
+  const denied = await preflightCloudflareToken(TOKEN, refused.fetch, NOW)
+  assertEquals(
+    detail(denied, 'token-policies')?.detail,
+    'The token cannot read its own permissions. Add User › API Tokens › Read to the token.'
+  )
+})
+
+test('DNS edit on the whole account passes with a warning that lists every zone', async () => {
+  const cf = createFakeCloudflare({
+    token: TOKEN,
+    zones: ZONES,
+    policies: [
+      policy('allow', { [ACCOUNT_KEY]: '*' }, ['Cloudflare Tunnel Write']),
+      policy('allow', { [ACCOUNT_KEY]: { 'com.cloudflare.api.account.zone.*': '*' } }, [
+        'DNS Write',
+      ]),
+    ],
+  })
+  const result = await preflightCloudflareToken(TOKEN, cf.fetch, NOW)
+  assertEquals(result.ok, true)
+  assertEquals(
+    detail(result, 'scope-dns')?.detail,
+    'The token can edit DNS in every zone of the account, more than the control plane needs: example.com, turbopanel.dev and other.net. DNS-01 certificates are issued only for names in these zones.'
+  )
+  assertEquals(result.zones.length, 3)
+})
+
+test('deny policies win over allow policies', async () => {
+  const cf = createFakeCloudflare({
+    token: TOKEN,
+    zones: ZONES,
+    policies: [
+      policy('allow', { [ACCOUNT_KEY]: '*' }, ['Cloudflare Tunnel Write', 'DNS Write']),
+      policy('deny', { 'com.cloudflare.api.account.zone.zone-3': '*' }, ['DNS Write']),
+    ],
+  })
+  const result = await preflightCloudflareToken(TOKEN, cf.fetch, NOW)
+  assertEquals(
+    result.zones.map((zone) => zone.name),
+    ['example.com', 'turbopanel.dev']
+  )
+  const deniedTunnel = createFakeCloudflare({
+    token: TOKEN,
+    policies: [
+      policy('allow', { [ACCOUNT_KEY]: '*' }, ['Cloudflare Tunnel Write', 'DNS Write']),
+      policy('DENY' as 'deny', { 'com.cloudflare.api.account.*': '*' }, [
+        'Cloudflare Tunnel Write',
+      ]),
+    ],
+  })
+  const denied = await preflightCloudflareToken(TOKEN, deniedTunnel.fetch, NOW)
+  assertEquals(
+    detail(denied, 'scope-tunnels')?.detail,
+    'A deny policy on the token takes Cloudflare Tunnel Edit away from the account. Remove that policy.'
+  )
+  const deniedDns = createFakeCloudflare({
+    token: TOKEN,
+    policies: [
+      policy('allow', { [ACCOUNT_KEY]: '*' }, ['Cloudflare Tunnel Write', 'DNS Write']),
+      policy('deny', { 'com.cloudflare.api.account.zone.*': '*' }, ['DNS Write']),
+    ],
+  })
+  const noDns = await preflightCloudflareToken(TOKEN, deniedDns.fetch, NOW)
+  assertEquals(
+    detail(noDns, 'scope-dns')?.detail,
+    'A deny policy on the token takes DNS Edit away from every zone it was granted on. Remove that policy.'
+  )
+})
+
+test('a token without tunnel or DNS edit fails both scope checks', async () => {
+  const cf = createFakeCloudflare({
+    token: TOKEN,
+    policies: [policy('allow', { [ACCOUNT_KEY]: '*' }, ['Cloudflare Tunnel Read', 'DNS Read'])],
+  })
+  const result = await preflightCloudflareToken(TOKEN, cf.fetch, NOW)
+  assertEquals(
+    detail(result, 'scope-tunnels')?.detail,
+    'The token does not have Cloudflare Tunnel Edit on the account (Account › Cloudflare Tunnel › Edit).'
+  )
+  assertEquals(
+    detail(result, 'scope-dns')?.detail,
+    'The token cannot edit DNS records in any zone (Zone › DNS › Edit).'
+  )
+})
+
+const PREVIOUS = {
+  tunnels: true,
+  dns: true,
+  checkedAt: '2026-10-01T00:00:00Z',
+  zones: [{ id: 'zone-1', name: 'example.com' }],
+  expiresOn: null,
+}
+
+test('a recheck that cannot read the policies keeps the stored scopes', async () => {
+  const cf = createFakeCloudflare({ token: TOKEN, forbidden: [/^\/user\/tokens\/tok-1$/] })
+  const result = await checkCloudflareToken(TOKEN, cf.fetch, NOW, 'acct-1')
+  assertEquals(result.keepStored, true)
+  assertEquals(recheckedScopes(PREVIOUS, result, NOW), {
+    ...PREVIOUS,
+    checkedAt: NOW.toISOString(),
+  })
+  assertEquals(recheckedScopes(null, result, NOW).tunnels, false)
+})
+
+test('a rate limit, a provider error or no answer keeps the stored scopes on recheck', async () => {
+  const cases: { method: string; path: RegExp; status: number }[] = [
+    { method: 'GET', path: /^\/user\/tokens\/tok-1$/, status: 429 },
+    { method: 'GET', path: /^\/user\/tokens\/tok-1$/, status: 500 },
+    { method: 'GET', path: /^\/user\/tokens\/verify$/, status: 503 },
+    { method: 'GET', path: /^\/zones\?account\.id=/, status: 502 },
+  ]
+  for (const refusal of cases) {
+    const cf = createFakeCloudflare({ token: TOKEN, refuse: [{ ...refusal, message: 'busy' }] })
+    const result = await checkCloudflareToken(TOKEN, cf.fetch, NOW, 'acct-1')
+    assertEquals(result.preflight.ok, false)
+    assertEquals(result.keepStored, true, `${refusal.status} ${refusal.path}`)
+    assertEquals(recheckedScopes(PREVIOUS, result, NOW), {
+      ...PREVIOUS,
+      checkedAt: NOW.toISOString(),
+    })
+  }
+  const unreachable: typeof fetch = () => Promise.reject(new Error('connect refused'))
+  const offline = await checkCloudflareToken(TOKEN, unreachable, NOW, 'acct-1')
+  assertEquals(offline.keepStored, true)
+  assertEquals(offline.preflight.checks[0]?.id, 'provider')
+})
+
+test('a 401 or not-found answer on the token read is a missing permission', async () => {
+  for (const status of [401, 404]) {
+    const cf = createFakeCloudflare({
+      token: TOKEN,
+      refuse: [{ method: 'GET', path: /^\/user\/tokens\/tok-1$/, status, message: 'no' }],
+    })
+    const result = await preflightCloudflareToken(TOKEN, cf.fetch, NOW)
+    assertEquals(
+      detail(result, 'token-policies')?.detail,
+      'The token cannot read its own permissions. Add User › API Tokens › Read to the token.'
+    )
+  }
+})
+
+test('verify without a token id says so instead of naming a permission', async () => {
+  const cf = createFakeCloudflare({ token: TOKEN, tokenId: '' })
+  const result = await preflightCloudflareToken(TOKEN, cf.fetch, NOW)
+  assertEquals(
+    detail(result, 'token-policies')?.detail,
+    'Cloudflare did not say which token this is, so its permissions cannot be read.'
+  )
+})
+
+test('a user token whose account list is refused says the account is unknown', async () => {
+  const cf = createFakeCloudflare({
+    token: TOKEN,
+    refuse: [{ method: 'GET', path: /^\/accounts\?page=/, message: 'no' }],
+  })
+  const result = await preflightCloudflareToken(TOKEN, cf.fetch, NOW)
+  assertEquals(
+    detail(result, 'scope-tunnels')?.detail,
+    'Cloudflare refused the list of accounts, so the token’s account is unknown.'
+  )
+  assertEquals(
+    detail(result, 'scope-dns')?.detail,
+    'The DNS zones cannot be checked without the account.'
+  )
+})
+
+test('a recheck whose account list is refused still checks the stored account', async () => {
+  const cf = createFakeCloudflare({
+    token: TOKEN,
+    refuse: [{ method: 'GET', path: /^\/accounts\?page=/, message: 'no' }],
+  })
+  const result = await checkCloudflareToken(TOKEN, cf.fetch, NOW, 'acct-1')
+  assertEquals(result.preflight.ok, true)
+  assertEquals(result.preflight.accountId, 'acct-1')
+  const noTunnel = createFakeCloudflare({
+    token: TOKEN,
+    refuse: [{ method: 'GET', path: /^\/accounts\?page=/, message: 'no' }],
+    policies: [policy('allow', { 'com.cloudflare.api.account.acct-1': '*' }, ['DNS Write'])],
+  })
+  const missing = await checkCloudflareToken(TOKEN, noTunnel.fetch, NOW, 'acct-1')
+  assertEquals(
+    detail(missing.preflight, 'scope-tunnels')?.detail,
+    'The token does not have Cloudflare Tunnel Edit on the account (Account › Cloudflare Tunnel › Edit).'
+  )
+  assertEquals(missing.keepStored, false)
+})
+
+test('Tunnel Edit on the all-zones wildcard names the zones of the account', async () => {
+  const cf = createFakeCloudflare({
+    token: TOKEN,
+    policies: [
+      policy('allow', { 'com.cloudflare.api.account.zone.*': '*' }, [
+        'Cloudflare Tunnel Write',
+        'DNS Write',
+      ]),
+    ],
+  })
+  const result = await preflightCloudflareToken(TOKEN, cf.fetch, NOW)
+  assertEquals(
+    detail(result, 'scope-tunnels')?.detail,
+    'Cloudflare Tunnel Edit is only granted on the zones of the account. Give it to the account instead.'
+  )
+})
+
+test('a recheck evaluates the stored account, not the first one the token picks', async () => {
+  const cf = createFakeCloudflare({ token: TOKEN })
+  const moved = await checkCloudflareToken(TOKEN, cf.fetch, NOW, 'acct-other')
+  assertEquals(
+    detail(moved.preflight, 'scope-tunnels')?.detail,
+    'The token no longer reaches the Cloudflare account this control plane uses (acct-other).'
+  )
+  assertEquals(moved.keepStored, false)
+  const zoneOnly = createFakeCloudflare({
+    token: TOKEN,
+    policies: [
+      policy('allow', { 'com.cloudflare.api.account.zone.zone-1': '*' }, [
+        'Cloudflare Tunnel Write',
+        'DNS Write',
+      ]),
+    ],
+  })
+  const stored = await checkCloudflareToken(TOKEN, zoneOnly.fetch, NOW, 'acct-1')
+  assertEquals(
+    detail(stored.preflight, 'scope-tunnels')?.detail,
+    'Cloudflare Tunnel Edit is only granted on the example.com zone. Give it to the account instead.'
+  )
+})
+
+test('listNames joins with commas and "and", and counts past ten', () => {
+  assertEquals(listNames(['a']), 'a')
+  assertEquals(listNames(['a', 'b', 'c']), 'a, b and c')
+  const many = Array.from({ length: 12 }, (_, index) => `z${index}`)
+  assertEquals(listNames(many), 'z0, z1, z2, z3, z4, z5, z6, z7, z8, z9 and 2 more')
 })
 
 test('a token that expires within 30 days is refused with the date', async () => {
