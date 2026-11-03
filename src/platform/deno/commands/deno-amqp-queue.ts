@@ -1,4 +1,3 @@
-import amqplib from 'amqplib'
 import {
   assertCommandAmqpTopology,
   COMMAND_AMQP_EXCHANGE,
@@ -8,6 +7,7 @@ import type { CommandQueue } from '../../../features/commands/queue.ts'
 import type { CommandEnvelope } from '../../../features/commands/envelope.ts'
 import { encodeCommandEnvelope } from '../../../features/commands/envelope.ts'
 import { compatLogWarn } from '../../../lib/log-compat.ts'
+import { AmqpConfirmPublisher, probeAmqpBrokerReachable } from '../amqp-confirm-publisher.ts'
 
 export { DEFAULT_AMQP_URL } from '../amqp-default-url.ts'
 
@@ -15,69 +15,35 @@ type DenoAmqpCommandQueueOptions = {
   amqpUrl: string
 }
 
-type AmqpConnection = Awaited<ReturnType<typeof amqplib.connect>>
-type AmqpChannel = Awaited<ReturnType<AmqpConnection['createConfirmChannel']>>
-
 class DenoAmqpCommandQueue implements CommandQueue {
   private readonly encoder = new TextEncoder()
-  private connection: AmqpConnection | null = null
-  private channel: AmqpChannel | null = null
-  private connectPromise: Promise<void> | null = null
+  private readonly publisher: AmqpConfirmPublisher
 
-  constructor(private readonly opts: DenoAmqpCommandQueueOptions) {}
-
-  private async ensureConnected(): Promise<boolean> {
-    if (this.channel) return true
-    this.connectPromise ??= (async () => {
-      this.connection = await amqplib.connect(this.opts.amqpUrl)
-      this.channel = await this.connection.createConfirmChannel()
-      await assertCommandAmqpTopology(this.channel)
-    })().catch((error: unknown) => {
-      compatLogWarn('command-queue', `AMQP connection failed: ${error}`)
-      this.connection = null
-      this.channel = null
-    }).finally(() => {
-      this.connectPromise = null
+  constructor(opts: DenoAmqpCommandQueueOptions) {
+    this.publisher = new AmqpConfirmPublisher({
+      amqpUrl: opts.amqpUrl,
+      logScope: 'command-queue',
+      assertTopology: assertCommandAmqpTopology,
     })
-    await this.connectPromise
-    return this.channel !== null
   }
 
   async enqueue(envelope: CommandEnvelope): Promise<void> {
-    const connected = await this.ensureConnected()
-    if (!connected || !this.channel) {
-      throw new Error('Command queue unavailable')
-    }
-    // amqplib requires a Node Buffer; Deno TextEncoder yields Uint8Array.
-    const content = Buffer.from(
-      this.encoder.encode(encodeCommandEnvelope(envelope)),
-    )
+    let published: boolean
     try {
-      await new Promise<void>((resolve, reject) => {
-        this.channel!.publish(
-          COMMAND_AMQP_EXCHANGE,
-          COMMAND_AMQP_ROUTING_KEY,
-          content,
-          { persistent: true, mandatory: true },
-          (error: Error | null) => {
-            if (error) reject(error)
-            else resolve()
-          },
-        )
-      })
+      published = await this.publisher.publish(
+        COMMAND_AMQP_EXCHANGE,
+        COMMAND_AMQP_ROUTING_KEY,
+        this.encoder.encode(encodeCommandEnvelope(envelope))
+      )
     } catch (error) {
       compatLogWarn('command-queue', `AMQP publish failed: ${error}`)
       throw error instanceof Error ? error : new Error(String(error))
     }
+    if (!published) throw new Error('Command queue unavailable')
   }
 
-  async close(): Promise<void> {
-    const channel = this.channel
-    const connection = this.connection
-    this.channel = null
-    this.connection = null
-    if (channel) await channel.close().catch(() => undefined)
-    if (connection) await connection.close().catch(() => undefined)
+  close(): Promise<void> {
+    return this.publisher.close()
   }
 }
 
@@ -85,12 +51,6 @@ export function createDenoAmqpCommandQueue(opts: DenoAmqpCommandQueueOptions): C
   return new DenoAmqpCommandQueue(opts)
 }
 
-export async function probeCommandAmqpBrokerReachable(amqpUrl: string): Promise<boolean> {
-  try {
-    const connection = await amqplib.connect(amqpUrl)
-    await connection.close()
-    return true
-  } catch {
-    return false
-  }
+export function probeCommandAmqpBrokerReachable(amqpUrl: string): Promise<boolean> {
+  return probeAmqpBrokerReachable(amqpUrl)
 }

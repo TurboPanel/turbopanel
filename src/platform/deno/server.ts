@@ -295,9 +295,10 @@ async function startOptionalCommandConsumer(opts: {
 
 /**
  * The in-process email consumer (what used to be the turbopanel-mailer
- * process). Same guard shape as the command consumer: no broker means no
- * consumer and a warning, never a failed boot — the instance still serves,
- * it just cannot deliver mail until the broker is back and the unit restarts.
+ * process). Same guard shape as the command consumer: never a failed boot.
+ * A broker that is down at start is retried in the background, and mail
+ * flows once it answers; only an explicitly empty broker URL (or none
+ * reachable on the default address in development) means no consumer.
  */
 async function startOptionalMailerConsumer(opts: {
   db: Db

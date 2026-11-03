@@ -38,7 +38,7 @@ delivery, presence, and request correlation only.
 > not hold Hyperdrive connections open across handler returns. Never build
 > general command queues inside Durable Objects — Cloudflare Queues / RabbitMQ
 > own durable transport; the cell owns only the live WS outbox + pending-request
-> row. Cloudflare Workers (Durable Object) mode and self-hosted Deno/Redis mode
+> row. Cloudflare Workers (Durable Object) mode and self-hosted Deno (RabbitMQ + Redis cell) mode
 > must keep behavioral parity for every command feature. Production daemon
 > commands must be typed handlers — never arbitrary shell strings.
 
@@ -133,7 +133,8 @@ in the execution-log store — there is no Postgres column for them. See
 
 - **Workers:** `TURBOPANEL_COMMAND_QUEUE` binding → per-env queue names in
   `wrangler.jsonc`: `live` uses `daemon-commands` / `daemon-commands-dlq`;
-  `testing` uses `staging-daemon-commands` / `staging-daemon-commands-dlq`;
+  `staging` uses `staging-daemon-commands` / `staging-daemon-commands-dlq`;
+  `testing` uses `testing-daemon-commands` / `testing-daemon-commands-dlq`;
   local top-level worker uses `dev-daemon-commands` / `dev-daemon-commands-dlq`
   (max 3 retries). Declared under `queues.producers` and `queues.consumers`.
   Consumer handler: `queue(batch, env, ctx)` in `src/workers.ts`. Failed
@@ -151,8 +152,16 @@ in the execution-log store — there is no Postgres column for them. See
   topology and prefetch all wait on the broker, and an `error` with no listener
   is a thrown exception), a failed setup closes the half-open connection, and a
   first session lost during start goes through the same reconnect loop as a
-  later loss. The mailer consumer (`lib/email/mailer/deno-mailer-consumer.ts`)
-  follows the same rule.
+  later loss. A broker that is still unreachable when the first connect gives up
+  (30 tries a second apart) does not stop the consumer either: start returns and
+  the same loop keeps trying in the background, so a slow broker start never
+  leaves the control plane accepting commands that nothing runs. The mailer
+  consumer (`lib/email/mailer/deno-mailer-consumer.ts`) follows the same rules.
+  The producers (`platform/deno/commands/deno-amqp-queue.ts` and the email one)
+  publish through `platform/deno/amqp-confirm-publisher.ts`, which applies the
+  same listener rule: a lost connection or channel only drops the session, and
+  the next publish opens a new one (a publish in flight at that moment fails to
+  its caller).
   Commands run **one at a time per server** (`command-lanes.ts`): the consumer
   parses each delivery, hands it to the lane of its envelope's `serverId`, and
   acks or nacks only after the command has finished. Different servers run in

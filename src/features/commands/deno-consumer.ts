@@ -1,6 +1,7 @@
 import amqplib from 'amqplib'
 import type { Db } from '../../db/connection.ts'
 import type { DaemonCellRegistry } from '../../contracts/cell.ts'
+import { createClosablePause } from '../../lib/closable-pause.ts'
 import { compatLogError, compatLogWarn } from '../../lib/log-compat.ts'
 import { assertCommandAmqpTopology, COMMAND_AMQP_QUEUE } from './command-amqp-topology.ts'
 import {
@@ -73,24 +74,28 @@ export const COMMAND_CONSUMER_PREFETCH = 32
 /** Servers whose commands may run at the same moment. */
 export const COMMAND_LANE_CONCURRENCY = 8
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms))
-}
-
-async function connectAmqp(url: string): Promise<AmqpConnection> {
+/**
+ * `stopped` ends the retries early once the consumer is closed, and `pause`
+ * is the consumer's own wait, which close() cuts short.
+ */
+async function connectAmqp(
+  url: string,
+  stopped: () => boolean,
+  pause: (ms: number) => Promise<void>
+): Promise<AmqpConnection> {
   const maxAttempts = 30
   const tryConnect = async (attempt: number): Promise<AmqpConnection> => {
     try {
       return await amqplib.connect(url)
     } catch (error) {
-      if (attempt === maxAttempts) throw error
+      if (attempt === maxAttempts || stopped()) throw error
       const errMsg = error instanceof Error ? error.message : String(error)
       compatLogWarn(
         'command-consumer',
         `AMQP connect failed (attempt ${attempt}/${maxAttempts}): ${errMsg}`
       )
     }
-    await sleep(1000)
+    await pause(1000)
     return tryConnect(attempt + 1)
   }
   return tryConnect(1)
@@ -170,6 +175,8 @@ export async function startCommandConsumer(
   let closed = false
   let reconnecting = false
   let session: ConsumerSession | undefined
+  const waits = createClosablePause()
+  const pause = waits.pause
 
   /**
    * Attach the listeners amqplib requires us to attach.
@@ -203,7 +210,7 @@ export async function startCommandConsumer(
   }
 
   async function openSession(): Promise<ConsumerSession> {
-    const connection = await connectAmqp(opts.amqpUrl)
+    const connection = await connectAmqp(opts.amqpUrl, () => closed, pause)
     // `channel` is filled in below; the object has to exist first so the
     // connection's listeners can be attached before anything else awaits.
     const opened = {
@@ -243,6 +250,10 @@ export async function startCommandConsumer(
     // `close` and `error` both fire for the same loss, and a session that has
     // already been replaced can still emit late; one rebuild per loss.
     if (closed || reconnecting || session !== from) return
+    await rebuild(reason)
+  }
+
+  async function rebuild(reason: string): Promise<void> {
     reconnecting = true
     session = undefined
     compatLogWarn('command-consumer', `AMQP ${reason} — reconnecting`)
@@ -279,7 +290,7 @@ export async function startCommandConsumer(
           `AMQP reconnect failed: ${errorMessage(error)} — retrying in ${delay}ms`
         )
       }
-      await sleep(delay)
+      await pause(delay)
       return attempt(Math.min(delay * 2, RECONNECT_MAX_DELAY_MS))
     }
     await attempt(RECONNECT_BASE_DELAY_MS)
@@ -353,8 +364,20 @@ export async function startCommandConsumer(
     disposeSafely(channel, msg, disposition)
   }
 
-  session = await openSession()
-  if (session.lost) {
+  try {
+    session = await openSession()
+  } catch (error) {
+    // The broker is not up yet (a cold start can take longer than the first
+    // connect's retries). Keep trying in the background like after a loss:
+    // giving up here would leave the control plane accepting commands that
+    // nothing ever runs, until someone restarts it.
+    compatLogError(
+      'command-consumer',
+      `AMQP broker unreachable at start: ${errorMessage(error)} — retrying in the background`
+    )
+    void rebuild('broker unreachable at start')
+  }
+  if (session?.lost) {
     // The broker went away while the first session was being set up. Its
     // listeners fired before it was the live session, so nothing else will
     // rebuild it — hand it to the reconnect loop instead of keeping it.
@@ -368,6 +391,7 @@ export async function startCommandConsumer(
   return {
     async close(): Promise<void> {
       closed = true
+      waits.close()
       const open = session
       session = undefined
       if (!open) return
