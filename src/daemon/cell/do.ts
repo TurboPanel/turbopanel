@@ -88,8 +88,7 @@ import {
   envelopeFrame,
   type SignedSessionState,
 } from '../../lib/panel-identity/signed-session.ts'
-import { orderedPublicOrigins } from '../../lib/panel-identity/urls.ts'
-import { listInstanceHostnames } from '../../features/install/instance-hostnames.ts'
+import { platformControlPlaneOrigins } from '../../features/install/control-plane-origins.ts'
 import { HEARTBEAT_SECONDS_DEFAULT } from '../../features/install/heartbeat-policy.ts'
 import { verifyDaemonJwt } from '../authn/daemon-jwt.ts'
 import { getServerDaemonStateByServerId } from '../../features/servers/server-identity-db.ts'
@@ -1777,10 +1776,9 @@ export class DaemonCellObject {
       this.#startSession(ws, attachment)
       return true
     }
-    const urls =
-      (await this.#withProjectionDbResult('hello-urls', attachment.serverId, async (db) =>
-        orderedPublicOrigins(await listInstanceHostnames(db))
-      )) ?? []
+    // High availability: the platform environment names the control plane;
+    // stored hostname rows are ignored on this runtime.
+    const urls = platformControlPlaneOrigins(this.#env)
     const hello = await buildSignedHello(decision.identity, decision.nonce, decision.session, {
       heartbeatSeconds: HEARTBEAT_SECONDS_DEFAULT,
       urls,

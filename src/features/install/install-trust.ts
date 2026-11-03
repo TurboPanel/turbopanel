@@ -402,7 +402,9 @@ export async function resolveInstallOriginTls(
 ): Promise<
   { ok: true; insecureTls: boolean; caFingerprints: string[] } | { ok: false; error: string }
 > {
-  const hostnames = await listServedHostnames(db)
+  // Hosted (no self-hosted listener): the platform terminates TLS and stored
+  // hostname rows are ignored, so none can mark the origin untrusted.
+  const hostnames = selfHostedListener ? await listServedHostnames(db) : []
   const trust = await publicTrustByCertificate(db, uploadedCertIds(hostnames))
   const trusted = hostnames.map((row) => toTrustRow(row, trust))
   const source = certificateSourceForInstallOrigin(instanceUrl, hostnames)
