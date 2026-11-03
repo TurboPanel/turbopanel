@@ -1410,11 +1410,13 @@ function authProofPayload(
  * The refusals a co-located daemon with stale credential files gets:
  * `401 Invalid license` or `409 Server key already registered` from
  * `POST /enroll`, and `404 Server key not found` from `POST /auth/session`.
+ * Any caller can produce one; the check it starts is rate-limited and changes
+ * nothing when the co-located files are healthy or not this control plane's.
  */
 export function isCredentialRefusal(method: string, path: string, status: number): boolean {
   if (method !== 'POST') return false
-  if (path.endsWith('/enroll')) return status === 401 || status === 409
-  if (path.endsWith('/auth/session')) return status === 404
+  if (path === `${DAEMON_API_PREFIX}/enroll`) return status === 401 || status === 409
+  if (path === `${DAEMON_API_PREFIX}/auth/session`) return status === 404
   return false
 }
 

@@ -94,9 +94,49 @@ export function isStrictlyInside(dir: string, root: string): boolean {
   return rest.split('/').every((segment) => segment !== '' && segment !== '.' && segment !== '..')
 }
 
+/** Structural view: the Workers type shim for `Deno` has no sync fs calls. */
+type SyncFs = { lstatSync(path: string): unknown; realPathSync(path: string): string }
+
+function syncFs(): SyncFs {
+  return Deno as unknown as SyncFs
+}
+
+/** The deepest existing path at or above `dir` (by `lstat`, so a dangling link counts). */
+function deepestExisting(dir: string): string {
+  let current = stripTrailingSlash(dir)
+  for (;;) {
+    try {
+      syncFs().lstatSync(current)
+      return current
+    } catch (err) {
+      if (!(err instanceof Deno.errors.NotFound) || current === '/') throw err
+    }
+    const cut = current.lastIndexOf('/')
+    current = cut <= 0 ? '/' : current.slice(0, cut)
+  }
+}
+
+/**
+ * True when `dir`, with every symlink resolved, still sits in `root` (or is
+ * about to be created right under it). A link in `/tmp` that points at a real
+ * state dir resolves outside the root and is refused; so is a dangling one.
+ */
+function resolvesInside(dir: string, root: string): boolean {
+  try {
+    const realRoot = syncFs().realPathSync(root)
+    const resolved = syncFs().realPathSync(deepestExisting(dir))
+    return resolved === realRoot || isStrictlyInside(resolved, realRoot)
+  } catch {
+    return false
+  }
+}
+
 /**
  * Throw when a test run is about to write daemon credentials outside `/tmp`
- * or `/var/tmp`. Production runs pass through untouched.
+ * or `/var/tmp`, judged on the path as written and again with symlinks
+ * resolved. This covers `deno test` runs only (the main module is a
+ * `*.test.ts` file); production runs pass through untouched, and a script
+ * run any other way is not detected.
  */
 export function assertColocatedCredentialsDirWritable(
   dir: string,
@@ -105,7 +145,7 @@ export function assertColocatedCredentialsDirWritable(
   const testRun = opts.testRun ?? isDenoTestRun()
   if (!testRun) return
   const roots = opts.tempRoot ? [opts.tempRoot] : TEST_TEMP_ROOTS
-  if (roots.some((root) => isStrictlyInside(dir, root))) return
+  if (roots.some((root) => isStrictlyInside(dir, root) && resolvesInside(dir, root))) return
   throw new Error(
     `refusing to write co-located daemon credentials to ${dir} from a test run; ` +
       'call setColocatedCredentialsDirForTesting with a fresh temp dir'

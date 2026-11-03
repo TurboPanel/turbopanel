@@ -675,7 +675,13 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
   // Co-located daemon credential self-repair: at boot and after an enroll or
   // session refusal, at most once per interval (`colocated-self-repair.ts`).
   const colocatedSelfRepair = createColocatedSelfRepair({
-    store: createColocatedRepairStore(db),
+    store: createColocatedRepairStore(db, {
+      socketPath: resolveInstanceSocket(),
+      panelFingerprints: () =>
+        [panelIdentity.current.kid, panelIdentity.next?.kid].filter(
+          (kid): kid is string => typeof kid === 'string' && kid.length > 0
+        ),
+    }),
   })
   registerDaemonApiRoutes(routes, {
     onCredentialRefusal: () => void colocatedSelfRepair.run('refusal'),
@@ -987,6 +993,8 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
         })
       })
       runSystemReconcileSweepTick()
+      // Retries a co-located credential repair that failed, on its backoff.
+      void colocatedSelfRepair.tick()
     },
   })
   const maintenanceTimer = setInterval(() => maintenance.tick(), DAEMON_CELL_MAINTAIN_MS)
