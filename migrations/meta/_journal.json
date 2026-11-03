@@ -134,6 +134,13 @@
       "when": 1793628853962,
       "tag": "0018_daemon_trust_level_and_nonce",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1793717631400,
+      "tag": "0019_tier_provider_nullable",
+      "breakpoints": true
     }
   ]
 }

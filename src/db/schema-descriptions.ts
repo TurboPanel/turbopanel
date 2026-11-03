@@ -472,7 +472,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'Ladder label `S1` to `S7` or `SX`, the unique key into the in-code ladder (`src/features/tiers/ladder.ts`) that holds everything the tier entitles.',
       rank: 'Ladder position copied from the in-code ladder on insert, never from a request; unique, orders tiers and decides upgrade versus downgrade and greedy assignment.',
       provider:
-        'Payment provider the row bills through; only `stripe` is allowed today (CHECK `tier_provider_check`), matching `payer.provider`.',
+        'Payment provider the row bills through: `stripe` (CHECK `tier_provider_check`), or NULL when `provider_product_id` is NULL, as on the `SX` row.',
       provider_product_id:
         'Provider Product id (Stripe `prod_...`) chosen from the provider catalogue and verified before write; null on the custom `SX` row, which is never purchasable.',
       price_cents:
