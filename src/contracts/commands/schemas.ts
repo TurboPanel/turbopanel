@@ -2748,9 +2748,10 @@ export type EnvironmentDeployCommandPayload = EnvironmentDeployHostAccess & {
    */
   hideWebServerNames?: boolean
   /**
-   * Keep `Via: 1.1 Caddy` on responses from the server's public hosting web
-   * server. Absent reads as off: the header is removed, as before. Sent only
-   * to a daemon that lists `hosting-via-header-v1`.
+   * Send the hosting web server's `Via` response header. False strips it.
+   * Absent follows `hideWebServerNames` (stripped when names are hidden), so
+   * an older control plane changes nothing. Sent only to a daemon that lists
+   * `hosting-via-header-v1`, always as a boolean.
    */
   sendViaHeader?: boolean
   /**

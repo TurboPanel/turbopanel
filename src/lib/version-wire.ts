@@ -587,7 +587,7 @@ export const SERVER_NETWORK_CHECK_FEATURE: DaemonWireFeature = 'server-network-c
  * The daemon honours `sendViaHeader` on `environment.deploy`: true keeps
  * `Via: 1.1 Caddy` on responses from the server's public hosting web server.
  * The control plane sends the field only to a daemon that lists this feature;
- * an older daemon, or an absent field, removes the header as before.
+ * an older daemon keeps tying Via to `hideWebServerNames`, as before.
  */
 export const HOSTING_VIA_HEADER_FEATURE: DaemonWireFeature = 'hosting-via-header-v1'
 

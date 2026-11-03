@@ -604,7 +604,7 @@ export type ServerDeployment = {
    * Keep `Via: 1.1 Caddy` on responses from the server's public hosting web
    * server. Resolved from the server's own setting, else its owner's
    * organization default, else off. Set only when the server's daemon lists
-   * `hosting-via-header-v1`; absent means the daemon removes the header.
+   * `hosting-via-header-v1`; absent leaves Via tied to `hideWebServerNames`.
    */
   sendViaHeader?: boolean
 }

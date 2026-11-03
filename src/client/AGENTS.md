@@ -121,8 +121,9 @@ changes.
   `sendViaHeader` (same layers, same routes, `sendViaHeaderSource`) is off
   unless a layer says on and keeps `Via: 1.1 Caddy` on the public hosting
   web server; deploy-prepare sends `environment.deploy.sendViaHeader` only to a
-  daemon that lists `hosting-via-header-v1` (`webServerDeployFields`), and an
-  absent field means the daemon removes Via. Multi-DC
+  daemon that lists `hosting-via-header-v1` (`webServerDeployFields`); an
+  older daemon gets no field and keeps tying Via to `hideWebServerNames`.
+  Multi-DC
   membership inherits from the first pin after sort by datacenter id (same as
   timezone).
 - **Server services snapshot (client surface):** `GET /servers/:id/services`

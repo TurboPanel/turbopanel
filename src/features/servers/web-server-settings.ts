@@ -54,8 +54,8 @@ export async function loadWebServerSettings(
 
 /**
  * The deploy fields for these settings. `sendViaHeader` goes only to a daemon
- * that lists `hosting-via-header-v1`; any other daemon gets no field and
- * removes the Via header, as it always has.
+ * that lists `hosting-via-header-v1`; any other daemon gets no field and keeps
+ * tying the Via header to `hideWebServerNames`, as it always has.
  */
 export function webServerDeployFields(
   settings: WebServerSettings,
