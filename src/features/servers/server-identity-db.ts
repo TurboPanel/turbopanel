@@ -294,9 +294,32 @@ export async function revokeDaemonKey(db: Db, serverId: string): Promise<void> {
  * `getServerDaemonStateByFingerprint` would still authenticate it.
  */
 export async function clearServerDaemonState(db: Db, serverId: string): Promise<void> {
+  await db.delete(key).where(eq(key.serverId, serverId))
+  await resetServerDaemonColumns(db, serverId)
+}
+
+/**
+ * {@link clearServerDaemonState}, but only while the server's key is still
+ * `keyId`: a key registered after the caller looked is left alone. True when
+ * the key was removed.
+ */
+export async function clearServerDaemonStateIfKey(
+  db: Db,
+  serverId: string,
+  keyId: string
+): Promise<boolean> {
+  const removed = await db
+    .delete(key)
+    .where(and(eq(key.serverId, serverId), eq(key.id, keyId)))
+    .returning({ id: key.id })
+  if (removed.length === 0) return false
+  await resetServerDaemonColumns(db, serverId)
+  return true
+}
+
+async function resetServerDaemonColumns(db: Db, serverId: string): Promise<void> {
   const now = nowTs()
   const defaultStatus = buildDefaultDaemonStatus()
-  await db.delete(key).where(eq(key.serverId, serverId))
   await db
     .update(server)
     .set({
