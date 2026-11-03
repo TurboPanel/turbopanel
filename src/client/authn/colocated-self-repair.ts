@@ -125,18 +125,9 @@ export function diagnoseColocatedCredentials(
   }
   const serverIdWrong = disk.serverId !== undefined && disk.serverId !== seat.serverId
   if (serverIdWrong) reasons.push('server.id does not match the co-located server')
-  let keyGone = false
-  if (key) {
-    if (disk.keyId === null) {
-      keyGone = true
-      reasons.push('the daemon holds no key id while one is stored')
-    } else if (disk.keyId !== undefined && disk.keyId !== key.id) {
-      keyGone = true
-      reasons.push('the daemon key id differs from the stored key')
-    }
-  } else if (disk.licenseToken === null) {
-    reasons.push('the license token file is missing before enrollment')
-  }
+  const keyProblem = daemonKeyProblem(disk, key)
+  const keyGone = keyProblem !== null && key !== null
+  if (keyProblem) reasons.push(keyProblem)
   if (reasons.length > 0) {
     // A daemon that still holds the stored key under the right server id
     // keeps working: only its license files are rewritten.
@@ -144,6 +135,18 @@ export function diagnoseColocatedCredentials(
   }
   if (!key && typeof disk.licenseToken === 'string') return { kind: 'check-token' }
   return { kind: 'ok' }
+}
+
+/** What is wrong with the daemon's key id (or, before enrollment, its token file), if anything. */
+function daemonKeyProblem(disk: ColocatedDiskState, key: StoredDaemonKey): string | null {
+  if (!key) {
+    return disk.licenseToken === null ? 'the license token file is missing before enrollment' : null
+  }
+  if (disk.keyId === null) return 'the daemon holds no key id while one is stored'
+  if (disk.keyId !== undefined && disk.keyId !== key.id) {
+    return 'the daemon key id differs from the stored key'
+  }
+  return null
 }
 
 async function readStateFile(path: string): Promise<DiskValue> {
