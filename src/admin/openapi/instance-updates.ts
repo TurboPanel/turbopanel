@@ -175,14 +175,18 @@ export const INSTANCE_UPDATES_PATHS = {
       '`{ ok: true, upToDate: true }`. Refuses with 409 `run_active` (with `activeRunId`) while ' +
       'an update is running, 409 `paused` while updates are paused, 409 `update_blocked` with ' +
       '`blockers` when a pre-flight check or a recent failure holds it, and 403 `development` ' +
-      'on a development install. A second press, or the hourly check at the same moment, ' +
-      'answers `run_active`.',
+      'on a development install. At most once a minute per install (its own limit, apart ' +
+      'from Check Now); sooner answers 429 `check_too_soon` with `retryAfterSeconds` and a ' +
+      '`Retry-After` header. When no manifest of the channel could be read it answers 503 ' +
+      '`release_unreachable` rather than up to date. A second press, or the hourly check at ' +
+      'the same moment, answers `run_active`.',
     {
       '200': { description: '`{ ok: true, upToDate: true }`' },
       '202': { description: '`{ ok: true, runId }`' },
       '403': { description: 'Forbidden — requires superadmin; or `development`' },
       '409': { description: '`run_active`, `paused` or `update_blocked`' },
-      '503': { description: 'Database unavailable' },
+      '429': { description: '`check_too_soon`' },
+      '503': { description: '`release_unreachable`, or the database is unavailable' },
     }
   ),
   [`${ADMIN_API_PREFIX}/instance/updates/steps/{id}/retry`]: retired(

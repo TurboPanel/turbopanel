@@ -5,6 +5,8 @@
 import {
   UPGRADE_DEVELOPMENT,
   UPGRADE_PAUSED,
+  UPGRADE_RELEASE_UNREACHABLE,
+  UPGRADE_TOO_SOON,
   UPGRADE_RUN_ACTIVE,
   UPGRADE_RUN_ACTIVE_MESSAGE,
   type UpgradeUpdateNowResult,
@@ -16,19 +18,23 @@ export const UPDATE_NOW_ERRORS = {
   paused: 'paused',
   development: 'development',
   blocked: 'update_blocked',
+  releaseUnreachable: 'release_unreachable',
+  /** The same code Check Now answers when pressed again within a minute. */
+  tooSoon: 'check_too_soon',
 } as const
 
 export type UpdateNowAnswer =
   | { status: 202; body: { ok: true; runId: string } }
   | { status: 200; body: { ok: true; upToDate: true } }
   | {
-      status: 403 | 409
+      status: 403 | 409 | 429 | 503
       body: {
         ok: false
         error: (typeof UPDATE_NOW_ERRORS)[keyof typeof UPDATE_NOW_ERRORS]
         message: string
         activeRunId?: string
         blockers?: string[]
+        retryAfterSeconds?: number
       }
     }
 
@@ -37,8 +43,17 @@ export const UPDATE_NOW_PAUSED_MESSAGE = 'Updates are paused. Resume updates to 
 export const UPDATE_NOW_DEVELOPMENT_MESSAGE =
   'A development install updates with Build and Push Daemon.'
 
-/** 202 with the run, 200 when nothing needs work, 403 or 409 with a code otherwise. */
-export function updateNowAnswer(result: UpgradeUpdateNowResult): UpdateNowAnswer {
+export const UPDATE_NOW_UNREACHABLE_MESSAGE =
+  'The release server could not be reached. Try again in a few minutes.'
+
+/**
+ * 202 with the run, 200 when nothing needs work, otherwise a code: 403, 409,
+ * 429 (`retryAfterSeconds`, read by the route) or 503.
+ */
+export function updateNowAnswer(
+  result: UpgradeUpdateNowResult,
+  retryAfterSeconds = 60
+): UpdateNowAnswer {
   if (result.ok) {
     return 'runId' in result
       ? { status: 202, body: { ok: true, runId: result.runId } }
@@ -59,6 +74,27 @@ export function updateNowAnswer(result: UpgradeUpdateNowResult): UpdateNowAnswer
       return {
         status: 409,
         body: { ok: false, error: UPDATE_NOW_ERRORS.paused, message: UPDATE_NOW_PAUSED_MESSAGE },
+      }
+    case UPGRADE_TOO_SOON: {
+      const wait = Math.max(1, Math.ceil(retryAfterSeconds))
+      return {
+        status: 429,
+        body: {
+          ok: false,
+          error: UPDATE_NOW_ERRORS.tooSoon,
+          message: `Pressed a moment ago. Try again in ${wait} second${wait === 1 ? '' : 's'}.`,
+          retryAfterSeconds: wait,
+        },
+      }
+    }
+    case UPGRADE_RELEASE_UNREACHABLE:
+      return {
+        status: 503,
+        body: {
+          ok: false,
+          error: UPDATE_NOW_ERRORS.releaseUnreachable,
+          message: UPDATE_NOW_UNREACHABLE_MESSAGE,
+        },
       }
     case UPGRADE_DEVELOPMENT:
       return {

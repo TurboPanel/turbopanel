@@ -2,10 +2,16 @@ import { assertEquals } from '@std/assert'
 import {
   UPGRADE_DEVELOPMENT,
   UPGRADE_PAUSED,
+  UPGRADE_RELEASE_UNREACHABLE,
   UPGRADE_RETRY_LATER,
   UPGRADE_RUN_ACTIVE,
+  UPGRADE_TOO_SOON,
 } from './coordinator.ts'
-import { UPDATE_NOW_PAUSED_MESSAGE, updateNowAnswer } from './update-now.ts'
+import {
+  UPDATE_NOW_PAUSED_MESSAGE,
+  UPDATE_NOW_UNREACHABLE_MESSAGE,
+  updateNowAnswer,
+} from './update-now.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -74,4 +80,30 @@ test('a preflight blocker or a backoff answers 409 update_blocked with the reaso
     assertEquals(bare.body.message, UPGRADE_RETRY_LATER)
     assertEquals(bare.body.blockers, [UPGRADE_RETRY_LATER])
   }
+})
+
+test('a press too soon answers 429 check_too_soon with the wait, like Check Now', () => {
+  assertEquals(updateNowAnswer({ ok: false, error: UPGRADE_TOO_SOON }, 42), {
+    status: 429,
+    body: {
+      ok: false,
+      error: 'check_too_soon',
+      message: 'Pressed a moment ago. Try again in 42 seconds.',
+      retryAfterSeconds: 42,
+    },
+  })
+  const one = updateNowAnswer({ ok: false, error: UPGRADE_TOO_SOON }, 0.2)
+  if (!one.body.ok) {
+    assertEquals(one.body.retryAfterSeconds, 1)
+    assertEquals(one.body.message, 'Pressed a moment ago. Try again in 1 second.')
+  }
+  const fallback = updateNowAnswer({ ok: false, error: UPGRADE_TOO_SOON })
+  if (!fallback.body.ok) assertEquals(fallback.body.retryAfterSeconds, 60)
+})
+
+test('an unreachable release server answers 503 release_unreachable, never up to date', () => {
+  assertEquals(updateNowAnswer({ ok: false, error: UPGRADE_RELEASE_UNREACHABLE }), {
+    status: 503,
+    body: { ok: false, error: 'release_unreachable', message: UPDATE_NOW_UNREACHABLE_MESSAGE },
+  })
 })

@@ -13,6 +13,7 @@ import { isExplicitDevelopmentMode } from '../lib/dev-mode.ts'
 import {
   createUpgradeCoordinator,
   ensureReservedRunId,
+  UPGRADE_TOO_SOON,
   type UpgradeTargetResolver,
 } from '../features/upgrades/coordinator.ts'
 import {
@@ -175,7 +176,9 @@ export function registerInstanceUpdatesAdminRoutes(
   // something is behind, starts the run through the coordinator's `start()`:
   // the same preflight, order and fleet gate as the hourly check. A second
   // press, or the hourly check at the same moment, loses at the run insert
-  // (`uniq_upgrade_active`) and answers 409 `run_active`.
+  // (`uniq_upgrade_active`) and answers 409 `run_active`. Once a minute per
+  // install (429 `check_too_soon`); an unreachable release server is 503
+  // `release_unreachable`, never "up to date".
   admin.post('/instance/updates/now', opts.rootOnly, async (c) => {
     if (opts.runtime === 'deno' && isExplicitDevelopmentMode()) {
       return c.json(
@@ -187,16 +190,39 @@ export function registerInstanceUpdatesAdminRoutes(
         403
       )
     }
+    const db = getDb(c)
+    if (!db) return c.json({ ok: false, error: 'Database unavailable' }, 503)
     const channel = resolveInstanceUpdateChannel(resolvePlatformEnv(c, opts))
     const coordinator = await coordinatorFrom(c, opts, () =>
       resolveUpgradeTarget(channel, (kind) => resolveUpdateManifest(channel, kind, { fresh: true }))
     )
     if (coordinator instanceof Response) return coordinator
     const session = c.get('session')
-    const result = await coordinator.updateNow({ startedBy: session?.userId ?? null })
-    const answer = updateNowAnswer(result)
+    const now = new Date()
+    const result = await coordinator.updateNow({
+      startedBy: session?.userId ?? null,
+      // Once a minute per install, on its own field (a Check Now just before
+      // does not make it wait): repeated presses cannot hammer the release
+      // servers. One conditional write, so two presses cannot both pass.
+      claimPress: async () => {
+        await ensureUpgradeCheckSchedule(db, now.toISOString())
+        return await claimManualUpgradeCheck(
+          db,
+          now.toISOString(),
+          UPGRADE_MANUAL_CHECK_MIN_GAP_MS,
+          'lastUpdateNowAt'
+        )
+      },
+    })
+    const schedule =
+      !result.ok && result.error === UPGRADE_TOO_SOON ? await readUpgradeCheckSchedule(db) : null
+    const answer = updateNowAnswer(
+      result,
+      schedule ? manualCheckWaitSeconds(schedule, now, 'lastUpdateNowAt') : undefined
+    )
+    if (answer.status === 429) c.header('Retry-After', String(answer.body.retryAfterSeconds))
     if (result.ok && 'runId' in result) {
-      await recordAudit(getDb(c), {
+      await recordAudit(db, {
         organizationId: null,
         actorUserId: session?.userId ?? null,
         actorEmail: session?.email ?? null,

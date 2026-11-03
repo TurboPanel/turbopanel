@@ -20,7 +20,8 @@
   audited as `upgrade.start_now`, no step-up, like Pause / Resume): it runs
   the hourly check at once and starts the update through the coordinator
   (202 `{ ok, runId }`, 200 `{ ok, upToDate }`, 409 `run_active` / `paused` /
-  `update_blocked`, 403 `development` on a development install; contract in
+  `update_blocked`, 429 `check_too_soon` (once a minute), 503
+  `release_unreachable`, 403 `development` on a development install; contract in
   `src/features/upgrades/AGENTS.md`). The old manual
   `POST /instance/updates/instance`, `/daemon` and the other start, retry and
   cancel routes stay retired and answer 410 `updates_automatic`. Development installs only:

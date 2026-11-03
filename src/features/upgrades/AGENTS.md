@@ -126,13 +126,27 @@ surface's own daemon update route (`../../developer/update-routes.ts`) stays.
   preflight, order and fleet hard gate as the hourly check, plus the automatic
   start's no-op rule and retry backoff. Answers: 202 `{ ok, runId }`, 200
   `{ ok, upToDate: true }` (nothing behind, or every step already done), 409
-  `update_blocked` with `blockers` (a preflight blocker or `retry_later`).
+  `update_blocked` with `blockers` (a preflight blocker or `retry_later`), 429
+  `check_too_soon`, 503 `release_unreachable` (below).
   `update-now.ts` maps the result to HTTP. Single-flight: a second press, or
   the hourly check at the same moment, loses at the run insert (the
   transaction's active-run read, `uniq_upgrade_active` and the reserved run
   id's primary key) and answers `run_active`; each step is claimed with a
   conditional `saveStep` before it is enqueued, so no server gets it twice.
-  It does not move the schedule or the Check Now minute.
+  It does not move the schedule; Check Now's minute stays its own.
+  Update Now refuses while any run is open, including one waiting only on
+  offline servers (the same as the hourly tick; only a direct `start()`
+  settles such a run first).
+  It is rate-limited like Check Now: once a minute per install, claimed with
+  `claimManualUpgradeCheck(…, 'lastUpdateNowAt')` (its own field, so a Check
+  Now just before does not make it wait) after the open-run and pause
+  refusals and before any manifest fetch; sooner answers 429
+  `check_too_soon` with `retryAfterSeconds` and `Retry-After`. When every
+  manifest the channel publishes comes back empty (`releaseServerUnreachable`
+  in `target-resolve.ts`: the release server was not reached) it answers 503
+  `release_unreachable` and keeps the saved build, instead of "up to date".
+  A `fresh` manifest read never caches an empty answer, so the next read asks
+  again instead of serving the miss for `MANIFEST_CACHE_MS`.
 - **Pause** (`UPGRADE_PAUSE` row, `../settings/upgrade-control.ts`): `POST
 /instance/updates/pause` / `resume`, admins only, recorded in the activity log
   (`upgrade.pause` / `upgrade.resume`). It snapshots who paused and when, so the

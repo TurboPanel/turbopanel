@@ -27,7 +27,15 @@ export type UpgradeCheckSchedule = {
    * starts the update) stays where it was.
    */
   lastManualCheckAt?: string | null
+  /**
+   * When a superadmin last pressed Update Now. Rate-limited on its own field,
+   * so a Check Now just before it does not make Update Now wait.
+   */
+  lastUpdateNowAt?: string | null
 }
+
+/** The field a manual press is claimed on: Check Now or Update Now. */
+export type ManualPressField = 'lastManualCheckAt' | 'lastUpdateNowAt'
 
 /** Check Now may run at most this often per install. */
 export const UPGRADE_MANUAL_CHECK_MIN_GAP_MS = 60_000
@@ -94,9 +102,13 @@ export function latestUpgradeCheckAt(schedule: UpgradeCheckSchedule): string | n
   return schedule.lastCheckAt
 }
 
-/** Whole seconds until Check Now may run again; 0 when it may run now. */
-export function manualCheckWaitSeconds(schedule: UpgradeCheckSchedule, now: Date): number {
-  const last = parsedMs(schedule.lastManualCheckAt)
+/** Whole seconds until Check Now (or Update Now) may run again; 0 when it may run now. */
+export function manualCheckWaitSeconds(
+  schedule: UpgradeCheckSchedule,
+  now: Date,
+  field: ManualPressField = 'lastManualCheckAt'
+): number {
+  const last = parsedMs(schedule[field])
   if (last === null) return 0
   const remaining = last + UPGRADE_MANUAL_CHECK_MIN_GAP_MS - now.getTime()
   if (remaining <= 0) return 0

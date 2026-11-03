@@ -10,13 +10,16 @@ import {
   createUpgradeCoordinator,
   UPGRADE_DEVELOPMENT,
   UPGRADE_PAUSED,
+  UPGRADE_RELEASE_UNREACHABLE,
   UPGRADE_RETRY_LATER,
   UPGRADE_RUN_ACTIVE,
+  UPGRADE_TOO_SOON,
   type UpgradeUpdateNowResult,
 } from './coordinator.ts'
 import { createMemoryUpgradeStore, type FleetServerFact } from './store.ts'
 import type { UpgradeTarget } from './target.ts'
 import type { UpgradeRuntime } from './planner.ts'
+import type { UpgradeSettings } from '../settings/upgrade-settings.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -63,7 +66,13 @@ function host(serverId: string, overrides: Partial<FleetServerFact> = {}): Fleet
 
 function setup(
   ids: string[],
-  options: { runtime?: UpgradeRuntime; colocated?: boolean; development?: boolean } = {}
+  options: {
+    runtime?: UpgradeRuntime
+    colocated?: boolean
+    development?: boolean
+    target?: UpgradeTarget
+    batch?: UpgradeSettings['batch']
+  } = {}
 ) {
   let nowMs = T0
   let resolves = 0
@@ -76,6 +85,7 @@ function setup(
     facts,
     latest: { daemon: build('older-daemon'), instance: null, ui: null },
     installedUi: { commit: 'new-ui', source: 'install', at: '2026-11-03T00:00:00.000Z' },
+    settings: { batch: options.batch ?? { mode: 'percent', value: 100 } },
   })
   let created = 0
   const insertRun = store.insertRun
@@ -98,7 +108,7 @@ function setup(
     instanceInstalled: { version: '0.1.22', commit: 'new-instance' },
     resolveTarget: () => {
       resolves += 1
-      return Promise.resolve(fresh)
+      return Promise.resolve(options.target ?? fresh)
     },
   })
   return {
@@ -244,4 +254,79 @@ test('Update Now keeps the retry backoff for a control plane host that just fail
   if (!refused.ok) assertEquals(refused.error, UPGRADE_RETRY_LATER)
   f.advance(HOUR + 60_000)
   runIdOf(await f.coordinator.updateNow({ startedBy: ADMIN }))
+})
+
+test('Update Now says the release server could not be reached instead of up to date', async () => {
+  const f = setup(['a'], { target: { daemon: null, instance: null, ui: null } })
+  const result = await f.coordinator.updateNow({ startedBy: ADMIN })
+  assertEquals(result.ok, false)
+  if (!result.ok) assertEquals(result.error, UPGRADE_RELEASE_UNREACHABLE)
+  // The build saved before stays; nothing starts.
+  assertEquals((await f.store.latestBuild())?.daemon?.commit, 'older-daemon')
+  assertEquals(await f.coordinator.activeRun(), null)
+})
+
+test('Update Now is rate-limited: a refused claim asks no release server', async () => {
+  const f = setup(['a'])
+  const result = await f.coordinator.updateNow({
+    startedBy: ADMIN,
+    claimPress: () => Promise.resolve(false),
+  })
+  assertEquals(result.ok, false)
+  if (!result.ok) assertEquals(result.error, UPGRADE_TOO_SOON)
+  assertEquals(f.resolves(), 0)
+  let claimed = 0
+  const started = await f.coordinator.updateNow({
+    startedBy: ADMIN,
+    claimPress: () => {
+      claimed += 1
+      return Promise.resolve(true)
+    },
+  })
+  runIdOf(started)
+  assertEquals(claimed, 1)
+})
+
+test('an open run or a pause refuses before the press is claimed', async () => {
+  const f = setup(['a'])
+  runIdOf(await f.coordinator.updateNow({ startedBy: ADMIN }))
+  let claimed = 0
+  const claimPress = () => {
+    claimed += 1
+    return Promise.resolve(true)
+  }
+  const active = await f.coordinator.updateNow({ startedBy: ADMIN, claimPress })
+  if (!active.ok) assertEquals(active.error, UPGRADE_RUN_ACTIVE)
+  const paused = setup(['a'])
+  paused.store.setPause({
+    since: '2026-11-03T09:00:00.000Z',
+    byUserId: null,
+    byEmail: null,
+    byName: null,
+  })
+  const refused = await paused.coordinator.updateNow({ startedBy: ADMIN, claimPress })
+  if (!refused.ok) assertEquals(refused.error, UPGRADE_PAUSED)
+  assertEquals(claimed, 0)
+})
+
+test('Update Now refuses while the open run waits only on offline servers, like the tick', async () => {
+  const f = setup(['a', 'b'], { batch: { mode: 'count', value: 1 } })
+  const first = runIdOf(await f.coordinator.updateNow({ startedBy: ADMIN }))
+  assertEquals(f.sentTo(), ['a'])
+  // a reaches the build; b drops before its batch opens and waits, never sent.
+  for (const fact of f.store.facts) {
+    if (fact.serverId === 'a') fact.commit = 'new-daemon'
+    if (fact.serverId === 'b') fact.connected = false
+  }
+  // One tick settles a; the next opens b's batch and finds it offline.
+  await f.coordinator.tick({ resolveManifests: false })
+  await f.coordinator.tick({ resolveManifests: false })
+  const open = (await f.coordinator.activeRun())?.steps.filter((s) => s.status !== 'done')
+  assertEquals(
+    open?.map((s) => [s.serverId, s.status, s.attempts]),
+    [['b', 'waiting', 0]]
+  )
+  const again = await f.coordinator.updateNow({ startedBy: ADMIN })
+  assertEquals(again.ok, false)
+  if (!again.ok) assertEquals(again.activeRunId, first)
 })

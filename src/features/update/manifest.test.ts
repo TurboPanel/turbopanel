@@ -228,6 +228,36 @@ test('a fresh lookup (Check Now) skips the cache and refills it', async () => {
   }
 })
 
+test('a fresh lookup that finds nothing keeps the cached build and caches no miss', async () => {
+  await resetUpdateManifestCacheForTests()
+  let up = true
+  const stub = stubFetch(async () =>
+    up
+      ? new Response(await manifestBody('canary'), { status: 200 })
+      : new Response('down', { status: 500 })
+  )
+  try {
+    assertEquals((await resolveUpdateManifest('canary'))?.commit, 'abc123')
+    up = false
+    // Update Now while the release server is down: the answer is empty...
+    assertEquals(await resolveUpdateManifest('canary', 'daemon', { fresh: true }), null)
+    const afterMiss = stub.calls.length
+    // ...but the build read before stays cached for the ordinary reads.
+    assertEquals((await resolveUpdateManifest('canary'))?.commit, 'abc123')
+    assertEquals(stub.calls.length, afterMiss)
+    // With nothing cached, the miss is not remembered: the next read asks again.
+    await resetUpdateManifestCacheForTests()
+    assertEquals(await resolveUpdateManifest('canary', 'daemon', { fresh: true }), null)
+    const before = stub.calls.length
+    up = true
+    assertEquals((await resolveUpdateManifest('canary'))?.commit, 'abc123')
+    assertEquals(stub.calls.length > before, true)
+  } finally {
+    stub.restore()
+    await resetUpdateManifestCacheForTests()
+  }
+})
+
 test('resolveUpdateManifest returns null when the manifest is unavailable', async () => {
   await resetUpdateManifestCacheForTests()
   const stub = stubFetch(() => new Response('nope', { status: 500 }))

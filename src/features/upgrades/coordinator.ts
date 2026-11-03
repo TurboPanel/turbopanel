@@ -15,6 +15,7 @@ import { redactUrlSecrets } from './redact-url-secrets.ts'
 import {
   channelHasInstancePackage,
   pinnedManifestBlockers,
+  releaseServerUnreachable,
   resolveUpgradeTarget,
 } from './target-resolve.ts'
 import {
@@ -138,6 +139,12 @@ export type UpgradeUpdateNowResult =
 /** `updateNow()` error on a development install (it updates by Build and Push Daemon). */
 export const UPGRADE_DEVELOPMENT = 'upgrade_development'
 
+/** `updateNow()` error when no manifest the channel publishes could be read. */
+export const UPGRADE_RELEASE_UNREACHABLE = 'upgrade_release_unreachable'
+
+/** `updateNow()` error when Update Now was pressed again within its minimum gap. */
+export const UPGRADE_TOO_SOON = 'upgrade_too_soon'
+
 export type UpgradeCoordinator = {
   preflight(): Promise<UpgradePreflight>
   start(input: {
@@ -166,7 +173,15 @@ export type UpgradeCoordinator = {
    * when something is behind. Refuses while a run is open, while paused and on
    * a development install; `upToDate` when nothing needs work.
    */
-  updateNow(input: { startedBy: string | null }): Promise<UpgradeUpdateNowResult>
+  updateNow(input: {
+    startedBy: string | null
+    /**
+     * Claims this press (once a minute per install), after the open-run and
+     * pause refusals and before the release servers are asked. False refuses
+     * with `upgrade_too_soon`.
+     */
+    claimPress?: () => Promise<boolean>
+  }): Promise<UpgradeUpdateNowResult>
   tick(input?: { resolveManifests?: boolean }): Promise<void>
   activeRun(): Promise<UpgradeRunWithSteps | null>
   /**
@@ -859,8 +874,13 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
   async function checkForUpdates(
     paused: boolean,
     updateNow?: { startedBy: string | null }
-  ): Promise<{ differs: boolean; started: UpgradeStartResult | null }> {
+  ): Promise<{ differs: boolean; started: UpgradeStartResult | null; unreachable?: true }> {
     const target = await resolveTarget()
+    // Update Now: an empty answer is a release server it could not reach, not
+    // "nothing newer". Keep the saved build and say so.
+    if (updateNow && releaseServerUnreachable(deps.channel, target)) {
+      return { differs: false, started: null, unreachable: true }
+    }
     await deps.store.saveLatestBuild(target)
     const active = await deps.store.activeRun()
     const daemonCommit = target.daemon?.commit ?? null
@@ -1276,7 +1296,13 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
       if (await deps.store.pause()) {
         return { ok: false, error: UPGRADE_PAUSED, blockers: [UPGRADE_PAUSED_MESSAGE] }
       }
-      const { differs, started } = await checkForUpdates(false, input)
+      if (input.claimPress && !(await input.claimPress())) {
+        return { ok: false, error: UPGRADE_TOO_SOON }
+      }
+      const { differs, started, unreachable } = await checkForUpdates(false, {
+        startedBy: input.startedBy,
+      })
+      if (unreachable) return { ok: false, error: UPGRADE_RELEASE_UNREACHABLE }
       if (!differs) return { ok: true, upToDate: true }
       // The hourly check opened a run between the read above and this check.
       if (!started) return runActiveRefusal((await deps.store.activeRun())?.id)

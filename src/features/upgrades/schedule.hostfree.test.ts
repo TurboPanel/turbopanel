@@ -150,3 +150,14 @@ test('Check Now runs at most once a minute', () => {
   // A press stamped in the future (clock moved back) still waits one minute at most.
   assertEquals(manualCheckWaitSeconds(s, at('2026-10-27T10:00:00.000Z')), 60)
 })
+
+test('Update Now waits on its own field, apart from Check Now', () => {
+  const s = schedule({
+    lastManualCheckAt: '2026-10-27T10:40:00.000Z',
+    lastUpdateNowAt: '2026-10-27T10:30:00.000Z',
+  })
+  const now = at('2026-10-27T10:40:10.000Z')
+  assertEquals(manualCheckWaitSeconds(s, now), 50)
+  assertEquals(manualCheckWaitSeconds(s, now, 'lastUpdateNowAt'), 0)
+  assertEquals(manualCheckWaitSeconds(s, at('2026-10-27T10:30:20.000Z'), 'lastUpdateNowAt'), 40)
+})
