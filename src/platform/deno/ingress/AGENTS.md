@@ -75,8 +75,11 @@ High Availability (Workers) must not contain any of it.
   zones-of-account form); `scopes.zones` is exactly those zones, so DNS-01 is
   offered only there. Every zone of the account passes with a warning in the
   detail. Deny policies win. Permission groups match by name (Write or Edit).
-  A recheck that cannot read the policies keeps the stored scopes and sets
-  `last_error`, so an account stored before this check keeps working. It also
+  A recheck evaluates the stored account. When the answer is unknown rather
+  than no (the token cannot read itself, or Cloudflare rate limits, fails with
+  5xx or cannot be reached) it keeps the stored scopes and sets `last_error`,
+  so an account stored before this check, or a bad minute at Cloudflare, does
+  not wipe a working account for a day. It also
   refuses a token that expires within 30 days, and seals it in
   `ingress.token_envelope` (re-encrypt stage `ingress`). Token rotation is
   remove and add. A daily recheck rides the tick. Connect (`applyWith`) names

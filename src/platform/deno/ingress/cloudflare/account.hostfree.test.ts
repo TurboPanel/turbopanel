@@ -2,6 +2,7 @@ import { assert, assertEquals } from '@std/assert'
 import { scrubSecrets } from '../../../../features/tunnels/scrub.ts'
 import {
   accountsDueForRecheck,
+  checkCloudflareToken,
   cloudflareTokenShapeProblem,
   listNames,
   preflightCloudflareToken,
@@ -219,21 +220,109 @@ test('a token without tunnel or DNS edit fails both scope checks', async () => {
   )
 })
 
+const PREVIOUS = {
+  tunnels: true,
+  dns: true,
+  checkedAt: '2026-10-01T00:00:00Z',
+  zones: [{ id: 'zone-1', name: 'example.com' }],
+  expiresOn: null,
+}
+
 test('a recheck that cannot read the policies keeps the stored scopes', async () => {
-  const previous = {
-    tunnels: true,
-    dns: true,
-    checkedAt: '2026-10-01T00:00:00Z',
-    zones: [{ id: 'zone-1', name: 'example.com' }],
-    expiresOn: null,
-  }
   const cf = createFakeCloudflare({ token: TOKEN, forbidden: [/^\/user\/tokens\/tok-1$/] })
-  const preflight = await preflightCloudflareToken(TOKEN, cf.fetch, NOW)
-  assertEquals(recheckedScopes(previous, preflight, NOW), {
-    ...previous,
+  const result = await checkCloudflareToken(TOKEN, cf.fetch, NOW, 'acct-1')
+  assertEquals(result.keepStored, true)
+  assertEquals(recheckedScopes(PREVIOUS, result, NOW), {
+    ...PREVIOUS,
     checkedAt: NOW.toISOString(),
   })
-  assertEquals(recheckedScopes(null, preflight, NOW).tunnels, false)
+  assertEquals(recheckedScopes(null, result, NOW).tunnels, false)
+})
+
+test('a rate limit, a provider error or no answer keeps the stored scopes on recheck', async () => {
+  const cases: { method: string; path: RegExp; status: number }[] = [
+    { method: 'GET', path: /^\/user\/tokens\/tok-1$/, status: 429 },
+    { method: 'GET', path: /^\/user\/tokens\/tok-1$/, status: 500 },
+    { method: 'GET', path: /^\/user\/tokens\/verify$/, status: 503 },
+    { method: 'GET', path: /^\/zones\?account\.id=/, status: 502 },
+  ]
+  for (const refusal of cases) {
+    const cf = createFakeCloudflare({ token: TOKEN, refuse: [{ ...refusal, message: 'busy' }] })
+    const result = await checkCloudflareToken(TOKEN, cf.fetch, NOW, 'acct-1')
+    assertEquals(result.preflight.ok, false)
+    assertEquals(result.keepStored, true, `${refusal.status} ${refusal.path}`)
+    assertEquals(recheckedScopes(PREVIOUS, result, NOW), {
+      ...PREVIOUS,
+      checkedAt: NOW.toISOString(),
+    })
+  }
+  const unreachable: typeof fetch = () => Promise.reject(new Error('connect refused'))
+  const offline = await checkCloudflareToken(TOKEN, unreachable, NOW, 'acct-1')
+  assertEquals(offline.keepStored, true)
+  assertEquals(offline.preflight.checks[0]?.id, 'provider')
+})
+
+test('a 401 or not-found answer on the token read is a missing permission', async () => {
+  for (const status of [401, 404]) {
+    const cf = createFakeCloudflare({
+      token: TOKEN,
+      refuse: [{ method: 'GET', path: /^\/user\/tokens\/tok-1$/, status, message: 'no' }],
+    })
+    const result = await preflightCloudflareToken(TOKEN, cf.fetch, NOW)
+    assertEquals(
+      detail(result, 'token-policies')?.detail,
+      'The token cannot read its own permissions. Add User › API Tokens › Read to the token.'
+    )
+  }
+})
+
+test('verify without a token id says so instead of naming a permission', async () => {
+  const cf = createFakeCloudflare({ token: TOKEN, tokenId: '' })
+  const result = await preflightCloudflareToken(TOKEN, cf.fetch, NOW)
+  assertEquals(
+    detail(result, 'token-policies')?.detail,
+    'Cloudflare did not say which token this is, so its permissions cannot be read.'
+  )
+})
+
+test('a user token whose account list is refused says the account is unknown', async () => {
+  const cf = createFakeCloudflare({
+    token: TOKEN,
+    refuse: [{ method: 'GET', path: /^\/accounts\?page=/, message: 'no' }],
+  })
+  const result = await preflightCloudflareToken(TOKEN, cf.fetch, NOW)
+  assertEquals(
+    detail(result, 'scope-tunnels')?.detail,
+    'Cloudflare refused the list of accounts, so the token’s account is unknown.'
+  )
+  assertEquals(
+    detail(result, 'scope-dns')?.detail,
+    'The DNS zones cannot be checked without the account.'
+  )
+})
+
+test('a recheck evaluates the stored account, not the first one the token picks', async () => {
+  const cf = createFakeCloudflare({ token: TOKEN })
+  const moved = await checkCloudflareToken(TOKEN, cf.fetch, NOW, 'acct-other')
+  assertEquals(
+    detail(moved.preflight, 'scope-tunnels')?.detail,
+    'The token no longer reaches the Cloudflare account this control plane uses (acct-other).'
+  )
+  assertEquals(moved.keepStored, false)
+  const zoneOnly = createFakeCloudflare({
+    token: TOKEN,
+    policies: [
+      policy('allow', { 'com.cloudflare.api.account.zone.zone-1': '*' }, [
+        'Cloudflare Tunnel Write',
+        'DNS Write',
+      ]),
+    ],
+  })
+  const stored = await checkCloudflareToken(TOKEN, zoneOnly.fetch, NOW, 'acct-1')
+  assertEquals(
+    detail(stored.preflight, 'scope-tunnels')?.detail,
+    'Cloudflare Tunnel Edit is only granted on the example.com zone. Give it to the account instead.'
+  )
 })
 
 test('listNames joins with commas and "and", and counts past ten', () => {

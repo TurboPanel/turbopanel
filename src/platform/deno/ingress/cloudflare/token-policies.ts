@@ -85,7 +85,11 @@ function coversAllZones(policy: CloudflareTokenPolicy, accountId: string): boole
     if (key === ALL_ZONES && value === '*') return true
     if (!isAccountKey(key, accountId)) return false
     if (value === '*') return true
-    return typeof value === 'object' && value !== null && ALL_ZONES in value
+    return (
+      typeof value === 'object' &&
+      value !== null &&
+      (value as Record<string, unknown>)[ALL_ZONES] === '*'
+    )
   })
 }
 

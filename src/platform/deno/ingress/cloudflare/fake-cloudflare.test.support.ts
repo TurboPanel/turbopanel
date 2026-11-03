@@ -20,8 +20,8 @@ export type FakeCloudflareOptions = {
   zones?: { id: string; name: string }[]
   /** Paths (regex source) that answer 403, to take a scope away. */
   forbidden?: RegExp[]
-  /** One method on a path (regex source) answers 403 with this message, as Cloudflare does for a missing permission. */
-  refuse?: { method: string; path: RegExp; message: string }[]
+  /** One method on a path (regex source) answers `status` (default 403) with this message, as Cloudflare does for a missing permission. */
+  refuse?: { method: string; path: RegExp; message: string; status?: number }[]
   expiresOn?: string
   /** Who owns the token: a user (verify at /user) or the account (verify at the account). Default user. */
   owner?: 'user' | 'account'
@@ -76,7 +76,7 @@ export function createFakeCloudflare(options: FakeCloudflareOptions): FakeCloudf
   ]
   const verify = (by: 'user' | 'account') =>
     by === owner
-      ? envelope({ id: tokenId, status: 'active', expires_on: options.expiresOn })
+      ? envelope({ id: tokenId || undefined, status: 'active', expires_on: options.expiresOn })
       : envelope(null, 401)
   const tokenDetail = (by: 'user' | 'account', id: string | undefined) =>
     by === owner && id === tokenId
@@ -192,7 +192,7 @@ export function createFakeCloudflare(options: FakeCloudflareOptions): FakeCloudf
     if (auth !== `Bearer ${options.token}`) return envelope(null, 401)
     if (options.forbidden?.some((pattern) => pattern.test(path))) return envelope(null, 403)
     const refusal = options.refuse?.find((item) => item.method === method && item.path.test(path))
-    if (refusal) return envelope(null, 403, refusal.message)
+    if (refusal) return envelope(null, refusal.status ?? 403, refusal.message)
     const body = init?.body ? (JSON.parse(init.body as string) as Record<string, unknown>) : {}
     for (const [verb, pattern, handler] of routes) {
       const match = verb === method ? pattern.exec(path) : null

@@ -231,8 +231,7 @@ test('a refused Connect step is named in the error', async () => {
     ['GET', /cfd_tunnel\?is_deleted=false&name=/, 'Finding the tunnel failed'],
     ['GET', /\/configurations$/, 'Reading the tunnel routes failed'],
     ['PUT', /\/configurations$/, 'Writing the tunnel routes failed'],
-    // The name's records are read first to find a dashboard tunnel behind it.
-    ['GET', /dns_records\?name=/, 'Finding the tunnel failed'],
+    ['GET', /dns_records\?name=/, 'Reading the DNS records failed'],
     ['POST', /dns_records$/, 'Creating the DNS record failed'],
     ['GET', /\/token$/, 'Getting the connector token failed'],
   ]

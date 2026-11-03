@@ -144,9 +144,13 @@ async function prepare(ctx: IngressContext): Promise<Ready | ApplyResult> {
 /** The account's tunnel: the one another hostname already uses, else one with our name, else a new one. */
 type FoundTunnel = { id: string; name: string; adopted: boolean }
 
+function readRecords(api: CloudflareClient, ready: Ready) {
+  return step('Reading the DNS records', () => api.listDnsRecords(ready.zoneId, ready.name))
+}
+
 /** A tunnel the name's CNAME already points at, when it belongs to this account. */
 async function tunnelBehindName(api: CloudflareClient, ready: Ready): Promise<FoundTunnel | null> {
-  const records = await api.listDnsRecords(ready.zoneId, ready.name)
+  const records = await readRecords(api, ready)
   const id = records.map((record) => tunnelIdFromTarget(record.content)).find(Boolean)
   if (!id) return null
   try {
@@ -175,13 +179,10 @@ async function ensureTunnel(
   const known = readTunnelState(ownState(ctx)) ?? shared[0]?.state
   if (known) return { id: known.tunnelId, name: known.tunnelName, adopted: known.adopted }
   const name = tunnelName(ready.deps.instanceId)
-  const found = await step('Finding the tunnel', async () => {
-    const behind = await tunnelBehindName(api, ready)
-    if (behind) return behind
-    const [existing] = await api.listTunnels(ready.accountId, name)
-    return existing ? { id: existing.id, name, adopted: false } : null
-  })
-  if (found) return found
+  const behind = await tunnelBehindName(api, ready)
+  if (behind) return behind
+  const [existing] = await step('Finding the tunnel', () => api.listTunnels(ready.accountId, name))
+  if (existing) return { id: existing.id, name, adopted: false }
   const created = await step('Creating the tunnel', () => api.createTunnel(ready.accountId, name))
   return { id: created.id, name, adopted: false }
 }
@@ -222,9 +223,7 @@ async function ensureDns(
   replaceExisting: boolean
 ): Promise<{ id: string; created: boolean } | ApplyResult> {
   const target = tunnelTarget(tunnelId)
-  const records = await step('Reading the DNS records', () =>
-    api.listDnsRecords(ready.zoneId, ready.name)
-  )
+  const records = await readRecords(api, ready)
   const ours = records.find((record) => record.type === 'CNAME' && record.content === target)
   if (ours) return { id: ours.id, created: false }
   const other = records[0]
