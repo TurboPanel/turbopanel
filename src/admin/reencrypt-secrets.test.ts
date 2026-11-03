@@ -96,7 +96,9 @@ async function installIsolatedFixtureSchema(tx: Db, schemaName: string): Promise
       options jsonb,
       next_linux_id integer DEFAULT 30001 NOT NULL,
       deploy_timeout_minutes integer,
-      is_acme_enabled boolean DEFAULT true NOT NULL,
+      is_acme_enabled boolean DEFAULT false NOT NULL,
+      acme_contact_email text,
+      acme_terms_accepted_at timestamptz(3),
       backup_destination_id uuid
     )
   `)
