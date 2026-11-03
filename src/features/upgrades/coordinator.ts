@@ -119,6 +119,25 @@ export type UpgradePreflight = {
   blockers: string[]
 }
 
+/** What `start()` answers: the new run, or why none was saved. */
+export type UpgradeStartResult =
+  | { ok: true; runId: string }
+  | {
+      ok: false
+      error: string
+      blockers?: string[]
+      activeRunId?: string
+    }
+
+/** What Update Now answers: a started run, nothing to do, or why it was refused. */
+export type UpgradeUpdateNowResult =
+  | { ok: true; runId: string }
+  | { ok: true; upToDate: true }
+  | Extract<UpgradeStartResult, { ok: false }>
+
+/** `updateNow()` error on a development install (it updates by Build and Push Daemon). */
+export const UPGRADE_DEVELOPMENT = 'upgrade_development'
+
 export type UpgradeCoordinator = {
   preflight(): Promise<UpgradePreflight>
   start(input: {
@@ -134,15 +153,20 @@ export type UpgradeCoordinator = {
      * binary is current, because the install is what moves the UI.
      */
     consoleCommit?: string | null
-  }): Promise<
-    | { ok: true; runId: string }
-    | {
-        ok: false
-        error: string
-        blockers?: string[]
-        activeRunId?: string
-      }
-  >
+    /**
+     * Update Now: an administrator ran the check at once. The run keeps its
+     * manual source but follows the automatic start's rules (no run saved
+     * when nothing needs work, retry backoff for hosts that failed this build).
+     */
+    updateNow?: boolean
+  }): Promise<UpgradeStartResult>
+  /**
+   * Update Now: the hourly check, run at once. Resolves and saves the target,
+   * then starts a run through `start()` (same preflight, order and fleet gate)
+   * when something is behind. Refuses while a run is open, while paused and on
+   * a development install; `upToDate` when nothing needs work.
+   */
+  updateNow(input: { startedBy: string | null }): Promise<UpgradeUpdateNowResult>
   tick(input?: { resolveManifests?: boolean }): Promise<void>
   activeRun(): Promise<UpgradeRunWithSteps | null>
   /**
@@ -186,6 +210,9 @@ export type UpgradeCoordinator = {
   }): Promise<void>
 }
 
+/** Resolves the channel target (cached manifests by default; Update Now asks fresh). */
+export type UpgradeTargetResolver = () => Promise<UpgradeTarget>
+
 export type UpgradeCoordinatorDeps = {
   store: UpgradeStore
   enqueue: (serverId: string, envelope: DaemonOutboundEnvelope) => Promise<unknown>
@@ -201,7 +228,7 @@ export type UpgradeCoordinatorDeps = {
    * so a step's from-version reads this first.
    */
   buildLabel?: string | null
-  resolveTarget?: () => Promise<UpgradeTarget>
+  resolveTarget?: UpgradeTargetResolver
   /**
    * How long a restarted control-plane step may wait for the daemon's verdict
    * (`UPGRADE_VERIFY_TIMEOUT_MS`; `TURBOPANEL_UPGRADE_VERIFY_TIMEOUT_MINUTES`).
@@ -829,7 +856,10 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
    * automatic run when something is behind, no run is open and updates are
    * not paused. Reports the decision through `trace`.
    */
-  async function checkForUpdates(paused: boolean): Promise<void> {
+  async function checkForUpdates(
+    paused: boolean,
+    updateNow?: { startedBy: string | null }
+  ): Promise<{ differs: boolean; started: UpgradeStartResult | null }> {
     const target = await resolveTarget()
     await deps.store.saveLatestBuild(target)
     const active = await deps.store.activeRun()
@@ -844,6 +874,7 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
       instanceBehind(target) ||
       uiBehindForRun(target, await deps.store.installedUi())
     let autoStart: UpgradeTickDecision['autoStart'] = { decision: 'not-attempted' }
+    let started: UpgradeStartResult | null = null
     if (
       shouldAutoStartRun({
         targetDiffers: differs,
@@ -852,10 +883,11 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
         development: deps.development,
       })
     ) {
-      const started = await createUpgradeCoordinator({ ...deps, trace: undefined }).start({
-        source: 'auto',
-        startedBy: null,
-      })
+      started = await createUpgradeCoordinator({ ...deps, trace: undefined }).start(
+        updateNow
+          ? { source: 'manual', startedBy: updateNow.startedBy, updateNow: true }
+          : { source: 'auto', startedBy: null }
+      )
       autoStart = started.ok
         ? {
             decision: 'started',
@@ -878,6 +910,7 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
       paused,
       autoStart,
     })
+    return { differs, started }
   }
 
   /**
@@ -1221,7 +1254,10 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
           !input.serverId
         )
       )
-      const refusal = input.source === 'auto' ? await automaticStartRefusal(steps, target) : null
+      const refusal =
+        input.source === 'auto' || input.updateNow
+          ? await automaticStartRefusal(steps, target)
+          : null
       if (refusal) return refusal
       run.phase = earliestOpenPhase(steps)
       const inserted = await deps.store.insertRun(run, steps)
@@ -1231,6 +1267,23 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
       run.phase = earliestOpenPhase(stored)
       await advance(run, stored, fleet)
       return { ok: true, runId: run.id }
+    },
+    updateNow: async (input) => {
+      if (deps.development) return { ok: false, error: UPGRADE_DEVELOPMENT }
+      // Answer the machine codes before any manifest fetch, as `start()` does.
+      const active = await deps.store.activeRun()
+      if (active) return runActiveRefusal(active.id)
+      if (await deps.store.pause()) {
+        return { ok: false, error: UPGRADE_PAUSED, blockers: [UPGRADE_PAUSED_MESSAGE] }
+      }
+      const { differs, started } = await checkForUpdates(false, input)
+      if (!differs) return { ok: true, upToDate: true }
+      // The hourly check opened a run between the read above and this check.
+      if (!started) return runActiveRefusal((await deps.store.activeRun())?.id)
+      if (!started.ok && started.error === UPGRADE_NOTHING_TO_UPDATE) {
+        return { ok: true, upToDate: true }
+      }
+      return started
     },
     tick: async (input) => {
       const paused = (await deps.store.pause()) !== null

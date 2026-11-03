@@ -12,7 +12,11 @@ async function readStatus(
   runtime: 'deno' | 'workers'
 ): Promise<{ development: boolean; daemonsBehind: boolean }> {
   const admin = new Hono<AppEnv>()
-  registerInstanceUpdatesAdminRoutes(admin, { runtime, getEnv: () => ({}) })
+  registerInstanceUpdatesAdminRoutes(admin, {
+    runtime,
+    getEnv: () => ({}),
+    rootOnly: (_c, next) => next(),
+  })
   const res = await admin.request('/instance/updates')
   assertEquals(res.status, 200)
   return (await res.json()) as { development: boolean; daemonsBehind: boolean }
@@ -52,5 +56,46 @@ test('GET /instance/updates reports development only on a Deno development insta
   })
   await withDevSurface('true', async () => {
     assertEquals((await readStatus('deno')).development, false)
+  })
+})
+
+async function pressUpdateNow(
+  runtime: 'deno' | 'workers',
+  superadmin: boolean
+): Promise<{ status: number; body: { ok: boolean; error?: string } }> {
+  const admin = new Hono<AppEnv>()
+  registerInstanceUpdatesAdminRoutes(admin, {
+    runtime,
+    getEnv: () => ({}),
+    rootOnly: (c, next) =>
+      superadmin ? next() : Promise.resolve(c.json({ ok: false, error: 'Forbidden' }, 403)),
+  })
+  const res = await admin.request('/instance/updates/now', { method: 'POST' })
+  return { status: res.status, body: (await res.json()) as { ok: boolean; error?: string } }
+}
+
+test('POST /instance/updates/now is superadmin only', async () => {
+  await withDevSurface(undefined, async () => {
+    const res = await pressUpdateNow('workers', false)
+    assertEquals(res.status, 403)
+    assertEquals(res.body.error, 'Forbidden')
+  })
+})
+
+test('POST /instance/updates/now refuses a development install with 403 development', async () => {
+  await withDevSurface('1', async () => {
+    const res = await pressUpdateNow('deno', true)
+    assertEquals(res.status, 403)
+    assertEquals(res.body.error, 'development')
+  })
+})
+
+test('POST /instance/updates/now needs the database on both runtimes', async () => {
+  await withDevSurface(undefined, async () => {
+    assertEquals((await pressUpdateNow('deno', true)).status, 503)
+  })
+  // Workers is never a development install, whatever the environment says.
+  await withDevSurface('1', async () => {
+    assertEquals((await pressUpdateNow('workers', true)).status, 503)
   })
 })

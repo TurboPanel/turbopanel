@@ -366,6 +366,7 @@ export function registerAdminRoutes(
 
   registerInstanceUpdatesAdminRoutes(admin, {
     runtime: opts.runtime,
+    rootOnly: createRootOnlyMiddleware(opts.secrets),
     ...(opts.getEnv ? { getEnv: opts.getEnv } : {}),
   })
 

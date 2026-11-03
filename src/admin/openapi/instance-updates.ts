@@ -10,7 +10,8 @@ function retired(summary: string) {
       summary,
       description:
         'Retired: updates are automatic. Always answers 410 `updates_automatic` with a ' +
-        '`message`; the only control is `POST /instance/updates/pause` / `resume`.',
+        '`message`; start one at once with `POST /instance/updates/now`, or stop them with ' +
+        '`POST /instance/updates/pause` / `resume`.',
       security: [...cookieSecurity],
       responses: {
         '401': { description: 'Unauthorized' },
@@ -40,7 +41,7 @@ function pauseRoute(summary: string, description: string) {
 
 /**
  * Control-plane and co-located daemon versions, the automatic-update status,
- * Pause / Resume, the batch size, and the read-only run and history routes.
+ * Update Now, Pause / Resume, the batch size, and the read-only run and history routes.
  * The UI package target is reported on the control-plane unit and installed
  * by the same upgrade.
  */
@@ -155,6 +156,34 @@ export const INSTANCE_UPDATES_PATHS = {
         '401': { description: 'Unauthorized' },
         '403': { description: 'Forbidden — requires admin or superadmin role' },
         '429': { description: '`check_too_soon`' },
+      },
+    },
+  },
+  [`${ADMIN_API_PREFIX}/instance/updates/now`]: {
+    post: {
+      tags: ['Instance'],
+      summary: 'Update Now: check and start the update right away',
+      description:
+        'Superadmin only; recorded in the activity log (`upgrade.start_now`) when a run starts. ' +
+        'Runs the hourly check at once: asks the release servers for the newest build ' +
+        '(skipping the manifest cache), saves it, and when a server, the control plane or the ' +
+        'web interface is behind, starts the update in the usual order (co-located daemon, then ' +
+        'the control plane, then the other servers once both are on target; fleet only on the ' +
+        'hosted platform) with the same pre-flight checks as an automatic update. Answers 202 ' +
+        '`{ ok: true, runId }` (follow it with `GET /instance/updates/run`) or 200 ' +
+        '`{ ok: true, upToDate: true }`. Refuses with 409 `run_active` (with `activeRunId`) while ' +
+        'an update is running, 409 `paused` while updates are paused, 409 `update_blocked` with ' +
+        '`blockers` when a pre-flight check or a recent failure holds it, and 403 `development` ' +
+        'on a development install. A second press, or the hourly check at the same moment, ' +
+        'answers `run_active`.',
+      security: [...cookieSecurity],
+      responses: {
+        '200': { description: '`{ ok: true, upToDate: true }`' },
+        '202': { description: '`{ ok: true, runId }`' },
+        '401': { description: 'Unauthorized' },
+        '403': { description: 'Forbidden — requires superadmin; or `development`' },
+        '409': { description: '`run_active`, `paused` or `update_blocked`' },
+        '503': { description: 'Database unavailable' },
       },
     },
   },
