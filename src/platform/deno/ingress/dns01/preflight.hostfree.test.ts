@@ -1,7 +1,13 @@
 import { assertEquals } from '@std/assert'
 import type { DnsChallengeProvider } from '../../../../features/tls/dns-certificates/dns-provider.ts'
 import { TunnelProviderError } from '../../../../features/tunnels/errors.ts'
-import { caaWalk, type DnsLookup, preflightDns01, txtVisibleOnAll } from './preflight.ts'
+import {
+  caaWalk,
+  type DnsLookup,
+  preflightDns01,
+  txtNotVisibleDetail,
+  txtVisibleOnAll,
+} from './preflight.ts'
 
 const test = Deno.test.bind(Deno)
 
@@ -80,7 +86,78 @@ test('txtVisibleOnAll names the servers that do not answer yet', async () => {
     '_acme-challenge.x',
     'token-value'
   )
-  assertEquals(seen, { ok: false, missing: ['198.51.100.53'] })
+  assertEquals(seen, {
+    ok: false,
+    confirmed: ['192.0.2.53'],
+    missing: ['198.51.100.53'],
+    unreachable: [],
+  })
+  assertEquals(
+    txtNotVisibleDetail(seen),
+    'The challenge record is not visible on 1 of 2 authoritative nameservers that answered yet.'
+  )
+})
+
+/** A zone listed on IPv4 and IPv6 addresses, seen from a host with no IPv6 route. */
+function ipv4OnlyDns(answers: Record<string, string[]>): DnsLookup {
+  return {
+    ...fakeDns(),
+    txtAt: (_name, server) =>
+      server.includes(':')
+        ? Promise.reject(new Error('io error: Network is unreachable (os error 101)'))
+        : Promise.resolve(answers[server] ?? []),
+  }
+}
+
+const MIXED_SERVERS = ['192.0.2.53', '198.51.100.53', '2001:db8::53', '2001:db8::54']
+
+test('txtVisibleOnAll passes when every server that answers has the value and the rest are unreachable', async () => {
+  const seen = await txtVisibleOnAll(
+    ipv4OnlyDns({ '192.0.2.53': ['token-value'], '198.51.100.53': ['token-value'] }),
+    MIXED_SERVERS,
+    '_acme-challenge.x',
+    'token-value'
+  )
+  assertEquals(seen, {
+    ok: true,
+    confirmed: ['192.0.2.53', '198.51.100.53'],
+    missing: [],
+    unreachable: ['2001:db8::53', '2001:db8::54'],
+  })
+})
+
+test('txtVisibleOnAll still waits on a reachable server that answers without the value', async () => {
+  const seen = await txtVisibleOnAll(
+    ipv4OnlyDns({ '192.0.2.53': ['token-value'], '198.51.100.53': ['older-value'] }),
+    MIXED_SERVERS,
+    '_acme-challenge.x',
+    'token-value'
+  )
+  assertEquals(seen.ok, false)
+  assertEquals(seen.missing, ['198.51.100.53'])
+  assertEquals(
+    txtNotVisibleDetail(seen),
+    'The challenge record is not visible on 1 of 2 authoritative nameservers that answered yet.'
+  )
+})
+
+test('txtVisibleOnAll fails when no server can be reached at all', async () => {
+  const seen = await txtVisibleOnAll(
+    ipv4OnlyDns({}),
+    ['2001:db8::53', '2001:db8::54'],
+    '_acme-challenge.x',
+    'token-value'
+  )
+  assertEquals(seen, {
+    ok: false,
+    confirmed: [],
+    missing: [],
+    unreachable: ['2001:db8::53', '2001:db8::54'],
+  })
+  assertEquals(
+    txtNotVisibleDetail(seen),
+    'No authoritative nameserver could be reached to check the challenge record (2 tried).'
+  )
 })
 
 test('caaWalk goes from the name up to the zone apex', () => {
