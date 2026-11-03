@@ -16,8 +16,11 @@ import type { DerivedSecretsConfig, SecretsConfig } from '../../lib/secrets/secr
 import { forEachSequential } from '../../lib/sequential.ts'
 import { queueHostingCertificateApply } from '../hostings/letsencrypt-apply.ts'
 import { systemRotationContext } from './system-context.ts'
+import { sharedAcmeTermsReader } from '../../features/organizations/acme-terms.ts'
 
 export type DnsCertWiring = {
+  /** Stands in for Let's Encrypt's current terms in tests. */
+  currentTerms?: DnsCertContext['currentTerms']
   secrets: DerivedSecretsConfig
   /** With these a renewed certificate is sent to its sites at once; without, the next deploy carries it. */
   push?: { commandQueue: CommandQueue; secretsConfig: SecretsConfig | null }
@@ -67,6 +70,7 @@ export function buildDnsCertContext(db: Db, wiring: DnsCertWiring): DnsCertConte
     adapters: createTunnelAdapterRegistry(providerFetch),
     dns: (_provider, token) => createCloudflareDnsChallenge({ token, fetch: providerFetch }),
     ...(acmeFetch ? { acmeFetch } : {}),
+    currentTerms: wiring.currentTerms ?? sharedAcmeTermsReader(),
     ...(wiring.presentGraceMs === undefined ? {} : { presentGraceMs: wiring.presentGraceMs }),
     ...(wiring.push
       ? { onRenewed: renewalPusher(db, { push: wiring.push, secrets: wiring.secrets }) }

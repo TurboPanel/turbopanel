@@ -18,7 +18,8 @@ type Saved = Parameters<LetsEncryptStore['saveHosting']>
 function fakeStore(
   existing: string | null = null,
   otherWeb: string[] = [],
-  pinnedNow: string | null = null
+  pinnedNow: string | null = null,
+  issued = false
 ) {
   const saved: Saved[] = []
   const released: string[][] = []
@@ -37,6 +38,7 @@ function fakeStore(
       return Promise.resolve({ id: 'tls-new', created: true })
     },
     pinnedCertificateId: () => Promise.resolve(pinnedNow),
+    hasIssuedCertificateFor: () => Promise.resolve(issued),
     releaseCertificates: (ids) => {
       released.push([...ids])
       return Promise.resolve()
@@ -425,4 +427,62 @@ test('port 80 closed: nothing is pinned, and the request waits with the reason',
   assertEquals(saved[0]![1].tlsId, undefined)
   const entry = out.ok && out.outcome === 'waiting' ? out.dns.hostnames[0] : undefined
   assertEquals(entry?.port80, 'closed')
+})
+
+test('newer terms hold a new certificate: the request is kept and nothing is created or pinned', async () => {
+  const { store, saved, created } = fakeStore()
+  const out = await requestLetsEncrypt({
+    store,
+    lookup: pointing,
+    now: NOW,
+    hosting: record(),
+    acmeEnabled: true,
+    termsHeld: true,
+  })
+  assertEquals(out.ok && out.outcome, 'waiting')
+  assertEquals(out.ok && out.outcome === 'waiting' && out.dns.termsHeld, true)
+  assertEquals(created, [])
+  assertEquals(saved.length, 1)
+  assertEquals(saved[0]![1].tlsId, undefined)
+  assertEquals(typeof saved[0]![1].pendingAt, 'string')
+})
+
+test('newer terms never hold a certificate that already exists: it is pinned and keeps renewing', async () => {
+  const { store, saved } = fakeStore('tls-existing', [], null, true)
+  const out = await requestLetsEncrypt({
+    store,
+    lookup: pointing,
+    now: NOW,
+    hosting: record(),
+    acmeEnabled: true,
+    termsHeld: true,
+  })
+  assertEquals(out.ok && out.outcome, 'pinned')
+  assertEquals(saved[0]![1].tlsId, 'tls-existing')
+})
+
+test('a request held only for newer terms does not expire', async () => {
+  const { store } = fakeStore()
+  const old = new Date(NOW.getTime() - 30 * 86_400_000).toISOString()
+  const hosting = record({
+    pendingAt: old,
+    metadata: {
+      letsEncryptDns: {
+        ready: true,
+        checkedAt: old,
+        hostnames: [],
+        expectedAddresses: [SERVER_IP],
+        termsHeld: true,
+      },
+    },
+  })
+  const outcome = await retryPendingLetsEncrypt({
+    store,
+    lookup: pointing,
+    now: NOW,
+    hosting,
+    acmeEnabled: true,
+    termsHeld: true,
+  })
+  assertEquals(outcome, 'waiting')
 })

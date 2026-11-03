@@ -62,6 +62,11 @@ import {
 } from './letsencrypt-apply.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
+import {
+  ACME_TERMS_HOLD_MESSAGE,
+  acmeTermsHeldFor,
+  acmeTermsReaderFor,
+} from '../../features/organizations/acme-terms.ts'
 
 export type HostingLetsEncryptDeps = {
   lookup?: DnsLookup
@@ -323,6 +328,7 @@ export function registerHostingLetsEncryptRoutes(
   const secrets = opts.secrets
   const lookup = deps.lookup ?? runtimeDnsLookup()
   const probes = precheckProbes(deps)
+  const currentTerms = acmeTermsReaderFor(opts.acmeTermsFetch)
   const now = deps.now ?? (() => new Date())
   const applyDeps = deps.applyDeps ?? requestApplyDeps
 
@@ -376,7 +382,13 @@ export function registerHostingLetsEncryptRoutes(
       now: now(),
       hosting: { ...row, organizationId },
       acmeEnabled: await loadAcmeEnabled(db, organizationId),
+      termsHeld: await acmeTermsHeldFor(db, organizationId, currentTerms),
     })
+    // A new certificate waits for the organization to accept Let's Encrypt's
+    // newer terms; the request is kept and goes ahead once they are accepted.
+    if (result.ok && result.outcome === 'waiting' && result.dns.termsHeld === true) {
+      return c.json({ error: 'acme_terms_changed', message: ACME_TERMS_HOLD_MESSAGE }, 409)
+    }
     if (!result.ok) {
       return c.json(
         {

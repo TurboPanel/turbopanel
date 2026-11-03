@@ -66,6 +66,12 @@ export type LetsEncryptStore = {
   /** The certificate row the hosting pins right now (read under the lock). */
   pinnedCertificateId(hostingId: string): Promise<string | null>
   /**
+   * Whether the managed row `managedCertificateFor` would pick for `names` has
+   * ever had a certificate (a stored pair, or one a server reported). Pinning
+   * such a row renews; anything else orders a new certificate.
+   */
+  hasIssuedCertificateFor(organizationId: string, names: readonly string[]): Promise<boolean>
+  /**
    * Remove these managed certificate rows when no site pins them any more.
    * Rows a person added, and rows another site still pins, stay.
    */
@@ -104,6 +110,12 @@ type RequestParams = {
   probes?: CertificatePrecheckProbes
   /** The sweep's own check (counts toward the growing wait); a button press does not. */
   scheduled?: boolean
+  /**
+   * The organization has not accepted Let's Encrypt's newer terms: a new
+   * certificate waits (the request is kept), one that already exists is still
+   * pinned so it keeps renewing.
+   */
+  termsHeld?: boolean
 }
 
 const MS_PER_MINUTE = 60_000
@@ -222,7 +234,14 @@ export async function requestLetsEncrypt(params: RequestParams): Promise<LetsEnc
     now: params.now,
     ...(params.probes ? { probes: params.probes } : {}),
   })
-  return dns.ready ? pinCertificate(params, names, dns) : rememberWaiting(params, dns)
+  if (!dns.ready) return rememberWaiting(params, dns)
+  if (
+    params.termsHeld === true &&
+    !(await params.store.hasIssuedCertificateFor(params.hosting.organizationId, names))
+  ) {
+    return rememberWaiting(params, { ...dns, termsHeld: true })
+  }
+  return pinCertificate(params, names, dns)
 }
 
 /** `unchanged`: DNS is ready and the hosting was already pinned to the matching row. */
@@ -243,7 +262,10 @@ export async function retryPendingLetsEncrypt(params: RequestParams): Promise<Pe
     })
     return outcome
   }
-  if (isPendingExpired(pending, params.now)) return dropPending('expired')
+  // A request held only for newer terms never expires: it goes ahead once they are accepted.
+  if (pending.dns?.termsHeld !== true && isPendingExpired(pending, params.now)) {
+    return dropPending('expired')
+  }
   if (composeOwnsAnotherCertificate(params.hosting.metadata)) return dropPending('refused')
   const result = await requestLetsEncrypt({ ...params, scheduled: true })
   if (!result.ok) return dropPending('refused')
