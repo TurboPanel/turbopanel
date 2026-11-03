@@ -552,7 +552,10 @@ export default {
 
       const registry = cachedDaemonCellRegistryFactory(env, db)
       const commandQueue = cachedCommandQueue ?? undefined
+      // The deploy-time firewall apply key; unset means observe-only everywhere.
+      const firewallApplyGate = firewallApplyGateFromEnv(stringBindingEnv(env))
       const deps = {
+        firewallApplyGate,
         commandQueue,
         resealDeps:
           cachedSecretsConfig && cachedDataEncryptionSecrets
@@ -563,8 +566,6 @@ export default {
             : undefined,
         secretsConfig: cachedSecretsConfig ?? undefined,
         dataEncryptionSecrets: cachedDataEncryptionSecrets ?? undefined,
-        // The deploy-time firewall apply key; unset means observe-only everywhere.
-        firewallApplyGate: firewallApplyGateFromEnv(stringBindingEnv(env)),
       }
 
       try {
