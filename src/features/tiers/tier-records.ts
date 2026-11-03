@@ -70,6 +70,17 @@ export type InsertTierInput = Readonly<{
 }>
 
 /**
+ * The provider a row names: none when it has no product (the `SX` row,
+ * which bills nowhere), else the given one, Stripe by default.
+ */
+function providerFor(
+  providerProductId: string | null,
+  provider: BillingProviderId = 'stripe'
+): BillingProviderId | null {
+  return providerProductId === null ? null : provider
+}
+
+/**
  * Add one tier row. `rank` and `isCustom` come from the ladder — a label
  * the ladder does not know is refused here, before anything is written.
  * A **plain insert**: `uniq_tier_label` raises on a second row for the
@@ -84,7 +95,7 @@ export async function insertTier(db: Db, input: InsertTierInput): Promise<TierRo
     .values({
       label: entry.label,
       rank: entry.rank,
-      provider: input.provider ?? 'stripe',
+      provider: providerFor(input.providerProductId, input.provider),
       providerProductId: input.providerProductId,
       priceCents: input.priceCents,
       currency: input.currency,
@@ -121,6 +132,7 @@ export async function updateTierById(
   for (const [key, value] of Object.entries(patch)) {
     if (value !== undefined) set[key] = value
   }
+  if (patch.providerProductId !== undefined) set.provider = providerFor(patch.providerProductId)
   const [row] = await db.update(tier).set(set).where(eq(tier.id, tierId)).returning()
   return row ?? null
 }
