@@ -37,7 +37,7 @@ function tierRow(id: string, label: string, rank: number) {
     id,
     label,
     rank,
-    provider: 'stripe',
+    provider: label === CUSTOM_TIER_LABEL ? null : 'stripe',
     providerProductId: label === CUSTOM_TIER_LABEL ? null : `prod_${label}`,
     priceCents: null,
     currency: null,
@@ -138,11 +138,18 @@ test('ensureCustomTierRow returns the existing SX row and creates one when the c
   const empty = grantDb({ tiers: [] })
   const created = await ensureCustomTierRow(empty)
   assertNotEquals(created, '')
-  const rows = empty.rows<{ label: string; rank: number; providerProductId: string | null; isCustom: boolean }>(tier)
+  const rows = empty.rows<{
+    label: string
+    rank: number
+    provider: string | null
+    providerProductId: string | null
+    isCustom: boolean
+  }>(tier)
   assertEquals(rows.length, 1)
+  // No product, so no provider: SX bills nowhere.
   assertEquals(
-    [rows[0]?.label, rows[0]?.rank, rows[0]?.providerProductId, rows[0]?.isCustom],
-    [CUSTOM_TIER_LABEL, selfHostedGrantRank(), null, true],
+    [rows[0]?.label, rows[0]?.rank, rows[0]?.provider, rows[0]?.providerProductId, rows[0]?.isCustom],
+    [CUSTOM_TIER_LABEL, selfHostedGrantRank(), null, null, true],
   )
 })
 
