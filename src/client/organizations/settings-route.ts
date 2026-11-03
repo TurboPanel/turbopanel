@@ -115,6 +115,21 @@ function auditEntries(entries: AuditEntry | readonly AuditEntry[] | null): reado
 
 type ParsedPatch<P> = { ok: true; patch: P } | OrganizationRouteValidationError
 
+/** Gate, read the JSON body and parse it: the shared start of every settings `PUT`. */
+async function openOrgSettingsPut<P>(
+  c: Context<AppEnv>,
+  gate: OrgSettingsGate,
+  parse: (body: Record<string, unknown>) => ParsedPatch<P>
+): Promise<{ scope: OrgSettingsScope; parsed: { ok: true; patch: P } } | Response> {
+  const scope = await openOrgSettingsScope(c, gate)
+  if (scope instanceof Response) return scope
+  const body = await parseJsonBody(c)
+  if (body instanceof Response) return body
+  const parsed = parse(body)
+  if (!parsed.ok) return c.json({ error: parsed.error }, parsed.status)
+  return { scope, parsed }
+}
+
 /**
  * `PUT` for a setting stored as top-level option keys: parse the body, merge
  * the patch, re-read, optionally audit, answer from what was stored.
@@ -134,14 +149,9 @@ export function orgOptionsPatchRoute<P extends Record<string, unknown>>(
   }>
 ) {
   return async (c: Context<AppEnv>) => {
-    const scope = await openOrgSettingsScope(c, params.gate)
-    if (scope instanceof Response) return scope
-
-    const body = await parseJsonBody(c)
-    if (body instanceof Response) return body
-
-    const parsed = params.parse(body)
-    if (!parsed.ok) return c.json({ error: parsed.error }, parsed.status)
+    const opened = await openOrgSettingsPut(c, params.gate, params.parse)
+    if (opened instanceof Response) return opened
+    const { scope, parsed } = opened
 
     const before = await loadOrgOptionsRow(scope.db, scope.id)
     if (!before) {
@@ -213,14 +223,9 @@ export function tlsSettingsPutRoute<P extends { acmeEnabled?: boolean }>(
   }>
 ) {
   return async (c: Context<AppEnv>) => {
-    const scope = await openOrgSettingsScope(c, params.gate)
-    if (scope instanceof Response) return scope
-
-    const body = await parseJsonBody(c)
-    if (body instanceof Response) return body
-
-    const parsed = params.parse(body)
-    if (!parsed.ok) return c.json({ error: parsed.error }, parsed.status)
+    const opened = await openOrgSettingsPut(c, params.gate, params.parse)
+    if (opened instanceof Response) return opened
+    const { scope, parsed } = opened
 
     const before = await loadOrgTlsSettings(scope.db, scope.id)
     if (!before) return c.json({ error: 'Not found' }, 404)
@@ -282,14 +287,9 @@ export function deployTimeoutPutRoute(
   }>
 ) {
   return async (c: Context<AppEnv>) => {
-    const scope = await openOrgSettingsScope(c, params.gate)
-    if (scope instanceof Response) return scope
-
-    const body = await parseJsonBody(c)
-    if (body instanceof Response) return body
-
-    const parsed = params.parse(body)
-    if (!parsed.ok) return c.json({ error: parsed.error }, parsed.status)
+    const opened = await openOrgSettingsPut(c, params.gate, params.parse)
+    if (opened instanceof Response) return opened
+    const { scope, parsed } = opened
 
     if ((await loadDeployTimeoutMinutes(scope.db, scope.id)) === undefined) {
       return c.json({ error: 'Not found' }, 404)
