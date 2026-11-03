@@ -334,3 +334,30 @@ test('createDenoAmqpCommandQueue drops a channel that throws on publish and reco
     connectStub.restore()
   }
 })
+
+test('createDenoAmqpCommandQueue never keeps a connection that finished opening after close', async () => {
+  let release: (() => void) | undefined
+  let closedConnections = 0
+  const connectStub = stub(amqplib, 'connect', async () => {
+    await new Promise<void>((resolve) => {
+      release = resolve
+    })
+    return {
+      createConfirmChannel: async () => createRecordingChannel(),
+      close: async () => {
+        closedConnections += 1
+      },
+    } as never
+  })
+  try {
+    const queue = createDenoAmqpCommandQueue({ amqpUrl: 'amqp://slow' })
+    const pending = queue.enqueue(LOSS_ENVELOPE)
+    await queue.close?.()
+    release?.()
+    await assertRejects(() => pending, Error, 'Command queue unavailable')
+    assertEquals(closedConnections, 1)
+    await assertRejects(() => queue.enqueue(LOSS_ENVELOPE), Error, 'Command queue unavailable')
+  } finally {
+    connectStub.restore()
+  }
+})

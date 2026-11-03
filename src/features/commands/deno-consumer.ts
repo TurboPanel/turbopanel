@@ -1,6 +1,7 @@
 import amqplib from 'amqplib'
 import type { Db } from '../../db/connection.ts'
 import type { DaemonCellRegistry } from '../../contracts/cell.ts'
+import { createClosablePause } from '../../lib/closable-pause.ts'
 import { compatLogError, compatLogWarn } from '../../lib/log-compat.ts'
 import { assertCommandAmqpTopology, COMMAND_AMQP_QUEUE } from './command-amqp-topology.ts'
 import {
@@ -73,24 +74,28 @@ export const COMMAND_CONSUMER_PREFETCH = 32
 /** Servers whose commands may run at the same moment. */
 export const COMMAND_LANE_CONCURRENCY = 8
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms))
-}
-
-async function connectAmqp(url: string): Promise<AmqpConnection> {
+/**
+ * `stopped` ends the retries early once the consumer is closed, and `pause`
+ * is the consumer's own wait, which close() cuts short.
+ */
+async function connectAmqp(
+  url: string,
+  stopped: () => boolean,
+  pause: (ms: number) => Promise<void>
+): Promise<AmqpConnection> {
   const maxAttempts = 30
   const tryConnect = async (attempt: number): Promise<AmqpConnection> => {
     try {
       return await amqplib.connect(url)
     } catch (error) {
-      if (attempt === maxAttempts) throw error
+      if (attempt === maxAttempts || stopped()) throw error
       const errMsg = error instanceof Error ? error.message : String(error)
       compatLogWarn(
         'command-consumer',
         `AMQP connect failed (attempt ${attempt}/${maxAttempts}): ${errMsg}`
       )
     }
-    await sleep(1000)
+    await pause(1000)
     return tryConnect(attempt + 1)
   }
   return tryConnect(1)
@@ -170,6 +175,8 @@ export async function startCommandConsumer(
   let closed = false
   let reconnecting = false
   let session: ConsumerSession | undefined
+  const waits = createClosablePause()
+  const pause = waits.pause
 
   /**
    * Attach the listeners amqplib requires us to attach.
@@ -203,7 +210,7 @@ export async function startCommandConsumer(
   }
 
   async function openSession(): Promise<ConsumerSession> {
-    const connection = await connectAmqp(opts.amqpUrl)
+    const connection = await connectAmqp(opts.amqpUrl, () => closed, pause)
     // `channel` is filled in below; the object has to exist first so the
     // connection's listeners can be attached before anything else awaits.
     const opened = {
@@ -283,7 +290,7 @@ export async function startCommandConsumer(
           `AMQP reconnect failed: ${errorMessage(error)} — retrying in ${delay}ms`
         )
       }
-      await sleep(delay)
+      await pause(delay)
       return attempt(Math.min(delay * 2, RECONNECT_MAX_DELAY_MS))
     }
     await attempt(RECONNECT_BASE_DELAY_MS)
@@ -384,6 +391,7 @@ export async function startCommandConsumer(
   return {
     async close(): Promise<void> {
       closed = true
+      waits.close()
       const open = session
       session = undefined
       if (!open) return

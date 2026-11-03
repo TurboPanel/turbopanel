@@ -427,11 +427,18 @@ test('startCommandConsumer close stops the background retry when the broker neve
       registry: emptyRegistry(),
       amqpUrl: 'amqp://never',
     })
+    // Let the background retry fail once and start its backoff wait.
+    for (let i = 0; i < 200 && attempts < 2; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    }
+    assertEquals(attempts, 2)
     await handle.close()
-    const afterClose = attempts
-    // The retry sleeps one second, then sees `closed` and stops.
-    await new Promise((resolve) => setTimeout(resolve, 1_500))
-    assertEquals(attempts <= afterClose + 1, true)
+    // close() ends the backoff wait at once: no later connect, and no timer
+    // left behind (the test's op sanitizer fails on a pending one).
+    for (let i = 0; i < 20; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    }
+    assertEquals(attempts, 2)
   } finally {
     connectStub.restore()
   }

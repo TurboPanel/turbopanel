@@ -42,6 +42,7 @@ function errorMessage(error: unknown): string {
 export class AmqpConfirmPublisher {
   private session: PublisherSession | null = null
   private connectPromise: Promise<PublisherSession | null> | null = null
+  private closed = false
 
   constructor(private readonly opts: AmqpConfirmPublisherOptions) {}
 
@@ -89,10 +90,17 @@ export class AmqpConfirmPublisher {
 
   /** The live session, opening one when needed; `null` when the broker is unreachable. */
   private async ensureSession(): Promise<PublisherSession | null> {
+    if (this.closed) return null
     if (this.session && !this.session.lost) return this.session
     this.connectPromise ??= this.open()
-      .then((opened) => {
+      .then(async (opened) => {
         if (opened.lost) return null
+        if (this.closed) {
+          // close() landed while this was connecting: never keep it.
+          opened.lost = true
+          await opened.connection.close().catch(() => undefined)
+          return null
+        }
         this.session = opened
         return opened
       })
@@ -136,7 +144,9 @@ export class AmqpConfirmPublisher {
     return true
   }
 
+  /** Shuts the publisher down for good; later publishes return `false`. */
   async close(): Promise<void> {
+    this.closed = true
     const session = this.session
     this.session = null
     if (!session) return
