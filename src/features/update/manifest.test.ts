@@ -371,13 +371,10 @@ test('resolveUpdateManifest defers to a registered provider for every channel', 
   }
 })
 
-test('resolveUpdateManifest keeps the daemon provider off the instance kind', async () => {
+test('resolveUpdateManifest gives instance and UI no target while the dev overlay is installed', async () => {
   await resetUpdateManifestCacheForTests()
-  const instanceUrl = 'https://github.com/TurboPanel/turbopanel/releases/download/rc/manifest.json'
-  const stub = stubFetch(async (url) =>
-    url === instanceUrl
-      ? new Response(await manifestBody('rc', 'inst1', '0.1.1'), { status: 200 })
-      : new Response('missing', { status: 404 })
+  const stub = stubFetch(
+    async () => new Response(await manifestBody('release', 'inst1', '0.1.1'), { status: 200 })
   )
   try {
     setUpdateManifestProvider(() =>
@@ -385,15 +382,17 @@ test('resolveUpdateManifest keeps the daemon provider off the instance kind', as
         commit: 'daemon-only',
         buildId: 'd',
         builtAt: '2020-01-01T00:00:00.000Z',
-        channel: 'rc',
+        channel: 'release',
         manifestUrl: 'https://example.invalid/m.json',
       })
     )
-    assertEquals((await resolveUpdateManifest('rc'))?.commit, 'daemon-only')
-    assertEquals((await resolveUpdateManifest('rc', 'instance'))?.commit, 'inst1')
-    assertEquals((await resolveUpdateManifest('rc', 'instance'))?.version, '0.1.1')
-    assertEquals(await resolveUpdateManifest('trunk', 'instance'), null)
-    assertEquals(stub.calls, [instanceUrl])
+    // A dev box runs the control plane and the web interface from source, so
+    // the channel's builds are never targets (they would be a rollback).
+    assertEquals((await resolveUpdateManifest('release'))?.commit, 'daemon-only')
+    assertEquals(await resolveUpdateManifest('release', 'instance'), null)
+    assertEquals(await resolveUpdateManifest('release', 'ui'), null)
+    assertEquals(await resolveUpdateManifest('canary', 'instance', { fresh: true }), null)
+    assertEquals(stub.calls, [])
   } finally {
     setUpdateManifestProvider(null)
     stub.restore()

@@ -44,7 +44,8 @@ src/
   overlay (`src/developer/dev-update-overlay.ts` — client update UI resolves
   the target from the local daemon checkout's `dist/manifest.json`, whatever
   channel the instance follows, and rebuilds the overlay before enqueueing
-  updates, instead of reading the public rail)
+  updates, instead of reading the public rail; the control plane and web
+  interface get no target, since both run from the checkouts)
 - `src/workers.ts` — Workers entry (`wrangler.jsonc` main); registers
   `developer/routes-core` once per isolate
 - `scripts/check-workers-bundle.mjs` — Wrangler dry-run of the deploy entrypoint

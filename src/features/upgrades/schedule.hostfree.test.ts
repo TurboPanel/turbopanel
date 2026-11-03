@@ -99,12 +99,13 @@ test('a last check in the future (clock moved back) never stalls the schedule pa
   )
 })
 
-test('an automatic run starts only on drift, with no run open and updates not paused', () => {
-  const base = { targetDiffers: true, runActive: false, paused: false }
+test('an automatic run starts only on drift, with no run open, updates not paused, outside development', () => {
+  const base = { targetDiffers: true, runActive: false, paused: false, development: false }
   assertEquals(shouldAutoStartRun(base), true)
   assertEquals(shouldAutoStartRun({ ...base, targetDiffers: false }), false)
   assertEquals(shouldAutoStartRun({ ...base, runActive: true }), false)
   assertEquals(shouldAutoStartRun({ ...base, paused: true }), false)
+  assertEquals(shouldAutoStartRun({ ...base, development: true }), false)
 })
 
 test('a test install with a 5 minute check keeps its own minute inside each 5 minutes', () => {

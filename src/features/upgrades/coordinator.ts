@@ -847,6 +847,7 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
         targetDiffers: differs,
         runActive: active !== null,
         paused,
+        development: deps.development,
       })
     ) {
       const started = await createUpgradeCoordinator({ ...deps, trace: undefined }).start({
