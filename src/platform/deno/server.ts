@@ -58,6 +58,10 @@ import { runManagedIngressOrphanSweep } from '../../features/managed/ingress-des
 import { runDatacenterRepinFanoutSweep } from '../../client/datacenters/repin-fanout.ts'
 import { runNetworkProbeSweep } from '../../client/datacenters/network-probe-sweep.ts'
 import { runSystemReconcileSweep } from '../../features/system/reconcile.ts'
+import {
+  createColocatedRepairStore,
+  createColocatedSelfRepair,
+} from '../../client/authn/colocated-self-repair.ts'
 import { runHostLossTick } from '../../daemon/cell/host-loss-tick.ts'
 import { runBackupsReconcileSweep } from '../../features/backups/reconcile.ts'
 import { runFolderReconcileSweep } from '../../daemon/cell/folder-reconcile-sweep.ts'
@@ -668,7 +672,13 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
   if (developerSurface) {
     options.registerDeveloperSurface?.({ routes, sessionSecrets, db })
   }
+  // Co-located daemon credential self-repair: at boot and after an enroll or
+  // session refusal, at most once per interval (`colocated-self-repair.ts`).
+  const colocatedSelfRepair = createColocatedSelfRepair({
+    store: createColocatedRepairStore(db),
+  })
   registerDaemonApiRoutes(routes, {
+    onCredentialRefusal: () => void colocatedSelfRepair.run('refusal'),
     secrets: daemonJwtKeyring,
     challengeSigningSecrets,
     secretsConfig,
@@ -832,6 +842,7 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
   // Observe pending self-host inventory on boot, not only after the first
   // 60s cell tick. Hello/DO still must not enqueue; this is the Deno timer path.
   runSystemReconcileSweepTick()
+  void colocatedSelfRepair.run('boot')
   // Deno process timer (not a Durable Object) — cost-safe. Both backends demote
   // stale presence at DAEMON_OFFLINE_SWEEP_MS; Redis uses this timer-driven
   // maintain() + sweepStalePresence loop. Workers is disconnect-first (no periodic

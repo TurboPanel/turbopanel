@@ -1406,6 +1406,18 @@ function authProofPayload(
     : buildAuthPayload(fields)
 }
 
+/**
+ * The refusals a co-located daemon with stale credential files gets:
+ * `401 Invalid license` or `409 Server key already registered` from
+ * `POST /enroll`, and `404 Server key not found` from `POST /auth/session`.
+ */
+export function isCredentialRefusal(method: string, path: string, status: number): boolean {
+  if (method !== 'POST') return false
+  if (path.endsWith('/enroll')) return status === 401 || status === 409
+  if (path.endsWith('/auth/session')) return status === 404
+  return false
+}
+
 export function registerDaemonApiRoutes<E extends Env>(
   app: Hono<E>,
   options: {
@@ -1452,6 +1464,13 @@ export function registerDaemonApiRoutes<E extends Env>(
     panelIdentity?: () => Promise<PanelIdentity | null>
     /** The panel's public origins for the identity document, from the request's database client. */
     identityUrls?: (db: Db) => Promise<string[]>
+    /**
+     * Called (fire and forget) after an enroll or session refusal that a
+     * co-located daemon with stale credential files would get. The Deno
+     * composition root passes the rate-limited co-located self-repair
+     * (`src/client/authn/colocated-self-repair.ts`); Workers passes nothing.
+     */
+    onCredentialRefusal?: () => void
   } = {}
 ) {
   const daemon = new Hono<DaemonApiEnv>()
@@ -1459,6 +1478,13 @@ export function registerDaemonApiRoutes<E extends Env>(
   const runtime = options.runtime ?? 'workers'
   const identityDocumentCache = createIdentityDocumentCache()
   daemon.use('*', signDaemonResponses(options.panelIdentity))
+  const onCredentialRefusal = options.onCredentialRefusal
+  if (onCredentialRefusal) {
+    daemon.use('*', async (c, next) => {
+      await next()
+      if (isCredentialRefusal(c.req.method, c.req.path, c.res.status)) onCredentialRefusal()
+    })
+  }
   const tlsPublic = options.tlsPublic ?? false
   const deployment = metricsDeploymentKindForRuntime(runtime)
   const metricsChartCache = createMetricsChartCache(runtime)
