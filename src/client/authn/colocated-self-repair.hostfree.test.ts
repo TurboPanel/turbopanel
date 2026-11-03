@@ -29,6 +29,7 @@ import {
   createColocatedSelfRepair,
   diagnoseColocatedCredentials,
   repairColocatedCredentialsOnce,
+  repairColocatedCredentialsOnRequest,
 } from './colocated-self-repair.ts'
 import {
   clearColocatedDaemonIdentityFiles,
@@ -681,4 +682,147 @@ test('retries stop once no socket refusal has come in for the window', async () 
   assertEquals(await repair.tick(), null)
   clock += 60_000
   assertEquals(await repair.tick(), null)
+})
+
+// ── On request ───────────────────────────────────────────────────────────
+
+/** The 2026-11-03 incident: both ids on disk come from another database. */
+const FOREIGN_FILES = {
+  [LICENSE_ID]: FOREIGN_LICENSE,
+  [LICENSE_TOKEN]: 'token-from-a-throwaway-db',
+  [SERVER_ID]: FOREIGN_SERVER,
+  [SERVER_KEY_ID]: 'key-from-a-throwaway-db',
+}
+
+test('on request: foreign ids on disk are repaired onto the same seat', async () => {
+  const credentials = await useColocatedCredentialsTempDir()
+  try {
+    await writeFiles(credentials.dir, FOREIGN_FILES)
+    const { store, state } = fakeStore()
+    const outcome = await repairColocatedCredentialsOnRequest(store, tempDisk(), SEAT.serverId)
+    assertEquals(outcome.status, 'repaired')
+    if (outcome.status === 'repaired') {
+      assertEquals(outcome.serverId, SEAT.serverId)
+      assertEquals(outcome.clearedKey, true)
+    }
+    // Database first (under the lock), then the files; same license and server.
+    assertEquals(state.events, ['lock', 'rotate', `clear:${KEY_ID}`])
+    assertEquals(await readTrimmed(`${credentials.dir}/${LICENSE_ID}`), SEAT.licenseId)
+    assertEquals(await readTrimmed(`${credentials.dir}/${SERVER_ID}`), SEAT.serverId)
+    assertEquals(await readTrimmed(`${credentials.dir}/${LICENSE_TOKEN}`), 'reissued-token-1')
+  } finally {
+    await credentials.restore()
+  }
+})
+
+test('on request: healthy files still get a new token and keep the key', async () => {
+  const { store, state } = fakeStore()
+  let written: { seat: ColocatedSeat; token: string } | null = null
+  const disk = memoryDisk(HEALTHY_DISK)
+  disk.write = (seat, token) => {
+    written = { seat, token }
+    return Promise.resolve(true)
+  }
+  const outcome = await repairColocatedCredentialsOnRequest(store, disk, SEAT.serverId)
+  assertEquals(outcome, {
+    status: 'repaired',
+    serverId: SEAT.serverId,
+    reasons: ['an owner asked for new credentials'],
+    clearedKey: false,
+  })
+  assertEquals(state.events, ['lock', 'rotate'])
+  assertEquals(state.key?.id, KEY_ID)
+  assertEquals(written, { seat: SEAT, token: 'reissued-token-1' })
+})
+
+test('on request: another server, no seat or no daemon files change nothing', async () => {
+  const other = fakeStore()
+  assertEquals(
+    await repairColocatedCredentialsOnRequest(
+      other.store,
+      memoryDisk(HEALTHY_DISK),
+      FOREIGN_SERVER
+    ),
+    { status: 'refused', code: 'not_colocated_server' }
+  )
+  assertEquals(other.state.events, [])
+
+  const noSeat = fakeStore({ seat: null })
+  assertEquals(
+    await repairColocatedCredentialsOnRequest(
+      noSeat.store,
+      memoryDisk(HEALTHY_DISK),
+      SEAT.serverId
+    ),
+    { status: 'refused', code: 'no_colocated_seat' }
+  )
+  assertEquals(noSeat.state.events, [])
+
+  const credentials = await useColocatedCredentialsTempDir()
+  try {
+    const bare = fakeStore()
+    assertEquals(await repairColocatedCredentialsOnRequest(bare.store, tempDisk(), SEAT.serverId), {
+      status: 'refused',
+      code: 'no_daemon_files',
+    })
+    assertEquals(bare.state.events, [])
+    assertEquals(await pathExists(`${credentials.dir}/${LICENSE_ID}`), false)
+  } finally {
+    await credentials.restore()
+  }
+})
+
+test('on request: a revoked key is refused and never touched', async () => {
+  const credentials = await useColocatedCredentialsTempDir()
+  try {
+    await writeFiles(credentials.dir, FOREIGN_FILES)
+    const { store, state } = fakeStore({ key: { ...ACTIVE_KEY, active: false } })
+    assertEquals(await repairColocatedCredentialsOnRequest(store, tempDisk(), SEAT.serverId), {
+      status: 'refused',
+      code: 'daemon_key_revoked',
+    })
+    assertEquals(state.events, ['lock'])
+    assertEquals(state.key?.active, false)
+    assertEquals(await readTrimmed(`${credentials.dir}/${LICENSE_ID}`), FOREIGN_LICENSE)
+  } finally {
+    await credentials.restore()
+  }
+})
+
+test('on request: a seat that changed under the lock changes nothing', async () => {
+  const { store, state } = fakeStore()
+  state.onLock = () => {
+    state.seat = { ...SEAT, licenseId: FOREIGN_LICENSE }
+  }
+  assertEquals(
+    await repairColocatedCredentialsOnRequest(store, memoryDisk(HEALTHY_DISK), SEAT.serverId),
+    { status: 'refused', code: 'seat_changed' }
+  )
+  assertEquals(state.events, ['lock'])
+})
+
+test('on request: a failed file write is reported after the database changed', async () => {
+  const { store, state } = fakeStore()
+  const disk = memoryDisk(HEALTHY_DISK, () => Promise.resolve(false))
+  const outcome = await repairColocatedCredentialsOnRequest(store, disk, SEAT.serverId)
+  assertEquals(outcome, {
+    status: 'failed',
+    serverId: SEAT.serverId,
+    reason: 'could not write license files',
+  })
+  assertEquals(state.events, ['lock', 'rotate'])
+})
+
+test('on request: a non-temp dir is refused in a test run before anything changes', async () => {
+  setColocatedCredentialsDirForTesting(REAL_LOOKING_DIR)
+  try {
+    const { store, state } = fakeStore()
+    await assertRejects(() =>
+      repairColocatedCredentialsOnRequest(store, createColocatedRepairDisk(), SEAT.serverId)
+    )
+    assertEquals(state.events, [])
+  } finally {
+    setColocatedCredentialsDirForTesting(null)
+  }
+  assertEquals(await pathExists(REAL_LOOKING_DIR), false)
 })

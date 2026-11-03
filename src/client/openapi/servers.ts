@@ -3,6 +3,7 @@ import {
   SERVER_DELETE_BLOCKER_KIND_VALUES,
   SERVER_SERVICES_REMOVAL_KIND_VALUES,
 } from '../servers/delete-guards.ts'
+import { COLOCATED_REPAIR_REFUSAL_CODES } from '../authn/colocated-self-repair.ts'
 import {
   CLIENT_ADDRESS_PORT_KEYS,
   CLIENT_ADDRESS_SCOPES,
@@ -1966,6 +1967,66 @@ const serverBasePaths: Record<string, unknown> = {
               },
             },
           },
+        },
+      },
+    },
+  },
+  '/api/client/v1/servers/{id}/colocated-repair': {
+    post: {
+      tags: ['Servers'],
+      summary: 'Repair the connection of the server this control plane runs on',
+      description:
+        "Self-hosted only (409 `not_deno` on High Availability). Owner only, always behind step-up re-authentication (403 `reauth_required`, action `server.colocated_repair`), audited as `server.colocated_repair`. For the server this control plane runs on, whose daemon is refused with an invalid license or an already registered key: issues a new token on the existing co-located license (same license, same server; no server is created), clears this server's stored daemon key when the daemon no longer holds it, then writes the daemon's server id, license id and license token files, so the daemon enrolls the same server again. A revoked key is never touched (409 `daemon_key_revoked`). Any other server is refused (409 `not_colocated_server`). The token is never returned or logged.",
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        {
+          name: 'id',
+          in: 'path',
+          required: true,
+          schema: { type: 'string', format: 'uuid' },
+        },
+      ],
+      responses: {
+        '200': {
+          description:
+            'New credentials written. `reasons` says what was wrong with the files; `clearedKey` says whether the stored daemon key was cleared so the daemon could enroll again.',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['ok', 'serverId', 'reasons', 'clearedKey'],
+                properties: {
+                  ok: { type: 'boolean', enum: [true] },
+                  serverId: { type: 'string', format: 'uuid' },
+                  reasons: { type: 'array', items: { type: 'string' } },
+                  clearedKey: { type: 'boolean' },
+                },
+              },
+            },
+          },
+        },
+        '403': {
+          description: 'Not the organization owner, or step-up required (`reauth_required`)',
+        },
+        '404': { description: 'Server not found in this organization' },
+        '409': {
+          description: 'Refused; nothing was changed. `error` is a plain message.',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error', 'code'],
+                properties: {
+                  error: { type: 'string' },
+                  code: { type: 'string', enum: [...COLOCATED_REPAIR_REFUSAL_CODES] },
+                },
+              },
+            },
+          },
+        },
+        '500': {
+          description:
+            "A new token was issued but the daemon's files could not be written (`write_failed`); try again.",
         },
       },
     },

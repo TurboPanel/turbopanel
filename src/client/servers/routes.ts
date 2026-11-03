@@ -110,6 +110,7 @@ import { registerServerMetricsRoutes } from './metrics-routes.ts'
 import { registerServerTrafficMapRoutes } from './traffic-map-routes.ts'
 import { registerServerAddressRoutes } from './address-routes.ts'
 import { registerServerReenrollTicketRoutes } from './reenroll-ticket-routes.ts'
+import { registerServerColocatedRepairRoutes } from './colocated-repair-routes.ts'
 import { registerServerLabelRoutes } from './labels-routes.ts'
 import { registerServerServicesRoutes } from './services-routes.ts'
 import {
@@ -1489,4 +1490,5 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
   registerServerPrincipalRemovalRoutes(router, opts)
   registerServerLicenseTierRoutes(router, opts)
   registerServerReenrollTicketRoutes(router, opts)
+  registerServerColocatedRepairRoutes(router, opts)
 }
