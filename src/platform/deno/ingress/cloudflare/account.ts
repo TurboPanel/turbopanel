@@ -158,7 +158,8 @@ function chooseAccount(
 ): { accountId: string } | { problem: string } {
   const ids = verified.owner.kind === 'account' ? [verified.owner.accountId] : verified.accountIds
   if (stored) {
-    return ids.includes(stored)
+    // A refused account list says nothing about the stored account: check it directly.
+    return ids.includes(stored) || verified.accountsUnreadable
       ? { accountId: stored }
       : {
           problem: `The token no longer reaches the Cloudflare account this control plane uses (${stored}).`,

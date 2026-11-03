@@ -301,6 +301,44 @@ test('a user token whose account list is refused says the account is unknown', a
   )
 })
 
+test('a recheck whose account list is refused still checks the stored account', async () => {
+  const cf = createFakeCloudflare({
+    token: TOKEN,
+    refuse: [{ method: 'GET', path: /^\/accounts\?page=/, message: 'no' }],
+  })
+  const result = await checkCloudflareToken(TOKEN, cf.fetch, NOW, 'acct-1')
+  assertEquals(result.preflight.ok, true)
+  assertEquals(result.preflight.accountId, 'acct-1')
+  const noTunnel = createFakeCloudflare({
+    token: TOKEN,
+    refuse: [{ method: 'GET', path: /^\/accounts\?page=/, message: 'no' }],
+    policies: [policy('allow', { 'com.cloudflare.api.account.acct-1': '*' }, ['DNS Write'])],
+  })
+  const missing = await checkCloudflareToken(TOKEN, noTunnel.fetch, NOW, 'acct-1')
+  assertEquals(
+    detail(missing.preflight, 'scope-tunnels')?.detail,
+    'The token does not have Cloudflare Tunnel Edit on the account (Account › Cloudflare Tunnel › Edit).'
+  )
+  assertEquals(missing.keepStored, false)
+})
+
+test('Tunnel Edit on the all-zones wildcard names the zones of the account', async () => {
+  const cf = createFakeCloudflare({
+    token: TOKEN,
+    policies: [
+      policy('allow', { 'com.cloudflare.api.account.zone.*': '*' }, [
+        'Cloudflare Tunnel Write',
+        'DNS Write',
+      ]),
+    ],
+  })
+  const result = await preflightCloudflareToken(TOKEN, cf.fetch, NOW)
+  assertEquals(
+    detail(result, 'scope-tunnels')?.detail,
+    'Cloudflare Tunnel Edit is only granted on the zones of the account. Give it to the account instead.'
+  )
+})
+
 test('a recheck evaluates the stored account, not the first one the token picks', async () => {
   const cf = createFakeCloudflare({ token: TOKEN })
   const moved = await checkCloudflareToken(TOKEN, cf.fetch, NOW, 'acct-other')
