@@ -92,26 +92,30 @@ export class AmqpConfirmPublisher {
   private async ensureSession(): Promise<PublisherSession | null> {
     if (this.closed) return null
     if (this.session && !this.session.lost) return this.session
-    this.connectPromise ??= this.open()
-      .then(async (opened) => {
-        if (opened.lost) return null
-        if (this.closed) {
-          // close() landed while this was connecting: never keep it.
-          opened.lost = true
-          await opened.connection.close().catch(() => undefined)
-          return null
-        }
-        this.session = opened
-        return opened
-      })
-      .catch((error: unknown) => {
-        compatLogWarn(this.opts.logScope, `AMQP connection failed: ${errorMessage(error)}`)
-        return null
-      })
-      .finally(() => {
-        this.connectPromise = null
-      })
+    this.connectPromise ??= this.connectOnce().finally(() => {
+      this.connectPromise = null
+    })
     return await this.connectPromise
+  }
+
+  /** One connect attempt shared by every publish waiting on it. */
+  private async connectOnce(): Promise<PublisherSession | null> {
+    let opened: PublisherSession
+    try {
+      opened = await this.open()
+    } catch (error) {
+      compatLogWarn(this.opts.logScope, `AMQP connection failed: ${errorMessage(error)}`)
+      return null
+    }
+    if (opened.lost) return null
+    if (this.closed) {
+      // close() landed while this was connecting: never keep it.
+      opened.lost = true
+      await opened.connection.close().catch(() => undefined)
+      return null
+    }
+    this.session = opened
+    return opened
   }
 
   /**
