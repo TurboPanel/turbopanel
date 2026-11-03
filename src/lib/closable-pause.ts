@@ -27,7 +27,8 @@ export function createClosablePause(): ClosablePause {
     },
     close(): void {
       closed = true
-      for (const wake of [...waking]) wake()
+      // Deleting the current entry while iterating a Set is safe.
+      for (const wake of waking) wake()
     },
   }
 }
