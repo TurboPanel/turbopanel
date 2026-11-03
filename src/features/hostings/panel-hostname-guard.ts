@@ -38,8 +38,13 @@ export class PanelHostnameClaimError extends HTTPException {
   }
 }
 
-/** The set of normalised names the panel serves. */
+/**
+ * The set of normalised names the panel serves. Hosted (Workers, no `Deno`
+ * global) the control plane's names are platform-managed and stored hostname
+ * rows are ignored, so none is refused here.
+ */
 export async function loadPanelHostSet(db: Db): Promise<Set<string>> {
+  if (typeof Deno === 'undefined') return new Set()
   const rows = await listInstanceHostnames(db)
   return new Set(rows.map((row) => normalizeHostForCompare(row.host)))
 }

@@ -566,8 +566,8 @@ GitLab OAuth redirect all read it. Self-hosted, it is the operator's public URL
 list only — never the request origin (behind Caddy → Unix socket that is not
 an address a provider can dial) and never `TURBOPANEL_BASE_URL` from the
 process env. Hosted (`runtime === 'workers'`), it is `TURBOPANEL_BASE_URL`
-(https only, own port kept via `publicHttpsOrigin`, a blank or `http:` value
-ignored) ahead of the stored list, which nothing fills there. Without it the
+then `TURBOPANEL_PUBLIC_URLS` (https only, always port-free, a blank or
+`http:` value ignored); stored hostname rows are ignored there. Without it the
 hosted wizard answered `503 public_url_not_configured`. The console reads the
 same set from `GET /forges/webhook-origins` (client: `organization:manage`;
 admin: admin role) as `{ origins, platformManaged }`, so it never offers an
