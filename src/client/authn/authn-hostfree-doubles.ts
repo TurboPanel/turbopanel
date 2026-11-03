@@ -289,7 +289,7 @@ function fetchWhereRows(
         .map((row) => ({
           id: row.id,
           options: row.options ?? null,
-          isAcmeEnabled: row.isAcmeEnabled ?? true,
+          isAcmeEnabled: row.isAcmeEnabled ?? false,
         }))
     )
   }

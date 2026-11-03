@@ -134,13 +134,13 @@ export const organization = pgTable(
     /**
      * Let's Encrypt allowed for this organization: gates `POST /tls` with
      * `source: 'lets_encrypt'`, the one-click button, compose `tls.mode:
-     * automatic` and the deploy-time `tlsMode: 'acme'` wire. New organizations
-     * start on; organizations made before the column keep what
-     * `options.acmeEnabled` said (absent meant off). Some operators turn it off
-     * so Let's Encrypt is never used against their servers; turning it off does
-     * not revoke certificates already issued.
+     * automatic` and the deploy-time `tlsMode: 'acme'` wire. Off until the
+     * organization turns it on: each organization is responsible for its own
+     * servers, so it opts in to Let's Encrypt itself. Organizations made before
+     * the column keep what `options.acmeEnabled` said. Turning it off does not
+     * revoke certificates already issued.
      */
-    isAcmeEnabled: boolean('is_acme_enabled').default(true).notNull(),
+    isAcmeEnabled: boolean('is_acme_enabled').default(false).notNull(),
     /** Destination finished backups are copied to unless a cluster chooses otherwise. */
     backupDestinationId: uuid('backup_destination_id').references(
       (): AnyPgColumn => backupTarget.id,

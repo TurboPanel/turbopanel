@@ -150,9 +150,9 @@ export type OrganizationOptions = {
   docker?: OrganizationDockerNetworking
   /**
    * Old copy of `organization.is_acme_enabled`, the Let's Encrypt switch. Nothing
-   * reads it any more; it is still written (on create and by the TLS settings
-   * route) for one release so an older build rolled back onto the database
-   * sees the same switch. Removed in a later release.
+   * reads it any more; the TLS settings route still writes it for one release so
+   * an older build rolled back onto the database sees the same switch. Removed
+   * in a later release.
    */
   acmeEnabled?: boolean
   /**
@@ -487,15 +487,6 @@ export function resolvePrincipalNamePolicy(options: OrganizationOptions): Princi
 export function resolveTemperatureUnit(options: OrganizationOptions): TemperatureUnit {
   return options.temperatureUnit ?? DEFAULT_TEMPERATURE_UNIT
 }
-
-/**
- * `organization.options` for an organization being created. The Let's Encrypt
- * switch itself is the `is_acme_enabled` column (on by default); this keeps the
- * old option copy in step with it for one release.
- */
-export const NEW_ORGANIZATION_OPTIONS: Readonly<OrganizationOptions> = Object.freeze({
-  acmeEnabled: true,
-})
 
 /** Longest address the authority accepts as a contact (the mailbox limit). */
 export const ACME_CONTACT_EMAIL_MAX_LENGTH = 254

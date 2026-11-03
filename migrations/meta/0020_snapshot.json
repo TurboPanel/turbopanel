@@ -1,5 +1,5 @@
 {
-  "id": "a5774fab-67c1-4485-aec4-8df3fc17cea9",
+  "id": "2e5c547d-a0f1-43f0-9d49-6a20541e2a71",
   "prevId": "17ee67a0-6e07-44ac-9bd8-917059ded555",
   "version": "7",
   "dialect": "postgresql",
@@ -9114,7 +9114,7 @@
           "type": "boolean",
           "primaryKey": false,
           "notNull": true,
-          "default": true
+          "default": false
         },
         "backup_destination_id": {
           "name": "backup_destination_id",

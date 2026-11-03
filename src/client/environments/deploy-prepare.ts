@@ -4301,7 +4301,7 @@ export type HostingTlsWire =
  * ACME-managed Let's Encrypt pins omit `tlsId` on the wire so older daemons
  * fall back to `tls internal`, and they are excluded from `tlsMaterial`.
  *
- * `acmeEnabled` is the org's gate (`organization.is_acme_enabled`, on for
+ * `acmeEnabled` is the org's gate (`organization.is_acme_enabled`, off for
  * new organizations) — checked here as defense in depth even though `POST
  * /tls` and the compose reconcile already refuse while the org is opted out,
  * because an `automatic` row can predate the org later disabling the gate.
