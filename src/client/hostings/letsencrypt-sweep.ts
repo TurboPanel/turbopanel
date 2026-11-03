@@ -37,7 +37,6 @@ import type { DerivedSecretsConfig, SecretsConfig } from '../../lib/secrets/secr
 import { runOriginCertificateSweepTick } from '../../features/tunnels/origin-certificate-sweep.ts'
 import { createLetsEncryptStore, loadAcmeEnabled } from './letsencrypt-store.ts'
 import { type HostingApplyDeps, queueHostingCertificateApply } from './letsencrypt-apply.ts'
-import { acmeTermsHeldFor, sharedAcmeTermsReader } from '../../features/organizations/acme-terms.ts'
 
 /** Waiting hostings looked at per tick (each one costs a DNS lookup or two). */
 export const HOSTING_LETS_ENCRYPT_SWEEP_BATCH = 10
@@ -236,16 +235,11 @@ export async function runHostingLetsEncryptSweepTick(
   }
   const sendPin = pinSender(db, deps.apply)
   const acmeByOrganization = new Map<string, boolean>()
-  const termsHeldByOrganization = new Map<string, boolean>()
   await forEachBounded(rows, HOSTING_LETS_ENCRYPT_SWEEP_CONCURRENCY, stop, async (row) => {
     const organizationId = await resolveEntityOrganizationId(db, 'hosting', row.id)
     if (organizationId === null) return
     if (!acmeByOrganization.has(organizationId)) {
       acmeByOrganization.set(organizationId, await loadAcmeEnabled(db, organizationId))
-      termsHeldByOrganization.set(
-        organizationId,
-        await acmeTermsHeldFor(db, organizationId, sharedAcmeTermsReader())
-      )
     }
     // A request waiting on a name that has since become tunnel-only is dropped.
     if (await settleTunnelOnlyHosting(db, { organizationId, hostingId: row.id })) {
@@ -259,7 +253,6 @@ export async function runHostingLetsEncryptSweepTick(
       now: now(),
       hosting: { ...row, organizationId },
       acmeEnabled: acmeByOrganization.get(organizationId) === true,
-      termsHeld: termsHeldByOrganization.get(organizationId) === true,
     })
     if (outcome === 'expired') await announceDropped(db, deps.apply, row, organizationId)
     if (outcome === 'pinned') {

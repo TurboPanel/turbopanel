@@ -31,10 +31,6 @@ import { parseJsonBody } from '../shared.ts'
 import { buildDnsCertContext } from '../tls/dns-certificate-context.ts'
 import { loadScope, type Scope } from './carrier-routes.ts'
 import { taskDbOpener } from './task-db.ts'
-import {
-  ACME_TERMS_HOLD_MESSAGE,
-  acmeTermsHeldFor,
-} from '../../features/organizations/acme-terms.ts'
 
 const PATHS = [
   '/organizations/:id/dns-certificates',
@@ -202,20 +198,6 @@ function zoneFailure(c: Context<AppEnv>, err: unknown, names: readonly string[])
   throw err
 }
 
-/** New DNS certificates wait for newer Let's Encrypt terms; test certificates never do. */
-async function newOrdersWaitForTerms(
-  ctx: DnsCertContext,
-  organizationId: string,
-  staging: boolean
-): Promise<boolean> {
-  if (staging || !ctx.currentTerms) return false
-  return await acmeTermsHeldFor(ctx.db, organizationId, ctx.currentTerms)
-}
-
-function isStagingRow(metadata: unknown): boolean {
-  return (metadata as { acme?: { staging?: unknown } } | null)?.acme?.staging === true
-}
-
 function createResponse(wiring: Wiring) {
   return async (c: Context<AppEnv>, scope: Scope): Promise<Response> => {
     const body = await parseJsonBody(c)
@@ -253,12 +235,8 @@ function createResponse(wiring: Wiring) {
       names: names.names,
       zones,
       staging,
-      termsHeld: await newOrdersWaitForTerms(ctx, scope.organizationId, staging),
     })
     if (started.kind === 'limit') return c.json({ error: 'dns_certificate_limit' }, 429)
-    if (started.kind === 'terms_changed') {
-      return c.json({ error: 'acme_terms_changed', message: ACME_TERMS_HOLD_MESSAGE }, 409)
-    }
     if (started.kind === 'created') {
       await audit(c, scope, 'tls.dns_certificate.create', started.id, {
         names: names.names,
@@ -303,14 +281,6 @@ function retryResponse(wiring: Wiring) {
     if (row instanceof Response) return row
     const ctx = contextOf(c, scope, wiring)
     if (!ctx) return c.json({ error: 'secrets_unavailable' }, 503)
-    // A failed row never had a certificate (renewals do not give up), so trying
-    // again is a new order and waits for newer terms.
-    if (
-      row.status === 'failed' &&
-      (await newOrdersWaitForTerms(ctx, scope.organizationId, isStagingRow(row.metadata)))
-    ) {
-      return c.json({ error: 'acme_terms_changed', message: ACME_TERMS_HOLD_MESSAGE }, 409)
-    }
     const outcome = await retryDnsCertificate(ctx, row.id)
     if (outcome === 'not_failed') return c.json({ error: 'not_failed' }, 409)
     if (outcome === 'too_soon') return c.json({ error: 'retry_too_soon' }, 429)

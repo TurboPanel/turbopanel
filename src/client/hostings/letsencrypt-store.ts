@@ -158,28 +158,6 @@ export async function findManagedCertificate(
   return (exact ?? covering)?.id ?? null
 }
 
-/**
- * Whether the managed row picked for `names` has ever had a certificate: a
- * stored pair or issuing server, or a server that reported one (kept even when
- * Let's Encrypt was turned off and the stored pair erased).
- */
-export async function hasIssuedManagedCertificate(
-  db: Db,
-  organizationId: string,
-  names: readonly string[]
-): Promise<boolean> {
-  const id = await findManagedCertificate(db, organizationId, names)
-  if (id === null) return false
-  const [row] = await db
-    .select({
-      issued: sql<boolean>`(${tls.privateKeyPem} is not null or ${tls.certificatePem} is not null or ${tls.issuedByServerId} is not null or ${tls.metadata} -> 'acme' ->> 'lastIssuedAt' is not null or ${tls.metadata} -> 'acme' ->> 'notAfter' is not null or ${tls.metadata} -> 'acme' ->> 'lastReportedAt' is not null)`,
-    })
-    .from(tls)
-    .where(eq(tls.id, id))
-    .limit(1)
-  return row?.issued === true
-}
-
 async function createManagedCertificate(
   db: Db,
   organizationId: string,
@@ -263,9 +241,6 @@ export function createLetsEncryptStore(db: Db): LetsEncryptStore {
 
     managedCertificateFor: (organizationId, names) =>
       managedCertificateFor(db, organizationId, names),
-
-    hasIssuedCertificateFor: (organizationId, names) =>
-      hasIssuedManagedCertificate(db, organizationId, names),
 
     async pinnedCertificateId(hostingId) {
       const [row] = await db

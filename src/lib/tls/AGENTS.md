@@ -24,19 +24,12 @@ Turning the gate off never revokes certificates already issued. `PATCH
 hatch: deploy-prepare treats that pin as the self-signed certificate instead of
 `tls_pin_not_ready`. Deleted or hostname-mismatched pins still fail.
 
-**New certificates wait for newer Let's Encrypt terms; renewals never do.**
-When the organization accepted an agreement (`organization.acme_terms_url`)
-and Let's Encrypt's directory now names a different one
-(`acmeTermsOutstanding`, `acmeTermsHeldFor` in
-`../../features/organizations/acme-terms.ts`), only the places where a new
-certificate is born hold: `POST /tls` with Let's Encrypt and pinning an
-unissued, unpinned library row (409 `acme_terms_changed`); pinning a site to a
-never-issued row (the button answers 409, compose and the waiting sweep keep the
-request with `dns.termsHeld`, which never expires); first HTTP orders
-(renewal = stored pair plus `centralPair`) and first DNS-01 orders. The deploy
-wire, pair storage, renewals and orders already open are never gated, and a site
-moved to another server keeps its certificate (owner decision 2026-11-03).
-Unreadable terms, or no recorded acceptance, hold nothing.
+**A change in Let's Encrypt's terms never pauses a certificate** (owner decision
+2026-11-03). Turning Let's Encrypt on needs the organization to accept the
+current agreement once (`organization.acme_terms_url`); after that, new orders
+and renewals go ahead even when Let's Encrypt publishes newer terms. The
+organization is only asked to accept the newer ones (`acmeTermsChanged` on the
+TLS settings read).
 
 **DNS-validated certificates (built).** The panel can also order a library certificate itself with a DNS challenge through the connected DNS account; see `../../features/tls/dns-certificates/AGENTS.md`. It is a normal `upload` row marked `metadata.acme.managedBy = 'panel'`, not a `lets_encrypt` row, so none of the Caddy-managed paths below apply to it.
 

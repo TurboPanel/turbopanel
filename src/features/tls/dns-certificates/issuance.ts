@@ -59,7 +59,6 @@ import {
 import { ariDue, fallbackRenewAt, refreshedRenewAt } from './timing.ts'
 import { findCarrier } from '../../tunnels/records.ts'
 import { openDnsToken } from './token.ts'
-import { ACME_TERMS_HOLD_MESSAGE, acmeTermsHeldFor } from '../../organizations/acme-terms.ts'
 
 type TlsRow = typeof tls.$inferSelect
 
@@ -73,17 +72,10 @@ export type StartInput = {
   names: string[]
   zones: ZoneRef[]
   staging: boolean
-  /**
-   * The organization has not accepted Let's Encrypt's newer terms: a covering
-   * or running certificate is still answered, a new one is not made.
-   */
-  termsHeld?: boolean
 }
 
 export type StartResult =
-  | { kind: 'reused' | 'existing' | 'created'; id: string }
-  | { kind: 'limit' }
-  | { kind: 'terms_changed' }
+  { kind: 'reused' | 'existing' | 'created'; id: string } | { kind: 'limit' }
 
 function isoOrNull(value: string | null): number | null {
   const at = value === null ? Number.NaN : Date.parse(value)
@@ -241,7 +233,6 @@ export async function startDnsCertificate(
     if (reusable) return { kind: 'reused' as const, id: reusable.id }
     const inFlight = findInFlight(rows, input)
     if (inFlight) return { kind: 'existing' as const, id: inFlight.id }
-    if (input.termsHeld === true) return { kind: 'terms_changed' as const }
     const since = now.getTime() - DAY_MS
     const recent = rows.filter((row) => Date.parse(row.createdAt) > since).length
     if (recent >= MAX_NEW_PER_DAY) return { kind: 'limit' as const }
@@ -545,7 +536,7 @@ export async function advanceDnsCertificate(
 ): Promise<AdvanceOutcome> {
   const row = await claim(ctx, id)
   if (!row) return 'busy'
-  const state = readDnsCertState(row.metadata)
+  let state = readDnsCertState(row.metadata)
   if (!state) {
     await release(ctx, row.id)
     return 'not_found'
@@ -559,19 +550,6 @@ export async function advanceDnsCertificate(
     await release(ctx, row.id)
     return 'backoff'
   }
-  if (await heldForTerms(ctx, row, state)) return 'waiting'
-  // The hold has ended: its sentence goes with the next write.
-  return await stepOrder(ctx, row, state, acmeWarningOf(row) === ACME_TERMS_HOLD_MESSAGE)
-}
-
-/** Run up to a few steps of the order, then record where it stands. */
-async function stepOrder(
-  ctx: DnsCertContext,
-  row: TlsRow,
-  first: DnsCertState,
-  endsHold: boolean
-): Promise<AdvanceOutcome> {
-  let state = first
   try {
     if (orderTimedOut(ctx, state)) throw await timedOutError(ctx, state, state.order)
     for (let i = 0; i < MAX_STEPS_PER_CALL; i += 1) {
@@ -584,10 +562,7 @@ async function stepOrder(
       }
       if (result.kind === 'wait') break
     }
-    await writeState(ctx, row, state, {
-      stage: stageOf(state),
-      ...(endsHold ? { warning: null } : {}),
-    })
+    await writeState(ctx, row, state, { stage: stageOf(state) })
     return 'waiting'
   } catch (err) {
     countAnswer(ctx, err)
@@ -599,43 +574,6 @@ async function stepOrder(
     await failOrder(ctx, row, state, err)
     return 'failed'
   }
-}
-
-/** How long a first certificate held for newer terms waits before it is looked at again. */
-const TERMS_HOLD_RECHECK_MS = 60 * 60_000
-
-function acmeWarningOf(row: TlsRow): unknown {
-  return (row.metadata as { acme?: { warning?: unknown } } | null)?.acme?.warning
-}
-
-/**
- * A first certificate not yet ordered waits for newer terms (a renewal, and an
- * order already open, go on). A held row is looked at again only after a real
- * wait, so held rows never crowd renewals out of a sweep tick. True when held.
- */
-async function heldForTerms(
-  ctx: DnsCertContext,
-  row: TlsRow,
-  state: DnsCertState
-): Promise<boolean> {
-  if (row.status !== 'pending' || state.order !== null) return false
-  if (!(await termsHeldFor(ctx, row, state))) return false
-  const held: DnsCertState = {
-    ...state,
-    nextAttemptAt: new Date(clock(ctx).getTime() + TERMS_HOLD_RECHECK_MS).toISOString(),
-  }
-  await writeState(ctx, row, held, { stage: 'queued', warning: ACME_TERMS_HOLD_MESSAGE })
-  return true
-}
-
-/** Whether a first certificate for this row waits for newer Let's Encrypt terms. */
-async function termsHeldFor(
-  ctx: DnsCertContext,
-  row: TlsRow,
-  state: DnsCertState
-): Promise<boolean> {
-  if (state.staging || !ctx.currentTerms) return false
-  return await acmeTermsHeldFor(ctx.db, row.organizationId, ctx.currentTerms)
 }
 
 /** A person's "try again" on a certificate that gave up: only after a quiet quarter hour. */
