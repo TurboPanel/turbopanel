@@ -32,6 +32,7 @@ import {
   startHttpIssuance,
 } from './orchestrator.ts'
 import { newHttpIssuanceState, readHttpIssuanceState } from './state.ts'
+import { waitingText } from './status-text.ts'
 
 const dbUrl = getDatabaseUrl()
 
@@ -340,6 +341,60 @@ test("nothing starts while the organization has Let's Encrypt turned off", async
     assertEquals(await startHttpIssuance(f.deps(), f.tlsId, always), 'not_eligible')
     assertEquals(f.sent.length, 0)
     assertEquals(readHttpIssuanceState((await readRow(f)).metadata), null)
+  } finally {
+    await f.cleanup()
+  }
+})
+
+test("a first order waits for Let's Encrypt's newer terms, and goes once they are the accepted ones", async () => {
+  if (!dbUrl) return skipWithoutDatabase('http issuance tests')
+  const f = await setup({ servers: 1 })
+  try {
+    await f.db
+      .update(organization)
+      .set({ acmeTermsUrl: 'https://ca.test/v1.pdf', acmeTermsAcceptedAt: T0.toISOString() })
+      .where(eq(organization.id, f.organizationId))
+    const newer = f.deps({
+      staging: false,
+      currentTerms: () => Promise.resolve('https://ca.test/v2.pdf'),
+    })
+    assertEquals(await startHttpIssuance(newer, f.tlsId, always), 'waiting')
+    assertEquals(f.sent.length, 0)
+    const acme = ((await readRow(f)).metadata as { acme: { stage: string; warning: string } }).acme
+    assertEquals(acme.stage, 'waiting')
+    assertEquals(acme.warning, waitingText('terms_changed'))
+
+    const same = f.deps({
+      staging: false,
+      currentTerms: () => Promise.resolve('https://ca.test/v1.pdf'),
+    })
+    assertEquals(await startHttpIssuance(same, f.tlsId, always), 'ordering')
+  } finally {
+    await f.cleanup()
+  }
+})
+
+test("a certificate that already exists renews while Let's Encrypt's newer terms are unaccepted", async () => {
+  if (!dbUrl) return skipWithoutDatabase('http issuance tests')
+  const f = await setup({ servers: 1 })
+  try {
+    await f.db
+      .update(organization)
+      .set({ acmeTermsUrl: 'https://ca.test/v1.pdf', acmeTermsAcceptedAt: T0.toISOString() })
+      .where(eq(organization.id, f.organizationId))
+    // A server reported a certificate for this row before (its stored pair may be gone).
+    const meta = ((await readRow(f)).metadata ?? {}) as Record<string, unknown>
+    const acme = (meta.acme ?? {}) as Record<string, unknown>
+    await f.db
+      .update(tls)
+      .set({ metadata: { ...meta, acme: { ...acme, lastIssuedAt: T0.toISOString() } } })
+      .where(eq(tls.id, f.tlsId))
+    const newer = f.deps({
+      staging: false,
+      currentTerms: () => Promise.resolve('https://ca.test/v2.pdf'),
+    })
+    assertEquals(await startHttpIssuance(newer, f.tlsId, always), 'ordering')
+    assertEquals(f.sent.length > 0, true)
   } finally {
     await f.cleanup()
   }

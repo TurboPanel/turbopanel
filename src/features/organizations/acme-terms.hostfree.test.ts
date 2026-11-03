@@ -1,5 +1,5 @@
 import { assertEquals } from '@std/assert'
-import { currentAcmeTermsReader } from './acme-terms.ts'
+import { acmeTermsOutstanding, currentAcmeTermsReader } from './acme-terms.ts'
 
 const test = Deno.test.bind(Deno)
 
@@ -66,4 +66,14 @@ test('a read still running is not shared, and a settled one is', async () => {
 test('an upper-case scheme is stored in its normal form', async () => {
   const ca = directory(() => 'HTTPS://CA.test/Agreement.pdf')
   assertEquals(await currentAcmeTermsReader(ca.fetchFn, () => 0)(), 'https://ca.test/Agreement.pdf')
+})
+
+test('new orders wait only when an accepted agreement differs from the current one', () => {
+  const v1 = 'https://ca.test/v1.pdf'
+  const v2 = 'https://ca.test/v2.pdf'
+  assertEquals(acmeTermsOutstanding(v1, v2), true)
+  assertEquals(acmeTermsOutstanding(v1, v1), false)
+  // No recorded acceptance, or terms that could not be read, hold nothing.
+  assertEquals(acmeTermsOutstanding(null, v2), false)
+  assertEquals(acmeTermsOutstanding(v1, null), false)
 })

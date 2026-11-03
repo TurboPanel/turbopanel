@@ -237,6 +237,25 @@ test('a wildcard and its apex are ordered, validated by two records at one name,
     assertEquals([acme.stage, acme.managedBy, acme.staging], ['issued', 'panel', true])
   }))
 
+test("newer Let's Encrypt terms hold a new certificate, never one already running for the names", () =>
+  withDb(async (db) => {
+    const s = await setup(db)
+    const held = await startDnsCertificate(s.ctx, {
+      ...s.input(['held.example.com']),
+      termsHeld: true,
+    })
+    assertEquals(held.kind, 'terms_changed')
+    assertEquals(
+      (await db.select().from(tls).where(eq(tls.organizationId, s.organizationId))).length,
+      0
+    )
+
+    const started = await startDnsCertificate(s.ctx, s.input(['example.com']))
+    assertEquals(started.kind, 'created')
+    const again = await startDnsCertificate(s.ctx, { ...s.input(['example.com']), termsHeld: true })
+    assertEquals(again.kind, 'existing')
+  }))
+
 test('a wildcard and apex order whose answer to one challenge was lost answers it again and is issued', () =>
   withDb(async (db) => {
     const s = await setup(db, { ca: { loseAnswers: 1 } })

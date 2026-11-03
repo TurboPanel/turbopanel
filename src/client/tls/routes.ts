@@ -96,6 +96,12 @@ import {
   rotationConvergedForRetire,
   rotationResultReason,
 } from './rotation-converge.ts'
+import {
+  ACME_TERMS_HOLD_MESSAGE,
+  acmeTermsHeldFor,
+  acmeTermsReaderFor,
+  type CurrentAcmeTerms,
+} from '../../features/organizations/acme-terms.ts'
 
 export const TLS_PUBLIC_SELECT = {
   id: tls.id,
@@ -129,7 +135,8 @@ async function refuseTlsCreateSource(
   c: Context<AppEnv>,
   db: Db,
   organizationId: string,
-  source: TlsSource
+  source: TlsSource,
+  currentTerms: CurrentAcmeTerms
 ): Promise<Response | null> {
   if (source === 'organization_ca') {
     const existing = await findActiveOrganizationCa(db, organizationId)
@@ -144,6 +151,10 @@ async function refuseTlsCreateSource(
   const acmeEnabled = orgRow?.isAcmeEnabled === true
   if (!acmeEnabled) {
     return c.json({ error: 'lets_encrypt_not_enabled' }, 403)
+  }
+  // A new Let's Encrypt row is a new certificate: it waits for newer terms.
+  if (await acmeTermsHeldFor(db, organizationId, currentTerms)) {
+    return c.json({ error: 'acme_terms_changed', message: ACME_TERMS_HOLD_MESSAGE }, 409)
   }
   return null
 }
@@ -669,6 +680,7 @@ export function registerTlsRoutes(
   }
   const secrets = opts.secrets
   const registry = createTunnelAdapterRegistry(fetchImpl)
+  const currentTerms = acmeTermsReaderFor(opts.acmeTermsFetch)
 
   router.use('/tls', createSessionMiddleware(secrets))
   router.use('/tls/*', createSessionMiddleware(secrets))
@@ -938,7 +950,7 @@ export function registerTlsRoutes(
       return c.json({ error: 'Invalid request' }, 400)
     }
 
-    const sourceDenied = await refuseTlsCreateSource(c, db, organizationId, source)
+    const sourceDenied = await refuseTlsCreateSource(c, db, organizationId, source, currentTerms)
     if (sourceDenied) return sourceDenied
 
     const prepared = await prepareTlsCreateMaterial(c, organizationId, source, body)

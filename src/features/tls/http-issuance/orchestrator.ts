@@ -52,6 +52,7 @@ import {
   withHttpIssuanceState,
 } from './state.ts'
 import { waitingText } from './status-text.ts'
+import { acmeTermsOutstanding, type CurrentAcmeTerms } from '../../organizations/acme-terms.ts'
 
 export type HttpIssuanceDeps = {
   db: Db
@@ -65,6 +66,12 @@ export type HttpIssuanceDeps = {
   contactEmail: (organizationId: string) => Promise<string | null>
   /** Order from the authority's test directory (a platform setting). */
   staging: boolean
+  /**
+   * The agreement Let's Encrypt names now (production directory). Absent, or
+   * an unreadable answer, holds nothing. A first order waits while the
+   * organization has not accepted it; a renewal never does.
+   */
+  currentTerms?: CurrentAcmeTerms
   newRequestId?: () => string
 }
 
@@ -106,14 +113,28 @@ async function lockRow(tx: Db, tlsId: string): Promise<RowFacts | null> {
   }
 }
 
-/** The organization's Let's Encrypt switch, read under the row lock. */
-async function acmeEnabledFor(tx: Db, organizationId: string): Promise<boolean> {
+/** A server reported a certificate for this row at some point (kept when a stored pair is erased). */
+function hadCertificate(metadata: Record<string, unknown>): boolean {
+  const acme = metadata.acme as
+    { lastIssuedAt?: unknown; notAfter?: unknown; lastReportedAt?: unknown } | undefined
+  return (
+    typeof acme?.lastIssuedAt === 'string' ||
+    typeof acme?.notAfter === 'string' ||
+    typeof acme?.lastReportedAt === 'string'
+  )
+}
+
+/** The organization's Let's Encrypt switch and accepted agreement, read under the row lock. */
+async function acmeSettingsFor(
+  tx: Db,
+  organizationId: string
+): Promise<{ enabled: boolean; acceptedTermsUrl: string | null }> {
   const [org] = await tx
-    .select({ isAcmeEnabled: organization.isAcmeEnabled })
+    .select({ isAcmeEnabled: organization.isAcmeEnabled, acmeTermsUrl: organization.acmeTermsUrl })
     .from(organization)
     .where(eq(organization.id, organizationId))
     .limit(1)
-  return org?.isAcmeEnabled === true
+  return { enabled: org?.isAcmeEnabled === true, acceptedTermsUrl: org?.acmeTermsUrl ?? null }
 }
 
 async function writeState(
@@ -405,17 +426,28 @@ async function startInTransaction(
     tlsId: string
     choice: Choice
     contactEmail: string
+    currentTermsUrl: string | null
     due: (facts: { hasPair: boolean; metadata: Record<string, unknown> }) => boolean
   }
 ): Promise<StepResult> {
   const { deps, now, choice, contactEmail } = params
   const row = await lockRow(tx, params.tlsId)
   if (!row) return { outcome: 'not_eligible', send: [] }
-  if (!(await acmeEnabledFor(tx, row.organizationId))) return { outcome: 'not_eligible', send: [] }
+  const settings = await acmeSettingsFor(tx, row.organizationId)
+  if (!settings.enabled) return { outcome: 'not_eligible', send: [] }
   const previous = readHttpIssuanceState(row.metadata)
   if (previous?.endedAt === null) return { outcome: 'not_due', send: [] }
   if (!params.due({ hasPair: row.hasPair, metadata: row.metadata })) {
     return { outcome: 'not_due', send: [] }
+  }
+  // A row that ever had a certificate renews and always goes ahead, also when
+  // its stored pair was erased (Let's Encrypt turned off and on again) and the
+  // servers still serve the copy they were sent. Only a row that never had one
+  // is a new certificate, which waits while newer terms are unaccepted.
+  const renewal = row.hasPair || previous?.centralPair === true || hadCertificate(row.metadata)
+  if (!renewal && acmeTermsOutstanding(settings.acceptedTermsUrl, params.currentTermsUrl)) {
+    await writeWaiting(tx, row, waitingText('terms_changed'), now)
+    return { outcome: 'waiting', send: [] }
   }
   const verdict = mayStartAttempt(
     { attemptTimes: previous?.attemptTimes ?? [], nextAttemptAt: previous?.nextAttemptAt ?? null },
@@ -443,6 +475,25 @@ async function startInTransaction(
     send: openingMessages(now, row, state, choice, contactEmail),
     state,
   }
+}
+
+/**
+ * The agreement Let's Encrypt names now, read only when it can matter: the
+ * organization accepted one (else nothing is held) and orders go to the
+ * production directory. Null holds nothing.
+ */
+async function currentTermsFor(
+  deps: HttpIssuanceDeps,
+  organizationId: string
+): Promise<string | null> {
+  if (deps.staging || !deps.currentTerms) return null
+  const [org] = await deps.db
+    .select({ acmeTermsUrl: organization.acmeTermsUrl })
+    .from(organization)
+    .where(eq(organization.id, organizationId))
+    .limit(1)
+  if (!org?.acmeTermsUrl) return null
+  return await deps.currentTerms()
 }
 
 /**
@@ -488,8 +539,18 @@ export async function startHttpIssuance(
   const { choice, servers } = await gather(deps, { id: tlsId, names }, previous)
   // Every serving server on an older daemon keeps ordering for itself; the row is left alone.
   if (!servers.some((s) => s.hasFeature)) return 'not_eligible'
+  // Read before the transaction: it may need a request to Let's Encrypt.
+  const currentTermsUrl = await currentTermsFor(deps, peek.organizationId)
   const result = await deps.db.transaction((tx) =>
-    startInTransaction(tx as unknown as Db, { deps, now, tlsId, choice, contactEmail, due })
+    startInTransaction(tx as unknown as Db, {
+      deps,
+      now,
+      tlsId,
+      choice,
+      contactEmail,
+      currentTermsUrl,
+      due,
+    })
   )
   await deliverOrFail(deps, tlsId, result)
   return result.outcome

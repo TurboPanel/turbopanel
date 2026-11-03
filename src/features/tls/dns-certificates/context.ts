@@ -4,6 +4,7 @@ import type { TunnelAdapterRegistry } from '../../tunnels/registry.ts'
 import type { TunnelProvider } from '../../tunnels/vocabulary.ts'
 import type { ThrottleCounters } from '../../../lib/throttle-counters.ts'
 import type { DnsChallengeProvider } from './dns-provider.ts'
+import type { CurrentAcmeTerms } from '../../organizations/acme-terms.ts'
 
 /** Everything a step needs. Tests replace the fetch, the DNS host and the clock. */
 export type DnsCertContext = {
@@ -23,6 +24,12 @@ export type DnsCertContext = {
   presentGraceMs?: number
   /** Told when a renewed certificate replaced the old one, so the sites pinning it can be refreshed. */
   onRenewed?: (tlsId: string, organizationId: string) => Promise<void>
+  /**
+   * The agreement Let's Encrypt names now. A first certificate waits while
+   * the organization has not accepted it; a renewal never does. Absent holds
+   * nothing.
+   */
+  currentTerms?: CurrentAcmeTerms
 }
 
 export const DAY_MS = 86_400_000

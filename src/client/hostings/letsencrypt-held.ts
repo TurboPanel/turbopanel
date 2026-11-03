@@ -24,6 +24,7 @@ import { requestLetsEncrypt } from '../../features/hostings/use-letsencrypt.ts'
 import { logWarn } from '../../lib/logger.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
 import { createLetsEncryptStore, loadAcmeEnabled } from './letsencrypt-store.ts'
+import { acmeTermsHeldFor, sharedAcmeTermsReader } from '../../features/organizations/acme-terms.ts'
 
 /** Probes and clock for the held pre-check; tests inject them, a deploy uses the runtime's. */
 export type HeldLetsEncryptDeps = {
@@ -53,6 +54,7 @@ export async function precheckHeldLetsEncrypt(
     .from(hosting)
     .where(inArray(hosting.id, [...hostingIds]))
   const acmeEnabled = await loadAcmeEnabled(db, organizationId)
+  const termsHeld = await acmeTermsHeldFor(db, organizationId, sharedAcmeTermsReader())
   const lookup = deps.lookup ?? runtimeDnsLookup()
   const probes = precheckProbes(deps)
   const store = createLetsEncryptStore(db)
@@ -65,6 +67,7 @@ export async function precheckHeldLetsEncrypt(
         now: deps.now?.() ?? new Date(),
         hosting: { ...row, organizationId },
         acmeEnabled,
+        termsHeld,
       })
     } catch (err) {
       logWarn(

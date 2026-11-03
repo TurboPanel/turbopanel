@@ -67,6 +67,12 @@ export type HostingDnsReport = {
   nextCheckAt?: string
   /** How many checks this waiting request has had. */
   checks?: number
+  /**
+   * DNS is ready, but the certificate would be a new one and the organization
+   * has not accepted Let's Encrypt's newer terms yet. Such a request does not
+   * expire; it goes ahead once the terms are accepted.
+   */
+  termsHeld?: boolean
 }
 
 export type HostingCertificate = {
