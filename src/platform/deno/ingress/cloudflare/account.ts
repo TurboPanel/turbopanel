@@ -1,7 +1,8 @@
 /**
  * The install-level Cloudflare account: check a pasted API token (verify, then
- * read the token's own policies and evaluate them in `token-policies.ts`),
- * store it sealed, recheck it and remove it. The token never reaches a log, a
+ * read the token's own policies and evaluate them in `token-policies.ts`, or,
+ * when the token may not read itself, one read per scope), store it sealed,
+ * recheck it and remove it. The token never reaches a log, a
  * response, an audit row or `last_error`.
  */
 import { eq } from 'drizzle-orm'
@@ -52,6 +53,8 @@ const EXPIRY_WARNING_MS = 30 * 24 * 60 * 60 * 1000
 const MAX_LABEL = 80
 /** Zone names spelled out in one message; the rest are counted. */
 const MAX_NAMED_ZONES = 10
+/** Zones read one by one when the token cannot show its policies; enough for an install's own names. */
+const MAX_ZONES_PROBED = 25
 
 const POLICY_READ_PERMISSION: Record<TokenOwner['kind'], string> = {
   account: 'Account › Account API Tokens › Read',
@@ -148,14 +151,106 @@ async function readPolicies(
 }
 
 /**
+ * How the scopes are learned: from the token's own policies (exact), or, when
+ * it may not read itself, from one read per scope (Tunnel Edit is then
+ * confirmed only when Connect writes).
+ */
+type ScopeReader = {
+  /** Whether the account looks like the one with Tunnel Edit, to pick it among several. */
+  tunnelAccount(accountId: string): Promise<boolean>
+  tunnel(accountId: string, zones: readonly ProviderZone[]): Promise<PreflightCheck>
+  dns(
+    accountId: string,
+    zones: readonly ProviderZone[]
+  ): Promise<{ check: PreflightCheck; zones: ProviderZone[] }>
+}
+
+function policyScopes(policies: readonly CloudflareTokenPolicy[]): ScopeReader {
+  return {
+    tunnelAccount: (accountId) =>
+      Promise.resolve(tunnelGrant(policies, accountId).kind === 'account'),
+    tunnel: (accountId, zones) =>
+      Promise.resolve(tunnelCheck(tunnelGrant(policies, accountId), zones)),
+    dns: (accountId, zones) => {
+      const grant = dnsGrant(policies, accountId, zones)
+      return Promise.resolve({ check: dnsCheck(grant), zones: grant.zones })
+    },
+  }
+}
+
+/** A read that Cloudflare refused is a no; a transient failure throws (the answer is unknown). */
+async function readable(probe: () => Promise<void>): Promise<boolean> {
+  try {
+    await probe()
+    return true
+  } catch (err) {
+    if (isTransient(err)) throw err
+    return false
+  }
+}
+
+function probeScopes(api: CloudflareClient): ScopeReader {
+  const tunnels = new Map<string, Promise<boolean>>()
+  const tunnelAccount = (accountId: string) => {
+    let read = tunnels.get(accountId)
+    if (!read) {
+      read = readable(() => api.probeTunnels(accountId))
+      tunnels.set(accountId, read)
+    }
+    return read
+  }
+  return {
+    tunnelAccount,
+    tunnel: async (accountId) =>
+      (await tunnelAccount(accountId))
+        ? check(
+            'scope-tunnels',
+            true,
+            'The token can read the account’s tunnels. Cloudflare Tunnel Edit is confirmed at Connect.'
+          )
+        : check(
+            'scope-tunnels',
+            false,
+            'The token cannot read the account’s tunnels (Account › Cloudflare Tunnel › Edit).'
+          ),
+    dns: async (_accountId, zones) => {
+      const probed = await Promise.all(
+        zones
+          .slice(0, MAX_ZONES_PROBED)
+          .map(async (zone) => ((await readable(() => api.probeDns(zone.id))) ? [zone] : []))
+      )
+      const found = probed.flat()
+      return { check: probedDnsCheck(found), zones: found }
+    },
+  }
+}
+
+function probedDnsCheck(zones: readonly ProviderZone[]): PreflightCheck {
+  if (zones.length === 0) {
+    return check(
+      'scope-dns',
+      false,
+      'The token cannot edit DNS records in any zone (Zone › DNS › Edit).'
+    )
+  }
+  const names = listNames(zones.map((zone) => zone.name))
+  const these = zones.length === 1 ? 'this zone' : 'these zones'
+  return check(
+    'scope-dns',
+    true,
+    `The token can read DNS records in ${names}. DNS-01 certificates are issued only for names in ${these}.`
+  )
+}
+
+/**
  * The account the tunnel lives in. A recheck keeps the stored account; a new
  * token uses its owner's account, else the first account with Tunnel Edit.
  */
-function chooseAccount(
-  policies: CloudflareTokenPolicy[],
+async function chooseAccount(
+  scopes: ScopeReader,
   verified: Verified,
   stored: string | null
-): { accountId: string } | { problem: string } {
+): Promise<{ accountId: string } | { problem: string }> {
   const ids = verified.owner.kind === 'account' ? [verified.owner.accountId] : verified.accountIds
   if (stored) {
     // A refused account list says nothing about the stored account: check it directly.
@@ -165,7 +260,10 @@ function chooseAccount(
           problem: `The token no longer reaches the Cloudflare account this control plane uses (${stored}).`,
         }
   }
-  const chosen = ids.find((id) => tunnelGrant(policies, id).kind === 'account') ?? ids[0]
+  const chosen =
+    (await firstSequential(ids, async (id) =>
+      (await scopes.tunnelAccount(id)) ? id : undefined
+    )) ?? ids[0]
   if (chosen) return { accountId: chosen }
   return {
     problem: verified.accountsUnreadable
@@ -309,29 +407,15 @@ async function evaluateToken(
   }
   const accepted = check('token-verify', true, 'Cloudflare accepted the token.')
   const expiry = expiryCheck(verified.expiresOn, now)
-  const unread = (detail: string): TokenCheck => ({
-    preflight: finish([accepted, check('token-policies', false, detail), expiry], {
-      accountId: verified.owner.kind === 'account' ? verified.owner.accountId : null,
-      zones: [],
-      expiresOn: verified.expiresOn,
-    }),
-    keepStored: true,
-  })
   const tokenId = verified.tokenId
-  if (!tokenId) {
-    return unread('Cloudflare did not say which token this is, so its permissions cannot be read.')
-  }
-  const policies = await readPolicies(api, { ...verified, tokenId })
-  if (!policies) {
-    const permission = POLICY_READ_PERMISSION[verified.owner.kind]
-    return unread(`The token cannot read its own permissions. Add ${permission} to the token.`)
-  }
-  const readable = check('token-policies', true, 'The token can read its own permissions.')
-  const chosen = chooseAccount(policies, verified, storedAccountId)
+  const policies = tokenId ? await readPolicies(api, { ...verified, tokenId }) : null
+  const scopes = policies ? policyScopes(policies) : probeScopes(api)
+  const policyCheck = check('token-policies', true, policyNote(verified, policies !== null))
+  const chosen = await chooseAccount(scopes, verified, storedAccountId)
   if ('problem' in chosen) {
     const checks = [
       accepted,
-      readable,
+      policyCheck,
       check('scope-tunnels', false, chosen.problem),
       check('scope-dns', false, 'The DNS zones cannot be checked without the account.'),
       expiry,
@@ -344,18 +428,26 @@ async function evaluateToken(
   const { accountId } = chosen
   const accountZones = await api.listZones(accountId)
   const zones = accountZones.map((zone) => ({ id: zone.id, name: zone.name.toLowerCase() }))
-  const dns = dnsGrant(policies, accountId, zones)
-  const checks = [
-    accepted,
-    readable,
-    tunnelCheck(tunnelGrant(policies, accountId), zones),
-    dnsCheck(dns),
-    expiry,
-  ]
+  const tunnel = await scopes.tunnel(accountId, zones)
+  const dns = await scopes.dns(accountId, zones)
+  const checks = [accepted, policyCheck, tunnel, dns.check, expiry]
   return {
     preflight: finish(checks, { accountId, zones: dns.zones, expiresOn: verified.expiresOn }),
     keepStored: false,
   }
+}
+
+/**
+ * The `token-policies` line. Reading itself is optional: without it the
+ * scopes come from read probes and Connect confirms Tunnel Edit.
+ */
+function policyNote(verified: Verified, read: boolean): string {
+  if (read) return 'The token can read its own permissions.'
+  if (!verified.tokenId) {
+    return 'Cloudflare did not say which token this is, so its permissions cannot be shown and Cloudflare Tunnel Edit is confirmed only at Connect.'
+  }
+  const permission = POLICY_READ_PERMISSION[verified.owner.kind]
+  return `The token cannot show its own permissions, so Cloudflare Tunnel Edit is confirmed only at Connect. Optional: add ${permission} to the token for an exact check.`
 }
 
 export function scopesFrom(preflight: CloudflarePreflight, now: Date): AccountScopes {
@@ -370,9 +462,8 @@ export function scopesFrom(preflight: CloudflarePreflight, now: Date): AccountSc
 }
 
 /**
- * The scopes a recheck stores. When the answer is unknown rather than no (a
- * token stored before the policy check that cannot read itself, or Cloudflare
- * rate limiting, failing or unreachable), the last answer is kept with the new
+ * The scopes a recheck stores. When the answer is unknown rather than no
+ * (Cloudflare rate limiting, failing or unreachable), the last answer is kept with the new
  * check time so its names keep working, and `last_error` says why.
  */
 export function recheckedScopes(

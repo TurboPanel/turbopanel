@@ -5,7 +5,15 @@
  * network.
  */
 
-export type FakeTunnel = { id: string; name: string; status: string; connections: unknown[] }
+export type FakeTunnel = {
+  id: string
+  name: string
+  status: string
+  connections: unknown[]
+  /** `local` for a tunnel run from a config file on its connector; default remotely managed. */
+  config_src?: string
+  remote_config?: boolean
+}
 export type FakeRecord = {
   id: string
   type: string
@@ -145,6 +153,7 @@ export function createFakeCloudflare(options: FakeCloudflareOptions): FakeCloudf
           name: String(body.name),
           status: 'inactive',
           connections: [],
+          config_src: typeof body.config_src === 'string' ? body.config_src : 'cloudflare',
         }
         state.tunnels.push(tunnel)
         return envelope(tunnel)
@@ -166,7 +175,11 @@ export function createFakeCloudflare(options: FakeCloudflareOptions): FakeCloudf
     [
       'GET',
       /^\/accounts\/[^/]+\/cfd_tunnel\/([^/]+)\/configurations$/,
-      (m) => envelope(state.configurations.get(m[1]!) ?? { config: { ingress: [] } }),
+      // A remotely managed tunnel that never had a configuration answers 404, as Cloudflare does.
+      (m) =>
+        state.configurations.has(m[1]!)
+          ? envelope(state.configurations.get(m[1]!))
+          : envelope(null, 404, 'Configuration for tunnel not found'),
     ],
     [
       'GET',

@@ -423,6 +423,83 @@ test('an adopted tunnel keeps its own catch-all and its other configuration memb
   )
 })
 
+function dashboardTunnel(h: Harness, id: string, extra: Record<string, unknown> = {}): void {
+  h.cf.tunnels.push({ id, name: 'made-in-dashboard', status: 'healthy', connections: [], ...extra })
+  h.cf.records.set('zone-1', [
+    {
+      id: 'rec-cname',
+      type: 'CNAME',
+      name: 'panel.example.com',
+      content: `${id}.cfargotunnel.com`,
+    },
+  ])
+}
+
+test('a remotely managed tunnel with no configuration yet gets only our rule', async () => {
+  const h = harness()
+  const id = '6f0c3c1e-1111-4222-8333-944455558888'
+  dashboardTunnel(h, id, { config_src: 'cloudflare' })
+  const result = await applyHostname(h.ctx(hostname('h1', 'panel.example.com')))
+  assert(result.ok)
+  assert(h.cf.log.includes(`GET /accounts/acct-1/cfd_tunnel/${id}/configurations`))
+  const config = h.cf.configurations.get(id) as {
+    config: Record<string, unknown> & { ingress: { hostname?: string; service: string }[] }
+  }
+  assertEquals(Object.keys(config.config), ['ingress'])
+  assertEquals(
+    config.config.ingress.map((rule) => [rule.hostname, rule.service]),
+    [
+      ['panel.example.com', 'https://127.0.0.1:8443'],
+      [undefined, 'http_status:404'],
+    ]
+  )
+  assertEquals(h.pushed, [`run-token-for-${id}`])
+
+  // Applying again (the tick) and removing read the same missing configuration without failing.
+  const row = hostname('h1', 'panel.example.com', result.state)
+  h.cf.configurations.delete(id)
+  const again = await applyHostname(h.ctx(row))
+  assert(again.ok)
+  h.cf.configurations.delete(id)
+  await cloudflareTunnelProvider.remove(h.ctx(row))
+  assertEquals((h.cf.configurations.get(id) as { config: { ingress: unknown[] } }).config.ingress, [
+    { service: 'http_status:404' },
+  ])
+})
+
+test('a locally managed tunnel is refused before anything is written', async () => {
+  for (const extra of [{ config_src: 'local' }, { remote_config: false }]) {
+    const h = harness()
+    const id = '6f0c3c1e-1111-4222-8333-944455559999'
+    dashboardTunnel(h, id, extra)
+    const result = await applyHostname(h.ctx(hostname('h1', 'panel.example.com')))
+    assertEquals(result.ok ? null : { cause: result.cause, detail: result.detail }, {
+      cause: 'provider-error',
+      detail:
+        'This tunnel is managed by a configuration file on its connector, so the control plane cannot add routes to it. Switch it to dashboard management in Cloudflare, or let the control plane create its own tunnel.',
+    })
+    assertEquals(
+      h.cf.log.filter((line) => !line.startsWith('GET ')),
+      [],
+      JSON.stringify(extra)
+    )
+    assertEquals(h.cf.configurations.has(id), false)
+    assertEquals(h.pushed, [])
+  }
+})
+
+test('an applied tunnel is read again on each apply and refused once it turns locally managed', async () => {
+  const h = harness()
+  const first = await applyHostname(h.ctx(hostname('h1', 'panel.example.com')))
+  assert(first.ok)
+  const row = hostname('h1', 'panel.example.com', first.state)
+  h.cf.tunnels[0]!.config_src = 'local'
+  const writes = h.cf.log.filter((line) => !line.startsWith('GET ')).length
+  const again = await applyHostname(h.ctx(row))
+  assertEquals(again.ok ? '' : again.cause, 'provider-error')
+  assertEquals(h.cf.log.filter((line) => !line.startsWith('GET ')).length, writes)
+})
+
 test('a name with no account reads its state from the connector (pasted run token)', async () => {
   const h = harness()
   const row = { ...hostname('h1', 'panel.example.com'), ingressId: null }

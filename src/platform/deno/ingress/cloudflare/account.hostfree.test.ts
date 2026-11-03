@@ -113,7 +113,7 @@ test('tunnel edit in a zone-only policy fails with the zone named (account-owned
   assert(cf.log.includes('GET /accounts/acct-1/tokens/tok-1'))
 })
 
-test('a token that cannot read its own policies fails and names the permission', async () => {
+test('a token that cannot read its own policies passes on read probes and names the optional permission', async () => {
   const cfat = 'cfat_fixtureTokenValue0123456789abcdef'
   const cf = createFakeCloudflare({
     token: cfat,
@@ -121,12 +121,51 @@ test('a token that cannot read its own policies fails and names the permission',
     forbidden: [/\/tokens\/tok-1$/],
   })
   const result = await preflightCloudflareToken(cfat, cf.fetch, NOW)
-  assertEquals(result.ok, false)
+  assertEquals(result.ok, true)
+  assertEquals(result.accountId, 'acct-1')
+  assertEquals(detail(result, 'token-policies'), {
+    id: 'token-policies',
+    ok: true,
+    detail:
+      'The token cannot show its own permissions, so Cloudflare Tunnel Edit is confirmed only at Connect. Optional: add Account › Account API Tokens › Read to the token for an exact check.',
+  })
   assertEquals(
-    detail(result, 'token-policies')?.detail,
-    'The token cannot read its own permissions. Add Account › Account API Tokens › Read to the token.'
+    detail(result, 'scope-tunnels')?.detail,
+    'The token can read the account’s tunnels. Cloudflare Tunnel Edit is confirmed at Connect.'
   )
-  assertEquals(result.zones, [])
+  assertEquals(
+    detail(result, 'scope-dns')?.detail,
+    'The token can read DNS records in example.com. DNS-01 certificates are issued only for names in this zone.'
+  )
+  assertEquals(result.zones, [{ id: 'zone-1', name: 'example.com' }])
+  assert(cf.log.includes('GET /accounts/acct-1/cfd_tunnel?is_deleted=false&per_page=1'))
+  assert(cf.log.includes('GET /zones/zone-1/dns_records?per_page=1'))
+})
+
+test('without its own policies, a refused tunnel or DNS read fails that scope', async () => {
+  const cf = createFakeCloudflare({
+    token: TOKEN,
+    zones: ZONES,
+    forbidden: [/^\/user\/tokens\/tok-1$/, /cfd_tunnel\?/, /zones\/zone-(1|3)\/dns_records/],
+  })
+  const result = await preflightCloudflareToken(TOKEN, cf.fetch, NOW)
+  assertEquals(result.ok, false)
+  assertEquals(detail(result, 'token-policies')?.ok, true)
+  assertEquals(detail(result, 'scope-tunnels'), {
+    id: 'scope-tunnels',
+    ok: false,
+    detail: 'The token cannot read the account’s tunnels (Account › Cloudflare Tunnel › Edit).',
+  })
+  assertEquals(result.zones, [{ id: 'zone-2', name: 'turbopanel.dev' }])
+  const noDns = createFakeCloudflare({
+    token: TOKEN,
+    forbidden: [/^\/user\/tokens\/tok-1$/, /dns_records/],
+  })
+  const dnsResult = await preflightCloudflareToken(TOKEN, noDns.fetch, NOW)
+  assertEquals(
+    detail(dnsResult, 'scope-dns')?.detail,
+    'The token cannot edit DNS records in any zone (Zone › DNS › Edit).'
+  )
 })
 
 test('a user-owned token reads itself at the user endpoint, and names the user permission when it cannot', async () => {
@@ -136,9 +175,10 @@ test('a user-owned token reads itself at the user endpoint, and names the user p
   assert(cf.log.includes('GET /user/tokens/tok-1'))
   const refused = createFakeCloudflare({ token: TOKEN, forbidden: [/^\/user\/tokens\/tok-1$/] })
   const denied = await preflightCloudflareToken(TOKEN, refused.fetch, NOW)
+  assertEquals(denied.ok, true)
   assertEquals(
     detail(denied, 'token-policies')?.detail,
-    'The token cannot read its own permissions. Add User › API Tokens › Read to the token.'
+    'The token cannot show its own permissions, so Cloudflare Tunnel Edit is confirmed only at Connect. Optional: add User › API Tokens › Read to the token for an exact check.'
   )
 })
 
@@ -228,15 +268,26 @@ const PREVIOUS = {
   expiresOn: null,
 }
 
-test('a recheck that cannot read the policies keeps the stored scopes', async () => {
+test('a recheck that cannot read the policies passes on read probes, never failing a working account', async () => {
   const cf = createFakeCloudflare({ token: TOKEN, forbidden: [/^\/user\/tokens\/tok-1$/] })
   const result = await checkCloudflareToken(TOKEN, cf.fetch, NOW, 'acct-1')
-  assertEquals(result.keepStored, true)
+  assertEquals(result.preflight.ok, true)
+  assertEquals(result.keepStored, false)
   assertEquals(recheckedScopes(PREVIOUS, result, NOW), {
     ...PREVIOUS,
     checkedAt: NOW.toISOString(),
   })
-  assertEquals(recheckedScopes(null, result, NOW).tunnels, false)
+  const busy = createFakeCloudflare({
+    token: TOKEN,
+    forbidden: [/^\/user\/tokens\/tok-1$/],
+    refuse: [{ method: 'GET', path: /cfd_tunnel\?/, status: 503, message: 'busy' }],
+  })
+  const unknown = await checkCloudflareToken(TOKEN, busy.fetch, NOW, 'acct-1')
+  assertEquals(unknown.keepStored, true)
+  assertEquals(recheckedScopes(PREVIOUS, unknown, NOW), {
+    ...PREVIOUS,
+    checkedAt: NOW.toISOString(),
+  })
 })
 
 test('a rate limit, a provider error or no answer keeps the stored scopes on recheck', async () => {
@@ -262,26 +313,28 @@ test('a rate limit, a provider error or no answer keeps the stored scopes on rec
   assertEquals(offline.preflight.checks[0]?.id, 'provider')
 })
 
-test('a 401 or not-found answer on the token read is a missing permission', async () => {
+test('a 401 or not-found answer on the token read falls back to read probes', async () => {
   for (const status of [401, 404]) {
     const cf = createFakeCloudflare({
       token: TOKEN,
       refuse: [{ method: 'GET', path: /^\/user\/tokens\/tok-1$/, status, message: 'no' }],
     })
     const result = await preflightCloudflareToken(TOKEN, cf.fetch, NOW)
+    assertEquals(result.ok, true, String(status))
     assertEquals(
       detail(result, 'token-policies')?.detail,
-      'The token cannot read its own permissions. Add User › API Tokens › Read to the token.'
+      'The token cannot show its own permissions, so Cloudflare Tunnel Edit is confirmed only at Connect. Optional: add User › API Tokens › Read to the token for an exact check.'
     )
   }
 })
 
-test('verify without a token id says so instead of naming a permission', async () => {
+test('verify without a token id says so and falls back to read probes', async () => {
   const cf = createFakeCloudflare({ token: TOKEN, tokenId: '' })
   const result = await preflightCloudflareToken(TOKEN, cf.fetch, NOW)
+  assertEquals(result.ok, true)
   assertEquals(
     detail(result, 'token-policies')?.detail,
-    'Cloudflare did not say which token this is, so its permissions cannot be read.'
+    'Cloudflare did not say which token this is, so its permissions cannot be shown and Cloudflare Tunnel Edit is confirmed only at Connect.'
   )
 })
 
@@ -491,4 +544,15 @@ test('the edge view finds a dashboard tunnel through the CNAME and lists its loc
   assertEquals(read.edge?.connections, 3)
   assertEquals(read.edge?.locations, ['kix01', 'nrt01'])
   assertEquals(read.edge?.hostnames, ['canary.example.com'])
+  // A tunnel that never had a configuration answers 404: it has no routes, not an error.
+  cf.configurations.delete(id)
+  const empty = await readEdgeTunnel({
+    account,
+    token: TOKEN,
+    fetch: cf.fetch,
+    hostnames: [hostname],
+    now: NOW,
+  })
+  assertEquals(empty.edge?.hostnames, [])
+  assertEquals(empty.edge?.connections, 3)
 })
