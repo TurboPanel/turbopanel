@@ -21,8 +21,7 @@ import { formatHostForUrl, publicHttpsOrigin } from './public-urls.ts'
 export type ControlPlaneRuntime = 'deno' | 'workers'
 
 /** The two platform variables that name the hosted control plane. */
-type PlatformEnv =
-  Readonly<{ TURBOPANEL_BASE_URL?: string; TURBOPANEL_PUBLIC_URLS?: string }> | undefined
+type PlatformEnv = Readonly<{ TURBOPANEL_BASE_URL?: string; TURBOPANEL_PUBLIC_URLS?: string }>
 
 /** One platform entry (`https://host`, `host` or either with a port) as a port-free origin. */
 function portlessPlatformOrigin(entry: string): string | null {
@@ -37,7 +36,7 @@ function portlessPlatformOrigin(entry: string): string | null {
  * The hosted control plane's origins from the platform environment, the base
  * URL first, normalized, port-free and de-duplicated. Empty when unset.
  */
-export function platformControlPlaneOrigins(env: PlatformEnv): string[] {
+export function platformControlPlaneOrigins(env: PlatformEnv | undefined): string[] {
   const entries = [
     env?.TURBOPANEL_BASE_URL ?? '',
     ...(env?.TURBOPANEL_PUBLIC_URLS ?? '').split(','),
@@ -47,7 +46,7 @@ export function platformControlPlaneOrigins(env: PlatformEnv): string[] {
 }
 
 /** The hosted control plane's preferred origin, or `null` when the platform sets none. */
-export function platformControlPlaneOrigin(env: PlatformEnv): string | null {
+export function platformControlPlaneOrigin(env: PlatformEnv | undefined): string | null {
   return platformControlPlaneOrigins(env)[0] ?? null
 }
 
