@@ -5,6 +5,8 @@
 import { assertEquals } from '@std/assert'
 import {
   applyManagedDefaultsPatch,
+  applyTlsSettingsPatch,
+  type TlsSettingsState,
   composeGatedFieldsGetResponse,
   composeGatedFieldsPutResponse,
   defaultEnvironmentGetResponse,
@@ -577,4 +579,49 @@ test('parseComposeDefaultResourceLimitsPatch takes positive figures, or null to 
   ]) {
     assertEquals(parseComposeDefaultResourceLimitsPatch(bad).ok, false, JSON.stringify(bad))
   }
+})
+
+test("applyTlsSettingsPatch needs a contact and accepted terms for Let's Encrypt to be on", () => {
+  const now = '2026-11-03T18:00:00.000Z'
+  const off: TlsSettingsState = {
+    acmeEnabled: false,
+    acmeContactEmail: null,
+    acmeTermsAcceptedAt: null,
+  }
+  const refusal = (patch: Parameters<typeof applyTlsSettingsPatch>[1], before = off) => {
+    const result = applyTlsSettingsPatch(before, patch, now)
+    return result.ok ? null : result.refusal.code
+  }
+  assertEquals(
+    refusal({ acmeEnabled: true, acmeTermsAccepted: true }),
+    'acme_contact_email_required'
+  )
+  assertEquals(
+    refusal({ acmeEnabled: true, acmeContactEmail: 'ops@example.com' }),
+    'acme_terms_not_accepted'
+  )
+  assertEquals(
+    applyTlsSettingsPatch(
+      off,
+      { acmeEnabled: true, acmeContactEmail: 'ops@example.com', acmeTermsAccepted: true },
+      now
+    ),
+    {
+      ok: true,
+      next: { acmeEnabled: true, acmeContactEmail: 'ops@example.com', acmeTermsAcceptedAt: now },
+    }
+  )
+  const on = {
+    acmeEnabled: true,
+    acmeContactEmail: 'ops@example.com',
+    acmeTermsAcceptedAt: '2026-11-01T00:00:00.000Z',
+  }
+  // Clearing the contact while on is refused; turning off keeps both.
+  assertEquals(refusal({ acmeContactEmail: null }, on), 'acme_contact_email_required')
+  assertEquals(applyTlsSettingsPatch(on, { acmeEnabled: false }, now), {
+    ok: true,
+    next: { ...on, acmeEnabled: false },
+  })
+  // Off with nothing stored is always allowed.
+  assertEquals(applyTlsSettingsPatch(off, { acmeContactEmail: null }, now), { ok: true, next: off })
 })

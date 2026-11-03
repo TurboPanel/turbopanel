@@ -1,5 +1,5 @@
 {
-  "id": "2e5c547d-a0f1-43f0-9d49-6a20541e2a71",
+  "id": "0336baf5-c0c6-4cbc-b1f3-380cd442237f",
   "prevId": "17ee67a0-6e07-44ac-9bd8-917059ded555",
   "version": "7",
   "dialect": "postgresql",
@@ -9116,6 +9116,18 @@
           "notNull": true,
           "default": false
         },
+        "acme_contact_email": {
+          "name": "acme_contact_email",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "acme_terms_accepted_at": {
+          "name": "acme_terms_accepted_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
         "backup_destination_id": {
           "name": "backup_destination_id",
           "type": "uuid",
@@ -9166,6 +9178,10 @@
         "organization_deploy_timeout_minutes_check": {
           "name": "organization_deploy_timeout_minutes_check",
           "value": "\"organization\".\"deploy_timeout_minutes\" IS NULL OR (\"organization\".\"deploy_timeout_minutes\" >= 5 AND \"organization\".\"deploy_timeout_minutes\" <= 240)"
+        },
+        "organization_acme_contact_email_check": {
+          "name": "organization_acme_contact_email_check",
+          "value": "\"organization\".\"acme_contact_email\" IS NULL OR (char_length(\"organization\".\"acme_contact_email\") >= 3 AND char_length(\"organization\".\"acme_contact_email\") <= 254 AND \"organization\".\"acme_contact_email\" LIKE '%_@_%')"
         }
       },
       "isRLSEnabled": false

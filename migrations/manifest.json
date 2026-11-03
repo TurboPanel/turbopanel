@@ -126,8 +126,8 @@
     {
       "idx": 20,
       "tag": "0020_organization_is_acme_enabled",
-      "when": 1793727125836,
-      "sha256": "6489eb5dda02ede84ced769a2a08f5623a72d43063d898eece27ea5d1562ff76"
+      "when": 1793727761808,
+      "sha256": "b90cc92ed58c3737a2d7b4c9d829da56ef08d1765a001d930dbcd77c3bbf98dc"
     }
   ]
 }

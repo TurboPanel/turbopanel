@@ -4,7 +4,9 @@ import {
   parseDeployTimeoutMinutes,
   parseTemperatureUnitInput,
   normalizeAcmeContactEmail,
-  resolveAcmeContactEmail,
+  ORG_ACME_CONTACT_EMAIL_REQUIRED_CODE,
+  ORG_ACME_TERMS_NOT_ACCEPTED_CODE,
+  ORG_ACME_TERMS_URL,
   resolveComposeDefaultResourceLimits,
   resolveComposeGatedFieldsEnabled,
   resolveDeployHooksEnabled,
@@ -61,10 +63,60 @@ export type TemperatureUnitPatch = {
   temperatureUnit: TemperatureUnit
 }
 
-/** Either key, or both; a key left out keeps its stored value. `null` clears the contact. */
+/**
+ * Any of the keys; a key left out keeps its stored value. `null` clears the
+ * contact. `acmeTermsAccepted` is only ever `true`: it records that the
+ * organization accepted the Let's Encrypt terms now.
+ */
 export type TlsSettingsPatch = {
   acmeEnabled?: boolean
   acmeContactEmail?: string | null
+  acmeTermsAccepted?: true
+}
+
+/** The organization's stored Let's Encrypt settings (see `settings-route.ts`). */
+export type TlsSettingsState = {
+  acmeEnabled: boolean
+  acmeContactEmail: string | null
+  acmeTermsAcceptedAt: string | null
+}
+
+/**
+ * The settings after `patch`, or why they are refused. Let's Encrypt can only
+ * be on with a contact address and accepted terms: each organization is
+ * responsible for its own servers, so it agrees to the authority's terms
+ * itself. Turning it off keeps the address and the acceptance.
+ */
+export function applyTlsSettingsPatch(
+  before: TlsSettingsState,
+  patch: TlsSettingsPatch,
+  now: string
+): { ok: true; next: TlsSettingsState } | { ok: false; refusal: { error: string; code: string } } {
+  const next: TlsSettingsState = {
+    acmeEnabled: patch.acmeEnabled ?? before.acmeEnabled,
+    acmeContactEmail:
+      patch.acmeContactEmail === undefined ? before.acmeContactEmail : patch.acmeContactEmail,
+    acmeTermsAcceptedAt: patch.acmeTermsAccepted ? now : before.acmeTermsAcceptedAt,
+  }
+  if (next.acmeEnabled && next.acmeContactEmail === null) {
+    return {
+      ok: false,
+      refusal: {
+        error: "Add a contact email before turning on Let's Encrypt",
+        code: ORG_ACME_CONTACT_EMAIL_REQUIRED_CODE,
+      },
+    }
+  }
+  if (next.acmeEnabled && next.acmeTermsAcceptedAt === null) {
+    return {
+      ok: false,
+      refusal: {
+        error: "Accept the Let's Encrypt terms before turning it on",
+        code: ORG_ACME_TERMS_NOT_ACCEPTED_CODE,
+      },
+    }
+  }
+  return { ok: true, next }
 }
 
 export type ComposeGatedFieldsPatch = {
@@ -393,8 +445,18 @@ export function parseTlsSettingsPatch(
       patch.acmeContactEmail = email
     }
   }
+  if ('acmeTermsAccepted' in body) {
+    if (body.acmeTermsAccepted !== true) {
+      return { ok: false, error: 'Invalid acmeTermsAccepted', status: 400 }
+    }
+    patch.acmeTermsAccepted = true
+  }
   if (Object.keys(patch).length === 0) {
-    return { ok: false, error: 'Send acmeEnabled or acmeContactEmail', status: 400 }
+    return {
+      ok: false,
+      error: 'Send acmeEnabled, acmeContactEmail or acmeTermsAccepted',
+      status: 400,
+    }
   }
   return { ok: true, patch }
 }
@@ -696,20 +758,16 @@ export function temperatureUnitPutResponse(options: { temperatureUnit?: Temperat
   }
 }
 
-export function tlsSettingsGetResponse(settings: {
-  acmeEnabled: boolean
-  options: { acmeContactEmail?: string }
-}) {
+export function tlsSettingsGetResponse(settings: TlsSettingsState) {
   return {
     acmeEnabled: settings.acmeEnabled,
-    acmeContactEmail: resolveAcmeContactEmail(settings.options),
+    acmeContactEmail: settings.acmeContactEmail,
+    acmeTermsAcceptedAt: settings.acmeTermsAcceptedAt,
+    acmeTermsUrl: ORG_ACME_TERMS_URL,
   }
 }
 
-export function tlsSettingsPutResponse(settings: {
-  acmeEnabled: boolean
-  options: { acmeContactEmail?: string }
-}) {
+export function tlsSettingsPutResponse(settings: TlsSettingsState) {
   return {
     ok: true as const,
     ...tlsSettingsGetResponse(settings),

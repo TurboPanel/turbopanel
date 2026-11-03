@@ -309,6 +309,10 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         "Let's Encrypt allowed for this organization's certificates; off until the organization opts in. Turning it off erases stored keys but revokes nothing.",
       options:
         'Org-wide settings merged key-by-key by the organization routes (`maxServers`, `phpModes` and more); its `acmeEnabled` only copies `is_acme_enabled`.',
+      acme_contact_email:
+        "Contact address on the organization's Let's Encrypt account, needed to turn it on; null means none.",
+      acme_terms_accepted_at:
+        "When the organization last accepted the Let's Encrypt terms, needed to turn it on; the audit log says who.",
       backup_destination_id:
         'Destination finished backups are copied to unless a cluster chooses otherwise; null means no default copy. Set null if the destination is deleted.',
       name: "Display name; sign-up uses `you@example.com's organization` from email, else `My Organization` if missing, blank, or label invalid; install Root Organization.",

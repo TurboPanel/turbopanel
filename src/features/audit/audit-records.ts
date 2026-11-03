@@ -48,6 +48,7 @@ export const AUDIT_ACTIONS = [
   'organization.compose_resource_defaults.set',
   'organization.acme.set',
   'organization.acme_contact.set',
+  'organization.acme_terms.accept',
   'organization.deploy_timeout.set',
   'organization.reauth_for_destructive.set',
   'server.firewall_mode.set',

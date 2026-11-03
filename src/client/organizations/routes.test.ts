@@ -12,7 +12,10 @@ import { audit, fabric, grant, network, organization, user } from '../../db/sche
 import { registerOrganizationRoutes } from './routes.ts'
 import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
 import { organizationAcmeContactEmail } from '../../features/organizations/acme-contact-email.ts'
-import { parseOrganizationOptions } from '../../features/organizations/organization-options.ts'
+import {
+  ORG_ACME_TERMS_URL,
+  parseOrganizationOptions,
+} from '../../features/organizations/organization-options.ts'
 
 const dbUrl = getDatabaseUrl()
 
@@ -585,14 +588,14 @@ test('PUT /organizations/:id/docker-networking forbids non-managers', async () =
   )
 })
 
-test('PUT /organizations/:id/tls-settings stores the contact email, keeps other options, and clears it', async () => {
+test('PUT /organizations/:id/tls-settings stores the contact email, keeps other options, and clears it while off', async () => {
   await withOrgFixtures(async ({ db, app, secrets, userId, organizationId }) => {
     const cookie = await sessionCookie(db, secrets, userId)
     const url = `/organizations/${organizationId}/tls-settings`
     const headers = { Cookie: cookie, 'Content-Type': 'application/json' }
     await db
       .update(organization)
-      .set({ isAcmeEnabled: true, options: { defaultEnvironmentName: 'staging' } })
+      .set({ options: { defaultEnvironmentName: 'staging' } })
       .where(eq(organization.id, organizationId))
 
     const put = await app.request(url, {
@@ -603,14 +606,20 @@ test('PUT /organizations/:id/tls-settings stores the contact email, keeps other 
     assertEquals(put.status, 200)
     assertEquals(await put.json(), {
       ok: true,
-      acmeEnabled: true,
+      acmeEnabled: false,
       acmeContactEmail: 'Ops@example.com',
+      acmeTermsAcceptedAt: null,
+      acmeTermsUrl: ORG_ACME_TERMS_URL,
     })
     const [row] = await db
       .select({ options: organization.options })
       .from(organization)
       .where(eq(organization.id, organizationId))
     assertEquals(parseOrganizationOptions(row!.options).defaultEnvironmentName, 'staging')
+    assertEquals(
+      Object.hasOwn((row!.options ?? {}) as Record<string, unknown>, 'acmeContactEmail'),
+      false
+    )
     assertEquals(await organizationAcmeContactEmail(db, organizationId), 'Ops@example.com')
 
     // Saving the same address again changes nothing, so it writes no audit row.
@@ -638,50 +647,97 @@ test('PUT /organizations/:id/tls-settings stores the contact email, keeps other 
       body: JSON.stringify({ acmeContactEmail: null }),
     })
     assertEquals(cleared.status, 200)
-    assertEquals(await cleared.json(), { ok: true, acmeEnabled: true, acmeContactEmail: null })
+    assertEquals((await cleared.json()).acmeContactEmail, null)
     assertEquals(await organizationAcmeContactEmail(db, organizationId), null)
-    const [after] = await db
-      .select({ options: organization.options })
-      .from(organization)
-      .where(eq(organization.id, organizationId))
-    assertEquals(
-      Object.hasOwn((after!.options ?? {}) as Record<string, unknown>, 'acmeContactEmail'),
-      false
-    )
   })
 })
 
-test('PUT /organizations/:id/tls-settings writes the is_acme_enabled column and the old option key', async () => {
+test("PUT /organizations/:id/tls-settings turns Let's Encrypt on only with a contact and accepted terms", async () => {
   await withOrgFixtures(async ({ db, app, secrets, userId, organizationId }) => {
     const cookie = await sessionCookie(db, secrets, userId)
     const url = `/organizations/${organizationId}/tls-settings`
     const headers = { Cookie: cookie, 'Content-Type': 'application/json' }
+    const put = (body: Record<string, unknown>) =>
+      app.request(url, { method: 'PUT', headers, body: JSON.stringify(body) })
     const stored = async () => {
       const [row] = await db
-        .select({ isAcmeEnabled: organization.isAcmeEnabled, options: organization.options })
+        .select({
+          isAcmeEnabled: organization.isAcmeEnabled,
+          acmeContactEmail: organization.acmeContactEmail,
+          acmeTermsAcceptedAt: organization.acmeTermsAcceptedAt,
+          options: organization.options,
+        })
         .from(organization)
         .where(eq(organization.id, organizationId))
-      return {
-        column: row!.isAcmeEnabled,
-        key: parseOrganizationOptions(row!.options).acmeEnabled,
-      }
+      return row!
     }
-    for (const acmeEnabled of [false, true]) {
-      const put = await app.request(url, {
-        method: 'PUT',
-        headers,
-        body: JSON.stringify({ acmeEnabled }),
-      })
-      assertEquals(put.status, 200)
-      assertEquals(await put.json(), { ok: true, acmeEnabled, acmeContactEmail: null })
-      assertEquals(await stored(), { column: acmeEnabled, key: acmeEnabled })
-      const get = await app.request(url, { headers })
-      assertEquals(await get.json(), { acmeEnabled, acmeContactEmail: null })
-    }
+
+    // A new organization starts off.
+    const start = await app.request(url, { headers })
+    assertEquals(await start.json(), {
+      acmeEnabled: false,
+      acmeContactEmail: null,
+      acmeTermsAcceptedAt: null,
+      acmeTermsUrl: ORG_ACME_TERMS_URL,
+    })
+
+    // No contact: refused, nothing written.
+    const noContact = await put({ acmeEnabled: true, acmeTermsAccepted: true })
+    assertEquals(noContact.status, 400)
+    assertEquals((await noContact.json()).code, 'acme_contact_email_required')
+    assertEquals((await stored()).acmeTermsAcceptedAt, null)
+
+    // A contact but no accepted terms: refused.
+    const noTerms = await put({ acmeEnabled: true, acmeContactEmail: 'ops@example.com' })
+    assertEquals(noTerms.status, 400)
+    assertEquals((await noTerms.json()).code, 'acme_terms_not_accepted')
+    assertEquals((await stored()).isAcmeEnabled, false)
+
+    // Both in one request: on, with the acceptance time and the old option copy.
+    const on = await put({
+      acmeEnabled: true,
+      acmeContactEmail: 'ops@example.com',
+      acmeTermsAccepted: true,
+    })
+    assertEquals(on.status, 200)
+    const onBody = await on.json()
+    assertEquals(onBody.acmeEnabled, true)
+    assertEquals(onBody.acmeContactEmail, 'ops@example.com')
+    assertEquals(typeof onBody.acmeTermsAcceptedAt, 'string')
+    const afterOn = await stored()
+    assertEquals(afterOn.isAcmeEnabled, true)
+    assertEquals(parseOrganizationOptions(afterOn.options).acmeEnabled, true)
+    const acceptRows = await db
+      .select({ actorUserId: audit.actorUserId })
+      .from(audit)
+      .where(
+        and(
+          eq(audit.organizationId, organizationId),
+          eq(audit.action, 'organization.acme_terms.accept')
+        )
+      )
+    assertEquals(acceptRows, [{ actorUserId: userId }])
+
+    // The contact cannot be cleared while it is on.
+    const clear = await put({ acmeContactEmail: null })
+    assertEquals(clear.status, 400)
+    assertEquals((await clear.json()).code, 'acme_contact_email_required')
+
+    // Off keeps the contact and the acceptance; on again needs neither resent.
+    const off = await put({ acmeEnabled: false })
+    assertEquals(off.status, 200)
+    const afterOff = await stored()
+    assertEquals(afterOff.isAcmeEnabled, false)
+    assertEquals(parseOrganizationOptions(afterOff.options).acmeEnabled, false)
+    assertEquals(afterOff.acmeContactEmail, 'ops@example.com')
+    assertEquals(afterOff.acmeTermsAcceptedAt, afterOn.acmeTermsAcceptedAt)
+    const again = await put({ acmeEnabled: true })
+    assertEquals(again.status, 200)
+    assertEquals((await stored()).isAcmeEnabled, true)
   })
 })
 
-test('PUT /organizations/:id/tls-settings refuses a mailto header trick and an empty body', async () => {
+test('PUT /organizations/:id/tls-settings refuses a mailto header trick, a false acceptance and an empty body', async () => {
   await withOrgFixtures(async ({ db, app, secrets, userId, organizationId }) => {
     const cookie = await sessionCookie(db, secrets, userId)
     const url = `/organizations/${organizationId}/tls-settings`
@@ -692,9 +748,18 @@ test('PUT /organizations/:id/tls-settings refuses a mailto header trick and an e
       body: JSON.stringify({ acmeContactEmail: 'a?subject=x@example.org' }),
     })
     assertEquals(bad.status, 400)
+    const notTrue = await app.request(url, {
+      method: 'PUT',
+      headers,
+      body: JSON.stringify({ acmeTermsAccepted: false }),
+    })
+    assertEquals(notTrue.status, 400)
+    assertEquals(await notTrue.json(), { error: 'Invalid acmeTermsAccepted' })
     const empty = await app.request(url, { method: 'PUT', headers, body: '{}' })
     assertEquals(empty.status, 400)
-    assertEquals(await empty.json(), { error: 'Send acmeEnabled or acmeContactEmail' })
+    assertEquals(await empty.json(), {
+      error: 'Send acmeEnabled, acmeContactEmail or acmeTermsAccepted',
+    })
   })
 })
 

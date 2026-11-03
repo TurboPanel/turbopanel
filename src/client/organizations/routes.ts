@@ -32,7 +32,7 @@ import {
 } from './settings-route.ts'
 import {
   parseOrganizationOptions,
-  resolveAcmeContactEmail,
+  ORG_ACME_TERMS_URL,
   resolveRandomizedPrincipalUsernames,
 } from '../../features/organizations/organization-options.ts'
 import type { AuditAction } from '../../features/audit/audit-records.ts'
@@ -74,6 +74,7 @@ import {
   parseProjectSettingsPatch,
   parseServerCapacityPutBody,
   parseTemperatureUnitPatch,
+  applyTlsSettingsPatch,
   parseTlsSettingsPatch,
   deployTimeoutGetResponse,
   deployTimeoutPutResponse,
@@ -258,33 +259,37 @@ export function registerOrganizationRoutes(router: Hono<AppEnv>, opts: AuthRoute
     tlsSettingsPutRoute({
       gate: 'manage',
       parse: parseTlsSettingsPatch,
+      apply: applyTlsSettingsPatch,
       respond: tlsSettingsPutResponse,
       // Turning Let's Encrypt off: the stored keys are no longer needed.
       afterWrite: async (db, organizationId, patch) => {
         if (patch.acmeEnabled === false) {
           await eraseStoredPairs(db, organizationId)
         }
-        // A merge cannot remove a key, so a cleared contact is removed outright.
-        if (patch.acmeContactEmail === null) {
-          await writeOrgOptions(db, organizationId, removeOrgOptionSql('acmeContactEmail'))
-        }
       },
-      audit: (patch, previous) => {
+      audit: (patch, before, after) => {
         const entries: { action: AuditAction; context: Record<string, unknown> }[] = []
+        // The acceptance comes first: it is what allowed the switch.
+        if (patch.acmeTermsAccepted) {
+          entries.push({
+            action: 'organization.acme_terms.accept',
+            context: { acceptedAt: after.acmeTermsAcceptedAt, termsUrl: ORG_ACME_TERMS_URL },
+          })
+        }
         if (patch.acmeEnabled !== undefined) {
           entries.push({
             action: 'organization.acme.set',
             context: { acmeEnabled: patch.acmeEnabled },
           })
         }
-        if (patch.acmeContactEmail !== undefined) {
-          const was = resolveAcmeContactEmail(previous.options)
-          if (patch.acmeContactEmail !== was) {
-            entries.push({
-              action: 'organization.acme_contact.set',
-              context: { acmeContactEmail: patch.acmeContactEmail, previous: was },
-            })
-          }
+        if (after.acmeContactEmail !== before.acmeContactEmail) {
+          entries.push({
+            action: 'organization.acme_contact.set',
+            context: {
+              acmeContactEmail: after.acmeContactEmail,
+              previous: before.acmeContactEmail,
+            },
+          })
         }
         return entries
       },

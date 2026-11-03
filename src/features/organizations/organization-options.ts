@@ -156,13 +156,6 @@ export type OrganizationOptions = {
    */
   acmeEnabled?: boolean
   /**
-   * The one address kept for this organization's Let's Encrypt account contact
-   * (central certificate ordering will use it; nothing reads it yet). Unset means none.
-   * Never taken from a member's account: an organization can have several
-   * owners and a person's address is not sent to a third party unasked.
-   */
-  acmeContactEmail?: string
-  /**
    * Step-up re-authentication for permanent actions (delete a project, remove
    * a member, revoke a key, ...). When on, those routes refuse with
    * `reauth_required` until the signed-in person has just proved who they are
@@ -412,8 +405,6 @@ export function parseOrganizationOptions(value: unknown): OrganizationOptions {
   if (typeof value.acmeEnabled === 'boolean') {
     options.acmeEnabled = value.acmeEnabled
   }
-  const acmeContactEmail = normalizeAcmeContactEmail(value.acmeContactEmail)
-  if (acmeContactEmail) options.acmeContactEmail = acmeContactEmail
   assignRequireReauth(options, value)
   assignComposeOptIns(options, value)
   if (typeof value.deployHooksEnabled === 'boolean') {
@@ -528,10 +519,17 @@ export function normalizeAcmeContactEmail(value: unknown): string | null {
   return `${local}@${domain}`
 }
 
-/** Effective contact address for Let's Encrypt orders, or null when none is set. */
-export function resolveAcmeContactEmail(options: OrganizationOptions): string | null {
-  return options.acmeContactEmail ?? null
-}
+/**
+ * Where the organization reads the Let's Encrypt terms before accepting them:
+ * the authority's own page that always lists the current subscriber agreement.
+ */
+export const ORG_ACME_TERMS_URL = 'https://letsencrypt.org/repository/'
+
+/** Refusal code: Let's Encrypt cannot be on without accepted terms. */
+export const ORG_ACME_TERMS_NOT_ACCEPTED_CODE = 'acme_terms_not_accepted'
+
+/** Refusal code: Let's Encrypt cannot be on without a contact address. */
+export const ORG_ACME_CONTACT_EMAIL_REQUIRED_CODE = 'acme_contact_email_required'
 
 /** Effective step-up gate for permanent actions: off unless an owner turned it on. */
 export function resolveRequireReauthForDestructive(options: OrganizationOptions): boolean {
