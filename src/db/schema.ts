@@ -483,8 +483,14 @@ export const tier = pgTable(
     label: text().notNull(),
     /** Copied from the ladder on insert, never from a request; orders tiers and decides upgrade vs downgrade. */
     rank: integer().notNull(),
-    /** `stripe` only — Apple was dropped before the first tag (2026-09-12). Matches `payer_provider_check`. */
-    provider: text().default('stripe').notNull(),
+    /**
+     * Payment provider the row bills through: `stripe`, or null on a row with
+     * no provider product — the custom `SX` row, which a self-hosted instance
+     * creates for its licence grant and which bills nowhere. Set together with
+     * `provider_product_id` (`insertTier`, `updateTierById`). Apple was dropped
+     * before the first tag (2026-09-12). Matches `payer_provider_check`.
+     */
+    provider: text(),
     /**
      * The provider's Product this tier bills against, chosen from the
      * provider's catalogue and verified before the row is written. Null on
@@ -514,6 +520,10 @@ export const tier = pgTable(
       .on(table.provider, table.providerProductId)
       .where(sql`${table.providerProductId} IS NOT NULL`),
     check('tier_provider_check', sql`provider IN ('stripe')`),
+    // A bound product always names the provider it lives on; the reverse
+    // (no product, no provider) is kept by the writers, not a CHECK, so a
+    // rolled-back Worker that still writes `stripe` on `SX` is not refused.
+    check('tier_provider_bound_check', sql`provider_product_id IS NULL OR provider IS NOT NULL`),
   ]
 )
 /**
