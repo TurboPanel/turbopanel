@@ -168,6 +168,87 @@ export function orgOptionsPatchRoute<P extends Record<string, unknown>>(
   }
 }
 
+/** What the TLS settings routes answer from: the Let's Encrypt column and the stored options. */
+export type OrgTlsSettings = { acmeEnabled: boolean; options: OrganizationOptions }
+
+/** The organization's TLS settings, or `undefined` when the organization does not exist. */
+async function loadOrgTlsSettings(db: Db, id: string): Promise<OrgTlsSettings | undefined> {
+  const [row] = await db
+    .select({ isAcmeEnabled: organization.isAcmeEnabled, options: organization.options })
+    .from(organization)
+    .where(eq(organization.id, id))
+    .limit(1)
+  if (!row) return undefined
+  return { acmeEnabled: row.isAcmeEnabled, options: parseOrganizationOptions(row.options) }
+}
+
+/** `GET` for the TLS settings: the `is_acme_enabled` column plus the contact kept in options. */
+export function tlsSettingsGetRoute(
+  gate: OrgSettingsGate,
+  respond: (settings: OrgTlsSettings) => object
+) {
+  return async (c: Context<AppEnv>) => {
+    const scope = await openOrgSettingsScope(c, gate)
+    if (scope instanceof Response) return scope
+    const settings = await loadOrgTlsSettings(scope.db, scope.id)
+    if (!settings) return c.json({ error: 'Not found' }, 404)
+    return c.json(respond(settings))
+  }
+}
+
+/**
+ * `PUT` for the TLS settings. `acmeEnabled` goes to `is_acme_enabled`; the patch is
+ * also merged into options, which keeps the old `options.acmeEnabled` copy in
+ * step for one release so an older build rolled back onto this database still
+ * reads the right switch.
+ */
+export function tlsSettingsPutRoute<P extends { acmeEnabled?: boolean }>(
+  params: Readonly<{
+    gate: OrgSettingsGate
+    parse: (body: Record<string, unknown>) => ParsedPatch<P>
+    respond: (settings: OrgTlsSettings) => object
+    audit: (patch: P, previous: OrgTlsSettings) => readonly AuditEntry[]
+    /** Runs after the settings are written, in the same transaction. */
+    afterWrite: (db: Db, organizationId: string, patch: P) => Promise<void>
+  }>
+) {
+  return async (c: Context<AppEnv>) => {
+    const scope = await openOrgSettingsScope(c, params.gate)
+    if (scope instanceof Response) return scope
+
+    const body = await parseJsonBody(c)
+    if (body instanceof Response) return body
+
+    const parsed = params.parse(body)
+    if (!parsed.ok) return c.json({ error: parsed.error }, parsed.status)
+
+    const before = await loadOrgTlsSettings(scope.db, scope.id)
+    if (!before) return c.json({ error: 'Not found' }, 404)
+
+    const { acmeEnabled } = parsed.patch
+    const settings = await scope.db.transaction(async (tx0) => {
+      const tx = tx0 as unknown as Db
+      await tx
+        .update(organization)
+        .set({
+          options: mergeOrgOptionsSql(parsed.patch),
+          ...(acmeEnabled === undefined ? {} : { isAcmeEnabled: acmeEnabled }),
+          updatedAt: new Date().toISOString(),
+        })
+        .where(eq(organization.id, scope.id))
+      await params.afterWrite(tx, scope.id, parsed.patch)
+      return await loadOrgTlsSettings(tx, scope.id)
+    })
+
+    await Promise.all(
+      params
+        .audit(parsed.patch, before)
+        .map(({ action, context }) => recordOrgSettingAudit(c, scope, action, context))
+    )
+    return c.json(params.respond(settings ?? before))
+  }
+}
+
 /** The stored `deploy_timeout_minutes` (null = default), or `undefined` when the organization does not exist. */
 async function loadDeployTimeoutMinutes(db: Db, id: string): Promise<number | null | undefined> {
   const [row] = await db

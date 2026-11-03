@@ -1377,10 +1377,10 @@ test("POST /environments/:id/deploy uses internal TLS after revoking a Let's Enc
       try {
         await useBaseCompose(db, { environmentId, projectId, serverId }, composeWithWebService())
         // POST /tls source:lets_encrypt requires the org to have opted in to
-        // ACME (organization.options.acmeEnabled, off by default).
+        // ACME (organization.is_acme_enabled).
         await db
           .update(organization)
-          .set({ options: { acmeEnabled: true } })
+          .set({ isAcmeEnabled: true })
           .where(eq(organization.id, organizationId))
 
         const cookie = await sessionCookie(db, secrets, userId)
@@ -1509,7 +1509,7 @@ for (const { acmeEnabled, dnsReady } of AUTOMATIC_CASES) {
           )
           await db
             .update(organization)
-            .set({ options: { acmeEnabled } })
+            .set({ isAcmeEnabled: acmeEnabled })
             .where(eq(organization.id, organizationId))
           // The server reports a public address; the name points at it only when DNS is ready.
           await db

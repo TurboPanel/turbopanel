@@ -139,7 +139,7 @@ async function withTlsFixtures(
     .insert(organization)
     .values({
       name: 'TLS Route Test Org',
-      options: { acmeEnabled: true },
+      isAcmeEnabled: true,
     })
     .returning({ id: organization.id })
   const organizationId = orgRow!.id
@@ -302,7 +302,7 @@ test('POST /tls refuses lets_encrypt when the org has not opted in to ACME', asy
   await withTlsFixtures(async ({ db, app, secrets, userId, organizationId }) => {
     await db
       .update(organization)
-      .set({ options: { acmeEnabled: false } })
+      .set({ isAcmeEnabled: false })
       .where(eq(organization.id, organizationId))
 
     const cookie = await sessionCookie(db, secrets, userId)

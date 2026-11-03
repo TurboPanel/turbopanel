@@ -131,6 +131,16 @@ export const organization = pgTable(
     nextLinuxId: integer('next_linux_id').default(30001).notNull(),
     /** Longest a deploy may run, in minutes (5 to 240); null means the default of 30. */
     deployTimeoutMinutes: integer('deploy_timeout_minutes'),
+    /**
+     * Let's Encrypt allowed for this organization: gates `POST /tls` with
+     * `source: 'lets_encrypt'`, the one-click button, compose `tls.mode:
+     * automatic` and the deploy-time `tlsMode: 'acme'` wire. New organizations
+     * start on; organizations made before the column keep what
+     * `options.acmeEnabled` said (absent meant off). Some operators turn it off
+     * so Let's Encrypt is never used against their servers; turning it off does
+     * not revoke certificates already issued.
+     */
+    isAcmeEnabled: boolean('is_acme_enabled').default(true).notNull(),
     /** Destination finished backups are copied to unless a cluster chooses otherwise. */
     backupDestinationId: uuid('backup_destination_id').references(
       (): AnyPgColumn => backupTarget.id,

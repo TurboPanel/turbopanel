@@ -26,6 +26,8 @@ import {
   orgOptionsPatchRoute,
   recordOrgSettingAudit,
   removeOrgOptionSql,
+  tlsSettingsGetRoute,
+  tlsSettingsPutRoute,
   writeOrgOptions,
 } from './settings-route.ts'
 import {
@@ -249,11 +251,11 @@ export function registerOrganizationRoutes(router: Hono<AppEnv>, opts: AuthRoute
 
   router.get(
     '/organizations/:id/tls-settings',
-    orgOptionsGetRoute('manage', tlsSettingsGetResponse)
+    tlsSettingsGetRoute('manage', tlsSettingsGetResponse)
   )
   router.put(
     '/organizations/:id/tls-settings',
-    orgOptionsPatchRoute({
+    tlsSettingsPutRoute({
       gate: 'manage',
       parse: parseTlsSettingsPatch,
       respond: tlsSettingsPutResponse,
@@ -276,7 +278,7 @@ export function registerOrganizationRoutes(router: Hono<AppEnv>, opts: AuthRoute
           })
         }
         if (patch.acmeContactEmail !== undefined) {
-          const was = resolveAcmeContactEmail(previous)
+          const was = resolveAcmeContactEmail(previous.options)
           if (patch.acmeContactEmail !== was) {
             entries.push({
               action: 'organization.acme_contact.set',

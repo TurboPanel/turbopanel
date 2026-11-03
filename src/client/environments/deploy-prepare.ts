@@ -31,7 +31,6 @@ import { deployInputsDigest } from './deploy-inputs-digest.ts'
 import { sealPrincipalPasswordHashes } from './deploy-principal-password-seal.ts'
 import {
   parseOrganizationOptions,
-  resolveAcmeEnabled,
   resolveComposeDefaultResourceLimits,
   resolveComposeGatedFieldsEnabled,
   resolveComposeRemoteBuildSourcesEnabled,
@@ -4302,7 +4301,7 @@ export type HostingTlsWire =
  * ACME-managed Let's Encrypt pins omit `tlsId` on the wire so older daemons
  * fall back to `tls internal`, and they are excluded from `tlsMaterial`.
  *
- * `acmeEnabled` is the org's gate (`organization.options.acmeEnabled`, on for
+ * `acmeEnabled` is the org's gate (`organization.is_acme_enabled`, on for
  * new organizations) — checked here as defense in depth even though `POST
  * /tls` and the compose reconcile already refuse while the org is opted out,
  * because an `automatic` row can predate the org later disabling the gate.
@@ -4705,11 +4704,11 @@ async function buildHostingPayload(
 
   const candidates = await loadOrgTlsCandidates(db, organizationId)
   const [orgRow] = await db
-    .select({ options: organization.options })
+    .select({ isAcmeEnabled: organization.isAcmeEnabled })
     .from(organization)
     .where(eq(organization.id, organizationId))
     .limit(1)
-  const acmeEnabled = resolveAcmeEnabled(parseOrganizationOptions(orgRow?.options))
+  const acmeEnabled = orgRow?.isAcmeEnabled === true
   const hostingPayload: DeployHostingPayload[] = []
   const resolvedTlsIds = new Set<string>()
 

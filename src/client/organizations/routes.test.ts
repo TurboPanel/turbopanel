@@ -592,7 +592,7 @@ test('PUT /organizations/:id/tls-settings stores the contact email, keeps other 
     const headers = { Cookie: cookie, 'Content-Type': 'application/json' }
     await db
       .update(organization)
-      .set({ options: { acmeEnabled: true, defaultEnvironmentName: 'staging' } })
+      .set({ isAcmeEnabled: true, options: { defaultEnvironmentName: 'staging' } })
       .where(eq(organization.id, organizationId))
 
     const put = await app.request(url, {
@@ -648,6 +648,36 @@ test('PUT /organizations/:id/tls-settings stores the contact email, keeps other 
       Object.hasOwn((after!.options ?? {}) as Record<string, unknown>, 'acmeContactEmail'),
       false
     )
+  })
+})
+
+test('PUT /organizations/:id/tls-settings writes the is_acme_enabled column and the old option key', async () => {
+  await withOrgFixtures(async ({ db, app, secrets, userId, organizationId }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const url = `/organizations/${organizationId}/tls-settings`
+    const headers = { Cookie: cookie, 'Content-Type': 'application/json' }
+    const stored = async () => {
+      const [row] = await db
+        .select({ isAcmeEnabled: organization.isAcmeEnabled, options: organization.options })
+        .from(organization)
+        .where(eq(organization.id, organizationId))
+      return {
+        column: row!.isAcmeEnabled,
+        key: parseOrganizationOptions(row!.options).acmeEnabled,
+      }
+    }
+    for (const acmeEnabled of [false, true]) {
+      const put = await app.request(url, {
+        method: 'PUT',
+        headers,
+        body: JSON.stringify({ acmeEnabled }),
+      })
+      assertEquals(put.status, 200)
+      assertEquals(await put.json(), { ok: true, acmeEnabled, acmeContactEmail: null })
+      assertEquals(await stored(), { column: acmeEnabled, key: acmeEnabled })
+      const get = await app.request(url, { headers })
+      assertEquals(await get.json(), { acmeEnabled, acmeContactEmail: null })
+    }
   })
 })
 

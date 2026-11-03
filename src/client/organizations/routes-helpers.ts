@@ -5,7 +5,6 @@ import {
   parseTemperatureUnitInput,
   normalizeAcmeContactEmail,
   resolveAcmeContactEmail,
-  resolveAcmeEnabled,
   resolveComposeDefaultResourceLimits,
   resolveComposeGatedFieldsEnabled,
   resolveDeployHooksEnabled,
@@ -697,23 +696,23 @@ export function temperatureUnitPutResponse(options: { temperatureUnit?: Temperat
   }
 }
 
-export function tlsSettingsGetResponse(options: {
-  acmeEnabled?: boolean
-  acmeContactEmail?: string
+export function tlsSettingsGetResponse(settings: {
+  acmeEnabled: boolean
+  options: { acmeContactEmail?: string }
 }) {
   return {
-    acmeEnabled: resolveAcmeEnabled(options),
-    acmeContactEmail: resolveAcmeContactEmail(options),
+    acmeEnabled: settings.acmeEnabled,
+    acmeContactEmail: resolveAcmeContactEmail(settings.options),
   }
 }
 
-export function tlsSettingsPutResponse(options: {
-  acmeEnabled?: boolean
-  acmeContactEmail?: string
+export function tlsSettingsPutResponse(settings: {
+  acmeEnabled: boolean
+  options: { acmeContactEmail?: string }
 }) {
   return {
     ok: true as const,
-    ...tlsSettingsGetResponse(options),
+    ...tlsSettingsGetResponse(settings),
   }
 }
 

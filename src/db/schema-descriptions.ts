@@ -305,8 +305,10 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'Next uid/gid for a Hosting Account on servers this organization owns; starts at 30001, rises by one per new account, never reused.',
       deploy_timeout_minutes:
         'The longest a deploy may run, in whole minutes from 5 to 240, counted only while the server reports; null means the default of 30.',
+      is_acme_enabled:
+        "Let's Encrypt allowed for this organization's certificates; new organizations start on. Turning it off erases stored Let's Encrypt keys but revokes nothing.",
       options:
-        'Org-wide settings merged key-by-key by the organization routes (`defaultServerTimezone`, `maxServers`, `acmeEnabled`, `managedDatabase`, `phpModes` and more).',
+        'Org-wide settings merged key-by-key by the organization routes (`maxServers`, `phpModes` and more); its `acmeEnabled` only copies `is_acme_enabled`.',
       backup_destination_id:
         'Destination finished backups are copied to unless a cluster chooses otherwise; null means no default copy. Set null if the destination is deleted.',
       name: "Display name; sign-up uses `you@example.com's organization` from email, else `My Organization` if missing, blank, or label invalid; install Root Organization.",

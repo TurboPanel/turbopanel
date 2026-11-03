@@ -149,15 +149,10 @@ export type OrganizationOptions = {
    */
   docker?: OrganizationDockerNetworking
   /**
-   * Gate for Let's Encrypt / ACME certificate issuance — the tenant `tls`
-   * library (`POST /tls` with `source: 'lets_encrypt'`), the one-click button,
-   * compose `tls.mode: automatic`, and the deploy-time `tlsMode: 'acme'` wire
-   * the resolved TLS status can produce. New organizations start with it on
-   * ({@link NEW_ORGANIZATION_OPTIONS}); a row without the key (an organization
-   * made before that) reads as off, so existing organizations keep what they
-   * had. Some operators do not want Let's Encrypt used against their servers
-   * at all and turn it off. Toggling off does not revoke certificates already
-   * issued.
+   * Old copy of `organization.is_acme_enabled`, the Let's Encrypt switch. Nothing
+   * reads it any more; it is still written (on create and by the TLS settings
+   * route) for one release so an older build rolled back onto the database
+   * sees the same switch. Removed in a later release.
    */
   acmeEnabled?: boolean
   /**
@@ -494,17 +489,13 @@ export function resolveTemperatureUnit(options: OrganizationOptions): Temperatur
 }
 
 /**
- * `organization.options` for an organization being created: Let's Encrypt
- * allowed. Only new rows get this; nothing rewrites existing organizations.
+ * `organization.options` for an organization being created. The Let's Encrypt
+ * switch itself is the `is_acme_enabled` column (on by default); this keeps the
+ * old option copy in step with it for one release.
  */
 export const NEW_ORGANIZATION_OPTIONS: Readonly<OrganizationOptions> = Object.freeze({
   acmeEnabled: true,
 })
-
-/** Effective Let's Encrypt gate: off unless the key is set (new organizations set it on). */
-export function resolveAcmeEnabled(options: OrganizationOptions): boolean {
-  return options.acmeEnabled ?? false
-}
 
 /** Longest address the authority accepts as a contact (the mailbox limit). */
 export const ACME_CONTACT_EMAIL_MAX_LENGTH = 254

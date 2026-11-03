@@ -53,7 +53,7 @@ async function sweepWorld() {
   const stamp = new Date().toISOString()
   const [org] = await db
     .insert(organization)
-    .values({ name: 'Sweep Org', options: { acmeEnabled: true } })
+    .values({ name: 'Sweep Org', isAcmeEnabled: true })
     .returning({ id: organization.id })
   const organizationId = org!.id
   const [ws] = await db

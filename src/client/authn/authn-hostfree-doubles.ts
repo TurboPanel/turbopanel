@@ -66,7 +66,12 @@ export type MockAuthState = {
     providerId: string
     providerUserId: string
   }>
-  organizations: Array<{ id: string; name: string | null; options?: unknown }>
+  organizations: Array<{
+    id: string
+    name: string | null
+    options?: unknown
+    isAcmeEnabled?: boolean
+  }>
   settings: Map<string, string>
   licenses: Array<{
     id: string
@@ -281,7 +286,11 @@ function fetchWhereRows(
     return Promise.resolve(
       state.organizations
         .filter((row) => row.name !== null)
-        .map((row) => ({ id: row.id, options: row.options ?? null }))
+        .map((row) => ({
+          id: row.id,
+          options: row.options ?? null,
+          isAcmeEnabled: row.isAcmeEnabled ?? true,
+        }))
     )
   }
   if (table === license) {
