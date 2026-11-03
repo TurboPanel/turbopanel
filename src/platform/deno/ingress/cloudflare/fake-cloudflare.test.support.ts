@@ -153,7 +153,7 @@ export function createFakeCloudflare(options: FakeCloudflareOptions): FakeCloudf
           name: String(body.name),
           status: 'inactive',
           connections: [],
-          config_src: String(body.config_src ?? 'cloudflare'),
+          config_src: typeof body.config_src === 'string' ? body.config_src : 'cloudflare',
         }
         state.tunnels.push(tunnel)
         return envelope(tunnel)
