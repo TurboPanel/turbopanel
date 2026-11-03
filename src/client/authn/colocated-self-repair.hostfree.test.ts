@@ -24,11 +24,9 @@ import {
   type ColocatedRepairQueries,
   type ColocatedRepairStore,
   type ColocatedSeat,
-  type ControlPlaneSelf,
   type StoredDaemonKey,
   createColocatedRepairDisk,
   createColocatedSelfRepair,
-  daemonTargetsThisControlPlane,
   diagnoseColocatedCredentials,
   repairColocatedCredentialsOnce,
 } from './colocated-self-repair.ts'
@@ -36,7 +34,9 @@ import {
   clearColocatedDaemonIdentityFiles,
   persistColocatedLicenseCredentials,
 } from './install-state.ts'
-import { isCredentialRefusal } from '../../daemon/api-routes.ts'
+import { Hono } from 'hono'
+import { credentialRefusalMiddleware, isCredentialRefusal } from '../../daemon/api-routes.ts'
+import { isDirectLocalSocketRequest } from '../../lib/peer-address.ts'
 import { computePublicKeyFingerprint } from '../../daemon/authn/server-key.ts'
 import { useColocatedCredentialsTempDir } from '../../test-fixtures/colocated-credentials.test.support.ts'
 
@@ -56,13 +56,6 @@ const FOREIGN_LICENSE = '00000000-0000-4000-8000-00000000f0a1'
 const FOREIGN_SERVER = '00000000-0000-4000-8000-00000000f0b1'
 const KEY_ID = 'key-current'
 const KEY_FINGERPRINT = 'fingerprint-current'
-const SOCKET = '/run/turbopanel/instance.sock'
-const PANEL_KID = 'A'.repeat(43)
-const SELF: ControlPlaneSelf = {
-  socketPath: SOCKET,
-  hostnames: ['panel.example.test'],
-  panelFingerprints: [PANEL_KID],
-}
 /** A path that is never under the temp dir and never touched: writers refuse first. */
 const REAL_LOOKING_DIR = '/var/lib/turbopanel-colocated-guard-never-written'
 
@@ -73,7 +66,6 @@ type FakeState = {
   tokenHash: string | null
   knownLicenses: Set<string>
   knownServers: Set<string>
-  self: ControlPlaneSelf
   events: string[]
   /** Runs when the lock is taken, before the locked queries: a racing writer. */
   onLock: () => void
@@ -89,7 +81,6 @@ function fakeStore(initial: Partial<FakeState> = {}): {
     tokenHash: null,
     knownLicenses: new Set([SEAT.licenseId]),
     knownServers: new Set([SEAT.serverId]),
-    self: SELF,
     events: [],
     onLock: () => {},
     ...initial,
@@ -118,7 +109,6 @@ function fakeStore(initial: Partial<FakeState> = {}): {
   }
   const store: ColocatedRepairStore = {
     ...queries,
-    controlPlaneSelf: () => Promise.resolve(state.self),
     locked: async (fn) => {
       state.events.push('lock')
       state.onLock()
@@ -147,17 +137,9 @@ async function pathExists(path: string): Promise<boolean> {
   }
 }
 
-/** Disk adapter on the temp credentials dir, with the daemon settings in it too. */
-function tempDisk(dir: string): ColocatedRepairDisk {
-  return createColocatedRepairDisk({
-    daemonEnvPath: () => `${dir}/test-daemon.env`,
-    panelPinPath: () => `${dir}/test-panel-identity`,
-  })
-}
-
-/** A daemon in socket mode pointed at this control plane. */
-async function writeOurDaemonEnv(dir: string): Promise<void> {
-  await writeFiles(dir, { 'test-daemon.env': 'TURBOPANEL_RUN_DIR=/run/turbopanel\n' })
+/** Disk adapter on the temp credentials dir. */
+function tempDisk(): ColocatedRepairDisk {
+  return createColocatedRepairDisk()
 }
 
 /** In-memory disk for scheduling tests. */
@@ -168,7 +150,6 @@ function memoryDisk(
   return {
     assertWritable: () => {},
     hasDaemonFiles: () => Promise.resolve(true),
-    readTarget: () => Promise.resolve({ daemonEnv: '', panelPin: null }),
     read: () => Promise.resolve(state),
     write,
   }
@@ -276,57 +257,9 @@ test('install writers write into the temp dir from the fixture', async () => {
 
 // ── Ownership ────────────────────────────────────────────────────────────
 
-test('target: the daemon settings decide when readable', () => {
-  const socket = (env: string) =>
-    daemonTargetsThisControlPlane({ daemonEnv: env, panelPin: null }, SELF)
-  assertEquals(socket('').ok, true)
-  assertEquals(socket('TURBOPANEL_RUN_DIR=/var/run/turbopanel\n').ok, true)
-  assertEquals(socket('TURBOPANEL_SOCKET=/run/other/instance.sock\n').ok, false)
-  assertEquals(socket('TURBOPANEL_INSTANCE_URL="https://panel.example.test:8443"\n').ok, true)
-  assertEquals(socket('TURBOPANEL_INSTANCE_URL=https://other.example.test\n').ok, false)
-  // A readable settings file that points elsewhere wins over a matching pin.
-  const pin = `current=${PANEL_KID}\n`
-  assertEquals(
-    daemonTargetsThisControlPlane(
-      { daemonEnv: 'TURBOPANEL_INSTANCE_URL=https://other.example.test\n', panelPin: pin },
-      SELF
-    ).ok,
-    false
-  )
-})
-
-test('target: an unreadable settings file falls back to the panel key pin', () => {
-  const pinned = (pin: string | null | undefined) =>
-    daemonTargetsThisControlPlane({ daemonEnv: undefined, panelPin: pin }, SELF).ok
-  assertEquals(pinned(`current=${PANEL_KID}\nnext=\nurls=\n`), true)
-  assertEquals(pinned(`current=${'B'.repeat(43)}\nurls=https://panel.example.test\n`), true)
-  assertEquals(pinned(`current=${'B'.repeat(43)}\nurls=https://other.example.test\n`), false)
-  assertEquals(pinned(null), false)
-  assertEquals(pinned(undefined), false)
-})
-
-test('repair: a daemon set to reach another control plane is never written', async () => {
-  const credentials = await useColocatedCredentialsTempDir()
-  try {
-    await writeFiles(credentials.dir, {
-      'test-daemon.env': 'TURBOPANEL_INSTANCE_URL=https://other.example.test\n',
-      [LICENSE_ID]: SEAT.licenseId,
-      [SERVER_ID]: FOREIGN_SERVER,
-    })
-    const { store, state } = fakeStore()
-    const outcome = await repairColocatedCredentialsOnce(store, tempDisk(credentials.dir))
-    assertEquals(outcome.status, 'not-ours')
-    assertEquals(state.events, [])
-    assertEquals(await readTrimmed(`${credentials.dir}/${SERVER_ID}`), FOREIGN_SERVER)
-  } finally {
-    await credentials.restore()
-  }
-})
-
 test('repair: files whose ids are both unknown here are never written', async () => {
   const credentials = await useColocatedCredentialsTempDir()
   try {
-    await writeOurDaemonEnv(credentials.dir)
     // The original incident: another database's license and server ids.
     await writeFiles(credentials.dir, {
       [LICENSE_ID]: FOREIGN_LICENSE,
@@ -334,7 +267,7 @@ test('repair: files whose ids are both unknown here are never written', async ()
       [SERVER_ID]: FOREIGN_SERVER,
     })
     const { store, state } = fakeStore()
-    const outcome = await repairColocatedCredentialsOnce(store, tempDisk(credentials.dir))
+    const outcome = await repairColocatedCredentialsOnce(store, tempDisk())
     assertEquals(outcome.status, 'not-ours')
     assertEquals(state.events, [])
     assertEquals(await readTrimmed(`${credentials.dir}/${LICENSE_ID}`), FOREIGN_LICENSE)
@@ -413,7 +346,6 @@ test('diagnosis: before enrollment the token is checked, and a missing one is a 
 test('repair: a known license id with a lost key is re-issued, then the next pass is a no-op', async () => {
   const credentials = await useColocatedCredentialsTempDir()
   try {
-    await writeOurDaemonEnv(credentials.dir)
     // The license id is this database's; the server id and key are gone.
     await writeFiles(credentials.dir, {
       [LICENSE_ID]: SEAT.licenseId,
@@ -421,7 +353,7 @@ test('repair: a known license id with a lost key is re-issued, then the next pas
       [SERVER_ID]: FOREIGN_SERVER,
     })
     const { store, state } = fakeStore()
-    const disk = tempDisk(credentials.dir)
+    const disk = tempDisk()
 
     const first = await repairColocatedCredentialsOnce(store, disk)
     assertEquals(first.status, 'repaired')
@@ -447,7 +379,6 @@ test('repair: the key file fingerprint is read from disk and a matching key is k
   try {
     const publicJwk = { kty: 'OKP', crv: 'Ed25519', x: 'test-public-x' }
     const fingerprint = await computePublicKeyFingerprint(publicJwk)
-    await writeOurDaemonEnv(credentials.dir)
     await writeFiles(credentials.dir, {
       [LICENSE_ID]: 'not-a-uuid-from-an-old-ticket',
       [LICENSE_TOKEN]: 'whatever',
@@ -457,7 +388,7 @@ test('repair: the key file fingerprint is read from disk and a matching key is k
     const { store, state } = fakeStore({
       key: { id: KEY_ID, fingerprint, active: true },
     })
-    const outcome = await repairColocatedCredentialsOnce(store, tempDisk(credentials.dir))
+    const outcome = await repairColocatedCredentialsOnce(store, tempDisk())
     // Only the license id was wrong: files rewritten, key left in place.
     assertEquals(outcome.status, 'repaired')
     assertEquals(state.events, ['lock', 'rotate'])
@@ -498,11 +429,10 @@ test('repair: the database is updated before the files are written', async () =>
 test('repair: nothing happens without a bound seat, daemon files or with a revoked key', async () => {
   const credentials = await useColocatedCredentialsTempDir()
   try {
-    const disk = tempDisk(credentials.dir)
+    const disk = tempDisk()
     const noFiles = fakeStore()
     assertEquals((await repairColocatedCredentialsOnce(noFiles.store, disk)).status, 'skipped')
 
-    await writeOurDaemonEnv(credentials.dir)
     await writeFiles(credentials.dir, { [LICENSE_ID]: SEAT.licenseId, [SERVER_ID]: 'wrong' })
     const noSeat = fakeStore({ seat: null })
     assertEquals((await repairColocatedCredentialsOnce(noSeat.store, disk)).status, 'skipped')
@@ -520,18 +450,17 @@ test('repair: nothing happens without a bound seat, daemon files or with a revok
 test('repair: before enrollment a token that verifies is left alone', async () => {
   const credentials = await useColocatedCredentialsTempDir()
   try {
-    await writeOurDaemonEnv(credentials.dir)
     await writeFiles(credentials.dir, {
       [LICENSE_ID]: SEAT.licenseId,
       [LICENSE_TOKEN]: 'install-token',
       [SERVER_ID]: SEAT.serverId,
     })
     const good = fakeStore({ key: null, tokenHash: 'install-token' })
-    assertEquals(await repairColocatedCredentialsOnce(good.store, tempDisk(credentials.dir)), {
+    assertEquals(await repairColocatedCredentialsOnce(good.store, tempDisk()), {
       status: 'ok',
     })
     const bad = fakeStore({ key: null, tokenHash: 'some-other-token' })
-    const outcome = await repairColocatedCredentialsOnce(bad.store, tempDisk(credentials.dir))
+    const outcome = await repairColocatedCredentialsOnce(bad.store, tempDisk())
     assertEquals(outcome.status, 'repaired')
     assertEquals(bad.state.events, ['lock', 'rotate'])
   } finally {
@@ -553,7 +482,7 @@ test('self-repair runs at most once per interval and shares a check in flight', 
   }
   const repair = createColocatedSelfRepair({ store, disk, minIntervalMs: 60_000, now: () => clock })
 
-  const [a, b] = await Promise.all([repair.run('boot'), repair.run('refusal')])
+  const [a, b] = await Promise.all([repair.run('refusal'), repair.run('refusal')])
   assertEquals(a.status, 'repaired')
   assertEquals(b.status, 'repaired')
   assertEquals((await repair.run('refusal')).status, 'rate-limited')
@@ -581,7 +510,7 @@ test('self-repair retries a failed write with backoff, without waiting for a res
     now: () => clock,
   })
 
-  assertEquals((await repair.run('boot')).status, 'failed')
+  assertEquals((await repair.run('refusal')).status, 'failed')
   assertEquals(await repair.tick(), null)
   clock += 1_000
   assertEquals((await repair.tick())?.status, 'failed')
@@ -611,7 +540,7 @@ test('self-repair retries after a database error and never throws', async () => 
     retryBaseMs: 1_000,
     now: () => clock,
   })
-  assertEquals(await repair.run('boot'), { status: 'skipped', reason: 'error' })
+  assertEquals(await repair.run('refusal'), { status: 'skipped', reason: 'error' })
   down = false
   clock += 1_000
   assertEquals((await repair.tick())?.status, 'repaired')
@@ -627,4 +556,129 @@ test('only enroll and session refusals a stale co-located daemon gets trigger a 
   assertEquals(isCredentialRefusal('GET', '/api/daemon/v1/enroll', 401), false)
   assertEquals(isCredentialRefusal('POST', '/api/daemon/v1/x/enroll', 401), false)
   assertEquals(isCredentialRefusal('POST', '/api/daemon/v1/commands/lease', 401), false)
+})
+
+// ── Direct socket refusals only ──────────────────────────────────────────
+
+test('isDirectLocalSocketRequest: any proxy header means proxied', () => {
+  const headers = (h: Record<string, string>) => (name: string) => h[name]
+  assertEquals(isDirectLocalSocketRequest(headers({})), true)
+  for (const name of [
+    'x-real-ip',
+    'x-forwarded-for',
+    'x-forwarded-proto',
+    'x-forwarded-host',
+    'forwarded',
+    'via',
+    'cf-connecting-ip',
+    'true-client-ip',
+  ]) {
+    assertEquals(isDirectLocalSocketRequest(headers({ [name]: '' })), false, name)
+  }
+})
+
+/** A daemon API stand-in: every enroll is refused 401, as for stale files. */
+function refusingDaemonApp(onRefusal: () => void): Hono {
+  const app = new Hono()
+  app.use('*', credentialRefusalMiddleware(onRefusal))
+  app.post('/api/daemon/v1/enroll', (c) => c.json({ ok: false, error: 'Invalid license' }, 401))
+  return app
+}
+
+/** The co-located seat's server id on disk with the key gone: a repair case. */
+async function writeRepairableFiles(dir: string, licenseId: string, serverId: string) {
+  await writeFiles(dir, {
+    [LICENSE_ID]: licenseId,
+    [LICENSE_TOKEN]: 'stale-token',
+    [SERVER_ID]: serverId,
+  })
+}
+
+async function enrollThrough(
+  app: Hono,
+  headers: Record<string, string>,
+  pending: Promise<unknown>[]
+): Promise<void> {
+  const response = await app.request('/api/daemon/v1/enroll', { method: 'POST', headers })
+  assertEquals(response.status, 401)
+  await Promise.all(pending)
+}
+
+test('a refusal Caddy proxied never starts a repair', async () => {
+  const credentials = await useColocatedCredentialsTempDir()
+  try {
+    await writeRepairableFiles(credentials.dir, SEAT.licenseId, FOREIGN_SERVER)
+    const { store, state } = fakeStore()
+    const repair = createColocatedSelfRepair({ store, disk: tempDisk() })
+    const pending: Promise<unknown>[] = []
+    const app = refusingDaemonApp(() => pending.push(repair.run('refusal')))
+    await enrollThrough(
+      app,
+      { 'x-real-ip': '127.0.0.1', 'x-forwarded-for': '127.0.0.1', 'x-forwarded-proto': 'https' },
+      pending
+    )
+    assertEquals(pending.length, 0)
+    assertEquals(state.events, [])
+    assertEquals(await readTrimmed(`${credentials.dir}/${SERVER_ID}`), FOREIGN_SERVER)
+  } finally {
+    await credentials.restore()
+  }
+})
+
+test('a direct socket refusal with a known id on disk repairs the files', async () => {
+  const credentials = await useColocatedCredentialsTempDir()
+  try {
+    await writeRepairableFiles(credentials.dir, SEAT.licenseId, FOREIGN_SERVER)
+    const { store, state } = fakeStore()
+    const repair = createColocatedSelfRepair({ store, disk: tempDisk() })
+    const pending: Promise<unknown>[] = []
+    const app = refusingDaemonApp(() => pending.push(repair.run('refusal')))
+    await enrollThrough(app, {}, pending)
+    assertEquals(pending.length, 1)
+    assertEquals(state.events, ['lock', 'rotate', `clear:${KEY_ID}`])
+    assertEquals(await readTrimmed(`${credentials.dir}/${SERVER_ID}`), SEAT.serverId)
+  } finally {
+    await credentials.restore()
+  }
+})
+
+test('a direct socket refusal with only unknown ids on disk writes nothing', async () => {
+  const credentials = await useColocatedCredentialsTempDir()
+  try {
+    await writeRepairableFiles(credentials.dir, FOREIGN_LICENSE, FOREIGN_SERVER)
+    const { store, state } = fakeStore()
+    const repair = createColocatedSelfRepair({ store, disk: tempDisk() })
+    const pending: Promise<unknown>[] = []
+    const app = refusingDaemonApp(() => pending.push(repair.run('refusal')))
+    await enrollThrough(app, {}, pending)
+    assertEquals(pending.length, 1)
+    assertEquals(await pending[0], {
+      status: 'not-ours',
+      reason: 'no id on disk names a row in this database',
+    })
+    assertEquals(state.events, [])
+    assertEquals(await readTrimmed(`${credentials.dir}/${LICENSE_ID}`), FOREIGN_LICENSE)
+  } finally {
+    await credentials.restore()
+  }
+})
+
+test('retries stop once no socket refusal has come in for the window', async () => {
+  let clock = 1_000_000
+  const { store } = fakeStore()
+  const repair = createColocatedSelfRepair({
+    store,
+    disk: memoryDisk({ ...HEALTHY_DISK, licenseId: 'wrong' }, () => Promise.resolve(false)),
+    retryBaseMs: 1_000,
+    refusalWindowMs: 5_000,
+    now: () => clock,
+  })
+  assertEquals((await repair.run('refusal')).status, 'failed')
+  clock += 1_000
+  assertEquals((await repair.tick())?.status, 'failed')
+  clock += 10_000
+  // The daemon stopped asking: the pending retry is dropped.
+  assertEquals(await repair.tick(), null)
+  clock += 60_000
+  assertEquals(await repair.tick(), null)
 })

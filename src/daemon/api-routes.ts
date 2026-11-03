@@ -1,8 +1,9 @@
 import { resolveClientIp } from '../client/authn/http.ts'
+import { isDirectLocalSocketRequest } from '../lib/peer-address.ts'
 import { DATABASE_ROLES_LACK_GRANTS, findMissingRuntimeGrants } from '../db/role-grants.ts'
 import { mapSequential } from '../lib/sequential.ts'
 import { Hono } from 'hono'
-import type { Context, Env, Next } from 'hono'
+import type { Context, Env, MiddlewareHandler, Next } from 'hono'
 import { and, eq, isNull } from 'drizzle-orm'
 import { isInstanceInstalled } from '../client/authn/install-state.ts'
 import { readPrivateUploadedTrustPem } from '../features/install/install-trust.ts'
@@ -1410,14 +1411,31 @@ function authProofPayload(
  * The refusals a co-located daemon with stale credential files gets:
  * `401 Invalid license` or `409 Server key already registered` from
  * `POST /enroll`, and `404 Server key not found` from `POST /auth/session`.
- * Any caller can produce one; the check it starts is rate-limited and changes
- * nothing when the co-located files are healthy or not this control plane's.
+ * The hook below fires only when such a refusal came straight in on the Unix
+ * socket (`isDirectLocalSocketRequest`), never for a request Caddy proxied.
  */
 export function isCredentialRefusal(method: string, path: string, status: number): boolean {
   if (method !== 'POST') return false
   if (path === `${DAEMON_API_PREFIX}/enroll`) return status === 401 || status === 409
   if (path === `${DAEMON_API_PREFIX}/auth/session`) return status === 404
   return false
+}
+
+/**
+ * Calls `onRefusal` after a {@link isCredentialRefusal} response to a request
+ * that came straight in on the Unix socket. A request Caddy proxied never
+ * counts, whatever it was refused for.
+ */
+export function credentialRefusalMiddleware(onRefusal: () => void): MiddlewareHandler {
+  return async (c, next) => {
+    await next()
+    if (
+      isCredentialRefusal(c.req.method, c.req.path, c.res.status) &&
+      isDirectLocalSocketRequest((name) => c.req.header(name))
+    ) {
+      onRefusal()
+    }
+  }
 }
 
 export function registerDaemonApiRoutes<E extends Env>(
@@ -1468,9 +1486,11 @@ export function registerDaemonApiRoutes<E extends Env>(
     identityUrls?: (db: Db) => Promise<string[]>
     /**
      * Called (fire and forget) after an enroll or session refusal that a
-     * co-located daemon with stale credential files would get. The Deno
-     * composition root passes the rate-limited co-located self-repair
-     * (`src/client/authn/colocated-self-repair.ts`); Workers passes nothing.
+     * co-located daemon with stale credential files would get, and only when
+     * the request came straight in on the Unix socket rather than through a
+     * proxy. The Deno composition root passes the rate-limited co-located
+     * self-repair (`src/client/authn/colocated-self-repair.ts`); Workers
+     * passes nothing.
      */
     onCredentialRefusal?: () => void
   } = {}
@@ -1480,12 +1500,8 @@ export function registerDaemonApiRoutes<E extends Env>(
   const runtime = options.runtime ?? 'workers'
   const identityDocumentCache = createIdentityDocumentCache()
   daemon.use('*', signDaemonResponses(options.panelIdentity))
-  const onCredentialRefusal = options.onCredentialRefusal
-  if (onCredentialRefusal) {
-    daemon.use('*', async (c, next) => {
-      await next()
-      if (isCredentialRefusal(c.req.method, c.req.path, c.res.status)) onCredentialRefusal()
-    })
+  if (options.onCredentialRefusal) {
+    daemon.use('*', credentialRefusalMiddleware(options.onCredentialRefusal))
   }
   const tlsPublic = options.tlsPublic ?? false
   const deployment = metricsDeploymentKindForRuntime(runtime)

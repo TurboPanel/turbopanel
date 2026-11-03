@@ -690,16 +690,11 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
   if (developerSurface) {
     options.registerDeveloperSurface?.({ routes, sessionSecrets, db })
   }
-  // Co-located daemon credential self-repair: at boot and after an enroll or
-  // session refusal, at most once per interval (`colocated-self-repair.ts`).
+  // Co-located daemon credential self-repair: after an enroll or session
+  // refusal that came straight in on the Unix socket, at most once per
+  // interval (`colocated-self-repair.ts`).
   const colocatedSelfRepair = createColocatedSelfRepair({
-    store: createColocatedRepairStore(db, {
-      socketPath: resolveInstanceSocket(),
-      panelFingerprints: () =>
-        [panelIdentity.current.kid, panelIdentity.next?.kid].filter(
-          (kid): kid is string => typeof kid === 'string' && kid.length > 0
-        ),
-    }),
+    store: createColocatedRepairStore(db),
   })
   registerDaemonApiRoutes(routes, {
     onCredentialRefusal: () => void colocatedSelfRepair.run('refusal'),
@@ -870,7 +865,6 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
   // Observe pending self-host inventory on boot, not only after the first
   // 60s cell tick. Hello/DO still must not enqueue; this is the Deno timer path.
   runSystemReconcileSweepTick()
-  void colocatedSelfRepair.run('boot')
   // Deno process timer (not a Durable Object) — cost-safe. Both backends demote
   // stale presence at DAEMON_OFFLINE_SWEEP_MS; Redis uses this timer-driven
   // maintain() + sweepStalePresence loop. Workers is disconnect-first (no periodic
@@ -1005,7 +999,7 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
         })
       })
       runSystemReconcileSweepTick()
-      // Retries a co-located credential repair that failed, on its backoff.
+      // Retries a failed co-located credential repair while a socket refusal is recent.
       void colocatedSelfRepair.tick()
     },
   })

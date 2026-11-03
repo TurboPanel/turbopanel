@@ -7,10 +7,13 @@
  * with `401 Invalid license` or `409 Server key already registered` and stays
  * offline until someone repairs it by hand.
  *
- * {@link createColocatedSelfRepair} checks at boot and when an enroll or
- * session is refused (any caller can cause that: the check is rate-limited
- * and does nothing when the files are healthy or not ours), and when the files
- * do not match it:
+ * {@link createColocatedSelfRepair} checks only after such a refusal came
+ * straight in on the control plane's Unix socket (`isDirectLocalSocketRequest`
+ * in `src/lib/peer-address.ts`): only the daemon on this server can connect
+ * back that way, while public traffic reaches the same socket through Caddy
+ * and is never counted. A parked daemon retries every few minutes, which
+ * brings the next refusal; there is no boot-time check. When the files do not
+ * match it:
  *
  * 1. re-issues the token on the EXISTING bound license (same id, same seat),
  * 2. clears the stored daemon key of that one server, only while it is still
@@ -21,11 +24,9 @@
  * diagnosis is repeated inside it, so two control plane processes sharing a
  * database (or a daemon enrolling at the same moment) cannot race it.
  *
- * Ownership comes first: it acts only when the daemon's own settings point at
- * THIS control plane (its socket or one of its hostnames; when the settings
- * file is unreadable, its panel key pin naming this control plane's key or a
- * hostname) AND the license id or server id on disk names a row in this
- * database. A daemon moved to another control plane is never rewritten.
+ * It also acts only when the license id or server id on disk names a row in
+ * this database (checked again under the lock): files from another control
+ * plane's database are never rewritten.
  *
  * Nothing here creates a server, touches another server, or runs without a
  * bound co-located seat. A revoked key is left alone: revocation is sticky
@@ -47,7 +48,6 @@ import {
 } from '../../features/servers/server-identity-db.ts'
 import { isDaemonKeyActive } from '../../features/servers/daemon-state.ts'
 import { computePublicKeyFingerprint } from '../../daemon/authn/server-key.ts'
-import { listInstanceHostnames } from '../../features/install/instance-hostnames.ts'
 import {
   assertColocatedCredentialsDirWritable,
   COLOCATED_LICENSE_ID_FILE,
@@ -69,6 +69,8 @@ export const COLOCATED_SELF_REPAIR_MIN_INTERVAL_MS = 10 * 60 * 1000
 /** First retry after a failed repair; doubles up to the ceiling. */
 export const COLOCATED_SELF_REPAIR_RETRY_BASE_MS = 60 * 1000
 export const COLOCATED_SELF_REPAIR_RETRY_MAX_MS = 30 * 60 * 1000
+/** Retries stop once no socket refusal has come in for this long. */
+export const COLOCATED_SELF_REPAIR_REFUSAL_WINDOW_MS = 60 * 60 * 1000
 
 /** Advisory lock name: one co-located repair at a time per database. */
 const COLOCATED_REPAIR_LOCK = 'turbopanel:colocated-credential-repair'
@@ -95,16 +97,6 @@ export type ColocatedDiskState = {
   keyFingerprint: DiskValue
 }
 
-/** The daemon's own settings file and its panel key pin, as read from disk. */
-export type DaemonTargetFiles = { daemonEnv: DiskValue; panelPin: DiskValue }
-
-/** What identifies this control plane to its co-located daemon. */
-export type ControlPlaneSelf = {
-  socketPath: string
-  hostnames: string[]
-  panelFingerprints: string[]
-}
-
 /** Database reads and writes; the locked variant runs inside the transaction. */
 export type ColocatedRepairQueries = {
   findSeat(): Promise<ColocatedSeat | null>
@@ -121,7 +113,6 @@ export type ColocatedRepairQueries = {
 }
 
 export type ColocatedRepairStore = ColocatedRepairQueries & {
-  controlPlaneSelf(): Promise<ControlPlaneSelf>
   /** Run `fn` in one transaction holding the co-located repair advisory lock. */
   locked<T>(fn: (queries: ColocatedRepairQueries) => Promise<T>): Promise<T>
 }
@@ -132,7 +123,6 @@ export type ColocatedRepairDisk = {
   assertWritable(): void
   /** True when any daemon file is in the dir; a bare dir is never written into. */
   hasDaemonFiles(): Promise<boolean>
-  readTarget(): Promise<DaemonTargetFiles>
   read(): Promise<ColocatedDiskState>
   write(seat: ColocatedSeat, token: string): Promise<boolean>
 }
@@ -152,104 +142,6 @@ export type ColocatedDiagnosis =
   | { kind: 'mismatch'; reasons: string[]; clearKeyId: string | null }
 
 // ── Ownership ────────────────────────────────────────────────────────────
-
-function unquote(value: string): string {
-  const first = value[0]
-  if (value.length >= 2 && (first === '"' || first === "'") && value.endsWith(first)) {
-    return value.slice(1, -1)
-  }
-  return value
-}
-
-function keyValueLines(text: string): Map<string, string> {
-  const values = new Map<string, string>()
-  for (const raw of text.split('\n')) {
-    const line = raw.trim().replace(/^export\s+/, '')
-    const at = line.indexOf('=')
-    if (line.startsWith('#') || at < 1) continue
-    values.set(line.slice(0, at).trim(), unquote(line.slice(at + 1).trim()))
-  }
-  return values
-}
-
-/** Drop trailing `/` characters with a plain loop (no backtracking regex). */
-function stripTrailingSlashes(path: string): string {
-  let end = path.length
-  while (end > 1 && path[end - 1] === '/') end--
-  return path.slice(0, end)
-}
-
-function hostOf(url: string): string | null {
-  try {
-    return new URL(url).hostname.toLowerCase()
-  } catch {
-    return null
-  }
-}
-
-function normalizeSocket(path: string): string {
-  const trimmed = stripTrailingSlashes(path.trim())
-  return trimmed.startsWith('/var/run/') ? trimmed.slice('/var'.length) : trimmed
-}
-
-/** The socket a daemon in socket mode dials, from its settings (mirrors the daemon). */
-function daemonSocketPath(env: Map<string, string>): string {
-  const explicit = env.get('TURBOPANEL_SOCKET')?.trim()
-  if (explicit) return explicit
-  const dir =
-    env.get('TURBOPANEL_SOCKET_DIR')?.trim() ||
-    env.get('TURBOPANEL_RUN_DIR')?.trim() ||
-    '/run/turbopanel'
-  return `${stripTrailingSlashes(dir)}/instance.sock`
-}
-
-function pinNamesThisControlPlane(pinText: string, self: ControlPlaneSelf): boolean {
-  const pin = keyValueLines(pinText)
-  const fingerprints = [pin.get('current'), pin.get('next')].filter(
-    (value): value is string => typeof value === 'string' && value.length > 0
-  )
-  if (fingerprints.some((fp) => self.panelFingerprints.includes(fp))) return true
-  const hostnames = new Set(self.hostnames.map((host) => host.toLowerCase()))
-  const urls = (pin.get('urls') ?? '').split(',').filter((url) => url.length > 0)
-  return urls.some((url) => {
-    const host = hostOf(url)
-    return host !== null && hostnames.has(host)
-  })
-}
-
-/**
- * Does the daemon's own configuration point at this control plane? The
- * settings file decides when it can be read: a URL must name one of this
- * control plane's hostnames, socket mode must dial this control plane's
- * socket. A managed host keeps that file daemon-only, so then the panel key
- * pin (group-readable) decides: it must name this control plane's key or one
- * of its hostnames. Nothing from a request is consulted.
- */
-export function daemonTargetsThisControlPlane(
-  files: DaemonTargetFiles,
-  self: ControlPlaneSelf
-): { ok: true } | { ok: false; reason: string } {
-  if (typeof files.daemonEnv === 'string') {
-    const env = keyValueLines(files.daemonEnv)
-    const url = env.get('TURBOPANEL_INSTANCE_URL')?.trim()
-    if (url) {
-      const host = hostOf(url)
-      const ours = host !== null && self.hostnames.some((name) => name.toLowerCase() === host)
-      return ours
-        ? { ok: true }
-        : { ok: false, reason: 'the daemon is set to reach another control plane address' }
-    }
-    return normalizeSocket(daemonSocketPath(env)) === normalizeSocket(self.socketPath)
-      ? { ok: true }
-      : { ok: false, reason: 'the daemon is set to dial another socket' }
-  }
-  if (typeof files.panelPin === 'string') {
-    return pinNamesThisControlPlane(files.panelPin, self)
-      ? { ok: true }
-      : { ok: false, reason: 'the daemon pins another control plane' }
-  }
-  return { ok: false, reason: 'cannot read where the daemon is set to connect' }
-}
 
 /** At least one id on disk must name a row in this database. */
 async function diskIdsKnown(
@@ -390,40 +282,16 @@ const DAEMON_EVIDENCE_FILES = [
   COLOCATED_SERVER_KEY_FILE,
 ]
 
-function defaultDaemonEnvPath(): string {
-  const configDir = Deno.env.get('TURBOPANEL_CONFIG_DIR')?.trim() || '/etc/turbopanel'
-  return `${stripTrailingSlashes(configDir)}/daemon.env`
-}
-
-function defaultPanelPinPath(): string {
-  const libDir = Deno.env.get('TURBOPANEL_LIB_DIR')?.trim() || '/opt/turbopanel/lib'
-  return `${stripTrailingSlashes(libDir)}/panel-identity`
-}
-
 /** Reads and writes the resolved co-located credentials dir. */
 export function createColocatedRepairDisk(
-  opts: {
-    dir?: () => string
-    daemonEnvPath?: () => string
-    panelPinPath?: () => string
-  } = {}
+  dir: () => string = resolveColocatedLicenseCredentialsDir
 ): ColocatedRepairDisk {
-  const dir = opts.dir ?? resolveColocatedLicenseCredentialsDir
-  const daemonEnvPath = opts.daemonEnvPath ?? defaultDaemonEnvPath
-  const panelPinPath = opts.panelPinPath ?? defaultPanelPinPath
   return {
     assertWritable: () => assertColocatedCredentialsDirWritable(dir()),
     async hasDaemonFiles() {
       const stateDir = dir()
       const found = await Promise.all(DAEMON_EVIDENCE_FILES.map((f) => exists(`${stateDir}/${f}`)))
       return found.some(Boolean)
-    },
-    async readTarget() {
-      const [daemonEnv, panelPin] = await Promise.all([
-        readStateFile(daemonEnvPath()),
-        readStateFile(panelPinPath()),
-      ])
-      return { daemonEnv, panelPin }
     },
     async read() {
       const stateDir = dir()
@@ -493,20 +361,9 @@ function createQueries(db: Db): ColocatedRepairQueries {
 }
 
 /** The real queries, on the process-long Deno database client. */
-export function createColocatedRepairStore(
-  db: Db,
-  opts: { socketPath: string; panelFingerprints: () => string[] }
-): ColocatedRepairStore {
+export function createColocatedRepairStore(db: Db): ColocatedRepairStore {
   return {
     ...createQueries(db),
-    async controlPlaneSelf() {
-      const rows = await listInstanceHostnames(db)
-      return {
-        socketPath: opts.socketPath,
-        hostnames: rows.map((row) => row.host),
-        panelFingerprints: opts.panelFingerprints(),
-      }
-    },
     locked(fn) {
       return db.transaction(async (tx) => {
         await tx.execute(
@@ -563,11 +420,6 @@ export async function repairColocatedCredentialsOnce(
   if (!(await disk.hasDaemonFiles())) {
     return { status: 'skipped', reason: 'no co-located daemon files' }
   }
-  const target = daemonTargetsThisControlPlane(
-    await disk.readTarget(),
-    await store.controlPlaneSelf()
-  )
-  if (!target.ok) return { status: 'not-ours', reason: target.reason }
   const seat = await store.findSeat()
   if (!seat) return { status: 'skipped', reason: 'no bound co-located seat' }
 
@@ -600,12 +452,18 @@ export async function repairColocatedCredentialsOnce(
 
 // ── Scheduling ───────────────────────────────────────────────────────────
 
-export type ColocatedRepairTrigger = 'boot' | 'refusal' | 'retry'
+export type ColocatedRepairTrigger = 'refusal' | 'retry'
 
 export type ColocatedSelfRepair = {
-  /** Check now unless a check ran within the interval; never throws. */
-  run(trigger: 'boot' | 'refusal'): Promise<ColocatedRepairOutcome>
-  /** Called from a periodic timer: retries a failed repair once its backoff ran out. */
+  /**
+   * A refusal came straight in on the socket: check now unless a check ran
+   * within the interval. Never throws.
+   */
+  run(trigger: 'refusal'): Promise<ColocatedRepairOutcome>
+  /**
+   * Called from a periodic timer: retries a failed repair once its backoff
+   * ran out, while a socket refusal is recent.
+   */
   tick(): Promise<ColocatedRepairOutcome | null>
 }
 
@@ -615,13 +473,16 @@ export function createColocatedSelfRepair(opts: {
   minIntervalMs?: number
   retryBaseMs?: number
   retryMaxMs?: number
+  refusalWindowMs?: number
   now?: () => number
 }): ColocatedSelfRepair {
   const disk = opts.disk ?? createColocatedRepairDisk()
   const minIntervalMs = opts.minIntervalMs ?? COLOCATED_SELF_REPAIR_MIN_INTERVAL_MS
   const retryBaseMs = opts.retryBaseMs ?? COLOCATED_SELF_REPAIR_RETRY_BASE_MS
   const retryMaxMs = opts.retryMaxMs ?? COLOCATED_SELF_REPAIR_RETRY_MAX_MS
+  const refusalWindowMs = opts.refusalWindowMs ?? COLOCATED_SELF_REPAIR_REFUSAL_WINDOW_MS
   const now = opts.now ?? Date.now
+  let lastRefusalAt: number | null = null
   const loggedOnce = new Set<string>()
   let lastRunAt: number | null = null
   let failures = 0
@@ -688,6 +549,7 @@ export function createColocatedSelfRepair(opts: {
 
   return {
     run(trigger) {
+      lastRefusalAt = now()
       if (inFlight) return inFlight
       if (lastRunAt !== null && now() - lastRunAt < minIntervalMs) {
         return Promise.resolve({ status: 'rate-limited' })
@@ -696,6 +558,12 @@ export function createColocatedSelfRepair(opts: {
     },
     tick() {
       if (inFlight || retryAt === null || now() < retryAt) return Promise.resolve(null)
+      if (lastRefusalAt === null || now() - lastRefusalAt > refusalWindowMs) {
+        // No recent refusal: the daemon is not asking any more.
+        retryAt = null
+        failures = 0
+        return Promise.resolve(null)
+      }
       return start('retry')
     },
   }
