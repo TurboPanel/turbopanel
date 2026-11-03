@@ -6,7 +6,7 @@ Third-party components remain under their own copyright and license terms and ar
 
 <!-- lockfiles
 deno.lock sha256:38f4600f955413ef9ce8429b1f8f3e21c68553d9adf88c5b542e81ab796b74de
-pnpm-lock.yaml sha256:48be0268435ac939c3b08973423b7ad70cf5246f86855dd9f099618459d39047
+pnpm-lock.yaml sha256:aa36a0622c76d6941e45095a3ced90dffe3baac1ec741d99143b685b75b6e58d
 -->
 
 ## Production dependencies
@@ -17,6 +17,11 @@ pnpm-lock.yaml sha256:48be0268435ac939c3b08973423b7ad70cf5246f86855dd9f099618459
 - Homepage: https://github.com/duckdb/duckdb-node-neo#readme
 
 ### @duckdb/node-bindings@1.5.5-r.4
+
+- License: MIT
+- Homepage: https://github.com/duckdb/duckdb-node-neo#readme
+
+### @duckdb/node-bindings-linux-x64@1.5.5-r.4
 
 - License: MIT
 - Homepage: https://github.com/duckdb/duckdb-node-neo#readme
@@ -138,6 +143,12 @@ pnpm-lock.yaml sha256:48be0268435ac939c3b08973423b7ad70cf5246f86855dd9f099618459
 - License: MIT
 - Copyright: luin
 - Homepage: https://github.com/luin/asCallback#readme
+
+### supports-color@10.2.2
+
+- License: MIT
+- Copyright: Sindre Sorhus
+- Homepage: https://github.com/chalk/supports-color#readme
 
 ### yaml@2.9.0
 
@@ -282,11 +293,6 @@ These packages are used for development, test, or build tooling and are not bund
 - License: Apache-2.0
 - Copyright: Drizzle Team
 - Homepage: https://github.com/drizzle-team/brocli
-
-### @duckdb/node-bindings-linux-x64@1.5.5-r.4
-
-- License: MIT
-- Homepage: https://github.com/duckdb/duckdb-node-neo#readme
 
 ### @esbuild-kit/core-utils@3.3.2
 
@@ -816,12 +822,6 @@ These packages are used for development, test, or build tooling and are not bund
 
 - License: MIT
 - Homepage: https://github.com/unjs/std-env#readme
-
-### supports-color@10.2.2
-
-- License: MIT
-- Copyright: Sindre Sorhus
-- Homepage: https://github.com/chalk/supports-color#readme
 
 ### supports-color@7.2.0
 
