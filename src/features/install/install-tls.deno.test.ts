@@ -111,7 +111,7 @@ test('installOriginNeedsInsecureTls follows the hostname certificate source', ()
   )
   assertEquals(
     installOriginNeedsInsecureTls('https://panel.example.com:8443', {
-      source: 'lets-encrypt',
+      source: 'acme-http-01',
     }),
     false
   )
@@ -154,8 +154,8 @@ test('installOriginTlsOptions marks only an uploaded leaf from TURBOPANEL_TLS_PU
   assertEquals(installOriginTlsOptions('platform-ca', env), {
     source: 'platform-ca',
   })
-  assertEquals(installOriginTlsOptions('lets-encrypt', {}), {
-    source: 'lets-encrypt',
+  assertEquals(installOriginTlsOptions('acme-http-01', {}), {
+    source: 'acme-http-01',
   })
   assertEquals(installOriginTlsOptions(undefined, env), {})
   assertEquals(
@@ -207,7 +207,7 @@ test("a Let's Encrypt sibling does not mark a private uploaded leaf as public", 
     TURBOPANEL_TLS_UPLOADED_PUBLIC: '1',
   }
   const hostnames = [
-    { host: 'https://acme.example.com:8443', source: 'lets-encrypt' as const },
+    { host: 'https://acme.example.com:8443', source: 'acme-http-01' as const },
     {
       host: 'https://private.example.com:8443',
       source: 'uploaded' as const,
@@ -262,7 +262,7 @@ test('install commands choose -k independently for each uploaded hostname', () =
     TURBOPANEL_TLS_UPLOADED_PUBLIC: '1',
   }
   const hostnames: InstallHostnameTrust[] = [
-    { host: 'https://acme.example.com:8443', source: 'lets-encrypt' },
+    { host: 'https://acme.example.com:8443', source: 'acme-http-01' },
     {
       host: 'https://public.example.com:8443',
       source: 'uploaded',
@@ -274,7 +274,7 @@ test('install commands choose -k independently for each uploaded hostname', () =
       publicUploaded: false,
     },
   ]
-  const acme = installCommandFor('https://acme.example.com:8443', 'lets-encrypt', hostnames, env)
+  const acme = installCommandFor('https://acme.example.com:8443', 'acme-http-01', hostnames, env)
   const published = installCommandFor('https://public.example.com:8443', 'uploaded', hostnames, env)
   const privateLeaf = installCommandFor(
     'https://private.example.com:8443',
@@ -335,7 +335,7 @@ test('GET /instance/ca still serves the Platform CA when a hostname presents tha
   assertEquals(await missing.json(), { error: 'platform CA not configured' })
 
   const env = { TURBOPANEL_TLS_PUBLIC: '1' }
-  const hostnames = [{ source: 'lets-encrypt' as const }, { source: 'platform-ca' as const }]
+  const hostnames = [{ source: 'acme-http-01' as const }, { source: 'platform-ca' as const }]
   assertEquals(
     installOriginNeedsInsecureTls(
       'https://panel.example.com:8443',
@@ -409,7 +409,7 @@ test("an unlisted public name on a Let's Encrypt-only listener keeps the Platfor
     'private.example.com',
   ])
   const origin = 'https://panel.example.com:8443'
-  const stored = [{ host: 'https://acme.example.com:8443', source: 'lets-encrypt' as const }]
+  const stored = [{ host: 'https://acme.example.com:8443', source: 'acme-http-01' as const }]
   assertEquals(hostnamePresentsPlatformCaLeaf('panel.example.com', stored), true)
   assertEquals(hostnamePresentsPlatformCaLeaf('acme.example.com:8443', stored), false)
   assertEquals(
@@ -476,7 +476,7 @@ test("an unlisted public name on a Let's Encrypt-only listener keeps the Platfor
 
     const db = memoryInstallDb(
       [
-        hostnameRow('https://acme.example.com:8443', 'lets-encrypt', null),
+        hostnameRow('https://acme.example.com:8443', 'acme-http-01', null),
         hostnameRow('https://private.example.com:8443', 'uploaded', 'cert-private'),
       ],
       [
@@ -549,7 +549,7 @@ test('a private upload without a covering issuer is not an install command', asy
   const origin = 'https://private.example.com:8443'
   const leafOnly = memoryInstallDb(
     [
-      hostnameRow('https://acme.example.com:8443', 'lets-encrypt', null),
+      hostnameRow('https://acme.example.com:8443', 'acme-http-01', null),
       hostnameRow(origin, 'uploaded', 'cert-private'),
     ],
     [{ id: 'cert-private', certPem: leaf.certificatePem }]
@@ -565,7 +565,7 @@ test('a private upload without a covering issuer is not an install command', asy
 
   const mismatch = memoryInstallDb(
     [
-      hostnameRow('https://acme.example.com:8443', 'lets-encrypt', null),
+      hostnameRow('https://acme.example.com:8443', 'acme-http-01', null),
       hostnameRow(origin, 'uploaded', 'cert-other'),
     ],
     [
@@ -650,7 +650,7 @@ test("a private upload with a Let's Encrypt sibling enrolls from its issuer whil
   const env = { TURBOPANEL_TLS_PUBLIC: '1' }
   const db = memoryInstallDb(
     [
-      hostnameRow('https://acme.example.com:8443', 'lets-encrypt', null),
+      hostnameRow('https://acme.example.com:8443', 'acme-http-01', null),
       hostnameRow(privateOrigin, 'uploaded', 'cert-private'),
       hostnameRow(publicOrigin, 'uploaded', 'cert-public'),
     ],
@@ -826,7 +826,7 @@ test('a forwarded LAN IP on the Platform CA leaf is accepted and an unlisted ali
   assertEquals(
     unlistedSelfHostedInstallRefusal(`https://${UNLISTED_LAN_ALIAS}:8443`, {
       ...covered,
-      source: 'lets-encrypt',
+      source: 'acme-http-01',
     }),
     null
   )

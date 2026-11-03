@@ -153,10 +153,10 @@ test('buildPanelIngress verifies the origin only for names with a live public pa
 })
 
 test('originCertVerifiable is true only for an issued ACME pair', () => {
-  assertEquals(originCertVerifiable({ source: 'dns-01', status: 'ready' }), true)
-  assertEquals(originCertVerifiable({ source: 'lets-encrypt', status: 'ready' }), true)
-  assertEquals(originCertVerifiable({ source: 'dns-01', status: 'pending' }), false)
-  assertEquals(originCertVerifiable({ source: 'dns-01', status: 'expired' }), false)
+  assertEquals(originCertVerifiable({ source: 'acme-dns-01', status: 'ready' }), true)
+  assertEquals(originCertVerifiable({ source: 'acme-http-01', status: 'ready' }), true)
+  assertEquals(originCertVerifiable({ source: 'acme-dns-01', status: 'pending' }), false)
+  assertEquals(originCertVerifiable({ source: 'acme-dns-01', status: 'expired' }), false)
   assertEquals(originCertVerifiable({ source: 'uploaded', status: 'ready' }), false)
   assertEquals(originCertVerifiable({ source: 'platform-ca', status: 'ready' }), false)
 })
@@ -178,7 +178,7 @@ test('apply creates the tunnel, the proxied CNAME and pushes the run token', asy
 })
 
 test('apply verifies the origin once a public pair is live and records it', async () => {
-  const live = { ...hostname('h1', 'panel.example.com'), source: 'dns-01' as const }
+  const live = { ...hostname('h1', 'panel.example.com'), source: 'acme-dns-01' as const }
   const h = harness()
   const result = await applyHostname(h.ctx(live))
   assert(result.ok)

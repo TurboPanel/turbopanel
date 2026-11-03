@@ -570,7 +570,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       dns_names:
         'JSON array of DNS names and IP addresses parsed from the leaf, used to test which hostnames the pair covers.',
       not_after: 'Leaf expiry copied from the parsed certificate when the pair is stored.',
-      kind: '`uploaded` for an operator upload, `dns-01` for a pair the control plane issued itself over DNS-01; issued pairs are never listed as uploads.',
+      kind: '`uploaded` for an operator upload, `acme-dns-01` for a pair the control plane issued itself over DNS-01; issued pairs are never listed as uploads.',
     },
   },
   origin: {
@@ -580,9 +580,9 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
     columns: {
       host: 'Normalized public URL entry (origin, host, or host:port) in the form public URL parsing already stores.',
       source:
-        'Certificate source for this name: `platform-ca`, `uploaded`, `lets-encrypt`, or `dns-01`.',
+        "Certificate source for this name: `platform-ca`, `uploaded`, `acme-http-01` (Let's Encrypt over HTTP-01) or `acme-dns-01` (Let's Encrypt over DNS-01).",
       uploaded_cert_id:
-        'Pair (`certificate.id`) this name serves: the upload when `source` is `uploaded` (required), or the issued pair when `source` is `dns-01`; otherwise NULL.',
+        'Pair (`certificate.id`) this name serves: the upload when `source` is `uploaded` (required), or the issued pair when `source` is `acme-dns-01`; otherwise NULL.',
       acme_last_attempt_at:
         "When this instance last tried Let's Encrypt for this name; NULL until an attempt runs.",
       acme_last_error:
@@ -599,7 +599,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       ingress_state:
         'Provider state for this name, such as tunnel id, DNS record id and last status; the shape depends on `mode` and the provider writes it.',
       acme_state:
-        'DNS-01 order and renewal progress for a `dns-01` name (stage, attempts, retry and renewal times, alerts sent); holds no key or token, NULL otherwise.',
+        'DNS-01 order and renewal progress for an `acme-dns-01` name (stage, attempts, retry and renewal times, alerts sent); holds no key or token, NULL otherwise.',
     },
   },
   ingress: {

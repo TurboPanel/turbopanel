@@ -161,7 +161,7 @@ export async function isCoLocatedServer(db: Db, serverId: string): Promise<boole
 /** True while any panel hostname takes its certificate from Let's Encrypt. */
 async function panelUsesLetsEncrypt(db: Db): Promise<boolean> {
   const rows = await db.select({ source: instanceHostname.source }).from(instanceHostname)
-  return rows.some((row) => row.source === 'lets-encrypt')
+  return rows.some((row) => row.source === 'acme-http-01')
 }
 
 /**

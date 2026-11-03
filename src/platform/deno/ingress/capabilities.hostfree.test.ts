@@ -20,7 +20,7 @@ const EXPECTED: Record<string, unknown[]> = {
     null,
     'none',
     null,
-    ['platform-ca', 'uploaded', 'lets-encrypt', 'dns-01'],
+    ['platform-ca', 'uploaded', 'acme-http-01', 'acme-dns-01'],
     false,
   ],
   'lan-only': [
@@ -34,7 +34,7 @@ const EXPECTED: Record<string, unknown[]> = {
     null,
     'none',
     null,
-    ['platform-ca', 'uploaded', 'dns-01'],
+    ['platform-ca', 'uploaded', 'acme-dns-01'],
     false,
   ],
   'cloudflare-tunnel': [
@@ -48,7 +48,7 @@ const EXPECTED: Record<string, unknown[]> = {
     100,
     'token',
     'cloudflare',
-    ['platform-ca', 'uploaded', 'dns-01'],
+    ['platform-ca', 'uploaded', 'acme-dns-01'],
     true,
   ],
   'cloudflare-proxy': [
@@ -62,7 +62,7 @@ const EXPECTED: Record<string, unknown[]> = {
     100,
     'token',
     'cloudflare',
-    ['uploaded', 'dns-01'],
+    ['uploaded', 'acme-dns-01'],
     true,
   ],
   'bunny-proxy': [
@@ -76,7 +76,7 @@ const EXPECTED: Record<string, unknown[]> = {
     null,
     'account-key',
     'bunny',
-    ['uploaded', 'dns-01'],
+    ['uploaded', 'acme-dns-01'],
     true,
   ],
   'private-overlay': [
@@ -90,7 +90,7 @@ const EXPECTED: Record<string, unknown[]> = {
     null,
     'none',
     null,
-    ['platform-ca', 'uploaded', 'dns-01'],
+    ['platform-ca', 'uploaded', 'acme-dns-01'],
     false,
   ],
   passthrough: [
@@ -104,7 +104,7 @@ const EXPECTED: Record<string, unknown[]> = {
     null,
     'none',
     null,
-    ['uploaded', 'dns-01'],
+    ['uploaded', 'acme-dns-01'],
     true,
   ],
 }

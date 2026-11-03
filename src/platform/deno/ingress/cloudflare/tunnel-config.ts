@@ -9,7 +9,10 @@ import type {
   CloudflareTunnelDetail,
 } from '../../../../features/tunnels/cloudflare-client.ts'
 import { hostFromPublicUrlEntry } from '../../../../features/install/public-urls.ts'
-import type { InstanceHostnameRecord } from '../../../../features/install/instance-hostnames.ts'
+import {
+  type InstanceHostnameRecord,
+  isAcmeHostnameSource,
+} from '../../../../features/install/instance-hostnames.ts'
 import type { HostnameWithState, IngressPhase } from '../provider.ts'
 
 /** The loopback hop from the connector to the control plane listener. */
@@ -60,7 +63,7 @@ export function dnsName(host: string): string | null {
 export function originCertVerifiable(
   row: Pick<InstanceHostnameRecord, 'source' | 'status'>
 ): boolean {
-  return row.status === 'ready' && (row.source === 'dns-01' || row.source === 'lets-encrypt')
+  return row.status === 'ready' && isAcmeHostnameSource(row.source)
 }
 
 /**
