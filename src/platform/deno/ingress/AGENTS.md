@@ -62,11 +62,25 @@ High Availability (Workers) must not contain any of it.
   value opens it. There is no confirm step: an older `EDGE_GATE_CONFIRMED`
   setting row is never read, and the audit action `instance.edge_gate.set`
   stays only for old audit rows.
-- **Provider account.** `cloudflare/account.ts` checks a pasted token (verify,
-  then one read per scope: tunnels, DNS per zone; Cloudflare cannot list a
-  token's permissions), refuses a token that expires within 30 days, and seals
-  it in `ingress.token_envelope` (re-encrypt stage `ingress`). Token rotation
-  is remove and add. A daily recheck rides the tick.
+- **Provider account.** `cloudflare/account.ts` checks a pasted token: verify
+  (the answer carries the token id), then read the token's own policies
+  (`GET /accounts/{id}/tokens/{token_id}` for an account-owned token, needing
+  Account › Account API Tokens › Read; `GET /user/tokens/{token_id}` for a
+  user-owned one, needing User › API Tokens › Read) and evaluate them in
+  `cloudflare/token-policies.ts`. A token that cannot read itself fails
+  (`token-policies`). Cloudflare Tunnel Edit counts only in a policy whose
+  resources cover the account; in a zone-only policy it does not (read
+  probes passed such a token and Connect then failed with a bare 403). DNS
+  Edit counts per zone (zone, all-zones wildcard, the account, or the nested
+  zones-of-account form); `scopes.zones` is exactly those zones, so DNS-01 is
+  offered only there. Every zone of the account passes with a warning in the
+  detail. Deny policies win. Permission groups match by name (Write or Edit).
+  A recheck that cannot read the policies keeps the stored scopes and sets
+  `last_error`, so an account stored before this check keeps working. It also
+  refuses a token that expires within 30 days, and seals it in
+  `ingress.token_envelope` (re-encrypt stage `ingress`). Token rotation is
+  remove and add. A daily recheck rides the tick. Connect (`applyWith`) names
+  the step in every provider error (`Creating the tunnel failed: …`).
 - **Cloudflare tunnel** (`providers/cloudflare-tunnel.ts`,
   `cloudflare/tunnel-config.ts`). One remotely managed tunnel per account,
   named `turbopanel-control-plane-<INSTANCE_ID prefix>`, adopted by stored id or

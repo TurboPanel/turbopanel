@@ -1,6 +1,6 @@
 /**
  * An in-memory Cloudflare API for the ingress tests: tunnels, DNS records,
- * token verify and zones. Every request is logged by method and path; the
+ * token verify, the token's own policies and zones. Every request is logged by method and path; the
  * Authorization header is checked against the one token it accepts. No
  * network.
  */
@@ -20,7 +20,14 @@ export type FakeCloudflareOptions = {
   zones?: { id: string; name: string }[]
   /** Paths (regex source) that answer 403, to take a scope away. */
   forbidden?: RegExp[]
+  /** One method on a path (regex source) answers 403 with this message, as Cloudflare does for a missing permission. */
+  refuse?: { method: string; path: RegExp; message: string }[]
   expiresOn?: string
+  /** Who owns the token: a user (verify at /user) or the account (verify at the account). Default user. */
+  owner?: 'user' | 'account'
+  tokenId?: string
+  /** The token's policies; default one allow policy with Tunnel and DNS Edit on the whole account. */
+  policies?: unknown[]
 }
 
 export type FakeCloudflare = {
@@ -31,11 +38,11 @@ export type FakeCloudflare = {
   configurations: Map<string, unknown>
 }
 
-function envelope(result: unknown, status = 200): Response {
+function envelope(result: unknown, status = 200, message = 'refused'): Response {
   return new Response(
     JSON.stringify({
       success: status < 400,
-      errors: status < 400 ? [] : [{ message: 'refused' }],
+      errors: status < 400 ? [] : [{ code: 10000, message }],
       result,
     }),
     { status, headers: { 'content-type': 'application/json' } }
@@ -57,13 +64,30 @@ export function createFakeCloudflare(options: FakeCloudflareOptions): FakeCloudf
   let counter = 0
   const nextId = (prefix: string) => `${prefix}-${++counter}`
   const zoneRecords = (zoneId: string) => state.records.get(zoneId) ?? []
+  const owner = options.owner ?? 'user'
+  const tokenId = options.tokenId ?? 'tok-1'
+  const policies = options.policies ?? [
+    {
+      id: 'pol-1',
+      effect: 'allow',
+      resources: { [`com.cloudflare.api.account.${accountId}`]: '*' },
+      permission_groups: [{ name: 'Cloudflare Tunnel Write' }, { name: 'DNS Write' }],
+    },
+  ]
+  const verify = (by: 'user' | 'account') =>
+    by === owner
+      ? envelope({ id: tokenId, status: 'active', expires_on: options.expiresOn })
+      : envelope(null, 401)
+  const tokenDetail = (by: 'user' | 'account', id: string | undefined) =>
+    by === owner && id === tokenId
+      ? envelope({ id: tokenId, status: 'active', policies })
+      : envelope(null, 404)
 
   const routes: [string, RegExp, Handler][] = [
-    [
-      'GET',
-      /^\/user\/tokens\/verify$/,
-      () => envelope({ status: 'active', expires_on: options.expiresOn }),
-    ],
+    ['GET', /^\/user\/tokens\/verify$/, () => verify('user')],
+    ['GET', /^\/user\/tokens\/([^/]+)$/, (m) => tokenDetail('user', m[1])],
+    ['GET', /^\/accounts\/[^/]+\/tokens\/verify$/, () => verify('account')],
+    ['GET', /^\/accounts\/[^/]+\/tokens\/([^/]+)$/, (m) => tokenDetail('account', m[1])],
     ['GET', /^\/accounts\?page=/, () => envelope([{ id: accountId, name: 'Fixture' }])],
     ['GET', /^\/zones\?account\.id=/, () => envelope(zones)],
     ['GET', /^\/zones\/([^/]+)\/dns_records\?per_page=1/, () => envelope([])],
@@ -167,6 +191,8 @@ export function createFakeCloudflare(options: FakeCloudflareOptions): FakeCloudf
     const auth = new Headers(init?.headers).get('authorization')
     if (auth !== `Bearer ${options.token}`) return envelope(null, 401)
     if (options.forbidden?.some((pattern) => pattern.test(path))) return envelope(null, 403)
+    const refusal = options.refuse?.find((item) => item.method === method && item.path.test(path))
+    if (refusal) return envelope(null, 403, refusal.message)
     const body = init?.body ? (JSON.parse(init.body as string) as Record<string, unknown>) : {}
     for (const [verb, pattern, handler] of routes) {
       const match = verb === method ? pattern.exec(path) : null
