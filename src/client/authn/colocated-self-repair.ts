@@ -526,10 +526,12 @@ export async function repairColocatedCredentialsOnRequest(
   serverId: string
 ): Promise<ColocatedRequestedRepairOutcome> {
   if (typeof Deno === 'undefined') return { status: 'refused', code: 'not_deno' }
-  disk.assertWritable()
+  // The seat is checked first (a database read only), so asking for any other
+  // server is a plain refusal; the dir guard still runs before any disk I/O.
   const seat = await store.findSeat()
   if (!seat) return { status: 'refused', code: 'no_colocated_seat' }
   if (seat.serverId !== serverId) return { status: 'refused', code: 'not_colocated_server' }
+  disk.assertWritable()
   if (!(await disk.hasDaemonFiles())) return { status: 'refused', code: 'no_daemon_files' }
 
   const outcome = await reissueAndWrite(store, disk, seat, ON_REQUEST)
