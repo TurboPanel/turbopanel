@@ -222,7 +222,10 @@ import {
   storageCopy,
   tls,
 } from '../../db/schema.ts'
-import { loadHideWebServerNames } from '../../features/servers/web-server-settings.ts'
+import {
+  loadWebServerSettings,
+  webServerDeployFields,
+} from '../../features/servers/web-server-settings.ts'
 import {
   checkResourceLimits,
   parseResourceLimits,
@@ -2974,6 +2977,7 @@ async function toPreparedDeployResult(
     ...(parts.edge?.hideWebServerNames === undefined
       ? {}
       : { hideWebServerNames: parts.edge.hideWebServerNames }),
+    ...(parts.edge?.sendViaHeader === undefined ? {} : { sendViaHeader: parts.edge.sendViaHeader }),
     composeServiceExpansion: expansionToRecord(parts.expansion),
     volumes: parts.registeredVolumes,
     warnings: parts.warnings,
@@ -4862,6 +4866,7 @@ type ServerEdgeDeployment = Pick<
   | 'hostingIngress'
   | 'hostingIngressNetwork'
   | 'hideWebServerNames'
+  | 'sendViaHeader'
 >
 
 /**
@@ -4946,10 +4951,13 @@ async function compileServerEdgeDeployment(
     listenerPorts,
     ...(hostingIngress ? { hostingIngress } : {}),
     ...(hostingIngressNetwork ? { hostingIngressNetwork } : {}),
-    hideWebServerNames: await loadHideWebServerNames(
-      db,
-      params.serverId,
-      params.serverOrganizationId ?? params.organizationId
+    ...webServerDeployFields(
+      await loadWebServerSettings(
+        db,
+        params.serverId,
+        params.serverOrganizationId ?? params.organizationId
+      ),
+      (await getServerDaemonStateByServerId(db, params.serverId))?.projection?.features
     ),
   }
 }

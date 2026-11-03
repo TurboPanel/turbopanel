@@ -2748,6 +2748,12 @@ export type EnvironmentDeployCommandPayload = EnvironmentDeployHostAccess & {
    */
   hideWebServerNames?: boolean
   /**
+   * Keep `Via: 1.1 Caddy` on responses from the server's public hosting web
+   * server. Absent reads as off: the header is removed, as before. Sent only
+   * to a daemon that lists `hosting-via-header-v1`.
+   */
+  sendViaHeader?: boolean
+  /**
    * `sequential`: the daemon stops the previous version, runs migrations,
    * starts the new one, gates on health and rolls back. Omitted for `inplace`
    * (and for a daemon that predates the field, which deploys in place).
@@ -4807,6 +4813,7 @@ export function parseEnvironmentDeployPayload(value: unknown): EnvironmentDeploy
       noCache: parseOptionalDeployBoolean(value.noCache),
       hostingsOnly: parseOptionalDeployBoolean(value.hostingsOnly),
       hideWebServerNames: parseOptionalDeployBoolean(value.hideWebServerNames),
+      sendViaHeader: parseOptionalDeployBoolean(value.sendViaHeader),
       deployStrategy: parseDeployStrategyField(value.deployStrategy),
       migrations: parseDeployMigrationsField(value.migrations),
       healthTimeoutSeconds: parseHealthTimeoutField(value.healthTimeoutSeconds),

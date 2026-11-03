@@ -16,6 +16,7 @@ import {
   type NtpDefaults,
   parseHideWebServerNames,
   parseNtpDefaults,
+  parseSendViaHeader,
   parseSshPort,
 } from '../servers/host-defaults.ts'
 import {
@@ -84,6 +85,11 @@ export type OrganizationOptions = {
    * Omitted → on.
    */
   hideWebServerNames?: boolean
+  /**
+   * Keep `Via: 1.1 Caddy` on site responses for servers that do not set their
+   * own. Omitted → off.
+   */
+  sendViaHeader?: boolean
   /**
    * Preferred TurboFabric state for this organization. Does not create or tear
    * down the mesh — `PUT /organizations/:id/fabric` remains the enable path.
@@ -315,12 +321,14 @@ function assignMaxServers(options: OrganizationOptions, value: Record<string, un
   if (parsed.ok) options.maxServers = parsed.value
 }
 
-function assignHideWebServerNames(
+function assignWebServerSettings(
   options: OrganizationOptions,
   value: Record<string, unknown>
 ): void {
   const hide = parseHideWebServerNames(value.hideWebServerNames)
   if (hide !== undefined) options.hideWebServerNames = hide
+  const via = parseSendViaHeader(value.sendViaHeader)
+  if (via !== undefined) options.sendViaHeader = via
 }
 
 function assignManagedDatabase(options: OrganizationOptions, value: Record<string, unknown>): void {
@@ -392,7 +400,7 @@ export function parseOrganizationOptions(value: unknown): OrganizationOptions {
   if (sshPort !== undefined) options.sshPort = sshPort
   const ntp = parseNtpDefaults(value.ntp)
   if (ntp) options.ntp = ntp
-  assignHideWebServerNames(options, value)
+  assignWebServerSettings(options, value)
   if (typeof value.defaultFabricEnabled === 'boolean') {
     options.defaultFabricEnabled = value.defaultFabricEnabled
   }

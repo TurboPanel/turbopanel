@@ -2117,7 +2117,7 @@ test('parseCommandPayload rejects non-boolean noCache on environment.deploy', ()
   )
 })
 
-test('parseCommandPayload carries hideWebServerNames on environment.deploy and rejects non-booleans', () => {
+test('parseCommandPayload carries hideWebServerNames and sendViaHeader on environment.deploy and rejects non-booleans', () => {
   const base = {
     environmentId: 'env-1',
     projectId: 'proj-1',
@@ -2128,26 +2128,29 @@ test('parseCommandPayload carries hideWebServerNames on environment.deploy and r
     ],
     hostings: [],
   }
-  for (const value of [true, false]) {
-    const parsed = parseCommandPayload('environment.deploy' as CommandType, {
-      ...base,
-      hideWebServerNames: value,
-    }) as { hideWebServerNames?: boolean }
-    assertEquals(parsed.hideWebServerNames, value)
-  }
-  const absent = parseCommandPayload('environment.deploy' as CommandType, base) as {
-    hideWebServerNames?: boolean
-  }
-  assertEquals('hideWebServerNames' in absent, false)
-  assertThrows(
-    () =>
-      parseCommandPayload('environment.deploy' as CommandType, {
+  const absent = parseCommandPayload('environment.deploy' as CommandType, base) as Record<
+    string,
+    unknown
+  >
+  for (const key of ['hideWebServerNames', 'sendViaHeader']) {
+    for (const value of [true, false]) {
+      const parsed = parseCommandPayload('environment.deploy' as CommandType, {
         ...base,
-        hideWebServerNames: 'yes',
-      }),
-    Error,
-    'Invalid environment.deploy payload'
-  )
+        [key]: value,
+      }) as Record<string, unknown>
+      assertEquals(parsed[key], value)
+    }
+    assertEquals(key in absent, false)
+    assertThrows(
+      () =>
+        parseCommandPayload('environment.deploy' as CommandType, {
+          ...base,
+          [key]: 'yes',
+        }),
+      Error,
+      'Invalid environment.deploy payload'
+    )
+  }
 })
 
 const MINIMAL_DEPLOY = {

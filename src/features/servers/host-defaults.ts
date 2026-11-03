@@ -34,6 +34,11 @@ export type HostDefaultsLayer = {
    * server layers only; unset everywhere means on.
    */
   hideWebServerNames?: boolean
+  /**
+   * Keep `Via: 1.1 Caddy` on responses from the public hosting web server.
+   * Organization and server layers only; unset everywhere means off.
+   */
+  sendViaHeader?: boolean
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -171,6 +176,30 @@ export function resolveEffectiveHideWebServerNames(
     return { hideWebServerNames: resolved.value, source: resolved.source }
   }
   return { hideWebServerNames: DEFAULT_HIDE_WEB_SERVER_NAMES, source: null }
+}
+
+/** The Via header is removed unless a layer says otherwise. */
+export const DEFAULT_SEND_VIA_HEADER = false
+
+/** Lenient jsonb read — anything but a boolean is omitted. */
+export const parseSendViaHeader = parseHideWebServerNames
+
+/** PUT/PATCH value: a boolean sets the layer, `null` clears it (inherit). */
+export const parseSendViaHeaderInput = parseDefaultFabricEnabledInput
+
+/** Server value wins, then the organization's; off when neither is set. */
+export function resolveEffectiveSendViaHeader(
+  server: HostDefaultsLayer | null | undefined,
+  organization: HostDefaultsLayer | null | undefined
+): { sendViaHeader: boolean; source: HostDefaultsSource | null } {
+  const resolved = firstDefined([
+    { value: server?.sendViaHeader, source: 'server' },
+    { value: organization?.sendViaHeader, source: 'organization' },
+  ])
+  if (resolved.value !== undefined) {
+    return { sendViaHeader: resolved.value, source: resolved.source }
+  }
+  return { sendViaHeader: DEFAULT_SEND_VIA_HEADER, source: null }
 }
 
 export function resolveEffectiveSshPort(
