@@ -67,17 +67,21 @@ High Availability (Workers) must not contain any of it.
   (`GET /accounts/{id}/tokens/{token_id}` for an account-owned token, needing
   Account › Account API Tokens › Read; `GET /user/tokens/{token_id}` for a
   user-owned one, needing User › API Tokens › Read) and evaluate them in
-  `cloudflare/token-policies.ts`. A token that cannot read itself fails
-  (`token-policies`). Cloudflare Tunnel Edit counts only in a policy whose
+  `cloudflare/token-policies.ts`. Reading itself is optional (owner
+  decision 2026-11-03): a token that cannot (401, 403 or 404, or no token id)
+  passes `token-policies` with a note naming the optional permission, and the
+  scopes come from read probes instead (list tunnels on the account, one DNS
+  read per zone, up to 25); Connect then confirms Tunnel Edit and names the
+  failing step. A refused probe is a no, a transient one throws. Cloudflare Tunnel Edit counts only in a policy whose
   resources cover the account; in a zone-only policy it does not (read
   probes passed such a token and Connect then failed with a bare 403). DNS
   Edit counts per zone (zone, all-zones wildcard, the account, or the nested
   zones-of-account form); `scopes.zones` is exactly those zones, so DNS-01 is
   offered only there. Every zone of the account passes with a warning in the
   detail. Deny policies win. Permission groups match by name (Write or Edit).
-  A recheck evaluates the stored account. When the answer is unknown rather
-  than no (the token cannot read itself, or Cloudflare rate limits, fails with
-  5xx or cannot be reached) it keeps the stored scopes and sets `last_error`,
+  A recheck evaluates the stored account the same way, so a refused policy
+  read never fails a working account. When the answer is unknown rather
+  than no (Cloudflare rate limits, fails with 5xx or cannot be reached) it keeps the stored scopes and sets `last_error`,
   so an account stored before this check, or a bad minute at Cloudflare, does
   not wipe a working account for a day. It also
   refuses a token that expires within 30 days, and seals it in
@@ -87,7 +91,12 @@ High Availability (Workers) must not contain any of it.
 - **Cloudflare tunnel** (`providers/cloudflare-tunnel.ts`,
   `cloudflare/tunnel-config.ts`). One remotely managed tunnel per account,
   named `turbopanel-control-plane-<INSTANCE_ID prefix>`, adopted by stored id or
-  name before one is created. Every tunnel name on the account is rebuilt into
+  name before one is created. Before writing routes, Connect reads the
+  tunnel (`config_src`, falling back to the deprecated `remote_config`) and
+  refuses a locally managed one (`config_src: local`: routes live in a file on
+  the connector) before anything is written. A configuration read that answers
+  404 (a remotely managed tunnel that never had one) is an empty configuration
+  (`CloudflareClient.getConfiguration`), for apply, remove and the edge view. Every tunnel name on the account is rebuilt into
   the ingress list on each apply and remove, all to `https://127.0.0.1:8443`
   with `originServerName`, `httpHostHeader` and `noTLSVerify` on the loopback
   hop (`caPool` is a later step). `noTLSVerify` drops for a name whose ACME

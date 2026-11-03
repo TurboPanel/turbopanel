@@ -50,6 +50,16 @@ export type CloudflareTunnelDetail = {
   name: string
   status?: CloudflareTunnelStatus
   connections?: { colo_name?: string; opened_at?: string }[]
+  /** `local`: routes live in a config file on the connector; `cloudflare`: managed remotely. */
+  config_src?: string
+  /** Older form of `config_src` (deprecated by Cloudflare): false means locally managed. */
+  remote_config?: boolean
+}
+
+/** Whether the tunnel's routes live in a config file on its connector, so the API cannot set them. */
+export function isLocallyManaged(tunnel: CloudflareTunnelDetail): boolean {
+  if (typeof tunnel.config_src === 'string') return tunnel.config_src === 'local'
+  return tunnel.remote_config === false
 }
 export type CloudflareOriginCertificate = {
   id: string
@@ -297,12 +307,22 @@ export class CloudflareClient {
     )
   }
 
-  /** The tunnel's ingress rules as Cloudflare holds them (remotely managed tunnels). */
+  /**
+   * The tunnel's ingress rules as Cloudflare holds them (remotely managed
+   * tunnels). A remotely managed tunnel that never had a configuration answers
+   * 404 ("Configuration for tunnel not found"): that is an empty one.
+   */
   async getConfiguration(accountId: string, tunnelId: string): Promise<CloudflareTunnelConfig> {
-    const result = await this.#call<{ config?: Partial<CloudflareTunnelConfig> | null } | null>(
-      'GET',
-      `/accounts/${encodeURIComponent(accountId)}/cfd_tunnel/${encodeURIComponent(tunnelId)}/configurations`
-    )
+    let result: { config?: Partial<CloudflareTunnelConfig> | null } | null
+    try {
+      result = await this.#call(
+        'GET',
+        `/accounts/${encodeURIComponent(accountId)}/cfd_tunnel/${encodeURIComponent(tunnelId)}/configurations`
+      )
+    } catch (err) {
+      if (err instanceof TunnelProviderError && err.code === 'not_found') return { ingress: [] }
+      throw err
+    }
     const config = result?.config ?? {}
     return { ...config, ingress: Array.isArray(config.ingress) ? config.ingress : [] }
   }

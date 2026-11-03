@@ -4,7 +4,11 @@
  * loopback listener, publishes a proxied CNAME per name and hands the run
  * token to the co-located daemon only, which runs the connector.
  */
-import { CloudflareClient } from '../../../../features/tunnels/cloudflare-client.ts'
+import {
+  CloudflareClient,
+  type CloudflareTunnelDetail,
+  isLocallyManaged,
+} from '../../../../features/tunnels/cloudflare-client.ts'
 import { TunnelProviderError } from '../../../../features/tunnels/errors.ts'
 import { zoneForName } from '../accounts.ts'
 import { capabilitiesFor } from '../capabilities.ts'
@@ -35,6 +39,8 @@ import type {
 const ALLOWED_PORTS = [443, 8443] as const
 const SELF_CHECK_TIMEOUT_MS = 10_000
 const IDENTITY_PATH = '/api/daemon/v1/instance/identity'
+const LOCALLY_MANAGED =
+  'This tunnel is managed by a configuration file on its connector, so the control plane cannot add routes to it. Switch it to dashboard management in Cloudflare, or let the control plane create its own tunnel.'
 
 type Ready = { deps: IngressDeps; name: string; zoneId: string; accountId: string; token: string }
 
@@ -141,8 +147,18 @@ async function prepare(ctx: IngressContext): Promise<Ready | ApplyResult> {
   return { deps, name, zoneId: zone.id, accountId: account.accountId, token }
 }
 
-/** The account's tunnel: the one another hostname already uses, else one with our name, else a new one. */
-type FoundTunnel = { id: string; name: string; adopted: boolean }
+/**
+ * The account's tunnel: the one another hostname already uses, else one with
+ * our name, else a new one. `detail` is the tunnel as Cloudflare answered it
+ * when this lookup read it; `created` when the control plane just made it.
+ */
+type FoundTunnel = {
+  id: string
+  name: string
+  adopted: boolean
+  detail?: CloudflareTunnelDetail
+  created?: boolean
+}
 
 function readRecords(api: CloudflareClient, ready: Ready) {
   return step('Reading the DNS records', () => api.listDnsRecords(ready.zoneId, ready.name))
@@ -155,7 +171,7 @@ async function tunnelBehindName(api: CloudflareClient, ready: Ready): Promise<Fo
   if (!id) return null
   try {
     const tunnel = await api.getTunnel(ready.accountId, id)
-    return { id: tunnel.id, name: tunnel.name, adopted: true }
+    return { id: tunnel.id, name: tunnel.name, adopted: true, detail: tunnel }
   } catch {
     return null
   }
@@ -182,9 +198,9 @@ async function ensureTunnel(
   const behind = await tunnelBehindName(api, ready)
   if (behind) return behind
   const [existing] = await step('Finding the tunnel', () => api.listTunnels(ready.accountId, name))
-  if (existing) return { id: existing.id, name, adopted: false }
+  if (existing) return { id: existing.id, name, adopted: false, detail: existing }
   const created = await step('Creating the tunnel', () => api.createTunnel(ready.accountId, name))
-  return { id: created.id, name, adopted: false }
+  return { id: created.id, name, adopted: false, created: true }
 }
 
 function ownState(ctx: IngressContext): unknown {
@@ -240,6 +256,19 @@ async function ensureDns(
   return { id: written.id, created: true }
 }
 
+/** Whether the tunnel takes its routes from a file on the connector; one the control plane just made never does. */
+async function locallyManaged(
+  api: CloudflareClient,
+  ready: Ready,
+  tunnel: FoundTunnel
+): Promise<boolean> {
+  if (tunnel.created) return false
+  const detail =
+    tunnel.detail ??
+    (await step('Reading the tunnel', () => api.getTunnel(ready.accountId, tunnel.id)))
+  return isLocallyManaged(detail)
+}
+
 async function pushRunToken(deps: IngressDeps, token: string): Promise<ApplyResult | null> {
   const pushed = await deps.pushRunToken(token)
   return pushed.ok
@@ -253,6 +282,7 @@ async function applyWith(
   ctx: IngressContext
 ): Promise<ApplyResult> {
   const tunnel = await ensureTunnel(api, ready, ctx)
+  if (await locallyManaged(api, ready, tunnel)) return refused('provider-error', LOCALLY_MANAGED)
   const { ingress: existing, ...rest } = await step('Reading the tunnel routes', () =>
     api.getConfiguration(ready.accountId, tunnel.id)
   )
