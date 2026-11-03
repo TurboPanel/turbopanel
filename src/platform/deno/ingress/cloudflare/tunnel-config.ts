@@ -9,6 +9,7 @@ import type {
   CloudflareTunnelDetail,
 } from '../../../../features/tunnels/cloudflare-client.ts'
 import { hostFromPublicUrlEntry } from '../../../../features/install/public-urls.ts'
+import type { InstanceHostnameRecord } from '../../../../features/install/instance-hostnames.ts'
 import type { HostnameWithState, IngressPhase } from '../provider.ts'
 
 /** The loopback hop from the connector to the control plane listener. */
@@ -33,6 +34,8 @@ export type TunnelState = {
    */
   adopted: boolean
   tokenPushedAt: string
+  /** True when the rule for this name verifies the origin certificate (a public pair is live for it). */
+  originVerified: boolean
 }
 
 export function tunnelName(instanceId: string): string {
@@ -49,15 +52,30 @@ export function dnsName(host: string): string | null {
 }
 
 /**
+ * Whether the listener presents a publicly trusted certificate for this name,
+ * so the loopback hop can verify it: an ACME pair (HTTP-01 or DNS-01) that is
+ * issued and unexpired. Uploaded and Platform CA pairs may be private, so they
+ * keep the unverified hop.
+ */
+export function originCertVerifiable(
+  row: Pick<InstanceHostnameRecord, 'source' | 'status'>
+): boolean {
+  return row.status === 'ready' && (row.source === 'dns-01' || row.source === 'lets-encrypt')
+}
+
+/**
  * One rule per name, all to the loopback listener, then the catch-all.
- * `noTLSVerify` stays on for the loopback hop until the connector can read the
- * Platform CA (`caPool` is a later step); `originServerName` still makes the
- * listener pick the right certificate.
+ * `noTLSVerify` stays on for the loopback hop unless the name is in
+ * `verified` (a public pair is live for it; `originServerName` makes the
+ * listener present that pair and the connector checks it). For the rest it
+ * stays on until the connector can read the Platform CA (`caPool` is a later
+ * step).
  */
 export function buildPanelIngress(
   names: readonly string[],
   existing: readonly CloudflareIngressRule[] = [],
-  dropped: readonly string[] = []
+  dropped: readonly string[] = [],
+  verified: ReadonlySet<string> = new Set()
 ): CloudflareIngressRule[] {
   const unique = [...new Set(names.map((name) => name.toLowerCase()))].sort((a, b) =>
     a.localeCompare(b)
@@ -72,7 +90,11 @@ export function buildPanelIngress(
   const rules: CloudflareIngressRule[] = unique.map((hostname) => ({
     hostname,
     service: PANEL_ORIGIN_DIAL,
-    originRequest: { originServerName: hostname, httpHostHeader: hostname, noTLSVerify: true },
+    originRequest: {
+      originServerName: hostname,
+      httpHostHeader: hostname,
+      noTLSVerify: !verified.has(hostname),
+    },
   }))
   return [...before, ...rules, catchAll]
 }
@@ -96,6 +118,7 @@ export function readTunnelState(value: unknown): TunnelState | null {
     createdRecord: raw.createdRecord === true,
     adopted: raw.adopted === true,
     tokenPushedAt: typeof raw.tokenPushedAt === 'string' ? raw.tokenPushedAt : '',
+    originVerified: raw.originVerified === true,
   }
 }
 

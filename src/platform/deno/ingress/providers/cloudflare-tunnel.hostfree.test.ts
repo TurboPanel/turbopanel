@@ -6,7 +6,12 @@ import {
   createFakeCloudflare,
   type FakeCloudflare,
 } from '../cloudflare/fake-cloudflare.test.support.ts'
-import { buildPanelIngress, tunnelName, tunnelPhase } from '../cloudflare/tunnel-config.ts'
+import {
+  buildPanelIngress,
+  originCertVerifiable,
+  tunnelName,
+  tunnelPhase,
+} from '../cloudflare/tunnel-config.ts'
 import type { HostnameWithState, IngressContext } from '../provider.ts'
 import { applyHostname } from '../registry.ts'
 import { cloudflareTunnelProvider, routesName } from './cloudflare-tunnel.ts'
@@ -129,6 +134,26 @@ test('buildPanelIngress sends every name to the loopback listener with a catch-a
   ])
 })
 
+test('buildPanelIngress verifies the origin only for names with a live public pair', () => {
+  const rules = buildPanelIngress(
+    ['a.example.com', 'b.example.com'],
+    [],
+    [],
+    new Set(['a.example.com'])
+  )
+  assertEquals(rules[0]?.originRequest?.noTLSVerify, false)
+  assertEquals(rules[1]?.originRequest?.noTLSVerify, true)
+})
+
+test('originCertVerifiable is true only for an issued ACME pair', () => {
+  assertEquals(originCertVerifiable({ source: 'dns-01', status: 'ready' }), true)
+  assertEquals(originCertVerifiable({ source: 'lets-encrypt', status: 'ready' }), true)
+  assertEquals(originCertVerifiable({ source: 'dns-01', status: 'pending' }), false)
+  assertEquals(originCertVerifiable({ source: 'dns-01', status: 'expired' }), false)
+  assertEquals(originCertVerifiable({ source: 'uploaded', status: 'ready' }), false)
+  assertEquals(originCertVerifiable({ source: 'platform-ca', status: 'ready' }), false)
+})
+
 test('apply creates the tunnel, the proxied CNAME and pushes the run token', async () => {
   const h = harness()
   const result = await applyHostname(h.ctx(hostname('h1', 'panel.example.com')))
@@ -143,6 +168,23 @@ test('apply creates the tunnel, the proxied CNAME and pushes the run token', asy
   assertEquals(record?.proxied, true)
   assertEquals(h.pushed, [`run-token-for-${h.cf.tunnels[0]!.id}`])
   assertEquals(JSON.stringify(result.state).includes('run-token'), false)
+})
+
+test('apply verifies the origin once a public pair is live and records it', async () => {
+  const live = { ...hostname('h1', 'panel.example.com'), source: 'dns-01' as const }
+  const h = harness()
+  const result = await applyHostname(h.ctx(live))
+  assert(result.ok)
+  assertEquals(result.state.originVerified, true)
+  const config = h.cf.configurations.get(h.cf.tunnels[0]!.id) as {
+    config: { ingress: { originRequest?: { noTLSVerify?: boolean } }[] }
+  }
+  assertEquals(config.config.ingress[0]?.originRequest?.noTLSVerify, false)
+
+  const pending = { ...live, status: 'pending' as const }
+  const again = await applyHostname(harness().ctx(pending))
+  assert(again.ok)
+  assertEquals(again.state.originVerified, false)
 })
 
 test('apply adopts a tunnel that already has our name', async () => {

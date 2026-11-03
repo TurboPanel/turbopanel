@@ -12,6 +12,7 @@ import {
   appliedTunnelRows,
   buildPanelIngress,
   dnsName,
+  originCertVerifiable,
   readTunnelState,
   tunnelName,
   tunnelIdFromTarget,
@@ -178,6 +179,20 @@ function namesOnTunnel(ctx: IngressContext, include: string | null): string[] {
   return include ? [...names, include] : names
 }
 
+/** Names on the tunnel whose rule can verify the origin certificate, `include` being the one being applied. */
+function verifiedOnTunnel(ctx: IngressContext, include: string | null): Set<string> {
+  const others = appliedTunnelRows(
+    ctx.deps?.hostnames ?? [],
+    ctx.hostname.ingressId ?? '',
+    ctx.hostname.id
+  )
+  const names = others.flatMap(({ row }) =>
+    originCertVerifiable(row) ? (dnsName(row.host) ?? []) : []
+  )
+  if (include && originCertVerifiable(ctx.hostname)) names.push(include)
+  return new Set(names.map((name) => name.toLowerCase()))
+}
+
 /** The CNAME for the name: kept when it already points at the tunnel, replaced only when asked. */
 async function ensureDns(
   api: CloudflareClient,
@@ -217,7 +232,12 @@ async function applyWith(
 ): Promise<ApplyResult> {
   const tunnel = await ensureTunnel(api, ready, ctx)
   const { ingress: existing, ...rest } = await api.getConfiguration(ready.accountId, tunnel.id)
-  const ingress = buildPanelIngress(namesOnTunnel(ctx, ready.name), existing)
+  const ingress = buildPanelIngress(
+    namesOnTunnel(ctx, ready.name),
+    existing,
+    [],
+    verifiedOnTunnel(ctx, ready.name)
+  )
   await api.putConfiguration(ready.accountId, tunnel.id, ingress, rest)
   const dns = await ensureDns(api, ready, tunnel.id, ctx.replaceExisting === true)
   if ('ok' in dns) return dns
@@ -233,6 +253,7 @@ async function applyWith(
     createdRecord: dns.created,
     adopted: tunnel.adopted,
     tokenPushedAt: ready.deps.now().toISOString(),
+    originVerified: originCertVerifiable(ctx.hostname),
   }
   return { ok: true, state }
 }
@@ -359,7 +380,7 @@ async function removeWith(
       state.tunnelId
     )
     const dropped = [dnsName(ctx.hostname.host) ?? '']
-    const ingress = buildPanelIngress(remaining, existing, dropped)
+    const ingress = buildPanelIngress(remaining, existing, dropped, verifiedOnTunnel(ctx, null))
     await api.putConfiguration(state.accountId, state.tunnelId, ingress, rest)
     return
   }
