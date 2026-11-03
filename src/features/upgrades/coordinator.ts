@@ -835,7 +835,11 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
     const active = await deps.store.activeRun()
     const daemonCommit = target.daemon?.commit ?? null
     const daemonDrift = daemonCommit
-      ? await deps.store.anyDaemonBehind(daemonCommit, target.daemon?.builtAt)
+      ? await deps.store.anyDaemonBehind(
+          daemonCommit,
+          target.daemon?.builtAt,
+          deps.development ? deps.colocatedServerId : null
+        )
       : false
     const differs =
       daemonDrift ||

@@ -79,6 +79,10 @@ import {
 } from '../../lib/secrets/password.ts'
 import { registerAdminRoutes } from '../../admin/routes.ts'
 import { registerIngressAdminRoutes } from './ingress/admin-routes.ts'
+import {
+  type PlatformAdminRoutesRegistrar,
+  withDevelopmentAdminRoutes,
+} from './development-admin-routes.ts'
 import { startIngressTimer } from './ingress/tick.ts'
 import { hostnameModes } from './ingress/planner.ts'
 import { registerInstallRoutes } from '../../install/routes.ts'
@@ -205,6 +209,12 @@ export type StartDenoServerOptions = {
    * entrypoint passes a registrar that imports those modules.
    */
   registerDeveloperSurface?: (ctx: DenoDeveloperSurfaceContext) => void
+  /**
+   * Optional development-only admin routes (Build and Push Daemon). Called
+   * with the admin router, behind the admin session middleware, only while
+   * the developer surface is on; production `src/deno.ts` omits it.
+   */
+  registerDevelopmentAdminRoutes?: PlatformAdminRoutesRegistrar
 }
 
 async function resolveEmailQueue(_db: Db): Promise<EmailQueue> {
@@ -735,12 +745,16 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     getEnv: () => Deno.env.toObject(),
     readPlatformCaBundle: () => Deno.readTextFile(resolveInstanceTlsCaServePath()),
     collectInstanceIps: () => collectServerIps(readDefaultRouteInterfaces()),
-    registerPlatformAdminRoutes: (admin, deps) =>
-      registerIngressAdminRoutes(admin, {
-        ...deps,
-        selfKid: () => panelIdentity.current.kid,
-        getEnv: () => Deno.env.toObject(),
-      }),
+    registerPlatformAdminRoutes: withDevelopmentAdminRoutes(
+      (admin, deps) =>
+        registerIngressAdminRoutes(admin, {
+          ...deps,
+          selfKid: () => panelIdentity.current.kid,
+          getEnv: () => Deno.env.toObject(),
+        }),
+      developerSurface,
+      options.registerDevelopmentAdminRoutes
+    ),
     panelIdentity: () => Promise.resolve(panelIdentity),
     identityUrls: async (requestDb) => orderedPublicOrigins(await listInstanceHostnames(requestDb)),
     onIdentityNextChanged: (fingerprint) => {

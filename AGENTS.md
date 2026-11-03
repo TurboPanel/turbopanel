@@ -101,7 +101,9 @@ co-located dev the daemon runs the `instance-dev-install` playbook (see
 the channel manifests, records the latest available build, and drives
 fleet-aware upgrade runs. Updates are always automatic on both runtimes: each
 install checks once an hour at its own minute; nobody starts one by hand, and
-the only control is Pause all updates in Admin > Updates. Order is
+the only control is Pause all updates in Admin > Updates. The exception is a
+development install (control plane from source), which never checks and
+updates only by the manual Build and Push Daemon action. Order is
 co-located daemon → control plane → fleet, with the fleet phase hard-gated on
 both being on target; Workers runs fleet-only (the control plane is
 deploy-managed). See `src/features/upgrades/AGENTS.md`.

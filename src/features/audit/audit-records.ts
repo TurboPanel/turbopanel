@@ -63,6 +63,7 @@ export const AUDIT_ACTIONS = [
   'instance.primary_hostname_changed',
   'upgrade.pause',
   'upgrade.resume',
+  'upgrade.dev_push',
   'binding.create',
   'binding.update',
   'binding.delete',
