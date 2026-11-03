@@ -28,6 +28,10 @@
  * this database (checked again under the lock): files from another control
  * plane's database are never rewritten.
  *
+ * {@link repairColocatedCredentialsOnRequest} is the same locked re-issue for
+ * an owner who asked for it (`POST /servers/:id/colocated-repair`): it skips
+ * the known-id check and re-issues even when the files look right.
+ *
  * Nothing here creates a server, touches another server, or runs without a
  * bound co-located seat. A revoked key is left alone: revocation is sticky
  * and only an owner lifts it.
@@ -386,28 +390,88 @@ const NOT_OURS_IDS: ColocatedRepairOutcome = {
   reason: 'no id on disk names a row in this database',
 }
 
+/**
+ * How a pass decides. The automatic pass needs an id on disk known here and
+ * leaves healthy files alone; a repair an owner asked for skips the first
+ * check and re-issues even when nothing looks wrong.
+ */
+type ReissueMode = { requireKnownIds: boolean; reissueWhenOk: boolean }
+
+const AUTOMATIC: ReissueMode = { requireKnownIds: true, reissueWhenOk: false }
+const ON_REQUEST: ReissueMode = { requireKnownIds: false, reissueWhenOk: true }
+
+/**
+ * Diagnose with the given queries. `done` ends the pass; `reissue` names what
+ * is wrong and which stored key (if any) to clear.
+ */
+async function decide(
+  queries: ColocatedRepairQueries,
+  seat: ColocatedSeat,
+  state: ColocatedDiskState,
+  mode: ReissueMode
+): Promise<
+  | { kind: 'done'; outcome: ColocatedRepairOutcome }
+  | { kind: 'reissue'; reasons: string[]; clearKeyId: string | null }
+> {
+  if (mode.requireKnownIds && !(await diskIdsKnown(queries, state))) {
+    return { kind: 'done', outcome: NOT_OURS_IDS }
+  }
+  const diagnosis = await diagnose(queries, seat, state)
+  if (diagnosis.kind === 'blocked') {
+    return { kind: 'done', outcome: { status: 'blocked', reason: diagnosis.reason } }
+  }
+  if (diagnosis.kind === 'ok') {
+    if (!mode.reissueWhenOk) return { kind: 'done', outcome: { status: 'ok' } }
+    return { kind: 'reissue', reasons: ['an owner asked for new credentials'], clearKeyId: null }
+  }
+  return { kind: 'reissue', reasons: diagnosis.reasons, clearKeyId: diagnosis.clearKeyId }
+}
+
 /** Inside the lock: look again, and change the database only if still needed. */
 async function reissueUnderLock(
   queries: ColocatedRepairQueries,
   disk: ColocatedRepairDisk,
-  seenSeat: ColocatedSeat
+  seenSeat: ColocatedSeat,
+  mode: ReissueMode
 ): Promise<LockedResult> {
   const seat = await queries.findSeat()
   if (seat?.licenseId !== seenSeat.licenseId || seat.serverId !== seenSeat.serverId) {
     return { kind: 'done', outcome: { status: 'skipped', reason: 'the co-located seat changed' } }
   }
-  const state = await disk.read()
-  if (!(await diskIdsKnown(queries, state))) return { kind: 'done', outcome: NOT_OURS_IDS }
-  const diagnosis = await diagnose(queries, seat, state)
-  if (diagnosis.kind === 'ok') return { kind: 'done', outcome: { status: 'ok' } }
-  if (diagnosis.kind === 'blocked') {
-    return { kind: 'done', outcome: { status: 'blocked', reason: diagnosis.reason } }
-  }
+  const decision = await decide(queries, seat, await disk.read(), mode)
+  if (decision.kind === 'done') return decision
   const token = await queries.rotateToken(seat.licenseId)
-  const clearedKey = diagnosis.clearKeyId
-    ? await queries.clearKey(seat.serverId, diagnosis.clearKeyId)
+  const clearedKey = decision.clearKeyId
+    ? await queries.clearKey(seat.serverId, decision.clearKeyId)
     : false
-  return { kind: 'write', seat, token, reasons: diagnosis.reasons, clearedKey }
+  return { kind: 'write', seat, token, reasons: decision.reasons, clearedKey }
+}
+
+/** Take the lock, re-issue, then write the files: database first, files last. */
+async function reissueAndWrite(
+  store: ColocatedRepairStore,
+  disk: ColocatedRepairDisk,
+  seat: ColocatedSeat,
+  mode: ReissueMode
+): Promise<ColocatedRepairOutcome> {
+  // The daemon re-enrolls as soon as it sees new license files, so the old
+  // key must already be gone by then.
+  const locked = await store.locked((queries) => reissueUnderLock(queries, disk, seat, mode))
+  if (locked.kind === 'done') return locked.outcome
+  const wrote = await disk.write(locked.seat, locked.token)
+  if (!wrote) {
+    return {
+      status: 'failed',
+      serverId: locked.seat.serverId,
+      reason: 'could not write license files',
+    }
+  }
+  return {
+    status: 'repaired',
+    serverId: locked.seat.serverId,
+    reasons: locked.reasons,
+    clearedKey: locked.clearedKey,
+  }
 }
 
 /** One check-and-repair pass, without the rate limit. */
@@ -424,29 +488,60 @@ export async function repairColocatedCredentialsOnce(
   if (!seat) return { status: 'skipped', reason: 'no bound co-located seat' }
 
   // A cheap look outside the lock: a healthy host never takes it.
-  const state = await disk.read()
-  if (!(await diskIdsKnown(store, state))) return NOT_OURS_IDS
-  const first = await diagnose(store, seat, state)
-  if (first.kind === 'ok') return { status: 'ok' }
-  if (first.kind === 'blocked') return { status: 'blocked', reason: first.reason }
+  const first = await decide(store, seat, await disk.read(), AUTOMATIC)
+  if (first.kind === 'done') return first.outcome
+  return reissueAndWrite(store, disk, seat, AUTOMATIC)
+}
 
-  // Database first, files last: the daemon re-enrolls as soon as it sees new
-  // license files, so the old key must already be gone by then.
-  const locked = await store.locked((queries) => reissueUnderLock(queries, disk, seat))
-  if (locked.kind === 'done') return locked.outcome
-  const wrote = await disk.write(locked.seat, locked.token)
-  if (!wrote) {
-    return {
-      status: 'failed',
-      serverId: locked.seat.serverId,
-      reason: 'could not write license files',
-    }
-  }
-  return {
-    status: 'repaired',
-    serverId: locked.seat.serverId,
-    reasons: locked.reasons,
-    clearedKey: locked.clearedKey,
+// ── On request ───────────────────────────────────────────────────────────
+
+/** Why a repair an owner asked for did not run. */
+export const COLOCATED_REPAIR_REFUSAL_CODES = [
+  'not_deno',
+  'no_colocated_seat',
+  'not_colocated_server',
+  'no_daemon_files',
+  'daemon_key_revoked',
+  'seat_changed',
+] as const
+
+export type ColocatedRepairRefusal = (typeof COLOCATED_REPAIR_REFUSAL_CODES)[number]
+
+export type ColocatedRequestedRepairOutcome =
+  | { status: 'refused'; code: ColocatedRepairRefusal }
+  | { status: 'repaired'; serverId: string; reasons: string[]; clearedKey: boolean }
+  | { status: 'failed'; serverId: string; reason: string }
+
+/**
+ * The repair an owner asks for from the co-located server's page. Same locked
+ * re-issue as the automatic pass (same license and seat, never a new server,
+ * a revoked key is refused, database before files), with two differences: it
+ * does not need an id on disk to be known here (files from another
+ * database are exactly what it fixes), and it re-issues the token even when
+ * the files look right. `serverId` must be the bound seat's server.
+ */
+export async function repairColocatedCredentialsOnRequest(
+  store: ColocatedRepairStore,
+  disk: ColocatedRepairDisk,
+  serverId: string
+): Promise<ColocatedRequestedRepairOutcome> {
+  if (typeof Deno === 'undefined') return { status: 'refused', code: 'not_deno' }
+  disk.assertWritable()
+  const seat = await store.findSeat()
+  if (!seat) return { status: 'refused', code: 'no_colocated_seat' }
+  if (seat.serverId !== serverId) return { status: 'refused', code: 'not_colocated_server' }
+  if (!(await disk.hasDaemonFiles())) return { status: 'refused', code: 'no_daemon_files' }
+
+  const outcome = await reissueAndWrite(store, disk, seat, ON_REQUEST)
+  switch (outcome.status) {
+    case 'repaired':
+    case 'failed':
+      return outcome
+    case 'blocked':
+      return { status: 'refused', code: 'daemon_key_revoked' }
+    default:
+      // Only a seat that changed under the lock lands here.
+      return { status: 'refused', code: 'seat_changed' }
   }
 }
 

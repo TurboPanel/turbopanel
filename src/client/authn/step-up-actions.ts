@@ -33,6 +33,7 @@ export const STEP_UP_ACTIONS = {
   'license.revoke': 'Revoke a license key',
   'license.key.burn': "Burn a license key's token and issue a new install ticket",
   'server.reenroll_ticket.issue': 'Issue a re-enroll ticket for a server',
+  'server.colocated_repair': 'Issue new credentials for the server this control plane runs on',
   'managed.delete': 'Delete a managed database',
   'managed.database.delete': 'Delete a database inside a managed database',
   'binding.delete': 'Remove the link between an app and a managed database',

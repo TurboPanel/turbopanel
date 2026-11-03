@@ -109,6 +109,7 @@ export const AUDIT_ACTIONS = [
   'server.key_replace',
   'server.reenroll_ticket.issue',
   'server.reenroll_ticket.revoke',
+  'server.colocated_repair',
   'license.key.burn',
   'panel.identity.generated',
   'panel.identity_next.set',
