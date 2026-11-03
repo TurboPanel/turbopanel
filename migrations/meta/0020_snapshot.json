@@ -1,5 +1,5 @@
 {
-  "id": "0336baf5-c0c6-4cbc-b1f3-380cd442237f",
+  "id": "2183edba-c7d7-4aa0-9425-b20c2151b805",
   "prevId": "17ee67a0-6e07-44ac-9bd8-917059ded555",
   "version": "7",
   "dialect": "postgresql",
@@ -9128,6 +9128,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "acme_terms_url": {
+          "name": "acme_terms_url",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "backup_destination_id": {
           "name": "backup_destination_id",
           "type": "uuid",
@@ -9178,6 +9184,10 @@
         "organization_deploy_timeout_minutes_check": {
           "name": "organization_deploy_timeout_minutes_check",
           "value": "\"organization\".\"deploy_timeout_minutes\" IS NULL OR (\"organization\".\"deploy_timeout_minutes\" >= 5 AND \"organization\".\"deploy_timeout_minutes\" <= 240)"
+        },
+        "organization_acme_terms_check": {
+          "name": "organization_acme_terms_check",
+          "value": "(\"organization\".\"acme_terms_accepted_at\" IS NULL) = (\"organization\".\"acme_terms_url\" IS NULL) AND (\"organization\".\"acme_terms_url\" IS NULL OR (\"organization\".\"acme_terms_url\" LIKE 'https://%' AND char_length(\"organization\".\"acme_terms_url\") <= 2048))"
         },
         "organization_acme_contact_email_check": {
           "name": "organization_acme_contact_email_check",

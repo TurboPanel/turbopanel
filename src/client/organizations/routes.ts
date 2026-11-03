@@ -32,7 +32,6 @@ import {
 } from './settings-route.ts'
 import {
   parseOrganizationOptions,
-  ORG_ACME_TERMS_URL,
   resolveRandomizedPrincipalUsernames,
 } from '../../features/organizations/organization-options.ts'
 import type { AuditAction } from '../../features/audit/audit-records.ts'
@@ -43,6 +42,8 @@ import { alignedNetworkCidr } from '../../lib/ip-address.ts'
 import { findDockerBridgePoolOverlap } from '../../features/deploy/docker-address-pools.ts'
 import { cidrCollisionResponse } from '../networks/network-scope.ts'
 import { eraseStoredPairs } from '../tls/stored-pair.ts'
+import { fetchTermsOfService } from '../../lib/acme/client.ts'
+import { ACME_PRODUCTION_DIRECTORY } from '../../lib/acme/directories.ts'
 import {
   applyManagedDefaultsPatch,
   composeDefaultResourceLimitsGetResponse,
@@ -104,6 +105,13 @@ async function loadOrganizationRecord(db: Db, id: string) {
 }
 
 export function registerOrganizationRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
+  // The agreement Let's Encrypt names now, from its cached directory; null
+  // when it cannot be read (the routes then refuse to accept or turn on).
+  const currentTermsUrl = (): Promise<string | null> =>
+    fetchTermsOfService({
+      directoryUrl: ACME_PRODUCTION_DIRECTORY,
+      fetch: opts.acmeTermsFetch,
+    }).catch(() => null)
   if (!opts.secrets) {
     throw new TypeError('session secrets are required for organization routes')
   }
@@ -252,13 +260,14 @@ export function registerOrganizationRoutes(router: Hono<AppEnv>, opts: AuthRoute
 
   router.get(
     '/organizations/:id/tls-settings',
-    tlsSettingsGetRoute('manage', tlsSettingsGetResponse)
+    tlsSettingsGetRoute('manage', currentTermsUrl, tlsSettingsGetResponse)
   )
   router.put(
     '/organizations/:id/tls-settings',
     tlsSettingsPutRoute({
       gate: 'manage',
       parse: parseTlsSettingsPatch,
+      currentTermsUrl,
       apply: applyTlsSettingsPatch,
       respond: tlsSettingsPutResponse,
       // Turning Let's Encrypt off: the stored keys are no longer needed.
@@ -273,7 +282,7 @@ export function registerOrganizationRoutes(router: Hono<AppEnv>, opts: AuthRoute
         if (patch.acmeTermsAccepted) {
           entries.push({
             action: 'organization.acme_terms.accept',
-            context: { acceptedAt: after.acmeTermsAcceptedAt, termsUrl: ORG_ACME_TERMS_URL },
+            context: { acceptedAt: after.acmeTermsAcceptedAt, termsUrl: after.acmeTermsUrl },
           })
         }
         if (patch.acmeEnabled !== undefined) {

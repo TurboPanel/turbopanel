@@ -99,6 +99,7 @@ async function installIsolatedFixtureSchema(tx: Db, schemaName: string): Promise
       is_acme_enabled boolean DEFAULT false NOT NULL,
       acme_contact_email text,
       acme_terms_accepted_at timestamptz(3),
+      acme_terms_url text,
       backup_destination_id uuid
     )
   `)

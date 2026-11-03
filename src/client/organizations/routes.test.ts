@@ -12,10 +12,7 @@ import { audit, fabric, grant, network, organization, user } from '../../db/sche
 import { registerOrganizationRoutes } from './routes.ts'
 import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
 import { organizationAcmeContactEmail } from '../../features/organizations/acme-contact-email.ts'
-import {
-  ORG_ACME_TERMS_URL,
-  parseOrganizationOptions,
-} from '../../features/organizations/organization-options.ts'
+import { parseOrganizationOptions } from '../../features/organizations/organization-options.ts'
 
 const dbUrl = getDatabaseUrl()
 
@@ -27,7 +24,26 @@ const dbUrl = getDatabaseUrl()
  */
 const test = Deno.test.bind(Deno)
 
-async function createOrgRoutesTestApp(db: ReturnType<typeof createDenoDb>) {
+/** The agreement the stand-in Let's Encrypt directory names. */
+const TERMS = 'https://letsencrypt.org/documents/LE-SA-test-v1.pdf'
+
+/** A Let's Encrypt directory stand-in that names `termsUrl` as its agreement. */
+function termsFetch(termsUrl: string): typeof fetch {
+  return () =>
+    Promise.resolve(
+      new Response(
+        JSON.stringify({
+          newNonce: 'https://acme.test/nonce',
+          newAccount: 'https://acme.test/account',
+          newOrder: 'https://acme.test/order',
+          meta: { termsOfService: termsUrl },
+        }),
+        { headers: { 'content-type': 'application/json' } }
+      )
+    )
+}
+
+async function createOrgRoutesTestApp(db: ReturnType<typeof createDenoDb>, termsUrl = TERMS) {
   const secretsConfig = parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`, 'deno')
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
   const app = new Hono<AppEnv>()
@@ -39,6 +55,7 @@ async function createOrgRoutesTestApp(db: ReturnType<typeof createDenoDb>) {
     secrets,
     runtime: 'deno',
     signupEnvOverride: undefined,
+    acmeTermsFetch: termsFetch(termsUrl),
   })
   return { app, secrets }
 }
@@ -609,7 +626,9 @@ test('PUT /organizations/:id/tls-settings stores the contact email, keeps other 
       acmeEnabled: false,
       acmeContactEmail: 'Ops@example.com',
       acmeTermsAcceptedAt: null,
-      acmeTermsUrl: ORG_ACME_TERMS_URL,
+      acmeAcceptedTermsUrl: null,
+      acmeTermsUrl: TERMS,
+      acmeTermsChanged: false,
     })
     const [row] = await db
       .select({ options: organization.options })
@@ -665,6 +684,7 @@ test("PUT /organizations/:id/tls-settings turns Let's Encrypt on only with a con
           isAcmeEnabled: organization.isAcmeEnabled,
           acmeContactEmail: organization.acmeContactEmail,
           acmeTermsAcceptedAt: organization.acmeTermsAcceptedAt,
+          acmeTermsUrl: organization.acmeTermsUrl,
           options: organization.options,
         })
         .from(organization)
@@ -678,11 +698,13 @@ test("PUT /organizations/:id/tls-settings turns Let's Encrypt on only with a con
       acmeEnabled: false,
       acmeContactEmail: null,
       acmeTermsAcceptedAt: null,
-      acmeTermsUrl: ORG_ACME_TERMS_URL,
+      acmeAcceptedTermsUrl: null,
+      acmeTermsUrl: TERMS,
+      acmeTermsChanged: false,
     })
 
     // No contact: refused, nothing written.
-    const noContact = await put({ acmeEnabled: true, acmeTermsAccepted: true })
+    const noContact = await put({ acmeEnabled: true, acmeTermsAccepted: true, acmeTermsUrl: TERMS })
     assertEquals(noContact.status, 400)
     assertEquals((await noContact.json()).code, 'acme_contact_email_required')
     assertEquals((await stored()).acmeTermsAcceptedAt, null)
@@ -698,12 +720,14 @@ test("PUT /organizations/:id/tls-settings turns Let's Encrypt on only with a con
       acmeEnabled: true,
       acmeContactEmail: 'ops@example.com',
       acmeTermsAccepted: true,
+      acmeTermsUrl: TERMS,
     })
     assertEquals(on.status, 200)
     const onBody = await on.json()
     assertEquals(onBody.acmeEnabled, true)
     assertEquals(onBody.acmeContactEmail, 'ops@example.com')
     assertEquals(typeof onBody.acmeTermsAcceptedAt, 'string')
+    assertEquals(onBody.acmeAcceptedTermsUrl, TERMS)
     // GET answers the acceptance time in the same ISO form the PUT did.
     const read = await app.request(url, { headers })
     assertEquals((await read.json()).acmeTermsAcceptedAt, onBody.acmeTermsAcceptedAt)
@@ -737,6 +761,33 @@ test("PUT /organizations/:id/tls-settings turns Let's Encrypt on only with a con
     const again = await put({ acmeEnabled: true })
     assertEquals(again.status, 200)
     assertEquals((await stored()).isAcmeEnabled, true)
+
+    // Let's Encrypt publishes a newer agreement: the screen is told, the old
+    // one can no longer be accepted, and turning back on needs the new one.
+    const newer = 'https://letsencrypt.org/documents/LE-SA-test-v2.pdf'
+    const { app: later } = await createOrgRoutesTestApp(db, newer)
+    const putLater = (body: Record<string, unknown>) =>
+      later.request(url, { method: 'PUT', headers, body: JSON.stringify(body) })
+    const changed = await (await later.request(url, { headers })).json()
+    assertEquals(changed.acmeTermsChanged, true)
+    assertEquals(changed.acmeTermsUrl, newer)
+    assertEquals(changed.acmeAcceptedTermsUrl, TERMS)
+    const stale = await putLater({ acmeTermsAccepted: true, acmeTermsUrl: TERMS })
+    assertEquals(stale.status, 409)
+    assertEquals((await stale.json()).code, 'acme_terms_changed')
+    assertEquals((await putLater({ acmeEnabled: false })).status, 200)
+    const notCurrent = await putLater({ acmeEnabled: true })
+    assertEquals(notCurrent.status, 400)
+    assertEquals((await notCurrent.json()).code, 'acme_terms_not_accepted')
+    const renewed = await putLater({
+      acmeEnabled: true,
+      acmeTermsAccepted: true,
+      acmeTermsUrl: newer,
+    })
+    assertEquals(renewed.status, 200)
+    const renewedBody = await renewed.json()
+    assertEquals(renewedBody.acmeTermsChanged, false)
+    assertEquals((await stored()).acmeTermsUrl, newer)
   })
 })
 
@@ -758,6 +809,12 @@ test('PUT /organizations/:id/tls-settings refuses a mailto header trick, a false
     })
     assertEquals(notTrue.status, 400)
     assertEquals(await notTrue.json(), { error: 'Invalid acmeTermsAccepted' })
+    const noUrl = await app.request(url, {
+      method: 'PUT',
+      headers,
+      body: JSON.stringify({ acmeTermsAccepted: true }),
+    })
+    assertEquals(noUrl.status, 400)
     const empty = await app.request(url, { method: 'PUT', headers, body: '{}' })
     assertEquals(empty.status, 400)
     assertEquals(await empty.json(), {

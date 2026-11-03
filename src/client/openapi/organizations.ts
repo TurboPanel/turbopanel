@@ -109,13 +109,26 @@ export const organizationSchemas = {
         type: 'boolean',
         const: true,
         description:
-          "Records that the organization accepted the Let's Encrypt terms (acmeTermsUrl) now. Only true is accepted.",
+          "Records that the organization accepts the Let's Encrypt agreement in acmeTermsUrl now. Only true is accepted, and only with acmeTermsUrl.",
+      },
+      acmeTermsUrl: {
+        type: 'string',
+        maxLength: 2048,
+        description:
+          "The exact agreement the person was shown (the GET's acmeTermsUrl). 409 acme_terms_changed when Let's Encrypt now names a different one; 503 acme_terms_unavailable when it cannot be read.",
       },
     },
   },
   OrganizationTlsSettings: {
     type: 'object',
-    required: ['acmeEnabled', 'acmeContactEmail', 'acmeTermsAcceptedAt', 'acmeTermsUrl'],
+    required: [
+      'acmeEnabled',
+      'acmeContactEmail',
+      'acmeTermsAcceptedAt',
+      'acmeAcceptedTermsUrl',
+      'acmeTermsUrl',
+      'acmeTermsChanged',
+    ],
     properties: {
       acmeEnabled: { type: 'boolean' },
       acmeContactEmail: {
@@ -128,11 +141,22 @@ export const organizationSchemas = {
         description:
           "When the organization last accepted the Let's Encrypt terms; null when it never has.",
       },
-      acmeTermsUrl: {
-        type: 'string',
+      acmeAcceptedTermsUrl: {
+        type: ['string', 'null'],
         format: 'uri',
         description:
-          "Page listing the current Let's Encrypt subscriber agreement, shown before accepting.",
+          "The exact Let's Encrypt agreement the organization accepted; null when it never has.",
+      },
+      acmeTermsUrl: {
+        type: ['string', 'null'],
+        format: 'uri',
+        description:
+          "The agreement Let's Encrypt names now (its directory's meta.termsOfService); null when it could not be read.",
+      },
+      acmeTermsChanged: {
+        type: 'boolean',
+        description:
+          'True when the organization accepted an older agreement than the current one and is asked to accept again.',
       },
     },
   },
@@ -1213,7 +1237,7 @@ export const organizationPaths: Record<string, unknown> = {
         },
         '400': {
           description:
-            "Invalid acmeEnabled, acmeContactEmail, acmeTermsAccepted or body; or Let's Encrypt turned on without a contact address (code acme_contact_email_required) or accepted terms (code acme_terms_not_accepted)",
+            "Invalid acmeEnabled, acmeContactEmail, acmeTermsAccepted or body; or Let's Encrypt turned on without a contact address (code acme_contact_email_required) or acceptance of the current agreement (code acme_terms_not_accepted)",
           content: {
             'application/json': {
               schema: { $ref: '#/components/schemas/ErrorResponse' },
@@ -1230,6 +1254,23 @@ export const organizationPaths: Record<string, unknown> = {
         },
         '403': {
           description: 'Forbidden',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '409': {
+          description:
+            "acme_terms_changed: the agreement sent is no longer the one Let's Encrypt names",
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '503': {
+          description: "acme_terms_unavailable: Let's Encrypt's current terms could not be read",
           content: {
             'application/json': {
               schema: { $ref: '#/components/schemas/ErrorResponse' },

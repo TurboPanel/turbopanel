@@ -5,8 +5,9 @@ import {
   parseTemperatureUnitInput,
   normalizeAcmeContactEmail,
   ORG_ACME_CONTACT_EMAIL_REQUIRED_CODE,
+  ORG_ACME_TERMS_CHANGED_CODE,
   ORG_ACME_TERMS_NOT_ACCEPTED_CODE,
-  ORG_ACME_TERMS_URL,
+  ORG_ACME_TERMS_UNAVAILABLE_CODE,
   resolveComposeDefaultResourceLimits,
   resolveComposeGatedFieldsEnabled,
   resolveDeployHooksEnabled,
@@ -65,13 +66,15 @@ export type TemperatureUnitPatch = {
 
 /**
  * Any of the keys; a key left out keeps its stored value. `null` clears the
- * contact. `acmeTermsAccepted` is only ever `true`: it records that the
- * organization accepted the Let's Encrypt terms now.
+ * contact. `acmeTermsAccepted` is only ever `true` and comes with
+ * `acmeTermsUrl`, the exact agreement the person was shown: it records that
+ * the organization accepts that agreement now.
  */
 export type TlsSettingsPatch = {
   acmeEnabled?: boolean
   acmeContactEmail?: string | null
   acmeTermsAccepted?: true
+  acmeTermsUrl?: string
 }
 
 /** The organization's stored Let's Encrypt settings (see `settings-route.ts`). */
@@ -79,55 +82,91 @@ export type TlsSettingsState = {
   acmeEnabled: boolean
   acmeContactEmail: string | null
   acmeTermsAcceptedAt: string | null
+  /** The exact agreement accepted at `acmeTermsAcceptedAt`. */
+  acmeTermsUrl: string | null
 }
 
+/** A refused TLS settings change: status, sentence and machine code. */
+export type TlsSettingsRefusal = { status: 400 | 409 | 503; error: string; code: string }
+
+function refuse(
+  status: TlsSettingsRefusal['status'],
+  code: string,
+  error: string
+): { ok: false; refusal: TlsSettingsRefusal } {
+  return { ok: false, refusal: { status, error, code } }
+}
+
+const TERMS_UNAVAILABLE =
+  "Let's Encrypt could not be reached to read its current terms. Try again in a moment."
+
 /**
- * The settings after `patch`, or why they are refused. Turning Let's Encrypt
- * on needs a contact address and accepted terms: each organization is
- * responsible for its own servers, so it agrees to the authority's terms
- * itself. While it is on the contact cannot be removed. Turning it off keeps
- * the address and the acceptance.
+ * The settings after `patch`, or why they are refused. `currentTermsUrl` is
+ * the agreement Let's Encrypt names now (null when it could not be read).
+ *
+ * Turning Let's Encrypt on needs a contact address and acceptance of the
+ * current agreement: each organization is responsible for its own servers, so
+ * it agrees to the authority's terms itself, and agrees again when they
+ * change. Accepting is refused when the agreement shown is no longer the
+ * current one. While it is on the contact cannot be removed. Turning it off
+ * keeps the address and the acceptance. An organization that was on before
+ * this step may still save its contact.
  */
 export function applyTlsSettingsPatch(
   before: TlsSettingsState,
   patch: TlsSettingsPatch,
-  now: string
-): { ok: true; next: TlsSettingsState } | { ok: false; refusal: { error: string; code: string } } {
+  now: string,
+  currentTermsUrl: string | null
+): { ok: true; next: TlsSettingsState } | { ok: false; refusal: TlsSettingsRefusal } {
+  if (patch.acmeTermsAccepted) {
+    if (currentTermsUrl === null)
+      return refuse(503, ORG_ACME_TERMS_UNAVAILABLE_CODE, TERMS_UNAVAILABLE)
+    if (patch.acmeTermsUrl !== currentTermsUrl) {
+      return refuse(
+        409,
+        ORG_ACME_TERMS_CHANGED_CODE,
+        "The Let's Encrypt terms changed. Read the new agreement and accept it again."
+      )
+    }
+  }
   const next: TlsSettingsState = {
     acmeEnabled: patch.acmeEnabled ?? before.acmeEnabled,
     acmeContactEmail:
       patch.acmeContactEmail === undefined ? before.acmeContactEmail : patch.acmeContactEmail,
     acmeTermsAcceptedAt: patch.acmeTermsAccepted ? now : before.acmeTermsAcceptedAt,
+    acmeTermsUrl: patch.acmeTermsAccepted ? (patch.acmeTermsUrl ?? null) : before.acmeTermsUrl,
   }
-  // Checked when it is being turned on. An organization that was already on
-  // before the terms step existed may still save its contact.
   const turningOn = next.acmeEnabled && !before.acmeEnabled
-  if (next.acmeEnabled && before.acmeEnabled && next.acmeContactEmail === null) {
-    return {
-      ok: false,
-      refusal: {
-        error: "Turn off Let's Encrypt before removing its contact email",
-        code: ORG_ACME_CONTACT_EMAIL_REQUIRED_CODE,
-      },
-    }
+  if (before.acmeEnabled && next.acmeEnabled && patch.acmeContactEmail === null) {
+    return refuse(
+      400,
+      ORG_ACME_CONTACT_EMAIL_REQUIRED_CODE,
+      "Turn off Let's Encrypt before removing its contact email"
+    )
   }
-  if (turningOn && next.acmeContactEmail === null) {
-    return {
-      ok: false,
-      refusal: {
-        error: "Add a contact email before turning on Let's Encrypt",
-        code: ORG_ACME_CONTACT_EMAIL_REQUIRED_CODE,
-      },
-    }
+  if (!turningOn) return { ok: true, next }
+  if (next.acmeContactEmail === null) {
+    return refuse(
+      400,
+      ORG_ACME_CONTACT_EMAIL_REQUIRED_CODE,
+      "Add a contact email before turning on Let's Encrypt"
+    )
   }
-  if (turningOn && next.acmeTermsAcceptedAt === null) {
-    return {
-      ok: false,
-      refusal: {
-        error: "Accept the Let's Encrypt terms before turning it on",
-        code: ORG_ACME_TERMS_NOT_ACCEPTED_CODE,
-      },
-    }
+  if (next.acmeTermsUrl === null) {
+    return refuse(
+      400,
+      ORG_ACME_TERMS_NOT_ACCEPTED_CODE,
+      "Accept the Let's Encrypt terms before turning it on"
+    )
+  }
+  if (currentTermsUrl === null)
+    return refuse(503, ORG_ACME_TERMS_UNAVAILABLE_CODE, TERMS_UNAVAILABLE)
+  if (next.acmeTermsUrl !== currentTermsUrl) {
+    return refuse(
+      400,
+      ORG_ACME_TERMS_NOT_ACCEPTED_CODE,
+      "Let's Encrypt has new terms. Accept them before turning it on."
+    )
   }
   return { ok: true, next }
 }
@@ -458,11 +497,15 @@ export function parseTlsSettingsPatch(
       patch.acmeContactEmail = email
     }
   }
-  if ('acmeTermsAccepted' in body) {
+  if ('acmeTermsAccepted' in body || 'acmeTermsUrl' in body) {
     if (body.acmeTermsAccepted !== true) {
       return { ok: false, error: 'Invalid acmeTermsAccepted', status: 400 }
     }
+    if (typeof body.acmeTermsUrl !== 'string' || body.acmeTermsUrl.length > 2048) {
+      return { ok: false, error: 'Send acmeTermsUrl, the agreement that was accepted', status: 400 }
+    }
     patch.acmeTermsAccepted = true
+    patch.acmeTermsUrl = body.acmeTermsUrl
   }
   if (Object.keys(patch).length === 0) {
     return {
@@ -771,19 +814,30 @@ export function temperatureUnitPutResponse(options: { temperatureUnit?: Temperat
   }
 }
 
-export function tlsSettingsGetResponse(settings: TlsSettingsState) {
+/**
+ * The TLS settings as the screen reads them. `acmeTermsUrl` is the agreement
+ * Let's Encrypt names now (null when it could not be read);
+ * `acmeAcceptedTermsUrl` the one the organization accepted; `acmeTermsChanged`
+ * says the organization accepted an older one and is asked again.
+ */
+export function tlsSettingsGetResponse(settings: TlsSettingsState, currentTermsUrl: string | null) {
   return {
     acmeEnabled: settings.acmeEnabled,
     acmeContactEmail: settings.acmeContactEmail,
     acmeTermsAcceptedAt: settings.acmeTermsAcceptedAt,
-    acmeTermsUrl: ORG_ACME_TERMS_URL,
+    acmeAcceptedTermsUrl: settings.acmeTermsUrl,
+    acmeTermsUrl: currentTermsUrl,
+    acmeTermsChanged:
+      settings.acmeTermsUrl !== null &&
+      currentTermsUrl !== null &&
+      settings.acmeTermsUrl !== currentTermsUrl,
   }
 }
 
-export function tlsSettingsPutResponse(settings: TlsSettingsState) {
+export function tlsSettingsPutResponse(settings: TlsSettingsState, currentTermsUrl: string | null) {
   return {
     ok: true as const,
-    ...tlsSettingsGetResponse(settings),
+    ...tlsSettingsGetResponse(settings, currentTermsUrl),
   }
 }
 

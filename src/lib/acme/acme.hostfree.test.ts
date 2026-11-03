@@ -3,7 +3,7 @@
  * authority that checks every signature, nonce and the request itself.
  */
 import { assert, assertEquals, assertRejects } from '@std/assert'
-import { AcmeClient, AcmeError, fetchRenewalInfo } from './client.ts'
+import { AcmeClient, AcmeError, fetchRenewalInfo, fetchTermsOfService } from './client.ts'
 import { buildCertificateRequest, generateCertificateKey } from './csr.ts'
 import {
   ACME_PRODUCTION_DIRECTORY,
@@ -214,4 +214,37 @@ test('a second stale nonce in a row is an error, with no third request', async (
   })
   await assertRejects(() => acme.ensureAccount(), AcmeError)
   assertEquals(posts, 2)
+})
+
+test('the terms of service come from the directory and must be an https link', async () => {
+  const directory =
+    (meta: unknown): typeof fetch =>
+    () =>
+      Promise.resolve(
+        Response.json({
+          newNonce: 'https://ca.test/nonce',
+          newAccount: 'https://ca.test/account',
+          newOrder: 'https://ca.test/order',
+          meta,
+        })
+      )
+  const terms = 'https://ca.test/agreement-v2.pdf'
+  assertEquals(
+    await fetchTermsOfService({
+      directoryUrl: 'https://ca.test/dir',
+      fetch: directory({ termsOfService: terms }),
+    }),
+    terms
+  )
+  for (const meta of [
+    undefined,
+    {},
+    { termsOfService: 'http://ca.test/a.pdf' },
+    { termsOfService: 5 },
+  ]) {
+    await assertRejects(
+      () => fetchTermsOfService({ directoryUrl: 'https://ca.test/dir', fetch: directory(meta) }),
+      AcmeError
+    )
+  }
 })

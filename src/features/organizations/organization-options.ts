@@ -519,14 +519,14 @@ export function normalizeAcmeContactEmail(value: unknown): string | null {
   return `${local}@${domain}`
 }
 
-/**
- * Where the organization reads the Let's Encrypt terms before accepting them:
- * the authority's own page that always lists the current subscriber agreement.
- */
-export const ORG_ACME_TERMS_URL = 'https://letsencrypt.org/repository/'
-
 /** Refusal code: Let's Encrypt cannot be on without accepted terms. */
 export const ORG_ACME_TERMS_NOT_ACCEPTED_CODE = 'acme_terms_not_accepted'
+
+/** Refusal code: the agreement accepted is no longer the one Let's Encrypt names. */
+export const ORG_ACME_TERMS_CHANGED_CODE = 'acme_terms_changed'
+
+/** Refusal code: Let's Encrypt's current terms could not be read. */
+export const ORG_ACME_TERMS_UNAVAILABLE_CODE = 'acme_terms_unavailable'
 
 /** Refusal code: Let's Encrypt cannot be on without a contact address. */
 export const ORG_ACME_CONTACT_EMAIL_REQUIRED_CODE = 'acme_contact_email_required'

@@ -183,10 +183,12 @@ export type OrgTlsSettings = {
   acmeEnabled: boolean
   acmeContactEmail: string | null
   acmeTermsAcceptedAt: string | null
+  /** The exact agreement accepted at `acmeTermsAcceptedAt`. */
+  acmeTermsUrl: string | null
 }
 
-/** Why a TLS settings change was refused (400 with a machine `code`). */
-export type OrgTlsSettingsRefusal = { error: string; code: string }
+/** Why a TLS settings change was refused, with a machine `code`. */
+export type OrgTlsSettingsRefusal = { status: 400 | 409 | 503; error: string; code: string }
 
 /**
  * The organization's TLS settings, or `undefined` when the organization does
@@ -202,6 +204,7 @@ async function loadOrgTlsSettings(
       isAcmeEnabled: organization.isAcmeEnabled,
       acmeContactEmail: organization.acmeContactEmail,
       acmeTermsAcceptedAt: organization.acmeTermsAcceptedAt,
+      acmeTermsUrl: organization.acmeTermsUrl,
     })
     .from(organization)
     .where(eq(organization.id, id))
@@ -214,41 +217,54 @@ async function loadOrgTlsSettings(
     // Same ISO form as the time a PUT records, whatever text the driver returns.
     acmeTermsAcceptedAt:
       row.acmeTermsAcceptedAt === null ? null : new Date(row.acmeTermsAcceptedAt).toISOString(),
-  }
-}
-
-/** `GET` for the TLS settings. */
-export function tlsSettingsGetRoute(
-  gate: OrgSettingsGate,
-  respond: (settings: OrgTlsSettings) => object
-) {
-  return async (c: Context<AppEnv>) => {
-    const scope = await openOrgSettingsScope(c, gate)
-    if (scope instanceof Response) return scope
-    const settings = await loadOrgTlsSettings(scope.db, scope.id)
-    if (!settings) return c.json({ error: 'Not found' }, 404)
-    return c.json(respond(settings))
+    acmeTermsUrl: row.acmeTermsUrl,
   }
 }
 
 /**
- * `PUT` for the TLS settings. Under the row lock: `apply` turns the stored
- * settings and the patch into the new settings or a refusal, then the columns
- * are written. A change to `acmeEnabled` is also merged into options, which
- * keeps the old `options.acmeEnabled` copy in step for one release so an older
- * build rolled back onto this database still reads the right switch. The old
- * `options.acmeContactEmail` copy is deliberately not kept in step.
+ * `GET` for the TLS settings. `currentTermsUrl` reads the agreement Let's
+ * Encrypt names now (null when it cannot be read), so the screen can show it
+ * and ask again when it changed.
+ */
+export function tlsSettingsGetRoute(
+  gate: OrgSettingsGate,
+  currentTermsUrl: () => Promise<string | null>,
+  respond: (settings: OrgTlsSettings, currentTermsUrl: string | null) => object
+) {
+  return async (c: Context<AppEnv>) => {
+    const scope = await openOrgSettingsScope(c, gate)
+    if (scope instanceof Response) return scope
+    const [settings, terms] = await Promise.all([
+      loadOrgTlsSettings(scope.db, scope.id),
+      currentTermsUrl(),
+    ])
+    if (!settings) return c.json({ error: 'Not found' }, 404)
+    return c.json(respond(settings, terms))
+  }
+}
+
+/**
+ * `PUT` for the TLS settings. The current agreement is read first, outside the
+ * row lock (it may need a request to Let's Encrypt). Then, under the lock,
+ * `apply` turns the stored settings and the patch into the new settings or a
+ * refusal, and the columns are written. A change to `acmeEnabled` is also
+ * merged into options, which keeps the old `options.acmeEnabled` copy in step
+ * for one release so an older build rolled back onto this database still
+ * reads the right switch. The old `options.acmeContactEmail` copy is
+ * deliberately not kept in step.
  */
 export function tlsSettingsPutRoute<P extends { acmeEnabled?: boolean }>(
   params: Readonly<{
     gate: OrgSettingsGate
     parse: (body: Record<string, unknown>) => ParsedPatch<P>
+    currentTermsUrl: () => Promise<string | null>
     apply: (
       before: OrgTlsSettings,
       patch: P,
-      now: string
+      now: string,
+      currentTermsUrl: string | null
     ) => { ok: true; next: OrgTlsSettings } | { ok: false; refusal: OrgTlsSettingsRefusal }
-    respond: (settings: OrgTlsSettings) => object
+    respond: (settings: OrgTlsSettings, currentTermsUrl: string | null) => object
     audit: (patch: P, before: OrgTlsSettings, after: OrgTlsSettings) => readonly AuditEntry[]
     /** Runs after the settings are written, in the same transaction. */
     afterWrite: (db: Db, organizationId: string, patch: P) => Promise<void>
@@ -259,13 +275,14 @@ export function tlsSettingsPutRoute<P extends { acmeEnabled?: boolean }>(
     if (opened instanceof Response) return opened
     const { scope, parsed } = opened
     const { acmeEnabled } = parsed.patch
+    const terms = await params.currentTermsUrl()
 
     const outcome = await scope.db.transaction(async (tx0) => {
       const tx = tx0 as unknown as Db
       const before = await loadOrgTlsSettings(tx, scope.id, true)
       if (!before) return { kind: 'missing' as const }
       const now = new Date().toISOString()
-      const applied = params.apply(before, parsed.patch, now)
+      const applied = params.apply(before, parsed.patch, now, terms)
       if (!applied.ok) return { kind: 'refused' as const, refusal: applied.refusal }
       const { next } = applied
       await tx
@@ -274,6 +291,7 @@ export function tlsSettingsPutRoute<P extends { acmeEnabled?: boolean }>(
           isAcmeEnabled: next.acmeEnabled,
           acmeContactEmail: next.acmeContactEmail,
           acmeTermsAcceptedAt: next.acmeTermsAcceptedAt,
+          acmeTermsUrl: next.acmeTermsUrl,
           ...(acmeEnabled === undefined ? {} : { options: mergeOrgOptionsSql({ acmeEnabled }) }),
           updatedAt: now,
         })
@@ -283,14 +301,17 @@ export function tlsSettingsPutRoute<P extends { acmeEnabled?: boolean }>(
     })
 
     if (outcome.kind === 'missing') return c.json({ error: 'Not found' }, 404)
-    if (outcome.kind === 'refused') return c.json(outcome.refusal, 400)
+    if (outcome.kind === 'refused') {
+      const { status, error, code } = outcome.refusal
+      return c.json({ error, code }, status)
+    }
 
     await Promise.all(
       params
         .audit(parsed.patch, outcome.before, outcome.after)
         .map(({ action, context }) => recordOrgSettingAudit(c, scope, action, context))
     )
-    return c.json(params.respond(outcome.after))
+    return c.json(params.respond(outcome.after, terms))
   }
 }
 

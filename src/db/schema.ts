@@ -155,6 +155,12 @@ export const organization = pgTable(
       withTimezone: true,
       mode: 'string',
     }),
+    /**
+     * The exact agreement accepted then, as Let's Encrypt's directory named it
+     * (`meta.termsOfService`). When the directory names a newer one, the
+     * organization is asked to accept again before turning Let's Encrypt on.
+     */
+    acmeTermsUrl: text('acme_terms_url'),
     /** Destination finished backups are copied to unless a cluster chooses otherwise. */
     backupDestinationId: uuid('backup_destination_id').references(
       (): AnyPgColumn => backupTarget.id,
@@ -170,6 +176,10 @@ export const organization = pgTable(
     check(
       'organization_deploy_timeout_minutes_check',
       sql`${table.deployTimeoutMinutes} IS NULL OR (${table.deployTimeoutMinutes} >= 5 AND ${table.deployTimeoutMinutes} <= 240)`
+    ),
+    check(
+      'organization_acme_terms_check',
+      sql`(${table.acmeTermsAcceptedAt} IS NULL) = (${table.acmeTermsUrl} IS NULL) AND (${table.acmeTermsUrl} IS NULL OR (${table.acmeTermsUrl} LIKE 'https://%' AND char_length(${table.acmeTermsUrl}) <= 2048))`
     ),
     check(
       'organization_acme_contact_email_check',

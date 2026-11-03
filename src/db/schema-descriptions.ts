@@ -311,6 +311,8 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'Org-wide settings merged key-by-key by the organization routes (`maxServers`, `phpModes` and more); its `acmeEnabled` only copies `is_acme_enabled`.',
       acme_contact_email:
         "Contact address on the organization's Let's Encrypt account, needed to turn it on; null means none.",
+      acme_terms_url:
+        "The exact Let's Encrypt agreement accepted at `acme_terms_accepted_at`; a newer one must be accepted again to turn it on.",
       acme_terms_accepted_at:
         "When the organization last accepted the Let's Encrypt terms, needed to turn it on; the audit log says who.",
       backup_destination_id:
