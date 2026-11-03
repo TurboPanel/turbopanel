@@ -146,13 +146,14 @@ async function sendTimed(send: typeof fetch, url: string, init: RequestInit): Pr
   }
 }
 
-/** True for an absolute `https:` URL. */
-function httpsUrl(value: unknown): boolean {
-  if (typeof value !== 'string') return false
+/** The value as a normalized absolute `https:` link (`URL.href`), or null. */
+function normalizedHttpsUrl(value: unknown): string | null {
+  if (typeof value !== 'string') return null
   try {
-    return new URL(value).protocol === 'https:'
+    const url = new URL(value)
+    return url.protocol === 'https:' ? url.href : null
   } catch {
-    return false
+    return null
   }
 }
 
@@ -177,8 +178,8 @@ async function loadDirectory(
     newAccount: body.newAccount,
     newOrder: body.newOrder,
     ...(body.renewalInfo ? { renewalInfo: body.renewalInfo } : {}),
-    ...(httpsUrl(body.meta?.termsOfService)
-      ? { termsOfService: body.meta?.termsOfService as string }
+    ...(normalizedHttpsUrl(body.meta?.termsOfService)
+      ? { termsOfService: normalizedHttpsUrl(body.meta?.termsOfService) as string }
       : {}),
   }
   session.rememberDirectory(directoryUrl, directory)
@@ -423,18 +424,31 @@ export async function fetchRenewalWindow(options: {
 
 /**
  * The exact agreement the authority currently asks subscribers to accept
- * (`meta.termsOfService` in its directory), read through the same cached
- * directory the orders use. Throws {@link AcmeError} when the authority cannot
- * be reached or names no agreement.
+ * (`meta.termsOfService` in its directory), as a normalized `https:` link.
+ * Reads the directory itself, without the orders' hour-long directory cache,
+ * and gives up after `timeoutMs` so a slow authority never holds a screen.
+ * Throws {@link AcmeError} when the authority cannot be reached or names no
+ * agreement.
  */
 export async function fetchTermsOfService(options: {
   directoryUrl: string
   fetch?: typeof fetch
+  timeoutMs?: number
 }): Promise<string> {
   const send = options.fetch ?? networkFetch
-  const directory = await loadDirectory(options.directoryUrl, send, sessionFor(options.fetch))
-  if (!directory.termsOfService) {
-    throw new AcmeError('server', 'The certificate authority does not name its terms')
+  let response: Response
+  try {
+    response = await send(options.directoryUrl, {
+      method: 'GET',
+      signal: AbortSignal.timeout(options.timeoutMs ?? REQUEST_TIMEOUT_MS),
+    })
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : 'request failed'
+    throw new AcmeError('unreachable', `The certificate authority could not be reached: ${reason}`)
   }
-  return directory.termsOfService
+  if (!response.ok) throw statusError(response)
+  const body = (await response.json()) as { meta?: { termsOfService?: unknown } }
+  const terms = normalizedHttpsUrl(body.meta?.termsOfService)
+  if (!terms) throw new AcmeError('server', 'The certificate authority does not name its terms')
+  return terms
 }

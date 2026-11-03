@@ -42,8 +42,7 @@ import { alignedNetworkCidr } from '../../lib/ip-address.ts'
 import { findDockerBridgePoolOverlap } from '../../features/deploy/docker-address-pools.ts'
 import { cidrCollisionResponse } from '../networks/network-scope.ts'
 import { eraseStoredPairs } from '../tls/stored-pair.ts'
-import { fetchTermsOfService } from '../../lib/acme/client.ts'
-import { ACME_PRODUCTION_DIRECTORY } from '../../lib/acme/directories.ts'
+import { currentAcmeTermsReader } from '../../features/organizations/acme-terms.ts'
 import {
   applyManagedDefaultsPatch,
   composeDefaultResourceLimitsGetResponse,
@@ -105,13 +104,9 @@ async function loadOrganizationRecord(db: Db, id: string) {
 }
 
 export function registerOrganizationRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
-  // The agreement Let's Encrypt names now, from its cached directory; null
-  // when it cannot be read (the routes then refuse to accept or turn on).
-  const currentTermsUrl = (): Promise<string | null> =>
-    fetchTermsOfService({
-      directoryUrl: ACME_PRODUCTION_DIRECTORY,
-      fetch: opts.acmeTermsFetch,
-    }).catch(() => null)
+  // The agreement Let's Encrypt names now; null when it cannot be read (the
+  // routes then refuse to accept or turn on). Cached, and quick to give up.
+  const currentTermsUrl = currentAcmeTermsReader(opts.acmeTermsFetch)
   if (!opts.secrets) {
     throw new TypeError('session secrets are required for organization routes')
   }
