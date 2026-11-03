@@ -16,11 +16,14 @@ import type { DerivedSecretsConfig, SecretsConfig } from '../../lib/secrets/secr
 import { forEachSequential } from '../../lib/sequential.ts'
 import { queueHostingCertificateApply } from '../hostings/letsencrypt-apply.ts'
 import { systemRotationContext } from './system-context.ts'
-import { sharedAcmeTermsReader } from '../../features/organizations/acme-terms.ts'
+import {
+  type CurrentAcmeTerms,
+  sharedAcmeTermsReader,
+} from '../../features/organizations/acme-terms.ts'
 
 export type DnsCertWiring = {
   /** Stands in for Let's Encrypt's current terms in tests. */
-  currentTerms?: DnsCertContext['currentTerms']
+  currentTerms?: CurrentAcmeTerms
   secrets: DerivedSecretsConfig
   /** With these a renewed certificate is sent to its sites at once; without, the next deploy carries it. */
   push?: { commandQueue: CommandQueue; secretsConfig: SecretsConfig | null }

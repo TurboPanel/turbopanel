@@ -43,7 +43,10 @@ import {
 } from '../../features/hostings/certificate-precheck.ts'
 import { settleTunnelOnlyHosting } from '../../features/tunnels/tunnel-only-certificate.ts'
 import { loadHostingTunnelPaths } from '../../features/tunnels/hosting-tunnel-paths.ts'
-import { requestLetsEncrypt } from '../../features/hostings/use-letsencrypt.ts'
+import {
+  type LetsEncryptRequestResult,
+  requestLetsEncrypt,
+} from '../../features/hostings/use-letsencrypt.ts'
 import { getCommandQueue } from '../../features/commands/queue.ts'
 import { assertNotSystemOwnedOr403, getOrgId, parseJsonBody } from '../shared.ts'
 import { assertHostingNotComposeOwnedOr409 } from './routes-helpers.ts'
@@ -317,6 +320,14 @@ async function answerTunnelOnly(
   })
 }
 
+/**
+ * A new certificate waits for the organization to accept Let's Encrypt's newer
+ * terms; the request is kept and goes ahead once they are accepted.
+ */
+function isTermsHeld(result: LetsEncryptRequestResult): boolean {
+  return result.ok && result.outcome === 'waiting' && result.dns.termsHeld === true
+}
+
 export function registerHostingLetsEncryptRoutes(
   router: Hono<AppEnv>,
   opts: AuthRouteOpts,
@@ -384,9 +395,7 @@ export function registerHostingLetsEncryptRoutes(
       acmeEnabled: await loadAcmeEnabled(db, organizationId),
       termsHeld: await acmeTermsHeldFor(db, organizationId, currentTerms),
     })
-    // A new certificate waits for the organization to accept Let's Encrypt's
-    // newer terms; the request is kept and goes ahead once they are accepted.
-    if (result.ok && result.outcome === 'waiting' && result.dns.termsHeld === true) {
+    if (isTermsHeld(result)) {
       return c.json({ error: 'acme_terms_changed', message: ACME_TERMS_HOLD_MESSAGE }, 409)
     }
     if (!result.ok) {

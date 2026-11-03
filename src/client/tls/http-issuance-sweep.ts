@@ -15,7 +15,10 @@ import { isServerConnected } from '../../daemon/cell/server-status.ts'
 import type { CommandQueue } from '../../features/commands/queue.ts'
 import { runtimeDnsLookup } from '../../features/hostings/hosting-dns-check.ts'
 import { organizationAcmeContactEmail } from '../../features/organizations/acme-contact-email.ts'
-import { sharedAcmeTermsReader } from '../../features/organizations/acme-terms.ts'
+import {
+  type CurrentAcmeTerms,
+  sharedAcmeTermsReader,
+} from '../../features/organizations/acme-terms.ts'
 import { getServerDaemonStateByServerId } from '../../features/servers/server-identity-db.ts'
 import {
   advanceHttpIssuance,
@@ -47,7 +50,7 @@ export type HttpIssuanceSweepWiring = {
   now?: () => Date
   dnsLookup?: HttpIssuanceDeps['dnsLookup']
   /** Stands in for Let's Encrypt's current terms in tests. */
-  currentTerms?: HttpIssuanceDeps['currentTerms']
+  currentTerms?: CurrentAcmeTerms
 }
 
 export type HttpIssuanceSweepResult = {
