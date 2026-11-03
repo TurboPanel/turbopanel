@@ -35,10 +35,6 @@ import {
   loadServerPublicAddresses,
 } from '../../features/net/client-addresses.ts'
 import { pinnedSiteAddresses } from '../../features/net/client-addresses-pure.ts'
-import {
-  parseOrganizationOptions,
-  resolveAcmeEnabled,
-} from '../../features/organizations/organization-options.ts'
 import { inetAddressToString } from '../../lib/ip-address.ts'
 import { coversAllHostnames } from '../../lib/tls/match.ts'
 import { splitTlsMetadata } from '../../lib/tls/metadata.ts'
@@ -51,11 +47,11 @@ import {
 
 export async function loadAcmeEnabled(db: Db, organizationId: string): Promise<boolean> {
   const [row] = await db
-    .select({ options: organization.options })
+    .select({ isAcmeEnabled: organization.isAcmeEnabled })
     .from(organization)
     .where(eq(organization.id, organizationId))
     .limit(1)
-  return resolveAcmeEnabled(parseOrganizationOptions(row?.options))
+  return row?.isAcmeEnabled === true
 }
 
 async function loadServerIdOfHosting(db: Db, hostingId: string): Promise<string | null> {

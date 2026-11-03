@@ -73,7 +73,7 @@ async function setup(
   const now = new Date().toISOString()
   const [org] = await db
     .insert(organization)
-    .values({ name: 'Http Order Org', options: { acmeEnabled: true } })
+    .values({ name: 'Http Order Org', isAcmeEnabled: true })
     .returning({ id: organization.id })
   const organizationId = org!.id
   const [ws] = await db
@@ -335,7 +335,7 @@ test("nothing starts while the organization has Let's Encrypt turned off", async
   try {
     await f.db
       .update(organization)
-      .set({ options: { acmeEnabled: false } })
+      .set({ isAcmeEnabled: false })
       .where(eq(organization.id, f.organizationId))
     assertEquals(await startHttpIssuance(f.deps(), f.tlsId, always), 'not_eligible')
     assertEquals(f.sent.length, 0)

@@ -125,8 +125,8 @@ async function withFixture(
   const orgs = await db
     .insert(organization)
     .values([
-      { name: 'Dns Org A', options: { acmeEnabled: options.acmeEnabled ?? true } },
-      { name: 'Dns Org B', options: { acmeEnabled: true } },
+      { name: 'Dns Org A', isAcmeEnabled: options.acmeEnabled ?? true },
+      { name: 'Dns Org B', isAcmeEnabled: true },
     ])
     .returning({ id: organization.id })
   const [orgA, orgB] = [orgs[0]!.id, orgs[1]!.id]

@@ -131,6 +131,36 @@ export const organization = pgTable(
     nextLinuxId: integer('next_linux_id').default(30001).notNull(),
     /** Longest a deploy may run, in minutes (5 to 240); null means the default of 30. */
     deployTimeoutMinutes: integer('deploy_timeout_minutes'),
+    /**
+     * Let's Encrypt allowed for this organization: gates `POST /tls` with
+     * `source: 'lets_encrypt'`, the one-click button, compose `tls.mode:
+     * automatic` and the deploy-time `tlsMode: 'acme'` wire. Off until the
+     * organization turns it on: each organization is responsible for its own
+     * servers, so it opts in to Let's Encrypt itself. Turning it on needs a
+     * contact address and the accepted terms (enforced by the TLS settings
+     * route). Organizations made before the column keep what
+     * `options.acmeEnabled` said. Turning it off does not revoke certificates
+     * already issued.
+     */
+    isAcmeEnabled: boolean('is_acme_enabled').default(false).notNull(),
+    /**
+     * The organization's Let's Encrypt account contact, sent with each order.
+     * Never filled in from a member's account by the server; the screen only
+     * suggests the signed-in person's address.
+     */
+    acmeContactEmail: text('acme_contact_email'),
+    /** When the organization last accepted the Let's Encrypt terms; who did is in the audit log. */
+    acmeTermsAcceptedAt: timestamp('acme_terms_accepted_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }),
+    /**
+     * The exact agreement accepted then, as Let's Encrypt's directory named it
+     * (`meta.termsOfService`). When the directory names a newer one, the
+     * organization is asked to accept again before turning Let's Encrypt on.
+     */
+    acmeTermsUrl: text('acme_terms_url'),
     /** Destination finished backups are copied to unless a cluster chooses otherwise. */
     backupDestinationId: uuid('backup_destination_id').references(
       (): AnyPgColumn => backupTarget.id,
@@ -146,6 +176,14 @@ export const organization = pgTable(
     check(
       'organization_deploy_timeout_minutes_check',
       sql`${table.deployTimeoutMinutes} IS NULL OR (${table.deployTimeoutMinutes} >= 5 AND ${table.deployTimeoutMinutes} <= 240)`
+    ),
+    check(
+      'organization_acme_terms_check',
+      sql`(${table.acmeTermsAcceptedAt} IS NULL) = (${table.acmeTermsUrl} IS NULL) AND (${table.acmeTermsUrl} IS NULL OR (${table.acmeTermsUrl} LIKE 'https://%' AND char_length(${table.acmeTermsUrl}) <= 2048))`
+    ),
+    check(
+      'organization_acme_contact_email_check',
+      sql`${table.acmeContactEmail} IS NULL OR (char_length(${table.acmeContactEmail}) >= 3 AND char_length(${table.acmeContactEmail}) <= 254 AND ${table.acmeContactEmail} LIKE '%_@_%')`
     ),
   ]
 )

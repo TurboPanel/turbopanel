@@ -5,6 +5,8 @@
 import { assertEquals } from '@std/assert'
 import {
   applyManagedDefaultsPatch,
+  applyTlsSettingsPatch,
+  type TlsSettingsState,
   composeGatedFieldsGetResponse,
   composeGatedFieldsPutResponse,
   defaultEnvironmentGetResponse,
@@ -597,4 +599,94 @@ test('parseComposeDefaultResourceLimitsPatch takes positive figures, or null to 
   ]) {
     assertEquals(parseComposeDefaultResourceLimitsPatch(bad).ok, false, JSON.stringify(bad))
   }
+})
+
+test("applyTlsSettingsPatch needs a contact and the current agreement for Let's Encrypt to be on", () => {
+  const now = '2026-11-03T18:00:00.000Z'
+  const terms = 'https://letsencrypt.org/documents/LE-SA-v1.5.pdf'
+  const newer = 'https://letsencrypt.org/documents/LE-SA-v1.6.pdf'
+  const off: TlsSettingsState = {
+    acmeEnabled: false,
+    acmeContactEmail: null,
+    acmeTermsAcceptedAt: null,
+    acmeTermsUrl: null,
+  }
+  const code = (
+    patch: Parameters<typeof applyTlsSettingsPatch>[1],
+    before: TlsSettingsState = off,
+    current: string | null = terms
+  ) => {
+    const result = applyTlsSettingsPatch(before, patch, now, current)
+    return result.ok ? null : `${result.refusal.status} ${result.refusal.code}`
+  }
+  const accept = { acmeTermsAccepted: true as const, acmeTermsUrl: terms }
+
+  assertEquals(code({ acmeEnabled: true, ...accept }), '400 acme_contact_email_required')
+  assertEquals(
+    code({ acmeEnabled: true, acmeContactEmail: 'ops@example.com' }),
+    '400 acme_terms_not_accepted'
+  )
+  // The agreement shown must be the current one, and readable.
+  assertEquals(code({ ...accept, acmeTermsUrl: newer }), '409 acme_terms_changed')
+  assertEquals(code(accept, off, null), '503 acme_terms_unavailable')
+  assertEquals(
+    applyTlsSettingsPatch(
+      off,
+      { acmeEnabled: true, acmeContactEmail: 'ops@example.com', ...accept },
+      now,
+      terms
+    ),
+    {
+      ok: true,
+      next: {
+        acmeEnabled: true,
+        acmeContactEmail: 'ops@example.com',
+        acmeTermsAcceptedAt: now,
+        acmeTermsUrl: terms,
+      },
+    }
+  )
+
+  const on: TlsSettingsState = {
+    acmeEnabled: true,
+    acmeContactEmail: 'ops@example.com',
+    acmeTermsAcceptedAt: '2026-11-01T00:00:00.000Z',
+    acmeTermsUrl: terms,
+  }
+  // Removing the contact while on is refused; turning off keeps the rest.
+  assertEquals(code({ acmeContactEmail: null }, on), '400 acme_contact_email_required')
+  assertEquals(applyTlsSettingsPatch(on, { acmeEnabled: false }, now, terms), {
+    ok: true,
+    next: { ...on, acmeEnabled: false },
+  })
+  // Newer terms: turning back on asks again; accepting the new ones records them.
+  const offOld = { ...on, acmeEnabled: false }
+  assertEquals(code({ acmeEnabled: true }, offOld, newer), '400 acme_terms_not_accepted')
+  assertEquals(code({ acmeEnabled: true }, offOld, null), '503 acme_terms_unavailable')
+  assertEquals(
+    applyTlsSettingsPatch(
+      offOld,
+      { acmeEnabled: true, acmeTermsAccepted: true, acmeTermsUrl: newer },
+      now,
+      newer
+    ),
+    { ok: true, next: { ...on, acmeTermsAcceptedAt: now, acmeTermsUrl: newer } }
+  )
+  // Staying on with older terms is allowed (the screen asks again).
+  assertEquals(code({ acmeContactEmail: 'new@example.com' }, on, newer), null)
+
+  // An organization already on before this step, with neither, can save a contact.
+  const legacy: TlsSettingsState = { ...off, acmeEnabled: true }
+  assertEquals(code({ acmeContactEmail: 'ops@example.com' }, legacy), null)
+  assertEquals(code({ acmeEnabled: true }, legacy), null)
+  // Turning on while clearing an existing contact is refused.
+  assertEquals(
+    code(
+      { acmeEnabled: true, acmeContactEmail: null, ...accept },
+      { ...off, acmeContactEmail: 'a@example.com' }
+    ),
+    '400 acme_contact_email_required'
+  )
+  // Off with nothing stored is always allowed, even when the terms cannot be read.
+  assertEquals(code({ acmeContactEmail: null }, off, null), null)
 })

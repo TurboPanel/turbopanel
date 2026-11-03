@@ -96,6 +96,8 @@ export type AcmeDirectory = {
   newOrder: string
   /** ACME Renewal Information (RFC 9773); absent on an authority without it. */
   renewalInfo?: string
+  /** `meta.termsOfService`: the exact agreement the authority asks subscribers to accept. */
+  termsOfService?: string
 }
 
 export type AcmeIdentifier = { type: 'dns'; value: string }
@@ -144,6 +146,17 @@ async function sendTimed(send: typeof fetch, url: string, init: RequestInit): Pr
   }
 }
 
+/** The value as a normalized absolute `https:` link (`URL.href`), or null. */
+function normalizedHttpsUrl(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  try {
+    const url = new URL(value)
+    return url.protocol === 'https:' ? url.href : null
+  } catch {
+    return null
+  }
+}
+
 /** The authority's directory, from the session's cache while it is fresh. */
 async function loadDirectory(
   directoryUrl: string,
@@ -154,15 +167,19 @@ async function loadDirectory(
   if (cached) return cached
   const response = await sendTimed(send, directoryUrl, { method: 'GET' })
   if (!response.ok) throw statusError(response)
-  const body = (await response.json()) as Partial<AcmeDirectory>
+  const body = (await response.json()) as Partial<AcmeDirectory> & {
+    meta?: { termsOfService?: unknown }
+  }
   if (!body.newNonce || !body.newAccount || !body.newOrder) {
     throw new AcmeError('server', 'The certificate authority sent an incomplete directory')
   }
+  const terms = normalizedHttpsUrl(body.meta?.termsOfService)
   const directory: AcmeDirectory = {
     newNonce: body.newNonce,
     newAccount: body.newAccount,
     newOrder: body.newOrder,
     ...(body.renewalInfo ? { renewalInfo: body.renewalInfo } : {}),
+    ...(terms ? { termsOfService: terms } : {}),
   }
   session.rememberDirectory(directoryUrl, directory)
   return directory
@@ -402,4 +419,36 @@ export async function fetchRenewalWindow(options: {
   fetch?: typeof fetch
 }): Promise<RenewalWindow | null> {
   return (await fetchRenewalInfo(options)).window
+}
+
+/**
+ * The exact agreement the authority currently asks subscribers to accept
+ * (`meta.termsOfService` in its directory), as a normalized `https:` link.
+ * Reads the directory itself, without the orders' hour-long directory cache,
+ * and gives up after `timeoutMs` so a slow authority never holds a screen.
+ * Throws {@link AcmeError} when the authority cannot be reached, answers an
+ * error or names no agreement; a body that is not JSON, or one cut off by the
+ * timeout, throws as the runtime reports it.
+ */
+export async function fetchTermsOfService(options: {
+  directoryUrl: string
+  fetch?: typeof fetch
+  timeoutMs?: number
+}): Promise<string> {
+  const send = options.fetch ?? networkFetch
+  let response: Response
+  try {
+    response = await send(options.directoryUrl, {
+      method: 'GET',
+      signal: AbortSignal.timeout(options.timeoutMs ?? REQUEST_TIMEOUT_MS),
+    })
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : 'request failed'
+    throw new AcmeError('unreachable', `The certificate authority could not be reached: ${reason}`)
+  }
+  if (!response.ok) throw statusError(response)
+  const body = (await response.json()) as { meta?: { termsOfService?: unknown } }
+  const terms = normalizedHttpsUrl(body.meta?.termsOfService)
+  if (!terms) throw new AcmeError('server', 'The certificate authority does not name its terms')
+  return terms
 }

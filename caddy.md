@@ -200,7 +200,7 @@ control-plane Caddy (`<state>/caddy/.local/share`), hosting Caddy
   `src/lib/tls/AGENTS.md`. Tenant **hosting** leaves (Caddy-fronted web
   services) are operator-pinned library certificates, Caddy `tls internal`,
   or — only once the organization has opted in
-  (`organization.options.acmeEnabled`, off by default) — a `managed`
+  (`organization.is_acme_enabled`, off by default) — a `managed`
   `lets_encrypt` row (`tlsMode: 'acme'`) that Caddy issues and renews on the
   serving host. They are never issued by the Organization CA, and the
   organization's opt-in does not obtain a certificate for the panel. The

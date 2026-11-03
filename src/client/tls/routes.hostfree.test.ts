@@ -194,7 +194,7 @@ async function buildTlsApp(opts: TlsAppOptions = {}): Promise<{
   state.organizations.push({
     id: ORG_ID,
     name: 'TLS Hostfree Org',
-    options: { acmeEnabled: opts.acmeEnabled ?? true },
+    isAcmeEnabled: opts.acmeEnabled ?? true,
   })
 
   const authDb = createMockAuthDb(state)

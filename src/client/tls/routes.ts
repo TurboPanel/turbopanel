@@ -42,10 +42,6 @@ import {
   parseJsonBody,
   requireDbSessionAndOrg,
 } from '../shared.ts'
-import {
-  parseOrganizationOptions,
-  resolveAcmeEnabled,
-} from '../../features/organizations/organization-options.ts'
 import { hierarchyDeleteHasChildrenResponse, runHierarchyDelete } from '../hierarchy-delete.ts'
 import {
   applyTlsOptionsPatch,
@@ -141,11 +137,11 @@ async function refuseTlsCreateSource(
   }
   if (source !== 'lets_encrypt') return null
   const [orgRow] = await db
-    .select({ options: organization.options })
+    .select({ isAcmeEnabled: organization.isAcmeEnabled })
     .from(organization)
     .where(eq(organization.id, organizationId))
     .limit(1)
-  const acmeEnabled = resolveAcmeEnabled(parseOrganizationOptions(orgRow?.options))
+  const acmeEnabled = orgRow?.isAcmeEnabled === true
   if (!acmeEnabled) {
     return c.json({ error: 'lets_encrypt_not_enabled' }, 403)
   }

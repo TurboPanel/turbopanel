@@ -277,13 +277,13 @@ it('install produces System workspace then Default Workspace', async () => {
     userId = result.userId
 
     const [orgRow] = await db
-      .select({ name: organization.name, options: organization.options })
+      .select({ name: organization.name, isAcmeEnabled: organization.isAcmeEnabled })
       .from(organization)
       .where(eq(organization.id, organizationId))
       .limit(1)
     assertEquals(orgRow?.name, ROOT_ORGANIZATION_NAME)
-    // A new organization allows Let's Encrypt from the start.
-    assertEquals(orgRow?.options, { acmeEnabled: true })
+    // A new organization starts with Let's Encrypt off until it opts in.
+    assertEquals(orgRow?.isAcmeEnabled, false)
 
     const serverRows = await db
       .select({
@@ -325,7 +325,7 @@ it('install produces System workspace then Default Workspace', async () => {
   }
 })
 
-it("createOrganizationForUser starts the organization with Let's Encrypt allowed", async () => {
+it("createOrganizationForUser starts the organization with Let's Encrypt off", async () => {
   if (!dbUrl) {
     skipWithoutDatabase('new organization options test')
     return
@@ -340,11 +340,11 @@ it("createOrganizationForUser starts the organization with Let's Encrypt allowed
     const created = await createOrganizationForUser(db, owner!.id, 'New Org')
     organizationId = created.organizationId
     const [row] = await db
-      .select({ options: organization.options })
+      .select({ isAcmeEnabled: organization.isAcmeEnabled })
       .from(organization)
       .where(eq(organization.id, organizationId))
       .limit(1)
-    assertEquals(row?.options, { acmeEnabled: true })
+    assertEquals(row?.isAcmeEnabled, false)
   } finally {
     await db.delete(grant).where(eq(grant.actorId, owner!.id))
     await db.delete(teammate).where(eq(teammate.userId, owner!.id))

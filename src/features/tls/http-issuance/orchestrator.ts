@@ -22,10 +22,6 @@ import {
   service,
   tls,
 } from '../../../db/schema.ts'
-import {
-  parseOrganizationOptions,
-  resolveAcmeEnabled,
-} from '../../organizations/organization-options.ts'
 import type { DaemonOutboundEnvelope } from '../../../contracts/cell-protocol.ts'
 import { generateDeliveryId, generateRequestId } from '../../../contracts/cell-protocol.ts'
 import { loadServerPublicAddresses } from '../../net/client-addresses.ts'
@@ -113,11 +109,11 @@ async function lockRow(tx: Db, tlsId: string): Promise<RowFacts | null> {
 /** The organization's Let's Encrypt switch, read under the row lock. */
 async function acmeEnabledFor(tx: Db, organizationId: string): Promise<boolean> {
   const [org] = await tx
-    .select({ options: organization.options })
+    .select({ isAcmeEnabled: organization.isAcmeEnabled })
     .from(organization)
     .where(eq(organization.id, organizationId))
     .limit(1)
-  return resolveAcmeEnabled(parseOrganizationOptions(org?.options))
+  return org?.isAcmeEnabled === true
 }
 
 async function writeState(
