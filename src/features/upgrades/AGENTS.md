@@ -56,16 +56,27 @@ surface's own daemon update route (`../../developer/update-routes.ts`) stays.
 `server` because older history rows carry them; new runs are `auto`.
 
 - **Development is the exception.** With `TURBOPANEL_DEV_SURFACE=1`
-  (`isExplicitDevelopmentMode()`, the coordinator's `development`) the check
-  still runs and saves the target, but `shouldAutoStartRun` never starts a run:
-  the co-located daemon runs from source and refuses every update, so an
-  automatic run there could only fail. Dev updates go through the developer
-  surface (`../../developer/update-routes.ts`, the dev console's **Rebuild
-  daemon and upgrade connected servers**). The dev update overlay also gives
-  the control plane and the web interface no target (`resolveUpdateManifest`
-  answers null for `instance` and `ui` while the overlay provider is set),
-  because a dev box runs both from its checkouts and any channel build would
-  be a rollback. So Admin > Updates offers nothing for them in dev.
+  (`isExplicitDevelopmentMode()`, the coordinator's `development`) there is no
+  check at all: `claimScheduledUpgradeCheck` (`maintenance.ts`) never claims
+  the slot, so no manifest is resolved, no target saved and no run started
+  (`shouldAutoStartRun` also refuses in development). The co-located daemon
+  runs from source and refuses every update. The only way a dev box updates
+  is the manual **Build and Push Daemon** action in Admin > Updates
+  (`GET /instance/updates/development`, `POST …/development/push`, see
+  `../../admin/AGENTS.md`): it rebuilds the daemon overlay from the local
+  checkout and pushes `update` to the connected remote servers. The developer
+  surface route (`../../developer/update-routes.ts`, the dev console's
+  **Rebuild daemon and upgrade connected servers**) shares its fan-out
+  (`../../developer/daemon-update-fanout.ts`). The dev update overlay gives
+  the daemon the BUILT overlay identity as target (`dist/manifest.json`,
+  `<sha>+<unix>`) or none, never a pending target for an unbuilt checkout,
+  and gives the control plane and the web interface no target
+  (`resolveUpdateManifest` answers null for `instance` and `ui` while the
+  overlay provider is set), because a dev box runs both from its checkouts
+  and any channel build would be a rollback. `GET /instance/updates` reports
+  `development: true`, the co-located daemon's `updateAvailable` is false,
+  and `daemonsBehind` leaves the co-located server out
+  (`anyDaemonBehind(commit, builtAt, excludeServerId)`).
 
 - **The hourly check.** The `UPGRADE_CHECK` setting row holds this install's
   minute of the hour (drawn at random once, then stable, so many installs never
@@ -140,7 +151,7 @@ On the hourly check (above), resolve the daemon / instance / UI manifests for
 the channel through `resolveUpdateManifest` (cached — daemons never poll
 GitHub). Compute pinned targets with `pinnedChannelManifestUrl`; the dev overlay
 provider (`../../developer/dev-update-overlay.ts`) still wins for the daemon
-kind. Store the latest available build in a setting row.
+kind (a development install never runs this check; see above). Store the latest available build in a setting row.
 
 ## Runs
 

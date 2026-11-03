@@ -140,6 +140,21 @@ test('parseServerPatchCore validates name, options, and emptiness', () => {
   const badHidden = parseServerPatchCore({ options: { hideWebServerNames: 'off' } })
   assertEquals(badHidden.ok, false)
 
+  const via = parseServerPatchCore({ options: { sendViaHeader: true } })
+  if (!via.ok) throw new TypeError('expected sendViaHeader patch')
+  assertEquals(via.patch.options?.sendViaHeader, true)
+  const viaOff = parseServerPatchCore({ options: { sendViaHeader: false } })
+  if (!viaOff.ok) throw new TypeError('expected sendViaHeader off')
+  assertEquals(viaOff.patch.options?.sendViaHeader, false)
+  const inheritVia = parseServerPatchCore({ options: { sendViaHeader: null } })
+  if (!inheritVia.ok) throw new TypeError('expected sendViaHeader clear')
+  assertEquals(inheritVia.patch.options?.sendViaHeader, null)
+  assertEquals(parseServerPatchCore({ options: { sendViaHeader: 'on' } }), {
+    ok: false,
+    error: 'Invalid sendViaHeader',
+    status: 400,
+  })
+
   const clearSsh = parseServerPatchCore({ options: { sshPort: null } })
   if (!clearSsh.ok) throw new TypeError('expected sshPort clear')
   assertEquals(clearSsh.patch.options?.sshPort, null)
@@ -298,6 +313,18 @@ test('timezone and presence shaping helpers', () => {
   )
   assertEquals(serverOn.hideWebServerNames, true)
   assertEquals(serverOn.hideWebServerNamesSource, 'server')
+  assertEquals(builtin.sendViaHeader, false)
+  assertEquals(builtin.sendViaHeaderSource, null)
+  const orgVia = resolveServerHostDefaultsFields({}, { sendViaHeader: true }, undefined)
+  assertEquals(orgVia.sendViaHeader, true)
+  assertEquals(orgVia.sendViaHeaderSource, 'organization')
+  const serverViaOff = resolveServerHostDefaultsFields(
+    { sendViaHeader: false },
+    { sendViaHeader: true },
+    undefined
+  )
+  assertEquals(serverViaOff.sendViaHeader, false)
+  assertEquals(serverViaOff.sendViaHeaderSource, 'server')
 
   const os = shapeServerOsFields({ family: 'linux', id: 'debian' })
   assertEquals(os.os?.id, 'debian')

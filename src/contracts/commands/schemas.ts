@@ -2748,6 +2748,13 @@ export type EnvironmentDeployCommandPayload = EnvironmentDeployHostAccess & {
    */
   hideWebServerNames?: boolean
   /**
+   * Send the hosting web server's `Via` response header. False strips it.
+   * Absent follows `hideWebServerNames` (stripped when names are hidden), so
+   * an older control plane changes nothing. Sent only to a daemon that lists
+   * `hosting-via-header-v1`, always as a boolean.
+   */
+  sendViaHeader?: boolean
+  /**
    * `sequential`: the daemon stops the previous version, runs migrations,
    * starts the new one, gates on health and rolls back. Omitted for `inplace`
    * (and for a daemon that predates the field, which deploys in place).
@@ -4807,6 +4814,7 @@ export function parseEnvironmentDeployPayload(value: unknown): EnvironmentDeploy
       noCache: parseOptionalDeployBoolean(value.noCache),
       hostingsOnly: parseOptionalDeployBoolean(value.hostingsOnly),
       hideWebServerNames: parseOptionalDeployBoolean(value.hideWebServerNames),
+      sendViaHeader: parseOptionalDeployBoolean(value.sendViaHeader),
       deployStrategy: parseDeployStrategyField(value.deployStrategy),
       migrations: parseDeployMigrationsField(value.migrations),
       healthTimeoutSeconds: parseHealthTimeoutField(value.healthTimeoutSeconds),

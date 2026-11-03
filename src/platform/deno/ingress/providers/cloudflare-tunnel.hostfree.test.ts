@@ -5,6 +5,7 @@ import type { IngressAccountRecord } from '../accounts.ts'
 import {
   createFakeCloudflare,
   type FakeCloudflare,
+  type FakeCloudflareOptions,
 } from '../cloudflare/fake-cloudflare.test.support.ts'
 import {
   buildPanelIngress,
@@ -68,8 +69,14 @@ type Harness = {
   ctx: (row: HostnameWithState, rows?: HostnameWithState[]) => IngressContext
 }
 
-function harness(options: { gateOpen?: boolean; selfCheck?: boolean } = {}): Harness {
-  const cf = createFakeCloudflare({ token: TOKEN })
+function harness(
+  options: {
+    gateOpen?: boolean
+    selfCheck?: boolean
+    refuse?: FakeCloudflareOptions['refuse']
+  } = {}
+): Harness {
+  const cf = createFakeCloudflare({ token: TOKEN, refuse: options.refuse })
   const pushed: string[] = []
   const edgeFetch: typeof fetch = (input, init) => {
     if (String(input).startsWith('https://panel.example.com')) {
@@ -216,6 +223,42 @@ test('apply refuses a name that already has another DNS record, unless asked to 
   const replaced = await applyHostname({ ...h.ctx(row), replaceExisting: true })
   assert(replaced.ok)
   assertEquals(h.cf.records.get('zone-1')?.[0]?.type, 'CNAME')
+})
+
+test('a refused Connect step is named in the error', async () => {
+  const cases: [string, RegExp, string][] = [
+    ['POST', /cfd_tunnel$/, 'Creating the tunnel failed'],
+    ['GET', /cfd_tunnel\?is_deleted=false&name=/, 'Finding the tunnel failed'],
+    ['GET', /\/configurations$/, 'Reading the tunnel routes failed'],
+    ['PUT', /\/configurations$/, 'Writing the tunnel routes failed'],
+    ['GET', /dns_records\?name=/, 'Reading the DNS records failed'],
+    ['POST', /dns_records$/, 'Creating the DNS record failed'],
+    ['GET', /\/token$/, 'Getting the connector token failed'],
+  ]
+  for (const [method, path, label] of cases) {
+    const h = harness({ refuse: [{ method, path, message: 'Authentication error' }] })
+    const result = await applyHostname(h.ctx(hostname('h1', 'panel.example.com')))
+    assertEquals(result.ok ? null : { cause: result.cause, detail: result.detail }, {
+      cause: 'scope-missing',
+      detail: `${label}: Cloudflare refused the request (403): Authentication error`,
+    })
+    assertEquals(h.pushed, [])
+  }
+})
+
+test('replacing an existing record names its step when refused', async () => {
+  const h = harness({
+    refuse: [{ method: 'PUT', path: /dns_records\/rec-a$/, message: 'Authentication error' }],
+  })
+  h.cf.records.set('zone-1', [
+    { id: 'rec-a', type: 'A', name: 'panel.example.com', content: '192.0.2.1' },
+  ])
+  const row = hostname('h1', 'panel.example.com')
+  const result = await applyHostname({ ...h.ctx(row), replaceExisting: true })
+  assertEquals(
+    result.ok ? '' : result.detail,
+    'Replacing the DNS record failed: Cloudflare refused the request (403): Authentication error'
+  )
 })
 
 test('apply stays refused while the edge gate is shut', async () => {

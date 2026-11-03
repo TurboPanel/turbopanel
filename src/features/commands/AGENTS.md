@@ -243,7 +243,9 @@ base64-encodes it, and streams `dev-sync-begin` → `dev-sync-chunk*` →
 console: **Sync source to attached checkouts**. Managed remotes (no checkout)
 skip source-sync; upgrade them with **Rebuild daemon and upgrade connected
 servers** (`POST /api/developer/v1/daemon/update` after `deno task release:dev`
-writes the overlay catalog). Co-located is skipped on both paths.
+writes the overlay catalog) or Admin > Updates **Build and Push Daemon**
+(`POST /api/admin/v1/instance/updates/development/push`, which builds when the
+checkout changed). Co-located is skipped on all paths.
 
 ### Instance Cloudflare tunnel
 
@@ -264,7 +266,9 @@ public-urls apply, and managed logs (`managed-logs-request` /
 **Public URL apply**: `POST /api/admin/v1/instance/public-urls/apply` (Deno
 only) sends a `public-urls-update` WS message to the co-located daemon with the
 current URL list. The daemon writes `TURBOPANEL_PUBLIC_URLS` to
-**`/etc/turbopanel/instance/runtime.env`** — never the checkout, re-runs the
+**`/etc/turbopanel/instance/runtime.env`** — never the checkout (a derived
+copy for the `instance-certs` role only; the self-hosted control plane never
+reads it back as a hostname source), re-runs the
 `instance-certs` Ansible role (regenerating the leaf cert with updated SANs, CA
 preserved), and reloads `turbopanel-caddy`. Replies with
 `public-urls-update-result { ok, error? }`. On Workers, the endpoint returns 422

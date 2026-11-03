@@ -33,6 +33,7 @@ import {
   parseSshPortInput,
   resolveEffectiveHideWebServerNames,
   resolveEffectiveNtpDefaults,
+  resolveEffectiveSendViaHeader,
   resolveEffectiveSshPort,
   type NtpDefaults,
 } from '../../features/servers/host-defaults.ts'
@@ -103,10 +104,11 @@ export type ServerPatchFields = {
   name?: string | null
   /** Pins `server.machine_class`; `null` clears the pin so ingest infers again. */
   machineClass?: ServerMachineClass | null
-  options?: Omit<ServerOptions, 'sshPort' | 'ntp' | 'hideWebServerNames'> & {
+  options?: Omit<ServerOptions, 'sshPort' | 'ntp' | 'hideWebServerNames' | 'sendViaHeader'> & {
     sshPort?: number | null
     ntp?: NtpDefaults | null
     hideWebServerNames?: boolean | null
+    sendViaHeader?: boolean | null
   }
   /**
    * The request's `location` as parsed: fields to set, `null` fields to clear,
@@ -164,20 +166,25 @@ function parseServerPatchName(
   }
 }
 
-/** Overlay `hideWebServerNames` (`null` inherits); an error response when it is not a boolean. */
-function overlayHideWebServerNames(
+/**
+ * Overlay a web server switch (`hideWebServerNames`, `sendViaHeader`; `null`
+ * inherits); an error response when it is not a boolean.
+ */
+function overlayWebServerSwitch(
   options: NonNullable<ServerPatchFields['options']>,
-  raw: Record<string, unknown>
+  raw: Record<string, unknown>,
+  key: 'hideWebServerNames' | 'sendViaHeader'
 ): ServerRouteValidationError | null {
-  if (!('hideWebServerNames' in raw)) return null
-  const hide = parseHideWebServerNamesInput(raw.hideWebServerNames)
-  if (!hide.ok) return { ok: false, error: 'Invalid hideWebServerNames', status: 400 }
-  options.hideWebServerNames = hide.value
+  if (!(key in raw)) return null
+  const parsed = parseHideWebServerNamesInput(raw[key])
+  if (!parsed.ok) return { ok: false, error: `Invalid ${key}`, status: 400 }
+  options[key] = parsed.value
   return null
 }
 
 /**
- * Overlay sshPort / ntp / hideWebServerNames onto parsed server options. `null` clears inherit.
+ * Overlay sshPort / ntp / hideWebServerNames / sendViaHeader onto parsed server
+ * options. `null` clears inherit.
  */
 function parseServerPatchOptions(
   raw: unknown
@@ -208,8 +215,10 @@ function parseServerPatchOptions(
     }
     options.ntp = ntp.value
   }
-  const hide = overlayHideWebServerNames(options, raw)
-  if (hide) return hide
+  const switchError =
+    overlayWebServerSwitch(options, raw, 'hideWebServerNames') ??
+    overlayWebServerSwitch(options, raw, 'sendViaHeader')
+  if (switchError) return switchError
   return { ok: true, options }
 }
 
@@ -451,6 +460,9 @@ export type ServerHostDefaultsFields = {
   /** Effective web server name hiding: this server's setting, else the organization's, else on. */
   hideWebServerNames: boolean
   hideWebServerNamesSource: string | null
+  /** Effective Via header: this server's setting, else the organization's, else off. */
+  sendViaHeader: boolean
+  sendViaHeaderSource: string | null
 }
 
 export function resolveServerTimezoneFields(
@@ -478,6 +490,7 @@ export function resolveServerHostDefaultsFields(
   const ssh = resolveEffectiveSshPort(serverOptions, dcOptions, orgOptions)
   const ntp = resolveEffectiveNtpDefaults(serverOptions, dcOptions, orgOptions)
   const hide = resolveEffectiveHideWebServerNames(serverOptions, orgOptions)
+  const via = resolveEffectiveSendViaHeader(serverOptions, orgOptions)
   return {
     sshPort: ssh.sshPort,
     sshPortSource: ssh.source,
@@ -485,6 +498,8 @@ export function resolveServerHostDefaultsFields(
     ntpDefaultsSource: ntp.source,
     hideWebServerNames: hide.hideWebServerNames,
     hideWebServerNamesSource: hide.source,
+    sendViaHeader: via.sendViaHeader,
+    sendViaHeaderSource: via.source,
   }
 }
 

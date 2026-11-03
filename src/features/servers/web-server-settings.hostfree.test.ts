@@ -1,6 +1,7 @@
 import { assertEquals } from '@std/assert'
 import type { Db } from '../../db/connection.ts'
-import { loadHideWebServerNames } from './web-server-settings.ts'
+import { HOSTING_VIA_HEADER_FEATURE } from '../../lib/version-wire.ts'
+import { loadWebServerSettings, webServerDeployFields } from './web-server-settings.ts'
 
 const test = Deno.test.bind(Deno)
 
@@ -15,23 +16,42 @@ function fakeDb(rows: Array<{ options: unknown } | undefined>): Db {
   return { select: () => chain } as unknown as Db
 }
 
-test('loadHideWebServerNames is on when nothing is set or a row is missing', async () => {
+const DEFAULTS = { hideWebServerNames: true, sendViaHeader: false }
+
+test('loadWebServerSettings hides names and drops Via when nothing is set or a row is missing', async () => {
   assertEquals(
-    await loadHideWebServerNames(fakeDb([{ options: {} }, { options: {} }]), 's', 'o'),
-    true
+    await loadWebServerSettings(fakeDb([{ options: {} }, { options: {} }]), 's', 'o'),
+    DEFAULTS
   )
-  assertEquals(await loadHideWebServerNames(fakeDb([undefined, undefined]), 's', 'o'), true)
+  assertEquals(await loadWebServerSettings(fakeDb([undefined, undefined]), 's', 'o'), DEFAULTS)
 })
 
-test('loadHideWebServerNames follows the organization, and the server wins', async () => {
-  const orgOff = { options: { hideWebServerNames: false } }
-  assertEquals(await loadHideWebServerNames(fakeDb([{ options: {} }, orgOff]), 's', 'o'), false)
+test('loadWebServerSettings follows the organization, and the server wins', async () => {
+  const org = { options: { hideWebServerNames: false, sendViaHeader: true } }
+  assertEquals(await loadWebServerSettings(fakeDb([{ options: {} }, org]), 's', 'o'), {
+    hideWebServerNames: false,
+    sendViaHeader: true,
+  })
   assertEquals(
-    await loadHideWebServerNames(
-      fakeDb([{ options: { hideWebServerNames: true } }, orgOff]),
+    await loadWebServerSettings(
+      fakeDb([{ options: { hideWebServerNames: true, sendViaHeader: false } }, org]),
       's',
       'o'
     ),
-    true
+    DEFAULTS
   )
+})
+
+test('webServerDeployFields sends sendViaHeader only to a daemon that lists the feature', () => {
+  const on = { hideWebServerNames: true, sendViaHeader: true }
+  assertEquals(webServerDeployFields(on, [HOSTING_VIA_HEADER_FEATURE]), on)
+  assertEquals(
+    webServerDeployFields(DEFAULTS, ['metrics-v8', HOSTING_VIA_HEADER_FEATURE]),
+    DEFAULTS
+  )
+  for (const features of [undefined, null, [], ['metrics-v8']]) {
+    const fields = webServerDeployFields(on, features)
+    assertEquals(fields, { hideWebServerNames: true })
+    assertEquals('sendViaHeader' in fields, false)
+  }
 })

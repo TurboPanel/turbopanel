@@ -114,9 +114,16 @@ changes.
   `options` jsonb) is on unless a layer says off: org `PUT …/host-defaults`
   (`null` clears), server `PATCH options.hideWebServerNames` (`null` inherits);
   list/detail expose the effective value and `hideWebServerNamesSource`. It is
-  read at deploy-prepare (`loadHideWebServerNames`, the server owner's
+  read at deploy-prepare (`loadWebServerSettings`, the server owner's
   organization) and sent as `environment.deploy.hideWebServerNames`, so it takes
-  effect on each environment's next deploy; saving it enqueues nothing. Multi-DC
+  effect on each environment's next deploy; saving it enqueues nothing. It
+  covers `Server`, `X-Powered-By` and version tokens, not Via.
+  `sendViaHeader` (same layers, same routes, `sendViaHeaderSource`) is off
+  unless a layer says on and keeps `Via: 1.1 Caddy` on the public hosting
+  web server; deploy-prepare sends `environment.deploy.sendViaHeader` only to a
+  daemon that lists `hosting-via-header-v1` (`webServerDeployFields`); an
+  older daemon gets no field and keeps tying Via to `hideWebServerNames`.
+  Multi-DC
   membership inherits from the first pin after sort by datacenter id (same as
   timezone).
 - **Server services snapshot (client surface):** `GET /servers/:id/services`
@@ -772,8 +779,9 @@ id)` order. `resolveOneFromCaches` walks the up list first; a down network is
 - **Webhook origins (client surface):** `GET /forges/webhook-origins`
   (`organization:manage`, like the rest of `/forges`) answers
   `{ origins, platformManaged }` — the set the manifest flow accepts as
-  `webhookOrigin`. Hosted, the platform's `TURBOPANEL_BASE_URL` leads it;
-  self-hosted, it is the operator list. Detail: `../webhook/AGENTS.md` →
+  `webhookOrigin`. Hosted, it is the platform's `TURBOPANEL_BASE_URL` /
+  `TURBOPANEL_PUBLIC_URLS` only (stored rows ignored); self-hosted, it is the
+  operator list only. Detail: `../webhook/AGENTS.md` →
   Reachability.
 - **Forge addresses and the GitHub install callback (client surface):** a
   forge's `baseUrl` / `apiUrl` / `webhookOrigin` is validated on every write

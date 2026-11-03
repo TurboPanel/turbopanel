@@ -13,12 +13,29 @@
   co-located daemon's `resolveDaemonCapabilities` snapshot (`{ applicable: false }`
   on Workers, and it must not wake a cell); `GET /instance/updates` reports the
   installed control-plane version (`INSTANCE_VERSION` plus `resolveInstanceRevision`)
-  and the co-located daemon's `daemonBuild` beside each channel manifest target;
-  `POST /instance/updates/instance` enqueues `instance-update` (202, Deno only —
-  Workers 422, a channel other than canary/rc/release 422, no connected daemon
-  503) and `POST /instance/updates/daemon` enqueues the existing `update` cell
-  message for the co-located host (the per-server update route refuses that
-  host); `GET /instance/identity` is the Panel Identity read (public fingerprints of the control
+  and the co-located daemon's `daemonBuild` beside each channel manifest target,
+  plus `development` (true only on a Deno development install, from
+  `isExplicitDevelopmentMode()`; always false on Workers). The manual
+  `POST /instance/updates/instance`, `/daemon` and the other start, retry and
+  cancel routes are retired and answer 410 `updates_automatic`
+  (`src/features/upgrades/AGENTS.md`). Development installs only:
+  `GET /instance/updates/development` and
+  `POST /instance/updates/development/push` (`{ force?: boolean }`, 202 with the
+  job, 409 `job_running` while one is active), superadmin, audited as
+  `upgrade.dev_push`, no step-up. They are Build and Push Daemon: rebuild the
+  daemon overlay from the local checkout when it changed (or on `force`), then
+  send `update` to every connected remote server in parallel. They live in
+  `src/developer/development-updates-routes.ts` and are mounted only through
+  `startDenoServer`'s `registerDevelopmentAdminRoutes` hook from
+  `src/deno-dev.ts` while the developer surface is on, so they are absent (404)
+  elsewhere and stay out of the admin spec; this file must never import
+  `src/developer/*`. GET answers `{ ok, daemonBuild: { built: { commit,
+  buildId, builtAt, source } | null, sourceFingerprint, sourceChanged },
+  servers: [{ id, name, connected, daemonVersion, daemonCommit, onLatestBuild
+  }], job: null | { id, state: building | pushing | done | failed, startedAt,
+  endedAt, message, servers: [{ id, name, ok, skipped, error }] },
+  pendingDaemonChanges }` (remote servers only; the job lives in memory and a
+  restart forgets it); `GET /instance/identity` is the Panel Identity read (public fingerprints of the control
   plane's current, next and sealing keys, the install address, and each server's pinned-by state,
   `none` until the server pin column exists); `PUT /instance/identity/next` sets or clears the next
   fingerprint (superadmin, self-hosted only, always behind `requireInstanceStepUp`, audited as

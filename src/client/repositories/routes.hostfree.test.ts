@@ -575,20 +575,21 @@ test('resolveGitlabRedirectUri prefers the configured URI then a public origin',
   )
 })
 
+const HOSTED = {
+  runtime: 'workers' as const,
+  platformEnv: { TURBOPANEL_BASE_URL: 'https://panel.example.com' },
+}
+
 test('resolveGitlabRedirectUri and resolveSourceWebhookInfo use the hosted address first', async () => {
   assertEquals(
-    await resolveGitlabRedirectUri(
-      selectLimitDb([{ value: [] }]),
-      null,
-      'https://panel.example.com'
-    ),
+    await resolveGitlabRedirectUri(selectLimitDb([{ value: [] }]), null, HOSTED),
     `https://panel.example.com${CLIENT_API_PREFIX}/repositories/gitlab/oauth/callback`
   )
   const hosted = await resolveSourceWebhookInfo(
     selectLimitDb([{ value: [] }]),
     'github',
     null,
-    'https://panel.example.com'
+    HOSTED
   )
   assertEquals(hosted?.webhookUrl, 'https://panel.example.com/webhook/github')
   assertEquals(hosted?.webhookReachable, true)

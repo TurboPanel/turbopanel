@@ -78,7 +78,11 @@ import { registerInstanceAccessAdminRoutes } from './instance-access-routes.ts'
 import { registerInstanceIdentityAdminRoutes } from './instance-identity-routes.ts'
 import type { PanelIdentity } from '../lib/panel-identity/identity.ts'
 import { registerInstanceUpdatesAdminRoutes } from './instance-updates-routes.ts'
-import { registerInstanceHostnameAdminRoutes } from './instance-hostname-routes.ts'
+import {
+  refuseWorkersWrite,
+  registerInstanceHostnameAdminRoutes,
+} from './instance-hostname-routes.ts'
+import { platformControlPlaneOrigins } from '../features/install/control-plane-origins.ts'
 import {
   publicUrlsSiteConflict,
   recordInstanceAcmeApplyTimeout,
@@ -298,6 +302,12 @@ export function registerAdminRoutes(
   })
 
   admin.get('/instance/public-urls', async (c) => {
+    // Hosted: the platform environment names the control plane; stored rows
+    // are ignored and never listed.
+    if (opts.runtime === 'workers') {
+      const urls = platformControlPlaneOrigins(resolvePlatformEnv(c, opts))
+      return c.json({ ok: true, urls, platformManaged: true })
+    }
     const db = getDb(c)
     if (!db) return c.json({ ok: true, urls: [] })
     const urls = await getPublicUrls(db)
@@ -305,6 +315,8 @@ export function registerAdminRoutes(
   })
 
   admin.put('/instance/public-urls', createRootOnlyMiddleware(opts.secrets), async (c) => {
+    const refused = refuseWorkersWrite(c, opts)
+    if (refused) return refused
     const db = getDb(c)
     if (!db) return c.json({ ok: false, error: 'Database unavailable' }, 503)
 

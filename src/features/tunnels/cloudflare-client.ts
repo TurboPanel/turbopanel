@@ -30,6 +30,13 @@ export type CloudflareIngressRule = {
 /** A remotely managed tunnel's configuration: the ingress list plus any other members (defaults, routing). */
 export type CloudflareTunnelConfig = { ingress: CloudflareIngressRule[]; [member: string]: unknown }
 export type CloudflareTokenVerify = { id?: string; status?: string; expires_on?: string }
+/** One token as Cloudflare holds it; `policies` are kept loose and read by the caller. */
+export type CloudflareTokenDetail = {
+  id?: string
+  status?: string
+  expires_on?: string
+  policies?: unknown[]
+}
 export type CloudflareDnsRecord = {
   id: string
   name?: string
@@ -164,6 +171,19 @@ export class CloudflareClient {
   /** Verify an account-owned token (GET /accounts/{account_id}/tokens/verify). */
   verifyAccountToken(accountId: string): Promise<CloudflareTokenVerify> {
     return this.#call('GET', `/accounts/${encodeURIComponent(accountId)}/tokens/verify`)
+  }
+
+  /** A user-owned token with its policies (GET /user/tokens/{id}); needs User › API Tokens › Read. */
+  getUserToken(tokenId: string): Promise<CloudflareTokenDetail> {
+    return this.#call('GET', `/user/tokens/${encodeURIComponent(tokenId)}`)
+  }
+
+  /** An account-owned token with its policies; needs Account › Account API Tokens › Read. */
+  getAccountToken(accountId: string, tokenId: string): Promise<CloudflareTokenDetail> {
+    return this.#call(
+      'GET',
+      `/accounts/${encodeURIComponent(accountId)}/tokens/${encodeURIComponent(tokenId)}`
+    )
   }
 
   /** One-row read: proves the token can read tunnels of the account. */

@@ -86,7 +86,7 @@ test('platformManagedOrigin ignores a blank, plaintext or unusable base URL', ()
   assertEquals(platformManagedOrigin({ runtime: 'workers' }), null)
 })
 
-test('platformManagedOrigin keeps a non-default port and drops an explicit 443', () => {
+test('platformManagedOrigin is always port-free: hosted answers on 443', () => {
   assertEquals(
     platformManagedOrigin({
       runtime: 'workers',
@@ -99,22 +99,34 @@ test('platformManagedOrigin keeps a non-default port and drops an explicit 443',
       runtime: 'workers',
       platformEnv: { TURBOPANEL_BASE_URL: 'https://panel.example.com:9443' },
     }),
-    'https://panel.example.com:9443'
+    'https://panel.example.com'
   )
 })
 
-test('listPublishedOrigins puts the platform address ahead of the stored list', async () => {
+test('listPublishedOrigins publishes the stored list self-hosted and the platform address hosted', async () => {
   assertEquals(await listPublishedOrigins(hostnamesDb()), [])
-  assertEquals(await listPublishedOrigins(hostnamesDb(), 'https://panel.example.com'), [
-    'https://panel.example.com',
-  ])
-  assertEquals(
-    await listPublishedOrigins(hostnamesDb(['hooks.example.com']), 'https://panel.example.com'),
-    ['https://panel.example.com', 'https://hooks.example.com:8443']
-  )
   assertEquals(await listPublishedOrigins(hostnamesDb(['hooks.example.com'])), [
     'https://hooks.example.com:8443',
   ])
+  assertEquals(
+    await listPublishedOrigins(hostnamesDb(['hooks.example.com']), {
+      runtime: 'deno',
+      platformEnv: HOSTED_ENV,
+    }),
+    ['https://hooks.example.com:8443']
+  )
+  // Hosted: a stored row is ignored, the platform address is the only one.
+  assertEquals(
+    await listPublishedOrigins(hostnamesDb(['hooks.example.com']), {
+      runtime: 'workers',
+      platformEnv: HOSTED_ENV,
+    }),
+    ['https://panel.example.com']
+  )
+  assertEquals(
+    await listPublishedOrigins(hostnamesDb(['hooks.example.com']), { runtime: 'workers' }),
+    []
+  )
 })
 
 test('resolvePublishedOrigins reports the runtime beside the origins', async () => {

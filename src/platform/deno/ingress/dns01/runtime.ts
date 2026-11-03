@@ -15,7 +15,8 @@ import { denoDnsLookup, type DnsLookup } from './preflight.ts'
 
 export type Dns01RuntimeDeps = DaemonApplyDeps & {
   fetch?: typeof fetch
-  email?: EmitEmail
+  /** The alert mail settings, or a resolver called at send time (the console link follows the saved primary hostname). */
+  email?: EmitEmail | (() => Promise<EmitEmail>)
   dns?: DnsLookup
   now?: () => Date
   random?: () => number
@@ -37,11 +38,12 @@ export async function buildDns01Deps(db: Db, runtime: Dns01RuntimeDeps): Promise
         fetch: fetchImpl,
       }),
     notify: async (context) => {
+      const email = typeof runtime.email === 'function' ? await runtime.email() : runtime.email
       await emitNotification(
         db,
         runtime.dataEncryption,
         { event: 'certificate.expiring', context, targetType: 'instance' },
-        { allowPrivateTargets: true, ...(runtime.email ? { email: runtime.email } : {}) }
+        { allowPrivateTargets: true, ...(email ? { email } : {}) }
       )
     },
     applyToDaemon: () => pushHostnamesToDaemon(db, runtime),

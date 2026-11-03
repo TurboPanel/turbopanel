@@ -1,6 +1,13 @@
 #!/usr/bin/env sh
 set -eu
-ROOT="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"
+# Take the root from git, not from this file's path: a custom absolute
+# core.hooksPath would otherwise point the hook at another checkout.
+ROOT="$(git rev-parse --show-toplevel)"
+if [ -z "$ROOT" ]; then
+  echo "pre-commit: git rev-parse --show-toplevel found no repository root" >&2
+  exit 1
+fi
+cd "$ROOT"
 
 # Secret scan is never skippable.
 "$ROOT/scripts/scan-secrets.sh"

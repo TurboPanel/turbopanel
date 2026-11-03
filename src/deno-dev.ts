@@ -5,6 +5,7 @@
 import { registerVersionRoute } from './daemon/version.ts'
 import { registerDevSyncRoutes } from './developer/dev-sync.ts'
 import { registerDevUpdateOverlay } from './developer/dev-update-overlay.ts'
+import { registerDevelopmentUpdatesAdminRoutes } from './developer/development-updates-routes.ts'
 import { registerDeveloperRoutes } from './developer/routes.ts'
 import { registerSystemRoutes } from './developer/system-routes.ts'
 import { registerTunnelRoutes } from './developer/tunnel-routes.ts'
@@ -19,8 +20,12 @@ await startDenoServer({
     registerDevSyncRoutes(routes, { secrets: sessionSecrets })
     registerTunnelRoutes(routes, { secrets: sessionSecrets })
     registerUpdateRoutes(routes, { secrets: sessionSecrets })
-    // Client update UI resolves trunk from the local daemon overlay and
-    // rebuilds it on demand, instead of comparing against the public CDN.
+    // The daemon target is the local overlay build, never the public CDN;
+    // it is rebuilt only by the manual Build and Push Daemon action.
     registerDevUpdateOverlay()
+  },
+  // Admin > Updates: Build and Push Daemon (development installs only).
+  registerDevelopmentAdminRoutes(admin, deps) {
+    registerDevelopmentUpdatesAdminRoutes(admin, deps)
   },
 })

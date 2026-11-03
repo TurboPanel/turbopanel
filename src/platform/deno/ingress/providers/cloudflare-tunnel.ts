@@ -42,6 +42,22 @@ function refused(cause: IngressCause, detail: string): ApplyResult {
   return { ok: false, cause, detail }
 }
 
+/** Run one Connect step; a provider refusal comes back saying which step failed. */
+async function step<T>(label: string, run: () => Promise<T>): Promise<T> {
+  try {
+    return await run()
+  } catch (err) {
+    if (!(err instanceof TunnelProviderError)) throw err
+    throw new TunnelProviderError(
+      err.code,
+      `${label} failed: ${err.message}`,
+      err.status,
+      [],
+      err.retryAfterMs
+    )
+  }
+}
+
 function causeFor(err: TunnelProviderError): IngressCause {
   if (err.code === 'unauthorized') return 'token-invalid'
   if (err.code === 'forbidden') return 'scope-missing'
@@ -72,7 +88,8 @@ function accountChecks(ctx: IngressContext, name: string | null): PreflightCheck
       scoped,
       scoped
         ? 'The Cloudflare token can manage tunnels and DNS.'
-        : 'The Cloudflare token is missing a scope. Recheck it in Cloudflare Connection.'
+        : (account.lastError ??
+            'The Cloudflare token is missing a scope. Recheck it in Cloudflare Connection.')
     ),
     check(
       'zone',
@@ -127,9 +144,13 @@ async function prepare(ctx: IngressContext): Promise<Ready | ApplyResult> {
 /** The account's tunnel: the one another hostname already uses, else one with our name, else a new one. */
 type FoundTunnel = { id: string; name: string; adopted: boolean }
 
+function readRecords(api: CloudflareClient, ready: Ready) {
+  return step('Reading the DNS records', () => api.listDnsRecords(ready.zoneId, ready.name))
+}
+
 /** A tunnel the name's CNAME already points at, when it belongs to this account. */
 async function tunnelBehindName(api: CloudflareClient, ready: Ready): Promise<FoundTunnel | null> {
-  const records = await api.listDnsRecords(ready.zoneId, ready.name)
+  const records = await readRecords(api, ready)
   const id = records.map((record) => tunnelIdFromTarget(record.content)).find(Boolean)
   if (!id) return null
   try {
@@ -157,12 +178,13 @@ async function ensureTunnel(
   )
   const known = readTunnelState(ownState(ctx)) ?? shared[0]?.state
   if (known) return { id: known.tunnelId, name: known.tunnelName, adopted: known.adopted }
+  const name = tunnelName(ready.deps.instanceId)
   const behind = await tunnelBehindName(api, ready)
   if (behind) return behind
-  const name = tunnelName(ready.deps.instanceId)
-  const [existing] = await api.listTunnels(ready.accountId, name)
+  const [existing] = await step('Finding the tunnel', () => api.listTunnels(ready.accountId, name))
   if (existing) return { id: existing.id, name, adopted: false }
-  return { id: (await api.createTunnel(ready.accountId, name)).id, name, adopted: false }
+  const created = await step('Creating the tunnel', () => api.createTunnel(ready.accountId, name))
+  return { id: created.id, name, adopted: false }
 }
 
 function ownState(ctx: IngressContext): unknown {
@@ -201,7 +223,7 @@ async function ensureDns(
   replaceExisting: boolean
 ): Promise<{ id: string; created: boolean } | ApplyResult> {
   const target = tunnelTarget(tunnelId)
-  const records = await api.listDnsRecords(ready.zoneId, ready.name)
+  const records = await readRecords(api, ready)
   const ours = records.find((record) => record.type === 'CNAME' && record.content === target)
   if (ours) return { id: ours.id, created: false }
   const other = records[0]
@@ -213,8 +235,8 @@ async function ensureDns(
   }
   const record = { name: ready.name, content: target }
   const written = other
-    ? await api.putDnsRecord(ready.zoneId, other.id, record)
-    : await api.createDnsRecord(ready.zoneId, record)
+    ? await step('Replacing the DNS record', () => api.putDnsRecord(ready.zoneId, other.id, record))
+    : await step('Creating the DNS record', () => api.createDnsRecord(ready.zoneId, record))
   return { id: written.id, created: true }
 }
 
@@ -231,17 +253,23 @@ async function applyWith(
   ctx: IngressContext
 ): Promise<ApplyResult> {
   const tunnel = await ensureTunnel(api, ready, ctx)
-  const { ingress: existing, ...rest } = await api.getConfiguration(ready.accountId, tunnel.id)
+  const { ingress: existing, ...rest } = await step('Reading the tunnel routes', () =>
+    api.getConfiguration(ready.accountId, tunnel.id)
+  )
   const ingress = buildPanelIngress(
     namesOnTunnel(ctx, ready.name),
     existing,
     [],
     verifiedOnTunnel(ctx, ready.name)
   )
-  await api.putConfiguration(ready.accountId, tunnel.id, ingress, rest)
+  await step('Writing the tunnel routes', () =>
+    api.putConfiguration(ready.accountId, tunnel.id, ingress, rest)
+  )
   const dns = await ensureDns(api, ready, tunnel.id, ctx.replaceExisting === true)
   if ('ok' in dns) return dns
-  const runToken = await api.getTunnelToken(ready.accountId, tunnel.id)
+  const runToken = await step('Getting the connector token', () =>
+    api.getTunnelToken(ready.accountId, tunnel.id)
+  )
   const pushFailed = await pushRunToken(ready.deps, runToken)
   if (pushFailed) return pushFailed
   const state: TunnelState = {

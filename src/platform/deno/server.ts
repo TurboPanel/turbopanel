@@ -31,7 +31,8 @@ import { ALERT_WEBHOOK_POLICY } from '../../features/alerts/alert-webhook-settin
 import { pruneAuditHistory } from '../../features/audit/prune.ts'
 import { pruneCommandHistory } from '../../features/commands/prune.ts'
 import { getAuditRetentionMonths } from '../../features/settings/audit-retention-settings.ts'
-import { retryDueDeliveries } from '../../features/notifications/emit.ts'
+import { type EmitEmail, retryDueDeliveries } from '../../features/notifications/emit.ts'
+import { resolveSelfHostedConsoleBaseUrl } from '../../features/install/resolve-public-base-url.ts'
 import { sendDueDigests } from '../../features/notifications/digest.ts'
 import { alertNewOrphanFolders } from '../../features/notifications/folder-alerts.ts'
 import { DAEMON_CELL_MAINTAIN_MS } from '../../contracts/cell-protocol.ts'
@@ -83,6 +84,10 @@ import {
 } from '../../lib/secrets/password.ts'
 import { registerAdminRoutes } from '../../admin/routes.ts'
 import { registerIngressAdminRoutes } from './ingress/admin-routes.ts'
+import {
+  type PlatformAdminRoutesRegistrar,
+  withDevelopmentAdminRoutes,
+} from './development-admin-routes.ts'
 import { startIngressTimer } from './ingress/tick.ts'
 import { hostnameModes } from './ingress/planner.ts'
 import { registerInstallRoutes } from '../../install/routes.ts'
@@ -209,6 +214,12 @@ export type StartDenoServerOptions = {
    * entrypoint passes a registrar that imports those modules.
    */
   registerDeveloperSurface?: (ctx: DenoDeveloperSurfaceContext) => void
+  /**
+   * Optional development-only admin routes (Build and Push Daemon). Called
+   * with the admin router, behind the admin session middleware, only while
+   * the developer surface is on; production `src/deno.ts` omits it.
+   */
+  registerDevelopmentAdminRoutes?: PlatformAdminRoutesRegistrar
 }
 
 async function resolveEmailQueue(_db: Db): Promise<EmailQueue> {
@@ -492,6 +503,14 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
   )
   // Derived after data-encryption secrets so DB-backed email secrets can be decrypted.
   const emailSettings = await resolveEmailSettings(db, runtimeEnv, dataEncryptionSecrets)
+  // Mail sent outside a request links to the primary hostname saved under
+  // Admin › Access › Hostnames (else the discovered address), resolved at
+  // send time so a hostname change needs no restart. Never the process env.
+  const consoleEmail = async (): Promise<EmitEmail> => ({
+    queue: emailQueue,
+    from: emailSettings.from,
+    consoleBaseUrl: await resolveSelfHostedConsoleBaseUrl(db).catch(() => null),
+  })
   const daemonCellRegistry = createRedisDaemonCellRegistry({ db })
   const queryCache = createRedisQueryCache({
     client: daemonCellRegistry.client,
@@ -641,7 +660,6 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     corsOrigins: Deno.env.get('TURBOPANEL_UI_CORS_ORIGINS'),
     signupEnvOverride: Deno.env.get('TURBOPANEL_IS_SIGNUP_ENABLED'),
     emailFrom: emailSettings.from,
-    baseUrl: Deno.env.get('TURBOPANEL_BASE_URL') ?? undefined,
     daemonCellRegistry,
     // Self-hosted has no Cloudflare: the same gate rules over an in-process map.
     metricsGate: createInMemoryMetricsGate(),
@@ -751,12 +769,16 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     getEnv: () => Deno.env.toObject(),
     readPlatformCaBundle: () => Deno.readTextFile(resolveInstanceTlsCaServePath()),
     collectInstanceIps: () => collectServerIps(readDefaultRouteInterfaces()),
-    registerPlatformAdminRoutes: (admin, deps) =>
-      registerIngressAdminRoutes(admin, {
-        ...deps,
-        selfKid: () => panelIdentity.current.kid,
-        getEnv: () => Deno.env.toObject(),
-      }),
+    registerPlatformAdminRoutes: withDevelopmentAdminRoutes(
+      (admin, deps) =>
+        registerIngressAdminRoutes(admin, {
+          ...deps,
+          selfKid: () => panelIdentity.current.kid,
+          getEnv: () => Deno.env.toObject(),
+        }),
+      developerSurface,
+      options.registerDevelopmentAdminRoutes
+    ),
     panelIdentity: () => Promise.resolve(panelIdentity),
     identityUrls: async (requestDb) => orderedPublicOrigins(await listInstanceHostnames(requestDb)),
     onIdentityNextChanged: (fingerprint) => {
@@ -864,11 +886,13 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
       }
       try {
         await sweepStalePresence(db, daemonCellRegistry, () =>
-          resolveAlertSender(db, dataEncryptionSecrets, undefined, ALERT_WEBHOOK_POLICY, {
-            queue: emailQueue,
-            from: emailSettings.from,
-            consoleBaseUrl: Deno.env.get('TURBOPANEL_BASE_URL') ?? null,
-          })
+          resolveAlertSender(
+            db,
+            dataEncryptionSecrets,
+            undefined,
+            ALERT_WEBHOOK_POLICY,
+            consoleEmail
+          )
         )
       } catch (err) {
         logWarn('daemon-cell', `stale presence sweep error: ${String(err)}`)
@@ -900,38 +924,26 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
       await runCleanupPhase('daemon nonce sweep', () => pruneExpiredNonces(db))
       // Workers parity (offline-sweep cron): tell each organization about the
       // folders that became orphans since the last tick, once per orphan.
-      await runCleanupPhase('orphan folder alert sweep', () =>
+      await runCleanupPhase('orphan folder alert sweep', async () =>
         alertNewOrphanFolders(db, dataEncryptionSecrets, {
-          email: {
-            queue: emailQueue,
-            from: emailSettings.from,
-            consoleBaseUrl: Deno.env.get('TURBOPANEL_BASE_URL') ?? null,
-          },
+          email: await consoleEmail(),
         })
       )
       // Workers parity (offline-sweep cron): resend notification deliveries
       // whose backoff has elapsed. Self-hosted may dial a LAN receiver.
-      await runCleanupPhase('notification retry sweep', () =>
+      await runCleanupPhase('notification retry sweep', async () =>
         retryDueDeliveries(db, dataEncryptionSecrets, {
           allowPrivateTargets: true,
-          email: {
-            queue: emailQueue,
-            from: emailSettings.from,
-            consoleBaseUrl: Deno.env.get('TURBOPANEL_BASE_URL') ?? null,
-          },
+          email: await consoleEmail(),
         })
       )
       // Workers parity (offline-sweep cron): one summary email per channel
       // for the events held by a digest cadence or quiet hours.
-      await runCleanupPhase('notification digest sweep', () =>
+      await runCleanupPhase('notification digest sweep', async () =>
         sendDueDigests(db, {
           secrets: dataEncryptionSecrets,
           allowPrivateTargets: true,
-          email: {
-            queue: emailQueue,
-            from: emailSettings.from,
-            consoleBaseUrl: Deno.env.get('TURBOPANEL_BASE_URL') ?? null,
-          },
+          email: await consoleEmail(),
         })
       )
       // Workers parity (offline-sweep cron): bounded removal of command
@@ -1057,11 +1069,7 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
       env: runtimeEnv,
       selfKid: () => panelIdentity.current.kid,
       commandQueue,
-      email: {
-        queue: emailQueue,
-        from: emailSettings.from,
-        consoleBaseUrl: Deno.env.get('TURBOPANEL_BASE_URL') ?? null,
-      },
+      email: consoleEmail,
     },
     { open: createDenoDb, close: endDbConnection }
   )

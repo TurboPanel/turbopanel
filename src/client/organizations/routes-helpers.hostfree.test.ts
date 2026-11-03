@@ -271,6 +271,7 @@ test('hostDefaultsGetResponse and PutResponse expose configured org values', () 
     sshPort: null,
     ntp: null,
     hideWebServerNames: true,
+    sendViaHeader: false,
     defaultFabricEnabled: false,
   })
   assertEquals(
@@ -284,10 +285,12 @@ test('hostDefaultsGetResponse and PutResponse expose configured org values', () 
       sshPort: 2222,
       ntp: { enabled: true },
       hideWebServerNames: true,
+      sendViaHeader: false,
       defaultFabricEnabled: true,
     }
   )
   assertEquals(hostDefaultsGetResponse({ hideWebServerNames: false }).hideWebServerNames, false)
+  assertEquals(hostDefaultsGetResponse({ sendViaHeader: true }).sendViaHeader, true)
 })
 
 test('parseHostDefaultsPatch takes hideWebServerNames as a boolean or null', () => {
@@ -302,6 +305,23 @@ test('parseHostDefaultsPatch takes hideWebServerNames as a boolean or null', () 
   const cleared = parseHostDefaultsPatch({ hideWebServerNames: null })
   if (!cleared.ok) throw new TypeError('expected hideWebServerNames clear')
   assertEquals(cleared.patch.hideWebServerNames, null)
+})
+
+test('parseHostDefaultsPatch takes sendViaHeader as a boolean or null', () => {
+  assertEquals(parseHostDefaultsPatch({ sendViaHeader: 'yes' }), {
+    ok: false,
+    error: 'Invalid sendViaHeader',
+    status: 400,
+  })
+  const on = parseHostDefaultsPatch({ sendViaHeader: true })
+  if (!on.ok) throw new TypeError('expected sendViaHeader patch')
+  assertEquals(on.patch, { sendViaHeader: true })
+  const off = parseHostDefaultsPatch({ sendViaHeader: false })
+  if (!off.ok) throw new TypeError('expected sendViaHeader patch')
+  assertEquals(off.patch.sendViaHeader, false)
+  const cleared = parseHostDefaultsPatch({ sendViaHeader: null })
+  if (!cleared.ok) throw new TypeError('expected sendViaHeader clear')
+  assertEquals(cleared.patch.sendViaHeader, null)
 })
 
 test('parseDefaultTimezonePatch rejects empty and invalid patches', () => {

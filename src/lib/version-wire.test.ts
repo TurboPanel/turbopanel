@@ -39,6 +39,7 @@ import {
   MANAGED_REPLICA_FRESHNESS_FEATURE,
   MIN_SUPPORTED_DAEMON_VERSION,
   SERVER_NETWORK_CHECK_FEATURE,
+  HOSTING_VIA_HEADER_FEATURE,
   parseSemver,
   PHP_SITE_MODES_FEATURE,
   resolveDaemonCapabilities,
@@ -327,6 +328,12 @@ test('does not advertise metrics-v7, so a daemon that only knows v7 stays on the
 test('server-network-check-v1 is an advertised wire feature and raised no floor', () => {
   assertEquals(SERVER_NETWORK_CHECK_FEATURE, 'server-network-check-v1')
   assertEquals(DAEMON_WIRE_FEATURES.includes(SERVER_NETWORK_CHECK_FEATURE), true)
+  assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.0')
+})
+
+test('hosting-via-header-v1 is an advertised wire feature and raised no floor', () => {
+  assertEquals(HOSTING_VIA_HEADER_FEATURE, 'hosting-via-header-v1')
+  assertEquals(DAEMON_WIRE_FEATURES.includes(HOSTING_VIA_HEADER_FEATURE), true)
   assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.0')
 })
 
