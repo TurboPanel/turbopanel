@@ -73,7 +73,10 @@ export const INSTANCE_UPDATES_PATHS = {
         'less where `TURBOPANEL_UPGRADE_CHECK_MINUTES` is set on a test install), ' +
         '`activeRunId` and `controlPlaneRecovery` (`{ runId, backupPath, rollbackCommand }` ' +
         'for a waiting self-hosted control-plane or UI update, the run id the next ' +
-        'automatic run uses; otherwise null). `updateWaiting` counts only what a run would act on. Each is one `limit 1` read.',
+        'automatic run uses; otherwise null). `updateWaiting` counts only what a run would act on. Each is one `limit 1` read. ' +
+        '`development` is true only on a Deno development install (control plane from ' +
+        'source): it never checks for updates, the co-located daemon never reads as ' +
+        'behind, and the daemon updates only by the manual Build and Push Daemon action.',
       security: [...cookieSecurity],
       responses: {
         '200': { description: 'Installed versions and channel targets' },

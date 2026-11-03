@@ -318,6 +318,10 @@ async function readUpdatesStatus(
   const channel = resolveInstanceUpdateChannel(env)
   const revision = resolveInstanceRevision(env)
   const consoleCommit = readConsoleCommit(c.req.query('consoleCommit'))
+  // A co-located development install (control plane from source): no check,
+  // no automatic run, and the daemon updates only by the manual Build and
+  // Push Daemon action. Always false on Workers.
+  const development = opts.runtime === 'deno' && isExplicitDevelopmentMode()
   const [instanceTarget, uiTarget, daemonTarget, daemon] = await Promise.all([
     resolveUpdateManifest(channel, 'instance'),
     resolveUpdateManifest(channel, 'ui'),
@@ -349,12 +353,20 @@ async function readUpdatesStatus(
     fleetCount: 0,
   }).includes('instance')
   const controlPlaneWaiting = instancePlannable && (instanceUpdateAvailable || uiUpdateAvailable)
-  const automatic = await readAutomaticStatus(c, opts, daemonTarget)
+  // The co-located development daemon runs from source and never matches a
+  // built identity, so it is never counted as behind.
+  const automatic = await readAutomaticStatus(
+    c,
+    opts,
+    daemonTarget,
+    development ? daemon.serverId : null
+  )
   const controlPlaneRecovery = controlPlaneWaiting ? await readRecovery(getDb(c)) : null
   return {
     ok: true,
     channel,
     runtime: opts.runtime,
+    development,
     managedUpgrade: true,
     updatesManaged: opts.runtime === 'workers',
     ...automatic,
@@ -378,7 +390,9 @@ async function readUpdatesStatus(
         serverId: daemon.serverId,
         connected: daemon.connected,
         updateAvailable:
-          daemonInstalled !== null && updateAvailableFor(daemonInstalled, daemonTarget),
+          !development &&
+          daemonInstalled !== null &&
+          updateAvailableFor(daemonInstalled, daemonTarget),
       },
     },
   }
@@ -458,7 +472,8 @@ function pauseFields(
 async function readAutomaticStatus(
   c: Context<AppEnv>,
   opts: { runtime: 'deno' | 'workers'; getEnv?: () => Record<string, string | undefined> },
-  daemonTarget: UpdateManifestTarget | null
+  daemonTarget: UpdateManifestTarget | null,
+  excludeServerId: string | null
 ): Promise<AutomaticStatus> {
   const db = getDb(c)
   const env = resolvePlatformEnv(c, opts)
@@ -487,7 +502,7 @@ async function readAutomaticStatus(
       .where(inArray(upgrade.status, [...UPGRADE_ACTIVE_STATUSES]))
       .limit(1),
     daemonTarget?.commit
-      ? store.anyDaemonBehind(daemonTarget.commit, daemonTarget.builtAt)
+      ? store.anyDaemonBehind(daemonTarget.commit, daemonTarget.builtAt, excludeServerId)
       : Promise.resolve(false),
   ])
   return {
