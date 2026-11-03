@@ -277,7 +277,7 @@ export const tlsPaths = {
         },
         409: {
           description:
-            'tls_fingerprint_conflict or organization_ca_exists (active CA already present)',
+            "tls_fingerprint_conflict, organization_ca_exists (active CA already present), or acme_terms_changed (a new Let's Encrypt row waits for the organization to accept Let's Encrypt's newer terms)",
         },
       },
     },

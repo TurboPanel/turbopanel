@@ -113,6 +113,17 @@ async function lockRow(tx: Db, tlsId: string): Promise<RowFacts | null> {
   }
 }
 
+/** A server reported a certificate for this row at some point (kept when a stored pair is erased). */
+function hadCertificate(metadata: Record<string, unknown>): boolean {
+  const acme = metadata.acme as
+    { lastIssuedAt?: unknown; notAfter?: unknown; lastReportedAt?: unknown } | undefined
+  return (
+    typeof acme?.lastIssuedAt === 'string' ||
+    typeof acme?.notAfter === 'string' ||
+    typeof acme?.lastReportedAt === 'string'
+  )
+}
+
 /** The organization's Let's Encrypt switch and accepted agreement, read under the row lock. */
 async function acmeSettingsFor(
   tx: Db,
@@ -429,9 +440,11 @@ async function startInTransaction(
   if (!params.due({ hasPair: row.hasPair, metadata: row.metadata })) {
     return { outcome: 'not_due', send: [] }
   }
-  // A renewal of a pair the panel placed always goes ahead; anything else is a
-  // new certificate and waits while newer Let's Encrypt terms are unaccepted.
-  const renewal = row.hasPair && previous?.centralPair === true
+  // A row that ever had a certificate renews and always goes ahead, also when
+  // its stored pair was erased (Let's Encrypt turned off and on again) and the
+  // servers still serve the copy they were sent. Only a row that never had one
+  // is a new certificate, which waits while newer terms are unaccepted.
+  const renewal = row.hasPair || previous?.centralPair === true || hadCertificate(row.metadata)
   if (!renewal && acmeTermsOutstanding(settings.acceptedTermsUrl, params.currentTermsUrl)) {
     await writeWaiting(tx, row, waitingText('terms_changed'), now)
     return { outcome: 'waiting', send: [] }

@@ -64,7 +64,7 @@ export function waitingText(
 ): string {
   if (reason === 'no_servers') return 'Waiting for a server to serve this name.'
   if (reason === 'terms_changed') {
-    return "Waiting for this organization to accept Let's Encrypt's new terms (Organization settings › Domains & certificates)."
+    return "Waiting for this organization to accept Let's Encrypt's new terms (Organization Settings › Domains & Certificates)."
   }
   if (reason === 'no_contact') {
     return 'Waiting for a contact email address for certificates to be set for this organization.'

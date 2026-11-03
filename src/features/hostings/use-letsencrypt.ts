@@ -180,14 +180,45 @@ async function rememberWaiting(
     checks,
     nextCheckAt: nextLetsEncryptCheckAt(params.now, Math.max(checks, 1)),
   }
+  // A request coming out of a terms hold starts its seven days again now.
   const pending: PendingLetsEncrypt = {
-    requestedAt: previous?.requestedAt ?? params.now.toISOString(),
+    requestedAt:
+      previous === null || previous.dns?.termsHeld === true
+        ? params.now.toISOString()
+        : previous.requestedAt,
     dns: scheduled,
   }
   await params.store.saveHosting(params.hosting.id, {
     ...pendingLetsEncryptPatch(params.hosting.metadata, pending),
   })
   return { ok: true, outcome: 'waiting', dns: scheduled }
+}
+
+/** How long a request held for newer terms waits before it is looked at again. */
+const TERMS_HOLD_RECHECK_MINUTES = 60
+
+/**
+ * Keep the request while the organization has not accepted Let's Encrypt's
+ * newer terms. No probe runs; the last DNS report is kept with `termsHeld`,
+ * and such a request never expires.
+ */
+async function holdForTerms(params: RequestParams): Promise<LetsEncryptRequestResult> {
+  const previous = readPendingLetsEncrypt(params.hosting)
+  const now = params.now.toISOString()
+  const dns: HostingDnsReport = {
+    ...(previous?.dns ?? { ready: false, checkedAt: now, hostnames: [], expectedAddresses: [] }),
+    termsHeld: true,
+    nextCheckAt: new Date(
+      params.now.getTime() + TERMS_HOLD_RECHECK_MINUTES * MS_PER_MINUTE
+    ).toISOString(),
+  }
+  await params.store.saveHosting(params.hosting.id, {
+    ...pendingLetsEncryptPatch(params.hosting.metadata, {
+      requestedAt: previous?.requestedAt ?? now,
+      dns,
+    }),
+  })
+  return { ok: true, outcome: 'waiting', dns }
 }
 
 /**
@@ -226,6 +257,14 @@ export async function requestLetsEncrypt(params: RequestParams): Promise<LetsEnc
   }
 
   const names = letsEncryptNames(hostnames, www)
+  // A new certificate waits for newer terms before any probe runs; one that
+  // already exists is pinned as usual so it keeps renewing.
+  if (
+    params.termsHeld === true &&
+    !(await params.store.hasIssuedCertificateFor(params.hosting.organizationId, names))
+  ) {
+    return holdForTerms(params)
+  }
   const expected = await params.store.expectedAddresses(params.hosting)
   const dns = await checkHostingDns({
     hostnames: names,
@@ -234,14 +273,7 @@ export async function requestLetsEncrypt(params: RequestParams): Promise<LetsEnc
     now: params.now,
     ...(params.probes ? { probes: params.probes } : {}),
   })
-  if (!dns.ready) return rememberWaiting(params, dns)
-  if (
-    params.termsHeld === true &&
-    !(await params.store.hasIssuedCertificateFor(params.hosting.organizationId, names))
-  ) {
-    return rememberWaiting(params, { ...dns, termsHeld: true })
-  }
-  return pinCertificate(params, names, dns)
+  return dns.ready ? pinCertificate(params, names, dns) : rememberWaiting(params, dns)
 }
 
 /** `unchanged`: DNS is ready and the hosting was already pinned to the matching row. */

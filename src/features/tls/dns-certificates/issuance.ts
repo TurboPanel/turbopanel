@@ -561,10 +561,18 @@ export async function advanceDnsCertificate(
   }
   // A first certificate not yet ordered waits for newer terms; a renewal, and
   // an order already open, go on.
+  // A held row is looked at again only after a real wait, so held rows never
+  // crowd renewals out of a sweep tick.
   if (row.status === 'pending' && state.order === null && (await termsHeldFor(ctx, row, state))) {
-    await writeState(ctx, row, state, { stage: 'queued', warning: ACME_TERMS_HOLD_MESSAGE })
+    const held: DnsCertState = {
+      ...state,
+      nextAttemptAt: new Date(clock(ctx).getTime() + TERMS_HOLD_RECHECK_MS).toISOString(),
+    }
+    await writeState(ctx, row, held, { stage: 'queued', warning: ACME_TERMS_HOLD_MESSAGE })
     return 'waiting'
   }
+  // The hold has ended: its sentence goes with the next write.
+  const endsHold = acmeWarningOf(row) === ACME_TERMS_HOLD_MESSAGE
   try {
     if (orderTimedOut(ctx, state)) throw await timedOutError(ctx, state, state.order)
     for (let i = 0; i < MAX_STEPS_PER_CALL; i += 1) {
@@ -577,7 +585,10 @@ export async function advanceDnsCertificate(
       }
       if (result.kind === 'wait') break
     }
-    await writeState(ctx, row, state, { stage: stageOf(state) })
+    await writeState(ctx, row, state, {
+      stage: stageOf(state),
+      ...(endsHold ? { warning: null } : {}),
+    })
     return 'waiting'
   } catch (err) {
     countAnswer(ctx, err)
@@ -589,6 +600,13 @@ export async function advanceDnsCertificate(
     await failOrder(ctx, row, state, err)
     return 'failed'
   }
+}
+
+/** How long a first certificate held for newer terms waits before it is looked at again. */
+const TERMS_HOLD_RECHECK_MS = 60 * 60_000
+
+function acmeWarningOf(row: TlsRow): unknown {
+  return (row.metadata as { acme?: { warning?: unknown } } | null)?.acme?.warning
 }
 
 /** Whether a first certificate for this row waits for newer Let's Encrypt terms. */

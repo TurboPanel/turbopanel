@@ -486,3 +486,52 @@ test('a request held only for newer terms does not expire', async () => {
   })
   assertEquals(outcome, 'waiting')
 })
+
+test('a request coming out of a terms hold starts its seven days again', async () => {
+  const { store, saved } = fakeStore()
+  const old = new Date(NOW.getTime() - 30 * 86_400_000).toISOString()
+  const out = await requestLetsEncrypt({
+    store,
+    lookup: nowhere,
+    now: NOW,
+    hosting: record({
+      pendingAt: old,
+      metadata: {
+        letsEncryptDns: {
+          ready: true,
+          checkedAt: old,
+          hostnames: [],
+          expectedAddresses: [SERVER_IP],
+          termsHeld: true,
+        },
+      },
+    }),
+    acmeEnabled: true,
+  })
+  assertEquals(out.ok && out.outcome, 'waiting')
+  assertEquals(out.ok && out.outcome === 'waiting' && out.dns.termsHeld, undefined)
+  assertEquals(saved[0]![1].pendingAt, NOW.toISOString())
+})
+
+test('a held request runs no probe and is looked at again in an hour', async () => {
+  const { store, saved } = fakeStore()
+  let looked = 0
+  const counting: DnsLookup = () => {
+    looked += 1
+    return Promise.resolve([SERVER_IP])
+  }
+  const out = await requestLetsEncrypt({
+    store,
+    lookup: counting,
+    now: NOW,
+    hosting: record(),
+    acmeEnabled: true,
+    termsHeld: true,
+  })
+  assertEquals(looked, 0)
+  assertEquals(
+    out.ok && out.outcome === 'waiting' && out.dns.nextCheckAt,
+    new Date(NOW.getTime() + 3_600_000).toISOString()
+  )
+  assertEquals(saved.length, 1)
+})

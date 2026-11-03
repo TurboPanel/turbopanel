@@ -71,7 +71,7 @@ export function acmeTermsOutstanding(
 
 /** What a held new order says, wherever it is shown. */
 export const ACME_TERMS_HOLD_MESSAGE =
-  "Let's Encrypt has new terms. Accept them under Organization settings › Domains & certificates; new certificates wait until then, and existing ones keep renewing."
+  "Let's Encrypt has new terms. Accept them under Organization Settings › Domains & Certificates; new certificates wait until then, and existing ones keep renewing."
 
 let sharedReader: CurrentAcmeTerms | null = null
 
