@@ -111,13 +111,21 @@ export type AutoStartInput = {
   runActive: boolean
   /** An administrator paused all updates (Admin > Updates). */
   paused: boolean
+  /**
+   * Explicit development mode (`TURBOPANEL_DEV_SURFACE=1`): the control plane
+   * and its co-located daemon run from source checkouts.
+   */
+  development: boolean
 }
 
 /**
- * Whether a check should start an automatic run. Never while paused, against
- * no drift, or while a run is active.
+ * Whether a check should start an automatic run. Never in development, while
+ * paused, against no drift, or while a run is active. A dev box's co-located
+ * daemon runs from source and refuses every update, so an automatic run there
+ * can only fail; dev updates go through the developer surface instead.
  */
 export function shouldAutoStartRun(input: AutoStartInput): boolean {
+  if (input.development) return false
   if (input.paused) return false
   if (input.runActive) return false
   return input.targetDiffers

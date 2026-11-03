@@ -55,6 +55,18 @@ surface's own daemon update route (`../../developer/update-routes.ts`) stays.
 `UPGRADE_SOURCES` keeps `manual` and
 `server` because older history rows carry them; new runs are `auto`.
 
+- **Development is the exception.** With `TURBOPANEL_DEV_SURFACE=1`
+  (`isExplicitDevelopmentMode()`, the coordinator's `development`) the check
+  still runs and saves the target, but `shouldAutoStartRun` never starts a run:
+  the co-located daemon runs from source and refuses every update, so an
+  automatic run there could only fail. Dev updates go through the developer
+  surface (`../../developer/update-routes.ts`, the dev console's **Rebuild
+  daemon and upgrade connected servers**). The dev update overlay also gives
+  the control plane and the web interface no target (`resolveUpdateManifest`
+  answers null for `instance` and `ui` while the overlay provider is set),
+  because a dev box runs both from its checkouts and any channel build would
+  be a rollback. So Admin > Updates offers nothing for them in dev.
+
 - **The hourly check.** The `UPGRADE_CHECK` setting row holds this install's
   minute of the hour (drawn at random once, then stable, so many installs never
   ask the release servers at the same minute) and `lastCheckAt`.
