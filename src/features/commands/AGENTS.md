@@ -136,11 +136,14 @@ in the execution-log store — there is no Postgres column for them. See
 
 - **One command per server, in order.** Before a command starts,
   `claimServerTurn` locks the server's row for one short transaction
-  (`lock_timeout` 2 s; Postgres drops the lock on commit, rollback or a lost
-  connection), checks the `command` table for another command of that server
-  that is still live, or an older one still `queued` (younger than 5 minutes,
-  so a lost message never holds a server longer than the stale sweep), and
-  only then marks this one `dispatching`. A deploy stops counting once the
+  (`FOR NO KEY UPDATE`, which does not clash with the key-share locks of
+  inserts that reference the server; `lock_timeout` 2 s; Postgres drops the
+  lock on commit, rollback or a lost connection), checks the `command` table
+  for another command of that server that is still live, or an older one still
+  `queued` and touched in the last 5 minutes (every busy check stamps the
+  waiting command's `updated_at`, so a command waiting its turn keeps its
+  place however long the server is busy, and one whose message was lost stops
+  holding the server), and only then marks this one `dispatching`. A deploy stops counting once the
   server has taken it over (`deployMayLeaveLane`). Nothing is held while the
   command runs; a run that dies leaves its row live until the stale sweep ends
   it. Busy: the envelope goes back on the queue `SERVER_BUSY_DELAY_SECONDS`
@@ -149,11 +152,22 @@ in the execution-log store — there is no Postgres column for them. See
   (Workers).
 - **Passing failures wait, then fail.** A transient error (`isTransientError`)
   puts a new envelope back with `attempt + 1` after 5 s, 30 s, 2 min and 10 min
-  (`COMMAND_RETRY_DELAYS_SECONDS`), and the delivery is acked. After that the
-  command is failed (`error_code` `queue_retry_exhausted`, a plain reason, the
-  same release of held rows as a command that never reached its server). If
-  even that cannot be written, the message is dead-lettered and the stale sweep
-  ends the command. A retry that cannot be queued hands the message back
+  (`COMMAND_RETRY_DELAYS_SECONDS`), and the delivery is acked. A deploy
+  hand-off re-enqueues with `attempt: 1`, so errors spread over a long deploy
+  never add up. After the last wait, a command that never reached its server
+  (`sent_at` null) is failed (`error_code` `queue_retry_exhausted`, a plain
+  reason, the same release of held rows as a command that never got there);
+  one already sent is left to report back or to the stale sweep, because
+  failing it would free its server's turn while it may still run. If even that
+  cannot be written, the message is dead-lettered and the stale sweep ends the
+  command.
+- **Known limits.** The stale sweep measures a `queued` command from
+  `queued_at`, so a short command waiting behind a long one on the same server
+  (a ping behind a 30-minute backup) can be timed out while it waits, on both
+  runtimes. Retries and busy waits publish the new message before acking the
+  old one: if the ack is lost in between, the command is delivered twice and
+  the second copy re-sends it to the server, which drops a command id it has
+  already seen. A retry that cannot be queued hands the message back
   (Deno nack-requeue, Workers `retry({ delaySeconds: 30 })`).
 - **Broken messages** (unparseable, or a permanent error) are dead-lettered.
 - `CommandQueue.enqueue(envelope, { delaySeconds })` is the one way to delay:

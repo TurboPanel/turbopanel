@@ -122,7 +122,7 @@ test('after the last retry the command is failed with the reason and the message
     error: new Error('redis connection refused'),
     failCommand: (_db, envelope, error) => {
       failed.push({ commandId: envelope.commandId, error })
-      return Promise.resolve()
+      return Promise.resolve('failed' as const)
     },
   })
   assertEquals(outcome, 'ack')

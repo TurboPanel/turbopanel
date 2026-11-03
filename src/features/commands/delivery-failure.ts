@@ -77,10 +77,13 @@ export async function settleFailedDelivery(input: {
   }
   try {
     const failCommand = input.failCommand ?? failCommandAfterRetries
-    await failCommand(input.db, envelope, decision.error, input.deps)
+    const result = await failCommand(input.db, envelope, decision.error, input.deps)
     compatLogError(
       'command-consumer',
-      `gave up on command ${envelope.commandId}: ${decision.error}`
+      result === 'left_running'
+        ? `stopped waiting on command ${envelope.commandId} (already sent to its server; ` +
+            `its result or the stale sweep ends it): ${decision.error}`
+        : `gave up on command ${envelope.commandId}: ${decision.error}`
     )
     return 'ack'
   } catch (failError) {

@@ -33,9 +33,11 @@ import { TERMINAL_COMMAND_STATUSES } from './types.ts'
 export const SERVER_TURN_LOCK_TIMEOUT_MS = 2_000
 
 /**
- * An older command still `queued` makes a newer one wait only while it is this
- * young. One whose queue message was lost never starts; past this it no longer
- * holds its server up and the stale-command sweep times it out.
+ * An older command still `queued` makes a newer one wait only while it was
+ * touched this recently. Every busy check stamps the waiting command's
+ * `updated_at`, so a command still waiting its turn keeps its place however
+ * long the server is busy; one whose queue message was lost stops being
+ * touched, and past this it no longer holds its server up.
  */
 export const OLDER_QUEUED_WAIT_MS = 5 * 60_000
 
@@ -80,7 +82,7 @@ function blockingCommandExists(input: { commandId: string; serverId: string }) {
         )
         or (
           other.status = 'queued'
-          and other.created_at > now() - ${OLDER_QUEUED_WAIT_MS} * interval '1 millisecond'
+          and other.updated_at > now() - ${OLDER_QUEUED_WAIT_MS} * interval '1 millisecond'
           and (other.created_at, other.id) < (
             select mine.created_at, mine.id from ${command} mine where mine.id = ${input.commandId}
           )
@@ -101,16 +103,26 @@ export async function claimServerTurn(
     return await db.transaction(async (tx) => {
       await tx.execute(sql.raw(`set local lock_timeout = '${SERVER_TURN_LOCK_TIMEOUT_MS}ms'`))
       // A server that is gone has no row to lock; the consumer fails the command next.
+      // `no key update` serializes claims just as well, and unlike `update` it does
+      // not wait on (or block) the key-share locks that inserts referencing the
+      // server take.
       await tx
         .select({ id: server.id })
         .from(server)
         .where(eq(server.id, input.serverId))
-        .for('update')
+        .for('no key update')
       const [blocking] = await tx.execute<{ blocked: boolean }>(
         sql`select ${blockingCommandExists(input)} as blocked`
       )
-      if (blocking?.blocked === true) return 'busy'
       const now = nowIso()
+      if (blocking?.blocked === true) {
+        // Still waiting its turn: keep its place ahead of newer commands.
+        await tx
+          .update(command)
+          .set({ updatedAt: now })
+          .where(and(eq(command.id, input.commandId), eq(command.status, 'queued')))
+        return 'busy'
+      }
       const claimed = await tx
         .update(command)
         .set({

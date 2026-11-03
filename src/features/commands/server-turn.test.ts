@@ -104,15 +104,36 @@ test('a newer command waits for an older one of the same server that has not sta
   })
 })
 
+/** Make a command look untouched for ten minutes, as one whose queue message was lost. */
+async function ageCommand(db: Ctx['db'], commandId: string): Promise<void> {
+  await db.execute(
+    sql`update command set created_at = now() - interval '10 minutes', updated_at = now() - interval '10 minutes' where id = ${commandId}`
+  )
+}
+
 test('an older queued command whose message was lost stops holding the server after the wait limit', async () => {
   await withServers(async ({ db, serverId }) => {
     const older = await newCommand(db, serverId, 'daemon.ping')
-    await db
-      .update(command)
-      .set({ createdAt: sql`now() - interval '10 minutes'` })
-      .where(eq(command.id, older.id))
+    await ageCommand(db, older.id)
     const newer = await newCommand(db, serverId, 'daemon.ping')
     assertEquals(await claim(db, newer), 'claimed')
+  })
+})
+
+test('a command that keeps waiting its turn keeps its place however long the server is busy', async () => {
+  await withServers(async ({ db, serverId }) => {
+    const running = await newCommand(db, serverId, 'daemon.ping')
+    await transitionCommand(db, running.id, { status: 'sent' })
+    const older = await newCommand(db, serverId, 'daemon.ping')
+    await ageCommand(db, older.id)
+    // Its busy check stamps it as still waiting...
+    assertEquals(await claim(db, older), 'busy')
+    // ...so a newer command still waits behind it.
+    const newer = await newCommand(db, serverId, 'daemon.ping')
+    assertEquals(await claim(db, newer), 'busy')
+    await transitionCommand(db, running.id, { status: 'succeeded' })
+    assertEquals(await claim(db, newer), 'busy')
+    assertEquals(await claim(db, older), 'claimed')
   })
 })
 
@@ -152,10 +173,7 @@ test('two consumers checking the same server at the same instant start only one 
     // Neither waits for the other by order (the older one is past the wait
     // limit), so only the row lock keeps them apart.
     const first = await newCommand(db, serverId, 'daemon.ping')
-    await db
-      .update(command)
-      .set({ createdAt: sql`now() - interval '10 minutes'` })
-      .where(eq(command.id, first.id))
+    await ageCommand(db, first.id)
     const second = await newCommand(db, serverId, 'daemon.ping')
     const results = await Promise.all([claim(db, first), claim(db, second)])
     assertEquals(results.filter((result) => result === 'claimed').length, 1)

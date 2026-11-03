@@ -821,7 +821,9 @@ async function settleUnansweredCommand(
       resultStatus,
     })
   if (waiter?.verdict === 'handoff') {
-    await deps?.commandQueue?.enqueue(envelope)
+    // A hand-off is not a failure: the next run starts a fresh retry count, so
+    // passing errors spread over a long deploy never add up to giving it up.
+    await deps?.commandQueue?.enqueue({ ...envelope, attempt: 1 })
     trace('handed_off')
     return
   }
@@ -3771,26 +3773,40 @@ async function applyUndeliveredSideEffects(
   await settleIngressRecoveryOfCommand(db, record)
 }
 
+/** What {@link failCommandAfterRetries} did. */
+export type GiveUpResult =
+  /** The command never reached its server and is now failed. */
+  | 'failed'
+  /** The server may be running it: left for its result or the stale sweep. */
+  | 'left_running'
+  /** Nothing to do: the command is gone or already finished. */
+  | 'none'
+
 /**
  * The runtime gave up on a command whose processing kept failing for a
- * passing reason (database or cell unreachable): fail it with that reason and
- * release what it held, like a command that never reached its server.
+ * passing reason (database or cell unreachable). One that never reached its
+ * server is failed with that reason and releases what it held, like a command
+ * that never got there. One that was sent may be running on the server right
+ * now: failing it would free its server's turn under it and drop its result,
+ * so it is left to report back, or to the stale sweep.
  */
 export async function failCommandAfterRetries(
   db: Db,
   envelope: CommandEnvelope,
   error: string,
   deps?: CommandConsumerDeps
-): Promise<void> {
+): Promise<GiveUpResult> {
   const record = await loadDispatchableRecord(db, envelope)
-  if (!record) return
+  if (!record) return 'none'
+  if (record.sentAt !== null) return 'left_running'
   const failed = await transitionCommand(db, record.id, {
     status: 'failed',
     error,
     errorCode: QUEUE_RETRY_EXHAUSTED_CODE,
   })
-  if (failed === null) return
+  if (failed === null) return 'none'
   await applyUndeliveredSideEffects(db, record, envelope, error, deps)
+  return 'failed'
 }
 
 export async function processCommandEnvelope(

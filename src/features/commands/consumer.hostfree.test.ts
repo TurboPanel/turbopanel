@@ -23,6 +23,7 @@ import {
   enrichPingResult,
   errorMessage,
   extractObservedHostname,
+  failCommandAfterRetries,
   failureErrorCodeField,
   hasManagedFollowUpDeps,
   isManagedObservedStatus,
@@ -747,6 +748,34 @@ test('processCommandEnvelope leaves the command untouched while its server runs 
     ServerBusyError
   )
   // Still queued: not marked dispatching, never sent.
+  assertEquals(transitions, [])
+})
+
+const GIVE_UP_ENVELOPE: CommandEnvelope = {
+  commandId: COMMAND_ID,
+  serverId: SERVER_ID,
+  type: 'daemon.ping',
+  attempt: 5,
+  queuedAt: '2020-01-01T00:00:00.000Z',
+}
+
+test('failCommandAfterRetries fails a command that never reached its server', async () => {
+  const { db, transitions } = createConsumerFakeDb({ commandRow: baseCommandRow() })
+  assertEquals(
+    await failCommandAfterRetries(db, GIVE_UP_ENVELOPE, 'database unreachable'),
+    'failed'
+  )
+  assertEquals(transitions, [{ status: 'failed', error: 'database unreachable' }])
+})
+
+test('failCommandAfterRetries leaves a command the server may be running alone', async () => {
+  const { db, transitions } = createConsumerFakeDb({
+    commandRow: baseCommandRow({ status: 'sent', sentAt: '2020-01-01T00:00:01.000Z' }),
+  })
+  assertEquals(
+    await failCommandAfterRetries(db, GIVE_UP_ENVELOPE, 'database unreachable'),
+    'left_running'
+  )
   assertEquals(transitions, [])
 })
 
