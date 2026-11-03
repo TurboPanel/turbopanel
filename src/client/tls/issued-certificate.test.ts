@@ -91,7 +91,7 @@ async function setup(
     .insert(organization)
     .values({
       name: 'Issued Org',
-      options: { acmeEnabled: options.acmeEnabled ?? true },
+      isAcmeEnabled: options.acmeEnabled ?? true,
     })
     .returning({ id: organization.id })
   const organizationId = org!.id

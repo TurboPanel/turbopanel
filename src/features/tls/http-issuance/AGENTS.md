@@ -54,7 +54,7 @@ is never picked.
   order runs, and the old pair keeps serving until the new one is installed.
   No route yet: the screen change adds it.
 
-The contact address is the organization's own (`organization.options.acmeContactEmail`,
+The contact address is the organization's own (`organization.acme_contact_email`,
 read by `organizationAcmeContactEmail`, set by org managers). It travels in each
 `acme-issue-request`; the daemon holds one authority account per issuing server per
 contact address, and the panel holds no account for this flow. With no address no

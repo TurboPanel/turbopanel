@@ -6,7 +6,6 @@ import {
   parseMaxServersInput,
   parseOrganizationOptions,
   parseTemperatureUnitInput,
-  resolveAcmeContactEmail,
   resolveComposeDefaultResourceLimits,
   resolveDefaultEnvironmentName,
   resolveDeployHooksEnabled,
@@ -382,12 +381,9 @@ test('normalizeAcmeContactEmail rejects lists, header breaks, display names and 
   for (const value of bad) assertEquals(normalizeAcmeContactEmail(value), null, String(value))
 })
 
-test('parseOrganizationOptions keeps a valid contact email and drops an invalid one', () => {
+test('parseOrganizationOptions drops the old contact email key (it is a column now)', () => {
   assertEquals(
-    parseOrganizationOptions({ acmeContactEmail: 'ops@example.com' }).acmeContactEmail,
-    'ops@example.com'
+    'acmeContactEmail' in parseOrganizationOptions({ acmeContactEmail: 'ops@example.com' }),
+    false
   )
-  assertEquals(parseOrganizationOptions({ acmeContactEmail: 'nope' }).acmeContactEmail, undefined)
-  assertEquals(parseOrganizationOptions({ acmeContactEmail: null }).acmeContactEmail, undefined)
-  assertEquals(resolveAcmeContactEmail({}), null)
 })

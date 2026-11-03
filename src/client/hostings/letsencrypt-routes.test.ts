@@ -88,7 +88,7 @@ async function setup(options: {
 
   const [org] = await db
     .insert(organization)
-    .values({ name: 'LE Org', options: { acmeEnabled: options.acmeEnabled } })
+    .values({ name: 'LE Org', isAcmeEnabled: options.acmeEnabled })
     .returning({ id: organization.id })
   const organizationId = org!.id
   const [u] = await db

@@ -90,6 +90,12 @@ export type AuthRouteOpts = {
   webauthnChallengeSecrets?: DerivedSecretsConfig
   runtime: 'deno' | 'workers'
   /**
+   * Fetch used to read Let's Encrypt's directory for its current terms (the
+   * organization TLS settings routes). Unset uses the network; tests pass a
+   * stand-in.
+   */
+  acmeTermsFetch?: typeof fetch
+  /**
    * Optional `TURBOPANEL_IS_SIGNUP_ENABLED` force override. When set to
    * `1`/`true` or `0`/`false` it overrides the `IS_SIGNUP_ENABLED` database
    * setting; when unset the DB (panel) toggle wins. Live Workers: set this

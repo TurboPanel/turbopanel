@@ -9,9 +9,9 @@ server) are operator-pinned library certificates, the web server's own
 self-signed certificate, or an `automatic` `lets_encrypt` row (`tlsMode:
 'acme'`) that the web server issues and renews on the serving host. They are
 never issued by the Organization CA. **Let's Encrypt is gated at the
-organization level and on for new organizations** (`organization.options.acmeEnabled`,
-`../../features/organizations/organization-options.ts`; a row without the key,
-an organization made before that default, reads as off) — some operators do not
+organization level and off until the organization opts in** (the
+`organization.is_acme_enabled` column, migration 0020; organizations made before
+it kept what their old `options.acmeEnabled` key said) — some operators do not
 want ACME used against their servers at all. `POST /tls` with `source:
 'lets_encrypt'` refuses to create the row (`lets_encrypt_not_enabled`, 403)
 while the org is opted out, compose `tls.mode: automatic` is refused at deploy

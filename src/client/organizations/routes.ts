@@ -26,11 +26,12 @@ import {
   orgOptionsPatchRoute,
   recordOrgSettingAudit,
   removeOrgOptionSql,
+  tlsSettingsGetRoute,
+  tlsSettingsPutRoute,
   writeOrgOptions,
 } from './settings-route.ts'
 import {
   parseOrganizationOptions,
-  resolveAcmeContactEmail,
   resolveRandomizedPrincipalUsernames,
 } from '../../features/organizations/organization-options.ts'
 import type { AuditAction } from '../../features/audit/audit-records.ts'
@@ -41,6 +42,7 @@ import { alignedNetworkCidr } from '../../lib/ip-address.ts'
 import { findDockerBridgePoolOverlap } from '../../features/deploy/docker-address-pools.ts'
 import { cidrCollisionResponse } from '../networks/network-scope.ts'
 import { eraseStoredPairs } from '../tls/stored-pair.ts'
+import { currentAcmeTermsReader } from '../../features/organizations/acme-terms.ts'
 import {
   applyManagedDefaultsPatch,
   composeDefaultResourceLimitsGetResponse,
@@ -72,6 +74,7 @@ import {
   parseProjectSettingsPatch,
   parseServerCapacityPutBody,
   parseTemperatureUnitPatch,
+  applyTlsSettingsPatch,
   parseTlsSettingsPatch,
   deployTimeoutGetResponse,
   deployTimeoutPutResponse,
@@ -101,6 +104,9 @@ async function loadOrganizationRecord(db: Db, id: string) {
 }
 
 export function registerOrganizationRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
+  // The agreement Let's Encrypt names now; null when it cannot be read (the
+  // routes then refuse to accept or turn on). Cached, and quick to give up.
+  const currentTermsUrl = currentAcmeTermsReader(opts.acmeTermsFetch)
   if (!opts.secrets) {
     throw new TypeError('session secrets are required for organization routes')
   }
@@ -249,40 +255,45 @@ export function registerOrganizationRoutes(router: Hono<AppEnv>, opts: AuthRoute
 
   router.get(
     '/organizations/:id/tls-settings',
-    orgOptionsGetRoute('manage', tlsSettingsGetResponse)
+    tlsSettingsGetRoute('manage', currentTermsUrl, tlsSettingsGetResponse)
   )
   router.put(
     '/organizations/:id/tls-settings',
-    orgOptionsPatchRoute({
+    tlsSettingsPutRoute({
       gate: 'manage',
       parse: parseTlsSettingsPatch,
+      currentTermsUrl,
+      apply: applyTlsSettingsPatch,
       respond: tlsSettingsPutResponse,
       // Turning Let's Encrypt off: the stored keys are no longer needed.
       afterWrite: async (db, organizationId, patch) => {
         if (patch.acmeEnabled === false) {
           await eraseStoredPairs(db, organizationId)
         }
-        // A merge cannot remove a key, so a cleared contact is removed outright.
-        if (patch.acmeContactEmail === null) {
-          await writeOrgOptions(db, organizationId, removeOrgOptionSql('acmeContactEmail'))
-        }
       },
-      audit: (patch, previous) => {
+      audit: (patch, before, after) => {
         const entries: { action: AuditAction; context: Record<string, unknown> }[] = []
+        // The acceptance comes first: it is what allowed the switch.
+        if (patch.acmeTermsAccepted) {
+          entries.push({
+            action: 'organization.acme_terms.accept',
+            context: { acceptedAt: after.acmeTermsAcceptedAt, termsUrl: after.acmeTermsUrl },
+          })
+        }
         if (patch.acmeEnabled !== undefined) {
           entries.push({
             action: 'organization.acme.set',
             context: { acmeEnabled: patch.acmeEnabled },
           })
         }
-        if (patch.acmeContactEmail !== undefined) {
-          const was = resolveAcmeContactEmail(previous)
-          if (patch.acmeContactEmail !== was) {
-            entries.push({
-              action: 'organization.acme_contact.set',
-              context: { acmeContactEmail: patch.acmeContactEmail, previous: was },
-            })
-          }
+        if (after.acmeContactEmail !== before.acmeContactEmail) {
+          entries.push({
+            action: 'organization.acme_contact.set',
+            context: {
+              acmeContactEmail: after.acmeContactEmail,
+              previous: before.acmeContactEmail,
+            },
+          })
         }
         return entries
       },

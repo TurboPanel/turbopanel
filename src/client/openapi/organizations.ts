@@ -94,23 +94,69 @@ export const organizationSchemas = {
     description: 'At least one key. A key left out keeps its stored value.',
     minProperties: 1,
     properties: {
-      acmeEnabled: { type: 'boolean' },
+      acmeEnabled: {
+        type: 'boolean',
+        description:
+          'true needs a contact address and accepted terms (stored, or sent in the same request); otherwise 400 with code acme_contact_email_required or acme_terms_not_accepted.',
+      },
       acmeContactEmail: {
         type: ['string', 'null'],
         maxLength: 254,
         description:
-          "The one address kept as this organization's Let's Encrypt account contact (central certificate ordering will use it; nothing reads it yet). null or an empty string clears it.",
+          "This organization's Let's Encrypt account contact, sent with each order. null or an empty string clears it (refused while Let's Encrypt is on).",
+      },
+      acmeTermsAccepted: {
+        type: 'boolean',
+        const: true,
+        description:
+          "Records that the organization accepts the Let's Encrypt agreement in acmeTermsUrl now. Only true is accepted, and only with acmeTermsUrl.",
+      },
+      acmeTermsUrl: {
+        type: 'string',
+        maxLength: 2048,
+        description:
+          "The exact agreement the person was shown (the GET's acmeTermsUrl). 409 acme_terms_changed when Let's Encrypt now names a different one; 503 acme_terms_unavailable when it cannot be read.",
       },
     },
   },
   OrganizationTlsSettings: {
     type: 'object',
-    required: ['acmeEnabled', 'acmeContactEmail'],
+    required: [
+      'acmeEnabled',
+      'acmeContactEmail',
+      'acmeTermsAcceptedAt',
+      'acmeAcceptedTermsUrl',
+      'acmeTermsUrl',
+      'acmeTermsChanged',
+    ],
     properties: {
       acmeEnabled: { type: 'boolean' },
       acmeContactEmail: {
         type: ['string', 'null'],
         description: 'Certificate contact address; null when none is set.',
+      },
+      acmeTermsAcceptedAt: {
+        type: ['string', 'null'],
+        format: 'date-time',
+        description:
+          "When the organization last accepted the Let's Encrypt terms; null when it never has.",
+      },
+      acmeAcceptedTermsUrl: {
+        type: ['string', 'null'],
+        format: 'uri',
+        description:
+          "The exact Let's Encrypt agreement the organization accepted; null when it never has.",
+      },
+      acmeTermsUrl: {
+        type: ['string', 'null'],
+        format: 'uri',
+        description:
+          "The agreement Let's Encrypt names now (its directory's meta.termsOfService); null when it could not be read.",
+      },
+      acmeTermsChanged: {
+        type: 'boolean',
+        description:
+          'True when the organization accepted an older agreement than the current one and is asked to accept again.',
       },
     },
   },
@@ -1162,7 +1208,7 @@ export const organizationPaths: Record<string, unknown> = {
       tags: ['Organizations'],
       summary: 'Update organization certificate settings',
       description:
-        'Organization managers only. Changing the contact address is audited as organization.acme_contact.set (with the previous value); saving an unchanged address writes no audit row.',
+        "Organization managers only. Let's Encrypt can only be on with a contact address and accepted terms. Accepting the terms is audited as organization.acme_terms.accept; changing the contact address as organization.acme_contact.set (with the previous value); saving an unchanged address writes no audit row.",
       security: [{ cookieAuth: [] }],
       parameters: [
         {
@@ -1199,7 +1245,8 @@ export const organizationPaths: Record<string, unknown> = {
           },
         },
         '400': {
-          description: 'Invalid acmeEnabled, acmeContactEmail or body',
+          description:
+            "Invalid acmeEnabled, acmeContactEmail, acmeTermsAccepted or body; or Let's Encrypt turned on without a contact address (code acme_contact_email_required) or acceptance of the current agreement (code acme_terms_not_accepted)",
           content: {
             'application/json': {
               schema: { $ref: '#/components/schemas/ErrorResponse' },
@@ -1216,6 +1263,23 @@ export const organizationPaths: Record<string, unknown> = {
         },
         '403': {
           description: 'Forbidden',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '409': {
+          description:
+            "acme_terms_changed: the agreement sent is no longer the one Let's Encrypt names",
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '503': {
+          description: "acme_terms_unavailable: Let's Encrypt's current terms could not be read",
           content: {
             'application/json': {
               schema: { $ref: '#/components/schemas/ErrorResponse' },

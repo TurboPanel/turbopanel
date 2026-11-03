@@ -155,24 +155,12 @@ export type OrganizationOptions = {
    */
   docker?: OrganizationDockerNetworking
   /**
-   * Gate for Let's Encrypt / ACME certificate issuance — the tenant `tls`
-   * library (`POST /tls` with `source: 'lets_encrypt'`), the one-click button,
-   * compose `tls.mode: automatic`, and the deploy-time `tlsMode: 'acme'` wire
-   * the resolved TLS status can produce. New organizations start with it on
-   * ({@link NEW_ORGANIZATION_OPTIONS}); a row without the key (an organization
-   * made before that) reads as off, so existing organizations keep what they
-   * had. Some operators do not want Let's Encrypt used against their servers
-   * at all and turn it off. Toggling off does not revoke certificates already
-   * issued.
+   * Old copy of `organization.is_acme_enabled`, the Let's Encrypt switch. Nothing
+   * reads it any more; the TLS settings route still writes it for one release so
+   * an older build rolled back onto the database sees the same switch. Removed
+   * in a later release.
    */
   acmeEnabled?: boolean
-  /**
-   * The one address kept for this organization's Let's Encrypt account contact
-   * (central certificate ordering will use it; nothing reads it yet). Unset means none.
-   * Never taken from a member's account: an organization can have several
-   * owners and a person's address is not sent to a third party unasked.
-   */
-  acmeContactEmail?: string
   /**
    * Step-up re-authentication for permanent actions (delete a project, remove
    * a member, revoke a key, ...). When on, those routes refuse with
@@ -425,8 +413,6 @@ export function parseOrganizationOptions(value: unknown): OrganizationOptions {
   if (typeof value.acmeEnabled === 'boolean') {
     options.acmeEnabled = value.acmeEnabled
   }
-  const acmeContactEmail = normalizeAcmeContactEmail(value.acmeContactEmail)
-  if (acmeContactEmail) options.acmeContactEmail = acmeContactEmail
   assignRequireReauth(options, value)
   assignComposeOptIns(options, value)
   if (typeof value.deployHooksEnabled === 'boolean') {
@@ -501,19 +487,6 @@ export function resolveTemperatureUnit(options: OrganizationOptions): Temperatur
   return options.temperatureUnit ?? DEFAULT_TEMPERATURE_UNIT
 }
 
-/**
- * `organization.options` for an organization being created: Let's Encrypt
- * allowed. Only new rows get this; nothing rewrites existing organizations.
- */
-export const NEW_ORGANIZATION_OPTIONS: Readonly<OrganizationOptions> = Object.freeze({
-  acmeEnabled: true,
-})
-
-/** Effective Let's Encrypt gate: off unless the key is set (new organizations set it on). */
-export function resolveAcmeEnabled(options: OrganizationOptions): boolean {
-  return options.acmeEnabled ?? false
-}
-
 /** Longest address the authority accepts as a contact (the mailbox limit). */
 export const ACME_CONTACT_EMAIL_MAX_LENGTH = 254
 const LOCAL_PART_CHARS = /^[A-Za-z0-9_+-]+$/
@@ -554,10 +527,17 @@ export function normalizeAcmeContactEmail(value: unknown): string | null {
   return `${local}@${domain}`
 }
 
-/** Effective contact address for Let's Encrypt orders, or null when none is set. */
-export function resolveAcmeContactEmail(options: OrganizationOptions): string | null {
-  return options.acmeContactEmail ?? null
-}
+/** Refusal code: Let's Encrypt cannot be on without accepted terms. */
+export const ORG_ACME_TERMS_NOT_ACCEPTED_CODE = 'acme_terms_not_accepted'
+
+/** Refusal code: the agreement accepted is no longer the one Let's Encrypt names. */
+export const ORG_ACME_TERMS_CHANGED_CODE = 'acme_terms_changed'
+
+/** Refusal code: Let's Encrypt's current terms could not be read. */
+export const ORG_ACME_TERMS_UNAVAILABLE_CODE = 'acme_terms_unavailable'
+
+/** Refusal code: Let's Encrypt cannot be on without a contact address. */
+export const ORG_ACME_CONTACT_EMAIL_REQUIRED_CODE = 'acme_contact_email_required'
 
 /** Effective step-up gate for permanent actions: off unless an owner turned it on. */
 export function resolveRequireReauthForDestructive(options: OrganizationOptions): boolean {
