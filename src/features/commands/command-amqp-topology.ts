@@ -20,7 +20,7 @@ export function commandDelayQueueName(seconds: number): string {
 /** The smallest tier that waits at least `delaySeconds` (the longest when none does). */
 export function commandDelayTierSeconds(delaySeconds: number): number {
   const tiers = COMMAND_AMQP_DELAY_TIERS_SECONDS
-  return tiers.find((tier) => tier >= delaySeconds) ?? tiers[tiers.length - 1]!
+  return tiers.find((tier) => tier >= delaySeconds) ?? tiers.at(-1)!
 }
 
 type AmqpTopologyChannel = {
@@ -49,14 +49,16 @@ export async function assertCommandAmqpTopology(channel: AmqpTopologyChannel): P
   // Delay queues are new queues, so the arguments of the two above (which the
   // broker refuses to change on an existing durable queue) stay as they were.
   // Messages are published to them through the default exchange.
-  for (const seconds of COMMAND_AMQP_DELAY_TIERS_SECONDS) {
-    await channel.assertQueue(commandDelayQueueName(seconds), {
-      durable: true,
-      arguments: {
-        'x-message-ttl': seconds * 1000,
-        'x-dead-letter-exchange': COMMAND_AMQP_EXCHANGE,
-        'x-dead-letter-routing-key': COMMAND_AMQP_ROUTING_KEY,
-      },
-    })
-  }
+  await Promise.all(
+    COMMAND_AMQP_DELAY_TIERS_SECONDS.map((seconds) =>
+      channel.assertQueue(commandDelayQueueName(seconds), {
+        durable: true,
+        arguments: {
+          'x-message-ttl': seconds * 1000,
+          'x-dead-letter-exchange': COMMAND_AMQP_EXCHANGE,
+          'x-dead-letter-routing-key': COMMAND_AMQP_ROUTING_KEY,
+        },
+      })
+    )
+  )
 }
