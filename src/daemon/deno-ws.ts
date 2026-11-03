@@ -14,6 +14,7 @@ import type {
   DaemonInboundFrameResult,
   DaemonMessage,
   DaemonOutboundEnvelope,
+  DevHostStatusMessage,
 } from '../contracts/cell-protocol.ts'
 import {
   DAEMON_CELL_PING,
@@ -625,6 +626,18 @@ async function applyDaemonInboundEnvelope(params: {
   return record
 }
 
+/**
+ * Receives `dev-host-status` from the co-located daemon (feature
+ * `dev-host-v1`). Supplied only by the development entry (`src/deno-dev.ts`);
+ * without it, and for any daemon that is not co-located, the frame only
+ * records liveness.
+ */
+export type DevHostStatusSink = (report: {
+  serverId: string
+  status: DevHostStatusMessage['status']
+  at: string
+}) => void
+
 /** Everything the per-type inbound handlers need for one validated frame. */
 type DaemonInboundDispatch = {
   cell: ReturnType<DaemonCellRegistry['getCell']>
@@ -637,6 +650,10 @@ type DaemonInboundDispatch = {
   message: DaemonMessage
   /** Seals alert channel addresses when an event notifies; omit and only the bell is written. */
   dataEncryptionSecrets?: DerivedSecretsConfig
+  /** True when the frame came over the co-located Unix-socket attach (no peer address). */
+  colocated?: boolean
+  /** Development entry only: receives the co-located daemon's `dev-host-status`. */
+  onDevHostStatus?: DevHostStatusSink
   /** Answer on the socket the frame arrived on (daemon-initiated requests). */
   reply: (
     message: BackupRunReportResultMessage | CommandOutcomeAckMessage | BackupCopyReportResultMessage
@@ -765,6 +782,12 @@ async function dispatchDaemonInboundByType(params: DaemonInboundDispatch): Promi
         message,
         reporterServerId: serverId,
       })
+      return
+    case 'dev-host-status':
+      await cell.recordInbound({ connectionId, at: message.at })
+      if (params.colocated === true && params.onDevHostStatus) {
+        params.onDevHostStatus({ serverId, status: message.status, at: message.at })
+      }
       return
     case 'topology-report':
       await handleDaemonTopologyReportInbound({
@@ -898,6 +921,8 @@ export type DaemonWebSocketOptions = {
   panelIdentity?: () => Promise<PanelIdentity | null>
   /** The control plane's public origins, sent in the signed hello. */
   identityUrls?: (db: Db) => Promise<string[]>
+  /** Development entry only: the co-located daemon's `dev-host-status` sink. */
+  onDevHostStatus?: DevHostStatusSink
 }
 
 /**
@@ -1175,6 +1200,8 @@ export function registerDaemonWebSocket<E extends Env>(
           registry,
           message,
           dataEncryptionSecrets: options.dataEncryptionSecrets,
+          colocated: remoteAddress === undefined,
+          onDevHostStatus: options.onDevHostStatus,
           reply: (answer) => replyToDaemon(ws, answer),
         })
       }

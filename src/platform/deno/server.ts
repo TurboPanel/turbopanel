@@ -101,7 +101,7 @@ import { pruneExpiredNonces } from '../../features/servers/daemon-nonce.ts'
 import { recordAudit } from '../../features/audit/audit-records.ts'
 import { setSelfHostedAddress } from '../../features/install/ingress-modes.ts'
 import { orderedPublicOrigins } from '../../lib/panel-identity/urls.ts'
-import { registerDaemonWebSocket } from '../../daemon/deno-ws.ts'
+import { type DevHostStatusSink, registerDaemonWebSocket } from '../../daemon/deno-ws.ts'
 import { createHeartbeatReader } from './heartbeat-reader.ts'
 import {
   parseMetricsRetentionDays,
@@ -216,6 +216,12 @@ export type StartDenoServerOptions = {
    * the developer surface is on; production `src/deno.ts` omits it.
    */
   registerDevelopmentAdminRoutes?: PlatformAdminRoutesRegistrar
+  /**
+   * Optional sink for the co-located daemon's `dev-host-status` (feature
+   * `dev-host-v1`). Used only while the developer surface is on; production
+   * `src/deno.ts` omits it.
+   */
+  onDevHostStatus?: DevHostStatusSink
 }
 
 async function resolveEmailQueue(_db: Db): Promise<EmailQueue> {
@@ -745,6 +751,9 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     commandQueue,
     panelIdentity: () => Promise.resolve(panelIdentity),
     identityUrls: async (requestDb) => orderedPublicOrigins(await listInstanceHostnames(requestDb)),
+    ...(developerSurface && options.onDevHostStatus
+      ? { onDevHostStatus: options.onDevHostStatus }
+      : {}),
   })
   registerAdminRoutes(app, {
     secrets: sessionSecrets,

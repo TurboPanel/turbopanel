@@ -538,6 +538,135 @@ export type ServerNetworkCheckResultMessage = {
 }
 
 /**
+ * Which development checkout a {@link DevHostPart} describes (feature
+ * `dev-host-v1`). Unknown names from a newer daemon are kept, not refused.
+ */
+export type DevHostPartName = 'daemon' | 'control-plane' | 'web-interface' | 'website'
+
+/**
+ * How one changed path in a development checkout is classed. Only `content`
+ * blocks a pull; `mode` (permission bits only), `generated` (the allowlisted
+ * generated files), `untracked` and `runtime` (tool state folders) are shown
+ * and never block.
+ */
+export type DevHostDirtyKind = 'content' | 'mode' | 'generated' | 'untracked' | 'runtime'
+
+/** One changed path, as the daemon classed it. */
+export type DevHostDirtyEntry = {
+  path: string
+  kind: DevHostDirtyKind
+}
+
+/** Local changes in one checkout. `kinds` holds at most {@link MAX_DEV_HOST_DIRTY_ENTRIES}. */
+export type DevHostDirty = {
+  files: number
+  blocking: boolean
+  kinds: DevHostDirtyEntry[]
+}
+
+/** What one checkout still needs before its new code runs. */
+export type DevHostSetupNeeded = {
+  /** The lockfile is newer than the installed packages. */
+  install?: boolean
+  /** Shipped migrations not yet applied (filled by the control plane). */
+  migrate?: { pending: number }
+}
+
+/**
+ * One development checkout and the system unit that runs it. Twin of the
+ * daemon's `DevHostPart` (`turbopaneld/src/contracts/cell-messages.ts`).
+ */
+export type DevHostPart = {
+  name: DevHostPartName
+  unit: string
+  branch: string
+  onTrunk: boolean
+  headCommit: string
+  /** The commit the running process started from; null when it hot reloads. */
+  runningCommit: string | null
+  /** Commits on `origin/trunk` the checkout does not have yet. */
+  behindBy: number
+  dirty: DevHostDirty
+  restartNeeded: boolean
+  setupNeeded: DevHostSetupNeeded
+  active: boolean
+  /** Why the last pull skipped this checkout (`git merge --ff-only` output), when it did. */
+  blockedReason?: string
+}
+
+/** The two development host actions. */
+export type DevHostAction = 'update' | 'restart'
+
+/** One step of a {@link DevHostJob}. */
+export type DevHostJobStep = {
+  name: string
+  state: 'pending' | 'running' | 'done' | 'failed' | 'skipped'
+  detail?: string
+}
+
+/** The current or last development host job, as the daemon persisted it. */
+export type DevHostJob = {
+  id: string
+  action: DevHostAction
+  state: 'running' | 'done' | 'failed'
+  /** Name of the step running now, or the last one that ran. */
+  step: string
+  steps: DevHostJobStep[]
+  startedAt: string
+  endedAt: string | null
+  /** Last output lines of a failed step, at most {@link MAX_DEV_HOST_LOG_TAIL_LINES}. */
+  logTail: string[]
+}
+
+/** The development host as the co-located daemon sees it (feature `dev-host-v1`). */
+export type DevHostStatus = {
+  parts: DevHostPart[]
+  /** Last `git fetch` of `origin/trunk`; null before the first one. */
+  lastFetchAt: string | null
+  job: DevHostJob | null
+}
+
+/**
+ * Daemon -> control plane, fire-and-forget (feature `dev-host-v1`): the
+ * development host status, sent on attach, on change and at least every 60 s,
+ * only by a co-located development daemon and only when the control plane
+ * advertises `dev-host-v1`. Kept in memory, never stored. Twin of the daemon's
+ * `DevHostStatusMessage`.
+ */
+export type DevHostStatusMessage = {
+  type: 'dev-host-status'
+  status: DevHostStatus
+  at: string
+}
+
+/**
+ * Control plane -> daemon (feature `dev-host-v1`): start a development host
+ * job. `update` pulls trunk where safe, installs, migrates and restarts;
+ * `restart` only restarts. Twin of the daemon's `DevHostActionMessage`.
+ */
+export type DevHostActionMessage = {
+  type: 'dev-host-action'
+  id: string
+  action: DevHostAction
+  at: string
+}
+
+/**
+ * The daemon's answer on the action's id: `ok: true` with the started job's
+ * `jobId`, or `ok: false` with `error` `job_running` or `not_development`.
+ * Progress rides `dev-host-status.status.job`. Twin of the daemon's
+ * `DevHostActionResultMessage`.
+ */
+export type DevHostActionResultMessage = {
+  type: 'dev-host-action-result'
+  id: string
+  ok: boolean
+  jobId?: string
+  error?: string
+  at: string
+}
+
+/**
  * The commands a daemon is carrying, sent on `hello` and `heartbeat` (feature
  * `command-recovery-v1`) only while either list is not empty. `running` holds
  * the ids it has accepted and not finished (including commands waiting behind
@@ -748,6 +877,9 @@ export type DaemonMessage =
   | ManagedPermissionsResultMessage
   | ServerNetworkCheckRequestMessage
   | ServerNetworkCheckResultMessage
+  | DevHostStatusMessage
+  | DevHostActionMessage
+  | DevHostActionResultMessage
   | AcmeIssueRequestMessage
   | AcmeProofForwardMessage
   | AcmeProofForwardEndMessage
@@ -1146,6 +1278,8 @@ export const DAEMON_INBOUND_ALLOWED = new Set([
   'managed-health-result',
   'managed-permissions-result',
   'server-network-check-result',
+  'dev-host-status',
+  'dev-host-action-result',
   'container-logs-result',
   'metrics-live-start-result',
   'metrics-live-stop-result',
@@ -1237,6 +1371,18 @@ export const MAX_DAEMON_WS_PERMISSIONS_LOGINS = 50
 export const MAX_DAEMON_WS_PERMISSIONS_DATABASES = 100
 /** Max targets in one `server-network-check-request`. */
 export const MAX_DAEMON_WS_NETWORK_CHECK_TARGETS = 32
+/** Max parts in one `dev-host-status` (the four development units, with room). */
+export const MAX_DEV_HOST_PARTS = 8
+/** Max classified paths per part in `dev-host-status` (`dirty.files` keeps the full count). */
+export const MAX_DEV_HOST_DIRTY_ENTRIES = 50
+/** Max steps in one `dev-host-status.status.job`. */
+export const MAX_DEV_HOST_JOB_STEPS = 16
+/** Max lines in `dev-host-status.status.job.logTail`. */
+export const MAX_DEV_HOST_LOG_TAIL_LINES = 15
+/** Max characters for one `logTail` line or `blockedReason`. */
+export const MAX_DEV_HOST_TEXT_CHARS = 512
+/** Max UTF-8 bytes of `dev-host-status.status` JSON. */
+export const MAX_DEV_HOST_STATUS_BYTES = 64 * 1024
 /** Max UTF-8 bytes of `managed-permissions-result.permissions` JSON. */
 export const MAX_DAEMON_WS_PERMISSIONS_JSON_BYTES = 128 * 1024
 
@@ -2405,6 +2551,116 @@ function validateServerNetworkCheckResultFields(record: Record<string, unknown>)
   return results.every(isNetworkCheckEntry) ? null : 'invalid results'
 }
 
+const DEV_HOST_SHORT_CHARS = 256
+
+function isDevHostShortText(value: unknown, max = DEV_HOST_SHORT_CHARS): value is string {
+  return typeof value === 'string' && value.length <= max
+}
+
+function isCount(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0
+}
+
+function isDevHostDirtyEntry(value: unknown): boolean {
+  return (
+    isRecord(value) && isDevHostShortText(value.path, 1024) && isDevHostShortText(value.kind, 32)
+  )
+}
+
+function isDevHostDirty(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    isCount(value.files) &&
+    typeof value.blocking === 'boolean' &&
+    Array.isArray(value.kinds) &&
+    value.kinds.length <= MAX_DEV_HOST_DIRTY_ENTRIES &&
+    value.kinds.every(isDevHostDirtyEntry)
+  )
+}
+
+function isDevHostSetupNeeded(value: unknown): boolean {
+  if (!isRecord(value)) return false
+  if (value.install !== undefined && typeof value.install !== 'boolean') return false
+  if (value.migrate === undefined) return true
+  return isRecord(value.migrate) && isCount(value.migrate.pending)
+}
+
+function isDevHostPart(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    isDevHostShortText(value.name, 64) &&
+    isDevHostShortText(value.unit) &&
+    isDevHostShortText(value.branch) &&
+    typeof value.onTrunk === 'boolean' &&
+    isDevHostShortText(value.headCommit, 128) &&
+    (value.runningCommit === null || isDevHostShortText(value.runningCommit, 128)) &&
+    isCount(value.behindBy) &&
+    isDevHostDirty(value.dirty) &&
+    typeof value.restartNeeded === 'boolean' &&
+    isDevHostSetupNeeded(value.setupNeeded) &&
+    typeof value.active === 'boolean' &&
+    (value.blockedReason === undefined ||
+      isDevHostShortText(value.blockedReason, MAX_DEV_HOST_TEXT_CHARS))
+  )
+}
+
+function isDevHostJobStep(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    isDevHostShortText(value.name, 64) &&
+    isDevHostShortText(value.state, 32) &&
+    (value.detail === undefined || isDevHostShortText(value.detail, MAX_DEV_HOST_TEXT_CHARS))
+  )
+}
+
+function isDevHostJob(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    isBoundedId(value.id) &&
+    isDevHostShortText(value.action, 32) &&
+    isDevHostShortText(value.state, 32) &&
+    isDevHostShortText(value.step, 64) &&
+    Array.isArray(value.steps) &&
+    value.steps.length <= MAX_DEV_HOST_JOB_STEPS &&
+    value.steps.every(isDevHostJobStep) &&
+    isIsoTimestamp(value.startedAt) &&
+    (value.endedAt === null || isIsoTimestamp(value.endedAt)) &&
+    Array.isArray(value.logTail) &&
+    value.logTail.length <= MAX_DEV_HOST_LOG_TAIL_LINES &&
+    value.logTail.every((line) => isDevHostShortText(line, MAX_DEV_HOST_TEXT_CHARS))
+  )
+}
+
+/**
+ * True when `value` is a well-formed {@link DevHostStatus} within the caps.
+ * Enum-like strings (`name`, `kind`, `state`, `action`) are only length-checked
+ * so a newer daemon's value is kept rather than refused.
+ */
+export function isDevHostStatus(value: unknown): value is DevHostStatus {
+  if (!isRecord(value)) return false
+  if (!Array.isArray(value.parts) || value.parts.length > MAX_DEV_HOST_PARTS) return false
+  if (!value.parts.every(isDevHostPart)) return false
+  if (value.lastFetchAt !== null && !isIsoTimestamp(value.lastFetchAt)) return false
+  if (value.job !== null && !isDevHostJob(value.job)) return false
+  return utf8ByteLength(JSON.stringify(value)) <= MAX_DEV_HOST_STATUS_BYTES
+}
+
+/**
+ * A status that is malformed or over the caps is ignored (the socket stays up):
+ * it is development-only telemetry and the daemon re-sends within 60 s.
+ */
+function validateDevHostStatusFields(record: Record<string, unknown>): string | null {
+  if (!isIsoTimestamp(record.at)) return 'invalid at timestamp'
+  return isDevHostStatus(record.status) ? null : unknownValue('status')
+}
+
+function validateDevHostActionResultFields(record: Record<string, unknown>): string | null {
+  const base = validateOkResultFields(record)
+  if (base) return base
+  if (record.jobId !== undefined && !isBoundedId(record.jobId)) return 'invalid jobId'
+  return null
+}
+
 /**
  * What the host did with a `deploy-cancel`: `cancelling` (it was told to stop;
  * the deploy command's own outcome says how it ended), `too_late` (the deploy
@@ -2570,6 +2826,10 @@ function validateInboundMessageFields(record: Record<string, unknown>): string |
       return validateManagedPermissionsResultFields(record)
     case 'server-network-check-result':
       return validateServerNetworkCheckResultFields(record)
+    case 'dev-host-status':
+      return validateDevHostStatusFields(record)
+    case 'dev-host-action-result':
+      return validateDevHostActionResultFields(record)
     case 'repo-read-result':
       return validateRepoReadResultFields(record)
     case 'repo-default-branch-result':
@@ -2703,6 +2963,9 @@ function validateInboundEnvelopeKind(inbound: DaemonInboundEnvelope): string | n
     case 'managed-permissions-result':
     case 'server-network-check-result':
       return validateOptionalError(inbound.error)
+    case 'dev-host-action-result':
+      if (inbound.jobId !== undefined && !isBoundedId(inbound.jobId)) return 'invalid jobId'
+      return validateOptionalError(inbound.error)
     case 'fabric-paths-result':
       return validateFabricPathsEnvelope(inbound)
     case 'command-outcome':
@@ -2817,6 +3080,10 @@ export type DaemonOutboundEnvelope =
   | (OutboundEnvelopeBase & {
       kind: 'server-network-check-request'
       targets: ServerNetworkCheckTarget[]
+    })
+  | (OutboundEnvelopeBase & {
+      kind: 'dev-host-action'
+      action: DevHostAction
     })
   | (OutboundEnvelopeBase & {
       kind: 'container-logs-request'
@@ -2974,6 +3241,14 @@ export type DaemonInboundEnvelope =
       at: string
       ok: boolean
       results?: ServerNetworkCheckEntry[]
+      error?: string
+    }
+  | {
+      kind: 'dev-host-action-result'
+      requestId: string
+      at: string
+      ok: boolean
+      jobId?: string
       error?: string
     }
   | {
@@ -3136,6 +3411,7 @@ export function wireMessageToInboundEnvelope(msg: DaemonMessage): DaemonInboundE
     case 'managed-ha-event':
     case 'managed-health-report':
     case 'fabric-peers-report':
+    case 'dev-host-status':
     case 'repo-key-changed':
     case 'topology-report':
     case 'acme-issuance-event':
@@ -3190,6 +3466,15 @@ export function wireMessageToInboundEnvelope(msg: DaemonMessage): DaemonInboundE
         at: msg.at,
         ok: msg.ok,
         results: msg.results,
+        error: msg.error,
+      }
+    case 'dev-host-action-result':
+      return {
+        kind: 'dev-host-action-result',
+        requestId: msg.id,
+        at: msg.at,
+        ok: msg.ok,
+        jobId: msg.jobId,
         error: msg.error,
       }
     case 'container-logs-result':
@@ -3446,6 +3731,8 @@ export function outboundEnvelopeToWireMessage(env: DaemonOutboundEnvelope): Daem
         targets: env.targets,
         at: env.at,
       }
+    case 'dev-host-action':
+      return { type: 'dev-host-action', id: env.requestId, action: env.action, at: env.at }
     case 'acme-issue-request':
       return {
         type: 'acme-issue-request',

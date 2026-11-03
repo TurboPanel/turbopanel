@@ -65,6 +65,8 @@ export const AUDIT_ACTIONS = [
   'upgrade.pause',
   'upgrade.resume',
   'upgrade.dev_push',
+  'upgrade.dev_host_update',
+  'upgrade.dev_host_restart',
   'binding.create',
   'binding.update',
   'binding.delete',

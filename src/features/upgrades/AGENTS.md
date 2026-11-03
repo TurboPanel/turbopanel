@@ -77,6 +77,16 @@ surface's own daemon update route (`../../developer/update-routes.ts`) stays.
   `development: true`, the co-located daemon's `updateAvailable` is false,
   and `daemonsBehind` leaves the co-located server out
   (`anyDaemonBehind(commit, builtAt, excludeServerId)`).
+  The dev box itself (the four development checkouts and their units) is
+  updated by the co-located daemon, never by the control plane: Admin >
+  Updates **Update and Restart** and **Restart Only**
+  (`POST …/development/host/update`, `…/host/restart`) send `dev-host-action`
+  (feature `dev-host-v1`) and the daemon runs the job (fast-forward pull of
+  checkouts on trunk without blocking changes, install, migrate with a backup
+  first, restarts with the daemon last). The control plane never resets,
+  stashes or pulls a checkout itself; the old developer surface
+  `POST /api/developer/v1/system/upgrade` (which reset checkouts to trunk) is
+  removed.
 
 - **The hourly check.** The `UPGRADE_CHECK` setting row holds this install's
   minute of the hour (drawn at random once, then stable, so many installs never

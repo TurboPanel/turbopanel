@@ -13,6 +13,10 @@
  *   one background job (409 `job_running` while one is active) that rebuilds
  *   when the checkout changed, nothing was built, or `force` is set, then
  *   pushes to every connected remote server in parallel.
+ * - `GET` also carries `host`: the co-located daemon's development host status
+ *   (`dev-host-view.ts`), null when it is offline or lacks `dev-host-v1`. The
+ *   push refuses with 409 `job_running` while a host job (Update and Restart,
+ *   Restart Only; `dev-host-routes.ts`) runs, and those refuse while a push runs.
  *
  * Mounted only from `src/deno-dev.ts` through the `registerDevelopmentAdminRoutes`
  * hook of `startDenoServer`, and only while the developer surface is on; the
@@ -30,6 +34,8 @@ import { server } from '../db/schema.ts'
 import { recordAudit } from '../features/audit/audit-records.ts'
 import { logWarn } from '../lib/logger.ts'
 import { type DaemonUpdateResult, fanOutDaemonUpdate } from './daemon-update-fanout.ts'
+import { devHostStatusStore } from './dev-host-status.ts'
+import { type DevHostView, readDevHostView } from './dev-host-view.ts'
 import {
   DevOverlayRebuildError,
   type DevOverlayState,
@@ -80,6 +86,10 @@ export type DevelopmentUpdatesHooks = {
   ) => Promise<DaemonUpdateResult[]>
   now?: () => Date
   newId?: () => string
+  /** The `host` block; null when the co-located daemon sent no status or is offline. */
+  readHost?: (db: Db, registry: DaemonCellRegistry) => Promise<DevHostView | null>
+  /** True while a development host job runs (the push refuses meanwhile). */
+  hostJobRunning?: () => boolean
 }
 
 let currentJob: DevelopmentPushJob | null = null
@@ -91,6 +101,11 @@ export function resetDevelopmentPushJobForTests(): void {
 
 function isActive(job: DevelopmentPushJob | null): boolean {
   return job !== null && (job.state === 'building' || job.state === 'pushing')
+}
+
+/** True while a Build and Push Daemon job runs (host actions refuse meanwhile). */
+export function isDevelopmentPushJobActive(): boolean {
+  return isActive(currentJob)
 }
 
 /** True when the checkout or the remote fleet differs from the last build. */
@@ -154,6 +169,8 @@ function resolveHooks(hooks: DevelopmentUpdatesHooks): Resolved {
     push: hooks.push ?? ((registry, db, ids) => fanOutDaemonUpdate(registry, db, ids, {})),
     now: hooks.now ?? (() => new Date()),
     newId: hooks.newId ?? (() => crypto.randomUUID()),
+    readHost: hooks.readHost ?? ((db, registry) => readDevHostView(db, registry)),
+    hostJobRunning: hooks.hostJobRunning ?? (() => devHostStatusStore.isJobRunning()),
   }
 }
 
@@ -241,7 +258,13 @@ export function registerDevelopmentUpdatesAdminRoutes(
       logWarn(LOG_COMPONENT, `cannot read the daemon checkout: ${errorMessage(err)}`)
       return c.json({ ok: false, error: 'daemon_checkout_unavailable' }, 503)
     }
-    const listed = await h.listRemoteServers(ctx.db, ctx.registry)
+    const [listed, host] = await Promise.all([
+      h.listRemoteServers(ctx.db, ctx.registry),
+      h.readHost(ctx.db, ctx.registry).catch((err) => {
+        logWarn(LOG_COMPONENT, `cannot read the development host status: ${errorMessage(err)}`)
+        return null
+      }),
+    ])
     const built = state.built
     const servers = listed.map((s) => ({
       ...s,
@@ -268,6 +291,7 @@ export function registerDevelopmentUpdatesAdminRoutes(
         sourceChanged: state.sourceChanged,
         servers: listed,
       }),
+      host,
     })
   })
 
@@ -276,7 +300,9 @@ export function registerDevelopmentUpdatesAdminRoutes(
     if (ctx instanceof Response) return ctx
     const body = (await c.req.json().catch(() => null)) as { force?: unknown } | null
     const force = body?.force === true
-    if (isActive(currentJob)) return c.json({ ok: false, error: JOB_RUNNING_ERROR }, 409)
+    if (isActive(currentJob) || h.hostJobRunning()) {
+      return c.json({ ok: false, error: JOB_RUNNING_ERROR }, 409)
+    }
     // Claimed before any await, so a second press sees the running job.
     const job: DevelopmentPushJob = {
       id: h.newId(),

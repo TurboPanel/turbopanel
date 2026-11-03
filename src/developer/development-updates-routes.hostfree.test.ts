@@ -156,6 +156,7 @@ test('GET reports the build, the remote servers and pending changes', async () =
         remote(SERVER_B, { daemonCommit: 'old' }),
         remote(SERVER_C, { connected: false, daemonCommit: null, daemonVersion: null }),
       ]),
+    readHost: () => Promise.resolve(null),
   })
   const res = await app.request('/instance/updates/development')
   assertEquals(res.status, 200)
@@ -172,6 +173,7 @@ test('GET reports the build, the remote servers and pending changes', async () =
     ],
     job: null,
     pendingDaemonChanges: true,
+    host: null,
   })
 })
 
@@ -304,4 +306,46 @@ test('a failed build fails the job with the stderr tail and pushes nothing', asy
     'daemon overlay rebuild failed (deno task release:dev exited 1)\nerror: compile failed'
   )
   assertEquals(pushes, 0)
+})
+
+test('POST refuses with 409 while a development host job runs and starts nothing', async () => {
+  resetDevelopmentPushJobForTests()
+  let rebuilt = false
+  const app = createApp({
+    readState: () => Promise.resolve(FRESH),
+    rebuild: () => {
+      rebuilt = true
+      return Promise.resolve()
+    },
+    listRemoteServers: () => Promise.resolve([remote(SERVER_A)]),
+    readHost: () => Promise.resolve(null),
+    hostJobRunning: () => true,
+  })
+  const res = await post(app, { force: true })
+  assertEquals(res.status, 409)
+  assertEquals(await res.json(), { ok: false, error: JOB_RUNNING_ERROR })
+  const status = await app.request('/instance/updates/development')
+  assertEquals(((await status.json()) as { job: unknown }).job, null)
+  assertEquals(rebuilt, false)
+})
+
+test('GET carries the host block and answers when reading it fails', async () => {
+  resetDevelopmentPushJobForTests()
+  const host = { parts: [], lastFetchAt: null, job: null, migrate: { pending: 0 } }
+  const withHost = createApp({
+    readState: () => Promise.resolve(FRESH),
+    listRemoteServers: () => Promise.resolve([]),
+    readHost: () => Promise.resolve(host),
+  })
+  const res = await withHost.request('/instance/updates/development')
+  assertEquals(((await res.json()) as { host: unknown }).host, host)
+
+  const failing = createApp({
+    readState: () => Promise.resolve(FRESH),
+    listRemoteServers: () => Promise.resolve([]),
+    readHost: () => Promise.reject(new Error('cell down')),
+  })
+  const failed = await failing.request('/instance/updates/development')
+  assertEquals(failed.status, 200)
+  assertEquals(((await failed.json()) as { host: unknown }).host, null)
 })
