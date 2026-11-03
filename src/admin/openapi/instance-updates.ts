@@ -22,8 +22,12 @@ function retired(summary: string) {
   }
 }
 
-/** Pause and Resume answer with the same pause fields as the status read. */
-function pauseRoute(summary: string, description: string) {
+/** A POST control route; `responses` adds to (or replaces) the 401 and 403 answers. */
+function postRoute(
+  summary: string,
+  description: string,
+  responses: Record<string, { description: string }>
+) {
   return {
     post: {
       tags: ['Instance'],
@@ -31,12 +35,19 @@ function pauseRoute(summary: string, description: string) {
       description,
       security: [...cookieSecurity],
       responses: {
-        '200': { description: '`{ ok: true, updatesPaused, pausedAt, pausedBy }`' },
         '401': { description: 'Unauthorized' },
         '403': { description: 'Forbidden — requires admin or superadmin role' },
+        ...responses,
       },
     },
   }
+}
+
+/** Pause and Resume answer with the same pause fields as the status read. */
+function pauseRoute(summary: string, description: string) {
+  return postRoute(summary, description, {
+    '200': { description: '`{ ok: true, updatesPaused, pausedAt, pausedBy }`' },
+  })
 }
 
 /**
@@ -140,53 +151,40 @@ export const INSTANCE_UPDATES_PATHS = {
   ),
   [`${ADMIN_API_PREFIX}/instance/updates/preflight`]: retired('Retired: pre-flight an update'),
   [`${ADMIN_API_PREFIX}/instance/updates/runs`]: retired('Retired: start an update run'),
-  [`${ADMIN_API_PREFIX}/instance/updates/check`]: {
-    post: {
-      tags: ['Instance'],
-      summary: 'Check Now: look for the newest build',
-      description:
-        'A refresh only. Asks the release servers for the newest build (skipping the ' +
-        'manifest cache), saves it, and answers the same body as `GET /instance/updates`. It ' +
-        'never starts an update and never moves the schedule: the next scheduled check ' +
-        'starts it. At most once a minute per install; sooner answers 429 `check_too_soon` ' +
-        'with `retryAfterSeconds` and a `Retry-After` header.',
-      security: [...cookieSecurity],
-      responses: {
-        '200': { description: 'The refreshed update status' },
-        '401': { description: 'Unauthorized' },
-        '403': { description: 'Forbidden — requires admin or superadmin role' },
-        '429': { description: '`check_too_soon`' },
-      },
-    },
-  },
-  [`${ADMIN_API_PREFIX}/instance/updates/now`]: {
-    post: {
-      tags: ['Instance'],
-      summary: 'Update Now: check and start the update right away',
-      description:
-        'Superadmin only; recorded in the activity log (`upgrade.start_now`) when a run starts. ' +
-        'Runs the hourly check at once: asks the release servers for the newest build ' +
-        '(skipping the manifest cache), saves it, and when a server, the control plane or the ' +
-        'web interface is behind, starts the update in the usual order (co-located daemon, then ' +
-        'the control plane, then the other servers once both are on target; fleet only on the ' +
-        'hosted platform) with the same pre-flight checks as an automatic update. Answers 202 ' +
-        '`{ ok: true, runId }` (follow it with `GET /instance/updates/run`) or 200 ' +
-        '`{ ok: true, upToDate: true }`. Refuses with 409 `run_active` (with `activeRunId`) while ' +
-        'an update is running, 409 `paused` while updates are paused, 409 `update_blocked` with ' +
-        '`blockers` when a pre-flight check or a recent failure holds it, and 403 `development` ' +
-        'on a development install. A second press, or the hourly check at the same moment, ' +
-        'answers `run_active`.',
-      security: [...cookieSecurity],
-      responses: {
-        '200': { description: '`{ ok: true, upToDate: true }`' },
-        '202': { description: '`{ ok: true, runId }`' },
-        '401': { description: 'Unauthorized' },
-        '403': { description: 'Forbidden — requires superadmin; or `development`' },
-        '409': { description: '`run_active`, `paused` or `update_blocked`' },
-        '503': { description: 'Database unavailable' },
-      },
-    },
-  },
+  [`${ADMIN_API_PREFIX}/instance/updates/check`]: postRoute(
+    'Check Now: look for the newest build',
+    'A refresh only. Asks the release servers for the newest build (skipping the ' +
+      'manifest cache), saves it, and answers the same body as `GET /instance/updates`. It ' +
+      'never starts an update and never moves the schedule: the next scheduled check ' +
+      'starts it. At most once a minute per install; sooner answers 429 `check_too_soon` ' +
+      'with `retryAfterSeconds` and a `Retry-After` header.',
+    {
+      '200': { description: 'The refreshed update status' },
+      '429': { description: '`check_too_soon`' },
+    }
+  ),
+  [`${ADMIN_API_PREFIX}/instance/updates/now`]: postRoute(
+    'Update Now: check and start the update right away',
+    'Superadmin only; recorded in the activity log (`upgrade.start_now`) when a run starts. ' +
+      'Runs the hourly check at once: asks the release servers for the newest build ' +
+      '(skipping the manifest cache), saves it, and when a server, the control plane or the ' +
+      'web interface is behind, starts the update in the usual order (co-located daemon, then ' +
+      'the control plane, then the other servers once both are on target; fleet only on the ' +
+      'hosted platform) with the same pre-flight checks as an automatic update. Answers 202 ' +
+      '`{ ok: true, runId }` (follow it with `GET /instance/updates/run`) or 200 ' +
+      '`{ ok: true, upToDate: true }`. Refuses with 409 `run_active` (with `activeRunId`) while ' +
+      'an update is running, 409 `paused` while updates are paused, 409 `update_blocked` with ' +
+      '`blockers` when a pre-flight check or a recent failure holds it, and 403 `development` ' +
+      'on a development install. A second press, or the hourly check at the same moment, ' +
+      'answers `run_active`.',
+    {
+      '200': { description: '`{ ok: true, upToDate: true }`' },
+      '202': { description: '`{ ok: true, runId }`' },
+      '403': { description: 'Forbidden — requires superadmin; or `development`' },
+      '409': { description: '`run_active`, `paused` or `update_blocked`' },
+      '503': { description: 'Database unavailable' },
+    }
+  ),
   [`${ADMIN_API_PREFIX}/instance/updates/steps/{id}/retry`]: retired(
     'Retired: retry an update step (failed servers are retried automatically)'
   ),
