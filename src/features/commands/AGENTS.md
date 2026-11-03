@@ -131,17 +131,48 @@ in the execution-log store — there is no Postgres column for them. See
 
 ### Queue transport
 
+**Same policy on both runtimes** (`server-turn.ts`, `delivery-retry.ts`,
+`delivery-failure.ts`):
+
+- **One command per server, in order.** Before a command starts,
+  `claimServerTurn` locks the server's row for one short transaction
+  (`lock_timeout` 2 s; Postgres drops the lock on commit, rollback or a lost
+  connection), checks the `command` table for another command of that server
+  that is still live, or an older one still `queued` (younger than 5 minutes,
+  so a lost message never holds a server longer than the stale sweep), and
+  only then marks this one `dispatching`. A deploy stops counting once the
+  server has taken it over (`deployMayLeaveLane`). Nothing is held while the
+  command runs; a run that dies leaves its row live until the stale sweep ends
+  it. Busy: the envelope goes back on the queue `SERVER_BUSY_DELAY_SECONDS`
+  later and the attempt is not counted. The self-hosted in-memory lanes stay
+  as a first filter; this is what keeps order when several consumers run
+  (Workers).
+- **Passing failures wait, then fail.** A transient error (`isTransientError`)
+  puts a new envelope back with `attempt + 1` after 5 s, 30 s, 2 min and 10 min
+  (`COMMAND_RETRY_DELAYS_SECONDS`), and the delivery is acked. After that the
+  command is failed (`error_code` `queue_retry_exhausted`, a plain reason, the
+  same release of held rows as a command that never reached its server). If
+  even that cannot be written, the message is dead-lettered and the stale sweep
+  ends the command. A retry that cannot be queued hands the message back
+  (Deno nack-requeue, Workers `retry({ delaySeconds: 30 })`).
+- **Broken messages** (unparseable, or a permanent error) are dead-lettered.
+- `CommandQueue.enqueue(envelope, { delaySeconds })` is the one way to delay:
+  Workers passes it to `send`; Deno publishes to the delay queue of the next
+  tier up (`turbopanel.commands.delay.{5,10,30,120,600}s`, queue-level TTL,
+  dead-lettered back into the dispatch queue).
+
 - **Workers:** `TURBOPANEL_COMMAND_QUEUE` binding → per-env queue names in
   `wrangler.jsonc`: `live` uses `daemon-commands` / `daemon-commands-dlq`;
   `staging` uses `staging-daemon-commands` / `staging-daemon-commands-dlq`;
   `testing` uses `testing-daemon-commands` / `testing-daemon-commands-dlq`;
   local top-level worker uses `dev-daemon-commands` / `dev-daemon-commands-dlq`
   (max 3 retries). Declared under `queues.producers` and `queues.consumers`.
-  Consumer handler: `queue(batch, env, ctx)` in `src/workers.ts`. Failed
-  messages are never acked: permanent failures (malformed/poisoned) log
-  `command.permanent_failure` and `retry()` like transient ones, so
-  `max_retries` exhaustion routes them to the `dead_letter_queue` (the DLQ
-  must exist: `wrangler queues create <name>-dlq`).
+  Consumer handler: `queue(batch, env, ctx)` in `src/workers.ts`. A
+  dead-lettered message is never acked: it logs `command.permanent_failure`
+  and is `retry()`d until `max_retries` routes it to the `dead_letter_queue`
+  (the DLQ must exist: `wrangler queues create <name>-dlq`). Retries and busy
+  waits are new delayed messages, not `retry()`, so they never use up
+  `max_retries`.
 - **Deno:** `TURBOPANEL_AMQP_URL` (same URL as email queue, different topology).
   Exchange `turbopanel.commands`, queue `turbopanel.commands.dispatch`, routing
   key `command.dispatch`, DLX `turbopanel.commands.dlx` → DLQ

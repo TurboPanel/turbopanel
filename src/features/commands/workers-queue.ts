@@ -1,4 +1,4 @@
-import type { CommandQueue } from './queue.ts'
+import type { CommandEnqueueOptions, CommandQueue } from './queue.ts'
 import type { CommandEnvelope } from './envelope.ts'
 
 /**
@@ -12,19 +12,22 @@ import type { CommandEnvelope } from './envelope.ts'
  * signature would reject. Nothing here reads it.
  */
 export type CommandQueueBinding = {
-  send(message: unknown): Promise<unknown>
+  send(message: unknown, options?: { delaySeconds?: number }): Promise<unknown>
 }
 
 class WorkersCommandQueue implements CommandQueue {
   constructor(private readonly queue: CommandQueueBinding) {}
 
-  async enqueue(envelope: CommandEnvelope): Promise<void> {
+  async enqueue(envelope: CommandEnvelope, options?: CommandEnqueueOptions): Promise<void> {
+    const delaySeconds = options?.delaySeconds
+    if (delaySeconds !== undefined && delaySeconds > 0) {
+      await this.queue.send(envelope, { delaySeconds: Math.ceil(delaySeconds) })
+      return
+    }
     await this.queue.send(envelope)
   }
 }
 
-export function createWorkersCommandQueue(
-  queue: CommandQueueBinding,
-): CommandQueue {
+export function createWorkersCommandQueue(queue: CommandQueueBinding): CommandQueue {
   return new WorkersCommandQueue(queue)
 }
