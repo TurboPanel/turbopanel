@@ -102,8 +102,11 @@ High Availability (Workers) must not contain any of it.
   setting, sealed, swept by the re-encrypt `identity` stage; contact, terms and
   directory from `INSTANCE_ACME_SETTINGS`). One step per tick: preflight
   (zone on the account, a probe TXT write, CAA, nameservers), order and publish
-  the TXT record, wait until every authoritative nameserver answers it (up to
-  10 minutes), answer, then finalize with a key made inside that step (never
+  the TXT record, wait until every authoritative nameserver address that
+  answers has it (up to 10 minutes; `txtVisibleOnAll`: an address this host
+  cannot reach, such as IPv6 on an IPv4-only host, is left out, a NotFound
+  answer counts as an answer without the record, and at least one address must
+  confirm), answer, then finalize with a key made inside that step (never
   stored before the pair), store the pair sealed in `certificate` with
   `kind='dns-01'`, point `origin.uploaded_cert_id` at it, remove the record and
   push the hostname list to the daemon. Renewal time is a random moment in the

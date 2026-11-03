@@ -27,7 +27,12 @@ import {
   nextAttemptAt,
   startsInLastHour,
 } from './backoff.ts'
-import { type DnsLookup, preflightDns01, txtVisibleOnAll } from './preflight.ts'
+import {
+  type DnsLookup,
+  preflightDns01,
+  txtNotVisibleDetail,
+  txtVisibleOnAll,
+} from './preflight.ts'
 import { planRenewal } from './renewal.ts'
 import {
   type Dns01Failure,
@@ -285,7 +290,7 @@ async function waitForDns(deps: Dns01Deps, row: Dns01Row, order: Dns01Order): Pr
     return state
   }
   if (deps.now().getTime() - Date.parse(order.startedAt) < TXT_WAIT_MS) return row.state
-  const detail = `The challenge record is not visible on ${visible.missing.length} of ${order.nameservers.length} authoritative nameservers yet.`
+  const detail = txtNotVisibleDetail(visible)
   return await recordFailure(deps, row, { cause: 'txt-not-visible', detail }, null)
 }
 

@@ -150,21 +150,55 @@ export async function preflightDns01(input: {
   return { ok: true, checks, failure: null, zone, nameservers }
 }
 
-/** Whether every authoritative server already answers the challenge value. */
+/** What the authoritative servers said about the challenge value. */
+export type TxtVisibility = {
+  ok: boolean
+  /** Servers that answered with the value. */
+  confirmed: string[]
+  /** Servers that answered without the value: the record has not reached them yet. */
+  missing: string[]
+  /** Servers that gave no answer (unreachable from this host, such as IPv6 on an IPv4-only host, or timed out). */
+  unreachable: string[]
+}
+
+/**
+ * Whether the challenge value is visible on the authoritative servers. A server
+ * that answers without it holds the check back; a server this host cannot reach
+ * says nothing either way and is left out, as long as at least one answers with
+ * the value. An IPv4-only host would otherwise wait on every IPv6 address the
+ * zone lists until the order gave up.
+ */
 export async function txtVisibleOnAll(
   dns: DnsLookup,
   servers: readonly string[],
   name: string,
   value: string
-): Promise<{ ok: boolean; missing: string[] }> {
+): Promise<TxtVisibility> {
   const seen = await Promise.all(
     servers.map(async (server) => {
-      const values: string[] = await dns.txtAt(name, server).catch(() => [])
-      return { server, ok: values.includes(value) }
+      try {
+        const values = await dns.txtAt(name, server)
+        return { server, outcome: values.includes(value) ? 'confirmed' : 'missing' }
+      } catch {
+        return { server, outcome: 'unreachable' }
+      }
     })
   )
-  const missing = seen.filter((item) => !item.ok).map((item) => item.server)
-  return { ok: missing.length === 0, missing }
+  const pick = (outcome: string) =>
+    seen.filter((item) => item.outcome === outcome).map((item) => item.server)
+  const confirmed = pick('confirmed')
+  const missing = pick('missing')
+  const unreachable = pick('unreachable')
+  return { ok: missing.length === 0 && confirmed.length > 0, confirmed, missing, unreachable }
+}
+
+/** The detail for a challenge record that is still not visible when the wait runs out. */
+export function txtNotVisibleDetail(visible: TxtVisibility): string {
+  if (visible.missing.length > 0) {
+    const answered = visible.missing.length + visible.confirmed.length
+    return `The challenge record is not visible on ${visible.missing.length} of ${answered} authoritative nameservers that answered yet.`
+  }
+  return `No authoritative nameserver could be reached to check the challenge record (${visible.unreachable.length} tried).`
 }
 
 type DenoCaa = { critical: boolean; tag: string; value: string }
@@ -189,10 +223,17 @@ export const denoDnsLookup: DnsLookup = {
     return [...v4, ...v6]
   },
   txtAt: async (name, server) => {
-    const answer = await Deno.resolveDns(name, 'TXT', {
-      ...withTimeout(),
-      nameServer: { ipAddr: server, port: 53 },
-    })
-    return answer.map((chunks) => chunks.join(''))
+    try {
+      const answer = await Deno.resolveDns(name, 'TXT', {
+        ...withTimeout(),
+        nameServer: { ipAddr: server, port: 53 },
+      })
+      return answer.map((chunks) => chunks.join(''))
+    } catch (err) {
+      // NotFound is an answer: the server has no TXT record at the name.
+      // Anything else (unreachable network, timeout) is no answer and throws on.
+      if (err instanceof Deno.errors.NotFound) return []
+      throw err
+    }
   },
 }
