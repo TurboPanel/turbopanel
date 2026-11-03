@@ -11,6 +11,7 @@ import {
   type CommandResealDeps,
 } from './consumer.ts'
 import { createLaneScheduler, type LaneScheduler } from './command-lanes.ts'
+import { type DeliveryOutcome, settleFailedDelivery } from './delivery-failure.ts'
 import { parseCommandEnvelope, type CommandEnvelope } from './envelope.ts'
 import type { CommandQueue } from './queue.ts'
 
@@ -62,6 +63,13 @@ export function commandMessageDisposition(
 ): CommandMessageDisposition {
   if (outcome.ok) return 'ack'
   return isTransientError(outcome.error) ? 'nack_requeue' : 'nack_dead'
+}
+
+/** How a shared delivery outcome maps onto ack/nack. */
+const DELIVERY_DISPOSITION: Record<DeliveryOutcome, CommandMessageDisposition> = {
+  ack: 'ack',
+  dead_letter: 'nack_dead',
+  redeliver: 'nack_requeue',
 }
 
 /**
@@ -351,13 +359,16 @@ export async function startCommandConsumer(
       )
       disposition = commandMessageDisposition({ ok: true })
     } catch (error) {
-      const errMsg = errorMessage(error)
-      disposition = commandMessageDisposition({ ok: false, error })
-      if (disposition === 'nack_requeue') {
-        compatLogWarn('command-consumer', `transient error, requeueing: ${errMsg}`)
-      } else {
-        compatLogError('command-consumer', `permanent error, dead-lettering: ${errMsg}`)
-      }
+      // A busy server, a passing outage or a broken command: the same policy
+      // as the Workers consumer (`delivery-failure.ts`).
+      const outcome = await settleFailedDelivery({
+        db: opts.db,
+        queue: opts.commandQueue,
+        envelope,
+        error,
+        deps: consumerDeps,
+      })
+      disposition = DELIVERY_DISPOSITION[outcome]
     }
     // Outside the try: a failed ack is a broker problem, not a reason to
     // re-classify a command that processed fine as a processing failure.

@@ -2,8 +2,10 @@ import {
   assertCommandAmqpTopology,
   COMMAND_AMQP_EXCHANGE,
   COMMAND_AMQP_ROUTING_KEY,
+  commandDelayQueueName,
+  commandDelayTierSeconds,
 } from '../../../features/commands/command-amqp-topology.ts'
-import type { CommandQueue } from '../../../features/commands/queue.ts'
+import type { CommandEnqueueOptions, CommandQueue } from '../../../features/commands/queue.ts'
 import type { CommandEnvelope } from '../../../features/commands/envelope.ts'
 import { encodeCommandEnvelope } from '../../../features/commands/envelope.ts'
 import { compatLogWarn } from '../../../lib/log-compat.ts'
@@ -27,12 +29,19 @@ class DenoAmqpCommandQueue implements CommandQueue {
     })
   }
 
-  async enqueue(envelope: CommandEnvelope): Promise<void> {
+  async enqueue(envelope: CommandEnvelope, options?: CommandEnqueueOptions): Promise<void> {
+    const delaySeconds = options?.delaySeconds ?? 0
+    // A delayed message waits in its tier's queue (default exchange, routed by
+    // queue name) and expires back into the dispatch queue.
+    const [exchange, routingKey] =
+      delaySeconds > 0
+        ? ['', commandDelayQueueName(commandDelayTierSeconds(delaySeconds))]
+        : [COMMAND_AMQP_EXCHANGE, COMMAND_AMQP_ROUTING_KEY]
     let published: boolean
     try {
       published = await this.publisher.publish(
-        COMMAND_AMQP_EXCHANGE,
-        COMMAND_AMQP_ROUTING_KEY,
+        exchange,
+        routingKey,
         this.encoder.encode(encodeCommandEnvelope(envelope))
       )
     } catch (error) {

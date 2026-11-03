@@ -4,7 +4,7 @@
  */
 
 import { DENY_FIREWALL_APPLY } from '../firewall/enforcement.ts'
-import { assertEquals } from '@std/assert'
+import { assertEquals, assertRejects } from '@std/assert'
 import type { Db } from '../../db/connection.ts'
 import { managed, recovery, replica } from '../../db/schema.ts'
 import type { ManagedMemberRow } from '../managed/members.ts'
@@ -13,6 +13,7 @@ import { DAEMON_RESTART_INTERRUPTION_MARKER, MAX_PROMOTE_RESUMES } from '../mana
 import type { DaemonCell, DaemonCellRegistry, PendingRequestRecord } from '../../contracts/cell.ts'
 import { COMMAND_DISPATCH_FAILURE_RETENTION_MS } from './command-records.ts'
 import type { CommandEnvelope } from './envelope.ts'
+import { ServerBusyError } from './delivery-retry.ts'
 import type { DeployFailureNotice } from '../deploy/deploy-failure-notice.ts'
 import {
   announceDeployFailure,
@@ -22,6 +23,7 @@ import {
   enrichPingResult,
   errorMessage,
   extractObservedHostname,
+  failCommandAfterRetries,
   failureErrorCodeField,
   hasManagedFollowUpDeps,
   isManagedObservedStatus,
@@ -396,6 +398,8 @@ type ConsumerFakeDbOptions = Readonly<{
   throwOnManagedReadyUpdate?: boolean
   throwOnManagedFailedUpdate?: boolean
   throwOnBackupInsert?: boolean
+  /** The server-turn check finds another command of the server running. */
+  serverBusy?: boolean
   /** The HA recovery journal row the command belongs to (`recovery` table reads and writes). */
   recoveryRow?: Record<string, unknown>
   /** The journal read throws (database down), so the failure hook itself fails. */
@@ -665,6 +669,9 @@ function createConsumerFakeDb(options: ConsumerFakeDbOptions = {}): {
       },
     }),
     transaction: (fn: (tx: unknown) => Promise<unknown>) => fn(db),
+    // The server-turn check (`server-turn.ts`): the lock timeout, then "no
+    // other command of this server runs or comes first".
+    execute: () => Promise.resolve([{ blocked: options.serverBusy === true }]),
   } as unknown as Db
 
   return {
@@ -722,6 +729,54 @@ test('processCommandEnvelope no-ops for already-terminal commands', async () => 
     queuedAt: '2020-01-01T00:00:00.000Z',
   })
   assertEquals(transitions.length, 0)
+})
+
+test('processCommandEnvelope leaves the command untouched while its server runs another one', async () => {
+  const { db, transitions } = createConsumerFakeDb({
+    commandRow: baseCommandRow(),
+    serverBusy: true,
+  })
+  await assertRejects(
+    () =>
+      processCommandEnvelope(db, emptyRegistry(), {
+        commandId: COMMAND_ID,
+        serverId: SERVER_ID,
+        type: 'daemon.ping',
+        attempt: 1,
+        queuedAt: '2020-01-01T00:00:00.000Z',
+      }),
+    ServerBusyError
+  )
+  // Still queued: not marked dispatching, never sent.
+  assertEquals(transitions, [])
+})
+
+const GIVE_UP_ENVELOPE: CommandEnvelope = {
+  commandId: COMMAND_ID,
+  serverId: SERVER_ID,
+  type: 'daemon.ping',
+  attempt: 5,
+  queuedAt: '2020-01-01T00:00:00.000Z',
+}
+
+test('failCommandAfterRetries fails a command that never reached its server', async () => {
+  const { db, transitions } = createConsumerFakeDb({ commandRow: baseCommandRow() })
+  assertEquals(
+    await failCommandAfterRetries(db, GIVE_UP_ENVELOPE, 'database unreachable'),
+    'failed'
+  )
+  assertEquals(transitions, [{ status: 'failed', error: 'database unreachable' }])
+})
+
+test('failCommandAfterRetries leaves a command the server may be running alone', async () => {
+  const { db, transitions } = createConsumerFakeDb({
+    commandRow: baseCommandRow({ status: 'sent', sentAt: '2020-01-01T00:00:01.000Z' }),
+  })
+  assertEquals(
+    await failCommandAfterRetries(db, GIVE_UP_ENVELOPE, 'database unreachable'),
+    'left_running'
+  )
+  assertEquals(transitions, [])
 })
 
 test('processCommandEnvelope marks expired commands timed_out', async () => {

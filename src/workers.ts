@@ -39,8 +39,9 @@ import {
 import { createWorkersCommandQueue } from './features/commands/workers-queue.ts'
 import { createNoopCommandQueue } from './features/commands/noop-command-queue.ts'
 import type { CommandQueue } from './features/commands/queue.ts'
-import { isTransientError, processCommandEnvelope } from './features/commands/consumer.ts'
-import { parseCommandEnvelope } from './features/commands/envelope.ts'
+import { processCommandEnvelope } from './features/commands/consumer.ts'
+import { type DeliveryOutcome, settleFailedDelivery } from './features/commands/delivery-failure.ts'
+import { type CommandEnvelope, parseCommandEnvelope } from './features/commands/envelope.ts'
 import { setRevokeBoundDaemonKey } from './features/licenses/revoke-bound-daemon-key.ts'
 import { connect as connectSocket } from 'cloudflare:sockets'
 import { registerCommandRuntimePorts } from './platform/ports/register-command-runtime-ports.ts'
@@ -381,14 +382,22 @@ function stringBindingEnv(env: CloudflareBindings): Record<string, string | unde
   return out
 }
 
+/** Wait before a message the consumer could not re-queue is delivered again. */
+const REDELIVER_DELAY_SECONDS = 30
+
 /**
- * Failed command message: never ack. Transient and permanent failures both
- * `retry()`; once the consumer's `max_retries` (wrangler.jsonc) is exhausted
- * Cloudflare moves the message to the configured `dead_letter_queue`, matching
- * the Deno consumer's dead-lettering. Acking here would silently drop it.
+ * Apply the shared outcome (`features/commands/delivery-failure.ts`) to a
+ * failed command message. A broken message is never acked: it is retried
+ * until the consumer's `max_retries` (wrangler.jsonc) is used up and
+ * Cloudflare moves it to the configured `dead_letter_queue`, which matches
+ * the Deno consumer's dead-lettering. Acking it would drop it silently.
  */
-function retryOrDeadLetter(msg: Message<unknown>, error: unknown): void {
-  if (!isTransientError(error)) {
+function applyDeliveryOutcome(msg: Message<unknown>, outcome: DeliveryOutcome): void {
+  if (outcome === 'ack') {
+    msg.ack()
+    return
+  }
+  if (outcome === 'dead_letter') {
     compatLogError(
       'command-consumer',
       JSON.stringify({
@@ -396,11 +405,12 @@ function retryOrDeadLetter(msg: Message<unknown>, error: unknown): void {
         disposition: 'retry_to_dlq',
         messageId: msg.id,
         attempts: msg.attempts,
-        error: error instanceof Error ? error.message : String(error),
       })
     )
+    msg.retry()
+    return
   }
-  msg.retry()
+  msg.retry({ delaySeconds: REDELIVER_DELAY_SECONDS })
 }
 
 export default {
@@ -536,38 +546,48 @@ export default {
     const db = resolveWorkersDb(env)
     try {
       if (!db || !cachedDaemonCellRegistryFactory) {
-        batch.retryAll()
+        batch.retryAll({ delaySeconds: REDELIVER_DELAY_SECONDS })
         return
       }
 
       const registry = cachedDaemonCellRegistryFactory(env, db)
+      const commandQueue = cachedCommandQueue ?? undefined
       // The deploy-time firewall apply key; unset means observe-only everywhere.
       const firewallApplyGate = firewallApplyGateFromEnv(stringBindingEnv(env))
+      const deps = {
+        firewallApplyGate,
+        commandQueue,
+        resealDeps:
+          cachedSecretsConfig && cachedDataEncryptionSecrets
+            ? {
+                secretsConfig: cachedSecretsConfig,
+                dataEncryptionSecrets: cachedDataEncryptionSecrets,
+              }
+            : undefined,
+        secretsConfig: cachedSecretsConfig ?? undefined,
+        dataEncryptionSecrets: cachedDataEncryptionSecrets ?? undefined,
+      }
 
       try {
         await forEachSequential(batch.messages, async (msg) => {
+          let envelope: CommandEnvelope | null = null
           try {
-            const envelope = parseCommandEnvelope(msg.body)
-            await processCommandEnvelope(db, registry, envelope, {
-              commandQueue: cachedCommandQueue ?? undefined,
-              resealDeps:
-                cachedSecretsConfig && cachedDataEncryptionSecrets
-                  ? {
-                      secretsConfig: cachedSecretsConfig,
-                      dataEncryptionSecrets: cachedDataEncryptionSecrets,
-                    }
-                  : undefined,
-              secretsConfig: cachedSecretsConfig ?? undefined,
-              dataEncryptionSecrets: cachedDataEncryptionSecrets ?? undefined,
-              firewallApplyGate,
-            })
+            envelope = parseCommandEnvelope(msg.body)
+            await processCommandEnvelope(db, registry, envelope, deps)
             msg.ack()
           } catch (error) {
-            retryOrDeadLetter(msg, error)
+            const outcome = await settleFailedDelivery({
+              db,
+              queue: commandQueue,
+              envelope,
+              error,
+              deps,
+            })
+            applyDeliveryOutcome(msg, outcome)
           }
         })
       } catch {
-        batch.retryAll()
+        batch.retryAll({ delaySeconds: REDELIVER_DELAY_SECONDS })
       }
     } finally {
       if (db) await endDbConnection(db).catch(() => {})

@@ -361,3 +361,23 @@ test('createDenoAmqpCommandQueue never keeps a connection that finished opening 
     connectStub.restore()
   }
 })
+
+test('createDenoAmqpCommandQueue sends a delayed envelope to its delay tier queue', async () => {
+  const channel = createRecordingChannel()
+  const connectStub = stub(amqplib, 'connect', () =>
+    Promise.resolve({
+      createConfirmChannel: async () => channel,
+      close: async () => undefined,
+    } as never)
+  )
+  try {
+    const queue = createDenoAmqpCommandQueue({ amqpUrl: 'amqp://test' })
+    await queue.enqueue(LOSS_ENVELOPE, { delaySeconds: 7 })
+    const publishCall = channel.calls.find((call) => call.method === 'publish')
+    // Default exchange, routed by queue name; the 10 s tier is the first that waits long enough.
+    assertEquals(publishCall?.args[0], '')
+    assertEquals(publishCall?.args[1], 'turbopanel.commands.delay.10s')
+  } finally {
+    connectStub.restore()
+  }
+})

@@ -279,6 +279,51 @@ describe('workers.ts entry handlers', () => {
     }) as unknown as Db
     setWorkersDbFactoryForTests(() => transientDb)
 
+    const envelope = {
+      commandId: crypto.randomUUID(),
+      serverId: crypto.randomUUID(),
+      type: 'daemon.ping',
+      attempt: 1,
+      queuedAt: new Date().toISOString(),
+    }
+    const sent: Array<{ body: unknown; options: unknown }> = []
+    const queueBinding = {
+      send: (body: unknown, options?: unknown) => {
+        sent.push({ body, options })
+        return Promise.resolve()
+      },
+    }
+    const msg = fakeQueueMessage(envelope)
+    const batch = fakeMessageBatch([msg])
+    await workers.queue(
+      batch,
+      workersTestEnv({
+        TURBOPANEL_COMMAND_QUEUE: queueBinding,
+      } as unknown as Partial<CloudflareBindings>)
+    )
+    // Same policy as self-hosted: a new message 5 s later with the attempt
+    // counted, and this one acked (not retried at once).
+    expect(msg.acked).toBe(true)
+    expect(msg.retried).toBe(false)
+    expect(sent).toEqual([{ body: { ...envelope, attempt: 2 }, options: { delaySeconds: 5 } }])
+  }, 30_000)
+
+  it('queue hands a transient failure back to the queue when it cannot queue the retry', async () => {
+    const transientDb = new Proxy(function () {}, {
+      get(_target, prop) {
+        if (prop === '$client') {
+          return { end: () => Promise.resolve() }
+        }
+        throw new Error('network timeout contacting postgres')
+      },
+      apply() {
+        throw new Error('network timeout contacting postgres')
+      },
+    }) as unknown as Db
+    setWorkersDbFactoryForTests(() => transientDb)
+    const queueBinding = {
+      send: () => Promise.reject(new Error('queue unavailable')),
+    }
     const msg = fakeQueueMessage({
       commandId: crypto.randomUUID(),
       serverId: crypto.randomUUID(),
@@ -286,8 +331,12 @@ describe('workers.ts entry handlers', () => {
       attempt: 1,
       queuedAt: new Date().toISOString(),
     })
-    const batch = fakeMessageBatch([msg])
-    await workers.queue(batch, workersTestEnv())
+    await workers.queue(
+      fakeMessageBatch([msg]),
+      workersTestEnv({
+        TURBOPANEL_COMMAND_QUEUE: queueBinding,
+      } as unknown as Partial<CloudflareBindings>)
+    )
     expect(msg.retried).toBe(true)
     expect(msg.acked).toBe(false)
   }, 30_000)

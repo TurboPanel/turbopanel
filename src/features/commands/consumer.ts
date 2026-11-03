@@ -206,6 +206,8 @@ import {
 import { isManagedEngineCode, type ManagedEngineCode } from '../managed/types.ts'
 import { isValidWireguardPublicKey } from '../fabric/wg.ts'
 import { type CommandType, TERMINAL_COMMAND_STATUSES } from './types.ts'
+import { claimServerTurn } from './server-turn.ts'
+import { QUEUE_RETRY_EXHAUSTED_CODE, ServerBusyError } from './delivery-retry.ts'
 
 import type { DerivedSecretsConfig, SecretsConfig } from '../../lib/secrets/secrets.ts'
 import { daemonUnsupportedReason, resolveDaemonSupport } from '../../lib/version-wire.ts'
@@ -541,22 +543,30 @@ async function loadDispatchableRecord(
   return { ...record, payload }
 }
 
+/**
+ * Take the server's turn and mark the command `dispatching`. Throws
+ * {@link ServerBusyError} when another command of the server runs or comes
+ * first (the runtime puts the message back for a little later); `false` when
+ * the command finished meanwhile.
+ */
 async function markDispatching(
   db: Db,
   record: DispatchableCommandRecord,
   envelope: CommandEnvelope
-): Promise<void> {
+): Promise<boolean> {
+  const turn = await claimServerTurn(db, {
+    commandId: record.id,
+    serverId: envelope.serverId,
+    attempts: record.attempts,
+  })
+  if (turn === 'busy') throw new ServerBusyError(envelope.serverId)
+  if (turn === 'finished') return false
   commandConsumerTrace('dispatch-start', {
     commandId: record.id,
     commandType: record.type,
     serverId: envelope.serverId,
   })
-
-  await transitionCommand(db, record.id, {
-    status: 'dispatching',
-    dispatchStartedAt: nowIso(),
-    attempts: record.attempts + 1,
-  })
+  return true
 }
 
 /** `null` when the command can be delivered; otherwise the error it was failed with. */
@@ -811,7 +821,9 @@ async function settleUnansweredCommand(
       resultStatus,
     })
   if (waiter?.verdict === 'handoff') {
-    await deps?.commandQueue?.enqueue(envelope)
+    // A hand-off is not a failure: the next run starts a fresh retry count, so
+    // passing errors spread over a long deploy never add up to giving it up.
+    await deps?.commandQueue?.enqueue({ ...envelope, attempt: 1 })
     trace('handed_off')
     return
   }
@@ -3742,6 +3754,61 @@ async function failSupersededReseed(db: Db, record: DispatchableCommandRecord): 
   return true
 }
 
+/** The failure side effects of a command that never reached its server. */
+async function applyUndeliveredSideEffects(
+  db: Db,
+  record: DispatchableCommandRecord,
+  envelope: CommandEnvelope,
+  error: string,
+  deps?: CommandConsumerDeps
+): Promise<void> {
+  // A managed apply/restore flips its row to `applying` before enqueue; a command
+  // that never reached its server must release that row or it blocks every
+  // later change until the stale sweep gets to it.
+  await applyManagedFailedSideEffect(db, record, deps, error)
+  // A deploy that never reached its server fails its row and halts the
+  // rollout, or later batches would wait on an `applying` row forever.
+  await applyEnvironmentDeployFailedSideEffect(db, record, envelope, error, 'failed', deps)
+  await applyFabricFailedSideEffect(db, record, envelope, error)
+  await settleIngressRecoveryOfCommand(db, record)
+}
+
+/** What {@link failCommandAfterRetries} did. */
+export type GiveUpResult =
+  /** The command never reached its server and is now failed. */
+  | 'failed'
+  /** The server may be running it: left for its result or the stale sweep. */
+  | 'left_running'
+  /** Nothing to do: the command is gone or already finished. */
+  | 'none'
+
+/**
+ * The runtime gave up on a command whose processing kept failing for a
+ * passing reason (database or cell unreachable). One that never reached its
+ * server is failed with that reason and releases what it held, like a command
+ * that never got there. One that was sent may be running on the server right
+ * now: failing it would free its server's turn under it and drop its result,
+ * so it is left to report back, or to the stale sweep.
+ */
+export async function failCommandAfterRetries(
+  db: Db,
+  envelope: CommandEnvelope,
+  error: string,
+  deps?: CommandConsumerDeps
+): Promise<GiveUpResult> {
+  const record = await loadDispatchableRecord(db, envelope)
+  if (!record) return 'none'
+  if (record.sentAt !== null) return 'left_running'
+  const failed = await transitionCommand(db, record.id, {
+    status: 'failed',
+    error,
+    errorCode: QUEUE_RETRY_EXHAUSTED_CODE,
+  })
+  if (failed === null) return 'none'
+  await applyUndeliveredSideEffects(db, record, envelope, error, deps)
+  return 'failed'
+}
+
 export async function processCommandEnvelope(
   db: Db,
   registry: DaemonCellRegistry,
@@ -3759,19 +3826,11 @@ export async function processCommandEnvelope(
     return
   }
 
-  await markDispatching(db, record, envelope)
+  if (!(await markDispatching(db, record, envelope))) return
 
   const notReady = await ensureServerAndDaemonOnline(db, registry, record, envelope)
   if (notReady !== null) {
-    // A managed apply/restore flips its row to `applying` before enqueue; a command
-    // that never reached its server must release that row or it blocks every
-    // later change until the stale sweep gets to it.
-    await applyManagedFailedSideEffect(db, record, deps, notReady)
-    // A deploy that never reached its server fails its row and halts the
-    // rollout, or later batches would wait on an `applying` row forever.
-    await applyEnvironmentDeployFailedSideEffect(db, record, envelope, notReady, 'failed', deps)
-    await applyFabricFailedSideEffect(db, record, envelope, notReady)
-    await settleIngressRecoveryOfCommand(db, record)
+    await applyUndeliveredSideEffects(db, record, envelope, notReady, deps)
     return
   }
 
