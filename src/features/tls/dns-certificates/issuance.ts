@@ -545,7 +545,7 @@ export async function advanceDnsCertificate(
 ): Promise<AdvanceOutcome> {
   const row = await claim(ctx, id)
   if (!row) return 'busy'
-  let state = readDnsCertState(row.metadata)
+  const state = readDnsCertState(row.metadata)
   if (!state) {
     await release(ctx, row.id)
     return 'not_found'
@@ -561,7 +561,17 @@ export async function advanceDnsCertificate(
   }
   if (await heldForTerms(ctx, row, state)) return 'waiting'
   // The hold has ended: its sentence goes with the next write.
-  const endsHold = acmeWarningOf(row) === ACME_TERMS_HOLD_MESSAGE
+  return await stepOrder(ctx, row, state, acmeWarningOf(row) === ACME_TERMS_HOLD_MESSAGE)
+}
+
+/** Run up to a few steps of the order, then record where it stands. */
+async function stepOrder(
+  ctx: DnsCertContext,
+  row: TlsRow,
+  first: DnsCertState,
+  endsHold: boolean
+): Promise<AdvanceOutcome> {
+  let state = first
   try {
     if (orderTimedOut(ctx, state)) throw await timedOutError(ctx, state, state.order)
     for (let i = 0; i < MAX_STEPS_PER_CALL; i += 1) {
