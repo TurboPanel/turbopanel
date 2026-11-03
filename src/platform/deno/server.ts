@@ -59,6 +59,10 @@ import { runManagedIngressOrphanSweep } from '../../features/managed/ingress-des
 import { runDatacenterRepinFanoutSweep } from '../../client/datacenters/repin-fanout.ts'
 import { runNetworkProbeSweep } from '../../client/datacenters/network-probe-sweep.ts'
 import { runSystemReconcileSweep } from '../../features/system/reconcile.ts'
+import {
+  createColocatedRepairStore,
+  createColocatedSelfRepair,
+} from '../../client/authn/colocated-self-repair.ts'
 import { runHostLossTick } from '../../daemon/cell/host-loss-tick.ts'
 import { runBackupsReconcileSweep } from '../../features/backups/reconcile.ts'
 import { runFolderReconcileSweep } from '../../daemon/cell/folder-reconcile-sweep.ts'
@@ -687,7 +691,14 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
   if (developerSurface) {
     options.registerDeveloperSurface?.({ routes, sessionSecrets, db })
   }
+  // Co-located daemon credential self-repair: after an enroll or session
+  // refusal that came straight in on the Unix socket, at most once per
+  // interval (`colocated-self-repair.ts`).
+  const colocatedSelfRepair = createColocatedSelfRepair({
+    store: createColocatedRepairStore(db),
+  })
   registerDaemonApiRoutes(routes, {
+    onCredentialRefusal: () => void colocatedSelfRepair.run('refusal'),
     secrets: daemonJwtKeyring,
     challengeSigningSecrets,
     secretsConfig,
@@ -989,6 +1000,8 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
         })
       })
       runSystemReconcileSweepTick()
+      // Retries a failed co-located credential repair while a socket refusal is recent.
+      void colocatedSelfRepair.tick()
     },
   })
   const maintenanceTimer = setInterval(() => maintenance.tick(), DAEMON_CELL_MAINTAIN_MS)

@@ -24,10 +24,7 @@ import {
   isValidCidr,
   normalizeIpAddress,
 } from './ip-address.ts'
-import {
-  bestReportedAddress,
-  type ServerReportedIp,
-} from '../contracts/server-addresses.ts'
+import { bestReportedAddress, type ServerReportedIp } from '../contracts/server-addresses.ts'
 
 /**
  * Peer addresses the instance will read forwarding headers from.
@@ -37,19 +34,14 @@ import {
  * beside it. Anything arriving with a non-loopback `X-Real-IP` reached Caddy
  * over the network and speaks only for itself.
  */
-export const DEFAULT_TRUSTED_PROXY_CIDRS = [
-  '127.0.0.0/8',
-  '::1/128',
-] as const
+export const DEFAULT_TRUSTED_PROXY_CIDRS = ['127.0.0.0/8', '::1/128'] as const
 
 /**
  * Parse `TURBOPANEL_TRUSTED_PROXY_CIDRS` (comma-separated). Invalid entries are
  * dropped rather than widening trust; an empty or absent value keeps the
  * loopback default.
  */
-export function parseTrustedProxyCidrs(
-  value: string | null | undefined,
-): string[] {
+export function parseTrustedProxyCidrs(value: string | null | undefined): string[] {
   const entries = (value ?? '')
     .split(',')
     .map((entry) => entry.trim())
@@ -59,11 +51,40 @@ export function parseTrustedProxyCidrs(
 
 export function isTrustedProxyAddress(
   address: string,
-  trustedProxyCidrs: readonly string[] = DEFAULT_TRUSTED_PROXY_CIDRS,
+  trustedProxyCidrs: readonly string[] = DEFAULT_TRUSTED_PROXY_CIDRS
 ): boolean {
   const normalized = normalizeIpAddress(address)
   if (!normalized) return false
   return trustedProxyCidrs.some((cidr) => addressInCidr(normalized, cidr))
+}
+
+/**
+ * Headers any proxy in front of the Deno instance's Unix socket adds. Caddy
+ * sets `X-Real-IP` (and `X-Forwarded-*`) on every proxied request, and a
+ * client cannot remove what Caddy adds; a tunnel connector adds
+ * `CF-Connecting-IP` / `X-Forwarded-For`.
+ */
+const PROXY_HEADERS = [
+  'x-real-ip',
+  'x-forwarded-for',
+  'x-forwarded-proto',
+  'x-forwarded-host',
+  'forwarded',
+  'via',
+  'cf-connecting-ip',
+  'true-client-ip',
+] as const
+
+/**
+ * True only when a request reached the Deno instance straight on its Unix
+ * socket from a local process (the co-located daemon dials it itself): none of
+ * the proxy headers is present. Public traffic reaches the same socket through
+ * Caddy and always carries `X-Real-IP`, so it is never direct. Any doubt reads
+ * as proxied. The socket carries no peer identity Deno exposes, so the
+ * headers are the signal, as in {@link resolvePeerAddress}.
+ */
+export function isDirectLocalSocketRequest(header: (name: string) => string | undefined): boolean {
+  return PROXY_HEADERS.every((name) => header(name) === undefined)
 }
 
 /** How the control plane learned the peer address. */
@@ -122,7 +143,7 @@ function firstForwardedAddress(value: string | null | undefined): string | null 
  */
 export function resolvePeerAddress(
   headers: PeerAddressHeaders,
-  options: ResolvePeerAddressOptions,
+  options: ResolvePeerAddressOptions
 ): ResolvedPeerAddress | null {
   // A forwarding header that names a loopback address describes the proxy, not
   // the caller — it must not shadow the address we would otherwise fall back to.
@@ -131,9 +152,7 @@ export function resolvePeerAddress(
   // Workers: the edge stamps CF-Connecting-IP and strips any client copy, so it
   // is the only trustworthy value and no local proxy is in play.
   if (options.runtime === 'workers') {
-    return cfConnectingIp
-      ? { address: cfConnectingIp, source: 'cloudflare' }
-      : null
+    return cfConnectingIp ? { address: cfConnectingIp, source: 'cloudflare' } : null
   }
 
   const trusted = options.trustedProxyCidrs ?? DEFAULT_TRUSTED_PROXY_CIDRS
@@ -183,9 +202,7 @@ export type ResolveServerAddressParams = {
 /** Sentinel stored for a daemon that dialled the local Unix socket. */
 export const DIRECT_ATTACH_SENTINEL = '__direct__'
 
-function reportedAddressToResolved(
-  reported: ServerReportedIp,
-): ResolvedServerAddress {
+function reportedAddressToResolved(reported: ServerReportedIp): ResolvedServerAddress {
   return {
     address: reported.address,
     source: 'interface',
@@ -196,7 +213,7 @@ function reportedAddressToResolved(
 
 function findReportedIp(
   ips: readonly ServerReportedIp[],
-  address: string,
+  address: string
 ): ServerReportedIp | undefined {
   return ips.find((row) => row.address === address)
 }
@@ -204,7 +221,7 @@ function findReportedIp(
 function observedResolved(
   address: string,
   scope: 'public' | 'private',
-  match?: ServerReportedIp,
+  match?: ServerReportedIp
 ): ResolvedServerAddress {
   const resolved: ResolvedServerAddress = { address, source: 'observed', scope }
   if (!match) return resolved
@@ -219,7 +236,7 @@ function observedResolved(
  */
 function preferredObservedAddress(
   observed: string,
-  ips: readonly ServerReportedIp[],
+  ips: readonly ServerReportedIp[]
 ): ResolvedServerAddress | null {
   const scope = ipAddressScope(observed)
   const match = findReportedIp(ips, observed)
@@ -248,7 +265,7 @@ function preferredObservedAddress(
  *    location on the network.
  */
 export function resolveServerAddress(
-  params: ResolveServerAddressParams,
+  params: ResolveServerAddressParams
 ): ResolvedServerAddress | null {
   const raw = params.remoteAddress?.trim() ?? ''
   if (raw === DIRECT_ATTACH_SENTINEL) {
