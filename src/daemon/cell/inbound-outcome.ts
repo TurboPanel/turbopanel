@@ -114,6 +114,12 @@ function deriveRawInboundOutcome(inbound: DaemonInboundEnvelope): InboundOutcome
         results: inbound.results,
         error: inbound.error,
       })
+    case 'dev-host-action-result':
+      return inboundOutcomeFromOk(inbound.ok, inbound.error, {
+        ok: inbound.ok,
+        jobId: inbound.jobId,
+        error: inbound.error,
+      })
     case 'repo-read-result':
       return inboundOutcomeFromOk(inbound.ok, inbound.error, repoReadResultPayload(inbound))
     case 'repo-default-branch-result':

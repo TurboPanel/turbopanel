@@ -219,6 +219,7 @@ export const DAEMON_WIRE_FEATURES = [
   'panel-signed-frames-v1',
   'signin-v2',
   'hosting-via-header-v1',
+  'dev-host-v1',
 ] as const
 
 export type DaemonWireFeature = (typeof DAEMON_WIRE_FEATURES)[number]
@@ -590,6 +591,14 @@ export const SERVER_NETWORK_CHECK_FEATURE: DaemonWireFeature = 'server-network-c
  * an older daemon keeps tying Via to `hideWebServerNames`, as before.
  */
 export const HOSTING_VIA_HEADER_FEATURE: DaemonWireFeature = 'hosting-via-header-v1'
+
+/**
+ * Development installs only: the co-located daemon pushes `dev-host-status`
+ * (the four development checkouts and units, and the current host job) and
+ * answers `dev-host-action` with `dev-host-action-result`. Each side sends only
+ * when the peer lists this feature; nothing is stored and no floor moved.
+ */
+export const DEV_HOST_FEATURE: DaemonWireFeature = 'dev-host-v1'
 
 /** Features that need an instance at or above a semver. Empty until one lands. */
 export const INSTANCE_FEATURE_MIN_VERSIONS: Readonly<Record<string, string>> = {}

@@ -34,8 +34,24 @@
   servers: [{ id, name, connected, daemonVersion, daemonCommit, onLatestBuild
   }], job: null | { id, state: building | pushing | done | failed, startedAt,
   endedAt, message, servers: [{ id, name, ok, skipped, error }] },
-  pendingDaemonChanges }` (remote servers only; the job lives in memory and a
-  restart forgets it); `GET /instance/identity` is the Panel Identity read (public fingerprints of the control
+  pendingDaemonChanges, host }` (remote servers only; the job lives in memory and a
+  restart forgets it). `host` is the co-located daemon's development host
+  status (`dev-host-status`, feature `dev-host-v1`, kept in memory by
+  `src/developer/dev-host-status.ts`) with the control plane part's
+  `runningCommit` (this process's commit, captured at boot) and a top-level
+  `migrate: { pending } | null` (`compareSchemaState` against the manifest on
+  disk, cached 30 s) filled in by `src/developer/dev-host-view.ts`; null while
+  that daemon is offline or never sent one.
+  `POST /instance/updates/development/host/update` (Update and Restart) and
+  `.../host/restart` (Restart Only), same gates, audited as
+  `upgrade.dev_host_update` / `upgrade.dev_host_restart`, send
+  `dev-host-action` to the co-located daemon and wait up to 8 s: 202
+  `{ ok, job: { id, action } }`, 409 `job_running` (a host job or a Build and Push
+  job is running; the push refuses the same way while a host job runs), 503
+  `daemon_unavailable` (offline, no `dev-host-v1`, timeout, or the daemon
+  refused, with `reason`). They live in `src/developer/dev-host-routes.ts`,
+  which also mounts `GET /api/developer/v1/dev-host/status` and the two
+  actions for the Developer Console behind the developer access middleware; `GET /instance/identity` is the Panel Identity read (public fingerprints of the control
   plane's current, next and sealing keys, the install address, and each server's pinned-by state,
   `none` until the server pin column exists); `PUT /instance/identity/next` sets or clears the next
   fingerprint (superadmin, self-hosted only, always behind `requireInstanceStepUp`, audited as

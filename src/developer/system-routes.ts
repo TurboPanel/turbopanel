@@ -1,7 +1,7 @@
 import type { Env, Hono } from 'hono'
 import { createDeveloperAccessMiddleware } from '../client/authn/middleware.ts'
 import type { DerivedSecretsConfig } from '../lib/secrets/secrets.ts'
-import { getDaemonRepoPath, getInstanceCommit } from '../daemon/version.ts'
+import { getDaemonRepoPath } from '../daemon/version.ts'
 import type { Db } from '../db/connection.ts'
 import { dirname, fromFileUrl, join } from '@std/path'
 import { DEVELOPER_API_PREFIX } from '../app/surfaces.ts'
@@ -17,7 +17,7 @@ export function getUiRepoPath(): string {
   return join(INSTANCE_REPO_ROOT, '..', 'ui')
 }
 
-/** Platform checkouts Upgrade System may reset — all must be clean first. */
+/** Platform checkouts whose local changes `GET /system/upgrade-status` reports. */
 const PLATFORM_REPOS = [
   { name: 'instance', path: INSTANCE_REPO_ROOT },
   { name: 'daemon', path: getDaemonRepoPath },
@@ -42,15 +42,12 @@ export type SystemGitResult = {
   stderr: string
 }
 
-export type SystemGitRunner = (
-  bin: string,
-  args: string[],
-) => Promise<SystemGitResult>
+export type SystemGitRunner = (bin: string, args: string[]) => Promise<SystemGitResult>
 
 export function resolveGitInvocation(
   repoRoot: string,
   args: string[],
-  opts: Readonly<{ direct: boolean; productionGitUser: string }>,
+  opts: Readonly<{ direct: boolean; productionGitUser: string }>
 ): { bin: string; args: string[] } {
   const gitArgs = ['-C', repoRoot, ...args]
   if (opts.direct) {
@@ -66,22 +63,6 @@ export function describeUnknownError(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
 }
 
-function trunkBranch(): string {
-  return Deno.env.get('TURBOPANEL_TRUNK_BRANCH')?.trim() || 'trunk'
-}
-
-/** Standard managed/dev unit name (daemon `instance-launch` `instance_service_name`). */
-export const DEFAULT_INSTANCE_SERVICE = 'turbopanel-instance'
-
-/**
- * systemd unit to restart after Upgrade System. `TURBOPANEL_INSTANCE_SERVICE`
- * is only an override for a non-standard unit name; unset means the standard
- * {@link DEFAULT_INSTANCE_SERVICE}.
- */
-export function instanceServiceName(): string {
-  return Deno.env.get('TURBOPANEL_INSTANCE_SERVICE')?.trim() || DEFAULT_INSTANCE_SERVICE
-}
-
 function usesDirectGit(): boolean {
   return (Deno.env.get('TURBOPANEL_DEV_USER')?.trim() ?? '').length > 0
 }
@@ -92,7 +73,7 @@ function productionGitUser(): string {
 
 export async function defaultSystemGitRunner(
   bin: string,
-  args: string[],
+  args: string[]
 ): Promise<SystemGitResult> {
   try {
     const command = new Deno.Command(bin, {
@@ -112,40 +93,20 @@ export async function defaultSystemGitRunner(
   }
 }
 
-function defaultRestartInstance(service: string): void {
-  new Deno.Command('sudo', {
-    args: ['systemctl', 'restart', service],
-    stdin: 'null',
-    stdout: 'null',
-    stderr: 'null',
-  }).spawn()
-}
-
 let systemGitRunner: SystemGitRunner = defaultSystemGitRunner
-let instanceRestarter: (service: string) => void = defaultRestartInstance
-let upgrading = false
 
-export function setSystemRoutesTestHooks(hooks: {
-  gitRunner?: SystemGitRunner | null
-  restarter?: ((service: string) => void) | null
-} = {}): void {
+export function setSystemRoutesTestHooks(
+  hooks: {
+    gitRunner?: SystemGitRunner | null
+  } = {}
+): void {
   if (hooks.gitRunner !== undefined) {
     systemGitRunner = hooks.gitRunner ?? defaultSystemGitRunner
   }
-  if (hooks.restarter !== undefined) {
-    instanceRestarter = hooks.restarter ?? defaultRestartInstance
-  }
-}
-
-export function resetSystemRoutesUpgradeLockForTests(): void {
-  upgrading = false
 }
 
 /** Run git as the dev user directly, or via sudo -u on managed production hosts. */
-async function git(
-  repoRoot: string,
-  args: string[],
-): Promise<SystemGitResult> {
+async function git(repoRoot: string, args: string[]): Promise<SystemGitResult> {
   const invocation = resolveGitInvocation(repoRoot, args, {
     direct: usesDirectGit(),
     productionGitUser: productionGitUser(),
@@ -167,7 +128,7 @@ export function isRuntimePorcelainLine(line: string): boolean {
 }
 
 async function repoDirty(
-  repoRoot: string,
+  repoRoot: string
 ): Promise<{ ok: true; dirty: boolean; changes: number } | { ok: false; error: string }> {
   const status = await git(repoRoot, ['status', '--porcelain'])
   if (!status.success) {
@@ -177,7 +138,10 @@ async function repoDirty(
     }
   }
   const lines = status.stdout
-    ? status.stdout.split('\n').filter(Boolean).filter((line) => !isRuntimePorcelainLine(line))
+    ? status.stdout
+        .split('\n')
+        .filter(Boolean)
+        .filter((line) => !isRuntimePorcelainLine(line))
     : []
   return { ok: true, dirty: lines.length > 0, changes: lines.length }
 }
@@ -199,37 +163,9 @@ async function collectDirtyRepos(): Promise<
   return { ok: true, dirty }
 }
 
-export function dirtyUpgradeError(dirty: DirtyRepo[]): string {
-  const names = dirty.map((entry) => entry.repo).join(', ')
-  return `cannot upgrade: uncommitted changes in ${names} (commit or stash first)`
-}
-
-async function syncRepoToTrunk(
-  repoRoot: string,
-  label: string,
-): Promise<{ ok: true } | { ok: false; error: string }> {
-  const fetched = await git(repoRoot, ['fetch', 'origin', trunkBranch()])
-  if (!fetched.success) {
-    return {
-      ok: false,
-      error: `${label} git fetch failed: ${fetched.stderr}`,
-    }
-  }
-
-  const reset = await git(repoRoot, ['reset', '--hard', `origin/${trunkBranch()}`])
-  if (!reset.success) {
-    return {
-      ok: false,
-      error: `${label} git reset failed: ${reset.stderr}`,
-    }
-  }
-
-  return { ok: true }
-}
-
 export function registerSystemRoutes<E extends Env>(
   app: Hono<E>,
-  opts: { secrets: DerivedSecretsConfig; db?: Db; authRequired?: boolean },
+  opts: { secrets: DerivedSecretsConfig; db?: Db; authRequired?: boolean }
 ): Hono<E> {
   if (opts.authRequired !== false) {
     app.use(`${DEVELOPER_API_PREFIX}/system/*`, createDeveloperAccessMiddleware(opts.secrets))
@@ -246,55 +182,6 @@ export function registerSystemRoutes<E extends Env>(
       dirty: result.dirty,
     }
     return c.json(body)
-  })
-
-  app.post(`${DEVELOPER_API_PREFIX}/system/upgrade`, async (c) => {
-    if (upgrading) {
-      return c.json({ ok: false, error: 'upgrade already in progress' }, 409)
-    }
-
-    const dirtyCheck = await collectDirtyRepos()
-    if (!dirtyCheck.ok) {
-      return c.json({ ok: false, error: dirtyCheck.error }, 500)
-    }
-    if (dirtyCheck.dirty.length > 0) {
-      return c.json(
-        {
-          ok: false,
-          error: dirtyUpgradeError(dirtyCheck.dirty),
-          dirty: dirtyCheck.dirty,
-        },
-        409,
-      )
-    }
-
-    const service = instanceServiceName()
-
-    upgrading = true
-    try {
-      const instanceSync = await syncRepoToTrunk(INSTANCE_REPO_ROOT, 'instance')
-      if (!instanceSync.ok) {
-        return c.json({ ok: false, error: instanceSync.error }, 500)
-      }
-
-      const daemonSync = await syncRepoToTrunk(getDaemonRepoPath(), 'daemon')
-      if (!daemonSync.ok) {
-        return c.json({ ok: false, error: daemonSync.error }, 500)
-      }
-
-      const instanceVersion = await getInstanceCommit()
-      const commit = instanceVersion.commit
-
-      // Queue restart without awaiting — awaiting systemctl restart kills this
-      // process before the HTTP response reaches Caddy (client sees HTTP 502).
-      instanceRestarter(service)
-
-      return c.json({ ok: true, commit })
-    } catch (err) {
-      return c.json({ ok: false, error: describeUnknownError(err) }, 500)
-    } finally {
-      upgrading = false
-    }
   })
 
   return app
