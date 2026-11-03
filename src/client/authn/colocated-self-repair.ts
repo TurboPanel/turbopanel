@@ -172,6 +172,13 @@ function keyValueLines(text: string): Map<string, string> {
   return values
 }
 
+/** Drop trailing `/` characters with a plain loop (no backtracking regex). */
+function stripTrailingSlashes(path: string): string {
+  let end = path.length
+  while (end > 1 && path[end - 1] === '/') end--
+  return path.slice(0, end)
+}
+
 function hostOf(url: string): string | null {
   try {
     return new URL(url).hostname.toLowerCase()
@@ -181,7 +188,7 @@ function hostOf(url: string): string | null {
 }
 
 function normalizeSocket(path: string): string {
-  const trimmed = path.trim().replace(/\/+$/, '')
+  const trimmed = stripTrailingSlashes(path.trim())
   return trimmed.startsWith('/var/run/') ? trimmed.slice('/var'.length) : trimmed
 }
 
@@ -193,7 +200,7 @@ function daemonSocketPath(env: Map<string, string>): string {
     env.get('TURBOPANEL_SOCKET_DIR')?.trim() ||
     env.get('TURBOPANEL_RUN_DIR')?.trim() ||
     '/run/turbopanel'
-  return `${dir.replace(/\/+$/, '')}/instance.sock`
+  return `${stripTrailingSlashes(dir)}/instance.sock`
 }
 
 function pinNamesThisControlPlane(pinText: string, self: ControlPlaneSelf): boolean {
@@ -385,12 +392,12 @@ const DAEMON_EVIDENCE_FILES = [
 
 function defaultDaemonEnvPath(): string {
   const configDir = Deno.env.get('TURBOPANEL_CONFIG_DIR')?.trim() || '/etc/turbopanel'
-  return `${configDir.replace(/\/+$/, '')}/daemon.env`
+  return `${stripTrailingSlashes(configDir)}/daemon.env`
 }
 
 function defaultPanelPinPath(): string {
   const libDir = Deno.env.get('TURBOPANEL_LIB_DIR')?.trim() || '/opt/turbopanel/lib'
-  return `${libDir.replace(/\/+$/, '')}/panel-identity`
+  return `${stripTrailingSlashes(libDir)}/panel-identity`
 }
 
 /** Reads and writes the resolved co-located credentials dir. */
