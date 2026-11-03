@@ -49,6 +49,7 @@
  * phases race remaining time, and `OFFLINE_SWEEP_LOCK.expiresAt` covers the
  * enforced live runtime so a still-running holder cannot be stolen.
  */
+import { platformControlPlaneOrigin } from '../../features/install/control-plane-origins.ts'
 import { expireStaleRecoveries } from '../../features/managed/recovery-records.ts'
 import { sweepStalledFencing } from '../../features/managed/ha-recovery.ts'
 import { AUTOMATIC_FAILOVER_STALE_DETECTING_MESSAGE } from '../../features/managed/recovery.ts'
@@ -1492,11 +1493,10 @@ async function resolveWorkersNotificationEmail(
   try {
     const queue = await resolveWorkersEmailQueue(db, platformEnv, tlsRenewal?.dataEncryptionSecrets)
     const settings = await resolveEmailSettings(db, platformEnv, tlsRenewal?.dataEncryptionSecrets)
-    const publicUrls = platformEnv.TURBOPANEL_PUBLIC_URLS?.split(',')[0]?.trim()
     return {
       queue,
       from: settings.from,
-      consoleBaseUrl: platformEnv.TURBOPANEL_BASE_URL?.trim() || publicUrls || null,
+      consoleBaseUrl: platformControlPlaneOrigin(platformEnv),
     }
   } catch {
     return undefined
@@ -1515,14 +1515,13 @@ async function sweepTierNoticesPhase(
     platformEnv,
     tlsRenewal?.dataEncryptionSecrets
   )
-  const publicUrls = platformEnv.TURBOPANEL_PUBLIC_URLS?.split(',')[0]?.trim()
   await sweepTierNotices({
     db,
     emailQueue,
     deployment: 'hosted',
     ignoreElapsedGate: true,
     nowMs: opts.nowMs,
-    consoleBaseUrl: platformEnv.TURBOPANEL_BASE_URL?.trim() || publicUrls,
+    consoleBaseUrl: platformControlPlaneOrigin(platformEnv) ?? undefined,
   })
 }
 

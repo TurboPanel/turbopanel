@@ -23,7 +23,7 @@ See "Deno mailer throttling and prefetch" below for rate/burst/prefetch behavior
 | `TURBOPANEL_AMQP_URL` | Deno | RabbitMQ connection URL (from `/etc/turbopanel/rabbitmq/.rabbitmq_pass`; dev RabbitMQ listens on `127.0.0.1:5672`) |
 | `TURBOPANEL_DATABASE_URL` | Deno | Postgres for DB-backed SMTP settings (`setting` table); the consumer uses the instance's own connection |
 | `TURBOPANEL_REDIS_SOCKET` | Deno | Unix socket path used by the Daemon Cell Redis backend (`src/daemon/cell/redis/client.ts`); default `/run/turbopanel/redis.sock` |
-| `TURBOPANEL_BASE_URL` | Deno | Public base URL for verification links (falls back to request origin) |
+| `TURBOPANEL_BASE_URL` | Workers | Public base URL for mailed links. Self-hosted links never read it: they use the primary hostname under Admin › Access › Hostnames, else the discovered address (`src/features/install/control-plane-origins.ts`) |
 | `TURBOPANEL_SYSTEM_EMAIL__PROVIDER` | Both | `smtp`, `mailgun`, `mailpit-api` (Workers only), or `mailpit-smtp` (Deno only) |
 | `TURBOPANEL_SYSTEM_EMAIL__SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` | Deno (`smtp` or optional override for `mailpit-smtp`) | Real SMTP relay configuration |
 | `TURBOPANEL_SYSTEM_EMAIL__RATE_LIMIT_PER_MINUTE` | Deno | Token-bucket rate limit for the email consumer (default 60) |

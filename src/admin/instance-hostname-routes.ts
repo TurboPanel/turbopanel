@@ -30,7 +30,7 @@ import {
   publicOriginForHostname,
 } from '../features/install/public-origins.ts'
 import { recordAudit } from '../features/audit/audit-records.ts'
-import { publicHttpsOrigin } from '../features/install/public-urls.ts'
+import { platformControlPlaneOrigin } from '../features/install/control-plane-origins.ts'
 import {
   parseCertificateHostnamesBody,
   parseCertificateUploadBody,
@@ -109,7 +109,7 @@ async function auditPrimaryChange(
 }
 
 /** The shared 422 for every write these routes refuse on Workers, or `null` to proceed. */
-function refuseWorkersWrite(c: Context<AppEnv>, opts: { runtime: 'deno' | 'workers' }) {
+export function refuseWorkersWrite(c: Context<AppEnv>, opts: { runtime: 'deno' | 'workers' }) {
   if (opts.runtime !== 'workers') return null
   return c.json({ ok: false, error: PLATFORM_MANAGED_TLS_ERROR }, 422)
 }
@@ -143,10 +143,7 @@ export function registerInstanceHostnameAdminRoutes(
 
   admin.get('/instance/hostnames', async (c) => {
     if (opts.runtime === 'workers') {
-      const env = resolvePlatformEnv(c, opts)
-      const platformManagedOrigin = env.TURBOPANEL_BASE_URL
-        ? publicHttpsOrigin(env.TURBOPANEL_BASE_URL)
-        : null
+      const platformManagedOrigin = platformControlPlaneOrigin(resolvePlatformEnv(c, opts))
       return c.json({
         ok: true,
         hostnames: [],
