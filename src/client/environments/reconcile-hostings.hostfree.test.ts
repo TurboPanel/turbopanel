@@ -99,7 +99,7 @@ function createReconcileDb(opts: {
   tlsRows?: TlsSeed[]
   ipRows?: Array<{ id: string; label: string | null }>
   panelHosts?: string[]
-  /** The organization's "Allow Let's Encrypt certificates" switch; unset leaves the key out. */
+  /** The organization's "Allow Let's Encrypt certificates" switch; unset means off. */
   acmeEnabled?: boolean
 }) {
   return createMemoryDb(
@@ -109,7 +109,8 @@ function createReconcileDb(opts: {
         [
           {
             id: ORG_ID,
-            options: opts.acmeEnabled === undefined ? {} : { acmeEnabled: opts.acmeEnabled },
+            options: {},
+            isAcmeEnabled: opts.acmeEnabled === true,
           },
         ],
       ],
