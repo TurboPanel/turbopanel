@@ -834,12 +834,10 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
     await deps.store.saveLatestBuild(target)
     const active = await deps.store.activeRun()
     const daemonCommit = target.daemon?.commit ?? null
+    // A development co-located daemon runs from source and never counts.
+    const excludeServerId = deps.development ? deps.colocatedServerId : null
     const daemonDrift = daemonCommit
-      ? await deps.store.anyDaemonBehind(
-          daemonCommit,
-          target.daemon?.builtAt,
-          deps.development ? deps.colocatedServerId : null
-        )
+      ? await deps.store.anyDaemonBehind(daemonCommit, target.daemon?.builtAt, excludeServerId)
       : false
     const differs =
       daemonDrift ||
